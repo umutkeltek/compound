@@ -326,6 +326,7 @@ type proofResourceCompletionPending struct {
 	WorkID          string                  `json:"work_id"`
 	ReservationID   string                  `json:"reservation_id"`
 	InputDigest     string                  `json:"input_digest"`
+	GovernanceSeal  string                  `json:"governance_seal,omitempty"`
 	CreatedAt       string                  `json:"created_at"`
 	Action          envelope.ActionIntent   `json:"action"`
 	Decision        envelope.PolicyDecision `json:"decision"`
@@ -375,6 +376,15 @@ var proofResourceAfterScarceMutation = func(phase string) {}
 // proofResourceAfterCompletionRetryMint is the deterministic hard-crash test boundary after a
 // retry is fully bound but before its pending journal or Work reachability may advance.
 var proofResourceAfterCompletionRetryMint = func(runattempt.RunAttempt) {}
+var proofResourceWriteCompletionRetryJournal = func(
+	s *Store,
+	path string,
+	pending proofResourceCompletionPending,
+	_ runattempt.RunAttempt,
+) error {
+	return s.writeProofResourceCompletionPending(path, pending)
+}
+var proofResourceAfterCompletionRetryJournal = func(runattempt.RunAttempt, proofResourceCompletionPending) {}
 
 type ownedProofReport struct {
 	SchemaVersion string   `json:"schema_version"`
@@ -525,7 +535,8 @@ func (s *Store) ResumeProofResourceCompletion(
 	if err != nil {
 		return ProofResourceCompleteResult{}, false, err
 	}
-	if !status.Held {
+	expiredExact := !status.Held && status.IsExpired
+	if !status.Held && !expiredExact {
 		return ProofResourceCompleteResult{}, false, nil
 	}
 	reservationID, runAttemptID, heldWorkID, proofHolder := parseProofResourceHolder(status.Holder)
@@ -582,6 +593,19 @@ func (s *Store) ResumeProofResourceCompletion(
 	if inputDigest != pending.InputDigest {
 		return ProofResourceCompleteResult{}, true, fmt.Errorf("retained proof completion input digest changed")
 	}
+	if expiredExact {
+		if err := s.rearmExpiredProofResourceCompletion(
+			workID,
+			in,
+			reservation,
+			pending,
+			completeInput,
+			status,
+			now,
+		); err != nil {
+			return ProofResourceCompleteResult{}, true, err
+		}
+	}
 	if pending.Result.ReportArtifactRef != "" {
 		if in.PrepareOwnedReport == nil {
 			return ProofResourceCompleteResult{}, true, fmt.Errorf("retained proof completion requires owned report publication before release")
@@ -592,6 +616,176 @@ func (s *Store) ResumeProofResourceCompletion(
 	}
 	result, err = s.CompleteProofResource(workID, completeInput, now)
 	return result, true, err
+}
+
+func (s *Store) deriveProofResourceCompletionExpectation(
+	workID string,
+	reservation ProofResourceReservation,
+	in ProofResourceCompleteInput,
+) (proofResourceCompletionExpectation, error) {
+	inputDigest, err := proofResourceCompletionInputDigest(workID, in)
+	if err != nil {
+		return proofResourceCompletionExpectation{}, err
+	}
+	reportStatus := ""
+	ownedReport := false
+	if in.ReportArtifactRef != "" {
+		artifacts, err := home.NewArtifactStore(s.home)
+		if err != nil {
+			return proofResourceCompletionExpectation{}, err
+		}
+		body, err := artifacts.Get(in.ReportArtifactRef)
+		if err != nil {
+			return proofResourceCompletionExpectation{}, fmt.Errorf("proof report artifact: %w", err)
+		}
+		report, err := decodeOwnedProofReport(body)
+		if err != nil {
+			return proofResourceCompletionExpectation{}, fmt.Errorf("proof report decode: %w", err)
+		}
+		if err := validateOwnedProofReportAgainstReservation(report, reservation); err != nil {
+			return proofResourceCompletionExpectation{}, fmt.Errorf("proof report profile: %w", err)
+		}
+		reportStatus = report.Status
+		ownedReport = true
+	}
+	resultID := idFor("pfrs_", workID, reservation.ID, in.ReportArtifactRef, in.FailureReason)
+	resultStatus := ProofResourceFailed
+	verificationRef := ""
+	if reportStatus == "ok" {
+		if in.ProducerExitKnown && in.ProducerExitCode == 0 {
+			resultStatus = ProofResourceVerified
+			verificationRef = "proof-check:" + resultID
+		} else {
+			resultStatus = ProofResourceInvalid
+		}
+	}
+	if reportStatus == "failed" && in.ProducerExitKnown && in.ProducerExitCode == 0 {
+		return proofResourceCompletionExpectation{}, fmt.Errorf("proof report failed but producer exit code was zero")
+	}
+	terminalStatus := runattempt.StatusFailed
+	if resultStatus == ProofResourceVerified {
+		terminalStatus = runattempt.StatusSucceeded
+	}
+	return proofResourceCompletionExpectation{
+		InputDigest:     inputDigest,
+		ResultStatus:    resultStatus,
+		ReportStatus:    reportStatus,
+		OwnedReport:     ownedReport,
+		VerificationRef: verificationRef,
+		TerminalStatus:  terminalStatus,
+		TerminalReason:  completionReason(resultStatus, in.FailureReason),
+	}, nil
+}
+
+func (s *Store) rearmExpiredProofResourceCompletion(
+	workID string,
+	in ProofResourceResumeInput,
+	reservation ProofResourceReservation,
+	pending proofResourceCompletionPending,
+	completeInput ProofResourceCompleteInput,
+	expiredStatus landlease.StatusResult,
+	now time.Time,
+) error {
+	return s.withLifecycleMutation(func() error {
+		w, err := s.Get(workID)
+		if err != nil {
+			return err
+		}
+		claim, err := s.readLease(workID)
+		if err != nil || claim.By != in.Actor {
+			return fmt.Errorf("expired proof completion rearm requires work lease held by %q", in.Actor)
+		}
+		var currentReservation ProofResourceReservation
+		if err := s.readEventJSON(reservation.ID, &currentReservation); err != nil {
+			return err
+		}
+		currentPending, present, pendingPath, err := s.readProofResourceCompletionPending(reservation.ID)
+		if err != nil {
+			return err
+		}
+		if !present ||
+			!reflect.DeepEqual(currentReservation, reservation) ||
+			!reflect.DeepEqual(currentPending, pending) {
+			return fmt.Errorf("expired proof completion identity changed before rearm")
+		}
+		expect, err := s.deriveProofResourceCompletionExpectation(workID, currentReservation, completeInput)
+		if err != nil {
+			return err
+		}
+		ra, err := s.runAttempts().Get(currentPending.Result.RunAttemptID)
+		if err != nil {
+			return err
+		}
+		normalized, migrated, err := s.validateAndNormalizeProofResourceCompletionPending(
+			w,
+			currentReservation,
+			currentPending,
+			ra,
+			completeInput,
+			expect,
+		)
+		if err != nil {
+			return err
+		}
+		if migrated {
+			if err := s.writeProofResourceCompletionPending(pendingPath, normalized); err != nil {
+				return fmt.Errorf("seal expired proof completion recovery journal: %w", err)
+			}
+			currentPending = normalized
+		}
+		action := s.proofResourceAction(
+			w,
+			currentReservation.ID,
+			in.Actor,
+			"completion_rearm",
+			"",
+			"",
+			"",
+			"",
+			now,
+		)
+		decision, err := s.evaluateProofResourceAction(action, now)
+		if err != nil {
+			return err
+		}
+		if !policy.Allowed(decision) {
+			return fmt.Errorf("expired proof completion rearm policy %s", decision.Outcome)
+		}
+		if err := s.persistProofScarceMutationPreparation(
+			&w,
+			action,
+			decision,
+			currentReservation,
+			currentPending.Result.RunAttemptID,
+			"completion_rearm",
+			now,
+		); err != nil {
+			return err
+		}
+		rearmed, err := landlease.RearmExpiredExact(s.home, expiredStatus, now)
+		if err != nil {
+			return fmt.Errorf("rearm exact expired proof completion holder: %w", err)
+		}
+		proofResourceAfterScarceMutation("completion_rearm")
+		refresh := ProofResourceRefresh{
+			SchemaVersion:    ProofResourceRefreshSchemaVersion,
+			ID:               idFor("pfrh_", currentReservation.ID, currentReservation.RunAttemptID, rearmed.ExpiresAt),
+			Kind:             "work.proof_resource.refresh",
+			CreatedAt:        now.UTC().Format(time.RFC3339Nano),
+			WorkID:           workID,
+			Actor:            in.Actor,
+			ReservationID:    currentReservation.ID,
+			RunAttemptID:     currentReservation.RunAttemptID,
+			Holder:           currentReservation.Holder,
+			WindowOpenedAt:   currentReservation.AcquiredAt,
+			RefreshedAt:      rearmed.AcquiredAt,
+			ExpiresAt:        rearmed.ExpiresAt,
+			TTLSeconds:       rearmed.TTLSeconds,
+			ActionIntentID:   action.ID,
+			PolicyDecisionID: decision.ID,
+		}
+		return s.persistProofRefresh(&w, action, decision, refresh, now)
+	})
 }
 
 func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserveInput, now time.Time) (ProofResourceReserveResult, error) {
@@ -1206,50 +1400,17 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 		return ProofResourceCompleteResult{}, fmt.Errorf("proof reservation %s no longer holds exclusive resource; current holder %q", reservation.ID, leaseStatus.Holder)
 	}
 
-	reportStatus := ""
-	ownedReport := false
-	if in.ReportArtifactRef != "" {
-		artifacts, err := home.NewArtifactStore(s.home)
-		if err != nil {
-			return ProofResourceCompleteResult{}, err
-		}
-		body, err := artifacts.Get(in.ReportArtifactRef)
-		if err != nil {
-			return ProofResourceCompleteResult{}, fmt.Errorf("proof report artifact: %w", err)
-		}
-		report, err := decodeOwnedProofReport(body)
-		if err != nil {
-			return ProofResourceCompleteResult{}, fmt.Errorf("proof report decode: %w", err)
-		}
-		if err := validateOwnedProofReportAgainstReservation(report, reservation); err != nil {
-			return ProofResourceCompleteResult{}, fmt.Errorf("proof report profile: %w", err)
-		}
-		reportStatus = report.Status
-		ownedReport = true
-	}
-
-	resultID := idFor("pfrs_", workID, reservation.ID, in.ReportArtifactRef, in.FailureReason)
-	status := ProofResourceFailed
-	verificationRef := ""
-	if reportStatus == "ok" {
-		if in.ProducerExitKnown && in.ProducerExitCode == 0 {
-			status = ProofResourceVerified
-			verificationRef = "proof-check:" + resultID
-		} else {
-			status = ProofResourceInvalid
-		}
-	}
-	if reportStatus == "failed" && in.ProducerExitKnown && in.ProducerExitCode == 0 {
-		return ProofResourceCompleteResult{}, fmt.Errorf("proof report failed but producer exit code was zero")
-	}
-	terminalStatus := runattempt.StatusFailed
-	if status == ProofResourceVerified {
-		terminalStatus = runattempt.StatusSucceeded
-	}
-	inputDigest, err := proofResourceCompletionInputDigest(workID, in)
+	expect, err := s.deriveProofResourceCompletionExpectation(workID, reservation, in)
 	if err != nil {
 		return ProofResourceCompleteResult{}, err
 	}
+	resultID := idFor("pfrs_", workID, reservation.ID, in.ReportArtifactRef, in.FailureReason)
+	status := expect.ResultStatus
+	reportStatus := expect.ReportStatus
+	ownedReport := expect.OwnedReport
+	verificationRef := expect.VerificationRef
+	terminalStatus := expect.TerminalStatus
+	inputDigest := expect.InputDigest
 	pending, pendingPresent, pendingPath, err := s.readProofResourceCompletionPending(reservation.ID)
 	if err != nil {
 		return ProofResourceCompleteResult{}, err
@@ -1265,15 +1426,7 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 			pending,
 			pendingPath,
 			in,
-			proofResourceCompletionExpectation{
-				InputDigest:     inputDigest,
-				ResultStatus:    status,
-				ReportStatus:    reportStatus,
-				OwnedReport:     ownedReport,
-				VerificationRef: verificationRef,
-				TerminalStatus:  terminalStatus,
-				TerminalReason:  completionReason(status, in.FailureReason),
-			},
+			expect,
 			now,
 		)
 		if err != nil {
@@ -1284,8 +1437,12 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 		if err != nil {
 			return ProofResourceCompleteResult{}, err
 		}
-		action := s.proofResourceAction(w, reservation.ID, in.Actor, "complete", "", "", "", "", now)
-		decision, err := s.evaluateProofResourceAction(action, now)
+		action, decision, governanceSeal, err := s.proofResourceCompletionGovernance(
+			w,
+			reservation,
+			in.Actor,
+			now,
+		)
 		if err != nil {
 			return ProofResourceCompleteResult{}, err
 		}
@@ -1343,6 +1500,7 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 			WorkID:          workID,
 			ReservationID:   reservation.ID,
 			InputDigest:     inputDigest,
+			GovernanceSeal:  governanceSeal,
 			CreatedAt:       now.UTC().Format(time.RFC3339Nano),
 			Action:          action,
 			Decision:        decision,
@@ -1490,6 +1648,39 @@ func proofResourceCompletionInputDigest(workID string, in ProofResourceCompleteI
 	return hex.EncodeToString(digest[:]), nil
 }
 
+func proofResourceCompletionGovernanceSeal(
+	action envelope.ActionIntent,
+	decision envelope.PolicyDecision,
+) (string, error) {
+	body, err := json.Marshal(struct {
+		Action   envelope.ActionIntent   `json:"action"`
+		Decision envelope.PolicyDecision `json:"decision"`
+	}{Action: action, Decision: decision})
+	if err != nil {
+		return "", fmt.Errorf("marshal proof completion governance: %w", err)
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func (s *Store) proofResourceCompletionGovernance(
+	w envelope.WorkEnvelope,
+	reservation ProofResourceReservation,
+	actor string,
+	now time.Time,
+) (envelope.ActionIntent, envelope.PolicyDecision, string, error) {
+	action := s.proofResourceAction(w, reservation.ID, actor, "complete", "", "", "", "", now)
+	decision, err := s.evaluateProofResourceAction(action, now)
+	if err != nil {
+		return envelope.ActionIntent{}, envelope.PolicyDecision{}, "", err
+	}
+	seal, err := proofResourceCompletionGovernanceSeal(action, decision)
+	if err != nil {
+		return envelope.ActionIntent{}, envelope.PolicyDecision{}, "", err
+	}
+	return action, decision, seal, nil
+}
+
 func (s *Store) proofResourceCompletionPendingPath(reservationID string) (string, error) {
 	if filepath.Base(reservationID) != reservationID || !strings.HasPrefix(reservationID, "pfr_") {
 		return "", fmt.Errorf("invalid proof reservation id %q", reservationID)
@@ -1575,27 +1766,56 @@ func (s *Store) validateAndNormalizeProofResourceCompletionPending(
 	if err := pending.Action.Validate(); err != nil {
 		return fail("completion ActionIntent is invalid: " + err.Error())
 	}
-	if pending.Action.IDs.WorkID != workID ||
-		pending.Action.IDs.ContextPackID != w.IDs.ContextPackID ||
-		pending.Action.Actor != in.Actor ||
-		pending.Action.Capability != "proof.resource" ||
-		pending.Action.Action != "complete_full_proof_resource" ||
-		pending.Action.Target.Kind != "work" ||
-		pending.Action.Target.ID != workID ||
-		pending.Action.Target.Path != s.workPath(workID) ||
-		pending.Action.MutationClass != "local_reversible" ||
-		pending.Action.Reversibility != "easy" ||
-		pending.Action.BlastRadius != "local" {
-		return fail("completion ActionIntent does not have the expected work, actor, target, or mutation shape")
-	}
 	if err := pending.Decision.Validate(); err != nil {
 		return fail("completion PolicyDecision is invalid: " + err.Error())
 	}
-	if pending.Decision.IDs.WorkID != workID ||
-		pending.Decision.IDs.ContextPackID != w.IDs.ContextPackID ||
-		pending.Decision.ActionIntentID != pending.Action.ID ||
-		!policy.Allowed(pending.Decision) {
-		return fail("completion PolicyDecision is not the allowing decision for the exact ActionIntent")
+	seal, err := proofResourceCompletionGovernanceSeal(pending.Action, pending.Decision)
+	if err != nil {
+		return fail("completion governance seal cannot be computed: " + err.Error())
+	}
+	normalized := pending
+	governanceMigrated := false
+	governanceCreatedAt := pending.CreatedAt
+	if ra.ID != reservation.RunAttemptID {
+		originalAttempt, err := s.runAttempts().Get(reservation.RunAttemptID)
+		if err != nil {
+			return fail("completion governance original RunAttempt cannot be read: " + err.Error())
+		}
+		if originalAttempt.CompletedAt.IsZero() {
+			return fail("completion governance original RunAttempt has no completion time")
+		}
+		governanceCreatedAt = originalAttempt.CompletedAt.UTC().Format(time.RFC3339Nano)
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, governanceCreatedAt)
+	if err != nil {
+		return fail("completion governance creation time is invalid: " + err.Error())
+	}
+	expectedAction := s.proofResourceAction(w, reservation.ID, in.Actor, "complete", "", "", "", "", createdAt)
+	if !reflect.DeepEqual(pending.Action, expectedAction) {
+		return fail("completion ActionIntent differs from canonical construction")
+	}
+	if pending.GovernanceSeal == "" {
+		expectedAction, expectedDecision, expectedSeal, err := s.proofResourceCompletionGovernance(
+			w,
+			reservation,
+			in.Actor,
+			createdAt,
+		)
+		if err != nil {
+			return fail("legacy completion governance cannot be reconstructed: " + err.Error())
+		}
+		if !reflect.DeepEqual(pending.Action, expectedAction) ||
+			!reflect.DeepEqual(pending.Decision, expectedDecision) ||
+			seal != expectedSeal {
+			return fail("legacy completion governance differs from canonical reconstruction")
+		}
+		normalized.GovernanceSeal = expectedSeal
+		governanceMigrated = true
+	} else if pending.GovernanceSeal != seal {
+		return fail("completion governance seal does not match the complete ActionIntent and PolicyDecision")
+	}
+	if !policy.Allowed(pending.Decision) {
+		return fail("completion PolicyDecision is not allowing")
 	}
 	if ra.WorkID != workID ||
 		ra.Actor != in.Actor ||
@@ -1729,18 +1949,18 @@ func (s *Store) validateAndNormalizeProofResourceCompletionPending(
 
 	exactResultProjection := pending.Result.RunAttemptStatus == pending.TerminalStatus &&
 		pending.Result.VerificationRef == pending.VerificationRef
-	legacyResultProjection := pending.Result.RunAttemptStatus == runattempt.StatusRunning &&
+	legacyResultProjection := (pending.Result.RunAttemptStatus == runattempt.StatusPending ||
+		pending.Result.RunAttemptStatus == runattempt.StatusRunning) &&
 		pending.Result.VerificationRef == ""
 	switch {
 	case exactResultProjection:
-		return pending, false, nil
+		return normalized, governanceMigrated, nil
 	case legacyResultProjection:
-		normalized := pending
 		normalized.Result.RunAttemptStatus = normalized.TerminalStatus
 		normalized.Result.VerificationRef = normalized.VerificationRef
 		return normalized, true, nil
 	default:
-		return fail("ProofResourceResult terminal projection is neither exact nor the known v0.1 running/empty shape")
+		return fail("ProofResourceResult terminal projection is neither exact nor a known v0.1 pending-or-running/empty shape")
 	}
 }
 
@@ -1852,13 +2072,14 @@ func (s *Store) proofRunAttemptForCompletionRetry(
 	}
 	proofResourceAfterCompletionRetryMint(retry)
 	nextPending := reseedProofResourceCompletionPending(pending, retry, now)
-	if err := s.writeProofResourceCompletionPending(pendingPath, nextPending); err != nil {
+	if err := proofResourceWriteCompletionRetryJournal(s, pendingPath, nextPending, retry); err != nil {
 		reachabilityErr := s.persistProofCompletionRetryReachability(w, nextPending, retry, now)
 		return failRetry(errors.Join(
 			fmt.Errorf("persist proof completion retry journal: %w", err),
 			reachabilityErr,
 		))
 	}
+	proofResourceAfterCompletionRetryJournal(retry, nextPending)
 	pending = nextPending
 	if err := s.persistProofCompletionRetryReachability(w, pending, retry, now); err != nil {
 		return failRetry(err)
@@ -2360,7 +2581,8 @@ func (s *Store) proofReservationWithLatestRefresh(reservation ProofResourceReser
 			}
 			if action.IDs.WorkID != reservation.WorkID ||
 				action.Actor != reservation.Actor ||
-				action.Action != "refresh_full_proof_resource" ||
+				(action.Action != "refresh_full_proof_resource" &&
+					action.Action != "rearm_expired_proof_completion") ||
 				decision.ActionIntentID != action.ID ||
 				!policy.Allowed(decision) {
 				return ProofResourceReservation{}, fmt.Errorf("proof refresh evidence %s lacks its exact allowing governance chain", ref)
@@ -2452,7 +2674,7 @@ func (s *Store) persistProofScarceMutationPreparation(
 		return fmt.Errorf("persist proof %s preparation work: %w", phase, err)
 	}
 	attached := []string{action.ID, decision.ID}
-	if phase == "refresh" {
+	if phase == "refresh" || phase == "completion_rearm" {
 		attached = append(attached, reservation.ID)
 	}
 	if runAttemptID != "" {
@@ -2476,6 +2698,10 @@ func (s *Store) persistProofRefresh(
 	refresh ProofResourceRefresh,
 	now time.Time,
 ) error {
+	note := "proof resource heartbeat refreshed the exclusive expiry"
+	if action.Action == "rearm_expired_proof_completion" {
+		note = "exact expired proof completion holder rearmed after journal validation and execution attestation"
+	}
 	if err := s.writeEventJSON(action.ID, &action); err != nil {
 		return err
 	}
@@ -2498,7 +2724,7 @@ func (s *Store) persistProofRefresh(
 		From:     w.State,
 		To:       w.State,
 		By:       refresh.Actor,
-		Note:     "proof resource heartbeat refreshed exclusive expiry",
+		Note:     note,
 		Attached: []string{action.ID, decision.ID, refresh.ReservationID, refresh.ID, refresh.RunAttemptID},
 	})
 }
@@ -2705,6 +2931,10 @@ func (s *Store) proofResourceAction(
 		action = "refresh_full_proof_resource"
 		preview = "heartbeat the active proof RunAttempt and extend its exact exclusive reservation"
 		rollback = "stop refreshing; the last evidenced TTL expires without reopening a stale holder"
+	case phase == "completion_rearm":
+		action = "rearm_expired_proof_completion"
+		preview = "rearm the exact expired proof holder after complete journal validation and execution termination"
+		rollback = "the exact holder remains auditable and its short rearmed TTL expires without successor release"
 	case strings.TrimSpace(terminationEvidenceRef) != "":
 		action = "steal_full_proof_resource_after_termination_evidence"
 		preview = fmt.Sprintf(

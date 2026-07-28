@@ -1825,6 +1825,7 @@ func TestProofResourceCompletionRetryNormalizesLegacyPendingResultProjection(t *
 	if !present {
 		t.Fatal("completion fault did not retain pending journal")
 	}
+	pending.GovernanceSeal = ""
 	pending.Result.RunAttemptStatus = runattempt.StatusRunning
 	pending.Result.VerificationRef = ""
 	if err := s.writeProofResourceCompletionPending(pendingPath, pending); err != nil {
@@ -2866,6 +2867,248 @@ func writeTestProofRecoveryNode(
 		t.Fatal(err)
 	}
 	return proofResourceHolder(reservation.ID, ra.ID, w.ID, actor)
+}
+
+func TestResumeProofResourceCompletionRearmsExactExpiredHolderWithoutNewReservation(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "resume exact expired proof completion", proofActorAlpha, fixedNow)
+	acquired, err := reserveProofResourceWithLiveBarrier(t, s, w.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       3 * time.Second,
+		Workspace: "/synthetic/repo-alpha",
+		Command:   "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportRef, err := artifacts.Put(validOwnedProofReportJSON("ok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeInput := ProofResourceCompleteInput{
+		Actor:             proofActorAlpha,
+		ReservationID:     acquired.Reservation.ID,
+		ReportArtifactRef: reportRef,
+		ProducerExitKnown: true,
+		ProducerExitCode:  0,
+	}
+	if _, err := s.CompleteProofResource(w.ID, completeInput, fixedNow.Add(2*time.Second)); err == nil {
+		t.Fatal("completion released while the execution barrier was live")
+	}
+	expiredAt := fixedNow.Add(5 * time.Second)
+	resumeInput := ProofResourceResumeInput{
+		Actor:              proofActorAlpha,
+		Workspace:          acquired.Reservation.Workspace,
+		Command:            acquired.Reservation.Command,
+		Profile:            acquired.Reservation.Profile,
+		PrepareOwnedReport: func(ProofResourceResult) error { return nil },
+	}
+	if _, found, err := s.ResumeProofResourceCompletion(w.ID, resumeInput, expiredAt); !found || err == nil {
+		t.Fatalf("live descendant expired resume = found:%t err:%v, want found refusal", found, err)
+	}
+	status, err := landlease.Status(s.home, expiredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.IsExpired || status.Holder != acquired.Reservation.Holder {
+		t.Fatalf("live-descendant refusal changed expired holder: %+v", status)
+	}
+	if err := acquired.ExecutionBarrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, found, err := s.ResumeProofResourceCompletion(w.ID, resumeInput, expiredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || !resumed.ResourceReleased || resumed.VerificationRef == "" {
+		t.Fatalf("expired exact resume = found:%t result:%+v", found, resumed)
+	}
+	attempts, err := s.runAttempts().List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	proofAttempts := 0
+	for _, attempt := range attempts {
+		if attempt.WorkID == w.ID && attempt.Harness == proofResourceHarness {
+			proofAttempts++
+		}
+	}
+	if proofAttempts != 2 {
+		t.Fatalf("proof RunAttempts = %d, want original plus completion-retry only", proofAttempts)
+	}
+}
+
+func TestProofResourceCompletionRetryRecoversLegacyPendingJournalCrashBeforeMarkRunning(t *testing.T) {
+	s, w, acquired, input, _, pendingPath := proofCompletionPendingFixture(t, "legacy pending retry journal crash")
+	originalWriter := proofResourceWriteCompletionRetryJournal
+	originalAfterJournal := proofResourceAfterCompletionRetryJournal
+	t.Cleanup(func() {
+		proofResourceWriteCompletionRetryJournal = originalWriter
+		proofResourceAfterCompletionRetryJournal = originalAfterJournal
+	})
+	proofResourceWriteCompletionRetryJournal = func(
+		store *Store,
+		path string,
+		pending proofResourceCompletionPending,
+		retry runattempt.RunAttempt,
+	) error {
+		pending.GovernanceSeal = ""
+		pending.Result.RunAttemptStatus = retry.Status
+		pending.Result.VerificationRef = ""
+		return store.writeProofResourceCompletionPending(path, pending)
+	}
+	crashed := false
+	proofResourceAfterCompletionRetryJournal = func(retry runattempt.RunAttempt, pending proofResourceCompletionPending) {
+		crashed = true
+		panic("synthetic crash after legacy retry journal write")
+	}
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = s.CompleteProofResource(w.ID, input, fixedNow.Add(4*time.Second))
+	}()
+	proofResourceWriteCompletionRetryJournal = originalWriter
+	proofResourceAfterCompletionRetryJournal = originalAfterJournal
+	if !crashed {
+		t.Fatal("retry did not reach post-journal crash boundary")
+	}
+	pending, present, _, err := s.readProofResourceCompletionPending(acquired.Reservation.ID)
+	if err != nil || !present {
+		t.Fatalf("read crash journal: present=%t err=%v", present, err)
+	}
+	if pending.Result.RunAttemptStatus != runattempt.StatusPending || pending.Result.VerificationRef != "" {
+		t.Fatalf("crash journal projection = %q/%q", pending.Result.RunAttemptStatus, pending.Result.VerificationRef)
+	}
+	before, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := s.CompleteProofResource(w.ID, input, fixedNow.Add(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recovered.ResourceReleased || recovered.VerificationRef == "" {
+		t.Fatalf("legacy pending crash recovery = %+v", recovered)
+	}
+	if _, err := os.Stat(pendingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("recovered pending journal remains (before=%d bytes): %v", len(before), err)
+	}
+}
+
+func TestProofResourceCompletionLegacyGovernanceMutationRejectedByteIdentical(t *testing.T) {
+	mutations := []struct {
+		name   string
+		mutate func(*proofResourceCompletionPending)
+	}{
+		{name: "action id", mutate: func(p *proofResourceCompletionPending) { p.Action.ID = "act_changed" }},
+		{name: "action preview", mutate: func(p *proofResourceCompletionPending) { p.Action.Preview += " changed" }},
+		{name: "action rollback", mutate: func(p *proofResourceCompletionPending) { p.Action.RollbackPlan += " changed" }},
+		{name: "action arguments", mutate: func(p *proofResourceCompletionPending) { p.Action.ArgumentsHash = "sha256:changed" }},
+		{name: "action source", mutate: func(p *proofResourceCompletionPending) {
+			p.Action.InputSources = []envelope.SourceBinding{{
+				SourceID:        "src_changed",
+				ContentHash:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				TrustClass:      envelope.SourceTrustAuthenticatedOperator,
+				Confidentiality: envelope.ConfidentialityInternal,
+			}}
+		}},
+		{name: "action security", mutate: func(p *proofResourceCompletionPending) {
+			p.Action.SecurityFloorOutcome = "hold"
+			p.Action.SecurityReasons = []string{"changed"}
+		}},
+		{name: "decision id", mutate: func(p *proofResourceCompletionPending) { p.Decision.ID = "pol_changed" }},
+		{name: "decision outcome", mutate: func(p *proofResourceCompletionPending) {
+			p.Decision.Outcome = "allow_with_obligations"
+			p.Decision.Obligations = []string{"changed"}
+		}},
+		{name: "decision reasons", mutate: func(p *proofResourceCompletionPending) { p.Decision.Reasons = append(p.Decision.Reasons, "changed") }},
+		{name: "decision obligations", mutate: func(p *proofResourceCompletionPending) {
+			p.Decision.Obligations = append(p.Decision.Obligations, "changed")
+		}},
+		{name: "decision grant", mutate: func(p *proofResourceCompletionPending) { p.Decision.StandingGrantID = "grant_changed" }},
+		{name: "decision expiry", mutate: func(p *proofResourceCompletionPending) { p.Decision.ExpiresAt = "2027-01-01T00:00:00Z" }},
+	}
+	for _, tc := range mutations {
+		t.Run(tc.name, func(t *testing.T) {
+			s, w, _, input, pending, pendingPath := proofCompletionPendingFixture(t, "governance mutation "+tc.name)
+			pending.GovernanceSeal = ""
+			tc.mutate(&pending)
+			if err := s.writeProofResourceCompletionPending(pendingPath, pending); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(pendingPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.CompleteProofResource(w.ID, input, fixedNow.Add(4*time.Second)); err == nil {
+				t.Fatal("changed legacy governance was accepted")
+			}
+			after, err := os.ReadFile(pendingPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatal("governance rejection mutated pending journal")
+			}
+		})
+	}
+}
+
+func proofCompletionPendingFixture(
+	t *testing.T,
+	title string,
+) (*Store, envelope.WorkEnvelope, ProofResourceReserveResult, ProofResourceCompleteInput, proofResourceCompletionPending, string) {
+	t.Helper()
+	s := newStore(t)
+	w := claimedProofWork(t, s, title, proofActorAlpha, fixedNow)
+	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       time.Minute,
+		Workspace: "/synthetic/repo-alpha",
+		Command:   "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportRef, err := artifacts.Put(validOwnedProofReportJSON("ok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := ProofResourceCompleteInput{
+		Actor:             proofActorAlpha,
+		ReservationID:     acquired.Reservation.ID,
+		ReportArtifactRef: reportRef,
+		ProducerExitKnown: true,
+		ProducerExitCode:  0,
+	}
+	originalWrite := proofResourceWriteEventRecord
+	proofResourceWriteEventRecord = func(store *Store, stage, id string, value any) error {
+		if stage == "result" {
+			return errors.New("synthetic prepared-completion persistence fault")
+		}
+		return originalWrite(store, stage, id, value)
+	}
+	_, firstErr := s.CompleteProofResource(w.ID, input, fixedNow.Add(3*time.Second))
+	proofResourceWriteEventRecord = originalWrite
+	if firstErr == nil {
+		t.Fatal("fixture completion did not retain pending journal")
+	}
+	pending, present, pendingPath, err := s.readProofResourceCompletionPending(acquired.Reservation.ID)
+	if err != nil || !present {
+		t.Fatalf("fixture pending journal: present=%t err=%v", present, err)
+	}
+	if pending.GovernanceSeal == "" {
+		t.Fatal("new completion journal omitted governance seal")
+	}
+	return s, w, acquired, input, pending, pendingPath
 }
 
 func reserveProofResource(
