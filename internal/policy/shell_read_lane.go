@@ -330,6 +330,7 @@ type shellSegment struct {
 	words      []string
 	writes     bool
 	obfuscated bool
+	dynamic    bool
 }
 
 // shellLex decomposes a command into its executable segments in one pass,
@@ -371,6 +372,9 @@ func shellLex(command string) ([]shellSegment, bool) {
 		switch r := runes[i]; r {
 		case '\\':
 			if i+1 < len(runes) {
+				if runes[i+1] == '\n' {
+					return nil, false
+				}
 				i++
 				word.WriteRune(runes[i])
 				continue
@@ -402,6 +406,9 @@ func shellLex(command string) ([]shellSegment, bool) {
 			if body == "" || shellWordContinues(runes, end) {
 				current.obfuscated = true
 			}
+			if strings.Contains(body, shellSubstitutionPlaceholder) || strings.ContainsRune(body, '$') {
+				current.dynamic = true
+			}
 			word.WriteString(body)
 			i = end
 		case '`':
@@ -414,9 +421,11 @@ func shellLex(command string) ([]shellSegment, bool) {
 				return nil, false
 			}
 			trailing = append(trailing, nested...)
+			current.dynamic = true
 			word.WriteString(shellSubstitutionPlaceholder)
 			i = end
 		case '$':
+			current.dynamic = true
 			if i+1 < len(runes) && runes[i+1] == '(' {
 				body, end, ok := shellReadSubstitution(runes, i+1)
 				if !ok {
@@ -432,6 +441,18 @@ func shellLex(command string) ([]shellSegment, bool) {
 				continue
 			}
 			word.WriteRune(r)
+		case '{', '}', '*', '?', '[':
+			// Unquoted brace, parameter, and pathname expansions can turn one
+			// apparent verification operand into new flags or commands.
+			current.dynamic = true
+			word.WriteRune(r)
+		case '=':
+			if i+1 < len(runes) && runes[i+1] == '(' {
+				return nil, false // zsh =(command) process substitution
+			}
+			word.WriteRune(r)
+		case '(', ')':
+			return nil, false // grouping and zsh executable glob qualifiers
 		case '<', '>':
 			if i+1 < len(runes) && runes[i+1] == '(' {
 				return nil, false // process substitution runs a command
@@ -617,14 +638,26 @@ func shellReadRedirection(runes []rune, start int, word *strings.Builder, curren
 		if next == ' ' || next == '\t' || next == ';' || next == '|' || next == '\n' || next == '&' {
 			break
 		}
+		if (next == '=' || next == '<' || next == '>') && i+2 < len(runes) && runes[i+2] == '(' {
+			return 0, false, false
+		}
+		if strings.ContainsRune("*?[]{}()#^~", next) {
+			return 0, false, false
+		}
 		if next == '\'' || next == '"' {
 			body, end, ok := shellReadQuoted(runes, i+1)
 			if !ok {
 				return 0, false, false
 			}
+			if next == '"' && (strings.ContainsRune(body, '$') || strings.ContainsRune(body, '`')) {
+				current.obfuscated = true
+			}
 			target.WriteString(body)
 			i = end
 			continue
+		}
+		if next == '$' || next == '`' {
+			current.obfuscated = true
 		}
 		i++
 		target.WriteRune(next)
@@ -633,6 +666,9 @@ func shellReadRedirection(runes []rune, start int, word *strings.Builder, curren
 		return i, false, false
 	}
 	if input {
+		if strings.HasPrefix(target.String(), "/dev/tcp/") || strings.HasPrefix(target.String(), "/dev/udp/") {
+			current.obfuscated = true
+		}
 		return i, false, true
 	}
 	return i, target.String() != "/dev/null", true
@@ -664,16 +700,28 @@ func shellSegmentClass(segment shellSegment, firstPartyCommands FirstPartyComman
 	if segment.writes || segment.obfuscated {
 		return shellClassUnknown
 	}
-	fields := shellStripCommandPrefixes(segment.words)
+	fields, prefixesSafe := shellStripCommandPrefixes(segment.words)
+	if !prefixesSafe {
+		return shellClassUnknown
+	}
 	prefixLength := len(segment.words) - len(fields)
 	prefix := segment.words[:prefixLength]
 	if shellPrefixChangesExecution(prefix) {
 		return shellClassUnknown
 	}
 	if len(fields) == 0 {
+		if shellPrefixHasAssignment(prefix) {
+			return shellClassUnknown
+		}
 		return shellClassRead
 	}
 	verb := shellVerbName(fields[0])
+	if shellDynamicArgumentsNeedHold(verb) && segment.dynamic {
+		return shellClassUnknown
+	}
+	if !shellVerificationExecutableTrusted(fields[0], verb) {
+		return shellClassUnknown
+	}
 	if shellVerificationVerbRequiresCleanPrefix(verb) && shellPrefixHasAssignment(prefix) {
 		return shellClassUnknown
 	}
@@ -689,8 +737,9 @@ func shellPrefixChangesExecution(prefix []string) bool {
 		}
 		name, _, _ := strings.Cut(strings.Trim(token, `"'`), "=")
 		switch name {
-		case "PATH", "BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS",
-			"MAKEFILES", "MAKEFLAGS", "SWIFT_EXEC", "SWIFTC_EXEC":
+		case "PATH", "path", "BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS",
+			"MAKEFILES", "MAKEFLAGS", "SWIFT_EXEC", "SWIFTC_EXEC",
+			"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH":
 			return true
 		}
 	}
@@ -708,34 +757,90 @@ func shellPrefixHasAssignment(prefix []string) bool {
 
 func shellVerificationVerbRequiresCleanPrefix(verb string) bool {
 	switch verb {
-	case "bash", "swift", "make":
+	case "sed", "bash", "swift", "make":
 		return true
 	default:
 		return false
 	}
 }
 
+func shellDynamicArgumentsNeedHold(verb string) bool {
+	switch verb {
+	case "sed", "bash", "swift", "make":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellVerificationExecutableTrusted(token, verb string) bool {
+	token = strings.TrimSpace(strings.Trim(token, `"'`))
+	switch verb {
+	case "sed":
+		return token == "sed" || token == "/usr/bin/sed" || token == "/bin/sed"
+	case "bash":
+		return token == "bash" || token == "/bin/bash"
+	case "swift":
+		return token == "swift" || token == "/usr/bin/swift"
+	case "make":
+		return token == "make" || token == "/usr/bin/make"
+	default:
+		return true
+	}
+}
+
 // shellStripCommandPrefixes drops environment assignments and the wrappers that
 // merely run another command, so the classified verb is the one that acts.
 // `sudo` is deliberately absent: it changes privilege, so it is not routine.
-func shellStripCommandPrefixes(fields []string) []string {
+func shellStripCommandPrefixes(fields []string) ([]string, bool) {
 	for len(fields) > 0 {
 		head := fields[0]
 		if shellLooksLikeAssignment(head) {
 			fields = fields[1:]
 			continue
 		}
-		switch shellVerbName(head) {
-		case "env", "nice", "stdbuf", "time", "timeout", "gtimeout", "command", "builtin", "exec":
+		wrapper := shellVerbName(head)
+		switch wrapper {
+		case "env":
+			if !shellWrapperExecutableTrusted(head, wrapper) {
+				return nil, false
+			}
 			fields = fields[1:]
-			for len(fields) > 0 && (strings.HasPrefix(fields[0], "-") || shellLooksLikeDuration(fields[0])) {
-				fields = fields[1:]
+			if len(fields) > 0 && strings.HasPrefix(fields[0], "-") {
+				return nil, false
+			}
+			continue
+		case "timeout", "gtimeout":
+			if !shellWrapperExecutableTrusted(head, wrapper) {
+				return nil, false
+			}
+			fields = fields[1:]
+			if len(fields) == 0 || !shellLooksLikeDuration(fields[0]) {
+				return nil, false
+			}
+			fields = fields[1:]
+			if len(fields) == 0 {
+				return nil, false
+			}
+			continue
+		case "nice", "stdbuf", "time", "command", "builtin", "exec":
+			if !shellWrapperExecutableTrusted(head, wrapper) {
+				return nil, false
+			}
+			fields = fields[1:]
+			if len(fields) == 0 || strings.HasPrefix(fields[0], "-") {
+				return nil, false
 			}
 			continue
 		}
 		break
 	}
-	return fields
+	return fields, true
+}
+
+func shellWrapperExecutableTrusted(token, wrapper string) bool {
+	token = strings.TrimSpace(strings.Trim(token, `"'`))
+	return token == wrapper
 }
 
 func shellLooksLikeAssignment(token string) bool {
@@ -1358,6 +1463,12 @@ func shellSedScriptWrites(script string) bool {
 		if shellSedHasSimpleAddressBefore(script, i) {
 			return true
 		}
+		if shellSedHasMixedRangeAddressBefore(script, i) {
+			return true
+		}
+		if shellSedHasRegexAddressBefore(script, i) {
+			return true
+		}
 		if shellSedHasAlternateRegexAddressBefore(script, i) {
 			return true
 		}
@@ -1382,21 +1493,15 @@ func shellSedSubstitutionWrites(script string) bool {
 		if !ok {
 			continue
 		}
-		separator := -1
 	flags:
 		for j := replacementEnd + 1; j < len(script); j++ {
 			switch script[j] {
 			case ';', '\n':
-				separator = j
 				break flags
 			case 'w', 'W', 'e':
 				return true
 			}
 		}
-		if separator < 0 {
-			return false
-		}
-		i = separator
 	}
 	return false
 }
@@ -1441,6 +1546,73 @@ func shellSedHasSimpleAddressBefore(script string, commandIndex int) bool {
 		}
 	}
 	return hasAddress
+}
+
+func shellSedHasMixedRangeAddressBefore(script string, commandIndex int) bool {
+	start := commandIndex
+	for start > 0 {
+		previous := script[start-1]
+		if previous == '\n' || previous == ';' || previous == '{' || previous == '}' {
+			break
+		}
+		start--
+	}
+
+	prefix := strings.TrimSpace(script[start:commandIndex])
+	prefix = strings.TrimSpace(strings.TrimSuffix(prefix, "!"))
+	comma := strings.LastIndex(prefix, ",")
+	if comma < 0 {
+		return false
+	}
+	second := strings.TrimSpace(prefix[comma+1:])
+	if second == "$" {
+		return true
+	}
+	if strings.HasPrefix(second, "+") || strings.HasPrefix(second, "~") {
+		second = second[1:]
+	}
+	if first, step, ok := strings.Cut(second, "~"); ok {
+		return shellAllDigits(first) && shellAllDigits(step)
+	}
+	return shellAllDigits(second)
+}
+
+func shellSedHasRegexAddressBefore(script string, commandIndex int) bool {
+	prefix := strings.TrimSpace(script[:commandIndex])
+	prefix = strings.TrimSpace(strings.TrimSuffix(prefix, "!"))
+	for candidateStart := 0; candidateStart < len(prefix); candidateStart++ {
+		if candidateStart > 0 && !strings.ContainsRune(",;\n{}", rune(prefix[candidateStart-1])) {
+			continue
+		}
+		for candidateStart < len(prefix) && (prefix[candidateStart] == ' ' || prefix[candidateStart] == '\t') {
+			candidateStart++
+		}
+		if candidateStart >= len(prefix) {
+			break
+		}
+
+		candidate := prefix[candidateStart:]
+		delimiterIndex := 0
+		if candidate[0] == '\\' {
+			if len(candidate) < 3 {
+				continue
+			}
+			delimiterIndex = 1
+		} else if candidate[0] != '/' {
+			continue
+		}
+		delimiter := candidate[delimiterIndex]
+		regexStart := delimiterIndex + 1
+		end, ok := shellSedDelimitedEnd(candidate, regexStart, delimiter)
+		if !ok {
+			continue
+		}
+		modifiers := strings.TrimSpace(candidate[end+1:])
+		if modifiers == "" || strings.Trim(modifiers, "IiMm") == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func shellSedHasAlternateRegexAddressBefore(script string, commandIndex int) bool {
