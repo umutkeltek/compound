@@ -90,13 +90,21 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// HookInstallBinding is one lifecycle event binding reported by an install/check pass.
+type HookInstallBinding struct {
+	Event   string `json:"event"`
+	Matcher string `json:"matcher,omitempty"`
+	Command string `json:"command"`
+}
+
 // HookInstallEntry is the per-harness outcome of an install/check pass.
 type HookInstallEntry struct {
-	Harness    string `json:"harness"`
-	ConfigPath string `json:"config_path"`
-	Action     string `json:"action"` // installed | updated | ok | drift | absent
-	Matcher    string `json:"matcher"`
-	Command    string `json:"command"`
+	Harness    string               `json:"harness"`
+	ConfigPath string               `json:"config_path"`
+	Action     string               `json:"action"` // installed | updated | ok | drift | absent
+	Bindings   []HookInstallBinding `json:"bindings"`
+	Matcher    string               `json:"matcher"` // compatibility: PreToolUse binding
+	Command    string               `json:"command"` // compatibility: PreToolUse binding
 }
 
 // HookInstallReport is the full install/check result.
@@ -144,12 +152,21 @@ func InstallHooksWithConfigDir(baseDir, binaryPath, scope string, harnesses []st
 		if err != nil {
 			return report, fmt.Errorf("%s: %w", harness, err)
 		}
+		reportedBindings := make([]HookInstallBinding, 0, len(bindings))
+		for _, binding := range bindings {
+			reportedBindings = append(reportedBindings, HookInstallBinding{
+				Event:   binding.Event,
+				Matcher: binding.Matcher,
+				Command: binding.Command,
+			})
+		}
 		action, err := mergeHookBindings(configPath, bindings, check)
 		if err != nil {
 			return report, fmt.Errorf("%s: %w", harness, err)
 		}
 		report.Entries = append(report.Entries, HookInstallEntry{
 			Harness: harness, ConfigPath: configPath, Action: action, Matcher: matcher, Command: command,
+			Bindings: reportedBindings,
 		})
 	}
 	return report, nil

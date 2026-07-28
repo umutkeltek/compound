@@ -73,6 +73,41 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 	if len(rep.Entries) != 3 {
 		t.Fatalf("expected all managed harnesses, got %d entries", len(rep.Entries))
 	}
+	reportJSON, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var publicReport struct {
+		Entries []struct {
+			Matcher  string `json:"matcher"`
+			Command  string `json:"command"`
+			Bindings []struct {
+				Event   string `json:"event"`
+				Matcher string `json:"matcher"`
+				Command string `json:"command"`
+			} `json:"bindings"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(reportJSON, &publicReport); err != nil {
+		t.Fatal(err)
+	}
+	for i, entry := range publicReport.Entries {
+		if len(entry.Bindings) != 4 {
+			t.Fatalf("entry %d reports %d bindings, want all 4 lifecycle events", i, len(entry.Bindings))
+		}
+		foundPreTool := false
+		for _, binding := range entry.Bindings {
+			if binding.Event == "PreToolUse" {
+				foundPreTool = true
+				if binding.Matcher != entry.Matcher || binding.Command != entry.Command {
+					t.Fatalf("entry %d legacy fields drifted from PreToolUse binding: entry=%+v binding=%+v", i, entry, binding)
+				}
+			}
+		}
+		if !foundPreTool {
+			t.Fatalf("entry %d omitted PreToolUse from reported bindings: %+v", i, entry.Bindings)
+		}
+	}
 	for _, e := range rep.Entries {
 		if e.Action != "installed" {
 			t.Fatalf("%s action = %q, want installed", e.Harness, e.Action)
