@@ -48,10 +48,12 @@ Governed `compound work delegate` can select an existing profile with `--executi
 role/capability/harness/transport/route/model/effort/orchestration/privacy selectors narrow that profile and are
 refused when no profile is selected. The existing `--harness` flag still selects the exact Compound model-router
 `LaneTuple`; admission verifies that tuple's harness family matches the resolved profile before readiness,
-capacity, event persistence, RunAttempt mint, or process creation. The resolved plan is stored on the delegate
-binding and in its canonical readiness snapshot. The exact RunAttempt stores the requested plan, client harness,
-transport, and native effort before spawn; observed model/provider fields remain empty until route evidence
-attests them. Gateway client-profile/account/credential selection remains gateway-owned and is not stored here.
+capacity, event persistence, RunAttempt mint, or process creation. The exact canonical plan body is copied
+losslessly into `execution_profile` readiness evidence alongside its reference and digest, hashed into the
+canonical `snapshot_revision`, and persisted on the delegate binding. The exact RunAttempt stores the requested
+plan, client harness, transport, and native effort before spawn; observed model/provider fields remain empty until
+route evidence attests them. Gateway client-profile/account/credential selection remains gateway-owned and is
+not stored here.
 
 Harness and transport are independent selectors: for example, Claude Code may run over native transport or an
 observed gateway transport without becoming a different harness. Selecting a transport does not let Compound
@@ -188,13 +190,13 @@ immutable owned EffectiveContract artifact by `contract_id`; rotation of the unr
 Failure returns structured `readiness_unmet` evidence before capacity admission, event persistence,
 tmux creation, or a `harness_execution` RunAttempt mint. A missing readiness checker fails closed.
 The admitted evidence rows plus the full lane-capacity verdict are canonicalized into one
-`snapshot_revision`. Immediately before mint, the lifecycle-admission lock re-reads the exact
-WorkEnvelope hash and lease, re-runs harness readiness and capacity with the same captured inputs,
-and requires the same snapshot revision. Any changed authority or capacity returns
-`authority_changed` with no mint or spawn. A successful activation carries the compact
-revision-bearing snapshot in its returned result and persisted `work.delegate.spawned` binding, so
-later recovery can name what admitted the run rather than inferring readiness from current
-configuration.
+`snapshot_revision`. Immediately before mint, the lifecycle-admission lock re-reads the exact WorkEnvelope hash
+and lease, re-resolves the execution profile, re-runs harness readiness and capacity with the same captured
+inputs, and requires the same snapshot revision. Any changed authority or capacity returns `authority_changed`
+with no mint, refusal-event persistence, or spawn. A successful activation carries the revision-bearing snapshot
+— including the exact admitted execution-profile body — in its returned result and persisted
+`work.delegate.spawned` binding, so later recovery can name what admitted the run rather than inferring readiness
+from current configuration.
 
 ## Second-order effects (design against these)
 

@@ -1,6 +1,7 @@
 package work
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -28,7 +29,7 @@ func testDelegateExecutionProfilePlan() *DelegateExecutionProfilePlan {
 		Budget:                  json.RawMessage(`{"max_requests":40}`),
 		Checkpoint:              json.RawMessage(`{"required":false}`),
 		Warnings:                []string{"fixture warning"},
-		Snapshot:                json.RawMessage(`{"id":"epplan_test1234","profile_id":"coding-implementation"}`),
+		Snapshot:                json.RawMessage(`{"budget":{"max_requests":40},"id":"epplan_test1234","profile_id":"coding-implementation","warnings":["fixture warning"]}`),
 	}
 }
 
@@ -106,14 +107,22 @@ func TestDelegateExecutionProfileRejectsHarnessFamilyMismatchBeforeMutation(t *t
 		return plan, nil
 	}
 	readinessCalls := 0
+	capacityCalls := 0
 	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
 		readinessCalls++
 		return DelegateHarnessReadinessResult{Ready: true}, nil
 	}
-	LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
+	LaneCapacityGuard = func(LaneCapacityGuardRequest) (LaneCapacityGuardResult, error) {
+		capacityCalls++
+		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
+	}
 
 	store := newStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
+	before, err := runattempt.Open(store.home).List()
+	if err != nil {
+		t.Fatal(err)
+	}
 	runner := newFakeRunner()
 	result, err := store.Delegate(DelegateOptions{
 		WorkID:           workID,
@@ -129,8 +138,87 @@ func TestDelegateExecutionProfileRejectsHarnessFamilyMismatchBeforeMutation(t *t
 	if result.Refusal == nil || result.Refusal.Reason != "execution_profile_incompatible" {
 		t.Fatalf("unexpected refusal: %+v", result)
 	}
-	if readinessCalls != 0 || len(runner.creates) != 0 {
-		t.Fatalf("incompatible profile crossed activation boundary: readiness=%d creates=%d", readinessCalls, len(runner.creates))
+	after, err := runattempt.Open(store.home).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readinessCalls != 0 || capacityCalls != 0 || len(runner.creates) != 0 || len(after) != len(before) {
+		t.Fatalf("incompatible profile crossed activation boundary: readiness=%d capacity=%d creates=%d attempts=%d->%d",
+			readinessCalls, capacityCalls, len(runner.creates), len(before), len(after))
+	}
+	if events := capturedDelegateEvents(t, store); len(events) != 0 {
+		t.Fatalf("incompatible profile persisted delegate events: %+v", events)
+	}
+}
+
+func TestDelegateExecutionProfileAuthorityDriftRefusesBeforeMintCreateOrPersistence(t *testing.T) {
+	originalProfileResolver := DelegateExecutionProfileResolver
+	originalReadiness := DelegateHarnessReadiness
+	originalCapacity := LaneCapacityGuard
+	defer func() {
+		DelegateExecutionProfileResolver = originalProfileResolver
+		DelegateHarnessReadiness = originalReadiness
+		LaneCapacityGuard = originalCapacity
+	}()
+
+	admittedPlan := testDelegateExecutionProfilePlan()
+	driftedPlan := cloneDelegateExecutionProfilePlan(admittedPlan)
+	driftedPlan.Snapshot = json.RawMessage(`{"budget":{"max_requests":20},"id":"epplan_test1234","profile_id":"coding-implementation","warnings":["authority drift"]}`)
+	resolverCalls := 0
+	DelegateExecutionProfileResolver = func(DelegateExecutionProfileResolveRequest) (*DelegateExecutionProfilePlan, error) {
+		resolverCalls++
+		if resolverCalls == 1 {
+			return admittedPlan, nil
+		}
+		return driftedPlan, nil
+	}
+	readinessCalls := 0
+	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+		readinessCalls++
+		return DelegateHarnessReadinessResult{Ready: true}, nil
+	}
+	var capacityReadOnly []bool
+	LaneCapacityGuard = func(req LaneCapacityGuardRequest) (LaneCapacityGuardResult, error) {
+		capacityReadOnly = append(capacityReadOnly, req.ReadOnly)
+		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
+	}
+
+	store := newStore(t)
+	workID := prepareClaimedWork(t, store, "codex", "", "")
+	before, err := runattempt.Open(store.home).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	result, err := store.Delegate(DelegateOptions{
+		WorkID:           workID,
+		Harness:          "claude_code",
+		Command:          "claude",
+		Workspace:        t.TempDir(),
+		ExecutionProfile: DelegateExecutionProfileIntent{ProfileID: admittedPlan.ProfileID},
+		Now:              fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Refusal == nil || result.Refusal.Reason != "authority_changed" {
+		t.Fatalf("unexpected refusal: %+v", result)
+	}
+	after, err := runattempt.Open(store.home).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolverCalls != 2 || readinessCalls != 2 {
+		t.Fatalf("authority was not checked at admission and pre-mint: resolver=%d readiness=%d", resolverCalls, readinessCalls)
+	}
+	if len(capacityReadOnly) != 2 || capacityReadOnly[0] || !capacityReadOnly[1] {
+		t.Fatalf("capacity checks = %v, want admission mutation check then evidence-only recheck", capacityReadOnly)
+	}
+	if len(runner.creates) != 0 || len(after) != len(before) {
+		t.Fatalf("authority drift crossed activation boundary: creates=%d attempts=%d->%d", len(runner.creates), len(before), len(after))
+	}
+	if events := capturedDelegateEvents(t, store); len(events) != 0 {
+		t.Fatalf("authority drift persisted delegate events: %+v", events)
 	}
 }
 
@@ -205,6 +293,9 @@ func TestDelegateExecutionProfileRoundTripsBindingReadinessAndRunAttempt(t *test
 	for _, evidence := range result.Readiness.Evidence {
 		if evidence.Kind == "execution_profile" && evidence.Ref == "execution-profile://"+plan.ID {
 			foundProfileEvidence = true
+			if !bytes.Equal(evidence.Body, plan.Snapshot) {
+				t.Fatalf("profile readiness evidence body = %s, want exact canonical plan %s", evidence.Body, plan.Snapshot)
+			}
 		}
 	}
 	if !foundProfileEvidence || strings.TrimSpace(result.Readiness.SnapshotRevision) == "" {
@@ -217,6 +308,15 @@ func TestDelegateExecutionProfileRoundTripsBindingReadinessAndRunAttempt(t *test
 	}
 	if !alive || recovered.ExecutionProfile == nil || recovered.ExecutionProfile.ID != plan.ID {
 		t.Fatalf("profile did not recover through event binding: alive=%v binding=%+v", alive, recovered)
+	}
+	foundRecoveredBody := false
+	for _, evidence := range recovered.Readiness.Evidence {
+		if evidence.Kind == "execution_profile" && evidence.Ref == "execution-profile://"+plan.ID {
+			foundRecoveredBody = bytes.Equal(evidence.Body, plan.Snapshot)
+		}
+	}
+	if !foundRecoveredBody {
+		t.Fatalf("canonical execution profile body did not survive event recovery: %+v", recovered.Readiness)
 	}
 
 	attempt, err := runattempt.Open(store.home).Get(result.RunAttemptID)

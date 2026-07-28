@@ -209,9 +209,10 @@ type DelegateHarnessReadinessRequest struct {
 }
 
 type DelegateHarnessReadinessEvidence struct {
-	Kind     string `json:"kind"`
-	Ref      string `json:"ref"`
-	Revision string `json:"revision,omitempty"`
+	Kind     string          `json:"kind"`
+	Ref      string          `json:"ref"`
+	Revision string          `json:"revision,omitempty"`
+	Body     json.RawMessage `json:"body,omitempty"`
 }
 
 type DelegateHarnessReadinessResult struct {
@@ -602,6 +603,7 @@ func addDelegateExecutionProfileReadinessEvidence(readiness DelegateHarnessReadi
 		Kind:     "execution_profile",
 		Ref:      "execution-profile://" + strings.TrimSpace(plan.ID),
 		Revision: "sha256:" + hex.EncodeToString(sum[:]),
+		Body:     append(json.RawMessage(nil), material...),
 	})
 	return readiness, nil
 }
