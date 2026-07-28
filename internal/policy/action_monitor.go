@@ -474,9 +474,16 @@ func toolOperation(tool string) string {
 		return "unknown"
 	}
 	if strings.HasPrefix(tool, "mcp__") {
-		parts := strings.SplitN(strings.TrimPrefix(tool, "mcp__"), "__", 2)
-		if len(parts) == 2 && strings.TrimSpace(parts[1]) != "" {
-			return strings.Trim(parts[1], "._/:")
+		parts := strings.Split(strings.TrimPrefix(tool, "mcp__"), "__")
+		operationIndex := 1
+		// Codex Apps is an enrolled connector aggregator. Its first component
+		// names the wrapper and the second names the backing connector, so the
+		// actual operation starts at component three.
+		if len(parts) >= 3 && parts[0] == "codex_apps" {
+			operationIndex = 2
+		}
+		if operationIndex < len(parts) && strings.TrimSpace(parts[operationIndex]) != "" {
+			return strings.Trim(strings.Join(parts[operationIndex:], "__"), "._/:")
 		}
 	}
 	for _, separator := range []string{".", "/", ":"} {
@@ -490,7 +497,8 @@ func toolOperation(tool string) string {
 func actionDestination(arguments map[string]any) string {
 	for _, key := range []string{
 		"recipient", "to", "url", "uri", "file_path", "path", "repo",
-		"repository", "project", "deployment", "package", "secret", "claim", "target", "id",
+		"repository", "repository_full_name", "repo_full_name", "repository_url", "repository_id",
+		"project", "deployment", "package", "secret", "claim", "target", "id",
 		"session_id", "page", "query", "symbol", "projectPath", "project_path",
 		"task_name", "server",
 	} {

@@ -122,6 +122,7 @@ func TestUniversalMonitorKeepsBenignHarnessWorkAutomatic(t *testing.T) {
 		{"browser snapshot", "browser.snapshot", map[string]any{"page": "docs"}, ActionDomainBrowser, "snapshot"},
 		{"browser interaction", "browser.click", map[string]any{"target": "@submit"}, ActionDomainBrowser, "click"},
 		{"connector read", "mcp__github__get_issue", map[string]any{"repo": "example/repo", "issue_number": 1}, ActionDomainConnector, "get_issue"},
+		{"codex apps GitHub PR read", "mcp__codex_apps__github__get_pr_info", map[string]any{"repository_full_name": "example/repo", "pr_number": 11}, ActionDomainConnector, "get_pr_info"},
 		{"codegraph explore", "mcp__codegraph__codegraph_explore", map[string]any{"query": "RateAppCoordinator"}, ActionDomainConnector, "codegraph_explore"},
 		{"codegraph node", "mcp__codegraph__codegraph_node", map[string]any{"symbol": "RateAppCoordinator"}, ActionDomainConnector, "codegraph_node"},
 		{"codegraph impact", "mcp__codegraph__codegraph_impact", map[string]any{"symbol": "RateAppCoordinator"}, ActionDomainConnector, "codegraph_impact"},
