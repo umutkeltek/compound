@@ -3898,11 +3898,13 @@ func (s *Store) proofReservationWithLatestRefresh(reservation ProofResourceReser
 			if err := s.readEventJSON(ref, &refresh); err != nil {
 				return ProofResourceReservation{}, fmt.Errorf("proof refresh evidence %s: %w", ref, err)
 			}
+			if refresh.ReservationID != reservation.ID {
+				continue
+			}
 			if refresh.SchemaVersion != ProofResourceRefreshSchemaVersion ||
 				refresh.ID != ref ||
 				refresh.WorkID != reservation.WorkID ||
 				refresh.Actor != reservation.Actor ||
-				refresh.ReservationID != reservation.ID ||
 				refresh.RunAttemptID != reservation.RunAttemptID ||
 				refresh.Holder != reservation.Holder ||
 				refresh.WindowOpenedAt != reservation.AcquiredAt ||

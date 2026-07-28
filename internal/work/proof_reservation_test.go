@@ -719,6 +719,77 @@ func TestProofResourceReservationHeartbeatExtendsOnlyTheCurrentHolder(t *testing
 	}
 }
 
+func TestProofReservationWithLatestRefreshIgnoresHistoricalReservationLineage(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "historical refresh lineage", proofActorAlpha, fixedNow)
+	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       30 * time.Second,
+		Workspace: "/synthetic/repo-alpha",
+		Command:   "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A work item may contain refresh evidence from an older reservation. It was
+	// validated when that reservation was active and is outside this lineage.
+	historical := ProofResourceRefresh{
+		SchemaVersion:    ProofResourceRefreshSchemaVersion,
+		ID:               "pfrh_historical_reservation",
+		Kind:             "work.proof_resource.refresh",
+		CreatedAt:        fixedNow.Add(3 * time.Second).UTC().Format(time.RFC3339Nano),
+		WorkID:           w.ID,
+		Actor:            proofActorAlpha,
+		ReservationID:    "pfr_historical_reservation",
+		RunAttemptID:     "ratt_historical_reservation",
+		Holder:           "proof:pfr_historical_reservation:ratt_historical_reservation",
+		WindowOpenedAt:   fixedNow.Add(-time.Minute).UTC().Format(time.RFC3339),
+		RefreshedAt:      fixedNow.Add(-30 * time.Second).UTC().Format(time.RFC3339),
+		ExpiresAt:        fixedNow.Add(time.Minute).UTC().Format(time.RFC3339),
+		TTLSeconds:       90,
+		ActionIntentID:   acquired.Reservation.ActionIntentID,
+		PolicyDecisionID: acquired.Reservation.PolicyDecisionID,
+	}
+	if err := s.writeEventJSON(historical.ID, &historical); err != nil {
+		t.Fatal(err)
+	}
+	current, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.appendEvent(Event{
+		TS:       ts(fixedNow.Add(3 * time.Second)),
+		WorkID:   w.ID,
+		From:     current.State,
+		To:       current.State,
+		By:       proofActorAlpha,
+		Note:     "historical proof resource refresh",
+		Attached: []string{historical.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	refreshed, err := s.RefreshProofResource(
+		w.ID,
+		acquired.Reservation.ID,
+		proofActorAlpha,
+		30*time.Second,
+		fixedNow.Add(20*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("refresh current reservation: %v", err)
+	}
+	evidenced, err := s.proofReservationWithLatestRefresh(acquired.Reservation)
+	if err != nil {
+		t.Fatalf("resolve latest current refresh: %v", err)
+	}
+	if evidenced.ExpiresAt != refreshed.ExpiresAt || evidenced.TTLSeconds != refreshed.TTLSeconds {
+		t.Fatalf("latest current refresh = expiry %s ttl %d, want expiry %s ttl %d",
+			evidenced.ExpiresAt, evidenced.TTLSeconds, refreshed.ExpiresAt, refreshed.TTLSeconds)
+	}
+}
+
 func TestProofResourceReservationExceptionalStealIsExplicitAndAudited(t *testing.T) {
 	s := newStore(t)
 	first := claimedProofWork(t, s, "steal source proof", proofActorAlpha, fixedNow)
