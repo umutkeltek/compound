@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/arch"
 	"compound/internal/authority/gitrepository"
 	"compound/internal/landlease"
 )
@@ -234,6 +235,61 @@ func TestPrepareProofCheckSealedWorkspaceCopiesOnlyCeremonyInputsAndCleansUp(t *
 	if _, err := os.Stat(sealedRepo); !os.IsNotExist(err) {
 		t.Fatalf("sealed workspace survived cleanup: %v", err)
 	}
+}
+
+func TestPrepareProofCheckSealedWorkspacePreservesSourceLeakOverlayForDoctor(t *testing.T) {
+	repo := initCompoundCommandGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("docs_private/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const sourceToken = "syntheticproductneedle"
+	sourceRel := filepath.Join("internal", "fixture", "fixture.go")
+	sourcePath := filepath.Join(repo, sourceRel)
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("package fixture\n\nconst product = \""+sourceToken+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCommandGit(t, repo, "add", ".gitignore", sourceRel)
+	runCommandGit(t, repo, "commit", "-m", "seal source token fixture")
+
+	overlayPath := filepath.Join(repo, "docs_private", "source-leak-tokens.txt")
+	if err := os.MkdirAll(filepath.Dir(overlayPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(overlayPath, []byte(sourceToken+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealedRepo, cleanup, err := prepareProofCheckSealedWorkspace(t.Context(), repo, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup sealed workspace: %v", err)
+		}
+	})
+
+	report := arch.Doctor(sealedRepo, true)
+	var docLeakFindings []arch.Finding
+	for _, finding := range report.Findings {
+		if finding.Check == "doc-leak" {
+			docLeakFindings = append(docLeakFindings, finding)
+		}
+		if finding.Check == "doc-leak" &&
+			finding.Severity == arch.Fail &&
+			strings.Contains(finding.Message, filepath.ToSlash(sourceRel)) &&
+			strings.Contains(finding.Message, sourceToken) {
+			return
+		}
+	}
+	t.Fatalf("sealed architecture doctor missed source overlay token %q in %s: doc_leak_findings=%+v", sourceToken, filepath.ToSlash(sourceRel), docLeakFindings)
 }
 
 func TestPrepareProofCheckSealedWorkspaceRejectsEscapingSymlinks(t *testing.T) {

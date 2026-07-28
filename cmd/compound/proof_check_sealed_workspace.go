@@ -16,6 +16,7 @@ import (
 
 var proofCheckCeremonyOwnedIgnoredInputs = []string{
 	"docs_private/leak-tokens.txt",
+	"docs_private/source-leak-tokens.txt",
 	"docs_private/plan",
 	"console/node_modules",
 	"docs_private/profiles",
