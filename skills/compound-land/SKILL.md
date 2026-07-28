@@ -30,10 +30,12 @@ This skill replaces re-deriving the "standing session rules" from
   20+ min, with the holder's daemons alive but no landing in sight. The discriminator is in the
   holder itself — `<harness>:<session>:<work_id>:<sha>`: run `git log --oneline -1 <sha>` and
   `git rev-list --left-right --count main...<sha>` in the holder's worktree. A holder whose SHA is
-  a real tip **ahead of main** is a live lane holding the lease across its own battery, which is the
-  sanctioned §3 pattern — queue on `--wait`, do NOT steal. Only a holder whose SHA resolves to
-  nothing, or to a commit already contained in main, is the stale case. Matching a symptom to a
-  filed defect is a hypothesis; the SHA is the evidence.
+  a real tip **ahead of main** is a live lane in its guard+merge window — queue on `--wait`, do NOT
+  steal. A `proof:pfr_*:ratt_*:<work_id>:<actor>` holder is a LIVE certifying battery holding the
+  resource for its gate run (§1) — queue for that too; if its run is provably dead, the takeover
+  door is proof-check's own `--steal --terminated-run` admission path, not `land-lease steal`.
+  Only a holder whose SHA resolves to nothing, or to a commit already contained in main, is the
+  stale case. Matching a symptom to a filed defect is a hypothesis; the SHA is the evidence.
 - Claim a narrow scope (which packages/files you will touch) in the worklog if one is active.
   Do not parallel-edit the same `internal/` package as a live lane.
 - Queued work discipline: **proposed ≠ held** — dispatch consumes proposed work. If you intend
@@ -233,9 +235,12 @@ git worktree add --detach /tmp/land-rehearsal <your-branch>
 # merge/rebase against a fresh fetch of main there; run the battery in the rehearsal tree
 ```
 
-Acquire the land-lease before touching the real main — it serializes the landing window itself
-(complementary to, not a replacement for, the `MAIN_SHA` guard below, which is the real
-correctness check):
+Acquire the land-lease AFTER the certifying battery completes green and before touching the real
+main — it serializes the guard+merge window (complementary to, not a replacement for, the
+`MAIN_SHA` guard below, which is the real correctness check). The battery itself must find the
+lease FREE: certifying proof-check reserves the land-lease under its own `proof:` holder for the
+whole gate run (§1), so there is no unserialized gap to cover before it — see the
+poisoned-predecessor bullet below for what a pre-battery generic hold does:
 
 ```bash
 compound land-lease acquire --holder "<harness>:<session>:<work_id>" --wait --timeout 120
@@ -278,11 +283,19 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   If main moves in between, the guard trips and you loop — the loop is the design.
   When the loop provably cannot converge — a concurrent lane lands FASTER than your battery cycle
   (lived 2026-07-17, rebaseline land: two trips in a row, ~15-min lands vs ~13-min batteries) —
-  the sanctioned counter is to acquire the land-lease BEFORE the rebase+battery and hold it
-  through the merge, refreshing its TTL from a background loop (re-acquire with the SAME holder
-  every ~4 min). Lease-respecting lanes queue instead of racing. STOP the refresher (TaskStop)
-  before releasing, or a late re-acquire silently re-holds a freed lease; and hold-across-battery
-  is for convergence failure only, never the default (it serializes everyone behind you).
+  remember the battery already IS the hold: certifying proof-check reserves the land-lease for
+  the entire gate run, so the exposed race window is only battery-green → guard+merge. Acquire
+  the lease manually for THAT short window only; lease-respecting lanes queue instead of racing.
+- **Never acquire the land-lease BEFORE a certifying battery — the poisoned-predecessor trap**
+  (lived 2026-07-28, Jaynes docs land): admission renames a pre-held generic
+  `<harness>:<session>:<work_id>` lease into its `proof:` reservation holder and records the
+  generic holder as the reservation's predecessor — and the predecessor recovery walk parses only
+  `proof:`-shaped holders, so admission exits 2, the DEAD reservation retains the lease for its
+  full TTL, and every retry INCLUDING `--steal --terminated-run` refuses on the same parse.
+  Recovery: release with the FULL `proof:pfr_*:ratt_*:...` holder string printed in the refusal
+  (the holder's own release is the tool's sanctioned path), confirm the dead run self-terminalized
+  (`compound run-attempt list --non-terminal` — proof-check terminalizes its own ratt on the
+  admission error path), then rerun the plain exact command on the freed resource.
 - **When holding the lease ALSO fails, land on package-disjointness — never on a CAS to your own tip**
   (lived 2026-07-27: FOUR guard trips, one of them while the lease was held, because the lease is
   advisory and that lane bypassed it). Measure before deciding: battery **~14 min** against main
