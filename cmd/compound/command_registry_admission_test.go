@@ -43,6 +43,36 @@ func TestFirstPartyCommandAdmissionStillFailsClosedOutsideRegistry(t *testing.T)
 	}
 }
 
+func TestFirstPartyCommandAdmissionPreservesNestedInstallSecurityFloor(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		command       string
+		wantOperation string
+		wantSink      string
+	}{
+		{
+			command:       "compound harness posture-plan --harness codex --json",
+			wantOperation: "local_command",
+			wantSink:      "shell",
+		},
+		{
+			command:       "compound hook install --harness codex --scope global",
+			wantOperation: "install_command",
+			wantSink:      "install",
+		},
+	} {
+		got := policy.ClassifyToolAction(policy.ToolActionRequest{
+			Tool:               "Bash",
+			Arguments:          map[string]any{"command": tc.command},
+			FirstPartyCommands: firstPartyCommandCatalog(),
+		})
+		if !got.Known || got.Operation != tc.wantOperation || got.RequiredSink != tc.wantSink {
+			t.Fatalf("%q classification = %+v, want operation=%q sink=%q", tc.command, got, tc.wantOperation, tc.wantSink)
+		}
+	}
+}
+
 func TestFirstPartyCommandCatalogMatchesEveryRuntimeCommand(t *testing.T) {
 	t.Parallel()
 
@@ -54,6 +84,12 @@ func TestFirstPartyCommandCatalogMatchesEveryRuntimeCommand(t *testing.T) {
 		}
 		if got != command.Admission {
 			t.Fatalf("runtime command %q admission = %q, catalog = %q", name, command.Admission, got)
+		}
+		for subcommand, want := range command.SubcommandAdmission {
+			got, ok := catalog.LookupSubcommand(name, subcommand)
+			if !ok || got != want {
+				t.Fatalf("runtime command %q %q admission = %q found=%t, want %q", name, subcommand, got, ok, want)
+			}
 		}
 	}
 }

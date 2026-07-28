@@ -7,8 +7,9 @@ import (
 )
 
 type compoundCommand struct {
-	Admission policy.FirstPartyCommandAdmission
-	Run       func([]string)
+	Admission           policy.FirstPartyCommandAdmission
+	SubcommandAdmission map[string]policy.FirstPartyCommandAdmission
+	Run                 func([]string)
 }
 
 func registeredCommand(
@@ -28,6 +29,17 @@ func readCommand(run func([]string)) compoundCommand {
 
 func governedCommand(run func([]string)) compoundCommand {
 	return registeredCommand(policy.FirstPartyCommandGoverned, run)
+}
+
+func (command compoundCommand) withSubcommandAdmission(
+	subcommand string,
+	admission policy.FirstPartyCommandAdmission,
+) compoundCommand {
+	if command.SubcommandAdmission == nil {
+		command.SubcommandAdmission = map[string]policy.FirstPartyCommandAdmission{}
+	}
+	command.SubcommandAdmission[subcommand] = admission
+	return command
 }
 
 func cmdVersion([]string) {
@@ -95,34 +107,36 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"finding":            heldCommand(cmdFinding),
 		"policy":             heldCommand(cmdPolicy),
 		"placement":          readCommand(cmdPlacement),
-		"hook":               governedCommand(cmdHook),
-		"harness":            governedCommand(cmdHarness),
-		"transition":         readCommand(cmdTransition),
-		"route":              readCommand(cmdRoute),
-		"profiles":           heldCommand(cmdProfiles),
-		"memory":             heldCommand(cmdMemory),
-		"corpus":             heldCommand(cmdCorpus),
-		"synthesis":          heldCommand(cmdSynthesis),
-		"knowledge":          heldCommand(cmdKnowledge),
-		"sessions":           heldCommand(cmdSessions),
-		"distiller":          heldCommand(cmdDistiller),
-		"capability":         heldCommand(cmdCapability),
-		"bench":              heldCommand(cmdBench),
-		"latent-tax":         heldCommand(cmdLatentTax),
-		"behavioral-lens":    heldCommand(cmdBehavioralLens),
-		"executor-lens":      heldCommand(cmdExecutorLens),
-		"lens-modulate":      heldCommand(cmdLensModulate),
-		"act":                heldCommand(cmdAct),
-		"actuator":           heldCommand(cmdActuator),
-		"capture":            heldCommand(cmdCapture),
-		"intent":             heldCommand(cmdIntent),
-		"land-lease":         governedCommand(cmdLandLease),
-		"panel":              heldCommand(cmdPanel),
-		"local-models":       heldCommand(cmdLocalModels),
-		"lanebeliefs":        heldCommand(cmdLaneBeliefs),
-		"mcp-transport":      heldCommand(cmdMCPTransport),
-		"negatives":          heldCommand(cmdNegatives),
-		"architecture":       heldCommand(cmdArchitecture),
+		"hook": governedCommand(cmdHook).
+			withSubcommandAdmission("install", policy.FirstPartyCommandInstall),
+		"harness": governedCommand(cmdHarness).
+			withSubcommandAdmission("posture-plan", policy.FirstPartyCommandRead),
+		"transition":      readCommand(cmdTransition),
+		"route":           readCommand(cmdRoute),
+		"profiles":        heldCommand(cmdProfiles),
+		"memory":          heldCommand(cmdMemory),
+		"corpus":          heldCommand(cmdCorpus),
+		"synthesis":       heldCommand(cmdSynthesis),
+		"knowledge":       heldCommand(cmdKnowledge),
+		"sessions":        heldCommand(cmdSessions),
+		"distiller":       heldCommand(cmdDistiller),
+		"capability":      heldCommand(cmdCapability),
+		"bench":           heldCommand(cmdBench),
+		"latent-tax":      heldCommand(cmdLatentTax),
+		"behavioral-lens": heldCommand(cmdBehavioralLens),
+		"executor-lens":   heldCommand(cmdExecutorLens),
+		"lens-modulate":   heldCommand(cmdLensModulate),
+		"act":             heldCommand(cmdAct),
+		"actuator":        heldCommand(cmdActuator),
+		"capture":         heldCommand(cmdCapture),
+		"intent":          heldCommand(cmdIntent),
+		"land-lease":      governedCommand(cmdLandLease),
+		"panel":           heldCommand(cmdPanel),
+		"local-models":    heldCommand(cmdLocalModels),
+		"lanebeliefs":     heldCommand(cmdLaneBeliefs),
+		"mcp-transport":   heldCommand(cmdMCPTransport),
+		"negatives":       heldCommand(cmdNegatives),
+		"architecture":    heldCommand(cmdArchitecture),
 	}
 }
 
@@ -132,5 +146,11 @@ func firstPartyCommandCatalog() policy.FirstPartyCommandCatalog {
 	for name, command := range registry {
 		commands[name] = command.Admission
 	}
-	return policy.NewFirstPartyCommandCatalog(commands)
+	catalog := policy.NewFirstPartyCommandCatalog(commands)
+	for name, command := range registry {
+		if len(command.SubcommandAdmission) > 0 {
+			catalog = catalog.WithSubcommands(name, command.SubcommandAdmission)
+		}
+	}
+	return catalog
 }

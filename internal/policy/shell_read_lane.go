@@ -805,8 +805,9 @@ func shellVerbClass(verb string, args []string, firstPartyCommands FirstPartyCom
 }
 
 func shellCompoundClass(args []string, firstPartyCommands FirstPartyCommandCatalog) string {
-	command, _ := shellFirstOperand(args, nil)
-	admission, ok := firstPartyCommands.Lookup(command)
+	command, rest := shellFirstOperand(args, nil)
+	subcommand, _ := shellFirstOperand(rest, nil)
+	admission, ok := firstPartyCommands.LookupSubcommand(command, subcommand)
 	if !ok {
 		return shellClassUnknown
 	}
@@ -815,6 +816,8 @@ func shellCompoundClass(args []string, firstPartyCommands FirstPartyCommandCatal
 		return shellClassRead
 	case FirstPartyCommandGoverned:
 		return shellClassGoverned
+	case FirstPartyCommandInstall:
+		return shellClassInstall
 	default:
 		return shellClassUnknown
 	}

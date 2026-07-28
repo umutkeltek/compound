@@ -126,6 +126,9 @@ outer classification and admission posture. The policy package does not keep a
 second subcommand allowlist. A registered `governed` command enters the local,
 reversible lane and must still enforce its own ActionIntent/PolicyDecision;
 an absent command or a registry row marked `hold` hits the security floor.
+Mixed commands carry their exceptions on the same executable registry row:
+read-only `harness posture-plan` stays read-only, while `hook install` retains
+the install sink and cannot inherit the generic governed lane.
 
 A held action can use a durable, exact, one-use approval. The approval binds
 operation, arguments, destination, source refs, tool schema and policy
