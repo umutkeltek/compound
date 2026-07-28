@@ -826,6 +826,9 @@ func (s *Store) applyWorkbenchGitDelivery(item *WorkbenchItem, w envelope.WorkEn
 		return
 	}
 	switch live.Status {
+	case "missing_source_bound_proof":
+		item.LandingStatus = "awaiting_proof"
+		item.NextAction = live.NextAction
 	case "awaiting_publication":
 		item.LandingStatus = "awaiting_publication"
 		item.NextAction = live.NextAction

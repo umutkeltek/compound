@@ -106,6 +106,7 @@ func TestWorkLandCheckCLIUsesExplicitRepoAndRecordsProof(t *testing.T) {
 	if _, err := store.Advance(w.ID, work.AdvanceInput{To: w.State, Actor: "codex", ArtifactID: "commit:" + tip}, cliTestNow.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	completeDetachedSourceBoundProofForCLITest(t, store, homePath, w.ID, "codex", repo, tip, cliTestNow.Add(time.Minute+time.Second))
 
 	dryOut := captureStdout(t, func() {
 		cmdWork([]string{
@@ -194,6 +195,7 @@ func TestWorkLandCheckCLIStealOnlyOverridesProofAttachment(t *testing.T) {
 	}, cliTestNow.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	completeDetachedSourceBoundProofForCLITest(t, store, homePath, w.ID, "actor-a", repo, tip, cliTestNow.Add(2*time.Minute+time.Second))
 
 	leasePath := filepath.Join(homePath, "work", "leases", w.ID+".json")
 	leaseBefore, err := os.ReadFile(leasePath)

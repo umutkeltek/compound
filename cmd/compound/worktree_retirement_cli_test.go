@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"compound/internal/authority"
+	"compound/internal/authority/gitrepository"
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/work"
@@ -353,6 +354,7 @@ func newWorktreeRetirementCLIFixture(t *testing.T, homePath string) worktreeReti
 	if _, err := store.Advance(source.ID, work.AdvanceInput{To: "verifying", Actor: "codex:source", ArtifactID: "commit:" + candidate, VerificationID: "check:source-landed"}, cliTestNow.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	completeSourceBoundProofForCLITest(t, store, homePath, source.ID, "codex:source", worktreePath, cliTestNow.Add(3*time.Minute+time.Second))
 	landed, err := store.LandCheck(source.ID, work.LandCheckOptions{CandidateTipSHA: candidate, Actor: "codex:source", Record: true}, cliTestNow.Add(4*time.Minute))
 	if err != nil || landed.Status != "landed" {
 		t.Fatalf("land-check=%+v err=%v", landed, err)
@@ -376,6 +378,116 @@ func newWorktreeRetirementCLIFixture(t *testing.T, homePath string) worktreeReti
 	}
 	recoveryRef := writeWorktreeRetirementCLIRecoveryProof(t, filepath.Join(filepath.Dir(repo), "recovery.bundle"), []byte("candidate recovery body"))
 	return worktreeRetirementCLIFixture{repo: repo, worktree: worktreePath, candidateRef: "refs/heads/candidate", candidateTip: candidate, ownerWorkID: owner.ID, sourceWorkID: source.ID, recoveryRef: recoveryRef}
+}
+
+func completeDetachedSourceBoundProofForCLITest(
+	t *testing.T,
+	store *work.Store,
+	homePath string,
+	workID string,
+	actor string,
+	repo string,
+	candidate string,
+	now time.Time,
+) {
+	t.Helper()
+	proofWorktree := filepath.Join(t.TempDir(), "proof-worktree")
+	runLandingCLIGit(t, repo, "worktree", "add", "--detach", proofWorktree, candidate)
+	completeSourceBoundProofForCLITest(t, store, homePath, workID, actor, proofWorktree, now)
+	runLandingCLIGit(t, repo, "worktree", "remove", proofWorktree)
+}
+
+func completeSourceBoundProofForCLITest(
+	t *testing.T,
+	store *work.Store,
+	homePath string,
+	workID string,
+	actor string,
+	workspace string,
+	now time.Time,
+) {
+	t.Helper()
+	item, err := store.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.GitDelivery == nil {
+		t.Fatalf("work %s has no git delivery contract", workID)
+	}
+	if item.State == "ready" {
+		item, err = store.Claim(workID, actor, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, err := gitrepository.CaptureCleanSnapshot(workspace, item.GitDelivery.ExpectedBaseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gates := []work.ProofResourceGateProfile{{
+		Name:     "synthetic-gate",
+		Command:  []string{"go", "test", "./internal/synthetic"},
+		ProofRef: "synthetic-proof",
+	}}
+	profile, err := work.NewProofResourceProfileWithSource(
+		work.ProofResourceProfileCanonicalFull,
+		workspace,
+		source,
+		gates,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := store.ReserveProofResource(workID, work.ProofResourceReserveInput{
+		Actor:     actor,
+		TTL:       time.Minute,
+		Workspace: workspace,
+		Command:   "compound proof-check --base " + source.BaseSHA + " --out /synthetic/worktree-retirement.json",
+		Profile:   profile,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reserved.ExecutionBarrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reportBody, err := json.Marshal(map[string]any{
+		"schema_version":  "compound.proof_check_report.v0.3",
+		"profile_kind":    work.ProofResourceProfileCanonicalFull,
+		"status":          "ok",
+		"generated_at":    now.Add(time.Second).Format(time.RFC3339),
+		"repo":            workspace,
+		"base_ref":        source.BaseSHA,
+		"source_snapshot": source,
+		"dry_run":         false,
+		"proof_refs":      []string{"synthetic-proof"},
+		"steps": []map[string]any{{
+			"name":      "synthetic-gate",
+			"command":   []string{"go", "test", "./internal/synthetic"},
+			"proof_ref": "synthetic-proof",
+			"status":    "ok",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportRef, err := artifacts.Put(reportBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteProofResource(workID, work.ProofResourceCompleteInput{
+		Actor:             actor,
+		ReservationID:     reserved.Reservation.ID,
+		ReportArtifactRef: reportRef,
+		ProducerExitKnown: true,
+		ProducerExitCode:  0,
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeWorktreeRetirementCLIRecoveryProof(t *testing.T, path string, body []byte) string {

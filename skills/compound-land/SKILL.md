@@ -68,11 +68,14 @@ cache-enabled short feedback. It is explicitly non-certifying: it does not write
 the canonical installed-runtime proof artifact and never substitutes for either
 the pre-land or post-land full proof below.
 
-Run the `compound-verify` skill. Minimum bar before any commit to main:
+Run the `compound-verify` skill. Before any replay, battery, or land, capture the
+current target tip once as `PRE_LAND_BASE_SHA`; the post-land battery reuses
+that exact full SHA so its diff still covers the landed candidate. Minimum bar
+before any commit to main:
 
 ```bash
-BASE_SHA=$(git rev-parse --verify "main^{commit}")
-go run ./cmd/compound proof-check --json --base "$BASE_SHA" \
+PRE_LAND_BASE_SHA=$(git rev-parse --verify "main^{commit}")
+go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
   --work <work_id> --actor "<harness>:<lane>" \
   --out <absolute-report.json>   # tests, vet, build, diff-check, console smokes,
                                 # doctor --strict, workbench, memory doctor, redact
@@ -338,13 +341,16 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   releasing with nothing held is an idempotent no-op — safe to run even if acquire never happened
   (e.g. a trivial single-commit land that skipped §3). `steal --reason` (§3) remains the escape
   hatch if a DIFFERENT lane needs to take over a lease this one abandoned without releasing.
-- Re-run on landed main (cheap insurance against rehearsal/main divergence):
+- Re-run on landed main against the same pre-land base (cheap insurance against
+  rehearsal/main divergence):
   ```bash
-  BASE_SHA=$(git rev-parse --verify "main^{commit}")
-  go run ./cmd/compound proof-check --json --base "$BASE_SHA" \
+  go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
     --work <work_id> --actor "<harness>:<lane>" --out <absolute-report.json>
   ```
-  Preserve its actual exit and read the authoritative `--out` report.
+  Preserve its actual exit and read the authoritative `--out` report. Never
+  recapture `main^{commit}` after landing: that makes `base...HEAD` empty. If
+  replay or rebase changes the candidate, deliberately capture a new
+  `PRE_LAND_BASE_SHA` before a renewed pre-land battery and rerun both batteries.
 - **If the land touched `cmd/compound` or `internal/{hook,harness,contract,mem,breadth}`: run
   `./install.sh`** — hooks and external consumers use the installed binary, which self-reports its
   build SHA since 9b5736b (`compound version`; arch doctor warns fresh/stale/missing). A stale

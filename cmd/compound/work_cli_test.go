@@ -60,7 +60,8 @@ func TestWorkLandCheckDefaultTextReportsForeignDirtPreservation(t *testing.T) {
 	out := captureStdout(t, func() {
 		cmdWork([]string{"land-check", w.ID, "--tip", tip, "--dry-run"})
 	})
-	if !strings.Contains(out, "status=landed") ||
+	if !strings.Contains(out, "status=missing_source_bound_proof") ||
+		!strings.Contains(out, "fresh canonical certifying proof") ||
 		!strings.Contains(out, "next_action:") ||
 		!strings.Contains(out, "preserve") ||
 		!strings.Contains(out, "foreign-lane-wip.txt") {

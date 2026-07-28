@@ -41,11 +41,16 @@ go test ./internal/work/ -count=1 -timeout 5m
 go run ./cmd/compound architecture doctor --strict
 
 # Full proof bundle (tests + vet + build + gofmt + doctors):
-BASE_SHA=$(git rev-parse --verify "main^{commit}")
-go run ./cmd/compound proof-check --base "$BASE_SHA" \
+PRE_LAND_BASE_SHA=$(git rev-parse --verify "main^{commit}")
+go run ./cmd/compound proof-check --base "$PRE_LAND_BASE_SHA" \
   --work <claimed-work-id> --actor <lease-holder> \
   --out <absolute-report.json>
 ```
+
+For a landing ceremony, capture `PRE_LAND_BASE_SHA` before replay, battery, or
+land and reuse that exact full SHA for the post-land canonical battery. Never
+recapture `main^{commit}` after landing; if a rebase changes the candidate,
+capture a new pre-land base and rerun the full pre-land and post-land batteries.
 
 Certifying proof is agent-invocable and supports non-terminal, redirected, or
 backgrounded stdout. Run it unpiped as its own command by default, preserve its
@@ -131,12 +136,7 @@ skills/                   Agent ceremony definitions
    when relevant. This is iteration feedback only: it does not write canonical
    installed-runtime proof evidence or satisfy pre-land or post-land proof.
 
-   ```sh
-   BASE_SHA=$(git rev-parse --verify "main^{commit}")
-   go run ./cmd/compound proof-check --base "$BASE_SHA" \
-     --work <claimed-work-id> --actor <lease-holder> \
-     --out <absolute-report.json>
-   ```
+   Then run the canonical full proof command from the Test section.
    The caller-selected base is captured as a full SHA; it is not inferred from
    `git_delivery.expected_base_sha`. Certifying proof refuses a dirty or
    uncommitted candidate, resolves the base once, and seals repository fingerprint,

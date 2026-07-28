@@ -89,7 +89,7 @@ func TestPreFingerprintGitDeliveryIsVisibleButNotDispatchableBeforeBackfill(t *t
 	}
 }
 
-func TestWorkbenchMakesVerifiedCodeAwaitingLandingVisible(t *testing.T) {
+func TestWorkbenchMakesCodeWithoutSourceBoundProofAwaitingProof(t *testing.T) {
 	now := time.Date(2026, 7, 13, 21, 0, 0, 0, time.UTC)
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -132,7 +132,9 @@ func TestWorkbenchMakesVerifiedCodeAwaitingLandingVisible(t *testing.T) {
 	if item.ExpectedBaseSHA != base || item.RepositoryFingerprint != w.GitDelivery.RepositoryFingerprint || item.CandidateTipSHA != tip {
 		t.Fatalf("source-control identity missing from workbench: %+v", item)
 	}
-	if item.LandingStatus != "awaiting_local_land" || !strings.Contains(item.NextAction, "land-check") {
-		t.Fatalf("verified code must be directly visible as awaiting landing: %+v", item)
+	if item.LandingStatus != "awaiting_proof" ||
+		!strings.Contains(item.NextAction, "fresh canonical certifying proof") ||
+		strings.Contains(item.NextAction, "fast-forward") {
+		t.Fatalf("unproved code must be directly visible as awaiting proof: %+v", item)
 	}
 }

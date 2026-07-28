@@ -36,6 +36,7 @@ func TestLandCheckClassifiesReadyLandedAndStaleLineage(t *testing.T) {
 			t.Fatal(err)
 		}
 		attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+		completeSourceBoundProofForDetachedCandidate(t, store, w.ID, "codex", repo, candidate, now.Add(30*time.Second+time.Second))
 
 		ready, err := store.LandCheck(w.ID, LandCheckOptions{
 			RepoPath:        repo,
@@ -110,6 +111,7 @@ func TestLandCheckFailsClosedForDirtyTargetAndMovedSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+	completeSourceBoundProofForDetachedCandidate(t, store, w.ID, "codex", repo, candidate, now.Add(30*time.Second+time.Second))
 
 	_, err = store.LandCheck(w.ID, LandCheckOptions{
 		RepoPath:        repo,
@@ -524,6 +526,7 @@ func TestLandCheckTargetContainmentStillAwaitsPublicationUnderForeignDirt(t *tes
 		t.Fatal(err)
 	}
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(30*time.Second+time.Second))
 
 	writeLandingFile(t, filepath.Join(repo, "foreign-lane-wip.txt"), "neighbor lane WIP\n")
 	report, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate}, now.Add(time.Minute))
@@ -566,6 +569,7 @@ func TestLandCheckMissingRequiredPublicationRefAwaitsPublication(t *testing.T) {
 		t.Fatal(err)
 	}
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(30*time.Second+time.Second))
 	landingGit(t, repo, "update-ref", "-d", "refs/remotes/origin/main")
 
 	report, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate}, now.Add(time.Minute))
@@ -799,6 +803,7 @@ func TestLandCheckRequiresLatestAttachedCommitArtifact(t *testing.T) {
 	}
 
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(4*time.Minute))
+	completeSourceBoundProofForDetachedCandidate(t, store, w.ID, "codex", repo, candidate, now.Add(4*time.Minute+time.Second))
 	ready, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main"}, now.Add(5*time.Minute))
 	if err != nil {
 		t.Fatal(err)

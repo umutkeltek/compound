@@ -335,17 +335,13 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		return report, err
 	}
 
-	if report.CandidateContainedInTarget {
-		if contract.PublicationMode == "required" {
-			publicationExists, err := landingRefExists(repoPath, contract.PublicationRef)
-			if err != nil {
-				return report, err
-			}
-			if !publicationExists {
-				report.Status = "awaiting_publication"
-				report.NextAction = fmt.Sprintf("publish %s containing candidate %s to %s, then record a fresh land-check", targetBranchRef, candidate, contract.PublicationRef)
-				return report, nil
-			}
+	publicationExists := false
+	if report.CandidateContainedInTarget && contract.PublicationMode == "required" {
+		publicationExists, err = landingRefExists(repoPath, contract.PublicationRef)
+		if err != nil {
+			return report, err
+		}
+		if publicationExists {
 			report.PublicationSHA, err = runLandingGitOutput(repoPath, "rev-parse", "--verify", contract.PublicationRef+"^{commit}")
 			if err != nil {
 				return report, fmt.Errorf("resolve publication ref %s: %w", contract.PublicationRef, err)
@@ -353,6 +349,36 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 			report.CandidateContainedInPublication, err = landingIsAncestor(repoPath, candidate, report.PublicationSHA)
 			if err != nil {
 				return report, err
+			}
+		}
+	}
+
+	if !report.CandidateContainedInTarget && !report.TargetAncestorOfCandidate {
+		report.Status = "rebase_required"
+		report.NextAction = fmt.Sprintf("rebase candidate %s onto current %s tip %s, attach rebased final tip commit:<full-sha>, rerun land-check on that exact tip", candidate, targetRef, targetSHA)
+		return report, nil
+	}
+
+	if !proofFound {
+		proofAction := fmt.Sprintf("run fresh canonical certifying proof for attached candidate commit:%s, then rerun land-check", candidate)
+		if !report.CleanTarget {
+			proofAction += fmt.Sprintf(
+				"; preserve foreign or later uncommitted changes in %s worktree (%s)",
+				targetRef,
+				strings.Join(dirtyStatusPaths(statusOutput), ", "),
+			)
+		}
+		report.Status = "missing_source_bound_proof"
+		report.NextAction = proofAction
+		return report, nil
+	}
+
+	if report.CandidateContainedInTarget {
+		if contract.PublicationMode == "required" {
+			if !publicationExists {
+				report.Status = "awaiting_publication"
+				report.NextAction = fmt.Sprintf("publish %s containing candidate %s to %s, then record a fresh land-check", targetBranchRef, candidate, contract.PublicationRef)
+				return report, nil
 			}
 			if !report.CandidateContainedInPublication {
 				report.Status = "awaiting_publication"
@@ -367,11 +393,6 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		// preservation warning so default text clients do not hide foreign WIP.
 		if !report.CleanTarget {
 			report.NextAction = landingContainedDirtyDiagnostic(targetRef, dirtyStatusPaths(statusOutput), contract.PublicationMode)
-		}
-		if !proofFound {
-			report.Status = "missing_source_bound_proof"
-			report.NextAction = fmt.Sprintf("run fresh canonical certifying proof for attached candidate commit:%s, then rerun land-check", candidate)
-			return report, nil
 		}
 		report.Status = "landed"
 		return report, nil

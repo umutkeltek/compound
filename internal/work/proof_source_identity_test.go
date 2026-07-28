@@ -283,6 +283,40 @@ func TestLandCheckRefusesSourceControlledCandidateWithoutCommittedProof(t *testi
 	}
 }
 
+func TestLandCheckRequiresSourceBoundProofBeforeFastForwardAdvice(t *testing.T) {
+	now := time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC)
+	repo, base, candidate := sharedLandingReadyRepo(t)
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "proof admission precedes landing advice",
+		GitDelivery:      localGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, item.ID, now)
+	attachLandingCommit(t, store, item.ID, candidate, now.Add(3*time.Minute))
+
+	report, err := store.LandCheck(item.ID, LandCheckOptions{
+		CandidateTipSHA: candidate,
+		Actor:           "codex",
+	}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "missing_source_bound_proof" {
+		t.Fatalf("unproved ready candidate status = %q, want missing_source_bound_proof: %+v", report.Status, report)
+	}
+	if !strings.Contains(report.NextAction, "fresh canonical certifying proof") ||
+		strings.Contains(report.NextAction, "fast-forward") {
+		t.Fatalf("unproved ready candidate received landing advice: %q", report.NextAction)
+	}
+}
+
 func TestRecordedLandedReportWithoutSourceProofCannotClose(t *testing.T) {
 	now := time.Date(2026, 7, 28, 7, 40, 0, 0, time.UTC)
 	repo, base, candidate := sharedLandingLandedRepo(t)
@@ -724,6 +758,22 @@ func newSourceBoundProofCompletionFixture(t *testing.T, now time.Time) sourceBou
 		reportRef: reportRef,
 		now:       now,
 	}
+}
+
+func completeSourceBoundProofForDetachedCandidate(
+	t *testing.T,
+	store *Store,
+	workID string,
+	actor string,
+	repo string,
+	candidate string,
+	now time.Time,
+) {
+	t.Helper()
+	proofWorktree := filepath.Join(t.TempDir(), "proof-worktree")
+	landingGit(t, repo, "worktree", "add", "--detach", proofWorktree, candidate)
+	completeSourceBoundProofForWork(t, store, workID, actor, proofWorktree, now)
+	landingGit(t, repo, "worktree", "remove", proofWorktree)
 }
 
 func completeSourceBoundProofForWork(

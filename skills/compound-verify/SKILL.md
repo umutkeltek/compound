@@ -69,8 +69,8 @@ Two corollaries worth their own line:
 
 2. **Deterministic bundle:**
    ```bash
-   BASE_SHA=$(git rev-parse --verify "main^{commit}")
-   go run ./cmd/compound proof-check --base "$BASE_SHA" \
+   PRE_LAND_BASE_SHA=$(git rev-parse --verify "main^{commit}")
+   go run ./cmd/compound proof-check --base "$PRE_LAND_BASE_SHA" \
      --work <work_id> --actor "<harness>:<lane>" \
      --out <absolute-report.json>
    ```

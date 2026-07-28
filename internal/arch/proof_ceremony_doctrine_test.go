@@ -14,13 +14,13 @@ var proofCeremonyCanonicalClauses = []string{
 }
 
 var (
-	fullProofBaseSHA = regexp.MustCompile(`^[0-9a-f]{40}(?:[0-9a-f]{24})?$`)
-	shellAssignment  = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
-	baseArgument     = regexp.MustCompile(`(?:^|\s)--base(?:=|\s+)(\S+)`)
-	devArgument      = regexp.MustCompile(`(?:^|\s)--dev(?:\s|$)`)
-	proofTerm        = regexp.MustCompile(`(?i)\b(?:proof-check|certifying proof|canonical full profile|full profile)\b`)
-	terminalTerm     = regexp.MustCompile(`(?i)\b(?:terminal|tty|pty)\b`)
-	terminalRequired = []*regexp.Regexp{
+	fullProofBaseSHA      = regexp.MustCompile(`^[0-9a-f]{40}(?:[0-9a-f]{24})?$`)
+	shellAssignment       = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	baseArgument          = regexp.MustCompile(`(?:^|\s)--base(?:=|\s+)(\S+)`)
+	nonCertifyingArgument = regexp.MustCompile(`(?:^|\s)--(?:ci-console|dev|ci|dry-run|timings)(?:\s|$)`)
+	proofTerm             = regexp.MustCompile(`(?i)\b(?:proof-check|certifying proof|canonical full profile|full profile)\b`)
+	terminalTerm          = regexp.MustCompile(`(?i)\b(?:terminal|tty|pty)\b`)
+	terminalRequired      = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\b(?:proof-check|certifying proof|canonical full profile|full profile)\b[^.;\n]{0,100}\b(?:requires?|must use|must run|only from)\s+(?:a\s+)?(?:real\s+)?(?:terminal|tty|pty)\b`),
 		regexp.MustCompile(`(?i)\b(?:real\s+)?(?:terminal|tty|pty)\s+is required\b[^.;\n]{0,80}\b(?:proof-check|certifying proof|canonical full profile|full profile)\b`),
 	}
@@ -103,17 +103,79 @@ func TestProofCeremonyCommandGuardRejectsMovingCanonicalBases(t *testing.T) {
 	}
 }
 
-func TestProofCeremonyCommandGuardAcceptsImmutableBasesAndDevMain(t *testing.T) {
-	body := "```bash\n" +
+func TestProofCeremonyCommandGuardAcceptsImmutableBasesAndNonCertifyingExamples(t *testing.T) {
+	nonCertifying := "```bash\n" +
 		"compound proof-check --dev --base main\n" +
-		"compound proof-check --base 0123456789abcdef0123456789abcdef01234567 --work work_sha1\n" +
-		"compound proof-check --base 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --work work_sha256\n" +
-		"BASE_SHA=$(git rev-parse --verify \"main^{commit}\")\n" +
-		"compound proof-check --base \"$BASE_SHA\" --work work_captured\n" +
+		"compound proof-check --ci --base HEAD\n" +
+		"compound proof-check --ci-console --base refs/heads/main\n" +
+		"compound proof-check --dry-run --base main\n" +
+		"compound proof-check --timings --base HEAD\n" +
+		"```"
+	if count, findings := certifyingProofCommandFindings(nonCertifying); count != 0 || len(findings) != 0 {
+		t.Fatalf("non-certifying examples count=%d findings=%v", count, findings)
+	}
+
+	for _, body := range []string{
+		"```bash\ncompound proof-check --base 0123456789abcdef0123456789abcdef01234567 --work work_sha1\n```",
+		"```bash\ncompound proof-check --base 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --work work_sha256\n```",
+		"```bash\nPRE_LAND_BASE_SHA=$(git rev-parse --verify \"main^{commit}\")\ncompound proof-check --base \"$PRE_LAND_BASE_SHA\" --work work_captured\n```",
+	} {
+		count, findings := certifyingProofCommandFindings(body)
+		if count != 1 || len(findings) != 0 {
+			t.Fatalf("immutable canonical command count=%d findings=%v", count, findings)
+		}
+	}
+}
+
+func TestProofCeremonyCommandGuardAcceptsPreLandBaseAcrossFences(t *testing.T) {
+	body := "```bash\n" +
+		"PRE_LAND_BASE_SHA=$(git rev-parse --verify \"main^{commit}\")\n" +
+		"compound proof-check --base \"$PRE_LAND_BASE_SHA\" --work work_pre\n" +
+		"```\n\nAfter landing:\n\n```bash\n" +
+		"compound proof-check --base \"$PRE_LAND_BASE_SHA\" --work work_post\n" +
 		"```"
 	count, findings := certifyingProofCommandFindings(body)
-	if count != 3 || len(findings) != 0 {
-		t.Fatalf("immutable canonical command count=%d findings=%v", count, findings)
+	if count != 2 || len(findings) != 0 {
+		t.Fatalf("cross-fence pre-land base count=%d findings=%v", count, findings)
+	}
+}
+
+func TestProofCeremonyCommandGuardRejectsPostLandBaseDrift(t *testing.T) {
+	shaA := "0123456789abcdef0123456789abcdef01234567"
+	shaB := "89abcdef0123456789abcdef0123456789abcdef"
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "recapture main after proof",
+			body: "```bash\n" +
+				"PRE_LAND_BASE_SHA=$(git rev-parse --verify \"main^{commit}\")\n" +
+				"compound proof-check --base \"$PRE_LAND_BASE_SHA\" --work work_pre\n" +
+				"```\n\n```bash\n" +
+				"PRE_LAND_BASE_SHA=$(git rev-parse --verify \"main^{commit}\")\n" +
+				"compound proof-check --base \"$PRE_LAND_BASE_SHA\" --work work_post\n" +
+				"```",
+			want: "reassigned",
+		},
+		{
+			name: "different post-land base",
+			body: "```bash\n" +
+				"compound proof-check --base " + shaA + " --work work_pre\n" +
+				"```\n\n```bash\n" +
+				"compound proof-check --base " + shaB + " --work work_post\n" +
+				"```",
+			want: "same pre-land base",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			count, findings := certifyingProofCommandFindings(tc.body)
+			if count != 2 || !strings.Contains(strings.Join(findings, "\n"), tc.want) {
+				t.Fatalf("post-land base drift count=%d findings=%v, want %q", count, findings, tc.want)
+			}
+		})
 	}
 }
 
@@ -179,17 +241,22 @@ func staleProofTerminalFindings(body string) []string {
 func certifyingProofCommandFindings(markdown string) (int, []string) {
 	canonicalCount := 0
 	var findings []string
+	assignments := make(map[string]bool)
+	usedAssignments := make(map[string]bool)
+	firstCanonicalBase := ""
 	for _, block := range markdownCodeBlocks(markdown) {
-		assignments := make(map[string]bool)
 		for _, command := range shellLogicalLines(block) {
 			if match := shellAssignment.FindStringSubmatch(command); match != nil {
+				if usedAssignments[match[1]] {
+					findings = append(findings, "captured pre-land proof base variable "+match[1]+" reassigned after canonical proof")
+				}
 				assignments[match[1]] = immutableProofBaseAssignment(match[2])
 				continue
 			}
 			if strings.HasPrefix(command, "#") || !strings.Contains(command, "proof-check") {
 				continue
 			}
-			if devArgument.MatchString(command) {
+			if nonCertifyingArgument.MatchString(command) {
 				continue
 			}
 			canonicalCount++
@@ -199,8 +266,18 @@ func certifyingProofCommandFindings(markdown string) (int, []string) {
 				continue
 			}
 			base := strings.Trim(match[1], "\"'")
-			if !immutableProofBaseArgument(base, assignments) {
+			baseIdentity, assignmentName, valid := immutableProofBaseIdentity(base, assignments)
+			if !valid {
 				findings = append(findings, "canonical proof-check --base must be a lowercase full SHA or a captured full-SHA variable: "+command)
+				continue
+			}
+			if assignmentName != "" {
+				usedAssignments[assignmentName] = true
+			}
+			if firstCanonicalBase == "" {
+				firstCanonicalBase = baseIdentity
+			} else if baseIdentity != firstCanonicalBase {
+				findings = append(findings, "canonical proof-check commands must reuse the same pre-land base: "+command)
 			}
 		}
 	}
@@ -256,9 +333,9 @@ func immutableProofBaseAssignment(value string) bool {
 	return strings.HasSuffix(ref, "^{commit}") && len(strings.TrimSuffix(ref, "^{commit}")) > 0
 }
 
-func immutableProofBaseArgument(value string, assignments map[string]bool) bool {
+func immutableProofBaseIdentity(value string, assignments map[string]bool) (string, string, bool) {
 	if fullProofBaseSHA.MatchString(value) {
-		return true
+		return "sha:" + value, "", true
 	}
 	var name string
 	switch {
@@ -267,7 +344,10 @@ func immutableProofBaseArgument(value string, assignments map[string]bool) bool 
 	case strings.HasPrefix(value, "$"):
 		name = strings.TrimPrefix(value, "$")
 	default:
-		return false
+		return "", "", false
 	}
-	return assignments[name]
+	if !assignments[name] {
+		return "", name, false
+	}
+	return "var:" + name, name, true
 }
