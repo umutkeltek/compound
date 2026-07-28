@@ -74,6 +74,83 @@ func TestRoutineReadShellCompositionsStayAutomatic(t *testing.T) {
 	}
 }
 
+func TestSedReadClassifierParsesOnlyScriptOperands(t *testing.T) {
+	automatic := []string{
+		"sed -n '1,80p' /synthetic/wayfinder/SKILL.md",
+		"sed 's/foo/bar/' /synthetic/recipes/input.md /synthetic/wayfinder/other.md",
+		"sed -e 's/foo/bar/' /synthetic/wayfinder/SKILL.md",
+		"sed -es/foo/bar/ /synthetic/wayfinder/SKILL.md",
+		"sed --expression='s/foo/bar/' /synthetic/wayfinder/SKILL.md",
+		"sed 's/a/1w/' /synthetic/wayfinder/SKILL.md",
+		"sed -n -- '1,80p' /synthetic/recipes/SKILL.md",
+	}
+	for _, command := range automatic {
+		t.Run("automatic/"+command, func(t *testing.T) {
+			monitored := MonitorToolAction(
+				monitorRequest("Bash", map[string]any{"command": command}),
+				DefaultConfig(),
+				fixedNow,
+			)
+			if !monitored.Classification.Known || monitored.Classification.Operation != "local_command" {
+				t.Fatalf("sed read became unknown or consequential: %q => %+v", command, monitored.Classification)
+			}
+			if !Allowed(monitored.Decision) {
+				t.Fatalf("sed read should remain automatic: %q => %+v", command, monitored.Decision)
+			}
+		})
+	}
+
+	held := []string{
+		"sed -n",
+		"sed -i 's/a/b/' file",
+		"sed -i.bak 's/a/b/' file",
+		"sed -I.bak 's/a/b/' file",
+		"sed --in-place=.bak 's/a/b/' file",
+		"sed -f mutator.sed file",
+		"sed -fmutator.sed file",
+		"sed --file=mutator.sed file",
+		"sed -e 'w out' file",
+		"sed -e 'W out' file",
+		"sed -e 'r source' file",
+		"sed -e 'R source' file",
+		"sed -e 'e command' file",
+		"sed '-es/a/b/w out' file",
+		"sed --expression='s/a/b/w out' file",
+		"sed 's#a#b#w /tmp/out' file",
+		"sed 's|a|b|e' file",
+		"sed '/match/!w /tmp/out' file",
+		"sed '/match/!r source' file",
+		"sed '/match/!e command' file",
+		"sed '\\%match%w /tmp/out' file",
+		"sed '\\%match%r source' file",
+		"sed '\\%match%e command' file",
+		"sed '1w out' file",
+		"sed '1r source' file",
+		"sed '1e command' file",
+		"sed '$w out' file",
+		"sed '2,4r source' file",
+		"sed '1~2e command' file",
+		"sed --line-length 80 'w out' file",
+		"sed -e",
+		"sed --expression",
+	}
+	for _, command := range held {
+		t.Run("held/"+command, func(t *testing.T) {
+			monitored := MonitorToolAction(
+				monitorRequest("Bash", map[string]any{"command": command}),
+				DefaultConfig(),
+				fixedNow,
+			)
+			if monitored.Classification.Known && monitored.Classification.Operation == "local_command" {
+				t.Fatalf("sed mutation or unknown grammar entered the routine lane: %q => %+v", command, monitored.Classification)
+			}
+			if Allowed(monitored.Decision) {
+				t.Fatalf("sed mutation or unknown grammar should remain held: %q => %+v", command, monitored)
+			}
+		})
+	}
+}
+
 // Release verification tools carry both harmless local/read operations and
 // consequential account/device mutations. Keep the automatic surface exact.
 func TestReleaseToolShellClassificationIsSubcommandAware(t *testing.T) {

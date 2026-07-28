@@ -665,10 +665,54 @@ func shellSegmentClass(segment shellSegment, firstPartyCommands FirstPartyComman
 		return shellClassUnknown
 	}
 	fields := shellStripCommandPrefixes(segment.words)
+	prefixLength := len(segment.words) - len(fields)
+	prefix := segment.words[:prefixLength]
+	if shellPrefixChangesExecution(prefix) {
+		return shellClassUnknown
+	}
 	if len(fields) == 0 {
 		return shellClassRead
 	}
-	return shellVerbClass(shellVerbName(fields[0]), fields[1:], firstPartyCommands)
+	verb := shellVerbName(fields[0])
+	if shellVerificationVerbRequiresCleanPrefix(verb) && shellPrefixHasAssignment(prefix) {
+		return shellClassUnknown
+	}
+	return shellVerbClass(verb, fields[1:], firstPartyCommands)
+}
+
+// shellPrefixChangesExecution holds prefixes that can replace the executable
+// or inject startup/build instructions before the classified verb runs.
+func shellPrefixChangesExecution(prefix []string) bool {
+	for _, token := range prefix {
+		if !shellLooksLikeAssignment(token) {
+			continue
+		}
+		name, _, _ := strings.Cut(strings.Trim(token, `"'`), "=")
+		switch name {
+		case "PATH", "BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS",
+			"MAKEFILES", "MAKEFLAGS", "SWIFT_EXEC", "SWIFTC_EXEC":
+			return true
+		}
+	}
+	return false
+}
+
+func shellPrefixHasAssignment(prefix []string) bool {
+	for _, token := range prefix {
+		if shellLooksLikeAssignment(token) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellVerificationVerbRequiresCleanPrefix(verb string) bool {
+	switch verb {
+	case "bash", "swift", "make":
+		return true
+	default:
+		return false
+	}
 }
 
 // shellStripCommandPrefixes drops environment assignments and the wrappers that
@@ -756,6 +800,10 @@ func shellVerbClass(verb string, args []string, firstPartyCommands FirstPartyCom
 			return shellClassRead
 		}
 		return shellClassUnknown
+	case "bash":
+		return shellBashSyntaxClass(args)
+	case "swift":
+		return shellSwiftClass(args)
 	case "xcodebuild":
 		return shellXcodebuildClass(args)
 	case "xcrun":
@@ -763,11 +811,7 @@ func shellVerbClass(verb string, args []string, firstPartyCommands FirstPartyCom
 	case "install.sh":
 		return shellClassInstall
 	case "make":
-		sub, _ := shellFirstOperand(args, nil)
-		if sub == "install" {
-			return shellClassInstall
-		}
-		return shellClassUnknown
+		return shellMakeVerificationClass(args)
 	case "sed":
 		if shellSedIsReadOnly(args) {
 			return shellClassRead
@@ -811,6 +855,96 @@ func shellVerbClass(verb string, args []string, firstPartyCommands FirstPartyCom
 		return shellClassRead
 	}
 	return shellClassUnknown
+}
+
+func shellBashSyntaxClass(args []string) string {
+	if len(args) != 2 || args[0] != "-n" {
+		return shellClassUnknown
+	}
+	script := strings.TrimSpace(args[1])
+	if script == "" || strings.HasPrefix(script, "-") {
+		return shellClassUnknown
+	}
+	return shellClassRead
+}
+
+func shellSwiftClass(args []string) string {
+	if len(args) == 1 {
+		switch args[0] {
+		case "--version", "-version":
+			return shellClassRead
+		}
+	}
+	if len(args) == 2 && args[0] == "package" {
+		switch args[1] {
+		case "describe", "dump-package":
+			return shellClassRead
+		}
+	}
+	if len(args) == 0 {
+		return shellClassUnknown
+	}
+
+	subcommand := args[0]
+	if subcommand != "build" && subcommand != "test" {
+		return shellClassUnknown
+	}
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "--configuration", "-c":
+			if i+1 >= len(args) {
+				return shellClassUnknown
+			}
+			i++
+			value := args[i]
+			if value != "debug" && value != "release" {
+				return shellClassUnknown
+			}
+		case "--jobs", "-j":
+			if i+1 >= len(args) || !shellAllDigits(args[i+1]) {
+				return shellClassUnknown
+			}
+			i++
+		case "--product", "--target":
+			if subcommand != "build" || i+1 >= len(args) ||
+				strings.TrimSpace(args[i+1]) == "" ||
+				strings.HasPrefix(args[i+1], "-") {
+				return shellClassUnknown
+			}
+			i++
+		case "--filter", "--skip":
+			if subcommand != "test" || i+1 >= len(args) ||
+				strings.TrimSpace(args[i+1]) == "" ||
+				strings.HasPrefix(args[i+1], "-") {
+				return shellClassUnknown
+			}
+			i++
+		case "--parallel", "--no-parallel", "--list-tests", "--enable-code-coverage":
+			if subcommand != "test" {
+				return shellClassUnknown
+			}
+		default:
+			return shellClassUnknown
+		}
+	}
+	return shellClassRead
+}
+
+func shellMakeVerificationClass(args []string) string {
+	if len(args) != 1 {
+		return shellClassUnknown
+	}
+	switch args[0] {
+	case "--version", "-v", "--help", "-h":
+		return shellClassRead
+	case "test", "build", "app", "verify-direct-release":
+		return shellClassRead
+	case "install":
+		return shellClassInstall
+	default:
+		return shellClassUnknown
+	}
 }
 
 func shellXcodebuildClass(args []string) string {
@@ -1120,33 +1254,97 @@ func shellFindClass(args []string) string {
 	return shellClassRead
 }
 
-// shellSedIsReadOnly rejects in-place editing and the script commands that
-// write a file (w/W), execute (e), or read one into the stream (r).
+// shellSedIsReadOnly parses sed's option/script boundary before inspecting
+// scripts. Once a positional script has been seen, later positional operands
+// are input filenames and must not be mistaken for sed commands.
 func shellSedIsReadOnly(args []string) bool {
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "--") {
-			if strings.HasPrefix(arg, "--in-place") {
+	scriptSeen := false
+	options := true
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if options && arg == "--" {
+			options = false
+			continue
+		}
+
+		if options && strings.HasPrefix(arg, "--") {
+			switch {
+			case arg == "--in-place", strings.HasPrefix(arg, "--in-place="),
+				arg == "--file", strings.HasPrefix(arg, "--file="):
+				return false
+			case arg == "--expression":
+				if i+1 >= len(args) {
+					return false
+				}
+				i++
+				if shellSedScriptWrites(args[i]) {
+					return false
+				}
+				scriptSeen = true
+			case strings.HasPrefix(arg, "--expression="):
+				if shellSedScriptWrites(strings.TrimPrefix(arg, "--expression=")) {
+					return false
+				}
+				scriptSeen = true
+			case arg == "--quiet", arg == "--silent", arg == "--regexp-extended",
+				arg == "--separate", arg == "--unbuffered", arg == "--null-data",
+				arg == "--posix", arg == "--debug", arg == "--sandbox":
+				continue
+			case (arg == "--help" || arg == "--version") && len(args) == 1:
+				return true
+			default:
 				return false
 			}
 			continue
 		}
-		if strings.HasPrefix(arg, "-") {
-			if strings.ContainsRune(arg, 'i') {
-				return false
+
+		if options && strings.HasPrefix(arg, "-") && arg != "-" {
+			short := strings.TrimPrefix(arg, "-")
+			for j := 0; j < len(short); j++ {
+				switch short[j] {
+				case 'i', 'I', 'f':
+					return false
+				case 'e':
+					expression := short[j+1:]
+					if expression == "" {
+						if i+1 >= len(args) {
+							return false
+						}
+						i++
+						expression = args[i]
+					}
+					if shellSedScriptWrites(expression) {
+						return false
+					}
+					scriptSeen = true
+					j = len(short)
+				case 'n', 'E', 'r', 's', 'u', 'z':
+					continue
+				default:
+					return false
+				}
 			}
 			continue
 		}
-		if shellSedScriptWrites(arg) {
-			return false
+
+		if !scriptSeen {
+			if shellSedScriptWrites(arg) {
+				return false
+			}
+			scriptSeen = true
 		}
 	}
-	return true
+	return scriptSeen
 }
 
 func shellSedScriptWrites(script string) bool {
+	if shellSedSubstitutionWrites(script) {
+		return true
+	}
 	for i := 0; i < len(script); i++ {
 		switch script[i] {
-		case 'w', 'W', 'e', 'r':
+		case 'w', 'W', 'e', 'r', 'R':
 		default:
 			continue
 		}
@@ -1154,7 +1352,116 @@ func shellSedScriptWrites(script string) bool {
 			return true
 		}
 		switch script[i-1] {
-		case ' ', '\t', ';', '{', '}', '/':
+		case ' ', '\t', '\n', ';', '{', '}', '/', '!':
+			return true
+		}
+		if shellSedHasSimpleAddressBefore(script, i) {
+			return true
+		}
+		if shellSedHasAlternateRegexAddressBefore(script, i) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellSedSubstitutionWrites(script string) bool {
+	for i := 0; i+1 < len(script); i++ {
+		if script[i] != 's' {
+			continue
+		}
+		delimiter := script[i+1]
+		if delimiter == '\\' || delimiter == '\n' {
+			continue
+		}
+		patternEnd, ok := shellSedDelimitedEnd(script, i+2, delimiter)
+		if !ok {
+			continue
+		}
+		replacementEnd, ok := shellSedDelimitedEnd(script, patternEnd+1, delimiter)
+		if !ok {
+			continue
+		}
+		separator := -1
+	flags:
+		for j := replacementEnd + 1; j < len(script); j++ {
+			switch script[j] {
+			case ';', '\n':
+				separator = j
+				break flags
+			case 'w', 'W', 'e':
+				return true
+			}
+		}
+		if separator < 0 {
+			return false
+		}
+		i = separator
+	}
+	return false
+}
+
+func shellSedDelimitedEnd(script string, start int, delimiter byte) (int, bool) {
+	for i := start; i < len(script); i++ {
+		if script[i] == '\\' {
+			i++
+			continue
+		}
+		if script[i] == delimiter {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func shellSedHasSimpleAddressBefore(script string, commandIndex int) bool {
+	start := commandIndex
+	for start > 0 {
+		previous := script[start-1]
+		if previous == '\n' || previous == ';' || previous == '{' || previous == '}' {
+			break
+		}
+		start--
+	}
+
+	prefix := strings.TrimSpace(script[start:commandIndex])
+	if prefix == "" {
+		return false
+	}
+	hasAddress := false
+	for i := 0; i < len(prefix); i++ {
+		switch {
+		case prefix[i] >= '0' && prefix[i] <= '9', prefix[i] == '$':
+			hasAddress = true
+		case prefix[i] == ' ', prefix[i] == '\t', prefix[i] == ',',
+			prefix[i] == '~', prefix[i] == '+', prefix[i] == '!':
+			continue
+		default:
+			return false
+		}
+	}
+	return hasAddress
+}
+
+func shellSedHasAlternateRegexAddressBefore(script string, commandIndex int) bool {
+	start := commandIndex
+	for start > 0 {
+		previous := script[start-1]
+		if previous == '\n' || previous == ';' || previous == '{' || previous == '}' {
+			break
+		}
+		start--
+	}
+
+	prefix := strings.TrimSpace(script[start:commandIndex])
+	prefix = strings.TrimSpace(strings.TrimSuffix(prefix, "!"))
+	for i := 0; i+2 < len(prefix); i++ {
+		if prefix[i] != '\\' {
+			continue
+		}
+		delimiter := prefix[i+1]
+		end, ok := shellSedDelimitedEnd(prefix, i+2, delimiter)
+		if ok && end == len(prefix)-1 {
 			return true
 		}
 	}
