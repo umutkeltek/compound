@@ -59,9 +59,10 @@ model/provider fields remain empty until route evidence attests them. Gateway cl
 selection remains gateway-owned and is not stored here.
 
 Profile compatibility binds the selected canonical tuple rather than trusting selectors in isolation. After
-route-owner normalization, a nonempty model constraint must equal the selected model ID; a nonempty route alias
-must equal the selected provider route or selected route identity; and the plan transport must equal a nonempty
-transport attested by its owner.
+trimming surrounding whitespace, opaque model IDs, provider routes/route aliases, and transport IDs compare
+exactly and case-sensitively; hyphens and underscores are not interchangeable. A nonempty model constraint must
+equal the selected model ID; a nonempty route alias must equal the selected provider route or selected route
+identity; and the plan transport must equal a nonempty transport attested by its owner.
 `LaneTuple` resolution deliberately leaves selected transport empty because the lane projection declares
 `transport` executor-owned. Therefore current real `--execution-profile` delegation fails closed before readiness
 until the executor-owned profile-plan cutover supplies transport evidence; Compound never infers Switchback

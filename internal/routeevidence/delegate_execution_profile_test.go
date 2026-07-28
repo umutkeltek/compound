@@ -120,14 +120,35 @@ func TestResolveDelegateExecutionProfileBindsSelectedCanonicalTuple(t *testing.T
 	}{
 		{name: "matching tuple", want: work.DelegateExecutionProfileCompatible},
 		{
-			name: "matching normalized tuple identities",
+			name: "matching trimmed exact tuple identities",
 			mutate: func(req *work.DelegateExecutionProfileResolveRequest) {
-				req.Intent.ModelConstraint = "fixture/model-name"
-				req.SelectedModelID = " FIXTURE/MODEL_NAME "
-				req.SelectedProviderRoute = " AUTO/BUILD "
-				req.SelectedTransportID = " SWITCHBACK "
+				req.SelectedModelID = " fixture/model "
+				req.SelectedProviderRoute = " auto/build "
+				req.SelectedTransportID = " switchback "
 			},
 			want: work.DelegateExecutionProfileCompatible,
+		},
+		{
+			name: "model punctuation variant is opaque mismatch",
+			mutate: func(req *work.DelegateExecutionProfileResolveRequest) {
+				req.Intent.ModelConstraint = "fixture/model-name"
+				req.SelectedModelID = "fixture/model_name"
+			},
+			want: work.DelegateExecutionProfileIncompatible,
+		},
+		{
+			name: "provider route case variant is opaque mismatch",
+			mutate: func(req *work.DelegateExecutionProfileResolveRequest) {
+				req.SelectedProviderRoute = "AUTO/BUILD"
+			},
+			want: work.DelegateExecutionProfileIncompatible,
+		},
+		{
+			name: "transport case variant is opaque mismatch",
+			mutate: func(req *work.DelegateExecutionProfileResolveRequest) {
+				req.SelectedTransportID = "SWITCHBACK"
+			},
+			want: work.DelegateExecutionProfileIncompatible,
 		},
 		{
 			name: "route alias matches selected route identity",
@@ -137,6 +158,15 @@ func TestResolveDelegateExecutionProfileBindsSelectedCanonicalTuple(t *testing.T
 				req.SelectedProviderRoute = "provider/physical-model"
 			},
 			want: work.DelegateExecutionProfileCompatible,
+		},
+		{
+			name: "route identity case variant is opaque mismatch",
+			mutate: func(req *work.DelegateExecutionProfileResolveRequest) {
+				req.Intent.ModelConstraint = ""
+				req.SelectedModelID = "AUTO/BUILD"
+				req.SelectedProviderRoute = "provider/physical-model"
+			},
+			want: work.DelegateExecutionProfileIncompatible,
 		},
 		{
 			name: "model mismatch",

@@ -74,7 +74,7 @@ func delegateExecutionProfileTransportCompatible(planTransportID, selectedTransp
 }
 
 func delegateExecutionProfileTupleIdentityEqual(left, right string) bool {
-	return normalizeModelCapabilitySelector(left) == normalizeModelCapabilitySelector(right)
+	return strings.TrimSpace(left) == strings.TrimSpace(right)
 }
 
 // delegateExecutionProfileHarnessesCompatible keeps client-family ownership
