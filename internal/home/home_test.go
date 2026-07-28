@@ -600,6 +600,40 @@ func TestOperationalArchiveKeepsOperatorPendingPanelVerdictsHot(t *testing.T) {
 	}
 }
 
+// A disposition recorded at the legacy doubled stem (`<id>.<id>.reviewed.json`)
+// still terminalizes its core item. Without this the review area can never
+// drain: the core item keeps its non-terminal producer status forever and the
+// only recorded evidence of the operator's decision is invisible to the sweep.
+func TestArchiveHistoryDrainsReviewWithDoubledStemDisposition(t *testing.T) {
+	now := archiveTestNow
+	h := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(h, "global", now); err != nil {
+		t.Fatal(err)
+	}
+
+	writeHomeFile(t, h, "reviews/source-control-cleanup/scr_a1b2c3d4e5f6.json",
+		`{"schema_version":"compound.source_control_review_plan.v0.1","id":"scr_a1b2c3d4e5f6","status":"review_required"}`)
+	writeHomeFile(t, h, "reviews/source-control-cleanup/scr_a1b2c3d4e5f6.review.yaml", "decision: parked\n")
+	writeHomeFile(t, h, "reviews/source-control-cleanup/scr_a1b2c3d4e5f6.scr_a1b2c3d4e5f6.reviewed.json",
+		`{"schema_version":"compound.source_control_review_report.v0.1","id":"scrr_a1b2c3d4e5f6","status":"recorded"}`)
+	writeHomeFile(t, h, "reviews/source-control-cleanup/scr_f6e5d4c3b2a1.json",
+		`{"schema_version":"compound.source_control_review_plan.v0.1","id":"scr_f6e5d4c3b2a1","status":"review_required"}`)
+
+	report, err := ArchiveOperationalHistory(h, OperationalArchiveOptions{Kinds: []string{"review"}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ArchivedCount != 3 || report.Counts["review"] != 3 {
+		t.Fatalf("archive report = %+v, want the doubled-stem disposition group drained", report)
+	}
+	assertMissing(t, filepath.Join(h, "reviews/source-control-cleanup/scr_a1b2c3d4e5f6.json"))
+	assertMissing(t, filepath.Join(h, "reviews/source-control-cleanup/scr_a1b2c3d4e5f6.review.yaml"))
+	assertMissing(t, filepath.Join(h, "reviews/source-control-cleanup/scr_a1b2c3d4e5f6.scr_a1b2c3d4e5f6.reviewed.json"))
+	if got := mustReadHomeFile(t, h, "reviews/source-control-cleanup/scr_f6e5d4c3b2a1.json"); !strings.Contains(got, "review_required") {
+		t.Fatalf("undisposed source-control review should remain hot, got %q", got)
+	}
+}
+
 func TestArchiveHistoryDrainsAllTerminalWorkInOnePass(t *testing.T) {
 	now := archiveTestNow
 	h := filepath.Join(t.TempDir(), ".compound")

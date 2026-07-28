@@ -2228,6 +2228,13 @@ func hasTerminalReviewSidecar(path string) bool {
 			return true
 		}
 	}
+	// A producer that joined a plan id with an identical review id recorded its
+	// disposition at a doubled `<stem>.<stem>.reviewed.json` name. Those files
+	// are immutable evidence, so the legacy stem stays selectable here and the
+	// existing backlog drains without a migration pass.
+	if _, err := os.Stat(filepath.Join(dir, stem+"."+stem+".reviewed.json")); err == nil {
+		return true
+	}
 	return false
 }
 

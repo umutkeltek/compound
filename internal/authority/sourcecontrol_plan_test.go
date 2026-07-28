@@ -140,6 +140,44 @@ evidence_refs:
 	}
 }
 
+// The plan pins review_id == plan_id, so joining the pair produced a doubled
+// stem no sidecar reader stats. The recorded disposition must land on the
+// sidecar stem its own core item owns, or the review can never be drained.
+func TestRecordSourceControlReviewWritesSidecarStemDisposition(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_review_sidecar_stem", fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	paths, err := RecordSourceControlReviewPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := writeValidSourceControlReview(t, paths.ReviewYAMLPath, plan)
+	report, err := RecordSourceControlReview(home, review, paths.ReviewYAMLPath, fixedSourceControlReviewTime.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(paths.ReviewYAMLPath)
+	wantPath := filepath.Join(dir, plan.ID+".reviewed.json")
+	if filepath.Clean(report.ReviewPath) != filepath.Clean(wantPath) {
+		t.Fatalf("recorded review path = %q, want sidecar stem %q", report.ReviewPath, wantPath)
+	}
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("recorded disposition is not on the sidecar stem: %v", err)
+	}
+	doubled := filepath.Join(dir, plan.ID+"."+plan.ReviewDraft.ReviewID+".reviewed.json")
+	if _, err := os.Stat(doubled); err == nil {
+		t.Fatalf("recorded disposition still written at the doubled stem %q", doubled)
+	}
+}
+
 func TestSourceControlReviewQueueFilesCleanSupersededPlanWithoutDeletingEvidence(t *testing.T) {
 	repo := initGitRepo(t)
 	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
@@ -368,7 +406,7 @@ func TestSourceControlReviewQueueSeedsStableOwnerAuthority(t *testing.T) {
 	if ctx.TargetScope != "private" || ctx.VerifiedRecoverability != policy.RecoverabilityVerified || ctx.OperatorControlContinuity != policy.OperatorControlContinuous {
 		t.Fatalf("authority context does not carry owner outcome evidence: %+v", ctx)
 	}
-	wantReportPath := filepath.Join(filepath.Dir(paths.ReviewYAMLPath), plan.ID+"."+plan.ReviewDraft.ReviewID+".reviewed.json")
+	wantReportPath := wantSourceControlReviewedReportPath(paths.ReviewYAMLPath, plan)
 	proofs := strings.Join(ctx.ExpectedProof, "\n")
 	if !strings.Contains(ctx.ExpectedReceipt, "review report") || !strings.Contains(proofs, wantReportPath) || !strings.Contains(proofs, plan.WorkID) || !strings.Contains(proofs, paths.PlanPath) || !strings.Contains(proofs, plan.PlanDigest) {
 		t.Fatalf("authority context does not truthfully describe the review report and work trail: %+v", ctx)
@@ -652,7 +690,7 @@ func TestSourceControlReviewAuthoritySeedRequiresStableOwnerIdentity(t *testing.
 }
 
 func wantSourceControlReviewedReportPath(reviewYAML string, plan SourceControlReviewPlan) string {
-	return filepath.Join(filepath.Dir(reviewYAML), plan.ID+"."+plan.ReviewDraft.ReviewID+".reviewed.json")
+	return filepath.Join(filepath.Dir(reviewYAML), sourceControlReviewReportName(plan.ID, plan.ReviewDraft.ReviewID))
 }
 
 func TestSourceControlReviewPlanRequiresDirtySnapshot(t *testing.T) {
@@ -1141,6 +1179,58 @@ func TestLegacyCountOnlySourceControlReviewCannotAuthorizeMutation(t *testing.T)
 }
 
 var fixedSourceControlReviewTime = time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+
+// Authorizations recorded before the report name was de-duped live at the
+// doubled stem and are immutable evidence. The queue must keep validating them
+// exactly, or de-duping the writer would silently invalidate recorded operator
+// authority.
+func TestRecordedSourceControlMutationQueueAcceptsLegacyDoubledStemReport(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := SourceControlMutationBinding{
+		ActionWorkID:      "work_legacy_authorization",
+		MutationInputHash: "mutation-input:sha256:" + strings.Repeat("c", 64),
+		Capability:        "filesystem.write",
+		Action:            "write_file",
+		MutationClass:     "local_reversible",
+		TargetPaths:       []string{"README.md"},
+		ActionIntentIDs:   []string{"act_legacy_authorization"},
+	}
+	plan, err := BuildSourceControlMutationReviewPlan(snapshot, binding.ActionWorkID, binding, fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	paths, err := RecordSourceControlReviewPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := authorizeSourceControlMutationPlan(t, home, paths, plan)
+
+	// Re-shape the sealed authorization exactly as the pre-de-dupe writer left it.
+	dir := filepath.Dir(paths.ReviewYAMLPath)
+	legacyPath := filepath.Join(dir, sourceControlLegacyReviewReportName(plan.ID, plan.ReviewDraft.ReviewID))
+	if err := os.Remove(report.ReviewPath); err != nil {
+		t.Fatal(err)
+	}
+	report.ReviewPath = legacyPath
+	report.AuthorizationDigest = ""
+	report.AuthorizationDigest = sourceControlReviewReportDigest(report)
+	writeJSON(t, legacyPath, report)
+
+	queue := sourceControlCleanupQueue(t, home)
+	if queue.Items[0].Status != "recorded" || queue.Items[0].Readiness != "review_recorded" || queue.Counts.OK != 1 {
+		t.Fatalf("legacy doubled-stem authorization queue = %+v, want recorded", queue)
+	}
+	found, err := FindRecordedSourceControlMutationReview(home, snapshot, binding)
+	if err != nil || found == nil {
+		t.Fatalf("legacy doubled-stem authorization not found: report=%+v err=%v", found, err)
+	}
+}
 
 func authorizeSourceControlMutationPlan(t *testing.T, home string, paths SourceControlReviewPlanPaths, plan SourceControlReviewPlan) SourceControlReviewReport {
 	return authorizeSourceControlMutationPlanAt(t, home, paths, plan, fixedSourceControlReviewTime.Add(time.Minute))

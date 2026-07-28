@@ -699,7 +699,7 @@ func RecordSourceControlReview(homePath string, review SourceControlReview, sour
 			"any state, session payload, action, class, capability, or target-set drift fails closed",
 		}
 	}
-	report.ReviewPath = filepath.Join(filepath.Dir(sourcePath), review.PlanID+"."+review.ID+".reviewed.json")
+	report.ReviewPath = filepath.Join(filepath.Dir(sourcePath), sourceControlReviewReportName(review.PlanID, review.ID))
 	report.AuthorizationDigest = sourceControlReviewReportDigest(report)
 	if _, err := reviewartifact.WriteJSON(homePath, SourceControlCleanupReviewArea, filepath.Base(report.ReviewPath), report, " "); err != nil {
 		return SourceControlReviewReport{}, err
@@ -828,6 +828,26 @@ func SourceControlMutationOwnerCurrent(workID, state string) bool {
 	default:
 		return false
 	}
+}
+
+// sourceControlReviewReportName is the single owner of the recorded-disposition
+// file name. ValidateSourceControlReviewPlan pins review_id == plan_id, so
+// joining the pair produced a doubled `<id>.<id>.reviewed.json` stem that no
+// sidecar reader stats — the core item stayed non-terminal forever and its
+// review area could never drain. De-duping keeps the disposition on the sidecar
+// stem its own core item owns while the joined form survives for any future
+// plan whose review id genuinely differs.
+func sourceControlReviewReportName(planID, reviewID string) string {
+	if planID == reviewID {
+		return planID + ".reviewed.json"
+	}
+	return planID + "." + reviewID + ".reviewed.json"
+}
+
+// sourceControlLegacyReviewReportName is the pre-de-dupe doubled stem. Recorded
+// dispositions are immutable evidence, so readers must keep accepting it.
+func sourceControlLegacyReviewReportName(planID, reviewID string) string {
+	return planID + "." + reviewID + ".reviewed.json"
 }
 
 func writeSourceControlReviewedSource(path string, review SourceControlReview) (string, error) {
@@ -1291,7 +1311,7 @@ func sourceControlRecordReviewAuthoritySeed(item reviewartifact.QueueItem, plan 
 	}
 	planPath := filepath.Clean(item.JSONPath)
 	reviewYAML = filepath.Clean(reviewYAML)
-	reviewReportPath := filepath.Join(dir, plan.ID+"."+plan.ReviewDraft.ReviewID+".reviewed.json")
+	reviewReportPath := filepath.Join(dir, sourceControlReviewReportName(plan.ID, plan.ReviewDraft.ReviewID))
 	actionIntent := &envelope.ActionIntent{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVActionIntent,
@@ -1358,7 +1378,14 @@ func validateRecordedSourceControlMutationQueueItem(item reviewartifact.QueueIte
 	dir := filepath.Dir(item.JSONPath)
 	expectedPlanPath := filepath.Join(dir, plan.ID+".json")
 	expectedReviewYAMLPath := filepath.Join(dir, plan.ID+".review.yaml")
-	expectedReportPath := filepath.Join(dir, plan.ID+"."+plan.ReviewDraft.ReviewID+".reviewed.json")
+	expectedReportPath := filepath.Join(dir, sourceControlReviewReportName(plan.ID, plan.ReviewDraft.ReviewID))
+	// A disposition recorded before the de-dupe sits at the doubled stem and can
+	// never be rewritten. Accept it, but only when the file and the report's own
+	// self-recorded path agree on that one form — the triple identity check below
+	// stays exact either way.
+	if legacy := filepath.Join(dir, sourceControlLegacyReviewReportName(plan.ID, plan.ReviewDraft.ReviewID)); filepath.Clean(reviewedPath) == filepath.Clean(legacy) {
+		expectedReportPath = legacy
+	}
 	if filepath.Clean(item.JSONPath) != filepath.Clean(expectedPlanPath) ||
 		filepath.Clean(sourceControlReviewYAMLPath(item)) != filepath.Clean(expectedReviewYAMLPath) ||
 		filepath.Clean(reviewedPath) != filepath.Clean(expectedReportPath) ||
