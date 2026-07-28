@@ -69,12 +69,16 @@ Two corollaries worth their own line:
 
 2. **Deterministic bundle:**
    ```bash
-   go run ./cmd/compound proof-check --work <work_id> --actor "<harness>:<lane>" \
+   BASE_SHA=$(git rev-parse --verify "main^{commit}")
+   go run ./cmd/compound proof-check --base "$BASE_SHA" \
+     --work <work_id> --actor "<harness>:<lane>" \
      --out <absolute-report.json>
    ```
-   The actor must already hold the named WorkEnvelope lease. Run the canonical full profile
-   unpiped from a real terminal/PTY with stdout direct; pipes/redirections are refused before
-   reservation or any gate subprocess. Custom `--ttl` values below 3s are likewise refused before
+   The actor must already hold the named WorkEnvelope lease. Certifying proof is agent-invocable:
+   non-terminal, redirected, and backgrounded stdout are supported; the authoritative full report
+   is `--out`. Run it unpiped as its own command by default and preserve the actual process exit
+   because zsh pipelines can mask failure. This is shell-observation safety, not proof admission.
+   Custom `--ttl` values below 3s are refused before
    admission; accepted windows refresh at `min(TTL/3, 5s)` and monitor holder loss continuously.
    Each gate inherits the shared land-lease kernel execution barrier. Lease loss, SIGINT/SIGTERM,
    and governed steal requests cancel and wait the whole gate process group; generic landing
@@ -104,6 +108,15 @@ Two corollaries worth their own line:
    `architecture doctor --strict`, workbench projection, `memory doctor`, and the public redact
    scan of changed files all passed. Any red stops the close — fix or escalate, never weaken the
    check.
+
+   The certifying base is a caller-captured immutable full SHA, not
+   `git_delivery.expected_base_sha`; Compound resolves it once. A dirty or uncommitted candidate
+   is refused. The report seals repository fingerprint, base SHA, HEAD SHA, tree SHA, and clean
+   state; diff-check and redact inspect the same committed `base...HEAD`. A rebase, replay, or
+   new HEAD invalidates the prior proof and requires a fresh battery. New `--out` reports are
+   private, ordinary existing modes are preserved, symlink/non-regular/raced targets are refused,
+   publication is atomic within the captured parent, and timing warnings are sealed before the
+   file, installed artifact, and JSON agree.
 
    Since `fc4cd8e3` the home-reading gates (`memory doctor`, workbench projection, the attention
    and agents console smokes) each seed and own a temp `COMPOUND_HOME` and assert its content, so
@@ -139,6 +152,10 @@ Two corollaries worth their own line:
    context pack → action → policy → receipt → transition. Check with
    `go run ./cmd/compound workbench --json` / `transition show <id>`. A `RouteDecision`, a plan
    artifact, or a written report is never task success — only the receipt's `state_delta` is.
+
+   For source-controlled work, the `land-check` candidate tip, current attached commit
+   candidate, and stored successful proof HEAD must be identical. A rebased or mismatched tip
+   is non-certifying and close refuses it until a fresh battery records the new HEAD.
 
 ## Verdict format (end every run with exactly one)
 

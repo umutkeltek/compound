@@ -41,12 +41,18 @@ go test ./internal/work/ -count=1 -timeout 5m
 go run ./cmd/compound architecture doctor --strict
 
 # Full proof bundle (tests + vet + build + gofmt + doctors):
-go run ./cmd/compound proof-check --work <claimed-work-id> --actor <lease-holder> \
+BASE_SHA=$(git rev-parse --verify "main^{commit}")
+go run ./cmd/compound proof-check --base "$BASE_SHA" \
+  --work <claimed-work-id> --actor <lease-holder> \
   --out <absolute-report.json>
 ```
 
-Run the full profile unpiped from a real terminal/PTY. All canonical gates must
-finish `ok`—a skipped gate is diagnostic evidence, not certifying proof.
+Certifying proof is agent-invocable and supports non-terminal, redirected, or
+backgrounded stdout. Run it unpiped as its own command by default, preserve its
+actual process exit, and read the authoritative full report from `--out`; this
+avoids zsh pipelines masking a failure and is shell-observation safety, not an
+admission requirement. All canonical gates must finish `ok`—a skipped gate is
+diagnostic evidence, not certifying proof.
 
 **Note:** some packages (`internal/work`, `internal/authority`,
 `internal/eventstore`) have slow tests (2-5 min each). Use `-p 2` to limit
@@ -126,11 +132,25 @@ skills/                   Agent ceremony definitions
    installed-runtime proof evidence or satisfy pre-land or post-land proof.
 
    ```sh
-   go run ./cmd/compound proof-check --work <claimed-work-id> --actor <lease-holder> \
+   BASE_SHA=$(git rev-parse --verify "main^{commit}")
+   go run ./cmd/compound proof-check --base "$BASE_SHA" \
+     --work <claimed-work-id> --actor <lease-holder> \
      --out <absolute-report.json>
    ```
-   The command atomically replaces `--out` only after the complete report is
-   synced; admission or transport refusal never creates or changes the target.
+   The caller-selected base is captured as a full SHA; it is not inferred from
+   `git_delivery.expected_base_sha`. Certifying proof refuses a dirty or
+   uncommitted candidate, resolves the base once, and seals repository fingerprint,
+   base SHA, HEAD SHA, tree SHA, and clean state. Diff-check and redact inspect that
+   same committed `base...HEAD`; a rebase, replay, or new HEAD invalidates the prior
+   proof and requires a fresh battery.
+
+   `--out` is the authoritative report. A new report is private; an ordinary
+   existing file keeps its mode. Symlink, non-regular, or raced targets are refused,
+   publication is atomic within the captured parent, and timing warnings are sealed
+   before file, installed artifact, and JSON output agree. For source-controlled
+   close, the `land-check` candidate tip, current attached commit candidate, and
+   stored successful proof HEAD must match; close refuses a mismatched or rebased
+   tip.
 4. **One logical change per PR.** If your change teaches something about the
    architecture, update the docs/contracts/tests in the same change.
 5. **CI runs automatically** on push/PR: `proof-check --ci` (Go gates) +

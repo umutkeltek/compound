@@ -55,7 +55,8 @@ This skill replaces re-deriving the "standing session rules" from
 ## 1 · Pre-flight battery (all of it, every time)
 
 The ceremony has five gates, in force order: **scope-claim** (§0 — land-lease + worklog claim) ·
-**battery** (§1 — `proof-check --json --out`) · **fresh-SHA guard** (§3 — `MAIN_SHA` read this
+**battery** (§1 — `proof-check --json --base <full-sha> --work ... --actor ... --out`) ·
+**fresh-SHA guard** (§3 — `MAIN_SHA` read this
 turn) · **redact** (§5 — unpiped, its own command) · **tree-identity** (§4 — containment proved
 before any removal). **A later gate cannot prove that an earlier gate passed: a green battery does
 not prove the scope claim, and a clean redact does not prove the battery ran.** Each is cleared only
@@ -70,7 +71,9 @@ the pre-land or post-land full proof below.
 Run the `compound-verify` skill. Minimum bar before any commit to main:
 
 ```bash
-go run ./cmd/compound proof-check --work <work_id> --actor "<harness>:<lane>" \
+BASE_SHA=$(git rev-parse --verify "main^{commit}")
+go run ./cmd/compound proof-check --json --base "$BASE_SHA" \
+  --work <work_id> --actor "<harness>:<lane>" \
   --out <absolute-report.json>   # tests, vet, build, diff-check, console smokes,
                                 # doctor --strict, workbench, memory doctor, redact
 ```
@@ -87,9 +90,10 @@ go run ./cmd/compound proof-check --work <work_id> --actor "<harness>:<lane>" \
   For a stale already-dead predecessor use
   `--steal --reason "<why>" --terminated-run <ratt_*>`; Compound's barrier probe produces the
   immutable Work-reachable termination evidence. Caller JSON and bare/reused PIDs are not proof.
-  Run from a real terminal/PTY with stdout direct;
-  pipe or redirect stdout and admission fails. Every reserved gate must finish `ok` to certify;
-  `skipped` is non-certifying. A complete canonical red battery (every gate `ok|failed`, at least
+  Certifying proof is agent-invocable: non-terminal, redirected, and backgrounded stdout are
+  supported. `--out` is the authoritative full report. Every reserved gate must finish `ok`
+  to certify; `skipped` is non-certifying. A complete canonical red battery (every gate
+  `ok|failed`, at least
   one failed) finalizes as non-certifying evidence, releases the resource, preserves the full
   report, ends stdout with one `battery: FAILED`, and exits 1. Refusal leaves `--out` absent or
   byte-identical, and successful publication syncs a sibling temp before atomic rename. A committed
@@ -106,15 +110,22 @@ go run ./cmd/compound proof-check --work <work_id> --actor "<harness>:<lane>" \
   green governed completion has released—never from candidate, failed, invalid, release-pending,
   dry-run, or CI output.
 - Exit contract: `0` ok · `1` a gate FAILED · `2` usage/admission/publication/finalization error.
-  Never "fix" a red gate by weakening
+- `--base` is a caller-captured immutable full SHA, not
+  `git_delivery.expected_base_sha`. It resolves once. Certifying proof refuses dirty or
+  uncommitted candidates and seals repository fingerprint, base SHA, HEAD SHA, tree SHA,
+  and clean state. Diff-check and redact both inspect the committed `base...HEAD`. A
+  rebase, replay, or new HEAD invalidates the proof and requires a fresh battery.
+- Never "fix" a red gate by weakening
   the gate, deleting the test, or raising a budget — that is the one unforgivable move here.
 - **Remove executor build caches (`.gocache/`, `.cache/`) from the worktree before the battery** —
   the redact gate scans untracked files; build-cache blobs carry 16-digit runs that false-positive
   the credit-card detector (observed 2026-07-10, reconciler land: MEDIUM pii.cc on `.gocache`).
 - **Never pipe the battery through `| tail`/`| head`** (near-miss 2026-07-07). zsh has no `pipefail`,
   so the pipeline's exit status is `tail`'s (always `0`) — a real gate failure reads as green. The
-  truncation also drops the top-of-output verdict and the `go-test`/`go-vet`/`go-build` gates. Run it
-  unpiped, foreground or backgrounded.
+  truncation also drops the top-of-output verdict and the `go-test`/`go-vet`/`go-build` gates. Run
+  it unpiped as its own command and read its exit/verdict. This is shell-observation safety, not
+  an admission requirement: background or redirection is supported when the caller preserves
+  proof-check's actual exit and reads `--out`.
 - **`--out <file>` is the sanctioned invocation now; the `> out.json 2>&1; echo "EXIT=$?"` wrapper
   is RETIRED.** `proof-check` owns its own output contract: `--out FILE` writes the FULL report to
   FILE itself (a prepare/publication failure is its own exit-2, even if every gate passed), and prints one
@@ -127,6 +138,9 @@ go run ./cmd/compound proof-check --work <work_id> --actor "<harness>:<lane>" \
   2026-07-07 (piped through `tail`), 2026-07-15 and 2026-07-18 (backgrounded: the wrapper's trailing
   `echo` exit, always `0`, was trusted as the battery's exit) — which is why the battery, not a shell
   wrapper, now owns the output contract.
+  New reports are private; ordinary existing modes are preserved. Symlink, non-regular,
+  or raced targets are refused, publication is atomic within the captured parent, and
+  timing warnings are sealed before report file, installed artifact, and JSON agree.
 - **A pre-commit battery CANNOT clear the doc-leak gate for NEW files** (lived 2026-07-19, inventory
   door). The gate enumerates TRACKED text files only, so files still untracked (`??`) at battery
   time are invisible to it — the battery goes green, the commit makes them tracked, and the NEXT
@@ -324,9 +338,12 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   releasing with nothing held is an idempotent no-op — safe to run even if acquire never happened
   (e.g. a trivial single-commit land that skipped §3). `steal --reason` (§3) remains the escape
   hatch if a DIFFERENT lane needs to take over a lease this one abandoned without releasing.
-- Re-run `go run ./cmd/compound proof-check --work <work_id> --actor "<harness>:<lane>"
-  --out <absolute-report.json>` unpiped from a real terminal on landed main (cheap insurance
-  against a rehearsal/main divergence).
+- Re-run on landed main (cheap insurance against rehearsal/main divergence):
+  ```bash
+  go run ./cmd/compound proof-check --json --base "$BASE_SHA" \
+    --work <work_id> --actor "<harness>:<lane>" --out <absolute-report.json>
+  ```
+  Preserve its actual exit and read the authoritative `--out` report.
 - **If the land touched `cmd/compound` or `internal/{hook,harness,contract,mem,breadth}`: run
   `./install.sh`** — hooks and external consumers use the installed binary, which self-reports its
   build SHA since 9b5736b (`compound version`; arch doctor warns fresh/stale/missing). A stale
@@ -341,6 +358,9 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   (caught live 2026-07-15: a hand-expanded tip tail sent land-check hunting a phantom commit;
   the correct read SHA certified `landed` immediately). Attach the SAME captured variable as the
   `commit:` artifact.
+- The `land-check` candidate tip must equal both the stored successful proof HEAD and the
+  current attached commit candidate. A rebase, replay, or new candidate tip requires a fresh
+  battery first; a mismatched tip is non-certifying and close refuses it.
 - Close the WorkEnvelope through the governed path (`work close-plan` → `work close`) with
   proof refs, so Receipt + Transition exist for the landed change.
 - After `work close`, run `compound act post --from-work <work_id> --transport buzz --confirm`; it holds silently unless the operator's standing grant is imported.
