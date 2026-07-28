@@ -572,7 +572,7 @@ func isConnectorTool(tool string) bool {
 }
 
 func isFilesystemWriteTool(tool string) bool {
-	return tool == "write" || tool == "edit" || tool == "multiedit" || tool == "apply_patch" ||
+	return tool == "write" || tool == "edit" || tool == "multiedit" || tool == "apply_patch" || tool == "notebookedit" ||
 		strings.Contains(tool, "filesystem.write") || strings.Contains(tool, "file.write")
 }
 
@@ -613,10 +613,28 @@ func isControlTool(tool string) bool {
 		tool == "get_goal" ||
 		tool == "tool_search" ||
 		tool == "skill" ||
+		isHarnessControlTool(tool) ||
 		strings.HasPrefix(tool, "collaboration.") ||
 		strings.HasPrefix(tool, "collaboration_") ||
 		strings.HasPrefix(tool, "list_mcp_resource") ||
 		tool == "read_mcp_resource"
+}
+
+// isHarnessControlTool covers harness-native orchestration tools (agent
+// fan-out, deferred-tool schema search, task tracking, session and workspace
+// control). Scheduling, notification, and remote-trigger tools stay unlisted
+// on purpose: they carry host or outbound side effects, so the unknown-tool
+// fail-closed default is the correct classification until each gets an
+// explicit domain.
+func isHarnessControlTool(tool string) bool {
+	switch tool {
+	case "agent", "toolsearch", "sendmessage", "monitor", "lsp",
+		"taskcreate", "taskupdate", "tasklist", "taskget", "taskoutput", "taskstop",
+		"enterplanmode", "exitplanmode", "enterworktree", "exitworktree",
+		"endconversation":
+		return true
+	}
+	return false
 }
 
 func classifyControlAction(classification ActionClassification, tool string) ActionClassification {
@@ -630,11 +648,11 @@ func classifyControlAction(classification ActionClassification, tool string) Act
 	// A skill invocation loads local instructions. Every action the skill then
 	// takes is classified on its own, so holding the invocation adds an operator
 	// prompt without adding a boundary.
-	case actionLooksReadOnly(operation) || containsAnyMonitor(operation, "wait", "get_goal", "tool_search", "skill"):
+	case actionLooksReadOnly(operation) || containsAnyMonitor(operation, "wait", "get_goal", "tool_search", "skill", "taskoutput", "monitor", "lsp"):
 		classification.MutationClass = "read"
 		classification.Reversibility = "none"
 		classification.NeedsDestination = false
-	case containsAnyMonitor(operation, "update_plan", "request_user_input", "spawn_agent", "followup_task", "send_message", "interrupt_agent"):
+	case containsAnyMonitor(operation, "update_plan", "request_user_input", "spawn_agent", "followup_task", "send_message", "interrupt_agent", "agent", "taskcreate", "taskupdate", "taskstop", "sendmessage", "planmode", "worktree", "endconversation"):
 		classification.MutationClass = "local_reversible"
 		classification.Reversibility = "easy"
 		classification.NeedsDestination = false
