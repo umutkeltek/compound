@@ -153,6 +153,40 @@ compound workbench
 
 Wire your agent harness: see [Harness Wiring](docs/harness-wiring.md).
 
+### Inspect one governed execution
+
+This local loop creates work, claims it, runs a bounded harness command, and
+leaves the proof chain inspectable:
+
+```bash
+compound home init
+compound doctor
+
+compound work create \
+  --owner "quickstart" \
+  --predicate "the harness prints hello and records proof" \
+  --state ready \
+  --by "operator:me"
+
+# Copy the returned work_... id into the commands below.
+compound work claim <work_id> --by "operator:me"
+compound work advance <work_id> --to running --by "operator:me" --execute \
+  --harness os-harness-entrypoints \
+  --workspace <demo-repo> \
+  -- echo hello
+
+compound work show <work_id> --json
+compound run-attempt list --json
+compound workbench
+
+# Copy a transition id from the work JSON to inspect its exact evidence.
+compound transition show <transition_id>
+```
+
+A successful command moves the work to `verifying`. The work, RunAttempt,
+transcript, Receipt, and Transition remain linked so the next state is based on
+inspectable proof rather than the harness's claim that it succeeded.
+
 Optional local console on port 3777:
 
 ```bash

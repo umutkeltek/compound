@@ -101,23 +101,39 @@ The Codex adapter compiles the stable intentions into the current native
 `hooks.json` event schema and no-clobber merges Compound's bindings. Operators
 do not maintain that schema directly.
 
-## OpenCode / any CLI harness
+## OpenCode
 
-Any harness that can run a shell command at lifecycle boundaries can integrate:
+OpenCode is a context-injection and outcome-observation lane. Its current
+before-tool callback cannot deny a tool call, so it is **not** a mutation-control
+harness. Do not wire `pre-tool-use --enforce` for OpenCode and do not use it for
+mutation-gated execution. Use a mutation-ready Claude-family or Codex hook lane
+when Compound must block an action before it runs.
+
+Install the repo-owned adapter from the Compound checkout:
 
 ```sh
-# At session start:
-compound hook session-start --live --harness opencode
-
-# Before each tool call:
-compound hook pre-tool-use --enforce --live --harness opencode
-
-# At session end:
-compound hook session-end --live --harness opencode
+bun adapters/opencode/install.ts
+compound harness posture-plan --harness opencode
 ```
 
-The `--harness` flag tells Compound which harness is calling, so it can
-tailor the ContextPack (e.g., Codex gets different context than Claude Code).
+The installer registers only the native lifecycle it can honestly provide:
+
+```text
+chat.message        → context injection
+tool.execute.after  → outcome observation
+guard_mutation      → unsupported
+```
+
+It validates that posture before changing `opencode.jsonc` or the plugin.
+
+## Other CLI harnesses
+
+A custom harness may call Compound at lifecycle boundaries, but it is
+mutation-ready only if it can synchronously propagate Compound's deny result
+before tool execution. Model the harness attestation and inspect
+`compound harness posture-plan --harness <name>` before relying on it as a
+guard. Context injection and post-tool observation alone do not create a
+mutation-control boundary.
 
 ## What each hook does
 
