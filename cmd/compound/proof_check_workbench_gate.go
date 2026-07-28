@@ -1,10 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"time"
 
 	"compound/internal/home"
@@ -28,6 +28,10 @@ import (
 // (TestWorkbenchReportsOpenLoopsAndTerminalProof) — same shape, one lifecycle each, so the
 // numbers below are derived from the ledger, not chosen to match an observed run.
 func runProofCheckWorkbenchGate(repo string, step proofCheckStep) ([]byte, error) {
+	return runProofCheckWorkbenchGateContext(context.Background(), repo, step)
+}
+
+func runProofCheckWorkbenchGateContext(ctx context.Context, repo string, step proofCheckStep) ([]byte, error) {
 	tmpHome, err := os.MkdirTemp("", "compound-proofcheck-workbench-home-*")
 	if err != nil {
 		return nil, err
@@ -40,7 +44,7 @@ func runProofCheckWorkbenchGate(repo string, step proofCheckStep) ([]byte, error
 	if err := seedProofCheckWorkbenchHome(tmpHome, now); err != nil {
 		return nil, fmt.Errorf("seed proof-check workbench fixture: %w", err)
 	}
-	return runProofCheckWorkbenchInHome(repo, tmpHome, step)
+	return runProofCheckWorkbenchInHomeContext(ctx, repo, tmpHome, step)
 }
 
 // proofCheckWorkbenchActor is the fixture's single identity. Advance and Close are
@@ -116,7 +120,15 @@ func seedProofCheckWorkbenchHome(homePath string, now time.Time) error {
 // runProofCheckWorkbenchInHome is split out for the same reason as its memory-doctor
 // sibling: the negative controls need to hand this an intentionally damaged home.
 func runProofCheckWorkbenchInHome(repo, homePath string, step proofCheckStep) ([]byte, error) {
-	cmd := exec.Command(step.Command[0], step.Command[1:]...)
+	return runProofCheckWorkbenchInHomeContext(context.Background(), repo, homePath, step)
+}
+
+func runProofCheckWorkbenchInHomeContext(ctx context.Context, repo, homePath string, step proofCheckStep) ([]byte, error) {
+	executable, err := proofCheckRuntimeExecutable(step.Command[0])
+	if err != nil {
+		return nil, err
+	}
+	cmd := proofCheckCommandContext(ctx, executable, step.Command[1:]...)
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
 	output, err := cmd.CombinedOutput()

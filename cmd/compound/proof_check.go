@@ -759,13 +759,15 @@ func consoleBunSmokeCommand(script string) []string {
 //
 // Each runner owns its own fixture and its own assertions; see the per-gate files. The
 // dispatch above stays an if-chain for the gates whose signatures differ (redact needs a base
-// ref, gofmt and bun-tools take only the repo).
-var proofCheckHomeOwningGates = map[string]func(repo string, step proofCheckStep) ([]byte, error){
-	"codex-pretooluse-native-gate":        runProofCheckCodexPreToolUseNativeGate,
-	"memory-doctor":                       runProofCheckMemoryDoctorGate,
-	"workbench-projection":                runProofCheckWorkbenchGate,
-	"console-attention-consistency-smoke": runProofCheckConsoleAttentionGate,
-	"console-agents-consistency-smoke":    runProofCheckConsoleAgentsGate,
+// ref, gofmt and bun-tools take only the repo). Every home-owning runner receives the
+// certifying run's context: the process-group cancellation and inherited land-lease barrier
+// are part of the gate contract, not optional wiring each fixture may replace.
+var proofCheckHomeOwningGates = map[string]func(context.Context, string, proofCheckStep) ([]byte, error){
+	"codex-pretooluse-native-gate":        runProofCheckCodexPreToolUseNativeGateContext,
+	"memory-doctor":                       runProofCheckMemoryDoctorGateContext,
+	"workbench-projection":                runProofCheckWorkbenchGateContext,
+	"console-attention-consistency-smoke": runProofCheckConsoleAttentionGateContext,
+	"console-agents-consistency-smoke":    runProofCheckConsoleAgentsGateContext,
 }
 
 func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCheckStep {
@@ -791,12 +793,10 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 		output, err = runProofCheckRedactContext(ctx, repo, baseRef)
 	} else if step.Name == "gofmt" {
 		output, err = runProofCheckGofmtContext(ctx, repo)
-	} else if step.Name == "codex-pretooluse-native-gate" {
-		output, err = runProofCheckCodexPreToolUseNativeGateContext(ctx, repo, step)
 	} else if step.Name == "bun-tools-test" {
 		output, err = runProofCheckBunTools(ctx, repo)
 	} else if runner, owns := proofCheckHomeOwningGates[step.Name]; owns {
-		output, err = runner(repo, step)
+		output, err = runner(ctx, repo, step)
 	} else {
 		executable, executableErr := proofCheckRuntimeExecutable(step.Command[0])
 		if executableErr != nil {

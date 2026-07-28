@@ -1,10 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -29,6 +29,10 @@ import (
 // exists. That also makes the fixture home's `home doctor` report operational_hygiene.ok
 // = false — correct, and not something this gate asserts on.
 func runProofCheckConsoleAgentsGate(repo string, step proofCheckStep) ([]byte, error) {
+	return runProofCheckConsoleAgentsGateContext(context.Background(), repo, step)
+}
+
+func runProofCheckConsoleAgentsGateContext(ctx context.Context, repo string, step proofCheckStep) ([]byte, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -45,15 +49,23 @@ func runProofCheckConsoleAgentsGate(repo string, step proofCheckStep) ([]byte, e
 	if err := seedProofCheckWorkbenchHome(tmpHome, now); err != nil {
 		return nil, fmt.Errorf("seed proof-check agents fixture: %w", err)
 	}
-	return runProofCheckConsoleAgentsInHome(repo, tmpHome, exe, step)
+	return runProofCheckConsoleAgentsInHomeContext(ctx, repo, tmpHome, exe, step)
 }
 
 func runProofCheckConsoleAgentsInHome(repo, homePath, binary string, step proofCheckStep) ([]byte, error) {
-	evidence, err := proofCheckAgentsFixtureLeases(homePath, binary)
+	return runProofCheckConsoleAgentsInHomeContext(context.Background(), repo, homePath, binary, step)
+}
+
+func runProofCheckConsoleAgentsInHomeContext(ctx context.Context, repo, homePath, binary string, step proofCheckStep) ([]byte, error) {
+	evidence, err := proofCheckAgentsFixtureLeasesContext(ctx, homePath, binary)
 	if err != nil {
 		return evidence, err
 	}
-	cmd := exec.Command(step.Command[0], step.Command[1:]...)
+	executable, err := proofCheckRuntimeExecutable(step.Command[0])
+	if err != nil {
+		return evidence, err
+	}
+	cmd := proofCheckCommandContext(ctx, executable, step.Command[1:]...)
 	cmd.Dir = filepath.Join(repo, step.Dir)
 	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath, "COMPOUND_BIN="+binary)
 	output, err := cmd.CombinedOutput()
@@ -65,7 +77,11 @@ func runProofCheckConsoleAgentsInHome(repo, homePath, binary string, step proofC
 // a residue lease the two doors are compared while both are empty, which is the same vacuous
 // green isolation would otherwise have bought.
 func proofCheckAgentsFixtureLeases(homePath, binary string) ([]byte, error) {
-	cmd := exec.Command(binary, "executors", "--json")
+	return proofCheckAgentsFixtureLeasesContext(context.Background(), homePath, binary)
+}
+
+func proofCheckAgentsFixtureLeasesContext(ctx context.Context, homePath, binary string) ([]byte, error) {
+	cmd := proofCheckCommandContext(ctx, binary, "executors", "--json")
 	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

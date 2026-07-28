@@ -1,10 +1,22 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
+
+var proofCheckHomeOwningGateNames = []string{
+	"codex-pretooluse-native-gate",
+	"memory-doctor",
+	"workbench-projection",
+	"console-attention-consistency-smoke",
+	"console-agents-consistency-smoke",
+}
 
 // TestHomeOwningGatesAreAllRealGates keeps the declared set and the gate list from drifting
 // apart. A renamed or retired gate would otherwise leave a dangling runner that never fires —
@@ -22,6 +34,154 @@ func TestHomeOwningGatesAreAllRealGates(t *testing.T) {
 		if !names[name] {
 			t.Fatalf("proofCheckHomeOwningGates names %q, which is not a gate in proofCheckSteps — the runner is dead code and that gate now inherits the live home", name)
 		}
+	}
+	gotNames := make([]string, 0, len(proofCheckHomeOwningGates))
+	for _, name := range proofCheckHomeOwningGateNames {
+		if _, ok := proofCheckHomeOwningGates[name]; ok {
+			gotNames = append(gotNames, name)
+		}
+	}
+	if len(gotNames) != len(proofCheckHomeOwningGates) || !reflect.DeepEqual(gotNames, proofCheckHomeOwningGateNames) {
+		t.Fatalf("proofCheckHomeOwningGates inventory = %v, want exactly %v", gotNames, proofCheckHomeOwningGateNames)
+	}
+}
+
+// TestHomeOwningGateDispatchPassesCancelledContext protects the certifying runner's
+// cancellation path. These gates create their own homes, but their descendants still hold the
+// same admission barrier as every other proof step; a runner that swaps in Background would
+// outlive a revoked lease.
+func TestHomeOwningGateDispatchPassesCancelledContext(t *testing.T) {
+	original := proofCheckHomeOwningGates
+	t.Cleanup(func() { proofCheckHomeOwningGates = original })
+
+	received := make(map[string]error, len(proofCheckHomeOwningGateNames))
+	proofCheckHomeOwningGates = make(map[string]func(context.Context, string, proofCheckStep) ([]byte, error), len(proofCheckHomeOwningGateNames))
+	for _, name := range proofCheckHomeOwningGateNames {
+		name := name
+		proofCheckHomeOwningGates[name] = func(ctx context.Context, _ string, _ proofCheckStep) ([]byte, error) {
+			received[name] = ctx.Err()
+			return nil, ctx.Err()
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, name := range proofCheckHomeOwningGateNames {
+		result := runProofCheckStepContext(ctx, t.TempDir(), proofCheckStep{Name: name, Command: []string{"true"}}, "")
+		if result.Status != "failed" {
+			t.Fatalf("%s status = %q, want failed after cancellation", name, result.Status)
+		}
+		if received[name] != context.Canceled {
+			t.Fatalf("%s received context error %v, want context.Canceled", name, received[name])
+		}
+	}
+}
+
+// TestHomeOwningGateProductionPathsAreContextOnly makes the process-control contract
+// mechanically visible: raw exec.Command cannot attach either the process group or the
+// inheritable execution-barrier descriptor, and contextless runners can silently evade a
+// revoked certifying run.
+func TestHomeOwningGateProductionPathsAreContextOnly(t *testing.T) {
+	for _, name := range []string{
+		"proof_check_memory_gate.go",
+		"proof_check_workbench_gate.go",
+		"proof_check_console_attention_gate.go",
+		"proof_check_agents_gate.go",
+	} {
+		body, err := os.ReadFile(filepath.Join(testRepoRoot, "cmd", "compound", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "exec.Command(") {
+			t.Fatalf("%s still has a raw exec.Command production path", name)
+		}
+		if !strings.Contains(string(body), "proofCheckCommandContext(") {
+			t.Fatalf("%s has no proofCheckCommandContext subprocess path", name)
+		}
+	}
+}
+
+func TestProofCheckAttentionFixtureProbeCancellationKillsDescendant(t *testing.T) {
+	started, survivor, script := proofCheckGateCancellationScript(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := proofCheckAttentionFixtureGroupsContext(ctx, t.TempDir(), script)
+		done <- err
+	}()
+	proofCheckWaitForFile(t, started)
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("fixture probe survived cancellation")
+	}
+	if ctx.Err() != context.Canceled {
+		t.Fatalf("fixture probe context = %v, want context.Canceled", ctx.Err())
+	}
+	proofCheckAssertNoSurvivor(t, survivor)
+}
+
+func TestProofCheckConsoleSmokeCancellationKillsDescendant(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the compound binary")
+	}
+	repo, _ := proofCheckConsoleAttentionStep(t)
+	homePath := proofCheckWorkbenchGateHome(t, false)
+	started, survivor, script := proofCheckGateCancellationScript(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := runProofCheckConsoleAttentionInHomeContext(ctx, repo, homePath, compoundTestBinary(t), proofCheckStep{
+			Name: "console-attention-consistency-smoke", Command: []string{script},
+		})
+		done <- err
+	}()
+	proofCheckWaitForFile(t, started)
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("console smoke survived cancellation")
+	}
+	if ctx.Err() != context.Canceled {
+		t.Fatalf("console smoke context = %v, want context.Canceled", ctx.Err())
+	}
+	proofCheckAssertNoSurvivor(t, survivor)
+}
+
+func proofCheckGateCancellationScript(t *testing.T) (started, survivor, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	started = filepath.Join(dir, "started")
+	survivor = filepath.Join(dir, "survivor")
+	script = filepath.Join(dir, "gate")
+	body := "#!/bin/sh\nprintf started > \"$PROOF_CHECK_GATE_STARTED\"\n( sleep 0.35; printf survivor > \"$PROOF_CHECK_GATE_SURVIVOR\" ) &\nwhile :; do sleep 1; done\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PROOF_CHECK_GATE_STARTED", started)
+	t.Setenv("PROOF_CHECK_GATE_SURVIVOR", survivor)
+	return started, survivor, script
+}
+
+func proofCheckWaitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
+}
+
+func proofCheckAssertNoSurvivor(t *testing.T, path string) {
+	t.Helper()
+	time.Sleep(450 * time.Millisecond)
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("cancelled gate left a descendant survivor marker at %s", path)
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
 	}
 }
 

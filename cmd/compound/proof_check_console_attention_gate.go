@@ -1,10 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -30,6 +30,10 @@ import (
 // compared two empty lists. So the gate proves the fixture is non-vacuous itself, before
 // handing the home to the smoke.
 func runProofCheckConsoleAttentionGate(repo string, step proofCheckStep) ([]byte, error) {
+	return runProofCheckConsoleAttentionGateContext(context.Background(), repo, step)
+}
+
+func runProofCheckConsoleAttentionGateContext(ctx context.Context, repo string, step proofCheckStep) ([]byte, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -49,15 +53,23 @@ func runProofCheckConsoleAttentionGate(repo string, step proofCheckStep) ([]byte
 	if err := seedProofCheckWorkbenchHome(tmpHome, now); err != nil {
 		return nil, fmt.Errorf("seed proof-check attention fixture: %w", err)
 	}
-	return runProofCheckConsoleAttentionInHome(repo, tmpHome, exe, step)
+	return runProofCheckConsoleAttentionInHomeContext(ctx, repo, tmpHome, exe, step)
 }
 
 func runProofCheckConsoleAttentionInHome(repo, homePath, binary string, step proofCheckStep) ([]byte, error) {
-	evidence, err := proofCheckAttentionFixtureGroups(homePath, binary)
+	return runProofCheckConsoleAttentionInHomeContext(context.Background(), repo, homePath, binary, step)
+}
+
+func runProofCheckConsoleAttentionInHomeContext(ctx context.Context, repo, homePath, binary string, step proofCheckStep) ([]byte, error) {
+	evidence, err := proofCheckAttentionFixtureGroupsContext(ctx, homePath, binary)
 	if err != nil {
 		return evidence, err
 	}
-	cmd := exec.Command(step.Command[0], step.Command[1:]...)
+	executable, err := proofCheckRuntimeExecutable(step.Command[0])
+	if err != nil {
+		return evidence, err
+	}
+	cmd := proofCheckCommandContext(ctx, executable, step.Command[1:]...)
 	cmd.Dir = filepath.Join(repo, step.Dir)
 	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath, "COMPOUND_BIN="+binary)
 	output, err := cmd.CombinedOutput()
@@ -69,7 +81,11 @@ func runProofCheckConsoleAttentionInHome(repo, homePath, binary string, step pro
 // nothing to project — the smoke's own emptiness allowance is a courtesy to a genuinely
 // quiet operator, not a licence for a fixture to assert nothing.
 func proofCheckAttentionFixtureGroups(homePath, binary string) ([]byte, error) {
-	cmd := exec.Command(binary, "attention", "--json")
+	return proofCheckAttentionFixtureGroupsContext(context.Background(), homePath, binary)
+}
+
+func proofCheckAttentionFixtureGroupsContext(ctx context.Context, homePath, binary string) ([]byte, error) {
+	cmd := proofCheckCommandContext(ctx, binary, "attention", "--json")
 	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

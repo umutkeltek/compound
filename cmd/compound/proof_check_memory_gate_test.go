@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,37 @@ func proofCheckMemoryGateStep(t *testing.T) (repo string, step proofCheckStep) {
 		Name:     "memory-doctor",
 		Command:  []string{compoundTestBinary(t), "memory", "doctor", "--json"},
 		ProofRef: "memory-doctor",
+	}
+}
+
+func TestProofCheckMemoryDoctorUsesCandidateRuntimeInsteadOfPATHCompound(t *testing.T) {
+	repo, _ := proofCheckMemoryGateStep(t)
+	homePath := proofCheckMemoryGateHome(t, false)
+	candidate, err := proofCheckRuntimeExecutable("compound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCandidate, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate != wantCandidate {
+		t.Fatalf("compound candidate = %q, want current runtime %q", candidate, wantCandidate)
+	}
+	marker := filepath.Join(t.TempDir(), "stale-compound-ran")
+	binDir := t.TempDir()
+	stale := filepath.Join(binDir, "compound")
+	if err := os.WriteFile(stale, []byte("#!/bin/sh\nprintf stale > \"$COMPOUND_STALE_MARKER\"\nexit 97\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("COMPOUND_STALE_MARKER", marker)
+
+	_, _ = runProofCheckMemoryDoctorInHomeContext(context.Background(), repo, homePath, proofCheckStep{
+		Name: "memory-doctor", Command: []string{"compound", "memory", "doctor", "--json"},
+	})
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("stale PATH compound ran instead of the candidate runtime: %v", err)
 	}
 }
 

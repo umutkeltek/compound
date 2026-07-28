@@ -1,10 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"time"
 
 	"compound/internal/candidates"
@@ -31,6 +31,10 @@ import (
 const proofCheckMemoryFixtureEntity = "Compound"
 
 func runProofCheckMemoryDoctorGate(repo string, step proofCheckStep) ([]byte, error) {
+	return runProofCheckMemoryDoctorGateContext(context.Background(), repo, step)
+}
+
+func runProofCheckMemoryDoctorGateContext(ctx context.Context, repo string, step proofCheckStep) ([]byte, error) {
 	tmpHome, err := os.MkdirTemp("", "compound-proofcheck-mem-home-*")
 	if err != nil {
 		return nil, err
@@ -43,7 +47,7 @@ func runProofCheckMemoryDoctorGate(repo string, step proofCheckStep) ([]byte, er
 	if err := seedProofCheckMemoryHome(tmpHome, now); err != nil {
 		return nil, fmt.Errorf("seed proof-check memory fixture: %w", err)
 	}
-	return runProofCheckMemoryDoctorInHome(repo, tmpHome, step)
+	return runProofCheckMemoryDoctorInHomeContext(ctx, repo, tmpHome, step)
 }
 
 // seedProofCheckMemoryHome promotes one claim through the real public door (Capture →
@@ -91,7 +95,15 @@ func seedProofCheckMemoryHome(homePath string, now time.Time) error {
 // from runProofCheckMemoryDoctorGate so the negative controls can hand it a home whose
 // ledger has been corrupted on purpose, and prove this gate can still go red.
 func runProofCheckMemoryDoctorInHome(repo, homePath string, step proofCheckStep) ([]byte, error) {
-	cmd := exec.Command(step.Command[0], step.Command[1:]...)
+	return runProofCheckMemoryDoctorInHomeContext(context.Background(), repo, homePath, step)
+}
+
+func runProofCheckMemoryDoctorInHomeContext(ctx context.Context, repo, homePath string, step proofCheckStep) ([]byte, error) {
+	executable, err := proofCheckRuntimeExecutable(step.Command[0])
+	if err != nil {
+		return nil, err
+	}
+	cmd := proofCheckCommandContext(ctx, executable, step.Command[1:]...)
 	cmd.Dir = repo
 	// COMPOUND_MEM_ENGINE_BIN is cleared, not just left unset: the operator's shell may
 	// export it, and a wired engine would add a hop whose result depends on a rented
