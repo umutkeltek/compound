@@ -65,7 +65,7 @@ equal the selected model ID; a nonempty route alias must equal the selected prov
 identity; and the plan transport must equal a nonempty transport attested by its owner.
 `LaneTuple` resolution deliberately leaves selected transport empty because the lane projection declares
 `transport` executor-owned. Therefore current real `--execution-profile` delegation fails closed before readiness
-until the executor-owned profile-plan cutover supplies transport evidence; Compound never infers Switchback
+until the executor-owned profile-plan cutover supplies transport evidence; Compound never infers executor-owned
 transport from a route name or requested profile. Delegation without `--execution-profile` retains its legacy
 behavior.
 
