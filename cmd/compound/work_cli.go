@@ -168,7 +168,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"delegate": {
-		Usage:   "usage: compound work delegate <work_id> --harness <claude-zai|claude-qwen|claude-minimax|claude|codex> [--execution-profile ID [--role ROLE] [--capability-class CLASS] [--client-harness ID] [--transport ID] [--route-alias ALIAS] [--model MODEL] [--semantic-effort LEVEL] [--effort LEVEL] [--orchestration POLICY] [--privacy-ceiling LEVEL]] [--actor A] [--prompt <text> | -- <command> [args...]] [--workspace DIR] [--session NAME] [--expected-minutes N] [--confirm] [--dry-run] [--json]\n  OR:  compound work delegate status <work_id> [--json]\n  OR:  compound work delegate progress <work_id> --done N --empty N --failed N --remaining N [--json]\n  OR:  compound work delegate sweep <work_id> [--dry-run] [--json]",
+		Usage:   "usage: compound work delegate <work_id> --harness <claude-zai|claude-qwen|claude-minimax|claude|codex> [--execution-profile ID [--launch-profile ID] [--role ROLE] [--capability-class CLASS] [--client-harness ID] [--transport ID] [--route-alias ALIAS] [--model MODEL] [--semantic-effort LEVEL] [--effort LEVEL] [--orchestration POLICY] [--privacy-ceiling LEVEL]] [--actor A] [--prompt <text> | -- <command> [args...]] [--workspace DIR] [--session NAME] [--expected-minutes N] [--confirm] [--dry-run] [--json]\n  OR:  compound work delegate status <work_id> [--json]\n  OR:  compound work delegate progress <work_id> --done N --empty N --failed N --remaining N [--json]\n  OR:  compound work delegate sweep <work_id> [--dry-run] [--json]",
 		Example: "compound work delegate work_abc123 --harness claude-zai --prompt \"follow the surprising thread\"",
 	},
 	"steer": {

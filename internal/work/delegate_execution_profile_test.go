@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -75,6 +77,25 @@ func testDelegateExecutionProfileResolutionForTuple(
 
 func testCompatibleDelegateExecutionProfileResolution(plan *DelegateExecutionProfilePlan) *DelegateExecutionProfileResolution {
 	return testDelegateExecutionProfileResolution(plan, "claude_code", "claude_code", DelegateExecutionProfileCompatible)
+}
+
+func testCompatibleDelegateLaunchProfileResolution() *DelegateLaunchProfileResolution {
+	snapshot := json.RawMessage(`{"authority_revision":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","capture_mode":"segmented_full_wire","client_profile_id":"claude-minimax-default","harness":"claude-code","id":"claude-minimax","owner_transport":"tap","provider_lane":"minimax","requested_effort":"xhigh","requested_model":"fixture/model","revision":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","route":"auto/build","schema_version":"compound.delegate_launch_profile_plan.v0.1","source_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_schema":"switchback/launch-profile-plan@1","transport_id":"switchback"}`)
+	return &DelegateLaunchProfileResolution{
+		Snapshot: snapshot,
+		Compatibility: DelegateLaunchProfileCompatibility{
+			Disposition:           DelegateLaunchProfileCompatible,
+			SelectedHarness:       "claude_code",
+			SelectedLaneID:        "claude_code",
+			SelectedModelID:       "fixture/model",
+			SelectedProviderRoute: "auto/build",
+			SelectedTransportID:   "switchback",
+			RequestedNativeEffort: "xhigh",
+			PlanID:                "claude-minimax",
+			ClientProfileID:       "claude-minimax-default",
+			Revision:              "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+	}
 }
 
 func installTestDelegateExecutionProfileHarness(t *testing.T) {
@@ -751,6 +772,473 @@ func TestDelegateExecutionProfileRoundTripsBindingReadinessAndRunAttempt(t *test
 	}
 	if attempt.ModelID != "" || attempt.ProviderRoute != "" {
 		t.Fatalf("intent stamped observed fields: %+v", attempt)
+	}
+}
+
+func TestDelegateExecutionProfilePassesExactWorkAndAttemptIdentityToSupervisedLaunch(t *testing.T) {
+	installTestDelegateExecutionProfileHarness(t)
+	originalProfileResolver := DelegateExecutionProfileResolver
+	originalReadiness := DelegateHarnessReadiness
+	originalCapacity := LaneCapacityGuard
+	defer func() {
+		DelegateExecutionProfileResolver = originalProfileResolver
+		DelegateHarnessReadiness = originalReadiness
+		LaneCapacityGuard = originalCapacity
+	}()
+
+	plan := testDelegateExecutionProfilePlan()
+	DelegateExecutionProfileResolver = func(DelegateExecutionProfileResolveRequest) (*DelegateExecutionProfileResolution, error) {
+		return testCompatibleDelegateExecutionProfileResolution(plan), nil
+	}
+	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+		return DelegateHarnessReadinessResult{Ready: true}, nil
+	}
+	LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
+
+	store := newStore(t)
+	workID := prepareClaimedWork(t, store, "codex", "", "")
+	runner := newFakeRunner()
+	result, err := store.Delegate(DelegateOptions{
+		WorkID:           workID,
+		Harness:          "claude_code",
+		Command:          "claude",
+		Workspace:        t.TempDir(),
+		ExecutionProfile: DelegateExecutionProfileIntent{ProfileID: plan.ProfileID},
+		Now:              fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "spawned" || result.RunAttemptID == "" {
+		t.Fatalf("delegate did not spawn one governed attempt: %+v", result)
+	}
+	if len(runner.creates) != 1 {
+		t.Fatalf("create calls = %d, want 1", len(runner.creates))
+	}
+	environment := runner.creates[0].Environment
+	for key, want := range map[string]string{
+		"COMPOUND_WORK_ID":                    workID,
+		"COMPOUND_RUN_ATTEMPT_ID":             result.RunAttemptID,
+		"COMPOUND_EXECUTION_PROFILE_PLAN_ID":  plan.ID,
+		"COMPOUND_EXECUTION_PROFILE_REVISION": result.Readiness.ExecutionProfile.Revision,
+	} {
+		if got := environment[key]; got != want {
+			t.Fatalf("launch environment %s = %q, want %q; environment=%+v", key, got, want, environment)
+		}
+	}
+}
+
+func TestDelegateLaunchProfileWithoutOwnerResolverRefusesBeforeReadinessCapacityMintOrCreate(t *testing.T) {
+	installTestDelegateExecutionProfileHarness(t)
+	originalProfileResolver := DelegateExecutionProfileResolver
+	originalReadiness := DelegateHarnessReadiness
+	originalCapacity := LaneCapacityGuard
+	defer func() {
+		DelegateExecutionProfileResolver = originalProfileResolver
+		DelegateHarnessReadiness = originalReadiness
+		LaneCapacityGuard = originalCapacity
+	}()
+
+	plan := testDelegateExecutionProfilePlan()
+	DelegateExecutionProfileResolver = func(DelegateExecutionProfileResolveRequest) (*DelegateExecutionProfileResolution, error) {
+		return testCompatibleDelegateExecutionProfileResolution(plan), nil
+	}
+	readinessCalls := 0
+	capacityCalls := 0
+	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+		readinessCalls++
+		return DelegateHarnessReadinessResult{Ready: true}, nil
+	}
+	LaneCapacityGuard = func(LaneCapacityGuardRequest) (LaneCapacityGuardResult, error) {
+		capacityCalls++
+		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
+	}
+
+	store := newStore(t)
+	workID := prepareClaimedWork(t, store, "codex", "", "")
+	before, err := runattempt.Open(store.home).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	result, err := store.Delegate(DelegateOptions{
+		WorkID:    workID,
+		Harness:   "claude_code",
+		Command:   "claude",
+		Workspace: t.TempDir(),
+		ExecutionProfile: DelegateExecutionProfileIntent{
+			ProfileID:       plan.ProfileID,
+			LaunchProfileID: "claude-minimax",
+		},
+		Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Refusal == nil || result.Refusal.Reason != "launch_profile_unresolved" {
+		t.Fatalf("missing owner resolver did not fail closed: %+v", result)
+	}
+	after, err := runattempt.Open(store.home).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readinessCalls != 0 || capacityCalls != 0 || len(runner.creates) != 0 || len(after) != len(before) {
+		t.Fatalf(
+			"missing owner resolver crossed mutation boundary: readiness=%d capacity=%d creates=%d attempts=%d->%d",
+			readinessCalls,
+			capacityCalls,
+			len(runner.creates),
+			len(before),
+			len(after),
+		)
+	}
+}
+
+func TestDelegateLaunchProfileRejectsOwnerDriftOrMissingClientBeforeReadinessCapacityMintOrCreate(t *testing.T) {
+	tests := []struct {
+		name     string
+		resolver DelegateLaunchProfileResolverFunc
+	}{
+		{
+			name: "generated artifact drift",
+			resolver: func(DelegateLaunchProfileResolveRequest) (*DelegateLaunchProfileResolution, error) {
+				return nil, errors.New("owner generated artifacts drift")
+			},
+		},
+		{
+			name: "missing client profile",
+			resolver: func(DelegateLaunchProfileResolveRequest) (*DelegateLaunchProfileResolution, error) {
+				resolution := testCompatibleDelegateLaunchProfileResolution()
+				resolution.Snapshot = json.RawMessage(`{"authority_revision":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","capture_mode":"segmented_full_wire","client_profile_id":"","harness":"claude-code","id":"claude-minimax","owner_transport":"tap","provider_lane":"minimax","requested_effort":"xhigh","requested_model":"fixture/model","revision":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","route":"auto/build","schema_version":"compound.delegate_launch_profile_plan.v0.1","source_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_schema":"switchback/launch-profile-plan@1","transport_id":"switchback"}`)
+				return resolution, nil
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			installTestDelegateExecutionProfileHarness(t)
+			originalProfileResolver := DelegateExecutionProfileResolver
+			originalLaunchResolver := DelegateLaunchProfileResolver
+			originalReadiness := DelegateHarnessReadiness
+			originalCapacity := LaneCapacityGuard
+			defer func() {
+				DelegateExecutionProfileResolver = originalProfileResolver
+				DelegateLaunchProfileResolver = originalLaunchResolver
+				DelegateHarnessReadiness = originalReadiness
+				LaneCapacityGuard = originalCapacity
+			}()
+
+			plan := testDelegateExecutionProfilePlan()
+			DelegateExecutionProfileResolver = func(DelegateExecutionProfileResolveRequest) (*DelegateExecutionProfileResolution, error) {
+				return testCompatibleDelegateExecutionProfileResolution(plan), nil
+			}
+			DelegateLaunchProfileResolver = tc.resolver
+			readinessCalls := 0
+			capacityCalls := 0
+			DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+				readinessCalls++
+				return DelegateHarnessReadinessResult{Ready: true}, nil
+			}
+			LaneCapacityGuard = func(LaneCapacityGuardRequest) (LaneCapacityGuardResult, error) {
+				capacityCalls++
+				return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
+			}
+
+			store := newStore(t)
+			workID := prepareClaimedWork(t, store, "codex", "", "")
+			before, err := runattempt.Open(store.home).List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner := newFakeRunner()
+			result, err := store.Delegate(DelegateOptions{
+				WorkID:    workID,
+				Harness:   "claude_code",
+				Command:   "claude",
+				Workspace: t.TempDir(),
+				ExecutionProfile: DelegateExecutionProfileIntent{
+					ProfileID:       plan.ProfileID,
+					LaunchProfileID: "claude-minimax",
+				},
+				Now: fixedNow,
+			}, runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Refusal == nil || result.Refusal.Reason != "launch_profile_unresolved" {
+				t.Fatalf("invalid owner proof did not fail closed: %+v", result)
+			}
+			after, err := runattempt.Open(store.home).List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if readinessCalls != 0 || capacityCalls != 0 || len(runner.creates) != 0 || len(after) != len(before) {
+				t.Fatalf(
+					"invalid owner proof crossed mutation boundary: readiness=%d capacity=%d creates=%d attempts=%d->%d",
+					readinessCalls,
+					capacityCalls,
+					len(runner.creates),
+					len(before),
+					len(after),
+				)
+			}
+		})
+	}
+}
+
+func TestDelegateLaunchProfileBindsOwnerPlanToEnvironmentAndRunAttempt(t *testing.T) {
+	installTestDelegateExecutionProfileHarness(t)
+	originalProfileResolver := DelegateExecutionProfileResolver
+	originalLaunchResolver := DelegateLaunchProfileResolver
+	originalReadiness := DelegateHarnessReadiness
+	originalCapacity := LaneCapacityGuard
+	defer func() {
+		DelegateExecutionProfileResolver = originalProfileResolver
+		DelegateLaunchProfileResolver = originalLaunchResolver
+		DelegateHarnessReadiness = originalReadiness
+		LaneCapacityGuard = originalCapacity
+	}()
+
+	plan := testDelegateExecutionProfilePlan()
+	DelegateExecutionProfileResolver = func(DelegateExecutionProfileResolveRequest) (*DelegateExecutionProfileResolution, error) {
+		return testCompatibleDelegateExecutionProfileResolution(plan), nil
+	}
+	launchResolverCalls := 0
+	DelegateLaunchProfileResolver = func(req DelegateLaunchProfileResolveRequest) (*DelegateLaunchProfileResolution, error) {
+		launchResolverCalls++
+		if req.ProfileID != "claude-minimax" ||
+			req.SelectedHarness != "claude_code" ||
+			req.SelectedLaneID != "claude_code" ||
+			req.SelectedModelID != "fixture/model" ||
+			req.SelectedProviderRoute != "auto/build" ||
+			req.SelectedTransportID != "switchback" ||
+			req.RequestedNativeEffort != "xhigh" {
+			t.Fatalf("launch profile owner request lost selected tuple: %+v", req)
+		}
+		return testCompatibleDelegateLaunchProfileResolution(), nil
+	}
+	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+		return DelegateHarnessReadinessResult{Ready: true}, nil
+	}
+	LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
+
+	store := newStore(t)
+	workID := prepareClaimedWork(t, store, "codex", "", "")
+	runner := newFakeRunner()
+	result, err := store.Delegate(DelegateOptions{
+		WorkID:    workID,
+		Harness:   "claude_code",
+		Command:   "claude",
+		Workspace: t.TempDir(),
+		ExecutionProfile: DelegateExecutionProfileIntent{
+			ProfileID:       plan.ProfileID,
+			LaunchProfileID: "claude-minimax",
+		},
+		Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "spawned" || launchResolverCalls != 2 {
+		t.Fatalf("launch profile was not admitted and revalidated: calls=%d result=%+v", launchResolverCalls, result)
+	}
+	if len(runner.creates) != 1 {
+		t.Fatalf("create calls = %d, want 1", len(runner.creates))
+	}
+	for key, want := range map[string]string{
+		"SB_LAUNCH_PROFILE_ID":       "claude-minimax",
+		"SB_LAUNCH_PROFILE_REVISION": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"SB_LAUNCH_CLIENT_PROFILE":   "claude-minimax-default",
+		"COMPOUND_CLIENT_PROFILE_ID": "claude-minimax-default",
+	} {
+		if got := runner.creates[0].Environment[key]; got != want {
+			t.Fatalf("launch environment %s = %q, want %q; environment=%+v", key, got, want, runner.creates[0].Environment)
+		}
+	}
+	resultValue := reflect.ValueOf(result)
+	launchProfile := resultValue.FieldByName("LaunchProfile")
+	if !launchProfile.IsValid() || launchProfile.IsNil() {
+		t.Fatalf("result lost launch profile proof: %+v", result)
+	}
+	attempt, err := runattempt.Open(store.home).Get(result.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptValue := reflect.ValueOf(attempt)
+	for field, want := range map[string]string{
+		"LaunchProfileID":          "claude-minimax",
+		"LaunchProfileRevision":    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"RequestedClientProfileID": "claude-minimax-default",
+	} {
+		value := attemptValue.FieldByName(field)
+		if !value.IsValid() || value.String() != want {
+			t.Fatalf("RunAttempt %s = %v, want %q; attempt=%+v", field, value, want, attempt)
+		}
+	}
+}
+
+func TestDelegateLaunchProfileSuppliesExecutorOwnedTransportAfterHarnessResolution(t *testing.T) {
+	installTestDelegateExecutionProfileHarnessTuple(t, "fixture/model", "auto/build", "")
+	originalProfileResolver := DelegateExecutionProfileResolver
+	originalLaunchResolver := DelegateLaunchProfileResolver
+	originalReadiness := DelegateHarnessReadiness
+	originalCapacity := LaneCapacityGuard
+	defer func() {
+		DelegateExecutionProfileResolver = originalProfileResolver
+		DelegateLaunchProfileResolver = originalLaunchResolver
+		DelegateHarnessReadiness = originalReadiness
+		LaneCapacityGuard = originalCapacity
+	}()
+
+	plan := testDelegateExecutionProfilePlan()
+	DelegateExecutionProfileResolver = func(req DelegateExecutionProfileResolveRequest) (*DelegateExecutionProfileResolution, error) {
+		if req.SelectedTransportID != "" {
+			t.Fatalf("harness resolver guessed executor transport: %+v", req)
+		}
+		return testDelegateExecutionProfileResolutionForTuple(
+			plan,
+			"claude_code",
+			"claude_code",
+			"fixture/model",
+			"auto/build",
+			"",
+			DelegateExecutionProfileCompatible,
+		), nil
+	}
+	DelegateLaunchProfileResolver = func(req DelegateLaunchProfileResolveRequest) (*DelegateLaunchProfileResolution, error) {
+		if req.SelectedTransportID != "switchback" {
+			t.Fatalf("launch resolver did not receive the execution plan transport family: %+v", req)
+		}
+		return testCompatibleDelegateLaunchProfileResolution(), nil
+	}
+	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+		return DelegateHarnessReadinessResult{Ready: true}, nil
+	}
+	LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
+
+	store := newStore(t)
+	workID := prepareClaimedWork(t, store, "codex", "", "")
+	result, err := store.Delegate(DelegateOptions{
+		WorkID:    workID,
+		Harness:   "claude_code",
+		Command:   "claude",
+		Workspace: t.TempDir(),
+		ExecutionProfile: DelegateExecutionProfileIntent{
+			ProfileID:       plan.ProfileID,
+			LaunchProfileID: "claude-minimax",
+		},
+		Now: fixedNow,
+	}, newFakeRunner())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "spawned" || result.LaunchProfile == nil ||
+		result.LaunchProfile.TransportID != "switchback" ||
+		result.LaunchProfile.OwnerTransport != "tap" {
+		t.Fatalf("executor-owned transport did not complete the delegated tuple: %+v", result)
+	}
+}
+
+func TestRecoverBoundSessionRejectsTamperedLaunchProfileProof(t *testing.T) {
+	installTestDelegateExecutionProfileHarness(t)
+	tests := []struct {
+		name   string
+		mutate func(*delegateEvent)
+	}{
+		{
+			name: "plan snapshot",
+			mutate: func(event *delegateEvent) {
+				event.LaunchProfile.Snapshot = json.RawMessage(`{"schema_version":"compound.delegate_launch_profile_plan.v0.1"}`)
+			},
+		},
+		{
+			name: "plan projection",
+			mutate: func(event *delegateEvent) {
+				event.LaunchProfile.ClientProfileID = "tampered-client-profile"
+			},
+		},
+		{
+			name: "readiness snapshot",
+			mutate: func(event *delegateEvent) {
+				event.Readiness.LaunchProfile.Snapshot = json.RawMessage(`{"schema_version":"compound.delegate_launch_profile_plan.v0.1"}`)
+			},
+		},
+		{
+			name: "readiness digest",
+			mutate: func(event *delegateEvent) {
+				event.Readiness.LaunchProfile.Revision = "sha256:tampered"
+			},
+		},
+		{
+			name: "readiness ref",
+			mutate: func(event *delegateEvent) {
+				event.Readiness.LaunchProfile.Ref = "launch-profile://tampered"
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			originalProfileResolver := DelegateExecutionProfileResolver
+			originalLaunchResolver := DelegateLaunchProfileResolver
+			originalReadiness := DelegateHarnessReadiness
+			originalCapacity := LaneCapacityGuard
+			defer func() {
+				DelegateExecutionProfileResolver = originalProfileResolver
+				DelegateLaunchProfileResolver = originalLaunchResolver
+				DelegateHarnessReadiness = originalReadiness
+				LaneCapacityGuard = originalCapacity
+			}()
+
+			plan := testDelegateExecutionProfilePlan()
+			DelegateExecutionProfileResolver = func(DelegateExecutionProfileResolveRequest) (*DelegateExecutionProfileResolution, error) {
+				return testCompatibleDelegateExecutionProfileResolution(plan), nil
+			}
+			DelegateLaunchProfileResolver = func(DelegateLaunchProfileResolveRequest) (*DelegateLaunchProfileResolution, error) {
+				return testCompatibleDelegateLaunchProfileResolution(), nil
+			}
+			DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+				return DelegateHarnessReadinessResult{Ready: true}, nil
+			}
+			LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
+
+			store := newStore(t)
+			workID := prepareClaimedWork(t, store, "codex", "", "")
+			result, err := store.Delegate(DelegateOptions{
+				WorkID:    workID,
+				Harness:   "claude_code",
+				Command:   "claude",
+				Workspace: t.TempDir(),
+				ExecutionProfile: DelegateExecutionProfileIntent{
+					ProfileID:       plan.ProfileID,
+					LaunchProfileID: "claude-minimax",
+				},
+				Now: fixedNow,
+			}, newFakeRunner())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != "spawned" {
+				t.Fatalf("fixture delegate did not spawn: %+v", result)
+			}
+
+			var persisted delegateEvent
+			if err := store.readEventJSON(result.EventID, &persisted); err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(&persisted)
+			if err := store.events.Remove(result.EventID); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.writeEventJSON(result.EventID, persisted); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.RecoverBoundSession(workID); err == nil ||
+				!strings.Contains(err.Error(), "launch profile") {
+				t.Fatalf("tampered %s recovery error = %v", tc.name, err)
+			}
+		})
 	}
 }
 

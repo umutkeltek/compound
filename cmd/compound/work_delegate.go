@@ -360,7 +360,7 @@ func parseDelegateCLI(args []string) (delegateCLIOptions, error) {
 		case "--harness", "--actor", "--session", "--prompt", "--workspace", "--expected-minutes",
 			"--execution-profile", "--role", "--capability-class", "--client-harness",
 			"--transport", "--route-alias", "--model", "--semantic-effort", "--effort",
-			"--orchestration", "--privacy-ceiling":
+			"--orchestration", "--privacy-ceiling", "--launch-profile":
 			value, err := readValue()
 			if err != nil {
 				return out, err
@@ -378,6 +378,8 @@ func parseDelegateCLI(args []string) (delegateCLIOptions, error) {
 				out.workspace = value
 			case "--execution-profile":
 				out.executionProfile.ProfileID = value
+			case "--launch-profile":
+				out.executionProfile.LaunchProfileID = value
 			case "--role":
 				out.executionProfile.Role = value
 			case "--capability-class":
@@ -426,7 +428,8 @@ func parseDelegateCLI(args []string) (delegateCLIOptions, error) {
 		return out, errors.New("delegate requires --harness")
 	}
 	if strings.TrimSpace(out.executionProfile.ProfileID) == "" &&
-		(strings.TrimSpace(out.executionProfile.Role) != "" ||
+		(strings.TrimSpace(out.executionProfile.LaunchProfileID) != "" ||
+			strings.TrimSpace(out.executionProfile.Role) != "" ||
 			strings.TrimSpace(out.executionProfile.CapabilityClass) != "" ||
 			strings.TrimSpace(out.executionProfile.ClientHarnessID) != "" ||
 			strings.TrimSpace(out.executionProfile.TransportID) != "" ||

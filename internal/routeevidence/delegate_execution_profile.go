@@ -30,10 +30,16 @@ func resolveDelegateExecutionProfile(req work.DelegateExecutionProfileResolveReq
 		return nil, fmt.Errorf("marshal execution profile plan snapshot: %w", err)
 	}
 	disposition := work.DelegateExecutionProfileIncompatible
+	transportCompatible := delegateExecutionProfileTransportCompatible(plan.TransportID, req.SelectedTransportID)
+	if strings.TrimSpace(req.SelectedTransportID) == "" &&
+		strings.TrimSpace(req.Intent.LaunchProfileID) != "" &&
+		strings.TrimSpace(plan.TransportID) == "switchback" {
+		transportCompatible = true
+	}
 	if delegateExecutionProfileHarnessesCompatible(req.SelectedHarness, req.SelectedLaneID, plan.ClientHarnessID) &&
 		delegateExecutionProfileModelCompatible(plan.ModelConstraint, req.SelectedModelID) &&
 		delegateExecutionProfileRouteCompatible(plan.RouteAlias, req.SelectedProviderRoute, req.SelectedModelID) &&
-		delegateExecutionProfileTransportCompatible(plan.TransportID, req.SelectedTransportID) {
+		transportCompatible {
 		disposition = work.DelegateExecutionProfileCompatible
 	}
 	return &work.DelegateExecutionProfileResolution{

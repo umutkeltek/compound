@@ -1,0 +1,263 @@
+package main
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"compound/internal/work"
+)
+
+func testLaneLaunchProfilePlan() []byte {
+	return []byte(`{
+		"schema": "switchback/launch-profile-plan@1",
+		"authority": {
+			"owner": "switchback",
+			"compound_role": "consumer",
+			"projection": "non_secret_profile_conformance"
+		},
+		"authority_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"profile": {
+			"id": "claude-minimax",
+			"provider_lane": "minimax",
+			"harness_preset": "claude-full",
+			"capture_policy": "full-wire",
+			"profile_label": "claude-minimax",
+			"client_profile": "claude-minimax-default",
+			"harness": "claude-code",
+			"route": "minimax/minimax-m3",
+			"requested_model": "minimax/minimax-m3",
+			"requested_effort": "xhigh",
+			"transport": "tap",
+			"capture": {
+				"id": "full-wire",
+				"mode": "segmented_full_wire"
+			},
+			"launch_args": ["--synthetic"],
+			"wrappers": ["claude-minimax"],
+			"targets": ["synthetic-target"]
+		},
+		"changed": false,
+		"artifacts": [{
+			"kind": "profile_conformance",
+			"path": "/synthetic/private/profile.json",
+			"exists": true,
+			"changed": false,
+			"current_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+			"desired_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+			"mode": "0600",
+			"actual_mode": "0600",
+			"mode_matches": true
+		}]
+	}`)
+}
+
+func testLaunchProfileResolveRequest() work.DelegateLaunchProfileResolveRequest {
+	return work.DelegateLaunchProfileResolveRequest{
+		ProfileID:             "claude-minimax",
+		SelectedHarness:       "claude_code",
+		SelectedLaneID:        "claude_code",
+		SelectedModelID:       "minimax/minimax-m3",
+		SelectedProviderRoute: "minimax/minimax-m3",
+		SelectedTransportID:   "switchback",
+		RequestedNativeEffort: "xhigh",
+	}
+}
+
+func TestNormalizeDelegateLaunchProfilePlanConsumesSafeOwnerProjection(t *testing.T) {
+	raw := testLaneLaunchProfilePlan()
+	resolution, err := normalizeDelegateLaunchProfilePlan(raw, testLaunchProfileResolveRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Compatibility.Disposition != work.DelegateLaunchProfileCompatible {
+		t.Fatalf("compatible owner plan disposition = %q", resolution.Compatibility.Disposition)
+	}
+
+	var snapshot map[string]any
+	if err := json.Unmarshal(resolution.Snapshot, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(raw)
+	if got, want := snapshot["source_digest"], "sha256:"+hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("source digest = %v, want %s", got, want)
+	}
+	for _, required := range []string{
+		"schema_version",
+		"source_schema",
+		"source_digest",
+		"authority_revision",
+		"revision",
+		"id",
+		"harness",
+		"provider_lane",
+		"route",
+		"requested_model",
+		"requested_effort",
+		"transport_id",
+		"owner_transport",
+		"client_profile_id",
+		"capture_mode",
+	} {
+		value, ok := snapshot[required].(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			t.Fatalf("normalized snapshot lost %s: %s", required, resolution.Snapshot)
+		}
+	}
+	if snapshot["transport_id"] != "switchback" || snapshot["owner_transport"] != "tap" {
+		t.Fatalf("transport family/subtype were not preserved exactly: %s", resolution.Snapshot)
+	}
+	for _, forbidden := range []string{
+		"artifacts",
+		"path",
+		"launch_args",
+		"targets",
+		"wrappers",
+		"harness_preset",
+		"profile_label",
+	} {
+		if bytes.Contains(resolution.Snapshot, []byte(forbidden)) {
+			t.Fatalf("normalized snapshot copied owner-private field %q: %s", forbidden, resolution.Snapshot)
+		}
+	}
+	if bytes.Contains(resolution.Snapshot, []byte("/synthetic/private")) {
+		t.Fatalf("normalized snapshot copied an owner path: %s", resolution.Snapshot)
+	}
+}
+
+func TestNormalizeDelegateLaunchProfilePlanRefusesUntrustedOrDriftedOwnerOutput(t *testing.T) {
+	tests := []struct {
+		name    string
+		replace func(map[string]any)
+		want    string
+	}{
+		{
+			name: "source schema",
+			replace: func(plan map[string]any) {
+				plan["schema"] = "switchback/launch-profile-plan@2"
+			},
+			want: "schema",
+		},
+		{
+			name: "authority owner",
+			replace: func(plan map[string]any) {
+				plan["authority"].(map[string]any)["owner"] = "other"
+			},
+			want: "authority",
+		},
+		{
+			name: "aggregate drift",
+			replace: func(plan map[string]any) {
+				plan["changed"] = true
+			},
+			want: "drift",
+		},
+		{
+			name: "missing artifact",
+			replace: func(plan map[string]any) {
+				plan["artifacts"].([]any)[0].(map[string]any)["exists"] = false
+			},
+			want: "artifact",
+		},
+		{
+			name: "artifact content drift",
+			replace: func(plan map[string]any) {
+				plan["artifacts"].([]any)[0].(map[string]any)["changed"] = true
+			},
+			want: "artifact",
+		},
+		{
+			name: "artifact mode drift",
+			replace: func(plan map[string]any) {
+				plan["artifacts"].([]any)[0].(map[string]any)["mode_matches"] = false
+			},
+			want: "artifact",
+		},
+		{
+			name: "artifact digest drift",
+			replace: func(plan map[string]any) {
+				plan["artifacts"].([]any)[0].(map[string]any)["current_sha256"] = "sha256:" + strings.Repeat("d", 64)
+			},
+			want: "artifact",
+		},
+		{
+			name: "missing client profile",
+			replace: func(plan map[string]any) {
+				plan["profile"].(map[string]any)["client_profile"] = ""
+			},
+			want: "client_profile",
+		},
+		{
+			name: "unknown owner transport",
+			replace: func(plan map[string]any) {
+				plan["profile"].(map[string]any)["transport"] = "mystery"
+			},
+			want: "transport",
+		},
+		{
+			name: "non-capturing profile",
+			replace: func(plan map[string]any) {
+				plan["profile"].(map[string]any)["capture"].(map[string]any)["mode"] = "metadata_only"
+			},
+			want: "capture_mode",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var plan map[string]any
+			if err := json.Unmarshal(testLaneLaunchProfilePlan(), &plan); err != nil {
+				t.Fatal(err)
+			}
+			tc.replace(plan)
+			raw, err := json.Marshal(plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := normalizeDelegateLaunchProfilePlan(raw, testLaunchProfileResolveRequest()); err == nil ||
+				!strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("normalize error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeDelegateLaunchProfilePlanMarksTupleMismatchIncompatible(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*work.DelegateLaunchProfileResolveRequest)
+	}{
+		{name: "harness", mutate: func(req *work.DelegateLaunchProfileResolveRequest) {
+			req.SelectedHarness = "codex"
+		}},
+		{name: "model", mutate: func(req *work.DelegateLaunchProfileResolveRequest) {
+			req.SelectedModelID = "other/model"
+		}},
+		{name: "route", mutate: func(req *work.DelegateLaunchProfileResolveRequest) {
+			req.SelectedProviderRoute = "other/route"
+		}},
+		{name: "transport", mutate: func(req *work.DelegateLaunchProfileResolveRequest) {
+			req.SelectedTransportID = "native"
+		}},
+		{name: "effort", mutate: func(req *work.DelegateLaunchProfileResolveRequest) {
+			req.RequestedNativeEffort = "medium"
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := testLaunchProfileResolveRequest()
+			tc.mutate(&req)
+			resolution, err := normalizeDelegateLaunchProfilePlan(testLaneLaunchProfilePlan(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolution.Compatibility.Disposition != work.DelegateLaunchProfileIncompatible {
+				t.Fatalf("tuple mismatch disposition = %q, want incompatible", resolution.Compatibility.Disposition)
+			}
+		})
+	}
+}

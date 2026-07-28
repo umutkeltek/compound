@@ -73,6 +73,14 @@ func (e *delegateExecutionProfileIncompatibleError) Error() string {
 	return "delegate execution profile is incompatible: " + e.detail
 }
 
+type delegateLaunchProfileIncompatibleError struct {
+	detail string
+}
+
+func (e *delegateLaunchProfileIncompatibleError) Error() string {
+	return "delegate launch profile is incompatible: " + e.detail
+}
+
 // SessionStatus captures the supervised pane's liveness and (when
 // available) its exit code/signal. The orchestrator treats this -- not bare
 // Has -- as the source of truth for whether a previously-spawned session
@@ -104,6 +112,13 @@ type SessionRunner interface {
 	SendKeys(name, text string, enter bool) error
 	Kill(name string) error
 	AttachArgv(name string) []string
+}
+
+// SessionEnvironmentRunner is the supervised-launch extension used when a
+// delegated run carries canonical execution identity. Values remain argv/data
+// at the runner boundary and are never rendered into a shell command.
+type SessionEnvironmentRunner interface {
+	CreateWithEnvironment(name, dir, command string, args []string, environment map[string]string) error
 }
 
 type DelegateOptions struct {
@@ -152,6 +167,7 @@ var DelegateHarnessResolver DelegateHarnessResolverFunc
 // this package intentionally does not import it.
 type DelegateExecutionProfileIntent struct {
 	ProfileID           string `json:"profile_id"`
+	LaunchProfileID     string `json:"launch_profile_id,omitempty"`
 	Role                string `json:"role,omitempty"`
 	CapabilityClass     string `json:"capability_class,omitempty"`
 	ClientHarnessID     string `json:"client_harness_id,omitempty"`
@@ -167,9 +183,13 @@ type DelegateExecutionProfileIntent struct {
 const (
 	delegateExecutionProfilePlanSchema       = "compound.execution_profile_plan.v0.1"
 	delegateExecutionProfileSnapshotMaxBytes = 256 << 10
+	delegateLaunchProfilePlanSchema          = "compound.delegate_launch_profile_plan.v0.1"
+	delegateLaunchProfileSnapshotMaxBytes    = 64 << 10
 
 	DelegateExecutionProfileCompatible   = "compatible"
 	DelegateExecutionProfileIncompatible = "incompatible"
+	DelegateLaunchProfileCompatible      = "compatible"
+	DelegateLaunchProfileIncompatible    = "incompatible"
 )
 
 // DelegateExecutionProfilePlan is derived from the validated canonical
@@ -235,6 +255,60 @@ type DelegateExecutionProfileResolverFunc func(DelegateExecutionProfileResolveRe
 // cycle and prevents a parallel profile registry in internal/work.
 var DelegateExecutionProfileResolver DelegateExecutionProfileResolverFunc
 
+type DelegateLaunchProfileResolveRequest struct {
+	ProfileID             string
+	SelectedHarness       string
+	SelectedLaneID        string
+	SelectedModelID       string
+	SelectedProviderRoute string
+	SelectedTransportID   string
+	RequestedNativeEffort string
+}
+
+type DelegateLaunchProfilePlan struct {
+	SchemaVersion     string          `json:"schema_version"`
+	SourceSchema      string          `json:"source_schema"`
+	SourceDigest      string          `json:"source_digest"`
+	AuthorityRevision string          `json:"authority_revision"`
+	Revision          string          `json:"revision"`
+	ID                string          `json:"id"`
+	Harness           string          `json:"harness"`
+	ProviderLane      string          `json:"provider_lane"`
+	Route             string          `json:"route"`
+	RequestedModel    string          `json:"requested_model"`
+	RequestedEffort   string          `json:"requested_effort"`
+	TransportID       string          `json:"transport_id"`
+	OwnerTransport    string          `json:"owner_transport"`
+	ClientProfileID   string          `json:"client_profile_id"`
+	CaptureMode       string          `json:"capture_mode"`
+	Snapshot          json.RawMessage `json:"-"`
+}
+
+type DelegateLaunchProfileCompatibility struct {
+	Disposition           string `json:"disposition"`
+	SelectedHarness       string `json:"selected_harness"`
+	SelectedLaneID        string `json:"selected_lane_id"`
+	SelectedModelID       string `json:"selected_model_id"`
+	SelectedProviderRoute string `json:"selected_provider_route"`
+	SelectedTransportID   string `json:"selected_transport_id"`
+	RequestedNativeEffort string `json:"requested_native_effort"`
+	PlanID                string `json:"plan_id"`
+	ClientProfileID       string `json:"client_profile_id"`
+	Revision              string `json:"revision"`
+}
+
+type DelegateLaunchProfileResolution struct {
+	Snapshot      json.RawMessage                    `json:"snapshot"`
+	Compatibility DelegateLaunchProfileCompatibility `json:"compatibility"`
+}
+
+type DelegateLaunchProfileResolverFunc func(DelegateLaunchProfileResolveRequest) (*DelegateLaunchProfileResolution, error)
+
+// DelegateLaunchProfileResolver is installed by the CLI edge that can ask the
+// executor owner for `sb profile plan --json`. internal/work never reads or
+// copies the executor's private launch-profile registry.
+var DelegateLaunchProfileResolver DelegateLaunchProfileResolverFunc
+
 type DelegateHarnessReadinessRequest struct {
 	HomePath               string
 	HarnessHome            string
@@ -263,12 +337,19 @@ type DelegateExecutionProfileReadiness struct {
 	Snapshot json.RawMessage `json:"snapshot"`
 }
 
+type DelegateLaunchProfileReadiness struct {
+	Ref      string          `json:"ref"`
+	Revision string          `json:"revision"`
+	Snapshot json.RawMessage `json:"snapshot"`
+}
+
 type DelegateHarnessReadinessResult struct {
 	Ready            bool                               `json:"ready"`
 	SnapshotRevision string                             `json:"snapshot_revision,omitempty"`
 	Details          []string                           `json:"details,omitempty"`
 	Evidence         []DelegateHarnessReadinessEvidence `json:"evidence,omitempty"`
 	ExecutionProfile *DelegateExecutionProfileReadiness `json:"execution_profile,omitempty"`
+	LaunchProfile    *DelegateLaunchProfileReadiness    `json:"launch_profile,omitempty"`
 }
 
 type DelegateHarnessReadinessFunc func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error)
@@ -289,6 +370,7 @@ type DelegateResult struct {
 	Readiness        *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
 	Decision         *LaneCapacityGuardResult        `json:"decision,omitempty"`
 	ExecutionProfile *DelegateExecutionProfilePlan   `json:"execution_profile,omitempty"`
+	LaunchProfile    *DelegateLaunchProfilePlan      `json:"launch_profile,omitempty"`
 	// RunAttemptID is the ratt_<UTC>_<hex> that was minted before Create
 	// and marked running after the supervised spawn succeeded. Always
 	// populated on Status="spawned"; older callers that recover a
@@ -313,6 +395,7 @@ type DelegateBinding struct {
 	WorkSHA256       string                          `json:"work_sha256,omitempty"`
 	Readiness        *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
 	ExecutionProfile *DelegateExecutionProfilePlan   `json:"execution_profile,omitempty"`
+	LaunchProfile    *DelegateLaunchProfilePlan      `json:"launch_profile,omitempty"`
 	// RunAttemptID is the ratt_<UTC>_<hex> the orchestrator minted BEFORE
 	// the supervised spawn. Older bindings (pre-slice) leave it empty
 	// and remain backward-compatible: recovery still returns the
@@ -367,6 +450,7 @@ type delegateEvent struct {
 	RunAttemptID     string                          `json:"run_attempt_id,omitempty"`
 	Readiness        *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
 	ExecutionProfile *DelegateExecutionProfilePlan   `json:"execution_profile,omitempty"`
+	LaunchProfile    *DelegateLaunchProfilePlan      `json:"launch_profile,omitempty"`
 	ExitCode         *int                            `json:"exit_code,omitempty"`
 	Signal           string                          `json:"signal,omitempty"`
 	ObservedExit     bool                            `json:"observed_exit,omitempty"`
@@ -431,6 +515,7 @@ func (s *Store) latestDelegateBinding(workID string) (*DelegateBinding, bool, er
 					WorkSHA256:       dev.WorkSHA256,
 					Readiness:        dev.Readiness,
 					ExecutionProfile: cloneDelegateExecutionProfilePlan(dev.ExecutionProfile),
+					LaunchProfile:    cloneDelegateLaunchProfilePlan(dev.LaunchProfile),
 					// Older spawned events (pre-slice) decode with empty
 					// RunAttemptID; the rest of the orchestrator treats
 					// empty as "no exact attempt" and stays backward-
@@ -507,6 +592,9 @@ func validateAttachedDelegateEvent(eventID, workID string, event delegateEvent) 
 	case "work.delegate.spawned":
 		if strings.TrimSpace(event.Session) == "" || strings.TrimSpace(event.Harness) == "" {
 			return errors.New("spawned delegate event requires session and harness")
+		}
+		if err := validateDelegateLaunchProfileBinding(event.LaunchProfile, event.Readiness); err != nil {
+			return fmt.Errorf("invalid launch profile proof: %w", err)
 		}
 		if err := validateDelegateExecutionProfileBinding(event.ExecutionProfile, event.Readiness); err != nil {
 			return fmt.Errorf("invalid execution profile proof: %w", err)
@@ -615,16 +703,24 @@ func finalizeDelegateReadinessSnapshot(readiness DelegateHarnessReadinessResult)
 		copied.Snapshot = append(json.RawMessage(nil), readiness.ExecutionProfile.Snapshot...)
 		executionProfile = &copied
 	}
+	var launchProfile *DelegateLaunchProfileReadiness
+	if readiness.LaunchProfile != nil {
+		copied := *readiness.LaunchProfile
+		copied.Snapshot = append(json.RawMessage(nil), readiness.LaunchProfile.Snapshot...)
+		launchProfile = &copied
+	}
 	snapshotMaterial, err := json.Marshal(struct {
 		Ready            bool                               `json:"ready"`
 		Details          []string                           `json:"details,omitempty"`
 		Evidence         []DelegateHarnessReadinessEvidence `json:"evidence"`
 		ExecutionProfile *DelegateExecutionProfileReadiness `json:"execution_profile,omitempty"`
+		LaunchProfile    *DelegateLaunchProfileReadiness    `json:"launch_profile,omitempty"`
 	}{
 		Ready:            readiness.Ready,
 		Details:          details,
 		Evidence:         evidence,
 		ExecutionProfile: executionProfile,
+		LaunchProfile:    launchProfile,
 	})
 	if err != nil {
 		return DelegateHarnessReadinessResult{}, fmt.Errorf("delegate: encode readiness snapshot: %w", err)
@@ -633,6 +729,7 @@ func finalizeDelegateReadinessSnapshot(readiness DelegateHarnessReadinessResult)
 	readiness.Details = details
 	readiness.Evidence = evidence
 	readiness.ExecutionProfile = executionProfile
+	readiness.LaunchProfile = launchProfile
 	readiness.SnapshotRevision = "sha256:" + hex.EncodeToString(snapshotSum[:])
 	return readiness, nil
 }
@@ -667,6 +764,15 @@ func cloneDelegateExecutionProfilePlan(plan *DelegateExecutionProfilePlan) *Dele
 	cloned.RemainingBudget = append(json.RawMessage(nil), plan.RemainingBudget...)
 	cloned.InheritedCeilings = append([]string(nil), plan.InheritedCeilings...)
 	cloned.Warnings = append([]string(nil), plan.Warnings...)
+	cloned.Snapshot = append(json.RawMessage(nil), plan.Snapshot...)
+	return &cloned
+}
+
+func cloneDelegateLaunchProfilePlan(plan *DelegateLaunchProfilePlan) *DelegateLaunchProfilePlan {
+	if plan == nil {
+		return nil
+	}
+	cloned := *plan
 	cloned.Snapshot = append(json.RawMessage(nil), plan.Snapshot...)
 	return &cloned
 }
@@ -804,6 +910,142 @@ func validateDelegateExecutionProfileResolution(
 	}
 }
 
+func delegateLaunchProfilePlanFromSnapshot(snapshot json.RawMessage) (*DelegateLaunchProfilePlan, error) {
+	if len(snapshot) == 0 {
+		return nil, errors.New("canonical launch profile snapshot is required")
+	}
+	if len(snapshot) > delegateLaunchProfileSnapshotMaxBytes {
+		return nil, fmt.Errorf("canonical launch profile snapshot exceeds %d bytes", delegateLaunchProfileSnapshotMaxBytes)
+	}
+	if !json.Valid(snapshot) {
+		return nil, errors.New("canonical launch profile snapshot is invalid JSON")
+	}
+	var canonical DelegateLaunchProfilePlan
+	if err := json.Unmarshal(snapshot, &canonical); err != nil {
+		return nil, fmt.Errorf("decode canonical launch profile snapshot: %w", err)
+	}
+	if canonical.SchemaVersion != delegateLaunchProfilePlanSchema {
+		return nil, fmt.Errorf(
+			"canonical launch profile schema_version = %q, want %q",
+			canonical.SchemaVersion,
+			delegateLaunchProfilePlanSchema,
+		)
+	}
+	for name, value := range map[string]string{
+		"source_schema":      canonical.SourceSchema,
+		"source_digest":      canonical.SourceDigest,
+		"authority_revision": canonical.AuthorityRevision,
+		"revision":           canonical.Revision,
+		"id":                 canonical.ID,
+		"harness":            canonical.Harness,
+		"provider_lane":      canonical.ProviderLane,
+		"route":              canonical.Route,
+		"requested_model":    canonical.RequestedModel,
+		"requested_effort":   canonical.RequestedEffort,
+		"transport_id":       canonical.TransportID,
+		"owner_transport":    canonical.OwnerTransport,
+		"client_profile_id":  canonical.ClientProfileID,
+		"capture_mode":       canonical.CaptureMode,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("canonical launch profile %s is required", name)
+		}
+	}
+	for name, value := range map[string]string{
+		"source_digest":      canonical.SourceDigest,
+		"authority_revision": canonical.AuthorityRevision,
+		"revision":           canonical.Revision,
+	} {
+		if !validDelegateSHA256Revision(value) {
+			return nil, fmt.Errorf("canonical launch profile %s is not a sha256 revision", name)
+		}
+	}
+	canonical.Snapshot = append(json.RawMessage(nil), snapshot...)
+	return &canonical, nil
+}
+
+func validDelegateSHA256Revision(value string) bool {
+	digest := strings.TrimPrefix(strings.TrimSpace(value), "sha256:")
+	return len(digest) == 64 && strings.IndexFunc(digest, func(r rune) bool {
+		return !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f'))
+	}) == -1
+}
+
+func validateDelegateLaunchProfileResolution(
+	resolution *DelegateLaunchProfileResolution,
+	selectedHarness,
+	selectedLaneID,
+	selectedModelID,
+	selectedProviderRoute,
+	selectedTransportID,
+	requestedNativeEffort string,
+) (*DelegateLaunchProfilePlan, error) {
+	if resolution == nil {
+		return nil, errors.New("launch profile resolver returned no resolution")
+	}
+	plan, err := delegateLaunchProfilePlanFromSnapshot(resolution.Snapshot)
+	if err != nil {
+		return nil, err
+	}
+	compatibility := resolution.Compatibility
+	for _, field := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "selected_harness", got: compatibility.SelectedHarness, want: selectedHarness},
+		{name: "selected_lane_id", got: compatibility.SelectedLaneID, want: selectedLaneID},
+		{name: "selected_model_id", got: compatibility.SelectedModelID, want: selectedModelID},
+		{name: "selected_provider_route", got: compatibility.SelectedProviderRoute, want: selectedProviderRoute},
+		{name: "selected_transport_id", got: compatibility.SelectedTransportID, want: selectedTransportID},
+		{name: "requested_native_effort", got: compatibility.RequestedNativeEffort, want: requestedNativeEffort},
+		{name: "plan_id", got: compatibility.PlanID, want: plan.ID},
+		{name: "client_profile_id", got: compatibility.ClientProfileID, want: plan.ClientProfileID},
+		{name: "revision", got: compatibility.Revision, want: plan.Revision},
+	} {
+		if strings.TrimSpace(field.got) != strings.TrimSpace(field.want) {
+			return nil, fmt.Errorf(
+				"launch compatibility %s = %q, canonical snapshot has %q",
+				field.name,
+				field.got,
+				field.want,
+			)
+		}
+	}
+	for _, field := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "route", got: plan.Route, want: selectedProviderRoute},
+		{name: "requested_model", got: plan.RequestedModel, want: selectedModelID},
+		{name: "transport_id", got: plan.TransportID, want: selectedTransportID},
+		{name: "requested_effort", got: plan.RequestedEffort, want: requestedNativeEffort},
+	} {
+		if strings.TrimSpace(field.got) != strings.TrimSpace(field.want) {
+			return nil, &delegateLaunchProfileIncompatibleError{
+				detail: fmt.Sprintf("%s %q does not match selected tuple %q", field.name, field.got, field.want),
+			}
+		}
+	}
+	if strings.ReplaceAll(strings.TrimSpace(plan.Harness), "-", "_") !=
+		strings.ReplaceAll(strings.TrimSpace(selectedHarness), "-", "_") {
+		return nil, &delegateLaunchProfileIncompatibleError{
+			detail: fmt.Sprintf("harness %q does not match selected tuple %q", plan.Harness, selectedHarness),
+		}
+	}
+	switch compatibility.Disposition {
+	case DelegateLaunchProfileCompatible:
+		return plan, nil
+	case DelegateLaunchProfileIncompatible:
+		return nil, &delegateLaunchProfileIncompatibleError{
+			detail: fmt.Sprintf("selected tuple is not compatible with launch profile %q", plan.ID),
+		}
+	default:
+		return nil, fmt.Errorf("launch compatibility disposition = %q", compatibility.Disposition)
+	}
+}
+
 func addDelegateExecutionProfileReadinessEvidence(readiness DelegateHarnessReadinessResult, plan *DelegateExecutionProfilePlan) (DelegateHarnessReadinessResult, error) {
 	if plan == nil {
 		return readiness, nil
@@ -818,6 +1060,26 @@ func addDelegateExecutionProfileReadinessEvidence(readiness DelegateHarnessReadi
 	sum := sha256.Sum256(plan.Snapshot)
 	readiness.ExecutionProfile = &DelegateExecutionProfileReadiness{
 		Ref:      "execution-profile://" + strings.TrimSpace(plan.ID),
+		Revision: "sha256:" + hex.EncodeToString(sum[:]),
+		Snapshot: append(json.RawMessage(nil), plan.Snapshot...),
+	}
+	return readiness, nil
+}
+
+func addDelegateLaunchProfileReadinessEvidence(readiness DelegateHarnessReadinessResult, plan *DelegateLaunchProfilePlan) (DelegateHarnessReadinessResult, error) {
+	if plan == nil {
+		return readiness, nil
+	}
+	validated, err := delegateLaunchProfilePlanFromSnapshot(plan.Snapshot)
+	if err != nil {
+		return DelegateHarnessReadinessResult{}, err
+	}
+	if !reflect.DeepEqual(plan, validated) {
+		return DelegateHarnessReadinessResult{}, errors.New("launch profile projection disagrees with canonical snapshot")
+	}
+	sum := sha256.Sum256(plan.Snapshot)
+	readiness.LaunchProfile = &DelegateLaunchProfileReadiness{
+		Ref:      "launch-profile://" + strings.TrimSpace(plan.ID),
 		Revision: "sha256:" + hex.EncodeToString(sum[:]),
 		Snapshot: append(json.RawMessage(nil), plan.Snapshot...),
 	}
@@ -871,6 +1133,61 @@ func validateDelegateExecutionProfileBinding(plan *DelegateExecutionProfilePlan,
 	}
 	if readiness.SnapshotRevision != canonicalReadiness.SnapshotRevision {
 		return fmt.Errorf("execution profile readiness snapshot_revision = %q, want %q", readiness.SnapshotRevision, canonicalReadiness.SnapshotRevision)
+	}
+	return nil
+}
+
+func validateDelegateLaunchProfileBinding(plan *DelegateLaunchProfilePlan, readiness *DelegateHarnessReadinessResult) error {
+	var proof *DelegateLaunchProfileReadiness
+	if readiness != nil {
+		proof = readiness.LaunchProfile
+		for _, evidence := range readiness.Evidence {
+			if evidence.Kind == "launch_profile" {
+				return errors.New("launch profile proof must use typed readiness field")
+			}
+		}
+	}
+	if plan == nil {
+		if proof != nil {
+			return errors.New("launch profile readiness proof has no bound plan")
+		}
+		return nil
+	}
+	if proof == nil {
+		return errors.New("bound launch profile has no typed readiness proof")
+	}
+	validated, err := delegateLaunchProfilePlanFromSnapshot(plan.Snapshot)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(plan, validated) {
+		return errors.New("bound launch profile projection disagrees with canonical snapshot")
+	}
+	if !bytes.Equal(proof.Snapshot, plan.Snapshot) {
+		return errors.New("launch profile readiness snapshot disagrees with bound plan")
+	}
+	if _, err := delegateLaunchProfilePlanFromSnapshot(proof.Snapshot); err != nil {
+		return fmt.Errorf("launch profile readiness snapshot: %w", err)
+	}
+	wantRef := "launch-profile://" + strings.TrimSpace(plan.ID)
+	if proof.Ref != wantRef {
+		return fmt.Errorf("launch profile readiness ref = %q, want %q", proof.Ref, wantRef)
+	}
+	sum := sha256.Sum256(proof.Snapshot)
+	wantRevision := "sha256:" + hex.EncodeToString(sum[:])
+	if proof.Revision != wantRevision {
+		return fmt.Errorf("launch profile readiness revision = %q, want %q", proof.Revision, wantRevision)
+	}
+	canonicalReadiness, err := finalizeDelegateReadinessSnapshot(*readiness)
+	if err != nil {
+		return err
+	}
+	if readiness.SnapshotRevision != canonicalReadiness.SnapshotRevision {
+		return fmt.Errorf(
+			"launch profile readiness snapshot_revision = %q, want %q",
+			readiness.SnapshotRevision,
+			canonicalReadiness.SnapshotRevision,
+		)
 	}
 	return nil
 }
@@ -984,6 +1301,66 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		}
 		executionProfile = cloneDelegateExecutionProfilePlan(executionProfile)
 		out.ExecutionProfile = cloneDelegateExecutionProfilePlan(executionProfile)
+	}
+	launchProfileResolver := DelegateLaunchProfileResolver
+	var launchProfile *DelegateLaunchProfilePlan
+	if strings.TrimSpace(opts.ExecutionProfile.LaunchProfileID) != "" {
+		if executionProfile == nil {
+			out.Refusal = &DelegateRefusal{
+				Reason:  "execution_profile_unresolved",
+				Message: "launch profile selection requires a resolved execution profile",
+			}
+			return out, nil
+		}
+		if launchProfileResolver == nil {
+			out.Refusal = &DelegateRefusal{
+				Reason:  "launch_profile_unresolved",
+				Message: "no launch profile owner resolver installed",
+			}
+			return out, nil
+		}
+		resolvedLaunchProfile, launchErr := launchProfileResolver(DelegateLaunchProfileResolveRequest{
+			ProfileID:             strings.TrimSpace(opts.ExecutionProfile.LaunchProfileID),
+			SelectedHarness:       resolvedHarness,
+			SelectedLaneID:        out.Lane,
+			SelectedModelID:       selectedModelID,
+			SelectedProviderRoute: selectedProviderRoute,
+			SelectedTransportID:   executionProfile.TransportID,
+			RequestedNativeEffort: executionProfile.RequestedNativeEffort,
+		})
+		if launchErr != nil {
+			out.Refusal = &DelegateRefusal{
+				Reason:  "launch_profile_unresolved",
+				Message: launchErr.Error(),
+			}
+			return out, nil
+		}
+		launchProfile, launchErr = validateDelegateLaunchProfileResolution(
+			resolvedLaunchProfile,
+			resolvedHarness,
+			out.Lane,
+			selectedModelID,
+			selectedProviderRoute,
+			executionProfile.TransportID,
+			executionProfile.RequestedNativeEffort,
+		)
+		var incompatible *delegateLaunchProfileIncompatibleError
+		if errors.As(launchErr, &incompatible) {
+			out.Refusal = &DelegateRefusal{
+				Reason:  "launch_profile_incompatible",
+				Message: incompatible.Error(),
+			}
+			return out, nil
+		}
+		if launchErr != nil {
+			out.Refusal = &DelegateRefusal{
+				Reason:  "launch_profile_unresolved",
+				Message: launchErr.Error(),
+			}
+			return out, nil
+		}
+		launchProfile = cloneDelegateLaunchProfilePlan(launchProfile)
+		out.LaunchProfile = cloneDelegateLaunchProfilePlan(launchProfile)
 	}
 
 	w, err := s.Get(out.WorkID)
@@ -1106,6 +1483,10 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	}
 	out.Decision = &decision
 	readiness, err = addDelegateExecutionProfileReadinessEvidence(readiness, executionProfile)
+	if err != nil {
+		return out, err
+	}
+	readiness, err = addDelegateLaunchProfileReadinessEvidence(readiness, launchProfile)
 	if err != nil {
 		return out, err
 	}
@@ -1289,6 +1670,33 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 				return &delegateAuthorityChangedError{detail: "execution profile revalidation failed: " + profileErr.Error()}
 			}
 		}
+		revalidatedLaunchProfile := launchProfile
+		if launchProfile != nil {
+			currentLaunchProfile, launchErr := launchProfileResolver(DelegateLaunchProfileResolveRequest{
+				ProfileID:             strings.TrimSpace(opts.ExecutionProfile.LaunchProfileID),
+				SelectedHarness:       resolvedHarness,
+				SelectedLaneID:        out.Lane,
+				SelectedModelID:       selectedModelID,
+				SelectedProviderRoute: selectedProviderRoute,
+				SelectedTransportID:   executionProfile.TransportID,
+				RequestedNativeEffort: executionProfile.RequestedNativeEffort,
+			})
+			if launchErr != nil {
+				return &delegateAuthorityChangedError{detail: "launch profile revalidation failed"}
+			}
+			revalidatedLaunchProfile, launchErr = validateDelegateLaunchProfileResolution(
+				currentLaunchProfile,
+				resolvedHarness,
+				out.Lane,
+				selectedModelID,
+				selectedProviderRoute,
+				executionProfile.TransportID,
+				executionProfile.RequestedNativeEffort,
+			)
+			if launchErr != nil {
+				return &delegateAuthorityChangedError{detail: "launch profile revalidation failed: " + launchErr.Error()}
+			}
+		}
 		revalidatedReadiness, err := readinessGuard(readinessRequest)
 		if err != nil {
 			return &delegateAuthorityChangedError{detail: "harness readiness revalidation failed"}
@@ -1306,6 +1714,10 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			return &delegateAuthorityChangedError{detail: "lane capacity revalidation failed"}
 		}
 		revalidatedReadiness, err = addDelegateExecutionProfileReadinessEvidence(revalidatedReadiness, revalidatedExecutionProfile)
+		if err != nil {
+			return err
+		}
+		revalidatedReadiness, err = addDelegateLaunchProfileReadinessEvidence(revalidatedReadiness, revalidatedLaunchProfile)
 		if err != nil {
 			return err
 		}
@@ -1388,8 +1800,46 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			return stamp("execution_profile", "RunAttempt execution profile stamp failed")
 		}
 	}
+	if launchProfile != nil {
+		if _, settErr := raStore.SetLaunchProfileIntent(
+			runAttemptID,
+			launchProfile.ID,
+			launchProfile.Revision,
+			launchProfile.ClientProfileID,
+		); settErr != nil {
+			return stamp("launch_profile", "RunAttempt launch profile stamp failed")
+		}
+	}
 
-	if err := runner.Create(sessionName, workspace, command, activationArgs); err != nil {
+	launchEnvironment := map[string]string{
+		"COMPOUND_WORK_ID":        out.WorkID,
+		"COMPOUND_RUN_ATTEMPT_ID": runAttemptID,
+	}
+	var createErr error
+	if environmentRunner, ok := runner.(SessionEnvironmentRunner); ok {
+		if executionProfile != nil {
+			launchEnvironment["COMPOUND_EXECUTION_PROFILE_PLAN_ID"] = executionProfile.ID
+			launchEnvironment["COMPOUND_EXECUTION_PROFILE_REVISION"] = readiness.ExecutionProfile.Revision
+		}
+		if launchProfile != nil {
+			launchEnvironment["SB_LAUNCH_PROFILE_ID"] = launchProfile.ID
+			launchEnvironment["SB_LAUNCH_PROFILE_REVISION"] = launchProfile.Revision
+			launchEnvironment["SB_LAUNCH_CLIENT_PROFILE"] = launchProfile.ClientProfileID
+			launchEnvironment["COMPOUND_CLIENT_PROFILE_ID"] = launchProfile.ClientProfileID
+		}
+		createErr = environmentRunner.CreateWithEnvironment(
+			sessionName,
+			workspace,
+			command,
+			activationArgs,
+			launchEnvironment,
+		)
+	} else if executionProfile != nil {
+		createErr = errors.New("session runner cannot bind supervised launch environment")
+	} else {
+		createErr = runner.Create(sessionName, workspace, command, activationArgs)
+	}
+	if createErr != nil {
 		// Create failed. Probe to detect partial / ambiguous: if the
 		// session exists on the server we DO NOT kill it (it may be a
 		// stranger's session) and we DO NOT emit a spawned binding. We
@@ -1431,6 +1881,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		WorkSHA256:       authorizedWorkSHA,
 		Readiness:        out.Readiness,
 		ExecutionProfile: cloneDelegateExecutionProfilePlan(executionProfile),
+		LaunchProfile:    cloneDelegateLaunchProfilePlan(launchProfile),
 		RunAttemptID:     runAttemptID,
 	}
 	// APPROVED ORDER: Create success -> record+attach spawned binding ->
@@ -1604,6 +2055,7 @@ func (s *Store) recordDelegateSpawned(workID string, b *DelegateBinding, confirm
 		RunAttemptID:     runAttemptID,
 		Readiness:        b.Readiness,
 		ExecutionProfile: cloneDelegateExecutionProfilePlan(b.ExecutionProfile),
+		LaunchProfile:    cloneDelegateLaunchProfilePlan(b.LaunchProfile),
 	}); err != nil {
 		return "", err
 	}

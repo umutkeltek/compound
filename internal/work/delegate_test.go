@@ -82,10 +82,11 @@ type fakeSessionRunner struct {
 }
 
 type fakeCreateCall struct {
-	Name    string
-	Dir     string
-	Command string
-	Args    []string
+	Name        string
+	Dir         string
+	Command     string
+	Args        []string
+	Environment map[string]string
 }
 
 type fakeSendKeysCall struct {
@@ -132,6 +133,14 @@ func (f *fakeSessionRunner) SessionStatus(name string) (SessionStatus, error) {
 }
 
 func (f *fakeSessionRunner) Create(name, dir, command string, args []string) error {
+	return f.create(name, dir, command, args, nil)
+}
+
+func (f *fakeSessionRunner) CreateWithEnvironment(name, dir, command string, args []string, environment map[string]string) error {
+	return f.create(name, dir, command, args, environment)
+}
+
+func (f *fakeSessionRunner) create(name, dir, command string, args []string, environment map[string]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.createErr != nil && !f.partialCreate {
@@ -140,7 +149,17 @@ func (f *fakeSessionRunner) Create(name, dir, command string, args []string) err
 	if f.duplicateNameErr != nil && f.live[name] {
 		return f.duplicateNameErr
 	}
-	f.creates = append(f.creates, fakeCreateCall{Name: name, Dir: dir, Command: command, Args: append([]string{}, args...)})
+	copiedEnvironment := make(map[string]string, len(environment))
+	for key, value := range environment {
+		copiedEnvironment[key] = value
+	}
+	f.creates = append(f.creates, fakeCreateCall{
+		Name:        name,
+		Dir:         dir,
+		Command:     command,
+		Args:        append([]string{}, args...),
+		Environment: copiedEnvironment,
+	})
 	f.live[name] = true
 	if f.onCreate != nil {
 		f.onCreate()

@@ -46,28 +46,38 @@ gateway/harness configuration.
 
 Governed `compound work delegate` can select an existing profile with `--execution-profile`. Optional
 role/capability/harness/transport/route/model/effort/orchestration/privacy selectors narrow that profile and are
-refused when no profile is selected. The existing `--harness` flag still selects the exact Compound model-router
-`LaneTuple`. The route-evidence owner resolves one bounded canonical plan snapshot and attests compatibility
-against the selected harness, lane, model ID, provider route, and owner-attested transport; `internal/work` does
-not maintain harness-family, model, route-alias, or transport compatibility tables. Admission validates the
-snapshot's size, JSON, schema, required identity, and exact attestation before readiness, capacity, event
-persistence, RunAttempt mint, or process creation. A typed execution-profile readiness
-proof carries that exact snapshot plus its reference and digest; the proof is hashed into the canonical
-`snapshot_revision` and persisted on the delegate binding. The exact RunAttempt stores the plan ID plus requested
-client-harness, transport, and native-effort identity fields before spawn—not the full plan. Observed
-model/provider fields remain empty until route evidence attests them. Gateway client-profile/account/credential
-selection remains gateway-owned and is not stored here.
+refused when no profile is selected. `--launch-profile` selects the executor owner's concrete launch/account-policy
+profile and is likewise invalid without an execution profile. The existing `--harness` flag still selects the exact
+Compound model-router `LaneTuple`. The route-evidence owner resolves one bounded canonical execution-plan snapshot
+and attests compatibility against the selected harness, lane, model ID, provider route, and transport evidence;
+`internal/work` does not maintain harness-family, model, route-alias, or executor-transport tables.
+
+`LaneTuple` resolution deliberately leaves transport empty because the lane projection declares it executor-owned.
+When an explicit launch profile is present, route-evidence may defer only a requested `switchback` transport while
+the remaining tuple is exact. The CLI then asks the executor owner for the full read-only profile plan. Compound
+accepts only the exact `switchback/launch-profile-plan@1` consumer projection owned by Switchback, with current
+generated artifacts, `segmented_full_wire` capture, an opaque nonempty client profile, and exact
+harness/model/route/effort compatibility. The owner's exact `gateway|tap|headroom` transport is sealed beside the
+Compound `switchback` transport family; it is never inferred from a route name. Missing client profiles, drifted
+materializations, non-capturing or unknown transports, or changed authority revisions refuse before readiness,
+capacity, RunAttempt mint, or process creation.
+
+Admission validates both snapshots' size, JSON, schema, required identity, and exact attestations. Typed
+execution-profile and launch-profile readiness proofs carry those snapshots plus references and digests; both are
+hashed into the canonical readiness `snapshot_revision` and persisted on the delegate binding. The exact
+RunAttempt stores the execution plan ID and requested client-harness/transport/native-effort fields plus the launch
+profile ID, owner revision, and opaque client-profile ID before spawn—not either full plan and never an account ID
+or credential. The supervised tmux runner installs `work_id`, `ratt_*`, execution-plan identity, launch-profile
+identity, and opaque client-profile identity as session-environment argv before respawn, without shell
+interpolation. Observed model/provider fields remain empty until route evidence attests them. Gateway
+account/credential selection remains gateway-owned and is not stored here. Delegation without
+`--execution-profile` retains its legacy behavior, so regular native Claude Code remains available.
 
 Profile compatibility binds the selected canonical tuple rather than trusting selectors in isolation. After
 trimming surrounding whitespace, opaque model IDs, provider routes/route aliases, and transport IDs compare
 exactly and case-sensitively; hyphens and underscores are not interchangeable. A nonempty model constraint must
 equal the selected model ID; a nonempty route alias must equal the selected provider route or selected route
-identity; and the plan transport must equal a nonempty transport attested by its owner.
-`LaneTuple` resolution deliberately leaves selected transport empty because the lane projection declares
-`transport` executor-owned. Therefore current real `--execution-profile` delegation fails closed before readiness
-until the executor-owned profile-plan cutover supplies transport evidence; Compound never infers executor-owned
-transport from a route name or requested profile. Delegation without `--execution-profile` retains its legacy
-behavior.
+identity; and transport is compatible only through the explicit owner-plan handoff above.
 
 Harness and transport are independent selectors: for example, Claude Code may run over native transport or an
 observed gateway transport without becoming a different harness. Selecting a transport does not let Compound

@@ -217,3 +217,53 @@ func TestResolveDelegateExecutionProfileBindsSelectedCanonicalTuple(t *testing.T
 		})
 	}
 }
+
+func TestResolveDelegateExecutionProfileDefersUnknownSwitchbackTransportToSelectedOwnerProfile(t *testing.T) {
+	resolved, err := resolveDelegateExecutionProfile(work.DelegateExecutionProfileResolveRequest{
+		Intent: work.DelegateExecutionProfileIntent{
+			ProfileID:       "coding-implementation",
+			LaunchProfileID: "claude-minimax",
+			ClientHarnessID: "claude-code",
+			TransportID:     "switchback",
+			ModelConstraint: "minimax/minimax-m3",
+			RouteAlias:      "minimax/minimax-m3",
+			NativeEffort:    "xhigh",
+		},
+		SelectedHarness:       "claude_code",
+		SelectedLaneID:        "claude_code",
+		SelectedModelID:       "minimax/minimax-m3",
+		SelectedProviderRoute: "minimax/minimax-m3",
+		SelectedTransportID:   "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Compatibility.Disposition != work.DelegateExecutionProfileCompatible {
+		t.Fatalf(
+			"owner-attested transport was rejected before launch-profile resolution: %+v",
+			resolved.Compatibility,
+		)
+	}
+
+	withoutOwner, err := resolveDelegateExecutionProfile(work.DelegateExecutionProfileResolveRequest{
+		Intent: work.DelegateExecutionProfileIntent{
+			ProfileID:       "coding-implementation",
+			ClientHarnessID: "claude-code",
+			TransportID:     "switchback",
+			ModelConstraint: "minimax/minimax-m3",
+			RouteAlias:      "minimax/minimax-m3",
+			NativeEffort:    "xhigh",
+		},
+		SelectedHarness:       "claude_code",
+		SelectedLaneID:        "claude_code",
+		SelectedModelID:       "minimax/minimax-m3",
+		SelectedProviderRoute: "minimax/minimax-m3",
+		SelectedTransportID:   "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutOwner.Compatibility.Disposition != work.DelegateExecutionProfileIncompatible {
+		t.Fatalf("missing owner profile incorrectly bypassed transport proof: %+v", withoutOwner.Compatibility)
+	}
+}

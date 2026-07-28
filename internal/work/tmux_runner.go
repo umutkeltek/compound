@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -235,6 +236,10 @@ func (r *TmuxRunner) SessionStatus(name string) (SessionStatus, error) {
 // session must never be killed), and terminalizes the attempt as failed
 // without emitting a spawned binding.
 func (r *TmuxRunner) Create(name, dir, command string, args []string) error {
+	return r.CreateWithEnvironment(name, dir, command, args, nil)
+}
+
+func (r *TmuxRunner) CreateWithEnvironment(name, dir, command string, args []string, environment map[string]string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return errors.New("tmux session is required")
@@ -278,6 +283,22 @@ func (r *TmuxRunner) Create(name, dir, command string, args []string) error {
 		// NO KILL: same contract as the set-option branch above.
 		return err
 	}
+	environmentKeys := make([]string, 0, len(environment))
+	for key, value := range environment {
+		if !validSupervisedEnvironmentKey(key) {
+			return errors.New("tmux supervised environment has invalid key")
+		}
+		if strings.ContainsRune(value, '\x00') || len(value) > 4096 {
+			return errors.New("tmux supervised environment has invalid value")
+		}
+		environmentKeys = append(environmentKeys, key)
+	}
+	sort.Strings(environmentKeys)
+	for _, key := range environmentKeys {
+		if err := r.tmuxRunOpaque("set-environment", "-t", name, key, environment[key]); err != nil {
+			return fmt.Errorf("tmux set-environment failed: %s", opaqueExitOnly(err))
+		}
+	}
 	// 3. respawn-pane -k with the user's exact argv behind the sh
 	//    cd-guard (see the Create doc comment: -c alone is ignored by a
 	//    wedged server). $0 is the workspace, "$@" is the verbatim
@@ -293,6 +314,18 @@ func (r *TmuxRunner) Create(name, dir, command string, args []string) error {
 		return fmt.Errorf("tmux respawn-pane failed: %s", opaqueExitOnly(err))
 	}
 	return nil
+}
+
+func validSupervisedEnvironmentKey(key string) bool {
+	if key == "" || len(key) > 128 {
+		return false
+	}
+	for _, r := range key {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // startPaneCapture points tmux pipe-pane at this session's log file. It
