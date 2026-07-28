@@ -119,7 +119,7 @@ Two corollaries worth their own line:
    file, installed artifact, and JSON agree.
 
    Canonical gates execute from a detached temporary checkout of the sealed HEAD,
-   with only the four ceremony-owned ignored inputs copied as snapshots; the
+   with only the five ceremony-owned ignored inputs copied as snapshots; the
    mutable caller worktree is never the gate execution surface.
 
    Since `fc4cd8e3` the home-reading gates (`memory doctor`, workbench projection, the attention
