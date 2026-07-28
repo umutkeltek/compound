@@ -2943,6 +2943,132 @@ func TestResumeProofResourceCompletionRearmsExactExpiredHolderWithoutNewReservat
 	}
 }
 
+func TestResumeProofResourceCompletionReconcilesCrashAfterExactRearm(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "reconcile exact rearm crash", proofActorAlpha, fixedNow)
+	acquired, err := reserveProofResourceWithLiveBarrier(t, s, w.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       3 * time.Second,
+		Workspace: "/synthetic/repo-alpha",
+		Command:   "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportRef, err := artifacts.Put(validOwnedProofReportJSON("ok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeInput := ProofResourceCompleteInput{
+		Actor:             proofActorAlpha,
+		ReservationID:     acquired.Reservation.ID,
+		ReportArtifactRef: reportRef,
+		ProducerExitKnown: true,
+		ProducerExitCode:  0,
+	}
+	if _, err := s.CompleteProofResource(w.ID, completeInput, fixedNow.Add(2*time.Second)); err == nil {
+		t.Fatal("completion released while execution barrier remained live")
+	}
+	if err := acquired.ExecutionBarrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+	prepareCalls := 0
+	resumeInput := ProofResourceResumeInput{
+		Actor:     proofActorAlpha,
+		Workspace: acquired.Reservation.Workspace,
+		Command:   acquired.Reservation.Command,
+		Profile:   acquired.Reservation.Profile,
+		PrepareOwnedReport: func(ProofResourceResult) error {
+			prepareCalls++
+			if prepareCalls == 1 {
+				return errors.New("injected failure after rearm outcome publication")
+			}
+			return nil
+		},
+	}
+	expiredAt := fixedNow.Add(5 * time.Second)
+	originalHook := proofResourceAfterScarceMutation
+	t.Cleanup(func() { proofResourceAfterScarceMutation = originalHook })
+	crashed := false
+	proofResourceAfterScarceMutation = func(phase string) {
+		if phase == "completion_rearm" {
+			crashed = true
+			panic("synthetic crash after exact rearm")
+		}
+		originalHook(phase)
+	}
+	func() {
+		defer func() { _ = recover() }()
+		_, _, _ = s.ResumeProofResourceCompletion(w.ID, resumeInput, expiredAt)
+	}()
+	proofResourceAfterScarceMutation = originalHook
+	if !crashed {
+		t.Fatal("resume did not reach post-rearm crash boundary")
+	}
+	rearmedStatus, err := landlease.Status(s.home, expiredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rearmedStatus.Held || rearmedStatus.Holder != acquired.Reservation.Holder {
+		t.Fatalf("post-crash exact holder = %+v", rearmedStatus)
+	}
+
+	if _, found, err := s.ResumeProofResourceCompletion(w.ID, resumeInput, expiredAt.Add(time.Second)); !found || err == nil {
+		t.Fatalf("post-rearm reconciliation did not stop at injected publication failure: found=%t err=%v", found, err)
+	}
+	heldAfterReconciliation, err := landlease.Status(s.home, expiredAt.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !heldAfterReconciliation.Held || heldAfterReconciliation.Holder != acquired.Reservation.Holder {
+		t.Fatalf("post-reconciliation failure released exact holder: %+v", heldAfterReconciliation)
+	}
+
+	resumed, found, err := s.ResumeProofResourceCompletion(w.ID, resumeInput, expiredAt.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("exact retry did not reuse reconciled rearm outcome: %v", err)
+	}
+	if !found || !resumed.ResourceReleased || resumed.VerificationRef == "" {
+		t.Fatalf("post-rearm crash recovery = found:%t result:%+v", found, resumed)
+	}
+	if resumed.Result.ReservationID != acquired.Reservation.ID {
+		t.Fatalf("post-rearm recovery changed reservation %q, want %q", resumed.Result.ReservationID, acquired.Reservation.ID)
+	}
+
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshRefs := map[string]struct{}{}
+	rearmPreparations := 0
+	rearmOutcomes := 0
+	for _, event := range events {
+		if event.Note == "proof resource completion_rearm governance persisted before scarce mutation" {
+			rearmPreparations++
+		}
+		if event.Note == "exact expired proof completion holder rearmed after journal validation and execution attestation" {
+			rearmOutcomes++
+		}
+		for _, ref := range event.Attached {
+			if strings.HasPrefix(ref, "pfrh_") {
+				refreshRefs[ref] = struct{}{}
+			}
+		}
+	}
+	if rearmPreparations != 1 || rearmOutcomes != 1 || len(refreshRefs) != 1 {
+		t.Fatalf(
+			"rearm evidence preparations/outcomes/refreshes = %d/%d/%d, want 1/1/1",
+			rearmPreparations,
+			rearmOutcomes,
+			len(refreshRefs),
+		)
+	}
+}
+
 func TestProofResourceCompletionRetryRecoversLegacyPendingJournalCrashBeforeMarkRunning(t *testing.T) {
 	s, w, acquired, input, _, pendingPath := proofCompletionPendingFixture(t, "legacy pending retry journal crash")
 	originalWriter := proofResourceWriteCompletionRetryJournal

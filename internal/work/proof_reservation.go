@@ -605,6 +605,16 @@ func (s *Store) ResumeProofResourceCompletion(
 		); err != nil {
 			return ProofResourceCompleteResult{}, true, err
 		}
+	} else if err := s.reconcileRearmedProofResourceCompletion(
+		workID,
+		in,
+		reservation,
+		pending,
+		completeInput,
+		status,
+		now,
+	); err != nil {
+		return ProofResourceCompleteResult{}, true, err
 	}
 	if pending.Result.ReportArtifactRef != "" {
 		if in.PrepareOwnedReport == nil {
@@ -785,6 +795,159 @@ func (s *Store) rearmExpiredProofResourceCompletion(
 			PolicyDecisionID: decision.ID,
 		}
 		return s.persistProofRefresh(&w, action, decision, refresh, now)
+	})
+}
+
+func (s *Store) reconcileRearmedProofResourceCompletion(
+	workID string,
+	in ProofResourceResumeInput,
+	reservation ProofResourceReservation,
+	pending proofResourceCompletionPending,
+	completeInput ProofResourceCompleteInput,
+	liveStatus landlease.StatusResult,
+	now time.Time,
+) error {
+	if !liveStatus.Held ||
+		liveStatus.Holder != reservation.Holder ||
+		liveStatus.AcquiredAt == reservation.AcquiredAt {
+		return nil
+	}
+	return s.withLifecycleMutation(func() error {
+		currentStatus, err := landlease.Status(s.home, now)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(currentStatus, liveStatus) {
+			return fmt.Errorf("rearmed proof completion lease changed before refresh reconciliation")
+		}
+		w, err := s.Get(workID)
+		if err != nil {
+			return err
+		}
+		claim, err := s.readLease(workID)
+		if err != nil || claim.By != in.Actor {
+			return fmt.Errorf("rearmed proof completion reconciliation requires work lease held by %q", in.Actor)
+		}
+		var currentReservation ProofResourceReservation
+		if err := s.readEventJSON(reservation.ID, &currentReservation); err != nil {
+			return err
+		}
+		currentPending, present, _, err := s.readProofResourceCompletionPending(reservation.ID)
+		if err != nil {
+			return err
+		}
+		if !present ||
+			!reflect.DeepEqual(currentReservation, reservation) ||
+			!reflect.DeepEqual(currentPending, pending) {
+			return fmt.Errorf("rearmed proof completion identity changed before refresh reconciliation")
+		}
+		latestReservation, err := s.proofReservationWithLatestRefresh(currentReservation)
+		if err != nil {
+			return err
+		}
+		if latestReservation.ExpiresAt == liveStatus.ExpiresAt &&
+			latestReservation.TTLSeconds == liveStatus.TTLSeconds {
+			return nil
+		}
+		expect, err := s.deriveProofResourceCompletionExpectation(workID, currentReservation, completeInput)
+		if err != nil {
+			return err
+		}
+		ra, err := s.runAttempts().Get(currentPending.Result.RunAttemptID)
+		if err != nil {
+			return err
+		}
+		_, migrated, err := s.validateAndNormalizeProofResourceCompletionPending(
+			w,
+			currentReservation,
+			currentPending,
+			ra,
+			completeInput,
+			expect,
+		)
+		if err != nil {
+			return err
+		}
+		if migrated {
+			return fmt.Errorf("rearmed proof completion journal was not sealed before scarce mutation")
+		}
+
+		var decision envelope.PolicyDecision
+		if err := s.readEventJSON(w.PolicyDecisionID, &decision); err != nil {
+			return fmt.Errorf("read prepared rearm PolicyDecision: %w", err)
+		}
+		var action envelope.ActionIntent
+		if err := s.readEventJSON(decision.ActionIntentID, &action); err != nil {
+			return fmt.Errorf("read prepared rearm ActionIntent: %w", err)
+		}
+		actionTime, err := time.Parse(time.RFC3339Nano, action.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("prepared rearm ActionIntent created_at: %w", err)
+		}
+		expectedAction := s.proofResourceAction(
+			w,
+			currentReservation.ID,
+			in.Actor,
+			"completion_rearm",
+			"",
+			"",
+			"",
+			"",
+			actionTime,
+		)
+		expectedDecision, err := s.evaluateProofResourceAction(expectedAction, actionTime)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(action, expectedAction) ||
+			!reflect.DeepEqual(decision, expectedDecision) ||
+			!policy.Allowed(decision) {
+			return fmt.Errorf("prepared rearm governance does not match canonical exact-holder recovery")
+		}
+		preparedAttached := []string{
+			action.ID,
+			decision.ID,
+			currentReservation.ID,
+			currentPending.Result.RunAttemptID,
+		}
+		prepared := false
+		events, err := s.eventsFor(workID)
+		if err != nil {
+			return err
+		}
+		for _, event := range events {
+			if event.WorkID == workID &&
+				event.By == in.Actor &&
+				event.Note == "proof resource completion_rearm governance persisted before scarce mutation" &&
+				reflect.DeepEqual(event.Attached, preparedAttached) {
+				prepared = true
+				break
+			}
+		}
+		if !prepared {
+			return fmt.Errorf("prepared rearm governance has no reachable pre-mutation event")
+		}
+		if _, err := landlease.AttestExecutionTerminated(s.home, currentReservation.Holder); err != nil {
+			return fmt.Errorf("reconcile rearmed proof execution termination: %w", err)
+		}
+		refresh := ProofResourceRefresh{
+			SchemaVersion:    ProofResourceRefreshSchemaVersion,
+			ID:               idFor("pfrh_", currentReservation.ID, currentReservation.RunAttemptID, liveStatus.ExpiresAt),
+			Kind:             "work.proof_resource.refresh",
+			CreatedAt:        action.CreatedAt,
+			WorkID:           workID,
+			Actor:            in.Actor,
+			ReservationID:    currentReservation.ID,
+			RunAttemptID:     currentReservation.RunAttemptID,
+			Holder:           currentReservation.Holder,
+			WindowOpenedAt:   currentReservation.AcquiredAt,
+			RefreshedAt:      liveStatus.AcquiredAt,
+			ExpiresAt:        liveStatus.ExpiresAt,
+			TTLSeconds:       liveStatus.TTLSeconds,
+			ActionIntentID:   action.ID,
+			PolicyDecisionID: decision.ID,
+		}
+		return s.persistProofRefresh(&w, action, decision, refresh, actionTime)
 	})
 }
 
