@@ -2160,6 +2160,9 @@ func TestHookReadinessActionContractFailsOnProseOnlyActions(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "cmd", "compound", "main_test.go"), []byte("func TestHooksAuthority(t *testing.T) {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(repo, "cmd", "compound", "hook_permission_prompt_test.go"), []byte("func TestHookPermissionPrompt(t *testing.T) {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(repo, "internal", "work"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -2174,6 +2177,9 @@ func TestHookReadinessActionContractFailsOnProseOnlyActions(t *testing.T) {
 		t.Fatalf("findings = %+v, want one failure", findings)
 	}
 	if !strings.Contains(findings[0].Message, "prove_fixture_hook") ||
+		!strings.Contains(findings[0].Message, "non_blocking") ||
+		!strings.Contains(findings[0].Message, "no native permission decision") ||
+		!strings.Contains(findings[0].Message, "--enforce") ||
 		!strings.Contains(findings[0].Message, "native_blocking") ||
 		!strings.Contains(findings[0].Message, "codex-pretooluse-native-gate-proof") ||
 		!strings.Contains(findings[0].Message, "expected_exit_code") ||

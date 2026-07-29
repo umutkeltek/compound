@@ -504,8 +504,8 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	if !containsString(pack.ActiveHooks, "hook://codex/SessionStart") {
 		t.Fatalf("context pack active hooks = %v, want hook://codex/SessionStart", pack.ActiveHooks)
 	}
-	if readiness := findContextHookReadiness(pack.HookReadiness, "codex", "PreToolUse"); readiness == nil || readiness.Status != "native_blocking" || readiness.AdapterRequired {
-		t.Fatalf("context pack hook readiness = %+v, want codex native_blocking", pack.HookReadiness)
+	if readiness := findContextHookReadiness(pack.HookReadiness, "codex", "PreToolUse"); readiness == nil || readiness.Status != "non_blocking" || readiness.Installed || !readiness.NativeBlock || readiness.AdapterRequired {
+		t.Fatalf("context pack hook readiness = %+v, want codex status=non_blocking installed=false native_block=true adapter_required=false", pack.HookReadiness)
 	}
 	if pack.IDs.ContractID == "" {
 		t.Fatal("context pack missing contract_id")
@@ -536,8 +536,8 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 		"hook://codex/PreToolUse",
 		"hook://codex/SessionStart",
 		"## Hook Gate Readiness",
-		"`codex/PreToolUse` status=native_blocking",
-		"installed=true",
+		"`codex/PreToolUse` status=non_blocking",
+		"installed=false",
 		"native_block=true",
 		"## Hook Roster",
 		// Required Checks and Capability Offers are deliberately NOT asserted on this

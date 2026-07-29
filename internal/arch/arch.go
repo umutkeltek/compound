@@ -2804,8 +2804,9 @@ func checkHookLiveParityContextSpineContract(repoRoot string) []Finding {
 }
 
 // checkHookReadinessActionContract keeps hook readiness rows actionable without
-// letting agents flip registration. Current Codex must prove its native write
-// gate, while genuinely missing live adapters retain fixture/operator actions.
+// letting agents flip registration. Interactive Codex observes by default and
+// may block only through explicit enforcement proof, while genuinely missing
+// live adapters retain fixture/operator actions.
 func checkHookReadinessActionContract(repoRoot string) []Finding {
 	statusBytes, err := os.ReadFile(filepath.Join(repoRoot, "docs", "architecture", "status.md"))
 	if err != nil {
@@ -2814,11 +2815,13 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 	status := strings.ToLower(string(statusBytes))
 	hasDocs := strings.Contains(status, "hook-readiness-action-contract") &&
 		strings.Contains(status, "codex sessionstart/userpromptsubmit") &&
-		strings.Contains(status, "ready") &&
-		strings.Contains(status, "registered") &&
-		strings.Contains(status, "handler-content") &&
+		strings.Contains(status, "reconciliation `registered` means the active invocation matches while handler-content bytes remain unverified") &&
+		strings.Contains(status, "reconciliation `ready` requires matching desired/observed handler-content revisions") &&
 		strings.Contains(status, "contextpack") &&
 		strings.Contains(status, "effectivecontract") &&
+		strings.Contains(status, "default interactive codex pretooluse is observational") &&
+		strings.Contains(status, "must not report `native_blocking` or emit a native permission decision") &&
+		strings.Contains(status, "`native_blocking` is reserved for an explicitly blocking binding installed with `--enforce`") &&
 		strings.Contains(status, "native_blocking") &&
 		strings.Contains(status, "codex-pretooluse-native-gate-proof") &&
 		strings.Contains(status, "permissiondecision") &&
@@ -2842,6 +2845,9 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 		"Actions": {Type: "[]HookReadinessAction", Tag: `json:"actions,omitempty"`},
 	})) == 0
 	hasSource := strings.Contains(contractText, "hookRuntimeReadinessActions") &&
+		strings.Contains(contractText, "InstalledHookRuntimeReadinessRows") &&
+		strings.Contains(contractText, "row.FixturePresent && row.LiveAdapter") &&
+		strings.Contains(contractText, `row.Status = "ready"`) &&
 		strings.Contains(envelopeText, "type HookReadinessAction struct") &&
 		hookReadinessActionsPresent &&
 		strings.Contains(contractText, "envelopeHookReadinessActions") &&
@@ -2849,6 +2855,12 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 		strings.Contains(contractText, "InvocationRevision string") &&
 		strings.Contains(contractText, "prove_fixture_hook") &&
 		strings.Contains(contractText, "ExpectedExitCode") &&
+		strings.Contains(contractText, "installedHookStatusForCommand") &&
+		strings.Contains(contractText, `canonicalHookEvent(event) == "PreToolUse"`) &&
+		strings.Contains(contractText, "compoundLivePreToolUseCommand(command)") &&
+		strings.Contains(contractText, `!hookCommandHasExactField(command, "--enforce")`) &&
+		strings.Contains(contractText, `return "non_blocking"`) &&
+		strings.Contains(contractText, `row.Status = "non_blocking"`) &&
 		strings.Contains(contractText, `row.Status = "native_blocking"`) &&
 		strings.Contains(contractText, "operator_install_required") &&
 		strings.Contains(contractText, "operator_live_adapter_required") &&
@@ -2862,6 +2874,13 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 	contractTest := string(contractTestBytes)
 	hasContractTest := strings.Contains(contractTest, "TestInstalledHookRuntimeReadinessAddsMissingAdapterActions") &&
 		strings.Contains(contractTest, "TestImportCodexHooksJSONFeedsRuntimeContract") &&
+		strings.Contains(contractTest, "observation-only Codex PreToolUse status") &&
+		strings.Contains(contractTest, `gate.Status != "non_blocking"`) &&
+		strings.Contains(contractTest, `readiness.Status != "non_blocking"`) &&
+		strings.Contains(contractTest, "observation-only Codex PreToolUse projected as blocking") &&
+		strings.Contains(contractTest, "TestImportCodexHooksJSONPreservesExplicitPreToolUseEnforcement") &&
+		strings.Contains(contractTest, "compound hook pre-tool-use --live --harness codex --enforce") &&
+		strings.Contains(contractTest, `readiness.Status != "native_blocking"`) &&
 		strings.Contains(contractTest, "prove_fixture_hook") &&
 		strings.Contains(contractTest, "ExpectedExitCode") &&
 		strings.Contains(contractTest, "native_blocking") &&
@@ -2885,9 +2904,23 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 	proofCheckText := string(proofCheckBytes)
 	hasProofCheck := strings.Contains(proofCheckText, "codex-pretooluse-native-gate-proof") &&
 		strings.Contains(proofCheckText, "runProofCheckCodexPreToolUseNativeGate") &&
+		strings.Contains(proofCheckText, `"--enforce"`) &&
 		strings.Contains(proofCheckText, `"tool_name":"apply_patch"`) &&
 		strings.Contains(proofCheckText, `PermissionDecision != "deny"`) &&
 		strings.Contains(proofCheckText, "COMPOUND_HOME=")
+
+	permissionPromptTestBytes, err := os.ReadFile(filepath.Join(repoRoot, "cmd", "compound", "hook_permission_prompt_test.go"))
+	if err != nil {
+		return []Finding{{"hook-readiness-action-contract", Warn, "could not read cmd/compound/hook_permission_prompt_test.go: " + err.Error()}}
+	}
+	permissionPromptTest := string(permissionPromptTestBytes)
+	hasPermissionPromptTest := strings.Contains(permissionPromptTest, "TestLivePreToolUseOnlyPublishesNativePermissionDecisionWhenEnforced") &&
+		strings.Contains(permissionPromptTest, `[]string{"codex", "claude-code"}`) &&
+		strings.Contains(permissionPromptTest, `"pre-tool-use", "--live", "--harness", harnessName`) &&
+		strings.Contains(permissionPromptTest, `observed.HookSpecificOutput.PermissionDecision; got != ""`) &&
+		strings.Contains(permissionPromptTest, "observe-only PreToolUse did not persist the held PolicyDecision evidence") &&
+		strings.Contains(permissionPromptTest, `"pre-tool-use", "--live", "--harness", harnessName, "--enforce"`) &&
+		strings.Contains(permissionPromptTest, `enforced.HookSpecificOutput.PermissionDecision; got == ""`)
 
 	cliTestBytes, err := os.ReadFile(filepath.Join(repoRoot, "cmd", "compound", "main_test.go"))
 	if err != nil {
@@ -2899,14 +2932,14 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 		strings.Contains(cliTest, `findHookReadiness(authorityReport.HookReadiness, "codex", "PreToolUse")`) &&
 		strings.Contains(cliTest, `got.Status != "ready"`) &&
 		strings.Contains(cliTest, `findHookGateReadiness(authorityReport.PreToolUseReadiness, "codex")`) &&
-		strings.Contains(cliTest, `got.Status != "native_blocking"`) &&
+		strings.Contains(cliTest, `got.Status != "non_blocking" || !got.NativeBlock || got.Installed || got.AdapterRequired || len(got.Actions) != 0`) &&
 		strings.Contains(cliTest, "codex-pretooluse-native-gate-proof") &&
 		strings.Contains(cliTest, `"status": "blocked"`)
 
-	if !hasDocs || !hasSource || !hasContractTest || !hasWorkbenchAction || !hasProofCheck || !hasCLITest {
-		return []Finding{{"hook-readiness-action-contract", Fail, "hook readiness must distinguish registered invocation from content-verified ready, prove Codex context adapters ready and PreToolUse native_blocking, keep codex-pretooluse-native-gate-proof allow/deny coverage, and retain prove_fixture_hook, expected_exit_code, and operator_live_adapter_required actions for missing live adapters"}}
+	if !hasDocs || !hasSource || !hasContractTest || !hasWorkbenchAction || !hasProofCheck || !hasPermissionPromptTest || !hasCLITest {
+		return []Finding{{"hook-readiness-action-contract", Fail, "hook readiness must distinguish registered invocation from content-verified ready, keep default Codex PreToolUse non_blocking with no native permission decision, prove explicit --enforce native_blocking allow/deny behavior through codex-pretooluse-native-gate-proof, and retain prove_fixture_hook, expected_exit_code, and operator_live_adapter_required actions for missing live adapters"}}
 	}
-	return []Finding{{"hook-readiness-action-contract", Info, "hook readiness separates registration from content proof, proves Codex native blocking, and retains fixture/operator actions for missing adapters"}}
+	return []Finding{{"hook-readiness-action-contract", Info, "hook readiness separates registration from content proof, keeps default Codex observation non-blocking, proves explicit native blocking, and retains fixture/operator actions for missing adapters"}}
 }
 
 // checkStandingGrantContract keeps autonomy grants from drifting back to
