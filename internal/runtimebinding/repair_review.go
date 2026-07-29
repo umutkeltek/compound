@@ -161,11 +161,30 @@ func RecordRepairReview(homePath string, review RepairReview, sourcePath string,
 		review.ReviewedAt = createdAt
 	}
 	review.SourceRef = "runtime-repair-review:" + filepath.Base(sourcePath)
-	report.ReviewPath = filepath.Join(filepath.Dir(sourcePath), review.PlanID+"."+review.ID+".reviewed.json")
+	report.ReviewPath = filepath.Join(filepath.Dir(sourcePath), repairReviewReportName(review.PlanID, review.ID))
 	if _, err := reviewartifact.WriteJSON(homePath, RuntimeRepairReviewArea, filepath.Base(report.ReviewPath), report, "  "); err != nil {
 		return RepairReviewReport{}, err
 	}
 	return report, nil
+}
+
+// repairReviewReportName is the single owner of the recorded-disposition file
+// name. Nothing pins a review id apart from its plan id, so a review YAML that
+// reuses the plan id joined the two into a doubled `<id>.<id>.reviewed.json`
+// stem that no sidecar reader stats: the core item would keep its non-terminal
+// producer status forever and its review area could never drain. De-duping puts
+// the disposition on the sidecar stem its own core item owns, while the joined
+// form survives whenever the two ids genuinely differ so distinct dispositions
+// of one plan never collide.
+//
+// Recorded dispositions are immutable evidence, so no reader changes with this:
+// the queue's reviewed-path probe already matches any `<id>.*.reviewed.json`,
+// and the archive sweep already selects the doubled stem as terminal.
+func repairReviewReportName(planID, reviewID string) string {
+	if planID == reviewID {
+		return planID + ".reviewed.json"
+	}
+	return planID + "." + reviewID + ".reviewed.json"
 }
 
 func LoadRepairReviewReport(path string) (RepairReviewReport, error) {

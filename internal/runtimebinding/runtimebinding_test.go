@@ -239,6 +239,94 @@ func TestRecordRuntimeRepairReviewAnnotatesQueue(t *testing.T) {
 	}
 }
 
+// Nothing pins a runtime repair review id apart from its plan id, so a review
+// YAML that reuses the plan id made the producer join the two into a doubled
+// `<id>.<id>.reviewed.json` stem — the shape that left source-control
+// dispositions invisible to every sidecar reader, keeping the core item
+// non-terminal forever and its review area undrainable.
+func TestRecordRepairReviewDeDupesEqualPlanAndReviewIDStem(t *testing.T) {
+	homePath := t.TempDir()
+	plan, paths := recordRepairPlanForReview(t, homePath)
+	review := loadValidRepairReview(t, paths.ReviewYAMLPath)
+	review.ID = plan.ID
+
+	record, err := RecordRepairReview(homePath, review, paths.ReviewYAMLPath, time.Date(2026, 6, 29, 1, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(paths.ReviewYAMLPath)
+	wantPath := filepath.Join(dir, plan.ID+".reviewed.json")
+	if filepath.Clean(record.ReviewPath) != filepath.Clean(wantPath) {
+		t.Fatalf("recorded review path = %q, want the sidecar stem %q", record.ReviewPath, wantPath)
+	}
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("recorded disposition is not on the sidecar stem: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, plan.ID+"."+plan.ID+".reviewed.json")); err == nil {
+		t.Fatalf("recorded disposition still written at the doubled stem")
+	}
+	queue, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: RuntimeRepairReviewArea}, time.Date(2026, 6, 29, 1, 2, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateRepairQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.Total != 1 || queue.Counts.OK != 1 {
+		t.Fatalf("de-duped disposition did not close its queue debt: %+v", queue.Counts)
+	}
+}
+
+// A review id that genuinely differs from its plan id keeps the joined form, so
+// distinct dispositions of one plan never collide on a single stem.
+func TestRecordRepairReviewKeepsJoinedStemForDistinctReviewID(t *testing.T) {
+	homePath := t.TempDir()
+	plan, paths := recordRepairPlanForReview(t, homePath)
+	review := loadValidRepairReview(t, paths.ReviewYAMLPath)
+	if review.ID == plan.ID {
+		t.Fatalf("draft review id must differ from its plan id, got %q twice", plan.ID)
+	}
+
+	record, err := RecordRepairReview(homePath, review, paths.ReviewYAMLPath, time.Date(2026, 6, 29, 1, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath := filepath.Join(filepath.Dir(paths.ReviewYAMLPath), plan.ID+"."+review.ID+".reviewed.json")
+	if filepath.Clean(record.ReviewPath) != filepath.Clean(wantPath) {
+		t.Fatalf("recorded review path = %q, want the joined stem %q", record.ReviewPath, wantPath)
+	}
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("recorded disposition is not on the joined stem: %v", err)
+	}
+}
+
+func recordRepairPlanForReview(t *testing.T, homePath string) (RepairPlan, RepairArtifactPaths) {
+	t.Helper()
+	b := validBundle()
+	b.RuntimeBinding.HostBinding = ""
+	plan, err := BuildRepairPlan(Doctor(b), RepairRefs{WritebackGateID: "owg_runtime"}, time.Date(2026, 6, 29, 1, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := RecordRepairPlan(homePath, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan, paths
+}
+
+func loadValidRepairReview(t *testing.T, reviewYAMLPath string) RepairReview {
+	t.Helper()
+	review, err := LoadRepairReview(reviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.Decision = "owner_action_required"
+	review.Rationale = "owner reviewed runtime repair path"
+	review.Confidence = 0.91
+	review.NextAction = "rerun runtime doctor after owner contract edit"
+	return review
+}
+
 func TestLoadFixture(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "runtime.yaml")
