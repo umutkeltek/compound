@@ -2,6 +2,7 @@ package actuator
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +107,7 @@ func TestWriteAndListHeldMoves(t *testing.T) {
 
 func TestPostHoldPersistsActionCard(t *testing.T) {
 	home := t.TempDir()
+	createKnownActuatorWork(t, home, "work_1")
 	cfg := policy.DefaultConfig()
 	ledger := OpenLedger(home)
 	budget := BudgetEnvelope{
@@ -135,5 +137,49 @@ func TestPostHoldPersistsActionCard(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "Budget exhausted") {
 		t.Fatalf("budget-held card must carry the budget release gate, got %s", string(data))
+	}
+}
+
+func TestPostFailsClosedWhenHeldMoveCardCannotBePersisted(t *testing.T) {
+	home := t.TempDir()
+	createKnownActuatorWork(t, home, "work_post")
+
+	ledger := OpenLedger(home)
+	budget := BudgetEnvelope{
+		SchemaVersion: BudgetSchemaVersion,
+		ID:            "budget_product-demo",
+		ProductID:     "product:demo",
+		CreatedAt:     testNow.Format(time.RFC3339),
+		Channels:      []ChannelLimits{{Channel: "distribution", WindowHours: 24, MaxActions: 1}},
+	}
+	if err := ledger.SaveBudget(budget); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Record(Consumption{
+		At:        testNow.Format(time.RFC3339),
+		ProductID: "product:demo",
+		Channel:   "distribution",
+		Actions:   1,
+		WorkID:    "work_post",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "actuator", "held-moves"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Post(home, PostInput{
+		WorkID:    "work_post",
+		ProductID: "product:demo",
+		Channel:   "distribution",
+		Surface:   "x",
+		Content:   "must remain held",
+	}, policy.DefaultConfig(), testNow)
+
+	if err == nil || !strings.Contains(err.Error(), "persist held-move card") {
+		t.Fatalf("held-card persistence failure must surface, result=%+v err=%v", result, err)
+	}
+	if result.Held || result.HeldMoveID != "" || result.HeldMovePath != "" {
+		t.Fatalf("an unpersisted card must not be reported as a successful hold: %+v", result)
 	}
 }

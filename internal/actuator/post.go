@@ -85,6 +85,9 @@ func Post(homePath string, in PostInput, cfg policy.Config, now time.Time) (Post
 	if strings.TrimSpace(in.Content) == "" {
 		return PostResult{}, fmt.Errorf("actuator post: content required")
 	}
+	if err := requireKnownWork(homePath, in.WorkID); err != nil {
+		return PostResult{}, fmt.Errorf("actuator post: %w", err)
+	}
 	channel := firstNonEmpty(in.Channel, "distribution")
 	surface := firstNonEmpty(in.Surface, "generic")
 	window := firstNonEmpty(in.Window, "7d")
@@ -101,7 +104,10 @@ func Post(homePath string, in PostInput, cfg policy.Config, now time.Time) (Post
 		// persist a human-gated action card so the operator knows exactly how to
 		// release the move.
 		card := ReleaseGateFor(plan, now)
-		path, _ := WriteHeldMoveCard(homePath, card)
+		path, err := WriteHeldMoveCard(homePath, card)
+		if err != nil {
+			return PostResult{}, fmt.Errorf("actuator post: persist held-move card: %w", err)
+		}
 		return PostResult{Plan: plan, Held: true, HeldMoveID: card.ID, HeldMovePath: path}, nil
 	}
 

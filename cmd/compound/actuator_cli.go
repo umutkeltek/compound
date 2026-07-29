@@ -446,6 +446,12 @@ func runActuatorRun(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+	if runErr != nil && !result.Executed {
+		// Pre-dispatch failure: no RunAttempt exists, so printing BLOCKED with an
+		// empty attempt and exit_code 0 would manufacture a misleading run summary.
+		fmt.Fprintln(stderr, "run error:", runErr)
+		return 1
+	}
 	if result.Held {
 		fmt.Fprintf(stdout, "# actuator run — HELD (nothing dispatched)\n")
 		for _, r := range result.Plan.Decision.Reasons {

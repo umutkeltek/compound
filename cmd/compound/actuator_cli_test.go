@@ -12,7 +12,23 @@ import (
 
 	"compound/internal/actuator"
 	"compound/internal/policy"
+	"compound/internal/work"
 )
+
+func seedActuatorCLIWork(t *testing.T, homePath, workID string) {
+	t.Helper()
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(work.CreateInput{
+		WorkID:           workID,
+		Owner:            "actuator-cli-test",
+		SuccessPredicate: "actuator CLI test work completes",
+	}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // T1 (packet 2026-07-21-zip27-actuator-cli.md): `actuator budget-set --max-actions ten`
 // must error naming the flag and the bad value, and must NOT write the budget file.
@@ -225,6 +241,7 @@ func TestActuatorSubcommandsAcceptKnownFlagsEndToEnd(t *testing.T) {
 func postRecordFailureHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
+	seedActuatorCLIWork(t, home, "work_rec")
 	budgetDir := filepath.Join(home, "actuator", "budget")
 	if err := os.MkdirAll(budgetDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -302,6 +319,7 @@ func TestActuatorPostHumanSurfacesReceiptWithRecordError(t *testing.T) {
 // This guards the mirror against over-printing an EXECUTED block for a zero result.
 func TestActuatorPostPreStagingFailureStaysErrorOnly(t *testing.T) {
 	home := t.TempDir()
+	seedActuatorCLIWork(t, home, "work_pre")
 	// Make the artifact-store path a FILE so act.NewArtifactStore's MkdirAll
 	// (home/artifacts/sha256) fails before any post is staged.
 	if err := os.WriteFile(filepath.Join(home, "artifacts"), []byte("x"), 0o644); err != nil {
@@ -391,5 +409,38 @@ func TestActuatorRunJSONNamesMissingWorkError(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "work_missing") || !strings.Contains(stderr.String(), "not found") {
 		t.Fatalf("JSON mode must name the missing work error on stderr, got %q", stderr.String())
+	}
+}
+
+func TestActuatorRunHeldCardPersistenceFailureStaysErrorOnly(t *testing.T) {
+	homePath := t.TempDir()
+	seedActuatorCLIWork(t, homePath, "work_hold")
+	actuatorDir := filepath.Join(homePath, "actuator")
+	if err := os.MkdirAll(actuatorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(actuatorDir, "held-moves"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runActuator([]string{
+		"run",
+		"--work", "work_hold",
+		"--harness", "os-harness-entrypoints",
+		"--home", homePath,
+		"--", "true",
+	}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("held-card persistence failure must exit 1, got %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "persist held-move card") {
+		t.Fatalf("stderr must name the held-card persistence failure, got %q", stderr.String())
+	}
+	for _, misleading := range []string{"HELD", "run_attempt", "exit_code"} {
+		if strings.Contains(stdout.String(), misleading) {
+			t.Fatalf("pre-dispatch failure must not print a %q run summary; stdout=%q", misleading, stdout.String())
+		}
 	}
 }

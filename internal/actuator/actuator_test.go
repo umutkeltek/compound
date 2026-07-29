@@ -69,6 +69,7 @@ func installStubActuatorRegistry(t *testing.T, stub *stubClaudeAdapter) {
 // write.)
 func TestSwitchbackInstructionStepIsGoverned(t *testing.T) {
 	home := t.TempDir()
+	createKnownActuatorWork(t, home, "work_switch")
 	workspace := t.TempDir()
 	cfg := policy.DefaultConfig()
 	profile := ProjectProfile{
@@ -168,6 +169,32 @@ func TestRunHoldsArbitraryCommandWithoutDispatch(t *testing.T) {
 	}
 	if res.HeldMoveID == "" {
 		t.Fatal("held run must persist a human-gated held-move card")
+	}
+}
+
+func TestRunFailsClosedWhenHeldMoveCardCannotBePersisted(t *testing.T) {
+	home := t.TempDir()
+	createKnownActuatorWork(t, home, "work_run")
+
+	actuatorDir := filepath.Join(home, "actuator")
+	if err := os.MkdirAll(actuatorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(actuatorDir, "held-moves"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Run(home, RunInput{
+		WorkID:  "work_run",
+		Harness: "os-harness-entrypoints",
+		Command: "true",
+	}, policy.DefaultConfig(), testNow)
+
+	if err == nil || !strings.Contains(err.Error(), "persist held-move card") {
+		t.Fatalf("held-card persistence failure must surface, result=%+v err=%v", result, err)
+	}
+	if result.Held || result.HeldMoveID != "" || result.HeldMovePath != "" {
+		t.Fatalf("an unpersisted card must not be reported as a successful hold: %+v", result)
 	}
 }
 
@@ -328,6 +355,58 @@ func TestRunRejectsMissingWorkBeforeDispatch(t *testing.T) {
 	}
 }
 
+func TestSwitchbackRejectsMissingWorkBeforeMutation(t *testing.T) {
+	homePath := t.TempDir()
+	workspace := t.TempDir()
+	target := filepath.Join(workspace, "AGENTS.md")
+	routingPath := filepath.Join(t.TempDir(), "routing.json")
+	routingBefore := "{\"lane\":\"baseline\"}\n"
+	if err := os.WriteFile(routingPath, []byte(routingBefore), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Switchback(homePath, ProjectProfile{
+		SchemaVersion: ProfileSchemaVersion,
+		ID:            "prof_missing_work",
+		Slug:          "missing-work-demo",
+		Workspace:     workspace,
+		Routing: RoutingSpec{
+			Harness:     "claude",
+			ConfigPath:  routingPath,
+			ConfigKey:   "lane",
+			ConfigValue: "next",
+		},
+		Instructions: []InstructionSurface{{
+			Name: "AGENTS.md",
+			Path: "AGENTS.md",
+			Body: "# must never be written\n",
+		}},
+		CreatedAt: testNow.Format(time.RFC3339),
+	}, "work_missing", policy.DefaultConfig(), testNow)
+
+	if err == nil || !strings.Contains(err.Error(), "work_missing") || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("missing work must fail with a named not-found error, result=%+v err=%v", result, err)
+	}
+	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("missing work must fail before the instruction write, stat err=%v", statErr)
+	}
+	routingAfter, readErr := os.ReadFile(routingPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(routingAfter) != routingBefore {
+		t.Fatalf("missing work must fail before the routing write: before=%q after=%q", routingBefore, routingAfter)
+	}
+	for _, path := range []string{
+		filepath.Join(homePath, "actuator"),
+		filepath.Join(homePath, "artifacts"),
+	} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("missing work must not create actuator artifacts at %s, stat err=%v", path, statErr)
+		}
+	}
+}
+
 func TestActionIntentIdentityIncludesInvocationTime(t *testing.T) {
 	firstAt := testNow
 	secondAt := testNow.Add(time.Second)
@@ -458,6 +537,7 @@ func TestRunDoesNotDispatchWhenAuthorizationPersistenceFails(t *testing.T) {
 
 func TestSwitchbackAccountingFailureIsStructuredAndNonGreen(t *testing.T) {
 	homePath := t.TempDir()
+	createKnownActuatorWork(t, homePath, "work_switch_accounting")
 	workspace := t.TempDir()
 	original := recordSwitchbackConsumption
 	recordSwitchbackConsumption = func(*Ledger, Consumption) error {

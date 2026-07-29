@@ -117,6 +117,9 @@ func Switchback(homePath string, p ProjectProfile, workID string, cfg policy.Con
 	if err != nil {
 		return SwitchbackResult{}, err
 	}
+	if err := requireKnownWork(homePath, workID); err != nil {
+		return SwitchbackResult{}, fmt.Errorf("actuator switchback: %w", err)
+	}
 	ledger := OpenLedger(homePath)
 	budget, err := ledger.LoadBudget(p.ProductID, now)
 	if err != nil {
@@ -331,6 +334,23 @@ type RunResult struct {
 	HeldMovePath   string `json:"held_move_path,omitempty"`
 }
 
+// requireKnownWork binds actuator moves to a durable WorkEnvelope. Store.Get
+// resolves both active and archived envelopes; runnable-state policy remains
+// separate from this identity/existence boundary.
+func requireKnownWork(homePath, workID string) error {
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		return fmt.Errorf("open work store: %w", err)
+	}
+	if _, err := workStore.Get(workID); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("work %s not found: %w", workID, err)
+		}
+		return fmt.Errorf("read work %s: %w", workID, err)
+	}
+	return nil
+}
+
 // Run executes one move of known work within limits. It builds a local_reversible
 // ActionIntent for the run, evaluates the full Plan (policy + budget + Route), and
 // — only if the verdict is auto — dispatches through the existing harness adapter
@@ -345,15 +365,8 @@ func Run(homePath string, in RunInput, cfg policy.Config, now time.Time) (RunRes
 	if strings.TrimSpace(in.Harness) == "" {
 		return RunResult{}, fmt.Errorf("actuator run: harness required")
 	}
-	workStore, err := work.Open(homePath)
-	if err != nil {
-		return RunResult{}, fmt.Errorf("actuator run: open work store: %w", err)
-	}
-	if _, err := workStore.Get(in.WorkID); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return RunResult{}, fmt.Errorf("actuator run: work %s not found: %w", in.WorkID, err)
-		}
-		return RunResult{}, fmt.Errorf("actuator run: read work %s: %w", in.WorkID, err)
+	if err := requireKnownWork(homePath, in.WorkID); err != nil {
+		return RunResult{}, fmt.Errorf("actuator run: %w", err)
 	}
 	channel := firstNonEmpty(in.Channel, "execution")
 	intent := runIntent(in, now)
@@ -365,7 +378,10 @@ func Run(homePath string, in RunInput, cfg policy.Config, now time.Time) (RunRes
 		// Held: do not dispatch. Persist a human-gated action card so the hold is
 		// actionable, not silent.
 		card := ReleaseGateFor(plan, now)
-		path, _ := WriteHeldMoveCard(homePath, card)
+		path, err := WriteHeldMoveCard(homePath, card)
+		if err != nil {
+			return RunResult{}, fmt.Errorf("actuator run: persist held-move card: %w", err)
+		}
 		return RunResult{Plan: plan, Held: true, HeldMoveID: card.ID, HeldMovePath: path}, nil
 	}
 

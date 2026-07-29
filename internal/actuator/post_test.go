@@ -32,8 +32,40 @@ func appendSignal(t *testing.T, home string, sig map[string]any) {
 	}
 }
 
+func TestPostRejectsMissingWorkBeforeStaging(t *testing.T) {
+	home := t.TempDir()
+
+	result, err := Post(home, PostInput{
+		WorkID:    "work_missing",
+		ProductID: "product:demo",
+		Channel:   "distribution",
+		Surface:   "x",
+		Content:   "must never be staged",
+		Metric:    "synthetic_signups",
+		Window:    "7d",
+	}, policy.DefaultConfig(), testNow)
+
+	if err == nil || !strings.Contains(err.Error(), "work_missing") || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("missing work must fail with a named not-found error, result=%+v err=%v", result, err)
+	}
+	if result.Executed || result.Held || result.PostPath != "" || result.ReceiptRef != "" ||
+		result.TransitionRef != "" || result.HypothesisID != "" || result.SignalCheckID != "" {
+		t.Fatalf("missing work must not return proof-like actuator state: %+v", result)
+	}
+	for _, path := range []string{
+		filepath.Join(home, "actuator"),
+		filepath.Join(home, "artifacts"),
+		filepath.Join(home, candidates.InboxDir(candidates.ProductHypothesis)),
+	} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("missing work must not stage actuator state at %s, stat err=%v", path, statErr)
+		}
+	}
+}
+
 func TestPostStagesAndOpensLoop(t *testing.T) {
 	home := t.TempDir()
+	createKnownActuatorWork(t, home, "work_1")
 	cfg := policy.DefaultConfig()
 	res, err := Post(home, PostInput{
 		WorkID:    "work_1",
@@ -68,6 +100,7 @@ func TestPostStagesAndOpensLoop(t *testing.T) {
 
 func TestPostHoldsWhenBudgetExhausted(t *testing.T) {
 	home := t.TempDir()
+	createKnownActuatorWork(t, home, "work_1")
 	cfg := policy.DefaultConfig()
 	ledger := OpenLedger(home)
 	budget := BudgetEnvelope{
@@ -96,6 +129,7 @@ func TestPostHoldsWhenBudgetExhausted(t *testing.T) {
 
 func TestObserveClosureOpenThenClosed(t *testing.T) {
 	home := t.TempDir()
+	createKnownActuatorWork(t, home, "work_1")
 	cfg := policy.DefaultConfig()
 	if _, err := Post(home, PostInput{
 		WorkID: "work_1", ProductID: "product:demo", Channel: "distribution",
@@ -139,6 +173,7 @@ func TestObserveClosureOpenThenClosed(t *testing.T) {
 
 func TestObserveClosureExpiresAfterWindow(t *testing.T) {
 	home := t.TempDir()
+	createKnownActuatorWork(t, home, "work_1")
 	cfg := policy.DefaultConfig()
 	if _, err := Post(home, PostInput{
 		WorkID: "work_1", ProductID: "product:demo", Channel: "distribution",
@@ -168,6 +203,7 @@ func TestObserveClosureExpiresAfterWindow(t *testing.T) {
 
 func TestObserveClosureLateSignalStillCloses(t *testing.T) {
 	home := t.TempDir()
+	createKnownActuatorWork(t, home, "work_1")
 	cfg := policy.DefaultConfig()
 	if _, err := Post(home, PostInput{
 		WorkID: "work_1", ProductID: "product:demo", Channel: "distribution",
@@ -203,6 +239,7 @@ func TestObserveClosureLateSignalStillCloses(t *testing.T) {
 // This mirrors TestRunSurfacesConsumptionRecordFailure for the run path.
 func TestPostSurfacesConsumptionRecordFailure(t *testing.T) {
 	home := t.TempDir()
+	createKnownActuatorWork(t, home, "work_rec")
 	budgetDir := filepath.Join(home, "actuator", "budget")
 	if err := os.MkdirAll(budgetDir, 0o755); err != nil {
 		t.Fatal(err)
