@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/arch"
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/contract"
@@ -178,6 +179,47 @@ func TestVersionStringEmbedsBuildSHA(t *testing.T) {
 	out := captureStdout(t, func() { fmt.Println(versionString()) })
 	if !strings.Contains(out, "a1b2c3d") {
 		t.Fatalf("printed version output = %q, want embedded sha", out)
+	}
+}
+
+// TestVersionJSONAnswersTheInstallChallenge proves the surface install verification depends on:
+// `version --json` must emit a PARSEABLE report bound to a nonce the caller mints, not just the
+// version string a stub can echo. Without the challenge fields, the installer is back to a string
+// compare — the probe a four-line fixture answers correctly.
+func TestVersionJSONAnswersTheInstallChallenge(t *testing.T) {
+	original := buildSHA
+	defer func() { buildSHA = original }()
+	buildSHA = "a1b2c3d"
+
+	out := captureStdout(t, func() { cmdVersion([]string{"--json", "--challenge", "nonce-xyz"}) })
+	var report arch.VersionReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("version --json is not a parseable report: %v\n%s", err, out)
+	}
+	if report.SchemaVersion != arch.VersionReportSchema {
+		t.Fatalf("schema_version = %q, want %q", report.SchemaVersion, arch.VersionReportSchema)
+	}
+	if report.BuildSHA != "a1b2c3d" || strings.TrimSpace(report.Version) == "" {
+		t.Fatalf("version report = %+v", report)
+	}
+	if report.Challenge != "nonce-xyz" {
+		t.Fatalf("challenge = %q, want the nonce echoed verbatim", report.Challenge)
+	}
+	want := arch.VersionChallengeDigest("nonce-xyz", report.Version, report.BuildSHA)
+	if report.ChallengeDigest != want {
+		t.Fatalf("challenge_digest = %q, want %q", report.ChallengeDigest, want)
+	}
+
+	// A different nonce must produce a different answer, or a recorded response replays forever.
+	other := captureStdout(t, func() { cmdVersion([]string{"--json", "--challenge", "nonce-abc"}) })
+	if strings.Contains(other, report.ChallengeDigest) {
+		t.Fatalf("challenge_digest is nonce-independent:\n%s", other)
+	}
+
+	// Plain `version` keeps its human string, so the existing operator surface is unchanged.
+	plain := captureStdout(t, func() { cmdVersion(nil) })
+	if strings.TrimSpace(plain) != versionString() {
+		t.Fatalf("plain version output = %q, want %q", plain, versionString())
 	}
 }
 
@@ -5363,10 +5405,27 @@ func TestInstallScriptBuildsInitializesAndDoctorsTempHome(t *testing.T) {
 		t.Fatalf("home manifest missing: %v\n%s", err, out)
 	}
 	text := string(out)
-	for _, want := range []string{"verdict: ok", "status: ok", "compound installed", "compound workbench"} {
+	for _, want := range []string{"install verification ok", "verdict: ok", "status: ok", "compound installed", "compound workbench"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("install output missing %q:\n%s", want, text)
 		}
+	}
+	// The artifact is built to a staging path and only moved in once verified, so a completed
+	// install leaves no staged file behind — and a failed one replaces nothing.
+	staged, err := filepath.Glob(filepath.Join(installDir, ".compound.incoming.*"))
+	if err != nil {
+		t.Fatalf("glob staged artifacts: %v", err)
+	}
+	if len(staged) != 0 {
+		t.Fatalf("install left staged artifacts behind: %v", staged)
+	}
+	headOut, headErr := exec.Command("git", "-C", repoRoot, "rev-parse", "--short", "HEAD").Output()
+	headSHA := ""
+	if headErr == nil {
+		headSHA = strings.TrimSpace(string(headOut))
+	}
+	if _, err := arch.VerifyInstalledArtifact(binaryPath, headSHA); err != nil {
+		t.Fatalf("the artifact install.sh actually placed does not verify: %v", err)
 	}
 }
 

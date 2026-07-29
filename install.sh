@@ -28,7 +28,17 @@ fi
 
 mkdir -p "$install_dir"
 build_sha=$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo "")
-go build -ldflags "-X main.buildSHA=$build_sha" -o "$install_dir/compound" ./cmd/compound
+
+# Build to a staging path, prove the artifact, and only then move it into place. Installing
+# first and verifying after would leave a half-installed artifact behind on failure — and the
+# lifecycle hooks shell out to that path, so a bad artifact there fails every policy gate OPEN
+# with no signal. `set -e` plus this trap means a failed verification replaces nothing.
+staged=$install_dir/.compound.incoming.$$
+trap 'rm -f "$staged"' EXIT HUP INT TERM
+go build -ldflags "-X main.buildSHA=$build_sha" -o "$staged" ./cmd/compound
+go run ./cmd/compound-install-verify --binary "$staged" --build-sha "$build_sha"
+mv -f "$staged" "$install_dir/compound"
+
 go build -o "$install_dir/compound-breadth-engine" ./cmd/compound-breadth-engine
 
 PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home init --home "$compound_home" --global

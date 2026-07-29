@@ -58,8 +58,16 @@ func (command compoundCommand) withSubcommandFlagAdmission(
 	return command
 }
 
-func cmdVersion([]string) {
-	fmt.Println(versionString())
+// cmdVersion prints the human version string, or — with --json — the structured version report
+// install verification parses. The structured form exists because a version STRING is
+// precomputable: comparing one is exactly the probe a stub answers correctly (see
+// internal/arch/installverify.go).
+func cmdVersion(args []string) {
+	if !hasFlag(args, "--json") {
+		fmt.Println(versionString())
+		return
+	}
+	printJSON(versionReport(valueFlag(args, "--challenge")))
 }
 
 func retiredCommand(name string) func([]string) {

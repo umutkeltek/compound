@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/arch"
 	"compound/internal/authority"
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
@@ -74,6 +75,24 @@ func buildSHAOrDev() string {
 // switch so tests can assert build-SHA embedding without shelling out to a built binary.
 func versionString() string {
 	return fmt.Sprintf("compound %s (build %s)", version, buildSHAOrDev())
+}
+
+// versionReport is what `compound version --json` emits: the same identity as versionString, in
+// a shape a caller can PARSE rather than string-match, plus an answer to a nonce the caller
+// minted. Install verification uses it to prove the artifact at the install path is this binary
+// and not something that merely knows what this binary prints (internal/arch/installverify.go).
+func versionReport(challenge string) arch.VersionReport {
+	challenge = strings.TrimSpace(challenge)
+	report := arch.VersionReport{
+		SchemaVersion: arch.VersionReportSchema,
+		Version:       version,
+		BuildSHA:      buildSHAOrDev(),
+	}
+	if challenge != "" {
+		report.Challenge = challenge
+		report.ChallengeDigest = arch.VersionChallengeDigest(challenge, report.Version, report.BuildSHA)
+	}
+	return report
 }
 
 func prepareGlobalArgs(args []string) ([]string, error) {
