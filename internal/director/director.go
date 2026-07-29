@@ -423,12 +423,13 @@ func autonomyRoutePlanSnapshot(plan routeevidence.CapabilityRoutePlan) autonomyp
 			resolution.Targets = append(resolution.Targets, autonomyproof.ResolvedTarget{Provider: target.Provider, Model: target.Model})
 		}
 		out.Chain = append(out.Chain, autonomyproof.LaneSnapshot{
-			ModelID:       lane.ModelID,
-			ProviderRoute: lane.ProviderRoute,
-			Resolution:    resolution,
-			Tier:          lane.Tier,
-			ClaimLevel:    lane.ClaimLevel,
-			GateRole:      lane.GateRole,
+			ModelID:           lane.ModelID,
+			ProviderRoute:     lane.ProviderRoute,
+			ProviderRouteKind: lane.ProviderRouteKind,
+			Resolution:        resolution,
+			Tier:              lane.Tier,
+			ClaimLevel:        lane.ClaimLevel,
+			GateRole:          lane.GateRole,
 		})
 	}
 	return out

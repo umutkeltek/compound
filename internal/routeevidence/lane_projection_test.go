@@ -15,26 +15,28 @@ func laneManifest() ModelCapabilitiesManifest {
 		CapabilityClasses: []string{"build-implement"},
 		Models: map[string]ModelCapabilityEntry{
 			"claude-fixture-primary": {
-				Lane:          "claude-fixture-primary",
-				Harness:       "claude_code",
-				ProviderRoute: "provider.example/model-primary",
-				EffortDefault: "high",
-				Tier:          "premium",
-				PacketCeiling: "repo-scoped",
-				CostClass:     "api-metered",
-				ContextWindow: 1000000,
-				Aliases:       []string{"model-primary"},
+				Lane:              "claude-fixture-primary",
+				Harness:           "claude_code",
+				ProviderRoute:     "provider.example/model-primary",
+				ProviderRouteKind: "direct_model",
+				EffortDefault:     "high",
+				Tier:              "premium",
+				PacketCeiling:     "repo-scoped",
+				CostClass:         "api-metered",
+				ContextWindow:     1000000,
+				Aliases:           []string{"model-primary"},
 				Capabilities: map[string]CapabilityClaim{
 					"build-implement": {Level: "capable", Evidence: "test"},
 				},
 			},
 			"codex-fixture-economy": {
-				Lane:          "codex-fixture-economy",
-				Harness:       "codex",
-				ProviderRoute: "model-economy",
-				EffortDefault: "medium",
-				Tier:          "cheap",
-				PacketCeiling: "multi-file",
+				Lane:              "codex-fixture-economy",
+				Harness:           "codex",
+				ProviderRoute:     "model-economy",
+				ProviderRouteKind: "provider_class",
+				EffortDefault:     "medium",
+				Tier:              "cheap",
+				PacketCeiling:     "multi-file",
 				Capabilities: map[string]CapabilityClaim{
 					"build-implement": {Level: "capable", Evidence: "test"},
 				},
@@ -70,6 +72,9 @@ func TestLaneProjectionCarriesModelAndEffortSeparately(t *testing.T) {
 	// back into the lane name, this is the test that should fail.
 	if primary.Route != "provider.example/model-primary" {
 		t.Fatalf("route = %q", primary.Route)
+	}
+	if primary.ProviderRouteKind != "direct_model" {
+		t.Fatalf("provider_route_kind = %q", primary.ProviderRouteKind)
 	}
 	if primary.NativeEffort != "high" {
 		t.Fatalf("native_effort = %q", primary.NativeEffort)

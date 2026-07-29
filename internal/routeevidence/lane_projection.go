@@ -37,14 +37,15 @@ type LaneProjectionEntry struct {
 	Harness string `json:"harness"`
 
 	// Compound-owned meaning.
-	Route         string   `json:"route,omitempty"`
-	NativeEffort  string   `json:"native_effort,omitempty"`
-	Aliases       []string `json:"aliases,omitempty"`
-	Tier          string   `json:"tier,omitempty"`
-	CostClass     string   `json:"cost_class,omitempty"`
-	PacketCeiling string   `json:"packet_ceiling,omitempty"`
-	ContextWindow int      `json:"context_window,omitempty"`
-	Notes         string   `json:"notes,omitempty"`
+	Route             string   `json:"route,omitempty"`
+	ProviderRouteKind string   `json:"provider_route_kind,omitempty"`
+	NativeEffort      string   `json:"native_effort,omitempty"`
+	Aliases           []string `json:"aliases,omitempty"`
+	Tier              string   `json:"tier,omitempty"`
+	CostClass         string   `json:"cost_class,omitempty"`
+	PacketCeiling     string   `json:"packet_ceiling,omitempty"`
+	ContextWindow     int      `json:"context_window,omitempty"`
+	Notes             string   `json:"notes,omitempty"`
 
 	// ExecutorOwned repeats the boundary per entry so a consumer processing one lane in
 	// isolation cannot lose it.
@@ -87,18 +88,19 @@ func BuildLaneProjection(manifest ModelCapabilitiesManifest, sourceRevision, har
 			lane = modelID
 		}
 		entries = append(entries, LaneProjectionEntry{
-			Lane:          lane,
-			ModelID:       modelID,
-			Harness:       entry.Harness,
-			Route:         entry.ProviderRoute,
-			NativeEffort:  entry.EffortDefault,
-			Aliases:       append([]string(nil), entry.Aliases...),
-			Tier:          entry.Tier,
-			CostClass:     entry.CostClass,
-			PacketCeiling: entry.PacketCeiling,
-			ContextWindow: entry.ContextWindow,
-			Notes:         entry.Notes,
-			ExecutorOwned: append([]string(nil), executorOwnedFields...),
+			Lane:              lane,
+			ModelID:           modelID,
+			Harness:           entry.Harness,
+			Route:             entry.ProviderRoute,
+			ProviderRouteKind: entry.ProviderRouteKind,
+			NativeEffort:      entry.EffortDefault,
+			Aliases:           append([]string(nil), entry.Aliases...),
+			Tier:              entry.Tier,
+			CostClass:         entry.CostClass,
+			PacketCeiling:     entry.PacketCeiling,
+			ContextWindow:     entry.ContextWindow,
+			Notes:             entry.Notes,
+			ExecutorOwned:     append([]string(nil), executorOwnedFields...),
 		})
 	}
 

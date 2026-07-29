@@ -47,12 +47,13 @@ type GrantSnapshot struct {
 }
 
 type LaneSnapshot struct {
-	ModelID       string         `json:"model_id"`
-	ProviderRoute string         `json:"provider_route,omitempty"`
-	Resolution    LaneResolution `json:"resolution"`
-	Tier          string         `json:"tier"`
-	ClaimLevel    string         `json:"claim_level,omitempty"`
-	GateRole      string         `json:"gate_role"`
+	ModelID           string         `json:"model_id"`
+	ProviderRoute     string         `json:"provider_route,omitempty"`
+	ProviderRouteKind string         `json:"provider_route_kind,omitempty"`
+	Resolution        LaneResolution `json:"resolution"`
+	Tier              string         `json:"tier"`
+	ClaimLevel        string         `json:"claim_level,omitempty"`
+	GateRole          string         `json:"gate_role"`
 }
 
 type ResolvedTarget struct {
@@ -173,10 +174,11 @@ type decidingRouteBinding struct {
 
 type modelManifest struct {
 	Models map[string]struct {
-		ProviderRoute string         `yaml:"provider_route"`
-		Resolution    LaneResolution `yaml:"resolution"`
-		Tier          string         `yaml:"tier"`
-		Capabilities  map[string]struct {
+		ProviderRoute     string         `yaml:"provider_route"`
+		ProviderRouteKind string         `yaml:"provider_route_kind"`
+		Resolution        LaneResolution `yaml:"resolution"`
+		Tier              string         `yaml:"tier"`
+		Capabilities      map[string]struct {
 			Level string `yaml:"level"`
 		} `yaml:"capabilities"`
 	} `yaml:"models"`
@@ -526,7 +528,7 @@ func validateRoutePlanSnapshot(homePath string, plan RoutePlanSnapshot) (string,
 		if reason := invalidLaneResolutionReason(model.Resolution); reason != "" {
 			return "model " + modelID + " " + reason, nil
 		}
-		expected = append(expected, LaneSnapshot{ModelID: modelID, ProviderRoute: strings.TrimSpace(model.ProviderRoute), Resolution: model.Resolution, Tier: strings.TrimSpace(model.Tier), ClaimLevel: level, GateRole: GateRole(plan.CapabilityClass, strings.TrimSpace(model.Tier), level)})
+		expected = append(expected, LaneSnapshot{ModelID: modelID, ProviderRoute: strings.TrimSpace(model.ProviderRoute), ProviderRouteKind: strings.TrimSpace(model.ProviderRouteKind), Resolution: model.Resolution, Tier: strings.TrimSpace(model.Tier), ClaimLevel: level, GateRole: GateRole(plan.CapabilityClass, strings.TrimSpace(model.Tier), level)})
 	}
 	if !sameLanes(plan.Chain, expected) {
 		return "route plan chain does not match current model-router authority", nil
@@ -1280,7 +1282,7 @@ func sameLanes(a, b []LaneSnapshot) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].ModelID != b[i].ModelID || a[i].ProviderRoute != b[i].ProviderRoute || a[i].Tier != b[i].Tier || a[i].ClaimLevel != b[i].ClaimLevel || a[i].GateRole != b[i].GateRole || !sameLaneResolution(a[i].Resolution, b[i].Resolution) {
+		if a[i].ModelID != b[i].ModelID || a[i].ProviderRoute != b[i].ProviderRoute || a[i].ProviderRouteKind != b[i].ProviderRouteKind || a[i].Tier != b[i].Tier || a[i].ClaimLevel != b[i].ClaimLevel || a[i].GateRole != b[i].GateRole || !sameLaneResolution(a[i].Resolution, b[i].Resolution) {
 			return false
 		}
 	}
