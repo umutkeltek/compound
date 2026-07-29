@@ -88,6 +88,12 @@ type doctorReport struct {
 	RunAttemptsStuck       int    `json:"run_attempts_stuck"`
 	RunAttemptsStuckOldest string `json:"run_attempts_stuck_oldest,omitempty"`
 
+	// Hook enforcement: for each binary the installed hooks would invoke, whether it really
+	// gates. Every other hook signal above compares CONFIG bytes and stays green when the file
+	// at the configured path is a no-op — see doctor_hook_enforcement.go.
+	HookEnforcement        []doctorHookEnforcement `json:"hook_enforcement,omitempty"`
+	HookEnforcementFailing int                     `json:"hook_enforcement_failing"`
+
 	// Worktree locks over delegate workspaces, and how many of them are held
 	// by a delegate that has already gone terminal — a lock protecting nobody
 	// that still refuses `git worktree remove`.
@@ -185,6 +191,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 			break
 		}
 	}
+
+	// 1b) Hook enforcement — the check above proves the config names Compound's command; this
+	// proves the binary behind that command still refuses a mutation. A wired-but-no-op gate is
+	// the failure mode with no other signal anywhere.
+	rep.HookEnforcement, rep.HookEnforcementFailing = buildHookEnforcementRows(rep.Hooks)
 
 	// 2) Land-lease — who (if anyone) holds the right to land right now.
 	if st, lerr := landlease.Status(homePath, time.Now()); lerr == nil {
@@ -298,6 +309,8 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	if rep.HookHint != "" {
 		fmt.Fprintf(stdout, "  -> %s\n", rep.HookHint)
 	}
+
+	printHookEnforcement(stdout, rep)
 
 	fmt.Fprintln(stdout, "\n## land-lease (concurrent landing)")
 	if rep.LeaseHeld {

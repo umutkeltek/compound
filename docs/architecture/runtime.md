@@ -460,6 +460,17 @@ name/desc/path and loads full SKILL.md on demand; the initial list is capped). S
 drift, fail-open risk, instruction cap, skill truncation, cwd-dependent guidance). Native blocking is claimed
 only when both the harness capability and an installed trusted write-scoped hook are proven. External maps enter as normalized `compound.harness_registry.v0.1` manifests, while OS-style entrypoint registries enter through `compound harness observe --os-entrypoints <file>` with only session-start context inferred; observation is evidence/no-promote, not hook installation. **No live hook install before the fixture loop passes.**
 
+**Installed ≠ enforcing (`compound doctor`, hook enforcement section).** Every other hook signal doctor
+reports compares CONFIG bytes: `installed`/`ok`/`drift`/`absent` says the harness config names Compound's
+command, which stays green when the file behind that command is a no-op — and an exit-0 hook is
+indistinguishable from an allow, so a fail-open leaves no signal anywhere. The enforcement check therefore
+probes behaviour: it reads the binary out of each installed PreToolUse binding (POSIX-unquoted, deduped, one
+subprocess per distinct binary), synthesizes a destructive mutation whose ActionIntent id is a nonce minted
+for that run, and requires back both a `HookEvent` whose `input_hash` derives from that nonce and a
+`PolicyDecision` that does not allow it. A canned or recorded response fails the hash; an exit-0 stub fails
+both. The probe runs with `COMPOUND_HOME` and cwd inside a throwaway directory, so doctor still writes
+nothing, and it reports `FAIL` with a reinstall remedy rather than changing doctor's exit code.
+
 ---
 
 ## 4. Instructions: tiny + compiled
