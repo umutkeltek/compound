@@ -1184,7 +1184,11 @@ func claimedWorktreeOwner(homePath, gitRoot, actor string) (string, error) {
 			continue
 		}
 		holder := holders[item.ID]
-		if holder == "" || holder != strings.TrimSpace(item.Authority.Owner) || !actorOwnsClaim(actor, holder) {
+		// A governed steal transfers the live lease while preserving the envelope's
+		// historical authority owner. The current lease is therefore the executable
+		// ownership proof; requiring it to equal Authority.Owner would reject valid
+		// salvaged/taken-over worktrees.
+		if holder == "" || !actorOwnsClaim(actor, holder) {
 			continue
 		}
 		direct := filepath.Clean(item.GitDelivery.TargetWorktreeRoot) == filepath.Clean(gitRoot) &&

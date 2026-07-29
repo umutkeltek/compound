@@ -1490,15 +1490,30 @@ func TestHookLiveCodexPreToolUseTrustsExactClaimedWorktreeProvenance(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	const actor = "codex:root-claimed-inherited"
-	if _, err := store.Claim(item.ID, actor, cliTestNow.Add(time.Second)); err != nil {
+	const previousActor = "codex:previous-claimed-inherited"
+	if _, err := store.Claim(item.ID, previousActor, cliTestNow.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Advance(item.ID, work.AdvanceInput{
 		To:         "running",
-		Actor:      actor,
+		Actor:      previousActor,
 		ArtifactID: "worktree-branch:refs/heads/" + branch,
 	}, cliTestNow.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	const actor = "codex:root-claimed-inherited"
+	if _, err := store.Advance(item.ID, work.AdvanceInput{
+		To:          "verifying",
+		Actor:       actor,
+		Steal:       true,
+		StealReason: "take over the exact abandoned branch worktree",
+	}, cliTestNow.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(item.ID, work.AdvanceInput{
+		To:    "running",
+		Actor: actor,
+	}, cliTestNow.Add(4*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("inherited dirty change\n"), 0o644); err != nil {
