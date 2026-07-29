@@ -94,6 +94,16 @@ _launch_claude_lane() {
 
 # codex-family launcher: keeps Codex's full TUI but applies the lane's color
 # and badge so visually it doesn't collide with the Claude lanes.
+#
+# Per-invocation CODEX_HOME isolation: every launch gets a fresh temp
+# dir under $TMPDIR (or /tmp) so concurrent codex invocations — the
+# scout TUI plus a parallel exec, two parallel exec, anything — do not
+# share state through ~/.codex. Mirrors the spirit of
+# _launch_claude_lane's per-lane CLAUDE_CONFIG_DIR but uses mktemp for
+# true per-invocation isolation rather than per-lane persistence. The
+# temp dir is left for OS temp-rotation to reclaim; if mktemp fails the
+# launcher proceeds without isolation (worst case: weaker, but the lane
+# still runs).
 _launch_codex_lane() {
   _lane="$1"; shift
   eval "$(lane_emit_sh "$_lane")"
@@ -102,6 +112,12 @@ _launch_codex_lane() {
 
   unset LANE_FAMILY LANE_ICON LANE_ANSI_HEX LANE_TAB_R LANE_TAB_G LANE_TAB_B \
         LANE_PROFILE_DIR_VAR LANE_TAP_BIND LANE_PROFILE_DEFAULT LANE_TITLE_SUFFIX
+
+  if _codex_home=$(mktemp -d "${TMPDIR:-/tmp}/codex.XXXXXX" 2>/dev/null) \
+     && [ -n "$_codex_home" ]; then
+    export CODEX_HOME="$_codex_home"
+  fi
+  unset _codex_home
 
   if command -v codex >/dev/null 2>&1; then
     command codex "$@"

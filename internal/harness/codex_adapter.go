@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"compound/internal/runattempt"
@@ -62,6 +63,17 @@ func (a *CodexAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error) 
 // doc for the --prompt drift this replaces). Args[0] is used as the
 // prompt if Prompt is empty (caller convenience); the explicit Prompt
 // field wins.
+//
+// CODEX_HOME isolation: every compound-dispatched codex invocation gets a
+// fresh CODEX_HOME under os.TempDir so two concurrent runs (or an exec
+// running while an interactive `codex` TUI is active) cannot share state
+// through ~/.codex. This is hardening, not a bug fix — the symptom
+// ("scout launch leaks release-tooling content into an unrelated
+// transcript") was not reproducible against codex-cli 0.145.0 in
+// concurrent-exec probes, but the asymmetry between this adapter
+// (no CODEX_HOME) and _launch_claude_lane (per-lane CLAUDE_CONFIG_DIR)
+// was the latent risk. Caller-supplied in.Env still wins: we set the
+// env line BEFORE in.Env so a caller override is honored.
 func (a *CodexAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
 	// Timeout is owned by runWithSubprocess; see OSEntrypointsAdapter.buildCmd.
 	prompt := in.Prompt
@@ -74,6 +86,15 @@ func (a *CodexAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
 	}
 	cmd := exec.CommandContext(ctx, "codex", args...)
 	cmd.Dir = in.Workspace
-	cmd.Env = append(os.Environ(), in.Env...)
+	codexHome, err := os.MkdirTemp("", "codex-")
+	if err != nil {
+		// Fall back to a path we are confident is writable; the OS temp
+		// rotation will eventually reclaim it. Worst case: isolation is
+		// weaker but the run still completes.
+		codexHome = filepath.Join(os.TempDir(), "codex-fallback-"+in.WorkID)
+		_ = os.MkdirAll(codexHome, 0o700)
+	}
+	cmd.Env = append(os.Environ(), "CODEX_HOME="+codexHome)
+	cmd.Env = append(cmd.Env, in.Env...)
 	return cmd
 }
