@@ -63,9 +63,16 @@ type fakeSessionRunner struct {
 	// the requested name became observable. The orchestrator must classify
 	// this as ambiguous and perform zero kills.
 	partialCreate bool
-	onCreate      func()
-	killErr       error
-	statusErr     error
+	// duplicateNameErr models real tmux's refusal to create a second session
+	// under a name the server already has ("duplicate session"). Opt-in so
+	// the tests that only care about the spawn decision keep a Create that
+	// always succeeds; the teardown falsifiers need it because a surviving
+	// orphan pane is precisely what turns the next spawn into
+	// spawn_ambiguous.
+	duplicateNameErr error
+	onCreate         func()
+	killErr          error
+	statusErr        error
 
 	// panes holds explicit SessionStatus observations per session name.
 	// When unset the runner falls back to "live -> exists/ExitCode=-1"
@@ -129,6 +136,9 @@ func (f *fakeSessionRunner) Create(name, dir, command string, args []string) err
 	defer f.mu.Unlock()
 	if f.createErr != nil && !f.partialCreate {
 		return f.createErr
+	}
+	if f.duplicateNameErr != nil && f.live[name] {
+		return f.duplicateNameErr
 	}
 	f.creates = append(f.creates, fakeCreateCall{Name: name, Dir: dir, Command: command, Args: append([]string{}, args...)})
 	f.live[name] = true

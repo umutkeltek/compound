@@ -214,6 +214,21 @@ revision-bearing snapshot, including the typed canonical execution-profile proof
 aggregate readiness revision, so it can name what admitted the run without trusting mutable current
 configuration.
 
+**Teardown reaps what activation created.** A delegate leaves two artifacts that outlive its
+process: the tmux session and the `git worktree lock` over its workspace. Every terminal path
+(`DelegateSweep`, and the spawn-failure finalizer) releases both, and the sweep outcome always
+reports what happened to the lock (`released` / `not_locked` / `held_by_live_attempt` /
+`no_workspace_evidence` / `reaper_absent`) so "nothing released" stays legible instead of silent.
+Ownership is the constraint, not convenience: the workspace comes from the terminalized RunAttempt's
+own record, the path must actually be locked, and no other non-terminal RunAttempt may name that
+workspace. On the session side the same principle applies — a delegate re-spawning over its own
+recorded exit reaps only a DEAD pane under that name; a LIVE pane is the ownership uncertainty
+`spawn_ambiguous` exists for and is never touched. Lock reaping is reported, never fatal: an
+advisory lock that cannot be released must not strand a terminal work item. What teardown could not
+reap is surfaced by `compound doctor`, which joins locked delegate workspaces against their
+RunAttempt status and flags every lock whose owning delegates are all terminal; doctor reports and
+never releases.
+
 ## Second-order effects (design against these)
 
 - **Cheap-mediocre drift.** If the router optimizes cost/latency without *outcome* feedback, the

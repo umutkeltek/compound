@@ -1155,9 +1155,23 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	// exists+pane_dead, record .exited and proceed with a fresh spawn on
 	// the SAME session name (deterministic so a steer-while-dead can
 	// re-attach); if exists+alive, refuse session_live.
-	existing, _, rerr := s.recoverBoundSession(out.WorkID)
+	// The eventlog-latest binding is read (not the alive-only view) so a
+	// binding whose exit is ALREADY recorded is still reachable here. That
+	// binding is exactly the leak case: a prior teardown recorded the exit but
+	// failed to remove the pane, and every later spawn on the same
+	// deterministic session name then hit Create -> spawn_ambiguous forever
+	// with no path back except a manual `tmux kill-session`.
+	latest, latestAlive, rerr := s.latestDelegateBinding(out.WorkID)
 	if rerr != nil {
 		return out, rerr
+	}
+	var existing *DelegateBinding
+	if latestAlive {
+		existing = latest
+	} else if latest != nil && latest.Session == sessionName {
+		if err := s.reapExitedDelegateSession(latest, runner); err != nil {
+			return out, err
+		}
 	}
 	if existing != nil {
 		st, sessErr := runner.SessionStatus(existing.Session)
@@ -1483,6 +1497,12 @@ func (s *Store) finalizeSpawnFailureAfterBinding(runner SessionRunner, workID st
 	if _, terr := raStore.Complete(b.RunAttemptID, runattempt.StatusFailed, now); terr != nil {
 		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: terminalize spawned attempt %s: %w", b.RunAttemptID, terr))
 	}
+	// This is a terminal path too: the attempt is now failed, so the worktree
+	// lock over its workspace protects nothing and is reaped on the same
+	// evidence rule as an ordinary sweep.
+	if _, lockErr := s.reapDelegateWorktreeLock(b); lockErr != nil {
+		cleanupErrs = append(cleanupErrs, lockErr)
+	}
 	if !bindingAttached {
 		return errors.Join(cleanupErrs...)
 	}
@@ -1515,6 +1535,35 @@ func (s *Store) finalizeSpawnFailureAfterBinding(runner SessionRunner, workID st
 		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: attach spawn-finalize exit: %w", err))
 	}
 	return errors.Join(cleanupErrs...)
+}
+
+// reapExitedDelegateSession removes a pane left behind by a delegate whose
+// exit is ALREADY recorded in the eventlog -- the retry path for a teardown
+// whose Kill failed (DelegateSweep records the exit before it kills, so a kill
+// failure makes the binding non-alive while the pane survives).
+//
+// Ownership follows the spawn_ambiguous principle rather than working around
+// it: this delegate's own work.delegate.spawned record proves it created a
+// session with this exact name, so a DEAD pane under that name is ours to
+// remove. A LIVE pane under a name whose exit we already recorded is precisely
+// the ownership uncertainty spawn_ambiguous exists for -- it may be a
+// stranger's -- so it is left untouched and the following Create refuses on it.
+// An unreadable probe concludes nothing and also leaves the pane alone.
+func (s *Store) reapExitedDelegateSession(b *DelegateBinding, runner SessionRunner) error {
+	if b == nil || runner == nil {
+		return nil
+	}
+	st, err := runner.SessionStatus(b.Session)
+	if err != nil {
+		return fmt.Errorf("delegate: probe exited session %s: %w", b.Session, err)
+	}
+	if st.UnknownReason != "" || !st.Exists || !st.PaneDead {
+		return nil
+	}
+	if err := runner.Kill(b.Session); err != nil {
+		return fmt.Errorf("delegate: remove orphaned pane %s left by a recorded exit: %w", b.Session, err)
+	}
+	return nil
 }
 
 // --- record helpers (writeEventJSON, D7 contract) ---
@@ -1908,6 +1957,17 @@ func (s *Store) DelegateSweep(b *DelegateBinding, observed SessionStatus, runner
 		}
 		out.RunAttemptStatus = status
 	}
+	// Teardown reaps BOTH artifacts this delegate created, not just the pane:
+	// the git worktree lock over its workspace is released first, because a
+	// kill failure below returns early and a lock left behind blocks
+	// `git worktree remove` long after the pane is irrelevant. Reaping is
+	// reported, never fatal -- the attempt is already terminal, and refusing
+	// to return the outcome because an advisory lock could not be released
+	// would strand the caller with no way to observe what happened.
+	out.WorktreeLock, err = s.reapDelegateWorktreeLock(b)
+	if err != nil {
+		out.WorktreeLockError = err.Error()
+	}
 	if runner != nil && observed.PaneDead {
 		if err := runner.Kill(b.Session); err != nil {
 			out.KillError = err.Error()
@@ -2070,12 +2130,20 @@ func (s *Store) DelegateProgress(workID string, progress runattempt.RunProgress,
 }
 
 // DelegateSweepOutcome is the per-binding result of DelegateSweep.
+//
+// WorktreeLock reports what teardown did with the `git worktree lock` over the
+// delegate's workspace, as one of the WorktreeLock* vocabulary constants. It is
+// always populated on a terminal sweep so "nothing was released" is legible as
+// a reason (no reaper installed, no workspace evidence, another live attempt
+// still holds it) instead of silence.
 type DelegateSweepOutcome struct {
-	WorkID           string `json:"work_id"`
-	Session          string `json:"session"`
-	RunAttemptID     string `json:"run_attempt_id,omitempty"`
-	RunAttemptStatus string `json:"run_attempt_status,omitempty"`
-	ObservedExit     string `json:"observed_exit"`
-	TerminalStatus   string `json:"terminal_status"`
-	KillError        string `json:"kill_error,omitempty"`
+	WorkID            string `json:"work_id"`
+	Session           string `json:"session"`
+	RunAttemptID      string `json:"run_attempt_id,omitempty"`
+	RunAttemptStatus  string `json:"run_attempt_status,omitempty"`
+	ObservedExit      string `json:"observed_exit"`
+	TerminalStatus    string `json:"terminal_status"`
+	KillError         string `json:"kill_error,omitempty"`
+	WorktreeLock      string `json:"worktree_lock,omitempty"`
+	WorktreeLockError string `json:"worktree_lock_error,omitempty"`
 }

@@ -15,6 +15,13 @@ import (
 	"compound/internal/work"
 )
 
+// The delegate teardown reaper is a composition-root seam like the harness
+// readiness guard: only this executable installs the real-git implementation,
+// so package tests keep driving a fake and never touch a repository.
+func init() {
+	work.DelegateWorktreeLockReaper = work.NewGitWorktreeLockReaper()
+}
+
 type delegateCLIOptions struct {
 	executionProfile                                   work.DelegateExecutionProfileIntent
 	workID, harness, actor, session, prompt, workspace string
@@ -149,10 +156,13 @@ func runDelegateSweepCLI(args []string, store *work.Store, runner work.SessionRu
 		}
 		return 0
 	}
-	fmt.Fprintf(stdout, "swept work=%s session=%s run_attempt=%s observed=%s status=%s\n",
-		out.WorkID, out.Session, out.RunAttemptID, out.ObservedExit, out.TerminalStatus)
+	fmt.Fprintf(stdout, "swept work=%s session=%s run_attempt=%s observed=%s status=%s worktree_lock=%s\n",
+		out.WorkID, out.Session, out.RunAttemptID, out.ObservedExit, out.TerminalStatus, out.WorktreeLock)
 	if out.KillError != "" {
 		fmt.Fprintf(stdout, "kill-error: %s\n", out.KillError)
+	}
+	if out.WorktreeLockError != "" {
+		fmt.Fprintf(stdout, "worktree-lock-error: %s\n", out.WorktreeLockError)
 	}
 	return 0
 }

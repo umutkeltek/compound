@@ -22,6 +22,7 @@ import (
 	"compound/internal/landlease"
 	"compound/internal/policy"
 	"compound/internal/runattempt"
+	"compound/internal/work"
 )
 
 // cmdDoctor is the single legible operator health surface. The newest organs each expose real state,
@@ -86,6 +87,12 @@ type doctorReport struct {
 	// a finding until swept (`compound run-attempt sweep`).
 	RunAttemptsStuck       int    `json:"run_attempts_stuck"`
 	RunAttemptsStuckOldest string `json:"run_attempts_stuck_oldest,omitempty"`
+
+	// Worktree locks over delegate workspaces, and how many of them are held
+	// by a delegate that has already gone terminal — a lock protecting nobody
+	// that still refuses `git worktree remove`.
+	WorktreeLocks      []work.DelegateWorktreeLockRow `json:"worktree_locks,omitempty"`
+	WorktreeLocksStale int                            `json:"worktree_locks_stale"`
 
 	// Surfacing coverage: rows = agent lanes/harnesses, columns = communication surfaces
 	// (guard hook · orient · memory injection · peer visibility). Read-only, derived from
@@ -219,6 +226,10 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		rep.RunAttemptsStuckOldest = surfacingAge(time.Since(oldest))
 	}
 
+	// 3c: worktree locks whose owning delegate is terminal. Read-only; the
+	// release path is delegate teardown, never a health command.
+	rep.WorktreeLocks, rep.WorktreeLocksStale = buildWorktreeLockRows(homePath)
+
 	// 4) Placement guard mode — observe is fail-open (record-only).
 	if cfg, _, cerr := policy.LoadConfig(homePath); cerr == nil {
 		rep.PlacementMode = cfg.PlacementGuardMode
@@ -312,6 +323,8 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 		fmt.Fprintf(stdout, "- %d stuck (pending/running), oldest %s ago\n", rep.RunAttemptsStuck, rep.RunAttemptsStuckOldest)
 		fmt.Fprintln(stdout, "  -> `compound run-attempt sweep` to terminalize stale attempts")
 	}
+
+	printWorktreeLocks(stdout, rep)
 
 	fmt.Fprintln(stdout, "\n## placement guard")
 	fmt.Fprintf(stdout, "- mode: %s\n", rep.PlacementMode)
