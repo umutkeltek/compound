@@ -92,8 +92,14 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, entry := range publicReport.Entries {
-		if len(entry.Bindings) != 4 {
-			t.Fatalf("entry %d reports %d bindings, want all 4 lifecycle events", i, len(entry.Bindings))
+		wantBindings := 4
+		wantPreTool := true
+		if rep.Entries[i].Harness == "codex" {
+			wantBindings = 3
+			wantPreTool = false
+		}
+		if len(entry.Bindings) != wantBindings {
+			t.Fatalf("%s reports %d bindings, want %d lifecycle events", rep.Entries[i].Harness, len(entry.Bindings), wantBindings)
 		}
 		foundPreTool := false
 		for _, binding := range entry.Bindings {
@@ -104,16 +110,23 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 				}
 			}
 		}
-		if !foundPreTool {
-			t.Fatalf("entry %d omitted PreToolUse from reported bindings: %+v", i, entry.Bindings)
+		if foundPreTool != wantPreTool {
+			t.Fatalf("%s PreToolUse reported=%t, want %t: %+v", rep.Entries[i].Harness, foundPreTool, wantPreTool, entry.Bindings)
 		}
 	}
 	for _, e := range rep.Entries {
 		if e.Action != "installed" {
 			t.Fatalf("%s action = %q, want installed", e.Harness, e.Action)
 		}
+		if e.Harness == "codex" {
+			if e.Matcher != "" || e.Command != "" {
+				t.Fatalf("Codex observation-only install advertised a guard: %+v", e)
+			}
+		} else if e.Matcher != "*" || !strings.Contains(e.Command, " --enforce") {
+			t.Fatalf("%s blocking guard report = %+v", e.Harness, e)
+		}
 	}
-	// Universal enforcement is intentionally matcher-wide. Tool-specific
+	// Claude-family enforcement is intentionally matcher-wide. Tool-specific
 	// authorization belongs in Compound's deterministic action monitor, not in
 	// harness config where new tools could bypass the gate.
 	claude := readJSON(t, filepath.Join(base, ".claude", "settings.json"))
@@ -125,19 +138,94 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 		t.Fatalf("claude-zai matcher = %q", got)
 	}
 	codex := readJSON(t, filepath.Join(base, ".codex", "hooks.json"))
-	if got := firstMatcher(t, codex); got != "*" {
-		t.Fatalf("codex matcher = %q", got)
-	}
 	for harnessName, cfg := range map[string]map[string]any{
 		"claude-code": claude,
 		"claude-zai":  zai,
 		"codex":       codex,
 	} {
-		for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
+		events := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"}
+		if harnessName == "codex" {
+			events = []string{"SessionStart", "UserPromptSubmit", "PostToolUse"}
+		}
+		for _, event := range events {
 			if !hasHookCommand(cfg, event, HookCommandForEvent("/usr/local/bin/compound", harnessName, event)) {
 				t.Fatalf("%s install did not consume semantic %s binding", harnessName, event)
 			}
 		}
+	}
+	if hasHookCommand(codex, "PreToolUse", HookCommandForEvent("/usr/local/bin/compound", "codex", "PreToolUse")) {
+		t.Fatal("Codex default install unexpectedly includes operator-opt-in PreToolUse")
+	}
+}
+
+func TestCodexInstallRetiresOnlyCompoundPreToolUseBinding(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := `{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "'/old/compound' hook pre-tool-use --live --harness codex"}]},
+      {"matcher": "apply_patch", "hooks": [{"type": "command", "command": "my-own-hook"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InstallHooks(base, "/bin/compound", "global", []string{"codex"}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readJSON(t, path)
+	hooks := got["hooks"].(map[string]any)
+	pre, _ := hooks["PreToolUse"].([]any)
+	if len(pre) != 1 || firstCommand(pre[0]) != "my-own-hook" {
+		t.Fatalf("Codex reconciliation did not retire only Compound PreToolUse: %+v", pre)
+	}
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse"} {
+		if !hasHookCommand(got, event, HookCommandForEvent("/bin/compound", "codex", event)) {
+			t.Fatalf("Codex reconciliation lost desired %s binding", event)
+		}
+	}
+}
+
+func TestBlockingPreToolUseCommandMakesEnforcementExplicit(t *testing.T) {
+	command := HookCommandForEvent("/bin/compound", "claude-code", "PreToolUse")
+	if !strings.Contains(command, " --enforce") {
+		t.Fatalf("blocking PreToolUse command = %q, want explicit --enforce", command)
+	}
+}
+
+func TestInstallerAcceptsOnlyExplicitCodexObservationalDefault(t *testing.T) {
+	observational := CompiledPosture{
+		CompiledFrom: CompilationContext{PostureID: "hpost_default_codex"},
+		Intentions: []CompiledIntention{
+			{Intention: IntentionPrepareContext, Disposition: DispositionNative},
+			{Intention: IntentionObserveOutcome, Disposition: DispositionNative},
+		},
+	}
+	if err := validateInstallableDefaultPosture("codex", observational); err != nil {
+		t.Fatalf("explicit Codex observational default rejected: %v", err)
+	}
+	if err := validateInstallableDefaultPosture("claude-code", observational); err == nil {
+		t.Fatal("non-mutation-ready Claude posture was silently accepted")
+	}
+	downgraded := observational
+	downgraded.Intentions = append(downgraded.Intentions, CompiledIntention{
+		Intention: IntentionGuardMutation, Disposition: DispositionUnsupported,
+	})
+	if err := validateInstallableDefaultPosture("codex", downgraded); err == nil {
+		t.Fatal("unsupported Codex guard was mistaken for the explicit observational default")
+	}
+	fallback := observational
+	fallback.Intentions = append([]CompiledIntention(nil), observational.Intentions...)
+	fallback.Intentions[0].Disposition = DispositionFallback
+	if err := validateInstallableDefaultPosture("codex", fallback); err == nil {
+		t.Fatal("degraded Codex observation was mistaken for the native default")
 	}
 }
 
@@ -226,9 +314,12 @@ func TestInstallHooksIdempotentAndUpdate(t *testing.T) {
 		t.Fatalf("moved-binary action = %q, want updated", rep.Entries[0].Action)
 	}
 	got := readJSON(t, filepath.Join(base, ".codex", "hooks.json"))
-	pre := got["hooks"].(map[string]any)["PreToolUse"].([]any)
-	if len(pre) != 1 {
-		t.Fatalf("update must replace in place, got %d entries", len(pre))
+	sessionStart := got["hooks"].(map[string]any)["SessionStart"].([]any)
+	if len(sessionStart) != 1 {
+		t.Fatalf("update must replace in place, got %d entries", len(sessionStart))
+	}
+	if command := firstCommand(sessionStart[0]); command != HookCommandForEvent("/opt/compound", "codex", "SessionStart") {
+		t.Fatalf("updated SessionStart command = %q", command)
 	}
 }
 

@@ -54,8 +54,8 @@ certification run must record the exact resolved provider/model revision.
 
 | Harness/function | Observed model/lane | Prompt-injection authority |
 |---|---|---|
-| Codex interactive | GPT-5.6 Sol, xhigh | Full local/network tool surface; generated Compound hooks now monitor every tool action |
-| Claude Code native | `opus[1m]` alias | Full Claude tool surface with bypass permissions; universal generated Pre/PostToolUse matchers |
+| Codex interactive | GPT-5.6 Sol, xhigh | Full local/network tool surface; default generated hooks observe session, prompt, and tool outcomes, but do not install `PreToolUse` or claim mutation containment |
+| Claude Code native | `opus[1m]` alias | Full Claude tool surface with bypass permissions; generated `PreToolUse` is explicitly enforced and paired with `PostToolUse` |
 | Claude alternate profiles | Z.ai, MiniMax, Qwen, GPT-5.6 profile | Same action monitor where the Compound profile adapter is installed; installation parity remains a required proof |
 | Credential-bearing chat executor | GPT-5.6 with several fallback lanes | Existing command/cron checks, but not yet complete Compound source/sink coverage |
 | Unsandboxed chat runtime | GPT-5.5 through an app-server | Full-tool reachability was the most exposed audited path; not yet fully enrolled |
@@ -71,11 +71,11 @@ certification run must record the exact resolved provider/model revision.
 | Input avenue | Model consumer | Current boundary | Residual risk |
 |---|---|---|---|
 | Direct operator prompt | Active Codex/Claude model | `UserPromptSubmit` mints authenticated-operator source | Pasted/quoted external text must remain derived data, not operator authority |
-| AGENTS/CLAUDE steering | Codex/Claude | Exact source hash; canon structural attestation; actions still monitored | Native harness reads repo instructions before Compound can isolate them |
+| AGENTS/CLAUDE steering | Codex/Claude | Exact source hash and canon structural attestation; action checks depend on the selected guarded posture | Native harness reads repo instructions before Compound can isolate them |
 | SKILL/plugin instructions | Skill-aware caller | Registered canon files receive surface/schema attestation; schema drift holds | Unregistered third-party bundles still need admission before activation |
 | MCP descriptions/schemas | MCP-capable caller | Capability-graph schema revision binds connector actions; missing schema holds | Direct shell use of unmanaged gateways must be enrolled |
-| Local files/repo docs | Main model or subagent | PostToolUse source envelope; later actions carry active lineage | A mixed context can still steer answers, though not governed action authority |
-| Shell/test/build/git output | Main model | Tool result source plus universal next-action monitor | Unmanaged subprocesses can expose sensitive bodies before a broker exists |
+| Local files/repo docs | Main model or subagent | PostToolUse source envelope; guarded postures carry that lineage into later action checks | An observation-only posture records evidence but does not prevent a later action |
+| Shell/test/build/git output | Main model | Tool result source; guarded postures also run a next-action monitor | Observation-only and unmanaged subprocess paths can expose sensitive bodies before a broker exists |
 | Web/search/browser DOM | Main/browser model | Born untrusted; reads/snapshots automatic; submits/uploads consequential | Authenticated browsing needs isolated reader and scoped executor |
 | Screenshot/image/PDF/OCR/video | Vision-capable caller or browser second-opinion lane | Treated as untrusted result lineage | No dedicated no-secret multimodal reader yet |
 | Email/calendar/Drive/docs/sheets | Caller through `gog`/MCP | Connector schema/destination/source binding; reads distinct from mutations | Every direct CLI path still needs executor enrollment |
@@ -91,7 +91,10 @@ certification run must record the exact resolved provider/model revision.
 | Chat/Telegram/scheduled prompt | Credential-bearing chat executor or routed model | Partial local controls | Highest residual exposure until those harnesses use the same monitor |
 | Package/install/build supply chain | Model plus host process | Install and unknown command classes hold; instruction manifests attested | Isolated build/install executor remains future work |
 
-## Enforced action path
+## Enforced action path (guarded postures)
+
+Current Claude-family enforced installs follow this path. The default Codex
+posture stops at observation and makes no sink-containment claim.
 
 ```text
 ingress/result
@@ -174,8 +177,9 @@ and do not advance the canon baseline. The drift still parks a no-promote
 candidate, so the evidence is visible without becoming authority.
 
 This is not a claim that native repo steering has been isolated: Codex and
-Claude may read it before Compound. Universal action containment is therefore
-still the authoritative defense.
+Claude may read it before Compound. Action containment is authoritative only
+where an enforced `PreToolUse` binding is installed; observation-only postures
+provide evidence, not prevention.
 
 ## Recommended tools
 
@@ -197,8 +201,10 @@ Exact package, wheel, Git-tree, and model pins live in
 
 ### Now: structural containment
 
-- Maintain universal generated Pre/PostToolUse coverage for Codex and Claude
+- Maintain enforced `PreToolUse` plus `PostToolUse` coverage for Claude
   profiles.
+- Keep Codex's default `SessionStart`, `UserPromptSubmit`, and `PostToolUse`
+  posture observational; native `PreToolUse` remains operator opt-in.
 - Keep live ingress/result lineage and exact action binding.
 - Keep standing-grant automation and one-use retry approval.
 - Gate source/tool schema drift through existing Compound owners.

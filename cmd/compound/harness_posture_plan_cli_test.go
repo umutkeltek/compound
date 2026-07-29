@@ -13,14 +13,15 @@ func TestHarnessPosturePlanCompilesAdapterNativeConfigurationWithoutVendorFlags(
 	t.Parallel()
 
 	for _, tc := range []struct {
-		harness    string
-		wantFamily string
-		wantReady  bool
-		wantGuard  hookplan.Disposition
+		harness              string
+		wantFamily           string
+		wantReady            bool
+		wantGuard            bool
+		wantGuardDisposition hookplan.Disposition
 	}{
-		{harness: "claude-zai", wantFamily: "claude", wantReady: true, wantGuard: hookplan.DispositionNative},
-		{harness: "codex", wantFamily: "codex", wantReady: true, wantGuard: hookplan.DispositionNative},
-		{harness: "opencode", wantFamily: "opencode", wantReady: false, wantGuard: hookplan.DispositionUnsupported},
+		{harness: "claude-zai", wantFamily: "claude", wantReady: true, wantGuard: true, wantGuardDisposition: hookplan.DispositionNative},
+		{harness: "codex", wantFamily: "codex", wantReady: false},
+		{harness: "opencode", wantFamily: "opencode", wantReady: false, wantGuard: true, wantGuardDisposition: hookplan.DispositionUnsupported},
 	} {
 		t.Run(tc.harness, func(t *testing.T) {
 			t.Parallel()
@@ -41,9 +42,12 @@ func TestHarnessPosturePlanCompilesAdapterNativeConfigurationWithoutVendorFlags(
 			if got.CompiledFrom.HarnessFamily != tc.wantFamily || got.MutationReady != tc.wantReady {
 				t.Fatalf("compiled posture = %+v", got)
 			}
-			guard := compiledIntentionForTest(t, got, hookplan.IntentionGuardMutation)
-			if guard.Disposition != tc.wantGuard {
-				t.Fatalf("guard disposition = %q, want %q", guard.Disposition, tc.wantGuard)
+			guard, hasGuard := compiledIntentionForTest(got, hookplan.IntentionGuardMutation)
+			if hasGuard != tc.wantGuard {
+				t.Fatalf("guard present=%t, want %t: %+v", hasGuard, tc.wantGuard, got.Intentions)
+			}
+			if hasGuard && guard.Disposition != tc.wantGuardDisposition {
+				t.Fatalf("guard disposition = %q, want %q", guard.Disposition, tc.wantGuardDisposition)
 			}
 		})
 	}
@@ -65,16 +69,13 @@ func TestHarnessPosturePlanRejectsUnknownFlags(t *testing.T) {
 }
 
 func compiledIntentionForTest(
-	t *testing.T,
 	compiled hookplan.CompiledPosture,
 	want hookplan.HarnessIntention,
-) hookplan.CompiledIntention {
-	t.Helper()
+) (hookplan.CompiledIntention, bool) {
 	for _, intention := range compiled.Intentions {
 		if intention.Intention == want {
-			return intention
+			return intention, true
 		}
 	}
-	t.Fatalf("compiled posture missing %q", want)
-	return hookplan.CompiledIntention{}
+	return hookplan.CompiledIntention{}, false
 }

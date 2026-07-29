@@ -1240,7 +1240,7 @@ func proofCheckSteps(baseRef string, headRefs ...string) ([]proofCheckStep, erro
 		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict", CIPortable: true},
 		{Name: "profiles-check", Command: []string{exe, "profiles", "check", "--installed-only"}, ProofRef: "profiles-check-installed-only"},
 		{Name: "workbench-projection", Command: []string{exe, "workbench", "--json"}, ProofRef: "workbench-projection-refresh"},
-		{Name: "codex-pretooluse-native-gate", Command: []string{exe, "hook", "pre-tool-use", "--live", "--harness", "codex"}, ProofRef: "codex-pretooluse-native-gate-proof"},
+		{Name: "codex-pretooluse-native-gate", Command: []string{exe, "hook", "pre-tool-use", "--live", "--harness", "codex", "--enforce"}, ProofRef: "codex-pretooluse-native-gate-proof"},
 		// --json because the gate PARSES the report and requires named hops to be "ok";
 		// see proof_check_memory_gate.go for why a bare exit code is a vacuous pass here.
 		{Name: "memory-doctor", Command: []string{exe, "memory", "doctor", "--json"}, ProofRef: "memory-doctor", CIPortable: true},
@@ -1430,11 +1430,11 @@ func runProofCheckCodexPreToolUseNativeGateContext(ctx context.Context, repo str
 		return nil, fmt.Errorf("import synthetic placement rules: %w", err)
 	}
 
-	runPatch := func(sessionID, patch string) (claudeLiveHookResponse, []byte, error) {
+	runPatch := func(sessionID, patch string) (claudeLiveHookResponse, []byte, int, error) {
 		input := fmt.Sprintf(`{"hook_event_name":"PreToolUse","session_id":%q,"cwd":%q,"tool_name":"apply_patch","tool_input":{"command":%q}}`, sessionID, tmpRepo, patch)
 		executable, err := proofCheckRuntimeExecutable(step.Command[0])
 		if err != nil {
-			return claudeLiveHookResponse{}, nil, err
+			return claudeLiveHookResponse{}, nil, 0, err
 		}
 		cmd := proofCheckCommandContext(ctx, executable, step.Command[1:]...)
 		cmd.Dir = repo
@@ -1444,30 +1444,41 @@ func runProofCheckCodexPreToolUseNativeGateContext(ctx context.Context, repo str
 		cmd.Stderr = &stderr
 		stdout, err := cmd.Output()
 		evidence := bytes.Join([][]byte{stdout, stderr.Bytes()}, nil)
+		exitCode := 0
 		if err != nil {
-			return claudeLiveHookResponse{}, evidence, fmt.Errorf("Codex native PreToolUse command: %w", err)
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || (exitErr.ExitCode() != 3 && exitErr.ExitCode() != 4) {
+				return claudeLiveHookResponse{}, evidence, 0, fmt.Errorf("Codex native PreToolUse command: %w", err)
+			}
+			exitCode = exitErr.ExitCode()
 		}
 		var response claudeLiveHookResponse
 		if err := json.Unmarshal(stdout, &response); err != nil {
-			return claudeLiveHookResponse{}, evidence, fmt.Errorf("parse Codex native PreToolUse response: %w", err)
+			return claudeLiveHookResponse{}, evidence, exitCode, fmt.Errorf("parse Codex native PreToolUse response: %w", err)
 		}
-		return response, evidence, nil
+		return response, evidence, exitCode, nil
 	}
 
 	allowedPatch := "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch"
-	allowed, allowedOut, err := runPatch("sess_codex_native_allow", allowedPatch)
+	allowed, allowedOut, allowedExit, err := runPatch("sess_codex_native_allow", allowedPatch)
 	if err != nil {
 		return allowedOut, err
+	}
+	if allowedExit != 0 {
+		return allowedOut, fmt.Errorf("valid Codex apply_patch exited %d, want 0", allowedExit)
 	}
 	if decision := allowed.HookSpecificOutput.PermissionDecision; decision != "" && decision != "allow" {
 		return allowedOut, fmt.Errorf("valid Codex apply_patch decision = %q, want allow", decision)
 	}
 
 	blockedPatch := "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** Add File: DOC-0001.md\n+misplaced canon\n*** End Patch"
-	blocked, blockedOut, err := runPatch("sess_codex_native_block", blockedPatch)
+	blocked, blockedOut, blockedExit, err := runPatch("sess_codex_native_block", blockedPatch)
 	combined := bytes.Join([][]byte{[]byte("allow:\n"), allowedOut, []byte("\nblock:\n"), blockedOut}, nil)
 	if err != nil {
 		return combined, err
+	}
+	if blockedExit != 3 {
+		return combined, fmt.Errorf("misplaced multi-target Codex apply_patch exited %d, want hold exit 3", blockedExit)
 	}
 	if blocked.HookSpecificOutput.PermissionDecision != "deny" || !strings.Contains(strings.ToLower(blocked.HookSpecificOutput.PermissionDecisionReason), "placement") {
 		return combined, fmt.Errorf("misplaced multi-target Codex apply_patch did not return native placement deny")
@@ -1478,10 +1489,13 @@ func runProofCheckCodexPreToolUseNativeGateContext(ctx context.Context, repo str
 	// it and hand back the redirect.
 	unownedTarget := filepath.Join(tmpHome, "private", "stray-scaffold.md")
 	unownedPatch := "*** Begin Patch\n*** Add File: " + unownedTarget + "\n+stray agent scaffolding\n*** End Patch"
-	unowned, unownedOut, err := runPatch("sess_codex_native_unowned", unownedPatch)
+	unowned, unownedOut, unownedExit, err := runPatch("sess_codex_native_unowned", unownedPatch)
 	combined = bytes.Join([][]byte{combined, []byte("\nunowned:\n"), unownedOut}, nil)
 	if err != nil {
 		return combined, err
+	}
+	if unownedExit != 3 {
+		return combined, fmt.Errorf("unowned write under COMPOUND_HOME exited %d, want hold exit 3", unownedExit)
 	}
 	unownedReason := strings.ToLower(unowned.HookSpecificOutput.PermissionDecisionReason)
 	if unowned.HookSpecificOutput.PermissionDecision != "deny" || !strings.Contains(unownedReason, "unowned-under-governed-root") {

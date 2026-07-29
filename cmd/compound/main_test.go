@@ -416,6 +416,10 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		if report.Steps[i].ProofRef != want || report.Steps[i].Status != "planned" {
 			t.Fatalf("step %d = %+v, want proof %s planned", i, report.Steps[i], want)
 		}
+		if want == "codex-pretooluse-native-gate-proof" &&
+			!stringSliceContains(report.Steps[i].Command, "--enforce") {
+			t.Fatalf("native gate proof command is not explicitly enforced: %+v", report.Steps[i].Command)
+		}
 		isBunConsoleSmoke := report.Steps[i].Name == "console-projection-timeout-smoke" || report.Steps[i].Name == "console-continue-button-smoke" || report.Steps[i].Name == "console-work-action-row-smoke" || report.Steps[i].Name == "console-work-trace-smoke" || report.Steps[i].Name == "console-lineage-smoke" || report.Steps[i].Name == "console-generic-actions-smoke" || report.Steps[i].Name == "console-view-registry-smoke" || report.Steps[i].Name == "console-decide-brief-smoke" || report.Steps[i].Name == "console-decision-execute-smoke" || report.Steps[i].Name == "console-standing-law-smoke" || report.Steps[i].Name == "console-memory-data-smoke" || report.Steps[i].Name == "console-work-language-smoke" || report.Steps[i].Name == "console-work-legibility-smoke" || report.Steps[i].Name == "console-ask-triage-smoke" || report.Steps[i].Name == "console-representation-falsifiers-smoke" || report.Steps[i].Name == "console-stream-tail-smoke" || report.Steps[i].Name == "console-decide-decision-feedback-smoke" || report.Steps[i].Name == "console-attention-consistency-smoke" || report.Steps[i].Name == "console-projection-degradation-smoke" || report.Steps[i].Name == "console-stream-door-smoke" || report.Steps[i].Name == "console-traffic-board-smoke" || report.Steps[i].Name == "console-delegated-sessions-smoke" || report.Steps[i].Name == "console-coordination-smoke"
 		if strings.HasPrefix(report.Steps[i].Name, "console-") && report.Steps[i].Name != "console-tsc" && !isBunConsoleSmoke && !sameStringSlicePrefix(report.Steps[i].Command, []string{"node", "--experimental-strip-types"}) {
 			t.Fatalf("console smoke step %s command = %+v, want node --experimental-strip-types", report.Steps[i].Name, report.Steps[i].Command)
@@ -756,7 +760,7 @@ func TestProofCheckNativeGateDeniesUnownedWrite(t *testing.T) {
 	exe := compoundTestBinary(t)
 	step := proofCheckStep{
 		Name:     "codex-pretooluse-native-gate",
-		Command:  []string{exe, "hook", "pre-tool-use", "--live", "--harness", "codex"},
+		Command:  []string{exe, "hook", "pre-tool-use", "--live", "--harness", "codex", "--enforce"},
 		ProofRef: "codex-pretooluse-native-gate-proof",
 	}
 	// A nil error means all three cases held: valid write allowed, misplaced canon denied, and

@@ -195,6 +195,17 @@ func CompileDefaultPosture(request DefaultPostureRequest) (CompiledPosture, erro
 		configScope = defaultScope
 	}
 	revision := harness.RegistryRevision(request.Registry)
+	intentions := []HarnessIntention{
+		IntentionPrepareContext,
+		IntentionGuardMutation,
+		IntentionObserveOutcome,
+	}
+	if registryName == "codex" {
+		intentions = []HarnessIntention{
+			IntentionPrepareContext,
+			IntentionObserveOutcome,
+		}
+	}
 	return CompileSemanticPosture(SemanticPosture{
 		ID:                 "hpost_default_" + registryName,
 		Revision:           revision,
@@ -203,11 +214,7 @@ func CompileDefaultPosture(request DefaultPostureRequest) (CompiledPosture, erro
 		HandlerRef:         request.HandlerRef,
 		InvocationRevision: "compound.hook.semantic.v0.1",
 		HandlerRevision:    request.HandlerRevision,
-		Intentions: []HarnessIntention{
-			IntentionPrepareContext,
-			IntentionGuardMutation,
-			IntentionObserveOutcome,
-		},
+		Intentions:         intentions,
 	}, HarnessAttestation{
 		Harness:          harnessName,
 		Family:           family,

@@ -1009,7 +1009,23 @@ func applyPatchTargetPaths(command string) []string {
 	return paths
 }
 
-func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome *liveStopTriageOutcome) any {
+// liveHookResponse preserves the enforced projection expected by direct unit
+// tests. Installed hooks use liveHookResponseWithEnforcement with their parsed
+// --enforce mode.
+func liveHookResponse(
+	harnessName, hookName string,
+	res hook.Result,
+	stopOutcome *liveStopTriageOutcome,
+) any {
+	return liveHookResponseWithEnforcement(harnessName, hookName, res, true, stopOutcome)
+}
+
+func liveHookResponseWithEnforcement(
+	harnessName, hookName string,
+	res hook.Result,
+	enforce bool,
+	stopOutcome *liveStopTriageOutcome,
+) any {
 	if hookName == "user-prompt-submit" {
 		return claudeLiveHookResponse{HookSpecificOutput: claudeHookSpecificOutput{
 			HookEventName:     hookEnumName(hookName),
@@ -1023,7 +1039,11 @@ func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome
 				HookEventName:     hookEnumName(hookName),
 				AdditionalContext: res.ContextOutput,
 			}
-			if decision, reason := livePermissionDecision(res); decision != "" {
+			if enforce {
+				decision, reason := livePermissionDecision(res)
+				if decision == "" {
+					return claudeLiveHookResponse{HookSpecificOutput: out}
+				}
 				// Codex PreToolUse supports allow/deny; a Compound hold denies this
 				// attempt until its separate review/approval changes the policy state.
 				out.PermissionDecision = "deny"
@@ -1068,7 +1088,11 @@ func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome
 	case "user-prompt-submit":
 		out.AdditionalContext = res.ContextOutput
 	case "pre-tool-use":
-		if decision, reason := livePermissionDecision(res); decision != "" {
+		if enforce {
+			decision, reason := livePermissionDecision(res)
+			if decision == "" {
+				return claudeLiveHookResponse{HookSpecificOutput: out}
+			}
 			out.PermissionDecision = decision
 			out.PermissionDecisionReason = reason
 		}

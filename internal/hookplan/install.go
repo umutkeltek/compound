@@ -76,7 +76,11 @@ func HookCommandForEvent(binaryPath, harness, event string) string {
 		"PreToolUse":       "pre-tool-use",
 		"PostToolUse":      "post-tool-use",
 	}[event]
-	return fmt.Sprintf("%s hook %s --live --harness %s", shellQuote(binaryPath), verb, harness)
+	command := fmt.Sprintf("%s hook %s --live --harness %s", shellQuote(binaryPath), verb, harness)
+	if event == "PreToolUse" {
+		command += " --enforce"
+	}
+	return command
 }
 
 // shellQuote wraps s in POSIX single quotes so a shell (or any shell-word splitter, including the
@@ -103,8 +107,8 @@ type HookInstallEntry struct {
 	ConfigPath string               `json:"config_path"`
 	Action     string               `json:"action"` // installed | updated | ok | drift | absent
 	Bindings   []HookInstallBinding `json:"bindings"`
-	Matcher    string               `json:"matcher"` // compatibility: PreToolUse binding
-	Command    string               `json:"command"` // compatibility: PreToolUse binding
+	Matcher    string               `json:"matcher"` // blocking guard matcher; empty for observation-only posture
+	Command    string               `json:"command"` // blocking guard command; empty for observation-only posture
 }
 
 // HookInstallReport is the full install/check result.
@@ -146,8 +150,6 @@ func InstallHooksWithConfigDir(baseDir, binaryPath, scope string, harnesses []st
 		if harness == claudeZaiHarness && strings.TrimSpace(configDir) != "" {
 			configPath = filepath.Join(configDir, "settings.json")
 		}
-		matcher := HarnessMatcher(harness)
-		command := HookCommand(binaryPath, harness)
 		bindings, _, err := compiledManagedHookBindings(binaryPath, harness, scope)
 		if err != nil {
 			return report, fmt.Errorf("%s: %w", harness, err)
@@ -160,6 +162,7 @@ func InstallHooksWithConfigDir(baseDir, binaryPath, scope string, harnesses []st
 				Command: binding.Command,
 			})
 		}
+		matcher, command := installedGuardProjection(bindings)
 		action, err := mergeHookBindings(configPath, bindings, check)
 		if err != nil {
 			return report, fmt.Errorf("%s: %w", harness, err)
@@ -191,10 +194,9 @@ func compiledManagedHookBindings(
 	if err != nil {
 		return nil, CompiledPosture{}, err
 	}
-	if !compiled.MutationReady {
-		return nil, compiled, fmt.Errorf("compiled posture is not mutation-ready")
+	if err := validateInstallableDefaultPosture(harnessName, compiled); err != nil {
+		return nil, compiled, err
 	}
-
 	bindings := make([]desiredHookBinding, 0, len(compiled.HookPlan.Bindings))
 	for _, binding := range compiled.HookPlan.Bindings {
 		bindings = append(bindings, desiredHookBinding{
@@ -204,6 +206,42 @@ func compiledManagedHookBindings(
 		})
 	}
 	return bindings, compiled, nil
+}
+
+func validateInstallableDefaultPosture(harnessName string, compiled CompiledPosture) error {
+	if compiled.MutationReady {
+		return nil
+	}
+	if harnessName == "codex" &&
+		compiled.CompiledFrom.PostureID == "hpost_default_codex" &&
+		isCodexObservationalDefault(compiled.Intentions) {
+		return nil
+	}
+	return fmt.Errorf("compiled posture is not mutation-ready")
+}
+
+func isCodexObservationalDefault(intentions []CompiledIntention) bool {
+	if len(intentions) != 2 {
+		return false
+	}
+	seen := map[HarnessIntention]bool{}
+	for _, intention := range intentions {
+		if intention.Intention == IntentionGuardMutation ||
+			intention.Disposition != DispositionNative {
+			return false
+		}
+		seen[intention.Intention] = true
+	}
+	return seen[IntentionPrepareContext] && seen[IntentionObserveOutcome]
+}
+
+func installedGuardProjection(bindings []desiredHookBinding) (string, string) {
+	for _, binding := range bindings {
+		if binding.Event == "PreToolUse" {
+			return binding.Matcher, binding.Command
+		}
+	}
+	return "", ""
 }
 
 // mergePreToolUseBinding merges compound's PreToolUse binding into an existing harness config without
@@ -232,6 +270,39 @@ func mergeHookBindings(configPath string, bindings []desiredHookBinding, check b
 		hooks = map[string]any{}
 	}
 	action := "ok"
+	desiredEvents := make(map[string]bool, len(bindings))
+	for _, binding := range bindings {
+		desiredEvents[binding.Event] = true
+	}
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
+		if desiredEvents[event] {
+			continue
+		}
+		groups, _ := hooks[event].([]any)
+		kept := make([]any, 0, len(groups))
+		removed := false
+		for _, entry := range groups {
+			entryMap, ok := entry.(map[string]any)
+			if ok && bindingIsCompoundEvent(entryMap, event) {
+				removed = true
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		if !removed {
+			continue
+		}
+		if check {
+			action = combineHookInstallAction(action, "drift", true)
+			continue
+		}
+		if len(kept) == 0 {
+			delete(hooks, event)
+		} else {
+			hooks[event] = kept
+		}
+		action = combineHookInstallAction(action, "updated", false)
+	}
 	for _, binding := range bindings {
 		if strings.TrimSpace(binding.Event) == "" || strings.TrimSpace(binding.Command) == "" {
 			return "", fmt.Errorf("hook binding needs event and command")
@@ -305,11 +376,7 @@ func combineHookInstallAction(current, next string, check bool) string {
 	return "ok"
 }
 
-// bindingIsCompound reports whether a PreToolUse entry is compound's own (matched by command marker).
-func bindingIsCompound(entry map[string]any) bool {
-	return bindingIsCompoundEvent(entry, "PreToolUse")
-}
-
+// bindingIsCompoundEvent reports whether an event entry is Compound's own.
 func bindingIsCompoundEvent(entry map[string]any, event string) bool {
 	verb := map[string]string{
 		"SessionStart":     "session-start",

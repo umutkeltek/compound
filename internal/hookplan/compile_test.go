@@ -3,7 +3,36 @@ package hookplan
 import (
 	"slices"
 	"testing"
+
+	"compound/internal/harness"
 )
+
+func TestDefaultCodexPostureLeavesNativeMutationGuardOperatorOptIn(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := CompileDefaultPosture(DefaultPostureRequest{
+		Harness:         "codex",
+		Registry:        harness.DefaultRegistry(),
+		HandlerRef:      "compound",
+		HandlerRevision: "sha256:handler-fixture",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compiled.MutationReady {
+		t.Fatalf("default Codex posture unexpectedly mutation-ready: %+v", compiled)
+	}
+	for _, intention := range compiled.Intentions {
+		if intention.Intention == IntentionGuardMutation {
+			t.Fatalf("default Codex posture installed an operator-opt-in guard: %+v", intention)
+		}
+	}
+	for _, binding := range compiled.HookPlan.Bindings {
+		if binding.Event == "PreToolUse" {
+			t.Fatalf("default Codex posture emitted PreToolUse binding: %+v", binding)
+		}
+	}
+}
 
 func TestCompileSemanticPostureThroughClaudeAdapter(t *testing.T) {
 	t.Parallel()

@@ -36,6 +36,11 @@ The stable intentions are `prepare_context`, `guard_mutation`, and
 matchers, and limitations. Every compiled intention says `native`, `fallback`,
 `degraded`, or `unsupported` and cites the harness attestation revision.
 
+Default postures may select a subset. Claude-family defaults select all three
+intentions and install `PreToolUse` with explicit `--enforce`. The Codex
+default selects `prepare_context` and `observe_outcome`; `hook install` omits
+and reconciles away only Compound's `PreToolUse` binding.
+
 Claude-family and Codex `compound hook install` consume this projection when
 they write managed hooks. The OpenCode installer asks Compound for the same
 projection and refuses adapter drift before writing its config/plugin. OpenCode
@@ -74,7 +79,8 @@ Add to your project's `.claude/settings.json`:
 
 With `--enforce`, Compound returns policy gate exit codes:
 - Exit 0 → allow (the tool call proceeds)
-- Exit 2 → deny (the tool call is blocked, agent sees the reason)
+- Exit 3 → hold (the tool call waits for operator approval)
+- Exit 4 → deny (the tool call is blocked and the agent sees the reason)
 
 ### Option B: import a generated hook roster
 
@@ -99,7 +105,10 @@ compound hook install --harness codex --scope global --check --json
 
 The Codex adapter compiles the stable intentions into the current native
 `hooks.json` event schema and no-clobber merges Compound's bindings. Operators
-do not maintain that schema directly.
+do not maintain that schema directly. The default is observation-only and does
+not claim mutation readiness: it installs `SessionStart`, `UserPromptSubmit`,
+and `PostToolUse`, removes a stale Compound-owned `PreToolUse`, and preserves
+unrelated user hooks. Native blocking remains an explicit posture choice.
 
 ## OpenCode
 
@@ -165,8 +174,11 @@ Returns a **PolicyDecision**:
 - `hold` → needs human approval
 - `deny` → blocked (agent sees the reason)
 
-Policy is **enforced, not asked**. No prompt injection can bypass it — the
-gate is in the CLI exit code, not in the prompt.
+With `--enforce`, Compound publishes the harness-native blocking decision and
+returns the policy gate exit (`3` for hold, `4` for deny; Codex maps a hold to
+native `deny` until approval). Without `--enforce`, the hook still records the
+ActionIntent and PolicyDecision, but publishes no native permission decision
+and does not turn that policy outcome into a blocking process exit.
 
 ### session-end
 

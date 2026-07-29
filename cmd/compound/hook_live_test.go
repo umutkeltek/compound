@@ -1563,10 +1563,12 @@ func runClaudePreToolUse(t *testing.T, input string) claudeLiveHookResponse {
 	var code int
 	out := captureStdout(t, func() {
 		withStdin(t, input, func() {
-			code = runHookCommand([]string{"pre-tool-use", "--live", "--harness", "claude-code"})
+			code = runHookCommand([]string{
+				"pre-tool-use", "--live", "--harness", "claude-code", "--enforce",
+			})
 		})
 	})
-	if code != 0 {
+	if code != 0 && code != 3 && code != 4 {
 		t.Fatalf("Claude PreToolUse exit=%d\n%s", code, out)
 	}
 	var response claudeLiveHookResponse
@@ -1619,10 +1621,12 @@ func runCodexPreToolUse(t *testing.T, input string) claudeLiveHookResponse {
 	var code int
 	out := captureStdout(t, func() {
 		withStdin(t, input, func() {
-			code = runHookCommand([]string{"pre-tool-use", "--live", "--harness", "codex"})
+			code = runHookCommand([]string{
+				"pre-tool-use", "--live", "--harness", "codex", "--enforce",
+			})
 		})
 	})
-	if code != 0 {
+	if code != 0 && code != 3 && code != 4 {
 		t.Fatalf("Codex PreToolUse exit=%d\n%s", code, out)
 	}
 	var response claudeLiveHookResponse
@@ -1731,11 +1735,13 @@ func TestHookLiveCodexPreToolUseDeniesWhenAnyApplyPatchTargetIsMisplacedCanon(t 
 	var code int
 	out := captureStdout(t, func() {
 		withStdin(t, input, func() {
-			code = runHookCommand([]string{"pre-tool-use", "--live", "--harness", "codex"})
+			code = runHookCommand([]string{
+				"pre-tool-use", "--live", "--harness", "codex", "--enforce",
+			})
 		})
 	})
-	if code != 0 {
-		t.Fatalf("codex native hook exit = %d, want JSON decision on exit 0\n%s", code, out)
+	if code != 3 {
+		t.Fatalf("codex native hook exit = %d, want hold exit 3\n%s", code, out)
 	}
 	var resp claudeLiveHookResponse
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
@@ -1766,11 +1772,13 @@ func TestHookLiveCodexPreToolUseDeniesUnparseableApplyPatch(t *testing.T) {
 	var code int
 	out := captureStdout(t, func() {
 		withStdin(t, input, func() {
-			code = runHookCommand([]string{"pre-tool-use", "--live", "--harness", "codex"})
+			code = runHookCommand([]string{
+				"pre-tool-use", "--live", "--harness", "codex", "--enforce",
+			})
 		})
 	})
-	if code != 0 {
-		t.Fatalf("unparseable Codex hook exit = %d, want native JSON deny\n%s", code, out)
+	if code != 3 {
+		t.Fatalf("unparseable Codex hook exit = %d, want hold exit 3\n%s", code, out)
 	}
 	var resp claudeLiveHookResponse
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
