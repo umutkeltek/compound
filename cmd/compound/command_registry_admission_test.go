@@ -112,6 +112,38 @@ func TestFirstPartyCommandAdmissionDistinguishesMutatingSubcommands(t *testing.T
 			command:       "compound profiles generate",
 			wantOperation: "governed_command",
 		},
+		{
+			command:       "compound home doctor --home /synthetic/home",
+			wantOperation: "local_command",
+		},
+		{
+			command:       "compound home where --home /synthetic/home",
+			wantOperation: "local_command",
+		},
+		{
+			command:       "compound home init --home /synthetic/home --global",
+			wantOperation: "governed_command",
+		},
+		{
+			command:       "compound runtime doctor fixtures/runtime/synthetic-service.yaml",
+			wantOperation: "governed_command",
+		},
+		{
+			command:       "compound architecture doctor --strict",
+			wantOperation: "local_command",
+		},
+		{
+			command:       "compound contract hooks-authority --observe-live",
+			wantOperation: "local_command",
+		},
+		{
+			command:       "compound contract compile --harness codex --task hook-health",
+			wantOperation: "governed_command",
+		},
+		{
+			command:       "compound contract import-hooks --codex-hooks-json hooks.json",
+			wantOperation: "governed_command",
+		},
 	}
 
 	for _, tc := range tests {
@@ -123,6 +155,31 @@ func TestFirstPartyCommandAdmissionDistinguishesMutatingSubcommands(t *testing.T
 			})
 			if !got.Known || got.Operation != tc.wantOperation {
 				t.Fatalf("%q classification = %+v, want operation=%q", tc.command, got, tc.wantOperation)
+			}
+		})
+	}
+}
+
+func TestFirstPartyCommandAdmissionKeepsDoctorMutationNeighborsHeld(t *testing.T) {
+	t.Parallel()
+	commands := []string{
+		"compound home backup --home /synthetic/home --target /synthetic/archive",
+		"compound home restore --archive /synthetic/archive --target /synthetic/home",
+		"compound home compact --home /synthetic/home",
+		"compound runtime repair-plan fixtures/runtime/synthetic-service.yaml",
+		"compound runtime repair-review review.yaml",
+		"compound architecture publish --public",
+		"compound contract definitely-not-a-command",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			got := policy.ClassifyToolAction(policy.ToolActionRequest{
+				Tool:               "Bash",
+				Arguments:          map[string]any{"command": command},
+				FirstPartyCommands: firstPartyCommandCatalog(),
+			})
+			if got.Known || got.MutationClass != "security" {
+				t.Fatalf("%q escaped security-floor hold: %+v", command, got)
 			}
 		})
 	}

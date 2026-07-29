@@ -136,6 +136,11 @@ commands through Bun or Node's TypeScript-strip mode, and read-only `xattr`
 inspection remain automatic. Other JavaScript entrypoints, TypeScript emit
 modes, and `xattr` write/delete/clear flags remain held. The same command
 registry marks `profiles check` read-only and `profiles generate` governed.
+Routine health faces follow the same split: `home doctor|where|verify`,
+`architecture doctor`, and `contract hooks-authority` are reads; `home init`,
+`runtime doctor` (which can opt into writeback), and contract
+compile/import are governed. Backup, restore, compaction, runtime repair, and
+unknown neighbors remain held.
 
 A held action can use a durable, exact, one-use approval. The approval binds
 operation, arguments, destination, source refs, tool schema and policy

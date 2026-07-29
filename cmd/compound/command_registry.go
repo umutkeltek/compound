@@ -58,23 +58,24 @@ func retiredCommand(name string) func([]string) {
 // has not yet earned automatic first-party admission.
 func compoundCommandRegistry() map[string]compoundCommand {
 	return map[string]compoundCommand{
-		"version":     readCommand(cmdVersion),
-		"--version":   readCommand(cmdVersion),
-		"-v":          readCommand(cmdVersion),
-		"distill":     readCommand(retiredCommand("distill")),
-		"scope":       readCommand(retiredCommand("scope")),
-		"promote":     readCommand(retiredCommand("promote")),
-		"build":       readCommand(retiredCommand("build")),
-		"reconcile":   readCommand(retiredCommand("reconcile")),
-		"timeline":    readCommand(retiredCommand("timeline")),
-		"recall":      readCommand(retiredCommand("recall")),
-		"pack":        readCommand(retiredCommand("pack")),
-		"ledger":      readCommand(retiredCommand("ledger")),
-		"authority":   governedCommand(cmdAuthority),
-		"decisions":   heldCommand(cmdDecisions),
-		"director":    heldCommand(cmdDirector),
-		"jobprobe":    heldCommand(cmdJobProbe),
-		"runtime":     heldCommand(cmdRuntime),
+		"version":   readCommand(cmdVersion),
+		"--version": readCommand(cmdVersion),
+		"-v":        readCommand(cmdVersion),
+		"distill":   readCommand(retiredCommand("distill")),
+		"scope":     readCommand(retiredCommand("scope")),
+		"promote":   readCommand(retiredCommand("promote")),
+		"build":     readCommand(retiredCommand("build")),
+		"reconcile": readCommand(retiredCommand("reconcile")),
+		"timeline":  readCommand(retiredCommand("timeline")),
+		"recall":    readCommand(retiredCommand("recall")),
+		"pack":      readCommand(retiredCommand("pack")),
+		"ledger":    readCommand(retiredCommand("ledger")),
+		"authority": governedCommand(cmdAuthority),
+		"decisions": heldCommand(cmdDecisions),
+		"director":  heldCommand(cmdDirector),
+		"jobprobe":  heldCommand(cmdJobProbe),
+		"runtime": heldCommand(cmdRuntime).
+			withSubcommandAdmission("doctor", policy.FirstPartyCommandGoverned),
 		"projection":  heldCommand(cmdProjection),
 		"system":      heldCommand(cmdSystem),
 		"product":     heldCommand(cmdProduct),
@@ -83,14 +84,21 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"event":       heldCommand(cmdEvent),
 		"event-store": heldCommand(cmdEventStore),
 		"writeback":   heldCommand(cmdWriteback),
-		"home":        heldCommand(cmdHome),
-		"envelope":    heldCommand(cmdEnvelope),
-		"schema":      heldCommand(cmdSchema),
-		"contract":    heldCommand(cmdContract),
-		"orient":      governedCommand(cmdOrient),
-		"work":        governedCommand(cmdWork),
-		"packets":     heldCommand(cmdPackets),
-		"workbench":   readCommand(cmdWorkbench),
+		"home": heldCommand(cmdHome).
+			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("where", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("verify", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("init", policy.FirstPartyCommandGoverned),
+		"envelope": heldCommand(cmdEnvelope),
+		"schema":   heldCommand(cmdSchema),
+		"contract": heldCommand(cmdContract).
+			withSubcommandAdmission("hooks-authority", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("compile", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("import-hooks", policy.FirstPartyCommandGoverned),
+		"orient":    governedCommand(cmdOrient),
+		"work":      governedCommand(cmdWork),
+		"packets":   heldCommand(cmdPackets),
+		"workbench": readCommand(cmdWorkbench),
 		"coordination": readCommand(cmdCoordination).
 			withSubcommandAdmission("measure", policy.FirstPartyCommandGoverned),
 		"attention":          readCommand(cmdAttention),
@@ -144,7 +152,8 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"lanebeliefs":     heldCommand(cmdLaneBeliefs),
 		"mcp-transport":   heldCommand(cmdMCPTransport),
 		"negatives":       heldCommand(cmdNegatives),
-		"architecture":    heldCommand(cmdArchitecture),
+		"architecture": heldCommand(cmdArchitecture).
+			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),
 	}
 }
 
