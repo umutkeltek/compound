@@ -80,9 +80,10 @@ func testCompatibleDelegateExecutionProfileResolution(plan *DelegateExecutionPro
 }
 
 func testCompatibleDelegateLaunchProfileResolution() *DelegateLaunchProfileResolution {
-	snapshot := json.RawMessage(`{"authority_revision":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","capture_mode":"segmented_full_wire","client_profile_id":"claude-minimax-default","harness":"claude-code","id":"claude-minimax","owner_transport":"tap","provider_lane":"minimax","requested_effort":"xhigh","requested_model":"fixture/model","revision":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","route":"auto/build","schema_version":"compound.delegate_launch_profile_plan.v0.1","source_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_schema":"switchback/launch-profile-plan@1","transport_id":"switchback"}`)
+	snapshot := json.RawMessage(`{"authority_revision":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","capture_mode":"segmented_full_wire","client_profile_id":"claude-minimax-default","executable_id":"claude","harness":"claude-code","id":"claude-minimax","owner_transport":"tap","provider_lane":"minimax","requested_effort":"xhigh","requested_model":"fixture/model","revision":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","route":"auto/build","schema_version":"compound.delegate_launch_profile_plan.v0.1","source_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_schema":"switchback/launch-profile-plan@1","transport_id":"switchback"}`)
 	return &DelegateLaunchProfileResolution{
-		Snapshot: snapshot,
+		Snapshot:       snapshot,
+		ExecutablePath: "/synthetic/bin/claude",
 		Compatibility: DelegateLaunchProfileCompatibility{
 			Disposition:           DelegateLaunchProfileCompatible,
 			SelectedHarness:       "claude_code",
@@ -94,6 +95,8 @@ func testCompatibleDelegateLaunchProfileResolution() *DelegateLaunchProfileResol
 			PlanID:                "claude-minimax",
 			ClientProfileID:       "claude-minimax-default",
 			Revision:              "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			SelectedExecutableID:  "claude",
+			ExecutableID:          "claude",
 		},
 	}
 }
@@ -909,7 +912,7 @@ func TestDelegateLaunchProfileRejectsOwnerDriftOrMissingClientBeforeReadinessCap
 			name: "missing client profile",
 			resolver: func(DelegateLaunchProfileResolveRequest) (*DelegateLaunchProfileResolution, error) {
 				resolution := testCompatibleDelegateLaunchProfileResolution()
-				resolution.Snapshot = json.RawMessage(`{"authority_revision":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","capture_mode":"segmented_full_wire","client_profile_id":"","harness":"claude-code","id":"claude-minimax","owner_transport":"tap","provider_lane":"minimax","requested_effort":"xhigh","requested_model":"fixture/model","revision":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","route":"auto/build","schema_version":"compound.delegate_launch_profile_plan.v0.1","source_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_schema":"switchback/launch-profile-plan@1","transport_id":"switchback"}`)
+				resolution.Snapshot = json.RawMessage(`{"authority_revision":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","capture_mode":"segmented_full_wire","client_profile_id":"","executable_id":"claude","harness":"claude-code","id":"claude-minimax","owner_transport":"tap","provider_lane":"minimax","requested_effort":"xhigh","requested_model":"fixture/model","revision":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","route":"auto/build","schema_version":"compound.delegate_launch_profile_plan.v0.1","source_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_schema":"switchback/launch-profile-plan@1","transport_id":"switchback"}`)
 				return resolution, nil
 			},
 		},
@@ -1046,9 +1049,14 @@ func TestDelegateLaunchProfileBindsOwnerPlanToEnvironmentAndRunAttempt(t *testin
 	if len(runner.creates) != 1 {
 		t.Fatalf("create calls = %d, want 1", len(runner.creates))
 	}
+	if got, want := runner.creates[0].Command, "/synthetic/bin/claude"; got != want {
+		t.Fatalf("spawn command = %q, want owner wrapper %q", got, want)
+	}
 	for key, want := range map[string]string{
 		"SB_LAUNCH_PROFILE_ID":       "claude-minimax",
 		"SB_LAUNCH_PROFILE_REVISION": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"SB_LAUNCH_HARNESS":          "claude-code",
+		"SB_LAUNCH_CAPTURE_POLICY":   "segmented_full_wire",
 		"SB_LAUNCH_CLIENT_PROFILE":   "claude-minimax-default",
 		"COMPOUND_CLIENT_PROFILE_ID": "claude-minimax-default",
 	} {
@@ -1066,6 +1074,9 @@ func TestDelegateLaunchProfileBindsOwnerPlanToEnvironmentAndRunAttempt(t *testin
 		t.Fatal(err)
 	}
 	attemptValue := reflect.ValueOf(attempt)
+	if got, want := attempt.Command, "/synthetic/bin/claude"; got != want {
+		t.Fatalf("RunAttempt command = %q, want owner wrapper %q", got, want)
+	}
 	for field, want := range map[string]string{
 		"LaunchProfileID":          "claude-minimax",
 		"LaunchProfileRevision":    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -1075,6 +1086,14 @@ func TestDelegateLaunchProfileBindsOwnerPlanToEnvironmentAndRunAttempt(t *testin
 		if !value.IsValid() || value.String() != want {
 			t.Fatalf("RunAttempt %s = %v, want %q; attempt=%+v", field, value, want, attempt)
 		}
+	}
+	recovered, alive, err := store.RecoverBoundSession(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !alive || recovered.LaunchProfile == nil ||
+		!bytes.Equal(recovered.LaunchProfile.Snapshot, result.LaunchProfile.Snapshot) {
+		t.Fatalf("launch profile did not survive event recovery: alive=%v binding=%+v", alive, recovered)
 	}
 }
 

@@ -53,12 +53,12 @@ and attests compatibility against the selected harness, lane, model ID, provider
 `internal/work` does not maintain harness-family, model, route-alias, or executor-transport tables.
 
 `LaneTuple` resolution deliberately leaves transport empty because the lane projection declares it executor-owned.
-When an explicit launch profile is present, route-evidence may defer only a requested `switchback` transport while
-the remaining tuple is exact. The CLI then asks the executor owner for the full read-only profile plan. Compound
-accepts only the exact `switchback/launch-profile-plan@1` consumer projection owned by Switchback, with current
+When an explicit launch profile is present, route-evidence may defer only the requested executor-owned gateway
+transport while the remaining tuple is exact. The CLI then asks the executor owner for the full read-only profile
+plan. Compound accepts only the owner's exact `launch-profile-plan@1` consumer projection, with current
 generated artifacts, `segmented_full_wire` capture, an opaque nonempty client profile, and exact
 harness/model/route/effort compatibility. The owner's exact `gateway|tap|headroom` transport is sealed beside the
-Compound `switchback` transport family; it is never inferred from a route name. Missing client profiles, drifted
+selected gateway transport family; it is never inferred from a route name. Missing client profiles, drifted
 materializations, non-capturing or unknown transports, or changed authority revisions refuse before readiness,
 capacity, RunAttempt mint, or process creation.
 
@@ -70,7 +70,10 @@ profile ID, owner revision, and opaque client-profile ID before spawn—not eith
 or credential. The supervised tmux runner installs `work_id`, `ratt_*`, execution-plan identity, launch-profile
 identity, and opaque client-profile identity as session-environment argv before respawn, without shell
 interpolation. Observed model/provider fields remain empty until route evidence attests them. Gateway
-account/credential selection remains gateway-owned and is not stored here. Delegation without
+account/credential selection remains gateway-owned and is not stored here. The lane-selected executable must match one
+healthy owner-published wrapper artifact. Its path is used only for the spawn and RunAttempt command, never sealed into
+the public-safe profile snapshot; that snapshot is persisted on the binding so status, steer, attach, sweep, and retry
+recovery revalidate the same identity. Delegation without
 `--execution-profile` retains its legacy behavior, so regular native Claude Code remains available.
 
 Profile compatibility binds the selected canonical tuple rather than trusting selectors in isolation. After

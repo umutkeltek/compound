@@ -62,6 +62,7 @@ type lanePlanProfile struct {
 	RequestedEffort string          `json:"requested_effort"`
 	Transport       string          `json:"transport"`
 	Capture         lanePlanCapture `json:"capture"`
+	Wrappers        []string        `json:"wrappers"`
 }
 
 type lanePlan struct {
@@ -260,6 +261,48 @@ func normalizeDelegateLaunchProfilePlan(
 			laneLaunchProfileCaptureMode,
 		)
 	}
+	selectedExecutableID := filepath.Base(strings.TrimSpace(req.SelectedCommand))
+	if selectedExecutableID == "" || selectedExecutableID == "." {
+		return nil, fmt.Errorf("selected launch command is required")
+	}
+	wrapperArtifacts := make(map[string]string)
+	for _, artifact := range source.Artifacts {
+		if artifact.Kind != "wrapper" {
+			continue
+		}
+		path := strings.TrimSpace(artifact.Path)
+		executableID := filepath.Base(path)
+		if path == "" || path != artifact.Path || !filepath.IsAbs(path) ||
+			executableID == "." || !validLaneOpaqueID(executableID) {
+			return nil, fmt.Errorf("launch profile wrapper artifact path is invalid")
+		}
+		if _, exists := wrapperArtifacts[executableID]; exists {
+			return nil, fmt.Errorf("launch profile wrapper artifact %q is ambiguous", executableID)
+		}
+		wrapperArtifacts[executableID] = path
+	}
+	if len(profile.Wrappers) == 0 || len(wrapperArtifacts) != len(profile.Wrappers) {
+		return nil, fmt.Errorf("launch profile wrapper artifacts do not match the owner profile")
+	}
+	declaredWrappers := make(map[string]bool, len(profile.Wrappers))
+	for _, wrapper := range profile.Wrappers {
+		if !validLaneOpaqueID(wrapper) || declaredWrappers[wrapper] {
+			return nil, fmt.Errorf("launch profile wrapper %q is invalid or duplicated", wrapper)
+		}
+		if _, ok := wrapperArtifacts[wrapper]; !ok {
+			return nil, fmt.Errorf("launch profile wrapper %q has no healthy artifact", wrapper)
+		}
+		declaredWrappers[wrapper] = true
+	}
+	executableID := selectedExecutableID
+	executablePath, selectedWrapper := wrapperArtifacts[executableID]
+	if !selectedWrapper {
+		if len(profile.Wrappers) != 1 {
+			return nil, fmt.Errorf("selected command %q does not identify one owner wrapper", selectedExecutableID)
+		}
+		executableID = profile.Wrappers[0]
+		executablePath = wrapperArtifacts[executableID]
+	}
 
 	sourceSum := sha256.Sum256(raw)
 	canonical := work.DelegateLaunchProfilePlan{
@@ -278,6 +321,7 @@ func normalizeDelegateLaunchProfilePlan(
 		OwnerTransport:    profile.Transport,
 		ClientProfileID:   profile.ClientProfile,
 		CaptureMode:       profile.Capture.Mode,
+		ExecutableID:      executableID,
 	}
 	snapshot, err := json.Marshal(canonical)
 	if err != nil {
@@ -289,11 +333,13 @@ func normalizeDelegateLaunchProfilePlan(
 		strings.TrimSpace(req.SelectedModelID) == profile.RequestedModel &&
 		strings.TrimSpace(req.SelectedProviderRoute) == profile.Route &&
 		strings.TrimSpace(req.SelectedTransportID) == laneLaunchProfileTransportID &&
-		strings.TrimSpace(req.RequestedNativeEffort) == profile.RequestedEffort {
+		strings.TrimSpace(req.RequestedNativeEffort) == profile.RequestedEffort &&
+		selectedExecutableID == canonical.ExecutableID {
 		disposition = work.DelegateLaunchProfileCompatible
 	}
 	return &work.DelegateLaunchProfileResolution{
-		Snapshot: snapshot,
+		Snapshot:       snapshot,
+		ExecutablePath: executablePath,
 		Compatibility: work.DelegateLaunchProfileCompatibility{
 			Disposition:           disposition,
 			SelectedHarness:       req.SelectedHarness,
@@ -305,6 +351,8 @@ func normalizeDelegateLaunchProfilePlan(
 			PlanID:                canonical.ID,
 			ClientProfileID:       canonical.ClientProfileID,
 			Revision:              canonical.Revision,
+			SelectedExecutableID:  selectedExecutableID,
+			ExecutableID:          canonical.ExecutableID,
 		},
 	}, nil
 }

@@ -42,17 +42,27 @@ func testLaneLaunchProfilePlan() []byte {
 			"targets": ["synthetic-target"]
 		},
 		"changed": false,
-		"artifacts": [{
-			"kind": "profile_conformance",
-			"path": "/synthetic/private/profile.json",
-			"exists": true,
-			"changed": false,
-			"current_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-			"desired_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-			"mode": "0600",
-			"actual_mode": "0600",
-			"mode_matches": true
-		}]
+  "artifacts": [{
+    "kind": "profile_conformance",
+    "path": "/synthetic/private/profile.json",
+    "exists": true,
+    "changed": false,
+    "current_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "desired_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "mode": "0600",
+    "actual_mode": "0600",
+    "mode_matches": true
+  }, {
+    "kind": "wrapper",
+    "path": "/synthetic/private/claude-minimax",
+    "exists": true,
+    "changed": false,
+    "current_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "desired_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "mode": "0700",
+    "actual_mode": "0700",
+    "mode_matches": true
+  }]
 	}`)
 }
 
@@ -65,6 +75,7 @@ func testLaunchProfileResolveRequest() work.DelegateLaunchProfileResolveRequest 
 		SelectedProviderRoute: "minimax/minimax-m3",
 		SelectedTransportID:   "switchback",
 		RequestedNativeEffort: "xhigh",
+		SelectedCommand:       "claude-minimax",
 	}
 }
 
@@ -76,6 +87,9 @@ func TestNormalizeDelegateLaunchProfilePlanConsumesSafeOwnerProjection(t *testin
 	}
 	if resolution.Compatibility.Disposition != work.DelegateLaunchProfileCompatible {
 		t.Fatalf("compatible owner plan disposition = %q", resolution.Compatibility.Disposition)
+	}
+	if got, want := resolution.ExecutablePath, "/synthetic/private/claude-minimax"; got != want {
+		t.Fatalf("attested executable path = %q, want %q", got, want)
 	}
 
 	var snapshot map[string]any
@@ -102,6 +116,7 @@ func TestNormalizeDelegateLaunchProfilePlanConsumesSafeOwnerProjection(t *testin
 		"owner_transport",
 		"client_profile_id",
 		"capture_mode",
+		"executable_id",
 	} {
 		value, ok := snapshot[required].(string)
 		if !ok || strings.TrimSpace(value) == "" {
@@ -162,6 +177,13 @@ func TestNormalizeDelegateLaunchProfilePlanRefusesUntrustedOrDriftedOwnerOutput(
 				plan["artifacts"].([]any)[0].(map[string]any)["exists"] = false
 			},
 			want: "artifact",
+		},
+		{
+			name: "missing wrapper artifact",
+			replace: func(plan map[string]any) {
+				plan["artifacts"] = plan["artifacts"].([]any)[:1]
+			},
+			want: "wrapper",
 		},
 		{
 			name: "artifact content drift",
@@ -245,6 +267,9 @@ func TestNormalizeDelegateLaunchProfilePlanMarksTupleMismatchIncompatible(t *tes
 		}},
 		{name: "effort", mutate: func(req *work.DelegateLaunchProfileResolveRequest) {
 			req.RequestedNativeEffort = "medium"
+		}},
+		{name: "command", mutate: func(req *work.DelegateLaunchProfileResolveRequest) {
+			req.SelectedCommand = "other-wrapper"
 		}},
 	}
 	for _, tc := range tests {

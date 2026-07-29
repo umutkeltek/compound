@@ -42,6 +42,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -263,6 +264,7 @@ type DelegateLaunchProfileResolveRequest struct {
 	SelectedProviderRoute string
 	SelectedTransportID   string
 	RequestedNativeEffort string
+	SelectedCommand       string
 }
 
 type DelegateLaunchProfilePlan struct {
@@ -281,7 +283,9 @@ type DelegateLaunchProfilePlan struct {
 	OwnerTransport    string          `json:"owner_transport"`
 	ClientProfileID   string          `json:"client_profile_id"`
 	CaptureMode       string          `json:"capture_mode"`
-	Snapshot          json.RawMessage `json:"-"`
+	ExecutableID      string          `json:"executable_id"`
+	ExecutablePath    string          `json:"-"`
+	Snapshot          json.RawMessage `json:"snapshot,omitempty"`
 }
 
 type DelegateLaunchProfileCompatibility struct {
@@ -295,11 +299,14 @@ type DelegateLaunchProfileCompatibility struct {
 	PlanID                string `json:"plan_id"`
 	ClientProfileID       string `json:"client_profile_id"`
 	Revision              string `json:"revision"`
+	SelectedExecutableID  string `json:"selected_executable_id"`
+	ExecutableID          string `json:"executable_id"`
 }
 
 type DelegateLaunchProfileResolution struct {
-	Snapshot      json.RawMessage                    `json:"snapshot"`
-	Compatibility DelegateLaunchProfileCompatibility `json:"compatibility"`
+	Snapshot       json.RawMessage                    `json:"snapshot"`
+	Compatibility  DelegateLaunchProfileCompatibility `json:"compatibility"`
+	ExecutablePath string                             `json:"-"`
 }
 
 type DelegateLaunchProfileResolverFunc func(DelegateLaunchProfileResolveRequest) (*DelegateLaunchProfileResolution, error)
@@ -946,6 +953,7 @@ func delegateLaunchProfilePlanFromSnapshot(snapshot json.RawMessage) (*DelegateL
 		"owner_transport":    canonical.OwnerTransport,
 		"client_profile_id":  canonical.ClientProfileID,
 		"capture_mode":       canonical.CaptureMode,
+		"executable_id":      canonical.ExecutableID,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return nil, fmt.Errorf("canonical launch profile %s is required", name)
@@ -978,7 +986,8 @@ func validateDelegateLaunchProfileResolution(
 	selectedModelID,
 	selectedProviderRoute,
 	selectedTransportID,
-	requestedNativeEffort string,
+	requestedNativeEffort,
+	selectedCommand string,
 ) (*DelegateLaunchProfilePlan, error) {
 	if resolution == nil {
 		return nil, errors.New("launch profile resolver returned no resolution")
@@ -1002,6 +1011,8 @@ func validateDelegateLaunchProfileResolution(
 		{name: "plan_id", got: compatibility.PlanID, want: plan.ID},
 		{name: "client_profile_id", got: compatibility.ClientProfileID, want: plan.ClientProfileID},
 		{name: "revision", got: compatibility.Revision, want: plan.Revision},
+		{name: "selected_executable_id", got: compatibility.SelectedExecutableID, want: filepath.Base(strings.TrimSpace(selectedCommand))},
+		{name: "executable_id", got: compatibility.ExecutableID, want: plan.ExecutableID},
 	} {
 		if strings.TrimSpace(field.got) != strings.TrimSpace(field.want) {
 			return nil, fmt.Errorf(
@@ -1021,6 +1032,7 @@ func validateDelegateLaunchProfileResolution(
 		{name: "requested_model", got: plan.RequestedModel, want: selectedModelID},
 		{name: "transport_id", got: plan.TransportID, want: selectedTransportID},
 		{name: "requested_effort", got: plan.RequestedEffort, want: requestedNativeEffort},
+		{name: "executable_id", got: plan.ExecutableID, want: filepath.Base(strings.TrimSpace(selectedCommand))},
 	} {
 		if strings.TrimSpace(field.got) != strings.TrimSpace(field.want) {
 			return nil, &delegateLaunchProfileIncompatibleError{
@@ -1034,6 +1046,12 @@ func validateDelegateLaunchProfileResolution(
 			detail: fmt.Sprintf("harness %q does not match selected tuple %q", plan.Harness, selectedHarness),
 		}
 	}
+	executablePath := strings.TrimSpace(resolution.ExecutablePath)
+	if executablePath == "" || executablePath != resolution.ExecutablePath ||
+		!filepath.IsAbs(executablePath) || filepath.Base(executablePath) != plan.ExecutableID {
+		return nil, errors.New("launch profile resolver returned no exact owner executable")
+	}
+	plan.ExecutablePath = executablePath
 	switch compatibility.Disposition {
 	case DelegateLaunchProfileCompatible:
 		return plan, nil
@@ -1074,7 +1092,9 @@ func addDelegateLaunchProfileReadinessEvidence(readiness DelegateHarnessReadines
 	if err != nil {
 		return DelegateHarnessReadinessResult{}, err
 	}
-	if !reflect.DeepEqual(plan, validated) {
+	projection := cloneDelegateLaunchProfilePlan(plan)
+	projection.ExecutablePath = ""
+	if !reflect.DeepEqual(projection, validated) {
 		return DelegateHarnessReadinessResult{}, errors.New("launch profile projection disagrees with canonical snapshot")
 	}
 	sum := sha256.Sum256(plan.Snapshot)
@@ -1327,6 +1347,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			SelectedProviderRoute: selectedProviderRoute,
 			SelectedTransportID:   executionProfile.TransportID,
 			RequestedNativeEffort: executionProfile.RequestedNativeEffort,
+			SelectedCommand:       command,
 		})
 		if launchErr != nil {
 			out.Refusal = &DelegateRefusal{
@@ -1343,6 +1364,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			selectedProviderRoute,
 			executionProfile.TransportID,
 			executionProfile.RequestedNativeEffort,
+			command,
 		)
 		var incompatible *delegateLaunchProfileIncompatibleError
 		if errors.As(launchErr, &incompatible) {
@@ -1360,6 +1382,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			return out, nil
 		}
 		launchProfile = cloneDelegateLaunchProfilePlan(launchProfile)
+		command = launchProfile.ExecutablePath
 		out.LaunchProfile = cloneDelegateLaunchProfilePlan(launchProfile)
 	}
 
@@ -1680,6 +1703,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 				SelectedProviderRoute: selectedProviderRoute,
 				SelectedTransportID:   executionProfile.TransportID,
 				RequestedNativeEffort: executionProfile.RequestedNativeEffort,
+				SelectedCommand:       command,
 			})
 			if launchErr != nil {
 				return &delegateAuthorityChangedError{detail: "launch profile revalidation failed"}
@@ -1692,6 +1716,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 				selectedProviderRoute,
 				executionProfile.TransportID,
 				executionProfile.RequestedNativeEffort,
+				command,
 			)
 			if launchErr != nil {
 				return &delegateAuthorityChangedError{detail: "launch profile revalidation failed: " + launchErr.Error()}
@@ -1824,6 +1849,8 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		if launchProfile != nil {
 			launchEnvironment["SB_LAUNCH_PROFILE_ID"] = launchProfile.ID
 			launchEnvironment["SB_LAUNCH_PROFILE_REVISION"] = launchProfile.Revision
+			launchEnvironment["SB_LAUNCH_HARNESS"] = launchProfile.Harness
+			launchEnvironment["SB_LAUNCH_CAPTURE_POLICY"] = launchProfile.CaptureMode
 			launchEnvironment["SB_LAUNCH_CLIENT_PROFILE"] = launchProfile.ClientProfileID
 			launchEnvironment["COMPOUND_CLIENT_PROFILE_ID"] = launchProfile.ClientProfileID
 		}
