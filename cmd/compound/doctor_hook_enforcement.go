@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"compound/internal/envelope"
 	"compound/internal/policy"
@@ -21,7 +23,7 @@ import (
 
 // doctor_hook_enforcement.go answers the question that made a real fail-open last 48 minutes with
 // no signal: the hooks are installed and their configured command exists — but does that binary
-// actually ENFORCE?
+// honor the configured observation-only or explicitly enforced posture?
 //
 // Every other hook signal doctor reports is a comparison of CONFIG bytes: hook install/drift/absent
 // compares the command string in the harness config against the one Compound would write. All of it
@@ -32,8 +34,9 @@ import (
 // it synthesizes a mutation whose ActionIntent id is a nonce minted for this run, feeds it to the
 // configured binary as a fixture, and requires two things back — the hook event's input hash (which
 // is derived from that id, so only a binary that really processed the input can produce it) and a
-// real PolicyDecision that does NOT allow the mutation. A canned response fails the first; an
-// exit-0 no-op fails both.
+// real PolicyDecision that does NOT allow the mutation. It then checks the configured posture:
+// observation-only must exit zero, while explicit --enforce must return the exact hold/deny exit.
+// A canned response fails the first check; an exit-0 no-op fails both.
 //
 // Read-only like the rest of doctor: the probe runs with COMPOUND_HOME pointed at a throwaway
 // directory and its cwd inside it, so the hook records its events there and nothing touches
@@ -43,61 +46,96 @@ import (
 // cannot answer a single fixture within this budget is reported, not waited for.
 const hookEnforcementProbeTimeout = 5 * time.Second
 
-// doctorHookEnforcement is one binary the installed hooks would invoke, and whether it enforces.
+const (
+	hookPostureObservationOnly = "observation_only"
+	hookPostureEnforced        = "enforced"
+)
+
+// doctorHookEnforcement is one binary+posture the installed hooks would invoke. A shared binary
+// can therefore have one observation row and one enforcement row without conflating them.
 type doctorHookEnforcement struct {
-	// Harnesses names every configured harness whose hook command resolves to this binary. One
-	// row per BINARY, not per harness: the probe costs a subprocess, and three configs almost
-	// always point at the same file.
+	// Harnesses names every configured harness whose hook command resolves to this binary and
+	// posture. Equivalent rows share one subprocess probe.
 	Harnesses []string `json:"harnesses"`
 	Binary    string   `json:"binary"`
-	Status    string   `json:"status"` // enforcing | fail_open
+	Posture   string   `json:"posture"` // observation_only | enforced
+	Status    string   `json:"status"`  // observing | enforcing | fail_open
 	Detail    string   `json:"detail,omitempty"`
 }
 
-// buildHookEnforcementRows probes each distinct binary the installed hook configs would invoke.
+type installedHookPosture struct {
+	Binary  string
+	Posture string
+}
+
+type hookProbeTarget struct {
+	Binary    string
+	Posture   string
+	Harnesses map[string]bool
+}
+
+// buildHookEnforcementRows probes each distinct binary+posture the installed hook configs invoke.
 // It reads the harness configs doctor already located rather than re-deriving paths, so the rows
 // describe the same install the hook section describes.
 func buildHookEnforcementRows(hooks []doctorHook) ([]doctorHookEnforcement, int) {
-	byBinary := map[string][]string{}
+	targets := map[string]*hookProbeTarget{}
 	for _, entry := range hooks {
-		binaryPath := installedHookBinary(entry.ConfigPath)
-		if binaryPath == "" {
-			continue
+		for _, installed := range installedHookPostures(entry.ConfigPath) {
+			key := installed.Binary + "\x00" + installed.Posture
+			target := targets[key]
+			if target == nil {
+				target = &hookProbeTarget{
+					Binary:    installed.Binary,
+					Posture:   installed.Posture,
+					Harnesses: map[string]bool{},
+				}
+				targets[key] = target
+			}
+			target.Harnesses[entry.Harness] = true
 		}
-		byBinary[binaryPath] = append(byBinary[binaryPath], entry.Harness)
 	}
-	binaries := make([]string, 0, len(byBinary))
-	for binaryPath := range byBinary {
-		binaries = append(binaries, binaryPath)
+	keys := make([]string, 0, len(targets))
+	for key := range targets {
+		keys = append(keys, key)
 	}
-	sort.Strings(binaries)
+	sort.Strings(keys)
 
-	rows := make([]doctorHookEnforcement, 0, len(binaries))
+	rows := make([]doctorHookEnforcement, 0, len(keys))
 	failing := 0
-	for _, binaryPath := range binaries {
-		harnesses := byBinary[binaryPath]
+	for _, key := range keys {
+		target := targets[key]
+		harnesses := make([]string, 0, len(target.Harnesses))
+		for harness := range target.Harnesses {
+			harnesses = append(harnesses, harness)
+		}
 		sort.Strings(harnesses)
-		detail := probeHookEnforcement(binaryPath)
-		status := "enforcing"
+		detail := probeHookPosture(target.Binary, target.Posture)
+		status := "observing"
+		if target.Posture == hookPostureEnforced {
+			status = "enforcing"
+		}
 		if detail != "" {
 			status = "fail_open"
 			failing++
 		}
 		rows = append(rows, doctorHookEnforcement{
-			Harnesses: harnesses, Binary: binaryPath, Status: status, Detail: detail,
+			Harnesses: harnesses,
+			Binary:    target.Binary,
+			Posture:   target.Posture,
+			Status:    status,
+			Detail:    detail,
 		})
 	}
 	return rows, failing
 }
 
-// installedHookBinary reads a harness config and returns the binary path Compound's own PreToolUse
-// binding would execute, or "" when the config holds no Compound binding. It reads the config that
-// is actually on disk — asking the running process for its own path would prove nothing about the
-// file the harness will exec.
-func installedHookBinary(configPath string) string {
+// installedHookPostures reads a harness config and returns every Compound PreToolUse binding it
+// would execute. The exact --enforce word is part of the identity: two configs can share one binary
+// while deliberately asking it to provide different postures.
+func installedHookPostures(configPath string) []installedHookPosture {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return ""
+		return nil
 	}
 	var root struct {
 		Hooks map[string][]struct {
@@ -107,54 +145,136 @@ func installedHookBinary(configPath string) string {
 		} `json:"hooks"`
 	}
 	if json.Unmarshal(data, &root) != nil {
-		return ""
+		return nil
 	}
+	var installed []installedHookPosture
 	for _, group := range root.Hooks["PreToolUse"] {
 		for _, entry := range group.Hooks {
-			if !strings.Contains(entry.Command, "hook pre-tool-use --live") {
+			words, ok := hookCommandWords(entry.Command)
+			if !ok || len(words) < 4 ||
+				words[1] != "hook" ||
+				words[2] != "pre-tool-use" ||
+				!containsHookCommandWord(words[3:], "--live") {
 				continue
 			}
-			if binaryPath := hookCommandBinary(entry.Command); binaryPath != "" {
-				return binaryPath
+			posture := hookPostureObservationOnly
+			if containsHookCommandWord(words[3:], "--enforce") {
+				posture = hookPostureEnforced
+			}
+			installed = append(installed, installedHookPosture{
+				Binary:  words[0],
+				Posture: posture,
+			})
+		}
+	}
+	return installed
+}
+
+// installedHookBinary retains the original single-binding helper for callers that only need the
+// executable. Posture-aware doctor reporting uses installedHookPostures directly.
+func installedHookBinary(configPath string) string {
+	installed := installedHookPostures(configPath)
+	if len(installed) == 0 {
+		return ""
+	}
+	return installed[0].Binary
+}
+
+func containsHookCommandWord(words []string, want string) bool {
+	for _, word := range words {
+		if word == want {
+			return true
+		}
+	}
+	return false
+}
+
+// hookCommandBinary extracts the executable from a hook command line. It stays as the compatibility
+// surface for the earlier binary-only check while sharing the posture parser's tokenization.
+func hookCommandBinary(command string) string {
+	words, ok := hookCommandWords(command)
+	if !ok || len(words) == 0 {
+		return ""
+	}
+	return words[0]
+}
+
+// hookCommandWords is the deliberately small POSIX word parser needed for commands written by
+// hookplan. It handles whitespace, single- and double-quoted words, and backslash escapes. In
+// particular, it understands the installer's close-quote/backslash-quote/reopen form for an
+// apostrophe inside a path. Shell expansions and operators are outside the canonical hook command
+// alphabet and are not evaluated.
+func hookCommandWords(command string) ([]string, bool) {
+	var (
+		words       []string
+		word        strings.Builder
+		quote       byte
+		wordStarted bool
+	)
+	flush := func() {
+		if !wordStarted {
+			return
+		}
+		words = append(words, word.String())
+		word.Reset()
+		wordStarted = false
+	}
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		switch quote {
+		case '\'':
+			if ch == '\'' {
+				quote = 0
+				continue
+			}
+			word.WriteByte(ch)
+			wordStarted = true
+		case '"':
+			if ch == '"' {
+				quote = 0
+				continue
+			}
+			if ch == '\\' {
+				i++
+				if i >= len(command) {
+					return nil, false
+				}
+				word.WriteByte(command[i])
+				wordStarted = true
+				continue
+			}
+			word.WriteByte(ch)
+			wordStarted = true
+		default:
+			switch {
+			case unicode.IsSpace(rune(ch)):
+				flush()
+			case ch == '\'' || ch == '"':
+				quote = ch
+				wordStarted = true
+			case ch == '\\':
+				i++
+				if i >= len(command) {
+					return nil, false
+				}
+				word.WriteByte(command[i])
+				wordStarted = true
+			default:
+				word.WriteByte(ch)
+				wordStarted = true
 			}
 		}
 	}
-	return ""
+	if quote != 0 {
+		return nil, false
+	}
+	flush()
+	return words, true
 }
 
-// hookCommandBinary extracts the executable from a hook command line. The installer POSIX-quotes
-// the path so a directory containing spaces still execs as one token, so the unquoting has to
-// mirror that — including the `'\”` escape — or a quoted path would be probed as a literal
-// filename that does not exist and every install would look broken.
-func hookCommandBinary(command string) string {
-	command = strings.TrimSpace(command)
-	if !strings.HasPrefix(command, "'") {
-		if idx := strings.IndexByte(command, ' '); idx >= 0 {
-			return command[:idx]
-		}
-		return command
-	}
-	var out strings.Builder
-	for i := 1; i < len(command); {
-		if command[i] != '\'' {
-			out.WriteByte(command[i])
-			i++
-			continue
-		}
-		if strings.HasPrefix(command[i:], `'\''`) {
-			out.WriteByte('\'')
-			i += 4
-			continue
-		}
-		return out.String()
-	}
-	return "" // unterminated quote: not a command we can reason about
-}
-
-// probeHookEnforcement returns "" when the binary really enforces, or a one-line reason why it
-// does not. The reason is the operator-facing evidence, so it names what came back rather than
-// asserting a verdict.
-func probeHookEnforcement(binaryPath string) string {
+// probeHookPosture returns "" when the binary both evaluates the mutation and honors the configured
+// process-exit posture, or a one-line reason why it does not.
+func probeHookPosture(binaryPath, posture string) string {
 	nonce, err := mintHookProbeNonce()
 	if err != nil {
 		return "could not mint a probe nonce: " + err.Error()
@@ -172,19 +292,88 @@ func probeHookEnforcement(binaryPath string) string {
 
 	ctx, cancel := context.WithTimeout(context.Background(), hookEnforcementProbeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binaryPath, "hook", "pre-tool-use", fixturePath)
+	args := []string{"hook", "pre-tool-use"}
+	if posture == hookPostureEnforced {
+		args = append(args, "--enforce")
+	} else if posture != hookPostureObservationOnly {
+		return fmt.Sprintf("unknown configured hook posture %q", posture)
+	}
+	args = append(args, fixturePath)
+	cmd := exec.CommandContext(ctx, binaryPath, args...)
 	cmd.Dir = sandbox
 	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+filepath.Join(sandbox, "home"))
 	out, runErr := cmd.Output()
-	if runErr != nil && len(out) == 0 {
-		return fmt.Sprintf("running `%s hook pre-tool-use` produced no result: %v", binaryPath, runErr)
+	if ctx.Err() != nil {
+		return fmt.Sprintf("%s probe timed out after %s", hookPostureLabel(posture), hookEnforcementProbeTimeout)
 	}
-	return checkHookEnforcementResponse(out, nonce)
+	exitCode := 0
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(runErr, &exitErr) {
+			return fmt.Sprintf("running `%s hook pre-tool-use` for %s failed: %v",
+				binaryPath, hookPostureLabel(posture), runErr)
+		}
+		exitCode = exitErr.ExitCode()
+	}
+	outcome, detail := inspectHookEnforcementResponse(out, nonce)
+	if detail != "" {
+		return fmt.Sprintf("%s probe: %s", hookPostureLabel(posture), detail)
+	}
+	wantExit, ok := hookPostureExpectedExit(posture, outcome)
+	if !ok {
+		return fmt.Sprintf("%s probe produced unsupported PolicyDecision outcome %q", hookPostureLabel(posture), outcome)
+	}
+	if exitCode != wantExit {
+		return fmt.Sprintf(
+			"%s probe evaluated PolicyDecision outcome %q but exited %d, want %d",
+			hookPostureLabel(posture),
+			outcome,
+			exitCode,
+			wantExit,
+		)
+	}
+	return ""
+}
+
+func hookPostureExpectedExit(posture, outcome string) (int, bool) {
+	switch posture {
+	case hookPostureObservationOnly:
+		if outcome != "hold" && outcome != "deny" {
+			return 0, false
+		}
+		return 0, true
+	case hookPostureEnforced:
+		switch outcome {
+		case "hold":
+			return 3, true
+		case "deny":
+			return 4, true
+		}
+	}
+	return 0, false
+}
+
+func hookPostureLabel(posture string) string {
+	if posture == hookPostureEnforced {
+		return "explicit enforcement"
+	}
+	return "observation-only"
+}
+
+// probeHookEnforcement retains the original helper's meaning for callers that explicitly want to
+// prove enforcement.
+func probeHookEnforcement(binaryPath string) string {
+	return probeHookPosture(binaryPath, hookPostureEnforced)
 }
 
 // checkHookEnforcementResponse is the pure half: given what the binary printed and the nonce it was
 // asked about, decide whether only a real policy gate could have answered.
 func checkHookEnforcementResponse(out []byte, nonce string) string {
+	_, detail := inspectHookEnforcementResponse(out, nonce)
+	return detail
+}
+
+func inspectHookEnforcementResponse(out []byte, nonce string) (string, string) {
 	var res struct {
 		Event struct {
 			HookName  string `json:"hook_name"`
@@ -194,14 +383,14 @@ func checkHookEnforcementResponse(out []byte, nonce string) string {
 		Produced []json.RawMessage `json:"produced"`
 	}
 	if err := json.Unmarshal(out, &res); err != nil {
-		return "the hook produced no parseable HookEvent (an exit code alone is not a decision)"
+		return "", "the hook produced no parseable HookEvent (an exit code alone is not a decision)"
 	}
 	if res.Event.HookName != "PreToolUse" {
-		return fmt.Sprintf("the hook reported hook_name %q, want PreToolUse", res.Event.HookName)
+		return "", fmt.Sprintf("the hook reported hook_name %q, want PreToolUse", res.Event.HookName)
 	}
 	wantHash := hookProbeDigest(nonce)
 	if res.Event.InputHash != wantHash {
-		return fmt.Sprintf("the hook's input_hash is %q, but this run's probe hashes to %q — the answer was not derived from the input",
+		return "", fmt.Sprintf("the hook's input_hash is %q, but this run's probe hashes to %q — the answer was not derived from the input",
 			res.Event.InputHash, wantHash)
 	}
 	for _, raw := range res.Produced {
@@ -210,11 +399,11 @@ func checkHookEnforcementResponse(out []byte, nonce string) string {
 			continue
 		}
 		if policy.Allowed(decision) {
-			return fmt.Sprintf("the gate ALLOWED a destructive probe mutation (outcome %q)", decision.Outcome)
+			return "", fmt.Sprintf("the gate ALLOWED a destructive probe mutation (outcome %q)", decision.Outcome)
 		}
-		return ""
+		return decision.Outcome, ""
 	}
-	return "the hook emitted no PolicyDecision for a destructive mutation, so nothing was gated"
+	return "", "the hook emitted no PolicyDecision for a destructive mutation, so nothing was gated"
 }
 
 // hookEnforcementProbeFixture builds the mutation the gate must refuse. The ActionIntent id is the
@@ -272,21 +461,25 @@ func hookProbeDigest(s string) string {
 // prints a wall of green trains the operator to skip it, and this is the section that must be read
 // on the day it is not green.
 func printHookEnforcement(stdout io.Writer, rep doctorReport) {
-	fmt.Fprintln(stdout, "\n## hook enforcement (does the hook binary actually gate?)")
+	fmt.Fprintln(stdout, "\n## hook posture (does the hook binary honor its configured mode?)")
 	if len(rep.HookEnforcement) == 0 {
 		fmt.Fprintln(stdout, "- (no installed hook command to probe)")
 		return
 	}
 	for _, row := range rep.HookEnforcement {
 		harnesses := strings.Join(row.Harnesses, ",")
-		if row.Status == "enforcing" {
-			fmt.Fprintf(stdout, "- ok   %-24s %s (refused a probe mutation it had never seen)\n", harnesses, row.Binary)
+		if row.Status == "observing" {
+			fmt.Fprintf(stdout, "- ok   %-24s %s (observation-only; evaluated policy and exited 0)\n", harnesses, row.Binary)
 			continue
 		}
-		fmt.Fprintf(stdout, "- FAIL %-24s %s\n", harnesses, row.Binary)
+		if row.Status == "enforcing" {
+			fmt.Fprintf(stdout, "- ok   %-24s %s (explicit enforcement; evaluated policy and returned the exact gate exit)\n", harnesses, row.Binary)
+			continue
+		}
+		fmt.Fprintf(stdout, "- FAIL %-24s %s (%s)\n", harnesses, row.Binary, hookPostureLabel(row.Posture))
 		fmt.Fprintf(stdout, "    %s\n", row.Detail)
 	}
 	if rep.HookEnforcementFailing > 0 {
-		fmt.Fprintln(stdout, "  -> the installed binary answers but does not enforce; reinstall it (`make install`) and re-run this check")
+		fmt.Fprintln(stdout, "  -> an installed binary does not honor its configured hook posture; reinstall it (`make install`) and re-run this check")
 	}
 }

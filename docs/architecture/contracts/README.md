@@ -96,11 +96,15 @@ paths write `COMPOUND_HOME/config/installed-hooks.yaml` as
 `EffectiveContract.active_hooks[]` plus runtime `ContextPack.active_hooks[]`, task-conditioned `hook_roster[]`,
 and task-conditioned `hook_readiness[]` come from Compound. `hook_roster[]` is the structured hook-selection read
 model: active hooks and task-excluded hooks carry harness, hook, event, matcher, status, and reason without
-exposing installed file paths. The additive `non_blocking` status keeps opencode context-injection and
-post-tool observation rows active while making their non-enforcement role explicit; the registration contains
-no PreToolUse row. `compound contract
-hooks-authority` reports `pre_tool_use_readiness[]`: native blocking, not installed, missing gate, or
-wrapper-required status plus the enforced adapter command for fail-open harnesses. With `--observe-live`,
+exposing installed file paths. The additive `non_blocking` status keeps
+observation hooks active while making their non-enforcement role explicit:
+interactive Codex and Claude Code register a non-blocking PreToolUse row, while
+OpenCode registers only non-blocking context-injection and post-tool observation
+rows and no PreToolUse row. `compound contract hooks-authority` reports
+`pre_tool_use_readiness[]` status as `native_blocking`, `non_blocking`,
+`not_installed`, `missing_gate`, `wrapper_required`, or
+`handler_unavailable`, plus the enforced adapter command when a wrapper is
+required. With `--observe-live`,
 desired `hook_plan`, read-only `installation_observation`, and deterministic `reconciliation` are separate;
 observed extras never promote themselves into desired authority. Reconciliation separates the privacy-safe
 command invocation revision from handler-content revision: an active matching command is `registered`;
@@ -121,8 +125,10 @@ not uninstall the hook or mutate harness settings.
 Placement guard evidence is also runtime policy context, not a second guard path: PreToolUse can pass
 `PlacementGuard` context into `PolicyDecision`, staged `observe -> warn -> block`; only `confidence:block`
 can hard-hold, `OPEN_WRITE` / `PLACEMENT_OVERRIDE=1` fail open, unknown modes fail open as observe, and
-the native Codex adapter emits `permissionDecision=deny` for a hold, while `hook pre-tool-use --enforce`
-carries the resulting Gate exit code for non-blocking adapter fallbacks.
+interactive Codex records a hold without publishing a native permission
+decision. An explicitly enforced isolated posture emits
+`permissionDecision=deny`, while `hook pre-tool-use --enforce` carries the
+resulting gate exit code for wrapper adapters.
 `compound policy import-placement-rules <placement-rules.json>` imports generated owner placement rules
 into `COMPOUND_HOME/registries/placement-rules.json` as `compound://registries/placement-rules`; after
 that handoff the generated source view is evidence/rollback input, and PreToolUse reads the Compound copy.

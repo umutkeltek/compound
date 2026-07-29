@@ -264,8 +264,10 @@ to `hold`/blocked through the same policy gate.
 `PlacementGuard` is policy context, not a second hook path: PreToolUse may pass owner-placement evidence into
 `PolicyDecision` with staged `observe -> warn -> block` behavior. Only `confidence:block` can hard-hold;
 `OPEN_WRITE` and `PLACEMENT_OVERRIDE=1` fail open, unknown modes fail open as observe, and
-the native Codex adapter returns `permissionDecision=deny` for a hold. `compound hook pre-tool-use --enforce
-<fixture.json>` returns the same gate exit code for harnesses or adapters that cannot block natively.
+interactive Codex records the hold without publishing a native permission
+decision. An explicitly enforced isolated posture returns
+`permissionDecision=deny`; `compound hook pre-tool-use --enforce <fixture.json>`
+returns the same gate exit code for wrapper adapters.
 `compound policy import-placement-rules <placement-rules.json>` installs generated owner placement rules
 as `compound://registries/placement-rules` under `COMPOUND_HOME`; the source view is evidence/rollback
 input after import, while PreToolUse reads the Compound-owned registry.
@@ -362,7 +364,7 @@ but is not ContextPack/model context. Dry-run and CI subsets stay outside this c
 > Hooks are clients. compound is authority.
 
 Hook event names are adapter vocabulary, not semantic authority. The stable input is a lifecycle intention such
-as `prepare_context`, `guard_mutation`, `normalize_artifact`, `observe_outcome`, `preserve_before_loss`,
+as `prepare_context`, `observe_action`, `guard_mutation`, `normalize_artifact`, `observe_outcome`, `preserve_before_loss`,
 `restore_after_resume`, or `close_with_proof`. The existing hook-plan owner must compile those intentions from
 the frozen TaskContract/EffectiveContract plus risk, privacy, and context needs against a revisioned harness
 capability attestation. Its HookPlan output is a harness-native projection with one explicit disposition per
@@ -371,9 +373,13 @@ add a peer lifecycle or hook system. The full ownership and compaction/resume fl
 [`information-custody.md` §5](./information-custody.md#5-recall-context-injection-and-hooks).
 
 `compound harness posture-plan --harness <name>` is the operator-facing
-compiler door. It accepts the stable default intentions (`prepare_context`,
-`guard_mutation`, `observe_outcome`) and returns the adapter-native projection
-plus its attestation revision. The executable CLI registry supplies first-party
+compiler door. Interactive Codex and Claude Code default to the stable
+intentions `prepare_context`, `observe_action`, and `observe_outcome`;
+their `PreToolUse` bindings persist ActionIntent/PolicyDecision evidence without
+publishing a native permission decision or blocking exit. Isolated
+Claude-family executor profiles select `guard_mutation` instead and install the
+binding with explicit enforcement. The compiler returns the adapter-native
+projection plus its attestation revision. The executable CLI registry supplies first-party
 shell admission to the hook monitor at runtime; the policy package has no
 parallel Compound subcommand allowlist. Unknown registry names and commands
 whose registry disposition is `hold` retain the security-floor refusal.
@@ -384,8 +390,9 @@ separate evidence. “Installed” therefore cannot imply “ready,” and an un
 capabilities from a familiar one. On delegation, resume, or harness replacement, Compound restores the owned
 working object and remaining ceilings, then compiles a new plan for the new executor.
 
-Hooks may: **request** context · **freeze** selected context into a ContextPack · **guard** mutations (where
-the harness supports blocking) · **capture** evidence/receipts · **emit** typed events. Hooks may **not**:
+Hooks may: **request** context · **freeze** selected context into a ContextPack · **observe** proposed actions ·
+**guard** mutations (only in an explicitly enforced posture where the harness supports blocking) ·
+**capture** evidence/receipts · **emit** typed events. Hooks may **not**:
 deep synthesis · canonical memory promotion · tool/model routing policy · product judgment · global truth
 arbitration. (Hooks sit at high-gravity points — a tiny SessionStart nudge bends the whole session — so keep
 them thin.)
@@ -396,12 +403,13 @@ Prompt-injection boundary: live `UserPromptSubmit` and `PostToolUse` hooks mint
 content-addressed `SourceEnvelope` records and maintain a bounded per-session
 lineage projection. `PreToolUse` loads that projection, classifies every tool
 domain, binds exact arguments/destination/source refs/tool schema/policy
-revision, then applies the security floor after standing grants. Routine
-reads/local verification/reversible in-envelope work remain automatic.
-Unknown tools, missing schema/destination, source/sink violations and
-consequential out-of-grant effects hold or deny. Exact approvals are durable,
-expiring and one-use; they cannot override a deny or security floor. Compaction
-and subagent transformations preserve parent lineage and cannot raise trust.
+revision, then records the security-floor result after standing grants.
+Interactive Codex and Claude Code keep routine work prompt-free: policy
+`hold`/`deny` outcomes remain evidence and do not become native permission
+decisions. An explicitly enforced isolated executor profile turns those exact
+decisions into the blocking boundary. Exact approvals are durable, expiring and
+one-use; they cannot override a deny or security floor. Compaction and subagent
+transformations preserve parent lineage and cannot raise trust.
 The full input/model map and migration plan is
 [`docs/security/prompt-injection.md`](../security/prompt-injection.md).
 `compound contract hooks-authority` reports `hook_readiness[]` from installed-hook authority, checked fixture coverage, and live-adapter support, plus `pre_tool_use_readiness[]` from installed hooks and harness native-block facts. With `--observe-live`, it exposes desired `hook_plan`, read-only `installation_observation`, and deterministic `reconciliation` separately; observed extras remain evidence and never enter desired authority. `compound hook pre-tool-use --enforce <fixture.json>` returns the same gate exit codes as `policy evaluate` for non-blocking adapter fallbacks.

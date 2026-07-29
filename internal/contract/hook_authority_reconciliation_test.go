@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -168,6 +169,157 @@ hooks:
 	}
 	if got := info.Mode().Perm(); got != 0o640 {
 		t.Fatalf("failed publication changed provenance mode to %o, want 640", got)
+	}
+}
+
+func TestImportHookInstallReportRollsBackNewAuthorityUnderRestrictiveUmask(t *testing.T) {
+	compoundHome := t.TempDir()
+	harnessHome := t.TempDir()
+	report, err := hookplan.InstallHooks(
+		harnessHome,
+		filepath.Join(harnessHome, ".local", "bin", "compound"),
+		"global",
+		[]string{"codex"},
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provenancePath := InstalledHooksSourceAuthorityPath(compoundHome)
+	if err := os.MkdirAll(filepath.Dir(provenancePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	provenanceBefore := []byte("{malformed provenance\n")
+	if err := os.WriteFile(provenancePath, provenanceBefore, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	previousUmask := syscall.Umask(0o077)
+	defer syscall.Umask(previousUmask)
+	if _, err := ImportHookInstallReport(compoundHome, harnessHome, report, time.Now()); err == nil ||
+		!strings.Contains(err.Error(), "parse installed hooks source authority") {
+		t.Fatalf("ImportHookInstallReport() error = %v, want provenance append failure", err)
+	}
+
+	authorityPath := InstalledHooksPath(compoundHome)
+	if _, err := os.Stat(authorityPath); !os.IsNotExist(err) {
+		t.Fatalf("failed publication left partial authority at %s: %v", authorityPath, err)
+	}
+	provenanceAfter, err := os.ReadFile(provenancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(provenanceAfter) != string(provenanceBefore) {
+		t.Fatalf("failed publication changed provenance:\nbefore=%s\nafter=%s", provenanceBefore, provenanceAfter)
+	}
+}
+
+func TestRollbackHookInstallAuthorityPreservesConcurrentChanges(t *testing.T) {
+	for _, initiallyExists := range []bool{false, true} {
+		name := "absent preimage"
+		if initiallyExists {
+			name = "existing preimage"
+		}
+		t.Run(name, func(t *testing.T) {
+			compoundHome := t.TempDir()
+			authorityPath := InstalledHooksPath(compoundHome)
+			if err := os.MkdirAll(filepath.Dir(authorityPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if initiallyExists {
+				if err := os.WriteFile(authorityPath, []byte("prior authority\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			snapshots, err := snapshotHookInstallAuthority(compoundHome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range snapshots {
+				if snapshots[i].path != authorityPath {
+					continue
+				}
+				snapshots[i].postKnown = true
+				snapshots[i].postExists = true
+				snapshots[i].postData = []byte("transaction-owned post-image\n")
+				snapshots[i].postMode = 0o644
+				if snapshots[i].existed {
+					snapshots[i].postMode = snapshots[i].mode
+				}
+			}
+			concurrent := []byte("concurrent authority edit\n")
+			if err := os.WriteFile(authorityPath, concurrent, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(authorityPath, 0o640); err != nil {
+				t.Fatal(err)
+			}
+
+			err = rollbackHookInstallAuthority(snapshots)
+			if err == nil || !strings.Contains(err.Error(), "rollback conflict") {
+				t.Fatalf("rollback error = %v, want concurrent-change conflict", err)
+			}
+			after, err := os.ReadFile(authorityPath)
+			if err != nil {
+				t.Fatalf("rollback removed concurrent authority: %v", err)
+			}
+			if string(after) != string(concurrent) {
+				t.Fatalf("rollback clobbered concurrent authority:\nwant=%s\ngot=%s", concurrent, after)
+			}
+			info, err := os.Stat(authorityPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != 0o640 {
+				t.Fatalf("rollback clobbered concurrent authority mode: got %o want 640", got)
+			}
+		})
+	}
+}
+
+func TestRollbackHookInstallAuthorityRequiresExactPostimageMode(t *testing.T) {
+	compoundHome := t.TempDir()
+	authorityPath := InstalledHooksPath(compoundHome)
+	if err := os.MkdirAll(filepath.Dir(authorityPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err := snapshotHookInstallAuthority(compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownPostimage := []byte("transaction-owned post-image\n")
+	for i := range snapshots {
+		if snapshots[i].path == authorityPath {
+			snapshots[i].postKnown = true
+			snapshots[i].postExists = true
+			snapshots[i].postData = ownPostimage
+			snapshots[i].postMode = 0o644
+		}
+	}
+	if err := os.WriteFile(authorityPath, ownPostimage, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(authorityPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err = rollbackHookInstallAuthority(snapshots)
+	if err == nil || !strings.Contains(err.Error(), "rollback conflict") {
+		t.Fatalf("rollback error = %v, want post-image mode conflict", err)
+	}
+	after, err := os.ReadFile(authorityPath)
+	if err != nil {
+		t.Fatalf("rollback removed mode-drifted authority: %v", err)
+	}
+	if string(after) != string(ownPostimage) {
+		t.Fatalf("rollback changed mode-drifted authority:\nwant=%s\ngot=%s", ownPostimage, after)
+	}
+	info, err := os.Stat(authorityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("rollback clobbered concurrent mode: got %o want 600", got)
 	}
 }
 

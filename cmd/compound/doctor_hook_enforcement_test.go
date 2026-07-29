@@ -35,14 +35,22 @@ func writeExecutable(t *testing.T, path, body string) string {
 // binaryPath, using the installer's own command builder so the test cannot drift into probing a
 // command shape the installer never writes.
 func writeHookConfigFor(t *testing.T, configPath, harness, binaryPath string) {
+	writeHookConfigForPosture(t, configPath, harness, binaryPath, false)
+}
+
+func writeHookConfigForPosture(t *testing.T, configPath, harness, binaryPath string, enforce bool) {
 	t.Helper()
+	command := hookplan.HookCommand(binaryPath, harness)
+	if enforce {
+		command += " --enforce"
+	}
 	config := map[string]any{
 		"hooks": map[string]any{
 			"PreToolUse": []any{
 				map[string]any{
 					"matcher": hookplan.HarnessMatcher(harness),
 					"hooks": []any{
-						map[string]any{"type": "command", "command": hookplan.HookCommand(binaryPath, harness)},
+						map[string]any{"type": "command", "command": command},
 					},
 				},
 			},
@@ -67,6 +75,61 @@ func buildRealCompound(t *testing.T) string {
 		t.Fatalf("build compound: %v\n%s", err, combined)
 	}
 	return out
+}
+
+func TestHookEnforcementBindsEachConfiguredPostureForSharedBinary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the compound binary: skipped in -short mode")
+	}
+	real := buildRealCompound(t)
+	dir := t.TempDir()
+	var hooks []doctorHook
+	for _, fixture := range []struct {
+		harness string
+		enforce bool
+	}{
+		{harness: "claude-code"},
+		{harness: "codex"},
+		{harness: "claude-zai", enforce: true},
+	} {
+		configPath := filepath.Join(dir, fixture.harness, "settings.json")
+		writeHookConfigForPosture(t, configPath, fixture.harness, real, fixture.enforce)
+		hooks = append(hooks, doctorHook{Harness: fixture.harness, ConfigPath: configPath})
+	}
+
+	rows, failing := buildHookEnforcementRows(hooks)
+	if failing != 0 {
+		t.Fatalf("real observer/enforcer postures must pass, got failing=%d rows=%+v", failing, rows)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("shared binary with observer and enforcer postures needs two rows, got %+v", rows)
+	}
+	assertHookPostureRow(t, rows, "observation_only", "observing", "claude-code,codex")
+	assertHookPostureRow(t, rows, "enforced", "enforcing", "claude-zai")
+}
+
+func assertHookPostureRow(
+	t *testing.T,
+	rows []doctorHookEnforcement,
+	posture, status, harnesses string,
+) {
+	t.Helper()
+	for _, row := range rows {
+		if row.Posture != posture {
+			continue
+		}
+		if row.Status != status || strings.Join(row.Harnesses, ",") != harnesses {
+			t.Fatalf(
+				"%s row = %+v, want status=%s harnesses=%s",
+				posture,
+				row,
+				status,
+				harnesses,
+			)
+		}
+		return
+	}
+	t.Fatalf("missing %s row in %+v", posture, rows)
 }
 
 // TestHookEnforcementFailsAnExitZeroStubBinary is the regression: the config is perfectly wired,
@@ -148,12 +211,71 @@ func TestHookEnforcementPassesTheRealBinary(t *testing.T) {
 	writeHookConfigFor(t, configPath, "claude-code", real)
 
 	rows, failing := buildHookEnforcementRows([]doctorHook{{Harness: "claude-code", ConfigPath: configPath}})
-	if failing != 0 || len(rows) != 1 || rows[0].Status != "enforcing" {
-		t.Fatalf("the real binary must be reported as enforcing, got failing=%d rows=%+v", failing, rows)
+	if failing != 0 || len(rows) != 1 || rows[0].Status != "observing" {
+		t.Fatalf("the observation-only real binary must be reported as observing, got failing=%d rows=%+v", failing, rows)
 	}
 	if rows[0].Detail != "" {
-		t.Fatalf("an enforcing row carries no failure detail, got %q", rows[0].Detail)
+		t.Fatalf("an observing row carries no failure detail, got %q", rows[0].Detail)
 	}
+}
+
+// TestHookEnforcementRejectsMixedPostureMismatches is the pair of fail-open falsifiers. Both
+// wrappers evaluate the genuine PolicyDecision; they differ only in whether they honor the
+// configured process-exit posture.
+func TestHookEnforcementRejectsMixedPostureMismatches(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the compound binary: skipped in -short mode")
+	}
+	real := buildRealCompound(t)
+	quotedReal := "'" + strings.ReplaceAll(real, "'", `'\''`) + "'"
+
+	t.Run("configured enforcer whose wrapper strips enforce", func(t *testing.T) {
+		dir := t.TempDir()
+		wrapper := writeExecutable(
+			t,
+			filepath.Join(dir, "compound"),
+			"#!/bin/sh\nexec "+quotedReal+" \"$1\" \"$2\" \"$4\"\n",
+		)
+		configPath := filepath.Join(dir, "settings.json")
+		writeHookConfigForPosture(t, configPath, "claude-zai", wrapper, true)
+
+		rows, failing := buildHookEnforcementRows([]doctorHook{{
+			Harness:    "claude-zai",
+			ConfigPath: configPath,
+		}})
+		if failing != 1 || len(rows) != 1 || rows[0].Posture != hookPostureEnforced {
+			t.Fatalf("stripped enforcement must fail its enforced row, got failing=%d rows=%+v", failing, rows)
+		}
+		for _, want := range []string{"explicit enforcement", "exited 0", "want"} {
+			if !strings.Contains(rows[0].Detail, want) {
+				t.Fatalf("enforced mismatch detail missing %q: %s", want, rows[0].Detail)
+			}
+		}
+	})
+
+	t.Run("configured observer whose wrapper adds enforce", func(t *testing.T) {
+		dir := t.TempDir()
+		wrapper := writeExecutable(
+			t,
+			filepath.Join(dir, "compound"),
+			"#!/bin/sh\nexec "+quotedReal+" \"$@\" --enforce\n",
+		)
+		configPath := filepath.Join(dir, "settings.json")
+		writeHookConfigFor(t, configPath, "codex", wrapper)
+
+		rows, failing := buildHookEnforcementRows([]doctorHook{{
+			Harness:    "codex",
+			ConfigPath: configPath,
+		}})
+		if failing != 1 || len(rows) != 1 || rows[0].Posture != hookPostureObservationOnly {
+			t.Fatalf("added enforcement must fail its observation row, got failing=%d rows=%+v", failing, rows)
+		}
+		for _, want := range []string{"observation-only", "exited", "want 0"} {
+			if !strings.Contains(rows[0].Detail, want) {
+				t.Fatalf("observation mismatch detail missing %q: %s", want, rows[0].Detail)
+			}
+		}
+	})
 }
 
 // TestHookEnforcementProbesEachBinaryOnceAcrossHarnesses keeps the check cheap enough to stay in
@@ -212,6 +334,44 @@ func TestHookCommandBinaryUnquotesTheInstalledCommand(t *testing.T) {
 	}
 }
 
+func TestInstalledHookPosturesRequiresExactEnforceWord(t *testing.T) {
+	dir := t.TempDir()
+	binary := "/opt/Compound Apps/it's compound"
+	command := hookplan.HookCommand(binary, "codex") + " --enforce-sometimes"
+	configPath := filepath.Join(dir, "settings.json")
+	config := `{"hooks":{"PreToolUse":[{"hooks":[{"command":` + quoteJSON(command) + `}]}]}}`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	installed := installedHookPostures(configPath)
+	if len(installed) != 1 {
+		t.Fatalf("installed postures = %+v, want one", installed)
+	}
+	if installed[0].Binary != binary || installed[0].Posture != hookPostureObservationOnly {
+		t.Fatalf("installed posture = %+v, want quoted binary in observation-only mode", installed[0])
+	}
+}
+
+func TestHookPostureExpectedExitPinsGateSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		posture string
+		outcome string
+		want    int
+	}{
+		{posture: hookPostureObservationOnly, outcome: "hold", want: 0},
+		{posture: hookPostureObservationOnly, outcome: "deny", want: 0},
+		{posture: hookPostureEnforced, outcome: "hold", want: 3},
+		{posture: hookPostureEnforced, outcome: "deny", want: 4},
+	} {
+		got, ok := hookPostureExpectedExit(tc.posture, tc.outcome)
+		if !ok || got != tc.want {
+			t.Fatalf("hookPostureExpectedExit(%q, %q) = %d,%v, want %d,true",
+				tc.posture, tc.outcome, got, ok, tc.want)
+		}
+	}
+}
+
 // TestHookEnforcementResponseRejectsPartialAnswers pins the individual reasons a response can be
 // insufficient, so a later refactor cannot quietly accept one of them.
 func TestHookEnforcementResponseRejectsPartialAnswers(t *testing.T) {
@@ -259,13 +419,14 @@ func TestPrintHookEnforcementShowsFailureAndRemedy(t *testing.T) {
 		HookEnforcement: []doctorHookEnforcement{{
 			Harnesses: []string{"claude-code"},
 			Binary:    "/opt/bin/compound",
+			Posture:   hookPostureObservationOnly,
 			Status:    "fail_open",
 			Detail:    "the hook emitted no PolicyDecision for a destructive mutation, so nothing was gated",
 		}},
 		HookEnforcementFailing: 1,
 	})
 	out := buf.String()
-	for _, want := range []string{"FAIL", "/opt/bin/compound", "no PolicyDecision", "make install"} {
+	for _, want := range []string{"FAIL", "/opt/bin/compound", "observation-only", "no PolicyDecision", "make install"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("rendered enforcement section missing %q:\n%s", want, out)
 		}

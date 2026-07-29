@@ -200,6 +200,249 @@ func TestInstallHooksPreflightsEveryHarnessConfigBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestInstallHooksRefusesSymlinkedConfigBeforeAnyWrite(t *testing.T) {
+	base := t.TempDir()
+	claudePath := filepath.Join(base, ".claude", "settings.json")
+	codexPath := filepath.Join(base, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(claudePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(codexPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claudeBefore := []byte("{\n  \"permissions\": {\"defaultMode\": \"bypassPermissions\"}\n}\n")
+	if err := os.WriteFile(claudePath, claudeBefore, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symlinkTarget := filepath.Join(t.TempDir(), "codex-hooks.json")
+	targetBefore := []byte("{\n  \"custom_setting\": true\n}\n")
+	if err := os.WriteFile(symlinkTarget, targetBefore, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(symlinkTarget, codexPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InstallHooks(base, "/bin/compound", "global", nil, false); err == nil ||
+		!strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("all-harness install error = %v, want symlink refusal", err)
+	}
+	claudeAfter, err := os.ReadFile(claudePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(claudeAfter) != string(claudeBefore) {
+		t.Fatalf("symlink preflight failure changed earlier Claude config:\nbefore=%s\nafter=%s", claudeBefore, claudeAfter)
+	}
+	zaiPath := filepath.Join(ClaudeZaiProfileDir(base), "settings.json")
+	if _, err := os.Stat(zaiPath); !os.IsNotExist(err) {
+		t.Fatalf("symlink preflight failure created isolated config: %v", err)
+	}
+	info, err := os.Lstat(codexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("install replaced symlinked config with mode %v", info.Mode())
+	}
+	targetAfter, err := os.ReadFile(symlinkTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(targetAfter) != string(targetBefore) {
+		t.Fatalf("install changed symlink target:\nbefore=%s\nafter=%s", targetBefore, targetAfter)
+	}
+}
+
+func TestCommitPreparedHookConfigRefusesPreimageDrift(t *testing.T) {
+	initial := []byte("{\n  \"initial\": true\n}\n")
+	concurrent := []byte("{\n  \"concurrent\": true\n}\n")
+	tests := []struct {
+		name            string
+		initiallyExists bool
+		mutate          func(*testing.T, string)
+		assertPreserved func(*testing.T, string)
+	}{
+		{
+			name: "appearance",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, concurrent, 0o640); err != nil {
+					t.Fatal(err)
+				}
+			},
+			assertPreserved: func(t *testing.T, path string) {
+				t.Helper()
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != string(concurrent) {
+					t.Fatalf("appearance drift was clobbered:\nwant=%s\ngot=%s", concurrent, got)
+				}
+			},
+		},
+		{
+			name:            "bytes",
+			initiallyExists: true,
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, concurrent, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			assertPreserved: func(t *testing.T, path string) {
+				t.Helper()
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != string(concurrent) {
+					t.Fatalf("byte drift was clobbered:\nwant=%s\ngot=%s", concurrent, got)
+				}
+			},
+		},
+		{
+			name:            "disappearance",
+			initiallyExists: true,
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			},
+			assertPreserved: func(t *testing.T, path string) {
+				t.Helper()
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("disappearance drift was overwritten: %v", err)
+				}
+			},
+		},
+		{
+			name:            "mode",
+			initiallyExists: true,
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Chmod(path, 0o640); err != nil {
+					t.Fatal(err)
+				}
+			},
+			assertPreserved: func(t *testing.T, path string) {
+				t.Helper()
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := info.Mode().Perm(); got != 0o640 {
+					t.Fatalf("mode drift was clobbered: got %o want 640", got)
+				}
+			},
+		},
+		{
+			name:            "symlink identity",
+			initiallyExists: true,
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				target := filepath.Join(t.TempDir(), "replacement.json")
+				if err := os.WriteFile(target, initial, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+			},
+			assertPreserved: func(t *testing.T, path string) {
+				t.Helper()
+				info, err := os.Lstat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode()&os.ModeSymlink == 0 {
+					t.Fatalf("symlink identity drift was replaced with mode %v", info.Mode())
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hooks.json")
+			if test.initiallyExists {
+				if err := os.WriteFile(path, initial, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			prepared, err := prepareHookBindings(
+				"codex",
+				path,
+				[]desiredHookBinding{{
+					Event:   "PreToolUse",
+					Matcher: "*",
+					Command: "compound hook pre-tool-use --live",
+				}},
+				false,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(t, path)
+
+			if err := commitPreparedHookConfig(prepared); err == nil ||
+				!strings.Contains(err.Error(), "changed since preflight") {
+				t.Fatalf("commit error = %v, want preimage drift refusal", err)
+			}
+			test.assertPreserved(t, path)
+		})
+	}
+}
+
+func TestHookInstallTransactionRollsBackPriorCommitsOnLaterPreimageDrift(t *testing.T) {
+	base := t.TempDir()
+	firstPath := filepath.Join(base, "first.json")
+	laterPath := filepath.Join(base, "later.json")
+	bindings := []desiredHookBinding{{
+		Event:   "PreToolUse",
+		Matcher: "*",
+		Command: "compound hook pre-tool-use --live",
+	}}
+	first, err := prepareHookBindings("claude-code", firstPath, bindings, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later, err := prepareHookBindings("codex", laterPath, bindings, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	concurrent := []byte("{\n  \"concurrent\": true\n}\n")
+
+	err = commitHookInstallTransaction(
+		[]preparedHookConfig{first, later},
+		HookInstallReport{},
+		nil,
+		func(config preparedHookConfig) error {
+			if config.path != laterPath {
+				return nil
+			}
+			return os.WriteFile(laterPath, concurrent, 0o640)
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "changed since preflight") {
+		t.Fatalf("transaction error = %v, want later preimage drift", err)
+	}
+	if _, err := os.Stat(firstPath); !os.IsNotExist(err) {
+		t.Fatalf("later drift left earlier committed config at %s: %v", firstPath, err)
+	}
+	laterAfter, err := os.ReadFile(laterPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(laterAfter) != string(concurrent) {
+		t.Fatalf("later concurrent config was clobbered:\nwant=%s\ngot=%s", concurrent, laterAfter)
+	}
+}
+
 func TestInstallHooksRollsBackEveryNativeConfigWhenPublishFails(t *testing.T) {
 	base := t.TempDir()
 	claudePath := filepath.Join(base, ".claude", "settings.json")
@@ -368,6 +611,134 @@ func TestCodexInstallReplacesOnlyCompoundPreToolUseBindingWithObservation(t *tes
 		if !hasHookCommand(got, event, HookCommandForEvent("/bin/compound", "codex", event)) {
 			t.Fatalf("Codex reconciliation lost desired %s binding", event)
 		}
+	}
+}
+
+func TestCodexInstallPreservesForeignHooksCoLocatedWithCompoundHook(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := `{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "user_group": "keep-me",
+        "hooks": [
+          {"type": "command", "command": "foreign-before"},
+          {"type": "command", "command": "'/old/compound' hook pre-tool-use --live --harness codex --enforce"},
+          {"type": "command", "command": "foreign-after"}
+        ]
+      },
+      {"matcher": "apply_patch", "hooks": [{"type": "command", "command": "foreign-later"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InstallHooks(base, "/bin/compound", "global", []string{"codex"}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := readJSON(t, path)
+	groups := hooksForEvent(t, cfg, "PreToolUse")
+	var foreignCommands []string
+	compoundCommands := 0
+	foundMixedUserGroup := false
+	for _, group := range groups {
+		entry, _ := group.(map[string]any)
+		inner, _ := entry["hooks"].([]any)
+		var groupForeign []string
+		for _, hook := range inner {
+			hookMap, _ := hook.(map[string]any)
+			command, _ := hookMap["command"].(string)
+			if strings.Contains(command, hookCommandMarker) {
+				compoundCommands++
+				if command != HookCommandForEvent("/bin/compound", "codex", "PreToolUse") {
+					t.Fatalf("installed Compound command = %q, want current observer", command)
+				}
+				continue
+			}
+			if command != "" {
+				foreignCommands = append(foreignCommands, command)
+				groupForeign = append(groupForeign, command)
+			}
+		}
+		if entry["user_group"] == "keep-me" {
+			foundMixedUserGroup = true
+			if !slices.Equal(groupForeign, []string{"foreign-before", "foreign-after"}) {
+				t.Fatalf("co-located foreign hook order = %v, want both hooks preserved", groupForeign)
+			}
+		}
+	}
+	if !foundMixedUserGroup {
+		t.Fatal("reconciliation deleted the user-owned mixed hook group")
+	}
+	if !slices.Equal(foreignCommands, []string{"foreign-before", "foreign-after", "foreign-later"}) {
+		t.Fatalf("foreign hook order = %v, want every user hook preserved", foreignCommands)
+	}
+	if compoundCommands != 1 {
+		t.Fatalf("Compound PreToolUse commands = %d, want exactly one observer", compoundCommands)
+	}
+}
+
+func TestCodexInstallCollapsesAllDuplicateLegacyPreToolUseHooks(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := `{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "'/old/compound' hook pre-tool-use --live --harness codex"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "foreign-first"}]},
+      {"matcher": "*", "hooks": [{"type": "command", "command": "'/old/compound' hook pre-tool-use --live --harness codex --enforce"}]},
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "foreign-second"},
+          {"type": "command", "command": "'/older/compound' hook pre-tool-use --live --harness codex --enforce"}
+        ]
+      }
+    ]
+  }
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InstallHooks(base, "/bin/compound", "global", []string{"codex"}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := readJSON(t, path)
+	var foreignCommands []string
+	var compoundCommands []string
+	for _, group := range hooksForEvent(t, cfg, "PreToolUse") {
+		entry, _ := group.(map[string]any)
+		inner, _ := entry["hooks"].([]any)
+		for _, hook := range inner {
+			hookMap, _ := hook.(map[string]any)
+			command, _ := hookMap["command"].(string)
+			switch {
+			case strings.Contains(command, hookCommandMarker):
+				compoundCommands = append(compoundCommands, command)
+			case command != "":
+				foreignCommands = append(foreignCommands, command)
+			}
+		}
+	}
+	wantObserver := HookCommandForEvent("/bin/compound", "codex", "PreToolUse")
+	if !slices.Equal(compoundCommands, []string{wantObserver}) {
+		t.Fatalf("Compound PreToolUse commands = %q, want one current observer", compoundCommands)
+	}
+	if !slices.Equal(foreignCommands, []string{"foreign-first", "foreign-second"}) {
+		t.Fatalf("foreign hook order = %v, want every user hook preserved", foreignCommands)
 	}
 }
 

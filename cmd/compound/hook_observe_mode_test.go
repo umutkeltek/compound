@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,52 @@ import (
 	"compound/internal/home"
 	"compound/internal/hook"
 )
+
+func TestObserveOnlyPreToolUseFailsOpenOnMalformedRuntimePolicy(t *testing.T) {
+	if os.Getenv("COMPOUND_HOOK_OBSERVE_POLICY_HELPER") == "1" {
+		os.Exit(runHookCommand([]string{"pre-tool-use", "--live", "--harness", "codex"}))
+	}
+
+	for _, configName := range []string{"orientation.yaml", "policy.yaml"} {
+		t.Run(configName, func(t *testing.T) {
+			homePath := t.TempDir()
+			if err := home.Init(homePath, "test", cliTestNow); err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(homePath, "config", configName)
+			if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(configPath, []byte("malformed: [\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			input := `{"hook_event_name":"PreToolUse","session_id":"sess_observe_policy_failure","cwd":` +
+				quoteJSON(t.TempDir()) +
+				`,"tool_name":"exec_command","tool_schema_revision":"builtin:exec-command-v1","tool_input":{"command":"echo fixture"}}`
+			command := exec.Command(
+				os.Args[0],
+				"-test.run=^TestObserveOnlyPreToolUseFailsOpenOnMalformedRuntimePolicy$/"+configName+"$",
+			)
+			command.Env = append(
+				os.Environ(),
+				"COMPOUND_HOOK_OBSERVE_POLICY_HELPER=1",
+				"COMPOUND_HOME="+homePath,
+			)
+			command.Stdin = strings.NewReader(input)
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("observation-only hook exited nonzero on malformed %s: %v\n%s", configName, err, output)
+			}
+			if !strings.Contains(string(output), "error:") {
+				t.Fatalf("malformed %s was not reported:\n%s", configName, output)
+			}
+			if strings.Contains(string(output), "permissionDecision") ||
+				strings.Contains(string(output), "permission_decision") {
+				t.Fatalf("malformed %s emitted a native permission decision:\n%s", configName, output)
+			}
+		})
+	}
+}
 
 func TestObserveOnlyPreToolUseFailsOpenOnRuntimeStorageError(t *testing.T) {
 	homePath := t.TempDir()

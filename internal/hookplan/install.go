@@ -194,15 +194,34 @@ func InstallHooksWithConfigDirAndPublish(
 	if check {
 		return report, nil
 	}
+	if err := commitHookInstallTransaction(prepared, report, publish, nil); err != nil {
+		return report, err
+	}
+	return report, nil
+}
 
+func commitHookInstallTransaction(
+	prepared []preparedHookConfig,
+	report HookInstallReport,
+	publish func(HookInstallReport) error,
+	beforeCommit func(preparedHookConfig) error,
+) error {
 	committed := make([]preparedHookConfig, 0, len(prepared))
 	for _, staged := range prepared {
 		if !staged.shouldWrite {
 			continue
 		}
-		if err := writeHookConfigAtomically(staged.path, staged.after, staged.mode); err != nil {
+		if beforeCommit != nil {
+			if err := beforeCommit(staged); err != nil {
+				return errors.Join(
+					fmt.Errorf("%s: before hook config commit: %w", staged.harness, err),
+					rollbackHookConfigs(committed),
+				)
+			}
+		}
+		if err := commitPreparedHookConfig(staged); err != nil {
 			rollbackErr := rollbackHookConfigs(committed)
-			return report, errors.Join(
+			return errors.Join(
 				fmt.Errorf("%s: write hook config: %w", staged.harness, err),
 				rollbackErr,
 			)
@@ -210,17 +229,17 @@ func InstallHooksWithConfigDirAndPublish(
 		committed = append(committed, staged)
 	}
 	if err := verifyHookConfigs(prepared); err != nil {
-		return report, errors.Join(err, rollbackHookConfigs(committed))
+		return errors.Join(err, rollbackHookConfigs(committed))
 	}
 	if publish != nil {
 		if err := publish(report); err != nil {
-			return report, errors.Join(
+			return errors.Join(
 				fmt.Errorf("publish installed-hook authority: %w", err),
 				rollbackHookConfigs(committed),
 			)
 		}
 	}
-	return report, nil
+	return nil
 }
 
 type preparedHookConfig struct {
@@ -230,6 +249,7 @@ type preparedHookConfig struct {
 	before      []byte
 	after       []byte
 	mode        os.FileMode
+	preimage    os.FileInfo
 	action      string
 	shouldWrite bool
 }
@@ -340,7 +360,7 @@ func mergeHookBindings(configPath string, bindings []desiredHookBinding, check b
 	if !prepared.shouldWrite {
 		return prepared.action, nil
 	}
-	if err := writeHookConfigAtomically(prepared.path, prepared.after, prepared.mode); err != nil {
+	if err := commitPreparedHookConfig(prepared); err != nil {
 		return "", err
 	}
 	return prepared.action, nil
@@ -359,14 +379,30 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 	}
 
 	root := map[string]any{}
-	if data, err := os.ReadFile(configPath); err == nil {
+	info, err := os.Lstat(configPath)
+	switch {
+	case err == nil:
+		if info.Mode()&os.ModeSymlink != 0 {
+			return preparedHookConfig{}, fmt.Errorf("refuse symlinked hook config %s", configPath)
+		}
+		if !info.Mode().IsRegular() {
+			return preparedHookConfig{}, fmt.Errorf("hook config %s must be a regular file", configPath)
+		}
+		data, readErr := os.ReadFile(configPath)
+		if readErr != nil {
+			return preparedHookConfig{}, readErr
+		}
+		afterReadInfo, statErr := os.Lstat(configPath)
+		if statErr != nil {
+			return preparedHookConfig{}, fmt.Errorf("hook config %s changed during preflight: %w", configPath, statErr)
+		}
+		if afterReadInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(info, afterReadInfo) {
+			return preparedHookConfig{}, fmt.Errorf("hook config %s changed during preflight", configPath)
+		}
 		prepared.existed = true
 		prepared.before = append([]byte(nil), data...)
-		info, statErr := os.Stat(configPath)
-		if statErr != nil {
-			return preparedHookConfig{}, statErr
-		}
-		prepared.mode = info.Mode().Perm()
+		prepared.mode = afterReadInfo.Mode()
+		prepared.preimage = afterReadInfo
 		if len(strings.TrimSpace(string(data))) > 0 {
 			if err := json.Unmarshal(data, &root); err != nil {
 				return preparedHookConfig{}, fmt.Errorf("parse %s: %w", configPath, err)
@@ -375,7 +411,8 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 				root = map[string]any{}
 			}
 		}
-	} else if !os.IsNotExist(err) {
+	case os.IsNotExist(err):
+	case err != nil:
 		return preparedHookConfig{}, err
 	}
 
@@ -384,72 +421,39 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 		hooks = map[string]any{}
 	}
 	action := "ok"
-	desiredEvents := make(map[string]bool, len(bindings))
+	desiredByEvent := make(map[string]desiredHookBinding, len(bindings))
 	for _, binding := range bindings {
-		desiredEvents[binding.Event] = true
+		desiredByEvent[binding.Event] = binding
 	}
 	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
-		if desiredEvents[event] {
-			continue
-		}
 		groups, _ := hooks[event].([]any)
-		kept := make([]any, 0, len(groups))
-		removed := false
-		for _, entry := range groups {
-			entryMap, ok := entry.(map[string]any)
-			if ok && bindingIsCompoundEvent(entryMap, event) {
-				removed = true
-				continue
-			}
-			kept = append(kept, entry)
+		binding, desired := desiredByEvent[event]
+		var desiredBinding *desiredHookBinding
+		if desired {
+			desiredBinding = &binding
 		}
-		if !removed {
+		reconciled, removed := reconcileHookEventGroups(groups, event, desiredBinding)
+		if sameHookGroups(groups, reconciled) {
 			continue
 		}
 		if check {
-			action = combineHookInstallAction(action, "drift", true)
+			next := "drift"
+			if desired && removed == 0 {
+				next = "absent"
+			}
+			action = combineHookInstallAction(action, next, true)
 		} else {
-			action = combineHookInstallAction(action, "updated", false)
+			next := "updated"
+			if desired && removed == 0 {
+				next = "installed"
+			}
+			action = combineHookInstallAction(action, next, false)
 		}
-		if len(kept) == 0 {
+		if len(reconciled) == 0 {
 			delete(hooks, event)
 		} else {
-			hooks[event] = kept
+			hooks[event] = reconciled
 		}
-	}
-	for _, binding := range bindings {
-		ourEntry := map[string]any{
-			"hooks": []any{map[string]any{"type": "command", "command": binding.Command}},
-		}
-		if strings.TrimSpace(binding.Matcher) != "" {
-			ourEntry["matcher"] = binding.Matcher
-		}
-		groups, _ := hooks[binding.Event].([]any)
-		idx := -1
-		for i, entry := range groups {
-			if em, ok := entry.(map[string]any); ok && bindingIsCompoundEvent(em, binding.Event) {
-				idx = i
-				break
-			}
-		}
-		switch {
-		case idx >= 0 && sameEntry(groups[idx], ourEntry):
-		case idx >= 0:
-			if check {
-				action = combineHookInstallAction(action, "drift", true)
-			} else {
-				action = combineHookInstallAction(action, "updated", false)
-			}
-			groups[idx] = ourEntry
-		default:
-			if check {
-				action = combineHookInstallAction(action, "absent", true)
-			} else {
-				action = combineHookInstallAction(action, "installed", false)
-			}
-			groups = append(groups, ourEntry)
-		}
-		hooks[binding.Event] = groups
 	}
 	prepared.action = action
 	if action == "ok" {
@@ -473,9 +477,23 @@ func hookConfigRevision(data []byte) string {
 
 func verifyHookConfigs(configs []preparedHookConfig) error {
 	for _, config := range configs {
+		info, err := os.Lstat(config.path)
+		if err != nil {
+			return fmt.Errorf("verify installed %s hook config: %w", config.harness, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("verify installed %s hook config: target is not a regular file", config.harness)
+		}
 		actual, err := os.ReadFile(config.path)
 		if err != nil {
 			return fmt.Errorf("verify installed %s hook config: %w", config.harness, err)
+		}
+		afterReadInfo, err := os.Lstat(config.path)
+		if err != nil {
+			return fmt.Errorf("verify installed %s hook config: %w", config.harness, err)
+		}
+		if !afterReadInfo.Mode().IsRegular() || !os.SameFile(info, afterReadInfo) {
+			return fmt.Errorf("verify installed %s hook config: target changed while reading", config.harness)
 		}
 		if !bytes.Equal(actual, config.after) {
 			return fmt.Errorf(
@@ -483,6 +501,14 @@ func verifyHookConfigs(configs []preparedHookConfig) error {
 				config.harness,
 				hookConfigRevision(actual),
 				hookConfigRevision(config.after),
+			)
+		}
+		if afterReadInfo.Mode() != config.mode {
+			return fmt.Errorf(
+				"verify installed %s hook config: mode mismatch: got %v want %v",
+				config.harness,
+				afterReadInfo.Mode(),
+				config.mode,
 			)
 		}
 	}
@@ -493,7 +519,7 @@ func rollbackHookConfigs(configs []preparedHookConfig) error {
 	var rollbackErr error
 	for i := len(configs) - 1; i >= 0; i-- {
 		config := configs[i]
-		current, err := os.ReadFile(config.path)
+		info, err := os.Lstat(config.path)
 		if os.IsNotExist(err) && !config.existed {
 			continue
 		}
@@ -509,7 +535,18 @@ func rollbackHookConfigs(configs []preparedHookConfig) error {
 			)
 			continue
 		}
-		info, err := os.Stat(config.path)
+		if !info.Mode().IsRegular() {
+			rollbackErr = errors.Join(
+				rollbackErr,
+				fmt.Errorf(
+					"rollback %s hook config %s refused; target changed after commit: not a regular file",
+					config.harness,
+					config.path,
+				),
+			)
+			continue
+		}
+		current, err := os.ReadFile(config.path)
 		if err != nil {
 			rollbackErr = errors.Join(
 				rollbackErr,
@@ -522,7 +559,12 @@ func rollbackHookConfigs(configs []preparedHookConfig) error {
 			)
 			continue
 		}
-		if !bytes.Equal(current, config.after) || info.Mode().Perm() != config.mode.Perm() {
+		afterReadInfo, err := os.Lstat(config.path)
+		if err != nil ||
+			!afterReadInfo.Mode().IsRegular() ||
+			!os.SameFile(info, afterReadInfo) ||
+			!bytes.Equal(current, config.after) ||
+			afterReadInfo.Mode() != config.mode {
 			rollbackErr = errors.Join(
 				rollbackErr,
 				fmt.Errorf(
@@ -552,6 +594,58 @@ func rollbackHookConfigs(configs []preparedHookConfig) error {
 	return rollbackErr
 }
 
+func commitPreparedHookConfig(config preparedHookConfig) error {
+	if err := verifyHookConfigPreimage(config); err != nil {
+		return err
+	}
+	return writeHookConfigAtomically(config.path, config.after, config.mode)
+}
+
+func verifyHookConfigPreimage(config preparedHookConfig) error {
+	info, err := os.Lstat(config.path)
+	if !config.existed {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("hook config %s changed since preflight: %w", config.path, err)
+		}
+		return fmt.Errorf("hook config %s changed since preflight: target appeared", config.path)
+	}
+	if err != nil {
+		return fmt.Errorf("hook config %s changed since preflight: %w", config.path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("hook config %s changed since preflight: target became a symlink", config.path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("hook config %s changed since preflight: target is no longer a regular file", config.path)
+	}
+	if config.preimage == nil || !os.SameFile(config.preimage, info) {
+		return fmt.Errorf("hook config %s changed since preflight: file identity changed", config.path)
+	}
+	current, err := os.ReadFile(config.path)
+	if err != nil {
+		return fmt.Errorf("hook config %s changed since preflight: %w", config.path, err)
+	}
+	afterReadInfo, err := os.Lstat(config.path)
+	if err != nil {
+		return fmt.Errorf("hook config %s changed since preflight: %w", config.path, err)
+	}
+	if afterReadInfo.Mode()&os.ModeSymlink != 0 ||
+		!os.SameFile(info, afterReadInfo) ||
+		!os.SameFile(config.preimage, afterReadInfo) {
+		return fmt.Errorf("hook config %s changed since preflight: file identity changed", config.path)
+	}
+	if !bytes.Equal(current, config.before) {
+		return fmt.Errorf("hook config %s changed since preflight: bytes changed", config.path)
+	}
+	if afterReadInfo.Mode() != config.mode {
+		return fmt.Errorf("hook config %s changed since preflight: mode changed", config.path)
+	}
+	return nil
+}
+
 func writeHookConfigAtomically(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -568,7 +662,7 @@ func writeHookConfigAtomically(path string, data []byte, mode os.FileMode) error
 			_ = os.Remove(tempPath)
 		}
 	}()
-	if err := temp.Chmod(mode.Perm()); err != nil {
+	if err := temp.Chmod(mode); err != nil {
 		return errors.Join(err, temp.Close())
 	}
 	if _, err := temp.Write(data); err != nil {
@@ -606,8 +700,7 @@ func combineHookInstallAction(current, next string, check bool) string {
 	return "ok"
 }
 
-// bindingIsCompoundEvent reports whether an event entry is Compound's own.
-func bindingIsCompoundEvent(entry map[string]any, event string) bool {
+func hookIsCompoundEvent(hook any, event string) bool {
 	verb := map[string]string{
 		"SessionStart":     "session-start",
 		"UserPromptSubmit": "user-prompt-submit",
@@ -615,23 +708,82 @@ func bindingIsCompoundEvent(entry map[string]any, event string) bool {
 		"PostToolUse":      "post-tool-use",
 	}[event]
 	marker := "hook " + verb + " --live"
-	inner, _ := entry["hooks"].([]any)
-	for _, h := range inner {
-		if hm, ok := h.(map[string]any); ok {
-			if cmd, _ := hm["command"].(string); strings.Contains(cmd, marker) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func sameEntry(a any, b map[string]any) bool {
-	am, ok := a.(map[string]any)
+	hookMap, ok := hook.(map[string]any)
 	if !ok {
 		return false
 	}
-	ad, _ := json.Marshal(am)
+	command, _ := hookMap["command"].(string)
+	return strings.Contains(command, marker)
+}
+
+func reconcileHookEventGroups(
+	groups []any,
+	event string,
+	desired *desiredHookBinding,
+) ([]any, int) {
+	reconciled := make([]any, 0, len(groups)+1)
+	insertAt := -1
+	removed := 0
+	for _, group := range groups {
+		entry, ok := group.(map[string]any)
+		if !ok {
+			reconciled = append(reconciled, group)
+			continue
+		}
+		inner, ok := entry["hooks"].([]any)
+		if !ok {
+			reconciled = append(reconciled, group)
+			continue
+		}
+		kept := make([]any, 0, len(inner))
+		removedFromGroup := 0
+		for _, hook := range inner {
+			if hookIsCompoundEvent(hook, event) {
+				removed++
+				removedFromGroup++
+				continue
+			}
+			kept = append(kept, hook)
+		}
+		if removedFromGroup == 0 {
+			reconciled = append(reconciled, group)
+			continue
+		}
+		if len(kept) > 0 {
+			preserved := make(map[string]any, len(entry))
+			for key, value := range entry {
+				preserved[key] = value
+			}
+			preserved["hooks"] = kept
+			reconciled = append(reconciled, preserved)
+		}
+		if desired != nil && insertAt < 0 {
+			insertAt = len(reconciled)
+		}
+	}
+	if desired == nil {
+		if removed == 0 {
+			return groups, 0
+		}
+		return reconciled, removed
+	}
+	desiredEntry := map[string]any{
+		"hooks": []any{map[string]any{"type": "command", "command": desired.Command}},
+	}
+	if strings.TrimSpace(desired.Matcher) != "" {
+		desiredEntry["matcher"] = desired.Matcher
+	}
+	if insertAt < 0 {
+		insertAt = len(reconciled)
+	}
+	reconciled = append(reconciled, nil)
+	copy(reconciled[insertAt+1:], reconciled[insertAt:])
+	reconciled[insertAt] = desiredEntry
+	return reconciled, removed
+}
+
+func sameHookGroups(a, b []any) bool {
+	ad, _ := json.Marshal(a)
 	bd, _ := json.Marshal(b)
-	return string(ad) == string(bd)
+	return bytes.Equal(ad, bd)
 }

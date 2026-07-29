@@ -11,8 +11,34 @@ import (
 
 	"compound/internal/contract"
 	"compound/internal/harness"
+	"compound/internal/home"
 	"compound/internal/hookplan"
 )
+
+func TestInstalledHookAuthorityMutationHoldsSharedAdmissionLock(t *testing.T) {
+	compoundHome := t.TempDir()
+	observedHeld := false
+	if err := withInstalledHookAuthorityLock(compoundHome, func() error {
+		held, err := home.AutonomyAdmissionLockHeld(compoundHome)
+		if err != nil {
+			return err
+		}
+		observedHeld = held
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !observedHeld {
+		t.Fatal("installed-hook authority mutation ran without the shared admission lock")
+	}
+	heldAfter, err := home.AutonomyAdmissionLockHeld(compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if heldAfter {
+		t.Fatal("installed-hook authority mutation left the shared admission lock held")
+	}
+}
 
 func TestHookInstallSynchronizesAuthorityWithoutPromotingInteractiveObserversToBlocking(t *testing.T) {
 	for _, order := range [][]string{

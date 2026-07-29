@@ -13,6 +13,7 @@ import (
 
 	"compound/internal/harness"
 	"compound/internal/hookplan"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -128,6 +129,17 @@ func ImportHookInstallReport(
 	if err != nil {
 		return nil, fmt.Errorf("snapshot installed hook authority: %w", err)
 	}
+	if err := prepareHookInstallAuthorityPostimages(
+		authoritySnapshots,
+		homePath,
+		managedHookInstallationRef,
+		sourceData,
+		manifest,
+		installedHooksHookInstallImportedVia,
+		now,
+	); err != nil {
+		return nil, fmt.Errorf("prepare installed hook authority publication: %w", err)
+	}
 	result, err := importInstalledHooks(
 		homePath,
 		managedHookInstallationRef,
@@ -146,10 +158,14 @@ func ImportHookInstallReport(
 }
 
 type hookInstallAuthoritySnapshot struct {
-	path    string
-	existed bool
-	data    []byte
-	mode    os.FileMode
+	path       string
+	existed    bool
+	data       []byte
+	mode       os.FileMode
+	postKnown  bool
+	postExists bool
+	postData   []byte
+	postMode   os.FileMode
 }
 
 func snapshotHookInstallAuthority(homePath string) ([]hookInstallAuthoritySnapshot, error) {
@@ -160,16 +176,23 @@ func snapshotHookInstallAuthority(homePath string) ([]hookInstallAuthoritySnapsh
 	snapshots := make([]hookInstallAuthoritySnapshot, 0, len(paths))
 	for _, path := range paths {
 		snapshot := hookInstallAuthoritySnapshot{path: path}
-		data, err := os.ReadFile(path)
+		info, err := os.Lstat(path)
 		switch {
 		case err == nil:
-			info, statErr := os.Stat(path)
-			if statErr != nil {
-				return nil, statErr
+			if !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("installed hook authority %s must be a regular file", path)
+			}
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, readErr
+			}
+			afterReadInfo, statErr := os.Lstat(path)
+			if statErr != nil || !afterReadInfo.Mode().IsRegular() || !os.SameFile(info, afterReadInfo) {
+				return nil, fmt.Errorf("installed hook authority %s changed during snapshot", path)
 			}
 			snapshot.existed = true
 			snapshot.data = append([]byte(nil), data...)
-			snapshot.mode = info.Mode().Perm()
+			snapshot.mode = afterReadInfo.Mode()
 		case os.IsNotExist(err):
 		default:
 			return nil, err
@@ -179,10 +202,250 @@ func snapshotHookInstallAuthority(homePath string) ([]hookInstallAuthoritySnapsh
 	return snapshots, nil
 }
 
+func prepareHookInstallAuthorityPostimages(
+	snapshots []hookInstallAuthoritySnapshot,
+	homePath string,
+	sourcePath string,
+	sourceData []byte,
+	incoming InstalledHooksManifest,
+	importedVia string,
+	now time.Time,
+) error {
+	authority := hookInstallAuthoritySnapshotForPath(snapshots, InstalledHooksPath(homePath))
+	if authority == nil {
+		return fmt.Errorf("installed hook authority snapshot missing")
+	}
+	incomingHookCount := len(incoming.Hooks)
+	finalManifest := incoming
+	priorAuthorityRevision := ""
+	if authority.existed {
+		existing, err := parseInstalledHooksManifest(authority.path, authority.data)
+		if err != nil {
+			return err
+		}
+		priorAuthorityRevision = hashBytes(authority.data)
+		finalManifest = mergeInstalledHooksManifest(existing, incoming)
+	}
+	finalManifest.SchemaVersion = installedHooksSchemaVersion
+	manifestData, err := yaml.Marshal(finalManifest)
+	if err != nil {
+		return err
+	}
+	authorityRevision := hashBytes(manifestData)
+	authority.postKnown = true
+	authority.postExists = true
+	authority.postData = manifestData
+	authority.postMode = authority.mode
+	if !authority.existed {
+		authority.postMode, err = hookInstallAuthorityNewFileMode(authority.path, 0o644)
+		if err != nil {
+			return fmt.Errorf("derive installed hook authority mode: %w", err)
+		}
+	}
+
+	sourceRevision := hashBytes(sourceData)
+	evidenceRefs := []string{sourceRevision, InstalledHooksAuthorityRef, "authority_revision:" + authorityRevision}
+	if priorAuthorityRevision != "" {
+		evidenceRefs = append(evidenceRefs, "prior_authority_revision:"+priorAuthorityRevision)
+	}
+	record := InstalledHooksSourceAuthority{
+		SchemaVersion:          InstalledHooksSourceAuthoritySchema,
+		ID:                     installedHooksSourceAuthorityID(sourcePath, sourceRevision, importedVia, authorityRevision),
+		CreatedAt:              now.UTC().Format(time.RFC3339),
+		SourcePath:             sourcePath,
+		SourceRevision:         sourceRevision,
+		ImportedVia:            importedVia,
+		AuthorityRef:           InstalledHooksAuthorityRef,
+		AuthorityRevision:      authorityRevision,
+		PriorAuthorityRevision: priorAuthorityRevision,
+		AuthorityStatus:        "compound_primary",
+		SourceRole:             "evidence_only_input_after_import",
+		Retires:                "source_view_authority:" + sourcePath,
+		RetirementCondition:    "EffectiveContract reads compound://config/installed-hooks from COMPOUND_HOME; source view remains rollback/evidence input",
+		Rollback:               "re-import source hooks JSON or remove COMPOUND_HOME config/installed-hooks.yaml",
+		Harnesses:              installedHookHarnesses(finalManifest),
+		IncomingHookCount:      incomingHookCount,
+		HookCount:              len(finalManifest.Hooks),
+		EvidenceRefs:           evidenceRefs,
+	}
+	provenance := hookInstallAuthoritySnapshotForPath(snapshots, InstalledHooksSourceAuthorityPath(homePath))
+	if provenance == nil {
+		return fmt.Errorf("installed hook provenance snapshot missing")
+	}
+	duplicate, parseErr := installedHookAuthorityRecordExists(provenance.data, record.ID)
+	if parseErr != nil {
+		// Preserve the importer's existing failure order: malformed provenance is
+		// discovered after the manifest write. Its unchanged preimage is still
+		// recognizable during rollback; any other state becomes a conflict.
+		return nil
+	}
+	recordData, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	provenance.postKnown = true
+	provenance.postExists = true
+	provenance.postMode = provenance.mode
+	if !provenance.existed {
+		provenance.postMode, err = hookInstallAuthorityNewFileMode(provenance.path, 0o644)
+		if err != nil {
+			return fmt.Errorf("derive installed hook provenance mode: %w", err)
+		}
+	}
+	if duplicate {
+		provenance.postData = append([]byte(nil), provenance.data...)
+		return nil
+	}
+	provenance.postData = append(append([]byte(nil), provenance.data...), append(recordData, '\n')...)
+	return nil
+}
+
+func hookInstallAuthorityNewFileMode(path string, requested os.FileMode) (os.FileMode, error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return 0, err
+	}
+	placeholder, err := os.CreateTemp(dir, ".compound-hook-authority-mode-*")
+	if err != nil {
+		return 0, err
+	}
+	probePath := placeholder.Name()
+	if err := errors.Join(placeholder.Close(), os.Remove(probePath)); err != nil {
+		return 0, err
+	}
+	probe, err := os.OpenFile(probePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, requested)
+	if err != nil {
+		return 0, err
+	}
+	info, statErr := probe.Stat()
+	cleanupErr := errors.Join(probe.Close(), os.Remove(probePath))
+	if statErr != nil || cleanupErr != nil {
+		return 0, errors.Join(statErr, cleanupErr)
+	}
+	return info.Mode(), nil
+}
+
+func hookInstallAuthoritySnapshotForPath(
+	snapshots []hookInstallAuthoritySnapshot,
+	path string,
+) *hookInstallAuthoritySnapshot {
+	for i := range snapshots {
+		if snapshots[i].path == path {
+			return &snapshots[i]
+		}
+	}
+	return nil
+}
+
+func installedHookAuthorityRecordExists(data []byte, id string) (bool, error) {
+	for lineIndex, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var record InstalledHooksSourceAuthority
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			return false, fmt.Errorf("parse installed hooks source authority line %d: %w", lineIndex+1, err)
+		}
+		if strings.TrimSpace(record.ID) == "" {
+			return false, fmt.Errorf("installed hooks source authority line %d missing id", lineIndex+1)
+		}
+		if record.ID == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+type hookInstallAuthorityState struct {
+	exists  bool
+	regular bool
+	data    []byte
+	mode    os.FileMode
+}
+
+func readHookInstallAuthorityState(path string) (hookInstallAuthorityState, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return hookInstallAuthorityState{}, nil
+	}
+	if err != nil {
+		return hookInstallAuthorityState{}, err
+	}
+	state := hookInstallAuthorityState{
+		exists:  true,
+		regular: info.Mode().IsRegular(),
+		mode:    info.Mode(),
+	}
+	if !state.regular {
+		return state, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return hookInstallAuthorityState{}, err
+	}
+	afterReadInfo, err := os.Lstat(path)
+	if err != nil {
+		return hookInstallAuthorityState{}, err
+	}
+	if !afterReadInfo.Mode().IsRegular() || !os.SameFile(info, afterReadInfo) {
+		return hookInstallAuthorityState{}, fmt.Errorf("authority changed while reading")
+	}
+	state.data = data
+	state.mode = afterReadInfo.Mode()
+	return state, nil
+}
+
+func hookInstallAuthorityStateMatches(
+	current hookInstallAuthorityState,
+	exists bool,
+	data []byte,
+	mode os.FileMode,
+) bool {
+	if current.exists != exists {
+		return false
+	}
+	if !exists {
+		return true
+	}
+	return current.regular && bytes.Equal(current.data, data) && current.mode == mode
+}
+
 func rollbackHookInstallAuthority(snapshots []hookInstallAuthoritySnapshot) error {
 	var rollbackErr error
 	for i := len(snapshots) - 1; i >= 0; i-- {
 		snapshot := snapshots[i]
+		current, err := readHookInstallAuthorityState(snapshot.path)
+		if err != nil {
+			rollbackErr = errors.Join(
+				rollbackErr,
+				fmt.Errorf("installed hook authority rollback conflict at %s: %w", snapshot.path, err),
+			)
+			continue
+		}
+		if hookInstallAuthorityStateMatches(
+			current,
+			snapshot.existed,
+			snapshot.data,
+			snapshot.mode,
+		) {
+			continue
+		}
+		if !snapshot.postKnown || !hookInstallAuthorityStateMatches(
+			current,
+			snapshot.postExists,
+			snapshot.postData,
+			snapshot.postMode,
+		) {
+			rollbackErr = errors.Join(
+				rollbackErr,
+				fmt.Errorf(
+					"installed hook authority rollback conflict at %s: current state does not match transaction post-image",
+					snapshot.path,
+				),
+			)
+			continue
+		}
 		if !snapshot.existed {
 			if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
 				rollbackErr = errors.Join(
@@ -192,36 +455,49 @@ func rollbackHookInstallAuthority(snapshots []hookInstallAuthoritySnapshot) erro
 			}
 			continue
 		}
-		current, readErr := os.ReadFile(snapshot.path)
-		if readErr == nil {
-			if info, statErr := os.Stat(snapshot.path); statErr == nil &&
-				bytes.Equal(current, snapshot.data) &&
-				info.Mode().Perm() == snapshot.mode {
-				continue
-			}
-		}
-		if err := os.MkdirAll(filepath.Dir(snapshot.path), 0o755); err != nil {
+		if err := writeHookInstallAuthorityAtomically(snapshot.path, snapshot.data, snapshot.mode); err != nil {
 			rollbackErr = errors.Join(
 				rollbackErr,
 				fmt.Errorf("rollback installed hook authority %s: %w", snapshot.path, err),
-			)
-			continue
-		}
-		if err := os.WriteFile(snapshot.path, snapshot.data, snapshot.mode); err != nil {
-			rollbackErr = errors.Join(
-				rollbackErr,
-				fmt.Errorf("rollback installed hook authority %s: %w", snapshot.path, err),
-			)
-			continue
-		}
-		if err := os.Chmod(snapshot.path, snapshot.mode); err != nil {
-			rollbackErr = errors.Join(
-				rollbackErr,
-				fmt.Errorf("rollback installed hook authority mode %s: %w", snapshot.path, err),
 			)
 		}
 	}
 	return rollbackErr
+}
+
+func writeHookInstallAuthorityAtomically(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(dir, ".compound-hook-authority-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	keepTemp := true
+	defer func() {
+		if keepTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := temp.Chmod(mode); err != nil {
+		return errors.Join(err, temp.Close())
+	}
+	if _, err := temp.Write(data); err != nil {
+		return errors.Join(err, temp.Close())
+	}
+	if err := temp.Sync(); err != nil {
+		return errors.Join(err, temp.Close())
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	keepTemp = false
+	return nil
 }
 
 // ReconcileInstalledHooks reads Compound's desired installed-hooks authority

@@ -55,6 +55,11 @@ deny, so Compound will not call it mutation-ready.
 Each non-check native install also records only that compiled managed roster in
 `compound://config/installed-hooks`; sequential harness installs preserve the
 other harness rosters. `--check` does not mutate native config or authority.
+Mutating `compound hook install` and legacy hook-authority imports share the
+Compound admission lock, so cooperating CLI writers serialize the native-config
+and authority transaction. External config editors do not take that advisory
+lock; preimage validation refuses drift it observes, without claiming mandatory
+filesystem exclusion.
 
 The vendor-shaped examples below are adapter evidence and troubleshooting
 fallbacks. They are not the operator contract.
@@ -145,6 +150,40 @@ do not maintain that schema directly. The default is observation-only and does
 not claim mutation readiness: it installs `SessionStart`, `UserPromptSubmit`,
 observation-only `PreToolUse`, and `PostToolUse`, while preserving unrelated
 user hooks. Native blocking remains an explicit isolated-posture choice.
+
+### Activate the updated interactive posture
+
+Active Codex and Claude Code processes cache their hook roster and permission
+posture at session start. Installing or reconciling hooks updates future
+processes; it does not rewrite the posture of a process that is already
+running. After installation, exit and start a fresh process, or resume the
+conversation from a newly started process.
+
+For prompt-free interactive Codex, set both the approval policy and a sandbox
+that is broad enough for the task in the active Codex profile before launch:
+
+```toml
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+```
+
+`approval_policy = "never"` removes approval questions; it does not expand the
+sandbox. Use `danger-full-access` only when unrestricted host access is
+intended. With a narrower sandbox, an out-of-scope operation fails instead of
+asking for approval. Start a fresh Codex process after changing either value.
+
+For prompt-free interactive Claude Code, resume with
+`bypassPermissions` explicitly:
+
+```sh
+claude --permission-mode bypassPermissions --resume <session-id>
+```
+
+This also avoids inheriting a launcher or saved session invocation that pins
+`acceptEdits` or another prompting mode. A fresh interactive Claude process may
+instead consume `permissions.defaultMode: "bypassPermissions"` from its normal
+settings authority. Isolated executor profiles remain separately configured
+and explicitly enforced.
 
 ## OpenCode
 

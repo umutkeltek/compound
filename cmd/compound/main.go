@@ -1521,27 +1521,40 @@ func cmdHookInstall(args []string) {
 		binary = exe
 	}
 
+	homePath := ""
 	var publish func(hookplan.HookInstallReport) error
 	if !check {
-		homePath, err := home.Resolve("")
+		resolvedHome, err := home.Resolve("")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+		homePath = resolvedHome
 		publish = func(report hookplan.HookInstallReport) error {
 			_, err := contract.ImportHookInstallReport(homePath, base, report, time.Now())
 			return err
 		}
 	}
-	rep, err := hookplan.InstallHooksWithConfigDirAndPublish(
-		base,
-		binary,
-		scope,
-		harnesses,
-		configDir,
-		check,
-		publish,
-	)
+	var rep hookplan.HookInstallReport
+	install := func() error {
+		var err error
+		rep, err = hookplan.InstallHooksWithConfigDirAndPublish(
+			base,
+			binary,
+			scope,
+			harnesses,
+			configDir,
+			check,
+			publish,
+		)
+		return err
+	}
+	var err error
+	if check {
+		err = install()
+	} else {
+		err = withInstalledHookAuthorityLock(homePath, install)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -1563,6 +1576,16 @@ func cmdHookInstall(args []string) {
 	}
 }
 
+// withInstalledHookAuthorityLock serializes Compound CLI writers that can replace the managed
+// native-hook roster or its installed-hooks authority. Native config preimage checks still defend
+// against editors that do not cooperate with this advisory lock.
+func withInstalledHookAuthorityLock(homePath string, mutate func() error) error {
+	if mutate == nil {
+		return fmt.Errorf("installed-hook authority mutation required")
+	}
+	return home.WithAutonomyAdmissionLock(homePath, mutate)
+}
+
 func runHookCommand(args []string) int {
 	parsed, err := parseHookArgs(args)
 	if err != nil {
@@ -1571,7 +1594,17 @@ func runHookCommand(args []string) int {
 	}
 	now := time.Now()
 	homePath := ""
-	deps := hook.Deps{Registry: harness.DefaultRegistry(), Orient: orientPolicy(), Policy: policyConfig()}
+	orientation, err := loadOrientationPolicy()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return hookRuntimeErrorExit(parsed)
+	}
+	policyCfg, err := loadRuntimePolicyConfig()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return hookRuntimeErrorExit(parsed)
+	}
+	deps := hook.Deps{Registry: harness.DefaultRegistry(), Orient: orientation, Policy: policyCfg}
 	if resolvedHome, err := home.Resolve(""); err == nil {
 		homePath = resolvedHome
 		deps.HomePath = homePath
@@ -1773,13 +1806,21 @@ func gateExit(pd envelope.PolicyDecision) int {
 }
 
 func policyConfig() policy.Config {
-	homePath, _ := home.Resolve("") // empty if none; LoadConfig falls back to the built-in default
-	cfg, _, err := policy.LoadConfig(homePath)
+	cfg, err := loadRuntimePolicyConfig()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 	return cfg
+}
+
+func loadRuntimePolicyConfig() (policy.Config, error) {
+	homePath, _ := home.Resolve("") // empty if none; LoadConfig falls back to the built-in default
+	cfg, _, err := policy.LoadConfig(homePath)
+	if err != nil {
+		return policy.Config{}, err
+	}
+	return cfg, nil
 }
 
 func loadActionIntent(path string) envelope.ActionIntent {
@@ -3433,13 +3474,21 @@ func parseOrientArgsWithHome(args []string, homePath string) (contract.Input, er
 }
 
 func orientPolicy() contract.OrientationPolicy {
-	homePath, _ := home.Resolve("") // empty if none; LoadPolicy falls back to the built-in default
-	pol, _, err := contract.LoadPolicy(homePath)
+	pol, err := loadOrientationPolicy()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 	return pol
+}
+
+func loadOrientationPolicy() (contract.OrientationPolicy, error) {
+	homePath, _ := home.Resolve("") // empty if none; LoadPolicy falls back to the built-in default
+	pol, _, err := contract.LoadPolicy(homePath)
+	if err != nil {
+		return contract.OrientationPolicy{}, err
+	}
+	return pol, nil
 }
 
 func printJSON(v any) {
@@ -3568,11 +3617,14 @@ func cmdContract(args []string) {
 		homePath, err := home.Resolve("")
 		die(err)
 		var report contract.InstalledHooksImportReport
-		if registrationPath != "" {
-			report, err = contract.ImportHookRegistrationTS(homePath, registrationPath, time.Now())
-		} else {
-			report, err = contract.ImportCodexHooksJSON(homePath, sourcePath, time.Now())
-		}
+		err = withInstalledHookAuthorityLock(homePath, func() error {
+			if registrationPath != "" {
+				report, err = contract.ImportHookRegistrationTS(homePath, registrationPath, time.Now())
+			} else {
+				report, err = contract.ImportCodexHooksJSON(homePath, sourcePath, time.Now())
+			}
+			return err
+		})
 		die(err)
 		printJSON(report)
 	case "hooks-authority":
