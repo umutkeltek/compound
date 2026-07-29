@@ -202,6 +202,9 @@ func TestRunAttemptAdmissionSeparatesReadOnlyListFromMutation(t *testing.T) {
 		"compound run-attempt list",
 		"compound run-attempt list --non-terminal --json",
 		"compound run-attempt list --home /tmp/compound-read-fixture",
+		"compound run-attempt list >&2",
+		"compound run-attempt list >&-",
+		"compound run-attempt list 2>&1",
 	} {
 		got := policy.ClassifyToolAction(policy.ToolActionRequest{
 			Tool:               "Bash",
@@ -224,6 +227,11 @@ func TestRunAttemptAdmissionSeparatesReadOnlyListFromMutation(t *testing.T) {
 		"compound run-attempt show ratt_20260729T000000Z_00000000 --json",
 		"compound run-attempt definitely-not-a-subcommand",
 		"/tmp/attacker/compound run-attempt list",
+		"compound run-attempt list >&/tmp/compound-classifier-output",
+		"compound run-attempt list >>&/tmp/compound-classifier-output",
+		"compound run-attempt list >>&2",
+		"compound run-attempt list >>&-",
+		"compound run-attempt list 2>>&1",
 		"compound run-attempt list $(touch /tmp/compound-classifier-must-not-run)",
 		`compound run-attempt "$RUN_ATTEMPT_SUBCOMMAND"`,
 		"compound run-attempt $(printf list)",

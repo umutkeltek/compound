@@ -649,18 +649,21 @@ func shellReadRedirection(runes []rune, start int, word *strings.Builder, curren
 	}
 	i := start
 	inputOnly := runes[i] == '<'
+	compoundOperator := false
 	for i+1 < len(runes) && (runes[i+1] == '>' || runes[i+1] == '<') {
+		compoundOperator = true
 		i++
 		if runes[i] == '>' {
 			inputOnly = false
 		}
 	}
+	descriptorDuplication := false
 	if i+1 < len(runes) && runes[i+1] == '&' {
+		// Only <&number and >&number duplicate descriptors. In zsh,
+		// >>&word appends stdout and stderr to word, even when word looks
+		// numeric, while <> is read/write. Both must remain writes.
+		descriptorDuplication = !compoundOperator
 		i++
-		for i+1 < len(runes) && (runes[i+1] == '-' || (runes[i+1] >= '0' && runes[i+1] <= '9')) {
-			i++
-		}
-		return i, false, true
 	}
 	for i+1 < len(runes) && (runes[i+1] == ' ' || runes[i+1] == '\t') {
 		i++
@@ -697,6 +700,10 @@ func shellReadRedirection(runes []rune, start int, word *strings.Builder, curren
 	}
 	if target.Len() == 0 {
 		return i, false, false
+	}
+	if descriptorDuplication {
+		targetValue := target.String()
+		return i, targetValue != "-" && !shellAllDigits(targetValue), true
 	}
 	if inputOnly {
 		if strings.HasPrefix(target.String(), "/dev/tcp/") || strings.HasPrefix(target.String(), "/dev/udp/") {
