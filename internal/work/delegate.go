@@ -23,7 +23,7 @@
 //   - One live session per work. A second delegate on a live session
 //     REFUSES with reason=session_live and the existing session returned.
 //   - Lifecycle events, not logs. Each verb emits a structured eventstore
-//     record under compound.work_delegate_event.v0.1 with kind ∈
+//     record under the current compound.work_delegate_event schema with kind ∈
 //     work.delegate.{spawned,refused,steered,exited}. Event payloads NEVER
 //     carry prompt text or command stdout (privacy law of the packet).
 //   - Dry-run runs the guard + binding + tmux-available checks, prints the
@@ -52,10 +52,11 @@ import (
 )
 
 const (
-	delegateEventSchemaVersion = "compound.work_delegate_event.v0.1"
-	delegateSpawnFailureNote   = "session runner could not create the governed session"
-	delegateAmbiguousNote      = "Create failed but the named session exists; classified as spawn_ambiguous (the session may be a stranger's); no kill performed"
-	delegateProbeUnknownNote   = "Create failed and session ownership could not be determined; classified as spawn_ambiguous; no kill performed"
+	delegateEventSchemaVersion       = "compound.work_delegate_event.v0.2"
+	delegateLegacyEventSchemaVersion = "compound.work_delegate_event.v0.1"
+	delegateSpawnFailureNote         = "session runner could not create the governed session"
+	delegateAmbiguousNote            = "Create failed but the named session exists; classified as spawn_ambiguous (the session may be a stranger's); no kill performed"
+	delegateProbeUnknownNote         = "Create failed and session ownership could not be determined; classified as spawn_ambiguous; no kill performed"
 )
 
 type delegateAuthorityChangedError struct {
@@ -145,15 +146,16 @@ type DelegateHarnessResolveRequest struct {
 }
 
 type DelegateHarnessResolution struct {
-	Harness                string
-	Command                string
-	LaneID                 string
-	RequestedModelID       string
-	RequestedProviderRoute string
-	SelectedTransportID    string
-	CapacityLane           string
-	TupleBacked            bool
-	CapacitySource         *LaneCapacitySource
+	Harness                    string
+	Command                    string
+	LaneID                     string
+	RequestedModelID           string
+	RequestedProviderRoute     string
+	RequestedProviderRouteKind string
+	SelectedTransportID        string
+	CapacityLane               string
+	TupleBacked                bool
+	CapacitySource             *LaneCapacitySource
 }
 
 type DelegateHarnessResolverFunc func(DelegateHarnessResolveRequest) (DelegateHarnessResolution, error)
@@ -184,7 +186,8 @@ type DelegateExecutionProfileIntent struct {
 const (
 	delegateExecutionProfilePlanSchema       = "compound.execution_profile_plan.v0.1"
 	delegateExecutionProfileSnapshotMaxBytes = 256 << 10
-	delegateLaunchProfilePlanSchema          = "compound.delegate_launch_profile_plan.v0.1"
+	delegateLaunchProfilePlanSchema          = "compound.delegate_launch_profile_plan.v0.2"
+	delegateLegacyLaunchProfilePlanSchema    = "compound.delegate_launch_profile_plan.v0.1"
 	delegateLaunchProfileSnapshotMaxBytes    = 64 << 10
 
 	DelegateExecutionProfileCompatible   = "compatible"
@@ -257,14 +260,15 @@ type DelegateExecutionProfileResolverFunc func(DelegateExecutionProfileResolveRe
 var DelegateExecutionProfileResolver DelegateExecutionProfileResolverFunc
 
 type DelegateLaunchProfileResolveRequest struct {
-	ProfileID             string
-	SelectedHarness       string
-	SelectedLaneID        string
-	SelectedModelID       string
-	SelectedProviderRoute string
-	SelectedTransportID   string
-	RequestedNativeEffort string
-	SelectedCommand       string
+	ProfileID                 string
+	SelectedHarness           string
+	SelectedLaneID            string
+	SelectedModelID           string
+	SelectedProviderRoute     string
+	SelectedProviderRouteKind string
+	SelectedTransportID       string
+	RequestedNativeEffort     string
+	SelectedCommand           string
 }
 
 type DelegateLaunchProfilePlan struct {
@@ -276,6 +280,7 @@ type DelegateLaunchProfilePlan struct {
 	ID                string          `json:"id"`
 	Harness           string          `json:"harness"`
 	ProviderLane      string          `json:"provider_lane"`
+	ProviderRouteKind string          `json:"provider_route_kind"`
 	Route             string          `json:"route"`
 	RequestedModel    string          `json:"requested_model"`
 	RequestedEffort   string          `json:"requested_effort"`
@@ -289,19 +294,20 @@ type DelegateLaunchProfilePlan struct {
 }
 
 type DelegateLaunchProfileCompatibility struct {
-	Disposition           string `json:"disposition"`
-	SelectedHarness       string `json:"selected_harness"`
-	SelectedLaneID        string `json:"selected_lane_id"`
-	SelectedModelID       string `json:"selected_model_id"`
-	SelectedProviderRoute string `json:"selected_provider_route"`
-	SelectedTransportID   string `json:"selected_transport_id"`
-	RequestedNativeEffort string `json:"requested_native_effort"`
-	PlanID                string `json:"plan_id"`
-	ClientHarnessID       string `json:"client_harness_id"`
-	ClientProfileID       string `json:"client_profile_id"`
-	Revision              string `json:"revision"`
-	SelectedExecutableID  string `json:"selected_executable_id"`
-	ExecutableID          string `json:"executable_id"`
+	Disposition               string `json:"disposition"`
+	SelectedHarness           string `json:"selected_harness"`
+	SelectedLaneID            string `json:"selected_lane_id"`
+	SelectedModelID           string `json:"selected_model_id"`
+	SelectedProviderRoute     string `json:"selected_provider_route"`
+	SelectedProviderRouteKind string `json:"selected_provider_route_kind"`
+	SelectedTransportID       string `json:"selected_transport_id"`
+	RequestedNativeEffort     string `json:"requested_native_effort"`
+	PlanID                    string `json:"plan_id"`
+	ClientHarnessID           string `json:"client_harness_id"`
+	ClientProfileID           string `json:"client_profile_id"`
+	Revision                  string `json:"revision"`
+	SelectedExecutableID      string `json:"selected_executable_id"`
+	ExecutableID              string `json:"executable_id"`
 }
 
 type DelegateLaunchProfileResolution struct {
@@ -393,17 +399,19 @@ type DelegateResult struct {
 // from a sidecar file). The orchestrator returns it to the verb layer so
 // the operator can print a single "session: <name>" hint.
 type DelegateBinding struct {
-	WorkID           string                          `json:"work_id"`
-	Session          string                          `json:"session"`
-	Harness          string                          `json:"harness"`
-	Lane             string                          `json:"lane,omitempty"`
-	Holder           string                          `json:"holder,omitempty"`
-	CapacityState    string                          `json:"capacity_state,omitempty"`
-	RecordedAt       string                          `json:"recorded_at,omitempty"`
-	WorkSHA256       string                          `json:"work_sha256,omitempty"`
-	Readiness        *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
-	ExecutionProfile *DelegateExecutionProfilePlan   `json:"execution_profile,omitempty"`
-	LaunchProfile    *DelegateLaunchProfilePlan      `json:"launch_profile,omitempty"`
+	WorkID                    string                          `json:"work_id"`
+	Session                   string                          `json:"session"`
+	Harness                   string                          `json:"harness"`
+	Lane                      string                          `json:"lane,omitempty"`
+	Holder                    string                          `json:"holder,omitempty"`
+	CapacityState             string                          `json:"capacity_state,omitempty"`
+	RecordedAt                string                          `json:"recorded_at,omitempty"`
+	WorkSHA256                string                          `json:"work_sha256,omitempty"`
+	SelectedProviderRoute     string                          `json:"selected_provider_route,omitempty"`
+	SelectedProviderRouteKind string                          `json:"selected_provider_route_kind,omitempty"`
+	Readiness                 *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
+	ExecutionProfile          *DelegateExecutionProfilePlan   `json:"execution_profile,omitempty"`
+	LaunchProfile             *DelegateLaunchProfilePlan      `json:"launch_profile,omitempty"`
 	// RunAttemptID is the ratt_<UTC>_<hex> the orchestrator minted BEFORE
 	// the supervised spawn. Older bindings (pre-slice) leave it empty
 	// and remain backward-compatible: recovery still returns the
@@ -427,7 +435,7 @@ func resolveDelegateSessionName(workID, override string) string {
 }
 
 // delegateEvent is the structured record stored in the existing eventstore
-// under compound.work_delegate_event.v0.1. It is the slice-1 single
+// under the versioned compound.work_delegate_event schema. It is the slice-1 single
 // meaning owner for the binding (work ↔ tmux session).
 //
 // RunAttemptID carries the exact ratt_<UTC>_<hex> the orchestrator minted
@@ -441,27 +449,29 @@ func resolveDelegateSessionName(workID, override string) string {
 // work.delegate.exited event. Older exited events (no fields) still
 // serialize cleanly: the orchestrator accepts either shape.
 type delegateEvent struct {
-	SchemaVersion    string                          `json:"schema_version"`
-	ID               string                          `json:"id"`
-	Kind             string                          `json:"kind"`
-	TS               string                          `json:"ts"`
-	WorkID           string                          `json:"work_id"`
-	Harness          string                          `json:"harness"`
-	Lane             string                          `json:"lane,omitempty"`
-	Holder           string                          `json:"holder,omitempty"`
-	CapacityState    string                          `json:"capacity_state,omitempty"`
-	Reason           string                          `json:"reason,omitempty"`
-	Message          string                          `json:"message,omitempty"`
-	Confirm          bool                            `json:"confirm,omitempty"`
-	Session          string                          `json:"session,omitempty"`
-	WorkSHA256       string                          `json:"work_sha256,omitempty"`
-	RunAttemptID     string                          `json:"run_attempt_id,omitempty"`
-	Readiness        *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
-	ExecutionProfile *DelegateExecutionProfilePlan   `json:"execution_profile,omitempty"`
-	LaunchProfile    *DelegateLaunchProfilePlan      `json:"launch_profile,omitempty"`
-	ExitCode         *int                            `json:"exit_code,omitempty"`
-	Signal           string                          `json:"signal,omitempty"`
-	ObservedExit     bool                            `json:"observed_exit,omitempty"`
+	SchemaVersion             string                          `json:"schema_version"`
+	ID                        string                          `json:"id"`
+	Kind                      string                          `json:"kind"`
+	TS                        string                          `json:"ts"`
+	WorkID                    string                          `json:"work_id"`
+	Harness                   string                          `json:"harness"`
+	Lane                      string                          `json:"lane,omitempty"`
+	Holder                    string                          `json:"holder,omitempty"`
+	CapacityState             string                          `json:"capacity_state,omitempty"`
+	Reason                    string                          `json:"reason,omitempty"`
+	Message                   string                          `json:"message,omitempty"`
+	Confirm                   bool                            `json:"confirm,omitempty"`
+	Session                   string                          `json:"session,omitempty"`
+	WorkSHA256                string                          `json:"work_sha256,omitempty"`
+	SelectedProviderRoute     string                          `json:"selected_provider_route,omitempty"`
+	SelectedProviderRouteKind string                          `json:"selected_provider_route_kind,omitempty"`
+	RunAttemptID              string                          `json:"run_attempt_id,omitempty"`
+	Readiness                 *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
+	ExecutionProfile          *DelegateExecutionProfilePlan   `json:"execution_profile,omitempty"`
+	LaunchProfile             *DelegateLaunchProfilePlan      `json:"launch_profile,omitempty"`
+	ExitCode                  *int                            `json:"exit_code,omitempty"`
+	Signal                    string                          `json:"signal,omitempty"`
+	ObservedExit              bool                            `json:"observed_exit,omitempty"`
 }
 
 func delegateEventID(kind, workID string, now time.Time) string {
@@ -513,17 +523,19 @@ func (s *Store) latestDelegateBinding(workID string) (*DelegateBinding, bool, er
 			switch dev.Kind {
 			case "work.delegate.spawned":
 				binding = &DelegateBinding{
-					WorkID:           dev.WorkID,
-					Session:          dev.Session,
-					Harness:          dev.Harness,
-					Lane:             dev.Lane,
-					Holder:           dev.Holder,
-					CapacityState:    dev.CapacityState,
-					RecordedAt:       dev.TS,
-					WorkSHA256:       dev.WorkSHA256,
-					Readiness:        dev.Readiness,
-					ExecutionProfile: cloneDelegateExecutionProfilePlan(dev.ExecutionProfile),
-					LaunchProfile:    cloneDelegateLaunchProfilePlan(dev.LaunchProfile),
+					WorkID:                    dev.WorkID,
+					Session:                   dev.Session,
+					Harness:                   dev.Harness,
+					Lane:                      dev.Lane,
+					Holder:                    dev.Holder,
+					CapacityState:             dev.CapacityState,
+					RecordedAt:                dev.TS,
+					WorkSHA256:                dev.WorkSHA256,
+					SelectedProviderRoute:     dev.SelectedProviderRoute,
+					SelectedProviderRouteKind: dev.SelectedProviderRouteKind,
+					Readiness:                 dev.Readiness,
+					ExecutionProfile:          cloneDelegateExecutionProfilePlan(dev.ExecutionProfile),
+					LaunchProfile:             cloneDelegateLaunchProfilePlan(dev.LaunchProfile),
 					// Older spawned events (pre-slice) decode with empty
 					// RunAttemptID; the rest of the orchestrator treats
 					// empty as "no exact attempt" and stays backward-
@@ -593,7 +605,7 @@ func (s *Store) recordedDelegateExit(workID string, b *DelegateBinding) (*delega
 }
 
 func validateAttachedDelegateEvent(eventID, workID string, event delegateEvent) error {
-	if event.SchemaVersion != delegateEventSchemaVersion || event.ID != eventID || event.WorkID != workID {
+	if !validDelegateEventSchemaVersion(event.SchemaVersion) || event.ID != eventID || event.WorkID != workID {
 		return errors.New("invalid delegate event identity")
 	}
 	switch event.Kind {
@@ -607,6 +619,62 @@ func validateAttachedDelegateEvent(eventID, workID string, event delegateEvent) 
 		if err := validateDelegateExecutionProfileBinding(event.ExecutionProfile, event.Readiness); err != nil {
 			return fmt.Errorf("invalid execution profile proof: %w", err)
 		}
+		if event.LaunchProfile != nil &&
+			event.ExecutionProfile != nil &&
+			strings.TrimSpace(event.LaunchProfile.Harness) != strings.TrimSpace(event.ExecutionProfile.ClientHarnessID) {
+			return fmt.Errorf(
+				"launch profile client harness %q does not match execution profile client harness %q",
+				event.LaunchProfile.Harness,
+				event.ExecutionProfile.ClientHarnessID,
+			)
+		}
+		if event.LaunchProfile != nil && event.SchemaVersion == delegateLegacyEventSchemaVersion {
+			if event.LaunchProfile.SchemaVersion != delegateLegacyLaunchProfilePlanSchema {
+				return fmt.Errorf(
+					"legacy delegate event launch profile schema %q is invalid",
+					event.LaunchProfile.SchemaVersion,
+				)
+			}
+			if strings.TrimSpace(event.SelectedProviderRoute) != "" ||
+				strings.TrimSpace(event.SelectedProviderRouteKind) != "" {
+				return errors.New("legacy delegate event cannot carry independent provider route facts")
+			}
+		}
+		if event.LaunchProfile != nil && event.SchemaVersion == delegateEventSchemaVersion {
+			if event.LaunchProfile.SchemaVersion != delegateLaunchProfilePlanSchema {
+				return fmt.Errorf(
+					"current delegate event launch profile schema %q is invalid",
+					event.LaunchProfile.SchemaVersion,
+				)
+			}
+			selectedProviderRoute := strings.TrimSpace(event.SelectedProviderRoute)
+			selectedProviderRouteKind := strings.TrimSpace(event.SelectedProviderRouteKind)
+			if !validDelegateProviderRouteKind(selectedProviderRouteKind) {
+				return fmt.Errorf(
+					"launch profile selected provider route kind %q is invalid",
+					event.SelectedProviderRouteKind,
+				)
+			}
+			if strings.TrimSpace(event.LaunchProfile.ProviderRouteKind) != selectedProviderRouteKind {
+				return fmt.Errorf(
+					"launch profile provider route kind %q does not match selected provider route kind %q",
+					event.LaunchProfile.ProviderRouteKind,
+					event.SelectedProviderRouteKind,
+				)
+			}
+			if !DelegateLaunchProfileRouteConforms(
+				selectedProviderRouteKind,
+				selectedProviderRoute,
+				event.LaunchProfile.ProviderLane,
+				event.LaunchProfile.Route,
+			) {
+				return fmt.Errorf(
+					"launch profile selected provider route %q does not match sealed %s axis",
+					event.SelectedProviderRoute,
+					event.SelectedProviderRouteKind,
+				)
+			}
+		}
 	case "work.delegate.exited", "work.delegate.steered":
 		if strings.TrimSpace(event.Session) == "" {
 			return fmt.Errorf("%s delegate event requires session", event.Kind)
@@ -619,6 +687,15 @@ func validateAttachedDelegateEvent(eventID, workID string, event delegateEvent) 
 		return fmt.Errorf("unknown kind %q", event.Kind)
 	}
 	return nil
+}
+
+func validDelegateEventSchemaVersion(version string) bool {
+	switch version {
+	case delegateEventSchemaVersion, delegateLegacyEventSchemaVersion:
+		return true
+	default:
+		return false
+	}
 }
 
 // runLaneCapacityGuard is the nil-safe wrapper. A nil guard returns a
@@ -932,11 +1009,14 @@ func delegateLaunchProfilePlanFromSnapshot(snapshot json.RawMessage) (*DelegateL
 	if err := json.Unmarshal(snapshot, &canonical); err != nil {
 		return nil, fmt.Errorf("decode canonical launch profile snapshot: %w", err)
 	}
-	if canonical.SchemaVersion != delegateLaunchProfilePlanSchema {
+	switch canonical.SchemaVersion {
+	case delegateLaunchProfilePlanSchema, delegateLegacyLaunchProfilePlanSchema:
+	default:
 		return nil, fmt.Errorf(
-			"canonical launch profile schema_version = %q, want %q",
+			"canonical launch profile schema_version = %q, want %q or %q",
 			canonical.SchemaVersion,
 			delegateLaunchProfilePlanSchema,
+			delegateLegacyLaunchProfilePlanSchema,
 		)
 	}
 	for name, value := range map[string]string{
@@ -960,6 +1040,17 @@ func delegateLaunchProfilePlanFromSnapshot(snapshot json.RawMessage) (*DelegateL
 			return nil, fmt.Errorf("canonical launch profile %s is required", name)
 		}
 	}
+	if canonical.SchemaVersion == delegateLaunchProfilePlanSchema &&
+		!validDelegateProviderRouteKind(canonical.ProviderRouteKind) {
+		return nil, fmt.Errorf(
+			"canonical launch profile provider_route_kind %q is unknown",
+			canonical.ProviderRouteKind,
+		)
+	}
+	if canonical.SchemaVersion == delegateLegacyLaunchProfilePlanSchema &&
+		strings.TrimSpace(canonical.ProviderRouteKind) != "" {
+		return nil, errors.New("legacy canonical launch profile cannot carry provider_route_kind")
+	}
 	for name, value := range map[string]string{
 		"source_digest":      canonical.SourceDigest,
 		"authority_revision": canonical.AuthorityRevision,
@@ -980,12 +1071,46 @@ func validDelegateSHA256Revision(value string) bool {
 	}) == -1
 }
 
+const (
+	delegateProviderRouteKindProviderClass = "provider_class"
+	delegateProviderRouteKindDirectModel   = "direct_model"
+)
+
+func validDelegateProviderRouteKind(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case delegateProviderRouteKindProviderClass, delegateProviderRouteKindDirectModel:
+		return true
+	default:
+		return false
+	}
+}
+
+// DelegateLaunchProfileRouteConforms applies only the route axis explicitly
+// declared by Compound's lane tuple. It never infers the kind from a slash,
+// requested_model, or either owner field.
+func DelegateLaunchProfileRouteConforms(selectedProviderRouteKind, selectedProviderRoute, ownerProviderLane, ownerRoute string) bool {
+	selectedProviderRoute = strings.TrimSpace(selectedProviderRoute)
+	if selectedProviderRoute == "" {
+		return false
+	}
+	switch strings.TrimSpace(selectedProviderRouteKind) {
+	case delegateProviderRouteKindProviderClass:
+		return selectedProviderRoute == strings.TrimSpace(ownerProviderLane)
+	case delegateProviderRouteKindDirectModel:
+		return selectedProviderRoute == strings.TrimSpace(ownerRoute)
+	default:
+		return false
+	}
+}
+
 func validateDelegateLaunchProfileResolution(
 	resolution *DelegateLaunchProfileResolution,
+	executionClientHarnessID,
 	selectedHarness,
 	selectedLaneID,
 	selectedModelID,
 	selectedProviderRoute,
+	selectedProviderRouteKind,
 	selectedTransportID,
 	requestedNativeEffort,
 	selectedCommand string,
@@ -997,6 +1122,14 @@ func validateDelegateLaunchProfileResolution(
 	if err != nil {
 		return nil, err
 	}
+	if plan.SchemaVersion != delegateLaunchProfilePlanSchema {
+		return nil, &delegateLaunchProfileIncompatibleError{
+			detail: fmt.Sprintf(
+				"launch profile schema %q cannot admit a new delegated run",
+				plan.SchemaVersion,
+			),
+		}
+	}
 	compatibility := resolution.Compatibility
 	for _, field := range []struct {
 		name string
@@ -1007,6 +1140,7 @@ func validateDelegateLaunchProfileResolution(
 		{name: "selected_lane_id", got: compatibility.SelectedLaneID, want: selectedLaneID},
 		{name: "selected_model_id", got: compatibility.SelectedModelID, want: selectedModelID},
 		{name: "selected_provider_route", got: compatibility.SelectedProviderRoute, want: selectedProviderRoute},
+		{name: "selected_provider_route_kind", got: compatibility.SelectedProviderRouteKind, want: selectedProviderRouteKind},
 		{name: "selected_transport_id", got: compatibility.SelectedTransportID, want: selectedTransportID},
 		{name: "requested_native_effort", got: compatibility.RequestedNativeEffort, want: requestedNativeEffort},
 		{name: "plan_id", got: compatibility.PlanID, want: plan.ID},
@@ -1025,12 +1159,40 @@ func validateDelegateLaunchProfileResolution(
 			)
 		}
 	}
+	if strings.TrimSpace(plan.Harness) != strings.TrimSpace(executionClientHarnessID) {
+		return nil, &delegateLaunchProfileIncompatibleError{
+			detail: fmt.Sprintf(
+				"owner client harness %q does not match execution profile client harness %q",
+				plan.Harness,
+				executionClientHarnessID,
+			),
+		}
+	}
+	if strings.TrimSpace(plan.ProviderRouteKind) != strings.TrimSpace(selectedProviderRouteKind) {
+		return nil, &delegateLaunchProfileIncompatibleError{
+			detail: fmt.Sprintf(
+				"sealed provider route kind %q does not match selected provider route kind %q",
+				plan.ProviderRouteKind,
+				selectedProviderRouteKind,
+			),
+		}
+	}
+	if !DelegateLaunchProfileRouteConforms(selectedProviderRouteKind, selectedProviderRoute, plan.ProviderLane, plan.Route) {
+		return nil, &delegateLaunchProfileIncompatibleError{
+			detail: fmt.Sprintf(
+				"selected provider route %q does not match owner %s axis (provider lane %q, concrete route %q)",
+				selectedProviderRoute,
+				selectedProviderRouteKind,
+				plan.ProviderLane,
+				plan.Route,
+			),
+		}
+	}
 	for _, field := range []struct {
 		name string
 		got  string
 		want string
 	}{
-		{name: "provider_lane", got: plan.ProviderLane, want: selectedProviderRoute},
 		{name: "transport_id", got: plan.TransportID, want: selectedTransportID},
 		{name: "requested_effort", got: plan.RequestedEffort, want: requestedNativeEffort},
 		{name: "executable_id", got: plan.ExecutableID, want: filepath.Base(strings.TrimSpace(selectedCommand))},
@@ -1229,10 +1391,12 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		LaneID:       strings.TrimSpace(opts.Harness),
 		CapacityLane: strings.TrimSpace(opts.Harness),
 	}
-	if DelegateHarnessResolver != nil {
-		resolved, resolveErr := DelegateHarnessResolver(DelegateHarnessResolveRequest{
-			HomePath: s.home, Harness: opts.Harness, CommandOverride: opts.Command, Now: opts.Now,
-		})
+	harnessResolver := DelegateHarnessResolver
+	harnessResolveRequest := DelegateHarnessResolveRequest{
+		HomePath: s.home, Harness: opts.Harness, CommandOverride: opts.Command, Now: opts.Now,
+	}
+	if harnessResolver != nil {
+		resolved, resolveErr := harnessResolver(harnessResolveRequest)
 		if resolveErr != nil {
 			out.Refusal = &DelegateRefusal{Reason: "harness_unknown", Message: resolveErr.Error()}
 			return out, nil
@@ -1244,6 +1408,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	laneForGuard := strings.TrimSpace(resolution.CapacityLane)
 	selectedModelID := strings.TrimSpace(resolution.RequestedModelID)
 	selectedProviderRoute := strings.TrimSpace(resolution.RequestedProviderRoute)
+	selectedProviderRouteKind := strings.TrimSpace(resolution.RequestedProviderRouteKind)
 	selectedTransportID := strings.TrimSpace(resolution.SelectedTransportID)
 	if laneForGuard == "" {
 		laneForGuard = strings.TrimSpace(resolution.LaneID)
@@ -1252,6 +1417,40 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		out.Refusal = &DelegateRefusal{
 			Reason:  "harness_unknown",
 			Message: fmt.Sprintf("harness %q did not resolve a complete executable tuple", opts.Harness),
+		}
+		return out, nil
+	}
+	if resolution.TupleBacked && selectedProviderRoute == "" {
+		out.Refusal = &DelegateRefusal{
+			Reason:  "harness_unknown",
+			Message: fmt.Sprintf("harness %q resolved a tuple without a provider route", opts.Harness),
+		}
+		return out, nil
+	}
+	if resolution.TupleBacked &&
+		selectedProviderRouteKind != "" &&
+		!validDelegateProviderRouteKind(selectedProviderRouteKind) {
+		out.Refusal = &DelegateRefusal{
+			Reason: "harness_unknown",
+			Message: fmt.Sprintf(
+				"harness %q resolved provider route %q with invalid provider route kind %q",
+				opts.Harness,
+				selectedProviderRoute,
+				selectedProviderRouteKind,
+			),
+		}
+		return out, nil
+	}
+	if strings.TrimSpace(opts.ExecutionProfile.LaunchProfileID) != "" &&
+		!validDelegateProviderRouteKind(selectedProviderRouteKind) {
+		out.Refusal = &DelegateRefusal{
+			Reason: "harness_unknown",
+			Message: fmt.Sprintf(
+				"harness %q resolved provider route %q with invalid provider route kind %q",
+				opts.Harness,
+				selectedProviderRoute,
+				selectedProviderRouteKind,
+			),
 		}
 		return out, nil
 	}
@@ -1335,14 +1534,15 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			return out, nil
 		}
 		resolvedLaunchProfile, launchErr := launchProfileResolver(DelegateLaunchProfileResolveRequest{
-			ProfileID:             strings.TrimSpace(opts.ExecutionProfile.LaunchProfileID),
-			SelectedHarness:       resolvedHarness,
-			SelectedLaneID:        out.Lane,
-			SelectedModelID:       selectedModelID,
-			SelectedProviderRoute: selectedProviderRoute,
-			SelectedTransportID:   executionProfile.TransportID,
-			RequestedNativeEffort: executionProfile.RequestedNativeEffort,
-			SelectedCommand:       command,
+			ProfileID:                 strings.TrimSpace(opts.ExecutionProfile.LaunchProfileID),
+			SelectedHarness:           resolvedHarness,
+			SelectedLaneID:            out.Lane,
+			SelectedModelID:           selectedModelID,
+			SelectedProviderRoute:     selectedProviderRoute,
+			SelectedProviderRouteKind: selectedProviderRouteKind,
+			SelectedTransportID:       executionProfile.TransportID,
+			RequestedNativeEffort:     executionProfile.RequestedNativeEffort,
+			SelectedCommand:           command,
 		})
 		if launchErr != nil {
 			out.Refusal = &DelegateRefusal{
@@ -1353,10 +1553,12 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		}
 		launchProfile, launchErr = validateDelegateLaunchProfileResolution(
 			resolvedLaunchProfile,
+			executionProfile.ClientHarnessID,
 			resolvedHarness,
 			out.Lane,
 			selectedModelID,
 			selectedProviderRoute,
+			selectedProviderRouteKind,
 			executionProfile.TransportID,
 			executionProfile.RequestedNativeEffort,
 			command,
@@ -1663,6 +1865,15 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		if currentLease != authorizedLease || strings.TrimSpace(currentLease.By) != holder {
 			return &delegateAuthorityChangedError{detail: "work lease changed"}
 		}
+		if harnessResolver != nil {
+			currentResolution, resolveErr := harnessResolver(harnessResolveRequest)
+			if resolveErr != nil {
+				return &delegateAuthorityChangedError{detail: "model-router harness tuple revalidation failed"}
+			}
+			if !reflect.DeepEqual(currentResolution, resolution) {
+				return &delegateAuthorityChangedError{detail: "model-router harness tuple changed"}
+			}
+		}
 		revalidatedExecutionProfile := executionProfile
 		if executionProfile != nil {
 			currentProfile, profileErr := executionProfileResolver(DelegateExecutionProfileResolveRequest{
@@ -1691,26 +1902,29 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		revalidatedLaunchProfile := launchProfile
 		if launchProfile != nil {
 			currentLaunchProfile, launchErr := launchProfileResolver(DelegateLaunchProfileResolveRequest{
-				ProfileID:             strings.TrimSpace(opts.ExecutionProfile.LaunchProfileID),
-				SelectedHarness:       resolvedHarness,
-				SelectedLaneID:        out.Lane,
-				SelectedModelID:       selectedModelID,
-				SelectedProviderRoute: selectedProviderRoute,
-				SelectedTransportID:   executionProfile.TransportID,
-				RequestedNativeEffort: executionProfile.RequestedNativeEffort,
-				SelectedCommand:       command,
+				ProfileID:                 strings.TrimSpace(opts.ExecutionProfile.LaunchProfileID),
+				SelectedHarness:           resolvedHarness,
+				SelectedLaneID:            out.Lane,
+				SelectedModelID:           selectedModelID,
+				SelectedProviderRoute:     selectedProviderRoute,
+				SelectedProviderRouteKind: selectedProviderRouteKind,
+				SelectedTransportID:       revalidatedExecutionProfile.TransportID,
+				RequestedNativeEffort:     revalidatedExecutionProfile.RequestedNativeEffort,
+				SelectedCommand:           command,
 			})
 			if launchErr != nil {
 				return &delegateAuthorityChangedError{detail: "launch profile revalidation failed"}
 			}
 			revalidatedLaunchProfile, launchErr = validateDelegateLaunchProfileResolution(
 				currentLaunchProfile,
+				revalidatedExecutionProfile.ClientHarnessID,
 				resolvedHarness,
 				out.Lane,
 				selectedModelID,
 				selectedProviderRoute,
-				executionProfile.TransportID,
-				executionProfile.RequestedNativeEffort,
+				selectedProviderRouteKind,
+				revalidatedExecutionProfile.TransportID,
+				revalidatedExecutionProfile.RequestedNativeEffort,
 				command,
 			)
 			if launchErr != nil {
@@ -1893,18 +2107,20 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	}
 
 	binding := &DelegateBinding{
-		WorkID:           out.WorkID,
-		Session:          sessionName,
-		Harness:          resolvedHarness,
-		Lane:             laneForGuard,
-		Holder:           holder,
-		CapacityState:    decision.Capacity.State,
-		RecordedAt:       ts(opts.Now),
-		WorkSHA256:       authorizedWorkSHA,
-		Readiness:        out.Readiness,
-		ExecutionProfile: cloneDelegateExecutionProfilePlan(executionProfile),
-		LaunchProfile:    cloneDelegateLaunchProfilePlan(launchProfile),
-		RunAttemptID:     runAttemptID,
+		WorkID:                    out.WorkID,
+		Session:                   sessionName,
+		Harness:                   resolvedHarness,
+		Lane:                      laneForGuard,
+		Holder:                    holder,
+		CapacityState:             decision.Capacity.State,
+		RecordedAt:                ts(opts.Now),
+		WorkSHA256:                authorizedWorkSHA,
+		SelectedProviderRoute:     selectedProviderRoute,
+		SelectedProviderRouteKind: selectedProviderRouteKind,
+		Readiness:                 out.Readiness,
+		ExecutionProfile:          cloneDelegateExecutionProfilePlan(executionProfile),
+		LaunchProfile:             cloneDelegateLaunchProfilePlan(launchProfile),
+		RunAttemptID:              runAttemptID,
 	}
 	// APPROVED ORDER: Create success -> record+attach spawned binding ->
 	// MarkRunning. Any failure AFTER the spawn + binding is a
@@ -2062,22 +2278,24 @@ func (s *Store) reapExitedDelegateSession(b *DelegateBinding, runner SessionRunn
 func (s *Store) recordDelegateSpawned(workID string, b *DelegateBinding, confirm bool, runAttemptID string, now time.Time) (string, error) {
 	id := delegateBindingEventID("work.delegate.spawned", workID, b, now)
 	if err := s.writeEventJSON(id, delegateEvent{
-		SchemaVersion:    delegateEventSchemaVersion,
-		ID:               id,
-		Kind:             "work.delegate.spawned",
-		TS:               ts(now),
-		WorkID:           workID,
-		Harness:          b.Harness,
-		Lane:             b.Lane,
-		Holder:           b.Holder,
-		CapacityState:    b.CapacityState,
-		Confirm:          confirm,
-		Session:          b.Session,
-		WorkSHA256:       b.WorkSHA256,
-		RunAttemptID:     runAttemptID,
-		Readiness:        b.Readiness,
-		ExecutionProfile: cloneDelegateExecutionProfilePlan(b.ExecutionProfile),
-		LaunchProfile:    cloneDelegateLaunchProfilePlan(b.LaunchProfile),
+		SchemaVersion:             delegateEventSchemaVersion,
+		ID:                        id,
+		Kind:                      "work.delegate.spawned",
+		TS:                        ts(now),
+		WorkID:                    workID,
+		Harness:                   b.Harness,
+		Lane:                      b.Lane,
+		Holder:                    b.Holder,
+		CapacityState:             b.CapacityState,
+		Confirm:                   confirm,
+		Session:                   b.Session,
+		WorkSHA256:                b.WorkSHA256,
+		SelectedProviderRoute:     b.SelectedProviderRoute,
+		SelectedProviderRouteKind: b.SelectedProviderRouteKind,
+		RunAttemptID:              runAttemptID,
+		Readiness:                 b.Readiness,
+		ExecutionProfile:          cloneDelegateExecutionProfilePlan(b.ExecutionProfile),
+		LaunchProfile:             cloneDelegateLaunchProfilePlan(b.LaunchProfile),
 	}); err != nil {
 		return "", err
 	}

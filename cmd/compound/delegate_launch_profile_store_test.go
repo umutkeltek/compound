@@ -68,14 +68,15 @@ func testLaneLaunchProfilePlan() []byte {
 
 func testLaunchProfileResolveRequest() work.DelegateLaunchProfileResolveRequest {
 	return work.DelegateLaunchProfileResolveRequest{
-		ProfileID:             "claude-minimax",
-		SelectedHarness:       "claude_minimax",
-		SelectedLaneID:        "claude_minimax",
-		SelectedModelID:       "claude-minimax (token plan)",
-		SelectedProviderRoute: "minimax",
-		SelectedTransportID:   "switchback",
-		RequestedNativeEffort: "xhigh",
-		SelectedCommand:       "claude-minimax",
+		ProfileID:                 "claude-minimax",
+		SelectedHarness:           "claude_minimax",
+		SelectedLaneID:            "claude_minimax",
+		SelectedModelID:           "claude-minimax (token plan)",
+		SelectedProviderRoute:     "minimax",
+		SelectedProviderRouteKind: "provider_class",
+		SelectedTransportID:       "switchback",
+		RequestedNativeEffort:     "xhigh",
+		SelectedCommand:           "claude-minimax",
 	}
 }
 
@@ -109,6 +110,7 @@ func TestNormalizeDelegateLaunchProfilePlanConsumesSafeOwnerProjection(t *testin
 		"id",
 		"harness",
 		"provider_lane",
+		"provider_route_kind",
 		"route",
 		"requested_model",
 		"requested_effort",
@@ -174,12 +176,13 @@ func testLaneLaunchProfilePlanFor(
 	return raw
 }
 
-func TestNormalizeDelegateLaunchProfilePlanAcceptsRegisteredClaudeTokenLaneFamily(t *testing.T) {
+func TestNormalizeDelegateLaunchProfilePlanAcceptsRegisteredClaudeTokenProviderClasses(t *testing.T) {
 	tests := []struct {
 		name            string
 		profileID       string
 		selectedHarness string
 		selectedModel   string
+		selectedRoute   string
 		providerLane    string
 		route           string
 		ownerModel      string
@@ -191,6 +194,7 @@ func TestNormalizeDelegateLaunchProfilePlanAcceptsRegisteredClaudeTokenLaneFamil
 			profileID:       "claude-minimax",
 			selectedHarness: "claude_minimax",
 			selectedModel:   "claude-minimax (token plan)",
+			selectedRoute:   "minimax",
 			providerLane:    "minimax",
 			route:           "minimax/MiniMax-M3",
 			ownerModel:      "MiniMax-M3",
@@ -202,6 +206,7 @@ func TestNormalizeDelegateLaunchProfilePlanAcceptsRegisteredClaudeTokenLaneFamil
 			profileID:       "claude-qwen",
 			selectedHarness: "claude_qwen",
 			selectedModel:   "claude-qwen (token plan)",
+			selectedRoute:   "qwen",
 			providerLane:    "qwen",
 			route:           "qwen/qwen3.8-max-preview",
 			ownerModel:      "qwen3.8-max-preview",
@@ -213,6 +218,7 @@ func TestNormalizeDelegateLaunchProfilePlanAcceptsRegisteredClaudeTokenLaneFamil
 			profileID:       "claude-zai-full",
 			selectedHarness: "claude_zai",
 			selectedModel:   "claude-zai (glm sub)",
+			selectedRoute:   "zai",
 			providerLane:    "zai",
 			route:           "zai/glm-5.2",
 			ownerModel:      "glm-5.2",
@@ -227,7 +233,8 @@ func TestNormalizeDelegateLaunchProfilePlanAcceptsRegisteredClaudeTokenLaneFamil
 			req.SelectedHarness = tc.selectedHarness
 			req.SelectedLaneID = tc.selectedHarness
 			req.SelectedModelID = tc.selectedModel
-			req.SelectedProviderRoute = tc.providerLane
+			req.SelectedProviderRoute = tc.selectedRoute
+			req.SelectedProviderRouteKind = "provider_class"
 			req.SelectedCommand = tc.wrapper
 
 			resolution, err := normalizeDelegateLaunchProfilePlan(
@@ -249,6 +256,119 @@ func TestNormalizeDelegateLaunchProfilePlanAcceptsRegisteredClaudeTokenLaneFamil
 				t.Fatalf("registered Claude token lane disposition = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestNormalizeDelegateLaunchProfilePlanUsesOnlyDeclaredProviderRouteAxis(t *testing.T) {
+	raw := testLaneLaunchProfilePlanFor(
+		t,
+		"claude-fixture-direct",
+		"fixture-provider",
+		"provider.example/model-primary",
+		"model-primary",
+		"claude-fixture-direct-default",
+		"claude-fixture-direct",
+	)
+	tests := []struct {
+		name          string
+		selectedRoute string
+		selectedKind  string
+		want          string
+	}{
+		{
+			name:          "direct model accepts concrete route",
+			selectedRoute: "provider.example/model-primary",
+			selectedKind:  "direct_model",
+			want:          work.DelegateLaunchProfileCompatible,
+		},
+		{
+			name:          "provider class rejects concrete route cross-kind",
+			selectedRoute: "provider.example/model-primary",
+			selectedKind:  "provider_class",
+			want:          work.DelegateLaunchProfileIncompatible,
+		},
+		{
+			name:          "direct model rejects provider lane cross-kind",
+			selectedRoute: "fixture-provider",
+			selectedKind:  "direct_model",
+			want:          work.DelegateLaunchProfileIncompatible,
+		},
+		{
+			name:          "missing kind does not infer from slash",
+			selectedRoute: "provider.example/model-primary",
+			selectedKind:  "",
+			want:          work.DelegateLaunchProfileIncompatible,
+		},
+		{
+			name:          "unknown kind does not infer from requested model",
+			selectedRoute: "provider.example/model-primary",
+			selectedKind:  "requested_model_alias",
+			want:          work.DelegateLaunchProfileIncompatible,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := testLaunchProfileResolveRequest()
+			req.ProfileID = "claude-fixture-direct"
+			req.SelectedHarness = "claude_code"
+			req.SelectedLaneID = "claude_code"
+			req.SelectedModelID = "provider.example/model-primary"
+			req.SelectedProviderRoute = tc.selectedRoute
+			req.SelectedProviderRouteKind = tc.selectedKind
+			req.SelectedCommand = "claude-fixture-direct"
+
+			resolution, err := normalizeDelegateLaunchProfilePlan(raw, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := resolution.Compatibility.Disposition; got != tc.want {
+				t.Fatalf("route-kind disposition = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeDelegateLaunchProfilePlanRefusesOwnerAliasMismatch(t *testing.T) {
+	req := testLaunchProfileResolveRequest()
+	req.ProfileID = "claude-fixture-stale"
+	req.SelectedHarness = "claude_code"
+	req.SelectedLaneID = "claude_code"
+	req.SelectedModelID = "provider.example/model-primary"
+	req.SelectedProviderRoute = "provider.example/model-primary"
+	req.SelectedProviderRouteKind = "direct_model"
+	req.SelectedCommand = "claude-fixture-stale"
+
+	_, err := normalizeDelegateLaunchProfilePlan(
+		testLaneLaunchProfilePlanFor(
+			t,
+			"claude-fixture-current",
+			"fixture-provider",
+			"provider.example/model-primary",
+			"model-primary",
+			"claude-fixture-current-default",
+			"claude-fixture-current",
+		),
+		req,
+	)
+	if err == nil ||
+		!strings.Contains(err.Error(), `returned id "claude-fixture-current" for requested id "claude-fixture-stale"`) {
+		t.Fatalf("owner alias mismatch was accepted: %v", err)
+	}
+}
+
+func TestNormalizeDelegateLaunchProfilePlanRefusesAbsentDedicatedProfile(t *testing.T) {
+	req := testLaunchProfileResolveRequest()
+	req.ProfileID = "claude-fixture-missing"
+	req.SelectedHarness = "claude_code"
+	req.SelectedLaneID = "claude_code"
+	req.SelectedModelID = "provider.example/model-secondary"
+	req.SelectedProviderRoute = "provider.example/model-secondary"
+	req.SelectedProviderRouteKind = "direct_model"
+	req.SelectedCommand = "claude-fixture-missing"
+
+	if _, err := normalizeDelegateLaunchProfilePlan(nil, req); err == nil ||
+		!strings.Contains(err.Error(), "empty plan") {
+		t.Fatalf("absent dedicated profile was invented: %v", err)
 	}
 }
 

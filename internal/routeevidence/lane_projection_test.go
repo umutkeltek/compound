@@ -84,6 +84,24 @@ func TestLaneProjectionCarriesModelAndEffortSeparately(t *testing.T) {
 	}
 }
 
+func TestLaneProjectionCanonicalizesProviderRouteKind(t *testing.T) {
+	manifest := laneManifest()
+	entry := manifest.Models["claude-fixture-primary"]
+	entry.ProviderRouteKind = " direct_model "
+	manifest.Models["claude-fixture-primary"] = entry
+
+	got := BuildLaneProjection(manifest, "sha256:abc", "")
+	for _, lane := range got.Lanes {
+		if lane.ModelID == "claude-fixture-primary" {
+			if lane.ProviderRouteKind != "direct_model" {
+				t.Fatalf("provider_route_kind = %q, want canonical enum", lane.ProviderRouteKind)
+			}
+			return
+		}
+	}
+	t.Fatalf("claude-fixture-primary missing from projection: %+v", got.Lanes)
+}
+
 // A lane with no harness cannot be launched; emitting it would invite the executor to
 // materialize something unlaunchable.
 func TestLaneProjectionSkipsHarnesslessEntries(t *testing.T) {

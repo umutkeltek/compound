@@ -30,7 +30,7 @@ const (
 	laneLaunchProfileTransportID    = "switchback"
 	laneLaunchProfileCaptureMode    = "segmented_full_wire"
 	laneLaunchProfilePlanMaxBytes   = 1 << 20
-	delegateLaunchProfilePlanSchema = "compound.delegate_launch_profile_plan.v0.1"
+	delegateLaunchProfilePlanSchema = "compound.delegate_launch_profile_plan.v0.2"
 )
 
 type lanePlanArtifact struct {
@@ -315,6 +315,7 @@ func normalizeDelegateLaunchProfilePlan(
 		ID:                profile.ID,
 		Harness:           profile.Harness,
 		ProviderLane:      profile.ProviderLane,
+		ProviderRouteKind: strings.TrimSpace(req.SelectedProviderRouteKind),
 		Route:             profile.Route,
 		RequestedModel:    profile.RequestedModel,
 		RequestedEffort:   profile.RequestedEffort,
@@ -332,7 +333,12 @@ func normalizeDelegateLaunchProfilePlan(
 	disposition := work.DelegateLaunchProfileIncompatible
 	if routeevidence.DelegateClientHarnessesCompatible(req.SelectedHarness, req.SelectedLaneID, profile.Harness) &&
 		strings.TrimSpace(req.SelectedModelID) != "" &&
-		strings.TrimSpace(req.SelectedProviderRoute) == profile.ProviderLane &&
+		work.DelegateLaunchProfileRouteConforms(
+			req.SelectedProviderRouteKind,
+			req.SelectedProviderRoute,
+			profile.ProviderLane,
+			profile.Route,
+		) &&
 		strings.TrimSpace(req.SelectedTransportID) == laneLaunchProfileTransportID &&
 		strings.TrimSpace(req.RequestedNativeEffort) == profile.RequestedEffort &&
 		selectedExecutableID == canonical.ExecutableID {
@@ -342,19 +348,20 @@ func normalizeDelegateLaunchProfilePlan(
 		Snapshot:       snapshot,
 		ExecutablePath: executablePath,
 		Compatibility: work.DelegateLaunchProfileCompatibility{
-			Disposition:           disposition,
-			SelectedHarness:       req.SelectedHarness,
-			SelectedLaneID:        req.SelectedLaneID,
-			SelectedModelID:       req.SelectedModelID,
-			SelectedProviderRoute: req.SelectedProviderRoute,
-			SelectedTransportID:   req.SelectedTransportID,
-			RequestedNativeEffort: req.RequestedNativeEffort,
-			PlanID:                canonical.ID,
-			ClientHarnessID:       canonical.Harness,
-			ClientProfileID:       canonical.ClientProfileID,
-			Revision:              canonical.Revision,
-			SelectedExecutableID:  selectedExecutableID,
-			ExecutableID:          canonical.ExecutableID,
+			Disposition:               disposition,
+			SelectedHarness:           req.SelectedHarness,
+			SelectedLaneID:            req.SelectedLaneID,
+			SelectedModelID:           req.SelectedModelID,
+			SelectedProviderRoute:     req.SelectedProviderRoute,
+			SelectedProviderRouteKind: req.SelectedProviderRouteKind,
+			SelectedTransportID:       req.SelectedTransportID,
+			RequestedNativeEffort:     req.RequestedNativeEffort,
+			PlanID:                    canonical.ID,
+			ClientHarnessID:           canonical.Harness,
+			ClientProfileID:           canonical.ClientProfileID,
+			Revision:                  canonical.Revision,
+			SelectedExecutableID:      selectedExecutableID,
+			ExecutableID:              canonical.ExecutableID,
 		},
 	}, nil
 }

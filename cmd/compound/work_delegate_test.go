@@ -135,7 +135,8 @@ func allowDelegateCLIGuard(t *testing.T, confirmationRequired bool) {
 		return work.DelegateHarnessResolution{
 			Harness: req.Harness, Command: command, LaneID: req.Harness,
 			RequestedModelID: "fixture-model", RequestedProviderRoute: strings.TrimPrefix(command, "claude-"),
-			CapacityLane: req.Harness, TupleBacked: true,
+			RequestedProviderRouteKind: "provider_class",
+			CapacityLane:               req.Harness, TupleBacked: true,
 		}, nil
 	}
 	work.DelegateHarnessReadiness = func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
@@ -230,13 +231,14 @@ func TestWorkDelegateCLIRefusesUnreadyHarnessBeforeAnyMutation(t *testing.T) {
 	}
 	work.DelegateHarnessResolver = func(req work.DelegateHarnessResolveRequest) (work.DelegateHarnessResolution, error) {
 		return work.DelegateHarnessResolution{
-			Harness:                "claude_minimax",
-			Command:                "claude-minimax",
-			LaneID:                 "claude_minimax",
-			RequestedModelID:       "claude-minimax (token plan)",
-			RequestedProviderRoute: "minimax",
-			CapacityLane:           "minimax",
-			TupleBacked:            true,
+			Harness:                    "claude_minimax",
+			Command:                    "claude-minimax",
+			LaneID:                     "claude_minimax",
+			RequestedModelID:           "claude-minimax (token plan)",
+			RequestedProviderRoute:     "minimax",
+			RequestedProviderRouteKind: "provider_class",
+			CapacityLane:               "minimax",
+			TupleBacked:                true,
 		}, nil
 	}
 	t.Cleanup(func() {

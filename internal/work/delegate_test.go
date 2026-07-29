@@ -276,13 +276,14 @@ func TestDelegateUsesInjectedTupleResolutionAndStampsAttribution(t *testing.T) {
 			t.Fatalf("resolver input = %+v", req)
 		}
 		return DelegateHarnessResolution{
-			Harness:                "claude_minimax",
-			Command:                "resolved-claude-minimax",
-			LaneID:                 "claude_minimax",
-			RequestedModelID:       "claude-minimax (token plan)",
-			RequestedProviderRoute: "minimax",
-			CapacityLane:           "minimax",
-			TupleBacked:            true,
+			Harness:                    "claude_minimax",
+			Command:                    "resolved-claude-minimax",
+			LaneID:                     "claude_minimax",
+			RequestedModelID:           "claude-minimax (token plan)",
+			RequestedProviderRoute:     "minimax",
+			RequestedProviderRouteKind: "provider_class",
+			CapacityLane:               "minimax",
+			TupleBacked:                true,
 		}, nil
 	}
 	t.Cleanup(func() {

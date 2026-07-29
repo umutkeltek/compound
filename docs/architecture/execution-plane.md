@@ -60,12 +60,24 @@ generated artifacts, `segmented_full_wire` capture, an opaque nonempty client pr
 harness-family/provider-lane/effort compatibility. A registered lane such as a Claude-family token lane remains
 distinct from the owner's `claude-code` client family: the route-evidence registry owns that family mapping.
 Likewise, the selected tuple's plan identity and provider route class remain distinct from the owner's concrete
-model and route. The selected provider route must equal the owner-attested `provider_lane`; the concrete owner
-model and route are sealed from the plan rather than inferred from or equated to the tuple aliases. The owner's
-exact `gateway|tap|headroom` transport is sealed beside the selected gateway transport family; it is never inferred
-from a route name. Missing client profiles, drifted
-materializations, non-capturing or unknown transports, or changed authority revisions refuse before readiness,
-capacity, RunAttempt mint, or process creation.
+model and route. `provider_route_kind` declares the one owner axis the selected provider route must match:
+`provider_class` compares exactly with the owner-attested `provider_lane`, while `direct_model` compares exactly
+with the owner-attested concrete `route`. Compound never infers the kind from `/`, the requested model, or an
+owner alias. Both values compare case-sensitively after trimming surrounding whitespace. The owner's concrete model
+and route are sealed from the plan rather than inferred from or equated to tuple aliases. The owner's exact
+`gateway|tap|headroom` transport is sealed beside the selected gateway transport family; it is never inferred from
+a route name.
+
+Legacy model-router manifests may omit `provider_route_kind` and continue to import and serve ordinary delegation
+without an owner launch profile. Selecting `--launch-profile` requires one of the two explicit values; a missing or
+unknown kind refuses before profile resolution, readiness, capacity, RunAttempt mint, or process creation. The
+model-router tuple is resolved again immediately before mint, and the selected route plus kind are persisted
+independently on the spawned binding so recovery cannot accept a coherently resealed launch plan on another axis.
+New launch bindings pair `compound.work_delegate_event.v0.2` with
+`compound.delegate_launch_profile_plan.v0.2`. Recovery still reads paired v0.1 records created before the route-kind
+field existed, without inventing independent route facts; mixed-version or downgraded current records fail closed.
+Missing client profiles, drifted materializations, non-capturing or unknown transports, or changed authority
+revisions fail at the same boundary.
 
 Admission validates both snapshots' size, JSON, schema, required identity, and exact attestations. Typed
 execution-profile and launch-profile readiness proofs carry those snapshots plus references and digests; both are
@@ -79,7 +91,8 @@ account/credential selection remains gateway-owned and is not stored here. The l
 healthy owner-published wrapper artifact. Its path is used only for the spawn and RunAttempt command, never sealed into
 the public-safe profile snapshot; that snapshot is persisted on the binding so status, steer, attach, sweep, and retry
 recovery revalidate the same identity. Delegation without
-`--execution-profile` retains its legacy behavior, so regular native Claude Code remains available.
+`--launch-profile` retains its legacy behavior, so regular native Claude Code and existing tuple-backed lanes remain
+available while their authority is migrated to publish an explicit route kind.
 
 Profile compatibility binds the selected canonical tuple rather than trusting selectors in isolation. After
 trimming surrounding whitespace, opaque model IDs, provider routes/route aliases, and transport IDs compare

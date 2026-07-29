@@ -476,13 +476,14 @@ func TestWorkDelegatePersistsSuccessfulReadinessAttestation(t *testing.T) {
 	}
 	work.DelegateHarnessResolver = func(work.DelegateHarnessResolveRequest) (work.DelegateHarnessResolution, error) {
 		return work.DelegateHarnessResolution{
-			Harness:                fixture.harness,
-			Command:                fixture.binary,
-			LaneID:                 fixture.harness,
-			RequestedModelID:       "fixture-zai",
-			RequestedProviderRoute: "zai",
-			CapacityLane:           "zai",
-			TupleBacked:            true,
+			Harness:                    fixture.harness,
+			Command:                    fixture.binary,
+			LaneID:                     fixture.harness,
+			RequestedModelID:           "fixture-zai",
+			RequestedProviderRoute:     "zai",
+			RequestedProviderRouteKind: "provider_class",
+			CapacityLane:               "zai",
+			TupleBacked:                true,
 		}, nil
 	}
 	work.DelegateHarnessReadiness = func(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
@@ -614,13 +615,14 @@ func TestWorkDelegateCLIRefusesUnattestedCommandOverrideBeforeMutation(t *testin
 			command = req.CommandOverride
 		}
 		return work.DelegateHarnessResolution{
-			Harness:                fixture.harness,
-			Command:                command,
-			LaneID:                 fixture.harness,
-			RequestedModelID:       "fixture-zai",
-			RequestedProviderRoute: "zai",
-			CapacityLane:           "zai",
-			TupleBacked:            true,
+			Harness:                    fixture.harness,
+			Command:                    command,
+			LaneID:                     fixture.harness,
+			RequestedModelID:           "fixture-zai",
+			RequestedProviderRoute:     "zai",
+			RequestedProviderRouteKind: "provider_class",
+			CapacityLane:               "zai",
+			TupleBacked:                true,
 		}, nil
 	}
 	work.DelegateHarnessReadiness = func(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {

@@ -92,7 +92,7 @@ func BuildLaneProjection(manifest ModelCapabilitiesManifest, sourceRevision, har
 			ModelID:           modelID,
 			Harness:           entry.Harness,
 			Route:             entry.ProviderRoute,
-			ProviderRouteKind: entry.ProviderRouteKind,
+			ProviderRouteKind: strings.TrimSpace(entry.ProviderRouteKind),
 			NativeEffort:      entry.EffortDefault,
 			Aliases:           append([]string(nil), entry.Aliases...),
 			Tier:              entry.Tier,

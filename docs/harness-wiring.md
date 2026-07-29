@@ -312,11 +312,23 @@ mutates your harness.
 
 The registry says what a harness can do; `compound://registries/model-router`
 owns the executable lane tuple used to run it. A tuple binds the harness id,
-wrapper aliases, requested provider route, permission posture, and optional
-capacity source. Compound resolves that tuple before moving work to `running`.
-An unknown or ambiguous tuple, missing wrapper, invalid posture, or stale/
-exhausted declared capacity leaves the work `claimed` and creates no execution
-RunAttempt.
+wrapper aliases, requested provider route, optional `provider_route_kind`,
+permission posture, and optional capacity source. The two explicit route kinds
+are `provider_class` (compare the selected route with the launch owner's
+`provider_lane`) and `direct_model` (compare it with the launch owner's concrete
+`route`); Compound never infers the kind from route spelling or model identity.
+Legacy tuples without the field remain valid for delegation that does not select
+an owner launch profile. `--launch-profile` fails closed until the tuple
+authority publishes a known kind. Compound resolves the tuple before moving work
+to `running` and re-resolves it immediately before RunAttempt mint. An unknown
+or ambiguous tuple, missing wrapper, invalid posture, stale/exhausted declared
+capacity, or launch-profile tuple missing an explicit route kind leaves the work
+`claimed` and creates no execution RunAttempt.
+
+Current spawned bindings and launch snapshots use paired v0.2 schemas. The
+reader preserves paired v0.1 launch records created before route-kind identity
+was persisted, but never upgrades them by inference or accepts a mixed-version
+downgrade as a new admission.
 
 Run a bounded task inline:
 
