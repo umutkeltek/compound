@@ -3479,20 +3479,23 @@ func importInstalledHooks(homePath, sourcePath string, data []byte, manifest Ins
 }
 
 // mergeInstalledHooksManifest treats an import as authoritative for managed
-// rows. Preserved external declarations are the one exception: they survive a
-// narrower import until an incoming row with the same stable identity replaces
-// them explicitly.
+// rows belonging to harnesses represented by that import. Managed rows for
+// other harnesses and preserved external declarations survive until a source
+// for their harness replaces them or an incoming row with the same stable
+// identity replaces them explicitly.
 func mergeInstalledHooksManifest(existing, incoming InstalledHooksManifest) InstalledHooksManifest {
 	byIdentity := map[string]InstalledHook{}
+	incomingHarnesses := map[string]bool{}
 	for _, hook := range incoming.Hooks {
+		incomingHarnesses[strings.TrimSpace(hook.Harness)] = true
 		byIdentity[installedHookStableIdentity(hook)] = hook
 	}
 	for _, hook := range existing.Hooks {
-		if strings.TrimSpace(hook.Status) != "preserved_external" {
+		identity := installedHookStableIdentity(hook)
+		if _, replaced := byIdentity[identity]; replaced {
 			continue
 		}
-		identity := installedHookStableIdentity(hook)
-		if _, replaced := byIdentity[identity]; !replaced {
+		if strings.TrimSpace(hook.Status) == "preserved_external" || !incomingHarnesses[strings.TrimSpace(hook.Harness)] {
 			byIdentity[identity] = hook
 		}
 	}

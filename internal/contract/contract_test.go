@@ -2020,6 +2020,60 @@ func TestInstalledHooksImportProvenanceTracksResultingAuthorityAcrossPreservedRe
 	}
 }
 
+func TestInstalledHooksSequentialClaudeCodexThenOpenCodeImportPreservesOtherManagedHarnesses(t *testing.T) {
+	home := t.TempDir()
+	claudeCodex := InstalledHooksManifest{Hooks: []InstalledHook{
+		{Harness: "claude_code", Name: "PreToolUse", Event: "PreToolUse", Matcher: "*", Ref: "handler:claude-managed", Status: "current"},
+		{Harness: "codex", Name: "SessionStart", Event: "SessionStart", Ref: "handler:codex-managed", Status: "current"},
+		{Harness: "claude_code", Name: "SessionStart", Event: "SessionStart", Ref: "handler:external-peer", Status: "preserved_external"},
+	}}
+	if _, err := importInstalledHooks(
+		home,
+		"claude-codex-hook-registration.ts",
+		[]byte("claude-codex"),
+		claudeCodex,
+		installedHooksRegistryImportedVia,
+		fixedNow,
+	); err != nil {
+		t.Fatalf("import Claude/Codex hooks: %v", err)
+	}
+
+	opencode := InstalledHooksManifest{Hooks: []InstalledHook{
+		{Harness: "opencode", Name: "tool.execute.before", Event: "tool.execute.before", Matcher: "*", Ref: "handler:opencode-managed", Status: "current"},
+	}}
+	report, err := importInstalledHooks(
+		home,
+		"opencode-hook-registration.ts",
+		[]byte("opencode"),
+		opencode,
+		installedHooksRegistryImportedVia,
+		fixedNow.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("import OpenCode hooks: %v", err)
+	}
+
+	if report.HookCount != 4 {
+		t.Fatalf("OpenCode import resulting hook count = %d, want 4: %+v", report.HookCount, report.Manifest.Hooks)
+	}
+	for _, want := range []struct {
+		harness string
+		name    string
+	}{
+		{harness: "claude_code", name: "PreToolUse"},
+		{harness: "codex", name: "SessionStart"},
+		{harness: "opencode", name: "tool.execute.before"},
+	} {
+		if hook := findInstalledHook(report.Manifest, want.harness, want.name); hook == nil || hook.Status != "current" {
+			t.Fatalf("resulting managed hook %s/%s = %+v, want current", want.harness, want.name, hook)
+		}
+	}
+	external := findInstalledHook(report.Manifest, "claude_code", "SessionStart")
+	if external == nil || external.Status != "preserved_external" {
+		t.Fatalf("resulting preserved external hook = %+v, want preserved_external", external)
+	}
+}
+
 func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
