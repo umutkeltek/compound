@@ -16,6 +16,7 @@ import (
 	"compound/internal/finding"
 	"compound/internal/hookplan"
 	"compound/internal/policy"
+	"compound/internal/runattempt"
 )
 
 // surfacingRowByHarness finds the matrix row whose aliased harness matches (claude|codex|…).
@@ -457,5 +458,149 @@ func TestFindingEvidenceRefsCommaAndRepeatBackCompat(t *testing.T) {
 	want := []string{"a", "b", "c", "d", "e"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("comma/repeat/empty handling = %v, want %v", got, want)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Sweep-teeth doctor surface (DEC-0027 build step 1, work_195771b63a58):
+// doctor must report (a) how many non-terminal attempts are stuck past
+// DefaultSweepThreshold and (b) how many were swept as ambiguous (so the
+// operator knows what to reconcile). These are read off the on-disk
+// run_attempts JSON in the same walk that counts RunAttemptsStuck; the
+// test pins the shape so a future refactor doesn't silently drop the
+// fields.
+// -----------------------------------------------------------------------
+
+// doctorReport is duplicated from doctor_cli.go so this test can decode
+// without pulling the unexported alias; both shapes are the same struct
+// (doctorReport) by construction. If the test fails to compile because
+// the doctor field shape drifted, mirror the change here.
+
+func TestDoctorReportsSweepTeethCounters(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+
+	// Stage four attempts in the doctor's home:
+	//   1. STUCK + fresh heartbeat      → counts in Stuck, NOT in StuckPastTTL
+	//   2. STUCK + stale                → counts in Stuck AND StuckPastTTL
+	//   3. ABANDONED + classification=ambiguous → counts in SweptAmbiguous
+	//   4. ABANDONED + classification=side_effect_free → does NOT count
+	//
+	// Doctor uses time.Now() as its "now", so we anchor the stale attempt
+	// to a long-ago CreatedAt and the fresh attempt to a recent Heartbeat
+	// (rather than to a fixed t0) — that way the "past TTL" boundary
+	// stays correct regardless of when the test runs.
+	now := time.Now().UTC()
+	store := runattempt.Open(home)
+
+	// 1. Stuck, fresh heartbeat → excluded from StuckPastTTL.
+	fresh, err := store.Mint("work_fresh", "actor", "fake", now.Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Heartbeat(fresh.ID, now.Add(-1*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Stuck, no heartbeat, well past TTL (2h old > 30m threshold).
+	stale, err := store.Mint("work_stale", "actor", "fake", now.Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetOrigin(stale.ID, runattempt.OriginClaimReservation); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Already swept as ambiguous.
+	amb, err := store.Mint("work_amb", "actor", "fake", now.Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetTranscript(amb.ID, "transcripts/"+amb.ID+".json"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteWithReasonAndClassification(
+		amb.ID,
+		runattempt.StatusAbandoned,
+		"stale: ambiguous — no activity for 2h0m0s (threshold 30m0s)",
+		runattempt.SweepClassificationAmbiguous,
+		now.Add(-1*time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// 4. Already swept as side_effect_free (NOT ambiguous).
+	clean, err := store.Mint("work_clean", "actor", "fake", now.Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetOrigin(clean.ID, runattempt.OriginClaimReservation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteWithReasonAndClassification(
+		clean.ID,
+		runattempt.StatusAbandoned,
+		"stale: side_effect_free — no activity for 2h0m0s (threshold 30m0s)",
+		runattempt.SweepClassificationSideEffectFree,
+		now.Add(-1*time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	args := []string{"--home", home, "--base", base, "--binary", "/opt/compound/compound", "--json"}
+	if code := runDoctor(args, &out, &errOut); code != 0 {
+		t.Fatalf("doctor exit=%d stderr=%q", code, errOut.String())
+	}
+
+	var rep doctorReport
+	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+		t.Fatalf("parse json: %v (%q)", err, out.String())
+	}
+
+	// Stuck = 2 (fresh + stale; clean and amb are terminal).
+	if rep.RunAttemptsStuck != 2 {
+		t.Fatalf("RunAttemptsStuck = %d, want 2 (fresh + stale)", rep.RunAttemptsStuck)
+	}
+	// StuckPastTTL = 1 (only stale; fresh was heartbeated 1m ago).
+	if rep.RunAttemptsStuckPastTTL != 1 {
+		t.Fatalf("RunAttemptsStuckPastTTL = %d, want 1 (only stale)", rep.RunAttemptsStuckPastTTL)
+	}
+	if rep.RunAttemptsStuckPastTTLOldest == "" {
+		t.Fatalf("RunAttemptsStuckPastTTLOldest must be populated when StuckPastTTL > 0")
+	}
+	// SweptAmbiguous = 1 (only amb; clean is side_effect_free).
+	if rep.RunAttemptsSweptAmbiguous != 1 {
+		t.Fatalf("RunAttemptsSweptAmbiguous = %d, want 1 (amb only; clean is side_effect_free)", rep.RunAttemptsSweptAmbiguous)
+	}
+	if len(rep.RunAttemptsSweptAmbiguousIDs) != 1 || rep.RunAttemptsSweptAmbiguousIDs[0] != amb.ID {
+		t.Fatalf("SweptAmbiguousIDs = %v, want [%s]", rep.RunAttemptsSweptAmbiguousIDs, amb.ID)
+	}
+}
+
+// Falsifier: a fresh home (no run_attempts dir) must report zero across
+// the new counters, not panic or surface a stale default. The doctor
+// continues to render the existing stuck-count zero, and the new fields
+// must join it cleanly.
+func TestDoctorReportsSweepTeethCountersOnFreshHome(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+
+	var out, errOut bytes.Buffer
+	args := []string{"--home", home, "--base", base, "--binary", "/opt/compound/compound", "--json"}
+	if code := runDoctor(args, &out, &errOut); code != 0 {
+		t.Fatalf("doctor exit=%d stderr=%q", code, errOut.String())
+	}
+
+	var rep doctorReport
+	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+		t.Fatalf("parse json: %v", err)
+	}
+	if rep.RunAttemptsStuck != 0 || rep.RunAttemptsStuckPastTTL != 0 || rep.RunAttemptsSweptAmbiguous != 0 {
+		t.Fatalf("fresh home: stuck=%d past_ttl=%d swept_ambiguous=%d, want all 0",
+			rep.RunAttemptsStuck, rep.RunAttemptsStuckPastTTL, rep.RunAttemptsSweptAmbiguous)
+	}
+	if len(rep.RunAttemptsSweptAmbiguousIDs) != 0 {
+		t.Fatalf("fresh home: SweptAmbiguousIDs should be empty, got %v", rep.RunAttemptsSweptAmbiguousIDs)
 	}
 }

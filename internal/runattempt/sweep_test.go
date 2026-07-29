@@ -437,3 +437,223 @@ func TestSweepStaleWithProbeHeartbeatFailureContinuesPastIt(t *testing.T) {
 		t.Fatal("ra2 must have received a heartbeat during the sweep -- the loop aborted on ra1's heartbeat failure")
 	}
 }
+
+// -----------------------------------------------------------------------
+// Sweep-teeth classification (DEC-0027 build step 1, work_195771b63a58):
+// the sweep MUST distinguish side-effect-free stale attempts (auto-close)
+// from ambiguous ones (escalate). The classification function is pure;
+// these tests pin each rule without touching the store.
+// -----------------------------------------------------------------------
+
+func TestClassifyStaleRunAttemptClaimReservationIsSideEffectFree(t *testing.T) {
+	ra := RunAttempt{Origin: OriginClaimReservation}
+	if got := ClassifyStaleRunAttempt(ra); got != SweepClassificationSideEffectFree {
+		t.Fatalf("classify(claim_reservation, no artifacts) = %q, want %q", got, SweepClassificationSideEffectFree)
+	}
+}
+
+func TestClassifyStaleRunAttemptHarnessExecutionNoArtifactsIsSideEffectFree(t *testing.T) {
+	ra := RunAttempt{Origin: OriginHarnessExecution}
+	if got := ClassifyStaleRunAttempt(ra); got != SweepClassificationSideEffectFree {
+		t.Fatalf("classify(harness_execution, no artifacts) = %q, want %q", got, SweepClassificationSideEffectFree)
+	}
+}
+
+func TestClassifyStaleRunAttemptTranscriptRefIsAmbiguous(t *testing.T) {
+	ra := RunAttempt{Origin: OriginHarnessExecution, TranscriptRef: "transcripts/foo.json"}
+	if got := ClassifyStaleRunAttempt(ra); got != SweepClassificationAmbiguous {
+		t.Fatalf("classify(harness_execution + transcript_ref) = %q, want %q", got, SweepClassificationAmbiguous)
+	}
+}
+
+func TestClassifyStaleRunAttemptDiffRefIsAmbiguous(t *testing.T) {
+	ra := RunAttempt{Origin: OriginHarnessExecution, DiffRef: "diffs/foo.patch"}
+	if got := ClassifyStaleRunAttempt(ra); got != SweepClassificationAmbiguous {
+		t.Fatalf("classify(harness_execution + diff_ref) = %q, want %q", got, SweepClassificationAmbiguous)
+	}
+}
+
+func TestClassifyStaleRunAttemptTestRefIsAmbiguous(t *testing.T) {
+	ra := RunAttempt{Origin: OriginHarnessExecution, TestRef: "tests/foo.json"}
+	if got := ClassifyStaleRunAttempt(ra); got != SweepClassificationAmbiguous {
+		t.Fatalf("classify(harness_execution + test_ref) = %q, want %q", got, SweepClassificationAmbiguous)
+	}
+}
+
+func TestClassifyStaleRunAttemptObservedExternalIsAmbiguous(t *testing.T) {
+	ra := RunAttempt{Origin: OriginObservedExternal}
+	if got := ClassifyStaleRunAttempt(ra); got != SweepClassificationAmbiguous {
+		t.Fatalf("classify(observed_external) = %q, want %q", got, SweepClassificationAmbiguous)
+	}
+}
+
+func TestClassifyStaleRunAttemptEmptyOriginIsAmbiguous(t *testing.T) {
+	// pre-F2 legacy record: origin was not persisted. Conservative = operator
+	// review, because we cannot prove no side effects.
+	ra := RunAttempt{Origin: ""}
+	if got := ClassifyStaleRunAttempt(ra); got != SweepClassificationAmbiguous {
+		t.Fatalf("classify(empty origin) = %q, want %q", got, SweepClassificationAmbiguous)
+	}
+}
+
+// Falsifier: even a claim_reservation placeholder with a transcript_ref
+// must escalate — the placeholder might have been replaced by a real
+// execution whose transcript we shouldn't auto-trust.
+func TestClassifyStaleRunAttemptClaimReservationWithTranscriptIsAmbiguous(t *testing.T) {
+	ra := RunAttempt{Origin: OriginClaimReservation, TranscriptRef: "transcripts/placeholder-leftover.json"}
+	if got := ClassifyStaleRunAttempt(ra); got != SweepClassificationAmbiguous {
+		t.Fatalf("classify(claim_reservation + transcript_ref) = %q, want %q", got, SweepClassificationAmbiguous)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Sweep-teeth wiring: the sweep MUST set SweepClassification on every
+// attempt it terminalizes, AND track AutoClosed vs Escalated separately
+// in the SweepReport so doctor can surface non-zero Escalated.
+// -----------------------------------------------------------------------
+
+func TestSweepStaleSetsClassificationOnRunAttempt(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+
+	ra, err := s.Mint("work_classify", "actor", "fake", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Mint leaves Origin empty (pre-F2 default); stamp a real origin so
+	// classification has the data it needs.
+	if _, err := s.SetOrigin(ra.ID, OriginClaimReservation); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.SweepStale(30*time.Minute, t0.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SweepClassification != SweepClassificationSideEffectFree {
+		t.Fatalf("classification = %q, want %q (no artifacts)", got.SweepClassification, SweepClassificationSideEffectFree)
+	}
+	if !strings.Contains(got.SweepReason, "side_effect_free") {
+		t.Fatalf("sweep_reason %q must mention the classification so an operator can grep it", got.SweepReason)
+	}
+	if !strings.Contains(got.SweepReason, "stale") {
+		t.Fatalf("sweep_reason %q must still mention staleness (back-compat with existing tests/audits)", got.SweepReason)
+	}
+}
+
+func TestSweepStaleEscalatesAmbiguousWithTranscript(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+
+	ra, err := s.Mint("work_ambiguous", "actor", "fake", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the harness having produced a transcript before dying.
+	if _, err := s.SetTranscript(ra.ID, "transcripts/"+ra.ID+".json"); err != nil {
+		t.Fatalf("set transcript: %v", err)
+	}
+
+	rep, err := s.SweepStale(30*time.Minute, t0.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Escalated != 1 {
+		t.Fatalf("escalated = %d, want 1 (transcript_ref → ambiguous)", rep.Escalated)
+	}
+	if rep.AutoClosed != 0 {
+		t.Fatalf("auto_closed = %d, want 0 (this attempt had a transcript)", rep.AutoClosed)
+	}
+	if len(rep.EscalatedIDs) != 1 || rep.EscalatedIDs[0] != ra.ID {
+		t.Fatalf("escalated_ids = %v, want [%s]", rep.EscalatedIDs, ra.ID)
+	}
+
+	got, _ := s.Get(ra.ID)
+	if got.SweepClassification != SweepClassificationAmbiguous {
+		t.Fatalf("classification = %q, want %q", got.SweepClassification, SweepClassificationAmbiguous)
+	}
+	if !strings.Contains(got.SweepReason, "ambiguous") {
+		t.Fatalf("sweep_reason %q must mention classification", got.SweepReason)
+	}
+}
+
+// TestSweepStaleMixedBatchClassification splits a stale batch into
+// auto-closed and escalated sets and verifies both counters AND ids are
+// right. This is the falsifier the predicate needs: the sweep must NEVER
+// route an ambiguous attempt into the auto-closed set, even when other
+// attempts in the same pass are clean.
+func TestSweepStaleMixedBatchClassification(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+
+	// Clean: claim_reservation placeholder (no artifacts).
+	clean, _ := s.Mint("work_clean", "actor", "fake", t0)
+	if _, err := s.SetOrigin(clean.ID, OriginClaimReservation); err != nil {
+		t.Fatal(err)
+	}
+	// Ambiguous: has a transcript_ref.
+	withTr, _ := s.Mint("work_tr", "actor", "fake", t0)
+	if _, err := s.SetTranscript(withTr.ID, "transcripts/"+withTr.ID+".json"); err != nil {
+		t.Fatal(err)
+	}
+	// Ambiguous: observed_external origin (mint, then SetOrigin).
+	observed, _ := s.Mint("work_obs", "actor", "fake", t0)
+	if _, err := s.SetOrigin(observed.ID, OriginObservedExternal); err != nil {
+		t.Fatalf("set origin: %v", err)
+	}
+
+	rep, err := s.SweepStale(30*time.Minute, t0.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Scanned != 3 {
+		t.Fatalf("scanned = %d, want 3", rep.Scanned)
+	}
+	if rep.Swept != 3 {
+		t.Fatalf("swept = %d, want 3", rep.Swept)
+	}
+	if rep.AutoClosed != 1 {
+		t.Fatalf("auto_closed = %d, want 1 (clean)", rep.AutoClosed)
+	}
+	if rep.Escalated != 2 {
+		t.Fatalf("escalated = %d, want 2 (tr + observed)", rep.Escalated)
+	}
+	if len(rep.AutoClosedIDs) != 1 || rep.AutoClosedIDs[0] != clean.ID {
+		t.Fatalf("auto_closed_ids = %v, want [%s]", rep.AutoClosedIDs, clean.ID)
+	}
+	gotEsc := map[string]bool{}
+	for _, id := range rep.EscalatedIDs {
+		gotEsc[id] = true
+	}
+	if !gotEsc[withTr.ID] || !gotEsc[observed.ID] {
+		t.Fatalf("escalated_ids = %v, want both %s and %s present", rep.EscalatedIDs, withTr.ID, observed.ID)
+	}
+}
+
+// TestSweepStaleAlwaysClassifiesAllStale: a stale attempt whose
+// classification call returns the empty string (impossible today, but
+// defensive) must NOT silently skip — the sweep terminates with an error
+// so the operator sees the misconfiguration rather than a partial sweep
+// with no escalation.
+func TestSweepStaleRefusesEmptyClassification(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+
+	ra, _ := s.Mint("work_empty", "actor", "fake", t0)
+
+	// Force a classification-rejection by calling
+	// CompleteWithReasonAndClassification directly with the empty string.
+	// Sweep itself is wired to always classify, so the production path
+	// cannot reach this — the test pins the rejection at the entrypoint.
+	if _, err := s.CompleteWithReasonAndClassification(ra.ID, StatusAbandoned, "stale: test", "", t0.Add(time.Hour)); err == nil {
+		t.Fatal("CompleteWithReasonAndClassification with empty classification must reject (sweep must always classify)")
+	}
+}

@@ -87,6 +87,27 @@ type doctorReport struct {
 	// a finding until swept (`compound run-attempt sweep`).
 	RunAttemptsStuck       int    `json:"run_attempts_stuck"`
 	RunAttemptsStuckOldest string `json:"run_attempts_stuck_oldest,omitempty"`
+	// RunAttemptsStuckPastTTL is the subset of RunAttemptsStuck whose last
+	// activity (LastHeartbeatAt when present, otherwise CreatedAt) is older
+	// than the sweep's DefaultSweepThreshold (work_195771b63a58 / DEC-0027
+	// build step 1). The sweep guarantees this count goes to zero after a
+	// successful pass; a non-zero value here means the sweep either has
+	// never run since the attempts accumulated, or it ran and refused to
+	// terminalize one (e.g. a write failure landed in Skipped). Either way,
+	// the operator must look. Doctor reads this off the on-disk run_attempts
+	// JSON in the same pass it counts RunAttemptsStuck — no extra sweep
+	// invocation, no double-walk of the directory.
+	RunAttemptsStuckPastTTL       int    `json:"run_attempts_stuck_past_ttl"`
+	RunAttemptsStuckPastTTLOldest string `json:"run_attempts_stuck_past_ttl_oldest,omitempty"`
+	// RunAttemptsSweptAmbiguous counts attempts the sweep terminalized as
+	// abandoned with sweep_classification="ambiguous" (had a transcript,
+	// diff, test, or observed_external origin before dying). The sweep
+	// itself cannot prove those side effects are clean — the operator
+	// MUST reconcile. Surfaced here so a non-zero value shows up
+	// alongside RunAttemptsStuckPastTTL in the same report.
+	RunAttemptsSweptAmbiguous       int      `json:"run_attempts_swept_ambiguous"`
+	RunAttemptsSweptAmbiguousIDs    []string `json:"run_attempts_swept_ambiguous_ids,omitempty"`
+	RunAttemptsSweptAmbiguousOldest string   `json:"run_attempts_swept_ambiguous_oldest,omitempty"`
 
 	// Hook enforcement: for each binary the installed hooks would invoke, whether it really
 	// gates. Every other hook signal above compares CONFIG bytes and stays green when the file
@@ -226,15 +247,69 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	// 3b) C3: RunAttempt crash terminality — count stuck (pending/running)
 	// attempts and report the oldest. Read-only; sweeping lives on the
 	// `compound run-attempt sweep` verb, never here.
+	//
+	// Sweep-teeth (DEC-0027 build step 1, work_195771b63a58) extends this
+	// pass with two extra counters read from the same ListNonTerminal walk:
+	//   - RunAttemptsStuckPastTTL: how many of the stuck attempts have last
+	//     activity older than DefaultSweepThreshold. The predicate requires
+	//     this to be zero after a sweep; non-zero is a finding.
+	//   - RunAttemptsSweptAmbiguous: how many abandoned attempts carry
+	//     sweep_classification="ambiguous" (had transcript/diff/test or
+	//     observed_external before the sweep terminalized them). These
+	//     were swept but still need operator reconciliation.
+	//
+	// All three counters come from one walk of the on-disk run_attempts
+	// JSON — doctor never invokes the sweep, never writes, never crosses
+	// the read-only boundary this section already lives inside.
 	if stuck, serr := runattempt.Open(homePath).ListNonTerminal(); serr == nil && len(stuck) > 0 {
 		rep.RunAttemptsStuck = len(stuck)
 		oldest := stuck[0].CreatedAt // List sorts by CreatedAt ascending
+		var stuckPastTTLOldest time.Time
 		for _, ra := range stuck {
 			if ra.CreatedAt.Before(oldest) {
 				oldest = ra.CreatedAt
 			}
+			lastActivity := ra.CreatedAt
+			if ra.LastHeartbeatAt != nil {
+				lastActivity = *ra.LastHeartbeatAt
+			}
+			if time.Since(lastActivity) > runattempt.DefaultSweepThreshold {
+				rep.RunAttemptsStuckPastTTL++
+				if stuckPastTTLOldest.IsZero() || lastActivity.Before(stuckPastTTLOldest) {
+					stuckPastTTLOldest = lastActivity
+				}
+			}
 		}
 		rep.RunAttemptsStuckOldest = surfacingAge(time.Since(oldest))
+		if rep.RunAttemptsStuckPastTTL > 0 {
+			rep.RunAttemptsStuckPastTTLOldest = surfacingAge(time.Since(stuckPastTTLOldest))
+		}
+	}
+
+	// RunAttemptsSweptAmbiguous is read from the FULL attempt list (not
+	// just non-terminal) because these are terminalized-but-flagged. A
+	// separate Open/List call is cheaper than re-walking the data we
+	// already have; doctor is allowed two reads here because the
+	// non-terminal walk above has a different shape (ListNonTerminal
+	// filters, we need everything).
+	if all, lerr := runattempt.Open(homePath).List(); lerr == nil {
+		var ambiguousOldest time.Time
+		for _, ra := range all {
+			if ra.Status != runattempt.StatusAbandoned {
+				continue
+			}
+			if ra.SweepClassification != runattempt.SweepClassificationAmbiguous {
+				continue
+			}
+			rep.RunAttemptsSweptAmbiguous++
+			rep.RunAttemptsSweptAmbiguousIDs = append(rep.RunAttemptsSweptAmbiguousIDs, ra.ID)
+			if ambiguousOldest.IsZero() || ra.CompletedAt.Before(ambiguousOldest) {
+				ambiguousOldest = ra.CompletedAt
+			}
+		}
+		if rep.RunAttemptsSweptAmbiguous > 0 {
+			rep.RunAttemptsSweptAmbiguousOldest = surfacingAge(time.Since(ambiguousOldest))
+		}
 	}
 
 	// 3c: worktree locks whose owning delegate is terminal. Read-only; the

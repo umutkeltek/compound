@@ -38,6 +38,24 @@ const (
 	StatusSuperseded = "superseded"
 )
 
+// SweepClassification enumerates how a stale non-terminal RunAttempt was
+// disposed of by the sweep (DEC-0027 build step 1, work_195771b63a58).
+// Empty on normally-completed attempts and on attempts the sweep did not
+// touch (i.e. still non-terminal, or pre-sweep-teeth).
+const (
+	// SweepClassificationSideEffectFree: the attempt produced no artifacts we
+	// have to preserve — no transcript_ref, diff_ref, test_ref, and not an
+	// observed-external origin. The sweep auto-closes; operator review is
+	// not required.
+	SweepClassificationSideEffectFree = "side_effect_free"
+	// SweepClassificationAmbiguous: the attempt MAY have left state behind
+	// that the runattempt package cannot prove is clean. Sweep terminalizes
+	// the attempt as abandoned, but the operator MUST reconcile the
+	// side effects. Surfaced via doctor's StuckSweptAmbiguous counter and
+	// via proof_refs entries prefixed "sweep:needs_me:".
+	SweepClassificationAmbiguous = "ambiguous"
+)
+
 // Origin records which of the three RunAttempt producers created this record:
 // a claim-time placeholder reservation, a harness that actually executed, or
 // a post-hoc observation of external evidence (e.g. a codex job file). Empty
@@ -136,6 +154,29 @@ type RunAttempt struct {
 	// SweepStale / CompleteWithReason; empty on normally-completed attempts.
 	// omitempty so pre-C3 records re-marshal byte-identical.
 	SweepReason string `json:"sweep_reason,omitempty"`
+
+	// SweepClassification records the sweep's DISPOSITION of a terminalized
+	// stale attempt — the bit the run-attempt sweep needs to gain teeth
+	// (DEC-0027 build step 1, work_195771b63a58). Two values, both set only
+	// by the sweep path:
+	//
+	//   "side_effect_free" → the attempt had no transcript, diff, test, or
+	//                        observed-external evidence when the sweep
+	//                        terminalized it. Auto-closed; no operator review
+	//                        needed because the attempt itself produced
+	//                        nothing worth preserving.
+	//   "ambiguous"        → the attempt MAY have left state behind — a
+	//                        transcript_ref, diff_ref, test_ref, or
+	//                        observed_external origin. Sweep terminalizes
+	//                        the attempt but the operator MUST reconcile
+	//                        the side effects (the runattempt package
+	//                        cannot prove they are clean). Surfaced via
+	//                        the doctor's StuckSweptAmbiguous counter and
+	//                        via proof_refs entries prefixed "sweep:needs_me:".
+	//
+	// Empty on normally-completed attempts and on pre-sweep-teeth records
+	// (omitempty so they re-marshal byte-identical).
+	SweepClassification string `json:"sweep_classification,omitempty"`
 
 	// PredecessorID links this attempt to the one it retries (C4: retry
 	// lineage). When a work is re-claimed after a failed/abandoned attempt,
@@ -381,6 +422,77 @@ func (s *Store) CompleteWithReason(id, status, reason string, now time.Time) (Ru
 		return RunAttempt{}, err
 	}
 	return ra, nil
+}
+
+// CompleteWithReasonAndClassification is the sweep's terminalizing entrypoint
+// (DEC-0027 build step 1, work_195771b63a58). It records both the WHY
+// (sweep_reason) and the DISPOSITION (side_effect_free vs ambiguous) in one
+// atomic write — a partial write that sets the reason but not the
+// classification would leave doctor unable to tell a swept-but-cleared
+// attempt from a swept-but-needs-review attempt.
+//
+// An empty classification is treated as SweepClassificationSideEffectFree:
+// callers that don't classify (the existing CompleteWithReason path, work
+// envelope supersession, etc.) get the same byte-identical record shape as
+// before. Empty classification explicitly is rejected on the sweep path —
+// the sweep ALWAYS classifies, so a missing classification is a bug in
+// the caller and should fail closed.
+func (s *Store) CompleteWithReasonAndClassification(id, status, reason, classification string, now time.Time) (RunAttempt, error) {
+	if !IsTerminal(status) {
+		return RunAttempt{}, fmt.Errorf("runattempt complete %s: status %q is not terminal", id, status)
+	}
+	ra, err := s.Get(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	if IsTerminal(ra.Status) {
+		return RunAttempt{}, fmt.Errorf("runattempt complete %s: already terminal (%s)", id, ra.Status)
+	}
+	if classification != SweepClassificationSideEffectFree && classification != SweepClassificationAmbiguous {
+		return RunAttempt{}, fmt.Errorf("runattempt complete %s: classification %q is not a valid SweepClassification", id, classification)
+	}
+	ra.Status = status
+	ra.CompletedAt = now.UTC()
+	ra.SweepReason = strings.TrimSpace(reason)
+	ra.SweepClassification = classification
+	if err := s.write(ra); err != nil {
+		return RunAttempt{}, err
+	}
+	return ra, nil
+}
+
+// ClassifyStaleRunAttempt returns the disposition of a stale non-terminal
+// RunAttempt. Side-effect-free attempts can be auto-closed; ambiguous ones
+// MUST surface to operator attention because we cannot prove they left no
+// state behind (transcript, diff, test artifact, or external observation).
+//
+// Rules (in order; first match wins):
+//
+//   1. transcript_ref / diff_ref / test_ref present → ambiguous. The attempt
+//      produced an artifact we should not lose.
+//   2. origin == observed_external → ambiguous. Someone observed evidence
+//      outside our control; we don't know what they saw or whether it was
+//      acted on.
+//   3. origin empty (pre-F2 legacy) → ambiguous. We can't tell what produced
+//      this attempt; conservative = operator review.
+//   4. otherwise (claim_reservation placeholder, OR harness_execution with
+//      no transcript/diff/test) → side_effect_free. The attempt itself
+//      produced nothing we have to preserve.
+//
+// Exposed at package level (not method) so callers can dry-run classification
+// without minting/loading a store — useful for tests and for the sweep CLI's
+// --dry-run mode.
+func ClassifyStaleRunAttempt(ra RunAttempt) string {
+	if ra.TranscriptRef != "" || ra.DiffRef != "" || ra.TestRef != "" {
+		return SweepClassificationAmbiguous
+	}
+	if ra.Origin == OriginObservedExternal {
+		return SweepClassificationAmbiguous
+	}
+	if ra.Origin == "" {
+		return SweepClassificationAmbiguous
+	}
+	return SweepClassificationSideEffectFree
 }
 
 // MarkRunning transitions a RunAttempt from pending to running (F5). This is
@@ -745,7 +857,15 @@ func (s *Store) SetPredecessor(id, predecessorID string) (RunAttempt, error) {
 // has NO effect on the work state machine.
 // ---------------------------------------------------------------------------
 
-// SweepReport is the outcome of one SweepStale pass. Pinned by C3 tests.
+// SweepReport is the outcome of one SweepStale pass. Pinned by C3 tests;
+// extended in sweep-teeth (DEC-0027 build step 1) with classification
+// counters so a single pass reports BOTH the headline totals AND the
+// split between auto-closed and escalated dispositions.
+//
+// AutoClosed + Escalated sum to Swept when every candidate could be
+// classified; a candidate whose CompleteWithReasonAndClassification
+// rejected (write failure) lands in Skipped instead. The three counters
+// are independently counted so a partial sweep is still legible.
 type SweepReport struct {
 	Scanned    int      `json:"scanned"` // total non-terminal attempts examined
 	Swept      int      `json:"swept"`   // terminalized this pass
@@ -758,6 +878,17 @@ type SweepReport struct {
 	// generic and probe-aware passes share the same on-disk JSON shape
 	// for the headline counters.
 	Protected int `json:"protected,omitempty"`
+	// AutoClosed counts swept attempts classified side_effect_free — the
+	// attempt produced no transcript/diff/test and was not observed
+	// externally. Auto-closed by the sweep; operator review NOT required.
+	AutoClosed    int      `json:"auto_closed,omitempty"`
+	AutoClosedIDs []string `json:"auto_closed_ids,omitempty"`
+	// Escalated counts swept attempts classified ambiguous — the attempt
+	// MAY have left state behind. Sweep terminalized as abandoned, but the
+	// operator MUST reconcile. Surfaced via doctor's StuckSweptAmbiguous
+	// counter so a non-zero value shows up on the next doctor run.
+	Escalated    int      `json:"escalated,omitempty"`
+	EscalatedIDs []string `json:"escalated_ids,omitempty"`
 }
 
 // DefaultSweepThreshold is the staleness cutoff used when no explicit
@@ -820,7 +951,9 @@ func (s *Store) ListNonTerminal() ([]RunAttempt, error) {
 // is older than threshold. "Last activity" is LastHeartbeatAt when present,
 // otherwise CreatedAt (an attempt that never received a heartbeat is judged
 // from its birth). Swept attempts transition to abandoned with a
-// sweep_reason recording the staleness. Terminal attempts are untouched.
+// sweep_reason recording the staleness, AND a SweepClassification recording
+// the disposition (side_effect_free vs ambiguous — see
+// ClassifyStaleRunAttempt). Terminal attempts are untouched.
 //
 // threshold <= 0 uses DefaultSweepThreshold.
 //
@@ -848,8 +981,10 @@ func (s *Store) SweepStale(threshold time.Duration, now time.Time) (SweepReport,
 			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
 			continue
 		}
-		reason := fmt.Sprintf("stale: no activity for %s (threshold %s)", age.Round(time.Second), threshold)
-		if _, cerr := s.CompleteWithReason(ra.ID, StatusAbandoned, reason, now); cerr != nil {
+		classification := ClassifyStaleRunAttempt(ra)
+		reason := fmt.Sprintf("stale: %s — no activity for %s (threshold %s)",
+			classification, age.Round(time.Second), threshold)
+		if _, cerr := s.CompleteWithReasonAndClassification(ra.ID, StatusAbandoned, reason, classification, now); cerr != nil {
 			// Best-effort: a write failure on one attempt does not abort the
 			// pass. The next sweep retries it.
 			rep.Skipped++
@@ -858,6 +993,14 @@ func (s *Store) SweepStale(threshold time.Duration, now time.Time) (SweepReport,
 		}
 		rep.Swept++
 		rep.SweptIDs = append(rep.SweptIDs, ra.ID)
+		switch classification {
+		case SweepClassificationSideEffectFree:
+			rep.AutoClosed++
+			rep.AutoClosedIDs = append(rep.AutoClosedIDs, ra.ID)
+		case SweepClassificationAmbiguous:
+			rep.Escalated++
+			rep.EscalatedIDs = append(rep.EscalatedIDs, ra.ID)
+		}
 	}
 	return rep, nil
 }
@@ -947,15 +1090,28 @@ func (s *Store) SweepStaleWithProbe(threshold time.Duration, now time.Time, prob
 			continue
 		}
 		// Vanished or dead (and not previously swept by DelegateSweep) →
-		// ordinary stale abandonment.
-		reason := fmt.Sprintf("stale: no activity for %s (threshold %s)", age.Round(time.Second), threshold)
-		if _, cerr := s.CompleteWithReason(ra.ID, StatusAbandoned, reason, now); cerr != nil {
+		// ordinary stale abandonment, classified the same way SweepStale
+		// would (DEC-0027 build step 1, work_195771b63a58: the probe-aware
+		// pass must produce the same disposition per attempt as the generic
+		// pass, so doctor reads a single source of truth).
+		classification := ClassifyStaleRunAttempt(ra)
+		reason := fmt.Sprintf("stale: %s — no activity for %s (threshold %s)",
+			classification, age.Round(time.Second), threshold)
+		if _, cerr := s.CompleteWithReasonAndClassification(ra.ID, StatusAbandoned, reason, classification, now); cerr != nil {
 			rep.Skipped++
 			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
 			continue
 		}
 		rep.Swept++
 		rep.SweptIDs = append(rep.SweptIDs, ra.ID)
+		switch classification {
+		case SweepClassificationSideEffectFree:
+			rep.AutoClosed++
+			rep.AutoClosedIDs = append(rep.AutoClosedIDs, ra.ID)
+		case SweepClassificationAmbiguous:
+			rep.Escalated++
+			rep.EscalatedIDs = append(rep.EscalatedIDs, ra.ID)
+		}
 	}
 	return rep, nil
 }
