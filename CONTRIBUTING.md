@@ -13,7 +13,7 @@ lenses behind, and the next session starts smarter. Read the
 
 ## Prerequisites
 
-- **Go 1.22+**
+- **Go 1.26.4+**
 - **Git**
 - Optional: **Bun** (for console work), **Ollama** (for semantic memory tests)
 

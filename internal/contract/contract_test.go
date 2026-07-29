@@ -276,6 +276,62 @@ func TestOpaqueInstalledWriteGateRetainsRegisteredReadinessWithoutContentAttesta
 	}
 }
 
+func TestInstalledHookGateReadinessRequiresAvailableNonBlockingPreToolUseObserver(t *testing.T) {
+	t.Run("non-blocking status on another event is not a PreToolUse posture", func(t *testing.T) {
+		manifest := InstalledHooksManifest{
+			SchemaVersion: installedHooksSchemaVersion,
+			Hooks: []InstalledHook{{
+				Harness:  "codex",
+				Name:     "SessionStart",
+				Event:    "SessionStart",
+				Ref:      "handler:session-start",
+				Revision: "sha256:session-start",
+				Status:   "non_blocking",
+			}},
+		}
+		gate := findHookGateReadiness(
+			InstalledHookGateReadiness(manifest, map[string]bool{"codex": true}),
+			"codex",
+		)
+		if gate == nil || gate.Status != "not_installed" || gate.Installed {
+			t.Fatalf("SessionStart-only non-blocking readiness = %+v, want not_installed", gate)
+		}
+	})
+
+	t.Run("unavailable non-blocking observer remains visible", func(t *testing.T) {
+		manifest := InstalledHooksManifest{
+			SchemaVersion: installedHooksSchemaVersion,
+			Hooks: []InstalledHook{
+				{
+					Harness:  "codex",
+					Name:     "PreToolUse",
+					Event:    "PreToolUse",
+					Matcher:  "*",
+					Ref:      "handler:available-observer",
+					Revision: "sha256:available-observer",
+					Status:   "non_blocking",
+				},
+				{
+					Harness:  "codex",
+					Name:     "PreToolUse",
+					Event:    "PreToolUse",
+					Matcher:  "*",
+					Ref:      "/synthetic/missing-observer",
+					Revision: installedHookHandlerUnavailableRevision,
+					Status:   "non_blocking",
+				},
+			},
+		}
+		gate := findHookGateReadiness(
+			InstalledHookGateReadiness(manifest, map[string]bool{"codex": true}),
+			"codex",
+		)
+		if gate == nil || gate.Status != "handler_unavailable" || gate.Installed || len(gate.Actions) == 0 {
+			t.Fatalf("mixed available/unavailable observer readiness = %+v, want handler_unavailable remediation", gate)
+		}
+	})
+}
+
 func TestMixedAvailableAndUnavailableWriteGatesFailLoudInEveryOrder(t *testing.T) {
 	ready := InstalledHook{
 		Harness:  "claude_code",
@@ -1910,8 +1966,25 @@ func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
 	if !installedHookHasMatcher(manifest, "codex", "PreToolUse", "*") {
 		t.Fatalf("Codex hook import lost the native PreToolUse matcher: %+v", manifest.Hooks)
 	}
-	if gate := findInstalledHook(manifest, "codex", "PreToolUse"); gate == nil || !strings.HasSuffix(gate.Ref, "/.local/bin/compound") || !strings.HasPrefix(gate.InvocationRevision, "sha256:") {
+	gate := findInstalledHook(manifest, "codex", "PreToolUse")
+	if gate == nil || !strings.HasSuffix(gate.Ref, "/.local/bin/compound") || !strings.HasPrefix(gate.InvocationRevision, "sha256:") {
 		t.Fatalf("Codex hook import lost the handler display ref or privacy-safe invocation identity: %+v", gate)
+	}
+	if gate.Status != "non_blocking" {
+		t.Fatalf("observation-only Codex PreToolUse status = %q, want non_blocking", gate.Status)
+	}
+	readiness := findHookGateReadiness(InstalledHookGateReadiness(manifest, map[string]bool{"codex": true}), "codex")
+	if readiness == nil || readiness.Status != "non_blocking" || readiness.Installed || readiness.AdapterRequired {
+		t.Fatalf("observation-only Codex readiness = %+v, want non_blocking without an installed gate", readiness)
+	}
+	plan, err := hookPlanFromInstalledManifest(manifest, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range plan.Bindings {
+		if binding.Harness == "codex" && binding.Event == "PreToolUse" && binding.Blocking {
+			t.Fatalf("observation-only Codex PreToolUse projected as blocking: %+v", binding)
+		}
 	}
 	records, err := LoadInstalledHooksSourceAuthority(home)
 	if err != nil {
@@ -1944,6 +2017,98 @@ func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
 	}
 	if sourceRev(ec.SourceRevisions, InstalledHooksAuthorityRef) == "" {
 		t.Fatalf("effective contract missing installed-hooks source revision: %+v", ec.SourceRevisions)
+	}
+}
+
+func TestImportCodexHooksJSONPreservesExplicitPreToolUseEnforcement(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	binaryPath := filepath.Join(home, ".local", "bin", "compound")
+	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binaryPath, []byte("synthetic compound binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "hooks.json")
+	data := `{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"$HOME/.local/bin/compound hook pre-tool-use --live --harness codex --enforce"}]}]}}`
+	if err := os.WriteFile(source, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportCodexHooksJSON(home, source, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := LoadInstalledHooksManifest(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := findInstalledHook(manifest, "codex", "PreToolUse")
+	if gate == nil || gate.Status != "current" {
+		t.Fatalf("explicitly enforced Codex PreToolUse = %+v, want current blocking authority", gate)
+	}
+	readiness := findHookGateReadiness(InstalledHookGateReadiness(manifest, map[string]bool{"codex": true}), "codex")
+	if readiness == nil || readiness.Status != "native_blocking" || !readiness.Installed {
+		t.Fatalf("explicitly enforced Codex readiness = %+v, want native_blocking", readiness)
+	}
+	plan, err := hookPlanFromInstalledManifest(manifest, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range plan.Bindings {
+		if binding.Harness == "codex" && binding.Event == "PreToolUse" {
+			if !binding.Blocking {
+				t.Fatalf("explicitly enforced Codex PreToolUse projected non-blocking: %+v", binding)
+			}
+			return
+		}
+	}
+	t.Fatalf("explicitly enforced Codex plan omitted PreToolUse: %+v", plan.Bindings)
+}
+
+func TestInstalledHookStatusInferenceOnlyDowngradesExactCompoundObserver(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		command  string
+		explicit string
+		want     string
+	}{
+		{
+			name:    "managed observer",
+			command: "$HOME/.local/bin/compound hook pre-tool-use --live --harness codex",
+			want:    "non_blocking",
+		},
+		{
+			name:    "managed enforcement",
+			command: "$HOME/.local/bin/compound hook pre-tool-use --live --harness codex --enforce",
+			want:    "current",
+		},
+		{
+			name:    "external hook",
+			command: "$HOME/.codex/hooks/PlacementGuard.hook.ts --live",
+			want:    "current",
+		},
+		{
+			name:    "unrelated compound arguments",
+			command: "wrapper compound --label pre-tool-use --live",
+			want:    "current",
+		},
+		{
+			name:    "wrapper receives compound observer argv",
+			command: "wrapper compound hook pre-tool-use --live --harness codex",
+			want:    "current",
+		},
+		{
+			name:     "explicit source status wins",
+			command:  "$HOME/.local/bin/compound hook pre-tool-use --live --harness codex",
+			explicit: "current",
+			want:     "current",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := installedHookStatusForCommand("PreToolUse", tc.command, tc.explicit); got != tc.want {
+				t.Fatalf("status = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -2175,6 +2340,21 @@ func TestInstalledHookGateReadinessRequiresWrapperForFailOpenCodex(t *testing.T)
 	}
 	if _, err := ImportHookRegistrationTS(home, source, fixedNow); err != nil {
 		t.Fatalf("import hook registration ts: %v", err)
+	}
+	binaryPath := filepath.Join(home, ".local", "bin", "compound")
+	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binaryPath, []byte("synthetic compound binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	enforcedCodexSource := filepath.Join(t.TempDir(), "codex-hooks.json")
+	enforcedCodex := `{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"$HOME/.local/bin/compound hook pre-tool-use --live --harness codex --enforce"}]}]}}`
+	if err := os.WriteFile(enforcedCodexSource, []byte(enforcedCodex), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportCodexHooksJSON(home, enforcedCodexSource, fixedNow.Add(time.Minute)); err != nil {
+		t.Fatalf("import explicit Codex enforcement: %v", err)
 	}
 	manifest, err := LoadInstalledHooksManifest(home)
 	if err != nil {

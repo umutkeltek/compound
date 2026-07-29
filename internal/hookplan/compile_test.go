@@ -7,11 +7,51 @@ import (
 	"compound/internal/harness"
 )
 
-func TestDefaultCodexPostureLeavesNativeMutationGuardOperatorOptIn(t *testing.T) {
+func TestDefaultInteractivePosturesObserveActionsWithoutNativeMutationGuard(t *testing.T) {
+	t.Parallel()
+
+	for _, harnessName := range []string{"codex", "claude-code"} {
+		harnessName := harnessName
+		t.Run(harnessName, func(t *testing.T) {
+			t.Parallel()
+
+			compiled, err := CompileDefaultPosture(DefaultPostureRequest{
+				Harness:         harnessName,
+				Registry:        harness.DefaultRegistry(),
+				HandlerRef:      "compound",
+				HandlerRevision: "sha256:handler-fixture",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if compiled.MutationReady {
+				t.Fatalf("default %s posture unexpectedly mutation-ready: %+v", harnessName, compiled)
+			}
+			for _, intention := range compiled.Intentions {
+				if intention.Intention == IntentionGuardMutation {
+					t.Fatalf("default %s posture installed a blocking mutation guard: %+v", harnessName, intention)
+				}
+			}
+			assertCompiledIntention(t, compiled, IntentionObserveAction, DispositionNative, []string{"PreToolUse"})
+			for _, binding := range compiled.HookPlan.Bindings {
+				if binding.Event != "PreToolUse" {
+					continue
+				}
+				if binding.Blocking || binding.EnforcementStrength != "observe" {
+					t.Fatalf("default %s PreToolUse binding is not observation-only: %+v", harnessName, binding)
+				}
+				return
+			}
+			t.Fatalf("default %s posture omitted PreToolUse action observation", harnessName)
+		})
+	}
+}
+
+func TestDefaultIsolatedClaudePostureRetainsExplicitMutationGuard(t *testing.T) {
 	t.Parallel()
 
 	compiled, err := CompileDefaultPosture(DefaultPostureRequest{
-		Harness:         "codex",
+		Harness:         "claude-zai",
 		Registry:        harness.DefaultRegistry(),
 		HandlerRef:      "compound",
 		HandlerRevision: "sha256:handler-fixture",
@@ -19,19 +59,19 @@ func TestDefaultCodexPostureLeavesNativeMutationGuardOperatorOptIn(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if compiled.MutationReady {
-		t.Fatalf("default Codex posture unexpectedly mutation-ready: %+v", compiled)
+	if !compiled.MutationReady {
+		t.Fatalf("isolated Claude posture is not mutation-ready: %+v", compiled)
 	}
-	for _, intention := range compiled.Intentions {
-		if intention.Intention == IntentionGuardMutation {
-			t.Fatalf("default Codex posture installed an operator-opt-in guard: %+v", intention)
-		}
-	}
+	assertCompiledIntention(t, compiled, IntentionGuardMutation, DispositionNative, []string{"PreToolUse"})
 	for _, binding := range compiled.HookPlan.Bindings {
 		if binding.Event == "PreToolUse" {
-			t.Fatalf("default Codex posture emitted PreToolUse binding: %+v", binding)
+			if !binding.Blocking || binding.EnforcementStrength != "blocking" {
+				t.Fatalf("isolated Claude PreToolUse binding is not blocking: %+v", binding)
+			}
+			return
 		}
 	}
+	t.Fatal("isolated Claude posture omitted PreToolUse mutation guard")
 }
 
 func TestCompileSemanticPostureThroughClaudeAdapter(t *testing.T) {

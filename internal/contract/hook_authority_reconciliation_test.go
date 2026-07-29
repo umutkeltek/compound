@@ -12,6 +12,165 @@ import (
 	"compound/internal/hookplan"
 )
 
+func TestImportHookInstallReportRejectsConfigRevisionMismatchBeforeAuthorityMutation(t *testing.T) {
+	compoundHome := t.TempDir()
+	harnessHome := t.TempDir()
+	report, err := hookplan.InstallHooks(
+		harnessHome,
+		filepath.Join(harnessHome, ".local", "bin", "compound"),
+		"global",
+		[]string{"codex"},
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := report.Entries[0].ConfigPath
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, append(configData, ' '), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ImportHookInstallReport(compoundHome, harnessHome, report, time.Now()); err == nil ||
+		!strings.Contains(err.Error(), "config revision mismatch") {
+		t.Fatalf("ImportHookInstallReport() error = %v, want config revision mismatch", err)
+	}
+	for _, path := range []string{
+		InstalledHooksPath(compoundHome),
+		InstalledHooksSourceAuthorityPath(compoundHome),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("revision mismatch mutated authority at %s: %v", path, err)
+		}
+	}
+}
+
+func TestImportHookInstallReportPublishesAllHarnessesAsOneAuthorityUpdate(t *testing.T) {
+	compoundHome := t.TempDir()
+	harnessHome := t.TempDir()
+	binaryPath := filepath.Join(harnessHome, ".local", "bin", "compound")
+	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binaryPath, []byte("synthetic compound binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	report, err := hookplan.InstallHooks(harnessHome, binaryPath, "global", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := ImportHookInstallReport(
+		compoundHome,
+		harnessHome,
+		report,
+		time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("combined install published %d authority updates, want 1", len(results))
+	}
+	result := results[0]
+	if result.SourceAuthority.SourcePath != managedHookInstallationRef {
+		t.Fatalf("combined source ref = %q, want %q", result.SourceAuthority.SourcePath, managedHookInstallationRef)
+	}
+	wantHarnesses := []string{"claude_code", "claude_zai", "codex"}
+	if strings.Join(result.Harnesses, ",") != strings.Join(wantHarnesses, ",") {
+		t.Fatalf("combined harnesses = %v, want %v", result.Harnesses, wantHarnesses)
+	}
+	if result.IncomingHookCount != 12 || len(result.Manifest.Hooks) != 12 {
+		t.Fatalf(
+			"combined manifest incoming=%d hooks=%d, want all 12 lifecycle bindings",
+			result.IncomingHookCount,
+			len(result.Manifest.Hooks),
+		)
+	}
+	records, err := LoadInstalledHooksSourceAuthority(compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("combined install wrote %d source-authority records, want 1", len(records))
+	}
+}
+
+func TestImportHookInstallReportRollsBackAuthorityWhenProvenanceAppendFails(t *testing.T) {
+	compoundHome := t.TempDir()
+	harnessHome := t.TempDir()
+	report, err := hookplan.InstallHooks(
+		harnessHome,
+		filepath.Join(harnessHome, ".local", "bin", "compound"),
+		"global",
+		[]string{"codex"},
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provenancePath := InstalledHooksSourceAuthorityPath(compoundHome)
+	if err := os.MkdirAll(filepath.Dir(provenancePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	provenanceBefore := []byte("{malformed provenance\n")
+	if err := os.WriteFile(provenancePath, provenanceBefore, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	authorityPath := InstalledHooksPath(compoundHome)
+	if err := os.MkdirAll(filepath.Dir(authorityPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	authorityBefore := []byte(`schema_version: compound.installed_hooks.v0.1
+hooks:
+  - harness: claude_code
+    name: SessionStart
+    event: SessionStart
+    ref: handler:prior
+    revision: ""
+    status: current
+`)
+	if err := os.WriteFile(authorityPath, authorityBefore, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ImportHookInstallReport(compoundHome, harnessHome, report, time.Now()); err == nil ||
+		!strings.Contains(err.Error(), "parse installed hooks source authority") {
+		t.Fatalf("ImportHookInstallReport() error = %v, want provenance append failure", err)
+	}
+	authorityAfter, err := os.ReadFile(authorityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(authorityAfter) != string(authorityBefore) {
+		t.Fatalf("failed publication changed authority:\nbefore=%s\nafter=%s", authorityBefore, authorityAfter)
+	}
+	authorityInfo, err := os.Stat(authorityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := authorityInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("failed publication changed authority mode to %o, want 600", got)
+	}
+	provenanceAfter, err := os.ReadFile(provenancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(provenanceAfter) != string(provenanceBefore) {
+		t.Fatalf("failed publication changed provenance:\nbefore=%s\nafter=%s", provenanceBefore, provenanceAfter)
+	}
+	info, err := os.Stat(provenancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("failed publication changed provenance mode to %o, want 640", got)
+	}
+}
+
 func TestReconcileInstalledHooksReportsLiveClaudeSessionEndAsExtraUnowned(t *testing.T) {
 	compoundHome := t.TempDir()
 	harnessHome := t.TempDir()

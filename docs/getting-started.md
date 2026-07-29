@@ -17,13 +17,13 @@ Hold the whole system as five places; each step below visits one:
 | **the door** | your task enters as a typed envelope, validated first | 3 |
 | **the ledger** | adjudicated meaning; serves the briefing your agent starts from | 2 |
 | **the edge** | your agent — a rented executor — claims and runs the job | 4 |
-| **the gate** | mutations ask policy before they happen | 6 |
+| **the gate** | policy is recorded before tools run; enforced profiles can block | 6 |
 | **the receipt** | proof of what ran, plus what it should change next time | 5 |
 
 ## Prerequisites
 
 - **Git** (Compound uses git for delivery proof).
-- **Go 1.22+** — only required if you build from source (the prebuilt binary
+- **Go 1.26.4+** — only required if you build from source (the prebuilt binary
   path needs no Go).
 - That's it. No cloud account, no API key, no external service.
 
@@ -103,7 +103,7 @@ links intent → context → action → receipt → transition.
 ```sh
 compound work create \
   --owner "getting-started" \
-  --predicate "the README has a contributors section" \
+  --predicate "the harness prints hello and records proof" \
   --state ready \
   --by "operator:you"
 ```
@@ -118,33 +118,50 @@ compound workbench
 compound work show <work_id>
 ```
 
-## 4. Claim and advance
+## 4. Claim and execute
 
 ```sh
 # Claim it (single-holder lease):
 compound work claim <work_id> --by "agent:claude-code:session-1"
 
-# Advance to running:
-compound work advance <work_id> --to running --by "agent:claude-code:session-1"
+# Run a bounded command through the governed execution path:
+compound work advance <work_id> \
+  --to running \
+  --by "agent:claude-code:session-1" \
+  --execute \
+  --harness os-harness-entrypoints \
+  --workspace "$PWD" \
+  -- echo "hello from compound"
+
+# Inspect the WorkEnvelope and the persisted RunAttempt:
+compound work show <work_id> --json
+compound run-attempt list --json
 ```
+
+A successful command prints a `run_attempt_id`, captures a transcript, and
+moves the work to `verifying`. The WorkEnvelope forward-links that `ratt_...`
+record, so the run remains reachable from the work on both success and failure.
 
 ## 5. Close with proof
 
-When the work is done, close it with evidence. This mints a **Receipt** (what
-was learned) and a **Transition** (what changed and how future behavior should
-differ).
+The successful RunAttempt is already attached to the work. Close the verifying
+work to mint a **Receipt** (what was learned) and a **Transition** (what changed
+and how future behavior should differ).
 
 ```sh
 compound work close <work_id> \
   --by "agent:claude-code:session-1" \
-  --move-type code_change \
-  --changed \
-  --proof-ref "commit:$(git rev-parse HEAD)"
+  --outcome completed \
+  --move-type outward_delta \
+  --summary "the bounded harness execution produced inspectable proof" \
+  --changed
 ```
+
+The close output includes both `receipt` and `transition` IDs.
 
 ```sh
 # See the proof chain:
-compound work show <work_id>
+compound work show <work_id> --json
 
 # See the transition:
 compound transition show <transition_id>
@@ -169,7 +186,8 @@ compound hook session-end --live --harness claude-code
 
 When hooks are wired:
 - **Session start** → agent receives a ContextPack (task-scoped orientation)
-- **Pre-tool-use** → mutations pass through policy (allow/deny/hold)
+- **Pre-tool-use** → records ActionIntent + PolicyDecision; `--enforce` also
+  publishes the native allow/hold/deny gate
 - **Session end** → work produces a Receipt + Transition (learning persists)
 
 ## 7. Verify the loop
@@ -188,11 +206,11 @@ compound architecture doctor --strict
 ## What just happened
 
 ```text
-orient          → the briefing (ContextPack: task-scoped context, not a preamble)
-work create     → the job at the door (WorkEnvelope: one stable identity)
-claim/advance   → the edge at work (single-holder lease, state machine)
-close           → the receipt (Receipt + Transition: proof behavior changed)
-hooks           → the gate, plus next session's briefing carries prior learning
+orient           → the briefing (ContextPack: task-scoped context, not a preamble)
+work create      → the job at the door (WorkEnvelope: one stable identity)
+claim/--execute  → the edge at work (RunAttempt + transcript, linked to the work)
+close            → the receipt (Receipt + Transition: proof behavior changed)
+hooks            → policy evidence; enforced postures can gate before mutation
 ```
 
 **The loop compounds.** The next `compound orient` on this repo includes the

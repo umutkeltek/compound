@@ -1,18 +1,25 @@
 package contract
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"compound/internal/harness"
 	"compound/internal/hookplan"
 )
 
-const liveHookInstallationRef = "harness-installation://live"
+const (
+	liveHookInstallationRef              = "harness-installation://live"
+	managedHookInstallationRef           = "harness-installation://managed"
+	installedHooksHookInstallImportedVia = "hook install"
+)
 
 // InstalledHooksReconciliation keeps desired authority, observed installation,
 // and their adjudication separate on the wire.
@@ -20,6 +27,201 @@ type InstalledHooksReconciliation struct {
 	Plan           hookplan.HookPlan             `json:"hook_plan"`
 	Observation    hookplan.InstallationSnapshot `json:"installation_observation"`
 	Reconciliation hookplan.Reconciliation       `json:"reconciliation"`
+}
+
+// ImportHookInstallReport verifies and records the exact managed posture
+// materialized by one hook install command. Every reported config revision is
+// checked before authority is touched, then all selected harnesses are
+// published through one combined manifest and one source-authority record.
+func ImportHookInstallReport(
+	homePath string,
+	harnessHome string,
+	report hookplan.HookInstallReport,
+	now time.Time,
+) ([]InstalledHooksImportReport, error) {
+	if report.Check {
+		return nil, fmt.Errorf("check-only hook install cannot update installed-hook authority")
+	}
+	if len(report.Entries) == 0 {
+		return nil, fmt.Errorf("hook install report has no entries")
+	}
+	manifest := InstalledHooksManifest{
+		SchemaVersion: installedHooksSchemaVersion,
+	}
+	type configEvidence struct {
+		Harness        string `json:"harness"`
+		ConfigRef      string `json:"config_ref"`
+		ConfigRevision string `json:"config_revision"`
+	}
+	evidence := make([]configEvidence, 0, len(report.Entries))
+	for _, entry := range report.Entries {
+		sourceData, err := os.ReadFile(entry.ConfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("read installed %s hook config: %w", entry.Harness, err)
+		}
+		actualRevision := "sha256:" + hashBytesFull(sourceData)
+		expectedRevision := strings.TrimSpace(entry.ConfigRevision)
+		if expectedRevision == "" {
+			return nil, fmt.Errorf("%s installed hook config revision required", entry.Harness)
+		}
+		if actualRevision != expectedRevision {
+			return nil, fmt.Errorf(
+				"%s installed hook config revision mismatch: got %s want %s",
+				entry.Harness,
+				actualRevision,
+				expectedRevision,
+			)
+		}
+		harnessName := normalizeInstalledHookHarness(entry.Harness)
+		if harnessName == "" {
+			return nil, fmt.Errorf("installed hook harness required")
+		}
+		evidence = append(evidence, configEvidence{
+			Harness:        harnessName,
+			ConfigRef:      entry.ConfigPath,
+			ConfigRevision: expectedRevision,
+		})
+		for _, binding := range entry.Bindings {
+			event := strings.TrimSpace(binding.Event)
+			command := strings.TrimSpace(binding.Command)
+			if event == "" || command == "" {
+				return nil, fmt.Errorf("%s installed hook binding needs event and command", entry.Harness)
+			}
+			if event == "PreToolUse" && binding.Blocking != hookCommandHasExactField(command, "--enforce") {
+				return nil, fmt.Errorf(
+					"%s PreToolUse blocking metadata does not match explicit --enforce command",
+					entry.Harness,
+				)
+			}
+			status := "current"
+			if event == "PreToolUse" && !binding.Blocking {
+				status = "non_blocking"
+			}
+			manifest.Hooks = append(manifest.Hooks, InstalledHook{
+				Harness:            harnessName,
+				Name:               event,
+				Event:              event,
+				Matcher:            strings.TrimSpace(binding.Matcher),
+				Ref:                canonicalHookHandlerRef(command, harnessHome),
+				InvocationRevision: canonicalHookInvocationRevision(command, harnessHome),
+				Status:             status,
+			})
+		}
+	}
+	sort.Slice(evidence, func(i, j int) bool {
+		left := strings.Join([]string{evidence[i].Harness, evidence[i].ConfigRef, evidence[i].ConfigRevision}, "\x00")
+		right := strings.Join([]string{evidence[j].Harness, evidence[j].ConfigRef, evidence[j].ConfigRevision}, "\x00")
+		return left < right
+	})
+	sourceData, err := json.Marshal(struct {
+		SchemaVersion string           `json:"schema_version"`
+		Configs       []configEvidence `json:"configs"`
+	}{
+		SchemaVersion: "compound.hook_install_evidence.v0.1",
+		Configs:       evidence,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal hook install evidence: %w", err)
+	}
+	attestInstalledHookHandlersAtHome(&manifest, harnessHome)
+	authoritySnapshots, err := snapshotHookInstallAuthority(homePath)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot installed hook authority: %w", err)
+	}
+	result, err := importInstalledHooks(
+		homePath,
+		managedHookInstallationRef,
+		sourceData,
+		manifest,
+		installedHooksHookInstallImportedVia,
+		now,
+	)
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("import installed hook authority: %w", err),
+			rollbackHookInstallAuthority(authoritySnapshots),
+		)
+	}
+	return []InstalledHooksImportReport{result}, nil
+}
+
+type hookInstallAuthoritySnapshot struct {
+	path    string
+	existed bool
+	data    []byte
+	mode    os.FileMode
+}
+
+func snapshotHookInstallAuthority(homePath string) ([]hookInstallAuthoritySnapshot, error) {
+	paths := []string{
+		InstalledHooksPath(homePath),
+		InstalledHooksSourceAuthorityPath(homePath),
+	}
+	snapshots := make([]hookInstallAuthoritySnapshot, 0, len(paths))
+	for _, path := range paths {
+		snapshot := hookInstallAuthoritySnapshot{path: path}
+		data, err := os.ReadFile(path)
+		switch {
+		case err == nil:
+			info, statErr := os.Stat(path)
+			if statErr != nil {
+				return nil, statErr
+			}
+			snapshot.existed = true
+			snapshot.data = append([]byte(nil), data...)
+			snapshot.mode = info.Mode().Perm()
+		case os.IsNotExist(err):
+		default:
+			return nil, err
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	return snapshots, nil
+}
+
+func rollbackHookInstallAuthority(snapshots []hookInstallAuthoritySnapshot) error {
+	var rollbackErr error
+	for i := len(snapshots) - 1; i >= 0; i-- {
+		snapshot := snapshots[i]
+		if !snapshot.existed {
+			if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
+				rollbackErr = errors.Join(
+					rollbackErr,
+					fmt.Errorf("rollback installed hook authority %s: %w", snapshot.path, err),
+				)
+			}
+			continue
+		}
+		current, readErr := os.ReadFile(snapshot.path)
+		if readErr == nil {
+			if info, statErr := os.Stat(snapshot.path); statErr == nil &&
+				bytes.Equal(current, snapshot.data) &&
+				info.Mode().Perm() == snapshot.mode {
+				continue
+			}
+		}
+		if err := os.MkdirAll(filepath.Dir(snapshot.path), 0o755); err != nil {
+			rollbackErr = errors.Join(
+				rollbackErr,
+				fmt.Errorf("rollback installed hook authority %s: %w", snapshot.path, err),
+			)
+			continue
+		}
+		if err := os.WriteFile(snapshot.path, snapshot.data, snapshot.mode); err != nil {
+			rollbackErr = errors.Join(
+				rollbackErr,
+				fmt.Errorf("rollback installed hook authority %s: %w", snapshot.path, err),
+			)
+			continue
+		}
+		if err := os.Chmod(snapshot.path, snapshot.mode); err != nil {
+			rollbackErr = errors.Join(
+				rollbackErr,
+				fmt.Errorf("rollback installed hook authority mode %s: %w", snapshot.path, err),
+			)
+		}
+	}
+	return rollbackErr
 }
 
 // ReconcileInstalledHooks reads Compound's desired installed-hooks authority

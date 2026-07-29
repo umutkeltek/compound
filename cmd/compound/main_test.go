@@ -2636,7 +2636,7 @@ func TestContractImportHooksFeedsCompile(t *testing.T) {
 		`"hook_count": 3`,
 		`"pre_tool_use_readiness": [`,
 		`"harness": "codex"`,
-		`"status": "native_blocking"`,
+		`"status": "non_blocking"`,
 		`"source_role": "evidence_only_input_after_import"`,
 	} {
 		if !strings.Contains(authorityOut, want) {
@@ -2838,8 +2838,8 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 		t.Fatalf("codex Stop runtime readiness not ready: %+v", got)
 	}
 	if got := findHookGateReadiness(authorityReport.PreToolUseReadiness, "codex"); got == nil ||
-		got.Status != "native_blocking" || !got.NativeBlock || !got.Installed || got.AdapterRequired || len(got.Actions) != 0 {
-		t.Fatalf("codex pre-tool-use gate should report installed native enforcement: %+v", got)
+		got.Status != "non_blocking" || !got.NativeBlock || got.Installed || got.AdapterRequired || len(got.Actions) != 0 {
+		t.Fatalf("codex pre-tool-use observer should not report installed native enforcement: %+v", got)
 	}
 	out := captureStdout(t, func() {
 		cmdContract([]string{"compile", "--harness", "claude_code", "--cwd", t.TempDir(), "--task", "use hooks", "--repo-kind", "control-plane"})

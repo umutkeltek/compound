@@ -2,12 +2,46 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/hook"
 )
+
+func TestObserveOnlyPreToolUseFailsOpenOnRuntimeStorageError(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	blockedEvents := filepath.Join(homePath, "events")
+	if err := os.RemoveAll(blockedEvents); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blockedEvents, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOUND_HOME", homePath)
+	input := `{"hook_event_name":"PreToolUse","session_id":"sess_observe_storage_failure","cwd":` +
+		quoteJSON(t.TempDir()) +
+		`,"tool_name":"exec_command","tool_schema_revision":"builtin:exec-command-v1","tool_input":{"command":"echo fixture"}}`
+
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"pre-tool-use", "--live", "--harness", "codex"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("observe-only storage failure exit=%d, want fail-open 0\n%s", code, out)
+	}
+	if strings.Contains(out, "permissionDecision") || strings.Contains(out, "permission_decision") {
+		t.Fatalf("observe-only storage failure emitted native permission decision: %s", out)
+	}
+}
 
 func TestLivePreToolUseOnlyPublishesNativeDenialWhenEnforced(t *testing.T) {
 	homePath := t.TempDir()

@@ -88,8 +88,10 @@ These are the typed objects every harness/hook/run flows through, hung off one r
 Hook adapters normalize relative `ActionIntent.target.path` values against hook `cwd` before policy evaluation,
 artifact persistence, and source-control inspection. Policy reasons, stored ActionIntent artifacts, and git evidence
 therefore refer to the same governed target.
-`compound contract import-hooks --codex-hooks-json <hooks.json>` or `--hook-registration-ts <hook-registration.ts>`
-imports generated hook rosters into `COMPOUND_HOME/config/installed-hooks.yaml` as
+`compound hook install` records its compiled managed native roster directly;
+`compound contract import-hooks --codex-hooks-json <hooks.json>` or
+`--hook-registration-ts <hook-registration.ts>` imports generated rosters. Both
+paths write `COMPOUND_HOME/config/installed-hooks.yaml` as
 `compound://config/installed-hooks`; after handoff generated hook sources are evidence/rollback input, and
 `EffectiveContract.active_hooks[]` plus runtime `ContextPack.active_hooks[]`, task-conditioned `hook_roster[]`,
 and task-conditioned `hook_readiness[]` come from Compound. `hook_roster[]` is the structured hook-selection read

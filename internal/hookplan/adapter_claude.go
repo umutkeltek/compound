@@ -47,6 +47,16 @@ func (claudeSemanticAdapter) Compile(
 			EnforcementStrength: "blocking",
 			NativeEvents:        []string{"PreToolUse"},
 		}, []nativeBinding{{event: "PreToolUse", matcher: "*"}}
+	case IntentionObserveAction:
+		if !attestation.Features["pre_tool_use_block"] {
+			return unsupportedIntention(intention, "pre-tool action observation is not attested"), nil
+		}
+		return CompiledIntention{
+			Intention:           intention,
+			Disposition:         DispositionNative,
+			EnforcementStrength: "observe",
+			NativeEvents:        []string{"PreToolUse"},
+		}, []nativeBinding{{event: "PreToolUse", matcher: "*"}}
 	case IntentionObserveOutcome:
 		if !attestation.Features["post_tool_use_event"] {
 			return unsupportedIntention(intention, "post-tool outcome observation is not attested"), nil

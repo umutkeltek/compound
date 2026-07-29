@@ -14,6 +14,7 @@ type HarnessIntention string
 
 const (
 	IntentionPrepareContext HarnessIntention = "prepare_context"
+	IntentionObserveAction  HarnessIntention = "observe_action"
 	IntentionGuardMutation  HarnessIntention = "guard_mutation"
 	IntentionObserveOutcome HarnessIntention = "observe_outcome"
 )
@@ -200,9 +201,10 @@ func CompileDefaultPosture(request DefaultPostureRequest) (CompiledPosture, erro
 		IntentionGuardMutation,
 		IntentionObserveOutcome,
 	}
-	if registryName == "codex" {
+	if registryName == "codex" || registryName == "claude_code" {
 		intentions = []HarnessIntention{
 			IntentionPrepareContext,
+			IntentionObserveAction,
 			IntentionObserveOutcome,
 		}
 	}
@@ -280,7 +282,7 @@ func validateSemanticPosture(posture SemanticPosture) error {
 	seen := map[HarnessIntention]bool{}
 	for _, intention := range posture.Intentions {
 		switch intention {
-		case IntentionPrepareContext, IntentionGuardMutation, IntentionObserveOutcome:
+		case IntentionPrepareContext, IntentionObserveAction, IntentionGuardMutation, IntentionObserveOutcome:
 		default:
 			return fmt.Errorf("compile semantic posture: unknown lifecycle intention %q", intention)
 		}

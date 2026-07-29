@@ -44,8 +44,9 @@ This preserves the existing operator experience:
 | S4 | Secret exfiltration, account/public mutation, durable poisoning |
 | S5 | Production/authority compromise or self-propagation |
 
-The release claim is zero unauthorized S4/S5 actions, not “the model never
-follows an injection.”
+A containment-certified release may claim zero unauthorized S4/S5 actions only
+for explicitly enforced scopes, not “the model never follows an injection.”
+Interactive observation-only Codex and Claude Code make no prevention claim.
 
 ## Model and harness map
 
@@ -54,9 +55,9 @@ certification run must record the exact resolved provider/model revision.
 
 | Harness/function | Observed model/lane | Prompt-injection authority |
 |---|---|---|
-| Codex interactive | GPT-5.6 Sol, xhigh | Full local/network tool surface; default generated hooks observe session, prompt, and tool outcomes, but do not install `PreToolUse` or claim mutation containment |
-| Claude Code native | `opus[1m]` alias | Full Claude tool surface with bypass permissions; generated `PreToolUse` is explicitly enforced and paired with `PostToolUse` |
-| Claude alternate profiles | Z.ai, MiniMax, Qwen, GPT-5.6 profile | Same action monitor where the Compound profile adapter is installed; installation parity remains a required proof |
+| Codex interactive | GPT-5.6 Sol, xhigh | Full local/network tool surface; default generated `PreToolUse` records action evidence but emits no native permission decision |
+| Claude Code native | `opus[1m]` alias | Full Claude tool surface with bypass permissions; default generated `PreToolUse` is observation-only and paired with `PostToolUse` |
+| Claude alternate profiles | Z.ai, MiniMax, Qwen, GPT-5.6 profile | Isolated profile adapters explicitly enforce the action monitor; installation parity remains a required proof |
 | Credential-bearing chat executor | GPT-5.6 with several fallback lanes | Existing command/cron checks, but not yet complete Compound source/sink coverage |
 | Unsandboxed chat runtime | GPT-5.5 through an app-server | Full-tool reachability was the most exposed audited path; not yet fully enrolled |
 | Chat-runtime compaction | GPT-5.3 with GPT-5.5 fallback | Derived transformation; native lineage enforcement remains future work |
@@ -93,8 +94,9 @@ certification run must record the exact resolved provider/model revision.
 
 ## Enforced action path (guarded postures)
 
-Current Claude-family enforced installs follow this path. The default Codex
-posture stops at observation and makes no sink-containment claim.
+Isolated Claude-family executor profiles follow this path. The interactive
+Codex and Claude Code defaults stop at observation and make no
+sink-containment claim.
 
 ```text
 ingress/result
@@ -201,10 +203,11 @@ Exact package, wheel, Git-tree, and model pins live in
 
 ### Now: structural containment
 
-- Maintain enforced `PreToolUse` plus `PostToolUse` coverage for Claude
-  profiles.
-- Keep Codex's default `SessionStart`, `UserPromptSubmit`, and `PostToolUse`
-  posture observational; native `PreToolUse` remains operator opt-in.
+- Keep interactive Codex and Claude Code `PreToolUse` observation-only so
+  ActionIntent/PolicyDecision evidence does not become a native permission
+  prompt.
+- Maintain explicit enforced `PreToolUse` plus `PostToolUse` coverage for
+  isolated executor profiles.
 - Keep live ingress/result lineage and exact action binding.
 - Keep standing-grant automation and one-use retry approval.
 - Gate source/tool schema drift through existing Compound owners.
@@ -249,9 +252,11 @@ value accounts and credentials.
 
 ## Residual risk
 
-The current change materially reduces the chance that a successful injection
-becomes a host/account action, but it does not make hostile content safe to
-mix. The largest remaining risks are:
+The current change improves action evidence for interactive sessions and
+preserves the explicit blocking path for isolated executor profiles. The
+observation-only interactive hooks do not by themselves reduce the chance that
+a successful injection becomes a host/account action, and hostile content is
+still unsafe to mix. The largest remaining risks are:
 
 1. credential-bearing chat and unsandboxed app-server CLI paths outside the
    universal monitor;

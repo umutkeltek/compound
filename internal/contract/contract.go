@@ -3393,11 +3393,15 @@ func ImportHookRegistrationTS(homePath, sourcePath string, now time.Time) (Insta
 }
 
 func attestInstalledHookHandlers(manifest *InstalledHooksManifest) {
+	attestInstalledHookHandlersAtHome(manifest, "")
+}
+
+func attestInstalledHookHandlersAtHome(manifest *InstalledHooksManifest, harnessHome string) {
 	if manifest == nil {
 		return
 	}
 	for i := range manifest.Hooks {
-		revision := installedHookHandlerRevision(manifest.Hooks[i].Ref, "")
+		revision := installedHookHandlerRevision(manifest.Hooks[i].Ref, harnessHome)
 		if revision == "" && concreteInstalledHookHandlerRef(manifest.Hooks[i].Ref) {
 			revision = installedHookHandlerUnavailableRevision
 		}
@@ -3561,9 +3565,7 @@ func parseHookRegistrationTS(data []byte) (InstalledHooksManifest, error) {
 		}
 		matcher, _ := tsStringField(obj, "matcher")
 		status, _ := tsStringField(obj, "status")
-		if status == "" {
-			status = "current"
-		}
+		status = installedHookStatusForCommand(event, command, status)
 		ref := expandHomeRef(hookRefFromCommand(command))
 		if ref == "" {
 			ref = hookRefFromHarnessFile(rawHarness, file)
@@ -3789,7 +3791,7 @@ func parseCodexHooksJSON(data []byte) (InstalledHooksManifest, error) {
 					Matcher:            matcher,
 					Ref:                ref,
 					InvocationRevision: canonicalHookInvocationRevision(hook.Command, ""),
-					Status:             "current",
+					Status:             installedHookStatusForCommand(event, hook.Command, ""),
 				})
 			}
 		}
@@ -3844,6 +3846,50 @@ func hookRefFromCommand(command string) string {
 		}
 	}
 	return ""
+}
+
+func installedHookStatusForCommand(event, command, explicitStatus string) string {
+	if status := strings.TrimSpace(explicitStatus); status != "" {
+		return status
+	}
+	if canonicalHookEvent(event) == "PreToolUse" &&
+		compoundLivePreToolUseCommand(command) &&
+		!hookCommandHasExactField(command, "--enforce") {
+		return "non_blocking"
+	}
+	return "current"
+}
+
+func compoundLivePreToolUseCommand(command string) bool {
+	fields := canonicalHookCommandFields(command)
+	if len(fields) < 3 {
+		return false
+	}
+	// Managed registrations execute Compound directly. Treat wrappers and
+	// launchers conservatively because Compound-shaped arguments do not prove
+	// which program owns the hook's blocking behavior.
+	executable := filepath.ToSlash(strings.TrimSpace(fields[0]))
+	if executable != "compound" && !strings.HasSuffix(executable, "/compound") {
+		return false
+	}
+	if fields[1] != "hook" || fields[2] != "pre-tool-use" {
+		return false
+	}
+	for _, field := range fields[3:] {
+		if field == "--live" {
+			return true
+		}
+	}
+	return false
+}
+
+func hookCommandHasExactField(command, want string) bool {
+	for _, field := range canonicalHookCommandFields(command) {
+		if field == want {
+			return true
+		}
+	}
+	return false
 }
 
 func expandHomeRef(ref string) string {
@@ -4219,7 +4265,8 @@ func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUs
 	for _, harness := range names {
 		installed, unavailable, ref := installedWriteGateForHarness(manifest, harness)
 		nativeBlock := nativePreToolUseBlock[harness]
-		nonBlockingLane := installedHooksExplicitlyNonBlocking(manifest, harness)
+		nonBlockingLane := installedHooksExplicitlyNonBlocking(manifest, harness) ||
+			installedHooksExplicitlyObservationOnlyAdapter(manifest, harness)
 		row := HookGateReadiness{
 			Harness:     harness,
 			Hook:        "PreToolUse",
@@ -4232,12 +4279,12 @@ func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUs
 			row.InstalledRef = ref
 		}
 		switch {
-		case nonBlockingLane:
-			row.Status = "non_blocking"
-			row.Reason = "harness is registered for context injection and observation only; no PreToolUse gate is registered"
 		case unavailable:
 			row.Status = "handler_unavailable"
 			row.Reason = "installed write-gate declaration names concrete handler content that is missing, unreadable, or symlinked"
+		case nonBlockingLane:
+			row.Status = "non_blocking"
+			row.Reason = "harness is registered for context injection and observation only; no blocking PreToolUse gate is registered"
 		case installed && nativeBlock:
 			row.Status = "native_blocking"
 			row.Reason = "installed write gate can block in the harness"
@@ -4262,12 +4309,40 @@ func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUs
 }
 
 func installedHooksExplicitlyNonBlocking(manifest InstalledHooksManifest, harness string) bool {
-	found := false
+	foundNonBlocking := false
+	foundBlockingPreTool := false
 	for _, hook := range manifest.Hooks {
 		if strings.TrimSpace(hook.Harness) != strings.TrimSpace(harness) || !installedHookCurrentStatus(hook.Status) {
 			continue
 		}
-		if strings.TrimSpace(hook.Status) != "non_blocking" {
+		if !writeScopedHook(hook) || installedHookHandlerUnavailable(hook) {
+			continue
+		}
+		nonBlocking := strings.TrimSpace(hook.Status) == "non_blocking"
+		if nonBlocking {
+			foundNonBlocking = true
+		}
+		if !nonBlocking {
+			foundBlockingPreTool = true
+		}
+	}
+	return foundNonBlocking && !foundBlockingPreTool
+}
+
+// OpenCode has no blocking before-tool callback, so its adapter-level
+// observation-only declaration remains distinct from native PreToolUse posture
+// inference. Other harnesses must prove an available non-blocking PreToolUse
+// binding and cannot inherit that posture from SessionStart or outcome hooks.
+func installedHooksExplicitlyObservationOnlyAdapter(manifest InstalledHooksManifest, harness string) bool {
+	if strings.TrimSpace(harness) != "opencode" {
+		return false
+	}
+	found := false
+	for _, hook := range manifest.Hooks {
+		if strings.TrimSpace(hook.Harness) != "opencode" || !installedHookCurrentStatus(hook.Status) {
+			continue
+		}
+		if strings.TrimSpace(hook.Status) != "non_blocking" || installedHookHandlerUnavailable(hook) {
 			return false
 		}
 		found = true
@@ -4516,6 +4591,9 @@ func installedWriteGateForHarness(manifest InstalledHooksManifest, harness strin
 		if installedHookHandlerUnavailable(hook) {
 			return false, true, ref
 		}
+		if !installedHookBlocksMutation(hook) {
+			continue
+		}
 		if installedRef == "" {
 			installedRef = ref
 		}
@@ -4560,6 +4638,10 @@ func writeScopedHook(hook InstalledHook) bool {
 		strings.Contains(matcher, "edit") ||
 		strings.Contains(matcher, "multiedit") ||
 		strings.Contains(ref, "placementguard")
+}
+
+func installedHookBlocksMutation(hook InstalledHook) bool {
+	return strings.TrimSpace(hook.Status) != "non_blocking" && writeScopedHook(hook)
 }
 
 func writeOnlyHook(hook InstalledHook) bool {

@@ -1467,8 +1467,8 @@ func cmdHook(args []string) {
 }
 
 // cmdHookInstall reconciles each compiled default posture without clobbering unrelated settings.
-// Claude-family installs context, an explicitly enforced guard, and outcomes. Codex installs
-// context and outcomes and retires only a stale Compound-owned PreToolUse binding.
+// Interactive Codex and Claude Code observe actions without publishing native permission
+// decisions; isolated Claude-family profiles retain explicit mutation enforcement.
 func cmdHookInstall(args []string) {
 	if hasUsageFlag(args) {
 		fmt.Println("usage: compound hook install [--harness claude-code|claude-zai|codex|all] [--scope global|project] [--config-dir DIR] [--base DIR] [--binary PATH] [--check] [--json]")
@@ -1521,7 +1521,27 @@ func cmdHookInstall(args []string) {
 		binary = exe
 	}
 
-	rep, err := hookplan.InstallHooksWithConfigDir(base, binary, scope, harnesses, configDir, check)
+	var publish func(hookplan.HookInstallReport) error
+	if !check {
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		publish = func(report hookplan.HookInstallReport) error {
+			_, err := contract.ImportHookInstallReport(homePath, base, report, time.Now())
+			return err
+		}
+	}
+	rep, err := hookplan.InstallHooksWithConfigDirAndPublish(
+		base,
+		binary,
+		scope,
+		harnesses,
+		configDir,
+		check,
+		publish,
+	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -1539,7 +1559,7 @@ func cmdHookInstall(args []string) {
 		fmt.Printf("- %s: %s -> %s [%s]\n", e.Harness, e.Action, e.ConfigPath, e.Matcher)
 	}
 	if !check {
-		fmt.Println("\nplacement_guard_mode remains separate; Claude PreToolUse is enforced, while the Codex default is observation-only.")
+		fmt.Println("\ninteractive Codex/Claude PreToolUse is observation-only; isolated executor profiles use explicit enforcement.")
 	}
 }
 
@@ -1567,12 +1587,12 @@ func runHookCommand(args []string) int {
 	fx, err := loadHookFixtureForHome(parsed, now, homePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
+		return hookRuntimeErrorExit(parsed)
 	}
 	stopOutcome, err := prepareLiveStopTriage(parsed, homePath, &fx, now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
+		return hookRuntimeErrorExit(parsed)
 	}
 
 	res, err := hook.Run(fx, deps, now)
@@ -1596,13 +1616,13 @@ func runHookCommand(args []string) int {
 			return preToolDeliveryFailureExit(parsed.Enforce, failClosed)
 		}
 		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
+		return hookRuntimeErrorExit(parsed)
 	}
 	recordLiveHookRetrieval(homePath, parsed, res, time.Now())
 	if parsed.Live && strings.TrimSpace(parsed.ParityLogDir) != "" {
 		if err := writeLiveHookParityLog(parsed.ParityLogDir, res, now); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
-			return 1
+			return hookRuntimeErrorExit(parsed)
 		}
 	}
 	if parsed.Live {
@@ -1717,6 +1737,13 @@ func hookEnforceExit(hookName string, res hook.Result) int {
 		return 1
 	}
 	return 0
+}
+
+func hookRuntimeErrorExit(parsed hookCommandArgs) int {
+	if parsed.Live && parsed.HookName == "pre-tool-use" && !parsed.Enforce {
+		return 0
+	}
+	return 1
 }
 
 // preToolDeliveryFailureExit keeps observation-only hooks from becoming a

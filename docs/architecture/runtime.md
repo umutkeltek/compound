@@ -508,12 +508,20 @@ compound transition create fixtures/transition/basic.json
 compound transition show <id>
 ```
 
-`compound mcp-transport` exposes a newline-delimited JSON-RPC 2.0 MCP server on stdio. A client must negotiate one
-of the server's exact supported protocol revisions with typed `initialize` parameters, then send the
-`notifications/initialized` notification before `tools/list` or `tools/call`. Its closed tool set is
-`compound_finding_record` and `compound_orient_recall`: the former invokes the existing private operational-finding
-evidence writer, and the latter invokes the existing sealed orient materializer. Tool results use the portable
-text-content `CallToolResult` shape shared by the advertised revisions. Inputs, summaries, and refs are bounded;
+`compound mcp-transport` exposes a newline-delimited JSON-RPC 2.0 MCP server on stdio with two bounded request
+modes. Lifecycle clients negotiate an exact supported revision with typed `initialize` parameters, then send
+`notifications/initialized` before `tools/list` or `tools/call`. Modern clients may call `server/discover` before
+initialization and send the advertised revision in
+`_meta["io.modelcontextprotocol/protocolVersion"]` plus an object in
+`_meta["io.modelcontextprotocol/clientCapabilities"]` on each stateless `tools/list` or `tools/call`;
+`server/discover` and `tools/list` responses include bounded cache hints. Stateless describes the transport
+lifecycle, not the tool's write effects.
+
+The closed tool set is `compound_finding_record` and `compound_orient_recall`. The former persists one private,
+operational finding (including its evidence refs) under `COMPOUND_HOME/observed/findings`; it never writes memory
+authority. The latter persists a sealed EffectiveContract, its `latest.json` projection, and a ContextPack through
+the existing orient materializer; it is not read-only or idempotent. Tool results use the portable text-content
+`CallToolResult` shape shared by the advertised revisions. Inputs, summaries, and refs are bounded; returned
 artifact refs are relative to `COMPOUND_HOME`; errors expose stable codes rather than internal text or paths. The
 transport creates no Claim, candidate, promotion, adjudication path, or second memory authority.
 

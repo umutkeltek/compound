@@ -13,14 +13,16 @@ func TestHarnessPosturePlanCompilesAdapterNativeConfigurationWithoutVendorFlags(
 	t.Parallel()
 
 	for _, tc := range []struct {
-		harness              string
-		wantFamily           string
-		wantReady            bool
-		wantGuard            bool
-		wantGuardDisposition hookplan.Disposition
+		harness               string
+		wantFamily            string
+		wantReady             bool
+		wantGuard             bool
+		wantGuardDisposition  hookplan.Disposition
+		wantActionObservation bool
 	}{
 		{harness: "claude-zai", wantFamily: "claude", wantReady: true, wantGuard: true, wantGuardDisposition: hookplan.DispositionNative},
-		{harness: "codex", wantFamily: "codex", wantReady: false},
+		{harness: "claude-code", wantFamily: "claude", wantReady: false, wantActionObservation: true},
+		{harness: "codex", wantFamily: "codex", wantReady: false, wantActionObservation: true},
 		{harness: "opencode", wantFamily: "opencode", wantReady: false, wantGuard: true, wantGuardDisposition: hookplan.DispositionUnsupported},
 	} {
 		t.Run(tc.harness, func(t *testing.T) {
@@ -48,6 +50,15 @@ func TestHarnessPosturePlanCompilesAdapterNativeConfigurationWithoutVendorFlags(
 			}
 			if hasGuard && guard.Disposition != tc.wantGuardDisposition {
 				t.Fatalf("guard disposition = %q, want %q", guard.Disposition, tc.wantGuardDisposition)
+			}
+			observedAction, hasActionObservation := compiledIntentionForTest(got, hookplan.IntentionObserveAction)
+			if hasActionObservation != tc.wantActionObservation {
+				t.Fatalf("action observation present=%t, want %t: %+v", hasActionObservation, tc.wantActionObservation, got.Intentions)
+			}
+			if hasActionObservation &&
+				(observedAction.Disposition != hookplan.DispositionNative ||
+					observedAction.EnforcementStrength != "observe") {
+				t.Fatalf("action observation is not native observe-only: %+v", observedAction)
 			}
 		})
 	}

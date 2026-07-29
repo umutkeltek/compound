@@ -10,11 +10,11 @@ Compound exposes **lifecycle hooks** — CLI commands your harness calls at
 session boundaries. Each hook produces a typed spine object:
 
 ```text
-session-start     → ContextPack (what the agent should know right now)
+session-start      → ContextPack (what the agent should know right now)
 user-prompt-submit → ContextPack (refreshed context mid-session)
-pre-tool-use      → PolicyDecision (allow / deny / hold the mutation)
-post-tool-use     → ToolEvent (evidence of what happened)
-session-end       → Receipt + Transition (what was learned, what changed)
+pre-tool-use       → PolicyDecision evidence (blocking only under explicit enforcement)
+post-tool-use      → ToolEvent (evidence of what happened)
+session-end        → Receipt + Transition (what was learned, what changed)
 ```
 
 The harness calls Compound; Compound never calls the harness. This is
@@ -31,21 +31,30 @@ compound harness posture-plan --harness codex
 compound harness posture-plan --harness opencode
 ```
 
-The stable intentions are `prepare_context`, `guard_mutation`, and
-`observe_outcome`. The selected adapter owns native events, settings schema,
-matchers, and limitations. Every compiled intention says `native`, `fallback`,
-`degraded`, or `unsupported` and cites the harness attestation revision.
+The stable intentions are `prepare_context`, `observe_action`,
+`guard_mutation`, and `observe_outcome`. The selected adapter owns native
+events, settings schema, matchers, and limitations. Every compiled intention
+says `native`, `fallback`, `degraded`, or `unsupported` and cites the harness
+attestation revision.
 
-Default postures may select a subset. Claude-family defaults select all three
-intentions and install `PreToolUse` with explicit `--enforce`. The Codex
-default selects `prepare_context` and `observe_outcome`; `hook install` omits
-and reconciles away only Compound's `PreToolUse` binding.
+Default postures select the subset appropriate to their role. Interactive
+Claude Code and Codex select `observe_action`: `PreToolUse` records the
+ActionIntent and PolicyDecision but cannot publish a native permission decision
+or a blocking exit. Isolated Claude-family executor profiles select
+`guard_mutation` and install `PreToolUse` with explicit `--enforce`.
+If an observation-only live hook cannot record its evidence, it reports the
+runtime error but still exits zero without a native permission decision; that
+path makes no containment claim. Explicitly enforced profiles remain blocking.
 
 Claude-family and Codex `compound hook install` consume this projection when
 they write managed hooks. The OpenCode installer asks Compound for the same
 projection and refuses adapter drift before writing its config/plugin. OpenCode
 currently reports `guard_mutation=unsupported`; its before-tool callback cannot
 deny, so Compound will not call it mutation-ready.
+
+Each non-check native install also records only that compiled managed roster in
+`compound://config/installed-hooks`; sequential harness installs preserve the
+other harness rosters. `--check` does not mutate native config or authority.
 
 The vendor-shaped examples below are adapter evidence and troubleshooting
 fallbacks. They are not the operator contract.
@@ -55,9 +64,15 @@ fallbacks. They are not the operator contract.
 Claude Code supports hooks in `.claude/settings.json` (project-level) or
 `~/.claude/settings.json` (global).
 
-### Option A: native blocking hooks (recommended)
+### Option A: managed interactive posture (recommended)
 
-Add to your project's `.claude/settings.json`:
+```sh
+compound hook install --harness claude-code --scope global
+compound hook install --harness claude-code --scope global --check --json
+```
+
+The managed default includes this observation-only binding. Its equivalent
+vendor-shaped entry is:
 
 ```json
 {
@@ -68,7 +83,7 @@ Add to your project's `.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "compound hook pre-tool-use --enforce --live --harness claude-code"
+            "command": "compound hook pre-tool-use --live --harness claude-code"
           }
         ]
       }
@@ -77,7 +92,28 @@ Add to your project's `.claude/settings.json`:
 }
 ```
 
-With `--enforce`, Compound returns policy gate exit codes:
+### Isolated profile: enforced `claude-zai`
+
+Only an isolated guarded executor profile should install the blocking binding.
+`CLAUDE_PROFILE_DIR` must identify that profile's separate config directory:
+
+```sh
+compound hook install --harness claude-zai \
+  --config-dir "${CLAUDE_PROFILE_DIR}"
+```
+
+The managed `PreToolUse` entry for that isolated profile explicitly enforces
+the decision:
+
+```json
+{
+  "type": "command",
+  "command": "compound hook pre-tool-use --enforce --live --harness claude-zai"
+}
+```
+
+In this explicitly enforced posture, Compound returns policy gate exit codes:
+
 - Exit 0 → allow (the tool call proceeds)
 - Exit 3 → hold (the tool call waits for operator approval)
 - Exit 4 → deny (the tool call is blocked and the agent sees the reason)
@@ -107,16 +143,16 @@ The Codex adapter compiles the stable intentions into the current native
 `hooks.json` event schema and no-clobber merges Compound's bindings. Operators
 do not maintain that schema directly. The default is observation-only and does
 not claim mutation readiness: it installs `SessionStart`, `UserPromptSubmit`,
-and `PostToolUse`, removes a stale Compound-owned `PreToolUse`, and preserves
-unrelated user hooks. Native blocking remains an explicit posture choice.
+observation-only `PreToolUse`, and `PostToolUse`, while preserving unrelated
+user hooks. Native blocking remains an explicit isolated-posture choice.
 
 ## OpenCode
 
 OpenCode is a context-injection and outcome-observation lane. Its current
 before-tool callback cannot deny a tool call, so it is **not** a mutation-control
 harness. Do not wire `pre-tool-use --enforce` for OpenCode and do not use it for
-mutation-gated execution. Use a mutation-ready Claude-family or Codex hook lane
-when Compound must block an action before it runs.
+mutation-gated execution. Use an explicitly enforced isolated Claude-family
+executor profile when Compound must block an action before it runs.
 
 Install the repo-owned adapter from the Compound checkout:
 
@@ -165,20 +201,21 @@ The agent receives:
 Evaluates an **ActionIntent** against policy before the tool runs.
 
 ```sh
-compound hook pre-tool-use --enforce --live --harness claude-code
+compound hook pre-tool-use --live --harness claude-code
 ```
 
-Returns a **PolicyDecision**:
+Interactive Claude Code records a **PolicyDecision**:
+
 - `allow` → proceed
 - `allow_with_obligations` → proceed with conditions
-- `hold` → needs human approval
-- `deny` → blocked (agent sees the reason)
+- `hold` → recorded as needing approval
+- `deny` → recorded as denied
 
-With `--enforce`, Compound publishes the harness-native blocking decision and
-returns the policy gate exit (`3` for hold, `4` for deny; Codex maps a hold to
-native `deny` until approval). Without `--enforce`, the hook still records the
-ActionIntent and PolicyDecision, but publishes no native permission decision
-and does not turn that policy outcome into a blocking process exit.
+Without `--enforce`, the hook publishes no native permission decision and does
+not turn `hold` or `deny` into a blocking process exit. The isolated
+`claude-zai` profile above adds explicit enforcement: it publishes the
+harness-native blocking decision and returns the policy gate exit (`3` for hold,
+`4` for deny).
 
 ### session-end
 

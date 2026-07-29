@@ -1,7 +1,10 @@
 package hookplan
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,22 +26,22 @@ const hookCommandMarker = "hook pre-tool-use --live"
 const claudeZaiHarness = "claude-zai"
 
 type desiredHookBinding struct {
-	Event   string
-	Matcher string
-	Command string
+	Event    string
+	Matcher  string
+	Command  string
+	Blocking bool
 }
 
-// HarnessMatcher deliberately covers every tool. Authorization lives in
-// Compound's deterministic action monitor; a write-only matcher lets shell,
-// browser, connector, messaging, secret, install, deploy, and newly-added tools
-// route around that monitor.
+// HarnessMatcher deliberately covers every tool. Interactive postures need a
+// complete action-evidence stream, while isolated guarded postures need the same
+// coverage for deterministic authorization.
 func HarnessMatcher(harness string) string {
 	return "*"
 }
 
-// ConfigRel is the harness config path relative to the base directory. Claude Code
-// uses a project-scoped settings overlay so Compound's guard is wired only inside
-// the current repository.
+// ConfigRel is the harness config path relative to the base directory. Claude
+// Code uses a project-scoped settings overlay so Compound's lifecycle bindings
+// can be scoped to the current repository.
 func ConfigRel(harness, scope string) string {
 	switch harness {
 	case "codex":
@@ -63,7 +66,7 @@ func ClaudeZaiProfileDir(baseDir string) string {
 	return filepath.Join(baseDir, ".config", "switchback", "claude", "zai-direct")
 }
 
-// HookCommand is the exact command a harness runs for the compound PreToolUse gate.
+// HookCommand is the exact observation-only command a harness runs for Compound PreToolUse.
 func HookCommand(binaryPath, harness string) string {
 	return HookCommandForEvent(binaryPath, harness, "PreToolUse")
 }
@@ -76,11 +79,7 @@ func HookCommandForEvent(binaryPath, harness, event string) string {
 		"PreToolUse":       "pre-tool-use",
 		"PostToolUse":      "post-tool-use",
 	}[event]
-	command := fmt.Sprintf("%s hook %s --live --harness %s", shellQuote(binaryPath), verb, harness)
-	if event == "PreToolUse" {
-		command += " --enforce"
-	}
-	return command
+	return fmt.Sprintf("%s hook %s --live --harness %s", shellQuote(binaryPath), verb, harness)
 }
 
 // shellQuote wraps s in POSIX single quotes so a shell (or any shell-word splitter, including the
@@ -96,19 +95,21 @@ func shellQuote(s string) string {
 
 // HookInstallBinding is one lifecycle event binding reported by an install/check pass.
 type HookInstallBinding struct {
-	Event   string `json:"event"`
-	Matcher string `json:"matcher,omitempty"`
-	Command string `json:"command"`
+	Event    string `json:"event"`
+	Matcher  string `json:"matcher,omitempty"`
+	Command  string `json:"command"`
+	Blocking bool   `json:"blocking"`
 }
 
 // HookInstallEntry is the per-harness outcome of an install/check pass.
 type HookInstallEntry struct {
-	Harness    string               `json:"harness"`
-	ConfigPath string               `json:"config_path"`
-	Action     string               `json:"action"` // installed | updated | ok | drift | absent
-	Bindings   []HookInstallBinding `json:"bindings"`
-	Matcher    string               `json:"matcher"` // blocking guard matcher; empty for observation-only posture
-	Command    string               `json:"command"` // blocking guard command; empty for observation-only posture
+	Harness        string               `json:"harness"`
+	ConfigPath     string               `json:"config_path"`
+	ConfigRevision string               `json:"config_revision"` // sha256 of the exact desired config bytes
+	Action         string               `json:"action"`          // installed | updated | ok | drift | absent
+	Bindings       []HookInstallBinding `json:"bindings"`
+	Matcher        string               `json:"matcher"` // blocking guard matcher; empty for observation-only posture
+	Command        string               `json:"command"` // blocking guard command; empty for observation-only posture
 }
 
 // HookInstallReport is the full install/check result.
@@ -128,6 +129,20 @@ func InstallHooks(baseDir, binaryPath, scope string, harnesses []string, check b
 // override is intentionally narrow: mixing it with another harness would make one path flag carry
 // two incompatible meanings.
 func InstallHooksWithConfigDir(baseDir, binaryPath, scope string, harnesses []string, configDir string, check bool) (HookInstallReport, error) {
+	return InstallHooksWithConfigDirAndPublish(baseDir, binaryPath, scope, harnesses, configDir, check, nil)
+}
+
+// InstallHooksWithConfigDirAndPublish installs every requested native config as one transaction
+// with its authority publisher. All configs are parsed and staged before the first write. If a
+// native commit, byte verification, or publication fails, every config already written by this
+// call is restored to its exact prior bytes and mode.
+func InstallHooksWithConfigDirAndPublish(
+	baseDir, binaryPath, scope string,
+	harnesses []string,
+	configDir string,
+	check bool,
+	publish func(HookInstallReport) error,
+) (HookInstallReport, error) {
 	if strings.TrimSpace(baseDir) == "" {
 		return HookInstallReport{}, fmt.Errorf("base dir required")
 	}
@@ -142,6 +157,7 @@ func InstallHooksWithConfigDir(baseDir, binaryPath, scope string, harnesses []st
 	if strings.TrimSpace(configDir) != "" && (len(want) != 1 || !want[claudeZaiHarness]) {
 		return report, fmt.Errorf("config dir is supported only with harness %s", claudeZaiHarness)
 	}
+	prepared := make([]preparedHookConfig, 0, 3)
 	for _, harness := range []string{"claude-code", claudeZaiHarness, "codex"} {
 		if len(want) > 0 && !want[harness] {
 			continue
@@ -157,22 +173,65 @@ func InstallHooksWithConfigDir(baseDir, binaryPath, scope string, harnesses []st
 		reportedBindings := make([]HookInstallBinding, 0, len(bindings))
 		for _, binding := range bindings {
 			reportedBindings = append(reportedBindings, HookInstallBinding{
-				Event:   binding.Event,
-				Matcher: binding.Matcher,
-				Command: binding.Command,
+				Event:    binding.Event,
+				Matcher:  binding.Matcher,
+				Command:  binding.Command,
+				Blocking: binding.Blocking,
 			})
 		}
 		matcher, command := installedGuardProjection(bindings)
-		action, err := mergeHookBindings(configPath, bindings, check)
+		staged, err := prepareHookBindings(harness, configPath, bindings, check)
 		if err != nil {
 			return report, fmt.Errorf("%s: %w", harness, err)
 		}
+		prepared = append(prepared, staged)
 		report.Entries = append(report.Entries, HookInstallEntry{
-			Harness: harness, ConfigPath: configPath, Action: action, Matcher: matcher, Command: command,
+			Harness: harness, ConfigPath: configPath, ConfigRevision: hookConfigRevision(staged.after),
+			Action: staged.action, Matcher: matcher, Command: command,
 			Bindings: reportedBindings,
 		})
 	}
+	if check {
+		return report, nil
+	}
+
+	committed := make([]preparedHookConfig, 0, len(prepared))
+	for _, staged := range prepared {
+		if !staged.shouldWrite {
+			continue
+		}
+		if err := writeHookConfigAtomically(staged.path, staged.after, staged.mode); err != nil {
+			rollbackErr := rollbackHookConfigs(committed)
+			return report, errors.Join(
+				fmt.Errorf("%s: write hook config: %w", staged.harness, err),
+				rollbackErr,
+			)
+		}
+		committed = append(committed, staged)
+	}
+	if err := verifyHookConfigs(prepared); err != nil {
+		return report, errors.Join(err, rollbackHookConfigs(committed))
+	}
+	if publish != nil {
+		if err := publish(report); err != nil {
+			return report, errors.Join(
+				fmt.Errorf("publish installed-hook authority: %w", err),
+				rollbackHookConfigs(committed),
+			)
+		}
+	}
 	return report, nil
+}
+
+type preparedHookConfig struct {
+	harness     string
+	path        string
+	existed     bool
+	before      []byte
+	after       []byte
+	mode        os.FileMode
+	action      string
+	shouldWrite bool
 }
 
 func compiledManagedHookBindings(
@@ -199,10 +258,15 @@ func compiledManagedHookBindings(
 	}
 	bindings := make([]desiredHookBinding, 0, len(compiled.HookPlan.Bindings))
 	for _, binding := range compiled.HookPlan.Bindings {
+		command := HookCommandForEvent(binaryPath, harnessName, binding.Event)
+		if binding.Blocking {
+			command += " --enforce"
+		}
 		bindings = append(bindings, desiredHookBinding{
-			Event:   binding.Event,
-			Matcher: binding.Matcher,
-			Command: HookCommandForEvent(binaryPath, harnessName, binding.Event),
+			Event:    binding.Event,
+			Matcher:  binding.Matcher,
+			Command:  command,
+			Blocking: binding.Blocking,
 		})
 	}
 	return bindings, compiled, nil
@@ -212,16 +276,17 @@ func validateInstallableDefaultPosture(harnessName string, compiled CompiledPost
 	if compiled.MutationReady {
 		return nil
 	}
-	if harnessName == "codex" &&
-		compiled.CompiledFrom.PostureID == "hpost_default_codex" &&
-		isCodexObservationalDefault(compiled.Intentions) {
+	registryName := strings.ReplaceAll(strings.TrimSpace(harnessName), "-", "_")
+	if (registryName == "codex" || registryName == "claude_code") &&
+		compiled.CompiledFrom.PostureID == "hpost_default_"+registryName &&
+		isInteractiveObservationalDefault(compiled.Intentions) {
 		return nil
 	}
 	return fmt.Errorf("compiled posture is not mutation-ready")
 }
 
-func isCodexObservationalDefault(intentions []CompiledIntention) bool {
-	if len(intentions) != 2 {
+func isInteractiveObservationalDefault(intentions []CompiledIntention) bool {
+	if len(intentions) != 3 {
 		return false
 	}
 	seen := map[HarnessIntention]bool{}
@@ -230,14 +295,28 @@ func isCodexObservationalDefault(intentions []CompiledIntention) bool {
 			intention.Disposition != DispositionNative {
 			return false
 		}
+		switch intention.Intention {
+		case IntentionPrepareContext:
+			if intention.EnforcementStrength != "context" {
+				return false
+			}
+		case IntentionObserveAction, IntentionObserveOutcome:
+			if intention.EnforcementStrength != "observe" {
+				return false
+			}
+		default:
+			return false
+		}
 		seen[intention.Intention] = true
 	}
-	return seen[IntentionPrepareContext] && seen[IntentionObserveOutcome]
+	return seen[IntentionPrepareContext] &&
+		seen[IntentionObserveAction] &&
+		seen[IntentionObserveOutcome]
 }
 
 func installedGuardProjection(bindings []desiredHookBinding) (string, string) {
 	for _, binding := range bindings {
-		if binding.Event == "PreToolUse" {
+		if binding.Event == "PreToolUse" && binding.Blocking {
 			return binding.Matcher, binding.Command
 		}
 	}
@@ -251,18 +330,53 @@ func mergePreToolUseBinding(configPath, matcher, command string, check bool) (st
 	return mergeHookBindings(configPath, []desiredHookBinding{{Event: "PreToolUse", Matcher: matcher, Command: command}}, check)
 }
 
-// mergeHookBindings performs one read and at most one write for a complete desired roster. This
-// keeps the isolated profile from observing a partially-installed four-event set.
+// mergeHookBindings retains the narrow single-config seam used by package tests. Multi-harness
+// installs use InstallHooksWithConfigDirAndPublish so every selected config is prepared first.
 func mergeHookBindings(configPath string, bindings []desiredHookBinding, check bool) (string, error) {
+	prepared, err := prepareHookBindings("", configPath, bindings, check)
+	if err != nil {
+		return "", err
+	}
+	if !prepared.shouldWrite {
+		return prepared.action, nil
+	}
+	if err := writeHookConfigAtomically(prepared.path, prepared.after, prepared.mode); err != nil {
+		return "", err
+	}
+	return prepared.action, nil
+}
+
+func prepareHookBindings(harnessName, configPath string, bindings []desiredHookBinding, check bool) (preparedHookConfig, error) {
+	prepared := preparedHookConfig{
+		harness: harnessName,
+		path:    configPath,
+		mode:    0o644,
+	}
+	for _, binding := range bindings {
+		if strings.TrimSpace(binding.Event) == "" || strings.TrimSpace(binding.Command) == "" {
+			return preparedHookConfig{}, fmt.Errorf("hook binding needs event and command")
+		}
+	}
+
 	root := map[string]any{}
 	if data, err := os.ReadFile(configPath); err == nil {
+		prepared.existed = true
+		prepared.before = append([]byte(nil), data...)
+		info, statErr := os.Stat(configPath)
+		if statErr != nil {
+			return preparedHookConfig{}, statErr
+		}
+		prepared.mode = info.Mode().Perm()
 		if len(strings.TrimSpace(string(data))) > 0 {
 			if err := json.Unmarshal(data, &root); err != nil {
-				return "", fmt.Errorf("parse %s: %w", configPath, err)
+				return preparedHookConfig{}, fmt.Errorf("parse %s: %w", configPath, err)
+			}
+			if root == nil {
+				root = map[string]any{}
 			}
 		}
 	} else if !os.IsNotExist(err) {
-		return "", err
+		return preparedHookConfig{}, err
 	}
 
 	hooks, _ := root["hooks"].(map[string]any)
@@ -294,19 +408,16 @@ func mergeHookBindings(configPath string, bindings []desiredHookBinding, check b
 		}
 		if check {
 			action = combineHookInstallAction(action, "drift", true)
-			continue
+		} else {
+			action = combineHookInstallAction(action, "updated", false)
 		}
 		if len(kept) == 0 {
 			delete(hooks, event)
 		} else {
 			hooks[event] = kept
 		}
-		action = combineHookInstallAction(action, "updated", false)
 	}
 	for _, binding := range bindings {
-		if strings.TrimSpace(binding.Event) == "" || strings.TrimSpace(binding.Command) == "" {
-			return "", fmt.Errorf("hook binding needs event and command")
-		}
 		ourEntry := map[string]any{
 			"hooks": []any{map[string]any{"type": "command", "command": binding.Command}},
 		}
@@ -326,35 +437,154 @@ func mergeHookBindings(configPath string, bindings []desiredHookBinding, check b
 		case idx >= 0:
 			if check {
 				action = combineHookInstallAction(action, "drift", true)
-				continue
+			} else {
+				action = combineHookInstallAction(action, "updated", false)
 			}
 			groups[idx] = ourEntry
-			action = combineHookInstallAction(action, "updated", false)
 		default:
 			if check {
 				action = combineHookInstallAction(action, "absent", true)
-				continue
+			} else {
+				action = combineHookInstallAction(action, "installed", false)
 			}
 			groups = append(groups, ourEntry)
-			action = combineHookInstallAction(action, "installed", false)
 		}
 		hooks[binding.Event] = groups
 	}
-	if check || action == "ok" {
-		return action, nil
+	prepared.action = action
+	if action == "ok" {
+		prepared.after = append([]byte(nil), prepared.before...)
+		return prepared, nil
 	}
 	root["hooks"] = hooks
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return "", err
+		return preparedHookConfig{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
-		return "", err
+	prepared.after = append(data, '\n')
+	prepared.shouldWrite = !check
+	return prepared, nil
+}
+
+func hookConfigRevision(data []byte) string {
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("sha256:%x", sum)
+}
+
+func verifyHookConfigs(configs []preparedHookConfig) error {
+	for _, config := range configs {
+		actual, err := os.ReadFile(config.path)
+		if err != nil {
+			return fmt.Errorf("verify installed %s hook config: %w", config.harness, err)
+		}
+		if !bytes.Equal(actual, config.after) {
+			return fmt.Errorf(
+				"verify installed %s hook config: revision mismatch: got %s want %s",
+				config.harness,
+				hookConfigRevision(actual),
+				hookConfigRevision(config.after),
+			)
+		}
 	}
-	if err := os.WriteFile(configPath, append(data, '\n'), 0o644); err != nil {
-		return "", err
+	return nil
+}
+
+func rollbackHookConfigs(configs []preparedHookConfig) error {
+	var rollbackErr error
+	for i := len(configs) - 1; i >= 0; i-- {
+		config := configs[i]
+		current, err := os.ReadFile(config.path)
+		if os.IsNotExist(err) && !config.existed {
+			continue
+		}
+		if err != nil {
+			rollbackErr = errors.Join(
+				rollbackErr,
+				fmt.Errorf(
+					"rollback %s hook config %s refused; target changed after commit: %w",
+					config.harness,
+					config.path,
+					err,
+				),
+			)
+			continue
+		}
+		info, err := os.Stat(config.path)
+		if err != nil {
+			rollbackErr = errors.Join(
+				rollbackErr,
+				fmt.Errorf(
+					"rollback %s hook config %s refused; target changed after commit: %w",
+					config.harness,
+					config.path,
+					err,
+				),
+			)
+			continue
+		}
+		if !bytes.Equal(current, config.after) || info.Mode().Perm() != config.mode.Perm() {
+			rollbackErr = errors.Join(
+				rollbackErr,
+				fmt.Errorf(
+					"rollback %s hook config %s refused; target changed after commit",
+					config.harness,
+					config.path,
+				),
+			)
+			continue
+		}
+		if config.existed {
+			if err := writeHookConfigAtomically(config.path, config.before, config.mode); err != nil {
+				rollbackErr = errors.Join(
+					rollbackErr,
+					fmt.Errorf("rollback %s hook config %s: %w", config.harness, config.path, err),
+				)
+			}
+			continue
+		}
+		if err := os.Remove(config.path); err != nil && !os.IsNotExist(err) {
+			rollbackErr = errors.Join(
+				rollbackErr,
+				fmt.Errorf("rollback %s hook config %s: %w", config.harness, config.path, err),
+			)
+		}
 	}
-	return action, nil
+	return rollbackErr
+}
+
+func writeHookConfigAtomically(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(dir, ".compound-hook-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	keepTemp := true
+	defer func() {
+		if keepTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := temp.Chmod(mode.Perm()); err != nil {
+		return errors.Join(err, temp.Close())
+	}
+	if _, err := temp.Write(data); err != nil {
+		return errors.Join(err, temp.Close())
+	}
+	if err := temp.Sync(); err != nil {
+		return errors.Join(err, temp.Close())
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	keepTemp = false
+	return nil
 }
 
 func combineHookInstallAction(current, next string, check bool) string {

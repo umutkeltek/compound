@@ -172,20 +172,31 @@ compound work create \
 compound work claim <work_id> --by "operator:me"
 compound work advance <work_id> --to running --by "operator:me" --execute \
   --harness os-harness-entrypoints \
-  --workspace <demo-repo> \
-  -- echo hello
+  --workspace "$PWD" \
+  -- echo "hello from compound"
 
 compound work show <work_id> --json
 compound run-attempt list --json
 compound workbench
 
-# Copy a transition id from the work JSON to inspect its exact evidence.
+# Close the verifying work; this mints its Receipt and Transition.
+compound work close <work_id> \
+  --by "operator:me" \
+  --outcome completed \
+  --move-type outward_delta \
+  --summary "the bounded harness execution produced inspectable proof" \
+  --changed
+
+# Copy the transition id from the close output or closed work JSON.
+compound work show <work_id> --json
 compound transition show <transition_id>
 ```
 
-A successful command moves the work to `verifying`. The work, RunAttempt,
-transcript, Receipt, and Transition remain linked so the next state is based on
-inspectable proof rather than the harness's claim that it succeeded.
+A successful command prints a `run_attempt_id`, captures a transcript, and
+moves the work to `verifying`. Closing it then mints the Receipt and Transition.
+The WorkEnvelope keeps the RunAttempt and terminal proof linked, so the next
+state is based on inspectable evidence rather than the harness's claim that it
+succeeded.
 
 Optional local console on port 3777:
 
@@ -250,10 +261,11 @@ Runtime and contracts:
 - `compound contract compile` and `compound orient` produce EffectiveContract
   and ContextPack artifacts, including included/excluded refs, active hook
   rosters, and structured capability offers.
-- `compound contract import-hooks --codex-hooks-json <hooks.json>` or
-  `--hook-registration-ts <hook-registration.ts>` installs generated hook
-  rosters as `compound://config/installed-hooks`; `compound contract
-  hooks-authority` reports that handoff.
+- `compound hook install` writes a compiled managed native roster and records
+  the same posture as `compound://config/installed-hooks`; manual
+  `compound contract import-hooks --codex-hooks-json <hooks.json>` or
+  `--hook-registration-ts <hook-registration.ts>` imports generated rosters,
+  and `compound contract hooks-authority` reports that handoff.
 
 Execution and policy:
 
