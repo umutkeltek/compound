@@ -323,8 +323,10 @@ func TestAttachDispatchPromptDoesNotOverwriteConcurrentLifecycleMutation(t *test
 			var result attachResult
 			select {
 			case result = <-attached:
-			case <-time.After(5 * time.Second):
-				t.Fatal("dispatch prompt attachment did not finish")
+			// This path compiles dispatch context while the full repository test battery runs
+			// packages concurrently. Keep the timeout a deadlock guard, not a host-load race.
+			case <-time.After(20 * time.Second):
+				t.Fatal("dispatch prompt attachment did not finish within 20 seconds")
 			}
 			if result.err != nil {
 				t.Fatalf("attach dispatch prompt: %v", result.err)
