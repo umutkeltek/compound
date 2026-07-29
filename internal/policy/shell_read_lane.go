@@ -514,8 +514,15 @@ func shellReadQuoted(runes []rune, open int) (string, int, bool) {
 	body := strings.Builder{}
 	for i := open + 1; i < len(runes); i++ {
 		if quote == '"' && runes[i] == '\\' && i+1 < len(runes) {
-			i++
-			body.WriteRune(runes[i])
+			next := runes[i+1]
+			if shellDoubleQuoteEscapes(next) {
+				i++
+				if next != '\n' {
+					body.WriteRune(next)
+				}
+			} else {
+				body.WriteRune('\\')
+			}
 			continue
 		}
 		if runes[i] == quote {
@@ -524,6 +531,15 @@ func shellReadQuoted(runes []rune, open int) (string, int, bool) {
 		body.WriteRune(runes[i])
 	}
 	return "", 0, false
+}
+
+func shellDoubleQuoteEscapes(next rune) bool {
+	switch next {
+	case '$', '`', '"', '\\', '\n':
+		return true
+	default:
+		return false
+	}
 }
 
 // shellReadDoubleQuoted returns the literal text of a double-quoted span with
@@ -537,8 +553,15 @@ func shellReadDoubleQuoted(runes []rune, open int) (string, []shellSegment, int,
 		switch runes[i] {
 		case '\\':
 			if i+1 < len(runes) {
-				i++
-				text.WriteRune(runes[i])
+				next := runes[i+1]
+				if shellDoubleQuoteEscapes(next) {
+					i++
+					if next != '\n' {
+						text.WriteRune(next)
+					}
+				} else {
+					text.WriteRune('\\')
+				}
 			}
 		case '"':
 			return text.String(), nested, i, true
@@ -625,9 +648,12 @@ func shellReadRedirection(runes []rune, start int, word *strings.Builder, curren
 		word.Reset()
 	}
 	i := start
-	input := runes[i] == '<'
+	inputOnly := runes[i] == '<'
 	for i+1 < len(runes) && (runes[i+1] == '>' || runes[i+1] == '<') {
 		i++
+		if runes[i] == '>' {
+			inputOnly = false
+		}
 	}
 	if i+1 < len(runes) && runes[i+1] == '&' {
 		i++
@@ -672,7 +698,7 @@ func shellReadRedirection(runes []rune, start int, word *strings.Builder, curren
 	if target.Len() == 0 {
 		return i, false, false
 	}
-	if input {
+	if inputOnly {
 		if strings.HasPrefix(target.String(), "/dev/tcp/") || strings.HasPrefix(target.String(), "/dev/udp/") {
 			current.obfuscated = true
 		}
@@ -820,6 +846,8 @@ func shellVerificationExecutableTrusted(token, verb string) bool {
 		return token == "node"
 	case "xattr":
 		return token == "xattr" || token == "/usr/bin/xattr"
+	case "compound":
+		return token == "compound"
 	default:
 		return true
 	}
