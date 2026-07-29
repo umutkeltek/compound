@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"compound/internal/routeevidence"
 	"compound/internal/work"
 )
 
@@ -329,9 +330,9 @@ func normalizeDelegateLaunchProfilePlan(
 	}
 
 	disposition := work.DelegateLaunchProfileIncompatible
-	if normalizeLaneHarness(req.SelectedHarness) == normalizeLaneHarness(profile.Harness) &&
-		strings.TrimSpace(req.SelectedModelID) == profile.RequestedModel &&
-		strings.TrimSpace(req.SelectedProviderRoute) == profile.Route &&
+	if routeevidence.DelegateClientHarnessesCompatible(req.SelectedHarness, req.SelectedLaneID, profile.Harness) &&
+		strings.TrimSpace(req.SelectedModelID) != "" &&
+		strings.TrimSpace(req.SelectedProviderRoute) == profile.ProviderLane &&
 		strings.TrimSpace(req.SelectedTransportID) == laneLaunchProfileTransportID &&
 		strings.TrimSpace(req.RequestedNativeEffort) == profile.RequestedEffort &&
 		selectedExecutableID == canonical.ExecutableID {
@@ -349,16 +350,13 @@ func normalizeDelegateLaunchProfilePlan(
 			SelectedTransportID:   req.SelectedTransportID,
 			RequestedNativeEffort: req.RequestedNativeEffort,
 			PlanID:                canonical.ID,
+			ClientHarnessID:       canonical.Harness,
 			ClientProfileID:       canonical.ClientProfileID,
 			Revision:              canonical.Revision,
 			SelectedExecutableID:  selectedExecutableID,
 			ExecutableID:          canonical.ExecutableID,
 		},
 	}, nil
-}
-
-func normalizeLaneHarness(value string) string {
-	return strings.ReplaceAll(strings.TrimSpace(value), "_", "-")
 }
 
 func validLaneSHA256Revision(value string) bool {

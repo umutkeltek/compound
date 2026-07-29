@@ -57,8 +57,13 @@ When an explicit launch profile is present, route-evidence may defer only the re
 transport while the remaining tuple is exact. The CLI then asks the executor owner for the full read-only profile
 plan. Compound accepts only the owner's exact `launch-profile-plan@1` consumer projection, with current
 generated artifacts, `segmented_full_wire` capture, an opaque nonempty client profile, and exact
-harness/model/route/effort compatibility. The owner's exact `gateway|tap|headroom` transport is sealed beside the
-selected gateway transport family; it is never inferred from a route name. Missing client profiles, drifted
+harness-family/provider-lane/effort compatibility. A registered lane such as a Claude-family token lane remains
+distinct from the owner's `claude-code` client family: the route-evidence registry owns that family mapping.
+Likewise, the selected tuple's plan identity and provider route class remain distinct from the owner's concrete
+model and route. The selected provider route must equal the owner-attested `provider_lane`; the concrete owner
+model and route are sealed from the plan rather than inferred from or equated to the tuple aliases. The owner's
+exact `gateway|tap|headroom` transport is sealed beside the selected gateway transport family; it is never inferred
+from a route name. Missing client profiles, drifted
 materializations, non-capturing or unknown transports, or changed authority revisions refuse before readiness,
 capacity, RunAttempt mint, or process creation.
 

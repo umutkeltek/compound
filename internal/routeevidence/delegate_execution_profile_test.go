@@ -70,6 +70,7 @@ func TestResolveDelegateExecutionProfileAttestsOnlyExactRegisteredHarnessFamilie
 		{name: "Claude lane with Codex client", selected: "claude_qwen", lane: "claude_qwen", clientHarness: "codex", want: work.DelegateExecutionProfileIncompatible},
 		{name: "Codex lane with Claude client", selected: "codex", lane: "codex", clientHarness: "claude-code", want: work.DelegateExecutionProfileIncompatible},
 		{name: "mixed selected harness and lane families", selected: "claude_code", lane: "codex", clientHarness: "claude-code", want: work.DelegateExecutionProfileIncompatible},
+		{name: "different registered Claude lane identities", selected: "claude_minimax", lane: "claude_qwen", clientHarness: "claude-code", want: work.DelegateExecutionProfileIncompatible},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resolved, err := resolveDelegateExecutionProfile(work.DelegateExecutionProfileResolveRequest{

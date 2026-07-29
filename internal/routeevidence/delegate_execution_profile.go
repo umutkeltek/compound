@@ -36,7 +36,7 @@ func resolveDelegateExecutionProfile(req work.DelegateExecutionProfileResolveReq
 		strings.TrimSpace(plan.TransportID) == "switchback" {
 		transportCompatible = true
 	}
-	if delegateExecutionProfileHarnessesCompatible(req.SelectedHarness, req.SelectedLaneID, plan.ClientHarnessID) &&
+	if DelegateClientHarnessesCompatible(req.SelectedHarness, req.SelectedLaneID, plan.ClientHarnessID) &&
 		delegateExecutionProfileModelCompatible(plan.ModelConstraint, req.SelectedModelID) &&
 		delegateExecutionProfileRouteCompatible(plan.RouteAlias, req.SelectedProviderRoute, req.SelectedModelID) &&
 		transportCompatible {
@@ -83,16 +83,17 @@ func delegateExecutionProfileTupleIdentityEqual(left, right string) bool {
 	return strings.TrimSpace(left) == strings.TrimSpace(right)
 }
 
-// delegateExecutionProfileHarnessesCompatible keeps client-family ownership
+// DelegateClientHarnessesCompatible keeps client-family ownership
 // beside the routeevidence tuple resolver. The accepted delegate identities
 // are the exact Claude/Codex harnesses currently enrolled by Compound's
 // HarnessRegistry; normalization only makes their declared hyphen/underscore
 // spellings equivalent. Unknown prefix lookalikes remain unregistered.
-func delegateExecutionProfileHarnessesCompatible(selectedHarness, selectedLaneID, clientHarnessID string) bool {
+func DelegateClientHarnessesCompatible(selectedHarness, selectedLaneID, clientHarnessID string) bool {
 	selectedFamily, selectedRegistered := registeredDelegateClientHarnessFamily(selectedHarness)
 	laneFamily, laneRegistered := registeredDelegateClientHarnessFamily(selectedLaneID)
 	return selectedRegistered &&
 		laneRegistered &&
+		normalizeModelCapabilitySelector(selectedHarness) == normalizeModelCapabilitySelector(selectedLaneID) &&
 		selectedFamily == laneFamily &&
 		selectedFamily == normalizeModelCapabilitySelector(clientHarnessID)
 }

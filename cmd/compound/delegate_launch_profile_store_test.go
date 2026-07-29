@@ -69,10 +69,10 @@ func testLaneLaunchProfilePlan() []byte {
 func testLaunchProfileResolveRequest() work.DelegateLaunchProfileResolveRequest {
 	return work.DelegateLaunchProfileResolveRequest{
 		ProfileID:             "claude-minimax",
-		SelectedHarness:       "claude_code",
-		SelectedLaneID:        "claude_code",
-		SelectedModelID:       "minimax/minimax-m3",
-		SelectedProviderRoute: "minimax/minimax-m3",
+		SelectedHarness:       "claude_minimax",
+		SelectedLaneID:        "claude_minimax",
+		SelectedModelID:       "claude-minimax (token plan)",
+		SelectedProviderRoute: "minimax",
 		SelectedTransportID:   "switchback",
 		RequestedNativeEffort: "xhigh",
 		SelectedCommand:       "claude-minimax",
@@ -141,6 +141,114 @@ func TestNormalizeDelegateLaunchProfilePlanConsumesSafeOwnerProjection(t *testin
 	}
 	if bytes.Contains(resolution.Snapshot, []byte("/synthetic/private")) {
 		t.Fatalf("normalized snapshot copied an owner path: %s", resolution.Snapshot)
+	}
+}
+
+func testLaneLaunchProfilePlanFor(
+	t *testing.T,
+	profileID,
+	providerLane,
+	route,
+	requestedModel,
+	clientProfile,
+	wrapper string,
+) []byte {
+	t.Helper()
+	var plan map[string]any
+	if err := json.Unmarshal(testLaneLaunchProfilePlan(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	profile := plan["profile"].(map[string]any)
+	profile["id"] = profileID
+	profile["provider_lane"] = providerLane
+	profile["route"] = route
+	profile["requested_model"] = requestedModel
+	profile["client_profile"] = clientProfile
+	profile["wrappers"] = []string{wrapper}
+	artifacts := plan["artifacts"].([]any)
+	artifacts[1].(map[string]any)["path"] = "/synthetic/private/" + wrapper
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestNormalizeDelegateLaunchProfilePlanAcceptsRegisteredClaudeTokenLaneFamily(t *testing.T) {
+	tests := []struct {
+		name            string
+		profileID       string
+		selectedHarness string
+		selectedModel   string
+		providerLane    string
+		route           string
+		ownerModel      string
+		clientProfile   string
+		wrapper         string
+	}{
+		{
+			name:            "minimax",
+			profileID:       "claude-minimax",
+			selectedHarness: "claude_minimax",
+			selectedModel:   "claude-minimax (token plan)",
+			providerLane:    "minimax",
+			route:           "minimax/MiniMax-M3",
+			ownerModel:      "MiniMax-M3",
+			clientProfile:   "claude-minimax-default",
+			wrapper:         "claude-minimax",
+		},
+		{
+			name:            "qwen",
+			profileID:       "claude-qwen",
+			selectedHarness: "claude_qwen",
+			selectedModel:   "claude-qwen (token plan)",
+			providerLane:    "qwen",
+			route:           "qwen/qwen3.8-max-preview",
+			ownerModel:      "qwen3.8-max-preview",
+			clientProfile:   "claude-qwen-default",
+			wrapper:         "claude-qwen",
+		},
+		{
+			name:            "zai",
+			profileID:       "claude-zai-full",
+			selectedHarness: "claude_zai",
+			selectedModel:   "claude-zai (glm sub)",
+			providerLane:    "zai",
+			route:           "zai/glm-5.2",
+			ownerModel:      "glm-5.2",
+			clientProfile:   "claude-zai-default",
+			wrapper:         "claude-zai-full",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := testLaunchProfileResolveRequest()
+			req.ProfileID = tc.profileID
+			req.SelectedHarness = tc.selectedHarness
+			req.SelectedLaneID = tc.selectedHarness
+			req.SelectedModelID = tc.selectedModel
+			req.SelectedProviderRoute = tc.providerLane
+			req.SelectedCommand = tc.wrapper
+
+			resolution, err := normalizeDelegateLaunchProfilePlan(
+				testLaneLaunchProfilePlanFor(
+					t,
+					tc.profileID,
+					tc.providerLane,
+					tc.route,
+					tc.ownerModel,
+					tc.clientProfile,
+					tc.wrapper,
+				),
+				req,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := resolution.Compatibility.Disposition, work.DelegateLaunchProfileCompatible; got != want {
+				t.Fatalf("registered Claude token lane disposition = %q, want %q", got, want)
+			}
+		})
 	}
 }
 
@@ -256,8 +364,8 @@ func TestNormalizeDelegateLaunchProfilePlanMarksTupleMismatchIncompatible(t *tes
 		{name: "harness", mutate: func(req *work.DelegateLaunchProfileResolveRequest) {
 			req.SelectedHarness = "codex"
 		}},
-		{name: "model", mutate: func(req *work.DelegateLaunchProfileResolveRequest) {
-			req.SelectedModelID = "other/model"
+		{name: "missing selected model", mutate: func(req *work.DelegateLaunchProfileResolveRequest) {
+			req.SelectedModelID = ""
 		}},
 		{name: "route", mutate: func(req *work.DelegateLaunchProfileResolveRequest) {
 			req.SelectedProviderRoute = "other/route"
@@ -270,6 +378,10 @@ func TestNormalizeDelegateLaunchProfilePlanMarksTupleMismatchIncompatible(t *tes
 		}},
 		{name: "command", mutate: func(req *work.DelegateLaunchProfileResolveRequest) {
 			req.SelectedCommand = "other-wrapper"
+		}},
+		{name: "unregistered Claude lookalike", mutate: func(req *work.DelegateLaunchProfileResolveRequest) {
+			req.SelectedHarness = "claude_minimax_unregistered"
+			req.SelectedLaneID = "claude_minimax_unregistered"
 		}},
 	}
 	for _, tc := range tests {

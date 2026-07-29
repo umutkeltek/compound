@@ -93,6 +93,7 @@ func testCompatibleDelegateLaunchProfileResolution() *DelegateLaunchProfileResol
 			SelectedTransportID:   "switchback",
 			RequestedNativeEffort: "xhigh",
 			PlanID:                "claude-minimax",
+			ClientHarnessID:       "claude-code",
 			ClientProfileID:       "claude-minimax-default",
 			Revision:              "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			SelectedExecutableID:  "claude",
@@ -991,7 +992,7 @@ func TestDelegateLaunchProfileRejectsOwnerDriftOrMissingClientBeforeReadinessCap
 }
 
 func TestDelegateLaunchProfileBindsOwnerPlanToEnvironmentAndRunAttempt(t *testing.T) {
-	installTestDelegateExecutionProfileHarness(t)
+	installTestDelegateExecutionProfileHarnessTuple(t, "claude-minimax (token plan)", "minimax", "switchback")
 	originalProfileResolver := DelegateExecutionProfileResolver
 	originalLaunchResolver := DelegateLaunchProfileResolver
 	originalReadiness := DelegateHarnessReadiness
@@ -1005,21 +1006,34 @@ func TestDelegateLaunchProfileBindsOwnerPlanToEnvironmentAndRunAttempt(t *testin
 
 	plan := testDelegateExecutionProfilePlan()
 	DelegateExecutionProfileResolver = func(DelegateExecutionProfileResolveRequest) (*DelegateExecutionProfileResolution, error) {
-		return testCompatibleDelegateExecutionProfileResolution(plan), nil
+		return testDelegateExecutionProfileResolutionForTuple(
+			plan,
+			"claude_minimax",
+			"claude_minimax",
+			"claude-minimax (token plan)",
+			"minimax",
+			"switchback",
+			DelegateExecutionProfileCompatible,
+		), nil
 	}
 	launchResolverCalls := 0
 	DelegateLaunchProfileResolver = func(req DelegateLaunchProfileResolveRequest) (*DelegateLaunchProfileResolution, error) {
 		launchResolverCalls++
 		if req.ProfileID != "claude-minimax" ||
-			req.SelectedHarness != "claude_code" ||
-			req.SelectedLaneID != "claude_code" ||
-			req.SelectedModelID != "fixture/model" ||
-			req.SelectedProviderRoute != "auto/build" ||
+			req.SelectedHarness != "claude_minimax" ||
+			req.SelectedLaneID != "claude_minimax" ||
+			req.SelectedModelID != "claude-minimax (token plan)" ||
+			req.SelectedProviderRoute != "minimax" ||
 			req.SelectedTransportID != "switchback" ||
 			req.RequestedNativeEffort != "xhigh" {
 			t.Fatalf("launch profile owner request lost selected tuple: %+v", req)
 		}
-		return testCompatibleDelegateLaunchProfileResolution(), nil
+		resolution := testCompatibleDelegateLaunchProfileResolution()
+		resolution.Compatibility.SelectedHarness = "claude_minimax"
+		resolution.Compatibility.SelectedLaneID = "claude_minimax"
+		resolution.Compatibility.SelectedModelID = "claude-minimax (token plan)"
+		resolution.Compatibility.SelectedProviderRoute = "minimax"
+		return resolution, nil
 	}
 	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
 		return DelegateHarnessReadinessResult{Ready: true}, nil
@@ -1031,7 +1045,7 @@ func TestDelegateLaunchProfileBindsOwnerPlanToEnvironmentAndRunAttempt(t *testin
 	runner := newFakeRunner()
 	result, err := store.Delegate(DelegateOptions{
 		WorkID:    workID,
-		Harness:   "claude_code",
+		Harness:   "claude_minimax",
 		Command:   "claude",
 		Workspace: t.TempDir(),
 		ExecutionProfile: DelegateExecutionProfileIntent{
@@ -1098,7 +1112,7 @@ func TestDelegateLaunchProfileBindsOwnerPlanToEnvironmentAndRunAttempt(t *testin
 }
 
 func TestDelegateLaunchProfileSuppliesExecutorOwnedTransportAfterHarnessResolution(t *testing.T) {
-	installTestDelegateExecutionProfileHarnessTuple(t, "fixture/model", "auto/build", "")
+	installTestDelegateExecutionProfileHarnessTuple(t, "claude-minimax (token plan)", "minimax", "")
 	originalProfileResolver := DelegateExecutionProfileResolver
 	originalLaunchResolver := DelegateLaunchProfileResolver
 	originalReadiness := DelegateHarnessReadiness
@@ -1117,10 +1131,10 @@ func TestDelegateLaunchProfileSuppliesExecutorOwnedTransportAfterHarnessResoluti
 		}
 		return testDelegateExecutionProfileResolutionForTuple(
 			plan,
-			"claude_code",
-			"claude_code",
-			"fixture/model",
-			"auto/build",
+			"claude_minimax",
+			"claude_minimax",
+			"claude-minimax (token plan)",
+			"minimax",
 			"",
 			DelegateExecutionProfileCompatible,
 		), nil
@@ -1129,7 +1143,12 @@ func TestDelegateLaunchProfileSuppliesExecutorOwnedTransportAfterHarnessResoluti
 		if req.SelectedTransportID != "switchback" {
 			t.Fatalf("launch resolver did not receive the execution plan transport family: %+v", req)
 		}
-		return testCompatibleDelegateLaunchProfileResolution(), nil
+		resolution := testCompatibleDelegateLaunchProfileResolution()
+		resolution.Compatibility.SelectedHarness = "claude_minimax"
+		resolution.Compatibility.SelectedLaneID = "claude_minimax"
+		resolution.Compatibility.SelectedModelID = "claude-minimax (token plan)"
+		resolution.Compatibility.SelectedProviderRoute = "minimax"
+		return resolution, nil
 	}
 	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
 		return DelegateHarnessReadinessResult{Ready: true}, nil
@@ -1140,7 +1159,7 @@ func TestDelegateLaunchProfileSuppliesExecutorOwnedTransportAfterHarnessResoluti
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	result, err := store.Delegate(DelegateOptions{
 		WorkID:    workID,
-		Harness:   "claude_code",
+		Harness:   "claude_minimax",
 		Command:   "claude",
 		Workspace: t.TempDir(),
 		ExecutionProfile: DelegateExecutionProfileIntent{

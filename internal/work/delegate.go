@@ -297,6 +297,7 @@ type DelegateLaunchProfileCompatibility struct {
 	SelectedTransportID   string `json:"selected_transport_id"`
 	RequestedNativeEffort string `json:"requested_native_effort"`
 	PlanID                string `json:"plan_id"`
+	ClientHarnessID       string `json:"client_harness_id"`
 	ClientProfileID       string `json:"client_profile_id"`
 	Revision              string `json:"revision"`
 	SelectedExecutableID  string `json:"selected_executable_id"`
@@ -1009,6 +1010,7 @@ func validateDelegateLaunchProfileResolution(
 		{name: "selected_transport_id", got: compatibility.SelectedTransportID, want: selectedTransportID},
 		{name: "requested_native_effort", got: compatibility.RequestedNativeEffort, want: requestedNativeEffort},
 		{name: "plan_id", got: compatibility.PlanID, want: plan.ID},
+		{name: "client_harness_id", got: compatibility.ClientHarnessID, want: plan.Harness},
 		{name: "client_profile_id", got: compatibility.ClientProfileID, want: plan.ClientProfileID},
 		{name: "revision", got: compatibility.Revision, want: plan.Revision},
 		{name: "selected_executable_id", got: compatibility.SelectedExecutableID, want: filepath.Base(strings.TrimSpace(selectedCommand))},
@@ -1028,8 +1030,7 @@ func validateDelegateLaunchProfileResolution(
 		got  string
 		want string
 	}{
-		{name: "route", got: plan.Route, want: selectedProviderRoute},
-		{name: "requested_model", got: plan.RequestedModel, want: selectedModelID},
+		{name: "provider_lane", got: plan.ProviderLane, want: selectedProviderRoute},
 		{name: "transport_id", got: plan.TransportID, want: selectedTransportID},
 		{name: "requested_effort", got: plan.RequestedEffort, want: requestedNativeEffort},
 		{name: "executable_id", got: plan.ExecutableID, want: filepath.Base(strings.TrimSpace(selectedCommand))},
@@ -1038,12 +1039,6 @@ func validateDelegateLaunchProfileResolution(
 			return nil, &delegateLaunchProfileIncompatibleError{
 				detail: fmt.Sprintf("%s %q does not match selected tuple %q", field.name, field.got, field.want),
 			}
-		}
-	}
-	if strings.ReplaceAll(strings.TrimSpace(plan.Harness), "-", "_") !=
-		strings.ReplaceAll(strings.TrimSpace(selectedHarness), "-", "_") {
-		return nil, &delegateLaunchProfileIncompatibleError{
-			detail: fmt.Sprintf("harness %q does not match selected tuple %q", plan.Harness, selectedHarness),
 		}
 	}
 	executablePath := strings.TrimSpace(resolution.ExecutablePath)
