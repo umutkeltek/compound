@@ -195,6 +195,53 @@ func TestFirstPartyCommandAdmissionKeepsDoctorMutationNeighborsHeld(t *testing.T
 	}
 }
 
+func TestRunAttemptAdmissionSeparatesReadOnlyListFromMutation(t *testing.T) {
+	t.Parallel()
+
+	for _, command := range []string{
+		"compound run-attempt list",
+		"compound run-attempt list --non-terminal --json",
+		"compound run-attempt list --home /tmp/compound-read-fixture",
+	} {
+		got := policy.ClassifyToolAction(policy.ToolActionRequest{
+			Tool:               "Bash",
+			Arguments:          map[string]any{"command": command},
+			FirstPartyCommands: firstPartyCommandCatalog(),
+		})
+		if !got.Known || got.Operation != "local_command" || got.MutationClass != "local_reversible" {
+			t.Fatalf("%q classification = %+v, want known automatic local command", command, got)
+		}
+	}
+
+	for _, command := range []string{
+		"compound run-attempt",
+		"compound run-attempt sweep --threshold 30m",
+		"compound run-attempt create",
+		"compound run-attempt start",
+		"compound run-attempt finish",
+		"compound run-attempt heartbeat",
+		"compound run-attempt link-predecessor",
+		"compound run-attempt show ratt_20260729T000000Z_00000000 --json",
+		"compound run-attempt definitely-not-a-subcommand",
+		"compound run-attempt list $(touch /tmp/compound-classifier-must-not-run)",
+		`compound run-attempt "$RUN_ATTEMPT_SUBCOMMAND"`,
+		"compound run-attempt $(printf list)",
+		"compound run-attempt `printf list`",
+		`compound run-attempt li${RUN_ATTEMPT_SUFFIX}`,
+		"compound run-attempt l*",
+		"compound run-attempt {list,sweep}",
+	} {
+		got := policy.ClassifyToolAction(policy.ToolActionRequest{
+			Tool:               "Bash",
+			Arguments:          map[string]any{"command": command},
+			FirstPartyCommands: firstPartyCommandCatalog(),
+		})
+		if got.Known || got.MutationClass != "security" {
+			t.Fatalf("%q classification = %+v, want fail-closed security hold", command, got)
+		}
+	}
+}
+
 func TestFirstPartyCommandCatalogMatchesEveryRuntimeCommand(t *testing.T) {
 	t.Parallel()
 

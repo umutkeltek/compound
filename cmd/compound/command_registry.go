@@ -125,7 +125,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"proof-check":        governedCommand(cmdProofCheck),
 		"doctor":             readCommand(cmdDoctor),
 		"retention":          readCommand(cmdRetention),
-		"run-attempt":        heldCommand(cmdRunAttempt),
+		"run-attempt":        heldCommand(cmdRunAttempt).withSubcommandAdmission("list", policy.FirstPartyCommandRead),
 		"experiential-smoke": heldCommand(cmdExperientialSmoke),
 		"release":            heldCommand(cmdRelease),
 		"reviews":            heldCommand(cmdReviews),
