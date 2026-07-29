@@ -785,7 +785,7 @@ func shellPrefixHasAssignment(prefix []string) bool {
 
 func shellVerificationVerbRequiresCleanPrefix(verb string) bool {
 	switch verb {
-	case "sed", "bash", "swift", "make":
+	case "sed", "bash", "swift", "make", "tsc", "bun", "node", "xattr":
 		return true
 	default:
 		return false
@@ -794,7 +794,7 @@ func shellVerificationVerbRequiresCleanPrefix(verb string) bool {
 
 func shellDynamicArgumentsNeedHold(verb string) bool {
 	switch verb {
-	case "sed", "bash", "swift", "make":
+	case "sed", "bash", "swift", "make", "tsc", "bun", "node", "xattr":
 		return true
 	default:
 		return false
@@ -812,6 +812,14 @@ func shellVerificationExecutableTrusted(token, verb string) bool {
 		return token == "swift" || token == "/usr/bin/swift"
 	case "make":
 		return token == "make" || token == "/usr/bin/make"
+	case "tsc":
+		return token == "./node_modules/.bin/tsc"
+	case "bun":
+		return token == "bun"
+	case "node":
+		return token == "node"
+	case "xattr":
+		return token == "xattr" || token == "/usr/bin/xattr"
 	default:
 		return true
 	}
@@ -945,6 +953,23 @@ func shellVerbClass(verb string, args []string, firstPartyCommands FirstPartyCom
 		return shellClassInstall
 	case "make":
 		return shellMakeVerificationClass(args)
+	case "tsc":
+		if len(args) == 1 && args[0] == "--noEmit" {
+			return shellClassRead
+		}
+		return shellClassUnknown
+	case "bun":
+		if shellProofSmokeScript(args) {
+			return shellClassRead
+		}
+	case "node":
+		if len(args) == 2 && args[0] == "--experimental-strip-types" &&
+			shellProofSmokeScript(args[1:]) {
+			return shellClassRead
+		}
+		return shellClassUnknown
+	case "xattr":
+		return shellXattrClass(args)
 	case "sed":
 		if shellSedIsReadOnly(args) {
 			return shellClassRead
@@ -988,6 +1013,64 @@ func shellVerbClass(verb string, args []string, firstPartyCommands FirstPartyCom
 		return shellClassRead
 	}
 	return shellClassUnknown
+}
+
+func shellProofSmokeScript(args []string) bool {
+	if len(args) != 1 {
+		return false
+	}
+	script := strings.TrimSpace(args[0])
+	if script == "" || filepath.IsAbs(script) || strings.ContainsAny(script, "*?[") ||
+		strings.Contains(script, shellSubstitutionPlaceholder) {
+		return false
+	}
+	clean := filepath.Clean(script)
+	if clean != script || filepath.Dir(clean) != "scripts" {
+		return false
+	}
+	base := filepath.Base(clean)
+	return base == "smoke.mjs" || strings.HasSuffix(base, "-smoke.mjs")
+}
+
+func shellXattrClass(args []string) string {
+	if len(args) == 0 {
+		return shellClassUnknown
+	}
+	flagsDone := false
+	hasOperand := false
+	for _, arg := range args {
+		if !flagsDone && arg == "--" {
+			flagsDone = true
+			continue
+		}
+		if !flagsDone && strings.HasPrefix(arg, "--") {
+			if arg != "--help" {
+				return shellClassUnknown
+			}
+			continue
+		}
+		if !flagsDone && strings.HasPrefix(arg, "-") {
+			flags := strings.TrimPrefix(arg, "-")
+			if flags == "" {
+				return shellClassUnknown
+			}
+			for _, flag := range flags {
+				switch flag {
+				case 'h', 'l', 'p', 'r', 's', 'v', 'x':
+				case 'c', 'd', 'w':
+					return shellClassUnknown
+				default:
+					return shellClassUnknown
+				}
+			}
+			continue
+		}
+		hasOperand = true
+	}
+	if !hasOperand {
+		return shellClassUnknown
+	}
+	return shellClassRead
 }
 
 func shellBashSyntaxClass(args []string) string {

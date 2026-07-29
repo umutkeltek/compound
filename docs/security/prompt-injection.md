@@ -130,6 +130,13 @@ Mixed commands carry their exceptions on the same executable registry row:
 read-only `harness posture-plan` stays read-only, while `hook install` retains
 the install sink and cannot inherit the generic governed lane.
 
+Local verification admission is syntax-bounded too. The repo-local
+`./node_modules/.bin/tsc --noEmit`, Compound console `scripts/*smoke.mjs`
+commands through Bun or Node's TypeScript-strip mode, and read-only `xattr`
+inspection remain automatic. Other JavaScript entrypoints, TypeScript emit
+modes, and `xattr` write/delete/clear flags remain held. The same command
+registry marks `profiles check` read-only and `profiles generate` governed.
+
 A held action can use a durable, exact, one-use approval. The approval binds
 operation, arguments, destination, source refs, tool schema and policy
 revision, expires within fifteen minutes, and cannot override a deny or

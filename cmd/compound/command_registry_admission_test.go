@@ -104,6 +104,14 @@ func TestFirstPartyCommandAdmissionDistinguishesMutatingSubcommands(t *testing.T
 			command:       "compound coordination measure --report drep_example",
 			wantOperation: "governed_command",
 		},
+		{
+			command:       "compound profiles check --installed-only",
+			wantOperation: "local_command",
+		},
+		{
+			command:       "compound profiles generate",
+			wantOperation: "governed_command",
+		},
 	}
 
 	for _, tc := range tests {

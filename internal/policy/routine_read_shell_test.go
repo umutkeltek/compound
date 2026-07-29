@@ -103,6 +103,60 @@ func TestEstablishedOperatorDiagnosticsStayAutomatic(t *testing.T) {
 	}
 }
 
+func TestCompoundVerificationDiagnosticsStayAutomatic(t *testing.T) {
+	commands := []string{
+		"./node_modules/.bin/tsc --noEmit",
+		"bun scripts/continue-button-smoke.mjs",
+		"node --experimental-strip-types scripts/mutation-guard-smoke.mjs",
+		"xattr -lr console/node_modules/react",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			monitored := MonitorToolAction(
+				monitorRequest("Bash", map[string]any{"command": command}),
+				DefaultConfig(),
+				fixedNow,
+			)
+			if !monitored.Classification.Known || monitored.Classification.Operation != "local_command" {
+				t.Fatalf("bounded verification diagnostic became friction: %q => %+v", command, monitored.Classification)
+			}
+			if !Allowed(monitored.Decision) {
+				t.Fatalf("bounded verification diagnostic should remain automatic: %q => %+v", command, monitored.Decision)
+			}
+		})
+	}
+}
+
+func TestCompoundVerificationDiagnosticsKeepUnsafeNeighborsHeld(t *testing.T) {
+	commands := []string{
+		"/tmp/node_modules/.bin/tsc --noEmit",
+		"./node_modules/.bin/tsc --emitDeclarationOnly",
+		"bun scripts/publish.mjs",
+		"bun ../scripts/continue-button-smoke.mjs",
+		"bun scripts/continue-button-smoke.mjs --write",
+		"node scripts/mutation-guard-smoke.mjs",
+		"node --experimental-strip-types scripts/publish.mjs",
+		"xattr -w com.example.fixture value file",
+		"xattr -d com.example.fixture file",
+		"xattr -c file",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			monitored := MonitorToolAction(
+				monitorRequest("Bash", map[string]any{"command": command}),
+				DefaultConfig(),
+				fixedNow,
+			)
+			if monitored.Classification.Known && monitored.Classification.Operation == "local_command" {
+				t.Fatalf("consequential verification neighbor entered routine lane: %q => %+v", command, monitored.Classification)
+			}
+			if Allowed(monitored.Decision) {
+				t.Fatalf("consequential verification neighbor should remain held: %q => %+v", command, monitored)
+			}
+		})
+	}
+}
+
 func TestSedReadClassifierParsesOnlyScriptOperands(t *testing.T) {
 	automatic := []string{
 		"sed -n '1,80p' /synthetic/wayfinder/SKILL.md",
