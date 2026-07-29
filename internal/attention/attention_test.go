@@ -531,6 +531,7 @@ func TestAreaMappingCoversKnownAreasAndUnknownDefault(t *testing.T) {
 		"synthesis-sweeps",
 		"capability-evaluation-intake",
 		"source-control-cleanup",
+		"worktree-retirement",
 		"capability-lifecycle-proposals",
 		"observation-candidates",
 		"source-observation-verdicts",

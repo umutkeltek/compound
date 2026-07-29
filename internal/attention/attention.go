@@ -160,6 +160,7 @@ var knownAreaClassifications = map[string]areaClassification{
 	"synthesis-sweeps":               {Kind: KindHygiene},
 	"capability-evaluation-intake":   {Kind: KindIntake},
 	"source-control-cleanup":         {Kind: KindHygiene},
+	"worktree-retirement":            {Kind: KindHygiene},
 	"capability-lifecycle-proposals": {Kind: KindPromotion},
 	"observation-candidates":         {Kind: KindAdjudicate},
 	"source-observation-verdicts":    {Kind: KindVerdict},

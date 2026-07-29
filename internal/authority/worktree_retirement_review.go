@@ -18,6 +18,15 @@ import (
 const (
 	WorktreeRetirementReviewSchemaVersion       = "compound.worktree_retirement_review.v0.1"
 	WorktreeRetirementReviewReportSchemaVersion = "compound.worktree_retirement_review_report.v0.1"
+
+	// WorktreeRetirementReviewArea owns worktree-retirement artifacts. They used
+	// to share the source-control-cleanup area, where the source-control queue
+	// annotator typed every retirement plan as an invalid dirty-plan and counted
+	// it against that area's operator queue. A retirement plan is its own review
+	// family — its own review YAML, its own authorization report, its own apply
+	// path — so it is routed, not terminally disposed: the operator decision it
+	// asks for is real and still owed.
+	WorktreeRetirementReviewArea = "worktree-retirement"
 )
 
 type WorktreeRetirementPlanPaths struct {
@@ -69,19 +78,43 @@ func RecordWorktreeRetirementPlan(homePath string, plan WorktreeRetirementPlan) 
 	if err != nil {
 		return WorktreeRetirementPlanPaths{}, err
 	}
-	planPath, err := writeExclusiveWorktreeRetirementArtifact(homePath, plan.ID+".retirement.json", append(planBytes, '\n'))
+	dir, err := worktreeRetirementArtifactDir(homePath, plan.ID)
 	if err != nil {
 		return WorktreeRetirementPlanPaths{}, err
 	}
-	reviewPath, err := writeExclusiveWorktreeRetirementArtifact(homePath, plan.ID+".retirement.md", []byte(RenderWorktreeRetirementPlan(plan)))
+	planPath, err := writeExclusiveWorktreeRetirementArtifact(dir, plan.ID+".retirement.json", append(planBytes, '\n'))
 	if err != nil {
 		return WorktreeRetirementPlanPaths{}, err
 	}
-	reviewYAMLPath, err := writeExclusiveWorktreeRetirementArtifact(homePath, plan.ID+".retirement.review.yaml", []byte(RenderWorktreeRetirementReviewYAML(plan)))
+	reviewPath, err := writeExclusiveWorktreeRetirementArtifact(dir, plan.ID+".retirement.md", []byte(RenderWorktreeRetirementPlan(plan)))
+	if err != nil {
+		return WorktreeRetirementPlanPaths{}, err
+	}
+	reviewYAMLPath, err := writeExclusiveWorktreeRetirementArtifact(dir, plan.ID+".retirement.review.yaml", []byte(RenderWorktreeRetirementReviewYAML(plan)))
 	if err != nil {
 		return WorktreeRetirementPlanPaths{}, err
 	}
 	return WorktreeRetirementPlanPaths{PlanPath: planPath, ReviewPath: reviewPath, ReviewYAMLPath: reviewYAMLPath}, nil
+}
+
+// worktreeRetirementArtifactDir resolves the directory that owns one plan's
+// whole artifact group. Retirement artifacts written before the area split are
+// immutable evidence sitting in the source-control-cleanup area, and their
+// review and apply flow must keep resolving them there; a plan whose core
+// artifact already exists in that legacy area therefore keeps its entire group
+// there, and only a plan with no legacy body lands in the retirement area.
+func worktreeRetirementArtifactDir(homePath, planID string) (string, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return "", fmt.Errorf("COMPOUND_HOME required")
+	}
+	if strings.TrimSpace(planID) == "" || filepath.Base(planID) != planID {
+		return "", fmt.Errorf("worktree retirement plan id invalid")
+	}
+	legacy := filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea)
+	if _, err := os.Stat(filepath.Join(legacy, planID+".retirement.json")); err == nil {
+		return legacy, nil
+	}
+	return reviewartifact.Dir(homePath, WorktreeRetirementReviewArea)
 }
 
 func ValidateWorktreeRetirementPlan(plan WorktreeRetirementPlan) error {
@@ -218,12 +251,16 @@ func RecordWorktreeRetirementReview(homePath string, review WorktreeRetirementRe
 	if err := validateWorktreeRetirementReview(review); err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
-	expectedTemplatePath := filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea, review.PlanID+".retirement.review.yaml")
+	dir, err := worktreeRetirementArtifactDir(homePath, review.PlanID)
+	if err != nil {
+		return WorktreeRetirementReviewReport{}, err
+	}
+	expectedTemplatePath := filepath.Join(dir, review.PlanID+".retirement.review.yaml")
 	canonicalSource, err := filepath.Abs(filepath.Clean(sourcePath))
 	if err != nil || canonicalSource != filepath.Clean(expectedTemplatePath) {
 		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement review source path must be %s", expectedTemplatePath)
 	}
-	planPath := filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea, review.PlanID+".retirement.json")
+	planPath := filepath.Join(dir, review.PlanID+".retirement.json")
 	plan, err := LoadWorktreeRetirementPlan(planPath)
 	if err != nil {
 		return WorktreeRetirementReviewReport{}, err
@@ -239,7 +276,7 @@ func RecordWorktreeRetirementReview(homePath string, review WorktreeRetirementRe
 		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement review must preserve every plan evidence ref")
 	}
 	reviewedSourceName := plan.ID + "." + review.ID + ".retirement.reviewed.yaml"
-	reviewedSourcePath := filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea, reviewedSourceName)
+	reviewedSourcePath := filepath.Join(dir, reviewedSourceName)
 	if review.ReviewedAt == "" {
 		existing, err := LoadWorktreeRetirementReview(reviewedSourcePath)
 		switch {
@@ -264,7 +301,7 @@ func RecordWorktreeRetirementReview(homePath string, review WorktreeRetirementRe
 	if err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
-	reviewedSourcePath, err = writeExclusiveWorktreeRetirementArtifact(homePath, reviewedSourceName, reviewBytes)
+	reviewedSourcePath, err = writeExclusiveWorktreeRetirementArtifact(dir, reviewedSourceName, reviewBytes)
 	if err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
@@ -286,13 +323,13 @@ func RecordWorktreeRetirementReview(homePath string, review WorktreeRetirementRe
 		SourceDigest:  sourceDigest,
 		EvidenceRefs:  sortedUniqueNonEmpty(append(requiredEvidence, sourceDigest, "worktree-retirement-reviewer:"+review.ReviewedBy)),
 	}
-	report.ReviewPath = filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea, plan.ID+"."+review.ID+".retirement.reviewed.json")
+	report.ReviewPath = filepath.Join(dir, plan.ID+"."+review.ID+".retirement.reviewed.json")
 	report.AuthorizationDigest = worktreeRetirementAuthorizationDigest(report)
 	reportBytes, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
-	path, err := writeExclusiveWorktreeRetirementArtifact(homePath, filepath.Base(report.ReviewPath), append(reportBytes, '\n'))
+	path, err := writeExclusiveWorktreeRetirementArtifact(dir, filepath.Base(report.ReviewPath), append(reportBytes, '\n'))
 	if err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
@@ -302,12 +339,15 @@ func RecordWorktreeRetirementReview(homePath string, review WorktreeRetirementRe
 	return report, nil
 }
 
-func writeExclusiveWorktreeRetirementArtifact(homePath, name string, data []byte) (string, error) {
+// writeExclusiveWorktreeRetirementArtifact takes the resolved artifact
+// directory, not the home, so every write in one plan's group lands beside its
+// core plan — retirement area for a new plan, legacy area for a plan that
+// already lives there.
+func writeExclusiveWorktreeRetirementArtifact(dir, name string, data []byte) (string, error) {
 	if filepath.Base(name) != name || strings.TrimSpace(name) == "" {
 		return "", fmt.Errorf("worktree retirement artifact name invalid")
 	}
-	dir, err := reviewartifact.Dir(homePath, SourceControlCleanupReviewArea)
-	if err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	path := filepath.Join(dir, name)

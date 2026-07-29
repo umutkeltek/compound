@@ -116,7 +116,7 @@ func TestApplyWorktreeRetirementPersistsStartedPhaseBeforeWorktreeMutationAndRec
 	if err != nil {
 		t.Fatal(err)
 	}
-	pendingPath := filepath.Join(home, "reviews", SourceControlCleanupReviewArea, plan.ID+".retirement.pending.json")
+	pendingPath := filepath.Join(home, "reviews", WorktreeRetirementReviewArea, plan.ID+".retirement.pending.json")
 	crash := errors.New("injected crash after worktree removal before completion persistence")
 	runner := &phaseAssertingRetirementGit{delegate: ExecWorktreeRetirementGit{}, pendingPath: pendingPath, t: t}
 	records := 0
@@ -166,7 +166,7 @@ func TestApplyWorktreeRetirementPersistsStartedPhaseBeforeRefMutationAndRecovers
 	if err != nil {
 		t.Fatal(err)
 	}
-	pendingPath := filepath.Join(home, "reviews", SourceControlCleanupReviewArea, plan.ID+".retirement.pending.json")
+	pendingPath := filepath.Join(home, "reviews", WorktreeRetirementReviewArea, plan.ID+".retirement.pending.json")
 	crash := errors.New("injected crash after ref deletion before completion persistence")
 	runner := &phaseAssertingRetirementGit{delegate: ExecWorktreeRetirementGit{}, pendingPath: pendingPath, t: t}
 	records := 0
@@ -307,7 +307,7 @@ func TestApplyWorktreeRetirementResumeRecordsCompletedTruthWithoutReauthorizingF
 	if !errors.Is(err, crash) || first.Phase != WorktreeRetirementPhaseRefDeletionStarted {
 		t.Fatalf("post-ref crash result=%+v err=%v", first, err)
 	}
-	pendingPath := filepath.Join(home, "reviews", SourceControlCleanupReviewArea, plan.ID+".retirement.pending.json")
+	pendingPath := filepath.Join(home, "reviews", WorktreeRetirementReviewArea, plan.ID+".retirement.pending.json")
 	pending, exists, err := loadWorktreeRetirementPending(pendingPath)
 	if err != nil || !exists {
 		t.Fatalf("pending exists=%v err=%v", exists, err)
@@ -633,7 +633,7 @@ func TestApplyWorktreeRetirementFailureOutcomeProofMustBeCompleteBeforeResultPer
 			if err == nil || !strings.Contains(err.Error(), "outcome proof chain incomplete") {
 				t.Fatalf("invalid proof result=%+v err=%v", result, err)
 			}
-			resultPath := filepath.Join(home, "reviews", SourceControlCleanupReviewArea, plan.ID+".retirement.result.json")
+			resultPath := filepath.Join(home, "reviews", WorktreeRetirementReviewArea, plan.ID+".retirement.result.json")
 			if _, statErr := os.Stat(resultPath); !os.IsNotExist(statErr) {
 				t.Fatalf("invalid proof persisted result: %v", statErr)
 			}

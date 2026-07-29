@@ -174,7 +174,10 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 		return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement recovery evidence invalid before apply/resume: %w", err)
 	}
 
-	dir := filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea)
+	dir, err := worktreeRetirementArtifactDir(homePath, plan.ID)
+	if err != nil {
+		return WorktreeRetirementResult{}, err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return WorktreeRetirementResult{}, err
 	}

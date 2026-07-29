@@ -90,7 +90,7 @@ func runAuthorityWorktreeRetire(homePath string, args []string, stdout, stderr i
 			AuthorityRef  string                                `json:"authority_ref"`
 			Plan          authority.WorktreeRetirementPlan      `json:"plan"`
 			Paths         authority.WorktreeRetirementPlanPaths `json:"paths"`
-		}{authority.WorktreeRetirementPlanSchemaVersion, plan.Status, "compound://reviews/source-control-cleanup", plan, paths}
+		}{authority.WorktreeRetirementPlanSchemaVersion, plan.Status, "compound://reviews/" + authority.WorktreeRetirementReviewArea, plan, paths}
 		if jsonOut {
 			writeWorktreeRetirementJSON(stdout, response)
 		} else {

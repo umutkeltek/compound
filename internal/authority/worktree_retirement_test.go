@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/reviewartifact"
 )
 
 func TestWorktreeRetirementReviewSealsExactEligiblePlanAndOperatorYAML(t *testing.T) {
@@ -191,8 +193,131 @@ func TestWorktreeRetirementReviewRejectsDifferentSecondReviewWithoutMutatingFirs
 	}
 }
 
+// Retirement plans shared the source-control-cleanup area, where the
+// source-control annotator typed every one of them as an invalid dirty-plan and
+// counted them against that area's operator queue. A retirement plan is its own
+// review family — its own review YAML, its own authorization report, its own
+// apply path — so it belongs in its own area and must leave no residue in the
+// area it used to pollute.
+func TestRecordWorktreeRetirementPlanUsesItsOwnReviewArea(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}, time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	paths, err := RecordWorktreeRetirementPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDir := filepath.Join(home, "reviews", WorktreeRetirementReviewArea)
+	for _, path := range []string{paths.PlanPath, paths.ReviewPath, paths.ReviewYAMLPath} {
+		if filepath.Dir(path) != wantDir {
+			t.Fatalf("retirement artifact %q is not in the worktree-retirement area %q", path, wantDir)
+		}
+	}
+	if entries, err := os.ReadDir(filepath.Join(home, "reviews", SourceControlCleanupReviewArea)); err == nil && len(entries) != 0 {
+		t.Fatalf("retirement planning still wrote into the source-control cleanup area: %d entries", len(entries))
+	}
+
+	review, err := LoadWorktreeRetirementReview(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.Decision = "authorize_retirement"
+	review.Rationale = "exact redundant branch and clean inactive worktree may be retired"
+	review.ReviewedBy = "operator:test"
+	review.ReviewedAt = "2026-07-15T07:01:00Z"
+	report, err := RecordWorktreeRetirementReview(home, review, paths.ReviewYAMLPath, time.Date(2026, 7, 15, 7, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(report.ReviewPath) != wantDir || filepath.Dir(report.SourcePath) != wantDir {
+		t.Fatalf("retirement authorization left its plan's area: %+v", report)
+	}
+	if _, err := ValidateAuthorizedWorktreeRetirement(paths.PlanPath, report.ReviewPath); err != nil {
+		t.Fatalf("authorization in the retirement area rejected: %v", err)
+	}
+
+	cleanup, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: SourceControlCleanupReviewArea}, time.Date(2026, 7, 15, 8, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateSourceControlCleanupQueue(&cleanup)
+	if len(cleanup.Items) != 0 {
+		t.Fatalf("retirement plan still pollutes the source-control cleanup queue: %+v", cleanup.Items)
+	}
+	retirement, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: WorktreeRetirementReviewArea}, time.Date(2026, 7, 15, 8, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retirement.Items) != 1 || retirement.Items[0].ID != plan.ID {
+		t.Fatalf("retirement queue = %+v, want the plan in its own area", retirement.Items)
+	}
+}
+
+// Retirement artifacts written before the area split are immutable evidence in
+// the legacy area. Their review and apply flow must keep resolving them there,
+// or the split would strand every recorded authorization already on disk.
+func TestWorktreeRetirementReviewStaysInLegacySourceControlCleanupArea(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}, time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	legacyDir := filepath.Join(home, "reviews", SourceControlCleanupReviewArea)
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	planBytes, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPlanPath := filepath.Join(legacyDir, plan.ID+".retirement.json")
+	if err := os.WriteFile(legacyPlanPath, append(planBytes, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacyYAMLPath := filepath.Join(legacyDir, plan.ID+".retirement.review.yaml")
+	if err := os.WriteFile(legacyYAMLPath, []byte(RenderWorktreeRetirementReviewYAML(plan)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := RecordWorktreeRetirementPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(paths.PlanPath) != legacyDir {
+		t.Fatalf("re-recording a legacy retirement plan forked it into %q", filepath.Dir(paths.PlanPath))
+	}
+
+	review, err := LoadWorktreeRetirementReview(legacyYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.Decision = "authorize_retirement"
+	review.Rationale = "legacy-area retirement evidence stays reviewable where it was written"
+	review.ReviewedBy = "operator:test"
+	review.ReviewedAt = "2026-07-15T07:01:00Z"
+	report, err := RecordWorktreeRetirementReview(home, review, legacyYAMLPath, time.Date(2026, 7, 15, 7, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("legacy-area retirement review rejected: %v", err)
+	}
+	if filepath.Dir(report.ReviewPath) != legacyDir || filepath.Clean(report.PlanPath) != filepath.Clean(legacyPlanPath) {
+		t.Fatalf("legacy-area authorization left its plan behind: %+v", report)
+	}
+	if _, err := ValidateAuthorizedWorktreeRetirement(legacyPlanPath, report.ReviewPath); err != nil {
+		t.Fatalf("legacy-area authorization rejected: %v", err)
+	}
+}
+
 func TestExclusiveWorktreeRetirementArtifactDoesNotPublishPartialTempWrite(t *testing.T) {
 	home := t.TempDir()
+	dir := filepath.Join(home, "reviews", WorktreeRetirementReviewArea)
 	name := "crash-safe.retirement.json"
 	body := []byte("complete retirement artifact bytes\n")
 	injected := errors.New("injected temp write failure")
@@ -205,16 +330,16 @@ func TestExclusiveWorktreeRetirementArtifactDoesNotPublishPartialTempWrite(t *te
 	}
 	t.Cleanup(func() { writeWorktreeRetirementArtifactTemp = previousWriteTemp })
 
-	if _, err := writeExclusiveWorktreeRetirementArtifact(home, name, body); !errors.Is(err, injected) {
+	if _, err := writeExclusiveWorktreeRetirementArtifact(dir, name, body); !errors.Is(err, injected) {
 		t.Fatalf("partial temp write error = %v, want %v", err, injected)
 	}
-	finalPath := filepath.Join(home, "reviews", SourceControlCleanupReviewArea, name)
+	finalPath := filepath.Join(dir, name)
 	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
 		t.Fatalf("partial temp write published final artifact: %v", err)
 	}
 
 	writeWorktreeRetirementArtifactTemp = previousWriteTemp
-	path, err := writeExclusiveWorktreeRetirementArtifact(home, name, body)
+	path, err := writeExclusiveWorktreeRetirementArtifact(dir, name, body)
 	if err != nil {
 		t.Fatalf("retry exact artifact: %v", err)
 	}
