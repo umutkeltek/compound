@@ -516,7 +516,7 @@ Home durability is part of the runtime contract:
 compound home backup [--target archive.tar.gz]
 compound home verify [archive.tar.gz]
 compound home restore archive.tar.gz --target <empty-home-path>
-compound home archive-history [--dry-run] [--kind work|lease|review|comparison]
+compound home archive-history --kind work|lease|review|comparison [--dry-run]   # --kind required to archive
 compound home restore-history (--all|--id ID...)
 compound home export --public-fixture [--target fixture.tar.gz]
 compound home compact [--dry-run] [--rebuildable]
@@ -534,6 +534,11 @@ it. It archives completed/failed/cancelled WorkEnvelopes, stale
 owner-review artifacts and sidecars, and judged comparison candidates. `home
 doctor` reports operational hygiene (`hygiene:no-terminal-work-hot`,
 `hygiene:no-stale-leases`) without making hygiene dirty state fatal, because
-`archive-history` is the repair path. `workbench` and `reviews` exclude archived
-entries by default; `--include-archived` restores query visibility, and
-`restore-history` moves selected entries back to original hot paths.
+`archive-history` is the repair path. Selection is explicit: an `archive-history`
+that would mutate requires `--kind`, and a bare invocation prints usage and exits
+2 instead of sweeping every kind — probing a mutating command for its usage must
+not be the same keystrokes as running it. `--dry-run` still previews the full
+sweep without moving anything, which is how a caller picks the kind. `workbench`
+and `reviews` exclude archived entries by default; `--include-archived` restores
+query visibility, and `restore-history` moves selected entries back to original
+hot paths.

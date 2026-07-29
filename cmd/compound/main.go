@@ -194,7 +194,7 @@ func usage() {
 
 usage:
   compound version
-compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore; archive-history accepts --kind work|lease|review|comparison|create-plan|memory-candidate and --path <rel>
+compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore; archive-history requires --kind work|lease|review|comparison|create-plan|memory-candidate to archive (or --dry-run to preview) and accepts --path <rel>
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
@@ -3719,7 +3719,8 @@ func cmdHome(args []string) {
 	if hasUsageFlag(args) {
 		switch sub {
 		case "archive-history":
-			fmt.Println("usage: compound home archive-history [--kind work|lease|review|comparison|create-plan|memory-candidate] [--path rel] [--dry-run]")
+			fmt.Println("usage: compound home archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--dry-run]")
+			fmt.Println("  --kind is required to archive; --dry-run previews every kind without moving anything")
 		case "restore-history":
 			fmt.Println("usage: compound home restore-history (--all|--id id[,id...]) [--dry-run]")
 		default:
@@ -3812,9 +3813,22 @@ func cmdHome(args []string) {
 		}
 		printHomeRestoreReport(report)
 	case "archive-history":
+		dryRun := hasFlag(args, "--dry-run")
+		kinds := valuesFlag(args, "--kind")
+		// A mutation with no selection is a footgun, not a default. Invoked
+		// bare -- as an agent probing for usage does -- this swept EVERY kind
+		// and relocated 329 terminal entries nobody asked to move. Selection
+		// is now explicit for any mutation: no --kind, no archive. --dry-run
+		// keeps its full-preview semantics, because a preview that writes
+		// nothing is exactly how you find out what a sweep would take.
+		if len(kinds) == 0 && !dryRun {
+			fmt.Fprintln(os.Stderr, "usage: compound home archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--dry-run]")
+			fmt.Fprintln(os.Stderr, "archive-history mutates: it needs an explicit --kind. To see what a full sweep would move, add --dry-run.")
+			os.Exit(2)
+		}
 		report, err := home.ArchiveOperationalHistory(resolve(), home.OperationalArchiveOptions{
-			DryRun: hasFlag(args, "--dry-run"),
-			Kinds:  valuesFlag(args, "--kind"),
+			DryRun: dryRun,
+			Kinds:  kinds,
 			Paths:  valuesFlag(args, "--path"),
 		}, time.Now())
 		if err != nil {
@@ -3844,7 +3858,7 @@ func cmdHome(args []string) {
 		}
 		printHomeCompactReport(report)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home <path>] [--local|--global]; archive-history [--kind work|lease|review|comparison|create-plan|memory-candidate] [--path rel] [--dry-run]")
+		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home <path>] [--local|--global]; archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--dry-run]")
 		os.Exit(2)
 	}
 }
