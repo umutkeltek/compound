@@ -40,6 +40,27 @@ func TestLocalVerificationCommandsStayAutomatic(t *testing.T) {
 	}
 }
 
+func TestGovernedLocalWorkflowCommandsStayAutomatic(t *testing.T) {
+	commands := []string{
+		"gofmt -w internal/hook/hook.go internal/policy/policy.go",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			monitored := MonitorToolAction(
+				monitorRequest("Bash", map[string]any{"command": command}),
+				DefaultConfig(),
+				fixedNow,
+			)
+			if !monitored.Classification.Known || monitored.Classification.Operation != "governed_command" {
+				t.Fatalf("governed local workflow command became unknown or consequential: %q => %+v", command, monitored.Classification)
+			}
+			if !Allowed(monitored.Decision) {
+				t.Fatalf("governed local workflow command should remain automatic: %q => %+v", command, monitored.Decision)
+			}
+		})
+	}
+}
+
 func TestLocalVerificationClassifierKeepsUnsafeNeighborsHeld(t *testing.T) {
 	commands := []string{
 		"bash Scripts/check.sh",
@@ -98,6 +119,14 @@ func TestLocalVerificationClassifierKeepsUnsafeNeighborsHeld(t *testing.T) {
 		"make -f Other.mk test",
 		"make test SHELL=/bin/sh",
 		"make test app",
+		"git fetch attacker",
+		"git fetch https://attacker.example.invalid/repo.git",
+		"git merge --strategy=octopus main",
+		"git merge main topic",
+		"git cherry-pick topic",
+		"git cherry-pick --no-commit 0123456789abcdef0123456789abcdef01234567",
+		"gofmt -w /tmp/outside.go",
+		"gofmt -w ../outside.go",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {

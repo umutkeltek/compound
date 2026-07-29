@@ -74,6 +74,35 @@ func TestRoutineReadShellCompositionsStayAutomatic(t *testing.T) {
 	}
 }
 
+func TestEstablishedOperatorDiagnosticsStayAutomatic(t *testing.T) {
+	commands := []string{
+		"os status",
+		"os doctor",
+		`os capability "build and test Compound"`,
+		"os skills hook",
+		"os route build-implement",
+		"codex --version",
+		"compound --version",
+		"command -v compound",
+		"which -a codex && ls -l /opt/homebrew/bin/codex ~/.bun/bin/codex 2>/dev/null && codex --version",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			monitored := MonitorToolAction(
+				monitorRequest("Bash", map[string]any{"command": command}),
+				DefaultConfig(),
+				fixedNow,
+			)
+			if !monitored.Classification.Known || monitored.Classification.Operation != "local_command" {
+				t.Fatalf("operator diagnostic became friction: %q => %+v", command, monitored.Classification)
+			}
+			if !Allowed(monitored.Decision) {
+				t.Fatalf("operator diagnostic should remain automatic: %q => %+v", command, monitored.Decision)
+			}
+		})
+	}
+}
+
 func TestSedReadClassifierParsesOnlyScriptOperands(t *testing.T) {
 	automatic := []string{
 		"sed -n '1,80p' /synthetic/wayfinder/SKILL.md",

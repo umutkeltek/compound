@@ -104,6 +104,13 @@ var shellNestedReadVerbs = map[string]map[string][]string{
 		"status":   nil,
 		"validate": nil,
 	},
+	"os": {
+		"status":     nil,
+		"doctor":     nil,
+		"capability": nil,
+		"skills":     nil,
+		"route":      nil,
+	},
 }
 
 var gitReadSubcommands = map[string]bool{
@@ -700,6 +707,9 @@ func shellSegmentClass(segment shellSegment, firstPartyCommands FirstPartyComman
 	if segment.writes || segment.obfuscated {
 		return shellClassUnknown
 	}
+	if shellCommandLookupIsRead(segment.words) {
+		return shellClassRead
+	}
 	fields, prefixesSafe := shellStripCommandPrefixes(segment.words)
 	if !prefixesSafe {
 		return shellClassUnknown
@@ -726,6 +736,24 @@ func shellSegmentClass(segment shellSegment, firstPartyCommands FirstPartyComman
 		return shellClassUnknown
 	}
 	return shellVerbClass(verb, fields[1:], firstPartyCommands)
+}
+
+func shellCommandLookupIsRead(fields []string) bool {
+	if len(fields) != 3 || fields[0] != "command" || (fields[1] != "-v" && fields[1] != "-V") {
+		return false
+	}
+	name := fields[2]
+	if name == "" || strings.Contains(name, shellSubstitutionPlaceholder) {
+		return false
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // shellPrefixChangesExecution holds prefixes that can replace the executable
@@ -894,17 +922,17 @@ func shellVerbClass(verb string, args []string, firstPartyCommands FirstPartyCom
 		return shellClassUnknown
 	case "compound":
 		return shellCompoundClass(args, firstPartyCommands)
+	case "codex":
+		if len(args) == 1 && args[0] == "--version" {
+			return shellClassRead
+		}
+		return shellClassUnknown
 	case "git":
 		return shellGitClass(args)
 	case "go":
 		return shellGoClass(args)
 	case "gofmt":
-		// gofmt writes formatted source when -w is present. Its stdout/diff/list
-		// modes remain routine reads, but source mutation must leave this lane.
-		if shellFlagAbsent(args, "-w") {
-			return shellClassRead
-		}
-		return shellClassUnknown
+		return shellGofmtClass(args)
 	case "bash":
 		return shellBashSyntaxClass(args)
 	case "swift":
@@ -971,6 +999,32 @@ func shellBashSyntaxClass(args []string) string {
 		return shellClassUnknown
 	}
 	return shellClassRead
+}
+
+func shellGofmtClass(args []string) string {
+	if shellFlagAbsent(args, "-w") {
+		return shellClassRead
+	}
+	files := 0
+	for _, arg := range args {
+		switch arg {
+		case "-w", "-s":
+			continue
+		}
+		if strings.HasPrefix(arg, "-") ||
+			strings.ContainsAny(arg, "*?[") ||
+			!strings.HasSuffix(strings.ToLower(arg), ".go") {
+			return shellClassUnknown
+		}
+		if _, ok := shellWorkspaceRelativeDestination(arg); !ok {
+			return shellClassUnknown
+		}
+		files++
+	}
+	if files == 0 {
+		return shellClassUnknown
+	}
+	return shellClassGoverned
 }
 
 func shellSwiftClass(args []string) string {
@@ -1164,6 +1218,9 @@ classified:
 }
 
 func shellCompoundClass(args []string, firstPartyCommands FirstPartyCommandCatalog) string {
+	if len(args) == 1 && args[0] == "--version" {
+		return shellClassRead
+	}
 	command, rest := shellFirstOperand(args, nil)
 	subcommand, _ := shellFirstOperand(rest, nil)
 	admission, ok := firstPartyCommands.LookupSubcommand(command, subcommand)
