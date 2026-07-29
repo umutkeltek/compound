@@ -378,6 +378,51 @@ func TestImportHookRegistrationPreservesExternalRowsAcrossNarrowReimport(t *test
 	}
 }
 
+func TestImportCodexHooksPreservesExternalPeerWhenCompoundOwnsLifecycleSlot(t *testing.T) {
+	compoundHome := t.TempDir()
+	harnessHome := t.TempDir()
+	t.Setenv("HOME", harnessHome)
+
+	compoundPath := filepath.Join(harnessHome, ".local", "bin", "compound")
+	recallPath := filepath.Join(harnessHome, ".codex", "hooks", "RecallContext.hook.ts")
+	writeHarnessHookConfig(t, compoundPath, "compound fixture")
+	writeHarnessHookConfig(t, recallPath, "recall fixture")
+
+	sourcePath := filepath.Join(harnessHome, ".codex", "hooks.json")
+	writeHarnessHookConfig(t, sourcePath, `{
+  "hooks": {
+    "SessionStart": [
+      {"hooks":[{"type":"command","command":"RECALL_HARNESS=codex $HOME/.bun/bin/bun $HOME/.codex/hooks/RecallContext.hook.ts"}]},
+      {"hooks":[{"type":"command","command":"$HOME/.local/bin/compound hook session-start --live --harness codex"}]}
+    ]
+  }
+}`)
+
+	report, err := ImportCodexHooksJSON(compoundHome, sourcePath, time.Date(2026, 7, 29, 3, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("ImportCodexHooksJSON() error = %v", err)
+	}
+	managed := installedHookByRefSuffix(report.Manifest, "/.local/bin/compound")
+	if managed == nil || managed.Status != "current" {
+		t.Fatalf("Compound SessionStart row = %+v, want current", managed)
+	}
+	preserved := installedHookByRefSuffix(report.Manifest, "/.codex/hooks/RecallContext.hook.ts")
+	if preserved == nil || preserved.Status != "preserved_external" {
+		t.Fatalf("RecallContext SessionStart row = %+v, want preserved_external", preserved)
+	}
+
+	reconciled, err := ReconcileInstalledHooks(compoundHome, harnessHome, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("ReconcileInstalledHooks() error = %v", err)
+	}
+	if len(reconciled.Plan.Bindings) != 1 || len(reconciled.Plan.PreservedBindings) != 1 {
+		t.Fatalf("desired/preserved plan split = desired:%+v preserved:%+v", reconciled.Plan.Bindings, reconciled.Plan.PreservedBindings)
+	}
+	if delta := hookReconciliationDeltaByRef(reconciled.Reconciliation, "$HOME/.codex/hooks/RecallContext.hook.ts"); delta == nil || delta.State != hookplan.StateExternalPreserved {
+		t.Fatalf("RecallContext reconciliation = %+v, want external_preserved", delta)
+	}
+}
+
 func TestReconcileInstalledHooksWithoutPlanStillReportsObservedExtras(t *testing.T) {
 	compoundHome := t.TempDir()
 	harnessHome := t.TempDir()

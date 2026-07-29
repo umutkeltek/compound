@@ -3791,10 +3791,40 @@ func parseCodexHooksJSON(data []byte) (InstalledHooksManifest, error) {
 			}
 		}
 	}
+	preserveExternalCodexHookPeers(&manifest)
 	if len(manifest.Hooks) == 0 {
 		return InstalledHooksManifest{}, fmt.Errorf("codex hooks json has no command hooks")
 	}
 	return manifest, nil
+}
+
+// preserveExternalCodexHookPeers keeps one managed owner per lifecycle slot. Codex permits multiple
+// commands for an event, so an existing context hook can legitimately share SessionStart with
+// Compound's compiled posture. The Compound command owns that managed slot; peer commands remain
+// observable rollback/evidence inputs without becoming duplicate desired HookPlan bindings.
+func preserveExternalCodexHookPeers(manifest *InstalledHooksManifest) {
+	compoundOwnedSlots := map[string]bool{}
+	for _, hook := range manifest.Hooks {
+		if codexHookIsCompoundOwned(hook) {
+			compoundOwnedSlots[codexHookSlotIdentity(hook)] = true
+		}
+	}
+	for i := range manifest.Hooks {
+		hook := &manifest.Hooks[i]
+		if compoundOwnedSlots[codexHookSlotIdentity(*hook)] && !codexHookIsCompoundOwned(*hook) {
+			hook.Status = "preserved_external"
+		}
+	}
+}
+
+func codexHookSlotIdentity(hook InstalledHook) string {
+	event := firstNonEmpty(strings.TrimSpace(hook.Event), strings.TrimSpace(hook.Name))
+	return strings.Join([]string{strings.TrimSpace(hook.Harness), event, strings.TrimSpace(hook.Matcher)}, "\x00")
+}
+
+func codexHookIsCompoundOwned(hook InstalledHook) bool {
+	ref := filepath.ToSlash(strings.TrimSpace(hook.Ref))
+	return ref == "compound" || strings.HasSuffix(ref, "/.local/bin/compound")
 }
 
 func hookRefFromCommand(command string) string {
