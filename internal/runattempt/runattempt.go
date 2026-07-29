@@ -468,16 +468,16 @@ func (s *Store) CompleteWithReasonAndClassification(id, status, reason, classifi
 //
 // Rules (in order; first match wins):
 //
-//   1. transcript_ref / diff_ref / test_ref present → ambiguous. The attempt
-//      produced an artifact we should not lose.
-//   2. origin == observed_external → ambiguous. Someone observed evidence
-//      outside our control; we don't know what they saw or whether it was
-//      acted on.
-//   3. origin empty (pre-F2 legacy) → ambiguous. We can't tell what produced
-//      this attempt; conservative = operator review.
-//   4. otherwise (claim_reservation placeholder, OR harness_execution with
-//      no transcript/diff/test) → side_effect_free. The attempt itself
-//      produced nothing we have to preserve.
+//  1. transcript_ref / diff_ref / test_ref present → ambiguous. The attempt
+//     produced an artifact we should not lose.
+//  2. origin == observed_external → ambiguous. Someone observed evidence
+//     outside our control; we don't know what they saw or whether it was
+//     acted on.
+//  3. origin empty (pre-F2 legacy) → ambiguous. We can't tell what produced
+//     this attempt; conservative = operator review.
+//  4. otherwise (claim_reservation placeholder, OR harness_execution with
+//     no transcript/diff/test) → side_effect_free. The attempt itself
+//     produced nothing we have to preserve.
 //
 // Exposed at package level (not method) so callers can dry-run classification
 // without minting/loading a store — useful for tests and for the sweep CLI's
