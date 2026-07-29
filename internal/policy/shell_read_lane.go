@@ -1306,7 +1306,7 @@ func shellCompoundClass(args []string, firstPartyCommands FirstPartyCommandCatal
 	}
 	command, rest := shellFirstOperand(args, nil)
 	subcommand, _ := shellFirstOperand(rest, nil)
-	admission, ok := firstPartyCommands.LookupSubcommand(command, subcommand)
+	admission, ok := firstPartyCommands.LookupSubcommandWithFlags(command, subcommand, rest)
 	if !ok {
 		return shellClassUnknown
 	}

@@ -61,6 +61,16 @@ func TestFirstPartyCommandAdmissionPreservesNestedInstallSecurityFloor(t *testin
 			wantOperation: "install_command",
 			wantSink:      "install",
 		},
+		{
+			command:       "compound hook install --harness codex --check=false",
+			wantOperation: "install_command",
+			wantSink:      "install",
+		},
+		{
+			command:       "compound hook install --harness codex --scope global --check --json",
+			wantOperation: "local_command",
+			wantSink:      "shell",
+		},
 	} {
 		got := policy.ClassifyToolAction(policy.ToolActionRequest{
 			Tool:               "Bash",
@@ -201,6 +211,14 @@ func TestFirstPartyCommandCatalogMatchesEveryRuntimeCommand(t *testing.T) {
 			got, ok := catalog.LookupSubcommand(name, subcommand)
 			if !ok || got != want {
 				t.Fatalf("runtime command %q %q admission = %q found=%t, want %q", name, subcommand, got, ok, want)
+			}
+		}
+		for subcommand, flagAdmissions := range command.SubcommandFlagAdmission {
+			for flag, want := range flagAdmissions {
+				got, ok := catalog.LookupSubcommandWithFlags(name, subcommand, []string{subcommand, flag})
+				if !ok || got != want {
+					t.Fatalf("runtime command %q %q flag %q admission = %q found=%t, want %q", name, subcommand, flag, got, ok, want)
+				}
 			}
 		}
 	}

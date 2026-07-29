@@ -7,9 +7,10 @@ import (
 )
 
 type compoundCommand struct {
-	Admission           policy.FirstPartyCommandAdmission
-	SubcommandAdmission map[string]policy.FirstPartyCommandAdmission
-	Run                 func([]string)
+	Admission               policy.FirstPartyCommandAdmission
+	SubcommandAdmission     map[string]policy.FirstPartyCommandAdmission
+	SubcommandFlagAdmission map[string]map[string]policy.FirstPartyCommandAdmission
+	Run                     func([]string)
 }
 
 func registeredCommand(
@@ -39,6 +40,21 @@ func (command compoundCommand) withSubcommandAdmission(
 		command.SubcommandAdmission = map[string]policy.FirstPartyCommandAdmission{}
 	}
 	command.SubcommandAdmission[subcommand] = admission
+	return command
+}
+
+func (command compoundCommand) withSubcommandFlagAdmission(
+	subcommand string,
+	flag string,
+	admission policy.FirstPartyCommandAdmission,
+) compoundCommand {
+	if command.SubcommandFlagAdmission == nil {
+		command.SubcommandFlagAdmission = map[string]map[string]policy.FirstPartyCommandAdmission{}
+	}
+	if command.SubcommandFlagAdmission[subcommand] == nil {
+		command.SubcommandFlagAdmission[subcommand] = map[string]policy.FirstPartyCommandAdmission{}
+	}
+	command.SubcommandFlagAdmission[subcommand][flag] = admission
 	return command
 }
 
@@ -117,7 +133,8 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"policy":             heldCommand(cmdPolicy),
 		"placement":          readCommand(cmdPlacement),
 		"hook": governedCommand(cmdHook).
-			withSubcommandAdmission("install", policy.FirstPartyCommandInstall),
+			withSubcommandAdmission("install", policy.FirstPartyCommandInstall).
+			withSubcommandFlagAdmission("install", "--check", policy.FirstPartyCommandRead),
 		"harness": governedCommand(cmdHarness).
 			withSubcommandAdmission("posture-plan", policy.FirstPartyCommandRead),
 		"transition": readCommand(cmdTransition),
@@ -167,6 +184,11 @@ func firstPartyCommandCatalog() policy.FirstPartyCommandCatalog {
 	for name, command := range registry {
 		if len(command.SubcommandAdmission) > 0 {
 			catalog = catalog.WithSubcommands(name, command.SubcommandAdmission)
+		}
+		for subcommand, flagAdmissions := range command.SubcommandFlagAdmission {
+			for flag, admission := range flagAdmissions {
+				catalog = catalog.WithSubcommandFlagAdmission(name, subcommand, flag, admission)
+			}
 		}
 	}
 	return catalog

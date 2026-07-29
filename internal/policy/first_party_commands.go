@@ -12,13 +12,15 @@ const (
 )
 
 type firstPartyCommandRule struct {
-	admission  FirstPartyCommandAdmission
-	subcommand map[string]FirstPartyCommandAdmission
+	admission       FirstPartyCommandAdmission
+	subcommand      map[string]FirstPartyCommandAdmission
+	subcommandFlags map[string]map[string]FirstPartyCommandAdmission
 }
 
 // FirstPartyCommandCatalog is the shell monitor's read-only view of the
 // executable Compound CLI registry. It deliberately knows command names and
-// admission posture, not subcommand flags or vendor-specific behavior.
+// admission posture, including the small number of flags that make an otherwise
+// mutating subcommand provably read-only. It does not infer vendor behavior.
 //
 // A zero catalog fails closed. The Compound executable supplies its runtime
 // registry at the hook seam, so policy cannot silently drift from a second
@@ -50,11 +52,27 @@ func (c FirstPartyCommandCatalog) LookupSubcommand(
 	name string,
 	subcommand string,
 ) (FirstPartyCommandAdmission, bool) {
+	return c.LookupSubcommandWithFlags(name, subcommand, nil)
+}
+
+func (c FirstPartyCommandCatalog) LookupSubcommandWithFlags(
+	name string,
+	subcommand string,
+	args []string,
+) (FirstPartyCommandAdmission, bool) {
 	rule, ok := c.commands[strings.ToLower(strings.TrimSpace(name))]
 	if !ok {
 		return "", false
 	}
-	if admission, exists := rule.subcommand[strings.ToLower(strings.TrimSpace(subcommand))]; exists {
+	subcommand = strings.ToLower(strings.TrimSpace(subcommand))
+	if flagAdmissions := rule.subcommandFlags[subcommand]; len(flagAdmissions) > 0 {
+		for _, arg := range args {
+			if admission, exists := flagAdmissions[strings.ToLower(strings.TrimSpace(arg))]; exists {
+				return admission, true
+			}
+		}
+	}
+	if admission, exists := rule.subcommand[subcommand]; exists {
 		return admission, true
 	}
 	return rule.admission, true
@@ -81,6 +99,34 @@ func (c FirstPartyCommandCatalog) WithSubcommands(
 	return next
 }
 
+func (c FirstPartyCommandCatalog) WithSubcommandFlagAdmission(
+	name string,
+	subcommand string,
+	flag string,
+	admission FirstPartyCommandAdmission,
+) FirstPartyCommandCatalog {
+	next := c.clone()
+	commandName := strings.ToLower(strings.TrimSpace(name))
+	rule, ok := next.commands[commandName]
+	if !ok {
+		return next
+	}
+	subcommand = strings.ToLower(strings.TrimSpace(subcommand))
+	flag = strings.ToLower(strings.TrimSpace(flag))
+	if subcommand == "" || flag == "" {
+		return next
+	}
+	if rule.subcommandFlags == nil {
+		rule.subcommandFlags = map[string]map[string]FirstPartyCommandAdmission{}
+	}
+	if rule.subcommandFlags[subcommand] == nil {
+		rule.subcommandFlags[subcommand] = map[string]FirstPartyCommandAdmission{}
+	}
+	rule.subcommandFlags[subcommand][flag] = validFirstPartyAdmission(admission)
+	next.commands[commandName] = rule
+	return next
+}
+
 func (c FirstPartyCommandCatalog) Without(name string) FirstPartyCommandCatalog {
 	next := c.clone()
 	without := strings.ToLower(strings.TrimSpace(name))
@@ -98,6 +144,15 @@ func (c FirstPartyCommandCatalog) clone() FirstPartyCommandCatalog {
 			subcommands[subcommand] = admission
 		}
 		rule.subcommand = subcommands
+		subcommandFlags := make(map[string]map[string]FirstPartyCommandAdmission, len(rule.subcommandFlags))
+		for subcommand, admissions := range rule.subcommandFlags {
+			flags := make(map[string]FirstPartyCommandAdmission, len(admissions))
+			for flag, admission := range admissions {
+				flags[flag] = admission
+			}
+			subcommandFlags[subcommand] = flags
+		}
+		rule.subcommandFlags = subcommandFlags
 		next.commands[command] = rule
 	}
 	return next
