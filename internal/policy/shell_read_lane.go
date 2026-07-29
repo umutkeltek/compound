@@ -1377,9 +1377,23 @@ func shellGitClass(args []string) string {
 		return shellClassNetwork
 	case gitReadSubcommands[sub]:
 		return shellClassRead
+	case sub == "bundle":
+		// `git bundle verify` validates and inspects an existing bundle.
+		// Creation and import forms can write, so they remain unknown/held.
+		action, _ := shellFirstOperand(rest, nil)
+		if action == "verify" {
+			return shellClassRead
+		}
+		return shellClassUnknown
 	case sub == "branch":
 		// Listing is a read; naming an operand creates or renames a ref. Query
 		// flags take a value, and that value is not an operand.
+		// With --list/-l, remaining operands are patterns rather than branch
+		// names, provided no mutation flag is also present.
+		if !shellFlagAbsent(rest, "--list", "-l") &&
+			shellFlagAbsent(rest, "-m", "-M", "-c", "-C", "--move", "--copy", "--set-upstream-to", "-u", "--unset-upstream", "--edit-description") {
+			return shellClassRead
+		}
 		if operand, _ := shellFirstOperand(rest, gitRefQueryFlagsWithValue); operand != "" {
 			return shellClassUnknown
 		}

@@ -57,6 +57,8 @@ func TestRoutineReadShellCompositionsStayAutomatic(t *testing.T) {
 		"git branch --merged main",
 		"git branch --no-merged main -vv",
 		"git branch --sort committerdate",
+		"git branch --list codex/release-audit-20260729",
+		"git bundle verify /tmp/release-audit-recovery.bundle",
 		"git tag --contains 40eb071e",
 		"git log --oneline -1 40eb071e 2>&1; git branch -a --contains 40eb071e | head -20",
 		"git merge-base --is-ancestor 40eb071e main && echo YES || echo NO",
@@ -372,6 +374,8 @@ func TestRoutineReadShellDoesNotSwallowMutationOrEgress(t *testing.T) {
 		"git reset --hard origin/main",
 		"git config user.email x",
 		"git worktree add /tmp/w",
+		"git bundle create /tmp/recovery.bundle main",
+		"git bundle unbundle /tmp/recovery.bundle",
 		// A query flag's value is not an operand, but a real operand still is.
 		"git branch newfeature",
 		"git branch --contains 40eb071e newfeature",
