@@ -32,8 +32,8 @@ import (
 
 	"compound/internal/act"
 	"compound/internal/activity"
-	"compound/internal/adapter/awstream"
 	"compound/internal/activity/tier1/source"
+	"compound/internal/adapter/awstream"
 	"compound/internal/envelope"
 	"compound/internal/policy"
 )
@@ -481,10 +481,14 @@ func buildDrainIntentForAW(workID, home string, now time.Time) envelope.ActionIn
 	}
 }
 
-// writeEventsToSpool writes activity events to per-day spool files. Idempotent
+// writeEventsToSpool appends activity events to per-day spool files. Idempotent
 // re-runs produce duplicate NDJSON lines — Drain is responsible for deduplication
-// via the cursor. Re-running materialize before drain is safe but produces
-// duplicates; running drain after materialize is the normal flow.
+// via the cursor. APPEND is load-bearing: the activity spool is shared between
+// the Swift Tier-0 collector, AWMaterialize (Tier-0 from AW), and tier1.Collect
+// (Tier-1 envelopes). Truncating overwrite would silently destroy the other
+// writers' lines and cause data loss. Re-running materialize before drain is
+// safe but produces duplicates; running drain after materialize is the normal
+// flow.
 func writeEventsToSpool(spoolDir string, events []activity.Event) error {
 	if len(events) == 0 {
 		return nil
@@ -505,7 +509,17 @@ func writeEventsToSpool(spoolDir string, events []activity.Event) error {
 	}
 	for day, buf := range buckets {
 		path := filepath.Join(spoolDir, day+".ndjson")
-		if err := os.WriteFile(path, buf, 0o600); err != nil {
+		// Append, do not overwrite. The spool is shared with the Swift Tier-0
+		// collector and the Tier-1 collector — both already use O_APPEND.
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(buf); err != nil {
+			_ = f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
 			return err
 		}
 	}

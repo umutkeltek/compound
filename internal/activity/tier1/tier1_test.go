@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"compound/internal/activity"
-	"compound/internal/adapter/awstream"
 	"compound/internal/activity/tier1/source"
+	"compound/internal/adapter/awstream"
 	"compound/internal/home"
 	"compound/internal/policy"
 )
@@ -324,6 +324,79 @@ func mustValidEnvelopeForTest() source.Envelope {
 		PaneType:  "terminal",
 		AgentKind: "agent-hook",
 		AgentName: "Claude Code",
+	}
+}
+
+// TestWriteEventsToSpoolAppendsNotOverwrites: the activity spool is shared between
+// the Swift Tier-0 collector, AWMaterialize (Tier-0 from AW), and tier1.Collect
+// (Tier-1 envelopes). All three writers must APPEND — truncating overwrite would
+// silently destroy the other writers' lines.
+//
+// Reproduces the bug fixed in the P0 spool-overwrite commit: writeEventsToSpool
+// used os.WriteFile which truncates, so an AW run on a day that already had
+// Swift collector lines would erase the Swift lines.
+func TestWriteEventsToSpoolAppendsNotOverwrites(t *testing.T) {
+	dir := t.TempDir()
+
+	// Pre-existing line in the spool for this day — represents whatever the
+	// Swift Tier-0 collector or a previous AWMaterialize run wrote.
+	const day = "2026-07-30"
+	path := filepath.Join(dir, day+".ndjson")
+	swiftLine := []byte(`{"schema_version":"compound.activity_observation.v0.2","seq":1,"ts":"2026-07-30T11:00:00Z","kind":"app_activated","bundle_id":"com.google.Chrome","app_name":"Chrome"}` + "\n")
+	if err := os.WriteFile(path, swiftLine, 0o600); err != nil {
+		t.Fatalf("seed spool: %v", err)
+	}
+
+	// writeEventsToSpool adds a second line for the same day.
+	events := []activity.Event{{
+		SchemaVersion: activity.SchemaVersion,
+		Seq:           2,
+		TS:            "2026-07-30T12:00:00Z",
+		Kind:          activity.KindAppActivated,
+		BundleID:      "com.cmuxterm.app",
+		AppName:       "cmux",
+		Engine:        activity.Engine{ID: Tier1EngineID, Revision: Tier1EngineRevision},
+	}}
+	if err := writeEventsToSpool(dir, events); err != nil {
+		t.Fatalf("writeEventsToSpool: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read spool: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(got), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("spool must contain BOTH the pre-existing line and the new line (append), got %d lines:\n%s", len(lines), got)
+	}
+	if !strings.Contains(lines[0], "com.google.Chrome") {
+		t.Errorf("first line must be the pre-existing Swift line, got %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "com.cmuxterm.app") {
+		t.Errorf("second line must be the new event, got %q", lines[1])
+	}
+}
+
+// TestWriteEventsToSpoolAcrossDays: writes to two different days produce two
+// different files, neither overwrites the other.
+func TestWriteEventsToSpoolAcrossDays(t *testing.T) {
+	dir := t.TempDir()
+	events := []activity.Event{
+		{SchemaVersion: activity.SchemaVersion, Seq: 1, TS: "2026-07-30T12:00:00Z", Kind: activity.KindAppActivated, BundleID: "com.google.Chrome", AppName: "Chrome", Engine: activity.Engine{ID: "x", Revision: "v0"}},
+		{SchemaVersion: activity.SchemaVersion, Seq: 2, TS: "2026-07-31T12:00:00Z", Kind: activity.KindAppActivated, BundleID: "com.apple.Safari", AppName: "Safari", Engine: activity.Engine{ID: "x", Revision: "v0"}},
+	}
+	if err := writeEventsToSpool(dir, events); err != nil {
+		t.Fatalf("writeEventsToSpool: %v", err)
+	}
+	for _, day := range []string{"2026-07-30", "2026-07-31"} {
+		path := filepath.Join(dir, day+".ndjson")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("day %s: %v", day, err)
+		}
+		if len(data) == 0 {
+			t.Errorf("day %s: file empty", day)
+		}
 	}
 }
 
