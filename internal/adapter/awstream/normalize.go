@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 
 	"compound/internal/activity"
 	"compound/internal/envelope"
@@ -46,18 +45,15 @@ func (l *normalizeLogs) note(s string) {
 	l.Notes = append(l.Notes, s)
 }
 
-// forbiddenMetaKeys mirrors activity.forbiddenMetaKeys — same invariant, applied at
-// the AW reader boundary so a hostile or buggy AW watcher can't smuggle content-bearing
-// keys through to compound. Kept in sync with activity.forbiddenMetaKeys (the latter is
-// the single source of truth for the activity package; awstream's copy is intentionally
-// separate so this package has no circular dependency on activity's internals).
-var forbiddenMetaKeys = map[string]bool{
-	"title":    true,
-	"url":      true,
-	"document": true,
-	"text":     true,
-	"content":  true,
-}
+// INPUT-vs-OUTPUT boundary for content-free:
+//
+// Previously Normalize DROPPED any window/web event whose data payload contained
+// a banned meta key (title, url, document, text, content). That made the bridge
+// useless on real AW data — standard payloads carry title/url. The fix is to
+// IGNORE banned keys at input and protect OUTPUT: we only copy safe, explicit
+// fields (app, bundle_id, app_name) from the raw payload into the activity event.
+// The activity.Event.Meta map is therefore always empty for awstream output, and
+// the F5 content-free invariant on the OUTPUT holds by construction.
 
 // Normalize converts AW raw events into Tier-0 activity.Event values joined across
 // hostnames. The contract:
@@ -72,8 +68,10 @@ var forbiddenMetaKeys = map[string]bool{
 //     can log/count).
 //   - AW `aw-watcher-afk_*` events map to KindIdleStarted/KindIdleEnded. Empty
 //     bundle_id is OK (afk is session-scoped, not app-scoped).
-//   - Events whose data.payload carries a banned meta key (F5) are DROPPED, not
-//     forwarded — the invariant is enforced at the read boundary.
+//   - The F5 content-free invariant protects OUTPUT, not input. Standard AW
+//     payloads carry content-bearing fields (title, url, file, document) that we
+//     IGNORE — they are never mirrored into Meta. An event with title/url present
+//     is ACCEPTED, with output Meta empty.
 //   - Seq is assigned monotonically per output position: 1, 2, 3, ... — deterministic.
 //   - engine.id = "compound-activity-awstream"; engine.revision = SchemaVersion.
 //
@@ -153,14 +151,17 @@ const EngineRevision = "v0.2.0"
 // mapEvent maps a single AW event to a Tier-0 activity.Event. Returns ok=false to
 // signal a drop; logs are appended in that case. Two paths:
 //
-//   - window watcher: data.app (or data.bundle_id) is the bundle; data.title and
-//     data.url are present but IGNORED (F5 — they would otherwise be smuggled through
-//     if we mirrored them into Meta).
+//   - window watcher: data.app (or data.bundle_id) is the bundle; data.title,
+//     data.url, data.file, data.document are present in standard AW payloads but
+//     IGNORED — they are never mirrored into Meta. The F5 content-free invariant
+//     protects OUTPUT, not input: a watcher that includes these fields is normal,
+//     not hostile, and dropping such events would make the bridge useless on
+//     real data.
 //   - afk watcher: data.status is "afk" or "not-afk"; maps to KindIdleStarted/Ended.
 //
-// Events whose data.payload carries a banned meta key (title/url/document/text/content)
-// are dropped. We don't try to strip them — the watcher that emitted them is hostile
-// or buggy, and stripping silently would mask the failure.
+// Events with no usable safe key (no app / bundle_id / status) are dropped; logs
+// record this. Events whose data payload cannot be parsed as JSON are dropped;
+// logs record this.
 func mapEvent(re RawEvent, logs *normalizeLogs) (Normalized, bool) {
 	bucketType := re.Bucket.BucketType()
 	switch bucketType {
@@ -193,8 +194,9 @@ func mapEvent(re RawEvent, logs *normalizeLogs) (Normalized, bool) {
 }
 
 // mapWindowEvent handles window-class watchers (window, vscode, web-*). Pulls bundle_id
-// from data.app (preferred) or data.bundle_id. Refuses any event whose data payload
-// carries a banned meta key (F5).
+// from data.app (preferred) or data.bundle_id. Standard AW payloads also include
+// title/url/file/document — these are NOT mirrored into Meta, so the F5 content-free
+// invariant on OUTPUT holds by construction.
 func mapWindowEvent(re RawEvent, logs *normalizeLogs) (Normalized, bool) {
 	if len(re.AWEvent.Data) == 0 || string(re.AWEvent.Data) == "null" {
 		logs.BadEvent++
@@ -207,16 +209,11 @@ func mapWindowEvent(re RawEvent, logs *normalizeLogs) (Normalized, bool) {
 		logs.note(fmt.Sprintf("window event data not parseable: %v", err))
 		return Normalized{}, false
 	}
-	// F5: refuse any payload that carries a banned content-bearing meta key.
-	for k := range data {
-		if forbiddenMetaKeys[strings.ToLower(strings.TrimSpace(k))] {
-			logs.BannedMeta++
-			logs.note(fmt.Sprintf("window event refused: data carries banned meta key %q", k))
-			return Normalized{}, false
-		}
-	}
 	// Bundle id: prefer data.app, fall back to data.bundle_id. AW's window watcher
-	// writes "app"; some watchers write "bundle_id". Either is acceptable.
+	// writes "app"; some watchers write "bundle_id". Either is acceptable. We
+	// IGNORE title/url/file/document entirely — they are never copied to Meta,
+	// so the F5 content-free invariant on OUTPUT holds regardless of what's in
+	// the raw input.
 	var bundle string
 	if raw, ok := data["app"]; ok {
 		_ = json.Unmarshal(raw, &bundle)

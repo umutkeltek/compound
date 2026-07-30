@@ -213,30 +213,68 @@ func TestNormalize_JoinAcrossHostnamesByBucketType(t *testing.T) {
 	}
 }
 
-// TestNormalize_DropsForbiddenMetaKeys: an AW watcher that smuggles a `title` field
-// through data is REFUSED at the read boundary, not forwarded.
-func TestNormalize_DropsForbiddenMetaKeys(t *testing.T) {
+// TestNormalize_AcceptsEventsWithTitleURL_StripsFromMeta: an AW window event
+// carrying a `title` field is ACCEPTED, but the title is NOT mirrored into the
+// activity.Event.Meta map. This is the INPUT-vs-OUTPUT content-free fix: real
+// AW payloads carry title/url/file by design; dropping such events made the
+// bridge useless on real data. We strip them at the output boundary by only
+// reading safe, explicit fields (app / bundle_id / app_name).
+func TestNormalize_AcceptsEventsWithTitleURL_StripsFromMeta(t *testing.T) {
 	ts := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	raw := []RawEvent{
-		// Good event — accepted.
+		// Window event with title (standard AW payload) — accepted.
 		rawEvent(Bucket{ID: "aw-watcher-window_host-a.local", Hostname: "host-a.local"},
-			ts, 30, map[string]any{"app": "com.example.ok"}),
-		// Bad event — title present in data payload. Refused.
+			ts, 30, map[string]any{"app": "com.example.terminal", "title": "secret window title"}),
+		// Web event with url + title (standard browser watcher payload) — accepted.
+		rawEvent(Bucket{ID: "aw-watcher-web-chrome_host-a.local", Hostname: "host-a.local"},
+			ts.Add(time.Second), 30, map[string]any{"app": "com.example.browser", "url": "https://secret.example/path", "title": "tab title"}),
+		// VSCode watcher with file — accepted, file NOT mirrored.
+		rawEvent(Bucket{ID: "aw-watcher-vscode_host-a.local", Hostname: "host-a.local"},
+			ts.Add(2*time.Second), 30, map[string]any{"app": "com.example.editor", "file": "/path/to/leaked/file.go", "project": "/path/to/project"}),
+	}
+	events, _, _ := Normalize(raw)
+	if len(events) != 3 {
+		t.Fatalf("all three real-AW-shape events must be accepted; got %d", len(events))
+	}
+	// Critical: Meta must be empty for all three. Title/url/file must NEVER appear.
+	for i, ev := range events {
+		if len(ev.Meta) != 0 {
+			t.Errorf("event[%d] Meta must be empty (title/url/file stripped from output), got %+v", i, ev.Meta)
+		}
+		// Belt-and-braces: marshal and grep for any banned-key string.
+		b, _ := json.Marshal(ev)
+		for _, banned := range []string{"title", "url", "file", "document", "text", "content"} {
+			if strings.Contains(string(b), `"`+banned+`"`) {
+				t.Errorf("event[%d] contains banned key %q in marshaled output: %s", i, banned, b)
+			}
+		}
+	}
+	// Bundles preserved (safe field). Sort order is by (bucket_type, ts, hostname);
+	// alphabetical bucket type order is: vscode < web-chrome < window.
+	wantBundles := []string{"com.example.editor", "com.example.browser", "com.example.terminal"}
+	for i, w := range wantBundles {
+		if events[i].BundleID != w {
+			t.Errorf("event[%d].BundleID = %q, want %q", i, events[i].BundleID, w)
+		}
+	}
+	// BannedMeta count must be zero — events were accepted, not dropped.
+}
+
+// TestNormalize_RefusesEventWithOnlyTitle: an event whose payload has ONLY
+// banned keys (no app / bundle_id) is still refused — there is no safe field
+// to keep, and we cannot trust the watcher.
+func TestNormalize_RefusesEventWithOnlyTitle(t *testing.T) {
+	ts := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	raw := []RawEvent{
 		rawEvent(Bucket{ID: "aw-watcher-window_host-a.local", Hostname: "host-a.local"},
-			ts.Add(time.Second), 30, map[string]any{"app": "com.example.bad", "title": "secret window title"}),
-		// Bad event — url present. Refused.
-		rawEvent(Bucket{ID: "aw-watcher-window_host-a.local", Hostname: "host-a.local"},
-			ts.Add(2*time.Second), 30, map[string]any{"app": "com.example.bad2", "url": "https://secret.example/path"}),
+			ts, 30, map[string]any{"title": "no app, no bundle, just a title"}),
 	}
 	events, _, logs := Normalize(raw)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 accepted event (good), got %d", len(events))
+	if len(events) != 0 {
+		t.Fatalf("event with no safe key (app/bundle_id) must be refused; got %d events", len(events))
 	}
-	if logs.BannedMeta != 2 {
-		t.Fatalf("BannedMeta = %d, want 2", logs.BannedMeta)
-	}
-	if events[0].BundleID != "com.example.ok" {
-		t.Fatalf("accepted bundle = %s, want com.example.ok", events[0].BundleID)
+	if logs.BadEvent != 1 {
+		t.Errorf("BadEvent = %d, want 1", logs.BadEvent)
 	}
 }
 
