@@ -80,7 +80,7 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
@@ -210,6 +210,10 @@ var workVerbHelpByName = map[string]workVerbHelp{
 	"close": {
 		Usage:   "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--steal --reason R]",
 		Example: "compound work close work_abc123 --outcome completed --move-type outward_delta --summary \"shipped\" --changed",
+	},
+	"set-aside": {
+		Usage:   "usage: compound work set-aside <begin|end> <work_id> ...\n  begin <work_id> --candidate <full-sha> --file <path> [--file ...] --by <actor> --reason \"<why the dirt is foreign>\" [--json]\n  end <work_id> [--by <actor>] [--json]",
+		Example: "compound work set-aside begin work_abc123 --candidate 0123456789012345678901234567890123456789 --file internal/foo.go --by codex --reason \"neighbor lane WIP\"",
 	},
 }
 
@@ -1795,6 +1799,83 @@ func cmdWork(args []string) {
 		observeEVCardCalibrationOnClose(homePath, res)
 		offerStandingProofGraduationOnClose(homePath, res)
 		autoConsumeCapabilityFeedback(homePath)
+	case "set-aside":
+		usage := workUsage("set-aside")
+		if len(rest) == 0 {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		// setAsidePositional extracts the single <work_id> positional from a
+		// set-aside subcommand's args (the "begin"/"end" token already stripped),
+		// skipping registered value-flags and any dashed token.
+		setAsidePositional := func(args []string, valueFlags map[string]bool) string {
+			for i := 0; i < len(args); i++ {
+				a := args[i]
+				if valueFlags[a] {
+					i++
+					continue
+				}
+				if strings.HasPrefix(a, "-") {
+					continue
+				}
+				return a
+			}
+			return ""
+		}
+		switch rest[0] {
+		case "begin":
+			beginValueFlags := map[string]bool{"--candidate": true, "--file": true, "--by": true, "--reason": true}
+			if err := validateWorkArguments(rest[1:], beginValueFlags, map[string]bool{"--json": true}, 1); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			workID := setAsidePositional(rest[1:], beginValueFlags)
+			if workID == "" {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			record, err := store.SetAsideBegin(work.SetAsideBeginOptions{
+				WorkID:       workID,
+				CandidateSHA: flag("--candidate"),
+				Files:        flagCSVValues(rest, "--file"),
+				Actor:        flag("--by"),
+				Reason:       flag("--reason"),
+			}, time.Now())
+			die(err)
+			if has("--json") {
+				printJSON(record)
+				return
+			}
+			paths := make([]string, 0, len(record.Files))
+			for _, f := range record.Files {
+				paths = append(paths, f.Path)
+			}
+			fmt.Printf("set-aside begin %s token=%s files=%d (%s)\n", record.WorkID, record.Token, len(record.Files), strings.Join(paths, ", "))
+			fmt.Println("restore with: compound work set-aside end " + record.WorkID)
+		case "end":
+			endValueFlags := map[string]bool{"--by": true}
+			if err := validateWorkArguments(rest[1:], endValueFlags, map[string]bool{"--json": true}, 1); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			workID := setAsidePositional(rest[1:], endValueFlags)
+			if workID == "" {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			result, err := store.SetAsideEnd(work.SetAsideEndOptions{WorkID: workID, Actor: flag("--by")}, time.Now())
+			die(err)
+			if has("--json") {
+				printJSON(result)
+				return
+			}
+			fmt.Printf("set-aside end %s token=%s restored=%d (%s)\n", result.WorkID, result.Token, len(result.Restored), strings.Join(result.Restored, ", "))
+		default:
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
 	default:
 		fmt.Fprintln(os.Stderr, workUsage(""))
 		os.Exit(2)

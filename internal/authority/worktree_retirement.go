@@ -123,6 +123,7 @@ type WorktreeRetirementSourceProof struct {
 	ActionIntentIDs       []string `json:"action_intent_ids"`
 	PolicyDecisionID      string   `json:"policy_decision_id"`
 	ReceiptID             string   `json:"receipt_id"`
+	ReceiptOutcome        string   `json:"receipt_outcome"`
 	TransitionID          string   `json:"transition_id"`
 	CommitArtifactRef     string   `json:"commit_artifact_ref"`
 	CommitTip             string   `json:"commit_tip"`
@@ -444,11 +445,14 @@ func validateRetirementOwnerProof(proof WorktreeRetirementOwnerProof) error {
 }
 
 func validateRetirementSourceProof(proof WorktreeRetirementSourceProof) error {
-	if strings.TrimSpace(proof.WorkID) == "" || proof.State != "completed" || !proof.ProofComplete {
-		return fmt.Errorf("completed terminal proof chain required")
+	if strings.TrimSpace(proof.WorkID) == "" || (proof.State != "completed" && proof.State != "failed") || !proof.ProofComplete {
+		return fmt.Errorf("completed or failed terminal proof chain required")
 	}
 	if len(proof.ActionIntentIDs) == 0 || strings.TrimSpace(proof.PolicyDecisionID) == "" || strings.TrimSpace(proof.ReceiptID) == "" || strings.TrimSpace(proof.TransitionID) == "" {
 		return fmt.Errorf("action policy receipt transition ids required")
+	}
+	if proof.ReceiptOutcome != proof.State {
+		return fmt.Errorf("terminal source state %s requires matching receipt outcome, got %s", proof.State, proof.ReceiptOutcome)
 	}
 	if !validRetirementObjectID(proof.CommitTip) || proof.CommitArtifactRef != "commit:"+proof.CommitTip {
 		return fmt.Errorf("consistent full commit artifact required")

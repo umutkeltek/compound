@@ -490,7 +490,7 @@ func landingOwnedDirtyNextAction(targetRef string, ownedDirtyPaths []string) str
 	if len(preview) > 5 {
 		preview = preview[:5]
 	}
-	return fmt.Sprintf("the %s target worktree has uncommitted changes to files this work owns (%s); commit or set them aside without discarding unrelated work, then rerun land-check", targetRef, strings.Join(preview, ", "))
+	return fmt.Sprintf("the %s target worktree has uncommitted changes to files this work owns (%s); commit them, or set them aside without discarding unrelated work (compound work set-aside begin <work_id> --candidate <tip> --file <path>), then rerun land-check", targetRef, strings.Join(preview, ", "))
 }
 
 func landingContainedDirtyDiagnostic(targetRef string, dirtyPaths []string, publicationMode string) string {

@@ -13,6 +13,7 @@ func TestEveryWorkVerbHelpIncludesUsageAndExecutableExample(t *testing.T) {
 		"dispatch-close", "dispatch-step", "claim-plan", "claim", "advance-plan", "advance",
 		"delegate", "steer", "attach", "observe-run", "land-check", "salvage-plan",
 		"action-plan", "act", "close-plan", "close",
+		"set-aside",
 	}
 	for _, verb := range verbs {
 		t.Run(verb, func(t *testing.T) {

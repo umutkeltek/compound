@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"compound/internal/mem"
@@ -28,10 +29,51 @@ type QueryHit struct {
 	Score      float64 `json:"score"`
 	Text       string  `json:"text,omitempty"`
 	TextStatus string  `json:"text_status"`
+	// Neighbors are the chunks adjacent to this hit inside the same item,
+	// populated only when QueryOptions.NeighborRadius > 0. They hang off the
+	// hit (not in QueryReport.Hits) because they were never ranked against
+	// the query — splicing them into the ranked list would let a downstream
+	// consumer sort context against results. The intent is the chunk before
+	// and after, not new answers.
+	Neighbors []QueryNeighbor `json:"neighbors,omitempty"`
 }
+
+// QueryNeighbor is an adjacent chunk attached to a hit as context. There is
+// deliberately NO Score field: a neighbor was not ranked, and any placeholder
+// score invites sorting context against results.
+type QueryNeighbor struct {
+	ChunkID    string `json:"chunk_id"`
+	Ordinal    int    `json:"ordinal"`
+	Text       string `json:"text,omitempty"`
+	TextStatus string `json:"text_status"`
+}
+
+// MaxNeighborRadius bounds context expansion. At radius r a k-hit query asks
+// for up to k*(2r+1) chunks; an unbounded radius turns one query into a
+// whole-corpus read.
+const MaxNeighborRadius = 5
 
 type QueryOptions struct {
 	IncludeText bool
+	// NeighborRadius expands each hit with up to this many chunks on each
+	// side, within the same item. 0 (the zero value) disables expansion, so
+	// every caller predating this option is byte-identical. A negative radius
+	// is REJECTED, not clamped — clamping would silently turn a caller's bug
+	// into "expansion is off", which looks exactly like success.
+	NeighborRadius int
+}
+
+// validate returns an error when opts carries an out-of-range NeighborRadius.
+// Extracted so the validation contract is unit-testable without spinning up
+// the full query machinery.
+func (opts QueryOptions) validate() error {
+	if opts.NeighborRadius < 0 {
+		return fmt.Errorf("corpus query: neighbor radius %d is negative", opts.NeighborRadius)
+	}
+	if opts.NeighborRadius > MaxNeighborRadius {
+		return fmt.Errorf("corpus query: neighbor radius %d exceeds max %d", opts.NeighborRadius, MaxNeighborRadius)
+	}
+	return nil
 }
 
 // runCorpusEngineQuery is the narrow engine-call seam used to prove privacy
@@ -50,6 +92,9 @@ func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, emb
 		return QueryReport{}, err
 	}
 	if err := validateEmbedder(lane, embedder); err != nil {
+		return QueryReport{}, err
+	}
+	if err := opts.validate(); err != nil {
 		return QueryReport{}, err
 	}
 	manifest, err := validateQueryItemAccess(homePath, lane)
@@ -87,7 +132,7 @@ func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, emb
 		if err != nil {
 			return QueryReport{}, fmt.Errorf("resolve chunk text for %s: %w", hit.ClaimID, err)
 		}
-		report.Hits = append(report.Hits, QueryHit{
+		qh := QueryHit{
 			ItemID:     info.itemID,
 			ChunkID:    hit.ClaimID,
 			SourceKind: info.sourceKind,
@@ -95,9 +140,98 @@ func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, emb
 			Score:      hit.Score,
 			Text:       resolved.Text,
 			TextStatus: string(resolved.Status),
-		})
+		}
+		if opts.NeighborRadius > 0 {
+			neighbors, err := expandNeighbors(homePath, manifest, lane, opts.IncludeText, hit.ClaimID, opts.NeighborRadius)
+			if err != nil {
+				return QueryReport{}, fmt.Errorf("resolve neighbors for %s: %w", hit.ClaimID, err)
+			}
+			qh.Neighbors = neighbors
+		}
+		report.Hits = append(report.Hits, qh)
 	}
 	return report, nil
+}
+
+// expandNeighbors returns the chunks adjacent to anchorChunkID within its
+// item, dropping any neighbor whose chunk resolves to a non-OK status.
+// "Dropped, not degraded" is the rule — a withheld or stale neighbor is part
+// of what the gate hides, so a private-bodies-fetch flag carrying a
+// suppressed neighbor would leak the existence of an item the caller is
+// supposed not to know about. Cross-item bleed is closed by construction:
+// candidate ordinals live inside anchorItem's slice and the chunk id is
+// rebuilt from the same item id, so expansion cannot address another item.
+func expandNeighbors(homePath string, manifest Manifest, lane LaneConfig, includeText bool, anchorChunkID string, radius int) ([]QueryNeighbor, error) {
+	itemID, ordinals, err := neighborOrdinalsFor(manifest, anchorChunkID, radius)
+	if err != nil || len(ordinals) == 0 {
+		return nil, err
+	}
+	out := make([]QueryNeighbor, 0, len(ordinals))
+	for _, ordinal := range ordinals {
+		candidate := buildChunkID(itemID, ordinal)
+		resolved, err := ResolveChunkText(homePath, manifest, candidate, includeText, lane)
+		if err != nil {
+			return nil, err
+		}
+		if resolved.Status != ChunkTextOK {
+			continue
+		}
+		out = append(out, QueryNeighbor{
+			ChunkID:    candidate,
+			Ordinal:    ordinal,
+			Text:       resolved.Text,
+			TextStatus: string(resolved.Status),
+		})
+	}
+	return out, nil
+}
+
+// neighborOrdinalsFor returns the ordinals adjacent to anchorChunkID within
+// its item, after clamping the radius against the item's chunk count. The
+// anchor's own ordinal is excluded. Item boundaries are the only clamp
+// sources, so an expansion cannot address another item: the chunk id is
+// rebuilt from the same item id as the anchor.
+//
+// Extracted from expandNeighbors so the bounding/clamping logic is
+// unit-testable without spinning up ResolveChunkText's body chunker.
+func neighborOrdinalsFor(manifest Manifest, anchorChunkID string, radius int) (itemID string, ordinals []int, err error) {
+	itemID, anchorOrdinal, err := splitChunkID(anchorChunkID)
+	if err != nil {
+		return "", nil, err
+	}
+	item, ok := findManifestItem(manifest, itemID)
+	if !ok {
+		return itemID, nil, nil
+	}
+	chunkCount := len(item.Chunks)
+	if chunkCount == 0 {
+		return itemID, nil, nil
+	}
+	if radius < 0 {
+		radius = 0
+	}
+	low := anchorOrdinal - radius
+	if low < 0 {
+		low = 0
+	}
+	high := anchorOrdinal + radius + 1
+	if high > chunkCount {
+		high = chunkCount
+	}
+	for ordinal := low; ordinal < high; ordinal++ {
+		if ordinal == anchorOrdinal {
+			continue
+		}
+		ordinals = append(ordinals, ordinal)
+	}
+	return itemID, ordinals, nil
+}
+
+// buildChunkID assembles a chunk id from item id and ordinal. The shape is
+// the inverse of splitChunkID in chunk.go — same "<item_id>#<ordinal>" form
+// that ResolveChunkText accepts.
+func buildChunkID(itemID string, ordinal int) string {
+	return itemID + "#" + strconv.Itoa(ordinal)
 }
 
 // validateQueryItemAccess refreshes item privacy from the current source

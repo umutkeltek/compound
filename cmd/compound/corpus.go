@@ -100,9 +100,9 @@ func cmdCorpusDoctor(args []string) {
 
 func cmdMemoryCorpusSearch(homePath string, args []string) {
 	laneName := valueFlag(args, "--lane")
-	query := firstPositional(args, map[string]bool{"--lane": true, "--k": true})
+	query := firstPositional(args, map[string]bool{"--lane": true, "--k": true, "--neighbors": true})
 	if laneName == "" || query == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound memory search --lane L <query> [--k N] [--include-private-text] [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound memory search --lane L <query> [--k N] [--include-private-text] [--neighbors R] [--json]")
 		os.Exit(2)
 	}
 	_, lane := mustCorpusLaneFromHome(homePath, laneName)
@@ -120,9 +120,22 @@ func cmdMemoryCorpusSearch(homePath string, args []string) {
 		}
 		k = n
 	}
+	neighbors := 0
+	if raw := valueFlag(args, "--neighbors"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			fmt.Fprintln(os.Stderr, "memory search: --neighbors must be non-negative integer")
+			os.Exit(2)
+		}
+		if n > corpus.MaxNeighborRadius {
+			fmt.Fprintf(os.Stderr, "memory search: --neighbors %d exceeds max %d\n", n, corpus.MaxNeighborRadius)
+			os.Exit(2)
+		}
+		neighbors = n
+	}
 	includeText := corpusIncludePrivateText(args)
 	retrievalStarted := time.Now()
-	report, err := corpus.QueryWithOptions(context.Background(), homePath, lane, embedder, query, k, corpus.QueryOptions{IncludeText: includeText})
+	report, err := corpus.QueryWithOptions(context.Background(), homePath, lane, embedder, query, k, corpus.QueryOptions{IncludeText: includeText, NeighborRadius: neighbors})
 	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerSearch, query, parityCorpusRefs(report), time.Since(retrievalStarted), err == nil, time.Now()))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "memory search:", err)
@@ -136,6 +149,9 @@ func cmdMemoryCorpusSearch(homePath string, args []string) {
 	for _, hit := range report.Hits {
 		fmt.Printf("%s item=%s score=%.4f %s\n", hit.ChunkID, hit.ItemID, hit.Score, hit.Title)
 		fmt.Printf("  text[%s]: %s\n", hit.TextStatus, corpusHitTextLine(hit))
+		for _, n := range hit.Neighbors {
+			fmt.Printf("  neighbor[%s] ord=%d: %s\n", n.TextStatus, n.Ordinal, corpusHitTextLine(corpus.QueryHit{TextStatus: n.TextStatus, Text: n.Text}))
+		}
 	}
 }
 

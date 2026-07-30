@@ -403,6 +403,23 @@ func TestBuildWorktreeRetirementPlanContainsCandidateWithoutMutatingGit(t *testi
 	}
 }
 
+func TestWorktreeRetirementPlanAllowsProofCompleteFailedSourceWork(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	req := retirementPlanRequest(fixture)
+	req.SourceProof.State = "failed"
+	req.SourceProof.ReceiptOutcome = "failed"
+
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Eligible || len(plan.BlockReasons) != 0 || plan.SourceProof.State != "failed" {
+		t.Fatalf("proof-complete failed source plan eligible=%v state=%q blockers=%v", plan.Eligible, plan.SourceProof.State, plan.BlockReasons)
+	}
+}
+
 func TestWorktreeRetirementPlanAllowsPatchEquivalentAndRefusesUniqueCandidate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
@@ -502,6 +519,9 @@ func TestWorktreeRetirementPlanRefusesAuthorityDriftAndIncompleteProofs(t *testi
 	}{
 		{name: "owner not running", mutate: func(r *WorktreeRetirementPlanRequest) { r.OwnerProof.State = "claimed" }, want: "owner_work_not_running_with_exact_lease"},
 		{name: "source nonterminal", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.State = "running" }, want: "source_work_proof_invalid"},
+		{name: "source cancelled", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.State = "cancelled" }, want: "source_work_proof_invalid"},
+		{name: "failed source with completed receipt", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.State = "failed" }, want: "source_work_proof_invalid"},
+		{name: "completed source with failed receipt", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.ReceiptOutcome = "failed" }, want: "source_work_proof_invalid"},
 		{name: "incomplete chain", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.ProofComplete = false }, want: "source_work_proof_invalid"},
 		{name: "missing receipt", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.ReceiptID = "" }, want: "source_work_proof_invalid"},
 		{name: "missing transition", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.TransitionID = "" }, want: "source_work_proof_invalid"},
@@ -755,6 +775,24 @@ func TestWorktreeRetirementPlanSealsCandidateRelationToSourceCommit(t *testing.T
 	}
 }
 
+func TestWorktreeRetirementPlanRefusesCandidateUncontainedBySourceCommit(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	tree := retirementGitOutput(t, fixture.repo, "rev-parse", "refs/heads/main^{tree}")
+	unrelatedSourceTip := retirementGitOutput(t, fixture.repo, "commit-tree", tree, "-m", "unrelated source proof")
+	req := retirementPlanRequest(fixture)
+	req.SourceProof = validRetirementSourceProof(unrelatedSourceTip)
+
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Eligible || plan.CandidateRelation != WorktreeCandidateContained || plan.SourceRelation != WorktreeCandidateUnique || !retirementPlanBlockedBy(plan, "candidate_not_contained_or_patch_equivalent_to_source_commit") {
+		t.Fatalf("uncontained source relation=%q candidate relation=%q eligible=%v blockers=%v", plan.SourceRelation, plan.CandidateRelation, plan.Eligible, plan.BlockReasons)
+	}
+}
+
 func TestWorktreeRetirementPlanSupportsWorktreeOnlyAndBranchOnlyTargets(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -989,6 +1027,7 @@ func validRetirementSourceProof(commit string) WorktreeRetirementSourceProof {
 		ActionIntentIDs:       []string{"act_source"},
 		PolicyDecisionID:      "pol_source",
 		ReceiptID:             "rec_source",
+		ReceiptOutcome:        "completed",
 		TransitionID:          "tr_source",
 		CommitArtifactRef:     "commit:" + commit,
 		CommitTip:             commit,
