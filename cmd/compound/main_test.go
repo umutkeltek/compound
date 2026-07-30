@@ -8779,6 +8779,43 @@ func TestProductSignalImportsASCSalesSeriesWindows(t *testing.T) {
 	}
 }
 
+func TestProductSignalImportsASCFunnelSeriesCoverageGatedWindows(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdProduct([]string{
+			"signal",
+			"--asc-funnel-series", filepath.Join("..", "..", "fixtures", "product", "asc-funnel-series.jsonl"),
+			"--product", "product:focus-notes",
+			"--app-id", "123456789",
+			"--metric", "impressions",
+			"--before", "2026-07-01/2026-07-03",
+			"--after", "2026-07-08/2026-07-10",
+			"--change-event", "Reworked App Store product page screenshots.",
+		})
+	})
+	if !strings.Contains(out, "# product signal sig_") || !strings.Contains(out, "- product: product:focus-notes") {
+		t.Fatalf("product signal output missing ASC funnel-series import proof:\n%s", out)
+	}
+	tl, err := product.LoadTimeline(homePath, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 300 (=100+200) and 400 (=150+250) are the coverage.complete_funnel-gated
+	// sums; the fixture also plants a 999999-impressions row in each window
+	// with complete_funnel=false. If those leaked in, Before/After would read
+	// in the hundreds of thousands instead.
+	if len(tl.Signals) != 1 || tl.Signals[0].MetricName != "app_store_connect_impressions" || tl.Signals[0].Before != 300 || tl.Signals[0].After != 400 {
+		t.Fatalf("ASC funnel signal timeline = %+v", tl.Signals)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("ASC funnel signal import should not create promoted claims ledger: %v", err)
+	}
+}
+
 func TestProductChangeStreamImportsSourceIssues(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

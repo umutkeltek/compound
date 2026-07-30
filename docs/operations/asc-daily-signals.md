@@ -114,6 +114,62 @@ The apply regression builds a temporary `compound`, uses a temporary
 `COMPOUND_HOME`, runs the bridge twice with `--apply`, and verifies
 ProductSignal ledger idempotency.
 
+## Funnel-Series JSONL Bridge
+
+If an existing collector already writes App Store Connect funnel rows as
+JSONL (impressions, product_page_views, first_time_downloads, proceeds_usd,
+paying_users, each day annotated with a `coverage` object), Compound should
+not fetch that source a second time either. Use this bridge to map the same
+private product config plus existing funnel rows into the
+`compound product signal --asc-funnel-series` adapter.
+
+Two data traps shape this adapter and are load-bearing, not incidental:
+
+- **Map by `asc_app_id`, never by display name.** The row schema this bridge
+  reads has no name-based matching path at all: the Go row type
+  (`internal/product/asc_funnel_series.go`) does not even decode a name/slug
+  field, and the bridge's own row filter (`rowsForApp` in
+  `tools/asc_funnel_series_bridge.ts`) matches strictly on `asc_app_id`.
+- **`coverage.complete_funnel` gates every metric.** On days where it is
+  false (or absent, for rows produced before the collector started emitting
+  it), `impressions` and `product_page_views` read as `0` because they are
+  missing, not because nothing happened. The Go adapter aggregates only
+  `coverage.complete_funnel == true` rows and carries the contributing row
+  count through as `asc:funnel_series:before_complete_funnel_rows:N` /
+  `..._after_complete_funnel_rows:N` evidence. The bridge itself pre-checks
+  the same condition per app/window so a "rows exist but none have confirmed
+  coverage" app is skipped with a specific, honest reason
+  (`no_complete_funnel_rows_in_before_window` /
+  `..._after_window`) rather than silently producing a deflated rate or
+  failing the Go call unpredictably.
+
+`first_time_downloads` can exceed `product_page_views` on the same day
+because iOS allows installing directly from the search card. The derived
+`product_page_conversion_rate` metric can therefore legitimately read above
+1.0; the adapter does not treat that as an error, and records a confounder
+note explaining why on every signal it produces for that metric.
+
+```bash
+bun tools/asc_funnel_series_bridge.ts \
+  --config "${COMPOUND_HOME:-${HOME}/.compound}/private/asc-products.json" \
+  --funnel-series "${ASC_FUNNEL_SERIES_JSONL}" \
+  --change-event "Describe the product or App Store change being evaluated." \
+  --before 2026-07-01/2026-07-07 \
+  --after 2026-07-08/2026-07-14 \
+  --metric product_page_conversion_rate,impressions,first_time_downloads \
+  --json
+```
+
+Add `--apply` only when the intended target is the current Compound runtime.
+For tests and rehearsals, use a temporary `COMPOUND_HOME` and pass a
+temp-built `--compound-bin`, same as the sales-series bridge.
+
+Regression proof:
+
+```bash
+bun test tools/asc_funnel_series_bridge.test.ts
+```
+
 ## From product signal to release authorization
 
 `compound release` exports the Compound repository. It is not an application

@@ -1,0 +1,10 @@
+{"date":"2026-06-15","asc_app_id":"123456789","name":"Neutral App A","impressions":40,"product_page_views":40,"first_time_downloads":40,"proceeds_usd":1,"paying_users":1}
+{"date":"2026-07-01","asc_app_id":"123456789","name":"Neutral App A","impressions":100,"product_page_views":50,"first_time_downloads":20,"proceeds_usd":10,"paying_users":2,"coverage":{"complete_funnel":true}}
+{"date":"2026-07-02","asc_app_id":"123456789","name":"Neutral App A","impressions":999999,"product_page_views":999999,"first_time_downloads":999999,"proceeds_usd":999999,"paying_users":999999,"coverage":{"complete_funnel":false}}
+{"date":"2026-07-03","asc_app_id":"123456789","name":"Neutral App A","impressions":200,"product_page_views":100,"first_time_downloads":30,"proceeds_usd":15,"paying_users":3,"coverage":{"complete_funnel":true}}
+{"date":"2026-07-08","asc_app_id":"123456789","name":"Neutral App A","impressions":150,"product_page_views":60,"first_time_downloads":70,"proceeds_usd":20,"paying_users":4,"coverage":{"complete_funnel":true}}
+{"date":"2026-07-09","asc_app_id":"123456789","name":"Neutral App A","impressions":999999,"product_page_views":999999,"first_time_downloads":999999,"proceeds_usd":999999,"paying_users":999999,"coverage":{"complete_funnel":false}}
+{"date":"2026-07-10","asc_app_id":"123456789","name":"Neutral App A","impressions":250,"product_page_views":90,"first_time_downloads":100,"proceeds_usd":30,"paying_users":6,"coverage":{"complete_funnel":true}}
+{"date":"2026-07-01","asc_app_id":"987654321","name":"Neutral App A","impressions":777,"product_page_views":777,"first_time_downloads":777,"proceeds_usd":777,"paying_users":777,"coverage":{"complete_funnel":true}}
+{"date":"2026-07-02","asc_app_id":"987654321","name":"Neutral App A","impressions":500,"product_page_views":200,"first_time_downloads":40,"proceeds_usd":5,"paying_users":1,"coverage":{"complete_funnel":false}}
+{"date":"2026-07-03","asc_app_id":"987654321","name":"Neutral App A","impressions":888,"product_page_views":888,"first_time_downloads":888,"proceeds_usd":888,"paying_users":888,"coverage":{"complete_funnel":true}}
