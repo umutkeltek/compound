@@ -22,3 +22,6 @@ node_modules/
 
 # prebuilt release artifacts (make release-artifacts) — generated, never committed
 /dist/
+
+# local codebase knowledge graph (generated analysis output) — never committed
+/.ua/
