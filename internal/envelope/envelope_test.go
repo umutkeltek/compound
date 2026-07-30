@@ -626,3 +626,111 @@ func TestRunAttemptIDsRequireRattPrefix(t *testing.T) {
 		t.Fatalf("well-formed ratt_ id was rejected: %v", err)
 	}
 }
+
+// validateHeader is a test helper: runs the private Header.validate() and returns the
+// public-style error. Same-package access lets us touch the unexported method. Empty
+// idPrefix means the ID-prefix check is skipped (these tests focus on HostBindings).
+func validateHeader(h Header) error {
+	var v verr
+	h.validate(&v, SVWork, "")
+	return v.result("Header")
+}
+
+// TestHeader_HostBindingsOptionalAndWellFormed: HostBindings is additive. A Header without
+// Host field still validates (legacy v0.1 callers stay green). A Header with well-formed
+// Host fields also validates. JSON round-trip preserves all three sub-fields.
+func TestHeader_HostBindingsOptionalAndWellFormed(t *testing.T) {
+	// Case 1: legacy Header without Host — must validate.
+	legacy := hdr(SVWork, "work_legacy_no_host")
+	if err := validateHeader(legacy); err != nil {
+		t.Fatalf("legacy Header (no Host) must validate, got: %v", err)
+	}
+	if legacy.Host != nil {
+		t.Fatalf("legacy Header Host must be nil, got: %+v", legacy.Host)
+	}
+
+	// Case 2: Header with all three Host fields populated — must validate.
+	withHost := hdr(SVWork, "work_with_host")
+	withHost.Host = &HostBindings{
+		HostID:   "2e6424e0-e1d8-40b9-abf5-af5454502fb0",
+		Hostname: "macstudio.local",
+		DeviceID: "aw-watcher-window",
+	}
+	if err := validateHeader(withHost); err != nil {
+		t.Fatalf("well-formed HostBindings must validate, got: %v", err)
+	}
+
+	// Case 3: JSON round-trip preserves HostBindings fields.
+	b, err := json.Marshal(withHost)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"host_bindings":{`) {
+		t.Fatalf("marshaled JSON must contain host_bindings key, got: %s", b)
+	}
+	if !strings.Contains(string(b), `"host_id":"2e6424e0-e1d8-40b9-abf5-af5454502fb0"`) {
+		t.Fatalf("marshaled JSON must contain host_id, got: %s", b)
+	}
+
+	var roundTripped Header
+	if err := json.Unmarshal(b, &roundTripped); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if roundTripped.Host == nil || *roundTripped.Host != *withHost.Host {
+		t.Fatalf("round-trip mismatch:\n  sent:     %+v\n  received: %+v", withHost.Host, roundTripped.Host)
+	}
+
+	// Case 4: legacy Header (Host == nil) marshals WITHOUT host_bindings key — preserves
+	// the byte-identity contract that existing wire-format consumers depend on.
+	bLegacy, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy: %v", err)
+	}
+	if strings.Contains(string(bLegacy), `"host_bindings"`) {
+		t.Fatalf("legacy Header (Host nil) must omit host_bindings, got: %s", bLegacy)
+	}
+}
+
+// TestHeader_HostBindingsMalformedRejected: any non-empty HostBindings field must match
+// the hostname-safe pattern. Slash, equals, semicolon, control bytes, whitespace, and
+// over-length values are all rejected.
+func TestHeader_HostBindingsMalformedRejected(t *testing.T) {
+	cases := []struct {
+		name  string
+		host  HostBindings
+		wants string // substring expected in error message
+	}{
+		{"slash_in_hostname", HostBindings{Hostname: "evil/host"}, "hostname"},
+		{"equals_in_host_id", HostBindings{HostID: "x=y"}, "host_id"},
+		{"semicolon_in_device_id", HostBindings{DeviceID: "a;b"}, "device_id"},
+		{"space_in_hostname", HostBindings{Hostname: "bad host"}, "hostname"},
+		{"control_byte_in_host_id", HostBindings{HostID: "abc\x00def"}, "host_id"},
+		{"too_long_hostname", HostBindings{Hostname: strings.Repeat("a", 254)}, "hostname"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := hdr(SVWork, "work_"+tc.name)
+			h.Host = &tc.host
+			err := validateHeader(h)
+			if err == nil {
+				t.Fatalf("malformed HostBindings %+v must reject, but validator accepted", tc.host)
+			}
+			if !strings.Contains(err.Error(), tc.wants) {
+				t.Fatalf("rejection must name %q field, got: %v", tc.wants, err)
+			}
+		})
+	}
+}
+
+// TestHeader_HostBindingsBoundaryLength: exactly 253 chars is allowed; 254 is not.
+// Pinning the boundary so a future refactor doesn't silently shift it.
+func TestHeader_HostBindingsBoundaryLength(t *testing.T) {
+	maxAllowed := strings.Repeat("a", 253)
+	tooLong := strings.Repeat("a", 254)
+	if err := (HostBindings{Hostname: maxAllowed}).Validate(); err != nil {
+		t.Fatalf("253-char hostname must validate, got: %v", err)
+	}
+	if err := (HostBindings{Hostname: tooLong}).Validate(); err == nil {
+		t.Fatalf("254-char hostname must reject")
+	}
+}

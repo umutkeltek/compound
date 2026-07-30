@@ -220,19 +220,66 @@ type Uncertainty struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// HostBindings is the optional per-event provenance of WHERE the event was captured. It is
+// additive: empty is valid; non-empty fields are advisory join keys (e.g., for joining
+// ActivityWatch events that fragment across hostnames). Fields are NOT used to drive any
+// privacy decision — that stays in Privacy/Risk — only to enable cross-host correlation.
+type HostBindings struct {
+	// HostID is a stable per-device identifier (AW "device_id", macOS hardware UUID,
+	// or another vendor's equivalent). Stable across renames.
+	HostID string `json:"host_id,omitempty"`
+	// Hostname is the human-readable hostname at capture time. Volatile across renames.
+	Hostname string `json:"hostname,omitempty"`
+	// DeviceID is the sensor/collector-specific identifier. Distinct from HostID so a
+	// watcher can carry both its own identity and the device identity it runs on.
+	DeviceID string `json:"device_id,omitempty"`
+}
+
+// Validate enforces a sane pattern on HostBindings fields. Empty is valid (HostBindings is
+// optional). Non-empty fields must match a hostname-safe pattern: letters, digits, dot,
+// underscore, dash. Length capped at 253 chars (DNS hostname max).
+func (h HostBindings) Validate() error {
+	if err := validateHostIDField("host_bindings.host_id", h.HostID); err != nil {
+		return err
+	}
+	if err := validateHostIDField("host_bindings.hostname", h.Hostname); err != nil {
+		return err
+	}
+	if err := validateHostIDField("host_bindings.device_id", h.DeviceID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// hostIDPattern matches what a sane hostname / UUID / vendor-specific id might contain.
+// No slashes, no control bytes, no whitespace, no `=` or `;` (which would let a smuggled
+// field escape a future shell-style parser).
+var hostIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{0,253}$`)
+
+func validateHostIDField(field, val string) error {
+	if val == "" {
+		return nil
+	}
+	if !hostIDPattern.MatchString(val) {
+		return fmt.Errorf("%s %q malformed (allowed: letters/digits/./_/-, ≤253 chars)", field, val)
+	}
+	return nil
+}
+
 // Header is on every envelope. Anonymous-embedded so its JSON fields flatten to top level.
 type Header struct {
-	SchemaVersion string      `json:"schema_version"`
-	ID            string      `json:"id"`
-	CreatedAt     string      `json:"created_at"`
-	Producer      Producer    `json:"producer"`
-	IDs           IDs         `json:"ids"`
-	Scope         Scope       `json:"scope"`
-	Authority     Authority   `json:"authority"`
-	Privacy       string      `json:"privacy"`
-	Risk          string      `json:"risk"`
-	EvidenceRefs  []string    `json:"evidence_refs"`
-	Uncertainty   Uncertainty `json:"uncertainty"`
+	SchemaVersion string        `json:"schema_version"`
+	ID            string        `json:"id"`
+	CreatedAt     string        `json:"created_at"`
+	Producer      Producer      `json:"producer"`
+	IDs           IDs           `json:"ids"`
+	Scope         Scope         `json:"scope"`
+	Authority     Authority     `json:"authority"`
+	Host          *HostBindings `json:"host_bindings,omitempty"`
+	Privacy       string        `json:"privacy"`
+	Risk          string        `json:"risk"`
+	EvidenceRefs  []string      `json:"evidence_refs"`
+	Uncertainty   Uncertainty   `json:"uncertainty"`
 }
 
 func (h Header) validate(v *verr, expectSV, idPrefix string) {
@@ -249,6 +296,11 @@ func (h Header) validate(v *verr, expectSV, idPrefix string) {
 	v.enum("authority.source_class", h.Authority.SourceClass, SourceClasses, true)
 	v.enum("authority.status", h.Authority.Status, AuthorityStatuses, false)
 	v.enum("uncertainty.level", h.Uncertainty.Level, UncertaintyLevels, false)
+	if h.Host != nil {
+		if err := h.Host.Validate(); err != nil {
+			v.addf("%v", err)
+		}
+	}
 }
 
 // Envelope is any typed runtime object.
