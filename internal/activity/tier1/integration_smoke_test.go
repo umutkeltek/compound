@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"compound/internal/activity"
-	"compound/internal/activity/awstream"
+	"compound/internal/adapter/awstream"
 	"compound/internal/activity/tier1/source"
 )
 

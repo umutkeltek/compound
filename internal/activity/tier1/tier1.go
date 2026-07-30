@@ -1,4 +1,4 @@
-// Package tier1 wires the AW virtual stream (internal/activity/awstream) to the
+// Package tier1 wires the AW virtual stream (internal/adapter/awstream) to the
 // per-app envelope source registry (internal/activity/tier1/source) and writes
 // Tier-1 events to the existing spool. It is the runtime half of Phase 4 — the
 // counterpart to the existing Drain verb, which writes Tier-0 events from the
@@ -32,7 +32,7 @@ import (
 
 	"compound/internal/act"
 	"compound/internal/activity"
-	"compound/internal/activity/awstream"
+	"compound/internal/adapter/awstream"
 	"compound/internal/activity/tier1/source"
 	"compound/internal/envelope"
 	"compound/internal/policy"

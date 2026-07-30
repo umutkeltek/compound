@@ -21,7 +21,7 @@ type EditorConfig struct {
 }
 
 // editorAwClient is the minimal AW REST surface EditorSource needs. We keep this as
-// an interface (not a hard dependency on internal/activity/awstream) so this package
+// an interface (not a hard dependency on internal/adapter/awstream) so this package
 // can be tested without spinning up an HTTP fixture.
 type editorAwClient interface {
 	FetchEvents(ctx context.Context, bucketID string, start, end time.Time, limit int) ([]editorEvent, error)

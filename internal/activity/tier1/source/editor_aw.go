@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"compound/internal/activity/awstream"
+	"compound/internal/adapter/awstream"
 )
 
 // fetchAWEventsForEditor bridges the default editorAWClient (declared in editor.go)
