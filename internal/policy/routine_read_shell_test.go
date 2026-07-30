@@ -264,10 +264,8 @@ func TestSedReadClassifierParsesOnlyScriptOperands(t *testing.T) {
 // consequential account/device mutations. Keep the automatic surface exact.
 func TestReleaseToolShellClassificationIsSubcommandAware(t *testing.T) {
 	automatic := []string{
-		"xcodebuild -scheme SampleGame -destination 'platform=iOS Simulator,id=fixture' build",
-		"xcodebuild -scheme SampleGame -destination 'platform=iOS Simulator,id=fixture' test",
-		"xcodebuild -scheme SampleGame -archivePath build/SampleGame.xcarchive archive",
-		"xcodebuild -exportArchive -archivePath build/SampleGame.xcarchive -exportPath build/export -exportOptionsPlist ExportOptions.plist",
+		"xcodebuild -scheme SampleGame -destination 'platform=iOS Simulator,id=fixture' CODE_SIGNING_ALLOWED=NO build",
+		"xcodebuild -scheme SampleGame -destination 'platform=iOS Simulator,id=fixture' CODE_SIGNING_ALLOWED=NO test",
 		"xcrun simctl list devices available",
 		"xcrun xcdevice list",
 		"xcrun xctrace list devices",
@@ -294,6 +292,8 @@ func TestReleaseToolShellClassificationIsSubcommandAware(t *testing.T) {
 
 	held := []string{
 		"xcodebuild clean",
+		"xcodebuild -scheme SampleGame -archivePath build/SampleGame.xcarchive archive",
+		"xcodebuild -exportArchive -archivePath build/SampleGame.xcarchive -exportPath build/export -exportOptionsPlist ExportOptions.plist",
 		"xcodebuild -allowProvisioningUpdates archive",
 		"xcodebuild -downloadPlatform iOS",
 		"xcrun simctl erase all",

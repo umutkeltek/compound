@@ -818,7 +818,7 @@ func shellPrefixHasAssignment(prefix []string) bool {
 
 func shellVerificationVerbRequiresCleanPrefix(verb string) bool {
 	switch verb {
-	case "sed", "bash", "swift", "make", "tsc", "bun", "node", "xattr":
+	case "sed", "bash", "swift", "make", "xcodebuild", "tsc", "bun", "node", "xattr":
 		return true
 	default:
 		return false
@@ -827,7 +827,7 @@ func shellVerificationVerbRequiresCleanPrefix(verb string) bool {
 
 func shellDynamicArgumentsNeedHold(verb string) bool {
 	switch verb {
-	case "sed", "bash", "swift", "make", "tsc", "bun", "node", "xattr":
+	case "sed", "bash", "swift", "make", "xcodebuild", "tsc", "bun", "node", "xattr":
 		return true
 	default:
 		return false
@@ -845,6 +845,8 @@ func shellVerificationExecutableTrusted(token, verb string) bool {
 		return token == "swift" || token == "/usr/bin/swift"
 	case "make":
 		return token == "make" || token == "/usr/bin/make"
+	case "xcodebuild":
+		return token == "xcodebuild" || token == "/usr/bin/xcodebuild"
 	case "tsc":
 		return token == "./node_modules/.bin/tsc"
 	case "bun":
@@ -1225,58 +1227,88 @@ func shellMakeVerificationClass(args []string) string {
 }
 
 func shellXcodebuildClass(args []string) string {
-	allowedActions := map[string]bool{
-		"build": true, "test": true, "analyze": true, "archive": true,
-		"build-for-testing": true, "test-without-building": true,
+	actions := map[string]bool{
+		"build":                 true,
+		"test":                  true,
+		"build-for-testing":     true,
+		"test-without-building": true,
 	}
-	allowedFlags := map[string]bool{
-		"-help": true, "-usage": true, "-version": true, "-showsdks": true,
-		"-list": true, "-showbuildsettings": true, "-showdestinations": true,
-		"-quiet": true, "-verbose": true, "-dry-run": true,
-		"-skipunavailableactions": true, "-parallelizetargets": true,
-		"-exportarchive": true,
+	queryFlags := map[string]bool{
+		"-help":                    true,
+		"-usage":                   true,
+		"-version":                 true,
+		"-showsdks":                true,
+		"-list":                    true,
+		"-showbuildsettings":       true,
+		"-showdestinations":        true,
+		"-showbuildsettingstiming": true,
 	}
 	flagsWithValues := map[string]bool{
-		"-project": true, "-workspace": true, "-scheme": true, "-target": true,
-		"-configuration": true, "-sdk": true, "-arch": true, "-destination": true,
-		"-destination-timeout": true, "-jobs": true, "-parallel-testing-worker-count": true,
-		"-maximum-parallel-testing-workers": true, "-only-testing": true, "-skip-testing": true,
-		"-testplan": true, "-deriveddatapath": true, "-resultbundlepath": true,
-		"-resultstreampath": true, "-archivepath": true, "-exportpath": true,
-		"-exportoptionsplist": true, "-xcconfig": true, "-toolchain": true,
-		"-clonedsourcepackagesdirpath": true, "-packagecachepath": true,
+		"-project":                          true,
+		"-workspace":                        true,
+		"-scheme":                           true,
+		"-target":                           true,
+		"-configuration":                    true,
+		"-sdk":                              true,
+		"-arch":                             true,
+		"-destination":                      true,
+		"-destination-timeout":              true,
+		"-jobs":                             true,
+		"-parallel-testing-worker-count":    true,
+		"-maximum-parallel-testing-workers": true,
+		"-only-testing":                     true,
+		"-skip-testing":                     true,
+		"-testplan":                         true,
+		"-deriveddatapath":                  true,
+		"-resultbundlepath":                 true,
+		"-resultstreampath":                 true,
+		"-clonedsourcepackagesdirpath":      true,
+		"-packagecachepath":                 true,
 	}
-	held := map[string]bool{
-		"clean": true, "install": true, "installsrc": true,
-		"-allowprovisioningupdates": true, "-allowprovisioningdeviceregistration": true,
-		"-authenticationkeypath": true, "-authenticationkeyid": true,
-		"-authenticationkeyissuerid": true, "-downloadplatform": true,
-		"-downloadallplatforms": true, "-downloadcomponent": true,
-		"-resolvepackagedependencies": true, "-runfirstlaunch": true,
-		"-license": true, "-importlocalizations": true, "-exportlocalizations": true,
-		"-exportnotarizedapp": true,
+	allowedFlags := map[string]bool{
+		"-quiet":                             true,
+		"-verbose":                           true,
+		"-dry-run":                           true,
+		"-parallelizetargets":                true,
+		"-skipunavailableactions":            true,
+		"-disableautomaticpackageresolution": true,
+		"-onlyusepackageversionsfromresolvedfile": true,
 	}
 
+	actionCount := 0
+	queryCount := 0
+	signingDisabled := false
 	for i := 0; i < len(args); i++ {
-		arg := strings.ToLower(strings.TrimSpace(args[i]))
-		if held[arg] {
-			return shellClassUnknown
-		}
-		if allowedActions[arg] || allowedFlags[arg] {
-			continue
-		}
-		if flagsWithValues[arg] {
-			if i+1 >= len(args) {
+		arg := args[i]
+		lower := strings.ToLower(arg)
+		switch {
+		case actions[lower]:
+			actionCount++
+		case queryFlags[lower]:
+			queryCount++
+		case flagsWithValues[lower]:
+			if i+1 >= len(args) ||
+				strings.TrimSpace(args[i+1]) == "" ||
+				strings.HasPrefix(args[i+1], "-") {
 				return shellClassUnknown
 			}
 			i++
-			continue
+		case allowedFlags[lower]:
+		case arg == "CODE_SIGNING_ALLOWED=NO":
+			signingDisabled = true
+		default:
+			return shellClassUnknown
 		}
-		// Build-setting assignments can replace compilers or inject commands.
-		// Keep them outside the automatic lane until individually modeled.
+	}
+
+	switch {
+	case actionCount == 1 && queryCount == 0 && signingDisabled:
+		return shellClassRead
+	case actionCount == 0 && queryCount > 0 && !signingDisabled:
+		return shellClassRead
+	default:
 		return shellClassUnknown
 	}
-	return shellClassRead
 }
 
 func shellXcrunClass(args []string) string {
