@@ -197,6 +197,11 @@ func copyCheckedTarGzip(src io.Reader, dst io.Writer, prefix string) (PublicArch
 			}
 		}
 	}
+	// tar.Reader stops at the logical end marker, before producers such as
+	// git archive necessarily finish writing record padding to their pipe.
+	if _, err := io.Copy(io.Discard, src); err != nil {
+		return scan, fmt.Errorf("drain archive source: %w", err)
+	}
 	if err := tw.Close(); err != nil {
 		return scan, err
 	}

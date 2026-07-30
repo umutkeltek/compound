@@ -48,6 +48,23 @@ func TestValidatePublicArchiveAllowsPublicTrackedShapes(t *testing.T) {
 	}
 }
 
+func TestCopyCheckedTarGzipDrainsTrailingArchivePadding(t *testing.T) {
+	archive, err := io.ReadAll(tarWithEntries(t, "compound-public/README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive = append(archive, bytes.Repeat([]byte{0}, 1<<20)...)
+	src := bytes.NewReader(archive)
+
+	var dst bytes.Buffer
+	if _, err := copyCheckedTarGzip(src, &dst, "compound-public/"); err != nil {
+		t.Fatalf("copyCheckedTarGzip: %v", err)
+	}
+	if remaining := src.Len(); remaining != 0 {
+		t.Fatalf("copyCheckedTarGzip left %d trailing archive bytes unread", remaining)
+	}
+}
+
 func TestExportPublicUsesGitArchiveAndIgnoresWorkingTreePrivateFiles(t *testing.T) {
 	requireGit(t)
 	repo := initGitRepo(t)
