@@ -10,12 +10,17 @@ import (
 // rather than minting a misleading span. Deterministic, no ML.
 const DwellFloorSec = 15
 
-// rawSpan is a foreground interval before dwell-floor merging.
+// rawSpan is foreground interval before dwell-floor merging. meta carries the
+// most recent event's Meta map so envelope-aware classification (Phase 6) can
+// distinguish per-project time without re-reading the spool. Tier-0 events
+// produce rawSpan with nil/empty meta; Tier-1 events carry pane_cwd / git_remote
+// / agent_kind meta that the classifier can refine on.
 type rawSpan struct {
 	start  time.Time
 	end    time.Time
 	bundle string
 	app    string
+	meta   map[string]string
 }
 
 // Segment reduces a day's raw events (any order) into deterministic ActivitySpans. It:
@@ -74,7 +79,7 @@ func Segment(events []Event) []ActivitySpan {
 				continue // same app in foreground; coalesce (keep the earlier start)
 			}
 			closeCur(t)
-			cur = &rawSpan{start: t, bundle: ev.BundleID, app: ev.AppName}
+			cur = &rawSpan{start: t, bundle: ev.BundleID, app: ev.AppName, meta: ev.Meta}
 		case KindIdleStarted, KindScreenLocked:
 			closeCur(t) // idle/lock ends the foreground interval; the gap itself is not a span
 		case KindCaptureGap:
@@ -86,7 +91,24 @@ func Segment(events []Event) []ActivitySpan {
 		case KindIdleEnded, KindScreenUnlocked:
 			// Foreground is unknown until the next app_activated; nothing to open here.
 		case KindWindowFocused:
-			// Reserved for Tier 1; unemitted in slice 1. No-op if it appears.
+			// Phase 5: Tier-1 envelope refinement. Same coalesce rule as
+			// KindAppActivated — same bundle as the current foreground = stay in it
+			// (keep the earlier start); different bundle = close the prior and open
+			// a new one. Tier-1 events carry envelope meta (pane_cwd, git_remote, ...)
+			// that downstream consumers can read off the final span; the reducer
+			// itself stays bundle-shaped so it composes with Tier-0.
+			//
+			// Phase 6: when a Tier-1 event arrives with the same bundle, we ALSO
+			// update cur.meta — the latest envelope wins. A span that covers
+			// multiple project transitions within the same terminal will surface
+			// the most recent project on the final span. (The span's Start time
+			// keeps the FIRST event's timestamp; only meta tracks the latest.)
+			if cur != nil && cur.bundle == ev.BundleID {
+				cur.meta = ev.Meta
+				continue
+			}
+			closeCur(t)
+			cur = &rawSpan{start: t, bundle: ev.BundleID, app: ev.AppName, meta: ev.Meta}
 		}
 	}
 	// Close a trailing open foreground at the last observed timestamp. If that equals its start
@@ -101,7 +123,13 @@ func Segment(events []Event) []ActivitySpan {
 	}
 	spans := make([]ActivitySpan, 0, len(merged))
 	for _, r := range merged {
-		cat, _ := Classify(r.bundle)
+		cat, _ := Classify(r.bundle, r.meta)
+		// Only emit Meta on the span when non-empty — Tier-0 events leave it nil,
+		// and omitempty keeps the JSON shape byte-identical to pre-Phase-6 output.
+		var meta map[string]string
+		if len(r.meta) > 0 {
+			meta = r.meta
+		}
 		spans = append(spans, ActivitySpan{
 			Start:     r.start.UTC().Format(time.RFC3339),
 			End:       r.end.UTC().Format(time.RFC3339),
@@ -110,6 +138,7 @@ func Segment(events []Event) []ActivitySpan {
 			AppName:   r.app,
 			Category:  cat,
 			Coverage:  coverage,
+			Meta:      meta,
 		})
 	}
 	return spans

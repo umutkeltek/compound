@@ -3,6 +3,7 @@ package activity
 import (
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"strings"
 	"testing"
@@ -14,32 +15,51 @@ import (
 // (eventstore — segments land ONLY under observed/activity/, never in the event store). This is a
 // by-construction invariant: an import here would be a silent architecture regression that no runtime
 // test could reliably catch.
+//
+// Phase 5 (F16): the walk recurses one level into immediate subdirectories so the
+// awstream / tier1 / tier1/source subpackages — which all live under
+// internal/activity/ and inherit the same doctrine — are subject to the same gate.
+// _test.go files are skipped at every depth (subpackage test files can import freely).
 func TestFalsifier4And6_NoForbiddenImports(t *testing.T) {
 	forbidden := map[string]string{
 		"compound/internal/mem":        "activity mints zero auto memory candidates (F4)",
 		"compound/internal/candidates": "activity mints zero auto memory candidates (F4)",
-		"compound/internal/eventstore": "activity segments land only under observed/activity/, never the event store (F6)",
+		"compound/internal/eventstore": "activity segments land only under observed/activity/, never in the event store (F6)",
 	}
 	fset := token.NewFileSet()
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read package dir: %v", err)
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
+	if err := fs.WalkDir(os.DirFS("."), ".", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
-		f, perr := parser.ParseFile(fset, name, nil, parser.ImportsOnly)
+		if d.IsDir() {
+			name := d.Name()
+			// Skip hidden dirs (e.g. .git, .vscode) and testdata dirs.
+			if strings.HasPrefix(name, ".") || name == "testdata" {
+				return fs.SkipDir
+			}
+			// Only descend one level — subpackages of subpackages would be a different
+			// doctrine boundary; this test covers . (activity) and immediate children.
+			if path != "." {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		f, perr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
 		if perr != nil {
-			t.Fatalf("parse %s: %v", name, perr)
+			t.Fatalf("parse %s: %v", path, perr)
 		}
 		for _, imp := range f.Imports {
-			path := strings.Trim(imp.Path.Value, `"`)
-			if reason, bad := forbidden[path]; bad {
-				t.Fatalf("%s imports forbidden package %q — %s", name, path, reason)
+			importPath := strings.Trim(imp.Path.Value, `"`)
+			if reason, bad := forbidden[importPath]; bad {
+				t.Fatalf("%s imports forbidden package %q — %s", path, importPath, reason)
 			}
 		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk dir: %v", err)
 	}
 }
 

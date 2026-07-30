@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-const okLine = `{"schema_version":"compound.activity_observation.v0.1","seq":1,"ts":"2026-07-15T10:00:00Z","kind":"app_activated","bundle_id":"com.apple.dt.Xcode","app_name":"Xcode","engine":{"id":"compound-activity-sensor","revision":"v0.1"}}`
+const okLine = `{"schema_version":"compound.activity_observation.v0.2","seq":1,"ts":"2026-07-15T10:00:00Z","kind":"app_activated","bundle_id":"com.apple.dt.Xcode","app_name":"Xcode","engine":{"id":"compound-activity-sensor","revision":"v0.1"}}`
 
 // TestFalsifier1_UnknownFieldRefused proves a line carrying a field outside the closed schema (here a
 // smuggled "title") is REFUSED and counted, never accepted as a silent extra. A naive
 // json.Unmarshal accepts and drops the unknown field — this test reds against that.
 func TestFalsifier1_UnknownFieldRefused(t *testing.T) {
-	bad := `{"schema_version":"compound.activity_observation.v0.1","seq":2,"ts":"2026-07-15T10:01:00Z","kind":"app_activated","bundle_id":"com.apple.Safari","app_name":"Safari","engine":{"id":"e","revision":"v0.1"},"title":"secret document name"}`
+	bad := `{"schema_version":"compound.activity_observation.v0.2","seq":2,"ts":"2026-07-15T10:01:00Z","kind":"app_activated","bundle_id":"com.apple.Safari","app_name":"Safari","engine":{"id":"e","revision":"v0.1"},"title":"secret document name"}`
 	rep := DecodeStrict([]byte(okLine+"\n"+bad), 1)
 	if len(rep.Accepted) != 1 {
 		t.Fatalf("expected exactly the 1 clean event accepted, got %d", len(rep.Accepted))
@@ -31,7 +31,7 @@ func TestFalsifier1_UnknownFieldRefused(t *testing.T) {
 // TestFalsifier1_UnknownKindRefused proves an event with a kind outside the closed vocabulary is
 // refused (naive decode accepts any string).
 func TestFalsifier1_UnknownKindRefused(t *testing.T) {
-	bad := `{"schema_version":"compound.activity_observation.v0.1","seq":3,"ts":"2026-07-15T10:02:00Z","kind":"keystroke_logged","bundle_id":"com.apple.Safari","app_name":"Safari","engine":{"id":"e","revision":"v0.1"}}`
+	bad := `{"schema_version":"compound.activity_observation.v0.2","seq":3,"ts":"2026-07-15T10:02:00Z","kind":"keystroke_logged","bundle_id":"com.apple.Safari","app_name":"Safari","engine":{"id":"e","revision":"v0.1"}}`
 	rep := DecodeStrict([]byte(bad), 1)
 	if len(rep.Accepted) != 0 {
 		t.Fatalf("unknown kind must be refused, got %d accepted", len(rep.Accepted))
@@ -45,7 +45,7 @@ func TestFalsifier1_UnknownKindRefused(t *testing.T) {
 // meta map carries a content-bearing key — belt-and-braces on top of the content-free schema.
 func TestFalsifier5_ForbiddenMetaKeyRefused(t *testing.T) {
 	for _, key := range []string{"title", "url", "document", "text", "content"} {
-		bad := `{"schema_version":"compound.activity_observation.v0.1","seq":4,"ts":"2026-07-15T10:03:00Z","kind":"app_activated","bundle_id":"com.apple.Safari","app_name":"Safari","engine":{"id":"e","revision":"v0.1"},"meta":{"` + key + `":"leak"}}`
+		bad := `{"schema_version":"compound.activity_observation.v0.2","seq":4,"ts":"2026-07-15T10:03:00Z","kind":"app_activated","bundle_id":"com.apple.Safari","app_name":"Safari","engine":{"id":"e","revision":"v0.1"},"meta":{"` + key + `":"leak"}}`
 		rep := DecodeStrict([]byte(bad), 1)
 		if len(rep.Accepted) != 0 {
 			t.Fatalf("meta key %q must be refused, got accepted", key)
@@ -66,7 +66,7 @@ func TestSchemaAcceptsCleanEvent(t *testing.T) {
 		t.Fatalf("clean event not accepted: %+v", rep.Accepted)
 	}
 	// A bounded, non-content meta key is allowed.
-	withMeta := `{"schema_version":"compound.activity_observation.v0.1","seq":5,"ts":"2026-07-15T10:04:00Z","kind":"idle_started","bundle_id":"","app_name":"","engine":{"id":"e","revision":"v0.1"},"meta":{"idle_sec":"120"}}`
+	withMeta := `{"schema_version":"compound.activity_observation.v0.2","seq":5,"ts":"2026-07-15T10:04:00Z","kind":"idle_started","bundle_id":"","app_name":"","engine":{"id":"e","revision":"v0.1"},"meta":{"idle_sec":"120"}}`
 	rep2 := DecodeStrict([]byte(withMeta), 1)
 	if len(rep2.Refused) != 0 || len(rep2.Accepted) != 1 {
 		t.Fatalf("idle event with bounded meta should pass: accepted=%d refused=%+v", len(rep2.Accepted), rep2.Refused)
@@ -75,7 +75,7 @@ func TestSchemaAcceptsCleanEvent(t *testing.T) {
 
 // TestSchemaRefusesBadTimestampAndVersion covers the remaining strict gates.
 func TestSchemaRefusesBadTimestampAndVersion(t *testing.T) {
-	badTS := `{"schema_version":"compound.activity_observation.v0.1","seq":6,"ts":"not-a-time","kind":"app_activated","bundle_id":"com.apple.Safari","app_name":"Safari","engine":{"id":"e","revision":"v0.1"}}`
+	badTS := `{"schema_version":"compound.activity_observation.v0.2","seq":6,"ts":"not-a-time","kind":"app_activated","bundle_id":"com.apple.Safari","app_name":"Safari","engine":{"id":"e","revision":"v0.1"}}`
 	if rep := DecodeStrict([]byte(badTS), 1); len(rep.Accepted) != 0 || len(rep.Refused) != 1 {
 		t.Fatalf("bad ts must refuse: %+v", rep)
 	}

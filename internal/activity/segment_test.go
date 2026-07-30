@@ -111,3 +111,52 @@ func TestSegmentMergesFlicker(t *testing.T) {
 		t.Fatalf("merged Xcode span should span full 40min (absorbing the flicker), got %d sec", spans[0].ActiveSec)
 	}
 }
+
+// TestSegmentPropagatesEnvelopeMeta: a Tier-1 event with envelope meta keys
+// (pane_cwd, git_remote, etc.) propagates the LATEST meta to the resulting
+// ActivitySpan.Meta. The reducer keeps the most recent event's meta — not the
+// first — so transitions within a span (e.g., switching projects mid-span)
+// surface in the span output.
+func TestSegmentPropagatesEnvelopeMeta(t *testing.T) {
+	events := []Event{
+		{SchemaVersion: SchemaVersion, Seq: 1, TS: "2026-07-15T10:00:00Z", Kind: KindWindowFocused, BundleID: "com.example.terminal", AppName: "Terminal", Meta: map[string]string{
+			"pane_cwd":   "/Users/operator/projects/a",
+			"git_remote": "git@example.com:operator/a.git",
+		}},
+		{SchemaVersion: SchemaVersion, Seq: 2, TS: "2026-07-15T10:01:00Z", Kind: KindWindowFocused, BundleID: "com.example.terminal", AppName: "Terminal", Meta: map[string]string{
+			"pane_cwd":   "/Users/operator/projects/b",
+			"git_remote": "git@example.com:operator/b.git",
+			"pane_type":  "terminal",
+		}},
+	}
+	spans := Segment(events)
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d: %+v", len(spans), spans)
+	}
+	// The latest meta wins (project b, not project a).
+	if spans[0].Meta["pane_cwd"] != "/Users/operator/projects/b" {
+		t.Errorf("Meta.pane_cwd = %q, want project b (latest)", spans[0].Meta["pane_cwd"])
+	}
+	if spans[0].Meta["git_remote"] != "git@example.com:operator/b.git" {
+		t.Errorf("Meta.git_remote = %q, want project b (latest)", spans[0].Meta["git_remote"])
+	}
+}
+
+// TestSegmentEmptyMetaForTier0: Tier-0 events with empty meta produce spans
+// with nil Meta. omitempty keeps the JSON shape byte-identical to pre-Phase-6
+// output — important for any downstream consumer that compares span JSON.
+func TestSegmentEmptyMetaForTier0(t *testing.T) {
+	// Two events (one to open, one to close) so the span is non-zero-length
+	// and survives the DwellFloor drop.
+	events := []Event{
+		{SchemaVersion: SchemaVersion, Seq: 1, TS: "2026-07-15T10:00:00Z", Kind: KindAppActivated, BundleID: "com.apple.dt.Xcode", AppName: "Xcode"},
+		{SchemaVersion: SchemaVersion, Seq: 2, TS: "2026-07-15T10:01:00Z", Kind: KindAppActivated, BundleID: "com.apple.dt.Xcode", AppName: "Xcode"},
+	}
+	spans := Segment(events)
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	if spans[0].Meta != nil {
+		t.Errorf("Tier-0 span Meta must be nil, got %+v", spans[0].Meta)
+	}
+}

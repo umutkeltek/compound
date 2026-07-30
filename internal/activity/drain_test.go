@@ -195,7 +195,7 @@ func TestFalsifier1_DrainRefusesBadLineButKeepsGood(t *testing.T) {
 	cfg := enableSensor(t, h, now)
 	dir := t.TempDir()
 	body := okLine + "\n" +
-		`{"schema_version":"compound.activity_observation.v0.1","seq":2,"ts":"2026-07-15T10:30:00Z","kind":"idle_started","bundle_id":"","app_name":"","engine":{"id":"e","revision":"v0.1"},"title":"leak"}` + "\n"
+		`{"schema_version":"compound.activity_observation.v0.2","seq":2,"ts":"2026-07-15T10:30:00Z","kind":"idle_started","bundle_id":"","app_name":"","engine":{"id":"e","revision":"v0.1"},"title":"leak"}` + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "2026-07-15.ndjson"), []byte(body), 0o600); err != nil {
 		t.Fatalf("write spool: %v", err)
 	}
