@@ -102,6 +102,10 @@ func cmdRunAttemptList(args []string) {
 	}
 	for _, ra := range attempts {
 		age := time.Since(ra.CreatedAt).Round(time.Second)
+		origin := ra.Origin
+		if origin == "" {
+			origin = "unknown"
+		}
 		hb := ""
 		if ra.LastHeartbeatAt != nil {
 			hb = fmt.Sprintf(" hb=%s", time.Since(*ra.LastHeartbeatAt).Round(time.Second))
@@ -110,8 +114,8 @@ func cmdRunAttemptList(args []string) {
 		if ra.SweepReason != "" {
 			reason = " (" + ra.SweepReason + ")"
 		}
-		fmt.Printf("%s  status=%-9s work=%s actor=%s harness=%s age=%s%s%s\n",
-			ra.ID, ra.Status, ra.WorkID, ra.Actor, ra.Harness, age, hb, reason)
+		fmt.Printf("%s  status=%-9s origin=%s work=%s actor=%s harness=%s age=%s%s%s\n",
+			ra.ID, ra.Status, origin, ra.WorkID, ra.Actor, ra.Harness, age, hb, reason)
 	}
 	fmt.Printf("\n%d attempt(s)\n", len(attempts))
 }
