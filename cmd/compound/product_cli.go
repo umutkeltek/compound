@@ -59,7 +59,7 @@ import (
 )
 
 func productUsage() string {
-	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-funnel-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | content-draft record --product <id> --platform <x|bluesky|threads> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id> | content-queue plan [--json]|content-queue apply --review <review.yaml> [--json] | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | release-plan --product <id> --change <summary> --candidate <ref> --rollback <text> --metric <post-release-metric> [--action-card <id>] [--evidence <ref>] | release-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | release-observe --reviewed <reviewed.json> --execution <receipt_id> --signal <signal_id> [--json] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | release-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-funnel-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-acquisition <tsv> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric first_time_downloads|paid_first_time_downloads|organic_first_time_downloads|paid_download_share]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | content-draft record --product <id> --platform <x|bluesky|threads> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id> | content-queue plan [--json]|content-queue apply --review <review.yaml> [--json] | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | release-plan --product <id> --change <summary> --candidate <ref> --rollback <text> --metric <post-release-metric> [--action-card <id>] [--evidence <ref>] | release-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | release-observe --reviewed <reviewed.json> --execution <receipt_id> --signal <signal_id> [--json] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | release-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -70,9 +70,11 @@ func loadProductSignalArg(args []string) (product.SignalDocument, string, error)
 	var ascDatapoints string
 	var ascSalesSeries string
 	var ascFunnelSeries string
+	var ascAcquisition string
 	datapointsOpts := product.ASCDatapointsSignalOptions{Metric: "review_count"}
 	salesOpts := product.ASCSalesSeriesSignalOptions{Metric: "units"}
 	funnelOpts := product.ASCFunnelSeriesSignalOptions{Metric: "product_page_conversion_rate"}
+	acquisitionOpts := product.ASCAcquisitionSignalOptions{Metric: "paid_download_share"}
 	for i := 0; i < len(args); i++ {
 		if i+1 >= len(args) {
 			return product.SignalDocument{}, "", fmt.Errorf("%s", productUsage())
@@ -85,34 +87,42 @@ func loadProductSignalArg(args []string) (product.SignalDocument, string, error)
 			ascSalesSeries = value
 		case "--asc-funnel-series":
 			ascFunnelSeries = value
+		case "--asc-acquisition":
+			ascAcquisition = value
 		case "--product":
 			datapointsOpts.ProductID = value
 			salesOpts.ProductID = value
 			funnelOpts.ProductID = value
+			acquisitionOpts.ProductID = value
 		case "--app-id":
 			datapointsOpts.AppID = value
 			salesOpts.AppID = value
 			funnelOpts.AppID = value
+			acquisitionOpts.AppID = value
 		case "--metric":
 			datapointsOpts.Metric = value
 			salesOpts.Metric = value
 			funnelOpts.Metric = value
+			acquisitionOpts.Metric = value
 		case "--before":
 			salesOpts.BeforeWindow = value
 			funnelOpts.BeforeWindow = value
+			acquisitionOpts.BeforeWindow = value
 		case "--after":
 			salesOpts.AfterWindow = value
 			funnelOpts.AfterWindow = value
+			acquisitionOpts.AfterWindow = value
 		case "--change-event":
 			salesOpts.ChangeEvent = value
 			funnelOpts.ChangeEvent = value
+			acquisitionOpts.ChangeEvent = value
 		default:
 			return product.SignalDocument{}, "", fmt.Errorf("%s", productUsage())
 		}
 		i++
 	}
 	sourceCount := 0
-	for _, source := range []string{ascDatapoints, ascSalesSeries, ascFunnelSeries} {
+	for _, source := range []string{ascDatapoints, ascSalesSeries, ascFunnelSeries, ascAcquisition} {
 		if source != "" {
 			sourceCount++
 		}
@@ -140,6 +150,14 @@ func loadProductSignalArg(args []string) (product.SignalDocument, string, error)
 		}
 		doc, err := product.LoadASCFunnelSeriesSignal(ascFunnelSeries, funnelOpts)
 		return doc, ascFunnelSeries, err
+	}
+	if ascAcquisition != "" {
+		if acquisitionOpts.ProductID == "" || acquisitionOpts.AppID == "" || acquisitionOpts.BeforeWindow == "" ||
+			acquisitionOpts.AfterWindow == "" || acquisitionOpts.ChangeEvent == "" {
+			return product.SignalDocument{}, "", fmt.Errorf("%s", productUsage())
+		}
+		doc, err := product.LoadASCAcquisitionSignal(ascAcquisition, acquisitionOpts)
+		return doc, ascAcquisition, err
 	}
 	return product.SignalDocument{}, "", fmt.Errorf("%s", productUsage())
 }
