@@ -38,6 +38,44 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// isolatedTestUserHome returns a disposable HOME to hand a child process, with Go's
+// own telemetry disabled inside it.
+//
+// A child that runs Go tooling writes counter files under the user config dir
+// ($HOME/Library/Application Support/go/telemetry on darwin, $HOME/.config/... on
+// linux) and can leave a detached uploader behind. Those writes land AFTER the
+// child exits, so they race t.TempDir()'s RemoveAll and fail the PARENT with
+// `TempDir RemoveAll cleanup: ... directory not empty` — a red gate produced by
+// telemetry bookkeeping, not by anything under test (lived on a loaded machine:
+// TestHomeDoctorCapacityFeedWarnings, which asserts only on doctor's JSON).
+// Seeding the documented `off` mode file (exactly what `go telemetry off` writes)
+// makes the isolated home inert instead of merely private.
+func isolatedTestUserHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	disableGoTelemetryIn(t, home)
+	return home
+}
+
+// disableGoTelemetryIn makes an already-created test HOME inert for Go telemetry.
+// Both platform config-dir layouts are seeded so the guarantee does not depend on
+// which OS runs the battery.
+func disableGoTelemetryIn(t *testing.T, home string) {
+	t.Helper()
+	for _, configDir := range []string{
+		filepath.Join(home, "Library", "Application Support"),
+		filepath.Join(home, ".config"),
+	} {
+		dir := filepath.Join(configDir, "go", "telemetry")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("prepare telemetry-off test home: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "mode"), []byte("off\n"), 0o644); err != nil {
+			t.Fatalf("disable go telemetry in test home: %v", err)
+		}
+	}
+}
+
 var (
 	compoundBinOnce sync.Once
 	compoundBinPath string
@@ -95,4 +133,12 @@ func compoundMockEngineTestBinary(t *testing.T) string {
 		t.Fatalf("%v", compoundMockEngineBinErr)
 	}
 	return compoundMockEngineBinPath
+}
+
+// telemetryOffHome disables Go telemetry inside an existing directory and returns it,
+// for call sites whose HOME is a tempdir they already use for other fixtures.
+func telemetryOffHome(t *testing.T, home string) string {
+	t.Helper()
+	disableGoTelemetryIn(t, home)
+	return home
 }

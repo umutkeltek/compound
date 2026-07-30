@@ -78,6 +78,15 @@ process.env.COMPOUND_HOME = home;
 process.env.PROJECTION_SMOKE_STATE = state;
 
 try {
+  // Pay the one-time OS cold-start tax on this brand-new executable at a
+  // brand-new temp path BEFORE any timed read. That tax (code-signing
+  // validation + page-cache miss on the first exec) is a property of the host,
+  // not of the degradation semantics under test, and on a loaded machine it
+  // alone exceeded the seed read's budget — a healthy projection reported as
+  // `unreachable` purely from machine load. `empty` is the side-effect-free
+  // stub mode, so warming through it seeds nothing the cases depend on.
+  await Bun.spawn([bin, "empty"], { stdout: "ignore", stderr: "ignore" }).exited;
+
   const compound = await import("../src/lib/compound.ts");
   const hasProjectionRead = typeof compound.runProjection === "function";
 
@@ -141,10 +150,18 @@ try {
       const second = await readProjection(["cache", "--json"], { timeoutMs: 2_000 });
       assert.equal(second.status, "stale", "an expired last-good value must revalidate as stale");
 
-      // Let the failed background refresh settle, then prove the good value and
-      // its success timestamp survived the failed attempt.
-      await Bun.sleep(100);
-      const afterFailure = await readProjection(["cache", "--json"], { timeoutMs: 2_000 });
+      // The failed background refresh settles on a SUBPROCESS's schedule, not a
+      // fixed one: a 100ms sleep raced a `bun` spawn and went red purely from
+      // machine load. Converge on the condition instead — re-read (the stub fails
+      // every call after the seed, so the refresh failure is durable once it
+      // lands) until the failure surfaces, bounded so a genuinely lost error
+      // still fails the smoke rather than hanging it.
+      let afterFailure = await readProjection(["cache", "--json"], { timeoutMs: 2_000 });
+      const settleDeadline = realNow() + 10_000;
+      while (!afterFailure.error && realNow() < settleDeadline) {
+        await Bun.sleep(20);
+        afterFailure = await readProjection(["cache", "--json"], { timeoutMs: 2_000 });
+      }
       assert.equal(afterFailure.status, "stale", "a failed refresh with last-good data must stay stale");
       assert.equal(afterFailure.value?.marker, "last-good", "a failed refresh must not cache null over good");
       assert.ok(afterFailure.lastGoodAt, "a failed refresh must preserve lastGoodAt");
