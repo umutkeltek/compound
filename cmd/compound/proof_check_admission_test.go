@@ -615,24 +615,7 @@ func TestProofCheckCommandSignalCancelsAndWaitsForWholeGateGroup(t *testing.T) {
 			_ = cmd.Process.Kill()
 		}
 	})
-	pidDeadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(pidPath); err == nil {
-			break
-		}
-		if time.Now().After(pidDeadline) {
-			t.Fatal("timed out waiting for gate child pid")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	rawPID, err := os.ReadFile(pidPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var gatePID int
-	if _, err := fmt.Sscanf(strings.TrimSpace(string(rawPID)), "%d", &gatePID); err != nil {
-		t.Fatalf("parse gate child pid %q: %v", rawPID, err)
-	}
+	gatePID := waitForProofCheckGatePID(t, pidPath, 5*time.Second)
 	if err := syscall.Kill(cmd.Process.Pid, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
@@ -647,6 +630,52 @@ func TestProofCheckCommandSignalCancelsAndWaitsForWholeGateGroup(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("gate descendant pid %d remained after proof-check signal handling: %v", gatePID, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestWaitForProofCheckGatePIDWaitsForCompletePublication(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), "gate-child.pid")
+	if err := os.WriteFile(pidPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeDone := make(chan error, 1)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		writeDone <- os.WriteFile(pidPath, []byte("4242\n"), 0o600)
+	}()
+
+	if got := waitForProofCheckGatePID(t, pidPath, time.Second); got != 4242 {
+		t.Fatalf("published pid = %d, want 4242", got)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForProofCheckGatePID(t *testing.T, path string, timeout time.Duration) int {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		rawPID, err := os.ReadFile(path)
+		if err == nil {
+			var pid int
+			if _, scanErr := fmt.Sscanf(strings.TrimSpace(string(rawPID)), "%d", &pid); scanErr == nil && pid > 0 {
+				return pid
+			} else if scanErr != nil {
+				lastErr = fmt.Errorf("parse pid %q: %w", rawPID, scanErr)
+			} else {
+				lastErr = fmt.Errorf("published pid %d is not positive", pid)
+			}
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("read gate child pid %s: %v", path, err)
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for parseable gate child pid at %s: %v", path, lastErr)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

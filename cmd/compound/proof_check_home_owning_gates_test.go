@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -166,6 +168,39 @@ func TestProofCheckAttentionFixtureProbeCancellationKillsDescendant(t *testing.T
 	proofCheckAssertNoSurvivor(t, survivor)
 }
 
+func TestProofCheckGateCancellationReadinessNamesLiveDescendant(t *testing.T) {
+	started, _, script := proofCheckGateCancellationScript(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := proofCheckCommandContext(ctx, script)
+	cmd.Env = os.Environ()
+	if err := cmd.Start(); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	proofCheckWaitForFile(t, started)
+	rawPID, err := os.ReadFile(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descendantPID, err := strconv.Atoi(strings.TrimSpace(string(rawPID)))
+	if err != nil {
+		t.Fatalf("cancellation readiness %q does not name the descendant: %v", rawPID, err)
+	}
+	if descendantPID <= 0 {
+		t.Fatalf("cancellation readiness pid = %d, want positive", descendantPID)
+	}
+	if err := syscall.Kill(descendantPID, 0); err != nil {
+		t.Fatalf("published descendant pid %d is not alive: %v", descendantPID, err)
+	}
+}
+
 func TestProofCheckConsoleSmokeCancellationKillsDescendant(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the compound binary")
@@ -203,7 +238,12 @@ func proofCheckGateCancellationScript(t *testing.T) (started, survivor, script s
 	// a fixed delay: a one-shot write races kill delivery under load (a 0.35s
 	// timer vs >0.35s signal latency reads as a phantom survivor), while a marker
 	// that reappears after the group wait has returned can only be a live process.
-	body := "#!/bin/sh\nprintf started > \"$PROOF_CHECK_GATE_STARTED\"\n( while :; do printf survivor > \"$PROOF_CHECK_GATE_SURVIVOR\"; sleep 0.1; done ) &\nwhile :; do sleep 1; done\n"
+	//
+	// Publish readiness only after the descendant exists. The prior leader marker
+	// let cancellation race between publication and fork, testing a late-spawn
+	// race instead of the claimed existing-descendant contract. Rename a complete
+	// PID file so the observer cannot see create-before-content either.
+	body := "#!/bin/sh\n( while :; do printf survivor > \"$PROOF_CHECK_GATE_SURVIVOR\"; sleep 0.1; done ) &\ndescendant=$!\nprintf '%s\\n' \"$descendant\" > \"$PROOF_CHECK_GATE_STARTED.tmp\"\nmv \"$PROOF_CHECK_GATE_STARTED.tmp\" \"$PROOF_CHECK_GATE_STARTED\"\nwhile :; do sleep 1; done\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
