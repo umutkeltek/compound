@@ -13480,6 +13480,18 @@ insert into goals(goal_id, app_id, objective, state, artifact_dir, created_at, u
 	}
 }
 
+func TestCaptureStdoutDrainsLargeOutput(t *testing.T) {
+	payload := strings.Repeat("x", 1<<20)
+	got := captureStdout(t, func() {
+		if _, err := io.WriteString(os.Stdout, payload); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if got != payload {
+		t.Fatalf("captured %d bytes, want %d", len(got), len(payload))
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout
@@ -13487,17 +13499,32 @@ func captureStdout(t *testing.T, fn func()) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	type readResult struct {
+		out []byte
+		err error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		out, err := io.ReadAll(r)
+		readDone <- readResult{out: out, err: err}
+	}()
+
 	os.Stdout = w
-	defer func() { os.Stdout = old }()
+	defer func() {
+		os.Stdout = old
+		_ = w.Close()
+		_ = r.Close()
+	}()
 	fn()
+	os.Stdout = old
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
+	result := <-readDone
+	if result.err != nil {
+		t.Fatal(result.err)
 	}
-	return string(out)
+	return string(result.out)
 }
 
 func sameStringSlice(got, want []string) bool {
