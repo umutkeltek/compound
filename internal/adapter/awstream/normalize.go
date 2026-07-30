@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"compound/internal/activity"
 	"compound/internal/envelope"
@@ -193,10 +194,132 @@ func mapEvent(re RawEvent, logs *normalizeLogs) (Normalized, bool) {
 	}
 }
 
+// appNameToBundleID maps AW's `app` field (a human-readable process/app name) to a
+// macOS bundle identifier when the watcher emits `app` instead of `bundle_id`.
+// Most AW window watchers (Linux/Windows variants, older aw-watcher-window versions)
+// write `app` as the process name rather than the bundle id. The bundle id is what
+// the activity classifier + Tier-1 source registry key on, so we translate the
+// common names here. Watchers that DO emit bundle_id go through the preferred path
+// without consulting this map.
+var appNameToBundleID = map[string]string{
+	"Google Chrome":      "com.google.Chrome",
+	"Chrome":             "com.google.Chrome",
+	"Safari":             "com.apple.Safari",
+	"Firefox":            "org.mozilla.firefox",
+	"Brave Browser":      "com.brave.Browser",
+	"Brave":              "com.brave.Browser",
+	"iTerm2":             "com.googlecode.iterm2",
+	"Terminal":           "com.apple.Terminal",
+	"Apple Terminal":     "com.apple.Terminal",
+	"Warp":               "dev.warp.Warp",
+	"Xcode":              "com.apple.dt.Xcode",
+	"Visual Studio Code": "com.microsoft.VSCode",
+	"VS Code":            "com.microsoft.VSCode",
+	"Cursor":             "com.todesktop.230313mzl4w4u96",
+	"Slack":              "com.tinyspeck.slackmacgap",
+	"Discord":            "com.hnc.Discord",
+	"Mail":               "com.apple.mail",
+	"Finder":             "com.apple.finder",
+	"Figma":              "com.figma.Desktop",
+	"Notion":             "notion.id",
+	"Obsidian":           "md.obsidian",
+	"Zoom":               "us.zoom.xos",
+	"Spotify":            "com.spotify.client",
+	"Music":              "com.apple.Music",
+	"Pages":              "com.apple.iWork.Pages",
+	"Numbers":            "com.apple.iWork.Numbers",
+	"Keynote":            "com.apple.iWork.Keynote",
+	"Notes":              "com.apple.Notes",
+	"Preview":            "com.apple.Preview",
+}
+
+// isBundleIDPattern returns true if s looks like a reverse-DNS bundle identifier
+// (contains a dot and only has safe chars). Used to distinguish a watcher that
+// emitted a real bundle id in `app` from one that emitted a human process name.
+func isBundleIDPattern(s string) bool {
+	if s == "" || !strings.Contains(s, ".") {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// resolveBundleID extracts a bundle identifier from an AW window/web payload.
+// Priority: data.bundle_id (always authoritative) → data.app if it looks like a
+// bundle id → data.app mapped via appNameToBundleID → "aw-app:<slug>" pseudo
+// for unknown app names so the classifier gets CategoryUnknown honestly.
+//
+// Critical: we NEVER silently use a human process name (e.g. "Google Chrome")
+// as a bundle identifier. The Tier-1 source registry keys on bundle id; passing
+// "Google Chrome" through would silently miss the cmux/iTerm/VSCode source and
+// fall through to no envelope resolution.
+func resolveBundleID(data map[string]json.RawMessage) (bundleID string, ok bool) {
+	// 1. data.bundle_id — authoritative.
+	if raw, ok := data["bundle_id"]; ok {
+		_ = json.Unmarshal(raw, &bundleID)
+		if bundleID != "" {
+			return bundleID, true
+		}
+	}
+	// 2. data.app — distinguish real bundle id from human name.
+	var app string
+	if raw, ok := data["app"]; ok {
+		_ = json.Unmarshal(raw, &app)
+	}
+	if app == "" {
+		return "", false
+	}
+	// 2a. data.app looks like a bundle id (reverse-DNS) — accept as-is.
+	if isBundleIDPattern(app) {
+		return app, true
+	}
+	// 2b. data.app is a known human name — map to bundle id.
+	if mapped, ok := appNameToBundleID[app]; ok {
+		return mapped, true
+	}
+	// 2c. Unknown human name — emit a safe pseudo-bundle so the classifier
+	// honestly returns CategoryUnknown instead of pretending "Google Chrome"
+	// is a bundle id.
+	return "aw-app:" + slugifyUnknownApp(app), true
+}
+
+// slugifyUnknownApp turns an arbitrary app/process name into a content-free
+// slug suitable for an aw-app: prefix. Keeps [a-z0-9-], lowercases, caps length.
+func slugifyUnknownApp(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+		if b.Len() >= 32 {
+			break
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "unknown"
+	}
+	return out
+}
+
 // mapWindowEvent handles window-class watchers (window, vscode, web-*). Pulls bundle_id
-// from data.app (preferred) or data.bundle_id. Standard AW payloads also include
-// title/url/file/document — these are NOT mirrored into Meta, so the F5 content-free
-// invariant on OUTPUT holds by construction.
+// from data.bundle_id (authoritative) or data.app (with translation). Standard AW
+// payloads also include title/url/file/document — these are NOT mirrored into Meta,
+// so the F5 content-free invariant on OUTPUT holds by construction.
 func mapWindowEvent(re RawEvent, logs *normalizeLogs) (Normalized, bool) {
 	if len(re.AWEvent.Data) == 0 || string(re.AWEvent.Data) == "null" {
 		logs.BadEvent++
@@ -209,29 +332,22 @@ func mapWindowEvent(re RawEvent, logs *normalizeLogs) (Normalized, bool) {
 		logs.note(fmt.Sprintf("window event data not parseable: %v", err))
 		return Normalized{}, false
 	}
-	// Bundle id: prefer data.app, fall back to data.bundle_id. AW's window watcher
-	// writes "app"; some watchers write "bundle_id". Either is acceptable. We
-	// IGNORE title/url/file/document entirely — they are never copied to Meta,
-	// so the F5 content-free invariant on OUTPUT holds regardless of what's in
-	// the raw input.
-	var bundle string
-	if raw, ok := data["app"]; ok {
-		_ = json.Unmarshal(raw, &bundle)
-	}
-	if bundle == "" {
-		if raw, ok := data["bundle_id"]; ok {
-			_ = json.Unmarshal(raw, &bundle)
-		}
-	}
-	if bundle == "" {
+	bundle, ok := resolveBundleID(data)
+	if !ok {
 		logs.BadEvent++
 		logs.note(fmt.Sprintf("window event refused: data.app/bundle_id missing or empty"))
 		return Normalized{}, false
 	}
-	// App name: optional. data.app_name (vscode watcher) or just reuse the bundle id.
+	// App name: optional. data.app_name (vscode watcher) or fall back to data.app
+	// (human-readable). Never copy the bundle id — they may legitimately differ.
 	var appName string
 	if raw, ok := data["app_name"]; ok {
 		_ = json.Unmarshal(raw, &appName)
+	}
+	if appName == "" {
+		if raw, ok := data["app"]; ok {
+			_ = json.Unmarshal(raw, &appName)
+		}
 	}
 	if appName == "" {
 		appName = bundle

@@ -456,3 +456,35 @@ func TestNormalize_InputAlreadySorted(t *testing.T) {
 		t.Fatalf("sort drift: events=%d hosts=%+v", len(events), hosts)
 	}
 }
+
+// TestNormalize_AppNameToBundleIDMapping: AW `app` field is often a human process
+// name, not a macOS bundle id. The normalizer must translate known names
+// (Chrome, Brave Browser, iTerm2, etc.) to their bundle ids and emit a safe
+// pseudo-bundle for unknown names.
+func TestNormalize_AppNameToBundleIDMapping(t *testing.T) {
+	ts := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	raw := []RawEvent{
+		// bundle_id present — always wins.
+		rawEvent(Bucket{ID: "aw-watcher-window_host-a", Hostname: "host-a"}, ts, 30,
+			map[string]any{"app": "irrelevant process name", "bundle_id": "com.google.Chrome"}),
+		// app is a reverse-DNS bundle id — accept as-is.
+		rawEvent(Bucket{ID: "aw-watcher-window_host-a", Hostname: "host-a"}, ts.Add(time.Second), 30,
+			map[string]any{"app": "com.apple.Safari"}),
+		// app is a known human name — map to bundle id.
+		rawEvent(Bucket{ID: "aw-watcher-window_host-a", Hostname: "host-a"}, ts.Add(2*time.Second), 30,
+			map[string]any{"app": "Brave Browser"}),
+		// app is unknown human name — emit aw-app:<slug>.
+		rawEvent(Bucket{ID: "aw-watcher-window_host-a", Hostname: "host-a"}, ts.Add(3*time.Second), 30,
+			map[string]any{"app": "Some Mystery App"}),
+	}
+	events, _, _ := Normalize(raw)
+	if len(events) != 4 {
+		t.Fatalf("expected 4 accepted events; got %d", len(events))
+	}
+	want := []string{"com.google.Chrome", "com.apple.Safari", "com.brave.Browser", "aw-app:some-mystery-app"}
+	for i, w := range want {
+		if events[i].BundleID != w {
+			t.Errorf("event[%d].BundleID = %q, want %q", i, events[i].BundleID, w)
+		}
+	}
+}
