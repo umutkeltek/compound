@@ -18,9 +18,10 @@ import (
 // Governed capabilities. Grants are matched capability-exact, so these strings ARE the security
 // boundary: a grant for one never authorizes the other.
 const (
-	ToggleCapability    = "activity.sensor.toggle"
-	DrainCapability     = "activity.ingest.drain"
-	ActionRecordVersion = "compound.activity_sensor_action.v0.1"
+	ToggleCapability       = "activity.sensor.toggle"
+	DrainCapability        = "activity.ingest.drain"
+	Tier1CollectCapability = "activity.tier1.collect"
+	ActionRecordVersion    = "compound.activity_sensor_action.v0.1"
 )
 
 // ToggleResult reports the outcome of an enable/disable attempt.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"compound/internal/activity"
+	"compound/internal/activity/tier1"
 	"compound/internal/home"
 	"compound/internal/policy"
 )
@@ -19,6 +20,11 @@ import (
 // NDJSON spool into segments+spans (grant-gated, fail-closed), and sweep old files. It NEVER runs a
 // daemon (a blind cron is a liar with a schedule) — the collector is an external launchd agent; drain
 // is event-driven and operator/agent-invoked.
+//
+// Phase 4 adds two Tier-1 verbs:
+//
+//   - compound activity aw materialize  : reads AW across hostnames and writes Tier-0 spool events.
+//   - compound activity tier1 collect   : bounded collect of Tier-1 envelopes into the spool.
 func cmdActivity(args []string) {
 	if code := runActivity(args, os.Stdout, os.Stderr); code != 0 {
 		os.Exit(code)
@@ -31,7 +37,9 @@ func activityUsage() string {
 		"  compound activity enable  [--work W] [--home P]                   governed enable (needs a matching standing grant)\n" +
 		"  compound activity disable [--work W] [--home P]                   governed disable\n" +
 		"  compound activity drain   [--spool DIR] [--work W] [--json] [--home P]  ingest spool -> segments+spans (grant-gated, fail-closed)\n" +
-		"  compound activity sweep   [--json] [--home P]                     delete spans/segments older than 30d, report reclaimed bytes"
+		"  compound activity sweep   [--json] [--home P]                     delete spans/segments older than 30d, report reclaimed bytes\n" +
+		"  compound activity aw materialize [--work W] [--home P] [--json]   read AW across hostnames -> spool (Tier-0, grant-gated)\n" +
+		"  compound activity tier1 collect  [--duration 30s] [--work W] [--home P] [--json]  bounded collect of Tier-1 envelopes -> spool (grant-gated)"
 }
 
 func runActivity(args []string, stdout, stderr io.Writer) int {
@@ -50,6 +58,10 @@ func runActivity(args []string, stdout, stderr io.Writer) int {
 		return runActivityDrain(args[1:], stdout, stderr)
 	case "sweep":
 		return runActivitySweep(args[1:], stdout, stderr)
+	case "aw":
+		return runActivityAW(args[1:], stdout, stderr)
+	case "tier1":
+		return runActivityTier1(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, activityUsage())
 		return 2
@@ -203,5 +215,132 @@ func writeJSON(stdout, stderr io.Writer, v any) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	return 0
+}
+
+// runActivityAW dispatches `compound activity aw ...`. Today only `materialize` is
+// implemented; future sub-verbs (e.g., `aw buckets` for listing the joined virtual
+// stream) land here.
+func runActivityAW(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: compound activity aw materialize [--work W] [--home P] [--json]")
+		return 2
+	}
+	switch args[0] {
+	case "materialize":
+		return runActivityAWMaterialize(args[1:], stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown aw sub-verb: %s\n", args[0])
+		return 2
+	}
+}
+
+// runActivityAWMaterialize reads AW buckets across hostnames, normalizes them via
+// awstream.Normalize, and writes Tier-0 spool events. Useful when AW is the only
+// activity source on this host (no Swift launchd collector running). Governance:
+// the same Enable gate as drain. Tier-1 envelope extraction is a SEPARATE verb
+// (`tier1 collect`).
+//
+// Phase 4 ships the verb as a working surface; the underlying AW materialize
+// routine (`tier1.AWMaterialize`) is implemented as a thin wrapper around the
+// awstream reader + the existing spool writer. The Tier-1 envelope collector
+// (`tier1.Collect`) is a distinct verb.
+func runActivityAWMaterialize(args []string, stdout, stderr io.Writer) int {
+	homePath, err := home.Resolve(flagValue(args, "--home"))
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	cfg, _, err := policy.LoadConfig(homePath)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	work := activityWorkID(args, "aw_materialize")
+	rep, err := tier1.AWMaterialize(homePath, defaultSpoolDir(), cfg, work, time.Now())
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	if hasFlag(args, "--json") {
+		code := 0
+		if rep.Refused {
+			code = 1
+		}
+		if writeJSON(stdout, stderr, rep) != 0 {
+			return 1
+		}
+		return code
+	}
+	if rep.Refused {
+		fmt.Fprintf(stderr, "aw materialize refused: %s\n", rep.Reason)
+		return 1
+	}
+	fmt.Fprintf(stdout, "aw materialize: events_written=%d buckets=%d bytes=%d\n",
+		rep.EventsWritten, rep.BucketsRead, rep.BytesUnderRoot)
+	return 0
+}
+
+// runActivityTier1 dispatches `compound activity tier1 ...`. Today only `collect`
+// is implemented; future sub-verbs (e.g., `tier1 status` for last-run summary)
+// land here.
+func runActivityTier1(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: compound activity tier1 collect [--duration 30s] [--work W] [--home P] [--json]")
+		return 2
+	}
+	switch args[0] {
+	case "collect":
+		return runActivityTier1Collect(args[1:], stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown tier1 sub-verb: %s\n", args[0])
+		return 2
+	}
+}
+
+// runActivityTier1Collect runs a bounded Tier-1 collect. Defaults: --duration 30s.
+// Governance: Tier1CollectCapability grant + Enabled config + byte cap.
+func runActivityTier1Collect(args []string, stdout, stderr io.Writer) int {
+	homePath, err := home.Resolve(flagValue(args, "--home"))
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	cfg, _, err := policy.LoadConfig(homePath)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	duration := 30 * time.Second
+	if d := strings.TrimSpace(flagValue(args, "--duration")); d != "" {
+		parsed, perr := time.ParseDuration(d)
+		if perr != nil {
+			fmt.Fprintf(stderr, "invalid --duration %q: %v\n", d, perr)
+			return 1
+		}
+		duration = parsed
+	}
+	work := activityWorkID(args, "tier1_collect")
+	rep, err := tier1.Collect(homePath, defaultSpoolDir(), cfg, work, duration, time.Now())
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	if hasFlag(args, "--json") {
+		code := 0
+		if rep.Refused {
+			code = 1
+		}
+		if writeJSON(stdout, stderr, rep) != 0 {
+			return 1
+		}
+		return code
+	}
+	if rep.Refused {
+		fmt.Fprintf(stderr, "tier1 collect refused: %s\n", rep.Reason)
+		return 1
+	}
+	fmt.Fprintf(stdout, "tier1 collect: events_written=%d sources_called=%d sources_failed=%d banned_refused=%d duration=%s\n",
+		rep.EventsWritten, rep.SourcesCalled, rep.SourcesFailed, rep.BannedRefused, duration)
 	return 0
 }
