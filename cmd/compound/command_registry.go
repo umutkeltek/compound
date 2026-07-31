@@ -130,6 +130,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"narrate":            readCommand(cmdNarrate),
 		"stream":             readCommand(cmdStream),
 		"executors":          readCommand(cmdExecutors),
+		"presence":           readCommand(cmdPresence),
 		"proof-check":        governedCommand(cmdProofCheck),
 		"doctor":             readCommand(cmdDoctor),
 		"retention":          readCommand(cmdRetention),
