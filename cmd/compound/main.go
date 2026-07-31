@@ -1471,7 +1471,7 @@ func cmdHook(args []string) {
 // decisions; isolated Claude-family profiles retain explicit mutation enforcement.
 func cmdHookInstall(args []string) {
 	if hasUsageFlag(args) {
-		fmt.Println("usage: compound hook install [--harness claude-code|claude-zai|codex|all] [--scope global|project] [--config-dir DIR] [--base DIR] [--binary PATH] [--check] [--json]")
+		fmt.Println("usage: compound hook install [--harness claude-code|claude-zai|claude-minimax|codex|all] [--scope global|project] [--config-dir DIR] [--base DIR] [--binary PATH] [--check] [--json]")
 		return
 	}
 	check := hasFlag(args, "--check")
@@ -1490,15 +1490,15 @@ func cmdHookInstall(args []string) {
 	switch h := strings.TrimSpace(valueFlag(args, "--harness")); h {
 	case "", "all":
 		harnesses = nil // every managed harness
-	case "claude-code", "claude-zai", "codex":
+	case "claude-code", "claude-zai", "claude-minimax", "codex":
 		harnesses = []string{h}
 	default:
-		fmt.Fprintln(os.Stderr, "error: --harness must be claude-code, claude-zai, codex, or all")
+		fmt.Fprintln(os.Stderr, "error: --harness must be claude-code, claude-zai, claude-minimax, codex, or all")
 		os.Exit(2)
 	}
 	configDir := strings.TrimSpace(valueFlag(args, "--config-dir"))
-	if configDir != "" && (len(harnesses) != 1 || harnesses[0] != "claude-zai") {
-		fmt.Fprintln(os.Stderr, "error: --config-dir requires --harness claude-zai")
+	if configDir != "" && (len(harnesses) != 1 || (harnesses[0] != "claude-zai" && harnesses[0] != "claude-minimax")) {
+		fmt.Fprintln(os.Stderr, "error: --config-dir requires --harness claude-zai or claude-minimax")
 		os.Exit(2)
 	}
 

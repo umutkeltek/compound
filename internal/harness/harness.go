@@ -155,18 +155,27 @@ func DefaultRegistry() Registry {
 		"claude_minimax": {
 			Name:                 "claude_minimax",
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
-			// A lane declaration is a conservative FLOOR, not an aspiration. Every
-			// hook flag here was true while the lane's settings registered no hooks
-			// at all -- the "separate hook installation" limitation below describes
-			// a step that had never been performed, so the registry described the
-			// intended end state and routing believed it. Work went to an executor
-			// that could not report back, and the failure looked like silence.
+			// A lane declaration is a conservative FLOOR, not an aspiration. Every hook flag here
+			// used to be true while the lane's settings registered no hooks at all -- the
+			// "separate hook installation" limitation below described a step that had never been
+			// performed, so the registry described the intended end state and routing believed
+			// it. Work went to an executor that could not report back, and the failure looked
+			// like silence.
+			//
+			// This is the raise: `compound hook install --harness claude-minimax` (see
+			// internal/hookplan/install.go) now genuinely writes SessionStart, UserPromptSubmit,
+			// PreToolUse (blocking, --enforce), and PostToolUse into the isolated minimax profile
+			// settings.json -- mirroring claude_zai below. The floor now describes an installed
+			// binding, not a plan. Stop and SessionEnd stay unregistered, so they stay false,
+			// same as claude_zai.
 			//
 			// Skills and MCP are off because this lane's launcher disables them.
-			// Verify any change here with `compound harness capability-drift`: an
-			// over-claim fails, and once hooks really are installed the check
-			// reports a (non-fatal) under-claim, which is the signal to raise this.
+			// Verify any change here with `compound harness capability-drift`: an over-claim
+			// fails; an under-claim against a genuinely installed binding is the signal that a
+			// future install-path change regressed and this floor needs lowering again.
 			Capabilities: Capabilities{
+				SessionStartContext: true, UserPromptContext: true,
+				PreToolUseBlock: true, PostToolUseEvent: true,
 				NativeSkills: false, MCP: false,
 			},
 			Limitations: []string{

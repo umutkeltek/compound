@@ -25,6 +25,10 @@ const hookCommandMarker = "hook pre-tool-use --live"
 
 const claudeZaiHarness = "claude-zai"
 
+// claudeMinimaxHarness is the sibling isolated-profile harness to claudeZaiHarness: same NO-CLOBBER
+// installer, same profile-scoped config, different provider lane.
+const claudeMinimaxHarness = "claude-minimax"
+
 type desiredHookBinding struct {
 	Event    string
 	Matcher  string
@@ -48,6 +52,8 @@ func ConfigRel(harness, scope string) string {
 		return filepath.Join(".codex", "hooks.json")
 	case claudeZaiHarness:
 		return filepath.Join(".config", "switchback", "claude", "zai-direct", "settings.json")
+	case claudeMinimaxHarness:
+		return filepath.Join(".config", "switchback", "claude", "_providers", "minimax-lane", "settings.json")
 	default: // claude-code
 		return filepath.Join(".claude", claudeSettingsFile(scope))
 	}
@@ -64,6 +70,12 @@ func claudeSettingsFile(scope string) string {
 // ClaudeZaiProfileDir is the default isolated Claude profile home under a user's base directory.
 func ClaudeZaiProfileDir(baseDir string) string {
 	return filepath.Join(baseDir, ".config", "switchback", "claude", "zai-direct")
+}
+
+// ClaudeMinimaxProfileDir is the default isolated Claude profile home for the minimax lane, under
+// a user's base directory.
+func ClaudeMinimaxProfileDir(baseDir string) string {
+	return filepath.Join(baseDir, ".config", "switchback", "claude", "_providers", "minimax-lane")
 }
 
 // HookCommand is the exact observation-only command a harness runs for Compound PreToolUse.
@@ -125,9 +137,9 @@ func InstallHooks(baseDir, binaryPath, scope string, harnesses []string, check b
 	return InstallHooksWithConfigDir(baseDir, binaryPath, scope, harnesses, "", check)
 }
 
-// InstallHooksWithConfigDir supports an explicit isolated profile directory for claude-zai. The
-// override is intentionally narrow: mixing it with another harness would make one path flag carry
-// two incompatible meanings.
+// InstallHooksWithConfigDir supports an explicit isolated profile directory for a single
+// isolated-profile harness (claude-zai or claude-minimax). The override is intentionally narrow:
+// mixing it with another harness would make one path flag carry two incompatible meanings.
 func InstallHooksWithConfigDir(baseDir, binaryPath, scope string, harnesses []string, configDir string, check bool) (HookInstallReport, error) {
 	return InstallHooksWithConfigDirAndPublish(baseDir, binaryPath, scope, harnesses, configDir, check, nil)
 }
@@ -154,16 +166,21 @@ func InstallHooksWithConfigDirAndPublish(
 	for _, h := range harnesses {
 		want[strings.TrimSpace(h)] = true
 	}
-	if strings.TrimSpace(configDir) != "" && (len(want) != 1 || !want[claudeZaiHarness]) {
-		return report, fmt.Errorf("config dir is supported only with harness %s", claudeZaiHarness)
+	if strings.TrimSpace(configDir) != "" {
+		if len(want) != 1 || (!want[claudeZaiHarness] && !want[claudeMinimaxHarness]) {
+			return report, fmt.Errorf(
+				"config dir is supported only with a single isolated-profile harness (%s or %s)",
+				claudeZaiHarness, claudeMinimaxHarness,
+			)
+		}
 	}
-	prepared := make([]preparedHookConfig, 0, 3)
-	for _, harness := range []string{"claude-code", claudeZaiHarness, "codex"} {
+	prepared := make([]preparedHookConfig, 0, 4)
+	for _, harness := range []string{"claude-code", claudeZaiHarness, claudeMinimaxHarness, "codex"} {
 		if len(want) > 0 && !want[harness] {
 			continue
 		}
 		configPath := filepath.Join(baseDir, ConfigRel(harness, scope))
-		if harness == claudeZaiHarness && strings.TrimSpace(configDir) != "" {
+		if strings.TrimSpace(configDir) != "" && (harness == claudeZaiHarness || harness == claudeMinimaxHarness) {
 			configPath = filepath.Join(configDir, "settings.json")
 		}
 		bindings, _, err := compiledManagedHookBindings(binaryPath, harness, scope)
@@ -260,7 +277,7 @@ func compiledManagedHookBindings(
 	configScope string,
 ) ([]desiredHookBinding, CompiledPosture, error) {
 	registry := harness.DefaultRegistry()
-	if harnessName == claudeZaiHarness {
+	if harnessName == claudeZaiHarness || harnessName == claudeMinimaxHarness {
 		configScope = "profile"
 	}
 	compiled, err := CompileDefaultPosture(DefaultPostureRequest{
