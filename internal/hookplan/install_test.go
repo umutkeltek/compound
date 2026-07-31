@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"compound/internal/harness"
 )
 
 func readJSON(t *testing.T, path string) map[string]any {
@@ -71,8 +73,12 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Entries) != 3 {
+	if len(rep.Entries) != 4 {
 		t.Fatalf("expected all managed harnesses, got %d entries", len(rep.Entries))
+	}
+	minimaxEntry := hookInstallEntryForHarness(t, rep, claudeMinimaxHarness)
+	if !strings.HasSuffix(minimaxEntry.ConfigPath, filepath.Join("_providers", "minimax-lane", "settings.json")) {
+		t.Fatalf("claude-minimax ConfigPath = %q, want suffix _providers/minimax-lane/settings.json", minimaxEntry.ConfigPath)
 	}
 	reportJSON, err := json.Marshal(rep)
 	if err != nil {
@@ -101,7 +107,7 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 		for _, binding := range entry.Bindings {
 			if binding.Event == "PreToolUse" {
 				foundPreTool = true
-				if harnessName == claudeZaiHarness {
+				if harnessName == claudeZaiHarness || harnessName == claudeMinimaxHarness {
 					if binding.Matcher != entry.Matcher || binding.Command != entry.Command ||
 						!strings.Contains(binding.Command, " --enforce") {
 						t.Fatalf("isolated guard projection drifted from binding: entry=%+v binding=%+v", entry, binding)
@@ -142,11 +148,16 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 	if got := firstMatcher(t, zai); got != "*" {
 		t.Fatalf("claude-zai matcher = %q", got)
 	}
+	minimax := readJSON(t, filepath.Join(ClaudeMinimaxProfileDir(base), "settings.json"))
+	if got := firstMatcher(t, minimax); got != "*" {
+		t.Fatalf("claude-minimax matcher = %q", got)
+	}
 	codex := readJSON(t, filepath.Join(base, ".codex", "hooks.json"))
 	for harnessName, cfg := range map[string]map[string]any{
-		"claude-code": claude,
-		"claude-zai":  zai,
-		"codex":       codex,
+		"claude-code":    claude,
+		"claude-zai":     zai,
+		"claude-minimax": minimax,
+		"codex":          codex,
 	} {
 		entry := hookInstallEntryForHarness(t, rep, harnessName)
 		for _, binding := range entry.Bindings {
@@ -480,7 +491,7 @@ func TestInstallHooksRollsBackEveryNativeConfigWhenPublishFails(t *testing.T) {
 		false,
 		func(report HookInstallReport) error {
 			publisherCalled = true
-			if len(report.Entries) != 3 {
+			if len(report.Entries) != 4 {
 				t.Fatalf("publisher received %d entries, want one complete all-harness report", len(report.Entries))
 			}
 			for _, entry := range report.Entries {
@@ -528,6 +539,10 @@ func TestInstallHooksRollsBackEveryNativeConfigWhenPublishFails(t *testing.T) {
 	zaiPath := filepath.Join(ClaudeZaiProfileDir(base), "settings.json")
 	if _, statErr := os.Stat(zaiPath); !os.IsNotExist(statErr) {
 		t.Fatalf("rollback left previously absent isolated config at %s: %v", zaiPath, statErr)
+	}
+	minimaxPath := filepath.Join(ClaudeMinimaxProfileDir(base), "settings.json")
+	if _, statErr := os.Stat(minimaxPath); !os.IsNotExist(statErr) {
+		t.Fatalf("rollback left previously absent isolated config at %s: %v", minimaxPath, statErr)
 	}
 }
 
@@ -812,6 +827,83 @@ func TestClaudeZaiInstallBindingsComeFromSemanticPosture(t *testing.T) {
 	}
 }
 
+// TestClaudeMinimaxInstallBindingsComeFromSemanticPosture proves the raised claude_minimax
+// registry floor (internal/harness) compiles to a mutation-ready posture with a blocking
+// PreToolUse binding, the same way claude_zai does. Falsifier for work_769bf567f529 gate 3: at
+// base, with every hook flag false, compiledManagedHookBindings refuses with "compiled posture is
+// not mutation-ready" before this raise.
+func TestClaudeMinimaxInstallBindingsComeFromSemanticPosture(t *testing.T) {
+	t.Parallel()
+
+	bindings, compiled, err := compiledManagedHookBindings("/fixture/compound", claudeMinimaxHarness, "global")
+	if err != nil {
+		t.Fatalf("compiled posture for claude-minimax: %v", err)
+	}
+	if !compiled.MutationReady {
+		t.Fatalf("attested claude-minimax posture is not mutation ready: %+v", compiled)
+	}
+	foundBlockingPreTool := false
+	for _, binding := range bindings {
+		if binding.Event == "PreToolUse" && binding.Blocking && strings.Contains(binding.Command, " --enforce") {
+			foundBlockingPreTool = true
+		}
+	}
+	if !foundBlockingPreTool {
+		t.Fatalf("claude-minimax posture omitted a blocking PreToolUse binding: %+v", bindings)
+	}
+	gotEvents := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		gotEvents = append(gotEvents, binding.Event)
+	}
+	wantEvents := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"}
+	if !slices.Equal(gotEvents, wantEvents) {
+		t.Fatalf("installed native events = %v, want compiled %v", gotEvents, wantEvents)
+	}
+}
+
+// TestClaudeMinimaxRegistryFloorIsLoadBearing proves the raised registry flags are load-bearing,
+// not decorative: the real (raised) registry compiles a mutation-ready posture, and an in-test
+// scratch copy with PreToolUseBlock lowered back to false must be refused by the same installer
+// gate. Falsifier 5 for work_769bf567f529 gate 3. At base (registry unraised), the first
+// assertion below fails because the real registry is not yet mutation-ready.
+func TestClaudeMinimaxRegistryFloorIsLoadBearing(t *testing.T) {
+	raised := harness.DefaultRegistry()
+	compiled, err := CompileDefaultPosture(DefaultPostureRequest{
+		Harness:         claudeMinimaxHarness,
+		Registry:        raised,
+		HandlerRef:      "compound",
+		HandlerRevision: "binary:/fixture/compound",
+		ConfigScope:     "profile",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateInstallableDefaultPosture(claudeMinimaxHarness, compiled); err != nil {
+		t.Fatalf("raised claude_minimax registry must be mutation-ready: %v", err)
+	}
+
+	lowered := harness.DefaultRegistry()
+	h, ok := lowered.Harnesses["claude_minimax"]
+	if !ok {
+		t.Fatal("claude_minimax not enrolled in registry")
+	}
+	h.Capabilities.PreToolUseBlock = false
+	lowered.Harnesses["claude_minimax"] = h
+	downCompiled, err := CompileDefaultPosture(DefaultPostureRequest{
+		Harness:         claudeMinimaxHarness,
+		Registry:        lowered,
+		HandlerRef:      "compound",
+		HandlerRevision: "binary:/fixture/compound",
+		ConfigScope:     "profile",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateInstallableDefaultPosture(claudeMinimaxHarness, downCompiled); err == nil {
+		t.Fatal("scratch-lowered PreToolUseBlock was silently accepted; registry floor is decorative")
+	}
+}
+
 func TestInstallHooksNoClobber(t *testing.T) {
 	base := t.TempDir()
 	dir := filepath.Join(base, ".claude")
@@ -976,6 +1068,125 @@ func TestInstallClaudeZaiProfileFullRosterNoClobberAndIdempotent(t *testing.T) {
 	}
 	if got := len(hooksForEvent(t, readJSON(t, settingsPath), "SessionStart")); got != 2 {
 		t.Fatalf("idempotent install duplicated SessionStart hooks: got %d groups, want user + Compound", got)
+	}
+}
+
+// TestInstallHooksClaudeMinimaxProfile is falsifier 1 for work_769bf567f529 gate 3: installing
+// with --harness claude-minimax into a temp isolated profile dir writes all 4 lifecycle bindings,
+// the PreToolUse binding is a blocking --enforce command, and a pre-seeded permissions+env key
+// survives untouched (the NO-CLOBBER law). At base, --harness claude-minimax is rejected by the
+// --config-dir gate before any write.
+func TestInstallHooksClaudeMinimaxProfile(t *testing.T) {
+	base := t.TempDir()
+	profileDir := filepath.Join(base, "minimax-profile")
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(profileDir, "settings.json")
+	existing := `{
+  "permissions": {"defaultMode": "bypassPermissions"},
+  "env": {"ANTHROPIC_BASE_URL": "https://minimax.example.invalid"},
+  "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "my-own-hook"}]}]}
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := InstallHooksWithConfigDir(base, "/opt/Compound Apps/compound", "global", []string{"claude-minimax"}, profileDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Entries) != 1 || first.Entries[0].Harness != "claude-minimax" || first.Entries[0].Action != "installed" {
+		t.Fatalf("first claude-minimax install = %+v", first)
+	}
+	if first.Entries[0].ConfigPath != settingsPath {
+		t.Fatalf("claude-minimax ConfigPath = %q, want %q", first.Entries[0].ConfigPath, settingsPath)
+	}
+	cfg := readJSON(t, settingsPath)
+	if _, ok := cfg["permissions"]; !ok {
+		t.Fatal("claude-minimax install clobbered permissions")
+	}
+	env, ok := cfg["env"].(map[string]any)
+	if !ok || env["ANTHROPIC_BASE_URL"] != "https://minimax.example.invalid" {
+		t.Fatalf("claude-minimax install clobbered env: %#v", cfg["env"])
+	}
+	hooks, ok := cfg["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings hooks = %#v", cfg["hooks"])
+	}
+	if len(first.Entries[0].Bindings) != 4 {
+		t.Fatalf("claude-minimax install reported %d bindings, want 4", len(first.Entries[0].Bindings))
+	}
+	wantCommands := map[string]string{}
+	for _, binding := range first.Entries[0].Bindings {
+		wantCommands[binding.Event] = binding.Command
+	}
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
+		groups, ok := hooks[event].([]any)
+		if !ok || len(groups) == 0 {
+			t.Fatalf("claude-minimax settings missing %s: %#v", event, hooks[event])
+		}
+		wantCommand := wantCommands[event]
+		found := false
+		for _, group := range groups {
+			if firstCommand(group) == wantCommand {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("claude-minimax %s missing command %q: %#v", event, wantCommand, groups)
+		}
+	}
+	preToolCommand := wantCommands["PreToolUse"]
+	if !strings.HasSuffix(preToolCommand, " --enforce") {
+		t.Fatalf("claude-minimax PreToolUse command = %q, want --enforce suffix", preToolCommand)
+	}
+	preGroups, _ := hooks["PreToolUse"].([]any)
+	var preMatcher string
+	for _, group := range preGroups {
+		if strings.Contains(firstCommand(group), "--harness claude-minimax") {
+			entry, _ := group.(map[string]any)
+			preMatcher, _ = entry["matcher"].(string)
+		}
+	}
+	if preMatcher != "*" {
+		t.Fatalf("claude-minimax PreToolUse matcher = %q", preMatcher)
+	}
+	if first.Entries[0].Matcher != "*" || !strings.Contains(first.Entries[0].Command, " --enforce") {
+		t.Fatalf("claude-minimax guard projection = %+v", first.Entries[0])
+	}
+
+	second, err := InstallHooksWithConfigDir(base, "/opt/Compound Apps/compound", "global", []string{"claude-minimax"}, profileDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Entries[0].Action != "ok" {
+		t.Fatalf("idempotent claude-minimax install action = %q, want ok", second.Entries[0].Action)
+	}
+	if got := len(hooksForEvent(t, readJSON(t, settingsPath), "SessionStart")); got != 2 {
+		t.Fatalf("idempotent install duplicated SessionStart hooks: got %d groups, want user + Compound", got)
+	}
+}
+
+// TestConfigDirGateAcceptsExactlyOneIsolatedProfileHarness is falsifier 3 for
+// work_769bf567f529 gate 3: --config-dir is accepted with claude-minimax alone (mirroring the
+// existing claude-zai carve-out), and still refused with two harnesses or with codex. At base,
+// claude-minimax alone is refused because the gate names only claude-zai.
+func TestConfigDirGateAcceptsExactlyOneIsolatedProfileHarness(t *testing.T) {
+	base := t.TempDir()
+	minimaxDir := t.TempDir()
+	if _, err := InstallHooksWithConfigDir(base, "/bin/compound", "global", []string{"claude-minimax"}, minimaxDir, false); err != nil {
+		t.Fatalf("--config-dir with claude-minimax alone must be accepted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(minimaxDir, "settings.json")); err != nil {
+		t.Fatalf("claude-minimax config-dir install did not write: %v", err)
+	}
+
+	if _, err := InstallHooksWithConfigDir(base, "/bin/compound", "global", []string{"claude-zai", "claude-minimax"}, minimaxDir, false); err == nil {
+		t.Fatal("--config-dir with two harnesses must be refused")
+	}
+	if _, err := InstallHooksWithConfigDir(base, "/bin/compound", "global", []string{"codex"}, minimaxDir, false); err == nil {
+		t.Fatal("--config-dir with codex must be refused")
 	}
 }
 
