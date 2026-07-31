@@ -87,6 +87,13 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "Tier-0 + Tier-1 content-free ambient-activity family (compound.activity_observation.v0.2 events + ActivitySpan reductions) under observed/activity/, ingested by a grant-gated fail-closed drain membrane; AW sidecar reader joins events across hostnames; Tier-1 envelope collector captures pane_cwd/git_remote/agent_kind",
 		Consumer: "compound activity CLI (enable/disable/status/drain/sweep/aw materialize/tier1 collect) + attention activity-unaccounted watching group + activity-unaccounted operator_private lens",
 	},
+	// adapter is the peer-of-core home for rented external protocol readers (awstream today).
+	// It joins/normalizes foreign event shapes for activity and never promotes or gates.
+	"organ:adapter": {
+		Class:    MintEvidence,
+		Purpose:  "rented external-protocol adapters (awstream ActivityWatch multi-host join) that feed owned object families without owning authority or promoting memory",
+		Consumer: "internal/activity drain + compound activity aw materialize",
+	},
 	// eventstore enforces the single physical-layout boundary for COMPOUND_HOME/events. The
 	// architecture doctor blocks any production path construction or filesystem access outside
 	// this package, so the organ is enforcement rather than a second meaning authority.
