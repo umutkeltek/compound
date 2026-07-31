@@ -100,6 +100,12 @@ func (s *AppleScriptSource) ContentFreeInvariant() error {
 // KindPermissionLost event so the segment reducer marks downstream spans incomplete.
 var ErrPermissionLost = errors.New("tier1/source: accessibility permission required for AppleScript")
 
+// ErrParseFailed signals that a source's vendor output (cmux surface.list,
+// vscode AW event, lsof output) was unparseable. Distinct from ErrPermissionLost
+// (TCC) so the collector can emit a precise source_error_code. The raw error
+// text stays in the CollectReport's audit log, NOT in the activity spool.
+var ErrParseFailed = errors.New("tier1/source: vendor output unparseable")
+
 // --- default runners (production wiring) ---
 
 // defaultPIDResolver uses AppleScript via System Events to find the focused window's

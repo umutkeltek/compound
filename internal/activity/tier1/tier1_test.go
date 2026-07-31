@@ -2,6 +2,7 @@ package tier1
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -593,5 +594,62 @@ func TestStatusIsReadOnly(t *testing.T) {
 	// Verify config still does NOT exist after Enabled() call.
 	if _, err := os.Stat(filepath.Join(h, "config", "activity-sensor.json")); err == nil {
 		t.Fatalf("status must not write config; file appeared after Enabled()")
+	}
+}
+
+// TestClassifySourceErrorMapping: the audit's bug 8 — raw srcErr.Error() must
+// NOT be stored in Meta. Instead, classifySourceError must map to one of the
+// closed codes (permission_lost / transport_failed / parse_failed / timeout).
+func TestClassifySourceErrorMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil error → empty", nil, ""},
+		{"context.DeadlineExceeded → timeout", context.DeadlineExceeded, "timeout"},
+		{"source.ErrPermissionLost → permission_lost", source.ErrPermissionLost, "permission_lost"},
+		{"source.ErrParseFailed → parse_failed", source.ErrParseFailed, "parse_failed"},
+		{"os.ErrPermission → permission_lost", os.ErrPermission, "permission_lost"},
+		{"plain error → transport_failed", errors.New("cmux not found"), "transport_failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(classifySourceError(tc.err))
+			if got != tc.want {
+				t.Errorf("classifySourceError(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWritePermissionLostEventNoRawError: the spooled event must carry only the
+// closed code (source_error_code) and source_kind. NO raw error text.
+func TestWritePermissionLostEventNoRawError(t *testing.T) {
+	dir := t.TempDir()
+	c := newCollectorWithDeps(awstream.NewClient("http://127.0.0.1:1"),
+		source.NewRegistry(), dir, time.Now)
+	// A deliberately scary raw error — contains a fake path.
+	scary := errors.New("lsof: /Users/operator/secret/file.txt: Permission denied (lsof -p 1234)")
+	if err := c.writePermissionLostEvent(context.Background(), "com.example.app", "applescript", "2026-07-30T12:00:00Z", scary); err != nil {
+		t.Fatalf("writePermissionLostEvent: %v", err)
+	}
+	entries, err := listSpool(dir)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("no spool entry written: %v", err)
+	}
+	data, _ := os.ReadFile(entries[0])
+	if strings.Contains(string(data), "secret") {
+		t.Fatalf("spool MUST NOT contain raw error text; got %s", data)
+	}
+	if strings.Contains(string(data), "lsof -p") {
+		t.Fatalf("spool MUST NOT contain command text; got %s", data)
+	}
+	// Verify the closed code IS present.
+	if !strings.Contains(string(data), `"source_error_code":"transport_failed"`) {
+		t.Errorf("spool must carry source_error_code; got %s", data)
+	}
+	if !strings.Contains(string(data), `"source_kind":"applescript"`) {
+		t.Errorf("spool must carry source_kind; got %s", data)
 	}
 }

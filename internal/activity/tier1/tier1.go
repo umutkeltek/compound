@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -186,7 +187,7 @@ func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectRepo
 			// TCC permission lost or transport error. Caller logs + counts.
 			// Emit a KindPermissionLost event so downstream spans are marked
 			// incomplete (F11).
-			if err := c.writePermissionLostEvent(ctx, bundleID, ev.TS, err); err != nil {
+			if err := c.writePermissionLostEvent(ctx, bundleID, sourceName(src), ev.TS, err); err != nil {
 				rep.SourcesFailed++
 			}
 			continue
@@ -244,16 +245,94 @@ func (c *Collector) appendEvent(ctx context.Context, ev activity.Event) error {
 	return nil
 }
 
+// Source error codes — closed set for the Meta key "source_error_code". Raw
+// error text is NEVER stored in Meta (audit's bug 8): vendor errors can carry
+// paths, command lines, or URLs that the F5 content-free invariant forbids.
+// The operator who needs the raw text should find it in the run report's
+// private finding artifact, not in the activity spool.
+//
+//	permission_lost   — TCC / Apple Events grant revoked (AppleScript source)
+//	transport_failed  — exec/run failed (cmux missing, lsof not on PATH, etc.)
+//	parse_failed      — vendor output was unparseable
+//	timeout           — ctx deadline exceeded before the source returned
+type sourceErrorCode string
+
+const (
+	sourceErrPermissionLost  sourceErrorCode = "permission_lost"
+	sourceErrTransportFailed sourceErrorCode = "transport_failed"
+	sourceErrParseFailed     sourceErrorCode = "parse_failed"
+	sourceErrTimeout         sourceErrorCode = "timeout"
+)
+
+// classifySourceError maps a raw source error to one of the closed codes.
+// Never returns the raw text — only the code.
+func classifySourceError(err error) sourceErrorCode {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return sourceErrTimeout
+	}
+	// Permission-lost is reported by the AppleScript source via a sentinel.
+	// It can also surface as os.ErrPermission on Linux/Windows variants.
+	if errors.Is(err, source.ErrPermissionLost) || errors.Is(err, os.ErrPermission) {
+		return sourceErrPermissionLost
+	}
+	// Parse-failed sentinel: source.ErrParseFailed.
+	if errors.Is(err, source.ErrParseFailed) {
+		return sourceErrParseFailed
+	}
+	// Default for everything else: transport failure (cmux not installed,
+	// lsof missing, IPC socket gone, etc.). The raw error text stays in the
+	// CollectReport's audit log, NOT in the activity spool.
+	return sourceErrTransportFailed
+}
+
+// sourceName returns a short, content-free name for a source. Used as the
+// "source_kind" meta value. Falls back to "unknown" if the source doesn't
+// identify itself — never reflects the bundle id (which can be a long path).
+func sourceName(src source.EnvelopeSource) string {
+	if src == nil {
+		return "unknown"
+	}
+	id := src.AppBundleID()
+	switch id {
+	case "com.cmuxterm.app":
+		return "cmux"
+	case "com.googlecode.iterm2":
+		return "iterm2"
+	case "dev.warp.Warp":
+		return "warp"
+	case "com.apple.Terminal":
+		return "terminal"
+	case "com.microsoft.VSCode":
+		return "vscode"
+	case "com.todesktop.230313mzl4w4u96":
+		return "cursor"
+	default:
+		return "adapter"
+	}
+}
+
 // writePermissionLostEvent appends a KindPermissionLost event when a source
-// reports TCC permission loss. This signals the segment reducer to mark spans
-// from this window as CoverageIncomplete (F11).
-func (c *Collector) writePermissionLostEvent(ctx context.Context, bundleID, ts string, srcErr error) error {
+// reports TCC permission loss or another transport failure. This signals the
+// segment reducer to mark spans from this window as CoverageIncomplete (F11).
+//
+// Meta carries only the closed code (source_error_code) and the source kind.
+// The raw error text stays out of the spool — it can contain paths, command
+// lines, or URLs that violate the F5 content-free invariant.
+func (c *Collector) writePermissionLostEvent(ctx context.Context, bundleID, sourceKind, ts string, srcErr error) error {
+	code := classifySourceError(srcErr)
 	ev := activity.Event{
 		SchemaVersion: activity.SchemaVersion,
 		TS:            ts,
 		Kind:          activity.KindPermissionLost,
 		Engine:        activity.Engine{ID: Tier1EngineID, Revision: Tier1EngineRevision},
-		Meta:          map[string]string{"bundle_id": bundleID, "source_error": srcErr.Error()},
+		Meta: map[string]string{
+			"bundle_id":         bundleID,
+			"source_kind":       sourceKind,
+			"source_error_code": string(code),
+		},
 	}
 	return c.appendEvent(ctx, ev)
 }
