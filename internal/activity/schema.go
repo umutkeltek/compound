@@ -67,8 +67,12 @@ func decodeEventStrict(line []byte) (Event, error) {
 	if dec.More() {
 		return Event{}, fmt.Errorf("strict decode: unexpected trailing content after event object")
 	}
-	if ev.SchemaVersion != SchemaVersion {
-		return Event{}, fmt.Errorf("schema_version=%q, want %q", ev.SchemaVersion, SchemaVersion)
+	// Read-compat window, not an exact pin: accept the current writer version plus
+	// any prior version still in acceptedSchemaVersions (ADR 0004). This is what
+	// lets an upgraded binary drain spool the previous release wrote, while still
+	// refusing genuinely unknown/future versions.
+	if !acceptedSchemaVersions[ev.SchemaVersion] {
+		return Event{}, fmt.Errorf("schema_version=%q not in read-compat set %v", ev.SchemaVersion, acceptedSchemaVersionList)
 	}
 	if !knownKinds[ev.Kind] {
 		return Event{}, fmt.Errorf("unknown kind %q", ev.Kind)

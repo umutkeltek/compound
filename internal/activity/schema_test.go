@@ -1,6 +1,7 @@
 package activity
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -82,5 +83,49 @@ func TestSchemaRefusesBadTimestampAndVersion(t *testing.T) {
 	badVer := `{"schema_version":"compound.activity_observation.v9.9","seq":7,"ts":"2026-07-15T10:05:00Z","kind":"app_activated","bundle_id":"com.apple.Safari","app_name":"Safari","engine":{"id":"e","revision":"v0.1"}}`
 	if rep := DecodeStrict([]byte(badVer), 1); len(rep.Accepted) != 0 || len(rep.Refused) != 1 {
 		t.Fatalf("bad schema_version must refuse: %+v", rep)
+	}
+}
+
+// TestDecodeStrictAcceptsPriorVersionInReadCompatWindow pins the ADR 0004
+// read-compat contract: the decoder accepts the current writer version AND every
+// version in acceptedSchemaVersions. A v0.1 spool line must survive a binary
+// upgrade — otherwise a version bump would silently refuse pre-existing spool.
+func TestDecodeStrictAcceptsPriorVersionInReadCompatWindow(t *testing.T) {
+	v01 := `{"schema_version":"compound.activity_observation.v0.1","seq":1,"ts":"2026-07-15T10:00:00Z","kind":"app_activated","bundle_id":"com.apple.dt.Xcode","app_name":"Xcode","engine":{"id":"compound-activity-sensor","revision":"v0.1"}}`
+	rep := DecodeStrict([]byte(v01), 1)
+	if len(rep.Accepted) != 1 || len(rep.Refused) != 0 {
+		t.Fatalf("v0.1 line must be readable under the read-compat window, got %+v", rep)
+	}
+}
+
+// TestAcceptedSchemaVersionsIncludesCurrent is the read-side drift guard for a
+// schema bump: if someone bumps SchemaVersion but forgets to add it to
+// acceptedSchemaVersions, this binary would WRITE spool lines its OWN decoder
+// refuses. It also pins list/set agreement so decoder error messages stay
+// deterministic.
+func TestAcceptedSchemaVersionsIncludesCurrent(t *testing.T) {
+	if !AcceptsActivitySchemaVersion(SchemaVersion) {
+		t.Fatalf("current writer version %q must be in acceptedSchemaVersions", SchemaVersion)
+	}
+	if got := len(acceptedSchemaVersionList); got != len(acceptedSchemaVersions) {
+		t.Fatalf("acceptedSchemaVersionList has %d entries, set has %d — keep them in sync", got, len(acceptedSchemaVersions))
+	}
+	for _, v := range acceptedSchemaVersionList {
+		if !acceptedSchemaVersions[v] {
+			t.Fatalf("list entry %q not in acceptedSchemaVersions", v)
+		}
+	}
+}
+
+// TestSchemaChangelogCoversCurrentVersion is the doc-side drift guard: a writer
+// version bump must be recorded in SCHEMA.md (ADR 0004). If you bumped
+// SchemaVersion and this fails, add the new version's section to the changelog.
+func TestSchemaChangelogCoversCurrentVersion(t *testing.T) {
+	b, err := os.ReadFile("SCHEMA.md")
+	if err != nil {
+		t.Fatalf("read SCHEMA.md: %v", err)
+	}
+	if !strings.Contains(string(b), SchemaVersion) {
+		t.Fatalf("SCHEMA.md must document the current writer version %q", SchemaVersion)
 	}
 }

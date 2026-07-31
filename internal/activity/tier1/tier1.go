@@ -389,8 +389,11 @@ func buildTier1Event(bundleID string, env source.Envelope, ts string) activity.E
 
 // Tier1AllowedMetaKeys lists the meta keys the Tier-1 collector may populate. The
 // intersection with activity.ForbiddenMetaKeys must be empty (verified by
-// TestTier1SetsDoNotOverlap). Adding a key here is a schema-level decision; bump
-// SchemaVersion in lockstep.
+// TestTier1SetsDoNotOverlap). Adding a key here is a schema change governed by
+// ADR 0004: an additive, optional, content-free key is PATCH-class (no version
+// bump, but it MUST be recorded in internal/activity/SCHEMA.md); a load-bearing
+// or breaking change is a MINOR/MAJOR bump that also extends the read-compat
+// window in activity.go.
 var Tier1AllowedMetaKeys = map[string]bool{
 	"pane_cwd":        true,
 	"git_root":        true,

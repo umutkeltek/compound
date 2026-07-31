@@ -17,13 +17,49 @@
 // internal/act + internal/policy seams; this package writes segment/span files directly.
 package activity
 
-// SchemaVersion is the closed event vocabulary version. A raw event carrying any other
-// schema_version is refused by the strict decoder.
+// SchemaVersion is the closed event vocabulary version this binary WRITES. The
+// strict decoder's READ side is governed by acceptedSchemaVersions below (the
+// current version plus an explicit prior-version window), NOT by this constant
+// alone — so bumping the writer here does not silently make pre-existing spool
+// unreadable. The versioning policy is ADR 0004; the per-family change log is
+// internal/activity/SCHEMA.md.
 //
 // v0.2 introduced: KindWindowFocused and KindPermissionLost are now lit-up reducer
 // semantics (Phase 5). Tier-1 envelopes ride on the same event schema with extra
 // Meta keys (see Tier1AllowedMetaKeys).
 const SchemaVersion = "compound.activity_observation.v0.2"
+
+// legacySchemaVersionV01 is the prior event vocabulary. v0.1 predates the lit-up
+// Tier-1 kinds and meta keys but is otherwise shape-compatible (same Event struct;
+// its kinds are a subset of knownKinds; no Tier-1 meta), so it stays in the
+// read-compat window: a binary upgraded to v0.2 must still drain spool lines the
+// previous release wrote. Spool is day/size-rotated, so this window is short by
+// design — keeping one prior version is enough.
+const legacySchemaVersionV01 = "compound.activity_observation.v0.1"
+
+// acceptedSchemaVersions is the closed READ-compat set for DecodeStrict: the
+// current writer version plus every prior version still considered readable.
+// Adding the new SchemaVersion here is the read-compat half of any bump; the
+// drift-guard test (TestAcceptedSchemaVersionsIncludesCurrent) fails if the
+// current version is ever absent. Deliberately removing a version is an explicit
+// "stop reading old spool" decision that must also update SCHEMA.md.
+var acceptedSchemaVersions = map[string]bool{
+	SchemaVersion:          true,
+	legacySchemaVersionV01: true,
+}
+
+// acceptedSchemaVersionList mirrors acceptedSchemaVersions as a deterministic
+// (ascending) slice, used only to render stable decoder error messages. Kept in
+// sync by TestAcceptedSchemaVersionsIncludesCurrent.
+var acceptedSchemaVersionList = []string{
+	legacySchemaVersionV01,
+	SchemaVersion,
+}
+
+// AcceptsActivitySchemaVersion reports whether the strict decoder will read a line
+// carrying the given schema_version. Exported so subpackages and tests consult the
+// one read-compat contract instead of re-pinning a version string.
+func AcceptsActivitySchemaVersion(v string) bool { return acceptedSchemaVersions[v] }
 
 // SpansSchemaVersion versions the deterministic span reduction file.
 const SpansSchemaVersion = "compound.activity_spans.v0.1"
@@ -66,7 +102,8 @@ var knownKinds = map[string]bool{
 // Adding a key here is a schema-level decision: existing drains that have already
 // validated with the old set will refuse the new key. v0.1 → v0.2 is the bump that
 // brought the Tier-1 extensions in; older v0.1 spool files are still readable
-// (the decoder only refuses unknown schema_version, not older ones).
+// because v0.1 is in the read-compat window (acceptedSchemaVersions), not because
+// the decoder ignores the version — it refuses any version outside that set.
 var ForbiddenMetaKeys = map[string]bool{
 	// F5 originals.
 	"title":    true,
