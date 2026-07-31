@@ -31,6 +31,33 @@ func cmdActivity(args []string) {
 	}
 }
 
+// enforceKnownFlags checks every flag in args against a closed set. Returns a
+// (badFlag, error) pair if an unknown flag is present — used by every activity
+// verb to satisfy the audit's bug 7: "compound activity tier1 collect
+// --duraton 5s" must NOT silently use the default. The audit's point: silent
+// flag typos are especially bad on verbs that write spool data.
+//
+// A "flag" here is any arg starting with "--". Positional args (no leading
+// "--") are NOT checked — sub-verb dispatch handles those.
+func enforceKnownFlags(args []string, known map[string]bool) (string, error) {
+	for _, a := range args {
+		if !strings.HasPrefix(a, "--") {
+			continue
+		}
+		// Strip "=value" suffix — both "--foo=bar" and "--foo bar" appear; the
+		// former is a single arg, the latter is two. Either way the flag name
+		// is everything up to the first '='.
+		name := a
+		if eq := strings.Index(a, "="); eq >= 0 {
+			name = a[:eq]
+		}
+		if !known[name] {
+			return name, fmt.Errorf("unknown flag %q", name)
+		}
+	}
+	return "", nil
+}
+
 func activityUsage() string {
 	return "usage:\n" +
 		"  compound activity status [--json] [--home P]                      sensor enabled state + storage summary\n" +
@@ -69,6 +96,11 @@ func runActivity(args []string, stdout, stderr io.Writer) int {
 }
 
 func runActivityStatus(args []string, stdout, stderr io.Writer) int {
+	if bad, err := enforceKnownFlags(args, map[string]bool{"--json": true, "--home": true}); err != nil {
+		fmt.Fprintf(stderr, "%s\n%s\n", err, activityUsage())
+		_ = bad
+		return 2
+	}
 	homePath, err := home.Resolve(flagValue(args, "--home"))
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -113,6 +145,11 @@ func runActivityStatus(args []string, stdout, stderr io.Writer) int {
 }
 
 func runActivityToggle(args []string, stdout, stderr io.Writer, enable bool) int {
+	if bad, err := enforceKnownFlags(args, map[string]bool{"--work": true, "--home": true, "--json": true}); err != nil {
+		fmt.Fprintf(stderr, "%s\n%s\n", err, activityUsage())
+		_ = bad
+		return 2
+	}
 	homePath, err := home.Resolve(flagValue(args, "--home"))
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -145,6 +182,11 @@ func runActivityToggle(args []string, stdout, stderr io.Writer, enable bool) int
 }
 
 func runActivityDrain(args []string, stdout, stderr io.Writer) int {
+	if bad, err := enforceKnownFlags(args, map[string]bool{"--spool": true, "--work": true, "--json": true, "--home": true}); err != nil {
+		fmt.Fprintf(stderr, "%s\n%s\n", err, activityUsage())
+		_ = bad
+		return 2
+	}
 	homePath, err := home.Resolve(flagValue(args, "--home"))
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -185,6 +227,11 @@ func runActivityDrain(args []string, stdout, stderr io.Writer) int {
 }
 
 func runActivitySweep(args []string, stdout, stderr io.Writer) int {
+	if bad, err := enforceKnownFlags(args, map[string]bool{"--json": true, "--home": true}); err != nil {
+		fmt.Fprintf(stderr, "%s\n%s\n", err, activityUsage())
+		_ = bad
+		return 2
+	}
 	homePath, err := home.Resolve(flagValue(args, "--home"))
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -259,6 +306,11 @@ func runActivityAW(args []string, stdout, stderr io.Writer) int {
 // awstream reader + the existing spool writer. The Tier-1 envelope collector
 // (`tier1.Collect`) is a distinct verb.
 func runActivityAWMaterialize(args []string, stdout, stderr io.Writer) int {
+	if bad, err := enforceKnownFlags(args, map[string]bool{"--start": true, "--end": true, "--work": true, "--home": true, "--json": true}); err != nil {
+		fmt.Fprintf(stderr, "%s\n%s\n", err, activityUsage())
+		_ = bad
+		return 2
+	}
 	homePath, err := home.Resolve(flagValue(args, "--home"))
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -322,6 +374,11 @@ func runActivityTier1(args []string, stdout, stderr io.Writer) int {
 //
 // Governance: Tier1CollectCapability grant + Enabled config + byte cap.
 func runActivityTier1Collect(args []string, stdout, stderr io.Writer) int {
+	if bad, err := enforceKnownFlags(args, map[string]bool{"--lookback": true, "--timeout": true, "--work": true, "--home": true, "--json": true}); err != nil {
+		fmt.Fprintf(stderr, "%s\n%s\n", err, activityUsage())
+		_ = bad
+		return 2
+	}
 	homePath, err := home.Resolve(flagValue(args, "--home"))
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
