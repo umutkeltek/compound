@@ -140,6 +140,36 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		os.Exit(2)
 	}
 
+	// Resolving a workspace is not proving one. The ladder returns whatever
+	// path it found -- including a git_delivery.target_worktree_root recorded
+	// months ago for a worktree since retired -- and Preflight never touches
+	// Workspace either. The path therefore reached cmd.Start(), which failed
+	// with "chdir: no such file or directory" AFTER the governed advance to
+	// running; failTerm then terminalized the RunAttempt and the caller closed
+	// the envelope "failed (audit_only)". failed is terminal, so a stale root
+	// destroyed the work item in a single invocation with no recovery path.
+	// Stat before the state change so the envelope survives a bad path.
+	if info, statErr := os.Stat(workspace); statErr != nil || !info.IsDir() {
+		observed := "stat " + workspace + ": "
+		if statErr != nil {
+			observed += statErr.Error()
+		} else {
+			observed += "exists but is not a directory"
+		}
+		gateRefusal{
+			Command: "compound work advance --execute",
+			Gate:    "workspace_existence",
+			Refused: fmt.Sprintf("the resolved execution workspace %q is not a usable directory, so no RunAttempt was minted and %s was not advanced", workspace, workID),
+			Tried:   append(workspaceTried, observed),
+			DoThis: []string{
+				fmt.Sprintf("compound work advance %s --execute --harness %s --workspace <existing-checkout>", workID, harnessName),
+				fmt.Sprintf("compound work show %s   # git_delivery.target_worktree_root may name a worktree that was retired", workID),
+			},
+			Prevents: "burning the work item. The launch fails with chdir, and a failed launch terminalizes the envelope 'failed (audit_only)' -- a terminal state with no recovery path.",
+		}.writeTo(os.Stderr)
+		os.Exit(2)
+	}
+
 	// Resolve adapter-owned prerequisites before the governed state change.
 	// Tuple-backed lanes use this seam to prove their Compound tuple, wrapper,
 	// permission posture, and declared capacity. A preflight failure leaves the

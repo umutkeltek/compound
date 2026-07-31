@@ -650,3 +650,172 @@ func TestWorkAdvanceExecuteNoSeparatorLeaksNoFlagTail(t *testing.T) {
 		t.Fatalf("refusal must mint no RunAttempt beyond the claim's; want exactly 1 file, got %d", len(runAttemptFiles))
 	}
 }
+
+// TestWorkAdvanceExecuteMissingWorkspaceDirNoStateChange: a resolved workspace
+// that does not exist on disk must refuse BEFORE the governed running advance.
+//
+// Falsifier (RED->GREEN): the ladder returned the resolved path without ever
+// stat-ing it, and Preflight never touches Workspace either. So the order was
+// resolve -> preflight -> Advance(running) -> adapter.Run, and cmd.Start()
+// failed with "chdir: no such file or directory" only AFTER the state change.
+// failTerm then terminalized the RunAttempt and the CLI closed the envelope
+// "failed (audit_only)" -- and failed is terminal, so the work item was burned
+// with no recovery path. This is not hypothetical: wave10 envelopes still
+// record .claude/worktrees roots that were retired, so dispatching one without
+// an explicit --workspace destroyed it in a single invocation.
+//
+// The teeth are the post-conditions, not the exit code: an exit-2 refusal that
+// still advanced the envelope would be the same bug wearing a better message.
+func TestWorkAdvanceExecuteMissingWorkspaceDirNoStateChange(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := work.Open(homePath)
+	w, err := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "a missing execution workspace must not move the work",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	// A path that is guaranteed absent: inside the per-test temp dir, never created.
+	missing := filepath.Join(t.TempDir(), "retired-worktree-root")
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", w.ID,
+		"--to", "running", "--by", "codex", "--execute",
+		"--harness", "os-harness-entrypoints",
+		"--workspace", missing,
+		"--", "echo", "hi")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("expected non-zero exit for a missing workspace dir, got 0. output:\n%s", out)
+	}
+
+	// The refusal must name the gate and the path it rejected, so the reader is
+	// not left guessing which of the three ladder rungs produced it.
+	for _, want := range []string{
+		"gate workspace_existence",
+		missing,
+		"tried in order:",
+		"prevents:",
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("expected %q in the workspace-existence refusal, got:\n%s", want, out)
+		}
+	}
+
+	ws2, _ := work.Open(homePath)
+	final, getErr := ws2.Get(w.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if final.State != "claimed" {
+		t.Fatalf("a missing workspace must refuse before any state change; state = %q, want claimed (the burn left it terminal 'failed')", final.State)
+	}
+	// A burn closed the envelope, and a close emits a Transition. No transition
+	// means nothing was terminalized.
+	if final.IDs.TransitionID != "" {
+		t.Fatalf("a missing workspace must not terminalize the envelope; transition_id = %q, want empty", final.IDs.TransitionID)
+	}
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 1 {
+		t.Fatalf("refusal must mint no RunAttempt beyond the claim's; want exactly 1 file, got %d", len(runAttemptFiles))
+	}
+}
+
+// TestWorkAdvanceExecuteExistingWorkspaceStillRuns is the paired falsifier that
+// must stay GREEN: the existence gate must reject only what is absent. If this
+// goes red, the guard has stopped being a guard and become a wall.
+func TestWorkAdvanceExecuteExistingWorkspaceStillRuns(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := work.Open(homePath)
+	w, err := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "an existing workspace still executes",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	present := t.TempDir()
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", w.ID,
+		"--to", "running", "--by", "codex", "--execute",
+		"--harness", "os-harness-entrypoints",
+		"--workspace", present,
+		"--", "echo", "hi")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("an existing workspace must still execute, got error %v. output:\n%s", runErr, out)
+	}
+	if strings.Contains(string(out), "gate workspace_existence") {
+		t.Fatalf("the existence gate must not fire for a directory that exists. output:\n%s", out)
+	}
+}
+
+// TestWorkAdvanceExecuteWorkspaceFileNotDirNoStateChange: a path that exists but
+// is a regular file is equally unusable as a working directory (chdir fails the
+// same way), so it must take the same fail-closed path rather than reaching Run.
+func TestWorkAdvanceExecuteWorkspaceFileNotDirNoStateChange(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := work.Open(homePath)
+	w, err := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "a file-as-workspace must not move the work",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	filePath := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", w.ID,
+		"--to", "running", "--by", "codex", "--execute",
+		"--harness", "os-harness-entrypoints",
+		"--workspace", filePath,
+		"--", "echo", "hi")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("expected non-zero exit for a file-as-workspace, got 0. output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "gate workspace_existence") {
+		t.Fatalf("expected the workspace-existence refusal for a non-directory, got:\n%s", out)
+	}
+
+	ws2, _ := work.Open(homePath)
+	final, getErr := ws2.Get(w.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if final.State != "claimed" {
+		t.Fatalf("a file-as-workspace must refuse before any state change; state = %q, want claimed", final.State)
+	}
+}
