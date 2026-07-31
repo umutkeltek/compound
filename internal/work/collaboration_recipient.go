@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
@@ -35,9 +36,22 @@ type CollaborationRecipientResolution struct {
 }
 
 // ResolveCollaborationRecipient binds a native session/cwd/harness payload to
-// one exact active, attached harness-execution RunAttempt. Session identity is
-// conjunctive authority: workspace/harness proximity never adopts an unknown
-// native session.
+// one exact recipient, by either of two paths. Session identity is conjunctive
+// authority on both: workspace/harness proximity never adopts an unknown native
+// session.
+//
+//	spawned  — an active, attached harness-execution RunAttempt whose live
+//	           delegate binding matches this exact session. Strongest evidence:
+//	           this runtime launched the session, so it knows who it is.
+//	declared — a self-announced identity corroborated by an independently held
+//	           fresh lease (resolveDeclaredCollaborationRecipient below).
+//
+// The declared path exists because the spawned path can only ever see sessions
+// Compound started. Measured 2026-07-31 against a live home: 533 delegated
+// sessions, all exited or refused, zero addressable -- while a dozen leases were
+// held under distinct named actors that were provably present and mutating the
+// ledger. Keying addressability to spawn provenance made the agents doing the
+// contending precisely the ones that could not be reached.
 func (s *Store) ResolveCollaborationRecipient(query CollaborationRecipientQuery) (CollaborationRecipientResolution, bool, error) {
 	query.Harness = normalizeCollaborationHarness(query.Harness)
 	query.SessionID = strings.TrimSpace(query.SessionID)
@@ -102,7 +116,101 @@ func (s *Store) ResolveCollaborationRecipient(query CollaborationRecipientQuery)
 	if len(exact) == 1 {
 		return s.collaborationRecipientResolution(exact[0].work, exact[0].attempt)
 	}
-	return CollaborationRecipientResolution{}, false, nil
+	// No spawned binding. A session Compound never launched may still identify
+	// itself, but only conjunctively -- see below.
+	return s.resolveDeclaredCollaborationRecipient(query, cwd, workByID, time.Now())
+}
+
+// resolveDeclaredCollaborationRecipient is the path for a session this runtime
+// did not spawn. It upholds the same conjunctive rule as the binding path
+// above: a self-declaration is a claim any local process could make, so it
+// adopts nothing on its own, and proximity still adopts nothing on its own.
+// Both must hold.
+//
+//	declaration  — an exact (harness, session, cwd) announcement exists
+//	corroboration — that actor independently holds a fresh lease
+//	unambiguity  — exactly one non-terminal work, as the binding path requires
+//
+// Corroboration deliberately reads ONLY leases, not the work-event log. This
+// runs on every hook fire for every session, so a tail read of the log here
+// would put megabytes of I/O on the hottest path in the system. Leases are also
+// the stricter signal: an actor with event history but no lease has no work
+// context, hence no WorkID to deliver against, so requiring a lease is not just
+// cheap but necessary. `compound presence` may therefore show an actor
+// corroborated by events alone while resolution still declines it -- resolution
+// is the stricter surface, deliberately.
+//
+// The returned RunAttemptID is empty because no harness-execution attempt
+// exists. That is load-bearing rather than incidental: deliveryRelevant gates
+// the interrupt class on a non-empty RunAttemptID, so a declared recipient can
+// only ever receive next_boundary delivery -- injected at its next prompt,
+// never mid-turn. The least-privilege outcome falls out of the data model
+// instead of needing its own switch.
+func (s *Store) resolveDeclaredCollaborationRecipient(
+	query CollaborationRecipientQuery,
+	cwd string,
+	workByID map[string]envelope.WorkEnvelope,
+	now time.Time,
+) (CollaborationRecipientResolution, bool, error) {
+	announcements, err := s.ListPresenceSessions()
+	if err != nil || len(announcements) == 0 {
+		return CollaborationRecipientResolution{}, false, err
+	}
+	// Key exactly as AnnouncePresenceSession does. It normalizes harness, trims
+	// the session, and canonicalizes cwd before hashing, so looking up with a
+	// raw path silently misses every record -- on macOS /var and /private/var
+	// hash differently. Normalizing here rather than trusting the caller keeps
+	// the helper correct on its own terms instead of depending on an unstated
+	// precondition that only today's single caller happens to satisfy.
+	canonicalCwd, err := canonicalCollaborationPath(cwd)
+	if err != nil {
+		return CollaborationRecipientResolution{}, false, err
+	}
+	want := presenceSessionKey(PresenceSessionInput{
+		Harness:   normalizeCollaborationHarness(query.Harness),
+		SessionID: strings.TrimSpace(query.SessionID),
+		Cwd:       canonicalCwd,
+	})
+	actor := ""
+	for _, announcement := range announcements {
+		if announcement.Key == want {
+			actor = strings.TrimSpace(announcement.Actor)
+			break
+		}
+	}
+	if actor == "" {
+		return CollaborationRecipientResolution{}, false, nil
+	}
+
+	leases, err := s.ListLeases()
+	if err != nil {
+		return CollaborationRecipientResolution{}, false, err
+	}
+	corroborated := false
+	held := make([]envelope.WorkEnvelope, 0, 1)
+	for _, lease := range leases {
+		if strings.TrimSpace(lease.By) != actor {
+			continue
+		}
+		if at, ok := parsePresenceTime(lease.ClaimAt); ok && now.Sub(at) <= DefaultPresenceTTL {
+			corroborated = true
+		}
+		if item, ok := workByID[lease.WorkID]; ok {
+			held = append(held, item)
+		}
+	}
+	// A lease that has gone cold is not corroboration: it would let an actor
+	// that stopped weeks ago keep validating a session forever.
+	if !corroborated {
+		return CollaborationRecipientResolution{}, false, nil
+	}
+	// Exactly one, mirroring the binding path. Two candidate works means we
+	// cannot say which context a message belongs to, and guessing would deliver
+	// one lane's coordination into another's.
+	if len(held) != 1 {
+		return CollaborationRecipientResolution{}, false, nil
+	}
+	return s.collaborationRecipientResolution(held[0], runattempt.RunAttempt{Actor: actor})
 }
 
 func (s *Store) collaborationRecipientResolution(item envelope.WorkEnvelope, attempt runattempt.RunAttempt) (CollaborationRecipientResolution, bool, error) {
