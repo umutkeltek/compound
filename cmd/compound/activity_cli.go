@@ -74,17 +74,27 @@ func runActivityStatus(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	if err := activity.EnsureConfigSeeded(homePath); err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 1
-	}
+	// Read-only: never write config from status. If config is missing,
+	// report config_status="missing" and enabled=false; the operator runs
+	// `compound activity enable --work W` to materialize config through the
+	// governed path.
 	enabled, err := activity.Enabled(homePath)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	configStatus := "present"
+	if _, statErr := os.Stat(activity.ConfigPath(homePath)); statErr != nil {
+		if os.IsNotExist(statErr) {
+			configStatus = "missing"
+		} else {
+			fmt.Fprintln(stderr, "error:", statErr)
+			return 1
+		}
+	}
 	out := map[string]any{
 		"enabled":       enabled,
+		"config_status": configStatus,
 		"config_path":   activity.ConfigPath(homePath),
 		"activity_root": activity.ActivityRoot(homePath),
 		"spool_dir":     defaultSpoolDir(),
@@ -92,10 +102,13 @@ func runActivityStatus(args []string, stdout, stderr io.Writer) int {
 	if hasFlag(args, "--json") {
 		return writeJSON(stdout, stderr, out)
 	}
-	fmt.Fprintf(stdout, "activity sensor enabled=%v\n", enabled)
+	fmt.Fprintf(stdout, "activity sensor enabled=%v config_status=%s\n", enabled, configStatus)
 	fmt.Fprintf(stdout, "  config: %s\n", activity.ConfigPath(homePath))
 	fmt.Fprintf(stdout, "  store:  %s\n", activity.ActivityRoot(homePath))
 	fmt.Fprintf(stdout, "  spool:  %s\n", defaultSpoolDir())
+	if configStatus == "missing" {
+		fmt.Fprintln(stdout, "  hint: run `compound activity enable --work W` to initialize config through the governed path")
+	}
 	return 0
 }
 

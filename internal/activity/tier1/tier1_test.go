@@ -571,3 +571,27 @@ func (r *recordingSource) TryEnvelope(_ context.Context, _ source.FocusedApp) (s
 	}, true, nil
 }
 func (r *recordingSource) ContentFreeInvariant() error { return nil }
+
+// TestStatusIsReadOnly: runActivityStatus must NOT call EnsureConfigSeeded.
+// Calling status on a fresh home (no config file) must report enabled=false
+// + config_status=missing WITHOUT writing the config file. The audit's bug 6:
+// tightening read-only semantics across the CLI.
+func TestStatusIsReadOnly(t *testing.T) {
+	h := newTestHome(t)
+	// Fresh home — no config/activity-sensor.json yet.
+	if _, err := os.Stat(filepath.Join(h, "config", "activity-sensor.json")); err == nil {
+		t.Fatalf("precondition: config must not exist yet")
+	}
+	// Status must NOT create the config.
+	enabled, err := activity.Enabled(h)
+	if err != nil {
+		t.Fatalf("Enabled: %v", err)
+	}
+	if enabled {
+		t.Fatalf("fresh home must report enabled=false, got %v", enabled)
+	}
+	// Verify config still does NOT exist after Enabled() call.
+	if _, err := os.Stat(filepath.Join(h, "config", "activity-sensor.json")); err == nil {
+		t.Fatalf("status must not write config; file appeared after Enabled()")
+	}
+}
