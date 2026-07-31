@@ -168,10 +168,8 @@ mkdir -p "$PROFILE2"
 # command sequences.
 echo '{"hooks":{}}' > "$PROFILE2/settings.json"
 # Capture the hook install invocation so we can assert the harness arg.
-# install-lane.sh must pass --harness claude-zai (the hook roster for any
-# claude_code-family isolated profile), NOT the raw lane id -- the real
-# cmdHookInstall allowlist is claude-code|claude-zai|codex|all and
-# --config-dir is gated to claude-zai.
+# install-lane.sh reads the lane's REAL hook harness from lanes.json
+# (hook_harness field). For zai-direct that is claude-zai.
 HOOK_INSTALL_LOG="$TMPDIR/hook-install.log"; export HOOK_INSTALL_LOG
 : > "$HOOK_INSTALL_LOG"
 LANES_SH_FILE="$LIB_DIR/lanes.sh" \
@@ -182,12 +180,11 @@ LANE_STATUSLINE_FILE="$LIB_DIR/lane-statusline.sh" \
     --compound "$FAKE_BIN/compound" \
     --steering-source "$LIB_DIR/README.md" 2>&1 | sed 's/\o033/<ESC>/g' >/dev/null
 
-# The hook install call must target the claude-zai roster with the lane's
-# own profile dir. Pinning the raw-lane-id regression (qwen/minimax/...
-# used to be rejected by the real compound binary).
+# The hook install call must target the lane's own hook harness (claude-zai for
+# zai-direct) with the lane's own profile dir.
 _hook_line=$(cat "$HOOK_INSTALL_LOG")
 case "$_hook_line" in
-  *"--harness claude-zai"*) printf "ok: hook install targets claude-zai roster\n" ;;
+  *"--harness claude-zai"*) printf "ok: zai-direct hook install targets claude-zai\n" ;;
   *) echo "FAIL: hook install harness arg wrong: $_hook_line"; exit 1 ;;
 esac
 case "$_hook_line" in
@@ -213,6 +210,60 @@ LANE_STATUSLINE_FILE="$LIB_DIR/lane-statusline.sh" \
     --compound "$FAKE_BIN/compound" --steering-source "$LIB_DIR/README.md" >/dev/null 2>&1
 _md2=$(md5sum "$PROFILE2/settings.json" | awk '{print $1}')
 assert_eq "$_md1" "$_md2" "install-lane rerun is byte-identical"
+
+echo ""
+echo "==> install-lane.sh: each lane installs its OWN hook harness"
+
+# minimax must install --harness claude-minimax, NOT collapse into claude-zai.
+# This is the core regression the adapter fix targets: a minimax lane that
+# records as claude-zai breaks executor identity / hook attribution.
+PROFILE_MM="$TMPDIR/profile-minimax"
+mkdir -p "$PROFILE_MM"
+echo '{"hooks":{}}' > "$PROFILE_MM/settings.json"
+: > "$HOOK_INSTALL_LOG"
+LANES_SH_FILE="$LIB_DIR/lanes.sh" \
+LANE_STATUSLINE_FILE="$LIB_DIR/lane-statusline.sh" \
+  sh "$LIB_DIR/install-lane.sh" \
+    --lane minimax \
+    --profile-dir "$PROFILE_MM" \
+    --compound "$FAKE_BIN/compound" \
+    --steering-source "$LIB_DIR/README.md" >/dev/null 2>&1
+_mm_line=$(cat "$HOOK_INSTALL_LOG")
+case "$_mm_line" in
+  *"--harness claude-minimax"*) printf "ok: minimax hook install targets claude-minimax\n" ;;
+  *) echo "FAIL: minimax must install claude-minimax, got: $_mm_line"; exit 1 ;;
+esac
+case "$_mm_line" in
+  *"--harness claude-zai"*) echo "FAIL: minimax must NOT collapse into claude-zai: $_mm_line"; exit 1 ;;
+  *) printf "ok: minimax does not collapse into claude-zai\n" ;;
+esac
+
+# A lane with no supported hook harness (qwen) must FAIL clearly and must NOT
+# call `compound hook install` at all -- no silent claude-zai fallback.
+PROFILE_QW="$TMPDIR/profile-qwen"
+mkdir -p "$PROFILE_QW"
+echo '{"hooks":{}}' > "$PROFILE_QW/settings.json"
+: > "$HOOK_INSTALL_LOG"
+_qw_rc=0
+_qw_err=$(LANES_SH_FILE="$LIB_DIR/lanes.sh" \
+  LANE_STATUSLINE_FILE="$LIB_DIR/lane-statusline.sh" \
+  sh "$LIB_DIR/install-lane.sh" \
+    --lane qwen \
+    --profile-dir "$PROFILE_QW" \
+    --compound "$FAKE_BIN/compound" \
+    --steering-source "$LIB_DIR/README.md" 2>&1 >/dev/null) || _qw_rc=$?
+if [ "$_qw_rc" -eq 0 ]; then
+  echo "FAIL: qwen install must exit nonzero (unsupported hook harness)"; exit 1
+fi
+printf "ok: qwen install exits nonzero (%s)\n" "$_qw_rc"
+case "$_qw_err" in
+  *"no supported hook harness"*) printf "ok: qwen failure names the unsupported harness\n" ;;
+  *) echo "FAIL: qwen error message unclear: $_qw_err"; exit 1 ;;
+esac
+if [ -s "$HOOK_INSTALL_LOG" ]; then
+  echo "FAIL: qwen must NOT invoke hook install, log: $(cat "$HOOK_INSTALL_LOG")"; exit 1
+fi
+printf "ok: qwen did not invoke hook install\n"
 
 echo ""
 echo "==> lane-launcher.sh: per-lane functions generated (bash)"

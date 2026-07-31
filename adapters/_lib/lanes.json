@@ -13,7 +13,8 @@
       "profile_dir_var": "CLAUDE_ZAI_PROFILE_DIR",
       "tap_bind": "127.0.0.1:18772",
       "profile_default": "${HOME}/.config/switchback/claude/zai-direct",
-      "title_suffix": "GLM-5.2"
+      "title_suffix": "GLM-5.2",
+      "hook_harness": "claude-zai"
     },
     {
       "id": "zai-direct",
@@ -27,7 +28,8 @@
       "profile_dir_var": "CLAUDE_ZAI_DIRECT_PROFILE_DIR",
       "tap_bind": "127.0.0.1:18773",
       "profile_default": "${HOME}/.config/switchback/claude/zai-direct-full",
-      "title_suffix": "GLM-5.2 (direct)"
+      "title_suffix": "GLM-5.2 (direct)",
+      "hook_harness": "claude-zai"
     },
     {
       "id": "codex",
@@ -41,7 +43,8 @@
       "profile_dir_var": "CLAUDE_CODEX_PROFILE_DIR",
       "tap_bind": "127.0.0.1:18774",
       "profile_default": "${HOME}/.config/switchback/claude/codex-tap",
-      "title_suffix": "gpt-5.6 (ultra)"
+      "title_suffix": "gpt-5.6 (ultra)",
+      "hook_harness": "claude-zai"
     },
     {
       "id": "minimax",
@@ -55,7 +58,8 @@
       "profile_dir_var": "CLAUDE_MINIMAX_PROFILE_DIR",
       "tap_bind": "127.0.0.1:18776",
       "profile_default": "${HOME}/.config/switchback/claude/minimax-direct",
-      "title_suffix": "MiniMax-M3"
+      "title_suffix": "MiniMax-M3",
+      "hook_harness": "claude-minimax"
     },
     {
       "id": "qwen",
@@ -69,7 +73,8 @@
       "profile_dir_var": "CLAUDE_QWEN_PROFILE_DIR",
       "tap_bind": "127.0.0.1:18777",
       "profile_default": "${HOME}/.config/switchback/claude/qwen-tap",
-      "title_suffix": "qwen3.8"
+      "title_suffix": "qwen3.8",
+      "hook_harness": ""
     },
     {
       "id": "native",
@@ -83,7 +88,8 @@
       "profile_dir_var": "",
       "tap_bind": "",
       "profile_default": "",
-      "title_suffix": "native"
+      "title_suffix": "native",
+      "hook_harness": ""
     },
     {
       "id": "codex-native",
@@ -97,7 +103,8 @@
       "profile_dir_var": "",
       "tap_bind": "",
       "profile_default": "",
-      "title_suffix": "codex native"
+      "title_suffix": "codex native",
+      "hook_harness": ""
     }
   ]
 }

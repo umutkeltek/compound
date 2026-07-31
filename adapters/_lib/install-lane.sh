@@ -95,16 +95,31 @@ fi
 
 mkdir -p "$profile_dir"
 
-# Every lane that reaches install-lane.sh is a claude_code-family isolated
-# profile (its own --config-dir). The hook ROSTER for any such profile is
-# claude-zai's full context/guard/ownership set -- that is what the
-# hand-written adapters/claude-zai/install.sh installs, and what
-# `compound hook install` accepts with --config-dir. Passing the raw lane
-# id (qwen/minimax/...) here used to fail: cmdHookInstall's allowlist is
-# claude-code|claude-zai|codex|all, and --config-dir is gated to
-# claude-zai. The lane id still identifies the profile (via --config-dir
-# and the statusline); claude-zai identifies the hook authority source.
-"$compound_bin" hook install --harness claude-zai --config-dir "$profile_dir" --binary "$compound_bin"
+# Resolve THIS lane's hook harness from lanes.json. Every lane that reaches
+# install-lane.sh is a claude_code-family isolated profile (its own
+# --config-dir), but the hook HARNESS is lane-specific: core `compound hook
+# install` enrolls each managed harness separately and gates --config-dir to
+# claude-zai and claude-minimax. So we must install the lane's REAL harness:
+#
+#   zai / zai-direct -> claude-zai     (the Claude Code hook roster)
+#   codex            -> claude-zai     (claude_code-family profile; its hook
+#                                       ROSTER is the Claude Code set, exposed
+#                                       by core as claude-zai. Lane identity is
+#                                       still carried by --config-dir and the
+#                                       statusline. Intentional + documented.)
+#   minimax          -> claude-minimax (its own enrolled harness)
+#   qwen / others    -> "" => FAIL     (core has no such harness with
+#                                       --config-dir yet; do NOT silently
+#                                       collapse it into claude-zai)
+#
+# Collapsing every lane into claude-zai breaks executor identity, hook
+# attribution, capability floors, and RunAttempt actor/lane routing.
+hook_harness=$(lane_field "$lane" hook_harness)
+if [ -z "$hook_harness" ]; then
+  echo "install-lane: lane '$lane' has no supported hook harness (core 'compound hook install' does not enroll one with --config-dir yet); refusing to install" >&2
+  exit 1
+fi
+"$compound_bin" hook install --harness "$hook_harness" --config-dir "$profile_dir" --binary "$compound_bin"
 
 LANES_SH_FILE="$_lib_dir/lanes.sh" \
 LANE_STATUSLINE_FILE="$_lib_dir/lane-statusline.sh" \
