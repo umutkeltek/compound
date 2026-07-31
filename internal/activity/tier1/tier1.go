@@ -158,11 +158,17 @@ func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectRepo
 	// any window flip on any hostname becomes one canonical record.
 	normalized, _, _ := awstream.Normalize(rawEvents)
 
-	// 3. Walk normalized events; pick the most-recent unique focused app; for each,
-	// call the registered source.
+	// 3. Walk normalized events in REVERSE order so the FIRST event we see
+	// for each bundleID is the MOST RECENT one. awstream.Normalize sorts
+	// ascending, so the loop runs from the tail. The Tier-1 collector is
+	// supposed to describe the current focused envelope — using the latest
+	// event in the lookback window matches that semantics. A user who
+	// switched apps 5s ago gets the app they're on now, not the one they
+	// were on 30s ago.
 	rep := CollectReport{}
 	seen := make(map[string]bool)
-	for _, ev := range normalized {
+	for i := len(normalized) - 1; i >= 0; i-- {
+		ev := normalized[i]
 		bundleID := ev.BundleID
 		if bundleID == "" || seen[bundleID] {
 			continue

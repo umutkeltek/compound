@@ -492,3 +492,82 @@ func makeCtxWithTimeout(d time.Duration) context.Context {
 	_ = cancel // caller cancels via ctx deadline
 	return ctx
 }
+
+// TestCollectorPicksLatestEventPerBundle: when two events for the same bundle
+// appear in the lookback window, the collector must pick the LATEST one. Walking
+// in REVERSE order makes "first time we see bundleID" == most recent. This pins
+// the audit's bug 5: the previous FORWARD-iteration code picked the EARLIEST
+// event in the window, which is the wrong semantic for "current focused envelope".
+func TestCollectorPicksLatestEventPerBundle(t *testing.T) {
+	h := newTestHome(t)
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	enableSensor(t, h, now)
+
+	// AW fixture: one currentwindow bucket with two events for the same bundle.
+	// The LATER event (1700000030.0 → 22:13:50Z) must be the focus that the
+	// Tier-1 collector resolves. The EARLIER event (1700000000.0 → 22:13:20Z)
+	// must be discarded.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/events"):
+			_, _ = w.Write([]byte(`[{"timestamp":1700000000.0,"duration":30,"data":{"app":"com.example.terminal"}},{"timestamp":1700000030.0,"duration":30,"data":{"app":"com.example.terminal"}}]`))
+		default:
+			_, _ = w.Write([]byte(`{"aw-watcher-window_local":{"id":"aw-watcher-window_local","type":"currentwindow","client":"aw-watcher-window","hostname":"local","data":{}}}`))
+		}
+	}))
+	defer srv.Close()
+
+	cli := awstream.NewClient(srv.URL)
+	spoolDir := t.TempDir()
+	reg := source.NewRegistryFromSources(&recordingSource{
+		bundle: "com.example.terminal",
+	})
+	c := newCollectorWithDeps(cli, reg, spoolDir, func() time.Time { return now })
+
+	_ = c.Run(context.Background(), 5*time.Minute)
+
+	// The Tier-1 event written to the spool carries ev.TS of the LATER event.
+	// Read the spool back and assert.
+	entries, err := listSpool(spoolDir)
+	if err != nil {
+		t.Fatalf("list spool: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("collector wrote no events")
+	}
+	data, err := os.ReadFile(entries[0])
+	if err != nil {
+		t.Fatalf("read spool: %v", err)
+	}
+	rep := activity.DecodeStrict(data, 1)
+	if len(rep.Accepted) != 1 {
+		t.Fatalf("spool must have exactly 1 event (one per unique bundle, with the latest ts); got %d", len(rep.Accepted))
+	}
+	gotTS := rep.Accepted[0].TS
+	if !strings.Contains(gotTS, "22:13:50") {
+		t.Errorf("spool event TS = %q, want the LATER timestamp 22:13:50", gotTS)
+	}
+	if strings.Contains(gotTS, "22:13:20") {
+		t.Errorf("spool event must NOT carry the earlier ts 22:13:20; got %q", gotTS)
+	}
+}
+
+// recordingSource is a fixture EnvelopeSource that returns a deterministic
+// envelope. Used by TestCollectorPicksLatestEventPerBundle to verify that the
+// collector's reverse-iteration picks the most-recent AW event for each bundle.
+type recordingSource struct {
+	bundle string
+}
+
+func (r *recordingSource) AppBundleID() string { return r.bundle }
+func (r *recordingSource) TryEnvelope(_ context.Context, _ source.FocusedApp) (source.Envelope, bool, error) {
+	return source.Envelope{
+		PaneCwd:   "/Users/operator/projects/example",
+		GitRoot:   "/Users/operator/projects/example",
+		GitRemote: "git@example.com:operator/example.git",
+		PaneType:  "terminal",
+		AgentKind: "agent-hook",
+	}, true, nil
+}
+func (r *recordingSource) ContentFreeInvariant() error { return nil }
