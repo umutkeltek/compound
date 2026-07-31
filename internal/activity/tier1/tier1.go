@@ -479,6 +479,11 @@ func buildTier1Intent(workID, home string, now time.Time) envelope.ActionIntent 
 	}
 }
 
+// awBaseURL is the AW REST endpoint AWMaterialize reads from. It is a var (not a
+// constant inlined at the call site) only so tests can point it at an httptest
+// server; production always uses awstream.DefaultBaseURL.
+var awBaseURL = awstream.DefaultBaseURL
+
 // AWMaterializeReport is the outcome of `compound activity aw materialize`. Mirrors
 // the Tier-1 collect report shape so the CLI can share error-handling code.
 type AWMaterializeReport struct {
@@ -493,10 +498,16 @@ type AWMaterializeReport struct {
 // awstream, and writes Tier-0 spool events. Governed by the same DrainCapability
 // (it's a Tier-0 ingest) plus the Enabled config + byte cap.
 //
+// start/end bound the AW data window actually fetched (the caller controls how
+// far back to materialize; the CLI defaults to the trailing 7 days). now is the
+// governance clock used for policy evaluation and envelope timestamps — it is
+// deliberately separate from end, because a bounded historical materialize still
+// evaluates grants "as of now".
+//
 // This is the AW-side counterpart to the Swift launchd collector: it produces the
 // SAME activity.Event shape, so downstream Drain works unchanged. The Tier-1
 // envelopes are NOT extracted here — that's a separate verb (`tier1 collect`).
-func AWMaterialize(home, spoolDir string, cfg policy.Config, workID string, now time.Time) (AWMaterializeReport, error) {
+func AWMaterialize(home, spoolDir string, cfg policy.Config, workID string, start, end, now time.Time) (AWMaterializeReport, error) {
 	// Gate 1: enabled.
 	enabled, err := activity.Enabled(home)
 	if err != nil {
@@ -522,7 +533,7 @@ func AWMaterialize(home, spoolDir string, cfg policy.Config, workID string, now 
 	}
 
 	// Run the materialize: list buckets, fetch events, normalize, write to spool.
-	cli := awstream.NewClient(awstream.DefaultBaseURL)
+	cli := awstream.NewClient(awBaseURL)
 	buckets, err := cli.ListBuckets(context.Background())
 	if err != nil {
 		return AWMaterializeReport{Refused: false, Reason: fmt.Sprintf("AW ListBuckets: %v", err)}, nil
@@ -537,9 +548,6 @@ func AWMaterialize(home, spoolDir string, cfg policy.Config, workID string, now 
 		if b.Type != "currentwindow" && b.Type != "afkstatus" && b.Type != "app.editor.activity" {
 			continue
 		}
-		// Look back 7 days — sufficient for a periodic materialize.
-		end := now
-		start := now.Add(-7 * 24 * time.Hour)
 		evs, err := cli.FetchEvents(context.Background(), b.ID, start, end, 10000)
 		if err != nil {
 			continue

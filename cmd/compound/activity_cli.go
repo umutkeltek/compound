@@ -322,7 +322,12 @@ func runActivityAWMaterialize(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	work := activityWorkID(args, "aw_materialize")
-	rep, err := tier1.AWMaterialize(homePath, defaultSpoolDir(), cfg, work, time.Now())
+	now := time.Now()
+	start, end, ok := parseAWMaterializeWindow(args, now, stderr)
+	if !ok {
+		return 2
+	}
+	rep, err := tier1.AWMaterialize(homePath, defaultSpoolDir(), cfg, work, start, end, now)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
@@ -344,6 +349,55 @@ func runActivityAWMaterialize(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "aw materialize: events_written=%d buckets=%d bytes=%d\n",
 		rep.EventsWritten, rep.BucketsRead, rep.BytesUnderRoot)
 	return 0
+}
+
+// awWindowFlag reads a window flag in BOTH "--name value" and "--name=value"
+// forms. enforceKnownFlags accepts the "=" form, so valueFlag alone would
+// silently drop it — and silently ignoring a bounding flag is exactly the bug
+// this verb is fixing.
+func awWindowFlag(args []string, name string) string {
+	if v := strings.TrimSpace(flagValue(args, name)); v != "" {
+		return v
+	}
+	prefix := name + "="
+	for _, a := range args {
+		if strings.HasPrefix(a, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(a, prefix))
+		}
+	}
+	return ""
+}
+
+// parseAWMaterializeWindow resolves the [start,end] AW data window from
+// --start/--end (RFC3339), defaulting to the trailing 7 days ending at now.
+// It returns ok=false (CLI exits 2) on a malformed timestamp or an inverted
+// window, so an operator who thinks they bounded the query really did — the
+// previous behavior accepted the flags and then always fetched 7 days.
+func parseAWMaterializeWindow(args []string, now time.Time, stderr io.Writer) (start, end time.Time, ok bool) {
+	end = now
+	start = now.Add(-7 * 24 * time.Hour)
+	if s := awWindowFlag(args, "--end"); s != "" {
+		parsed, perr := time.Parse(time.RFC3339, s)
+		if perr != nil {
+			fmt.Fprintf(stderr, "invalid --end %q: expected RFC3339 (e.g. 2026-07-31T00:00:00Z): %v\n", s, perr)
+			return time.Time{}, time.Time{}, false
+		}
+		end = parsed
+	}
+	if s := awWindowFlag(args, "--start"); s != "" {
+		parsed, perr := time.Parse(time.RFC3339, s)
+		if perr != nil {
+			fmt.Fprintf(stderr, "invalid --start %q: expected RFC3339 (e.g. 2026-07-30T00:00:00Z): %v\n", s, perr)
+			return time.Time{}, time.Time{}, false
+		}
+		start = parsed
+	}
+	if !start.Before(end) {
+		fmt.Fprintf(stderr, "invalid window: --start %s must be before --end %s\n",
+			start.Format(time.RFC3339), end.Format(time.RFC3339))
+		return time.Time{}, time.Time{}, false
+	}
+	return start, end, true
 }
 
 // runActivityTier1 dispatches `compound activity tier1 ...`. Today only `collect`

@@ -250,7 +250,7 @@ func TestAWMaterialize_DisabledRefuses(t *testing.T) {
 		grantSpec{"grant.activity_drain", activity.DrainCapability, ""},
 	)
 	cfg := loadCfg(t, h)
-	rep, err := AWMaterialize(h, t.TempDir(), cfg, "work_aw", now)
+	rep, err := AWMaterialize(h, t.TempDir(), cfg, "work_aw", now.Add(-7*24*time.Hour), now, now)
 	if err != nil {
 		t.Fatalf("AWMaterialize: %v", err)
 	}
@@ -268,12 +268,57 @@ func TestAWMaterialize_NoGrantRefuses(t *testing.T) {
 		grantSpec{"grant.activity_toggle", activity.ToggleCapability, ""},
 	)
 	cfg := loadCfg(t, h)
-	rep, err := AWMaterialize(h, t.TempDir(), cfg, "work_aw", now)
+	rep, err := AWMaterialize(h, t.TempDir(), cfg, "work_aw", now.Add(-7*24*time.Hour), now, now)
 	if err != nil {
 		t.Fatalf("AWMaterialize: %v", err)
 	}
 	if !rep.Refused {
 		t.Fatalf("AW materialize without drain grant must refuse; got %+v", rep)
+	}
+}
+
+// The bounded [start,end] window the caller passes must actually reach AW's
+// FetchEvents query — the previous implementation accepted the CLI flags and
+// then always fetched a hardcoded trailing 7 days.
+func TestAWMaterialize_WindowBoundsReachFetchEvents(t *testing.T) {
+	h := newTestHome(t)
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	cfg := enableSensor(t, h, now)
+
+	var gotStart, gotEnd string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/events"):
+			gotStart = r.URL.Query().Get("start")
+			gotEnd = r.URL.Query().Get("end")
+			_, _ = w.Write([]byte(`[]`))
+		case strings.Contains(r.URL.Path, "buckets"):
+			_, _ = w.Write([]byte(`{"aw-watcher-window_test":{"id":"aw-watcher-window_test","type":"currentwindow","hostname":"test"}}`))
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+
+	prev := awBaseURL
+	awBaseURL = srv.URL
+	defer func() { awBaseURL = prev }()
+
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	rep, err := AWMaterialize(h, t.TempDir(), cfg, "work_aw", start, end, now)
+	if err != nil {
+		t.Fatalf("AWMaterialize: %v", err)
+	}
+	if rep.Refused {
+		t.Fatalf("enabled+granted materialize must not refuse: %+v", rep)
+	}
+	if want := start.UTC().Format(time.RFC3339Nano); gotStart != want {
+		t.Fatalf("FetchEvents start = %q, want %q", gotStart, want)
+	}
+	if want := end.UTC().Format(time.RFC3339Nano); gotEnd != want {
+		t.Fatalf("FetchEvents end = %q, want %q", gotEnd, want)
 	}
 }
 

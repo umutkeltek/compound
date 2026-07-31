@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/activity"
 	"compound/internal/home"
@@ -62,5 +63,85 @@ func TestActivityCLIUnknownVerbPrintsUsage(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "usage:") {
 		t.Fatalf("unknown verb must print usage, got %q", stderr.String())
+	}
+}
+
+// aw materialize accepts --start/--end, so a malformed value must NOT be
+// silently swallowed (the bug being fixed): it must exit 2 with a clear reason.
+func TestActivityCLIAWMaterializeInvalidStartExits2(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := runActivity([]string{"aw", "materialize", "--start", "not-a-time", "--home", homePath}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("invalid --start must exit 2, got %d (stderr=%q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "invalid --start") {
+		t.Fatalf("error must name --start, got %q", stderr.String())
+	}
+}
+
+// A window where --start is not before --end is a usage error, exit 2.
+func TestActivityCLIAWMaterializeInvertedWindowExits2(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := runActivity([]string{"aw", "materialize",
+		"--start", "2026-07-31T00:00:00Z",
+		"--end", "2026-07-30T00:00:00Z",
+		"--home", homePath}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("inverted window must exit 2, got %d (stderr=%q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "must be before") {
+		t.Fatalf("error must explain the inverted window, got %q", stderr.String())
+	}
+}
+
+// Direct unit coverage of the window resolver: defaults, explicit bounds, and
+// the "--flag=value" form (which valueFlag alone would silently drop).
+func TestParseAWMaterializeWindow(t *testing.T) {
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	var stderr bytes.Buffer
+
+	// Default: trailing 7 days ending now.
+	start, end, ok := parseAWMaterializeWindow(nil, now, &stderr)
+	if !ok {
+		t.Fatalf("default window must parse, stderr=%q", stderr.String())
+	}
+	if !end.Equal(now) || !start.Equal(now.Add(-7*24*time.Hour)) {
+		t.Fatalf("default window = [%s, %s], want trailing 7d", start, end)
+	}
+
+	// Explicit space-form bounds.
+	start, end, ok = parseAWMaterializeWindow([]string{
+		"--start", "2026-07-30T00:00:00Z",
+		"--end", "2026-07-31T00:00:00Z",
+	}, now, &stderr)
+	if !ok {
+		t.Fatalf("explicit window must parse, stderr=%q", stderr.String())
+	}
+	if start.Format(time.RFC3339) != "2026-07-30T00:00:00Z" || end.Format(time.RFC3339) != "2026-07-31T00:00:00Z" {
+		t.Fatalf("explicit window = [%s, %s]", start, end)
+	}
+
+	// Equals-form bound must be honored, not dropped.
+	start, _, ok = parseAWMaterializeWindow([]string{"--start=2026-07-29T00:00:00Z"}, now, &stderr)
+	if !ok {
+		t.Fatalf("equals-form window must parse, stderr=%q", stderr.String())
+	}
+	if start.Format(time.RFC3339) != "2026-07-29T00:00:00Z" {
+		t.Fatalf("equals-form start = %s, want 2026-07-29T00:00:00Z", start)
+	}
+
+	// Malformed end is rejected.
+	if _, _, ok = parseAWMaterializeWindow([]string{"--end", "nope"}, now, &stderr); ok {
+		t.Fatalf("malformed --end must not parse")
 	}
 }
