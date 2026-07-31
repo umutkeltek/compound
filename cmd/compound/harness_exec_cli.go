@@ -96,7 +96,7 @@ func cmdHarnessRun(args []string) {
 	// Parse the rest-arg. Everything after `--` is the command + args.
 	// If no `--`, the command is empty and the harness adapter must take
 	// a prompt via --prompt.
-	restArgs := args
+	var restArgs []string
 	if idx := indexOf(args, "--"); idx >= 0 {
 		restArgs = args[idx+1:]
 	}

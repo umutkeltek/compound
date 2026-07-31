@@ -73,7 +73,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	// Parse post-`--` for command + args. Everything before the `--` is
 	// flag parsing; everything after is the subprocess argv. The first
 	// post-`--` token is the program path; the rest are its args.
-	restArgs := rest
+	var restArgs []string
 	if idx := indexOf(rest, "--"); idx >= 0 {
 		restArgs = rest[idx+1:]
 	}

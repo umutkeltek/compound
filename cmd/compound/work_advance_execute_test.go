@@ -596,3 +596,57 @@ func TestWorkAdvanceExecuteStampsLaneIDOnExecAttempt(t *testing.T) {
 		t.Fatalf("exec-mint RunAttempt lane_id = %q, want %q (the resolved --by actor)", ra.LaneID, "codex")
 	}
 }
+
+// TestWorkAdvanceExecuteNoSeparatorLeaksNoFlagTail: with neither --prompt
+// nor a post-`--` command, --execute must refuse before any state change.
+//
+// Falsifier (RED→GREEN): the parse defaulted restArgs to the WHOLE flag
+// tail when no `--` was present, so command became "--to", the guard never
+// fired, and the harness launched with the CLI's own flags as its argv.
+// That burns the work item: the launch fails instantly and a failed run
+// terminalizes it (failed is terminal — no recovery path).
+func TestWorkAdvanceExecuteNoSeparatorLeaksNoFlagTail(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := work.Open(homePath)
+	w, err := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "--execute with no --prompt and no post-`--` command refuses instead of leaking the flag tail",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", w.ID,
+		"--to", "running", "--by", "codex", "--execute", "--harness", "os-harness-entrypoints")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("expected non-zero exit for --execute with no --prompt and no post-`--` command, got 0. output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "--execute requires either --prompt or a post-`--` command") {
+		t.Fatalf("expected the --prompt|command guard refusal in stderr, got:\n%s", out)
+	}
+
+	// The refusal must fire BEFORE any state change: still "claimed", and
+	// only the claim-mint RunAttempt exists.
+	ws2, _ := work.Open(homePath)
+	final, getErr := ws2.Get(w.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if final.State != "claimed" {
+		t.Fatalf("no-separator --execute must refuse before any state change; state = %q, want claimed", final.State)
+	}
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 1 {
+		t.Fatalf("refusal must mint no RunAttempt beyond the claim's; want exactly 1 file, got %d", len(runAttemptFiles))
+	}
+}
