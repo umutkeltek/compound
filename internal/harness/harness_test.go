@@ -325,10 +325,11 @@ func TestNewClaudeLaneHarnessesEnrolledWithExpectedLimitations(t *testing.T) {
 	cases := []struct {
 		name            string
 		extraLimitation string
+		hooksInstalled  bool
 	}{
-		{"claude_minimax", "token-plan provider lane (prepaid); context price cliff near 512k tokens"},
-		{"claude_qwen", "fast scoped lane; prefer review/second-opinion scoped runs"},
-		{"claude_zai_full", "subscription window lane; busy-hour token weighting applies"},
+		{"claude_minimax", "token-plan provider lane (prepaid); context price cliff near 512k tokens", true},
+		{"claude_qwen", "fast scoped lane; prefer review/second-opinion scoped runs", false},
+		{"claude_zai_full", "subscription window lane; busy-hour token weighting applies", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -359,8 +360,25 @@ func TestNewClaudeLaneHarnessesEnrolledWithExpectedLimitations(t *testing.T) {
 			// What this test now pins is the invariant that matters: a lane whose
 			// hooks were never installed must NOT claim hook capabilities. If you
 			// install them, capability-drift reports a (non-fatal) under-claim --
-			// raise the declaration then, and only then.
-			if h.Capabilities.SessionStartContext || h.Capabilities.UserPromptContext ||
+			// raise the declaration then, and only then. claude_minimax made that
+			// transition (hook install --harness claude-minimax), so its case pins
+			// the raised floor instead: exactly the four installed bindings, with
+			// Stop and SessionEnd still unregistered, mirroring claude_zai.
+			if tc.hooksInstalled {
+				if !h.Capabilities.SessionStartContext || !h.Capabilities.UserPromptContext ||
+					!h.Capabilities.PreToolUseBlock || !h.Capabilities.PostToolUseEvent {
+					t.Fatalf(
+						"harness %q must claim its installed hook bindings: %+v",
+						tc.name, h.Capabilities,
+					)
+				}
+				if h.Capabilities.StopFeedback || h.Capabilities.SessionEndReceipt {
+					t.Fatalf(
+						"harness %q claims Stop/SessionEnd, which are not registered: %+v",
+						tc.name, h.Capabilities,
+					)
+				}
+			} else if h.Capabilities.SessionStartContext || h.Capabilities.UserPromptContext ||
 				h.Capabilities.PreToolUseBlock || h.Capabilities.PostToolUseEvent ||
 				h.Capabilities.StopFeedback || h.Capabilities.SessionEndReceipt {
 				t.Fatalf(
