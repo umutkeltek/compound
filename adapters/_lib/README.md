@@ -114,7 +114,7 @@ work.
 ## Verifying
 
 ```sh
-# Run the shell test suite (38 tests, ~1s on a modern machine).
+# Run the shell test suite (63 assertions, ~1s on a modern machine).
 sh adapters/_lib/install-lane.test.sh
 
 # Manual smoke:
