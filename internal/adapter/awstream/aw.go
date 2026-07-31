@@ -182,7 +182,7 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 	if len(aux.Timestamp) == 0 {
 		return fmt.Errorf("awstream: event missing timestamp")
 	}
-	// Try float-seconds first (window watcher emits 1700000000.123).
+	// Try float-seconds first (window watcher emits unix-seconds as JSON number).
 	var f float64
 	if err := json.Unmarshal(aux.Timestamp, &f); err == nil {
 		e.Timestamp = time.Unix(int64(f), int64((f-float64(int64(f)))*1e9)).UTC().Format(time.RFC3339Nano)
