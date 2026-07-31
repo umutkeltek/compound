@@ -60,7 +60,7 @@ func ConfigRel(harness, scope string) string {
 	case claudeMinimaxHarness:
 		return filepath.Join(".config", "switchback", "claude", "_providers", "minimax-lane", "settings.json")
 	case claudeQwenHarness:
-		return filepath.Join(".config", "switchback", "claude", "qwen-tap", "settings.json")
+		return filepath.Join(".config", "switchback", "claude", "_providers", "qwen", "settings.json")
 	default: // claude-code
 		return filepath.Join(".claude", claudeSettingsFile(scope))
 	}
@@ -89,7 +89,7 @@ func ClaudeMinimaxProfileDir(baseDir string) string {
 // user's base directory. It matches the profile_default recorded for the qwen lane in
 // adapters/_lib/lanes.json.
 func ClaudeQwenProfileDir(baseDir string) string {
-	return filepath.Join(baseDir, ".config", "switchback", "claude", "qwen-tap")
+	return filepath.Join(baseDir, ".config", "switchback", "claude", "_providers", "qwen")
 }
 
 // HookCommand is the exact observation-only command a harness runs for Compound PreToolUse.

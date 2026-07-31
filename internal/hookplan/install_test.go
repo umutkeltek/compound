@@ -81,8 +81,8 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 		t.Fatalf("claude-minimax ConfigPath = %q, want suffix _providers/minimax-lane/settings.json", minimaxEntry.ConfigPath)
 	}
 	qwenEntry := hookInstallEntryForHarness(t, rep, claudeQwenHarness)
-	if !strings.HasSuffix(qwenEntry.ConfigPath, filepath.Join("qwen-tap", "settings.json")) {
-		t.Fatalf("claude-qwen ConfigPath = %q, want suffix qwen-tap/settings.json", qwenEntry.ConfigPath)
+	if !strings.HasSuffix(qwenEntry.ConfigPath, filepath.Join("_providers", "qwen", "settings.json")) {
+		t.Fatalf("claude-qwen ConfigPath = %q, want suffix _providers/qwen/settings.json", qwenEntry.ConfigPath)
 	}
 	reportJSON, err := json.Marshal(rep)
 	if err != nil {

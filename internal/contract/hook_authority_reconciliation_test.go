@@ -986,3 +986,71 @@ func TestReconcileInstalledHooksObservesClaudeQwenProfile(t *testing.T) {
 		t.Fatalf("claude_qwen PreToolUse reconciliation = %+v, want ready", delta)
 	}
 }
+
+// TestObserveHarnessHookInstallationResolvesSwitchbackPublishedPaths pins the
+// observation source table to the on-disk layout switchback actually publishes.
+// Each claude harness's settings.json must live at the path the installer writes
+// AND the path observeHarnessHookInstallation reads -- the two are contractually
+// the same path, so a fixture dropped at the published path must be observed as
+// a binding under that harness.
+//
+// The fifth harness claude_qwen used to point at "qwen-tap", a directory
+// InstallHooks never creates -- the switchback published layout for qwen is
+// ".config/switchback/claude/_providers/qwen/settings.json", matching the
+// claude_minimax line directly above it. With the stale "qwen-tap" entry, the
+// source list read a path that no installer ever writes, so the bindings were
+// never observed and the blocking_hook_live readiness gate could never see them.
+// The fix routes claude_qwen through "_providers/qwen". Against the old path,
+// the claude_qwen fixture at _providers/qwen/settings.json is silently skipped
+// (the source list looks for qwen-tap/settings.json) -- so the per-case
+// subtest below catches the regression directly. The table-driven form makes
+// the omission visible as a single missing case rather than a fuzzier
+// end-to-end readiness gap.
+func TestObserveHarnessHookInstallationResolvesSwitchbackPublishedPaths(t *testing.T) {
+	harnessHome := t.TempDir()
+	t.Setenv("HOME", harnessHome)
+
+	cases := []struct {
+		harness string
+		relPath string // path relative to harnessHome where switchback publishes this harness's settings.json
+	}{
+		{harness: "claude_code", relPath: filepath.Join(".claude", "settings.json")},
+		{harness: "claude_zai", relPath: filepath.Join(".config", "switchback", "claude", "zai-direct", "settings.json")},
+		{harness: "claude_minimax", relPath: filepath.Join(".config", "switchback", "claude", "_providers", "minimax-lane", "settings.json")},
+		{harness: "claude_qwen", relPath: filepath.Join(".config", "switchback", "claude", "_providers", "qwen", "settings.json")},
+	}
+
+	// Minimal settings.json body: parseObservedHarnessHooks produces one binding
+	// per command. The exact handler command does not matter -- the harness
+	// identity plus SourceRef on the resulting binding is what tells us which
+	// observation source fired.
+	fixture := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo fixture"}]}]}}`
+	for _, c := range cases {
+		writeHarnessHookConfig(t, filepath.Join(harnessHome, c.relPath), fixture)
+	}
+
+	// observeHarnessHookInstallation is package-private, but ReconcileInstalledHooks
+	// (also in package contract) is the smallest existing seam that composes it
+	// and exposes the snapshot via Observation.Bindings. No new API surface.
+	compoundHome := t.TempDir()
+	got, err := ReconcileInstalledHooks(compoundHome, harnessHome, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("ReconcileInstalledHooks() error = %v", err)
+	}
+
+	for _, c := range cases {
+		c := c
+		t.Run(c.harness, func(t *testing.T) {
+			wantSourceRef := "harness://" + c.harness + "/settings"
+			for _, binding := range got.Observation.Bindings {
+				if binding.Harness == c.harness && binding.SourceRef == wantSourceRef {
+					return
+				}
+			}
+			t.Fatalf(
+				"no observed binding with SourceRef=%q for harness %q (settings expected at %q under harnessHome; observation source table is missing or mis-routed)",
+				wantSourceRef, c.harness, c.relPath,
+			)
+		})
+	}
+}
