@@ -28,6 +28,7 @@ type SourceControlSnapshot struct {
 	RepoID                  string `json:"repo_id"`
 	RequestedPath           string `json:"requested_path,omitempty"`
 	GitRoot                 string `json:"git_root"`
+	MainWorktreeRoot        string `json:"main_worktree_root,omitempty"`
 	Remote                  string `json:"remote,omitempty"`
 	RepositoryFingerprint   string `json:"repository_fingerprint,omitempty"`
 	Branch                  string `json:"branch,omitempty"`
@@ -160,6 +161,7 @@ func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
 		RepoID:                  repositoryID,
 		RequestedPath:           requestedPath,
 		GitRoot:                 root,
+		MainWorktreeRoot:        mainWorktreeRoot(ctx, root),
 		Remote:                  strings.TrimSpace(remote),
 		RepositoryFingerprint:   repositoryIdentity.Fingerprint,
 		Branch:                  strings.TrimSpace(branch),
@@ -455,15 +457,84 @@ func slugToken(value string) string {
 	return out
 }
 
+// mergeSourceControlEntity records only identifiers that outlive the invocation
+// that observed them. Identifiers are never evicted, so anything ephemeral put
+// here accumulates forever inside a row that is re-appended in full on every
+// change -- a set stored across a time axis, which costs sum(n) rather than n.
+//
+// GitRoot is the toplevel of whichever worktree was inspected, so from a linked
+// worktree it names a directory that is deleted when the branch lands, and
+// RequestedPath is whatever path the caller passed, down to a single file. Both
+// are observations of one invocation, not identity, and both already reach the
+// evidence layer: sourceControlCandidates emits git_root as a candidate fact on
+// every import, so nothing is lost by keeping them out of the entity.
 func mergeSourceControlEntity(snap SourceControlSnapshot, existing []mem.Entity) mem.Entity {
-	ids := []string{snap.GitRoot}
-	if snap.RequestedPath != "" {
+	root := snap.MainWorktreeRoot
+	if root == "" {
+		root = snap.GitRoot
+	}
+	ids := []string{root}
+	// Inside a linked worktree every path observed is scoped to a checkout that
+	// outlives nothing, so the main root is the only path worth recording.
+	//
+	// Otherwise the requested path is kept only when it is another name for the
+	// root itself -- the root is canonicalized on read, so a repo reached
+	// through a symlinked prefix (anything under /var on macOS) is named by a
+	// string the canonical root does not match, and identifier matching is
+	// literal. That alias is bounded at one per spelling of the root, and
+	// because matching is prefix-aware it also resolves every path beneath it.
+	// A requested path that merely lives inside the repo is not kept: the root,
+	// in either spelling, already covers it.
+	inLinkedWorktree := snap.MainWorktreeRoot != "" && snap.MainWorktreeRoot != snap.GitRoot
+	if !inLinkedWorktree && snap.RequestedPath != "" && canonicalPath(snap.RequestedPath) == root {
 		ids = append(ids, snap.RequestedPath)
 	}
 	if snap.Remote != "" {
 		ids = append(ids, snap.Remote, "git_remote:"+snap.Remote)
 	}
 	return mergeEntity(existing, snap.RepoID, "repo", []string{strings.TrimPrefix(snap.RepoID, "repo:")}, ids)
+}
+
+func canonicalPath(path string) string {
+	resolved, err := filepath.EvalSymlinks(strings.TrimSpace(path))
+	if err != nil {
+		return path
+	}
+	return resolved
+}
+
+// mainWorktreeRoot resolves the repository's main worktree. A linked worktree's
+// git dir points back at the main checkout's .git, which is what makes the main
+// root stable across the worktrees that come and go against it.
+func mainWorktreeRoot(ctx context.Context, root string) string {
+	common, err := gitOutput(ctx, root, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return ""
+	}
+	common = strings.TrimSpace(common)
+	if common == "" {
+		return ""
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(root, common)
+	}
+	if canonical, canonicalErr := filepath.EvalSymlinks(common); canonicalErr == nil {
+		common = canonical
+	}
+	if filepath.Base(common) != ".git" {
+		// Bare repository or a layout with no main worktree to name.
+		return ""
+	}
+	return filepath.Dir(common)
+}
+
+func pathCoveredBy(root, candidate string) bool {
+	root = strings.TrimRight(strings.TrimSpace(root), "/")
+	candidate = strings.TrimSpace(candidate)
+	if root == "" || candidate == "" {
+		return false
+	}
+	return candidate == root || strings.HasPrefix(candidate, root+"/")
 }
 
 func sourceControlCandidates(snap SourceControlSnapshot) []mem.Candidate {

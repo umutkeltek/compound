@@ -174,8 +174,15 @@ func TestImportGitSnapshotAcceptsFileAndFuturePath(t *testing.T) {
 	if report.EvidenceRef == "" || report.EvidenceRef != snap.EvidenceReference() {
 		t.Fatalf("evidence ref report=%q snap=%q", report.EvidenceRef, snap.EvidenceReference())
 	}
-	if !hasString(entity.Identifiers, filePath) || !hasString(entity.Identifiers, canonicalRepo) {
-		t.Fatalf("identifiers = %+v, want file path and repo root", entity.Identifiers)
+	// The repo root is the identifier; the inspected file is not. Identifier
+	// matching is prefix-aware, so the root already resolves any path beneath
+	// it, and recording each inspected path instead grew one permanent
+	// identifier per invocation. The path survives as a candidate fact.
+	if !hasString(entity.Identifiers, canonicalRepo) {
+		t.Fatalf("identifiers = %+v, want the repo root", entity.Identifiers)
+	}
+	if hasString(entity.Identifiers, filePath) {
+		t.Fatalf("identifiers = %+v, must not record the inspected path", entity.Identifiers)
 	}
 
 	futurePath := filepath.Join(repo, "docs", "future", "later.md")
