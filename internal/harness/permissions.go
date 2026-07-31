@@ -298,21 +298,31 @@ func RenderPermissions(homePath, harness string) (PermissionRender, error) {
 	autoMode := objectAt(settings, "autoMode")
 	autoMode["allow"] = reconcileRules(stringSlice(autoMode["allow"]), previous.ManagedEntries["autoMode.allow"], policy.AutoMode.Allow, true)
 	settings["autoMode"] = autoMode
+	// Owned dotted paths reconcile after the permission objects so a settings
+	// path may deliberately override a rendered key rather than race it.
+	managedSettings, err := applyJSONSettingsPaths(settings, policy.Settings, previous.ManagedEntries)
+	if err != nil {
+		return PermissionRender{}, err
+	}
 	content, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return PermissionRender{}, err
 	}
 	content = append(content, '\n')
+	managedEntries := map[string][]string{
+		"permissions.allow": append([]string(nil), policy.Permissions.Allow...),
+		"permissions.deny":  append([]string(nil), policy.Permissions.Deny...),
+		"permissions.ask":   append([]string(nil), policy.Permissions.Ask...),
+		"autoMode.allow":    append([]string(nil), policy.AutoMode.Allow...),
+	}
+	for key, value := range managedSettings {
+		managedEntries[key] = value
+	}
 	artifact := HarnessArtifact{
 		SchemaVersion: HarnessArtifactSchemaVersion, Path: policy.TargetPath, Harness: harness,
 		SourceAuthorityRef: policy.AuthorityRef, SourceRevision: sourceRevision,
-		ContentSHA256: "sha256:" + digest(content),
-		ManagedEntries: map[string][]string{
-			"permissions.allow": append([]string(nil), policy.Permissions.Allow...),
-			"permissions.deny":  append([]string(nil), policy.Permissions.Deny...),
-			"permissions.ask":   append([]string(nil), policy.Permissions.Ask...),
-			"autoMode.allow":    append([]string(nil), policy.AutoMode.Allow...),
-		},
+		ContentSHA256:  "sha256:" + digest(content),
+		ManagedEntries: managedEntries,
 	}
 	return PermissionRender{
 		TargetPath: policy.TargetPath,
@@ -1280,6 +1290,9 @@ func PermissionDrift(homePath, harness string) (PermissionDriftReport, error) {
 			report.Details = append(report.Details, "unsupported permissions.allow rule mcp__*")
 		}
 	}
+	// Named before the whole-content comparison: a drifted owned key must say
+	// which key and what value, not only that the file differs somewhere.
+	report.Details = append(report.Details, jsonSettingsDrift(settings, policy.Settings)...)
 	if !jsonEquivalent(current, render.Content) {
 		report.Details = append(report.Details, managedRuleDifferences(current, render.Content)...)
 	}
