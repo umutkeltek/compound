@@ -425,8 +425,31 @@ func cmdMemory(args []string) {
 			for _, e := range ents {
 				fmt.Printf("%-24s %-10s aliases=%v ids=%v\n", e.Slug, e.Kind, e.Aliases, e.Identifiers)
 			}
+		case len(rest) >= 1 && rest[0] == "fold":
+			// Rewrites the registry to the rows its readers already select.
+			// Refuses to apply unless both production readers agree across the
+			// old and new encoding and every surviving row is a verbatim row of
+			// the original; the pre-fold bytes are archived first. Defaults to a
+			// dry run.
+			apply := has("--apply")
+			report, err := store.FoldEntities(time.Now(), apply)
+			die(err)
+			if has("--json") {
+				printJSON(report)
+				return
+			}
+			fmt.Printf("rows %d -> %d (%d slugs, %d unreadable rows skipped)\n",
+				report.RowsBefore, report.RowsAfter, report.RowsAfter, report.SkippedRows)
+			fmt.Printf("bytes %d -> %d\n", report.BytesBefore, report.BytesAfter)
+			fmt.Printf("verified=%v applied=%v\n", report.Verified, report.Applied)
+			if report.ArchivePath != "" {
+				fmt.Printf("archive %s sha256=%s\n", report.ArchivePath, report.ArchiveSHA256)
+			}
+			if !apply {
+				fmt.Println("dry run; re-run with --apply to rewrite the registry")
+			}
 		default:
-			fmt.Fprintln(os.Stderr, "usage: compound memory entity <register <slug> <kind> [--alias a,b] [--id x,y] [--parent p]|resolve <token>|list>")
+			fmt.Fprintln(os.Stderr, "usage: compound memory entity <register <slug> <kind> [--alias a,b] [--id x,y] [--parent p]|resolve <token>|list|fold [--apply]>")
 			os.Exit(2)
 		}
 	case "evidence":

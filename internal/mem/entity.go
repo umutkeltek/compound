@@ -43,6 +43,13 @@ func (s *Store) entitiesLog() string { return s.home + "/ledger/entities.jsonl" 
 // RegisterEntity appends an entity to the registry (append-only; last write wins per slug on load).
 // The registry participates in the memory owner's lock so CurrentView can capture
 // claims, edges, and identity resolution from one coherent generation.
+//
+// An append whose payload already matches the slug's current row is skipped. The
+// row carries the entity's whole identifier set, so a re-append of unchanged
+// state costs the size of that set while adding nothing any reader can observe;
+// repeated registration of a stable entity is the common case (every git
+// snapshot import re-registers its repo). CreatedAt is excluded from the
+// comparison because it is restamped on every call and no caller reads it.
 func (s *Store) RegisterEntity(e Entity, now time.Time) (Entity, error) {
 	if strings.TrimSpace(e.Slug) == "" {
 		return Entity{}, fmt.Errorf("entity needs a slug")
@@ -54,8 +61,37 @@ func (s *Store) RegisterEntity(e Entity, now time.Time) (Entity, error) {
 		e.Visibility = "operational"
 	}
 	e.CreatedAt = rfc3339(now)
-	err := s.withLock(func() error { return appendJSONL(s.entitiesLog(), &e) })
-	return e, err
+	stored := e
+	err := s.withLock(func() error {
+		current, found, err := lastEntityFor(s.entitiesLog(), e.Slug)
+		if err != nil {
+			return err
+		}
+		if found && sameEntityPayload(current, e) {
+			stored = current
+			return nil
+		}
+		return appendJSONL(s.entitiesLog(), &e)
+	})
+	return stored, err
+}
+
+// lastEntityFor streams the registry for the current row of one slug. It reads
+// the file rather than Entities() so the write decision is made against what is
+// actually on disk, and streams rather than loading so the cost does not scale
+// with the registry's total size.
+func lastEntityFor(path, slug string) (Entity, bool, error) {
+	var out Entity
+	found := false
+	err := eachLine(path, func(line []byte) error {
+		var e Entity
+		if json.Unmarshal(line, &e) != nil || e.Slug != slug {
+			return nil
+		}
+		out, found = e, true
+		return nil
+	})
+	return out, found, err
 }
 
 // Entities loads the registry (append-only, last-wins by slug, deterministic order).
@@ -67,9 +103,16 @@ func (s *Store) Entities() ([]Entity, error) {
 }
 
 func (s *Store) loadEntities() ([]Entity, error) {
+	return loadEntitiesFrom(s.entitiesLog())
+}
+
+// loadEntitiesFrom is the registry loader bound to an explicit path so a fold
+// can prove old and new encodings agree by running the production reader over
+// both. Store.loadEntities is the only production caller.
+func loadEntitiesFrom(path string) ([]Entity, error) {
 	byID := map[string]Entity{}
 	var order []string
-	err := readJSONL(s.entitiesLog(), func(line []byte) error {
+	err := readJSONL(path, func(line []byte) error {
 		var e Entity
 		if json.Unmarshal(line, &e) != nil || e.Slug == "" {
 			return nil // skip a torn line rather than bricking the registry
@@ -95,7 +138,13 @@ func (s *Store) loadEntities() ([]Entity, error) {
 // decoding as soon as a row is known not to be a topic and drains the rest of
 // that JSONL record without materializing it.
 func (s *Store) TopicEntities() ([]Entity, error) {
-	f, err := os.Open(s.entitiesLog())
+	return topicEntitiesFrom(s.entitiesLog())
+}
+
+// topicEntitiesFrom is the streaming topic reader bound to an explicit path, so
+// a fold can prove this reader also agrees across encodings.
+func topicEntitiesFrom(path string) ([]Entity, error) {
+	f, err := os.Open(path)
 	if os.IsNotExist(err) {
 		return []Entity{}, nil
 	}
@@ -108,7 +157,7 @@ func (s *Store) TopicEntities() ([]Entity, error) {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("entity registry is not a regular file: %s", s.entitiesLog())
+		return nil, fmt.Errorf("entity registry is not a regular file: %s", path)
 	}
 
 	reader := bufio.NewReaderSize(f, 1024*1024)
