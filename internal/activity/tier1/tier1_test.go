@@ -113,7 +113,7 @@ func TestFalsifier15_Tier1CollectWithoutGrantWritesZeroRows(t *testing.T) {
 		t.Fatalf("enable: %v", err)
 	}
 
-	rep, err := Collect(h, t.TempDir(), cfg, "work_tier1", 30*time.Second, now)
+	rep, err := Collect(h, t.TempDir(), cfg, "work_tier1", 30*time.Second, 5*time.Second, now)
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestFalsifier15_Tier1CollectWithGrantProceeds(t *testing.T) {
 
 	// AW isn't running on the test host — Collect should gracefully no-op
 	// (SourcesFailed may be 1 from the ListBuckets error).
-	rep, err := Collect(h, t.TempDir(), cfg, "work_tier1", 30*time.Second, now)
+	rep, err := Collect(h, t.TempDir(), cfg, "work_tier1", 30*time.Second, 5*time.Second, now)
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestFalsifier15_Tier1CollectDisabledRefuses(t *testing.T) {
 	)
 	cfg := loadCfg(t, h)
 
-	rep, err := Collect(h, t.TempDir(), cfg, "work_tier1", 30*time.Second, now)
+	rep, err := Collect(h, t.TempDir(), cfg, "work_tier1", 30*time.Second, 5*time.Second, now)
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
@@ -402,3 +402,93 @@ func TestWriteEventsToSpoolAcrossDays(t *testing.T) {
 
 // Quiet the unused-import warning when tests are pruned.
 var _ = exec.ErrNotFound
+
+// TestCollect_TimeoutCutsOffHungSource: a source that blocks indefinitely must
+// be cut off by the wall-clock --timeout budget. The audit's bug 4 fix: --duration
+// is the AW data window; --timeout is the actual wall-clock bound.
+func TestCollect_TimeoutCutsOffHungSource(t *testing.T) {
+	h := newTestHome(t)
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	enableSensor(t, h, now)
+
+	// AW fixture: one currentwindow bucket + one event for a bundle that the
+	// hung source will resolve. The hung source then blocks forever; the
+	// timeout must cut off the run.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/events"):
+			_, _ = w.Write([]byte(`[{"timestamp":1700000000.0,"duration":30,"data":{"app":"com.example.hung"}}]`))
+		default:
+			_, _ = w.Write([]byte(`{"aw-watcher-window_local":{"id":"aw-watcher-window_local","type":"currentwindow","client":"aw-watcher-window","hostname":"local","data":{}}}`))
+		}
+	}))
+	defer srv.Close()
+
+	// Register a source for com.example.hung that blocks on ctx.Done.
+	cli := awstream.NewClient(srv.URL)
+	reg := source.NewRegistryFromSources(&hungSource{
+		bundle: "com.example.hung",
+		delay:  30 * time.Second, // well beyond the 100ms timeout below
+	})
+	c := newCollectorWithDeps(cli, reg, t.TempDir(), func() time.Time { return now })
+
+	// 100ms timeout; hung source blocks 30s; run must complete well before that.
+	start := time.Now()
+	rep := c.Run(makeCtxWithTimeout(100*time.Millisecond), 30*time.Second)
+	elapsed := time.Since(start)
+	if elapsed > 1*time.Second {
+		t.Fatalf("Run must complete within ~timeout, took %s", elapsed)
+	}
+	if rep.Refused {
+		t.Fatalf("hung-source run should not refuse (gate passed), got %+v", rep)
+	}
+	// SourcesCalled may be 1 (the source was entered) or 0 (ctx already canceled
+	// at entry — both are acceptable).
+	_ = rep.SourcesCalled
+}
+
+// TestRun_HonorsCanceledContext: Run with an already-canceled context returns
+// immediately without touching the AW client.
+func TestRun_HonorsCanceledContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("AW must NOT be called when ctx is already canceled")
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	cli := awstream.NewClient(srv.URL)
+	c := newCollectorWithDeps(cli, source.NewRegistry(), t.TempDir(), time.Now)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rep := c.Run(ctx, 30*time.Second)
+	if rep.SourcesCalled != 0 || rep.Refused {
+		t.Errorf("canceled-ctx run must be a no-op, got %+v", rep)
+	}
+}
+
+// hungSource is a fixture EnvelopeSource whose TryEnvelope blocks on ctx.Done
+// until either ctx is canceled (clean) or the configured delay elapses (would
+// be a hang in production). Used by TestCollect_TimeoutCutsOffHungSource.
+type hungSource struct {
+	bundle string
+	delay  time.Duration
+}
+
+func (h *hungSource) AppBundleID() string { return h.bundle }
+func (h *hungSource) TryEnvelope(ctx context.Context, _ source.FocusedApp) (source.Envelope, bool, error) {
+	select {
+	case <-ctx.Done():
+		return source.Envelope{}, false, ctx.Err()
+	case <-time.After(h.delay):
+		return source.Envelope{}, false, nil
+	}
+}
+func (h *hungSource) ContentFreeInvariant() error { return nil }
+
+// makeCtxWithTimeout is a test helper that returns a context with the given
+// timeout.
+func makeCtxWithTimeout(d time.Duration) context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	_ = cancel // caller cancels via ctx deadline
+	return ctx
+}

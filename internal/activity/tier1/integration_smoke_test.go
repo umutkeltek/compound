@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"compound/internal/activity"
-	"compound/internal/adapter/awstream"
 	"compound/internal/activity/tier1/source"
+	"compound/internal/adapter/awstream"
 )
 
 // cmuxFixtureRunner is a test-side cmuxRunner that returns canned JSON without

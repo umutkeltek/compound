@@ -39,7 +39,7 @@ func activityUsage() string {
 		"  compound activity drain   [--spool DIR] [--work W] [--json] [--home P]  ingest spool -> segments+spans (grant-gated, fail-closed)\n" +
 		"  compound activity sweep   [--json] [--home P]                     delete spans/segments older than 30d, report reclaimed bytes\n" +
 		"  compound activity aw materialize [--work W] [--home P] [--json]   read AW across hostnames -> spool (Tier-0, grant-gated)\n" +
-		"  compound activity tier1 collect  [--duration 30s] [--work W] [--home P] [--json]  bounded collect of Tier-1 envelopes -> spool (grant-gated)"
+		"  compound activity tier1 collect  [--lookback 30s] [--timeout 5s] [--work W] [--home P] [--json]  bounded collect of Tier-1 envelopes -> spool (grant-gated)"
 }
 
 func runActivity(args []string, stdout, stderr io.Writer) int {
@@ -286,7 +286,7 @@ func runActivityAWMaterialize(args []string, stdout, stderr io.Writer) int {
 // land here.
 func runActivityTier1(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: compound activity tier1 collect [--duration 30s] [--work W] [--home P] [--json]")
+		fmt.Fprintln(stderr, "usage: compound activity tier1 collect [--lookback 30s] [--timeout 5s] [--work W] [--home P] [--json]")
 		return 2
 	}
 	switch args[0] {
@@ -298,7 +298,15 @@ func runActivityTier1(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// runActivityTier1Collect runs a bounded Tier-1 collect. Defaults: --duration 30s.
+// runActivityTier1Collect runs a bounded Tier-1 collect.
+//
+// Two distinct timing flags (the audit's bug 4):
+//
+//   - --lookback: the AW data window to fetch events from. Default 30s.
+//   - --timeout: the wall-clock budget for the run. Default 5s. The wrapper
+//     applies context.WithTimeout so a hung source (lsof, pgrep, cmux IPC)
+//     cannot keep the collector alive past this budget.
+//
 // Governance: Tier1CollectCapability grant + Enabled config + byte cap.
 func runActivityTier1Collect(args []string, stdout, stderr io.Writer) int {
 	homePath, err := home.Resolve(flagValue(args, "--home"))
@@ -311,17 +319,26 @@ func runActivityTier1Collect(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	duration := 30 * time.Second
-	if d := strings.TrimSpace(flagValue(args, "--duration")); d != "" {
+	lookback := 30 * time.Second
+	if d := strings.TrimSpace(flagValue(args, "--lookback")); d != "" {
 		parsed, perr := time.ParseDuration(d)
 		if perr != nil {
-			fmt.Fprintf(stderr, "invalid --duration %q: %v\n", d, perr)
+			fmt.Fprintf(stderr, "invalid --lookback %q: %v\n", d, perr)
 			return 1
 		}
-		duration = parsed
+		lookback = parsed
+	}
+	timeout := 5 * time.Second
+	if d := strings.TrimSpace(flagValue(args, "--timeout")); d != "" {
+		parsed, perr := time.ParseDuration(d)
+		if perr != nil {
+			fmt.Fprintf(stderr, "invalid --timeout %q: %v\n", d, perr)
+			return 1
+		}
+		timeout = parsed
 	}
 	work := activityWorkID(args, "tier1_collect")
-	rep, err := tier1.Collect(homePath, defaultSpoolDir(), cfg, work, duration, time.Now())
+	rep, err := tier1.Collect(homePath, defaultSpoolDir(), cfg, work, lookback, timeout, time.Now())
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
@@ -340,7 +357,7 @@ func runActivityTier1Collect(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "tier1 collect refused: %s\n", rep.Reason)
 		return 1
 	}
-	fmt.Fprintf(stdout, "tier1 collect: events_written=%d sources_called=%d sources_failed=%d banned_refused=%d duration=%s\n",
-		rep.EventsWritten, rep.SourcesCalled, rep.SourcesFailed, rep.BannedRefused, duration)
+	fmt.Fprintf(stdout, "tier1 collect: events_written=%d sources_called=%d sources_failed=%d banned_refused=%d lookback=%s timeout=%s\n",
+		rep.EventsWritten, rep.SourcesCalled, rep.SourcesFailed, rep.BannedRefused, lookback, timeout)
 	return 0
 }

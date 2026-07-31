@@ -89,17 +89,28 @@ func newCollectorWithDeps(aw *awstream.Client, reg *source.Registry, spoolDir st
 	return &Collector{AW: aw, Registry: reg, SpoolDir: spoolDir, nowFn: nowFn}
 }
 
-// Run reads AW window events between [now-duration, now], resolves the focused
+// Run reads AW window events between [now-lookback, now], resolves the focused
 // app's envelope via the registered source, and writes one Tier-1 event per
 // (focused bundle, surface ref) tuple to the spool. Returns a report honest about
 // per-source failures. Refused=true means ZERO rows written; this only happens
 // when Collect() refuses at one of the three gates.
 //
-// The run is bounded by ctx (callers pass a context with --duration timeout) AND
-// by the duration parameter (we stop polling once now-duration is in the past).
-func (c *Collector) Run(ctx context.Context, duration time.Duration) CollectReport {
+// Two distinct concepts that callers often conflate:
+//
+//   - lookback (data window): how far back into the AW event history to read.
+//     Larger lookback = more events fetched, slower run, more memory.
+//   - ctx (wall-clock bound): when this returns or fails, the run must stop.
+//     The CLI passes context.WithTimeout(ctx, --timeout) so a hung source
+//     (lsof, pgrep, cmux IPC) cannot keep the collector alive past the budget.
+//
+// Run honors ctx cancellation. If ctx is already canceled at entry, Run returns
+// immediately with an empty report.
+func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectReport {
+	if ctx.Err() != nil {
+		return CollectReport{}
+	}
 	now := c.nowFn()
-	start := now.Add(-duration)
+	start := now.Add(-lookback)
 
 	// 1. Fetch recent AW window events from EVERY currentwindow bucket — the
 	// virtual stream materializes cross-hostname. With awstream.Normalize the
@@ -310,9 +321,16 @@ var Tier1AllowedMetaKeys = map[string]bool{
 // runs the three gates fail-closed (config enabled -> policy grant -> byte cap),
 // and only on all-allow does it mint an ActionIntent and invoke Collector.Run.
 //
+// Two timing parameters, both defaulted by the CLI:
+//
+//   - lookback: the AW data window to fetch events from. Larger = more events.
+//   - timeout: the wall-clock budget for the run. The wrapper applies
+//     context.WithTimeout so a hung source cannot keep the collector alive.
+//     timeout=0 disables the wall-clock bound (NOT recommended in CLI use).
+//
 // Refused=true with a Reason means ZERO rows were written (F2 / F15). Missing or
 // expired grant, disabled key, or byte cap = refused.
-func Collect(home, spoolDir string, cfg policy.Config, workID string, duration time.Duration, now time.Time) (CollectReport, error) {
+func Collect(home, spoolDir string, cfg policy.Config, workID string, lookback, timeout time.Duration, now time.Time) (CollectReport, error) {
 	// Gate 1: config enabled. Tier-1 collect requires the sensor to be enabled
 	// (the same key as Tier-0 drain) — both share the underlying toggle.
 	enabled, err := activity.Enabled(home)
@@ -336,9 +354,15 @@ func Collect(home, spoolDir string, cfg policy.Config, workID string, duration t
 	if size >= activity.ByteCapBytes {
 		return CollectReport{Refused: true, Reason: "byte_cap_exceeded", BytesUnderRoot: size}, nil
 	}
-	// All gates pass — run the collector.
+	// All gates pass — run the collector with a wall-clock budget.
+	ctx := context.Background()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	c := NewCollector(spoolDir)
-	return c.Run(context.Background(), duration), nil
+	return c.Run(ctx, lookback), nil
 }
 
 // buildTier1Intent mirrors buildDrainIntent in drain.go: deterministic act ID
