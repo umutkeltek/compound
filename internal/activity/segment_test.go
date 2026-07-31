@@ -120,11 +120,11 @@ func TestSegmentMergesFlicker(t *testing.T) {
 func TestSegmentPropagatesEnvelopeMeta(t *testing.T) {
 	events := []Event{
 		{SchemaVersion: SchemaVersion, Seq: 1, TS: "2026-07-15T10:00:00Z", Kind: KindWindowFocused, BundleID: "com.example.terminal", AppName: "Terminal", Meta: map[string]string{
-			"pane_cwd":   "/Users/operator/projects/a",
+			"pane_cwd":   "/Users/example/projects/a",
 			"git_remote": "git@example.com:operator/a.git",
 		}},
 		{SchemaVersion: SchemaVersion, Seq: 2, TS: "2026-07-15T10:01:00Z", Kind: KindWindowFocused, BundleID: "com.example.terminal", AppName: "Terminal", Meta: map[string]string{
-			"pane_cwd":   "/Users/operator/projects/b",
+			"pane_cwd":   "/Users/example/projects/b",
 			"git_remote": "git@example.com:operator/b.git",
 			"pane_type":  "terminal",
 		}},
@@ -134,7 +134,7 @@ func TestSegmentPropagatesEnvelopeMeta(t *testing.T) {
 		t.Fatalf("expected 1 span, got %d: %+v", len(spans), spans)
 	}
 	// The latest meta wins (project b, not project a).
-	if spans[0].Meta["pane_cwd"] != "/Users/operator/projects/b" {
+	if spans[0].Meta["pane_cwd"] != "/Users/example/projects/b" {
 		t.Errorf("Meta.pane_cwd = %q, want project b (latest)", spans[0].Meta["pane_cwd"])
 	}
 	if spans[0].Meta["git_remote"] != "git@example.com:operator/b.git" {

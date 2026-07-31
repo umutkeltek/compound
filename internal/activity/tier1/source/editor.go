@@ -105,7 +105,7 @@ func (s *EditorSource) TryEnvelope(ctx context.Context, focused FocusedApp) (Env
 // PaneType ("editor"). Both are content-free by doctrine.
 func (s *EditorSource) ContentFreeInvariant() error {
 	return CheckEnvelopeContentFree(Envelope{
-		PaneCwd:  "/Users/operator/projects/example",
+		PaneCwd:  "/Users/example/projects/example",
 		PaneType: "editor",
 	})
 }

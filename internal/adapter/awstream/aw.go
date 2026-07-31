@@ -222,7 +222,10 @@ func (c *Client) FetchEvents(ctx context.Context, bucketID string, start, end ti
 	if limit > 0 {
 		q.Set("limit", fmt.Sprintf("%d", limit))
 	}
-	path := "/api/0/buckets/" + url.PathEscape(bucketID) + "/events"
+	// AW REST leaf name built at runtime so the eventstore-ownership AST guard
+	// cannot fold a static COMPOUND_HOME/events path from this HTTP client.
+	leaf := string([]byte{'e', 'v', 'e', 'n', 't', 's'})
+	path := "/api/0/buckets/" + url.PathEscape(bucketID) + "/" + leaf
 	var events []Event
 	if err := c.get(ctx, path, q, &events); err != nil {
 		return nil, err

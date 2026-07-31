@@ -8,7 +8,7 @@
       "workspace_id": "6CA3D8DB-78D0-4AC9-BC59-C76524F77DFA",
       "pane_id": "DDFFC97D-C57C-4B60-98F8-27FF074B0136",
       "pane_ref": "pane:37",
-      "requested_working_directory": "/Users/operator/projects/example",
+      "requested_working_directory": "/Users/example/projects/example",
       "index": 0,
       "index_in_pane": 0,
       "initial_command": "/bin/zsh '/tmp/something.zsh'",
@@ -18,11 +18,11 @@
         "checkpoint_id": "39062616-b020-4b55-940f-f92317302237",
         "kind": "agent-hook",
         "name": "Claude Code",
-        "cwd": "/Users/operator/projects/example",
-        "command": "cd -- '/Users/operator/projects/example' && printf claude --resume",
+        "cwd": "/Users/example/projects/example",
+        "command": "cd -- '/Users/example/projects/example' && printf claude --resume",
         "environment": {
           "ANTHROPIC_BASE_URL": "http://127.0.0.1:18781",
-          "CLAUDE_CONFIG_DIR": "/Users/operator/.config/claude",
+          "CLAUDE_CONFIG_DIR": "/Users/example/.config/claude",
           "PATH": "/usr/local/bin:/usr/bin:/bin"
         }
       }
@@ -35,7 +35,7 @@
       "workspace_id": "6CA3D8DB-78D0-4AC9-BC59-C76524F77DFA",
       "pane_id": "DDFFC97D-C57C-4B60-98F8-27FF074B0136",
       "pane_ref": "pane:37",
-      "requested_working_directory": "/Users/operator/projects/example",
+      "requested_working_directory": "/Users/example/projects/example",
       "initial_command": "/bin/zsh",
       "resume_binding": null
     }

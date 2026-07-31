@@ -21,7 +21,7 @@ import (
 // attack — a buggy source that accidentally populates `title`.
 func TestFalsifier13_Tier1EnvelopeContentFree(t *testing.T) {
 	for _, banned := range []string{"title", "url", "document", "text", "content", "file", "command_args", "script", "initial_command", "env", "language"} {
-		line := `{"schema_version":"compound.activity_observation.v0.2","seq":1,"ts":"2026-07-15T10:00:00Z","kind":"window_focused","bundle_id":"com.example.ok","app_name":"X","engine":{"id":"` + Tier1EngineID + `","revision":"v0.1.0"},"meta":{"pane_cwd":"/Users/operator/projects/example","` + banned + `":"leaked"}}`
+		line := `{"schema_version":"compound.activity_observation.v0.2","seq":1,"ts":"2026-07-15T10:00:00Z","kind":"window_focused","bundle_id":"com.example.ok","app_name":"X","engine":{"id":"` + Tier1EngineID + `","revision":"v0.1.0"},"meta":{"pane_cwd":"/Users/example/projects/example","` + banned + `":"leaked"}}`
 		var ev activity.Event
 		// DecodeStrict is the load-bearing gate. Walk the line through it.
 		rep := activity.DecodeStrict([]byte(line), 1)
@@ -41,7 +41,7 @@ func TestFalsifier13_Tier1EnvelopeContentFree(t *testing.T) {
 // F13 positive: a clean Tier-1 envelope decodes successfully. The envelope carries
 // pane_cwd + git_remote + agent_kind — all Tier-1-allowed meta keys.
 func TestFalsifier13_Tier1EnvelopeAcceptsCleanMeta(t *testing.T) {
-	line := `{"schema_version":"compound.activity_observation.v0.2","seq":1,"ts":"2026-07-15T10:00:00Z","kind":"window_focused","bundle_id":"com.example.terminal","app_name":"Terminal","engine":{"id":"` + Tier1EngineID + `","revision":"v0.1.0"},"meta":{"pane_cwd":"/Users/operator/projects/example","git_remote":"git@example.com:operator/example.git","pane_type":"terminal","agent_kind":"agent-hook","agent_name":"Claude Code","surface_ref":"surf-abc","workspace_ref":"ws-xyz"}}`
+	line := `{"schema_version":"compound.activity_observation.v0.2","seq":1,"ts":"2026-07-15T10:00:00Z","kind":"window_focused","bundle_id":"com.example.terminal","app_name":"Terminal","engine":{"id":"` + Tier1EngineID + `","revision":"v0.1.0"},"meta":{"pane_cwd":"/Users/example/projects/example","git_remote":"git@example.com:operator/example.git","pane_type":"terminal","agent_kind":"agent-hook","agent_name":"Claude Code","surface_ref":"surf-abc","workspace_ref":"ws-xyz"}}`
 	rep := activity.DecodeStrict([]byte(line), 1)
 	if len(rep.Accepted) != 1 {
 		t.Fatalf("clean Tier-1 envelope must decode, got %+v", rep)
@@ -100,8 +100,8 @@ func TestBuildTier1EventCarriesOnlyAllowedKeys(t *testing.T) {
 func TestWindowFocusedCoalescesSameBundle(t *testing.T) {
 	events := []activity.Event{
 		{SchemaVersion: activity.SchemaVersion, Seq: 1, TS: "2026-07-15T10:00:00Z", Kind: activity.KindAppActivated, BundleID: "com.example.terminal", AppName: "Terminal"},
-		{SchemaVersion: activity.SchemaVersion, Seq: 2, TS: "2026-07-15T10:00:30Z", Kind: activity.KindWindowFocused, BundleID: "com.example.terminal", AppName: "Terminal", Meta: map[string]string{"pane_cwd": "/Users/operator/projects/a", "git_remote": "git@example.com:a.git"}},
-		{SchemaVersion: activity.SchemaVersion, Seq: 3, TS: "2026-07-15T10:01:00Z", Kind: activity.KindWindowFocused, BundleID: "com.example.terminal", AppName: "Terminal", Meta: map[string]string{"pane_cwd": "/Users/operator/projects/a", "git_remote": "git@example.com:a.git"}},
+		{SchemaVersion: activity.SchemaVersion, Seq: 2, TS: "2026-07-15T10:00:30Z", Kind: activity.KindWindowFocused, BundleID: "com.example.terminal", AppName: "Terminal", Meta: map[string]string{"pane_cwd": "/Users/example/projects/a", "git_remote": "git@example.com:a.git"}},
+		{SchemaVersion: activity.SchemaVersion, Seq: 3, TS: "2026-07-15T10:01:00Z", Kind: activity.KindWindowFocused, BundleID: "com.example.terminal", AppName: "Terminal", Meta: map[string]string{"pane_cwd": "/Users/example/projects/a", "git_remote": "git@example.com:a.git"}},
 	}
 	spans := activity.Segment(events)
 	if len(spans) != 1 {

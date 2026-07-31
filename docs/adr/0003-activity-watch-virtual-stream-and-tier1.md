@@ -54,7 +54,7 @@ slots — schema-valid but no-op in the slice-1 reducer. This ADR lights them up
   Duplication invites drift; the strict decoder is the load-bearing gate.
 - **Public/private boundary.** The repo is destined to be public. Tests use
   generic hostnames (`host-a.local`), generic paths
-  (`/Users/operator/projects/example`), generic org names
+  (`/Users/example/projects/example`), generic org names
   (`git@example.com:operator/example.git`). No `umut`, no real org names, no
   real hostnames.
 
@@ -166,7 +166,7 @@ scope — those are different doctrine boundaries.
   used for the Swift launchd collector. Operators with AW on their machine
   don't need to install the Swift collector — they can use AW alone.
 - Per-project breakdown becomes possible: "Work / Programming / compound"
-  vs "Work / Programming / activity-watch-tier1" vs "Research / switchback"
+  vs "Work / Programming / activity-watch-tier1" vs "Research / other-repo"
   is now resolvable from cmux pane metadata, not bundle id alone.
 - Agent-kind attribution refines from coarse ("agent-session") to vendor
   (`claude` vs `codex`) in future phases. v0.2 ships `AgentKind = "agent-hook"`

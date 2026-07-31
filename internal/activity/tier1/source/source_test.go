@@ -95,7 +95,7 @@ func TestSlug_HandlesVariousInputs(t *testing.T) {
 
 func TestCheckEnvelopeContentFree_AcceptsCleanEnvelope(t *testing.T) {
 	env := Envelope{
-		PaneCwd:      "/Users/operator/projects/example",
+		PaneCwd:      "/Users/example/projects/example",
 		PaneType:     "terminal",
 		AgentKind:    "agent-hook",
 		AgentName:    "Claude Code",
@@ -127,7 +127,7 @@ func TestCheckEnvelopeContentFree_RejectsAllBannedKeys(t *testing.T) {
 
 func TestCheckEnvelopeContentFree_RejectsBannedKeysNested(t *testing.T) {
 	// Top-level is clean; nested map carries a banned key.
-	raw := []byte(`{"pane_cwd":"/Users/operator/projects/example","meta":{"file":"leaked"}}`)
+	raw := []byte(`{"pane_cwd":"/Users/example/projects/example","meta":{"file":"leaked"}}`)
 	if err := CheckRawContentFree(raw); err == nil {
 		t.Fatalf("nested banned key must be refused")
 	}
@@ -155,7 +155,7 @@ func TestCmuxSource_ParsesSurfaceListFixture(t *testing.T) {
 		t.Fatalf("expected ok=true with focused surface in fixture")
 	}
 	// Focused surface: requested_working_directory + resume_binding.kind/name.
-	if env.PaneCwd != "/Users/operator/projects/example" {
+	if env.PaneCwd != "/Users/example/projects/example" {
 		t.Errorf("PaneCwd = %q", env.PaneCwd)
 	}
 	if env.PaneType != "agent-session" {
@@ -232,14 +232,14 @@ func TestCmuxSource_ContentFreeInvariant(t *testing.T) {
 func TestAppleScriptSource_ResolvesCwdViaPIDAndLsof(t *testing.T) {
 	s := &AppleScriptSource{
 		cfg:     AppleScriptConfig{BundleID: "com.googlecode.iterm2", DisplayName: "iTerm2"},
-		execCmd: fixtureLsof{Path: "/Users/operator/projects/example"},
+		execCmd: fixtureLsof{Path: "/Users/example/projects/example"},
 		getPID:  fixturePID{PID: 12345},
 	}
 	env, ok, err := s.TryEnvelope(context.Background(), FocusedApp{BundleID: "com.googlecode.iterm2"})
 	if err != nil || !ok {
 		t.Fatalf("expected ok=true err=nil, got ok=%v err=%v", ok, err)
 	}
-	if env.PaneCwd != "/Users/operator/projects/example" {
+	if env.PaneCwd != "/Users/example/projects/example" {
 		t.Errorf("PaneCwd = %q", env.PaneCwd)
 	}
 	if env.PaneType != "terminal" {
@@ -297,14 +297,14 @@ func TestEditorSource_ReadsProjectFieldOnly(t *testing.T) {
 		fixtureAWEvents{events: []editorEvent{{
 			Timestamp: "2026-07-30T12:00:00Z",
 			Duration:  60,
-			Data:      []byte(`{"project":"/Users/operator/projects/example","file":"/secret/path","language":"go"}`),
+			Data:      []byte(`{"project":"/Users/example/projects/example","file":"/secret/path","language":"go"}`),
 		}}},
 	)
 	env, ok, err := s.TryEnvelope(context.Background(), FocusedApp{BundleID: "com.microsoft.VSCode"})
 	if err != nil || !ok {
 		t.Fatalf("expected ok=true err=nil, got ok=%v err=%v", ok, err)
 	}
-	if env.PaneCwd != "/Users/operator/projects/example" {
+	if env.PaneCwd != "/Users/example/projects/example" {
 		t.Errorf("PaneCwd = %q, want project", env.PaneCwd)
 	}
 	if env.PaneType != "editor" {

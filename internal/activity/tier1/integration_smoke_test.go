@@ -60,7 +60,7 @@ func TestActivityCLITier1CollectSmoke_AgainstFixture(t *testing.T) {
 
 	// cmux source wired to a fixture runner.
 	cmuxSrc := source.NewCmuxSourceWithRunner(cmuxFixtureRunner{
-		payload: []byte(`{"surfaces":[{"id":"surf-test","type":"agent-session","focused":true,"window_id":"win-1","workspace_id":"ws-1","pane_id":"pane-1","pane_ref":"pane:1","requested_working_directory":"/Users/operator/projects/example","resume_binding":{"kind":"agent-hook","name":"Claude Code","cwd":"/Users/operator/projects/example"}}]}`),
+		payload: []byte(`{"surfaces":[{"id":"surf-test","type":"agent-session","focused":true,"window_id":"win-1","workspace_id":"ws-1","pane_id":"pane-1","pane_ref":"pane:1","requested_working_directory":"/Users/example/projects/example","resume_binding":{"kind":"agent-hook","name":"Claude Code","cwd":"/Users/example/projects/example"}}]}`),
 	})
 	reg := source.NewRegistryFromSources(
 		cmuxSrc,
@@ -167,7 +167,7 @@ func listSpool(dir string) ([]string, error) {
 // marshaled form. The runtime smoke covers the end-to-end flow; this static check
 // covers the JSON shape contract.
 func TestSmokeTier1EnvelopeDecodesCleanly(t *testing.T) {
-	line := `{"schema_version":"compound.activity_observation.v0.2","seq":1,"ts":"2026-07-30T12:00:00Z","kind":"window_focused","bundle_id":"com.cmuxterm.app","app_name":"cmux","engine":{"id":"` + Tier1EngineID + `","revision":"v0.1.0"},"meta":{"pane_cwd":"/Users/operator/projects/example","git_remote":"git@example.com:operator/example.git","pane_type":"agent-session","agent_kind":"agent-hook","agent_name":"Claude Code","surface_ref":"surf-test","workspace_ref":"ws-1"}}`
+	line := `{"schema_version":"compound.activity_observation.v0.2","seq":1,"ts":"2026-07-30T12:00:00Z","kind":"window_focused","bundle_id":"com.cmuxterm.app","app_name":"cmux","engine":{"id":"` + Tier1EngineID + `","revision":"v0.1.0"},"meta":{"pane_cwd":"/Users/example/projects/example","git_remote":"git@example.com:operator/example.git","pane_type":"agent-session","agent_kind":"agent-hook","agent_name":"Claude Code","surface_ref":"surf-test","workspace_ref":"ws-1"}}`
 	rep := activity.DecodeStrict([]byte(line), 1)
 	if len(rep.Accepted) != 1 {
 		t.Fatalf("smoke envelope must decode; got %+v", rep)

@@ -319,8 +319,8 @@ func TestTier1EventRejectsBannedKeyAtBuildTime(t *testing.T) {
 
 func mustValidEnvelopeForTest() source.Envelope {
 	return source.Envelope{
-		PaneCwd:   "/Users/operator/projects/example",
-		GitRoot:   "/Users/operator/projects/example",
+		PaneCwd:   "/Users/example/projects/example",
+		GitRoot:   "/Users/example/projects/example",
 		GitRemote: "git@example.com:operator/example.git",
 		PaneType:  "terminal",
 		AgentKind: "agent-hook",
@@ -564,8 +564,8 @@ type recordingSource struct {
 func (r *recordingSource) AppBundleID() string { return r.bundle }
 func (r *recordingSource) TryEnvelope(_ context.Context, _ source.FocusedApp) (source.Envelope, bool, error) {
 	return source.Envelope{
-		PaneCwd:   "/Users/operator/projects/example",
-		GitRoot:   "/Users/operator/projects/example",
+		PaneCwd:   "/Users/example/projects/example",
+		GitRoot:   "/Users/example/projects/example",
 		GitRemote: "git@example.com:operator/example.git",
 		PaneType:  "terminal",
 		AgentKind: "agent-hook",
@@ -630,7 +630,7 @@ func TestWritePermissionLostEventNoRawError(t *testing.T) {
 	c := newCollectorWithDeps(awstream.NewClient("http://127.0.0.1:1"),
 		source.NewRegistry(), dir, time.Now)
 	// A deliberately scary raw error — contains a fake path.
-	scary := errors.New("lsof: /Users/operator/secret/file.txt: Permission denied (lsof -p 1234)")
+	scary := errors.New("lsof: /Users/example/secret/file.txt: Permission denied (lsof -p 1234)")
 	if err := c.writePermissionLostEvent(context.Background(), "com.example.app", "applescript", "2026-07-30T12:00:00Z", scary); err != nil {
 		t.Fatalf("writePermissionLostEvent: %v", err)
 	}

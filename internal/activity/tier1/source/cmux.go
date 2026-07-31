@@ -113,7 +113,7 @@ func (s *CmuxSource) TryEnvelope(ctx context.Context, focused FocusedApp) (Envel
 // change adds a new field assignment, this test catches it.
 func (s *CmuxSource) ContentFreeInvariant() error {
 	env := Envelope{
-		PaneCwd:      "/Users/operator/projects/example",
+		PaneCwd:      "/Users/example/projects/example",
 		PaneType:     "terminal",
 		AgentKind:    "agent-hook",
 		AgentName:    "Claude Code",
