@@ -44,17 +44,39 @@ import (
 //   - WorkspaceRef: per-app workspace reference (cmux workspace UUID).
 //   - SurfaceRef:   per-app surface reference (cmux surface UUID).
 //   - WindowRef:    per-app window reference (cmux window UUID).
+//   - PaneResolution: how PaneCwd was resolved — a CLOSED confidence vocabulary
+//     (see the PaneResolution* constants). PaneCwd from pgrep/lsof is a guess that
+//     may pick the wrong process; cmux IPC names the focused surface directly.
+//     Downstream consumers must not over-trust a best-effort cwd, so the marker is
+//     emitted alongside it.
 type Envelope struct {
-	PaneCwd      string `json:"pane_cwd,omitempty"`
-	GitRoot      string `json:"git_root,omitempty"`
-	GitRemote    string `json:"git_remote,omitempty"`
-	PaneType     string `json:"pane_type,omitempty"`
-	AgentKind    string `json:"agent_kind,omitempty"`
-	AgentName    string `json:"agent_name,omitempty"`
-	WorkspaceRef string `json:"workspace_ref,omitempty"`
-	SurfaceRef   string `json:"surface_ref,omitempty"`
-	WindowRef    string `json:"window_ref,omitempty"`
+	PaneCwd        string `json:"pane_cwd,omitempty"`
+	GitRoot        string `json:"git_root,omitempty"`
+	GitRemote      string `json:"git_remote,omitempty"`
+	PaneType       string `json:"pane_type,omitempty"`
+	AgentKind      string `json:"agent_kind,omitempty"`
+	AgentName      string `json:"agent_name,omitempty"`
+	WorkspaceRef   string `json:"workspace_ref,omitempty"`
+	SurfaceRef     string `json:"surface_ref,omitempty"`
+	WindowRef      string `json:"window_ref,omitempty"`
+	PaneResolution string `json:"pane_resolution,omitempty"`
 }
+
+// PaneResolution is a closed vocabulary describing HOW a source resolved the pane's
+// working directory, so consumers can weight its trust. It is structural provenance,
+// never content. Ordered from strongest to weakest signal.
+const (
+	// PaneResolutionCmuxIPC: cmux reported the focused surface's cwd over IPC —
+	// the focused surface is named directly, so the cwd is high-confidence.
+	PaneResolutionCmuxIPC = "cmux_ipc"
+	// PaneResolutionAWEvent: an ActivityWatch editor event carried the project
+	// path — medium confidence (AW's own watcher attribution).
+	PaneResolutionAWEvent = "aw_event"
+	// PaneResolutionBestEffortProcess: cwd came from a process-level guess
+	// (pgrep app -> pid -> lsof cwd). This can select a process that is NOT the
+	// focused window/pane, so it is low-confidence and must be treated as a hint.
+	PaneResolutionBestEffortProcess = "best_effort_process"
+)
 
 // FocusedApp is what the OS / AW reports about the foreground app. Sources use the
 // fields they need (iTerm2 needs PID; cmux uses bundle id as a discriminator; VSCode

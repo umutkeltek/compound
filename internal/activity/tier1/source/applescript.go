@@ -80,8 +80,9 @@ func (s *AppleScriptSource) TryEnvelope(ctx context.Context, focused FocusedApp)
 		return Envelope{}, false, nil
 	}
 	return Envelope{
-		PaneCwd:  cwd,
-		PaneType: "terminal",
+		PaneCwd:        cwd,
+		PaneType:       "terminal",
+		PaneResolution: PaneResolutionBestEffortProcess,
 	}, true, nil
 }
 
@@ -90,8 +91,9 @@ func (s *AppleScriptSource) TryEnvelope(ctx context.Context, focused FocusedApp)
 // invariant is verified by building a synthetic envelope.
 func (s *AppleScriptSource) ContentFreeInvariant() error {
 	return CheckEnvelopeContentFree(Envelope{
-		PaneCwd:  "/Users/example/projects/example",
-		PaneType: "terminal",
+		PaneCwd:        "/Users/example/projects/example",
+		PaneType:       "terminal",
+		PaneResolution: PaneResolutionBestEffortProcess,
 	})
 }
 

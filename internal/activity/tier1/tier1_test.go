@@ -451,6 +451,28 @@ func TestTier1EventCarriesExpectedMetaKeys(t *testing.T) {
 	}
 }
 
+// The pane_resolution confidence marker must ride alongside pane_cwd so a
+// downstream consumer never over-trusts a best-effort (pgrep/lsof) cwd. It is
+// emitted when the source sets it and omitted when blank.
+func TestTier1EventCarriesPaneResolution(t *testing.T) {
+	if !Tier1AllowedMetaKeys["pane_resolution"] {
+		t.Fatalf("pane_resolution must be an allowed Tier-1 meta key")
+	}
+	env := mustValidEnvelopeForTest()
+	env.PaneResolution = source.PaneResolutionBestEffortProcess
+	ev := buildTier1Event("com.example.terminal", env, "2026-07-30T12:00:00Z")
+	if got := ev.Meta["pane_resolution"]; got != source.PaneResolutionBestEffortProcess {
+		t.Errorf("pane_resolution = %q, want %q", got, source.PaneResolutionBestEffortProcess)
+	}
+
+	// Blank resolution is omitted, not emitted as an empty string.
+	env2 := mustValidEnvelopeForTest()
+	ev2 := buildTier1Event("com.example.terminal", env2, "2026-07-30T12:00:00Z")
+	if _, ok := ev2.Meta["pane_resolution"]; ok {
+		t.Errorf("blank pane_resolution must be omitted, got %+v", ev2.Meta)
+	}
+}
+
 func TestTier1EventRejectsBannedKeyAtBuildTime(t *testing.T) {
 	// Build an event whose Meta carries a banned key directly. The collector
 	// refuses it (BannedRefused++); we verify that the test helper for

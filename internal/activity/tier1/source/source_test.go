@@ -161,6 +161,9 @@ func TestCmuxSource_ParsesSurfaceListFixture(t *testing.T) {
 	if env.PaneType != "agent-session" {
 		t.Errorf("PaneType = %q, want agent-session", env.PaneType)
 	}
+	if env.PaneResolution != PaneResolutionCmuxIPC {
+		t.Errorf("PaneResolution = %q, want %q (cmux IPC is high-confidence)", env.PaneResolution, PaneResolutionCmuxIPC)
+	}
 	if env.AgentKind != "agent-hook" {
 		t.Errorf("AgentKind = %q, want agent-hook", env.AgentKind)
 	}
@@ -245,6 +248,9 @@ func TestAppleScriptSource_ResolvesCwdViaPIDAndLsof(t *testing.T) {
 	if env.PaneType != "terminal" {
 		t.Errorf("PaneType = %q, want terminal", env.PaneType)
 	}
+	if env.PaneResolution != PaneResolutionBestEffortProcess {
+		t.Errorf("PaneResolution = %q, want %q (pgrep/lsof is a low-confidence guess)", env.PaneResolution, PaneResolutionBestEffortProcess)
+	}
 }
 
 func TestAppleScriptSource_LsofFailsCleanly(t *testing.T) {
@@ -309,6 +315,9 @@ func TestEditorSource_ReadsProjectFieldOnly(t *testing.T) {
 	}
 	if env.PaneType != "editor" {
 		t.Errorf("PaneType = %q, want editor", env.PaneType)
+	}
+	if env.PaneResolution != PaneResolutionAWEvent {
+		t.Errorf("PaneResolution = %q, want %q (AW editor event)", env.PaneResolution, PaneResolutionAWEvent)
 	}
 	// Defensive: file and language must NEVER appear in the envelope.
 	b, _ := json.Marshal(env)

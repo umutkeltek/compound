@@ -93,11 +93,12 @@ func (s *CmuxSource) TryEnvelope(ctx context.Context, focused FocusedApp) (Envel
 		return Envelope{}, false, nil
 	}
 	env := Envelope{
-		PaneCwd:      firstNonEmpty(surf.RequestedWorkingDirectory, resumeCwd(surf.ResumeBinding)),
-		WorkspaceRef: Slug(surf.WorkspaceID),
-		SurfaceRef:   Slug(surf.ID),
-		WindowRef:    Slug(surf.WindowID),
-		PaneType:     cmuxPaneTypeToSurfaceType(surf.Type),
+		PaneCwd:        firstNonEmpty(surf.RequestedWorkingDirectory, resumeCwd(surf.ResumeBinding)),
+		WorkspaceRef:   Slug(surf.WorkspaceID),
+		SurfaceRef:     Slug(surf.ID),
+		WindowRef:      Slug(surf.WindowID),
+		PaneType:       cmuxPaneTypeToSurfaceType(surf.Type),
+		PaneResolution: PaneResolutionCmuxIPC,
 	}
 	if surf.ResumeBinding != nil {
 		env.AgentKind = surf.ResumeBinding.Kind
@@ -113,13 +114,14 @@ func (s *CmuxSource) TryEnvelope(ctx context.Context, focused FocusedApp) (Envel
 // change adds a new field assignment, this test catches it.
 func (s *CmuxSource) ContentFreeInvariant() error {
 	env := Envelope{
-		PaneCwd:      "/Users/example/projects/example",
-		PaneType:     "terminal",
-		AgentKind:    "agent-hook",
-		AgentName:    "Claude Code",
-		WorkspaceRef: "ws-abc123",
-		SurfaceRef:   "surf-def456",
-		WindowRef:    "win-789",
+		PaneCwd:        "/Users/example/projects/example",
+		PaneType:       "terminal",
+		AgentKind:      "agent-hook",
+		AgentName:      "Claude Code",
+		WorkspaceRef:   "ws-abc123",
+		SurfaceRef:     "surf-def456",
+		WindowRef:      "win-789",
+		PaneResolution: PaneResolutionCmuxIPC,
 	}
 	return CheckEnvelopeContentFree(env)
 }

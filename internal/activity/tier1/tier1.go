@@ -371,6 +371,9 @@ func buildTier1Event(bundleID string, env source.Envelope, ts string) activity.E
 	if env.WindowRef != "" {
 		meta["window_ref"] = env.WindowRef
 	}
+	if env.PaneResolution != "" {
+		meta["pane_resolution"] = env.PaneResolution
+	}
 	return activity.Event{
 		SchemaVersion: activity.SchemaVersion,
 		TS:            ts,
@@ -389,15 +392,16 @@ func buildTier1Event(bundleID string, env source.Envelope, ts string) activity.E
 // TestTier1SetsDoNotOverlap). Adding a key here is a schema-level decision; bump
 // SchemaVersion in lockstep.
 var Tier1AllowedMetaKeys = map[string]bool{
-	"pane_cwd":      true,
-	"git_root":      true,
-	"git_remote":    true,
-	"pane_type":     true,
-	"agent_kind":    true,
-	"agent_name":    true,
-	"workspace_ref": true,
-	"surface_ref":   true,
-	"window_ref":    true,
+	"pane_cwd":        true,
+	"git_root":        true,
+	"git_remote":      true,
+	"pane_type":       true,
+	"agent_kind":      true,
+	"agent_name":      true,
+	"workspace_ref":   true,
+	"surface_ref":     true,
+	"window_ref":      true,
+	"pane_resolution": true,
 }
 
 // --- governance wrapper (mirror of activity.Drain) ---
