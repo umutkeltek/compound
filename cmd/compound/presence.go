@@ -12,12 +12,16 @@ import (
 	"compound/internal/work"
 )
 
-const presenceUsage = "usage: compound presence [--json] [--ttl DURATION] [--include-stale] [--tail-bytes N]"
+const presenceUsage = "usage: compound presence [--json] [--ttl DURATION] [--include-stale] [--tail-bytes N]\n       compound presence announce --actor A --session S --harness H [--cwd D] [--json]"
 
 // cmdPresence answers "who is here right now" from evidence Compound already
 // holds. It is deliberately NOT sourced from delegate bindings: an agent this
 // runtime never launched is still present the moment it touches the ledger.
 func cmdPresence(args []string) {
+	if len(args) > 0 && args[0] == "announce" {
+		cmdPresenceAnnounce(args[1:])
+		return
+	}
 	jsonOut := false
 	opts := work.PresenceOptions{}
 	for i := 0; i < len(args); i++ {
@@ -103,15 +107,100 @@ func printPresence(projection work.PresenceProjection) {
 			fmt.Printf("    %-5s %s%s\n", observation.Kind, observation.WorkID, detail)
 		}
 	}
+	if len(projection.Sessions) > 0 {
+		fmt.Printf("\n## declared sessions (claims — corroborated only by independent evidence)\n\n")
+		for _, session := range projection.Sessions {
+			marker := "!"
+			if session.Corroborated {
+				marker = "+"
+			}
+			fmt.Printf("%s %s claims %s\n", marker, session.Harness, session.Actor)
+			fmt.Printf("    session %s · %s\n", session.SessionID, session.Basis)
+		}
+	}
 	fmt.Printf("\nactors %d · fresh %d · stale %d · lease-only %d · event-only %d · both %d\n",
 		projection.Counts.Actors, projection.Counts.Fresh, projection.Counts.Stale,
 		projection.Counts.LeaseOnly, projection.Counts.EventOnly, projection.Counts.BothSources)
+	if projection.Counts.Sessions > 0 {
+		fmt.Printf("declared sessions %d · corroborated %d\n",
+			projection.Counts.Sessions, projection.Counts.Corroborated)
+	}
 	if projection.TailTruncated {
 		fmt.Printf("event evidence read from the last %d bytes of the work log\n", projection.TailBytes)
 	}
 	for _, note := range projection.Integrity {
 		fmt.Println("integrity:", note)
 	}
+}
+
+// cmdPresenceAnnounce records a session's claimed actor. The declaration is
+// observed-class evidence, never authority: it is only usable once presence
+// independently shows that actor active, so announcing an identity you do not
+// hold gains nothing.
+func cmdPresenceAnnounce(args []string) {
+	in := work.PresenceSessionInput{}
+	jsonOut := false
+	for i := 0; i < len(args); i++ {
+		switch arg := args[i]; arg {
+		case "--json":
+			jsonOut = true
+		case "--actor", "--session", "--harness", "--cwd":
+			i++
+			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
+				fmt.Fprintln(os.Stderr, presenceUsage)
+				os.Exit(2)
+			}
+			value := strings.TrimSpace(args[i])
+			switch arg {
+			case "--actor":
+				in.Actor = value
+			case "--session":
+				in.SessionID = value
+			case "--harness":
+				in.Harness = value
+			case "--cwd":
+				in.Cwd = value
+			}
+		default:
+			fmt.Fprintln(os.Stderr, presenceUsage)
+			os.Exit(2)
+		}
+	}
+	if strings.TrimSpace(in.Cwd) == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		in.Cwd = wd
+	}
+
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	record, err := store.AnnouncePresenceSession(in, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
+	if jsonOut {
+		if err := json.NewEncoder(os.Stdout).Encode(record); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	fmt.Printf("announced %s as %s (session %s, announce #%d)\n",
+		record.Harness, record.Actor, record.SessionID, record.Announces)
+	fmt.Println("note: a declaration is evidence, not authority — it is usable only while")
+	fmt.Println("      `compound presence` independently shows that actor active.")
 }
 
 func presenceAge(seconds int64) string {

@@ -70,6 +70,31 @@ type PresenceCounts struct {
 	LeaseOnly   int `json:"lease_only"`
 	EventOnly   int `json:"event_only"`
 	BothSources int `json:"both_sources"`
+	// Sessions counts announcements; Corroborated counts the subset whose
+	// claimed actor is independently fresh in lease/event evidence.
+	Sessions     int `json:"sessions"`
+	Corroborated int `json:"corroborated_sessions"`
+}
+
+// Corroboration bases. "none" means the claimed actor has no independent
+// evidence at all -- the declaration stands alone and buys nothing.
+const (
+	PresenceCorroborationNone  = "none"
+	PresenceCorroborationStale = "stale_evidence"
+	PresenceCorroborationLease = "lease"
+	PresenceCorroborationEvent = "events"
+	PresenceCorroborationBoth  = "lease+events"
+)
+
+// PresenceSessionRow is one session's claimed identity joined to whatever
+// independent evidence exists for the actor it claims to be.
+type PresenceSessionRow struct {
+	PresenceSessionAnnouncement
+	// Corroborated is true only when the claimed actor is independently fresh
+	// in lease/event evidence. A declaration never sets this on its own.
+	Corroborated bool   `json:"corroborated"`
+	Basis        string `json:"corroboration_basis"`
+	ActorAgeSecs int64  `json:"actor_age_seconds"`
 }
 
 // PresenceProjection is the read-only answer to "who is here".
@@ -85,7 +110,11 @@ type PresenceProjection struct {
 	TailTruncated bool           `json:"tail_truncated"`
 	Counts        PresenceCounts `json:"counts"`
 	Present       []PresenceRow  `json:"present"`
-	Integrity     []string       `json:"integrity,omitempty"`
+	// Sessions are self-declared identities, each carrying its own
+	// corroboration verdict. They are reported beside Present, never merged
+	// into it: an announcement is a claim, not a sighting.
+	Sessions  []PresenceSessionRow `json:"sessions,omitempty"`
+	Integrity []string             `json:"integrity,omitempty"`
 }
 
 // PresenceOptions tunes the projection. Zero values take the defaults.
@@ -248,6 +277,49 @@ func (s *Store) PresenceProjectionFor(now time.Time, optionSets ...PresenceOptio
 		return rows[i].Actor < rows[j].Actor
 	})
 	projection.Present = rows
+
+	// Corroboration reads ONLY `acc`, which is built exclusively from leases and
+	// work events above. Announcements are never written into `acc`, so a
+	// self-declaration structurally cannot corroborate itself -- that is the
+	// conjunctive rule enforced by construction rather than by convention.
+	announcements, err := s.ListPresenceSessions()
+	if err != nil {
+		return PresenceProjection{}, err
+	}
+	if len(announcements) > 0 {
+		projection.SourceRefs = appendSourceRef(projection.SourceRefs, "compound.observed.presence_sessions")
+	}
+	sessions := make([]PresenceSessionRow, 0, len(announcements))
+	for _, announcement := range announcements {
+		row := PresenceSessionRow{
+			PresenceSessionAnnouncement: announcement,
+			Basis:                       PresenceCorroborationNone,
+		}
+		if entry, seen := acc[announcement.Actor]; seen {
+			age := now.Sub(entry.lastSeen)
+			if age < 0 {
+				age = 0
+			}
+			row.ActorAgeSecs = int64(age / time.Second)
+			switch {
+			case age > opts.TTL:
+				row.Basis = PresenceCorroborationStale
+			case entry.leases > 0 && entry.events > 0:
+				row.Basis = PresenceCorroborationBoth
+			case entry.leases > 0:
+				row.Basis = PresenceCorroborationLease
+			default:
+				row.Basis = PresenceCorroborationEvent
+			}
+			row.Corroborated = age <= opts.TTL
+		}
+		projection.Counts.Sessions++
+		if row.Corroborated {
+			projection.Counts.Corroborated++
+		}
+		sessions = append(sessions, row)
+	}
+	projection.Sessions = sessions
 	return projection, nil
 }
 
