@@ -23,6 +23,21 @@ func (s *Store) gitDeliveryProofForClose(w envelope.WorkEnvelope, outcome, moveT
 	if err != nil {
 		return nil, err
 	}
+	// An audit_only close asserts no delivery, so there is nothing for a landed
+	// proof to prove -- and that is true whether or not the envelope happens to
+	// carry a git_delivery contract. The contract doubles as the execution
+	// workspace pointer (resolveExecuteWorkspace), so work binds it at t0 merely
+	// to get somewhere to run, long before the move type is chosen at close.
+	// Reading the binding as delivery intent made every bound envelope
+	// unclosable as an audit, while the CLI's own refusal text kept teaching
+	// "--move-type audit_only" as the way out (work_lease_refusal.go).
+	//
+	// This is not a hole: gitDeliveryRequirementSignal checks latestCommitArtifact
+	// FIRST, so an audit that actually produced a commit still yields a non-empty
+	// signal and falls through to the landed-proof gate below.
+	if signal == "" && moveType == "audit_only" {
+		return nil, nil
+	}
 	if w.GitDelivery == nil {
 		if signal == "" {
 			return nil, nil

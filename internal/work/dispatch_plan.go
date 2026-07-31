@@ -1614,7 +1614,7 @@ func dispatchClosePlanCandidate(item WorkbenchItem, actor, outcome, moveType str
 		if dispatchLeaseHeldByOther(item, actor) {
 			out.Action = "held_by_other"
 			out.Reason = "lease held by " + item.ClaimedBy
-		} else if workbenchItemNeedsGitDeliveryProof(item) && item.LandingStatus != "ready_to_close" {
+		} else if workbenchItemNeedsGitDeliveryProof(item, moveType) && item.LandingStatus != "ready_to_close" {
 			out.Action = "await_proof"
 			out.Reason = "source-controlled work is not ready to close: " + firstNonEmpty(item.LandingStatus, "missing Git delivery proof")
 			out.NextAction = item.NextAction
@@ -1642,12 +1642,21 @@ func dispatchClosePlanCandidate(item WorkbenchItem, actor, outcome, moveType str
 	return out
 }
 
-func workbenchItemNeedsGitDeliveryProof(item WorkbenchItem) bool {
-	if item.GitDeliveryBound {
+// workbenchItemNeedsGitDeliveryProof mirrors gitDeliveryProofForClose's
+// decision for the read model, and must mirror its ORDER too: a recorded commit
+// artifact demands proof first, and only then does an audit_only move waive the
+// binding. Without moveType this predicate answered a different question than
+// the gate it advertises, so a bound audit envelope was reported "await_proof"
+// forever while the close itself would have succeeded -- the dispatch loop
+// stalled on a verdict the enforcer did not share.
+func workbenchItemNeedsGitDeliveryProof(item WorkbenchItem, moveType string) bool {
+	if _, _, found, _ := latestCommitArtifact(item.ArtifactIDs); found {
 		return true
 	}
-	_, _, found, _ := latestCommitArtifact(item.ArtifactIDs)
-	return found
+	if moveType == "audit_only" {
+		return false
+	}
+	return item.GitDeliveryBound
 }
 
 func hasCloseProofEvidence(item WorkbenchItem) bool {
