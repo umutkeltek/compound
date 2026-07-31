@@ -896,3 +896,48 @@ func countString(values []string, want string) int {
 	}
 	return count
 }
+
+// The delegate-readiness blocking_hook_live gate consumes this loop end-to-end:
+// a harness whose hooks are genuinely installed must reconcile its
+// mutation-covering PreToolUse binding to ready. claude_minimax stayed
+// invisible here even after a real install, because the observation source
+// table lacked its profile settings path -- so the readiness gate reported the
+// binding missing forever while the authority and the settings both had it.
+func TestReconcileInstalledHooksObservesClaudeMinimaxProfile(t *testing.T) {
+	compoundHome := t.TempDir()
+	harnessHome := t.TempDir()
+	t.Setenv("HOME", harnessHome)
+	binaryPath := filepath.Join(harnessHome, ".local", "bin", "compound")
+	writeHarnessHookConfig(t, binaryPath, "#!/bin/sh\nexit 0\n")
+
+	report, err := hookplan.InstallHooks(harnessHome, binaryPath, "global", []string{"claude-minimax"}, false)
+	if err != nil {
+		t.Fatalf("InstallHooks(claude-minimax) error = %v", err)
+	}
+	if _, err := ImportHookInstallReport(
+		compoundHome,
+		harnessHome,
+		report,
+		time.Date(2026, 7, 31, 15, 0, 0, 0, time.UTC),
+	); err != nil {
+		t.Fatalf("ImportHookInstallReport() error = %v", err)
+	}
+
+	got, err := ReconcileInstalledHooks(compoundHome, harnessHome, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("ReconcileInstalledHooks() error = %v", err)
+	}
+	observed := 0
+	for _, binding := range got.Observation.Bindings {
+		if binding.Harness == "claude_minimax" {
+			observed++
+		}
+	}
+	if observed != 4 {
+		t.Fatalf("observed %d claude_minimax bindings, want 4 (observation source missing)", observed)
+	}
+	delta := hookReconciliationDelta(got.Reconciliation, "claude_minimax", "PreToolUse")
+	if delta == nil || delta.State != hookplan.StateReady {
+		t.Fatalf("claude_minimax PreToolUse reconciliation = %+v, want ready", delta)
+	}
+}
