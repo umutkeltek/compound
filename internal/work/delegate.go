@@ -550,16 +550,26 @@ func runLaneCapacityGuard(guard LaneCapacityGuardFunc, req LaneCapacityGuardRequ
 // the exact capacity verdict into one canonical revision. The resulting
 // snapshot is persisted on the delegate binding; a second evaluation must
 // produce the same revision immediately before RunAttempt mint.
+//
+// Only the capacity VERDICT is folded in — state, refusal, whether
+// confirmation is required, and the reason. The live measurements behind it
+// (remaining share, reset time, last-proven stamp, data ref) are deliberately
+// excluded: they are re-read from usage history on every evaluation and move
+// on their own while the orchestrator spends tokens, so hashing them made the
+// admission-time and pre-mint revisions differ for a lane that never changed
+// its verdict. Every spawn on an actively-used account then refused as
+// `authority_changed`. The measurements stay on the evidence entry for
+// observability; they are evidence, not authority.
 func completeDelegateReadinessSnapshot(readiness DelegateHarnessReadinessResult, lane string, decision LaneCapacityGuardResult) (DelegateHarnessReadinessResult, error) {
 	capacityMaterial, err := json.Marshal(struct {
-		Lane                 string               `json:"lane"`
-		Capacity             DispatchLaneCapacity `json:"capacity"`
-		Refused              bool                 `json:"refused"`
-		ConfirmationRequired bool                 `json:"confirmation_required"`
-		Message              string               `json:"message,omitempty"`
+		Lane                 string `json:"lane"`
+		State                string `json:"state"`
+		Refused              bool   `json:"refused"`
+		ConfirmationRequired bool   `json:"confirmation_required"`
+		Message              string `json:"message,omitempty"`
 	}{
 		Lane:                 strings.TrimSpace(lane),
-		Capacity:             decision.Capacity,
+		State:                strings.TrimSpace(decision.Capacity.State),
 		Refused:              decision.Refused,
 		ConfirmationRequired: decision.ConfirmationRequired,
 		Message:              decision.Message,

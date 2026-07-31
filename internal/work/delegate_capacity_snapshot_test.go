@@ -1,0 +1,107 @@
+package work
+
+import "testing"
+
+// The delegate readiness snapshot is evaluated twice: once at admission, once
+// immediately before RunAttempt mint. A difference between the two is reported
+// as `authority_changed` and refuses the spawn. So anything folded into the
+// snapshot revision is, by construction, a claim that it is AUTHORITY —
+// something whose change should invalidate an admission.
+//
+// A lane's remaining-token meter is not that. It is a live measurement that
+// moves on its own while the orchestrator burns tokens, so folding it in makes
+// every spawn on an actively-used account refuse, no matter how healthy the
+// lane is. The capacity VERDICT (state, refused, confirmation_required) is the
+// thing admission gated on, and it is what must be stable.
+
+func baseCapacityDecision() LaneCapacityGuardResult {
+	return LaneCapacityGuardResult{
+		Capacity: DispatchLaneCapacity{
+			Remaining:  0.82,
+			ResetsAt:   "2026-08-01T05:00:00Z",
+			LastProven: "2026-08-01T01:40:00Z",
+			State:      "alive",
+			DataRef:    "codexbar://minimax",
+		},
+	}
+}
+
+func snapshotRevisionFor(t *testing.T, decision LaneCapacityGuardResult) string {
+	t.Helper()
+	readiness, err := completeDelegateReadinessSnapshot(DelegateHarnessReadinessResult{Ready: true}, "claude-minimax", decision)
+	if err != nil {
+		t.Fatalf("completeDelegateReadinessSnapshot: %v", err)
+	}
+	if readiness.SnapshotRevision == "" {
+		t.Fatal("snapshot revision is empty")
+	}
+	return readiness.SnapshotRevision
+}
+
+// A meter that merely ticked between the two evaluations must NOT read as an
+// authority change. This is the regression: before the fix, every field below
+// was hashed, so a few tokens of drift refused the spawn.
+func TestDelegateReadinessSnapshotIgnoresLiveCapacityMeasurements(t *testing.T) {
+	admission := baseCapacityDecision()
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*LaneCapacityGuardResult)
+	}{
+		{"remaining ticked down", func(d *LaneCapacityGuardResult) { d.Capacity.Remaining = 0.7999 }},
+		{"remaining exhausted to zero but state still alive", func(d *LaneCapacityGuardResult) { d.Capacity.Remaining = 0 }},
+		{"last proven re-stamped", func(d *LaneCapacityGuardResult) { d.Capacity.LastProven = "2026-08-01T01:41:12Z" }},
+		{"window reset time refreshed", func(d *LaneCapacityGuardResult) { d.Capacity.ResetsAt = "2026-08-01T06:00:00Z" }},
+		{"data ref repointed", func(d *LaneCapacityGuardResult) { d.Capacity.DataRef = "codexbar://minimax?v=2" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recheck := baseCapacityDecision()
+			tc.mutate(&recheck)
+			if got, want := snapshotRevisionFor(t, recheck), snapshotRevisionFor(t, admission); got != want {
+				t.Fatalf("live measurement change altered the snapshot revision\n  admission = %s\n  recheck   = %s\nthis refuses every spawn as authority_changed", want, got)
+			}
+		})
+	}
+}
+
+// The guard must keep its teeth: a real verdict change still invalidates the
+// admission. If this test ever passes trivially, the snapshot has stopped
+// carrying capacity at all and the fix has gone too far.
+func TestDelegateReadinessSnapshotTracksCapacityVerdict(t *testing.T) {
+	admission := baseCapacityDecision()
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*LaneCapacityGuardResult)
+	}{
+		{"lane went exhausted", func(d *LaneCapacityGuardResult) { d.Capacity.State = "exhausted" }},
+		{"guard now refuses", func(d *LaneCapacityGuardResult) { d.Refused = true }},
+		{"confirmation now required", func(d *LaneCapacityGuardResult) { d.ConfirmationRequired = true }},
+		{"refusal message changed", func(d *LaneCapacityGuardResult) { d.Message = "window exhausted until 05:00Z" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recheck := baseCapacityDecision()
+			tc.mutate(&recheck)
+			if got, want := snapshotRevisionFor(t, recheck), snapshotRevisionFor(t, admission); got == want {
+				t.Fatalf("capacity verdict change did not alter the snapshot revision (%s); the admission guard has lost its teeth", got)
+			}
+		})
+	}
+}
+
+// The lane is part of the identity: the same verdict on a different lane is a
+// different snapshot.
+func TestDelegateReadinessSnapshotSeparatesLanes(t *testing.T) {
+	decision := baseCapacityDecision()
+	a, err := completeDelegateReadinessSnapshot(DelegateHarnessReadinessResult{Ready: true}, "claude-minimax", decision)
+	if err != nil {
+		t.Fatalf("minimax: %v", err)
+	}
+	b, err := completeDelegateReadinessSnapshot(DelegateHarnessReadinessResult{Ready: true}, "claude-qwen", decision)
+	if err != nil {
+		t.Fatalf("qwen: %v", err)
+	}
+	if a.SnapshotRevision == b.SnapshotRevision {
+		t.Fatalf("two lanes shared one snapshot revision (%s)", a.SnapshotRevision)
+	}
+}
