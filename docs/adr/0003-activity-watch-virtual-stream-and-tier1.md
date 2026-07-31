@@ -53,7 +53,7 @@ slots — schema-valid but no-op in the slice-1 reducer. This ADR lights them up
   and Tier-1 (runtime invariant) consult the same `ForbiddenMetaKeys` set.
   Duplication invites drift; the strict decoder is the load-bearing gate.
 - **Public/private boundary.** The repo is destined to be public. Tests use
-  generic hostnames (`host-a.local`), generic paths
+  generic hostnames (`host-a.example`), generic paths
   (`/Users/example/projects/example`), generic org names
   (`git@example.com:operator/example.git`). No `umut`, no real org names, no
   real hostnames.
