@@ -322,6 +322,117 @@ func TestAWMaterialize_WindowBoundsReachFetchEvents(t *testing.T) {
 	}
 }
 
+// An AW outage (ListBuckets fails) is a FAILED run, not a success and not a
+// policy refusal. The old shape returned Refused=false with the error stuffed
+// into Reason, which the CLI rendered as exit 0 / success-looking output.
+func TestAWMaterialize_ListBucketsFailureIsFailed(t *testing.T) {
+	h := newTestHome(t)
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	cfg := enableSensor(t, h, now)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	restore := OverrideAWBaseURLForTest(srv.URL)
+	defer restore()
+
+	rep, err := AWMaterialize(h, t.TempDir(), cfg, "work_aw", now.Add(-7*24*time.Hour), now, now)
+	if err != nil {
+		t.Fatalf("AWMaterialize: %v", err)
+	}
+	if rep.Refused {
+		t.Fatalf("AW outage is an operational failure, not a refusal: %+v", rep)
+	}
+	if !rep.Failed {
+		t.Fatalf("ListBuckets failure must set Failed=true: %+v", rep)
+	}
+	if rep.EventsWritten != 0 {
+		t.Fatalf("failed run must write zero events, got %d", rep.EventsWritten)
+	}
+	if !strings.Contains(rep.Reason, "ListBuckets") {
+		t.Fatalf("reason must name the AW read failure, got %q", rep.Reason)
+	}
+}
+
+// If every eligible bucket's event read fails, the run is failed (so
+// events_written=0 is never mistaken for "no activity"). A PARTIAL failure is
+// counted but not failed, since some data did land.
+func TestAWMaterialize_BucketFetchFailures(t *testing.T) {
+	h := newTestHome(t)
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	cfg := enableSensor(t, h, now)
+
+	const twoBuckets = `{
+		"aw-watcher-window_bad":{"id":"aw-watcher-window_bad","type":"currentwindow","hostname":"h"},
+		"aw-watcher-window_ok":{"id":"aw-watcher-window_ok","type":"currentwindow","hostname":"h"}
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "window_bad"):
+			http.Error(w, "boom", http.StatusInternalServerError)
+		case strings.Contains(r.URL.Path, "/events"):
+			_, _ = w.Write([]byte(`[]`))
+		case strings.Contains(r.URL.Path, "buckets"):
+			_, _ = w.Write([]byte(twoBuckets))
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+	restore := OverrideAWBaseURLForTest(srv.URL)
+	defer restore()
+
+	// Partial failure: one bucket errors, one succeeds → not failed, counted.
+	rep, err := AWMaterialize(h, t.TempDir(), cfg, "work_aw", now.Add(-7*24*time.Hour), now, now)
+	if err != nil {
+		t.Fatalf("AWMaterialize: %v", err)
+	}
+	if rep.Failed {
+		t.Fatalf("partial bucket failure must not fail the whole run: %+v", rep)
+	}
+	if rep.BucketsFailed != 1 {
+		t.Fatalf("BucketsFailed = %d, want 1: %+v", rep.BucketsFailed, rep)
+	}
+	if rep.BucketsRead != 2 {
+		t.Fatalf("BucketsRead = %d, want 2: %+v", rep.BucketsRead, rep)
+	}
+}
+
+// When ALL eligible buckets fail to read, the run is failed.
+func TestAWMaterialize_AllBucketsFailIsFailed(t *testing.T) {
+	h := newTestHome(t)
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	cfg := enableSensor(t, h, now)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/events"):
+			http.Error(w, "boom", http.StatusInternalServerError)
+		case strings.Contains(r.URL.Path, "buckets"):
+			_, _ = w.Write([]byte(`{"aw-watcher-window_a":{"id":"aw-watcher-window_a","type":"currentwindow","hostname":"h"}}`))
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+	restore := OverrideAWBaseURLForTest(srv.URL)
+	defer restore()
+
+	rep, err := AWMaterialize(h, t.TempDir(), cfg, "work_aw", now.Add(-7*24*time.Hour), now, now)
+	if err != nil {
+		t.Fatalf("AWMaterialize: %v", err)
+	}
+	if !rep.Failed {
+		t.Fatalf("all-bucket failure must set Failed=true: %+v", rep)
+	}
+	if rep.BucketsFailed != 1 || rep.EventsWritten != 0 {
+		t.Fatalf("unexpected counts: %+v", rep)
+	}
+}
+
 // --- Tier1AllowedMetaKeys completeness guard (F13 partial) ---
 
 func TestTier1EventCarriesExpectedMetaKeys(t *testing.T) {

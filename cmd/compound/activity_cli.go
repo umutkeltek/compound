@@ -332,9 +332,12 @@ func runActivityAWMaterialize(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	// Both a governance refusal and an operational failure (AW down, spool
+	// unwritable, every bucket read errored) are nonzero. They stay distinct in
+	// the message so an operator can tell "not allowed" from "did not work".
 	if hasFlag(args, "--json") {
 		code := 0
-		if rep.Refused {
+		if rep.Refused || rep.Failed {
 			code = 1
 		}
 		if writeJSON(stdout, stderr, rep) != 0 {
@@ -342,9 +345,18 @@ func runActivityAWMaterialize(args []string, stdout, stderr io.Writer) int {
 		}
 		return code
 	}
+	if rep.Failed {
+		fmt.Fprintf(stderr, "aw materialize failed: %s\n", rep.Reason)
+		return 1
+	}
 	if rep.Refused {
 		fmt.Fprintf(stderr, "aw materialize refused: %s\n", rep.Reason)
 		return 1
+	}
+	if rep.BucketsFailed > 0 {
+		fmt.Fprintf(stdout, "aw materialize: events_written=%d buckets=%d buckets_failed=%d bytes=%d\n",
+			rep.EventsWritten, rep.BucketsRead, rep.BucketsFailed, rep.BytesUnderRoot)
+		return 0
 	}
 	fmt.Fprintf(stdout, "aw materialize: events_written=%d buckets=%d bytes=%d\n",
 		rep.EventsWritten, rep.BucketsRead, rep.BytesUnderRoot)

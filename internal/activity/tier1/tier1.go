@@ -484,13 +484,30 @@ func buildTier1Intent(workID, home string, now time.Time) envelope.ActionIntent 
 // server; production always uses awstream.DefaultBaseURL.
 var awBaseURL = awstream.DefaultBaseURL
 
+// OverrideAWBaseURLForTest redirects AWMaterialize at a test server and returns a
+// restore func. Test-only seam (the CLI lives in package main and cannot touch the
+// unexported var); production code never calls it.
+func OverrideAWBaseURLForTest(url string) func() {
+	prev := awBaseURL
+	awBaseURL = url
+	return func() { awBaseURL = prev }
+}
+
 // AWMaterializeReport is the outcome of `compound activity aw materialize`. Mirrors
 // the Tier-1 collect report shape so the CLI can share error-handling code.
+//
+// Refused and Failed are distinct: Refused=true is a GOVERNANCE outcome (sensor
+// disabled, no grant, byte cap) — an honest "no". Failed=true is an OPERATIONAL
+// failure (AW unreachable, spool unwritable, every bucket read errored) — the run
+// did not do its job. Both must exit nonzero, but they are NOT the same thing, and
+// the previous shape collapsed an AW outage into a success-looking Refused=false.
 type AWMaterializeReport struct {
 	Refused        bool   `json:"refused"`
+	Failed         bool   `json:"failed,omitempty"`
 	Reason         string `json:"reason,omitempty"`
 	EventsWritten  int    `json:"events_written"`
 	BucketsRead    int    `json:"buckets_read"`
+	BucketsFailed  int    `json:"buckets_failed,omitempty"`
 	BytesUnderRoot int64  `json:"bytes_under_root"`
 }
 
@@ -536,20 +553,29 @@ func AWMaterialize(home, spoolDir string, cfg policy.Config, workID string, star
 	cli := awstream.NewClient(awBaseURL)
 	buckets, err := cli.ListBuckets(context.Background())
 	if err != nil {
-		return AWMaterializeReport{Refused: false, Reason: fmt.Sprintf("AW ListBuckets: %v", err)}, nil
+		// AW is unreachable — a failed run (nothing written), NOT a policy
+		// refusal. The CLI surfaces this as a nonzero exit, not success.
+		return AWMaterializeReport{Failed: true, Reason: fmt.Sprintf("AW ListBuckets: %v", err)}, nil
 	}
 	if len(buckets) == 0 {
 		return AWMaterializeReport{BucketsRead: 0}, nil
 	}
 
-	// Collect raw events across all buckets.
+	// Collect raw events across all buckets. A single bucket's read error is
+	// counted (BucketsFailed) but does not abort the run; if EVERY eligible
+	// bucket fails, the run is marked failed below so events_written=0 is never
+	// mistaken for "no activity" when really AW could not be read.
 	var rawEvents []awstream.RawEvent
+	bucketsFailed := 0
+	attempted := 0
 	for _, b := range buckets {
 		if b.Type != "currentwindow" && b.Type != "afkstatus" && b.Type != "app.editor.activity" {
 			continue
 		}
+		attempted++
 		evs, err := cli.FetchEvents(context.Background(), b.ID, start, end, 10000)
 		if err != nil {
+			bucketsFailed++
 			continue
 		}
 		for _, e := range evs {
@@ -561,11 +587,17 @@ func AWMaterialize(home, spoolDir string, cfg policy.Config, workID string, star
 	awstream.AssignSeq(events)
 
 	// Write events to spool.
-	rep := AWMaterializeReport{BucketsRead: len(buckets)}
+	rep := AWMaterializeReport{BucketsRead: len(buckets), BucketsFailed: bucketsFailed}
 	if err := writeEventsToSpool(spoolDir, events); err != nil {
-		return AWMaterializeReport{Refused: false, Reason: fmt.Sprintf("spool write: %v", err)}, nil
+		rep.Failed = true
+		rep.Reason = fmt.Sprintf("spool write: %v", err)
+		return rep, nil
 	}
 	rep.EventsWritten = len(events)
+	if attempted > 0 && bucketsFailed == attempted {
+		rep.Failed = true
+		rep.Reason = fmt.Sprintf("AW FetchEvents failed for all %d eligible buckets", attempted)
+	}
 	rep.BytesUnderRoot, _ = dirSize(activity.ActivityRoot(home))
 	return rep, nil
 }

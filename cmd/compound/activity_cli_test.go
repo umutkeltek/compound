@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +11,9 @@ import (
 	"time"
 
 	"compound/internal/activity"
+	"compound/internal/activity/tier1"
 	"compound/internal/home"
+	"compound/internal/policy"
 )
 
 // F2 at the CLI door: a fresh home (sensor disabled, no grant) must refuse `activity drain` with a
@@ -143,5 +147,74 @@ func TestParseAWMaterializeWindow(t *testing.T) {
 	// Malformed end is rejected.
 	if _, _, ok = parseAWMaterializeWindow([]string{"--end", "nope"}, now, &stderr); ok {
 		t.Fatalf("malformed --end must not parse")
+	}
+}
+
+// enableAWMaterializeHome seeds a home whose sensor is enabled and whose grant
+// registry carries the toggle + drain capabilities, so `aw materialize` passes
+// its governance gates and actually reaches the AW read.
+func enableAWMaterializeHome(t *testing.T, homePath string, now time.Time) {
+	t.Helper()
+	grants := `{"schema_version":"compound.standing_grants_source.v0.1","standing_grants":[` +
+		`{"id":"grant.activity_toggle","capability":"` + activity.ToggleCapability + `","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"},` +
+		`{"id":"grant.activity_drain","capability":"` + activity.DrainCapability + `","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"}` +
+		`]}`
+	srcPath := filepath.Join(t.TempDir(), "grants.json")
+	if err := os.WriteFile(srcPath, []byte(grants), 0o600); err != nil {
+		t.Fatalf("write grants: %v", err)
+	}
+	if _, err := policy.ImportStandingGrants(homePath, srcPath, now); err != nil {
+		t.Fatalf("import grants: %v", err)
+	}
+	cfg, _, err := policy.LoadConfig(homePath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if _, err := activity.SetEnabled(homePath, cfg, "work_enable", true, now); err != nil {
+		t.Fatalf("enable sensor: %v", err)
+	}
+}
+
+// The user-visible contract: when AW is unreachable, `aw materialize` must exit
+// nonzero and name the failure — it must NOT print a success-looking line. This
+// is the exact regression the audit flagged (AW outage rendered as exit 0).
+func TestActivityCLIAWMaterializeAWDownExitsNonZero(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	enableAWMaterializeHome(t, homePath, cliTestNow)
+
+	// AW server that errors on every request.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	restore := tier1.OverrideAWBaseURLForTest(srv.URL)
+	defer restore()
+
+	// Human mode: nonzero exit, stderr names the failure.
+	var stdout, stderr bytes.Buffer
+	code := runActivity([]string{"aw", "materialize", "--home", homePath}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("AW down must exit nonzero, got 0 (stdout=%q)", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "failed") {
+		t.Fatalf("stderr must name the failure, got %q", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "aw materialize: events_written") {
+		t.Fatalf("must not print a success line on failure, got %q", stdout.String())
+	}
+
+	// JSON mode: exit 1 with failed=true.
+	stdout.Reset()
+	stderr.Reset()
+	code = runActivity([]string{"aw", "materialize", "--home", homePath, "--json"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("JSON AW-down must exit 1, got %d", code)
+	}
+	if !strings.Contains(stdout.String(), `"failed": true`) {
+		t.Fatalf("JSON must carry failed=true, got %q", stdout.String())
 	}
 }
