@@ -29,6 +29,11 @@ const claudeZaiHarness = "claude-zai"
 // installer, same profile-scoped config, different provider lane.
 const claudeMinimaxHarness = "claude-minimax"
 
+// claudeQwenHarness is the third enrolled isolated-profile harness: same NO-CLOBBER installer and
+// profile-scoped config as claudeZaiHarness and claudeMinimaxHarness, backing the qwen token-plan
+// lane. Enrollment raises the claude_qwen registry floor to the four genuinely installed bindings.
+const claudeQwenHarness = "claude-qwen"
+
 type desiredHookBinding struct {
 	Event    string
 	Matcher  string
@@ -54,6 +59,8 @@ func ConfigRel(harness, scope string) string {
 		return filepath.Join(".config", "switchback", "claude", "zai-direct", "settings.json")
 	case claudeMinimaxHarness:
 		return filepath.Join(".config", "switchback", "claude", "_providers", "minimax-lane", "settings.json")
+	case claudeQwenHarness:
+		return filepath.Join(".config", "switchback", "claude", "qwen-tap", "settings.json")
 	default: // claude-code
 		return filepath.Join(".claude", claudeSettingsFile(scope))
 	}
@@ -76,6 +83,13 @@ func ClaudeZaiProfileDir(baseDir string) string {
 // a user's base directory.
 func ClaudeMinimaxProfileDir(baseDir string) string {
 	return filepath.Join(baseDir, ".config", "switchback", "claude", "_providers", "minimax-lane")
+}
+
+// ClaudeQwenProfileDir is the default isolated Claude profile home for the qwen lane, under a
+// user's base directory. It matches the profile_default recorded for the qwen lane in
+// adapters/_lib/lanes.json.
+func ClaudeQwenProfileDir(baseDir string) string {
+	return filepath.Join(baseDir, ".config", "switchback", "claude", "qwen-tap")
 }
 
 // HookCommand is the exact observation-only command a harness runs for Compound PreToolUse.
@@ -138,8 +152,9 @@ func InstallHooks(baseDir, binaryPath, scope string, harnesses []string, check b
 }
 
 // InstallHooksWithConfigDir supports an explicit isolated profile directory for a single
-// isolated-profile harness (claude-zai or claude-minimax). The override is intentionally narrow:
-// mixing it with another harness would make one path flag carry two incompatible meanings.
+// isolated-profile harness (claude-zai, claude-minimax, or claude-qwen). The override is
+// intentionally narrow: mixing it with another harness would make one path flag carry two
+// incompatible meanings.
 func InstallHooksWithConfigDir(baseDir, binaryPath, scope string, harnesses []string, configDir string, check bool) (HookInstallReport, error) {
 	return InstallHooksWithConfigDirAndPublish(baseDir, binaryPath, scope, harnesses, configDir, check, nil)
 }
@@ -167,20 +182,20 @@ func InstallHooksWithConfigDirAndPublish(
 		want[strings.TrimSpace(h)] = true
 	}
 	if strings.TrimSpace(configDir) != "" {
-		if len(want) != 1 || (!want[claudeZaiHarness] && !want[claudeMinimaxHarness]) {
+		if len(want) != 1 || (!want[claudeZaiHarness] && !want[claudeMinimaxHarness] && !want[claudeQwenHarness]) {
 			return report, fmt.Errorf(
-				"config dir is supported only with a single isolated-profile harness (%s or %s)",
-				claudeZaiHarness, claudeMinimaxHarness,
+				"config dir is supported only with a single isolated-profile harness (%s, %s, or %s)",
+				claudeZaiHarness, claudeMinimaxHarness, claudeQwenHarness,
 			)
 		}
 	}
-	prepared := make([]preparedHookConfig, 0, 4)
-	for _, harness := range []string{"claude-code", claudeZaiHarness, claudeMinimaxHarness, "codex"} {
+	prepared := make([]preparedHookConfig, 0, 5)
+	for _, harness := range []string{"claude-code", claudeZaiHarness, claudeMinimaxHarness, claudeQwenHarness, "codex"} {
 		if len(want) > 0 && !want[harness] {
 			continue
 		}
 		configPath := filepath.Join(baseDir, ConfigRel(harness, scope))
-		if strings.TrimSpace(configDir) != "" && (harness == claudeZaiHarness || harness == claudeMinimaxHarness) {
+		if strings.TrimSpace(configDir) != "" && (harness == claudeZaiHarness || harness == claudeMinimaxHarness || harness == claudeQwenHarness) {
 			configPath = filepath.Join(configDir, "settings.json")
 		}
 		bindings, _, err := compiledManagedHookBindings(binaryPath, harness, scope)
@@ -277,7 +292,7 @@ func compiledManagedHookBindings(
 	configScope string,
 ) ([]desiredHookBinding, CompiledPosture, error) {
 	registry := harness.DefaultRegistry()
-	if harnessName == claudeZaiHarness || harnessName == claudeMinimaxHarness {
+	if harnessName == claudeZaiHarness || harnessName == claudeMinimaxHarness || harnessName == claudeQwenHarness {
 		configScope = "profile"
 	}
 	compiled, err := CompileDefaultPosture(DefaultPostureRequest{

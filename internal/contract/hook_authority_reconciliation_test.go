@@ -80,13 +80,13 @@ func TestImportHookInstallReportPublishesAllHarnessesAsOneAuthorityUpdate(t *tes
 	if result.SourceAuthority.SourcePath != managedHookInstallationRef {
 		t.Fatalf("combined source ref = %q, want %q", result.SourceAuthority.SourcePath, managedHookInstallationRef)
 	}
-	wantHarnesses := []string{"claude_code", "claude_minimax", "claude_zai", "codex"}
+	wantHarnesses := []string{"claude_code", "claude_minimax", "claude_qwen", "claude_zai", "codex"}
 	if strings.Join(result.Harnesses, ",") != strings.Join(wantHarnesses, ",") {
 		t.Fatalf("combined harnesses = %v, want %v", result.Harnesses, wantHarnesses)
 	}
-	if result.IncomingHookCount != 16 || len(result.Manifest.Hooks) != 16 {
+	if result.IncomingHookCount != 20 || len(result.Manifest.Hooks) != 20 {
 		t.Fatalf(
-			"combined manifest incoming=%d hooks=%d, want all 16 lifecycle bindings",
+			"combined manifest incoming=%d hooks=%d, want all 20 lifecycle bindings",
 			result.IncomingHookCount,
 			len(result.Manifest.Hooks),
 		)
@@ -939,5 +939,50 @@ func TestReconcileInstalledHooksObservesClaudeMinimaxProfile(t *testing.T) {
 	delta := hookReconciliationDelta(got.Reconciliation, "claude_minimax", "PreToolUse")
 	if delta == nil || delta.State != hookplan.StateReady {
 		t.Fatalf("claude_minimax PreToolUse reconciliation = %+v, want ready", delta)
+	}
+}
+
+// TestReconcileInstalledHooksObservesClaudeQwenProfile mirrors the minimax
+// falsifier for the fifth managed harness: a genuinely installed claude-qwen
+// binding must reconcile its mutation-covering PreToolUse to ready. Without the
+// qwen profile settings path in the observation source table, the readiness
+// gate reports the binding missing forever while the authority and the
+// settings both have it.
+func TestReconcileInstalledHooksObservesClaudeQwenProfile(t *testing.T) {
+	compoundHome := t.TempDir()
+	harnessHome := t.TempDir()
+	t.Setenv("HOME", harnessHome)
+	binaryPath := filepath.Join(harnessHome, ".local", "bin", "compound")
+	writeHarnessHookConfig(t, binaryPath, "#!/bin/sh\nexit 0\n")
+
+	report, err := hookplan.InstallHooks(harnessHome, binaryPath, "global", []string{"claude-qwen"}, false)
+	if err != nil {
+		t.Fatalf("InstallHooks(claude-qwen) error = %v", err)
+	}
+	if _, err := ImportHookInstallReport(
+		compoundHome,
+		harnessHome,
+		report,
+		time.Date(2026, 7, 31, 19, 0, 0, 0, time.UTC),
+	); err != nil {
+		t.Fatalf("ImportHookInstallReport() error = %v", err)
+	}
+
+	got, err := ReconcileInstalledHooks(compoundHome, harnessHome, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("ReconcileInstalledHooks() error = %v", err)
+	}
+	observed := 0
+	for _, binding := range got.Observation.Bindings {
+		if binding.Harness == "claude_qwen" {
+			observed++
+		}
+	}
+	if observed != 4 {
+		t.Fatalf("observed %d claude_qwen bindings, want 4 (observation source missing)", observed)
+	}
+	delta := hookReconciliationDelta(got.Reconciliation, "claude_qwen", "PreToolUse")
+	if delta == nil || delta.State != hookplan.StateReady {
+		t.Fatalf("claude_qwen PreToolUse reconciliation = %+v, want ready", delta)
 	}
 }

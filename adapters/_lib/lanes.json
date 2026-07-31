@@ -74,7 +74,7 @@
       "tap_bind": "127.0.0.1:18777",
       "profile_default": "${HOME}/.config/switchback/claude/qwen-tap",
       "title_suffix": "qwen3.8",
-      "hook_harness": ""
+      "hook_harness": "claude-qwen"
     },
     {
       "id": "native",

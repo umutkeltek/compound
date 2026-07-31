@@ -190,10 +190,22 @@ func DefaultRegistry() Registry {
 		"claude_qwen": {
 			Name:                 "claude_qwen",
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
-			// Hook flags dropped to the observed floor: this lane's settings register
-			// no hooks. Skills and MCP stay true -- its launcher does not disable
-			// them. See claude_minimax for why a floor beats an aspiration here.
+			// This is the raise, mirroring claude_minimax: `compound hook install
+			// --harness claude-qwen` (see internal/hookplan/install.go) now genuinely
+			// writes SessionStart, UserPromptSubmit, PreToolUse (blocking, --enforce),
+			// and PostToolUse into the isolated qwen profile settings.json. The floor
+			// describes an installed binding, not a plan; before enrollment it declared
+			// zero hooks and qwen sessions could not report back, so their work never
+			// compounded. Stop and SessionEnd stay unregistered, so they stay false,
+			// same as claude_zai and claude_minimax.
+			//
+			// Skills and MCP stay true -- unlike minimax, this lane's launcher does
+			// not disable them. Verify any change here with `compound harness
+			// capability-drift`: an over-claim fails; an under-claim against a
+			// genuinely installed binding signals a regressed install path.
 			Capabilities: Capabilities{
+				SessionStartContext: true, UserPromptContext: true,
+				PreToolUseBlock: true, PostToolUseEvent: true,
 				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{
@@ -201,7 +213,7 @@ func DefaultRegistry() Registry {
 				"global steering requires the managed profile link; repository CLAUDE.md discovery remains shared",
 				"long-session instruction drift",
 				"instruction/context budget cap",
-				"fast scoped lane; prefer review/second-opinion scoped runs",
+				"token-plan provider lane (prepaid); night-discount window 22:00-08:00 UTC+8 for execution burns",
 			},
 			InjectBudgetMS: 1500,
 		},

@@ -73,12 +73,16 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Entries) != 4 {
+	if len(rep.Entries) != 5 {
 		t.Fatalf("expected all managed harnesses, got %d entries", len(rep.Entries))
 	}
 	minimaxEntry := hookInstallEntryForHarness(t, rep, claudeMinimaxHarness)
 	if !strings.HasSuffix(minimaxEntry.ConfigPath, filepath.Join("_providers", "minimax-lane", "settings.json")) {
 		t.Fatalf("claude-minimax ConfigPath = %q, want suffix _providers/minimax-lane/settings.json", minimaxEntry.ConfigPath)
+	}
+	qwenEntry := hookInstallEntryForHarness(t, rep, claudeQwenHarness)
+	if !strings.HasSuffix(qwenEntry.ConfigPath, filepath.Join("qwen-tap", "settings.json")) {
+		t.Fatalf("claude-qwen ConfigPath = %q, want suffix qwen-tap/settings.json", qwenEntry.ConfigPath)
 	}
 	reportJSON, err := json.Marshal(rep)
 	if err != nil {
@@ -107,7 +111,7 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 		for _, binding := range entry.Bindings {
 			if binding.Event == "PreToolUse" {
 				foundPreTool = true
-				if harnessName == claudeZaiHarness || harnessName == claudeMinimaxHarness {
+				if harnessName == claudeZaiHarness || harnessName == claudeMinimaxHarness || harnessName == claudeQwenHarness {
 					if binding.Matcher != entry.Matcher || binding.Command != entry.Command ||
 						!strings.Contains(binding.Command, " --enforce") {
 						t.Fatalf("isolated guard projection drifted from binding: entry=%+v binding=%+v", entry, binding)
@@ -152,11 +156,16 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 	if got := firstMatcher(t, minimax); got != "*" {
 		t.Fatalf("claude-minimax matcher = %q", got)
 	}
+	qwen := readJSON(t, filepath.Join(ClaudeQwenProfileDir(base), "settings.json"))
+	if got := firstMatcher(t, qwen); got != "*" {
+		t.Fatalf("claude-qwen matcher = %q", got)
+	}
 	codex := readJSON(t, filepath.Join(base, ".codex", "hooks.json"))
 	for harnessName, cfg := range map[string]map[string]any{
 		"claude-code":    claude,
 		"claude-zai":     zai,
 		"claude-minimax": minimax,
+		"claude-qwen":    qwen,
 		"codex":          codex,
 	} {
 		entry := hookInstallEntryForHarness(t, rep, harnessName)
@@ -491,7 +500,7 @@ func TestInstallHooksRollsBackEveryNativeConfigWhenPublishFails(t *testing.T) {
 		false,
 		func(report HookInstallReport) error {
 			publisherCalled = true
-			if len(report.Entries) != 4 {
+			if len(report.Entries) != 5 {
 				t.Fatalf("publisher received %d entries, want one complete all-harness report", len(report.Entries))
 			}
 			for _, entry := range report.Entries {
@@ -543,6 +552,10 @@ func TestInstallHooksRollsBackEveryNativeConfigWhenPublishFails(t *testing.T) {
 	minimaxPath := filepath.Join(ClaudeMinimaxProfileDir(base), "settings.json")
 	if _, statErr := os.Stat(minimaxPath); !os.IsNotExist(statErr) {
 		t.Fatalf("rollback left previously absent isolated config at %s: %v", minimaxPath, statErr)
+	}
+	qwenPath := filepath.Join(ClaudeQwenProfileDir(base), "settings.json")
+	if _, statErr := os.Stat(qwenPath); !os.IsNotExist(statErr) {
+		t.Fatalf("rollback left previously absent isolated config at %s: %v", qwenPath, statErr)
 	}
 }
 
@@ -1165,6 +1178,114 @@ func TestInstallHooksClaudeMinimaxProfile(t *testing.T) {
 	}
 	if got := len(hooksForEvent(t, readJSON(t, settingsPath), "SessionStart")); got != 2 {
 		t.Fatalf("idempotent install duplicated SessionStart hooks: got %d groups, want user + Compound", got)
+	}
+}
+
+// TestInstallHooksClaudeQwenProfile is the qwen falsifier for
+// work_qwen_harness_enrollment_20260731: installing with --harness claude-qwen
+// into a temp isolated profile dir writes all 4 lifecycle bindings, the
+// PreToolUse binding is a blocking --enforce command, and a pre-seeded
+// permissions+env key survives untouched (the NO-CLOBBER law). At base,
+// --harness claude-qwen is rejected by the --config-dir gate before any write.
+func TestInstallHooksClaudeQwenProfile(t *testing.T) {
+	base := t.TempDir()
+	profileDir := filepath.Join(base, "qwen-profile")
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(profileDir, "settings.json")
+	existing := `{
+  "permissions": {"defaultMode": "bypassPermissions"},
+  "env": {"ANTHROPIC_BASE_URL": "https://qwen.example.invalid"},
+  "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "my-own-hook"}]}]}
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := InstallHooksWithConfigDir(base, "/opt/Compound Apps/compound", "global", []string{"claude-qwen"}, profileDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Entries) != 1 || first.Entries[0].Harness != "claude-qwen" || first.Entries[0].Action != "installed" {
+		t.Fatalf("first claude-qwen install = %+v", first)
+	}
+	if first.Entries[0].ConfigPath != settingsPath {
+		t.Fatalf("claude-qwen ConfigPath = %q, want %q", first.Entries[0].ConfigPath, settingsPath)
+	}
+	cfg := readJSON(t, settingsPath)
+	if _, ok := cfg["permissions"]; !ok {
+		t.Fatal("claude-qwen install clobbered permissions")
+	}
+	env, ok := cfg["env"].(map[string]any)
+	if !ok || env["ANTHROPIC_BASE_URL"] != "https://qwen.example.invalid" {
+		t.Fatalf("claude-qwen install clobbered env: %#v", cfg["env"])
+	}
+	hooks, ok := cfg["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings hooks = %#v", cfg["hooks"])
+	}
+	if len(first.Entries[0].Bindings) != 4 {
+		t.Fatalf("claude-qwen install reported %d bindings, want 4", len(first.Entries[0].Bindings))
+	}
+	wantCommands := map[string]string{}
+	for _, binding := range first.Entries[0].Bindings {
+		wantCommands[binding.Event] = binding.Command
+	}
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
+		groups, ok := hooks[event].([]any)
+		if !ok || len(groups) == 0 {
+			t.Fatalf("claude-qwen settings missing %s: %#v", event, hooks[event])
+		}
+		wantCommand := wantCommands[event]
+		found := false
+		for _, group := range groups {
+			if firstCommand(group) == wantCommand {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("claude-qwen %s missing command %q: %#v", event, wantCommand, groups)
+		}
+	}
+	preToolCommand := wantCommands["PreToolUse"]
+	if !strings.HasSuffix(preToolCommand, " --enforce") {
+		t.Fatalf("claude-qwen PreToolUse command = %q, want --enforce suffix", preToolCommand)
+	}
+	preGroups, _ := hooks["PreToolUse"].([]any)
+	var preMatcher string
+	for _, group := range preGroups {
+		if strings.Contains(firstCommand(group), "--harness claude-qwen") {
+			entry, _ := group.(map[string]any)
+			preMatcher, _ = entry["matcher"].(string)
+		}
+	}
+	if preMatcher != "*" {
+		t.Fatalf("claude-qwen PreToolUse matcher = %q", preMatcher)
+	}
+	if first.Entries[0].Matcher != "*" || !strings.Contains(first.Entries[0].Command, " --enforce") {
+		t.Fatalf("claude-qwen guard projection = %+v", first.Entries[0])
+	}
+
+	second, err := InstallHooksWithConfigDir(base, "/opt/Compound Apps/compound", "global", []string{"claude-qwen"}, profileDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Entries[0].Action != "ok" {
+		t.Fatalf("idempotent claude-qwen install action = %q, want ok", second.Entries[0].Action)
+	}
+	if got := len(hooksForEvent(t, readJSON(t, settingsPath), "SessionStart")); got != 2 {
+		t.Fatalf("idempotent install duplicated SessionStart hooks: got %d groups, want user + Compound", got)
+	}
+
+	// The --config-dir gate must accept claude-qwen alone, same carve-out as
+	// claude-zai and claude-minimax.
+	qwenDir := t.TempDir()
+	if _, err := InstallHooksWithConfigDir(base, "/bin/compound", "global", []string{"claude-qwen"}, qwenDir, false); err != nil {
+		t.Fatalf("--config-dir with claude-qwen alone must be accepted: %v", err)
+	}
+	if _, err := InstallHooksWithConfigDir(base, "/bin/compound", "global", []string{"claude-zai", "claude-qwen"}, qwenDir, false); err == nil {
+		t.Fatal("--config-dir with two harnesses (zai+qwen) must be refused")
 	}
 }
 

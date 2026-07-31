@@ -99,7 +99,8 @@ mkdir -p "$profile_dir"
 # install-lane.sh is a claude_code-family isolated profile (its own
 # --config-dir), but the hook HARNESS is lane-specific: core `compound hook
 # install` enrolls each managed harness separately and gates --config-dir to
-# claude-zai and claude-minimax. So we must install the lane's REAL harness:
+# claude-zai, claude-minimax, and claude-qwen. So we must install the lane's
+# REAL harness:
 #
 #   zai / zai-direct -> claude-zai     (the Claude Code hook roster)
 #   codex            -> claude-zai     (claude_code-family profile; its hook
@@ -108,7 +109,8 @@ mkdir -p "$profile_dir"
 #                                       still carried by --config-dir and the
 #                                       statusline. Intentional + documented.)
 #   minimax          -> claude-minimax (its own enrolled harness)
-#   qwen / others    -> "" => FAIL     (core has no such harness with
+#   qwen             -> claude-qwen    (its own enrolled harness)
+#   others           -> "" => FAIL     (core has no such harness with
 #                                       --config-dir yet; do NOT silently
 #                                       collapse it into claude-zai)
 #

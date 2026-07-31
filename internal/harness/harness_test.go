@@ -328,7 +328,7 @@ func TestNewClaudeLaneHarnessesEnrolledWithExpectedLimitations(t *testing.T) {
 		hooksInstalled  bool
 	}{
 		{"claude_minimax", "token-plan provider lane (prepaid); context price cliff near 512k tokens", true},
-		{"claude_qwen", "fast scoped lane; prefer review/second-opinion scoped runs", false},
+		{"claude_qwen", "token-plan provider lane (prepaid); night-discount window 22:00-08:00 UTC+8 for execution burns", true},
 		{"claude_zai_full", "subscription window lane; busy-hour token weighting applies", false},
 	}
 	for _, tc := range cases {

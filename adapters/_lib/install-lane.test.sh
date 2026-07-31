@@ -238,32 +238,28 @@ case "$_mm_line" in
   *) printf "ok: minimax does not collapse into claude-zai\n" ;;
 esac
 
-# A lane with no supported hook harness (qwen) must FAIL clearly and must NOT
-# call `compound hook install` at all -- no silent claude-zai fallback.
+# qwen must install --harness claude-qwen (its own enrolled harness), NOT
+# collapse into claude-zai -- same identity contract as minimax.
 PROFILE_QW="$TMPDIR/profile-qwen"
 mkdir -p "$PROFILE_QW"
 echo '{"hooks":{}}' > "$PROFILE_QW/settings.json"
 : > "$HOOK_INSTALL_LOG"
-_qw_rc=0
-_qw_err=$(LANES_SH_FILE="$LIB_DIR/lanes.sh" \
-  LANE_STATUSLINE_FILE="$LIB_DIR/lane-statusline.sh" \
+LANES_SH_FILE="$LIB_DIR/lanes.sh" \
+LANE_STATUSLINE_FILE="$LIB_DIR/lane-statusline.sh" \
   sh "$LIB_DIR/install-lane.sh" \
     --lane qwen \
     --profile-dir "$PROFILE_QW" \
     --compound "$FAKE_BIN/compound" \
-    --steering-source "$LIB_DIR/README.md" 2>&1 >/dev/null) || _qw_rc=$?
-if [ "$_qw_rc" -eq 0 ]; then
-  echo "FAIL: qwen install must exit nonzero (unsupported hook harness)"; exit 1
-fi
-printf "ok: qwen install exits nonzero (%s)\n" "$_qw_rc"
-case "$_qw_err" in
-  *"no supported hook harness"*) printf "ok: qwen failure names the unsupported harness\n" ;;
-  *) echo "FAIL: qwen error message unclear: $_qw_err"; exit 1 ;;
+    --steering-source "$LIB_DIR/README.md" >/dev/null 2>&1
+_qw_line=$(cat "$HOOK_INSTALL_LOG")
+case "$_qw_line" in
+  *"--harness claude-qwen"*) printf "ok: qwen hook install targets claude-qwen\n" ;;
+  *) echo "FAIL: qwen must install claude-qwen, got: $_qw_line"; exit 1 ;;
 esac
-if [ -s "$HOOK_INSTALL_LOG" ]; then
-  echo "FAIL: qwen must NOT invoke hook install, log: $(cat "$HOOK_INSTALL_LOG")"; exit 1
-fi
-printf "ok: qwen did not invoke hook install\n"
+case "$_qw_line" in
+  *"--harness claude-zai"*) echo "FAIL: qwen must NOT collapse into claude-zai: $_qw_line"; exit 1 ;;
+  *) printf "ok: qwen does not collapse into claude-zai\n" ;;
+esac
 
 echo ""
 echo "==> lane-launcher.sh: per-lane functions generated (bash)"
