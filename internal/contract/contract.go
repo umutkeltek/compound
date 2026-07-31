@@ -1603,6 +1603,12 @@ const (
 	peerLeaseStaleAfter    = 24 * time.Hour
 	peerLaneCardCap        = 5
 	peerTopCapabilitiesCap = 2
+	// peerActiveLeaseCap bounds the lease rows carried in the pack, mirroring
+	// peerLaneCardCap. work/leases grows monotonically until a lease is released, so an
+	// uncapped list makes the peers section the largest thing in the ContextPack on a
+	// mature home while saying the least: a stale lease is one bit of information
+	// repeated per row. Cap + omitted count keeps the display-only section display-sized.
+	peerActiveLeaseCap = 12
 )
 
 // buildPeersSection assembles the CONTEXTUAL, display-only peers view at orient time: the active
@@ -1616,35 +1622,56 @@ func buildPeersSection(homePath string, now time.Time) *envelope.PeersSection {
 	if strings.TrimSpace(homePath) == "" {
 		return nil
 	}
-	leases := peerActiveLeases(homePath, now)
+	leases, omitted := peerActiveLeases(homePath, now)
 	lanes := peerLaneCards(homePath)
 	if len(leases) == 0 && len(lanes) == 0 {
 		return nil
 	}
-	return &envelope.PeersSection{ActiveLeases: leases, Lanes: lanes}
+	return &envelope.PeersSection{ActiveLeases: leases, ActiveLeasesOmitted: omitted, Lanes: lanes}
 }
 
 // peerActiveLeases lists the work leases as peer rows with deterministic expiry staleness. It only
 // touches the work store when a leases dir already exists, so orient never materializes work
 // runtime dirs on a fresh home just to report an empty peer set.
-func peerActiveLeases(homePath string, now time.Time) []envelope.PeerLease {
+func peerActiveLeases(homePath string, now time.Time) ([]envelope.PeerLease, int) {
 	if _, err := os.Stat(filepath.Join(homePath, "work", "leases")); err != nil {
-		return nil
+		return nil, 0
 	}
 	store, err := work.Open(homePath)
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 	raw, err := store.ListLeases()
 	if err != nil {
-		return nil
+		return nil, 0
 	}
-	out := make([]envelope.PeerLease, 0, len(raw))
+	all := make([]envelope.PeerLease, 0, len(raw))
 	for _, l := range raw {
 		age, stale := peerLeaseAgeStale(l.ClaimAt, now)
-		out = append(out, envelope.PeerLease{WorkID: l.WorkID, Holder: l.By, Age: age, Stale: stale})
+		all = append(all, envelope.PeerLease{WorkID: l.WorkID, Holder: l.By, Age: age, Stale: stale})
 	}
-	return out
+	// ListLeases orders oldest-claim-first, which is exactly the wrong end to keep: the
+	// rows worth a peer's attention are the ones someone may still be holding. Order
+	// live-before-stale, then newest claim first, so the cap drops the least informative
+	// rows. Ties fall back to work id for a deterministic pack.
+	claimAt := make(map[string]string, len(raw))
+	for _, l := range raw {
+		claimAt[l.WorkID] = l.ClaimAt
+	}
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].Stale != all[j].Stale {
+			return !all[i].Stale
+		}
+		ci, cj := claimAt[all[i].WorkID], claimAt[all[j].WorkID]
+		if ci != cj {
+			return ci > cj
+		}
+		return all[i].WorkID < all[j].WorkID
+	})
+	if len(all) <= peerActiveLeaseCap {
+		return all, 0
+	}
+	return all[:peerActiveLeaseCap], len(all) - peerActiveLeaseCap
 }
 
 // peerLeaseAgeStale renders a coarse age and the deterministic staleness verdict for a claimed_at
