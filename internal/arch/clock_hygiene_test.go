@@ -1,5 +1,7 @@
-// Package hygiene hosts repo-wide guard tests that walk the source tree under
-// cmd/ and internal/ and refuse to ship known-broken patterns.
+// Repo-wide clock-hygiene guard. It lives in internal/arch because that package already
+// owns the repo's structural guards (classification totality, package-table single source,
+// status hot-path cap); a test-hygiene walk over cmd/ and internal/ is the same family, and
+// giving it its own package would mint a new organ under the two-class law for no gain.
 //
 // This file exists because of a real, reproducible failure. On 2026-08-01 a
 // certifying test (cmd/compound/synthesis_test.go) seeded a candidate with a
@@ -21,7 +23,7 @@
 // Files outside the test walk (synthesis_test.go) are listed in excludedFiles
 // with a reason. Add a new entry there ONLY when the literal is being fixed
 // elsewhere; do NOT use the exclusion list as a graveyard.
-package hygiene
+package arch
 
 import (
 	"bufio"
@@ -56,10 +58,10 @@ var excludedFiles = map[string]string{}
 // Add a name here only when an actual production field uses it.
 var expiryFieldPattern = regexp.MustCompile(`(?:ExpiresAt|expiresAt|expires_at|NotAfter|ValidUntil|validUntil|valid_until)\s*:\s*"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)"`)
 
-// repoRoot resolves the repository root from this test file's own path so
+// clockGuardRepoRoot resolves the repository root from this test file's own path so
 // the guard works regardless of the working directory `go test` is invoked
-// from. this file lives at <repoRoot>/internal/hygiene/clock_hygiene_test.go.
-func repoRoot(t *testing.T) string {
+// from. this file lives at <repoRoot>/internal/arch/clock_hygiene_test.go.
+func clockGuardRepoRoot(t *testing.T) string {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -134,7 +136,7 @@ func scanFile(t *testing.T, now time.Time, path, relPath string) []string {
 // already passed relative to time.Now(). Future literals are allowed; the
 // goal is to catch the trap once it arms, not to police intent.
 func TestNoPastDatedExpiryLiteralsInTests(t *testing.T) {
-	root := repoRoot(t)
+	root := clockGuardRepoRoot(t)
 	now := time.Now().UTC()
 
 	var all []string
