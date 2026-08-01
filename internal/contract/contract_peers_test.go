@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -252,5 +253,35 @@ func TestPeers_F6_UnderCapDeclaresNoOmission(t *testing.T) {
 	}
 	if pack.Peers.ActiveLeasesOmitted != 0 {
 		t.Fatalf("omitted must be 0 under the cap, got %d", pack.Peers.ActiveLeasesOmitted)
+	}
+}
+
+// SummaryMD is the one injected surface renderInjection does not budget, so every fragment
+// appended to it must carry its own bound. memoryLine has always capped; activePositionLine
+// did not, and positions were the largest contributor. This pins BOTH to the same bound and
+// pins what must survive it: the position id and slot stay whole, because they are how a
+// reader resolves the untruncated body.
+func TestSummaryFragmentsAreBounded(t *testing.T) {
+	longStance := strings.Repeat("stance-body ", 200)
+	line := activePositionLine("entity::topic::slot-abc123", "predicate", "constraint", longStance, 42, 3, false)
+
+	if len(line) > 320 {
+		t.Fatalf("position line unbounded at %d chars: %q", len(line), line)
+	}
+	if !strings.HasPrefix(line, "entity::topic::slot-abc123 [predicate=predicate, claim_type=constraint]") {
+		t.Fatalf("position id/slot must survive the cap: %q", line)
+	}
+	if !strings.Contains(line, "...") {
+		t.Fatalf("a truncated stance must say so: %q", line)
+	}
+	if !strings.Contains(line, "since-seq 42") || !strings.Contains(line, "chain-length 3") {
+		t.Fatalf("provenance fields must survive the cap: %q", line)
+	}
+
+	if got := boundedSummaryText(strings.Repeat("x", 500)); len(got) != 180 {
+		t.Fatalf("boundedSummaryText = %d chars, want 180", len(got))
+	}
+	if got := boundedSummaryText("short"); got != "short" {
+		t.Fatalf("short text must pass through unchanged, got %q", got)
 	}
 }

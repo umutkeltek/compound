@@ -2927,7 +2927,11 @@ func activePositionLine(positionID, predicate, claimType, stance string, sinceSe
 	if len(slotFields) > 0 {
 		slot = " [" + strings.Join(slotFields, ", ") + "]"
 	}
-	line := fmt.Sprintf("%s%s → %s (since-seq %d, chain-length %d)", positionID, slot, stance, sinceSeq, chainLength)
+	// The stance is the only unbounded part of this line, and it is the same kind of
+	// ledger-derived body memoryLine has always capped — an uncapped stance made positions
+	// 1,707 bytes of a 3,935-byte SummaryMD. positionID and the slot stay whole: they are how
+	// the reader resolves the full position, so truncating them would cost the drill-down.
+	line := fmt.Sprintf("%s%s → %s (since-seq %d, chain-length %d)", positionID, slot, boundedSummaryText(stance), sinceSeq, chainLength)
 	if contested {
 		line += " [contested]"
 	}
@@ -3196,7 +3200,16 @@ func qualifierContains(claim mem.Claim, key, needle string) bool {
 }
 
 func memoryLine(claim mem.Claim) string {
-	text := fmt.Sprintf("%s.%s = %s", claim.Entity, claim.Predicate, claim.Object)
+	return boundedSummaryText(fmt.Sprintf("%s.%s = %s", claim.Entity, claim.Predicate, claim.Object))
+}
+
+// boundedSummaryText caps one ledger-derived fragment destined for SummaryMD. SummaryMD is
+// the ONE injected surface with no budget of its own — every other injected section is capped
+// by renderInjection — and it is appended to per hook/decision/memory/position/probe group, so
+// an uncapped fragment makes the session payload grow with the ledger. The ellipsis is the
+// signal that the reader is holding a fragment, not the claim: the full body stays resolvable
+// through the ref that accompanies it in active_memory / active_positions.
+func boundedSummaryText(text string) string {
 	const max = 180
 	if len(text) <= max {
 		return text
