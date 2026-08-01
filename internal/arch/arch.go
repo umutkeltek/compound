@@ -299,6 +299,25 @@ func parseLeakTokenLines(raw string) []string {
 // spine — the budget can only go down, so the debt can never become wallpaper or quietly grow.
 const ConvergePendingBudget = 0
 
+// MaxNonTestCompoundFiles is the RATCHET on the count of non-test .go files directly under
+// cmd/compound/. `*_test.go` does not count (tests are the spine, not the debt), and the
+// `cmd/compound-*` siblings (compound-install-verify, compound-breadth-engine,
+// compound-memory-cli-engine, compound-mock-engine) are NOT measured here — this gate is the
+// cmd/compound MONOLITH budget, and a sibling that needs to grow either graduates into
+// internal/ or ships with its own dedicated gate. `--strict` fails when the actual count
+// exceeds this ceiling. The budget only ratchets DOWN, so new code lands by `git mv
+// cmd/compound/foo.go internal/<organ>/`, not by appending to cmd/compound/. Raising this
+// ceiling to fit is the forbidden weaken-the-gate move.
+const MaxNonTestCompoundFiles = 119
+
+// MaxNonTestCompoundLOC is the RATCHET on total non-test .go physical lines under
+// cmd/compound/. Same exclusion rules as MaxNonTestCompoundFiles (no `*_test.go`, no
+// `cmd/compound-*` siblings, no `internal/`). Both ratchets are read independently by
+// checkCmdCompoundBudget — a gate that only watched files would let a single file bloat
+// unchecked, and a gate that only watched LOC would let file count fragment unchecked.
+// `--strict` fails when either is exceeded; the budget only ratchets DOWN.
+const MaxNonTestCompoundLOC = 53046
+
 // MaxStatusHotPathNarrationLines is the RATCHET on status.md's PROSE, and it deliberately does not
 // count the package-table rows that checkPackageTableSingleSource MANDATES (one row per
 // arch.Classification entry). Counting them put two gates of this same doctor in direct conflict:
@@ -373,6 +392,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkASCDailySignalsPublicBoundaryContract(repoRoot)...)
 		f = append(f, checkBuildFreshnessContract(repoRoot)...)
 		f = append(f, checkMintTwoClassHome(repoRoot)...)
+		f = append(f, checkCmdCompoundBudget(repoRoot, strict)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -4710,6 +4730,73 @@ func isDigits(value string) bool {
 		}
 	}
 	return true
+}
+
+// checkCmdCompoundBudget ratchets the cmd/compound MONOLITH on two independent metrics:
+// non-test .go file count and non-test .go physical LOC. *_test.go does not count (tests are
+// the spine, not the debt). `cmd/compound-*` siblings (compound-install-verify etc.) are NOT
+// measured — those are separate surfaces, each free to grow on its own budget. The check reads
+// cmd/compound DIRECTLY and ignores `internal/` so the two-stack pressure (minting a new organ
+// costs three coupled gates; appending to cmd/compound costs zero) cannot bleed past this gate.
+// `--strict` flips any over-budget metric to FAIL. Headroom on BOTH metrics is reported in the
+// Info message so a maintainer can see exactly how much room is left before the ratchet fires.
+func checkCmdCompoundBudget(repoRoot string, strict bool) []Finding {
+	if repoRoot == "" {
+		return []Finding{{"cmd-compound-budget", Warn, "no repoRoot provided to checkCmdCompoundBudget — skipping the cmd/compound monolith budget check"}}
+	}
+	compoundDir := filepath.Join(repoRoot, "cmd", "compound")
+	entries, err := os.ReadDir(compoundDir)
+	if err != nil {
+		return []Finding{{"cmd-compound-budget", Warn, "could not read cmd/compound: " + err.Error()}}
+	}
+	var fileCount, loc int
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		fileCount++
+		b, err := os.ReadFile(filepath.Join(compoundDir, name))
+		if err != nil {
+			return []Finding{{"cmd-compound-budget", Warn, "could not read cmd/compound/" + name + ": " + err.Error()}}
+		}
+		loc += strings.Count(string(b), "\n")
+		if len(b) > 0 && b[len(b)-1] != '\n' {
+			loc++
+		}
+	}
+	var f []Finding
+	// each metric is checked INDEPENDENTLY: a gate that only watched files would let a single
+	// file bloat unchecked, and a gate that only watched LOC would let file count fragment
+	// unchecked. Either exceeds → FAIL (with `--strict`). The Info line reports both actuals
+	// and both budgets plus headroom so a maintainer sees the whole picture at once.
+	sevFiles := Info
+	msgFiles := "cmd/compound/ has " + itoa(fileCount) + "/" + itoa(MaxNonTestCompoundFiles) + " non-test .go files (headroom " + itoa(MaxNonTestCompoundFiles-fileCount) + ")"
+	if fileCount > MaxNonTestCompoundFiles {
+		sevFiles = Fail
+		if !strict {
+			sevFiles = Warn
+		}
+		msgFiles = "cmd/compound/ has " + itoa(fileCount) + " non-test .go files — over budget " + itoa(MaxNonTestCompoundFiles) + " by " + itoa(fileCount-MaxNonTestCompoundFiles) + "; the budget only ratchets DOWN, so new code lands by `git mv cmd/compound/foo.go internal/<organ>/`, never by raising the ceiling"
+	}
+	sevLOC := Info
+	msgLOC := "cmd/compound/ has " + itoa(loc) + "/" + itoa(MaxNonTestCompoundLOC) + " non-test .go LOC (headroom " + itoa(MaxNonTestCompoundLOC-loc) + ")"
+	if loc > MaxNonTestCompoundLOC {
+		sevLOC = Fail
+		if !strict {
+			sevLOC = Warn
+		}
+		msgLOC = "cmd/compound/ has " + itoa(loc) + " non-test .go LOC — over budget " + itoa(MaxNonTestCompoundLOC) + " by " + itoa(loc-MaxNonTestCompoundLOC) + "; the budget only ratchets DOWN, so new code lands by `git mv cmd/compound/foo.go internal/<organ>/`, never by raising the ceiling"
+	}
+	f = append(f, Finding{"cmd-compound-budget", sevFiles, msgFiles})
+	f = append(f, Finding{"cmd-compound-budget", sevLOC, msgLOC})
+	return f
 }
 
 func convergenceDebt(strict bool) []Finding {
