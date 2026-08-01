@@ -560,19 +560,27 @@ func runLaneCapacityGuard(guard LaneCapacityGuardFunc, req LaneCapacityGuardRequ
 // its verdict. Every spawn on an actively-used account then refused as
 // `authority_changed`. The measurements stay on the evidence entry for
 // observability; they are evidence, not authority.
+//
+// The guard's Message is excluded for the same reason and is NOT a weaker
+// claim than excluding the fields directly: capacityDecisionMessage formats
+// `data_row_timestamp=<LastProven>` and `data_ref=<...updated_at=...>` into the
+// prose, so hashing the string smuggles the identical live meter back in. For a
+// lane whose capacity comes from a live probe that restamps per second, that
+// re-breaks the spawn on exactly the states where Message is populated —
+// `expiring` and `unknown`, which are the states where --confirm is load-bearing
+// and the run still proceeds to mint. State, refusal and confirmation-required
+// already carry the whole actionable verdict; the prose only explains it.
 func completeDelegateReadinessSnapshot(readiness DelegateHarnessReadinessResult, lane string, decision LaneCapacityGuardResult) (DelegateHarnessReadinessResult, error) {
 	capacityMaterial, err := json.Marshal(struct {
 		Lane                 string `json:"lane"`
 		State                string `json:"state"`
 		Refused              bool   `json:"refused"`
 		ConfirmationRequired bool   `json:"confirmation_required"`
-		Message              string `json:"message,omitempty"`
 	}{
 		Lane:                 strings.TrimSpace(lane),
 		State:                strings.TrimSpace(decision.Capacity.State),
 		Refused:              decision.Refused,
 		ConfirmationRequired: decision.ConfirmationRequired,
-		Message:              decision.Message,
 	})
 	if err != nil {
 		return DelegateHarnessReadinessResult{}, fmt.Errorf("delegate: encode capacity readiness: %w", err)

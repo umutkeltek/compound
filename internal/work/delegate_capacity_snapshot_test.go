@@ -14,15 +14,27 @@ import "testing"
 // lane is. The capacity VERDICT (state, refused, confirmation_required) is the
 // thing admission gated on, and it is what must be stable.
 
+// The base decision deliberately uses the `expiring` shape with a POPULATED
+// Message. An all-empty-Message fixture is what let the first version of this
+// fix ship a hole: capacityDecisionMessage formats the live `LastProven` and
+// `DataRef` into that prose, so a test whose Message is always "" cannot see
+// the meter re-entering the hash through the string. `expiring` is also the
+// state that matters — it is not refused and does not require confirmation, so
+// the run proceeds to mint, which is precisely when a spurious
+// `authority_changed` costs a real spawn.
 func baseCapacityDecision() LaneCapacityGuardResult {
 	return LaneCapacityGuardResult{
 		Capacity: DispatchLaneCapacity{
 			Remaining:  0.82,
 			ResetsAt:   "2026-08-01T05:00:00Z",
 			LastProven: "2026-08-01T01:40:00Z",
-			State:      "alive",
-			DataRef:    "codexbar://minimax",
+			State:      "expiring",
+			DataRef:    "codexbar-live:provider=minimax,window=300m,updated_at=2026-08-01T01:40:00Z",
 		},
+		Message: "lane minimax capacity admitted by --confirm: state=expiring " +
+			"data_row_timestamp=2026-08-01T01:40:00Z " +
+			"data_ref=codexbar-live:provider=minimax,window=300m,updated_at=2026-08-01T01:40:00Z " +
+			"alternative_ladder=[none recorded]",
 	}
 }
 
@@ -49,10 +61,24 @@ func TestDelegateReadinessSnapshotIgnoresLiveCapacityMeasurements(t *testing.T) 
 		mutate func(*LaneCapacityGuardResult)
 	}{
 		{"remaining ticked down", func(d *LaneCapacityGuardResult) { d.Capacity.Remaining = 0.7999 }},
-		{"remaining exhausted to zero but state still alive", func(d *LaneCapacityGuardResult) { d.Capacity.Remaining = 0 }},
+		{"remaining exhausted to zero but state unchanged", func(d *LaneCapacityGuardResult) { d.Capacity.Remaining = 0 }},
 		{"last proven re-stamped", func(d *LaneCapacityGuardResult) { d.Capacity.LastProven = "2026-08-01T01:41:12Z" }},
 		{"window reset time refreshed", func(d *LaneCapacityGuardResult) { d.Capacity.ResetsAt = "2026-08-01T06:00:00Z" }},
 		{"data ref repointed", func(d *LaneCapacityGuardResult) { d.Capacity.DataRef = "codexbar://minimax?v=2" }},
+		// The live probe restamps per wall-clock second, and those stamps are
+		// formatted into the guard's prose. Same verdict, different sentence.
+		{"message re-stamped by a one-second-later probe", func(d *LaneCapacityGuardResult) {
+			d.Message = "lane minimax capacity admitted by --confirm: state=expiring " +
+				"data_row_timestamp=2026-08-01T01:40:01Z " +
+				"data_ref=codexbar-live:provider=minimax,window=300m,updated_at=2026-08-01T01:40:01Z " +
+				"alternative_ladder=[none recorded]"
+		}},
+		{"message alternative ladder reworded", func(d *LaneCapacityGuardResult) {
+			d.Message = "lane minimax capacity admitted by --confirm: state=expiring " +
+				"data_row_timestamp=2026-08-01T01:40:00Z " +
+				"data_ref=codexbar-live:provider=minimax,window=300m,updated_at=2026-08-01T01:40:00Z " +
+				"alternative_ladder=[claude-zai]"
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			recheck := baseCapacityDecision()
@@ -75,9 +101,9 @@ func TestDelegateReadinessSnapshotTracksCapacityVerdict(t *testing.T) {
 		mutate func(*LaneCapacityGuardResult)
 	}{
 		{"lane went exhausted", func(d *LaneCapacityGuardResult) { d.Capacity.State = "exhausted" }},
+		{"lane recovered to alive", func(d *LaneCapacityGuardResult) { d.Capacity.State = "alive" }},
 		{"guard now refuses", func(d *LaneCapacityGuardResult) { d.Refused = true }},
 		{"confirmation now required", func(d *LaneCapacityGuardResult) { d.ConfirmationRequired = true }},
-		{"refusal message changed", func(d *LaneCapacityGuardResult) { d.Message = "window exhausted until 05:00Z" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			recheck := baseCapacityDecision()
