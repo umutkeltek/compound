@@ -65,7 +65,7 @@ func cmdPresence(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	store, err := work.Open(homePath)
+	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

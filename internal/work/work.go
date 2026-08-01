@@ -169,6 +169,19 @@ func Open(homePath string) (*Store, error) {
 	return &Store{home: homePath, events: events}, nil
 }
 
+// OpenReadOnly roots a store without materializing work or event habitat.
+// Read projections treat absent runtime files as empty state.
+func OpenReadOnly(homePath string) (*Store, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return nil, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
+	}
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{home: homePath, events: events}, nil
+}
+
 func (s *Store) workPath(id string) string  { return filepath.Join(s.home, "work/work", id+".json") }
 func (s *Store) leasePath(id string) string { return filepath.Join(s.home, "work/leases", id+".json") }
 
