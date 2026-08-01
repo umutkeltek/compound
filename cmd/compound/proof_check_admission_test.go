@@ -1804,6 +1804,7 @@ func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			homePath := t.TempDir()
 			now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 			if err := home.Init(homePath, "proof-release-pending-restore-test", now); err != nil {
