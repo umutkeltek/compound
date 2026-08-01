@@ -48,16 +48,28 @@ const Tier1EngineID = "compound-activity-tier1"
 // change (new meta keys, new envelope source, etc.).
 const Tier1EngineRevision = "v0.1.0"
 
-// CollectReport is the honest outcome of a tier1 collect. Refused=true with a
-// Reason means ZERO rows were written (fail-closed); the CLI maps it to a non-zero
-// exit. SourcesCalled counts how many envelope sources were attempted; SourcesFailed
-// counts ones that errored (graceful skip — the run continues).
+var collectorAWBaseURL = awstream.DefaultBaseURL
+
+// OverrideCollectorAWBaseURLForTest redirects the bounded Tier-1 collector to a
+// fixture server. Production keeps the ActivityWatch default.
+func OverrideCollectorAWBaseURLForTest(url string) func() {
+	previous := collectorAWBaseURL
+	collectorAWBaseURL = url
+	return func() { collectorAWBaseURL = previous }
+}
+
+// CollectReport is the honest outcome of a tier1 collect. Refused is reserved
+// for governance denial; Failed means the ActivityWatch read failed
+// operationally. Both map to a non-zero CLI exit. SourcesFailed counts envelope
+// source failures; BucketsFailed counts ActivityWatch bucket read failures.
 type CollectReport struct {
 	Refused        bool   `json:"refused"`
+	Failed         bool   `json:"failed,omitempty"`
 	Reason         string `json:"reason,omitempty"`
 	EventsWritten  int    `json:"events_written"`
 	SourcesCalled  int    `json:"sources_called"`
 	SourcesFailed  int    `json:"sources_failed"`
+	BucketsFailed  int    `json:"buckets_failed,omitempty"`
 	BannedRefused  int    `json:"banned_refused"`
 	BytesUnderRoot int64  `json:"bytes_under_root"`
 }
@@ -68,17 +80,19 @@ type CollectReport struct {
 type Collector struct {
 	AW       *awstream.Client
 	Registry *source.Registry
+	HomePath string
 	SpoolDir string
 	nowFn    func() time.Time // overridable for tests; defaults to time.Now
 }
 
-// NewCollector returns a Collector wired to the default AW client (localhost:5600),
-// the default source registry (cmux, iTerm2, Warp, Terminal.app, VS Code, Cursor),
-// and the standard spool dir.
-func NewCollector(spoolDir string) *Collector {
+// NewCollector returns a Collector wired to the default AW client
+// (localhost:5600), the default source registry, the governed Compound home,
+// and the requested spool dir.
+func NewCollector(homePath, spoolDir string) *Collector {
 	return &Collector{
-		AW:       awstream.NewClient(awstream.DefaultBaseURL),
+		AW:       awstream.NewClient(collectorAWBaseURL),
 		Registry: source.NewRegistry(),
+		HomePath: homePath,
 		SpoolDir: spoolDir,
 		nowFn:    func() time.Time { return time.Now().UTC() },
 	}
@@ -120,7 +134,7 @@ func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectRepo
 	// this replaces the previous "read the first matching bucket only" path.
 	buckets, err := c.AW.ListBuckets(ctx)
 	if err != nil {
-		return CollectReport{Refused: false, SourcesFailed: 1, Reason: fmt.Sprintf("AW ListBuckets: %v", err)}
+		return CollectReport{Failed: true, SourcesFailed: 1, Reason: fmt.Sprintf("AW ListBuckets: %v", err)}
 	}
 	var windowBuckets []string
 	for _, b := range buckets {
@@ -135,6 +149,7 @@ func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectRepo
 
 	// Pull events from every currentwindow bucket and assemble raw events for
 	// normalization.
+	rep := CollectReport{}
 	rawEvents := make([]awstream.RawEvent, 0, 100)
 	for _, bucketID := range windowBuckets {
 		// Look up the bucket struct so awstream.Normalize can stamp host bindings.
@@ -147,11 +162,16 @@ func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectRepo
 		}
 		events, err := c.AW.FetchEvents(ctx, bucketID, start, now, 1000)
 		if err != nil {
+			rep.BucketsFailed++
 			continue // graceful skip per-bucket; report stays honest
 		}
 		for _, e := range events {
 			rawEvents = append(rawEvents, awstream.RawEvent{Bucket: bucket, AWEvent: e})
 		}
+	}
+	if rep.BucketsFailed == len(windowBuckets) {
+		rep.Failed = true
+		rep.Reason = fmt.Sprintf("AW FetchEvents failed for all %d currentwindow buckets", len(windowBuckets))
 	}
 
 	// 2. Normalize: dedup across hostnames by (bucket_type, ts), drop banned
@@ -166,7 +186,6 @@ func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectRepo
 	// event in the lookback window matches that semantics. A user who
 	// switched apps 5s ago gets the app they're on now, not the one they
 	// were on 30s ago.
-	rep := CollectReport{}
 	seen := make(map[string]bool)
 	for i := len(normalized) - 1; i >= 0; i-- {
 		ev := normalized[i]
@@ -218,7 +237,7 @@ func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectRepo
 		rep.EventsWritten++
 	}
 
-	rep.BytesUnderRoot, _ = dirSize(activity.ActivityRoot(parentHome(ctx, c)))
+	rep.BytesUnderRoot, _ = dirSize(activity.ActivityRoot(c.HomePath))
 	return rep
 }
 
@@ -453,7 +472,7 @@ func Collect(home, spoolDir string, cfg policy.Config, workID string, lookback, 
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	c := NewCollector(spoolDir)
+	c := NewCollector(home, spoolDir)
 	return c.Run(ctx, lookback), nil
 }
 
@@ -725,30 +744,6 @@ var runGitConfig = func(ctx context.Context, cwd string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
-}
-
-// parentHome extracts the home directory from the collector's spool path. Used
-// to compute BytesUnderRoot for the byte-cap gate. Returns "" if the spool path
-// doesn't include a home segment (tests with t.TempDir()).
-func parentHome(ctx context.Context, c *Collector) string {
-	// SpoolDir is typically <home>/spool/activity. Strip the trailing /spool/activity
-	// to recover the home. If the path is just t.TempDir(), we return "" and the
-	// byte-cap reading becomes 0 — fine for tests.
-	if c.SpoolDir == "" {
-		return ""
-	}
-	// Walk up to find a path that contains "/spool" — strip the suffix.
-	p := c.SpoolDir
-	for {
-		parent := filepath.Dir(p)
-		if parent == p || parent == "." || parent == "/" {
-			return ""
-		}
-		if filepath.Base(parent) == "spool" {
-			return filepath.Dir(parent)
-		}
-		p = parent
-	}
 }
 
 // utcDay returns the YYYY-MM-DD UTC day of a timestamp string. Used to bucket

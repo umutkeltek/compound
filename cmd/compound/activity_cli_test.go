@@ -175,6 +175,28 @@ func enableAWMaterializeHome(t *testing.T, homePath string, now time.Time) {
 	}
 }
 
+func enableTier1CollectHome(t *testing.T, homePath string, now time.Time) {
+	t.Helper()
+	grants := `{"schema_version":"compound.standing_grants_source.v0.1","standing_grants":[` +
+		`{"id":"grant.activity_toggle","capability":"` + activity.ToggleCapability + `","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"},` +
+		`{"id":"grant.activity_tier1_collect","capability":"` + activity.Tier1CollectCapability + `","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"}` +
+		`]}`
+	srcPath := filepath.Join(t.TempDir(), "grants.json")
+	if err := os.WriteFile(srcPath, []byte(grants), 0o600); err != nil {
+		t.Fatalf("write grants: %v", err)
+	}
+	if _, err := policy.ImportStandingGrants(homePath, srcPath, now); err != nil {
+		t.Fatalf("import grants: %v", err)
+	}
+	cfg, _, err := policy.LoadConfig(homePath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if _, err := activity.SetEnabled(homePath, cfg, "work_enable", true, now); err != nil {
+		t.Fatalf("enable sensor: %v", err)
+	}
+}
+
 // The user-visible contract: when AW is unreachable, `aw materialize` must exit
 // nonzero and name the failure — it must NOT print a success-looking line. This
 // is the exact regression the audit flagged (AW outage rendered as exit 0).
@@ -216,5 +238,58 @@ func TestActivityCLIAWMaterializeAWDownExitsNonZero(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"failed": true`) {
 		t.Fatalf("JSON must carry failed=true, got %q", stdout.String())
+	}
+}
+
+func TestActivityCLITier1CollectAWDownExitsNonZero(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	enableTier1CollectHome(t, homePath, cliTestNow)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	restore := tier1.OverrideCollectorAWBaseURLForTest(srv.URL)
+	defer restore()
+
+	var stdout, stderr bytes.Buffer
+	code := runActivity([]string{"tier1", "collect", "--home", homePath, "--json"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("JSON Tier-1 AW-down must exit 1, got %d (stdout=%q stderr=%q)", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"failed": true`) {
+		t.Fatalf("JSON must carry failed=true, got %q", stdout.String())
+	}
+}
+
+func TestActivityCLITier1CollectAWDownHumanOutputIsFailure(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	enableTier1CollectHome(t, homePath, cliTestNow)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	restore := tier1.OverrideCollectorAWBaseURLForTest(srv.URL)
+	defer restore()
+
+	var stdout, stderr bytes.Buffer
+	code := runActivity([]string{"tier1", "collect", "--home", homePath}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("human Tier-1 AW-down must exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "tier1 collect failed") {
+		t.Fatalf("stderr must name the operational failure, got %q", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "tier1 collect: events_written") {
+		t.Fatalf("failed run must not print a success line, got %q", stdout.String())
 	}
 }

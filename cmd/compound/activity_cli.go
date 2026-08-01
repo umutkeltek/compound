@@ -481,7 +481,7 @@ func runActivityTier1Collect(args []string, stdout, stderr io.Writer) int {
 	}
 	if hasFlag(args, "--json") {
 		code := 0
-		if rep.Refused {
+		if rep.Refused || rep.Failed {
 			code = 1
 		}
 		if writeJSON(stdout, stderr, rep) != 0 {
@@ -491,6 +491,10 @@ func runActivityTier1Collect(args []string, stdout, stderr io.Writer) int {
 	}
 	if rep.Refused {
 		fmt.Fprintf(stderr, "tier1 collect refused: %s\n", rep.Reason)
+		return 1
+	}
+	if rep.Failed {
+		fmt.Fprintf(stderr, "tier1 collect failed: %s\n", rep.Reason)
 		return 1
 	}
 	fmt.Fprintf(stdout, "tier1 collect: events_written=%d sources_called=%d sources_failed=%d banned_refused=%d lookback=%s timeout=%s\n",
