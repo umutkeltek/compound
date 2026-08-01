@@ -237,7 +237,9 @@ func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectRepo
 		rep.EventsWritten++
 	}
 
-	rep.BytesUnderRoot, _ = dirSize(activity.ActivityRoot(c.HomePath))
+	if strings.TrimSpace(c.HomePath) != "" {
+		rep.BytesUnderRoot, _ = dirSize(activity.ActivityRoot(c.HomePath))
+	}
 	return rep
 }
 
