@@ -3,18 +3,27 @@ package mem
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/candidates"
 )
 
 // volatileBase is a well-formed low-risk volatile candidate; tests mutate one
 // field at a time to isolate each refusal.
+//
+// ExpiresAt is a horizon relative to the wall clock, not an absolute literal,
+// so the value cannot expire out from under the test the way 2026-07-28T12:00:00Z
+// did. The literal was carried in by an earlier revision; one calendar day
+// after that instant the candidate stopped being accepted as "live" and the
+// certifying battery went red for every caller. The repo-wide clock-hygiene
+// guard (internal/hygiene/clock_hygiene_test.go) refuses to ship that pattern
+// again.
 func volatileBase() Candidate {
 	return Candidate{
 		Entity: "project:compound", Predicate: "build_status", Object: "green as of t0",
 		Confidence: 0.9, Derivation: "deterministic", ClaimType: "status",
 		SourceTraceRef: "trace:vol1", SnippetHash: "hvol1",
-		Visibility: "volatile", ExpiresAt: "2026-07-28T12:00:00Z",
+		Visibility: "volatile", ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour).Format(time.RFC3339),
 		PromotionBasis: candidates.BasisRuntimeProof,
 	}
 }
@@ -81,7 +90,12 @@ func TestVolatileWithoutClockRefusedAtPromotion(t *testing.T) {
 // clock (Claim.ExpiresAt is the additive field this packet introduces).
 func TestVolatilePromotionCarriesExpiresAt(t *testing.T) {
 	s := newStore(t)
-	got, err := s.Capture([]Candidate{volatileBase()}, t0)
+	// Capture the expected ExpiresAt before handing the candidate to Capture so
+	// the assertion compares against whatever horizon volatileBase chose, not
+	// against a re-stated literal that would re-arm the same trap.
+	cand := volatileBase()
+	want := cand.ExpiresAt
+	got, err := s.Capture([]Candidate{cand}, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,8 +109,8 @@ func TestVolatilePromotionCarriesExpiresAt(t *testing.T) {
 	if res.Claim.Visibility != "volatile" {
 		t.Fatalf("claim visibility = %q, want volatile", res.Claim.Visibility)
 	}
-	if res.Claim.ExpiresAt != "2026-07-28T12:00:00Z" {
-		t.Fatalf("claim expires_at = %q, want the candidate clock", res.Claim.ExpiresAt)
+	if res.Claim.ExpiresAt != want {
+		t.Fatalf("claim expires_at = %q, want the candidate clock %q", res.Claim.ExpiresAt, want)
 	}
 	// Volatile IS promoted: recallable under matching scope (only ambient is closed to it).
 	rec, err := s.Recall("project:compound", RecallOpts{})
