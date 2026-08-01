@@ -153,6 +153,7 @@ func ApplyChangeStreamCandidates(homePath string, doc ChangeStreamDocument, now 
 	for _, c := range doc.Candidates {
 		nop, appended, err := store.RecordNoPromote(ChangeStreamNoPromote(doc, c), now)
 		if err != nil {
+			report.Status = "fail"
 			return report, err
 		}
 		if appended {

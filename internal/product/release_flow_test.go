@@ -162,8 +162,8 @@ func TestReleaseReviewRecordsAuthorizationButNeverExecution(t *testing.T) {
 	}
 	AnnotateReviewQueue(&queue)
 	reviewartifact.Recount(&queue)
-	if queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 1 || queue.Items[0].Readiness != "no_action" {
-		t.Fatalf("recorded release authorization should make queue terminal: counts=%+v items=%+v", queue.Counts, queue.Items)
+	if queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 1 || queue.Items[0].Readiness != "no_action" || queue.Items[0].Status != "authorization_recorded" {
+		t.Fatalf("recorded release authorization should preserve its terminal status: counts=%+v items=%+v", queue.Counts, queue.Items)
 	}
 }
 

@@ -804,7 +804,7 @@ func containsString(values []string, target string) bool {
 
 func annotateProductReleaseItem(item *reviewartifact.QueueItem) {
 	if report, ok := productReleaseReviewedFromExtras(item.ExtraPaths); ok {
-		item.Status = "recorded"
+		item.Status = report.Status
 		item.Readiness = "no_action"
 		item.BlockedReason = ""
 		item.NextAction = report.NextAction

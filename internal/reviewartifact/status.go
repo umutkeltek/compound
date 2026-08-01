@@ -20,13 +20,14 @@ import "strings"
 // "there is nothing left to decide". Add to this set rather than to a caller;
 // a seventh copy of the literal is how the sixth one drifted.
 var terminalStatuses = map[string]bool{
-	"ok":                 true,
-	"applied":            true,
-	"resolved":           true,
-	"accepted":           true,
-	"recorded":           true,
-	"candidate_recorded": true,
-	"completed":          true,
+	"ok":                     true,
+	"applied":                true,
+	"resolved":               true,
+	"accepted":               true,
+	"recorded":               true,
+	"candidate_recorded":     true,
+	"authorization_recorded": true,
+	"completed":              true,
 }
 
 // TerminalStatus reports whether a review artifact status means the work is
