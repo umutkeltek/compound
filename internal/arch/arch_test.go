@@ -1010,7 +1010,7 @@ func TestStatusHotPathFailsAboveLineBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	var b strings.Builder
-	for i := 0; i < MaxStatusHotPathLines+1; i++ {
+	for i := 0; i < MaxStatusHotPathNarrationLines+1; i++ {
 		b.WriteString("line\n")
 	}
 	if err := os.WriteFile(filepath.Join(statusDir, "status.md"), []byte(b.String()), 0o644); err != nil {
@@ -1022,6 +1022,78 @@ func TestStatusHotPathFailsAboveLineBudget(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Message, "docs/architecture/status.md") {
 		t.Fatalf("failure should name status.md: %+v", findings[0])
+	}
+}
+
+// writeStatusDoc lays a status.md down in a temp repo and returns the repo root.
+func writeStatusDoc(t *testing.T, lines []string) string {
+	t.Helper()
+	repo := t.TempDir()
+	statusDir := filepath.Join(repo, "docs", "architecture")
+	if err := os.MkdirAll(statusDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(statusDir, "status.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return repo
+}
+
+// packageTableRows is the parity table checkPackageTableSingleSource mandates — one row per
+// classified package, so this section's size is not discretionary.
+func packageTableRows(n int) []string {
+	rows := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		rows = append(rows, "| `pkg"+itoa(i)+"` | leaf | a classified package that must carry a parity row |")
+	}
+	return rows
+}
+
+// The regression that sent the ADR-0005 `persist` lane red on 2026-08-01: minting an organ REQUIRES
+// a package-table row, so a budget that counts those rows fails the lane for doing the right thing.
+// Narration sits exactly at budget here and the mandated rows push the file far past the old
+// 250-line total cap — this must still pass, or the doctor is once again punishing correct minting.
+func TestStatusHotPathIgnoresMandatedPackageRows(t *testing.T) {
+	lines := []string{"# Package & Command Status", "", "## Packages (`internal/`)"}
+	lines = append(lines, packageTableRows(120)...)
+	for len(lines)-120 < MaxStatusHotPathNarrationLines {
+		lines = append(lines, "narration that the budget does bound")
+	}
+	findings := checkStatusHotPath(writeStatusDoc(t, lines))
+	if len(findings) != 1 || findings[0].Severity != Info {
+		t.Fatalf("findings = %+v, want one status-hot-path Info: mandated package rows must not consume the narration budget", findings)
+	}
+	if !strings.Contains(findings[0].Message, "120 mandated package-table rows excluded") {
+		t.Fatalf("Info should report the excluded row count: %+v", findings[0])
+	}
+}
+
+// The exclusion must not become a loophole: rows buy no prose headroom whatsoever. One narration
+// line past budget fails no matter how large the mandated table is.
+func TestStatusHotPathPackageRowsCannotBuyProseHeadroom(t *testing.T) {
+	lines := []string{"## Packages (`internal/`)"}
+	lines = append(lines, packageTableRows(200)...)
+	for len(lines)-200 < MaxStatusHotPathNarrationLines+1 {
+		lines = append(lines, "narration that the budget does bound")
+	}
+	findings := checkStatusHotPath(writeStatusDoc(t, lines))
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want a Fail: a big parity table must not raise the prose budget", findings)
+	}
+	if !strings.Contains(findings[0].Message, "never raise the budget to fit") {
+		t.Fatalf("failure should refuse the weaken-the-gate move: %+v", findings[0])
+	}
+}
+
+// Narration cannot be smuggled past the ratchet by shaping it like a table row: only rows INSIDE the
+// `## Packages` section are mandated, so identical rows under `## Commands` still count as prose.
+func TestStatusHotPathCountsTableShapedProseOutsidePackages(t *testing.T) {
+	lines := []string{"## Commands"}
+	lines = append(lines, packageTableRows(MaxStatusHotPathNarrationLines)...)
+	findings := checkStatusHotPath(writeStatusDoc(t, lines))
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want a Fail: table-shaped prose outside ## Packages is still narration", findings)
 	}
 }
 

@@ -298,7 +298,20 @@ func parseLeakTokenLines(raw string) []string {
 // this. `--strict` fails if it grows (new fragmentation). Lower it as packages converge onto the
 // spine — the budget can only go down, so the debt can never become wallpaper or quietly grow.
 const ConvergePendingBudget = 0
-const MaxStatusHotPathLines = 250
+
+// MaxStatusHotPathNarrationLines is the RATCHET on status.md's PROSE, and it deliberately does not
+// count the package-table rows that checkPackageTableSingleSource MANDATES (one row per
+// arch.Classification entry). Counting them put two gates of this same doctor in direct conflict:
+// minting an organ is required to add a row, and the row pushed the file past a total-line cap — so
+// on 2026-08-01 the ADR-0005 `persist` lane went red for doing exactly the right thing, and the
+// cheapest way to dodge the gate was to bury new code in cmd/compound instead, where nothing is
+// budgeted at all. The threat this bounds is narration/journal accretion, not the parity table,
+// whose size is a function of how many packages the system honestly has.
+//
+// This is NOT a loosened budget: the prose allowance is unchanged. The old cap left 250-61=189 lines
+// for narration once the 61 mandated rows were paid for, and 189 is exactly what it is here. Like
+// ConvergePendingBudget, it only ever goes DOWN — to add prose, subtract prose.
+const MaxStatusHotPathNarrationLines = 189
 
 // Doctor runs every check. repoRoot is the compound repo root for filesystem checks (classification
 // totality, doc leak); pass "" to run only the in-memory checks (candidate map). strict turns the
@@ -800,9 +813,9 @@ func checkStatusHotPath(repoRoot string) []Finding {
 	if err != nil {
 		return []Finding{{"status-hot-path", Warn, "could not read docs/architecture/status.md: " + err.Error()}}
 	}
-	lines := lineCount(b)
-	if lines > MaxStatusHotPathLines {
-		return []Finding{{"status-hot-path", Fail, "docs/architecture/status.md is " + itoa(lines) + " lines; keep the hot status surface at or below " + itoa(MaxStatusHotPathLines) + " lines and move proof journal entries to docs/architecture/archive/"}}
+	narration, mandated := statusNarrationLineCount(b)
+	if narration > MaxStatusHotPathNarrationLines {
+		return []Finding{{"status-hot-path", Fail, "docs/architecture/status.md carries " + itoa(narration) + " narration lines (excluding " + itoa(mandated) + " mandated package-table rows); keep narration at or below " + itoa(MaxStatusHotPathNarrationLines) + " lines — subtract prose or move proof journal entries to docs/architecture/archive/, and never raise the budget to fit"}}
 	}
 	var journalLines []string
 	for i, line := range strings.Split(string(b), "\n") {
@@ -813,7 +826,32 @@ func checkStatusHotPath(repoRoot string) []Finding {
 	if len(journalLines) > 0 {
 		return []Finding{{"status-hot-path", Fail, "docs/architecture/status.md contains proof-journal shaped entries (" + strings.Join(journalLines, ", ") + "); keep status as current owner/surface map and move dated proof logs to docs/architecture/archive/"}}
 	}
-	return []Finding{{"status-hot-path", Info, "docs/architecture/status.md hot path is " + itoa(lines) + "/" + itoa(MaxStatusHotPathLines) + " lines with no proof-journal entries"}}
+	return []Finding{{"status-hot-path", Info, "docs/architecture/status.md narration is " + itoa(narration) + "/" + itoa(MaxStatusHotPathNarrationLines) + " lines (" + itoa(mandated) + " mandated package-table rows excluded) with no proof-journal entries"}}
+}
+
+// statusNarrationLineCount splits status.md into the prose the budget bounds and the package-table
+// rows checkPackageTableSingleSource mandates. A row only stops counting while it is inside the
+// `## Packages` section AND shaped like a table row — prose that merely mentions a package still
+// counts, so narration cannot be smuggled past the ratchet by parking it in the table's section.
+func statusNarrationLineCount(b []byte) (narration int, mandated int) {
+	inPackages := false
+	for _, line := range strings.Split(string(b), "\n") {
+		switch {
+		case strings.HasPrefix(line, "## Packages"):
+			inPackages = true
+		case strings.HasPrefix(line, "## "):
+			inPackages = false
+		}
+		if inPackages && strings.HasPrefix(strings.TrimSpace(line), "| `") {
+			mandated++
+			continue
+		}
+		narration++
+	}
+	if len(b) > 0 && b[len(b)-1] == '\n' {
+		narration-- // the trailing newline is not a line, matching lineCount's contract
+	}
+	return narration, mandated
 }
 
 func lineCount(b []byte) int {

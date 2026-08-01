@@ -229,7 +229,7 @@ Intentionally no alias layer. Alias layers keep obsolete surfaces alive and recr
 - candidate-map integrity: every candidate kind has exactly one created inbox dir and consumer;
 - package classification totality: every `internal/` directory is classified, and every classified package exists;
 - public leak gate: docs scan generic path/email leaks plus private leak-token list; optional private source-leak token list scans public fixtures/tests/source examples without hardcoding operator names into public core;
-- status-hot-path guard: `docs/architecture/status.md` must stay at or below 250 lines, with proof journals archived out of the hot path; retired-surface guard: old skill-matrix debt cannot reappear in public docs;
+- status-hot-path guard: this file's NARRATION must stay at or below 189 lines, with proof journals archived out of the hot path; the package-table rows `package-table-single-source` mandates are excluded, so minting a classified organ never reds this gate, and the budget only ratchets DOWN — to add prose, subtract prose; retired-surface guard: old skill-matrix debt cannot reappear in public docs;
 - distiller-contract guard: duplicate candidate anti-churn must remain documented beyond memory-only duplicates;
 - llm-grounding-contract guard: request-grounded candidate `evidence_refs[]` / request `source_refs[]` gating must remain documented for eval/live/offline replay extraction;
 - distiller-shape-contract guard: memory candidate `entity`/`predicate`/`object` and non-memory `subject`/`statement` shape must remain documented before inbox write;
