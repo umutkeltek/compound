@@ -293,3 +293,40 @@ func TestActivityCLITier1CollectAWDownHumanOutputIsFailure(t *testing.T) {
 		t.Fatalf("failed run must not print a success line, got %q", stdout.String())
 	}
 }
+
+func TestActivityCLITier1CollectPartialBucketFailureStaysSuccessfulAndVisible(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	enableTier1CollectHome(t, homePath, cliTestNow)
+
+	const buckets = `{
+		"aw-watcher-window_bad":{"id":"aw-watcher-window_bad","type":"currentwindow","hostname":"h"},
+		"aw-watcher-window_ok":{"id":"aw-watcher-window_ok","type":"currentwindow","hostname":"h"}
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "window_bad"):
+			http.Error(w, "down", http.StatusInternalServerError)
+		case strings.Contains(r.URL.Path, "/events"):
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			_, _ = w.Write([]byte(buckets))
+		}
+	}))
+	defer srv.Close()
+	restore := tier1.OverrideCollectorAWBaseURLForTest(srv.URL)
+	defer restore()
+
+	var stdout, stderr bytes.Buffer
+	code := runActivity([]string{"tier1", "collect", "--home", homePath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("partial bucket failure must remain successful, got %d (stderr=%q)", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "buckets_failed=1") {
+		t.Fatalf("human output must expose partial degradation, got %q", stdout.String())
+	}
+}
