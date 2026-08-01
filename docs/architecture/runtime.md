@@ -194,7 +194,7 @@ is still `recorded_via=generic`, not the attested
 Hung off one root `work_id`. The header matters more than any body — it prevents *retrieved ≠ relevant ≠
 authoritative ≠ current*.
 
-Current source-delivery close rule (superseding the earlier v0.4 migration wording above): only a revalidated `landed` `compound.work_land_check.v0.5` report is current close evidence. It binds the candidate tip to the latest attached, owned, content-addressed `proof-check:pfrs_*` source snapshot when one exists. Historical v0.3 and v0.4 reports remain readable stale evidence and require a fresh v0.5 check; v0.3 predates repository identity and v0.4 predates sealed proof source identity.
+Current source-delivery close rule (superseding the earlier v0.4 migration wording above): only a revalidated `landed` `compound.work_land_check.v0.5` report is current close evidence. It binds the candidate tip to the latest attached, owned, content-addressed `proof-check:pfrs_*` source snapshot when one exists. The normal proof observes the bound target checkout. A checkout-independent CAS landing is also certifiable when the bound repository identity remains valid, no worktree checks out the target ref, and the target plus required publication refs already contain the certified candidate; dirt in the active foreign feature checkout is then outside target cleanliness. A target ref checked out in any worktree retains the ordinary checkout gate. Historical v0.3 and v0.4 reports remain readable stale evidence and require a fresh v0.5 check; v0.3 predates repository identity and v0.4 predates sealed proof source identity.
 
 Canonical source proof executes every gate in a detached temporary checkout of
 the sealed HEAD. Only the ceremony-owned ignored inputs are copied as snapshots;

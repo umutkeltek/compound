@@ -1120,6 +1120,87 @@ func TestLandCheckRejectsWrongRepoSecondCloneAndWrongBranch(t *testing.T) {
 	}
 }
 
+func TestLandCheckCertifiesContainedTargetRefWithoutTargetCheckout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	repo, base, candidate := sharedLandingReadyRepo(t)
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "an atomic target-ref landing certifies without interrupting the active feature checkout",
+		GitDelivery:      localGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, w.ID, now)
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(3*time.Minute))
+
+	// Reproduce the documented checkout-independent landing escape hatch: the
+	// canonical worktree stays on the active feature branch while a guarded
+	// update-ref advances main. No worktree has main checked out.
+	landingGit(t, repo, "switch", "feature")
+	landingGit(t, repo, "update-ref", "refs/heads/main", candidate, base)
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(3*time.Minute+time.Second))
+
+	report, err := store.LandCheck(w.ID, LandCheckOptions{
+		CandidateTipSHA: candidate,
+		Record:          true,
+		Actor:           "codex",
+	}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "landed" || !report.CandidateContainedInTarget || report.TargetBranchWorktree {
+		t.Fatalf("checkout-independent contained target must certify: %+v", report)
+	}
+}
+
+func TestLandCheckRefusesCheckoutIndependentProofWhenTargetIsCheckedOutElsewhere(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
+	now := time.Date(2026, 8, 1, 13, 0, 0, 0, time.UTC)
+	repo, base, candidate := sharedLandingReadyRepo(t)
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "a live target checkout keeps worktree state authoritative",
+		GitDelivery:      localGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, w.ID, now)
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(3*time.Minute))
+
+	landingGit(t, repo, "switch", "feature")
+	landingGit(t, repo, "update-ref", "refs/heads/main", candidate, base)
+	targetCheckout := filepath.Join(t.TempDir(), "main-worktree")
+	landingGit(t, repo, "worktree", "add", targetCheckout, "main")
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(3*time.Minute+time.Second))
+
+	report, err := store.LandCheck(w.ID, LandCheckOptions{
+		CandidateTipSHA: candidate,
+	}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "wrong_target_worktree" {
+		t.Fatalf("a target checked out outside the bound worktree must refuse: %+v", report)
+	}
+}
+
 func TestLandCheckRejectsSamePathRepositoryReplacement(t *testing.T) {
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")

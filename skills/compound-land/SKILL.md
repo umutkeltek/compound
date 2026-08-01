@@ -377,9 +377,14 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   installed binary silently serves yesterday's behavior to every session.
 - For a source-controlled WorkEnvelope, run `compound work land-check <work_id> --tip
   <full-candidate-sha> --actor <lease-holder>` after local landing and after the normal push when
-  publication is required. It certifies only the envelope-bound canonical worktree, local target
-  ref, and remote-tracking publication ref; a feature worktree, second clone, or local-only main
-  cannot supply close proof. The §3 read-not-reconstruct rule applies to the `--tip` SHA too:
+  publication is required. It certifies only the envelope-bound repository, local target ref, and
+  remote-tracking publication ref; a feature worktree, second clone, or local-only main cannot
+  supply close proof. One narrow exception matches the §1 CAS escape hatch: when the canonical
+  checkout remains on an active feature branch, **no worktree checks out the target ref**, and the
+  target plus required publication already contain the certified candidate, land-check certifies
+  from those immutable refs without inspecting or interrupting the foreign checkout. If any
+  worktree checks out the target ref, the ordinary canonical-worktree rule still applies. The §3
+  read-not-reconstruct rule applies to the `--tip` SHA too:
   capture it from `git rev-parse` output THIS turn (`TIP=$(git rev-parse main)`), never expand a
   short SHA from memory — a fabricated tip reads as `invalid_lineage` "recover candidate tip"
   (caught live 2026-07-15: a hand-expanded tip tail sent land-check hunting a phantom commit;

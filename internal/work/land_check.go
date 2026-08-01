@@ -287,12 +287,6 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 			return report, nil
 		}
 	}
-	if !report.TargetBranchWorktree {
-		report.Status = "wrong_target_worktree"
-		report.NextAction = fmt.Sprintf("check out %s in the explicit target worktree, then rerun land-check", targetRef)
-		return report, nil
-	}
-
 	report.CandidateExists, err = landingCommitExists(repoPath, candidate)
 	if err != nil {
 		return report, err
@@ -333,6 +327,25 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 	report.TargetAncestorOfCandidate, err = landingIsAncestor(repoPath, targetSHA, candidate)
 	if err != nil {
 		return report, err
+	}
+	if !report.TargetBranchWorktree {
+		targetCheckedOut, err := landingRefCheckedOut(repoPath, targetBranchRef)
+		if err != nil {
+			return report, err
+		}
+		// The landing ceremony permits an atomic update-ref CAS when no
+		// worktree has the target branch checked out. Once that ref contains
+		// the certified candidate, the foreign feature checkout is irrelevant
+		// to delivery and must not block land-check or leak its dirt into the
+		// target cleanliness result. A target checked out anywhere, or a target
+		// that still needs to move, retains the canonical-worktree refusal.
+		if targetCheckedOut || !report.CandidateContainedInTarget {
+			report.Status = "wrong_target_worktree"
+			report.NextAction = fmt.Sprintf("check out %s in the explicit target worktree, then rerun land-check", targetRef)
+			return report, nil
+		}
+		report.CleanTarget = true
+		statusOutput = ""
 	}
 
 	publicationExists := false
@@ -860,6 +873,20 @@ func landingCurrentBranchRef(repoPath string) (string, error) {
 		return "", nil
 	}
 	return "", fmt.Errorf("inspect target worktree branch: %w: %s", err, strings.TrimSpace(string(out)))
+}
+
+func landingRefCheckedOut(repoPath, targetBranchRef string) (bool, error) {
+	out, err := runLandingGitOutput(repoPath, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return false, fmt.Errorf("inspect worktrees for target ref %s: %w", targetBranchRef, err)
+	}
+	want := "branch " + targetBranchRef
+	for _, field := range strings.Split(out, "\x00") {
+		if field == want {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func landingRefExists(repoPath, ref string) (bool, error) {
