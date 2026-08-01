@@ -331,14 +331,11 @@ func TestCollectorBytesUnderRootUsesHomeNotSpoolPath(t *testing.T) {
 		}`))
 	}))
 	defer srv.Close()
+	restore := OverrideCollectorAWBaseURLForTest(srv.URL)
+	defer restore()
 
-	c := newCollectorWithDeps(
-		awstream.NewClient(srv.URL),
-		source.NewRegistry(),
-		t.TempDir(),
-		func() time.Time { return now },
-	)
-	c.HomePath = homePath
+	c := NewCollector(homePath, t.TempDir())
+	c.nowFn = func() time.Time { return now }
 	rep := c.Run(context.Background(), 30*time.Second)
 
 	if rep.BytesUnderRoot != int64(len(payload)) {
