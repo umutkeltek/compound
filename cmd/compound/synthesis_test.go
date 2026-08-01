@@ -151,7 +151,14 @@ func TestSynthesisSweepCLIWritesSeedCorroborationReviewCard(t *testing.T) {
 		Visibility:     "contextual",
 		Tags:           []string{"seed"},
 		Salience:       "low",
-		ExpiresAt:      "2026-08-01T00:00:00Z",
+		// Relative, not absolute. The candidate store is driven by this test's own
+		// fixed clock (July 2026 above), but `synthesis sweep` reads the real one, so
+		// an unexpired seed is only unexpired until the literal date arrives. Pinned
+		// to 2026-08-01T00:00:00Z, this test passed for a month and then began failing
+		// for every caller at that instant — turning the repo-wide certifying battery
+		// red on a change that had nothing to do with synthesis. Keep it a horizon the
+		// wall clock cannot reach rather than a date that re-arms the same trap.
+		ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour).Format(time.RFC3339),
 		Expectation: &mem.CandidateExpectation{
 			Entity:    "project:alpha",
 			Predicate: "runtime_outcome",
