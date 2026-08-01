@@ -2279,3 +2279,32 @@ func TestLiveReadIntentIsMonitoredNotHeldMutation(t *testing.T) {
 		t.Fatalf("a file read must not emit the held generic use_tool action: %+v", intents[0])
 	}
 }
+
+// Exercise the installed-hook boundary, not only intent construction. On an
+// enforced Claude lane a built-in Read must return no permission decision,
+// while an unknown path-carrying tool keeps the fail-closed ask.
+func TestLiveReadBuiltinDoesNotAskAtEnforcedHookBoundary(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	repo := t.TempDir()
+	target := filepath.Join(repo, "README.md")
+
+	input := `{"hook_event_name":"PreToolUse","session_id":"sess_read_boundary","cwd":` +
+		quoteJSON(repo) + `,"tool_name":"Read","tool_input":{"file_path":` + quoteJSON(target) + `}}`
+	readResponse := runClaudePreToolUse(t, input)
+	if got := readResponse.HookSpecificOutput.PermissionDecision; got != "" {
+		t.Fatalf("enforced Read decision=%q reason=%q, want no prompt",
+			got, readResponse.HookSpecificOutput.PermissionDecisionReason)
+	}
+
+	unknownInput := `{"hook_event_name":"PreToolUse","session_id":"sess_unknown_boundary","cwd":` +
+		quoteJSON(repo) + `,"tool_name":"SomeFutureTool","tool_input":{"file_path":` + quoteJSON(target) + `}}`
+	unknownResponse := runClaudePreToolUse(t, unknownInput)
+	if got := unknownResponse.HookSpecificOutput.PermissionDecision; got != "ask" {
+		t.Fatalf("unknown path tool decision=%q reason=%q, want fail-closed ask",
+			got, unknownResponse.HookSpecificOutput.PermissionDecisionReason)
+	}
+}
