@@ -38,13 +38,7 @@ import (
 // excludedFiles lists test files the guard MUST skip, with a one-line reason.
 // Keep the list short — every entry is debt. The exclusion is local to this
 // guard; production hygiene is still owed on the excluded surface.
-var excludedFiles = map[string]string{
-	// synthesis_test.go carries ExpiresAt: "2026-08-01T00:00:00Z" — the literal
-	// that caused this guard to exist. The fix is landing on another branch;
-	// touching it here would collide with that branch. Re-evaluate on next
-	// merge of the synthesis packet.
-	"cmd/compound/synthesis_test.go": "fixed on synthesis packet branch; do not collide",
-}
+var excludedFiles = map[string]string{}
 
 // expiryFieldPattern matches the literal assignment patterns this guard
 // watches for. Each alternative is "an expiry-ish field name, optional
