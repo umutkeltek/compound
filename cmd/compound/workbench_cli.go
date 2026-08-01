@@ -95,7 +95,12 @@ func cmdWorkbench(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	store, err := work.Open(homePath)
+	// Read-only by registry contract: the workbench inspects the ledger and
+	// must not materialize work/ or events/ just by looking (see
+	// work.OpenReadOnly). Every projection it composes — Workbench,
+	// ExecutorsProjection, the review queue, capability surface, route plan —
+	// is a read; a missing home projects empty rather than scaffolded.
+	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -274,11 +279,15 @@ func cmdWorkbench(args []string) {
 		os.Exit(1)
 	}
 	var capabilitySurface *capgraph.SurfaceReport
-	if capabilityTask != "" {
+	if capabilityTask != "" && capgraph.Exists(homePath) {
 		if capabilityHarness == "" {
 			capabilityHarness = actor
 		}
-		capStore, err := capgraph.Open(homePath)
+		// OpenReadOnly, not Open: the workbench is read-classified and must not
+		// MkdirAll registries/ just because --capability-task was passed. An
+		// absent graph (fresh home) skips the surface with a visible warning,
+		// mirroring doctor's agentLaneRows Exists guard.
+		capStore, err := capgraph.OpenReadOnly(homePath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
@@ -290,6 +299,11 @@ func cmdWorkbench(args []string) {
 		}
 		surface = surface.LimitOffers(capabilityLimit)
 		capabilitySurface = &surface
+	} else if capabilityTask != "" {
+		// The operator asked for a capability surface explicitly, but this home
+		// has no graph yet. Say so instead of silently rendering nothing — and
+		// never scaffold registries/ from a read-classified command.
+		fmt.Fprintln(os.Stderr, "warning: no capability graph under this home; --capability-task surface skipped")
 	}
 	var routePlan *routeevidence.CapabilityRoutePlan
 	if routeClass != "" {

@@ -270,7 +270,12 @@ func readOperatorCoordination(
 	if err != nil {
 		return OperatorCoordinationProjection{}, err
 	}
-	store, err := work.Open(request.HomePath)
+	// OpenReadOnly: this projection only validates delivery evidence off the
+	// work store (Get + lifecycle reads) — it writes nothing. `compound
+	// attention --json` and `compound coordination --json` are read-classified
+	// in the registry, so projecting operator coordination must not MkdirAll
+	// work/* or Ensure events/ as a side effect of looking.
+	store, err := work.OpenReadOnly(request.HomePath)
 	if err != nil {
 		return OperatorCoordinationProjection{}, err
 	}

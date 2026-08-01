@@ -167,7 +167,10 @@ func StampReviewActionAuthority(homePath string, report *reviewartifact.QueueRep
 	if err != nil {
 		return fmt.Errorf("load current policy for review authority: %w", err)
 	}
-	workStore, err := work.Open(homePath)
+	// OpenReadOnly: the queue report is assembled by reads only (Get +
+	// policy.EvaluateAuthority), so stamping authority must not materialize
+	// work/ or events/ as a side effect of building the report.
+	workStore, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		return fmt.Errorf("open work store for review authority: %w", err)
 	}
@@ -217,7 +220,8 @@ func StampReviewGroupActionAuthority(homePath string, report *reviewartifact.Que
 	if err != nil {
 		return fmt.Errorf("load current policy for review group authority: %w", err)
 	}
-	workStore, err := work.Open(homePath)
+	// OpenReadOnly: read-only assembly, same contract as StampReviewActionAuthority above.
+	workStore, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		return fmt.Errorf("open work store for review group authority: %w", err)
 	}
@@ -250,7 +254,9 @@ func StampReviewGroupActionAuthority(homePath string, report *reviewartifact.Que
 // ResolveReviewWorkAuthority reads only the current work store and the
 // already-loaded binding. It never creates, reopens, advances, or guesses work.
 func ResolveReviewWorkAuthority(homePath string, item reviewartifact.QueueItem) (ReviewWorkAuthority, error) {
-	workStore, err := work.Open(homePath)
+	// OpenReadOnly honors the read-only contract in the doc above: this resolves
+	// authority off the current work store without creating or advancing it.
+	workStore, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		return ReviewWorkAuthority{}, fmt.Errorf("open work store for review authority: %w", err)
 	}

@@ -121,7 +121,10 @@ func buildNarrateScript(homePath string, mood narrate.Mood, recent int, now time
 	if recent <= 0 {
 		recent = 5
 	}
-	store, err := work.Open(homePath)
+	// Read-only by registry contract: narrate (and `orient --operator`, which
+	// shares this builder) serves a script off the ledger and must not
+	// materialize work/ or events/ just by looking (see work.OpenReadOnly).
+	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		return narrate.Result{}, err
 	}

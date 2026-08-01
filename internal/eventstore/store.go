@@ -605,6 +605,10 @@ func (s *Store) HookEventsExists() (bool, error) {
 	return regularFileExists(s.hookEventsPath())
 }
 
+func (s *Store) WorkLogExists() (bool, error) {
+	return regularFileExists(s.workLogPath())
+}
+
 func (s *Store) OpenTraces() (*os.File, error) { return os.Open(s.tracesPath()) }
 
 func (s *Store) OpenRetrievalTraffic() (*os.File, error) {

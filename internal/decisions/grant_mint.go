@@ -16,7 +16,9 @@ package decisions
 // CLI uses; this only makes it a legible card.
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"compound/internal/mem"
@@ -82,8 +84,16 @@ func AnnotateAutonomyGrantMintQueue(report *reviewartifact.QueueReport, homePath
 // (so the card emits) rather than erroring. The bool is false only when the
 // grant records could not be read at all.
 func activeAutonomyGrantClasses(homePath string) (map[string]bool, bool) {
-	store, err := mem.Open(homePath)
+	// OpenReadOnly: this annotates a read-only queue projection off the memory
+	// ledger and must never scaffold candidates/ or ledger/ as a side effect.
+	// An ABSENT ledger reads as "no grants" (empty map, ok) — exactly the
+	// fresh-home semantics mem.Open used to provide by mkdir-ing the ledger
+	// before reading it empty. Only a genuine open failure fails closed.
+	store, err := mem.OpenReadOnly(homePath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]bool{}, true
+		}
 		return nil, false
 	}
 	claims, err := store.AllCurrentOperationalDecisions()
@@ -118,7 +128,9 @@ func activeAutonomyGrantClasses(homePath string) (map[string]bool, bool) {
 // nothing) rather than a phantom card.
 func waitingDirectorClassCounts(homePath string) map[string]int {
 	counts := map[string]int{}
-	store, err := work.Open(homePath)
+	// OpenReadOnly: a read failure yields an empty map per the contract above;
+	// counting director work must not materialize work/ or events/.
+	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		return counts
 	}

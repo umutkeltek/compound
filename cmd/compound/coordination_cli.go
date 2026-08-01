@@ -63,7 +63,11 @@ func cmdCoordination(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	store, err := work.Open(homePath)
+	// Read-only by registry contract: coordination projects the planning half
+	// of `work continue` without executing any of it, so it must not materialize
+	// work/ or events/ just by looking (see work.OpenReadOnly). The governed
+	// `measure` subcommand keeps its own opener below.
+	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
