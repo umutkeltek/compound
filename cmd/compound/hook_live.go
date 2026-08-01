@@ -971,7 +971,27 @@ func liveMutationInputReference(harnessName string, in claudeLiveHookInput, targ
 	return prefix + hex.EncodeToString(digest[:])
 }
 
+// readOnlyBuiltinTools are the built-in tools that carry a file_path/path but do not
+// write through it. Without this, liveToolPaths saw the path key and routed them down
+// the mutation branch, where they mapped to the generic "use_tool" action, which has no
+// standing grant, which the policy layer holds — and on an --enforce lane a hold becomes
+// permissionDecision "ask" (see livePermissionDecision). The result was an approval
+// prompt on every file read: the gate fires so often it trains the operator to accept
+// without reading, which is worse than not gating at all.
+//
+// Deliberately a small ALLOW-list of known-safe built-ins, never a deny-list: an
+// unrecognized tool — including every mcp__* tool — keeps the old mutation-path
+// treatment and stays fail-closed.
+var readOnlyBuiltinTools = map[string]bool{
+	"Read": true,
+	"Glob": true,
+	"Grep": true,
+}
+
 func liveToolPaths(toolName string, input map[string]any) []string {
+	if readOnlyBuiltinTools[strings.TrimSpace(toolName)] {
+		return nil
+	}
 	for _, key := range []string{"file_path", "path"} {
 		if raw, ok := input[key]; ok {
 			if s := strings.TrimSpace(fmt.Sprint(raw)); s != "" && s != "<nil>" {

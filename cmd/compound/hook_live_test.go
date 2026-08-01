@@ -2237,3 +2237,45 @@ func TestLiveHookResponsePreservesSessionSummaryWithCoordinationContext(t *testi
 		}
 	}
 }
+
+// A read-only built-in must not be classified as a mutation. It used to be: the tool
+// carried file_path, liveToolPaths keyed only on that key, and the intent became the
+// generic "use_tool" action — held by policy, surfaced as permissionDecision "ask" on an
+// --enforce lane. That is an approval prompt on every file read, which trains the
+// operator to accept blindly. An UNKNOWN tool with a path must still take the mutation
+// path, so the allow-list can never become a hole.
+func TestLiveToolPathsClassifiesReadOnlyBuiltinsAsNonMutating(t *testing.T) {
+	withPath := map[string]any{"file_path": "/repo/pkg/file.go"}
+	for _, name := range []string{"Read", "Glob", "Grep"} {
+		if got := liveToolPaths(name, withPath); len(got) != 0 {
+			t.Fatalf("%s must not yield mutation targets, got %v", name, got)
+		}
+	}
+	for _, name := range []string{"Write", "Edit", "MultiEdit", "mcp__unknown__do_thing", "SomeFutureTool"} {
+		if got := liveToolPaths(name, withPath); len(got) != 1 {
+			t.Fatalf("%s must still yield its target (fail-closed), got %v", name, got)
+		}
+	}
+}
+
+// End-to-end: the intent a read produces must not be the held generic action. Asserting
+// on the emitted ActionIntent rather than on liveToolPaths alone is the point — the
+// prompt comes from the action/policy pair, not from the path extraction.
+func TestLiveReadIntentIsMonitoredNotHeldMutation(t *testing.T) {
+	in := claudeLiveHookInput{
+		ToolName:  "Read",
+		ToolInput: map[string]any{"file_path": "/repo/pkg/file.go"},
+		SessionID: "sess_read",
+		Cwd:       "/repo",
+	}
+	intents, err := liveActionIntents("claude-code", in, cliTestNow)
+	if err != nil {
+		t.Fatalf("liveActionIntents: %v", err)
+	}
+	if len(intents) != 1 {
+		t.Fatalf("want one intent, got %d", len(intents))
+	}
+	if intents[0].Action == "use_tool" {
+		t.Fatalf("a file read must not emit the held generic use_tool action: %+v", intents[0])
+	}
+}
