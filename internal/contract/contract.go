@@ -34,6 +34,8 @@ import (
 	"compound/internal/harness"
 	"compound/internal/mem"
 	"compound/internal/negatives"
+	"compound/internal/persist"
+	"compound/internal/persist/pg"
 	"compound/internal/projection"
 	"compound/internal/work"
 )
@@ -2140,6 +2142,43 @@ type contextPositionRef struct {
 // measured recall.
 var breadthEngineFactory = mem.DefaultBreadthEngine
 
+// pgvectorEnabled reports whether the postgres+pgvector store backend is active.
+func pgvectorEnabled() bool {
+	return strings.TrimSpace(os.Getenv("COMPOUND_STORE")) == "postgres"
+}
+
+// pgvectorEngineOrNil builds a mem.Engine backed by pgvector, or nil when the
+// postgres store is not enabled or unreachable. The caller owns Close via the
+// returned closeEng.
+func pgvectorEngineOrNil() *pg.PgEngine {
+	if !pgvectorEnabled() {
+		return nil
+	}
+	dsn := strings.TrimSpace(os.Getenv("COMPOUND_DSN"))
+	if dsn == "" {
+		dsn = "postgres://127.0.0.1:5433/compound?sslmode=disable"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store, err := pg.Open(ctx, persist.Config{DSN: dsn})
+	if err != nil {
+		return nil
+	}
+	dims := 768
+	if d := strings.TrimSpace(os.Getenv("COMPOUND_VECTOR_DIMS")); d != "" {
+		fmt.Sscanf(d, "%d", &dims)
+	}
+	embedURL := strings.TrimSpace(os.Getenv("COMPOUND_EMBED_URL"))
+	if embedURL == "" {
+		embedURL = "http://localhost:11434/v1"
+	}
+	embedModel := strings.TrimSpace(os.Getenv("COMPOUND_EMBED_MODEL"))
+	if embedModel == "" {
+		embedModel = "nomic-embed-text"
+	}
+	return pg.NewPgEngine(store, embedURL, embedModel, dims)
+}
+
 var breadthEmbedderResolver = breadth.ResolveEmbedder
 
 type exactTaskMemoizingEmbedder struct {
@@ -2252,10 +2291,10 @@ func semanticTaskRankResultWithEmbedderFromView(homePath string, in Input, trace
 			trace.RequestedEngine = requestedEngineIdentity()
 		}
 	}
-	if !in.ReadOnlyRetrieval && strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) == "" {
+	if !in.ReadOnlyRetrieval && strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) == "" && !pgvectorEnabled() {
 		return semanticTaskRankResult{}
 	}
-	if in.ReadOnlyRetrieval && embedder == nil {
+	if in.ReadOnlyRetrieval && embedder == nil && !pgvectorEnabled() {
 		return semanticTaskRankResult{}
 	}
 	if len(memoryTextTokens(in.Task)) == 0 {
@@ -2278,17 +2317,27 @@ func semanticTaskRankResultWithEmbedderFromView(homePath string, in Input, trace
 	var eng mem.Engine
 	closeEng := func() {}
 	if in.ReadOnlyRetrieval {
-		core, err := breadth.NewEngine(breadth.EngineConfig{Embedder: embedder, CompoundHome: homePath})
-		if err != nil {
-			if trace != nil {
-				trace.Outcome = EngineOutcomeDegraded
-				trace.ErrorClass = EngineErrorRetrieval
+		if pgEng := pgvectorEngineOrNil(); pgEng != nil {
+			eng = pgEng
+			closeEng = func() { pgEng.Close() }
+		} else {
+			core, err := breadth.NewEngine(breadth.EngineConfig{Embedder: embedder, CompoundHome: homePath})
+			if err != nil {
+				if trace != nil {
+					trace.Outcome = EngineOutcomeDegraded
+					trace.ErrorClass = EngineErrorRetrieval
+				}
+				return semanticTaskRankResult{}
 			}
-			return semanticTaskRankResult{}
+			eng = &inProcessBreadthEngine{engine: core, embedder: embedder}
 		}
-		eng = &inProcessBreadthEngine{engine: core, embedder: embedder}
 	} else {
-		eng, closeEng = breadthEngineFactory(homePath)
+		if pgEng := pgvectorEngineOrNil(); pgEng != nil {
+			eng = pgEng
+			closeEng = func() { pgEng.Close() }
+		} else {
+			eng, closeEng = breadthEngineFactory(homePath)
+		}
 	}
 	defer closeEng()
 	if trace != nil {
