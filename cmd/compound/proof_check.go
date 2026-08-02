@@ -1346,7 +1346,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 		if executableErr != nil {
 			result.Status = "failed"
 			result.OutputTail = executableErr.Error()
-			result.FailureFacts = work.ProofFailureFacts([]byte(executableErr.Error()), executableErr)
+			result.FailureFacts = work.ProofFailureFacts(step.Name, []byte(executableErr.Error()), executableErr)
 			result.ExitCode = 1
 			return result
 		}
@@ -1368,7 +1368,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 	result.OutputTail = proofCheckTail(output, 4000)
 	if err != nil {
 		result.Status = "failed"
-		result.FailureFacts = work.ProofFailureFacts(output, err)
+		result.FailureFacts = work.ProofFailureFacts(step.Name, output, err)
 		result.ExitCode = proofCheckExitCode(err)
 	}
 	return result

@@ -125,7 +125,13 @@ go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
   `advance` validates both chains and the comparison before mutating the WorkEnvelope; `land-check`
   reloads and recomputes them again before accepting the verification.
   Missing facts, new facts, changed commands, dirty/stale source, malformed refs, and incomplete or
-  forged result chains fail closed. Old reports without `failure_facts` cannot certify this path.
+  forged result chains fail closed. Host-coupled facts are semantically normalized only for bounded
+  classes proven by real batteries: a Go timeout dump is accepted only when every nonblank line
+  matches the strict timeout/stack/package grammar and its facts retain each timed-out test's
+  normalized wait state plus ordered function frames through the test; Bun cache-resolution lines
+  retain the requested package identity. Any unrecognized line falls back to exact hashes.
+  Old reports without
+  `failure_facts` cannot certify this path.
   The red reports remain red; the differential reference says only that the candidate added no
   observed failure relative to its exact base. No scheduler or parallel authority is introduced.
 - Exit contract: `0` ok · `1` a gate FAILED · `2` usage/admission/publication/finalization error.

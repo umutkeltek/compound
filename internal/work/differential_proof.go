@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -16,34 +17,256 @@ import (
 const DifferentialProofVerificationPrefix = "proof-diff:"
 
 // ProofFailureFacts seals deterministic unique facts from complete failing output.
-// Exact-line hashing is deliberately conservative: nondeterministic or path-specific
-// output will not compare equal and therefore cannot silently become certifying proof.
-func ProofFailureFacts(output []byte, runErr error) []string {
+// Known host-coupled failures are reduced to stable semantic facts; other failures
+// retain exact normalized line hashes.
+func ProofFailureFacts(gate string, output []byte, runErr error) []string {
 	if runErr == nil {
 		return nil
 	}
-	unique := make(map[string]struct{})
-	for _, line := range strings.Split(string(output), "\n") {
-		if normalized := strings.Join(strings.Fields(line), " "); normalized != "" {
-			unique[normalized] = struct{}{}
+	labels, fullyNormalized := semanticProofFailureLabels(gate, string(output))
+	if !fullyNormalized {
+		unique := make(map[string]struct{})
+		for _, line := range strings.Split(string(output), "\n") {
+			normalized := strings.Join(strings.Fields(line), " ")
+			if normalized == "" {
+				continue
+			}
+			if semantic := semanticBunCacheFailureLabel(gate, normalized); semantic != "" {
+				unique[semantic] = struct{}{}
+			} else {
+				unique[normalized] = struct{}{}
+			}
+		}
+		if len(unique) == 0 {
+			if normalized := strings.Join(strings.Fields(runErr.Error()), " "); normalized != "" {
+				unique[normalized] = struct{}{}
+			}
+		}
+		for line := range unique {
+			labels = append(labels, line)
 		}
 	}
-	if len(unique) == 0 {
-		if normalized := strings.Join(strings.Fields(runErr.Error()), " "); normalized != "" {
-			unique[normalized] = struct{}{}
-		}
-	}
-	lines := make([]string, 0, len(unique))
-	for line := range unique {
-		lines = append(lines, line)
-	}
-	sort.Strings(lines)
-	facts := make([]string, 0, len(lines))
-	for _, line := range lines {
-		sum := sha256.Sum256([]byte(line))
+	facts := make([]string, 0, len(labels))
+	for _, label := range labels {
+		sum := sha256.Sum256([]byte(label))
 		facts = append(facts, "sha256:"+hex.EncodeToString(sum[:]))
 	}
+	sort.Strings(facts)
 	return facts
+}
+
+var (
+	goTimeoutHeaderPattern = regexp.MustCompile(`^panic: test timed out after \S+$`)
+	goTimeoutTestPattern   = regexp.MustCompile(`^[A-Za-z0-9_./-]+ \([^)]*\)$`)
+	goGoroutinePattern     = regexp.MustCompile(`^goroutine [0-9]+(?: gp=.*)? \[([^]]+)\]:$`)
+	goPassSummaryPattern   = regexp.MustCompile(`^ok\s+\S+\s+[0-9.]+s$`)
+	goNoTestsPattern       = regexp.MustCompile(`^\?\s+\S+\s+\[no test files\]$`)
+	goFailPackagePattern   = regexp.MustCompile(`^FAIL	(\S+)	[0-9.]+s$`)
+	bunMissingPattern      = regexp.MustCompile(`Cannot find (?:package|module) '([^']+)'`)
+)
+
+func semanticProofFailureLabels(gate, output string) ([]string, bool) {
+	if gate != "go-test" || !strings.Contains(output, "panic: test timed out after") {
+		return nil, false
+	}
+	labels := map[string]bool{}
+	timeoutTests := map[string]bool{}
+	phase := "before-timeout"
+	expectSource := false
+	sawGoroutine := false
+	currentWaitState := ""
+	currentFrames := []string{}
+	pendingFunction := ""
+	finalizeGoroutine := func() {
+		for _, testName := range sortedTrueKeys(timeoutTests) {
+			for i, frame := range currentFrames {
+				if strings.HasSuffix(frame, "."+testName) {
+					root := currentFrames[:i+1]
+					labels["go-test:timeout-root:"+testName+":"+currentWaitState+":"+strings.Join(root, "|")] = true
+					break
+				}
+			}
+		}
+		currentWaitState = ""
+		currentFrames = nil
+		pendingFunction = ""
+	}
+	for _, raw := range strings.Split(output, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		switch phase {
+		case "before-timeout":
+			if goTimeoutHeaderPattern.MatchString(line) {
+				labels["go-test:timeout"] = true
+				phase = "running-tests-header"
+				continue
+			}
+			if goPassSummaryPattern.MatchString(line) || goNoTestsPattern.MatchString(line) {
+				continue
+			}
+			return nil, false
+		case "running-tests-header":
+			if line != "running tests:" {
+				return nil, false
+			}
+			phase = "running-tests"
+			continue
+		case "running-tests":
+			if strings.HasPrefix(raw, "		") && goTimeoutTestPattern.MatchString(line) {
+				testName := strings.Fields(line)[0]
+				labels["go-test:timeout-test:"+testName] = true
+				timeoutTests[testName] = true
+				continue
+			}
+			if match := goGoroutinePattern.FindStringSubmatch(line); len(match) == 2 {
+				sawGoroutine = true
+				currentWaitState = normalizeGoWaitState(match[1])
+				phase = "stack"
+				continue
+			}
+			return nil, false
+		case "stack":
+			if match := goFailPackagePattern.FindStringSubmatch(raw); len(match) == 2 {
+				if expectSource {
+					return nil, false
+				}
+				finalizeGoroutine()
+				labels["go-test:failed-package:"+match[1]] = true
+				phase = "after-failure"
+				continue
+			}
+			if match := goGoroutinePattern.FindStringSubmatch(line); len(match) == 2 {
+				if expectSource {
+					return nil, false
+				}
+				finalizeGoroutine()
+				sawGoroutine = true
+				currentWaitState = normalizeGoWaitState(match[1])
+				continue
+			}
+			if expectSource {
+				if !strings.HasPrefix(raw, "	") || (!strings.Contains(line, ".go:") && !strings.Contains(line, "_testmain.go:")) {
+					return nil, false
+				}
+				expectSource = false
+				currentFrames = append(currentFrames, pendingFunction)
+				pendingFunction = ""
+				continue
+			}
+			if strings.HasPrefix(line, "created by ") || (strings.Contains(line, "(") && (strings.HasSuffix(line, ")") || strings.HasSuffix(line, "(...)"))) {
+				pendingFunction = normalizeGoFunction(line)
+				expectSource = true
+				continue
+			}
+			return nil, false
+		case "after-failure":
+			if goPassSummaryPattern.MatchString(line) || goNoTestsPattern.MatchString(line) || line == "FAIL" {
+				continue
+			}
+			return nil, false
+		}
+	}
+	if phase != "after-failure" || !sawGoroutine {
+		return nil, false
+	}
+	timeoutTestCount := 0
+	timeoutRoots := 0
+	for label := range labels {
+		if strings.HasPrefix(label, "go-test:timeout-test:") {
+			timeoutTestCount++
+		}
+		if strings.HasPrefix(label, "go-test:timeout-root:") {
+			timeoutRoots++
+		}
+	}
+	if timeoutTestCount == 0 || timeoutRoots != timeoutTestCount {
+		return nil, false
+	}
+	out := make([]string, 0, len(labels))
+	for label := range labels {
+		out = append(out, label)
+	}
+	sort.Strings(out)
+	return out, true
+}
+
+func normalizeGoWaitState(state string) string {
+	return strings.TrimSpace(strings.SplitN(state, ",", 2)[0])
+}
+
+func normalizeGoFunction(line string) string {
+	if strings.HasPrefix(line, "created by ") {
+		line = strings.TrimPrefix(line, "created by ")
+		if in := strings.LastIndex(line, " in goroutine "); in >= 0 {
+			line = line[:in]
+		}
+		return strings.TrimSpace(line)
+	}
+	if in := strings.LastIndexByte(line, '('); in >= 0 {
+		line = line[:in]
+	}
+	return strings.TrimSpace(line)
+}
+
+func sortedTrueKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key, present := range values {
+		if present {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func semanticBunCacheFailureLabel(gate, line string) string {
+	if !strings.HasPrefix(gate, "console-") || !strings.Contains(line, "/.bun/install/cache/") {
+		return ""
+	}
+	identity := ""
+	if match := bunMissingPattern.FindStringSubmatch(line); len(match) == 2 {
+		identity = bunPackageRoot(match[1])
+	} else if strings.Contains(line, "EISDIR reading") {
+		cachePath := strings.SplitN(line, "/.bun/install/cache/", 2)
+		if len(cachePath) == 2 {
+			identity = bunCachePathPackage(cachePath[1])
+		}
+	}
+	if identity == "" {
+		return ""
+	}
+	return "environment:bun-module-cache-resolution:" + identity
+}
+
+func bunPackageRoot(name string) string {
+	parts := strings.Split(strings.TrimSpace(name), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		return ""
+	}
+	if strings.HasPrefix(parts[0], "@") {
+		if len(parts) < 2 || parts[1] == "" {
+			return ""
+		}
+		return parts[0] + "/" + parts[1]
+	}
+	return parts[0]
+}
+
+func bunCachePathPackage(cachePath string) string {
+	component := strings.Trim(cachePath, `"`)
+	if slash := strings.IndexByte(component, '/'); slash >= 0 {
+		component = component[:slash]
+	}
+	if strings.HasPrefix(component, "@") {
+		if at := strings.Index(component[1:], "@"); at >= 0 {
+			component = component[:at+1]
+		}
+	} else if at := strings.Index(component, "@"); at >= 0 {
+		component = component[:at]
+	}
+	return bunPackageRoot(component)
 }
 
 func (s *Store) loadCommittedFailedProofResult(id string) (envelope.WorkEnvelope, ProofResourceResult, ownedProofReport, error) {
