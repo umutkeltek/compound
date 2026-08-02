@@ -113,6 +113,14 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("where", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("verify", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("init", policy.FirstPartyCommandGoverned),
+		"store": heldCommand(cmdStore).
+			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("status", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("init", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("migrate", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("sync", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("embed", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("recall", policy.FirstPartyCommandRead),
 		"envelope": heldCommand(cmdEnvelope),
 		"schema":   heldCommand(cmdSchema),
 		"contract": heldCommand(cmdContract).
