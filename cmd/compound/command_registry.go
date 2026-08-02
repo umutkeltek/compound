@@ -109,12 +109,12 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"event-store": heldCommand(cmdEventStore),
 		"writeback":   heldCommand(cmdWriteback),
 		"home": heldCommand(cmdHome).
-			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("doctor", policy.FirstPartyCommandGoverned).
 			withSubcommandAdmission("where", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("verify", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("init", policy.FirstPartyCommandGoverned),
 		"store": heldCommand(cmdStore).
-			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("doctor", policy.FirstPartyCommandGoverned).
 			withSubcommandAdmission("status", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("init", policy.FirstPartyCommandGoverned).
 			withSubcommandAdmission("migrate", policy.FirstPartyCommandGoverned).
@@ -187,7 +187,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"mcp-transport":   heldCommand(cmdMCPTransport),
 		"negatives":       heldCommand(cmdNegatives),
 		"architecture": heldCommand(cmdArchitecture).
-			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),
+			withSubcommandAdmission("doctor", policy.FirstPartyCommandGoverned),
 	}
 }
 

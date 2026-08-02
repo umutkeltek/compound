@@ -45,10 +45,10 @@ type Claim struct {
 
 // Edge is a version-chain relationship between claims (supersedes, reinforces, etc.).
 type Edge struct {
-	From  string `json:"from"`
-	To    string `json:"to"`
-	Kind  string `json:"kind"`
-	Seq   int64  `json:"seq"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+	Kind    string `json:"kind"`
+	Seq     int64  `json:"seq"`
 	ClaimID string `json:"claim_id"`
 }
 
@@ -86,11 +86,11 @@ type CandidateFilter struct {
 
 // Position is the current stance for an entity+topic, derived by folding claims.
 type Position struct {
-	Entity    string  `json:"entity"`
-	Topic     string  `json:"topic"`
-	Claim     Claim   `json:"claim"`
-	Seq       int64   `json:"seq"`
-	UpdatedAt string  `json:"updated_at"`
+	Entity    string `json:"entity"`
+	Topic     string `json:"topic"`
+	Claim     Claim  `json:"claim"`
+	Seq       int64  `json:"seq"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // LedgerStore is the claim/candidate persistence surface.
@@ -122,10 +122,10 @@ type LedgerStore interface {
 
 // EventRecord is one event in the append-only log.
 type EventRecord struct {
-	ID        string          `json:"id"`
-	Kind      string          `json:"kind"`
-	Bytes     []byte          `json:"-"`
-	CreatedAt time.Time       `json:"created_at"`
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind"`
+	Bytes     []byte    `json:"-"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // EventScanOptions controls a scan over the event log.

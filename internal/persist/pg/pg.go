@@ -8,6 +8,7 @@
 package pg
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -463,13 +464,25 @@ func (s *Store) PutJSON(id string, value any) error {
 	if err != nil {
 		return fmt.Errorf("persist/pg: marshal event: %w", err)
 	}
-	_, err = s.pool.Exec(ctx, `
+	// Idempotent on same bytes; conflict on same-ID-different-bytes.
+	// An event store must never silently overwrite history.
+	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO events (id, payload, created_at) VALUES ($1, $2, now())
-		ON CONFLICT (id) DO UPDATE SET payload = $2`, id, payload)
+		ON CONFLICT (id) DO NOTHING`, id, payload)
 	if err != nil {
 		return fmt.Errorf("persist/pg: put event: %w", err)
 	}
-	return nil
+	if tag.RowsAffected() > 0 {
+		return nil // inserted
+	}
+	var existing []byte
+	if err := s.pool.QueryRow(ctx, `SELECT payload FROM events WHERE id = $1`, id).Scan(&existing); err != nil {
+		return fmt.Errorf("persist/pg: conflict check: %w", err)
+	}
+	if !bytes.Equal(existing, payload) {
+		return fmt.Errorf("persist/pg: event conflict: id %s exists with different payload", id)
+	}
+	return nil // idempotent: same id, same bytes
 }
 
 func (s *Store) PutJSONIfAbsent(id string, value any) (bool, error) {
@@ -484,7 +497,18 @@ func (s *Store) PutJSONIfAbsent(id string, value any) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("persist/pg: put if absent: %w", err)
 	}
-	return tag.RowsAffected() > 0, nil
+	if tag.RowsAffected() > 0 {
+		return true, nil // created
+	}
+	// Already exists — detect same-ID-different-bytes corruption.
+	var existing []byte
+	if err := s.pool.QueryRow(ctx, `SELECT payload FROM events WHERE id = $1`, id).Scan(&existing); err != nil {
+		return false, fmt.Errorf("persist/pg: conflict check: %w", err)
+	}
+	if !bytes.Equal(existing, payload) {
+		return false, fmt.Errorf("persist/pg: event conflict: id %s exists with different payload", id)
+	}
+	return false, nil // already present, same bytes
 }
 
 func (s *Store) Read(ref string) (*persist.EventRecord, error) {
@@ -766,11 +790,11 @@ func (s *Store) TableCounts(ctx context.Context) map[string]int64 {
 func (s *Store) PoolStats() pgxpoolStats {
 	stat := s.pool.Stat()
 	return pgxpoolStats{
-		AcquireCount:       stat.AcquireCount(),
-		TotalConns:         stat.TotalConns(),
-		IdleConns:          stat.IdleConns(),
-		MaxConns:           stat.MaxConns(),
-		ConstructingConns:  stat.ConstructingConns(),
+		AcquireCount:      stat.AcquireCount(),
+		TotalConns:        stat.TotalConns(),
+		IdleConns:         stat.IdleConns(),
+		MaxConns:          stat.MaxConns(),
+		ConstructingConns: stat.ConstructingConns(),
 	}
 }
 
@@ -781,4 +805,3 @@ type pgxpoolStats struct {
 	MaxConns          int32 `json:"max_conns"`
 	ConstructingConns int32 `json:"constructing_conns"`
 }
-

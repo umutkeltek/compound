@@ -13,6 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"compound/internal/envelope"
+	"compound/internal/eventstore"
+	"compound/internal/home"
 	"compound/internal/persist"
 	"compound/internal/persist/pg"
 )
@@ -20,36 +25,45 @@ import (
 const storeUsage = `usage: compound store <subcommand>
 
 Subcommands:
-  doctor [--json]    Connect, ensure schema, round-trip test data, report health
+  doctor [--json]    Connect, ensure schema, round-trip probe data, report health
+                     (probes use scratch store-doctor-* ids and are removed afterwards)
   init               Connect and create schema (tables + vector extension)
   status [--json]    Show connection info and row counts
-  migrate (--dry-run | --apply) [--json] [--home P]
-                     Bulk-load file ledger into Postgres
-  sync [--json] [--home P] [--embed]
-                     Incremental sync: file ledger → Postgres (idempotent)
-                     --embed chains into incremental embed after sync
-  embed [--json] [--batch N]
-                     Embed unembedded claims into pgvector via Ollama (incremental)
+  migrate (--dry-run | --apply --work W) [--json] [--home P]
+                     Bulk-load file ledger into Postgres; governed write:
+                     dry-run default, --apply requires an allowing PolicyDecision
+  sync [--json] [--home P] [--embed] [--confirm --work W]
+                     Incremental sync: file ledger → Postgres (idempotent); governed
+                     write: dry-run default, --confirm requires an allowing
+                     PolicyDecision. --embed chains into incremental embed after sync
+  embed [--json] [--batch N] [--home P] [--confirm --work W]
+                     Embed unembedded claims into pgvector via an OpenAI-compatible
+                     embeddings endpoint (incremental); governed write: dry-run
+                     default, --confirm requires an allowing PolicyDecision
   recall <query> [--k N] [--json]
-                     Semantic recall over embedded claims
+                     EXPERIMENTAL, non-canonical: semantic recall over embedded
+                     claims. The pg ledger computes the allowlist and the index
+                     only ranks; the canonical recall front door is
+                     compound memory recall — this is an operator debug surface.
 
 Environment:
   COMPOUND_DSN          Postgres connection string (required)
   COMPOUND_STORE        Must be "postgres" for store commands
   COMPOUND_VECTOR_DIMS  Embedding dimensions (default: 1536)
-  COMPOUND_EMBED_URL    Ollama-compatible embeddings API (default: http://localhost:11434/v1)
+  COMPOUND_EMBED_URL    OpenAI-compatible embeddings API base URL (required for embed/recall)
   COMPOUND_EMBED_MODEL  Embedding model name (default: nomic-embed-text)
 
 Examples:
-  COMPOUND_DSN="postgres://user:pass@192.168.1.10:5432/compound?sslmode=disable" \
+  COMPOUND_DSN="postgres://user:pass@db.example.com:5432/compound?sslmode=disable" \
     compound store doctor
   compound store init
   compound store status --json
   compound store migrate --dry-run
-  compound store migrate --apply
-  compound store sync
-  compound store sync --embed
-  compound store embed
+  compound store migrate --apply --work work_123
+  compound store sync                      # dry-run
+  compound store sync --confirm --work work_123
+  compound store sync --confirm --work work_123 --embed
+  compound store embed --confirm --work work_123
   compound store recall "session distillation architecture" --k 5
 `
 
@@ -80,7 +94,7 @@ func runStore(args []string, stdout, stderr io.Writer) int {
 	case "sync":
 		return runStoreSync(args[1:], stdout, stderr)
 	case "embed":
-		return runStoreEmbed(args[1:], stdout, stderr)
+		return runStoreEmbed(args[1:], stdout, stderr, false)
 	case "recall":
 		return runStoreRecall(args[1:], stdout, stderr)
 	default:
@@ -93,17 +107,17 @@ func runStore(args []string, stdout, stderr io.Writer) int {
 // ─── store doctor ────────────────────────────────────────────────────────────────
 
 type storeDoctorReport struct {
-	Backend  string              `json:"backend"`
-	DSN      string              `json:"dsn_masked"`
-	Checks   []storeDoctorCheck  `json:"checks"`
-	AllOK    bool                `json:"all_ok"`
-	Duration string              `json:"duration"`
+	Backend  string             `json:"backend"`
+	DSN      string             `json:"dsn_masked"`
+	Checks   []storeDoctorCheck `json:"checks"`
+	AllOK    bool               `json:"all_ok"`
+	Duration string             `json:"duration"`
 }
 
 type storeDoctorCheck struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"` // ok|fail
-	Detail  string `json:"detail,omitempty"`
+	Name   string `json:"name"`
+	Status string `json:"status"` // ok|fail
+	Detail string `json:"detail,omitempty"`
 }
 
 func runStoreDoctor(args []string, stdout, stderr io.Writer) int {
@@ -161,20 +175,29 @@ func runStoreDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 	report.Checks = append(report.Checks, storeDoctorCheck{Name: "schema", Status: "ok"})
 
+	// Probe rows live in a scratch namespace (unique store-doctor-* ids per run)
+	// and every one of them is removed by checkCleanup afterwards — a doctor run
+	// leaves the authority-shaped tables as it found them.
+	probe := newStoreDoctorProbe()
+
 	// 3. Claims round-trip
-	checkClaims(ctx, store, &report)
+	checkClaims(ctx, store, probe, &report)
 
 	// 4. Events round-trip
-	checkEvents(ctx, store, &report)
+	checkEvents(ctx, store, probe, &report)
 
 	// 5. Work round-trip
-	checkWork(ctx, store, &report)
+	checkWork(ctx, store, probe, &report)
 
 	// 6. Vectors round-trip
-	checkVectors(ctx, store, cfg, &report)
+	checkVectors(ctx, store, cfg, probe, &report)
 
 	// 7. Candidates round-trip
-	checkCandidates(ctx, store, &report)
+	checkCandidates(ctx, store, probe, &report)
+
+	// 8. Remove every probe row (claims/candidates/events/work_envelopes); the
+	// vector probe is removed inside checkVectors through the store's own Delete.
+	checkCleanup(ctx, cfg.DSN, probe, &report)
 
 	report.AllOK = true
 	for _, c := range report.Checks {
@@ -193,17 +216,40 @@ func runStoreDoctor(args []string, stdout, stderr io.Writer) int {
 	return exitCode
 }
 
-func checkClaims(ctx context.Context, store *pg.Store, report *storeDoctorReport) {
+// storeDoctorProbe carries the scratch-namespace ids one doctor run writes and
+// then removes. Probes never claim authority: the claim row is candidate-class
+// (visibility candidate, state proposed), never promoted, and even a concurrent
+// reader mid-probe cannot mistake it for canon.
+type storeDoctorProbe struct {
+	claimID     string
+	eventID     string
+	workID      string
+	vectorRef   string
+	candidateID string
+}
+
+func newStoreDoctorProbe() storeDoctorProbe {
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	return storeDoctorProbe{
+		claimID:     "store-doctor-claim-" + suffix,
+		eventID:     "store-doctor-event-" + suffix,
+		workID:      "store-doctor-work-" + suffix,
+		vectorRef:   "store-doctor-vec-" + suffix,
+		candidateID: "store-doctor-cand-" + suffix,
+	}
+}
+
+func checkClaims(ctx context.Context, store *pg.Store, probe storeDoctorProbe, report *storeDoctorReport) {
 	now := time.Now()
 	testClaim := persist.Claim{
-		ID:        fmt.Sprintf("store-doctor-%d", now.UnixNano()),
-		Entity:    "compound::store-doctor",
-		Predicate: "health_check",
-		Object:    "pass",
-		Confidence: 1.0,
+		ID:         probe.claimID,
+		Entity:     "compound::store-doctor",
+		Predicate:  "health_check",
+		Object:     "pass",
+		Confidence: 0.5,
 		Derivation: "deterministic",
-		Visibility: "operational",
-		State:     "promoted",
+		Visibility: "candidate",
+		State:      "proposed",
 	}
 
 	seq, err := store.AppendClaim(testClaim, now)
@@ -228,22 +274,21 @@ func checkClaims(ctx context.Context, store *pg.Store, report *storeDoctorReport
 
 	report.Checks = append(report.Checks, storeDoctorCheck{
 		Name: "claims", Status: "ok",
-		Detail: fmt.Sprintf("seq=%d fold=✓", seq),
+		Detail: fmt.Sprintf("seq=%d fold=✓ (candidate-class probe, removed below)", seq),
 	})
 }
 
-func checkEvents(ctx context.Context, store *pg.Store, report *storeDoctorReport) {
-	testID := fmt.Sprintf("store-doctor-%d", time.Now().UnixNano())
+func checkEvents(ctx context.Context, store *pg.Store, probe storeDoctorProbe, report *storeDoctorReport) {
 	payload := map[string]string{"check": "health", "source": "store-doctor"}
 
-	if err := store.PutJSON(testID, payload); err != nil {
+	if err := store.PutJSON(probe.eventID, payload); err != nil {
 		report.Checks = append(report.Checks, storeDoctorCheck{
 			Name: "events", Status: "fail", Detail: "put: " + err.Error(),
 		})
 		return
 	}
 
-	rec, err := store.Read(testID)
+	rec, err := store.Read(probe.eventID)
 	if err != nil || rec == nil {
 		detail := "read: nil"
 		if err != nil {
@@ -260,43 +305,50 @@ func checkEvents(ctx context.Context, store *pg.Store, report *storeDoctorReport
 	})
 }
 
-func checkWork(ctx context.Context, store *pg.Store, report *storeDoctorReport) {
-	// Use the WorkStore interface — just verify Put/Get works
-	testID := fmt.Sprintf("store-doctor-work-%d", time.Now().UnixNano())
+func checkWork(ctx context.Context, store *pg.Store, probe storeDoctorProbe, report *storeDoctorReport) {
+	// Round-trip the real work_envelopes path (PutWork/GetWork): a doctor check
+	// must touch the table it reports on — never proxy through another table.
+	env := envelope.WorkEnvelope{}
+	env.IDs.WorkID = probe.workID
+	env.State = "proposed"
+	env.Owner = "store-doctor"
 
-	// We need an envelope — import is already in pg.go; here we build minimal JSON
-	env := map[string]any{
-		"ids":   map[string]string{"work_id": testID},
-		"state": "proposed",
-		"owner": "store-doctor",
-	}
-	payload, _ := json.Marshal(env)
-
-	// Use the raw events table as a proxy since PutWork needs a full WorkEnvelope
-	if err := store.PutJSON(testID, payload); err != nil {
+	if err := store.PutWork(env); err != nil {
 		report.Checks = append(report.Checks, storeDoctorCheck{
 			Name: "work", Status: "fail", Detail: "put: " + err.Error(),
 		})
 		return
 	}
+
+	got, err := store.GetWork(probe.workID)
+	if err != nil || got == nil {
+		detail := "get: nil"
+		if err != nil {
+			detail = "get: " + err.Error()
+		}
+		report.Checks = append(report.Checks, storeDoctorCheck{
+			Name: "work", Status: "fail", Detail: detail,
+		})
+		return
+	}
+
 	report.Checks = append(report.Checks, storeDoctorCheck{
-		Name: "work", Status: "ok", Detail: "put=✓",
+		Name: "work", Status: "ok", Detail: "put+get work_envelopes=✓",
 	})
 }
 
-func checkVectors(ctx context.Context, store *pg.Store, cfg persist.Config, report *storeDoctorReport) {
+func checkVectors(ctx context.Context, store *pg.Store, cfg persist.Config, probe storeDoctorProbe, report *storeDoctorReport) {
 	dims := cfg.VectorDimensions
 	if dims <= 0 {
 		dims = 1536
 	}
 
-	testRef := fmt.Sprintf("store-doctor-vec-%d", time.Now().UnixNano())
 	// Create a simple test embedding
 	embedding := make([]float32, dims)
 	embedding[0] = 1.0
 	embedding[1] = 0.5
 
-	if err := store.Upsert(testRef, embedding, map[string]string{"source": "doctor"}); err != nil {
+	if err := store.Upsert(probe.vectorRef, embedding, map[string]string{"source": "doctor"}); err != nil {
 		report.Checks = append(report.Checks, storeDoctorCheck{
 			Name: "vectors", Status: "fail", Detail: "upsert: " + err.Error(),
 		})
@@ -318,21 +370,26 @@ func checkVectors(ctx context.Context, store *pg.Store, cfg persist.Config, repo
 		return
 	}
 
-	// Cleanup
-	store.Delete(testRef)
+	// Cleanup through the store's own Delete path; a failed delete is a failed
+	// check, never a silent leftover.
+	if err := store.Delete(probe.vectorRef); err != nil {
+		report.Checks = append(report.Checks, storeDoctorCheck{
+			Name: "vectors", Status: "fail", Detail: "cleanup delete: " + err.Error(),
+		})
+		return
+	}
 
 	report.Checks = append(report.Checks, storeDoctorCheck{
 		Name: "vectors", Status: "ok",
-		Detail: fmt.Sprintf("dims=%d upsert+search=✓ score=%.4f", dims, hits[0].Score),
+		Detail: fmt.Sprintf("dims=%d upsert+search+delete=✓ score=%.4f", dims, hits[0].Score),
 	})
 }
 
-func checkCandidates(ctx context.Context, store *pg.Store, report *storeDoctorReport) {
+func checkCandidates(ctx context.Context, store *pg.Store, probe storeDoctorProbe, report *storeDoctorReport) {
 	now := time.Now()
-	testID := fmt.Sprintf("store-doctor-cand-%d", now.UnixNano())
 
 	cand := persist.Candidate{
-		ID:         testID,
+		ID:         probe.candidateID,
 		Entity:     "compound::store-doctor",
 		Predicate:  "health_check",
 		Object:     "pass",
@@ -349,7 +406,7 @@ func checkCandidates(ctx context.Context, store *pg.Store, report *storeDoctorRe
 		return
 	}
 
-	got, err := store.GetCandidate(testID)
+	got, err := store.GetCandidate(probe.candidateID)
 	if err != nil || got == nil {
 		detail := "get: nil"
 		if err != nil {
@@ -366,11 +423,51 @@ func checkCandidates(ctx context.Context, store *pg.Store, report *storeDoctorRe
 	})
 }
 
+// checkCleanup removes every probe row the round-trip checks wrote. pg.Store
+// deliberately exposes no row deletes for the append-only authority tables, so
+// cleanup runs through a short-lived raw connection scoped to the exact probe
+// ids. A cleanup failure is a failed check — never a silent leak.
+func checkCleanup(ctx context.Context, dsn string, probe storeDoctorProbe, report *storeDoctorReport) {
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		report.Checks = append(report.Checks, storeDoctorCheck{
+			Name: "cleanup", Status: "fail", Detail: "connect: " + err.Error(),
+		})
+		return
+	}
+	defer conn.Close(ctx)
+
+	// Table/column names below are compile-time constants; only the id is a parameter.
+	deletes := []struct {
+		table  string
+		column string
+		id     string
+	}{
+		{"claims", "id", probe.claimID},
+		{"candidates", "id", probe.candidateID},
+		{"events", "id", probe.eventID},
+		{"work_envelopes", "work_id", probe.workID},
+	}
+	for _, d := range deletes {
+		if _, err := conn.Exec(ctx, "DELETE FROM "+d.table+" WHERE "+d.column+" = $1", d.id); err != nil {
+			report.Checks = append(report.Checks, storeDoctorCheck{
+				Name: "cleanup", Status: "fail", Detail: fmt.Sprintf("delete %s: %v", d.table, err),
+			})
+			return
+		}
+	}
+	report.Checks = append(report.Checks, storeDoctorCheck{
+		Name: "cleanup", Status: "ok", Detail: "probe rows removed",
+	})
+}
+
 func emitStoreDoctor(stdout io.Writer, report storeDoctorReport, jsonOut bool) {
 	if jsonOut {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(report)
+		if err := enc.Encode(report); err != nil {
+			fmt.Fprintln(stdout, "error encoding report:", err)
+		}
 		return
 	}
 	// Human-readable output
@@ -438,19 +535,19 @@ func runStoreInit(args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stdout, "store init: schema created (dims=%d)\n", cfg.VectorDimensions)
 	fmt.Fprintf(stdout, "  tables: claims, edges, candidates, events, work_log, work_envelopes, vectors\n")
-	fmt.Fprintf(stdout, "  index:  ivfflat on vectors (lists=100)\n")
+	fmt.Fprintf(stdout, "  index:  hnsw on vectors (m=16, ef_construction=64, vector_cosine_ops)\n")
 	return 0
 }
 
 // ─── store status ────────────────────────────────────────────────────────────────
 
 type storeStatusReport struct {
-	Backend    string            `json:"backend"`
-	DSN        string            `json:"dsn_masked"`
-	Connected  bool              `json:"connected"`
-	Tables     map[string]int64  `json:"tables,omitempty"`
-	VectorDims int               `json:"vector_dims"`
-	Error      string            `json:"error,omitempty"`
+	Backend    string           `json:"backend"`
+	DSN        string           `json:"dsn_masked"`
+	Connected  bool             `json:"connected"`
+	Tables     map[string]int64 `json:"tables,omitempty"`
+	VectorDims int              `json:"vector_dims"`
+	Error      string           `json:"error,omitempty"`
 }
 
 func runStoreStatus(args []string, stdout, stderr io.Writer) int {
@@ -497,7 +594,9 @@ func emitStoreStatus(stdout io.Writer, report storeStatusReport, jsonOut bool) {
 	if jsonOut {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(report)
+		if err := enc.Encode(report); err != nil {
+			fmt.Fprintln(stdout, "error encoding report:", err)
+		}
 		return
 	}
 	fmt.Fprintf(stdout, "store status\n")
@@ -550,20 +649,58 @@ type syncEdgeRow struct {
 
 func runStoreSync(args []string, stdout, stderr io.Writer) int {
 	jsonOut := hasFlag(args, "--json")
-	home := valueFlag(args, "--home")
-	if home == "" {
-		home = os.Getenv("COMPOUND_HOME")
+	homePath, err := home.Resolve(valueFlag(args, "--home"))
+	if err != nil {
+		fmt.Fprintf(stderr, "store sync: resolve home: %v (run `compound home init`)\n", err)
+		return 1
 	}
-	if home == "" {
-		home = os.Getenv("HOME") + "/.compound"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
 	cfg := persist.ConfigFromEnv()
 	if cfg.Backend != persist.BackendPostgres || cfg.DSN == "" {
 		fmt.Fprintln(stderr, "store sync: COMPOUND_STORE=postgres and COMPOUND_DSN required")
 		return 1
 	}
+
+	// Governed write: dry-run by default, --confirm --work W performs it behind
+	// an allowing PolicyDecision (mirrors `event-store rebaseline`).
+	if !hasFlag(args, "--confirm") {
+		claimsN, edgesN := countLedgerRows(homePath)
+		ai := storeGovernedIntent("work_dryrun", "sync_apply", maskDSN(cfg.DSN),
+			fmt.Sprintf("incremental sync of ~%d claims, ~%d edges from %s into Postgres", claimsN, edgesN, homePath), time.Now())
+		_, gateErr := gateStoreGovernedWrite(homePath, ai, time.Now())
+		if jsonOut {
+			if err := encodeJSON(stdout, map[string]any{
+				"mode": "dry-run", "claims_pending": claimsN, "edges_pending": edgesN,
+				"allowed": gateErr == nil,
+			}); err != nil {
+				fmt.Fprintln(stderr, "store sync: encode:", err)
+				return 1
+			}
+		} else {
+			fmt.Fprintf(stdout, "store sync (dry-run — nothing written): ~%d claims, ~%d edges in %s\n", claimsN, edgesN, homePath)
+			if gateErr != nil {
+				fmt.Fprintf(stdout, "  policy: BLOCKED — %v\n", gateErr)
+			} else {
+				fmt.Fprintln(stdout, "  policy: ALLOWED — run again with --confirm --work W to sync")
+			}
+		}
+		return 0
+	}
+
+	work := strings.TrimSpace(valueFlag(args, "--work"))
+	if work == "" {
+		fmt.Fprintln(stderr, "error: --work W is required for --confirm (a governed act belongs to a work)")
+		return 2
+	}
+	now := time.Now()
+	ai := storeGovernedIntent(work, "sync_apply", maskDSN(cfg.DSN),
+		fmt.Sprintf("incremental sync of the file ledger from %s into Postgres", homePath), now)
+	if _, err := gateStoreGovernedWrite(homePath, ai, now); err != nil {
+		fmt.Fprintln(stderr, "store sync --confirm:", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
 	store, err := pg.Open(ctx, cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "store sync: connect: %v\n", err)
@@ -575,34 +712,83 @@ func runStoreSync(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if !jsonOut {
-		fmt.Fprintf(stdout, "store sync: %s → postgres\n", home)
+		fmt.Fprintf(stdout, "store sync: %s → postgres\n", homePath)
 	}
 	start := time.Now()
-	claimsUp, claimsErr := syncClaims(ctx, store, filepath.Join(home, "ledger", "claims.jsonl"), stdout, jsonOut)
-	edgesUp, edgesErr := syncEdges(ctx, store, filepath.Join(home, "ledger", "edges.jsonl"), stdout, jsonOut)
+	claimsUp, claimsErr := syncClaims(ctx, store, filepath.Join(homePath, "ledger", "claims.jsonl"), stdout, jsonOut)
+	edgesUp, edgesErr := syncEdges(ctx, store, filepath.Join(homePath, "ledger", "edges.jsonl"), stdout, jsonOut)
 	duration := time.Since(start).Round(time.Second)
+
+	var receiptID, transitionID string
+	if claimsErr == 0 && edgesErr == 0 {
+		// The mutation is complete; record its proof. A proof failure after a
+		// successful sync is loud, never silent.
+		esStore, err := eventstore.Open(homePath)
+		if err != nil {
+			fmt.Fprintf(stderr, "store sync: open event store for proof: %v\n", err)
+			return 1
+		}
+		var proofErr error
+		receiptID, transitionID, proofErr = recordStoreGovernedProof(esStore, ai,
+			fmt.Sprintf("store sync --confirm: %d claims, %d edges upserted to Postgres", claimsUp, edgesUp), now)
+		if proofErr != nil {
+			fmt.Fprintf(stderr, "store sync: sync applied but proof recording failed: %v\n", proofErr)
+			return 1
+		}
+	}
+
 	if jsonOut {
-		json.NewEncoder(stdout).Encode(map[string]any{
+		if err := encodeJSON(stdout, map[string]any{
 			"claims_upserted": claimsUp, "claims_errors": claimsErr,
 			"edges_upserted": edgesUp, "edges_errors": edgesErr,
-			"duration": duration.String(),
-		})
+			"duration":   duration.String(),
+			"receipt_id": receiptID, "transition_id": transitionID,
+		}); err != nil {
+			fmt.Fprintln(stderr, "store sync: encode:", err)
+			return 1
+		}
 	} else {
 		fmt.Fprintf(stdout, "\nstore sync: done (%s)\n", duration)
 		fmt.Fprintf(stdout, "  claims: %d upserted, %d errors\n", claimsUp, claimsErr)
 		fmt.Fprintf(stdout, "  edges:  %d upserted, %d errors\n", edgesUp, edgesErr)
+		if receiptID != "" {
+			fmt.Fprintf(stdout, "  proof:  receipt=%s transition=%s\n", receiptID, transitionID)
+		}
 	}
 	if claimsErr > 0 || edgesErr > 0 {
 		return 1
 	}
-	// Chain into incremental embed when --embed is passed
+	// Chain into incremental embed when --embed is passed; the sync gate above
+	// already authorized this governed run, so embed inherits it.
 	if hasFlag(args, "--embed") {
 		if !jsonOut {
 			fmt.Fprintln(stdout)
 		}
-		return runStoreEmbed(args, stdout, stderr)
+		return runStoreEmbed(args, stdout, stderr, true)
 	}
 	return 0
+}
+
+// countLedgerRows counts non-empty lines in the ledger's claims/edges logs for
+// dry-run previews. Missing files count as zero; unreadable files as -1.
+func countLedgerRows(homePath string) (claims, edges int) {
+	count := func(name string) int {
+		data, err := os.ReadFile(filepath.Join(homePath, "ledger", name))
+		if err != nil {
+			if os.IsNotExist(err) {
+				return 0
+			}
+			return -1
+		}
+		n := 0
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(line) != "" {
+				n++
+			}
+		}
+		return n
+	}
+	return count("claims.jsonl"), count("edges.jsonl")
 }
 
 func syncClaims(ctx context.Context, store *pg.Store, path string, stdout io.Writer, jsonOut bool) (int, int) {
@@ -713,7 +899,7 @@ type embedBatchResponse struct {
 	} `json:"data"`
 }
 
-func runStoreEmbed(args []string, stdout, stderr io.Writer) int {
+func runStoreEmbed(args []string, stdout, stderr io.Writer, authorized bool) int {
 	jsonOut := hasFlag(args, "--json")
 	batchSize := 32
 	if v := valueFlag(args, "--batch"); v != "" {
@@ -724,13 +910,59 @@ func runStoreEmbed(args []string, stdout, stderr io.Writer) int {
 	}
 	ollamaURL := storeEnvOr("COMPOUND_EMBED_URL", "http://localhost:11434/v1")
 	model := storeEnvOr("COMPOUND_EMBED_MODEL", "nomic-embed-text")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
 	cfg := persist.ConfigFromEnv()
 	if cfg.Backend != persist.BackendPostgres || cfg.DSN == "" {
 		fmt.Fprintln(stderr, "store embed: COMPOUND_STORE=postgres and COMPOUND_DSN required")
 		return 1
 	}
+
+	// Governed write: dry-run by default, --confirm --work W performs it behind
+	// an allowing PolicyDecision. When chained from `store sync --confirm`, the
+	// sync gate already authorized this run (authorized=true).
+	var proofAI envelope.ActionIntent
+	proofNow := time.Now()
+	recordProof := false
+	if !authorized {
+		homePath, err := home.Resolve(valueFlag(args, "--home"))
+		if err != nil {
+			fmt.Fprintf(stderr, "store embed: resolve home: %v (run `compound home init`)\n", err)
+			return 1
+		}
+		if !hasFlag(args, "--confirm") {
+			ai := storeGovernedIntent("work_dryrun", "embed_apply", maskDSN(cfg.DSN),
+				"embed unembedded claims into pgvector", proofNow)
+			_, gateErr := gateStoreGovernedWrite(homePath, ai, proofNow)
+			if jsonOut {
+				if err := encodeJSON(stdout, map[string]any{"mode": "dry-run", "allowed": gateErr == nil}); err != nil {
+					fmt.Fprintln(stderr, "store embed: encode:", err)
+					return 1
+				}
+			} else {
+				fmt.Fprintln(stdout, "store embed (dry-run — nothing written)")
+				if gateErr != nil {
+					fmt.Fprintf(stdout, "  policy: BLOCKED — %v\n", gateErr)
+				} else {
+					fmt.Fprintln(stdout, "  policy: ALLOWED — run again with --confirm --work W to embed")
+				}
+			}
+			return 0
+		}
+		work := strings.TrimSpace(valueFlag(args, "--work"))
+		if work == "" {
+			fmt.Fprintln(stderr, "error: --work W is required for --confirm (a governed act belongs to a work)")
+			return 2
+		}
+		proofAI = storeGovernedIntent(work, "embed_apply", maskDSN(cfg.DSN),
+			"embed unembedded claims into pgvector", proofNow)
+		if _, err := gateStoreGovernedWrite(homePath, proofAI, proofNow); err != nil {
+			fmt.Fprintln(stderr, "store embed --confirm:", err)
+			return 1
+		}
+		recordProof = true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
 	store, err := pg.Open(ctx, cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "store embed: connect: %v\n", err)
@@ -761,7 +993,10 @@ func runStoreEmbed(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(pending) == 0 {
 		if jsonOut {
-			json.NewEncoder(stdout).Encode(map[string]any{"claims_total": len(claims), "already_embedded": existing, "embedded": 0, "errors": 0, "model": model, "duration": "0s"})
+			if err := encodeJSON(stdout, map[string]any{"claims_total": len(claims), "already_embedded": existing, "embedded": 0, "errors": 0, "model": model, "duration": "0s"}); err != nil {
+				fmt.Fprintln(stderr, "store embed: encode:", err)
+				return 1
+			}
 		} else {
 			fmt.Fprintln(stdout, "store embed: nothing to do — all claims already embedded")
 		}
@@ -805,10 +1040,38 @@ func runStoreEmbed(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	duration := time.Since(start).Round(time.Second)
+	var receiptID, transitionID string
+	if errors == 0 && recordProof {
+		// The mutation is complete; record its proof (standalone --confirm runs
+		// only — chained runs are covered by the sync proof).
+		homePath, err := home.Resolve(valueFlag(args, "--home"))
+		if err != nil {
+			fmt.Fprintf(stderr, "store embed: embed applied but proof setup failed: %v\n", err)
+			return 1
+		}
+		esStore, err := eventstore.Open(homePath)
+		if err != nil {
+			fmt.Fprintf(stderr, "store embed: embed applied but proof setup failed: %v\n", err)
+			return 1
+		}
+		var proofErr error
+		receiptID, transitionID, proofErr = recordStoreGovernedProof(esStore, proofAI,
+			fmt.Sprintf("store embed --confirm: %d claims embedded into pgvector", embedded), proofNow)
+		if proofErr != nil {
+			fmt.Fprintf(stderr, "store embed: embed applied but proof recording failed: %v\n", proofErr)
+			return 1
+		}
+	}
 	if jsonOut {
-		json.NewEncoder(stdout).Encode(map[string]any{"claims_total": len(claims) + int(existing), "already_embedded": existing, "embedded": embedded, "errors": errors, "model": model, "duration": duration.String()})
+		if err := encodeJSON(stdout, map[string]any{"claims_total": len(claims) + int(existing), "already_embedded": existing, "embedded": embedded, "errors": errors, "model": model, "duration": duration.String(), "receipt_id": receiptID, "transition_id": transitionID}); err != nil {
+			fmt.Fprintln(stderr, "store embed: encode:", err)
+			return 1
+		}
 	} else {
 		fmt.Fprintf(stdout, "\nstore embed: done — %d embedded, %d errors (%s)\n", embedded, errors, duration)
+		if receiptID != "" {
+			fmt.Fprintf(stdout, "  proof: receipt=%s transition=%s\n", receiptID, transitionID)
+		}
 	}
 	if errors > 0 {
 		return 1
@@ -914,7 +1177,10 @@ func runStoreRecall(args []string, stdout, stderr io.Writer) int {
 		}
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(map[string]any{"query": query, "model": model, "k": k, "results": results})
+		if err := enc.Encode(map[string]any{"query": query, "model": model, "k": k, "experimental": true, "results": results}); err != nil {
+			fmt.Fprintln(stderr, "store recall: encode:", err)
+			return 1
+		}
 		return 0
 	}
 	fmt.Fprintf(stdout, "recall: %q (k=%d, model=%s)\n\n", query, k, model)
