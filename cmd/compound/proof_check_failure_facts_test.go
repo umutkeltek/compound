@@ -149,6 +149,20 @@ func TestProofCheckFailureFactsNormalizationDoesNotHideAdditionalFailures(t *tes
 		t.Fatal("ordinary go-test assertion details were semantically collapsed")
 	}
 
+	ordinaryTimingBaseline := work.ProofFailureFacts(
+		"go-test",
+		[]byte("ok  	compound/internal/act	13.387s\n--- FAIL: TestStableName (19.50s)\n    thing_test.go:10: got 1, want 2\nFAIL	compound/internal/thing	132.252s\nFAIL"),
+		errors.New("exit status 1"),
+	)
+	ordinaryTimingCandidate := work.ProofFailureFacts(
+		"go-test",
+		[]byte("ok  	compound/internal/act	7.102s\n--- FAIL: TestStableName (18.86s)\n    thing_test.go:10: got 1, want 2\nFAIL	compound/internal/thing	127.431s\nFAIL"),
+		errors.New("exit status 1"),
+	)
+	if !reflect.DeepEqual(ordinaryTimingBaseline, ordinaryTimingCandidate) {
+		t.Fatalf("go-test timing-only summaries changed failure identity:\nbaseline=%v\ncandidate=%v", ordinaryTimingBaseline, ordinaryTimingCandidate)
+	}
+
 	timeoutBaseline := "panic: test timed out after 40m0s\n	running tests:\n		TestGatewayCallerContextTimeout (39m12s)\n\ngoroutine 156 [chan receive, 39 minutes]:\ncompound/internal/panel.TestGatewayCallerContextTimeout(0x10c74b400)\n	/tmp/baseline/repo/internal/panel/gateway_test.go:236 +0x1a0\nFAIL	compound/internal/panel	2400.639s"
 	timeoutCandidate := "panic: test timed out after 40m0s\n	running tests:\n		TestGatewayCallerContextTimeout (38m51s)\n\ngoroutine 163 [chan receive, 38 minutes]:\ncompound/internal/panel.TestGatewayCallerContextTimeout(0x14a5e5600)\n	/tmp/candidate/repo/internal/panel/gateway_test.go:236 +0x1a0\nFAIL	compound/internal/panel	2400.644s"
 	timeoutWithOrdinaryFailureBaseline := timeoutBaseline + "\n--- FAIL: TestAlsoFailed (0.01s)\n    thing_test.go:10: got 1, want 2"

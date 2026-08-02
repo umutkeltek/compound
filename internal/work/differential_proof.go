@@ -31,6 +31,14 @@ func ProofFailureFacts(gate string, output []byte, runErr error) []string {
 			if normalized == "" {
 				continue
 			}
+			if gate == "go-test" {
+				if semantic, keep := semanticGoTestFallbackLine(normalized); !keep {
+					continue
+				} else if semantic != "" {
+					unique[semantic] = struct{}{}
+					continue
+				}
+			}
 			if semantic := semanticBunCacheFailureLabel(gate, normalized); semantic != "" {
 				unique[semantic] = struct{}{}
 			} else {
@@ -56,14 +64,29 @@ func ProofFailureFacts(gate string, output []byte, runErr error) []string {
 }
 
 var (
-	goTimeoutHeaderPattern = regexp.MustCompile(`^panic: test timed out after \S+$`)
-	goTimeoutTestPattern   = regexp.MustCompile(`^[A-Za-z0-9_./-]+ \([^)]*\)$`)
-	goGoroutinePattern     = regexp.MustCompile(`^goroutine [0-9]+(?: gp=.*)? \[([^]]+)\]:$`)
-	goPassSummaryPattern   = regexp.MustCompile(`^ok\s+\S+\s+[0-9.]+s$`)
-	goNoTestsPattern       = regexp.MustCompile(`^\?\s+\S+\s+\[no test files\]$`)
-	goFailPackagePattern   = regexp.MustCompile(`^FAIL	(\S+)	[0-9.]+s$`)
-	bunMissingPattern      = regexp.MustCompile(`Cannot find (?:package|module) '([^']+)'`)
+	goTimeoutHeaderPattern         = regexp.MustCompile(`^panic: test timed out after \S+$`)
+	goTimeoutTestPattern           = regexp.MustCompile(`^[A-Za-z0-9_./-]+ \([^)]*\)$`)
+	goGoroutinePattern             = regexp.MustCompile(`^goroutine [0-9]+(?: gp=.*)? \[([^]]+)\]:$`)
+	goPassSummaryPattern           = regexp.MustCompile(`^ok\s+\S+\s+[0-9.]+s$`)
+	goNoTestsPattern               = regexp.MustCompile(`^\?\s+\S+\s+\[no test files\]$`)
+	goFailPackagePattern           = regexp.MustCompile(`^FAIL	(\S+)	[0-9.]+s$`)
+	goNormalizedFailPackagePattern = regexp.MustCompile(`^FAIL\s+(\S+)\s+[0-9.]+s$`)
+	goFailTestPattern              = regexp.MustCompile(`^--- FAIL: (\S+) \([^)]*\)$`)
+	bunMissingPattern              = regexp.MustCompile(`Cannot find (?:package|module) '([^']+)'`)
 )
+
+func semanticGoTestFallbackLine(line string) (string, bool) {
+	if goPassSummaryPattern.MatchString(line) || goNoTestsPattern.MatchString(line) {
+		return "", false
+	}
+	if match := goFailTestPattern.FindStringSubmatch(line); len(match) == 2 {
+		return "go-test:failed-test:" + match[1], true
+	}
+	if match := goNormalizedFailPackagePattern.FindStringSubmatch(line); len(match) == 2 {
+		return "go-test:failed-package:" + match[1], true
+	}
+	return "", true
+}
 
 func semanticProofFailureLabels(gate, output string) ([]string, bool) {
 	if gate != "go-test" || !strings.Contains(output, "panic: test timed out after") {

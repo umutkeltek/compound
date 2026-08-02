@@ -128,9 +128,11 @@ go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
   forged result chains fail closed. Host-coupled facts are semantically normalized only for bounded
   classes proven by real batteries: a Go timeout dump is accepted only when every nonblank line
   matches the strict timeout/stack/package grammar and its facts retain each timed-out test's
-  normalized wait state plus ordered function frames through the test; Bun cache-resolution lines
-  retain the requested package identity. Any unrecognized line falls back to exact hashes.
-  Old reports without
+  normalized wait state plus ordered function frames through the test. For ordinary Go failures,
+  strict successful-package summaries are discarded and only strict test/package durations are
+  removed; assertion text, panic text, diagnostics, build errors, and every unrecognized line remain
+  exact. Bun cache-resolution lines retain the requested package identity. Within the strict timeout
+  parser specifically, any unrecognized line falls the entire timeout output back to exact hashes. Old reports without
   `failure_facts` cannot certify this path.
   The red reports remain red; the differential reference says only that the candidate added no
   observed failure relative to its exact base. No scheduler or parallel authority is introduced.
