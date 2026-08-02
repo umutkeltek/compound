@@ -3636,7 +3636,7 @@ func cmdContract(args []string) {
 		}
 		homePath, err := home.Resolve("")
 		die(err)
-		report := hooksAuthorityReport{
+		report := contract.HooksAuthorityReport{
 			Privacy:          "private",
 			AuthorityRef:     contract.InstalledHooksAuthorityRef,
 			AuthorityPath:    contract.InstalledHooksPath(homePath),
@@ -3662,7 +3662,9 @@ func cmdContract(args []string) {
 		report.RetiredSourceAuthorityRefs = sourceSummary.RetiredSourceAuthorityRefs
 		report.SourceAuthority = records
 		if observeLive {
-			die(populateLiveHookReconciliation(&report, homePath))
+			harnessHome, err := os.UserHomeDir()
+			die(err)
+			die(contract.PopulateLiveHookReconciliation(&report, homePath, harnessHome))
 		}
 		printJSON(report)
 	default:

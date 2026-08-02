@@ -2901,7 +2901,7 @@ func TestUnavailableConcretePreToolUseFailsLoudAcrossAuthorityAndOrientation(t *
 			authorityOut := captureStdout(t, func() {
 				cmdContract([]string{"hooks-authority"})
 			})
-			var authority hooksAuthorityReport
+			var authority contract.HooksAuthorityReport
 			if err := json.Unmarshal([]byte(authorityOut), &authority); err != nil {
 				t.Fatalf("parse hooks-authority: %v\n%s", err, authorityOut)
 			}

@@ -308,7 +308,7 @@ const ConvergePendingBudget = 0
 // exceeds this ceiling. The budget only ratchets DOWN, so new code lands by `git mv
 // cmd/compound/foo.go internal/<organ>/`, not by appending to cmd/compound/. Raising this
 // ceiling to fit is the forbidden weaken-the-gate move.
-const MaxNonTestCompoundFiles = 119
+const MaxNonTestCompoundFiles = 118
 
 // MaxNonTestCompoundLOC is the RATCHET on total non-test .go physical lines under
 // cmd/compound/. Same exclusion rules as MaxNonTestCompoundFiles (no `*_test.go`, no
