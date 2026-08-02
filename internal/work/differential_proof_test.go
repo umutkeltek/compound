@@ -13,6 +13,29 @@ import (
 	"compound/internal/home"
 )
 
+func TestRecordedLandCheckVerificationRefAcceptsOnlyCanonicalShapes(t *testing.T) {
+	for _, ref := range []string{
+		"proof-check:pfrs_candidate",
+		"proof-diff:pfrs_candidate:pfrs_baseline",
+	} {
+		if !validRecordedLandCheckVerificationRef(ref) {
+			t.Fatalf("canonical verification ref rejected: %q", ref)
+		}
+	}
+	for _, ref := range []string{
+		"",
+		"proof-check:pfr_candidate",
+		"proof-diff:pfrs_candidate",
+		"proof-diff:pfr_candidate:pfrs_baseline",
+		"proof-diff:pfrs_candidate:pfrs_baseline:extra",
+		"evidence:forged",
+	} {
+		if validRecordedLandCheckVerificationRef(ref) {
+			t.Fatalf("malformed verification ref accepted: %q", ref)
+		}
+	}
+}
+
 func TestDifferentialProofComparisonAcceptsOnlyBaselineKnownFailures(t *testing.T) {
 	candidate, candidateReport, baseline, baselineReport := differentialComparisonFixture(t)
 	if err := validateDifferentialProofComparison(candidate, candidateReport, baseline, baselineReport); err != nil {
@@ -157,12 +180,16 @@ func TestLandCheckConsumesGovernedDifferentialProofAfterReloadingChains(t *testi
 	checked, err := store.LandCheck(candidateWork.ID, LandCheckOptions{
 		CandidateTipSHA: candidateSnapshot.HeadSHA,
 		Actor:           "candidate-owner",
+		Record:          true,
 	}, now.Add(11*time.Second))
 	if err != nil {
 		t.Fatalf("land-check differential proof: %v", err)
 	}
 	if checked.Status != "landed" || checked.ProofVerificationRef != verificationRef || checked.ProofHeadSHA != candidateSnapshot.HeadSHA {
 		t.Fatalf("land-check = %+v", checked)
+	}
+	if err := validateRecordedLandCheck(current, checked.EvidenceRef, checked.ID, checked.ProofPath, checked); err != nil {
+		t.Fatalf("recorded differential land-check rejected by terminal close gate: %v", err)
 	}
 }
 

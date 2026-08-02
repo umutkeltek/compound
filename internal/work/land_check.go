@@ -748,7 +748,7 @@ func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPa
 	switch {
 	case report.ProofVerificationRef == "" && report.ProofHeadSHA != "":
 		return fmt.Errorf("recorded land-check %s has proof head without verification identity", id)
-	case report.ProofVerificationRef != "" && !strings.HasPrefix(report.ProofVerificationRef, "proof-check:pfrs_"):
+	case report.ProofVerificationRef != "" && !validRecordedLandCheckVerificationRef(report.ProofVerificationRef):
 		return fmt.Errorf("recorded land-check %s has invalid proof verification identity", id)
 	case report.ProofVerificationRef != "" && report.ProofHeadSHA != report.CandidateTipSHA:
 		return fmt.Errorf("recorded land-check %s proof tip differs from candidate tip", id)
@@ -760,6 +760,14 @@ func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPa
 		return fmt.Errorf("recorded land-check %s does not prove containment in bound publication ref %s", id, contract.PublicationRef)
 	}
 	return nil
+}
+
+func validRecordedLandCheckVerificationRef(ref string) bool {
+	if strings.HasPrefix(ref, "proof-check:pfrs_") {
+		return true
+	}
+	_, _, ok := parseDifferentialProofVerificationRef(ref)
+	return ok
 }
 
 func (s *Store) validateRecordedLandCheckProofResult(w envelope.WorkEnvelope, report LandCheckReport) error {
