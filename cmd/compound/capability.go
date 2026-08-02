@@ -384,14 +384,13 @@ func cmdCapability(args []string) {
 		fmt.Printf("- source_authority: %s\n", auth.ID)
 	case "import-agent-lanes":
 		now := time.Now()
-		registryPath := flag("--registry")
-		overlayPath := flag("--overlay")
-		p := posn(map[string]bool{"--registry": true, "--overlay": true})
+		registryPath, overlayPath, launchProfilesPath := flag("--registry"), flag("--overlay"), flag("--launch-profiles")
+		p := posn(map[string]bool{"--registry": true, "--overlay": true, "--launch-profiles": true})
 		if registryPath == "" || overlayPath == "" || len(p) != 0 {
-			fmt.Fprintln(os.Stderr, "usage: compound capability import-agent-lanes --registry <registry.ts> --overlay <overlay.json>")
+			fmt.Fprintln(os.Stderr, "usage: compound capability import-agent-lanes --registry <registry.ts> --overlay <overlay.json> [--launch-profiles <profiles.json>]")
 			os.Exit(2)
 		}
-		report, err := capgraph.ImportAgentLaneProfiles(homePath, registryPath, overlayPath, now)
+		report, err := capgraph.ImportAgentLaneProfilesWithLaunchProfiles(homePath, registryPath, overlayPath, launchProfilesPath, now)
 		die(err)
 		printJSON(report)
 	case "reachability":

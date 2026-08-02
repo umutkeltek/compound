@@ -81,7 +81,14 @@ type agentLaneTuple = AgentLaneTuple
 // private profiles registry overlay. Missing seed files are a clean no-op so
 // public clones can run the importer without carrying docs_private.
 func ImportAgentLaneProfiles(homePath, registryPath, overlayPath string, now time.Time) (AgentLaneImportReport, error) {
-	seed, ok, err := loadAgentLaneProfiles(registryPath, overlayPath, now)
+	return ImportAgentLaneProfilesWithLaunchProfiles(homePath, registryPath, overlayPath, "", now)
+}
+
+// ImportAgentLaneProfilesWithLaunchProfiles additionally mints lane IDENTITY from the
+// launch-profile authority at launchProfilesPath (see agent_lane_launch_profiles.go). An empty
+// path is the overlay-only behaviour ImportAgentLaneProfiles preserves.
+func ImportAgentLaneProfilesWithLaunchProfiles(homePath, registryPath, overlayPath, launchProfilesPath string, now time.Time) (AgentLaneImportReport, error) {
+	seed, ok, err := loadAgentLaneProfiles(registryPath, overlayPath, launchProfilesPath, now)
 	if err != nil {
 		return AgentLaneImportReport{Status: "fail"}, err
 	}
@@ -136,7 +143,7 @@ func ImportAgentLaneProfiles(homePath, registryPath, overlayPath string, now tim
 	return report, nil
 }
 
-func loadAgentLaneProfiles(registryPath, overlayPath string, now time.Time) (agentLaneProfileSeed, bool, error) {
+func loadAgentLaneProfiles(registryPath, overlayPath, launchProfilesPath string, now time.Time) (agentLaneProfileSeed, bool, error) {
 	if strings.TrimSpace(registryPath) == "" || strings.TrimSpace(overlayPath) == "" {
 		return agentLaneProfileSeed{}, false, nil
 	}
@@ -158,10 +165,20 @@ func loadAgentLaneProfiles(registryPath, overlayPath string, now time.Time) (age
 	if err := json.Unmarshal(overlayData, &overlay); err != nil {
 		return agentLaneProfileSeed{}, false, fmt.Errorf("parse agent-lane profiles overlay %s: %w", overlayPath, err)
 	}
+	launchAuthority, hasLaunchProfiles, err := loadLaunchProfiles(launchProfilesPath)
+	if err != nil {
+		return agentLaneProfileSeed{}, false, err
+	}
 	if now.IsZero() {
 		now = time.Now()
 	}
 	revision := agentLaneProfilesRevision(registryData, overlayData)
+	if hasLaunchProfiles {
+		// The launch-profile authority's own revision joins the seed revision: a profile change
+		// with an unchanged overlay is still a different lane graph, and a revision that missed
+		// it would report "no drift" while identities moved underneath.
+		revision = agentLaneProfilesRevision([]byte(revision), []byte(launchAuthority.AuthorityRevision))
+	}
 	seed := agentLaneProfileSeed{
 		revision: revision,
 		source: SkillSourceRef{
@@ -172,13 +189,13 @@ func loadAgentLaneProfiles(registryPath, overlayPath string, now time.Time) (age
 			Revision:    revision,
 		},
 	}
-	if err := populateAgentLaneSeed(&seed, overlay, now); err != nil {
+	if err := populateAgentLaneSeed(&seed, overlay, launchAuthority.Profiles, now); err != nil {
 		return agentLaneProfileSeed{}, false, err
 	}
 	return seed, true, nil
 }
 
-func populateAgentLaneSeed(seed *agentLaneProfileSeed, overlay agentLaneProfilesOverlay, now time.Time) error {
+func populateAgentLaneSeed(seed *agentLaneProfileSeed, overlay agentLaneProfilesOverlay, launchProfiles []LaunchProfile, now time.Time) error {
 	roles := append([]agentLaneProfileRole(nil), overlay.Roles...)
 	lanes := append([]agentLaneProfileLane(nil), overlay.Lanes...)
 	sort.SliceStable(roles, func(i, j int) bool { return roles[i].ID < roles[j].ID })
@@ -248,6 +265,11 @@ func populateAgentLaneSeed(seed *agentLaneProfileSeed, overlay agentLaneProfiles
 				}
 			}
 		}
+	}
+	// Launch-profile lanes mint their identity from the authority, not from the role that binds
+	// to them, so they run after the overlay pass and share its node/edge maps.
+	if err := appendLaunchProfileLanes(nodesByID, edgesByKey, roles, launchProfiles, now); err != nil {
+		return err
 	}
 	for _, node := range nodesByID {
 		seed.nodes = append(seed.nodes, node)
