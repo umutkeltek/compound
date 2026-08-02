@@ -629,6 +629,12 @@ func createCommandForWork(w envelope.WorkEnvelope, actor string) []string {
 	if strings.TrimSpace(w.Privacy) != "" {
 		cmd = append(cmd, "--privacy", w.Privacy)
 	}
+	if strings.TrimSpace(w.PlanClass) != "" {
+		cmd = append(cmd, "--plan-class", w.PlanClass)
+	}
+	if strings.TrimSpace(w.ReworkOfWorkID) != "" {
+		cmd = append(cmd, "--rework-of", w.ReworkOfWorkID)
+	}
 	return cmd
 }
 
