@@ -526,6 +526,7 @@ type ownedProofReport struct {
 		SkipIfMissing string   `json:"skip_if_missing,omitempty"`
 		ProofRef      string   `json:"proof_ref"`
 		Status        string   `json:"status"`
+		FailureFacts  []string `json:"failure_facts,omitempty"`
 	} `json:"steps"`
 }
 
@@ -2127,25 +2128,55 @@ func (s *Store) validateCommittedProofResourceChain(
 	result ProofResourceResult,
 	report ownedProofReport,
 ) error {
+	return s.validateCommittedProofResourceChainStatus(w, result, report, ProofResourceVerified)
+}
+
+func (s *Store) validateCommittedFailedProofResourceChain(
+	w envelope.WorkEnvelope,
+	result ProofResourceResult,
+	report ownedProofReport,
+) error {
+	return s.validateCommittedProofResourceChainStatus(w, result, report, ProofResourceFailed)
+}
+
+func (s *Store) validateCommittedProofResourceChainStatus(
+	w envelope.WorkEnvelope,
+	result ProofResourceResult,
+	report ownedProofReport,
+	expectedStatus string,
+) error {
+	if expectedStatus != ProofResourceVerified && expectedStatus != ProofResourceFailed {
+		return fmt.Errorf("unsupported committed proof result status %q", expectedStatus)
+	}
+	verified := expectedStatus == ProofResourceVerified
+	wantRunStatus := runattempt.StatusFailed
+	wantReportStatus := "failed"
+	wantVerificationRef := ""
+	if verified {
+		wantRunStatus = runattempt.StatusSucceeded
+		wantReportStatus = "ok"
+		wantVerificationRef = "proof-check:" + result.ID
+	}
 	if result.SchemaVersion != ProofResourceResultSchemaVersion ||
 		result.Kind != "work.proof_resource.result" ||
-		result.Status != ProofResourceVerified ||
+		result.Status != expectedStatus ||
 		result.WorkID != w.ID ||
 		result.Actor == "" ||
 		result.ReservationID == "" ||
 		result.RunAttemptID == "" ||
-		result.RunAttemptStatus != runattempt.StatusSucceeded ||
+		result.RunAttemptStatus != wantRunStatus ||
 		result.ReportArtifactRef == "" ||
-		result.ReportStatus != "ok" ||
+		result.ReportStatus != wantReportStatus ||
 		!result.OwnedReport ||
-		result.ProducerExitKnown != true ||
-		result.ProducerExitCode != 0 ||
+		!result.ProducerExitKnown ||
+		(verified && result.ProducerExitCode != 0) ||
+		(!verified && result.ProducerExitCode == 0) ||
 		result.FailureReason != "" ||
-		result.VerificationRef != "proof-check:"+result.ID ||
+		result.VerificationRef != wantVerificationRef ||
 		result.CompletionID == "" ||
 		result.ActionIntentID == "" ||
 		result.PolicyDecisionID == "" {
-		return fmt.Errorf("result identity or successful terminal projection is incomplete")
+		return fmt.Errorf("result identity or terminal projection is incomplete for status %s", expectedStatus)
 	}
 	var reservation ProofResourceReservation
 	if err := s.readEventJSON(result.ReservationID, &reservation); err != nil {
@@ -2205,7 +2236,7 @@ func (s *Store) validateCommittedProofResourceChain(
 		completion.ReservationID != reservation.ID ||
 		completion.ResultID != result.ID ||
 		completion.RunAttemptID != result.RunAttemptID ||
-		completion.RunAttemptStatus != runattempt.StatusSucceeded ||
+		completion.RunAttemptStatus != wantRunStatus ||
 		completion.VerificationRef != result.VerificationRef ||
 		completion.ActionIntentID != result.ActionIntentID ||
 		completion.PolicyDecisionID != result.PolicyDecisionID {
@@ -2221,7 +2252,9 @@ func (s *Store) validateCommittedProofResourceChain(
 		result.ID,
 		completion.ID,
 		result.ReportArtifactRef,
-		result.VerificationRef,
+	}
+	if result.VerificationRef != "" {
+		wantProofRefs = append(wantProofRefs, result.VerificationRef)
 	}
 	wantAttemptActionID := reservation.ActionIntentID
 	if retry {
@@ -2234,11 +2267,11 @@ func (s *Store) validateCommittedProofResourceChain(
 		attempt.ActionIntentID != wantAttemptActionID ||
 		attempt.Workspace != reservation.Workspace ||
 		attempt.Command != reservation.Command ||
-		attempt.Status != runattempt.StatusSucceeded ||
+		attempt.Status != wantRunStatus ||
 		attempt.CompletedAt.IsZero() ||
-		attempt.SweepReason != completionReason(ProofResourceVerified, "") ||
+		attempt.SweepReason != completionReason(expectedStatus, "") ||
 		!reflect.DeepEqual(attempt.ProofRefs, wantProofRefs) {
-		return fmt.Errorf("RunAttempt is not the terminal successful finalizer commitment")
+		return fmt.Errorf("RunAttempt is not the terminal %s finalizer commitment", expectedStatus)
 	}
 	if err := s.validateProofRunAttemptLineage(w, reservation, result, attempt); err != nil {
 		return err

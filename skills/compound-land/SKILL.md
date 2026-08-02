@@ -114,6 +114,20 @@ go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
   usage/admission errors print none. Publish the installed-runtime Workbench artifact only after a
   green governed completion has released—never from candidate, failed, invalid, release-pending,
   dry-run, or CI output.
+- **Exact-base differential proof is the narrow exception for complete red batteries, not a green
+  rewrite.** Run the same canonical battery on the candidate and its exact base using a binary that
+  emits `failure_facts`. When the base result HEAD equals the candidate result BASE, repository and
+  gate inventories match, both failed-result finalizer chains are authentic, and every candidate
+  failed-gate fact is already present on the base, attach the governed verification with the existing
+  lifecycle command:
+  `compound work advance <work_id> --to <current-state> --by <actor> --verification
+  proof-diff:<candidate_pfrs_id>:<baseline_pfrs_id> --note "exact-base differential proof"`.
+  `advance` validates both chains and the comparison before mutating the WorkEnvelope; `land-check`
+  reloads and recomputes them again before accepting the verification.
+  Missing facts, new facts, changed commands, dirty/stale source, malformed refs, and incomplete or
+  forged result chains fail closed. Old reports without `failure_facts` cannot certify this path.
+  The red reports remain red; the differential reference says only that the candidate added no
+  observed failure relative to its exact base. No scheduler or parallel authority is introduced.
 - Exit contract: `0` ok · `1` a gate FAILED · `2` usage/admission/publication/finalization error.
 - `--base` is a caller-captured immutable full SHA, not
   `git_delivery.expected_base_sha`. It resolves once. Certifying proof refuses dirty or

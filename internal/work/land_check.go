@@ -517,6 +517,13 @@ func landingContainedDirtyDiagnostic(targetRef string, dirtyPaths []string, publ
 func (s *Store) latestSourceBoundProofResult(w envelope.WorkEnvelope) (ProofResourceResult, bool, error) {
 	for i := len(w.VerificationIDs) - 1; i >= 0; i-- {
 		ref := strings.TrimSpace(w.VerificationIDs[i])
+		if strings.HasPrefix(ref, DifferentialProofVerificationPrefix) {
+			result, err := s.validateDifferentialProofRef(w, ref)
+			if err != nil {
+				return ProofResourceResult{}, true, err
+			}
+			return result, true, nil
+		}
 		if !strings.HasPrefix(ref, "proof-check:") {
 			continue
 		}

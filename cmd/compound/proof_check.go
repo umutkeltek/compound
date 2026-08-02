@@ -54,9 +54,9 @@ type proofCheckStep struct {
 	ExitCode      int      `json:"exit_code,omitempty"`
 	DurationMS    int64    `json:"duration_ms,omitempty"`
 	OutputTail    string   `json:"output_tail,omitempty"`
-	// CIPortable marks a gate that runs green in a fresh-clone CI checkout: no external
-	// non-Go binary (redact), no installed-binary dependency, and no COMPOUND_HOME body.
-	// `proof-check --ci` runs exactly these. Not serialized — it is a gate attribute, not a result.
+	FailureFacts  []string `json:"failure_facts,omitempty"`
+	// CIPortable marks a fresh-clone CI gate: no external non-Go binary, installed binary,
+	// or COMPOUND_HOME body. `proof-check --ci` runs exactly these; it is not serialized.
 	CIPortable bool `json:"-"`
 }
 
@@ -68,10 +68,8 @@ func cmdProofCheck(args []string) {
 		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--dev|--ci|--ci-console] [--repo P] [--base REF] [--out FILE] [--work ID --actor ACTOR]")
 		fmt.Println("  --dev         fast, cache-enabled, non-certifying developer feedback")
 		fmt.Println("  --ci          run only the fresh-clone-portable gate subset (bare Go gates; what CI runs on push/PR)")
-		fmt.Println("  --ci-console  run only the console/TypeScript gate subset (needs bun + console/node_modules;")
-		fmt.Println("                run by the CI console job, not the bare-clone --ci job)")
-		fmt.Println("  --out FILE    write the full JSON report to FILE and print a final 'battery: ok|FAILED' verdict")
-		fmt.Println("                line as the last stdout line; the process exit code stays truthful (0/1/2)")
+		fmt.Println("  --ci-console  run console/TypeScript gates (needs bun + console/node_modules; CI console job, not bare-clone --ci)")
+		fmt.Println("  --out FILE    write full JSON and print final 'battery: ok|FAILED'; exit code stays truthful (0/1/2)")
 		fmt.Println("  --timings     report the recorded per-gate duration history instead of running the battery")
 		fmt.Println("                (--dev selects the development lane, --window N the sample depth)")
 		fmt.Println("  --work ID --actor ACTOR  required for a full local battery; reserves the scarce proof resource")
@@ -1348,6 +1346,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 		if executableErr != nil {
 			result.Status = "failed"
 			result.OutputTail = executableErr.Error()
+			result.FailureFacts = work.ProofFailureFacts([]byte(executableErr.Error()), executableErr)
 			result.ExitCode = 1
 			return result
 		}
@@ -1369,6 +1368,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 	result.OutputTail = proofCheckTail(output, 4000)
 	if err != nil {
 		result.Status = "failed"
+		result.FailureFacts = work.ProofFailureFacts(output, err)
 		result.ExitCode = proofCheckExitCode(err)
 	}
 	return result

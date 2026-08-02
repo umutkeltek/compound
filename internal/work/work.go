@@ -1245,6 +1245,11 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 		}
 		in.GitDelivery = normalized
 	}
+	if ref := strings.TrimSpace(in.VerificationID); strings.HasPrefix(ref, DifferentialProofVerificationPrefix) {
+		if _, err := s.validateDifferentialProofRef(w, ref); err != nil {
+			return w, fmt.Errorf("differential proof verification: %w", err)
+		}
+	}
 	// Resolve a declared/corrected lane fail-closed BEFORE any state mutation: a bad --lane ref
 	// aborts the advance untouched (never records a refusal, never mutates the envelope).
 	declaredLane, err := s.resolveDeclaredLane(in.LaneRef)
