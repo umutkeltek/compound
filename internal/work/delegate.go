@@ -1640,6 +1640,23 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	if strings.TrimSpace(workspace) == "" {
 		return out, errors.New("delegate: no workspace resolved from --workspace, git_delivery.target_worktree_root, or cwd")
 	}
+	// The workspace is the attribution key: TranscriptDirFor derives a lane's
+	// session store from it, so two live lanes sharing one workspace interleave
+	// into a single JSONL with nothing marking which passage belongs to which
+	// work. That cannot be separated afterward, so refuse here rather than let a
+	// later harvest read one lane's transcript as another's.
+	occupant, occupied, occErr := s.workspaceLiveOccupant(workspace, out.WorkID)
+	if occErr != nil {
+		return out, occErr
+	}
+	if occupied {
+		message := fmt.Sprintf(
+			"workspace %s is already bound to live lane work %s (run attempt %s, status %s); "+
+				"give this lane its own workspace, or terminalize that attempt first",
+			workspace, occupant.WorkID, occupant.ID, occupant.Status)
+		out.Refusal = &DelegateRefusal{Reason: "workspace_occupied", Message: message}
+		return out, nil
+	}
 	activationArgs := append([]string(nil), opts.Args...)
 	readinessRequest := DelegateHarnessReadinessRequest{
 		HomePath:               s.home,
@@ -2856,4 +2873,32 @@ type DelegateSweepOutcome struct {
 	KillError         string `json:"kill_error,omitempty"`
 	WorktreeLock      string `json:"worktree_lock,omitempty"`
 	WorktreeLockError string `json:"worktree_lock_error,omitempty"`
+}
+
+// workspaceLiveOccupant reports whether a workspace is already bound to a
+// non-terminal run attempt belonging to a DIFFERENT work. It guards the
+// transcript-attribution boundary described at the call site in Delegate.
+//
+// Non-terminal is deliberately the whole bar. An idle-but-unterminalized attempt
+// still owns the transcript directory, so admitting a second lane beside it
+// collides their reports just as thoroughly as a busy one would. Over-refusing
+// costs one explicit message naming the attempt to terminalize; under-refusing
+// costs a report that can never be attributed.
+func (s *Store) workspaceLiveOccupant(workspace, selfWorkID string) (runattempt.RunAttempt, bool, error) {
+	if strings.TrimSpace(workspace) == "" {
+		return runattempt.RunAttempt{}, false, nil
+	}
+	attempts, err := runattempt.Open(s.home).ListNonTerminal()
+	if err != nil {
+		return runattempt.RunAttempt{}, false, fmt.Errorf("delegate: list non-terminal run attempts: %w", err)
+	}
+	for _, ra := range attempts {
+		if ra.WorkID == selfWorkID || strings.TrimSpace(ra.Workspace) == "" {
+			continue
+		}
+		if sameWorkspacePath(ra.Workspace, workspace) {
+			return ra, true, nil
+		}
+	}
+	return runattempt.RunAttempt{}, false, nil
 }
