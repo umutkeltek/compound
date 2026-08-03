@@ -683,8 +683,11 @@ func TestRetrievalJournalCLIAndBestEffortFailure(t *testing.T) {
 func TestRecallFailureJournalsUnavailableObservationBeforeExit(t *testing.T) {
 	homePath := newParityTestHome(t, time.Now().UTC())
 	query := "synthetic recall failure marker"
+	// A torn FINAL line is a crash-truncated append the ledger law tolerates as
+	// never-written; genuine corruption must be mid-file to fail loud. Two
+	// garbage lines put the first one mid-file.
 	claimsPath := filepath.Join(homePath, "ledger", "claims.jsonl")
-	if err := os.WriteFile(claimsPath, []byte("not-json\n"), 0o644); err != nil {
+	if err := os.WriteFile(claimsPath, []byte("not-json\nnot-json-either\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

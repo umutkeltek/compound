@@ -143,7 +143,10 @@ func TestProofCheckMemoryDoctorGateFailsOnUnreadableLedger(t *testing.T) {
 	}
 	repo, step := proofCheckMemoryGateStep(t)
 	seeded := proofCheckMemoryGateHome(t, false)
-	appendToClaimsLedger(t, seeded, "{ this is not a claim\n")
+	// A torn FINAL line is a crash-truncated append the ledger law tolerates
+	// as never-written; genuine corruption must be mid-file to fail loud. The
+	// second garbage line puts the first one mid-file.
+	appendToClaimsLedger(t, seeded, "{ this is not a claim\n{ neither is this\n")
 	out, err := runProofCheckMemoryDoctorInHome(repo, seeded, step)
 	if err == nil {
 		t.Fatalf("gate passed with an unparsable claims ledger:\n%s", out)
