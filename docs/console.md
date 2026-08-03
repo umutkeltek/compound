@@ -1,9 +1,13 @@
 # Console — the visual surface for Compound
 
 > The console is a **local, operator-owned** web dashboard on port 3777. It
-> reads from `COMPOUND_HOME` through the `compound` CLI — it never mutates
-> state, never owns meaning, and never becomes a second authority. It is a
-> **projection**: a rebuildable view over the spine's objects.
+> reads from `COMPOUND_HOME` through the `compound` CLI — it never owns
+> meaning and never becomes a second authority. It is a **projection**: a
+> rebuildable view over the spine's objects. Mutations flow only through the
+> DEC-0021 gated path: `POST /api/decision/execute` refuses every call unless
+> `COMPOUND_CONSOLE_MUTATIONS=1` is set and the request is a same-origin
+> localhost call carrying the console session token — every act remains a
+> human click through a governed argv allowlist.
 
 ## Quick start
 

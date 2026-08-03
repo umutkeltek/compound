@@ -24,6 +24,9 @@ Meanwhile, 61 internal packages exist, of which 14 have a single source file.
 The CLI dispatch is a 5,432-line `main.go` with 75 case branches in one
 `package main`.
 
+*(Package and line counts as of `5546f479`, 2026-08-02; they age as the tree
+moves.)*
+
 Active agent lanes (6+ concurrent Claude/Codex sessions, 80+ worktrees) mean
 any breaking import-path change risks compile failures across live work.
 

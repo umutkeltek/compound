@@ -118,7 +118,12 @@ Modes:
 - temporal evolution through positions and supersession edges;
 - conservative ambient injection from operational/world-visible promoted memory.
 
-Raw evidence and private quotes are not ambient by default.
+Raw evidence and private evidence quotes are not ambient by default. This is a
+statement about evidence bodies, not about claim visibility: a promoted claim
+with `visibility: private` still passes the orient ambient gate by design
+(`memoryVisibilityAllowedForOrient` in `internal/contract`), subject to the
+per-repo-kind `MemoryRule`, which can mark `personal-corpus`/`self-model`
+claims explicit-only or forbidden.
 
 Admission happens before operator review: deterministic source metadata
 (`source=knowledge_import`) enters the source-index tier and knowledge extraction

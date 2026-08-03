@@ -37,7 +37,9 @@ Intent
 → Transition             the proof apex — state change + projections
 ```
 
-**Packages:** `internal/{home, envelope, contract, work, policy, harness, hook}`. Built P0–P5.
+**Packages:** `internal/{arch, contract, envelope, harness, home, hook, policy, schema, work, writeback}`
+— the ratcheted spine allowlist; `arch.Classification` (`internal/arch/arch.go`) is the source of
+truth. Built P0–P5.
 Full schemas: `architecture/runtime.md`. Proof object: `architecture/transition.md`.
 
 ---

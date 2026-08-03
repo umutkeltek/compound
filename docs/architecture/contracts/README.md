@@ -139,7 +139,8 @@ only reasoned about inside that one decision.
 `compound policy import-standing-grants <standing-grants.yaml|json>` imports scoped grant envelopes into
 `COMPOUND_HOME/registries/standing-grants.json` at `compound://registries/standing-grants`; policy
 evaluation consumes that authority via `LoadConfig`, while config-file `standing_grants` remains rollback
-evidence.
+evidence. The source must cite an operator-provenance decision record (`authority.decision_ref` +
+`authority.reviewed_by`), and a grant without `expires_at` never imports without one.
 `compound policy import-operator-state <operator-state.json>` imports the global autonomy ceiling into
 `COMPOUND_HOME/registries/operator-state.json` as `compound://registries/operator-state`; policy evaluation
 loads that Compound authority, records the authority ref on `PolicyDecision.evidence_refs[]`, and still holds
@@ -455,17 +456,20 @@ only when a vertical slice needs it (`../../roadmap/phases.md`).
 
 ## Entity resolution — the precedence order (the root of anti-fragmentation)
 
-`NotesApp` / `notes-app` / a bundle id / "that app with the metrics" must collapse to **one** entity:
+`NotesApp` / `notes-app` / a bundle id / "that app with the metrics" must collapse to **one** entity.
+The implemented precedence (`internal/mem` `ResolveEntity`) is:
 
 ```text
-1. explicit compound entity id
-2. registry alias
-3. repo / app / product fingerprint (remote, bundle id, package name, deploy target)
-4. scope-resolver match ABOVE a confidence threshold
-5. otherwise → a NEW candidate entity, PARKED until reviewed
+1. exact entity slug
+2. exact identifier (remote, bundle id, package name, deploy target, ...)
+3. alias (case-insensitive)
+4. path — the token is a registered path identifier, or nested under one
 ```
 
-An **uncertain** match creates **parked evidence only — never a promoted claim.**
+A match at a stronger tier beats any weaker-tier match. Exactly one entity at the strongest matched
+tier → **resolved**; several distinct entities tied at that tier → **multi**; none → **unresolved**.
+There is no confidence-threshold tier: an **uncertain** (`multi`/`unresolved`) match creates **parked
+evidence only — never a promoted claim.**
 
 ## Shared fields that bend behavior
 

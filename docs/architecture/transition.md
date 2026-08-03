@@ -17,8 +17,11 @@ system trust + open loops + dead surfaces.
 
 A `Transition` is a state change plus its **projections** into multiple representational spaces.
 The anonymous `Header` field supplies the universal envelope keys and flattens them into JSON; in
-particular, `ids.work_id` is the root link from intent through transition and
-`ids.transition_id` carries the transition identifier. The direct struct-field contract is:
+particular, `ids.work_id` is the root link from intent through transition, and the transition's own
+identifier is the flattened header `id` (`tr_...`). `ids.transition_id` is NOT set on the Transition
+itself — close-minted transitions leave it empty; the link lives on the WorkEnvelope, whose
+`ids.transition_id` the close path sets to the minted transition's id. The direct struct-field
+contract is:
 
 | Go field | Go type | JSON tag |
 |---|---|---|
@@ -97,11 +100,16 @@ Do not collapse everything into one schema. The ledger preserves evidence; the s
 
 ### The central invariant (this is what "coherent tensors across media" means)
 
-> **Every projection MUST preserve:** `entity_id, scope, evidence_ref, time, actor,
+> **Target: every projection preserves** `entity_id, scope, evidence_ref, time, actor,
 > uncertainty, risk, cost, state_delta`.
 
-Coherence is not one schema. Coherence is the ability to transform between spaces without
-losing those nine fields. If a projection drops one, fragmentation enters through a side door.
+This nine-field shape is the design target, not what the shipped schema enforces today. The
+implemented `ProjectionRef` (`internal/envelope`) carries `kind`, `ref`, `role`, and optional
+`evidence_ref`, `confidence`, `status`; the untyped projection lists (`memory`, `skill`, `product`,
+`cost`, `risk`, `taste`, `routing`, `human_attention`) carry refs only. Coherence is not one schema.
+Coherence is the ability to transform between spaces without losing those nine fields — a projection
+that drops one opens a fragmentation side door, so new projection fields should close the gap toward
+the target rather than drift further from it.
 
 ## Relationship to the ledger
 
