@@ -666,6 +666,34 @@ func (e *ContextPack) Validate() error {
 	if e.Retrieval != nil {
 		validateRetrievalPosture(v, *e.Retrieval)
 	}
+	// Present sections are shape-checked (the admission LAWS — no private
+	// bodies, excluded refs never materialize — stay in the materializer; the
+	// schema owns only that a hand-written pack cannot claim empty refs).
+	for i, pos := range e.ActivePositions {
+		v.req(fmt.Sprintf("active_positions[%d].ref", i), pos.Ref)
+		v.req(fmt.Sprintf("active_positions[%d].entity", i), pos.Entity)
+	}
+	for i, neg := range e.Negatives {
+		v.req(fmt.Sprintf("negatives[%d].approach_key", i), neg.ApproachKey)
+		v.req(fmt.Sprintf("negatives[%d].ref", i), neg.Ref)
+	}
+	if e.Peers != nil {
+		for i, lease := range e.Peers.ActiveLeases {
+			v.req(fmt.Sprintf("peers.active_leases[%d].work_id", i), lease.WorkID)
+			v.req(fmt.Sprintf("peers.active_leases[%d].holder", i), lease.Holder)
+		}
+	}
+	if e.BodyPack != nil {
+		for i, body := range e.BodyPack.Bodies {
+			v.req(fmt.Sprintf("body_pack.bodies[%d].ref", i), body.Ref)
+			v.req(fmt.Sprintf("body_pack.bodies[%d].sha256", i), body.SHA256)
+			v.req(fmt.Sprintf("body_pack.bodies[%d].status", i), body.Status)
+		}
+		for i, om := range e.BodyPack.Omitted {
+			v.req(fmt.Sprintf("body_pack.omitted[%d].ref", i), om.Ref)
+			v.req(fmt.Sprintf("body_pack.omitted[%d].reason", i), om.Reason)
+		}
+	}
 	// the excluded list (what was NOT loaded, and why) is the whole point of replaceability;
 	// require its presence (may be empty) so it's never silently dropped.
 	if e.Excluded == nil {
@@ -934,6 +962,9 @@ func (e *WorkEnvelope) Kind() string { return "work" }
 func (e *WorkEnvelope) Validate() error {
 	v := &verr{}
 	e.Header.validate(v, SVWork, "work_")
+	if strings.HasPrefix(e.ID, "work_live_") {
+		v.addf("id %q occupies the ephemeral %q namespace (reserved for unattributed live-hook mutations); a durable work envelope must mint a durable id", e.ID, "work_live_")
+	}
 	v.enum("state", e.State, WorkStates, true)
 	v.enum("proof_medium", e.ProofMedium, ProofMedia, false)
 	// Optional: empty is legal and means oneshot (see PlanClasses / PlanClass).

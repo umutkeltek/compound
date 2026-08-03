@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"compound/internal/capgraph"
+	"slices"
+
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/home"
@@ -1452,6 +1454,12 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 		return w, err
 	}
 	pendingPath := s.advancePendingPath(workID)
+	// Never stage an envelope that fails the current schema: a hand edit or a
+	// rule added after the last write must not ride the lifecycle into a
+	// persisted invalid spine object.
+	if err := w.Validate(); err != nil {
+		return w, fmt.Errorf("refusing to persist invalid advanced envelope: %w", err)
+	}
 	stagedWork, err := s.stageJSON(pendingPath, &w)
 	if err != nil {
 		return w, err
@@ -1826,6 +1834,54 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if w.State != in.Outcome && !canTransition(w.State, in.Outcome) {
 		return res, fmt.Errorf("cannot close %s from state %q to %q", workID, w.State, in.Outcome)
 	}
+	// Idempotent re-close: a work already terminal with the SAME outcome returns
+	// its existing terminal proof pair — "the closing receipt" is not
+	// last-writer-wins, and re-minting a fresh receipt+transition would strand
+	// the original pair unreachable from the envelope.
+	if w.State == in.Outcome {
+		events, err := s.eventsFor(workID)
+		if err != nil {
+			return res, err
+		}
+		for i := len(events) - 1; i >= 0; i-- {
+			ev := events[i]
+			if ev.To != in.Outcome {
+				continue
+			}
+			var recID, trID string
+			for _, id := range ev.Attached {
+				if strings.HasPrefix(id, "rec_") {
+					recID = id
+				}
+				if strings.HasPrefix(id, "tr_") {
+					trID = id
+				}
+			}
+			if recID == "" || trID == "" {
+				break // terminal event without its pair: fall through to a fresh close
+			}
+			var rec envelope.Receipt
+			if err := s.readEventJSON(recID, &rec); err != nil {
+				return res, fmt.Errorf("re-close: read existing closing receipt %s: %w", recID, err)
+			}
+			var tr envelope.Transition
+			if err := s.readEventJSON(trID, &tr); err != nil {
+				return res, fmt.Errorf("re-close: read existing closing transition %s: %w", trID, err)
+			}
+			// A re-close carrying NEW information is not a replay: refuse with a
+			// pointer to the existing terminal receipt rather than silently
+			// discarding the caller's evidence.
+			if in.MoveType != rec.MoveType {
+				return res, fmt.Errorf("work %s is already %s (receipt %s, move_type %s); a re-close with move_type %s is not a replay — attach new evidence through new work", workID, in.Outcome, rec.ID, rec.MoveType, in.MoveType)
+			}
+			for _, ref := range in.ProofRefs {
+				if !slices.Contains(rec.ProofRefs, ref) {
+					return res, fmt.Errorf("work %s is already %s (receipt %s); re-close carries new proof ref %q not on that receipt — attach new evidence through new work", workID, in.Outcome, rec.ID, ref)
+				}
+			}
+			return CloseResult{Work: w, Receipt: rec, Transition: tr}, nil
+		}
+	}
 	var landingProof *LandCheckReport
 	deliveryProofRefs := mergeUnique(w.ArtifactIDs, w.VerificationIDs, in.ProofRefs, landCheckEvidenceRefs(w.EvidenceRefs))
 	landingProof, err = s.gitDeliveryProofForClose(w, in.Outcome, in.MoveType, deliveryProofRefs, now)
@@ -1934,10 +1990,19 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if len(in.ConsumedRefs) > 0 {
 		rec.Skills.Used = mergeUnique(rec.Skills.Used, in.ConsumedRefs)
 	}
+	// The apex action_refs carry only ActionIntent ids: legacy envelopes still
+	// hold prun_* run refs in ActionIntentIDs (see the field comment in
+	// envelope.go), and those are run history, not actions.
+	actionRefs := make([]string, 0, len(w.ActionIntentIDs))
+	for _, id := range w.ActionIntentIDs {
+		if strings.HasPrefix(id, "act_") {
+			actionRefs = append(actionRefs, id)
+		}
+	}
 	tr := envelope.Transition{
 		Header:     newHeaderWithLane(envelope.SVTransition, idFor("tr_", workID, ts(now)), now, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
 		BeforeRefs: before,
-		ActionRefs: orEmpty(w.ActionIntentIDs),
+		ActionRefs: orEmpty(actionRefs),
 		AfterRefs:  after,
 		StateDelta: in.Summary,
 		Projections: envelope.Projections{
@@ -1946,7 +2011,11 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 			Typed: typedProjectionRefs,
 		},
 		SecondOrder: envelope.SecondOrder{
-			FutureBehaviorChanged: in.MoveType != "audit_only",
+			// Derived from the effective change, not the move class: a no-op
+			// close (no effective change) must not claim future behavior
+			// changed, or every branchless close ranks as changed and the
+			// coverage rule ranks nothing.
+			FutureBehaviorChanged: in.MoveType != "audit_only" && rec.StateDelta.Changed,
 			ShouldHarden:          shouldHardenOnClose(w.TargetSurface, in.Outcome, in.ProofRefs),
 		},
 		OpensBranches: in.OpensBranches,
@@ -2035,6 +2104,11 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	}
 	w.State = in.Outcome
 	w.IDs.TransitionID = tr.ID
+	// Never persist an envelope that fails the current schema: the lifecycle
+	// must not mint valid receipts/transitions citing an invalid spine object.
+	if err := w.Validate(); err != nil {
+		return res, abortReferenceTransaction(fmt.Errorf("refusing to persist invalid terminal envelope: %w", err))
+	}
 	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
 		return res, abortReferenceTransaction(err)
 	}

@@ -734,3 +734,63 @@ func TestHeader_HostBindingsBoundaryLength(t *testing.T) {
 		t.Fatalf("254-char hostname must reject")
 	}
 }
+
+// The ephemeral work_live_ namespace is for unattributed live-hook mutations;
+// a durable WorkEnvelope must never occupy it (reviewqueue, sourcecontrol, and
+// decisions already refuse it as non-durable).
+func TestWorkEnvelopeValidateRefusesLiveNamespace(t *testing.T) {
+	w := WorkEnvelope{Header: hdr(SVWork, "work_live_abc123"), Owner: "compound", State: "ready", SuccessPredicate: "a state delta exists"}
+	err := w.Validate()
+	if err == nil || !strings.Contains(err.Error(), "work_live_") {
+		t.Fatalf("work_live_ id must fail validation, got %v", err)
+	}
+	w.ID = "work_durable_abc123"
+	if err := w.Validate(); err != nil {
+		t.Fatalf("durable work id must validate: %v", err)
+	}
+}
+
+// Present ContextPack sections are shape-checked: a hand-written pack carrying
+// an empty-ref position, negative, lease, or body must not validate.
+func TestContextPackValidateChecksPresentSections(t *testing.T) {
+	pack := ContextPack{
+		Header:          hdr(SVContextPack, "ctx_sections"),
+		TaskContract:    TaskContract{Intent: "shape-check sections", SuccessPredicate: "sections shape-checked"},
+		Included:        []IncludedRef{},
+		Excluded:        []ExcludedRef{},
+		ActiveDecisions: []string{},
+		RequiredChecks:  []string{},
+		Avoid:           []string{},
+		ActivePositions: []ActivePosition{{Ref: "pos_1", Entity: "e", Stance: "holds"}},
+		Negatives:       []NegativeCard{{ApproachKey: "a", Ref: "neg_1"}},
+		Peers:           &PeersSection{ActiveLeases: []PeerLease{{WorkID: "work_1", Holder: "codex"}}, Lanes: []PeerLaneCard{}},
+		BodyPack:        &BodyPackSection{Bodies: []BodyPackItem{{Ref: "claim_1", SHA256: "sha256:x", Status: "current"}}, Omitted: []BodyPackOmission{{Ref: "claim_2", Reason: "budget_exhausted"}}},
+	}
+	if err := pack.Validate(); err != nil {
+		t.Fatalf("a well-formed pack with all sections present must validate: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*ContextPack)
+		want   string
+	}{
+		{"empty position ref", func(p *ContextPack) { p.ActivePositions[0].Ref = "" }, "active_positions[0].ref"},
+		{"empty negative approach key", func(p *ContextPack) { p.Negatives[0].ApproachKey = "" }, "negatives[0].approach_key"},
+		{"empty lease work id", func(p *ContextPack) { p.Peers.ActiveLeases[0].WorkID = "" }, "peers.active_leases[0].work_id"},
+		{"empty lease holder", func(p *ContextPack) { p.Peers.ActiveLeases[0].Holder = "" }, "peers.active_leases[0].holder"},
+		{"empty body ref", func(p *ContextPack) { p.BodyPack.Bodies[0].Ref = "" }, "body_pack.bodies[0].ref"},
+		{"empty body sha", func(p *ContextPack) { p.BodyPack.Bodies[0].SHA256 = "" }, "body_pack.bodies[0].sha256"},
+		{"empty omission reason", func(p *ContextPack) { p.BodyPack.Omitted[0].Reason = "" }, "body_pack.omitted[0].reason"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := pack
+			tc.mutate(&bad)
+			err := bad.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() = %v, want an error naming %s", err, tc.want)
+			}
+		})
+	}
+}
