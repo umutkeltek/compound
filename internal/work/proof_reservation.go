@@ -14,6 +14,7 @@ import (
 
 	"compound/internal/authority/gitrepository"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/home"
 	"compound/internal/landlease"
 	"compound/internal/policy"
@@ -23,6 +24,7 @@ import (
 const (
 	ProofResourceReservationSchemaVersion           = "compound.work_proof_reservation.v0.2"
 	ProofResourceRefreshSchemaVersion               = "compound.work_proof_refresh.v0.1"
+	ProofResourceRefreshPreparationSchemaVersion    = "compound.work_proof_refresh_preparation.v0.1"
 	ProofResourceResultSchemaVersion                = "compound.work_proof_result.v0.1"
 	ProofResourceCompletionSchemaVersion            = "compound.work_proof_completion.v0.1"
 	ProofResourceLegacyRecoverySchemaVersion        = "compound.work_proof_legacy_recovery.v0.1"
@@ -204,6 +206,29 @@ type ProofResourceRefresh struct {
 	WindowOpenedAt   string `json:"window_opened_at"`
 	RefreshedAt      string `json:"refreshed_at"`
 	ExpiresAt        string `json:"expires_at"`
+	TTLSeconds       int64  `json:"ttl_seconds"`
+	PreparationID    string `json:"preparation_id,omitempty"`
+	ActionIntentID   string `json:"action_intent_id"`
+	PolicyDecisionID string `json:"policy_decision_id"`
+}
+
+// ProofResourceRefreshPreparation is the per-heartbeat pre-image that proves an
+// allowing decision existed before the scarce lease mutation. Its reservation-
+// scoped id family makes every preparation reachable without appending another
+// row to the global Work lifecycle. A preparation without a matching refresh is
+// a fail-closed interrupted attempt, never evidence of an extended window.
+type ProofResourceRefreshPreparation struct {
+	SchemaVersion    string `json:"schema_version"`
+	ID               string `json:"id"`
+	Kind             string `json:"kind"`
+	CreatedAt        string `json:"created_at"`
+	WorkID           string `json:"work_id"`
+	Actor            string `json:"actor"`
+	ReservationID    string `json:"reservation_id"`
+	RunAttemptID     string `json:"run_attempt_id"`
+	Holder           string `json:"holder"`
+	WindowOpenedAt   string `json:"window_opened_at"`
+	RequestedAt      string `json:"requested_at"`
 	TTLSeconds       int64  `json:"ttl_seconds"`
 	ActionIntentID   string `json:"action_intent_id"`
 	PolicyDecisionID string `json:"policy_decision_id"`
@@ -1706,7 +1731,7 @@ func (s *Store) failProofResourceAcquisition(
 // running RunAttempt remain live. The landlease refresh itself refuses resurrection after expiry.
 func (s *Store) RefreshProofResource(workID, reservationID, actor string, ttl time.Duration, now time.Time) (ProofResourceReservation, error) {
 	var reservation ProofResourceReservation
-	err := s.withLifecycleMutation(func() error {
+	err := home.WithAutonomyAdmissionLock(s.home, func() error {
 		workID = strings.TrimSpace(workID)
 		reservationID = strings.TrimSpace(reservationID)
 		actor = strings.TrimSpace(actor)
@@ -1731,7 +1756,11 @@ func (s *Store) RefreshProofResource(workID, reservationID, actor string, ttl ti
 		if err != nil {
 			return err
 		}
-		action := s.proofResourceAction(w, reservation.ID, actor, "refresh", "", "", "", "", now)
+		actionTime, err := proofRefreshActionTime(reservation)
+		if err != nil {
+			return err
+		}
+		action := s.proofResourceAction(w, reservation.ID, actor, "refresh", "", "", "", "", actionTime)
 		decision, err := s.evaluateProofResourceAction(action, now)
 		if err != nil {
 			return err
@@ -1739,15 +1768,23 @@ func (s *Store) RefreshProofResource(workID, reservationID, actor string, ttl ti
 		if !policy.Allowed(decision) {
 			return fmt.Errorf("proof refresh policy %s", decision.Outcome)
 		}
-		if err := s.persistProofScarceMutationPreparation(
-			&w,
-			action,
-			decision,
-			reservation,
-			ra.ID,
-			"refresh",
-			now,
-		); err != nil {
+		preparation := ProofResourceRefreshPreparation{
+			SchemaVersion:    ProofResourceRefreshPreparationSchemaVersion,
+			ID:               proofRefreshPreparationID(reservation.ID, ra.ID, now),
+			Kind:             "work.proof_resource.refresh_preparation",
+			CreatedAt:        now.UTC().Format(time.RFC3339Nano),
+			WorkID:           workID,
+			Actor:            actor,
+			ReservationID:    reservation.ID,
+			RunAttemptID:     ra.ID,
+			Holder:           reservation.Holder,
+			WindowOpenedAt:   reservation.AcquiredAt,
+			RequestedAt:      now.UTC().Format(time.RFC3339),
+			TTLSeconds:       int64(ttl / time.Second),
+			ActionIntentID:   action.ID,
+			PolicyDecisionID: decision.ID,
+		}
+		if err := s.persistProofHeartbeatPreparation(&w, action, decision, preparation, now); err != nil {
 			return err
 		}
 		windowOpenedAt := reservation.AcquiredAt
@@ -1763,7 +1800,7 @@ func (s *Store) RefreshProofResource(workID, reservationID, actor string, ttl ti
 		reservation.TTLSeconds = lease.TTLSeconds
 		refresh := ProofResourceRefresh{
 			SchemaVersion:    ProofResourceRefreshSchemaVersion,
-			ID:               idFor("pfrh_", reservation.ID, ra.ID, lease.ExpiresAt),
+			ID:               proofRefreshOutcomeID(reservation.ID, ra.ID, lease.ExpiresAt),
 			Kind:             "work.proof_resource.refresh",
 			CreatedAt:        now.UTC().Format(time.RFC3339Nano),
 			WorkID:           workID,
@@ -1775,10 +1812,11 @@ func (s *Store) RefreshProofResource(workID, reservationID, actor string, ttl ti
 			RefreshedAt:      lease.AcquiredAt,
 			ExpiresAt:        lease.ExpiresAt,
 			TTLSeconds:       lease.TTLSeconds,
+			PreparationID:    preparation.ID,
 			ActionIntentID:   action.ID,
 			PolicyDecisionID: decision.ID,
 		}
-		return s.persistProofRefresh(&w, action, decision, refresh, now)
+		return s.writeEventJSON(refresh.ID, &refresh)
 	})
 	return reservation, err
 }
@@ -3914,12 +3952,57 @@ func validateOwnedProofReportAgainstReservation(report ownedProofReport, reserva
 	return nil
 }
 
-func (s *Store) proofReservationWithLatestRefresh(reservation ProofResourceReservation) (ProofResourceReservation, error) {
+func proofRefreshReservationSuffix(reservationID string) string {
+	return strings.TrimPrefix(strings.TrimSpace(reservationID), "pfr_")
+}
+
+func proofRefreshPreparationPrefix(reservationID string) string {
+	return "pfrp_" + proofRefreshReservationSuffix(reservationID) + "_"
+}
+
+func proofRefreshOutcomePrefix(reservationID string) string {
+	return "pfrh_" + proofRefreshReservationSuffix(reservationID) + "_"
+}
+
+func proofRefreshPreparationID(reservationID, runAttemptID string, now time.Time) string {
+	return idFor(proofRefreshPreparationPrefix(reservationID), runAttemptID, ts(now))
+}
+
+func proofRefreshOutcomeID(reservationID, runAttemptID, expiresAt string) string {
+	return idFor(proofRefreshOutcomePrefix(reservationID), runAttemptID, expiresAt)
+}
+
+func proofRefreshActionTime(reservation ProofResourceReservation) (time.Time, error) {
+	createdAt, err := time.Parse(time.RFC3339Nano, reservation.CreatedAt)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("proof reservation %s created_at: %w", reservation.ID, err)
+	}
+	return createdAt, nil
+}
+
+func (s *Store) proofRefreshRefs(reservation ProofResourceReservation) ([]string, bool, error) {
+	prefix := proofRefreshOutcomePrefix(reservation.ID)
+	entries, err := s.events.Scan(eventstore.ScanOptions{Prefixes: []string{prefix}, RegularOnly: true})
+	if err != nil {
+		return nil, false, err
+	}
+	if len(entries) > 0 {
+		refs := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			refs = append(refs, entry.ID)
+		}
+		return refs, true, nil
+	}
+
+	// Compatibility path for reservations refreshed by pre-bounded runtimes.
+	// Once one reservation-scoped outcome exists it is necessarily newer than
+	// those historical lifecycle attachments, so the hot path never re-scans
+	// the global work log.
 	events, err := s.eventsFor(reservation.WorkID)
 	if err != nil {
-		return ProofResourceReservation{}, err
+		return nil, false, err
 	}
-	latest := ProofResourceRefresh{}
+	refs := make([]string, 0)
 	seen := map[string]bool{}
 	for _, event := range events {
 		for _, ref := range event.Attached {
@@ -3927,51 +4010,94 @@ func (s *Store) proofReservationWithLatestRefresh(reservation ProofResourceReser
 				continue
 			}
 			seen[ref] = true
-			var refresh ProofResourceRefresh
-			if err := s.readEventJSON(ref, &refresh); err != nil {
-				return ProofResourceReservation{}, fmt.Errorf("proof refresh evidence %s: %w", ref, err)
+			refs = append(refs, ref)
+		}
+	}
+	return refs, false, nil
+}
+
+func (s *Store) proofReservationWithLatestRefresh(reservation ProofResourceReservation) (ProofResourceReservation, error) {
+	refs, scoped, err := s.proofRefreshRefs(reservation)
+	if err != nil {
+		return ProofResourceReservation{}, err
+	}
+	latest := ProofResourceRefresh{}
+	for _, ref := range refs {
+		var refresh ProofResourceRefresh
+		if err := s.readEventJSON(ref, &refresh); err != nil {
+			return ProofResourceReservation{}, fmt.Errorf("proof refresh evidence %s: %w", ref, err)
+		}
+		if refresh.ReservationID != reservation.ID {
+			if scoped {
+				return ProofResourceReservation{}, fmt.Errorf("proof refresh evidence %s escaped reservation-scoped family", ref)
 			}
-			if refresh.ReservationID != reservation.ID {
-				continue
+			continue
+		}
+		if scoped && refresh.ID != proofRefreshOutcomeID(reservation.ID, refresh.RunAttemptID, refresh.ExpiresAt) {
+			return ProofResourceReservation{}, fmt.Errorf("proof refresh evidence %s has invalid reservation-scoped identity", ref)
+		}
+		if refresh.SchemaVersion != ProofResourceRefreshSchemaVersion ||
+			refresh.ID != ref ||
+			refresh.WorkID != reservation.WorkID ||
+			refresh.Actor != reservation.Actor ||
+			refresh.RunAttemptID != reservation.RunAttemptID ||
+			refresh.Holder != reservation.Holder ||
+			refresh.WindowOpenedAt != reservation.AcquiredAt ||
+			refresh.ActionIntentID == "" ||
+			refresh.PolicyDecisionID == "" {
+			return ProofResourceReservation{}, fmt.Errorf("proof refresh evidence %s is not bound to the reserved work/actor/RunAttempt/window", ref)
+		}
+		if scoped {
+			var preparation ProofResourceRefreshPreparation
+			if err := s.readEventJSON(refresh.PreparationID, &preparation); err != nil {
+				return ProofResourceReservation{}, fmt.Errorf("proof refresh %s preparation: %w", ref, err)
 			}
-			if refresh.SchemaVersion != ProofResourceRefreshSchemaVersion ||
-				refresh.ID != ref ||
-				refresh.WorkID != reservation.WorkID ||
-				refresh.Actor != reservation.Actor ||
-				refresh.RunAttemptID != reservation.RunAttemptID ||
-				refresh.Holder != reservation.Holder ||
-				refresh.WindowOpenedAt != reservation.AcquiredAt ||
-				refresh.ActionIntentID == "" ||
-				refresh.PolicyDecisionID == "" {
-				return ProofResourceReservation{}, fmt.Errorf("proof refresh evidence %s is not bound to the reserved work/actor/RunAttempt/window", ref)
-			}
-			var action envelope.ActionIntent
-			if err := s.readEventJSON(refresh.ActionIntentID, &action); err != nil {
-				return ProofResourceReservation{}, fmt.Errorf("proof refresh %s ActionIntent: %w", ref, err)
-			}
-			var decision envelope.PolicyDecision
-			if err := s.readEventJSON(refresh.PolicyDecisionID, &decision); err != nil {
-				return ProofResourceReservation{}, fmt.Errorf("proof refresh %s PolicyDecision: %w", ref, err)
-			}
-			if action.IDs.WorkID != reservation.WorkID ||
-				action.Actor != reservation.Actor ||
-				(action.Action != "refresh_full_proof_resource" &&
-					action.Action != "rearm_expired_proof_completion") ||
-				decision.ActionIntentID != action.ID ||
-				!policy.Allowed(decision) {
-				return ProofResourceReservation{}, fmt.Errorf("proof refresh evidence %s lacks its exact allowing governance chain", ref)
-			}
-			refreshedAt, err := time.Parse(time.RFC3339, refresh.RefreshedAt)
+			preparedAt, err := time.Parse(time.RFC3339Nano, preparation.CreatedAt)
 			if err != nil {
-				return ProofResourceReservation{}, fmt.Errorf("proof refresh %s refreshed_at: %w", ref, err)
+				return ProofResourceReservation{}, fmt.Errorf("proof refresh %s preparation created_at: %w", ref, err)
 			}
-			expiresAt, err := time.Parse(time.RFC3339, refresh.ExpiresAt)
-			if err != nil || !expiresAt.After(refreshedAt) {
-				return ProofResourceReservation{}, fmt.Errorf("proof refresh %s has invalid expires_at %q", ref, refresh.ExpiresAt)
+			if preparation.SchemaVersion != ProofResourceRefreshPreparationSchemaVersion ||
+				preparation.ID != refresh.PreparationID ||
+				preparation.ID != proofRefreshPreparationID(reservation.ID, refresh.RunAttemptID, preparedAt) ||
+				preparation.WorkID != refresh.WorkID ||
+				preparation.Actor != refresh.Actor ||
+				preparation.ReservationID != refresh.ReservationID ||
+				preparation.RunAttemptID != refresh.RunAttemptID ||
+				preparation.Holder != refresh.Holder ||
+				preparation.WindowOpenedAt != refresh.WindowOpenedAt ||
+				preparation.RequestedAt != refresh.RefreshedAt ||
+				preparation.TTLSeconds != refresh.TTLSeconds ||
+				preparation.ActionIntentID != refresh.ActionIntentID ||
+				preparation.PolicyDecisionID != refresh.PolicyDecisionID {
+				return ProofResourceReservation{}, fmt.Errorf("proof refresh %s lacks its exact governed preparation", ref)
 			}
-			if latest.ID == "" || refresh.RefreshedAt > latest.RefreshedAt {
-				latest = refresh
-			}
+		}
+		var action envelope.ActionIntent
+		if err := s.readEventJSON(refresh.ActionIntentID, &action); err != nil {
+			return ProofResourceReservation{}, fmt.Errorf("proof refresh %s ActionIntent: %w", ref, err)
+		}
+		var decision envelope.PolicyDecision
+		if err := s.readEventJSON(refresh.PolicyDecisionID, &decision); err != nil {
+			return ProofResourceReservation{}, fmt.Errorf("proof refresh %s PolicyDecision: %w", ref, err)
+		}
+		if action.IDs.WorkID != reservation.WorkID ||
+			action.Actor != reservation.Actor ||
+			(action.Action != "refresh_full_proof_resource" &&
+				action.Action != "rearm_expired_proof_completion") ||
+			decision.ActionIntentID != action.ID ||
+			!policy.Allowed(decision) {
+			return ProofResourceReservation{}, fmt.Errorf("proof refresh evidence %s lacks its exact allowing governance chain", ref)
+		}
+		refreshedAt, err := time.Parse(time.RFC3339, refresh.RefreshedAt)
+		if err != nil {
+			return ProofResourceReservation{}, fmt.Errorf("proof refresh %s refreshed_at: %w", ref, err)
+		}
+		expiresAt, err := time.Parse(time.RFC3339, refresh.ExpiresAt)
+		if err != nil || !expiresAt.After(refreshedAt) {
+			return ProofResourceReservation{}, fmt.Errorf("proof refresh %s has invalid expires_at %q", ref, refresh.ExpiresAt)
+		}
+		if latest.ID == "" || refresh.RefreshedAt > latest.RefreshedAt {
+			latest = refresh
 		}
 	}
 	if latest.ID != "" {
@@ -4062,6 +4188,45 @@ func (s *Store) persistProofScarceMutationPreparation(
 		By:       reservation.Actor,
 		Note:     "proof resource " + phase + " governance persisted before scarce mutation",
 		Attached: attached,
+	})
+}
+
+func (s *Store) persistProofHeartbeatPreparation(
+	w *envelope.WorkEnvelope,
+	action envelope.ActionIntent,
+	decision envelope.PolicyDecision,
+	preparation ProofResourceRefreshPreparation,
+	now time.Time,
+) error {
+	if err := proofResourceWriteEventRecord(s, "refresh_prepare_action", action.ID, &action); err != nil {
+		return fmt.Errorf("persist proof refresh preparation action: %w", err)
+	}
+	if err := proofResourceWriteEventRecord(s, "refresh_prepare_decision", decision.ID, &decision); err != nil {
+		return fmt.Errorf("persist proof refresh preparation decision: %w", err)
+	}
+	if err := proofResourceWriteEventRecord(s, "refresh_prepare_record", preparation.ID, &preparation); err != nil {
+		return fmt.Errorf("persist proof refresh preparation: %w", err)
+	}
+	if oneOf(action.ID, w.ActionIntentIDs) {
+		return nil
+	}
+
+	// Root the recurring refresh operation exactly once. Every later current
+	// decision and outcome remains reservation-scoped evidence, so neither the
+	// WorkEnvelope nor its terminal Transition grows with battery duration.
+	w.ActionIntentIDs = append(w.ActionIntentIDs, action.ID)
+	w.PolicyDecisionID = decision.ID
+	if err := proofResourceWriteWorkRecord(s, "refresh_root_work", w); err != nil {
+		return fmt.Errorf("persist proof refresh governance root: %w", err)
+	}
+	return proofResourceAppendLifecycleRecord(s, Event{
+		TS:       ts(now),
+		WorkID:   w.ID,
+		From:     w.State,
+		To:       w.State,
+		By:       preparation.Actor,
+		Note:     "proof resource heartbeat governance rooted for the reservation",
+		Attached: []string{action.ID, decision.ID, preparation.ReservationID, preparation.ID, preparation.RunAttemptID},
 	})
 }
 

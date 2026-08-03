@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/home"
 	"compound/internal/landlease"
 	"compound/internal/policy"
@@ -664,20 +665,12 @@ func TestProofResourceReservationHeartbeatExtendsOnlyTheCurrentHolder(t *testing
 	if refreshed.ExpiresAt == acquired.Reservation.ExpiresAt {
 		t.Fatalf("refresh did not extend expiry: before=%s after=%s", acquired.Reservation.ExpiresAt, refreshed.ExpiresAt)
 	}
-	events, err := s.eventsFor(first.ID)
+	refreshRefs, scoped, err := s.proofRefreshRefs(acquired.Reservation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	refreshRef := ""
-	for _, event := range events {
-		for _, ref := range event.Attached {
-			if strings.HasPrefix(ref, "pfrh_") {
-				refreshRef = ref
-			}
-		}
-	}
-	if refreshRef == "" {
-		t.Fatal("refresh expiry evidence is not attached to governed work lifecycle")
+	if !scoped || len(refreshRefs) != 1 {
+		t.Fatalf("refresh expiry evidence = refs:%v scoped:%t, want one reservation-scoped outcome", refreshRefs, scoped)
 	}
 
 	if _, err := reserveProofResource(t, s, second.ID, ProofResourceReserveInput{
@@ -716,6 +709,139 @@ func TestProofResourceReservationHeartbeatExtendsOnlyTheCurrentHolder(t *testing
 	}
 	if completed.Result.Status != ProofResourceVerified || completed.VerificationRef == "" {
 		t.Fatalf("refreshed reservation did not certify exact canonical report: %+v", completed)
+	}
+}
+
+func TestProofResourceRepeatedHeartbeatsKeepWorkLifecycleBounded(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "bounded heartbeat proof work", proofActorAlpha, fixedNow)
+	w, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: proofActorAlpha}, fixedNow.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       30 * time.Second,
+		Workspace: "/synthetic/repo-alpha",
+		Command:   "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents, err := s.eventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readsAfterRoot := int64(0)
+	for i, offset := range []time.Duration{5, 10, 15} {
+		if _, err := s.RefreshProofResource(
+			w.ID,
+			acquired.Reservation.ID,
+			proofActorAlpha,
+			30*time.Second,
+			fixedNow.Add(offset*time.Second),
+		); err != nil {
+			t.Fatalf("refresh at +%s: %v", offset, err)
+		}
+		if i == 0 {
+			readsAfterRoot = s.eventLogReadCount()
+		}
+	}
+	if got := s.eventLogReadCount() - readsAfterRoot; got != 0 {
+		t.Fatalf("heartbeats after the first governance root performed %d global lifecycle-log reads, want zero", got)
+	}
+
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterEvents, err := s.eventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(after.ActionIntentIDs), len(before.ActionIntentIDs)+1; got != want {
+		t.Fatalf("three heartbeats grew work action refs to %d, want one stable refresh root (%d)", got, want)
+	}
+	if got, want := len(afterEvents)-len(beforeEvents), 1; got != want {
+		t.Fatalf("three heartbeats appended %d lifecycle rows, want one stable refresh root", got)
+	}
+
+	entries, err := s.events.Scan(eventstore.ScanOptions{Prefixes: []string{"pfrh_"}, RegularOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshes := 0
+	for _, entry := range entries {
+		record, err := entry.Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var refresh ProofResourceRefresh
+		if err := json.Unmarshal(record.Bytes, &refresh); err != nil {
+			t.Fatal(err)
+		}
+		if refresh.ReservationID == acquired.Reservation.ID {
+			refreshes++
+		}
+	}
+	if refreshes != 3 {
+		t.Fatalf("reservation refresh evidence count = %d, want 3", refreshes)
+	}
+	latest, err := s.proofReservationWithLatestRefresh(acquired.Reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.ExpiresAt != fixedNow.Add(45*time.Second).UTC().Format(time.RFC3339) {
+		t.Fatalf("latest refresh expiry = %s, want %s", latest.ExpiresAt, fixedNow.Add(45*time.Second).UTC().Format(time.RFC3339))
+	}
+}
+
+func TestProofResourceScopedRefreshRequiresExactPreparation(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "refresh preparation proof work", proofActorAlpha, fixedNow)
+	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       30 * time.Second,
+		Workspace: "/synthetic/repo-alpha",
+		Command:   "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RefreshProofResource(
+		w.ID,
+		acquired.Reservation.ID,
+		proofActorAlpha,
+		30*time.Second,
+		fixedNow.Add(10*time.Second),
+	); err != nil {
+		t.Fatal(err)
+	}
+	refs, scoped, err := s.proofRefreshRefs(acquired.Reservation)
+	if err != nil || !scoped || len(refs) != 1 {
+		t.Fatalf("scoped refresh refs = %v scoped=%t err=%v", refs, scoped, err)
+	}
+	var refresh ProofResourceRefresh
+	if err := s.readEventJSON(refs[0], &refresh); err != nil {
+		t.Fatal(err)
+	}
+	if refresh.PreparationID == "" {
+		t.Fatal("scoped refresh omitted preparation_id")
+	}
+	refresh.RefreshedAt = fixedNow.Add(11 * time.Second).UTC().Format(time.RFC3339)
+	refresh.ExpiresAt = fixedNow.Add(41 * time.Second).UTC().Format(time.RFC3339)
+	refresh.CreatedAt = fixedNow.Add(11 * time.Second).UTC().Format(time.RFC3339Nano)
+	refresh.PreparationID = "pfrp_missing_preparation"
+	refresh.ID = proofRefreshOutcomeID(refresh.ReservationID, refresh.RunAttemptID, refresh.ExpiresAt)
+	if err := s.writeEventJSON(refresh.ID, &refresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.proofReservationWithLatestRefresh(acquired.Reservation); err == nil || !strings.Contains(err.Error(), "preparation") {
+		t.Fatalf("missing preparation was not rejected: %v", err)
 	}
 }
 
