@@ -92,8 +92,13 @@ var retentionClasses = []ArtifactClass{
 		Owner:       "source adapter",
 		Description: "Sealed artifact segments whose authoritative copy has been verified elsewhere.",
 		Retention:   "Reclaim only after the owner verifies custody and the configured local retention floor.",
-		Mode:        ReclaimOperatorGated,
-		Rebuildable: false,
+		// The owner executes; compound only names the entrypoint. The command self-gates on a
+		// per-day content-hash comparison against the remote and refuses to delete anything when
+		// a sealed day is short, so an unverified custody claim cannot reach a deletion.
+		ReclaimCommand:     "~/Projects/systems/compound/scripts/switchback-capture-maintenance.sh --prune",
+		ReclaimCommandArgv: []string{"bash", "~/Projects/systems/compound/scripts/switchback-capture-maintenance.sh", "--prune"},
+		Mode:               ReclaimOperatorGated,
+		Rebuildable:        false,
 	},
 	{
 		ID:          "superseded-artifact",

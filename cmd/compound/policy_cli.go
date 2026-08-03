@@ -145,6 +145,7 @@ func cmdPolicy(args []string) {
 	case "import-standing-grants":
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound policy import-standing-grants <standing-grants.yaml|json>")
+			fmt.Fprintln(os.Stderr, "  the source must carry an authority block citing the authorizing decision record (authority.decision_ref + authority.reviewed_by operator:<id>)")
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")

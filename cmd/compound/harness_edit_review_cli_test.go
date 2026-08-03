@@ -33,7 +33,7 @@ func TestAuthorityHarnessEditReviewWhitelistDispatch(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		cmdAuthority([]string{"harness-edit-review", cardPath, "--decision", "whitelist", "--rationale", "agents may trim dead offers here", "--json"})
+		cmdAuthority([]string{"harness-edit-review", cardPath, "--decision", "whitelist", "--rationale", "agents may trim dead offers here", "--actor", "operator:cli-test", "--json"})
 	})
 	for _, want := range []string{
 		`"decision": "whitelist"`,

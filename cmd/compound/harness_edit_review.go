@@ -9,7 +9,7 @@ import (
 	"compound/internal/director"
 )
 
-const harnessEditReviewUsage = "usage: compound authority harness-edit-review <card.json> --decision whitelist|reject --rationale <text> [--actor <id>] [--json]"
+const harnessEditReviewUsage = "usage: compound authority harness-edit-review <card.json> --decision whitelist|reject --rationale <text> [--actor <id>] [--json]\n  whitelist opens the surface for edits and requires --actor with operator provenance (e.g. operator:<id>)"
 
 // runAuthorityHarnessEditReview parses `compound authority harness-edit-review
 // <card> --decision whitelist|reject --rationale <text> [--actor <id>] [--json]`

@@ -11,6 +11,9 @@ func TestImportStandingGrantsWritesAuthorityAndPolicyConsumes(t *testing.T) {
 	homePath := t.TempDir()
 	sourcePath := filepath.Join(t.TempDir(), "standing-grants.yaml")
 	raw := []byte(`generated_at: "2026-07-01T12:00:00Z"
+authority:
+  decision_ref: "grant:test-standing-grants-import"
+  reviewed_by: "operator:test"
 grants:
   - grant_id: grant_review_finding
     capabilities: ["review.finding", "review.summary"]
@@ -67,6 +70,62 @@ grants:
 	}
 }
 
+// The import mints auto-allow authority, so it refuses a source that does not
+// cite an operator-provenance decision record — and writes nothing.
+func TestImportStandingGrantsRefusesUncitedAuthority(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "no authority block (non-expiring grant)",
+			raw: `grants:
+  - grant_id: grant_uncited
+    capabilities: ["review.finding"]
+    target_scope: "state/runs/*"
+    reversibility_ceiling: reversible
+`,
+		},
+		{
+			name: "expiring grant still requires the citation",
+			raw: `grants:
+  - grant_id: grant_uncited_expiring
+    capabilities: ["review.finding"]
+    target_scope: "state/runs/*"
+    reversibility_ceiling: reversible
+    valid_until: "2027-01-01T00:00:00Z"
+`,
+		},
+		{
+			name: "non-operator reviewer",
+			raw: `authority:
+  decision_ref: "grant:self-asserted"
+  reviewed_by: "claude-code-executor"
+grants:
+  - grant_id: grant_self_asserted
+    capabilities: ["review.finding"]
+    target_scope: "state/runs/*"
+    reversibility_ceiling: reversible
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			sourcePath := filepath.Join(t.TempDir(), "standing-grants.yaml")
+			if err := os.WriteFile(sourcePath, []byte(tc.raw), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ImportStandingGrants(homePath, sourcePath, fixedNow); err == nil {
+				t.Fatal("import without an operator-provenance decision citation must be refused")
+			}
+			if _, err := os.Stat(StandingGrantsPath(homePath)); !os.IsNotExist(err) {
+				t.Fatalf("refused import must not write the authority: stat err=%v", err)
+			}
+		})
+	}
+}
+
 func TestStandingGrantReversibilityCeilingDoesNotOpenIrreversible(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.StandingGrants = []StandingGrant{{
@@ -120,7 +179,10 @@ func TestStandingGrantAuthorityKeepsPolicyYAMLFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	sourcePath := filepath.Join(t.TempDir(), "standing-grants.yaml")
-	raw := []byte(`grants:
+	raw := []byte(`authority:
+  decision_ref: "grant:test-standing-grants-fallback"
+  reviewed_by: "operator:test"
+grants:
   - grant_id: authority_grant
     capabilities: ["authority.capability"]
     target_scope: authority/*

@@ -31,10 +31,21 @@ type StandingGrantRegistry struct {
 }
 
 type StandingGrantSource struct {
-	SchemaVersion  string                  `json:"schema_version,omitempty" yaml:"schema_version,omitempty"`
-	GeneratedAt    string                  `json:"generated_at,omitempty" yaml:"generated_at,omitempty"`
-	StandingGrants []StandingGrant         `json:"standing_grants,omitempty" yaml:"standing_grants,omitempty"`
-	Grants         []OSPipelineGrantSource `json:"grants,omitempty" yaml:"grants,omitempty"`
+	SchemaVersion  string                        `json:"schema_version,omitempty" yaml:"schema_version,omitempty"`
+	GeneratedAt    string                        `json:"generated_at,omitempty" yaml:"generated_at,omitempty"`
+	Authority      *StandingGrantSourceAuthority `json:"authority,omitempty" yaml:"authority,omitempty"`
+	StandingGrants []StandingGrant               `json:"standing_grants,omitempty" yaml:"standing_grants,omitempty"`
+	Grants         []OSPipelineGrantSource       `json:"grants,omitempty" yaml:"grants,omitempty"`
+}
+
+// StandingGrantSourceAuthority is the operator-provenance decision citation an
+// import must carry. The import mints auto-allow authority, so the source file
+// must name the decision record that authorized it (decision_ref) and the
+// operator identity that reviewed it (reviewed_by) — an executor-authored file
+// asserting its own grants is exactly the bypass this door refuses.
+type StandingGrantSourceAuthority struct {
+	DecisionRef string `json:"decision_ref" yaml:"decision_ref"`
+	ReviewedBy  string `json:"reviewed_by" yaml:"reviewed_by"`
 }
 
 type OSPipelineGrantSource struct {
@@ -91,6 +102,9 @@ func importStandingGrantsLocked(homePath, sourcePath string, now time.Time) (Sta
 	if err != nil {
 		return StandingGrantsImportReport{}, err
 	}
+	if err := validateStandingGrantImportAuthority(source); err != nil {
+		return StandingGrantsImportReport{}, err
+	}
 	registry, err := NormalizeStandingGrantSource(source)
 	if err != nil {
 		return StandingGrantsImportReport{}, err
@@ -121,7 +135,7 @@ func importStandingGrantsLocked(homePath, sourcePath string, now time.Time) (Sta
 		RetirementCondition: "Policy evaluation reads compound://registries/standing-grants from COMPOUND_HOME; policy.yaml standing_grants remains rollback/evidence input",
 		Rollback:            "re-import standing-grants source or remove COMPOUND_HOME registries/standing-grants.json",
 		GrantIDs:            standingGrantIDs(registry.Grants),
-		EvidenceRefs:        []string{"sha256:" + sourceRevision, StandingGrantsAuthorityRef},
+		EvidenceRefs:        []string{"sha256:" + sourceRevision, StandingGrantsAuthorityRef, strings.TrimSpace(source.Authority.DecisionRef)},
 	}
 	if err := appendStandingGrantsSourceAuthority(homePath, rec); err != nil {
 		return StandingGrantsImportReport{}, err
@@ -135,6 +149,21 @@ func importStandingGrantsLocked(homePath, sourcePath string, now time.Time) (Sta
 		GrantCount:        len(registry.Grants),
 		CapabilityCount:   countStandingGrantCapabilities(registry.Grants),
 	}, nil
+}
+
+// validateStandingGrantImportAuthority is the provenance door on minting
+// auto-allow authority: the import must cite an operator-provenance decision
+// record (authority.decision_ref + authority.reviewed_by). Without it an
+// executor-authored file could grant itself — including a grant with no
+// expires_at, which never expires and so must never proceed uncited.
+func validateStandingGrantImportAuthority(source StandingGrantSource) error {
+	if source.Authority == nil || strings.TrimSpace(source.Authority.DecisionRef) == "" {
+		return fmt.Errorf("standing grants import requires an authority block citing the authorizing decision record (authority.decision_ref); a grant without expires_at never proceeds without one")
+	}
+	if !HasOperatorProvenance(source.Authority.ReviewedBy) {
+		return fmt.Errorf("standing grants import requires operator provenance on authority.reviewed_by, got %q", source.Authority.ReviewedBy)
+	}
+	return nil
 }
 
 func NormalizeStandingGrantSource(source StandingGrantSource) (StandingGrantRegistry, error) {

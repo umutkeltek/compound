@@ -652,6 +652,19 @@ func RecordHarnessEditReview(homePath string, in HarnessEditReviewInput, now tim
 		return HarnessEditReviewReport{}, fmt.Errorf("harness-edit review rationale required")
 	}
 	reviewedBy := strings.TrimSpace(in.ReviewedBy)
+	if decision == HarnessEditDecisionWhitelist {
+		// whitelist opens the card's target surface for edits (it writes the
+		// editable-surfaces registry), so the default reviewer can never satisfy
+		// it: an executor could author a card naming its own steering surface and
+		// whitelist it with no operator in the loop. Require an explicit
+		// reviewer carrying operator provenance BEFORE any write.
+		if reviewedBy == "" {
+			return HarnessEditReviewReport{}, fmt.Errorf("harness-edit review whitelist requires an explicit reviewer with operator provenance (--actor operator:<id>); the %q default cannot open a surface", harnessEditDefaultReviewer)
+		}
+		if !policy.HasOperatorProvenance(reviewedBy) {
+			return HarnessEditReviewReport{}, fmt.Errorf("harness-edit review whitelist requires operator provenance on reviewed_by, got %q", reviewedBy)
+		}
+	}
 	if reviewedBy == "" {
 		reviewedBy = harnessEditDefaultReviewer
 	}

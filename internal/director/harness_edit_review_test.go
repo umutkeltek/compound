@@ -108,9 +108,10 @@ func TestHarnessEditReviewWhitelistWritesRegistryAndBandsOut(t *testing.T) {
 	}
 
 	rep, err := RecordHarnessEditReview(home, HarnessEditReviewInput{
-		CardPath:  cardPath,
-		Decision:  HarnessEditDecisionWhitelist,
-		Rationale: "agents may trim dead offers on this surface",
+		CardPath:   cardPath,
+		Decision:   HarnessEditDecisionWhitelist,
+		Rationale:  "agents may trim dead offers on this surface",
+		ReviewedBy: "operator:test",
 	}, directorTestNow)
 	if err != nil {
 		t.Fatalf("whitelist: %v", err)
@@ -151,9 +152,10 @@ func TestHarnessEditReviewWhitelistWritesRegistryAndBandsOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := RecordHarnessEditReview(home, HarnessEditReviewInput{
-		CardPath:  cardPath,
-		Decision:  HarnessEditDecisionWhitelist,
-		Rationale: "agents may trim dead offers on this surface",
+		CardPath:   cardPath,
+		Decision:   HarnessEditDecisionWhitelist,
+		Rationale:  "agents may trim dead offers on this surface",
+		ReviewedBy: "operator:test",
 	}, directorTestNow); err != nil {
 		t.Fatalf("idempotent re-run must not error: %v", err)
 	}
@@ -221,6 +223,70 @@ func TestHarnessEditReviewRejectLeavesRegistryUnchanged(t *testing.T) {
 	}
 	if item.Band != reviewartifact.BandFiled {
 		t.Fatalf("declined card must be filed, got band %q", item.Band)
+	}
+}
+
+// --- B2b: whitelist opens the editable-surfaces registry, so it refuses
+// without explicit operator provenance on the reviewer (the operator-console
+// default can never open a surface); reject keeps the default reviewer. ---
+func TestHarnessEditReviewWhitelistRequiresOperatorProvenance(t *testing.T) {
+	// No reviewer at all: the default must not satisfy a whitelist.
+	home := t.TempDir()
+	cardPath := seedHarnessEditCard(t, home, "dirprop_b2b_default", "capability_edges")
+	if _, err := RecordHarnessEditReview(home, HarnessEditReviewInput{
+		CardPath:  cardPath,
+		Decision:  HarnessEditDecisionWhitelist,
+		Rationale: "open it",
+	}, directorTestNow); err == nil {
+		t.Fatal("whitelist with the default reviewer must be refused")
+	}
+	if _, err := os.Stat(policy.EditableSurfacesPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("refused whitelist must not write the registry; stat err=%v", err)
+	}
+	if got := harnessEditSidecarFiles(t, home); len(got) != 0 {
+		t.Fatalf("refused whitelist must write no sidecar, got %v", got)
+	}
+
+	// A non-operator reviewer (an executor identity) is refused the same way.
+	cardPath2 := seedHarnessEditCard(t, home, "dirprop_b2b_executor", "capability_edges")
+	if _, err := RecordHarnessEditReview(home, HarnessEditReviewInput{
+		CardPath:   cardPath2,
+		Decision:   HarnessEditDecisionWhitelist,
+		Rationale:  "open it",
+		ReviewedBy: "claude-code-executor",
+	}, directorTestNow); err == nil {
+		t.Fatal("whitelist by a non-operator reviewer must be refused")
+	}
+	if _, err := os.Stat(policy.EditableSurfacesPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("refused whitelist must not write the registry; stat err=%v", err)
+	}
+
+	// An explicit operator-provenance reviewer whitelists.
+	rep, err := RecordHarnessEditReview(home, HarnessEditReviewInput{
+		CardPath:   cardPath2,
+		Decision:   HarnessEditDecisionWhitelist,
+		Rationale:  "open it",
+		ReviewedBy: "operator:test",
+	}, directorTestNow)
+	if err != nil {
+		t.Fatalf("whitelist with operator provenance: %v", err)
+	}
+	if !rep.SurfaceWhitelisted || rep.ReviewedBy != "operator:test" {
+		t.Fatalf("whitelist report = %+v", rep)
+	}
+
+	// Reject still tolerates the default reviewer (it writes no registry byte).
+	cardPath3 := seedHarnessEditCard(t, home, "dirprop_b2b_reject", "capability_edges")
+	rep, err = RecordHarnessEditReview(home, HarnessEditReviewInput{
+		CardPath:  cardPath3,
+		Decision:  HarnessEditDecisionReject,
+		Rationale: "not now",
+	}, directorTestNow)
+	if err != nil {
+		t.Fatalf("reject with default reviewer: %v", err)
+	}
+	if rep.ReviewedBy != harnessEditDefaultReviewer {
+		t.Fatalf("reject should keep the default reviewer, got %q", rep.ReviewedBy)
 	}
 }
 

@@ -35,7 +35,7 @@ func TestAutonomyAdmissionAuthoritiesShareLock(t *testing.T) {
 			name: "standing grants",
 			write: func(home string) error {
 				source := filepath.Join(home, "standing-grants-source.yaml")
-				body := []byte("grants:\n  - grant_id: test\n    capabilities: [\"work.advance\"]\n    target_scope: \"work/*\"\n    reversibility_ceiling: reversible\n")
+				body := []byte("authority:\n  decision_ref: \"grant:test-lock\"\n  reviewed_by: \"operator:test\"\ngrants:\n  - grant_id: test\n    capabilities: [\"work.advance\"]\n    target_scope: \"work/*\"\n    reversibility_ceiling: reversible\n")
 				if err := os.WriteFile(source, body, 0o644); err != nil {
 					return err
 				}
