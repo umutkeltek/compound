@@ -34,8 +34,6 @@ import (
 	"compound/internal/harness"
 	"compound/internal/mem"
 	"compound/internal/negatives"
-	"compound/internal/persist"
-	"compound/internal/persist/pg"
 	"compound/internal/projection"
 	"compound/internal/work"
 )
@@ -1747,27 +1745,6 @@ func surfaceCapabilityHits(homePath string, in Input, embedder breadth.EmbedderA
 	return surfaced, surfacedTotal, nil
 }
 
-func appendOSAdaptationSteeringOffer(pack envelope.ContextPack, in Input) (envelope.ContextPack, error) {
-	offer, rev, ok, err := osAdaptationSteeringOffer(in)
-	if err != nil {
-		return pack, err
-	}
-	if !ok {
-		return pack, nil
-	}
-	pack.CapabilityOffers = append(pack.CapabilityOffers, offer)
-	pack.Included = append(pack.Included, envelope.IncludedRef{
-		Ref:         osAdaptationCapabilityRef,
-		SourceClass: "private_overlay",
-		Reason:      "ContextPack selected private OS-adaptation rule for a control-plane task that mentions adapting old operating-system material; refs only, no private body injection",
-		Confidence:  1,
-		Status:      "current",
-	})
-	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{rev})
-	pack.SummaryMD += " 1 context-aware OS adaptation offer included; private rule is refs-only and not imported as authority."
-	return pack, nil
-}
-
 func osAdaptationSteeringOffer(in Input) (envelope.CapabilityOffer, envelope.SourceRev, bool, error) {
 	if !shouldOfferOSAdaptationSteering(in) {
 		return envelope.CapabilityOffer{}, envelope.SourceRev{}, false, nil
@@ -1849,27 +1826,6 @@ func osAdaptationSteeringOffer(in Input) (envelope.CapabilityOffer, envelope.Sou
 		CostRiskNote: "Use only for Compound control-plane adaptation work; stays silent for ordinary product/library tasks and never imports old-system content by itself.",
 	}
 	return offer, envelope.SourceRev{Source: osAdaptationRuleRef, Rev: "sha256:" + hashBytes(rule)}, true, nil
-}
-
-func appendOracleSecondOpinionOffer(pack envelope.ContextPack, in Input) (envelope.ContextPack, error) {
-	offer, rev, ok, err := oracleSecondOpinionOffer(in)
-	if err != nil {
-		return pack, err
-	}
-	if !ok {
-		return pack, nil
-	}
-	pack.CapabilityOffers = append(pack.CapabilityOffers, offer)
-	pack.Included = append(pack.Included, envelope.IncludedRef{
-		Ref:         oracleSecondOpinionCapabilityRef,
-		SourceClass: "private_overlay",
-		Reason:      "ContextPack selected private Oracle second-opinion rule for a high-leverage control-plane task; refs only, no private rule body injection",
-		Confidence:  1,
-		Status:      "current",
-	})
-	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{rev})
-	pack.SummaryMD += " 1 Oracle second-opinion offer included; private rule is refs-only and Oracle output remains evidence, not authority."
-	return pack, nil
 }
 
 func oracleSecondOpinionOffer(in Input) (envelope.CapabilityOffer, envelope.SourceRev, bool, error) {
@@ -2147,36 +2103,57 @@ func pgvectorEnabled() bool {
 	return strings.TrimSpace(os.Getenv("COMPOUND_STORE")) == "postgres"
 }
 
-// pgvectorEngineOrNil builds a mem.Engine backed by pgvector, or nil when the
-// postgres store is not enabled or unreachable. The caller owns Close via the
-// returned closeEng.
-func pgvectorEngineOrNil() *pg.PgEngine {
+// CloseableEngine is a rented recall engine whose connections the caller closes
+// after use. The pgvector engine the composition root injects satisfies it.
+type CloseableEngine interface {
+	mem.Engine
+	Close()
+}
+
+// pgvectorEngineFactory builds the rented pgvector recall engine when the operator
+// selects the postgres store backend. It is a package var wired ONCE by the CLI
+// composition root (ADR-0005: the spine stays dependency-free; backend construction
+// — pg.Open, the embed endpoint, credentials — lives in cmd/compound, never here).
+// A nil factory means no pgvector lane is wired; a factory ERROR is a Degraded
+// outcome recorded on the trace, never a silent fall-through to another engine.
+var pgvectorEngineFactory func() (CloseableEngine, error)
+
+// SetPgvectorEngineFactory installs the postgres-backed recall engine factory.
+// The CLI composition root calls it at startup; tests substitute a fake. A nil
+// factory under COMPOUND_STORE=postgres is a selected-but-unavailable backend:
+// recall reports Degraded rather than silently falling through to another engine.
+func SetPgvectorEngineFactory(factory func() (CloseableEngine, error)) {
+	pgvectorEngineFactory = factory
+}
+
+// pgvectorEngineOrNil returns the injected pgvector engine, or nil when the
+// postgres store is not selected, no factory is wired, or construction fails.
+// A missing/failing factory under COMPOUND_STORE=postgres is a Degraded trace
+// outcome (mirroring the mem.Open degradation in
+// semanticTaskRankResultWithEmbedderFromView): visible evidence, never a hidden
+// fallback to another backend. The caller owns Close.
+func pgvectorEngineOrNil(trace *EngineDependencyTrace) CloseableEngine {
 	if !pgvectorEnabled() {
 		return nil
 	}
-	dsn := strings.TrimSpace(os.Getenv("COMPOUND_DSN"))
-	if dsn == "" {
-		dsn = "postgres://127.0.0.1:5433/compound?sslmode=disable"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	store, err := pg.Open(ctx, persist.Config{DSN: dsn})
-	if err != nil {
+	if pgvectorEngineFactory == nil {
+		if trace != nil {
+			trace.Attempted = true
+			trace.Outcome = EngineOutcomeDegraded
+			trace.ErrorClass = EngineErrorUnavailable
+		}
 		return nil
 	}
-	dims := 768
-	if d := strings.TrimSpace(os.Getenv("COMPOUND_VECTOR_DIMS")); d != "" {
-		fmt.Sscanf(d, "%d", &dims)
+	eng, err := pgvectorEngineFactory()
+	if err != nil {
+		if trace != nil {
+			trace.Attempted = true
+			trace.Outcome = EngineOutcomeDegraded
+			trace.ErrorClass = EngineErrorUnavailable
+		}
+		return nil
 	}
-	embedURL := strings.TrimSpace(os.Getenv("COMPOUND_EMBED_URL"))
-	if embedURL == "" {
-		embedURL = "http://localhost:11434/v1"
-	}
-	embedModel := strings.TrimSpace(os.Getenv("COMPOUND_EMBED_MODEL"))
-	if embedModel == "" {
-		embedModel = "nomic-embed-text"
-	}
-	return pg.NewPgEngine(store, embedURL, embedModel, dims)
+	return eng
 }
 
 var breadthEmbedderResolver = breadth.ResolveEmbedder
@@ -2254,35 +2231,21 @@ func (e *inProcessBreadthEngine) Query(text, gate string, allowlist []string, k 
 // only surfaces maxContextMemoryRefs, so a small top-k is plenty.
 const semanticTaskRankK = 24
 
-// semanticTaskRanks returns claimID → relevance weight from the owned breadth engine for the task,
-// used ONLY to sharpen the ambient ranker — the ledger still gates class-tier/visibility (the
-// engine ranks, the ledger gates). Transient read-only callers use the configured embedder and
-// owned breadth cache in-process; ordinary callers retain the configured sidecar path. Without a
-// configured lane, or on ANY engine error, it returns nil so loadMemoryRefs runs exactly as before
-// (bulletproof degradation — orient never fails because an embedder/sidecar is down). Weights are
-// descending rank positions (not raw cosine) so they compose with the small-integer entity/token
-// scores instead of swamping them.
-func semanticTaskRanks(homePath string, in Input) map[string]float64 {
-	return semanticTaskRanksTraced(homePath, in, nil)
-}
-
-func semanticTaskRanksTraced(homePath string, in Input, trace *EngineDependencyTrace) map[string]float64 {
-	return semanticTaskRanksTracedWithEmbedder(homePath, in, trace, nil)
-}
-
-func semanticTaskRanksTracedWithEmbedder(homePath string, in Input, trace *EngineDependencyTrace, embedder breadth.EmbedderAdapter) map[string]float64 {
-	return semanticTaskRanksTracedWithEmbedderFromView(homePath, in, trace, embedder, nil, nil, nil)
-}
-
-func semanticTaskRanksTracedWithEmbedderFromView(homePath string, in Input, trace *EngineDependencyTrace, embedder breadth.EmbedderAdapter, store *mem.Store, view *mem.CurrentView, expanded *mem.ExpandedQuery) map[string]float64 {
-	return semanticTaskRankResultWithEmbedderFromView(homePath, in, trace, embedder, store, view, expanded).Ranks
-}
-
 type semanticTaskRankResult struct {
 	Ranks          map[string]float64
 	ConsumedRecall *mem.ExpandedQuery
 }
 
+// semanticTaskRankResultWithEmbedderFromView returns claimID → relevance weight from the rented
+// breadth engine for the task, used ONLY to sharpen the ambient ranker — the ledger still gates
+// class-tier/visibility (the engine ranks, the ledger gates). Transient read-only callers use the
+// configured embedder and owned breadth cache in-process; ordinary callers retain the configured
+// sidecar path; an operator-selected postgres store routes to the injected pgvector engine.
+// Without a configured lane, or on ANY engine error, it returns an empty result so the ambient
+// rankers (loadMemoryRefsFromView et al.) run exactly as they would without breadth (bulletproof
+// degradation — orient never fails because an embedder/sidecar is down). Weights are descending
+// rank positions (not raw cosine) so they compose with the small-integer entity/token scores
+// instead of swamping them.
 func semanticTaskRankResultWithEmbedderFromView(homePath string, in Input, trace *EngineDependencyTrace, embedder breadth.EmbedderAdapter, store *mem.Store, view *mem.CurrentView, expanded *mem.ExpandedQuery) semanticTaskRankResult {
 	if trace != nil {
 		if in.ReadOnlyRetrieval && embedder != nil {
@@ -2316,28 +2279,29 @@ func semanticTaskRankResultWithEmbedderFromView(homePath string, in Input, trace
 	}
 	var eng mem.Engine
 	closeEng := func() {}
-	if in.ReadOnlyRetrieval {
-		if pgEng := pgvectorEngineOrNil(); pgEng != nil {
-			eng = pgEng
-			closeEng = func() { pgEng.Close() }
-		} else {
-			core, err := breadth.NewEngine(breadth.EngineConfig{Embedder: embedder, CompoundHome: homePath})
-			if err != nil {
-				if trace != nil {
-					trace.Outcome = EngineOutcomeDegraded
-					trace.ErrorClass = EngineErrorRetrieval
-				}
-				return semanticTaskRankResult{}
+	if pgvectorEnabled() {
+		// The operator selected the postgres+pgvector recall lane: it is the ONLY
+		// semantic engine here. A missing/failing factory is Degraded evidence on
+		// the trace (marked by pgvectorEngineOrNil), never a silent fall-through
+		// to another backend (ADR-0005).
+		pgEng := pgvectorEngineOrNil(trace)
+		if pgEng == nil {
+			return semanticTaskRankResult{}
+		}
+		eng = pgEng
+		closeEng = pgEng.Close
+	} else if in.ReadOnlyRetrieval {
+		core, err := breadth.NewEngine(breadth.EngineConfig{Embedder: embedder, CompoundHome: homePath})
+		if err != nil {
+			if trace != nil {
+				trace.Outcome = EngineOutcomeDegraded
+				trace.ErrorClass = EngineErrorRetrieval
 			}
-			eng = &inProcessBreadthEngine{engine: core, embedder: embedder}
+			return semanticTaskRankResult{}
 		}
+		eng = &inProcessBreadthEngine{engine: core, embedder: embedder}
 	} else {
-		if pgEng := pgvectorEngineOrNil(); pgEng != nil {
-			eng = pgEng
-			closeEng = func() { pgEng.Close() }
-		} else {
-			eng, closeEng = breadthEngineFactory(homePath)
-		}
+		eng, closeEng = breadthEngineFactory(homePath)
 	}
 	defer closeEng()
 	if trace != nil {
@@ -2473,48 +2437,8 @@ func topicScopeForInput(store *mem.Store, topic string) (map[string]bool, error)
 	return set, nil
 }
 
-func topicScopeForInputFromView(store *mem.Store, view *mem.CurrentView, topic string) (map[string]bool, error) {
-	topic = strings.TrimSpace(topic)
-	if topic == "" {
-		return nil, nil
-	}
-	root := topic
-	if resolved, err := store.ResolveEntity(topic); err != nil {
-		return nil, err
-	} else if resolved.Status == "resolved" {
-		root = resolved.Slug
-	}
-	subtree := view.TopicSubtree(root)
-	set := make(map[string]bool, len(subtree))
-	for _, slug := range subtree {
-		set[slug] = true
-	}
-	return set, nil
-}
-
 func topicScopeExclusionReason(topic string) string {
 	return fmt.Sprintf("ambient recall narrowed to topic %q; claim outside topic subtree left out of active_memory", strings.TrimSpace(topic))
-}
-
-func loadMemoryRefs(homePath string, in Input, rule MemoryRule, semanticRanks map[string]float64) ([]contextMemoryRef, []envelope.ExcludedRef, error) {
-	if len(rule.Ambient) == 0 {
-		return nil, nil, nil
-	}
-	entities := memoryEntityKeys(in)
-	taskTokens := memoryTextTokens(in.Task)
-	if len(entities) == 0 && len(taskTokens) == 0 {
-		return nil, nil, nil
-	}
-	store, err := mem.Open(homePath)
-	if err != nil {
-		return nil, nil, err
-	}
-	view, err := store.CurrentView()
-	if err != nil {
-		return nil, nil, err
-	}
-	dependencies := captureRuntimeMemoryDependencies(homePath, in, view)
-	return loadMemoryRefsFromView(in, rule, semanticRanks, view, &dependencies)
 }
 
 func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]float64, view *mem.CurrentView, dependencies *runtimeMemoryDependencies) ([]contextMemoryRef, []envelope.ExcludedRef, error) {
@@ -2736,27 +2660,6 @@ func BenchMemoryRank(homePath string, in Input, pol OrientationPolicy) (ranked [
 		ranked = append(ranked, sc.id)
 	}
 	return ranked, present, true, nil
-}
-
-func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks map[string]float64) ([]contextPositionRef, []envelope.ExcludedRef, error) {
-	if len(rule.Ambient) == 0 {
-		return nil, nil, nil
-	}
-	entities := memoryEntityKeys(in)
-	taskTokens := memoryTextTokens(in.Task)
-	if len(entities) == 0 && len(taskTokens) == 0 {
-		return nil, nil, nil
-	}
-	store, err := mem.Open(homePath)
-	if err != nil {
-		return nil, nil, err
-	}
-	view, err := store.CurrentView()
-	if err != nil {
-		return nil, nil, err
-	}
-	dependencies := captureRuntimeMemoryDependencies(homePath, in, view)
-	return loadPositionRefsFromView(in, rule, semanticRanks, view, dependencies.TopicSet, dependencies.SelfEntities, dependencies.ProductFence)
 }
 
 func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]float64, view *mem.CurrentView, topicSet map[string]bool, selfEntities map[string]bool, productFence productRecallFence) ([]contextPositionRef, []envelope.ExcludedRef, error) {
@@ -3224,18 +3127,6 @@ func memoryLine(claim mem.Claim) string {
 		return text
 	}
 	return strings.TrimSpace(text[:max-3]) + "..."
-}
-
-func loadDecisionRefs(homePath string, in Input) ([]string, []envelope.SourceRev, []envelope.ExcludedRef, error) {
-	store, err := mem.Open(homePath)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	view, err := store.CurrentView()
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return loadDecisionRefsFromView(in, view, resolveProductRecallFence(in, view))
 }
 
 func loadDecisionRefsFromView(in Input, view *mem.CurrentView, productFence productRecallFence) ([]string, []envelope.SourceRev, []envelope.ExcludedRef, error) {
@@ -4023,11 +3914,6 @@ func installedHookHarnesses(manifest InstalledHooksManifest) []string {
 func installedHooksSourceAuthorityID(path, revision, importedVia, authorityRevision string) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{path, revision, importedVia, authorityRevision}, "|")))
 	return "hksrc_" + hex.EncodeToString(sum[:])[:12]
-}
-
-func loadInstalledHooks(homePath, harness string) ([]string, []envelope.SourceRev, error) {
-	active, _, _, revs, err := loadInstalledHooksForInput(homePath, Input{Harness: harness})
-	return active, revs, err
 }
 
 func hookReadinessForInput(homePath string, in Input) ([]envelope.HookReadiness, error) {

@@ -165,6 +165,38 @@ func TestBuildOnFreshHomeReturnsEmptyReportNoError(t *testing.T) {
 	}
 }
 
+// TestBuildAndStampOnStrippedHomeCreateNoDirs proves the queue assembly honors
+// its read-only contract in fact, not just in its doc comments: on a home whose
+// work/ and events/ have been stripped, Build + both stamp passes must return
+// the empty report and leave both directories ABSENT. Before the
+// work.OpenReadOnly swap, every stamp MkdirAll'd work/* and events/ as a side
+// effect of merely assembling the report — so `compound workbench`,
+// `compound attention`, and `compound narrate` (all read-classified in the
+// registry) left footprints in COMPOUND_HOME through this shared helper.
+func TestBuildAndStampOnStrippedHomeCreateNoDirs(t *testing.T) {
+	homePath := newFreshHome(t)
+	for _, d := range []string{"work", "events"} {
+		if err := os.RemoveAll(filepath.Join(homePath, d)); err != nil {
+			t.Fatalf("strip %s: %v", d, err)
+		}
+	}
+	report, err := Build(homePath, Options{Now: stampFixtureNow})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := StampReviewActionAuthority(homePath, &report, stampFixtureNow); err != nil {
+		t.Fatalf("StampReviewActionAuthority: %v", err)
+	}
+	if err := StampReviewGroupActionAuthority(homePath, &report, stampFixtureNow); err != nil {
+		t.Fatalf("StampReviewGroupActionAuthority: %v", err)
+	}
+	for _, d := range []string{"work", "events"} {
+		if _, statErr := os.Stat(filepath.Join(homePath, d)); !os.IsNotExist(statErr) {
+			t.Errorf("read-only queue assembly must not create %s/ (stat err=%v)", d, statErr)
+		}
+	}
+}
+
 // TestBuildDefaultsNowWhenZero locks in the opts.Now fallback documented on
 // Build: a zero Options.Now must not error or panic, it falls back to
 // time.Now() internally.

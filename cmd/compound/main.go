@@ -38,6 +38,8 @@ import (
 	"compound/internal/hookplan"
 	"compound/internal/knowledge"
 	"compound/internal/mem"
+	"compound/internal/persist"
+	"compound/internal/persist/pg"
 	"compound/internal/policy"
 	"compound/internal/product"
 	"compound/internal/projection"
@@ -140,6 +142,37 @@ func main() {
 	command.Run(os.Args[2:])
 }
 
+// wirePgvectorEngineFactory installs the postgres+pgvector recall-engine factory
+// the contract spine consumes (ADR-0005: the spine stays dependency-free; backend
+// construction — pg.Open, the embed endpoint, credentials — lives at this CLI
+// composition root). Every connection parameter comes from the environment; there
+// are no baked-in hosts. A missing COMPOUND_DSN or COMPOUND_EMBED_URL under
+// COMPOUND_STORE=postgres is a factory error the spine records as Degraded
+// evidence, never a silent fall-through to another engine.
+func init() {
+	contract.SetPgvectorEngineFactory(func() (contract.CloseableEngine, error) {
+		cfg := persist.ConfigFromEnv()
+		if cfg.Backend != persist.BackendPostgres {
+			return nil, fmt.Errorf("postgres store backend not selected (COMPOUND_STORE=%q)", cfg.Backend)
+		}
+		if strings.TrimSpace(cfg.DSN) == "" {
+			return nil, fmt.Errorf("COMPOUND_DSN is required when COMPOUND_STORE=postgres")
+		}
+		embedURL := strings.TrimSpace(os.Getenv("COMPOUND_EMBED_URL"))
+		if embedURL == "" {
+			return nil, fmt.Errorf("COMPOUND_EMBED_URL is required when COMPOUND_STORE=postgres (no baked-in default)")
+		}
+		embedModel := storeEnvOr("COMPOUND_EMBED_MODEL", "nomic-embed-text")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		store, err := pg.Open(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return pg.NewPgEngine(store, embedURL, embedModel, cfg.VectorDimensions), nil
+	})
+}
+
 func sortedMapKeys(m map[string]int) []string {
 	keys := make([]string, 0, len(m))
 	for key := range m {
@@ -240,6 +273,7 @@ compound capture --source S [--text T] [--work W] | capture show <cid> gesture-f
 compound intent <plan|review|apply> expressive utterance -> task-scoped ContextPack -> reviewable existing work create-plan; ambiguity parks and apply requires an explicit reviewer
 compound placement <resolve|target> where a write belongs: positive canonical-target redirect for a blocked path (guidance, not a gate)
 compound doctor [--json] [--base DIR] [--binary PATH] one legible operator health surface: hooks, leases, findings, placement freshness, retention; writes nothing
+compound store <doctor|init|status|migrate|sync|embed|recall> [--json]  Postgres+pgvector storage backend lifecycle (ADR-0005); requires COMPOUND_STORE=postgres + COMPOUND_DSN; sync/embed/migrate --apply are governed writes (dry-run default, --confirm --work)
 compound retention <classes|scan|plan> [--json]                 declare and inspect artifact retention; plans only, never reclaims
 compound proof-check [--json] [--dry-run] [--dev] [--repo P] [--out FILE] deterministic verification bundle; --dev is fast, cache-enabled, non-certifying feedback while canonical proof stays fresh
   compound director propose [--dry-run|--apply] --json          suggested work; apply may evidence-admit job_health but never executes it

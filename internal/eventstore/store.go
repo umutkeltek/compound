@@ -449,6 +449,29 @@ func (s *Store) retrievalTrafficPath() string {
 	return filepath.Join(s.rootPath(), retrievalTrafficStreamName)
 }
 
+// WithWorkLogReadLock serializes a read with active lifecycle writers without
+// materializing the event habitat. A missing root or lock means there is no
+// writer-established stream to coordinate with yet, so the callback reads the
+// empty/legacy state directly.
+func (s *Store) WithWorkLogReadLock(fn func() error) error {
+	if fn == nil {
+		return fmt.Errorf("work log lock callback required")
+	}
+	lock, err := os.OpenFile(s.workLogLockPath(), os.O_RDONLY, 0)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fn()
+		}
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_SH); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	return fn()
+}
+
 // WithWorkLogLock serializes authoritative lifecycle readers and writers on
 // the stable sidecar lock. Autonomy admission remains an outer concern of the
 // work package, preserving admission -> work-log lock ordering.

@@ -270,7 +270,7 @@ func readOperatorCoordination(
 	if err != nil {
 		return OperatorCoordinationProjection{}, err
 	}
-	store, err := work.Open(request.HomePath)
+	store, err := work.OpenReadOnly(request.HomePath)
 	if err != nil {
 		return OperatorCoordinationProjection{}, err
 	}
