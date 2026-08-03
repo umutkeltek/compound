@@ -15,26 +15,28 @@ func laneManifest() ModelCapabilitiesManifest {
 		CapabilityClasses: []string{"build-implement"},
 		Models: map[string]ModelCapabilityEntry{
 			"claude-fixture-primary": {
-				Lane:          "claude-fixture-primary",
-				Harness:       "claude_code",
-				ProviderRoute: "provider.example/model-primary",
-				EffortDefault: "high",
-				Tier:          "premium",
-				PacketCeiling: "repo-scoped",
-				CostClass:     "api-metered",
-				ContextWindow: 1000000,
-				Aliases:       []string{"model-primary"},
+				Lane:              "claude-fixture-primary",
+				Harness:           "claude_code",
+				ProviderRoute:     "provider.example/model-primary",
+				ProviderRouteKind: "direct_model",
+				EffortDefault:     "high",
+				Tier:              "premium",
+				PacketCeiling:     "repo-scoped",
+				CostClass:         "api-metered",
+				ContextWindow:     1000000,
+				Aliases:           []string{"model-primary"},
 				Capabilities: map[string]CapabilityClaim{
 					"build-implement": {Level: "capable", Evidence: "test"},
 				},
 			},
 			"codex-fixture-economy": {
-				Lane:          "codex-fixture-economy",
-				Harness:       "codex",
-				ProviderRoute: "model-economy",
-				EffortDefault: "medium",
-				Tier:          "cheap",
-				PacketCeiling: "multi-file",
+				Lane:              "codex-fixture-economy",
+				Harness:           "codex",
+				ProviderRoute:     "model-economy",
+				ProviderRouteKind: "provider_class",
+				EffortDefault:     "medium",
+				Tier:              "cheap",
+				PacketCeiling:     "multi-file",
 				Capabilities: map[string]CapabilityClaim{
 					"build-implement": {Level: "capable", Evidence: "test"},
 				},
@@ -71,12 +73,33 @@ func TestLaneProjectionCarriesModelAndEffortSeparately(t *testing.T) {
 	if primary.Route != "provider.example/model-primary" {
 		t.Fatalf("route = %q", primary.Route)
 	}
+	if primary.ProviderRouteKind != "direct_model" {
+		t.Fatalf("provider_route_kind = %q", primary.ProviderRouteKind)
+	}
 	if primary.NativeEffort != "high" {
 		t.Fatalf("native_effort = %q", primary.NativeEffort)
 	}
 	if primary.Lane != "claude-fixture-primary" {
 		t.Fatalf("lane name must not encode effort, got %q", primary.Lane)
 	}
+}
+
+func TestLaneProjectionCanonicalizesProviderRouteKind(t *testing.T) {
+	manifest := laneManifest()
+	entry := manifest.Models["claude-fixture-primary"]
+	entry.ProviderRouteKind = " direct_model "
+	manifest.Models["claude-fixture-primary"] = entry
+
+	got := BuildLaneProjection(manifest, "sha256:abc", "")
+	for _, lane := range got.Lanes {
+		if lane.ModelID == "claude-fixture-primary" {
+			if lane.ProviderRouteKind != "direct_model" {
+				t.Fatalf("provider_route_kind = %q, want canonical enum", lane.ProviderRouteKind)
+			}
+			return
+		}
+	}
+	t.Fatalf("claude-fixture-primary missing from projection: %+v", got.Lanes)
 }
 
 // A lane with no harness cannot be launched; emitting it would invite the executor to

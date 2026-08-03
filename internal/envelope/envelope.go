@@ -585,8 +585,13 @@ type BodyPackOmission struct {
 // never a console/doctor dump of its contents (ratified Q2). v1 carries leases +
 // lane cards; belief-claim cards join here in slice B (agent-lane beliefs).
 type PeersSection struct {
-	ActiveLeases []PeerLease    `json:"active_leases"`
-	Lanes        []PeerLaneCard `json:"lanes"`
+	ActiveLeases []PeerLease `json:"active_leases"`
+	// ActiveLeasesOmitted counts the leases the cap dropped from ActiveLeases. The
+	// list is bounded (a home accumulates leases without bound), so the count is what
+	// keeps the truncation honest: a reader can tell "these are all the leases" from
+	// "these are the newest N of M" instead of silently reading a capped list as total.
+	ActiveLeasesOmitted int            `json:"active_leases_omitted,omitempty"`
+	Lanes               []PeerLaneCard `json:"lanes"`
 }
 
 // PeerLease is one work lease surfaced to peers: the work id, the holder, a coarse

@@ -2901,7 +2901,7 @@ func TestUnavailableConcretePreToolUseFailsLoudAcrossAuthorityAndOrientation(t *
 			authorityOut := captureStdout(t, func() {
 				cmdContract([]string{"hooks-authority"})
 			})
-			var authority hooksAuthorityReport
+			var authority contract.HooksAuthorityReport
 			if err := json.Unmarshal([]byte(authorityOut), &authority); err != nil {
 				t.Fatalf("parse hooks-authority: %v\n%s", err, authorityOut)
 			}
@@ -3115,6 +3115,57 @@ func TestWorkCreatePlanCLIRecordsPolicyWithoutCreating(t *testing.T) {
 	}
 	if _, err := store.Get(plan.WorkID); err == nil {
 		t.Fatalf("create-plan must not write work %s", plan.WorkID)
+	}
+}
+
+func TestWorkCreatePlanCLIPreservesPlanClassAndReworkLineage(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	writeCLIContextPackArtifact(t, homePath, "ctx_cli_create_plan_lineage")
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	earlier, err := store.Create(work.CreateInput{
+		WorkID:           "work_cli_create_plan_earlier",
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "the earlier work whose breakage requires rework",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create earlier work: %v", err)
+	}
+
+	out, runErr := runCLIFlagSeam(t, homePath,
+		"work", "create-plan",
+		"--owner", "compound-core",
+		"--by", "codex",
+		"--predicate", "planned rework preserves its admission contract",
+		"--outcome", "repair the earlier work",
+		"--context-pack", "ctx_cli_create_plan_lineage",
+		"--plan-class", "phased",
+		"--rework-of", earlier.ID,
+		"--json",
+	)
+	if runErr != nil {
+		t.Fatalf("create-plan must accept plan-class and rework lineage flags: %v\n%s", runErr, out)
+	}
+	start := strings.Index(string(out), "{")
+	if start < 0 {
+		t.Fatalf("create-plan output missing JSON:\n%s", out)
+	}
+	var plan work.CreatePlan
+	if err := json.NewDecoder(strings.NewReader(string(out[start:]))).Decode(&plan); err != nil {
+		t.Fatalf("parse create plan: %v\n%s", err, out)
+	}
+	if plan.Work.PlanClass != "phased" || plan.Work.ReworkOfWorkID != earlier.ID {
+		t.Fatalf("planned work dropped admission contract: plan_class=%q rework_of=%q", plan.Work.PlanClass, plan.Work.ReworkOfWorkID)
+	}
+	if !landingCommandHasPair(plan.CreateCommand, "--plan-class", "phased") ||
+		!landingCommandHasPair(plan.CreateCommand, "--rework-of", earlier.ID) {
+		t.Fatalf("create command dropped admission contract: %v", plan.CreateCommand)
 	}
 }
 

@@ -303,6 +303,38 @@ func TestCompileAllowsEligibleLocalDirectLane(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsProviderRouteKindDriftFromCurrentAuthority(t *testing.T) {
+	tests := []struct {
+		name string
+		kind string
+	}{
+		{name: "omitted", kind: ""},
+		{name: "different-kind", kind: routeevidence.ProviderRouteKindProviderClass},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			plan := installLocalDirectPlan(t, home)
+			plan.Chain[0].ProviderRouteKind = tc.kind
+
+			artifact := compile(t, home, plan, 1)
+			assertReason(t, artifact, "route plan chain does not match current model-router authority")
+		})
+	}
+}
+
+func TestCompileAcceptsLegacyManifestWithoutProviderRouteKind(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "legacy-provider-route-kind-first", proofNow.Add(-48*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "legacy-provider-route-kind-second", proofNow.Add(-24*time.Hour), sampleOptions{})
+
+	artifact := compile(t, home, plan, 2)
+	if artifact.Status != "eligible" {
+		t.Fatalf("legacy manifest without provider_route_kind was rejected: %+v", artifact)
+	}
+}
+
 func TestCompileRejectsDirectLaneResolvingToDifferentLane(t *testing.T) {
 	home := t.TempDir()
 	plan := installPlan(t, home, false)
@@ -958,6 +990,7 @@ func installLocalDirectPlan(t *testing.T, home string) autonomy.RoutePlanSnapsho
 models:
   mac/qwen-fixture:
     provider_route: direct
+    provider_route_kind: direct_model
     resolution:
       mode: direct
       targets:
@@ -985,7 +1018,7 @@ routing_defaults:
 		SourceRevision:  revision,
 		CapabilityClass: "judge-critique",
 		Chain: []autonomy.LaneSnapshot{
-			{ModelID: "mac/qwen-fixture", ProviderRoute: "direct", Resolution: autonomy.LaneResolution{Mode: "direct", Targets: []autonomy.ResolvedTarget{{Provider: "lmstudio", Model: "qwen-fixture-served"}}}, Tier: "local-batch", ClaimLevel: "primary", GateRole: "eligible"},
+			{ModelID: "mac/qwen-fixture", ProviderRoute: "direct", ProviderRouteKind: routeevidence.ProviderRouteKindDirectModel, Resolution: autonomy.LaneResolution{Mode: "direct", Targets: []autonomy.ResolvedTarget{{Provider: "lmstudio", Model: "qwen-fixture-served"}}}, Tier: "local-batch", ClaimLevel: "primary", GateRole: "eligible"},
 		},
 	}
 	plan.ID = autonomy.RoutePlanID(plan.CapabilityClass, plan.PrivacySensitive, plan.AuthorityPath, plan.SourceRevision)

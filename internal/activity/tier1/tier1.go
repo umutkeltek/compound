@@ -48,19 +48,20 @@ const Tier1EngineID = "compound-activity-tier1"
 // change (new meta keys, new envelope source, etc.).
 const Tier1EngineRevision = "v0.1.0"
 
-// CollectReport is the honest outcome of a tier1 collect.
-//
-// Refused and Failed are distinct, exactly as in AWMaterializeReport:
-// Refused=true is a GOVERNANCE outcome (sensor disabled, no grant, byte cap) —
-// an honest "no". Failed=true is an OPERATIONAL failure (AW unreachable, every
-// eligible bucket read errored) — the run did not do its job. The CLI maps
-// EITHER to a non-zero exit; collapsing an AW outage into a success-looking
-// Refused=false is the bug this shape exists to prevent.
-//
-// SourcesCalled counts how many envelope sources were attempted; SourcesFailed
-// counts ones that errored (graceful skip — the run continues while at least
-// one source still works). BucketsFailed counts currentwindow buckets whose
-// FetchEvents errored; when EVERY eligible bucket fails the run is Failed.
+var collectorAWBaseURL = awstream.DefaultBaseURL
+
+// OverrideCollectorAWBaseURLForTest redirects the bounded Tier-1 collector to a
+// fixture server. Production keeps the ActivityWatch default.
+func OverrideCollectorAWBaseURLForTest(url string) func() {
+	previous := collectorAWBaseURL
+	collectorAWBaseURL = url
+	return func() { collectorAWBaseURL = previous }
+}
+
+// CollectReport is the honest outcome of a tier1 collect. Refused is reserved
+// for governance denial; Failed means the ActivityWatch read failed
+// operationally. Both map to a non-zero CLI exit. SourcesFailed counts envelope
+// source failures; BucketsFailed counts ActivityWatch bucket read failures.
 type CollectReport struct {
 	Refused        bool   `json:"refused"`
 	Failed         bool   `json:"failed,omitempty"`
@@ -75,29 +76,23 @@ type CollectReport struct {
 
 // Collector bundles the AW reader + source registry + spool writer. Production
 // wiring uses NewCollector() with the default registry; tests inject a custom
-// registry and a fixture AW client. Home is the COMPOUND_HOME the governance
-// wrapper (Collect) runs against; Run uses it to report BytesUnderRoot from
-// the REAL activity root instead of inferring a home from the spool path
-// (which, for the default ~/Library/Application Support spool, resolves to a
-// wrong parent). Empty in unit tests that build a Collector directly — the
-// byte count then stays zero, which is harmless for them.
+// registry and a fixture AW client.
 type Collector struct {
 	AW       *awstream.Client
 	Registry *source.Registry
+	HomePath string
 	SpoolDir string
-	Home     string
 	nowFn    func() time.Time // overridable for tests; defaults to time.Now
 }
 
-// NewCollector returns a Collector wired to the AW client at awBaseURL (the
-// package-level var that defaults to localhost:5600 and that
-// OverrideAWBaseURLForTest redirects for tests — same seam AWMaterialize uses),
-// the default source registry (cmux, iTerm2, Warp, Terminal.app, VS Code,
-// Cursor), and the standard spool dir.
-func NewCollector(spoolDir string) *Collector {
+// NewCollector returns a Collector wired to the default AW client
+// (localhost:5600), the default source registry, the governed Compound home,
+// and the requested spool dir.
+func NewCollector(homePath, spoolDir string) *Collector {
 	return &Collector{
-		AW:       awstream.NewClient(awBaseURL),
+		AW:       awstream.NewClient(collectorAWBaseURL),
 		Registry: source.NewRegistry(),
+		HomePath: homePath,
 		SpoolDir: spoolDir,
 		nowFn:    func() time.Time { return time.Now().UTC() },
 	}
@@ -139,10 +134,7 @@ func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectRepo
 	// this replaces the previous "read the first matching bucket only" path.
 	buckets, err := c.AW.ListBuckets(ctx)
 	if err != nil {
-		// AW is unreachable — a FAILED run (nothing collected), not a policy
-		// refusal and not a success. Mirrors AWMaterialize: the CLI surfaces
-		// this as a nonzero exit.
-		return CollectReport{Failed: true, Reason: fmt.Sprintf("AW ListBuckets: %v", err)}
+		return CollectReport{Failed: true, SourcesFailed: 1, Reason: fmt.Sprintf("AW ListBuckets: %v", err)}
 	}
 	var windowBuckets []string
 	for _, b := range buckets {
@@ -156,12 +148,9 @@ func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectRepo
 	}
 
 	// Pull events from every currentwindow bucket and assemble raw events for
-	// normalization. A single bucket's read error is counted (BucketsFailed)
-	// and skipped; if EVERY eligible bucket fails, the run is marked Failed
-	// after the walk below, so events_written=0 is never mistaken for "no
-	// activity" when really AW could not be read.
+	// normalization.
+	rep := CollectReport{}
 	rawEvents := make([]awstream.RawEvent, 0, 100)
-	bucketsFailed := 0
 	for _, bucketID := range windowBuckets {
 		// Look up the bucket struct so awstream.Normalize can stamp host bindings.
 		var bucket awstream.Bucket
@@ -173,12 +162,16 @@ func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectRepo
 		}
 		events, err := c.AW.FetchEvents(ctx, bucketID, start, now, 1000)
 		if err != nil {
-			bucketsFailed++
+			rep.BucketsFailed++
 			continue // graceful skip per-bucket; report stays honest
 		}
 		for _, e := range events {
 			rawEvents = append(rawEvents, awstream.RawEvent{Bucket: bucket, AWEvent: e})
 		}
+	}
+	if rep.BucketsFailed == len(windowBuckets) {
+		rep.Failed = true
+		rep.Reason = fmt.Sprintf("AW FetchEvents failed for all %d currentwindow buckets", len(windowBuckets))
 	}
 
 	// 2. Normalize: dedup across hostnames by (bucket_type, ts), drop banned
@@ -193,7 +186,6 @@ func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectRepo
 	// event in the lookback window matches that semantics. A user who
 	// switched apps 5s ago gets the app they're on now, not the one they
 	// were on 30s ago.
-	rep := CollectReport{}
 	seen := make(map[string]bool)
 	for i := len(normalized) - 1; i >= 0; i-- {
 		ev := normalized[i]
@@ -245,19 +237,8 @@ func (c *Collector) Run(ctx context.Context, lookback time.Duration) CollectRepo
 		rep.EventsWritten++
 	}
 
-	rep.BucketsFailed = bucketsFailed
-	if bucketsFailed == len(windowBuckets) {
-		// len(windowBuckets) > 0 here — the empty case returned early above —
-		// so every eligible bucket errored: the run collected nothing because
-		// AW could not be read. That is a failed run, not a quiet no-op.
-		rep.Failed = true
-		rep.Reason = fmt.Sprintf("AW FetchEvents failed for all %d eligible buckets", len(windowBuckets))
-	}
-	if c.Home != "" {
-		// Report bytes from the ACTUAL activity root. Inferring home from the
-		// spool path resolves the default ~/Library/Application Support spool
-		// to the wrong parent, silently mis-reporting the gate's metric.
-		rep.BytesUnderRoot, _ = dirSize(activity.ActivityRoot(c.Home))
+	if strings.TrimSpace(c.HomePath) != "" {
+		rep.BytesUnderRoot, _ = dirSize(activity.ActivityRoot(c.HomePath))
 	}
 	return rep
 }
@@ -486,17 +467,14 @@ func Collect(home, spoolDir string, cfg policy.Config, workID string, lookback, 
 	if size >= activity.ByteCapBytes {
 		return CollectReport{Refused: true, Reason: "byte_cap_exceeded", BytesUnderRoot: size}, nil
 	}
-	// All gates pass — run the collector with a wall-clock budget. Home is
-	// carried on the Collector so Run reports BytesUnderRoot from the real
-	// activity root, never inferred from the spool path.
+	// All gates pass — run the collector with a wall-clock budget.
 	ctx := context.Background()
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	c := NewCollector(spoolDir)
-	c.Home = home
+	c := NewCollector(home, spoolDir)
 	return c.Run(ctx, lookback), nil
 }
 
@@ -529,13 +507,12 @@ func buildTier1Intent(workID, home string, now time.Time) envelope.ActionIntent 
 	}
 }
 
-// awBaseURL is the AW REST endpoint both AW verbs read from (AWMaterialize and,
-// via NewCollector, tier1 collect). It is a var (not a constant inlined at the
-// call sites) only so tests can point it at an httptest server; production
-// always uses awstream.DefaultBaseURL.
+// awBaseURL is the AW REST endpoint AWMaterialize reads from. It is a var (not a
+// constant inlined at the call site) only so tests can point it at an httptest
+// server; production always uses awstream.DefaultBaseURL.
 var awBaseURL = awstream.DefaultBaseURL
 
-// OverrideAWBaseURLForTest redirects the AW verbs at a test server and returns a
+// OverrideAWBaseURLForTest redirects AWMaterialize at a test server and returns a
 // restore func. Test-only seam (the CLI lives in package main and cannot touch the
 // unexported var); production code never calls it.
 func OverrideAWBaseURLForTest(url string) func() {

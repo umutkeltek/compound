@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,4 +178,110 @@ func capgraphStoreHash(t *testing.T, home string) string {
 		h.Write(data)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// F5 — a home whose leases outgrow the cap yields a BOUNDED pack: the rows are capped at
+// peerActiveLeaseCap, the drop is declared in active_leases_omitted (never silent), and the
+// surviving rows are the live ones plus the newest stale claims — never the oldest, which is
+// the end work.ListLeases returns first. This is the falsifier for the accumulation failure:
+// leases are written per claim and removed per release, so a mature home carries hundreds of
+// dead rows, and a cap that kept ListLeases' order would keep exactly the dead ones.
+func TestPeers_F5_ActiveLeasesCappedNewestLiveFirstAndDeclared(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+
+	// 30 stale leases, oldest first by construction: work_stale_00 is the oldest claim.
+	const staleCount = 30
+	for i := 0; i < staleCount; i++ {
+		writeLease(t, home, fmt.Sprintf("work_stale_%02d", i), "lane-old",
+			now.Add(-time.Duration(staleCount-i)*24*time.Hour))
+	}
+	// Two live leases, claimed within the staleness window.
+	writeLease(t, home, "work_live_a", "lane-alpha", now.Add(-2*time.Hour))
+	writeLease(t, home, "work_live_b", "lane-beta", now.Add(-1*time.Hour))
+
+	pack, err := PackWithCapabilities(mkInput("product"), DefaultPolicy(), home, now)
+	if err != nil {
+		t.Fatalf("PackWithCapabilities: %v", err)
+	}
+	if pack.Peers == nil {
+		t.Fatalf("peers section must be present when leases exist")
+	}
+	if got := len(pack.Peers.ActiveLeases); got != peerActiveLeaseCap {
+		t.Fatalf("active leases must cap at %d, got %d", peerActiveLeaseCap, got)
+	}
+	total := staleCount + 2
+	if want := total - peerActiveLeaseCap; pack.Peers.ActiveLeasesOmitted != want {
+		t.Fatalf("omitted count must declare the drop: want %d, got %d", want, pack.Peers.ActiveLeasesOmitted)
+	}
+	// Both live leases survive the cap and lead the list.
+	if pack.Peers.ActiveLeases[0].WorkID != "work_live_b" || pack.Peers.ActiveLeases[1].WorkID != "work_live_a" {
+		t.Fatalf("live leases must lead, newest first: %+v", pack.Peers.ActiveLeases[:2])
+	}
+	for _, l := range pack.Peers.ActiveLeases[:2] {
+		if l.Stale {
+			t.Fatalf("live lease rendered stale: %+v", l)
+		}
+	}
+	// The kept stale rows are the NEWEST claims, so the oldest must be gone.
+	kept := map[string]bool{}
+	for _, l := range pack.Peers.ActiveLeases {
+		kept[l.WorkID] = true
+	}
+	if kept["work_stale_00"] {
+		t.Fatalf("cap kept the oldest lease; ordering regressed to ListLeases order: %+v", pack.Peers.ActiveLeases)
+	}
+	if !kept[fmt.Sprintf("work_stale_%02d", staleCount-1)] {
+		t.Fatalf("cap dropped the newest stale lease: %+v", pack.Peers.ActiveLeases)
+	}
+}
+
+// F6 — under the cap, nothing is dropped and the omitted count stays zero, so a small home's
+// pack never claims a truncation that did not happen (the field is omitempty on the wire).
+func TestPeers_F6_UnderCapDeclaresNoOmission(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	writeLease(t, home, "work_one", "lane-alpha", now.Add(-1*time.Hour))
+	writeLease(t, home, "work_two", "lane-beta", now.Add(-48*time.Hour))
+
+	pack, err := PackWithCapabilities(mkInput("product"), DefaultPolicy(), home, now)
+	if err != nil {
+		t.Fatalf("PackWithCapabilities: %v", err)
+	}
+	if pack.Peers == nil || len(pack.Peers.ActiveLeases) != 2 {
+		t.Fatalf("both leases must survive under the cap: %+v", pack.Peers)
+	}
+	if pack.Peers.ActiveLeasesOmitted != 0 {
+		t.Fatalf("omitted must be 0 under the cap, got %d", pack.Peers.ActiveLeasesOmitted)
+	}
+}
+
+// SummaryMD is the one injected surface renderInjection does not budget, so every fragment
+// appended to it must carry its own bound. memoryLine has always capped; activePositionLine
+// did not, and positions were the largest contributor. This pins BOTH to the same bound and
+// pins what must survive it: the position id and slot stay whole, because they are how a
+// reader resolves the untruncated body.
+func TestSummaryFragmentsAreBounded(t *testing.T) {
+	longStance := strings.Repeat("stance-body ", 200)
+	line := activePositionLine("entity::topic::slot-abc123", "predicate", "constraint", longStance, 42, 3, false)
+
+	if len(line) > 320 {
+		t.Fatalf("position line unbounded at %d chars: %q", len(line), line)
+	}
+	if !strings.HasPrefix(line, "entity::topic::slot-abc123 [predicate=predicate, claim_type=constraint]") {
+		t.Fatalf("position id/slot must survive the cap: %q", line)
+	}
+	if !strings.Contains(line, "...") {
+		t.Fatalf("a truncated stance must say so: %q", line)
+	}
+	if !strings.Contains(line, "since-seq 42") || !strings.Contains(line, "chain-length 3") {
+		t.Fatalf("provenance fields must survive the cap: %q", line)
+	}
+
+	if got := boundedSummaryText(strings.Repeat("x", 500)); len(got) != 180 {
+		t.Fatalf("boundedSummaryText = %d chars, want 180", len(got))
+	}
+	if got := boundedSummaryText("short"); got != "short" {
+		t.Fatalf("short text must pass through unchanged, got %q", got)
+	}
 }

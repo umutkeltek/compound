@@ -218,6 +218,174 @@ func TestFalsifier17_Tier1CollectBoundedByDuration(t *testing.T) {
 	}
 }
 
+func TestCollectorListBucketsFailureIsFailedNotRefused(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := newCollectorWithDeps(
+		awstream.NewClient(srv.URL),
+		source.NewRegistry(),
+		t.TempDir(),
+		func() time.Time { return now },
+	)
+	rep := c.Run(context.Background(), 30*time.Second)
+
+	if rep.Refused {
+		t.Fatalf("AW outage is an operational failure, not a refusal: %+v", rep)
+	}
+	if !rep.Failed {
+		t.Fatalf("ListBuckets failure must set Failed=true: %+v", rep)
+	}
+	if !strings.Contains(rep.Reason, "ListBuckets") {
+		t.Fatalf("reason must name the failed AW operation, got %q", rep.Reason)
+	}
+}
+
+func TestCollectorPartialBucketFailureIsCountedWithoutFailingRun(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	const buckets = `{
+		"aw-watcher-window_bad":{"id":"aw-watcher-window_bad","type":"currentwindow","hostname":"h"},
+		"aw-watcher-window_ok":{"id":"aw-watcher-window_ok","type":"currentwindow","hostname":"h"}
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "window_bad"):
+			http.Error(w, "down", http.StatusInternalServerError)
+		case strings.Contains(r.URL.Path, "/events"):
+			_, _ = w.Write([]byte(`[]`))
+		case strings.Contains(r.URL.Path, "buckets"):
+			_, _ = w.Write([]byte(buckets))
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := newCollectorWithDeps(
+		awstream.NewClient(srv.URL),
+		source.NewRegistry(),
+		t.TempDir(),
+		func() time.Time { return now },
+	)
+	rep := c.Run(context.Background(), 30*time.Second)
+
+	if rep.Failed {
+		t.Fatalf("partial bucket failure must not fail the run: %+v", rep)
+	}
+	if rep.BucketsFailed != 1 {
+		t.Fatalf("BucketsFailed = %d, want 1: %+v", rep.BucketsFailed, rep)
+	}
+}
+
+func TestCollectorAllBucketFetchesFailIsFailed(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/events") {
+			http.Error(w, "down", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"aw-watcher-window_bad":{"id":"aw-watcher-window_bad","type":"currentwindow","hostname":"h"}
+		}`))
+	}))
+	defer srv.Close()
+
+	c := newCollectorWithDeps(
+		awstream.NewClient(srv.URL),
+		source.NewRegistry(),
+		t.TempDir(),
+		func() time.Time { return now },
+	)
+	rep := c.Run(context.Background(), 30*time.Second)
+
+	if !rep.Failed {
+		t.Fatalf("all-bucket failure must set Failed=true: %+v", rep)
+	}
+	if rep.BucketsFailed != 1 || rep.EventsWritten != 0 {
+		t.Fatalf("unexpected failure counts: %+v", rep)
+	}
+	if !strings.Contains(rep.Reason, "all 1") {
+		t.Fatalf("reason must name the all-bucket failure, got %q", rep.Reason)
+	}
+}
+
+func TestCollectorBytesUnderRootUsesHomeNotSpoolPath(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	homePath := t.TempDir()
+	activityRoot := activity.ActivityRoot(homePath)
+	if err := os.MkdirAll(activityRoot, 0o700); err != nil {
+		t.Fatalf("mkdir activity root: %v", err)
+	}
+	payload := []byte("bytes owned by the Compound home")
+	if err := os.WriteFile(filepath.Join(activityRoot, "owned.bin"), payload, 0o600); err != nil {
+		t.Fatalf("seed activity bytes: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/events") {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"aw-watcher-window_ok":{"id":"aw-watcher-window_ok","type":"currentwindow","hostname":"h"}
+		}`))
+	}))
+	defer srv.Close()
+	restore := OverrideCollectorAWBaseURLForTest(srv.URL)
+	defer restore()
+
+	c := NewCollector(homePath, t.TempDir())
+	c.nowFn = func() time.Time { return now }
+	rep := c.Run(context.Background(), 30*time.Second)
+
+	if rep.BytesUnderRoot != int64(len(payload)) {
+		t.Fatalf("BytesUnderRoot = %d, want %d from actual home", rep.BytesUnderRoot, len(payload))
+	}
+}
+
+func TestCollectorBytesUnderRootDoesNotUseCurrentDirectoryAsHome(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	activityRoot := activity.ActivityRoot("")
+	if err := os.MkdirAll(activityRoot, 0o700); err != nil {
+		t.Fatalf("mkdir cwd activity root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(activityRoot, "foreign.bin"), []byte("cwd is not authority"), 0o600); err != nil {
+		t.Fatalf("seed cwd bytes: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/events") {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"aw-watcher-window_ok":{"id":"aw-watcher-window_ok","type":"currentwindow","hostname":"h"}
+		}`))
+	}))
+	defer srv.Close()
+
+	c := newCollectorWithDeps(
+		awstream.NewClient(srv.URL),
+		source.NewRegistry(),
+		t.TempDir(),
+		func() time.Time { return now },
+	)
+	rep := c.Run(context.Background(), 30*time.Second)
+
+	if rep.BytesUnderRoot != 0 {
+		t.Fatalf("collector without a home read %d bytes from cwd", rep.BytesUnderRoot)
+	}
+}
+
 // --- Schema-disjointness guard (Tier-1 allowed vs Tier-0 forbidden) ---
 
 func TestTier1AllowedKeysDoNotOverlapForbidden(t *testing.T) {

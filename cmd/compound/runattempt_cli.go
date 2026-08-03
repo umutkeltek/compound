@@ -70,7 +70,45 @@ func resolveRunAttemptHome(args []string) string {
 	return homePath
 }
 
+func validateRunAttemptArgs(args []string, valueFlags, boolFlags map[string]bool) error {
+	if err := validateKnownFlags(args, valueFlags, boolFlags); err != nil {
+		return err
+	}
+	if err := rejectFlagUsedAsValue(args, valueFlags); err != nil {
+		return err
+	}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if valueFlags[arg] {
+			i++
+			continue
+		}
+		if boolFlags[arg] {
+			continue
+		}
+		return fmt.Errorf("unexpected positional argument %q", arg)
+	}
+	return nil
+}
+
+func requireValidRunAttemptArgs(args []string, valueFlags, boolFlags map[string]bool) {
+	if err := validateRunAttemptArgs(args, valueFlags, boolFlags); err != nil {
+		fmt.Fprintln(os.Stderr, "run-attempt:", err)
+		fmt.Fprintln(os.Stderr)
+		printRunAttemptUsage()
+		os.Exit(2)
+	}
+}
+
 func cmdRunAttemptList(args []string) {
+	if hasUsageFlag(args) {
+		printRunAttemptUsage()
+		return
+	}
+	requireValidRunAttemptArgs(args,
+		map[string]bool{"--home": true},
+		map[string]bool{"--non-terminal": true, "--json": true},
+	)
 	homePath := resolveRunAttemptHome(args)
 	nonTerminal := hasFlag(args, "--non-terminal")
 	jsonOut := hasFlag(args, "--json")
@@ -121,6 +159,17 @@ func cmdRunAttemptList(args []string) {
 }
 
 func cmdRunAttemptSweep(args []string) {
+	// sweep mutates stale attempt records. Help, a typo, a missing value, or an
+	// unexpected positional token is not consent to run it with defaults, so the
+	// entire argument shape is rejected before home resolution or store access.
+	if hasUsageFlag(args) {
+		printRunAttemptUsage()
+		return
+	}
+	requireValidRunAttemptArgs(args,
+		map[string]bool{"--threshold": true, "--home": true},
+		map[string]bool{"--json": true},
+	)
 	homePath := resolveRunAttemptHome(args)
 	thresholdStr := flagValue(args, "--threshold")
 	jsonOut := hasFlag(args, "--json")
@@ -130,7 +179,15 @@ func cmdRunAttemptSweep(args []string) {
 		parsed, err := time.ParseDuration(thresholdStr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "run-attempt sweep: invalid threshold %q: %v\n", thresholdStr, err)
-			os.Exit(1)
+			fmt.Fprintln(os.Stderr)
+			printRunAttemptUsage()
+			os.Exit(2)
+		}
+		if parsed <= 0 {
+			fmt.Fprintf(os.Stderr, "run-attempt sweep: threshold must be greater than zero, got %q\n", thresholdStr)
+			fmt.Fprintln(os.Stderr)
+			printRunAttemptUsage()
+			os.Exit(2)
 		}
 		threshold = parsed
 	}

@@ -22,6 +22,14 @@ func resolveDelegateHarness(req work.DelegateHarnessResolveRequest) (work.Delega
 	if strings.TrimSpace(tuple.ProviderRoute) == "" {
 		return work.DelegateHarnessResolution{}, fmt.Errorf("Compound lane tuple %q has no provider_route", modelID)
 	}
+	providerRouteKind := strings.TrimSpace(tuple.ProviderRouteKind)
+	if providerRouteKind != "" && !validProviderRouteKind(providerRouteKind) {
+		return work.DelegateHarnessResolution{}, fmt.Errorf(
+			"Compound lane tuple %q has unknown provider_route_kind %q",
+			modelID,
+			providerRouteKind,
+		)
+	}
 	command := strings.TrimSpace(req.CommandOverride)
 	if command == "" {
 		command, err = ResolveModelCapabilityExecutable(tuple.Aliases)
@@ -30,11 +38,12 @@ func resolveDelegateHarness(req work.DelegateHarnessResolveRequest) (work.Delega
 		}
 	}
 	resolution := work.DelegateHarnessResolution{
-		Harness:                strings.TrimSpace(tuple.Harness),
-		Command:                command,
-		LaneID:                 strings.TrimSpace(tuple.Harness),
-		RequestedModelID:       modelID,
-		RequestedProviderRoute: strings.TrimSpace(tuple.ProviderRoute),
+		Harness:                    strings.TrimSpace(tuple.Harness),
+		Command:                    command,
+		LaneID:                     strings.TrimSpace(tuple.Harness),
+		RequestedModelID:           modelID,
+		RequestedProviderRoute:     strings.TrimSpace(tuple.ProviderRoute),
+		RequestedProviderRouteKind: providerRouteKind,
 		// Transport is executor-owned in the lane projection. Keep it unknown
 		// until the selected executor returns an owner-attested profile plan.
 		SelectedTransportID: "",

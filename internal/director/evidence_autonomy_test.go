@@ -21,6 +21,21 @@ type jobHealthSampleProof struct {
 	RouteID   string
 }
 
+func TestAutonomyRoutePlanSnapshotCarriesProviderRouteKind(t *testing.T) {
+	got := autonomyRoutePlanSnapshot(routeevidence.CapabilityRoutePlan{
+		Chain: []routeevidence.CapabilityRouteLane{
+			{
+				ModelID:           "fixture-model",
+				ProviderRoute:     "provider.example/model-primary",
+				ProviderRouteKind: routeevidence.ProviderRouteKindDirectModel,
+			},
+		},
+	})
+	if len(got.Chain) != 1 || got.Chain[0].ProviderRouteKind != routeevidence.ProviderRouteKindDirectModel {
+		t.Fatalf("director projection omitted provider route kind: %+v", got.Chain)
+	}
+}
+
 func seedJobHealthAutonomyGrant(t *testing.T, home, class string, minSamples, minDays, maxFailures int, now time.Time) string {
 	t.Helper()
 	store, err := mem.Open(home)

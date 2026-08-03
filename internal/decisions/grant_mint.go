@@ -85,13 +85,13 @@ func AnnotateAutonomyGrantMintQueue(report *reviewartifact.QueueReport, homePath
 // grant records could not be read at all.
 func activeAutonomyGrantClasses(homePath string) (map[string]bool, bool) {
 	// OpenReadOnly: this annotates a read-only queue projection off the memory
-	// ledger; a missing ledger must read as "no grants" (return false below),
-	// never scaffold candidates/ or ledger/.
+	// ledger and must never scaffold candidates/ or ledger/ as a side effect.
+	// An ABSENT ledger reads as "no grants" (empty map, ok) — exactly the
+	// fresh-home semantics mem.Open used to provide by mkdir-ing the ledger
+	// before reading it empty. Only a genuine open failure fails closed.
 	store, err := mem.OpenReadOnly(homePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			// No ledger exists at all: that is provably zero grants, not an
-			// unreadable authority — the card may emit.
 			return map[string]bool{}, true
 		}
 		return nil, false

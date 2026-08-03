@@ -527,6 +527,112 @@ func writeRouteCandidateFixture(t *testing.T, home string, candidate routeCandid
 	}
 }
 
+func TestProviderRouteKindRoundTripsThroughAuthorityProjection(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join(t.TempDir(), "provider-route-kind.yaml")
+	body := []byte(`version: 1
+purpose: provider route kind fixture
+capability_classes: [build-implement]
+models:
+  fixture-direct:
+    lane: fixture direct
+    harness: claude_code
+    provider_route: provider.example/model-primary
+    provider_route_kind: direct_model
+    tier: premium
+    packet_ceiling: repo-scoped
+    capabilities: {build-implement: {level: capable, evidence: fixture}}
+routing_defaults:
+  build-implement: [fixture-direct]
+`)
+	if err := os.WriteFile(source, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportModelCapabilitiesYAML(home, source, t0); err != nil {
+		t.Fatal(err)
+	}
+	projection, err := ProjectModelCapabilities(home, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Lanes) != 1 ||
+		projection.Lanes[0].ProviderRoute != "provider.example/model-primary" ||
+		projection.Lanes[0].ProviderRouteKind != "direct_model" {
+		t.Fatalf("provider route kind did not round-trip: %+v", projection.Lanes)
+	}
+}
+
+func TestPlanCapabilityRouteCarriesExplicitProviderRouteKind(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join(t.TempDir(), "provider-route-kind-plan.yaml")
+	body := []byte(`version: 1
+purpose: provider route kind plan fixture
+capability_classes: [build-implement]
+models:
+  fixture-direct:
+    lane: fixture direct
+    harness: claude_code
+    provider_route: provider.example/model-primary
+    provider_route_kind: direct_model
+    tier: premium
+    packet_ceiling: repo-scoped
+    capabilities: {build-implement: {level: capable, evidence: fixture}}
+routing_defaults:
+  build-implement: [fixture-direct]
+`)
+	if err := os.WriteFile(source, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportModelCapabilitiesYAML(home, source, t0); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Chain) != 1 || plan.Chain[0].ProviderRouteKind != ProviderRouteKindDirectModel {
+		t.Fatalf("route plan omitted provider route kind: %+v", plan.Chain)
+	}
+}
+
+func TestImportModelCapabilitiesRejectsUnknownProviderRouteKind(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join(t.TempDir(), "provider-route-kind.yaml")
+	body := []byte(`version: 1
+purpose: provider route kind fixture
+capability_classes: [build-implement]
+models:
+  fixture-unknown:
+    lane: fixture unknown
+    harness: claude_code
+    provider_route: provider.example/model-primary
+    provider_route_kind: inferred_from_slash
+    tier: premium
+    packet_ceiling: repo-scoped
+    capabilities: {build-implement: {level: capable, evidence: fixture}}
+routing_defaults:
+  build-implement: [fixture-unknown]
+`)
+	if err := os.WriteFile(source, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportModelCapabilitiesYAML(home, source, t0); err == nil ||
+		!strings.Contains(err.Error(), "unknown provider_route_kind") {
+		t.Fatalf("unknown provider_route_kind imported: %v", err)
+	}
+}
+
+func TestMergeModelCapabilityEntryPreservesExplicitProviderRouteKind(t *testing.T) {
+	existing := ModelCapabilityEntry{ProviderRouteKind: "direct_model"}
+	if got := mergeModelCapabilityEntry(existing, ModelCapabilityEntry{}).ProviderRouteKind; got != "direct_model" {
+		t.Fatalf("bridge row erased provider_route_kind: %q", got)
+	}
+	if got := mergeModelCapabilityEntry(existing, ModelCapabilityEntry{ProviderRouteKind: "provider_class"}).ProviderRouteKind; got != "provider_class" {
+		t.Fatalf("explicit provider_route_kind update did not win: %q", got)
+	}
+}
+
 // TestImportModelCapabilitiesLaneTupleRoundTripSurfacesSubscriptionFacts verifies
 // the additive LaneTuple fields (context_window, max_output, cost_detail,
 // relative_cost_hint, capacity_source, aliases) decode through YAML, surface in
@@ -695,6 +801,7 @@ func TestModelCapabilitiesLegacyFixtureOmitsLaneTupleFields(t *testing.T) {
 		`"relative_cost_hint":`,
 		`"capacity_source":`,
 		`"aliases":`,
+		`"provider_route_kind":`,
 	} {
 		if strings.Contains(wire, banned) {
 			t.Fatalf("legacy projection leaks %q in JSON: %s", banned, wire)
@@ -716,6 +823,7 @@ func TestModelCapabilitiesLegacyFixtureOmitsLaneTupleFields(t *testing.T) {
 			`"relative_cost_hint":`,
 			`"capacity_source":`,
 			`"aliases":`,
+			`"provider_route_kind":`,
 		} {
 			if strings.Contains(string(solo), banned) {
 				t.Fatalf("legacy lane %s JSON leaks %q: %s", lane.ModelID, banned, solo)

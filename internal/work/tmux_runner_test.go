@@ -256,6 +256,51 @@ func TestTmuxRunnerCreateLaunchOrderAgainstProduction(t *testing.T) {
 	}
 }
 
+func TestTmuxRunnerCreateWithEnvironmentInstallsOpaqueValuesBeforeRespawn(t *testing.T) {
+	sock := newPrivateTmuxServer(t)
+	cr := newCapturingRunner(t, sock)
+	dir := t.TempDir()
+	opaque := `opaque value $(never-execute); "quoted"`
+	if err := cr.CreateWithEnvironment(
+		"sess-environment",
+		dir,
+		"/bin/sleep",
+		[]string{"30"},
+		map[string]string{
+			"SB_LAUNCH_PROFILE_ID": "claude-minimax",
+			"COMPOUND_WORK_ID":     opaque,
+		},
+	); err != nil {
+		t.Fatalf("create with environment: %v", err)
+	}
+	t.Cleanup(func() { _ = cr.Kill("sess-environment") })
+
+	calls := cr.recorded()
+	if len(calls) < 5 {
+		t.Fatalf("captured %d tmux calls, want >=5: %+v", len(calls), calls)
+	}
+	if calls[2][0] != "set-environment" ||
+		calls[2][3] != "COMPOUND_WORK_ID" ||
+		calls[2][4] != opaque {
+		t.Fatalf("first sorted environment value was not passed as one opaque argv: %v", calls[2])
+	}
+	if calls[3][0] != "set-environment" ||
+		calls[3][3] != "SB_LAUNCH_PROFILE_ID" ||
+		calls[3][4] != "claude-minimax" {
+		t.Fatalf("second sorted environment value was not passed exactly: %v", calls[3])
+	}
+	if calls[4][0] != "respawn-pane" {
+		t.Fatalf("environment was not installed before supervised respawn: %+v", calls)
+	}
+	got, err := runTmuxCapture(sock, "show-environment", "-t", "sess-environment", "COMPOUND_WORK_ID")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(got) != "COMPOUND_WORK_ID="+opaque {
+		t.Fatalf("tmux session environment = %q, want exact opaque value", got)
+	}
+}
+
 // TestTmuxRunnerCreatePaneCwdIsWorkspace proves the pane's REAL working
 // directory is the workspace by observing behavior, not argv: the spawned
 // command writes $(pwd) to a file. This is the test that fails if the

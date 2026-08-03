@@ -172,13 +172,15 @@ func Open(homePath string) (*Store, error) {
 
 // OpenReadOnly roots a store at homePath WITHOUT materializing any runtime
 // state: it creates no directories and never calls events.Ensure. It exists so
-// read-only projections (presence) can honor the registry's read-only contract
-// — inspecting "who is here" must not itself leave footprints in COMPOUND_HOME.
-// The read methods OpenReadOnly serves (ListLeases, readWorkLogTail,
-// ListPresenceSessions) all treat missing dirs/files as "empty", so a fresh
-// home yields an empty projection rather than an error. Any mutating method
-// called on a Store opened this way fails at its own write boundary, exactly
-// as it would against any unprepared home.
+// read-classified commands (presence, workbench, attention, coordination,
+// narrate, executors, doctor) can honor the registry's read-only contract —
+// inspecting the home must not itself leave footprints in COMPOUND_HOME.
+// The read methods OpenReadOnly serves (List/ListWithArchived, ListLeases,
+// eventsFor/eventsByWorkID, readWorkLogTail, ListPresenceSessions) all treat
+// missing dirs/files as "empty", so a fresh or stripped home yields an empty
+// projection rather than an error. Any mutating method called on a Store
+// opened this way fails at its own write boundary, exactly as it would
+// against any unprepared home.
 func OpenReadOnly(homePath string) (*Store, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return nil, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
@@ -493,11 +495,14 @@ func (s *Store) list(includeArchived bool) ([]envelope.WorkEnvelope, []string, e
 	dir := filepath.Join(s.home, "work/work")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			entries = nil
-		} else {
-			return nil, nil, err
+		// A missing work/work dir reads as "no work" — the contract
+		// OpenReadOnly's doc states for the read methods it serves, and the
+		// precedent ListLeases already sets: a fresh or stripped home projects
+		// empty, never an error, and never a mkdir.
+		if os.IsNotExist(err) {
+			return nil, nil, nil
 		}
+		return nil, nil, err
 	}
 	var out []envelope.WorkEnvelope
 	var warnings []string
@@ -1256,6 +1261,11 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 			return w, err
 		}
 		in.GitDelivery = normalized
+	}
+	if ref := strings.TrimSpace(in.VerificationID); strings.HasPrefix(ref, DifferentialProofVerificationPrefix) {
+		if _, err := s.validateDifferentialProofRef(w, ref); err != nil {
+			return w, fmt.Errorf("differential proof verification: %w", err)
+		}
 	}
 	// Resolve a declared/corrected lane fail-closed BEFORE any state mutation: a bad --lane ref
 	// aborts the advance untouched (never records a refusal, never mutates the envelope).
@@ -2633,6 +2643,21 @@ func writeWorkEventThrough(writer io.Writer, data []byte) (int, error) {
 }
 
 func (s *Store) eventsFor(workID string) ([]Event, error) {
+	// Read-only fast path: when the lifecycle log does not exist there are no
+	// events to return and no concurrent append to serialize against, so the
+	// read returns empty WITHOUT taking the work-event lock. Taking that lock
+	// materializes runtime state (eventstore.Ensure creates events/, and the
+	// lock file lands inside it) — a footprint work.OpenReadOnly exists to
+	// forbid, and the read-classified commands (workbench, attention,
+	// coordination, narrate, executors, doctor) reach eventsFor through every
+	// lifecycle projection. readEventsStrictUnlocked below already maps an
+	// absent log to empty, so a Store opened for mutation sees identical
+	// behavior either way; the log-exists branch keeps the lock because a
+	// concurrent append may be mid-flight and the strict read demands a
+	// stable tail.
+	if exists, err := s.events.WorkLogExists(); err != nil || !exists {
+		return nil, err
+	}
 	var events []Event
 	err := s.withWorkEventLock(func() error {
 		var err error
@@ -2661,6 +2686,12 @@ func (s *Store) readEventsStrictUnlocked(workID string) ([]Event, error) {
 // re-read+re-decode per item; eventsFor stays the correct call for existing
 // single-work callers (dispatch, continue, show) and is untouched.
 func (s *Store) eventsByWorkID() (map[string][]Event, error) {
+	// Same read-only fast path as eventsFor: no log means no events and no
+	// concurrent writer, so the batch read returns empty without taking the
+	// lock — taking it would materialize events/ under work.OpenReadOnly.
+	if exists, err := s.events.WorkLogExists(); err != nil || !exists {
+		return map[string][]Event{}, err
+	}
 	var all []Event
 	err := s.withWorkEventLock(func() error {
 		var err error

@@ -3028,3 +3028,351 @@ func mustWriteArchFixture(t *testing.T, repo, rel, text string) {
 		t.Fatal(err)
 	}
 }
+
+// --- cmd/compound budget gate tests ---
+//
+// The two ratchets (MaxNonTestCompoundFiles and MaxNonTestCompoundLOC) are independent, so
+// each test fixes one metric at the in-budget state and varies the other. The fixtures use
+// tiny, fixed-content files (each one newline so LOC counting is exact), and each test
+// asserts the gate reads cmd/compound only — internal/ and cmd/compound-* siblings are
+// written alongside as deliberate traps.
+
+func cmdCompoundBudgetFindings(t *testing.T, repo string, strict bool) []Finding {
+	t.Helper()
+	return checkCmdCompoundBudget(repo, strict)
+}
+
+func assertCmdCompoundBudgetSeverity(t *testing.T, fs []Finding, field, want string) {
+	t.Helper()
+	for _, f := range fs {
+		if !strings.Contains(f.Message, field) {
+			continue
+		}
+		if string(f.Severity) != want {
+			t.Fatalf("severity for %q = %s, want %s: %+v", field, f.Severity, want, f)
+		}
+		return
+	}
+	t.Fatalf("no cmd-compound-budget finding for %q in: %+v", field, fs)
+}
+
+func cmdCompoundBudgetCount(fs []Finding, contains string) (Severity, string, bool) {
+	for _, f := range fs {
+		if !strings.Contains(f.Message, contains) {
+			continue
+		}
+		return f.Severity, f.Message, true
+	}
+	return "", "", false
+}
+
+// TestCheckCmdCompoundBudgetPassesOnRealRepo: the live cmd/compound tree is at-or-under
+// both ratchets as of this WorkEnvelope — files are exactly at budget (119/119), LOC is
+// under budget with explicit headroom reported in the Info message. A future commit that
+// blows either budget will trip this test (see TestCheckCmdCompoundBudgetFailsOn...).
+func TestCheckCmdCompoundBudgetPassesOnRealRepo(t *testing.T) {
+	fs := cmdCompoundBudgetFindings(t, repoRoot, false)
+	if len(fs) != 2 {
+		t.Fatalf("want 2 findings (files + LOC), got %d: %+v", len(fs), fs)
+	}
+	filesSev, filesMsg, ok := cmdCompoundBudgetCount(fs, "non-test .go files")
+	if !ok {
+		t.Fatalf("missing files finding in: %+v", fs)
+	}
+	if filesSev != Info {
+		t.Fatalf("files finding must be Info on a passing tree, got %s: %s", filesSev, filesMsg)
+	}
+	if !strings.Contains(filesMsg, itoa(MaxNonTestCompoundFiles)+"/"+itoa(MaxNonTestCompoundFiles)) {
+		t.Fatalf("files finding should report %d/%d, got: %s", MaxNonTestCompoundFiles, MaxNonTestCompoundFiles, filesMsg)
+	}
+	locSev, locMsg, ok := cmdCompoundBudgetCount(fs, "non-test .go LOC")
+	if !ok {
+		t.Fatalf("missing LOC finding in: %+v", fs)
+	}
+	if locSev != Info {
+		t.Fatalf("LOC finding must be Info on a passing tree, got %s: %s", locSev, locMsg)
+	}
+	if !strings.Contains(locMsg, "/"+itoa(MaxNonTestCompoundLOC)) {
+		t.Fatalf("LOC finding should report /%d budget, got: %s", MaxNonTestCompoundLOC, locMsg)
+	}
+	if !strings.Contains(locMsg, "headroom") {
+		t.Fatalf("LOC finding must report headroom so the ratchet floor is visible: %s", locMsg)
+	}
+}
+
+// TestCheckCmdCompoundBudgetFailsOnFileCountExceeded: a tmpdir with one MORE non-test .go
+// file than the budget must FAIL the files metric even though LOC is far under. The LOC
+// metric stays Info (independent ratchets — see comment in checkCmdCompoundBudget).
+func TestCheckCmdCompoundBudgetFailsOnFileCountExceeded(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "cmd", "compound"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Write MaxNonTestCompoundFiles + 1 files, each one line so LOC stays tiny.
+	for i := 0; i <= MaxNonTestCompoundFiles; i++ {
+		name := filepath.Join(repo, "cmd", "compound", "f"+itoa(i)+".go")
+		if err := os.WriteFile(name, []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fs := cmdCompoundBudgetFindings(t, repo, true)
+	filesSev, filesMsg, ok := cmdCompoundBudgetCount(fs, "non-test .go files")
+	if !ok || filesSev != Fail {
+		t.Fatalf("files metric must FAIL when over budget (strict), got %s (msg=%s, ok=%v): %+v", filesSev, filesMsg, ok, fs)
+	}
+	if !strings.Contains(filesMsg, "over budget") {
+		t.Fatalf("failure should explain the over-budget direction so a maintainer can act: %s", filesMsg)
+	}
+	// LOC metric stays Info — independent ratchet.
+	locSev, _, ok := cmdCompoundBudgetCount(fs, "non-test .go LOC")
+	if !ok || locSev != Info {
+		t.Fatalf("LOC metric must stay Info when only files is over budget, got %s (ok=%v): %+v", locSev, ok, fs)
+	}
+}
+
+// TestCheckCmdCompoundBudgetFailsOnLOCExceeded: a tmpdir with files at-budget but each
+// bloat enough to push total LOC over the ceiling must FAIL the LOC metric, while the files
+// metric stays Info. Mirrors the files-over-budget test on the other ratchet.
+func TestCheckCmdCompoundBudgetFailsOnLOCExceeded(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "cmd", "compound"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// One file. Body is many newlines so LOC = body length, well over budget while file count = 1.
+	body := strings.Repeat("\n", MaxNonTestCompoundLOC+1)
+	if err := os.WriteFile(filepath.Join(repo, "cmd", "compound", "huge.go"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs := cmdCompoundBudgetFindings(t, repo, true)
+	locSev, locMsg, ok := cmdCompoundBudgetCount(fs, "non-test .go LOC")
+	if !ok || locSev != Fail {
+		t.Fatalf("LOC metric must FAIL when over budget (strict), got %s (msg=%s, ok=%v): %+v", locSev, locMsg, ok, fs)
+	}
+	if !strings.Contains(locMsg, "over budget") {
+		t.Fatalf("failure should explain the over-budget direction so a maintainer can act: %s", locMsg)
+	}
+	filesSev, _, ok := cmdCompoundBudgetCount(fs, "non-test .go files")
+	if !ok || filesSev != Info {
+		t.Fatalf("files metric must stay Info when only LOC is over budget, got %s (ok=%v): %+v", filesSev, ok, fs)
+	}
+}
+
+// TestCheckCmdCompoundBudgetIgnoresTestFiles: a fixture with the budget-allowed number of
+// non-test files PLUS enough _test.go files to blow the budget IF counted must still PASS.
+// This is the mutation target: if a maintainer removes the `*_test.go` exclusion from
+// checkCmdCompoundBudget, the gate fires and this test fails — so the test guards the
+// exclusion itself, not just the overall budget.
+func TestCheckCmdCompoundBudgetIgnoresTestFiles(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "cmd", "compound"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Under-budget non-test files.
+	for i := 0; i < MaxNonTestCompoundFiles-1; i++ {
+		name := filepath.Join(repo, "cmd", "compound", "f"+itoa(i)+".go")
+		if err := os.WriteFile(name, []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Far more _test.go files than the non-test budget. If exclusion breaks, file count
+	// inflates to 2*MaxNonTestCompoundFiles-1 and the gate fires.
+	for i := 0; i < MaxNonTestCompoundFiles*3; i++ {
+		name := filepath.Join(repo, "cmd", "compound", "t"+itoa(i)+"_test.go")
+		if err := os.WriteFile(name, []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fs := cmdCompoundBudgetFindings(t, repo, false)
+	for _, f := range fs {
+		if f.Severity == Fail {
+			t.Fatalf("test files must not count toward the budget, but a finding failed: %+v", f)
+		}
+	}
+	_, filesMsg, _ := cmdCompoundBudgetCount(fs, "non-test .go files")
+	// Files finding should reflect ONLY the non-test count, not the inflated total.
+	if !strings.Contains(filesMsg, itoa(MaxNonTestCompoundFiles-1)+"/"+itoa(MaxNonTestCompoundFiles)) {
+		t.Fatalf("files finding should report %d/%d (test files excluded), got: %s",
+			MaxNonTestCompoundFiles-1, MaxNonTestCompoundFiles, filesMsg)
+	}
+}
+
+// TestCheckCmdCompoundBudgetIgnoresCmdCompoundSiblings: cmd/compound-install-verify and
+// friends are separate surfaces, each free to grow on its own budget. A fixture that
+// explodes the sibling surface must NOT push the cmd/compound budget over.
+func TestCheckCmdCompoundBudgetIgnoresCmdCompoundSiblings(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "cmd", "compound"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "cmd", "compound-install-verify"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Under-budget cmd/compound.
+	if err := os.WriteFile(filepath.Join(repo, "cmd", "compound", "one.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Far over-budget sibling. If the gate accidentally reads `cmd/compound-*`, file count
+	// would inflate and the gate would fire on the metric below.
+	for i := 0; i < MaxNonTestCompoundFiles*4; i++ {
+		name := filepath.Join(repo, "cmd", "compound-install-verify", "s"+itoa(i)+".go")
+		if err := os.WriteFile(name, []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fs := cmdCompoundBudgetFindings(t, repo, false)
+	for _, f := range fs {
+		if f.Severity == Fail {
+			t.Fatalf("cmd/compound-* siblings must not feed the cmd/compound budget, but a finding failed: %+v", f)
+		}
+	}
+	_, filesMsg, _ := cmdCompoundBudgetCount(fs, "non-test .go files")
+	if !strings.Contains(filesMsg, "1/"+itoa(MaxNonTestCompoundFiles)) {
+		t.Fatalf("files finding should report only cmd/compound/, got: %s", filesMsg)
+	}
+}
+
+// TestCheckCmdCompoundBudgetIgnoresInternalDir: internal/ is not the surface this gate
+// bounds — it has its own classification totality check. A fixture with internal/ full of
+// .go files must not feed the cmd/compound budget.
+func TestCheckCmdCompoundBudgetIgnoresInternalDir(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "cmd", "compound"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "internal", "fakeorgan"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "cmd", "compound", "one.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Far over-budget internal/. Should be invisible to this gate.
+	for i := 0; i < MaxNonTestCompoundFiles*4; i++ {
+		name := filepath.Join(repo, "internal", "fakeorgan", "f"+itoa(i)+".go")
+		if err := os.WriteFile(name, []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fs := cmdCompoundBudgetFindings(t, repo, false)
+	for _, f := range fs {
+		if f.Severity == Fail {
+			t.Fatalf("internal/ must not feed the cmd/compound budget, but a finding failed: %+v", f)
+		}
+	}
+	_, filesMsg, _ := cmdCompoundBudgetCount(fs, "non-test .go files")
+	if !strings.Contains(filesMsg, "1/"+itoa(MaxNonTestCompoundFiles)) {
+		t.Fatalf("files finding should ignore internal/, got: %s", filesMsg)
+	}
+}
+
+// TestCheckCmdCompoundBudgetStrictEscalatesOverBudgetToFail: the file-count and LOC
+// findings stay Warn when over budget and `strict` is false, but flip to Fail under
+// `--strict`. The "weaken-the-gate" direction is the only one that would lower strict
+// further; the ratchet only tightens from here.
+func TestCheckCmdCompoundBudgetStrictEscalatesOverBudgetToFail(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "cmd", "compound"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Repeat("\n", MaxNonTestCompoundLOC+1)
+	if err := os.WriteFile(filepath.Join(repo, "cmd", "compound", "huge.go"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// non-strict: Warn, not Fail — preserves green-build semantics for routine surfaces.
+	fsNon := cmdCompoundBudgetFindings(t, repo, false)
+	locSevNon, _, _ := cmdCompoundBudgetCount(fsNon, "non-test .go LOC")
+	if locSevNon != Warn {
+		t.Fatalf("non-strict over-budget LOC must be Warn, got %s: %+v", locSevNon, fsNon)
+	}
+	// strict: Fail, the ratchet actually bites.
+	fsStrict := cmdCompoundBudgetFindings(t, repo, true)
+	locSevStrict, _, _ := cmdCompoundBudgetCount(fsStrict, "non-test .go LOC")
+	if locSevStrict != Fail {
+		t.Fatalf("strict over-budget LOC must be Fail, got %s: %+v", locSevStrict, fsStrict)
+	}
+}
+
+// TestDoctorEmitsCmdCompoundBudgetFindings: integration smoke through Doctor(repoRoot,
+// true). Direct tests already pin the check's behavior; this one pins the WIRE — that the
+// check is actually registered in Doctor(). If a future refactor drops the
+// `f = append(f, checkCmdCompoundBudget(repoRoot, strict)...)` call, the unit tests still
+// pass against the unwired function, and the gate silently stops gating. This test catches
+// that drift: a real run of Doctor(strict=true) against the live repo must surface exactly
+// two cmd-compound-budget findings (one per independent metric).
+func TestDoctorEmitsCmdCompoundBudgetFindings(t *testing.T) {
+	report := Doctor(repoRoot, true)
+	if !report.OK {
+		t.Fatalf("Doctor(strict=true) against the live repo must be green, got failures: %+v", report.Findings)
+	}
+	var budget []Finding
+	for _, f := range report.Findings {
+		if f.Check == "cmd-compound-budget" {
+			budget = append(budget, f)
+		}
+	}
+	if len(budget) != 2 {
+		t.Fatalf("Doctor must emit exactly 2 cmd-compound-budget findings (files + LOC), got %d: %+v", len(budget), budget)
+	}
+	hasFiles, hasLOC := false, false
+	for _, f := range budget {
+		if strings.Contains(f.Message, "non-test .go files") {
+			hasFiles = true
+		}
+		if strings.Contains(f.Message, "non-test .go LOC") {
+			hasLOC = true
+		}
+	}
+	if !hasFiles || !hasLOC {
+		t.Fatalf("Doctor's cmd-compound-budget findings must cover BOTH metrics (files + LOC), got: %+v", budget)
+	}
+}
+
+// TestCheckCmdCompoundBudgetMutationExclusionBrokenFails: this is the mutation guard for
+// the `*_test.go` exclusion. The fixture has exactly MaxNonTestCompoundFiles-2 non-test
+// files (under budget) and MaxNonTestCompoundFiles+10 test files. If exclusion is intact,
+// the gate reports under budget. If a future refactor accidentally counts test files, the
+// inflated total blows the budget and the gate fires — this test catches that regression.
+// Mechanically: the assertion is "no finding has severity Fail", and the file-count
+// finding's message names the non-test count (not the inflated one). Either assertion
+// detects a broken exclusion.
+func TestCheckCmdCompoundBudgetMutationExclusionBrokenFails(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "cmd", "compound"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Under-budget non-test files. Two less than the budget so the test files can push
+	// past the ceiling if exclusion breaks.
+	nonTestCount := MaxNonTestCompoundFiles - 2
+	for i := 0; i < nonTestCount; i++ {
+		name := filepath.Join(repo, "cmd", "compound", "f"+itoa(i)+".go")
+		if err := os.WriteFile(name, []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Many test files. If exclusion breaks, total file count exceeds budget.
+	testCount := MaxNonTestCompoundFiles + 10
+	for i := 0; i < testCount; i++ {
+		name := filepath.Join(repo, "cmd", "compound", "t"+itoa(i)+"_test.go")
+		if err := os.WriteFile(name, []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fs := cmdCompoundBudgetFindings(t, repo, true)
+	for _, f := range fs {
+		if f.Severity == Fail {
+			t.Fatalf("with the *_test.go exclusion intact the gate must NOT fail — the "+
+				"mutation guard caught a broken exclusion (the gate counted test files): "+
+				"%+v", f)
+		}
+	}
+	// Independently confirm the files finding's count message names ONLY the non-test count,
+	// so a future regression that inflates it would also trip this assertion.
+	_, filesMsg, _ := cmdCompoundBudgetCount(fs, "non-test .go files")
+	if !strings.Contains(filesMsg, itoa(nonTestCount)+"/"+itoa(MaxNonTestCompoundFiles)) {
+		t.Fatalf("files finding must report the non-test count only (%d/%d), got: %s",
+			nonTestCount, MaxNonTestCompoundFiles, filesMsg)
+	}
+	if strings.Contains(filesMsg, itoa(nonTestCount+testCount)+"/") {
+		t.Fatalf("files finding appears to count test files too (%d/%d would be the inflated total): %s",
+			nonTestCount+testCount, MaxNonTestCompoundFiles, filesMsg)
+	}
+}

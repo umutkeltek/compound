@@ -70,6 +70,7 @@ func TestResolveDelegateExecutionProfileAttestsOnlyExactRegisteredHarnessFamilie
 		{name: "Claude lane with Codex client", selected: "claude_qwen", lane: "claude_qwen", clientHarness: "codex", want: work.DelegateExecutionProfileIncompatible},
 		{name: "Codex lane with Claude client", selected: "codex", lane: "codex", clientHarness: "claude-code", want: work.DelegateExecutionProfileIncompatible},
 		{name: "mixed selected harness and lane families", selected: "claude_code", lane: "codex", clientHarness: "claude-code", want: work.DelegateExecutionProfileIncompatible},
+		{name: "different registered Claude lane identities", selected: "claude_minimax", lane: "claude_qwen", clientHarness: "claude-code", want: work.DelegateExecutionProfileIncompatible},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resolved, err := resolveDelegateExecutionProfile(work.DelegateExecutionProfileResolveRequest{
@@ -215,5 +216,55 @@ func TestResolveDelegateExecutionProfileBindsSelectedCanonicalTuple(t *testing.T
 				t.Fatalf("selected tuple attestation drifted: request=%+v compatibility=%+v", req, resolved.Compatibility)
 			}
 		})
+	}
+}
+
+func TestResolveDelegateExecutionProfileDefersUnknownSwitchbackTransportToSelectedOwnerProfile(t *testing.T) {
+	resolved, err := resolveDelegateExecutionProfile(work.DelegateExecutionProfileResolveRequest{
+		Intent: work.DelegateExecutionProfileIntent{
+			ProfileID:       "coding-implementation",
+			LaunchProfileID: "claude-minimax",
+			ClientHarnessID: "claude-code",
+			TransportID:     "switchback",
+			ModelConstraint: "minimax/minimax-m3",
+			RouteAlias:      "minimax/minimax-m3",
+			NativeEffort:    "xhigh",
+		},
+		SelectedHarness:       "claude_code",
+		SelectedLaneID:        "claude_code",
+		SelectedModelID:       "minimax/minimax-m3",
+		SelectedProviderRoute: "minimax/minimax-m3",
+		SelectedTransportID:   "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Compatibility.Disposition != work.DelegateExecutionProfileCompatible {
+		t.Fatalf(
+			"owner-attested transport was rejected before launch-profile resolution: %+v",
+			resolved.Compatibility,
+		)
+	}
+
+	withoutOwner, err := resolveDelegateExecutionProfile(work.DelegateExecutionProfileResolveRequest{
+		Intent: work.DelegateExecutionProfileIntent{
+			ProfileID:       "coding-implementation",
+			ClientHarnessID: "claude-code",
+			TransportID:     "switchback",
+			ModelConstraint: "minimax/minimax-m3",
+			RouteAlias:      "minimax/minimax-m3",
+			NativeEffort:    "xhigh",
+		},
+		SelectedHarness:       "claude_code",
+		SelectedLaneID:        "claude_code",
+		SelectedModelID:       "minimax/minimax-m3",
+		SelectedProviderRoute: "minimax/minimax-m3",
+		SelectedTransportID:   "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutOwner.Compatibility.Disposition != work.DelegateExecutionProfileIncompatible {
+		t.Fatalf("missing owner profile incorrectly bypassed transport proof: %+v", withoutOwner.Compatibility)
 	}
 }

@@ -82,10 +82,11 @@ type fakeSessionRunner struct {
 }
 
 type fakeCreateCall struct {
-	Name    string
-	Dir     string
-	Command string
-	Args    []string
+	Name        string
+	Dir         string
+	Command     string
+	Args        []string
+	Environment map[string]string
 }
 
 type fakeSendKeysCall struct {
@@ -132,6 +133,14 @@ func (f *fakeSessionRunner) SessionStatus(name string) (SessionStatus, error) {
 }
 
 func (f *fakeSessionRunner) Create(name, dir, command string, args []string) error {
+	return f.create(name, dir, command, args, nil)
+}
+
+func (f *fakeSessionRunner) CreateWithEnvironment(name, dir, command string, args []string, environment map[string]string) error {
+	return f.create(name, dir, command, args, environment)
+}
+
+func (f *fakeSessionRunner) create(name, dir, command string, args []string, environment map[string]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.createErr != nil && !f.partialCreate {
@@ -140,7 +149,17 @@ func (f *fakeSessionRunner) Create(name, dir, command string, args []string) err
 	if f.duplicateNameErr != nil && f.live[name] {
 		return f.duplicateNameErr
 	}
-	f.creates = append(f.creates, fakeCreateCall{Name: name, Dir: dir, Command: command, Args: append([]string{}, args...)})
+	copiedEnvironment := make(map[string]string, len(environment))
+	for key, value := range environment {
+		copiedEnvironment[key] = value
+	}
+	f.creates = append(f.creates, fakeCreateCall{
+		Name:        name,
+		Dir:         dir,
+		Command:     command,
+		Args:        append([]string{}, args...),
+		Environment: copiedEnvironment,
+	})
 	f.live[name] = true
 	if f.onCreate != nil {
 		f.onCreate()
@@ -257,13 +276,14 @@ func TestDelegateUsesInjectedTupleResolutionAndStampsAttribution(t *testing.T) {
 			t.Fatalf("resolver input = %+v", req)
 		}
 		return DelegateHarnessResolution{
-			Harness:                "claude_minimax",
-			Command:                "resolved-claude-minimax",
-			LaneID:                 "claude_minimax",
-			RequestedModelID:       "claude-minimax (token plan)",
-			RequestedProviderRoute: "minimax",
-			CapacityLane:           "minimax",
-			TupleBacked:            true,
+			Harness:                    "claude_minimax",
+			Command:                    "resolved-claude-minimax",
+			LaneID:                     "claude_minimax",
+			RequestedModelID:           "claude-minimax (token plan)",
+			RequestedProviderRoute:     "minimax",
+			RequestedProviderRouteKind: "provider_class",
+			CapacityLane:               "minimax",
+			TupleBacked:                true,
 		}, nil
 	}
 	t.Cleanup(func() {
@@ -1127,11 +1147,10 @@ func TestDelegateUsesResolvedWorkspace(t *testing.T) {
 // boundary. A lane's transcript directory is derived from its workspace
 // (TranscriptDirFor), so two lanes sharing one workspace write into one session
 // store with nothing marking which passage belongs to which work. Measured
-// 2026-08-02: 11 lanes were spawned into a single workspace and 9 of them
-// reduced to one JSONL, so their reports could not be attributed and the naive
-// harvest returned byte-identical output for four different works. A collided
-// transcript cannot be separated afterward, so the refusal has to happen at
-// spawn.
+// 2026-08-02: 11 lanes were spawned into a single workspace and 9 reduced to one
+// JSONL, so their reports could not be attributed and a naive harvest returned
+// byte-identical output for four different works. A collided transcript cannot
+// be separated afterward, so the refusal has to happen at spawn.
 func TestDelegateRefusesWorkspaceHeldByAnotherLiveLane(t *testing.T) {
 	orig := LaneCapacityGuard
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
@@ -1150,7 +1169,7 @@ func TestDelegateRefusesWorkspaceHeldByAnotherLiveLane(t *testing.T) {
 		t.Fatalf("first delegate: %v", err)
 	}
 	if first.Status != "spawned" {
-		t.Fatalf("first delegate status = %q, want spawned (result=%+v)", first.Status, first)
+		t.Fatalf("first delegate status = %q, want spawned", first.Status)
 	}
 
 	secondID := prepareClaimedWork(t, s, "orchestrator:test", "", "second lane aims at the same workspace")
@@ -1162,21 +1181,21 @@ func TestDelegateRefusesWorkspaceHeldByAnotherLiveLane(t *testing.T) {
 		t.Fatalf("second delegate: %v", err)
 	}
 	if second.Refusal == nil || second.Refusal.Reason != "workspace_occupied" {
-		t.Fatalf("second delegate into an occupied workspace = %+v, want refusal reason workspace_occupied", second)
+		t.Fatalf("second delegate into an occupied workspace = %+v, want refusal workspace_occupied", second)
 	}
-	// The refusal must name the holder, or the operator cannot tell which lane
-	// to terminalize and the message is a dead end.
+	// The refusal must name the holder, or the operator cannot tell which lane to
+	// terminalize and the message is a dead end.
 	if !strings.Contains(second.Refusal.Message, firstID) {
 		t.Fatalf("refusal message %q does not name the holding work %s", second.Refusal.Message, firstID)
 	}
 	if len(runner.creates) != 1 {
-		t.Fatalf("runner created %d sessions, want 1 — the refused lane must not spawn", len(runner.creates))
+		t.Fatalf("runner created %d sessions, want 1 -- the refused lane must not spawn", len(runner.creates))
 	}
 }
 
 // TestDelegateAllowsDistinctWorkspaces is the other half of the asymmetry: the
-// guard must key on the workspace, not merely on "another lane is live". Without
-// this, refusing every concurrent delegate would also pass the test above.
+// guard must key on the workspace, not merely on "another lane is live".
+// Without this, refusing every concurrent delegate would also pass the test above.
 func TestDelegateAllowsDistinctWorkspaces(t *testing.T) {
 	orig := LaneCapacityGuard
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")

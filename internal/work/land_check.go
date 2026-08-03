@@ -287,12 +287,6 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 			return report, nil
 		}
 	}
-	if !report.TargetBranchWorktree {
-		report.Status = "wrong_target_worktree"
-		report.NextAction = fmt.Sprintf("check out %s in the explicit target worktree, then rerun land-check", targetRef)
-		return report, nil
-	}
-
 	report.CandidateExists, err = landingCommitExists(repoPath, candidate)
 	if err != nil {
 		return report, err
@@ -333,6 +327,25 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 	report.TargetAncestorOfCandidate, err = landingIsAncestor(repoPath, targetSHA, candidate)
 	if err != nil {
 		return report, err
+	}
+	if !report.TargetBranchWorktree {
+		targetCheckedOut, err := landingRefCheckedOut(repoPath, targetBranchRef)
+		if err != nil {
+			return report, err
+		}
+		// The landing ceremony permits an atomic update-ref CAS when no
+		// worktree has the target branch checked out. Once that ref contains
+		// the certified candidate, the foreign feature checkout is irrelevant
+		// to delivery and must not block land-check or leak its dirt into the
+		// target cleanliness result. A target checked out anywhere, or a target
+		// that still needs to move, retains the canonical-worktree refusal.
+		if targetCheckedOut || !report.CandidateContainedInTarget {
+			report.Status = "wrong_target_worktree"
+			report.NextAction = fmt.Sprintf("check out %s in the explicit target worktree, then rerun land-check", targetRef)
+			return report, nil
+		}
+		report.CleanTarget = true
+		statusOutput = ""
 	}
 
 	publicationExists := false
@@ -504,6 +517,13 @@ func landingContainedDirtyDiagnostic(targetRef string, dirtyPaths []string, publ
 func (s *Store) latestSourceBoundProofResult(w envelope.WorkEnvelope) (ProofResourceResult, bool, error) {
 	for i := len(w.VerificationIDs) - 1; i >= 0; i-- {
 		ref := strings.TrimSpace(w.VerificationIDs[i])
+		if strings.HasPrefix(ref, DifferentialProofVerificationPrefix) {
+			result, err := s.validateDifferentialProofRef(w, ref)
+			if err != nil {
+				return ProofResourceResult{}, true, err
+			}
+			return result, true, nil
+		}
 		if !strings.HasPrefix(ref, "proof-check:") {
 			continue
 		}
@@ -728,7 +748,7 @@ func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPa
 	switch {
 	case report.ProofVerificationRef == "" && report.ProofHeadSHA != "":
 		return fmt.Errorf("recorded land-check %s has proof head without verification identity", id)
-	case report.ProofVerificationRef != "" && !strings.HasPrefix(report.ProofVerificationRef, "proof-check:pfrs_"):
+	case report.ProofVerificationRef != "" && !validRecordedLandCheckVerificationRef(report.ProofVerificationRef):
 		return fmt.Errorf("recorded land-check %s has invalid proof verification identity", id)
 	case report.ProofVerificationRef != "" && report.ProofHeadSHA != report.CandidateTipSHA:
 		return fmt.Errorf("recorded land-check %s proof tip differs from candidate tip", id)
@@ -740,6 +760,14 @@ func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPa
 		return fmt.Errorf("recorded land-check %s does not prove containment in bound publication ref %s", id, contract.PublicationRef)
 	}
 	return nil
+}
+
+func validRecordedLandCheckVerificationRef(ref string) bool {
+	if strings.HasPrefix(ref, "proof-check:pfrs_") {
+		return true
+	}
+	_, _, ok := parseDifferentialProofVerificationRef(ref)
+	return ok
 }
 
 func (s *Store) validateRecordedLandCheckProofResult(w envelope.WorkEnvelope, report LandCheckReport) error {
@@ -860,6 +888,20 @@ func landingCurrentBranchRef(repoPath string) (string, error) {
 		return "", nil
 	}
 	return "", fmt.Errorf("inspect target worktree branch: %w: %s", err, strings.TrimSpace(string(out)))
+}
+
+func landingRefCheckedOut(repoPath, targetBranchRef string) (bool, error) {
+	out, err := runLandingGitOutput(repoPath, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return false, fmt.Errorf("inspect worktrees for target ref %s: %w", targetBranchRef, err)
+	}
+	want := "branch " + targetBranchRef
+	for _, field := range strings.Split(out, "\x00") {
+		if field == want {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func landingRefExists(repoPath, ref string) (bool, error) {

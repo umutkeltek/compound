@@ -207,6 +207,9 @@ type RunAttempt struct {
 	RequestedClientHarnessID string `json:"requested_client_harness_id,omitempty"`
 	RequestedTransportID     string `json:"requested_transport_id,omitempty"`
 	RequestedNativeEffort    string `json:"requested_native_effort,omitempty"`
+	LaunchProfileID          string `json:"launch_profile_id,omitempty"`
+	LaunchProfileRevision    string `json:"launch_profile_revision,omitempty"`
+	RequestedClientProfileID string `json:"requested_client_profile_id,omitempty"`
 	// ModelID is the concrete model the run consumed (e.g. "model-x"). Empty
 	// when the dispatching context does not know the model -- never guessed.
 	ModelID string `json:"model_id,omitempty"`
@@ -770,6 +773,20 @@ func (s *Store) SetExecutionProfileIntent(id, planID, clientHarnessID, transport
 	ra.RequestedClientHarnessID = strings.TrimSpace(clientHarnessID)
 	ra.RequestedTransportID = strings.TrimSpace(transportID)
 	ra.RequestedNativeEffort = strings.TrimSpace(nativeEffort)
+	return ra, s.write(ra)
+}
+
+// SetLaunchProfileIntent records the opaque executor-owner launch and account
+// policy identity selected before spawn. It carries no account id or
+// credential and does not populate observed provider/model fields.
+func (s *Store) SetLaunchProfileIntent(id, profileID, revision, clientProfileID string) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	ra.LaunchProfileID = strings.TrimSpace(profileID)
+	ra.LaunchProfileRevision = strings.TrimSpace(revision)
+	ra.RequestedClientProfileID = strings.TrimSpace(clientProfileID)
 	return ra, s.write(ra)
 }
 

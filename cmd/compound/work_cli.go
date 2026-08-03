@@ -84,7 +84,7 @@ const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-ca
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
-		Usage:   "usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--deviation-lane L [--deviation-class C] [--deviation-card REF] [--deviation-risk gate|judge|tidy]] [--json] [--dry-run]",
+		Usage:   "usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--deviation-lane L [--deviation-class C] [--deviation-card REF] [--deviation-risk gate|judge|tidy]] [--plan-class oneshot|plan_doc|phased] [--rework-of work_id] [--json] [--dry-run]",
 		Example: "compound work create-plan --owner codex --predicate \"tests pass\" --dry-run",
 	},
 	"admit-plan": {
@@ -168,7 +168,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"delegate": {
-		Usage:   "usage: compound work delegate <work_id> --harness <claude-zai|claude-qwen|claude-minimax|claude|codex> [--execution-profile ID [--role ROLE] [--capability-class CLASS] [--client-harness ID] [--transport ID] [--route-alias ALIAS] [--model MODEL] [--semantic-effort LEVEL] [--effort LEVEL] [--orchestration POLICY] [--privacy-ceiling LEVEL]] [--actor A] [--prompt <text> | -- <command> [args...]] [--workspace DIR] [--session NAME] [--expected-minutes N] [--confirm] [--dry-run] [--json]\n  OR:  compound work delegate status <work_id> [--json]\n  OR:  compound work delegate progress <work_id> --done N --empty N --failed N --remaining N [--json]\n  OR:  compound work delegate sweep <work_id> [--dry-run] [--json]",
+		Usage:   "usage: compound work delegate <work_id> --harness <claude-zai|claude-qwen|claude-minimax|claude|codex> [--execution-profile ID [--launch-profile ID] [--role ROLE] [--capability-class CLASS] [--client-harness ID] [--transport ID] [--route-alias ALIAS] [--model MODEL] [--semantic-effort LEVEL] [--effort LEVEL] [--orchestration POLICY] [--privacy-ceiling LEVEL]] [--actor A] [--prompt <text> | -- <command> [args...]] [--workspace DIR] [--session NAME] [--expected-minutes N] [--confirm] [--dry-run] [--json]\n  OR:  compound work delegate status <work_id> [--json]\n  OR:  compound work delegate progress <work_id> --done N --empty N --failed N --remaining N [--json]\n  OR:  compound work delegate sweep <work_id> [--dry-run] [--json]",
 		Example: "compound work delegate work_abc123 --harness claude-zai --prompt \"follow the surprising thread\"",
 	},
 	"steer": {
@@ -465,6 +465,22 @@ func cmdWork(args []string) {
 		}
 		return &envelope.RouteDeviation{Lane: lane, CapabilityClass: class, CardRef: card, RiskGrade: risk}
 	}
+	createInputFromFlags := func(base work.CreateInput) work.CreateInput {
+		base.WorkID = flag("--work-id")
+		base.Owner = flag("--owner")
+		base.CanonicalSurface = flag("--canonical-surface")
+		base.SuccessPredicate = flag("--predicate")
+		base.DesiredOutcome = flag("--outcome")
+		base.NonGoals = flagCSVValues(rest, "--non-goal", "--non-goals")
+		base.EvidenceRefs = flagCSVValues(rest, "--evidence-ref", "--evidence")
+		base.ContextPackID = flag("--context-pack")
+		base.RouteDecisionID = flag("--route-decision-id")
+		base.Risk = flag("--risk")
+		base.Privacy = flag("--privacy")
+		base.PlanClass = flag("--plan-class")
+		base.ReworkOfWorkID = flag("--rework-of")
+		return base
+	}
 
 	switch sub {
 	case "delegate", "steer", "attach":
@@ -492,6 +508,7 @@ func cmdWork(args []string) {
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
 			"--predicted-outcome": true, "--predicted-move-type": true, "--prediction-note": true,
 			"--deviation-lane": true, "--deviation-card": true, "--deviation-class": true, "--deviation-risk": true,
+			"--plan-class": true, "--rework-of": true,
 		}, map[string]bool{"--json": true, "--dry-run": true, "--local-only": true}, 0); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
@@ -501,24 +518,13 @@ func cmdWork(args []string) {
 		gitDelivery := parseGitDelivery(usage)
 		prediction := parsePrediction(usage)
 		routeDeviation := parseRouteDeviation(usage)
-		plan, err := store.CreatePlan(work.CreateInput{
-			WorkID:           flag("--work-id"),
-			Owner:            flag("--owner"),
-			Actor:            firstNonEmpty(flag("--by"), flag("--actor")),
-			CanonicalSurface: flag("--canonical-surface"),
-			SuccessPredicate: flag("--predicate"),
-			DesiredOutcome:   flag("--outcome"),
-			NonGoals:         flagCSVValues(rest, "--non-goal", "--non-goals"),
-			EvidenceRefs:     flagCSVValues(rest, "--evidence-ref", "--evidence"),
-			ContextPackID:    flag("--context-pack"),
-			RouteDecisionID:  flag("--route-decision-id"),
-			GitDelivery:      gitDelivery,
-			State:            flag("--state"),
-			Risk:             flag("--risk"),
-			Privacy:          flag("--privacy"),
-			Prediction:       prediction,
-			RouteDeviation:   routeDeviation,
-		}, time.Now(), work.CreatePlanOptions{
+		plan, err := store.CreatePlan(createInputFromFlags(work.CreateInput{
+			Actor:          firstNonEmpty(flag("--by"), flag("--actor")),
+			GitDelivery:    gitDelivery,
+			State:          flag("--state"),
+			Prediction:     prediction,
+			RouteDeviation: routeDeviation,
+		}), time.Now(), work.CreatePlanOptions{
 			Actor:         firstNonEmpty(flag("--by"), flag("--actor")),
 			Capability:    flag("--capability"),
 			Action:        flag("--action"),
@@ -636,26 +642,13 @@ func cmdWork(args []string) {
 			actor = firstNonEmpty(actor, "test-fixture")
 		}
 		now := time.Now()
-		w, err := store.Create(work.CreateInput{
-			WorkID:           flag("--work-id"),
-			Owner:            flag("--owner"),
-			Actor:            actor,
-			CanonicalSurface: flag("--canonical-surface"),
-			SuccessPredicate: flag("--predicate"),
-			DesiredOutcome:   flag("--outcome"),
-			NonGoals:         flagCSVValues(rest, "--non-goal", "--non-goals"),
-			EvidenceRefs:     flagCSVValues(rest, "--evidence-ref", "--evidence"),
-			ContextPackID:    flag("--context-pack"),
-			RouteDecisionID:  flag("--route-decision-id"),
-			GitDelivery:      gitDelivery,
-			State:            createState,
-			Risk:             flag("--risk"),
-			Privacy:          flag("--privacy"),
-			Prediction:       prediction,
-			RouteDeviation:   routeDeviation,
-			PlanClass:        flag("--plan-class"),
-			ReworkOfWorkID:   flag("--rework-of"),
-		}, now)
+		w, err := store.Create(createInputFromFlags(work.CreateInput{
+			Actor:          actor,
+			GitDelivery:    gitDelivery,
+			State:          createState,
+			Prediction:     prediction,
+			RouteDeviation: routeDeviation,
+		}), now)
 		die(err)
 		if requestedState == "running" {
 			w, err = store.Claim(w.ID, actor, now)
