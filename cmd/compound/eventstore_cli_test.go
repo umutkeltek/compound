@@ -2361,6 +2361,9 @@ func TestEventStoreRebaselineWritesWithGrantAndClosesTheGateAgain(t *testing.T) 
 	sidecarPath := filepath.Join(homePath, "events", "migration", "stream-baseline.json")
 	grantSrc := filepath.Join(homePath, "rebaseline-grant.yaml")
 	raw := "generated_at: \"2026-07-16T12:00:00Z\"\n" +
+		"authority:\n" +
+		"  decision_ref: \"grant:test-rebaseline\"\n" +
+		"  reviewed_by: \"operator:test\"\n" +
 		"grants:\n" +
 		"  - grant_id: grant_rebaseline\n" +
 		"    capabilities: [\"" + eventStoreRebaselineCapability + "\"]\n" +

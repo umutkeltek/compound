@@ -133,6 +133,9 @@ func TestActRepointWritesWithGrantAndRecordsReceipt(t *testing.T) {
 
 	grantSrc := filepath.Join(home, "grants.yaml")
 	raw := "generated_at: \"2026-07-01T12:00:00Z\"\n" +
+		"authority:\n" +
+		"  decision_ref: \"grant:test-act-repoint\"\n" +
+		"  reviewed_by: \"operator:test\"\n" +
 		"grants:\n" +
 		"  - grant_id: grant_act_repoint\n" +
 		"    capabilities: [\"" + actDefaultCapability + "\"]\n" +

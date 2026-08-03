@@ -198,6 +198,9 @@ func TestActPostConfirmWithGrantExecutesOnceAndRecordsReceipt(t *testing.T) {
 	}
 	grantSource := filepath.Join(homePath, "standing-grants.yaml")
 	grantBody := "generated_at: \"2026-07-01T12:00:00Z\"\n" +
+		"authority:\n" +
+		"  decision_ref: \"grant:test-fixture-post\"\n" +
+		"  reviewed_by: \"operator:test\"\n" +
 		"grants:\n" +
 		"  - grant_id: grant_fixture_post\n" +
 		"    capabilities: [\"" + product.ContentPostCapability + "\"]\n" +

@@ -76,6 +76,9 @@ func importRemoteGrant(t *testing.T, home, capability, targetPath string) {
 	t.Helper()
 	grantSrc := filepath.Join(home, "grants.yaml")
 	raw := "generated_at: \"2026-07-01T12:00:00Z\"\n" +
+		"authority:\n" +
+		"  decision_ref: \"grant:test-remote-act\"\n" +
+		"  reviewed_by: \"operator:test\"\n" +
 		"grants:\n" +
 		"  - grant_id: grant_remote_act\n" +
 		"    capabilities: [\"" + capability + "\"]\n" +

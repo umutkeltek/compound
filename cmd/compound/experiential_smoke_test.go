@@ -23,6 +23,9 @@ func importExpSmokeReviewGrant(t *testing.T, homePath string) {
 	t.Helper()
 	grantSource := filepath.Join(t.TempDir(), "standing-grants.yaml")
 	if err := os.WriteFile(grantSource, []byte(`generated_at: "2026-07-01T12:00:00Z"
+authority:
+  decision_ref: "grant:test-review-finding"
+  reviewed_by: "operator:test"
 grants:
   - grant_id: grant_review_finding
     capabilities:
