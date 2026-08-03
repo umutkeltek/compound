@@ -37,7 +37,7 @@ func TestVolatileVisibilityClaimNeverEntersAmbient(t *testing.T) {
 			Confidence: 0.9, Derivation: "deterministic", ClaimType: "status",
 			Qualifiers:     map[string]string{"domain": "build_status"},
 			PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "ev_vv", SnippetHash: "sha256:vv",
-			Visibility: "volatile", ExpiresAt: "2027-01-01T00:00:00Z",
+			Visibility: "volatile", ExpiresAt: fixedNow.Add(365 * 24 * time.Hour).Format(time.RFC3339),
 			ObservationDate: "2026-07-02T00:00:00Z",
 		},
 	}

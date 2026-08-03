@@ -135,7 +135,7 @@ func TestNonVolatilePromotionDropsCandidateParkClock(t *testing.T) {
 	s := newStore(t)
 	c := volatileBase()
 	c.Visibility = "operational"
-	c.ExpiresAt = "2026-07-20T00:00:00Z" // a park-decay TTL, not a claim clock
+	c.ExpiresAt = t0.Add(30 * 24 * time.Hour).Format(time.RFC3339) // a park-decay TTL, not a claim clock
 	got, err := s.Capture([]Candidate{c}, t0)
 	if err != nil {
 		t.Fatal(err)

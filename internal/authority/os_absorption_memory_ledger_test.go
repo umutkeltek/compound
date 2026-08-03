@@ -1,6 +1,8 @@
 package authority
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -14,7 +16,6 @@ import (
 
 const (
 	testMemorySourceRef       = "/synthetic/brain/projects/compound.md"
-	testMemoryEvidenceID      = "ev_memory_ledger_consumed"
 	testMemoryKnowledgePageID = "knowledge_memory_ledger_consumed"
 	testMemoryContextPackID   = "ctx_memory_ledger_consumed"
 	testMemoryContractID      = "contract_memory_ledger_consumed"
@@ -24,7 +25,6 @@ const (
 func TestOSAbsorptionDoctorMemoryLedgerAuthorityBindsConsumedContextPack(t *testing.T) {
 	const (
 		sourceRef       = "/synthetic/brain/projects/compound.md"
-		evidenceID      = "ev_memory_ledger_consumed"
 		knowledgePageID = "knowledge_memory_ledger_consumed"
 		contextPackID   = "ctx_memory_ledger_consumed"
 		contractID      = "contract_memory_ledger_consumed"
@@ -44,8 +44,8 @@ func TestOSAbsorptionDoctorMemoryLedgerAuthorityBindsConsumedContextPack(t *test
 	if _, err := ImportOSAbsorptionMatrix(homePath, matrixPath, time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("import matrix: %v", err)
 	}
+	evidenceID := writeMemoryLedgerEvidenceFixture(t, homePath, knowledgePageID)
 	writeMemoryLedgerClaimFixture(t, homePath, evidenceID, knowledgePageID, candidates.BasisCuratedPage, sourceRef)
-	writeMemoryLedgerEvidenceFixture(t, homePath, evidenceID, knowledgePageID)
 	writeMemoryLedgerConsumedContextPack(t, homePath, contextPackID, contractID, claimID)
 
 	report, err := OSAbsorptionDoctor(homePath)
@@ -227,7 +227,7 @@ func TestOSAbsorptionDoctorMemoryLedgerAuthorityScansPastUnconsumedSourceMatch(t
 					"page_id":     testMemoryKnowledgePageID,
 					"source_path": testMemorySourceRef,
 				},
-				"evidence_refs": []string{"cand_memory_ledger_earlier", testMemoryEvidenceID},
+				"evidence_refs": []string{"cand_memory_ledger_earlier", memoryLedgerEvidenceID(testMemoryKnowledgePageID)},
 				"visibility":    "contextual",
 				"created_at":    "2026-07-12T11:59:00Z",
 			})
@@ -279,8 +279,8 @@ func installMemoryLedgerAuthorityTestFixture(t *testing.T, options memoryLedgerA
 	if sourceRef == "" {
 		sourceRef = testMemorySourceRef
 	}
-	writeMemoryLedgerClaimFixture(t, homePath, testMemoryEvidenceID, knowledgePageID, promotionBasis, sourceRef)
-	writeMemoryLedgerEvidenceFixture(t, homePath, testMemoryEvidenceID, knowledgePageID)
+	evidenceID := writeMemoryLedgerEvidenceFixture(t, homePath, knowledgePageID)
+	writeMemoryLedgerClaimFixture(t, homePath, evidenceID, knowledgePageID, promotionBasis, sourceRef)
 	if !options.skipPack {
 		writeMemoryLedgerConsumedContextPack(t, homePath, testMemoryContextPackID, testMemoryContractID, testMemoryClaimID, options.context)
 	}
@@ -400,9 +400,11 @@ func writeMemoryLedgerConsumedContextPack(t *testing.T, homePath, contextPackID,
 func TestOSAbsorptionDoctorMemoryLedgerAuthority(t *testing.T) {
 	const (
 		sourceRef       = "/synthetic/brain/projects/compound.md"
-		evidenceID      = "ev_memory_ledger_proof"
 		knowledgePageID = "knowledge_memory_ledger_proof"
 	)
+	// The evidence id is content-derived (the ledger fold revalidates every
+	// row's content address), so it is computed, never hand-named.
+	evidenceID, _ := memoryLedgerEvidenceAddress(knowledgePageID)
 
 	tests := []struct {
 		name            string
@@ -448,8 +450,8 @@ func TestOSAbsorptionDoctorMemoryLedgerAuthority(t *testing.T) {
 			if _, err := ImportOSAbsorptionMatrix(homePath, matrixPath, now); err != nil {
 				t.Fatalf("import matrix: %v", err)
 			}
+			writeMemoryLedgerEvidenceFixture(t, homePath, knowledgePageID)
 			writeMemoryLedgerClaimFixture(t, homePath, evidenceID, knowledgePageID, tt.promotionBasis, tt.sourcePath)
-			writeMemoryLedgerEvidenceFixture(t, homePath, evidenceID, knowledgePageID)
 
 			report, err := OSAbsorptionDoctor(homePath)
 			if err != nil {
@@ -484,7 +486,6 @@ func TestOSAbsorptionDoctorMemoryLedgerAuthority(t *testing.T) {
 func TestOSAbsorptionDoctorMemoryLedgerAuthorityAcceptsHistoricalPromotedClaim(t *testing.T) {
 	const (
 		sourceRef       = "/synthetic/brain/projects/compound.md"
-		evidenceID      = "ev_memory_ledger_historical"
 		knowledgePageID = "knowledge_memory_ledger_historical"
 		contextPackID   = "ctx_memory_ledger_historical"
 		contractID      = "contract_memory_ledger_historical"
@@ -503,8 +504,8 @@ func TestOSAbsorptionDoctorMemoryLedgerAuthorityAcceptsHistoricalPromotedClaim(t
 	if _, err := ImportOSAbsorptionMatrix(homePath, matrixPath, time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("import matrix: %v", err)
 	}
+	evidenceID := writeMemoryLedgerEvidenceFixture(t, homePath, knowledgePageID)
 	writeMemoryLedgerClaimFixture(t, homePath, evidenceID, knowledgePageID, candidates.BasisCuratedPage, sourceRef)
-	writeMemoryLedgerEvidenceFixture(t, homePath, evidenceID, knowledgePageID)
 	appendMemoryLedgerJSONFixture(t, filepath.Join(homePath, "ledger", "claims.jsonl"), map[string]any{
 		"id":              "claim_memory_ledger_newer_unrelated",
 		"seq":             2,
@@ -580,13 +581,35 @@ func writeMemoryLedgerClaimFixture(t *testing.T, homePath, evidenceID, knowledge
 	}
 }
 
-func writeMemoryLedgerEvidenceFixture(t *testing.T, homePath, evidenceID, knowledgePageID string) {
+// memoryLedgerEvidenceAddress computes the compliant content address for the
+// fixture evidence row: the ledger fold revalidates every row (an ev_ id is
+// derived from SourceKind + SourceID + QuoteText, never hand-named), so
+// fixtures must mint the same way production does (mem.evidenceContentHash).
+func memoryLedgerEvidenceAddress(knowledgePageID string) (id, contentHash string) {
+	material := "note" + "\x00" + "knowledge_page:" + knowledgePageID + "\x00"
+	sum := sha256.Sum256([]byte(material))
+	hash := hex.EncodeToString(sum[:])
+	return "ev_" + hash[:12], hash
+}
+
+// memoryLedgerEvidenceID is the id-only convenience for fixture rows that
+// must reference the evidence id before the evidence row itself is written.
+func memoryLedgerEvidenceID(knowledgePageID string) string {
+	id, _ := memoryLedgerEvidenceAddress(knowledgePageID)
+	return id
+}
+
+// writeMemoryLedgerEvidenceFixture writes one content-addressed evidence row
+// and returns its derived id, so claims' evidence_refs and proof assertions
+// bind the exact row the fold will accept.
+func writeMemoryLedgerEvidenceFixture(t *testing.T, homePath, knowledgePageID string) string {
 	t.Helper()
+	evidenceID, contentHash := memoryLedgerEvidenceAddress(knowledgePageID)
 	evidence := map[string]any{
 		"id":           evidenceID,
 		"source_kind":  "note",
 		"source_id":    "knowledge_page:" + knowledgePageID,
-		"content_hash": "fixture-memory-ledger-proof",
+		"content_hash": contentHash,
 		"observed_at":  "2026-07-12T12:00:00Z",
 		"visibility":   "contextual",
 	}
@@ -595,9 +618,13 @@ func writeMemoryLedgerEvidenceFixture(t *testing.T, homePath, evidenceID, knowle
 		t.Fatal(err)
 	}
 	path := filepath.Join(homePath, "ledger", "evidence.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, append(body, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return evidenceID
 }
 
 func appendMemoryLedgerJSONFixture(t *testing.T, path string, value any) {

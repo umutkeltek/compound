@@ -858,7 +858,7 @@ func TestProofResourceReservationExceptionalStealIsExplicitAndAudited(t *testing
     mutation_class: security
     reversibility: manual
     blast_radius: repo
-    expires_at: "2027-01-01T00:00:00Z"
+    expires_at: "` + fixedNow.Add(365*24*time.Hour).Format(time.RFC3339) + `"
 `)
 	if err := os.WriteFile(filepath.Join(s.home, "config", "policy.yaml"), policyYAML, 0o644); err != nil {
 		t.Fatal(err)
@@ -973,7 +973,7 @@ func TestProofResourceFailedStealRetainsTerminationBarrierAcrossExpiry(t *testin
     mutation_class: security
     reversibility: manual
     blast_radius: repo
-    expires_at: "2027-01-01T00:00:00Z"
+    expires_at: "`+fixedNow.Add(365*24*time.Hour).Format(time.RFC3339)+`"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -2908,7 +2908,7 @@ func writeProofResourceStealGrant(t *testing.T, homePath string) {
     mutation_class: security
     reversibility: manual
     blast_radius: repo
-    expires_at: "2027-01-01T00:00:00Z"
+    expires_at: "`+fixedNow.Add(365*24*time.Hour).Format(time.RFC3339)+`"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -3229,7 +3229,9 @@ func TestProofResourceCompletionLegacyGovernanceMutationRejectedByteIdentical(t 
 			p.Decision.Obligations = append(p.Decision.Obligations, "changed")
 		}},
 		{name: "decision grant", mutate: func(p *proofResourceCompletionPending) { p.Decision.StandingGrantID = "grant_changed" }},
-		{name: "decision expiry", mutate: func(p *proofResourceCompletionPending) { p.Decision.ExpiresAt = "2027-01-01T00:00:00Z" }},
+		{name: "decision expiry", mutate: func(p *proofResourceCompletionPending) {
+			p.Decision.ExpiresAt = fixedNow.Add(365 * 24 * time.Hour).Format(time.RFC3339)
+		}},
 	}
 	for _, tc := range mutations {
 		t.Run(tc.name, func(t *testing.T) {

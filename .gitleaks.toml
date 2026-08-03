@@ -1,4 +1,4 @@
-# gitleaks config for compound CI (.github/workflows/ci.yml).
+# gitleaks config for compound CI (.woodpecker.yml).
 #
 # This is the portable, CI-side secret scan. It COMPLEMENTS — it does not replace — the local
 # `redact` push-floor (redact also does PII / private-path / private-tool-name detection that a

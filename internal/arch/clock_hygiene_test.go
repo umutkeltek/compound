@@ -1,7 +1,8 @@
 // Repo-wide clock-hygiene guard. It lives in internal/arch because that package already
 // owns the repo's structural guards (classification totality, package-table single source,
-// status hot-path cap); a test-hygiene walk over cmd/ and internal/ is the same family, and
-// giving it its own package would mint a new organ under the two-class law for no gain.
+// status hot-path cap); a test-hygiene walk over cmd/, internal/, and fixtures/ is the same
+// family, and giving it its own package would mint a new organ under the two-class law for
+// no gain.
 //
 // This file exists because of a real, reproducible failure. On 2026-08-01 a
 // certifying test (cmd/compound/synthesis_test.go) seeded a candidate with a
@@ -43,11 +44,22 @@ import (
 var excludedFiles = map[string]string{}
 
 // expiryFieldPattern matches the literal assignment patterns this guard
-// watches for. Each alternative is "an expiry-ish field name, optional
-// whitespace, a colon, optional whitespace, a double-quoted RFC3339 literal".
+// watches for. Three assignment shapes are covered:
+//
+//   - Go struct-literal / YAML:  ExpiresAt: "…"   expires_at: "…"
+//   - Go assignment:             c.ExpiresAt = "…"
+//   - JSON (compact or spaced):  "expires_at":"…"  "expires_at": "…"
+//
+// The JSON shape needs the optional closing quote before the separator —
+// the key's own quote would otherwise defeat the colon match. The separator
+// class [:=] is safe against Go comparisons: "!=" and "==" never satisfy
+// field + optional quote + whitespace + separator + quote (the "!" and the
+// second "=" block it), so an assertion like `saved.ExpiresAt != "…"` is
+// not matched — only the assignment form is.
+//
 // It is deliberately anchored so that strings inside comments or unrelated
 // JSON keys ("CreatedAt", "GeneratedAt", "ObservedAt", "ImportedAt", etc.)
-// are NOT matched — only the assignment form is.
+// are NOT matched.
 //
 // Field names covered:
 //   - ExpiresAt, expiresAt  (Go)
@@ -56,7 +68,7 @@ var excludedFiles = map[string]string{}
 //   - ValidUntil, validUntil, valid_until (Go + YAML)
 //
 // Add a name here only when an actual production field uses it.
-var expiryFieldPattern = regexp.MustCompile(`(?:ExpiresAt|expiresAt|expires_at|NotAfter|ValidUntil|validUntil|valid_until)\s*:\s*"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)"`)
+var expiryFieldPattern = regexp.MustCompile(`(?:ExpiresAt|expiresAt|expires_at|NotAfter|ValidUntil|validUntil|valid_until)"?\s*[:=]\s*"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)"`)
 
 // clockGuardRepoRoot resolves the repository root from this test file's own path so
 // the guard works regardless of the working directory `go test` is invoked
@@ -131,17 +143,27 @@ func scanFile(t *testing.T, now time.Time, path, relPath string) []string {
 }
 
 // TestNoPastDatedExpiryLiteralsInTests is the main deliverable. It walks
-// every *_test.go file under cmd/ and internal/, scans for absolute RFC3339
-// literals assigned to an expiry-ish field, and fails if any literal has
-// already passed relative to time.Now(). Future literals are allowed; the
-// goal is to catch the trap once it arms, not to police intent.
+// every *_test.go file under cmd/ and internal/ plus every machine-read data
+// file under fixtures/ (a fixture that pins an absolute expiry arms the same
+// trap from the data side: the test loads the fixture, the code reads
+// time.Now()), scans for absolute RFC3339 literals assigned to an expiry-ish
+// field, and fails if any literal has already passed relative to time.Now().
+// Future literals are allowed; the goal is to catch the trap once it arms,
+// not to police intent.
 func TestNoPastDatedExpiryLiteralsInTests(t *testing.T) {
 	root := clockGuardRepoRoot(t)
 	now := time.Now().UTC()
 
 	var all []string
-	for _, sub := range []string{"cmd", "internal"} {
-		base := filepath.Join(root, sub)
+	for _, walk := range []struct {
+		sub  string
+		keep func(name string) bool
+	}{
+		{"cmd", isGoTestFile},
+		{"internal", isGoTestFile},
+		{"fixtures", isFixtureDataFile},
+	} {
+		base := filepath.Join(root, walk.sub)
 		err := filepath.Walk(base, func(path string, info os.FileInfo, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
@@ -149,8 +171,7 @@ func TestNoPastDatedExpiryLiteralsInTests(t *testing.T) {
 			if info.IsDir() {
 				return nil
 			}
-			name := info.Name()
-			if !strings.HasSuffix(name, "_test.go") {
+			if !walk.keep(info.Name()) {
 				return nil
 			}
 			rel, err := filepath.Rel(root, path)
@@ -172,7 +193,7 @@ func TestNoPastDatedExpiryLiteralsInTests(t *testing.T) {
 
 	if len(all) > 0 {
 		t.Fatalf(
-			"found %d past-dated expiry literal(s) in *_test.go under cmd/ or internal/.\n"+
+			"found %d past-dated expiry literal(s) in *_test.go under cmd/ or internal/ or fixture data under fixtures/.\n"+
 				"A literal of this shape arms a wall-clock trap: the test will fail the moment time.Now() passes it, "+
 				"and every caller of the certifying battery goes red for unrelated reasons. Replace the literal with a horizon "+
 				"computed relative to time.Now() (e.g. time.Now().UTC().Add(365*24*time.Hour).Format(time.RFC3339)) so the "+
@@ -181,4 +202,21 @@ func TestNoPastDatedExpiryLiteralsInTests(t *testing.T) {
 			len(all), strings.Join(all, "\n  "),
 		)
 	}
+}
+
+// isGoTestFile keeps the cmd/ and internal/ walks on the test files whose
+// literals compile into the certifying battery.
+func isGoTestFile(name string) bool {
+	return strings.HasSuffix(name, "_test.go")
+}
+
+// isFixtureDataFile keeps the fixtures/ walk on machine-read data files — the
+// ones a test decodes and hands to production code that reads time.Now().
+// Prose (.md, .txt) is out of scope: it arms no clock.
+func isFixtureDataFile(name string) bool {
+	switch filepath.Ext(name) {
+	case ".json", ".ndjson", ".jsonl", ".yaml", ".yml":
+		return true
+	}
+	return false
 }

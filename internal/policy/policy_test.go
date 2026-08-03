@@ -442,7 +442,7 @@ func TestUnknownClassFailsClosed(t *testing.T) {
 // envelope; an expired grant does not.
 func TestStandingGrant(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.StandingGrants = []StandingGrant{{ID: "grant_deploy", Capability: "deploy.run", MutationClass: "public", BlastRadius: "public", ExpiresAt: "2027-01-01T00:00:00Z"}}
+	cfg.StandingGrants = []StandingGrant{{ID: "grant_deploy", Capability: "deploy.run", MutationClass: "public", BlastRadius: "public", ExpiresAt: fixedNow.Add(365 * 24 * time.Hour).Format(time.RFC3339)}}
 	ai := mkAction("public", "manual", "site/index.html", "public")
 	ai.Capability = "deploy.run"
 	pd := Evaluate(ai, cfg, fixedNow)
@@ -452,7 +452,7 @@ func TestStandingGrant(t *testing.T) {
 		t.Errorf("matching grant should allow_with_obligations and keep grant id, got outcome=%q grant=%q obligations=%v", pd.Outcome, pd.StandingGrantID, pd.Obligations)
 	}
 	// Expired grant -> falls through to baseline (hold).
-	cfg.StandingGrants[0].ExpiresAt = "2020-01-01T00:00:00Z"
+	cfg.StandingGrants[0].ExpiresAt = fixedNow.Add(-365 * 24 * time.Hour).Format(time.RFC3339)
 	if pd := Evaluate(ai, cfg, fixedNow); pd.Outcome != "hold" {
 		t.Errorf("expired grant should fall to baseline hold, got %q", pd.Outcome)
 	}
@@ -556,7 +556,7 @@ func TestStandingGrantKeepsTrustObligations(t *testing.T) {
 		Capability:    "deploy.run",
 		MutationClass: "external_side_effect",
 		BlastRadius:   "repo",
-		ExpiresAt:     "2027-01-01T00:00:00Z",
+		ExpiresAt:     fixedNow.Add(365 * 24 * time.Hour).Format(time.RFC3339),
 	}}
 	ai := mkAction("external_side_effect", "easy", "site/index.html", "repo")
 	ai.Capability = "deploy.run"
@@ -688,7 +688,7 @@ func TestPlacementGuardBlockHoldsAndClearsGrant(t *testing.T) {
 		Capability:    "deploy.run",
 		MutationClass: "public",
 		BlastRadius:   "public",
-		ExpiresAt:     "2027-01-01T00:00:00Z",
+		ExpiresAt:     fixedNow.Add(365 * 24 * time.Hour).Format(time.RFC3339),
 	}}
 	ai := mkAction("public", "manual", "site/index.html", "public")
 	ai.Capability = "deploy.run"

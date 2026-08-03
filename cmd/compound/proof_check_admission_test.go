@@ -1038,7 +1038,7 @@ func TestProofCheckAdmissionStealCancelsPredecessorProcessBeforeSuccessorStarts(
     mutation_class: security
     reversibility: manual
     blast_radius: repo
-    expires_at: "2027-01-01T00:00:00Z"
+    expires_at: "`+time.Now().UTC().Add(365*24*time.Hour).Format(time.RFC3339)+`"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1150,7 +1150,7 @@ func TestProofCheckAdmissionExpiryRequiresGovernedTerminationEvidenceBeforeRunne
     mutation_class: security
     reversibility: manual
     blast_radius: repo
-    expires_at: "2027-01-01T00:00:00Z"
+    expires_at: "`+time.Now().UTC().Add(365*24*time.Hour).Format(time.RFC3339)+`"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}

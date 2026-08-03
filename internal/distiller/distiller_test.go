@@ -109,6 +109,11 @@ func TestReplayStableIDs(t *testing.T) {
 
 func TestSeedCandidateParksLowSalienceWithExpectation(t *testing.T) {
 	home, store := setup(t)
+	// The seed clock is a horizon relative to the run clock, not an absolute
+	// literal, so the trace can never expire out from under the test the way
+	// the hardcoded 2026-08-01T00:00:00Z did (the incident the repo-wide
+	// clock-hygiene guard post-mortems).
+	expiresAt := t0.Add(365 * 24 * time.Hour).Format(time.RFC3339)
 	trace := `{"trace_ref":"trace_seed","candidates":[
 	  {
 	    "kind":"memory",
@@ -118,7 +123,7 @@ func TestSeedCandidateParksLowSalienceWithExpectation(t *testing.T) {
 	    "confidence":0.92,
 	    "promotion_basis":"explicit_confirmation",
 	    "expectation":{"entity":"project:alpha","predicate":"runtime_outcome","object":"integration risk materialized"},
-	    "expires_at":"2026-08-01T00:00:00Z"
+	    "expires_at":"` + expiresAt + `"
 	  }
 	]}`
 
@@ -151,7 +156,7 @@ func TestSeedCandidateParksLowSalienceWithExpectation(t *testing.T) {
 	if saved.State != "parked" || saved.CreatedAt == "" {
 		t.Fatalf("seed state = %q created_at=%q, want parked with timestamp", saved.State, saved.CreatedAt)
 	}
-	if saved.Salience != "low" || saved.Visibility != "contextual" || saved.ExpiresAt != "2026-08-01T00:00:00Z" {
+	if saved.Salience != "low" || saved.Visibility != "contextual" || saved.ExpiresAt != expiresAt {
 		t.Fatalf("seed class tier = salience %q visibility %q expires %q", saved.Salience, saved.Visibility, saved.ExpiresAt)
 	}
 	if !stringSliceContains(saved.Tags, "seed") {

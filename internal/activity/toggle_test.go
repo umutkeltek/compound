@@ -36,7 +36,9 @@ func importGrants(t *testing.T, homePath string, now time.Time, specs ...grantSp
 		grants = append(grants, `{"id":"`+s.id+`","capability":"`+s.capability+
 			`","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"`+expiresField(s.expires)+`}`)
 	}
-	src := `{"schema_version":"compound.standing_grants_source.v0.1","standing_grants":[` + strings.Join(grants, ",") + `]}`
+	src := `{"schema_version":"compound.standing_grants_source.v0.1",` +
+		`"authority":{"decision_ref":"grant:test-toggle","reviewed_by":"operator:test"},` +
+		`"standing_grants":[` + strings.Join(grants, ",") + `]}`
 	srcPath := filepath.Join(t.TempDir(), "grants.json")
 	if err := os.WriteFile(srcPath, []byte(src), 0o600); err != nil {
 		t.Fatalf("write grant source: %v", err)
