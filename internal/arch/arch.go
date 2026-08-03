@@ -90,6 +90,7 @@ var Classification = map[string]Class{
 	"lensmodulator":   Leaf, // governed modulator: composes behaviorallens signals + act into the one enforcement point that turns a crossing signal into a reversible, PolicyDecision-gated route/role demote (calibration-guarded, default off); owns no authority object (envelope/policy/work/act stay authority), operator_private modulations stay operator-local
 	"narrate":         Leaf, // composed read-only correspondent script over attention/orient-changed/receipts; owns no authority objects
 	"negatives":       Leaf, // rebuildable read-only projection over inbox/failure-patterns + reviews/route-remorse; owns no authority objects, surfaces scope-matched negatives at orient (Weng item 6)
+	"persist":         Leaf, // storage abstraction layer: interfaces (LedgerStore, EventStore, WorkStore, VectorStore) + Postgres/pgvector backend; file backend stays default, owns no authority object (ADR-0005)
 	"release":         Leaf,
 	"routeev":         Leaf, // deterministic EV-card composer + calibration comparator + content-addressed card store under COMPOUND_HOME/observed/route-evcards; pure pricing evidence for route deviations (refuses to price missing inputs), owns no authority object and never gates/promotes (the deviation-staking gate lives in envelope.Validate, the calibration minting door in mem)
 	"runattempt":      Leaf, // concrete harness-execution-attempt store under COMPOUND_HOME/run_attempts; persistence primitive consumed by work's RunAttemptIDs slot, not meaning authority or envelope spine
@@ -319,6 +320,7 @@ const MaxStatusHotPathNarrationLines = 189
 func Doctor(repoRoot string, strict bool) Report {
 	var f []Finding
 	f = append(f, checkCandidateMap()...)
+	f = append(f, checkProveablePairLaw("", strict)...)
 	if repoRoot != "" {
 		f = append(f, checkClassificationTotal(repoRoot)...)
 		f = append(f, checkPackageClassificationTableContract(repoRoot)...)

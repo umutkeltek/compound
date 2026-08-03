@@ -266,6 +266,11 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "privacy-bounded retrieval traffic and replay comparisons over production consumer paths",
 		Consumer: "compound memory parity-replay and parity-freeze operator review",
 	},
+	"organ:persist": {
+		Class:    MintEvidence,
+		Purpose:  "storage abstraction layer defining LedgerStore/EventStore/WorkStore/VectorStore interfaces with a Postgres+pgvector backend selectable via COMPOUND_STORE env; file backend remains default",
+		Consumer: "home.Open backend selection (COMPOUND_STORE=postgres) and future compound store doctor validation",
+	},
 	// stream is the read-only tail organ over the work-event log + ledger seq: it emits JSONL frames
 	// (a finite --once snapshot with an end-of-log cursor + generated_at, or a long-running --follow
 	// tail) that a client translates. It blocks nothing, promotes nothing, and opens the log read-only
@@ -283,6 +288,17 @@ var mintHomes = map[string]MintHome{
 		Class:    MintEvidence,
 		Purpose:  "concrete record of one harness execution attempt against a work_id (who/what/when), persisted under COMPOUND_HOME/run_attempts for proof-chain linkage",
 		Consumer: "internal/work WorkEnvelope RunAttemptIDs slot, work proof-chain doctor, and orient execution history",
+	},
+	// proveable-pair law status note marks the named discipline: every claim produced by an agent must be
+	// paired with a content-bound, mechanically-verifiable, replayable record of what actually changed.
+	// The law holds by construction in the close path (work.go close emits Receipt + Transition
+	// together, each validated by envelope.Validate) AND by enforcement: checkProveablePairLaw scans
+	// the eventstore on every architecture doctor run and fails on any orphan (a work whose close
+	// emitted one side of the pair without the other). See ADR-0007 for the audit and law text.
+	"status-note:Proveable-pair law note": {
+		Class:    MintEnforcement,
+		Purpose:  "operator-facing named discipline: every agent claim is paired with a content-bound, replayable proof of what actually changed (Receipt + Transition, ActionIntent + Receipt, model argument + Lean certificate); the architecture doctor's checkProveablePairLaw fails the build on any orphan receipt or transition",
+		Consumer: "compound architecture doctor checkProveablePairLaw (which scans the eventstore on every doctor run and fails on any work with one side of the pair but not both) plus the docs/architecture/status.md status surface",
 	},
 }
 
