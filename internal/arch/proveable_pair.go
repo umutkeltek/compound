@@ -2,8 +2,11 @@ package arch
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
@@ -17,6 +20,22 @@ type pairState struct {
 	hasTransition bool
 	receiptID     string
 	transitionID  string
+}
+
+// proveablePairGenesis is the ADR-0007 adoption instant (2026-08-02): the pair
+// law applies FORWARD from it. Pre-genesis receipts/transitions are
+// grandfathered — a real home carries tens of thousands of pre-law orphan
+// records, and a repo gate must never red on home history the law did not
+// govern. Records with a missing or unparseable created_at are pre-law by
+// shape and skipped the same way.
+var proveablePairGenesis = time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)
+
+func proveablePairPreGenesis(createdAt string) bool {
+	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(createdAt))
+	if err != nil {
+		return true
+	}
+	return t.Before(proveablePairGenesis)
 }
 
 // proveablePairPairAudit is the pure pair-detection core, factored out of the
@@ -36,12 +55,18 @@ func proveablePairPairAudit(records map[string][]byte) (orphans []string, scanEr
 				scanErrors++
 				continue
 			}
+			if proveablePairPreGenesis(receipt.CreatedAt) {
+				continue
+			}
 			workID = strings.TrimSpace(receipt.IDs.WorkID)
 			kind = "receipt"
 		case strings.HasPrefix(id, "tr_"):
 			var transition envelope.Transition
 			if err := json.Unmarshal(body, &transition); err != nil {
 				scanErrors++
+				continue
+			}
+			if proveablePairPreGenesis(transition.CreatedAt) {
 				continue
 			}
 			workID = strings.TrimSpace(transition.IDs.WorkID)
@@ -153,8 +178,26 @@ func checkProveablePairLaw(homePath string, strict bool) []Finding {
 		records[rec.ID] = rec.Bytes
 	}
 	orphans, scanErrors, seenWorks := proveablePairPairAudit(records)
+	// The pair law binds work CLOSURES. Projections that mint lone Transitions
+	// (route-evidence imports, policy/product imports) hang off synthetic ids
+	// with no WorkEnvelope behind them — they are evidence surfaces, not
+	// closed work, and the law does not govern them. An orphan only violates
+	// the law when its work envelope actually exists.
+	exempt := 0
+	var closeOrphans []string
+	for _, id := range orphans {
+		if _, err := os.Stat(filepath.Join(resolved, "work", "work", id+".json")); err == nil {
+			closeOrphans = append(closeOrphans, id)
+		} else {
+			exempt++
+		}
+	}
+	orphans = closeOrphans
 	if len(orphans) == 0 {
-		summary := itoa(seenWorks) + " work(s) audited at COMPOUND_HOME=" + resolved + "; every receipt is paired with a transition and vice versa"
+		summary := itoa(seenWorks) + " post-genesis work(s) audited at COMPOUND_HOME=" + resolved + "; every close emitted its receipt+transition pair"
+		if exempt > 0 {
+			summary += "; " + itoa(exempt) + " projection-only transition(s) exempt (no work envelope — not closes)"
+		}
 		if scanErrors > 0 {
 			f = append(f, Finding{
 				Check:    "proveable-pair-law",

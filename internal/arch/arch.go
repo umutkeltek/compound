@@ -91,6 +91,7 @@ var Classification = map[string]Class{
 	"narrate":         Leaf, // composed read-only correspondent script over attention/orient-changed/receipts; owns no authority objects
 	"negatives":       Leaf, // rebuildable read-only projection over inbox/failure-patterns + reviews/route-remorse; owns no authority objects, surfaces scope-matched negatives at orient (Weng item 6)
 	"persist":         Leaf, // storage abstraction layer: interfaces (LedgerStore, EventStore, WorkStore, VectorStore) + Postgres/pgvector backend; file backend stays default, owns no authority object (ADR-0005)
+	"store":           Leaf, // `compound store` operator surface organ (ADR-0005 pg experiment): doctor/init/status/migrate/sync/embed/recall; governed exports mint Receipt+Transition, owns no authority object
 	"release":         Leaf,
 	"routeev":         Leaf, // deterministic EV-card composer + calibration comparator + content-addressed card store under COMPOUND_HOME/observed/route-evcards; pure pricing evidence for route deviations (refuses to price missing inputs), owns no authority object and never gates/promotes (the deviation-staking gate lives in envelope.Validate, the calibration minting door in mem)
 	"runattempt":      Leaf, // concrete harness-execution-attempt store under COMPOUND_HOME/run_attempts; persistence primitive consumed by work's RunAttemptIDs slot, not meaning authority or envelope spine
@@ -309,7 +310,7 @@ const ConvergePendingBudget = 0
 // exceeds this ceiling. The budget only ratchets DOWN, so new code lands by `git mv
 // cmd/compound/foo.go internal/<organ>/`, not by appending to cmd/compound/. Raising this
 // ceiling to fit is the forbidden weaken-the-gate move.
-const MaxNonTestCompoundFiles = 118
+const MaxNonTestCompoundFiles = 117
 
 // MaxNonTestCompoundLOC is the RATCHET on total non-test .go physical lines under
 // cmd/compound/. Same exclusion rules as MaxNonTestCompoundFiles (no `*_test.go`, no
@@ -317,7 +318,7 @@ const MaxNonTestCompoundFiles = 118
 // checkCmdCompoundBudget — a gate that only watched files would let a single file bloat
 // unchecked, and a gate that only watched LOC would let file count fragment unchecked.
 // `--strict` fails when either is exceeded; the budget only ratchets DOWN.
-const MaxNonTestCompoundLOC = 53046
+const MaxNonTestCompoundLOC = 52877
 
 // MaxStatusHotPathNarrationLines is the RATCHET on status.md's PROSE, and it deliberately does not
 // count the package-table rows that checkPackageTableSingleSource MANDATES (one row per

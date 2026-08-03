@@ -3067,7 +3067,7 @@ func cmdCompoundBudgetCount(fs []Finding, contains string) (Severity, string, bo
 }
 
 // TestCheckCmdCompoundBudgetPassesOnRealRepo: the live cmd/compound tree is at-or-under
-// both ratchets as of this WorkEnvelope — files are exactly at budget (119/119), LOC is
+// both ratchets as of this WorkEnvelope — files are exactly at budget (the ratchet locks each extraction gain), LOC is
 // under budget with explicit headroom reported in the Info message. A future commit that
 // blows either budget will trip this test (see TestCheckCmdCompoundBudgetFailsOn...).
 func TestCheckCmdCompoundBudgetPassesOnRealRepo(t *testing.T) {

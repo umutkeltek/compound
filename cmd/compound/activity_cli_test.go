@@ -155,7 +155,7 @@ func TestParseAWMaterializeWindow(t *testing.T) {
 // its governance gates and actually reaches the AW read.
 func enableAWMaterializeHome(t *testing.T, homePath string, now time.Time) {
 	t.Helper()
-	grants := `{"schema_version":"compound.standing_grants_source.v0.1","standing_grants":[` +
+	grants := `{"schema_version":"compound.standing_grants_source.v0.1","authority":{"decision_ref":"dec_activity_cli_test_grant_authority","reviewed_by":"operator:activity-cli-test"},"standing_grants":[` +
 		`{"id":"grant.activity_toggle","capability":"` + activity.ToggleCapability + `","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"},` +
 		`{"id":"grant.activity_drain","capability":"` + activity.DrainCapability + `","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"}` +
 		`]}`
@@ -177,7 +177,7 @@ func enableAWMaterializeHome(t *testing.T, homePath string, now time.Time) {
 
 func enableTier1CollectHome(t *testing.T, homePath string, now time.Time) {
 	t.Helper()
-	grants := `{"schema_version":"compound.standing_grants_source.v0.1","standing_grants":[` +
+	grants := `{"schema_version":"compound.standing_grants_source.v0.1","authority":{"decision_ref":"dec_activity_cli_test_grant_authority","reviewed_by":"operator:activity-cli-test"},"standing_grants":[` +
 		`{"id":"grant.activity_toggle","capability":"` + activity.ToggleCapability + `","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"},` +
 		`{"id":"grant.activity_tier1_collect","capability":"` + activity.Tier1CollectCapability + `","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"}` +
 		`]}`

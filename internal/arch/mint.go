@@ -87,6 +87,13 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "Tier-0 + Tier-1 content-free ambient-activity family (compound.activity_observation.v0.2 events + ActivitySpan reductions) under observed/activity/, ingested by a grant-gated fail-closed drain membrane; AW sidecar reader joins events across hostnames; Tier-1 envelope collector captures pane_cwd/git_remote/agent_kind",
 		Consumer: "compound activity CLI (enable/disable/status/drain/sweep/aw materialize/tier1 collect) + attention activity-unaccounted watching group + activity-unaccounted operator_private lens",
 	},
+	// store is the ADR-0005 pg experiment operator surface; it never promotes or gates
+	// memory truth — exports are governed writes with their own PolicyDecision door.
+	"organ:store": {
+		Class:    MintEvidence,
+		Purpose:  "Postgres+pgvector backend operator surface (doctor/init/status/migrate/sync/embed/recall); migrate/sync/embed are governed external_side_effect writes gated by store.postgres_export.write with Receipt+Transition proof in the home event store; migrate reads through mem's locked MigrationSnapshot; owns no authority object",
+		Consumer: "cmd/compound cmdStore shim (`compound store ...`); composition-root pg engine injection in cmd/compound/main.go",
+	},
 	// adapter is the peer-of-core home for rented external protocol readers (awstream today).
 	// It joins/normalizes foreign event shapes for activity and never promotes or gates.
 	"organ:adapter": {
