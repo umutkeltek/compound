@@ -65,7 +65,9 @@ func cmdPresence(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	store, err := work.Open(homePath)
+	// Read-only by registry contract: presence inspects the ledger and must
+	// not materialize work/ or events/ just by looking (see work.OpenReadOnly).
+	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

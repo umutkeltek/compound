@@ -17,7 +17,9 @@ import (
 // lock is teardown's job (`compound work delegate sweep`), not a health
 // command's.
 func buildWorktreeLockRows(homePath string) ([]work.DelegateWorktreeLockRow, int) {
-	store, err := work.Open(homePath)
+	// Doctor writes nothing, so its read of the lock table must not materialize
+	// work/ or events/ either (see work.OpenReadOnly).
+	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		return nil, 0
 	}

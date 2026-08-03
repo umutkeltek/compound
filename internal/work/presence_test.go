@@ -190,6 +190,60 @@ func TestPresenceWritesNothing(t *testing.T) {
 	}
 }
 
+// OpenReadOnly is the opener the presence CLI must use: unlike Open it creates
+// no work/* dirs and never calls events.Ensure. A bare home (nothing but the
+// directory itself) must yield an empty, well-formed projection AND remain
+// byte-identical on disk — inspecting presence leaves no footprints.
+func TestOpenReadOnlyCreatesNoDirsAndProjectsEmpty(t *testing.T) {
+	homePath := t.TempDir()
+
+	s, err := OpenReadOnly(homePath)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	projection, err := s.PresenceProjectionFor(fixedNow)
+	if err != nil {
+		t.Fatalf("projection on a bare home must be empty, not an error: %v", err)
+	}
+	if len(projection.Present) != 0 || projection.Counts.Actors != 0 {
+		t.Fatalf("bare home must project nobody present: %+v", projection)
+	}
+
+	entries, err := os.ReadDir(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("OpenReadOnly + projection must create nothing, found %d entries:", len(entries))
+	}
+}
+
+// OpenReadOnly against a populated home must see exactly what Open sees — the
+// read-only opener may not observe a different ledger.
+func TestOpenReadOnlySeesExistingLeases(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "operator", SuccessPredicate: "ro opener sees leases"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimAt := fixedNow.Add(time.Minute)
+	if _, err := s.Claim(w.ID, "claude-code:ro-opener", claimAt); err != nil {
+		t.Fatal(err)
+	}
+
+	ro, err := OpenReadOnly(s.home)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	projection, err := ro.PresenceProjectionFor(claimAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findPresenceRow(projection, "claude-code:ro-opener"); !ok {
+		t.Fatalf("read-only opener must see the lease holder: %+v", projection.Present)
+	}
+}
+
 func findPresenceRow(projection PresenceProjection, actor string) (PresenceRow, bool) {
 	for _, row := range projection.Present {
 		if row.Actor == actor {

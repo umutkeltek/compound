@@ -481,7 +481,7 @@ func runActivityTier1Collect(args []string, stdout, stderr io.Writer) int {
 	}
 	if hasFlag(args, "--json") {
 		code := 0
-		if rep.Refused {
+		if rep.Refused || rep.Failed {
 			code = 1
 		}
 		if writeJSON(stdout, stderr, rep) != 0 {
@@ -489,9 +489,22 @@ func runActivityTier1Collect(args []string, stdout, stderr io.Writer) int {
 		}
 		return code
 	}
+	// Failed (an operational source failure — AW unreachable, every bucket
+	// read errored) is distinct from Refused (a governance "no"), but both are
+	// nonzero exits: a finite collector that could not read its source did not
+	// succeed, and it must not look like a clean no-op.
+	if rep.Failed {
+		fmt.Fprintf(stderr, "tier1 collect failed: %s\n", rep.Reason)
+		return 1
+	}
 	if rep.Refused {
 		fmt.Fprintf(stderr, "tier1 collect refused: %s\n", rep.Reason)
 		return 1
+	}
+	if rep.BucketsFailed > 0 {
+		fmt.Fprintf(stdout, "tier1 collect: events_written=%d sources_called=%d sources_failed=%d buckets_failed=%d banned_refused=%d lookback=%s timeout=%s\n",
+			rep.EventsWritten, rep.SourcesCalled, rep.SourcesFailed, rep.BucketsFailed, rep.BannedRefused, lookback, timeout)
+		return 0
 	}
 	fmt.Fprintf(stdout, "tier1 collect: events_written=%d sources_called=%d sources_failed=%d banned_refused=%d lookback=%s timeout=%s\n",
 		rep.EventsWritten, rep.SourcesCalled, rep.SourcesFailed, rep.BannedRefused, lookback, timeout)

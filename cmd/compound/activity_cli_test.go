@@ -155,7 +155,9 @@ func TestParseAWMaterializeWindow(t *testing.T) {
 // its governance gates and actually reaches the AW read.
 func enableAWMaterializeHome(t *testing.T, homePath string, now time.Time) {
 	t.Helper()
-	grants := `{"schema_version":"compound.standing_grants_source.v0.1","standing_grants":[` +
+	grants := `{"schema_version":"compound.standing_grants_source.v0.1",` +
+		`"authority":{"decision_ref":"grant:test-activity","reviewed_by":"operator:test"},` +
+		`"standing_grants":[` +
 		`{"id":"grant.activity_toggle","capability":"` + activity.ToggleCapability + `","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"},` +
 		`{"id":"grant.activity_drain","capability":"` + activity.DrainCapability + `","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"}` +
 		`]}`
@@ -211,6 +213,81 @@ func TestActivityCLIAWMaterializeAWDownExitsNonZero(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	code = runActivity([]string{"aw", "materialize", "--home", homePath, "--json"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("JSON AW-down must exit 1, got %d", code)
+	}
+	if !strings.Contains(stdout.String(), `"failed": true`) {
+		t.Fatalf("JSON must carry failed=true, got %q", stdout.String())
+	}
+}
+
+// enableTier1CollectHome seeds a home whose sensor is enabled and whose grant
+// registry carries the toggle + tier1-collect capabilities, so `tier1 collect`
+// passes its governance gates and actually reaches the AW read — the only
+// place the AW-outage behavior under test can surface.
+func enableTier1CollectHome(t *testing.T, homePath string, now time.Time) {
+	t.Helper()
+	grants := `{"schema_version":"compound.standing_grants_source.v0.1",` +
+		`"authority":{"decision_ref":"grant:test-activity","reviewed_by":"operator:test"},` +
+		`"standing_grants":[` +
+		`{"id":"grant.activity_toggle","capability":"` + activity.ToggleCapability + `","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"},` +
+		`{"id":"grant.activity_tier1_collect","capability":"` + activity.Tier1CollectCapability + `","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"}` +
+		`]}`
+	srcPath := filepath.Join(t.TempDir(), "grants.json")
+	if err := os.WriteFile(srcPath, []byte(grants), 0o600); err != nil {
+		t.Fatalf("write grants: %v", err)
+	}
+	if _, err := policy.ImportStandingGrants(homePath, srcPath, now); err != nil {
+		t.Fatalf("import grants: %v", err)
+	}
+	cfg, _, err := policy.LoadConfig(homePath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if _, err := activity.SetEnabled(homePath, cfg, "work_enable", true, now); err != nil {
+		t.Fatalf("enable sensor: %v", err)
+	}
+}
+
+// The user-visible contract for tier1 collect, twin of the materialize case:
+// when AW is unreachable, `compound activity tier1 collect` must exit nonzero
+// and name the failure — it must NOT render as a clean no-op with exit 0. That
+// rendering was the bug: Collector.Run returned Refused=false on a ListBuckets
+// error, and the CLI only treated Refused as fatal.
+func TestActivityCLITier1CollectAWDownExitsNonZero(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	enableTier1CollectHome(t, homePath, cliTestNow)
+
+	// AW server that errors on every request.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	restore := tier1.OverrideAWBaseURLForTest(srv.URL)
+	defer restore()
+
+	// Human mode: nonzero exit, stderr names the failure, no success line.
+	var stdout, stderr bytes.Buffer
+	code := runActivity([]string{"tier1", "collect", "--home", homePath}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("AW down must exit nonzero, got 0 (stdout=%q)", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "tier1 collect failed") {
+		t.Fatalf("stderr must name the failure, got %q", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "tier1 collect: events_written") {
+		t.Fatalf("must not print a success line on failure, got %q", stdout.String())
+	}
+
+	// JSON mode: exit 1 with failed=true (and NOT refused — an AW outage is an
+	// operational failure, not a governance "no").
+	stdout.Reset()
+	stderr.Reset()
+	code = runActivity([]string{"tier1", "collect", "--home", homePath, "--json"}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("JSON AW-down must exit 1, got %d", code)
 	}

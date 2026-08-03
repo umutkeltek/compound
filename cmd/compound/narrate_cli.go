@@ -19,8 +19,8 @@ const narrateUsage = "usage: compound narrate [--json|--text] [--mood decide|wan
 
 // cmdNarrate emits the compound.narrate.v0.1 correspondent script. It mirrors
 // attention_cli's loader wiring and reuses the orient operator cursor/changed
-// helpers READ-ONLY — narrate never advances the orient cursor (spec §7). It
-// persists only its own emphasis sidecar (projections/narrate-thread-seen.json).
+// helpers read-only. Narration is a pure projection: it never advances the
+// orient cursor or persists an emphasis sidecar.
 func cmdNarrate(args []string) {
 	if hasUsageFlag(args) {
 		fmt.Println(narrateUsage)
@@ -79,12 +79,6 @@ func cmdNarrate(args []string) {
 		fmt.Fprintln(os.Stderr, "narrate:", err)
 		os.Exit(1)
 	}
-	// cmdNarrate is the emphasis-owning reader: persist the monotonic sidecar so
-	// repeat visits report `unchanged` instead of re-announcing the same threads.
-	if err := writeNarrateThreadSeen(homePath, res.ThreadSeen); err != nil {
-		fmt.Fprintln(os.Stderr, "narrate: sidecar write:", err)
-		os.Exit(1)
-	}
 	if jsonOut {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", " ")
@@ -121,7 +115,10 @@ func buildNarrateScript(homePath string, mood narrate.Mood, recent int, now time
 	if recent <= 0 {
 		recent = 5
 	}
-	store, err := work.Open(homePath)
+	// Read-only by registry contract: narrate (and `orient --operator`, which
+	// shares this builder) serves a script off the ledger and must not
+	// materialize work/ or events/ just by looking (see work.OpenReadOnly).
+	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		return narrate.Result{}, err
 	}

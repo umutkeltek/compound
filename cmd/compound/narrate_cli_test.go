@@ -41,8 +41,8 @@ func seedNarrateHome(t *testing.T) string {
 	return homePath
 }
 
-// The CLI emits a valid script, leaves the orient cursor untouched (read-only),
-// and persists only its own emphasis sidecar.
+// The CLI emits a valid script and leaves both the orient cursor and narration
+// sidecar absent: narrate is a pure read projection.
 func TestNarrateCLIEmitsScriptAndLeavesOrientCursorUntouched(t *testing.T) {
 	homePath := seedNarrateHome(t)
 	cursorPath := filepath.Join(homePath, "projections", "orient-operator-last-seq.json")
@@ -71,9 +71,8 @@ func TestNarrateCLIEmitsScriptAndLeavesOrientCursorUntouched(t *testing.T) {
 	if _, err := os.Stat(cursorPath); !os.IsNotExist(err) {
 		t.Fatalf("narrate advanced/created the orient cursor (spec §7 forbids it): %v", err)
 	}
-	// narrate persists its own emphasis sidecar.
-	if _, err := os.Stat(sidecarPath); err != nil {
-		t.Fatalf("narrate did not persist its thread-seen sidecar: %v", err)
+	if _, err := os.Stat(sidecarPath); !os.IsNotExist(err) {
+		t.Fatalf("narrate created a thread-seen sidecar despite its read-only contract: %v", err)
 	}
 }
 
