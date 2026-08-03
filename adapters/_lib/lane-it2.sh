@@ -28,8 +28,8 @@ set -eu
 
 # This file is meant to be sourced with its absolute path, OR with LANE_IT2_FILE
 # set, OR with LANES_SH already pointing to lanes.sh. The user's zshrc
-# launchers should:
-#     LANE_IT2_FILE="$HOME/Projects/systems/compound/adapters/_lib/lane-it2.sh"
+# launchers should (path = wherever you keep the compound checkout):
+#     LANE_IT2_FILE="$HOME/path/to/compound/adapters/_lib/lane-it2.sh"
 #     . "$LANE_IT2_FILE"
 #
 # We deliberately use `dirname` (no `cd`) because the user's zshrc has a

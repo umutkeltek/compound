@@ -1,28 +1,33 @@
 # adapters/_lib/zshrc-overlay.zsh
 #
 # Lane-aware overlay for the user's existing `_iterm_visuals_update` hook.
-# Drop ONE line near the bottom of your ~/.zshrc:
+# Drop ONE line near the bottom of your ~/.zshrc (path = wherever you keep
+# the compound checkout):
 #
-#     [ -r "$HOME/Projects/systems/compound/adapters/_lib/zshrc-overlay.zsh" ] \
-#       && . "$HOME/Projects/systems/compound/adapters/_lib/zshrc-overlay.zsh"
+#     [ -r "$HOME/path/to/compound/adapters/_lib/zshrc-overlay.zsh" ] \
+#       && . "$HOME/path/to/compound/adapters/_lib/zshrc-overlay.zsh"
 #
 # This file ADDS its own chpwd/precmd hook (`_iterm_lane_paint`) — does NOT
 # touch the user's. Painted second, so when a lane is selected our tab color
 # + lane-augmented title/badge win. With no lane selected, this hook is a
 # no-op and the user's visuals stay exactly as they were.
 
-# Locate lane-it2.sh. Standard install path:
-: "${LANE_IT2_FILE:=$HOME/Projects/systems/compound/adapters/_lib/lane-it2.sh}"
+# Locate lane-it2.sh. Default: the sibling of THIS sourced file, so no
+# absolute install location is baked in (zsh sets $0 to the sourced path).
+_OVERLAY_DIR=${0:A:h}
+: "${LANE_IT2_FILE:=$_OVERLAY_DIR/lane-it2.sh}"
 if [ ! -f "$LANE_IT2_FILE" ]; then
   echo "lane overlay: missing $LANE_IT2_FILE (set LANE_IT2_FILE in zshrc to override)" >&2
+  unset _OVERLAY_DIR
   return 1 2>/dev/null || exit 1
 fi
 # lane-it2.sh expects either LANE_IT2_FILE or LANES_SH to find lanes.sh. We
 # give it a second look-up hint for non-default install locations.
 if [ -z "${LANES_SH:-}" ]; then
-  : "${LANES_SH:=$HOME/Projects/systems/compound/adapters/_lib/lanes.sh}"
+  : "${LANES_SH:=$_OVERLAY_DIR/lanes.sh}"
   export LANES_SH
 fi
+unset _OVERLAY_DIR
 . "$LANE_IT2_FILE"
 
 # Lane paint hook. Idempotent registration (add-zsh-hook -d clears any prior).

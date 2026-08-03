@@ -31,9 +31,13 @@ That is the entire changelog per new lane.
 ## One-line zshrc snippet
 
 ```sh
-[ -r "$HOME/Projects/systems/compound/adapters/_lib/zshrc-snippet.zsh" ] \
-  && . "$HOME/Projects/systems/compound/adapters/_lib/zshrc-snippet.zsh"
+# path = wherever you keep the compound checkout
+[ -r "$HOME/path/to/compound/adapters/_lib/zshrc-snippet.zsh" ] \
+  && . "$HOME/path/to/compound/adapters/_lib/zshrc-snippet.zsh"
 ```
+
+The snippet self-locates: every sibling default derives from the sourced
+file's own directory, so no absolute install path is baked in.
 
 After sourcing:
 

@@ -1,7 +1,7 @@
 # macos-activity — Tier-0 ambient-activity collector
 
 A ~200-line Swift launchd agent that emits a **content-free** NDJSON stream
-(`compound.activity_observation.v0.1`) of app focus, idle, and lock transitions. It is the
+(`compound.activity_observation.v0.2`) of app focus, idle, and lock transitions. It is the
 replaceable half of compound's activity sensor: the collector observes, the compound membrane
 (`compound activity drain`) validates, classifies, and persists. The collector holds zero
 authority — no `COMPOUND_HOME` access, no network, and only zero-permission APIs (no

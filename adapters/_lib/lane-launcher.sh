@@ -18,10 +18,11 @@
 #   5. Launches the right binary (claude from $HOME/.local/bin/claude,
 #      or /opt/homebrew/bin/codex for codex-family).
 #
-# To install in your zshrc, add:
+# To install in your zshrc, add (path = wherever you keep the compound
+# checkout):
 #
-#     LANE_LAUNCHER_FILE="$HOME/Projects/systems/compound/adapters/_lib/lane-launcher.sh"
-#     LANE_IT2_FILE="$HOME/Projects/systems/compound/adapters/_lib/lane-it2.sh"
+#     LANE_LAUNCHER_FILE="$HOME/path/to/compound/adapters/_lib/lane-launcher.sh"
+#     LANE_IT2_FILE="$HOME/path/to/compound/adapters/_lib/lane-it2.sh"
 #     . "$LANE_LAUNCHER_FILE"
 #
 # Then `claude-zai`, `claude-minimax`, `claude-qwen`, etc. become commands.

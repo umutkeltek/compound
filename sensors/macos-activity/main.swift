@@ -1,6 +1,6 @@
 // compound-activity-sensor — Tier-0 ambient-activity collector (slice 1).
 //
-// Emits a content-free NDJSON stream (compound.activity_observation.v0.1) of app focus, idle, and
+// Emits a content-free NDJSON stream (compound.activity_observation.v0.2) of app focus, idle, and
 // lock transitions to a local spool dir. The compound membrane (`compound activity drain`) is the
 // sole consumer; this process holds ZERO authority: no titles, no URLs, no network, no
 // COMPOUND_HOME access, and only zero-permission APIs (no Accessibility/TCC prompts):
@@ -15,9 +15,9 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-let schemaVersion = "compound.activity_observation.v0.1"
+let schemaVersion = "compound.activity_observation.v0.2"
 let engineID = "macos-activity-sensor"
-let engineRevision = "0.1.0"
+let engineRevision = "0.2.0"
 let idlePollSeconds: TimeInterval = 30
 let idleThresholdSeconds: Double = 120
 
