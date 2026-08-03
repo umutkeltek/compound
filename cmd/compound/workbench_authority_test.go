@@ -200,8 +200,27 @@ func TestStampReviewActionAuthorityRejectsSyntheticOwnerRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	syntheticWorkID := "work_live_review_authority_record"
-	store := openWorkbenchAuthorityWorkStore(t, homePath)
-	if _, err := store.Create(work.CreateInput{WorkID: syntheticWorkID, Owner: "source-control-cleanup", SuccessPredicate: "synthetic correlation never becomes durable action authority"}, cliTestNow); err != nil {
+	// The durable create door now REFUSES the ephemeral work_live_ namespace,
+	// so the synthetic record can only arrive out-of-band (an older binary, a
+	// hand edit) — which is exactly the scenario the authority door must keep
+	// refusing. Seed the envelope JSON directly, bypassing Create.
+	syntheticEnvelope := map[string]any{
+		"schema_version":    "compound.work.v0.1",
+		"id":                syntheticWorkID,
+		"created_at":        cliTestNow.UTC().Format(time.RFC3339),
+		"state":             "proposed",
+		"owner":             "source-control-cleanup",
+		"success_predicate": "synthetic correlation never becomes durable action authority",
+	}
+	syntheticBody, err := json.Marshal(syntheticEnvelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syntheticDir := filepath.Join(homePath, "work", "work")
+	if err := os.MkdirAll(syntheticDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(syntheticDir, syntheticWorkID+".json"), append(syntheticBody, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	recordWorkbenchAuthorityReview(t, homePath, "work_review_authority_seed_source", cliTestNow.Add(time.Minute))
