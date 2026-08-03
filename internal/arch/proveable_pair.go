@@ -13,6 +13,11 @@ import (
 	"compound/internal/home"
 )
 
+// terminalWorkStates mirrors internal/work's terminalStates (completed,
+// failed, cancelled) — duplicated because internal/arch must not import the
+// work store for a single state check.
+var terminalWorkStates = map[string]bool{"completed": true, "failed": true, "cancelled": true}
+
 // proveable-pair pair-state: one work may emit any subset of {Receipt, Transition}.
 // An orphan (one without the other) is a violation of the proveable-pair law.
 type pairState struct {
@@ -181,16 +186,24 @@ func checkProveablePairLaw(homePath string, strict bool) []Finding {
 	// The pair law binds work CLOSURES. Projections that mint lone Transitions
 	// (route-evidence imports, policy/product imports) hang off synthetic ids
 	// with no WorkEnvelope behind them — they are evidence surfaces, not
-	// closed work, and the law does not govern them. An orphan only violates
-	// the law when its work envelope actually exists.
+	// closed work, and the law does not govern them. A LIVE work (envelope
+	// present, not yet terminal) legitimately shows a transition before its
+	// closing receipt exists: the pair is only due AT close. An orphan only
+	// violates the law when its envelope is terminal and the pair is broken.
 	exempt := 0
 	var closeOrphans []string
 	for _, id := range orphans {
-		if _, err := os.Stat(filepath.Join(resolved, "work", "work", id+".json")); err == nil {
-			closeOrphans = append(closeOrphans, id)
-		} else {
-			exempt++
+		body, err := os.ReadFile(filepath.Join(resolved, "work", "work", id+".json"))
+		if err != nil {
+			exempt++ // no envelope: projection-only, not a close
+			continue
 		}
+		var w envelope.WorkEnvelope
+		if err := json.Unmarshal(body, &w); err != nil || !terminalWorkStates[w.State] {
+			exempt++ // live work: the pair is not due yet
+			continue
+		}
+		closeOrphans = append(closeOrphans, id)
 	}
 	orphans = closeOrphans
 	if len(orphans) == 0 {
