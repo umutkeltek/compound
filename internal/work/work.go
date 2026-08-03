@@ -71,6 +71,7 @@ func canTransition(from, to string) bool {
 type Store struct {
 	home                  string
 	events                *eventstore.Store
+	readOnly              bool
 	eventLogReads         atomic.Int64
 	holdEvidenceFileReads atomic.Int64
 }
@@ -167,6 +168,26 @@ func Open(homePath string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{home: homePath, events: events}, nil
+}
+
+// OpenReadOnly roots a store at homePath WITHOUT materializing any runtime
+// state: it creates no directories and never calls events.Ensure. It exists so
+// read-only projections (presence) can honor the registry's read-only contract
+// — inspecting "who is here" must not itself leave footprints in COMPOUND_HOME.
+// The read methods OpenReadOnly serves (ListLeases, readWorkLogTail,
+// ListPresenceSessions) all treat missing dirs/files as "empty", so a fresh
+// home yields an empty projection rather than an error. Any mutating method
+// called on a Store opened this way fails at its own write boundary, exactly
+// as it would against any unprepared home.
+func OpenReadOnly(homePath string) (*Store, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return nil, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
+	}
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{home: homePath, events: events, readOnly: true}, nil
 }
 
 func (s *Store) workPath(id string) string  { return filepath.Join(s.home, "work/work", id+".json") }
@@ -472,7 +493,11 @@ func (s *Store) list(includeArchived bool) ([]envelope.WorkEnvelope, []string, e
 	dir := filepath.Join(s.home, "work/work")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, nil, err
+		if errors.Is(err, os.ErrNotExist) {
+			entries = nil
+		} else {
+			return nil, nil, err
+		}
 	}
 	var out []envelope.WorkEnvelope
 	var warnings []string
@@ -2593,6 +2618,9 @@ func marshalWorkEvent(e Event) ([]byte, error) {
 }
 
 func (s *Store) withWorkEventLock(fn func() error) error {
+	if s.readOnly {
+		return s.events.WithWorkLogReadLock(fn)
+	}
 	return s.events.WithWorkLogLock(fn)
 }
 

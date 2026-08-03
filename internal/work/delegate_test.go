@@ -1123,6 +1123,92 @@ func TestDelegateUsesResolvedWorkspace(t *testing.T) {
 	}
 }
 
+// TestDelegateRefusesWorkspaceHeldByAnotherLiveLane pins the attribution
+// boundary. A lane's transcript directory is derived from its workspace
+// (TranscriptDirFor), so two lanes sharing one workspace write into one session
+// store with nothing marking which passage belongs to which work. Measured
+// 2026-08-02: 11 lanes were spawned into a single workspace and 9 of them
+// reduced to one JSONL, so their reports could not be attributed and the naive
+// harvest returned byte-identical output for four different works. A collided
+// transcript cannot be separated afterward, so the refusal has to happen at
+// spawn.
+func TestDelegateRefusesWorkspaceHeldByAnotherLiveLane(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	workspace := t.TempDir()
+	runner := newFakeRunner()
+
+	firstID := prepareClaimedWork(t, s, "orchestrator:test", "", "first lane holds the shared workspace")
+	first, err := s.Delegate(DelegateOptions{
+		WorkID: firstID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: workspace, Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatalf("first delegate: %v", err)
+	}
+	if first.Status != "spawned" {
+		t.Fatalf("first delegate status = %q, want spawned (result=%+v)", first.Status, first)
+	}
+
+	secondID := prepareClaimedWork(t, s, "orchestrator:test", "", "second lane aims at the same workspace")
+	second, err := s.Delegate(DelegateOptions{
+		WorkID: secondID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: workspace, Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatalf("second delegate: %v", err)
+	}
+	if second.Refusal == nil || second.Refusal.Reason != "workspace_occupied" {
+		t.Fatalf("second delegate into an occupied workspace = %+v, want refusal reason workspace_occupied", second)
+	}
+	// The refusal must name the holder, or the operator cannot tell which lane
+	// to terminalize and the message is a dead end.
+	if !strings.Contains(second.Refusal.Message, firstID) {
+		t.Fatalf("refusal message %q does not name the holding work %s", second.Refusal.Message, firstID)
+	}
+	if len(runner.creates) != 1 {
+		t.Fatalf("runner created %d sessions, want 1 — the refused lane must not spawn", len(runner.creates))
+	}
+}
+
+// TestDelegateAllowsDistinctWorkspaces is the other half of the asymmetry: the
+// guard must key on the workspace, not merely on "another lane is live". Without
+// this, refusing every concurrent delegate would also pass the test above.
+func TestDelegateAllowsDistinctWorkspaces(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	runner := newFakeRunner()
+
+	firstID := prepareClaimedWork(t, s, "orchestrator:test", "", "first lane in its own workspace")
+	if _, err := s.Delegate(DelegateOptions{
+		WorkID: firstID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow,
+	}, runner); err != nil {
+		t.Fatalf("first delegate: %v", err)
+	}
+
+	secondID := prepareClaimedWork(t, s, "orchestrator:test", "", "second lane in its own workspace")
+	second, err := s.Delegate(DelegateOptions{
+		WorkID: secondID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatalf("second delegate: %v", err)
+	}
+	if second.Refusal != nil {
+		t.Fatalf("delegate into its own workspace was refused: %+v", second.Refusal)
+	}
+	if second.Status != "spawned" || len(runner.creates) != 2 {
+		t.Fatalf("second status=%q creates=%d, want spawned and 2", second.Status, len(runner.creates))
+	}
+}
+
 func TestDelegateDoesNotPersistPromptArguments(t *testing.T) {
 	orig := LaneCapacityGuard
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")

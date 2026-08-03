@@ -55,7 +55,10 @@ func TestClaimPlanEvaluatesPolicyWithoutClaiming(t *testing.T) {
 func TestClaimPlanReportsStandingGrantCoverage(t *testing.T) {
 	s := newStore(t)
 	grantPath := filepath.Join(t.TempDir(), "standing-grants.yaml")
-	raw := []byte(`grants:
+	raw := []byte(`authority:
+  decision_ref: "grant:test-claim-work"
+  reviewed_by: "operator:test"
+grants:
 - grant_id: grant_claim_work
   capabilities: ["work.claim"]
   target_scope: "**/work/work/*.json"
