@@ -58,7 +58,12 @@ type ExperimentPlan struct {
 }
 
 func WriteExperimentPlanText(w io.Writer, plan ExperimentPlan) {
-	fmt.Fprintf(w, "# route experiment-plan %s\n- role_aliases: %s\n", plan.ID, strings.Join(plan.RoleAliases, ","))
+	fmt.Fprintf(w, "# route experiment-plan %s\n", plan.ID)
+	if len(plan.RoleAliases) > 1 {
+		fmt.Fprintf(w, "- role_aliases: %s\n", strings.Join(plan.RoleAliases, ","))
+	} else {
+		fmt.Fprintf(w, "- role_alias: %s\n", plan.RoleAlias)
+	}
 	if len(plan.EffortFilters) > 0 {
 		fmt.Fprintf(w, "- effort_filters: %s\n", strings.Join(plan.EffortFilters, ","))
 	}
@@ -145,17 +150,32 @@ func PlanRouteExperimentMatrix(profilesRoot string, roles, effortFilters, profil
 	if len(lanes) < 2 {
 		return ExperimentPlan{}, fmt.Errorf("experiment needs at least two profile×role trials after effort filtering")
 	}
-	seed, _ := json.Marshal(struct {
-		Roles   []string
-		Efforts []string
-		Lanes   []ExperimentLane
-	}{roles, effortFilters, lanes})
-	sum := sha256.Sum256(seed)
-	roleAlias := ""
-	if len(roles) == 1 {
-		roleAlias = roles[0]
+	legacyInvocation := len(roles) == 1 && len(effortFilters) == 0
+	var seed []byte
+	if legacyInvocation {
+		// Preserve the v0.1 single-role plan identity. Existing receipts and
+		// scripts use this deterministic rexp_* value as their comparison key.
+		seed, _ = json.Marshal(struct {
+			Role  string
+			Lanes []ExperimentLane
+		}{roles[0], lanes})
+	} else {
+		seed, _ = json.Marshal(struct {
+			Roles   []string
+			Efforts []string
+			Lanes   []ExperimentLane
+		}{roles, effortFilters, lanes})
 	}
-	return ExperimentPlan{SchemaVersion: ExperimentPlanSchema, ID: "rexp_" + hex.EncodeToString(sum[:6]), RoleAlias: roleAlias, RoleAliases: roles, EffortFilters: effortFilters, ProfilesRoot: profilesRoot, Lanes: lanes, Independence: "terminal comparison requires distinct observed provider/model or account identities; profile and role labels do not prove independence", Execution: "execute each owner-published profile×role lane through governed compound work delegate; import Switchback trace evidence before comparison", Verdict: "plan_only_not_execution_evidence"}, nil
+	sum := sha256.Sum256(seed)
+	roleAliases := []string(nil)
+	if len(roles) > 1 {
+		roleAliases = append(roleAliases, roles...)
+	}
+	execution := "execute each owner-published profile×role lane through governed compound work delegate; import Switchback trace evidence before comparison"
+	if legacyInvocation {
+		execution = "execute each lane through governed compound work delegate; import Switchback trace evidence before comparison"
+	}
+	return ExperimentPlan{SchemaVersion: ExperimentPlanSchema, ID: "rexp_" + hex.EncodeToString(sum[:6]), RoleAlias: roles[0], RoleAliases: roleAliases, EffortFilters: effortFilters, ProfilesRoot: profilesRoot, Lanes: lanes, Independence: "terminal comparison requires distinct observed provider/model or account identities; profile and role labels do not prove independence", Execution: execution, Verdict: "plan_only_not_execution_evidence"}, nil
 }
 
 func normalizeExperimentRoles(roles []string) ([]string, error) {

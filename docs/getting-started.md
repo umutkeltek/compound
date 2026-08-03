@@ -179,9 +179,9 @@ version for Claude Code:
 
 ```sh
 # In your project's .claude/settings.json, add hook commands that call:
-compound hook session-start --live --harness claude-code
-compound hook pre-tool-use --live --harness claude-code
-compound hook session-end --live --harness claude-code
+compound hook session-start --live --harness claude_code
+compound hook pre-tool-use --live --harness claude_code
+compound hook session-end --live --harness claude_code
 ```
 
 When hooks are wired:

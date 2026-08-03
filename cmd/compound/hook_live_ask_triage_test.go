@@ -1,17 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/contract"
 	"compound/internal/decisions"
 	"compound/internal/envelope"
 	"compound/internal/harvest"
 	"compound/internal/home"
+	"compound/internal/hookplan"
 	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/reviewartifact"
@@ -50,6 +54,160 @@ func TestInstalledHookRuntimeSupportIncludesCodexPostToolUse(t *testing.T) {
 		return
 	}
 	t.Fatal("Codex PostToolUse is live but absent from hook runtime authority")
+}
+
+func TestInstalledHookRuntimeSupportCoversCanonicalClaudeFamily(t *testing.T) {
+	wantFixtures := map[string]string{
+		"SessionStart":     "fixtures/hooks/session-start.json",
+		"UserPromptSubmit": "fixtures/hooks/user-prompt-submit.json",
+		"PreToolUse":       "fixtures/hooks/pre-tool-use.claude.json",
+		"PostToolUse":      "fixtures/hooks/post-tool-use.json",
+	}
+	wantHarnesses := map[string]bool{"claude_code": true, "claude_zai": true, "claude_minimax": true, "claude_qwen": true}
+	seen := map[string]int{}
+	for _, support := range installedHookRuntimeSupport() {
+		fixture, standardHook := wantFixtures[support.Hook]
+		if !wantHarnesses[support.Harness] || !standardHook {
+			continue
+		}
+		seen[support.Harness]++
+		wantCommand := "compound hook " + hookCommandName(support.Hook) + " --live --harness " + support.Harness
+		if !support.FixturePresent || support.FixtureRef != fixture || !support.LiveAdapter || support.LiveCommand != wantCommand {
+			t.Errorf("%s %s runtime support = %+v, want fixture %s and command %q", support.Harness, support.Hook, support, fixture, wantCommand)
+		}
+	}
+	for harnessName := range wantHarnesses {
+		if seen[harnessName] != 4 {
+			t.Errorf("%s runtime support rows = %d, want 4", harnessName, seen[harnessName])
+		}
+		if !strings.Contains(hookUsage, harnessName) {
+			t.Errorf("live hook usage omits canonical harness %s: %s", harnessName, hookUsage)
+		}
+	}
+	manifest := contract.InstalledHooksManifest{}
+	for harnessName := range wantHarnesses {
+		for hookName := range wantFixtures {
+			manifest.Hooks = append(manifest.Hooks, contract.InstalledHook{
+				Harness: harnessName, Name: hookName, Ref: "hook://" + harnessName + "/" + hookName, Status: "current",
+			})
+		}
+	}
+	rows := contract.InstalledHookRuntimeReadinessRows(manifest, installedHookRuntimeSupport())
+	for harnessName := range wantHarnesses {
+		for hookName := range wantFixtures {
+			if got := findHookReadiness(rows, harnessName, hookName); got == nil || got.Status != "ready" || !got.Installed || !got.FixturePresent || !got.LiveAdapter {
+				t.Errorf("%s %s authority readiness = %+v, want ready", harnessName, hookName, got)
+			}
+		}
+	}
+}
+
+func TestCanonicalClaudeFamilyExecutesAllLiveHookEvents(t *testing.T) {
+	testBinary := compoundTestBinary(t)
+	for _, harnessCase := range []struct {
+		installer string
+		runtime   string
+	}{
+		{"claude-code", "claude_code"},
+		{"claude-zai", "claude_zai"},
+		{"claude-minimax", "claude_minimax"},
+		{"claude-qwen", "claude_qwen"},
+	} {
+		t.Run(harnessCase.runtime, func(t *testing.T) {
+			homePath := t.TempDir()
+			workspace := t.TempDir()
+			profileDir := filepath.Join(t.TempDir(), "profile")
+			t.Setenv("COMPOUND_HOME", homePath)
+			if err := home.Init(homePath, "canonical-claude-hook-test", cliTestNow); err != nil {
+				t.Fatal(err)
+			}
+			report, err := hookplan.InstallHooksWithConfigDir(
+				t.TempDir(), testBinary, "global", []string{harnessCase.installer}, profileDir, false,
+			)
+			if err != nil {
+				t.Fatalf("install %s hooks: %v", harnessCase.installer, err)
+			}
+			if len(report.Entries) != 1 || len(report.Entries[0].Bindings) != 4 {
+				t.Fatalf("%s install report = %+v, want one entry with four bindings", harnessCase.installer, report)
+			}
+			bindings := map[string]hookplan.HookInstallBinding{}
+			for _, binding := range report.Entries[0].Bindings {
+				bindings[binding.Event] = binding
+			}
+			preCommand := bindings["PreToolUse"].Command
+			wantEnforce := harnessCase.installer != "claude-code"
+			if strings.Contains(preCommand, " --enforce") != wantEnforce {
+				t.Fatalf("%s PreToolUse command=%q, enforce=%t want %t", harnessCase.installer, preCommand, strings.Contains(preCommand, " --enforce"), wantEnforce)
+			}
+
+			sessionID := "sess_" + harnessCase.runtime
+			target := filepath.Join(workspace, "README.md")
+			events := []struct {
+				name  string
+				input string
+			}{
+				{"SessionStart", `{"hook_event_name":"SessionStart","session_id":` + quoteJSON(sessionID) + `,"cwd":` + quoteJSON(workspace) + `,"source":"startup"}`},
+				{"UserPromptSubmit", `{"hook_event_name":"UserPromptSubmit","session_id":` + quoteJSON(sessionID) + `,"cwd":` + quoteJSON(workspace) + `,"prompt":"compare the selected model lane"}`},
+				{"PreToolUse", `{"hook_event_name":"PreToolUse","session_id":` + quoteJSON(sessionID) + `,"cwd":` + quoteJSON(workspace) + `,"tool_name":"Read","tool_input":{"file_path":` + quoteJSON(target) + `}}`},
+				{"PostToolUse", `{"hook_event_name":"PostToolUse","session_id":` + quoteJSON(sessionID) + `,"cwd":` + quoteJSON(workspace) + `,"tool_name":"Read","tool_input":{"file_path":` + quoteJSON(target) + `},"tool_response":{"type":"text","content":"ok"}}`},
+			}
+			for _, event := range events {
+				binding, ok := bindings[event.name]
+				if !ok || !strings.Contains(binding.Command, "--harness "+harnessCase.runtime) {
+					t.Fatalf("%s binding missing canonical runtime %s: %+v", event.name, harnessCase.runtime, binding)
+				}
+				command := exec.Command("/bin/sh", "-c", binding.Command)
+				command.Stdin = strings.NewReader(event.input)
+				command.Dir = workspace
+				command.Env = os.Environ()
+				var stdout, stderr bytes.Buffer
+				command.Stdout = &stdout
+				command.Stderr = &stderr
+				if err := command.Run(); err != nil {
+					t.Fatalf("%s command failed: %v\ncommand=%s\nstdout=%s\nstderr=%s", event.name, err, binding.Command, stdout.String(), stderr.String())
+				}
+				var response claudeLiveHookResponse
+				if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+					t.Fatalf("parse %s response: %v\n%s", event.name, err, stdout.String())
+				}
+				if response.HookSpecificOutput.HookEventName != event.name {
+					t.Fatalf("%s response event=%q", event.name, response.HookSpecificOutput.HookEventName)
+				}
+				context := response.HookSpecificOutput.AdditionalContext
+				if event.name == "SessionStart" && (!strings.Contains(context, "Oriented as a **product** repo") ||
+					!strings.Contains(context, "`"+harnessCase.runtime+"`")) {
+					t.Fatalf("SessionStart returned no harness-specific orientation:\n%s", context)
+				}
+				if event.name == "UserPromptSubmit" && (!strings.Contains(context, "# Compound Context Injection") || !strings.Contains(context, "Orientation served this session at `hook_")) {
+					t.Fatalf("UserPromptSubmit did not consume SessionStart orientation:\n%s", context)
+				}
+			}
+
+			seen := map[string]int{}
+			for _, entry := range testEventEntries(t, homePath, "hook_") {
+				record, err := entry.Read()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var event envelope.HookEvent
+				if err := json.Unmarshal(record.Bytes, &event); err != nil {
+					t.Fatalf("parse hook event: %v\n%s", err, record.Bytes)
+				}
+				if event.Harness != harnessCase.runtime {
+					t.Fatalf("persisted %s harness=%q, want %q", event.HookName, event.Harness, harnessCase.runtime)
+				}
+				if event.Status != "ok" {
+					t.Fatalf("persisted %s status=%q, want ok", event.HookName, event.Status)
+				}
+				seen[event.HookName]++
+			}
+			for _, event := range events {
+				if seen[event.name] != 1 {
+					t.Fatalf("persisted %s count=%d, want 1", event.name, seen[event.name])
+				}
+			}
+		})
+	}
 }
 
 func TestHookLiveCodexStopCoveredAskPersistsCanonicalResume(t *testing.T) {

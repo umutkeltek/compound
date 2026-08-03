@@ -30,6 +30,22 @@ func TestRouteExperimentPlanCLI(t *testing.T) {
 	if got["verdict"] != "plan_only_not_execution_evidence" {
 		t.Fatalf("got %#v", got)
 	}
+	if got["role_alias"] != "opus" {
+		t.Fatalf("legacy role_alias = %#v, want opus", got["role_alias"])
+	}
+	if _, ok := got["role_aliases"]; ok {
+		t.Fatalf("legacy single-role JSON gained role_aliases: %#v", got)
+	}
+	out.Reset()
+	errOut.Reset()
+	code = runRouteExperimentPlanCommand([]string{"--profiles-root", root, "--role", "opus", "--profile", "claude-gpt", "--profile", "claude-minimax"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("text code=%d err=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "- role_alias: opus\n") || strings.Contains(out.String(), "- role_aliases:") ||
+		!strings.Contains(out.String(), "- execution: execute each lane through governed compound work delegate; import Switchback trace evidence before comparison\n") {
+		t.Fatalf("legacy text output changed:\n%s", out.String())
+	}
 }
 
 func TestRouteExperimentPlanRequiresProfilesRoot(t *testing.T) {
@@ -74,6 +90,7 @@ func TestRouteExperimentPlanOneProfileMultipleModelRoles(t *testing.T) {
 		t.Fatalf("code=%d err=%s", code, errOut.String())
 	}
 	var got struct {
+		RoleAlias   string   `json:"role_alias"`
 		RoleAliases []string `json:"role_aliases"`
 		Lanes       []struct {
 			RoleAlias      string `json:"role_alias"`
@@ -83,7 +100,7 @@ func TestRouteExperimentPlanOneProfileMultipleModelRoles(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Lanes) != 2 || len(got.RoleAliases) != 2 {
+	if got.RoleAlias != "opus" || len(got.Lanes) != 2 || len(got.RoleAliases) != 2 {
 		t.Fatalf("plan did not expand one profile into two real model trials: %+v", got)
 	}
 	if got.Lanes[0].RoleAlias != "opus" || got.Lanes[0].RequestedAlias != "qwen3.8-max" ||

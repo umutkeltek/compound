@@ -290,7 +290,7 @@ mutation-control boundary.
 Produces a **ContextPack**: task-scoped orientation for the agent.
 
 ```sh
-compound hook session-start --live --harness claude-code
+compound hook session-start --live --harness claude_code
 ```
 
 The agent receives:
@@ -304,7 +304,7 @@ The agent receives:
 Evaluates an **ActionIntent** against policy before the tool runs.
 
 ```sh
-compound hook pre-tool-use --live --harness claude-code
+compound hook pre-tool-use --live --harness claude_code
 ```
 
 Interactive Claude Code records a **PolicyDecision**:
@@ -325,7 +325,7 @@ harness-native blocking decision and returns the policy gate exit (`3` for hold,
 Produces a **Receipt** (what was learned) and a **Transition** (what changed).
 
 ```sh
-compound hook session-end --live --harness claude-code
+compound hook session-end --live --harness claude_code
 ```
 
 This is where compounding happens: the session's learnings become durable

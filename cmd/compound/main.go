@@ -3699,16 +3699,16 @@ func hookManifestHarnesses(manifest contract.InstalledHooksManifest) []string {
 }
 
 func installedHookRuntimeSupport() []contract.HookRuntimeSupport {
-	return []contract.HookRuntimeSupport{
-		hookRuntimeSupport("claude_code", "SessionStart", "fixtures/hooks/session-start.json", true),
-		hookRuntimeSupport("claude_code", "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", true),
-		hookRuntimeSupport("claude_code", "PreToolUse", "fixtures/hooks/pre-tool-use.claude.json", true),
-		hookRuntimeSupport("claude_code", "PostToolUse", "fixtures/hooks/post-tool-use.json", true),
+	supports := []contract.HookRuntimeSupport{}
+	for _, harnessName := range []string{"claude_code", "claude_zai", "claude_minimax", "claude_qwen"} {
+		supports = append(supports,
+			hookRuntimeSupport(harnessName, "SessionStart", "fixtures/hooks/session-start.json", true),
+			hookRuntimeSupport(harnessName, "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", true),
+			hookRuntimeSupport(harnessName, "PreToolUse", "fixtures/hooks/pre-tool-use.claude.json", true),
+			hookRuntimeSupport(harnessName, "PostToolUse", "fixtures/hooks/post-tool-use.json", true))
+	}
+	return append(supports,
 		hookRuntimeSupport("claude_code", "SessionEnd", "", true),
-		hookRuntimeSupport("claude_zai", "SessionStart", "fixtures/hooks/session-start.json", true),
-		hookRuntimeSupport("claude_zai", "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", true),
-		hookRuntimeSupport("claude_zai", "PreToolUse", "fixtures/hooks/pre-tool-use.claude.json", true),
-		hookRuntimeSupport("claude_zai", "PostToolUse", "fixtures/hooks/post-tool-use.json", true),
 		hookRuntimeSupport("codex", "SessionStart", "fixtures/hooks/session-start.json", true),
 		hookRuntimeSupport("codex", "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", true),
 		hookRuntimeSupport("codex", "PreToolUse", "fixtures/hooks/pre-tool-use.codex.json", true),
@@ -3717,7 +3717,7 @@ func installedHookRuntimeSupport() []contract.HookRuntimeSupport {
 		hookRuntimeSupport("opencode", "SessionStart", "fixtures/hooks/session-start.opencode.json", true),
 		hookRuntimeSupport("opencode", "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.opencode.json", true),
 		hookRuntimeSupport("opencode", "PostToolUse", "fixtures/hooks/post-tool-use.opencode.json", true),
-	}
+	)
 }
 
 func hookRuntimeSupport(harnessName, hookName, fixtureRef string, liveAdapter bool) contract.HookRuntimeSupport {
@@ -3735,8 +3735,7 @@ func liveHookCommand(harnessName, hookName string, liveAdapter bool) string {
 	if !liveAdapter {
 		return ""
 	}
-	harnessArg := strings.ReplaceAll(harnessName, "_", "-")
-	return fmt.Sprintf("compound hook %s --live --harness %s", hookCommandName(hookName), harnessArg)
+	return fmt.Sprintf("compound hook %s --live --harness %s", hookCommandName(hookName), harnessName)
 }
 
 func hookCommandName(hookName string) string {

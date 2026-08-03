@@ -2790,7 +2790,7 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 		`"hook_readiness": [`,
 		`"fixture_present": true`,
 		`"live_adapter": true`,
-		`"live_command": "compound hook session-start --live --harness claude-code"`,
+		`"live_command": "compound hook session-start --live --harness claude_code"`,
 	} {
 		if !strings.Contains(authorityOut, want) {
 			t.Fatalf("hooks-authority output missing %q:\n%s", want, authorityOut)
