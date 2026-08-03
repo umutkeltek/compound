@@ -72,7 +72,70 @@ func TestSessionEndAdapterOutcomeIdentityIncludesExecution(t *testing.T) {
 	}
 }
 
-func TestSessionEndAdapterCommitAtDeadlineRetainsPendingReplayIdentity(t *testing.T) {
+func TestSessionEndAdapterPersistenceStatesDistinguishCommittedFromNotCommitted(t *testing.T) {
+	input := []byte("{\"hook_event_name\":\"SessionEnd\",\"session_id\":\"sess_persistence_states\"}\n")
+	parsed := sessionEndAdapterArgs{Harness: "claude-code", Timeout: time.Second, Worker: "/unused"}
+	native := sessionEndAdapterInput{HookEventName: "SessionEnd", SessionID: "sess_persistence_states"}
+
+	committedHome := t.TempDir()
+	committedAttempt := prepareSessionEndAdapterAcceptance(parsed, native, input, time.Unix(1_800_000_000, 1).UTC())
+	committed := persistSessionEndAdapterAcceptanceBounded(
+		committedHome,
+		committedAttempt,
+		input,
+		time.Second,
+		nil,
+	)
+	if committed.PersistenceState != sessionEndAdapterPersistenceCommitted || committed.Err != nil {
+		t.Fatalf("committed persistence result=%+v", committed)
+	}
+
+	notCommittedHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(notCommittedHome, "artifacts"), []byte("blocks artifact directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notCommittedAttempt := prepareSessionEndAdapterAcceptance(parsed, native, input, time.Unix(1_800_000_000, 2).UTC())
+	notCommitted := persistSessionEndAdapterAcceptanceBounded(
+		notCommittedHome,
+		notCommittedAttempt,
+		input,
+		time.Second,
+		nil,
+	)
+	if notCommitted.PersistenceState != sessionEndAdapterPersistenceNotCommitted || notCommitted.Err == nil {
+		t.Fatalf("not-committed persistence result=%+v", notCommitted)
+	}
+}
+
+func TestSessionEndAdapterPersistenceStateRequiresDurablePublicationSignal(t *testing.T) {
+	compoundHome := t.TempDir()
+	input := []byte("{\"hook_event_name\":\"SessionEnd\",\"session_id\":\"sess_reconcile_writer_error\"}\n")
+	parsed := sessionEndAdapterArgs{Harness: "claude-code", Timeout: time.Second, Worker: "/unused"}
+	native := sessionEndAdapterInput{HookEventName: "SessionEnd", SessionID: "sess_reconcile_writer_error"}
+	attempt := prepareSessionEndAdapterAcceptance(parsed, native, input, time.Unix(1_800_000_000, 3).UTC())
+	events, err := eventstore.Open(compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lateError := fmt.Errorf("injected error after durable publication")
+	put, err := events.PutJSONAtomic(attempt.ID, attempt, "  ", eventstore.AtomicOptions{
+		AfterPublish: func() error { return lateError },
+	})
+	if err == nil || !put.Created {
+		t.Fatalf("post-publication fixture result=%+v err=%v", put, err)
+	}
+	if state := classifySessionEndAdapterEventPersistence(events, attempt.ID, put, err); state != sessionEndAdapterPersistenceCommitted {
+		t.Fatalf("durably published record plus late error state=%s, want committed", state)
+	}
+	if state := classifySessionEndAdapterEventPersistence(events, attempt.ID, eventstore.PutResult{}, lateError); state != sessionEndAdapterPersistenceUnknown {
+		t.Fatalf("visible record without durable publication signal state=%s, want unknown", state)
+	}
+	if state := classifySessionEndAdapterEventPersistence(events, sessionEndAdapterAttemptIDPrefix+"absent", eventstore.PutResult{}, lateError); state != sessionEndAdapterPersistenceNotCommitted {
+		t.Fatalf("absent record after writer error state=%s, want not_committed", state)
+	}
+}
+
+func TestSessionEndAdapterCommitAtDeadlineReportsUnknownPersistenceState(t *testing.T) {
 	compoundHome := t.TempDir()
 	input := []byte("{\"hook_event_name\":\"SessionEnd\",\"session_id\":\"sess_commit_at_deadline\"}\n")
 	parsed := sessionEndAdapterArgs{Harness: "claude-code", Timeout: time.Second, Worker: "/unused"}
@@ -97,7 +160,7 @@ func TestSessionEndAdapterCommitAtDeadlineRetainsPendingReplayIdentity(t *testin
 	default:
 		t.Fatal("deadline fired before the acceptance commit boundary was reached")
 	}
-	if result.Err == nil || !result.TimedOut {
+	if result.Err == nil || result.PersistenceState != sessionEndAdapterPersistenceUnknown {
 		t.Fatalf("commit-at-deadline result=%+v, want truthful timeout/unknown state", result)
 	}
 	if result.Attempt.ID != prepared.ID || result.Attempt.InputRef != prepared.InputRef {
@@ -125,6 +188,35 @@ func TestSessionEndAdapterCommitAtDeadlineRetainsPendingReplayIdentity(t *testin
 	}
 	if !bytes.Equal(stored, input) {
 		t.Fatalf("pending input changed: want=%q got=%q", input, stored)
+	}
+}
+
+func TestSessionEndAdapterAcceptanceDiagnosticDistinguishesDeadlineFromAmbiguousError(t *testing.T) {
+	attempt := sessionEndAdapterAttempt{InputRef: home.ArtifactRefPrefix + "known_input"}
+	attempt.ID = sessionEndAdapterAttemptIDPrefix + "must_not_be_advertised"
+
+	var ambiguous bytes.Buffer
+	writeSessionEndAdapterAcceptanceError(&ambiguous, sessionEndAdapterAcceptanceResult{
+		Attempt:          attempt,
+		PersistenceState: sessionEndAdapterPersistenceUnknown,
+		Err:              fmt.Errorf("sync result unavailable"),
+	})
+	if strings.Contains(ambiguous.String(), "timed out") || !strings.Contains(ambiguous.String(), "could not be confirmed") {
+		t.Fatalf("synchronous ambiguity was misreported as a deadline: %s", ambiguous.String())
+	}
+	if strings.Contains(ambiguous.String(), attempt.ID) {
+		t.Fatalf("ambiguous acceptance advertised an unconfirmed id: %s", ambiguous.String())
+	}
+
+	var deadline bytes.Buffer
+	writeSessionEndAdapterAcceptanceError(&deadline, sessionEndAdapterAcceptanceResult{
+		Attempt:          attempt,
+		PersistenceState: sessionEndAdapterPersistenceUnknown,
+		DeadlineExceeded: true,
+		Err:              fmt.Errorf("timed out after 1s"),
+	})
+	if !strings.Contains(deadline.String(), "persistence timed out") || !strings.Contains(deadline.String(), "state=unknown") {
+		t.Fatalf("deadline ambiguity was not explicit: %s", deadline.String())
 	}
 }
 
@@ -275,8 +367,147 @@ func TestSessionEndAdapterBoundsAcceptancePersistenceBeforeStartingWorker(t *tes
 	if !strings.Contains(stderr.String(), "acceptance persistence timed out") || !strings.Contains(stderr.String(), "sha256:"+digest) {
 		t.Fatalf("SessionEnd acceptance timeout was not explicit: %s", stderr.String())
 	}
+	if !strings.Contains(stderr.String(), "state=unknown") {
+		t.Fatalf("SessionEnd acceptance timeout did not preserve deadline ambiguity: %s", stderr.String())
+	}
+	for _, forbidden := range []string{"pending=", "retry=", sessionEndAdapterAttemptIDPrefix} {
+		if strings.Contains(stderr.String(), forbidden) {
+			t.Fatalf("unknown SessionEnd acceptance advertised uncommitted replay identity %q: %s", forbidden, stderr.String())
+		}
+	}
 	if _, err := os.Stat(workerMarker); !os.IsNotExist(err) {
 		t.Fatalf("SessionEnd worker started before durable acceptance: stat err=%v", err)
+	}
+}
+
+func TestSessionEndAdapterReportsAcceptanceNotCommittedWithoutReplayIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell worker fixture requires a POSIX host")
+	}
+	t.Setenv(sessionEndAdapterWorkerOverrideEnv, "1")
+	compoundHome := t.TempDir()
+	t.Setenv("COMPOUND_HOME", compoundHome)
+	if err := os.WriteFile(filepath.Join(compoundHome, "artifacts"), []byte("blocks artifact directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	workerMarker := filepath.Join(t.TempDir(), "worker-started")
+	workerPath := filepath.Join(t.TempDir(), "observable-session-end-worker.sh")
+	worker := fmt.Sprintf("#!/bin/sh\ntouch %q\n", workerMarker)
+	if err := os.WriteFile(workerPath, []byte(worker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	input := `{"hook_event_name":"SessionEnd","session_id":"sess_acceptance_not_committed"}`
+	var stdout, stderr bytes.Buffer
+	if code := runSessionEndAdapterCommand([]string{
+		"--live", "--harness", "claude-code", "--timeout", "100ms", "--worker", workerPath,
+	}, strings.NewReader(input), &stdout, &stderr); code != 0 {
+		t.Fatalf("SessionEnd adapter exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var response claudeLiveHookResponse
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
+		t.Fatalf("SessionEnd acceptance failure response invalid: err=%v response=%+v stdout=%s", err, response, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "acceptance persistence failed") || !strings.Contains(stderr.String(), "state=not_committed") {
+		t.Fatalf("SessionEnd acceptance failure did not report a definite non-commit: %s", stderr.String())
+	}
+	for _, forbidden := range []string{"pending=", "retry=", sessionEndAdapterAttemptIDPrefix} {
+		if strings.Contains(stderr.String(), forbidden) {
+			t.Fatalf("failed SessionEnd acceptance advertised uncommitted replay identity %q: %s", forbidden, stderr.String())
+		}
+	}
+	if _, err := os.Stat(workerMarker); !os.IsNotExist(err) {
+		t.Fatalf("SessionEnd worker started after failed acceptance persistence: stat err=%v", err)
+	}
+}
+
+func TestSessionEndAdapterReportsUnknownOutcomeWithoutTerminalIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell worker fixture requires a POSIX host")
+	}
+	t.Setenv(sessionEndAdapterWorkerOverrideEnv, "1")
+	compoundHome := t.TempDir()
+	t.Setenv("COMPOUND_HOME", compoundHome)
+
+	workerPath := filepath.Join(t.TempDir(), "break-outcome-store-worker.sh")
+	worker := "#!/bin/sh\nmv \"$COMPOUND_HOME/events\" \"$COMPOUND_HOME/events.accepted\"\ntouch \"$COMPOUND_HOME/events\"\nexit 9\n"
+	if err := os.WriteFile(workerPath, []byte(worker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	input := `{"hook_event_name":"SessionEnd","session_id":"sess_outcome_not_committed"}`
+	var stdout, stderr bytes.Buffer
+	if code := runSessionEndAdapterCommand([]string{
+		"--live", "--harness", "claude-code", "--timeout", "5s", "--worker", workerPath,
+	}, strings.NewReader(input), &stdout, &stderr); code != 0 {
+		t.Fatalf("SessionEnd adapter exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var response claudeLiveHookResponse
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
+		t.Fatalf("SessionEnd outcome failure response invalid: err=%v response=%+v stdout=%s", err, response, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "terminal outcome persistence") || !strings.Contains(stderr.String(), "state=unknown") {
+		t.Fatalf("SessionEnd outcome failure did not preserve unreadable-store ambiguity: %s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "terminal=") {
+		t.Fatalf("failed SessionEnd outcome advertised an uncommitted terminal identity: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "retry evidence="+sessionEndAdapterAttemptIDPrefix) {
+		t.Fatalf("failed SessionEnd outcome lost its known-committed acceptance identity: %s", stderr.String())
+	}
+}
+
+func TestSessionEndAdapterRendersUnknownOutcomeWithoutTerminalIdentity(t *testing.T) {
+	attempt := sessionEndAdapterAttempt{
+		InputRef: home.ArtifactRefPrefix + "known_input",
+		RetryArgv: []string{
+			"compound", "hook", "session-end-adapter", "--replay", sessionEndAdapterAttemptIDPrefix + "known_committed",
+		},
+	}
+	attempt.ID = sessionEndAdapterAttemptIDPrefix + "known_committed"
+	outcome := sessionEndAdapterOutcomeResult{
+		PersistenceState: sessionEndAdapterPersistenceUnknown,
+		Err:              fmt.Errorf("timed out after 1s"),
+	}
+	var stderr bytes.Buffer
+	writeSessionEndAdapterWorkerFailure(&stderr, "worker failed", outcome, attempt)
+	writeSessionEndAdapterOutcomeError(&stderr, outcome, attempt)
+
+	if strings.Contains(stderr.String(), "terminal=") {
+		t.Fatalf("unknown SessionEnd outcome advertised a terminal identity: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "state=unknown") {
+		t.Fatalf("unknown SessionEnd outcome hid deadline ambiguity: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "retry evidence="+attempt.ID) {
+		t.Fatalf("unknown SessionEnd outcome lost its known-committed acceptance identity: %s", stderr.String())
+	}
+}
+
+func TestSessionEndAdapterCommittedOutcomeRemainsUsableAfterPostPublicationError(t *testing.T) {
+	attempt := sessionEndAdapterAttempt{InputRef: home.ArtifactRefPrefix + "committed_input"}
+	attempt.ID = sessionEndAdapterAttemptIDPrefix + "committed"
+	acceptance := sessionEndAdapterAcceptanceResult{Attempt: attempt, PersistenceState: sessionEndAdapterPersistenceCommitted}
+	outcome := sessionEndAdapterOutcomeResult{
+		Outcome: sessionEndAdapterOutcome{
+			AttemptID: attempt.ID,
+			InputRef:  attempt.InputRef,
+			Status:    sessionEndAdapterStatusSucceeded,
+		},
+		PersistenceState: sessionEndAdapterPersistenceCommitted,
+		Err:              fmt.Errorf("late lock release error"),
+	}
+	outcome.Outcome.ID = sessionEndAdapterOutcomeIDPrefix + "committed"
+	worker := sessionEndAdapterWorkerResult{Stdout: []byte("{\"hookSpecificOutput\":{\"hookEventName\":\"SessionEnd\"}}\n")}
+	var stdout, stderr bytes.Buffer
+	completeSessionEndAdapterWorkerSuccess(&stdout, &stderr, worker, acceptance, outcome)
+
+	if !bytes.Equal(stdout.Bytes(), worker.Stdout) {
+		t.Fatalf("committed outcome lost worker response: got=%q want=%q", stdout.String(), worker.Stdout)
+	}
+	for _, want := range []string{"worker succeeded", "state=committed", "terminal=" + outcome.Outcome.ID} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("committed late-error outcome omitted %q: %s", want, stderr.String())
+		}
 	}
 }
 
@@ -397,7 +628,7 @@ func TestSessionEndAdapterMarksSuccessfulWorkerProcessing(t *testing.T) {
 		ctx,
 		"go", "run", ".", "hook", "session-end-adapter",
 		"--live", "--harness", "claude-code",
-		"--timeout", "1s", "--worker", workerPath,
+		"--timeout", "5s", "--worker", workerPath,
 	)
 	command.Env = append(
 		os.Environ(),

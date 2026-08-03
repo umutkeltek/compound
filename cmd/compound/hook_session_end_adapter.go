@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -44,6 +45,14 @@ type sessionEndAdapterArgs struct {
 	ReplayID string
 }
 
+type sessionEndAdapterPersistenceState string
+
+const (
+	sessionEndAdapterPersistenceCommitted    sessionEndAdapterPersistenceState = "committed"
+	sessionEndAdapterPersistenceNotCommitted sessionEndAdapterPersistenceState = "not_committed"
+	sessionEndAdapterPersistenceUnknown      sessionEndAdapterPersistenceState = "unknown"
+)
+
 type sessionEndAdapterInput struct {
 	HookEventName  string `json:"hook_event_name"`
 	SessionID      string `json:"session_id"`
@@ -65,9 +74,10 @@ type sessionEndAdapterAttempt struct {
 }
 
 type sessionEndAdapterAcceptanceResult struct {
-	Attempt  sessionEndAdapterAttempt
-	Err      error
-	TimedOut bool
+	Attempt          sessionEndAdapterAttempt
+	PersistenceState sessionEndAdapterPersistenceState
+	DeadlineExceeded bool
+	Err              error
 }
 
 type sessionEndAdapterOutcome struct {
@@ -81,8 +91,10 @@ type sessionEndAdapterOutcome struct {
 }
 
 type sessionEndAdapterOutcomeResult struct {
-	Outcome sessionEndAdapterOutcome
-	Err     error
+	Outcome          sessionEndAdapterOutcome
+	PersistenceState sessionEndAdapterPersistenceState
+	DeadlineExceeded bool
+	Err              error
 }
 
 type sessionEndAdapterWorkerResult struct {
@@ -144,26 +156,18 @@ func runSessionEndAdapterCommand(args []string, stdin io.Reader, stdout, stderr 
 		sessionEndAdapterAcceptanceTimeout,
 		nil,
 	)
-	if acceptance.Err != nil {
+	if acceptance.PersistenceState != sessionEndAdapterPersistenceCommitted {
 		writeSessionEndAdapterResponse(stdout)
-		if acceptance.TimedOut {
-			fmt.Fprintf(
-				stderr,
-				"session-end adapter: acceptance persistence timed out; state=unknown; worker not started; pending=%s input_ref=%s retry=%q\n",
-				acceptance.Attempt.ID,
-				acceptance.Attempt.InputRef,
-				strings.Join(acceptance.Attempt.RetryArgv, " "),
-			)
-		} else {
-			fmt.Fprintf(
-				stderr,
-				"session-end adapter: acceptance persistence failed: %v; state=not_accepted; worker not started; pending=%s input_ref=%s\n",
-				acceptance.Err,
-				acceptance.Attempt.ID,
-				acceptance.Attempt.InputRef,
-			)
-		}
+		writeSessionEndAdapterAcceptanceError(stderr, acceptance)
 		return 0
+	}
+	if acceptance.Err != nil {
+		fmt.Fprintf(
+			stderr,
+			"session-end adapter: acceptance committed despite post-publication error: %v; state=committed; acceptance=%s\n",
+			acceptance.Err,
+			acceptance.Attempt.ID,
+		)
 	}
 
 	executionID := sessionEndAdapterExecutionID(acceptance.Attempt.ID, time.Now())
@@ -186,14 +190,11 @@ func runSessionEndAdapterCommand(args []string, stdin io.Reader, stdout, stderr 
 			sessionEndAdapterAcceptanceTimeout,
 		)
 		writeSessionEndAdapterResponse(stdout)
-		fmt.Fprintf(
+		writeSessionEndAdapterWorkerFailure(
 			stderr,
-			"session-end adapter: worker timed out after %s; retry evidence=%s terminal=%s input_ref=%s retry=%q\n",
-			parsed.Timeout,
-			acceptance.Attempt.ID,
-			sessionEndAdapterOutcomeID(acceptance.Attempt.ID, executionID),
-			acceptance.Attempt.InputRef,
-			strings.Join(acceptance.Attempt.RetryArgv, " "),
+			fmt.Sprintf("worker timed out after %s", parsed.Timeout),
+			outcome,
+			acceptance.Attempt,
 		)
 		writeSessionEndAdapterOutcomeError(stderr, outcome, acceptance.Attempt)
 		return 0
@@ -210,14 +211,11 @@ func runSessionEndAdapterCommand(args []string, stdin io.Reader, stdout, stderr 
 			sessionEndAdapterAcceptanceTimeout,
 		)
 		writeSessionEndAdapterResponse(stdout)
-		fmt.Fprintf(
+		writeSessionEndAdapterWorkerFailure(
 			stderr,
-			"session-end adapter: worker failed: %v; retry evidence=%s terminal=%s input_ref=%s retry=%q\n",
-			worker.Err,
-			acceptance.Attempt.ID,
-			sessionEndAdapterOutcomeID(acceptance.Attempt.ID, executionID),
-			acceptance.Attempt.InputRef,
-			strings.Join(acceptance.Attempt.RetryArgv, " "),
+			fmt.Sprintf("worker failed: %v", worker.Err),
+			outcome,
+			acceptance.Attempt,
 		)
 		writeSessionEndAdapterOutcomeError(stderr, outcome, acceptance.Attempt)
 		return 0
@@ -235,13 +233,11 @@ func runSessionEndAdapterCommand(args []string, stdin io.Reader, stdout, stderr 
 			sessionEndAdapterAcceptanceTimeout,
 		)
 		writeSessionEndAdapterResponse(stdout)
-		fmt.Fprintf(
+		writeSessionEndAdapterWorkerFailure(
 			stderr,
-			"session-end adapter: worker emitted invalid hook JSON; retry evidence=%s terminal=%s input_ref=%s retry=%q\n",
-			acceptance.Attempt.ID,
-			sessionEndAdapterOutcomeID(acceptance.Attempt.ID, executionID),
-			acceptance.Attempt.InputRef,
-			strings.Join(acceptance.Attempt.RetryArgv, " "),
+			"worker emitted invalid hook JSON",
+			outcome,
+			acceptance.Attempt,
 		)
 		writeSessionEndAdapterOutcomeError(stderr, outcome, acceptance.Attempt)
 		return 0
@@ -256,22 +252,7 @@ func runSessionEndAdapterCommand(args []string, stdin io.Reader, stdout, stderr 
 		time.Now(),
 		sessionEndAdapterAcceptanceTimeout,
 	)
-	if outcome.Err != nil {
-		writeSessionEndAdapterResponse(stdout)
-		writeSessionEndAdapterOutcomeError(stderr, outcome, acceptance.Attempt)
-		return 0
-	}
-	fmt.Fprintf(
-		stderr,
-		"session-end adapter: worker succeeded; acceptance=%s terminal=%s input_ref=%s\n",
-		acceptance.Attempt.ID,
-		outcome.Outcome.ID,
-		acceptance.Attempt.InputRef,
-	)
-	_, _ = stdout.Write(worker.Stdout)
-	if len(worker.Stdout) == 0 || worker.Stdout[len(worker.Stdout)-1] != '\n' {
-		_, _ = io.WriteString(stdout, "\n")
-	}
+	completeSessionEndAdapterWorkerSuccess(stdout, stderr, worker, acceptance, outcome)
 	return 0
 }
 
@@ -287,8 +268,8 @@ func persistSessionEndAdapterOutcomeBounded(
 ) sessionEndAdapterOutcomeResult {
 	result := make(chan sessionEndAdapterOutcomeResult, 1)
 	go func() {
-		outcome, err := persistSessionEndAdapterOutcome(homePath, attempt, executionID, status, errorClass, duration, now)
-		result <- sessionEndAdapterOutcomeResult{Outcome: outcome, Err: err}
+		outcome, state, err := persistSessionEndAdapterOutcomeDetailed(homePath, attempt, executionID, status, errorClass, duration, now)
+		result <- sessionEndAdapterOutcomeResult{Outcome: outcome, PersistenceState: state, Err: err}
 	}()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -296,7 +277,11 @@ func persistSessionEndAdapterOutcomeBounded(
 	case terminal := <-result:
 		return terminal
 	case <-timer.C:
-		return sessionEndAdapterOutcomeResult{Err: fmt.Errorf("timed out after %s", timeout)}
+		return sessionEndAdapterOutcomeResult{
+			PersistenceState: sessionEndAdapterPersistenceUnknown,
+			DeadlineExceeded: true,
+			Err:              fmt.Errorf("timed out after %s", timeout),
+		}
 	}
 }
 
@@ -309,17 +294,30 @@ func persistSessionEndAdapterOutcome(
 	duration time.Duration,
 	now time.Time,
 ) (sessionEndAdapterOutcome, error) {
+	outcome, _, err := persistSessionEndAdapterOutcomeDetailed(homePath, attempt, executionID, status, errorClass, duration, now)
+	return outcome, err
+}
+
+func persistSessionEndAdapterOutcomeDetailed(
+	homePath string,
+	attempt sessionEndAdapterAttempt,
+	executionID string,
+	status string,
+	errorClass string,
+	duration time.Duration,
+	now time.Time,
+) (sessionEndAdapterOutcome, sessionEndAdapterPersistenceState, error) {
 	switch status {
 	case sessionEndAdapterStatusSucceeded, sessionEndAdapterStatusTimedOut, sessionEndAdapterStatusFailed:
 	default:
-		return sessionEndAdapterOutcome{}, fmt.Errorf("unknown SessionEnd adapter outcome %q", status)
+		return sessionEndAdapterOutcome{}, sessionEndAdapterPersistenceNotCommitted, fmt.Errorf("unknown SessionEnd adapter outcome %q", status)
 	}
 	if strings.TrimSpace(executionID) == "" {
-		return sessionEndAdapterOutcome{}, fmt.Errorf("SessionEnd adapter outcome requires execution_id")
+		return sessionEndAdapterOutcome{}, sessionEndAdapterPersistenceNotCommitted, fmt.Errorf("SessionEnd adapter outcome requires execution_id")
 	}
 	events, err := eventstore.Open(homePath)
 	if err != nil {
-		return sessionEndAdapterOutcome{}, err
+		return sessionEndAdapterOutcome{}, sessionEndAdapterPersistenceNotCommitted, err
 	}
 	outcome := sessionEndAdapterOutcome{
 		Header: envelope.Header{
@@ -341,22 +339,135 @@ func persistSessionEndAdapterOutcome(
 		ErrorClass:  errorClass,
 		DurationMS:  duration.Milliseconds(),
 	}
-	if _, err := events.PutJSON(outcome.ID, outcome, "  "); err != nil {
-		return sessionEndAdapterOutcome{}, err
+	put, err := events.PutJSON(outcome.ID, outcome, "  ")
+	state := classifySessionEndAdapterEventPersistence(events, outcome.ID, put, err)
+	return outcome, state, err
+}
+
+func classifySessionEndAdapterEventPersistence(
+	events *eventstore.Store,
+	id string,
+	put eventstore.PutResult,
+	persistErr error,
+) sessionEndAdapterPersistenceState {
+	if persistErr == nil {
+		return sessionEndAdapterPersistenceCommitted
 	}
-	return outcome, nil
+	if put.Created {
+		return sessionEndAdapterPersistenceCommitted
+	}
+	if events == nil || strings.TrimSpace(id) == "" {
+		return sessionEndAdapterPersistenceUnknown
+	}
+	_, err := events.Read(id)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return sessionEndAdapterPersistenceNotCommitted
+		}
+		return sessionEndAdapterPersistenceUnknown
+	}
+	// Visibility without PutResult.Created can follow a failed Sync. It is not
+	// durable enough to advertise a replayable identity.
+	return sessionEndAdapterPersistenceUnknown
 }
 
 func writeSessionEndAdapterOutcomeError(stderr io.Writer, outcome sessionEndAdapterOutcomeResult, attempt sessionEndAdapterAttempt) {
-	if outcome.Err == nil {
+	if outcome.PersistenceState == sessionEndAdapterPersistenceCommitted {
+		if outcome.Err != nil {
+			fmt.Fprintf(
+				stderr,
+				"session-end adapter: terminal outcome committed despite post-publication error: %v; state=committed; terminal=%s\n",
+				outcome.Err,
+				outcome.Outcome.ID,
+			)
+		}
+		return
+	}
+	verb := "failed"
+	if outcome.PersistenceState == sessionEndAdapterPersistenceUnknown {
+		verb = "could not be confirmed"
+		if outcome.DeadlineExceeded {
+			verb = "timed out"
+		}
+	}
+	fmt.Fprintf(
+		stderr,
+		"session-end adapter: terminal outcome persistence %s: %v; state=%s; acceptance %s remains pending with input_ref=%s\n",
+		verb,
+		outcome.Err,
+		outcome.PersistenceState,
+		attempt.ID,
+		attempt.InputRef,
+	)
+}
+
+func writeSessionEndAdapterAcceptanceError(stderr io.Writer, acceptance sessionEndAdapterAcceptanceResult) {
+	if acceptance.PersistenceState == sessionEndAdapterPersistenceCommitted {
+		return
+	}
+	if acceptance.PersistenceState == sessionEndAdapterPersistenceUnknown {
+		verb := "could not be confirmed"
+		if acceptance.DeadlineExceeded {
+			verb = "timed out"
+		}
+		fmt.Fprintf(
+			stderr,
+			"session-end adapter: acceptance persistence %s: %v; state=unknown; worker not started; input_ref=%s\n",
+			verb,
+			acceptance.Err,
+			acceptance.Attempt.InputRef,
+		)
 		return
 	}
 	fmt.Fprintf(
 		stderr,
-		"session-end adapter: terminal outcome persistence failed: %v; acceptance %s remains pending with input_ref=%s\n",
-		outcome.Err,
-		attempt.ID,
+		"session-end adapter: acceptance persistence failed: %v; state=not_committed; worker not started; input_ref=%s\n",
+		acceptance.Err,
+		acceptance.Attempt.InputRef,
+	)
+}
+
+func completeSessionEndAdapterWorkerSuccess(
+	stdout io.Writer,
+	stderr io.Writer,
+	worker sessionEndAdapterWorkerResult,
+	acceptance sessionEndAdapterAcceptanceResult,
+	outcome sessionEndAdapterOutcomeResult,
+) {
+	if outcome.PersistenceState != sessionEndAdapterPersistenceCommitted {
+		writeSessionEndAdapterResponse(stdout)
+		writeSessionEndAdapterOutcomeError(stderr, outcome, acceptance.Attempt)
+		return
+	}
+	writeSessionEndAdapterOutcomeError(stderr, outcome, acceptance.Attempt)
+	fmt.Fprintf(
+		stderr,
+		"session-end adapter: worker succeeded; acceptance=%s terminal=%s input_ref=%s\n",
+		acceptance.Attempt.ID,
+		outcome.Outcome.ID,
+		acceptance.Attempt.InputRef,
+	)
+	_, _ = stdout.Write(worker.Stdout)
+	if len(worker.Stdout) == 0 || worker.Stdout[len(worker.Stdout)-1] != '\n' {
+		_, _ = io.WriteString(stdout, "\n")
+	}
+}
+
+func writeSessionEndAdapterWorkerFailure(
+	stderr io.Writer,
+	summary string,
+	outcome sessionEndAdapterOutcomeResult,
+	attempt sessionEndAdapterAttempt,
+) {
+	fmt.Fprintf(stderr, "session-end adapter: %s; retry evidence=%s", summary, attempt.ID)
+	if outcome.PersistenceState == sessionEndAdapterPersistenceCommitted {
+		fmt.Fprintf(stderr, " terminal=%s", outcome.Outcome.ID)
+	}
+	fmt.Fprintf(
+		stderr,
+		" input_ref=%s retry=%q\n",
 		attempt.InputRef,
+		strings.Join(attempt.RetryArgv, " "),
 	)
 }
 
@@ -583,11 +694,11 @@ func persistSessionEndAdapterAcceptanceBounded(
 ) sessionEndAdapterAcceptanceResult {
 	result := make(chan sessionEndAdapterAcceptanceResult, 1)
 	go func() {
-		err := persistSessionEndAdapterAcceptance(homePath, attempt, input)
-		if err == nil && afterPersist != nil {
+		state, err := persistSessionEndAdapterAcceptanceDetailed(homePath, attempt, input)
+		if state == sessionEndAdapterPersistenceCommitted && afterPersist != nil {
 			afterPersist()
 		}
-		result <- sessionEndAdapterAcceptanceResult{Attempt: attempt, Err: err}
+		result <- sessionEndAdapterAcceptanceResult{Attempt: attempt, PersistenceState: state, Err: err}
 	}()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -595,7 +706,12 @@ func persistSessionEndAdapterAcceptanceBounded(
 	case accepted := <-result:
 		return accepted
 	case <-timer.C:
-		return sessionEndAdapterAcceptanceResult{Attempt: attempt, Err: fmt.Errorf("timed out after %s", timeout), TimedOut: true}
+		return sessionEndAdapterAcceptanceResult{
+			Attempt:          attempt,
+			PersistenceState: sessionEndAdapterPersistenceUnknown,
+			DeadlineExceeded: true,
+			Err:              fmt.Errorf("timed out after %s", timeout),
+		}
 	}
 }
 
@@ -641,28 +757,36 @@ func persistSessionEndAdapterAcceptance(
 	attempt sessionEndAdapterAttempt,
 	input []byte,
 ) error {
+	_, err := persistSessionEndAdapterAcceptanceDetailed(homePath, attempt, input)
+	return err
+}
+
+func persistSessionEndAdapterAcceptanceDetailed(
+	homePath string,
+	attempt sessionEndAdapterAttempt,
+	input []byte,
+) (sessionEndAdapterPersistenceState, error) {
 	events, err := eventstore.Open(homePath)
 	if err != nil {
-		return err
+		return sessionEndAdapterPersistenceNotCommitted, err
 	}
 	if err := events.Preflight(); err != nil {
-		return err
+		return sessionEndAdapterPersistenceNotCommitted, err
 	}
 	artifacts, err := home.NewArtifactStore(homePath)
 	if err != nil {
-		return err
+		return sessionEndAdapterPersistenceNotCommitted, err
 	}
 	inputRef, err := artifacts.Put(input)
 	if err != nil {
-		return err
+		return sessionEndAdapterPersistenceNotCommitted, err
 	}
 	if inputRef != attempt.InputRef {
-		return fmt.Errorf("accepted input ref %s does not match prepared %s", inputRef, attempt.InputRef)
+		return sessionEndAdapterPersistenceNotCommitted, fmt.Errorf("accepted input ref %s does not match prepared %s", inputRef, attempt.InputRef)
 	}
-	if _, err := events.PutJSON(attempt.ID, attempt, "  "); err != nil {
-		return err
-	}
-	return nil
+	put, err := events.PutJSON(attempt.ID, attempt, "  ")
+	state := classifySessionEndAdapterEventPersistence(events, attempt.ID, put, err)
+	return state, err
 }
 
 func sessionEndAdapterAttemptID(harnessName, inputHash string, now time.Time) string {
