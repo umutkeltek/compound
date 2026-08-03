@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"bufio"
@@ -67,14 +67,12 @@ Examples:
   compound store recall "session distillation architecture" --k 5
 `
 
-// cmdStore is the storage-backend operator surface. It manages the Postgres+pgvector
-// backend lifecycle: schema creation, health checks, and status reporting.
-// Additive infrastructure (ADR-0005): touches no existing code paths.
-func cmdStore(args []string) {
-	os.Exit(runStore(args, os.Stdout, os.Stderr))
-}
-
-func runStore(args []string, stdout, stderr io.Writer) int {
+// Run is the storage-backend operator surface (`compound store`). It manages
+// the Postgres+pgvector backend lifecycle: schema creation, health checks,
+// and status reporting. Additive infrastructure (ADR-0005): the file backend
+// under COMPOUND_HOME remains authoritative; Postgres is never authority.
+// cmd/compound keeps only a thin os.Exit shim over this organ.
+func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || hasUsageFlag(args) {
 		fmt.Fprint(stdout, storeUsage)
 		if len(args) == 0 {

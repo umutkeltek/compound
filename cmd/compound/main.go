@@ -38,8 +38,6 @@ import (
 	"compound/internal/hookplan"
 	"compound/internal/knowledge"
 	"compound/internal/mem"
-	"compound/internal/persist"
-	"compound/internal/persist/pg"
 	"compound/internal/policy"
 	"compound/internal/product"
 	"compound/internal/projection"
@@ -49,6 +47,7 @@ import (
 	"compound/internal/runtimebinding"
 	"compound/internal/schema"
 	"compound/internal/sourceobs"
+	storecli "compound/internal/store"
 	"compound/internal/work"
 	"compound/internal/writeback"
 )
@@ -142,35 +141,11 @@ func main() {
 	command.Run(os.Args[2:])
 }
 
-// wirePgvectorEngineFactory installs the postgres+pgvector recall-engine factory
-// the contract spine consumes (ADR-0005: the spine stays dependency-free; backend
-// construction — pg.Open, the embed endpoint, credentials — lives at this CLI
-// composition root). Every connection parameter comes from the environment; there
-// are no baked-in hosts. A missing COMPOUND_DSN or COMPOUND_EMBED_URL under
-// COMPOUND_STORE=postgres is a factory error the spine records as Degraded
-// evidence, never a silent fall-through to another engine.
+// The pg recall-engine factory is installed by the internal/store organ (ADR-0005:
+// the spine stays dependency-free; backend construction lives at the composition
+// root, and the organ owns the mechanics).
 func init() {
-	contract.SetPgvectorEngineFactory(func() (contract.CloseableEngine, error) {
-		cfg := persist.ConfigFromEnv()
-		if cfg.Backend != persist.BackendPostgres {
-			return nil, fmt.Errorf("postgres store backend not selected (COMPOUND_STORE=%q)", cfg.Backend)
-		}
-		if strings.TrimSpace(cfg.DSN) == "" {
-			return nil, fmt.Errorf("COMPOUND_DSN is required when COMPOUND_STORE=postgres")
-		}
-		embedURL := strings.TrimSpace(os.Getenv("COMPOUND_EMBED_URL"))
-		if embedURL == "" {
-			return nil, fmt.Errorf("COMPOUND_EMBED_URL is required when COMPOUND_STORE=postgres (no baked-in default)")
-		}
-		embedModel := storeEnvOr("COMPOUND_EMBED_MODEL", "nomic-embed-text")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		store, err := pg.Open(ctx, cfg)
-		if err != nil {
-			return nil, err
-		}
-		return pg.NewPgEngine(store, embedURL, embedModel, cfg.VectorDimensions), nil
-	})
+	storecli.InstallPgvectorEngineFactory()
 }
 
 func sortedMapKeys(m map[string]int) []string {
@@ -3841,6 +3816,26 @@ func cmdOrient(args []string) {
 
 // cmdHome manages COMPOUND_HOME — the runtime body (docs/architecture/runtime.md).
 // The first envelope-first brick: generated state lives here, never in the repo.
+// cmdPresence and cmdPresenceAnnounce are thin shims over the work organ's
+// presence surface (the cmd-budget ratchet keeps cmd/compound a dispatch layer).
+func cmdPresence(args []string) {
+	if code := work.RunPresence(args); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func cmdPresenceAnnounce(args []string) {
+	if code := work.RunPresenceAnnounce(args); code != 0 {
+		os.Exit(code)
+	}
+}
+
+// cmdStore is the thin shell over the internal/store organ (the cmd-budget
+// ratchet keeps cmd/compound a dispatch layer; the surface lives in the organ).
+func cmdStore(args []string) {
+	os.Exit(storecli.Run(args, os.Stdout, os.Stderr))
+}
+
 func cmdHome(args []string) {
 	flagHome, sub, kind := "", "", "global"
 	positionals := []string{}

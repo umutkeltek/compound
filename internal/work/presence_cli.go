@@ -1,4 +1,4 @@
-package main
+package work
 
 import (
 	"encoding/json"
@@ -9,21 +9,20 @@ import (
 	"time"
 
 	"compound/internal/home"
-	"compound/internal/work"
 )
 
 const presenceUsage = "usage: compound presence [--json] [--ttl DURATION] [--include-stale] [--tail-bytes N]\n       compound presence announce --actor A --session S --harness H [--cwd D] [--json]"
 
-// cmdPresence answers "who is here right now" from evidence Compound already
+// RunPresence answers "who is here right now" from evidence Compound already
 // holds. It is deliberately NOT sourced from delegate bindings: an agent this
 // runtime never launched is still present the moment it touches the ledger.
-func cmdPresence(args []string) {
+// cmd/compound keeps only a thin os.Exit shim over this organ surface.
+func RunPresence(args []string) int {
 	if len(args) > 0 && args[0] == "announce" {
-		cmdPresenceAnnounce(args[1:])
-		return
+		return RunPresenceAnnounce(args[1:])
 	}
 	jsonOut := false
-	opts := work.PresenceOptions{}
+	opts := PresenceOptions{}
 	for i := 0; i < len(args); i++ {
 		switch arg := args[i]; arg {
 		case "--json":
@@ -34,61 +33,62 @@ func cmdPresence(args []string) {
 			i++
 			if i >= len(args) {
 				fmt.Fprintln(os.Stderr, presenceUsage)
-				os.Exit(2)
+				return 2
 			}
 			parsed, err := time.ParseDuration(strings.TrimSpace(args[i]))
 			if err != nil || parsed <= 0 {
 				fmt.Fprintln(os.Stderr, "error: --ttl must be a positive duration (e.g. 30m)")
-				os.Exit(2)
+				return 2
 			}
 			opts.TTL = parsed
 		case "--tail-bytes":
 			i++
 			if i >= len(args) {
 				fmt.Fprintln(os.Stderr, presenceUsage)
-				os.Exit(2)
+				return 2
 			}
 			parsed, err := strconv.ParseInt(strings.TrimSpace(args[i]), 10, 64)
 			if err != nil || parsed <= 0 {
 				fmt.Fprintln(os.Stderr, "error: --tail-bytes must be a positive integer")
-				os.Exit(2)
+				return 2
 			}
 			opts.TailBytes = parsed
 		default:
 			fmt.Fprintln(os.Stderr, presenceUsage)
-			os.Exit(2)
+			return 2
 		}
 	}
 
 	homePath, err := home.Resolve("")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
-		os.Exit(1)
+		return 1
 	}
 	// Read-only by registry contract: presence inspects the ledger and must
 	// not materialize work/ or events/ just by looking (see work.OpenReadOnly).
-	store, err := work.OpenReadOnly(homePath)
+	store, err := OpenReadOnly(homePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return 1
 	}
 	projection, err := store.PresenceProjectionFor(time.Now(), opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if jsonOut {
 		if err := json.NewEncoder(os.Stdout).Encode(projection); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 	printPresence(projection)
+	return 0
 }
 
-func printPresence(projection work.PresenceProjection) {
+func printPresence(projection PresenceProjection) {
 	fmt.Printf("# presence (ttl %ds)\n\n", projection.TTLSeconds)
 	if len(projection.Present) == 0 {
 		fmt.Println("no actor seen inside the ttl window")
@@ -135,12 +135,12 @@ func printPresence(projection work.PresenceProjection) {
 	}
 }
 
-// cmdPresenceAnnounce records a session's claimed actor. The declaration is
+// RunPresenceAnnounce records a session's claimed actor. The declaration is
 // observed-class evidence, never authority: it is only usable once presence
 // independently shows that actor active, so announcing an identity you do not
 // hold gains nothing.
-func cmdPresenceAnnounce(args []string) {
-	in := work.PresenceSessionInput{}
+func RunPresenceAnnounce(args []string) int {
+	in := PresenceSessionInput{}
 	jsonOut := false
 	for i := 0; i < len(args); i++ {
 		switch arg := args[i]; arg {
@@ -150,7 +150,7 @@ func cmdPresenceAnnounce(args []string) {
 			i++
 			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
 				fmt.Fprintln(os.Stderr, presenceUsage)
-				os.Exit(2)
+				return 2
 			}
 			value := strings.TrimSpace(args[i])
 			switch arg {
@@ -165,14 +165,14 @@ func cmdPresenceAnnounce(args []string) {
 			}
 		default:
 			fmt.Fprintln(os.Stderr, presenceUsage)
-			os.Exit(2)
+			return 2
 		}
 	}
 	if strings.TrimSpace(in.Cwd) == "" {
 		wd, err := os.Getwd()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return 1
 		}
 		in.Cwd = wd
 	}
@@ -180,29 +180,30 @@ func cmdPresenceAnnounce(args []string) {
 	homePath, err := home.Resolve("")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
-		os.Exit(1)
+		return 1
 	}
-	store, err := work.Open(homePath)
+	store, err := Open(homePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return 1
 	}
 	record, err := store.AnnouncePresenceSession(in, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(2)
+		return 2
 	}
 	if jsonOut {
 		if err := json.NewEncoder(os.Stdout).Encode(record); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 	fmt.Printf("announced %s as %s (session %s, announce #%d)\n",
 		record.Harness, record.Actor, record.SessionID, record.Announces)
 	fmt.Println("note: a declaration is evidence, not authority — it is usable only while")
 	fmt.Println("      `compound presence` independently shows that actor active.")
+	return 0
 }
 
 func presenceAge(seconds int64) string {
