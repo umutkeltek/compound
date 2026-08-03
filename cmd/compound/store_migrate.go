@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,25 +12,34 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/eventstore"
 	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/persist"
 	"compound/internal/persist/pg"
 )
 
-const storeMigrateUsage = `usage: compound store migrate (--dry-run | --apply) [--json] [--home P]
+const storeMigrateUsage = `usage: compound store migrate (--dry-run | --apply --work W) [--json] [--home P]
 
 Bulk-loads the file-based ledger (claims, edges, candidates) from COMPOUND_HOME
-into the Postgres backend. Read-only on files; additive writes to pg.
+into the Postgres backend. Claims/edges are read through the memory owner's
+LOCKED MigrationSnapshot (mem.Store.MigrationSnapshot): a point-in-time copy
+that hard-refuses malformed rows and seq regressions — never a raw, unlocked
+scan that can tear mid-promotion or silently skip ledger bytes.
 
 Flags:
   --dry-run   Count records without writing (default)
-  --apply     Actually write records to Postgres
+  --apply     Actually write records to Postgres; governed write — requires
+              --work W and an allowing PolicyDecision (standing grant for
+              capability store.postgres_export.write, external_side_effect
+              class, scoped to the masked DSN target). On success a
+              Receipt+Transition pair is recorded in the home event store.
   --json      Machine-readable output
-  --home P    COMPOUND_HOME path (default: $COMPOUND_HOME)
+  --home P    COMPOUND_HOME path (default: home.Resolve — env, then ancestors)
 
 Environment:
-  COMPOUND_DSN  Postgres connection string (required for --apply)
+  COMPOUND_STORE  must be 'postgres' for --apply
+  COMPOUND_DSN    Postgres connection string (required for --apply)
 `
 
 type migrateSummary struct {
@@ -41,6 +50,10 @@ type migrateSummary struct {
 	ClaimsWritten     int    `json:"claims_written,omitempty"`
 	EdgesWritten      int    `json:"edges_written,omitempty"`
 	CandidatesWritten int    `json:"candidates_written,omitempty"`
+	SeqCounter        int64  `json:"seq_counter"`
+	SeqHighWater      int64  `json:"seq_high_water"`
+	ReceiptID         string `json:"receipt_id,omitempty"`
+	TransitionID      string `json:"transition_id,omitempty"`
 	Errors            int    `json:"errors,omitempty"`
 	Duration          string `json:"duration,omitempty"`
 }
@@ -58,17 +71,9 @@ func runStoreMigrate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "store migrate: no mode specified, defaulting to --dry-run")
 	}
 
-	homePath := valueFlag(args, "--home")
-	if homePath == "" {
-		var err error
-		homePath, err = home.Resolve("")
-		if err != nil {
-			fmt.Fprintf(stderr, "store migrate: resolve home: %v\n", err)
-			return 1
-		}
-	}
-	if homePath == "" {
-		fmt.Fprintln(stderr, "store migrate: no COMPOUND_HOME (set $COMPOUND_HOME or pass --home)")
+	homePath, err := home.Resolve(valueFlag(args, "--home"))
+	if err != nil {
+		fmt.Fprintf(stderr, "store migrate: resolve home: %v (run `compound home init`)\n", err)
 		return 1
 	}
 
@@ -78,29 +83,39 @@ func runStoreMigrate(args []string, stdout, stderr io.Writer) int {
 		summary.Mode = "apply"
 	}
 
-	// Count/read claims
-	claimsPath := filepath.Join(homePath, "ledger", "claims.jsonl")
-	claims, claimErr := readClaimsJSONL(claimsPath)
-	if claimErr != nil {
-		if os.IsNotExist(claimErr) {
-			fmt.Fprintf(stderr, "store migrate: claims.jsonl not found at %s\n", claimsPath)
-		} else {
-			fmt.Fprintf(stderr, "store migrate: read claims: %v\n", claimErr)
-			return 1
-		}
+	// Claims/edges come from the owner's locked, validated snapshot — never a
+	// raw scanner over the live ledger files.
+	memStore, err := mem.OpenReadOnly(homePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "store migrate: open memory store: %v\n", err)
+		return 1
+	}
+	snapshot, err := memStore.MigrationSnapshot()
+	if err != nil {
+		fmt.Fprintf(stderr, "store migrate: migration snapshot: %v\n", err)
+		return 1
+	}
+	summary.SeqCounter = snapshot.Counter
+	summary.SeqHighWater = snapshot.HighWater
+
+	claims, err := parseClaimsSnapshot(snapshot.ClaimsJSONL)
+	if err != nil {
+		fmt.Fprintf(stderr, "store migrate: parse claims snapshot: %v\n", err)
+		return 1
+	}
+	if len(claims) == 0 {
+		fmt.Fprintf(stderr, "store migrate: no claims in ledger at %s\n", filepath.Join(homePath, "ledger", "claims.jsonl"))
 	}
 	summary.ClaimsFound = len(claims)
 
-	// Count/read edges
-	edgesPath := filepath.Join(homePath, "ledger", "edges.jsonl")
-	edges, edgeErr := readEdgesJSONL(edgesPath)
-	if edgeErr != nil && !os.IsNotExist(edgeErr) {
-		fmt.Fprintf(stderr, "store migrate: read edges: %v\n", edgeErr)
+	edges, err := parseEdgesSnapshot(snapshot.EdgesJSONL)
+	if err != nil {
+		fmt.Fprintf(stderr, "store migrate: parse edges snapshot: %v\n", err)
 		return 1
 	}
 	summary.EdgesFound = len(edges)
 
-	// Count/read candidates
+	// Candidates are file-per-record (no shared append log), read directly.
 	candDir := filepath.Join(homePath, candidates.InboxDir(candidates.Memory))
 	cands, candErr := readCandidateFiles(candDir)
 	if candErr != nil && !os.IsNotExist(candErr) {
@@ -111,14 +126,15 @@ func runStoreMigrate(args []string, stdout, stderr io.Writer) int {
 
 	if !apply {
 		summary.Duration = time.Since(start).Round(time.Millisecond).String()
-		emitMigrateSummary(stdout, summary, jsonOut)
-		return 0
+		return emitMigrateSummary(stdout, stderr, summary, jsonOut)
 	}
 
-	// ─── Apply mode ──────────────────────────────────────────────────────────────
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
+	// ─── Apply mode: governed write, gated BEFORE any side effect ─────────────
+	work := strings.TrimSpace(valueFlag(args, "--work"))
+	if work == "" {
+		fmt.Fprintln(stderr, "error: --work W is required for --apply (a governed act belongs to a work)")
+		return 2
+	}
 	cfg := persist.ConfigFromEnv()
 	if cfg.Backend != persist.BackendPostgres {
 		fmt.Fprintln(stderr, "store migrate --apply: COMPOUND_STORE must be 'postgres'")
@@ -128,6 +144,17 @@ func runStoreMigrate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "store migrate --apply: COMPOUND_DSN is required")
 		return 1
 	}
+
+	now := time.Now()
+	ai := storeGovernedIntent(work, "migrate_apply", maskDSN(cfg.DSN),
+		fmt.Sprintf("bulk-load %d claims, %d edges, %d candidates from %s into Postgres", len(claims), len(edges), len(cands), homePath), now)
+	if _, err := gateStoreGovernedWrite(homePath, ai, now); err != nil {
+		fmt.Fprintln(stderr, "store migrate --apply:", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 
 	store, err := pg.Open(ctx, cfg)
 	if err != nil {
@@ -181,62 +208,66 @@ func runStoreMigrate(args []string, stdout, stderr io.Writer) int {
 	}
 
 	summary.Duration = time.Since(start).Round(time.Millisecond).String()
-	emitMigrateSummary(stdout, summary, jsonOut)
 
 	if summary.Errors > 0 {
+		emitMigrateSummary(stdout, stderr, summary, jsonOut)
 		return 1
 	}
-	return 0
+
+	// The mutation is complete; record its proof. A proof failure after a
+	// successful export is loud, never silent.
+	esStore, err := eventstore.Open(homePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "store migrate: open event store for proof: %v\n", err)
+		return 1
+	}
+	proofSummary := fmt.Sprintf("store migrate --apply: %d claims, %d edges, %d candidates exported to Postgres (seq high-water %d)",
+		summary.ClaimsWritten, summary.EdgesWritten, summary.CandidatesWritten, summary.SeqHighWater)
+	receiptID, transitionID, err := recordStoreGovernedProof(esStore, ai, proofSummary, now)
+	if err != nil {
+		fmt.Fprintf(stderr, "store migrate: export applied but proof recording failed: %v\n", err)
+		return 1
+	}
+	summary.ReceiptID = receiptID
+	summary.TransitionID = transitionID
+
+	return emitMigrateSummary(stdout, stderr, summary, jsonOut)
 }
 
-// ─── File readers ────────────────────────────────────────────────────────────────
+// ─── Snapshot parsers ────────────────────────────────────────────────────────────
+// The snapshot already validated every row (hard-refusing malformed lines and
+// seq regressions); these parsers only decode — a decode failure here means the
+// owner validation and this decoder disagree, which is a hard error, never a
+// skipped row.
 
-func readClaimsJSONL(path string) ([]mem.Claim, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
+func parseClaimsSnapshot(data []byte) ([]mem.Claim, error) {
 	var claims []mem.Claim
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 4*1024*1024) // 4MB max line
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
+	for index, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var c mem.Claim
-		if err := json.Unmarshal([]byte(line), &c); err != nil {
-			continue // skip malformed lines
+		if err := json.Unmarshal(line, &c); err != nil {
+			return nil, fmt.Errorf("claim row %d: %w", index+1, err)
 		}
 		claims = append(claims, c)
 	}
-	return claims, scanner.Err()
+	return claims, nil
 }
 
-func readEdgesJSONL(path string) ([]mem.Edge, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
+func parseEdgesSnapshot(data []byte) ([]mem.Edge, error) {
 	var edges []mem.Edge
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
+	for index, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var e mem.Edge
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			continue
+		if err := json.Unmarshal(line, &e); err != nil {
+			return nil, fmt.Errorf("edge row %d: %w", index+1, err)
 		}
 		edges = append(edges, e)
 	}
-	return edges, scanner.Err()
+	return edges, nil
 }
 
 func readCandidateFiles(dir string) ([]mem.Candidate, error) {
@@ -252,11 +283,11 @@ func readCandidateFiles(dir string) ([]mem.Candidate, error) {
 		}
 		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("read candidate %s: %w", entry.Name(), err)
 		}
 		var c mem.Candidate
 		if err := json.Unmarshal(data, &c); err != nil {
-			continue
+			return nil, fmt.Errorf("parse candidate %s: %w", entry.Name(), err)
 		}
 		if c.ID == "" {
 			// Use filename stem as ID if not embedded
@@ -284,9 +315,10 @@ func mapMemClaimToPersist(c mem.Claim) persist.Claim {
 		Qualifiers:      c.Qualifiers,
 		Visibility:      c.Visibility,
 		State:           c.State,
-		SourceTraceRef:  "",
-		EvidenceRefs:    c.EvidenceRefs,
-		CreatedAt:       c.CreatedAt,
+		// mem.Claim carries no SourceTraceRef (that field lives on Candidate);
+		// provenance stays in EvidenceRefs — never invent a source.
+		EvidenceRefs: c.EvidenceRefs,
+		CreatedAt:    c.CreatedAt,
 	}
 }
 
@@ -316,12 +348,13 @@ func mapMemCandidateToPersist(c mem.Candidate) persist.Candidate {
 
 // ─── Output ──────────────────────────────────────────────────────────────────────
 
-func emitMigrateSummary(stdout io.Writer, summary migrateSummary, jsonOut bool) {
+func emitMigrateSummary(stdout, stderr io.Writer, summary migrateSummary, jsonOut bool) int {
 	if jsonOut {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		enc.Encode(summary)
-		return
+		if err := encodeJSON(stdout, summary); err != nil {
+			fmt.Fprintln(stderr, "store migrate: encode summary:", err)
+			return 1
+		}
+		return 0
 	}
 	fmt.Fprintf(stdout, "store migrate (%s)\n", summary.Mode)
 	fmt.Fprintf(stdout, "  claims:     %d found", summary.ClaimsFound)
@@ -339,10 +372,15 @@ func emitMigrateSummary(stdout io.Writer, summary migrateSummary, jsonOut bool) 
 		fmt.Fprintf(stdout, " → %d written", summary.CandidatesWritten)
 	}
 	fmt.Fprintln(stdout)
+	fmt.Fprintf(stdout, "  seq:        counter=%d high-water=%d (locked owner snapshot)\n", summary.SeqCounter, summary.SeqHighWater)
+	if summary.ReceiptID != "" {
+		fmt.Fprintf(stdout, "  proof:      receipt=%s transition=%s\n", summary.ReceiptID, summary.TransitionID)
+	}
 	if summary.Errors > 0 {
 		fmt.Fprintf(stdout, "  errors:     %d\n", summary.Errors)
 	}
 	if summary.Duration != "" {
 		fmt.Fprintf(stdout, "  duration:   %s\n", summary.Duration)
 	}
+	return 0
 }

@@ -54,7 +54,7 @@ Environment:
   COMPOUND_EMBED_MODEL  Embedding model name (default: nomic-embed-text)
 
 Examples:
-  COMPOUND_DSN="postgres://user:pass@db.example.com:5432/compound?sslmode=disable" \
+  COMPOUND_DSN="postgres://user@db.example.invalid:5432/compound" \
     compound store doctor
   compound store init
   compound store status --json
