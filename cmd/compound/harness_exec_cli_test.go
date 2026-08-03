@@ -431,4 +431,64 @@ func TestHarnessRunJSONGovernedFalse(t *testing.T) {
 	}
 }
 
+// TestHarnessRunMissingWorkspaceRefusedBeforeMint: `harness run` with a
+// workspace that does not exist must refuse at the workspace_existence gate
+// BEFORE minting a RunAttempt -- the same fail-closed stat gate
+// `work advance --execute` has, via the shared checkExecuteWorkspaceExists.
+//
+// Falsifier (RED at base): cmdHarnessRun had no existence gate, so a stale
+// path (e.g. a retired git_delivery.target_worktree_root) minted an attempt
+// that was guaranteed to terminalize failed at cmd.Start (chdir).
+func TestHarnessRunMissingWorkspaceRefusedBeforeMint(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "harness run refuses a missing workspace before mint",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A path that is guaranteed absent: inside the per-test temp dir, never created.
+	missing := filepath.Join(t.TempDir(), "retired-worktree-root")
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	cmd := exec.Command(compoundTestBinary(t), "harness", "run",
+		"--harness", "os-harness-entrypoints",
+		"--work", w.ID,
+		"--workspace", missing,
+		"--", "echo", "hi")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("expected non-zero exit for a missing workspace dir, got 0. output:\n%s", out)
+	}
+	// The refusal must name the gate and the path it rejected, so the reader
+	// is not left guessing which ladder rung produced it.
+	for _, want := range []string{
+		"gate workspace_existence",
+		missing,
+		"tried in order:",
+		"prevents:",
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("expected %q in the workspace-existence refusal, got:\n%s", want, out)
+		}
+	}
+	// `harness run` does not claim, so a refusal mints NOTHING.
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 0 {
+		t.Fatalf("refusal must mint no RunAttempt; want 0 files, got %d", len(runAttemptFiles))
+	}
+}
+
 var _ = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)

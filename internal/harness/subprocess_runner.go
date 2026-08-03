@@ -83,6 +83,13 @@ func runWithSubprocess(
 	if err := validateSubprocessInput(harnessName, in); err != nil {
 		return RunOutput{}, err
 	}
+	// A non-positive heartbeat interval panics time.NewTicker inside
+	// heartbeatLoop. Clamp here -- the single funnel every adapter passes
+	// through -- so a misconfigured adapter degrades to the default cadence
+	// instead of crashing the run after the RunAttempt was minted.
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = defaultHeartbeatInterval
+	}
 	started := in.Now
 	ra, err := store.Mint(in.WorkID, harnessName, harnessName, started)
 	if err != nil {
@@ -172,6 +179,11 @@ func runWithSubprocess(
 	tw := &lockedWriter{w: bufio.NewWriter(tf)}
 
 	cmd := build(ctx, in)
+	// Spawn the subprocess in its own process group (unix only; a no-op
+	// elsewhere) so the timeout kill below reaps the whole tree, not just the
+	// direct child -- see procgroup_unix.go for the orphaned-grandchild hang
+	// this prevents.
+	setProcessGroup(cmd)
 	// Connect stdin to the subprocess. The old code ran
 	// io.Copy(io.Discard, in.Stdin) in a goroutine, silently throwing the
 	// caller's input away.
@@ -204,9 +216,12 @@ func runWithSubprocess(
 	// forgets exec.CommandContext cannot hang forever inside capWG.Wait.
 	// The kill timer forces the subprocess to exit at RunInput.Timeout,
 	// which EOFs the capture pipes, so capWG.Wait below is bounded
-	// regardless of how buildCmd constructed the command. The timer also
-	// selects on stopCh so a process that exits on its own never gets a
-	// spurious kill.
+	// regardless of how buildCmd constructed the command. The kill targets
+	// the whole process group (setProcessGroup above): killing only the
+	// direct child lets an orphaned grandchild keep the pipes open, which
+	// re-hangs capWG.Wait with fresh heartbeats that hide the stall from
+	// SweepStale. The timer also selects on stopCh so a process that exits
+	// on its own never gets a spurious kill.
 	var timedOut atomic.Bool
 	if in.Timeout > 0 {
 		go func() {
@@ -215,7 +230,7 @@ func runWithSubprocess(
 			select {
 			case <-t.C:
 				timedOut.Store(true)
-				_ = cmd.Process.Kill()
+				killProcessTree(cmd)
 			case <-stopCh:
 			}
 		}()
@@ -252,8 +267,22 @@ func runWithSubprocess(
 	}
 	terminal, err := store.Complete(ra.ID, status, started.Add(time.Since(started)))
 	if err != nil {
-		return RunOutput{RunAttempt: ra, TranscriptPath: transcriptPath, ExitCode: exitCode, TimedOut: timedOut.Load(), Duration: time.Since(started)},
-			fmt.Errorf("%s: complete: %w", harnessName, err)
+		// Retry once: a transient store fault must not strand a pending
+		// attempt that callers forward-link onto the envelope.
+		terminal, err = store.Complete(ra.ID, status, started.Add(time.Since(started)))
+	}
+	if err != nil {
+		// The run produced a result but the attempt would not terminalize.
+		// failTerm best-effort records the reason and attempts a failed
+		// Complete, so the returned attempt is terminal whenever ANY store
+		// write still lands -- never a pending record the caller forward-links
+		// as if the run were still in flight. The real exit code / timeout /
+		// duration are preserved on top of failTerm's infra-failure defaults.
+		out := failTerm("complete run attempt: " + err.Error())
+		out.ExitCode = exitCode
+		out.TimedOut = timedOut.Load()
+		out.Duration = time.Since(started)
+		return out, fmt.Errorf("%s: complete: %w", harnessName, err)
 	}
 	return RunOutput{
 		RunAttempt:     terminal,

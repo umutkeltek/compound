@@ -26,7 +26,11 @@ var mergeClaimRefRE = regexp.MustCompile(`claim_[A-Za-z0-9_:-]+`)
 
 // Apply is the only mutating panel step. It maps recorded panel verdicts through
 // policy and memory adjudication, then closes a WorkEnvelope proof chain.
-func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
+//
+// The returns are named so the deferred terminalizer registered right after
+// Mint can read the error an early return is failing with and record it as the
+// RunAttempt's terminalization reason (see the failTerm-style guard below).
+func Apply(homePath string, run Run, now func() time.Time) (result Run, err error) {
 	if now == nil {
 		now = time.Now
 	}
@@ -110,10 +114,62 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 	if err != nil {
 		return run, err
 	}
+	// Terminalize on EVERY return path from here on -- the failTerm-style
+	// backstop (see subprocess_runner.go's failTerm). Before this guard, an
+	// error return below stranded the minted attempt pending AND left the
+	// WorkEnvelope stuck in running. The explicit paths below still own the
+	// honest terminal states (succeeded on a clean apply, failed when the
+	// fail-soft loop saw target failures); this defer covers only returns
+	// that happen BEFORE those Complete/Close calls: it fails the attempt
+	// with the returned error as the reason and fail-closes the envelope
+	// (audit_only), mirroring the governed execution path's failed-run close
+	// in cmd/compound/work_advance_execute.go. All best-effort: the
+	// function's own error return remains the truth we surface.
+	attemptTerminal := false
+	envelopeOpen := false
+	defer func() {
+		if !attemptTerminal {
+			reason := "panel apply aborted before completing the run attempt"
+			if err != nil {
+				reason = "panel apply aborted: " + err.Error()
+			}
+			_, _ = runAttemptStore.CompleteWithReason(ra.ID, runattempt.StatusFailed, reason, now().UTC())
+		}
+		if envelopeOpen {
+			summary := "panel apply aborted before work close"
+			if err != nil {
+				summary = "panel apply aborted: " + err.Error()
+			}
+			_, _ = workStore.Close(run.WorkID, work.CloseInput{
+				Outcome:       "failed",
+				MoveType:      "audit_only",
+				Actor:         panelApplyActor,
+				Summary:       summary,
+				Changed:       true,
+				ProofRefs:     proofRefs,
+				RunAttemptIDs: []string{ra.ID},
+			}, now().UTC())
+		}
+	}()
+	// F2: stamp provenance immediately after Mint, before any other side
+	// effect. panel.Apply IS the execution -- it performs the adjudication
+	// mutations synchronously -- so the attempt is harness_execution, never a
+	// claim reservation or a post-hoc observation. The stamp lets
+	// supersede-at-attach (internal/work) retire the pending claim_reservation
+	// minted by workStore.Claim above when this attempt attaches at the
+	// running-advance below. A stamp failure is a genuine infra failure: it
+	// returns here and the deferred guard terminalizes the freshly minted
+	// attempt instead of stranding it pending.
+	if stamped, oErr := runAttemptStore.SetOrigin(ra.ID, runattempt.OriginHarnessExecution); oErr != nil {
+		return run, fmt.Errorf("stamp run attempt origin: %w", oErr)
+	} else {
+		ra = stamped
+	}
 	advancedEnv, err := workStore.Advance(run.WorkID, work.AdvanceInput{To: "running", Actor: panelApplyActor, RunAttemptIDs: []string{ra.ID}, Note: "panel apply started"}, now().UTC())
 	if err != nil {
 		return run, err
 	}
+	envelopeOpen = true
 	// Bind the RunAttempt to the ActionIntent Advance just created (the last act_ id on the
 	// advanced envelope), closing the attempt→intent→decision audit chain.
 	if n := len(advancedEnv.ActionIntentIDs); n > 0 {
@@ -195,6 +251,7 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 	if err != nil {
 		return run, err
 	}
+	envelopeOpen = false // the envelope terminalized on the explicit path; the deferred guard must not re-close it
 	run.ReceiptID = closeResult.Receipt.ID
 	run.TransitionID = closeResult.Transition.ID
 	if err := store.SaveRun(run); err != nil {
@@ -215,6 +272,7 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 	if _, err := runAttemptStore.Complete(ra.ID, runAttemptStatus, now().UTC()); err != nil {
 		return run, err
 	}
+	attemptTerminal = true // the attempt terminalized on the explicit path; the deferred guard must not re-complete it
 	if applyFailures > 0 {
 		return run, fmt.Errorf("panel apply completed with %d target failure(s); run %s remains re-applyable for the failed targets", applyFailures, run.ID)
 	}

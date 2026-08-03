@@ -456,6 +456,23 @@ func TestApplyRecordsRunAttemptChain(t *testing.T) {
 	if len(ra.ProofRefs) == 0 {
 		t.Fatalf("runattempt proof_refs must include at least the panel run record and the receipt/transition ids")
 	}
+	// F2: panel apply IS the execution, so its attempt is stamped
+	// harness_execution immediately after Mint.
+	if ra.Origin != runattempt.OriginHarnessExecution {
+		t.Fatalf("runattempt origin = %q, want %q (stamped immediately after Mint)", ra.Origin, runattempt.OriginHarnessExecution)
+	}
+	// F2 twin: attaching the harness_execution attempt at the running-advance
+	// supersedes the claim_reservation placeholder minted by Claim -- it must
+	// not linger pending for the sweeper.
+	for _, e := range entries {
+		candidate, err := raStore.Get(strings.TrimSuffix(e.Name(), ".json"))
+		if err != nil {
+			t.Fatalf("Get runattempt %s: %v", e.Name(), err)
+		}
+		if candidate.Origin == runattempt.OriginClaimReservation && candidate.Status != runattempt.StatusSuperseded {
+			t.Fatalf("claim reservation status = %q, want superseded once the execution attempt attached", candidate.Status)
+		}
+	}
 }
 
 // TestApplyRecordsRunAttemptChainFailed is the failed-path companion to
@@ -526,6 +543,85 @@ func TestApplyRecordsRunAttemptChainFailed(t *testing.T) {
 	}
 	if ra.Status != runattempt.StatusFailed {
 		t.Fatalf("runattempt status = %q, want failed", ra.Status)
+	}
+}
+
+// TestApplyAbortTerminalizesAttemptAndClosesEnvelope pins the deferred
+// failTerm-style guard: an error return AFTER Mint and the running-advance
+// must neither strand the minted RunAttempt pending nor leave the
+// WorkEnvelope stuck in running. The trigger is a TargetKind that
+// countPanelTargetStates rejects -- a deterministic error return late in
+// Apply (after every store write up to the apply loop succeeded) that needs
+// no fault-injection seam. Falsifier: before the guard, this exact path left
+// the attempt pending forever and the envelope running.
+func TestApplyAbortTerminalizesAttemptAndClosesEnvelope(t *testing.T) {
+	home := t.TempDir()
+	// decision_candidate passes Apply's early target-kind validation but has no
+	// countPanelTargetStates case, so it deterministically errors late — after
+	// Mint and the running-advance — which is exactly the path the guard owns.
+	run := newPanelApplyRunForTest("decision_candidate")
+
+	got, err := Apply(home, run, incrementingPanelNowForTest())
+	if err == nil || !strings.Contains(err.Error(), "unsupported target kind") {
+		t.Fatalf("want unsupported-target-kind abort, got %v", err)
+	}
+	if got.WorkID == "" {
+		t.Fatalf("the abort path must have created and claimed a work envelope before failing")
+	}
+
+	// The execution attempt is terminal failed with the abort named as the
+	// reason -- never stranded pending. The claim reservation is superseded
+	// (F2). Two attempts total.
+	raStore := runattempt.Open(home)
+	entries, err := os.ReadDir(filepath.Join(home, "run_attempts"))
+	if err != nil {
+		t.Fatalf("read run_attempts: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("run_attempts entries = %d, want 2 (claim reservation + execution)", len(entries))
+	}
+	execFound := false
+	for _, e := range entries {
+		candidate, err := raStore.Get(strings.TrimSuffix(e.Name(), ".json"))
+		if err != nil {
+			t.Fatalf("Get runattempt %s: %v", e.Name(), err)
+		}
+		switch candidate.Origin {
+		case runattempt.OriginHarnessExecution:
+			execFound = true
+			if candidate.Status != runattempt.StatusFailed {
+				t.Fatalf("execution attempt status = %q, want failed (the deferred guard terminalized the abort)", candidate.Status)
+			}
+			if !strings.Contains(candidate.SweepReason, "panel apply aborted") {
+				t.Fatalf("execution attempt reason = %q, want it to name the abort", candidate.SweepReason)
+			}
+		case runattempt.OriginClaimReservation:
+			if candidate.Status != runattempt.StatusSuperseded {
+				t.Fatalf("claim reservation status = %q, want superseded once the execution attempt attached", candidate.Status)
+			}
+		default:
+			t.Fatalf("unexpected attempt origin %q; every mint must be stamped (F2)", candidate.Origin)
+		}
+	}
+	if !execFound {
+		t.Fatal("no harness_execution attempt found; panel apply must stamp SetOrigin right after Mint")
+	}
+
+	// The envelope fail-closed (audit_only) instead of stranding in running,
+	// mirroring the governed execution path's failed-run close.
+	workStore, err := work.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := workStore.Get(got.WorkID)
+	if err != nil {
+		t.Fatalf("get work: %v", err)
+	}
+	if w.State != "failed" {
+		t.Fatalf("work envelope state = %q, want failed (fail-closed by the deferred guard, not stuck running)", w.State)
+	}
+	if w.IDs.TransitionID == "" {
+		t.Fatalf("a fail-closed envelope emits a Transition; transition_id is empty")
 	}
 }
 

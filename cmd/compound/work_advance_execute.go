@@ -149,13 +149,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	// the envelope "failed (audit_only)". failed is terminal, so a stale root
 	// destroyed the work item in a single invocation with no recovery path.
 	// Stat before the state change so the envelope survives a bad path.
-	if info, statErr := os.Stat(workspace); statErr != nil || !info.IsDir() {
-		observed := "stat " + workspace + ": "
-		if statErr != nil {
-			observed += statErr.Error()
-		} else {
-			observed += "exists but is not a directory"
-		}
+	if observed, ok := checkExecuteWorkspaceExists(workspace); !ok {
 		gateRefusal{
 			Command: "compound work advance --execute",
 			Gate:    "workspace_existence",

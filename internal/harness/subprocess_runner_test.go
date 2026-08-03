@@ -406,3 +406,202 @@ func itoa(n int) string {
 	}
 	return string(b[i:])
 }
+
+// failOnceCompleteStore wraps a real *runattempt.Store but fails the FIRST
+// Complete call, simulating a transient store fault at terminalization.
+// Every later call delegates, so the runner's retry can still land.
+type failOnceCompleteStore struct {
+	*runattempt.Store
+	calls int
+}
+
+func (s *failOnceCompleteStore) Complete(id string, status string, now time.Time) (runattempt.RunAttempt, error) {
+	s.calls++
+	if s.calls == 1 {
+		return runattempt.RunAttempt{}, errors.New("transient write fault")
+	}
+	return s.Store.Complete(id, status, now)
+}
+
+// alwaysFailCompleteStore fails EVERY Complete call, simulating a store that
+// refuses all terminal writes. calls counts attempts so the test can prove
+// the retry and the best-effort failTerm Complete both fired.
+type alwaysFailCompleteStore struct {
+	*runattempt.Store
+	calls int
+}
+
+func (s *alwaysFailCompleteStore) Complete(_, _ string, _ time.Time) (runattempt.RunAttempt, error) {
+	s.calls++
+	return runattempt.RunAttempt{}, errors.New("disk full")
+}
+
+// TestRunnerCompleteRetriedOnce: a transient store.Complete fault is retried
+// once, so the run still terminalizes succeeded instead of returning a
+// pending attempt the caller would forward-link onto the envelope.
+// Falsifier: the old code returned the first Complete error to the caller and
+// left the persisted record pending.
+func TestRunnerCompleteRetriedOnce(t *testing.T) {
+	home := t.TempDir()
+	real := runattempt.Open(home)
+	store := &failOnceCompleteStore{Store: real}
+
+	build := func(ctx context.Context, in RunInput) *exec.Cmd {
+		return exec.CommandContext(ctx, in.Command, in.Args...)
+	}
+	out, err := runWithSubprocess(context.Background(), store, "os-harness-entrypoints",
+		RunInput{
+			WorkID:    "work_complete_retry",
+			Harness:   "os-harness-entrypoints",
+			Workspace: home,
+			Command:   "echo",
+			Args:      []string{"ok"},
+			Now:       time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC),
+		}, build, defaultHeartbeatInterval)
+	if err != nil {
+		t.Fatalf("a transient Complete fault must be retried, got error: %v", err)
+	}
+	if store.calls != 2 {
+		t.Fatalf("Complete calls = %d, want 2 (initial + one retry)", store.calls)
+	}
+	if out.RunAttempt.Status != runattempt.StatusSucceeded {
+		t.Fatalf("status = %q, want succeeded after the retry", out.RunAttempt.Status)
+	}
+	got, gerr := real.Get(out.RunAttempt.ID)
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if got.Status != runattempt.StatusSucceeded {
+		t.Fatalf("persisted status = %q, want succeeded (the retry must land the terminal write)", got.Status)
+	}
+}
+
+// TestRunnerCompleteFailureTerminalizesBestEffort: a persistent
+// store.Complete failure still (a) retries once, (b) records the reason on
+// the transcript, and (c) attempts a best-effort failed Complete -- then
+// returns the error alongside the REAL run result (exit code, transcript),
+// never a silently-pending record. A store that refuses every terminal write
+// cannot be terminalized; the transcript line and the returned error are the
+// audit trail that remains.
+func TestRunnerCompleteFailureTerminalizesBestEffort(t *testing.T) {
+	home := t.TempDir()
+	real := runattempt.Open(home)
+	store := &alwaysFailCompleteStore{Store: real}
+
+	build := func(ctx context.Context, in RunInput) *exec.Cmd {
+		return exec.CommandContext(ctx, in.Command, in.Args...)
+	}
+	out, err := runWithSubprocess(context.Background(), store, "os-harness-entrypoints",
+		RunInput{
+			WorkID:    "work_complete_fail",
+			Harness:   "os-harness-entrypoints",
+			Workspace: home,
+			Command:   "echo",
+			Args:      []string{"ok"},
+			Now:       time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC),
+		}, build, defaultHeartbeatInterval)
+	if err == nil {
+		t.Fatalf("a persistent Complete failure must still return a non-nil error")
+	}
+	// The minted attempt id is returned so the caller can forward-link it.
+	if out.RunAttempt.ID == "" {
+		t.Fatalf("RunOutput.RunAttempt.ID is empty; the minted attempt was stranded")
+	}
+	// The real run result is preserved on top of failTerm's infra defaults:
+	// the echo succeeded (exit 0); only terminalization failed.
+	if out.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (the run itself succeeded)", out.ExitCode)
+	}
+	// Three Complete attempts: the initial call, the retry, and failTerm's
+	// best-effort failed Complete.
+	if store.calls != 3 {
+		t.Fatalf("Complete calls = %d, want 3 (initial + retry + failTerm)", store.calls)
+	}
+	// The reason landed on the transcript even though the store refused
+	// every terminal write.
+	body, rerr := os.ReadFile(out.TranscriptPath)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if !strings.Contains(string(body), "infra_error: complete run attempt") {
+		t.Fatalf("transcript must record the terminalization failure reason; got:\n%s", body)
+	}
+}
+
+// TestRunnerClampsNonPositiveHeartbeatInterval: a non-positive heartbeat
+// interval panics time.NewTicker inside heartbeatLoop. runWithSubprocess
+// clamps it to the default cadence, so a misconfigured adapter degrades
+// instead of crashing the run after the RunAttempt was minted.
+// Falsifier: before the clamp, interval 0 crashed the process with
+// "non-positive interval for NewTicker".
+func TestRunnerClampsNonPositiveHeartbeatInterval(t *testing.T) {
+	for _, interval := range []time.Duration{0, -time.Second} {
+		home := t.TempDir()
+		store := runattempt.Open(home)
+		build := func(ctx context.Context, in RunInput) *exec.Cmd {
+			return exec.CommandContext(ctx, in.Command, in.Args...)
+		}
+		out, err := runWithSubprocess(context.Background(), store, "os-harness-entrypoints",
+			RunInput{
+				WorkID:    "work_hb_clamp",
+				Harness:   "os-harness-entrypoints",
+				Workspace: home,
+				Command:   "echo",
+				Args:      []string{"ok"},
+				Now:       time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC),
+			}, build, interval)
+		if err != nil {
+			t.Fatalf("interval %v: run must succeed on the clamped cadence: %v", interval, err)
+		}
+		if out.RunAttempt.Status != runattempt.StatusSucceeded {
+			t.Fatalf("interval %v: status = %q, want succeeded", interval, out.RunAttempt.Status)
+		}
+	}
+}
+
+// TestRunnerTimeoutKillsProcessGroup: the timeout kill targets the whole
+// process group, not just the direct child. The fixture spawns a background
+// grandchild that inherits (holds open) the capture pipes; a direct-child-
+// only kill leaves the grandchild alive, capture never sees EOF, and
+// capWG.Wait blocks until the grandchild exits (~30s) -- with heartbeats
+// keeping the attempt fresh, so SweepStale would never collect it either.
+// Falsifier: with a direct-child-only kill this test takes the full 30s
+// sleep and trips the elapsed bound.
+func TestRunnerTimeoutKillsProcessGroup(t *testing.T) {
+	home := t.TempDir()
+	store := runattempt.Open(home)
+	// Deliberately build with exec.Command (no context), same as
+	// TestRunnerTimeoutOwnedByRunner: the runner owns the kill.
+	naiveBuild := func(_ context.Context, in RunInput) *exec.Cmd {
+		return exec.Command(in.Command, in.Args...)
+	}
+	start := time.Now()
+	out, err := runWithSubprocess(context.Background(), store, "naive",
+		RunInput{
+			WorkID:    "work_group_kill",
+			Harness:   "naive",
+			Workspace: home,
+			// The background sleep inherits the capture pipes; the foreground
+			// sleep keeps the direct child alive until the kill fires. Only a
+			// process-group kill reaps BOTH.
+			Command: "sh",
+			Args:    []string{"-c", "sleep 30 & sleep 30"},
+			Timeout: 300 * time.Millisecond,
+			Now:     time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC),
+		}, naiveBuild, defaultHeartbeatInterval)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("timeout must NOT surface as a Run-level error: %v", err)
+	}
+	if !out.TimedOut {
+		t.Fatalf("out.TimedOut = false, want true")
+	}
+	if out.RunAttempt.Status != runattempt.StatusFailed {
+		t.Fatalf("status = %q, want failed", out.RunAttempt.Status)
+	}
+	// Killed at 300ms; a direct-child-only kill returns only after the
+	// orphaned grandchild's 30s sleep closes the pipes.
+	if elapsed > 5*time.Second {
+		t.Fatalf("process group was not killed: elapsed = %v (an orphaned grandchild held the pipes open)", elapsed)
+	}
+}

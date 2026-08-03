@@ -431,12 +431,12 @@ func (s *Store) CompleteWithReason(id, status, reason string, now time.Time) (Ru
 // classification would leave doctor unable to tell a swept-but-cleared
 // attempt from a swept-but-needs-review attempt.
 //
-// An empty classification is treated as SweepClassificationSideEffectFree:
-// callers that don't classify (the existing CompleteWithReason path, work
-// envelope supersession, etc.) get the same byte-identical record shape as
-// before. Empty classification explicitly is rejected on the sweep path —
-// the sweep ALWAYS classifies, so a missing classification is a bug in
-// the caller and should fail closed.
+// The classification is REQUIRED: an empty (or otherwise unrecognized) value
+// is rejected — the sweep ALWAYS classifies, so a missing classification is a
+// bug in the caller and should fail closed. Callers that don't classify (the
+// existing CompleteWithReason path, work envelope supersession, etc.) never
+// reach this entrypoint; they leave SweepClassification empty (omitempty) and
+// get the same byte-identical record shape as before.
 func (s *Store) CompleteWithReasonAndClassification(id, status, reason, classification string, now time.Time) (RunAttempt, error) {
 	if !IsTerminal(status) {
 		return RunAttempt{}, fmt.Errorf("runattempt complete %s: status %q is not terminal", id, status)

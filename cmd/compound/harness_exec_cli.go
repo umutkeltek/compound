@@ -157,6 +157,27 @@ func cmdHarnessRun(args []string) {
 		os.Exit(2)
 	}
 
+	// Same existence gate as `work advance --execute` (shared
+	// checkExecuteWorkspaceExists): the resolver returns whatever path it
+	// found -- including a git_delivery.target_worktree_root recorded months
+	// ago for a worktree since retired. Stat BEFORE the adapter mints a
+	// RunAttempt, so a stale path refuses the run instead of minting an
+	// attempt that is guaranteed to terminalize failed at cmd.Start (chdir).
+	if observed, ok := checkExecuteWorkspaceExists(workspace); !ok {
+		gateRefusal{
+			Command: "compound harness run",
+			Gate:    "workspace_existence",
+			Refused: fmt.Sprintf("the resolved execution workspace %q is not a usable directory, so no RunAttempt was minted", workspace),
+			Tried:   append(workspaceTried, observed),
+			DoThis: []string{
+				fmt.Sprintf("compound harness run --harness %s --work %s --workspace <existing-checkout>", harnessName, firstNonEmptyRefusalValue(workID, "<work-id>")),
+				fmt.Sprintf("compound work show %s   # git_delivery.target_worktree_root may name a worktree that was retired", firstNonEmptyRefusalValue(workID, "<work-id>")),
+			},
+			Prevents: "minting a RunAttempt that is guaranteed to fail: the harness launch dies at chdir when the resolved workspace does not exist, leaving a failed attempt that records nothing but the operator's stale path.",
+		}.writeTo(os.Stderr)
+		os.Exit(2)
+	}
+
 	in := harness.RunInput{
 		WorkID:         workID,
 		Harness:        harnessName,
@@ -266,4 +287,25 @@ func resolveExecuteWorkspace(args []string, gd *envelope.GitDeliveryContract) (s
 		return cwd, append(tried, "current working directory: "+cwd)
 	}
 	return "", append(tried, "current working directory: unavailable ("+err.Error()+")")
+}
+
+// checkExecuteWorkspaceExists proves the resolved execution workspace is a
+// usable directory BEFORE any state change (a governed advance or a RunAttempt
+// mint). Shared by `work advance --execute` and `harness run` so both refuse a
+// stale path -- e.g. a git_delivery.target_worktree_root recorded months ago
+// for a worktree since retired -- instead of discovering it at cmd.Start
+// (chdir), after the state change already landed. Returns the observed trace
+// line the refusal ladder quotes verbatim; ok=false means refuse.
+func checkExecuteWorkspaceExists(workspace string) (observed string, ok bool) {
+	observed = "stat " + workspace + ": "
+	info, statErr := os.Stat(workspace)
+	switch {
+	case statErr != nil:
+		observed += statErr.Error()
+	case !info.IsDir():
+		observed += "exists but is not a directory"
+	default:
+		observed += "ok"
+	}
+	return observed, statErr == nil && info.IsDir()
 }
