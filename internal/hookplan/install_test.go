@@ -177,6 +177,96 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 	}
 }
 
+// Installer profile names use dashes because they are operator-facing launch labels,
+// while HookEvent/ContextPack harness identities use the registry's snake_case keys.
+// The installed command is the boundary between those namespaces: emitting the
+// operator label here makes a real hook run through the generic fail-open harness.
+func TestInstallHooksEmitsCanonicalRuntimeHarnessNames(t *testing.T) {
+	rep, err := InstallHooks(t.TempDir(), "/usr/local/bin/compound", "global", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"claude-code":    "claude_code",
+		"claude-zai":     "claude_zai",
+		"claude-minimax": "claude_minimax",
+		"claude-qwen":    "claude_qwen",
+		"codex":          "codex",
+	}
+	for _, entry := range rep.Entries {
+		runtimeHarness, ok := want[entry.Harness]
+		if !ok {
+			t.Fatalf("unexpected installer harness %q", entry.Harness)
+		}
+		needle := " --harness " + runtimeHarness
+		for _, binding := range entry.Bindings {
+			if !strings.Contains(binding.Command, needle) {
+				t.Errorf("%s %s command = %q, want canonical runtime identity %q", entry.Harness, binding.Event, binding.Command, runtimeHarness)
+			}
+		}
+	}
+}
+
+func TestClaudeFamilyAdapterRegistrationsUseCanonicalRuntimeHarnessNames(t *testing.T) {
+	want := map[string]string{
+		"claude-zai":     "claude_zai",
+		"claude-minimax": "claude_minimax",
+		"claude-qwen":    "claude_qwen",
+	}
+	for installerHarness, runtimeHarness := range want {
+		installerHarness, runtimeHarness := installerHarness, runtimeHarness
+		t.Run(installerHarness, func(t *testing.T) {
+			path := filepath.Join("..", "..", "adapters", installerHarness, "hook-registration.ts")
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			canonical := "--harness " + runtimeHarness
+			if got := strings.Count(string(body), canonical); got != 4 {
+				t.Fatalf("%s contains %d canonical runtime commands, want 4\n%s", path, got, body)
+			}
+			if strings.Contains(string(body), "--harness "+installerHarness) {
+				t.Fatalf("%s still passes the operator-facing installer label to live hooks\n%s", path, body)
+			}
+		})
+	}
+}
+
+func TestInstallHooksClaudeCodeAtExplicitProfileDir(t *testing.T) {
+	base := t.TempDir()
+	profileDir := filepath.Join(base, "switchback-profile")
+	settingsPath := filepath.Join(profileDir, "settings.json")
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := []byte("{\n  \"model\": \"fixture/model\",\n  \"effortLevel\": \"xhigh\"\n}\n")
+	if err := os.WriteFile(settingsPath, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := InstallHooksWithConfigDir(base, "/usr/local/bin/compound", "global", []string{"claude-code"}, profileDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Entries) != 1 || rep.Entries[0].ConfigPath != settingsPath {
+		t.Fatalf("explicit profile install = %+v, want one entry at %s", rep, settingsPath)
+	}
+	if rep.Entries[0].Matcher != "" || rep.Entries[0].Command != "" {
+		t.Fatalf("generic Claude profile must keep the canonical claude_code observation posture: %+v", rep.Entries[0])
+	}
+	cfg := readJSON(t, settingsPath)
+	if cfg["model"] != "fixture/model" || cfg["effortLevel"] != "xhigh" {
+		t.Fatalf("hook enrollment clobbered Switchback-owned model/effort: %+v", cfg)
+	}
+	for _, binding := range rep.Entries[0].Bindings {
+		if !strings.Contains(binding.Command, " --harness claude_code") {
+			t.Fatalf("profile hook command has noncanonical runtime identity: %q", binding.Command)
+		}
+		if strings.Contains(binding.Command, " --enforce") {
+			t.Fatalf("generic Claude profile unexpectedly upgraded observation to blocking: %q", binding.Command)
+		}
+	}
+}
+
 func TestInstallHooksPreflightsEveryHarnessConfigBeforeWriting(t *testing.T) {
 	base := t.TempDir()
 	claudePath := filepath.Join(base, ".claude", "settings.json")
@@ -1157,7 +1247,7 @@ func TestInstallHooksClaudeMinimaxProfile(t *testing.T) {
 	preGroups, _ := hooks["PreToolUse"].([]any)
 	var preMatcher string
 	for _, group := range preGroups {
-		if strings.Contains(firstCommand(group), "--harness claude-minimax") {
+		if strings.Contains(firstCommand(group), "--harness claude_minimax") {
 			entry, _ := group.(map[string]any)
 			preMatcher, _ = entry["matcher"].(string)
 		}
@@ -1255,7 +1345,7 @@ func TestInstallHooksClaudeQwenProfile(t *testing.T) {
 	preGroups, _ := hooks["PreToolUse"].([]any)
 	var preMatcher string
 	for _, group := range preGroups {
-		if strings.Contains(firstCommand(group), "--harness claude-qwen") {
+		if strings.Contains(firstCommand(group), "--harness claude_qwen") {
 			entry, _ := group.(map[string]any)
 			preMatcher, _ = entry["matcher"].(string)
 		}
@@ -1330,7 +1420,7 @@ func matcherForEvent(t *testing.T, hooks map[string]any, event string) string {
 	}
 	for _, group := range groups {
 		entry, _ := group.(map[string]any)
-		if strings.Contains(firstCommand(group), "--harness claude-zai") {
+		if strings.Contains(firstCommand(group), "--harness claude_zai") {
 			matcher, _ := entry["matcher"].(string)
 			return matcher
 		}

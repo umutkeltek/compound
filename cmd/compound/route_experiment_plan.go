@@ -30,11 +30,12 @@ func tryRouteExperimentPlanCommand(args []string) bool {
 func runRouteExperimentPlanCommand(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("route experiment-plan", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	role := fs.String("role", "opus", "Claude role alias: default|opus|sonnet|haiku|subagent")
 	root := fs.String("profiles-root", "", "Switchback non-secret conformance projection root (required)")
 	jsonOut := fs.Bool("json", false, "emit JSON")
-	var profiles stringListFlag
-	fs.Var(&profiles, "profile", "launch profile id (repeat at least twice)")
+	var profiles, roles, efforts stringListFlag
+	fs.Var(&profiles, "profile", "launch profile id (repeat; trials are profile×role)")
+	fs.Var(&roles, "role", "Claude role alias (repeat): default|opus|sonnet|haiku|subagent; defaults to opus")
+	fs.Var(&efforts, "effort", "owner-published requested effort to include (repeat); unpublished variants are refused")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -46,7 +47,7 @@ func runRouteExperimentPlanCommand(args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stderr, "route experiment-plan: --profiles-root is required")
 		return 2
 	}
-	plan, err := routeevidence.PlanRouteExperiment(*root, *role, profiles)
+	plan, err := routeevidence.PlanRouteExperimentMatrix(*root, roles, efforts, profiles)
 	if err != nil {
 		fmt.Fprintln(stderr, "route experiment-plan:", err)
 		return 2
@@ -59,7 +60,10 @@ func runRouteExperimentPlanCommand(args []string, stdout, stderr io.Writer) int 
 		}
 		return 0
 	}
-	fmt.Fprintf(stdout, "# route experiment-plan %s\n- role_alias: %s\n", plan.ID, plan.RoleAlias)
+	fmt.Fprintf(stdout, "# route experiment-plan %s\n- role_aliases: %s\n", plan.ID, strings.Join(plan.RoleAliases, ","))
+	if len(plan.EffortFilters) > 0 {
+		fmt.Fprintf(stdout, "- effort_filters: %s\n", strings.Join(plan.EffortFilters, ","))
+	}
 	for _, lane := range plan.Lanes {
 		fmt.Fprintf(stdout, "- lane: profile=%s role=%s requested_alias=%s expected_route=%s observed_provider=unknown observed_model=unknown observed_account=unknown evidence=%s\n", lane.ProfileID, lane.RoleAlias, lane.RequestedAlias, lane.ExpectedRoute, lane.EvidenceStatus)
 	}

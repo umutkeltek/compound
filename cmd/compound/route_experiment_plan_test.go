@@ -46,3 +46,79 @@ func TestRouteExperimentPlanRequiresProfilesRoot(t *testing.T) {
 		t.Fatalf("missing required-flag refusal: %s", errOut.String())
 	}
 }
+
+func TestRouteExperimentPlanOneProfileMultipleModelRoles(t *testing.T) {
+	root := t.TempDir()
+	v := map[string]any{
+		"schema":               "switchback/profile-conformance@1",
+		"conformance_revision": "sha256:qwen",
+		"profile": map[string]any{
+			"id": "claude-qwen", "harness": "claude-code", "route": "qwen/qwen3.8-max",
+			"requested_model": "qwen3.8-max", "requested_effort": "xhigh",
+			"model_aliases": map[string]string{"opus": "qwen3.8-max", "sonnet": "qwen3.7-plus"},
+		},
+	}
+	b, _ := json.Marshal(v)
+	if err := os.WriteFile(filepath.Join(root, "claude-qwen.json"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := runRouteExperimentPlanCommand([]string{
+		"--profiles-root", root,
+		"--profile", "claude-qwen",
+		"--role", "opus",
+		"--role", "sonnet",
+		"--json",
+	}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("code=%d err=%s", code, errOut.String())
+	}
+	var got struct {
+		RoleAliases []string `json:"role_aliases"`
+		Lanes       []struct {
+			RoleAlias      string `json:"role_alias"`
+			RequestedAlias string `json:"requested_alias"`
+		} `json:"lanes"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Lanes) != 2 || len(got.RoleAliases) != 2 {
+		t.Fatalf("plan did not expand one profile into two real model trials: %+v", got)
+	}
+	if got.Lanes[0].RoleAlias != "opus" || got.Lanes[0].RequestedAlias != "qwen3.8-max" ||
+		got.Lanes[1].RoleAlias != "sonnet" || got.Lanes[1].RequestedAlias != "qwen3.7-plus" {
+		t.Fatalf("model aliases do not match the owner projection: %+v", got.Lanes)
+	}
+}
+
+func TestRouteExperimentPlanRefusesUnpublishedEffortVariant(t *testing.T) {
+	root := t.TempDir()
+	v := map[string]any{
+		"schema":               "switchback/profile-conformance@1",
+		"conformance_revision": "sha256:qwen",
+		"profile": map[string]any{
+			"id": "claude-qwen", "harness": "claude-code", "route": "qwen/qwen3.8-max",
+			"requested_model": "qwen3.8-max", "requested_effort": "xhigh",
+			"model_aliases": map[string]string{"opus": "qwen3.8-max", "sonnet": "qwen3.7-plus"},
+		},
+	}
+	b, _ := json.Marshal(v)
+	if err := os.WriteFile(filepath.Join(root, "claude-qwen.json"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := runRouteExperimentPlanCommand([]string{
+		"--profiles-root", root,
+		"--profile", "claude-qwen",
+		"--role", "opus",
+		"--role", "sonnet",
+		"--effort", "high",
+	}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("code=%d, want 2; stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "effort high is not materialized") {
+		t.Fatalf("planner did not name the owner-published profile requirement: %s", errOut.String())
+	}
+}

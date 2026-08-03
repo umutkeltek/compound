@@ -47,6 +47,8 @@ type ExperimentPlan struct {
 	SchemaVersion string           `json:"schema_version"`
 	ID            string           `json:"id"`
 	RoleAlias     string           `json:"role_alias"`
+	RoleAliases   []string         `json:"role_aliases,omitempty"`
+	EffortFilters []string         `json:"effort_filters,omitempty"`
 	ProfilesRoot  string           `json:"profiles_root"`
 	Lanes         []ExperimentLane `json:"lanes"`
 	Independence  string           `json:"independence_requirement"`
@@ -55,17 +57,30 @@ type ExperimentPlan struct {
 }
 
 func PlanRouteExperiment(profilesRoot, role string, profileIDs []string) (ExperimentPlan, error) {
-	role = strings.TrimSpace(strings.ToLower(role))
-	switch role {
-	case "default", "opus", "sonnet", "haiku", "subagent":
-	default:
-		return ExperimentPlan{}, fmt.Errorf("unsupported role alias %q", role)
-	}
 	if len(profileIDs) < 2 {
 		return ExperimentPlan{}, fmt.Errorf("at least two --profile values required")
 	}
+	return PlanRouteExperimentMatrix(profilesRoot, []string{role}, nil, profileIDs)
+}
+
+// PlanRouteExperimentMatrix expands owner-published launch profiles into concrete
+// profile×role trials. Multiple roles let one subscription profile compare its real
+// model aliases; effort filters may select only effort values already materialized by
+// distinct Switchback profiles. The planner never invents a runnable effort preset.
+func PlanRouteExperimentMatrix(profilesRoot string, roles, effortFilters, profileIDs []string) (ExperimentPlan, error) {
+	roles, err := normalizeExperimentRoles(roles)
+	if err != nil {
+		return ExperimentPlan{}, err
+	}
+	effortFilters, err = normalizeExperimentValues("effort", effortFilters)
+	if err != nil {
+		return ExperimentPlan{}, err
+	}
+	if len(profileIDs) == 0 {
+		return ExperimentPlan{}, fmt.Errorf("at least one --profile value required")
+	}
 	seen := map[string]bool{}
-	lanes := make([]ExperimentLane, 0, len(profileIDs))
+	profiles := make([]conformanceFile, 0, len(profileIDs))
 	for _, id := range profileIDs {
 		id = strings.TrimSpace(id)
 		if id == "" || seen[id] {
@@ -83,20 +98,82 @@ func PlanRouteExperiment(profilesRoot, role string, profileIDs []string) (Experi
 		if cf.Profile.ID != id || cf.Schema != "switchback/profile-conformance@1" {
 			return ExperimentPlan{}, fmt.Errorf("profile %s conformance identity/schema mismatch", id)
 		}
-		alias := cf.Profile.ModelAliases[role]
-		if role == "default" && alias == "" {
-			alias = cf.Profile.RequestedModel
-		}
-		if alias == "" {
-			return ExperimentPlan{}, fmt.Errorf("profile %s does not declare role alias %s", id, role)
-		}
-		lanes = append(lanes, ExperimentLane{ProfileID: id, Harness: cf.Profile.Harness, RoleAlias: role, RequestedAlias: alias, ExpectedRoute: cf.Profile.Route, RequestedEffort: cf.Profile.RequestedEffort, ClientProfile: cf.Profile.ClientProfile, ConformanceRevision: cf.ConformanceRevision, EvidenceStatus: "unknown_until_route_evidence"})
+		profiles = append(profiles, cf)
 	}
-	sort.Slice(lanes, func(i, j int) bool { return lanes[i].ProfileID < lanes[j].ProfileID })
+	sort.Slice(profiles, func(i, j int) bool { return profiles[i].Profile.ID < profiles[j].Profile.ID })
+	publishedEfforts := map[string]bool{}
+	for _, cf := range profiles {
+		publishedEfforts[strings.TrimSpace(cf.Profile.RequestedEffort)] = true
+	}
+	for _, effort := range effortFilters {
+		if !publishedEfforts[effort] {
+			return ExperimentPlan{}, fmt.Errorf("effort %s is not materialized by selected launch profiles; Switchback must publish a distinct profile with requested_effort=%s", effort, effort)
+		}
+	}
+	wantedEffort := make(map[string]bool, len(effortFilters))
+	for _, effort := range effortFilters {
+		wantedEffort[effort] = true
+	}
+	lanes := make([]ExperimentLane, 0, len(profiles)*len(roles))
+	for _, cf := range profiles {
+		if len(wantedEffort) > 0 && !wantedEffort[cf.Profile.RequestedEffort] {
+			continue
+		}
+		for _, role := range roles {
+			alias := cf.Profile.ModelAliases[role]
+			if role == "default" && alias == "" {
+				alias = cf.Profile.RequestedModel
+			}
+			if alias == "" {
+				return ExperimentPlan{}, fmt.Errorf("profile %s does not declare role alias %s", cf.Profile.ID, role)
+			}
+			lanes = append(lanes, ExperimentLane{ProfileID: cf.Profile.ID, Harness: cf.Profile.Harness, RoleAlias: role, RequestedAlias: alias, ExpectedRoute: cf.Profile.Route, RequestedEffort: cf.Profile.RequestedEffort, ClientProfile: cf.Profile.ClientProfile, ConformanceRevision: cf.ConformanceRevision, EvidenceStatus: "unknown_until_route_evidence"})
+		}
+	}
+	if len(lanes) < 2 {
+		return ExperimentPlan{}, fmt.Errorf("experiment needs at least two profile×role trials after effort filtering")
+	}
 	seed, _ := json.Marshal(struct {
-		Role  string
-		Lanes []ExperimentLane
-	}{role, lanes})
+		Roles   []string
+		Efforts []string
+		Lanes   []ExperimentLane
+	}{roles, effortFilters, lanes})
 	sum := sha256.Sum256(seed)
-	return ExperimentPlan{SchemaVersion: ExperimentPlanSchema, ID: "rexp_" + hex.EncodeToString(sum[:6]), RoleAlias: role, ProfilesRoot: profilesRoot, Lanes: lanes, Independence: "terminal comparison requires distinct observed provider/model or account identities; profile and role labels do not prove independence", Execution: "execute each lane through governed compound work delegate; import Switchback trace evidence before comparison", Verdict: "plan_only_not_execution_evidence"}, nil
+	roleAlias := ""
+	if len(roles) == 1 {
+		roleAlias = roles[0]
+	}
+	return ExperimentPlan{SchemaVersion: ExperimentPlanSchema, ID: "rexp_" + hex.EncodeToString(sum[:6]), RoleAlias: roleAlias, RoleAliases: roles, EffortFilters: effortFilters, ProfilesRoot: profilesRoot, Lanes: lanes, Independence: "terminal comparison requires distinct observed provider/model or account identities; profile and role labels do not prove independence", Execution: "execute each owner-published profile×role lane through governed compound work delegate; import Switchback trace evidence before comparison", Verdict: "plan_only_not_execution_evidence"}, nil
+}
+
+func normalizeExperimentRoles(roles []string) ([]string, error) {
+	if len(roles) == 0 {
+		roles = []string{"opus"}
+	}
+	roles, err := normalizeExperimentValues("role", roles)
+	if err != nil {
+		return nil, err
+	}
+	for _, role := range roles {
+		switch role {
+		case "default", "opus", "sonnet", "haiku", "subagent":
+		default:
+			return nil, fmt.Errorf("unsupported role alias %q", role)
+		}
+	}
+	return roles, nil
+}
+
+func normalizeExperimentValues(kind string, values []string) ([]string, error) {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(strings.ToLower(value))
+		if value == "" || seen[value] {
+			return nil, fmt.Errorf("%s values must be non-empty and unique: %q", kind, value)
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out, nil
 }

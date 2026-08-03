@@ -88,7 +88,7 @@ vendor-shaped entry is:
         "hooks": [
           {
             "type": "command",
-            "command": "compound hook pre-tool-use --live --harness claude-code"
+            "command": "compound hook pre-tool-use --live --harness claude_code"
           }
         ]
       }
@@ -97,7 +97,12 @@ vendor-shaped entry is:
 }
 ```
 
-### Isolated profile: enforced `claude-zai`
+The CLI accepts the operator-facing installer label `claude-code`, but the
+managed command uses the HarnessRegistry identity `claude_code`. The two names
+are deliberately distinct: dashed names select an installer/profile; snake-case
+names are what live hooks pass to ContextPack and policy compilation.
+
+### Isolated Claude-family profiles
 
 Only an isolated guarded executor profile should install the blocking binding.
 `CLAUDE_PROFILE_DIR` must identify that profile's separate config directory:
@@ -107,13 +112,18 @@ compound hook install --harness claude-zai \
   --config-dir "${CLAUDE_PROFILE_DIR}"
 ```
 
+The named guarded installers are `claude-zai`, `claude-minimax`, and
+`claude-qwen`. Their live hook commands use `claude_zai`, `claude_minimax`, and
+`claude_qwen` respectively, matching Compound's HarnessRegistry. Installation
+preserves profile-owned `model` and `effortLevel` settings.
+
 The managed `PreToolUse` entry for that isolated profile explicitly enforces
 the decision:
 
 ```json
 {
   "type": "command",
-  "command": "compound hook pre-tool-use --enforce --live --harness claude-zai"
+  "command": "compound hook pre-tool-use --enforce --live --harness claude_zai"
 }
 ```
 
@@ -122,6 +132,60 @@ In this explicitly enforced posture, Compound returns policy gate exit codes:
 - Exit 0 → allow (the tool call proceeds)
 - Exit 3 → hold (the tool call waits for operator approval)
 - Exit 4 → deny (the tool call is blocked and the agent sees the reason)
+
+Some Switchback launch profiles, such as a GPT or full Z.ai profile, are model
+selection identities rather than distinct Compound harness types. Enroll those
+profiles through the canonical generic Claude posture instead of inventing a
+new HarnessRegistry row for every model:
+
+```sh
+compound hook install --harness claude-code \
+  --config-dir "${CLAUDE_PROFILE_DIR}"
+```
+
+That path installs observation-only `claude_code` context hooks and preserves
+Switchback's model and effort settings. The profile id remains visible in
+Switchback route evidence; the hook runtime identity remains `claude_code`.
+
+### Compare models and efforts published by Switchback
+
+`route experiment-plan` reads Switchback's non-secret conformance projection.
+Repeat `--role` to expand one subscription profile into trials for its actual
+Claude aliases, for example Qwen's `opus`, `sonnet`, `haiku`, and `subagent`
+routes:
+
+```sh
+compound route experiment-plan \
+  --profiles-root "${HOME}/.switchback/state/profile-conformance" \
+  --profile claude-qwen \
+  --role opus \
+  --role sonnet \
+  --role haiku \
+  --role subagent \
+  --json
+```
+
+The output names the concrete model alias and requested effort from the owner
+projection; Compound does not maintain a duplicate model catalog. Repeat
+`--profile` to compare providers. `--effort` filters to effort values already
+published by those profiles:
+
+```sh
+compound route experiment-plan \
+  --profiles-root "${HOME}/.switchback/state/profile-conformance" \
+  --profile claude-qwen \
+  --profile claude-minimax \
+  --role opus \
+  --effort xhigh \
+  --json
+```
+
+An effort value that is not materialized by a selected launch profile is
+refused. To test `high` against `xhigh`, Switchback must publish distinct
+profiles for those efforts first; rewriting one shared profile between trials
+would make the experiment identity unstable. The plan is a trial matrix, not
+success evidence: execute each trial through governed work and import observed
+provider/model/account route evidence before comparing results.
 
 ### Option B: import a generated hook roster
 

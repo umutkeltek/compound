@@ -1507,8 +1507,8 @@ func cmdHookInstall(args []string) {
 		os.Exit(2)
 	}
 	configDir := strings.TrimSpace(valueFlag(args, "--config-dir"))
-	if configDir != "" && (len(harnesses) != 1 || (harnesses[0] != "claude-zai" && harnesses[0] != "claude-minimax" && harnesses[0] != "claude-qwen")) {
-		fmt.Fprintln(os.Stderr, "error: --config-dir requires --harness claude-zai, claude-minimax, or claude-qwen")
+	if configDir != "" && (len(harnesses) != 1 || (harnesses[0] != "claude-code" && harnesses[0] != "claude-zai" && harnesses[0] != "claude-minimax" && harnesses[0] != "claude-qwen")) {
+		fmt.Fprintln(os.Stderr, "error: --config-dir requires one Claude profile harness: claude-code, claude-zai, claude-minimax, or claude-qwen")
 		os.Exit(2)
 	}
 

@@ -105,7 +105,26 @@ func HookCommandForEvent(binaryPath, harness, event string) string {
 		"PreToolUse":       "pre-tool-use",
 		"PostToolUse":      "post-tool-use",
 	}[event]
-	return fmt.Sprintf("%s hook %s --live --harness %s", shellQuote(binaryPath), verb, harness)
+	return fmt.Sprintf("%s hook %s --live --harness %s", shellQuote(binaryPath), verb, runtimeHarnessName(harness))
+}
+
+// runtimeHarnessName translates the operator-facing installer/profile label to
+// the HarnessRegistry identity consumed by live hooks and ContextPack compilation.
+// Keeping the translation at the emitted-command boundary preserves readable
+// launch labels without letting a dashed label fall through to Generic().
+func runtimeHarnessName(installerHarness string) string {
+	switch strings.TrimSpace(installerHarness) {
+	case "claude-code":
+		return "claude_code"
+	case claudeZaiHarness:
+		return "claude_zai"
+	case claudeMinimaxHarness:
+		return "claude_minimax"
+	case claudeQwenHarness:
+		return "claude_qwen"
+	default:
+		return strings.TrimSpace(installerHarness)
+	}
 }
 
 // shellQuote wraps s in POSIX single quotes so a shell (or any shell-word splitter, including the
@@ -182,9 +201,9 @@ func InstallHooksWithConfigDirAndPublish(
 		want[strings.TrimSpace(h)] = true
 	}
 	if strings.TrimSpace(configDir) != "" {
-		if len(want) != 1 || (!want[claudeZaiHarness] && !want[claudeMinimaxHarness] && !want[claudeQwenHarness]) {
+		if len(want) != 1 || (!want["claude-code"] && !want[claudeZaiHarness] && !want[claudeMinimaxHarness] && !want[claudeQwenHarness]) {
 			return report, fmt.Errorf(
-				"config dir is supported only with a single isolated-profile harness (%s, %s, or %s)",
+				"config dir is supported only with a single Claude profile harness (claude-code, %s, %s, or %s)",
 				claudeZaiHarness, claudeMinimaxHarness, claudeQwenHarness,
 			)
 		}
@@ -195,7 +214,7 @@ func InstallHooksWithConfigDirAndPublish(
 			continue
 		}
 		configPath := filepath.Join(baseDir, ConfigRel(harness, scope))
-		if strings.TrimSpace(configDir) != "" && (harness == claudeZaiHarness || harness == claudeMinimaxHarness || harness == claudeQwenHarness) {
+		if strings.TrimSpace(configDir) != "" && (harness == "claude-code" || harness == claudeZaiHarness || harness == claudeMinimaxHarness || harness == claudeQwenHarness) {
 			configPath = filepath.Join(configDir, "settings.json")
 		}
 		bindings, _, err := compiledManagedHookBindings(binaryPath, harness, scope)
