@@ -133,7 +133,7 @@ In this explicitly enforced posture, Compound returns policy gate exit codes:
 - Exit 3 → hold (the tool call waits for operator approval)
 - Exit 4 → deny (the tool call is blocked and the agent sees the reason)
 
-Some Switchback launch profiles, such as a GPT or full Z.ai profile, are model
+Some launch profiles, such as a GPT or full Z.ai profile, are model
 selection identities rather than distinct Compound harness types. Enroll those
 profiles through the canonical generic Claude posture instead of inventing a
 new HarnessRegistry row for every model:
@@ -144,19 +144,19 @@ compound hook install --harness claude-code \
 ```
 
 That path installs observation-only `claude_code` context hooks and preserves
-Switchback's model and effort settings. The profile id remains visible in
-Switchback route evidence; the hook runtime identity remains `claude_code`.
+the launch-profile owner's model and effort settings. The profile id remains
+visible in route evidence; the hook runtime identity remains `claude_code`.
 
-### Compare models and efforts published by Switchback
+### Compare models and efforts published by the profile owner
 
-`route experiment-plan` reads Switchback's non-secret conformance projection.
+`route experiment-plan` reads the owner's non-secret conformance projection.
 Repeat `--role` to expand one subscription profile into trials for its actual
 Claude aliases, for example Qwen's `opus`, `sonnet`, `haiku`, and `subagent`
 routes:
 
 ```sh
 compound route experiment-plan \
-  --profiles-root "${HOME}/.switchback/state/profile-conformance" \
+  --profiles-root "${PROFILE_CONFORMANCE_ROOT}" \
   --profile claude-qwen \
   --role opus \
   --role sonnet \
@@ -172,7 +172,7 @@ published by those profiles:
 
 ```sh
 compound route experiment-plan \
-  --profiles-root "${HOME}/.switchback/state/profile-conformance" \
+  --profiles-root "${PROFILE_CONFORMANCE_ROOT}" \
   --profile claude-qwen \
   --profile claude-minimax \
   --role opus \
@@ -181,7 +181,7 @@ compound route experiment-plan \
 ```
 
 An effort value that is not materialized by a selected launch profile is
-refused. To test `high` against `xhigh`, Switchback must publish distinct
+refused. To test `high` against `xhigh`, the launch-profile owner must publish distinct
 profiles for those efforts first; rewriting one shared profile between trials
 would make the experiment identity unstable. The plan is a trial matrix, not
 success evidence: execute each trial through governed work and import observed

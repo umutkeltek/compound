@@ -60,13 +60,6 @@ func runRouteExperimentPlanCommand(args []string, stdout, stderr io.Writer) int 
 		}
 		return 0
 	}
-	fmt.Fprintf(stdout, "# route experiment-plan %s\n- role_aliases: %s\n", plan.ID, strings.Join(plan.RoleAliases, ","))
-	if len(plan.EffortFilters) > 0 {
-		fmt.Fprintf(stdout, "- effort_filters: %s\n", strings.Join(plan.EffortFilters, ","))
-	}
-	for _, lane := range plan.Lanes {
-		fmt.Fprintf(stdout, "- lane: profile=%s role=%s requested_alias=%s expected_route=%s observed_provider=unknown observed_model=unknown observed_account=unknown evidence=%s\n", lane.ProfileID, lane.RoleAlias, lane.RequestedAlias, lane.ExpectedRoute, lane.EvidenceStatus)
-	}
-	fmt.Fprintf(stdout, "- independence: %s\n- execution: %s\n- verdict: %s\n", plan.Independence, plan.Execution, plan.Verdict)
+	routeevidence.WriteExperimentPlanText(stdout, plan)
 	return 0
 }

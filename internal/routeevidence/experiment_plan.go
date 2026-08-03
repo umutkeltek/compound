@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -54,6 +55,17 @@ type ExperimentPlan struct {
 	Independence  string           `json:"independence_requirement"`
 	Execution     string           `json:"execution"`
 	Verdict       string           `json:"verdict"`
+}
+
+func WriteExperimentPlanText(w io.Writer, plan ExperimentPlan) {
+	fmt.Fprintf(w, "# route experiment-plan %s\n- role_aliases: %s\n", plan.ID, strings.Join(plan.RoleAliases, ","))
+	if len(plan.EffortFilters) > 0 {
+		fmt.Fprintf(w, "- effort_filters: %s\n", strings.Join(plan.EffortFilters, ","))
+	}
+	for _, lane := range plan.Lanes {
+		fmt.Fprintf(w, "- lane: profile=%s role=%s requested_alias=%s expected_route=%s observed_provider=unknown observed_model=unknown observed_account=unknown evidence=%s\n", lane.ProfileID, lane.RoleAlias, lane.RequestedAlias, lane.ExpectedRoute, lane.EvidenceStatus)
+	}
+	fmt.Fprintf(w, "- independence: %s\n- execution: %s\n- verdict: %s\n", plan.Independence, plan.Execution, plan.Verdict)
 }
 
 func PlanRouteExperiment(profilesRoot, role string, profileIDs []string) (ExperimentPlan, error) {
