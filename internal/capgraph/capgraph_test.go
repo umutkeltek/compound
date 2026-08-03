@@ -1173,6 +1173,9 @@ func validSkillManifestForTest() SkillManifest {
 func readCapEdges(t *testing.T, home string) []Edge {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(home, "registries", "capability-edges.jsonl"))
+	if os.IsNotExist(err) {
+		return nil // no edges written yet — the file is the append-only edge log
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

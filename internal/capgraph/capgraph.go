@@ -26,7 +26,7 @@ import (
 )
 
 // NodeKinds — skills are one kind, not the whole graph.
-var NodeKinds = []string{"lens", "procedure", "script", "tool", "mcp", "model_profile", "harness", "eval", "workflow", "adapter", "doctrine", "taste_standard", "skill", "instruction_rule", "agent-lane", "gateway", "service"}
+var NodeKinds = []string{"lens", "procedure", "script", "tool", "mcp", "model_profile", "harness", "eval", "workflow", "adapter", "doctrine", "taste_standard", "skill", "instruction_rule", "hook", "agent-lane", "gateway", "service"}
 
 // Edge kinds: routing + the evolution feedback edges.
 const (
