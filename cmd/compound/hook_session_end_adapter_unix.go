@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os/exec"
 	"syscall"
 )
@@ -14,11 +15,14 @@ func setSessionEndAdapterProcessGroup(command *exec.Cmd) {
 	command.SysProcAttr.Setpgid = true
 }
 
-func killSessionEndAdapterProcessGroup(command *exec.Cmd) {
+func killSessionEndAdapterProcessGroup(command *exec.Cmd) error {
 	if command.Process == nil {
-		return
+		return nil
 	}
 	if err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL); err != nil {
-		_ = command.Process.Kill()
+		if processErr := command.Process.Kill(); processErr != nil {
+			return fmt.Errorf("kill process group: %v; kill worker: %w", err, processErr)
+		}
 	}
+	return nil
 }

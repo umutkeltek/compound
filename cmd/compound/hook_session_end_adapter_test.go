@@ -31,9 +31,101 @@ type sessionEndAdapterAttemptEvidence struct {
 
 type sessionEndAdapterOutcomeEvidence struct {
 	SchemaVersion string `json:"schema_version"`
+	ID            string `json:"id"`
 	AttemptID     string `json:"attempt_id"`
 	InputRef      string `json:"input_ref"`
 	Status        string `json:"status"`
+}
+
+func requireSessionEndAdapterDiagnosticValue(t *testing.T, output, marker string) string {
+	t.Helper()
+	index := strings.Index(output, marker)
+	if index < 0 {
+		t.Fatalf("SessionEnd adapter diagnostic omitted %q: %s", marker, output)
+	}
+	fields := strings.Fields(output[index+len(marker):])
+	if len(fields) == 0 {
+		t.Fatalf("SessionEnd adapter diagnostic has no value after %q: %s", marker, output)
+	}
+	return strings.Trim(fields[0], `"`)
+}
+
+func TestSessionEndAdapterPostKillReapWaitIsBounded(t *testing.T) {
+	waited := make(chan error)
+	started := time.Now()
+	_, reaped := waitSessionEndAdapterReap(waited, 20*time.Millisecond)
+	elapsed := time.Since(started)
+	if reaped {
+		t.Fatal("a worker that never reports Wait completion was reported as reaped")
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("post-kill reap wait was not bounded: %s", elapsed)
+	}
+}
+
+func TestSessionEndAdapterOutcomeIdentityIncludesExecution(t *testing.T) {
+	attemptID := "hook_sessend_attempt_fixed"
+	first := sessionEndAdapterOutcomeID(attemptID, "sessend_exec_first")
+	second := sessionEndAdapterOutcomeID(attemptID, "sessend_exec_second")
+	if first == second {
+		t.Fatalf("distinct executions collapsed onto one terminal outcome id: %s", first)
+	}
+}
+
+func TestSessionEndAdapterCommitAtDeadlineRetainsPendingReplayIdentity(t *testing.T) {
+	compoundHome := t.TempDir()
+	input := []byte("{\"hook_event_name\":\"SessionEnd\",\"session_id\":\"sess_commit_at_deadline\"}\n")
+	parsed := sessionEndAdapterArgs{Harness: "claude-code", Timeout: time.Second, Worker: "/unused"}
+	native := sessionEndAdapterInput{HookEventName: "SessionEnd", SessionID: "sess_commit_at_deadline"}
+	prepared := prepareSessionEndAdapterAcceptance(parsed, native, input, time.Unix(1_800_000_000, 123).UTC())
+
+	committed := make(chan struct{})
+	release := make(chan struct{})
+	result := persistSessionEndAdapterAcceptanceBounded(
+		compoundHome,
+		prepared,
+		input,
+		500*time.Millisecond,
+		func() {
+			close(committed)
+			<-release
+		},
+	)
+	defer close(release)
+	select {
+	case <-committed:
+	default:
+		t.Fatal("deadline fired before the acceptance commit boundary was reached")
+	}
+	if result.Err == nil || !result.TimedOut {
+		t.Fatalf("commit-at-deadline result=%+v, want truthful timeout/unknown state", result)
+	}
+	if result.Attempt.ID != prepared.ID || result.Attempt.InputRef != prepared.InputRef {
+		t.Fatalf("pending identity was lost: result=%+v prepared=%+v", result.Attempt, prepared)
+	}
+	wantRetry := []string{"compound", "hook", "session-end-adapter", "--replay", prepared.ID}
+	if strings.Join(result.Attempt.RetryArgv, "\x00") != strings.Join(wantRetry, "\x00") {
+		t.Fatalf("pending retry argv=%q want=%q", result.Attempt.RetryArgv, wantRetry)
+	}
+
+	events, err := eventstore.Open(compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.Read(prepared.ID); err != nil {
+		t.Fatalf("committed acceptance is not exact-ID readable after deadline: %v", err)
+	}
+	artifacts, err := home.NewArtifactStore(compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := artifacts.Get(prepared.InputRef)
+	if err != nil {
+		t.Fatalf("committed exact input is not replayable after deadline: %v", err)
+	}
+	if !bytes.Equal(stored, input) {
+		t.Fatalf("pending input changed: want=%q got=%q", input, stored)
+	}
 }
 
 func TestSessionEndAdapterRejectsWorkerOverrideOutsideTestTemp(t *testing.T) {
@@ -43,6 +135,84 @@ func TestSessionEndAdapterRejectsWorkerOverrideOutsideTestTemp(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "test temporary directory") {
 		t.Fatalf("non-temporary worker override error = %v", err)
+	}
+}
+
+func TestSessionEndAdapterRetryArgvReplaysAcceptedExactInputByID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell worker fixture requires a POSIX host")
+	}
+	t.Setenv(sessionEndAdapterWorkerOverrideEnv, "1")
+	compoundHome := t.TempDir()
+	t.Setenv("COMPOUND_HOME", compoundHome)
+
+	slowWorker := filepath.Join(t.TempDir(), "slow-session-end-worker.sh")
+	if err := os.WriteFile(slowWorker, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	input := "{\n  \"hook_event_name\": \"SessionEnd\",\n  \"session_id\": \"sess_exact_replay\",\n  \"unknown_future_field\": [1, 2, 3]\n}\n"
+	var liveStdout, liveStderr bytes.Buffer
+	if code := runSessionEndAdapterCommand([]string{
+		"--live", "--harness", "claude-code", "--timeout", "1s", "--worker", slowWorker,
+	}, strings.NewReader(input), &liveStdout, &liveStderr); code != 0 {
+		t.Fatalf("live adapter exit=%d stdout=%s stderr=%s", code, liveStdout.String(), liveStderr.String())
+	}
+
+	const evidenceMarker = "retry evidence="
+	after, ok := strings.CutPrefix(strings.TrimSpace(liveStderr.String()), "session-end adapter: worker timed out")
+	if !ok || !strings.Contains(after, evidenceMarker) {
+		t.Fatalf("timeout omitted retry identity: %s", liveStderr.String())
+	}
+	attemptID := strings.Fields(strings.SplitN(after, evidenceMarker, 2)[1])[0]
+	if !strings.HasPrefix(attemptID, "hook_sessend_attempt_") {
+		t.Fatalf("attempt id %q is not routed through the hook family", attemptID)
+	}
+
+	events, err := eventstore.Open(compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := events.Read(attemptID)
+	if err != nil {
+		t.Fatalf("read accepted attempt by exact id: %v", err)
+	}
+	var attempt sessionEndAdapterAttemptEvidence
+	if err := json.Unmarshal(record.Bytes, &attempt); err != nil {
+		t.Fatal(err)
+	}
+	wantRetry := []string{"compound", "hook", "session-end-adapter", "--replay", attemptID}
+	if strings.Join(attempt.RetryArgv, "\x00") != strings.Join(wantRetry, "\x00") {
+		t.Fatalf("retry argv=%q want=%q", attempt.RetryArgv, wantRetry)
+	}
+
+	workerInput := filepath.Join(t.TempDir(), "replayed-input.json")
+	successWorker := filepath.Join(t.TempDir(), "successful-session-end-worker.sh")
+	worker := fmt.Sprintf("#!/bin/sh\nhead -c %d > %q\nprintf '%%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionEnd\"}}'\n", len(input), workerInput)
+	if err := os.WriteFile(successWorker, []byte(worker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var replayStdout, replayStderr bytes.Buffer
+	replayArgs := append(append([]string(nil), attempt.RetryArgv[3:]...), "--worker", successWorker)
+	if code := runSessionEndAdapterCommand(replayArgs, strings.NewReader("must-not-be-consumed"), &replayStdout, &replayStderr); code != 0 {
+		partial, partialErr := os.ReadFile(workerInput)
+		t.Fatalf("replay exit=%d stdout=%s stderr=%s worker_input_bytes=%d worker_input_err=%v", code, replayStdout.String(), replayStderr.String(), len(partial), partialErr)
+	}
+	gotInput, err := os.ReadFile(workerInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotInput) != input {
+		t.Fatalf("replay changed accepted stdin:\nwant=%q\ngot=%q", input, gotInput)
+	}
+	var outcome sessionEndAdapterOutcomeEvidence
+	if err := json.Unmarshal(replayStdout.Bytes(), &outcome); err != nil {
+		t.Fatalf("decode replay outcome: %v stdout=%s", err, replayStdout.String())
+	}
+	if outcome.Status != sessionEndAdapterStatusSucceeded || !strings.HasPrefix(outcome.ID, "hook_sessend_outcome_") {
+		t.Fatalf("replay outcome=%+v", outcome)
+	}
+	if _, err := events.Read(outcome.ID); err != nil {
+		t.Fatalf("read replay outcome by exact id: %v", err)
 	}
 }
 
@@ -168,36 +338,23 @@ func TestSessionEndAdapterTimesOutSlowWorkerWithoutCancellingHookAndKeepsRetryEv
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := store.Scan(eventstore.ScanOptions{Prefixes: []string{"sessend_"}, RegularOnly: true})
+	attemptID := requireSessionEndAdapterDiagnosticValue(t, stderr.String(), "retry evidence=")
+	outcomeID := requireSessionEndAdapterDiagnosticValue(t, stderr.String(), "terminal=")
+	attemptRecord, err := store.Read(attemptID)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read timeout acceptance by exact id: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("durable SessionEnd records = %d, want acceptance + terminal outcome", len(entries))
+	outcomeRecord, err := store.Read(outcomeID)
+	if err != nil {
+		t.Fatalf("read timeout outcome by exact id: %v", err)
 	}
 	var attempt sessionEndAdapterAttemptEvidence
 	var outcome sessionEndAdapterOutcomeEvidence
-	for _, entry := range entries {
-		record, err := entry.Read()
-		if err != nil {
-			t.Fatal(err)
-		}
-		var header struct {
-			SchemaVersion string `json:"schema_version"`
-		}
-		if err := json.Unmarshal(record.Bytes, &header); err != nil {
-			t.Fatal(err)
-		}
-		switch header.SchemaVersion {
-		case sessionEndAdapterAttemptSchema:
-			if err := json.Unmarshal(record.Bytes, &attempt); err != nil {
-				t.Fatal(err)
-			}
-		case sessionEndAdapterOutcomeEvidenceSchema:
-			if err := json.Unmarshal(record.Bytes, &outcome); err != nil {
-				t.Fatal(err)
-			}
-		}
+	if err := json.Unmarshal(attemptRecord.Bytes, &attempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(outcomeRecord.Bytes, &outcome); err != nil {
+		t.Fatal(err)
 	}
 	if attempt.Status != "accepted" || attempt.SessionID != "sess_slow_worker" || attempt.InputRef == "" {
 		t.Fatalf("durable SessionEnd handoff = %+v", attempt)
@@ -205,7 +362,7 @@ func TestSessionEndAdapterTimesOutSlowWorkerWithoutCancellingHookAndKeepsRetryEv
 	if outcome.Status != "timed_out" || outcome.AttemptID != attempt.ID || outcome.InputRef != attempt.InputRef {
 		t.Fatalf("durable SessionEnd terminal outcome = %+v, acceptance=%+v", outcome, attempt)
 	}
-	if !strings.Contains(strings.Join(attempt.RetryArgv, " "), "hook session-end --live --harness claude-code") {
+	if strings.Join(attempt.RetryArgv, "\x00") != strings.Join([]string{"compound", "hook", "session-end-adapter", "--replay", attempt.ID}, "\x00") {
 		t.Fatalf("durable SessionEnd handoff lost retry argv: %+v", attempt.RetryArgv)
 	}
 	artifacts, err := home.NewArtifactStore(compoundHome)
@@ -263,29 +420,23 @@ func TestSessionEndAdapterMarksSuccessfulWorkerProcessing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := store.Scan(eventstore.ScanOptions{Prefixes: []string{"sessend_"}, RegularOnly: true})
+	attemptID := requireSessionEndAdapterDiagnosticValue(t, stderr.String(), "acceptance=")
+	outcomeID := requireSessionEndAdapterDiagnosticValue(t, stderr.String(), "terminal=")
+	attemptRecord, err := store.Read(attemptID)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read successful acceptance by exact id: %v", err)
+	}
+	outcomeRecord, err := store.Read(outcomeID)
+	if err != nil {
+		t.Fatalf("read successful outcome by exact id: %v", err)
 	}
 	var attempt sessionEndAdapterAttemptEvidence
 	var outcome sessionEndAdapterOutcomeEvidence
-	for _, entry := range entries {
-		record, err := entry.Read()
-		if err != nil {
-			t.Fatal(err)
-		}
-		var header struct {
-			SchemaVersion string `json:"schema_version"`
-		}
-		if err := json.Unmarshal(record.Bytes, &header); err != nil {
-			t.Fatal(err)
-		}
-		switch header.SchemaVersion {
-		case sessionEndAdapterAttemptSchema:
-			_ = json.Unmarshal(record.Bytes, &attempt)
-		case sessionEndAdapterOutcomeEvidenceSchema:
-			_ = json.Unmarshal(record.Bytes, &outcome)
-		}
+	if err := json.Unmarshal(attemptRecord.Bytes, &attempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(outcomeRecord.Bytes, &outcome); err != nil {
+		t.Fatal(err)
 	}
 	if attempt.Status != "accepted" || attempt.InputRef == "" {
 		t.Fatalf("successful SessionEnd acceptance missing: %+v", attempt)
