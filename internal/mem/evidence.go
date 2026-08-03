@@ -124,6 +124,11 @@ func validateEvidenceContentAddress(e EvidenceItem) error {
 }
 
 // Evidence loads all evidence items (append-only, last-wins by id, deterministic order).
+// Every row's content address is revalidated at fold time — an ev_ id is
+// derived from the content, so a second same-id row with mismatched content
+// (or any tampered row) is a forgery the fold must fail loud on, never
+// silently last-win. Previously only the explicit-confirmation path
+// revalidated (mem.go adjudicate); the fold now shares that discipline.
 func (s *Store) Evidence() ([]EvidenceItem, error) {
 	byID := map[string]EvidenceItem{}
 	var order []string
@@ -131,6 +136,9 @@ func (s *Store) Evidence() ([]EvidenceItem, error) {
 		var e EvidenceItem
 		if json.Unmarshal(line, &e) != nil || e.ID == "" {
 			return nil
+		}
+		if err := validateEvidenceContentAddress(e); err != nil {
+			return err
 		}
 		if _, seen := byID[e.ID]; !seen {
 			order = append(order, e.ID)

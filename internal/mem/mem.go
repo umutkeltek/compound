@@ -14,11 +14,13 @@
 package mem
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -529,11 +531,16 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 // (and the console standing-law queue built on it) can tell a candidate the
 // operator has already ruled on — even a re-park, "Keep aside" — from one
 // still sitting untouched since ingestion. actor defaults to "operator" when
-// blank.
+// blank and must carry operator provenance (the same admission rule
+// RecordOperatorConfirmation applies): a rented executor identity must not
+// mint operator ratification stamps through this door.
 func (s *Store) AdjudicateAsOperator(candID, verdict, workID, actor string, now time.Time) (AdjudicateResult, error) {
 	actor = strings.TrimSpace(actor)
 	if actor == "" {
 		actor = "operator"
+	}
+	if !policy.HasOperatorProvenance(actor) {
+		return AdjudicateResult{}, fmt.Errorf("operator adjudication requires operator provenance, got %q", actor)
 	}
 	return s.adjudicate(candID, verdict, workID, now, false, "", actor)
 }
@@ -1931,20 +1938,107 @@ func readJSON(path string, v any) error {
 	return json.Unmarshal(b, v)
 }
 
+// appendJSONL is the one append door for the owned ledger logs (claims, edges,
+// evidence, entities, positions) — every authority write funnels through it.
+// It mirrors the eventstore segment discipline (segment.go appendFrameAt): a
+// torn final line is repaired first (a crash between Write and fsync can leave
+// a fragment, and appending onto it would glue the new record to the fragment
+// into one permanently unparseable line), then the record is written in full
+// and fsynced before returning. The ledger is the meaning authority: a nil
+// error must mean the bytes are durable, and a short write must never pass as
+// success.
 func appendJSONL(path string, v any) error {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(append(b, '\n'))
-	return err
+	if err := repairJSONLTail(path); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	line := append(b, '\n')
+	n, err := f.Write(line)
+	if err == nil && n != len(line) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
+// tornFinalLine reports whether a ledger log ends in a torn final line: a
+// crash-torn append shows up either as an unterminated tail (the newline never
+// landed) or as a terminated-but-unparseable final line (the record body was
+// partially flushed). Anything else — including syntactically valid JSON that
+// fails a typed decode — is genuine corruption, not a tear.
+func tornFinalLine(b []byte) bool {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 {
+		return false
+	}
+	if b[len(b)-1] != '\n' {
+		return true
+	}
+	last := trimmed[bytes.LastIndexByte(trimmed, '\n')+1:]
+	return !json.Valid(last)
+}
+
+// repairJSONLTail drops a torn final line before an append (the write-path
+// half of the eventstore repairTail pattern). Only the FINAL line is
+// repairable: the kept prefix is re-validated first, so mid-file corruption
+// fails loud and the file is left untouched for forensics.
+func repairJSONLTail(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if len(data) == 0 || !tornFinalLine(data) {
+		return nil
+	}
+	body := data
+	if body[len(body)-1] == '\n' {
+		body = body[:len(body)-1] // ignore the terminator; the final line itself is torn
+	}
+	keep := bytes.LastIndexByte(body, '\n') + 1 // 0 when no complete line precedes the fragment
+	for i, line := range bytes.Split(data[:keep], []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		if !json.Valid(bytes.TrimSpace(line)) {
+			return fmt.Errorf("repair %s: mid-file corruption at line %d; refusing to append", filepath.Base(path), i+1)
+		}
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	if err := f.Truncate(int64(keep)); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// readJSONL folds a ledger log line by line. A torn FINAL line is tolerated as
+// never-written — the append did not complete — and the write path truncates
+// it on the next append (repairJSONLTail). Any other unparseable line is
+// mid-file corruption and fails loud.
 func readJSONL(path string, fn func([]byte) error) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -1953,11 +2047,15 @@ func readJSONL(path string, fn func([]byte) error) error {
 		}
 		return err
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	for i, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		if err := fn([]byte(line)); err != nil {
+			if i == len(lines)-1 && tornFinalLine(b) {
+				continue
+			}
 			return err
 		}
 	}

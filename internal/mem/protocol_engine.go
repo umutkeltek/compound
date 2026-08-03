@@ -2,6 +2,7 @@ package mem
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -36,13 +37,19 @@ type HeldCoprocessTransport struct {
 }
 
 func NewHeldCoprocess(argv, extraEnv []string) *HeldCoprocessTransport {
-	to := 10 * time.Second
+	return &HeldCoprocessTransport{argv: argv, env: extraEnv, timeout: engineRoundTripTimeout()}
+}
+
+// engineRoundTripTimeout bounds one engine round-trip so a hung sidecar can
+// never block lock-holders forever. COMPOUND_MEM_ENGINE_TIMEOUT (whole
+// seconds) overrides the 10s default; both transports share the knob.
+func engineRoundTripTimeout() time.Duration {
 	if v := os.Getenv("COMPOUND_MEM_ENGINE_TIMEOUT"); v != "" {
 		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
-			to = time.Duration(secs) * time.Second
+			return time.Duration(secs) * time.Second
 		}
 	}
-	return &HeldCoprocessTransport{argv: argv, env: extraEnv, timeout: to}
+	return 10 * time.Second
 }
 
 // DefaultBreadthEngine selects the rented breadth engine the same way the CLI does: a held
@@ -158,13 +165,23 @@ func (t *HeldCoprocessTransport) Close() error {
 type ExecTransport struct {
 	Argv []string
 	Env  []string
+	// Timeout bounds one round-trip; zero resolves COMPOUND_MEM_ENGINE_TIMEOUT
+	// or the 10s default, the same knob the warm path uses. A hung sidecar
+	// must never block lock-holders forever on this path either.
+	Timeout time.Duration
 }
 
 func (t ExecTransport) RoundTrip(req Request) (Response, error) {
 	if len(t.Argv) == 0 {
 		return Response{}, fmt.Errorf("no engine command")
 	}
-	cmd := exec.Command(t.Argv[0], t.Argv[1:]...)
+	timeout := t.Timeout
+	if timeout <= 0 {
+		timeout = engineRoundTripTimeout()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, t.Argv[0], t.Argv[1:]...)
 	cmd.Stderr = os.Stderr
 	if len(t.Env) > 0 {
 		cmd.Env = append(os.Environ(), t.Env...)
@@ -176,6 +193,9 @@ func (t ExecTransport) RoundTrip(req Request) (Response, error) {
 	cmd.Stdin = bytes.NewReader(append(in, '\n'))
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return Response{}, fmt.Errorf("engine round-trip timed out after %s", timeout)
+		}
 		return Response{}, err
 	}
 	var resp Response

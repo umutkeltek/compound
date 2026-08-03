@@ -145,14 +145,9 @@ func ExpandQuery(text string, reg RecallAliasRegistry) ExpandedQuery {
 			if t == "" || tokenSet[t] {
 				continue
 			}
-			// Don't re-add terms already in the original query.
-			if strings.Contains(lower, t) && !strings.Contains(t, " ") {
-				// single-token already present as substring of a longer word is ok to skip only if exact token
-			}
-			if tokenSet[t] {
-				continue
-			}
-			// Exact token presence
+			// Don't re-add terms already in the original query: exact-token
+			// presence only — a single token appearing as a substring of a
+			// longer original word does not count as present.
 			present := false
 			for _, ot := range tokens {
 				if ot == t {

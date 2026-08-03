@@ -945,13 +945,21 @@ func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	nonOperator := writeRawEvidence(t, s, EvidenceItem{
-		ID:         "ev_non_operator_confirmation",
-		SourceKind: "operator_confirmation",
+	nonOperator := EvidenceItem{
+		SourceKind: OperatorConfirmationSourceKind,
 		SourceID:   candidateID,
 		QuoteText:  "Agent attempted confirmation.",
 		Actor:      "agent:test",
-	})
+	}
+	// Well-formed but agent-attributed: mint a content-valid address and write
+	// raw, because RecordOperatorConfirmation would refuse the actor at the
+	// door. The fold accepts the row; the confirmation door must still reject
+	// it on provenance.
+	nonOperator.ContentHash = evidenceContentHash(nonOperator)
+	nonOperator.ID = "ev_" + nonOperator.ContentHash[:12]
+	if err := appendJSONL(s.evidenceLog(), &nonOperator); err != nil {
+		t.Fatal(err)
+	}
 	wrongKind, err := s.RecordEvidence(EvidenceItem{
 		SourceKind: "session_note",
 		SourceID:   candidateID,
@@ -959,14 +967,6 @@ func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testi
 		Actor:      "operator:test",
 	}, t0)
 	if err != nil {
-		t.Fatal(err)
-	}
-	tampered, err := s.RecordOperatorConfirmation(candidateID, "Tamper-check confirmation.", "operator:test", t0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tampered.Actor = "operator:tampered-after-write"
-	if err := appendJSONL(s.evidenceLog(), &tampered); err != nil {
 		t.Fatal(err)
 	}
 
@@ -979,7 +979,6 @@ func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testi
 		{name: "mismatched candidate", ref: mismatched.ID},
 		{name: "non operator", ref: nonOperator.ID},
 		{name: "wrong kind", ref: wrongKind.ID},
-		{name: "tampered content address", ref: tampered.ID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := s.AdjudicateExplicitConfirmation(candidateID, tc.ref, "work_user_shadow", t0); err == nil {
@@ -990,6 +989,38 @@ func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testi
 			}
 		})
 	}
+
+	// A tampered row — same ev_ id, rewritten content — now fails the fold
+	// itself: Evidence() revalidates content addresses, so a forgery can no
+	// longer silently last-win. Proven in its own store so the poisoned log
+	// does not wedge this test's happy path below.
+	t.Run("tampered content address", func(t *testing.T) {
+		s2 := newStore(t)
+		captured2, err := s2.Capture([]Candidate{seed}, t0)
+		if err != nil || len(captured2) != 1 {
+			t.Fatalf("capture = %+v, err=%v", captured2, err)
+		}
+		if _, err := s2.Adjudicate(captured2[0].ID, "park", "work_user_shadow", t0); err != nil {
+			t.Fatal(err)
+		}
+		tampered, err := s2.RecordOperatorConfirmation(captured2[0].ID, "Tamper-check confirmation.", "operator:test", t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tampered.Actor = "operator:tampered-after-write"
+		if err := appendJSONL(s2.evidenceLog(), &tampered); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s2.Evidence(); err == nil {
+			t.Fatal("evidence fold must fail loud on a tampered content address")
+		}
+		if _, err := s2.AdjudicateExplicitConfirmation(captured2[0].ID, tampered.ID, "work_user_shadow", t0); err == nil {
+			t.Fatal("citing a tampered confirmation row must fail")
+		}
+		if claims, err := s2.loadClaims(); err != nil || len(claims) != 0 {
+			t.Fatalf("tampered confirmation wrote claims=%d err=%v", len(claims), err)
+		}
+	})
 
 	confirmation, err := s.RecordOperatorConfirmation(candidateID, "Yes, keep this as my communication preference.", "operator:test", t0)
 	if err != nil {
@@ -1014,23 +1045,6 @@ func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testi
 			t.Fatalf("claim evidence[%d] = %q, want %q (%v)", i, res.Claim.EvidenceRefs[i], want, res.Claim.EvidenceRefs)
 		}
 	}
-}
-
-func writeRawEvidence(t *testing.T, s *Store, evidence EvidenceItem) EvidenceItem {
-	t.Helper()
-	if evidence.ID == "" {
-		t.Fatal("raw evidence fixture needs an id")
-	}
-	if evidence.ContentHash == "" {
-		evidence.ContentHash = "legacy-fixture"
-	}
-	if evidence.ObservedAt == "" {
-		evidence.ObservedAt = rfc3339(t0)
-	}
-	if err := appendJSONL(s.evidenceLog(), &evidence); err != nil {
-		t.Fatal(err)
-	}
-	return evidence
 }
 
 func TestOperationalDecisionFoldIgnoresGenericSameSlotShadow(t *testing.T) {
@@ -1612,6 +1626,31 @@ func TestAdjudicateAsOperatorStampsProvenance(t *testing.T) {
 	}
 	if got := byID[autoCaptured[0].ID]; got.AdjudicatedBy != "" {
 		t.Fatalf("candidates-list projection stamped adjudicated_by on an automated park: %+v", got)
+	}
+}
+
+// TestAdjudicateAsOperatorRefusesNonOperatorActor is the falsifier for the
+// operator-door provenance check: the ratification door must refuse a rented
+// executor identity (e.g. --by codex) instead of stamping operator
+// provenance, and the refusal must leave the candidate untouched.
+func TestAdjudicateAsOperatorRefusesNonOperatorActor(t *testing.T) {
+	s := newStore(t)
+	captured, err := s.Capture([]Candidate{cand("decision:refused", "decided", "executor-forged ratification", "")}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+	if _, err := s.AdjudicateAsOperator(captured[0].ID, "park", "", "codex", t0); err == nil {
+		t.Fatal("operator ratification door must refuse a non-operator actor")
+	}
+	got, err := s.getCandidate(captured[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "proposed" {
+		t.Fatalf("refused adjudication changed state to %q, want proposed", got.State)
+	}
+	if got.AdjudicatedBy != "" || got.AdjudicatedAt != "" {
+		t.Fatalf("refused adjudication stamped provenance: by=%q at=%q", got.AdjudicatedBy, got.AdjudicatedAt)
 	}
 }
 

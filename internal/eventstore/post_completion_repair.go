@@ -1988,7 +1988,11 @@ func restorePostCompletionRepairClaim(claimPath, sourcePath string) error {
 		return err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		target, err := os.Readlink(claimPath)
+		// target must be hoisted: a := here would shadow the outer err, so a failed
+		// Symlink would read as success at the check below and the quarantined claim
+		// — possibly the only surviving copy — would be destroyed after syncDirectory.
+		var target string
+		target, err = os.Readlink(claimPath)
 		if err != nil {
 			return err
 		}

@@ -3,6 +3,7 @@ package mem
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -217,6 +218,23 @@ func TestHeldCoprocessTimeout(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("round-trip should have timed out fast, took %s", elapsed)
+	}
+}
+
+// The per-op exec fallback must bound its round-trip the same way: a hung
+// spawned engine must be killed at the deadline, not block lock-holders
+// forever on the cold path.
+func TestExecTransportTimeout(t *testing.T) {
+	tr := ExecTransport{Argv: []string{"sleep", "30"}, Timeout: 200 * time.Millisecond}
+	start := time.Now()
+	_, err := tr.RoundTrip(Request{SchemaVersion: ProtocolVersion, RequestID: "r1", Op: OpCapabilities})
+	if err == nil {
+		t.Error("a non-responding exec engine should time out, not hang")
+	} else if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("exec timeout should be reported as a timeout, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("exec round-trip should have timed out fast, took %s", elapsed)
 	}
 }
 

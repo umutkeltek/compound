@@ -85,10 +85,8 @@ func TestQueryBreadthExpansionFindsPlantedPairWithoutDroppingPrimary(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	// System claim should not match casual phrasing without expansion.
-	if containsClaimID(before, promotedID(t, s, sys[0].ID)) {
-		// After promote, claim id differs from candidate id — resolve via content.
-	}
+	// System claim should not match casual phrasing without expansion (resolve
+	// via content: after promote the claim id differs from the candidate id).
 	if containsObject(before, "extract_facts starvation under load") {
 		t.Fatalf("precondition: casual query already hits system claim: %v", objs(before))
 	}
@@ -190,15 +188,6 @@ func claimIDs(cs []Claim) []string {
 	return out
 }
 
-func containsClaimID(cs []Claim, id string) bool {
-	for _, c := range cs {
-		if c.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
 func containsObject(cs []Claim, object string) bool {
 	for _, c := range cs {
 		if c.Object == object {
@@ -206,20 +195,4 @@ func containsObject(cs []Claim, object string) bool {
 		}
 	}
 	return false
-}
-
-func promotedID(t *testing.T, s *Store, candidateID string) string {
-	t.Helper()
-	claims, err := s.AllCurrent()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range claims {
-		for _, ref := range c.EvidenceRefs {
-			if ref == candidateID || ref == "candidate:"+candidateID {
-				return c.ID
-			}
-		}
-	}
-	return ""
 }

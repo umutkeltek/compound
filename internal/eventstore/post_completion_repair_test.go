@@ -4656,3 +4656,39 @@ func seedPostCompletionRepairProofWithoutCleanup(t *testing.T, store *Store, pla
 	}
 	return proof, receiptID, transitionID
 }
+
+// TestPostCompletionRepairRestorePropagatesSymlinkFailureAndPreservesClaim is the
+// falsifier for the restore error path. restorePostCompletionRepairClaim once declared
+// a block-scoped err inside the symlink branch, so a failed os.Symlink was never seen
+// by the outer check: the restore reported success, synced the directory, and removed
+// the quarantined claim — possibly the only surviving copy of the loose bytes. The
+// failure is forced by pre-creating the restore destination (EEXIST), which is
+// deterministic on every platform and UID, unlike a read-only directory.
+func TestPostCompletionRepairRestorePropagatesSymlinkFailureAndPreservesClaim(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(target, []byte("loose bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	claimPath := filepath.Join(dir, "claim.json")
+	if err := os.Symlink(target, claimPath); err != nil {
+		t.Fatal(err)
+	}
+	// The drift case this path defends against: the loose pathname was recreated after
+	// the atomic claim, so re-creating the symlink must fail with EEXIST.
+	sourcePath := filepath.Join(dir, "loose.json")
+	if err := os.WriteFile(sourcePath, []byte("recreated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := restorePostCompletionRepairClaim(claimPath, sourcePath)
+	if err == nil {
+		t.Fatal("restore succeeded despite the symlink destination already existing")
+	}
+	if !strings.Contains(err.Error(), "restore refused post-completion repair claim") {
+		t.Errorf("error = %v, want the refused-restore wrapper", err)
+	}
+	if _, lerr := os.Lstat(claimPath); lerr != nil {
+		t.Fatalf("quarantined claim destroyed by a failed restore: %v", lerr)
+	}
+}

@@ -2,6 +2,7 @@ package home
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,6 +132,50 @@ func TestWriteFileAtomicAppliesTheRequestedMode(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o644 {
 		t.Errorf("mode = %o, want 644 (CreateTemp's 0600 must not survive the rename)", got)
 	}
+}
+
+// TestWriteFileAtomicSyncFailurePreventsPublication is the falsifier for the durability
+// half of the contract: atomicity alone does not survive a crash. A failed temp-file
+// sync must abort the write BEFORE the rename — the target keeps its previous body —
+// and a failed directory sync must surface as an error instead of a volatile-only
+// success. Without the syncs the write would report success while a crash could still
+// resurrect the previous (or an empty) body, and this test would have nothing to fail.
+func TestWriteFileAtomicSyncFailurePreventsPublication(t *testing.T) {
+	fault := errors.New("injected sync failure")
+
+	t.Run("temp file sync", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "projections", "body.json")
+		if err := WriteFileAtomic(path, []byte(`{"v":1}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		previous := atomicWriteTempFileSync
+		defer func() { atomicWriteTempFileSync = previous }()
+		atomicWriteTempFileSync = func(*os.File) error { return fault }
+
+		err := WriteFileAtomic(path, []byte(`{"v":2}`), 0o644)
+		if !errors.Is(err, fault) {
+			t.Fatalf("temp file sync error = %v, want %v", err, fault)
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if string(body) != `{"v":1}` {
+			t.Errorf("target body changed after a failed temp-file sync: %q", body)
+		}
+	})
+
+	t.Run("directory sync", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "projections", "body.json")
+		previous := atomicWriteDirSync
+		defer func() { atomicWriteDirSync = previous }()
+		atomicWriteDirSync = func(string) error { return fault }
+
+		err := WriteFileAtomic(path, []byte(`{"v":1}`), 0o644)
+		if !errors.Is(err, fault) {
+			t.Fatalf("directory sync error = %v, want %v", err, fault)
+		}
+	})
 }
 
 func mustJSON(t *testing.T, v any) []byte {
