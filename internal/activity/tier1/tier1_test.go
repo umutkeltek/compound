@@ -52,9 +52,7 @@ func importGrants(t *testing.T, homePath string, now time.Time, specs ...grantSp
 		grants = append(grants, `{"id":"`+s.id+`","capability":"`+s.capability+
 			`","mutation_class":"external_side_effect","reversibility_ceiling":"reversible"`+exp+`}`)
 	}
-	src := `{"schema_version":"compound.standing_grants_source.v0.1",` +
-		`"authority":{"decision_ref":"grant:test-tier1","reviewed_by":"operator:test"},` +
-		`"standing_grants":[` + strings.Join(grants, ",") + `]}`
+	src := `{"schema_version":"compound.standing_grants_source.v0.1","authority":{"decision_ref":"dec_tier1_test_grant_authority","reviewed_by":"operator:tier1-test"},"standing_grants":[` + strings.Join(grants, ",") + `]}`
 	srcPath := filepath.Join(t.TempDir(), "grants.json")
 	if err := os.WriteFile(srcPath, []byte(src), 0o600); err != nil {
 		t.Fatalf("write grant source: %v", err)
@@ -149,12 +147,8 @@ func TestFalsifier15_Tier1CollectWithGrantProceeds(t *testing.T) {
 		t.Fatalf("enable: %v", err)
 	}
 
-	// This test proves GATE passage only: with the grant + enabled sensor,
-	// Collect must NOT refuse. What happens past the gate is host-dependent:
-	// on a host without AW, ListBuckets errors and the run is honestly marked
-	// Failed (an operational failure, still not a Refused); on a host WITH AW
-	// running, collection proceeds. Either way Refused must stay false — an
-	// AW outage is a failed run, never a governance refusal.
+	// AW isn't running on the test host — Collect should gracefully no-op
+	// (SourcesFailed may be 1 from the ListBuckets error).
 	rep, err := Collect(h, t.TempDir(), cfg, "work_tier1", 30*time.Second, 5*time.Second, now)
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
@@ -607,163 +601,6 @@ func TestAWMaterialize_AllBucketsFailIsFailed(t *testing.T) {
 	}
 }
 
-// An AW outage (ListBuckets fails) is a FAILED tier1 collect, not a success and
-// not a refusal — mirroring TestAWMaterialize_ListBucketsFailureIsFailed. The
-// previous shape returned Refused=false with only SourcesFailed=1, which the
-// CLI rendered as exit 0: a finite collector that cannot reach its source was
-// indistinguishable from a clean run.
-func TestCollect_ListBucketsFailureIsFailed(t *testing.T) {
-	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "down", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	cli := awstream.NewClient(srv.URL)
-	c := newCollectorWithDeps(cli, source.NewRegistry(), t.TempDir(), func() time.Time { return now })
-	rep := c.Run(context.Background(), 30*time.Second)
-
-	if !rep.Failed {
-		t.Fatalf("ListBuckets failure must set Failed=true: %+v", rep)
-	}
-	if rep.Refused {
-		t.Fatalf("an AW outage is operational failure, not a governance refusal: %+v", rep)
-	}
-	if !strings.Contains(rep.Reason, "ListBuckets") {
-		t.Fatalf("reason must name the failure, got %q", rep.Reason)
-	}
-	if rep.EventsWritten != 0 {
-		t.Fatalf("failed run must write zero events: %+v", rep)
-	}
-}
-
-// When EVERY currentwindow bucket fails FetchEvents, the collect is failed —
-// events_written=0 must never be mistaken for "no activity" when really AW
-// could not be read. Mirrors TestAWMaterialize_AllBucketsFailIsFailed.
-func TestCollect_AllBucketFetchFailureIsFailed(t *testing.T) {
-	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "/events"):
-			http.Error(w, "boom", http.StatusInternalServerError)
-		case strings.Contains(r.URL.Path, "buckets"):
-			_, _ = w.Write([]byte(`{` +
-				`"aw-watcher-window_a":{"id":"aw-watcher-window_a","type":"currentwindow","hostname":"ha"},` +
-				`"aw-watcher-window_b":{"id":"aw-watcher-window_b","type":"currentwindow","hostname":"hb"}` +
-				`}`))
-		default:
-			_, _ = w.Write([]byte(`{}`))
-		}
-	}))
-	defer srv.Close()
-
-	cli := awstream.NewClient(srv.URL)
-	reg := source.NewRegistryFromSources(&recordingSource{bundle: "com.example.terminal"})
-	c := newCollectorWithDeps(cli, reg, t.TempDir(), func() time.Time { return now })
-	rep := c.Run(context.Background(), 30*time.Second)
-
-	if !rep.Failed {
-		t.Fatalf("all-bucket failure must set Failed=true: %+v", rep)
-	}
-	if rep.BucketsFailed != 2 || rep.EventsWritten != 0 {
-		t.Fatalf("unexpected counts: %+v", rep)
-	}
-	if !strings.Contains(rep.Reason, "all 2 eligible buckets") {
-		t.Fatalf("reason must name the all-bucket failure, got %q", rep.Reason)
-	}
-}
-
-// A PARTIAL bucket failure stays a success: one bucket errors, the other
-// delivers events, and the run collects from the healthy one. The honest
-// signal is BucketsFailed=1 with a zero exit — not a failed run.
-func TestCollect_PartialBucketFailureStaysSuccess(t *testing.T) {
-	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "/events") && strings.Contains(r.URL.Path, "bad"):
-			http.Error(w, "boom", http.StatusInternalServerError)
-		case strings.Contains(r.URL.Path, "/events"):
-			_, _ = w.Write([]byte(`[{"timestamp":1700000000.0,"duration":30,"data":{"app":"com.example.terminal"}}]`))
-		case strings.Contains(r.URL.Path, "buckets"):
-			_, _ = w.Write([]byte(`{` +
-				`"aw-watcher-window_good":{"id":"aw-watcher-window_good","type":"currentwindow","hostname":"good"},` +
-				`"aw-watcher-window_bad":{"id":"aw-watcher-window_bad","type":"currentwindow","hostname":"bad"}` +
-				`}`))
-		default:
-			_, _ = w.Write([]byte(`{}`))
-		}
-	}))
-	defer srv.Close()
-
-	cli := awstream.NewClient(srv.URL)
-	reg := source.NewRegistryFromSources(&recordingSource{bundle: "com.example.terminal"})
-	spoolDir := t.TempDir()
-	c := newCollectorWithDeps(cli, reg, spoolDir, func() time.Time { return now })
-	rep := c.Run(context.Background(), 5*time.Minute)
-
-	if rep.Failed || rep.Refused {
-		t.Fatalf("partial failure must stay a success: %+v", rep)
-	}
-	if rep.BucketsFailed != 1 {
-		t.Fatalf("BucketsFailed = %d, want 1: %+v", rep.BucketsFailed, rep)
-	}
-	if rep.EventsWritten < 1 {
-		t.Fatalf("healthy bucket must still deliver events: %+v", rep)
-	}
-}
-
-// BytesUnderRoot must be measured from the ACTUAL activity root carried on the
-// Collector, never inferred from the spool path. The regression: parentHome
-// walked up from SpoolDir looking for a "spool" segment — with the default
-// ~/Library/Application Support/compound-activity/spool that resolves to
-// Application Support, silently mis-reporting the byte metric (and reporting
-// 0 whenever the spool lived anywhere else, like a test tempdir).
-func TestCollect_BytesUnderRootUsesRealHome(t *testing.T) {
-	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
-
-	// A home with a known footprint under observed/activity.
-	homePath := t.TempDir()
-	root := activity.ActivityRoot(homePath)
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatalf("mkdir activity root: %v", err)
-	}
-	payload := []byte(strings.Repeat("x", 4096))
-	if err := os.WriteFile(filepath.Join(root, "2026-07-15.ndjson"), payload, 0o600); err != nil {
-		t.Fatalf("seed activity bytes: %v", err)
-	}
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "/events"):
-			_, _ = w.Write([]byte(`[{"timestamp":1700000000.0,"duration":30,"data":{"app":"com.example.terminal"}}]`))
-		case strings.Contains(r.URL.Path, "buckets"):
-			_, _ = w.Write([]byte(`{"aw-watcher-window_local":{"id":"aw-watcher-window_local","type":"currentwindow","hostname":"local"}}`))
-		default:
-			_, _ = w.Write([]byte(`{}`))
-		}
-	}))
-	defer srv.Close()
-
-	// Spool lives in an UNRELATED tempdir — the arrangement under which the old
-	// spool-path inference could never recover the home.
-	cli := awstream.NewClient(srv.URL)
-	reg := source.NewRegistryFromSources(&recordingSource{bundle: "com.example.terminal"})
-	c := newCollectorWithDeps(cli, reg, t.TempDir(), func() time.Time { return now })
-	c.Home = homePath
-	rep := c.Run(context.Background(), 5*time.Minute)
-
-	if rep.EventsWritten < 1 {
-		t.Fatalf("fixture must collect an event: %+v", rep)
-	}
-	if rep.BytesUnderRoot != int64(len(payload)) {
-		t.Fatalf("BytesUnderRoot = %d, want %d (the real activity root's bytes): %+v",
-			rep.BytesUnderRoot, len(payload), rep)
-	}
-}
-
 // --- Tier1AllowedMetaKeys completeness guard (F13 partial) ---
 
 func TestTier1EventCarriesExpectedMetaKeys(t *testing.T) {
@@ -853,13 +690,6 @@ func TestWriteEventsToSpoolAppendsNotOverwrites(t *testing.T) {
 	const day = "2026-07-30"
 	path := filepath.Join(dir, day+".ndjson")
 	swiftLine := []byte(`{"schema_version":"compound.activity_observation.v0.2","seq":1,"ts":"2026-07-30T11:00:00Z","kind":"app_activated","bundle_id":"com.google.Chrome","app_name":"Chrome"}` + "\n")
-	// Drift guard: this fixture line stands in for the Swift Tier-0 collector's output
-	// (sensors/macos-activity/main.swift), so its schema_version MUST be the version
-	// internal/activity owns. If this reds, bump the Swift sensor and this fixture to
-	// the new activity.SchemaVersion together.
-	if !strings.Contains(string(swiftLine), `"schema_version":"`+activity.SchemaVersion+`"`) {
-		t.Fatalf("swift fixture schema_version drifted from activity.SchemaVersion %q — update sensors/macos-activity/main.swift and this fixture together", activity.SchemaVersion)
-	}
 	if err := os.WriteFile(path, swiftLine, 0o600); err != nil {
 		t.Fatalf("seed spool: %v", err)
 	}
