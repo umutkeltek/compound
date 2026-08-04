@@ -84,9 +84,9 @@ func TestImportHookInstallReportPublishesAllHarnessesAsOneAuthorityUpdate(t *tes
 	if strings.Join(result.Harnesses, ",") != strings.Join(wantHarnesses, ",") {
 		t.Fatalf("combined harnesses = %v, want %v", result.Harnesses, wantHarnesses)
 	}
-	if result.IncomingHookCount != 20 || len(result.Manifest.Hooks) != 20 {
+	if result.IncomingHookCount != 24 || len(result.Manifest.Hooks) != 24 {
 		t.Fatalf(
-			"combined manifest incoming=%d hooks=%d, want all 20 lifecycle bindings",
+			"combined manifest incoming=%d hooks=%d, want all 24 lifecycle bindings",
 			result.IncomingHookCount,
 			len(result.Manifest.Hooks),
 		)
@@ -933,8 +933,8 @@ func TestReconcileInstalledHooksObservesClaudeMinimaxProfile(t *testing.T) {
 			observed++
 		}
 	}
-	if observed != 4 {
-		t.Fatalf("observed %d claude_minimax bindings, want 4 (observation source missing)", observed)
+	if observed != 5 {
+		t.Fatalf("observed %d claude_minimax bindings, want 5 (observation source missing)", observed)
 	}
 	delta := hookReconciliationDelta(got.Reconciliation, "claude_minimax", "PreToolUse")
 	if delta == nil || delta.State != hookplan.StateReady {
@@ -978,8 +978,8 @@ func TestReconcileInstalledHooksObservesClaudeQwenProfile(t *testing.T) {
 			observed++
 		}
 	}
-	if observed != 4 {
-		t.Fatalf("observed %d claude_qwen bindings, want 4 (observation source missing)", observed)
+	if observed != 5 {
+		t.Fatalf("observed %d claude_qwen bindings, want 5 (observation source missing)", observed)
 	}
 	delta := hookReconciliationDelta(got.Reconciliation, "claude_qwen", "PreToolUse")
 	if delta == nil || delta.State != hookplan.StateReady {

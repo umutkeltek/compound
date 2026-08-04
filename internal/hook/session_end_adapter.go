@@ -1,4 +1,4 @@
-package main
+package hook
 
 import (
 	"bytes"
@@ -107,7 +107,17 @@ type sessionEndAdapterWorkerResult struct {
 	Duration time.Duration
 }
 
-func runSessionEndAdapterCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+type sessionEndAdapterHookSpecificOutput struct {
+	HookEventName string `json:"hookEventName"`
+}
+
+type sessionEndAdapterResponse struct {
+	HookSpecificOutput sessionEndAdapterHookSpecificOutput `json:"hookSpecificOutput"`
+}
+
+// RunSessionEndAdapterCommand executes the bounded Claude-family SessionEnd
+// adapter behind the thin cmd/compound dispatch seam.
+func RunSessionEndAdapterCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	parsed, err := parseSessionEndAdapterArgs(args)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -222,7 +232,7 @@ func runSessionEndAdapterCommand(args []string, stdin io.Reader, stdout, stderr 
 		writeSessionEndAdapterOutcomeError(stderr, outcome, acceptance.Attempt)
 		return 0
 	}
-	var response claudeLiveHookResponse
+	var response sessionEndAdapterResponse
 	if err := json.Unmarshal(worker.Stdout, &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
 		outcome := persistSessionEndAdapterOutcomeBounded(
 			homePath,
@@ -673,7 +683,7 @@ func sessionEndAdapterWorkerOutcome(worker sessionEndAdapterWorkerResult) (strin
 	if worker.Err != nil {
 		return sessionEndAdapterStatusFailed, "worker_exit"
 	}
-	var response claudeLiveHookResponse
+	var response sessionEndAdapterResponse
 	if err := json.Unmarshal(worker.Stdout, &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
 		return sessionEndAdapterStatusFailed, "invalid_worker_output"
 	}
@@ -827,15 +837,27 @@ func persistSessionEndAdapterAcceptanceDetailed(
 }
 
 func sessionEndAdapterAttemptID(harnessName, inputHash string, now time.Time) string {
-	return sessionEndAdapterAttemptIDPrefix + shortHash(harnessName, inputHash, now.UTC().Format(time.RFC3339Nano))
+	return sessionEndAdapterAttemptIDPrefix + sessionEndAdapterShortHash(harnessName, inputHash, now.UTC().Format(time.RFC3339Nano))
 }
 
 func sessionEndAdapterExecutionID(attemptID string, now time.Time) string {
-	return "sessend_exec_" + shortHash(attemptID, now.UTC().Format(time.RFC3339Nano))
+	return "sessend_exec_" + sessionEndAdapterShortHash(attemptID, now.UTC().Format(time.RFC3339Nano))
 }
 
 func sessionEndAdapterOutcomeID(attemptID, executionID string) string {
-	return sessionEndAdapterOutcomeIDPrefix + shortHash(attemptID, executionID)
+	return sessionEndAdapterOutcomeIDPrefix + sessionEndAdapterShortHash(attemptID, executionID)
+}
+
+// sessionEndAdapterShortHash preserves the command-layer adapter's original
+// NUL-delimited identity bytes so accepted evidence remains replayable after
+// moving the implementation into the hook spine.
+func sessionEndAdapterShortHash(parts ...string) string {
+	hash := sha256.New()
+	for _, part := range parts {
+		_, _ = hash.Write([]byte(part))
+		_, _ = hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))[:12]
 }
 
 func sessionEndAdapterRetryArgv(attemptID string) []string {
@@ -914,8 +936,8 @@ func (w *sessionEndAdapterCapture) Bytes() []byte {
 }
 
 func writeSessionEndAdapterResponse(stdout io.Writer) {
-	_ = json.NewEncoder(stdout).Encode(claudeLiveHookResponse{
-		HookSpecificOutput: claudeHookSpecificOutput{HookEventName: "SessionEnd"},
+	_ = json.NewEncoder(stdout).Encode(sessionEndAdapterResponse{
+		HookSpecificOutput: sessionEndAdapterHookSpecificOutput{HookEventName: "SessionEnd"},
 	})
 }
 

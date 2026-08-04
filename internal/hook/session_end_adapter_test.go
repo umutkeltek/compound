@@ -1,4 +1,4 @@
-package main
+package hook
 
 import (
 	"bytes"
@@ -287,7 +287,7 @@ func TestSessionEndAdapterReplayAcceptsDashedEvidenceButExecutesCanonically(t *t
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := runSessionEndAdapterCommand(
+	if code := RunSessionEndAdapterCommand(
 		[]string{"--replay", parent.ID, "--worker", workerPath},
 		strings.NewReader("must-not-be-consumed"),
 		&stdout,
@@ -337,7 +337,7 @@ func TestSessionEndAdapterRetryArgvReplaysAcceptedExactInputByID(t *testing.T) {
 	}
 	input := "{\n  \"hook_event_name\": \"SessionEnd\",\n  \"session_id\": \"sess_exact_replay\",\n  \"unknown_future_field\": [1, 2, 3]\n}\n"
 	var liveStdout, liveStderr bytes.Buffer
-	if code := runSessionEndAdapterCommand([]string{
+	if code := RunSessionEndAdapterCommand([]string{
 		"--live", "--harness", "claude-code", "--timeout", "1s", "--worker", slowWorker,
 	}, strings.NewReader(input), &liveStdout, &liveStderr); code != 0 {
 		t.Fatalf("live adapter exit=%d stdout=%s stderr=%s", code, liveStdout.String(), liveStderr.String())
@@ -378,7 +378,7 @@ func TestSessionEndAdapterRetryArgvReplaysAcceptedExactInputByID(t *testing.T) {
 	}
 	var replayStdout, replayStderr bytes.Buffer
 	replayArgs := append(append([]string(nil), attempt.RetryArgv[3:]...), "--worker", successWorker)
-	if code := runSessionEndAdapterCommand(replayArgs, strings.NewReader("must-not-be-consumed"), &replayStdout, &replayStderr); code != 0 {
+	if code := RunSessionEndAdapterCommand(replayArgs, strings.NewReader("must-not-be-consumed"), &replayStdout, &replayStderr); code != 0 {
 		partial, partialErr := os.ReadFile(workerInput)
 		t.Fatalf("replay exit=%d stdout=%s stderr=%s worker_input_bytes=%d worker_input_err=%v", code, replayStdout.String(), replayStderr.String(), len(partial), partialErr)
 	}
@@ -417,7 +417,7 @@ func TestSessionEndAdapterManualReplayCanUseLongerBoundedTimeout(t *testing.T) {
 	input := `{"hook_event_name":"SessionEnd","session_id":"sess_longer_manual_replay","unknown_future_field":{"kept":true}}`
 
 	var liveStdout, liveStderr bytes.Buffer
-	if code := runSessionEndAdapterCommand([]string{
+	if code := RunSessionEndAdapterCommand([]string{
 		"--live", "--harness", "claude-code", "--timeout", "100ms", "--worker", workerPath,
 	}, strings.NewReader(input), &liveStdout, &liveStderr); code != 0 {
 		t.Fatalf("live adapter exit=%d stdout=%s stderr=%s", code, liveStdout.String(), liveStderr.String())
@@ -443,7 +443,7 @@ func TestSessionEndAdapterManualReplayCanUseLongerBoundedTimeout(t *testing.T) {
 	}
 
 	var replayStdout, replayStderr bytes.Buffer
-	if code := runSessionEndAdapterCommand([]string{
+	if code := RunSessionEndAdapterCommand([]string{
 		"--replay", parent.ID, "--timeout", "1s", "--worker", workerPath,
 	}, strings.NewReader("must-not-be-consumed"), &replayStdout, &replayStderr); code != 0 {
 		t.Fatalf("manual replay exit=%d stdout=%s stderr=%s", code, replayStdout.String(), replayStderr.String())
@@ -518,7 +518,7 @@ func TestSessionEndAdapterBoundsAcceptancePersistenceBeforeStartingWorker(t *tes
 	defer cancel()
 	command := exec.CommandContext(
 		ctx,
-		"go", "run", ".", "hook", "session-end-adapter",
+		"go", "run", "../../cmd/compound", "hook", "session-end-adapter",
 		"--live", "--harness", "claude-code",
 		"--timeout", "100ms", "--worker", workerPath,
 	)
@@ -544,7 +544,7 @@ func TestSessionEndAdapterBoundsAcceptancePersistenceBeforeStartingWorker(t *tes
 	if elapsed > 10*time.Second {
 		t.Fatalf("SessionEnd acceptance exceeded its bounded handoff window: %s", elapsed)
 	}
-	var response claudeLiveHookResponse
+	var response sessionEndAdapterResponse
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
 		t.Fatalf("SessionEnd acceptance failure did not emit valid hook JSON: err=%v response=%+v stdout=%s", err, response, stdout.String())
 	}
@@ -583,12 +583,12 @@ func TestSessionEndAdapterReportsAcceptanceNotCommittedWithoutReplayIdentity(t *
 	}
 	input := `{"hook_event_name":"SessionEnd","session_id":"sess_acceptance_not_committed"}`
 	var stdout, stderr bytes.Buffer
-	if code := runSessionEndAdapterCommand([]string{
+	if code := RunSessionEndAdapterCommand([]string{
 		"--live", "--harness", "claude-code", "--timeout", "100ms", "--worker", workerPath,
 	}, strings.NewReader(input), &stdout, &stderr); code != 0 {
 		t.Fatalf("SessionEnd adapter exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	var response claudeLiveHookResponse
+	var response sessionEndAdapterResponse
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
 		t.Fatalf("SessionEnd acceptance failure response invalid: err=%v response=%+v stdout=%s", err, response, stdout.String())
 	}
@@ -620,12 +620,12 @@ func TestSessionEndAdapterReportsUnknownOutcomeWithoutTerminalIdentity(t *testin
 	}
 	input := `{"hook_event_name":"SessionEnd","session_id":"sess_outcome_not_committed"}`
 	var stdout, stderr bytes.Buffer
-	if code := runSessionEndAdapterCommand([]string{
+	if code := RunSessionEndAdapterCommand([]string{
 		"--live", "--harness", "claude-code", "--timeout", "5s", "--worker", workerPath,
 	}, strings.NewReader(input), &stdout, &stderr); code != 0 {
 		t.Fatalf("SessionEnd adapter exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	var response claudeLiveHookResponse
+	var response sessionEndAdapterResponse
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
 		t.Fatalf("SessionEnd outcome failure response invalid: err=%v response=%+v stdout=%s", err, response, stdout.String())
 	}
@@ -711,7 +711,7 @@ func TestSessionEndAdapterTimesOutSlowWorkerWithoutCancellingHookAndKeepsRetryEv
 	defer cancel()
 	command := exec.CommandContext(
 		ctx,
-		"go", "run", ".", "hook", "session-end-adapter",
+		"go", "run", "../../cmd/compound", "hook", "session-end-adapter",
 		"--live", "--harness", "claude-code",
 		"--timeout", "100ms", "--worker", workerPath,
 	)
@@ -738,7 +738,7 @@ func TestSessionEndAdapterTimesOutSlowWorkerWithoutCancellingHookAndKeepsRetryEv
 		t.Fatalf("SessionEnd adapter exceeded its bounded handoff window: %s", elapsed)
 	}
 
-	var response claudeLiveHookResponse
+	var response sessionEndAdapterResponse
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
 		t.Fatalf("SessionEnd adapter did not emit valid Claude hook JSON: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
@@ -810,7 +810,7 @@ func TestSessionEndAdapterMarksSuccessfulWorkerProcessing(t *testing.T) {
 	defer cancel()
 	command := exec.CommandContext(
 		ctx,
-		"go", "run", ".", "hook", "session-end-adapter",
+		"go", "run", "../../cmd/compound", "hook", "session-end-adapter",
 		"--live", "--harness", "claude-code",
 		"--timeout", "5s", "--worker", workerPath,
 	)
@@ -826,7 +826,7 @@ func TestSessionEndAdapterMarksSuccessfulWorkerProcessing(t *testing.T) {
 	if err := command.Run(); err != nil {
 		t.Fatalf("SessionEnd adapter exit = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
-	var response claudeLiveHookResponse
+	var response sessionEndAdapterResponse
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
 		t.Fatalf("SessionEnd success response invalid: err=%v response=%+v stdout=%s", err, response, stdout.String())
 	}

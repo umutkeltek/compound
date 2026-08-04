@@ -1473,7 +1473,7 @@ func cmdHook(args []string) {
 		return
 	}
 	if len(args) > 0 && args[0] == "session-end-adapter" {
-		if code := runSessionEndAdapterCommand(args[1:], os.Stdin, os.Stdout, os.Stderr); code != 0 {
+		if code := hook.RunSessionEndAdapterCommand(args[1:], os.Stdin, os.Stdout, os.Stderr); code != 0 {
 			os.Exit(code)
 		}
 		return
