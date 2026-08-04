@@ -30,6 +30,10 @@ func TestCanonicalProofGatesReadSealedHeadDuringTransientCallerMutation(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	plan, err := resolveCanonicalProofPlan(repo, source)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	controlDir := t.TempDir()
 	startedPath := filepath.Join(controlDir, "started")
@@ -73,7 +77,9 @@ exit 0
 		report proofCheckReport
 		err    error
 	}
-	runnerContext, cancelRunner := context.WithCancel(context.Background())
+	runnerContext, cancelRunner := context.WithCancel(
+		proofCheckContextWithCanonicalPlan(context.Background(), plan),
+	)
 	defer cancelRunner()
 	done := make(chan runnerResult, 1)
 	go func() {

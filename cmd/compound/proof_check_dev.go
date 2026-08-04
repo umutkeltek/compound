@@ -144,6 +144,9 @@ func runDevelopmentProofCheck(repoPath string, dryRun bool, baseRef string, now 
 	if err != nil {
 		return proofCheckReport{}, err
 	}
+	if err := refuseRustInCompoundOnlyProofMode(repo, "development proof mode"); err != nil {
+		return proofCheckReport{}, err
+	}
 	baseRef = strings.TrimSpace(baseRef)
 	steps, err := proofCheckDevelopmentSteps(repo, baseRef)
 	if err != nil {

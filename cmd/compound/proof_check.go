@@ -225,7 +225,17 @@ func cmdProofCheck(args []string) {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
-		profile, err := proofCheckAdmissionProfile(resolvedRepo, sourceSnapshot)
+		plan, err := resolveCanonicalProofPlan(resolvedRepo, sourceSnapshot)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check:", err)
+			os.Exit(2)
+		}
+		profile, err := proofCheckAdmissionProfileForPlan(plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check:", err)
+			os.Exit(2)
+		}
+		publishCompoundRuntimeArtifact, err := canonicalProofProfilePublishesCompoundRuntimeArtifact(plan, profile)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
@@ -260,7 +270,8 @@ func cmdProofCheck(args []string) {
 			TerminationEvidenceRef: terminationEvidenceRef,
 			Now:                    time.Now,
 		}, func(ctx context.Context) (proofCheckReport, error) {
-			produced, runErr := proofCheckCanonicalRunner(ctx, resolvedRepo, false, sourceSnapshot, false, false, time.Now())
+			planContext := proofCheckContextWithCanonicalPlan(ctx, plan)
+			produced, runErr := proofCheckCanonicalRunner(planContext, resolvedRepo, false, sourceSnapshot, false, false, time.Now())
 			if runErr != nil {
 				return produced, runErr
 			}
@@ -287,7 +298,8 @@ func cmdProofCheck(args []string) {
 		if report.Status == "ok" &&
 			completed.VerificationRef != "" &&
 			completed.ResourceReleased &&
-			!completed.RecoveryJournalRetained {
+			!completed.RecoveryJournalRetained &&
+			publishCompoundRuntimeArtifact {
 			if _, recordErr := proofCheckRuntimeArtifactRecorder(homePath, report); recordErr != nil {
 				fmt.Fprintln(os.Stderr, "proof-check: installed-runtime proof publication:", recordErr)
 				if verdict, ok := proofCheckPostReportErrorVerdict(report, outPath, recordErr); ok {
@@ -370,21 +382,11 @@ func proofCheckShouldRecordArtifact(dryRun bool, status string, ciOnly, ciConsol
 }
 
 func proofCheckAdmissionProfile(repo string, source gitrepository.Snapshot) (work.ProofResourceProfile, error) {
-	steps, err := proofCheckSteps(source.BaseSHA, source.HeadSHA)
+	plan, err := resolveCanonicalProofPlan(repo, source)
 	if err != nil {
 		return work.ProofResourceProfile{}, err
 	}
-	gates := make([]work.ProofResourceGateProfile, 0, len(steps))
-	for _, step := range steps {
-		gates = append(gates, work.ProofResourceGateProfile{
-			Name:          step.Name,
-			Command:       append([]string(nil), step.Command...),
-			Dir:           step.Dir,
-			SkipIfMissing: step.SkipIfMissing,
-			ProofRef:      step.ProofRef,
-		})
-	}
-	return work.NewProofResourceProfileWithSource(work.ProofResourceProfileCanonicalFull, repo, source, gates)
+	return proofCheckAdmissionProfileForPlan(plan)
 }
 
 func proofCheckInvocationIdentity(args []string) (string, error) {
@@ -1047,9 +1049,21 @@ func runProofCheckWithRangeContext(
 		return proofCheckReport{}, err
 	}
 	baseRef = strings.TrimSpace(baseRef)
-	steps, err := proofCheckSteps(baseRef, headRef)
-	if err != nil {
-		return proofCheckReport{}, err
+	var steps []proofCheckStep
+	if source != nil {
+		plan, planErr := canonicalProofPlanForExecution(ctx, repo, *source)
+		if planErr != nil {
+			return proofCheckReport{}, planErr
+		}
+		steps = cloneCanonicalProofPlan(plan).Steps
+	} else {
+		if err := refuseRustInCompoundOnlyProofMode(repo, "non-certifying proof mode"); err != nil {
+			return proofCheckReport{}, err
+		}
+		steps, err = proofCheckSteps(baseRef, headRef)
+		if err != nil {
+			return proofCheckReport{}, err
+		}
 	}
 	if ciConsole {
 		steps = ciConsoleSteps(steps)
@@ -1346,7 +1360,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 		if executableErr != nil {
 			result.Status = "failed"
 			result.OutputTail = executableErr.Error()
-			result.FailureFacts = work.ProofFailureFacts(step.Name, []byte(executableErr.Error()), executableErr)
+			result.FailureFacts = proofCheckFailureFacts(repo, step.Name, []byte(executableErr.Error()), executableErr)
 			result.ExitCode = 1
 			return result
 		}
@@ -1368,7 +1382,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 	result.OutputTail = proofCheckTail(output, 4000)
 	if err != nil {
 		result.Status = "failed"
-		result.FailureFacts = work.ProofFailureFacts(step.Name, output, err)
+		result.FailureFacts = proofCheckFailureFacts(repo, step.Name, output, err)
 		result.ExitCode = proofCheckExitCode(err)
 	}
 	return result

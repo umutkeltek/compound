@@ -13831,10 +13831,13 @@ func initCompoundCommandGitRepo(t *testing.T) string {
 	runCommandGit(t, repo, "init", "-b", "main")
 	runCommandGit(t, repo, "config", "user.email", "test@example.invalid")
 	runCommandGit(t, repo, "config", "user.name", "Compound Test")
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module compound\n\ngo 1.26.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runCommandGit(t, repo, "add", "README.md")
+	runCommandGit(t, repo, "add", "go.mod", "README.md")
 	runCommandGit(t, repo, "commit", "-m", "initial")
 	return repo
 }
