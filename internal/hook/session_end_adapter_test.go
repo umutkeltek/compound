@@ -2,7 +2,6 @@ package hook
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -514,32 +513,19 @@ func TestSessionEndAdapterBoundsAcceptancePersistenceBeforeStartingWorker(t *tes
 		t.Fatalf("mkfifo: %v: %s", err, output)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	command := exec.CommandContext(
-		ctx,
-		"go", "run", "../../cmd/compound", "hook", "session-end-adapter",
+	t.Setenv("COMPOUND_HOME", compoundHome)
+	t.Setenv(sessionEndAdapterWorkerOverrideEnv, "1")
+	args := []string{
 		"--live", "--harness", "claude-code",
 		"--timeout", "100ms", "--worker", workerPath,
-	)
-	command.Env = append(
-		os.Environ(),
-		"COMPOUND_HOME="+compoundHome,
-		sessionEndAdapterWorkerOverrideEnv+"=1",
-	)
-	command.Stdin = strings.NewReader(input)
+	}
 	var stdout, stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
 
 	started := time.Now()
-	err := command.Run()
+	code := RunSessionEndAdapterCommand(args, strings.NewReader(input), &stdout, &stderr)
 	elapsed := time.Since(started)
-	if ctx.Err() != nil {
-		t.Fatalf("SessionEnd acceptance persistence remained blocked until its test guard fired after %s: %v", elapsed, ctx.Err())
-	}
-	if err != nil {
-		t.Fatalf("SessionEnd adapter exit = %v after %s\nstdout=%s\nstderr=%s", err, elapsed, stdout.String(), stderr.String())
+	if code != 0 {
+		t.Fatalf("SessionEnd adapter exit = %d after %s\nstdout=%s\nstderr=%s", code, elapsed, stdout.String(), stderr.String())
 	}
 	if elapsed > 10*time.Second {
 		t.Fatalf("SessionEnd acceptance exceeded its bounded handoff window: %s", elapsed)
@@ -707,32 +693,19 @@ func TestSessionEndAdapterTimesOutSlowWorkerWithoutCancellingHookAndKeepsRetryEv
 	}
 	input := `{"hook_event_name":"SessionEnd","session_id":"sess_slow_worker","cwd":"/repo/example","transcript_path":"/repo/example/transcript.jsonl"}`
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	command := exec.CommandContext(
-		ctx,
-		"go", "run", "../../cmd/compound", "hook", "session-end-adapter",
+	t.Setenv("COMPOUND_HOME", compoundHome)
+	t.Setenv(sessionEndAdapterWorkerOverrideEnv, "1")
+	args := []string{
 		"--live", "--harness", "claude-code",
 		"--timeout", "100ms", "--worker", workerPath,
-	)
-	command.Env = append(
-		os.Environ(),
-		"COMPOUND_HOME="+compoundHome,
-		sessionEndAdapterWorkerOverrideEnv+"=1",
-	)
-	command.Stdin = strings.NewReader(input)
+	}
 	var stdout, stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
 
 	started := time.Now()
-	err := command.Run()
+	code := RunSessionEndAdapterCommand(args, strings.NewReader(input), &stdout, &stderr)
 	elapsed := time.Since(started)
-	if ctx.Err() != nil {
-		t.Fatalf("SessionEnd adapter remained blocked until its test guard fired after %s: %v\n%s", elapsed, ctx.Err(), stderr.String())
-	}
-	if err != nil {
-		t.Fatalf("SessionEnd adapter exit = %v after %s\nstdout=%s\nstderr=%s", err, elapsed, stdout.String(), stderr.String())
+	if code != 0 {
+		t.Fatalf("SessionEnd adapter exit = %d after %s\nstdout=%s\nstderr=%s", code, elapsed, stdout.String(), stderr.String())
 	}
 	if elapsed > 10*time.Second {
 		t.Fatalf("SessionEnd adapter exceeded its bounded handoff window: %s", elapsed)
@@ -806,25 +779,15 @@ func TestSessionEndAdapterMarksSuccessfulWorkerProcessing(t *testing.T) {
 	}
 	input := `{"hook_event_name":"SessionEnd","session_id":"sess_successful_worker","cwd":"/repo/example"}`
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	command := exec.CommandContext(
-		ctx,
-		"go", "run", "../../cmd/compound", "hook", "session-end-adapter",
+	t.Setenv("COMPOUND_HOME", compoundHome)
+	t.Setenv(sessionEndAdapterWorkerOverrideEnv, "1")
+	args := []string{
 		"--live", "--harness", "claude-code",
 		"--timeout", "5s", "--worker", workerPath,
-	)
-	command.Env = append(
-		os.Environ(),
-		"COMPOUND_HOME="+compoundHome,
-		sessionEndAdapterWorkerOverrideEnv+"=1",
-	)
-	command.Stdin = strings.NewReader(input)
+	}
 	var stdout, stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	if err := command.Run(); err != nil {
-		t.Fatalf("SessionEnd adapter exit = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	if code := RunSessionEndAdapterCommand(args, strings.NewReader(input), &stdout, &stderr); code != 0 {
+		t.Fatalf("SessionEnd adapter exit = %d\nstdout=%s\nstderr=%s", code, stdout.String(), stderr.String())
 	}
 	var response sessionEndAdapterResponse
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
