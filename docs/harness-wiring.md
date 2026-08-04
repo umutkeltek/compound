@@ -337,7 +337,16 @@ compound hook session-end-adapter --live --harness claude_code
 
 The adapter durably accepts the exact input before starting the existing
 `session-end` worker, bounds worker time, records a terminal outcome, and leaves
-an exact-ID replay command on timeout or failure. This is where compounding
+an exact-ID replay command on timeout or failure. Live hooks remain capped at
+five seconds. An explicit manual replay can use a separately bounded longer
+deadline (up to 30 seconds) without changing the accepted input identity:
+
+```sh
+compound hook session-end-adapter --replay hook_sessend_attempt_<id> --timeout 30s
+```
+
+The replay attempt records that deadline and its predecessor while preserving
+the original input hash and artifact reference. This is where compounding
 happens: the session's learnings become durable spine objects that the next
 session's `session-start` will recall.
 
@@ -355,7 +364,9 @@ compound hook pre-tool-use fixtures/hooks/pre-tool-use.claude.json
 ```
 
 Fixtures are synthetic — no personal data, no live harness needed. They're the
-same fixtures CI uses to prove hook behavior.
+same fixtures CI uses to prove hook behavior. Canonical fixture references are
+compiled into the CLI, so installed readiness checks and fixture-mode commands
+resolve them from any working directory.
 
 ## Verifying your wiring
 

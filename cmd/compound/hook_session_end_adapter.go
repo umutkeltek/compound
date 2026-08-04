@@ -29,20 +29,22 @@ const (
 	sessionEndAdapterAttemptIDPrefix     = "hook_sessend_attempt_"
 	sessionEndAdapterOutcomeIDPrefix     = "hook_sessend_outcome_"
 	sessionEndAdapterDefaultTimeout      = 2 * time.Second
-	sessionEndAdapterMaxTimeout          = 5 * time.Second
+	sessionEndAdapterMaxLiveTimeout      = 5 * time.Second
+	sessionEndAdapterMaxReplayTimeout    = 30 * time.Second
 	sessionEndAdapterAcceptanceTimeout   = time.Second
 	sessionEndAdapterPostKillReapTimeout = 250 * time.Millisecond
 	sessionEndAdapterMaxInputBytes       = 1 << 20
 	sessionEndAdapterMaxChildOutputBytes = 256 << 10
 	sessionEndAdapterWorkerOverrideEnv   = "COMPOUND_SESSION_END_ADAPTER_ALLOW_WORKER_OVERRIDE"
-	sessionEndAdapterUsage               = "usage: compound hook session-end-adapter --live --harness claude_code|claude_zai|claude_minimax|claude_qwen [--timeout 2s] OR compound hook session-end-adapter --replay hook_sessend_attempt_<id>"
+	sessionEndAdapterUsage               = "usage: compound hook session-end-adapter --live --harness claude_code|claude_zai|claude_minimax|claude_qwen [--timeout 2s] OR compound hook session-end-adapter --replay hook_sessend_attempt_<id> [--timeout 30s]"
 )
 
 type sessionEndAdapterArgs struct {
-	Harness  string
-	Timeout  time.Duration
-	Worker   string
-	ReplayID string
+	Harness    string
+	Timeout    time.Duration
+	TimeoutSet bool
+	Worker     string
+	ReplayID   string
 }
 
 type sessionEndAdapterPersistenceState string
@@ -474,7 +476,6 @@ func writeSessionEndAdapterWorkerFailure(
 func parseSessionEndAdapterArgs(args []string) (sessionEndAdapterArgs, error) {
 	parsed := sessionEndAdapterArgs{Timeout: sessionEndAdapterDefaultTimeout}
 	live := false
-	timeoutSet := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--live":
@@ -491,11 +492,11 @@ func parseSessionEndAdapterArgs(args []string) (sessionEndAdapterArgs, error) {
 			}
 			i++
 			timeout, err := time.ParseDuration(strings.TrimSpace(args[i]))
-			if err != nil || timeout < 10*time.Millisecond || timeout > sessionEndAdapterMaxTimeout {
-				return sessionEndAdapterArgs{}, fmt.Errorf("session-end adapter: --timeout must be between 10ms and %s", sessionEndAdapterMaxTimeout)
+			if err != nil {
+				return sessionEndAdapterArgs{}, fmt.Errorf("session-end adapter: --timeout must be a duration")
 			}
 			parsed.Timeout = timeout
-			timeoutSet = true
+			parsed.TimeoutSet = true
 		case "--replay":
 			if i+1 >= len(args) {
 				return sessionEndAdapterArgs{}, fmt.Errorf(sessionEndAdapterUsage)
@@ -520,10 +521,16 @@ func parseSessionEndAdapterArgs(args []string) (sessionEndAdapterArgs, error) {
 		if !ok {
 			return sessionEndAdapterArgs{}, fmt.Errorf(sessionEndAdapterUsage)
 		}
+		if parsed.Timeout < 10*time.Millisecond || parsed.Timeout > sessionEndAdapterMaxLiveTimeout {
+			return sessionEndAdapterArgs{}, fmt.Errorf("session-end adapter: live --timeout must be between 10ms and %s", sessionEndAdapterMaxLiveTimeout)
+		}
 		parsed.Harness = canonical
 	} else {
-		if parsed.Harness != "" || timeoutSet || !strings.HasPrefix(parsed.ReplayID, sessionEndAdapterAttemptIDPrefix) {
+		if parsed.Harness != "" || !strings.HasPrefix(parsed.ReplayID, sessionEndAdapterAttemptIDPrefix) {
 			return sessionEndAdapterArgs{}, fmt.Errorf(sessionEndAdapterUsage)
+		}
+		if parsed.TimeoutSet && (parsed.Timeout < 10*time.Millisecond || parsed.Timeout > sessionEndAdapterMaxReplayTimeout) {
+			return sessionEndAdapterArgs{}, fmt.Errorf("session-end adapter: replay --timeout must be between 10ms and %s", sessionEndAdapterMaxReplayTimeout)
 		}
 	}
 	if parsed.Worker == "" {
@@ -605,6 +612,9 @@ func runSessionEndAdapterReplay(parsed sessionEndAdapterArgs, homePath string, s
 	attempt.PredecessorID = parent.ID
 	attempt.RetryArgv = sessionEndAdapterRetryArgv(attempt.ID)
 	attempt.EvidenceRefs = []string{"compound://events/" + parent.ID, parent.InputRef}
+	if parsed.TimeoutSet {
+		attempt.TimeoutMS = parsed.Timeout.Milliseconds()
+	}
 	if _, err := events.PutJSON(attempt.ID, attempt, "  "); err != nil {
 		fmt.Fprintln(stderr, "session-end adapter replay: persist replay attempt:", err)
 		return 1
@@ -642,8 +652,15 @@ func validateSessionEndAdapterAttempt(attempt sessionEndAdapterAttempt, requeste
 	if _, ok := canonicalSessionEndHarness(attempt.Harness); !ok || attempt.Status != sessionEndAdapterStatusAccepted || attempt.InputRef == "" || attempt.InputHash == "" {
 		return fmt.Errorf("SessionEnd adapter acceptance %s is incomplete", requestedID)
 	}
+	maxTimeout := sessionEndAdapterMaxLiveTimeout
+	if attempt.PredecessorID != "" {
+		if attempt.PredecessorID == attempt.ID || !strings.HasPrefix(attempt.PredecessorID, sessionEndAdapterAttemptIDPrefix) {
+			return fmt.Errorf("SessionEnd adapter acceptance %s has invalid predecessor_id=%q", requestedID, attempt.PredecessorID)
+		}
+		maxTimeout = sessionEndAdapterMaxReplayTimeout
+	}
 	timeout := time.Duration(attempt.TimeoutMS) * time.Millisecond
-	if timeout < 10*time.Millisecond || timeout > sessionEndAdapterMaxTimeout {
+	if timeout < 10*time.Millisecond || timeout > maxTimeout {
 		return fmt.Errorf("SessionEnd adapter acceptance %s has invalid timeout_ms=%d", requestedID, attempt.TimeoutMS)
 	}
 	return nil

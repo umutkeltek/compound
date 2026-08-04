@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	hookfixtures "compound/fixtures/hooks"
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
 	"compound/internal/harvest"
@@ -130,7 +131,7 @@ func loadHookFixtureForHome(parsed hookCommandArgs, now time.Time, homePath stri
 		}
 		return liveHookFixtureForHome(parsed, data, now, homePath)
 	}
-	data, err := os.ReadFile(parsed.FixturePath)
+	data, err := readHookFixtureReference(parsed.FixturePath)
 	if err != nil {
 		return hook.Fixture{}, err
 	}
@@ -140,6 +141,13 @@ func loadHookFixtureForHome(parsed hookCommandArgs, now time.Time, homePath stri
 	}
 	fx.Hook = parsed.HookName // the CLI verb is authoritative
 	return fx, nil
+}
+
+func readHookFixtureReference(ref string) ([]byte, error) {
+	if hookfixtures.HasReference(ref) {
+		return hookfixtures.ReadReference(ref)
+	}
+	return os.ReadFile(ref)
 }
 
 func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.Fixture, error) {

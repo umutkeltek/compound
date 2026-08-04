@@ -401,6 +401,97 @@ func TestSessionEndAdapterRetryArgvReplaysAcceptedExactInputByID(t *testing.T) {
 	}
 }
 
+func TestSessionEndAdapterManualReplayCanUseLongerBoundedTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell worker fixture requires a POSIX host")
+	}
+	t.Setenv(sessionEndAdapterWorkerOverrideEnv, "1")
+	compoundHome := t.TempDir()
+	t.Setenv("COMPOUND_HOME", compoundHome)
+
+	workerPath := filepath.Join(t.TempDir(), "slow-valid-session-end-worker.sh")
+	worker := "#!/bin/sh\nsleep 0.3\nprintf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionEnd\"}}'\n"
+	if err := os.WriteFile(workerPath, []byte(worker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	input := `{"hook_event_name":"SessionEnd","session_id":"sess_longer_manual_replay","unknown_future_field":{"kept":true}}`
+
+	var liveStdout, liveStderr bytes.Buffer
+	if code := runSessionEndAdapterCommand([]string{
+		"--live", "--harness", "claude-code", "--timeout", "100ms", "--worker", workerPath,
+	}, strings.NewReader(input), &liveStdout, &liveStderr); code != 0 {
+		t.Fatalf("live adapter exit=%d stdout=%s stderr=%s", code, liveStdout.String(), liveStderr.String())
+	}
+	if !strings.Contains(liveStderr.String(), "worker timed out after 100ms") {
+		t.Fatalf("live attempt did not reproduce the short-deadline failure: %s", liveStderr.String())
+	}
+	parentID := requireSessionEndAdapterDiagnosticValue(t, liveStderr.String(), "retry evidence=")
+	events, err := eventstore.Open(compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentRecord, err := events.Read(parentID)
+	if err != nil {
+		t.Fatalf("read parent acceptance: %v", err)
+	}
+	var parent sessionEndAdapterAttempt
+	if err := json.Unmarshal(parentRecord.Bytes, &parent); err != nil {
+		t.Fatal(err)
+	}
+	if parent.TimeoutMS != 100 {
+		t.Fatalf("parent timeout_ms=%d, want 100", parent.TimeoutMS)
+	}
+
+	var replayStdout, replayStderr bytes.Buffer
+	if code := runSessionEndAdapterCommand([]string{
+		"--replay", parent.ID, "--timeout", "1s", "--worker", workerPath,
+	}, strings.NewReader("must-not-be-consumed"), &replayStdout, &replayStderr); code != 0 {
+		t.Fatalf("manual replay exit=%d stdout=%s stderr=%s", code, replayStdout.String(), replayStderr.String())
+	}
+	var outcome sessionEndAdapterOutcomeEvidence
+	if err := json.Unmarshal(replayStdout.Bytes(), &outcome); err != nil {
+		t.Fatalf("decode replay outcome: %v stdout=%s", err, replayStdout.String())
+	}
+	if outcome.Status != sessionEndAdapterStatusSucceeded {
+		t.Fatalf("manual replay outcome=%+v stderr=%s", outcome, replayStderr.String())
+	}
+	childRecord, err := events.Read(outcome.AttemptID)
+	if err != nil {
+		t.Fatalf("read child replay attempt: %v", err)
+	}
+	var child sessionEndAdapterAttempt
+	if err := json.Unmarshal(childRecord.Bytes, &child); err != nil {
+		t.Fatal(err)
+	}
+	if child.PredecessorID != parent.ID {
+		t.Fatalf("child predecessor_id=%q, want %q", child.PredecessorID, parent.ID)
+	}
+	if child.InputHash != parent.InputHash || child.InputRef != parent.InputRef {
+		t.Fatalf("manual replay changed source identity: parent hash/ref=%s %s child=%s %s", parent.InputHash, parent.InputRef, child.InputHash, child.InputRef)
+	}
+	if child.TimeoutMS != 1000 {
+		t.Fatalf("child timeout_ms=%d, want replay override 1000", child.TimeoutMS)
+	}
+}
+
+func TestSessionEndAdapterRejectsManualReplayTimeoutAboveThirtySeconds(t *testing.T) {
+	accepted, err := parseSessionEndAdapterArgs([]string{
+		"--replay", sessionEndAdapterAttemptIDPrefix + "bounded", "--timeout", "30s",
+	})
+	if err != nil {
+		t.Fatalf("30s manual replay timeout should be accepted: %v", err)
+	}
+	if accepted.Timeout != 30*time.Second {
+		t.Fatalf("manual replay timeout=%s, want 30s", accepted.Timeout)
+	}
+	_, err = parseSessionEndAdapterArgs([]string{
+		"--replay", sessionEndAdapterAttemptIDPrefix + "too_long", "--timeout", "30.001s",
+	})
+	if err == nil || !strings.Contains(err.Error(), "between 10ms and 30s") {
+		t.Fatalf("over-bound manual replay timeout error=%v", err)
+	}
+}
+
 func TestSessionEndAdapterBoundsAcceptancePersistenceBeforeStartingWorker(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("FIFO persistence fixture requires a POSIX host")

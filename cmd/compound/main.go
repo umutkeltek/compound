@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	hookfixtures "compound/fixtures/hooks"
 	"compound/internal/arch"
 	"compound/internal/authority"
 	"compound/internal/candidates"
@@ -3731,7 +3732,7 @@ func hookRuntimeSupport(harnessName, hookName, fixtureRef string, liveAdapter bo
 		Harness:        harnessName,
 		Hook:           hookName,
 		FixtureRef:     fixtureRef,
-		FixturePresent: fileExists(fixtureRef),
+		FixturePresent: hookfixtures.HasReference(fixtureRef),
 		LiveAdapter:    liveAdapter,
 		LiveCommand:    liveHookCommand(harnessName, hookName, liveAdapter),
 	}
@@ -3764,19 +3765,6 @@ func hookCommandName(hookName string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(hookName))
 	}
-}
-
-func fileExists(path string) bool {
-	if strings.TrimSpace(path) == "" {
-		return false
-	}
-	if _, err := os.Stat(path); err == nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join("..", "..", path)); err == nil {
-		return true
-	}
-	return false
 }
 
 // nativePreToolUseBlockMap exposes harness-native gate facts to installed-hook authority reporting.

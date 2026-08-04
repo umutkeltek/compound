@@ -106,6 +106,33 @@ func TestInstalledHookRuntimeSupportCoversCanonicalClaudeFamily(t *testing.T) {
 	}
 }
 
+func TestInstalledHookRuntimeSupportResolvesFixtureOutsideRepoCWD(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	var sessionEnd *contract.HookRuntimeSupport
+	for _, support := range installedHookRuntimeSupport() {
+		if support.Harness == "claude_code" && support.Hook == "SessionEnd" {
+			copy := support
+			sessionEnd = &copy
+			break
+		}
+	}
+	if sessionEnd == nil || !sessionEnd.FixturePresent || sessionEnd.FixtureRef != "fixtures/hooks/session-end.json" {
+		t.Fatalf("SessionEnd installed readiness depends on repository cwd: %+v", sessionEnd)
+	}
+
+	fixture, err := loadHookFixture(hookCommandArgs{
+		HookName:    "session-end",
+		FixturePath: sessionEnd.FixtureRef,
+	}, time.Unix(1_800_000_000, 0).UTC())
+	if err != nil {
+		t.Fatalf("resolve installed SessionEnd fixture outside repository cwd: %v", err)
+	}
+	if fixture.Hook != "session-end" || fixture.Harness != "claude_code" || fixture.SessionID != "session_end_fixture" {
+		t.Fatalf("resolved embedded SessionEnd fixture = %+v", fixture)
+	}
+}
+
 func TestCanonicalClaudeFamilyExecutesAllLiveHookEvents(t *testing.T) {
 	testBinary := compoundTestBinary(t)
 	for _, harnessCase := range []struct {
