@@ -28,6 +28,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/home"
+	"compound/internal/policy"
 	"compound/internal/runattempt"
 )
 
@@ -47,6 +48,11 @@ var transitions = map[string][]string{
 // terminalStates may not advance further; close lands a work in one of them.
 var terminalStates = map[string]bool{"completed": true, "failed": true, "cancelled": true}
 
+// ErrExecutionReservationChanged is returned when a governed executor tries
+// to start or finalize against a running state/policy/action generation that
+// another lifecycle mutation has superseded.
+var ErrExecutionReservationChanged = errors.New("work execution reservation changed")
+
 const crossStateClaimedAdvanceRefusal = "claimed is reached only via 'compound work claim' (claim-before-you-touch); bare advance cannot bind authority owner+lease"
 
 func terminalStateRequiresClose(action, state string) error {
@@ -56,6 +62,35 @@ func terminalStateRequiresClose(action, state string) error {
 func crossStateClaimedAdvanceError(from, to string) error {
 	if to == "claimed" && from != "claimed" {
 		return errors.New(crossStateClaimedAdvanceRefusal)
+	}
+	return nil
+}
+
+func validateExpectedExecutionReservation(w envelope.WorkEnvelope, expectedState, expectedPolicyDecisionID, expectedActionIntentID string) error {
+	expectedState = strings.TrimSpace(expectedState)
+	expectedPolicyDecisionID = strings.TrimSpace(expectedPolicyDecisionID)
+	expectedActionIntentID = strings.TrimSpace(expectedActionIntentID)
+	var currentActionIntentID string
+	if n := len(w.ActionIntentIDs); n > 0 {
+		currentActionIntentID = w.ActionIntentIDs[n-1]
+	}
+	if expectedState != "" && w.State != expectedState && expectedPolicyDecisionID == "" && expectedActionIntentID == "" {
+		return fmt.Errorf("%w: work %s state %q no longer matches expected state %q", ErrExecutionReservationChanged, w.ID, w.State, expectedState)
+	}
+	if (expectedState != "" && w.State != expectedState) ||
+		(expectedPolicyDecisionID != "" && w.PolicyDecisionID != expectedPolicyDecisionID) ||
+		(expectedActionIntentID != "" && currentActionIntentID != expectedActionIntentID) {
+		return fmt.Errorf(
+			"%w: work %s state=%q policy=%q action_intent=%q; expected state=%q policy=%q action_intent=%q",
+			ErrExecutionReservationChanged,
+			w.ID,
+			w.State,
+			w.PolicyDecisionID,
+			currentActionIntentID,
+			expectedState,
+			expectedPolicyDecisionID,
+			expectedActionIntentID,
+		)
 	}
 	return nil
 }
@@ -1149,6 +1184,18 @@ func (s *Store) validateClaimEventArtifacts(event Event, claimed envelope.WorkEn
 type AdvanceInput struct {
 	To    string
 	Actor string
+	// ExpectedWorkState is an optional compare-and-set precondition evaluated
+	// under the lifecycle admission lock. Governed execution uses it to reserve
+	// claimed -> running exactly once while ordinary same-state advances remain
+	// available for proof and attachment updates.
+	ExpectedWorkState string
+	// These two optional preconditions distinguish same-state generations:
+	// every lifecycle mutation mints a new PolicyDecision + ActionIntent.
+	ExpectedPolicyDecisionID string
+	ExpectedActionIntentID   string
+	// AutonomyClass optionally requires the live class kill-switch to be clear
+	// at the same locked commit that changes lifecycle state.
+	AutonomyClass string
 	// LaneRef optionally declares or corrects the work's lane mid-lifecycle. When set it must
 	// resolve via capgraph.ResolveLaneRef (fail-closed) and is recorded as the canonical node
 	// id on the holder's lease, under the same holder-scoped rules as any advance mutation.
@@ -1193,6 +1240,9 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 	if err != nil {
 		return w, err
 	}
+	if err := validateExpectedExecutionReservation(w, in.ExpectedWorkState, in.ExpectedPolicyDecisionID, in.ExpectedActionIntentID); err != nil {
+		return w, err
+	}
 	pendingActionID, err := s.pendingReceiptedActionID(workID)
 	if err != nil {
 		return w, err
@@ -1218,6 +1268,15 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 	actor := strings.TrimSpace(in.Actor)
 	if actor == "" {
 		actor = "codex"
+	}
+	if class := strings.TrimSpace(in.AutonomyClass); class != "" {
+		halted, reason, err := policy.AutonomyHalted(s.home, class)
+		if err != nil {
+			return w, fmt.Errorf("check autonomy halt (%s): %w", class, err)
+		}
+		if halted {
+			return w, fmt.Errorf("autonomy halted (%s): %s", class, reason)
+		}
 	}
 	// Kill-switch (W9-J4), defense-in-depth: an autonomous (non-operator) admission of a
 	// director-proposed work out of `proposed` is denied while the policy-owned autonomy
@@ -1745,9 +1804,14 @@ type CloseInput struct {
 	Outcome  string // completed | failed | cancelled
 	MoveType string // outward_delta | memory_delta | rule_delta | control_plane_repair | audit_only
 	Actor    string
-	LaneID   string
-	Summary  string
-	Changed  bool
+	// Optional compare-and-set preconditions for governed execution
+	// finalization. They are evaluated under the lifecycle lock.
+	ExpectedWorkState        string
+	ExpectedPolicyDecisionID string
+	ExpectedActionIntentID   string
+	LaneID                   string
+	Summary                  string
+	Changed                  bool
 	// Steal and StealReason are the close-gate lease escape hatch: closing a work held by a
 	// different actor is refused unless Steal is true AND StealReason is non-empty. A steal
 	// records the prior holder + reason + stealing actor on the envelope trail (see
@@ -1819,6 +1883,9 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	var res CloseResult
 	w, err := s.recoverPendingClaimBeforeMutation(workID)
 	if err != nil {
+		return res, err
+	}
+	if err := validateExpectedExecutionReservation(w, in.ExpectedWorkState, in.ExpectedPolicyDecisionID, in.ExpectedActionIntentID); err != nil {
 		return res, err
 	}
 	pendingActionID, err := s.pendingReceiptedActionID(workID)

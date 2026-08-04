@@ -7,10 +7,13 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/actuator"
 	"compound/internal/harness"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
+
+var workAdvanceExecuteExit = os.Exit
 
 // runWorkAdvanceExecute is the --execute branch of compound work advance.
 // It runs a registered harness adapter inline as part of the work
@@ -44,12 +47,12 @@ import (
 func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, rest []string, existingRunAttempts []string, now time.Time) {
 	if workID == "" {
 		fmt.Fprintln(os.Stderr, "error: --execute requires a work_id")
-		os.Exit(2)
+		workAdvanceExecuteExit(2)
 	}
 	harnessName := valueFlag(rest, "--harness")
 	if harnessName == "" {
 		fmt.Fprintln(os.Stderr, "error: --execute requires --harness <name>")
-		os.Exit(2)
+		workAdvanceExecuteExit(2)
 	}
 	prompt := valueFlag(rest, "--prompt")
 	actor := firstNonEmpty(valueFlag(rest, "--by"), valueFlag(rest, "--actor"))
@@ -64,7 +67,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	target := valueFlag(rest, "--to")
 	if target != "" && target != "running" {
 		fmt.Fprintf(os.Stderr, "error: --execute requires --to running (got %q)\n", target)
-		os.Exit(2)
+		workAdvanceExecuteExit(2)
 	}
 	if target == "" {
 		target = "running"
@@ -85,7 +88,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	}
 	if command == "" && prompt == "" {
 		fmt.Fprintln(os.Stderr, "error: --execute requires either --prompt or a post-`--` command")
-		os.Exit(2)
+		workAdvanceExecuteExit(2)
 	}
 
 	// Validate work envelope exists. Read-only check -- we are about to
@@ -93,7 +96,18 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	wenv, err := store.Get(workID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "work envelope %q: %v\n", workID, err)
-		os.Exit(1)
+		workAdvanceExecuteExit(1)
+	}
+	if wenv.State != "claimed" {
+		gateRefusal{
+			Command:  "compound work advance --execute",
+			Gate:     "execution_reservation",
+			Refused:  fmt.Sprintf("work %s is %s; governed execution requires a currently claimed envelope", workID, wenv.State),
+			Tried:    []string{fmt.Sprintf("expected state claimed, observed %s", wenv.State)},
+			DoThis:   []string{fmt.Sprintf("compound work show %s", workID), "recover or create an explicit claimed execution envelope before retrying"},
+			Prevents: "replaying an adapter against work that is already running or verifying; a retry is a new audited recovery decision, not a same-state launch.",
+		}.writeTo(os.Stderr)
+		workAdvanceExecuteExit(1)
 	}
 
 	// Resolve the adapter BEFORE any state change. An unknown harness name
@@ -118,7 +132,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 			},
 			Prevents: "advancing the envelope to running before the adapter is known. Resolving second left a typo'd --harness stuck in running with no RunAttempt and no recovery path.",
 		}.writeTo(os.Stderr)
-		os.Exit(1)
+		workAdvanceExecuteExit(1)
 	}
 
 	// Resolve the execution workspace BEFORE advancing. Never default to
@@ -137,7 +151,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 			},
 			Prevents: "running a code-editing harness against COMPOUND_HOME. There is no home fallback by design: the harness would edit the state and config directory instead of the project, and the edits would look like successful work.",
 		}.writeTo(os.Stderr)
-		os.Exit(2)
+		workAdvanceExecuteExit(2)
 	}
 
 	// Resolving a workspace is not proving one. The ladder returns whatever
@@ -161,7 +175,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 			},
 			Prevents: "burning the work item. The launch fails with chdir, and a failed launch terminalizes the envelope 'failed (audit_only)' -- a terminal state with no recovery path.",
 		}.writeTo(os.Stderr)
-		os.Exit(2)
+		workAdvanceExecuteExit(2)
 	}
 
 	// Resolve adapter-owned prerequisites before the governed state change.
@@ -183,100 +197,53 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		resolved, err := preflight.Preflight(context.Background(), runInput)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "harness %s preflight: %v\n", harnessName, err)
-			os.Exit(1)
+			workAdvanceExecuteExit(1)
 		}
 		runInput = resolved
 	}
-
-	// Advance 1: to "running" (validated above -- target is always
-	// "running" by the time we get here).
 	note := valueFlag(rest, "--note")
 	if note == "" {
 		note = "harness execute: " + harnessName
 	}
-	w, err := store.Advance(workID, work.AdvanceInput{
-		To:    target,
-		Actor: actor,
-		Note:  note,
-	}, now)
+	reserved, err := actuator.ReserveGovernedHarnessLaunch(actuator.GovernedHarnessReservationInput{
+		HomePath: homePath, Store: store, ClaimedWork: wenv, Adapter: adapter,
+		RunInput: runInput, Actor: actor, Target: target, Note: note, Now: now,
+	})
 	die(err)
+	w := reserved.RunningWork
+	runInput = reserved.RunInput
+	actionIntentID := reserved.ActionIntentID
 	fmt.Printf("%s -> %s policy=%s\n", w.ID, w.State, w.PolicyDecisionID)
 
-	// The running-advance above mints an ActionIntent and appends it as
-	// the LAST element of w.ActionIntentIDs (see work.applyAdvance). Bind
-	// that id onto the RunInput so the RunAttempt records the intent that
-	// authorized it -- closes the attempt->intent->policy-decision audit
-	// chain (mirrors internal/actuator/actuator.go's ActionIntentID
-	// stamp). Guard len==0 defensively; leave it empty rather than error
-	// if the advance somehow returned no intent.
-	var actionIntentID string
-	if n := len(w.ActionIntentIDs); n > 0 {
-		actionIntentID = w.ActionIntentIDs[n-1]
-	}
-
-	// Run the adapter. On infrastructure failure (runErr != nil) the
-	// adapter has already terminalized the RunAttempt failed
-	// (subprocess_runner.failTerm) and out.RunAttempt is populated -- we
-	// carry that ratt_ id onto the close so the failed run is reachable
-	// from the envelope, not only from run_attempts/<id>.json.
-	runInput.ActionIntentID = actionIntentID
+	// Adapter failures terminalize their RunAttempt before returning; the
+	// actuator then CAS-finalizes the exact running work generation.
 	out, runErr := adapter.Run(context.Background(), runInput)
 
-	// LaneID: the resolved --by/--actor lane, stamped onto the RunAttempt
-	// pre-terminalization inside runWithSubprocess (SetAttribution). This
-	// closes the S3 attribution gap: `actor` is known here and now reaches
-	// the adapter through RunInput.LaneID, so the exec-mint RunAttempt
-	// carries lane_id = the resolved actor (the assertion pinned in
-	// work_advance_execute_test.go). Model/provider are not exposed by any
-	// adapter config on this path, so they are not stamped here.
-
-	allRunAttempts := append([]string(nil), existingRunAttempts...)
-	if out.RunAttempt.ID != "" {
-		allRunAttempts = append(allRunAttempts, out.RunAttempt.ID)
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "harness %s run: %v\n", harnessName, runErr)
 	}
-
-	succeeded := runErr == nil && out.RunAttempt.Status == runattempt.StatusSucceeded
-	if succeeded {
-		// Advance 2: to verifying. "verifying" is a non-terminal state,
-		// so Advance works. RunAttemptIDs + VerificationID close the
-		// audit chain.
-		w2, err := store.Advance(workID, work.AdvanceInput{
-			To:             "verifying",
-			Actor:          actor,
-			RunAttemptIDs:  allRunAttempts,
-			VerificationID: out.TranscriptPath,
-			Note:           "harness " + harnessName + " " + out.RunAttempt.Status,
-		}, time.Now().UTC())
-		if err != nil {
-			die(err)
+	finalized, err := actuator.FinalizeGovernedHarnessRun(actuator.GovernedHarnessFinalizationInput{
+		Store:                 store,
+		WorkID:                workID,
+		Actor:                 actor,
+		HarnessName:           harnessName,
+		RunningPolicyID:       w.PolicyDecisionID,
+		RunningActionIntentID: actionIntentID,
+		ExistingRunAttemptIDs: existingRunAttempts,
+		Output:                out,
+		RunError:              runErr,
+		Now:                   time.Now().UTC(),
+	})
+	die(err)
+	if finalized.WorkID != "" {
+		if finalized.FailedAuditOnly {
+			fmt.Printf("%s -> %s (audit_only)\n", finalized.WorkID, finalized.FinalState)
+		} else {
+			fmt.Printf("%s -> %s\n", finalized.WorkID, finalized.FinalState)
 		}
-		fmt.Printf("%s -> %s\n", w2.ID, w2.State)
-	} else {
-		// Failed harness run -- subprocess non-zero exit, timeout, OR
-		// infrastructure failure. Close the work as failed. Move type
-		// "audit_only" matches the gate-blocked close path: nothing
-		// landed, the audit trail is the run record + transcript.
-		// RunAttemptIDs forward-links the (already-terminal) run so the
-		// envelope points at the failed attempt -- the same shape as the
-		// succeeded path, via the close-time field.
-		if runErr != nil {
-			fmt.Fprintf(os.Stderr, "harness %s run: %v\n", harnessName, runErr)
-		}
-		closeIn := work.CloseInput{
-			Outcome:       "failed",
-			MoveType:      "audit_only",
-			Actor:         actor,
-			Summary:       "harness " + harnessName + " " + out.RunAttempt.Status,
-			Changed:       true,
-			RunAttemptIDs: allRunAttempts,
-		}
-		if out.TranscriptPath != "" {
-			closeIn.ProofRefs = []string{out.TranscriptPath}
-		}
-		if _, err := store.Close(workID, closeIn, time.Now().UTC()); err != nil {
-			die(err)
-		}
-		fmt.Printf("%s -> failed (audit_only)\n", workID)
+	}
+	for _, warning := range finalized.Warnings {
+		fmt.Fprintln(os.Stderr, warning)
 	}
 
 	// Print the RunAttempt summary on the same stdout stream as the
@@ -298,7 +265,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	// "failed") is independent of the process exit code; we use the exit
 	// code to signal "this whole thing did not succeed", which CI / make
 	// / orchestration can react to.
-	if !succeeded {
-		os.Exit(1)
+	if !finalized.Succeeded {
+		workAdvanceExecuteExit(1)
 	}
 }

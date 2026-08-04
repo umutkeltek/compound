@@ -55,6 +55,19 @@ type PreflightAdapter interface {
 	Preflight(ctx context.Context, in RunInput) (RunInput, error)
 }
 
+// GovernedPermissionAdapter marks adapters whose PermissionMode is a
+// mutation/read-only execution boundary governed by the work rail. Wrappers
+// can preserve this capability by embedding or forwarding the marker; callers
+// must not rely on one concrete adapter type.
+type GovernedPermissionAdapter interface {
+	Adapter
+	GovernedPermissionPosture()
+	// RevalidateGovernedRun reloads every adapter-owned launch authority at
+	// the final process-start boundary. It must be read-only: callers hold the
+	// autonomy-admission lock while invoking it.
+	RevalidateGovernedRun(context.Context, RunInput) (RunInput, error)
+}
+
 // RunInput is the per-Run caller contract. All fields are required unless
 // marked optional. A future slice (harness-adapter-feature) adds
 // PermissionDecision and CapabilityRef once the policy seam is in place.
@@ -80,14 +93,24 @@ type RunInput struct {
 	Prompt string
 	// PermissionMode selects the harness's permission posture for adapters
 	// that have one (today: Claude). Recognized values for Claude: "" (safe
-	// "plan" default -- read-only; the only governed mode that does not hang
-	// a non-interactive `claude --print` run), "default", "plan",
-	// "acceptEdits", and "bypass" (--dangerously-skip-permissions, explicit
-	// opt-in for fully-autonomous runs). The chosen mode is reflected in the
-	// subprocess argv. Surfaced on the CLI as --permission-mode so the
-	// posture is explicit and auditable rather than hard-coded.
+	// "plan" direct-adapter default -- read-only; the only mode that does not
+	// hang a non-interactive `claude --print` run), "default", "plan",
+	// "acceptEdits", and "bypass" (--dangerously-skip-permissions). Governed
+	// work execution resolves this field from envelope/policy/readiness before
+	// the adapter sees it; manual harness runs retain the safe plan default.
+	// The chosen mode is reflected in the subprocess argv.
 	// OSEntrypointsAdapter and CodexAdapter ignore it.
 	PermissionMode string
+	// ExecutionPosture is the resolved governed permission evidence for this
+	// launch. The shared runner persists it on the RunAttempt before command
+	// construction or subprocess start. Nil for harnesses without a permission
+	// posture.
+	ExecutionPosture *runattempt.ExecutionPosture
+	// StartGuard owns the final governed launch boundary. The shared runner
+	// passes it the one-shot cmd.Start operation after command construction and
+	// pipe setup; the guard must call that operation exactly once only when its
+	// live authority revalidation succeeds. Nil starts normally.
+	StartGuard func(context.Context, func() error) error
 	// Args is the argv (after the program path). May be empty.
 	Args []string
 	// Env is the additional env vars to set on the subprocess. Optional.
@@ -120,8 +143,10 @@ type RunInput struct {
 	RequestedModelID       string
 	RequestedProviderRoute string
 	// preflighted is an adapter-owned handoff marker. Governed callers cannot
-	// forge it outside this package; it prevents Run from repeating a live
-	// capacity check after the caller has already moved work to running.
+	// forge it outside this package; it prevents Run from repeating an
+	// evidence-writing capacity check after the caller has moved work to
+	// running. GovernedPermissionAdapter.RevalidateGovernedRun performs the
+	// read-only launch-boundary check instead.
 	preflighted bool
 }
 

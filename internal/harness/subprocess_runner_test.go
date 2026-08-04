@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -27,8 +28,175 @@ type failingOriginStore struct {
 	mintedID string
 }
 
-func (s *failingOriginStore) Mint(workID, actor, harness string, now time.Time) (runattempt.RunAttempt, error) {
-	ra, err := s.Store.Mint(workID, actor, harness, now)
+type executionPostureStore struct {
+	*runattempt.Store
+	mintedID    string
+	postureSet  bool
+	failPosture bool
+}
+
+func (s *executionPostureStore) MintWithActionIntent(workID, actor, harness, actionIntentID string, now time.Time) (runattempt.RunAttempt, error) {
+	ra, err := s.Store.MintWithActionIntent(workID, actor, harness, actionIntentID, now)
+	s.mintedID = ra.ID
+	return ra, err
+}
+
+func (s *executionPostureStore) SetExecutionPosture(id string, posture runattempt.ExecutionPosture) (runattempt.RunAttempt, error) {
+	s.postureSet = true
+	if s.failPosture {
+		return runattempt.RunAttempt{}, errors.New("posture store unavailable")
+	}
+	return s.Store.SetExecutionPosture(id, posture)
+}
+
+func TestRunnerPersistsExecutionPostureBeforeCommandConstruction(t *testing.T) {
+	home := t.TempDir()
+	store := &executionPostureStore{Store: runattempt.Open(home)}
+	buildCalled := false
+	build := func(ctx context.Context, in RunInput) *exec.Cmd {
+		buildCalled = true
+		if !store.postureSet {
+			t.Fatal("command constructed before execution posture was persisted")
+		}
+		got, err := store.Store.Get(store.mintedID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ExecutionPosture == nil || got.ExecutionPosture.PolicyDecisionID != "pol_running" {
+			t.Fatalf("posture at command construction = %+v", got.ExecutionPosture)
+		}
+		return exec.CommandContext(ctx, in.Command, in.Args...)
+	}
+	posture := &runattempt.ExecutionPosture{PermissionMode: "plan", PolicyDecisionID: "pol_running"}
+	out, err := runWithSubprocess(context.Background(), store, "os-harness-entrypoints", RunInput{
+		WorkID: "work_posture_order", Harness: "os-harness-entrypoints", Workspace: home,
+		Command: "echo", Args: []string{"ok"}, ActionIntentID: "act_posture_order",
+		ExecutionPosture: posture, Now: time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC),
+	}, build, defaultHeartbeatInterval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !buildCalled || out.RunAttempt.Status != runattempt.StatusSucceeded {
+		t.Fatalf("build_called=%t attempt=%+v", buildCalled, out.RunAttempt)
+	}
+}
+
+func TestRunnerExecutionPostureFailureTerminalizesBeforeCommandConstruction(t *testing.T) {
+	home := t.TempDir()
+	store := &executionPostureStore{Store: runattempt.Open(home), failPosture: true}
+	buildCalled := false
+	build := func(ctx context.Context, in RunInput) *exec.Cmd {
+		buildCalled = true
+		return exec.CommandContext(ctx, in.Command, in.Args...)
+	}
+	out, err := runWithSubprocess(context.Background(), store, "os-harness-entrypoints", RunInput{
+		WorkID: "work_posture_fail", Harness: "os-harness-entrypoints", Workspace: home,
+		Command: "echo", Args: []string{"must-not-run"}, ActionIntentID: "act_posture_fail",
+		ExecutionPosture: &runattempt.ExecutionPosture{PermissionMode: "plan", PolicyDecisionID: "pol_running"},
+		Now:              time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC),
+	}, build, defaultHeartbeatInterval)
+	if err == nil || !strings.Contains(err.Error(), "set execution posture") {
+		t.Fatalf("posture failure error = %v", err)
+	}
+	if buildCalled {
+		t.Fatal("posture failure constructed or started the subprocess")
+	}
+	if out.RunAttempt.ID != store.mintedID || out.RunAttempt.Status != runattempt.StatusFailed {
+		t.Fatalf("posture failure did not terminalize minted attempt: out=%+v minted=%s", out.RunAttempt, store.mintedID)
+	}
+}
+
+// A governed launch guard runs at the last possible boundary: command and
+// pipes may be prepared, but cmd.Start has not happened. If current authority
+// no longer matches the posture recorded on the RunAttempt, the attempt must
+// terminalize failed and the external command must never observe a side
+// effect.
+func TestRunnerStartGuardFailureTerminalizesWithoutStarting(t *testing.T) {
+	home := t.TempDir()
+	store := runattempt.Open(home)
+	marker := filepath.Join(home, "started")
+	build := func(ctx context.Context, in RunInput) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "printf started > \"$1\"", "sh", marker)
+	}
+	out, err := runWithSubprocess(context.Background(), store, "os-harness-entrypoints", RunInput{
+		WorkID: "work_start_guard", Harness: "os-harness-entrypoints", Workspace: home,
+		Command: "sh",
+		Now:     time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC),
+		StartGuard: func(_ context.Context, _ func() error) error {
+			return errors.New("launch authority revision changed")
+		},
+	}, build, defaultHeartbeatInterval)
+	if err == nil || !strings.Contains(err.Error(), "launch authority revision changed") {
+		t.Fatalf("start guard error = %v", err)
+	}
+	if out.RunAttempt.Status != runattempt.StatusFailed {
+		t.Fatalf("guard-refused attempt status = %q, want failed", out.RunAttempt.Status)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("guard-refused command started; marker stat err=%v", statErr)
+	}
+}
+
+func TestRunnerSweptWhileStartGuardWaitsDoesNotLaunch(t *testing.T) {
+	home := t.TempDir()
+	store := runattempt.Open(home)
+	marker := filepath.Join(home, "started-after-sweep")
+	guardEntered := make(chan struct{})
+	releaseGuard := make(chan struct{})
+	type runResult struct {
+		out RunOutput
+		err error
+	}
+	result := make(chan runResult, 1)
+	startedAt := time.Now().UTC().Add(-time.Hour)
+	go func() {
+		out, err := runWithSubprocess(context.Background(), store, "os-harness-entrypoints", RunInput{
+			WorkID: "work_swept_start_guard", Harness: "os-harness-entrypoints", Workspace: home,
+			Command: "sh", Now: startedAt,
+			StartGuard: func(_ context.Context, start func() error) error {
+				close(guardEntered)
+				<-releaseGuard
+				return start()
+			},
+		}, func(ctx context.Context, _ RunInput) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", "printf started > \"$1\"", "sh", marker)
+		}, defaultHeartbeatInterval)
+		result <- runResult{out: out, err: err}
+	}()
+
+	select {
+	case <-guardEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not reach the blocked start guard")
+	}
+	report, err := store.SweepStale(time.Minute, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Swept != 1 || report.AutoClosed != 1 {
+		t.Fatalf("blocked pre-start attempt was not swept side-effect-free: %+v", report)
+	}
+	close(releaseGuard)
+
+	var got runResult
+	select {
+	case got = <-result:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not return after releasing the start guard")
+	}
+	if got.err == nil || !strings.Contains(got.err.Error(), "runattempt is terminal") {
+		t.Fatalf("swept start error = %v", got.err)
+	}
+	if got.out.RunAttempt.Status != runattempt.StatusAbandoned {
+		t.Fatalf("swept attempt status = %q, want abandoned", got.out.RunAttempt.Status)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("swept attempt launched the child; marker stat err=%v", statErr)
+	}
+}
+
+func (s *failingOriginStore) MintWithActionIntent(workID, actor, harness, actionIntentID string, now time.Time) (runattempt.RunAttempt, error) {
+	ra, err := s.Store.MintWithActionIntent(workID, actor, harness, actionIntentID, now)
 	s.mintedID = ra.ID
 	return ra, err
 }
@@ -55,12 +223,13 @@ func TestRunnerSetOriginFailureTerminalizes(t *testing.T) {
 	}
 	out, err := runWithSubprocess(context.Background(), store, "os-harness-entrypoints",
 		RunInput{
-			WorkID:    "work_setorigin_fail",
-			Harness:   "os-harness-entrypoints",
-			Workspace: home,
-			Command:   "echo",
-			Args:      []string{"ok"},
-			Now:       time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC),
+			WorkID:         "work_setorigin_fail",
+			Harness:        "os-harness-entrypoints",
+			Workspace:      home,
+			Command:        "echo",
+			Args:           []string{"ok"},
+			ActionIntentID: "act_setorigin_fail",
+			Now:            time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC),
 		}, build, defaultHeartbeatInterval)
 
 	// (1) A non-nil error is still returned: an origin-stamp failure is a
@@ -84,6 +253,9 @@ func TestRunnerSetOriginFailureTerminalizes(t *testing.T) {
 	}
 	if got.Status != runattempt.StatusFailed {
 		t.Fatalf("persisted status = %q, want failed (SetOrigin failure must terminalize, not leave pending)", got.Status)
+	}
+	if got.ActionIntentID != "act_setorigin_fail" {
+		t.Fatalf("persisted action_intent_id = %q, want atomic mint-time bind", got.ActionIntentID)
 	}
 	// (4) The terminal record names the origin-stamp failure. No transcript
 	// exists yet at the SetOrigin stage, so the reason lands as a proof_ref.

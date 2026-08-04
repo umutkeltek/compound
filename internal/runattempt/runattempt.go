@@ -7,9 +7,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -85,6 +87,25 @@ var ErrNotFound = errors.New("runattempt not found")
 // mismatched rebind is a bug, not a refresh.
 var ErrAlreadyBound = errors.New("runattempt already bound to a different action_intent_id")
 
+// ExecutionPostureEvidence is one immutable authority revision that justified
+// the permission posture selected for a governed harness execution. It carries
+// references and revisions only; no provider credentials or prompt bodies.
+type ExecutionPostureEvidence struct {
+	Kind     string `json:"kind"`
+	Ref      string `json:"ref"`
+	Revision string `json:"revision"`
+}
+
+// ExecutionPosture records the resolved (not merely requested) permission
+// mode and the actual PolicyDecision that advanced the work to running. For a
+// mutation-capable posture, AuthorityEvidence contains the exact permission
+// and blocking hook revisions checked before that advance.
+type ExecutionPosture struct {
+	PermissionMode    string                     `json:"permission_mode"`
+	PolicyDecisionID  string                     `json:"policy_decision_id"`
+	AuthorityEvidence []ExecutionPostureEvidence `json:"authority_evidence,omitempty"`
+}
+
 // RunAttempt is the S1 type. Fields are deliberately minimal: enough to bind a RunAttempt to
 // a work_id and to record who/what ran and when. Transcript, diff, test, proof refs are not
 // part of S1 -- they land when a real harness adapter actually produces them.
@@ -101,9 +122,9 @@ type RunAttempt struct {
 	ID            string `json:"id"`
 	WorkID        string `json:"work_id"`
 	// ActionIntentID binds this RunAttempt to the ActionIntent that authorized and represents it,
-	// closing the attempt→intent→policy-decision audit chain. Empty on Mint (Mint runs before the
-	// Advance that creates the ActionIntent — see panel.Apply); attached post-Advance via
-	// AttachActionIntent. omitempty so pre-existing ratt_ records re-marshal byte-identical.
+	// closing the attempt→intent→policy-decision audit chain. Governed subprocesses bind it
+	// atomically through MintWithActionIntent; claim-time placeholders may attach it after the
+	// Advance that creates the ActionIntent. omitempty preserves pre-existing ratt_ records.
 	ActionIntentID string `json:"action_intent_id,omitempty"`
 	Actor          string `json:"actor"`
 	Harness        string `json:"harness"`
@@ -225,6 +246,11 @@ type RunAttempt struct {
 	// TokensOut is the completion token usage. Zero ≡ unknown; see TokensIn.
 	// omitempty so pre-S3 records re-marshal byte-identical.
 	TokensOut int64 `json:"tokens_out,omitempty"`
+
+	// ExecutionPosture is the governed permission decision bound before the
+	// harness subprocess starts. Pointer + omitempty preserves byte identity
+	// for pre-posture records.
+	ExecutionPosture *ExecutionPosture `json:"execution_posture,omitempty"`
 }
 
 // RunProgress is the reduced, content-free progress shape shared by
@@ -262,6 +288,14 @@ func Open(home string) *Store {
 // The id format is enforced by Valid -- if Mint ever produces a non-conforming id (regression
 // guard), the validator will reject it before it reaches the envelope.
 func (s *Store) Mint(workID, actor, harness string, now time.Time) (RunAttempt, error) {
+	return s.MintWithActionIntent(workID, actor, harness, "", now)
+}
+
+// MintWithActionIntent atomically creates a RunAttempt with its authorizing
+// ActionIntent already bound. Governed subprocesses use this form so even an
+// infrastructure failure on the first post-mint metadata write retains the
+// attempt -> intent -> policy audit chain.
+func (s *Store) MintWithActionIntent(workID, actor, harness, actionIntentID string, now time.Time) (RunAttempt, error) {
 	if strings.TrimSpace(workID) == "" {
 		return RunAttempt{}, fmt.Errorf("runattempt mint: work_id is required")
 	}
@@ -271,18 +305,23 @@ func (s *Store) Mint(workID, actor, harness string, now time.Time) (RunAttempt, 
 	if strings.TrimSpace(harness) == "" {
 		return RunAttempt{}, fmt.Errorf("runattempt mint: harness is required")
 	}
+	actionIntentID = strings.TrimSpace(actionIntentID)
+	if actionIntentID != "" && !strings.HasPrefix(actionIntentID, "act_") {
+		return RunAttempt{}, fmt.Errorf("runattempt mint: action_intent_id %q must start with act_", actionIntentID)
+	}
 	id, err := Mint(now)
 	if err != nil {
 		return RunAttempt{}, err
 	}
 	ra := RunAttempt{
-		SchemaVersion: SchemaVersion,
-		ID:            id,
-		WorkID:        workID,
-		Actor:         actor,
-		Harness:       harness,
-		Status:        StatusPending,
-		CreatedAt:     now.UTC(),
+		SchemaVersion:  SchemaVersion,
+		ID:             id,
+		WorkID:         workID,
+		Actor:          actor,
+		Harness:        harness,
+		Status:         StatusPending,
+		CreatedAt:      now.UTC(),
+		ActionIntentID: actionIntentID,
 	}
 	if err := s.write(ra); err != nil {
 		return RunAttempt{}, err
@@ -308,23 +347,6 @@ func (s *Store) MintWithID(id, workID, actor, harness string, now time.Time) (Ru
 	if strings.TrimSpace(harness) == "" {
 		return RunAttempt{}, fmt.Errorf("runattempt mint: harness is required")
 	}
-	// Idempotent: if the record already exists AND matches the caller's
-	// identity, return it. A mismatch is fail-closed (F4): the deterministic
-	// id (e.g. from a codex job id) is globally meaningful, so a different
-	// work/actor/harness reusing the same id is a split-truth bug, not a
-	// legitimate idempotent retrieve.
-	if existing, err := s.Get(id); err == nil {
-		if existing.WorkID != workID {
-			return RunAttempt{}, fmt.Errorf("run attempt %s already belongs to work %s (caller: %s)", id, existing.WorkID, workID)
-		}
-		if existing.Actor != actor {
-			return RunAttempt{}, fmt.Errorf("run attempt %s already belongs to actor %s (caller: %s)", id, existing.Actor, actor)
-		}
-		if existing.Harness != harness {
-			return RunAttempt{}, fmt.Errorf("run attempt %s already belongs to harness %s (caller: %s)", id, existing.Harness, harness)
-		}
-		return existing, nil
-	}
 	ra := RunAttempt{
 		SchemaVersion: SchemaVersion,
 		ID:            id,
@@ -334,10 +356,38 @@ func (s *Store) MintWithID(id, workID, actor, harness string, now time.Time) (Ru
 		Status:        StatusPending,
 		CreatedAt:     now.UTC(),
 	}
-	if err := s.write(ra); err != nil {
+	var out RunAttempt
+	err := s.withAttemptLock(id, func() error {
+		// Create-or-retrieve is one filesystem transaction. An independent
+		// Store cannot create and mutate this deterministic attempt between an
+		// optimistic miss and a stale whole-record write.
+		existing, err := s.getFresh(id)
+		if err == nil {
+			if existing.WorkID != workID {
+				return fmt.Errorf("run attempt %s already belongs to work %s (caller: %s)", id, existing.WorkID, workID)
+			}
+			if existing.Actor != actor {
+				return fmt.Errorf("run attempt %s already belongs to actor %s (caller: %s)", id, existing.Actor, actor)
+			}
+			if existing.Harness != harness {
+				return fmt.Errorf("run attempt %s already belongs to harness %s (caller: %s)", id, existing.Harness, harness)
+			}
+			out = existing
+			return nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		if err := s.writeLocked(ra); err != nil {
+			return err
+		}
+		out = ra
+		return nil
+	})
+	if err != nil {
 		return RunAttempt{}, err
 	}
-	return ra, nil
+	return cloneExecutionPosture(out), nil
 }
 
 // Get returns the RunAttempt with the given id, loading from disk if not yet cached.
@@ -347,6 +397,7 @@ func (s *Store) Get(id string) (RunAttempt, error) {
 	}
 	s.mu.RLock()
 	if ra, ok := s.cache[id]; ok {
+		ra = cloneExecutionPosture(ra)
 		s.mu.RUnlock()
 		return ra, nil
 	}
@@ -364,7 +415,28 @@ func (s *Store) Get(id string) (RunAttempt, error) {
 		return RunAttempt{}, fmt.Errorf("runattempt get %s: decode: %w", id, err)
 	}
 	s.mu.Lock()
-	s.cache[id] = ra
+	s.cache[id] = cloneExecutionPosture(ra)
+	s.mu.Unlock()
+	return ra, nil
+}
+
+func (s *Store) getFresh(id string) (RunAttempt, error) {
+	if !Valid(id) {
+		return RunAttempt{}, fmt.Errorf("runattempt get: id %q does not match %s pattern", id, Prefix)
+	}
+	data, err := os.ReadFile(s.path(id))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return RunAttempt{}, ErrNotFound
+		}
+		return RunAttempt{}, fmt.Errorf("runattempt get %s: %w", id, err)
+	}
+	var ra RunAttempt
+	if err := json.Unmarshal(data, &ra); err != nil {
+		return RunAttempt{}, fmt.Errorf("runattempt get %s: decode: %w", id, err)
+	}
+	s.mu.Lock()
+	s.cache[id] = cloneExecutionPosture(ra)
 	s.mu.Unlock()
 	return ra, nil
 }
@@ -386,19 +458,14 @@ func (s *Store) Complete(id string, status string, now time.Time) (RunAttempt, e
 	if !IsTerminal(status) {
 		return RunAttempt{}, fmt.Errorf("runattempt complete %s: status %q is not terminal", id, status)
 	}
-	ra, err := s.Get(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	if IsTerminal(ra.Status) {
-		return RunAttempt{}, fmt.Errorf("runattempt complete %s: already terminal (%s)", id, ra.Status)
-	}
-	ra.Status = status
-	ra.CompletedAt = now.UTC()
-	if err := s.write(ra); err != nil {
-		return RunAttempt{}, err
-	}
-	return ra, nil
+	return s.mutate(id, func(ra *RunAttempt) (bool, error) {
+		if IsTerminal(ra.Status) {
+			return false, fmt.Errorf("runattempt complete %s: already terminal (%s)", id, ra.Status)
+		}
+		ra.Status = status
+		ra.CompletedAt = now.UTC()
+		return true, nil
+	})
 }
 
 // CompleteWithReason transitions a RunAttempt to terminal status and records
@@ -411,23 +478,18 @@ func (s *Store) CompleteWithReason(id, status, reason string, now time.Time) (Ru
 	if !IsTerminal(status) {
 		return RunAttempt{}, fmt.Errorf("runattempt complete %s: status %q is not terminal", id, status)
 	}
-	ra, err := s.Get(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	if IsTerminal(ra.Status) {
-		return RunAttempt{}, fmt.Errorf("runattempt complete %s: already terminal (%s)", id, ra.Status)
-	}
-	ra.Status = status
-	ra.CompletedAt = now.UTC()
-	ra.SweepReason = strings.TrimSpace(reason)
-	if err := s.write(ra); err != nil {
-		return RunAttempt{}, err
-	}
-	return ra, nil
+	return s.mutate(id, func(ra *RunAttempt) (bool, error) {
+		if IsTerminal(ra.Status) {
+			return false, fmt.Errorf("runattempt complete %s: already terminal (%s)", id, ra.Status)
+		}
+		ra.Status = status
+		ra.CompletedAt = now.UTC()
+		ra.SweepReason = strings.TrimSpace(reason)
+		return true, nil
+	})
 }
 
-// CompleteWithReasonAndClassification is the sweep's terminalizing entrypoint
+// CompleteWithReasonAndClassification is the low-level classified terminalizer
 // (DEC-0027 build step 1, work_195771b63a58). It records both the WHY
 // (sweep_reason) and the DISPOSITION (side_effect_free vs ambiguous) in one
 // atomic write — a partial write that sets the reason but not the
@@ -439,29 +501,26 @@ func (s *Store) CompleteWithReason(id, status, reason string, now time.Time) (Ru
 // bug in the caller and should fail closed. Callers that don't classify (the
 // existing CompleteWithReason path, work envelope supersession, etc.) never
 // reach this entrypoint; they leave SweepClassification empty (omitempty) and
-// get the same byte-identical record shape as before.
+// get the same byte-identical record shape as before. SweepStale uses the
+// stricter completeStaleSnapshot path so its liveness decision cannot race a
+// newer heartbeat or evidence write.
 func (s *Store) CompleteWithReasonAndClassification(id, status, reason, classification string, now time.Time) (RunAttempt, error) {
 	if !IsTerminal(status) {
 		return RunAttempt{}, fmt.Errorf("runattempt complete %s: status %q is not terminal", id, status)
 	}
-	ra, err := s.Get(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	if IsTerminal(ra.Status) {
-		return RunAttempt{}, fmt.Errorf("runattempt complete %s: already terminal (%s)", id, ra.Status)
-	}
 	if classification != SweepClassificationSideEffectFree && classification != SweepClassificationAmbiguous {
 		return RunAttempt{}, fmt.Errorf("runattempt complete %s: classification %q is not a valid SweepClassification", id, classification)
 	}
-	ra.Status = status
-	ra.CompletedAt = now.UTC()
-	ra.SweepReason = strings.TrimSpace(reason)
-	ra.SweepClassification = classification
-	if err := s.write(ra); err != nil {
-		return RunAttempt{}, err
-	}
-	return ra, nil
+	return s.mutate(id, func(ra *RunAttempt) (bool, error) {
+		if IsTerminal(ra.Status) {
+			return false, fmt.Errorf("runattempt complete %s: already terminal (%s)", id, ra.Status)
+		}
+		ra.Status = status
+		ra.CompletedAt = now.UTC()
+		ra.SweepReason = strings.TrimSpace(reason)
+		ra.SweepClassification = classification
+		return true, nil
+	})
 }
 
 // ClassifyStaleRunAttempt returns the disposition of a stale non-terminal
@@ -498,6 +557,45 @@ func ClassifyStaleRunAttempt(ra RunAttempt) string {
 	return SweepClassificationSideEffectFree
 }
 
+// completeStaleSnapshot terminalizes only the exact non-terminal snapshot a
+// sweep inspected. Probe execution happens outside the RunAttempt lock, so a
+// heartbeat, progress update, or evidence attachment may land after the
+// candidate scan. Any such change invalidates the stale/liveness verdict and
+// is skipped for a later sweep. Classification and age are recomputed from
+// the fresh record while holding the same lock as the terminal write.
+func (s *Store) completeStaleSnapshot(expected RunAttempt, threshold time.Duration, now time.Time) (RunAttempt, string, bool, error) {
+	if threshold <= 0 {
+		threshold = DefaultSweepThreshold
+	}
+	var classification string
+	var swept bool
+	updated, err := s.mutate(expected.ID, func(current *RunAttempt) (bool, error) {
+		if IsTerminal(current.Status) || !reflect.DeepEqual(*current, expected) {
+			return false, nil
+		}
+		lastActivity := current.CreatedAt
+		if current.LastHeartbeatAt != nil {
+			lastActivity = *current.LastHeartbeatAt
+		}
+		age := now.Sub(lastActivity)
+		if age < threshold {
+			return false, nil
+		}
+		classification = ClassifyStaleRunAttempt(*current)
+		if classification != SweepClassificationSideEffectFree && classification != SweepClassificationAmbiguous {
+			return false, fmt.Errorf("runattempt complete %s: classification %q is not a valid SweepClassification", current.ID, classification)
+		}
+		current.Status = StatusAbandoned
+		current.CompletedAt = now.UTC()
+		current.SweepReason = fmt.Sprintf("stale: %s — no activity for %s (threshold %s)",
+			classification, age.Round(time.Second), threshold)
+		current.SweepClassification = classification
+		swept = true
+		return true, nil
+	})
+	return updated, classification, swept, err
+}
+
 // MarkRunning transitions a RunAttempt from pending to running (F5). This is
 // the setter observe-run's "running"/"in_progress" job-status branch was
 // missing -- without it a running job's RunAttempt silently stayed pending
@@ -506,15 +604,59 @@ func ClassifyStaleRunAttempt(ra RunAttempt) string {
 // no-op if already running -- repeated "still running" observations of the
 // same job must not error or reset CreatedAt/heartbeat state.
 func (s *Store) MarkRunning(id string, now time.Time) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		if ra.Status == StatusRunning {
+			return false, nil
+		}
+		ra.Status = StatusRunning
+		return true, nil
+	})
+}
+
+// CommitLaunch is the one-shot pending -> running boundary for a real
+// subprocess. It persists a launch-time heartbeat and invokes start while
+// holding the canonical RunAttempt lock, so a stale sweep cannot terminalize
+// the attempt between the status check and the external side effect. A
+// terminal or already-running attempt refuses the callback. If start returns
+// an error after the running record is committed, the caller must terminalize
+// the attempt on its ordinary failure path.
+func (s *Store) CommitLaunch(id string, now time.Time, start func() error) (RunAttempt, error) {
+	if !Valid(id) {
+		return RunAttempt{}, fmt.Errorf("runattempt launch %s: id does not match %s pattern", id, Prefix)
 	}
-	if ra.Status == StatusRunning {
-		return ra, nil
+	if start == nil {
+		return RunAttempt{}, fmt.Errorf("runattempt launch %s: start callback required", id)
 	}
-	ra.Status = StatusRunning
-	return ra, s.write(ra)
+	var out RunAttempt
+	err := s.withAttemptLock(id, func() error {
+		ra, err := s.getFresh(id)
+		if err != nil {
+			return err
+		}
+		if IsTerminal(ra.Status) {
+			out = ra
+			return fmt.Errorf("runattempt launch %s: %w (status=%s)", id, terminalRefusal, ra.Status)
+		}
+		if ra.Status != StatusPending {
+			out = ra
+			return fmt.Errorf("runattempt launch %s: status %s is not pending", id, ra.Status)
+		}
+		launchAt := now.UTC()
+		if launchAt.IsZero() || launchAt.Before(ra.CreatedAt) {
+			launchAt = ra.CreatedAt
+		}
+		if ra.LastHeartbeatAt != nil && launchAt.Before(*ra.LastHeartbeatAt) {
+			launchAt = *ra.LastHeartbeatAt
+		}
+		ra.Status = StatusRunning
+		ra.LastHeartbeatAt = &launchAt
+		if err := s.writeLocked(ra); err != nil {
+			return err
+		}
+		out = ra
+		return start()
+	})
+	return cloneExecutionPosture(out), err
 }
 
 // AttachActionIntent binds a RunAttempt to the ActionIntent that authorized it, closing the
@@ -544,21 +686,20 @@ func (s *Store) AttachActionIntent(id, actionIntentID string) error {
 	if !strings.HasPrefix(actionIntentID, "act_") {
 		return fmt.Errorf("runattempt attach %s: action_intent_id %q must start with act_", id, actionIntentID)
 	}
-	ra, err := s.Get(id)
-	if err != nil {
-		return err
-	}
-	if IsTerminal(ra.Status) {
-		return fmt.Errorf("runattempt attach %s: already terminal (%s); binding after terminalization is a bug", id, ra.Status)
-	}
-	if ra.ActionIntentID == actionIntentID {
-		return nil // idempotent retry
-	}
-	if ra.ActionIntentID != "" {
-		return fmt.Errorf("runattempt attach %s: %w (have %q, want %q)", id, ErrAlreadyBound, ra.ActionIntentID, actionIntentID)
-	}
-	ra.ActionIntentID = actionIntentID
-	return s.write(ra)
+	_, err := s.mutate(id, func(ra *RunAttempt) (bool, error) {
+		if IsTerminal(ra.Status) {
+			return false, fmt.Errorf("runattempt attach %s: already terminal (%s); binding after terminalization is a bug", id, ra.Status)
+		}
+		if ra.ActionIntentID == actionIntentID {
+			return false, nil // idempotent retry
+		}
+		if ra.ActionIntentID != "" {
+			return false, fmt.Errorf("runattempt attach %s: %w (have %q, want %q)", id, ErrAlreadyBound, ra.ActionIntentID, actionIntentID)
+		}
+		ra.ActionIntentID = actionIntentID
+		return true, nil
+	})
+	return err
 }
 
 // ---------------------------------------------------------------------------
@@ -577,18 +718,47 @@ func (s *Store) AttachActionIntent(id, actionIntentID string) error {
 // refusal pins.
 var terminalRefusal = errors.New("runattempt is terminal; cannot mutate")
 
-func (s *Store) requireMutable(id string) (RunAttempt, error) {
+func (s *Store) mutate(id string, fn func(*RunAttempt) (bool, error)) (RunAttempt, error) {
 	if !Valid(id) {
-		return RunAttempt{}, fmt.Errorf("runattempt set %s: id does not match %s pattern", id, Prefix)
+		return RunAttempt{}, fmt.Errorf("runattempt mutation %s: id does not match %s pattern", id, Prefix)
 	}
-	ra, err := s.Get(id)
+	if fn == nil {
+		return RunAttempt{}, fmt.Errorf("runattempt mutation %s: callback required", id)
+	}
+	var out RunAttempt
+	err := s.withAttemptLock(id, func() error {
+		// The read is intentionally inside the filesystem lock. A different
+		// Store or Compound process may have changed immutable bindings,
+		// terminality, progress, or evidence since this Store last observed it.
+		ra, err := s.getFresh(id)
+		if err != nil {
+			return err
+		}
+		changed, err := fn(&ra)
+		if err != nil {
+			return err
+		}
+		if changed {
+			if err := s.writeLocked(ra); err != nil {
+				return err
+			}
+		}
+		out = ra
+		return nil
+	})
 	if err != nil {
 		return RunAttempt{}, err
 	}
-	if IsTerminal(ra.Status) {
-		return RunAttempt{}, fmt.Errorf("runattempt %s: %w (status=%s)", id, terminalRefusal, ra.Status)
-	}
-	return ra, nil
+	return cloneExecutionPosture(out), nil
+}
+
+func (s *Store) mutateMutable(id string, fn func(*RunAttempt) (bool, error)) (RunAttempt, error) {
+	return s.mutate(id, func(ra *RunAttempt) (bool, error) {
+		if IsTerminal(ra.Status) {
+			return false, fmt.Errorf("runattempt %s: %w (status=%s)", id, terminalRefusal, ra.Status)
+		}
+		return fn(ra)
+	})
 }
 
 // SetOrigin stamps the provenance of an attempt's mint (F2 groundwork). Called
@@ -597,46 +767,123 @@ func (s *Store) requireMutable(id string) (RunAttempt, error) {
 // change. Refuses on terminal exactly like every other S2/S3 setter, via
 // requireMutable, so provenance can never be rewritten after the fact.
 func (s *Store) SetOrigin(id, origin string) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	ra.Origin = strings.TrimSpace(origin)
-	return ra, s.write(ra)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		ra.Origin = strings.TrimSpace(origin)
+		return true, nil
+	})
 }
 
 // SetContextPack records which ContextRequest envelope this attempt loaded.
 // Pinned by TestRunAttemptRoundTripsNewFields/context_pack and refused on
 // terminal attempts by TestRunAttemptSettersRefuseOnTerminal.
 func (s *Store) SetContextPack(id, ref string) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	ra.ContextPackRef = strings.TrimSpace(ref)
-	return ra, s.write(ra)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		ra.ContextPackRef = strings.TrimSpace(ref)
+		return true, nil
+	})
 }
 
 // SetWorkspace records the filesystem root the attempt ran inside. Free-text
 // by design; the audit reads it as opaque context.
 func (s *Store) SetWorkspace(id, workspace string) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	ra.Workspace = strings.TrimSpace(workspace)
-	return ra, s.write(ra)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		ra.Workspace = strings.TrimSpace(workspace)
+		return true, nil
+	})
 }
 
 // SetCommand records the actual command or function call the harness
 // executed. Treated as opaque context, not a re-runnable spec.
 func (s *Store) SetCommand(id, command string) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		ra.Command = strings.TrimSpace(command)
+		return true, nil
+	})
+}
+
+// SetExecutionPosture atomically binds the resolved governed permission mode,
+// actual running PolicyDecision, and checked authority revisions before a
+// harness subprocess starts. Repeating the exact bind is idempotent; changing
+// it is refused because execution authority is immutable evidence.
+func (s *Store) SetExecutionPosture(id string, posture ExecutionPosture) (RunAttempt, error) {
+	posture.PermissionMode = strings.TrimSpace(posture.PermissionMode)
+	switch posture.PermissionMode {
+	case "default", "plan", "acceptEdits", "bypass":
+	default:
+		return RunAttempt{}, fmt.Errorf("runattempt %s: execution posture permission_mode %q is invalid", id, posture.PermissionMode)
 	}
-	ra.Command = strings.TrimSpace(command)
-	return ra, s.write(ra)
+	posture.PolicyDecisionID = strings.TrimSpace(posture.PolicyDecisionID)
+	if !strings.HasPrefix(posture.PolicyDecisionID, "pol_") {
+		return RunAttempt{}, fmt.Errorf("runattempt %s: execution posture policy_decision_id %q must start with pol_", id, posture.PolicyDecisionID)
+	}
+
+	var evidence []ExecutionPostureEvidence
+	if len(posture.AuthorityEvidence) > 0 {
+		evidence = make([]ExecutionPostureEvidence, 0, len(posture.AuthorityEvidence))
+	}
+	seenKinds := make(map[string]bool, len(posture.AuthorityEvidence))
+	mutationCapable := posture.PermissionMode == "default" || posture.PermissionMode == "acceptEdits" || posture.PermissionMode == "bypass"
+	requiredKinds := map[string]bool{
+		"permission_authority":       true,
+		"permission_posture":         true,
+		"blocking_hook_plan":         true,
+		"blocking_hook_installation": true,
+	}
+	for _, item := range posture.AuthorityEvidence {
+		item.Kind = strings.TrimSpace(item.Kind)
+		item.Ref = strings.TrimSpace(item.Ref)
+		item.Revision = strings.TrimSpace(item.Revision)
+		if item.Kind == "" || item.Ref == "" || item.Revision == "" {
+			return RunAttempt{}, fmt.Errorf("runattempt %s: execution posture evidence requires kind, ref, and revision", id)
+		}
+		if seenKinds[item.Kind] {
+			return RunAttempt{}, fmt.Errorf("runattempt %s: execution posture evidence kind %q is duplicated", id, item.Kind)
+		}
+		if mutationCapable && !requiredKinds[item.Kind] {
+			return RunAttempt{}, fmt.Errorf("runattempt %s: %s execution posture has unexpected authority evidence kind %q", id, posture.PermissionMode, item.Kind)
+		}
+		seenKinds[item.Kind] = true
+		evidence = append(evidence, item)
+	}
+	if mutationCapable {
+		for _, kind := range []string{"permission_authority", "permission_posture", "blocking_hook_plan", "blocking_hook_installation"} {
+			if !seenKinds[kind] {
+				return RunAttempt{}, fmt.Errorf("runattempt %s: %s execution posture requires %s evidence", id, posture.PermissionMode, kind)
+			}
+		}
+	}
+	sort.Slice(evidence, func(i, j int) bool {
+		if evidence[i].Kind != evidence[j].Kind {
+			return evidence[i].Kind < evidence[j].Kind
+		}
+		if evidence[i].Ref != evidence[j].Ref {
+			return evidence[i].Ref < evidence[j].Ref
+		}
+		return evidence[i].Revision < evidence[j].Revision
+	})
+	posture.AuthorityEvidence = evidence
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		if ra.ExecutionPosture != nil {
+			if reflect.DeepEqual(*ra.ExecutionPosture, posture) {
+				return false, nil
+			}
+			return false, fmt.Errorf("runattempt %s: execution posture is already bound", id)
+		}
+		bound := posture
+		bound.AuthorityEvidence = append([]ExecutionPostureEvidence(nil), evidence...)
+		ra.ExecutionPosture = &bound
+		return true, nil
+	})
+}
+
+func cloneExecutionPosture(ra RunAttempt) RunAttempt {
+	if ra.ExecutionPosture == nil {
+		return ra
+	}
+	posture := *ra.ExecutionPosture
+	posture.AuthorityEvidence = append([]ExecutionPostureEvidence(nil), posture.AuthorityEvidence...)
+	ra.ExecutionPosture = &posture
+	return ra
 }
 
 // Heartbeat advances LastHeartbeatAt to now, but ONLY if now is strictly
@@ -645,95 +892,83 @@ func (s *Store) SetCommand(id, command string) (RunAttempt, error) {
 // also refuses on terminal attempts -- a heartbeat on a "succeeded" run
 // would imply the attempt is still running, contradicting the terminal status.
 func (s *Store) Heartbeat(id string, now time.Time) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	t := now.UTC()
-	if ra.LastHeartbeatAt != nil && !t.After(*ra.LastHeartbeatAt) {
-		return ra, nil
-	}
-	ra.LastHeartbeatAt = &t
-	return ra, s.write(ra)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		t := now.UTC()
+		if ra.LastHeartbeatAt != nil && !t.After(*ra.LastHeartbeatAt) {
+			return false, nil
+		}
+		ra.LastHeartbeatAt = &t
+		return true, nil
+	})
 }
 
 // HeartbeatProgress advances liveness and cumulative progress atomically.
 // Completed buckets may only increase and Remaining may only decrease.
 func (s *Store) HeartbeatProgress(id string, now time.Time, progress RunProgress) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
 	if progress.Done < 0 || progress.Empty < 0 || progress.Failed < 0 || progress.Remaining < 0 {
 		return RunAttempt{}, errors.New("runattempt progress counts must be non-negative")
 	}
-	if previous := ra.Progress; previous != nil {
-		if progress.Done < previous.Done || progress.Empty < previous.Empty || progress.Failed < previous.Failed || progress.Remaining > previous.Remaining {
-			return RunAttempt{}, fmt.Errorf("runattempt progress must be monotonic: previous=%+v next=%+v", *previous, progress)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		if previous := ra.Progress; previous != nil {
+			if progress.Done < previous.Done || progress.Empty < previous.Empty || progress.Failed < previous.Failed || progress.Remaining > previous.Remaining {
+				return false, fmt.Errorf("runattempt progress must be monotonic: previous=%+v next=%+v", *previous, progress)
+			}
 		}
-	}
-	t := now.UTC()
-	if ra.LastHeartbeatAt != nil && t.Before(*ra.LastHeartbeatAt) {
-		return RunAttempt{}, fmt.Errorf("runattempt progress heartbeat is stale: previous=%s next=%s", ra.LastHeartbeatAt.UTC().Format(time.RFC3339Nano), t.Format(time.RFC3339Nano))
-	}
-	ra.LastHeartbeatAt = &t
-	copy := progress
-	ra.Progress = &copy
-	return ra, s.write(ra)
+		t := now.UTC()
+		if ra.LastHeartbeatAt != nil && t.Before(*ra.LastHeartbeatAt) {
+			return false, fmt.Errorf("runattempt progress heartbeat is stale: previous=%s next=%s", ra.LastHeartbeatAt.UTC().Format(time.RFC3339Nano), t.Format(time.RFC3339Nano))
+		}
+		ra.LastHeartbeatAt = &t
+		copy := progress
+		ra.Progress = &copy
+		return true, nil
+	})
 }
 
 // SetTranscript records the run transcript path. Single string by design --
 // a harness has one transcript.
 func (s *Store) SetTranscript(id, ref string) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	ra.TranscriptRef = strings.TrimSpace(ref)
-	return ra, s.write(ra)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		ra.TranscriptRef = strings.TrimSpace(ref)
+		return true, nil
+	})
 }
 
 // SetDiff records the diff artifact path (if any).
 func (s *Store) SetDiff(id, ref string) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	ra.DiffRef = strings.TrimSpace(ref)
-	return ra, s.write(ra)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		ra.DiffRef = strings.TrimSpace(ref)
+		return true, nil
+	})
 }
 
 // SetTest records the test-result artifact path (if any).
 func (s *Store) SetTest(id, ref string) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	ra.TestRef = strings.TrimSpace(ref)
-	return ra, s.write(ra)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		ra.TestRef = strings.TrimSpace(ref)
+		return true, nil
+	})
 }
 
 // SetProofRefs replaces the proof-refs slice. Pass nil to clear (pinned by
 // TestRunAttemptSetProofRefsClearsOnEmpty). Pass a non-empty slice to
 // overwrite. Order is preserved as-given; the audit does not sort.
 func (s *Store) SetProofRefs(id string, refs []string) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	if len(refs) == 0 {
-		ra.ProofRefs = nil
-	} else {
-		out := make([]string, 0, len(refs))
-		for _, r := range refs {
-			r = strings.TrimSpace(r)
-			if r != "" {
-				out = append(out, r)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		if len(refs) == 0 {
+			ra.ProofRefs = nil
+		} else {
+			out := make([]string, 0, len(refs))
+			for _, r := range refs {
+				r = strings.TrimSpace(r)
+				if r != "" {
+					out = append(out, r)
+				}
 			}
+			ra.ProofRefs = out
 		}
-		ra.ProofRefs = out
-	}
-	return ra, s.write(ra)
+		return true, nil
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -751,43 +986,37 @@ func (s *Store) SetProofRefs(id string, refs []string) (RunAttempt, error) {
 // tuple requested before launch. It deliberately does not populate ModelID or
 // ProviderRoute: only observed route evidence may attest those fields.
 func (s *Store) SetDispatchIntent(id, laneID, requestedModelID, requestedProviderRoute string) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	ra.LaneID = strings.TrimSpace(laneID)
-	ra.RequestedModelID = strings.TrimSpace(requestedModelID)
-	ra.RequestedProviderRoute = strings.TrimSpace(requestedProviderRoute)
-	return ra, s.write(ra)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		ra.LaneID = strings.TrimSpace(laneID)
+		ra.RequestedModelID = strings.TrimSpace(requestedModelID)
+		ra.RequestedProviderRoute = strings.TrimSpace(requestedProviderRoute)
+		return true, nil
+	})
 }
 
 // SetExecutionProfileIntent records the exact requested semantic execution
 // identity before the harness is spawned. It deliberately leaves observed
 // ModelID and ProviderRoute empty; those fields require route evidence.
 func (s *Store) SetExecutionProfileIntent(id, planID, clientHarnessID, transportID, nativeEffort string) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	ra.ExecutionProfilePlanID = strings.TrimSpace(planID)
-	ra.RequestedClientHarnessID = strings.TrimSpace(clientHarnessID)
-	ra.RequestedTransportID = strings.TrimSpace(transportID)
-	ra.RequestedNativeEffort = strings.TrimSpace(nativeEffort)
-	return ra, s.write(ra)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		ra.ExecutionProfilePlanID = strings.TrimSpace(planID)
+		ra.RequestedClientHarnessID = strings.TrimSpace(clientHarnessID)
+		ra.RequestedTransportID = strings.TrimSpace(transportID)
+		ra.RequestedNativeEffort = strings.TrimSpace(nativeEffort)
+		return true, nil
+	})
 }
 
 // SetLaunchProfileIntent records the opaque executor-owner launch and account
 // policy identity selected before spawn. It carries no account id or
 // credential and does not populate observed provider/model fields.
 func (s *Store) SetLaunchProfileIntent(id, profileID, revision, clientProfileID string) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	ra.LaunchProfileID = strings.TrimSpace(profileID)
-	ra.LaunchProfileRevision = strings.TrimSpace(revision)
-	ra.RequestedClientProfileID = strings.TrimSpace(clientProfileID)
-	return ra, s.write(ra)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		ra.LaunchProfileID = strings.TrimSpace(profileID)
+		ra.LaunchProfileRevision = strings.TrimSpace(revision)
+		ra.RequestedClientProfileID = strings.TrimSpace(clientProfileID)
+		return true, nil
+	})
 }
 
 // SetAttribution records which lane / model / provider route drove this run.
@@ -796,27 +1025,23 @@ func (s *Store) SetLaunchProfileIntent(id, profileID, revision, clientProfileID 
 // changes nothing on a fresh mint. Stamped by the dispatching context only
 // where it actually knows the values -- never guessed.
 func (s *Store) SetAttribution(id, laneID, modelID, providerRoute string) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	ra.LaneID = strings.TrimSpace(laneID)
-	ra.ModelID = strings.TrimSpace(modelID)
-	ra.ProviderRoute = strings.TrimSpace(providerRoute)
-	return ra, s.write(ra)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		ra.LaneID = strings.TrimSpace(laneID)
+		ra.ModelID = strings.TrimSpace(modelID)
+		ra.ProviderRoute = strings.TrimSpace(providerRoute)
+		return true, nil
+	})
 }
 
 // SetTokenUsage records the prompt / completion token counts. Zero ≡ unknown
 // (see the TokensIn field comment); pass the counts the dispatching context
 // actually observed. Refuses on terminal, same as every S2/S3 setter.
 func (s *Store) SetTokenUsage(id string, in, out int64) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	ra.TokensIn = in
-	ra.TokensOut = out
-	return ra, s.write(ra)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		ra.TokensIn = in
+		ra.TokensOut = out
+		return true, nil
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -835,10 +1060,6 @@ func (s *Store) SetTokenUsage(id string, in, out int64) (RunAttempt, error) {
 // on terminal attempts (a swept/completed attempt cannot be retroactively
 // linked). Pinned by TestSetPredecessorChains and TestSetPredecessorRefuses.
 func (s *Store) SetPredecessor(id, predecessorID string) (RunAttempt, error) {
-	ra, err := s.requireMutable(id)
-	if err != nil {
-		return RunAttempt{}, err
-	}
 	predecessorID = strings.TrimSpace(predecessorID)
 	if predecessorID == "" {
 		return RunAttempt{}, fmt.Errorf("runattempt set-predecessor %s: predecessor_id is required", id)
@@ -846,20 +1067,23 @@ func (s *Store) SetPredecessor(id, predecessorID string) (RunAttempt, error) {
 	if !Valid(predecessorID) {
 		return RunAttempt{}, fmt.Errorf("runattempt set-predecessor %s: predecessor %q does not match %s pattern", id, predecessorID, Prefix)
 	}
-	// The predecessor must exist on disk — no phantom links.
-	if _, err := s.Get(predecessorID); err != nil {
-		return RunAttempt{}, fmt.Errorf("runattempt set-predecessor %s: predecessor %s: %w", id, predecessorID, err)
-	}
-	// Idempotent: same predecessor again is a no-op.
-	if ra.PredecessorID == predecessorID {
-		return ra, nil
-	}
-	// Append-only: changing to a different predecessor is a bug.
-	if ra.PredecessorID != "" {
-		return RunAttempt{}, fmt.Errorf("runattempt set-predecessor %s: already linked to %s (append-only chain)", id, ra.PredecessorID)
-	}
-	ra.PredecessorID = predecessorID
-	return ra, s.write(ra)
+	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		// The predecessor must exist on disk — no phantom links. The global
+		// RunAttempt lock is already held, so this read cannot race a create.
+		if _, err := s.getFresh(predecessorID); err != nil {
+			return false, fmt.Errorf("runattempt set-predecessor %s: predecessor %s: %w", id, predecessorID, err)
+		}
+		// Idempotent: same predecessor again is a no-op.
+		if ra.PredecessorID == predecessorID {
+			return false, nil
+		}
+		// Append-only: changing to a different predecessor is a bug.
+		if ra.PredecessorID != "" {
+			return false, fmt.Errorf("runattempt set-predecessor %s: already linked to %s (append-only chain)", id, ra.PredecessorID)
+		}
+		ra.PredecessorID = predecessorID
+		return true, nil
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -880,9 +1104,9 @@ func (s *Store) SetPredecessor(id, predecessorID string) (RunAttempt, error) {
 // split between auto-closed and escalated dispositions.
 //
 // AutoClosed + Escalated sum to Swept when every candidate could be
-// classified; a candidate whose CompleteWithReasonAndClassification
-// rejected (write failure) lands in Skipped instead. The three counters
-// are independently counted so a partial sweep is still legible.
+// classified; a candidate whose snapshot changed or whose terminal write
+// failed lands in Skipped instead. The three counters are independently
+// counted so a partial sweep is still legible.
 type SweepReport struct {
 	Scanned    int      `json:"scanned"` // total non-terminal attempts examined
 	Swept      int      `json:"swept"`   // terminalized this pass
@@ -998,12 +1222,11 @@ func (s *Store) SweepStale(threshold time.Duration, now time.Time) (SweepReport,
 			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
 			continue
 		}
-		classification := ClassifyStaleRunAttempt(ra)
-		reason := fmt.Sprintf("stale: %s — no activity for %s (threshold %s)",
-			classification, age.Round(time.Second), threshold)
-		if _, cerr := s.CompleteWithReasonAndClassification(ra.ID, StatusAbandoned, reason, classification, now); cerr != nil {
+		_, classification, swept, cerr := s.completeStaleSnapshot(ra, threshold, now)
+		if cerr != nil || !swept {
 			// Best-effort: a write failure on one attempt does not abort the
-			// pass. The next sweep retries it.
+			// pass. A changed snapshot is also skipped: the next sweep retries
+			// it with a fresh liveness/classification decision.
 			rep.Skipped++
 			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
 			continue
@@ -1111,10 +1334,8 @@ func (s *Store) SweepStaleWithProbe(threshold time.Duration, now time.Time, prob
 		// would (DEC-0027 build step 1, work_195771b63a58: the probe-aware
 		// pass must produce the same disposition per attempt as the generic
 		// pass, so doctor reads a single source of truth).
-		classification := ClassifyStaleRunAttempt(ra)
-		reason := fmt.Sprintf("stale: %s — no activity for %s (threshold %s)",
-			classification, age.Round(time.Second), threshold)
-		if _, cerr := s.CompleteWithReasonAndClassification(ra.ID, StatusAbandoned, reason, classification, now); cerr != nil {
+		_, classification, swept, cerr := s.completeStaleSnapshot(ra, threshold, now)
+		if cerr != nil || !swept {
 			rep.Skipped++
 			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
 			continue
@@ -1142,10 +1363,79 @@ func (s *Store) path(id string) string {
 // internal/landlease.writeAtomic so a crash mid-write loses at most one RunAttempt.
 // C5: the fsync is real now (previously the comment claimed it but the code did not).
 // The store is an evidence organ — durability matters.
+func (s *Store) withAttemptLock(id string, fn func() error) error {
+	if !Valid(id) {
+		return fmt.Errorf("runattempt mutation: id %q does not match %s pattern", id, Prefix)
+	}
+	if fn == nil {
+		return errors.New("runattempt mutation callback required")
+	}
+	lockDir := filepath.Join(s.home, "lock")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		return fmt.Errorf("runattempt lock: mkdir %s: %w", lockDir, err)
+	}
+	// One stable inode serializes RunAttempt read-modify-write transactions
+	// across Store instances and processes without accumulating one permanent
+	// lock file per historical attempt.
+	lockPath := filepath.Join(lockDir, "runattempts.lock")
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("runattempt lock: open %s: %w", lockPath, err)
+	}
+	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("runattempt lock: acquire %s: %w", lockPath, err)
+	}
+	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	return fn()
+}
+
 func (s *Store) write(ra RunAttempt) error {
+	return s.withAttemptLock(ra.ID, func() error {
+		if current, err := s.getFresh(ra.ID); err == nil {
+			if reflect.DeepEqual(current, ra) {
+				return nil
+			}
+			return fmt.Errorf("runattempt write %s: record already exists", ra.ID)
+		} else if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		return s.writeLocked(ra)
+	})
+}
+
+func (s *Store) writeLocked(ra RunAttempt) error {
 	dir := filepath.Join(s.home, "run_attempts")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("runattempt write: mkdir %s: %w", dir, err)
+	}
+	if current, err := s.getFresh(ra.ID); err == nil {
+		if current.SchemaVersion != ra.SchemaVersion || current.ID != ra.ID || current.WorkID != ra.WorkID ||
+			current.Actor != ra.Actor || current.Harness != ra.Harness || !current.CreatedAt.Equal(ra.CreatedAt) {
+			return fmt.Errorf("runattempt write %s: immutable identity changed", ra.ID)
+		}
+		if IsTerminal(current.Status) && !reflect.DeepEqual(current, ra) {
+			return fmt.Errorf("runattempt %s: %w (status=%s)", ra.ID, terminalRefusal, current.Status)
+		}
+		if current.ExecutionPosture != nil {
+			switch {
+			case ra.ExecutionPosture == nil:
+				posture := *current.ExecutionPosture
+				posture.AuthorityEvidence = append([]ExecutionPostureEvidence(nil), posture.AuthorityEvidence...)
+				ra.ExecutionPosture = &posture
+			case !reflect.DeepEqual(*current.ExecutionPosture, *ra.ExecutionPosture):
+				return fmt.Errorf("runattempt %s: execution posture is already bound", ra.ID)
+			}
+		}
+		if current.Status == StatusRunning && ra.Status == StatusPending {
+			ra.Status = StatusRunning
+		}
+		if current.LastHeartbeatAt != nil && (ra.LastHeartbeatAt == nil || current.LastHeartbeatAt.After(*ra.LastHeartbeatAt)) {
+			heartbeat := *current.LastHeartbeatAt
+			ra.LastHeartbeatAt = &heartbeat
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
 	}
 	data, err := json.MarshalIndent(ra, "", "  ")
 	if err != nil {
@@ -1171,7 +1461,7 @@ func (s *Store) write(ra RunAttempt) error {
 		return fmt.Errorf("runattempt write: rename %s: %w", tmp, err)
 	}
 	s.mu.Lock()
-	s.cache[ra.ID] = ra
+	s.cache[ra.ID] = cloneExecutionPosture(ra)
 	s.mu.Unlock()
 	return nil
 }

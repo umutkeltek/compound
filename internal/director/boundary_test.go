@@ -70,6 +70,10 @@ func TestProposeApplyWritesConfinedToProposalSurfaces(t *testing.T) {
 		// enclosing director run claims its WorkEnvelope, so a run-attempt is
 		// minted; it is an execution-record artifact, not an owner-state escape.
 		"run_attempts/",
+		// Cross-process RunAttempt mutations use one canonical flock companion.
+		// This exact file is persistence infrastructure for run_attempts/, not a
+		// broader grant over lock/.
+		"lock/runattempts.lock",
 	}
 
 	var escaped []string
@@ -111,11 +115,24 @@ func TestProposeApplyWritesConfinedToProposalSurfaces(t *testing.T) {
 
 func hasAllowedPrefix(rel string, prefixes []string) bool {
 	for _, p := range prefixes {
-		if strings.HasPrefix(rel, p) {
+		if strings.HasSuffix(p, "/") && strings.HasPrefix(rel, p) {
+			return true
+		}
+		if !strings.HasSuffix(p, "/") && rel == p {
 			return true
 		}
 	}
 	return false
+}
+
+func TestHasAllowedPrefixTreatsFileEntriesAsExact(t *testing.T) {
+	allowed := []string{"run_attempts/", "lock/runattempts.lock"}
+	if !hasAllowedPrefix("lock/runattempts.lock", allowed) {
+		t.Fatal("canonical RunAttempt lock must be allowed")
+	}
+	if hasAllowedPrefix("lock/runattempts.lock.backup", allowed) {
+		t.Fatal("exact lock-file allowance must not admit suffixed paths")
+	}
 }
 
 // snapshotHomeTree records every regular file under home as a

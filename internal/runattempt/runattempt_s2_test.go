@@ -38,6 +38,7 @@ func TestRunAttemptHashNeutralityForPreS2Records(t *testing.T) {
 		`"provider_route"`,
 		`"tokens_in"`,
 		`"tokens_out"`,
+		`"execution_posture"`,
 	}
 
 	assertNeutral := func(t *testing.T, label string, fixture []byte) {
@@ -144,6 +145,14 @@ func TestRunAttemptRoundTripsNewFields(t *testing.T) {
 			}},
 		{"token_usage", func() error { _, e := s.SetTokenUsage(ra.ID, 100, 250); return e },
 			func(got RunAttempt) bool { return got.TokensIn == 100 && got.TokensOut == 250 }},
+		{"execution_posture", func() error {
+			_, e := s.SetExecutionPosture(ra.ID, ExecutionPosture{
+				PermissionMode: "plan", PolicyDecisionID: "pol_running",
+			})
+			return e
+		}, func(got RunAttempt) bool {
+			return got.ExecutionPosture != nil && got.ExecutionPosture.PermissionMode == "plan" && got.ExecutionPosture.PolicyDecisionID == "pol_running"
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.do(); err != nil {
@@ -192,6 +201,10 @@ func TestRunAttemptSettersRefuseOnTerminal(t *testing.T) {
 		{"attribution", func() error { _, e := s.SetAttribution(ra.ID, "lane-x", "model-y", "provider-z"); return e }},
 		{"dispatch_intent", func() error { _, e := s.SetDispatchIntent(ra.ID, "lane-x", "tuple-y", "provider-z"); return e }},
 		{"token_usage", func() error { _, e := s.SetTokenUsage(ra.ID, 100, 250); return e }},
+		{"execution_posture", func() error {
+			_, e := s.SetExecutionPosture(ra.ID, ExecutionPosture{PermissionMode: "plan", PolicyDecisionID: "pol_running"})
+			return e
+		}},
 	}
 	for _, tc := range setters {
 		t.Run(tc.name, func(t *testing.T) {

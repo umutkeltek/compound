@@ -59,6 +59,28 @@ func TestAdapterRegistryAdapterByName(t *testing.T) {
 	}
 }
 
+func TestClaudeFamilyAdaptersAdvertiseGovernedPermissionPosture(t *testing.T) {
+	r := NewAdapterRegistry(runattempt.Open(t.TempDir()))
+	for _, name := range []string{"claude", "claude_code", "claude_minimax", "claude_qwen", "claude_zai", "claude_zai_full"} {
+		adapter, ok := r.AdapterByName(name)
+		if !ok {
+			t.Fatalf("missing adapter %q", name)
+		}
+		if _, ok := adapter.(GovernedPermissionAdapter); !ok {
+			t.Fatalf("adapter %q does not advertise governed permission posture", name)
+		}
+	}
+	for _, name := range []string{"codex", "os-harness-entrypoints"} {
+		adapter, ok := r.AdapterByName(name)
+		if !ok {
+			t.Fatalf("missing adapter %q", name)
+		}
+		if _, ok := adapter.(GovernedPermissionAdapter); ok {
+			t.Fatalf("adapter %q unexpectedly advertises Claude permission posture", name)
+		}
+	}
+}
+
 // TestAdapterRegistryRegisterOverride: a custom adapter can override a
 // built-in. Pinned so future slices that wrap built-ins (e.g. a
 // "claude-with-logging" wrapper) have a clear extension point.

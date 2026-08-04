@@ -96,7 +96,9 @@ compound **observes** executions; it does not become one. The rail is proven by 
   EVERY return path** (`succeeded|failed|abandoned`) — never leave `pending`/`running` (a stuck attempt is a
   crash, not a state). `Heartbeat` marks liveness for long runs. `run-attempt sweep [--threshold 30m]`
   terminalizes stale attempts with a `SweepReason` — sweeping is audit-only, it **never touches the work state
-  machine**. Retry lineage is `PredecessorID` (append-only: idempotent re-link, refuses a different predecessor).
+  machine**. A real subprocess commits `pending → running` + launch heartbeat and `cmd.Start` under the same
+  RunAttempt lock; a swept/terminal attempt never launches afterward. Retry lineage is `PredecessorID`
+  (append-only: idempotent re-link, refuses a different predecessor).
   One RunAttempt per harness run against one `work_id` — a persistence primitive, not meaning authority; it fills
   the WorkEnvelope `run_attempt_ids[]` (`ratt_`-only) slot, and subprocess exit codes are **not** infra errors
   (they map to `Status`).
@@ -108,13 +110,25 @@ compound **observes** executions; it does not become one. The rail is proven by 
   Only `work advance --execute` is governed execution (ActionIntent + PolicyDecision + envelope advance);
   `compound harness run` is a manual, ungoverned run record — it mints the RunAttempt, prints a warning, and
   reports `governed: false` in JSON output.
-  The `ratt_` id **forward-links on BOTH paths** so the failed attempt is reachable from the envelope, not only
-  from `run_attempts/<id>.json`.
+  The `ratt_` id **forward-links on BOTH ordinary paths** so the failed attempt is reachable from the envelope,
+  not only from `run_attempts/<id>.json`. One explicit race exception preserves stronger authority: if the exact
+  running reservation changes after the attempt is minted, the newer WorkEnvelope generation stays byte-for-byte
+  authoritative. The attempt remains durable and reverse-linked by `work_id` + `action_intent_id`, and the CLI MUST
+  surface that exception; it may never mint a same-state policy/action generation to manufacture a forward link.
 - **Workspace resolution order:** `--workspace` → `git_delivery.target_worktree_root` → `cwd` → **refuse**. **NEVER
   default to `COMPOUND_HOME`** — running a code-editing harness there edits the state/config dir, not the project.
-- **Claude adapter permission default is `plan`** (read-only; the only governed mode that does not hang a
-  non-interactive `claude --print` run). `bypass` (`--dangerously-skip-permissions`) is an **explicit opt-in
-  only**, surfaced as `--permission-mode` so the posture is auditable, never hard-coded.
+- **Raw/manual Claude adapter permission default is `plan`** (read-only; the only posture that cannot hang on
+  a non-interactive permission prompt). Governed `work advance --execute` reserves the exact state + PolicyDecision
+  + last ActionIntent generation of one currently `claimed` envelope and may derive prompt-free `bypass` when its
+  prospective policy allows, the autonomy halt
+  is clear, and current permission + blocking-hook authorities attest exact revisions. Explicit `default`,
+  `acceptEdits`, and `bypass` pass the same gate; `acceptEdits` is never auto-selected. Unready authority resolves
+  to `plan`; lane-tuple/executable/capacity drift is rechecked for every Claude-family mode, while permission,
+  blocking-hook, and halt authority are additionally rechecked for mutation modes. Every governed adapter checks
+  the exact running state + PolicyDecision + last ActionIntent immediately around process start and consumes that
+  same generation through a lock-scoped finalization CAS. Reservation loss preserves the newer lifecycle state.
+  Authority evidence is bound to the resolved Claude-family harness. The RunAttempt records the resolved mode,
+  actual running PolicyDecision, and exact authority revisions.
 
 ## Adapter lanes
 - A lane lives under `adapters/<lane>/` and installs into an **isolated Claude-family profile** (its own

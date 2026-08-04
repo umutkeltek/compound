@@ -34,15 +34,16 @@ type buildCmdFn func(context.Context, RunInput) *exec.Cmd
 // SetProofRefs) still lands, so the test can assert the freshly minted
 // attempt is terminalized failed on disk rather than left stranded pending.
 type runAttemptStore interface {
-	Mint(workID, actor, harness string, now time.Time) (runattempt.RunAttempt, error)
+	MintWithActionIntent(workID, actor, harness, actionIntentID string, now time.Time) (runattempt.RunAttempt, error)
 	SetOrigin(id, origin string) (runattempt.RunAttempt, error)
 	SetWorkspace(id, workspace string) (runattempt.RunAttempt, error)
 	SetCommand(id, command string) (runattempt.RunAttempt, error)
-	AttachActionIntent(id, actionIntentID string) error
+	SetExecutionPosture(id string, posture runattempt.ExecutionPosture) (runattempt.RunAttempt, error)
 	SetDispatchIntent(id, laneID, requestedModelID, requestedProviderRoute string) (runattempt.RunAttempt, error)
 	SetProofRefs(id string, refs []string) (runattempt.RunAttempt, error)
 	SetTranscript(id, ref string) (runattempt.RunAttempt, error)
 	Complete(id string, status string, now time.Time) (runattempt.RunAttempt, error)
+	CommitLaunch(id string, now time.Time, start func() error) (runattempt.RunAttempt, error)
 	Heartbeat(id string, now time.Time) (runattempt.RunAttempt, error)
 	Home() string
 }
@@ -59,8 +60,11 @@ type runAttemptStore interface {
 // supplies the right harness name and buildCmd.
 //
 // Hardening guarantees (pinned by subprocess_runner_test.go):
-//   - ActionIntentID binds BEFORE Complete -- AttachActionIntent refuses a
-//     terminal attempt, so binding post-Complete was a guaranteed no-op.
+//   - ActionIntentID binds atomically with Mint -- even the first post-mint
+//     metadata failure retains the attempt->intent->policy audit chain.
+//   - pending -> running + launch heartbeat and cmd.Start share the canonical
+//     RunAttempt lock -- a stale sweep cannot abandon an attempt and then let
+//     its child start.
 //   - RunInput.Stdin is connected to the subprocess (never discarded).
 //   - Transcript writes are serialized -- stdout and stderr capture
 //     goroutines share one bufio.Writer through a mutex.
@@ -91,7 +95,7 @@ func runWithSubprocess(
 		heartbeatInterval = defaultHeartbeatInterval
 	}
 	started := in.Now
-	ra, err := store.Mint(in.WorkID, harnessName, harnessName, started)
+	ra, err := store.MintWithActionIntent(in.WorkID, harnessName, harnessName, in.ActionIntentID, started)
 	if err != nil {
 		return RunOutput{}, fmt.Errorf("%s: mint: %w", harnessName, err)
 	}
@@ -146,13 +150,9 @@ func runWithSubprocess(
 	if _, err := store.SetCommand(ra.ID, in.Command); err != nil {
 		return failTerm("set command"), fmt.Errorf("%s: set command: %w", harnessName, err)
 	}
-	// Bind the authorizing ActionIntent BEFORE any side effect and BEFORE
-	// terminalization. AttachActionIntent refuses a terminal attempt, so
-	// binding after Complete (the old order) was a guaranteed silent no-op
-	// that broke the attempt->intent->policy-decision audit chain.
-	if in.ActionIntentID != "" {
-		if err := store.AttachActionIntent(ra.ID, in.ActionIntentID); err != nil {
-			return failTerm("attach action intent"), fmt.Errorf("%s: attach action intent: %w", harnessName, err)
+	if in.ExecutionPosture != nil {
+		if _, err := store.SetExecutionPosture(ra.ID, *in.ExecutionPosture); err != nil {
+			return failTerm("set execution posture"), fmt.Errorf("%s: set execution posture: %w", harnessName, err)
 		}
 	}
 
@@ -198,7 +198,39 @@ func runWithSubprocess(
 	if err != nil {
 		return failTerm("stderr pipe"), fmt.Errorf("%s: stderr pipe: %w", harnessName, err)
 	}
-	if err := cmd.Start(); err != nil {
+	startCalled := false
+	start := func() error {
+		if startCalled {
+			return errors.New("subprocess start operation may be called only once")
+		}
+		startCalled = true
+		launched, launchErr := store.CommitLaunch(ra.ID, time.Now().UTC(), func() error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return cmd.Start()
+		})
+		if launched.ID != "" {
+			ra = launched
+		}
+		return launchErr
+	}
+	if in.StartGuard != nil {
+		err = in.StartGuard(ctx, start)
+		if err == nil && !startCalled {
+			err = errors.New("subprocess start guard returned without starting the command")
+		}
+	} else {
+		err = start()
+	}
+	if err != nil {
+		// A faulty guard could return an error after a successful start. The
+		// production guard returns start's result directly, but contain any
+		// future implementation bug here so no unobserved child is orphaned.
+		if startCalled && cmd.Process != nil {
+			killProcessTree(cmd)
+			_ = cmd.Wait()
+		}
 		return failTerm("start: " + err.Error()), fmt.Errorf("%s: start: %w", harnessName, err)
 	}
 

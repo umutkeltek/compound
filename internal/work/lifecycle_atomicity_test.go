@@ -16,6 +16,153 @@ import (
 	"compound/internal/policy"
 )
 
+func TestAdvanceExpectedWorkStatePreventsSecondExecutionReservation(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "executor", SuccessPredicate: "one claimed execution reservation"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "executor", fixedNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.Advance(w.ID, AdvanceInput{
+		To: "running", Actor: "executor", ExpectedWorkState: "claimed",
+	}, fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotLifecycleAuthority(t, s)
+
+	_, err = s.Advance(w.ID, AdvanceInput{
+		To: "running", Actor: "executor", ExpectedWorkState: "claimed",
+	}, fixedNow.Add(3*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), `state "running" no longer matches expected state "claimed"`) {
+		t.Fatalf("second execution reservation error = %v", err)
+	}
+	after := snapshotLifecycleAuthority(t, s)
+	assertLifecycleAuthorityUnchanged(t, before, after)
+	persisted, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(persisted.ActionIntentIDs, first.ActionIntentIDs) || persisted.PolicyDecisionID != first.PolicyDecisionID {
+		t.Fatalf("losing reservation changed execution authority: first=%+v persisted=%+v", first, persisted)
+	}
+}
+
+func TestExecutionFinalizationCASRejectsSupersededSameStateGeneration(t *testing.T) {
+	newRunning := func(t *testing.T) (*Store, envelope.WorkEnvelope) {
+		t.Helper()
+		s := newStore(t)
+		created, err := s.Create(CreateInput{Owner: "executor", SuccessPredicate: "finalization consumes the exact running generation"}, fixedNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Claim(created.ID, "executor", fixedNow.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		running, err := s.Advance(created.ID, AdvanceInput{To: "running", Actor: "executor"}, fixedNow.Add(2*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s, running
+	}
+	reservation := func(w envelope.WorkEnvelope) (string, string) {
+		if len(w.ActionIntentIDs) == 0 {
+			t.Fatalf("running work %s has no action intent", w.ID)
+		}
+		return w.PolicyDecisionID, w.ActionIntentIDs[len(w.ActionIntentIDs)-1]
+	}
+
+	t.Run("advance to verifying", func(t *testing.T) {
+		s, running := newRunning(t)
+		policyID, actionIntentID := reservation(running)
+		newer, err := s.Advance(running.ID, AdvanceInput{To: "running", Actor: "executor", Note: "supersede running generation"}, fixedNow.Add(3*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.Advance(running.ID, AdvanceInput{
+			To:                       "verifying",
+			Actor:                    "executor",
+			ExpectedWorkState:        "running",
+			ExpectedPolicyDecisionID: policyID,
+			ExpectedActionIntentID:   actionIntentID,
+		}, fixedNow.Add(4*time.Minute))
+		if !errors.Is(err, ErrExecutionReservationChanged) {
+			t.Fatalf("stale success finalization error = %v, want ErrExecutionReservationChanged", err)
+		}
+		got, err := s.Get(running.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.State != "running" || got.PolicyDecisionID != newer.PolicyDecisionID || !reflect.DeepEqual(got.ActionIntentIDs, newer.ActionIntentIDs) {
+			t.Fatalf("stale success finalization changed newer generation: got=%+v newer=%+v", got, newer)
+		}
+	})
+
+	t.Run("close failed", func(t *testing.T) {
+		s, running := newRunning(t)
+		policyID, actionIntentID := reservation(running)
+		newer, err := s.Advance(running.ID, AdvanceInput{To: "blocked", Actor: "executor", Note: "newer block decision"}, fixedNow.Add(3*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.Close(running.ID, CloseInput{
+			Outcome:                  "failed",
+			MoveType:                 "audit_only",
+			Actor:                    "executor",
+			Summary:                  "stale execution failure",
+			Changed:                  true,
+			ExpectedWorkState:        "running",
+			ExpectedPolicyDecisionID: policyID,
+			ExpectedActionIntentID:   actionIntentID,
+		}, fixedNow.Add(4*time.Minute))
+		if !errors.Is(err, ErrExecutionReservationChanged) {
+			t.Fatalf("stale failure finalization error = %v, want ErrExecutionReservationChanged", err)
+		}
+		got, err := s.Get(running.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.State != "blocked" || got.PolicyDecisionID != newer.PolicyDecisionID || !reflect.DeepEqual(got.ActionIntentIDs, newer.ActionIntentIDs) {
+			t.Fatalf("stale failure close changed newer decision: got=%+v newer=%+v", got, newer)
+		}
+	})
+}
+
+func TestAdvanceAutonomyClassMustBeClearAtExecutionCommit(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "executor", SuccessPredicate: "halt wins before mutation-capable execution"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "executor", fixedNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := policy.WriteAutonomyHalt(s.home, policy.AutonomyHalt{
+		DisabledClasses: map[string]string{"build-implement": "incident response"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotLifecycleAuthority(t, s)
+
+	_, err = s.Advance(w.ID, AdvanceInput{
+		To: "running", Actor: "executor", ExpectedWorkState: "claimed", AutonomyClass: "build-implement",
+	}, fixedNow.Add(2*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "autonomy halted (build-implement)") {
+		t.Fatalf("halted execution commit error = %v", err)
+	}
+	after := snapshotLifecycleAuthority(t, s)
+	assertLifecycleAuthorityUnchanged(t, before, after)
+	persisted, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != "claimed" {
+		t.Fatalf("halted execution commit state = %q, want claimed", persisted.State)
+	}
+}
+
 func TestClaimSerializesWithAdvanceCommit(t *testing.T) {
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "atomicity-test", SuccessPredicate: "claim cannot interleave with advance commit"}, fixedNow)

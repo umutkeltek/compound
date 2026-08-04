@@ -545,6 +545,17 @@ func withPermissionApplyLock(homePath string, fn func() error) error {
 	return fn()
 }
 
+// WithPermissionPostureLock serializes a governed launch's final posture
+// revalidation with Compound's permission publisher. Callers should hold it
+// only across the live read and process start boundary; long-running child
+// execution is deliberately outside the lock.
+func WithPermissionPostureLock(homePath string, fn func() error) error {
+	if fn == nil {
+		return fmt.Errorf("permission posture lock callback required")
+	}
+	return withPermissionApplyLock(homePath, fn)
+}
+
 func recoverPermissionApplyPending(homePath, harness string, abort PermissionApplyAbort, finalize PermissionApplyFinalize) (PermissionApplyOutcome, bool, error) {
 	var zero PermissionApplyOutcome
 	path, exists, err := ProbePermissionApplyRecovery(homePath, harness)

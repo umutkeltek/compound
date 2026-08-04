@@ -316,6 +316,7 @@ func TestHarnessEditProposeApplyWritesCardConfined(t *testing.T) {
 		"events/",
 		"reviews/harness-edit-proposals/", // the harness-edit operator card
 		"run_attempts/",                   // C1: every claim mints a RunAttempt; harness-edit --apply claims, so a run-attempt write is legitimate, not an escape
+		"lock/runattempts.lock",           // exact canonical flock companion for cross-process run_attempts/ mutations
 	}
 	var escaped, sawCard []string
 	for _, rel := range writeSet {

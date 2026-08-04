@@ -303,6 +303,10 @@ func TestSettersRefuseOnAbandoned(t *testing.T) {
 		{"attach_action_intent", func() error { return s.AttachActionIntent(ra.ID, "act_12345678") }},
 		{"origin", func() error { _, e := s.SetOrigin(ra.ID, OriginClaimReservation); return e }},
 		{"mark_running", func() error { _, e := s.MarkRunning(ra.ID, now.Add(2*time.Minute)); return e }},
+		{"execution_posture", func() error {
+			_, e := s.SetExecutionPosture(ra.ID, ExecutionPosture{PermissionMode: "plan", PolicyDecisionID: "pol_running"})
+			return e
+		}},
 	}
 	for _, tc := range setters {
 		t.Run(tc.name, func(t *testing.T) {

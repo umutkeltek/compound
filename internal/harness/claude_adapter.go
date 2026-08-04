@@ -65,6 +65,23 @@ func NewClaudeAdapterWithInterval(store *runattempt.Store, interval time.Duratio
 // integration (C.3) keys on this.
 func (a *ClaudeAdapter) Name() string { return a.name }
 
+// GovernedPermissionPosture marks every direct and tuple-backed Claude-family
+// adapter as carrying the governed PermissionMode boundary.
+func (a *ClaudeAdapter) GovernedPermissionPosture() {}
+
+// RevalidateGovernedRun reloads the Claude-family lane tuple, executable, and
+// declared capacity without recording refusal evidence. The governed start
+// guard calls it while holding the autonomy-admission lock, so a tuple import
+// cannot cross the comparison-to-cmd.Start boundary. Suppressing refusal
+// evidence is required here because evidence publication is itself a governed
+// mutation and would recursively acquire that lock.
+func (a *ClaudeAdapter) RevalidateGovernedRun(_ context.Context, in RunInput) (RunInput, error) {
+	if err := validateClaudePermissionMode(in.PermissionMode); err != nil {
+		return RunInput{}, err
+	}
+	return a.resolveRunInput(in, true)
+}
+
 // Run drives the claude subprocess end-to-end. The RunInput.Command is
 // overridden to "claude" so the caller doesn't have to know the binary
 // path; Args[0] (or Prompt) is appended as the prompt text.
@@ -97,7 +114,7 @@ func (a *ClaudeAdapter) Preflight(_ context.Context, in RunInput) (RunInput, err
 	if err := validateClaudePermissionMode(in.PermissionMode); err != nil {
 		return RunInput{}, err
 	}
-	resolved, err := a.resolveRunInput(in)
+	resolved, err := a.resolveRunInput(in, false)
 	if err != nil {
 		return RunInput{}, err
 	}
@@ -105,7 +122,7 @@ func (a *ClaudeAdapter) Preflight(_ context.Context, in RunInput) (RunInput, err
 	return resolved, nil
 }
 
-func (a *ClaudeAdapter) resolveRunInput(in RunInput) (RunInput, error) {
+func (a *ClaudeAdapter) resolveRunInput(in RunInput, suppressRefusalEvidence bool) (RunInput, error) {
 	if !a.tupleBacked {
 		in.Command = a.command
 		return in, nil
@@ -132,7 +149,7 @@ func (a *ClaudeAdapter) resolveRunInput(in RunInput) (RunInput, error) {
 			60,
 			false,
 			nil,
-			false,
+			suppressRefusalEvidence,
 		)
 		if err != nil {
 			return RunInput{}, fmt.Errorf("%s adapter: capacity preflight: %w", a.Name(), err)
@@ -175,16 +192,18 @@ func validateClaudePermissionMode(mode string) error {
 // "plan" is the only governed mode that does not hang a headless run --
 // planning mode researches and proposes but takes no state-changing action,
 // so it never prompts. To let Claude actually edit/execute autonomously,
-// pass --permission-mode explicitly: "acceptEdits" (auto-accept file edits,
-// still prompts on bash) or "bypass" (--dangerously-skip-permissions, no
-// prompts at all). Pinned by TestClaudeAdapterHappyPath (default is plan,
-// not bypass) and TestClaudeAdapterPermissionMode.
+// a direct caller passes --permission-mode explicitly: "acceptEdits"
+// (auto-accept file edits, still prompts on bash) or "bypass"
+// (--dangerously-skip-permissions, no prompts at all). Governed work execution
+// may resolve an omitted mode to bypass before calling the adapter. Pinned by
+// TestClaudeAdapterHappyPath (the direct default is plan, not bypass) and
+// TestClaudeAdapterPermissionMode.
 const claudeDefaultPermissionMode = "plan"
 
 // claudePermissionArgs translates a PermissionMode into the argv fragment
 // the Claude CLI understands. "" -> the safe plan default; "bypass" ->
-// --dangerously-skip-permissions (explicit opt-in for fully-autonomous
-// runs); "default" / "plan" / "acceptEdits" pass through verbatim. Callers
+// --dangerously-skip-permissions; "default" / "plan" / "acceptEdits" pass
+// through verbatim. Callers
 // go through Run(), which calls validateClaudePermissionMode first, so
 // mode is always one of the recognized values here; the default case is a
 // defensive fallback for any future direct caller, never for a typo (a

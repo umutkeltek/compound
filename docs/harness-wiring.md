@@ -402,6 +402,32 @@ compound work advance <work_id> --to running --execute \
   --prompt "implement the claimed slice"
 ```
 
+The governed inline rail accepts exactly one `claimed → running` execution
+reservation, compare-and-setting the claimed state, PolicyDecision, and last
+ActionIntent after workspace/preflight resolution. For Claude-family adapters
+an omitted permission mode resolves to
+prompt-free `bypass` only when the prospective PolicyDecision allows the
+advance, the build autonomy halt is clear, and the permission posture plus
+mutation-blocking hook have one current revision each. Explicit `default`,
+`acceptEdits`, and `bypass` require the same evidence; `acceptEdits` is never
+chosen automatically. Missing or stale authority resolves to read-only `plan`.
+For every Claude-family mode the rail re-resolves the model lane tuple,
+executable, and declared capacity; mutation modes additionally revalidate the
+exact harness-bound permission/hook authority tuple and halt at the
+process-start boundary. Every governed adapter checks its exact running state,
+PolicyDecision, and last ActionIntent immediately around `cmd.Start`, then uses
+the same three-field compare-and-set when finalizing. Drift, revocation,
+exhaustion, or a newly engaged halt terminalizes the attempt without starting
+the child, while a later reservation change preserves the newer lifecycle
+generation byte-for-byte. The CLI explicitly reports that the durable refused
+attempt is reverse-linked only by `work_id` and `action_intent_id`; it never
+mints a same-state policy/action generation merely to manufacture a forward
+link. The RunAttempt's `pending → running` launch heartbeat and `cmd.Start`
+share the canonical RunAttempt lock, so a stale sweep cannot abandon the
+attempt and then let its child start. Every Claude-family execution RunAttempt
+persists the resolved mode, actual running PolicyDecision id, and exact
+authority revisions.
+
 Run a supervised task in tmux so an operator or agent can inspect and steer it:
 
 ```sh

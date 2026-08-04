@@ -1,20 +1,81 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/actuator"
+	"compound/internal/harness"
 	"compound/internal/home"
+	"compound/internal/policy"
 	"compound/internal/routeevidence"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
+
+type claimedExecutionFixture struct {
+	homePath string
+	store    *work.Store
+	workID   string
+}
+
+func initializedExecutionHome(t *testing.T) string {
+	t.Helper()
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	return homePath
+}
+
+func newClaimedExecutionFixture(t *testing.T, owner, successPredicate string) claimedExecutionFixture {
+	t.Helper()
+	homePath := initializedExecutionHome(t)
+	t.Setenv("COMPOUND_HOME", homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(work.CreateInput{Owner: owner, SuccessPredicate: successPredicate}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(w.ID, owner, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	return claimedExecutionFixture{homePath: homePath, store: store, workID: w.ID}
+}
+
+func (f claimedExecutionFixture) executionAttempt(t *testing.T) runattempt.RunAttempt {
+	t.Helper()
+	final, err := f.store.Get(f.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(final.RunAttemptIDs) < 2 {
+		t.Fatalf("expected claim-mint + execute-mint, got %v", final.RunAttemptIDs)
+	}
+	attempt, err := runattempt.Open(f.homePath).Get(final.RunAttemptIDs[len(final.RunAttemptIDs)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return attempt
+}
+
+func reportRevokedExecutionAttempt(store *work.Store, workID, executionAttemptID string) {
+	for _, warning := range actuator.ReportRevokedExecutionAttempt(store, workID, executionAttemptID) {
+		fmt.Fprintln(os.Stderr, warning)
+	}
+}
 
 // TestWorkAdvanceExecute: --execute runs the harness adapter inline as
 // part of the work advance. The full chain exercised:
@@ -98,6 +159,115 @@ func TestWorkAdvanceExecute(t *testing.T) {
 	}
 	if ra.TranscriptRef == "" {
 		t.Fatalf("RunAttempt must have transcript_ref after --execute")
+	}
+}
+
+// Two executors may read the same claimed envelope, but claimed -> running is
+// a one-shot execution reservation. The first real process stays running while
+// the second arrives, falsifying the old same-state running -> running path
+// that minted and launched a second adapter against the same workspace.
+func TestWorkAdvanceExecuteConcurrentProcessesLaunchOnce(t *testing.T) {
+	fixture := newClaimedExecutionFixture(t, "executor", "one governed subprocess launch")
+
+	fixtureDir := t.TempDir()
+	launchLog := filepath.Join(fixtureDir, "launches.log")
+	releasePath := filepath.Join(fixtureDir, "release")
+	scriptPath := filepath.Join(fixtureDir, "hold-launch.sh")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$$\" >> \"$COMPOUND_LAUNCH_LOG\"\nwhile [ ! -f \"$COMPOUND_LAUNCH_RELEASE\" ]; do sleep 0.01; done\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	release := func() { _ = os.WriteFile(releasePath, []byte("release\n"), 0o644) }
+	t.Cleanup(release)
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	newExecution := func() *exec.Cmd {
+		cmd := exec.Command(compoundTestBinary(t), "work", "advance", fixture.workID,
+			"--to", "running", "--execute", "--harness", "os-harness-entrypoints",
+			"--workspace", fixtureDir, "--by", "executor", "--", scriptPath)
+		cmd.Dir = repoRoot
+		cmd.Env = append(os.Environ(),
+			"COMPOUND_HOME="+fixture.homePath,
+			"COMPOUND_LAUNCH_LOG="+launchLog,
+			"COMPOUND_LAUNCH_RELEASE="+releasePath,
+		)
+		return cmd
+	}
+	type processResult struct {
+		output []byte
+		err    error
+	}
+	start := func(cmd *exec.Cmd) <-chan processResult {
+		done := make(chan processResult, 1)
+		go func() {
+			out, err := cmd.CombinedOutput()
+			done <- processResult{output: out, err: err}
+		}()
+		return done
+	}
+
+	firstDone := start(newExecution())
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		body, _ := os.ReadFile(launchLog)
+		if len(strings.Fields(string(body))) >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			release()
+			t.Fatal("first execution did not reach the held subprocess")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	secondDone := start(newExecution())
+
+	var secondEarly *processResult
+	probeDeadline := time.Now().Add(2 * time.Second)
+	for secondEarly == nil && time.Now().Before(probeDeadline) {
+		select {
+		case result := <-secondDone:
+			secondEarly = &result
+		default:
+			body, _ := os.ReadFile(launchLog)
+			if len(strings.Fields(string(body))) >= 2 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		body, _ := os.ReadFile(launchLog)
+		if len(strings.Fields(string(body))) >= 2 {
+			break
+		}
+	}
+	release()
+	first := <-firstDone
+	second := processResult{}
+	if secondEarly != nil {
+		second = *secondEarly
+	} else {
+		second = <-secondDone
+	}
+
+	body, err := os.ReadFile(launchLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launches := len(strings.Fields(string(body))); launches != 1 {
+		t.Fatalf("governed subprocess launches = %d, want exactly one; log=%q first=%v/%s second=%v/%s", launches, body, first.err, first.output, second.err, second.output)
+	}
+	successes := 0
+	if first.err == nil {
+		successes++
+	}
+	if second.err == nil {
+		successes++
+	}
+	if successes != 1 {
+		t.Fatalf("concurrent execute successes = %d, want one; first=%v/%s second=%v/%s", successes, first.err, first.output, second.err, second.output)
+	}
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(fixture.homePath, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 2 {
+		t.Fatalf("concurrent execute attempts = %d, want claim reservation + one execution; files=%v", len(runAttemptFiles), runAttemptFiles)
 	}
 }
 
@@ -425,6 +595,903 @@ func TestWorkAdvanceExecuteAcceptsWorkspaceAndPermissionMode(t *testing.T) {
 	}
 	if ra.Workspace != workspace {
 		t.Fatalf("RunAttempt.Workspace = %q, want the --workspace value %q", ra.Workspace, workspace)
+	}
+}
+
+type governedClaudeExecutionFixture struct {
+	claimedExecutionFixture
+	argvLog   string
+	harness   string
+	workspace string
+}
+
+func newGovernedClaudeExecutionFixture(t *testing.T, successPredicate string) governedClaudeExecutionFixture {
+	t.Helper()
+	return newGovernedClaudeLaneExecutionFixture(t, successPredicate, "claude", "claude")
+}
+
+func newGovernedClaudeLaneExecutionFixture(t *testing.T, successPredicate, harnessName, executableName string) governedClaudeExecutionFixture {
+	t.Helper()
+	fixture := governedClaudeExecutionFixture{
+		claimedExecutionFixture: newClaimedExecutionFixture(t, "codex", successPredicate),
+		argvLog:                 filepath.Join(t.TempDir(), "claude-argv.log"),
+		harness:                 harnessName,
+		workspace:               t.TempDir(),
+	}
+	binDir := t.TempDir()
+	fakeClaude := filepath.Join(binDir, executableName)
+	if err := os.WriteFile(fakeClaude, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$COMPOUND_TEST_CLAUDE_ARGV\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOUND_TEST_CLAUDE_ARGV", fixture.argvLog)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return fixture
+}
+
+func (f governedClaudeExecutionFixture) advanceArgs(permissionMode, prompt string) []string {
+	args := []string{
+		"advance", f.workID,
+		"--to", "running",
+		"--execute",
+		"--harness", f.harness,
+		"--workspace", f.workspace,
+		"--by", "codex",
+	}
+	if permissionMode != "" {
+		args = append(args, "--permission-mode", permissionMode)
+	}
+	return append(args, "--prompt", prompt)
+}
+
+func (f governedClaudeExecutionFixture) run(t *testing.T, permissionMode, prompt string) string {
+	t.Helper()
+	return captureStdout(t, func() { cmdWork(f.advanceArgs(permissionMode, prompt)) })
+}
+
+func (f governedClaudeExecutionFixture) command(t *testing.T, permissionMode, prompt string) *exec.Cmd {
+	t.Helper()
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	cmd := exec.Command(compoundTestBinary(t), append([]string{"work"}, f.advanceArgs(permissionMode, prompt)...)...)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+f.homePath)
+	return cmd
+}
+
+func (f governedClaudeExecutionFixture) argv(t *testing.T) string {
+	t.Helper()
+	argv, err := os.ReadFile(f.argvLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(argv)
+}
+
+func stubDelegateHarnessReadiness(t *testing.T, readiness work.DelegateHarnessReadinessFunc) {
+	t.Helper()
+	original := work.DelegateHarnessReadiness
+	work.DelegateHarnessReadiness = readiness
+	t.Cleanup(func() { work.DelegateHarnessReadiness = original })
+}
+
+// TestWorkAdvanceExecuteDerivesClaudeBypassFromGovernedReadiness proves the
+// public execution rail turns an omitted Claude permission mode into a
+// prompt-free bypass only after the claimed work's prospective running
+// decision and harness authorities are ready. The fake Claude executable
+// records the real argv assembled by the adapter, so this test exercises the
+// same `compound work advance --execute` seam callers use rather than a
+// permission helper in isolation.
+//
+// RED (2026-08-04): the execute rail forwarded an empty PermissionMode and the
+// Claude adapter converted it to `--permission-mode plan`; the readiness guard
+// was never consulted. That kept governed unattended work read-only even when
+// its envelope and mutation-blocking authorities were current.
+func TestWorkAdvanceExecuteDerivesClaudeBypassFromGovernedReadiness(t *testing.T) {
+	fixture := newGovernedClaudeExecutionFixture(t, "governed Claude execution derives prompt-free bypass")
+	readinessCalls := 0
+	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		readinessCalls++
+		return work.DelegateHarnessReadinessResult{
+			Ready:    true,
+			Evidence: governedClaudeReadyEvidenceFixture(),
+		}, nil
+	})
+	cliOut := fixture.run(t, "", "apply the claimed change")
+
+	argv := fixture.argv(t)
+	if !strings.Contains(argv, "--dangerously-skip-permissions") {
+		t.Fatalf("governed ready Claude argv = %q, want --dangerously-skip-permissions", argv)
+	}
+	if strings.Contains(argv, "--permission-mode plan") || strings.Contains(argv, "--permission-mode acceptEdits") {
+		t.Fatalf("governed ready Claude argv retained an interactive/read-only posture: %q", argv)
+	}
+	if readinessCalls != 2 {
+		t.Fatalf("governed Claude readiness calls = %d, want pre-advance selection + immediate pre-start revalidation", readinessCalls)
+	}
+	policyMarker := "policy="
+	policyOffset := strings.Index(cliOut, policyMarker)
+	if policyOffset < 0 {
+		t.Fatalf("running advance output omitted policy decision:\n%s", cliOut)
+	}
+	policyFields := strings.Fields(cliOut[policyOffset+len(policyMarker):])
+	if len(policyFields) == 0 || !strings.HasPrefix(policyFields[0], "pol_") {
+		t.Fatalf("running advance output carried invalid policy decision:\n%s", cliOut)
+	}
+	runningPolicyID := policyFields[0]
+	if !testEventExists(t, fixture.homePath, runningPolicyID) {
+		t.Fatalf("running PolicyDecision %s was not durably recorded", runningPolicyID)
+	}
+
+	attempt := fixture.executionAttempt(t)
+	if attempt.ExecutionPosture == nil {
+		t.Fatal("execute-mint RunAttempt omitted execution_posture")
+	}
+	if got := attempt.ExecutionPosture.PermissionMode; got != "bypass" {
+		t.Fatalf("recorded permission_mode = %q, want bypass", got)
+	}
+	if got := attempt.ExecutionPosture.PolicyDecisionID; got != runningPolicyID {
+		t.Fatalf("recorded policy_decision_id = %q, want actual running decision %q", got, runningPolicyID)
+	}
+	recordedAuthorities := map[string]string{}
+	for _, item := range attempt.ExecutionPosture.AuthorityEvidence {
+		recordedAuthorities[item.Kind] = item.Ref + "@" + item.Revision
+	}
+	for kind, want := range map[string]string{
+		"permission_authority":       "compound://config/harness-permissions/claude_code@sha256:permission-authority",
+		"permission_posture":         "harness-posture://claude_code@sha256:permission-posture",
+		"blocking_hook_plan":         "hook://claude_code/PreToolUse@sha256:hook-plan",
+		"blocking_hook_installation": "harness-installation://live@sha256:hook-installation",
+	} {
+		if got := recordedAuthorities[kind]; got != want {
+			t.Fatalf("recorded authority %s = %q, want %q (all=%v)", kind, got, want, recordedAuthorities)
+		}
+	}
+}
+
+// A tuple-backed lane must attest the identity resolved by adapter preflight,
+// not the generic Claude alias the direct adapter uses. This pins the Qwen
+// harness, model, provider route, executable, and prompt on both readiness
+// checks and on the persisted execution attempt.
+func TestWorkAdvanceExecuteTupleBackedQwenUsesResolvedReadinessIdentity(t *testing.T) {
+	fixture := newGovernedClaudeLaneExecutionFixture(
+		t,
+		"tuple-backed Qwen uses its resolved readiness identity",
+		"claude_qwen",
+		"claude-qwen",
+	)
+	importQwenTupleFixture(t, fixture.homePath, "fixture-qwen", "qwen")
+
+	readinessCalls := 0
+	stubDelegateHarnessReadiness(t, func(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		readinessCalls++
+		if req.Harness != "claude_qwen" || req.RequestedModelID != "fixture-qwen" || req.RequestedProviderRoute != "qwen" {
+			t.Fatalf("Qwen readiness identity = harness:%q model:%q provider:%q", req.Harness, req.RequestedModelID, req.RequestedProviderRoute)
+		}
+		if filepath.Base(req.Command) != "claude-qwen" || !slices.Equal(req.Args, []string{"execute through Qwen"}) {
+			t.Fatalf("Qwen readiness activation = command:%q args:%q", req.Command, req.Args)
+		}
+		return work.DelegateHarnessReadinessResult{
+			Ready:    true,
+			Evidence: governedClaudeReadyEvidenceFor("claude_qwen"),
+		}, nil
+	})
+
+	fixture.run(t, "", "execute through Qwen")
+	if readinessCalls != 2 {
+		t.Fatalf("Qwen readiness calls = %d, want pre-advance selection + immediate pre-start revalidation", readinessCalls)
+	}
+	if argv := fixture.argv(t); !strings.Contains(argv, "--dangerously-skip-permissions") {
+		t.Fatalf("ready Qwen argv = %q, want --dangerously-skip-permissions", argv)
+	}
+	attempt := fixture.executionAttempt(t)
+	if attempt.Harness != "claude_qwen" || attempt.RequestedModelID != "fixture-qwen" || attempt.RequestedProviderRoute != "qwen" {
+		t.Fatalf("persisted Qwen identity = harness:%q model:%q provider:%q", attempt.Harness, attempt.RequestedModelID, attempt.RequestedProviderRoute)
+	}
+	if attempt.ExecutionPosture == nil || len(attempt.ExecutionPosture.AuthorityEvidence) != 4 {
+		t.Fatalf("persisted Qwen execution posture = %+v, want four current authorities", attempt.ExecutionPosture)
+	}
+}
+
+func TestWorkAdvanceExecuteTupleRotationBeforeStartLaunchesNoChildAndClosesFailed(t *testing.T) {
+	fixture := newGovernedClaudeLaneExecutionFixture(
+		t,
+		"tuple rotation at the public rail fails before child start",
+		"claude_qwen",
+		"claude-qwen",
+	)
+	importQwenTupleFixture(t, fixture.homePath, "fixture-qwen-before", "qwen-before")
+	readinessCalls := 0
+	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		readinessCalls++
+		if readinessCalls == 1 {
+			// Preflight already resolved the first tuple. Rotate the authority
+			// before the running advance reaches the final guarded cmd.Start.
+			importQwenTupleFixture(t, fixture.homePath, "fixture-qwen-after", "qwen-after")
+		}
+		return work.DelegateHarnessReadinessResult{
+			Ready:    true,
+			Evidence: governedClaudeReadyEvidenceFor("claude_qwen"),
+		}, nil
+	})
+
+	type exitSignal struct{ code int }
+	originalExit := workAdvanceExecuteExit
+	workAdvanceExecuteExit = func(code int) { panic(exitSignal{code: code}) }
+	t.Cleanup(func() { workAdvanceExecuteExit = originalExit })
+	exitCode := 0
+	func() {
+		defer func() {
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+			signal, ok := recovered.(exitSignal)
+			if !ok {
+				panic(recovered)
+			}
+			exitCode = signal.code
+		}()
+		cmdWork(fixture.advanceArgs("", "must not reach rotated Qwen child"))
+	}()
+	if exitCode != 1 {
+		t.Fatalf("tuple rotation exit code = %d, want 1", exitCode)
+	}
+	if readinessCalls != 1 {
+		t.Fatalf("tuple rotation readiness calls = %d, want only pre-admission call before lane refusal", readinessCalls)
+	}
+	if _, err := os.Stat(fixture.argvLog); !os.IsNotExist(err) {
+		t.Fatalf("rotated tuple launched child; argv marker stat err=%v", err)
+	}
+	final, err := fixture.store.Get(fixture.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "failed" || len(final.RunAttemptIDs) < 2 {
+		t.Fatalf("tuple rotation final work = state:%s attempts:%v, want failed with forward-linked execution attempt", final.State, final.RunAttemptIDs)
+	}
+	attempt := fixture.executionAttempt(t)
+	if attempt.Status != runattempt.StatusFailed {
+		t.Fatalf("tuple rotation attempt status = %q, want failed", attempt.Status)
+	}
+	if attempt.RequestedModelID != "fixture-qwen-before" || attempt.RequestedProviderRoute != "qwen-before" {
+		t.Fatalf("failed attempt lost originally reserved tuple: model=%q provider=%q", attempt.RequestedModelID, attempt.RequestedProviderRoute)
+	}
+}
+
+func TestWorkAdvanceExecuteTupleBackedQwenRejectsDifferentHarnessAuthority(t *testing.T) {
+	fixture := newGovernedClaudeLaneExecutionFixture(
+		t,
+		"tuple-backed Qwen rejects authority for another Claude-family harness",
+		"claude_qwen",
+		"claude-qwen",
+	)
+	importQwenTupleFixture(t, fixture.homePath, "fixture-qwen", "qwen")
+	readinessCalls := 0
+	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		readinessCalls++
+		return work.DelegateHarnessReadinessResult{
+			Ready:    true,
+			Evidence: governedClaudeReadyEvidenceFor("claude_code"),
+		}, nil
+	})
+
+	fixture.run(t, "", "remain read-only on mismatched authority")
+	argv := fixture.argv(t)
+	if !strings.Contains(argv, "--permission-mode plan") || strings.Contains(argv, "--dangerously-skip-permissions") {
+		t.Fatalf("Qwen with claude_code authority argv = %q, want read-only plan", argv)
+	}
+	if readinessCalls != 1 {
+		t.Fatalf("mismatched Qwen authority readiness calls = %d, want one pre-admission refusal", readinessCalls)
+	}
+	attempt := fixture.executionAttempt(t)
+	if attempt.ExecutionPosture == nil || attempt.ExecutionPosture.PermissionMode != "plan" || len(attempt.ExecutionPosture.AuthorityEvidence) != 0 {
+		t.Fatalf("mismatched Qwen authority posture = %+v, want plan without mutation authority", attempt.ExecutionPosture)
+	}
+}
+
+// TestWorkAdvanceExecuteAutonomyHaltKeepsOmittedClaudeModeInPlan pins the
+// lane-level kill switch. A class halt for build-implement must prevent
+// automatic bypass even when permission and blocking-hook authorities are
+// otherwise current. The safe fallback still executes the read-only plan
+// posture, so the work receives analysis without a mutation-capable process.
+func TestWorkAdvanceExecuteAutonomyHaltKeepsOmittedClaudeModeInPlan(t *testing.T) {
+	fixture := newGovernedClaudeExecutionFixture(t, "build halt keeps Claude read-only")
+	if err := policy.WriteAutonomyHalt(fixture.homePath, policy.AutonomyHalt{
+		DisabledClasses: map[string]string{"build-implement": "incident review"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readinessCalled := false
+	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		readinessCalled = true
+		return work.DelegateHarnessReadinessResult{Ready: true, Evidence: governedClaudeReadyEvidenceFixture()}, nil
+	})
+
+	fixture.run(t, "", "analyze without mutating")
+	argv := fixture.argv(t)
+	if !strings.Contains(argv, "--permission-mode plan") || strings.Contains(argv, "--dangerously-skip-permissions") {
+		t.Fatalf("halted build-implement Claude argv = %q, want read-only plan", argv)
+	}
+	if readinessCalled {
+		t.Fatal("build-implement halt must stop automatic bypass before harness readiness is consulted")
+	}
+	ra := fixture.executionAttempt(t)
+	if ra.ExecutionPosture == nil || ra.ExecutionPosture.PermissionMode != "plan" || len(ra.ExecutionPosture.AuthorityEvidence) != 0 {
+		t.Fatalf("halted execution posture = %+v, want plan with no bypass authority evidence", ra.ExecutionPosture)
+	}
+}
+
+func governedClaudeReadyEvidenceFixture() []work.DelegateHarnessReadinessEvidence {
+	return governedClaudeReadyEvidenceFor("claude_code")
+}
+
+func governedClaudeReadyEvidenceFor(harnessName string) []work.DelegateHarnessReadinessEvidence {
+	return []work.DelegateHarnessReadinessEvidence{
+		{Kind: "permission_authority", Ref: "compound://config/harness-permissions/" + harnessName, Revision: "sha256:permission-authority"},
+		{Kind: "permission_posture", Ref: "harness-posture://" + harnessName, Revision: "sha256:permission-posture"},
+		{Kind: "blocking_hook_plan", Ref: "hook://" + harnessName + "/PreToolUse", Revision: "sha256:hook-plan"},
+		{Kind: "blocking_hook_installation", Ref: "harness-installation://live", Revision: "sha256:hook-installation"},
+	}
+}
+
+func TestGovernedClaudeEvidenceRefRequiresCanonicalMutationBlockingHook(t *testing.T) {
+	tests := []struct {
+		name string
+		ref  string
+		want bool
+	}{
+		{name: "unmatched PreToolUse", ref: "hook://claude_qwen/PreToolUse", want: true},
+		{name: "matcher-qualified PreToolUse", ref: "hook://claude_qwen/PreToolUse?matcher=684888c0ebb1", want: true},
+		{name: "different valid matcher digest", ref: "hook://claude_qwen/PreToolUse?matcher=0123456789ab", want: false},
+		{name: "non-blocking event", ref: "hook://claude_qwen/SessionStart", want: false},
+		{name: "event lookalike", ref: "hook://claude_qwen/PreToolUseExtra", want: false},
+		{name: "empty matcher", ref: "hook://claude_qwen/PreToolUse?matcher=", want: false},
+		{name: "short matcher", ref: "hook://claude_qwen/PreToolUse?matcher=0123456789a", want: false},
+		{name: "non-hex matcher", ref: "hook://claude_qwen/PreToolUse?matcher=0123456789az", want: false},
+		{name: "extra query", ref: "hook://claude_qwen/PreToolUse?matcher=0123456789ab&other=value", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := actuator.GovernedClaudeEvidenceRefMatchesHarness("claude_qwen", "blocking_hook_plan", tt.ref); got != tt.want {
+				t.Fatalf("governedClaudeEvidenceRefMatchesHarness(%q) = %t, want %t", tt.ref, got, tt.want)
+			}
+		})
+	}
+}
+
+func importQwenTupleFixture(t *testing.T, homePath, modelID, provider string) {
+	t.Helper()
+	manifestPath := filepath.Join(t.TempDir(), "model-capabilities.yaml")
+	manifest := fmt.Sprintf(`version: 1
+purpose: fixture
+capability_classes: [build-implement]
+models:
+  %s:
+    lane: fixture qwen lane
+    harness: claude_qwen
+    provider_route: %s
+    tier: cheap
+    packet_ceiling: multi-file
+    aliases: [claude-qwen]
+    capabilities: {build-implement: {level: capable, evidence: fixture}}
+routing_defaults:
+  build-implement: [%s]
+`, modelID, provider, modelID)
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, manifestPath, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func governedClaudeGuardReservation(t *testing.T, homePath string) (string, string, string) {
+	t.Helper()
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "guard starts only while this exact running reservation remains current",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(created.ID, "codex", cliTestNow.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	running, err := store.Advance(created.ID, work.AdvanceInput{To: "running", Actor: "codex"}, cliTestNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.PolicyDecisionID == "" || len(running.ActionIntentIDs) == 0 {
+		t.Fatalf("running reservation identity is incomplete: policy=%q actions=%v", running.PolicyDecisionID, running.ActionIntentIDs)
+	}
+	return running.ID, running.PolicyDecisionID, running.ActionIntentIDs[len(running.ActionIntentIDs)-1]
+}
+
+func TestGovernedClaudeStartGuardRejectsChangedAuthorityBeforeLaunch(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	workID, policyID, actionIntentID := governedClaudeGuardReservation(t, homePath)
+	expected := governedClaudeReadyEvidenceFixture()
+	changed := governedClaudeReadyEvidenceFixture()
+	changed[1].Revision = "sha256:replaced-permission-posture"
+
+	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		return work.DelegateHarnessReadinessResult{Ready: true, Evidence: changed}, nil
+	})
+
+	started := false
+	guard := actuator.NewGovernedClaudeStartGuard(homePath, "claude", work.DelegateHarnessReadinessRequest{
+		HomePath: homePath,
+		WorkID:   workID,
+		Harness:  "claude_code",
+		Command:  "claude",
+		Now:      cliTestNow,
+	}, expected, policyID, actionIntentID)
+	err := guard(context.Background(), func() error {
+		started = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "authority revisions changed before launch") {
+		t.Fatalf("changed launch authority error = %v", err)
+	}
+	if started {
+		t.Fatal("changed launch authority crossed the guarded start boundary")
+	}
+}
+
+func TestGovernedClaudeStartGuardRejectsHaltBeforeLaunch(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	workID, policyID, actionIntentID := governedClaudeGuardReservation(t, homePath)
+	if err := policy.WriteAutonomyHalt(homePath, policy.AutonomyHalt{
+		DisabledClasses: map[string]string{"build-implement": "incident response"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		t.Fatal("a launch-time halt must refuse before re-reading harness readiness")
+		return work.DelegateHarnessReadinessResult{}, nil
+	})
+
+	started := false
+	guard := actuator.NewGovernedClaudeStartGuard(homePath, "claude", work.DelegateHarnessReadinessRequest{
+		HomePath: homePath,
+		WorkID:   workID,
+		Harness:  "claude_code",
+		Command:  "claude",
+		Now:      cliTestNow,
+	}, governedClaudeReadyEvidenceFixture(), policyID, actionIntentID)
+	err := guard(context.Background(), func() error {
+		started = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "autonomy halted before launch") {
+		t.Fatalf("launch-time halt error = %v", err)
+	}
+	if started {
+		t.Fatal("launch-time halt crossed the guarded start boundary")
+	}
+}
+
+func TestGovernedClaudeStartGuardRejectsChangedTupleBeforeLaunch(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	workID, policyID, actionIntentID := governedClaudeGuardReservation(t, homePath)
+	binDir := t.TempDir()
+	fakeQwen := filepath.Join(binDir, "claude-qwen")
+	if err := os.WriteFile(fakeQwen, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	importQwenTupleFixture(t, homePath, "fixture-qwen-a", "qwen-a")
+	registry := harness.NewAdapterRegistry(runattempt.Open(homePath))
+	adapter, ok := registry.AdapterByName("claude_qwen")
+	if !ok {
+		t.Fatal("claude_qwen adapter is absent")
+	}
+	preflight, ok := adapter.(harness.PreflightAdapter)
+	if !ok {
+		t.Fatal("claude_qwen adapter has no preflight")
+	}
+	resolved, err := preflight.Preflight(context.Background(), harness.RunInput{
+		WorkID: workID, Harness: "claude_qwen", Workspace: t.TempDir(),
+		PermissionMode: "bypass", LaneID: "codex", Prompt: "execute through Qwen", Now: cliTestNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := work.DelegateHarnessReadinessRequest{
+		HomePath:               homePath,
+		WorkID:                 resolved.WorkID,
+		Workspace:              resolved.Workspace,
+		Harness:                resolved.Harness,
+		LaneID:                 resolved.LaneID,
+		RequestedModelID:       resolved.RequestedModelID,
+		RequestedProviderRoute: resolved.RequestedProviderRoute,
+		Command:                resolved.Command,
+		Args:                   []string{resolved.Prompt},
+		Now:                    cliTestNow,
+	}
+
+	importQwenTupleFixture(t, homePath, "fixture-qwen-b", "qwen-b")
+	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		return work.DelegateHarnessReadinessResult{Ready: true, Evidence: governedClaudeReadyEvidenceFor("claude_qwen")}, nil
+	})
+
+	started := false
+	guard := actuator.NewGovernedClaudeStartGuard(homePath, "claude_qwen", request, governedClaudeReadyEvidenceFor("claude_qwen"), policyID, actionIntentID)
+	err = guard(context.Background(), func() error {
+		started = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "revalidate governed Claude lane before launch") {
+		t.Fatalf("changed Qwen tuple error = %v", err)
+	}
+	if started {
+		t.Fatal("changed Qwen tuple crossed the guarded start boundary")
+	}
+}
+
+func TestGovernedClaudeLaneStartGuardRejectsChangedTupleInPlanMode(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	workID, policyID, actionIntentID := governedClaudeGuardReservation(t, homePath)
+	binDir := t.TempDir()
+	fakeQwen := filepath.Join(binDir, "claude-qwen")
+	if err := os.WriteFile(fakeQwen, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	importQwenTupleFixture(t, homePath, "fixture-plan-qwen-a", "qwen-plan-a")
+	registry := harness.NewAdapterRegistry(runattempt.Open(homePath))
+	adapter, ok := registry.AdapterByName("claude_qwen")
+	if !ok {
+		t.Fatal("claude_qwen adapter is absent")
+	}
+	preflight, ok := adapter.(harness.PreflightAdapter)
+	if !ok {
+		t.Fatal("claude_qwen adapter has no preflight")
+	}
+	resolved, err := preflight.Preflight(context.Background(), harness.RunInput{
+		WorkID: workID, Harness: "claude_qwen", Workspace: t.TempDir(),
+		PermissionMode: "plan", LaneID: "codex", Prompt: "plan through Qwen", Now: cliTestNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := work.DelegateHarnessReadinessRequest{
+		HomePath:               homePath,
+		WorkID:                 resolved.WorkID,
+		Workspace:              resolved.Workspace,
+		Harness:                resolved.Harness,
+		LaneID:                 resolved.LaneID,
+		RequestedModelID:       resolved.RequestedModelID,
+		RequestedProviderRoute: resolved.RequestedProviderRoute,
+		Command:                resolved.Command,
+		Args:                   []string{resolved.Prompt},
+		Now:                    cliTestNow,
+	}
+	importQwenTupleFixture(t, homePath, "fixture-plan-qwen-b", "qwen-plan-b")
+
+	started := false
+	guard := actuator.NewGovernedClaudeLaneStartGuard(homePath, "claude_qwen", request, policyID, actionIntentID)
+	err = guard(context.Background(), func() error {
+		started = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "revalidate governed Claude lane before launch") {
+		t.Fatalf("changed plan-mode Qwen tuple error = %v", err)
+	}
+	if started {
+		t.Fatal("changed plan-mode Qwen tuple crossed the guarded start boundary")
+	}
+}
+
+func TestGovernedClaudeStartGuardRejectsRevokedExecutionReservationBeforeLaunch(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	workID, policyID, actionIntentID := governedClaudeGuardReservation(t, homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(workID, work.AdvanceInput{To: "held", Actor: "codex", Note: "operator revoked launch"}, cliTestNow.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		return work.DelegateHarnessReadinessResult{Ready: true, Evidence: governedClaudeReadyEvidenceFixture()}, nil
+	})
+
+	started := false
+	guard := actuator.NewGovernedClaudeStartGuard(homePath, "claude", work.DelegateHarnessReadinessRequest{
+		HomePath: homePath,
+		WorkID:   workID,
+		Harness:  "claude_code",
+		Command:  "claude",
+		Now:      cliTestNow,
+	}, governedClaudeReadyEvidenceFixture(), policyID, actionIntentID)
+	err = guard(context.Background(), func() error {
+		started = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "execution reservation changed before launch") {
+		t.Fatalf("revoked execution reservation error = %v", err)
+	}
+	if started {
+		t.Fatal("revoked execution reservation crossed the guarded start boundary")
+	}
+}
+
+func TestGovernedExecutionReservationGuardAppliesToEveryHarness(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	workID, policyID, actionIntentID := governedClaudeGuardReservation(t, homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(workID, work.AdvanceInput{To: "held", Actor: "codex", Note: "revoke generic harness start"}, cliTestNow.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	started := false
+	guard := actuator.NewGovernedExecutionReservationStartGuard(homePath, workID, policyID, actionIntentID)
+	err = guard(context.Background(), func() error {
+		started = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "execution reservation changed before launch") {
+		t.Fatalf("generic reservation guard error = %v", err)
+	}
+	if started {
+		t.Fatal("generic reservation guard started after revocation")
+	}
+}
+
+func TestReserveGovernedHarnessLaunchRejectsRotatedClaimedGeneration(t *testing.T) {
+	fixture := newClaimedExecutionFixture(t, "codex", "stale claimed preflight never launches")
+	staleClaimed, err := fixture.store.Get(fixture.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := fixture.store.Advance(fixture.workID, work.AdvanceInput{
+		To: "claimed", Actor: "codex", Note: "newer claimed context generation",
+	}, cliTestNow.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.PolicyDecisionID == staleClaimed.PolicyDecisionID || slices.Equal(rotated.ActionIntentIDs, staleClaimed.ActionIntentIDs) {
+		t.Fatal("same-state claimed update did not rotate the policy/action generation")
+	}
+
+	adapter := harness.NewOSEntrypointsAdapter(runattempt.Open(fixture.homePath))
+	_, err = actuator.ReserveGovernedHarnessLaunch(actuator.GovernedHarnessReservationInput{
+		HomePath:    fixture.homePath,
+		Store:       fixture.store,
+		ClaimedWork: staleClaimed,
+		Adapter:     adapter,
+		RunInput: harness.RunInput{
+			WorkID: fixture.workID, Harness: adapter.Name(), Workspace: t.TempDir(), Command: "/usr/bin/true", Now: cliTestNow,
+		},
+		Actor: "codex", Target: "running", Note: "stale reservation must fail", Now: cliTestNow.Add(2 * time.Second),
+	})
+	if !errors.Is(err, work.ErrExecutionReservationChanged) {
+		t.Fatalf("stale claimed generation reservation error = %v", err)
+	}
+	got, getErr := fixture.store.Get(fixture.workID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if !reflect.DeepEqual(got, rotated) {
+		t.Fatalf("stale reservation mutated the newer claimed generation:\nbefore=%+v\nafter=%+v", rotated, got)
+	}
+	attempts, listErr := runattempt.Open(fixture.homePath).List()
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("stale reservation minted a child attempt; got %d attempts, want the claim attempt only", len(attempts))
+	}
+}
+
+func TestReportRevokedExecutionAttemptDoesNotRotateNewerHeldGeneration(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	workID, _, runningActionIntentID := governedClaudeGuardReservation(t, homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := store.Advance(workID, work.AdvanceInput{To: "held", Actor: "codex", Note: "newer operator decision"}, cliTestNow.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptStore := runattempt.Open(homePath)
+	attempt, err := attemptStore.MintWithActionIntent(workID, "codex", "os-harness-entrypoints", runningActionIntentID, cliTestNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attemptStore.Complete(attempt.ID, runattempt.StatusFailed, cliTestNow.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	stderr := captureStderr(t, func() {
+		reportRevokedExecutionAttempt(store, workID, attempt.ID)
+	})
+	if !strings.Contains(stderr, "remains reverse-linked only") || !strings.Contains(stderr, "preserving its state, policy, and action identity") {
+		t.Fatalf("nonterminal revocation exception was not surfaced:\n%s", stderr)
+	}
+
+	got, err := store.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, held) {
+		t.Fatalf("revoked attempt report mutated newer held generation:\nbefore=%+v\nafter=%+v", held, got)
+	}
+	if slices.Contains(got.RunAttemptIDs, attempt.ID) {
+		t.Fatalf("revoked attempt unexpectedly forward-linked into newer generation: %v", got.RunAttemptIDs)
+	}
+	persisted, err := attemptStore.Get(attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.WorkID != workID || persisted.ActionIntentID != runningActionIntentID {
+		t.Fatalf("nonterminal exception lost reverse link: work=%q action=%q", persisted.WorkID, persisted.ActionIntentID)
+	}
+}
+
+func TestReportRevokedExecutionAttemptSurfacesImmutableTerminalReverseLinkException(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	workID, _, runningActionIntentID := governedClaudeGuardReservation(t, homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptStore := runattempt.Open(homePath)
+	attempt, err := attemptStore.MintWithActionIntent(workID, "codex", "os-harness-entrypoints", runningActionIntentID, cliTestNow.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attemptStore.Complete(attempt.ID, runattempt.StatusFailed, cliTestNow.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Close(workID, work.CloseInput{
+		Outcome: "failed", MoveType: "audit_only", Actor: "codex",
+		Summary: "newer terminal operator decision", Changed: true,
+	}, cliTestNow.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	stderr := captureStderr(t, func() {
+		reportRevokedExecutionAttempt(store, workID, attempt.ID)
+	})
+	if !strings.Contains(stderr, "remains reverse-linked only") || !strings.Contains(stderr, "terminal receipt/work hashes are immutable") {
+		t.Fatalf("terminal revocation exception was not surfaced:\n%s", stderr)
+	}
+	got, err := store.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "failed" || slices.Contains(got.RunAttemptIDs, attempt.ID) {
+		t.Fatalf("terminal revocation attachment rewrote immutable work: state=%s attempts=%v", got.State, got.RunAttemptIDs)
+	}
+	persisted, err := attemptStore.Get(attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.WorkID != workID || persisted.ActionIntentID != runningActionIntentID {
+		t.Fatalf("terminal exception lost reverse link: work=%q action=%q", persisted.WorkID, persisted.ActionIntentID)
+	}
+}
+
+func TestWorkAdvanceExecuteMissingOrStaleAuthorityKeepsClaudeInPlan(t *testing.T) {
+	tests := []struct {
+		name      string
+		readiness work.DelegateHarnessReadinessResult
+	}{
+		{
+			name: "missing blocking hook installation",
+			readiness: work.DelegateHarnessReadinessResult{
+				Ready:    true,
+				Evidence: governedClaudeReadyEvidenceFixture()[:3],
+			},
+		},
+		{
+			name: "stale permission posture",
+			readiness: work.DelegateHarnessReadinessResult{
+				Ready:    false,
+				Details:  []string{"permission_posture: managed settings differ from authority"},
+				Evidence: governedClaudeReadyEvidenceFixture(),
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newGovernedClaudeExecutionFixture(t, "unready authority keeps Claude read-only")
+			readinessCalled := false
+			stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+				readinessCalled = true
+				return tc.readiness, nil
+			})
+
+			fixture.run(t, "", "plan the claimed change")
+			argv := fixture.argv(t)
+			if !strings.Contains(argv, "--permission-mode plan") || strings.Contains(argv, "--dangerously-skip-permissions") {
+				t.Fatalf("unready Claude argv = %q, want read-only plan", argv)
+			}
+			if !readinessCalled {
+				t.Fatal("omitted Claude mode did not consult harness readiness")
+			}
+			ra := fixture.executionAttempt(t)
+			if ra.ExecutionPosture == nil || ra.ExecutionPosture.PermissionMode != "plan" || len(ra.ExecutionPosture.AuthorityEvidence) != 0 {
+				t.Fatalf("unready execution posture = %+v, want plan with no bypass authority evidence", ra.ExecutionPosture)
+			}
+		})
+	}
+}
+
+// Explicit Claude modes do not bypass the governed rail. `default` can
+// restore an unattended permission prompt and `acceptEdits` can mutate files,
+// so both require the same current permission + blocking-hook authority as
+// bypass. When that authority is stale, the rail keeps the execution useful
+// but read-only by resolving the mode to plan.
+func TestWorkAdvanceExecuteUnreadyExplicitMutationModesResolveToPlan(t *testing.T) {
+	for _, requestedMode := range []string{"default", "acceptEdits", "bypass"} {
+		t.Run(requestedMode, func(t *testing.T) {
+			fixture := newGovernedClaudeExecutionFixture(t, "stale authority cannot launch an explicit mutation mode")
+			stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+				return work.DelegateHarnessReadinessResult{
+					Ready:   false,
+					Details: []string{"permission_posture: managed settings differ from authority"},
+				}, nil
+			})
+
+			fixture.run(t, requestedMode, "stay read-only while authority is stale")
+			argv := fixture.argv(t)
+			if !strings.Contains(argv, "--permission-mode plan") {
+				t.Fatalf("unready explicit %s argv = %q, want read-only plan", requestedMode, argv)
+			}
+			if strings.Contains(argv, "--dangerously-skip-permissions") || strings.Contains(argv, "--permission-mode "+requestedMode) {
+				t.Fatalf("unready explicit %s retained mutation/prompt posture: %q", requestedMode, argv)
+			}
+		})
+	}
+}
+
+func TestWorkAdvanceExecuteExplicitClaudePlanRemainsPlan(t *testing.T) {
+	fixture := newGovernedClaudeExecutionFixture(t, "explicit Claude plan remains read-only")
+	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		t.Fatal("explicit plan must not consult mutation readiness")
+		return work.DelegateHarnessReadinessResult{}, nil
+	})
+
+	fixture.run(t, "plan", "plan only")
+	argv := fixture.argv(t)
+	if !strings.Contains(argv, "--permission-mode plan") || strings.Contains(argv, "--dangerously-skip-permissions") {
+		t.Fatalf("explicit plan Claude argv = %q, want plan", argv)
+	}
+}
+
+func TestWorkAdvanceExecuteHeldPolicyDoesNotLaunchClaude(t *testing.T) {
+	fixture := newGovernedClaudeExecutionFixture(t, "held running advance launches nothing")
+	policyBody := []byte("class_outcome:\n  local_reversible:\n    outcome: hold\n")
+	if err := os.WriteFile(filepath.Join(fixture.homePath, "config", "policy.yaml"), policyBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := fixture.command(t, "", "must not launch")
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("held running advance unexpectedly succeeded:\n%s", out)
+	}
+	if !strings.Contains(string(out), "policy hold") {
+		t.Fatalf("held running advance did not name policy hold:\n%s", out)
+	}
+	if _, err := os.Stat(fixture.argvLog); !os.IsNotExist(err) {
+		t.Fatalf("held running advance launched Claude; argv log stat err=%v", err)
+	}
+	final, err := fixture.store.Get(fixture.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "claimed" || len(final.RunAttemptIDs) != 1 {
+		t.Fatalf("held running advance mutated execution state: state=%s attempts=%v", final.State, final.RunAttemptIDs)
 	}
 }
 

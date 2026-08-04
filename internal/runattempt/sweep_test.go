@@ -438,6 +438,91 @@ func TestSweepStaleWithProbeHeartbeatFailureContinuesPastIt(t *testing.T) {
 	}
 }
 
+// A liveness verdict applies only to the exact attempt snapshot the probe
+// inspected. If another writer heartbeats the attempt before terminalization,
+// the stale verdict must not abandon that newer activity.
+func TestSweepStaleWithProbeSkipsHeartbeatWrittenAfterSnapshot(t *testing.T) {
+	home := t.TempDir()
+	seed := Open(home)
+	t0 := time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC)
+	sweepNow := t0.Add(time.Hour)
+
+	ra, err := seed.Mint("work_probe_heartbeat_race", "actor", "fake", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.SetOrigin(ra.ID, OriginHarnessExecution); err != nil {
+		t.Fatal(err)
+	}
+	newHeartbeat := sweepNow.Add(time.Second)
+	rep, err := seed.SweepStaleWithProbe(30*time.Minute, sweepNow, func(snapshot RunAttempt) (bool, error) {
+		if snapshot.ID != ra.ID {
+			t.Fatalf("probe snapshot id = %q, want %q", snapshot.ID, ra.ID)
+		}
+		_, err := Open(home).Heartbeat(ra.ID, newHeartbeat)
+		return false, err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Swept != 0 || rep.Skipped != 1 {
+		t.Fatalf("race report = %+v, want changed candidate skipped", rep)
+	}
+
+	got, err := Open(home).Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsTerminal(got.Status) {
+		t.Fatalf("heartbeat written after probe snapshot was abandoned: %+v", got)
+	}
+	if got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(newHeartbeat) {
+		t.Fatalf("last_heartbeat_at = %v, want %s", got.LastHeartbeatAt, newHeartbeat)
+	}
+}
+
+// Classification is snapshot-bound too. A transcript attached while the
+// liveness probe runs must not be terminalized under the earlier
+// side_effect_free classification.
+func TestSweepStaleWithProbeSkipsEvidenceWrittenAfterSnapshot(t *testing.T) {
+	home := t.TempDir()
+	seed := Open(home)
+	t0 := time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC)
+
+	ra, err := seed.Mint("work_probe_evidence_race", "actor", "fake", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.SetOrigin(ra.ID, OriginHarnessExecution); err != nil {
+		t.Fatal(err)
+	}
+	transcript := "transcripts/" + ra.ID + ".json"
+	rep, err := seed.SweepStaleWithProbe(30*time.Minute, t0.Add(time.Hour), func(snapshot RunAttempt) (bool, error) {
+		if snapshot.ID != ra.ID {
+			t.Fatalf("probe snapshot id = %q, want %q", snapshot.ID, ra.ID)
+		}
+		_, err := Open(home).SetTranscript(ra.ID, transcript)
+		return false, err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Swept != 0 || rep.AutoClosed != 0 || rep.Skipped != 1 {
+		t.Fatalf("race report = %+v, want changed candidate skipped without auto-close", rep)
+	}
+
+	got, err := Open(home).Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsTerminal(got.Status) {
+		t.Fatalf("evidence written after probe snapshot was abandoned: %+v", got)
+	}
+	if got.TranscriptRef != transcript {
+		t.Fatalf("transcript_ref = %q, want %q", got.TranscriptRef, transcript)
+	}
+}
+
 // -----------------------------------------------------------------------
 // Sweep-teeth classification (DEC-0027 build step 1, work_195771b63a58):
 // the sweep MUST distinguish side-effect-free stale attempts (auto-close)
