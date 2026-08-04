@@ -43,22 +43,7 @@ type proofCheckReport struct {
 	Steps          []proofCheckStep        `json:"steps"`
 }
 
-type proofCheckStep struct {
-	Name          string   `json:"name"`
-	Command       []string `json:"command"`
-	Dir           string   `json:"dir,omitempty"`
-	SkipIfMissing string   `json:"skip_if_missing,omitempty"`
-	SkipReason    string   `json:"skip_reason,omitempty"`
-	ProofRef      string   `json:"proof_ref"`
-	Status        string   `json:"status"`
-	ExitCode      int      `json:"exit_code,omitempty"`
-	DurationMS    int64    `json:"duration_ms,omitempty"`
-	OutputTail    string   `json:"output_tail,omitempty"`
-	FailureFacts  []string `json:"failure_facts,omitempty"`
-	// CIPortable marks a fresh-clone CI gate: no external non-Go binary, installed binary,
-	// or COMPOUND_HOME body. `proof-check --ci` runs exactly these; it is not serialized.
-	CIPortable bool `json:"-"`
-}
+type proofCheckStep = work.ProofCheckStep
 
 var proofCheckCanonicalRunner = runProofCheckSealedSnapshotContext
 var proofCheckRuntimeArtifactRecorder = recordProofCheckRuntimeArtifact
@@ -225,17 +210,17 @@ func cmdProofCheck(args []string) {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
-		plan, err := resolveCanonicalProofPlan(resolvedRepo, sourceSnapshot)
+		plan, err := work.ResolveCanonicalProofPlan(resolvedRepo, sourceSnapshot, proofCheckSteps)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
-		profile, err := proofCheckAdmissionProfileForPlan(plan)
+		profile, err := work.ProofResourceProfileForCanonicalPlan(plan)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
-		publishCompoundRuntimeArtifact, err := canonicalProofProfilePublishesCompoundRuntimeArtifact(plan, profile)
+		publishCompoundRuntimeArtifact, err := work.CanonicalProofProfilePublishesCompoundRuntimeArtifact(plan, profile, proofCheckSteps)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
@@ -270,7 +255,7 @@ func cmdProofCheck(args []string) {
 			TerminationEvidenceRef: terminationEvidenceRef,
 			Now:                    time.Now,
 		}, func(ctx context.Context) (proofCheckReport, error) {
-			planContext := proofCheckContextWithCanonicalPlan(ctx, plan)
+			planContext := work.ContextWithCanonicalProofPlan(ctx, plan)
 			produced, runErr := proofCheckCanonicalRunner(planContext, resolvedRepo, false, sourceSnapshot, false, false, time.Now())
 			if runErr != nil {
 				return produced, runErr
@@ -379,14 +364,6 @@ func proofCheckLegacyRecoveryModeError(args []string) error {
 
 func proofCheckShouldRecordArtifact(dryRun bool, status string, ciOnly, ciConsole bool) bool {
 	return !dryRun && status == "ok" && !ciOnly && !ciConsole
-}
-
-func proofCheckAdmissionProfile(repo string, source gitrepository.Snapshot) (work.ProofResourceProfile, error) {
-	plan, err := resolveCanonicalProofPlan(repo, source)
-	if err != nil {
-		return work.ProofResourceProfile{}, err
-	}
-	return proofCheckAdmissionProfileForPlan(plan)
 }
 
 func proofCheckInvocationIdentity(args []string) (string, error) {
@@ -1051,13 +1028,13 @@ func runProofCheckWithRangeContext(
 	baseRef = strings.TrimSpace(baseRef)
 	var steps []proofCheckStep
 	if source != nil {
-		plan, planErr := canonicalProofPlanForExecution(ctx, repo, *source)
+		plan, planErr := work.CanonicalProofPlanForExecution(ctx, repo, *source, proofCheckSteps)
 		if planErr != nil {
 			return proofCheckReport{}, planErr
 		}
-		steps = cloneCanonicalProofPlan(plan).Steps
+		steps = plan.Steps
 	} else {
-		if err := refuseRustInCompoundOnlyProofMode(repo, "non-certifying proof mode"); err != nil {
+		if err := work.RefuseRustInCompoundOnlyProofMode(repo, "non-certifying proof mode"); err != nil {
 			return proofCheckReport{}, err
 		}
 		steps, err = proofCheckSteps(baseRef, headRef)
@@ -1360,7 +1337,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 		if executableErr != nil {
 			result.Status = "failed"
 			result.OutputTail = executableErr.Error()
-			result.FailureFacts = proofCheckFailureFacts(repo, step.Name, []byte(executableErr.Error()), executableErr)
+			result.FailureFacts = work.CanonicalProofFailureFacts(repo, step.Name, []byte(executableErr.Error()), executableErr)
 			result.ExitCode = 1
 			return result
 		}
@@ -1382,7 +1359,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 	result.OutputTail = proofCheckTail(output, 4000)
 	if err != nil {
 		result.Status = "failed"
-		result.FailureFacts = proofCheckFailureFacts(repo, step.Name, output, err)
+		result.FailureFacts = work.CanonicalProofFailureFacts(repo, step.Name, output, err)
 		result.ExitCode = proofCheckExitCode(err)
 	}
 	return result

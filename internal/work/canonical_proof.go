@@ -1,11 +1,13 @@
-package main
+package work
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -13,36 +15,63 @@ import (
 	"strings"
 
 	"compound/internal/authority/gitrepository"
-	"compound/internal/work"
 )
 
 const (
-	canonicalProofPlanCompoundV1      = "compound_v1"
-	canonicalProofPlanRustWorkspaceV1 = "rust_workspace_v1"
+	CanonicalProofPlanCompoundV1      = "compound_v1"
+	CanonicalProofPlanRustWorkspaceV1 = "rust_workspace_v1"
 )
 
-// canonicalProofPlan is the one immutable, source-bound inventory shared by proof admission and
+// ProofCheckStep is one executable proof gate plus its eventual result. The same type crosses
+// canonical plan selection, admission, execution, report serialization, and differential proof.
+type ProofCheckStep struct {
+	Name          string   `json:"name"`
+	Command       []string `json:"command"`
+	Dir           string   `json:"dir,omitempty"`
+	SkipIfMissing string   `json:"skip_if_missing,omitempty"`
+	SkipReason    string   `json:"skip_reason,omitempty"`
+	ProofRef      string   `json:"proof_ref"`
+	Status        string   `json:"status"`
+	ExitCode      int      `json:"exit_code,omitempty"`
+	DurationMS    int64    `json:"duration_ms,omitempty"`
+	OutputTail    string   `json:"output_tail,omitempty"`
+	FailureFacts  []string `json:"failure_facts,omitempty"`
+	// CIPortable marks a fresh-clone CI gate: no external non-Go binary, installed binary,
+	// or COMPOUND_HOME body. It is runtime inventory metadata, not serialized proof output.
+	CIPortable bool `json:"-"`
+}
+
+// CanonicalProofInventory supplies Compound's command-owned gate inventory. The work owner keeps
+// repository classification and Rust policy deep while the command adapter retains its existing
+// home-owning gate runners and executable substitutions.
+type CanonicalProofInventory func(baseRef string, headRefs ...string) ([]ProofCheckStep, error)
+
+// CanonicalProofPlan is the immutable, source-bound inventory shared by proof admission and
 // execution. Its ID is descriptive; ProofResourceProfile's digest remains the authority because
 // it seals the repository, source snapshot, and every ordered gate identity.
-type canonicalProofPlan struct {
+type CanonicalProofPlan struct {
 	ID     string
 	Repo   string
 	Source gitrepository.Snapshot
-	Steps  []proofCheckStep
+	Steps  []ProofCheckStep
 }
 
 type canonicalProofPlanContextKey struct{}
 
-func resolveCanonicalProofPlan(repo string, source gitrepository.Snapshot) (canonicalProofPlan, error) {
-	resolvedRepo, err := resolveProofCheckRepo(repo)
+func ResolveCanonicalProofPlan(
+	repo string,
+	source gitrepository.Snapshot,
+	compoundInventory CanonicalProofInventory,
+) (CanonicalProofPlan, error) {
+	resolvedRepo, err := resolveCanonicalProofRepo(repo)
 	if err != nil {
-		return canonicalProofPlan{}, err
+		return CanonicalProofPlan{}, err
 	}
 	if err := gitrepository.ValidateSnapshotShape(source); err != nil {
-		return canonicalProofPlan{}, fmt.Errorf("canonical proof source: %w", err)
+		return CanonicalProofPlan{}, fmt.Errorf("canonical proof source: %w", err)
 	}
 	if !source.Clean {
-		return canonicalProofPlan{}, fmt.Errorf("canonical proof source must be clean")
+		return CanonicalProofPlan{}, fmt.Errorf("canonical proof source must be clean")
 	}
 
 	markers, err := canonicalProofRootMarkers(
@@ -51,38 +80,44 @@ func resolveCanonicalProofPlan(repo string, source gitrepository.Snapshot) (cano
 		[]string{"Cargo.lock", "Cargo.toml", "go.mod"},
 	)
 	if err != nil {
-		return canonicalProofPlan{}, fmt.Errorf("inspect canonical proof root markers at %s: %w", source.HeadSHA, err)
+		return CanonicalProofPlan{}, fmt.Errorf("inspect canonical proof root markers at %s: %w", source.HeadSHA, err)
 	}
 	hasCargoManifest := markers["Cargo.toml"]
 	hasCargoLock := markers["Cargo.lock"]
 	hasGoModule := markers["go.mod"]
 
-	plan := canonicalProofPlan{Repo: resolvedRepo, Source: source}
+	plan := CanonicalProofPlan{Repo: resolvedRepo, Source: source}
 	switch {
 	case hasCargoManifest && hasGoModule:
-		return canonicalProofPlan{}, fmt.Errorf("mixed root Cargo.toml and go.mod are not a canonical proof profile")
+		return CanonicalProofPlan{}, fmt.Errorf("mixed root Cargo.toml and go.mod are not a canonical proof profile")
 	case hasCargoManifest && !hasCargoLock:
-		return canonicalProofPlan{}, fmt.Errorf("Rust canonical proof requires a tracked root Cargo.lock")
+		return CanonicalProofPlan{}, fmt.Errorf("Rust canonical proof requires a tracked root Cargo.lock")
 	case hasCargoManifest:
-		plan.ID = canonicalProofPlanRustWorkspaceV1
+		plan.ID = CanonicalProofPlanRustWorkspaceV1
 		plan.Steps = rustWorkspaceProofCheckSteps(source.BaseSHA, source.HeadSHA)
 	case hasCargoLock:
-		return canonicalProofPlan{}, fmt.Errorf("tracked root Cargo.lock without Cargo.toml is not a canonical proof profile")
+		return CanonicalProofPlan{}, fmt.Errorf("tracked root Cargo.lock without Cargo.toml is not a canonical proof profile")
 	case hasGoModule:
 		moduleBody, blobErr := canonicalProofGitBlob(resolvedRepo, source.HeadSHA, "go.mod")
 		if blobErr != nil {
-			return canonicalProofPlan{}, blobErr
+			return CanonicalProofPlan{}, blobErr
 		}
 		if !isCanonicalCompoundModule(moduleBody) {
-			return canonicalProofPlan{}, fmt.Errorf("canonical Compound proof requires tracked root go.mod declaring `module compound`")
+			return CanonicalProofPlan{}, fmt.Errorf("canonical Compound proof requires tracked root go.mod declaring `module compound`")
 		}
-		plan.ID = canonicalProofPlanCompoundV1
-		plan.Steps, err = proofCheckSteps(source.BaseSHA, source.HeadSHA)
+		if compoundInventory == nil {
+			return CanonicalProofPlan{}, fmt.Errorf("canonical Compound proof inventory is unavailable")
+		}
+		plan.ID = CanonicalProofPlanCompoundV1
+		plan.Steps, err = compoundInventory(source.BaseSHA, source.HeadSHA)
 		if err != nil {
-			return canonicalProofPlan{}, err
+			return CanonicalProofPlan{}, err
+		}
+		if len(plan.Steps) == 0 {
+			return CanonicalProofPlan{}, fmt.Errorf("canonical Compound proof inventory is empty")
 		}
 	default:
-		return canonicalProofPlan{}, fmt.Errorf("unsupported canonical proof repository: tracked root go.mod or Cargo.toml plus Cargo.lock required")
+		return CanonicalProofPlan{}, fmt.Errorf("unsupported canonical proof repository: tracked root go.mod or Cargo.toml plus Cargo.lock required")
 	}
 	return cloneCanonicalProofPlan(plan), nil
 }
@@ -90,7 +125,7 @@ func resolveCanonicalProofPlan(repo string, source gitrepository.Snapshot) (cano
 func canonicalProofRootMarkers(repo, headSHA string, paths []string) (map[string]bool, error) {
 	args := []string{"ls-tree", "-z", headSHA, "--"}
 	args = append(args, paths...)
-	records, err := proofCheckGitNULList(repo, args...)
+	records, err := canonicalProofGitNULList(repo, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +149,9 @@ func canonicalProofRootMarkers(repo, headSHA string, paths []string) (map[string
 	return markers, nil
 }
 
-func refuseRustInCompoundOnlyProofMode(repo, mode string) error {
+// RefuseRustInCompoundOnlyProofMode keeps development, CI, and legacy dry-run inventories from
+// silently presenting Compound's Go gates for a Rust repository.
+func RefuseRustInCompoundOnlyProofMode(repo, mode string) error {
 	refusal := func() error {
 		return fmt.Errorf("%s is Compound-specific; a Rust workspace requires governed canonical proof with explicit --base, --work, --actor, and --out", mode)
 	}
@@ -125,7 +162,7 @@ func refuseRustInCompoundOnlyProofMode(repo, mode string) error {
 			return fmt.Errorf("inspect %s root marker %s: %w", mode, marker, err)
 		}
 	}
-	committed, err := proofCheckGitNULList(
+	committed, err := canonicalProofGitNULList(
 		repo,
 		"ls-tree", "-z", "--name-only", "HEAD", "--", "Cargo.lock", "Cargo.toml",
 	)
@@ -137,10 +174,10 @@ func refuseRustInCompoundOnlyProofMode(repo, mode string) error {
 
 var rustfmtDiffHeaderPattern = regexp.MustCompile(`^Diff in (.+):([0-9]+):$`)
 
-// Rustfmt failures are block-structured whitespace evidence. Hashing their lines through the
-// generic normalizer would erase indentation, ordering, and header/body association, so only the
-// execution-root prefix is normalized and each otherwise byte-exact diff block becomes one fact.
-func proofCheckFailureFacts(repo, gate string, output []byte, runErr error) []string {
+// CanonicalProofFailureFacts retains generic normalization for every gate except rustfmt. Rustfmt
+// failures are block-structured whitespace evidence, so only the execution-root prefix is
+// normalized and each otherwise byte-exact diff block becomes one fact.
+func CanonicalProofFailureFacts(repo, gate string, output []byte, runErr error) []string {
 	if gate == "rustfmt" && runErr != nil {
 		if blocks, ok := rustfmtFailureBlocks(repo, output); ok {
 			facts := make([]string, 0, len(blocks))
@@ -152,7 +189,7 @@ func proofCheckFailureFacts(repo, gate string, output []byte, runErr error) []st
 			return facts
 		}
 	}
-	return work.ProofFailureFacts(gate, output, runErr)
+	return ProofFailureFacts(gate, output, runErr)
 }
 
 func rustfmtFailureBlocks(repo string, output []byte) ([]string, bool) {
@@ -243,7 +280,7 @@ func rustfmtPathRelativeToRepository(roots []string, path string) (string, bool)
 }
 
 func canonicalProofGitBlob(repo, headSHA, path string) ([]byte, error) {
-	cmd := proofCheckCommandContext(context.Background(), "git", "show", headSHA+":"+path)
+	cmd := exec.CommandContext(context.Background(), "git", "show", headSHA+":"+path)
 	cmd.Dir = repo
 	body, err := cmd.Output()
 	if err != nil {
@@ -263,29 +300,29 @@ func isCanonicalCompoundModule(body []byte) bool {
 	return false
 }
 
-func rustWorkspaceProofCheckSteps(baseRef, headRef string) []proofCheckStep {
+func rustWorkspaceProofCheckSteps(baseRef, headRef string) []ProofCheckStep {
 	diffRange := strings.TrimSpace(baseRef) + "..." + strings.TrimSpace(headRef)
 	redactCommand := []string{
 		"redact", "--repo-visibility", "public",
 		"<committed blobs changed in " + diffRange + ">",
 	}
-	return []proofCheckStep{
+	return []ProofCheckStep{
 		{Name: "rustfmt", Command: []string{"cargo", "fmt", "--all", "--", "--check"}, ProofRef: "cargo-fmt-all-check", CIPortable: true},
 		{Name: "cargo-clippy", Command: []string{"cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"}, ProofRef: "cargo-clippy-locked-workspace-all-targets-deny-warnings", CIPortable: true},
 		{Name: "cargo-test", Command: []string{"cargo", "test", "--locked", "--workspace"}, ProofRef: "cargo-test-locked-workspace", CIPortable: true},
 		{Name: "cargo-build", Command: []string{"cargo", "build", "--locked", "--workspace"}, ProofRef: "cargo-build-locked-workspace", CIPortable: true},
-		{Name: "diff-check", Command: append([]string{"git", "diff", "--check"}, diffRangeArgs(diffRange)...), ProofRef: "diff-check", CIPortable: true},
+		{Name: "diff-check", Command: []string{"git", "diff", "--check", diffRange}, ProofRef: "diff-check", CIPortable: true},
 		{Name: "redact-public", Command: redactCommand, ProofRef: "redact-public-clean"},
 	}
 }
 
-func proofCheckAdmissionProfileForPlan(plan canonicalProofPlan) (work.ProofResourceProfile, error) {
+func ProofResourceProfileForCanonicalPlan(plan CanonicalProofPlan) (ProofResourceProfile, error) {
 	if strings.TrimSpace(plan.ID) == "" || strings.TrimSpace(plan.Repo) == "" || len(plan.Steps) == 0 {
-		return work.ProofResourceProfile{}, fmt.Errorf("canonical proof plan is incomplete")
+		return ProofResourceProfile{}, fmt.Errorf("canonical proof plan is incomplete")
 	}
-	gates := make([]work.ProofResourceGateProfile, 0, len(plan.Steps))
+	gates := make([]ProofResourceGateProfile, 0, len(plan.Steps))
 	for _, step := range plan.Steps {
-		gates = append(gates, work.ProofResourceGateProfile{
+		gates = append(gates, ProofResourceGateProfile{
 			Name:          step.Name,
 			Command:       append([]string(nil), step.Command...),
 			Dir:           step.Dir,
@@ -293,72 +330,117 @@ func proofCheckAdmissionProfileForPlan(plan canonicalProofPlan) (work.ProofResou
 			ProofRef:      step.ProofRef,
 		})
 	}
-	return work.NewProofResourceProfileWithSource(
-		work.ProofResourceProfileCanonicalFull,
+	return NewProofResourceProfileWithSource(
+		ProofResourceProfileCanonicalFull,
 		plan.Repo,
 		plan.Source,
 		gates,
 	)
 }
 
-func canonicalProofProfilePublishesCompoundRuntimeArtifact(
-	plan canonicalProofPlan,
-	profile work.ProofResourceProfile,
+func CanonicalProofProfilePublishesCompoundRuntimeArtifact(
+	plan CanonicalProofPlan,
+	profile ProofResourceProfile,
+	compoundInventory CanonicalProofInventory,
 ) (bool, error) {
-	if plan.ID != canonicalProofPlanCompoundV1 {
+	if plan.ID != CanonicalProofPlanCompoundV1 {
 		return false, nil
 	}
-	expectedSteps, err := proofCheckSteps(plan.Source.BaseSHA, plan.Source.HeadSHA)
+	if compoundInventory == nil {
+		return false, fmt.Errorf("canonical Compound proof inventory is unavailable")
+	}
+	expectedSteps, err := compoundInventory(plan.Source.BaseSHA, plan.Source.HeadSHA)
 	if err != nil {
 		return false, err
 	}
 	expectedPlan := cloneCanonicalProofPlan(plan)
 	expectedPlan.Steps = expectedSteps
-	expectedProfile, err := proofCheckAdmissionProfileForPlan(expectedPlan)
+	expectedProfile, err := ProofResourceProfileForCanonicalPlan(expectedPlan)
 	if err != nil {
 		return false, err
 	}
 	return reflect.DeepEqual(profile, expectedProfile), nil
 }
 
-func proofCheckContextWithCanonicalPlan(ctx context.Context, plan canonicalProofPlan) context.Context {
+func ContextWithCanonicalProofPlan(ctx context.Context, plan CanonicalProofPlan) context.Context {
 	return context.WithValue(ctx, canonicalProofPlanContextKey{}, cloneCanonicalProofPlan(plan))
 }
 
-func canonicalProofPlanForExecution(
+func CanonicalProofPlanForExecution(
 	ctx context.Context,
 	repo string,
 	source gitrepository.Snapshot,
-) (canonicalProofPlan, error) {
-	if stored, ok := ctx.Value(canonicalProofPlanContextKey{}).(canonicalProofPlan); ok {
-		resolvedRepo, err := resolveProofCheckRepo(repo)
+	compoundInventory CanonicalProofInventory,
+) (CanonicalProofPlan, error) {
+	if stored, ok := ctx.Value(canonicalProofPlanContextKey{}).(CanonicalProofPlan); ok {
+		resolvedRepo, err := resolveCanonicalProofRepo(repo)
 		if err != nil {
-			return canonicalProofPlan{}, err
+			return CanonicalProofPlan{}, err
 		}
 		if !reflect.DeepEqual(stored.Source, source) {
-			return canonicalProofPlan{}, fmt.Errorf("canonical proof plan does not match execution source")
+			return CanonicalProofPlan{}, fmt.Errorf("canonical proof plan does not match execution source")
 		}
 		executionSource, err := gitrepository.CaptureCleanSnapshot(resolvedRepo, source.BaseSHA)
 		if err != nil {
-			return canonicalProofPlan{}, fmt.Errorf("canonical proof execution checkout: %w", err)
+			return CanonicalProofPlan{}, fmt.Errorf("canonical proof execution checkout: %w", err)
 		}
 		if executionSource.BaseSHA != source.BaseSHA ||
 			executionSource.HeadSHA != source.HeadSHA ||
 			executionSource.TreeSHA != source.TreeSHA {
-			return canonicalProofPlan{}, fmt.Errorf("canonical proof execution checkout does not match sealed source")
+			return CanonicalProofPlan{}, fmt.Errorf("canonical proof execution checkout does not match sealed source")
 		}
 		return cloneCanonicalProofPlan(stored), nil
 	}
-	return resolveCanonicalProofPlan(repo, source)
+	return ResolveCanonicalProofPlan(repo, source, compoundInventory)
 }
 
-func cloneCanonicalProofPlan(in canonicalProofPlan) canonicalProofPlan {
+func cloneCanonicalProofPlan(in CanonicalProofPlan) CanonicalProofPlan {
 	out := in
-	out.Steps = make([]proofCheckStep, len(in.Steps))
+	out.Steps = make([]ProofCheckStep, len(in.Steps))
 	for i, step := range in.Steps {
 		out.Steps[i] = step
 		out.Steps[i].Command = append([]string(nil), step.Command...)
 		out.Steps[i].FailureFacts = append([]string(nil), step.FailureFacts...)
 	}
 	return out
+}
+
+func resolveCanonicalProofRepo(repoPath string) (string, error) {
+	if strings.TrimSpace(repoPath) == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		repoPath = cwd
+	}
+	abs, err := filepath.Abs(repoPath)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("--repo must be a directory, got %s", abs)
+	}
+	return abs, nil
+}
+
+func canonicalProofGitNULList(repo string, args ...string) ([]string, error) {
+	cmd := exec.CommandContext(context.Background(), "git", args...)
+	cmd.Dir = repo
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	raw := bytes.Split(out, []byte{0})
+	values := make([]string, 0, len(raw))
+	for _, part := range raw {
+		if len(part) == 0 {
+			continue
+		}
+		values = append(values, string(part))
+	}
+	return values, nil
 }

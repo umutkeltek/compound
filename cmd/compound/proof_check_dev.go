@@ -2,6 +2,7 @@ package main
 
 import (
 	"compound/internal/home"
+	"compound/internal/work"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -144,7 +145,7 @@ func runDevelopmentProofCheck(repoPath string, dryRun bool, baseRef string, now 
 	if err != nil {
 		return proofCheckReport{}, err
 	}
-	if err := refuseRustInCompoundOnlyProofMode(repo, "development proof mode"); err != nil {
+	if err := work.RefuseRustInCompoundOnlyProofMode(repo, "development proof mode"); err != nil {
 		return proofCheckReport{}, err
 	}
 	baseRef = strings.TrimSpace(baseRef)

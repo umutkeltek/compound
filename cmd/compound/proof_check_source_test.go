@@ -28,7 +28,11 @@ func TestProofCheckAdmissionProfileUsesOneImmutableSourceRange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	profile, err := proofCheckAdmissionProfile(repo, source)
+	plan, err := work.ResolveCanonicalProofPlan(repo, source, proofCheckSteps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := work.ProofResourceProfileForCanonicalPlan(plan)
 	if err != nil {
 		t.Fatal(err)
 	}

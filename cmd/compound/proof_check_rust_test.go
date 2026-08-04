@@ -32,7 +32,7 @@ func TestResolveCanonicalProofPlanKeepsCompoundInventoryUnchanged(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	plan, err := resolveCanonicalProofPlan(repo, source)
+	plan, err := work.ResolveCanonicalProofPlan(repo, source, proofCheckSteps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,35 +40,78 @@ func TestResolveCanonicalProofPlanKeepsCompoundInventoryUnchanged(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.ID != canonicalProofPlanCompoundV1 {
-		t.Fatalf("plan id = %q, want %q", plan.ID, canonicalProofPlanCompoundV1)
+	if plan.ID != work.CanonicalProofPlanCompoundV1 {
+		t.Fatalf("plan id = %q, want %q", plan.ID, work.CanonicalProofPlanCompoundV1)
 	}
 	if !reflect.DeepEqual(plan.Steps, want) {
 		t.Fatalf("Compound plan changed existing inventory\n got: %#v\nwant: %#v", plan.Steps, want)
 	}
-	profile, err := proofCheckAdmissionProfileForPlan(plan)
+	profile, err := work.ProofResourceProfileForCanonicalPlan(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	publishes, err := canonicalProofProfilePublishesCompoundRuntimeArtifact(plan, profile)
+	publishes, err := work.CanonicalProofProfilePublishesCompoundRuntimeArtifact(plan, profile, proofCheckSteps)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !publishes {
 		t.Fatal("exact admitted Compound profile must retain installed-runtime artifact publication")
 	}
-	mutated := cloneCanonicalProofPlan(plan)
-	mutated.Steps[0].Command = append(mutated.Steps[0].Command, "./unexpected")
-	mutatedProfile, err := proofCheckAdmissionProfileForPlan(mutated)
+	mutated := plan
+	mutated.Steps = append([]proofCheckStep(nil), plan.Steps...)
+	mutated.Steps[0].Command = append(append([]string(nil), plan.Steps[0].Command...), "./unexpected")
+	mutatedProfile, err := work.ProofResourceProfileForCanonicalPlan(mutated)
 	if err != nil {
 		t.Fatal(err)
 	}
-	publishes, err = canonicalProofProfilePublishesCompoundRuntimeArtifact(mutated, mutatedProfile)
+	publishes, err = work.CanonicalProofProfilePublishesCompoundRuntimeArtifact(mutated, mutatedProfile, proofCheckSteps)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if publishes {
 		t.Fatal("changed Compound inventory digest must not authorize installed-runtime artifact publication")
+	}
+}
+
+func TestCanonicalProofInventoryDependencyIsCompoundOnlyAndNonEmpty(t *testing.T) {
+	compoundRepo := initCanonicalProofRepo(t, map[string]string{
+		"go.mod": "module compound\n\ngo 1.26.4\n",
+	})
+	compoundSource, err := gitrepository.CaptureCleanSnapshot(compoundRepo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := work.ResolveCanonicalProofPlan(compoundRepo, compoundSource, nil); err == nil || !strings.Contains(err.Error(), "inventory is unavailable") {
+		t.Fatalf("nil Compound inventory error = %v, want unavailable refusal", err)
+	}
+	emptyInventory := func(string, ...string) ([]work.ProofCheckStep, error) { return nil, nil }
+	if _, err := work.ResolveCanonicalProofPlan(compoundRepo, compoundSource, emptyInventory); err == nil || !strings.Contains(err.Error(), "inventory is empty") {
+		t.Fatalf("empty Compound inventory error = %v, want empty refusal", err)
+	}
+
+	rustRepo := initCanonicalProofRepo(t, map[string]string{
+		"Cargo.toml": "[workspace]\nmembers = []\nresolver = \"2\"\n",
+		"Cargo.lock": "# synthetic lock\nversion = 4\n",
+	})
+	rustSource, err := gitrepository.CaptureCleanSnapshot(rustRepo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rustPlan, err := work.ResolveCanonicalProofPlan(rustRepo, rustSource, nil)
+	if err != nil {
+		t.Fatalf("Rust resolution unexpectedly required Compound inventory: %v", err)
+	}
+	if publishes, err := work.CanonicalProofProfilePublishesCompoundRuntimeArtifact(rustPlan, work.ProofResourceProfile{}, nil); err != nil || publishes {
+		t.Fatalf("Rust runtime-artifact authorization = (%v, %v), want (false, nil)", publishes, err)
+	}
+	executed, err := work.CanonicalProofPlanForExecution(
+		work.ContextWithCanonicalProofPlan(t.Context(), rustPlan),
+		rustRepo,
+		rustSource,
+		nil,
+	)
+	if err != nil || !reflect.DeepEqual(executed, rustPlan) {
+		t.Fatalf("stored Rust execution plan = (%+v, %v), want original plan", executed, err)
 	}
 }
 
@@ -86,7 +129,7 @@ func TestResolveCanonicalProofPlanBuildsSourceBoundRustWorkspaceFloor(t *testing
 		t.Fatal(err)
 	}
 
-	plan, err := resolveCanonicalProofPlan(repo, source)
+	plan, err := work.ResolveCanonicalProofPlan(repo, source, proofCheckSteps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,14 +142,14 @@ func TestResolveCanonicalProofPlanBuildsSourceBoundRustWorkspaceFloor(t *testing
 		{Name: "diff-check", Command: []string{"git", "diff", "--check", rangeRef}, ProofRef: "diff-check", CIPortable: true},
 		{Name: "redact-public", Command: []string{"redact", "--repo-visibility", "public", "<committed blobs changed in " + rangeRef + ">"}, ProofRef: "redact-public-clean"},
 	}
-	if plan.ID != canonicalProofPlanRustWorkspaceV1 {
-		t.Fatalf("plan id = %q, want %q", plan.ID, canonicalProofPlanRustWorkspaceV1)
+	if plan.ID != work.CanonicalProofPlanRustWorkspaceV1 {
+		t.Fatalf("plan id = %q, want %q", plan.ID, work.CanonicalProofPlanRustWorkspaceV1)
 	}
 	if !reflect.DeepEqual(plan.Steps, want) {
 		t.Fatalf("Rust plan inventory\n got: %#v\nwant: %#v", plan.Steps, want)
 	}
 
-	profile, err := proofCheckAdmissionProfileForPlan(plan)
+	profile, err := work.ProofResourceProfileForCanonicalPlan(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +160,7 @@ func TestResolveCanonicalProofPlanBuildsSourceBoundRustWorkspaceFloor(t *testing
 	if len(profile.Gates) != len(want) {
 		t.Fatalf("profile gates = %d, want %d", len(profile.Gates), len(want))
 	}
-	publishes, err := canonicalProofProfilePublishesCompoundRuntimeArtifact(plan, profile)
+	publishes, err := work.CanonicalProofProfilePublishesCompoundRuntimeArtifact(plan, profile, proofCheckSteps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +169,7 @@ func TestResolveCanonicalProofPlanBuildsSourceBoundRustWorkspaceFloor(t *testing
 	}
 
 	report, err := runProofCheckWithRangeContext(
-		proofCheckContextWithCanonicalPlan(t.Context(), plan),
+		work.ContextWithCanonicalProofPlan(t.Context(), plan),
 		repo,
 		true,
 		source.BaseSHA,
@@ -199,7 +242,7 @@ func TestResolveCanonicalProofPlanFailsClosedBeforeRustExecution(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := resolveCanonicalProofPlan(repo, source); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			if _, err := work.ResolveCanonicalProofPlan(repo, source, proofCheckSteps); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("resolve error = %v, want containing %q", err, tc.wantErr)
 			}
 		})
@@ -221,7 +264,7 @@ func TestResolveCanonicalProofPlanRejectsNonBlobRootMarkers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := resolveCanonicalProofPlan(repo, source); err == nil || !strings.Contains(err.Error(), "regular blob") {
+		if _, err := work.ResolveCanonicalProofPlan(repo, source, proofCheckSteps); err == nil || !strings.Contains(err.Error(), "regular blob") {
 			t.Fatalf("symlink marker error = %v, want regular blob refusal", err)
 		}
 	})
@@ -235,7 +278,7 @@ func TestResolveCanonicalProofPlanRejectsNonBlobRootMarkers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := resolveCanonicalProofPlan(repo, source); err == nil || !strings.Contains(err.Error(), "regular blob") {
+		if _, err := work.ResolveCanonicalProofPlan(repo, source, proofCheckSteps); err == nil || !strings.Contains(err.Error(), "regular blob") {
 			t.Fatalf("tree marker error = %v, want regular blob refusal", err)
 		}
 	})
@@ -500,11 +543,11 @@ func TestResolveCanonicalProofPlanReadsCommittedMarkersOnly(t *testing.T) {
 	}
 	writeCanonicalProofFile(t, repo, "go.mod", "module example.invalid/uncommitted\n\ngo 1.25\n")
 
-	plan, err := resolveCanonicalProofPlan(repo, source)
+	plan, err := work.ResolveCanonicalProofPlan(repo, source, proofCheckSteps)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.ID != canonicalProofPlanRustWorkspaceV1 {
+	if plan.ID != work.CanonicalProofPlanRustWorkspaceV1 {
 		t.Fatalf("uncommitted marker drift changed sealed plan to %q", plan.ID)
 	}
 }

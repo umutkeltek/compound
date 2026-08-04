@@ -13,6 +13,7 @@ import (
 	"compound/internal/arch"
 	"compound/internal/authority/gitrepository"
 	"compound/internal/landlease"
+	"compound/internal/work"
 )
 
 func TestCanonicalProofGatesReadSealedHeadDuringTransientCallerMutation(t *testing.T) {
@@ -30,7 +31,7 @@ func TestCanonicalProofGatesReadSealedHeadDuringTransientCallerMutation(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := resolveCanonicalProofPlan(repo, source)
+	plan, err := work.ResolveCanonicalProofPlan(repo, source, proofCheckSteps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +79,7 @@ exit 0
 		err    error
 	}
 	runnerContext, cancelRunner := context.WithCancel(
-		proofCheckContextWithCanonicalPlan(context.Background(), plan),
+		work.ContextWithCanonicalProofPlan(context.Background(), plan),
 	)
 	defer cancelRunner()
 	done := make(chan runnerResult, 1)
