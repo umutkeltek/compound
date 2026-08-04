@@ -167,6 +167,18 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "body-free adaptive projection of harness-native context and rate-limit metadata with TTL-bound hysteresis and reversible terminal themes",
 		Consumer: "compound system status-surface snapshot/render plus Claude Code statusLine and the Codex theme projection",
 	},
+	// terminal is the unified host-terminal (cmux / iTerm2 / Warp / Terminal.app) operator
+	// surface. It is read-mostly: doctor + hooks + wire/unwire + workspace + feed verbs expose
+	// per-terminal IPC bridges through a single Terminal interface, with workspace and feed
+	// mutations governed at the command-registry layer (FirstPartyCommandGoverned). It does
+	// not promote or gate memory, write to a ledger, or own an authority object; the terminal
+	// IPC handles the only mutations, and those happen under the operator's explicit policy
+	// grant — so it is evidence, not enforcement.
+	"organ:terminal": {
+		Class:    MintEvidence,
+		Purpose:  "unified host-terminal operator surface (cmux/iTerm2/Warp/Terminal.app) — Terminal interface + registry + per-terminal adapters; doctor/hooks are read, wire/unwire/workspace/feed are governed at command-registry layer; no authority object, no ledger write, no memory promotion",
+		Consumer: "cmd/compound terminal CLI (doctor / hooks / wire / unwire / workspace / feed) + terminal_admission_test.go contract pin",
+	},
 	// finding is the direct-write home for agent-authored operational findings under
 	// COMPOUND_HOME/observed/findings — the POSITIVE counterpart to the placement guard: a governed
 	// place to record a durable operational note instead of inventing a path. It writes only a
