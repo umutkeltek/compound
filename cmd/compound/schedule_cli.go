@@ -31,7 +31,7 @@ import (
 	"time"
 )
 
-const scheduleUsage = "usage: compound schedule list [--json] [--source user|system|crontab|all] [--namespace N]\n" +
+const scheduleUsage = "usage: compound schedule list [--json] [--source user|system|crontab|all] [--namespace N] [--include-env-values]\n" +
 	"       compound schedule show <label|path> [--json]\n" +
 	"       compound schedule doctor [--json] [--stale-days N]\n" +
 	"  Read-only launchd + crontab projection. No --fix. Migration is C-scope."
@@ -56,6 +56,7 @@ type ScheduleEntry struct {
 	RunAtLoad     bool               `json:"run_at_load"`
 	KeepAlive     bool               `json:"keep_alive"`
 	ProgramArgs   []string           `json:"program_args,omitempty"`
+	EnvKeys       []string           `json:"env_keys,omitempty"` // sorted env var names; populated when Env is redacted out
 	Calendar      *scheduleCalendar  `json:"calendar,omitempty"`
 	Env           map[string]string  `json:"env,omitempty"`
 	StdOutPath    string             `json:"stdout_path,omitempty"`
@@ -109,14 +110,21 @@ func cmdSchedule(args []string) {
 }
 
 func cmdScheduleList(args []string) {
+	if err := validateScheduleFlags("list", args, 0); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, scheduleUsage)
+		os.Exit(2)
+	}
 	jsonOut := hasFlag(args, "--json")
 	source := "all"
 	if v := strings.TrimSpace(valueFlag(args, "--source")); v != "" {
 		source = v
 	}
 	nsFilter := strings.TrimSpace(valueFlag(args, "--namespace"))
+	includeEnv := hasFlag(args, "--include-env-values")
 
 	entries, errs := collectSchedule(source)
+	entries = prepareScheduleEntries(entries, nsFilter, includeEnv)
 	if jsonOut {
 		out := struct {
 			Schema    string          `json:"schema"`
@@ -135,9 +143,6 @@ func cmdScheduleList(args []string) {
 		}
 		printJSON(out)
 		return
-	}
-	if nsFilter != "" {
-		entries = filterByNamespace(entries, nsFilter)
 	}
 	if len(errs) > 0 {
 		fmt.Fprintf(os.Stderr, "# %d source read error(s):\n", len(errs))
@@ -232,11 +237,12 @@ func cmdScheduleDoctor(args []string) {
 			})
 		}
 		if !e.Disabled && len(e.ProgramArgs) > 0 {
-			if _, err := os.Stat(e.ProgramArgs[0]); err != nil {
+			statPath := expandEnvPath(e.ProgramArgs[0], e.Env)
+			if _, err := os.Stat(statPath); err != nil {
 				report.Findings = append(report.Findings, scheduleDoctorFinding{
 					Label: e.Label, Path: e.Path, Source: e.Source,
 					Code:   "missing-binary",
-					Detail: fmt.Sprintf("ProgramArguments[0] %q not executable: %v", e.ProgramArgs[0], err),
+					Detail: fmt.Sprintf("ProgramArguments[0] %q (expanded: %q) not executable: %v", e.ProgramArgs[0], statPath, err),
 				})
 			}
 		}
@@ -461,9 +467,82 @@ func readPlistEntry(path string) (ScheduleEntry, error) {
 	return e, nil
 }
 
-// collectCrontab returns the user crontab as parsed entries. Only the user
-// crontab is consulted; system crontabs (/etc/cron.d) are out of scope for
-// compound observation per the B-scope envelope.
+// parseCrontabLines parses crontab text into ScheduleEntry rows. Pure
+// function: no exec, no filesystem — easy to unit-test against synthetic
+// crontabs without `crontab -l` needing to exist.
+//
+// crontab semantics worth preserving: leading "NAME=VALUE" lines are env
+// assignments inherited by every subsequent schedule line. We capture them
+// per-entry so the doctor can expand $VAR before stat'ing the program path
+// (cron's parser does this expansion; a literal stat does not).
+func parseCrontabLines(text string) []ScheduleEntry {
+	var entries []ScheduleEntry
+	env := map[string]string{}
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if isCrontabEnvLine(line) {
+			if k, v, ok := strings.Cut(line, "="); ok && k != "" && !strings.ContainsAny(k, " \t") {
+				env[k] = v
+			}
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			continue
+		}
+		entryEnv := make(map[string]string, len(env))
+		for k, v := range env {
+			entryEnv[k] = v
+		}
+		// Label carries the schedule prefix AND the command so identical
+		// schedules invoking different commands are distinguishable in the
+		// list/group output (e.g. "0 * * * * job-one" vs "job-two").
+		// Different invocations of the same command+schedule get the same
+		// label, which is the caller's signal that the duplicate is the
+		// same job, not a coincidentally-coinciding rule.
+		cmd := fields[5]
+		if i := strings.LastIndex(cmd, "/"); i >= 0 {
+			cmd = cmd[i+1:]
+		}
+		entries = append(entries, ScheduleEntry{
+			Label:       "crontab:" + strings.Join(fields[:5], " ") + " " + cmd,
+			Path:        "crontab",
+			Source:      scheduleSourceCrontab,
+			Namespace:   "other",
+			ProgramArgs: fields[5:],
+			Env:         entryEnv,
+		})
+	}
+	return entries
+}
+
+// isCrontabEnvLine reports whether a trimmed crontab line is an env
+// assignment rather than a schedule entry. cron treats leading "NAME=VALUE"
+// lines as Bourne-shell-style exports; this helper is intentionally narrow —
+// any line that begins with a cron schedule token (digit, "*", "@") is a
+// schedule, not env, even if it happens to contain "=".
+func isCrontabEnvLine(line string) bool {
+	if line == "" {
+		return false
+	}
+	if strings.HasPrefix(line, "@") {
+		return false
+	}
+	first := line[0]
+	if first == '*' || (first >= '0' && first <= '9') {
+		return false
+	}
+	return strings.Contains(line, "=")
+}
+
+// collectCrontab shells out to `crontab -l` and delegates parsing to
+// parseCrontabLines. Only the user crontab is consulted; system crontabs
+// (/etc/cron.d) are out of scope for compound observation per the B-scope
+// envelope.
 func collectCrontab() ([]ScheduleEntry, error) {
 	cmd := exec.Command("crontab", "-l")
 	out, err := cmd.Output()
@@ -475,30 +554,7 @@ func collectCrontab() ([]ScheduleEntry, error) {
 		}
 		return nil, fmt.Errorf("crontab -l: %w", err)
 	}
-	var entries []ScheduleEntry
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// Preserve PROJECT=... env stanzas that pre-set the working dir.
-		if strings.Contains(line, "=") && !strings.HasPrefix(line, "*") && !strings.HasPrefix(line, "@") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 6 {
-			continue
-		}
-		entries = append(entries, ScheduleEntry{
-			Label:       "crontab:" + strings.Join(fields[:5], " "),
-			Path:        "crontab",
-			Source:      scheduleSourceCrontab,
-			Namespace:   "other",
-			ProgramArgs: fields[5:],
-		})
-	}
-	return entries, scanner.Err()
+	return parseCrontabLines(string(out)), nil
 }
 
 // printScheduleEntry renders one entry in compact human form.
@@ -579,6 +635,87 @@ func groupByNamespace(in []ScheduleEntry) map[string][]ScheduleEntry {
 	out := map[string][]ScheduleEntry{}
 	for _, e := range in {
 		out[e.Namespace] = append(out[e.Namespace], e)
+	}
+	return out
+}
+
+// scheduleFlagSets enumerates the accepted flags per subcommand. Keep this
+// table-driven and one-source-of-truth so adding a new flag means one row
+// here plus the consume site.
+var scheduleFlagSets = map[string]map[string]bool{
+	"list": {
+		"--json":               true,
+		"--source":             true,
+		"--namespace":          true,
+		"--include-env-values": true,
+	},
+	"show": {
+		"--json": true,
+	},
+	"doctor": {
+		"--json":       true,
+		"--stale-days": true,
+	},
+}
+
+// validateScheduleFlags fails closed on unknown flags and on too many
+// positional args. Centralized so list/show/doctor speak the same dialect;
+// doctor callers that want to add a flag touch exactly two places (here
+// + the consume site).
+func validateScheduleFlags(sub string, args []string, maxPos int) error {
+	known, ok := scheduleFlagSets[sub]
+	if !ok {
+		return fmt.Errorf("unknown subcommand %q", sub)
+	}
+	positional := 0
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "--") {
+			positional++
+			continue
+		}
+		name := a
+		if eq := strings.Index(a, "="); eq >= 0 {
+			name = a[:eq]
+		}
+		if !known[name] {
+			return fmt.Errorf("unknown flag %q", a)
+		}
+		// Value-requiring flags: consume the next arg if it doesn't look
+		// like another flag. The list of value-requiring flags lives here
+		// too — keeps the validation authoritative.
+		if (name == "--source" || name == "--namespace" || name == "--stale-days") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+			i++
+		}
+	}
+	if positional > maxPos {
+		return fmt.Errorf("too many positional args (got %d, max %d)", positional, maxPos)
+	}
+	return nil
+}
+
+// prepareScheduleEntries is the shared seam for list/doctor/anything that
+// wants the projection ready for emission. It applies the namespace filter,
+// and — to keep secrets out of operator-facing output by default — strips
+// Env values when includeEnv is false, replacing them with a sorted
+// EnvKeys list. Caller controls opt-in via --include-env-values.
+func prepareScheduleEntries(in []ScheduleEntry, ns string, includeEnv bool) []ScheduleEntry {
+	out := make([]ScheduleEntry, 0, len(in))
+	for _, e := range in {
+		if ns != "" && e.Namespace != ns {
+			continue
+		}
+		keys := make([]string, 0, len(e.Env))
+		for k := range e.Env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		cp := e
+		cp.EnvKeys = keys
+		if !includeEnv {
+			cp.Env = nil
+		}
+		out = append(out, cp)
 	}
 	return out
 }
@@ -692,3 +829,24 @@ func stringMapField(m map[string]any) map[string]string {
 // printJSONSchedule is intentionally NOT defined here; main.go's printJSON is
 // the canonical emitter for this binary. Leaving this comment so a future
 // reader does not duplicate it.
+
+// expandEnvPath replaces $NAME and ${NAME} references in p with values from
+// env. Used to bridge a stat() that does not know about cron's env semantics;
+// cron's parser expands these references itself before exec, so a literal
+// stat would falsely report a missing binary. Unknown $NAME tokens are left
+// untouched so the resulting detail string still tells the operator which
+// var matters.
+func expandEnvPath(p string, env map[string]string) string {
+	if len(env) == 0 || !strings.ContainsAny(p, "$") {
+		return p
+	}
+	out := p
+	for k, v := range env {
+		if k == "" {
+			continue
+		}
+		out = strings.ReplaceAll(out, "${"+k+"}", v)
+		out = strings.ReplaceAll(out, "$"+k, v)
+	}
+	return out
+}
