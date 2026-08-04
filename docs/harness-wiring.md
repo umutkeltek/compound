@@ -32,10 +32,11 @@ compound harness posture-plan --harness opencode
 ```
 
 The stable intentions are `prepare_context`, `observe_action`,
-`guard_mutation`, and `observe_outcome`. The selected adapter owns native
-events, settings schema, matchers, and limitations. Every compiled intention
-says `native`, `fallback`, `degraded`, or `unsupported` and cites the harness
-attestation revision.
+`guard_mutation`, `observe_outcome`, and `record_receipt`. The selected adapter
+owns native events, settings schema, matchers, and limitations. For
+Claude-family harnesses, `record_receipt` maps the native `SessionEnd` event to
+the bounded receipt adapter. Every compiled intention says `native`, `fallback`,
+`degraded`, or `unsupported` and cites the harness attestation revision.
 
 Default postures select the subset appropriate to their role. Interactive
 Claude Code and Codex select `observe_action`: `PreToolUse` records the

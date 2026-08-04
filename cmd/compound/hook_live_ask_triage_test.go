@@ -62,6 +62,7 @@ func TestInstalledHookRuntimeSupportCoversCanonicalClaudeFamily(t *testing.T) {
 		"UserPromptSubmit": "fixtures/hooks/user-prompt-submit.json",
 		"PreToolUse":       "fixtures/hooks/pre-tool-use.claude.json",
 		"PostToolUse":      "fixtures/hooks/post-tool-use.json",
+		"SessionEnd":       "fixtures/hooks/session-end.json",
 	}
 	wantHarnesses := map[string]bool{"claude_code": true, "claude_zai": true, "claude_minimax": true, "claude_qwen": true}
 	seen := map[string]int{}
@@ -72,13 +73,16 @@ func TestInstalledHookRuntimeSupportCoversCanonicalClaudeFamily(t *testing.T) {
 		}
 		seen[support.Harness]++
 		wantCommand := "compound hook " + hookCommandName(support.Hook) + " --live --harness " + support.Harness
+		if support.Hook == "SessionEnd" {
+			wantCommand = "compound hook session-end-adapter --live --harness " + support.Harness
+		}
 		if !support.FixturePresent || support.FixtureRef != fixture || !support.LiveAdapter || support.LiveCommand != wantCommand {
 			t.Errorf("%s %s runtime support = %+v, want fixture %s and command %q", support.Harness, support.Hook, support, fixture, wantCommand)
 		}
 	}
 	for harnessName := range wantHarnesses {
-		if seen[harnessName] != 4 {
-			t.Errorf("%s runtime support rows = %d, want 4", harnessName, seen[harnessName])
+		if seen[harnessName] != 5 {
+			t.Errorf("%s runtime support rows = %d, want 5", harnessName, seen[harnessName])
 		}
 		if !strings.Contains(hookUsage, harnessName) {
 			t.Errorf("live hook usage omits canonical harness %s: %s", harnessName, hookUsage)

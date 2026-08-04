@@ -68,8 +68,10 @@ func TestContractImportClaudeZaiRegistrationIsDistinctReadyAndObserved(t *testin
 		}
 	}
 	sessionEnd := findHookReadiness(authority.HookReadiness, "claude_zai", "SessionEnd")
-	if sessionEnd == nil || sessionEnd.Status != "missing_fixture" || sessionEnd.LiveCommand != "compound hook session-end-adapter --live --harness claude_zai" {
-		t.Fatalf("claude-zai SessionEnd runtime readiness = %+v, want installed bounded adapter with explicit fixture gap", sessionEnd)
+	if sessionEnd == nil || sessionEnd.Status != "ready" || !sessionEnd.FixturePresent ||
+		sessionEnd.FixtureRef != "fixtures/hooks/session-end.json" ||
+		sessionEnd.LiveCommand != "compound hook session-end-adapter --live --harness claude_zai" {
+		t.Fatalf("claude-zai SessionEnd runtime readiness = %+v, want ready bounded adapter with fixture proof", sessionEnd)
 	}
 	gate := findHookGateReadiness(authority.PreToolUseReadiness, "claude_zai")
 	if gate == nil || gate.Status != "native_blocking" || !gate.NativeBlock || !gate.Installed {

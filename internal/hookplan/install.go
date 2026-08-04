@@ -767,8 +767,7 @@ func hookIsCompoundEvent(hook any, event string) bool {
 	if event == "SessionEnd" {
 		trimmed := strings.TrimSpace(command)
 		return trimmed == `"$HOME/.claude/hooks/SessionReceipt.hook.ts"` ||
-			strings.Contains(command, " hook session-end-adapter --live") ||
-			strings.Contains(command, " hook session-end --live")
+			isCompoundSessionEndCommand(trimmed)
 	}
 	verb := map[string]string{
 		"SessionStart":     "session-start",
@@ -778,6 +777,56 @@ func hookIsCompoundEvent(hook any, event string) bool {
 	}[event]
 	marker := "hook " + verb + " --live"
 	return strings.Contains(command, marker)
+}
+
+func isCompoundSessionEndCommand(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	for _, verb := range []string{"session-end-adapter", "session-end"} {
+		marker := " hook " + verb + " --live --harness "
+		markerAt := strings.LastIndex(trimmed, marker)
+		if markerAt < 0 {
+			continue
+		}
+		executable := strings.TrimSpace(trimmed[:markerAt])
+		harnessName := strings.TrimSpace(trimmed[markerAt+len(marker):])
+		if !isClaudeFamilyHarnessName(harnessName) || !isCompoundExecutableToken(executable) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isClaudeFamilyHarnessName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "claude-code", "claude_code",
+		"claude-zai", "claude_zai",
+		"claude-minimax", "claude_minimax",
+		"claude-qwen", "claude_qwen":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCompoundExecutableToken(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	if strings.HasPrefix(token, "'") {
+		if !strings.HasSuffix(token, "'") || len(token) < 2 {
+			return false
+		}
+		decoded := strings.ReplaceAll(token[1:len(token)-1], `'\''`, `'`)
+		if shellQuote(decoded) != token {
+			return false
+		}
+		token = decoded
+	} else if strings.ContainsAny(token, " \t\r\n'\"`$;&|<>") {
+		return false
+	}
+	return filepath.Base(filepath.Clean(token)) == "compound"
 }
 
 func reconcileHookEventGroups(

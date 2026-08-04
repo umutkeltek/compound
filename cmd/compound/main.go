@@ -3712,7 +3712,7 @@ func installedHookRuntimeSupport() []contract.HookRuntimeSupport {
 			hookRuntimeSupport(harnessName, "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", true),
 			hookRuntimeSupport(harnessName, "PreToolUse", "fixtures/hooks/pre-tool-use.claude.json", true),
 			hookRuntimeSupport(harnessName, "PostToolUse", "fixtures/hooks/post-tool-use.json", true),
-			hookRuntimeSupport(harnessName, "SessionEnd", "", true))
+			hookRuntimeSupport(harnessName, "SessionEnd", "fixtures/hooks/session-end.json", true))
 	}
 	return append(supports,
 		hookRuntimeSupport("codex", "SessionStart", "fixtures/hooks/session-start.json", true),

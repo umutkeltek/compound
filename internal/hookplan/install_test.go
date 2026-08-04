@@ -247,6 +247,7 @@ func TestSessionEndInstallRetiresOnlyLegacyCompoundHooksAndPreservesForeignMixed
       {"hooks": [{"type": "command", "command": "/old/compound hook session-end --live --harness claude-code"}]},
       {"hooks": [{"type": "command", "command": "/old/compound hook session-end-adapter --live --harness claude-code"}]},
       {"hooks": [{"type": "command", "command": "foreign SessionReceipt.hook.ts --audit"}]},
+	  {"hooks": [{"type": "command", "command": "foreign-wrapper hook session-end-adapter --live --harness claude_code"}]},
       {"hooks": [{"type": "command", "command": "foreign-only"}]}
     ]
   }
@@ -283,7 +284,7 @@ func assertSessionEndInstallShape(t *testing.T, settingsPath string) {
 			hook := rawHook.(map[string]any)
 			command, _ := hook["command"].(string)
 			switch {
-			case strings.Contains(command, " hook session-end-adapter --live"):
+			case command == HookCommandForEvent("/opt/compound", "claude-code", "SessionEnd"):
 				counts["adapter"]++
 			case command == `"$HOME/.claude/hooks/SessionReceipt.hook.ts"`:
 				counts["legacy"]++
@@ -297,7 +298,12 @@ func assertSessionEndInstallShape(t *testing.T, settingsPath string) {
 	if counts["adapter"] != 1 || counts["legacy"] != 0 || counts["direct"] != 0 {
 		t.Fatalf("managed SessionEnd counts = %+v, want one adapter and no retired hooks", counts)
 	}
-	for _, foreign := range []string{"foreign-mixed", "foreign SessionReceipt.hook.ts --audit", "foreign-only"} {
+	for _, foreign := range []string{
+		"foreign-mixed",
+		"foreign SessionReceipt.hook.ts --audit",
+		"foreign-wrapper hook session-end-adapter --live --harness claude_code",
+		"foreign-only",
+	} {
 		if counts[foreign] != 1 {
 			t.Fatalf("foreign SessionEnd hook %q count=%d; all counts=%+v", foreign, counts[foreign], counts)
 		}
