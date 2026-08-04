@@ -1233,8 +1233,8 @@ func TestRenderedIncludedListMarksDemotedRefsOnly(t *testing.T) {
 }
 
 // TestRenderInjectionActiveDecisionsRenderCountNotBareIDs pins the demotion: the
-// section states how much law is in force and how to resolve it, and spends no budget
-// on unranked opaque `decision://…` ids.
+// section states how many refs the ContextPack selected and how to resolve one, and
+// spends no budget on opaque `decision://…` ids.
 func TestRenderInjectionActiveDecisionsRenderCountNotBareIDs(t *testing.T) {
 	refs := make([]string, 0, 74)
 	for i := 0; i < 74; i++ {
@@ -1249,7 +1249,7 @@ func TestRenderInjectionActiveDecisionsRenderCountNotBareIDs(t *testing.T) {
 	if !strings.Contains(text, "## Active Decisions") {
 		t.Fatalf("injection missing Active Decisions section:\n%s", text)
 	}
-	if !strings.Contains(text, "74 active decision(s) in force") {
+	if !strings.Contains(text, "74 decision refs carried by this ContextPack") {
 		t.Fatalf("injection missing active decision count:\n%s", text)
 	}
 	if !strings.Contains(text, "compound decisions show <id>") {
@@ -1267,13 +1267,13 @@ func TestRenderInjectionActiveDecisionsRenderCountNotBareIDs(t *testing.T) {
 }
 
 // TestRenderInjectionEmptyActiveDecisions proves the empty case still renders the
-// section explicitly, so "no decisions in force" stays distinguishable from "the
-// section was dropped".
+// section explicitly, so "no decision refs carried by this ContextPack" stays
+// distinguishable from "the section was dropped".
 func TestRenderInjectionEmptyActiveDecisions(t *testing.T) {
 	pack := envelope.ContextPack{SummaryMD: "summary"}
 	pack.Header.ID = "ctx_test"
 	text := renderInjection(injectionRender{HookID: "hookev_test", Pack: pack, Surface: injectionSurfaceTask})
-	if !strings.Contains(text, "## Active Decisions\n- none") {
+	if !strings.Contains(text, "## Active Decisions\n- no decision refs carried by this ContextPack") {
 		t.Fatalf("injection should render an explicit empty decisions section:\n%s", text)
 	}
 }

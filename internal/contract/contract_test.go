@@ -3927,6 +3927,7 @@ func TestRuntimeContractDedupesDecisionRefsByDecisionID(t *testing.T) {
 	}
 
 	in := mkInput("control-plane")
+	in.Task = "update localization baseline"
 	ec, err := CompileWithRuntime(in, DefaultPolicy(), home, fixedNow)
 	if err != nil {
 		t.Fatal(err)
@@ -3947,6 +3948,264 @@ func TestRuntimeContractDedupesDecisionRefsByDecisionID(t *testing.T) {
 	}
 	if got := countIncluded(pack, "decision://DEC-0001"); got != 1 {
 		t.Fatalf("pack should include one included decision ref, got %d in %+v", got, pack.Included)
+	}
+}
+
+func TestControlPlaneContextRanksBoundsAndExplainsAcceptedDecisions(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	candidatesToCapture := []mem.Candidate{
+		{
+			Entity:         "decision:DEC-Z-TOP",
+			Predicate:      "decided",
+			Object:         "Claude capture session receipt reliability repair",
+			Confidence:     1,
+			Derivation:     "deterministic",
+			ClaimType:      "decision",
+			Qualifiers:     map[string]string{"decision_id": "DEC-Z-TOP", "lifecycle_status": "accepted"},
+			PromotionBasis: candidates.BasisDecisionRecord,
+			SourceTraceRef: "ev_top",
+			SnippetHash:    "top",
+			Visibility:     "ambient",
+		},
+	}
+	for i := 0; i < 13; i++ {
+		id := fmt.Sprintf("DEC-TIE-%02d", i)
+		candidatesToCapture = append(candidatesToCapture, mem.Candidate{
+			Entity:         "decision:" + id,
+			Predicate:      "decided",
+			Object:         "Claude capture event",
+			Confidence:     1,
+			Derivation:     "deterministic",
+			ClaimType:      "decision",
+			Qualifiers:     map[string]string{"decision_id": id, "lifecycle_status": "accepted"},
+			PromotionBasis: candidates.BasisDecisionRecord,
+			SourceTraceRef: "ev_" + id,
+			SnippetHash:    strings.ToLower(id),
+			Visibility:     "ambient",
+		})
+	}
+	candidatesToCapture = append(candidatesToCapture, mem.Candidate{
+		Entity:         "decision:DEC-IRRELEVANT",
+		Predicate:      "decided",
+		Object:         "Paywall checkout conversion baseline",
+		Confidence:     1,
+		Derivation:     "deterministic",
+		ClaimType:      "decision",
+		Qualifiers:     map[string]string{"decision_id": "DEC-IRRELEVANT", "lifecycle_status": "accepted"},
+		PromotionBasis: candidates.BasisDecisionRecord,
+		SourceTraceRef: "ev_irrelevant",
+		SnippetHash:    "irrelevant",
+		Visibility:     "ambient",
+	})
+	candidatesToCapture = append(candidatesToCapture, mem.Candidate{
+		Entity:         "decision:DEC-TARGET-4242",
+		Predicate:      "decided",
+		Object:         "Identifier-only sentinel",
+		Confidence:     1,
+		Derivation:     "deterministic",
+		ClaimType:      "decision",
+		Qualifiers:     map[string]string{"decision_id": "DEC-TARGET-4242", "lifecycle_status": "accepted"},
+		PromotionBasis: candidates.BasisDecisionRecord,
+		SourceTraceRef: "ev_identifier",
+		SnippetHash:    "identifier",
+		Visibility:     "ambient",
+	})
+	for _, id := range []string{"brain-D1", "brain-D2"} {
+		candidatesToCapture = append(candidatesToCapture, mem.Candidate{
+			Entity:         "decision:" + id,
+			Predicate:      "decided",
+			Object:         "Short identifier sentinel",
+			Confidence:     1,
+			Derivation:     "deterministic",
+			ClaimType:      "decision",
+			Qualifiers:     map[string]string{"decision_id": id, "lifecycle_status": "accepted"},
+			PromotionBasis: candidates.BasisDecisionRecord,
+			SourceTraceRef: "ev_" + id,
+			SnippetHash:    strings.ToLower(id),
+			Visibility:     "ambient",
+		})
+	}
+	candidatesToCapture = append(candidatesToCapture, mem.Candidate{
+		Entity:         "legacy:fallback",
+		Predicate:      "decided",
+		Object:         "Canonical fallback sentinel",
+		Confidence:     1,
+		Derivation:     "deterministic",
+		ClaimType:      "decision",
+		Qualifiers:     map[string]string{"lifecycle_status": "accepted"},
+		PromotionBasis: candidates.BasisDecisionRecord,
+		SourceTraceRef: "ev_fallback",
+		SnippetHash:    "fallback",
+		Visibility:     "ambient",
+	})
+
+	captured, err := store.Capture(candidatesToCapture, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimIDs := map[string]string{}
+	for i, candidate := range captured {
+		result, err := store.Adjudicate(candidate.ID, "promote", "test", fixedNow.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		claimIDs[decisions.CanonicalRef(*result.Claim)] = result.Claim.ID
+	}
+
+	in := Input{
+		Harness:     "codex",
+		Cwd:         "/repo/control-plane",
+		Task:        "repair claude capture session receipt reliability",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	ec, err := CompileWithRuntime(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantActive := []string{"decision://DEC-Z-TOP"}
+	for i := 0; i < 11; i++ {
+		wantActive = append(wantActive, fmt.Sprintf("decision://DEC-TIE-%02d", i))
+	}
+	if got, want := strings.Join(ec.ActiveDecisions, "\n"), strings.Join(wantActive, "\n"); got != want {
+		t.Fatalf("effective contract decisions = %v, want ranked bounded set %v", ec.ActiveDecisions, wantActive)
+	}
+	if got, want := strings.Join(pack.ActiveDecisions, "\n"), strings.Join(wantActive, "\n"); got != want {
+		t.Fatalf("context pack decisions = %v, want parity with effective contract %v", pack.ActiveDecisions, wantActive)
+	}
+	for _, ref := range wantActive {
+		if !hasIncluded(pack, ref) {
+			t.Fatalf("selected decision %s missing from included refs: %+v", ref, pack.Included)
+		}
+		wantRev := "claim:" + claimIDs[ref]
+		if got := sourceRev(ec.SourceRevisions, ref); got != wantRev {
+			t.Fatalf("effective contract source revision for %s = %q, want %q", ref, got, wantRev)
+		}
+		if got := sourceRev(pack.SourceRevisions, ref); got != wantRev {
+			t.Fatalf("context pack source revision for %s = %q, want %q", ref, got, wantRev)
+		}
+	}
+
+	for _, ref := range []string{"decision://DEC-TIE-11", "decision://DEC-TIE-12"} {
+		wantReason := "accepted decision from Compound ledger omitted: relevant but outside 12-ref task context budget"
+		if got := exclusionReason(ec.Excluded, ref); got != wantReason {
+			t.Fatalf("effective contract budget exclusion for %s = %q, want %q", ref, got, wantReason)
+		}
+		if got := exclusionReason(pack.Excluded, ref); got != wantReason {
+			t.Fatalf("context pack budget exclusion for %s = %q, want %q", ref, got, wantReason)
+		}
+		if hasIncluded(pack, ref) || sourceRev(ec.SourceRevisions, ref) != "" || sourceRev(pack.SourceRevisions, ref) != "" {
+			t.Fatalf("budget-omitted decision %s leaked into included refs or source revisions", ref)
+		}
+	}
+
+	irrelevantRef := "decision://DEC-IRRELEVANT"
+	wantIrrelevantReason := "accepted decision from Compound ledger omitted: no task relevance"
+	if got := exclusionReason(ec.Excluded, irrelevantRef); got != wantIrrelevantReason {
+		t.Fatalf("effective contract irrelevant exclusion = %q, want %q", got, wantIrrelevantReason)
+	}
+	if got := exclusionReason(pack.Excluded, irrelevantRef); got != wantIrrelevantReason {
+		t.Fatalf("context pack irrelevant exclusion = %q, want %q", got, wantIrrelevantReason)
+	}
+	if hasIncluded(pack, irrelevantRef) || sourceRev(ec.SourceRevisions, irrelevantRef) != "" || sourceRev(pack.SourceRevisions, irrelevantRef) != "" {
+		t.Fatalf("irrelevant decision leaked into included refs or source revisions")
+	}
+
+	structuralOnly := in
+	structuralOnly.Task = "inspect accepted decision lifecycle status"
+	structuralEC, err := CompileWithRuntime(structuralOnly, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(structuralEC.ActiveDecisions) != 0 {
+		t.Fatalf("structural ledger vocabulary manufactured task relevance: %v", structuralEC.ActiveDecisions)
+	}
+
+	exactID := in
+	exactID.Task = "apply DEC-TARGET-4242"
+	exactIDEC, err := CompileWithRuntime(exactID, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(exactIDEC.ActiveDecisions, "\n"), "decision://DEC-TARGET-4242"; got != want {
+		t.Fatalf("exact decision id lookup = %v, want only %s", exactIDEC.ActiveDecisions, want)
+	}
+
+	shortID := in
+	shortID.Task = "apply brain-D1"
+	shortIDEC, err := CompileWithRuntime(shortID, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(shortIDEC.ActiveDecisions, "\n"), "decision://brain-D1"; got != want {
+		t.Fatalf("short decision id lookup = %v, want only %s", shortIDEC.ActiveDecisions, want)
+	}
+
+	fallbackRef := ""
+	for ref, claimID := range claimIDs {
+		if strings.HasSuffix(ref, claimID) {
+			fallbackRef = ref
+			break
+		}
+	}
+	if fallbackRef == "" {
+		t.Fatal("missing canonical fallback decision ref")
+	}
+	fallbackID := in
+	fallbackID.Task = "apply " + fallbackRef
+	fallbackIDEC, err := CompileWithRuntime(fallbackID, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(fallbackIDEC.ActiveDecisions, "\n"); got != fallbackRef {
+		t.Fatalf("claim-id fallback lookup = %v, want only %s", fallbackIDEC.ActiveDecisions, fallbackRef)
+	}
+
+	emptyTask := in
+	emptyTask.Task = ""
+	emptyEC, err := CompileWithRuntime(emptyTask, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(emptyEC.ActiveDecisions) != 0 {
+		t.Fatalf("empty task selected decisions: %v", emptyEC.ActiveDecisions)
+	}
+	for ref := range claimIDs {
+		if got, want := exclusionReason(emptyEC.Excluded, ref), "accepted decision from Compound ledger omitted: no task relevance"; got != want {
+			t.Fatalf("empty-task exclusion for %s = %q, want %q", ref, got, want)
+		}
+		if got := sourceRev(emptyEC.SourceRevisions, ref); got != "" {
+			t.Fatalf("empty task leaked source revision for %s: %q", ref, got)
+		}
+	}
+}
+
+func TestTaskMentionsDecisionIdentityRequiresWholeIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		task string
+		want bool
+	}{
+		{task: "apply brain-D1", want: true},
+		{task: "apply `brain-D1`", want: true},
+		{task: "apply decision://brain-D1", want: true},
+		{task: "apply xbrain-D1", want: false},
+		{task: "apply brain-D10", want: false},
+		{task: "apply brain-D1-extra", want: false},
+	} {
+		if got := taskMentionsDecisionIdentity(tc.task, "brain-D1"); got != tc.want {
+			t.Errorf("taskMentionsDecisionIdentity(%q) = %v, want %v", tc.task, got, tc.want)
+		}
 	}
 }
 
@@ -4074,12 +4333,16 @@ func countStrings(values []string, want string) int {
 }
 
 func hasExcluded(pack envelope.ContextPack, ref string) bool {
-	for _, exc := range pack.Excluded {
-		if exc.Ref == ref && exc.Reason != "" {
-			return true
+	return exclusionReason(pack.Excluded, ref) != ""
+}
+
+func exclusionReason(excluded []envelope.ExcludedRef, ref string) string {
+	for _, exc := range excluded {
+		if exc.Ref == ref {
+			return exc.Reason
 		}
 	}
-	return false
+	return ""
 }
 
 func writeOSAdaptationRuleFixture(t *testing.T) string {

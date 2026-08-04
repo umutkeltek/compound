@@ -2048,6 +2048,7 @@ func capabilityOfferConstraints(values []capgraph.SurfacingConstraint) []envelop
 
 const (
 	maxContextMemoryRefs             = 5
+	maxContextDecisionRefs           = 12
 	maxContextCapabilityOffers       = 12
 	maxContextExternalRepoIntakeRefs = 5
 	// maxContextNegativeCards bounds the negatives section — scoped surfacing only,
@@ -3170,30 +3171,21 @@ func boundedSummaryText(text string) string {
 }
 
 func loadDecisionRefsFromView(in Input, view *mem.CurrentView, productFence productRecallFence) ([]string, []envelope.SourceRev, []envelope.ExcludedRef, error) {
-	claims := view.Claims()
-	claims = decisionstate.AllActiveDecisions(claims)
-	byRef := map[string]mem.Claim{}
-	for _, c := range claims {
-		if c.ClaimType != "decision" || c.Qualifiers == nil || canonicalDecisionStatus(c.Qualifiers["lifecycle_status"]) != "accepted" {
-			continue
-		}
-		id := strings.TrimSpace(c.Qualifiers["decision_id"])
-		if id == "" {
-			id = c.ID
-		}
-		ref := "decision://" + id
-		if prior, ok := byRef[ref]; !ok || c.Seq > prior.Seq || (c.Seq == prior.Seq && c.ID > prior.ID) {
-			byRef[ref] = c
-		}
-	}
+	byRef := decisionstate.ActiveByRef(view.Claims())
 	refs := make([]string, 0, len(byRef))
 	for ref := range byRef {
 		refs = append(refs, ref)
 	}
 	sort.Strings(refs)
-	active := make([]string, 0, len(refs))
+	type rankedDecision struct {
+		ref   string
+		claim mem.Claim
+		score float64
+	}
+
+	relevant := make([]rankedDecision, 0, len(refs))
 	var excluded []envelope.ExcludedRef
-	taskTokens := memoryTextTokens(in.Task + " " + filepath.Base(in.Cwd) + " " + productFence.Entity)
+	taskTokens := memoryTextTokens(in.Task)
 	for _, ref := range refs {
 		claim := byRef[ref]
 		if !productRecallFenceAllowsClaim(productFence, claim) {
@@ -3203,50 +3195,108 @@ func loadDecisionRefsFromView(in Input, view *mem.CurrentView, productFence prod
 			})
 			continue
 		}
-		if decisionScopeIncludesAll(in.RepoKind) || decisionRelevantToTask(claim, taskTokens) {
-			active = append(active, ref)
+		score := decisionTaskOverlapScore(claim, in.Task, taskTokens, ref)
+		if score <= 0 {
+			excluded = append(excluded, envelope.ExcludedRef{
+				Ref:    ref,
+				Reason: "accepted decision from Compound ledger omitted: no task relevance",
+			})
 			continue
 		}
-		excluded = append(excluded, envelope.ExcludedRef{
-			Ref:    ref,
-			Reason: "accepted decision from Compound ledger omitted: not relevant to repo/task scoped context",
+		relevant = append(relevant, rankedDecision{
+			ref:   ref,
+			claim: claim,
+			score: score,
 		})
 	}
-	revs := make([]envelope.SourceRev, 0, len(refs))
-	for _, ref := range active {
-		revs = append(revs, envelope.SourceRev{Source: ref, Rev: "claim:" + byRef[ref].ID})
+	sort.Slice(relevant, func(i, j int) bool {
+		if relevant[i].score != relevant[j].score {
+			return relevant[i].score > relevant[j].score
+		}
+		return relevant[i].ref < relevant[j].ref
+	})
+
+	selected := relevant
+	if len(selected) > maxContextDecisionRefs {
+		selected = selected[:maxContextDecisionRefs]
+		for _, decision := range relevant[maxContextDecisionRefs:] {
+			excluded = append(excluded, envelope.ExcludedRef{
+				Ref:    decision.ref,
+				Reason: fmt.Sprintf("accepted decision from Compound ledger omitted: relevant but outside %d-ref task context budget", maxContextDecisionRefs),
+			})
+		}
+	}
+
+	active := make([]string, 0, len(selected))
+	revs := make([]envelope.SourceRev, 0, len(selected))
+	for _, decision := range selected {
+		active = append(active, decision.ref)
+		revs = append(revs, envelope.SourceRev{Source: decision.ref, Rev: "claim:" + decision.claim.ID})
 	}
 	return active, revs, excluded, nil
 }
 
-func decisionScopeIncludesAll(repoKind string) bool {
-	return strings.TrimSpace(repoKind) == "control-plane"
-}
-
-func decisionRelevantToTask(claim mem.Claim, taskTokens map[string]bool) bool {
-	if len(taskTokens) == 0 {
-		return false
-	}
-	decisionTokens := memoryTextTokens(claim.Entity + " " + claim.Predicate + " " + claim.Object)
-	for key, value := range claim.Qualifiers {
-		for token := range memoryTextTokens(key + " " + value) {
+// decisionTaskOverlapScore ranks only meaning-bearing decision text against the task.
+// Structural ledger vocabulary (decision, decided, lifecycle_status, accepted) is shared by
+// every decision and would manufacture relevance for an arbitrary alphabetical slice. An exact
+// canonical id mention receives priority without scoring shared identity fragments.
+func decisionTaskOverlapScore(claim mem.Claim, task string, taskTokens map[string]bool, canonicalRef string) float64 {
+	decisionID := strings.TrimPrefix(canonicalRef, decisionstate.RefPrefix)
+	exactIdentity := taskMentionsDecisionIdentity(task, decisionID)
+	decisionTokens := memoryTextTokens(claim.Object)
+	addTokens := func(value string) {
+		for token := range memoryTextTokens(value) {
 			decisionTokens[token] = true
 		}
 	}
+	if memoryKey(claim.Predicate) != "decided" {
+		addTokens(claim.Predicate)
+	}
+	if claim.Qualifiers != nil {
+		for _, key := range []string{"domain", "product", "product_id", "project", "project_id", "scope", "tags", "topic"} {
+			addTokens(claim.Qualifiers[key])
+		}
+	}
+
+	score := 0.0
 	for token := range taskTokens {
 		if decisionTokens[token] {
+			score++
+		}
+	}
+	if exactIdentity {
+		// Exact identity always outranks lexical relevance without giving shared id
+		// fragments (DEC, brain, claim) relevance of their own.
+		score += float64(len(taskTokens) + 1)
+	}
+	return score
+}
+
+func taskMentionsDecisionIdentity(task, decisionID string) bool {
+	task = strings.ToLower(task)
+	decisionID = strings.ToLower(strings.TrimSpace(decisionID))
+	if task == "" || decisionID == "" {
+		return false
+	}
+	for offset := 0; offset <= len(task)-len(decisionID); {
+		relative := strings.Index(task[offset:], decisionID)
+		if relative < 0 {
+			return false
+		}
+		start := offset + relative
+		end := start + len(decisionID)
+		beforeBoundary := start == 0 || !decisionIdentityByte(task[start-1])
+		afterBoundary := end == len(task) || !decisionIdentityByte(task[end])
+		if beforeBoundary && afterBoundary {
 			return true
 		}
+		offset = start + 1
 	}
 	return false
 }
 
-func canonicalDecisionStatus(status string) string {
-	status = strings.ToLower(strings.TrimSpace(status))
-	if status == "" {
-		return "accepted"
-	}
-	return status
+func decisionIdentityByte(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') || value == '_' || value == '-'
 }
 
 type codexHooksFile struct {

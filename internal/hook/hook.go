@@ -2432,22 +2432,23 @@ func writeNegativesList(b *strings.Builder, cards []envelope.NegativeCard) {
 	}
 }
 
-// writeActiveDecisionsPointer renders the active-decision COUNT plus how to resolve
-// one, instead of a list of bare `decision://…` ids.
-//
-// The ids are not task-ranked (internal/contract assigns pack.ActiveDecisions the
-// snapshot order), so listing the first N surfaced N arbitrary opaque refs carrying no
-// content an executor could act on — while consuming the single largest fixed slice of
-// a 6000-char budget. The full authoritative set stays in the ContextPack JSON; this
-// line says how much law is in force and how to read any of it on demand.
+// writeActiveDecisionsPointer renders the selected-decision COUNT plus how to resolve
+// one, instead of a list of bare `decision://…` ids. New packs are task-ranked, but
+// this unversioned renderer can also receive legacy packs, so it only describes the
+// selected set it actually holds. An opaque id carries no decision content an executor
+// can act on. The full accepted inventory remains in decision authority.
 func writeActiveDecisionsPointer(b *strings.Builder, refs []string) {
 	b.WriteString("\n## Active Decisions\n")
 	if len(refs) == 0 {
-		b.WriteString("- none\n")
+		b.WriteString("- no decision refs carried by this ContextPack\n")
 		return
 	}
-	fmt.Fprintf(b, "- %d active decision(s) in force; ids are not task-ranked, so none are listed here\n", len(refs))
-	b.WriteString("- resolve any of them from the ContextPack JSON `active_decisions`, or `compound decisions show <id>`\n")
+	label := "refs"
+	if len(refs) == 1 {
+		label = "ref"
+	}
+	fmt.Fprintf(b, "- %d decision %s carried by this ContextPack\n", len(refs), label)
+	b.WriteString("- current lookup (if active): `compound decisions show <id>`; frozen ref/rev stay in ContextPack JSON\n")
 }
 
 func writeCapabilityOfferList(b *strings.Builder, offers []envelope.CapabilityOffer) {

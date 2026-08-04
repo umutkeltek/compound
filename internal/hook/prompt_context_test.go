@@ -182,11 +182,11 @@ func TestRenderInjectionPrioritizesMeaningWithinWholeContextBound(t *testing.T) 
 		t.Fatalf("rendered injection chars=%d, max=%d", got, MaxContextChars)
 	}
 	// Decisions are deliberately rendered as a count + resolution pointer, never as
-	// bare unranked ids — the budget they used to consume funds the negatives section.
+	// bare opaque ids — the budget they used to consume funds the negatives section.
 	if strings.Contains(text, decisionRef) {
 		t.Fatalf("bounded injection must not list bare decision ids:\n%s", text)
 	}
-	if !strings.Contains(text, "1 active decision(s) in force") {
+	if !strings.Contains(text, "1 decision ref carried by this ContextPack") {
 		t.Fatalf("bounded injection dropped the decisions count line:\n%s", text)
 	}
 	for _, want := range []string{positionLine, "PROMPT_REQUIRED_HIGH_SIGNAL", "PROMPT_AVOID_HIGH_SIGNAL", "PROMPT_NEGATIVE_HIGH_SIGNAL", "PROMPT_CAPABILITY_HIGH_SIGNAL"} {
@@ -278,7 +278,7 @@ func TestRenderInjectionReservesBudgetAcrossPathologicalHighSignalSections(t *te
 	}
 	// The decisions section renders a count, not ref content, so its reservation is
 	// proven by the count line surviving rather than by a passthrough marker.
-	if !strings.Contains(text, "1 active decision(s) in force") {
+	if !strings.Contains(text, "1 decision ref carried by this ContextPack") {
 		t.Fatalf("pathological injection starved the decisions count line:\n%s", text)
 	}
 }

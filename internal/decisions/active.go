@@ -1,9 +1,63 @@
 package decisions
 
 import (
+	"strings"
+
 	"compound/internal/mem"
 	"compound/internal/policy"
 )
+
+const RefPrefix = "decision://"
+
+// CanonicalRef is the one served identity for a decision claim. Imported decisions
+// keep their durable decision_id; legacy decision-shaped claims fall back to the
+// claim id so every emitted ref still resolves exactly.
+func CanonicalRef(claim mem.Claim) string {
+	id := ""
+	if claim.Qualifiers != nil {
+		id = strings.TrimSpace(claim.Qualifiers["decision_id"])
+	}
+	if id == "" {
+		id = strings.TrimSpace(claim.ID)
+	}
+	return RefPrefix + id
+}
+
+// ActiveByRef projects accepted, non-superseded decisions onto CanonicalRef and
+// collapses duplicate imports to the newest claim revision.
+func ActiveByRef(claims []mem.Claim) map[string]mem.Claim {
+	byRef := map[string]mem.Claim{}
+	for _, claim := range AllActiveDecisions(claims) {
+		ref := CanonicalRef(claim)
+		if prior, ok := byRef[ref]; !ok || claim.Seq > prior.Seq || (claim.Seq == prior.Seq && claim.ID > prior.ID) {
+			byRef[ref] = claim
+		}
+	}
+	return byRef
+}
+
+// ResolveActive resolves exactly one canonical ref, decision id, or claim id from
+// the active decision projection. It never falls back to a full inventory search.
+func ResolveActive(claims []mem.Claim, query string) (mem.Claim, string, bool) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return mem.Claim{}, "", false
+	}
+	byRef := ActiveByRef(claims)
+	ref := query
+	if !strings.HasPrefix(ref, RefPrefix) {
+		ref = RefPrefix + ref
+	}
+	if claim, ok := byRef[ref]; ok {
+		return claim, ref, true
+	}
+	for candidateRef, claim := range byRef {
+		if query == claim.ID {
+			return claim, candidateRef, true
+		}
+	}
+	return mem.Claim{}, "", false
+}
 
 // AllActiveDecisions returns accepted decision claims that are NOT superseded
 // by any other current decision record's supersedes qualifier.

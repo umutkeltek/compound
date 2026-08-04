@@ -12,6 +12,7 @@
 //   - this file                     (cmdDecisions — third verb extracted)
 //
 // Subcommand surface (all in cmdDecisions's switch):
+//   - show
 //   - candidate-plan
 //   - import
 //   - authority
@@ -100,6 +101,52 @@ func cmdDecisions(args []string) {
 	}
 	store, homePath := openMemStore()
 	switch sub {
+	case "show":
+		if len(args) < 2 || strings.TrimSpace(args[1]) == "" || strings.HasPrefix(args[1], "--") {
+			fmt.Fprintln(os.Stderr, "usage: compound decisions show <decision://ref|decision_id|claim_id> [--json]")
+			os.Exit(2)
+		}
+		claims, err := store.AllCurrent()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions show:", err)
+			os.Exit(1)
+		}
+		claim, ref, ok := decisions.ResolveActive(claims, args[1])
+		if !ok {
+			fmt.Fprintf(os.Stderr, "decisions show: active decision %q not found\n", args[1])
+			os.Exit(1)
+		}
+		lifecycle := decisions.LifecycleFromClaim(claim)
+		if hasFlag(args[2:], "--json") {
+			payload := struct {
+				Ref       string              `json:"ref"`
+				Claim     mem.Claim           `json:"claim"`
+				Lifecycle decisions.Lifecycle `json:"lifecycle"`
+			}{Ref: ref, Claim: claim, Lifecycle: lifecycle}
+			if err := json.NewEncoder(os.Stdout).Encode(payload); err != nil {
+				fmt.Fprintln(os.Stderr, "decisions show:", err)
+				os.Exit(1)
+			}
+			return
+		}
+		fmt.Printf("# decision\n\n")
+		fmt.Printf("- ref: %s\n", ref)
+		fmt.Printf("- claim_id: %s\n", claim.ID)
+		fmt.Printf("- kind: %s\n", lifecycle.Kind)
+		fmt.Printf("- status: %s\n", lifecycle.Status)
+		if lifecycle.Scope != "" {
+			fmt.Printf("- scope: %s\n", lifecycle.Scope)
+		}
+		if lifecycle.Owner != "" {
+			fmt.Printf("- owner: %s\n", lifecycle.Owner)
+		}
+		fmt.Printf("- choice: %s\n", strings.Join(strings.Fields(claim.Object), " "))
+		if lifecycle.Falsifier != "" {
+			fmt.Printf("- falsifier: %s\n", strings.Join(strings.Fields(lifecycle.Falsifier), " "))
+		}
+		if lifecycle.ReviewTrigger != "" {
+			fmt.Printf("- review_trigger: %s\n", strings.Join(strings.Fields(lifecycle.ReviewTrigger), " "))
+		}
 	case "candidate-plan":
 		candidateID := valueFlag(args[1:], "--candidate")
 		targetPath := valueFlag(args[1:], "--target")

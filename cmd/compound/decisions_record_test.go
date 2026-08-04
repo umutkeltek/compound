@@ -1,9 +1,70 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"compound/internal/candidates"
+	"compound/internal/mem"
 )
+
+func TestCmdDecisionsShowResolvesOneExactActiveDecision(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC)
+	captured, err := store.Capture([]mem.Candidate{
+		{
+			Entity: "decision:brain-D1", Predicate: "decided", Object: "Target short-id decision",
+			Confidence: 1, Derivation: "deterministic", ClaimType: "decision",
+			Qualifiers:     map[string]string{"decision_id": "brain-D1", "lifecycle_status": "accepted"},
+			PromotionBasis: candidates.BasisDecisionRecord, SourceTraceRef: "ev_target", SnippetHash: "target", Visibility: "ambient",
+		},
+		{
+			Entity: "decision:brain-D2", Predicate: "decided", Object: "Unrelated short-id decision",
+			Confidence: 1, Derivation: "deterministic", ClaimType: "decision",
+			Qualifiers:     map[string]string{"decision_id": "brain-D2", "lifecycle_status": "accepted"},
+			PromotionBasis: candidates.BasisDecisionRecord, SourceTraceRef: "ev_unrelated", SnippetHash: "unrelated", Visibility: "ambient",
+		},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var targetClaimID string
+	for i, candidate := range captured {
+		result, err := store.Adjudicate(candidate.ID, "promote", "test", now.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			targetClaimID = result.Claim.ID
+		}
+	}
+
+	for _, query := range []string{"decision://brain-D1", "brain-D1", targetClaimID} {
+		out := captureStdout(t, func() {
+			cmdDecisions([]string{"show", query, "--json"})
+		})
+		var got struct {
+			Ref   string    `json:"ref"`
+			Claim mem.Claim `json:"claim"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("decode decisions show JSON for %q: %v\n%s", query, err, out)
+		}
+		if got.Ref != "decision://brain-D1" || got.Claim.ID != targetClaimID || got.Claim.Object != "Target short-id decision" {
+			t.Fatalf("decisions show %q resolved wrong record: %+v", query, got)
+		}
+		if strings.Contains(out, "Unrelated short-id decision") {
+			t.Fatalf("decisions show %q re-expanded the full inventory:\n%s", query, out)
+		}
+	}
+}
 
 // TestCmdDecisionsRecordWritesGrantAndCitesIt proves `compound decisions
 // record --kind grant ...` writes a decision record under
