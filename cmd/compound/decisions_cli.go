@@ -106,46 +106,14 @@ func cmdDecisions(args []string) {
 			fmt.Fprintln(os.Stderr, "usage: compound decisions show <decision://ref|decision_id|claim_id> [--json]")
 			os.Exit(2)
 		}
-		claims, err := store.AllCurrent()
+		record, err := decisions.LoadActive(store, args[1])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "decisions show:", err)
 			os.Exit(1)
 		}
-		claim, ref, ok := decisions.ResolveActive(claims, args[1])
-		if !ok {
-			fmt.Fprintf(os.Stderr, "decisions show: active decision %q not found\n", args[1])
+		if err := record.Render(os.Stdout, hasFlag(args[2:], "--json")); err != nil {
+			fmt.Fprintln(os.Stderr, "decisions show:", err)
 			os.Exit(1)
-		}
-		lifecycle := decisions.LifecycleFromClaim(claim)
-		if hasFlag(args[2:], "--json") {
-			payload := struct {
-				Ref       string              `json:"ref"`
-				Claim     mem.Claim           `json:"claim"`
-				Lifecycle decisions.Lifecycle `json:"lifecycle"`
-			}{Ref: ref, Claim: claim, Lifecycle: lifecycle}
-			if err := json.NewEncoder(os.Stdout).Encode(payload); err != nil {
-				fmt.Fprintln(os.Stderr, "decisions show:", err)
-				os.Exit(1)
-			}
-			return
-		}
-		fmt.Printf("# decision\n\n")
-		fmt.Printf("- ref: %s\n", ref)
-		fmt.Printf("- claim_id: %s\n", claim.ID)
-		fmt.Printf("- kind: %s\n", lifecycle.Kind)
-		fmt.Printf("- status: %s\n", lifecycle.Status)
-		if lifecycle.Scope != "" {
-			fmt.Printf("- scope: %s\n", lifecycle.Scope)
-		}
-		if lifecycle.Owner != "" {
-			fmt.Printf("- owner: %s\n", lifecycle.Owner)
-		}
-		fmt.Printf("- choice: %s\n", strings.Join(strings.Fields(claim.Object), " "))
-		if lifecycle.Falsifier != "" {
-			fmt.Printf("- falsifier: %s\n", strings.Join(strings.Fields(lifecycle.Falsifier), " "))
-		}
-		if lifecycle.ReviewTrigger != "" {
-			fmt.Printf("- review_trigger: %s\n", strings.Join(strings.Fields(lifecycle.ReviewTrigger), " "))
 		}
 	case "candidate-plan":
 		candidateID := valueFlag(args[1:], "--candidate")

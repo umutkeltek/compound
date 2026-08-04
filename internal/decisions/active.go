@@ -1,6 +1,9 @@
 package decisions
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"strings"
 
 	"compound/internal/mem"
@@ -8,6 +11,55 @@ import (
 )
 
 const RefPrefix = "decision://"
+
+// ActiveRecord is the exact read model served for one active decision.
+type ActiveRecord struct {
+	Ref       string    `json:"ref"`
+	Claim     mem.Claim `json:"claim"`
+	Lifecycle Lifecycle `json:"lifecycle"`
+}
+
+// LoadActive reads and resolves one active decision from the canonical memory store.
+func LoadActive(store *mem.Store, query string) (ActiveRecord, error) {
+	claims, err := store.AllCurrent()
+	if err != nil {
+		return ActiveRecord{}, err
+	}
+	claim, ref, ok := ResolveActive(claims, query)
+	if !ok {
+		return ActiveRecord{}, fmt.Errorf("active decision %q not found", query)
+	}
+	return ActiveRecord{Ref: ref, Claim: claim, Lifecycle: LifecycleFromClaim(claim)}, nil
+}
+
+// Render writes the stable JSON or Markdown representation of one exact decision.
+func (record ActiveRecord) Render(w io.Writer, asJSON bool) error {
+	if asJSON {
+		return json.NewEncoder(w).Encode(record)
+	}
+	var body strings.Builder
+	fmt.Fprintln(&body, "# decision")
+	fmt.Fprintln(&body)
+	fmt.Fprintf(&body, "- ref: %s\n", record.Ref)
+	fmt.Fprintf(&body, "- claim_id: %s\n", record.Claim.ID)
+	fmt.Fprintf(&body, "- kind: %s\n", record.Lifecycle.Kind)
+	fmt.Fprintf(&body, "- status: %s\n", record.Lifecycle.Status)
+	if record.Lifecycle.Scope != "" {
+		fmt.Fprintf(&body, "- scope: %s\n", record.Lifecycle.Scope)
+	}
+	if record.Lifecycle.Owner != "" {
+		fmt.Fprintf(&body, "- owner: %s\n", record.Lifecycle.Owner)
+	}
+	fmt.Fprintf(&body, "- choice: %s\n", strings.Join(strings.Fields(record.Claim.Object), " "))
+	if record.Lifecycle.Falsifier != "" {
+		fmt.Fprintf(&body, "- falsifier: %s\n", strings.Join(strings.Fields(record.Lifecycle.Falsifier), " "))
+	}
+	if record.Lifecycle.ReviewTrigger != "" {
+		fmt.Fprintf(&body, "- review_trigger: %s\n", strings.Join(strings.Fields(record.Lifecycle.ReviewTrigger), " "))
+	}
+	_, err := io.WriteString(w, body.String())
+	return err
+}
 
 // CanonicalRef is the one served identity for a decision claim. Imported decisions
 // keep their durable decision_id; legacy decision-shaped claims fall back to the
