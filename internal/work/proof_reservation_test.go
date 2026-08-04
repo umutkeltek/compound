@@ -213,7 +213,7 @@ func TestCloseFailedWorkRejectsProofShapedSucceededAttemptWithoutCommittedFinali
 	}
 }
 
-func TestProofResourceCompleteCanonicalFailedReportReleasesWithoutVerification(t *testing.T) {
+func TestProofResourceCompleteCanonicalAllFailedNullProofRefsReleasesWithoutVerification(t *testing.T) {
 	s := newStore(t)
 	first := claimedProofWork(t, s, "complete failed proof work", proofActorAlpha, fixedNow)
 	successorWork := claimedProofWork(t, s, "proof after complete failure", proofActorBeta, fixedNow.Add(time.Second))
@@ -231,7 +231,7 @@ func TestProofResourceCompleteCanonicalFailedReportReleasesWithoutVerification(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	reportRef, err := artifacts.Put(validOwnedProofReportJSON("failed"))
+	reportRef, err := artifacts.Put(allFailedOwnedProofReportJSONWithNullRefs())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1792,6 +1792,13 @@ func TestProofResourceCompletionRejectsCanonicalProfileDrift(t *testing.T) {
 				steps[0]["command"] = []string{"go", "test", "./..."}
 			},
 			wantErr: "command",
+		},
+		{
+			name: "proof ref inventory mismatch",
+			mutate: func(report map[string]any) {
+				report["proof_refs"] = []string{"synthetic-proof-a"}
+			},
+			wantErr: "proof_ref inventory mismatch",
 		},
 		{
 			name: "gate proof ref mismatch",
@@ -4640,6 +4647,23 @@ func validOwnedProofReportJSON(status string) []byte {
 	if status == "failed" {
 		report["proof_refs"] = []string{"synthetic-proof-b"}
 	}
+	body, err := json.Marshal(report)
+	if err != nil {
+		panic(err)
+	}
+	return body
+}
+
+func allFailedOwnedProofReportJSONWithNullRefs() []byte {
+	report := canonicalOwnedProofReport()
+	report["base_ref"] = ""
+	report["status"] = "failed"
+	report["generated_at"] = fixedNow.Add(3 * time.Second).Format(time.RFC3339)
+	steps := report["steps"].([]map[string]any)
+	for _, step := range steps {
+		step["status"] = "failed"
+	}
+	report["proof_refs"] = nil
 	body, err := json.Marshal(report)
 	if err != nil {
 		panic(err)

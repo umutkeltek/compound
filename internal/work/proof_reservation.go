@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -4071,7 +4072,7 @@ func validateOwnedProofReportAgainstReservation(report ownedProofReport, reserva
 	if report.Status == "failed" && failedGates == 0 {
 		return fmt.Errorf("canonical_full failed report contains no failed gate")
 	}
-	if !reflect.DeepEqual(report.ProofRefs, reportProofRefs) {
+	if !slices.Equal(report.ProofRefs, reportProofRefs) {
 		return fmt.Errorf("proof_ref inventory mismatch: report=%v successful_gates=%v", report.ProofRefs, reportProofRefs)
 	}
 	generatedAt, err := time.Parse(time.RFC3339, report.GeneratedAt)
