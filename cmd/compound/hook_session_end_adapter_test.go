@@ -230,6 +230,99 @@ func TestSessionEndAdapterRejectsWorkerOverrideOutsideTestTemp(t *testing.T) {
 	}
 }
 
+func TestSessionEndAdapterNormalizesClaudeProfileAliasesBeforeAcceptance(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"claude_code":    "claude_code",
+		"claude-code":    "claude_code",
+		"claude_zai":     "claude_zai",
+		"claude-zai":     "claude_zai",
+		"claude_minimax": "claude_minimax",
+		"claude-minimax": "claude_minimax",
+		"claude_qwen":    "claude_qwen",
+		"claude-qwen":    "claude_qwen",
+	}
+	for input, want := range cases {
+		input, want := input, want
+		t.Run(input, func(t *testing.T) {
+			t.Parallel()
+			parsed, err := parseSessionEndAdapterArgs([]string{"--live", "--harness", input})
+			if err != nil {
+				t.Fatalf("parse canonical/alias harness %q: %v", input, err)
+			}
+			if parsed.Harness != want {
+				t.Fatalf("parsed harness = %q, want canonical %q", parsed.Harness, want)
+			}
+		})
+	}
+}
+
+func TestSessionEndAdapterReplayAcceptsDashedEvidenceButExecutesCanonically(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell worker fixture requires a POSIX host")
+	}
+	t.Setenv(sessionEndAdapterWorkerOverrideEnv, "1")
+	compoundHome := t.TempDir()
+	t.Setenv("COMPOUND_HOME", compoundHome)
+
+	input := []byte(`{"hook_event_name":"SessionEnd","session_id":"sess_legacy_alias"}`)
+	parent := prepareSessionEndAdapterAcceptance(
+		sessionEndAdapterArgs{Harness: "claude-zai", Timeout: time.Second},
+		sessionEndAdapterInput{HookEventName: "SessionEnd", SessionID: "sess_legacy_alias"},
+		input,
+		time.Unix(1_800_000_000, 0).UTC(),
+	)
+	// Preserve the pre-canonicalization evidence shape explicitly: replay must
+	// accept old dashed records but every new attempt and worker run is canonical.
+	parent.Harness = "claude-zai"
+	if err := persistSessionEndAdapterAcceptance(compoundHome, parent, input); err != nil {
+		t.Fatal(err)
+	}
+
+	argvPath := filepath.Join(t.TempDir(), "worker-argv.txt")
+	workerPath := filepath.Join(t.TempDir(), "successful-session-end-worker.sh")
+	worker := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nprintf '%%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionEnd\"}}'\n", argvPath)
+	if err := os.WriteFile(workerPath, []byte(worker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runSessionEndAdapterCommand(
+		[]string{"--replay", parent.ID, "--worker", workerPath},
+		strings.NewReader("must-not-be-consumed"),
+		&stdout,
+		&stderr,
+	); code != 0 {
+		t.Fatalf("replay exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var outcome sessionEndAdapterOutcomeEvidence
+	if err := json.Unmarshal(stdout.Bytes(), &outcome); err != nil {
+		t.Fatalf("decode replay outcome: %v stdout=%s", err, stdout.String())
+	}
+	events, err := eventstore.Open(compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := events.Read(outcome.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replay sessionEndAdapterAttempt
+	if err := json.Unmarshal(record.Bytes, &replay); err != nil {
+		t.Fatal(err)
+	}
+	if replay.Harness != "claude_zai" {
+		t.Fatalf("replayed attempt harness = %q, want canonical claude_zai", replay.Harness)
+	}
+	argv, err := os.ReadFile(argvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Fields(string(argv)), []string{"hook", "session-end", "--live", "--harness", "claude_zai"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("worker argv = %q, want %q", got, want)
+	}
+}
+
 func TestSessionEndAdapterRetryArgvReplaysAcceptedExactInputByID(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell worker fixture requires a POSIX host")

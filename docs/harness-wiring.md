@@ -102,6 +102,12 @@ managed command uses the HarnessRegistry identity `claude_code`. The two names
 are deliberately distinct: dashed names select an installer/profile; snake-case
 names are what live hooks pass to ContextPack and policy compilation.
 
+The same install also reconciles `SessionEnd` to exactly one bounded adapter:
+`compound hook session-end-adapter --live --harness claude_code`. It retires
+the legacy `SessionReceipt.hook.ts` shim and old direct Compound SessionEnd
+commands while preserving unrelated SessionEnd hooks, including foreign hooks
+co-located in the same group.
+
 ### Isolated Claude-family profiles
 
 Only an isolated guarded executor profile should install the blocking binding.
@@ -325,11 +331,14 @@ harness-native blocking decision and returns the policy gate exit (`3` for hold,
 Produces a **Receipt** (what was learned) and a **Transition** (what changed).
 
 ```sh
-compound hook session-end --live --harness claude_code
+compound hook session-end-adapter --live --harness claude_code
 ```
 
-This is where compounding happens: the session's learnings become durable
-spine objects that the next session's `session-start` will recall.
+The adapter durably accepts the exact input before starting the existing
+`session-end` worker, bounds worker time, records a terminal outcome, and leaves
+an exact-ID replay command on timeout or failure. This is where compounding
+happens: the session's learnings become durable spine objects that the next
+session's `session-start` will recall.
 
 ## Fixture mode (testing without a live harness)
 

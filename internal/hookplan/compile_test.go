@@ -97,6 +97,74 @@ func TestCompileSemanticPostureThroughClaudeAdapter(t *testing.T) {
 	})
 }
 
+func TestClaudeReceiptIntentionCompilesOnlyWhenSessionEndIsAttested(t *testing.T) {
+	t.Parallel()
+
+	receiptIntention := HarnessIntention("record_receipt")
+	posture := testSemanticPosture("claude-code")
+	posture.Intentions = append(posture.Intentions, receiptIntention)
+	attestation := testClaudeAttestation()
+	attestation.Features["session_end_receipt"] = true
+	compiled, err := CompileSemanticPosture(posture, attestation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCompiledIntention(t, compiled, receiptIntention, DispositionNative, []string{"SessionEnd"})
+
+	attestation.Features["session_end_receipt"] = false
+	compiled, err = CompileSemanticPosture(posture, attestation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCompiledIntention(t, compiled, receiptIntention, DispositionUnsupported, nil)
+	for _, binding := range compiled.HookPlan.Bindings {
+		if binding.Event == "SessionEnd" {
+			t.Fatalf("unattested SessionEnd leaked into desired bindings: %+v", binding)
+		}
+	}
+}
+
+func TestDefaultClaudePosturesRecordSessionEndAndCodexDoesNot(t *testing.T) {
+	t.Parallel()
+
+	for _, harnessName := range []string{"claude-code", "claude-zai", "claude-minimax", "claude-qwen"} {
+		harnessName := harnessName
+		t.Run(harnessName, func(t *testing.T) {
+			t.Parallel()
+			compiled, err := CompileDefaultPosture(DefaultPostureRequest{
+				Harness:         harnessName,
+				Registry:        harness.DefaultRegistry(),
+				HandlerRef:      "compound",
+				HandlerRevision: "sha256:handler-fixture",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertCompiledIntention(t, compiled, HarnessIntention("record_receipt"), DispositionNative, []string{"SessionEnd"})
+		})
+	}
+
+	compiled, err := CompileDefaultPosture(DefaultPostureRequest{
+		Harness:         "codex",
+		Registry:        harness.DefaultRegistry(),
+		HandlerRef:      "compound",
+		HandlerRevision: "sha256:handler-fixture",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, intention := range compiled.Intentions {
+		if intention.Intention == HarnessIntention("record_receipt") {
+			t.Fatalf("Codex default posture installed a Claude SessionEnd receipt intention: %+v", intention)
+		}
+	}
+	for _, binding := range compiled.HookPlan.Bindings {
+		if binding.Event == "SessionEnd" {
+			t.Fatalf("Codex default posture installed SessionEnd: %+v", binding)
+		}
+	}
+}
+
 func TestCompileSemanticPostureThroughCodexAdapter(t *testing.T) {
 	t.Parallel()
 

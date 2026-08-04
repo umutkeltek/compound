@@ -104,8 +104,12 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 	}
 	for i, entry := range publicReport.Entries {
 		harnessName := rep.Entries[i].Harness
-		if len(entry.Bindings) != 4 {
-			t.Fatalf("%s reports %d bindings, want all 4 lifecycle events", harnessName, len(entry.Bindings))
+		wantBindings := 5
+		if harnessName == "codex" {
+			wantBindings = 4
+		}
+		if len(entry.Bindings) != wantBindings {
+			t.Fatalf("%s reports %d bindings, want %d managed lifecycle events", harnessName, len(entry.Bindings), wantBindings)
 		}
 		foundPreTool := false
 		for _, binding := range entry.Bindings {
@@ -177,6 +181,129 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 	}
 }
 
+func TestClaudeProfilesInstallOneBoundedSessionEndAndCodexDoesNot(t *testing.T) {
+	wantHarness := map[string]string{
+		"claude-code":    "claude_code",
+		"claude-zai":     "claude_zai",
+		"claude-minimax": "claude_minimax",
+		"claude-qwen":    "claude_qwen",
+	}
+	for installerHarness, runtimeHarness := range wantHarness {
+		installerHarness, runtimeHarness := installerHarness, runtimeHarness
+		t.Run(installerHarness, func(t *testing.T) {
+			base := t.TempDir()
+			profileDir := t.TempDir()
+			first, err := InstallHooksWithConfigDir(base, "/opt/compound", "global", []string{installerHarness}, profileDir, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var sessionEnd []HookInstallBinding
+			for _, binding := range first.Entries[0].Bindings {
+				if binding.Event == "SessionEnd" {
+					sessionEnd = append(sessionEnd, binding)
+				}
+			}
+			if len(sessionEnd) != 1 {
+				t.Fatalf("%s SessionEnd bindings = %+v, want exactly one", installerHarness, sessionEnd)
+			}
+			for _, want := range []string{" hook session-end-adapter --live", " --harness " + runtimeHarness} {
+				if !strings.Contains(sessionEnd[0].Command, want) {
+					t.Fatalf("%s SessionEnd command = %q, missing %q", installerHarness, sessionEnd[0].Command, want)
+				}
+			}
+			second, err := InstallHooksWithConfigDir(base, "/opt/compound", "global", []string{installerHarness}, profileDir, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if second.Entries[0].Action != "ok" {
+				t.Fatalf("%s second install action = %q, want ok", installerHarness, second.Entries[0].Action)
+			}
+		})
+	}
+
+	report, err := InstallHooks(t.TempDir(), "/opt/compound", "global", []string{"codex"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range report.Entries[0].Bindings {
+		if binding.Event == "SessionEnd" {
+			t.Fatalf("Codex install unexpectedly contains SessionEnd: %+v", binding)
+		}
+	}
+}
+
+func TestSessionEndInstallRetiresOnlyLegacyCompoundHooksAndPreservesForeignMixedGroups(t *testing.T) {
+	base := t.TempDir()
+	profileDir := t.TempDir()
+	settingsPath := filepath.Join(profileDir, "settings.json")
+	before := `{
+  "model": "fixture/model",
+  "hooks": {
+    "SessionEnd": [
+      {"hooks": [
+        {"type": "command", "command": "\"$HOME/.claude/hooks/SessionReceipt.hook.ts\""},
+        {"type": "command", "command": "foreign-mixed"}
+      ]},
+      {"hooks": [{"type": "command", "command": "/old/compound hook session-end --live --harness claude-code"}]},
+      {"hooks": [{"type": "command", "command": "/old/compound hook session-end-adapter --live --harness claude-code"}]},
+      {"hooks": [{"type": "command", "command": "foreign SessionReceipt.hook.ts --audit"}]},
+      {"hooks": [{"type": "command", "command": "foreign-only"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallHooksWithConfigDir(base, "/opt/compound", "global", []string{"claude-code"}, profileDir, false); err != nil {
+		t.Fatal(err)
+	}
+	assertSessionEndInstallShape(t, settingsPath)
+	second, err := InstallHooksWithConfigDir(base, "/opt/compound", "global", []string{"claude-code"}, profileDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Entries[0].Action != "ok" {
+		t.Fatalf("second install action = %q, want ok", second.Entries[0].Action)
+	}
+	assertSessionEndInstallShape(t, settingsPath)
+}
+
+func assertSessionEndInstallShape(t *testing.T, settingsPath string) {
+	t.Helper()
+	cfg := readJSON(t, settingsPath)
+	hooks := cfg["hooks"].(map[string]any)
+	groups := hooks["SessionEnd"].([]any)
+	counts := map[string]int{}
+	for _, rawGroup := range groups {
+		group, ok := rawGroup.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, rawHook := range group["hooks"].([]any) {
+			hook := rawHook.(map[string]any)
+			command, _ := hook["command"].(string)
+			switch {
+			case strings.Contains(command, " hook session-end-adapter --live"):
+				counts["adapter"]++
+			case command == `"$HOME/.claude/hooks/SessionReceipt.hook.ts"`:
+				counts["legacy"]++
+			case strings.Contains(command, " hook session-end --live"):
+				counts["direct"]++
+			default:
+				counts[command]++
+			}
+		}
+	}
+	if counts["adapter"] != 1 || counts["legacy"] != 0 || counts["direct"] != 0 {
+		t.Fatalf("managed SessionEnd counts = %+v, want one adapter and no retired hooks", counts)
+	}
+	for _, foreign := range []string{"foreign-mixed", "foreign SessionReceipt.hook.ts --audit", "foreign-only"} {
+		if counts[foreign] != 1 {
+			t.Fatalf("foreign SessionEnd hook %q count=%d; all counts=%+v", foreign, counts[foreign], counts)
+		}
+	}
+}
+
 // Installer profile names use dashes because they are operator-facing launch labels,
 // while HookEvent/ContextPack harness identities use the registry's snake_case keys.
 // The installed command is the boundary between those namespaces: emitting the
@@ -222,11 +349,14 @@ func TestClaudeFamilyAdapterRegistrationsUseCanonicalRuntimeHarnessNames(t *test
 				t.Fatal(err)
 			}
 			canonical := "--harness " + runtimeHarness
-			if got := strings.Count(string(body), canonical); got != 4 {
-				t.Fatalf("%s contains %d canonical runtime commands, want 4\n%s", path, got, body)
+			if got := strings.Count(string(body), canonical); got != 5 {
+				t.Fatalf("%s contains %d canonical runtime commands, want 5\n%s", path, got, body)
 			}
 			if strings.Contains(string(body), "--harness "+installerHarness) {
 				t.Fatalf("%s still passes the operator-facing installer label to live hooks\n%s", path, body)
+			}
+			if !strings.Contains(string(body), "hook session-end-adapter --live "+canonical) {
+				t.Fatalf("%s omits the bounded SessionEnd adapter\n%s", path, body)
 			}
 		})
 	}
@@ -924,7 +1054,7 @@ func TestClaudeZaiInstallBindingsComeFromSemanticPosture(t *testing.T) {
 	for _, binding := range bindings {
 		gotEvents = append(gotEvents, binding.Event)
 	}
-	wantEvents := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"}
+	wantEvents := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"}
 	if !slices.Equal(gotEvents, wantEvents) {
 		t.Fatalf("installed native events = %v, want compiled %v", gotEvents, wantEvents)
 	}
@@ -958,7 +1088,7 @@ func TestClaudeMinimaxInstallBindingsComeFromSemanticPosture(t *testing.T) {
 	for _, binding := range bindings {
 		gotEvents = append(gotEvents, binding.Event)
 	}
-	wantEvents := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"}
+	wantEvents := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"}
 	if !slices.Equal(gotEvents, wantEvents) {
 		t.Fatalf("installed native events = %v, want compiled %v", gotEvents, wantEvents)
 	}
@@ -1139,7 +1269,7 @@ func TestInstallClaudeZaiProfileFullRosterNoClobberAndIdempotent(t *testing.T) {
 	for _, binding := range first.Entries[0].Bindings {
 		wantCommands[binding.Event] = binding.Command
 	}
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"} {
 		groups, ok := hooks[event].([]any)
 		if !ok || len(groups) == 0 {
 			t.Fatalf("claude-zai settings missing %s: %#v", event, hooks[event])
@@ -1175,7 +1305,7 @@ func TestInstallClaudeZaiProfileFullRosterNoClobberAndIdempotent(t *testing.T) {
 }
 
 // TestInstallHooksClaudeMinimaxProfile is falsifier 1 for work_769bf567f529 gate 3: installing
-// with --harness claude-minimax into a temp isolated profile dir writes all 4 lifecycle bindings,
+// with --harness claude-minimax into a temp isolated profile dir writes all 5 lifecycle bindings,
 // the PreToolUse binding is a blocking --enforce command, and a pre-seeded permissions+env key
 // survives untouched (the NO-CLOBBER law). At base, --harness claude-minimax is rejected by the
 // --config-dir gate before any write.
@@ -1217,14 +1347,14 @@ func TestInstallHooksClaudeMinimaxProfile(t *testing.T) {
 	if !ok {
 		t.Fatalf("settings hooks = %#v", cfg["hooks"])
 	}
-	if len(first.Entries[0].Bindings) != 4 {
-		t.Fatalf("claude-minimax install reported %d bindings, want 4", len(first.Entries[0].Bindings))
+	if len(first.Entries[0].Bindings) != 5 {
+		t.Fatalf("claude-minimax install reported %d bindings, want 5", len(first.Entries[0].Bindings))
 	}
 	wantCommands := map[string]string{}
 	for _, binding := range first.Entries[0].Bindings {
 		wantCommands[binding.Event] = binding.Command
 	}
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"} {
 		groups, ok := hooks[event].([]any)
 		if !ok || len(groups) == 0 {
 			t.Fatalf("claude-minimax settings missing %s: %#v", event, hooks[event])
@@ -1273,7 +1403,7 @@ func TestInstallHooksClaudeMinimaxProfile(t *testing.T) {
 
 // TestInstallHooksClaudeQwenProfile is the qwen falsifier for
 // work_qwen_harness_enrollment_20260731: installing with --harness claude-qwen
-// into a temp isolated profile dir writes all 4 lifecycle bindings, the
+// into a temp isolated profile dir writes all 5 lifecycle bindings, the
 // PreToolUse binding is a blocking --enforce command, and a pre-seeded
 // permissions+env key survives untouched (the NO-CLOBBER law). At base,
 // --harness claude-qwen is rejected by the --config-dir gate before any write.
@@ -1315,14 +1445,14 @@ func TestInstallHooksClaudeQwenProfile(t *testing.T) {
 	if !ok {
 		t.Fatalf("settings hooks = %#v", cfg["hooks"])
 	}
-	if len(first.Entries[0].Bindings) != 4 {
-		t.Fatalf("claude-qwen install reported %d bindings, want 4", len(first.Entries[0].Bindings))
+	if len(first.Entries[0].Bindings) != 5 {
+		t.Fatalf("claude-qwen install reported %d bindings, want 5", len(first.Entries[0].Bindings))
 	}
 	wantCommands := map[string]string{}
 	for _, binding := range first.Entries[0].Bindings {
 		wantCommands[binding.Event] = binding.Command
 	}
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"} {
 		groups, ok := hooks[event].([]any)
 		if !ok || len(groups) == 0 {
 			t.Fatalf("claude-qwen settings missing %s: %#v", event, hooks[event])

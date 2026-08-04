@@ -35,7 +35,7 @@ const (
 	sessionEndAdapterMaxInputBytes       = 1 << 20
 	sessionEndAdapterMaxChildOutputBytes = 256 << 10
 	sessionEndAdapterWorkerOverrideEnv   = "COMPOUND_SESSION_END_ADAPTER_ALLOW_WORKER_OVERRIDE"
-	sessionEndAdapterUsage               = "usage: compound hook session-end-adapter --live --harness claude-code [--timeout 2s] OR compound hook session-end-adapter --replay hook_sessend_attempt_<id>"
+	sessionEndAdapterUsage               = "usage: compound hook session-end-adapter --live --harness claude_code|claude_zai|claude_minimax|claude_qwen [--timeout 2s] OR compound hook session-end-adapter --replay hook_sessend_attempt_<id>"
 )
 
 type sessionEndAdapterArgs struct {
@@ -516,9 +516,11 @@ func parseSessionEndAdapterArgs(args []string) (sessionEndAdapterArgs, error) {
 		return sessionEndAdapterArgs{}, fmt.Errorf(sessionEndAdapterUsage)
 	}
 	if live {
-		if parsed.Harness != "claude-code" {
+		canonical, ok := canonicalSessionEndHarness(parsed.Harness)
+		if !ok {
 			return sessionEndAdapterArgs{}, fmt.Errorf(sessionEndAdapterUsage)
 		}
+		parsed.Harness = canonical
 	} else {
 		if parsed.Harness != "" || timeoutSet || !strings.HasPrefix(parsed.ReplayID, sessionEndAdapterAttemptIDPrefix) {
 			return sessionEndAdapterArgs{}, fmt.Errorf(sessionEndAdapterUsage)
@@ -542,6 +544,21 @@ func parseSessionEndAdapterArgs(args []string) (sessionEndAdapterArgs, error) {
 		}
 	}
 	return parsed, nil
+}
+
+func canonicalSessionEndHarness(value string) (string, bool) {
+	switch strings.TrimSpace(value) {
+	case "claude_code", "claude-code":
+		return "claude_code", true
+	case "claude_zai", "claude-zai":
+		return "claude_zai", true
+	case "claude_minimax", "claude-minimax":
+		return "claude_minimax", true
+	case "claude_qwen", "claude-qwen":
+		return "claude_qwen", true
+	default:
+		return "", false
+	}
 }
 
 func runSessionEndAdapterReplay(parsed sessionEndAdapterArgs, homePath string, stdout, stderr io.Writer) int {
@@ -581,7 +598,9 @@ func runSessionEndAdapterReplay(parsed sessionEndAdapterArgs, homePath string, s
 
 	now := time.Now()
 	attempt := parent
-	attempt.ID = sessionEndAdapterAttemptID(parent.Harness, parent.InputHash, now)
+	canonicalHarness, _ := canonicalSessionEndHarness(parent.Harness)
+	attempt.Harness = canonicalHarness
+	attempt.ID = sessionEndAdapterAttemptID(attempt.Harness, parent.InputHash, now)
 	attempt.CreatedAt = now.UTC().Format(time.RFC3339Nano)
 	attempt.PredecessorID = parent.ID
 	attempt.RetryArgv = sessionEndAdapterRetryArgv(attempt.ID)
@@ -620,7 +639,7 @@ func validateSessionEndAdapterAttempt(attempt sessionEndAdapterAttempt, requeste
 	if attempt.SchemaVersion != sessionEndAdapterAttemptSchema || attempt.ID != requestedID || !strings.HasPrefix(attempt.ID, sessionEndAdapterAttemptIDPrefix) {
 		return fmt.Errorf("record %s is not a SessionEnd adapter acceptance", requestedID)
 	}
-	if attempt.Status != sessionEndAdapterStatusAccepted || attempt.Harness != "claude-code" || attempt.InputRef == "" || attempt.InputHash == "" {
+	if _, ok := canonicalSessionEndHarness(attempt.Harness); !ok || attempt.Status != sessionEndAdapterStatusAccepted || attempt.InputRef == "" || attempt.InputHash == "" {
 		return fmt.Errorf("SessionEnd adapter acceptance %s is incomplete", requestedID)
 	}
 	timeout := time.Duration(attempt.TimeoutMS) * time.Millisecond
@@ -721,13 +740,14 @@ func prepareSessionEndAdapterAcceptance(
 	input []byte,
 	now time.Time,
 ) sessionEndAdapterAttempt {
+	canonicalHarness, _ := canonicalSessionEndHarness(parsed.Harness)
 	inputHash := sessionEndAdapterInputHash(input)
 	inputRef := home.ArtifactRefPrefix + strings.TrimPrefix(inputHash, "sha256:")
 	workID := strings.TrimSpace(native.WorkID)
 	if workID == "" {
 		workID = strings.TrimSpace(native.CompoundWorkID)
 	}
-	attemptID := sessionEndAdapterAttemptID(parsed.Harness, inputHash, now)
+	attemptID := sessionEndAdapterAttemptID(canonicalHarness, inputHash, now)
 	return sessionEndAdapterAttempt{
 		Header: envelope.Header{
 			SchemaVersion: sessionEndAdapterAttemptSchema,
@@ -741,7 +761,7 @@ func prepareSessionEndAdapterAcceptance(
 			EvidenceRefs:  []string{inputRef},
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
-		Harness:   parsed.Harness,
+		Harness:   canonicalHarness,
 		SessionID: strings.TrimSpace(native.SessionID),
 		WorkID:    workID,
 		InputHash: inputHash,

@@ -3711,10 +3711,10 @@ func installedHookRuntimeSupport() []contract.HookRuntimeSupport {
 			hookRuntimeSupport(harnessName, "SessionStart", "fixtures/hooks/session-start.json", true),
 			hookRuntimeSupport(harnessName, "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", true),
 			hookRuntimeSupport(harnessName, "PreToolUse", "fixtures/hooks/pre-tool-use.claude.json", true),
-			hookRuntimeSupport(harnessName, "PostToolUse", "fixtures/hooks/post-tool-use.json", true))
+			hookRuntimeSupport(harnessName, "PostToolUse", "fixtures/hooks/post-tool-use.json", true),
+			hookRuntimeSupport(harnessName, "SessionEnd", "", true))
 	}
 	return append(supports,
-		hookRuntimeSupport("claude_code", "SessionEnd", "", true),
 		hookRuntimeSupport("codex", "SessionStart", "fixtures/hooks/session-start.json", true),
 		hookRuntimeSupport("codex", "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", true),
 		hookRuntimeSupport("codex", "PreToolUse", "fixtures/hooks/pre-tool-use.codex.json", true),
@@ -3740,6 +3740,9 @@ func hookRuntimeSupport(harnessName, hookName, fixtureRef string, liveAdapter bo
 func liveHookCommand(harnessName, hookName string, liveAdapter bool) string {
 	if !liveAdapter {
 		return ""
+	}
+	if strings.TrimSpace(hookName) == "SessionEnd" {
+		return fmt.Sprintf("compound hook session-end-adapter --live --harness %s", harnessName)
 	}
 	return fmt.Sprintf("compound hook %s --live --harness %s", hookCommandName(hookName), harnessName)
 }

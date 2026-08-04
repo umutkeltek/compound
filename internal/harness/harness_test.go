@@ -101,23 +101,36 @@ func TestClaudeZaiCapabilitiesAreExplicitAndKeepDistinctIdentity(t *testing.T) {
 	if !found || zai.Fallback || zai.Name != "claude_zai" {
 		t.Fatalf("claude_zai registry row = %+v found=%v, want explicit distinct non-fallback", zai, found)
 	}
-	// These four are the events the profile's settings actually register. Stop and
-	// SessionEnd are NOT registered there, and this test used to require all six --
-	// asserting a capability the profile on disk contradicts. Claiming an event the
-	// harness never fires routes work to an executor that cannot report back, so
-	// the absent two are pinned absent rather than left to drift back in.
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
+	// These five are the events the profile's settings actually register. Stop is
+	// still absent and must remain distinct from the bounded SessionEnd receipt.
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"} {
 		if !r.Supports("claude_zai", event) {
 			t.Errorf("claude_zai should support %s through its isolated Claude Code profile", event)
 		}
 	}
-	for _, event := range []string{"Stop", "SessionEnd"} {
+	for _, event := range []string{"Stop"} {
 		if r.Supports("claude_zai", event) {
 			t.Errorf("claude_zai claims %s, but its profile settings do not register that hook", event)
 		}
 	}
 	if zai.InstructionMechanism == DefaultRegistry().Harnesses["claude_code"].InstructionMechanism {
 		t.Fatal("claude_zai must document its profile-isolated steering mechanism, not copy the native row verbatim")
+	}
+}
+
+func TestInstalledClaudeProfilesAdvertiseSessionEndReceipt(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+	for _, harnessName := range []string{"claude_code", "claude_zai", "claude_minimax", "claude_qwen"} {
+		if !registry.Supports(harnessName, "SessionEnd") {
+			t.Errorf("%s must advertise its installed bounded SessionEnd receipt", harnessName)
+		}
+	}
+	for _, harnessName := range []string{"claude_zai", "claude_minimax", "claude_qwen"} {
+		if registry.Supports(harnessName, "Stop") {
+			t.Errorf("%s must not conflate the uninstalled Stop hook with SessionEnd", harnessName)
+		}
 	}
 }
 
@@ -362,8 +375,8 @@ func TestNewClaudeLaneHarnessesEnrolledWithExpectedLimitations(t *testing.T) {
 			// install them, capability-drift reports a (non-fatal) under-claim --
 			// raise the declaration then, and only then. claude_minimax made that
 			// transition (hook install --harness claude-minimax), so its case pins
-			// the raised floor instead: exactly the four installed bindings, with
-			// Stop and SessionEnd still unregistered, mirroring claude_zai.
+			// the raised floor instead: the four context/action hooks plus bounded
+			// SessionEnd, while Stop remains unregistered, mirroring claude_zai.
 			if tc.hooksInstalled {
 				if !h.Capabilities.SessionStartContext || !h.Capabilities.UserPromptContext ||
 					!h.Capabilities.PreToolUseBlock || !h.Capabilities.PostToolUseEvent {
@@ -372,9 +385,9 @@ func TestNewClaudeLaneHarnessesEnrolledWithExpectedLimitations(t *testing.T) {
 						tc.name, h.Capabilities,
 					)
 				}
-				if h.Capabilities.StopFeedback || h.Capabilities.SessionEndReceipt {
+				if h.Capabilities.StopFeedback || !h.Capabilities.SessionEndReceipt {
 					t.Fatalf(
-						"harness %q claims Stop/SessionEnd, which are not registered: %+v",
+						"harness %q must keep Stop absent and bounded SessionEnd present: %+v",
 						tc.name, h.Capabilities,
 					)
 				}

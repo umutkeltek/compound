@@ -67,6 +67,16 @@ func (claudeSemanticAdapter) Compile(
 			EnforcementStrength: "observe",
 			NativeEvents:        []string{"PostToolUse"},
 		}, []nativeBinding{{event: "PostToolUse", matcher: "*"}}
+	case IntentionRecordReceipt:
+		if !attestation.Features["session_end_receipt"] {
+			return unsupportedIntention(intention, "native SessionEnd receipt is not attested"), nil
+		}
+		return CompiledIntention{
+			Intention:           intention,
+			Disposition:         DispositionNative,
+			EnforcementStrength: "receipt",
+			NativeEvents:        []string{"SessionEnd"},
+		}, []nativeBinding{{event: "SessionEnd"}}
 	default:
 		return unsupportedIntention(intention, "Claude adapter does not implement this lifecycle intention"), nil
 	}
@@ -78,5 +88,6 @@ func (claudeSemanticAdapter) Attest(capabilities harness.Capabilities) map[strin
 		"user_prompt_context":   capabilities.UserPromptContext,
 		"pre_tool_use_block":    capabilities.PreToolUseBlock,
 		"post_tool_use_event":   capabilities.PostToolUseEvent,
+		"session_end_receipt":   capabilities.SessionEndReceipt,
 	}
 }

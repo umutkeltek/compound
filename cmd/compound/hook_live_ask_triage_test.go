@@ -127,8 +127,8 @@ func TestCanonicalClaudeFamilyExecutesAllLiveHookEvents(t *testing.T) {
 			if err != nil {
 				t.Fatalf("install %s hooks: %v", harnessCase.installer, err)
 			}
-			if len(report.Entries) != 1 || len(report.Entries[0].Bindings) != 4 {
-				t.Fatalf("%s install report = %+v, want one entry with four bindings", harnessCase.installer, report)
+			if len(report.Entries) != 1 || len(report.Entries[0].Bindings) != 5 {
+				t.Fatalf("%s install report = %+v, want one entry with five bindings", harnessCase.installer, report)
 			}
 			bindings := map[string]hookplan.HookInstallBinding{}
 			for _, binding := range report.Entries[0].Bindings {
@@ -150,6 +150,7 @@ func TestCanonicalClaudeFamilyExecutesAllLiveHookEvents(t *testing.T) {
 				{"UserPromptSubmit", `{"hook_event_name":"UserPromptSubmit","session_id":` + quoteJSON(sessionID) + `,"cwd":` + quoteJSON(workspace) + `,"prompt":"compare the selected model lane"}`},
 				{"PreToolUse", `{"hook_event_name":"PreToolUse","session_id":` + quoteJSON(sessionID) + `,"cwd":` + quoteJSON(workspace) + `,"tool_name":"Read","tool_input":{"file_path":` + quoteJSON(target) + `}}`},
 				{"PostToolUse", `{"hook_event_name":"PostToolUse","session_id":` + quoteJSON(sessionID) + `,"cwd":` + quoteJSON(workspace) + `,"tool_name":"Read","tool_input":{"file_path":` + quoteJSON(target) + `},"tool_response":{"type":"text","content":"ok"}}`},
+				{"SessionEnd", `{"hook_event_name":"SessionEnd","session_id":` + quoteJSON(sessionID) + `,"cwd":` + quoteJSON(workspace) + `}`},
 			}
 			for _, event := range events {
 				binding, ok := bindings[event.name]
@@ -192,6 +193,9 @@ func TestCanonicalClaudeFamilyExecutesAllLiveHookEvents(t *testing.T) {
 				var event envelope.HookEvent
 				if err := json.Unmarshal(record.Bytes, &event); err != nil {
 					t.Fatalf("parse hook event: %v\n%s", err, record.Bytes)
+				}
+				if event.SchemaVersion != envelope.SVHookEvent {
+					continue
 				}
 				if event.Harness != harnessCase.runtime {
 					t.Fatalf("persisted %s harness=%q, want %q", event.HookName, event.Harness, harnessCase.runtime)

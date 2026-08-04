@@ -132,16 +132,15 @@ func DefaultRegistry() Registry {
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Unlike the `_providers` lanes, this one is a FULL Claude profile with
 			// hooks genuinely installed: its settings register SessionStart,
-			// UserPromptSubmit, PreToolUse and PostToolUse. Stop and SessionEnd are
-			// NOT registered, so they stay false -- the previous entry claimed all
-			// six and over-claimed exactly those two.
+			// UserPromptSubmit, PreToolUse, PostToolUse, and the bounded SessionEnd
+			// adapter. Stop remains unregistered and distinct from the receipt hook.
 			//
 			// `compound harness capability-drift` cannot yet verify this lane (it
-			// publishes no launch profile to read), so these four flags rest on a
+			// publishes no launch profile to read), so these five hook flags rest on a
 			// direct reading of the profile settings rather than on the check.
 			Capabilities: Capabilities{
 				SessionStartContext: true, UserPromptContext: true,
-				PreToolUseBlock: true, PostToolUseEvent: true,
+				PreToolUseBlock: true, PostToolUseEvent: true, SessionEndReceipt: true,
 				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{
@@ -166,8 +165,8 @@ func DefaultRegistry() Registry {
 			// internal/hookplan/install.go) now genuinely writes SessionStart, UserPromptSubmit,
 			// PreToolUse (blocking, --enforce), and PostToolUse into the isolated minimax profile
 			// settings.json -- mirroring claude_zai below. The floor now describes an installed
-			// binding, not a plan. Stop and SessionEnd stay unregistered, so they stay false,
-			// same as claude_zai.
+			// binding, not a plan. SessionEnd uses the bounded adapter; Stop remains
+			// unregistered, same as claude_zai.
 			//
 			// Skills and MCP are off because this lane's launcher disables them.
 			// Verify any change here with `compound harness capability-drift`: an over-claim
@@ -175,7 +174,7 @@ func DefaultRegistry() Registry {
 			// future install-path change regressed and this floor needs lowering again.
 			Capabilities: Capabilities{
 				SessionStartContext: true, UserPromptContext: true,
-				PreToolUseBlock: true, PostToolUseEvent: true,
+				PreToolUseBlock: true, PostToolUseEvent: true, SessionEndReceipt: true,
 				NativeSkills: false, MCP: false,
 			},
 			Limitations: []string{
@@ -196,8 +195,8 @@ func DefaultRegistry() Registry {
 			// and PostToolUse into the isolated qwen profile settings.json. The floor
 			// describes an installed binding, not a plan; before enrollment it declared
 			// zero hooks and qwen sessions could not report back, so their work never
-			// compounded. Stop and SessionEnd stay unregistered, so they stay false,
-			// same as claude_zai and claude_minimax.
+			// compounded. SessionEnd uses the bounded adapter; Stop remains
+			// unregistered, same as claude_zai and claude_minimax.
 			//
 			// Skills and MCP stay true -- unlike minimax, this lane's launcher does
 			// not disable them. Verify any change here with `compound harness
@@ -205,7 +204,7 @@ func DefaultRegistry() Registry {
 			// genuinely installed binding signals a regressed install path.
 			Capabilities: Capabilities{
 				SessionStartContext: true, UserPromptContext: true,
-				PreToolUseBlock: true, PostToolUseEvent: true,
+				PreToolUseBlock: true, PostToolUseEvent: true, SessionEndReceipt: true,
 				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{

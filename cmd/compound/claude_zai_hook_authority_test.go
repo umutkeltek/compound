@@ -26,8 +26,8 @@ func TestContractImportClaudeZaiRegistrationIsDistinctReadyAndObserved(t *testin
 	if err := json.Unmarshal([]byte(importOut), &report); err != nil {
 		t.Fatalf("parse import report: %v\n%s", err, importOut)
 	}
-	if report.IncomingHookCount != 4 || report.HookCount != 4 {
-		t.Fatalf("claude-zai import counts = incoming %d total %d, want 4/4", report.IncomingHookCount, report.HookCount)
+	if report.IncomingHookCount != 5 || report.HookCount != 5 {
+		t.Fatalf("claude-zai import counts = incoming %d total %d, want 5/5", report.IncomingHookCount, report.HookCount)
 	}
 	events := map[string]bool{}
 	for _, installed := range report.Manifest.Hooks {
@@ -39,7 +39,7 @@ func TestContractImportClaudeZaiRegistrationIsDistinctReadyAndObserved(t *testin
 		}
 		events[installed.Event] = true
 	}
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"} {
 		if !events[event] {
 			t.Fatalf("claude-zai installed-hook authority missing %s: %+v", event, report.Manifest.Hooks)
 		}
@@ -67,6 +67,10 @@ func TestContractImportClaudeZaiRegistrationIsDistinctReadyAndObserved(t *testin
 			t.Fatalf("claude-zai %s reconciliation = %+v, want ready", event, delta)
 		}
 	}
+	sessionEnd := findHookReadiness(authority.HookReadiness, "claude_zai", "SessionEnd")
+	if sessionEnd == nil || sessionEnd.Status != "missing_fixture" || sessionEnd.LiveCommand != "compound hook session-end-adapter --live --harness claude_zai" {
+		t.Fatalf("claude-zai SessionEnd runtime readiness = %+v, want installed bounded adapter with explicit fixture gap", sessionEnd)
+	}
 	gate := findHookGateReadiness(authority.PreToolUseReadiness, "claude_zai")
 	if gate == nil || gate.Status != "native_blocking" || !gate.NativeBlock || !gate.Installed {
 		t.Fatalf("claude-zai PreToolUse readiness = %+v, want installed native_blocking", gate)
@@ -89,7 +93,7 @@ func TestContractImportClaudeZaiRegistrationIsDistinctReadyAndObserved(t *testin
 	if effective.Harness != "claude_zai" {
 		t.Fatalf("effective harness = %q, want claude_zai", effective.Harness)
 	}
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"} {
 		ref := "hook://claude_zai/" + event
 		if !stringSliceContains(effective.ActiveHooks, ref) {
 			t.Fatalf("claude-zai effective hooks = %v, missing %s", effective.ActiveHooks, ref)

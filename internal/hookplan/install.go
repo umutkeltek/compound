@@ -99,6 +99,9 @@ func HookCommand(binaryPath, harness string) string {
 
 // HookCommandForEvent is the exact command a harness runs for one Compound live-hook event.
 func HookCommandForEvent(binaryPath, harness, event string) string {
+	if event == "SessionEnd" {
+		return fmt.Sprintf("%s hook session-end-adapter --live --harness %s", shellQuote(binaryPath), runtimeHarnessName(harness))
+	}
 	verb := map[string]string{
 		"SessionStart":     "session-start",
 		"UserPromptSubmit": "user-prompt-submit",
@@ -357,7 +360,7 @@ func validateInstallableDefaultPosture(harnessName string, compiled CompiledPost
 }
 
 func isInteractiveObservationalDefault(intentions []CompiledIntention) bool {
-	if len(intentions) != 3 {
+	if len(intentions) < 3 || len(intentions) > 4 {
 		return false
 	}
 	seen := map[HarnessIntention]bool{}
@@ -373,6 +376,10 @@ func isInteractiveObservationalDefault(intentions []CompiledIntention) bool {
 			}
 		case IntentionObserveAction, IntentionObserveOutcome:
 			if intention.EnforcementStrength != "observe" {
+				return false
+			}
+		case IntentionRecordReceipt:
+			if intention.EnforcementStrength != "receipt" {
 				return false
 			}
 		default:
@@ -476,7 +483,7 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 	for _, binding := range bindings {
 		desiredByEvent[binding.Event] = binding
 	}
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"} {
 		groups, _ := hooks[event].([]any)
 		binding, desired := desiredByEvent[event]
 		var desiredBinding *desiredHookBinding
@@ -752,6 +759,17 @@ func combineHookInstallAction(current, next string, check bool) string {
 }
 
 func hookIsCompoundEvent(hook any, event string) bool {
+	hookMap, ok := hook.(map[string]any)
+	if !ok {
+		return false
+	}
+	command, _ := hookMap["command"].(string)
+	if event == "SessionEnd" {
+		trimmed := strings.TrimSpace(command)
+		return trimmed == `"$HOME/.claude/hooks/SessionReceipt.hook.ts"` ||
+			strings.Contains(command, " hook session-end-adapter --live") ||
+			strings.Contains(command, " hook session-end --live")
+	}
 	verb := map[string]string{
 		"SessionStart":     "session-start",
 		"UserPromptSubmit": "user-prompt-submit",
@@ -759,11 +777,6 @@ func hookIsCompoundEvent(hook any, event string) bool {
 		"PostToolUse":      "post-tool-use",
 	}[event]
 	marker := "hook " + verb + " --live"
-	hookMap, ok := hook.(map[string]any)
-	if !ok {
-		return false
-	}
-	command, _ := hookMap["command"].(string)
 	return strings.Contains(command, marker)
 }
 

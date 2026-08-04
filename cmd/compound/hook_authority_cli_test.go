@@ -40,6 +40,39 @@ func TestInstalledHookAuthorityMutationHoldsSharedAdmissionLock(t *testing.T) {
 	}
 }
 
+func TestInstalledRuntimeSupportUsesBoundedSessionEndForEveryInstalledClaudeProfile(t *testing.T) {
+	t.Parallel()
+
+	want := map[string]string{
+		"claude_code":    "compound hook session-end-adapter --live --harness claude_code",
+		"claude_zai":     "compound hook session-end-adapter --live --harness claude_zai",
+		"claude_minimax": "compound hook session-end-adapter --live --harness claude_minimax",
+		"claude_qwen":    "compound hook session-end-adapter --live --harness claude_qwen",
+	}
+	seen := map[string]bool{}
+	for _, support := range installedHookRuntimeSupport() {
+		if support.Hook != "SessionEnd" {
+			continue
+		}
+		if support.Harness == "codex" {
+			t.Fatalf("Codex runtime support unexpectedly advertises SessionEnd: %+v", support)
+		}
+		command, ok := want[support.Harness]
+		if !ok {
+			t.Fatalf("unexpected SessionEnd runtime support row: %+v", support)
+		}
+		if support.LiveCommand != command {
+			t.Fatalf("%s SessionEnd command = %q, want %q", support.Harness, support.LiveCommand, command)
+		}
+		seen[support.Harness] = true
+	}
+	for harnessName := range want {
+		if !seen[harnessName] {
+			t.Errorf("missing SessionEnd runtime support for %s", harnessName)
+		}
+	}
+}
+
 func TestHookInstallSynchronizesAuthorityWithoutPromotingInteractiveObserversToBlocking(t *testing.T) {
 	for _, order := range [][]string{
 		{"codex", "claude-code"},
