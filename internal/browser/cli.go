@@ -13,7 +13,18 @@
 //  - One row per browser INSTANCE (grouped by --user-data-dir uuid), not
 //    per PID, so the doctor result is legible at the level a human acts
 //    on (kill the instance, not "is PID 7180 a problem? probably no").
-//  - No host identifiers leave the box; output is local-only.
+//
+// Privacy / scope:
+//  This surface is a local operator diagnostic. Every projection row carries
+//  local paths (--user-data-dir, cwd) and full process command lines, which
+//  is useful locally and unsafe to pipe into public audit docs, MCP
+//  responses, or general agent context. Treat output as you would `ps`:
+//  inspect it on the box, redact before sharing.
+//
+//  `browser doctor --fix` is the only mutation. It is governed at the
+//  command-registry layer (FirstPartyCommandGoverned for `--fix`), scoped
+//  to the orphan-idle-swiftshader class, and prompts per-target by
+//  default (`--yes-each` skips the prompt).
 
 package browser
 
@@ -34,7 +45,55 @@ import (
 const browserUsage = "usage: compound browser list [--json] [--instance UUID] [--swiftshader-only]\n" +
 	"       compound browser show <pid|uuid> [--json]\n" +
 	"       compound browser doctor [--json] [--stale-min M] [--idle-cpu-pct PCT]\n" +
-	"       compound browser doctor --fix [--dry-run] [--json] [--yes-each] scoped reap: orphan swiftshader only; per-target confirmation by default"
+	"       compound browser doctor --fix [--dry-run] [--json] [--yes-each] scoped reap: orphan swiftshader only; per-target confirmation by default\n" +
+	"\n" +
+	"local operator diagnostic only — output contains local paths and process args; do not pipe into public audit / MCP / general agent context."
+
+// browserFlagSets enumerates the accepted flags per subcommand. Mirrors the
+// shape used by `scheduleFlagSets` (see cmd/compound/schedule_cli.go) so
+// adding a new flag touches exactly two places: this table, and the consume
+// site in the matching handler. Unknown flags fail closed — `compound browser
+// doctor --stale-mins 30 --json` is rejected with exit 2, not silently
+// treated as default.
+var browserFlagSets = map[string]map[string]bool{
+	"list": {
+		"--json":             true,
+		"--instance":         true,
+		"--swiftshader-only": true,
+	},
+	"show": {
+		"--json": true,
+	},
+	"doctor": {
+		"--json":         true,
+		"--stale-min":    true,
+		"--idle-cpu-pct": true,
+		"--fix":          true,
+		"--dry-run":      true,
+		"--yes-each":     true,
+	},
+}
+
+// validateBrowserFlags fails closed on unknown flags and on too many
+// positional args (the `show` verb takes exactly one — pid or uuid — and
+// anything beyond that is a usage error). `enforceKnownFlags` already
+// catches the unknown-flag case; the positional cap exists because
+// positional args are not gated by that helper.
+func validateBrowserFlags(sub string, args []string, maxPos int) error {
+	if _, err := enforceKnownFlags(args, browserFlagSets[sub]); err != nil {
+		return err
+	}
+	pos := 0
+	for _, a := range args {
+		if !strings.HasPrefix(a, "--") {
+			pos++
+		}
+	}
+	if pos > maxPos {
+		return fmt.Errorf("too many positional args (got %d, max %d)", pos, maxPos)
+	}
+	return nil
+}
 
 // browserProcess is one PID row from ps, plus the user-data-dir uuid (when
 // present) and the agent-browser parent PID (when reachable via ppid walk).
@@ -110,6 +169,11 @@ func Run(args []string) {
 }
 
 func cmdBrowserList(args []string) {
+	if err := validateBrowserFlags("list", args, 0); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, browserUsage)
+		os.Exit(2)
+	}
 	jsonOut := hasFlag(args, "--json")
 	swiftOnly := hasFlag(args, "--swiftshader-only")
 	instFilter := strings.TrimSpace(valueFlag(args, "--instance"))
@@ -148,6 +212,11 @@ func cmdBrowserList(args []string) {
 }
 
 func cmdBrowserShow(args []string) {
+	if err := validateBrowserFlags("show", args, 1); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, browserUsage)
+		os.Exit(2)
+	}
 	jsonOut := hasFlag(args, "--json")
 	target := ""
 	for _, a := range args {
@@ -193,6 +262,11 @@ func cmdBrowserShow(args []string) {
 }
 
 func cmdBrowserDoctor(args []string) {
+	if err := validateBrowserFlags("doctor", args, 0); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, browserUsage)
+		os.Exit(2)
+	}
 	jsonOut := hasFlag(args, "--json")
 	staleMin := 60
 	if v := strings.TrimSpace(valueFlag(args, "--stale-min")); v != "" {
@@ -444,9 +518,6 @@ func collectBrowserInstances() ([]browserInstance, error) {
 			}
 		}
 		sort.Ints(inst.HelperPIDs)
-		if cwd := osGetenvZeroFor(main.PID); cwd != "" {
-			inst.Cwd = cwd
-		}
 		instances = append(instances, inst)
 	}
 	sort.Slice(instances, func(i, j int) bool { return instances[i].UUID < instances[j].UUID })
@@ -763,15 +834,6 @@ func parentCmdName(procMap map[int]browserProcess, ppid int) string {
 		return ""
 	}
 	return p.Argv0
-}
-
-func osGetenvZeroFor(pid int) string {
-	// Best-effort cwd lookup. We don't require it; absence is not an error.
-	out, err := os.ReadFile(fmt.Sprintf("/proc/%d/cwd", pid))
-	if err == nil {
-		return strings.TrimSpace(string(out))
-	}
-	return ""
 }
 
 func readProcessCPU(pid int) (string, error) {
