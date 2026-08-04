@@ -198,6 +198,16 @@ func TestCanonicalClaudeFamilyExecutesAllLiveHookEvents(t *testing.T) {
 				if err := command.Run(); err != nil {
 					t.Fatalf("%s command failed: %v\ncommand=%s\nstdout=%s\nstderr=%s", event.name, err, binding.Command, stdout.String(), stderr.String())
 				}
+				if event.name == "SessionEnd" {
+					var response map[string]json.RawMessage
+					if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+						t.Fatalf("parse SessionEnd response: %v\n%s", err, stdout.String())
+					}
+					if response == nil || len(response) != 0 {
+						t.Fatalf("SessionEnd response must be the generic empty object, got keys=%v\n%s", response, stdout.String())
+					}
+					continue
+				}
 				var response claudeLiveHookResponse
 				if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
 					t.Fatalf("parse %s response: %v\n%s", event.name, err, stdout.String())

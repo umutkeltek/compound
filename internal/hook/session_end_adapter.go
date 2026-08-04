@@ -107,13 +107,9 @@ type sessionEndAdapterWorkerResult struct {
 	Duration time.Duration
 }
 
-type sessionEndAdapterHookSpecificOutput struct {
-	HookEventName string `json:"hookEventName"`
-}
-
-type sessionEndAdapterResponse struct {
-	HookSpecificOutput sessionEndAdapterHookSpecificOutput `json:"hookSpecificOutput"`
-}
+// SessionEnd accepts only Claude's generic hook response fields. It does not
+// accept hookSpecificOutput, whose event-specific union excludes SessionEnd.
+type sessionEndAdapterResponse struct{}
 
 // RunSessionEndAdapterCommand executes the bounded Claude-family SessionEnd
 // adapter behind the thin cmd/compound dispatch seam.
@@ -232,8 +228,7 @@ func RunSessionEndAdapterCommand(args []string, stdin io.Reader, stdout, stderr 
 		writeSessionEndAdapterOutcomeError(stderr, outcome, acceptance.Attempt)
 		return 0
 	}
-	var response sessionEndAdapterResponse
-	if err := json.Unmarshal(worker.Stdout, &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
+	if !validSessionEndAdapterWorkerOutput(worker.Stdout) {
 		outcome := persistSessionEndAdapterOutcomeBounded(
 			homePath,
 			acceptance.Attempt,
@@ -683,11 +678,18 @@ func sessionEndAdapterWorkerOutcome(worker sessionEndAdapterWorkerResult) (strin
 	if worker.Err != nil {
 		return sessionEndAdapterStatusFailed, "worker_exit"
 	}
-	var response sessionEndAdapterResponse
-	if err := json.Unmarshal(worker.Stdout, &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
+	if !validSessionEndAdapterWorkerOutput(worker.Stdout) {
 		return sessionEndAdapterStatusFailed, "invalid_worker_output"
 	}
 	return sessionEndAdapterStatusSucceeded, ""
+}
+
+func validSessionEndAdapterWorkerOutput(raw []byte) bool {
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &response); err != nil || response == nil {
+		return false
+	}
+	return len(response) == 0
 }
 
 func validateSessionEndAdapterWorker(path string) error {
@@ -936,9 +938,7 @@ func (w *sessionEndAdapterCapture) Bytes() []byte {
 }
 
 func writeSessionEndAdapterResponse(stdout io.Writer) {
-	_ = json.NewEncoder(stdout).Encode(sessionEndAdapterResponse{
-		HookSpecificOutput: sessionEndAdapterHookSpecificOutput{HookEventName: "SessionEnd"},
-	})
+	_ = json.NewEncoder(stdout).Encode(sessionEndAdapterResponse{})
 }
 
 func sessionEndAdapterInputHash(input []byte) string {

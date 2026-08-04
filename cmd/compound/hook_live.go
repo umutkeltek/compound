@@ -76,6 +76,8 @@ type claudeLiveHookResponse struct {
 	HookSpecificOutput claudeHookSpecificOutput `json:"hookSpecificOutput"`
 }
 
+type claudeSessionEndHookResponse struct{}
+
 type codexLiveHookResponse struct {
 	SchemaVersion      string `json:"schema_version"`
 	HookName           string `json:"hook_name"`
@@ -1105,6 +1107,9 @@ func liveHookResponseWithEnforcement(
 			}
 		}
 		return out
+	}
+	if hookName == "session-end" {
+		return claudeSessionEndHookResponse{}
 	}
 	out := claudeHookSpecificOutput{HookEventName: hookEnumName(hookName)}
 	if strings.TrimSpace(res.ContextOutput) != "" {

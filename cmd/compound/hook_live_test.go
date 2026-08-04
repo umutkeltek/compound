@@ -1807,12 +1807,12 @@ func TestHookLiveSessionEndRecordsEventAndParity(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("live session-end exit = %d\n%s", code, out)
 	}
-	var resp claudeLiveHookResponse
+	var resp map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
 		t.Fatalf("parse live response: %v\n%s", err, out)
 	}
-	if resp.HookSpecificOutput.HookEventName != "SessionEnd" {
-		t.Fatalf("live session-end response = %+v", resp.HookSpecificOutput)
+	if resp == nil || len(resp) != 0 {
+		t.Fatalf("live SessionEnd must use Claude's generic empty response, got keys=%v\n%s", resp, out)
 	}
 	stream, err := os.ReadFile(filepath.Join(homePath, "events", "hook-events.ndjson"))
 	if err != nil {

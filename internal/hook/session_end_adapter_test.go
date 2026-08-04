@@ -49,6 +49,17 @@ func requireSessionEndAdapterDiagnosticValue(t *testing.T, output, marker string
 	return strings.Trim(fields[0], `"`)
 }
 
+func requireGenericSessionEndHookResponse(t *testing.T, raw []byte) {
+	t.Helper()
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatalf("SessionEnd response is not JSON: %v\n%s", err, raw)
+	}
+	if response == nil || len(response) != 0 {
+		t.Fatalf("SessionEnd response must be the generic empty object, got keys=%v\n%s", response, raw)
+	}
+}
+
 func TestSessionEndAdapterPostKillReapWaitIsBounded(t *testing.T) {
 	waited := make(chan error)
 	started := time.Now()
@@ -68,6 +79,33 @@ func TestSessionEndAdapterOutcomeIdentityIncludesExecution(t *testing.T) {
 	second := sessionEndAdapterOutcomeID(attemptID, "sessend_exec_second")
 	if first == second {
 		t.Fatalf("distinct executions collapsed onto one terminal outcome id: %s", first)
+	}
+}
+
+func TestSessionEndAdapterWorkerOutputUsesGenericSessionEndSchema(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		raw   string
+		valid bool
+	}{
+		{name: "empty object", raw: `{}`, valid: true},
+		{name: "empty object with whitespace", raw: "  {}\n", valid: true},
+		{name: "null", raw: `null`},
+		{name: "array", raw: `[]`},
+		{name: "malformed", raw: `{`},
+		{name: "legacy event-specific output", raw: `{"hookSpecificOutput":{"hookEventName":"SessionEnd"}}`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := validSessionEndAdapterWorkerOutput([]byte(testCase.raw)); got != testCase.valid {
+				t.Fatalf("validSessionEndAdapterWorkerOutput(%q) = %t, want %t", testCase.raw, got, testCase.valid)
+			}
+		})
+	}
+
+	worker := sessionEndAdapterWorkerResult{Stdout: []byte(`{"hookSpecificOutput":{"hookEventName":"SessionEnd"}}`)}
+	status, errorClass := sessionEndAdapterWorkerOutcome(worker)
+	if status != sessionEndAdapterStatusFailed || errorClass != "invalid_worker_output" {
+		t.Fatalf("event-specific SessionEnd worker response = status %q class %q", status, errorClass)
 	}
 }
 
@@ -281,7 +319,7 @@ func TestSessionEndAdapterReplayAcceptsDashedEvidenceButExecutesCanonically(t *t
 
 	argvPath := filepath.Join(t.TempDir(), "worker-argv.txt")
 	workerPath := filepath.Join(t.TempDir(), "successful-session-end-worker.sh")
-	worker := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nprintf '%%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionEnd\"}}'\n", argvPath)
+	worker := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nprintf '%%s\\n' '{}'\n", argvPath)
 	if err := os.WriteFile(workerPath, []byte(worker), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +409,7 @@ func TestSessionEndAdapterRetryArgvReplaysAcceptedExactInputByID(t *testing.T) {
 
 	workerInput := filepath.Join(t.TempDir(), "replayed-input.json")
 	successWorker := filepath.Join(t.TempDir(), "successful-session-end-worker.sh")
-	worker := fmt.Sprintf("#!/bin/sh\nhead -c %d > %q\nprintf '%%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionEnd\"}}'\n", len(input), workerInput)
+	worker := fmt.Sprintf("#!/bin/sh\nhead -c %d > %q\nprintf '%%s\\n' '{}'\n", len(input), workerInput)
 	if err := os.WriteFile(successWorker, []byte(worker), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +447,7 @@ func TestSessionEndAdapterManualReplayCanUseLongerBoundedTimeout(t *testing.T) {
 	t.Setenv("COMPOUND_HOME", compoundHome)
 
 	workerPath := filepath.Join(t.TempDir(), "slow-valid-session-end-worker.sh")
-	worker := "#!/bin/sh\nsleep 0.3\nprintf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionEnd\"}}'\n"
+	worker := "#!/bin/sh\nsleep 0.3\nprintf '%s\\n' '{}'\n"
 	if err := os.WriteFile(workerPath, []byte(worker), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -530,10 +568,7 @@ func TestSessionEndAdapterBoundsAcceptancePersistenceBeforeStartingWorker(t *tes
 	if elapsed > 10*time.Second {
 		t.Fatalf("SessionEnd acceptance exceeded its bounded handoff window: %s", elapsed)
 	}
-	var response sessionEndAdapterResponse
-	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
-		t.Fatalf("SessionEnd acceptance failure did not emit valid hook JSON: err=%v response=%+v stdout=%s", err, response, stdout.String())
-	}
+	requireGenericSessionEndHookResponse(t, stdout.Bytes())
 	if !strings.Contains(stderr.String(), "acceptance persistence timed out") || !strings.Contains(stderr.String(), "sha256:"+digest) {
 		t.Fatalf("SessionEnd acceptance timeout was not explicit: %s", stderr.String())
 	}
@@ -574,10 +609,7 @@ func TestSessionEndAdapterReportsAcceptanceNotCommittedWithoutReplayIdentity(t *
 	}, strings.NewReader(input), &stdout, &stderr); code != 0 {
 		t.Fatalf("SessionEnd adapter exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	var response sessionEndAdapterResponse
-	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
-		t.Fatalf("SessionEnd acceptance failure response invalid: err=%v response=%+v stdout=%s", err, response, stdout.String())
-	}
+	requireGenericSessionEndHookResponse(t, stdout.Bytes())
 	if !strings.Contains(stderr.String(), "acceptance persistence failed") || !strings.Contains(stderr.String(), "state=not_committed") {
 		t.Fatalf("SessionEnd acceptance failure did not report a definite non-commit: %s", stderr.String())
 	}
@@ -611,10 +643,7 @@ func TestSessionEndAdapterReportsUnknownOutcomeWithoutTerminalIdentity(t *testin
 	}, strings.NewReader(input), &stdout, &stderr); code != 0 {
 		t.Fatalf("SessionEnd adapter exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	var response sessionEndAdapterResponse
-	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
-		t.Fatalf("SessionEnd outcome failure response invalid: err=%v response=%+v stdout=%s", err, response, stdout.String())
-	}
+	requireGenericSessionEndHookResponse(t, stdout.Bytes())
 	if !strings.Contains(stderr.String(), "terminal outcome persistence") || !strings.Contains(stderr.String(), "state=unknown") {
 		t.Fatalf("SessionEnd outcome failure did not preserve unreadable-store ambiguity: %s", stderr.String())
 	}
@@ -667,7 +696,7 @@ func TestSessionEndAdapterCommittedOutcomeRemainsUsableAfterPostPublicationError
 		Err:              fmt.Errorf("late lock release error"),
 	}
 	outcome.Outcome.ID = sessionEndAdapterOutcomeIDPrefix + "committed"
-	worker := sessionEndAdapterWorkerResult{Stdout: []byte("{\"hookSpecificOutput\":{\"hookEventName\":\"SessionEnd\"}}\n")}
+	worker := sessionEndAdapterWorkerResult{Stdout: []byte("{}\n")}
 	var stdout, stderr bytes.Buffer
 	completeSessionEndAdapterWorkerSuccess(&stdout, &stderr, worker, acceptance, outcome)
 
@@ -711,13 +740,7 @@ func TestSessionEndAdapterTimesOutSlowWorkerWithoutCancellingHookAndKeepsRetryEv
 		t.Fatalf("SessionEnd adapter exceeded its bounded handoff window: %s", elapsed)
 	}
 
-	var response sessionEndAdapterResponse
-	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
-		t.Fatalf("SessionEnd adapter did not emit valid Claude hook JSON: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
-	}
-	if response.HookSpecificOutput.HookEventName != "SessionEnd" {
-		t.Fatalf("SessionEnd adapter response = %+v", response)
-	}
+	requireGenericSessionEndHookResponse(t, stdout.Bytes())
 	if !strings.Contains(stderr.String(), "timed out") || !strings.Contains(stderr.String(), home.ArtifactRefPrefix) {
 		t.Fatalf("SessionEnd adapter hid its timeout/retry evidence: %s", stderr.String())
 	}
@@ -773,7 +796,7 @@ func TestSessionEndAdapterMarksSuccessfulWorkerProcessing(t *testing.T) {
 
 	compoundHome := t.TempDir()
 	workerPath := filepath.Join(t.TempDir(), "successful-session-end-worker.sh")
-	worker := "#!/bin/sh\nprintf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionEnd\"}}'\n"
+	worker := "#!/bin/sh\nprintf '%s\\n' '{}'\n"
 	if err := os.WriteFile(workerPath, []byte(worker), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -789,10 +812,7 @@ func TestSessionEndAdapterMarksSuccessfulWorkerProcessing(t *testing.T) {
 	if code := RunSessionEndAdapterCommand(args, strings.NewReader(input), &stdout, &stderr); code != 0 {
 		t.Fatalf("SessionEnd adapter exit = %d\nstdout=%s\nstderr=%s", code, stdout.String(), stderr.String())
 	}
-	var response sessionEndAdapterResponse
-	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil || response.HookSpecificOutput.HookEventName != "SessionEnd" {
-		t.Fatalf("SessionEnd success response invalid: err=%v response=%+v stdout=%s", err, response, stdout.String())
-	}
+	requireGenericSessionEndHookResponse(t, stdout.Bytes())
 
 	store, err := eventstore.Open(compoundHome)
 	if err != nil {

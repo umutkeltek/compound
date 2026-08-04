@@ -338,8 +338,12 @@ compound hook session-end-adapter --live --harness claude_code
 The adapter durably accepts the exact input before starting the existing
 `session-end` worker, bounds worker time, records a terminal outcome, and leaves
 an exact-ID replay command on timeout or failure. Live hooks remain capped at
-five seconds. An explicit manual replay can use a separately bounded longer
-deadline (up to 30 seconds) without changing the accepted input identity:
+five seconds. The host-facing response is the generic empty JSON object (`{}`). Claude's
+event-specific `hookSpecificOutput` union does not include `SessionEnd`; durable
+acceptance, terminal status, and replay identity live in Compound's event store.
+
+An explicit manual replay can use a separately bounded longer deadline (up to
+30 seconds) without changing the accepted input identity:
 
 ```sh
 compound hook session-end-adapter --replay hook_sessend_attempt_<id> --timeout 30s
