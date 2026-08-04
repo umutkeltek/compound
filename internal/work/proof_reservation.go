@@ -1808,7 +1808,7 @@ func (s *Store) RefreshProofResource(workID, reservationID, actor string, ttl ti
 		reservation.TTLSeconds = lease.TTLSeconds
 		refresh := ProofResourceRefresh{
 			SchemaVersion:    ProofResourceRefreshSchemaVersion,
-			ID:               proofRefreshOutcomeID(reservation.ID, ra.ID, lease.ExpiresAt),
+			ID:               proofRefreshPreparedOutcomeID(reservation.ID, ra.ID, lease.ExpiresAt, preparation.ID),
 			Kind:             "work.proof_resource.refresh",
 			CreatedAt:        now.UTC().Format(time.RFC3339Nano),
 			WorkID:           workID,
@@ -4064,8 +4064,14 @@ func proofRefreshPreparationID(reservationID, runAttemptID string, now time.Time
 	return idFor(proofRefreshPreparationPrefix(reservationID), runAttemptID, ts(now))
 }
 
-func proofRefreshOutcomeID(reservationID, runAttemptID, expiresAt string) string {
+// proofRefreshLegacyOutcomeID preserves reads of persisted v0.1 evidence whose
+// identity used the whole-second expiry and could therefore collide.
+func proofRefreshLegacyOutcomeID(reservationID, runAttemptID, expiresAt string) string {
 	return idFor(proofRefreshOutcomePrefix(reservationID), runAttemptID, expiresAt)
+}
+
+func proofRefreshPreparedOutcomeID(reservationID, runAttemptID, expiresAt, preparationID string) string {
+	return idFor(proofRefreshOutcomePrefix(reservationID), runAttemptID, expiresAt, preparationID)
 }
 
 func proofRefreshActionTime(reservation ProofResourceReservation) (time.Time, error) {
@@ -4129,8 +4135,17 @@ func (s *Store) proofReservationWithLatestRefresh(reservation ProofResourceReser
 			}
 			continue
 		}
-		if scoped && refresh.ID != proofRefreshOutcomeID(reservation.ID, refresh.RunAttemptID, refresh.ExpiresAt) {
-			return ProofResourceReservation{}, fmt.Errorf("proof refresh evidence %s has invalid reservation-scoped identity", ref)
+		if scoped {
+			preparedID := proofRefreshPreparedOutcomeID(
+				reservation.ID,
+				refresh.RunAttemptID,
+				refresh.ExpiresAt,
+				refresh.PreparationID,
+			)
+			legacyID := proofRefreshLegacyOutcomeID(reservation.ID, refresh.RunAttemptID, refresh.ExpiresAt)
+			if refresh.ID != preparedID && refresh.ID != legacyID {
+				return ProofResourceReservation{}, fmt.Errorf("proof refresh evidence %s has invalid reservation-scoped identity", ref)
+			}
 		}
 		if refresh.SchemaVersion != ProofResourceRefreshSchemaVersion ||
 			refresh.ID != ref ||

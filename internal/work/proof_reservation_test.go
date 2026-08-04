@@ -800,6 +800,60 @@ func TestProofResourceRepeatedHeartbeatsKeepWorkLifecycleBounded(t *testing.T) {
 	}
 }
 
+func TestProofResourceSameSecondRefreshesKeepDistinctOutcomeEvidence(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "same-second heartbeat proof work", proofActorAlpha, fixedNow)
+	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       30 * time.Second,
+		Workspace: "/synthetic/repo-alpha",
+		Command:   "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, refreshedAt := range []time.Time{
+		fixedNow.Add(10*time.Second + 11*time.Millisecond),
+		fixedNow.Add(10*time.Second + 771*time.Millisecond),
+	} {
+		if _, err := s.RefreshProofResource(
+			w.ID,
+			acquired.Reservation.ID,
+			proofActorAlpha,
+			30*time.Second,
+			refreshedAt,
+		); err != nil {
+			t.Fatalf("same-second refresh at %s: %v", refreshedAt.Format(time.RFC3339Nano), err)
+		}
+	}
+
+	refs, scoped, err := s.proofRefreshRefs(acquired.Reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !scoped || len(refs) != 2 || refs[0] == refs[1] {
+		t.Fatalf("same-second refresh refs = %v scoped=%t, want two distinct scoped outcomes", refs, scoped)
+	}
+	preparations := map[string]bool{}
+	for _, ref := range refs {
+		var refresh ProofResourceRefresh
+		if err := s.readEventJSON(ref, &refresh); err != nil {
+			t.Fatal(err)
+		}
+		if refresh.PreparationID == "" {
+			t.Fatalf("same-second refresh %s omitted preparation_id", ref)
+		}
+		preparations[refresh.PreparationID] = true
+	}
+	if len(preparations) != 2 {
+		t.Fatalf("same-second refresh preparations = %v, want two distinct governed preparations", preparations)
+	}
+	if _, err := s.proofReservationWithLatestRefresh(acquired.Reservation); err != nil {
+		t.Fatalf("same-second refresh evidence did not validate: %v", err)
+	}
+}
+
 func TestProofResourceScopedRefreshRequiresExactPreparation(t *testing.T) {
 	s := newStore(t)
 	w := claimedProofWork(t, s, "refresh preparation proof work", proofActorAlpha, fixedNow)
@@ -832,16 +886,62 @@ func TestProofResourceScopedRefreshRequiresExactPreparation(t *testing.T) {
 	if refresh.PreparationID == "" {
 		t.Fatal("scoped refresh omitted preparation_id")
 	}
+	legacy := refresh
+	legacy.ID = proofRefreshLegacyOutcomeID(legacy.ReservationID, legacy.RunAttemptID, legacy.ExpiresAt)
+	if err := s.writeEventJSON(legacy.ID, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.proofReservationWithLatestRefresh(acquired.Reservation); err != nil {
+		t.Fatalf("legacy expiry-only refresh identity was not accepted: %v", err)
+	}
 	refresh.RefreshedAt = fixedNow.Add(11 * time.Second).UTC().Format(time.RFC3339)
 	refresh.ExpiresAt = fixedNow.Add(41 * time.Second).UTC().Format(time.RFC3339)
 	refresh.CreatedAt = fixedNow.Add(11 * time.Second).UTC().Format(time.RFC3339Nano)
 	refresh.PreparationID = "pfrp_missing_preparation"
-	refresh.ID = proofRefreshOutcomeID(refresh.ReservationID, refresh.RunAttemptID, refresh.ExpiresAt)
+	refresh.ID = proofRefreshLegacyOutcomeID(refresh.ReservationID, refresh.RunAttemptID, refresh.ExpiresAt)
 	if err := s.writeEventJSON(refresh.ID, &refresh); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.proofReservationWithLatestRefresh(acquired.Reservation); err == nil || !strings.Contains(err.Error(), "preparation") {
 		t.Fatalf("missing preparation was not rejected: %v", err)
+	}
+}
+
+func TestProofResourceScopedRefreshRejectsArbitraryOutcomeIdentity(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "arbitrary refresh identity proof work", proofActorAlpha, fixedNow)
+	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       30 * time.Second,
+		Workspace: "/synthetic/repo-alpha",
+		Command:   "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RefreshProofResource(
+		w.ID,
+		acquired.Reservation.ID,
+		proofActorAlpha,
+		30*time.Second,
+		fixedNow.Add(10*time.Second),
+	); err != nil {
+		t.Fatal(err)
+	}
+	refs, scoped, err := s.proofRefreshRefs(acquired.Reservation)
+	if err != nil || !scoped || len(refs) != 1 {
+		t.Fatalf("scoped refresh refs = %v scoped=%t err=%v", refs, scoped, err)
+	}
+	var refresh ProofResourceRefresh
+	if err := s.readEventJSON(refs[0], &refresh); err != nil {
+		t.Fatal(err)
+	}
+	refresh.ID = proofRefreshOutcomePrefix(acquired.Reservation.ID) + "arbitrary"
+	if err := s.writeEventJSON(refresh.ID, &refresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.proofReservationWithLatestRefresh(acquired.Reservation); err == nil || !strings.Contains(err.Error(), "invalid reservation-scoped identity") {
+		t.Fatalf("arbitrary refresh identity was not rejected: %v", err)
 	}
 }
 
