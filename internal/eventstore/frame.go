@@ -80,6 +80,11 @@ var idPrefixFamilies = []struct{ prefix, family string }{
 	{"act_live_", "action"},
 	{"trace_", "trace"},
 	{"rec_", "receipt"},
+	// approval_ MUST stay mapped: the pre-tool-use hook scans this prefix on
+	// every tool call (policy.ExactActionApprovalStore.ApplyMatching), and an
+	// unmapped prefix disables routing entirely -- that scan then parses every
+	// segment in the store, in every concurrent lane, on every tool call.
+	{"approval_", "approval"},
 }
 
 func familyOf(record []byte, id string) string {

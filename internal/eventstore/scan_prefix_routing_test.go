@@ -27,6 +27,7 @@ var allFamilySeeds = []familySeed{
 	{"action", "act_live_a", "compound.action_intent.v0.1"},
 	{"trace", "trace_a", "compound.trace_envelope.v0.1"},
 	{"receipt", "rec_a", "compound.receipt.v0.1"},
+	{"approval", "approval_grant_a", "compound.exact_action_approval.v0.1"},
 }
 
 func seedAllFamilies(t *testing.T, store *Store, now time.Time) {
@@ -180,7 +181,7 @@ func TestScanPrefixRoutingFailSafeOnUnmappedPrefixParsesAllFamilies(t *testing.T
 	closeCompletionGate(t, store)
 	seedAllFamilies(t, store, now)
 
-	wantFamilies := []string{"action", "hook", "policy", "receipt", "trace", "transition"}
+	wantFamilies := []string{"action", "approval", "hook", "policy", "receipt", "trace", "transition"}
 
 	t.Run("wholly_unmapped", func(t *testing.T) {
 		touched := observeParsedFamilies(t)
@@ -209,6 +210,34 @@ func TestScanPrefixRoutingFailSafeOnUnmappedPrefixParsesAllFamilies(t *testing.T
 			t.Fatalf("families parsed = %v, want fail-safe superset %v (one unmapped prefix must disable routing entirely)", got, wantFamilies)
 		}
 	})
+}
+
+// S5 (hot-path regression): the approval_ prefix MUST route to its own family.
+// This is the one prefix the pre-tool-use hook scans on EVERY tool call
+// (policy.ExactActionApprovalStore.ApplyMatching), so falling into the S4
+// fail-safe here is not a slow scan — it is a full parse of the entire event
+// store per tool call in every concurrent lane. Observed live before the
+// mapping existed: 2-5 GB RSS and 30-40s per hook invocation against a 3 GB
+// store. The mapping is safe to introduce without migration because approval
+// records expire in <=15m and none exist outside their own family.
+func TestScanApprovalPrefixRoutingParsesOnlyApprovalFamily(t *testing.T) {
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	store := openConfiguredStore(t, engineConfig{clock: func() time.Time { return now }})
+	closeCompletionGate(t, store)
+	seedAllFamilies(t, store, now)
+
+	touched := observeParsedFamilies(t)
+
+	entries, err := store.Scan(ScanOptions{Prefixes: []string{"approval_"}, RegularOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].ID != "approval_grant_a" {
+		t.Fatalf("scan entries = %+v, want only approval_grant_a", entries)
+	}
+	if got, want := touched(), []string{"approval"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("families parsed by approval_ Scan = %v, want %v (an unmapped approval_ prefix regresses every tool call on the machine to a full-store parse)", got, want)
+	}
 }
 
 // S3 (cursor law): a cursor minted under one Prefixes intent, then consumed
