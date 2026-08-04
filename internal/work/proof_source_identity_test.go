@@ -658,6 +658,297 @@ func TestLandCheckAcceptsFinalizerCommittedRetryChain(t *testing.T) {
 	}
 }
 
+func TestLandCheckAcceptsExactProofReservationGovernanceVariants(t *testing.T) {
+	completeAndAttachCandidate := func(
+		t *testing.T,
+		fixture sourceBoundProofCompletionFixture,
+		variant string,
+	) ProofResourceCompleteResult {
+		t.Helper()
+		completed, err := fixture.store.CompleteProofResource(
+			fixture.item.ID,
+			ProofResourceCompleteInput{
+				Actor:             proofActorBeta,
+				ReservationID:     fixture.reserved.Reservation.ID,
+				ReportArtifactRef: fixture.reportRef,
+				ProducerExitKnown: true,
+				ProducerExitCode:  0,
+			},
+			fixture.now.Add(8*time.Second),
+		)
+		if err != nil {
+			t.Fatalf("complete %s proof: %v", variant, err)
+		}
+		current, err := fixture.store.Get(fixture.item.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.store.Advance(fixture.item.ID, AdvanceInput{
+			To:         current.State,
+			Actor:      proofActorBeta,
+			ArtifactID: "commit:" + fixture.source.HeadSHA,
+		}, fixture.now.Add(9*time.Second)); err != nil {
+			t.Fatalf("attach %s candidate: %v", variant, err)
+		}
+		return completed
+	}
+
+	for _, variant := range []string{
+		"reserve",
+		"ordinary steal",
+		"termination-evidenced steal",
+	} {
+		t.Run(variant, func(t *testing.T) {
+			fixture := newSourceBoundTakeoverProofFixture(
+				t,
+				time.Date(2026, 8, 4, 3, 0, 0, 0, time.UTC),
+				variant,
+			)
+			completed := completeAndAttachCandidate(t, fixture, variant)
+
+			checked, err := fixture.store.LandCheck(fixture.item.ID, LandCheckOptions{
+				CandidateTipSHA: fixture.source.HeadSHA,
+				Actor:           proofActorBeta,
+			}, fixture.now.Add(10*time.Second))
+			if err != nil {
+				t.Fatalf("LandCheck rejected %s reservation governance: %v", variant, err)
+			}
+			if checked.Status != "landed" ||
+				checked.ProofVerificationRef != completed.VerificationRef ||
+				checked.ProofHeadSHA != fixture.source.HeadSHA {
+				t.Fatalf("%s LandCheck = %+v, want committed proof %s", variant, checked, completed.VerificationRef)
+			}
+		})
+	}
+
+	t.Run("checksum-valid wrong reservation action is rejected", func(t *testing.T) {
+		fixture := newSourceBoundTakeoverProofFixture(
+			t,
+			time.Date(2026, 8, 4, 3, 30, 0, 0, time.UTC),
+			"termination-evidenced steal",
+		)
+		var action envelope.ActionIntent
+		if err := fixture.store.readEventJSON(fixture.reserved.Reservation.ActionIntentID, &action); err != nil {
+			t.Fatal(err)
+		}
+		action.Action = proofResourceActionReserve
+		if err := fixture.store.replaceEvent(action.ID, &action); err != nil {
+			t.Fatal(err)
+		}
+		completeAndAttachCandidate(t, fixture, "termination-evidenced steal")
+
+		_, err := fixture.store.LandCheck(fixture.item.ID, LandCheckOptions{
+			CandidateTipSHA: fixture.source.HeadSHA,
+			Actor:           proofActorBeta,
+		}, fixture.now.Add(10*time.Second))
+		if err == nil ||
+			!strings.Contains(err.Error(), "reservation governance") ||
+			!strings.Contains(err.Error(), "identity does not bind proof work") {
+			t.Fatalf("LandCheck wrong reservation action error = %v", err)
+		}
+	})
+
+	t.Run("partial termination evidence is rejected", func(t *testing.T) {
+		priorRun := "ratt_20260804T030000Z_12345678"
+		reservation := ProofResourceReservation{
+			ID:                        "pfr_tampered_takeover",
+			PriorHolder:               proofResourceHolder("pfr_prior", priorRun, "work_prior", proofActorAlpha),
+			PriorRunAttemptID:         priorRun,
+			StealReason:               "tampered takeover",
+			StolenAt:                  "2026-08-04T03:00:00Z",
+			TerminatedRunAttemptID:    priorRun,
+			TerminationConfirmedAt:    "2026-08-04T03:00:00Z",
+			TerminationConfirmationID: "pfrt_tampered",
+		}
+		if _, err := proofReservationExpectedAction(reservation); err == nil ||
+			!strings.Contains(err.Error(), "termination-evidenced") {
+			t.Fatalf("partial termination-evidenced reservation action error = %v", err)
+		}
+	})
+}
+
+func newSourceBoundTakeoverProofFixture(
+	t *testing.T,
+	now time.Time,
+	variant string,
+) sourceBoundProofCompletionFixture {
+	t.Helper()
+	store := newStore(t)
+	repo := initProofSourceRepo(t, "https://example.invalid/compound/proof-takeover-finalizer.git")
+	source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var predecessor envelope.WorkEnvelope
+	var predecessorReservation ProofResourceReserveResult
+	if variant != "reserve" {
+		writeProofResourceStealGrant(t, store.home)
+		predecessor = claimedProofWork(t, store, "takeover predecessor remains auditable", proofActorAlpha, now)
+		predecessorProfile, err := NewProofResourceProfile(
+			ProofResourceProfileCanonicalFull,
+			"/synthetic/proof-takeover-predecessor",
+			"",
+			[]ProofResourceGateProfile{{
+				Name:     "synthetic-predecessor-gate",
+				Command:  []string{"go", "test", "./internal/synthetic-predecessor"},
+				ProofRef: "synthetic-predecessor-proof",
+			}},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		predecessorReservation, err = store.ReserveProofResource(predecessor.ID, ProofResourceReserveInput{
+			Actor:     proofActorAlpha,
+			TTL:       time.Minute,
+			Workspace: "/synthetic/proof-takeover-predecessor",
+			Command:   "compound proof-check --out /synthetic/predecessor.json",
+			Profile:   predecessorProfile,
+		}, now.Add(2*time.Second))
+		if err != nil {
+			t.Fatalf("reserve %s predecessor: %v", variant, err)
+		}
+		if err := predecessorReservation.ExecutionBarrier.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	item, err := store.Create(CreateInput{
+		Owner:            "proof-takeover-finalizer-test",
+		Actor:            proofActorBeta,
+		SuccessPredicate: "LandCheck accepts the exact persisted reservation governance variant",
+		GitDelivery: &envelope.GitDeliveryContract{
+			TargetWorktreeRoot:    repo,
+			RepositoryFingerprint: source.RepositoryFingerprint,
+			TargetLocalRef:        "refs/heads/main",
+			ExpectedBaseSHA:       source.BaseSHA,
+			PublicationMode:       "local_only",
+		},
+	}, now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err = store.Claim(item.ID, proofActorBeta, now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := NewProofResourceProfileWithSource(
+		ProofResourceProfileCanonicalFull,
+		repo,
+		source,
+		[]ProofResourceGateProfile{{
+			Name:     "synthetic-gate",
+			Command:  []string{"go", "test", "./internal/synthetic"},
+			ProofRef: "synthetic-proof",
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserveInput := ProofResourceReserveInput{
+		Actor:     proofActorBeta,
+		TTL:       time.Minute,
+		Workspace: repo,
+		Command:   "compound proof-check --base " + source.BaseSHA + " --out /synthetic/takeover-finalizer.json",
+		Profile:   profile,
+	}
+	if variant != "reserve" {
+		reserveInput.Steal = true
+		reserveInput.StealReason = "governed takeover finalizer regression"
+	}
+	if variant == "termination-evidenced steal" {
+		reserveInput.TerminatedRunAttemptID = predecessorReservation.Reservation.RunAttemptID
+	}
+	var ordinaryPredecessorDone chan error
+	if variant == "ordinary steal" {
+		ordinaryPredecessorDone = make(chan error, 1)
+		go func() {
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				status, statusErr := landlease.Status(store.home, now.Add(5*time.Second))
+				if statusErr != nil {
+					ordinaryPredecessorDone <- statusErr
+					return
+				}
+				if status.Holder != predecessorReservation.Reservation.Holder {
+					_, predecessorErr := store.CompleteProofResource(predecessor.ID, ProofResourceCompleteInput{
+						Actor:         proofActorAlpha,
+						ReservationID: predecessorReservation.Reservation.ID,
+						FailureReason: "predecessor observed governed lease transfer",
+					}, now.Add(6*time.Second))
+					if predecessorErr == nil {
+						ordinaryPredecessorDone <- errors.New("stolen predecessor completion unexpectedly succeeded")
+						return
+					}
+					attempt, attemptErr := store.runAttempts().Get(predecessorReservation.Reservation.RunAttemptID)
+					if attemptErr != nil {
+						ordinaryPredecessorDone <- attemptErr
+						return
+					}
+					if !runattempt.IsTerminal(attempt.Status) {
+						ordinaryPredecessorDone <- errors.New("stolen predecessor remained nonterminal")
+						return
+					}
+					ordinaryPredecessorDone <- nil
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			ordinaryPredecessorDone <- errors.New("timed out waiting for ordinary proof takeover")
+		}()
+	}
+	reserved, err := store.ReserveProofResource(item.ID, reserveInput, now.Add(5*time.Second))
+	if err != nil {
+		t.Fatalf("reserve %s proof: %v", variant, err)
+	}
+	if ordinaryPredecessorDone != nil {
+		if err := <-ordinaryPredecessorDone; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := reserved.ExecutionBarrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reportBody, err := json.Marshal(map[string]any{
+		"schema_version":  "compound.proof_check_report.v0.3",
+		"profile_kind":    ProofResourceProfileCanonicalFull,
+		"status":          "ok",
+		"generated_at":    now.Add(7 * time.Second).Format(time.RFC3339),
+		"repo":            repo,
+		"base_ref":        source.BaseSHA,
+		"source_snapshot": source,
+		"dry_run":         false,
+		"proof_refs":      []string{"synthetic-proof"},
+		"steps": []map[string]any{{
+			"name":      "synthetic-gate",
+			"command":   []string{"go", "test", "./internal/synthetic"},
+			"proof_ref": "synthetic-proof",
+			"status":    "ok",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(store.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportRef, err := artifacts.Put(reportBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sourceBoundProofCompletionFixture{
+		store:     store,
+		item:      item,
+		repo:      repo,
+		source:    source,
+		reserved:  reserved,
+		reportRef: reportRef,
+		now:       now,
+	}
+}
+
 type sourceBoundProofCompletionFixture struct {
 	store     *Store
 	item      envelope.WorkEnvelope

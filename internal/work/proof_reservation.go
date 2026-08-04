@@ -42,6 +42,10 @@ const (
 	ProofResourceProfileCanonicalFull = "canonical_full"
 
 	proofResourceHarness = "proof-check"
+
+	proofResourceActionReserve               = "reserve_full_proof_resource"
+	proofResourceActionSteal                 = "steal_full_proof_resource"
+	proofResourceActionStealAfterTermination = "steal_full_proof_resource_after_termination_evidence"
 )
 
 // ProofResourceReserveInput requests the existing process-wide landlease mutex for a governed
@@ -748,12 +752,16 @@ func (s *Store) RecoverLegacyProofResourceCompletion(
 		if err != nil || claim.By != in.Actor {
 			return fmt.Errorf("legacy proof recovery requires work lease held by %q", in.Actor)
 		}
+		expectedReservationAction, err := proofReservationExpectedAction(reservation)
+		if err != nil {
+			return fmt.Errorf("legacy proof reservation governance state: %w", err)
+		}
 		if err := s.validateStoredProofGovernance(
 			w,
 			in.Actor,
 			reservation.ActionIntentID,
 			reservation.PolicyDecisionID,
-			"reserve_full_proof_resource",
+			expectedReservationAction,
 		); err != nil {
 			return fmt.Errorf("legacy proof reservation governance: %w", err)
 		}
@@ -2314,12 +2322,16 @@ func (s *Store) validateCommittedProofResourceChainStatus(
 	if err := s.validateProofRunAttemptLineage(w, reservation, result, attempt); err != nil {
 		return err
 	}
+	expectedReservationAction, err := proofReservationExpectedAction(reservation)
+	if err != nil {
+		return fmt.Errorf("reservation governance state: %w", err)
+	}
 	if err := s.validateStoredProofGovernance(
 		w,
 		result.Actor,
 		reservation.ActionIntentID,
 		reservation.PolicyDecisionID,
-		"reserve_full_proof_resource",
+		expectedReservationAction,
 	); err != nil {
 		return fmt.Errorf("reservation governance: %w", err)
 	}
@@ -2377,6 +2389,90 @@ func (s *Store) validateProofRunAttemptLineage(
 		}
 		current = predecessor
 	}
+}
+
+// proofReservationExpectedAction derives one exact governance action from the immutable
+// reservation state. Takeover actions are not aliases for reserve: every field written by the
+// corresponding scarce-lease transfer must be present and internally consistent, while partial
+// takeover state fails closed instead of broadening the accepted ActionIntent set.
+func proofReservationExpectedAction(reservation ProofResourceReservation) (string, error) {
+	priorHolder := strings.TrimSpace(reservation.PriorHolder)
+	priorRunAttemptID := strings.TrimSpace(reservation.PriorRunAttemptID)
+	stealReason := strings.TrimSpace(reservation.StealReason)
+	stolenAt := strings.TrimSpace(reservation.StolenAt)
+	terminatedRunAttemptID := strings.TrimSpace(reservation.TerminatedRunAttemptID)
+	terminationEvidenceRef := strings.TrimSpace(reservation.TerminationEvidenceRef)
+	terminationConfirmedAt := strings.TrimSpace(reservation.TerminationConfirmedAt)
+	terminationConfirmationID := strings.TrimSpace(reservation.TerminationConfirmationID)
+	if priorHolder != reservation.PriorHolder ||
+		priorRunAttemptID != reservation.PriorRunAttemptID ||
+		stealReason != reservation.StealReason ||
+		stolenAt != reservation.StolenAt ||
+		terminatedRunAttemptID != reservation.TerminatedRunAttemptID ||
+		terminationEvidenceRef != reservation.TerminationEvidenceRef ||
+		terminationConfirmedAt != reservation.TerminationConfirmedAt ||
+		terminationConfirmationID != reservation.TerminationConfirmationID {
+		return "", fmt.Errorf("proof reservation %s takeover fields are not canonical", reservation.ID)
+	}
+	if _, err := proofReservationPredecessorHolders(reservation); err != nil {
+		return "", err
+	}
+
+	hasStealState := priorHolder != "" || priorRunAttemptID != "" || stealReason != "" || stolenAt != ""
+	hasTerminationState := terminatedRunAttemptID != "" ||
+		terminationEvidenceRef != "" ||
+		terminationConfirmedAt != "" ||
+		terminationConfirmationID != ""
+	if hasTerminationState {
+		if priorHolder == "" ||
+			priorRunAttemptID == "" ||
+			stealReason == "" ||
+			stolenAt == "" ||
+			terminatedRunAttemptID == "" ||
+			terminationEvidenceRef == "" ||
+			terminationConfirmedAt == "" ||
+			terminationConfirmationID == "" {
+			return "", fmt.Errorf("termination-evidenced proof reservation %s is incomplete", reservation.ID)
+		}
+		if !runattempt.Valid(terminatedRunAttemptID) {
+			return "", fmt.Errorf("termination-evidenced proof reservation %s has invalid terminated RunAttempt %q", reservation.ID, terminatedRunAttemptID)
+		}
+		if !strings.HasPrefix(terminationEvidenceRef, "artifact:sha256:") ||
+			!strings.HasPrefix(terminationConfirmationID, "pfrt_") {
+			return "", fmt.Errorf("termination-evidenced proof reservation %s has invalid evidence identity", reservation.ID)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, terminationConfirmedAt); err != nil {
+			return "", fmt.Errorf("termination-evidenced proof reservation %s confirmed_at: %w", reservation.ID, err)
+		}
+		if err := validateProofReservationStealState(reservation, priorHolder, priorRunAttemptID, stolenAt); err != nil {
+			return "", err
+		}
+		return proofResourceActionStealAfterTermination, nil
+	}
+	if hasStealState {
+		if priorHolder == "" || priorRunAttemptID == "" || stealReason == "" || stolenAt == "" {
+			return "", fmt.Errorf("ordinary proof-steal reservation %s is incomplete", reservation.ID)
+		}
+		if err := validateProofReservationStealState(reservation, priorHolder, priorRunAttemptID, stolenAt); err != nil {
+			return "", err
+		}
+		return proofResourceActionSteal, nil
+	}
+	return proofResourceActionReserve, nil
+}
+
+func validateProofReservationStealState(
+	reservation ProofResourceReservation,
+	priorHolder, priorRunAttemptID, stolenAt string,
+) error {
+	_, holderRunAttemptID, _, ok := parseProofResourceHolder(priorHolder)
+	if !ok || holderRunAttemptID != priorRunAttemptID || !runattempt.Valid(priorRunAttemptID) {
+		return fmt.Errorf("proof reservation %s prior holder does not bind RunAttempt %q", reservation.ID, priorRunAttemptID)
+	}
+	if _, err := time.Parse(time.RFC3339, stolenAt); err != nil {
+		return fmt.Errorf("proof reservation %s stolen_at: %w", reservation.ID, err)
+	}
+	return nil
 }
 
 func (s *Store) validateStoredProofGovernance(
@@ -4455,7 +4551,7 @@ func (s *Store) proofResourceAction(
 	reservationID, actor, phase, priorHolder, reason, terminatedRunAttemptID, terminationEvidenceRef string,
 	now time.Time,
 ) envelope.ActionIntent {
-	action := "reserve_full_proof_resource"
+	action := proofResourceActionReserve
 	preview := "reserve full proof resource before any gate subprocess"
 	rollback := "release the exclusive proof resource or let its heartbeat-backed TTL expire"
 	mutationClass := "local_reversible"
@@ -4479,7 +4575,7 @@ func (s *Store) proofResourceAction(
 		preview = "release exact retained pre-v0.3 proof holder without verification"
 		rollback = "the retained report remains evidence and a fresh source-bound v0.3 battery remains required"
 	case strings.TrimSpace(terminationEvidenceRef) != "":
-		action = "steal_full_proof_resource_after_termination_evidence"
+		action = proofResourceActionStealAfterTermination
 		preview = fmt.Sprintf(
 			"exceptionally steal full proof resource from %q after terminated predecessor %s; reason: %s; immutable termination evidence: %s",
 			priorHolder,
@@ -4492,7 +4588,7 @@ func (s *Store) proofResourceAction(
 		reversibility = "manual"
 		blastRadius = "repo"
 	case strings.TrimSpace(reason) != "":
-		action = "steal_full_proof_resource"
+		action = proofResourceActionSteal
 		preview = fmt.Sprintf("exceptionally steal full proof resource from %q; reason: %s", priorHolder, reason)
 		rollback = "stolen predecessor remains auditable through reservation and RunAttempt evidence"
 		mutationClass = "security"
