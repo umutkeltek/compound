@@ -27,11 +27,13 @@ func init() { terminal.Register(New()) }
 
 type impl struct{}
 
-func (i *impl) Name() string                          { return Name }
-func (i *impl) BundleID() string                      { return BundleID }
-func (i *impl) Hooks() terminal.HookSet               { return terminal.HookSet{Install: "# terminal-app: no bridge\n", Uninstall: "# no-op\n"} }
-func (i *impl) Workspace() terminal.WorkspaceAPI      { return workspace{} }
-func (i *impl) Feed() terminal.FeedAPI                { return feed{} }
+func (i *impl) Name() string     { return Name }
+func (i *impl) BundleID() string { return BundleID }
+func (i *impl) Hooks() terminal.HookSet {
+	return terminal.HookSet{Install: "# terminal-app: no bridge\n", Uninstall: "# no-op\n"}
+}
+func (i *impl) Workspace() terminal.WorkspaceAPI { return workspace{} }
+func (i *impl) Feed() terminal.FeedAPI           { return feed{} }
 
 func (i *impl) Doctor(_ context.Context) (terminal.DoctorReport, error) {
 	rep := terminal.DoctorReport{IPCReachable: false}
