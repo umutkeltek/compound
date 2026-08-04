@@ -135,6 +135,11 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("measure", policy.FirstPartyCommandGoverned),
 		"attention": readCommand(cmdAttention),
 		"activity":  heldCommand(cmdActivity),
+		"terminal": readCommand(cmdTerminal).
+			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("wire", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("unwire", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("hooks", policy.FirstPartyCommandRead),
 		"narrate":   readCommand(cmdNarrate),
 		"stream":    readCommand(cmdStream),
 		"executors": readCommand(cmdExecutors),
@@ -189,6 +194,15 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"negatives":       heldCommand(cmdNegatives),
 		"architecture": heldCommand(cmdArchitecture).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),
+		"schedule": readCommand(cmdSchedule).
+			withSubcommandAdmission("list", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("show", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),
+		"browser": readCommand(cmdBrowser).
+			withSubcommandAdmission("list", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("show", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
+			withSubcommandFlagAdmission("doctor", "--fix", policy.FirstPartyCommandGoverned),
 	}
 }
 

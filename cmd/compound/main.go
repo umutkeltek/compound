@@ -248,7 +248,9 @@ compound finding <record|list|show|doctor> private direct-write home for durable
 compound capture --source S [--text T] [--work W] | capture show <cid> gesture-fired capture front door: content-addressed body under observed/capture/ (never ledger), mints ONE observed-class proposed candidate (never auto-promotable); day-salted dedup
 compound intent <plan|review|apply> expressive utterance -> task-scoped ContextPack -> reviewable existing work create-plan; ambiguity parks and apply requires an explicit reviewer
 compound placement <resolve|target> where a write belongs: positive canonical-target redirect for a blocked path (guidance, not a gate)
-compound doctor [--json] [--base DIR] [--binary PATH] one legible operator health surface: hooks, leases, findings, placement freshness, retention; writes nothing
+compound schedule <list|show|doctor> [--json] [--source user|system|crontab|all] [--namespace N] [--stale-days N] read-only launchd + crontab projection; no --fix
+  compound browser <list|show|doctor> [--json] [--instance UUID] [--swiftshader-only] [--stale-min M] [--idle-cpu-pct PCT] [--fix|--dry-run|--yes-each] read-only agent-browser / chrome projection; --fix is B-scope: orphan swiftshader only, per-target confirmation
+  compound doctor [--json] [--base DIR] [--binary PATH] one legible operator health surface: hooks, leases, findings, placement freshness, retention; writes nothing
 compound store <doctor|init|status|migrate|sync|embed|recall> [--json]  Postgres+pgvector storage backend lifecycle (ADR-0005); requires COMPOUND_STORE=postgres + COMPOUND_DSN; sync/embed/migrate --apply are governed writes (dry-run default, --confirm --work)
 compound retention <classes|scan|plan> [--json]                 declare and inspect artifact retention; plans only, never reclaims
 compound proof-check [--json] [--dry-run] [--dev] [--repo P] [--out FILE] deterministic verification bundle; --dev is fast, cache-enabled, non-certifying feedback while canonical proof stays fresh
