@@ -76,6 +76,7 @@ var Classification = map[string]Class{
 	"behaviorallens":  Leaf, // composable behavioral-lens framework: uniform observe->InferredSignal plug + visibility-gated composition + sycophancy (paired-stance shift) lens; records evidence rows under COMPOUND_HOME, owns no authority object and never gates/promotes
 	"bench":           Leaf, // evaluator organ: read-only scorer over the real surfacing/recall paths; produces evidence reports, owns no object family
 	"breadth":         Leaf,
+	"browser":         Leaf, // read-only headless/automation browser (agent-browser chrome) observation surface behind `compound browser list|show|doctor`; `doctor --fix` is B-scope (orphan-idle swiftshader reap only, per-target confirmation by default); owns no authority object
 	"candidates":      Leaf,
 	"corpus":          Leaf, // lane-scoped corpus indexes: disposable derivatives over imported evidence; ledger stays authority, hits never ambient
 	"executorlens":    Leaf, // evidence-only collector: reads THIS repo's executor lanes' (Codex, Claude Code) receipts/events and builds behaviorallens Observations (public_safe hedging over output text + operator_private agreement-asymmetry over receipt verdicts); records evidence rows only, owns no authority object, never gates/promotes
@@ -100,6 +101,7 @@ var Classification = map[string]Class{
 	"statussurface":   Leaf, // body-free, TTL-bound adaptive projection over harness-native context/rate-limit metadata; Claude/Codex remain live authority, route guidance is evidence only
 	"stream":          Leaf, // read-only tail organ over events/work.jsonl (byte cursor) + ledger/seq; opens the log read-only and NEVER takes the work-event write lock; emits evidence frames the console SSE route translates, owns no authority object and promotes nothing
 	"reviewqueue":     Leaf, // canonical workbench review-queue builder (merge + annotate rows); presentation-side only, no authority object, no terminal effect
+	"schedule":        Leaf, // read-only launchd+crontab projection surface behind `compound schedule list|show|doctor`; no mutation door; owns no authority object
 	"verdictflow":     Leaf, // shared plan->record->render->load->annotate scaffolding behind the three panel-verdict review bridges (product/sourceobs/capgraph); writes review artifacts through reviewartifact and reads them back, owns no authority object and performs no terminal effect (ledger/store/writeback stay in the domain callbacks)
 	// memory object family — canonical after Gen-1 package retirement
 	"mem": MemTarget,

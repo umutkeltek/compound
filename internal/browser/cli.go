@@ -15,7 +15,7 @@
 //    on (kill the instance, not "is PID 7180 a problem? probably no").
 //  - No host identifiers leave the box; output is local-only.
 
-package main
+package browser
 
 import (
 	"bufio"
@@ -54,19 +54,19 @@ type browserProcess struct {
 // browserInstance is one user-data-dir group: the chrome "main" process
 // plus its helpers. The doctor reports findings at the instance level.
 type browserInstance struct {
-	UUID         string            `json:"uuid"`
-	MainPID      int               `json:"main_pid"`
-	HelperPIDs   []int             `json:"helper_pids"`
-	ParentABPID  int               `json:"parent_ab_pid"`
-	ParentABCmd  string            `json:"parent_ab_cmd,omitempty"`
+	UUID          string           `json:"uuid"`
+	MainPID       int              `json:"main_pid"`
+	HelperPIDs    []int            `json:"helper_pids"`
+	ParentABPID   int              `json:"parent_ab_pid"`
+	ParentABCmd   string           `json:"parent_ab_cmd,omitempty"`
 	ParentABAlive bool             `json:"parent_ab_alive"`
-	ParentABCPU  string            `json:"parent_ab_cpu,omitempty"`
-	Elapsed      string            `json:"elapsed"`
-	StartedAt    string            `json:"started_at"`
-	Swiftshader  bool              `json:"swiftshader"`
-	UserDataDir  string            `json:"user_data_dir,omitempty"`
-	Cwd          string            `json:"cwd,omitempty"`
-	Procs        []browserProcess  `json:"procs,omitempty"`
+	ParentABCPU   string           `json:"parent_ab_cpu,omitempty"`
+	Elapsed       string           `json:"elapsed"`
+	StartedAt     string           `json:"started_at"`
+	Swiftshader   bool             `json:"swiftshader"`
+	UserDataDir   string           `json:"user_data_dir,omitempty"`
+	Cwd           string           `json:"cwd,omitempty"`
+	Procs         []browserProcess `json:"procs,omitempty"`
 }
 
 type browserDoctorFinding struct {
@@ -89,7 +89,9 @@ type browserDoctorReport struct {
 
 const browserDoctorSchema = "compound/browser-doctor.v0.1"
 
-func cmdBrowser(args []string) {
+// Run is the organ entry point behind `compound browser` (the cmd-budget
+// ratchet keeps cmd/compound a dispatch layer; the surface lives here).
+func Run(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, browserUsage)
 		os.Exit(2)
@@ -120,10 +122,10 @@ func cmdBrowserList(args []string) {
 	instances = filterInstances(instances, instFilter, swiftOnly)
 	if jsonOut {
 		out := struct {
-			Schema     string            `json:"schema"`
-			Generated  string            `json:"generated_at"`
-			Instances  []browserInstance `json:"instances"`
-			RawProcs   []browserProcess  `json:"raw_procs"`
+			Schema    string            `json:"schema"`
+			Generated string            `json:"generated_at"`
+			Instances []browserInstance `json:"instances"`
+			RawProcs  []browserProcess  `json:"raw_procs"`
 		}{
 			Schema:    "compound/browser-list.v0.1",
 			Generated: time.Now().UTC().Format(time.RFC3339Nano),
@@ -260,10 +262,10 @@ func cmdBrowserDoctorFix(report browserDoctorReport, dryRun, yesEach, jsonOut bo
 		return
 	}
 	type reapResult struct {
-		UUID    string `json:"uuid"`
-		PID     int    `json:"pid"`
-		Action  string `json:"action"` // "would-kill" | "skipped" | "killed" | "kill-failed"
-		Error   string `json:"error,omitempty"`
+		UUID   string `json:"uuid"`
+		PID    int    `json:"pid"`
+		Action string `json:"action"` // "would-kill" | "skipped" | "killed" | "kill-failed"
+		Error  string `json:"error,omitempty"`
 	}
 	results := []reapResult{}
 	for _, t := range targets {
@@ -338,11 +340,11 @@ func addInstanceFindings(report *browserDoctorReport, inst browserInstance) {
 			target := []int{inst.MainPID}
 			target = append(target, inst.HelperPIDs...)
 			report.Findings = append(report.Findings, browserDoctorFinding{
-				UUID:        inst.UUID,
-				MainPID:     inst.MainPID,
-				Code:        "orphan-idle-swiftshader",
-				Detail:      fmt.Sprintf("agent-browser pid %d at %s CPU; swiftshader on; reap target [%s]", inst.ParentABPID, inst.ParentABCPU, strings.Trim(fmt.Sprint(target), "[]")),
-				ReapTarget:  target,
+				UUID:       inst.UUID,
+				MainPID:    inst.MainPID,
+				Code:       "orphan-idle-swiftshader",
+				Detail:     fmt.Sprintf("agent-browser pid %d at %s CPU; swiftshader on; reap target [%s]", inst.ParentABPID, inst.ParentABCPU, strings.Trim(fmt.Sprint(target), "[]")),
+				ReapTarget: target,
 			})
 		}
 	}

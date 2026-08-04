@@ -94,6 +94,21 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "Postgres+pgvector backend operator surface (doctor/init/status/migrate/sync/embed/recall); migrate/sync/embed are governed external_side_effect writes gated by store.postgres_export.write with Receipt+Transition proof in the home event store; migrate reads through mem's locked MigrationSnapshot; owns no authority object",
 		Consumer: "cmd/compound cmdStore shim (`compound store ...`); composition-root pg engine injection in cmd/compound/main.go",
 	},
+	// schedule is the macOS launchd+crontab read-only projection organ; there is no
+	// mutation door at all (no apply, no --fix) — it observes and renders, never writes.
+	"organ:schedule": {
+		Class:    MintEvidence,
+		Purpose:  "read-only launchd+crontab projection surface (list/show/doctor); no mutation door; owns no authority object",
+		Consumer: "cmd/compound command-registry dispatch (`compound schedule ...`) via schedule.Run",
+	},
+	// browser is the macOS headless/automation-chrome observation organ; its only
+	// mutation is the B-scope `doctor --fix` orphan-idle swiftshader reap with
+	// per-target confirmation, never a write to compound authority.
+	"organ:browser": {
+		Class:    MintEvidence,
+		Purpose:  "read-only headless/automation browser observation surface; owns no authority object",
+		Consumer: "cmd/compound command-registry dispatch (`compound browser ...`) via browser.Run",
+	},
 	// adapter is the peer-of-core home for rented external protocol readers (awstream today).
 	// It joins/normalizes foreign event shapes for activity and never promotes or gates.
 	"organ:adapter": {

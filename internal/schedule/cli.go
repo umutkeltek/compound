@@ -16,7 +16,7 @@
 //  - Namespace inference is heuristic (label second-segment or known list)
 //    and exposed verbatim in JSON so callers can override.
 
-package main
+package schedule
 
 import (
 	"bufio"
@@ -47,37 +47,37 @@ const (
 // ScheduleEntry is one row of the read-only projection. JSON-friendly and
 // stable enough to diff across runs.
 type ScheduleEntry struct {
-	Label         string             `json:"label"`
-	Path          string             `json:"path"`
-	Source        scheduleSource     `json:"source"`
-	Namespace     string             `json:"namespace"`
-	Disabled      bool               `json:"disabled"`
-	DisabledByExt bool               `json:"disabled_by_extension"` // *.plist.disabled
-	RunAtLoad     bool               `json:"run_at_load"`
-	KeepAlive     bool               `json:"keep_alive"`
-	ProgramArgs   []string           `json:"program_args,omitempty"`
-	EnvKeys       []string           `json:"env_keys,omitempty"` // sorted env var names; populated when Env is redacted out
-	Calendar      *scheduleCalendar  `json:"calendar,omitempty"`
-	Env           map[string]string  `json:"env,omitempty"`
-	StdOutPath    string             `json:"stdout_path,omitempty"`
-	StdErrPath    string             `json:"stderr_path,omitempty"`
-	MTime         string             `json:"mtime,omitempty"`
-	ModTimeAge    string             `json:"mod_age,omitempty"`
-	Warnings      []string           `json:"warnings,omitempty"`
+	Label         string            `json:"label"`
+	Path          string            `json:"path"`
+	Source        scheduleSource    `json:"source"`
+	Namespace     string            `json:"namespace"`
+	Disabled      bool              `json:"disabled"`
+	DisabledByExt bool              `json:"disabled_by_extension"` // *.plist.disabled
+	RunAtLoad     bool              `json:"run_at_load"`
+	KeepAlive     bool              `json:"keep_alive"`
+	ProgramArgs   []string          `json:"program_args,omitempty"`
+	EnvKeys       []string          `json:"env_keys,omitempty"` // sorted env var names; populated when Env is redacted out
+	Calendar      *scheduleCalendar `json:"calendar,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	StdOutPath    string            `json:"stdout_path,omitempty"`
+	StdErrPath    string            `json:"stderr_path,omitempty"`
+	MTime         string            `json:"mtime,omitempty"`
+	ModTimeAge    string            `json:"mod_age,omitempty"`
+	Warnings      []string          `json:"warnings,omitempty"`
 }
 
 type scheduleCalendar struct {
-	Hour   int `json:"hour,omitempty"`
-	Minute int `json:"minute,omitempty"`
+	Hour    int `json:"hour,omitempty"`
+	Minute  int `json:"minute,omitempty"`
 	Weekday int `json:"weekday,omitempty"`
 }
 
 type scheduleDoctorFinding struct {
-	Label   string `json:"label"`
-	Path    string `json:"path"`
-	Source  scheduleSource `json:"source"`
-	Code    string `json:"code"` // disabled, disabled-by-extension, missing-binary, stale
-	Detail  string `json:"detail"`
+	Label  string         `json:"label"`
+	Path   string         `json:"path"`
+	Source scheduleSource `json:"source"`
+	Code   string         `json:"code"` // disabled, disabled-by-extension, missing-binary, stale
+	Detail string         `json:"detail"`
 }
 
 type scheduleDoctorReport struct {
@@ -91,7 +91,9 @@ type scheduleDoctorReport struct {
 
 const scheduleDoctorSchema = "compound/schedule-doctor.v0.1"
 
-func cmdSchedule(args []string) {
+// Run is the organ entry point behind `compound schedule` (the cmd-budget
+// ratchet keeps cmd/compound a dispatch layer; the surface lives here).
+func Run(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, scheduleUsage)
 		os.Exit(2)
@@ -826,9 +828,10 @@ func stringMapField(m map[string]any) map[string]string {
 	return out
 }
 
-// printJSONSchedule is intentionally NOT defined here; main.go's printJSON is
-// the canonical emitter for this binary. Leaving this comment so a future
-// reader does not duplicate it.
+// printJSON lives in this organ's helpers.go, mirrored byte-compatible from
+// cmd/compound/main.go (the cmd-budget ratchet keeps cmd/compound a thin
+// dispatch shell, so the organ carries its own copy rather than importing the
+// shell).
 
 // expandEnvPath replaces $NAME and ${NAME} references in p with values from
 // env. Used to bridge a stat() that does not know about cron's env semantics;

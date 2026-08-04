@@ -1,4 +1,6 @@
-package main
+//go:build darwin
+
+package browser
 
 import (
 	"strings"
@@ -7,13 +9,13 @@ import (
 
 func TestAddInstanceFindings_OrphanIdleSwiftshaderFires(t *testing.T) {
 	inst := browserInstance{
-		UUID:        "abcd1234",
-		MainPID:     9999,
-		ParentABPID: 7000,
+		UUID:          "abcd1234",
+		MainPID:       9999,
+		ParentABPID:   7000,
 		ParentABAlive: true,
-		ParentABCPU: "0.0%",
-		Swiftshader: true,
-		Elapsed:     "1d2h3m",
+		ParentABCPU:   "0.0%",
+		Swiftshader:   true,
+		Elapsed:       "1d2h3m",
 	}
 	report := browserDoctorReport{
 		StaleMin: 60,
@@ -40,13 +42,13 @@ func TestAddInstanceFindings_OrphanIdleSwiftshaderFires(t *testing.T) {
 
 func TestAddInstanceFindings_OrphanDoesNotFireWhenParentBusy(t *testing.T) {
 	inst := browserInstance{
-		UUID:        "abcd1234",
-		MainPID:     9999,
-		ParentABPID: 7000,
+		UUID:          "abcd1234",
+		MainPID:       9999,
+		ParentABPID:   7000,
 		ParentABAlive: true,
-		ParentABCPU: "47.0%",
-		Swiftshader: true,
-		Elapsed:     "1d2h3m",
+		ParentABCPU:   "47.0%",
+		Swiftshader:   true,
+		Elapsed:       "1d2h3m",
 	}
 	report := browserDoctorReport{StaleMin: 60, IdlePct: 5, Codes: map[string]int{}}
 	addInstanceFindings(&report, inst)
@@ -120,7 +122,7 @@ func TestIsChromeShape_OnlyMatchesChromeForTesting(t *testing.T) {
 		cmd  string
 		want bool
 	}{
-		{"chrome-for-testing", "/Users/example/.agent-browser/browsers/chrome/.../MacOS/Google Chrome for Testing --type=gpu-process", true},
+		{"chrome-for-testing", "/Users/tester/.agent-browser/browsers/chrome/.../MacOS/Google Chrome for Testing --type=gpu-process", true},
 		{"personal-chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --type=gpu-process", false},
 		{"brave", "/Applications/Brave Browser.app/.../chrome_crashpad_handler", false},
 		{"electron", "/Applications/Cursor.app/.../chrome_crashpad_handler", false},

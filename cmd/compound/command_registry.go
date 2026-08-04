@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 
+	browsercli "compound/internal/browser"
 	"compound/internal/policy"
+	schedulecli "compound/internal/schedule"
 )
 
 type compoundCommand struct {
@@ -189,11 +191,11 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"negatives":       heldCommand(cmdNegatives),
 		"architecture": heldCommand(cmdArchitecture).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),
-		"schedule": readCommand(cmdSchedule).
+		"schedule": readCommand(schedulecli.Run).
 			withSubcommandAdmission("list", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("show", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),
-		"browser": readCommand(cmdBrowser).
+		"browser": readCommand(browsercli.Run).
 			withSubcommandAdmission("list", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("show", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
