@@ -1,7 +1,15 @@
-package main
+//go:build darwin
+
+// Package cli is the `compound terminal` operator surface. It is the
+// cmd-budget-compliant home of the terminal CLI (the monolith stays a
+// dispatch layer; the surface lives in the organ). It implements the
+// registry's readCommand contract via Run(args) and carries the flag
+// helpers it needs locally, so cmd/compound needs no terminal shims.
+package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -21,9 +29,10 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 // commandRegistry entry point (wired in command_registry.go: "terminal" key)
 
-// cmdTerminal is the production wrapper for `compound terminal …`. It
-// invokes runTerminal and exits with its returned code on non-zero.
-func cmdTerminal(args []string) {
+// Run is the organ entry point behind `compound terminal`, matching the
+// registry's readCommand(func([]string)) contract. It exits with the
+// dispatcher's code on non-zero, mirroring the browser/schedule organs.
+func Run(args []string) {
 	if code := runTerminal(args, os.Stdout, os.Stderr); code != 0 {
 		os.Exit(code)
 	}
@@ -44,7 +53,7 @@ func cmdTerminal(args []string) {
 //
 // Exit codes: 0 success, 1 error, 2 usage / unknown verb / unknown flag.
 func runTerminal(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || hasUsageFlag(args) {
+	if len(args) == 0 || cliHasUsageFlag(args) {
 		fmt.Fprintln(stderr, terminalUsage())
 		return 2
 	}
@@ -94,7 +103,7 @@ func runTerminal(args []string, stdout, stderr io.Writer) int {
 // listTerminalNames prints the registered terminal names in alphabetical
 // order. Read-only (Read admission).
 func listTerminalNames(args []string, stdout, stderr io.Writer) int {
-	if bad, err := enforceKnownFlags(args, map[string]bool{"--json": true}); err != nil {
+	if bad, err := cliEnforceKnownFlags(args, map[string]bool{"--json": true}); err != nil {
 		fmt.Fprintf(stderr, "%s\n%s\n", err, terminalUsage())
 		_ = bad
 		return 2
@@ -104,8 +113,8 @@ func listTerminalNames(args []string, stdout, stderr io.Writer) int {
 		"terminals": reg.Names(),
 		"count":     len(reg.Names()),
 	}
-	if hasFlag(args, "--json") {
-		return writeJSON(stdout, stderr, out)
+	if cliHasFlag(args, "--json") {
+		return cliWriteJSON(stdout, stderr, out)
 	}
 	for _, n := range reg.Names() {
 		fmt.Fprintln(stdout, n)
@@ -115,7 +124,7 @@ func listTerminalNames(args []string, stdout, stderr io.Writer) int {
 
 // runTerminalDoctor prints the DoctorReport. Read-only.
 func runTerminalDoctor(t terminal.Terminal, args []string, stdout, stderr io.Writer) int {
-	if bad, err := enforceKnownFlags(args, map[string]bool{"--json": true}); err != nil {
+	if bad, err := cliEnforceKnownFlags(args, map[string]bool{"--json": true}); err != nil {
 		fmt.Fprintf(stderr, "%s\n%s\n", err, terminalUsage())
 		_ = bad
 		return 2
@@ -125,8 +134,8 @@ func runTerminalDoctor(t terminal.Terminal, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	if hasFlag(args, "--json") {
-		return writeJSON(stdout, stderr, rep)
+	if cliHasFlag(args, "--json") {
+		return cliWriteJSON(stdout, stderr, rep)
 	}
 	fmt.Fprintf(stdout, "%s installed=%v ipc=%v hooks_wired=%d bridge=%v\n",
 		t.Name(), rep.Installed, rep.IPCReachable, rep.HooksWired, rep.BridgeOK)
@@ -140,7 +149,7 @@ func runTerminalDoctor(t terminal.Terminal, args []string, stdout, stderr io.Wri
 // shown to the operator for review; actual execution would be a separate
 // gated verb (deferred to a follow-up PR; today the operator copies it).
 func runTerminalWire(t terminal.Terminal, args []string, stdout, stderr io.Writer) int {
-	if bad, err := enforceKnownFlags(args, map[string]bool{"--json": true}); err != nil {
+	if bad, err := cliEnforceKnownFlags(args, map[string]bool{"--json": true}); err != nil {
 		fmt.Fprintf(stderr, "%s\n%s\n", err, terminalUsage())
 		_ = bad
 		return 2
@@ -151,8 +160,8 @@ func runTerminalWire(t terminal.Terminal, args []string, stdout, stderr io.Write
 		"install":  hs.Install,
 		"paths":    hs.Paths,
 	}
-	if hasFlag(args, "--json") {
-		return writeJSON(stdout, stderr, out)
+	if cliHasFlag(args, "--json") {
+		return cliWriteJSON(stdout, stderr, out)
 	}
 	fmt.Fprintf(stdout, "# %s install snippet\n%s\n", t.Name(), hs.Install)
 	return 0
@@ -160,14 +169,14 @@ func runTerminalWire(t terminal.Terminal, args []string, stdout, stderr io.Write
 
 // runTerminalUnwire prints the uninstall snippet.
 func runTerminalUnwire(t terminal.Terminal, args []string, stdout, stderr io.Writer) int {
-	if bad, err := enforceKnownFlags(args, map[string]bool{"--json": true}); err != nil {
+	if bad, err := cliEnforceKnownFlags(args, map[string]bool{"--json": true}); err != nil {
 		fmt.Fprintf(stderr, "%s\n%s\n", err, terminalUsage())
 		_ = bad
 		return 2
 	}
 	hs := t.Hooks()
-	if hasFlag(args, "--json") {
-		return writeJSON(stdout, stderr, map[string]any{
+	if cliHasFlag(args, "--json") {
+		return cliWriteJSON(stdout, stderr, map[string]any{
 			"terminal":  t.Name(),
 			"uninstall": hs.Uninstall,
 		})
@@ -178,14 +187,14 @@ func runTerminalUnwire(t terminal.Terminal, args []string, stdout, stderr io.Wri
 
 // runTerminalHooks prints the HookSet as JSON or human-readable.
 func runTerminalHooks(t terminal.Terminal, args []string, stdout, stderr io.Writer) int {
-	if bad, err := enforceKnownFlags(args, map[string]bool{"--json": true}); err != nil {
+	if bad, err := cliEnforceKnownFlags(args, map[string]bool{"--json": true}); err != nil {
 		fmt.Fprintf(stderr, "%s\n%s\n", err, terminalUsage())
 		_ = bad
 		return 2
 	}
 	hs := t.Hooks()
-	if hasFlag(args, "--json") {
-		return writeJSON(stdout, stderr, hs)
+	if cliHasFlag(args, "--json") {
+		return cliWriteJSON(stdout, stderr, hs)
 	}
 	fmt.Fprintf(stdout, "terminal: %s\n", t.Name())
 	for _, p := range hs.Paths {
@@ -196,12 +205,12 @@ func runTerminalHooks(t terminal.Terminal, args []string, stdout, stderr io.Writ
 
 // runTerminalWorkspace dispatches the workspace verbs.
 func runTerminalWorkspace(t terminal.Terminal, args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || hasUsageFlag(args) {
+	if len(args) == 0 || cliHasUsageFlag(args) {
 		fmt.Fprintln(stderr, terminalWorkspaceUsage())
 		return 2
 	}
 	known := map[string]bool{"--json": true}
-	if bad, err := enforceKnownFlags(args, known); err != nil {
+	if bad, err := cliEnforceKnownFlags(args, known); err != nil {
 		fmt.Fprintf(stderr, "%s\n%s\n", err, terminalWorkspaceUsage())
 		_ = bad
 		return 2
@@ -240,8 +249,8 @@ func runTerminalWorkspace(t terminal.Terminal, args []string, stdout, stderr io.
 		fmt.Fprintf(stderr, "unknown workspace verb %q\n%s\n", args[0], terminalWorkspaceUsage())
 		return 2
 	}
-	if hasFlag(args, "--json") {
-		return writeJSON(stdout, stderr, map[string]any{"ok": true, "verb": args[0]})
+	if cliHasFlag(args, "--json") {
+		return cliWriteJSON(stdout, stderr, map[string]any{"ok": true, "verb": args[0]})
 	}
 	fmt.Fprintln(stdout, "ok")
 	return 0
@@ -249,7 +258,7 @@ func runTerminalWorkspace(t terminal.Terminal, args []string, stdout, stderr io.
 
 // runTerminalFeed dispatches the feed verbs.
 func runTerminalFeed(t terminal.Terminal, args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || hasUsageFlag(args) {
+	if len(args) == 0 || cliHasUsageFlag(args) {
 		fmt.Fprintln(stderr, terminalFeedUsage())
 		return 2
 	}
@@ -259,7 +268,7 @@ func runTerminalFeed(t terminal.Terminal, args []string, stdout, stderr io.Write
 		"--kind":   true,
 		"--json":   true,
 	}
-	if bad, err := enforceKnownFlags(args, known); err != nil {
+	if bad, err := cliEnforceKnownFlags(args, known); err != nil {
 		fmt.Fprintf(stderr, "%s\n%s\n", err, terminalFeedUsage())
 		_ = bad
 		return 2
@@ -268,14 +277,14 @@ func runTerminalFeed(t terminal.Terminal, args []string, stdout, stderr io.Write
 	ctx := context.Background()
 	switch args[0] {
 	case "push":
-		body := strings.TrimSpace(flagValue(args, "--body"))
+		body := strings.TrimSpace(cliValueFlag(args, "--body"))
 		if body == "" {
 			fmt.Fprintln(stderr, "feed push requires --body <text>")
 			return 2
 		}
 		opts := terminal.FeedPushOpts{
-			Source: strings.TrimSpace(flagValue(args, "--source")),
-			Kind:   strings.TrimSpace(flagValue(args, "--kind")),
+			Source: strings.TrimSpace(cliValueFlag(args, "--source")),
+			Kind:   strings.TrimSpace(cliValueFlag(args, "--kind")),
 		}
 		if err := api.Push(ctx, body, opts); err != nil {
 			fmt.Fprintln(stderr, "feed push:", err)
@@ -294,8 +303,8 @@ func runTerminalFeed(t terminal.Terminal, args []string, stdout, stderr io.Write
 		fmt.Fprintf(stderr, "unknown feed verb %q\n%s\n", args[0], terminalFeedUsage())
 		return 2
 	}
-	if hasFlag(args, "--json") {
-		return writeJSON(stdout, stderr, map[string]any{"ok": true, "verb": args[0]})
+	if cliHasFlag(args, "--json") {
+		return cliWriteJSON(stdout, stderr, map[string]any{"ok": true, "verb": args[0]})
 	}
 	fmt.Fprintln(stdout, "ok")
 	return 0
@@ -334,7 +343,66 @@ func terminalFeedUsage() string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// helpers
+// local flag/json helpers
 //
-// enforceKnownFlags and writeJSON are shared with cmd/compound/activity_cli.go
-// at package scope; we use them here directly. No redeclaration.
+// These are small, self-contained copies of the cmd/compound package-scope
+// helpers (cliEnforceKnownFlags, cliWriteJSON, cliHasFlag, cliHasUsageFlag). The organ
+// cannot import cmd/compound (that would cycle the dispatch layer back into
+// itself), so it carries its own — the same pattern schedule/browser use.
+
+func cliHasUsageFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+func cliHasFlag(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == name {
+			return true
+		}
+	}
+	return false
+}
+
+// cliEnforceKnownFlags returns the first unknown flag (or "" if all args are
+// known). It tolerates values: a "--name=value" form and a standalone
+// "--name" followed by a non-flag token are both accepted for a known name.
+func cliEnforceKnownFlags(args []string, known map[string]bool) (string, error) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		name := arg
+		if idx := strings.IndexByte(name, '='); idx >= 0 {
+			name = name[:idx]
+		}
+		if !known[name] {
+			return name, fmt.Errorf("unknown flag %q", name)
+		}
+	}
+	return "", nil
+}
+
+func cliWriteJSON(stdout, stderr io.Writer, v any) int {
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	return 0
+}
+
+func cliValueFlag(args []string, name string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == name && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
