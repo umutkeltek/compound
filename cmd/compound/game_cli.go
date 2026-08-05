@@ -8,25 +8,35 @@ package main
 //   game genres                                    — genre catalog projection (compound/game-genres.v0.1)
 //   game companies                                 — company catalog projection (compound/game-companies.v0.1)
 //   game trending [--limit N] [--days D]            — top-N momentum view (compound/game-trending.v0.1)
+//   game scout <query>                             — deterministic evidence packet (Read)
+//   game draft <query>                             — LLM-rented one-pager; parks KindProductHypothesis (Governed)
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
+	"compound/internal/distiller"
 	"compound/internal/game"
+	"compound/internal/game/idea"
 	"compound/internal/home"
 )
 
-const gameUsage = "usage: compound game <doctor|observe|genres|companies|trending> [flags]\n" +
+const gameUsage = "usage: compound game <doctor|observe|genres|companies|trending|scout|draft> [flags]\n" +
 	"       compound game observe <steamweb|steamspy> --appids <csv> [--genres <csv>] [--companies <csv>] [--json] [--home P]\n" +
 	"       compound game doctor [--json] [--home P]\n" +
 	"       compound game genres [--json] [--home P]\n" +
 	"       compound game companies [--json] [--home P]\n" +
 	"       compound game trending [--limit N] [--days D] [--json] [--home P]\n" +
-	"  Read/write game-source observations."
+	"       compound game scout <query> [--limit N] [--json] [--home P]\n" +
+	"       compound game draft <query> [--json] [--home P]\n" +
+	"  Read/write game-source observations. scout reads; draft rents an LLM\n" +
+	"  and parks a KindProductHypothesis candidate (never auto-promotes)."
 
 func cmdGame(args []string) {
 	if len(args) == 0 {
@@ -297,6 +307,150 @@ func printGameCatalogHuman(r game.CatalogReport, label string) {
 			state, e.Label, e.SourceKey, e.Source, e.ObservationCount, apps, roles)
 	}
 }
+
+// cmdGameScout returns 0 on success, 2 on usage, 1 on op error.
+func cmdGameScout(args []string) int {
+	if err := validateGameFlags("scout", args, map[string]bool{"--json": true, "--home": true, "--limit": true}); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+	jsonOut := hasFlag(args, "--json")
+	homePath, err := resolveGameHome(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	query, err := gameFirstPositional(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+	limit := parseGameIntFlag(valueFlag(args, "--limit"), 20)
+
+	pkt, err := idea.ComposeScoutPacket(context.Background(), homePath, query, time.Now().UTC(), limit)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: scout:", err)
+		return 1
+	}
+
+	if jsonOut {
+		printJSON(pkt)
+		return 0
+	}
+	fmt.Printf("# game scout (%s)\n", pkt.Schema)
+	fmt.Printf("query:      %s\n", pkt.Query)
+	fmt.Printf("compiled:   %s\n", pkt.CompiledAt.Format(time.RFC3339))
+	fmt.Printf("anchors:    %d\n", len(pkt.Anchors))
+	for _, w := range pkt.Warnings {
+		fmt.Printf("warning:    %s\n", w)
+	}
+	for _, a := range pkt.Anchors {
+		apps := ""
+		if len(a.AppIDs) > 0 {
+			apps = fmt.Sprintf(" apps=%s", strings.Join(a.AppIDs, ","))
+		}
+		fmt.Printf("  - [%s] %s (key=%s, source=%s, n=%d)%s\n",
+			a.Kind, a.Label, a.SourceKey, a.Source, a.Observation, apps)
+	}
+	if len(pkt.RecentMomentum) > 0 {
+		fmt.Println("momentum:")
+		for _, m := range pkt.RecentMomentum {
+			fmt.Printf("  - [%s] %s — %d hits\n", m.Kind, m.Label, m.Hits)
+		}
+	}
+	return 0
+}
+
+// cmdGameDraft returns 0 on success, 2 on usage, 1 on op error.
+// The LLM call requires OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL
+// env vars; the CLI surfaces a clear error if any are missing.
+func cmdGameDraft(args []string) int {
+	if err := validateGameFlags("draft", args, map[string]bool{"--json": true, "--home": true}); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+	jsonOut := hasFlag(args, "--json")
+	homePath, err := resolveGameHome(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	query, err := gameFirstPositional(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+
+	baseURL := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
+	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	model := strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
+	if baseURL == "" || apiKey == "" || model == "" {
+		fmt.Fprintln(os.Stderr, "error: OPENAI_BASE_URL, OPENAI_API_KEY, and OPENAI_MODEL must be set to rent a model lane")
+		return 1
+	}
+
+	llm := &gameDraftLLMClient{
+		HTTPClient: &http.Client{Timeout: 60 * time.Second},
+		BaseURL:    baseURL,
+		APIKey:     apiKey,
+		Model:      model,
+	}
+	res, err := idea.NewIdeaDraft(context.Background(), homePath, query, time.Now().UTC(), llm, idea.DefaultCandidateWriter{})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+
+	if jsonOut {
+		printJSON(res)
+		return 0
+	}
+	fmt.Printf("# game draft (%s)\n", res.Schema)
+	fmt.Printf("query:        %s\n", res.Query)
+	fmt.Printf("candidate:    %s\n", res.CandidateID)
+	fmt.Printf("title:        %s\n", res.OnePager.Title)
+	fmt.Printf("hook:         %s\n", res.OnePager.Hook)
+	fmt.Printf("genres:       %s\n", strings.Join(res.OnePager.GenreIDs, ","))
+	fmt.Printf("audience:     %s\n", res.OnePager.Audience)
+	fmt.Printf("mechanic:     %s\n", res.OnePager.Mechanic)
+	fmt.Printf("confidence:   %.2f\n", res.OnePager.Confidence)
+	fmt.Printf("next_action:  compound product hypothesis-plan --candidate %s\n", res.CandidateID)
+	return 0
+}
+
+// gameDraftLLMClient adapts the distiller.ChatCompletionJSON signature to
+// idea.LLMClient's narrower contract.
+type gameDraftLLMClient struct {
+	HTTPClient *http.Client
+	BaseURL    string
+	APIKey     string
+	Model      string
+}
+
+func (c *gameDraftLLMClient) Complete(ctx context.Context, system, user string) ([]byte, error) {
+	content, _, _, err := distiller.ChatCompletionJSON(ctx, c.HTTPClient, c.BaseURL, c.APIKey, c.Model, system, user)
+	return content, err
+}
+
+// gameFirstPositional extracts the first non-flag argument from args.
+func gameFirstPositional(args []string) (string, error) {
+	for _, a := range args {
+		if strings.HasPrefix(a, "--") {
+			continue
+		}
+		return strings.TrimSpace(a), nil
+	}
+	return "", fmt.Errorf("query argument required")
+}
+
+// candidates import is used transitively via idea.DefaultCandidateWriter.
+// Keep the import here so go vet flags unused-import drift if the writer
+// wiring ever moves into a separate package.
+var _ = candidates.ProductHypothesis
 
 func validateGameFlags(subcommand string, args []string, allowed map[string]bool) error {
 	for i := 0; i < len(args); i++ {
