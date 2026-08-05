@@ -46,13 +46,17 @@ func Doctor(homePath string, now time.Time) (DoctorReport, error) {
 	byKind := map[string]int{}
 	bySource := map[string]int{}
 	for _, it := range list.Items {
-		k, _, _, ok := parseGameSubject(it.Subject)
+		k, _, _, md, ok := parseGameSubject(it.Subject)
 		if !ok {
 			continue
 		}
 		total++
 		byKind[k]++
-		if src := inferSourceSystem(it.SourceRef, it.EvidenceRefs); src != "" {
+		src := md["source"]
+		if src == "" {
+			src = inferSourceSystem(it.SourceRef, it.EvidenceRefs)
+		}
+		if src != "" {
 			bySource[src]++
 		}
 		created := parseCreated(it.CreatedAt)

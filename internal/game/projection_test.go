@@ -220,7 +220,7 @@ func TestParseGameSubject(t *testing.T) {
 		{"game:genre", "", "", "", false},
 	}
 	for _, c := range cases {
-		k, key, lab, ok := parseGameSubject(c.in)
+		k, key, lab, _, ok := parseGameSubject(c.in)
 		if ok != c.wantOk || k != c.wantKind || key != c.wantKey || lab != c.wantLab {
 			t.Errorf("parseGameSubject(%q) = (%q,%q,%q,%v), want (%q,%q,%q,%v)",
 				c.in, k, key, lab, ok, c.wantKind, c.wantKey, c.wantLab, c.wantOk)

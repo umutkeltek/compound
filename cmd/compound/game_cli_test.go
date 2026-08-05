@@ -83,8 +83,7 @@ func TestCmdGameGenresJSONStable(t *testing.T) {
 		"genre", "action", "Action", `Dota 2 is in genre "Action" on appid 570`,
 		now.Add(-1*time.Hour))
 	var code int
-	var stdout, stderr string
-	captureStdio(t, func() {
+	stdout, stderr := captureStdio(t, func() {
 		code = cmdGameGenres([]string{"--json"})
 	})
 	if code != 0 {
@@ -106,8 +105,7 @@ func TestCmdGameGenresJSONStable(t *testing.T) {
 func TestCmdGameDoctorEmptyHome(t *testing.T) {
 	withTempHome(t)
 	var code int
-	var stdout, stderr string
-	captureStdio(t, func() {
+	stdout, stderr := captureStdio(t, func() {
 		code = cmdGameDoctor([]string{"--json"})
 	})
 	if code != 0 {
@@ -136,8 +134,7 @@ func TestCmdGameCompaniesJSON(t *testing.T) {
 		"company", "valve", "Valve", `Valve publishes appid 440 (Team Fortress 2)`,
 		now.Add(-1*time.Hour))
 	var code int
-	var stdout, stderr string
-	captureStdio(t, func() {
+	stdout, stderr := captureStdio(t, func() {
 		code = cmdGameCompanies([]string{"--json"})
 	})
 	if code != 0 {
@@ -159,8 +156,7 @@ func TestCmdGameTrendingJSON(t *testing.T) {
 		"genre", "action", "Action", `Game is in genre "Action" on appid 440`,
 		now.Add(-1*time.Hour))
 	var code int
-	var stdout, stderr string
-	captureStdio(t, func() {
+	stdout, stderr := captureStdio(t, func() {
 		code = cmdGameTrending([]string{"--limit", "5", "--days", "7", "--json"})
 	})
 	if code != 0 {
@@ -178,8 +174,7 @@ func TestCmdGameTrendingJSON(t *testing.T) {
 func TestCmdGameObserveEmptyAppIDs(t *testing.T) {
 	withTempHome(t)
 	var code int
-	var _, stderr string
-	captureStdio(t, func() {
+	_, stderr := captureStdio(t, func() {
 		code = cmdGameObserve([]string{"steamweb"})
 	})
 	if code != 2 {
@@ -193,8 +188,7 @@ func TestCmdGameObserveEmptyAppIDs(t *testing.T) {
 func TestCmdGameObserveUnknownAdapter(t *testing.T) {
 	withTempHome(t)
 	var code int
-	var _, stderr string
-	captureStdio(t, func() {
+	_, stderr := captureStdio(t, func() {
 		code = cmdGameObserve([]string{"steamdbscrape", "--appids", "440"})
 	})
 	if code != 1 {
@@ -209,8 +203,7 @@ func TestCmdGameObserveRejectsInvalidAppIDs(t *testing.T) {
 	withTempHome(t)
 	for _, in := range []string{"abc", "0", "-1", "440,xxx"} {
 		var code int
-		var _, stderr string
-		captureStdio(t, func() {
+		_, stderr := captureStdio(t, func() {
 			code = cmdGameObserve([]string{"steamweb", "--appids", in})
 		})
 		if code != 2 {
@@ -228,8 +221,7 @@ func TestCmdGameRejectsUnknownFlag(t *testing.T) {
 	}
 	for _, args := range cases {
 		var code int
-		var _, stderr string
-		captureStdio(t, func() {
+		_, stderr := captureStdio(t, func() {
 			switch args[0] {
 			case "genres":
 				code = cmdGameGenres(args[1:])
@@ -255,8 +247,7 @@ func TestCmdGameDoctorSeedsSeesObs(t *testing.T) {
 		"genre", "action", "Action", `Game is in genre "Action" on appid 440`,
 		now.Add(-2*time.Hour))
 	var code int
-	var stdout, stderr string
-	captureStdio(t, func() {
+	stdout, stderr := captureStdio(t, func() {
 		code = cmdGameDoctor([]string{"--json"})
 	})
 	if code != 0 {

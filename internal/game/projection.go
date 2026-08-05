@@ -84,7 +84,7 @@ func projectKind(homePath, kind, schema string, now time.Time) (CatalogReport, e
 	buckets := map[string]*bucket{}
 
 	for _, it := range list.Items {
-		k, key, label, ok := parseGameSubject(it.Subject)
+		k, key, label, md, ok := parseGameSubject(it.Subject)
 		if !ok || k != kind {
 			continue
 		}
@@ -115,13 +115,17 @@ func projectKind(homePath, kind, schema string, now time.Time) (CatalogReport, e
 		if label != "" {
 			b.entry.Label = label
 		}
-		if role, ok := parseRole(it.Statement); ok {
+		if role := md["role"]; role != "" {
 			b.roleSet[role] = true
 		}
-		if appid, ok := parseAppIDFromStatement(it.Statement); ok {
+		if appid := md["appid"]; appid != "" {
 			b.appSet[appid] = true
 		}
-		if src := inferSourceSystem(it.SourceRef, it.EvidenceRefs); src != "" {
+		src := md["source"]
+		if src == "" {
+			src = inferSourceSystem(it.SourceRef, it.EvidenceRefs)
+		}
+		if src != "" {
 			b.sourceSet[src] = true
 		}
 	}
@@ -193,7 +197,7 @@ func ProjectTrending(homePath string, now time.Time, limit int, windowDays int) 
 		return report, err
 	}
 	for _, it := range list.Items {
-		k, key, label, ok := parseGameSubject(it.Subject)
+		k, key, label, _, ok := parseGameSubject(it.Subject)
 		if !ok {
 			continue
 		}
@@ -233,14 +237,28 @@ func ProjectTrending(homePath string, now time.Time, limit int, windowDays int) 
 	return report, nil
 }
 
-// parseGameSubject extracts (kind, sourceKey, label) from a Subject of the
-// form "game:<kind>:<sourceKey>::<label>".
-func parseGameSubject(subject string) (kind, sourceKey, label string, ok bool) {
+// parseGameSubject extracts (kind, sourceKey, label, metadata) from a Subject
+// of the form "game:<kind>:<sourceKey>::<label>|<metadata>" where
+// metadata is a `;`-separated list of `key=value` pairs.
+func parseGameSubject(subject string) (kind, sourceKey, label string, metadata map[string]string, ok bool) {
 	subject = strings.TrimSpace(subject)
 	if !strings.HasPrefix(subject, "game:") {
-		return "", "", "", false
+		return "", "", "", nil, false
 	}
 	rest := strings.TrimPrefix(subject, "game:")
+	var md map[string]string
+	if i := strings.Index(rest, "|"); i >= 0 {
+		metaPart := rest[i+1:]
+		rest = rest[:i]
+		if metaPart != "" {
+			md = map[string]string{}
+			for _, kv := range strings.Split(metaPart, ";") {
+				if eq := strings.Index(kv, "="); eq > 0 {
+					md[kv[:eq]] = kv[eq+1:]
+				}
+			}
+		}
+	}
 	var labelPart string
 	if i := strings.Index(rest, "::"); i >= 0 {
 		labelPart = rest[i+2:]
@@ -248,35 +266,9 @@ func parseGameSubject(subject string) (kind, sourceKey, label string, ok bool) {
 	}
 	parts := strings.SplitN(rest, ":", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", "", false
+		return "", "", "", nil, false
 	}
-	return parts[0], parts[1], labelPart, true
-}
-
-func parseRole(statement string) (string, bool) {
-	s := strings.ToLower(statement)
-	switch {
-	case strings.Contains(s, "develops appid"), strings.Contains(s, "as developer"):
-		return "developer", true
-	case strings.Contains(s, "publishes appid"), strings.Contains(s, "as publisher"):
-		return "publisher", true
-	}
-	return "", false
-}
-
-func parseAppIDFromStatement(statement string) (string, bool) {
-	s := statement
-	if i := strings.Index(s, "appid "); i >= 0 {
-		tail := strings.TrimSpace(s[i+len("appid "):])
-		end := 0
-		for end < len(tail) && tail[end] >= '0' && tail[end] <= '9' {
-			end++
-		}
-		if end > 0 {
-			return tail[:end], true
-		}
-	}
-	return "", false
+	return parts[0], parts[1], labelPart, md, true
 }
 
 func parseCreated(s string) time.Time {
