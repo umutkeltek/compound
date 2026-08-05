@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	browsercli "compound/internal/browser"
 	"compound/internal/policy"
@@ -208,7 +209,22 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("show", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
 			withSubcommandFlagAdmission("doctor", "--fix", policy.FirstPartyCommandGoverned),
+		"game": readCommand(cmdGame).
+			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("observe", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("genres", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("companies", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("trending", policy.FirstPartyCommandRead),
 	}
+}
+
+// cmdGame is a stub for the in-flight game surface (cmd/compound/game_cli.go is
+// tracked as part of the operator-surfaces PR1 wave — see internal/game and
+// docs/operations/game-surface.md). The dispatch here keeps the registry
+// compiling while the real implementation lands.
+func cmdGame(_ []string) {
+	fmt.Fprintln(os.Stderr, "compound game: surface in flight (PR1 partial); see internal/game and docs/operations/game-surface.md")
+	os.Exit(2)
 }
 
 func firstPartyCommandCatalog() policy.FirstPartyCommandCatalog {
