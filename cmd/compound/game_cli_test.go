@@ -49,28 +49,28 @@ func captureStdio(t *testing.T, fn func()) (stdout, stderr string) {
 	rErr, wErr, _ := os.Pipe()
 	os.Stdout = wOut
 	os.Stderr = wErr
-	done := make(chan struct{})
+	outDone := make(chan struct{})
+	errDone := make(chan struct{})
 	go func() {
 		var b bytes.Buffer
 		_, _ = io.Copy(&b, rOut)
 		stdout = b.String()
-		close(done)
+		close(outDone)
 	}()
 	go func() {
 		var b bytes.Buffer
 		_, _ = io.Copy(&b, rErr)
 		stderr = b.String()
-	}()
-	defer func() {
-		_ = wOut.Close()
-		_ = wErr.Close()
-		<-done
-		os.Stdout = origOut
-		os.Stderr = origErr
+		close(errDone)
 	}()
 	fn()
 	_ = wOut.Close()
 	_ = wErr.Close()
+	<-outDone
+	<-errDone
+	os.Stdout = origOut
+	os.Stderr = origErr
+	return stdout, stderr
 }
 
 func TestCmdGameGenresJSONStable(t *testing.T) {
