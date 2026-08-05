@@ -218,12 +218,9 @@ func compoundCommandRegistry() map[string]compoundCommand {
 	}
 }
 
-// cmdGame is a stub for the in-flight game surface (cmd/compound/game_cli.go is
-// tracked as part of the operator-surfaces PR1 wave — see internal/game and
-// docs/operations/game-surface.md). The dispatch here keeps the registry
-// compiling while the real implementation lands.
+// cmdGame stub: PR1 partial — real handler lands with cmd/compound/game_cli.go.
 func cmdGame(_ []string) {
-	fmt.Fprintln(os.Stderr, "compound game: surface in flight (PR1 partial); see internal/game and docs/operations/game-surface.md")
+	fmt.Fprintln(os.Stderr, "compound game: surface in flight (PR1 partial)")
 	os.Exit(2)
 }
 

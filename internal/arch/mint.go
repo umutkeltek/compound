@@ -179,6 +179,17 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "unified host-terminal operator surface (cmux/iTerm2/Warp/Terminal.app) — Terminal interface + registry + per-terminal adapters; doctor/hooks are read, wire/unwire/workspace/feed are governed at command-registry layer; no authority object, no ledger write, no memory promotion",
 		Consumer: "internal/terminal/cli (terminalcli.Run wired in cmd/compound command registry) + terminal_admission_test.go contract pin",
 	},
+	// game is the read-only game-catalog + doctor projection surface; aggregates from
+	// internal/sourceobs (Source Observation Memory) into a stable gmid_* catalog keyed on
+	// (source, sourceKey, kind). It owns no authority object, writes no ledger byte, and
+	// promotes no memory candidate — the projection is consumed verbatim by the cmd/compound
+	// `game` CLI (doctor / observe / genres / companies / trending), so it is evidence, not
+	// enforcement. observe is governed at the command-registry layer (subcommand admission).
+	"organ:game": {
+		Class:    MintEvidence,
+		Purpose:  "read-only game catalog + doctor projection aggregating internal/sourceobs into stable gmid_* keys; no authority object, no ledger write, no memory promotion",
+		Consumer: "cmd/compound game CLI (doctor / observe / genres / companies / trending); observe is governed at the command-registry layer",
+	},
 	// finding is the direct-write home for agent-authored operational findings under
 	// COMPOUND_HOME/observed/findings — the POSITIVE counterpart to the placement guard: a governed
 	// place to record a durable operational note instead of inventing a path. It writes only a
