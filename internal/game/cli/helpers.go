@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// helpers mirrored byte-compatible from cmd/compound (precedent: schedule/browser/terminal organs).
+// helpers mirrored byte-compatible from cmd/compound.
 
 func hasFlag(args []string, name string) bool {
 	for _, a := range args {
