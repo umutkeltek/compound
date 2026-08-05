@@ -177,7 +177,7 @@ var mintHomes = map[string]MintHome{
 	"organ:terminal": {
 		Class:    MintEvidence,
 		Purpose:  "unified host-terminal operator surface (cmux/iTerm2/Warp/Terminal.app) — Terminal interface + registry + per-terminal adapters; doctor/hooks are read, wire/unwire/workspace/feed are governed at command-registry layer; no authority object, no ledger write, no memory promotion",
-		Consumer: "cmd/compound terminal CLI (doctor / hooks / wire / unwire / workspace / feed) + terminal_admission_test.go contract pin",
+		Consumer: "internal/terminal/cli (terminalcli.Run wired in cmd/compound command registry) + terminal_admission_test.go contract pin",
 	},
 	// finding is the direct-write home for agent-authored operational findings under
 	// COMPOUND_HOME/observed/findings — the POSITIVE counterpart to the placement guard: a governed
