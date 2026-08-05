@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	browsercli "compound/internal/browser"
+	gamecli "compound/internal/game/cli"
 	"compound/internal/policy"
 	schedulecli "compound/internal/schedule"
 	terminalcli "compound/internal/terminal/cli"
@@ -208,7 +209,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("show", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
 			withSubcommandFlagAdmission("doctor", "--fix", policy.FirstPartyCommandGoverned),
-		"game": readCommand(cmdGame).
+		"game": readCommand(gamecli.Run).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("observe", policy.FirstPartyCommandGoverned).
 			withSubcommandAdmission("genres", policy.FirstPartyCommandRead).

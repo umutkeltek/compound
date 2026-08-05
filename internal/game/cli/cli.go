@@ -1,4 +1,4 @@
-package main
+package cli
 
 // Compound `game` surface — studio-facing operator surface.
 //
@@ -38,7 +38,7 @@ const gameUsage = "usage: compound game <doctor|observe|genres|companies|trendin
 	"  Read/write game-source observations. scout reads; draft rents an LLM\n" +
 	"  and parks a KindProductHypothesis candidate (never auto-promotes)."
 
-func cmdGame(args []string) {
+func Run(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, gameUsage)
 		os.Exit(2)
