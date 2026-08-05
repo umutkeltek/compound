@@ -129,12 +129,12 @@ func TestHabitatCatalogClassifiesEveryKnownRootAndMakesBridgeDebtExplicit(t *tes
 	knownRoots := []string{
 		"action-execution-plans", "advance-plans", "archives", "artifacts", "bench-suites",
 		"claim-plans", "close-plans", "config", "context", "continue-runs", "continues",
-		"contracts", "create-plans", "credit-harvest", "decisions", "dispatch-advances",
-		"dispatch-claims", "dispatch-plans", "dispatch-step-runs", "dispatch-steps", "distill",
+		"contracts", "create-plans", "credit-harvest", "decisions", "delegate-workspaces",
+		"dispatch-advances", "dispatch-claims", "dispatch-plans", "dispatch-step-runs", "dispatch-steps", "distill",
 		"events", "evidence", "exports", "imports", "inbox", "indexes", "lanebeliefs",
 		"ledger", "lock", "locks", "logs", "observed", "packs", "panel-runs", "private",
 		"projections", "registries", "reports", "reviewed-fixtures", "reviews",
-		"run-observations", "runs", "runtime", "snapshots", "sources", "state", "tmp", "transactions", "work",
+		"run-observations", "runs", "runtime", "scripts", "snapshots", "sources", "state", "tmp", "transactions", "work",
 	}
 	for _, root := range knownRoots {
 		entry, ok := HabitatForPath(root)
@@ -424,5 +424,79 @@ func TestHabitatCatalogOwnsSecretsRoot(t *testing.T) {
 	}
 	if len(inventory.UnknownRoots) != 0 {
 		t.Fatalf("secrets must be a known root; unknown_roots=%v", inventory.UnknownRoots)
+	}
+}
+
+// TestHabitatCatalogOwnsLaneAutomationSurfaces: lane automation writes
+// three surfaces under COMPOUND_HOME that no compound organ creates:
+// delegate-workspaces/ (per-delegation lane workspaces), scripts/
+// (babysit/triage tooling), and the nightly-continue receipt logs
+// (top-level files appended by the launchd job). An unregistered root
+// reds home doctor — lived 2026-08-05: `home doctor` reported all three
+// as unknown on a live home, which blocked the terminal-work
+// archive-history repair and made `make install` fail its hygiene gate.
+// Falsifier: removing any catalog entry turns this RED — InspectHabitat
+// reports the surface as unknown.
+func TestHabitatCatalogOwnsLaneAutomationSurfaces(t *testing.T) {
+	dirSurfaces := []struct {
+		path  string
+		id    string
+		class HabitatClass
+	}{
+		{path: "delegate-workspaces/digest-lane-20260804/DISPATCH-PROMPT.md", id: "delegate-workspaces", class: HabitatClassOperational},
+		{path: "scripts/babysit-lane.sh", id: "scripts", class: HabitatClassConfig},
+	}
+	for _, tc := range dirSurfaces {
+		entry, ok := HabitatForPath(tc.path)
+		if !ok {
+			t.Fatalf("%s is not owned by the habitat catalog", tc.path)
+		}
+		if entry.Prefix != tc.id || entry.Status != HabitatStatusActive || entry.Class != tc.class {
+			t.Fatalf("%s habitat is not active %s state: %+v", tc.id, tc.class, entry)
+		}
+		if entry.Scaffold || entry.Compact {
+			t.Fatalf("%s must not scaffold or compact: %+v", tc.id, entry)
+		}
+		if !entry.Backup || !entry.PlacementAllowed {
+			t.Fatalf("%s must back up and allow placement: %+v", tc.id, entry)
+		}
+	}
+	for _, logFile := range []string{
+		"nightly-continue.log",
+		"nightly-continue.stderr.log",
+		"nightly-continue.stdout.log",
+	} {
+		entry, ok := HabitatForPath(logFile)
+		if !ok {
+			t.Fatalf("%s is not owned by the habitat catalog", logFile)
+		}
+		if entry.Prefix != logFile || entry.Status != HabitatStatusActive || entry.Class != HabitatClassOperational {
+			t.Fatalf("%s habitat is not active operational: %+v", logFile, entry)
+		}
+		if !entry.TopLevelFile || !entry.Backup {
+			t.Fatalf("%s must be a backed-up top-level file: %+v", logFile, entry)
+		}
+	}
+
+	homePath := t.TempDir()
+	for _, rel := range []string{
+		"delegate-workspaces/digest-lane/DISPATCH-PROMPT.md",
+		"scripts/babysit-lane.sh",
+		"nightly-continue.log",
+		"nightly-continue.stderr.log",
+		"nightly-continue.stdout.log",
+	} {
+		writeHomeFile(t, homePath, rel, "")
+	}
+	inventory, err := InspectHabitat(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.UnknownRoots) != 0 || len(inventory.UnknownEntries) != 0 {
+		t.Fatalf("lane automation surfaces must be known; unknown_roots=%v unknown_entries=%v", inventory.UnknownRoots, inventory.UnknownEntries)
+	}
+	report := Doctor(homePath)
+	if !report.HabitatOK {
+		t.Fatalf("doctor habitat not ok with lane automation surfaces present: %+v", report.Habitat)
 	}
 }

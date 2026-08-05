@@ -117,6 +117,24 @@ func buildHabitatEntries() []HabitatEntry {
 		// bundles — a lost secret is re-provisioned, not restored. Scaffold=false
 		// like profiles: only lanes that custody credentials create it.
 		active("secrets", "secrets", HabitatClassConfig, false, false, false),
+		// delegate-workspaces/ custodies per-delegation lane workspaces
+		// (DISPATCH-PROMPT.md, REPORT.md, BLOCKED.md) written by the
+		// delegation automation seam. Scaffold=false: only lanes that
+		// delegate create it, so a home that never delegated must not
+		// report a missing scaffold.
+		active("delegate-workspaces", "delegate-workspaces", HabitatClassOperational, false, true, false),
+		// scripts/ holds operator-installed lane-automation tooling
+		// (babysit-*.sh, watch-income-triage-*.sh) deployed from the
+		// control-plane plan docs. Config-class: operator-authored, backed
+		// up, never compacted; Scaffold=false like profiles.
+		active("scripts", "scripts", HabitatClassConfig, false, true, false),
+		// nightly-continue.*.log are the receipt logs the
+		// compound-nightly-continue.sh launchd job appends one line per
+		// run (outcome or skip-reason). Top-level files so `tail
+		// ~/.compound/nightly-continue.log` stays the documented check.
+		{ID: "nightly-continue.log", Prefix: "nightly-continue.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
+		{ID: "nightly-continue.stderr.log", Prefix: "nightly-continue.stderr.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
+		{ID: "nightly-continue.stdout.log", Prefix: "nightly-continue.stdout.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
 		active("context", "context", HabitatClassOperational, true, true, false),
 		child("context.requests", "context/requests", HabitatClassOperational, true, true, false),
 		child("context.packs", "context/packs", HabitatClassOperational, true, true, false),
