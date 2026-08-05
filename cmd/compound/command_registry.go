@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	browsercli "compound/internal/browser"
 	"compound/internal/policy"
@@ -216,12 +215,6 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("companies", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("trending", policy.FirstPartyCommandRead),
 	}
-}
-
-// cmdGame stub: PR1 partial — real handler lands with cmd/compound/game_cli.go.
-func cmdGame(_ []string) {
-	fmt.Fprintln(os.Stderr, "compound game: surface in flight (PR1 partial)")
-	os.Exit(2)
 }
 
 func firstPartyCommandCatalog() policy.FirstPartyCommandCatalog {
