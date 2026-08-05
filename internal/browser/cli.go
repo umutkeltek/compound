@@ -76,21 +76,38 @@ var browserFlagSets = map[string]map[string]bool{
 
 // validateBrowserFlags fails closed on unknown flags and on too many
 // positional args (the `show` verb takes exactly one — pid or uuid — and
-// anything beyond that is a usage error). `enforceKnownFlags` already
-// catches the unknown-flag case; the positional cap exists because
-// positional args are not gated by that helper.
+// anything beyond that is a usage error). The unknown-flag scan is inline
+// (self-contained like schedule's validateScheduleFlags) so the organ owns
+// its validation end-to-end; the positional cap exists because positional
+// args are not gated by the flag table.
 func validateBrowserFlags(sub string, args []string, maxPos int) error {
-	if _, err := enforceKnownFlags(args, browserFlagSets[sub]); err != nil {
-		return err
+	known, ok := browserFlagSets[sub]
+	if !ok {
+		return fmt.Errorf("unknown subcommand %q", sub)
 	}
-	pos := 0
-	for _, a := range args {
+	positional := 0
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		if !strings.HasPrefix(a, "--") {
-			pos++
+			positional++
+			continue
+		}
+		name := a
+		if eq := strings.Index(a, "="); eq >= 0 {
+			name = a[:eq]
+		}
+		if !known[name] {
+			return fmt.Errorf("unknown flag %q", a)
+		}
+		// Value-requiring flags consume the next arg when it isn't a flag.
+		// --instance and --stale-min take values; --json/--fix/--dry-run/
+		// --yes-each/swiftshader-only are bare switches.
+		if (name == "--instance" || name == "--stale-min" || name == "--idle-cpu-pct") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+			i++
 		}
 	}
-	if pos > maxPos {
-		return fmt.Errorf("too many positional args (got %d, max %d)", pos, maxPos)
+	if positional > maxPos {
+		return fmt.Errorf("too many positional args (got %d, max %d)", positional, maxPos)
 	}
 	return nil
 }

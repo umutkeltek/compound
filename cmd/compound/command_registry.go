@@ -6,6 +6,7 @@ import (
 	browsercli "compound/internal/browser"
 	"compound/internal/policy"
 	schedulecli "compound/internal/schedule"
+	terminalcli "compound/internal/terminal/cli"
 )
 
 type compoundCommand struct {
@@ -137,7 +138,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("measure", policy.FirstPartyCommandGoverned),
 		"attention": readCommand(cmdAttention),
 		"activity":  heldCommand(cmdActivity),
-		"terminal": readCommand(cmdTerminal).
+		"terminal": readCommand(terminalcli.Run).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("wire", policy.FirstPartyCommandGoverned).
 			withSubcommandAdmission("unwire", policy.FirstPartyCommandGoverned).

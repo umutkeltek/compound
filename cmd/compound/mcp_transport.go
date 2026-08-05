@@ -1409,10 +1409,6 @@ func bytesTrim(b []byte) []byte {
 	return b[start:end]
 }
 
-func bytesHasSuffixNewline(b []byte) bool {
-	return len(b) > 0 && b[len(b)-1] == '\n'
-}
-
 // cmdMCPTransport is the dispatch seam the cmd/compound/main.go switch calls
 // when invoked as `compound mcp-transport`. It rewires ioIn/ioOut to stdio
 // (the test seams above let tests swap to pipes) and runs the transport loop
