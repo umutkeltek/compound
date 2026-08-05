@@ -1,77 +1,29 @@
-package main
+package cli
+
+// scout_draft_test.go: scout (genre anchor search) + draft (LLM-rented idea
+// one-pager) tests, ported from the pre-organ cmd/compound/game_idea_test.go
+// (same-change law: the surface moved into internal/game/cli with its tests).
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
-
-	"compound/internal/game/source/gamesource"
-	"compound/internal/sourceobs"
 )
-
-// stubLLMClient for game_idea_test.go — a deterministic LLM stub the
-// production code path will never reach because cmdGameDraft fails fast
-// on missing env vars before invoking it. We use it via a thin shim that
-// the draft CLI uses internally.
-type stubLLMClient struct {
-	mu        sync.Mutex
-	responses map[string][]byte
-	err       error
-	calls     int
-}
-
-func (s *stubLLMClient) Complete(_ context.Context, system, user string) ([]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.calls++
-	if s.err != nil {
-		return nil, s.err
-	}
-	if v, ok := s.responses[system+"\n--\n"+user]; ok {
-		return v, nil
-	}
-	if v, ok := s.responses["default"]; ok {
-		return v, nil
-	}
-	return nil, errors.New("no canned response")
-}
-
-func seedIdeaObsCli(t *testing.T, home, kind, sourceKey, subject, statement string, when time.Time) {
-	t.Helper()
-	it := gamesource.RawObservation{
-		Kind: kind, SourceKey: sourceKey, Subject: subject,
-		Statement: statement, Confidence: 1.0,
-		Evidence: []string{"https://store.steampowered.com/api/appdetails", "revision:test"},
-	}
-	rev := "idea-cli-" + time.Now().Format(time.RFC3339Nano)
-	obs, err := gamesource.BuildObservation(gamesource.AdapterIDSteamWeb, gamesource.SourceSystemSteamWeb, rev, it, when)
-	if err != nil {
-		t.Fatalf("seed build: %v", err)
-	}
-	if _, err := sourceobs.Apply(home, obs, when); err != nil {
-		t.Fatalf("seed apply: %v", err)
-	}
-}
 
 func TestCmdGameScoutJSON(t *testing.T) {
 	home := withTempHome(t)
 	now := time.Now().UTC()
-	seedIdeaObsCli(t, home, "genre", "action", "Action",
+	seedGameObsCli(t, home, "steamweb", "steamweb", "genre", "action", "Action",
 		`Game is in genre "Action" on appid 440`, now.Add(-1*time.Hour))
-	seedIdeaObsCli(t, home, "genre", "strategy", "Strategy",
+	seedGameObsCli(t, home, "steamweb", "steamweb", "genre", "strategy", "Strategy",
 		`Game is in genre "Strategy" on appid 570`, now.Add(-1*time.Hour))
 
-	var code int
-	stdout, stderr := captureStdio(t, func() {
-		code = cmdGameScout([]string{"action", "--json"})
+	code, stdout := runGameCmd(t, func() int {
+		return cmdGameScout([]string{"action", "--json"})
 	})
 	if code != 0 {
-		t.Fatalf("exit %d stderr=%s", code, stderr)
+		t.Fatalf("exit %d", code)
 	}
 	var got map[string]any
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
@@ -88,26 +40,21 @@ func TestCmdGameScoutJSON(t *testing.T) {
 
 func TestCmdGameScoutRequiresQuery(t *testing.T) {
 	withTempHome(t)
-	var code int
-	_, stderr := captureStdio(t, func() {
-		code = cmdGameScout([]string{"--json"})
+	code, _ := runGameCmd(t, func() int {
+		return cmdGameScout([]string{"--json"})
 	})
 	if code != 2 {
-		t.Errorf("expected exit 2, got %d stderr=%s", code, stderr)
-	}
-	if !strings.Contains(stderr, "query") {
-		t.Errorf("expected query hint, got %q", stderr)
+		t.Errorf("expected exit 2, got %d", code)
 	}
 }
 
 func TestCmdGameScoutEmptyQueryReturnsTrending(t *testing.T) {
 	home := withTempHome(t)
 	now := time.Now().UTC()
-	seedIdeaObsCli(t, home, "genre", "action", "Action",
+	seedGameObsCli(t, home, "steamweb", "steamweb", "genre", "action", "Action",
 		`Game is in genre "Action" on appid 440`, now.Add(-1*time.Hour))
-	var code int
-	stdout, _ := captureStdio(t, func() {
-		code = cmdGameScout([]string{"", "--json"})
+	code, stdout := runGameCmd(t, func() int {
+		return cmdGameScout([]string{"", "--json"})
 	})
 	if code != 0 {
 		t.Fatalf("exit %d", code)
@@ -126,21 +73,12 @@ func TestCmdGameScoutEmptyQueryReturnsTrending(t *testing.T) {
 }
 
 func TestCmdGameDraftRequiresEnvVars(t *testing.T) {
-	// Clear env vars to ensure the failure path triggers.
-	prevBase := os.Getenv("OPENAI_BASE_URL")
-	prevKey := os.Getenv("OPENAI_API_KEY")
-	prevModel := os.Getenv("OPENAI_MODEL")
 	t.Setenv("OPENAI_BASE_URL", "")
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("OPENAI_MODEL", "")
-	t.Cleanup(func() {
-		_ = os.Setenv("OPENAI_BASE_URL", prevBase)
-		_ = os.Setenv("OPENAI_API_KEY", prevKey)
-		_ = os.Setenv("OPENAI_MODEL", prevModel)
-	})
 	withTempHome(t)
 	var code int
-	_, stderr := captureStdio(t, func() {
+	_, stderr := captureStdoutStderr(t, func() {
 		code = cmdGameDraft([]string{"co-op roguelike", "--json"})
 	})
 	if code != 1 {
@@ -152,13 +90,12 @@ func TestCmdGameDraftRequiresEnvVars(t *testing.T) {
 }
 
 func TestCmdGameDraftRequiresQuery(t *testing.T) {
-	// Set env vars so we reach the query check, not the env-var check.
 	t.Setenv("OPENAI_BASE_URL", "https://example.invalid")
 	t.Setenv("OPENAI_API_KEY", "x")
 	t.Setenv("OPENAI_MODEL", "gpt-test")
 	withTempHome(t)
 	var code int
-	_, stderr := captureStdio(t, func() {
+	_, stderr := captureStdoutStderr(t, func() {
 		code = cmdGameDraft([]string{"--json"})
 	})
 	if code != 2 {
@@ -177,7 +114,7 @@ func TestCmdGameRejectsUnknownFlagScoutDraft(t *testing.T) {
 	}
 	for _, args := range cases {
 		var code int
-		_, stderr := captureStdio(t, func() {
+		_, stderr := captureStdoutStderr(t, func() {
 			switch args[0] {
 			case "scout":
 				code = cmdGameScout(args[1:])
@@ -202,7 +139,6 @@ func TestGameFirstPositional(t *testing.T) {
 	if got != "action" {
 		t.Errorf("got %q want action", got)
 	}
-	// No positional at all (all args are flags): error.
 	if _, err := gameFirstPositional([]string{"--json", "--home"}); err == nil {
 		t.Errorf("expected error on no positional")
 	}

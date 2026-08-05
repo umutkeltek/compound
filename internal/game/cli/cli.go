@@ -13,6 +13,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -24,10 +25,11 @@ import (
 	"compound/internal/distiller"
 	"compound/internal/game"
 	"compound/internal/game/idea"
+	"compound/internal/game/unity"
 	"compound/internal/home"
 )
 
-const gameUsage = "usage: compound game <doctor|observe|genres|companies|trending|scout|draft> [flags]\n" +
+const gameUsage = "usage: compound game <doctor|observe|genres|companies|trending|scout|draft|unity> [flags]\n" +
 	"       compound game observe <steamweb|steamspy> --appids <csv> [--genres <csv>] [--companies <csv>] [--json] [--home P]\n" +
 	"       compound game doctor [--json] [--home P]\n" +
 	"       compound game genres [--json] [--home P]\n" +
@@ -35,8 +37,10 @@ const gameUsage = "usage: compound game <doctor|observe|genres|companies|trendin
 	"       compound game trending [--limit N] [--days D] [--json] [--home P]\n" +
 	"       compound game scout <query> [--limit N] [--json] [--home P]\n" +
 	"       compound game draft <query> [--json] [--home P]\n" +
+	"       compound game unity scaffold <idea-id> [--json] [--home P]\n" +
 	"  Read/write game-source observations. scout reads; draft rents an LLM\n" +
-	"  and parks a KindProductHypothesis candidate (never auto-promotes)."
+	"  and parks a KindProductHypothesis candidate (never auto-promotes).\n" +
+	"  unity scaffold emits a Unity project blueprint JSON; no disk writes in v0."
 
 func Run(args []string) {
 	if len(args) == 0 {
@@ -55,6 +59,8 @@ func Run(args []string) {
 		code = cmdGameCompanies(args[1:])
 	case "trending":
 		code = cmdGameTrending(args[1:])
+	case "unity":
+		code = cmdGameUnity(args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, gameUsage)
 		os.Exit(2)
@@ -445,6 +451,97 @@ func gameFirstPositional(args []string) (string, error) {
 		return strings.TrimSpace(a), nil
 	}
 	return "", fmt.Errorf("query argument required")
+}
+
+// cmdGameUnity returns 0 on success, 2 on usage, 1 on op error.
+//
+// Subcommands:
+//
+//	unity scaffold <idea-id>   — emit a Unity project blueprint JSON (Read; no disk writes in v0)
+//
+// The "scaffold" verb is fixed in v0 to keep the surface narrow. A future
+// `--materialize` flag would land as a separate governed PR and require its
+// own `withSubcommandFlagAdmission("unity", "--materialize", Governed)`
+// line in command_registry.go.
+func cmdGameUnity(args []string) int {
+	if err := validateGameFlags("unity", args, map[string]bool{"--json": true, "--home": true}); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "error: subcommand required (scaffold)")
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+	switch args[0] {
+	case "scaffold":
+		return cmdGameUnityScaffold(args[1:])
+	default:
+		fmt.Fprintln(os.Stderr, "error: unknown unity subcommand:", args[0])
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+}
+
+// cmdGameUnityScaffold returns 0 on success, 2 on usage, 1 on op error.
+// Pure spec emission — no filesystem writes, no Unity binary access.
+func cmdGameUnityScaffold(args []string) int {
+	if err := validateGameFlags("unity-scaffold", args, map[string]bool{"--json": true, "--home": true}); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+	ideaID, err := gameFirstPositional(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+	if strings.TrimSpace(ideaID) == "" {
+		fmt.Fprintln(os.Stderr, "error: idea-id required")
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+	// Refuse flag-shaped ids early — keeps the surface from accepting
+	// accidental --materialize or similar future flags as a candidate id.
+	if strings.HasPrefix(ideaID, "--") {
+		fmt.Fprintln(os.Stderr, "error: idea-id cannot start with --")
+		return 2
+	}
+	jsonOut := hasFlag(args, "--json")
+
+	hints := unity.SourceHints{
+		IdeaCandidate: ideaID,
+	}
+	bp, err := unity.Render(hints, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+
+	if jsonOut {
+		// Ensure stable output even if Render set non-deterministic fields
+		// by re-marshalling ourselves.
+		out, mErr := json.MarshalIndent(bp, "", "  ")
+		if mErr != nil {
+			fmt.Fprintln(os.Stderr, "error: marshal:", mErr)
+			return 1
+		}
+		_, _ = os.Stdout.Write(out)
+		_, _ = os.Stdout.Write([]byte("\n"))
+		return 0
+	}
+	fmt.Printf("# game unity scaffold (%s)\n", bp.Schema)
+	fmt.Printf("idea:           %s\n", bp.Source.IdeaCandidate)
+	fmt.Printf("unity_version:  %s\n", bp.UnityVersion)
+	fmt.Printf("render_pipeline:%s\n", bp.RenderPipeline)
+	fmt.Printf("project_root:   %s\n", bp.ProjectRoot)
+	fmt.Println("boundary:")
+	for _, b := range bp.Boundary {
+		fmt.Printf("  - %s\n", b)
+	}
+	return 0
 }
 
 // candidates import is used transitively via idea.DefaultCandidateWriter.

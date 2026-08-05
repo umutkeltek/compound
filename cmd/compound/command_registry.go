@@ -216,7 +216,8 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("companies", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("trending", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("scout", policy.FirstPartyCommandRead).
-			withSubcommandAdmission("draft", policy.FirstPartyCommandGoverned),
+			withSubcommandAdmission("draft", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("unity", policy.FirstPartyCommandGoverned),
 	}
 }
 
