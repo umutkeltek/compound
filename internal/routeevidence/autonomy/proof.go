@@ -163,8 +163,9 @@ type routeRaw struct {
 }
 
 type receiptEvidence struct {
-	Refs      []string
-	Terminals []terminalEvidence
+	Refs             []string
+	Terminals        []terminalEvidence
+	LatestWorkSHA256 string
 }
 
 type terminalEvidence struct {
@@ -924,19 +925,8 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 				return excluded, err
 			}
 			snapHash := "sha256:" + shaHex(data)
-			hashed := false
-			matched := false
-			for _, terminal := range evidence.Terminals {
-				h := strings.TrimSpace(terminal.WorkSHA256)
-				if h == "" {
-					continue
-				}
-				hashed = true
-				if h == snapHash {
-					matched = true
-				}
-			}
-			if hashed && !matched {
+			sealed := strings.TrimSpace(evidence.LatestWorkSHA256)
+			if sealed != "" && sealed != snapHash {
 				return excluded, fmt.Errorf("recent terminal work %s snapshot hash does not match terminal event", workID)
 			}
 			class, classErr := autonomyClassOf(snapshots[0].Work)
@@ -963,7 +953,7 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 			}
 			return excluded, fmt.Errorf("recent terminal work %s snapshot state %q is not terminal", workID, snapshots[0].Work.State)
 		}
-		if strings.TrimSpace(evidence.Terminals[0].WorkSHA256) == "" {
+		if strings.TrimSpace(evidence.LatestWorkSHA256) == "" {
 			if verifiedOffClass {
 				excluded++
 				continue
@@ -974,7 +964,7 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 		if err != nil {
 			return excluded, err
 		}
-		if evidence.Terminals[0].WorkSHA256 != "sha256:"+shaHex(data) {
+		if strings.TrimSpace(evidence.LatestWorkSHA256) != "sha256:"+shaHex(data) {
 			return excluded, fmt.Errorf("recent terminal work %s snapshot hash does not match terminal event", workID)
 		}
 		class, classErr := autonomyClassOf(snapshots[0].Work)
@@ -1038,6 +1028,14 @@ func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) 
 			return nil, err
 		}
 		evidence := out[event.WorkID]
+		// The custody seal is the MOST RECENT recorded snapshot hash for this work,
+		// not the first close's. A governed re-close (audit_only) or any other
+		// sealed post-close event rewrites the record and records the new hash;
+		// verifying against the first close would read that legitimate re-seal as
+		// tampering. Any change with NO sealing event still mismatches.
+		if h := strings.TrimSpace(event.WorkSHA256); h != "" {
+			evidence.LatestWorkSHA256 = h
+		}
 		// A terminal event is a TRANSITION INTO a terminal state. Same-state rows
 		// (from == to) are annotations on already-closed work -- delegate steer and
 		// exit notes write them -- and carry neither a close's snapshot hash nor a
