@@ -29,7 +29,7 @@ func New(baseURL string, client *http.Client) *Fetcher {
 	return &Fetcher{baseURL: baseURL, client: client}
 }
 
-func (f *Fetcher) ID() string    { return gamesource.AdapterIDSteamWeb }
+func (f *Fetcher) ID() string     { return gamesource.AdapterIDSteamWeb }
 func (f *Fetcher) System() string { return gamesource.SourceSystemSteamWeb }
 
 func (f *Fetcher) Fetch(ctx context.Context, req gamesource.FetchRequest) (gamesource.FetchResult, error) {
@@ -58,9 +58,9 @@ func (f *Fetcher) Fetch(ctx context.Context, req gamesource.FetchRequest) (games
 	}
 
 	result := gamesource.FetchResult{
-		AdapterID:  f.ID(),
-		SourceSys:  f.System(),
-		FetchedAt:  now,
+		AdapterID: f.ID(),
+		SourceSys: f.System(),
+		FetchedAt: now,
 		RawSHA256: rev,
 	}
 

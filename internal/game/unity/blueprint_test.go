@@ -17,11 +17,11 @@ func TestRenderRequiresIdeaCandidate(t *testing.T) {
 func TestRenderHonorsHints(t *testing.T) {
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
 	bp, err := Render(SourceHints{
-		IdeaCandidate:  "hypothesis_draft_test-game",
-		Title:          "Test Game",
-		Hook:           "A test game.",
-		UnityVersion:   "2023.2.0f1",
-		RenderPipeline: "HDRP",
+		IdeaCandidate:   "hypothesis_draft_test-game",
+		Title:           "Test Game",
+		Hook:            "A test game.",
+		UnityVersion:    "2023.2.0f1",
+		RenderPipeline:  "HDRP",
 		ProjectRootHint: "/tmp/projects/test-game",
 	}, now)
 	if err != nil {

@@ -29,9 +29,9 @@ func TestCmdGameUnityScaffoldJSON(t *testing.T) {
 	// All three boundary strings must appear verbatim.
 	boundary, _ := got["boundary"].([]any)
 	need := map[string]bool{
-		"this command emits blueprint spec only; does not write any files to disk in v0":     false,
+		"this command emits blueprint spec only; does not write any files to disk in v0":                                                  false,
 		"creating Unity project directories requires explicit human approval via --materialize, which is gated FirstPartyCommandGoverned": false,
-		"Unity editor binary path is not consulted, downloaded, or invoked":                       false,
+		"Unity editor binary path is not consulted, downloaded, or invoked":                                                               false,
 	}
 	for _, b := range boundary {
 		bs, _ := b.(string)

@@ -30,7 +30,7 @@ func New(baseURL string, client *http.Client) *Fetcher {
 	return &Fetcher{baseURL: baseURL, client: client}
 }
 
-func (f *Fetcher) ID() string    { return gamesource.AdapterIDSteamSpy }
+func (f *Fetcher) ID() string     { return gamesource.AdapterIDSteamSpy }
 func (f *Fetcher) System() string { return gamesource.SourceSystemSteamSpy }
 
 func (f *Fetcher) Fetch(ctx context.Context, req gamesource.FetchRequest) (gamesource.FetchResult, error) {

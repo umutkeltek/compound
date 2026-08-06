@@ -26,11 +26,11 @@ import (
 
 // ScoutAnchor is one observed entity that matched the query.
 type ScoutAnchor struct {
-	Kind        string `json:"kind"`
-	SourceKey   string `json:"source_key"`
-	Label       string `json:"label"`
-	Source      string `json:"source"`
-	Observation int    `json:"observation_count"`
+	Kind        string   `json:"kind"`
+	SourceKey   string   `json:"source_key"`
+	Label       string   `json:"label"`
+	Source      string   `json:"source"`
+	Observation int      `json:"observation_count"`
 	AppIDs      []string `json:"app_ids,omitempty"`
 }
 
@@ -48,24 +48,24 @@ type ScoutEvidence struct {
 
 // MomentumItem is one trending observation included in the packet.
 type MomentumItem struct {
-	Kind     string `json:"kind"`
-	Label    string `json:"label"`
-	Hits     int    `json:"hits"`
-	Source   string `json:"source"`
+	Kind   string `json:"kind"`
+	Label  string `json:"label"`
+	Hits   int    `json:"hits"`
+	Source string `json:"source"`
 }
 
 // ScoutPacket is the deterministic evidence bundle the LLM (or the human
 // reviewer) sees. Schema-stable across runs against the same store so
 // diffable.
 type ScoutPacket struct {
-	Schema         string         `json:"schema"`
-	ID             string         `json:"id"`
-	Query          string         `json:"query"`
-	CompiledAt     time.Time      `json:"compiled_at"`
-	Anchors        []ScoutAnchor  `json:"anchors"`
+	Schema         string          `json:"schema"`
+	ID             string          `json:"id"`
+	Query          string          `json:"query"`
+	CompiledAt     time.Time       `json:"compiled_at"`
+	Anchors        []ScoutAnchor   `json:"anchors"`
 	Evidence       []ScoutEvidence `json:"evidence"`
-	RecentMomentum []MomentumItem `json:"recent_momentum"`
-	Warnings       []string       `json:"warnings,omitempty"`
+	RecentMomentum []MomentumItem  `json:"recent_momentum"`
+	Warnings       []string        `json:"warnings,omitempty"`
 }
 
 const scoutSchema = "compound/game-scout-packet.v0.1"

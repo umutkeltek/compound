@@ -16,13 +16,13 @@ import (
 // the candidate parked downstream can be promoted into a ProductHypothesis
 // via the existing governed review queue without re-parsing.
 type IdeaOnePager struct {
-	Title       string   `json:"title"`
-	Hook        string   `json:"hook"`
-	GenreIDs    []string `json:"genre_ids"`
-	Audience    string   `json:"audience"`
-	Mechanic    string   `json:"mechanic"`
+	Title        string   `json:"title"`
+	Hook         string   `json:"hook"`
+	GenreIDs     []string `json:"genre_ids"`
+	Audience     string   `json:"audience"`
+	Mechanic     string   `json:"mechanic"`
 	EvidenceRefs []string `json:"evidence_refs"`
-	Confidence  float64  `json:"confidence"`
+	Confidence   float64  `json:"confidence"`
 }
 
 // LLMClient is the interface NewIdeaDraft depends on. Production wires it
@@ -77,12 +77,12 @@ func (DefaultCandidateWriter) WriteIdeaCandidate(homePath, id string, payload an
 // the one-pager the LLM produced. The CLI echoes the id so the operator
 // can run `compound product hypothesis-plan --candidate <id>` next.
 type DraftResult struct {
-	Schema       string         `json:"schema"`
-	CandidateID  string         `json:"candidate_id"`
-	Query        string         `json:"query"`
-	OnePager     IdeaOnePager   `json:"one_pager"`
-	ScoutPacket  ScoutPacket    `json:"scout_packet"`
-	CreatedAt    time.Time      `json:"created_at"`
+	Schema      string       `json:"schema"`
+	CandidateID string       `json:"candidate_id"`
+	Query       string       `json:"query"`
+	OnePager    IdeaOnePager `json:"one_pager"`
+	ScoutPacket ScoutPacket  `json:"scout_packet"`
+	CreatedAt   time.Time    `json:"created_at"`
 }
 
 const draftSchema = "compound/game-idea.v0.1"
@@ -154,15 +154,15 @@ func NewIdeaDraft(
 // without needing to re-call scout.
 func buildCandidatePayload(query string, pkt ScoutPacket, op IdeaOnePager, id string, now time.Time) map[string]any {
 	return map[string]any{
-		"id":           id,
-		"query":        query,
-		"schema":       draftSchema,
-		"verdict":      candidates.Park,
+		"id":              id,
+		"query":           query,
+		"schema":          draftSchema,
+		"verdict":         candidates.Park,
 		"promote_allowed": false,
-		"created_at":   now.Format(time.RFC3339Nano),
-		"one_pager":    op,
-		"scout_packet": pkt,
-		"next_action":  "compound product hypothesis-plan --candidate " + id,
+		"created_at":      now.Format(time.RFC3339Nano),
+		"one_pager":       op,
+		"scout_packet":    pkt,
+		"next_action":     "compound product hypothesis-plan --candidate " + id,
 	}
 }
 

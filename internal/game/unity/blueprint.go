@@ -21,17 +21,17 @@ import (
 // Blueprint is the spec emitted by Render. Fields are stable across runs
 // against the same idea candidate so consumers can diff blueprints.
 type Blueprint struct {
-	Schema         string         `json:"schema"`
-	UnityVersion   string         `json:"unity_version"`
-	RenderPipeline string         `json:"render_pipeline"`
-	ProjectRoot    string         `json:"project_root"` // planned path; NEVER materialized in v0
-	Layout         Layout         `json:"layout"`
-	Packages       Packages       `json:"packages"`
-	FirstScene     FirstScene     `json:"first_scene"`
-	BuildTargets   []BuildTarget  `json:"build_targets"`
-	Boundary       []string       `json:"boundary"` // explicit non-writes; verbatim
-	Generated      time.Time      `json:"generated_at"`
-	Source         Source         `json:"source"`
+	Schema         string        `json:"schema"`
+	UnityVersion   string        `json:"unity_version"`
+	RenderPipeline string        `json:"render_pipeline"`
+	ProjectRoot    string        `json:"project_root"` // planned path; NEVER materialized in v0
+	Layout         Layout        `json:"layout"`
+	Packages       Packages      `json:"packages"`
+	FirstScene     FirstScene    `json:"first_scene"`
+	BuildTargets   []BuildTarget `json:"build_targets"`
+	Boundary       []string      `json:"boundary"` // explicit non-writes; verbatim
+	Generated      time.Time     `json:"generated_at"`
+	Source         Source        `json:"source"`
 }
 
 // Layout is the planned on-disk directory layout for the Unity project.
@@ -41,7 +41,7 @@ type Layout struct {
 	ProjectSettings []string `json:"project_settings"`
 	Packages        []string `json:"packages"`
 	Ignore          []string `json:"ignore"`
-	RecommendedDirs  []string `json:"recommended_dirs"`
+	RecommendedDirs []string `json:"recommended_dirs"`
 }
 
 // Packages captures the planned Unity package manifest. Dependencies are
@@ -75,9 +75,9 @@ type Source struct {
 // includes all three so consumers can grep for them. The unity_test.go
 // test asserts each one is present, byte-exact.
 const (
-	BoundaryNoDiskWrites = "this command emits blueprint spec only; does not write any files to disk in v0"
+	BoundaryNoDiskWrites     = "this command emits blueprint spec only; does not write any files to disk in v0"
 	BoundaryMaterializeGated = "creating Unity project directories requires explicit human approval via --materialize, which is gated FirstPartyCommandGoverned"
-	BoundaryNoEditorBinary = "Unity editor binary path is not consulted, downloaded, or invoked"
+	BoundaryNoEditorBinary   = "Unity editor binary path is not consulted, downloaded, or invoked"
 )
 
 // SchemaVersion is the versioned schema for the emitted JSON. Bumping
@@ -87,7 +87,7 @@ const SchemaVersion = "compound/game-unity-blueprint.v0.1"
 // DefaultUnityVersion + DefaultRenderPipeline anchor the spec defaults.
 // Override via SourceHints in Render; absent hints fall through to these.
 const (
-	DefaultUnityVersion = "2022.3.20f1"
+	DefaultUnityVersion   = "2022.3.20f1"
 	DefaultRenderPipeline = "URP"
 )
 
@@ -174,8 +174,8 @@ func defaultLayout() Layout {
 func defaultPackages(renderPipeline string) Packages {
 	deps := map[string]string{
 		"com.unity.ide.rider":       "3.0.27",
-		"com.unity.test-framework":   "1.1.33",
-		"com.unity.visualscripting":  "1.9.4",
+		"com.unity.test-framework":  "1.1.33",
+		"com.unity.visualscripting": "1.9.4",
 	}
 	switch renderPipeline {
 	case "URP":
