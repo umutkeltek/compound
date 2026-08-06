@@ -28,3 +28,6 @@ node_modules/
 
 # hermes worktree metadata (local) — never committed
 /.hermes/
+
+# local lane-launcher scripts (sb run wrappers per model) — generated, never committed
+/wrappers/
