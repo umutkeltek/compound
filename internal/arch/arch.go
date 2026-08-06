@@ -103,6 +103,7 @@ var Classification = map[string]Class{
 	"reviewqueue":     Leaf, // canonical workbench review-queue builder (merge + annotate rows); presentation-side only, no authority object, no terminal effect
 	"schedule":        Leaf, // read-only launchd+crontab projection surface behind `compound schedule list|show|doctor`; no mutation door; owns no authority object
 	"terminal":        Leaf, // macOS terminal surface behind `compound terminal <name> doctor|wire|unwire|hooks|workspace|feed`; read verbs doctor/hooks, governed mutate verbs wire/unwire/workspace/feed; owns no authority object
+	"game":            Leaf, // game studio operator surface behind `compound game doctor|observe|genres|companies|trending|scout|draft|unity`; reads from internal/sourceobs into a stable gmid_* catalog; observe/scaffold/draft are governed at the command-registry layer; owns no authority object
 	"verdictflow":     Leaf, // shared plan->record->render->load->annotate scaffolding behind the three panel-verdict review bridges (product/sourceobs/capgraph); writes review artifacts through reviewartifact and reads them back, owns no authority object and performs no terminal effect (ledger/store/writeback stay in the domain callbacks)
 	// memory object family — canonical after Gen-1 package retirement
 	"mem": MemTarget,
