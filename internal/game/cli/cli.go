@@ -25,11 +25,13 @@ import (
 	"compound/internal/distiller"
 	"compound/internal/game"
 	"compound/internal/game/idea"
+	"compound/internal/game/release"
 	"compound/internal/game/unity"
 	"compound/internal/home"
+	"compound/internal/mem"
 )
 
-const gameUsage = "usage: compound game <doctor|observe|genres|companies|trending|scout|draft|unity> [flags]\n" +
+const gameUsage = "usage: compound game <doctor|observe|genres|companies|trending|scout|draft|unity|release> [flags]\n" +
 	"       compound game observe <steamweb|steamspy> --appids <csv> [--genres <csv>] [--companies <csv>] [--json] [--home P]\n" +
 	"       compound game doctor [--json] [--home P]\n" +
 	"       compound game genres [--json] [--home P]\n" +
@@ -38,9 +40,12 @@ const gameUsage = "usage: compound game <doctor|observe|genres|companies|trendin
 	"       compound game scout <query> [--limit N] [--json] [--home P]\n" +
 	"       compound game draft <query> [--json] [--home P]\n" +
 	"       compound game unity scaffold <idea-id> [--json] [--home P]\n" +
+	"       compound game release plan --idea-id ID --product-id PID [--unity-artifact REF] [--change-summary S] [--rollback R] [--post-release-metric M] [--json] [--home P]\n" +
 	"  Read/write game-source observations. scout reads; draft rents an LLM\n" +
 	"  and parks a KindProductHypothesis candidate (never auto-promotes).\n" +
-	"  unity scaffold emits a Unity project blueprint JSON; no disk writes in v0."
+	"  unity scaffold emits a Unity project blueprint JSON; no disk writes in v0.\n" +
+	"  release plan produces a ProductReleasePlan via product.BuildReleasePlan;\n" +
+	"  it does NOT call Steamworks or upload builds."
 
 func Run(args []string) {
 	if len(args) == 0 {
@@ -61,6 +66,8 @@ func Run(args []string) {
 		code = cmdGameTrending(args[1:])
 	case "unity":
 		code = cmdGameUnity(args[1:])
+	case "release":
+		code = cmdGameRelease(args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, gameUsage)
 		os.Exit(2)
@@ -548,6 +555,120 @@ func cmdGameUnityScaffold(args []string) int {
 // Keep the import here so go vet flags unused-import drift if the writer
 // wiring ever moves into a separate package.
 var _ = candidates.ProductHypothesis
+
+// cmdGameRelease returns 0 on success, 2 on usage, 1 on op error.
+//
+// Subcommands:
+//
+//	release plan   — produce a ProductReleasePlan via product.BuildReleasePlan
+//
+// The release path is governance-only: it writes a plan JSON + review
+// MD + review YAML under COMPOUND_HOME/product_release_plan/, but never
+// calls Steamworks, never uploads a Unity build, never executes anything.
+// Authorization is the next human step via `compound product release-review`.
+func cmdGameRelease(args []string) int {
+	if err := validateGameFlags("release", args, map[string]bool{
+		"--json": true, "--home": true,
+		"--idea-id": true, "--product-id": true, "--unity-artifact": true,
+		"--change-summary": true, "--rollback": true, "--post-release-metric": true,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "error: subcommand required (plan)")
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+	switch args[0] {
+	case "plan":
+		return cmdGameReleasePlan(args[1:])
+	default:
+		fmt.Fprintln(os.Stderr, "error: unknown release subcommand:", args[0])
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+}
+
+func cmdGameReleasePlan(args []string) int {
+	if err := validateGameFlags("release-plan", args, map[string]bool{
+		"--json": true, "--home": true,
+		"--idea-id": true, "--product-id": true, "--unity-artifact": true,
+		"--change-summary": true, "--rollback": true, "--post-release-metric": true,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, gameUsage)
+		return 2
+	}
+
+	ideaID := strings.TrimSpace(valueFlag(args, "--idea-id"))
+	productID := strings.TrimSpace(valueFlag(args, "--product-id"))
+	changeSummary := strings.TrimSpace(valueFlag(args, "--change-summary"))
+	rollback := strings.TrimSpace(valueFlag(args, "--rollback"))
+	postReleaseMetric := strings.TrimSpace(valueFlag(args, "--post-release-metric"))
+	unityArtifact := strings.TrimSpace(valueFlag(args, "--unity-artifact"))
+
+	for _, pair := range []struct {
+		flag, val string
+	}{
+		{"--idea-id", ideaID},
+		{"--product-id", productID},
+		{"--change-summary", changeSummary},
+		{"--rollback", rollback},
+		{"--post-release-metric", postReleaseMetric},
+	} {
+		if pair.val == "" {
+			fmt.Fprintln(os.Stderr, "error:", pair.flag, "required")
+			fmt.Fprintln(os.Stderr, gameUsage)
+			return 2
+		}
+	}
+
+	jsonOut := hasFlag(args, "--json")
+	homePath, err := resolveGameHome(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+
+	res, err := release.Build(context.Background(), release.PlanInput{
+		HomePath:          homePath,
+		StoreOpener:       openGameMemStore,
+		ProductID:         productID,
+		IdeaCandidate:     ideaID,
+		UnityArtifactRef:  unityArtifact,
+		ChangeSummary:     changeSummary,
+		Rollback:          rollback,
+		PostReleaseMetric: postReleaseMetric,
+	}, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+
+	if jsonOut {
+		printJSON(res)
+		return 0
+	}
+	fmt.Printf("# game release plan (%s)\n", res.Schema)
+	fmt.Printf("plan_id:     %s\n", res.PlanID)
+	fmt.Printf("plan_path:   %s\n", res.Paths.PlanPath)
+	fmt.Printf("review_path: %s\n", res.Paths.ReviewPath)
+	fmt.Printf("review_yaml: %s\n", res.Paths.ReviewYAMLPath)
+	fmt.Printf("next_action: %s\n", res.NextAction)
+	return 0
+}
+
+// openGameMemStore opens the compound memory store from homePath. Production
+// wiring only — tests in the release package inject their own StoreOpener.
+func openGameMemStore(homePath string) (*mem.Store, error) {
+	// mem.Open (canonical) lives in internal/mem. We import the package
+	// here so cmd/compound stays the only place that knows the concrete
+	// constructor. Open returns nil store + error if the home is empty
+	// or unreadable; Build translates that to a clear CLI error.
+	return mem.Open(homePath)
+}
 
 func validateGameFlags(subcommand string, args []string, allowed map[string]bool) error {
 	for i := 0; i < len(args); i++ {
