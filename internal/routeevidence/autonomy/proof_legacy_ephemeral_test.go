@@ -29,7 +29,7 @@ func TestCompileExcludesTerminalLegacyEphemeralWorkRecords(t *testing.T) {
 	})
 
 	artifact := compile(t, home, plan, 1)
-	if artifact.ExcludedInvalidLegacyCount != 1 {
+	if artifact.ExcludedUnverifiableCount != 1 {
 		t.Fatalf("legacy ephemeral record not visibly excluded: %+v", artifact)
 	}
 	for _, sample := range artifact.Samples {
@@ -60,6 +60,67 @@ func writeRawWork(t *testing.T, home, id string, doc map[string]any) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Custody strictness is class-scoped: an OFF-class recent-terminal record with a
+// dirty custody trail is excluded visibly; the SAME dirt on a class-relevant
+// record still fails the compilation closed.
+func TestCompileExcludesOffClassDirtyTerminalHistory(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "class-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	foreignDup := seedSample(t, home, plan, "foreign-dup", proofNow.Add(-24*time.Hour), sampleOptions{autonomyClass: "other_class"})
+	duplicateTerminalWorkEvent(t, home, foreignDup.WorkID)
+
+	artifact := compile(t, home, plan, 1)
+	if artifact.ExcludedUnverifiableCount != 1 {
+		t.Fatalf("off-class dirty terminal history not visibly excluded: %+v", artifact)
+	}
+	for _, sample := range artifact.Samples {
+		if sample.WorkID == foreignDup.WorkID {
+			t.Fatalf("off-class dirty record entered cohort: %+v", artifact.Samples)
+		}
+	}
+}
+
+func TestCompileFailsClosedOnClassDirtyTerminalHistory(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "class-clean-2", proofNow.Add(-48*time.Hour), sampleOptions{})
+	victim := seedSample(t, home, plan, "class-dup", proofNow.Add(-24*time.Hour), sampleOptions{})
+	duplicateTerminalWorkEvent(t, home, victim.WorkID)
+
+	if _, err := compileArtifact(home, plan, 1); err == nil || !strings.Contains(err.Error(), "multiple terminal events") {
+		t.Fatalf("class-relevant dirty terminal history did not fail closed: %v", err)
+	}
+}
+
+func duplicateTerminalWorkEvent(t *testing.T, home, workID string) {
+	t.Helper()
+	path := filepath.Join(home, "events", "work.jsonl")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dup := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var event struct {
+			WorkID string `json:"work_id"`
+			To     string `json:"to"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.WorkID == workID && (event.To == "completed" || event.To == "failed" || event.To == "cancelled") {
+			dup = line
+		}
+	}
+	if dup == "" {
+		t.Fatalf("no terminal event found for %s", workID)
+	}
+	if err := os.WriteFile(path, append(raw, []byte(dup+"\n")...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

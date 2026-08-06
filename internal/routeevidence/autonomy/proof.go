@@ -113,19 +113,21 @@ type Artifact struct {
 	LookbackStart              string            `json:"lookback_start"`
 	LookbackEnd                string            `json:"lookback_end"`
 	ExcludedStaleTerminalCount int               `json:"excluded_stale_terminal_count"`
-	// ExcludedInvalidLegacyCount counts persisted records that occupy the ephemeral
-	// work_live_ namespace in a terminal state. They can never be eligibility
-	// samples; the count keeps their exclusion visible on the artifact instead of
-	// silently dropping them or failing the whole compilation.
-	ExcludedInvalidLegacyCount int      `json:"excluded_invalid_legacy_count"`
-	TerminalSampleCount        int      `json:"terminal_sample_count"`
-	FailureCount               int      `json:"failure_count"`
-	WindowStart                string   `json:"window_start,omitempty"`
-	WindowEnd                  string   `json:"window_end,omitempty"`
-	WindowSeconds              int64    `json:"window_seconds"`
-	Samples                    []Sample `json:"samples"`
-	Reasons                    []string `json:"reasons,omitempty"`
-	EvidenceRefs               []string `json:"evidence_refs"`
+	// ExcludedUnverifiableCount counts records excluded from eligibility history
+	// because they can never be samples for this class: terminal records in the
+	// ephemeral work_live_ namespace, and OFF-class recent-terminal records whose
+	// custody trail is unverifiable (multiple terminal events, missing or
+	// mismatched snapshot hashes, unparseable timestamps). Class-relevant custody
+	// violations still fail the compilation closed.
+	ExcludedUnverifiableCount int      `json:"excluded_unverifiable_count"`
+	TerminalSampleCount       int      `json:"terminal_sample_count"`
+	FailureCount              int      `json:"failure_count"`
+	WindowStart               string   `json:"window_start,omitempty"`
+	WindowEnd                 string   `json:"window_end,omitempty"`
+	WindowSeconds             int64    `json:"window_seconds"`
+	Samples                   []Sample `json:"samples"`
+	Reasons                   []string `json:"reasons,omitempty"`
+	EvidenceRefs              []string `json:"evidence_refs"`
 }
 
 type workSnapshot struct {
@@ -273,14 +275,16 @@ func Compile(homePath string, grant GrantSnapshot, plan RoutePlanSnapshot, now t
 	if err != nil {
 		return Artifact{}, err
 	}
-	artifact.ExcludedInvalidLegacyCount = excludedLegacy
+	artifact.ExcludedUnverifiableCount = excludedLegacy
 	receipts, err := receiptEvidenceByWork(homePath)
 	if err != nil {
 		return Artifact{}, err
 	}
-	if err := reconcileRecentTerminalSnapshots(homePath, works, receipts, artifact.Class, lookbackStart, evaluatedAt); err != nil {
+	excludedDirty, err := reconcileRecentTerminalSnapshots(homePath, works, receipts, artifact.Class, lookbackStart, evaluatedAt)
+	if err != nil {
 		return Artifact{}, err
 	}
+	artifact.ExcludedUnverifiableCount += excludedDirty
 	routes, err := loadRouteRows(homePath)
 	if err != nil {
 		return Artifact{}, err
@@ -460,8 +464,8 @@ func Validate(artifact Artifact) error {
 	if artifact.ExcludedStaleTerminalCount < 0 {
 		problems = append(problems, "excluded_stale_terminal_count must not be negative")
 	}
-	if artifact.ExcludedInvalidLegacyCount < 0 {
-		problems = append(problems, "excluded_invalid_legacy_count must not be negative")
+	if artifact.ExcludedUnverifiableCount < 0 {
+		problems = append(problems, "excluded_unverifiable_count must not be negative")
 	}
 	if generatedAt, err := time.Parse(time.RFC3339, artifact.GeneratedAt); err != nil {
 		problems = append(problems, "generated_at must be RFC3339")
@@ -861,7 +865,7 @@ func loadWorks(homePath string) ([]workSnapshot, int, error) {
 	return out, excludedLegacy, nil
 }
 
-func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, receipts map[string]receiptEvidence, cohortClass string, lookbackStart, lookbackEnd time.Time) error {
+func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, receipts map[string]receiptEvidence, cohortClass string, lookbackStart, lookbackEnd time.Time) (int, error) {
 	byID := map[string][]workSnapshot{}
 	for _, work := range works {
 		byID[work.Work.ID] = append(byID[work.Work.ID], work)
@@ -870,7 +874,7 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 		class, classErr := autonomyClassOf(work.Work)
 		if classErr != nil {
 			if terminalWorkState(work.Work.State) && autonomyTriggerMentionsClass(work.Work, cohortClass) {
-				return classErr
+				return 0, classErr
 			}
 			continue
 		}
@@ -878,52 +882,99 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 			continue
 		}
 		if len(receipts[work.Work.ID].Terminals) == 0 {
-			return fmt.Errorf("terminal work %s has 0 terminal events; exactly one required", work.Work.ID)
+			return 0, fmt.Errorf("terminal work %s has 0 terminal events; exactly one required", work.Work.ID)
 		}
 	}
+	excluded := 0
 	for workID, evidence := range receipts {
 		if len(evidence.Terminals) == 0 {
 			continue
 		}
+		// Custody strictness is class-scoped: a record that could belong to the
+		// cohort class must fail the compilation closed on any custody violation,
+		// while OFF-class debris can never be a sample here and is excluded
+		// visibly (counted on the artifact) instead of vetoing the class.
+		classRelevant := false
+		for _, snapshot := range byID[workID] {
+			class, classErr := autonomyClassOf(snapshot.Work)
+			if classErr != nil {
+				if autonomyTriggerMentionsClass(snapshot.Work, cohortClass) {
+					classRelevant = true
+				}
+				continue
+			}
+			if class == cohortClass {
+				classRelevant = true
+			}
+		}
 		recent := false
+		badTimestamp := ""
 		terminalTimes := make([]time.Time, 0, len(evidence.Terminals))
 		for _, terminal := range evidence.Terminals {
 			parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(terminal.At))
 			if err != nil {
-				return fmt.Errorf("terminal work %s has invalid terminal timestamp %q", workID, terminal.At)
+				badTimestamp = terminal.At
+				break
 			}
 			terminalTimes = append(terminalTimes, parsed)
 			if !parsed.Before(lookbackStart) {
 				recent = true
 			}
 		}
+		if badTimestamp != "" {
+			if classRelevant {
+				return excluded, fmt.Errorf("terminal work %s has invalid terminal timestamp %q", workID, badTimestamp)
+			}
+			excluded++
+			continue
+		}
 		if !recent {
 			continue
 		}
 		if len(evidence.Terminals) != 1 {
-			return fmt.Errorf("recent terminal work %s has multiple terminal events (%d)", workID, len(evidence.Terminals))
+			if classRelevant {
+				return excluded, fmt.Errorf("recent terminal work %s has multiple terminal events (%d)", workID, len(evidence.Terminals))
+			}
+			excluded++
+			continue
 		}
 		snapshots := byID[workID]
 		if len(snapshots) != 1 {
-			return fmt.Errorf("recent terminal work %s has %d snapshots; exactly one required", workID, len(snapshots))
+			if classRelevant {
+				return excluded, fmt.Errorf("recent terminal work %s has %d snapshots; exactly one required", workID, len(snapshots))
+			}
+			excluded++
+			continue
 		}
 		if !terminalWorkState(snapshots[0].Work.State) {
-			return fmt.Errorf("recent terminal work %s snapshot state %q is not terminal", workID, snapshots[0].Work.State)
+			if classRelevant {
+				return excluded, fmt.Errorf("recent terminal work %s snapshot state %q is not terminal", workID, snapshots[0].Work.State)
+			}
+			excluded++
+			continue
 		}
 		if strings.TrimSpace(evidence.Terminals[0].WorkSHA256) == "" {
-			return fmt.Errorf("recent terminal work %s terminal event snapshot hash is required", workID)
+			if classRelevant {
+				return excluded, fmt.Errorf("recent terminal work %s terminal event snapshot hash is required", workID)
+			}
+			excluded++
+			continue
 		}
 		data, err := json.Marshal(snapshots[0].Work)
 		if err != nil {
-			return err
+			return excluded, err
 		}
 		if evidence.Terminals[0].WorkSHA256 != "sha256:"+shaHex(data) {
-			return fmt.Errorf("recent terminal work %s snapshot hash does not match terminal event", workID)
+			if classRelevant {
+				return excluded, fmt.Errorf("recent terminal work %s snapshot hash does not match terminal event", workID)
+			}
+			excluded++
+			continue
 		}
 		class, classErr := autonomyClassOf(snapshots[0].Work)
 		if classErr != nil {
 			if autonomyTriggerMentionsClass(snapshots[0].Work, cohortClass) {
-				return classErr
+				return excluded, classErr
 			}
 			continue
 		}
@@ -931,29 +982,28 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 			continue
 		}
 		if strings.TrimSpace(evidence.Terminals[0].ReceiptSHA256) == "" {
-			return fmt.Errorf("terminal work %s receipt snapshot hash is required", workID)
+			return excluded, fmt.Errorf("terminal work %s receipt snapshot hash is required", workID)
 		}
 		if len(evidence.Refs) != 1 {
-			return fmt.Errorf("terminal work %s has %d receipt refs; exactly one required", workID, len(evidence.Refs))
+			return excluded, fmt.Errorf("terminal work %s has %d receipt refs; exactly one required", workID, len(evidence.Refs))
 		}
 		_, receipt, _, err := loadBoundReceipt(homePath, evidence.Refs[0])
 		if err != nil {
-			return fmt.Errorf("terminal work %s %w", workID, err)
+			return excluded, fmt.Errorf("terminal work %s %w", workID, err)
 		}
 		receiptCanonical, err := json.Marshal(receipt)
 		if err != nil {
-			return err
+			return excluded, err
 		}
 		if evidence.Terminals[0].ReceiptSHA256 != "sha256:"+shaHex(receiptCanonical) {
-			return fmt.Errorf("terminal work %s receipt snapshot hash does not match terminal event", workID)
+			return excluded, fmt.Errorf("terminal work %s receipt snapshot hash does not match terminal event", workID)
 		}
 		if terminalTimes[0].After(lookbackEnd) {
-			return fmt.Errorf("terminal work %s has terminal timestamp after eligibility evaluation: %q is after lookback end %q", workID, evidence.Terminals[0].At, lookbackEnd.UTC().Format(time.RFC3339))
+			return excluded, fmt.Errorf("terminal work %s has terminal timestamp after eligibility evaluation: %q is after lookback end %q", workID, evidence.Terminals[0].At, lookbackEnd.UTC().Format(time.RFC3339))
 		}
 	}
-	return nil
+	return excluded, nil
 }
-
 func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) {
 	out := map[string]receiptEvidence{}
 	store, err := eventstore.Open(homePath)
