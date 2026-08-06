@@ -113,14 +113,19 @@ type Artifact struct {
 	LookbackStart              string            `json:"lookback_start"`
 	LookbackEnd                string            `json:"lookback_end"`
 	ExcludedStaleTerminalCount int               `json:"excluded_stale_terminal_count"`
-	TerminalSampleCount        int               `json:"terminal_sample_count"`
-	FailureCount               int               `json:"failure_count"`
-	WindowStart                string            `json:"window_start,omitempty"`
-	WindowEnd                  string            `json:"window_end,omitempty"`
-	WindowSeconds              int64             `json:"window_seconds"`
-	Samples                    []Sample          `json:"samples"`
-	Reasons                    []string          `json:"reasons,omitempty"`
-	EvidenceRefs               []string          `json:"evidence_refs"`
+	// ExcludedInvalidLegacyCount counts persisted records that occupy the ephemeral
+	// work_live_ namespace in a terminal state. They can never be eligibility
+	// samples; the count keeps their exclusion visible on the artifact instead of
+	// silently dropping them or failing the whole compilation.
+	ExcludedInvalidLegacyCount int      `json:"excluded_invalid_legacy_count"`
+	TerminalSampleCount        int      `json:"terminal_sample_count"`
+	FailureCount               int      `json:"failure_count"`
+	WindowStart                string   `json:"window_start,omitempty"`
+	WindowEnd                  string   `json:"window_end,omitempty"`
+	WindowSeconds              int64    `json:"window_seconds"`
+	Samples                    []Sample `json:"samples"`
+	Reasons                    []string `json:"reasons,omitempty"`
+	EvidenceRefs               []string `json:"evidence_refs"`
 }
 
 type workSnapshot struct {
@@ -264,10 +269,11 @@ func Compile(homePath string, grant GrantSnapshot, plan RoutePlanSnapshot, now t
 		artifact.Reasons = append(artifact.Reasons, reason)
 	}
 
-	works, err := loadWorks(homePath)
+	works, excludedLegacy, err := loadWorks(homePath)
 	if err != nil {
 		return Artifact{}, err
 	}
+	artifact.ExcludedInvalidLegacyCount = excludedLegacy
 	receipts, err := receiptEvidenceByWork(homePath)
 	if err != nil {
 		return Artifact{}, err
@@ -453,6 +459,9 @@ func Validate(artifact Artifact) error {
 	}
 	if artifact.ExcludedStaleTerminalCount < 0 {
 		problems = append(problems, "excluded_stale_terminal_count must not be negative")
+	}
+	if artifact.ExcludedInvalidLegacyCount < 0 {
+		problems = append(problems, "excluded_invalid_legacy_count must not be negative")
 	}
 	if generatedAt, err := time.Parse(time.RFC3339, artifact.GeneratedAt); err != nil {
 		problems = append(problems, "generated_at must be RFC3339")
@@ -728,7 +737,7 @@ func buildSample(homePath string, ws workSnapshot, receiptEvidence receiptEviden
 	return sample
 }
 
-func loadWorks(homePath string) ([]workSnapshot, error) {
+func loadWorks(homePath string) ([]workSnapshot, int, error) {
 	type workLocation struct {
 		Path         string
 		OriginalPath string
@@ -738,7 +747,7 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	locations := []workLocation{}
 	entries, err := os.ReadDir(filepath.Join(homePath, "work", "work"))
 	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+		return nil, 0, err
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
@@ -748,7 +757,7 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	}
 	archive, err := homepkg.LoadOperationalArchiveIndex(homePath)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	indexedArchivePaths := map[string]bool{}
 	archiveWorkRoot := filepath.Join(homepkg.OperationalArchiveFilesRoot(homePath), "work", "work")
@@ -758,35 +767,35 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 		}
 		originalPath, ok := canonicalLocalSlashPath(entry.OriginalPath)
 		if !ok {
-			return nil, fmt.Errorf("operational archive work %s original path must be a canonical local path", entry.ID)
+			return nil, 0, fmt.Errorf("operational archive work %s original path must be a canonical local path", entry.ID)
 		}
 		if filepath.Dir(originalPath) != filepath.Join("work", "work") || filepath.Ext(originalPath) != ".json" {
-			return nil, fmt.Errorf("operational archive work %s original path is outside the owned work root", entry.ID)
+			return nil, 0, fmt.Errorf("operational archive work %s original path is outside the owned work root", entry.ID)
 		}
 		archiveRel, ok := canonicalLocalSlashPath(entry.ArchivePath)
 		if !ok {
-			return nil, fmt.Errorf("operational archive work %s archive path must be a canonical local path", entry.ID)
+			return nil, 0, fmt.Errorf("operational archive work %s archive path must be a canonical local path", entry.ID)
 		}
 		expectedArchivePath := filepath.Join(homepkg.OperationalArchiveFilesRel, originalPath)
 		if archiveRel != expectedArchivePath {
-			return nil, fmt.Errorf("operational archive work %s archive path does not match original path", entry.ID)
+			return nil, 0, fmt.Errorf("operational archive work %s archive path does not match original path", entry.ID)
 		}
 		if !terminalWorkState(strings.TrimSpace(entry.Status)) {
-			return nil, fmt.Errorf("operational archive work %s status %q is not terminal", entry.ID, entry.Status)
+			return nil, 0, fmt.Errorf("operational archive work %s status %q is not terminal", entry.ID, entry.Status)
 		}
 		if strings.TrimSpace(entry.SHA256) == "" {
-			return nil, fmt.Errorf("operational archive work %s sha256 is required", entry.ID)
+			return nil, 0, fmt.Errorf("operational archive work %s sha256 is required", entry.ID)
 		}
 		wantID := "oparch_" + shaHex([]byte(filepath.ToSlash(originalPath)))[:12]
 		if entry.ID != wantID {
-			return nil, fmt.Errorf("operational archive work id %s does not match original path", entry.ID)
+			return nil, 0, fmt.Errorf("operational archive work id %s does not match original path", entry.ID)
 		}
 		archivePath := filepath.Join(homePath, archiveRel)
 		if filepath.Dir(archivePath) != archiveWorkRoot {
-			return nil, fmt.Errorf("operational archive work %s archive path is outside the owned archive work root", entry.ID)
+			return nil, 0, fmt.Errorf("operational archive work %s archive path is outside the owned archive work root", entry.ID)
 		}
 		if indexedArchivePaths[archivePath] {
-			return nil, fmt.Errorf("operational archive work path %s is indexed more than once", entry.ArchivePath)
+			return nil, 0, fmt.Errorf("operational archive work path %s is indexed more than once", entry.ArchivePath)
 		}
 		entryCopy := entry
 		locations = append(locations, workLocation{Path: archivePath, OriginalPath: entry.OriginalPath, FileKind: "archive", Archive: &entryCopy})
@@ -795,7 +804,7 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	physicalArchiveWorkDir := archiveWorkRoot
 	archivedFiles, err := os.ReadDir(physicalArchiveWorkDir)
 	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+		return nil, 0, err
 	}
 	for _, entry := range archivedFiles {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
@@ -803,45 +812,53 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 		}
 		path := filepath.Clean(filepath.Join(physicalArchiveWorkDir, entry.Name()))
 		if !indexedArchivePaths[path] {
-			return nil, fmt.Errorf("operational archive contains unindexed work file %s", filepath.ToSlash(entry.Name()))
+			return nil, 0, fmt.Errorf("operational archive contains unindexed work file %s", filepath.ToSlash(entry.Name()))
 		}
 	}
 	sort.Slice(locations, func(i, j int) bool { return locations[i].Path < locations[j].Path })
 	var out []workSnapshot
+	excludedLegacy := 0
 	seen := map[string]string{}
 	for _, location := range locations {
 		raw, err := readRegularFile(homePath, location.Path, location.FileKind)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if location.Archive != nil {
 			if got := shaHex(raw); got != strings.TrimSpace(location.Archive.SHA256) {
-				return nil, fmt.Errorf("operational archive work %s sha256 mismatch", location.Archive.ID)
+				return nil, 0, fmt.Errorf("operational archive work %s sha256 mismatch", location.Archive.ID)
 			}
 			if location.Archive.Size > 0 && int64(len(raw)) != location.Archive.Size {
-				return nil, fmt.Errorf("operational archive work %s size mismatch", location.Archive.ID)
+				return nil, 0, fmt.Errorf("operational archive work %s size mismatch", location.Archive.ID)
 			}
 		}
 		var work envelope.WorkEnvelope
 		if err := json.Unmarshal(raw, &work); err != nil {
-			return nil, fmt.Errorf("decode work %s: %w", location.Path, err)
+			return nil, 0, fmt.Errorf("decode work %s: %w", location.Path, err)
 		}
 		if err := work.Validate(); err != nil {
-			return nil, err
+			if strings.HasPrefix(work.ID, "work_live_") && terminalWorkState(strings.TrimSpace(work.State)) {
+				// A legacy ephemeral record persisted to a durable store. It can never be
+				// a durable envelope or an eligibility sample; exclude it visibly instead
+				// of failing every eligibility compilation over historical debris.
+				excludedLegacy++
+				continue
+			}
+			return nil, 0, err
 		}
 		if filepath.Base(filepath.FromSlash(location.OriginalPath)) != work.ID+".json" {
-			return nil, fmt.Errorf("work snapshot %s path does not match work identity %s", location.OriginalPath, work.ID)
+			return nil, 0, fmt.Errorf("work snapshot %s path does not match work identity %s", location.OriginalPath, work.ID)
 		}
 		if location.Archive != nil && strings.TrimSpace(location.Archive.Status) != strings.TrimSpace(work.State) {
-			return nil, fmt.Errorf("operational archive work %s status %q does not match work state %q", location.Archive.ID, location.Archive.Status, work.State)
+			return nil, 0, fmt.Errorf("operational archive work %s status %q does not match work state %q", location.Archive.ID, location.Archive.Status, work.State)
 		}
 		if prior, ok := seen[work.ID]; ok {
-			return nil, fmt.Errorf("duplicate work identity %s at %s and %s", work.ID, prior, location.Path)
+			return nil, 0, fmt.Errorf("duplicate work identity %s at %s and %s", work.ID, prior, location.Path)
 		}
 		seen[work.ID] = location.Path
 		out = append(out, workSnapshot{Work: work, Raw: bytes.TrimSpace(raw)})
 	}
-	return out, nil
+	return out, excludedLegacy, nil
 }
 
 func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, receipts map[string]receiptEvidence, cohortClass string, lookbackStart, lookbackEnd time.Time) error {
