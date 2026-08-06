@@ -314,7 +314,7 @@ const ConvergePendingBudget = 0
 // exceeds this ceiling. The budget only ratchets DOWN, so new code lands by `git mv
 // cmd/compound/foo.go internal/<organ>/`, not by appending to cmd/compound/. Raising this
 // ceiling to fit is the forbidden weaken-the-gate move.
-const MaxNonTestCompoundFiles = 116
+const MaxNonTestCompoundFiles = 115
 
 // MaxNonTestCompoundLOC is the RATCHET on total non-test .go physical lines under
 // cmd/compound/. Same exclusion rules as MaxNonTestCompoundFiles (no `*_test.go`, no
@@ -322,7 +322,7 @@ const MaxNonTestCompoundFiles = 116
 // checkCmdCompoundBudget — a gate that only watched files would let a single file bloat
 // unchecked, and a gate that only watched LOC would let file count fragment unchecked.
 // `--strict` fails when either is exceeded; the budget only ratchets DOWN.
-const MaxNonTestCompoundLOC = 52863
+const MaxNonTestCompoundLOC = 52826
 
 // MaxStatusHotPathNarrationLines is the RATCHET on status.md's PROSE, and it deliberately does not
 // count the package-table rows that checkPackageTableSingleSource MANDATES (one row per

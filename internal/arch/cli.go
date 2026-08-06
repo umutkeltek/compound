@@ -1,16 +1,16 @@
-package main
+package arch
 
 import (
 	"fmt"
 	"os"
-
-	"compound/internal/arch"
 )
 
-// cmdArchitecture runs architecture doctor: candidate-map integrity, total package
-// classification (a new unclassified package fails), public-doc leak gate, visible
-// memory-stack convergence debt. Exits non-zero if any check FAILs.
-func cmdArchitecture(args []string) {
+// Run is the organ entry point behind `compound architecture` (the cmd-budget
+// ratchet keeps cmd/compound a dispatch layer; the surface lives here).
+// It runs architecture doctor: candidate-map integrity, total package
+// classification (a new unclassified package fails), public-doc leak gate, and
+// visible memory-stack convergence debt. Exits non-zero if any check FAILs.
+func Run(args []string) {
 	if len(args) == 0 || args[0] != "doctor" {
 		fmt.Fprintln(os.Stderr, "usage: compound architecture doctor [--repo <path>] [--strict]")
 		os.Exit(2)
@@ -26,7 +26,7 @@ func cmdArchitecture(args []string) {
 			}
 		}
 	}
-	r := arch.Doctor(repo, strict)
+	r := Doctor(repo, strict)
 	for _, f := range r.Findings {
 		fmt.Printf("  [%-4s] %-14s %s\n", f.Severity, f.Check, f.Message)
 	}

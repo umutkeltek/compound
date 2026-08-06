@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	archcli "compound/internal/arch"
 	browsercli "compound/internal/browser"
 	gamecli "compound/internal/game/cli"
 	"compound/internal/policy"
@@ -198,7 +199,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"lanebeliefs":     heldCommand(cmdLaneBeliefs),
 		"mcp-transport":   heldCommand(cmdMCPTransport),
 		"negatives":       heldCommand(cmdNegatives),
-		"architecture": heldCommand(cmdArchitecture).
+		"architecture": heldCommand(archcli.Run).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),
 		"schedule": readCommand(schedulecli.Run).
 			withSubcommandAdmission("list", policy.FirstPartyCommandRead).
