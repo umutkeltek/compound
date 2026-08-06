@@ -67,7 +67,7 @@
       "aliases": ["claude-qwen"],
       "icon": "❖",
       "family": "claude_code",
-      "model": "qwen/qwen3.8-max-preview",
+      "model": "qwen/qwen3.8-max",
       "tab_rgb": [170, 90, 220],
       "ansi_hex": "AA5ADC",
       "profile_dir_var": "CLAUDE_QWEN_PROFILE_DIR",

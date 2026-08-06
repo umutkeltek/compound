@@ -113,14 +113,21 @@ type Artifact struct {
 	LookbackStart              string            `json:"lookback_start"`
 	LookbackEnd                string            `json:"lookback_end"`
 	ExcludedStaleTerminalCount int               `json:"excluded_stale_terminal_count"`
-	TerminalSampleCount        int               `json:"terminal_sample_count"`
-	FailureCount               int               `json:"failure_count"`
-	WindowStart                string            `json:"window_start,omitempty"`
-	WindowEnd                  string            `json:"window_end,omitempty"`
-	WindowSeconds              int64             `json:"window_seconds"`
-	Samples                    []Sample          `json:"samples"`
-	Reasons                    []string          `json:"reasons,omitempty"`
-	EvidenceRefs               []string          `json:"evidence_refs"`
+	// ExcludedUnverifiableCount counts records excluded from eligibility history
+	// because they can never be samples for this class: terminal records in the
+	// ephemeral work_live_ namespace, and OFF-class recent-terminal records whose
+	// custody trail is unverifiable (multiple terminal events, missing or
+	// mismatched snapshot hashes, unparseable timestamps). Class-relevant custody
+	// violations still fail the compilation closed.
+	ExcludedUnverifiableCount int      `json:"excluded_unverifiable_count"`
+	TerminalSampleCount       int      `json:"terminal_sample_count"`
+	FailureCount              int      `json:"failure_count"`
+	WindowStart               string   `json:"window_start,omitempty"`
+	WindowEnd                 string   `json:"window_end,omitempty"`
+	WindowSeconds             int64    `json:"window_seconds"`
+	Samples                   []Sample `json:"samples"`
+	Reasons                   []string `json:"reasons,omitempty"`
+	EvidenceRefs              []string `json:"evidence_refs"`
 }
 
 type workSnapshot struct {
@@ -156,8 +163,9 @@ type routeRaw struct {
 }
 
 type receiptEvidence struct {
-	Refs      []string
-	Terminals []terminalEvidence
+	Refs             []string
+	Terminals        []terminalEvidence
+	LatestWorkSHA256 string
 }
 
 type terminalEvidence struct {
@@ -264,17 +272,20 @@ func Compile(homePath string, grant GrantSnapshot, plan RoutePlanSnapshot, now t
 		artifact.Reasons = append(artifact.Reasons, reason)
 	}
 
-	works, err := loadWorks(homePath)
+	works, excludedLegacy, err := loadWorks(homePath)
 	if err != nil {
 		return Artifact{}, err
 	}
+	artifact.ExcludedUnverifiableCount = len(excludedLegacy)
 	receipts, err := receiptEvidenceByWork(homePath)
 	if err != nil {
 		return Artifact{}, err
 	}
-	if err := reconcileRecentTerminalSnapshots(homePath, works, receipts, artifact.Class, lookbackStart, evaluatedAt); err != nil {
+	excludedDirty, err := reconcileRecentTerminalSnapshots(homePath, works, receipts, excludedLegacy, artifact.Class, lookbackStart, evaluatedAt)
+	if err != nil {
 		return Artifact{}, err
 	}
+	artifact.ExcludedUnverifiableCount += excludedDirty
 	routes, err := loadRouteRows(homePath)
 	if err != nil {
 		return Artifact{}, err
@@ -453,6 +464,9 @@ func Validate(artifact Artifact) error {
 	}
 	if artifact.ExcludedStaleTerminalCount < 0 {
 		problems = append(problems, "excluded_stale_terminal_count must not be negative")
+	}
+	if artifact.ExcludedUnverifiableCount < 0 {
+		problems = append(problems, "excluded_unverifiable_count must not be negative")
 	}
 	if generatedAt, err := time.Parse(time.RFC3339, artifact.GeneratedAt); err != nil {
 		problems = append(problems, "generated_at must be RFC3339")
@@ -728,7 +742,7 @@ func buildSample(homePath string, ws workSnapshot, receiptEvidence receiptEviden
 	return sample
 }
 
-func loadWorks(homePath string) ([]workSnapshot, error) {
+func loadWorks(homePath string) ([]workSnapshot, map[string]bool, error) {
 	type workLocation struct {
 		Path         string
 		OriginalPath string
@@ -738,7 +752,7 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	locations := []workLocation{}
 	entries, err := os.ReadDir(filepath.Join(homePath, "work", "work"))
 	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
@@ -748,7 +762,7 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	}
 	archive, err := homepkg.LoadOperationalArchiveIndex(homePath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	indexedArchivePaths := map[string]bool{}
 	archiveWorkRoot := filepath.Join(homepkg.OperationalArchiveFilesRoot(homePath), "work", "work")
@@ -758,35 +772,35 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 		}
 		originalPath, ok := canonicalLocalSlashPath(entry.OriginalPath)
 		if !ok {
-			return nil, fmt.Errorf("operational archive work %s original path must be a canonical local path", entry.ID)
+			return nil, nil, fmt.Errorf("operational archive work %s original path must be a canonical local path", entry.ID)
 		}
 		if filepath.Dir(originalPath) != filepath.Join("work", "work") || filepath.Ext(originalPath) != ".json" {
-			return nil, fmt.Errorf("operational archive work %s original path is outside the owned work root", entry.ID)
+			return nil, nil, fmt.Errorf("operational archive work %s original path is outside the owned work root", entry.ID)
 		}
 		archiveRel, ok := canonicalLocalSlashPath(entry.ArchivePath)
 		if !ok {
-			return nil, fmt.Errorf("operational archive work %s archive path must be a canonical local path", entry.ID)
+			return nil, nil, fmt.Errorf("operational archive work %s archive path must be a canonical local path", entry.ID)
 		}
 		expectedArchivePath := filepath.Join(homepkg.OperationalArchiveFilesRel, originalPath)
 		if archiveRel != expectedArchivePath {
-			return nil, fmt.Errorf("operational archive work %s archive path does not match original path", entry.ID)
+			return nil, nil, fmt.Errorf("operational archive work %s archive path does not match original path", entry.ID)
 		}
 		if !terminalWorkState(strings.TrimSpace(entry.Status)) {
-			return nil, fmt.Errorf("operational archive work %s status %q is not terminal", entry.ID, entry.Status)
+			return nil, nil, fmt.Errorf("operational archive work %s status %q is not terminal", entry.ID, entry.Status)
 		}
 		if strings.TrimSpace(entry.SHA256) == "" {
-			return nil, fmt.Errorf("operational archive work %s sha256 is required", entry.ID)
+			return nil, nil, fmt.Errorf("operational archive work %s sha256 is required", entry.ID)
 		}
 		wantID := "oparch_" + shaHex([]byte(filepath.ToSlash(originalPath)))[:12]
 		if entry.ID != wantID {
-			return nil, fmt.Errorf("operational archive work id %s does not match original path", entry.ID)
+			return nil, nil, fmt.Errorf("operational archive work id %s does not match original path", entry.ID)
 		}
 		archivePath := filepath.Join(homePath, archiveRel)
 		if filepath.Dir(archivePath) != archiveWorkRoot {
-			return nil, fmt.Errorf("operational archive work %s archive path is outside the owned archive work root", entry.ID)
+			return nil, nil, fmt.Errorf("operational archive work %s archive path is outside the owned archive work root", entry.ID)
 		}
 		if indexedArchivePaths[archivePath] {
-			return nil, fmt.Errorf("operational archive work path %s is indexed more than once", entry.ArchivePath)
+			return nil, nil, fmt.Errorf("operational archive work path %s is indexed more than once", entry.ArchivePath)
 		}
 		entryCopy := entry
 		locations = append(locations, workLocation{Path: archivePath, OriginalPath: entry.OriginalPath, FileKind: "archive", Archive: &entryCopy})
@@ -795,7 +809,7 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	physicalArchiveWorkDir := archiveWorkRoot
 	archivedFiles, err := os.ReadDir(physicalArchiveWorkDir)
 	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, entry := range archivedFiles {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
@@ -803,48 +817,56 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 		}
 		path := filepath.Clean(filepath.Join(physicalArchiveWorkDir, entry.Name()))
 		if !indexedArchivePaths[path] {
-			return nil, fmt.Errorf("operational archive contains unindexed work file %s", filepath.ToSlash(entry.Name()))
+			return nil, nil, fmt.Errorf("operational archive contains unindexed work file %s", filepath.ToSlash(entry.Name()))
 		}
 	}
 	sort.Slice(locations, func(i, j int) bool { return locations[i].Path < locations[j].Path })
 	var out []workSnapshot
+	excludedLegacy := map[string]bool{}
 	seen := map[string]string{}
 	for _, location := range locations {
 		raw, err := readRegularFile(homePath, location.Path, location.FileKind)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if location.Archive != nil {
 			if got := shaHex(raw); got != strings.TrimSpace(location.Archive.SHA256) {
-				return nil, fmt.Errorf("operational archive work %s sha256 mismatch", location.Archive.ID)
+				return nil, nil, fmt.Errorf("operational archive work %s sha256 mismatch", location.Archive.ID)
 			}
 			if location.Archive.Size > 0 && int64(len(raw)) != location.Archive.Size {
-				return nil, fmt.Errorf("operational archive work %s size mismatch", location.Archive.ID)
+				return nil, nil, fmt.Errorf("operational archive work %s size mismatch", location.Archive.ID)
 			}
 		}
 		var work envelope.WorkEnvelope
 		if err := json.Unmarshal(raw, &work); err != nil {
-			return nil, fmt.Errorf("decode work %s: %w", location.Path, err)
+			return nil, nil, fmt.Errorf("decode work %s: %w", location.Path, err)
 		}
 		if err := work.Validate(); err != nil {
-			return nil, err
+			if strings.HasPrefix(work.ID, "work_live_") && terminalWorkState(strings.TrimSpace(work.State)) {
+				excludedLegacy[work.ID] = true
+				// A legacy ephemeral record persisted to a durable store. It can never be
+				// a durable envelope or an eligibility sample; exclude it visibly instead
+				// of failing every eligibility compilation over historical debris.
+				continue
+			}
+			return nil, nil, err
 		}
 		if filepath.Base(filepath.FromSlash(location.OriginalPath)) != work.ID+".json" {
-			return nil, fmt.Errorf("work snapshot %s path does not match work identity %s", location.OriginalPath, work.ID)
+			return nil, nil, fmt.Errorf("work snapshot %s path does not match work identity %s", location.OriginalPath, work.ID)
 		}
 		if location.Archive != nil && strings.TrimSpace(location.Archive.Status) != strings.TrimSpace(work.State) {
-			return nil, fmt.Errorf("operational archive work %s status %q does not match work state %q", location.Archive.ID, location.Archive.Status, work.State)
+			return nil, nil, fmt.Errorf("operational archive work %s status %q does not match work state %q", location.Archive.ID, location.Archive.Status, work.State)
 		}
 		if prior, ok := seen[work.ID]; ok {
-			return nil, fmt.Errorf("duplicate work identity %s at %s and %s", work.ID, prior, location.Path)
+			return nil, nil, fmt.Errorf("duplicate work identity %s at %s and %s", work.ID, prior, location.Path)
 		}
 		seen[work.ID] = location.Path
 		out = append(out, workSnapshot{Work: work, Raw: bytes.TrimSpace(raw)})
 	}
-	return out, nil
+	return out, excludedLegacy, nil
 }
 
-func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, receipts map[string]receiptEvidence, cohortClass string, lookbackStart, lookbackEnd time.Time) error {
+func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, receipts map[string]receiptEvidence, excludedLegacy map[string]bool, cohortClass string, lookbackStart, lookbackEnd time.Time) (int, error) {
 	byID := map[string][]workSnapshot{}
 	for _, work := range works {
 		byID[work.Work.ID] = append(byID[work.Work.ID], work)
@@ -853,7 +875,7 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 		class, classErr := autonomyClassOf(work.Work)
 		if classErr != nil {
 			if terminalWorkState(work.Work.State) && autonomyTriggerMentionsClass(work.Work, cohortClass) {
-				return classErr
+				return 0, classErr
 			}
 			continue
 		}
@@ -861,11 +883,15 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 			continue
 		}
 		if len(receipts[work.Work.ID].Terminals) == 0 {
-			return fmt.Errorf("terminal work %s has 0 terminal events; exactly one required", work.Work.ID)
+			return 0, fmt.Errorf("terminal work %s has 0 terminal events; exactly one required", work.Work.ID)
 		}
 	}
+	excluded := 0
 	for workID, evidence := range receipts {
-		if len(evidence.Terminals) == 0 {
+		if len(evidence.Terminals) == 0 || excludedLegacy[workID] {
+			// An ephemeral work_live_ record has no durable envelope to reconcile
+			// against; loadWorks already excluded it, so its events carry no
+			// eligibility weight either.
 			continue
 		}
 		recent := false
@@ -873,7 +899,7 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 		for _, terminal := range evidence.Terminals {
 			parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(terminal.At))
 			if err != nil {
-				return fmt.Errorf("terminal work %s has invalid terminal timestamp %q", workID, terminal.At)
+				return excluded, fmt.Errorf("terminal work %s has invalid terminal timestamp %q", workID, terminal.At)
 			}
 			terminalTimes = append(terminalTimes, parsed)
 			if !parsed.Before(lookbackStart) {
@@ -883,30 +909,68 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 		if !recent {
 			continue
 		}
-		if len(evidence.Terminals) != 1 {
-			return fmt.Errorf("recent terminal work %s has multiple terminal events (%d)", workID, len(evidence.Terminals))
-		}
 		snapshots := byID[workID]
+		// Custody strictness is class-scoped, but exclusion is only safe when the
+		// work's class attribution is trustworthy: exactly one snapshot whose
+		// recorded hash (when any terminal event carries one) verifies. A missing
+		// snapshot, an ambiguous snapshot set, or a hash mismatch leaves the class
+		// unknowable or untrustworthy and always fails closed. OFF-class debris
+		// with close-retry duplicates or pre-hash-era events can never be a sample
+		// for this cohort and is excluded visibly (counted on the artifact)
+		// instead of vetoing the class.
+		verifiedOffClass := false
+		if len(snapshots) == 1 {
+			data, err := json.Marshal(snapshots[0].Work)
+			if err != nil {
+				return excluded, err
+			}
+			snapHash := "sha256:" + shaHex(data)
+			sealed := strings.TrimSpace(evidence.LatestWorkSHA256)
+			if sealed != "" && sealed != snapHash {
+				return excluded, fmt.Errorf("recent terminal work %s snapshot hash does not match terminal event", workID)
+			}
+			class, classErr := autonomyClassOf(snapshots[0].Work)
+			if classErr != nil {
+				verifiedOffClass = !autonomyTriggerMentionsClass(snapshots[0].Work, cohortClass)
+			} else {
+				verifiedOffClass = class != cohortClass
+			}
+		}
+		if len(evidence.Terminals) != 1 {
+			if verifiedOffClass {
+				excluded++
+				continue
+			}
+			return excluded, fmt.Errorf("recent terminal work %s has multiple terminal events (%d)", workID, len(evidence.Terminals))
+		}
 		if len(snapshots) != 1 {
-			return fmt.Errorf("recent terminal work %s has %d snapshots; exactly one required", workID, len(snapshots))
+			return excluded, fmt.Errorf("recent terminal work %s has %d snapshots; exactly one required", workID, len(snapshots))
 		}
 		if !terminalWorkState(snapshots[0].Work.State) {
-			return fmt.Errorf("recent terminal work %s snapshot state %q is not terminal", workID, snapshots[0].Work.State)
+			if verifiedOffClass {
+				excluded++
+				continue
+			}
+			return excluded, fmt.Errorf("recent terminal work %s snapshot state %q is not terminal", workID, snapshots[0].Work.State)
 		}
-		if strings.TrimSpace(evidence.Terminals[0].WorkSHA256) == "" {
-			return fmt.Errorf("recent terminal work %s terminal event snapshot hash is required", workID)
+		if strings.TrimSpace(evidence.LatestWorkSHA256) == "" {
+			if verifiedOffClass {
+				excluded++
+				continue
+			}
+			return excluded, fmt.Errorf("recent terminal work %s terminal event snapshot hash is required", workID)
 		}
 		data, err := json.Marshal(snapshots[0].Work)
 		if err != nil {
-			return err
+			return excluded, err
 		}
-		if evidence.Terminals[0].WorkSHA256 != "sha256:"+shaHex(data) {
-			return fmt.Errorf("recent terminal work %s snapshot hash does not match terminal event", workID)
+		if strings.TrimSpace(evidence.LatestWorkSHA256) != "sha256:"+shaHex(data) {
+			return excluded, fmt.Errorf("recent terminal work %s snapshot hash does not match terminal event", workID)
 		}
 		class, classErr := autonomyClassOf(snapshots[0].Work)
 		if classErr != nil {
 			if autonomyTriggerMentionsClass(snapshots[0].Work, cohortClass) {
-				return classErr
+				return excluded, classErr
 			}
 			continue
 		}
@@ -914,29 +978,28 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 			continue
 		}
 		if strings.TrimSpace(evidence.Terminals[0].ReceiptSHA256) == "" {
-			return fmt.Errorf("terminal work %s receipt snapshot hash is required", workID)
+			return excluded, fmt.Errorf("terminal work %s receipt snapshot hash is required", workID)
 		}
 		if len(evidence.Refs) != 1 {
-			return fmt.Errorf("terminal work %s has %d receipt refs; exactly one required", workID, len(evidence.Refs))
+			return excluded, fmt.Errorf("terminal work %s has %d receipt refs; exactly one required", workID, len(evidence.Refs))
 		}
 		_, receipt, _, err := loadBoundReceipt(homePath, evidence.Refs[0])
 		if err != nil {
-			return fmt.Errorf("terminal work %s %w", workID, err)
+			return excluded, fmt.Errorf("terminal work %s %w", workID, err)
 		}
 		receiptCanonical, err := json.Marshal(receipt)
 		if err != nil {
-			return err
+			return excluded, err
 		}
 		if evidence.Terminals[0].ReceiptSHA256 != "sha256:"+shaHex(receiptCanonical) {
-			return fmt.Errorf("terminal work %s receipt snapshot hash does not match terminal event", workID)
+			return excluded, fmt.Errorf("terminal work %s receipt snapshot hash does not match terminal event", workID)
 		}
 		if terminalTimes[0].After(lookbackEnd) {
-			return fmt.Errorf("terminal work %s has terminal timestamp after eligibility evaluation: %q is after lookback end %q", workID, evidence.Terminals[0].At, lookbackEnd.UTC().Format(time.RFC3339))
+			return excluded, fmt.Errorf("terminal work %s has terminal timestamp after eligibility evaluation: %q is after lookback end %q", workID, evidence.Terminals[0].At, lookbackEnd.UTC().Format(time.RFC3339))
 		}
 	}
-	return nil
+	return excluded, nil
 }
-
 func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) {
 	out := map[string]receiptEvidence{}
 	store, err := eventstore.Open(homePath)
@@ -955,6 +1018,7 @@ func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) 
 		var event struct {
 			TS            string   `json:"ts"`
 			WorkID        string   `json:"work_id"`
+			From          string   `json:"from"`
 			To            string   `json:"to"`
 			Attached      []string `json:"attached"`
 			WorkSHA256    string   `json:"work_sha256,omitempty"`
@@ -964,7 +1028,21 @@ func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) 
 			return nil, err
 		}
 		evidence := out[event.WorkID]
-		terminal := terminalWorkState(event.To)
+		// The custody seal is the MOST RECENT recorded snapshot hash for this work,
+		// not the first close's. A governed re-close (audit_only) or any other
+		// sealed post-close event rewrites the record and records the new hash;
+		// verifying against the first close would read that legitimate re-seal as
+		// tampering. Any change with NO sealing event still mismatches.
+		if h := strings.TrimSpace(event.WorkSHA256); h != "" {
+			evidence.LatestWorkSHA256 = h
+		}
+		// A terminal event is a TRANSITION INTO a terminal state. Same-state rows
+		// (from == to) are annotations on already-closed work -- delegate steer and
+		// exit notes write them -- and carry neither a close's snapshot hash nor a
+		// receipt. Counting them as closes made one steered work look like it had
+		// several conflicting terminal events and no custody hash, which failed the
+		// whole eligibility compilation closed.
+		terminal := terminalWorkState(event.To) && strings.TrimSpace(event.From) != strings.TrimSpace(event.To)
 		if terminal && strings.TrimSpace(event.TS) != "" {
 			evidence.Terminals = append(evidence.Terminals, terminalEvidence{
 				At:            normalizedEvidenceTime(event.TS),
