@@ -30,10 +30,10 @@ func TestCmdGameReleasePlanRejectsUnknownFlag(t *testing.T) {
 
 func TestCmdGameReleasePlanRequiresAllFlags(t *testing.T) {
 	cases := []string{
-		"--idea-id x --product-id y --change-summary s --rollback r", // missing --post-release-metric
-		"--idea-id x --product-id y --change-summary s --post-release-metric m", // missing --rollback
-		"--idea-id x --product-id y --rollback r --post-release-metric m", // missing --change-summary
-		"--idea-id x --change-summary s --rollback r --post-release-metric m", // missing --product-id
+		"--idea-id x --product-id y --change-summary s --rollback r",             // missing --post-release-metric
+		"--idea-id x --product-id y --change-summary s --post-release-metric m",  // missing --rollback
+		"--idea-id x --product-id y --rollback r --post-release-metric m",        // missing --change-summary
+		"--idea-id x --change-summary s --rollback r --post-release-metric m",    // missing --product-id
 		"--product-id y --change-summary s --rollback r --post-release-metric m", // missing --idea-id
 	}
 	for _, args := range cases {

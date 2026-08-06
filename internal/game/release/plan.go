@@ -22,24 +22,24 @@ import (
 // parked idea candidate. All fields are required (the underlying
 // product.BuildReleasePlan enforces this and returns an error otherwise).
 type PlanInput struct {
-	HomePath        string // COMPOUND_HOME; resolved via home.Resolve upstream
-	StoreOpener     func(homePath string) (*mem.Store, error)
-	ProductID       string // e.g. "game:idea:roguelike-deckbuilder"
-	ActionCardID    string // optional; empty means no specific action card
-	IdeaCandidate   string // candidate id from `compound game draft`
-	UnityArtifactRef string // optional; empty if Unity build not yet packaged
-	ChangeSummary   string // one-liner for the review queue
-	Rollback        string // named rollback plan (free text)
+	HomePath          string // COMPOUND_HOME; resolved via home.Resolve upstream
+	StoreOpener       func(homePath string) (*mem.Store, error)
+	ProductID         string // e.g. "game:idea:roguelike-deckbuilder"
+	ActionCardID      string // optional; empty means no specific action card
+	IdeaCandidate     string // candidate id from `compound game draft`
+	UnityArtifactRef  string // optional; empty if Unity build not yet packaged
+	ChangeSummary     string // one-liner for the review queue
+	Rollback          string // named rollback plan (free text)
 	PostReleaseMetric string // e.g. "steam:wishlist_delta" — what we measure
 }
 
 // PlanResult is the producer output. The CLI prints PlanID + the
 // on-disk paths so the operator can run the next review command.
 type PlanResult struct {
-	Schema string `json:"schema"`
-	PlanID string `json:"plan_id"`
-	Paths  product.ProductReleasePlanPaths `json:"paths"`
-	NextAction string `json:"next_action"`
+	Schema     string                          `json:"schema"`
+	PlanID     string                          `json:"plan_id"`
+	Paths      product.ProductReleasePlanPaths `json:"paths"`
+	NextAction string                          `json:"next_action"`
 }
 
 const (
@@ -111,9 +111,9 @@ func Build(ctx context.Context, in PlanInput, now time.Time) (PlanResult, error)
 		return PlanResult{}, fmt.Errorf("release.Build: record plan: %w", err)
 	}
 
-	_ = ctx // reserved for future cancellation hook
+	_ = ctx                          // reserved for future cancellation hook
 	_ = candidates.ProductHypothesis // imported transitively; pins dependency
-	_ = game.SchemaGameReleasePlan    // pins the schema constant
+	_ = game.SchemaGameReleasePlan   // pins the schema constant
 
 	return PlanResult{
 		Schema:     planResultSchema,
