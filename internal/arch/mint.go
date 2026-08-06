@@ -208,6 +208,19 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "pure preparation-lane ranking (capability fit, token speed, cost) with a veto seam",
 		Consumer: "work dispatch-plan lane selection via the routeevidence adapter",
 	},
+	// operatornotice is the single missing edge between the attention hold frontier
+	// (internal/attention) and the existing act post buzz transport (internal/act). It scans
+	// BandNeedsYou groups, emits exactly one governed buzz notification per new hold
+	// (idempotent on re-scan, persisted via the home event store), and counts unnotifiable /
+	// refused holds in a doctor figure. It reuses attention.Build, act.Execute, and the
+	// existing standing-grant registry; it owns no authority object, gates nothing, and
+	// promotes nothing — the persistence it does is via the existing event store seam, so it
+	// is evidence, not enforcement.
+	"organ:operatornotice": {
+		Class:    MintEvidence,
+		Purpose:  "single missing edge between attention BandNeedsYou groups and the act post buzz transport; one function (Notify) emits exactly one governed buzz notification per new hold (idempotent on re-scan) and counts unnotifiable/refused holds in a doctor figure; reuses attention.Build, act.Execute, and the existing standing-grant registry; owns no authority object",
+		Consumer: "compound notice-flush CLI (the operator-facing wiring; no daemon or scheduler)",
+	},
 	// data-sources and services land together (infra-os registry import door,
 	// work_0ccf9361f136): both are evidence, not enforcement — they inform the
 	// os-absorption doctor's infra_registry_authority proof mode and future
