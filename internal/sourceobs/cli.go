@@ -1,15 +1,18 @@
-package main
+package sourceobs
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
 
 	"compound/internal/home"
-	"compound/internal/sourceobs"
 )
 
-func cmdSourceObservations(args []string) {
+// RunObservations is the organ entry point behind `compound source observations`
+// (the cmd-budget ratchet keeps cmd/compound a dispatch layer; the surface lives
+// here).
+func RunObservations(args []string) {
 	if len(args) > 1 || (len(args) == 1 && args[0] != "--json") {
 		fmt.Fprintln(os.Stderr, "usage: compound source observations [--json]")
 		os.Exit(2)
@@ -19,13 +22,18 @@ func cmdSourceObservations(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	report, err := sourceobs.ListSourceObservations(homePath, time.Now())
+	report, err := ListSourceObservations(homePath, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "source observations:", err)
 		os.Exit(1)
 	}
 	if len(args) == 1 && args[0] == "--json" {
-		printJSON(report)
+		encoded, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "source observations: encode:", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(encoded))
 		return
 	}
 	fmt.Printf("# source observations\n\n")

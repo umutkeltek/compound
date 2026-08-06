@@ -6,6 +6,7 @@ import (
 	archcli "compound/internal/arch"
 	browsercli "compound/internal/browser"
 	gamecli "compound/internal/game/cli"
+	noticecli "compound/internal/operatornotice"
 	"compound/internal/policy"
 	schedulecli "compound/internal/schedule"
 	terminalcli "compound/internal/terminal/cli"
@@ -201,6 +202,8 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"negatives":       heldCommand(cmdNegatives),
 		"architecture": heldCommand(archcli.Run).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),
+		"notice": heldCommand(noticecli.Run).
+			withSubcommandAdmission("flush", policy.FirstPartyCommandGoverned),
 		"schedule": readCommand(schedulecli.Run).
 			withSubcommandAdmission("list", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("show", policy.FirstPartyCommandRead).

@@ -30,7 +30,7 @@ func cmdSource(args []string) {
 	case "observe-batch":
 		cmdSourceObserveBatch(args[1:])
 	case "observations":
-		cmdSourceObservations(args[1:])
+		sourceobs.RunObservations(args[1:])
 	case "intake":
 		cmdSourceIntake(args[1:])
 	case "connections":
