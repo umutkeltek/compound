@@ -2222,7 +2222,55 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if len(in.RunAttemptIDs) > 0 {
 		s.supersedeClaimReservations(existingRunAttemptIDs, in.RunAttemptIDs, now)
 	}
+	// `work close` terminalizes every bound non-terminal RunAttempt by outcome
+	// (completed→succeeded, failed→failed, cancelled→abandoned). Already-terminal
+	// attempts are skipped. Without this the doctor's stuck-attempt count
+	// inflates correctly-closed work, so "something died" becomes unreadable.
+	// Best-effort: errors are silently dropped (mirror abandonRunAttempts) —
+	// the close is already committed, terminalization is evidence not
+	// enforcement, and a missed terminalization is a doctor-visible gap that
+	// the C3 sweeper backstops.
+	s.terminalizeRunAttemptsForOutcome(w.RunAttemptIDs, in.Outcome, now)
 	return CloseResult{Work: w, Receipt: rec, Transition: tr}, nil
+}
+
+// terminalizeRunAttemptsForOutcome closes every non-terminal RunAttempt in ids
+// in the status that matches the close outcome. The mapping is fixed:
+//
+//	completed -> succeeded
+//	failed    -> failed
+//	cancelled -> abandoned
+//
+// Already-terminal attempts (succeeded/failed/abandoned/superseded) are
+// skipped — they cannot be rewritten, and an idempotent re-close must not
+// disturb a terminal attempt from a prior close. Best-effort: errors are
+// silently dropped because the close is already durable and a RunAttempt is
+// evidence, not enforcement (same posture as abandonRunAttempts and
+// supersedeClaimReservations). Unknown outcomes are no-ops.
+func (s *Store) terminalizeRunAttemptsForOutcome(ids []string, outcome string, now time.Time) {
+	target := map[string]string{
+		"completed": runattempt.StatusSucceeded,
+		"failed":    runattempt.StatusFailed,
+		"cancelled": runattempt.StatusAbandoned,
+	}[outcome]
+	if target == "" {
+		return
+	}
+	store := s.runAttempts()
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		ra, err := store.Get(id)
+		if err != nil {
+			continue // not found or unreadable — nothing to terminalize
+		}
+		if runattempt.IsTerminal(ra.Status) {
+			continue // already terminal — skip (idempotent re-close path)
+		}
+		_, _ = store.Complete(id, target, now)
+	}
 }
 
 // releaseLease deletes workID's claim lease, if one is still held. Called only
