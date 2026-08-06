@@ -124,3 +124,36 @@ func duplicateTerminalWorkEvent(t *testing.T, home, workID string) {
 		t.Fatal(err)
 	}
 }
+
+// Same-state rows (from == to) are annotations on already-closed work -- delegate
+// steer and exit notes write them -- not closes. Counting them as terminal events
+// made a steered work look like it had several conflicting closes and no custody
+// hash, failing the whole compilation closed.
+func TestCompileIgnoresSameStateAnnotationsOnClosedWork(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "annotated-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	annotated := seedSample(t, home, plan, "annotated", proofNow.Add(-24*time.Hour), sampleOptions{})
+	appendWorkEvent(t, home, map[string]any{
+		"ts":      proofNow.Add(-1 * time.Hour).Format(time.RFC3339),
+		"work_id": annotated.WorkID,
+		"from":    "completed",
+		"to":      "completed",
+		"by":      "claude-fable",
+		"note":    "delegate steered session",
+	})
+
+	artifact := compile(t, home, plan, 2)
+	if artifact.Status != "eligible" {
+		t.Fatalf("same-state annotation blocked eligibility: %+v", artifact)
+	}
+	found := false
+	for _, sample := range artifact.Samples {
+		if sample.WorkID == annotated.WorkID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("annotated work dropped out of the cohort: %+v", artifact.Samples)
+	}
+}
