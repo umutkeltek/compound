@@ -1,10 +1,9 @@
-package main
+package routeevidence
 
 import (
 	"time"
 
 	"compound/internal/laneselect"
-	"compound/internal/routeevidence"
 	"compound/internal/work"
 )
 
@@ -14,7 +13,7 @@ import (
 // preparation-class dispatch by capability fit, token-generation speed, and cost.
 func init() {
 	work.PreparationLaneSelector = func(homePath, class string, now time.Time) (*laneselect.PreparationLaneRanking, error) {
-		ranking, err := routeevidence.PlanPreparationLane(homePath, class, routeevidence.PreparationLaneOptions{}, now)
+		ranking, err := PlanPreparationLane(homePath, class, PreparationLaneOptions{}, now)
 		if err != nil {
 			return nil, err
 		}
