@@ -64,6 +64,9 @@ var shellReadVerbs = map[string]bool{
 	"sw_vers": true, "vm_stat": true, "ps": true, "lsof": true, "nproc": true,
 	// Emit and format.
 	"echo": true, "printf": true, "true": true, "false": true,
+	// Condition builtins. `[ -d dir ]` / `test -f file` inspect the filesystem
+	// and produce only an exit status.
+	"[": true, "test": true, "[[": true,
 	// Read and transform text.
 	"cat": true, "bat": true, "head": true, "tail": true, "wc": true, "nl": true,
 	"sort": true, "uniq": true, "cut": true, "tr": true, "column": true, "rev": true,
@@ -145,6 +148,13 @@ var gitRefQueryFlagsWithValue = map[string]bool{
 	"--merged": true, "--no-merged": true,
 	"--points-at": true, "--sort": true, "--format": true,
 	"--color": true, "--abbrev": true, "-n": true,
+}
+
+// goGlobalFlagsWithValue mirrors gitGlobalFlagsWithValue: `go -C <dir> test`
+// puts the directory where the subcommand would otherwise sit, so without this
+// the path is read as the subcommand and a plain test run gets held.
+var goGlobalFlagsWithValue = map[string]bool{
+	"-C": true,
 }
 
 var goReadSubcommands = map[string]bool{
@@ -736,9 +746,64 @@ func shellAllDigits(value string) bool {
 	return value != ""
 }
 
+// shellControlKeywords are shell grammar, not commands. `for … do … done` and
+// `if … then … fi` execute nothing themselves; the loop body's own segments are
+// classified individually, exactly like `;` and `&&` composition. Holding a
+// loop whose every body command is a read is the boundary breaking its own
+// contract — it teaches the operator to click through holds.
+var shellControlKeywords = map[string]bool{
+	"for": true, "do": true, "done": true,
+	"if": true, "then": true, "elif": true, "else": true, "fi": true,
+	"while": true, "until": true, "case": true, "esac": true,
+	"{": true, "}": true, "!": true,
+}
+
+// shellStripControlKeywords removes leading control-flow words. It refuses the
+// `for X in <words>` header unless every word is literal, so a loop cannot
+// smuggle execution through its iteration list.
+func shellStripControlKeywords(words []string) ([]string, bool) {
+	for len(words) > 0 && shellControlKeywords[words[0]] {
+		head := words[0]
+		words = words[1:]
+		if head != "for" && head != "while" && head != "until" && head != "case" {
+			continue
+		}
+		// Consume the whole `VAR in word...` header. Any substitution placeholder
+		// in the iteration list means the list is computed rather than literal,
+		// so the loop stops being statically readable and keeps its hold.
+		for len(words) > 0 && !shellControlKeywords[words[0]] {
+			if strings.Contains(words[0], shellSubstitutionPlaceholder) {
+				return nil, false
+			}
+			words = words[1:]
+		}
+		// `in` is only meaningful inside this header, so it is consumed here
+		// rather than treated as a standalone control token.
+		if len(words) > 0 && words[0] == "in" {
+			words = words[1:]
+			for len(words) > 0 && !shellControlKeywords[words[0]] {
+				if strings.Contains(words[0], shellSubstitutionPlaceholder) {
+					return nil, false
+				}
+				words = words[1:]
+			}
+		}
+	}
+	return words, true
+}
+
 func shellSegmentClass(segment shellSegment, firstPartyCommands FirstPartyCommandCatalog) string {
 	if segment.writes || segment.obfuscated {
 		return shellClassUnknown
+	}
+	if stripped, ok := shellStripControlKeywords(segment.words); !ok {
+		return shellClassUnknown
+	} else if len(stripped) < len(segment.words) {
+		if len(stripped) == 0 {
+			// A pure control token (`done`, `fi`) runs nothing.
+			return shellClassRead
+		}
+		segment.words = stripped
 	}
 	if shellCommandLookupIsRead(segment.words) {
 		return shellClassRead
@@ -978,6 +1043,10 @@ func shellVerbClass(verb string, args []string, firstPartyCommands FirstPartyCom
 		return shellGoClass(args)
 	case "gofmt":
 		return shellGofmtClass(args)
+	case "sb":
+		return shellSwitchbackClass(args)
+	case "xargs":
+		return shellXargsClass(args, firstPartyCommands)
 	case "bash":
 		return shellBashSyntaxClass(args)
 	case "swift":
@@ -1507,8 +1576,74 @@ func shellGitClass(args []string) string {
 	return shellClassUnknown
 }
 
+// switchbackReadSubcommands are the `sb` verbs that only report state. Every
+// other verb — run, apply, and the rest of the lane-mutating surface — stays
+// unknown so it keeps its hold.
+var switchbackReadSubcommands = map[string]bool{
+	"pulse": true, "usage": true, "status": true, "list": true, "show": true,
+	"doctor": true, "diff": true, "plan": true,
+}
+
+// shellSwitchbackClass reads `sb <verb> [sub]`. `sb profile doctor|list|show|diff|plan`
+// is a report; `sb profile apply` is not, so the second operand decides when the
+// first is a noun rather than a verb.
+func shellSwitchbackClass(args []string) string {
+	verb, rest := shellFirstOperand(args, nil)
+	if verb == "" {
+		return shellClassUnknown
+	}
+	if switchbackReadSubcommands[verb] {
+		return shellClassRead
+	}
+	// Noun-first forms (`sb profile doctor`, `sb body status`, `sb lane list`)
+	// carry their read/write verb in the second operand.
+	switch verb {
+	case "profile", "body", "lane", "registry", "capture", "account":
+		sub, _ := shellFirstOperand(rest, nil)
+		if switchbackReadSubcommands[sub] {
+			return shellClassRead
+		}
+	}
+	return shellClassUnknown
+}
+
+// shellXargsClass classifies `xargs [flags] <command> ...` by the command it
+// will actually run: `find … | xargs grep -l …` is a read because grep is. An
+// xargs with no command runs `echo`, and an untrusted or write-class payload
+// keeps its hold.
+func shellXargsClass(args []string, firstPartyCommands FirstPartyCommandCatalog) string {
+	fields := args
+	for len(fields) > 0 && strings.HasPrefix(fields[0], "-") {
+		// -I/-J/-n/-P/-s take a value; consuming it keeps the payload aligned.
+		switch fields[0] {
+		case "-I", "-J", "-n", "-P", "-s", "-L":
+			if len(fields) < 2 {
+				return shellClassUnknown
+			}
+			fields = fields[2:]
+		case "-0", "-r", "-t", "-p":
+			fields = fields[1:]
+		default:
+			return shellClassUnknown
+		}
+	}
+	if len(fields) == 0 {
+		// Bare `xargs` echoes its input.
+		return shellClassRead
+	}
+	payload, prefixesSafe := shellStripCommandPrefixes(fields)
+	if !prefixesSafe || len(payload) == 0 {
+		return shellClassUnknown
+	}
+	verb := shellVerbName(payload[0])
+	if !shellVerificationExecutableTrusted(payload[0], verb) {
+		return shellClassUnknown
+	}
+	return shellVerbClass(verb, payload[1:], firstPartyCommands)
+}
+
 func shellGoClass(args []string) string {
-	sub, rest := shellFirstOperand(args, nil)
+	sub, rest := shellFirstOperand(args, goGlobalFlagsWithValue)
 	switch {
 	case sub == "":
 		return shellClassUnknown

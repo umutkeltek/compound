@@ -62,6 +62,15 @@ func TestRoutineReadShellCompositionsStayAutomatic(t *testing.T) {
 		"git tag --contains 40eb071e",
 		"git log --oneline -1 40eb071e 2>&1; git branch -a --contains 40eb071e | head -20",
 		"git merge-base --is-ancestor 40eb071e main && echo YES || echo NO",
+		// 2026-08-06: five of six delegate lanes froze at once, every held
+		// command read-only. The operator had to clear dialogs by hand to keep
+		// his own agents moving — the exact failure this test exists to stop.
+		// Each line below is a verbatim command that was held that night.
+		"go -C /repo test -count=1 -timeout 5m -run 'TestClaimRepairsOwnerlessClaimedEnvelope' ./internal/work/ 2>&1 | tail -10",
+		`go test -count=1 -run "TestCloseCompletedTerminalizesRunAttemptSucceeded|TestCloseSkipsAlreadyTerminalRunAttempts" ./internal/work/ 2>&1 | head -80`,
+		`find /repo -name "*.rs" -not -path "*target*" 2>/dev/null | xargs grep -l "2026-07-11" 2>/dev/null | head -10`,
+		"sb pulse 2>&1 | head -50",
+		`for d in sample-display sample-display-core; do if [ -d "$d/.git" ]; then echo "== $d =="; git -C "$d" rev-parse --abbrev-ref HEAD; git -C "$d" status --porcelain | head -20; fi; done`,
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
