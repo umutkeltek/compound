@@ -11,7 +11,7 @@ import (
 
 // --- work_9928ccb3621b: compound-owned usage-supplement capacity source ---
 //
-// The umut-os launchd sampler appends claude/zai capacity rows into CodexBar.app's own
+// An external launchd sampler appends claude/zai capacity rows into CodexBar.app's own
 // usage-history.jsonl. Since CodexBar started rewriting/pruning that file (2026-07-23), a
 // claude-family row landing there can be silently dropped, freezing every claude lane on
 // capacity_confirmation_required. These falsifiers prove the reader now merges Compound's OWN

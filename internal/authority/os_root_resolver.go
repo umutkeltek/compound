@@ -22,7 +22,7 @@ import (
 // below that root (the AbsorbedOS* sub-path constants below). No absorbed-OS
 // path is ever hardcoded into product source.
 const (
-	AbsorbedOSRegistryKey   = "umut_os"
+	AbsorbedOSRegistryKey   = "absorbed_os"
 	InstalledHarnessHomeKey = "installed_harness_home"
 
 	InstalledHarnessEntrypointRevisionPrefix = "installed-entrypoint://"
@@ -47,10 +47,10 @@ const (
 )
 
 // ResolveAbsorbedOSRoot resolves the operator-declared absorbed-OS root from
-// the promoted current_path claim on the umut_os path-authority entity.
+// the promoted current_path claim on the absorbed_os path-authority entity.
 // It returns found=false (never an error) whenever there is nothing to
 // resolve: no COMPOUND_HOME ledger yet, or no current_path claim for the
-// umut_os key. That is the public-clone skip case, not a fault — a fresh
+// absorbed_os key. That is the public-clone skip case, not a fault — a fresh
 // clone with no operator os-path-authority.yaml imported must resolve
 // found=false, not fail.
 func ResolveAbsorbedOSRoot(compoundHome string) (string, bool, error) {
@@ -370,7 +370,8 @@ func absorbedOSRootPresentOnDisk(root string) bool {
 // osAbsorptionAbsorbedOSSkipReason is the standard proof_detail every
 // OS-absorption wrapper proof reports when it declines to run because no
 // absorbed-OS root is configured on this machine (the public-clone case).
-const osAbsorptionAbsorbedOSSkipReason = "no absorbed-OS root declared (os-path-authority key 'umut_os' absent or path missing) — OS-absorption proofs skipped"
+const osAbsorptionAbsorbedOSSkipReason = "no absorbed-OS root declared (os-path-authority key '" +
+	AbsorbedOSRegistryKey + "' absent or path missing) — OS-absorption proofs skipped"
 
 // resolveAbsorbedOSRootForProof is the shared entry check every OS-absorption
 // wrapper proof (os_capability, os_skills, os_status) calls first: it

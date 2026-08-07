@@ -91,11 +91,11 @@ func TestImportPathAuthorityRejectsRelativeActiveBinding(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "path-authority.yaml")
 	body := strings.Join([]string{
 		"schema_version: " + PathAuthoritySchemaVersion,
-		"entity_ref: source:umut-os",
+		"entity_ref: source:example-os",
 		"entity_kind: repo",
 		"authoritative_source: direct-path-authority-test",
 		"path_bindings:",
-		"  - path: relative/umut-os",
+		"  - path: relative/example-os",
 		"    status: active",
 		"evidence_refs:",
 		"  - test:relative-active",

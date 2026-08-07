@@ -200,16 +200,24 @@ func TestInstalledHarnessEntrypointBindingRejectsFIFOWithoutBlocking(t *testing.
 	}
 }
 
-func TestAbsorbedOSRootReusesExistingUmutOSRegistryKey(t *testing.T) {
-	if AbsorbedOSRegistryKey != "umut_os" {
-		t.Fatalf("absorbed OS resolver must reuse canonical_roots.umut_os, got %q", AbsorbedOSRegistryKey)
+// TestAbsorbedOSRootUsesGenericRegistryKey pins the absorbed-OS seam to a
+// role-named registry key. The key is the only absorbed-OS identifier in
+// tracked source; WHICH control plane sits behind it is operator data, held
+// as a promoted current_path claim in the local COMPOUND_HOME ledger. A key
+// naming a specific operator or a specific control plane would leak private
+// identity into a public clone and is the regression this falsifies.
+func TestAbsorbedOSRootUsesGenericRegistryKey(t *testing.T) {
+	if AbsorbedOSRegistryKey != "absorbed_os" {
+		t.Fatalf("absorbed OS registry key must be role-named, got %q", AbsorbedOSRegistryKey)
 	}
-	if absorbedOSEntityRef != "source:umut-os" {
-		t.Fatalf("absorbed OS entity ref = %q, want source:umut-os", absorbedOSEntityRef)
+	// The ref must be DERIVED from the key, not a second literal that can
+	// drift away from it (that drift is how a stale personal name survives).
+	wantRef := "source:" + strings.ReplaceAll(AbsorbedOSRegistryKey, "_", "-")
+	if absorbedOSEntityRef != wantRef || absorbedOSEntityRef != "source:absorbed-os" {
+		t.Fatalf("absorbed OS entity ref = %q, want %q", absorbedOSEntityRef, wantRef)
 	}
-	if strings.Contains(osAbsorptionAbsorbedOSSkipReason, "absorbed_os") ||
-		!strings.Contains(osAbsorptionAbsorbedOSSkipReason, "umut_os") {
-		t.Fatalf("skip reason must name the existing registry key: %q", osAbsorptionAbsorbedOSSkipReason)
+	if !strings.Contains(osAbsorptionAbsorbedOSSkipReason, AbsorbedOSRegistryKey) {
+		t.Fatalf("skip reason must name the registry key: %q", osAbsorptionAbsorbedOSSkipReason)
 	}
 }
 
@@ -234,7 +242,7 @@ func TestResolveInstalledHarnessHomePropagatesDanglingLedgerSymlink(t *testing.T
 }
 
 // seedAbsorbedOSRegistry writes a minimal os-path-authority.yaml declaring
-// osRoot as the active umut_os canonical root and imports it into
+// osRoot as the active absorbed_os canonical root and imports it into
 // compoundHome's mem ledger exactly the way `compound authority
 // path-registry` does in production (RegisterEntity + Capture + Adjudicate
 // promote — see cmd/compound/main.go's "path-registry" handler). Every
