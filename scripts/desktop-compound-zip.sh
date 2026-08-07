@@ -18,10 +18,11 @@ Default mode is for a ChatGPT Pro source audit:
   - always excludes .claude/ (harness session state and agent worktrees —
     the worktrees are duplicate checkouts of this same tree and were the
     reason snapshots ballooned past the source folder)
-  - always excludes .codex/, .agents/, /state/, .pytest_cache/, .ua/ — same
-    rationale as .claude/ (harness/runtime or generated analysis state,
-    duplicate checkouts, not part of the audited source). Skipping these keeps
-    rsync from walking ~10 GB of agent worktrees on every run.
+  - always excludes .codex/, .agents/, /state/, .pytest_cache/, .ua/,
+    /.hermes/ — same rationale as .claude/ (harness/runtime or generated
+    analysis state, duplicate checkouts, not part of the audited source).
+    Skipping these keeps rsync from walking ~10 GB of agent worktrees on
+    every run.
   - excludes dependency/build artifacts: node_modules, .next
   - removes Finder/system junk: .DS_Store, __MACOSX
   - enforces a hard zip budget (--max-zip-mb, default 480): an oversized
@@ -249,8 +250,8 @@ $ahead_behind_line
    NOT repo state. Judge modes against this note, not the extracted tree.
 2. Push/branch state advances after snapshot; "ahead N" above reflects
    package time only.
-3. .claude/, .codex/, .agents/, state/, .pytest_cache/, and .ua/ are always
-   excluded because they contain harness/runtime state, caches, generated
+3. .claude/, .codex/, .agents/, state/, .pytest_cache/, .ua/, and .hermes/ are
+   always excluded because they contain harness/runtime state, caches, generated
    analysis output, or duplicate agent checkouts. Their absence is a packaging
    rule, not repo state.
 
@@ -269,6 +270,7 @@ rsync_args=(
   --exclude "/state/"
   --exclude "/.pytest_cache/"
   --exclude "/.ua/"
+  --exclude "/.hermes/"
   --filter "+ /memory/"
 )
 
