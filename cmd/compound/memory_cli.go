@@ -51,7 +51,7 @@ func memoryUsage(sub string) string {
 	case "position":
 		return "usage: compound memory position <entity> [--as-of N] [--topic topic-slug] [--json]"
 	case "engine-config":
-		return "usage: compound memory engine-config [--profile generic|memory-cli|gbrain|breadth] [--clear] [--json]"
+		return "usage: compound memory engine-config [--profile generic|memory-cli|breadth] [--clear] [--json]"
 	case "bakeoff":
 		return "usage: compound memory bakeoff <init [--queries file] [--force]|run --queries file [--engine bin] [--k N] [--json]>"
 	case "concur":

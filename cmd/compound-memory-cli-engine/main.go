@@ -193,12 +193,10 @@ func configFromEnv() (cliConfig, error) {
 			Embedder:      "memory-cli",
 		}
 	case "gbrain":
-		cfg = cliConfig{
-			Name:          "gbrain",
-			Bin:           "gbrain",
-			QueryTemplate: "query {query} --limit {limit} --detail {detail} --autocut false",
-			Embedder:      "gbrain-cli",
-		}
+		// Retired as a memory engine (2026-08-08): compound owns memory via the
+		// ledger + corpus lanes. A config that still names gbrain is a stale
+		// holdover and must fail loudly, never silently shell to a gbrain binary.
+		return cliConfig{}, fmt.Errorf("memory engine profile %q is retired; compound owns memory — use %q (ledger + corpus lanes)", "gbrain", "breadth")
 	default:
 		return cliConfig{}, fmt.Errorf("unknown COMPOUND_MEMORY_CLI_PROFILE %q", profile)
 	}

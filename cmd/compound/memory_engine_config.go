@@ -107,8 +107,15 @@ type memoryEngineConfigReport struct {
 func normalizeMemoryEngineProfile(profile string) (string, error) {
 	profile = strings.ToLower(strings.TrimSpace(profile))
 	switch profile {
-	case "", "generic", "memory-cli", "gbrain", "breadth":
+	case "", "generic", "memory-cli", "breadth":
 		return profile, nil
+	case "gbrain":
+		// gbrain is RETIRED as a memory engine (2026-08-08, operator-directed):
+		// compound owns the memory layer — ledger + corpus lanes — and the
+		// dormant COMPOUND_MEMORY_CLI_PROFILE=gbrain path that shelled to a
+		// gbrain binary must not be selectable. Reject it loudly instead of
+		// silently falling back, so a stale config cannot resurrect it.
+		return "", fmt.Errorf("memory engine profile %q is retired; compound owns memory — use %q (ledger + corpus lanes)", "gbrain", "breadth")
 	default:
 		return "", fmt.Errorf("unknown memory engine profile %q", profile)
 	}

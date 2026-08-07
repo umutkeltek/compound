@@ -11570,40 +11570,22 @@ func TestMemoryDoctorEngineProfileWiresReadOnlyCLISidecar(t *testing.T) {
 	}
 }
 
-func TestMemoryEngineConfigPersistsDefaultProfile(t *testing.T) {
+func TestMemoryEngineConfigGbrainProfileIsRetired(t *testing.T) {
+	// gbrain is retired as a memory engine (2026-08-08): compound owns memory
+	// via the ledger + corpus lanes. A config or flag naming gbrain must fail
+	// loudly and direct to breadth, never silently shell to a gbrain binary.
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
-
-	out := captureStdout(t, func() {
-		cmdMemory([]string{"engine-config", "--profile", "gbrain"})
-	})
-	if !strings.Contains(out, "- configured: true") || !strings.Contains(out, "- profile: gbrain") {
-		t.Fatalf("engine-config output =\n%s", out)
+	if _, err := writeMemoryEngineConfig(homePath, "gbrain"); err == nil {
+		t.Fatal("gbrain profile must fail closed, got no error")
+	} else if !strings.Contains(err.Error(), "retired") || !strings.Contains(err.Error(), "breadth") {
+		t.Fatalf("gbrain retirement error is not actionable: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(homePath, "config", "memory-engine.yaml"))
-	if err != nil {
-		t.Fatalf("read memory engine config: %v", err)
-	}
-	if !strings.Contains(string(data), "schema_version: compound.memory_engine_config.v0.1") ||
-		!strings.Contains(string(data), "profile: gbrain") {
-		t.Fatalf("memory engine config not persisted as expected:\n%s", data)
-	}
-
-	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
-	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "")
-	restore, err := configureMemoryEngineFromHome(homePath, "")
-	if err != nil {
-		t.Fatalf("configure from persisted profile: %v", err)
-	}
-	defer restore()
-	if got := os.Getenv("COMPOUND_MEMORY_CLI_PROFILE"); got != "gbrain" {
-		t.Fatalf("configured profile = %q, want gbrain", got)
-	}
-	if got := os.Getenv("COMPOUND_MEM_ENGINE_BIN"); strings.TrimSpace(got) == "" {
-		t.Fatal("persisted profile should configure a sidecar command")
+	if _, err := os.ReadFile(filepath.Join(homePath, "config", "memory-engine.yaml")); err == nil {
+		t.Fatal("gbrain profile must not persist a config")
 	}
 }
 
