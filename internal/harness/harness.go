@@ -175,14 +175,19 @@ func DefaultRegistry() Registry {
 			// binding, not a plan. SessionEnd uses the bounded adapter; Stop remains
 			// unregistered, same as claude_zai.
 			//
-			// Skills and MCP are off because this lane's launcher disables them.
+			// Skills and MCP were off here while the launcher disabled them. It no longer
+			// does: the wrapper launches `sb run claude --with minimax --workflows
+			// --mcp-all --skills`, and the profile carries both bindings on disk (a skills
+			// symlink and a generated MCP config). The floor stayed false after the
+			// launcher changed, so `capability-drift` reported an underclaim and routing
+			// withheld skill- and MCP-bearing work from a lane that could run it.
 			// Verify any change here with `compound harness capability-drift`: an over-claim
 			// fails; an under-claim against a genuinely installed binding is the signal that a
 			// future install-path change regressed and this floor needs lowering again.
 			Capabilities: Capabilities{
 				SessionStartContext: true, UserPromptContext: true,
 				PreToolUseBlock: true, PostToolUseEvent: true, SessionEndReceipt: true,
-				NativeSkills: false, MCP: false,
+				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{
 				"profile-local settings and history require separate hook installation",
@@ -226,9 +231,14 @@ func DefaultRegistry() Registry {
 		"claude_zai_full": {
 			Name:                 "claude_zai_full",
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
-			// Hook flags dropped to the observed floor: no hooks registered in this
-			// lane's settings. Skills and MCP stay true; its launcher keeps them.
+			// Hook flags once sat at zero because this lane's settings registered no
+			// hooks. They do now -- `compound harness capability-drift` observes all five
+			// (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, SessionEnd) in the
+			// profile settings -- so the floor rises to the installed binding. Skills and
+			// MCP stay true; its launcher keeps them.
 			Capabilities: Capabilities{
+				SessionStartContext: true, UserPromptContext: true,
+				PreToolUseBlock: true, PostToolUseEvent: true, SessionEndReceipt: true,
 				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{

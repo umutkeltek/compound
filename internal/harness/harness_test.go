@@ -342,7 +342,10 @@ func TestNewClaudeLaneHarnessesEnrolledWithExpectedLimitations(t *testing.T) {
 	}{
 		{"claude_minimax", "token-plan provider lane (prepaid); context price cliff near 512k tokens", true},
 		{"claude_qwen", "token-plan provider lane (prepaid); night-discount window 22:00-08:00 UTC+8 for execution burns", true},
-		{"claude_zai_full", "subscription window lane; busy-hour token weighting applies", false},
+		// Raised from false once `capability-drift` observed all five hooks in this
+		// lane's real settings. The owner resolves claude-zai-full ->
+		// _providers/zai-lane/settings.json, so the binding is installed, not planned.
+		{"claude_zai_full", "subscription window lane; busy-hour token weighting applies", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
