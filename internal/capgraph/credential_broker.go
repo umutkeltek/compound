@@ -286,6 +286,114 @@ func usageRequested(args []string) bool {
 	return false
 }
 
+// CredentialBindCommand attaches a CredentialHandle to an existing connection
+// surface in place — the operator enrollment door. Values never appear: the
+// handle is an address into whichever store already custodies the credential.
+//
+//	compound credential bind --surface <node-id> --ref <kind>://<locator> --custodian <owner> --env <NAME> [--broker <cmd>]
+//
+// The handle is validated at the write door (pointer-not-value), so a pasted key
+// is refused before it can reach the sidecar or orient.
+func CredentialBindCommand(args []string, stdout, stderr io.Writer) int {
+	if usageRequested(args) {
+		fmt.Fprintln(stderr, "usage: compound credential bind --surface <node-id> --ref <kind>://<locator> --custodian <owner> --env <NAME> [--broker <cmd>]")
+		return 2
+	}
+	nodeID := flagValue(args, "--surface")
+	h := CredentialHandle{
+		Ref:       flagValue(args, "--ref"),
+		Custodian: flagValue(args, "--custodian"),
+		EnvName:   flagValue(args, "--env"),
+		Broker:    flagValue(args, "--broker"),
+	}
+	if strings.TrimSpace(nodeID) == "" {
+		fmt.Fprintln(stderr, "error: credential bind: --surface <node-id> is required")
+		return 2
+	}
+	if err := ValidateCredentialHandle(h); err != nil {
+		fmt.Fprintln(stderr, "error: credential bind:", err)
+		return 2
+	}
+	homePath, err := homepkg.Resolve("")
+	if err != nil {
+		fmt.Fprintln(stderr, "error: credential bind:", err)
+		return 1
+	}
+	store, err := Open(homePath)
+	if err != nil {
+		fmt.Fprintln(stderr, "error: credential bind:", err)
+		return 1
+	}
+	changed, err := store.SetConnectionSurfaceCredential(nodeID, h)
+	if err != nil {
+		fmt.Fprintln(stderr, "error: credential bind:", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "bound %s -> %s (custodian %s)\n", nodeID, h.Ref, h.Custodian)
+	if !changed {
+		fmt.Fprintln(stdout, "unchanged: the surface already carries this exact handle")
+	}
+	return 0
+}
+
+// CredentialListCommand prints every connection surface that carries a
+// credential handle — addresses and env names only, never values — so "which
+// lane uses which credential" is answerable at a glance.
+func CredentialListCommand(args []string, stdout, stderr io.Writer) int {
+	if usageRequested(args) {
+		fmt.Fprintln(stderr, "usage: compound credential list [--json]")
+		return 2
+	}
+	homePath, err := homepkg.Resolve("")
+	if err != nil {
+		fmt.Fprintln(stderr, "error: credential list:", err)
+		return 1
+	}
+	store, err := Open(homePath)
+	if err != nil {
+		fmt.Fprintln(stderr, "error: credential list:", err)
+		return 1
+	}
+	surfaces, err := store.ConnectionSurfaces()
+	if err != nil {
+		fmt.Fprintln(stderr, "error: credential list:", err)
+		return 1
+	}
+	type row struct {
+		NodeID    string `json:"node_id"`
+		Ref       string `json:"credential_ref"`
+		Custodian string `json:"credential_custodian"`
+		EnvName   string `json:"credential_env_name"`
+	}
+	var rows []row
+	for _, cs := range surfaces {
+		if strings.TrimSpace(cs.CredentialHandle.Ref) == "" {
+			continue
+		}
+		rows = append(rows, row{NodeID: cs.NodeID, Ref: cs.CredentialHandle.Ref, Custodian: cs.CredentialHandle.Custodian, EnvName: cs.CredentialHandle.EnvName})
+	}
+	jsonOut := false
+	for _, a := range args {
+		if a == "--json" {
+			jsonOut = true
+		}
+	}
+	if jsonOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(map[string]any{"schema_version": CredentialUsageSchemaVersion, "surfaces": rows})
+		return 0
+	}
+	if len(rows) == 0 {
+		fmt.Fprintln(stdout, "no connection surfaces carry a credential handle")
+		return 0
+	}
+	for _, r := range rows {
+		fmt.Fprintf(stdout, "%s -> %s (custodian=%s, env=%s)\n", r.NodeID, r.Ref, r.Custodian, r.EnvName)
+	}
+	return 0
+}
+
 func flagValue(args []string, name string) string {
 	for i := 0; i < len(args); i++ {
 		if args[i] == name && i+1 < len(args) {

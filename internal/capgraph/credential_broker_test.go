@@ -250,3 +250,101 @@ func TestCredentialExecChildExitCodePropagates(t *testing.T) {
 		t.Fatalf("child exit code = %d, want 7", code)
 	}
 }
+
+func TestSetConnectionSurfaceCredentialBindsInPlace(t *testing.T) {
+	home := t.TempDir()
+	store, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddConnectionSurface(ConnectionSurface{NodeID: "tool:db", Endpoint: "postgres://example-db.internal"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Attach a handle to the existing surface.
+	h := CredentialHandle{Ref: "home-secret://db/app", Custodian: "compound", EnvName: "DB_PASSWORD"}
+	changed, err := store.SetConnectionSurfaceCredential("tool:db", h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected the handle to be added")
+	}
+	surfaces, err := store.ConnectionSurfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *ConnectionSurface
+	for i := range surfaces {
+		if surfaces[i].NodeID == "tool:db" {
+			got = &surfaces[i]
+		}
+	}
+	if got == nil {
+		t.Fatal("surface vanished after bind")
+	}
+	if got.CredentialHandle != h {
+		t.Fatalf("bound handle = %+v, want %+v", got.CredentialHandle, h)
+	}
+	if got.Endpoint != "postgres://example-db.internal" {
+		t.Fatalf("bind clobbered the surface endpoint: %q", got.Endpoint)
+	}
+
+	// Idempotent: same handle → no-op.
+	changed, err = store.SetConnectionSurfaceCredential("tool:db", h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Fatal("identical re-bind must be a no-op")
+	}
+}
+
+func TestSetConnectionSurfaceCredentialFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	store, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Unknown surface.
+	if _, err := store.SetConnectionSurfaceCredential("tool:nope", CredentialHandle{Ref: "home-secret://s/f", Custodian: "compound", EnvName: "K"}); err == nil {
+		t.Fatal("binding an unknown surface must fail closed")
+	}
+	// Value-shaped handle rejected at the write door.
+	if _, err := store.AddConnectionSurface(ConnectionSurface{NodeID: "tool:leaky"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetConnectionSurfaceCredential("tool:leaky", CredentialHandle{Ref: "home-secret://sk-" + strings.Repeat("a", 20), Custodian: "compound", EnvName: "K"}); err == nil {
+		t.Fatal("value-shaped handle must be refused at bind")
+	}
+}
+
+func TestCredentialListShowsOnlySurfacesWithHandles(t *testing.T) {
+	home := t.TempDir()
+	store, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddConnectionSurface(ConnectionSurface{NodeID: "tool:plain"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddConnectionSurface(ConnectionSurface{
+		NodeID:           "tool:db",
+		CredentialHandle: CredentialHandle{Ref: "home-secret://db/app", Custodian: "compound", EnvName: "DB_PASSWORD"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOUND_HOME", home)
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if code := CredentialListCommand([]string{}, &stdout, &stderr); code != 0 {
+		t.Fatalf("list exit=%d stderr=%s", code, stderr.String())
+	}
+	out := stdout.String()
+	if strings.Contains(out, "tool:plain") {
+		t.Fatalf("list showed a handle-less surface: %s", out)
+	}
+	if !strings.Contains(out, "tool:db") || !strings.Contains(out, "DB_PASSWORD") || !strings.Contains(out, "home-secret://db/app") {
+		t.Fatalf("list omitted the bound surface: %s", out)
+	}
+}

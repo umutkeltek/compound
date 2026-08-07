@@ -78,6 +78,43 @@ func (s *Store) AddConnectionSurface(cs ConnectionSurface) (bool, error) {
 	return true, nil
 }
 
+// SetConnectionSurfaceCredential attaches (or replaces) a CredentialHandle on an
+// existing connection surface in place, so a surface minted by an import door
+// can be bound to its custody without re-importing. The handle is validated at
+// the write door (pointer-not-value). Append-only last-write-wins on load, so
+// this appends a new record line carrying the updated handle.
+func (s *Store) SetConnectionSurfaceCredential(nodeID string, h CredentialHandle) (bool, error) {
+	if strings.TrimSpace(nodeID) == "" {
+		return false, fmt.Errorf("connection surface needs a node id")
+	}
+	if err := ValidateCredentialHandle(h); err != nil {
+		return false, fmt.Errorf("connection surface %s: %w", nodeID, err)
+	}
+	existing, err := s.loadConnectionSurfaces()
+	if err != nil {
+		return false, err
+	}
+	var current *ConnectionSurface
+	for i := range existing {
+		if existing[i].NodeID == nodeID {
+			current = &existing[i]
+			break
+		}
+	}
+	if current == nil {
+		return false, fmt.Errorf("no connection surface for node %q (create it first)", nodeID)
+	}
+	updated := *current
+	updated.CredentialHandle = h
+	if current.CredentialHandle == h {
+		return false, nil // already bound identically — no-op
+	}
+	if err := appendJSONL(s.connectionSurfacesLog(), &updated); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // loadConnectionSurfaces reads the sidecar, last-write-wins by NodeID with
 // insertion order preserved (mirrors loadNodes). A missing file is empty, never
 // an error, so read-only consumers on a home without the sidecar stay clean.
