@@ -1488,9 +1488,11 @@ func cmdHook(args []string) {
 // cmdHookInstall reconciles each compiled default posture without clobbering unrelated settings.
 // Interactive Codex and Claude Code observe actions without publishing native permission
 // decisions; isolated Claude-family profiles retain explicit mutation enforcement.
+// `--lane-file` derives install harness + hook roster from a lane manifest; `--roster`
+// selects the roster explicitly or overrides the manifest's declaration.
 func cmdHookInstall(args []string) {
 	if hasUsageFlag(args) {
-		fmt.Println("usage: compound hook install [--harness claude-code|claude-zai|claude-minimax|claude-qwen|codex|all] [--scope global|project] [--config-dir DIR] [--base DIR] [--binary PATH] [--check] [--json]")
+		fmt.Println("usage: compound hook install [--lane-file lane.yaml | --harness claude-code|claude-zai|claude-minimax|claude-qwen|codex|all] [--roster minimal|full] [--scope global|project] [--config-dir DIR] [--base DIR] [--binary PATH] [--check] [--json]")
 		return
 	}
 	check := hasFlag(args, "--check")
@@ -1505,19 +1507,9 @@ func cmdHookInstall(args []string) {
 		os.Exit(2)
 	}
 
-	var harnesses []string
-	switch h := strings.TrimSpace(valueFlag(args, "--harness")); h {
-	case "", "all":
-		harnesses = nil // every managed harness
-	case "claude-code", "claude-zai", "claude-minimax", "claude-qwen", "codex":
-		harnesses = []string{h}
-	default:
-		fmt.Fprintln(os.Stderr, "error: --harness must be claude-code, claude-zai, claude-minimax, claude-qwen, codex, or all")
-		os.Exit(2)
-	}
-	configDir := strings.TrimSpace(valueFlag(args, "--config-dir"))
-	if configDir != "" && (len(harnesses) != 1 || (harnesses[0] != "claude-code" && harnesses[0] != "claude-zai" && harnesses[0] != "claude-minimax" && harnesses[0] != "claude-qwen")) {
-		fmt.Fprintln(os.Stderr, "error: --config-dir requires one Claude profile harness: claude-code, claude-zai, claude-minimax, or claude-qwen")
+	req, err := hookplan.ResolveInstallRequest(strings.TrimSpace(valueFlag(args, "--lane-file")), strings.TrimSpace(valueFlag(args, "--harness")), strings.TrimSpace(valueFlag(args, "--roster")), strings.TrimSpace(valueFlag(args, "--config-dir")))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(2)
 	}
 
@@ -1557,23 +1549,24 @@ func cmdHookInstall(args []string) {
 	var rep hookplan.HookInstallReport
 	install := func() error {
 		var err error
-		rep, err = hookplan.InstallHooksWithConfigDirAndPublish(
+		rep, err = hookplan.InstallHooksWithRoster(
 			base,
 			binary,
 			scope,
-			harnesses,
-			configDir,
+			req.Harnesses,
+			req.ConfigDir,
+			req.AllowedEvents,
 			check,
 			publish,
 		)
 		return err
 	}
-	var err error
-	if check {
-		err = install()
-	} else {
-		err = withInstalledHookAuthorityLock(homePath, install)
-	}
+	err = func() error {
+		if check {
+			return install()
+		}
+		return withInstalledHookAuthorityLock(homePath, install)
+	}()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

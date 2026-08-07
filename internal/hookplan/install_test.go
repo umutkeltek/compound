@@ -1000,7 +1000,7 @@ func TestCodexInstallCollapsesAllDuplicateLegacyPreToolUseHooks(t *testing.T) {
 }
 
 func TestIsolatedBlockingPreToolUseCommandMakesEnforcementExplicit(t *testing.T) {
-	bindings, _, err := compiledManagedHookBindings("/bin/compound", claudeZaiHarness, "global")
+	bindings, _, err := compiledManagedHookBindings("/bin/compound", claudeZaiHarness, "global", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1052,7 +1052,7 @@ func TestInstallerAcceptsOnlyExplicitInteractiveObservationalDefaults(t *testing
 func TestClaudeZaiInstallBindingsComeFromSemanticPosture(t *testing.T) {
 	t.Parallel()
 
-	bindings, compiled, err := compiledManagedHookBindings("/fixture/compound", claudeZaiHarness, "global")
+	bindings, compiled, err := compiledManagedHookBindings("/fixture/compound", claudeZaiHarness, "global", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1077,7 +1077,7 @@ func TestClaudeZaiInstallBindingsComeFromSemanticPosture(t *testing.T) {
 func TestClaudeMinimaxInstallBindingsComeFromSemanticPosture(t *testing.T) {
 	t.Parallel()
 
-	bindings, compiled, err := compiledManagedHookBindings("/fixture/compound", claudeMinimaxHarness, "global")
+	bindings, compiled, err := compiledManagedHookBindings("/fixture/compound", claudeMinimaxHarness, "global", nil)
 	if err != nil {
 		t.Fatalf("compiled posture for claude-minimax: %v", err)
 	}

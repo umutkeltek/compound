@@ -9,6 +9,7 @@ import (
 
 	"compound/internal/actuator"
 	"compound/internal/harness"
+	"compound/internal/hookplan"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
@@ -200,6 +201,12 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 			workAdvanceExecuteExit(1)
 		}
 		runInput = resolved
+	}
+	// A hook-governed lane must run the full roster for governed spawn; refuse
+	// (never install) before any state change (hookplan.GovernedFullRosterGate).
+	if gate := hookplan.GovernedFullRosterGate(harnessName); gate != nil {
+		gateRefusal{Command: gate.Command, Gate: gate.Gate, Refused: gate.Refused, Tried: gate.Tried, DoThis: gate.DoThis, Prevents: gate.Prevents}.writeTo(os.Stderr)
+		workAdvanceExecuteExit(1)
 	}
 	note := valueFlag(rest, "--note")
 	if note == "" {

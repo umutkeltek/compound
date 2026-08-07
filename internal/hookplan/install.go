@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"compound/internal/harness"
+	"compound/internal/lanemanifest"
 )
 
 // install.go is the WRITER half of the hook lifecycle. hookplan already models desired vs observed
@@ -90,6 +91,31 @@ func ClaudeMinimaxProfileDir(baseDir string) string {
 // adapters/_lib/lanes.json.
 func ClaudeQwenProfileDir(baseDir string) string {
 	return filepath.Join(baseDir, ".config", "switchback", "claude", "_providers", "qwen")
+}
+
+// LaneHookSettingsPath returns the settings.json path compound installs a
+// governed claude lane's hooks into, under baseDir, or ("", false) if the
+// harness is not a hook-governed claude lane. It is the one place that names a
+// lane's hook settings path (the same convention ConfigRel encodes for install,
+// plus the zai-full profile whose profile dir is _providers/zai-lane). Governed
+// spawn reads the observed roster from this path; the install path writes it.
+func LaneHookSettingsPath(baseDir, harnessName string) (string, bool) {
+	var profileDir string
+	switch harnessName {
+	case "claude-minimax", "claude_minimax":
+		profileDir = ClaudeMinimaxProfileDir(baseDir)
+	case "claude-qwen", "claude_qwen":
+		profileDir = ClaudeQwenProfileDir(baseDir)
+	case "claude-zai", "claude_zai":
+		profileDir = ClaudeZaiProfileDir(baseDir)
+	case "claude_zai_full":
+		// The full zai lane runs a separate subscription profile, not the
+		// zai-direct profile the base zai lane shares with the direct tap.
+		profileDir = filepath.Join(baseDir, ".config", "switchback", "claude", "_providers", "zai-lane")
+	default:
+		return "", false
+	}
+	return filepath.Join(profileDir, "settings.json"), true
 }
 
 // HookCommand is the exact observation-only command a harness runs for Compound PreToolUse.
@@ -192,6 +218,53 @@ func InstallHooksWithConfigDirAndPublish(
 	check bool,
 	publish func(HookInstallReport) error,
 ) (HookInstallReport, error) {
+	return installHooksImpl(baseDir, binaryPath, scope, harnesses, configDir, nil, check, publish)
+}
+
+// InstallHooksForLane installs the roster a lane manifest entitles into the
+// lane's derived install harness. It is the compound-owned projection of the
+// manifest's hooks.roster field. The harness set is exactly the derived install
+// harness, so the config-dir override keeps its single-profile meaning.
+func InstallHooksForLane(
+	baseDir, binaryPath, scope, installHarness, configDir string,
+	roster lanemanifest.Roster,
+	check bool,
+	publish func(HookInstallReport) error,
+) (HookInstallReport, error) {
+	allowedEvents, err := RosterEventSet(roster)
+	if err != nil {
+		return HookInstallReport{}, err
+	}
+	return InstallHooksWithRoster(baseDir, binaryPath, scope, []string{installHarness}, configDir, allowedEvents, check, publish)
+}
+
+// InstallHooksWithRoster is the roster-aware form of InstallHooksWithConfigDirAndPublish.
+// A nil allowedEvents installs every compiled binding (the pre-roster default); a roster
+// narrows the installed native events to the roster's set. `compound hook install
+// --lane-file` and `--roster` route through this so one install path serves both the
+// manifest-driven and the explicit-roster selection.
+func InstallHooksWithRoster(
+	baseDir, binaryPath, scope string,
+	harnesses []string,
+	configDir string,
+	allowedEvents map[string]bool,
+	check bool,
+	publish func(HookInstallReport) error,
+) (HookInstallReport, error) {
+	return installHooksImpl(baseDir, binaryPath, scope, harnesses, configDir, allowedEvents, check, publish)
+}
+
+// installHooksImpl is the transaction body shared by every install entry point.
+// A nil allowedEvents installs every compiled binding (the pre-roster default);
+// a roster narrows the installed native events.
+func installHooksImpl(
+	baseDir, binaryPath, scope string,
+	harnesses []string,
+	configDir string,
+	allowedEvents map[string]bool,
+	check bool,
+	publish func(HookInstallReport) error,
+) (HookInstallReport, error) {
 	if strings.TrimSpace(baseDir) == "" {
 		return HookInstallReport{}, fmt.Errorf("base dir required")
 	}
@@ -220,7 +293,7 @@ func InstallHooksWithConfigDirAndPublish(
 		if strings.TrimSpace(configDir) != "" && (harness == "claude-code" || harness == claudeZaiHarness || harness == claudeMinimaxHarness || harness == claudeQwenHarness) {
 			configPath = filepath.Join(configDir, "settings.json")
 		}
-		bindings, _, err := compiledManagedHookBindings(binaryPath, harness, scope)
+		bindings, _, err := compiledManagedHookBindings(binaryPath, harness, scope, allowedEvents)
 		if err != nil {
 			return report, fmt.Errorf("%s: %w", harness, err)
 		}
@@ -312,6 +385,7 @@ func compiledManagedHookBindings(
 	binaryPath string,
 	harnessName string,
 	configScope string,
+	allowedEvents map[string]bool,
 ) ([]desiredHookBinding, CompiledPosture, error) {
 	registry := harness.DefaultRegistry()
 	if harnessName == claudeZaiHarness || harnessName == claudeMinimaxHarness || harnessName == claudeQwenHarness {
@@ -327,11 +401,14 @@ func compiledManagedHookBindings(
 	if err != nil {
 		return nil, CompiledPosture{}, err
 	}
+	// Validation reads the FULL posture so the mutation-readiness and
+	// observational-default contracts are judged on semantics, never on the
+	// narrowed roster. Only the installed native bindings are filtered.
 	if err := validateInstallableDefaultPosture(harnessName, compiled); err != nil {
 		return nil, compiled, err
 	}
 	bindings := make([]desiredHookBinding, 0, len(compiled.HookPlan.Bindings))
-	for _, binding := range compiled.HookPlan.Bindings {
+	for _, binding := range selectBindings(compiled.HookPlan.Bindings, allowedEvents) {
 		command := HookCommandForEvent(binaryPath, harnessName, binding.Event)
 		if binding.Blocking {
 			command += " --enforce"

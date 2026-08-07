@@ -101,6 +101,16 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "read-only launchd+crontab projection surface (list/show/doctor); no mutation door; owns no authority object",
 		Consumer: "cmd/compound command-registry dispatch (`compound schedule ...`) via schedule.Run",
 	},
+	// lanemanifest is the one declarative unit that names a harness lane. Compound's
+	// consumption is the hook projection: `compound hook install --lane-file` derives
+	// the install harness and hook roster from it, and governed spawn refuses a lane
+	// whose observed roster is not full. It declares and never mutates — hook and
+	// harness configs retain authority, so it is evidence, not enforcement.
+	"organ:lanemanifest": {
+		Class:    MintEvidence,
+		Purpose:  "declarative lane-manifest unit (harness + model + capture + route + hooks.roster) that switchback and compound both consume; compound derives the install harness and hook roster from it and governed spawn refuses lanes whose observed roster is not full",
+		Consumer: "cmd/compound cmdHookInstall --lane-file + GovernedFullRosterGate (work advance --execute), internal/hookplan InstallHooksForLane",
+	},
 	// browser is the macOS headless/automation-chrome observation organ; its only
 	// mutation is the B-scope `doctor --fix` orphan-idle swiftshader reap with
 	// per-target confirmation, never a write to compound authority.

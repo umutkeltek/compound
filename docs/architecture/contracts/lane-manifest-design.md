@@ -1,19 +1,52 @@
-# Lane Manifest — design brief (switchback × compound authority)
+# Lane Manifest — design brief (launch owner × compound authority)
 
-Status: **proposal — not implemented**. Author: 2026-08-07 session. Consumer: compound
-governed adapters + switchback launch-profile generator. This brief maps the current surface,
-proposes one declarative unit (the **lane manifest**), and defines the authority split. It is
-a starting hypothesis; implement it only via a vertical slice that proves the path.
+Status: **proposal — compound-only slice implemented (2026-08-07)**. Author: 2026-08-07
+session. Consumer: compound governed adapters + the launch owner's profile generator. This
+brief maps the current surface, proposes one declarative unit (the **lane manifest**), and
+defines the authority split. The compound-owned half of the slice is landed: the manifest
+schema (`internal/lanemanifest`), `compound hook install --lane-file` deriving harness +
+roster, and the governed-spawn full-roster gate. The launch-owner half (manifest as launch
+authority, `sb profile plan/apply` consuming it) remains a starting hypothesis to prove only
+via a future vertical slice.
+
+## 6b. Landed compound slice (2026-08-07)
+
+The compound-only half of §6, implemented end to end:
+
+1. **`internal/lanemanifest`** — the declarative unit. `Parse` (YAML/JSON),
+   `Validate` (harness family, roster, schema version), `InstallHarness()`
+   (lane → install harness via the lanes.json `hook_harness` convention).
+   Reference manifest: `fixtures/lanemanifest/minimax.lane.yaml`.
+2. **Roster selection** — `hookplan.RosterEventSet`: `minimal` = {SessionStart,
+   PreToolUse}; `full` = {SessionStart, UserPromptSubmit, PreToolUse,
+   PostToolUse, SessionEnd}. Bindings are narrowed to the roster; semantic
+   posture validation reads the full posture. `InstallHooksForLane` + a
+   roster-aware `InstallHooksWithRoster`; the pre-roster signature is unchanged
+   (default full).
+3. **`compound hook install --lane-file <manifest> [--roster minimal|full]
+   [--check]`** — derives the install harness and roster from the manifest;
+   `--roster` overrides. The default flips: `minimal` needs zero ceremony, `full`
+   is the governed selection.
+4. **Governed spawn gate** — `work advance --execute` refuses a hook-governed
+   lane whose observed settings do not cover the full roster (`gateRefusal`,
+   fail-closed, read-only; never installs on spawn). Lanes without an
+   observable profile are governed by tuple preflight + permission mode instead.
+5. **Two-writers regression** — the NO-CLOBBER reconciler already preserves
+   every non-compound settings key; tests now pin that contract for the
+   launch-owner-regen → drift → re-apply loop.
+
+The launch-owner half (manifest as the launch/capture/route authority) is unchanged
+and still requires the cross-repo slice.
 
 ## 1. Problem
 
 Setting up a harness lane today is a many-piece ceremony:
 
-- switchback: launch profile (`sb profile apply` → wrapper, `settings.json`,
+- launch owner: launch profile (`sb profile apply` → wrapper, `settings.json`,
   `harness_settings`, capture policy, tap/Headroom bindings).
 - compound: per-harness hook roster (`compound hook install --harness …`), isolated
   `--config-dir` profiles per lane, `install-lane.sh` glue mapping lane → hook harness,
-  plus hand-written settings blocks that switchback's conformance regen can revert
+  plus hand-written settings blocks that the launch owner's conformance regen can revert
   (`find_bc58676341a9`).
 
 Consequences: every new harness × lane combination re-derives the ceremony; hook fixtures
@@ -25,20 +58,20 @@ but nothing expresses "this lane is the same thing as that endpoint" in one plac
 
 | Concern | Owner today | Artifacts |
 |---|---|---|
-| Provider lane (model, upstream) | switchback provider registry | `provider-registry.json`, routes |
-| Launch profile (harness × lane × capture) | switchback | wrapper, `settings.json`, capture policy, tap/Headroom |
+| Provider lane (model, upstream) | launch owner provider registry | `provider-registry.json`, routes |
+| Launch profile (harness × lane × capture) | launch owner | wrapper, `settings.json`, capture policy, tap/Headroom |
 | Harness authority hooks (governance) | compound | `hook install` rosters per harness type |
 | Lane identity / executor roster | compound | `compound executors`, lease/attempt state |
-| Lane-as-API | switchback gateway | OpenAI-compatible endpoints, taps (`:1877x`) |
+| Lane-as-API | launch-owner gateway | OpenAI-compatible endpoints, taps (`:1877x`) |
 
-Two authorities, one seam: compound **consumes** switchback's published projections
-(profiles, account projections, lane conformance); switchback never reads compound state.
-The seam today is implicit (paths, env, wrapper ids) — no schema names it.
+Two authorities, one seam: compound **consumes** the launch owner's published projections
+(profiles, account projections, lane conformance); the launch owner never reads compound
+state. The seam today is implicit (paths, env, wrapper ids) — no schema names it.
 
 ## 3. Target model: one manifest, two projections
 
-**Lane manifest** (`compound://registries/lane-manifest` served, tracked source in
-switchback repo as the authority, compound consumes):
+**Lane manifest** (tracked source in the launch owner's repo as the authority; compound
+consumes it via `--lane-file`):
 
 ```yaml
 lane: minimax
@@ -56,7 +89,7 @@ hooks:
 
 Two projections are generated from one manifest, by their owner:
 
-- **switchback** owns: wrapper + `harness_settings` + capture policy + tap/Headroom
+- **launch owner** owns: wrapper + `harness_settings` + capture policy + tap/Headroom
   binding + gateway routes. The `api:` block maps directly onto existing route targets —
   "lane as API" stops being a separate config.
 - **compound** owns: adapter wiring (exact `model:` on every Agent/Workflow spawn),
@@ -82,40 +115,40 @@ One manifest expresses all three consumption modes:
   thing as that endpoint".
 
 Authority split (unchanged doctrine, now explicit):
-- switchback: meaning-neutral launch/capture/route truth (it owns the wire).
+- launch owner: meaning-neutral launch/capture/route truth (it owns the wire).
 - compound: governance truth (it owns what harnesses may do, and the receipts).
-- compound never mutates switchback state; switchback never reads compound state.
+- compound never mutates launch-owner state; the launch owner never reads compound state.
 
 ## 5. Generation rules
 
 1. `sb profile plan --lane <manifest>` validates the manifest against provider registry +
    account projections; `sb profile apply` emits the artifacts.
-2. `compound hook install --lane <manifest>` derives harness + roster from the manifest;
-   `--config-dir` gating stays (isolated profiles per lane).
+2. `compound hook install --lane-file <manifest>` derives harness + roster from the
+   manifest; `--config-dir` gating stays (isolated profiles per lane).
 3. A manifest change is a **binding**: re-apply + first real launch after apply is the proof
    (launch args are a binding — existing doctrine, unchanged).
-4. Retirement: the manifest registry replaces hand-written `install-lane.sh` glue and the
+4. Retirement: the manifest replaces hand-written `install-lane.sh` glue and the
    implicit path coupling; retire those once the slice proves the consumer path.
 
 ## 6. Slice proposal (when approved)
 
 Vertical slice: **claude-minimax as both harness and API from one manifest.**
 
-1. Manifest tracked in switchback repo; `sb profile plan`/`apply` consumes it (or a
+1. Manifest tracked in the launch owner's repo; `sb profile plan`/`apply` consumes it (or a
    `--lane-file` passthrough — decide in slice).
-2. Compound `hook install --lane-file` derives the minimax roster (claude-zai hook harness
-   per current mapping) — `minimal` default, `full` on governed spawn.
+2. Compound `hook install --lane-file` derives the minimax roster (claude-minimax hook
+   harness per the lanes.json mapping) — `minimal` default, `full` on governed spawn.
 3. Prove: `claude-minimax --version` works from a fresh profile; a governed
    `compound work advance --execute` on the minimax lane passes readiness with `full`
    roster; the same lane serves an API call through its tap route.
 4. Tests probe depth: manifest drift (provider model removed from registry), roster
    mismatch (lane says minimal but governed spawn requires full), and the two-writers
-   regression (switchback regen must not clobber compound's applied settings).
+   regression (launch-owner regen must not clobber compound's applied settings).
 
 ## 7. Open questions
 
-1. Manifest source of truth location: switchback repo (owner of launch) vs compound
-   (owner of governance) — recommendation: switchback repo, compound consumes with
+1. Manifest source of truth location: the launch owner's repo (owner of launch) vs compound
+   (owner of governance) — recommendation: the launch owner's repo, compound consumes with
    authority_ref + source_revision, mirroring existing projection consumption.
 2. `permission` in the manifest vs compound-side policy only — recommendation: manifest
    declares default; compound policy can override per work class (governed spawns already

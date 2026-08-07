@@ -53,41 +53,25 @@ type ObservedCapabilities struct {
 // manufacturing a fact.
 func ObserveLaneCapabilities(settingsPath, wrapperPath string) (ObservedCapabilities, error) {
 	var out ObservedCapabilities
-	raw, err := os.ReadFile(settingsPath)
+	events, err := ObserveRegisteredHookEvents(settingsPath)
 	if err != nil {
-		return out, fmt.Errorf("observe capabilities: read harness settings: %w", err)
+		return out, err
 	}
-	var settings struct {
-		Hooks map[string]json.RawMessage `json:"hooks"`
-	}
-	if err := json.Unmarshal(raw, &settings); err != nil {
-		return out, fmt.Errorf("observe capabilities: parse harness settings: %w", err)
-	}
-	if len(settings.Hooks) == 0 {
+	if len(events) == 0 {
 		out.Evidence = append(out.Evidence, "settings declares no hooks key: no hook capability is observable")
 	}
-	registered := make([]string, 0, len(settings.Hooks))
-	for event := range settings.Hooks {
-		if _, known := hookEventCapability[event]; known {
-			registered = append(registered, event)
-		}
+	registered := make([]string, 0, len(events))
+	for event := range events {
+		registered = append(registered, event)
 	}
 	sort.Strings(registered)
 	for _, event := range registered {
-		switch event {
-		case "SessionStart":
-			out.Capabilities.SessionStartContext = true
-		case "UserPromptSubmit":
-			out.Capabilities.UserPromptContext = true
-		case "PreToolUse":
-			out.Capabilities.PreToolUseBlock = true
-		case "PostToolUse":
-			out.Capabilities.PostToolUseEvent = true
-		case "Stop":
-			out.Capabilities.StopFeedback = true
-		case "SessionEnd":
-			out.Capabilities.SessionEndReceipt = true
-		}
+		out.Capabilities.SessionStartContext = out.Capabilities.SessionStartContext || event == "SessionStart"
+		out.Capabilities.UserPromptContext = out.Capabilities.UserPromptContext || event == "UserPromptSubmit"
+		out.Capabilities.PreToolUseBlock = out.Capabilities.PreToolUseBlock || event == "PreToolUse"
+		out.Capabilities.PostToolUseEvent = out.Capabilities.PostToolUseEvent || event == "PostToolUse"
+		out.Capabilities.StopFeedback = out.Capabilities.StopFeedback || event == "Stop"
+		out.Capabilities.SessionEndReceipt = out.Capabilities.SessionEndReceipt || event == "SessionEnd"
 	}
 	if len(registered) > 0 {
 		out.Evidence = append(out.Evidence, "settings registers hooks: "+strings.Join(registered, ","))
@@ -111,6 +95,30 @@ func ObserveLaneCapabilities(settingsPath, wrapperPath string) (ObservedCapabili
 		out.Evidence = append(out.Evidence, "launch wrapper passes --no-mcp")
 	}
 	return out, nil
+}
+
+// ObserveRegisteredHookEvents returns the set of compound-mapped hook events a
+// harness settings file registers. A missing or unreadable settings path is an
+// error (unknown, never a confident negative); an absent hooks key is an empty
+// set. The governed spawn roster gate reads the observed roster from here.
+func ObserveRegisteredHookEvents(settingsPath string) (map[string]bool, error) {
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return nil, fmt.Errorf("observe capabilities: read harness settings: %w", err)
+	}
+	var settings struct {
+		Hooks map[string]json.RawMessage `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return nil, fmt.Errorf("observe capabilities: parse harness settings: %w", err)
+	}
+	registered := make(map[string]bool, len(settings.Hooks))
+	for event := range settings.Hooks {
+		if _, known := hookEventCapability[event]; known {
+			registered[event] = true
+		}
+	}
+	return registered, nil
 }
 
 // CapabilityMismatch is one declared capability the observation contradicts.
