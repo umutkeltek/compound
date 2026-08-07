@@ -22,16 +22,29 @@ type HookResponse = {
 
 export type HookRunner = (name: CompoundHookName, input: HookInput) => Promise<string>
 
-const DEFAULT_TIMEOUT_MS = 2_000
+// Budgets are per hook because the hooks have different jobs, and one shared
+// budget silently defeated the most important of them. Measured on a real
+// control-plane repo: `compound hook session-start --live` takes 10-13s (it
+// builds the whole ContextPack), so a single 2s budget made session-start time
+// out and fail open on EVERY start — opencode ran with zero Compound context
+// while the plugin, the hook, and every status surface all reported success.
+// Session start happens once and its entire purpose is to block until context
+// exists, so it gets room; the per-turn and per-tool hooks stay tight so a slow
+// control plane can never stall a turn.
+const DEFAULT_TIMEOUT_MS: Record<CompoundHookName, number> = {
+  "session-start": 30_000,
+  "user-prompt-submit": 10_000,
+  "post-tool-use": 2_000,
+}
 
 function oneLine(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error)
   return text.replace(/\s+/g, " ").trim() || "unknown error"
 }
 
-function timeoutMS(): number {
+export function timeoutMS(name: CompoundHookName): number {
   const configured = Number.parseInt(process.env.COMPOUND_OPENCODE_HOOK_TIMEOUT_MS ?? "", 10)
-  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_TIMEOUT_MS
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_TIMEOUT_MS[name]
 }
 
 function compoundBinary(): string {
@@ -49,10 +62,11 @@ const runCompoundHook: HookRunner = async (name, input) => {
   )
 
   let timedOut = false
+  const budgetMS = timeoutMS(name)
   const timer = setTimeout(() => {
     timedOut = true
     proc.kill()
-  }, timeoutMS())
+  }, budgetMS)
 
   const [exitCode, stdout, stderr] = await Promise.all([
     proc.exited,
@@ -60,7 +74,7 @@ const runCompoundHook: HookRunner = async (name, input) => {
     new Response(proc.stderr).text(),
   ]).finally(() => clearTimeout(timer))
 
-  if (timedOut) throw new Error("timed out after " + timeoutMS() + "ms")
+  if (timedOut) throw new Error("timed out after " + budgetMS + "ms")
   if (exitCode !== 0) throw new Error("exit " + exitCode + ": " + oneLine(stderr))
 
   let response: HookResponse
