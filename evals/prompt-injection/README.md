@@ -28,8 +28,8 @@ The release gate has two independent axes:
 | Weekly | AgentDojo pinned suite | Utility and injection task success with tool use | Trend, then gate after adapter |
 | Release | Full matrix plus live canaries | Installed hooks, schemas, permission invariants and model revisions | Required |
 
-Prompt Guard 2 and LlamaFirewall run shadow-only until measured on Umut's own
-traffic. Their output may quarantine or hold, but a benign score cannot relax
+Prompt Guard 2 and LlamaFirewall run shadow-only until measured on the
+operator's own traffic. Their output may quarantine or hold, but a benign score cannot relax
 source, sink, schema, destination, policy, or standing-grant checks.
 
 ## Required release thresholds
