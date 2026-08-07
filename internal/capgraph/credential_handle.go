@@ -2,6 +2,7 @@ package capgraph
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -146,11 +147,22 @@ func ValidateCredentialHandle(h CredentialHandle) error {
 	}
 	// The opaque-run check exempts broker argv, which may legitimately carry a
 	// long encoded flag, and is not persisted as an address.
-	for label, field := range map[string]string{
-		"credential_ref": ref, "credential_custodian": custodian, "credential_env_name": env,
-	} {
-		if longOpaqueRun.MatchString(field) {
-			return fmt.Errorf("%s contains a 40+ character opaque run, which is the shape of a secret rather than a locator", label)
+	//
+	// It also exempts a locator that LOOKS like a filesystem path (contains a
+	// separator) for the path-shaped kinds (env-file, home-secret): a real path
+	// on macOS/Windows legitimately combines alphanumerics with '/' into a 40+
+	// run (/var/folders/..., the operator home). Rejecting those rejects every
+	// real dotenv and custody path. A path-shaped locator with NO separator
+	// (home-secret://QWERTYuiop…) is exactly the pasted blob the rule exists to
+	// catch, so it stays refused. The vendor-prefixed secretShapedPattern above
+	// is the tripwire that catches a pasted key in any kind.
+	if pathShapedKind(kindName) && !strings.Contains(locator, "/") && !strings.Contains(locator, string(filepath.Separator)) {
+		for label, field := range map[string]string{
+			"credential_ref": ref, "credential_custodian": custodian, "credential_env_name": env,
+		} {
+			if longOpaqueRun.MatchString(field) {
+				return fmt.Errorf("%s contains a 40+ character opaque run, which is the shape of a secret rather than a locator", label)
+			}
 		}
 	}
 
@@ -174,6 +186,18 @@ func sortedKindNames() []string {
 		}
 	}
 	return names
+}
+
+// pathShapedKind reports whether a kind's locator is a filesystem path (so the
+// opaque-run tripwire does not apply). Paths legitimately contain 40+ alnum+slash
+// runs on real machines; the vendor-prefixed tripwire still catches pasted keys.
+func pathShapedKind(kind string) bool {
+	switch kind {
+	case "env-file", "home-secret":
+		return true
+	default:
+		return false
+	}
 }
 
 // CredentialValueTransits reports whether using this handle causes the secret's
