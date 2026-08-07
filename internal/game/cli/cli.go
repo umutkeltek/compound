@@ -64,6 +64,10 @@ func Run(args []string) {
 		code = cmdGameCompanies(args[1:])
 	case "trending":
 		code = cmdGameTrending(args[1:])
+	case "scout":
+		code = cmdGameScout(args[1:])
+	case "draft":
+		code = cmdGameDraft(args[1:])
 	case "unity":
 		code = cmdGameUnity(args[1:])
 	case "release":
