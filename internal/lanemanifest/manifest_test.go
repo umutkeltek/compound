@@ -1,6 +1,7 @@
 package lanemanifest
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,5 +151,59 @@ func TestTrackedManifestFixtureStaysValid(t *testing.T) {
 	}
 	if installHarness != "claude-minimax" {
 		t.Fatalf("tracked fixture install harness = %q, want claude-minimax", installHarness)
+	}
+}
+
+// TestLaneHookHarnessMirrorsLanesJSON enforces the parity contract the
+// laneHookHarness map documents: it "mirrors the hook_harness field in
+// adapters/_lib/lanes.json". Without this test, the two could drift — lanes.json
+// gains or changes a managed hook profile, or laneHookHarness gains an orphan —
+// and hook install would derive a different harness than adapter install. Every
+// non-empty hook_harness lane in lanes.json must be present with the same value;
+// every empty-hook_harness lane must be absent (native/codex-native resolve to
+// an error, never a default profile); and laneHookHarness must hold no lane
+// lanes.json does not publish.
+func TestLaneHookHarnessMirrorsLanesJSON(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "adapters", "_lib", "lanes.json"))
+	if err != nil {
+		t.Fatalf("read lanes.json: %v", err)
+	}
+	var doc struct {
+		Lanes []struct {
+			ID          string `json:"id"`
+			HookHarness string `json:"hook_harness"`
+		} `json:"lanes"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("parse lanes.json: %v", err)
+	}
+	if len(doc.Lanes) == 0 {
+		t.Fatal("lanes.json publishes no lanes")
+	}
+
+	published := map[string]string{}
+	for _, lane := range doc.Lanes {
+		if lane.ID == "" {
+			t.Fatal("lanes.json has a lane with no id")
+		}
+		published[lane.ID] = lane.HookHarness
+		if lane.HookHarness == "" {
+			if _, ok := laneHookHarness[lane.ID]; ok {
+				t.Fatalf("lane %q has empty hook_harness but IS present in laneHookHarness; it must resolve to an error", lane.ID)
+			}
+			continue
+		}
+		got, ok := laneHookHarness[lane.ID]
+		if !ok {
+			t.Fatalf("lane %q publishes hook_harness %q but laneHookHarness has no entry", lane.ID, lane.HookHarness)
+		}
+		if got != lane.HookHarness {
+			t.Fatalf("lane %q: laneHookHarness = %q, lanes.json = %q — the two must agree", lane.ID, got, lane.HookHarness)
+		}
+	}
+	for lane := range laneHookHarness {
+		if _, ok := published[lane]; !ok {
+			t.Fatalf("laneHookHarness has orphan lane %q not published in lanes.json", lane)
+		}
 	}
 }
