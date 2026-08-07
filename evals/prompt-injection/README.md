@@ -29,8 +29,9 @@ The release gate has two independent axes:
 | Release | Full matrix plus live canaries | Installed hooks, schemas, permission invariants and model revisions | Required |
 
 Prompt Guard 2 and LlamaFirewall run shadow-only until measured on the
-operator's own traffic. Their output may quarantine or hold, but a benign score cannot relax
-source, sink, schema, destination, policy, or standing-grant checks.
+operator's own traffic. Their output may quarantine or hold, but a benign
+score cannot relax source, sink, schema, destination, policy, or
+standing-grant checks.
 
 ## Required release thresholds
 

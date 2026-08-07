@@ -72,7 +72,7 @@ func TestTransitionBranchRejectsProseOwner(t *testing.T) {
 			t.Fatalf("expected validation error for owner %q, got nil", bad)
 		}
 	}
-	for _, good := range []string{"claude:orchestrator", "operator:umut", "workbench"} {
+	for _, good := range []string{"claude:orchestrator", "operator:example", "workbench"} {
 		tr.OpensBranches = []BranchRef{{Branch: "branch-lifecycle", Owner: good, Kind: "opens"}}
 		if err := tr.Validate(); err != nil {
 			t.Fatalf("owner %q should validate: %v", good, err)

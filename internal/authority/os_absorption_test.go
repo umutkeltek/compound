@@ -351,7 +351,7 @@ func TestOSAbsorptionOSCapabilityProofBindsCompoundOnlyProjection(t *testing.T) 
 // public-clone falsifier for this wrapper proof: the fixture installs real
 // os/bun/compound shims and entrypoint files on disk (so a bug that ignores
 // the resolver and falls back to a hardcoded path would still find files to
-// read), but never seeds the umut_os path-authority registry into mem.
+// read), but never seeds the absorbed_os path-authority registry into mem.
 // The proof must skip — never fail, never fabricate an ok — and must not
 // move AutoProofCount or FailedAutoProofCount.
 func TestOSAbsorptionOSCapabilityProofSkipsWhenNoAbsorbedOSConfigured(t *testing.T) {
@@ -362,7 +362,7 @@ func TestOSAbsorptionOSCapabilityProofSkipsWhenNoAbsorbedOSConfigured(t *testing
 		t.Fatalf("no absorbed-OS root declared should skip, not %q: %+v", got.ProofStatus, got)
 	}
 	if !strings.Contains(got.ProofDetail, "no absorbed-OS root declared") {
-		t.Fatalf("skip detail should explain the missing umut_os declaration: %+v", got)
+		t.Fatalf("skip detail should explain the missing absorbed_os declaration: %+v", got)
 	}
 
 	report, err := OSAbsorptionDoctor(fixture.compoundHome)

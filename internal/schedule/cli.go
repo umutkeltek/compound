@@ -2,8 +2,8 @@
 
 // Compound `schedule` surface: read-only projection of the macOS launchd
 // surface (user LaunchAgents, system LaunchAgents, system LaunchDaemons) and
-// the user crontab, grouped by namespace (compound / other locally
-// configured namespaces). Designed
+// the user crontab, grouped by namespace inferred from each launchd label
+// (see inferNamespace; unattributable entries land in "other"). Designed
 // to make "what is scheduled on this box and who owns it" legible without
 // becoming a writer: there is no `apply`, no `--fix` here. Migration of
 // plists INTO compound-owned generation is a separate workstream.
