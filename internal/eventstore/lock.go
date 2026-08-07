@@ -103,8 +103,17 @@ func (s *shardedAppendLock) acquire(family string) (*appendLock, error) {
 			return nil, fmt.Errorf("open event append lock: %w", err)
 		}
 		s.mu.Lock()
-		s.fd[family] = file // first open wins; a racer closes its duplicate
-		s.mu.Unlock()
+		if existing := s.fd[family]; existing != nil {
+			// A racer won the first-open race for this family. Our duplicate
+			// open is unused, so close it and use the stored handle; flock on
+			// either open description of the same inode serializes identically.
+			s.mu.Unlock()
+			_ = file.Close()
+			file = existing
+		} else {
+			s.fd[family] = file
+			s.mu.Unlock()
+		}
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
 		return nil, fmt.Errorf("lock event append stream: %w", err)
