@@ -133,7 +133,11 @@ func TestInstalledHookRuntimeSupportResolvesFixtureOutsideRepoCWD(t *testing.T) 
 	}
 }
 
-func TestCanonicalClaudeFamilyExecutesAllLiveHookEvents(t *testing.T) {
+// TestCanonicalClaudeFamilyExecutesEveryInstalledLiveHookEvent runs every binding the
+// installer actually wrote for each Claude lane. It is deliberately not "all five events":
+// claude_code installs no UserPromptSubmit binding, and asserting an event the lane does
+// not install would prove a hook that no session ever fires.
+func TestCanonicalClaudeFamilyExecutesEveryInstalledLiveHookEvent(t *testing.T) {
 	testBinary := compoundTestBinary(t)
 	for _, harnessCase := range []struct {
 		installer string
@@ -158,12 +162,23 @@ func TestCanonicalClaudeFamilyExecutesAllLiveHookEvents(t *testing.T) {
 			if err != nil {
 				t.Fatalf("install %s hooks: %v", harnessCase.installer, err)
 			}
-			if len(report.Entries) != 1 || len(report.Entries[0].Bindings) != 5 {
-				t.Fatalf("%s install report = %+v, want one entry with five bindings", harnessCase.installer, report)
+			// claude_code orients once at SessionStart and installs no per-turn
+			// UserPromptSubmit binding, so it carries four bindings where the isolated
+			// lanes carry five.
+			perTurnContext := harnessCase.installer != "claude-code"
+			wantBindings := 4
+			if perTurnContext {
+				wantBindings = 5
+			}
+			if len(report.Entries) != 1 || len(report.Entries[0].Bindings) != wantBindings {
+				t.Fatalf("%s install report = %+v, want one entry with %d bindings", harnessCase.installer, report, wantBindings)
 			}
 			bindings := map[string]hookplan.HookInstallBinding{}
 			for _, binding := range report.Entries[0].Bindings {
 				bindings[binding.Event] = binding
+			}
+			if _, installed := bindings["UserPromptSubmit"]; installed != perTurnContext {
+				t.Fatalf("%s UserPromptSubmit installed=%t, want %t", harnessCase.installer, installed, perTurnContext)
 			}
 			preCommand := bindings["PreToolUse"].Command
 			wantEnforce := harnessCase.installer != "claude-code"
@@ -184,6 +199,9 @@ func TestCanonicalClaudeFamilyExecutesAllLiveHookEvents(t *testing.T) {
 				{"SessionEnd", `{"hook_event_name":"SessionEnd","session_id":` + quoteJSON(sessionID) + `,"cwd":` + quoteJSON(workspace) + `}`},
 			}
 			for _, event := range events {
+				if event.name == "UserPromptSubmit" && !perTurnContext {
+					continue
+				}
 				binding, ok := bindings[event.name]
 				if !ok || !strings.Contains(binding.Command, "--harness "+harnessCase.runtime) {
 					t.Fatalf("%s binding missing canonical runtime %s: %+v", event.name, harnessCase.runtime, binding)
@@ -247,8 +265,12 @@ func TestCanonicalClaudeFamilyExecutesAllLiveHookEvents(t *testing.T) {
 				seen[event.HookName]++
 			}
 			for _, event := range events {
-				if seen[event.name] != 1 {
-					t.Fatalf("persisted %s count=%d, want 1", event.name, seen[event.name])
+				want := 1
+				if event.name == "UserPromptSubmit" && !perTurnContext {
+					want = 0
+				}
+				if seen[event.name] != want {
+					t.Fatalf("persisted %s count=%d, want %d", event.name, seen[event.name], want)
 				}
 			}
 		})

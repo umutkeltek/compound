@@ -360,7 +360,13 @@ func validateInstallableDefaultPosture(harnessName string, compiled CompiledPost
 }
 
 func isInteractiveObservationalDefault(intentions []CompiledIntention) bool {
-	if len(intentions) < 3 || len(intentions) > 4 {
+	// The upper bound is the size of the allowed set below -- prepare_context,
+	// prepare_turn_context, observe_action, observe_outcome, record_receipt -- which
+	// grew by one when per-turn injection became its own intention. It is a
+	// nothing-unexpected-snuck-in count, not a substitute for the per-intention checks:
+	// unknown intentions, guard_mutation, and any non-native disposition are still
+	// refused one by one.
+	if len(intentions) < 3 || len(intentions) > 5 {
 		return false
 	}
 	seen := map[HarnessIntention]bool{}
@@ -370,7 +376,7 @@ func isInteractiveObservationalDefault(intentions []CompiledIntention) bool {
 			return false
 		}
 		switch intention.Intention {
-		case IntentionPrepareContext:
+		case IntentionPrepareContext, IntentionPrepareTurnContext:
 			if intention.EnforcementStrength != "context" {
 				return false
 			}

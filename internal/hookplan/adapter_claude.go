@@ -10,33 +10,25 @@ func (claudeSemanticAdapter) Compile(
 ) (CompiledIntention, []nativeBinding) {
 	switch intention {
 	case IntentionPrepareContext:
-		events := make([]string, 0, 2)
-		if attestation.Features["session_start_context"] {
-			events = append(events, "SessionStart")
-		}
-		if attestation.Features["user_prompt_context"] {
-			events = append(events, "UserPromptSubmit")
-		}
-		if len(events) == 0 {
-			return unsupportedIntention(intention, "context injection events are not attested"), nil
-		}
-		disposition := DispositionNative
-		reason := ""
-		if len(events) != 2 {
-			disposition = DispositionDegraded
-			reason = "only part of the context injection lifecycle is attested"
-		}
-		bindings := make([]nativeBinding, 0, len(events))
-		for _, event := range events {
-			bindings = append(bindings, nativeBinding{event: event})
+		if !attestation.Features["session_start_context"] {
+			return unsupportedIntention(intention, "session start context injection is not attested"), nil
 		}
 		return CompiledIntention{
 			Intention:           intention,
-			Disposition:         disposition,
+			Disposition:         DispositionNative,
 			EnforcementStrength: "context",
-			NativeEvents:        events,
-			Reason:              reason,
-		}, bindings
+			NativeEvents:        []string{"SessionStart"},
+		}, []nativeBinding{{event: "SessionStart"}}
+	case IntentionPrepareTurnContext:
+		if !attestation.Features["user_prompt_context"] {
+			return unsupportedIntention(intention, "per-turn context injection is not attested"), nil
+		}
+		return CompiledIntention{
+			Intention:           intention,
+			Disposition:         DispositionNative,
+			EnforcementStrength: "context",
+			NativeEvents:        []string{"UserPromptSubmit"},
+		}, []nativeBinding{{event: "UserPromptSubmit"}}
 	case IntentionGuardMutation:
 		if !attestation.Features["pre_tool_use_block"] {
 			return unsupportedIntention(intention, "native blocking pre-tool execution is not attested"), nil

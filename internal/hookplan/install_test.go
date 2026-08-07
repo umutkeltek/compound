@@ -104,8 +104,11 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 	}
 	for i, entry := range publicReport.Entries {
 		harnessName := rep.Entries[i].Harness
+		// Codex is one short because it has no SessionEnd receipt hook. claude-code is
+		// one short for the opposite reason: it keeps the receipt and drops per-turn
+		// UserPromptSubmit injection, taking its orientation at SessionStart only.
 		wantBindings := 5
-		if harnessName == "codex" {
+		if harnessName == "codex" || harnessName == "claude-code" {
 			wantBindings = 4
 		}
 		if len(entry.Bindings) != wantBindings {

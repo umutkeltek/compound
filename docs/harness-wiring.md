@@ -31,8 +31,10 @@ compound harness posture-plan --harness codex
 compound harness posture-plan --harness opencode
 ```
 
-The stable intentions are `prepare_context`, `observe_action`,
-`guard_mutation`, `observe_outcome`, and `record_receipt`. The selected adapter
+The stable intentions are `prepare_context`, `prepare_turn_context`,
+`observe_action`, `guard_mutation`, `observe_outcome`, and `record_receipt`.
+Session orientation and per-turn injection are two intentions, not one, because a
+harness can want one without the other. The selected adapter
 owns native events, settings schema, matchers, and limitations. For
 Claude-family harnesses, `record_receipt` maps the native `SessionEnd` event to
 the bounded receipt adapter. Every compiled intention says `native`, `fallback`,
@@ -43,6 +45,9 @@ Claude Code and Codex select `observe_action`: `PreToolUse` records the
 ActionIntent and PolicyDecision but cannot publish a native permission decision
 or a blocking exit. Isolated Claude-family executor profiles select
 `guard_mutation` and install `PreToolUse` with explicit `--enforce`.
+Interactive Claude Code does not select `prepare_turn_context`: it takes
+orientation once at `SessionStart` and installs no `UserPromptSubmit` binding.
+Codex and the isolated Claude-family profiles select both context intentions.
 If an observation-only live hook cannot record its evidence, it reports the
 runtime error but still exits zero without a native permission decision; that
 path makes no containment claim. Explicitly enforced profiles remain blocking.

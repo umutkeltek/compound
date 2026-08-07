@@ -87,7 +87,6 @@ func TestCompileSemanticPostureThroughClaudeAdapter(t *testing.T) {
 	}
 	assertCompiledIntention(t, compiled, IntentionPrepareContext, DispositionNative, []string{
 		"SessionStart",
-		"UserPromptSubmit",
 	})
 	assertCompiledIntention(t, compiled, IntentionGuardMutation, DispositionNative, []string{
 		"PreToolUse",
@@ -95,6 +94,89 @@ func TestCompileSemanticPostureThroughClaudeAdapter(t *testing.T) {
 	assertCompiledIntention(t, compiled, IntentionObserveOutcome, DispositionNative, []string{
 		"PostToolUse",
 	})
+}
+
+func TestClaudeContextIntentionsCompileToOneEventEach(t *testing.T) {
+	t.Parallel()
+
+	posture := testSemanticPosture("claude-code")
+	posture.Intentions = append(posture.Intentions, IntentionPrepareTurnContext)
+	compiled, err := CompileSemanticPosture(posture, testClaudeAttestation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCompiledIntention(t, compiled, IntentionPrepareContext, DispositionNative, []string{"SessionStart"})
+	assertCompiledIntention(t, compiled, IntentionPrepareTurnContext, DispositionNative, []string{"UserPromptSubmit"})
+
+	// A harness that cannot inject per turn must lose only the per-turn intention:
+	// folding both events into one intention used to degrade session orientation too.
+	attestation := testClaudeAttestation()
+	attestation.Features["user_prompt_context"] = false
+	compiled, err = CompileSemanticPosture(posture, attestation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCompiledIntention(t, compiled, IntentionPrepareContext, DispositionNative, []string{"SessionStart"})
+	assertCompiledIntention(t, compiled, IntentionPrepareTurnContext, DispositionUnsupported, nil)
+	for _, binding := range compiled.HookPlan.Bindings {
+		if binding.Event == "UserPromptSubmit" {
+			t.Fatalf("unattested per-turn injection leaked into desired bindings: %+v", binding)
+		}
+	}
+}
+
+// TestDefaultClaudeCodePostureBindsSessionStartWithoutPerTurnInjection is the falsifier for
+// dropping claude_code's per-turn context injection: claude_code must compile to a
+// SessionStart binding and no UserPromptSubmit binding at all, while the isolated Claude
+// lanes that share the same family adapter must still compile both. Before the intention
+// split, one prepare_context intention emitted both events for every Claude harness, so the
+// claude_code half of this test could not have passed.
+func TestDefaultClaudeCodePostureBindsSessionStartWithoutPerTurnInjection(t *testing.T) {
+	t.Parallel()
+
+	claudeCode, err := CompileDefaultPosture(DefaultPostureRequest{
+		Harness:         "claude-code",
+		Registry:        harness.DefaultRegistry(),
+		HandlerRef:      "compound",
+		HandlerRevision: "sha256:handler-fixture",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCompiledIntention(t, claudeCode, IntentionPrepareContext, DispositionNative, []string{"SessionStart"})
+	for _, intention := range claudeCode.Intentions {
+		if intention.Intention == IntentionPrepareTurnContext {
+			t.Fatalf("claude_code default posture requested per-turn context injection: %+v", intention)
+		}
+	}
+	for _, binding := range claudeCode.HookPlan.Bindings {
+		if binding.Event == "UserPromptSubmit" {
+			t.Fatalf("claude_code default posture bound UserPromptSubmit: %+v", binding)
+		}
+	}
+
+	for _, harnessName := range []string{"claude-zai", "claude-minimax", "claude-qwen", "codex"} {
+		harnessName := harnessName
+		t.Run(harnessName, func(t *testing.T) {
+			t.Parallel()
+			compiled, err := CompileDefaultPosture(DefaultPostureRequest{
+				Harness:         harnessName,
+				Registry:        harness.DefaultRegistry(),
+				HandlerRef:      "compound",
+				HandlerRevision: "sha256:handler-fixture",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertCompiledIntention(t, compiled, IntentionPrepareTurnContext, DispositionNative, []string{"UserPromptSubmit"})
+			for _, binding := range compiled.HookPlan.Bindings {
+				if binding.Event == "UserPromptSubmit" {
+					return
+				}
+			}
+			t.Fatalf("%s lost its per-turn context binding: %+v", harnessName, compiled.HookPlan.Bindings)
+		})
+	}
 }
 
 func TestClaudeReceiptIntentionCompilesOnlyWhenSessionEndIsAttested(t *testing.T) {
@@ -193,7 +275,6 @@ func TestCompileSemanticPostureThroughCodexAdapter(t *testing.T) {
 	}
 	assertCompiledIntention(t, compiled, IntentionPrepareContext, DispositionNative, []string{
 		"SessionStart",
-		"UserPromptSubmit",
 	})
 	assertCompiledIntention(t, compiled, IntentionGuardMutation, DispositionNative, []string{
 		"PreToolUse",

@@ -13,11 +13,18 @@ import (
 type HarnessIntention string
 
 const (
+	// IntentionPrepareContext is orientation taken once, when a session opens.
 	IntentionPrepareContext HarnessIntention = "prepare_context"
-	IntentionObserveAction  HarnessIntention = "observe_action"
-	IntentionGuardMutation  HarnessIntention = "guard_mutation"
-	IntentionObserveOutcome HarnessIntention = "observe_outcome"
-	IntentionRecordReceipt  HarnessIntention = "record_receipt"
+	// IntentionPrepareTurnContext is injection repeated on every operator turn. It is a
+	// separate intention from IntentionPrepareContext because the two are separately
+	// wanted: a harness can carry session orientation without paying a context build per
+	// prompt. Folding both into one intention made that choice unrepresentable, so a
+	// harness could only take both or neither.
+	IntentionPrepareTurnContext HarnessIntention = "prepare_turn_context"
+	IntentionObserveAction      HarnessIntention = "observe_action"
+	IntentionGuardMutation      HarnessIntention = "guard_mutation"
+	IntentionObserveOutcome     HarnessIntention = "observe_outcome"
+	IntentionRecordReceipt      HarnessIntention = "record_receipt"
 )
 
 type Disposition string
@@ -197,21 +204,6 @@ func CompileDefaultPosture(request DefaultPostureRequest) (CompiledPosture, erro
 		configScope = defaultScope
 	}
 	revision := harness.RegistryRevision(request.Registry)
-	intentions := []HarnessIntention{
-		IntentionPrepareContext,
-		IntentionGuardMutation,
-		IntentionObserveOutcome,
-	}
-	if registryName == "codex" || registryName == "claude_code" {
-		intentions = []HarnessIntention{
-			IntentionPrepareContext,
-			IntentionObserveAction,
-			IntentionObserveOutcome,
-		}
-	}
-	if strings.HasPrefix(registryName, "claude_") {
-		intentions = append(intentions, IntentionRecordReceipt)
-	}
 	return CompileSemanticPosture(SemanticPosture{
 		ID:                 "hpost_default_" + registryName,
 		Revision:           revision,
@@ -220,7 +212,7 @@ func CompileDefaultPosture(request DefaultPostureRequest) (CompiledPosture, erro
 		HandlerRef:         request.HandlerRef,
 		InvocationRevision: "compound.hook.semantic.v0.1",
 		HandlerRevision:    request.HandlerRevision,
-		Intentions:         intentions,
+		Intentions:         defaultPostureIntentions(registryName),
 	}, HarnessAttestation{
 		Harness:          harnessName,
 		Family:           family,
@@ -232,6 +224,36 @@ func CompileDefaultPosture(request DefaultPostureRequest) (CompiledPosture, erro
 		FallbackRevision: "none",
 		Features:         features,
 	})
+}
+
+// defaultPostureIntentions names the lifecycle intentions a harness's default posture
+// requests, in the order their bindings are installed.
+//
+// Session orientation (IntentionPrepareContext) and per-turn injection
+// (IntentionPrepareTurnContext) are requested separately because they are separately
+// wanted. claude_code asks for orientation only: its per-turn build spent the whole
+// inject budget re-deriving what SessionStart had already delivered, and a build that
+// overruns the budget fails open, so the injection it paid for was not reliably there.
+// Every other lane keeps both -- for them the per-turn hook is the only channel that
+// reaches a session already in flight. Adapters that cannot do per-turn injection at all
+// (opencode) are never asked for it, so the request stays honest rather than compiling to
+// an unsupported intention.
+func defaultPostureIntentions(registryName string) []HarnessIntention {
+	intentions := []HarnessIntention{IntentionPrepareContext}
+	perTurnContext := registryName != "claude_code" &&
+		(registryName == "codex" || strings.HasPrefix(registryName, "claude"))
+	if perTurnContext {
+		intentions = append(intentions, IntentionPrepareTurnContext)
+	}
+	if registryName == "codex" || registryName == "claude_code" {
+		intentions = append(intentions, IntentionObserveAction, IntentionObserveOutcome)
+	} else {
+		intentions = append(intentions, IntentionGuardMutation, IntentionObserveOutcome)
+	}
+	if strings.HasPrefix(registryName, "claude_") {
+		intentions = append(intentions, IntentionRecordReceipt)
+	}
+	return intentions
 }
 
 func AttestedFeatures(
@@ -286,7 +308,8 @@ func validateSemanticPosture(posture SemanticPosture) error {
 	seen := map[HarnessIntention]bool{}
 	for _, intention := range posture.Intentions {
 		switch intention {
-		case IntentionPrepareContext, IntentionObserveAction, IntentionGuardMutation, IntentionObserveOutcome, IntentionRecordReceipt:
+		case IntentionPrepareContext, IntentionPrepareTurnContext, IntentionObserveAction,
+			IntentionGuardMutation, IntentionObserveOutcome, IntentionRecordReceipt:
 		default:
 			return fmt.Errorf("compile semantic posture: unknown lifecycle intention %q", intention)
 		}
