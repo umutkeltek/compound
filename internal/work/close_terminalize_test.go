@@ -215,3 +215,46 @@ func TestCloseSkipsAlreadyTerminalRunAttempts(t *testing.T) {
 		}
 	}
 }
+
+// TestCloseSkipRunAttemptTerminalizationLeavesAttemptMutable: a caller that owns
+// its own RunAttempt lifecycle (binds close-produced proof refs to the attempt
+// and completes it with its honest status AFTER the close, e.g. internal/panel
+// apply's fail-soft flow) must be able to opt out. With
+// SkipRunAttemptTerminalization=true the bound non-terminal attempt stays
+// non-terminal after the close, so SetProofRefs + Complete still land. This is
+// the falsifier for the 2026-08-07 regression where close pre-terminalized the
+// attempt (completed→succeeded) and panel's post-close Complete refused.
+func TestCloseSkipRunAttemptTerminalizationLeavesAttemptMutable(t *testing.T) {
+	s := newStore(t)
+	id, rattIDs := closeTerminalizeWork(t, s, "close-skip-runattempt-termination", fixedNow)
+	if len(rattIDs) == 0 {
+		t.Fatal("setup: claim must mint a RunAttempt")
+	}
+	if _, err := s.Close(id, CloseInput{
+		Outcome:                       "completed",
+		MoveType:                      "outward_delta",
+		Summary:                       "close with caller-owned RunAttempt",
+		Changed:                       true,
+		ProofRefs:                     []string{"check:close-skip-runattempt-termination"},
+		SkipRunAttemptTerminalization: true,
+	}, fixedNow.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	for _, rid := range rattIDs {
+		ra, err := runattempt.Open(s.home).Get(rid)
+		if err != nil {
+			t.Fatalf("RunAttempt %s lookup after close: %v", rid, err)
+		}
+		if runattempt.IsTerminal(ra.Status) {
+			t.Fatalf("RunAttempt %s status = %q, want non-terminal (opt-out must leave the attempt mutable for the caller's own completion)", rid, ra.Status)
+		}
+		// The caller's post-close proof-ref binding + completion must still land
+		// (this is what internal/panel apply does after its fail-soft close).
+		if _, err := runattempt.Open(s.home).SetProofRefs(rid, []string{"proof:post-close"}); err != nil {
+			t.Fatalf("post-close SetProofRefs on opted-out RunAttempt %s: %v", rid, err)
+		}
+		if _, err := runattempt.Open(s.home).Complete(rid, runattempt.StatusFailed, fixedNow.Add(6*time.Minute)); err != nil {
+			t.Fatalf("post-close Complete on opted-out RunAttempt %s: %v", rid, err)
+		}
+	}
+}

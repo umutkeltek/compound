@@ -1855,6 +1855,13 @@ type CloseInput struct {
 	// future_behavior_changed claim unverifiable by construction.
 	// Additive; validated as part of the emitted Transition.
 	OpensBranches []envelope.BranchRef
+	// SkipRunAttemptTerminalization opts out of close-time terminalization of
+	// bound non-terminal RunAttempts (see closeLocked). A caller sets this
+	// when it completes its RunAttempt itself AFTER the close — the panel
+	// apply flow binds the close's own receipt/transition ids as proof refs
+	// and completes the attempt with its honest status (failed on target
+	// failures even though the envelope closes completed, fail-soft).
+	SkipRunAttemptTerminalization bool
 }
 
 // CloseResult is the connected chain proof: the final work plus the Receipt and the
@@ -2229,8 +2236,14 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	// Best-effort: errors are silently dropped (mirror abandonRunAttempts) —
 	// the close is already committed, terminalization is evidence not
 	// enforcement, and a missed terminalization is a doctor-visible gap that
-	// the C3 sweeper backstops.
-	s.terminalizeRunAttemptsForOutcome(w.RunAttemptIDs, in.Outcome, now)
+	// the C3 sweeper backstops. SkipRunAttemptTerminalization lets a caller
+	// that OWNS its own RunAttempt lifecycle (binds close-produced proof refs
+	// to the attempt and completes it with its honest status AFTER the close,
+	// e.g. internal/panel apply's fail-soft flow) opt out: terminalizing at
+	// close would freeze the attempt before those refs land.
+	if !in.SkipRunAttemptTerminalization {
+		s.terminalizeRunAttemptsForOutcome(w.RunAttemptIDs, in.Outcome, now)
+	}
 	return CloseResult{Work: w, Receipt: rec, Transition: tr}, nil
 }
 

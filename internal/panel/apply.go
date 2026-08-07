@@ -148,6 +148,10 @@ func Apply(homePath string, run Run, now func() time.Time) (result Run, err erro
 				Changed:       true,
 				ProofRefs:     proofRefs,
 				RunAttemptIDs: []string{ra.ID},
+				// panel owns its RunAttempt lifecycle end-to-end: the deferred
+				// guard completes the attempt (with reason) after the close, so
+				// close-time terminalization would freeze it before that.
+				SkipRunAttemptTerminalization: true,
 			}, now().UTC())
 		}
 	}()
@@ -247,6 +251,12 @@ func Apply(homePath string, run Run, now func() time.Time) (result Run, err erro
 		MemoryPromoted:   closeState.promoted,
 		MemoryParked:     closeState.parked,
 		MemoryRejected:   closeState.rejected,
+		// panel completes the RunAttempt itself after the close (binding the
+		// close's receipt/transition as proof refs first), with failed on
+		// target failures even though the envelope closes completed (fail-soft).
+		// Close-time terminalization would freeze the attempt before those
+		// refs land and would mislabel target failures as succeeded.
+		SkipRunAttemptTerminalization: true,
 	}, now().UTC())
 	if err != nil {
 		return run, err
