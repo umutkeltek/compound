@@ -105,6 +105,10 @@ go run ./cmd/compound schema export context_pack
 go run ./cmd/compound envelope validate fixtures/envelopes/*.json
 ```
 
+That last command exits non-zero on purpose: `fixtures/envelopes/work.invalid.json`
+is a deliberately malformed fixture, so a correct run reports it `INVALID` and
+fails. Every other fixture must report `ok`.
+
 For semantic memory (search over your docs): see the
 [Memory Quickstart](docs/memory-quickstart.md).
 
