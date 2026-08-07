@@ -3,6 +3,12 @@
 Local-first, agent-agnostic substrate that makes the flow of agent work leave
 reusable structure behind — without freezing the flow.
 
+Concretely: one Go binary (`compound`) and one local runtime directory
+(`COMPOUND_HOME`, default `~/.compound`). No cloud, no account, no daemon
+required. Your agent harnesses — Claude Code, Codex, OpenCode, or any CLI —
+call it at session start for oriented context and through hooks for governed
+execution; everything learned lands in local, typed, inspectable records.
+
 Agent sessions are amnesiac by default: whatever an agent learned, decided, or
 broke evaporates when the context window closes. Compound records the work as
 it actually happens — every session leaves claims, receipts, and lenses
@@ -22,6 +28,85 @@ meaning in the ledger · rented executors at the edge · policy before mutation
 · receipts and transitions after action.** Compound owns that structure;
 models, engines, and harnesses are replaceable edges. Search is not truth.
 Model output is not canon. Mutation requires an envelope and proof.
+
+## Quickstart
+
+**New here?** Start with the [Getting Started guide](docs/getting-started.md) —
+Compound + your repo + your agent in 15 minutes.
+
+```bash
+make install
+compound orient --harness claude-code --cwd /path/to/your/project --task "describe this project"
+compound work create --owner "my-first-task" --predicate "the thing works" --state ready --by "operator:me"
+compound workbench
+```
+
+Wire your agent harness: see [Harness Wiring](docs/harness-wiring.md).
+
+### Inspect one governed execution
+
+This local loop creates work, claims it, runs a bounded harness command, and
+leaves the proof chain inspectable:
+
+```bash
+compound home init
+compound doctor
+
+compound work create \
+  --owner "quickstart" \
+  --predicate "the harness prints hello and records proof" \
+  --state ready \
+  --by "operator:me"
+
+# Copy the returned work_... id into the commands below.
+compound work claim <work_id> --by "operator:me"
+compound work advance <work_id> --to running --by "operator:me" --execute \
+  --harness os-harness-entrypoints \
+  --workspace "$PWD" \
+  -- echo "hello from compound"
+
+compound work show <work_id> --json
+compound run-attempt list --json
+compound workbench
+
+# Close the verifying work; this mints its Receipt and Transition.
+compound work close <work_id> \
+  --by "operator:me" \
+  --outcome completed \
+  --move-type outward_delta \
+  --summary "the bounded harness execution produced inspectable proof" \
+  --changed
+
+# Copy the transition id from the close output or closed work JSON.
+compound work show <work_id> --json
+compound transition show <transition_id>
+```
+
+A successful command prints a `run_attempt_id`, captures a transcript, and
+moves the work to `verifying`. Closing it then mints the Receipt and Transition.
+The WorkEnvelope keeps the RunAttempt and terminal proof linked, so the next
+state is based on inspectable evidence rather than the harness's claim that it
+succeeded.
+
+Optional local console on port 3777:
+
+```bash
+cd console && bun install
+compound console --operator
+```
+
+See the [Console guide](docs/console.md) for what you'll see.
+
+For contract consumers:
+
+```bash
+go run ./cmd/compound schema list
+go run ./cmd/compound schema export context_pack
+go run ./cmd/compound envelope validate fixtures/envelopes/*.json
+```
+
+For semantic memory (search over your docs): see the
+[Memory Quickstart](docs/memory-quickstart.md).
 
 ## Why
 
@@ -139,85 +224,6 @@ products, route evidence, runtime bindings, and policy. The apex is the
 `Transition`: what changed, which evidence supports it, and how future behavior
 should differ.
 
-## Quickstart
-
-**New here?** Start with the [Getting Started guide](docs/getting-started.md) —
-Compound + your repo + your agent in 15 minutes.
-
-```bash
-make install
-compound orient --harness claude-code --cwd /path/to/your/project --task "describe this project"
-compound work create --owner "my-first-task" --predicate "the thing works" --state ready --by "operator:me"
-compound workbench
-```
-
-Wire your agent harness: see [Harness Wiring](docs/harness-wiring.md).
-
-### Inspect one governed execution
-
-This local loop creates work, claims it, runs a bounded harness command, and
-leaves the proof chain inspectable:
-
-```bash
-compound home init
-compound doctor
-
-compound work create \
-  --owner "quickstart" \
-  --predicate "the harness prints hello and records proof" \
-  --state ready \
-  --by "operator:me"
-
-# Copy the returned work_... id into the commands below.
-compound work claim <work_id> --by "operator:me"
-compound work advance <work_id> --to running --by "operator:me" --execute \
-  --harness os-harness-entrypoints \
-  --workspace "$PWD" \
-  -- echo "hello from compound"
-
-compound work show <work_id> --json
-compound run-attempt list --json
-compound workbench
-
-# Close the verifying work; this mints its Receipt and Transition.
-compound work close <work_id> \
-  --by "operator:me" \
-  --outcome completed \
-  --move-type outward_delta \
-  --summary "the bounded harness execution produced inspectable proof" \
-  --changed
-
-# Copy the transition id from the close output or closed work JSON.
-compound work show <work_id> --json
-compound transition show <transition_id>
-```
-
-A successful command prints a `run_attempt_id`, captures a transcript, and
-moves the work to `verifying`. Closing it then mints the Receipt and Transition.
-The WorkEnvelope keeps the RunAttempt and terminal proof linked, so the next
-state is based on inspectable evidence rather than the harness's claim that it
-succeeded.
-
-Optional local console on port 3777:
-
-```bash
-cd console && bun install
-compound console --operator
-```
-
-See the [Console guide](docs/console.md) for what you'll see.
-
-For contract consumers:
-
-```bash
-go run ./cmd/compound schema list
-go run ./cmd/compound schema export context_pack
-go run ./cmd/compound envelope validate fixtures/envelopes/*.json
-```
-
-For semantic memory (search over your docs): see the
-[Memory Quickstart](docs/memory-quickstart.md).
-
 ## Where State Lives
 
 The repo is source: code, schemas, tests, docs, and fixtures.
@@ -278,45 +284,13 @@ Execution and policy:
 - `compound proof-check --work <work_id> --actor <lease-holder> --out
   <report.json>` runs the canonical deterministic local proof bundle: tests,
   vet, build, diff check, strict architecture doctor, memory doctor, and public
-  redact scan. A full local run is admitted against the existing lease/work
-  owners before its first subprocess. It needs no interactive terminal: custody
-  of the `--out` report under the still-held lease is the proof, so any harness
-  or model invoked as a capability can certify, as can a scheduled queue with no
-  controlling terminal. Custom
-  TTLs below 3s are refused as usage before reservation; accepted windows refresh
-  at `min(TTL/3, 5s)` and continuously monitor holder loss. Expiry alone never
-  makes a successor executable: every proof gate inherits a kernel execution
-  barrier from the existing land-lease owner, and ordinary landing acquire,
-  expiry recovery, generic sweep, and exceptional steal all fail closed while
-  any descendant still holds it. SIGINT/SIGTERM and governed steal requests
-  cancel and wait for the whole gate process group. A stale already-dead
-  predecessor is recovered through the stricter exceptional policy with
-  `--steal --reason ... --terminated-run <ratt_*>`; Compound itself attests the
-  released barrier and writes the immutable Work-reachable termination evidence.
-  Bare/reused PIDs and caller-authored JSON never authorize takeover.
-  Ambiguous or cyclic recovery lineages still fail closed.
-  Every reserved `canonical_full` gate must finish `ok` to certify; a skipped gate
-  cannot certify. A complete canonical red battery—every gate terminal
-  `ok|failed`, with at least one `failed`—is retained as non-certifying governed
-  evidence, releases the scarce resource, prints one truthful `battery: FAILED`
-  verdict, and exits 1 so it does not wedge a successor.
-  Refusal leaves an existing report byte-identical and a nonexistent report
-  absent, while successful publication uses a synced sibling temp plus atomic
-  rename. Any failure after a complete report is durable prints exactly one final
-  non-green battery verdict; pre-report usage/admission errors print none. A
-  post-release installed-runtime publication failure is therefore non-green, and
-  that marker is also published by synced atomic rename with a completion footer
-  so an interrupted prefix cannot suppress Workbench action.
-  committed green or red result whose lease release remains pending returns a
-  non-green command error and retains its exact retry journal until recovery;
-  its report stays intact and stdout ends `battery: FAILED release_pending=true`.
-  Invoking that exact command again resumes the owned result before reservation,
-  atomically restores and verifies `--out` from the immutable owned artifact
-  before release, returns the prior report, and releases without rerunning the
-  gates or minting another holder. The installed-runtime Workbench artifact is
-  published only after a green governed completion has released; release-pending,
-  invalid, failed, dry-run, and CI reports cannot suppress that action. Dry-run
-  and CI subsets remain lightweight and non-certifying.
+  redact scan. Certification is custody-based — the `--out` report held under a
+  still-live land-lease is the proof — so headless harnesses and scheduled
+  queues can certify without an interactive terminal. Red batteries are
+  retained as non-certifying evidence and exit 1; recovery from a dead
+  predecessor fails closed behind a kernel execution barrier. The full lease,
+  refusal, red-battery, and recovery contract:
+  [Proof-Check and the Land-Lease](docs/architecture/proof-check.md).
 - `.woodpecker.yml` runs the portable core, console, and gitleaks gates on the
   owned Woodpecker agent. A scheduled/manual run is the reliable trigger while
   the forge cannot reach the LAN-only webhook; GitHub-hosted Actions are
@@ -402,37 +376,48 @@ Read in this order:
 7. `docs/architecture/source-adapters.md`
 8. `docs/operations/legacy-system-retirement.md`
 
-Core packages:
+The spine is 60+ packages under `internal/`; `compound architecture doctor
+--strict` enforces that each classifies under exactly one layer of
+`docs/LAYERS.md`. The load-bearing ones:
 
 ```text
 cmd/compound/             CLI boundary
-internal/home/            COMPOUND_HOME runtime body
+internal/home/            COMPOUND_HOME runtime body (layout, doctor, backup)
 internal/envelope/        typed runtime grammar
 internal/schema/          JSON Schema export + contract-aware validation
 internal/contract/        EffectiveContract + ContextPack assembly
 internal/work/            WorkEnvelope lifecycle + read-only workbench
+internal/runattempt/      RunAttempt lifecycle: spawn -> terminal proof
+internal/landlease/       landing mutual exclusion (one lander at a time)
 internal/policy/          ActionIntent -> PolicyDecision
+internal/act/             governed outward actions: transports + receipts
+internal/attention/       hold frontier: what needs the operator, grouped
+internal/operatornotice/  attention holds reach the operator's transport
+internal/director/        proposals + evidence-thresholded admission
 internal/harness/         HarnessRegistry
 internal/hook/            lifecycle hook runner
-internal/knowledge/      source-backed knowledge intake
+internal/knowledge/       source-backed knowledge intake
 internal/candidates/      candidate kind -> inbox dir + verdicts
 internal/mem/             canonical memory object family
 internal/distiller/       trace -> candidate fan-out + critique
 internal/capgraph/        capability graph
-internal/panel/          lens review panel
-internal/localmodel/     local model advice seam
+internal/panel/           lens review panel
+internal/localmodel/      local model advice seam
 internal/runtimebinding/  RuntimeBinding + ServiceContract doctor
 internal/projection/      generated-view freshness
 internal/product/         product signals, hypotheses, reviews
+internal/release/         product release planning + observation
 internal/routeevidence/   execution route evidence
-internal/reviewartifact/ shared review artifact writes
-internal/writeback/      owner writeback/no-promote gate
+internal/schedule/        read-only launchd/cron projection
+internal/reviewartifact/  shared review artifact writes
+internal/writeback/       owner writeback/no-promote gate
 internal/arch/            architecture doctor
 ```
 
 Importer packages adapt existing systems into the spine without becoming new
 owners: `authority`, `decisions`, `eventsource`, `sourceobs`, and
-`tooltopology`.
+`tooltopology`. The remaining packages are support organs; `ls internal/`
+lists the full roster.
 
 ## Rented Edge
 
