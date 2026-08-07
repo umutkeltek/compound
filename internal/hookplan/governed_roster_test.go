@@ -81,3 +81,48 @@ func TestGovernedFullRosterRefusal(t *testing.T) {
 		t.Fatalf("minimax with full roster refused: %q", reason)
 	}
 }
+
+// TestLaneHookSettingsPathPinsStandardProfilePaths pins the one place that names
+// a governed lane's hook settings path. Governed spawn (GovernedFullRosterRefusal)
+// observes the roster ONLY from os.UserHomeDir() + LaneHookSettingsPath — the
+// standard profile path — so a custom --config-dir install is intentionally
+// invisible to the governed gate. This test makes that contract observable: the
+// exact paths the gate reads are fixed, and non-governed harnesses resolve to
+// ("", false).
+func TestLaneHookSettingsPathPinsStandardProfilePaths(t *testing.T) {
+	base := t.TempDir()
+
+	cases := []struct {
+		harness string
+		want    string
+	}{
+		{"claude-minimax", filepath.Join(ClaudeMinimaxProfileDir(base), "settings.json")},
+		{"claude_minimax", filepath.Join(ClaudeMinimaxProfileDir(base), "settings.json")},
+		{"claude-qwen", filepath.Join(ClaudeQwenProfileDir(base), "settings.json")},
+		{"claude_qwen", filepath.Join(ClaudeQwenProfileDir(base), "settings.json")},
+		{"claude-zai", filepath.Join(ClaudeZaiProfileDir(base), "settings.json")},
+		{"claude_zai", filepath.Join(ClaudeZaiProfileDir(base), "settings.json")},
+		// The full zai lane runs a separate subscription profile, not the
+		// zai-direct profile the base zai lane shares with the direct tap.
+		{"claude_zai_full", filepath.Join(base, ".config", "switchback", "claude", "_providers", "zai-lane", "settings.json")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.harness, func(t *testing.T) {
+			got, ok := LaneHookSettingsPath(base, tc.harness)
+			if !ok {
+				t.Fatalf("LaneHookSettingsPath(%q) = ok false, want true", tc.harness)
+			}
+			if got != tc.want {
+				t.Fatalf("LaneHookSettingsPath(%q) = %q, want %q", tc.harness, got, tc.want)
+			}
+		})
+	}
+
+	// Non-governed harnesses carry no hook profile path compound reads for the
+	// governed gate; they must resolve to ("", false), never a default.
+	for _, harness := range []string{"claude_code", "codex", "opencode", "claude-native", "os-harness-entrypoints"} {
+		if got, ok := LaneHookSettingsPath(base, harness); ok {
+			t.Fatalf("LaneHookSettingsPath(%q) = (%q, true), want (\"\", false)", harness, got)
+		}
+	}
+}
