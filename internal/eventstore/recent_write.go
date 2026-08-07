@@ -13,9 +13,20 @@ import (
 // process is rejected as already-present without touching the segment at all.
 // Storing the hash keeps the fast path EXACT: a same-id-different-content put
 // (a genuine conflict) does not match and falls through to the durable checkID
-// scan, which errors. The cache is a hint, never an authority — a miss (cold
-// start, another process, a rollover) falls through to the exact path the
-// engine already took.
+// scan, which errors.
+//
+// The cache is an authority for the decision it makes: a HIT rejects the put as
+// already-present without consulting the store. The conservative direction is
+// the MISS — cold start, another process's append, a rollover, or an eviction
+// all fall through to the durable checkID path the engine already took, so the
+// cache can only ever under-report writes, never invent one. The one accepted
+// limitation is cross-process remove: only the process that performed a durable
+// remove forgets that id (scan.go), so a foreign process that removes an id this
+// process appended is invisible here, and a same-id+same-hash re-put after that
+// foreign remove is mis-deduped as already-present. Remove-then-re-put of the
+// same id with byte-identical content is rare, and the false positive is a
+// created:false no-op, never data corruption — the cost of a durable probe on
+// the hot path.
 //
 // The cache is keyed by STORE ROOT + family so distinct homes in one process
 // (the test suite, a console supervisor) cannot collide, and bounded per family
