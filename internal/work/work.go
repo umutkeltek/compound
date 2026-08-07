@@ -104,6 +104,20 @@ func canTransition(from, to string) bool {
 	return false
 }
 
+// claimEventFromIsLegal returns whether `from` is a legal lifecycle From
+// for a transaction that lands the work in "claimed". A normal claim
+// requires a real state-machine edge (canTransition). The ownerless-claim
+// repair is a same-state binding (claimed -> claimed) -- the state
+// machine has no self-loop, so the canTransition check is loosened for
+// that case to keep the binding explicit and refused-if-claimed-to-
+// something-else.
+func claimEventFromIsLegal(from string, repairOwnerless bool) bool {
+	if repairOwnerless && from == "claimed" {
+		return true
+	}
+	return canTransition(from, "claimed")
+}
+
 // Store is the work lifecycle store rooted at a COMPOUND_HOME.
 type Store struct {
 	home                  string
@@ -787,13 +801,20 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 	}
 	lease := Lease{WorkID: workID, By: plan.Actor, ClaimAt: ts(now), LaneID: laneID, WorkSHA256: claimedWorkSHA256}
 	note := "claimed (policy " + plan.Policy.Outcome + ")"
+	// Repair is a claimed-to-claimed same-state advance that retroactively
+	// binds authority and proof to an ownerless wedge. The lifecycle
+	// From/To fields must agree (a same-state binding), not borrow the
+	// wedge's source state, and the note must carry the repair marker so
+	// validatePendingClaim's RepairOwnerless<->note parity holds.
+	eventFrom := from
 	if repairOwnerless {
+		eventFrom = "claimed"
 		note = "ownerless-claim repair (policy " + plan.Policy.Outcome + ")"
 	}
 	event := Event{
 		TS:                 lease.ClaimAt,
 		WorkID:             workID,
-		From:               from,
+		From:               eventFrom,
 		To:                 "claimed",
 		By:                 plan.Actor,
 		Note:               note,
@@ -1063,7 +1084,7 @@ func (s *Store) validatePendingClaim(pending claimPending) error {
 	if pending.RunAttemptID != "" {
 		wantAttached = append(wantAttached, pending.RunAttemptID)
 	}
-	if event.WorkID != pending.WorkID || !canTransition(event.From, "claimed") || event.To != "claimed" || event.By != pending.Actor ||
+	if event.WorkID != pending.WorkID || !claimEventFromIsLegal(event.From, pending.RepairOwnerless) || event.To != "claimed" || event.By != pending.Actor ||
 		event.TS != pending.Lease.ClaimAt || event.PreviousWorkSHA256 != pending.PreviousWorkSHA256 || event.WorkSHA256 != pending.ClaimedWorkSHA256 ||
 		!reflect.DeepEqual(event.Attached, wantAttached) {
 		return fmt.Errorf("pending lifecycle event does not bind exact claim transaction")
@@ -1075,6 +1096,17 @@ func (s *Store) validatePendingClaim(pending claimPending) error {
 		pending.ClaimedWork.ActionIntentIDs[len(pending.ClaimedWork.ActionIntentIDs)-1] != pending.ActionIntentID ||
 		pending.ClaimedWork.PolicyDecisionID != pending.PolicyDecisionID {
 		return fmt.Errorf("pending claimed Work does not bind exact action and policy")
+	}
+	// RunAttemptID binding: the ratt_ the claim mints must land on the
+	// envelope's RunAttemptIDs. A missing/mismatched ratt_ dimension is a
+	// refused claim -- validate before any authoritative publication.
+	if pending.RunAttemptID != "" {
+		if !oneOf(pending.RunAttemptID, pending.ClaimedWork.RunAttemptIDs) {
+			return fmt.Errorf("pending claimed Work does not bind its claim RunAttempt %s", pending.RunAttemptID)
+		}
+		if event.Attached[2] != pending.RunAttemptID {
+			return fmt.Errorf("pending repair RunAttempt %s does not match event attachment", pending.RunAttemptID)
+		}
 	}
 	return s.validateClaimEventArtifacts(event, pending.ClaimedWork)
 }
@@ -1117,7 +1149,8 @@ func (s *Store) validateClaimAuthority(claimed envelope.WorkEnvelope, allowLegac
 		return "", fmt.Errorf("found %d durable events for current claimed WorkEnvelope, want exactly one", len(matches))
 	}
 	event := matches[0]
-	if event.WorkID != claimed.ID || !canTransition(event.From, "claimed") ||
+	repairFrom := strings.HasPrefix(event.Note, "ownerless-claim repair (policy ")
+	if event.WorkID != claimed.ID || !claimEventFromIsLegal(event.From, repairFrom) ||
 		event.TS != lease.ClaimAt || event.By != holder {
 		return "", fmt.Errorf("durable claim event identity mismatch")
 	}
