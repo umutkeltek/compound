@@ -334,6 +334,12 @@ func TestPutSealedIDResolvesViaIndexNotHotMemo(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The dup put below must resolve through the durable sealed-index path the
+	// test is guarding. Reset the in-process recent-write fast-path cache so a
+	// just-appended id cannot short-circuit the re-put as "already present"
+	// before the index is consulted.
+	resetSharedRecentWrites()
+
 	hotCount, restoreHot := installParseCounter(t)
 	defer restoreHot()
 	idxCount, restoreIdx := installIndexParseCounter(t)

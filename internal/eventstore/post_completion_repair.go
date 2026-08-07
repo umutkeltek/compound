@@ -1112,14 +1112,12 @@ func (s *Store) applyPostCompletionRepairOutcome(planPath string, authorization 
 			}
 		}
 		if entry.Disposition == RepairImportAbsent && repairPhaseRank(progress.Phase) < repairPhaseRank(repairPhaseFrameVerified) {
-			appendLock, err := acquireAppendLock(s.engine.segRoot)
+			releaseAll, err := s.engine.lockAllFamilyShards()
 			if err != nil {
 				return zero, err
 			}
 			segmentErr := func() (retErr error) {
-				defer func() {
-					retErr = errors.Join(retErr, appendLock.release())
-				}()
+				defer releaseAll()
 				if repairPhaseRank(progress.Phase) < repairPhaseRank(repairPhaseAppendReserved) {
 					if err := s.validatePostCompletionRepairMutationBoundary(census, opts); err != nil {
 						return err
@@ -2188,11 +2186,11 @@ func (s *Store) PostCompletionRepairPhysicalCompletionForFinalization(planPath s
 		return false, err
 	}
 	defer runLock.release()
-	appendLock, err := acquireAppendLock(s.engine.segRoot)
+	releaseAll, err := s.engine.lockAllFamilyShards()
 	if err != nil {
 		return false, err
 	}
-	defer appendLock.release()
+	defer releaseAll()
 	return s.postCompletionRepairPhysicalCompletionForFinalization(plan, authorization)
 }
 

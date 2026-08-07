@@ -182,12 +182,20 @@ func freshStore(t *testing.T, home string) *Store {
 	return store
 }
 
-// Falsifier a — parse-once. 50 Gets against one hot segment full-parse it
-// exactly once. Adds call-count exactness on top of
-// TestHotSegmentCacheServesFreshAppends' correctness proof.
+// Falsifier a — parse-once. 50 puts then 50 Gets against one hot segment
+// full-parse it exactly once: the first put cold-parses (empty file → one
+// parse), and the warm-memo update keeps every later put AND read served from
+// the in-process memo with zero further parses. This pins the improvement over
+// the pre-2026-08-08 behavior where every append invalidated the memo and the
+// next read re-parsed the whole hot segment per put.
 func TestHotSegmentParsedOncePerProcess(t *testing.T) {
 	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
 	store := openConfiguredStore(t, engineConfig{clock: func() time.Time { return now }})
+	hot := hotSegmentPath(store, "transition", "2026-07-15")
+
+	count, restore := installParseCounter(t)
+	defer restore()
+
 	const records = 50
 	ids := make([]string, records)
 	for i := 0; i < records; i++ {
@@ -195,17 +203,13 @@ func TestHotSegmentParsedOncePerProcess(t *testing.T) {
 		ids[i] = id
 		putRecord(t, store, id, "compound.transition.v0.1", now, fmt.Sprintf("v%02d", i))
 	}
-	hot := hotSegmentPath(store, "transition", "2026-07-15")
-
-	count, restore := installParseCounter(t)
-	defer restore()
 	for _, id := range ids {
 		if _, err := store.Read(id); err != nil {
 			t.Fatalf("read %s: %v", id, err)
 		}
 	}
 	if got := count(hot); got != 1 {
-		t.Fatalf("hot segment parsed %d times across %d Gets, want 1", got, records)
+		t.Fatalf("hot segment parsed %d times across %d puts + %d Gets, want 1 (one cold parse)", got, records, records)
 	}
 }
 
@@ -216,6 +220,12 @@ func TestHotSegmentParsedOncePerProcess(t *testing.T) {
 func TestHotSegmentInterleaveDoesNotThrash(t *testing.T) {
 	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
 	store := openConfiguredStore(t, engineConfig{clock: func() time.Time { return now }})
+	hotA := hotSegmentPath(store, "transition", "2026-07-15")
+	hotB := hotSegmentPath(store, "receipt", "2026-07-15")
+
+	count, restore := installParseCounter(t)
+	defer restore()
+
 	const per = 25
 	aIDs := make([]string, per)
 	bIDs := make([]string, per)
@@ -226,11 +236,6 @@ func TestHotSegmentInterleaveDoesNotThrash(t *testing.T) {
 		putRecord(t, store, a, "compound.transition.v0.1", now, fmt.Sprintf("a%02d", i))
 		putRecord(t, store, b, "compound.receipt.v0.1", now, fmt.Sprintf("b%02d", i))
 	}
-	hotA := hotSegmentPath(store, "transition", "2026-07-15")
-	hotB := hotSegmentPath(store, "receipt", "2026-07-15")
-
-	count, restore := installParseCounter(t)
-	defer restore()
 	for i := 0; i < per; i++ {
 		if _, err := store.Read(aIDs[i]); err != nil {
 			t.Fatalf("read %s: %v", aIDs[i], err)
@@ -240,17 +245,20 @@ func TestHotSegmentInterleaveDoesNotThrash(t *testing.T) {
 		}
 	}
 	if got := count(hotA); got != 1 {
-		t.Fatalf("family A hot parsed %d times under interleave, want 1", got)
+		t.Fatalf("family A hot parsed %d times under interleave, want 1 (one cold parse)", got)
 	}
 	if got := count(hotB); got != 1 {
-		t.Fatalf("family B hot parsed %d times under interleave, want 1", got)
+		t.Fatalf("family B hot parsed %d times under interleave, want 1 (one cold parse)", got)
 	}
 }
 
-// Falsifier c — staleness. A warm memo is discarded when the hot segment
-// grows: the appended id is found, the prior id stays byte-correct, and the
-// reparse happens exactly once. Adds call-count exactness on top of
-// TestHotSegmentCacheServesFreshAppends.
+// Falsifier c — warm-on-own-append, reparse-on-foreign-append. A warm memo is
+// NOT discarded when THIS process appends (hotSegmentAppend updates it in place
+// under the family lock — the pre-2026-08-08 behavior reparsed the whole hot
+// segment on every own append, the O(n²) that made a hook-event write a
+// per-tool-call full parse). A FOREIGN writer's append still moves the stat
+// tuple the memo cannot account for, so exactly one reparse occurs and the
+// appended id is found while prior ids stay byte-correct.
 func TestHotSegmentStalenessReparsesOnAppend(t *testing.T) {
 	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
 	store := openConfiguredStore(t, engineConfig{clock: func() time.Time { return now }})
@@ -275,28 +283,55 @@ func TestHotSegmentStalenessReparsesOnAppend(t *testing.T) {
 		t.Fatalf("parses after memo hit = %d, want 1 (served from memo)", got)
 	}
 
+	// Own-process append keeps the memo warm in place: the appended id is
+	// found with NO reparse (count stays 1), and the prior id stays intact.
 	newID := "tr_stale_new"
 	putRecord(t, store, newID, "compound.transition.v0.1", now, "new")
-
 	got, err := store.Read(newID)
 	if err != nil {
-		t.Fatalf("read appended id after invalidation: %v", err)
+		t.Fatalf("read appended id after own append: %v", err)
 	}
 	if !bytes.Contains(got.Bytes, []byte(`"value": "new"`)) && !bytes.Contains(got.Bytes, []byte(`"value":"new"`)) {
 		t.Fatalf("appended record body wrong: %s", got.Bytes)
 	}
-	if c := count(hot); c != 2 {
-		t.Fatalf("parses after append+read = %d, want 2 (exactly one reparse)", c)
+	if c := count(hot); c != 1 {
+		t.Fatalf("parses after own append + read = %d, want 1 (memo kept warm in place, no reparse)", c)
 	}
-	again, err := store.Read(oldID)
-	if err != nil {
+	if again, err := store.Read(oldID); err != nil {
 		t.Fatalf("re-read prior id: %v", err)
+	} else if !bytes.Equal(first.Bytes, again.Bytes) {
+		t.Fatalf("prior id bytes drifted after warm own-append:\n before=%s\n after =%s", first.Bytes, again.Bytes)
 	}
-	if !bytes.Equal(first.Bytes, again.Bytes) {
-		t.Fatalf("prior id bytes drifted after reparse:\n before=%s\n after =%s", first.Bytes, again.Bytes)
+
+	// Foreign append (direct file write, not through this store) moves the
+	// stat tuple the memo cannot account for → exactly one reparse, and both
+	// the foreign id and the prior ids are correct afterward.
+	foreignLine := frameLine(t, "tr_foreign", "compound.transition.v0.1", now, "foreign")
+	f, err := os.OpenFile(hot, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open hot segment for foreign append: %v", err)
+	}
+	if _, err := f.Write(foreignLine); err != nil {
+		_ = f.Close()
+		t.Fatalf("foreign append: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fr, err := store.Read("tr_foreign")
+	if err != nil {
+		t.Fatalf("read foreign-appended id: %v", err)
+	}
+	if !bytes.Contains(fr.Bytes, []byte(`"value": "foreign"`)) && !bytes.Contains(fr.Bytes, []byte(`"value":"foreign"`)) {
+		t.Fatalf("foreign record body wrong: %s", fr.Bytes)
 	}
 	if c := count(hot); c != 2 {
-		t.Fatalf("parses after re-read = %d, want 2 (memo warm again)", c)
+		t.Fatalf("parses after foreign append + read = %d, want 2 (exactly one reparse for foreign interference)", c)
+	}
+	if again, err := store.Read(oldID); err != nil {
+		t.Fatalf("re-read prior id after foreign append: %v", err)
+	} else if !bytes.Equal(first.Bytes, again.Bytes) {
+		t.Fatalf("prior id bytes drifted after foreign reparse:\n before=%s\n after =%s", first.Bytes, again.Bytes)
 	}
 }
 

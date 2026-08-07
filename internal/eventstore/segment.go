@@ -39,6 +39,7 @@ type engine struct {
 	warnOnce        sync.Once
 	sourceHashMu    sync.Mutex
 	sourceHashes    map[string]cachedSourceHash
+	appendShards    *shardedAppendLock
 }
 
 type putMode uint8
@@ -105,6 +106,7 @@ func newEngine(homePath string, config engineConfig) (*engine, error) {
 		logf:            logf,
 		localFS:         local,
 		fsType:          fsType,
+		appendShards:    shardedAppendLocksFor(filepath.Join(homePath, eventsDirName, segmentsDirName)),
 	}, nil
 }
 
@@ -261,15 +263,29 @@ func (e *engine) put(id string, record []byte, mode putMode, opts AtomicOptions)
 		return e.legacyPut(frame, record, mode, opts)
 	}
 
-	lock, err := acquireAppendLock(e.segRoot)
+	lock, err := e.appendShards.acquire(frame.Family)
 	if err != nil {
 		return putOutcome{}, err
 	}
 	defer func() {
-		if releaseErr := lock.release(); retErr == nil && releaseErr != nil {
+		if releaseErr := e.appendShards.release(frame.Family, lock); retErr == nil && releaseErr != nil {
 			retErr = releaseErr
 		}
 	}()
+
+	// O(1) dedup fast path: an id this process appended to this family moments
+	// ago (same frame SHA256) is already present — no hot-segment parse, no tail
+	// repair. A miss falls through to the durable checkID scan below.
+	if sharedRecentWrites.seen(e.segRoot, frame.Family, id, frame.SHA256) {
+		switch mode {
+		case putExclusive:
+			return putOutcome{}, fmt.Errorf("%s: %w", id, os.ErrExist)
+		case putIfAbsent:
+			return putOutcome{created: false, diagnosticPath: logicalReferencePrefix + id}, nil
+		default:
+			return putOutcome{created: false, diagnosticPath: logicalReferencePrefix + id}, nil
+		}
+	}
 
 	last, exists, err := e.lastWritten(frame.Family)
 	if err != nil {
@@ -309,8 +325,19 @@ func (e *engine) put(id string, record []byte, mode putMode, opts AtomicOptions)
 			return putOutcome{}, err
 		}
 	}
-	if _, _, err := e.appendFrameAt(frame.Family, today, line); err != nil {
+	relPath, start, err := e.appendFrameAt(frame.Family, today, line)
+	if err != nil {
 		return putOutcome{}, err
+	}
+	sharedRecentWrites.remember(e.segRoot, frame.Family, id, frame.SHA256)
+	// Keep the hot-segment memo warm in place so the NEXT put's repairTail does
+	// not reparse the whole hot segment: pre-append size == start, post-append
+	// size/mtime from a stat. See hotSegmentAppend's freshness guard.
+	absPath := filepath.Join(e.eventsDir, relPath)
+	if info, statErr := os.Stat(absPath); statErr == nil {
+		hotSegmentAppend(absPath, info.Size(), info.ModTime(), parsedFrame{
+			Frame: frame, Offset: start, End: start + int64(len(line)),
+		})
 	}
 	outcome = putOutcome{created: true, diagnosticPath: logicalReferencePrefix + id}
 	if opts.AfterPublish != nil {
@@ -591,6 +618,31 @@ func (e *engine) legacyAtomicPut(id, path string, record []byte, opts AtomicOpti
 	return outcome, nil
 }
 
+// lockAllFamilyShards acquires every family shard that could be appended to —
+// the existing segment directories plus the known id-prefix vocabulary — and
+// returns a release func. Maintenance paths (migration apply, post-completion
+// repair import) use it so their segment mutations stay mutually exclusive with
+// put's per-family appends; locking all of them (≤ a dozen, sorted, deadlock-
+// free) is cheap on these rare paths and never touches the hot per-tool-call
+// put. Callers that rewrite one known family can lock just that shard instead.
+func (e *engine) lockAllFamilyShards() (func(), error) {
+	fams, err := e.segmentFamilies()
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, f := range fams {
+		seen[f] = true
+	}
+	for _, pf := range idPrefixFamilies {
+		if !seen[pf.family] {
+			seen[pf.family] = true
+			fams = append(fams, pf.family)
+		}
+	}
+	return e.appendShards.acquireAll(fams)
+}
+
 func (e *engine) preflight() error {
 	if !e.localFS && os.Getenv(requireLocalEnv) == "1" {
 		return nonLocalFSError(e.fsType)
@@ -605,13 +657,10 @@ func (e *engine) preflight() error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if e.localFS {
-		lock, err := acquireAppendLock(e.segRoot)
-		if err != nil {
-			return err
-		}
-		defer lock.release()
-	}
+	// No append lock here: this is a writability probe on a uniquely-named temp
+	// file, independent of segment appends. Pre-2026-08-08 this took the global
+	// .append.lock on EVERY store open (every tool call), adding a second global
+	// serialization point on top of put's.
 	probe, err := os.CreateTemp(dir, ".eventstore-preflight-*")
 	if err != nil {
 		return err

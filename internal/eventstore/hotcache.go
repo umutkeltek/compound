@@ -126,6 +126,46 @@ func invalidateHotSegment(path string) {
 	}
 }
 
+// hotSegmentAppend updates the cached hot-segment memo IN PLACE after this
+// process appends one frame while holding the family append lock. The caller
+// passes the post-append stat (size/mtime) and the exact parsedFrame of the
+// appended line (Offset = the byte offset the append began at, End = Offset +
+// line length). Without this, every append moves the file's stat tuple and the
+// next put's repairTail would reparse the whole hot segment — the O(n²) that
+// turned an 8MB hook segment into a per-tool-call full parse under 29-session
+// load. Because the family flock serializes appends to this family, updating
+// the memo with our own frame keeps it EXACTLY fresh: it already reflected the
+// file before our append (repairTail warmed it on this same put) and our frame
+// is the only change.
+//
+// Freshness guard: the memo's recorded size must equal frame.Offset, which is
+// the byte offset our append began at and therefore the pre-append size. If a
+// foreign writer changed the file between our warm and our append (memo stale),
+// that equality fails and we leave the memo alone — the next put re-parses,
+// which is the correct behavior for a view we cannot account for.
+//
+// The cached entry's byID map is never mutated in place: callers read the map
+// outside the cache lock (hotFrames returns the reference), so we copy-on-write
+// and store a fresh entry.
+func hotSegmentAppend(path string, size int64, mtime time.Time, frame parsedFrame) {
+	key := filepath.Dir(path)
+	sharedHotCache.mu.Lock()
+	defer sharedHotCache.mu.Unlock()
+	entry, ok := sharedHotCache.entries[key]
+	if !ok || entry.path != path || entry.size != frame.Offset || entry.mtime.Equal(mtime) {
+		return
+	}
+	byID := make(map[string]parsedFrame, len(entry.byID)+1)
+	for id, f := range entry.byID {
+		byID[id] = f
+	}
+	byID[frame.Frame.ID] = frame
+	entry.byID = byID
+	entry.size = size
+	entry.mtime = mtime
+	sharedHotCache.entries[key] = entry
+}
+
 // hotSegmentEntryFor returns the memoized entry for path's family directory,
 // reparsing only when the memo is absent or its {path, size, mtime} stat
 // guard no longer matches path's current stat. The returned entry (and its

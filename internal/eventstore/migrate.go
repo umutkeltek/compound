@@ -1276,17 +1276,15 @@ func (m *migrator) apply() (MigrateReport, error) {
 }
 
 // processBatch holds the append writer lock for one bounded batch only (never
-// the whole run) so live writers interleave between batches.
+// the whole run) so live writers interleave between batches. It locks every
+// family shard so its segment folds stay mutually exclusive with put's
+// per-family appends.
 func (m *migrator) processBatch(batch []looseFile, presence map[string]segmentLocation, manifest map[string]manifestRow, report *MigrateReport) (retErr error) {
-	lock, err := acquireAppendLock(m.engine.segRoot)
+	releaseAll, err := m.engine.lockAllFamilyShards()
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if relErr := lock.release(); retErr == nil && relErr != nil {
-			retErr = relErr
-		}
-	}()
+	defer releaseAll()
 	repaired := map[string]bool{}
 	today := ingestionDay(m.engine.clock())
 	for _, lf := range batch {

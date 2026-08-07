@@ -312,23 +312,22 @@ func (e *engine) remove(id string) (retErr error) {
 	if !e.localFS {
 		return os.Remove(filepath.Join(e.eventsDir, id+".json"))
 	}
-	lock, err := acquireAppendLock(e.segRoot)
+	families, err := e.segmentFamilies()
+	if err != nil {
+		return err
+	}
+	// remove may rewrite any family's hot segment, so it locks every family
+	// shard (sorted, deadlock-free) — mutually exclusive with put's per-family
+	// appends on the families it touches.
+	releaseAll, err := e.appendShards.acquireAll(families)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return os.Remove(filepath.Join(e.eventsDir, id+".json"))
 		}
 		return err
 	}
-	defer func() {
-		if releaseErr := lock.release(); retErr == nil && releaseErr != nil {
-			retErr = releaseErr
-		}
-	}()
+	defer releaseAll()
 
-	families, err := e.segmentFamilies()
-	if err != nil {
-		return err
-	}
 	preferred := familyOf(nil, id)
 	sort.SliceStable(families, func(i, j int) bool {
 		return families[i] == preferred && families[j] != preferred
@@ -355,10 +354,20 @@ func (e *engine) remove(id string) (retErr error) {
 			if i != len(frames)-1 {
 				return fmt.Errorf("cannot remove non-tail event %s from append-only segment", id)
 			}
-			return truncateAndSync(last.path, frames[i].Offset, true)
+			if err := truncateAndSync(last.path, frames[i].Offset, true); err != nil {
+				return err
+			}
+			// The id is durably gone; the in-process recent-write view must not
+			// short-circuit a later re-put of the same id as "already present".
+			sharedRecentWrites.forget(e.segRoot, family, id)
+			return nil
 		}
 	}
-	return os.Remove(filepath.Join(e.eventsDir, id+".json"))
+	if err := os.Remove(filepath.Join(e.eventsDir, id+".json")); err != nil {
+		return err
+	}
+	sharedRecentWrites.forget(e.segRoot, preferred, id)
+	return nil
 }
 
 func (e *engine) segmentFamilies() ([]string, error) {
