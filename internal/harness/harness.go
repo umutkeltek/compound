@@ -124,8 +124,15 @@ func DefaultRegistry() Registry {
 				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
 				NativeSkills: true, MCP: true,
 			},
-			Limitations:    []string{"long-session instruction drift", "instruction/context budget cap"},
-			InjectBudgetMS: 1500,
+			Limitations: []string{"long-session instruction drift", "instruction/context budget cap"},
+			// claude_code no longer binds UserPromptSubmit (see hookplan's
+			// prepare_turn_context split), so this budget governs SessionStart alone --
+			// one build per session, not one per turn. 1500ms was a per-turn figure and
+			// the session build does not fit inside it: measured 1.1s idle and 2.3-4.3s
+			// under load, which is why roughly a third of session starts fail open with
+			// "Context build failed" and open unoriented. 5000ms clears the loaded
+			// measurement with headroom; it is not a licence for the build to get slower.
+			InjectBudgetMS: 5000,
 		},
 		"claude_zai": {
 			Name:                 "claude_zai",

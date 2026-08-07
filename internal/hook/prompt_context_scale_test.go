@@ -68,8 +68,12 @@ func TestLiveUserPromptScaleStaysInsideNativeBudget(t *testing.T) {
 	if got := deps.Registry.InjectionBudgetMS("codex"); got != 1500 {
 		t.Fatalf("codex injection budget = %dms, want pinned 1500ms", got)
 	}
-	if got := deps.Registry.InjectionBudgetMS("claude_code"); got != 1500 {
-		t.Fatalf("claude injection budget = %dms, want pinned 1500ms", got)
+	// claude_code's budget is deliberately larger and is NOT the gate this test enforces:
+	// it stopped binding UserPromptSubmit, so its budget now covers the once-per-session
+	// SessionStart build. The latency ceilings below stay pinned to codex's per-turn
+	// 1500ms, which is the stricter of the two and the one a prompt actually runs under.
+	if got := deps.Registry.InjectionBudgetMS("claude_code"); got != 5000 {
+		t.Fatalf("claude session injection budget = %dms, want pinned 5000ms", got)
 	}
 
 	latencies := make([]time.Duration, 0, promptScaleRuns)
