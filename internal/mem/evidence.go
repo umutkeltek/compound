@@ -19,6 +19,32 @@ const OperatorConfirmationSourceKind = "operator_confirmation"
 // A kind is a lowercase slug so provenance stays greppable and typo-resistant in shape.
 var evidenceSourceKindPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]*$`)
 
+// canonicalEvidenceID matches the content-addressed format RecordEvidence mints
+// (ev_ + first 12 hex chars of the content hash). Rows predating that ratchet
+// (UUID-suffixed session-transcript ids, extended-hex note ids, and canonical-
+// looking ids hashed by the old formula) can never match the canonical address.
+// The fold treats pre-ratchet rows as legacy: structural checks only, never a
+// hard fail — legacy data is old, not a forgery. Post-ratchet rows are still
+// validated strictly and fail loud on drift.
+const evidenceAddressRatchetDate = "2026-08-03"
+
+var canonicalEvidenceID = regexp.MustCompile(`^ev_[0-9a-f]{12}$`)
+
+// isLegacyEvidence reports whether a row predates the content-address ratchet,
+// by its own observed_at when present; rows without a timestamp are treated as
+// legacy (old data, conservative for the strict fold). Operator-confirmation
+// rows are governed and always validate strictly — the strict fold exists to
+// protect adjudication, so no confirmation row is ever "legacy".
+func isLegacyEvidence(e EvidenceItem) bool {
+	if e.SourceKind == OperatorConfirmationSourceKind {
+		return false
+	}
+	if canonicalEvidenceID.MatchString(e.ID) && e.ObservedAt >= evidenceAddressRatchetDate {
+		return false
+	}
+	return true
+}
+
 // EvidenceItem is immutable, citable raw material — never truth on its own, but the thing a claim
 // points at. The spine-native convergence of the Gen-1 memory.EvidenceItem: mem previously kept
 // only a SnippetHash on the candidate, with no stored, retrievable evidence object. The id is
@@ -138,7 +164,16 @@ func (s *Store) Evidence() ([]EvidenceItem, error) {
 			return nil
 		}
 		if err := validateEvidenceContentAddress(e); err != nil {
-			return err
+			// Pre-ratchet rows (observed before the strict fold shipped) cannot
+			// satisfy the canonical address formula; verify their shape instead of
+			// failing the whole ledger. Post-ratchet rows keep the strict fail-loud
+			// fold — a drift there is a forgery.
+			if !isLegacyEvidence(e) {
+				return err
+			}
+			if !strings.HasPrefix(e.ID, "ev_") || !evidenceSourceKindPattern.MatchString(e.SourceKind) {
+				return fmt.Errorf("legacy evidence %q malformed: id prefix or source_kind", e.ID)
+			}
 		}
 		if _, seen := byID[e.ID]; !seen {
 			order = append(order, e.ID)

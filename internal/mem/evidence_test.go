@@ -1,6 +1,9 @@
 package mem
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 // Evidence is stored, retrievable, and content-addressed: recording the same content twice is
 // idempotent (one item, stable id), and the item round-trips by id.
@@ -48,5 +51,51 @@ func TestEvidenceValidation(t *testing.T) {
 	}
 	if _, err := s.RecordEvidence(EvidenceItem{SourceKind: "note"}, t0); err == nil {
 		t.Error("evidence with neither quote_text nor source_id must be rejected")
+	}
+}
+
+// Legacy pre-ratchet evidence rows (UUID-suffixed ids from the old gbrain
+// transcript import, extended-hex note ids, canonical-looking ids hashed by the
+// old formula) cannot match the canonical content-address formula; the fold must
+// pass them with structural checks instead of failing the whole ledger.
+// Post-ratchet canonical rows still fail loud on any drift.
+func TestEvidenceFoldToleratesLegacyRowsButNotCanonicalTampering(t *testing.T) {
+	s := newStore(t)
+
+	appendRaw := func(line string) {
+		t.Helper()
+		f, err := os.OpenFile(s.evidenceLog(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString(line + "\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Legacy transcript row: UUID-suffixed id, session_id, non-canonical hash,
+	// observed before the ratchet date.
+	appendRaw(`{"id":"ev_3ea05141-2d1c-4f57-bb96-b89aee61699a_000","source_kind":"transcript","source_id":"3ea05141-2d1c-4f57-bb96-b89aee61699a","session_id":"3ea05141-2d1c-4f57-bb96-b89aee61699a","quote_text":"legacy transcript quote","content_hash":"628b6ec3ad523e7d","actor":"user","observed_at":"2026-06-24T12:44:04Z"}`)
+	// Legacy canonical-looking row: ev_<12hex> id but old-formula hash, pre-ratchet.
+	appendRaw(`{"id":"ev_47e4c659f035","source_kind":"note","source_id":"n1","quote_text":"legacy note quote","content_hash":"deadbeefdeadbeef","actor":"user","observed_at":"2026-06-30T12:00:00Z"}`)
+
+	all, err := s.Evidence()
+	if err != nil {
+		t.Fatalf("fold must tolerate legacy evidence rows: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("fold must load both legacy rows; got %d", len(all))
+	}
+
+	// A POST-ratchet canonical row with a wrong hash is still a forgery: fail loud.
+	canonical, err := s.RecordEvidence(EvidenceItem{SourceKind: "codex", SourceID: "s1", QuoteText: "tamper me", Actor: "user"}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tamperObserved := "2026-08-05T12:00:00Z"
+	appendRaw(`{"id":"` + canonical.ID + `","source_kind":"codex","source_id":"DIFFERENT","quote_text":"tampered","content_hash":"0000000000000000","actor":"user","observed_at":"` + tamperObserved + `"}`)
+	if _, err := s.Evidence(); err == nil {
+		t.Error("post-ratchet canonical-format evidence with mismatched content address must fail the fold")
 	}
 }
