@@ -9,6 +9,11 @@ roster, and the governed-spawn full-roster gate. The launch-owner half (manifest
 authority, `sb profile plan/apply` consuming it) remains a starting hypothesis to prove only
 via a future vertical slice.
 
+**§9-§14 (naming and combination extension)** are proposal-only and land nothing. They settle
+what sections 1-8 left open: what a lane is *called*, how a harness is registered without a
+code change, how valid `(harness, lane)` combinations are computed rather than remembered, and
+where account/entitlement truth lives. Read §14 for the recommended slice order.
+
 ## 6b. Landed compound slice (2026-08-07)
 
 The compound-only half of §6, implemented end to end:
@@ -162,3 +167,181 @@ Vertical slice: **claude-minimax as both harness and API from one manifest.**
   covers all lanes (minimax, zai, zai-direct, qwen, claude-codex, opencode).
 - Implicit path coupling (wrappers pointing at repo-relative scripts) retired when the
   manifest is the only thing that names a lane's artifacts.
+- Hand-written launch wrappers retired once §11's generator emits them from tuples. In one
+  observed deployment 52 wrappers existed against 11 provider lanes, of which 6 carried
+  launch-profile ownership and 46 were hand-written — plus 4 stale backup files sharing the
+  same namespace. Deletion, not migration, is the retirement.
+
+---
+
+# Naming and combination extension (§9-§14)
+
+Sections 1-8 settle *what a lane declares*. They do not settle *what a lane is called*, and
+that turned out to be the load-bearing question: the manifest's `lane:` field is still a flat
+name, so it inherits the fragility it was meant to remove.
+
+## 9. Identity: naming is owned by `docs/NAMING.md`
+
+**This section does not define a naming scheme.** `docs/NAMING.md` already owns it, is
+enforced by `harness.ValidateHarnessName` plus tests, and answers every question this design
+raised: the four distinct nouns (account, lane, harness, profile), the identifier grammar
+(`lane <vendor>/<model>[@<variant>]`, `profile <harness>.<lane>[.<account>]`), the rule that
+`profile` is always the composite and never shorthand for a part, and the bans on encoding
+effort, cost, or comparative suffixes into a name.
+
+A second copy of a naming rule is a copy that drifts, so what follows is only the delta: the
+violations this design must repair, and the one rule the owner does not yet state.
+
+### 9.1 Live violations of the owner's rules
+
+The manifest's flat `lane:` field lets all three of these persist:
+
+1. **One lane, one name per surface.** A single provider lane was observed carrying six
+   simultaneous names across lane records, per-harness launchers, a governance registry, a
+   route target, and a third harness's own config. `NAMING.md` §Locations already forbids
+   this — "ask the owner; never keep a second copy" — but nothing derives the names, so each
+   surface keeps its own.
+2. **A name meaning two things.** The lane-to-harness map contains `"codex" -> "claude-zai"`
+   with a comment explaining that the lane named `codex` is not the codex harness. That is
+   the exact defect class `NAMING.md` opens with.
+3. **A banned comparative suffix.** A `-full` profile persists, which rule 4 forbids by name
+   — and for the documented reason: the suffix once described an intended subscription tier
+   while capability came from somewhere else.
+
+### 9.2 The additive rule: launcher names are generated, not authored
+
+`NAMING.md` governs identifiers. It does not say who *writes* a launcher file's name, and
+that gap is how the violations above entered — every launcher name was typed by hand.
+
+> A launcher filename is derived from its profile id. It is generated output, never an
+> authored name. Nothing may key on the string.
+
+This is what makes the owner's rules enforceable rather than aspirational: a generated name
+cannot carry an effort, a cost hint, or a comparative suffix, because no human is typing it.
+It also makes renaming safe, which `NAMING.md` §Applying this otherwise treats as a
+migration with an alias step.
+
+## 10. Harness as registry data, not a closed enum
+
+The loader for this already exists: `compound.harness_registry.v0.1`
+(`harness.LoadRegistryManifest`, reference fixture `fixtures/harness/harness-registry.yaml`)
+reads harnesses as data — name, instruction mechanism, capabilities, limitations.
+
+**What is missing is authority.** `DefaultRegistry()` remains a hardcoded Go map, and the
+lane-manifest family check remains a closed switch over three names. Registering a new
+harness therefore still requires editing Go in several places, which is precisely the barrier
+that keeps an outside contributor from adding their own.
+
+The change is to make the manifest the registry's source and leave the Go map as the seed
+default for a deployment that ships no manifest. Then:
+
+- Adding a harness is **one YAML row**: name, instruction mechanism, capability flags,
+  limitations, and the wire protocols it speaks (§11).
+- The harness family check reads the registry instead of a switch.
+- `compound harness capability-drift` stays the falsifier. It already works and already earns
+  its keep: it caught two registry floors declaring less than the lanes actually had, one of
+  them on reasoning that had been true when written and silently stopped being true. A
+  declaration is only meaningful when something outside it can disagree.
+
+Capability semantics are `docs/NAMING.md` §Capability's, unchanged and not restated here:
+declared capability is a floor, over-claiming is unsafe while under-claiming is merely
+wasteful, and a declaration must be falsifiable by something outside itself.
+
+## 11. The combination matrix
+
+A harness and a lane compose when their wire protocols agree. **That compatibility fact is
+already declared per lane** — each lane record carries the wire API it speaks and whether it
+publishes a native Anthropic tap. So the matrix is computable from data that exists today; it
+does not need a new registry, only a join.
+
+| lane declares | harness needing a native Anthropic tap | OpenAI-compatible harness |
+|---|---|---|
+| wire `anthropic_messages` + tap port | native tap | via gateway route |
+| wire `chat` + tap port | tap shim | direct route |
+| wire `chat`, no tap | **incompatible** | direct route |
+
+This yields three states per `(harness, lane)` cell, and the useful one is the middle:
+
+- **realized** — a launcher exists,
+- **possible** — compatible, nothing built yet,
+- **incompatible** — the lane cannot serve that harness, with the declared reason.
+
+Surface: `compound lanes matrix [--harness H] [--lane L]`, read-only, no mutation. The
+**possible** cells are the answer to "which lanes could this harness use" without anyone
+enumerating wrappers from memory.
+
+Generation follows from the same table: a launcher is emitted per realized tuple by the launch
+owner's existing wrapper generator, rather than hand-written. This is the retirement path in
+§8 — and it makes governance posture structural, since a generated wrapper carries the profile
+id, revision, and capture binding by construction. Hand-written launchers were observed to
+carry none of these, which is not a lane defect but a *naming* defect: the wrapper was an
+authored artifact rather than a derived one.
+
+Evidence that the one-config-many-lanes shape works: a third harness already reaches nine
+lanes through a single config file listing route ids against one gateway endpoint, with zero
+per-lane wrappers. The wrapper-per-lane explosion is a property of the two harnesses whose
+launchers are authored by hand, not a property of lanes.
+
+## 12. The account and entitlement axis
+
+The manifest names a model but never says **which account reaches it**, so "what can I
+actually run right now" is unanswerable from the manifest alone. Two stores already hold the
+halves, and nothing joins them:
+
+- a **model catalog** — providers, models, pricing, free tiers, refreshable from upstream
+  catalogs with drift detection. This is *what exists in the world*.
+- an **account store** — per-provider enrollments with state, credential readiness, capacity
+  windows, and the discovery sources that observed them. This is *what this operator reaches*.
+
+The join is the runnable set: `catalog x enrollments -> lanes this deployment can actually
+run, with cost and remaining capacity`. The manifest gains two optional fields:
+
+```yaml
+account: <account-id>      # FK into the account store; omitted = provider default
+source:  <source-id>       # which subscription/API serves this lane
+```
+
+Both optional, so a single-account deployment writes neither. This also resolves a name
+collision worth fixing while the schema is open: in the model catalog, `sources` currently
+means *research sources for pricing data*, not *the operator's subscriptions*. Two unrelated
+meanings on one word, in the schema that is about to gain the second one.
+
+Once joined, entitlement becomes checkable rather than discovered at runtime: a lane whose
+account has no credential, or whose capacity window is exhausted, is knowably unrunnable
+before a spawn rather than after a failure.
+
+## 13. Open-source posture
+
+This design is for any deployment, not the one it was observed in. Constraints that follow:
+
+1. **No operator-specific lanes, accounts, paths, or credentials in tracked files.** Provider
+   and model names are public facts; account ids and host paths are not. Reference manifests
+   ship as fixtures with placeholder accounts.
+2. **The registry ships empty-capable.** A fresh clone with no accounts must run: the matrix
+   is empty, the doctor says so plainly, and nothing fails closed on absence.
+3. **Adding a provider, an account, or a harness is data, never a code change.** This is the
+   test of whether §10 and §12 actually landed. If a contributor adding a harness has to edit
+   Go, the extension failed.
+4. **The two authorities stay separate and one-directional.** The launch owner owns
+   launch/capture/route truth; compound owns governance truth and consumes published
+   projections with `authority_ref` + `source_revision`. Compound never mutates launch state;
+   the launch owner never reads compound state. Nothing in §9-§12 changes this seam.
+
+## 14. Slice order (recommendation)
+
+Smallest first, each independently useful:
+
+1. **§10 authority flip** — manifest owns the harness registry; Go map becomes the seed.
+   Proof: register a harness with no Go change and see it in `harness list` and
+   `capability-drift`.
+2. **§11 matrix (read-only)** — `compound lanes matrix`. Proof: it reports the *possible*
+   cells for a harness that currently has no launchers, and the incompatible ones with a
+   declared reason.
+3. **§11 generator** — emit launchers per realized tuple; delete the hand-written ones.
+   Proof: a regenerated launcher is byte-identical to an owned one, and profile doctor is
+   clean across every lane.
+4. **§12 account join** — optional manifest fields plus the runnable-set query.
+
+Steps 1-2 are additive and reversible. Step 3 deletes files and must be staged behind a
+backup plus a clean profile-doctor sweep; it is the only step in this extension that removes
+anything an operator might be launching by hand.

@@ -6,6 +6,7 @@ import (
 	archcli "compound/internal/arch"
 	browsercli "compound/internal/browser"
 	gamecli "compound/internal/game/cli"
+	lanematrixcli "compound/internal/lanematrix"
 	noticecli "compound/internal/operatornotice"
 	"compound/internal/policy"
 	schedulecli "compound/internal/schedule"
@@ -151,6 +152,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"narrate":   readCommand(cmdNarrate),
 		"stream":    readCommand(cmdStream),
 		"executors": readCommand(cmdExecutors),
+		"lanes":     readCommand(lanematrixcli.Run),
 		"presence": readCommand(cmdPresence).
 			withSubcommandAdmission("announce", policy.FirstPartyCommandGoverned),
 		"proof-check":        governedCommand(cmdProofCheck),

@@ -111,6 +111,17 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "declarative lane-manifest unit (harness + model + capture + route + hooks.roster) that switchback and compound both consume; compound derives the install harness and hook roster from it and governed spawn refuses lanes whose observed roster is not full",
 		Consumer: "cmd/compound cmdHookInstall --lane-file + GovernedFullRosterGate (work advance --execute), internal/hookplan InstallHooksForLane",
 	},
+	// lanematrix answers "which harness can run which lane, and which of those
+	// combinations exist yet" by composing the launch owner's published
+	// profile-conformance against the harness registry. It reads and never writes,
+	// and it deliberately reports an unbound combination as `unknown` rather than
+	// `possible` — the projection publishes no wire protocol or tap binding, so
+	// claiming compatibility would be the over-claim docs/NAMING.md calls unsafe.
+	"organ:lanematrix": {
+		Class:    MintEvidence,
+		Purpose:  "read-only (harness x lane) combination projection over published launch profile-conformance plus the harness registry; enumerates from registries rather than a launcher-directory listing and asserts no compatibility the projection does not publish",
+		Consumer: "cmd/compound command-registry dispatch (`compound lanes matrix`) via cmdLanes",
+	},
 	// browser is the macOS headless/automation-chrome observation organ; its only
 	// mutation is the B-scope `doctor --fix` orphan-idle swiftshader reap with
 	// per-target confirmation, never a write to compound authority.
