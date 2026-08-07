@@ -94,7 +94,7 @@ func TestEvidenceFoldToleratesLegacyRowsButNotCanonicalTampering(t *testing.T) {
 		t.Fatal(err)
 	}
 	tamperObserved := "2026-08-05T12:00:00Z"
-	appendRaw(`{"id":"` + canonical.ID + `","source_kind":"codex","source_id":"DIFFERENT","quote_text":"tampered","content_hash":"0000000000000000","actor":"user","observed_at":"` + tamperObserved + `"}`)
+	appendRaw(`{"id":"` + canonical.ID + `","source_kind":"codex","source_id":"DIFFERENT","quote_text":"tampered","content_hash":"00000000deadbeef","actor":"user","observed_at":"` + tamperObserved + `"}`)
 	if _, err := s.Evidence(); err == nil {
 		t.Error("post-ratchet canonical-format evidence with mismatched content address must fail the fold")
 	}
