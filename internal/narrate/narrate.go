@@ -86,7 +86,26 @@ type Inputs struct {
 	Receipts   []ReceiptSummary
 	Traffic    TrafficSplit
 	ThreadSeen map[string]ThreadSeen
+	Injection  *InjectionLegibility
 	Now        time.Time
+}
+
+// InjectionLegibility is the glanceable per-turn injection meter carried into
+// narrate. It is derived upstream (cmd/compound via capgraph.LatestInjectionLegibility)
+// from the latest ContextPack + its rendered injection; narrate only renders one
+// beat from the numbers, mirroring how ReceiptSummary/TrafficSplit carry already-
+// derived streams. Present is false when no ContextPack has been observed, so the
+// beat is absent (never a fabricated "0 served").
+type InjectionLegibility struct {
+	Present          bool   `json:"present"`
+	PackID           string `json:"pack_id"`
+	ServedRefs       int    `json:"served_refs"`
+	ServedMemory     int    `json:"served_memory"`
+	ServedPositions  int    `json:"served_positions"`
+	ServedOffers     int    `json:"served_offers"`
+	ExcludedRefs     int    `json:"excluded_refs"`
+	ExcludedNoTask   int    `json:"excluded_no_task"`
+	InjectionBytes   int    `json:"injection_bytes"`
 }
 
 // ChangedSet mirrors the exported needs of the orient operator cursor + its
@@ -262,6 +281,12 @@ func Build(in Inputs, opt Options) (Result, error) {
 	// enters the attention conservation accounting (narrated+folded==members).
 	if tb, ok := composeTraffic(in.Traffic, mood); ok {
 		beats = append(beats, tb)
+	}
+
+	// The injection-legibility beat is the same shape: a standing glance over the
+	// latest ContextPack, outside the attention accounting.
+	if ib, ok := composeInjection(in.Injection, mood); ok {
+		beats = append(beats, ib)
 	}
 
 	assignSceneOrder(beats)

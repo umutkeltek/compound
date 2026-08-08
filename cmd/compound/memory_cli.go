@@ -37,7 +37,7 @@ func memoryUsage(sub string) string {
 	case "temperature":
 		return "usage: compound memory temperature [--json] [--rebuild]"
 	case "observation":
-		return "usage: compound memory observation [--json] [--record]"
+		return "usage: compound memory observation [legibility] [--json] [--record]"
 	case "consumption":
 		return "usage: compound memory consumption [--json] [--record]"
 	case "canon":

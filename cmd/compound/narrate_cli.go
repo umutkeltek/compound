@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/attention"
+	"compound/internal/capgraph"
 	"compound/internal/home"
 	"compound/internal/narrate"
 	"compound/internal/routeevidence"
@@ -160,14 +161,36 @@ func buildNarrateScript(homePath string, mood narrate.Mood, recent int, now time
 	if err != nil {
 		return narrate.Result{}, err
 	}
+	injection := loadNarrateInjection(homePath)
 	return narrate.Build(narrate.Inputs{
 		Attention:  report,
 		Changed:    narrate.ChangedSet{CurrentSeq: currentSeq, LastSeenSeq: cursor.LastSeenSeq, FirstRun: firstRun},
 		Receipts:   recentReceiptSummaries(changed),
 		Traffic:    traffic,
 		ThreadSeen: seen,
+		Injection:  injection,
 		Now:        now,
 	}, narrate.Options{Mood: mood})
+}
+
+// loadNarrateInjection reduces the latest ContextPack's injection meter to the
+// narrate beat's input. Best-effort: no pack → nil (beat absent), never an error.
+func loadNarrateInjection(homePath string) *narrate.InjectionLegibility {
+	leg, err := capgraph.LatestInjectionLegibility(homePath)
+	if err != nil || leg.PackID == "" {
+		return nil
+	}
+	return &narrate.InjectionLegibility{
+		Present:         true,
+		PackID:          leg.PackID,
+		ServedRefs:      leg.ServedRefs,
+		ServedMemory:    leg.ServedMemory,
+		ServedPositions: leg.ServedPositions,
+		ServedOffers:    leg.ServedOffers,
+		ExcludedRefs:    leg.ExcludedRefs,
+		ExcludedNoTask:  leg.ExcludedNoTask,
+		InjectionBytes:  leg.InjectionBytes,
+	}
 }
 
 // loadCheapShare reads the imported route-evidence ledger and reduces it to the

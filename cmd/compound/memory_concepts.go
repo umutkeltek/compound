@@ -346,7 +346,13 @@ func printTemperatureSummary(proj mem.TemperatureProjection) {
 // math; this function only sweeps (never mutates) and renders. --record persists the
 // report as a plain timestamped artifact under $COMPOUND_HOME/state/runs/
 // memory-injection-observation/ — the runtime home, never the repo, never projections/.
+// The `legibility` form renders the GLANCEABLE per-turn meter (the operator-legibility
+// half): latest ContextPack + its rendered injection, in one line and --json.
 func cmdMemoryObservation(homePath string, args []string) {
+	if len(args) > 0 && args[0] == "legibility" {
+		cmdMemoryLegibility(homePath, args[1:])
+		return
+	}
 	wantJSON := hasFlag(args, "--json")
 	rep, err := capgraph.BuildInjectionObservationReport(homePath, capgraph.InjectionObservationOptions{GeneratedAt: time.Now()})
 	if err != nil {
@@ -372,6 +378,22 @@ func cmdMemoryObservation(homePath string, args []string) {
 // reader never has to trust an out-of-band description of on/off/reduced), the
 // per-condition rollup the packet's report-content spec requires, the explicit f2 line,
 // and a per-session table (session/receipt id, condition, served, consumed).
+// cmdMemoryLegibility renders the glanceable per-turn injection meter: the latest
+// ContextPack's served/excluded/memory/positions/offers plus the rendered injection
+// size, in one line. Read-only, best-effort (a home that never oriented says so).
+func cmdMemoryLegibility(homePath string, args []string) {
+	leg, err := capgraph.LatestInjectionLegibility(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if hasFlag(args, "--json") {
+		printJSON(leg)
+		return
+	}
+	fmt.Println(leg.Glance())
+}
+
 func printInjectionObservationSummary(rep capgraph.InjectionObservationReport) {
 	fmt.Println("# memory injection observation")
 	fmt.Printf("- discriminator: %s\n", rep.Discriminator)
