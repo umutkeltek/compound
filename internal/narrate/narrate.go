@@ -97,15 +97,15 @@ type Inputs struct {
 // derived streams. Present is false when no ContextPack has been observed, so the
 // beat is absent (never a fabricated "0 served").
 type InjectionLegibility struct {
-	Present          bool   `json:"present"`
-	PackID           string `json:"pack_id"`
-	ServedRefs       int    `json:"served_refs"`
-	ServedMemory     int    `json:"served_memory"`
-	ServedPositions  int    `json:"served_positions"`
-	ServedOffers     int    `json:"served_offers"`
-	ExcludedRefs     int    `json:"excluded_refs"`
-	ExcludedNoTask   int    `json:"excluded_no_task"`
-	InjectionBytes   int    `json:"injection_bytes"`
+	Present         bool   `json:"present"`
+	PackID          string `json:"pack_id"`
+	ServedRefs      int    `json:"served_refs"`
+	ServedMemory    int    `json:"served_memory"`
+	ServedPositions int    `json:"served_positions"`
+	ServedOffers    int    `json:"served_offers"`
+	ExcludedRefs    int    `json:"excluded_refs"`
+	ExcludedNoTask  int    `json:"excluded_no_task"`
+	InjectionBytes  int    `json:"injection_bytes"`
 }
 
 // ChangedSet mirrors the exported needs of the orient operator cursor + its
