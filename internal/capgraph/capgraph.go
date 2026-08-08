@@ -241,6 +241,53 @@ func (s *Store) Add(n Node) error {
 	return appendJSONL(s.nodesLog(), &n)
 }
 
+// Retire marks one or more capability nodes WITHDRAWN (the durable lifecycle
+// fact the Node.Retired doc describes): it reloads the existing node so its
+// kind/name/triggers/surfaces are preserved, sets Retired=true, and re-appends
+// (last-write-wins by ID). Retired nodes never surface. It is a DECIDED
+// withdrawal, distinct from Health (a broken-but-live node stays named and is
+// merely not offered). Unknown ids are reported, not silently dropped, so a
+// caller can tell a typo from a no-op. A node already retired is left untouched.
+func (s *Store) Retire(ids ...string) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("retire requires at least one node id")
+	}
+	nodes, err := s.loadNodes()
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]Node, len(nodes))
+	for _, n := range nodes {
+		byID[n.ID] = n
+	}
+	unknown := make([]string, 0, len(ids))
+	retired := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		n, ok := byID[id]
+		if !ok {
+			unknown = append(unknown, id)
+			continue
+		}
+		if n.Retired {
+			retired = append(retired, id)
+			continue
+		}
+		n.Retired = true
+		if err := appendJSONL(s.nodesLog(), &n); err != nil {
+			return retired, fmt.Errorf("retire %s: %w", id, err)
+		}
+		retired = append(retired, id)
+	}
+	if len(unknown) > 0 {
+		return retired, fmt.Errorf("retire: unknown node id(s) %v", unknown)
+	}
+	return retired, nil
+}
+
 // AddEdge appends a typed graph edge. It is for deterministic importers such as
 // tool topology; feedback learning still goes through Observe.
 func (s *Store) AddEdge(e Edge, now time.Time) error {
