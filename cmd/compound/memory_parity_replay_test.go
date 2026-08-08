@@ -289,7 +289,7 @@ func TestParityReplayCmdMemoryEngineProfileBindsConfiguredEngine(t *testing.T) {
 			ExpectedRefs: []string{wantRef},
 		}},
 	})
-	exitCode, out := runParityProfileReplayCLI(t, homePath, fixturePath, "gbrain", strings.TrimPrefix(wantRef, "claim://"))
+	exitCode, out := runParityProfileReplayCLI(t, homePath, fixturePath, "memory-cli", strings.TrimPrefix(wantRef, "claim://"))
 	if exitCode != 0 {
 		t.Fatalf("cmdMemory parity replay with engine profile exit=%d, want 0\n%s", exitCode, out)
 	}
@@ -301,7 +301,7 @@ func TestParityReplayCmdMemoryEngineProfileBindsConfiguredEngine(t *testing.T) {
 		t.Fatalf("profiled parity replay report=%+v", report)
 	}
 	evidence := report.Rows[0].EngineDependency
-	if evidence == nil || evidence.RequestedEngine != "gbrain" || evidence.ObservedEngine != "parity-test-breadth" || evidence.Outcome != retrievalparity.EngineOutcomeUsed {
+	if evidence == nil || evidence.RequestedEngine != "memory-cli" || evidence.ObservedEngine != "parity-test-breadth" || evidence.Outcome != retrievalparity.EngineOutcomeUsed {
 		t.Fatalf("profiled parity replay evidence=%+v", evidence)
 	}
 }

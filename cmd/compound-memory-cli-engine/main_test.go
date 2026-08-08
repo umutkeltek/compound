@@ -69,47 +69,28 @@ func TestMemoryCLIEngineUsesQueryOutputToRankIndexedClaims(t *testing.T) {
 	}
 }
 
-func TestMemoryCLIEngineGBrainProfileUsesReadOnlyQueryTemplate(t *testing.T) {
+func TestMemoryCLIEngineGBrainProfileIsRetired(t *testing.T) {
+	// gbrain is retired as a memory engine (2026-08-08): compound owns memory
+	// via the ledger + corpus lanes. The legacy COMPOUND_MEMORY_CLI_PROFILE=gbrain
+	// path that shelled to a gbrain binary must fail loudly and direct to
+	// breadth, never silently run.
 	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "gbrain")
-	fake := &fakeMemoryCLI{output: "Compound engine profile should use Go."}
-	responses := exchange(t, fake, []mem.Request{
-		{SchemaVersion: mem.ProtocolVersion, RequestID: "r1", Op: mem.OpCapabilities},
-		{
-			SchemaVersion: mem.ProtocolVersion,
-			RequestID:     "r2",
-			Op:            mem.OpIndex,
-			CorpusGen:     1,
-			Claims:        []mem.ClaimText{{ClaimID: "claim_go", Text: "compound memory engine go"}},
-		},
-		{
-			SchemaVersion: mem.ProtocolVersion,
-			RequestID:     "r3",
-			Op:            mem.OpQuery,
-			Text:          "compound memory engine",
-			Gate:          mem.GateList,
-			Allowlist:     []string{"claim_go"},
-			K:             1,
-		},
-	})
-	if responses[0].Name != "gbrain" || responses[0].Embedder != "gbrain-cli" {
-		t.Fatalf("capabilities = %+v, want gbrain/gbrain-cli", responses[0])
+	fake := &fakeMemoryCLI{output: "unused"}
+	var out bytes.Buffer
+	err := run(strings.NewReader("{}\n"), &out, fake.run)
+	if err == nil {
+		t.Fatal("gbrain profile must fail closed, got no error")
 	}
-	if fake.calls != 1 || fake.bins[0] != "gbrain" {
-		t.Fatalf("gbrain profile should call gbrain once, bins=%v calls=%d", fake.bins, fake.calls)
+	if !strings.Contains(err.Error(), "retired") || !strings.Contains(err.Error(), "breadth") {
+		t.Fatalf("gbrain retirement error is not actionable: %v", err)
 	}
-	joined := strings.Join(fake.args[0], " ")
-	for _, want := range []string{"query", "--limit 8", "--detail low", "--autocut false"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("gbrain args %q missing %q", joined, want)
-		}
-	}
-	if len(responses[2].Hits) != 1 || responses[2].Hits[0].ClaimID != "claim_go" {
-		t.Fatalf("gbrain profile hits = %+v", responses[2].Hits)
+	if fake.calls != 0 {
+		t.Fatalf("gbrain profile must not shell out, got %d external calls", fake.calls)
 	}
 }
 
 func TestMemoryCLIEngineProfileAllowsExplicitOverrides(t *testing.T) {
-	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "gbrain")
+	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "memory-cli")
 	t.Setenv("COMPOUND_MEMORY_CLI_BIN", "custom-brain")
 	t.Setenv("COMPOUND_MEMORY_CLI_QUERY_ARGS", "search {query} --limit {limit}")
 	t.Setenv("COMPOUND_MEMORY_CLI_ENGINE_EMBEDDER", "custom-embedder")

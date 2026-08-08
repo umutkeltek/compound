@@ -11636,7 +11636,9 @@ func TestMemoryEngineProfileFlagOverridesPersistedConfig(t *testing.T) {
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
-	if _, err := writeMemoryEngineConfig(homePath, "gbrain"); err != nil {
+	// Persist a breadth config, then override it with an explicit profile flag.
+	// (gbrain is retired as a memory engine, so it can no longer be persisted.)
+	if _, err := writeMemoryEngineConfig(homePath, "breadth"); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
