@@ -5,6 +5,7 @@ import (
 
 	archcli "compound/internal/arch"
 	browsercli "compound/internal/browser"
+	executorlenscli "compound/internal/executorlens"
 	gamecli "compound/internal/game/cli"
 	lanematrixcli "compound/internal/lanematrix"
 	noticecli "compound/internal/operatornotice"
@@ -190,7 +191,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"bench":           heldCommand(cmdBench),
 		"latent-tax":      heldCommand(cmdLatentTax),
 		"behavioral-lens": heldCommand(cmdBehavioralLens),
-		"executor-lens":   heldCommand(cmdExecutorLens),
+		"executor-lens":   heldCommand(executorlenscli.RunCLI),
 		"lens-modulate":   heldCommand(cmdLensModulate),
 		"act":             heldCommand(cmdAct),
 		"actuator":        heldCommand(cmdActuator),

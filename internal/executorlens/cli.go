@@ -1,26 +1,32 @@
-package main
+package executorlens
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"time"
 
-	"compound/internal/executorlens"
 	"compound/internal/home"
 )
 
-// cmdExecutorLens is the operator/orchestrator door onto the executor-receipt locator — the
+// RunCLI is the operator/orchestrator door onto the executor-receipt locator — the
 // evidence-only collector that reads THIS repo's executor lanes' (Codex, Claude Code) receipts/events
-// and turns them into behavioral-lens signals. It delegates to runExecutorLens, which returns an exit
+// and turns them into behavioral-lens signals. It delegates to runCLI, which returns an exit
 // code (never calls os.Exit) so the visibility gate and fail-loud paths are exercised by tests.
-func cmdExecutorLens(args []string) {
-	if code := runExecutorLens(args, os.Stdout, os.Stderr); code != 0 {
+//
+// The command body lives with its organ rather than in cmd/compound, matching the
+// schedule.Run / browser.Run / lanematrix.Run pattern, so cmd/compound stays a thin
+// dispatch layer under its ratcheting size budget. It is RunCLI and not Run because
+// Run is already this package's collector entry point (Run(homePath, record, now)) —
+// the CLI face is the caller of that, not a second spelling of it.
+func RunCLI(args []string) {
+	if code := runCLI(args, os.Stdout, os.Stderr); code != 0 {
 		os.Exit(code)
 	}
 }
 
-func executorLensUsage() string {
+func cliUsage() string {
 	return "usage:\n" +
 		"  compound executor-lens subjects [--home P] [--json]\n" +
 		"    list the executor lanes (Codex, Claude Code) found in this home's receipts/events and how\n" +
@@ -33,35 +39,35 @@ func executorLensUsage() string {
 		"and the outward projection is public_safe only — operator_private executor signals never leave the home."
 }
 
-func runExecutorLens(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || hasUsageFlag(args) {
-		fmt.Fprintln(stderr, executorLensUsage())
+func runCLI(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || cliHasUsageFlag(args) {
+		fmt.Fprintln(stderr, cliUsage())
 		return 2
 	}
 	switch args[0] {
 	case "subjects":
-		return runExecutorLensSubjects(args[1:], stdout, stderr)
+		return runCLISubjects(args[1:], stdout, stderr)
 	case "run":
-		return runExecutorLensRun(args[1:], stdout, stderr)
+		return runCLIRun(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintln(stderr, executorLensUsage())
+		fmt.Fprintln(stderr, cliUsage())
 		return 2
 	}
 }
 
-func runExecutorLensSubjects(args []string, stdout, stderr io.Writer) int {
-	homePath, err := home.Resolve(flagValue(args, "--home"))
+func runCLISubjects(args []string, stdout, stderr io.Writer) int {
+	homePath, err := home.Resolve(cliFlagValue(args, "--home"))
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	col, err := executorlens.CollectObservations(homePath)
+	col, err := CollectObservations(homePath)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	if hasFlag(args, "--json") {
-		if err := encodeJSON(stdout, col); err != nil {
+	if cliHasFlag(args, "--json") {
+		if err := cliEncodeJSON(stdout, col); err != nil {
 			fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
@@ -77,19 +83,19 @@ func runExecutorLensSubjects(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runExecutorLensRun(args []string, stdout, stderr io.Writer) int {
-	homePath, err := home.Resolve(flagValue(args, "--home"))
+func runCLIRun(args []string, stdout, stderr io.Writer) int {
+	homePath, err := home.Resolve(cliFlagValue(args, "--home"))
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	report, err := executorlens.Run(homePath, hasFlag(args, "--record"), time.Now())
+	report, err := Run(homePath, cliHasFlag(args, "--record"), time.Now())
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	if hasFlag(args, "--json") {
-		if err := encodeJSON(stdout, report); err != nil {
+	if cliHasFlag(args, "--json") {
+		if err := cliEncodeJSON(stdout, report); err != nil {
 			fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
@@ -106,4 +112,45 @@ func runExecutorLensRun(args []string, stdout, stderr io.Writer) int {
 			sig.LensID, sig.Subject, sig.Value, sig.Confidence, sig.Visibility)
 	}
 	return 0
+}
+
+// Flag helpers are package-local rather than imported, matching the organ-CLI
+// pattern already used by internal/browser and internal/schedule: an organ owns
+// its own small argv reading so moving a command out of cmd/compound does not
+// require exporting cmd/compound's unexported helpers.
+
+func cliHasUsageFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+func cliHasFlag(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == name {
+			return true
+		}
+	}
+	return false
+}
+
+func cliFlagValue(args []string, name string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == name && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func cliEncodeJSON(w io.Writer, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(w, string(data))
+	return err
 }

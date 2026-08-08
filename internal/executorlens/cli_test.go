@@ -1,4 +1,4 @@
-package main
+package executorlens
 
 import (
 	"bytes"
@@ -10,13 +10,12 @@ import (
 
 	"compound/internal/behaviorallens"
 	"compound/internal/envelope"
-	"compound/internal/executorlens"
 )
 
 func runExecCLI(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
 	var out, errb bytes.Buffer
-	code := runExecutorLens(args, &out, &errb)
+	code := runCLI(args, &out, &errb)
 	return out.String(), errb.String(), code
 }
 
@@ -76,7 +75,7 @@ func TestExecutorLensCLIRunPublicProjectionOnly(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run exit=%d stderr=%s", code, errStr)
 	}
-	var report executorlens.RunReport
+	var report RunReport
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("decode run report: %v (%s)", err, out)
 	}
@@ -116,7 +115,7 @@ func TestExecutorLensCLISubjects(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("subjects exit=%d stderr=%s", code, errStr)
 	}
-	var col executorlens.Collection
+	var col Collection
 	if err := json.Unmarshal([]byte(out), &col); err != nil {
 		t.Fatalf("decode collection: %v (%s)", err, out)
 	}
