@@ -28,7 +28,7 @@ import (
 // cmdCapability is the P8 capability graph: surface relevant capabilities for a task (never
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
-	usage := "usage: compound capability <add|resolve|surface|observe|consume|consume-receipts|usage|list|graph|authority|lifecycle-review|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-connections|import-gateway|import-skills|import-agent-lanes|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
+	usage := "usage: compound capability <add|retire|resolve|surface|observe|consume|consume-receipts|usage|list|graph|authority|lifecycle-review|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-connections|import-gateway|import-skills|import-agent-lanes|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -1169,6 +1169,26 @@ func cmdCapability(args []string) {
 		}
 		die(store.Add(capgraph.Node{ID: p[0], Kind: p[1], Name: p[2], Triggers: trig}))
 		fmt.Printf("added node %s (%s)\n", p[0], p[1])
+	case "retire":
+		// `capability retire <id>...` withdraws nodes from surfacing (durable
+		// lifecycle fact). The store reloads each node so its kind/name/triggers
+		// survive; only Retired flips. Retired nodes never surface and never
+		// execute. Distinct from Health (broken-but-named).
+		p := posn(map[string]bool{})
+		if len(p) == 0 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability retire <id> [<id>...]")
+			os.Exit(2)
+		}
+		retired, err := store.Retire(p...)
+		if err != nil {
+			// Unknown ids are reported; already-retired ones are still listed.
+			fmt.Fprintln(os.Stderr, "error:", err)
+			if len(retired) > 0 {
+				fmt.Fprintf(os.Stderr, "retired: %v\n", retired)
+			}
+			os.Exit(1)
+		}
+		fmt.Printf("retired %d node(s): %v\n", len(retired), retired)
 	case "resolve":
 		jsonOut := hasFlag(rest, "--json")
 		harness := flag("--harness")
