@@ -154,6 +154,15 @@ func RevertPromotionApply(homePath, workID string, plan PromotionRevertPlan, pd 
 		return PromotionRevertResult{}, err
 	}
 
+	// The restore moved the authority back to its pre-apply revision, so the
+	// source-authority ledger head must follow. Without this the ledger would
+	// still name the reverted-away revision and every later route plan or
+	// promotion review would error out against a "restored" authority.
+	restoredRevision := strings.TrimSpace(record.AuthorityRevisionBefore)
+	if err := appendPromotionAuthorityRecord(homePath, plan.AuthorityPath, restoredRevision, promotionRevertCommandName, record.ReviewID, res); err != nil {
+		return PromotionRevertResult{}, fmt.Errorf("authority restored to %s (receipt %s) but the source-authority ledger head could not be updated: %w",
+			plan.RestoredClaimLevel, res.Receipt.ID, err)
+	}
 	record.Status = "reverted"
 	record.UndoCommand = ""
 	record.EvidenceRefs = reviewartifact.UniqueSorted(append(append([]string{}, record.EvidenceRefs...),

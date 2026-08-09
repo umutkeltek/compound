@@ -30,13 +30,17 @@ import (
 const (
 	PromotionAppliedRecordSchemaVersion = "compound.route_promotion_applied.v0.1"
 
-	// PromotionApplyCapability is the capability an operator standing grant must
-	// name to let `route promotion-apply --confirm` write. The grant scopes to
-	// exactly this capability + the config_change class + the model-router path.
+	// PromotionApplyCapability is the capability a policy decision is evaluated
+	// against for `route promotion-apply --confirm`. The action is scoped to the
+	// local_reversible class, easy reversibility (the captured pre-image restores
+	// it through the same act seam), and local blast radius, against exactly the
+	// model-router authority file.
 	PromotionApplyCapability = "authority.model_router.claim.write"
 
 	promotionApplyAction         = "apply_model_router_claim"
 	promotionApplyTargetKind     = "model_router_claim"
+	promotionApplyCommandName    = "route promotion-apply"
+	promotionRevertCommandName   = "route promotion-revert"
 	promotionAppliedRecordSuffix = ".applied.json"
 	promotionHoldRecordSuffix    = ".reviewed.json"
 )
@@ -328,7 +332,7 @@ func PromotionApplyIntent(workID string, plan PromotionApplyPlan, now time.Time)
 		Capability:    PromotionApplyCapability,
 		Action:        promotionApplyAction,
 		Target:        target,
-		MutationClass: "config_change",
+		MutationClass: "local_reversible",
 		Reversibility: "easy",
 		BlastRadius:   "local",
 		Preview: fmt.Sprintf("%s %s/%s from %q to %q in %s (review %s)",
@@ -362,7 +366,17 @@ func ApplyPromotionReview(homePath, workID string, plan PromotionApplyPlan, pd e
 		return PromotionApplyResult{}, err
 	}
 
-	afterRevision := "sha256:" + digestHex(res.PostImage)
+	afterRevision := "sha256:" + digestHex(plan.ProposedYAML)
+
+	// The source-authority ledger names WHO last set the live authority revision.
+	// latestModelCapabilitiesSource refuses when the ledger head disagrees with the
+	// parsed authority, so a governed mutation that skipped this step would leave
+	// route planning and promotion review erroring out — mutated but unusable.
+	// This record is not an import: it is stamped with the governed door.
+	if lerr := appendPromotionAuthorityRecord(homePath, plan.AuthorityPath, afterRevision, promotionApplyCommandName, plan.ReviewID, res); lerr != nil {
+		return PromotionApplyResult{}, restoreAfterGovernedApplyFailure(store, adapter, ai, pd, res, lerr, now)
+	}
+
 	record := PromotionAppliedRecord{
 		SchemaVersion:             PromotionAppliedRecordSchemaVersion,
 		ID:                        reviewartifact.ID("rpar_", plan.ReviewID, res.Receipt.ID, plan.ProposedClaimLevel),
@@ -412,18 +426,49 @@ func ApplyPromotionReview(homePath, workID string, plan PromotionApplyPlan, pd e
 	if werr != nil {
 		// The authority is mutated but its review provenance could not be
 		// persisted. Restore through the SAME governed seam.
-		return PromotionApplyResult{}, restoreAfterAppliedRecordFailure(store, adapter, ai, pd, res, werr, now)
+		return PromotionApplyResult{}, restoreAfterGovernedApplyFailure(store, adapter, ai, pd, res, werr, now)
 	}
 	record.RecordPath = path
 
 	return PromotionApplyResult{Plan: plan, Record: record}, nil
 }
 
-// restoreAfterAppliedRecordFailure undoes a governed apply whose review-side
-// record could not be written. The original PolicyDecision authorized this exact
-// forward write, so restoring its own captured pre-image is an obligation-bound
-// cleanup under that same decision — not a new ungoverned mutation.
-func restoreAfterAppliedRecordFailure(store *act.ArtifactStore, adapter act.Adapter, ai envelope.ActionIntent, pd envelope.PolicyDecision, res act.Result, cause error, now time.Time) error {
+// appendPromotionAuthorityRecord stamps the source-authority ledger with the
+// revision this governed door installed. It deliberately records the promotion
+// command — not the import command — as the producer, so the ledger keeps saying
+// truthfully which door last changed authority.
+func appendPromotionAuthorityRecord(homePath, authorityPath, revision, via, reviewID string, res act.Result) error {
+	manifest, _, _, err := loadModelCapabilitiesSnapshot(homePath)
+	if err != nil {
+		return err
+	}
+	return appendModelCapabilitiesSourceAuthority(homePath, ModelCapabilitiesSourceAuthority{
+		SchemaVersion:       ModelCapabilitiesSourceAuthoritySchema,
+		ID:                  modelCapabilitiesSourceAuthorityID(authorityPath, revision),
+		CreatedAt:           res.Receipt.CreatedAt,
+		SourcePath:          authorityPath,
+		SourceRevision:      revision,
+		InputRevision:       revision,
+		ImportedVia:         via,
+		AuthorityRef:        ModelCapabilitiesAuthorityRef,
+		AuthorityStatus:     "compound_primary",
+		SourceRole:          "governed_authority_mutation",
+		Retires:             "",
+		RetirementCondition: "governed promotion door writes are authority, not a bridge input; no retirement condition applies",
+		Rollback:            "compound route promotion-revert --applied " + reviewID + promotionAppliedRecordSuffix + " --work <work-id> --confirm",
+		ModelIDs:            modelCapabilityIDs(manifest),
+		CapabilityClasses:   sortedStrings(manifest.CapabilityClasses),
+		RoutingDefaultCount: len(manifest.RoutingDefaults),
+		EvidenceRefs:        reviewartifact.UniqueSorted([]string{revision, res.Receipt.ID, res.Transition.ID, res.PreImageRef, res.PostImageRef, ModelCapabilitiesAuthorityRef}),
+	})
+}
+
+// restoreAfterGovernedApplyFailure undoes a governed apply whose post-write
+// bookkeeping (ledger head or review record) could not be persisted. The original
+// PolicyDecision authorized this exact forward write, so restoring its own
+// captured pre-image is obligation-bound cleanup under that same decision — not a
+// new ungoverned mutation.
+func restoreAfterGovernedApplyFailure(store *act.ArtifactStore, adapter act.Adapter, ai envelope.ActionIntent, pd envelope.PolicyDecision, res act.Result, cause error, now time.Time) error {
 	revertAI := act.RevertIntent(ai, res, now)
 	revertPD := pd
 	revertPD.ActionIntentID = revertAI.ID
