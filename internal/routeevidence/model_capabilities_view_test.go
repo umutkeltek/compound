@@ -51,6 +51,59 @@ func TestModelCapabilitiesYAMLProjectionIsDeterministicAndCarriesNoPrivatePaths(
 	}
 }
 
+func TestModelCapabilitiesProjectionRedactsSecretsAndPrivateEndpointsWithoutWeakeningDrift(t *testing.T) {
+	home := t.TempDir()
+	secret := "sk-" + strings.Repeat("a", 24)
+	privateEndpoint := "http" + "://127.0.0.1:1234/v1"
+	dirtyFixture := strings.Replace(
+		promotionApplyFixtureYAML,
+		"    cost_class: api-marginal\n",
+		"    cost_class: api-marginal\n    notes: endpoint "+privateEndpoint+" token "+secret+"\n",
+		1,
+	)
+	source := filepath.Join(t.TempDir(), "model-capabilities.yaml")
+	if err := os.WriteFile(source, []byte(dirtyFixture), 0o644); err != nil {
+		t.Fatalf("write dirty authority fixture: %v", err)
+	}
+	if _, err := ImportModelCapabilitiesYAML(home, source, t0); err != nil {
+		t.Fatalf("import dirty authority fixture: %v", err)
+	}
+
+	body, manifest := decodeProjection(t, home)
+	projected := string(body)
+	if strings.Contains(projected, secret) || strings.Contains(projected, privateEndpoint) {
+		t.Fatalf("projection leaked a credential or private endpoint:\n%s", projected)
+	}
+	for _, placeholder := range []string{"[credential-redacted]", "[private-endpoint]"} {
+		if !strings.Contains(projected, placeholder) {
+			t.Fatalf("projection missing %q placeholder:\n%s", placeholder, projected)
+		}
+	}
+
+	viewPath := filepath.Join(t.TempDir(), "view.yaml")
+	if err := os.WriteFile(viewPath, body, 0o644); err != nil {
+		t.Fatalf("write redacted view: %v", err)
+	}
+	check, err := CheckModelCapabilitiesView(home, viewPath)
+	if err != nil {
+		t.Fatalf("check redacted view: %v", err)
+	}
+	if !check.InSync {
+		t.Fatalf("sanctioned redaction must remain in sync, got: %+v", check.Drifts)
+	}
+
+	entry := manifest.Models["synthetic-judge.invalid"]
+	entry.Notes = strings.Replace(entry.Notes, "[private-endpoint]", "[tampered-endpoint]", 1)
+	manifest.Models["synthetic-judge.invalid"] = entry
+	drift, err := CheckModelCapabilitiesView(home, writeViewFrom(t, manifest))
+	if err != nil {
+		t.Fatalf("check tampered redacted view: %v", err)
+	}
+	if drift.InSync || len(drift.Drifts) != 1 || !strings.Contains(drift.Drifts[0], "notes") {
+		t.Fatalf("redaction must not weaken semantic drift detection, got: %+v", drift.Drifts)
+	}
+}
+
 // writeViewFrom renders a view file from a manifest the test mutated
 // structurally. Mutating through decode/encode (not string surgery) keeps these
 // falsifiers independent of the YAML emitter's cosmetic indentation choices.

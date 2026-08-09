@@ -3,6 +3,7 @@ package routeevidence
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -18,9 +19,18 @@ import (
 //	model-capabilities --yaml            deterministic YAML projection of authority
 //	model-capabilities --check-view FILE semantic drift check, nonzero on any drift
 //
-// The projection carries no timestamps and no private paths: it is exactly the
-// validated manifest, so byte-identical authority always yields byte-identical
-// output.
+// The projection carries no timestamps, credential values, private endpoints,
+// or private paths. Authority remains lossless inside Compound; this external
+// compatibility view is the redacted consumer boundary.
+
+var (
+	modelCapabilitiesProjectionSecret = regexp.MustCompile(
+		`(?i)(AKIA[0-9A-Z]{12,}|ASIA[0-9A-Z]{12,}|sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,})`,
+	)
+	modelCapabilitiesProjectionPrivateEndpoint = regexp.MustCompile(
+		`(?i)\bhttps?://(?:localhost|127(?:\.[0-9]{1,3}){3}|10(?:\.[0-9]{1,3}){3}|192\.168(?:\.[0-9]{1,3}){2}|172\.(?:1[6-9]|2[0-9]|3[01])(?:\.[0-9]{1,3}){2})(?::[0-9]+)?(?:/[^\s'\"]*)?`,
+	)
+)
 
 // ModelCapabilitiesViewCheck is the result of comparing an external view file
 // against Compound's authority.
@@ -42,6 +52,7 @@ func ProjectModelCapabilitiesYAML(homePath string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	sanitizeModelCapabilitiesProjection(&manifest)
 	body, err := yaml.Marshal(manifest)
 	if err != nil {
 		return nil, fmt.Errorf("marshal model capabilities projection: %w", err)
@@ -61,6 +72,7 @@ func CheckModelCapabilitiesView(homePath, viewPath string) (ModelCapabilitiesVie
 	if err != nil {
 		return ModelCapabilitiesViewCheck{}, err
 	}
+	sanitizeModelCapabilitiesProjection(&manifest)
 	viewData, err := os.ReadFile(viewPath)
 	if err != nil {
 		return ModelCapabilitiesViewCheck{}, fmt.Errorf("read model capabilities view %s: %w", viewPath, err)
@@ -80,6 +92,48 @@ func CheckModelCapabilitiesView(homePath, viewPath string) (ModelCapabilitiesVie
 	}
 	check.InSync = len(check.Drifts) == 0
 	return check, nil
+}
+
+// sanitizeModelCapabilitiesProjection redacts only the external compatibility
+// view. It never writes the authority snapshot and preserves every structural
+// routing key, claim level, model id, and ordering decision. Free-text fields
+// and endpoint-bearing tuple fields are sanitized consistently before both
+// projection and semantic drift comparison, so redaction cannot become a drift
+// bypass.
+func sanitizeModelCapabilitiesProjection(manifest *ModelCapabilitiesManifest) {
+	manifest.Purpose = sanitizeModelCapabilitiesProjectionText(manifest.Purpose)
+	for i := range manifest.Rules {
+		manifest.Rules[i] = sanitizeModelCapabilitiesProjectionText(manifest.Rules[i])
+	}
+	for id, entry := range manifest.Models {
+		entry.Lane = sanitizeModelCapabilitiesProjectionText(entry.Lane)
+		entry.ProviderRoute = sanitizeModelCapabilitiesProjectionText(entry.ProviderRoute)
+		entry.ProviderRouteKind = sanitizeModelCapabilitiesProjectionText(entry.ProviderRouteKind)
+		entry.Notes = sanitizeModelCapabilitiesProjectionText(entry.Notes)
+		for i := range entry.Resolution.Targets {
+			entry.Resolution.Targets[i].Provider = sanitizeModelCapabilitiesProjectionText(entry.Resolution.Targets[i].Provider)
+			entry.Resolution.Targets[i].Model = sanitizeModelCapabilitiesProjectionText(entry.Resolution.Targets[i].Model)
+		}
+		for class, claim := range entry.Capabilities {
+			claim.Evidence = sanitizeModelCapabilitiesProjectionText(claim.Evidence)
+			entry.Capabilities[class] = claim
+		}
+		if entry.CostDetail != nil && entry.CostDetail.Subscription != nil {
+			entry.CostDetail.Subscription.PlanRef = sanitizeModelCapabilitiesProjectionText(entry.CostDetail.Subscription.PlanRef)
+		}
+		if entry.CapacitySource != nil {
+			entry.CapacitySource.Ref = sanitizeModelCapabilitiesProjectionText(entry.CapacitySource.Ref)
+		}
+		for i := range entry.Aliases {
+			entry.Aliases[i] = sanitizeModelCapabilitiesProjectionText(entry.Aliases[i])
+		}
+		manifest.Models[id] = entry
+	}
+}
+
+func sanitizeModelCapabilitiesProjectionText(value string) string {
+	value = modelCapabilitiesProjectionSecret.ReplaceAllString(value, "[credential-redacted]")
+	return modelCapabilitiesProjectionPrivateEndpoint.ReplaceAllString(value, "[private-endpoint]")
 }
 
 // diffModelCapabilities returns a sorted, human-readable list of every semantic
