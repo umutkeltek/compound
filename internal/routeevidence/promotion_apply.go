@@ -12,6 +12,7 @@ import (
 
 	"compound/internal/act"
 	"compound/internal/envelope"
+	"compound/internal/finding"
 	"compound/internal/reviewartifact"
 	autonomyproof "compound/internal/routeevidence/autonomy"
 )
@@ -163,15 +164,14 @@ func PlanPromotionApply(homePath, reviewPath, rationale string) (PromotionApplyP
 		return PromotionApplyPlan{}, fmt.Errorf("route promotion review %s recommendation %q is not applicable; only %q and %q mutate authority (hold decisions belong to route promotion-record)",
 			review.ID, recommendation, promotionRecommendationPromote, promotionRecommendationDemote)
 	}
-	// The emitted status for a recommendation is fixed by promotionReviewStatusFor:
-	// promote surfaces as operator review-debt (review_required) and demote as an
-	// automated authority outcome (recorded). Requiring the EXACT status the
-	// evaluator would have emitted makes a hand-edited status a refusal, not a
-	// silent pass.
-	wantStatus := promotionReviewStatusFor(recommendation)
-	if strings.TrimSpace(review.Status) != wantStatus {
-		return PromotionApplyPlan{}, fmt.Errorf("route promotion review %s status %q is not appliable; recommendation %q requires status %q",
-			review.ID, review.Status, recommendation, wantStatus)
+	// A reviewed authority mutation is operator review-debt, so the artifact must
+	// be a CURRENT review_required promotion. The evaluator emits demote as
+	// `recorded` provenance, which is deliberately NOT appliable here: an operator
+	// must raise a review_required promotion artifact to move authority. A
+	// hand-edited status is therefore a refusal, in both directions.
+	if strings.TrimSpace(review.Status) != promotionReviewStatusReviewRequired {
+		return PromotionApplyPlan{}, fmt.Errorf("route promotion review %s status %q is not appliable; a governed apply requires a current %q promotion artifact",
+			review.ID, review.Status, promotionReviewStatusReviewRequired)
 	}
 
 	laneID := strings.TrimSpace(review.LaneID)
@@ -232,6 +232,20 @@ func PlanPromotionApply(homePath, reviewPath, rationale string) (PromotionApplyP
 	}
 	if currentLevel == proposedLevel {
 		return PromotionApplyPlan{}, fmt.Errorf("route promotion review %s would not change %s/%s (already %q)", review.ID, laneID, class, currentLevel)
+	}
+	// The review id is DERIVED from lane + class. Requiring it to match binds the
+	// artifact's identity to the claim it moves, so a review cannot be re-pointed
+	// at a different lane or class by editing its body.
+	if wantID := promotionReviewID(laneID, class); review.ID != wantID {
+		return PromotionApplyPlan{}, fmt.Errorf("route promotion review id %q does not match its lane/class (%s/%s derives %q) — refusing a re-pointed review artifact",
+			review.ID, laneID, class, wantID)
+	}
+	// The recommendation must agree with the DIRECTION of the claim change. A
+	// "promote" that lowers a claim (or a "demote" that raises one) is tampered
+	// input, not a promotion: without this, relabelling the recommendation would
+	// let either verb move a claim either way.
+	if err := assertClaimDirection(review.ID, recommendation, currentLevel, proposedLevel); err != nil {
+		return PromotionApplyPlan{}, err
 	}
 
 	proposedEvidence := promotionAppliedEvidence(review, rationale, claim.Evidence)
@@ -359,6 +373,13 @@ func ApplyPromotionReview(homePath, workID string, plan PromotionApplyPlan, pd e
 	if err != nil {
 		return PromotionApplyResult{}, err
 	}
+	// TOCTOU guard: PlanPromotionApply validated against a snapshot that may be
+	// minutes old (dry-run, operator review, then --confirm). Re-read the live
+	// authority immediately before the act so a concurrent lane's change is a
+	// refusal here rather than a silent overwrite.
+	if err := assertAuthorityRevision(homePath, plan.AuthorityRevision, "apply"); err != nil {
+		return PromotionApplyResult{}, err
+	}
 	ai := PromotionApplyIntent(workID, plan, now)
 	adapter := act.NewFileArtifactAdapter()
 	res, err := act.Execute(store, adapter, ai, pd, plan.ProposedYAML, now)
@@ -374,7 +395,9 @@ func ApplyPromotionReview(homePath, workID string, plan PromotionApplyPlan, pd e
 	// route planning and promotion review erroring out — mutated but unusable.
 	// This record is not an import: it is stamped with the governed door.
 	if lerr := appendPromotionAuthorityRecord(homePath, plan.AuthorityPath, afterRevision, promotionApplyCommandName, plan.ReviewID, res); lerr != nil {
-		return PromotionApplyResult{}, restoreAfterGovernedApplyFailure(store, adapter, ai, pd, res, lerr, now)
+		// The ledger head was NOT advanced, so restoring the YAML alone leaves it
+		// coherent at the pre-apply revision.
+		return PromotionApplyResult{}, restoreAfterGovernedApplyFailure(store, adapter, ai, pd, res, lerr, now, homePath, plan, false)
 	}
 
 	record := PromotionAppliedRecord{
@@ -424,13 +447,111 @@ func ApplyPromotionReview(homePath, workID string, plan PromotionApplyPlan, pd e
 
 	path, werr := reviewartifact.WriteJSON(homePath, routePromotionReviewArea, plan.ReviewID+promotionAppliedRecordSuffix, record, "  ")
 	if werr != nil {
-		// The authority is mutated but its review provenance could not be
-		// persisted. Restore through the SAME governed seam.
-		return PromotionApplyResult{}, restoreAfterGovernedApplyFailure(store, adapter, ai, pd, res, werr, now)
+		// The authority is mutated AND the ledger head already names the new
+		// revision. Restoring the YAML alone would leave the ledger pointing at a
+		// revision that no longer exists on disk, which breaks every later route
+		// plan and promotion review — so the rollback must re-stamp the ledger too.
+		return PromotionApplyResult{}, restoreAfterGovernedApplyFailure(store, adapter, ai, pd, res, werr, now, homePath, plan, true)
 	}
 	record.RecordPath = path
 
 	return PromotionApplyResult{Plan: plan, Record: record}, nil
+}
+
+// claimLevelRank orders the claim vocabulary so a promote/demote direction can be
+// checked. `avoid` is the weakest position, then assumed, capable, primary.
+func claimLevelRank(level string) (int, bool) {
+	switch strings.TrimSpace(strings.ToLower(level)) {
+	case "avoid":
+		return 0, true
+	case "assumed":
+		return 1, true
+	case "capable":
+		return 2, true
+	case "primary":
+		return 3, true
+	default:
+		return 0, false
+	}
+}
+
+// assertClaimDirection requires promote to raise a claim and demote to lower it.
+func assertClaimDirection(reviewID, recommendation, current, proposed string) error {
+	from, okFrom := claimLevelRank(current)
+	to, okTo := claimLevelRank(proposed)
+	if !okFrom || !okTo {
+		return fmt.Errorf("route promotion review %s has an unrankable claim transition %q -> %q", reviewID, current, proposed)
+	}
+	switch recommendation {
+	case promotionRecommendationPromote:
+		if to <= from {
+			return fmt.Errorf("route promotion review %s recommends %q but %q -> %q does not raise the claim — refusing a mislabelled recommendation", reviewID, recommendation, current, proposed)
+		}
+	case promotionRecommendationDemote:
+		if to >= from {
+			return fmt.Errorf("route promotion review %s recommends %q but %q -> %q does not lower the claim — refusing a mislabelled recommendation", reviewID, recommendation, current, proposed)
+		}
+	}
+	return nil
+}
+
+// compensateApplyRollbackLedgerSplit restores authority/ledger AGREEMENT after a
+// rollback whose ledger re-stamp failed. The ledger head still names the post
+// revision, so the authority is written forward to that same post image through
+// the act seam. The claim change is then genuinely in effect and the caller is
+// told so plainly — an honest, coherent outcome beats a tidy-sounding error over
+// a home whose route planning refuses.
+func compensateApplyRollbackLedgerSplit(homePath string, store *act.ArtifactStore, adapter act.Adapter, ai envelope.ActionIntent, pd envelope.PolicyDecision, res act.Result, plan PromotionApplyPlan, cause, ledgerErr error, now time.Time) error {
+	image, gerr := store.Get(res.PostImageRef)
+	if gerr != nil {
+		return recordApplyLedgerSplit(homePath, ai, plan, res, cause, fmt.Errorf("post-image %s could not be read: %w", res.PostImageRef, gerr), now)
+	}
+	forward := act.RevertIntent(ai, act.Result{PreImageRef: res.PostImageRef, PostImageRef: res.PostImageRef}, now)
+	forward.Preview = "restore authority to the revision named by the source-authority ledger head"
+	fpd := pd
+	fpd.ActionIntentID = forward.ID
+	if _, ferr := act.ExecuteRevert(store, adapter, forward, fpd, image, now); ferr != nil {
+		return recordApplyLedgerSplit(homePath, ai, plan, res, cause, ferr, now)
+	}
+	return fmt.Errorf("route promotion applied record could not be written (%v) and the rollback's ledger re-stamp failed (%v); the authority was set forward to the revision the ledger names, so authority and ledger AGREE — the %s/%s claim IS now %q with NO applied record; run route promotion-revert against the receipt %s or re-run promotion-apply to write the record",
+		cause, ledgerErr, plan.LaneID, plan.CapabilityClass, plan.ProposedClaimLevel, res.Receipt.ID)
+}
+
+func recordApplyLedgerSplit(homePath string, ai envelope.ActionIntent, plan PromotionApplyPlan, res act.Result, cause, compensationErr error, now time.Time) error {
+	body := fmt.Sprintf(
+		"model-router authority and source-authority ledger DISAGREE after a governed apply rollback — manual recovery required.\n"+
+			"action_intent: %s\nreview_id: %s\nauthority_path: %s\n"+
+			"pre_revision: %s\npre_image_ref: %s\npost_image_ref: %s\n"+
+			"original_error: %v\ncompensation_error: %v\n"+
+			"effect: latestModelCapabilitiesSource will refuse until the ledger head and the authority file name the same revision.\n",
+		ai.ID, plan.ReviewID, plan.AuthorityPath,
+		plan.AuthorityRevision, res.PreImageRef, res.PostImageRef, cause, compensationErr)
+	rec, ferr := finding.Record(homePath, finding.Finding{
+		Topic:        "act-recovery/model_router_authority_ledger_split",
+		Body:         body,
+		ProducedBy:   "internal/routeevidence",
+		WorkID:       ai.IDs.WorkID,
+		EvidenceRefs: []string{res.PreImageRef, res.PostImageRef},
+	}, now)
+	if ferr != nil {
+		return fmt.Errorf("route promotion apply rollback FAILED to reconcile (%v / %v) AND the recovery finding could not be recorded (%v) — %s and its source-authority ledger DISAGREE; MANUAL RECOVERY REQUIRED",
+			cause, compensationErr, ferr, plan.AuthorityPath)
+	}
+	return fmt.Errorf("route promotion apply rollback FAILED to reconcile (%v / %v) — %s and its source-authority ledger DISAGREE; recovery finding %s records the exact refs; MANUAL RECOVERY REQUIRED",
+		cause, compensationErr, plan.AuthorityPath, rec.ID)
+}
+
+// assertAuthorityRevision refuses when the live model-router authority is no
+// longer the revision a plan was validated against.
+func assertAuthorityRevision(homePath, want, verb string) error {
+	_, _, live, err := loadModelCapabilitiesSnapshot(homePath)
+	if err != nil {
+		return fmt.Errorf("re-read model capabilities authority before %s: %w", verb, err)
+	}
+	if live != strings.TrimSpace(want) {
+		return fmt.Errorf("model-router authority changed between plan and %s: planned against %s, live revision is %s — re-plan against current authority", verb, want, live)
+	}
+	return nil
 }
 
 // appendPromotionAuthorityRecord stamps the source-authority ledger with the
@@ -468,13 +589,24 @@ func appendPromotionAuthorityRecord(homePath, authorityPath, revision, via, revi
 // PolicyDecision authorized this exact forward write, so restoring its own
 // captured pre-image is obligation-bound cleanup under that same decision — not a
 // new ungoverned mutation.
-func restoreAfterGovernedApplyFailure(store *act.ArtifactStore, adapter act.Adapter, ai envelope.ActionIntent, pd envelope.PolicyDecision, res act.Result, cause error, now time.Time) error {
+func restoreAfterGovernedApplyFailure(store *act.ArtifactStore, adapter act.Adapter, ai envelope.ActionIntent, pd envelope.PolicyDecision, res act.Result, cause error, now time.Time, homePath string, plan PromotionApplyPlan, ledgerAdvanced bool) error {
 	revertAI := act.RevertIntent(ai, res, now)
 	revertPD := pd
 	revertPD.ActionIntentID = revertAI.ID
-	if _, rerr := act.ExecuteRevert(store, adapter, revertAI, revertPD, res.PreImage, now); rerr != nil {
-		return fmt.Errorf("route promotion applied record could not be written (%v) AND the authority restore FAILED (%v) — %s is left at post-image %s; pre-image ref %s; MANUAL RECOVERY REQUIRED",
-			cause, rerr, ai.Target.Path, res.PostImageRef, res.PreImageRef)
+	revertRes, rerr := act.ExecuteRevert(store, adapter, revertAI, revertPD, res.PreImage, now)
+	if rerr != nil {
+		// The forward write stands and could not be undone. Land durable recovery
+		// evidence rather than only returning text an operator may never read.
+		return recordApplyLedgerSplit(homePath, ai, plan, res, cause, rerr, now)
+	}
+	if ledgerAdvanced {
+		if lerr := appendPromotionAuthorityRecord(homePath, plan.AuthorityPath, plan.AuthorityRevision, promotionRevertCommandName, plan.ReviewID, revertRes); lerr != nil {
+			// Rollback succeeded (authority = pre) but the ledger head still names
+			// the post revision. Put the authority back to the image the ledger
+			// describes so the two AGREE; if that also fails, land durable recovery
+			// evidence rather than leaving a silent split.
+			return compensateApplyRollbackLedgerSplit(homePath, store, adapter, ai, pd, res, plan, cause, lerr, now)
+		}
 	}
 	return fmt.Errorf("route promotion applied record could not be written (%w) — the authority was restored to pre-image %s through the act seam; no claim change is in effect", cause, res.PreImageRef)
 }

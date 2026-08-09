@@ -146,6 +146,24 @@ func diffModelEntry(id string, a, v ModelCapabilityEntry) []string {
 	scalar("cost_class", a.CostClass, v.CostClass)
 	scalar("effort_default", a.EffortDefault, v.EffortDefault)
 	scalar("resolution.mode", a.Resolution.Mode, v.Resolution.Mode)
+	scalar("notes", a.Notes, v.Notes)
+
+	// EVERY serialized tuple field is compared. A field that round-trips through
+	// the projection but is not diffed here would be a silent drift channel: the
+	// OS view could carry a different context window, cost, capacity source, or
+	// alias set and still read as in sync.
+	if a.ContextWindow != v.ContextWindow {
+		drifts = append(drifts, fmt.Sprintf("model %s context_window: authority %d, view %d", id, a.ContextWindow, v.ContextWindow))
+	}
+	if a.MaxOutput != v.MaxOutput {
+		drifts = append(drifts, fmt.Sprintf("model %s max_output: authority %d, view %d", id, a.MaxOutput, v.MaxOutput))
+	}
+	drifts = append(drifts, diffCostDetail(id, a.CostDetail, v.CostDetail)...)
+	drifts = append(drifts, diffCapacitySource(id, a.CapacitySource, v.CapacitySource)...)
+	if strings.Join(a.Aliases, ",") != strings.Join(v.Aliases, ",") {
+		drifts = append(drifts, fmt.Sprintf("model %s aliases: authority [%s], view [%s]", id, strings.Join(a.Aliases, ","), strings.Join(v.Aliases, ",")))
+	}
+	drifts = append(drifts, diffFloatMap(id, "relative_cost_hint", a.RelativeCostHint, v.RelativeCostHint)...)
 
 	if len(a.Resolution.Targets) != len(v.Resolution.Targets) {
 		drifts = append(drifts, fmt.Sprintf("model %s resolution.targets: authority %d, view %d", id, len(a.Resolution.Targets), len(v.Resolution.Targets)))
@@ -174,6 +192,90 @@ func diffModelEntry(id string, a, v ModelCapabilityEntry) []string {
 	for _, class := range sortedCapabilityClaimClasses(v.Capabilities) {
 		if _, ok := a.Capabilities[class]; !ok {
 			drifts = append(drifts, fmt.Sprintf("model %s capability %s: present in view, absent from authority", id, class))
+		}
+	}
+	return drifts
+}
+
+// diffCostDetail compares the optional cost tuple, including the nested
+// subscription block. Absent-vs-present is itself a drift.
+func diffCostDetail(id string, a, v *LaneCostDetail) []string {
+	if a == nil && v == nil {
+		return nil
+	}
+	if a == nil || v == nil {
+		return []string{fmt.Sprintf("model %s cost_detail: authority present=%t, view present=%t", id, a != nil, v != nil)}
+	}
+	var drifts []string
+	if a.APIUSDPerMtokIn != v.APIUSDPerMtokIn {
+		drifts = append(drifts, fmt.Sprintf("model %s cost_detail.api_usd_per_mtok_in: authority %g, view %g", id, a.APIUSDPerMtokIn, v.APIUSDPerMtokIn))
+	}
+	if a.APIUSDPerMtokOut != v.APIUSDPerMtokOut {
+		drifts = append(drifts, fmt.Sprintf("model %s cost_detail.api_usd_per_mtok_out: authority %g, view %g", id, a.APIUSDPerMtokOut, v.APIUSDPerMtokOut))
+	}
+	as, vs := a.Subscription, v.Subscription
+	if as == nil && vs == nil {
+		return drifts
+	}
+	if as == nil || vs == nil {
+		return append(drifts, fmt.Sprintf("model %s cost_detail.subscription: authority present=%t, view present=%t", id, as != nil, vs != nil))
+	}
+	if as.WindowMinutes != vs.WindowMinutes {
+		drifts = append(drifts, fmt.Sprintf("model %s cost_detail.subscription.window_minutes: authority %d, view %d", id, as.WindowMinutes, vs.WindowMinutes))
+	}
+	if as.BusyMultiplier != vs.BusyMultiplier {
+		drifts = append(drifts, fmt.Sprintf("model %s cost_detail.subscription.busy_multiplier: authority %g, view %g", id, as.BusyMultiplier, vs.BusyMultiplier))
+	}
+	if strings.TrimSpace(as.PlanRef) != strings.TrimSpace(vs.PlanRef) {
+		drifts = append(drifts, fmt.Sprintf("model %s cost_detail.subscription.plan_ref: authority %q, view %q", id, as.PlanRef, vs.PlanRef))
+	}
+	return drifts
+}
+
+func diffCapacitySource(id string, a, v *LaneCapacitySourceRef) []string {
+	if a == nil && v == nil {
+		return nil
+	}
+	if a == nil || v == nil {
+		return []string{fmt.Sprintf("model %s capacity_source: authority present=%t, view present=%t", id, a != nil, v != nil)}
+	}
+	var drifts []string
+	if strings.TrimSpace(a.Kind) != strings.TrimSpace(v.Kind) {
+		drifts = append(drifts, fmt.Sprintf("model %s capacity_source.kind: authority %q, view %q", id, a.Kind, v.Kind))
+	}
+	if a.FreshnessMinutes != v.FreshnessMinutes {
+		drifts = append(drifts, fmt.Sprintf("model %s capacity_source.freshness_minutes: authority %d, view %d", id, a.FreshnessMinutes, v.FreshnessMinutes))
+	}
+	if strings.TrimSpace(a.Ref) != strings.TrimSpace(v.Ref) {
+		drifts = append(drifts, fmt.Sprintf("model %s capacity_source.ref: authority %q, view %q", id, a.Ref, v.Ref))
+	}
+	return drifts
+}
+
+func diffFloatMap(id, field string, a, v map[string]float64) []string {
+	var drifts []string
+	keys := map[string]struct{}{}
+	for k := range a {
+		keys[k] = struct{}{}
+	}
+	for k := range v {
+		keys[k] = struct{}{}
+	}
+	ordered := make([]string, 0, len(keys))
+	for k := range keys {
+		ordered = append(ordered, k)
+	}
+	sort.Strings(ordered)
+	for _, k := range ordered {
+		av, aok := a[k]
+		vv, vok := v[k]
+		switch {
+		case aok && !vok:
+			drifts = append(drifts, fmt.Sprintf("model %s %s[%s]: present in authority, absent from view", id, field, k))
+		case !aok && vok:
+			drifts = append(drifts, fmt.Sprintf("model %s %s[%s]: present in view, absent from authority", id, field, k))
+		case av != vv:
+			drifts = append(drifts, fmt.Sprintf("model %s %s[%s]: authority %g, view %g", id, field, k, av, vv))
 		}
 	}
 	return drifts

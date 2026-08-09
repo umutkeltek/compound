@@ -198,6 +198,114 @@ func TestCheckViewDetectsRowClaimDefaultAndRuleDrift(t *testing.T) {
 			},
 			wantPart: "tier",
 		},
+		// Every OPTIONAL serialized tuple field is a drift channel too: a field
+		// that round-trips through the projection but is not diffed would let the
+		// OS view carry different economics or capacity facts and still read as in
+		// sync. These cases require each one to turn the check red.
+		{
+			name: "changed context window",
+			mutate: func(m *ModelCapabilitiesManifest) {
+				entry := m.Models["auto/judge"]
+				entry.ContextWindow = 999
+				m.Models["auto/judge"] = entry
+			},
+			wantPart: "context_window",
+		},
+		{
+			name: "changed max output",
+			mutate: func(m *ModelCapabilitiesManifest) {
+				entry := m.Models["auto/judge"]
+				entry.MaxOutput = 4242
+				m.Models["auto/judge"] = entry
+			},
+			wantPart: "max_output",
+		},
+		{
+			name: "changed cost detail",
+			mutate: func(m *ModelCapabilitiesManifest) {
+				entry := m.Models["auto/judge"]
+				entry.CostDetail = &LaneCostDetail{APIUSDPerMtokIn: 1.5, APIUSDPerMtokOut: 9}
+				m.Models["auto/judge"] = entry
+			},
+			wantPart: "cost_detail",
+		},
+		{
+			name: "changed capacity source",
+			mutate: func(m *ModelCapabilitiesManifest) {
+				entry := m.Models["auto/judge"]
+				entry.CapacitySource = &LaneCapacitySourceRef{Kind: "codexbar", FreshnessMinutes: 5, Ref: "codexbar:fixture.invalid"}
+				m.Models["auto/judge"] = entry
+			},
+			wantPart: "capacity_source",
+		},
+		{
+			name: "changed aliases",
+			mutate: func(m *ModelCapabilitiesManifest) {
+				entry := m.Models["auto/judge"]
+				entry.Aliases = []string{"judge-alias.invalid"}
+				m.Models["auto/judge"] = entry
+			},
+			wantPart: "aliases",
+		},
+		{
+			name: "changed relative cost hint",
+			mutate: func(m *ModelCapabilitiesManifest) {
+				entry := m.Models["auto/judge"]
+				entry.RelativeCostHint = map[string]float64{"classify-extract": 2.5}
+				m.Models["auto/judge"] = entry
+			},
+			wantPart: "relative_cost_hint",
+		},
+		{
+			name: "changed notes",
+			mutate: func(m *ModelCapabilitiesManifest) {
+				entry := m.Models["auto/judge"]
+				entry.Notes = "view-only annotation"
+				m.Models["auto/judge"] = entry
+			},
+			wantPart: "notes",
+		},
+		{
+			name: "changed harness",
+			mutate: func(m *ModelCapabilitiesManifest) {
+				entry := m.Models["auto/judge"]
+				entry.Harness = "other-harness"
+				m.Models["auto/judge"] = entry
+			},
+			wantPart: "harness",
+		},
+		{
+			name: "changed packet ceiling",
+			mutate: func(m *ModelCapabilitiesManifest) {
+				entry := m.Models["auto/judge"]
+				entry.PacketCeiling = "small"
+				m.Models["auto/judge"] = entry
+			},
+			wantPart: "packet_ceiling",
+		},
+		{
+			name: "changed cost class",
+			mutate: func(m *ModelCapabilitiesManifest) {
+				entry := m.Models["auto/judge"]
+				entry.CostClass = "free"
+				m.Models["auto/judge"] = entry
+			},
+			wantPart: "cost_class",
+		},
+		{
+			name: "changed capability class list",
+			mutate: func(m *ModelCapabilitiesManifest) {
+				m.CapabilityClasses = []string{"classify-extract"}
+			},
+			wantPart: "capability_class list",
+		},
+		{
+			name: "changed version",
+			mutate: func(m *ModelCapabilitiesManifest) {
+				m.Version = 7
+			},
+			wantPart: "version",
+		},
 	}
 
 	for _, tc := range cases {
@@ -243,7 +351,7 @@ func TestProjectionFollowsGovernedApply(t *testing.T) {
 		t.Fatalf("write stale view: %v", err)
 	}
 
-	reviewPath := promotionReviewFile(t, home, revision, "route_promotion_fixture_promote",
+	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
 		promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
 	plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
 	if err != nil {
