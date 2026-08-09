@@ -140,7 +140,7 @@ func TestWorkAdvanceExecuteThenClose(t *testing.T) {
 	for _, aid := range actionIDs {
 		actionSet[aid] = true
 	}
-	var sawExecutionAction bool
+	var executionRatt string
 	for _, rattID := range rattIDs {
 		ra, err := raStore.Get(rattID)
 		if err != nil {
@@ -152,12 +152,21 @@ func TestWorkAdvanceExecuteThenClose(t *testing.T) {
 		if !runattempt.IsTerminal(ra.Status) {
 			t.Fatalf("RunAttempt %s status=%q, want terminal", rattID, ra.Status)
 		}
-		if ra.ActionIntentID != "" && actionSet[ra.ActionIntentID] {
-			sawExecutionAction = true
+		if ra.ActionIntentID != "" && !actionSet[ra.ActionIntentID] {
+			t.Fatalf("RunAttempt %s action_intent_id=%q is absent from work actions %v", rattID, ra.ActionIntentID, actionIDs)
+		}
+		if ra.Origin == runattempt.OriginHarnessExecution {
+			if executionRatt != "" {
+				t.Fatalf("expected one harness execution RunAttempt, got at least %s and %s", executionRatt, rattID)
+			}
+			if ra.ActionIntentID == "" {
+				t.Fatalf("execution RunAttempt %s has no ActionIntent", rattID)
+			}
+			executionRatt = rattID
 		}
 	}
-	if !sawExecutionAction {
-		t.Fatalf("expected the execution RunAttempt to carry an ActionIntent present on the work; rattIDs=%v actions=%v", rattIDs, actionIDs)
+	if executionRatt == "" {
+		t.Fatalf("expected one harness execution RunAttempt; rattIDs=%v actions=%v", rattIDs, actionIDs)
 	}
 
 	// Intact chain: doctor must report status:"ok" complete:1, schema v0.2,
@@ -190,7 +199,6 @@ func TestWorkAdvanceExecuteThenClose(t *testing.T) {
 	if item == nil {
 		t.Fatalf("doctor items missing work %s: %+v", workID, report.Items)
 	}
-	executionRatt := rattIDs[len(rattIDs)-1]
 	if !slices.Contains(item.RunAttemptIDs, executionRatt) {
 		t.Fatalf("doctor item RunAttemptIDs = %v, want to include execution attempt %s", item.RunAttemptIDs, executionRatt)
 	}
@@ -229,7 +237,7 @@ func TestWorkAdvanceExecuteThenClose(t *testing.T) {
 		}
 	}
 	if !foundMissingRunAttempt {
-		t.Fatalf("findings missing run_attempt_missing_run_attempt (missing_run_attempt): %+v", reportBad.Findings)
+		t.Fatalf("findings missing missing_run_attempt: %+v", reportBad.Findings)
 	}
 }
 

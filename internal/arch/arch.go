@@ -2520,8 +2520,8 @@ func checkWorkPacketContract(repoRoot string) []Finding {
 // readable Receipt and Transition envelopes with the same work_id, AND to
 // RunAttempt records that prove the executed attempt is terminal,
 // same-work, and -- when the RunAttempt carries an ActionIntent -- that
-// ActionIntent is present on the WorkEnvelope. Empty legacy ActionIntentIDs
-// remain valid (delegate evidence compatibility).
+// ActionIntent is present on the WorkEnvelope. An empty legacy RunAttempt
+// ActionIntentID remains valid (delegate evidence compatibility).
 func checkWorkProofChainContract(repoRoot string) []Finding {
 	requiredByFile := map[string][]string{
 		"internal/work/proof_chain_doctor.go": {
@@ -2533,7 +2533,7 @@ func checkWorkProofChainContract(repoRoot string) []Finding {
 			"terminalProofRequired",
 			"rec.Validate()",
 			"tr.Validate()",
-			// v0.2 RunAttempt proof dimension (run_attempt_runattempt packet).
+			// v0.2 RunAttempt proof dimension (RunAttempt packet).
 			"compound.work_proof_chain_doctor.v0.2",
 			"MissingRunAttempt",
 			"run_attempt_work_mismatch",
@@ -2580,11 +2580,11 @@ func checkWorkProofChainContract(repoRoot string) []Finding {
 			// Public E2E must assert the v0.2 schema, the new proof ref,
 			// the item RunAttemptIDs include the execution attempt, and the
 			// corrupted doctor must exit exactly 1 with missing_run_attempt.
-			"compound.work_proof_chain_doctor.v0.2",
-			"work-proof-chain-run-attempt",
-			"item.RunAttemptIDs",
+			"report.SchemaVersion != \"compound.work_proof_chain_doctor.v0.2\"",
+			"slices.Contains(report.ProofRefs, \"work-proof-chain-run-attempt\")",
+			"slices.Contains(item.RunAttemptIDs, executionRatt)",
 			"exitCode != 1",
-			"missing_run_attempt",
+			"finding.Code == \"missing_run_attempt\"",
 		},
 	}
 	var failures []string

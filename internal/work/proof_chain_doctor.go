@@ -10,8 +10,8 @@ import (
 	"compound/internal/runattempt"
 )
 
-// Schema bumped to v0.2 to add the RunAttempt proof dimension. v0.1 remains
-// readable; the new field is additive and old consumers keep working.
+// Schema bumped to v0.2 to add the RunAttempt proof dimension while retaining
+// every v0.1 field for tolerant existing consumers.
 const ProofChainDoctorSchemaVersion = "compound.work_proof_chain_doctor.v0.2"
 
 type ProofChainDoctorOptions struct {
@@ -54,12 +54,12 @@ type ProofChainDoctorCounts struct {
 	// report.Findings is the narrow reason (missing_run_attempt,
 	// run_attempt_unreadable, run_attempt_invalid, run_attempt_work_mismatch,
 	// run_attempt_action_mismatch, run_attempt_nonterminal).
-	MissingRunAttempt         int `json:"missing_run_attempt"`
-	UnreadableRunAttempt      int `json:"unreadable_run_attempt"`
-	InvalidRunAttempt         int `json:"invalid_run_attempt"`
-	RunAttemptWorkMismatch    int `json:"run_attempt_work_mismatch"`
-	RunAttemptActionMismatch  int `json:"run_attempt_action_mismatch"`
-	RunAttemptNonterminal     int `json:"run_attempt_nonterminal"`
+	MissingRunAttempt        int `json:"missing_run_attempt"`
+	UnreadableRunAttempt     int `json:"unreadable_run_attempt"`
+	InvalidRunAttempt        int `json:"invalid_run_attempt"`
+	RunAttemptWorkMismatch   int `json:"run_attempt_work_mismatch"`
+	RunAttemptActionMismatch int `json:"run_attempt_action_mismatch"`
+	RunAttemptNonterminal    int `json:"run_attempt_nonterminal"`
 }
 
 type ProofChainDoctorItem struct {
@@ -357,8 +357,8 @@ func compactPrefix(values []string, prefix string) []string {
 // caller put there -- including entries that trim to empty. Used for the
 // RunAttemptIDs slot, where compactPrefix's prefix filter would silently
 // turn a populated malformed slot into a legacy zero-ref work; checkRunAttemptProof
-// then classifies each preserved entry on its own merits (whitespace-only
-// entries are skipped, empty and non-ratt_ entries surface run_attempt_invalid).
+// then classifies each preserved entry on its own merits (whitespace-only,
+// empty, padded, and non-ratt_ entries surface run_attempt_invalid).
 func dedupeStrings(values []string) []string {
 	out := []string{}
 	seen := map[string]bool{}
