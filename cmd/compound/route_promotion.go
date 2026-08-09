@@ -68,6 +68,18 @@ func tryRoutePromotionCommand(args []string, homePath string) bool {
 		fmt.Printf("- recorded: %s\n", report.ReviewPath)
 		fmt.Println("- authority_mutation: none")
 		return true
+	case "promotion-apply":
+		// The governed authority door. promotion-record above stays hold-only;
+		// this verb is the only path that mutates a model-router claim.
+		if code := runRoutePromotionApply(args[1:], homePath, os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
+		}
+		return true
+	case "promotion-revert":
+		if code := runRoutePromotionRevert(args[1:], homePath, os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
+		}
+		return true
 	default:
 		return false
 	}
