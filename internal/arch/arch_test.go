@@ -3067,10 +3067,29 @@ func cmdCompoundBudgetCount(fs []Finding, contains string) (Severity, string, bo
 }
 
 // TestCheckCmdCompoundBudgetPassesOnRealRepo: the live cmd/compound tree is at-or-under
-// both ratchets as of this WorkEnvelope — files are exactly at budget (the ratchet locks each extraction gain), LOC is
-// under budget with explicit headroom reported in the Info message. A future commit that
-// blows either budget will trip this test (see TestCheckCmdCompoundBudgetFailsOn...).
+// both ratchets as of this WorkEnvelope. The file ceiling remains pinned while the finding
+// reports the measured count and extraction-created headroom; LOC is under budget with explicit
+// headroom reported in the Info message. A future commit that blows either budget will trip this
+// test (see TestCheckCmdCompoundBudgetFailsOn...).
 func TestCheckCmdCompoundBudgetPassesOnRealRepo(t *testing.T) {
+	const pinnedFileBudget = 113
+	if MaxNonTestCompoundFiles != pinnedFileBudget {
+		t.Fatalf("cmd/compound file budget changed: got %d, want pinned ceiling %d", MaxNonTestCompoundFiles, pinnedFileBudget)
+	}
+	entries, err := os.ReadDir(filepath.Join(repoRoot, "cmd", "compound"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileCount := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") && !strings.HasSuffix(entry.Name(), "_test.go") {
+			fileCount++
+		}
+	}
+	if fileCount > MaxNonTestCompoundFiles {
+		t.Fatalf("cmd/compound file count %d exceeds pinned budget %d", fileCount, MaxNonTestCompoundFiles)
+	}
+
 	fs := cmdCompoundBudgetFindings(t, repoRoot, false)
 	if len(fs) != 2 {
 		t.Fatalf("want 2 findings (files + LOC), got %d: %+v", len(fs), fs)
@@ -3082,8 +3101,11 @@ func TestCheckCmdCompoundBudgetPassesOnRealRepo(t *testing.T) {
 	if filesSev != Info {
 		t.Fatalf("files finding must be Info on a passing tree, got %s: %s", filesSev, filesMsg)
 	}
-	if !strings.Contains(filesMsg, itoa(MaxNonTestCompoundFiles)+"/"+itoa(MaxNonTestCompoundFiles)) {
-		t.Fatalf("files finding should report %d/%d, got: %s", MaxNonTestCompoundFiles, MaxNonTestCompoundFiles, filesMsg)
+	if !strings.Contains(filesMsg, itoa(fileCount)+"/"+itoa(MaxNonTestCompoundFiles)) {
+		t.Fatalf("files finding should report measured count %d/%d, got: %s", fileCount, MaxNonTestCompoundFiles, filesMsg)
+	}
+	if !strings.Contains(filesMsg, "headroom "+itoa(MaxNonTestCompoundFiles-fileCount)) {
+		t.Fatalf("files finding should report headroom %d, got: %s", MaxNonTestCompoundFiles-fileCount, filesMsg)
 	}
 	locSev, locMsg, ok := cmdCompoundBudgetCount(fs, "non-test .go LOC")
 	if !ok {
