@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"compound/internal/envelope"
 	"compound/internal/mem"
@@ -16,6 +17,9 @@ func TestSynthesisSweepCLIReconcileStageRunsAndCheckpoints(t *testing.T) {
 	if _, err := mem.Open(homePath); err != nil {
 		t.Fatal(err)
 	}
+	now := time.Now().UTC()
+	claimAt := now.Add(-2 * time.Hour).Format(time.RFC3339)
+	receiptAt := now.Add(-time.Hour).Format(time.RFC3339)
 
 	appendClaimLine(t, filepath.Join(homePath, "ledger", "claims.jsonl"), mem.Claim{
 		ID:             "claim_cli_used",
@@ -23,15 +27,15 @@ func TestSynthesisSweepCLIReconcileStageRunsAndCheckpoints(t *testing.T) {
 		Entity:         "project:cli",
 		Predicate:      "runtime",
 		Object:         "Go",
-		ValidFrom:      "2026-07-10T00:00:00Z",
+		ValidFrom:      claimAt,
 		Confidence:     0.9,
 		Derivation:     "extracted",
 		PromotionBasis: "explicit_confirmation",
 		EvidenceRefs:   []string{"trace_cli_used"},
 		Visibility:     "ambient",
-		CreatedAt:      "2026-07-10T00:00:00Z",
+		CreatedAt:      claimAt,
 	})
-	writeSynthesisReconcileCLIReceipt(t, homePath, "rec_cli_usage", "2026-07-10T01:00:00Z", []string{"claim://claim_cli_used"})
+	writeSynthesisReconcileCLIReceipt(t, homePath, "rec_cli_usage", receiptAt, []string{"claim://claim_cli_used"})
 
 	first := captureStdout(t, func() {
 		cmdSynthesis([]string{"sweep", "--stage", "reconcile", "--json"})

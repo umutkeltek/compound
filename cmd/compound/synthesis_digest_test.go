@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/home"
 	"compound/internal/mem"
@@ -64,21 +65,24 @@ func TestSynthesisDigestCLIRendersReadOnlyBlastTieredPage(t *testing.T) {
 		{
 			name: "reconciled usage receipt renders a tier-2 undo command",
 			setup: func(t *testing.T, homePath string) {
+				now := time.Now().UTC()
+				claimAt := now.Add(-2 * time.Hour).Format(time.RFC3339)
+				receiptAt := now.Add(-time.Hour).Format(time.RFC3339)
 				appendClaimLine(t, filepath.Join(homePath, "ledger", "claims.jsonl"), mem.Claim{
 					ID:             "claim_digest_cli_used",
 					Seq:            1,
 					Entity:         "project:digest-cli",
 					Predicate:      "runtime",
 					Object:         "Go",
-					ValidFrom:      "2026-07-10T00:00:00Z",
+					ValidFrom:      claimAt,
 					Confidence:     0.9,
 					Derivation:     "extracted",
 					PromotionBasis: "explicit_confirmation",
 					EvidenceRefs:   []string{"trace_digest_cli_used"},
 					Visibility:     "ambient",
-					CreatedAt:      "2026-07-10T00:00:00Z",
+					CreatedAt:      claimAt,
 				})
-				writeSynthesisReconcileCLIReceipt(t, homePath, "rec_digest_cli_usage", "2026-07-10T01:00:00Z", []string{"claim://claim_digest_cli_used"})
+				writeSynthesisReconcileCLIReceipt(t, homePath, "rec_digest_cli_usage", receiptAt, []string{"claim://claim_digest_cli_used"})
 				captureStdout(t, func() {
 					cmdSynthesis([]string{"sweep", "--stage", "reconcile", "--json"})
 				})
