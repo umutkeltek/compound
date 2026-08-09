@@ -7,13 +7,17 @@ import (
 	"time"
 
 	"compound/internal/routeevidence"
+	routeevidencecli "compound/internal/routeevidence/cli"
 )
 
 func tryRoutePromotionCommand(args []string, homePath string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	if tryRouteModelCapabilitiesCommand(args, homePath) {
+	if args[0] == "model-capabilities" {
+		if code := routeevidencecli.RunModelCapabilities(args[1:], homePath, os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
+		}
 		return true
 	}
 	switch args[0] {
@@ -71,12 +75,12 @@ func tryRoutePromotionCommand(args []string, homePath string) bool {
 	case "promotion-apply":
 		// The governed authority door. promotion-record above stays hold-only;
 		// this verb is the only path that mutates a model-router claim.
-		if code := runRoutePromotionApply(args[1:], homePath, os.Stdout, os.Stderr); code != 0 {
+		if code := routeevidencecli.RunPromotionApply(args[1:], homePath, os.Stdout, os.Stderr); code != 0 {
 			os.Exit(code)
 		}
 		return true
 	case "promotion-revert":
-		if code := runRoutePromotionRevert(args[1:], homePath, os.Stdout, os.Stderr); code != 0 {
+		if code := routeevidencecli.RunPromotionRevert(args[1:], homePath, os.Stdout, os.Stderr); code != 0 {
 			os.Exit(code)
 		}
 		return true

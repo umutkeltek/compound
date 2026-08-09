@@ -45,6 +45,7 @@ import (
 	"compound/internal/retrievalparity"
 	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
+	routeevidencecli "compound/internal/routeevidence/cli"
 	"compound/internal/runtimebinding"
 	"compound/internal/schema"
 	"compound/internal/sourceobs"
@@ -172,11 +173,11 @@ func routeUsage(sub string) string {
 	case "cost-doctor":
 		return "usage: compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]"
 	case "model-capabilities":
-		return routeModelCapabilitiesUsage
+		return routeevidencecli.ModelCapabilitiesUsage()
 	case "promotion-apply":
-		return routePromotionApplyUsage()
+		return routeevidencecli.PromotionApplyUsage()
 	case "promotion-revert":
-		return routePromotionRevertUsage()
+		return routeevidencecli.PromotionRevertUsage()
 	case "promotion-record":
 		return "usage: compound route promotion-record --review <route_promotion.json> --rationale <text> [--json]"
 	case "execution-profile":

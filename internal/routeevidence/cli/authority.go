@@ -1,6 +1,7 @@
-package main
+package routeevidencecli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -11,6 +12,111 @@ import (
 	"compound/internal/policy"
 	"compound/internal/routeevidence"
 )
+
+// ModelCapabilitiesUsage describes the read/projection/drift-check surface.
+func ModelCapabilitiesUsage() string {
+	return "usage: compound route model-capabilities [--json] [--yaml] [--check-view <view.yaml>]"
+}
+
+// RunModelCapabilities renders Compound-owned model-router authority or checks
+// an external compatibility view. It owns no process exits so the thin command
+// package only maps the returned code onto its process boundary.
+func RunModelCapabilities(args []string, homePath string, stdout, stderr io.Writer) int {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json", "--yaml":
+		case "--check-view":
+			i++
+			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
+				fmt.Fprintln(stderr, ModelCapabilitiesUsage())
+				return 2
+			}
+		default:
+			fmt.Fprintln(stderr, ModelCapabilitiesUsage())
+			return 2
+		}
+	}
+
+	if viewPath := strings.TrimSpace(flagValue(args, "--check-view")); viewPath != "" {
+		check, err := routeevidence.CheckModelCapabilitiesView(homePath, viewPath)
+		if err != nil {
+			fmt.Fprintln(stderr, "route model-capabilities --check-view:", err)
+			return 1
+		}
+		if hasFlag(args, "--json") {
+			if err := writeJSON(stdout, check); err != nil {
+				fmt.Fprintln(stderr, "route model-capabilities --check-view:", err)
+				return 1
+			}
+		} else {
+			fmt.Fprintln(stdout, "# route model-capabilities --check-view")
+			fmt.Fprintf(stdout, "- authority: %s\n", check.AuthorityRef)
+			fmt.Fprintf(stdout, "- authority_revision: %s\n", check.AuthorityRevision)
+			fmt.Fprintf(stdout, "- view: %s\n", check.ViewPath)
+			fmt.Fprintf(stdout, "- view_revision: %s\n", check.ViewRevision)
+			for _, drift := range check.Drifts {
+				fmt.Fprintf(stdout, "- drift: %s\n", drift)
+			}
+			if check.InSync {
+				fmt.Fprintln(stdout, "- verdict: in_sync")
+			} else {
+				fmt.Fprintf(stdout, "- verdict: drifted (%d)\n", len(check.Drifts))
+			}
+		}
+		if !check.InSync {
+			return 1
+		}
+		return 0
+	}
+
+	if hasFlag(args, "--yaml") {
+		body, err := routeevidence.ProjectModelCapabilitiesYAML(homePath)
+		if err != nil {
+			fmt.Fprintln(stderr, "route model-capabilities --yaml:", err)
+			return 1
+		}
+		if _, err := stdout.Write(body); err != nil {
+			fmt.Fprintln(stderr, "route model-capabilities --yaml:", err)
+			return 1
+		}
+		return 0
+	}
+
+	report, err := routeevidence.ProjectModelCapabilities(homePath, time.Now())
+	if err != nil {
+		fmt.Fprintln(stderr, "route model-capabilities:", err)
+		return 1
+	}
+	if hasFlag(args, "--json") {
+		if err := writeJSON(stdout, report); err != nil {
+			fmt.Fprintln(stderr, "route model-capabilities:", err)
+			return 1
+		}
+		return 0
+	}
+
+	fmt.Fprintln(stdout, "# route model-capabilities")
+	fmt.Fprintf(stdout, "- authority: %s\n", report.AuthorityRef)
+	fmt.Fprintf(stdout, "- authority_path: %s\n", report.AuthorityPath)
+	if report.SourceAuthorityID != "" {
+		fmt.Fprintf(stdout, "- source_authority: %s\n", report.SourceAuthorityID)
+	}
+	fmt.Fprintf(stdout, "- models: %d\n", report.ModelCount)
+	fmt.Fprintf(stdout, "- capability_classes: %s\n", strings.Join(report.CapabilityClasses, ","))
+	fmt.Fprintf(stdout, "- routing_defaults: %d\n", report.RoutingDefaultCount)
+	for _, lane := range report.Lanes {
+		fmt.Fprintf(stdout, "- lane: %s tier=%s cost_class=%s harness=%s provider_route=%s capabilities=%d\n",
+			lane.ModelID,
+			emptyDash(lane.Tier),
+			emptyDash(lane.CostClass),
+			emptyDash(lane.Harness),
+			emptyDash(lane.ProviderRoute),
+			len(lane.Capabilities),
+		)
+	}
+	fmt.Fprintln(stdout, "- verdict: read_only_projection")
+	return 0
+}
 
 // The governed model-router promotion door.
 //
@@ -25,19 +131,19 @@ import (
 // PolicyDecision; without one the act seam refuses and the authority stays
 // byte-identical.
 
-func routePromotionApplyUsage() string {
+func PromotionApplyUsage() string {
 	return "usage: compound route promotion-apply --review <route_promotion.json> --rationale <text> --work W [--confirm] [--home P] [--json]"
 }
 
-func routePromotionRevertUsage() string {
+func PromotionRevertUsage() string {
 	return "usage: compound route promotion-revert --applied <route_promotion.applied.json> --work W [--confirm] [--home P] [--json]"
 }
 
-func runRoutePromotionApply(args []string, defaultHome string, stdout, stderr io.Writer) int {
+func RunPromotionApply(args []string, defaultHome string, stdout, stderr io.Writer) int {
 	reviewPath := strings.TrimSpace(flagValue(args, "--review"))
 	rationale := strings.TrimSpace(flagValue(args, "--rationale"))
 	if reviewPath == "" || rationale == "" {
-		fmt.Fprintln(stderr, routePromotionApplyUsage())
+		fmt.Fprintln(stderr, PromotionApplyUsage())
 		return 2
 	}
 	homePath, err := resolveRoutePromotionHome(args, defaultHome)
@@ -97,10 +203,10 @@ func runRoutePromotionApply(args []string, defaultHome string, stdout, stderr io
 	return printRoutePromotionApplyResult(stdout, res, asJSON)
 }
 
-func runRoutePromotionRevert(args []string, defaultHome string, stdout, stderr io.Writer) int {
+func RunPromotionRevert(args []string, defaultHome string, stdout, stderr io.Writer) int {
 	appliedPath := strings.TrimSpace(flagValue(args, "--applied"))
 	if appliedPath == "" {
-		fmt.Fprintln(stderr, routePromotionRevertUsage())
+		fmt.Fprintln(stderr, PromotionRevertUsage())
 		return 2
 	}
 	homePath, err := resolveRoutePromotionHome(args, defaultHome)
@@ -304,4 +410,39 @@ func allowedLabel(allowed bool) string {
 		return "ALLOWED"
 	}
 	return "NOT allowed"
+}
+
+func flagValue(args []string, name string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == name {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func hasFlag(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == name {
+			return true
+		}
+	}
+	return false
+}
+
+func encodeJSON(w io.Writer, value any) error {
+	return writeJSON(w, value)
+}
+
+func writeJSON(w io.Writer, value any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(value)
+}
+
+func emptyDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }

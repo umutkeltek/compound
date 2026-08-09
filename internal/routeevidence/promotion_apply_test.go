@@ -416,7 +416,7 @@ func TestPromotionApplyFailsClosedBeforeAnyAuthorityMutation(t *testing.T) {
 			name: "stale model authority revision",
 			prepare: func(t *testing.T, home, revision, reviewPath string) string {
 				return mutateReviewFile(t, reviewPath, func(p map[string]any) {
-					p["model_capabilities_revision"] = "sha256:0000000000000000"
+					p["model_capabilities_revision"] = "sha256:deadbeefdeadbeef"
 				})
 			},
 			wantErr: "stale",
