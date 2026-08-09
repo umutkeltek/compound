@@ -361,6 +361,8 @@ func expectedApplyIntent(record PromotionAppliedRecord) envelope.ActionIntent {
 		CurrentClaimLevel:  strings.TrimSpace(record.PriorClaimLevel),
 		ProposedClaimLevel: strings.TrimSpace(record.AppliedClaimLevel),
 		AuthorityPath:      strings.TrimSpace(record.AuthorityPath),
+		AuthorityRevision:  strings.TrimSpace(record.AuthorityRevisionBefore),
+		ProposedRevision:   strings.TrimSpace(record.AuthorityRevisionAfter),
 	}
 	// CreatedAt does not participate in the intent id and is not safety-relevant;
 	// reuse the recorded value so the reconstruction is otherwise identical.
@@ -472,6 +474,14 @@ func RevertPromotionApply(homePath, workID string, plan PromotionRevertPlan, pd 
 	if strings.TrimSpace(workID) == "" {
 		return PromotionRevertResult{}, fmt.Errorf("work id required for a governed promotion revert")
 	}
+	// PromotionRevertPlan is an exported preview, not authority. Rebuild it from
+	// the applied record immediately before mutation and use only the newly
+	// verified path, revisions, refs, and content-addressed pre-image below.
+	freshPlan, err := PlanPromotionRevert(homePath, plan.AppliedPath)
+	if err != nil {
+		return PromotionRevertResult{}, err
+	}
+	plan = freshPlan
 	record, err := LoadPromotionAppliedRecord(plan.AppliedPath)
 	if err != nil {
 		return PromotionRevertResult{}, err
@@ -505,7 +515,7 @@ func RevertPromotionApply(homePath, workID string, plan PromotionRevertPlan, pd 
 	// a forged authority_revision_before cannot point the ledger head at a
 	// revision the restored file does not carry.
 	restoredRevision := plan.RestoredRevision
-	if lerr := appendPromotionAuthorityRecord(homePath, plan.AuthorityPath, restoredRevision, promotionRevertCommandName, record.ReviewID, res); lerr != nil {
+	if lerr := appendPromotionAuthorityRecordFn(homePath, plan.AuthorityPath, restoredRevision, promotionRevertCommandName, record.ReviewID, res); lerr != nil {
 		// The YAML is now at the PRE revision while the ledger head still names the
 		// POST revision. That disagreement makes latestModelCapabilitiesSource
 		// refuse, breaking every later route plan and promotion review — so it is
@@ -518,7 +528,7 @@ func RevertPromotionApply(homePath, workID string, plan PromotionRevertPlan, pd 
 	record.UndoCommand = ""
 	record.EvidenceRefs = reviewartifact.UniqueSorted(append(append([]string{}, record.EvidenceRefs...),
 		res.Receipt.ID, res.Transition.ID, res.PreImageRef, res.PostImageRef))
-	if _, werr := reviewartifact.WriteJSON(homePath, routePromotionReviewArea, record.ReviewID+promotionAppliedRecordSuffix, record, "  "); werr != nil {
+	if _, werr := writePromotionAppliedRecordFn(homePath, record.ReviewID, record); werr != nil {
 		// The authority AND the ledger head are both back at the pre-apply
 		// revision, so the home is coherent: the claim change is genuinely undone.
 		// Only the record's own status line is stale, and because it still names

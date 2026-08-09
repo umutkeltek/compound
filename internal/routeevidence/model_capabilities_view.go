@@ -91,6 +91,9 @@ func diffModelCapabilities(authority, view ModelCapabilitiesManifest) []string {
 	if authority.Version != view.Version {
 		drifts = append(drifts, fmt.Sprintf("version: authority %d, view %d", authority.Version, view.Version))
 	}
+	if strings.TrimSpace(authority.Purpose) != strings.TrimSpace(view.Purpose) {
+		drifts = append(drifts, fmt.Sprintf("purpose: authority %q, view %q", authority.Purpose, view.Purpose))
+	}
 	drifts = append(drifts, diffStringSets("capability_class", authority.CapabilityClasses, view.CapabilityClasses)...)
 	drifts = append(drifts, diffStringSets("rule", authority.Rules, view.Rules)...)
 

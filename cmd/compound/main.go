@@ -171,6 +171,12 @@ func routeUsage(sub string) string {
 	switch sub {
 	case "cost-doctor":
 		return "usage: compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]"
+	case "model-capabilities":
+		return routeModelCapabilitiesUsage
+	case "promotion-apply":
+		return routePromotionApplyUsage()
+	case "promotion-revert":
+		return routePromotionRevertUsage()
 	case "promotion-record":
 		return "usage: compound route promotion-record --review <route_promotion.json> --rationale <text> [--json]"
 	case "execution-profile":
@@ -178,7 +184,7 @@ func routeUsage(sub string) string {
 	case "ev":
 		return routeEvUsage
 	default:
-		return "usage: compound route <execution-profile (--list|--profile ID) [--json]|evidence-authority [--json] [--recent N]|lane-projection [--harness H] [--json]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|import-account-projection <admin-accounts.json>|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|speed (observe [--from <probe.json>]|list) [--json]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive] [--latency-class interactive|batch|overnight])|ev --capability-class C --deviation-lane L [--risk-grade gate|judge|tidy] [--class-bucket unknown] [--json]>"
+		return "usage: compound route <execution-profile (--list|--profile ID) [--json]|evidence-authority [--json] [--recent N]|lane-projection [--harness H] [--json]|model-capabilities [--json|--yaml|--check-view FILE]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|promotion-apply --review <route_promotion.json> --rationale <text> --work W [--confirm] [--json]|promotion-revert --applied <route_promotion.applied.json> --work W [--confirm] [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|import-account-projection <admin-accounts.json>|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|speed (observe [--from <probe.json>]|list) [--json]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive] [--latency-class interactive|batch|overnight])|ev --capability-class C --deviation-lane L [--risk-grade gate|judge|tidy] [--class-bucket unknown] [--json]>"
 	}
 }
 
@@ -266,12 +272,15 @@ compound proof-check [--json] [--dry-run] [--dev] [--repo P] [--out FILE] determ
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]|posture-plan --harness H|drift|generate|permission-mode|instruction-pack>
   compound transition show <id>                                 inspect a Transition or envelope
-  compound route lane-projection [--harness H] [--json]          read-only executor lane input from Compound route authority
-  compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
-  compound route import-model-capabilities <model-capabilities.yaml> OS model router YAML -> Compound route authority
-  compound route import-promotion-criteria <promotion-criteria.yaml> Promotion criteria YAML -> Compound route review authority
-  compound route promotion-review [--lane ID] [--json] Review model-lane claim promotion evidence, no authority mutation
-  compound route promotion-record --review route_promotion.json --rationale TEXT [--json] Record reviewed hold decision, no authority mutation
+	  compound route lane-projection [--harness H] [--json]          read-only executor lane input from Compound route authority
+	  compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
+	  compound route model-capabilities [--json|--yaml|--check-view FILE] read/project Compound model-router authority; drift check exits nonzero
+	  compound route import-model-capabilities <model-capabilities.yaml> additive migration/backfill bridge into Compound route authority
+	  compound route import-promotion-criteria <promotion-criteria.yaml> Promotion criteria YAML -> Compound route review authority
+	  compound route promotion-review [--lane ID] [--json] Review model-lane claim promotion evidence, no authority mutation
+	  compound route promotion-record --review route_promotion.json --rationale TEXT [--json] Record reviewed hold decision, no authority mutation
+	  compound route promotion-apply --review route_promotion.json --rationale TEXT --work W [--confirm] [--json] governed one-claim authority mutation; dry-run by default
+	  compound route promotion-revert --applied route_promotion.applied.json --work W [--confirm] [--json] governed exact-pre-image undo; dry-run by default
   compound route evidence-authority [--json] [--recent N] read-only route evidence authority
   compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N] provider-call NDJSON -> route/cost projections
   compound route import-account-projection <admin-accounts.json>  switchback/admin-accounts@1 -> projections/account-projection.json (lane admission gate)

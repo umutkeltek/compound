@@ -66,6 +66,7 @@ type PromotionApplyPlan struct {
 	AuthorityRef      string `json:"authority_ref"`
 	AuthorityPath     string `json:"authority_path"`
 	AuthorityRevision string `json:"authority_revision"`
+	ProposedRevision  string `json:"proposed_revision"`
 
 	ModelCapabilitiesSourceID string `json:"model_capabilities_source_id,omitempty"`
 	CriteriaSourceID          string `json:"criteria_source_id,omitempty"`
@@ -131,6 +132,16 @@ type PromotionApplyResult struct {
 	Plan   PromotionApplyPlan     `json:"plan"`
 	Record PromotionAppliedRecord `json:"record"`
 }
+
+// Persistence seams stay package-private and default to the real owners. Tests
+// replace them to exercise post-mutation recovery deterministically on hosts
+// where chmod cannot force a write failure (for example privileged containers).
+var (
+	writePromotionAppliedRecordFn = func(homePath, reviewID string, record PromotionAppliedRecord) (string, error) {
+		return reviewartifact.WriteJSON(homePath, routePromotionReviewArea, reviewID+promotionAppliedRecordSuffix, record, "  ")
+	}
+	appendPromotionAuthorityRecordFn = appendPromotionAuthorityRecord
+)
 
 // PromotionAppliedRecordPath names the review-side applied record for a review id.
 func PromotionAppliedRecordPath(homePath, reviewID string) string {
@@ -272,6 +283,7 @@ func PlanPromotionApply(homePath, reviewPath, rationale string) (PromotionApplyP
 		AuthorityRef:              ModelCapabilitiesAuthorityRef,
 		AuthorityPath:             authorityPath,
 		AuthorityRevision:         authorityRevision,
+		ProposedRevision:          "sha256:" + digestHex(body),
 		ModelCapabilitiesSourceID: strings.TrimSpace(review.ModelCapabilitiesSourceID),
 		CriteriaSourceID:          strings.TrimSpace(review.CriteriaSourceID),
 		CriteriaRevision:          strings.TrimSpace(review.CriteriaRevision),
@@ -332,15 +344,17 @@ func PromotionApplyIntent(workID string, plan PromotionApplyPlan, now time.Time)
 	return envelope.ActionIntent{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVActionIntent,
-			ID:            reviewartifact.ID("act_", workID, PromotionApplyCapability, plan.AuthorityPath, target.ID, plan.ReviewID, plan.ProposedClaimLevel),
-			CreatedAt:     now.UTC().Format(time.RFC3339),
-			Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
-			IDs:           envelope.IDs{WorkID: workID},
-			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
-			Privacy:       "private",
-			Risk:          "tier1",
-			EvidenceRefs:  []string{},
-			Uncertainty:   envelope.Uncertainty{Level: "known"},
+			ID: reviewartifact.ID("act_", workID, PromotionApplyCapability,
+				plan.AuthorityPath, target.ID, plan.ReviewID, plan.ProposedClaimLevel,
+				plan.AuthorityRevision, plan.ProposedRevision),
+			CreatedAt:    now.UTC().Format(time.RFC3339),
+			Producer:     envelope.Producer{Kind: "cli", Name: "compound"},
+			IDs:          envelope.IDs{WorkID: workID},
+			Authority:    envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:      "private",
+			Risk:         "tier1",
+			EvidenceRefs: []string{},
+			Uncertainty:  envelope.Uncertainty{Level: "known"},
 		},
 		Actor:         "operator",
 		Capability:    PromotionApplyCapability,
@@ -369,6 +383,16 @@ func ApplyPromotionReview(homePath, workID string, plan PromotionApplyPlan, pd e
 	if strings.TrimSpace(workID) == "" {
 		return PromotionApplyResult{}, fmt.Errorf("work id required for a governed promotion apply")
 	}
+	// PromotionApplyPlan is an exported preview, not authority. Rebuild it from
+	// the review artifact immediately before mutation and use only that canonical
+	// payload below. The PolicyDecision is re-gated against an intent whose id
+	// binds both authority revisions, so a changed review/rationale cannot reuse
+	// an earlier authorization.
+	freshPlan, err := PlanPromotionApply(homePath, plan.ReviewPath, plan.Rationale)
+	if err != nil {
+		return PromotionApplyResult{}, err
+	}
+	plan = freshPlan
 	store, err := act.NewArtifactStore(homePath)
 	if err != nil {
 		return PromotionApplyResult{}, err
@@ -387,14 +411,14 @@ func ApplyPromotionReview(homePath, workID string, plan PromotionApplyPlan, pd e
 		return PromotionApplyResult{}, err
 	}
 
-	afterRevision := "sha256:" + digestHex(plan.ProposedYAML)
+	afterRevision := plan.ProposedRevision
 
 	// The source-authority ledger names WHO last set the live authority revision.
 	// latestModelCapabilitiesSource refuses when the ledger head disagrees with the
 	// parsed authority, so a governed mutation that skipped this step would leave
 	// route planning and promotion review erroring out — mutated but unusable.
 	// This record is not an import: it is stamped with the governed door.
-	if lerr := appendPromotionAuthorityRecord(homePath, plan.AuthorityPath, afterRevision, promotionApplyCommandName, plan.ReviewID, res); lerr != nil {
+	if lerr := appendPromotionAuthorityRecordFn(homePath, plan.AuthorityPath, afterRevision, promotionApplyCommandName, plan.ReviewID, res); lerr != nil {
 		// The ledger head was NOT advanced, so restoring the YAML alone leaves it
 		// coherent at the pre-apply revision.
 		return PromotionApplyResult{}, restoreAfterGovernedApplyFailure(store, adapter, ai, pd, res, lerr, now, homePath, plan, false)
@@ -445,7 +469,7 @@ func ApplyPromotionReview(homePath, workID string, plan PromotionApplyPlan, pd e
 	record.UndoCommand = fmt.Sprintf("compound route promotion-revert --applied %s --work %s --confirm",
 		PromotionAppliedRecordPath(homePath, plan.ReviewID), workID)
 
-	path, werr := reviewartifact.WriteJSON(homePath, routePromotionReviewArea, plan.ReviewID+promotionAppliedRecordSuffix, record, "  ")
+	path, werr := writePromotionAppliedRecordFn(homePath, plan.ReviewID, record)
 	if werr != nil {
 		// The authority is mutated AND the ledger head already names the new
 		// revision. Restoring the YAML alone would leave the ledger pointing at a
@@ -600,7 +624,7 @@ func restoreAfterGovernedApplyFailure(store *act.ArtifactStore, adapter act.Adap
 		return recordApplyLedgerSplit(homePath, ai, plan, res, cause, rerr, now)
 	}
 	if ledgerAdvanced {
-		if lerr := appendPromotionAuthorityRecord(homePath, plan.AuthorityPath, plan.AuthorityRevision, promotionRevertCommandName, plan.ReviewID, revertRes); lerr != nil {
+		if lerr := appendPromotionAuthorityRecordFn(homePath, plan.AuthorityPath, plan.AuthorityRevision, promotionRevertCommandName, plan.ReviewID, revertRes); lerr != nil {
 			// Rollback succeeded (authority = pre) but the ledger head still names
 			// the post revision. Put the authority back to the image the ledger
 			// describes so the two AGREE; if that also fails, land durable recovery

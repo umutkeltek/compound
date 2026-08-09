@@ -2,12 +2,14 @@ package routeevidence
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/act"
 	"compound/internal/envelope"
 	"compound/internal/policy"
 )
@@ -23,8 +25,8 @@ rules:
   - free lanes never gate a verdict
 capability_classes: [classify-extract, judge-critique]
 models:
-  auto/judge:
-    lane: auto-judge.invalid
+  synthetic-judge.invalid:
+    lane: judge-executor.invalid
     harness: switchback
     tier: premium
     packet_ceiling: large
@@ -36,8 +38,8 @@ models:
       judge-critique:
         level: primary
         evidence: panel agreement 0.94
-  fedora/qwen3.6-35b-a3b:
-    lane: fedora-local.invalid
+  synthetic-local.invalid:
+    lane: local-executor.invalid
     harness: switchback
     tier: cheap
     packet_ceiling: medium
@@ -47,8 +49,8 @@ models:
         level: capable
         evidence: local probe sweep
 routing_defaults:
-  classify-extract: [auto/judge, fedora/qwen3.6-35b-a3b]
-  judge-critique: [auto/judge]
+  classify-extract: [synthetic-judge.invalid, synthetic-local.invalid]
+  judge-critique: [synthetic-judge.invalid]
 `
 
 // Review ids are DERIVED from lane + capability class, and the governed door
@@ -56,8 +58,8 @@ routing_defaults:
 // production does rather than inventing literals, so a change to the id scheme
 // cannot leave these falsifiers silently testing an unreachable path.
 var (
-	fixturePromoteReviewID = promotionReviewID("auto/judge", "classify-extract")
-	fixtureDemoteReviewID  = promotionReviewID("fedora/qwen3.6-35b-a3b", "classify-extract")
+	fixturePromoteReviewID = promotionReviewID("synthetic-judge.invalid", "classify-extract")
+	fixtureDemoteReviewID  = promotionReviewID("synthetic-local.invalid", "classify-extract")
 )
 
 // promotionApplyHome builds a temp home whose model-router authority carries the
@@ -264,7 +266,7 @@ func allowingDecision(t *testing.T, home, work string, plan PromotionApplyPlan, 
 func TestPromotionApplyReviewedPromoteMutatesOnlyTheReviewedClaim(t *testing.T) {
 	home, revision := promotionApplyHome(t)
 	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
-		promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
 
 	before := fingerprintAuthority(t, home)
 
@@ -303,13 +305,13 @@ func TestPromotionApplyReviewedPromoteMutatesOnlyTheReviewedClaim(t *testing.T) 
 	if err != nil {
 		t.Fatalf("reload authority: %v", err)
 	}
-	if got := after.Models["auto/judge"].Capabilities["classify-extract"].Level; got != "primary" {
+	if got := after.Models["synthetic-judge.invalid"].Capabilities["classify-extract"].Level; got != "primary" {
 		t.Fatalf("reviewed claim not applied: %q", got)
 	}
-	if got := after.Models["auto/judge"].Capabilities["judge-critique"].Level; got != "primary" {
+	if got := after.Models["synthetic-judge.invalid"].Capabilities["judge-critique"].Level; got != "primary" {
 		t.Fatalf("sibling claim disturbed: %q", got)
 	}
-	if got := after.Models["fedora/qwen3.6-35b-a3b"].Capabilities["classify-extract"].Level; got != "capable" {
+	if got := after.Models["synthetic-local.invalid"].Capabilities["classify-extract"].Level; got != "capable" {
 		t.Fatalf("other lane claim disturbed: %q", got)
 	}
 	if len(after.Models) != 2 || len(after.RoutingDefaults) != 2 || len(after.Rules) != 1 {
@@ -317,7 +319,7 @@ func TestPromotionApplyReviewedPromoteMutatesOnlyTheReviewedClaim(t *testing.T) 
 	}
 
 	// FALSIFIER 4 — provenance: the installed claim names the review and criteria.
-	evidence := after.Models["auto/judge"].Capabilities["classify-extract"].Evidence
+	evidence := after.Models["synthetic-judge.invalid"].Capabilities["classify-extract"].Evidence
 	for _, want := range []string{fixturePromoteReviewID, "pcsa_synthetic", "sha256:criteria-fixture", "operator reviewed bakeoff evidence", "bakeoff round 3"} {
 		if !strings.Contains(evidence, want) {
 			t.Fatalf("installed evidence missing %q: %q", want, evidence)
@@ -332,7 +334,7 @@ func TestPromotionApplyReviewedPromoteMutatesOnlyTheReviewedClaim(t *testing.T) 
 	if err != nil {
 		t.Fatalf("plan classify-extract route: %v", err)
 	}
-	if len(routePlan.Chain) == 0 || routePlan.Chain[0].ModelID != "auto/judge" || routePlan.Chain[0].ClaimLevel != "primary" {
+	if len(routePlan.Chain) == 0 || routePlan.Chain[0].ModelID != "synthetic-judge.invalid" || routePlan.Chain[0].ClaimLevel != "primary" {
 		t.Fatalf("route plan does not reflect the applied claim: %+v", routePlan.Chain)
 	}
 }
@@ -341,7 +343,7 @@ func TestPromotionApplyReviewedPromoteMutatesOnlyTheReviewedClaim(t *testing.T) 
 func TestPromotionApplyReviewedDemoteMutatesOnlyTheReviewedClaim(t *testing.T) {
 	home, revision := promotionApplyHome(t)
 	reviewPath := promotionReviewFile(t, home, revision, fixtureDemoteReviewID,
-		promotionRecommendationDemote, "fedora/qwen3.6-35b-a3b", "classify-extract", "capable", "assumed")
+		promotionRecommendationDemote, "synthetic-local.invalid", "classify-extract", "capable", "assumed")
 
 	plan, err := PlanPromotionApply(home, reviewPath, "operator reviewed failing-rate evidence")
 	if err != nil {
@@ -360,13 +362,13 @@ func TestPromotionApplyReviewedDemoteMutatesOnlyTheReviewedClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload authority: %v", err)
 	}
-	if got := after.Models["fedora/qwen3.6-35b-a3b"].Capabilities["classify-extract"].Level; got != "assumed" {
+	if got := after.Models["synthetic-local.invalid"].Capabilities["classify-extract"].Level; got != "assumed" {
 		t.Fatalf("demote not applied: %q", got)
 	}
-	if got := after.Models["auto/judge"].Capabilities["classify-extract"].Level; got != "capable" {
+	if got := after.Models["synthetic-judge.invalid"].Capabilities["classify-extract"].Level; got != "capable" {
 		t.Fatalf("other lane claim disturbed by demote: %q", got)
 	}
-	if got := after.Models["auto/judge"].Capabilities["judge-critique"].Evidence; got != "panel agreement 0.94" {
+	if got := after.Models["synthetic-judge.invalid"].Capabilities["judge-critique"].Evidence; got != "panel agreement 0.94" {
 		t.Fatalf("untouched claim evidence rewritten: %q", got)
 	}
 	if len(after.RoutingDefaults["classify-extract"]) != 2 {
@@ -536,7 +538,7 @@ func TestPromotionApplyFailsClosedBeforeAnyAuthorityMutation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			home, revision := promotionApplyHome(t)
 			reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
-				promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
+				promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
 			before := fingerprintAuthority(t, home)
 
 			input := tc.prepare(t, home, revision, reviewPath)
@@ -561,7 +563,7 @@ func TestPromotionApplyFailsClosedBeforeAnyAuthorityMutation(t *testing.T) {
 func TestPromotionApplyRefusesWhenNoStandingGrantCoversIt(t *testing.T) {
 	home, revision := promotionApplyHomeWithoutGrant(t)
 	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
-		promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
 	plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -592,7 +594,7 @@ func TestPromotionApplyRefusesWhenNoStandingGrantCoversIt(t *testing.T) {
 func TestPromotionApplySucceedsOnlyBecauseOfTheStandingGrant(t *testing.T) {
 	home, revision := promotionApplyHome(t)
 	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
-		promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
 	plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -619,7 +621,7 @@ func TestPromotionApplySucceedsOnlyBecauseOfTheStandingGrant(t *testing.T) {
 func TestPromotionApplyRefusesWhenAuthorityMovesBetweenPlanAndConfirm(t *testing.T) {
 	home, revision := promotionApplyHome(t)
 	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
-		promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
 	plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -633,8 +635,8 @@ purpose: concurrent lane change
 rules: []
 capability_classes: [classify-extract]
 models:
-  fedora/qwen3.6-35b-a3b:
-    lane: fedora-local.invalid
+  synthetic-local.invalid:
+    lane: local-executor.invalid
     tier: cheap
     packet_ceiling: medium
     capabilities:
@@ -642,7 +644,7 @@ models:
         level: assumed
         evidence: concurrent lane change
 routing_defaults:
-  classify-extract: [fedora/qwen3.6-35b-a3b]
+  classify-extract: [synthetic-local.invalid]
 `
 	if err := os.WriteFile(concurrent, []byte(body), 0o644); err != nil {
 		t.Fatalf("write concurrent input: %v", err)
@@ -658,6 +660,81 @@ routing_defaults:
 	before.assertUnchanged(t, home, "toctou")
 }
 
+// The plan is an exported preview value, not mutation authority. Execution must
+// rebuild it from the review path immediately before the act and must ignore a
+// caller-replaced ProposedYAML payload, even when the PolicyDecision was valid
+// for the original preview.
+func TestPromotionApplyReplansAndIgnoresForgedPlanPayload(t *testing.T) {
+	home, revision := promotionApplyHome(t)
+	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
+	plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	_, pd := allowingDecision(t, home, "work_forged_apply_plan", plan, t0)
+
+	plan.ProposedYAML = []byte(`version: 1
+purpose: attacker supplied plan payload
+rules: []
+capability_classes: [classify-extract]
+models:
+  attacker/model.invalid:
+    lane: attacker.invalid
+    tier: premium
+    packet_ceiling: large
+    capabilities:
+      classify-extract:
+        level: primary
+        evidence: forged exported plan
+routing_defaults:
+  classify-extract: [attacker/model.invalid]
+`)
+
+	if _, err := ApplyPromotionReview(home, "work_forged_apply_plan", plan, pd, t0); err != nil {
+		t.Fatalf("canonical reviewed apply should still succeed: %v", err)
+	}
+	manifest, _, _, err := loadModelCapabilitiesSnapshot(home)
+	if err != nil {
+		t.Fatalf("reload authority: %v", err)
+	}
+	if _, ok := manifest.Models["attacker/model.invalid"]; ok {
+		t.Fatal("caller-supplied ProposedYAML reached authority")
+	}
+	if got := manifest.Models["synthetic-judge.invalid"].Capabilities["classify-extract"].Level; got != "primary" {
+		t.Fatalf("canonical reviewed claim was not applied: %q", got)
+	}
+}
+
+// A PolicyDecision must bind both sides of the authority transition. The
+// proposed revision commits to the exact YAML bytes (and therefore rationale +
+// provenance), while the authority revision commits to the before image.
+func TestPromotionApplyIntentBindsBeforeAndProposedRevisions(t *testing.T) {
+	home, revision := promotionApplyHome(t)
+	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
+	plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	wantProposedRevision := "sha256:" + digestHex(plan.ProposedYAML)
+	if plan.ProposedRevision != wantProposedRevision {
+		t.Fatalf("proposed revision = %q, want %q", plan.ProposedRevision, wantProposedRevision)
+	}
+
+	baseID := PromotionApplyIntent("work_revision_binding", plan, t0).ID
+	changedBefore := plan
+	changedBefore.AuthorityRevision = "sha256:" + strings.Repeat("b", 64)
+	if got := PromotionApplyIntent("work_revision_binding", changedBefore, t0).ID; got == baseID {
+		t.Fatal("action intent id did not bind the before authority revision")
+	}
+	changedAfter := plan
+	changedAfter.ProposedRevision = "sha256:" + strings.Repeat("a", 64)
+	if got := PromotionApplyIntent("work_revision_binding", changedAfter, t0).ID; got == baseID {
+		t.Fatal("action intent id did not bind the proposed authority revision")
+	}
+}
+
 // FALSIFIER 5 (evidence-binding control) — a hand-authored or tampered applied
 // record cannot drive a governed restore. Without this, promotion-revert would be
 // a write primitive aimed at arbitrary attacker-named artifact bytes.
@@ -666,7 +743,7 @@ func TestPromotionRevertRejectsAppliedRecordsNotBackedByCanonicalEvidence(t *tes
 		t.Helper()
 		home, revision := promotionApplyHome(t)
 		reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
-			promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
+			promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
 		plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
 		if err != nil {
 			t.Fatalf("plan: %v", err)
@@ -758,12 +835,12 @@ func TestPromotionRevertRejectsAppliedRecordsNotBackedByCanonicalEvidence(t *tes
 		{
 			name:    "forged authority_revision_before",
 			tamper:  func(r *PromotionAppliedRecord) { r.AuthorityRevisionBefore = "sha256:" + strings.Repeat("b", 64) },
-			wantErr: "refusing a forged revision",
+			wantErr: "does not reproduce its own action intent id",
 		},
 		{
 			name:    "forged authority_revision_after",
 			tamper:  func(r *PromotionAppliedRecord) { r.AuthorityRevisionAfter = "sha256:" + strings.Repeat("a", 64) },
-			wantErr: "refusing a forged revision",
+			wantErr: "does not reproduce its own action intent id",
 		},
 	}
 
@@ -801,6 +878,72 @@ func TestPromotionRevertRejectsAppliedRecordsNotBackedByCanonicalEvidence(t *tes
 	}
 }
 
+// The exported revert plan is only a preview. Execution must re-plan from the
+// applied-record path and restore the canonical content-addressed pre-image,
+// never bytes substituted into plan.PreImage by a caller after policy review.
+func TestPromotionRevertReplansAndIgnoresForgedPlanPreImage(t *testing.T) {
+	home, revision := promotionApplyHome(t)
+	original, err := os.ReadFile(ModelCapabilitiesPath(home))
+	if err != nil {
+		t.Fatalf("read original authority: %v", err)
+	}
+	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
+	applyPlan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
+	if err != nil {
+		t.Fatalf("plan apply: %v", err)
+	}
+	_, applyPD := allowingDecision(t, home, "work_forged_revert_plan", applyPlan, t0)
+	if _, err := ApplyPromotionReview(home, "work_forged_revert_plan", applyPlan, applyPD, t0); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	appliedPath := PromotionAppliedRecordPath(home, fixturePromoteReviewID)
+	revertPlan, err := PlanPromotionRevert(home, appliedPath)
+	if err != nil {
+		t.Fatalf("plan revert: %v", err)
+	}
+	record, err := LoadPromotionAppliedRecord(appliedPath)
+	if err != nil {
+		t.Fatalf("load applied record: %v", err)
+	}
+	cfg, _, err := policy.LoadConfig(home)
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	revertAI := PromotionRevertIntent("work_forged_revert_plan", record, t0)
+	revertPD := policy.Evaluate(revertAI, cfg, t0)
+	if !policy.Allowed(revertPD) {
+		t.Fatalf("revert decision should allow, got %s", revertPD.Outcome)
+	}
+
+	revertPlan.PreImage = []byte(`version: 1
+purpose: attacker supplied revert payload
+rules: []
+capability_classes: [classify-extract]
+models:
+  attacker/model.invalid:
+    lane: attacker.invalid
+    tier: premium
+    packet_ceiling: large
+    capabilities:
+      classify-extract:
+        level: primary
+        evidence: forged exported revert plan
+routing_defaults:
+  classify-extract: [attacker/model.invalid]
+`)
+	if _, err := RevertPromotionApply(home, "work_forged_revert_plan", revertPlan, revertPD, t0); err != nil {
+		t.Fatalf("canonical revert should still succeed: %v", err)
+	}
+	restored, err := os.ReadFile(ModelCapabilitiesPath(home))
+	if err != nil {
+		t.Fatalf("read restored authority: %v", err)
+	}
+	if string(restored) != string(original) {
+		t.Fatal("revert executed caller-supplied plan.PreImage instead of the canonical artifact")
+	}
+}
+
 // FALSIFIER 5 — undo. The recorded one-line undo restores the EXACT pre-image,
 // produces its own receipt/transition, and refuses once the post-image revision
 // no longer matches.
@@ -811,7 +954,7 @@ func TestPromotionRevertRestoresExactPreImageAndRefusesOnDrift(t *testing.T) {
 		t.Fatalf("read original authority: %v", err)
 	}
 	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
-		promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
 
 	plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
 	if err != nil {
@@ -883,7 +1026,7 @@ func TestPromotionRevertRestoresExactPreImageAndRefusesOnDrift(t *testing.T) {
 func TestPromotionRevertRefusesWhenAuthorityMovedAfterApply(t *testing.T) {
 	home, revision := promotionApplyHome(t)
 	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
-		promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
 	plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -906,8 +1049,8 @@ purpose: later change
 rules: []
 capability_classes: [classify-extract]
 models:
-  fedora/qwen3.6-35b-a3b:
-    lane: fedora-local.invalid
+  synthetic-local.invalid:
+    lane: local-executor.invalid
     tier: cheap
     packet_ceiling: medium
     capabilities:
@@ -915,7 +1058,7 @@ models:
         level: assumed
         evidence: later independent change
 routing_defaults:
-  classify-extract: [fedora/qwen3.6-35b-a3b]
+  classify-extract: [synthetic-local.invalid]
 `
 	if err := os.WriteFile(later, []byte(body), 0o644); err != nil {
 		t.Fatalf("write later input: %v", err)
@@ -946,7 +1089,7 @@ func TestPromotionRevertStaysCoherentWhenTheRecordCannotBeMarkedReverted(t *test
 		t.Fatalf("read original authority: %v", err)
 	}
 	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
-		promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
 	plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -975,16 +1118,17 @@ func TestPromotionRevertStaysCoherentWhenTheRecordCannotBeMarkedReverted(t *test
 		t.Fatalf("revert decision should allow, got %s", revertPD.Outcome)
 	}
 
-	// Force the record write to fail by making the reviews area unwritable.
-	reviewsDir := filepath.Dir(appliedPath)
-	if err := os.Chmod(reviewsDir, 0o500); err != nil {
-		t.Fatalf("chmod reviews dir: %v", err)
+	// Fail exactly the post-revert record write. This injected seam is
+	// deterministic even when the test process can bypass filesystem modes.
+	realWriteAppliedRecord := writePromotionAppliedRecordFn
+	writePromotionAppliedRecordFn = func(string, string, PromotionAppliedRecord) (string, error) {
+		return "", errors.New("injected applied-record write failure")
 	}
-	t.Cleanup(func() { _ = os.Chmod(reviewsDir, 0o755) })
+	t.Cleanup(func() { writePromotionAppliedRecordFn = realWriteAppliedRecord })
 
 	_, err = RevertPromotionApply(home, "work_revert_persist", revertPlan, revertPD, t0)
 	if err == nil {
-		t.Skip("filesystem allowed the write despite a read-only directory; cannot exercise this path here")
+		t.Fatal("expected injected applied-record write failure")
 	}
 	if !strings.Contains(err.Error(), "the undo IS in effect") {
 		t.Fatalf("the failure must state that the undo took effect, got: %v", err)
@@ -1015,7 +1159,7 @@ func TestPromotionRevertStaysCoherentWhenTheRecordCannotBeMarkedReverted(t *test
 func TestPromotionRevertCompensatesWhenTheLedgerHeadCannotBeUpdated(t *testing.T) {
 	home, revision := promotionApplyHome(t)
 	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
-		promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
 	plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -1049,17 +1193,17 @@ func TestPromotionRevertCompensatesWhenTheLedgerHeadCannotBeUpdated(t *testing.T
 		t.Fatalf("revert decision should allow, got %s", revertPD.Outcome)
 	}
 
-	// Make ONLY the ledger file unwritable, so the authority write still succeeds
-	// and the failure lands exactly on the ledger append.
-	ledgerPath := ModelCapabilitiesSourceAuthorityPath(home)
-	if err := os.Chmod(ledgerPath, 0o444); err != nil {
-		t.Fatalf("chmod ledger: %v", err)
+	// Fail exactly the ledger append after the authority restore. The
+	// compensation path must put authority back at the still-current ledger head.
+	realAppendAuthorityRecord := appendPromotionAuthorityRecordFn
+	appendPromotionAuthorityRecordFn = func(string, string, string, string, string, act.Result) error {
+		return errors.New("injected source-authority ledger append failure")
 	}
-	t.Cleanup(func() { _ = os.Chmod(ledgerPath, 0o644) })
+	t.Cleanup(func() { appendPromotionAuthorityRecordFn = realAppendAuthorityRecord })
 
 	_, err = RevertPromotionApply(home, "work_ledger_split", revertPlan, revertPD, t0)
 	if err == nil {
-		t.Skip("filesystem allowed the ledger append despite a read-only file; cannot exercise this path here")
+		t.Fatal("expected injected source-authority ledger append failure")
 	}
 	if !strings.Contains(err.Error(), "authority and ledger agree") {
 		t.Fatalf("the failure must state that agreement was restored, got: %v", err)
@@ -1091,7 +1235,7 @@ func TestPromotionRevertCompensatesWhenTheLedgerHeadCannotBeUpdated(t *testing.T
 func TestPromotionRevertRefusesForgedAfterRevisionOverNewerAuthority(t *testing.T) {
 	home, revision := promotionApplyHome(t)
 	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
-		promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
 	plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -1110,8 +1254,8 @@ purpose: newer independent authority
 rules: []
 capability_classes: [classify-extract]
 models:
-  fedora/qwen3.6-35b-a3b:
-    lane: fedora-local.invalid
+  synthetic-local.invalid:
+    lane: local-executor.invalid
     tier: cheap
     packet_ceiling: medium
     capabilities:
@@ -1119,7 +1263,7 @@ models:
         level: assumed
         evidence: newer independent change
 routing_defaults:
-  classify-extract: [fedora/qwen3.6-35b-a3b]
+  classify-extract: [synthetic-local.invalid]
 `
 	if err := os.WriteFile(later, []byte(body), 0o644); err != nil {
 		t.Fatalf("write later input: %v", err)
@@ -1156,8 +1300,8 @@ routing_defaults:
 
 	if _, err := PlanPromotionRevert(home, appliedPath); err == nil {
 		t.Fatal("a forged authority_revision_after must not satisfy the drift guard")
-	} else if !strings.Contains(err.Error(), "refusing a forged revision") {
-		t.Fatalf("refusal should name the forged revision, got: %v", err)
+	} else if !strings.Contains(err.Error(), "does not reproduce its own action intent id") {
+		t.Fatalf("refusal should show that the bound intent rejected the forged revision, got: %v", err)
 	}
 
 	// The newer authority survived untouched.
@@ -1177,7 +1321,7 @@ routing_defaults:
 func TestImportRemainsAdditiveBridgeAfterGovernedApply(t *testing.T) {
 	home, revision := promotionApplyHome(t)
 	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
-		promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
 	plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -1194,8 +1338,8 @@ purpose: partial bridge input
 rules: []
 capability_classes: [classify-extract]
 models:
-  fedora/qwen3.6-35b-a3b:
-    lane: fedora-local.invalid
+  synthetic-local.invalid:
+    lane: local-executor.invalid
     tier: cheap
     packet_ceiling: medium
     capabilities:
@@ -1203,7 +1347,7 @@ models:
         level: capable
         evidence: refreshed local probe sweep
 routing_defaults:
-  classify-extract: [fedora/qwen3.6-35b-a3b]
+  classify-extract: [synthetic-local.invalid]
 `
 	if err := os.WriteFile(partial, []byte(body), 0o644); err != nil {
 		t.Fatalf("write partial: %v", err)
@@ -1216,13 +1360,13 @@ routing_defaults:
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if _, ok := after.Models["auto/judge"]; !ok {
+	if _, ok := after.Models["synthetic-judge.invalid"]; !ok {
 		t.Fatal("bridge import deleted a Compound-only row")
 	}
-	if got := after.Models["auto/judge"].Capabilities["classify-extract"].Level; got != "primary" {
+	if got := after.Models["synthetic-judge.invalid"].Capabilities["classify-extract"].Level; got != "primary" {
 		t.Fatalf("bridge import reverted the governed claim: %q", got)
 	}
-	if _, ok := after.Models["auto/judge"].Capabilities["judge-critique"]; !ok {
+	if _, ok := after.Models["synthetic-judge.invalid"].Capabilities["judge-critique"]; !ok {
 		t.Fatal("bridge import deleted a Compound-only claim")
 	}
 	if _, ok := after.RoutingDefaults["judge-critique"]; !ok {

@@ -190,6 +190,7 @@ func printRoutePromotionApplyPreview(stdout io.Writer, plan routeevidence.Promot
 			"authority_ref":           plan.AuthorityRef,
 			"authority_path":          plan.AuthorityPath,
 			"authority_revision":      plan.AuthorityRevision,
+			"proposed_revision":       plan.ProposedRevision,
 			"action_intent_id":        ai.ID,
 			"policy_decision_id":      pd.ID,
 			"policy_outcome":          pd.Outcome,
@@ -205,6 +206,7 @@ func printRoutePromotionApplyPreview(stdout io.Writer, plan routeevidence.Promot
 	fmt.Fprintf(stdout, "- claim: %s/%s %q -> %q\n", plan.LaneID, plan.CapabilityClass, plan.CurrentClaimLevel, plan.ProposedClaimLevel)
 	fmt.Fprintf(stdout, "- authority: %s (%s)\n", plan.AuthorityRef, plan.AuthorityPath)
 	fmt.Fprintf(stdout, "- authority_revision: %s\n", plan.AuthorityRevision)
+	fmt.Fprintf(stdout, "- proposed_revision: %s\n", plan.ProposedRevision)
 	fmt.Fprintf(stdout, "- action_intent: %s\n", ai.ID)
 	fmt.Fprintf(stdout, "- policy: %s (%s)\n", pd.Outcome, allowedLabel(allowed))
 	if allowed {

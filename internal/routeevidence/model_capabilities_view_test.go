@@ -44,7 +44,7 @@ func TestModelCapabilitiesYAMLProjectionIsDeterministicAndCarriesNoPrivatePaths(
 		}
 	}
 	// It is a real projection of the authority, not an empty document.
-	for _, want := range []string{"auto/judge", "fedora/qwen3.6-35b-a3b", "classify-extract", "routing_defaults"} {
+	for _, want := range []string{"synthetic-judge.invalid", "synthetic-local.invalid", "classify-extract", "routing_defaults"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("projection missing %q:\n%s", want, body)
 		}
@@ -102,10 +102,10 @@ func TestCheckViewPassesOnTheProjectionAndFailsOnOneClaimDrift(t *testing.T) {
 
 	// RED CONTROL: flip exactly ONE claim level in the view. If the check still
 	// passes, it is decorative and this test has caught that.
-	entry := manifest.Models["auto/judge"]
+	entry := manifest.Models["synthetic-judge.invalid"]
 	claim := entry.Capabilities["classify-extract"]
 	if claim.Level != "capable" {
-		t.Fatalf("fixture precondition: auto/judge classify-extract should start capable, got %q", claim.Level)
+		t.Fatalf("fixture precondition: synthetic-judge.invalid classify-extract should start capable, got %q", claim.Level)
 	}
 	claim.Level = "assumed"
 	caps := map[string]CapabilityClaim{}
@@ -114,7 +114,7 @@ func TestCheckViewPassesOnTheProjectionAndFailsOnOneClaimDrift(t *testing.T) {
 	}
 	caps["classify-extract"] = claim
 	entry.Capabilities = caps
-	manifest.Models["auto/judge"] = entry
+	manifest.Models["synthetic-judge.invalid"] = entry
 
 	driftCheck, err := CheckModelCapabilitiesView(home, writeViewFrom(t, manifest))
 	if err != nil {
@@ -138,23 +138,30 @@ func TestCheckViewDetectsRowClaimDefaultAndRuleDrift(t *testing.T) {
 		wantPart string
 	}{
 		{
+			name: "changed purpose",
+			mutate: func(m *ModelCapabilitiesManifest) {
+				m.Purpose = "view-only purpose"
+			},
+			wantPart: "purpose",
+		},
+		{
 			name: "deleted routing position",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				m.RoutingDefaults["classify-extract"] = []string{"auto/judge"}
+				m.RoutingDefaults["classify-extract"] = []string{"synthetic-judge.invalid"}
 			},
 			wantPart: "routing_default",
 		},
 		{
 			name: "deleted model row",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				delete(m.Models, "fedora/qwen3.6-35b-a3b")
+				delete(m.Models, "synthetic-local.invalid")
 			},
 			wantPart: "absent from view",
 		},
 		{
 			name: "deleted claim",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				entry := m.Models["auto/judge"]
+				entry := m.Models["synthetic-judge.invalid"]
 				caps := map[string]CapabilityClaim{}
 				for k, v := range entry.Capabilities {
 					if k != "judge-critique" {
@@ -162,7 +169,7 @@ func TestCheckViewDetectsRowClaimDefaultAndRuleDrift(t *testing.T) {
 					}
 				}
 				entry.Capabilities = caps
-				m.Models["auto/judge"] = entry
+				m.Models["synthetic-judge.invalid"] = entry
 			},
 			wantPart: "capability judge-critique",
 		},
@@ -176,7 +183,7 @@ func TestCheckViewDetectsRowClaimDefaultAndRuleDrift(t *testing.T) {
 		{
 			name: "changed evidence",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				entry := m.Models["auto/judge"]
+				entry := m.Models["synthetic-judge.invalid"]
 				caps := map[string]CapabilityClaim{}
 				for k, v := range entry.Capabilities {
 					caps[k] = v
@@ -185,16 +192,16 @@ func TestCheckViewDetectsRowClaimDefaultAndRuleDrift(t *testing.T) {
 				claim.Evidence = "unsourced assertion"
 				caps["classify-extract"] = claim
 				entry.Capabilities = caps
-				m.Models["auto/judge"] = entry
+				m.Models["synthetic-judge.invalid"] = entry
 			},
 			wantPart: "evidence",
 		},
 		{
 			name: "changed tier",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				entry := m.Models["auto/judge"]
+				entry := m.Models["synthetic-judge.invalid"]
 				entry.Tier = "free"
-				m.Models["auto/judge"] = entry
+				m.Models["synthetic-judge.invalid"] = entry
 			},
 			wantPart: "tier",
 		},
@@ -205,90 +212,90 @@ func TestCheckViewDetectsRowClaimDefaultAndRuleDrift(t *testing.T) {
 		{
 			name: "changed context window",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				entry := m.Models["auto/judge"]
+				entry := m.Models["synthetic-judge.invalid"]
 				entry.ContextWindow = 999
-				m.Models["auto/judge"] = entry
+				m.Models["synthetic-judge.invalid"] = entry
 			},
 			wantPart: "context_window",
 		},
 		{
 			name: "changed max output",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				entry := m.Models["auto/judge"]
+				entry := m.Models["synthetic-judge.invalid"]
 				entry.MaxOutput = 4242
-				m.Models["auto/judge"] = entry
+				m.Models["synthetic-judge.invalid"] = entry
 			},
 			wantPart: "max_output",
 		},
 		{
 			name: "changed cost detail",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				entry := m.Models["auto/judge"]
+				entry := m.Models["synthetic-judge.invalid"]
 				entry.CostDetail = &LaneCostDetail{APIUSDPerMtokIn: 1.5, APIUSDPerMtokOut: 9}
-				m.Models["auto/judge"] = entry
+				m.Models["synthetic-judge.invalid"] = entry
 			},
 			wantPart: "cost_detail",
 		},
 		{
 			name: "changed capacity source",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				entry := m.Models["auto/judge"]
+				entry := m.Models["synthetic-judge.invalid"]
 				entry.CapacitySource = &LaneCapacitySourceRef{Kind: "codexbar", FreshnessMinutes: 5, Ref: "codexbar:fixture.invalid"}
-				m.Models["auto/judge"] = entry
+				m.Models["synthetic-judge.invalid"] = entry
 			},
 			wantPart: "capacity_source",
 		},
 		{
 			name: "changed aliases",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				entry := m.Models["auto/judge"]
+				entry := m.Models["synthetic-judge.invalid"]
 				entry.Aliases = []string{"judge-alias.invalid"}
-				m.Models["auto/judge"] = entry
+				m.Models["synthetic-judge.invalid"] = entry
 			},
 			wantPart: "aliases",
 		},
 		{
 			name: "changed relative cost hint",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				entry := m.Models["auto/judge"]
+				entry := m.Models["synthetic-judge.invalid"]
 				entry.RelativeCostHint = map[string]float64{"classify-extract": 2.5}
-				m.Models["auto/judge"] = entry
+				m.Models["synthetic-judge.invalid"] = entry
 			},
 			wantPart: "relative_cost_hint",
 		},
 		{
 			name: "changed notes",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				entry := m.Models["auto/judge"]
+				entry := m.Models["synthetic-judge.invalid"]
 				entry.Notes = "view-only annotation"
-				m.Models["auto/judge"] = entry
+				m.Models["synthetic-judge.invalid"] = entry
 			},
 			wantPart: "notes",
 		},
 		{
 			name: "changed harness",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				entry := m.Models["auto/judge"]
+				entry := m.Models["synthetic-judge.invalid"]
 				entry.Harness = "other-harness"
-				m.Models["auto/judge"] = entry
+				m.Models["synthetic-judge.invalid"] = entry
 			},
 			wantPart: "harness",
 		},
 		{
 			name: "changed packet ceiling",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				entry := m.Models["auto/judge"]
+				entry := m.Models["synthetic-judge.invalid"]
 				entry.PacketCeiling = "small"
-				m.Models["auto/judge"] = entry
+				m.Models["synthetic-judge.invalid"] = entry
 			},
 			wantPart: "packet_ceiling",
 		},
 		{
 			name: "changed cost class",
 			mutate: func(m *ModelCapabilitiesManifest) {
-				entry := m.Models["auto/judge"]
+				entry := m.Models["synthetic-judge.invalid"]
 				entry.CostClass = "free"
-				m.Models["auto/judge"] = entry
+				m.Models["synthetic-judge.invalid"] = entry
 			},
 			wantPart: "cost_class",
 		},
@@ -352,7 +359,7 @@ func TestProjectionFollowsGovernedApply(t *testing.T) {
 	}
 
 	reviewPath := promotionReviewFile(t, home, revision, fixturePromoteReviewID,
-		promotionRecommendationPromote, "auto/judge", "classify-extract", "capable", "primary")
+		promotionRecommendationPromote, "synthetic-judge.invalid", "classify-extract", "capable", "primary")
 	plan, err := PlanPromotionApply(home, reviewPath, "operator rationale")
 	if err != nil {
 		t.Fatalf("plan: %v", err)

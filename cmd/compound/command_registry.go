@@ -177,7 +177,11 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("execution-profile", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("experiment-plan", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("lane-projection", policy.FirstPartyCommandRead).
-			withSubcommandAdmission("model-capabilities", policy.FirstPartyCommandRead),
+			withSubcommandAdmission("model-capabilities", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("promotion-apply", policy.FirstPartyCommandRead).
+			withSubcommandFlagAdmission("promotion-apply", "--confirm", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("promotion-revert", policy.FirstPartyCommandRead).
+			withSubcommandFlagAdmission("promotion-revert", "--confirm", policy.FirstPartyCommandGoverned),
 		"profiles": heldCommand(cmdProfiles).
 			withSubcommandAdmission("check", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("generate", policy.FirstPartyCommandGoverned),

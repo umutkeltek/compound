@@ -190,13 +190,23 @@ Local `compound distiller extract` follows the same rule: successful extraction 
 `ExecutionRouteEvidence` and an audit-only Transition whose routing/cost projections point at that
 evidence; it still does not prove the extracted candidates are true or promoted.
 
-Compound-owned route policy authority is separate from route execution evidence. `compound route
-import-model-capabilities <model-capabilities.yaml>` imports generated model-router capability claims
-and `routing_defaults` into `compound://registries/model-router`, records source authority, and leaves
-the generated source view as rollback/evidence input. `compound route plan --capability-class <class>
-[--privacy-sensitive]` only renders a planned lane chain with `lane_justification`: it does not call
-models, rank live providers, mutate gateway config, or certify task success. Privacy-sensitive plans
-filter to `local-batch` lanes; free judge/critique lanes are tripwires, not verdict gates.
+Compound-owned route policy authority is separate from route execution evidence. The authoring door is
+`route promotion-apply`: it revalidates a current `review_required` promote/demote artifact immediately
+before mutation, mints an ActionIntent bound to the before and exact proposed authority revisions,
+requires an allowing PolicyDecision, changes one claim through the act seam, and records the receipt,
+transition, pre/post images, and literal `promotion-revert` command. Revert re-plans from that applied
+record and restores only the canonical content-addressed pre-image; exported plan structs and applied
+record bodies are untrusted input. `promotion-record` remains hold-only and never mutates authority.
+
+`compound route import-model-capabilities <model-capabilities.yaml>` remains an additive
+migration/backfill bridge into `compound://registries/model-router`; it is not the steady-state
+authoring route. The compatibility direction is Compound outward: `route model-capabilities --yaml`
+renders the deterministic OS view, while `--check-view FILE` compares every manifest field and exits
+nonzero on semantic drift. The external generator consumes that projection instead of maintaining a
+second meaning owner. `compound route plan --capability-class <class> [--privacy-sensitive]` only
+renders a planned lane chain with `lane_justification`: it does not call models, rank live providers,
+mutate gateway config, or certify task success. Privacy-sensitive plans filter to `local-batch` lanes;
+free judge/critique lanes are tripwires, not verdict gates.
 
 Lane resolution is typed independently of its execution address. `provider_route` says how to call
 the lane; `resolution.mode=adaptive` means the requested alias must be resolved by gateway evidence,
