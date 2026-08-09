@@ -2517,7 +2517,11 @@ func checkWorkPacketContract(repoRoot string) []Finding {
 
 // checkWorkProofChainContract keeps terminal work from drifting into "closed
 // because state says so". Completed/failed work must remain mechanically tied to
-// readable Receipt and Transition envelopes with the same work_id.
+// readable Receipt and Transition envelopes with the same work_id, AND to
+// RunAttempt records that prove the executed attempt is terminal,
+// same-work, and -- when the RunAttempt carries an ActionIntent -- that
+// ActionIntent is present on the WorkEnvelope. Empty legacy ActionIntentIDs
+// remain valid (delegate evidence compatibility).
 func checkWorkProofChainContract(repoRoot string) []Finding {
 	requiredByFile := map[string][]string{
 		"internal/work/proof_chain_doctor.go": {
@@ -2529,6 +2533,26 @@ func checkWorkProofChainContract(repoRoot string) []Finding {
 			"terminalProofRequired",
 			"rec.Validate()",
 			"tr.Validate()",
+			// v0.2 RunAttempt proof dimension (run_attempt_runattempt packet).
+			"compound.work_proof_chain_doctor.v0.2",
+			"MissingRunAttempt",
+			"run_attempt_work_mismatch",
+			"run_attempt_action_mismatch",
+			"run_attempt_nonterminal",
+			"run_attempt_unreadable",
+			"run_attempt_invalid",
+			"work-proof-chain-run-attempt",
+			// Validate the EXACT raw entry -- no trimming; whitespace-only
+			// and padded canonical refs classify as run_attempt_invalid.
+			"runattempt.Valid(rattID)",
+			// Identity check (embedded id + schema_version) fires BEFORE WorkID
+			// linkage so a corrupt record (multi-corrupt, half-decoded)
+			// classifies as run_attempt_invalid, not run_attempt_work_mismatch.
+			"ra.ID != rattID",
+			"ra.SchemaVersion != runattempt.SchemaVersion",
+			// Empty legacy ActionIntentID stays valid; a non-empty ActionIntent
+			// must be present on the work.
+			"ra.ActionIntentID != \"\"",
 		},
 		"cmd/compound/work_cli.go": {
 			"proof-chain-doctor",
@@ -2539,9 +2563,28 @@ func checkWorkProofChainContract(repoRoot string) []Finding {
 			"TestProofChainDoctorReportsCleanTerminalWork",
 			"TestProofChainDoctorFailsTerminalWorkMissingReceiptTransition",
 			"TestProofChainDoctorFailsMismatchedTerminalWorkID",
+			// v0.2 RunAttempt regressions.
+			"TestProofChainDoctorFailsReferencedRunAttemptMissing",
+			"TestProofChainDoctorFailsRunAttemptWorkIDMismatch",
+			"TestProofChainDoctorFailsRunAttemptActionMismatch",
+			"TestProofChainDoctorFailsRunAttemptNonterminal",
+			"TestProofChainDoctorFailsRunAttemptUnreadable",
+			"TestProofChainDoctorFailsRunAttemptInvalidRecord",
+			"TestProofChainDoctorFailsRunAttemptInvalidReference",
+			"TestProofChainDoctorAcceptsLegacyTerminalWorkWithZeroRunAttemptRefs",
+			"TestProofChainDoctorAcceptsLegacyRunAttemptWithEmptyActionIntentID",
 		},
 		"cmd/compound/work_proof_chain_doctor_test.go": {
 			"TestWorkProofChainDoctorCLIJSON",
+			"TestWorkAdvanceExecuteThenClose",
+			// Public E2E must assert the v0.2 schema, the new proof ref,
+			// the item RunAttemptIDs include the execution attempt, and the
+			// corrupted doctor must exit exactly 1 with missing_run_attempt.
+			"compound.work_proof_chain_doctor.v0.2",
+			"work-proof-chain-run-attempt",
+			"item.RunAttemptIDs",
+			"exitCode != 1",
+			"missing_run_attempt",
 		},
 	}
 	var failures []string
@@ -2557,7 +2600,7 @@ func checkWorkProofChainContract(repoRoot string) []Finding {
 		sort.Strings(failures)
 		return []Finding{{"work-proof-chain-contract", Fail, "terminal work proof-chain doctor drifted: " + strings.Join(failures, "; ")}}
 	}
-	return []Finding{{"work-proof-chain-contract", Info, "terminal work proof-chain doctor verifies receipt/transition existence, validity, and work_id linkage"}}
+	return []Finding{{"work-proof-chain-contract", Info, "terminal work proof-chain doctor verifies receipt/transition existence, validity, and work_id linkage plus RunAttempt same-work, terminal, and present-ActionIntent membership (empty legacy ActionIntentID stays valid)"}}
 }
 
 // checkMCPorterTopologyContract keeps real MCP catalog ingestion from drifting

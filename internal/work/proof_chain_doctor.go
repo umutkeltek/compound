@@ -1,14 +1,18 @@
 package work
 
 import (
+	"errors"
 	"strings"
 	"time"
 
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
+	"compound/internal/runattempt"
 )
 
-const ProofChainDoctorSchemaVersion = "compound.work_proof_chain_doctor.v0.1"
+// Schema bumped to v0.2 to add the RunAttempt proof dimension. v0.1 remains
+// readable; the new field is additive and old consumers keep working.
+const ProofChainDoctorSchemaVersion = "compound.work_proof_chain_doctor.v0.2"
 
 type ProofChainDoctorOptions struct {
 	IncludeArchived bool
@@ -45,6 +49,17 @@ type ProofChainDoctorCounts struct {
 	OrphanTransition           int `json:"orphan_transition"`
 	OrphanActionIntent         int `json:"orphan_action_intent"`
 	OrphanPolicyDecision       int `json:"orphan_policy_decision"`
+	// RunAttempt proof dimension (v0.2). Each counter records one
+	// terminal-work RunAttempt evidence defect; the finding code under
+	// report.Findings is the narrow reason (missing_run_attempt,
+	// run_attempt_unreadable, run_attempt_invalid, run_attempt_work_mismatch,
+	// run_attempt_action_mismatch, run_attempt_nonterminal).
+	MissingRunAttempt         int `json:"missing_run_attempt"`
+	UnreadableRunAttempt      int `json:"unreadable_run_attempt"`
+	InvalidRunAttempt         int `json:"invalid_run_attempt"`
+	RunAttemptWorkMismatch    int `json:"run_attempt_work_mismatch"`
+	RunAttemptActionMismatch  int `json:"run_attempt_action_mismatch"`
+	RunAttemptNonterminal     int `json:"run_attempt_nonterminal"`
 }
 
 type ProofChainDoctorItem struct {
@@ -54,6 +69,7 @@ type ProofChainDoctorItem struct {
 	PolicyDecisionID string   `json:"policy_decision_id,omitempty"`
 	ReceiptID        string   `json:"receipt_id,omitempty"`
 	TransitionID     string   `json:"transition_id,omitempty"`
+	RunAttemptIDs    []string `json:"run_attempt_ids,omitempty"`
 	ProofComplete    bool     `json:"proof_complete"`
 	Problems         []string `json:"problems,omitempty"`
 }
@@ -87,6 +103,7 @@ func (s *Store) ProofChainDoctor(now time.Time, opts ProofChainDoctorOptions) (P
 			"work-proof-chain-policy-decision",
 			"work-proof-chain-transition-action-refs",
 			"work-proof-chain-orphan-envelope-scan",
+			"work-proof-chain-run-attempt",
 		},
 	}
 	report.Counts.WorksChecked = len(works)
@@ -101,12 +118,19 @@ func (s *Store) ProofChainDoctor(now time.Time, opts ProofChainDoctorOptions) (P
 	if err != nil {
 		return ProofChainDoctorReport{}, err
 	}
+	// One runattempt.Store opened per doctor pass, reused across terminal items.
+	// The store is cheap (path-only); opening once keeps the proof dimension
+	// scoped to the same home every terminal item inspects.
+	raStore := runattempt.Open(s.home)
 	for _, w := range works {
 		if !terminalProofRequired(w.State) {
 			continue
 		}
 		report.Counts.TerminalChecked++
 		item := s.proofChainItem(w, eventsByWork[w.ID], &report)
+		if len(item.RunAttemptIDs) > 0 {
+			s.checkRunAttemptProof(w, raStore, &item, &report)
+		}
 		if len(item.Problems) == 0 {
 			item.ProofComplete = true
 			report.Counts.Complete++
@@ -129,6 +153,12 @@ func (s *Store) proofChainItem(w envelope.WorkEnvelope, events []Event, report *
 	item.TransitionID = firstNonEmpty(w.IDs.TransitionID, lastAttachedWithPrefix(events, "tr_"))
 	item.ActionIntentIDs = compactPrefix(w.ActionIntentIDs, "act_")
 	item.PolicyDecisionID = strings.TrimSpace(w.PolicyDecisionID)
+	// RunAttemptIDs: copy and dedupe the raw slot. compactPrefix would
+	// silently drop malformed entries and turn a populated bad slot into a
+	// legacy zero-ref work -- a silent corruption trap. The shape check
+	// runs per-entry inside checkRunAttemptProof so the doctor can name the
+	// exact bad reference.
+	item.RunAttemptIDs = dedupeStrings(w.RunAttemptIDs)
 	if len(item.ActionIntentIDs) == 0 {
 		report.Counts.MissingActionIntent++
 		addProofChainProblem(report, &item, "missing_action_intent", "terminal work has no action intent run ref")
@@ -323,6 +353,25 @@ func compactPrefix(values []string, prefix string) []string {
 	return out
 }
 
+// dedupeStrings dedupes a string slice while preserving every entry the
+// caller put there -- including entries that trim to empty. Used for the
+// RunAttemptIDs slot, where compactPrefix's prefix filter would silently
+// turn a populated malformed slot into a legacy zero-ref work; checkRunAttemptProof
+// then classifies each preserved entry on its own merits (whitespace-only
+// entries are skipped, empty and non-ratt_ entries surface run_attempt_invalid).
+func dedupeStrings(values []string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, value := range values {
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
 func addProofChainProblem(report *ProofChainDoctorReport, item *ProofChainDoctorItem, code, message string) {
 	item.Problems = append(item.Problems, code)
 	report.Findings = append(report.Findings, ProofChainDoctorFinding{WorkID: item.WorkID, Code: code, Message: message})
@@ -335,4 +384,72 @@ func proofChainContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// checkRunAttemptProof validates every RunAttempt id referenced by a terminal
+// work envelope against the live runattempt.Store. The slice order preserves
+// schema v0.1 compatibility for terminal work with zero RunAttempt refs
+// (legacy evidence) and for legacy RunAttempt records with empty
+// action_intent_id (delegate evidence).
+//
+// Validation operates on the raw entry -- no trimming. Whitespace-only and
+// padded canonical refs classify as run_attempt_invalid because
+// runattempt.Valid only accepts the exact `ratt_<UTC>_<8 hex>` shape.
+//
+// Defect ordering matters: identity (embedded id / schema_version) is
+// checked AFTER decode and BEFORE WorkID linkage so a corrupt record (empty
+// WorkID, half-decoded bytes, multi-corrupt file) classifies as
+// run_attempt_invalid instead of masking as run_attempt_work_mismatch. After
+// an identity mismatch the loop continues to the next reference -- the
+// work_id / action / terminal checks only run on records with valid
+// embedded identity, because those checks would otherwise misattribute the
+// half-decoded record's emptiness as additional defects.
+func (s *Store) checkRunAttemptProof(w envelope.WorkEnvelope, raStore *runattempt.Store, item *ProofChainDoctorItem, report *ProofChainDoctorReport) {
+	actionSet := map[string]bool{}
+	for _, actionID := range item.ActionIntentIDs {
+		actionSet[actionID] = true
+	}
+	for _, rattID := range item.RunAttemptIDs {
+		// Validate the EXACT raw entry. No trimming -- whitespace-only and
+		// padded canonical refs are run_attempt_invalid.
+		if !runattempt.Valid(rattID) {
+			report.Counts.InvalidRunAttempt++
+			addProofChainProblem(report, item, "run_attempt_invalid", "run attempt reference "+rattID+" is not a syntactically valid ratt_ id")
+			continue
+		}
+		ra, err := raStore.Get(rattID)
+		if err != nil {
+			if errors.Is(err, runattempt.ErrNotFound) {
+				report.Counts.MissingRunAttempt++
+				addProofChainProblem(report, item, "missing_run_attempt", "run attempt "+rattID+" is referenced by work "+w.ID+" but no run_attempts/"+rattID+".json exists")
+				continue
+			}
+			report.Counts.UnreadableRunAttempt++
+			addProofChainProblem(report, item, "run_attempt_unreadable", "run attempt "+rattID+" unreadable: "+err.Error())
+			continue
+		}
+		// Identity check: embedded id + schema_version. A mismatch
+		// classifies as run_attempt_invalid and the loop continues to the
+		// next reference -- the work/action/terminal checks would otherwise
+		// misattribute the half-decoded record's emptiness.
+		if ra.ID != rattID || ra.SchemaVersion != runattempt.SchemaVersion {
+			report.Counts.InvalidRunAttempt++
+			addProofChainProblem(report, item, "run_attempt_invalid", "run attempt "+rattID+" embedded identity mismatches: embedded id="+ra.ID+" schema="+ra.SchemaVersion)
+			continue
+		}
+		// Identity-valid record: orthogonal work/action/terminal checks.
+		if ra.WorkID != w.ID {
+			report.Counts.RunAttemptWorkMismatch++
+			report.Counts.MismatchedWorkID++
+			addProofChainProblem(report, item, "run_attempt_work_mismatch", "run attempt "+rattID+" belongs to work "+ra.WorkID+", not "+w.ID)
+		}
+		if ra.ActionIntentID != "" && !actionSet[ra.ActionIntentID] {
+			report.Counts.RunAttemptActionMismatch++
+			addProofChainProblem(report, item, "run_attempt_action_mismatch", "run attempt "+rattID+" action_intent_id "+ra.ActionIntentID+" is not present in work "+w.ID+" action intent ids")
+		}
+		if !runattempt.IsTerminal(ra.Status) {
+			report.Counts.RunAttemptNonterminal++
+			addProofChainProblem(report, item, "run_attempt_nonterminal", "run attempt "+rattID+" status "+ra.Status+" is not terminal while work "+w.ID+" is terminal")
+		}
+	}
 }
