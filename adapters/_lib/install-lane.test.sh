@@ -294,6 +294,98 @@ LANE_LAUNCHER_FILE="$LIB_DIR/lane-launcher.sh" \
   '
 
 echo ""
+echo "==> lane-launcher.sh: profile expansion and tap bind validation (bash)"
+LANE_LAUNCHER_FILE="$LIB_DIR/lane-launcher.sh" \
+  bash -c '
+    export LANE_LAUNCHER_FILE HOME
+    unset LANES_SH_FILE LANE_IT2_FILE
+    . "$LANE_LAUNCHER_FILE"
+    HOME=/tmp/lane-test-home
+
+    # _lane_profile_dir expands ${HOME} without eval.
+    _out=$(_lane_profile_dir "" "${HOME}/.config/claude")
+    if [ "$_out" != "/tmp/lane-test-home/.config/claude" ]; then
+      echo "FAIL: profile dir expansion: $_out"
+      exit 1
+    fi
+    printf "ok: profile dir expands ${HOME}\n"
+
+    # Shell metacharacters in the registry value are not executed; they pass through literally.
+    _out=$(_lane_profile_dir "" "${HOME}/x; echo pwned")
+    if [ "$_out" != "/tmp/lane-test-home/x; echo pwned" ]; then
+      echo "FAIL: profile dir eval escape: $_out"
+      exit 1
+    fi
+    printf "ok: profile dir does not eval shell metacharacters\n"
+
+    # A literal ${HOME} with an embedded double-quote exercises the difference between
+    # string-substitution and eval: an eval-based implementation would see the unescaped
+    # quote and either terminate early or produce a syntax error.
+    _evil="\${HOME}/config\"evil"
+    _out=$(_lane_profile_dir "" "$_evil")
+    _expected="/tmp/lane-test-home/config\"evil"
+    if [ "$_out" != "$_expected" ]; then
+      echo "FAIL: profile dir embedded quote escape: $_out"
+      exit 1
+    fi
+    printf "ok: profile dir handles embedded quotes without eval\n"
+
+    # Valid host:port bindings (including empty for native lanes).
+    _lane_tap_bind_is_valid "127.0.0.1:8080" || { echo "FAIL: valid IP:port rejected"; exit 1; }
+    _lane_tap_bind_is_valid "localhost:18772" || { echo "FAIL: valid hostname:port rejected"; exit 1; }
+    _lane_tap_bind_is_valid "" || { echo "FAIL: empty tap bind rejected"; exit 1; }
+
+    # Malformed or dangerous bindings must be rejected before forming a URL.
+    _lane_tap_bind_is_valid "127.0.0.1" && { echo "FAIL: missing port accepted"; exit 1; }
+    _lane_tap_bind_is_valid "127.0.0.1:abc" && { echo "FAIL: non-numeric port accepted"; exit 1; }
+    _lane_tap_bind_is_valid "127.0.0.1:8080:extra" && { echo "FAIL: extra colon accepted"; exit 1; }
+    _lane_tap_bind_is_valid ";rm -rf /:1" && { echo "FAIL: shell metacharacter bind accepted"; exit 1; }
+    _lane_tap_bind_is_valid "http://evil.com:1" && { echo "FAIL: scheme-in-host accepted"; exit 1; }
+    printf "ok: tap bind validation rejects malformed values\n"
+  '
+
+echo ""
+echo "==> lane-launcher.sh: profile expansion and tap bind validation (zsh)"
+LANE_LAUNCHER_FILE="$LIB_DIR/lane-launcher.sh" \
+  zsh -c '
+    export LANE_LAUNCHER_FILE HOME
+    unset LANES_SH_FILE LANE_IT2_FILE
+    source "$LANE_LAUNCHER_FILE"
+    HOME=/tmp/lane-test-home
+
+    _out=$(_lane_profile_dir "" "${HOME}/.config/claude")
+    if [ "$_out" != "/tmp/lane-test-home/.config/claude" ]; then
+      print -- "FAIL: zsh profile dir expansion: $_out"
+      exit 1
+    fi
+    print -- "ok: zsh profile dir expands ${HOME}"
+
+    _out=$(_lane_profile_dir "" "${HOME}/x; echo pwned")
+    if [ "$_out" != "/tmp/lane-test-home/x; echo pwned" ]; then
+      print -- "FAIL: zsh profile dir eval escape: $_out"
+      exit 1
+    fi
+    print -- "ok: zsh profile dir does not eval shell metacharacters"
+
+    _evil="\${HOME}/config\"evil"
+    _out=$(_lane_profile_dir "" "$_evil")
+    _expected="/tmp/lane-test-home/config\"evil"
+    if [ "$_out" != "$_expected" ]; then
+      print -- "FAIL: zsh profile dir embedded quote escape: $_out"
+      exit 1
+    fi
+    print -- "ok: zsh profile dir handles embedded quotes without eval"
+
+    _lane_tap_bind_is_valid "127.0.0.1:8080" || { print -- "FAIL: zsh valid IP:port rejected"; exit 1; }
+    _lane_tap_bind_is_valid "localhost:18772" || { print -- "FAIL: zsh valid hostname:port rejected"; exit 1; }
+    _lane_tap_bind_is_valid "" || { print -- "FAIL: zsh empty tap bind rejected"; exit 1; }
+    _lane_tap_bind_is_valid "127.0.0.1" && { print -- "FAIL: zsh missing port accepted"; exit 1; }
+    _lane_tap_bind_is_valid "127.0.0.1:abc" && { print -- "FAIL: zsh non-numeric port accepted"; exit 1; }
+    _lane_tap_bind_is_valid ";rm -rf /:1" && { print -- "FAIL: zsh shell metacharacter bind accepted"; exit 1; }
+    print -- "ok: zsh tap bind validation rejects malformed values"
+  '
+
+echo ""
 echo "==> lane-statusline.sh: renders distinct lanes from session JSON"
 
 INPUT='{"workspace":{"current_dir":"/srv/compound"},"model":{"display_name":"Claude 4.7 Sonnet"},"cost":{"total_duration_ms":120000},"context_window":{"current_usage":{"cache_read_input_tokens":30000,"input_tokens":10000,"cache_creation_input_tokens":2000,"output_tokens":500},"context_window_size":200000}}'

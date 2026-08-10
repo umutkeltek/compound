@@ -82,6 +82,22 @@ func writeTransportConfig(t *testing.T, homePath, name string, argv []string, ti
 	}
 }
 
+func runExecTransport(t *testing.T, homePath string, argv []string) error {
+	t.Helper()
+	writeTransportConfig(t, homePath, "fixture", argv, 30)
+	store, err := NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatalf("new artifact store: %v", err)
+	}
+	ai := execTransportIntent(t, "work_argv_validation", "fixture")
+	pd := policy.Evaluate(ai, execTransportGrantConfig(ai), fixedNow())
+	if !policy.Allowed(pd) {
+		t.Fatalf("precondition: fixture grant did not allow: %s (%v)", pd.Outcome, pd.Reasons)
+	}
+	_, err = Execute(store, NewExecTransportAdapter("fixture", homePath), ai, pd, []byte("body"), fixedNow())
+	return err
+}
+
 // F1: Execute must reject a held post before the adapter can run its transport.
 func TestExecTransportExecuteHoldNeverRuns(t *testing.T) {
 	homePath := t.TempDir()
@@ -150,6 +166,92 @@ func TestExecTransportInvalidConfigFailsClosed(t *testing.T) {
 				t.Fatalf("invalid config minted %d receipts, want 0", got)
 			}
 		})
+	}
+}
+
+// F7: a transport config cannot name an arbitrary executable, a shell interpreter,
+// a relative/traversal path, or contain shell metacharacters in arguments. The load
+// fails closed before the process is spawned.
+func TestExecTransportArgvValidationFailsClosed(t *testing.T) {
+	tests := []struct {
+		name       string
+		argv       []string
+		wantDetail string
+	}{
+		{name: "unallowed basename", argv: []string{"rm", "-rf", "/"}, wantDetail: "not an allowed transport executable"},
+		{name: "shell interpreter basename", argv: []string{"sh", "-c", "echo pwned"}, wantDetail: "not an allowed transport executable"},
+		{name: "absolute shell path", argv: []string{"/bin/sh", "-c", "echo pwned"}, wantDetail: "shell/interpreter"},
+		{name: "versioned interpreter path", argv: []string{"/usr/local/bin/python3.9", "-c", "print()"}, wantDetail: "shell/interpreter"},
+		{name: "relative path", argv: []string{"../spy-transport.sh"}, wantDetail: "not an allowed transport executable"},
+		{name: "traversal in absolute path", argv: []string{"/tmp/../etc/passwd"}, wantDetail: "clean absolute path"},
+		{name: "unsafe argument", argv: []string{"compound", "foo; rm -rf /"}, wantDetail: "unsafe characters"},
+		{name: "command substitution arg", argv: []string{"compound", "$(id)"}, wantDetail: "unsafe characters"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			_, marker := writeSpyTransport(t, homePath)
+			err := runExecTransport(t, homePath, tt.argv)
+			if err == nil {
+				t.Fatalf("argv %v must be rejected", tt.argv)
+			}
+			errStr := err.Error()
+			if !strings.Contains(errStr, `transport "fixture" config`) || !strings.Contains(errStr, tt.wantDetail) {
+				t.Fatalf("argv %v error = %v, want config-validation error containing %q", tt.argv, err, tt.wantDetail)
+			}
+			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+				t.Fatalf("argv %v ran the transport; marker stat error = %v", tt.argv, statErr)
+			}
+			if got := receiptCount(t, homePath); got != 0 {
+				t.Fatalf("argv %v minted %d receipts, want 0", tt.argv, got)
+			}
+		})
+	}
+}
+
+// F8: error messages surface a bounded, redacted summary of transport output; the
+// full combined stdout/stderr is not echoed to the caller.
+func TestExecTransportFailureRedactsLongOutput(t *testing.T) {
+	homePath := t.TempDir()
+	script := filepath.Join(homePath, "leaky-transport.sh")
+	// Emit a long, distinctive failure message. The old code would echo the entire
+	// string in the error; the new code must cap it and mark the remainder redacted.
+	prefix := "fixture transport exploded "
+	tail := strings.Repeat("A", 2000)
+	scriptBody := "#!/bin/sh\ncat >/dev/null\nprintf '%s' '" + prefix + tail + "' >&2\nexit 7\n"
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatalf("write leaky transport: %v", err)
+	}
+	writeTransportConfig(t, homePath, "fixture", []string{script}, 30)
+	store, err := NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatalf("new artifact store: %v", err)
+	}
+	ai := execTransportIntent(t, "work_transport_leak", "fixture")
+	pd := policy.Evaluate(ai, execTransportGrantConfig(ai), fixedNow())
+	if !policy.Allowed(pd) {
+		t.Fatalf("precondition: fixture grant did not allow: %s (%v)", pd.Outcome, pd.Reasons)
+	}
+
+	result, err := Execute(store, NewExecTransportAdapter("fixture", homePath), ai, pd, []byte("body"), fixedNow())
+	if err == nil {
+		t.Fatalf("leaky transport must error")
+	}
+	if result.Receipt.ID != "" || result.PostImageRef != "" {
+		t.Fatalf("failed transport returned receipt/post image: receipt=%q post=%q", result.Receipt.ID, result.PostImageRef)
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, prefix) {
+		t.Fatalf("error must include a short prefix of the output, got: %s", errStr)
+	}
+	if strings.Contains(errStr, tail) {
+		t.Fatalf("error leaked the full transport output")
+	}
+	if !strings.Contains(errStr, "output redacted") {
+		t.Fatalf("error must indicate redaction, got: %s", errStr)
+	}
+	if got := receiptCount(t, homePath); got != 0 {
+		t.Fatalf("failed transport minted %d receipts, want 0", got)
 	}
 }
 
