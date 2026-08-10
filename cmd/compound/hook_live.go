@@ -1231,33 +1231,7 @@ func liveProducedKinds(produced []envelope.Envelope) []string {
 }
 
 func livePermissionDecision(res hook.Result) (string, string) {
-	coordinationDeny := res.CoordinationDelivery != nil &&
-		res.CoordinationDelivery.ExecutionHeld
-	for _, produced := range res.Produced {
-		pd, ok := produced.(*envelope.PolicyDecision)
-		if !ok || policy.Allowed(*pd) {
-			continue
-		}
-		reason := strings.TrimSpace(strings.Join(pd.Reasons, "; "))
-		if reason == "" {
-			reason = res.Summary
-		}
-		if coordinationDeny {
-			return "deny", reason
-		}
-		if pd.Outcome == "hold" {
-			return "ask", reason
-		}
-		return "deny", reason
-	}
-	if coordinationDeny {
-		reason := strings.TrimSpace(res.CoordinationDelivery.DegradedReason)
-		if reason == "" {
-			reason = "relevant coordination interrupt requires governed clearance"
-		}
-		return "deny", reason
-	}
-	return "", ""
+	return hook.NativePermissionDecision(res)
 }
 
 func hookEnumName(hookName string) string {

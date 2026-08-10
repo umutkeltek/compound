@@ -1,9 +1,12 @@
 package policy
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -348,6 +351,92 @@ func TestExactActionApprovalRejectsNonOperatorExpiredAndMissingStore(t *testing.
 	}
 }
 
+func TestApplyMatchingRejectsMatchingPlanlessApprovalAsNonAuthority(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	monitored := MonitorToolAction(monitorRequest("browser.submit", map[string]any{
+		"target": "publish",
+		"form":   "planless-authority-regression",
+	}), cfg, fixedNow)
+	approval, err := NewExactActionApproval(
+		"approval_grant_planless_legacy",
+		"operator:raw_planless_marker",
+		monitored.Binding,
+		fixedNow.Add(5*time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewExactActionApprovalStore(homePath)
+	if _, err := store.Save(approval); err != nil {
+		t.Fatal(err)
+	}
+
+	decision, matched, err := store.ApplyMatching(
+		monitored.Intent,
+		cfg,
+		monitored.Decision,
+		fixedNow.Add(time.Second),
+	)
+	if !matched || err == nil || err.Error() != "exact approval authority unavailable" {
+		t.Fatalf("planless authority decision=%+v matched=%v err=%v, want bounded fail-closed error", decision, matched, err)
+	}
+	if Allowed(decision) {
+		t.Fatalf("planless authority authorized action: %+v", decision)
+	}
+	status, statusErr := store.Check(approval.ID, fixedNow.Add(2*time.Second))
+	if statusErr != nil || status.Status != ExactApprovalStatusReady {
+		t.Fatalf("planless authority status=%+v err=%v, want ready and unconsumed", status, statusErr)
+	}
+}
+
+func TestApplyMatchingIgnoresUnrelatedPlanlessCompatibilityRecord(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	store := NewExactActionApprovalStore(homePath)
+	unrelated := MonitorToolAction(monitorRequest("browser.submit", map[string]any{
+		"target": "preview",
+		"form":   "unrelated-planless-compatibility",
+	}), cfg, fixedNow)
+	legacy, err := NewExactActionApproval(
+		"approval_grant_000_unrelated_planless",
+		"operator:legacy_fixture",
+		unrelated.Binding,
+		fixedNow.Add(5*time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Save(legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	targetRequest := monitorRequest("browser.submit", map[string]any{
+		"target": "publish",
+		"form":   "plan-backed-target",
+	})
+	target := MonitorToolAction(targetRequest, cfg, fixedNow)
+	_, ready := approvePlanBackedIntentForTest(
+		t, homePath, store, target.Intent, cfg, 5*time.Minute,
+		fixedNow, fixedNow.Add(time.Second), "operator:fixture",
+	)
+	retry := MonitorToolAction(targetRequest, cfg, fixedNow.Add(2*time.Second))
+	decision, matched, err := store.ApplyMatching(retry.Intent, cfg, retry.Decision, fixedNow.Add(2*time.Second))
+	if err != nil || !matched || !Allowed(decision) ||
+		!containsExactString(decision.EvidenceRefs, "compound://events/"+ready.ID) {
+		t.Fatalf("unrelated planless record blocked plan-backed grant: decision=%+v matched=%v err=%v", decision, matched, err)
+	}
+	if status, statusErr := store.Check(legacy.ID, fixedNow.Add(3*time.Second)); statusErr != nil || status.Status != ExactApprovalStatusReady {
+		t.Fatalf("unrelated planless record status=%+v err=%v, want unchanged", status, statusErr)
+	}
+}
+
 func TestPersistedExactApprovalAuthorizesOneExactRetryButNeverSecurityFloor(t *testing.T) {
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", fixedNow); err != nil {
@@ -373,32 +462,24 @@ func TestPersistedExactApprovalAuthorizesOneExactRetryButNeverSecurityFloor(t *t
 	)
 	request.Sources = []envelope.SourceEnvelope{operator}
 	first := MonitorToolAction(request, cfg, fixedNow)
-	approval, err := NewExactActionApproval(
-		"approval_persisted_fixture",
-		"operator:fixture",
-		first.Binding,
-		fixedNow.Add(5*time.Minute),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	store := NewExactActionApprovalStore(homePath)
-	if _, err := store.Save(approval); err != nil {
-		t.Fatalf("save approval: %v", err)
-	}
+	_, _ = approvePlanBackedIntentForTest(
+		t, homePath, store, first.Intent, cfg, 5*time.Minute,
+		fixedNow, fixedNow.Add(time.Second), "operator:fixture",
+	)
 
-	retry := MonitorToolAction(request, cfg, fixedNow.Add(time.Second))
+	retry := MonitorToolAction(request, cfg, fixedNow.Add(2*time.Second))
 	if retry.Intent.ID == first.Intent.ID {
 		t.Fatal("test requires a distinct retry action intent")
 	}
-	allowed, matched, err := store.ApplyMatching(retry.Intent, cfg, retry.Decision, fixedNow.Add(time.Second))
+	allowed, matched, err := store.ApplyMatching(retry.Intent, cfg, retry.Decision, fixedNow.Add(2*time.Second))
 	if err != nil {
 		t.Fatalf("apply matching approval: %v", err)
 	}
 	if !matched || !Allowed(allowed) {
 		t.Fatalf("exact retry not authorized: matched=%v decision=%+v", matched, allowed)
 	}
-	if _, _, err := store.ApplyMatching(retry.Intent, cfg, retry.Decision, fixedNow.Add(2*time.Second)); err == nil ||
+	if _, _, err := store.ApplyMatching(retry.Intent, cfg, retry.Decision, fixedNow.Add(3*time.Second)); err == nil ||
 		!strings.Contains(err.Error(), "already consumed") {
 		t.Fatalf("approval replay error = %v, want already consumed", err)
 	}
@@ -413,25 +494,24 @@ func TestPersistedExactApprovalAuthorizesOneExactRetryButNeverSecurityFloor(t *t
 	)
 	blockedRequest := request
 	blockedRequest.Sources = []envelope.SourceEnvelope{blockedSource}
-	blocked := MonitorToolAction(blockedRequest, cfg, fixedNow.Add(3*time.Second))
-	floorApproval, err := NewExactActionApproval(
-		"approval_must_not_override_floor",
-		"operator:fixture",
-		blocked.Binding,
-		fixedNow.Add(5*time.Minute),
+	blocked := MonitorToolAction(blockedRequest, cfg, fixedNow.Add(4*time.Second))
+	floorPlanSource := blocked.Intent
+	floorPlanSource.ID = "act_floor_plan_source"
+	floorPlanSource.SecurityFloorOutcome = ""
+	floorPlanSource.SecurityReasons = nil
+	_, floorApproval := approvePlanBackedIntentForTest(
+		t, homePath, store, floorPlanSource, cfg, 5*time.Minute,
+		fixedNow.Add(4*time.Second), fixedNow.Add(5*time.Second), "operator:fixture",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Save(floorApproval); err != nil {
-		t.Fatal(err)
-	}
-	decision, matched, err := store.ApplyMatching(blocked.Intent, cfg, blocked.Decision, fixedNow.Add(3*time.Second))
+	decision, matched, err := store.ApplyMatching(blocked.Intent, cfg, blocked.Decision, fixedNow.Add(6*time.Second))
 	if err == nil || !strings.Contains(err.Error(), "security floor") {
 		t.Fatalf("security-floor approval error = %v, want refusal", err)
 	}
 	if !matched || Allowed(decision) {
 		t.Fatalf("security floor was bypassed: matched=%v decision=%+v", matched, decision)
+	}
+	if status, statusErr := store.Check(floorApproval.ID, fixedNow.Add(7*time.Second)); statusErr != nil || status.Status != ExactApprovalStatusReady {
+		t.Fatalf("security-floor grant status=%+v err=%v, want ready and unconsumed", status, statusErr)
 	}
 }
 
@@ -488,6 +568,460 @@ func TestExactApprovalPlanApproveCheckLifecycleBindsCurrentPolicy(t *testing.T) 
 		!strings.Contains(err.Error(), "binding changed") {
 		t.Fatalf("changed-policy plan approval error = %v, want binding changed", err)
 	}
+}
+
+func TestEnsurePlanForIntentReusesGenerationUntilGrantConsumedOrExpired(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	request := monitorRequest("browser.submit", map[string]any{
+		"target": "publish",
+		"form":   "prepared-draft",
+	})
+	first := MonitorToolAction(request, cfg, fixedNow)
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(first.Intent.ID, first.Intent, "  "); err != nil {
+		t.Fatal(err)
+	}
+	store := NewExactActionApprovalStore(homePath)
+	planA, refA, reused, err := store.EnsurePlanForIntent(first.Intent, cfg, 5*time.Minute, fixedNow)
+	if err != nil || reused {
+		t.Fatalf("first ensure plan=%+v reused=%v err=%v", planA, reused, err)
+	}
+	retry := MonitorToolAction(request, cfg, fixedNow.Add(time.Second))
+	persistActionIntentForTest(t, homePath, retry.Intent)
+	reusedPlan, reusedRef, reused, err := store.EnsurePlanForIntent(retry.Intent, cfg, 5*time.Minute, fixedNow.Add(time.Second))
+	if err != nil || !reused || reusedPlan.ID != planA.ID || reusedRef != refA {
+		t.Fatalf("same binding did not reuse plan A: plan=%+v ref=%q reused=%v err=%v", reusedPlan, reusedRef, reused, err)
+	}
+
+	if _, _, err := store.Approve(planA.ID, "operator:first", cfg, fixedNow.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	readyPlan, readyRef, reused, err := store.EnsurePlanForIntent(retry.Intent, cfg, 5*time.Minute, fixedNow.Add(2*time.Second))
+	if err != nil || !reused || readyPlan.ID != planA.ID || readyRef != refA {
+		t.Fatalf("ready grant allowed a second plan generation: A=%s got=%+v ref=%q reused=%v err=%v", planA.ID, readyPlan, readyRef, reused, err)
+	}
+	if plans := exactPlansForTest(t, homePath, planA.BindingDigest); len(plans) != 1 {
+		t.Fatalf("ready grant left %d plan generations, want one: %+v", len(plans), plans)
+	}
+	retryAfterApproval := MonitorToolAction(request, cfg, fixedNow.Add(3*time.Second))
+	if _, matched, err := store.ApplyMatching(retryAfterApproval.Intent, cfg, retryAfterApproval.Decision, fixedNow.Add(3*time.Second)); err != nil || !matched {
+		t.Fatalf("consume ready plan A grant: matched=%v err=%v", matched, err)
+	}
+	planB, _, reused, err := store.EnsurePlanForIntent(retry.Intent, cfg, 5*time.Minute, fixedNow.Add(4*time.Second))
+	if err != nil || reused || planB.ID == planA.ID {
+		t.Fatalf("consumed plan did not rotate: A=%s B=%+v reused=%v err=%v", planA.ID, planB, reused, err)
+	}
+
+	changed := retry.Intent
+	changed.ID = "act_changed_exact_binding"
+	changed.ArgumentsHash = "sha256:changed-binding"
+	persistActionIntentForTest(t, homePath, changed)
+	changedPlan, _, reused, err := store.EnsurePlanForIntent(changed, cfg, 5*time.Minute, fixedNow.Add(5*time.Second))
+	if err != nil || reused || changedPlan.BindingDigest == planA.BindingDigest {
+		t.Fatalf("changed action binding reused plan: plan=%+v reused=%v err=%v", changedPlan, reused, err)
+	}
+	changedPolicy := cfg
+	changedPolicy.ForbiddenPaths = append(changedPolicy.ForbiddenPaths, "policy-revision-change")
+	policyRetry := MonitorToolAction(request, cfg, fixedNow.Add(6*time.Second)).Intent
+	persistActionIntentForTest(t, homePath, policyRetry)
+	policyPlan, _, reused, err := store.EnsurePlanForIntent(policyRetry, changedPolicy, 5*time.Minute, fixedNow.Add(6*time.Second))
+	if err != nil || reused || policyPlan.BindingDigest == planA.BindingDigest {
+		t.Fatalf("changed policy binding reused plan: plan=%+v reused=%v err=%v", policyPlan, reused, err)
+	}
+
+	expiringRequest := monitorRequest("browser.submit", map[string]any{"target": "preview", "form": "short-lived"})
+	expiring := MonitorToolAction(expiringRequest, cfg, fixedNow)
+	persistActionIntentForTest(t, homePath, expiring.Intent)
+	expiredPlan, _, reused, err := store.EnsurePlanForIntent(expiring.Intent, cfg, time.Second, fixedNow)
+	if err != nil || reused {
+		t.Fatalf("first expiring plan reused=%v err=%v", reused, err)
+	}
+	replacement, _, reused, err := store.EnsurePlanForIntent(expiring.Intent, cfg, time.Minute, fixedNow.Add(2*time.Second))
+	if err != nil || reused || replacement.ID == expiredPlan.ID {
+		t.Fatalf("expired plan was reused: old=%s replacement=%+v reused=%v err=%v", expiredPlan.ID, replacement, reused, err)
+	}
+}
+
+func TestEnsurePlanForIntentConcurrentCallsConverge(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	base := MonitorToolAction(monitorRequest("browser.submit", map[string]any{
+		"target": "publish",
+		"form":   "concurrent-draft",
+	}), cfg, fixedNow).Intent
+	store := NewExactActionApprovalStore(homePath)
+	type result struct {
+		plan   ExactActionApprovalPlan
+		ref    string
+		reused bool
+		err    error
+	}
+	results := make([]result, 16)
+	intents := make([]envelope.ActionIntent, len(results))
+	for i := range intents {
+		intents[i] = base
+		intents[i].ID = "act_concurrent_exact_" + shortActionHash(string(rune('a'+i)))
+		persistActionIntentForTest(t, homePath, intents[i])
+	}
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i].plan, results[i].ref, results[i].reused, results[i].err =
+				store.EnsurePlanForIntent(intents[i], cfg, 5*time.Minute, fixedNow.Add(time.Duration(i)*time.Millisecond))
+		}(i)
+	}
+	wg.Wait()
+	wantID, wantRef := results[0].plan.ID, results[0].ref
+	created := 0
+	for i, result := range results {
+		if result.err != nil || result.plan.ID != wantID || result.ref != wantRef {
+			t.Fatalf("concurrent result[%d]=%+v want id=%s ref=%s", i, result, wantID, wantRef)
+		}
+		if !result.reused {
+			created++
+		}
+	}
+	if created != 1 {
+		t.Fatalf("concurrent creators=%d, want exactly one: %+v", created, results)
+	}
+	if plans := exactPlansForTest(t, homePath, results[0].plan.BindingDigest); len(plans) != 1 {
+		t.Fatalf("concurrent plan records=%d, want one: %+v", len(plans), plans)
+	}
+}
+
+func TestEnsurePlanForIntentRequiresValidMatchingPersistedSource(t *testing.T) {
+	cfg := DefaultConfig()
+	newIntent := func() envelope.ActionIntent {
+		return MonitorToolAction(monitorRequest("browser.submit", map[string]any{
+			"target": "publish",
+			"form":   "source-authority",
+		}), cfg, fixedNow).Intent
+	}
+
+	t.Run("missing", func(t *testing.T) {
+		homePath := t.TempDir()
+		if err := home.Init(homePath, "test", fixedNow); err != nil {
+			t.Fatal(err)
+		}
+		intent := newIntent()
+		if _, _, _, err := NewExactActionApprovalStore(homePath).EnsurePlanForIntent(intent, cfg, time.Minute, fixedNow); err == nil || !strings.Contains(err.Error(), "source action intent") {
+			t.Fatalf("missing source error=%v, want source action intent", err)
+		}
+	})
+
+	t.Run("malformed", func(t *testing.T) {
+		homePath := t.TempDir()
+		if err := home.Init(homePath, "test", fixedNow); err != nil {
+			t.Fatal(err)
+		}
+		intent := newIntent()
+		events, err := eventstore.Open(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := events.PutJSON(intent.ID, map[string]any{"schema_version": envelope.SVActionIntent, "id": intent.ID}, "  "); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, err := NewExactActionApprovalStore(homePath).EnsurePlanForIntent(intent, cfg, time.Minute, fixedNow); err == nil || !strings.Contains(err.Error(), "invalid source action intent") {
+			t.Fatalf("malformed source error=%v, want invalid source action intent", err)
+		}
+	})
+
+	t.Run("binding-mismatch", func(t *testing.T) {
+		homePath := t.TempDir()
+		if err := home.Init(homePath, "test", fixedNow); err != nil {
+			t.Fatal(err)
+		}
+		intent := newIntent()
+		stored := intent
+		stored.ArgumentsHash = "sha256:different-source-binding"
+		persistActionIntentForTest(t, homePath, stored)
+		if _, _, _, err := NewExactActionApprovalStore(homePath).EnsurePlanForIntent(intent, cfg, time.Minute, fixedNow); err == nil || !strings.Contains(err.Error(), "does not match") {
+			t.Fatalf("mismatched source error=%v, want does not match", err)
+		}
+	})
+}
+
+func TestEnsurePlanForIntentFailsClosedOnMalformedAuthorityRecords(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   string
+	}{
+		{name: "plan", id: "approval_plan_badbadbadbad"},
+		{name: "grant", id: "approval_grant_badbadbadbad"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			if err := home.Init(homePath, "test", fixedNow); err != nil {
+				t.Fatal(err)
+			}
+			cfg := DefaultConfig()
+			intent := MonitorToolAction(monitorRequest("browser.submit", map[string]any{
+				"target": "publish",
+				"form":   "malformed-authority",
+			}), cfg, fixedNow).Intent
+			persistActionIntentForTest(t, homePath, intent)
+			events, err := eventstore.Open(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := events.PutJSON(tc.id, map[string]any{"schema_version": "malformed", "id": tc.id}, "  "); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, err := NewExactActionApprovalStore(homePath).EnsurePlanForIntent(intent, cfg, time.Minute, fixedNow); err == nil || !strings.Contains(err.Error(), "invalid exact") {
+				t.Fatalf("malformed %s error=%v, want invalid exact authority", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestApprovePlanAllowsOnlyOneGrantAcrossOperatorActors(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	monitored := MonitorToolAction(monitorRequest("browser.submit", map[string]any{
+		"target": "publish",
+		"form":   "one-grant",
+	}), cfg, fixedNow)
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(monitored.Intent.ID, monitored.Intent, "  "); err != nil {
+		t.Fatal(err)
+	}
+	store := NewExactActionApprovalStore(homePath)
+	plan, _, _, err := store.EnsurePlanForIntent(monitored.Intent, cfg, 5*time.Minute, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, firstRef, err := store.Approve(plan.ID, "operator:first", cfg, fixedNow.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	idempotent, idempotentRef, err := store.Approve(plan.ID, "operator:first", cfg, fixedNow.Add(time.Second))
+	if err != nil || idempotent.ID != first.ID || idempotentRef != firstRef {
+		t.Fatalf("same actor approval was not idempotent: approval=%+v ref=%q err=%v", idempotent, idempotentRef, err)
+	}
+	if _, _, err := store.Approve(plan.ID, "operator:second", cfg, fixedNow.Add(time.Second)); err == nil || !strings.Contains(err.Error(), "already approved") {
+		t.Fatalf("second actor approval error=%v, want already approved", err)
+	}
+	retry := MonitorToolAction(monitorRequest("browser.submit", map[string]any{
+		"target": "publish",
+		"form":   "one-grant",
+	}), cfg, fixedNow.Add(2*time.Second))
+	if _, matched, err := store.ApplyMatching(retry.Intent, cfg, retry.Decision, fixedNow.Add(2*time.Second)); err != nil || !matched {
+		t.Fatalf("consume first approval matched=%v err=%v", matched, err)
+	}
+	if _, _, err := store.Approve(plan.ID, "operator:first", cfg, fixedNow.Add(3*time.Second)); err == nil || !strings.Contains(err.Error(), "already consumed") {
+		t.Fatalf("consumed plan reapproval error=%v, want already consumed", err)
+	}
+	if grants := exactApprovalsForPlanTest(t, homePath, "compound://events/"+plan.ID); len(grants) != 1 || grants[0].GrantedBy != "operator:first" {
+		t.Fatalf("plan grants=%+v, want exactly first actor", grants)
+	}
+}
+
+func TestApprovePlanConcurrentCallsConverge(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	intent := MonitorToolAction(monitorRequest("browser.submit", map[string]any{
+		"target": "publish",
+		"form":   "concurrent-grant",
+	}), cfg, fixedNow).Intent
+	persistActionIntentForTest(t, homePath, intent)
+	store := NewExactActionApprovalStore(homePath)
+	plan, _, _, err := store.EnsurePlanForIntent(intent, cfg, 5*time.Minute, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		approval ExactActionApproval
+		ref      string
+		err      error
+	}
+	results := make([]result, 12)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i].approval, results[i].ref, results[i].err = store.Approve(plan.ID, "operator:concurrent", cfg, fixedNow.Add(time.Second))
+		}(i)
+	}
+	wg.Wait()
+	for i, got := range results {
+		if got.err != nil || got.approval.ID != results[0].approval.ID || got.ref != results[0].ref {
+			t.Fatalf("concurrent approval[%d]=%+v, want id=%s ref=%s", i, got, results[0].approval.ID, results[0].ref)
+		}
+	}
+	if grants := exactApprovalsForPlanTest(t, homePath, "compound://events/"+plan.ID); len(grants) != 1 {
+		t.Fatalf("concurrent plan grants=%+v, want exactly one", grants)
+	}
+}
+
+func TestApplyMatchingSkipsConsumedGrantAndConsumesLaterReadyGrant(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	request := monitorRequest("browser.submit", map[string]any{
+		"target": "publish",
+		"form":   "shadow-regression",
+	})
+	first := MonitorToolAction(request, cfg, fixedNow)
+	store := NewExactActionApprovalStore(homePath)
+	planA, approvalA := approvePlanBackedIntentForTest(
+		t, homePath, store, first.Intent, cfg, 5*time.Minute,
+		fixedNow, fixedNow.Add(time.Second), "operator:fixture",
+	)
+	retryA := MonitorToolAction(request, cfg, fixedNow.Add(time.Second))
+	if decision, matched, err := store.ApplyMatching(retryA.Intent, cfg, retryA.Decision, fixedNow.Add(2*time.Second)); err != nil || !matched ||
+		!containsExactString(decision.EvidenceRefs, "compound://events/"+approvalA.ID) {
+		t.Fatalf("first grant consume decision=%+v matched=%v err=%v", decision, matched, err)
+	}
+	seedB := MonitorToolAction(request, cfg, fixedNow.Add(3*time.Second))
+	planB, approvalB := approvePlanBackedIntentForTest(
+		t, homePath, store, seedB.Intent, cfg, 5*time.Minute,
+		fixedNow.Add(3*time.Second), fixedNow.Add(4*time.Second), "operator:fixture",
+	)
+	if planA.ID == planB.ID || approvalA.ID >= approvalB.ID {
+		t.Fatalf("shadow fixture order does not exercise consumed-before-ready: A=%s/%s B=%s/%s", planA.ID, approvalA.ID, planB.ID, approvalB.ID)
+	}
+	retryB := MonitorToolAction(request, cfg, fixedNow.Add(5*time.Second))
+	if decision, matched, err := store.ApplyMatching(retryB.Intent, cfg, retryB.Decision, fixedNow.Add(5*time.Second)); err != nil || !matched ||
+		!containsExactString(decision.EvidenceRefs, "compound://events/"+approvalB.ID) {
+		t.Fatalf("consumed A shadowed ready Z: decision=%+v matched=%v err=%v", decision, matched, err)
+	}
+	retryC := MonitorToolAction(request, cfg, fixedNow.Add(6*time.Second))
+	if _, matched, err := store.ApplyMatching(retryC.Intent, cfg, retryC.Decision, fixedNow.Add(6*time.Second)); !matched || err == nil ||
+		!errors.Is(err, ErrExactApprovalExhausted) || !strings.Contains(err.Error(), "already consumed") {
+		t.Fatalf("exhausted approvals matched=%v err=%v, want bounded consumed diagnostic", matched, err)
+	}
+}
+
+func TestApplyMatchingSkipsExpiredGrantAndConsumesLaterReadyGrant(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	request := monitorRequest("browser.submit", map[string]any{
+		"target": "publish",
+		"form":   "expired-shadow-regression-v3",
+	})
+	store := NewExactActionApprovalStore(homePath)
+	expiring := MonitorToolAction(request, cfg, fixedNow)
+	planA, expired := approvePlanBackedIntentForTest(
+		t, homePath, store, expiring.Intent, cfg, time.Second,
+		fixedNow, fixedNow.Add(500*time.Millisecond), "operator:fixture",
+	)
+	readySeed := MonitorToolAction(request, cfg, fixedNow.Add(2*time.Second))
+	planB, ready := approvePlanBackedIntentForTest(
+		t, homePath, store, readySeed.Intent, cfg, 5*time.Minute,
+		fixedNow.Add(2*time.Second), fixedNow.Add(3*time.Second), "operator:fixture",
+	)
+	if planA.ID == planB.ID || expired.ID >= ready.ID {
+		t.Fatalf("shadow fixture order does not exercise expired-before-ready: A=%s/%s B=%s/%s", planA.ID, expired.ID, planB.ID, ready.ID)
+	}
+	retry := MonitorToolAction(request, cfg, fixedNow.Add(4*time.Second))
+	decision, matched, err := store.ApplyMatching(retry.Intent, cfg, retry.Decision, fixedNow.Add(4*time.Second))
+	if err != nil || !matched ||
+		!containsExactString(decision.EvidenceRefs, "compound://events/"+ready.ID) {
+		t.Fatalf("expired grant shadowed ready grant: decision=%+v matched=%v err=%v", decision, matched, err)
+	}
+	status, err := store.Check(ready.ID, fixedNow.Add(5*time.Second))
+	if err != nil || status.Status != ExactApprovalStatusConsumed {
+		t.Fatalf("ready grant after expired was not consumed: status=%+v err=%v", status, err)
+	}
+}
+
+func exactPlansForTest(t *testing.T, homePath, digest string) []ExactActionApprovalPlan {
+	t.Helper()
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans, err := exactApprovalPlansForBinding(store, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plans
+}
+
+func exactApprovalsForPlanTest(t *testing.T, homePath, planRef string) []ExactActionApproval {
+	t.Helper()
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.Scan(eventstore.ScanOptions{Prefixes: []string{"approval_grant_"}, RegularOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvals := []ExactActionApproval{}
+	for _, entry := range entries {
+		record, err := entry.Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var approval ExactActionApproval
+		if err := json.Unmarshal(record.Bytes, &approval); err == nil && containsExactString(approval.EvidenceRefs, planRef) {
+			approvals = append(approvals, approval)
+		}
+	}
+	return approvals
+}
+
+func persistActionIntentForTest(t *testing.T, homePath string, intent envelope.ActionIntent) {
+	t.Helper()
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutJSON(intent.ID, intent, "  "); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func approvePlanBackedIntentForTest(
+	t *testing.T,
+	homePath string,
+	store *ExactActionApprovalStore,
+	intent envelope.ActionIntent,
+	cfg Config,
+	ttl time.Duration,
+	planAt, approveAt time.Time,
+	grantedBy string,
+) (ExactActionApprovalPlan, ExactActionApproval) {
+	t.Helper()
+	persistActionIntentForTest(t, homePath, intent)
+	plan, _, _, err := store.EnsurePlanForIntent(intent, cfg, ttl, planAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval, _, err := store.Approve(plan.ID, grantedBy, cfg, approveAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan, approval
 }
 
 func monitorRequest(tool string, args map[string]any) ToolActionRequest {

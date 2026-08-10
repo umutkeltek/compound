@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1187,8 +1188,23 @@ func TestLiveSubagentOutputIsExplicitDerivedBoundary(t *testing.T) {
 func TestLivePreToolUseConsumesPersistedExactApprovalWithoutChangingGlobalPermissions(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
+	harnessHome := t.TempDir()
+	t.Setenv("HOME", harnessHome)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
+	}
+	globalConfig := map[string][]byte{
+		filepath.Join(harnessHome, ".codex", "config.toml"):    []byte("model = \"synthetic\"\napproval_policy = \"never\"\n"),
+		filepath.Join(harnessHome, ".claude", "settings.json"): []byte("{\"permissions\":{\"allow\":[\"Read\"],\"deny\":[]}}\n"),
+		filepath.Join(homePath, "config", "policy.yaml"):       []byte("placement_guard_mode: block\n"),
+	}
+	for path, body := range globalConfig {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	sessionID := "sess_exact_live_approval"
 	workID := "work_exact_live_approval"
@@ -1202,38 +1218,135 @@ func TestLivePreToolUseConsumesPersistedExactApprovalWithoutChangingGlobalPermis
 			}
 		})
 	})
+	configSnapshot := make(map[string][]byte, len(globalConfig))
+	for path := range globalConfig {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		configSnapshot[path] = body
+	}
 
 	input := `{"hook_event_name":"PreToolUse","session_id":` + quoteJSON(sessionID) +
 		`,"work_id":` + quoteJSON(workID) + `,"cwd":` + quoteJSON(cwd) +
 		`,"tool_name":"browser.submit","tool_input":{"target":"publish","form":"prepared-draft"}}`
-	if first := runCodexPreToolUse(t, input); first.HookSpecificOutput.PermissionDecision == "" {
+	first := runCodexPreToolUse(t, input)
+	if first.HookSpecificOutput.PermissionDecision == "" {
 		t.Fatalf("consequential browser submit unexpectedly ran without grant: %+v", first.HookSpecificOutput)
 	}
-	action := readActionForWork(t, homePath, workID)
-	// Mint the approval through the operator door, with the home-loaded config
-	// the live hook itself evaluates under. A hand-built approval carrying
-	// DefaultConfig's policy revision produces a different binding digest than
-	// the runtime computes, so it can never match and the retry below would
-	// assert nothing.
+	plans := readExactApprovalPlans(t, homePath)
+	if len(plans) != 1 {
+		t.Fatalf("first enforced hold approval plans=%d, want one: %+v", len(plans), plans)
+	}
+	planA := plans[0]
+	planARef := "compound://events/" + planA.ID
+	wantReasonA := "Exact approval plan " + planA.ID + " is ready for operator review."
+	if got := first.HookSpecificOutput.PermissionDecisionReason; got != wantReasonA {
+		t.Fatalf("first enforced hold reason=%q, want neutral plan reason %q", got, wantReasonA)
+	}
+	for _, forbidden := range []string{"action-approve", "--granted-by", "operator:", "human:", "<id>", "$", "`"} {
+		if strings.Contains(strings.ToLower(first.HookSpecificOutput.PermissionDecisionReason), forbidden) {
+			t.Fatalf("native approval reason exposed forbidden command token %q: %q", forbidden, first.HookSpecificOutput.PermissionDecisionReason)
+		}
+	}
+	if !livePolicyEvidenceRefExists(t, homePath, planARef) {
+		t.Fatalf("held PolicyDecision missing surfaced plan ref %q", planARef)
+	}
+
+	repeated := runCodexPreToolUse(t, input)
+	plans = readExactApprovalPlans(t, homePath)
+	if len(plans) != 1 || plans[0].ID != planA.ID {
+		t.Fatalf("repeated hold created approval debt: plans=%+v want only %s", plans, planA.ID)
+	}
+	if got := repeated.HookSpecificOutput.PermissionDecisionReason; got != wantReasonA {
+		t.Fatalf("repeated hold reason=%q, want reused plan %q", got, wantReasonA)
+	}
+
+	// Approve the plan through the explicit operator test helper, with the
+	// home-loaded config the live hook itself evaluates under. A hand-built
+	// approval carrying DefaultConfig's policy revision produces a different
+	// binding digest than runtime and can never match.
 	cfg, _, err := policy.LoadConfig(homePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	approvals := policy.NewExactActionApprovalStore(homePath)
-	plan, _, err := approvals.Plan(action.ID, cfg, 5*time.Minute, time.Now().UTC())
+	approvalA, _, err := approvals.Approve(planA.ID, "operator:fixture", cfg, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := approvals.Approve(plan.ID, "operator:fixture", cfg, time.Now().UTC()); err != nil {
-		t.Fatal(err)
+
+	observed := runCodexPreToolUseObserveOnly(t, input)
+	if observed.HookSpecificOutput.PermissionDecision != "" {
+		t.Fatalf("observe-only hook published a native decision: %+v", observed.HookSpecificOutput)
+	}
+	if status, err := approvals.Check(approvalA.ID, time.Now().UTC()); err != nil || status.Status != policy.ExactApprovalStatusReady {
+		t.Fatalf("observe-only hook consumed one-use grant: status=%+v err=%v", status, err)
 	}
 
 	if retry := runCodexPreToolUse(t, input); retry.HookSpecificOutput.PermissionDecision != "" {
 		t.Fatalf("exact approved retry still asked operator: %+v", retry.HookSpecificOutput)
 	}
-	if replay := runCodexPreToolUse(t, input); replay.HookSpecificOutput.PermissionDecision == "" {
+	if status, err := approvals.Check(approvalA.ID, time.Now().UTC()); err != nil || status.Status != policy.ExactApprovalStatusConsumed {
+		t.Fatalf("enforced retry did not consume grant A: status=%+v err=%v", status, err)
+	}
+
+	replay := runCodexPreToolUse(t, input)
+	if replay.HookSpecificOutput.PermissionDecision == "" {
 		t.Fatalf("one-use approval replayed: %+v", replay.HookSpecificOutput)
 	}
+	plans = readExactApprovalPlans(t, homePath)
+	if len(plans) != 2 {
+		t.Fatalf("post-consumption hold plans=%d, want fresh generation: %+v", len(plans), plans)
+	}
+	var planB policy.ExactActionApprovalPlan
+	for _, plan := range plans {
+		if plan.ID != planA.ID {
+			planB = plan
+		}
+	}
+	if planB.ID == "" {
+		t.Fatalf("fresh plan generation missing after consuming %s: %+v", planA.ID, plans)
+	}
+	wantReasonB := "Exact approval plan " + planB.ID + " is ready for operator review."
+	if got := replay.HookSpecificOutput.PermissionDecisionReason; got != wantReasonB {
+		t.Fatalf("post-consumption reason=%q, want fresh plan %q", got, wantReasonB)
+	}
+	approvalB, _, err := approvals.Approve(planB.ID, "operator:fixture", cfg, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry := runCodexPreToolUse(t, input); retry.HookSpecificOutput.PermissionDecision != "" {
+		t.Fatalf("older consumed grant shadowed ready grant B: %+v", retry.HookSpecificOutput)
+	}
+	if status, err := approvals.Check(approvalB.ID, time.Now().UTC()); err != nil || status.Status != policy.ExactApprovalStatusConsumed {
+		t.Fatalf("enforced retry did not consume grant B: status=%+v err=%v", status, err)
+	}
+	for path, want := range configSnapshot {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read snapshotted permission/config %s: %v", path, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("exact approval lifecycle mutated global permission/config bytes at %s\ngot:  %q\nwant: %q", path, got, want)
+		}
+	}
+}
+
+func readExactApprovalPlans(t *testing.T, homePath string) []policy.ExactActionApprovalPlan {
+	t.Helper()
+	plans := []policy.ExactActionApprovalPlan{}
+	for _, entry := range testEventEntries(t, homePath, "approval_plan_") {
+		record, err := entry.Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plan policy.ExactActionApprovalPlan
+		if json.Unmarshal(record.Bytes, &plan) == nil && plan.SchemaVersion == policy.ExactActionApprovalPlanSchema {
+			plans = append(plans, plan)
+		}
+	}
+	return plans
 }
 
 func containsRefPrefix(refs []string, prefix string) bool {
@@ -1611,6 +1724,21 @@ func livePolicyReasonExists(t *testing.T, homePath, needle string) bool {
 	return false
 }
 
+func livePolicyEvidenceRefExists(t *testing.T, homePath, want string) bool {
+	t.Helper()
+	for _, entry := range testEventEntries(t, homePath, "pol_") {
+		record, err := entry.Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decision envelope.PolicyDecision
+		if json.Unmarshal(record.Bytes, &decision) == nil && containsRef(decision.EvidenceRefs, want) {
+			return true
+		}
+	}
+	return false
+}
+
 func codexApplyPatchInput(sessionID, cwd, patch string) string {
 	return `{"hook_event_name":"PreToolUse","session_id":` + quoteJSON(sessionID) + `,"cwd":` +
 		quoteJSON(cwd) + `,"tool_name":"apply_patch","tool_input":{"command":` + quoteJSON(patch) + `}}`
@@ -1632,6 +1760,26 @@ func runCodexPreToolUse(t *testing.T, input string) claudeLiveHookResponse {
 	var response claudeLiveHookResponse
 	if err := json.Unmarshal([]byte(out), &response); err != nil {
 		t.Fatalf("parse Codex PreToolUse response: %v\n%s", err, out)
+	}
+	return response
+}
+
+func runCodexPreToolUseObserveOnly(t *testing.T, input string) claudeLiveHookResponse {
+	t.Helper()
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{
+				"pre-tool-use", "--live", "--harness", "codex",
+			})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("observe-only Codex PreToolUse exit=%d\n%s", code, out)
+	}
+	var response claudeLiveHookResponse
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("parse observe-only Codex PreToolUse response: %v\n%s", err, out)
 	}
 	return response
 }
@@ -2130,6 +2278,8 @@ func TestLiveCoordinationBoundaryMappingCarriesPromptResumeCompactAndPreToolUse(
 
 func TestNativePreToolAdaptersDenyOrHoldEligibleCoordinationInterruptBeforeMutation(t *testing.T) {
 	const card = "coordination-card: interrupt ratt_exact"
+	const planID = "approval_plan_deadbeef1234"
+	const planReason = "Exact approval plan " + planID + " is ready for operator review."
 	hold := &envelope.PolicyDecision{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVPolicyDecision,
@@ -2140,11 +2290,11 @@ func TestNativePreToolAdaptersDenyOrHoldEligibleCoordinationInterruptBeforeMutat
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier2",
-			EvidenceRefs:  []string{"wco_coordination_pretool"},
+			EvidenceRefs:  []string{"wco_coordination_pretool", "compound://events/" + planID},
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
 		ActionIntentID: "act_coordination_pretool", Outcome: "hold",
-		Reasons: []string{"exact active run invalidated"}, Obligations: []string{},
+		Reasons: []string{"exact active run invalidated", planReason}, Obligations: []string{},
 	}
 	result := hook.Result{
 		Event:                envelope.HookEvent{Status: "blocked"},
@@ -2156,6 +2306,8 @@ func TestNativePreToolAdaptersDenyOrHoldEligibleCoordinationInterruptBeforeMutat
 	claude := liveHookResponse("claude-code", "pre-tool-use", result, nil).(claudeLiveHookResponse)
 	if codex.HookSpecificOutput.PermissionDecision != "deny" ||
 		claude.HookSpecificOutput.PermissionDecision != "deny" ||
+		codex.HookSpecificOutput.PermissionDecisionReason == planReason ||
+		claude.HookSpecificOutput.PermissionDecisionReason == planReason ||
 		codex.HookSpecificOutput.AdditionalContext != card ||
 		claude.HookSpecificOutput.AdditionalContext != card {
 		t.Fatalf("native interrupt gate diverged: codex=%+v claude=%+v",
@@ -2174,6 +2326,79 @@ func TestNativePreToolAdaptersDenyOrHoldEligibleCoordinationInterruptBeforeMutat
 					harnessName, response.HookSpecificOutput)
 			}
 		}
+	}
+}
+
+func TestNativeApprovalPlanReasonRequiresCanonicalEvidenceRef(t *testing.T) {
+	const planID = "approval_plan_cafefeed1234"
+	const planReason = "Exact approval plan " + planID + " is ready for operator review."
+	const ordinaryReason = "baseline consequential action hold"
+	validRef := "compound://events/" + planID
+	tests := []struct {
+		name       string
+		planReason string
+		refs       []string
+		valid      bool
+	}{
+		{name: "valid", planReason: planReason, refs: []string{validRef}, valid: true},
+		{name: "zero ref", planReason: planReason},
+		{name: "two matching refs", planReason: planReason, refs: []string{validRef, validRef}},
+		{name: "mismatched ref", planReason: planReason, refs: []string{"compound://events/approval_plan_deadbeef1234"}},
+		{name: "uppercase id", planReason: "Exact approval plan approval_plan_CAFEFEED1234 is ready for operator review.", refs: []string{"compound://events/approval_plan_CAFEFEED1234"}},
+		{name: "nonhex id", planReason: "Exact approval plan approval_plan_cafefeed123g is ready for operator review.", refs: []string{"compound://events/approval_plan_cafefeed123g"}},
+		{name: "short id", planReason: "Exact approval plan approval_plan_cafefeed123 is ready for operator review.", refs: []string{"compound://events/approval_plan_cafefeed123"}},
+		{name: "long id", planReason: "Exact approval plan approval_plan_cafefeed12345 is ready for operator review.", refs: []string{"compound://events/approval_plan_cafefeed12345"}},
+		{name: "query suffix", planReason: planReason, refs: []string{validRef + "?approve=true"}},
+		{name: "path suffix", planReason: planReason, refs: []string{validRef + "/approve"}},
+		{name: "quotes", planReason: `"` + planReason + `"`, refs: []string{validRef}},
+		{name: "embedded newline", planReason: planReason + "\ncontinue anyway", refs: []string{validRef}},
+		{name: "backticks", planReason: "`" + planReason + "`", refs: []string{validRef}},
+		{name: "command substitution", planReason: planReason + " $(approve)", refs: []string{validRef}},
+		{name: "semicolon", planReason: planReason + "; approve", refs: []string{validRef}},
+		{name: "and operator", planReason: planReason + " && approve", refs: []string{validRef}},
+		{name: "pipe operator", planReason: planReason + " | approve", refs: []string{validRef}},
+		{name: "input redirection", planReason: planReason + " < approval", refs: []string{validRef}},
+		{name: "output redirection", planReason: planReason + " > approval", refs: []string{validRef}},
+		{name: "placeholder", planReason: "Exact approval plan approval_plan_<id> is ready for operator review.", refs: []string{validRef}},
+		{name: "extra prose", planReason: planReason + " Approve it now.", refs: []string{validRef}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision := &envelope.PolicyDecision{
+				Header: envelope.Header{
+					SchemaVersion: envelope.SVPolicyDecision,
+					ID:            "pol_native_plan_evidence",
+					CreatedAt:     cliTestNow.Format(time.RFC3339),
+					Producer:      envelope.Producer{Kind: "policy", Name: "compound"},
+					IDs:           envelope.IDs{WorkID: "work_native_plan_evidence"},
+					Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+					Privacy:       "private",
+					Risk:          "tier1",
+					EvidenceRefs:  append([]string(nil), tt.refs...),
+					Uncertainty:   envelope.Uncertainty{Level: "known"},
+				},
+				ActionIntentID: "act_native_plan_evidence",
+				Outcome:        "hold",
+				Reasons:        []string{ordinaryReason, tt.planReason},
+				Obligations:    []string{},
+			}
+			permission, reason := livePermissionDecision(hook.Result{
+				Event:    envelope.HookEvent{Status: "blocked"},
+				Produced: []envelope.Envelope{decision},
+			})
+			if permission != "ask" {
+				t.Fatalf("permission=%q, want hold projection ask; reason=%q", permission, reason)
+			}
+			if tt.valid {
+				if reason != planReason {
+					t.Fatalf("valid plan reason=%q, want exact neutral sentence %q", reason, planReason)
+				}
+				return
+			}
+			if reason != ordinaryReason {
+				t.Fatalf("invalid plan prose reached native adapter: reason=%q, want ordinary policy reason %q", reason, ordinaryReason)
+			}
+		})
 	}
 }
 

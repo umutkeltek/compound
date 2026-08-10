@@ -409,8 +409,18 @@ revision, then records the security-floor result after standing grants.
 Interactive Codex and Claude Code keep routine work prompt-free: policy
 `hold`/`deny` outcomes remain evidence and do not become native permission
 decisions. An explicitly enforced isolated executor profile turns those exact
-decisions into the blocking boundary. Exact approvals are durable, expiring and
-one-use; they cannot override a deny or security floor. Compaction and subagent
+decisions into the blocking boundary. For an eligible exact approval, runtime
+order is: persist the `ActionIntent` → mint or reuse the
+`ExactActionApprovalPlan` → add its canonical reference before persisting the
+`PolicyDecision` and `HookEvent`. Grant consumption and plan creation use the
+same eligibility predicate: an adapter-enforced direct single-action baseline
+hold, excluding security, placement, dirty source-control, and coordination
+boundaries. A ready grant keeps its plan generation; consumption or expiry
+rotates it. The executor sees only the neutral, evidence-backed
+`Exact approval plan approval_plan_<12hex> is ready for operator review.`
+sentence. Authentication and approval remain a separate operator boundary,
+and no retry mutates global harness permissions or configuration. Exact
+approvals cannot override a deny or security floor. Compaction and subagent
 transformations preserve parent lineage and cannot raise trust.
 The full input/model map and migration plan is
 [`docs/security/prompt-injection.md`](../security/prompt-injection.md).

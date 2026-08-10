@@ -147,10 +147,17 @@ Routine health faces follow the same split: `home doctor|where|verify`,
 compile/import are governed. Backup, restore, compaction, runtime repair, and
 unknown neighbors remain held.
 
-A held action can use a durable, exact, one-use approval. The approval binds
-operation, arguments, destination, source refs, tool schema and policy
-revision, expires within fifteen minutes, and cannot override a deny or
-security floor. Retrying does not change global permissions.
+A held action can use a durable, exact, one-use approval. Only an
+adapter-enforced, direct single-action baseline hold with no security floor,
+placement block, dirty source-control state, or coordination hold may mint or
+reuse an `ExactActionApprovalPlan`. The rented executor sees only
+`Exact approval plan approval_plan_<12hex> is ready for operator review.`,
+backed by that exact plan reference in the `PolicyDecision`; it never receives
+an approval command or operator/principal syntax. Authentication and approval
+remain a separate operator boundary. The approval binds operation, arguments,
+destination, source refs, tool schema and policy revision, expires within
+fifteen minutes, and cannot override a deny or security floor. Retrying does
+not change global permissions.
 
 The normal-push standing grant is intentionally narrower than the generic
 network-command lane. Only `git push origin <simple-source-ref>` classifies as

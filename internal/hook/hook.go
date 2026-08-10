@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -90,6 +91,9 @@ type Fixture struct {
 	ToolOutput        string                        `json:"tool_output,omitempty"` // post-tool-use: the tool's response body; large bodies are externalized (C3), never inlined
 	Placement         *policy.PlacementGuardContext `json:"placement,omitempty"`
 
+	// Enforced is trusted adapter posture. Fixture JSON cannot set it; live
+	// callers derive it from their explicit enforcement flag after loading.
+	Enforced bool `json:"-"`
 	// AdapterSideEffects are governed artifacts prepared by a live harness
 	// adapter before Run persists the HookEvent. Fixture JSON cannot inject them.
 	AdapterSideEffects []string `json:"-"`
@@ -167,6 +171,133 @@ type Result struct {
 	Context              *ContextObservation      `json:"-"`
 	CoordinationDelivery *hookplan.DeliveryReport `json:"-"`
 	BreakerTripped       bool                     `json:"breaker_tripped,omitempty"`
+	pendingExactApproval *pendingExactApproval
+}
+
+// NativePermissionDecision projects the typed PreToolUse result into the
+// host-neutral permission decision exposed by live adapters. Approval-plan
+// prose is accepted only when one canonical evidence ref backs one exact,
+// command-free operator-review sentence.
+func NativePermissionDecision(res Result) (string, string) {
+	coordinationDeny := res.CoordinationDelivery != nil &&
+		res.CoordinationDelivery.ExecutionHeld
+	if coordinationDeny {
+		reason := ""
+		for _, produced := range res.Produced {
+			pd, ok := produced.(*envelope.PolicyDecision)
+			if !ok || policy.Allowed(*pd) {
+				continue
+			}
+			reason = nativePolicyDecisionReason(pd.Reasons, "")
+			if reason != "" {
+				break
+			}
+		}
+		if reason == "" {
+			reason = strings.TrimSpace(res.CoordinationDelivery.DegradedReason)
+		}
+		if reason == "" {
+			reason = "relevant coordination interrupt requires governed clearance"
+		}
+		return "deny", reason
+	}
+	for _, produced := range res.Produced {
+		pd, ok := produced.(*envelope.PolicyDecision)
+		if !ok || policy.Allowed(*pd) {
+			continue
+		}
+		if pd.Outcome == "hold" {
+			if reason := exactApprovalOperatorReviewReason(pd.Reasons, pd.EvidenceRefs); reason != "" {
+				return "ask", reason
+			}
+		}
+		reason := nativePolicyDecisionReason(pd.Reasons, res.Summary)
+		if pd.Outcome == "hold" {
+			return "ask", reason
+		}
+		return "deny", reason
+	}
+	return "", ""
+}
+
+func exactApprovalOperatorReviewReason(reasons, evidenceRefs []string) string {
+	const (
+		reasonPrefix = "Exact approval plan "
+		reasonSuffix = " is ready for operator review."
+		refPrefix    = "compound://events/approval_plan_"
+	)
+	planID := ""
+	for _, ref := range evidenceRefs {
+		planLike := strings.Contains(strings.ToLower(ref), "approval_plan")
+		if !strings.HasPrefix(ref, refPrefix) {
+			if planLike {
+				return ""
+			}
+			continue
+		}
+		digest := strings.TrimPrefix(ref, refPrefix)
+		if len(digest) != 12 || strings.ToLower(digest) != digest {
+			return ""
+		}
+		if _, err := hex.DecodeString(digest); err != nil {
+			return ""
+		}
+		if planID != "" {
+			return ""
+		}
+		planID = "approval_plan_" + digest
+	}
+	if planID == "" {
+		return ""
+	}
+	want := reasonPrefix + planID + reasonSuffix
+	matched := 0
+	for _, reason := range reasons {
+		if reason == want {
+			matched++
+			continue
+		}
+		if approvalPlanLikeReason(reason) {
+			return ""
+		}
+	}
+	if matched == 1 {
+		return want
+	}
+	return ""
+}
+
+func nativePolicyDecisionReason(reasons []string, fallback string) string {
+	safe := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		reason = strings.TrimSpace(reason)
+		if reason == "" || approvalPlanLikeReason(reason) {
+			continue
+		}
+		safe = append(safe, reason)
+	}
+	if len(safe) > 0 {
+		return strings.Join(safe, "; ")
+	}
+	fallback = strings.TrimSpace(fallback)
+	if fallback != "" && !approvalPlanLikeReason(fallback) {
+		return fallback
+	}
+	return "Compound policy requires governed clearance"
+}
+
+func approvalPlanLikeReason(reason string) bool {
+	lower := strings.ToLower(reason)
+	return strings.Contains(lower, "approval_plan") ||
+		strings.Contains(lower, "approval plan") ||
+		strings.Contains(lower, "exact approval")
+}
+
+type pendingExactApproval struct {
+	fixture  Fixture
+	prepared preparedPreToolAction
+	action   envelope.ActionIntent
+	decision envelope.PolicyDecision
 }
 
 // Run dispatches a hook fixture, validating everything it produces through the spine.
@@ -220,6 +351,11 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 			}
 			if delivery.ReportRef != "" {
 				res.Event.SideEffects = mergeRefs(res.Event.SideEffects, []string{delivery.ReportRef})
+			}
+			if name == "PreToolUse" && res.pendingExactApproval != nil && !delivery.ExecutionHeld {
+				if err := finalizePendingExactApproval(&res, deps, delivery, now); err != nil {
+					return err
+				}
 			}
 			if delivery.ExecutionHeld && name == "PreToolUse" {
 				if err := applyCoordinationExecutionHold(&res, deps, fx, delivery, now); err != nil {
@@ -283,6 +419,7 @@ func applyCoordinationExecutionHold(res *Result, deps Deps, fx Fixture, delivery
 	if reason == "" {
 		reason = "relevant interrupt evidence requires execution hold"
 	}
+	deferred := res.pendingExactApproval != nil
 	var holds []envelope.Envelope
 	var sideEffects []string
 	for _, produced := range res.Produced {
@@ -295,18 +432,36 @@ func applyCoordinationExecutionHold(res *Result, deps Deps, fx Fixture, delivery
 			return err
 		}
 		if strings.TrimSpace(deps.HomePath) != "" {
-			effects, err := writeGateArtifacts(deps.HomePath, *action, hold)
-			if err != nil {
-				return err
+			if deferred {
+				decisionRef, err := writeGateDecisionArtifact(deps.HomePath, hold)
+				if err != nil {
+					return err
+				}
+				sideEffects = append(sideEffects, decisionRef)
+			} else {
+				effects, err := writeGateArtifacts(deps.HomePath, *action, hold)
+				if err != nil {
+					return err
+				}
+				sideEffects = append(sideEffects, effects...)
 			}
-			sideEffects = append(sideEffects, effects...)
 		}
 		holds = append(holds, &hold)
 	}
 	if len(holds) == 0 {
 		return fmt.Errorf("coordination interrupt hold has no PreToolUse action")
 	}
-	res.Produced = append(res.Produced, holds...)
+	if deferred {
+		if len(holds) != 1 {
+			return fmt.Errorf("deferred coordination hold requires one direct action")
+		}
+		if err := replacePreToolPolicyDecision(res, *holds[0].(*envelope.PolicyDecision)); err != nil {
+			return err
+		}
+		res.pendingExactApproval = nil
+	} else {
+		res.Produced = append(res.Produced, holds...)
+	}
 	res.Event.SideEffects = mergeRefs(res.Event.SideEffects, sideEffects)
 	res.Summary = appendContextOutput(res.Summary, "policy hold: "+reason)
 	if deps.Registry.Supports(fx.Harness, "PreToolUse") {
@@ -671,6 +826,9 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		if prepareErr != nil {
 			return Result{}, prepareErr
 		}
+		// An unparsed mutation is not an exact action: there is no bounded target
+		// for an operator to approve, so its fail-closed hold cannot mint a plan.
+		prepared.allowApprovalPlan = prepared.action.Action != "unparsed_apply_patch"
 		reviewed, reviewErr := reviewedSourceControlMutationForBatch(deps, []preparedPreToolAction{prepared})
 		if reviewErr != nil {
 			return Result{}, reviewErr
@@ -679,6 +837,9 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	}
 	if err != nil {
 		return Result{}, err
+	}
+	if res.pendingExactApproval != nil {
+		return res, nil
 	}
 	if effect, recordErr := recordPendingSessionMutation(deps.HomePath, fx, res, now); recordErr != nil {
 		return Result{}, recordErr
@@ -694,6 +855,9 @@ type preparedPreToolAction struct {
 	sourceControl *policy.SourceControlContext
 	targetGitRoot string
 	sourceEffects []string
+	// Only the direct single-action path opts in. Batch children deliberately
+	// remain false after Actions is stripped for evaluation.
+	allowApprovalPlan bool
 }
 
 // preparePreToolUseAction resolves every read-only input before policy runs.
@@ -749,22 +913,25 @@ func evaluatePreparedPreToolUse(name string, fx Fixture, deps Deps, prepared pre
 	}
 	sideEffects := mergeRefs(fx.AdapterSideEffects, prepared.sourceEffects)
 	pd := policy.EvaluateWithContext(ai, deps.Policy, evalCtx, now)
-	if deps.HomePath != "" && !policy.Allowed(pd) {
-		approved, matched, approvalErr := policy.NewExactActionApprovalStore(deps.HomePath).
-			ApplyMatching(ai, deps.Policy, pd, now)
-		if matched && approvalErr == nil {
-			pd = approved
-			sideEffects = mergeRefs(sideEffects, approved.EvidenceRefs)
-		} else if matched {
-			pd.Reasons = append(pd.Reasons, "exact approval unavailable: "+approvalErr.Error())
-		}
-	}
 	if deps.HomePath != "" {
-		effects, err := writeGateArtifacts(deps.HomePath, ai, pd)
+		actionRef, err := writeGateActionArtifact(deps.HomePath, ai)
 		if err != nil {
 			return Result{}, err
 		}
-		sideEffects = append(sideEffects, effects...)
+		sideEffects = append(sideEffects, actionRef)
+	}
+	deferExactApproval := fx.CoordinationDelivery != nil && prepared.allowApprovalPlan
+	if !deferExactApproval {
+		var approvalEffects []string
+		pd, approvalEffects = applyExactApprovalEdge(fx, deps, prepared, ai, pd, now)
+		sideEffects = mergeRefs(sideEffects, approvalEffects)
+	}
+	if deps.HomePath != "" && !deferExactApproval {
+		decisionRef, err := writeGateDecisionArtifact(deps.HomePath, pd)
+		if err != nil {
+			return Result{}, err
+		}
+		sideEffects = append(sideEffects, decisionRef)
 	}
 	reviewWorkID := ""
 	if deps.Store != nil && sourceControl != nil && !policy.Allowed(pd) && strings.TrimSpace(sourceControl.Status) == "dirty" {
@@ -801,7 +968,141 @@ func evaluatePreparedPreToolUse(name string, fx Fixture, deps Deps, prepared pre
 	if reviewWorkID != "" {
 		summary += "; held review work " + reviewWorkID
 	}
-	return Result{Event: ev, Produced: []envelope.Envelope{&ai, &pd}, Summary: summary}, nil
+	res := Result{Event: ev, Produced: []envelope.Envelope{&ai, &pd}, Summary: summary}
+	if deferExactApproval {
+		res.pendingExactApproval = &pendingExactApproval{
+			fixture: fx, prepared: prepared, action: ai, decision: pd,
+		}
+	}
+	return res, nil
+}
+
+func applyExactApprovalEdge(
+	fx Fixture,
+	deps Deps,
+	prepared preparedPreToolAction,
+	ai envelope.ActionIntent,
+	pd envelope.PolicyDecision,
+	now time.Time,
+) (envelope.PolicyDecision, []string) {
+	if !exactApprovalPlanEligible(fx, deps, prepared, ai, pd, now) {
+		return pd, nil
+	}
+	sideEffects := []string{}
+	approved, matched, approvalErr := policy.NewExactActionApprovalStore(deps.HomePath).
+		ApplyMatching(ai, deps.Policy, pd, now)
+	switch {
+	case matched && approvalErr == nil:
+		pd = approved
+		sideEffects = mergeRefs(sideEffects, approved.EvidenceRefs)
+	case approvalErr != nil && errors.Is(approvalErr, policy.ErrExactApprovalExhausted):
+		// A valid generation was already consumed or expired. Rotating to the
+		// next plan is the expected one-use lifecycle, not an authority failure.
+	case approvalErr != nil:
+		// Malformed records and store failures remain fail-closed. Keep the
+		// adapter-facing reason bounded and never mint through uncertain authority.
+		pd.Reasons = append(pd.Reasons, "exact approval authority unavailable for operator review")
+		return pd, sideEffects
+	}
+	if pd.Outcome != "hold" {
+		return pd, sideEffects
+	}
+	plan, planRef, _, planErr := policy.NewExactActionApprovalStore(deps.HomePath).
+		EnsurePlanForIntent(ai, deps.Policy, 5*time.Minute, now)
+	if planErr != nil {
+		// The original hold remains authoritative. Keep the adapter-facing
+		// failure bounded and command-free instead of turning policy friction
+		// into a hook runtime failure.
+		pd.Reasons = append(pd.Reasons, "exact approval plan unavailable for operator review")
+		return pd, sideEffects
+	}
+	pd.EvidenceRefs = mergeRefs(pd.EvidenceRefs, []string{planRef})
+	pd.Reasons = append(pd.Reasons,
+		fmt.Sprintf("Exact approval plan %s is ready for operator review.", plan.ID))
+	sideEffects = mergeRefs(sideEffects, []string{planRef})
+	return pd, sideEffects
+}
+
+func finalizePendingExactApproval(res *Result, deps Deps, delivery hookplan.DeliveryReport, now time.Time) error {
+	if res == nil || res.pendingExactApproval == nil {
+		return nil
+	}
+	if delivery.ExecutionHeld {
+		return fmt.Errorf("cannot finalize exact approval while coordination execution is held")
+	}
+	pending := res.pendingExactApproval
+	pd, approvalEffects := applyExactApprovalEdge(
+		pending.fixture,
+		deps,
+		pending.prepared,
+		pending.action,
+		pending.decision,
+		now,
+	)
+	if strings.TrimSpace(deps.HomePath) != "" {
+		decisionRef, err := writeGateDecisionArtifact(deps.HomePath, pd)
+		if err != nil {
+			return err
+		}
+		approvalEffects = mergeRefs(approvalEffects, []string{decisionRef})
+	}
+	if err := replacePreToolPolicyDecision(res, pd); err != nil {
+		return err
+	}
+	res.Event.SideEffects = mergeRefs(res.Event.SideEffects, approvalEffects)
+	if pd.Outcome != pending.decision.Outcome {
+		status, warning := preToolPolicyStatus(deps, pending.fixture, pd)
+		res.Event.Status = status
+		res.Event.FailOpenReason = ""
+		if status == "fail_open" {
+			res.Event.FailOpenReason = envelope.FailOpenCapabilityAbsent
+		}
+		res.Summary = fmt.Sprintf("policy %s for %s%s", pd.Outcome, pending.action.Action, warning)
+	}
+	res.pendingExactApproval = nil
+	if effect, err := recordPendingSessionMutation(deps.HomePath, pending.fixture, *res, now); err != nil {
+		return err
+	} else if effect != "" {
+		res.Event.SideEffects = mergeRefs(res.Event.SideEffects, []string{effect})
+	}
+	return nil
+}
+
+func replacePreToolPolicyDecision(res *Result, decision envelope.PolicyDecision) error {
+	if res == nil {
+		return fmt.Errorf("replace PreToolUse PolicyDecision requires result")
+	}
+	for i, produced := range res.Produced {
+		if _, ok := produced.(*envelope.PolicyDecision); ok {
+			res.Produced[i] = &decision
+			return nil
+		}
+	}
+	return fmt.Errorf("PreToolUse result has no PolicyDecision")
+}
+
+func preToolPolicyStatus(deps Deps, fx Fixture, pd envelope.PolicyDecision) (string, string) {
+	if policy.Allowed(pd) {
+		return "ok", ""
+	}
+	if deps.Registry.Supports(fx.Harness, "PreToolUse") {
+		return "blocked", ""
+	}
+	return "fail_open", fmt.Sprintf(" — WARNING: %s cannot block natively; enforce via wrapper/adapter", fx.Harness)
+}
+
+func exactApprovalPlanEligible(fx Fixture, deps Deps, prepared preparedPreToolAction, ai envelope.ActionIntent, pd envelope.PolicyDecision, now time.Time) bool {
+	if !fx.Enforced || !prepared.allowApprovalPlan || strings.TrimSpace(deps.HomePath) == "" ||
+		pd.Outcome != "hold" || strings.TrimSpace(ai.SecurityFloorOutcome) != "" || prepared.placement != nil {
+		return false
+	}
+	if prepared.sourceControl != nil && strings.TrimSpace(prepared.sourceControl.Status) == "dirty" {
+		return false
+	}
+	// A context-raised hold (placement/source-control) is not the same approval
+	// class as the baseline action hold. V1 exposes plans only when baseline
+	// policy independently reaches the same hold.
+	return policy.Evaluate(ai, deps.Policy, now).Outcome == "hold"
 }
 
 func preToolUseBatch(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
@@ -1078,19 +1379,39 @@ func mergeRefs(groups ...[]string) []string {
 }
 
 func writeGateArtifacts(homePath string, ai envelope.ActionIntent, pd envelope.PolicyDecision) ([]string, error) {
-	store, err := eventstore.Open(homePath)
+	actionRef, err := writeGateActionArtifact(homePath, ai)
 	if err != nil {
 		return nil, err
+	}
+	decisionRef, err := writeGateDecisionArtifact(homePath, pd)
+	if err != nil {
+		return nil, err
+	}
+	return []string{actionRef, decisionRef}, nil
+}
+
+func writeGateActionArtifact(homePath string, ai envelope.ActionIntent) (string, error) {
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return "", err
 	}
 	action, err := store.PutJSON(ai.ID, ai, "  ")
 	if err != nil {
-		return nil, err
+		return "", err
+	}
+	return action.Reference.String(), nil
+}
+
+func writeGateDecisionArtifact(homePath string, pd envelope.PolicyDecision) (string, error) {
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return "", err
 	}
 	decision, err := store.PutJSON(pd.ID, pd, "  ")
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	return []string{action.Reference.String(), decision.Reference.String()}, nil
+	return decision.Reference.String(), nil
 }
 
 func sourceControlContextForAction(homePath, targetPath, sessionID, actor string, live bool, now time.Time) (*policy.SourceControlContext, string, []string, error) {

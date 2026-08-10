@@ -1645,6 +1645,7 @@ func runHookCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return hookRuntimeErrorExit(parsed)
 	}
+	fx.Enforced = parsed.Enforce
 	stopOutcome, err := prepareLiveStopTriage(parsed, homePath, &fx, now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
