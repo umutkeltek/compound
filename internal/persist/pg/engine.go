@@ -262,6 +262,10 @@ func (s *Store) VectorEmbedders(ctx context.Context) ([]string, error) {
 // vectors row with the producing embedder and REFUSES (mem.ErrEmbedderMismatch)
 // when existing rows carry a different identity — a silent model swap must never
 // mix two embedding spaces in one index.
+//
+// The embedder check+write is serialized with a transaction-scoped advisory lock
+// so that concurrent writers cannot both see an empty table and insert different
+// embedders under READ COMMITTED.
 func (s *Store) UpsertWithEmbedder(ref string, embedding []float32, metadata map[string]string, embedder string) error {
 	ctx := context.Background()
 	meta, _ := json.Marshal(metadata)
@@ -272,6 +276,12 @@ func (s *Store) UpsertWithEmbedder(ref string, embedding []float32, metadata map
 		return fmt.Errorf("persist/pg: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// Serialize all embedder-stamped writes to prevent a race where two
+	// transactions see no conflicting rows and commit different embedders.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('compound:vectors:embedder'))`); err != nil {
+		return fmt.Errorf("persist/pg: embedder lock: %w", err)
+	}
 
 	var other string
 	err = tx.QueryRow(ctx, `

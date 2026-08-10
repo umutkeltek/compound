@@ -913,6 +913,11 @@ func runStoreEmbed(args []string, stdout, stderr io.Writer, authorized bool) int
 		fmt.Fprintln(stderr, "store embed: COMPOUND_STORE=postgres and COMPOUND_DSN required")
 		return 1
 	}
+	dims := cfg.VectorDimensions
+	if dims <= 0 {
+		dims = 1536
+	}
+	embedder := fmt.Sprintf("ollama:%s:%d", model, dims)
 
 	// Governed write: dry-run by default, --confirm --work W performs it behind
 	// an allowing PolicyDecision. When chained from `store sync --confirm`, the
@@ -1027,7 +1032,7 @@ func runStoreEmbed(args []string, stdout, stderr io.Writer, authorized bool) int
 				break
 			}
 			meta := map[string]string{"entity": c.Entity, "predicate": c.Predicate, "claim_id": c.ID}
-			if err := store.Upsert("claim:"+c.ID, vectors[j], meta); err != nil {
+			if err := store.UpsertWithEmbedder("claim:"+c.ID, vectors[j], meta, embedder); err != nil {
 				errors++
 				continue
 			}
