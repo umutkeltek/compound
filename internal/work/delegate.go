@@ -1876,7 +1876,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	// argv, which may contain operator secrets. RunAttempt persistence is
 	// independent of the spawn side effect, so a Mint failure is a
 	// refuse -- ZERO Create side effects, ZERO session exists.
-	raStore := runattempt.Open(s.home)
+	raStore := runAttemptsFactory(s.home)
 	var minted runattempt.RunAttempt
 	mintErr := s.withLifecycleMutation(func() error {
 		current, err := s.Get(out.WorkID)
@@ -2031,8 +2031,49 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	// wrapper command only -- prompt text / args must NEVER reach
 	// RunAttempt on disk. Stamp failures terminalize the mint (the
 	// attempt is the only thing that exists at this point) and refuse.
+	// Best-effort context (origin/workspace/command) and the failure reason
+	// are persisted BEFORE terminalizing so the failed attempt remains auditable.
 	stamp := func(field, msg string) (DelegateResult, error) {
-		if _, terr := raStore.Complete(runAttemptID, runattempt.StatusFailed, opts.Now); terr != nil {
+		var bestEffortDetails []string
+		if detail := bestEffortStamp(raStore, runAttemptID, "origin", func() (runattempt.RunAttempt, error) {
+			return raStore.SetOrigin(runAttemptID, runattempt.OriginHarnessExecution)
+		}); detail != "" {
+			bestEffortDetails = append(bestEffortDetails, detail)
+		}
+		if detail := bestEffortStamp(raStore, runAttemptID, "workspace", func() (runattempt.RunAttempt, error) {
+			return raStore.SetWorkspace(runAttemptID, workspace)
+		}); detail != "" {
+			bestEffortDetails = append(bestEffortDetails, detail)
+		}
+		if detail := bestEffortStamp(raStore, runAttemptID, "command", func() (runattempt.RunAttempt, error) {
+			return raStore.SetCommand(runAttemptID, command)
+		}); detail != "" {
+			bestEffortDetails = append(bestEffortDetails, detail)
+		}
+		if detail := bestEffortStamp(raStore, runAttemptID, "dispatch_intent", func() (runattempt.RunAttempt, error) {
+			return raStore.SetDispatchIntent(runAttemptID, resolution.LaneID, resolution.RequestedModelID, resolution.RequestedProviderRoute)
+		}); detail != "" {
+			bestEffortDetails = append(bestEffortDetails, detail)
+		}
+		if executionProfile != nil {
+			if detail := bestEffortStamp(raStore, runAttemptID, "execution_profile", func() (runattempt.RunAttempt, error) {
+				return raStore.SetExecutionProfileIntent(runAttemptID, executionProfile.ID, executionProfile.ClientHarnessID, executionProfile.TransportID, executionProfile.RequestedNativeEffort)
+			}); detail != "" {
+				bestEffortDetails = append(bestEffortDetails, detail)
+			}
+		}
+		if launchProfile != nil {
+			if detail := bestEffortStamp(raStore, runAttemptID, "launch_profile", func() (runattempt.RunAttempt, error) {
+				return raStore.SetLaunchProfileIntent(runAttemptID, launchProfile.ID, launchProfile.Revision, launchProfile.ClientProfileID)
+			}); detail != "" {
+				bestEffortDetails = append(bestEffortDetails, detail)
+			}
+		}
+		reason := "stamp " + field + ": " + msg
+		if len(bestEffortDetails) > 0 {
+			reason += "; " + strings.Join(bestEffortDetails, "; ")
+		}
+		if _, terr := raStore.CompleteWithReason(runAttemptID, runattempt.StatusFailed, reason, opts.Now); terr != nil {
 			return out, terr
 		}
 		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "mint_failed", msg, opts.Now)
@@ -2277,6 +2318,18 @@ func (s *Store) finalizeSpawnFailureAfterBinding(runner SessionRunner, workID st
 		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: attach spawn-finalize exit: %w", err))
 	}
 	return errors.Join(cleanupErrs...)
+}
+
+// bestEffortStamp writes audit context to a RunAttempt during a failure closure
+// and captures any error in the reason string so operators can see that the
+// backfill failed. The actual stamp error is preserved as a non-fatal audit
+// signal rather than shadowing the terminalization error.
+func bestEffortStamp(raStore runAttemptStore, runAttemptID, field string, setter func() (runattempt.RunAttempt, error)) string {
+	_, err := setter()
+	if err != nil {
+		return fmt.Sprintf("%s stamp failed: %v", field, err)
+	}
+	return ""
 }
 
 // reapExitedDelegateSession removes a pane left behind by a delegate whose

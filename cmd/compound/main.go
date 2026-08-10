@@ -3106,11 +3106,29 @@ func (e *reviewFindingDeniedError) Error() string {
 	return "review finding refused by policy: outcome " + e.Decision.Outcome
 }
 
+// reviewFindingWorkStore is the minimal work-store surface used by
+// recordReviewFinding. The concrete *work.Store satisfies it; the variable
+// below exists only so tests can inject a fault wrapper to prove rollback
+// behavior when lifecycle transitions fail after the artifact is written.
+type reviewFindingWorkStore interface {
+	Create(in work.CreateInput, now time.Time) (envelope.WorkEnvelope, error)
+	Get(workID string) (envelope.WorkEnvelope, error)
+	RecordAction(workID string, ai envelope.ActionIntent, pd envelope.PolicyDecision, now time.Time) (envelope.WorkEnvelope, error)
+	Claim(workID string, actor string, now time.Time) (envelope.WorkEnvelope, error)
+	Advance(workID string, in work.AdvanceInput, now time.Time) (envelope.WorkEnvelope, error)
+	Close(workID string, in work.CloseInput, now time.Time) (work.CloseResult, error)
+}
+
+// reviewFindingStoreOpener is a test seam; production delegates to work.Open.
+var reviewFindingStoreOpener = func(homePath string) (reviewFindingWorkStore, error) { return work.Open(homePath) }
+
 // recordReviewFinding is the governed review-finding door extracted as a
-// returning function. It evaluates policy, writes the finding artifact and its
-// markdown sibling only after an allowing PolicyDecision, and records the
-// ActionIntent on the WorkEnvelope. Behavior is identical to the prior inline
-// implementation; the CLI wrapper adds the os.Exit / printJSON shell.
+// returning function. It evaluates policy, records the ActionIntent and
+// allowing PolicyDecision on the WorkEnvelope FIRST, and only then writes the
+// finding artifact and its markdown sibling and advances/closes the work.
+// On any failure after the artifact files are written, the files are rolled
+// back so no orphaned artifact remains while the work is stuck mid-lifecycle.
+// The CLI wrapper adds the os.Exit / printJSON shell.
 func recordReviewFinding(in recordReviewFindingInput, now time.Time) (reviewFindingRecord, error) {
 	capability := reviewartifact.FirstNonEmpty(in.Capability, "review.finding")
 	target, err := normalizeRunReviewTarget(in.TargetPath)
@@ -3152,7 +3170,7 @@ func recordReviewFinding(in recordReviewFindingInput, now time.Time) (reviewFind
 	if err != nil {
 		return reviewFindingRecord{}, err
 	}
-	store, err := work.Open(homePath)
+	store, err := reviewFindingStoreOpener(homePath)
 	if err != nil {
 		return reviewFindingRecord{}, err
 	}
@@ -3183,7 +3201,12 @@ func recordReviewFinding(in recordReviewFindingInput, now time.Time) (reviewFind
 			return reviewFindingRecord{}, fmt.Errorf("work %s is %s (terminal); cannot record review finding", workID, w.State)
 		}
 	}
-	evidenceRefs = reviewartifact.Unique(append(evidenceRefs, "work://"+workID, target))
+	// evidenceRefs collects the upstream evidence that exists before this action.
+	// The target artifact path is an OUTPUT of this action, not evidence for it,
+	// and must not appear in the ActionIntent's EvidenceRefs before the file is
+	// written. The final report (written after the artifact exists) can link it.
+	actionEvidenceRefs := reviewartifact.Unique(append([]string{}, evidenceRefs...))
+	actionEvidenceRefs = reviewartifact.Unique(append(actionEvidenceRefs, "work://"+workID))
 	actionID := reviewartifact.ID("act_", workID, capability, target, in.Summary, createdAt)
 	ai := envelope.ActionIntent{
 		Header: envelope.Header{
@@ -3195,7 +3218,7 @@ func recordReviewFinding(in recordReviewFindingInput, now time.Time) (reviewFind
 			Authority:     envelope.Authority{SourceClass: "runtime", Owner: "compound", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier1",
-			EvidenceRefs:  evidenceRefs,
+			EvidenceRefs:  actionEvidenceRefs,
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
 		Actor:         "compound-cli",
@@ -3229,40 +3252,55 @@ func recordReviewFinding(in recordReviewFindingInput, now time.Time) (reviewFind
 		StandingGrantID:  pd.StandingGrantID,
 		SourceArtifacts:  sourceArtifacts,
 		SourceTraces:     sourceTraces,
-		EvidenceRefs:     evidenceRefs,
+		EvidenceRefs:     actionEvidenceRefs,
 		Warnings: []string{
 			"writes only under state/runs/**",
 			"requires allowing PolicyDecision before artifact write",
-			"records ActionIntent on WorkEnvelope after artifact write",
+			"records ActionIntent on WorkEnvelope before artifact write",
 		},
 	}
-	data, err := json.MarshalIndent(report, "", " ")
-	if err != nil {
+	// POLICY-ENFORCEMENT SEAM: record the ActionIntent + PolicyDecision before
+	// any irreversible artifact write or lifecycle transition. If this fails, no
+	// files are on disk and the work has not been advanced/closed.
+	if _, err := store.RecordAction(workID, ai, pd, now); err != nil {
 		return reviewFindingRecord{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o755); err != nil {
 		return reviewFindingRecord{}, err
 	}
+	// Now that the governed policy decision is durable, include the target path
+	// in the written report's evidence refs -- the file is about to exist.
+	report.EvidenceRefs = reviewartifact.Unique(append(append([]string{}, actionEvidenceRefs...), target))
+	data, err := json.MarshalIndent(report, "", " ")
+	if err != nil {
+		return reviewFindingRecord{}, err
+	}
 	if err := os.WriteFile(artifactPath, append(data, '\n'), 0o644); err != nil {
 		return reviewFindingRecord{}, err
+	}
+	artifactFilesWritten := false
+	rollbackArtifacts := func() {
+		if artifactFilesWritten {
+			_ = os.Remove(artifactPath)
+			_ = os.Remove(markdownPath)
+		}
 	}
 	if err := os.WriteFile(markdownPath, []byte(renderReviewFindingMarkdown(report)), 0o644); err != nil {
 		_ = os.Remove(artifactPath)
 		return reviewFindingRecord{}, err
 	}
-	if _, err := store.RecordAction(workID, ai, pd, now); err != nil {
-		_ = os.Remove(artifactPath)
-		_ = os.Remove(markdownPath)
-		return reviewFindingRecord{}, err
-	}
+	artifactFilesWritten = true
 	if in.AutoWork {
 		if _, err := store.Claim(workID, "compound reviews", now); err != nil {
+			rollbackArtifacts()
 			return reviewFindingRecord{}, err
 		}
 		if _, err := store.Advance(workID, work.AdvanceInput{To: "running", Actor: "compound reviews", Note: "review finding recorded"}, now); err != nil {
+			rollbackArtifacts()
 			return reviewFindingRecord{}, err
 		}
 		if _, err := store.Advance(workID, work.AdvanceInput{To: "verifying", Actor: "compound reviews", VerificationID: target, Note: "review finding artifact written"}, now); err != nil {
+			rollbackArtifacts()
 			return reviewFindingRecord{}, err
 		}
 		if _, err := store.Close(workID, work.CloseInput{
@@ -3273,6 +3311,7 @@ func recordReviewFinding(in recordReviewFindingInput, now time.Time) (reviewFind
 			Changed:   true,
 			ProofRefs: []string{target},
 		}, now); err != nil {
+			rollbackArtifacts()
 			return reviewFindingRecord{}, err
 		}
 	}
