@@ -154,12 +154,19 @@ func ApplySkillSurfacingMisses(homePath string, misses SkillSurfacingMisses, now
 	}
 	unknown := map[string]bool{}
 	missingContext := map[string]bool{}
+	var newEdges []Edge
 	for _, receipt := range misses.PerReceipt {
-		if err := applySkillSurfacingFeedback(store, nodes, existingEdges, unknown, missingContext, receipt, receipt.Real, EdMissedWhen, now, &report); err != nil {
+		if err := collectSkillSurfacingFeedback(&newEdges, nodes, existingEdges, unknown, missingContext, receipt, receipt.Real, EdMissedWhen, now, &report); err != nil {
 			report.Status = "fail"
 			return report, err
 		}
-		if err := applySkillSurfacingFeedback(store, nodes, existingEdges, unknown, missingContext, receipt, receipt.falseTriggered(), EdFalseTriggeredBy, now, &report); err != nil {
+		if err := collectSkillSurfacingFeedback(&newEdges, nodes, existingEdges, unknown, missingContext, receipt, receipt.falseTriggered(), EdFalseTriggeredBy, now, &report); err != nil {
+			report.Status = "fail"
+			return report, err
+		}
+	}
+	if len(newEdges) > 0 {
+		if err := ApplyNodesAndEdgesGoverned(homePath, nil, newEdges, now); err != nil {
 			report.Status = "fail"
 			return report, err
 		}
@@ -173,7 +180,7 @@ func ApplySkillSurfacingMisses(homePath string, misses SkillSurfacingMisses, now
 	return report, nil
 }
 
-func applySkillSurfacingFeedback(store *Store, nodes []Node, existingEdges, unknown, missingContext map[string]bool, receipt SkillSurfacingMissReceipt, entries []SkillSurfacingMissEntry, edgeKind string, now time.Time, report *SkillSurfacingMissesReport) error {
+func collectSkillSurfacingFeedback(edges *[]Edge, nodes []Node, existingEdges, unknown, missingContext map[string]bool, receipt SkillSurfacingMissReceipt, entries []SkillSurfacingMissEntry, edgeKind string, now time.Time, report *SkillSurfacingMissesReport) error {
 	for _, entry := range entries {
 		if edgeKind == EdFalseTriggeredBy {
 			report.FalseTriggersRead++
@@ -213,7 +220,7 @@ func applySkillSurfacingFeedback(store *Store, nodes []Node, existingEdges, unkn
 				Confidence: entry.Confidence,
 				CreatedAt:  now.UTC().Format(time.RFC3339),
 			}
-			added, err := store.addEdgeOnce(edge, existingEdges, now)
+			added, err := addEdgeOnceCollect(edges, existingEdges, edge)
 			if err != nil {
 				return err
 			}
