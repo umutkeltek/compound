@@ -319,12 +319,7 @@ func CredentialBindCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error: credential bind:", err)
 		return 1
 	}
-	store, err := Open(homePath)
-	if err != nil {
-		fmt.Fprintln(stderr, "error: credential bind:", err)
-		return 1
-	}
-	changed, err := store.SetConnectionSurfaceCredential(nodeID, h)
+	changed, err := SetConnectionSurfaceCredentialGoverned(homePath, nodeID, h, time.Now())
 	if err != nil {
 		fmt.Fprintln(stderr, "error: credential bind:", err)
 		return 1

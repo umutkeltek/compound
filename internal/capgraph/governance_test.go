@@ -33,6 +33,36 @@ func TestGovernedAddPolicyDenyBlocksMutation(t *testing.T) {
 	}
 }
 
+func TestGovernedBindCredentialPolicyDenyBlocksMutation(t *testing.T) {
+	home, s := newStore(t)
+	// Seed a surface so the bind has something to attach to; then deny the
+	// local_reversible class so the governed bind must refuse before writing.
+	if _, err := s.AddConnectionSurface(ConnectionSurface{NodeID: "conn:github"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePolicy(home, "class_outcome:\n  local_reversible:\n    outcome: deny\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	h := CredentialHandle{Ref: "home-secret://github/token", Custodian: "compound", EnvName: "GITHUB_TOKEN"}
+	if _, err := SetConnectionSurfaceCredentialGoverned(home, "conn:github", h, t0); err == nil || !strings.Contains(err.Error(), "refuses") {
+		t.Fatalf("expected policy refusal, got %v", err)
+	}
+
+	surfaces, err := s.loadConnectionSurfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cs := range surfaces {
+		if cs.NodeID == "conn:github" && cs.CredentialHandle.Ref == "home-secret://github/token" {
+			t.Fatal("denied credential bind mutated the connection surface")
+		}
+	}
+	if !hasGovernanceRecord(home, "bind_credential", false) {
+		t.Fatal("missing denied governance record for bind_credential")
+	}
+}
+
 func TestGovernedRetirePolicyDenyBlocksMutation(t *testing.T) {
 	home, s := newStore(t)
 	if err := s.Add(Node{ID: "tool:gbrain.search", Kind: "tool", Name: "gbrain search", Triggers: []string{"search"}}); err != nil {

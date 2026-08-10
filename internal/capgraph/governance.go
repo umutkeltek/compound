@@ -167,6 +167,30 @@ func AddConnectionSurfaceGoverned(homePath string, cs ConnectionSurface, now tim
 	return added, nil
 }
 
+// SetConnectionSurfaceCredentialGoverned fail-closed entry point binding a
+// CredentialHandle onto an existing connection surface. It mints an ActionIntent,
+// evaluates policy, records the governance pair, and only then persists the
+// binding; a policy deny prevents the credential from being attached.
+func SetConnectionSurfaceCredentialGoverned(homePath, nodeID string, h CredentialHandle, now time.Time) (bool, error) {
+	if strings.TrimSpace(nodeID) == "" {
+		return false, fmt.Errorf("connection surface needs a node id")
+	}
+	var bound bool
+	mutation := capabilityGraphMutation{
+		kind:    "bind_credential",
+		nodeIDs: []string{nodeID},
+		apply: func(s *Store) error {
+			var err error
+			bound, err = s.SetConnectionSurfaceCredential(nodeID, h)
+			return err
+		},
+	}
+	if err := applyGovernedCapabilityGraphMutation(homePath, mutation, now); err != nil {
+		return false, err
+	}
+	return bound, nil
+}
+
 func guardNoResurrect(homePath string, proposed []Node) error {
 	store, err := Open(homePath)
 	if err != nil {
@@ -233,7 +257,7 @@ func capabilityGraphActionIntent(homePath string, mutation capabilityGraphMutati
 		mutationClass = "destructive"
 		reversibility = "irreversible"
 		risk = "tier3"
-	case "add_node", "observe", "apply_skill_manifest", "apply_nodes_and_edges", "add_connection_surface":
+	case "add_node", "observe", "apply_skill_manifest", "apply_nodes_and_edges", "add_connection_surface", "bind_credential":
 		// defaults above
 	}
 
