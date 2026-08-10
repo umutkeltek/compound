@@ -161,32 +161,47 @@ type surfacingRow struct {
 // honest matrix shows the same numbers on every row rather than faking a per-lane split. Scope
 // is always "global" and Note says so; a future per-lane consumption signal would refine this.
 //
-// MEASURED vs UNMEASURED is load-bearing, not a nicety. A session's consumption is only ever
-// OBSERVED when its close declared one (Receipt.Skills.UsedDeclared — the session-end detector
-// actually ran over a transcript). internal/hook/consumption.go states the invariant the detector
-// is built on: "UNDER-DETECTION IS SAFE: a missed consumption becomes UNKNOWN, never ignored."
-// Summing served events across undeclared sessions and printing one ConsumedEvents beside the
-// total silently converts those unknowns into observed zeros, and the resulting ratio reads as a
-// consumption rate it has no standing to be. So ConsumedEvents pairs with MeasuredServedEvents
-// ONLY; UnmeasuredServedEvents is reported separately and is never a denominator.
-// ServedEvents keeps its original meaning (the total) so an existing reader is not silently
-// re-pointed at a different quantity: Measured + Unmeasured always reconstructs it.
+// NO CONSUMPTION RATE IS COMPUTABLE FROM RECEIPTS, and saying so is this struct's main job.
+//
+// It is tempting to divide ConsumedEvents by ServedEvents, or to split served events into
+// "measured" and "unmeasured" by Receipt.Skills.UsedDeclared and divide by the measured half. Both
+// are wrong, for the same reason: UsedDeclared has TWO writers with incompatible meanings and the
+// Receipt does not record which one wrote it.
+//
+//	cmd/compound/work_cli.go  UsedDeclared: has("--used")   — an operator or agent typed a flag
+//	internal/hook/hook.go     UsedDeclared: usedDeclared    — the session-end detector actually ran
+//
+// A detector-produced receipt and a CLI-close receipt are structurally identical: same fields, same
+// hardcoded Producer{Kind:"cli"} (work.go's newHeaderWithLane stamps it on BOTH paths). Verified
+// 2026-08-11 by field-by-field comparison on the real home. So a "measured" denominator built on
+// UsedDeclared silently counts CLI closes that never measured anything — on the real home that was
+// 96 of 97 declared sessions, contributing 420 served events and zero claim consumption, next to
+// the single session where the detector actually ran and consumed 5 of 5.
+//
+// What IS honest from receipt data: how many claim events were served, how many were observed to be
+// referenced, and across how many sessions each happened. Everything else is unknown — and
+// internal/hook/consumption.go's own invariant ("UNDER-DETECTION IS SAFE: a missed consumption
+// becomes UNKNOWN, never ignored") means unknown must not be rendered as zero. Recording the
+// declaration's provenance on the Receipt is what would make a rate computable; until then this
+// surface reports counts and says why it reports no ratio.
 type surfacingInjection struct {
 	Scope string `json:"scope"` // always "global" in v1
 
-	// ServedEvents is every served claim event, measured or not. It is NOT a denominator.
-	ServedEvents int `json:"served_events"`
-	// MeasuredServedEvents is the served events from sessions whose consumption detector ran
-	// (used_declared=true). This is the only honest denominator for ConsumedEvents.
-	MeasuredServedEvents int `json:"measured_served_events"`
-	// UnmeasuredServedEvents is the served events from sessions whose detector never ran. Their
-	// consumption is UNKNOWN — reporting it as zero is the defect this split exists to prevent.
-	UnmeasuredServedEvents int `json:"unmeasured_served_events"`
-
+	// ServedEvents and ConsumedEvents are raw counts, never a numerator/denominator pair.
+	ServedEvents   int `json:"served_events"`
 	ConsumedEvents int `json:"consumed_events"`
 
-	MeasuredSessions   int `json:"measured_sessions"`
-	UnmeasuredSessions int `json:"unmeasured_sessions"`
+	SessionsServed          int `json:"sessions_served"`
+	SessionsWithConsumption int `json:"sessions_with_consumption"`
+	// SessionsWithoutConsumption recorded no referenced claim. Whether that means "the detector
+	// ran and found nothing" or "no detector ever ran" is NOT recoverable from the receipt, which
+	// is exactly why these are never called measured zeros.
+	SessionsWithoutConsumption int `json:"sessions_without_consumption"`
+
+	// ConsumptionProvenanceRecoverable is false for as long as the Receipt carries no writer for
+	// UsedDeclared. It is a constant today on purpose: it is the machine-readable form of the
+	// caveat, so a consumer computing a rate has something to check rather than prose to parse.
+	ConsumptionProvenanceRecoverable bool `json:"consumption_provenance_recoverable"`
 
 	LastConsumed string `json:"last_consumed"` // coarse age or "never"
 	Note         string `json:"note"`
@@ -782,26 +797,26 @@ func printSurfacing(stdout io.Writer, rep doctorReport) {
 		fmt.Fprintf(stdout, "-> %s\n", rep.SurfacingNote)
 	}
 	inj := rep.SurfacingInjection
-	fmt.Fprintf(stdout, "-> injection %s: served %d = measured %d + unmeasured %d, consumed %d of %d measured, last-consumed %s (%s)\n",
-		inj.Scope, inj.ServedEvents, inj.MeasuredServedEvents, inj.UnmeasuredServedEvents,
-		inj.ConsumedEvents, inj.MeasuredServedEvents, inj.LastConsumed, inj.Note)
-	if inj.UnmeasuredServedEvents > 0 {
-		fmt.Fprintf(stdout, "-> injection unmeasured: %d served event(s) across %d session(s) whose consumption detector never ran (used_declared=false) — consumption UNKNOWN, never counted as zero; only the %d measured event(s) are a denominator\n",
-			inj.UnmeasuredServedEvents, inj.UnmeasuredSessions, inj.MeasuredServedEvents)
+	fmt.Fprintf(stdout, "-> injection %s: served %d event(s) across %d session(s), consumed %d event(s) across %d session(s), last-consumed %s (%s)\n",
+		inj.Scope, inj.ServedEvents, inj.SessionsServed,
+		inj.ConsumedEvents, inj.SessionsWithConsumption, inj.LastConsumed, inj.Note)
+	if !inj.ConsumptionProvenanceRecoverable && inj.SessionsWithoutConsumption > 0 {
+		fmt.Fprintf(stdout, "-> injection coverage: no consumption rate is computable from these numbers. %d session(s) recorded no referenced claim, but skills.used_declared has two writers — a typed --used flag (cmd/compound/work_cli.go) and a real session-end detector run (internal/hook/hook.go) — and the receipt records neither, so those sessions are UNKNOWN, not zero.\n",
+			inj.SessionsWithoutConsumption)
 	}
 	fmt.Fprintln(stdout, "-> peers: active leases + agent-lane cards render in each harness's orient ContextPack (contextual, display-only)")
 }
 
-// surfacingInjectionCell renders the matrix's injection cell. It keeps the established
-// served/consumed order, but the served half is the MEASURED count — the only one that pairs with
-// consumed — and any unmeasured remainder is appended with a "?" so the cell can never be read as
-// a complete measurement. With nothing unmeasured the cell keeps its original "(global)" shape.
-// The arrow lines under the matrix carry the full sentence; this cell is the glance.
+// surfacingInjectionCell renders the matrix's injection cell: served/consumed events, then the
+// session counts those came from. The session pair is what stops the event pair from reading as a
+// rate at a glance — "1142/5 (1/299)" says five references were seen in one session out of 299,
+// which is a coverage statement, not a percentage. The arrow lines below the matrix carry the full
+// caveat; this cell is only the glance.
 func surfacingInjectionCell(inj surfacingInjection) string {
-	if inj.UnmeasuredServedEvents > 0 {
-		return fmt.Sprintf("%d/%d (+%d?)", inj.MeasuredServedEvents, inj.ConsumedEvents, inj.UnmeasuredServedEvents)
+	if inj.SessionsServed > 0 {
+		return fmt.Sprintf("%d/%d (%d/%ds)", inj.ServedEvents, inj.ConsumedEvents, inj.SessionsWithConsumption, inj.SessionsServed)
 	}
-	return fmt.Sprintf("%d/%d (global)", inj.MeasuredServedEvents, inj.ConsumedEvents)
+	return fmt.Sprintf("%d/%d (global)", inj.ServedEvents, inj.ConsumedEvents)
 }
 
 // surfacingLaneCell renders a lane name into the fixed-width lane column. When the name exceeds the
@@ -1075,21 +1090,23 @@ func injectionGlobalSummary(homePath string, now time.Time) surfacingInjection {
 	if err != nil {
 		return inj
 	}
-	// Rolled up from Sessions, not Conditions: the used_declared discriminator only exists at
-	// session granularity, and it is the whole point of this summary. The totals are identical
-	// either way (a condition summary is a sum over its own sessions), so nothing is traded for
-	// it — the session walk simply keeps the measured/unmeasured split that the condition rollup
-	// has already flattened away.
+	// Rolled up from Sessions, not Conditions, so the per-session counts below are available at
+	// all; the event totals are identical either way (a condition summary is a sum over its own
+	// sessions). Sessions are bucketed by OBSERVED consumption — did this session reference a
+	// claim its own pack served — and deliberately NOT by UsedDeclared, which cannot distinguish a
+	// detector run from a typed --used flag (see the type comment).
 	for _, s := range rep.Sessions {
 		inj.ServedEvents += s.ServedCount
 		inj.ConsumedEvents += s.ConsumedCount
-		if s.UsedDeclared {
-			inj.MeasuredSessions++
-			inj.MeasuredServedEvents += s.ServedCount
+		if s.ServedCount == 0 {
+			continue // served nothing: not a session this surface can say anything about
+		}
+		inj.SessionsServed++
+		if s.ConsumedCount > 0 {
+			inj.SessionsWithConsumption++
 			continue
 		}
-		inj.UnmeasuredSessions++
-		inj.UnmeasuredServedEvents += s.ServedCount
+		inj.SessionsWithoutConsumption++
 	}
 	var last time.Time
 	for _, s := range rep.Sessions {
