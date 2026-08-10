@@ -386,7 +386,6 @@ func TestCandidateFullSchemaRoundTrip(t *testing.T) {
 	}
 }
 
-
 func TestCandidateLifecycle(t *testing.T) {
 	store := testStore(t)
 	now := time.Now()

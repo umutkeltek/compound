@@ -174,10 +174,10 @@ func TestApplySkillSurfacingMissesUsesGovernedBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	misses := SkillSurfacingMisses{
-		ID:        "skill_surfacing:governed",
+		ID:         "skill_surfacing:governed",
 		SourcePath: "governed.json",
-		Revision:  "sha256:governed",
-		Generated: t0.UTC().Format(time.RFC3339),
+		Revision:   "sha256:governed",
+		Generated:  t0.UTC().Format(time.RFC3339),
 		PerReceipt: []SkillSurfacingMissReceipt{
 			{
 				Dir:   "receipts/governed",

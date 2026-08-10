@@ -45,34 +45,34 @@ type Claim struct {
 
 // Edge is a version-chain relationship between claims (supersedes, reinforces, etc.).
 type Edge struct {
-	From      string  `json:"from"`
-	To        string  `json:"to"`
-	Kind      string  `json:"kind"`
-	Seq       int64   `json:"seq"`
-	ClaimID   string  `json:"claim_id"`
-	CreatedAt string  `json:"created_at,omitempty"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Kind      string `json:"kind"`
+	Seq       int64  `json:"seq"`
+	ClaimID   string `json:"claim_id"`
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 // Candidate is an untrusted proposed fact awaiting adjudication (mirrors mem.Candidate).
 type Candidate struct {
-	ID             string            `json:"id"`
-	Entity         string            `json:"entity"`
-	Predicate      string            `json:"predicate"`
-	Object         string            `json:"object"`
+	ID              string            `json:"id"`
+	Entity          string            `json:"entity"`
+	Predicate       string            `json:"predicate"`
+	Object          string            `json:"object"`
 	ObservationDate string            `json:"observation_date,omitempty"`
-	Confidence     float64           `json:"confidence"`
-	Derivation     string            `json:"derivation"`
-	ClaimType      string            `json:"claim_type,omitempty"`
-	CanonClass     string            `json:"canon_class,omitempty"`
-	Qualifiers     map[string]string `json:"qualifiers,omitempty"`
-	Visibility     string            `json:"visibility"`
-	State          string            `json:"state"`
-	SourceTraceRef string            `json:"source_trace_ref"`
-	EvidenceRefs   []string          `json:"evidence_refs,omitempty"`
-	Reason         string            `json:"reason,omitempty"`
-	AdjudicatedBy  string            `json:"adjudicated_by,omitempty"`
-	AdjudicatedAt  string            `json:"adjudicated_at,omitempty"`
-	CreatedAt      string            `json:"created_at"`
+	Confidence      float64           `json:"confidence"`
+	Derivation      string            `json:"derivation"`
+	ClaimType       string            `json:"claim_type,omitempty"`
+	CanonClass      string            `json:"canon_class,omitempty"`
+	Qualifiers      map[string]string `json:"qualifiers,omitempty"`
+	Visibility      string            `json:"visibility"`
+	State           string            `json:"state"`
+	SourceTraceRef  string            `json:"source_trace_ref"`
+	EvidenceRefs    []string          `json:"evidence_refs,omitempty"`
+	Reason          string            `json:"reason,omitempty"`
+	AdjudicatedBy   string            `json:"adjudicated_by,omitempty"`
+	AdjudicatedAt   string            `json:"adjudicated_at,omitempty"`
+	CreatedAt       string            `json:"created_at"`
 }
 
 // ClaimFilter narrows a fold query.
@@ -218,7 +218,7 @@ type Config struct {
 	// Backend selects the storage engine. Default: BackendFile.
 	Backend Backend
 	// DSN is the Postgres connection string (required when Backend=postgres).
-	// Example: "postgres://compound:secret@192.168.1.10:5432/compound?sslmode=disable"
+	// Example: "postgres://<user>:<password>@<host>:5432/compound?sslmode=disable"
 	DSN string
 	// VectorDimensions is the embedding dimension for pgvector columns.
 	// Must match the embedding model output. Default: 1536 (OpenAI ada-002).

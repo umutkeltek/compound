@@ -2629,4 +2629,3 @@ func TestDelegateWorkspaceIsNeverCompoundHome(t *testing.T) {
 		t.Fatalf("workspace_occupied refusal created session: %+v", runner.creates)
 	}
 }
-
