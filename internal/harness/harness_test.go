@@ -1,10 +1,13 @@
 package harness
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"compound/internal/runattempt"
 )
 
 func TestSupportsByHarness(t *testing.T) {
@@ -84,7 +87,23 @@ func TestGenericFallback(t *testing.T) {
 
 func TestNamesSorted(t *testing.T) {
 	got := DefaultRegistry().Names()
-	want := []string{"claude_code", "claude_minimax", "claude_qwen", "claude_zai", "claude_zai_full", "codex", "hermes", "opencode"}
+	want := []string{
+		"claude_code",
+		"claude_deepseek_flash_api",
+		"claude_deepseek_flash_nvidia",
+		"claude_gpt",
+		"claude_gpt56_sol_wpcom",
+		"claude_gpt56_sol_wpcom_headroom",
+		"claude_kimi",
+		"claude_minimax",
+		"claude_neuralwatt",
+		"claude_qwen",
+		"claude_zai",
+		"claude_zai_full",
+		"codex",
+		"hermes",
+		"opencode",
+	}
 	if len(got) != len(want) {
 		t.Fatalf("Names() = %v, want %v", got, want)
 	}
@@ -434,6 +453,158 @@ func TestNewClaudeLaneHarnessesListedInDefaultRegistrySorted(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("DefaultRegistry().Names() = %v, missing %q", got, name)
+		}
+	}
+}
+
+// launchProfileFixtureEntry keeps the one source field that defines this
+// slice's boundary. A Prime-family profile is not a Claude adapter merely
+// because it shares a provider route with one.
+type launchProfileFixtureEntry struct {
+	Harness string `json:"harness"`
+}
+
+// launchProfilesFixture mirrors the switchback/launch-profiles@1 shape with
+// synthetic values. It snapshots the Claude-Code profiles covered by this
+// registry slice without depending on operator-local state.
+type launchProfilesFixture struct {
+	Schema         string                               `json:"schema"`
+	LaunchProfiles map[string]launchProfileFixtureEntry `json:"launch_profiles"`
+}
+
+// readLaunchProfilesFixture loads the committed fixture. The fixture lives
+// under testdata/ so the test never depends on a path outside the repo.
+func readLaunchProfilesFixture(t *testing.T) launchProfilesFixture {
+	t.Helper()
+	path := filepath.Join("testdata", "launch-profiles.fixture.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", path, err)
+	}
+	var fixture launchProfilesFixture
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("parse fixture %s: %v", path, err)
+	}
+	if fixture.Schema != "switchback/launch-profiles@1" {
+		t.Fatalf("fixture schema = %q, want switchback/launch-profiles@1", fixture.Schema)
+	}
+	if len(fixture.LaunchProfiles) == 0 {
+		t.Fatalf("fixture has no launch_profiles entries")
+	}
+	for id, profile := range fixture.LaunchProfiles {
+		if strings.TrimSpace(profile.Harness) == "" {
+			t.Fatalf("fixture profile %q has no harness identity", id)
+		}
+	}
+	return fixture
+}
+
+// TestEveryClaudeCodeLaunchProfileIsEnrolledAsHarness pins the execution gap:
+// a declared Claude-Code launch profile must resolve to both a harness and an
+// adapter. The guard is intentionally one-directional; non-profile built-ins
+// such as codex, hermes, and opencode remain legal registry entries.
+func TestEveryClaudeCodeLaunchProfileIsEnrolledAsHarness(t *testing.T) {
+	fixture := readLaunchProfilesFixture(t)
+	registry := DefaultRegistry()
+	adapters := NewAdapterRegistry(runattempt.Open(t.TempDir()))
+
+	wantNames := make([]string, 0, len(fixture.LaunchProfiles))
+	skippedNonClaude := 0
+	for rawID, profile := range fixture.LaunchProfiles {
+		if profile.Harness != "claude-code" {
+			// Prime lives in the fixture as a negative selector. This loop
+			// proves the Claude-Code enrollment boundary by skipping every
+			// non-Claude profile; it does not assert whether non-Claude
+			// profiles are enrolled elsewhere. First-class Prime enrollment
+			// is a planned separate slice and must not be blocked here.
+			if rawID != "prime-minimax" || profile.Harness != "prime-agent" {
+				t.Errorf(
+					"unexpected non-Claude profile in enrollment fixture: rawID=%q harness=%q "+
+						"(want prime-minimax/prime-agent as the negative-selector shape)",
+					rawID, profile.Harness,
+				)
+			}
+			skippedNonClaude++
+			continue
+		}
+		normalized := strings.ReplaceAll(strings.TrimSpace(rawID), "-", "_")
+		wantNames = append(wantNames, normalized)
+		if _, ok := registry.Get(rawID); !ok {
+			t.Errorf(
+				"Claude-Code launch profile %q (normalized %q) has no registered harness; "+
+					"declared-but-not-enrolled leaves the lane with no harness to dispatch into",
+				rawID, normalized,
+			)
+		}
+		if _, ok := adapters.AdapterByName(rawID); !ok {
+			t.Errorf(
+				"Claude-Code launch profile %q (normalized %q) has no adapter registered; "+
+					"a registry entry without a runtime adapter is declared-but-not-executor-backed",
+				rawID, normalized,
+			)
+		}
+	}
+
+	// The fixture snapshots the ten Claude-Code profiles at enrollment time.
+	// Prime is present as a negative selector inside the skipped branch
+	// above; the nonzero skippedNonClaude count below proves this loop
+	// actually exercises the Claude-Code boundary.
+	if len(wantNames) != 10 {
+		t.Fatalf("Claude-Code launch profile count = %d, want 10", len(wantNames))
+	}
+	if skippedNonClaude == 0 {
+		t.Fatal("fixture has no non-Claude profile to prove the harness boundary")
+	}
+	gotNames := registry.Names()
+	for _, want := range wantNames {
+		var found bool
+		for _, candidate := range gotNames {
+			if candidate == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DefaultRegistry().Names() = %v, missing enrolled lane %q", gotNames, want)
+		}
+	}
+}
+
+// TestHarnessIdentityNormalizesHyphenAndUnderscore proves that both public
+// launch-profile spelling and internal registry spelling reach the same
+// declared harness and executor adapter.
+func TestHarnessIdentityNormalizesHyphenAndUnderscore(t *testing.T) {
+	fixture := readLaunchProfilesFixture(t)
+	registry := DefaultRegistry()
+	adapters := NewAdapterRegistry(runattempt.Open(t.TempDir()))
+
+	for rawID, profile := range fixture.LaunchProfiles {
+		if profile.Harness != "claude-code" {
+			continue
+		}
+		hyphen := strings.TrimSpace(rawID)
+		underscore := strings.ReplaceAll(hyphen, "-", "_")
+		h1, ok1 := registry.Get(hyphen)
+		h2, ok2 := registry.Get(underscore)
+		if !ok1 || !ok2 {
+			t.Errorf("hyphen form %q (ok=%v) or underscore form %q (ok=%v) missing from registry",
+				hyphen, ok1, underscore, ok2)
+			continue
+		}
+		if h1.Name != h2.Name {
+			t.Errorf("hyphen form resolves to %q, underscore form to %q; they must be the same harness",
+				h1.Name, h2.Name)
+		}
+		a1, aok1 := adapters.AdapterByName(hyphen)
+		a2, aok2 := adapters.AdapterByName(underscore)
+		if !aok1 || !aok2 {
+			t.Errorf("hyphen adapter %q (ok=%v) or underscore adapter %q (ok=%v) missing",
+				hyphen, aok1, underscore, aok2)
+			continue
+		}
+		if a1.Name() != a2.Name() {
+			t.Errorf("hyphen adapter resolves to %q, underscore adapter to %q; they must be the same adapter",
+				a1.Name(), a2.Name())
 		}
 	}
 }

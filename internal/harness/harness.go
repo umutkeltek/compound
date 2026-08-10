@@ -250,6 +250,147 @@ func DefaultRegistry() Registry {
 			},
 			InjectBudgetMS: 1500,
 		},
+		"claude_neuralwatt": {
+			Name:                 "claude_neuralwatt",
+			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
+			// Registry identity only. This lane is a Claude-family launch profile that
+			// was previously absent from the registry; its settings have no
+			// installed hook bindings yet, so the conservative floor stays at the
+			// un-installed shape (every hook flag false) and the lane will fail a
+			// readiness check that asks for PreToolUse block or SessionEnd receipt.
+			// That is the next slice: the isolated lane installer must install and
+			// attest hooks before raising the capability floor. (The earlier
+			// `compound hook install --harness claude-neuralwatt` form is invalid
+			// here — hook install accepts Claude-family harness types, not raw
+			// lane IDs.) The credential is the GATEWAY token, not the provider
+			// key, mirroring the switchback launch-profiles.json note.
+			Capabilities: Capabilities{
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"profile-local settings and history require separate hook installation",
+				"global steering requires the managed profile link; repository CLAUDE.md discovery remains shared",
+				"long-session instruction drift",
+				"instruction/context budget cap",
+				"gateway-credential lane (not provider key) — the tap forwards to the gateway, which injects the upstream provider key",
+				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+			},
+			InjectBudgetMS: 1500,
+		},
+		"claude_gpt56_sol_wpcom": {
+			Name:                 "claude_gpt56_sol_wpcom",
+			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
+			// Registry identity only. Same floor as claude_neuralwatt: no installed hook
+			// bindings yet, so all hook flags stay false. The next slice installs hooks
+			// and raises this floor the same way claude_minimax was raised.
+			Capabilities: Capabilities{
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"profile-local settings and history require separate hook installation",
+				"global steering requires the managed profile link; repository CLAUDE.md discovery remains shared",
+				"long-session instruction drift",
+				"instruction/context budget cap",
+				"wpcom free-proxy lane — Opus/Sonnet/Haiku all route through the same target; the wpcom proxy does not differentiate them",
+				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+			},
+			InjectBudgetMS: 1500,
+		},
+		"claude_gpt56_sol_wpcom_headroom": {
+			Name:                 "claude_gpt56_sol_wpcom_headroom",
+			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
+			// Registry identity only. Same floor as claude_gpt56_sol_wpcom; the
+			// headroom transport (compression on, hosted tool-search off) is a
+			// launch-profile detail, not a registry-floor differentiator.
+			Capabilities: Capabilities{
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"profile-local settings and history require separate hook installation",
+				"global steering requires the managed profile link; repository CLAUDE.md discovery remains shared",
+				"long-session instruction drift",
+				"instruction/context budget cap",
+				"wpcom free-proxy lane via Headroom transport — compression enabled, hosted tool-search injection disabled for Switchback target compatibility",
+				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+			},
+			InjectBudgetMS: 1500,
+		},
+		"claude_gpt": {
+			Name:                 "claude_gpt",
+			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
+			// Registry identity only. Same floor as the other new lanes; this one routes
+			// through the strict native Codex OAuth lane (no wpcom, no provider fallback)
+			// which is captured here as a limitation, not as a hook-flag override.
+			Capabilities: Capabilities{
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"profile-local settings and history require separate hook installation",
+				"global steering requires the managed profile link; repository CLAUDE.md discovery remains shared",
+				"long-session instruction drift",
+				"instruction/context budget cap",
+				"strict native Codex OAuth lane — sole target codex-relay; no wpcom proxy, no provider fallback",
+				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+			},
+			InjectBudgetMS: 1500,
+		},
+		"claude_kimi": {
+			Name:                 "claude_kimi",
+			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
+			// Registry identity only. Kimi K3 coding plan via rotating OAuth is a
+			// subscription, not API billing; that is captured in the limitations string
+			// without lifting any hook flag.
+			Capabilities: Capabilities{
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"profile-local settings and history require separate hook installation",
+				"global steering requires the managed profile link; repository CLAUDE.md discovery remains shared",
+				"long-session instruction drift",
+				"instruction/context budget cap",
+				"subscription lane (Kimi K3 coding plan) via rotating OAuth, not API billing",
+				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+			},
+			InjectBudgetMS: 1500,
+		},
+		"claude_deepseek_flash_api": {
+			Name:                 "claude_deepseek_flash_api",
+			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
+			// Registry identity only. Direct DEEPSEEK_API_KEY upstream, falls back to the
+			// NVIDIA Build variant when the direct upstream rejects. The fallback is a
+			// launch-profile detail, not a registry-floor differentiator.
+			Capabilities: Capabilities{
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"profile-local settings and history require separate hook installation",
+				"global steering requires the managed profile link; repository CLAUDE.md discovery remains shared",
+				"long-session instruction drift",
+				"instruction/context budget cap",
+				"direct-API lane (api.deepseek.com) — falls back to the NVIDIA Build variant if the direct upstream rejects",
+				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+			},
+			InjectBudgetMS: 1500,
+		},
+		"claude_deepseek_flash_nvidia": {
+			Name:                 "claude_deepseek_flash_nvidia",
+			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
+			// Registry identity only. NVIDIA Build free tier, rate-limited; multiple
+			// targets keep the lane alive when a single target rejects. Same hook-floor
+			// story as the other new lanes.
+			Capabilities: Capabilities{
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"profile-local settings and history require separate hook installation",
+				"global steering requires the managed profile link; repository CLAUDE.md discovery remains shared",
+				"long-session instruction drift",
+				"instruction/context budget cap",
+				"NVIDIA Build free-tier lane (integrate.api.nvidia.com) — rate-limited; multiple targets ensure the lane survives single-target rejections",
+				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+			},
+			InjectBudgetMS: 1500,
+		},
 		"codex": {
 			Name:                 "codex",
 			InstructionMechanism: "AGENTS.md + hooks + skills (progressive disclosure)",
@@ -473,13 +614,20 @@ func RegistryRevision(reg Registry) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// canonicalHarnessName maps the names a caller may hold to the single identity
+// the registry keys on. The hyphen rewrite matters as much as the "claude" alias:
+// switchback names its launch profiles with hyphens (`claude-kimi`) while the
+// registry keys on underscores, and every caller bridging the two used to do its
+// own ReplaceAll. One that forgot got Generic() with found=false — a fail-open
+// stand-in that looks like an unknown harness, which is precisely the
+// harness_unknown refusal lane enrollment exists to remove. Normalizing here
+// means a lane resolves under either form, from any caller.
 func canonicalHarnessName(name string) string {
-	switch strings.TrimSpace(name) {
-	case "claude":
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "claude" {
 		return "claude_code"
-	default:
-		return strings.TrimSpace(name)
 	}
+	return strings.ReplaceAll(trimmed, "-", "_")
 }
 
 func osEntrypointInstruction(row OSEntrypointRow) string {
@@ -549,9 +697,17 @@ func (r Registry) InjectionBudgetMS(name string) int {
 }
 
 // Get returns the harness by name, or the generic fallback with found=false.
+// An exact key wins; otherwise the name is canonicalized (alias and hyphen form)
+// so `claude-kimi` and `claude_kimi` resolve to the same entry rather than
+// silently falling through to the generic stand-in.
 func (r Registry) Get(name string) (Harness, bool) {
 	if h, ok := r.Harnesses[name]; ok {
 		return h, true
+	}
+	if canonical := canonicalHarnessName(name); canonical != name {
+		if h, ok := r.Harnesses[canonical]; ok {
+			return h, true
+		}
 	}
 	return Generic(), false
 }

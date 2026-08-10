@@ -17,10 +17,20 @@ func TestAdapterRegistryNewHasBuiltins(t *testing.T) {
 	r := NewAdapterRegistry(runattempt.Open(t.TempDir()))
 	got := r.Names()
 	sort.Strings(got)
+	// One row per enrolled switchback launch profile plus the non-lane built-ins.
+	// This list is the collateral inventory of NewAdapterRegistry: enrolling a lane
+	// without adding it here fails loudly, which is the point.
 	want := []string{
 		"claude",
 		"claude_code",
+		"claude_deepseek_flash_api",
+		"claude_deepseek_flash_nvidia",
+		"claude_gpt",
+		"claude_gpt56_sol_wpcom",
+		"claude_gpt56_sol_wpcom_headroom",
+		"claude_kimi",
 		"claude_minimax",
+		"claude_neuralwatt",
 		"claude_qwen",
 		"claude_zai",
 		"claude_zai_full",

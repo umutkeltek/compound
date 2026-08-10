@@ -37,6 +37,13 @@ func NewAdapterRegistry(store *runattempt.Store) *AdapterRegistry {
 		"claude_qwen",
 		"claude_zai",
 		"claude_zai_full",
+		"claude_neuralwatt",
+		"claude_gpt56_sol_wpcom",
+		"claude_gpt56_sol_wpcom_headroom",
+		"claude_gpt",
+		"claude_kimi",
+		"claude_deepseek_flash_api",
+		"claude_deepseek_flash_nvidia",
 	} {
 		r.RegisterAdapter(newClaudeLaneAdapter(store, name, defaultHeartbeatInterval))
 	}
@@ -66,6 +73,12 @@ func (r *AdapterRegistry) AdapterByName(name string) (Adapter, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	a, ok := r.adapters[name]
+	if ok {
+		return a, true
+	}
+	if canonical := canonicalHarnessName(name); canonical != name {
+		a, ok = r.adapters[canonical]
+	}
 	return a, ok
 }
 
