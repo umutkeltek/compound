@@ -346,7 +346,12 @@ func checkVectors(ctx context.Context, store *pg.Store, cfg persist.Config, prob
 	embedding[0] = 1.0
 	embedding[1] = 0.5
 
-	if err := store.Upsert(probe.vectorRef, embedding, map[string]string{"source": "doctor"}); err != nil {
+	// Embedder identity the doctor probe claims when writing a scratch vector.
+	// This MUST route through UpsertWithEmbedder so the probe never inserts an
+	// unlabeled vector into an embedder-custody index.
+	embedder := fmt.Sprintf("ollama:%s:%d", storeEnvOr("COMPOUND_EMBED_MODEL", "nomic-embed-text"), dims)
+
+	if err := store.UpsertWithEmbedder(probe.vectorRef, embedding, map[string]string{"source": "doctor"}, embedder); err != nil {
 		report.Checks = append(report.Checks, storeDoctorCheck{
 			Name: "vectors", Status: "fail", Detail: "upsert: " + err.Error(),
 		})

@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -91,4 +95,47 @@ func TestUpsertWithEmbedderPreventsConcurrentMixedEmbedders(t *testing.T) {
 
 func testCtx(t *testing.T) context.Context {
 	return context.Background()
+}
+
+// readSourceFile reads a sibling source file from the same package directory.
+// Used for static assertions that would fail on the un-fixed code.
+func readSourceFile(name string) (string, error) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", fmt.Errorf("cannot determine test file path")
+	}
+	path := filepath.Join(filepath.Dir(file), name)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// TestEmbedderLockUsesHardcodedNamespacedKey verifies that the embedder advisory
+// lock is acquired with a hardcoded 64-bit namespaced key, not with hashtext.
+// hashtext has a small collision space and could alias with unrelated keys;
+// pg_advisory_xact_lock(8392753, 1) is an explicit, stable namespace.
+func TestEmbedderLockUsesHardcodedNamespacedKey(t *testing.T) {
+	source, err := readSourceFile("engine.go")
+	if err != nil {
+		t.Fatalf("read engine.go: %v", err)
+	}
+	// The SQL expression "hashtext(" must not appear in the source; this catches the
+	// previously used pg_advisory_xact_lock(hashtext('compound:vectors:embedder')).
+	if strings.Contains(source, "hashtext(") {
+		t.Fatalf("engine.go still uses hashtext(...) for the embedder advisory lock")
+	}
+	want := "pg_advisory_xact_lock($1, $2)"
+	if !strings.Contains(source, want) {
+		t.Fatalf("engine.go does not use a parameterized 2-key pg_advisory_xact_lock; want %q", want)
+	}
+	wantKey := "vectorEmbedderLockKey1 = 8392753"
+	if !strings.Contains(source, wantKey) {
+		t.Fatalf("engine.go missing hardcoded lock namespace key; want %q", wantKey)
+	}
+	wantKey2 := "vectorEmbedderLockKey2 = 1"
+	if !strings.Contains(source, wantKey2) {
+		t.Fatalf("engine.go missing hardcoded lock instance key; want %q", wantKey2)
+	}
 }

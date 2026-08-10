@@ -20,7 +20,17 @@ import (
 // older embed runs. The canonical namespace is the BARE claim id, matching the
 // ledger-computed allowlist (mem's relevance gate carries bare claim ids) — the
 // engine normalizes legacy rows at its boundary until they are re-embedded.
-const claimRefPrefix = "claim:"
+const (
+	claimRefPrefix = "claim:"
+
+	// vectorEmbedderLockKey1/2 form a hardcoded 64-bit namespaced advisory lock key
+	// for pg_advisory_xact_lock. We deliberately avoid the old hash-based key (which
+	// had a small collision space and could alias with unrelated keys). 8392753 is
+	// an arbitrary namespace picked to avoid Postgres key conventions; key2=1 is the
+	// lock instance for embedder-stamped vector writes.
+	vectorEmbedderLockKey1 = 8392753
+	vectorEmbedderLockKey2 = 1
+)
 
 // PgEngine implements mem.Engine backed by Postgres + pgvector. It embeds query
 // text via an OpenAI-compatible /v1/embeddings endpoint (e.g. Ollama) and
@@ -279,7 +289,7 @@ func (s *Store) UpsertWithEmbedder(ref string, embedding []float32, metadata map
 
 	// Serialize all embedder-stamped writes to prevent a race where two
 	// transactions see no conflicting rows and commit different embedders.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('compound:vectors:embedder'))`); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, vectorEmbedderLockKey1, vectorEmbedderLockKey2); err != nil {
 		return fmt.Errorf("persist/pg: embedder lock: %w", err)
 	}
 
