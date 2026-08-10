@@ -107,18 +107,18 @@ func TestRecordStoreGovernedProofSurfacesCompensationFailure(t *testing.T) {
 	if transitionID != "" {
 		t.Fatal("transition id should be empty")
 	}
-	if !strings.Contains(err.Error(), "compensation failed") {
-		t.Fatalf("error should mention compensation failure: %v", err)
+	if !strings.Contains(err.Error(), "compensation failed") || !strings.Contains(err.Error(), "manual repair") || !strings.Contains(err.Error(), "orphan receipt") {
+		t.Fatalf("error should mention orphan receipt and manual repair: %v", err)
 	}
 }
 
 // fakeEventstoreRecorder implements eventstoreRecorder for failure-path testing.
 // It succeeds for the first failAfter PutJSON calls, then returns putErr.
 type fakeEventstoreRecorder struct {
-	puts      int
-	failAfter int
+	puts       int
+	failAfter  int
 	failRemove bool
-	removed   bool
+	removed    bool
 }
 
 func (f *fakeEventstoreRecorder) PutJSON(id string, value any, indent string) (eventstore.PutResult, error) {

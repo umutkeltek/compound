@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     entity          TEXT NOT NULL,
     predicate       TEXT NOT NULL,
     object          TEXT NOT NULL,
+    observation_date TEXT,
     confidence      DOUBLE PRECISION DEFAULT 0,
     derivation      TEXT DEFAULT 'extracted',
     claim_type      TEXT DEFAULT '',
@@ -152,6 +153,9 @@ CREATE TABLE IF NOT EXISTS candidates (
 );
 CREATE INDEX IF NOT EXISTS idx_candidates_state ON candidates(state);
 CREATE INDEX IF NOT EXISTS idx_candidates_entity ON candidates(entity);
+
+-- Databases created before the observation_date column was added do not have it.
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS observation_date TEXT;
 
 -- Events: append-only event log (replaces JSONL segments).
 CREATE TABLE IF NOT EXISTS events (
@@ -439,18 +443,42 @@ func appendCandidateExec(ctx context.Context, exec dbExecer, cand persist.Candid
 			adjudicatedAt = &t
 		}
 	}
-	_, err := exec.Exec(ctx, `
+	var id string
+	err := exec.QueryRow(ctx, `
 		INSERT INTO candidates (id, entity, predicate, object, observation_date, confidence,
 			derivation, claim_type, canon_class, qualifiers, visibility, state,
 			source_trace_ref, evidence_refs, reason, adjudicated_by, adjudicated_at, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-		ON CONFLICT (id) DO NOTHING`,
+		ON CONFLICT (id) DO UPDATE SET
+			entity = candidates.entity
+		WHERE (
+			candidates.entity = EXCLUDED.entity AND
+			candidates.predicate = EXCLUDED.predicate AND
+			candidates.object = EXCLUDED.object AND
+			candidates.observation_date IS NOT DISTINCT FROM EXCLUDED.observation_date AND
+			candidates.confidence IS NOT DISTINCT FROM EXCLUDED.confidence AND
+			candidates.derivation IS NOT DISTINCT FROM EXCLUDED.derivation AND
+			candidates.claim_type IS NOT DISTINCT FROM EXCLUDED.claim_type AND
+			candidates.canon_class IS NOT DISTINCT FROM EXCLUDED.canon_class AND
+			candidates.qualifiers IS NOT DISTINCT FROM EXCLUDED.qualifiers AND
+			candidates.visibility IS NOT DISTINCT FROM EXCLUDED.visibility AND
+			candidates.state IS NOT DISTINCT FROM EXCLUDED.state AND
+			candidates.source_trace_ref IS NOT DISTINCT FROM EXCLUDED.source_trace_ref AND
+			candidates.evidence_refs IS NOT DISTINCT FROM EXCLUDED.evidence_refs AND
+			candidates.reason IS NOT DISTINCT FROM EXCLUDED.reason AND
+			candidates.adjudicated_by IS NOT DISTINCT FROM EXCLUDED.adjudicated_by AND
+			candidates.adjudicated_at IS NOT DISTINCT FROM EXCLUDED.adjudicated_at
+		)
+		RETURNING id`,
 		cand.ID, cand.Entity, cand.Predicate, cand.Object, cand.ObservationDate,
 		cand.Confidence, cand.Derivation, cand.ClaimType, cand.CanonClass,
 		qualifiers, cand.Visibility, cand.State, cand.SourceTraceRef,
 		evidenceRefs, cand.Reason, cand.AdjudicatedBy, adjudicatedAt, now,
-	)
+	).Scan(&id)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("persist/pg: append candidate: id %s exists with different content", cand.ID)
+		}
 		return fmt.Errorf("persist/pg: append candidate: %w", err)
 	}
 	return nil
