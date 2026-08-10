@@ -184,6 +184,8 @@ func ApplyCapabilityEvaluations(homePath string, set CapabilityEvaluationSet, no
 		existingEdges[edgeKey(edge)] = true
 	}
 	unknown := map[string]bool{}
+	var evalNodes []Node
+	var evalEdges []Edge
 	for _, eval := range set.Evaluations {
 		if err := eval.Validate(); err != nil {
 			report.Status = "fail"
@@ -197,10 +199,7 @@ func ApplyCapabilityEvaluations(homePath string, set CapabilityEvaluationSet, no
 			Weight:       0.25,
 			EvidenceOnly: true,
 		}
-		if err := store.Add(evalNode); err != nil {
-			report.Status = "fail"
-			return report, err
-		}
+		evalNodes = append(evalNodes, evalNode)
 		report.EvaluationNodeIDs = append(report.EvaluationNodeIDs, evalNode.ID)
 		capabilityNodeID := resolveCapabilityNode(nodes, eval.Capability)
 		if capabilityNodeID == "" {
@@ -218,7 +217,7 @@ func ApplyCapabilityEvaluations(homePath string, set CapabilityEvaluationSet, no
 			Confidence: evaluationConfidence(eval),
 			CreatedAt:  now.UTC().Format(time.RFC3339),
 		}
-		if added, err := store.addEdgeOnce(evaluated, existingEdges, now); err != nil {
+		if added, err := addEdgeOnceCollect(&evalEdges, existingEdges, evaluated); err != nil {
 			report.Status = "fail"
 			return report, err
 		} else if added {
@@ -232,7 +231,7 @@ func ApplyCapabilityEvaluations(homePath string, set CapabilityEvaluationSet, no
 				Confidence: evaluationConfidence(eval),
 				CreatedAt:  now.UTC().Format(time.RFC3339),
 			}
-			if added, err := store.addEdgeOnce(validated, existingEdges, now); err != nil {
+			if added, err := addEdgeOnceCollect(&evalEdges, existingEdges, validated); err != nil {
 				report.Status = "fail"
 				return report, err
 			} else if added {
@@ -241,11 +240,36 @@ func ApplyCapabilityEvaluations(homePath string, set CapabilityEvaluationSet, no
 		}
 		report.AppliedEvaluations++
 	}
+	if len(evalNodes) > 0 || len(evalEdges) > 0 {
+		if err := ApplyNodesAndEdgesGoverned(homePath, evalNodes, evalEdges, now); err != nil {
+			report.Status = "fail"
+			return report, err
+		}
+	}
 	sort.Strings(report.SkippedUnknown)
 	if len(report.SkippedUnknown) > 0 {
 		report.Status = "review"
 	}
 	return report, nil
+}
+
+func addEdgeOnceCollect(edges *[]Edge, existing map[string]bool, edge Edge) (bool, error) {
+	key := edgeKey(edge)
+	if existing[key] {
+		return false, nil
+	}
+	if edge.Confidence == 0 {
+		edge.Confidence = 1.0
+	}
+	if edge.Confidence < 0 {
+		return false, fmt.Errorf("edge confidence must be >= 0, got %.2f", edge.Confidence)
+	}
+	if strings.TrimSpace(edge.CreatedAt) == "" {
+		return false, fmt.Errorf("edge needs created_at")
+	}
+	existing[key] = true
+	*edges = append(*edges, edge)
+	return true, nil
 }
 
 var capabilityEvaluationVerdicts = map[string]bool{

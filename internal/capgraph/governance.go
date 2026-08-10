@@ -72,16 +72,22 @@ func RetireGoverned(homePath string, ids []string, now time.Time) ([]string, err
 		},
 	}
 	if err := applyGovernedCapabilityGraphMutation(homePath, mutation, now); err != nil {
-		return retired, err
+		return nil, err
 	}
 	return retired, nil
 }
 
 // ObserveGoverned is the fail-closed entry point for recording feedback edges.
+// It pre-computes the observed edge identities from the context tokens so the
+// ActionIntent summary and ID carry the actual node/edge IDs instead of
+// collapsing to a timestamp-only hash.
 func ObserveGoverned(homePath string, node, signal, context string, conf float64, now time.Time) ([]Edge, error) {
 	var edges []Edge
+	edgeIDs := observeEdgeIDs(node, signal, context)
 	mutation := capabilityGraphMutation{
-		kind: "observe",
+		kind:    "observe",
+		nodeIDs: []string{node},
+		edgeIDs: edgeIDs,
 		apply: func(s *Store) error {
 			var err error
 			edges, err = s.Observe(node, signal, context, conf, now)
@@ -89,9 +95,76 @@ func ObserveGoverned(homePath string, node, signal, context string, conf float64
 		},
 	}
 	if err := applyGovernedCapabilityGraphMutation(homePath, mutation, now); err != nil {
-		return edges, err
+		return nil, err
 	}
 	return edges, nil
+}
+
+func observeEdgeIDs(node, signal, context string) []string {
+	var ids []string
+	for _, tok := range tokenList(context) {
+		ids = append(ids, signal+":context:"+tok+"->"+node)
+	}
+	return ids
+}
+
+// ApplyNodesAndEdgesGoverned is the fail-closed batch entry point for
+// deterministic importers that mint nodes and edges together. It validates the
+// proposed set, mints one ActionIntent + PolicyDecision, records the governance
+// pair, and only then persists the batch. On policy deny nothing is written.
+func ApplyNodesAndEdgesGoverned(homePath string, nodes []Node, edges []Edge, now time.Time) error {
+	if err := guardNoResurrect(homePath, nodes); err != nil {
+		return err
+	}
+	nodeIDs := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		nodeIDs = append(nodeIDs, n.ID)
+	}
+	edgeIDs := make([]string, 0, len(edges))
+	for _, e := range edges {
+		edgeIDs = append(edgeIDs, edgeID(e))
+	}
+	mutation := capabilityGraphMutation{
+		kind:    "apply_nodes_and_edges",
+		nodeIDs: nodeIDs,
+		edgeIDs: edgeIDs,
+		apply: func(s *Store) error {
+			for _, n := range nodes {
+				if err := s.Add(n); err != nil {
+					return err
+				}
+			}
+			for _, e := range edges {
+				if err := s.AddEdge(e, now); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+	return applyGovernedCapabilityGraphMutation(homePath, mutation, now)
+}
+
+// AddConnectionSurfaceGoverned is the fail-closed entry point for appending a
+// connection-surface sidecar record. A policy deny prevents persistence.
+func AddConnectionSurfaceGoverned(homePath string, cs ConnectionSurface, now time.Time) (bool, error) {
+	if strings.TrimSpace(cs.NodeID) == "" {
+		return false, fmt.Errorf("connection surface needs a node id")
+	}
+	var added bool
+	mutation := capabilityGraphMutation{
+		kind:    "add_connection_surface",
+		nodeIDs: []string{cs.NodeID},
+		apply: func(s *Store) error {
+			var err error
+			added, err = s.AddConnectionSurface(cs)
+			return err
+		},
+	}
+	if err := applyGovernedCapabilityGraphMutation(homePath, mutation, now); err != nil {
+		return false, err
+	}
+	return added, nil
 }
 
 func guardNoResurrect(homePath string, proposed []Node) error {
@@ -160,7 +233,7 @@ func capabilityGraphActionIntent(homePath string, mutation capabilityGraphMutati
 		mutationClass = "destructive"
 		reversibility = "irreversible"
 		risk = "tier3"
-	case "add_node", "observe", "apply_skill_manifest":
+	case "add_node", "observe", "apply_skill_manifest", "apply_nodes_and_edges", "add_connection_surface":
 		// defaults above
 	}
 

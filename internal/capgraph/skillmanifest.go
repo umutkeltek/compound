@@ -188,6 +188,8 @@ func ApplySkillManifest(homePath string, manifest SkillManifest, now time.Time) 
 		},
 	}
 	if err := applyGovernedCapabilityGraphMutation(homePath, mutation, now); err != nil {
+		report.NodeIDs = nil
+		report.EdgeIDs = nil
 		return report, err
 	}
 	return report, nil

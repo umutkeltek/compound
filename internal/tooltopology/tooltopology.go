@@ -162,10 +162,10 @@ func Apply(homePath string, topo Topology, now time.Time) (Report, error) {
 	if report.Status != "ok" {
 		return report, fmt.Errorf("tool topology invalid")
 	}
-	store, err := capgraph.Open(homePath)
-	if err != nil {
-		return report, err
-	}
+
+	var nodes []capgraph.Node
+	var edges []capgraph.Edge
+	var surfaces []capgraph.ConnectionSurface
 	for _, e := range topo.Entries {
 		n := capgraph.Node{
 			ID:       e.ID,
@@ -180,9 +180,7 @@ func Apply(homePath string, topo Topology, now time.Time) (Report, error) {
 			Retired: e.Retired || e.Status == "retired" || e.Status == "deprecated",
 			Health:  e.Health,
 		}
-		if err := store.Add(n); err != nil {
-			return report, err
-		}
+		nodes = append(nodes, n)
 		report.NodeIDs = append(report.NodeIDs, e.ID)
 		if !e.Connection.hasFacts() {
 			continue
@@ -191,7 +189,7 @@ func Apply(homePath string, topo Topology, now time.Time) (Report, error) {
 		// capgraph write door refuses (credential-shaped input is the case that
 		// matters), and importing the NAME while silently dropping the ACCESS is
 		// precisely the failure this whole change exists to remove.
-		added, err := store.AddConnectionSurface(capgraph.ConnectionSurface{
+		surfaces = append(surfaces, capgraph.ConnectionSurface{
 			NodeID:         e.ID,
 			ConfigPaths:    e.Connection.ConfigPaths,
 			Endpoint:       e.Connection.Endpoint,
@@ -200,30 +198,36 @@ func Apply(homePath string, topo Topology, now time.Time) (Report, error) {
 			AssertingOwner: topo.SourceSystem,
 			SourceRevision: topo.SourceRef.Revision,
 		})
-		if err != nil {
-			return report, fmt.Errorf("connection surface for %s: %w", e.ID, err)
-		}
 		report.ConnectionSurfaceIDs = append(report.ConnectionSurfaceIDs, e.ID)
-		if added {
-			report.ConnectionSurfacesAdded++
-		}
 	}
 	for _, rec := range topo.Recommendations {
 		conf := rec.Confidence
 		if conf == 0 {
 			conf = 1.0
 		}
-		edge := capgraph.Edge{
+		edges = append(edges, capgraph.Edge{
 			Kind:       capgraph.EdFallbackFor,
 			From:       rec.Fallback,
 			To:         rec.Primary,
 			Confidence: conf,
 			CreatedAt:  now.UTC().Format(time.RFC3339),
-		}
-		if err := store.AddEdge(edge, now); err != nil {
+		})
+		report.EdgeIDs = append(report.EdgeIDs, capgraph.EdFallbackFor+":"+rec.Fallback+"->"+rec.Primary)
+	}
+
+	if len(nodes) > 0 || len(edges) > 0 {
+		if err := capgraph.ApplyNodesAndEdgesGoverned(homePath, nodes, edges, now); err != nil {
 			return report, err
 		}
-		report.EdgeIDs = append(report.EdgeIDs, edge.Kind+":"+edge.From+"->"+edge.To)
+	}
+	for _, cs := range surfaces {
+		added, err := capgraph.AddConnectionSurfaceGoverned(homePath, cs, now)
+		if err != nil {
+			return report, fmt.Errorf("connection surface for %s: %w", cs.NodeID, err)
+		}
+		if added {
+			report.ConnectionSurfacesAdded++
+		}
 	}
 	return report, nil
 }

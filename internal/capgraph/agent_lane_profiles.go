@@ -112,16 +112,15 @@ func ImportAgentLaneProfilesWithLaunchProfiles(homePath, registryPath, overlayPa
 	for _, node := range existingNodes {
 		nodesByID[node.ID] = node
 	}
+	var nodes []Node
+	var edges []Edge
 	for _, node := range seed.nodes {
 		report.NodeIDs = append(report.NodeIDs, node.ID)
-		if reflect.DeepEqual(nodesByID[node.ID], node) {
-			continue
+		if !reflect.DeepEqual(nodesByID[node.ID], node) {
+			nodes = append(nodes, node)
+			nodesByID[node.ID] = node
+			report.AppliedNodes++
 		}
-		if err := store.Add(node); err != nil {
-			return report, err
-		}
-		nodesByID[node.ID] = node
-		report.AppliedNodes++
 	}
 
 	existingEdges, err := store.loadEdges()
@@ -133,11 +132,16 @@ func ImportAgentLaneProfilesWithLaunchProfiles(homePath, registryPath, overlayPa
 		edgesByKey[edgeKey(edge)] = true
 	}
 	for _, edge := range seed.edges {
-		if added, err := store.addEdgeOnce(edge, edgesByKey, now); err != nil {
+		if added, err := addEdgeOnceCollect(&edges, edgesByKey, edge); err != nil {
 			return report, err
 		} else if added {
 			report.EdgeIDs = append(report.EdgeIDs, edgeID(edge))
 			report.AppliedEdges++
+		}
+	}
+	if len(nodes) > 0 || len(edges) > 0 {
+		if err := ApplyNodesAndEdgesGoverned(homePath, nodes, edges, now); err != nil {
+			return report, err
 		}
 	}
 	return report, nil

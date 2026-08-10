@@ -1471,6 +1471,15 @@ func importCapabilityConnections(store *capgraph.Store, homePath, harnessFilter 
 		existingNode[n.ID] = true
 	}
 
+	var nodeBatch []capgraph.Node
+	var surfaceBatch []capgraph.ConnectionSurface
+	var pending []struct {
+		harnessName string
+		nodeMinted  bool
+		configPaths []string
+		cs          capgraph.ConnectionSurface
+	}
+
 	for _, path := range matches {
 		harnessName := strings.TrimSuffix(filepath.Base(path), ".yaml")
 		if harnessFilter != "" && harnessName != harnessFilter {
@@ -1487,14 +1496,12 @@ func importCapabilityConnections(store *capgraph.Store, homePath, harnessFilter 
 
 		nodeMinted := false
 		if !existingNode[harnessName] {
-			if err := store.Add(capgraph.Node{
+			nodeBatch = append(nodeBatch, capgraph.Node{
 				ID:       harnessName,
 				Kind:     "harness",
 				Name:     harnessName,
 				Triggers: []string{harnessName},
-			}); err != nil {
-				return report, err
-			}
+			})
 			existingNode[harnessName] = true
 			nodeMinted = true
 		}
@@ -1506,21 +1513,41 @@ func importCapabilityConnections(store *capgraph.Store, homePath, harnessFilter 
 			AssertingOwner:    harness.PermissionAuthorityRef(harnessName),
 			SourceRevision:    sourceRevision,
 		}
+		surfaceBatch = append(surfaceBatch, cs)
+		pending = append(pending, struct {
+			harnessName string
+			nodeMinted  bool
+			configPaths []string
+			cs          capgraph.ConnectionSurface
+		}{harnessName, nodeMinted, configPaths, cs})
+	}
 
-		obs := connectionImportObservation(harnessName, path, sourceRevision, configPaths, now)
+	if len(nodeBatch) > 0 {
+		if err := capgraph.ApplyNodesAndEdgesGoverned(homePath, nodeBatch, nil, now); err != nil {
+			return report, err
+		}
+	}
+
+	for _, item := range pending {
+		added, err := capgraph.AddConnectionSurfaceGoverned(homePath, item.cs, now)
+		if err != nil {
+			return report, err
+		}
+
+		obs := connectionImportObservation(item.harnessName, item.cs.ConfigPaths[0], item.cs.SourceRevision, item.configPaths, now)
 		sourceReport, err := sourceobs.Apply(homePath, obs, now)
 		if err != nil {
 			return report, fmt.Errorf("source observe: %w", err)
 		}
 		auth, err := capgraph.RecordSourceAuthority(homePath, capgraph.SourceAuthorityInput{
-			SourcePath:          path,
+			SourcePath:          item.cs.ConfigPaths[0],
 			SourceKind:          "harness_permission_authority",
-			SourceOwner:         harness.PermissionAuthorityRef(harnessName),
+			SourceOwner:         harness.PermissionAuthorityRef(item.harnessName),
 			SourceClass:         "source",
-			SourceRevision:      sourceRevision,
+			SourceRevision:      item.cs.SourceRevision,
 			SourceObservedAt:    obs.ObservedAt,
 			ImportedVia:         "capability import-connections",
-			NodeIDs:             []string{harnessName},
+			NodeIDs:             []string{item.harnessName},
 			SourceObservationID: sourceReport.ObservationID,
 			NoPromoteIDs:        sourceReport.NoPromoteIDs,
 			EvidenceRefs:        obs.EvidenceRefs,
@@ -1528,18 +1555,14 @@ func importCapabilityConnections(store *capgraph.Store, homePath, harnessFilter 
 		if err != nil {
 			return report, err
 		}
-		added, err := store.AddConnectionSurface(cs)
-		if err != nil {
-			return report, err
-		}
 		report.Harnesses = append(report.Harnesses, connectionImportHarness{
-			Harness:                harnessName,
-			NodeID:                 harnessName,
-			NodeMinted:             nodeMinted,
-			ConfigPaths:            configPaths,
-			SettingsSchemaRef:      cs.SettingsSchemaRef,
-			AssertingOwner:         cs.AssertingOwner,
-			SourceRevision:         sourceRevision,
+			Harness:                item.harnessName,
+			NodeID:                 item.harnessName,
+			NodeMinted:             item.nodeMinted,
+			ConfigPaths:            item.configPaths,
+			SettingsSchemaRef:      item.cs.SettingsSchemaRef,
+			AssertingOwner:         item.cs.AssertingOwner,
+			SourceRevision:         item.cs.SourceRevision,
 			SourceObservationID:    sourceReport.ObservationID,
 			SourceAuthorityID:      auth.ID,
 			NoPromoteIDs:           sourceReport.NoPromoteIDs,
@@ -1665,42 +1688,40 @@ func importCapabilityGateway(store *capgraph.Store, homePath, registryPath, gate
 	for _, n := range nodes {
 		existingNode[n.ID] = true
 	}
-	ensureNode := func(id, name string) (bool, error) {
-		if existingNode[id] {
-			return false, nil // never rewrite a pre-existing node
-		}
-		if err := store.Add(capgraph.GatewayNode(id, name)); err != nil {
-			return false, err
-		}
-		existingNode[id] = true
-		return true, nil
-	}
 
-	var nodeIDs []string
+	var nodeBatch []capgraph.Node
+	var surfaceBatch []capgraph.ConnectionSurface
+	var pending []struct {
+		nodeID string
+		name   string
+		minted bool
+		cs     capgraph.ConnectionSurface
+	}
 
 	// Root node: config path + schema + owner + revision, but NO endpoint/auth
 	// (the registry does not carry the gateway's own listen address).
 	rootID := capgraph.GatewayRootNodeID(gatewayName)
 	rootName := gatewayName + " gateway"
-	rootMinted, err := ensureNode(rootID, rootName)
-	if err != nil {
-		return report, err
+	rootMinted := false
+	if !existingNode[rootID] {
+		nodeBatch = append(nodeBatch, capgraph.GatewayNode(rootID, rootName))
+		existingNode[rootID] = true
+		rootMinted = true
 	}
-	rootAdded, err := store.AddConnectionSurface(capgraph.ConnectionSurface{
+	rootCS := capgraph.ConnectionSurface{
 		NodeID:            rootID,
 		ConfigPaths:       []string{registryPath},
 		SettingsSchemaRef: registry.Schema,
 		AssertingOwner:    gatewayAssertingOwner,
 		SourceRevision:    registry.SourceRevision,
-	})
-	if err != nil {
-		return report, err
 	}
-	nodeIDs = append(nodeIDs, rootID)
-	report.Nodes = append(report.Nodes, gatewayImportNode{
-		NodeID: rootID, Role: "root", Name: rootName,
-		NodeMinted: rootMinted, ConnectionSurfaceAdded: rootAdded,
-	})
+	surfaceBatch = append(surfaceBatch, rootCS)
+	pending = append(pending, struct {
+		nodeID string
+		name   string
+		minted bool
+		cs     capgraph.ConnectionSurface
+	}{rootID, rootName, rootMinted, rootCS})
 
 	// Provider nodes: endpoint=base_url. A provider with no id or no base_url has
 	// no connectivity fact to record -- skip it and count it (never silent-drop).
@@ -1721,9 +1742,11 @@ func importCapabilityGateway(store *capgraph.Store, homePath, registryPath, gate
 		if name == "" {
 			name = providerID
 		}
-		minted, err := ensureNode(nodeID, name)
-		if err != nil {
-			return report, err
+		minted := false
+		if !existingNode[nodeID] {
+			nodeBatch = append(nodeBatch, capgraph.GatewayNode(nodeID, name))
+			existingNode[nodeID] = true
+			minted = true
 		}
 		cs := capgraph.ConnectionSurface{
 			NodeID:            nodeID,
@@ -1734,15 +1757,39 @@ func importCapabilityGateway(store *capgraph.Store, homePath, registryPath, gate
 			AssertingOwner:    gatewayAssertingOwner,
 			SourceRevision:    registry.SourceRevision,
 		}
-		added, err := store.AddConnectionSurface(cs)
+		surfaceBatch = append(surfaceBatch, cs)
+		pending = append(pending, struct {
+			nodeID string
+			name   string
+			minted bool
+			cs     capgraph.ConnectionSurface
+		}{nodeID, name, minted, cs})
+	}
+
+	if len(nodeBatch) > 0 {
+		if err := capgraph.ApplyNodesAndEdgesGoverned(homePath, nodeBatch, nil, now); err != nil {
+			return report, err
+		}
+	}
+
+	var nodeIDs []string
+	for _, item := range pending {
+		nodeIDs = append(nodeIDs, item.nodeID)
+		added, err := capgraph.AddConnectionSurfaceGoverned(homePath, item.cs, now)
 		if err != nil {
 			return report, err
 		}
-		nodeIDs = append(nodeIDs, nodeID)
+		var role, providerID string
+		if item.nodeID == rootID {
+			role = "root"
+		} else {
+			role = "provider"
+			providerID = strings.TrimPrefix(item.nodeID, capgraph.GatewayProviderNodeID(gatewayName, ""))
+		}
 		report.Nodes = append(report.Nodes, gatewayImportNode{
-			NodeID: nodeID, Role: "provider", ProviderID: providerID, Name: name,
-			Endpoint: cs.Endpoint, AuthMode: cs.AuthMode,
-			NodeMinted: minted, ConnectionSurfaceAdded: added,
+			NodeID: item.nodeID, Role: role, ProviderID: providerID, Name: item.name,
+			Endpoint: item.cs.Endpoint, AuthMode: item.cs.AuthMode,
+			NodeMinted: item.minted, ConnectionSurfaceAdded: added,
 		})
 	}
 

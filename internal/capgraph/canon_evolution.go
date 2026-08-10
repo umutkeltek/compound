@@ -86,6 +86,7 @@ func RecordCanonEvolution(homePath string, in CanonEvolutionInput, now time.Time
 	report := CanonEvolutionReport{}
 	var ensured []string
 	seen := map[string]bool{}
+	var nodes []Node
 	for _, ref := range in.NodeRefs {
 		ref = strings.TrimSpace(ref)
 		if ref == "" || seen[ref] {
@@ -100,12 +101,15 @@ func RecordCanonEvolution(homePath string, in CanonEvolutionInput, now time.Time
 		if !present[ref] {
 			// First-of-kind ensure: register a minimal evidence-only node. Never clobber a node an
 			// upstream importer already owns with richer fields.
-			if err := store.Add(Node{ID: ref, Kind: kind, Name: ref, Triggers: []string{ref}, EvidenceOnly: true}); err != nil {
-				return envelope.Transition{}, report, err
-			}
+			nodes = append(nodes, Node{ID: ref, Kind: kind, Name: ref, Triggers: []string{ref}, EvidenceOnly: true})
 			present[ref] = true
 		}
 		ensured = append(ensured, ref)
+	}
+	if len(nodes) > 0 {
+		if err := ApplyNodesAndEdgesGoverned(homePath, nodes, nil, now); err != nil {
+			return envelope.Transition{}, report, err
+		}
 	}
 	sort.Strings(ensured)
 	sort.Strings(report.SkippedNodeRefs)

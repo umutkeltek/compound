@@ -899,7 +899,7 @@ func (s *Store) Consume(homePath string, now time.Time) (int, error) {
 			!FeedbackEdges[obs.Detail] || obs.Subject == "" || obs.Statement == "" || obs.Confidence <= 0 {
 			continue
 		}
-		if _, err := s.Observe(obs.Subject, obs.Detail, obs.Statement, obs.Confidence, now); err != nil {
+		if _, err := ObserveGoverned(homePath, obs.Subject, obs.Detail, obs.Statement, obs.Confidence, now); err != nil {
 			return applied, err
 		}
 		applied++
@@ -965,6 +965,7 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 		existingEdges[edgeKey(e)] = true
 	}
 	unknown := map[string]bool{}
+	var newEdges []Edge
 
 	for _, entry := range entries {
 		record, err := entry.Read()
@@ -1018,7 +1019,7 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 					continue
 				}
 				edge := receiptEdge(EdValidatedBy, nodeID, rec.ID, rec.ID, provenance, weight, now)
-				if added, err := s.addEdgeOnce(edge, existingEdges, now); err != nil {
+				if added, err := addEdgeOnceCollect(&newEdges, existingEdges, edge); err != nil {
 					return report, err
 				} else if added {
 					report.AppliedEdges++
@@ -1026,7 +1027,7 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 				}
 				for _, tok := range contextTokens {
 					contextEdge := receiptEdge(EdValidatedBy, "context:"+tok, nodeID, rec.ID, provenance, weight, now)
-					if added, err := s.addEdgeOnce(contextEdge, existingEdges, now); err != nil {
+					if added, err := addEdgeOnceCollect(&newEdges, existingEdges, contextEdge); err != nil {
 						return report, err
 					} else if added {
 						report.AppliedEdges++
@@ -1055,7 +1056,7 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 			}
 			for _, tok := range contextTokens {
 				edge := receiptEdge(EdMissedWhen, "context:"+tok, nodeID, rec.ID, provenance, weight, now)
-				if added, err := s.addEdgeOnce(edge, existingEdges, now); err != nil {
+				if added, err := addEdgeOnceCollect(&newEdges, existingEdges, edge); err != nil {
 					return report, err
 				} else if added {
 					report.AppliedEdges++
@@ -1083,7 +1084,7 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 			}
 			for _, tok := range contextTokens {
 				edge := receiptEdge(EdFalseTriggeredBy, "context:"+tok, nodeID, rec.ID, provenance, weight, now)
-				if added, err := s.addEdgeOnce(edge, existingEdges, now); err != nil {
+				if added, err := addEdgeOnceCollect(&newEdges, existingEdges, edge); err != nil {
 					return report, err
 				} else if added {
 					report.AppliedEdges++
@@ -1092,6 +1093,13 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 			}
 		}
 	}
+
+	if len(newEdges) > 0 {
+		if err := ApplyNodesAndEdgesGoverned(homePath, nil, newEdges, now); err != nil {
+			return report, err
+		}
+	}
+
 	sort.Strings(report.SkippedUnknown)
 	return report, nil
 }
