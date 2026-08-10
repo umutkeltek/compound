@@ -98,10 +98,19 @@ func TestLivePreToolUseSanitizesMatchingPlanlessApprovalAuthority(t *testing.T) 
 	if err != nil || len(actions) != 1 {
 		t.Fatalf("derive live action: actions=%+v err=%v", actions, err)
 	}
+	// The binding must be derived from the same runtime policy config the live
+	// hook evaluates with. DefaultConfig() produces a different binding digest,
+	// so the stored grant never matches, ApplyMatching reports matched=false,
+	// and the run falls through to plan minting -- which silently stops
+	// exercising the planless sanitize path this test exists to prove.
+	runtimePolicy, err := loadRuntimePolicyConfig()
+	if err != nil {
+		t.Fatalf("load runtime policy config: %v", err)
+	}
 	approval, err := policy.NewExactActionApproval(
 		"approval_grant_raw_planless_marker",
 		"operator:raw_planless_marker",
-		policy.ActionBindingForIntent(actions[0], policy.DefaultConfig()),
+		policy.ActionBindingForIntent(actions[0], runtimePolicy),
 		time.Now().UTC().Add(5*time.Minute),
 	)
 	if err != nil {
