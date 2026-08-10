@@ -49,10 +49,33 @@ _lane_profile_dir() {
   if [ -n "$_var_name" ] && [ -n "${!_var_name:-}" ]; then
     printf '%s\n' "${!_var_name}"
   elif [ -n "$_fallback" ]; then
-    # Expand ${HOME} shells in the registry value.
-    eval "printf '%s\n' \"$_fallback\""
+    # Expand ${HOME} placeholders in the registry value without eval. Only the literal
+    # ${HOME} substring is replaced; no other shell expansion or command substitution
+    # can run.
+    while case "$_fallback" in *'${HOME}'*) true;; *) false;; esac; do
+      _prefix=${_fallback%%'${HOME}'*}
+      _suffix=${_fallback#*'${HOME}'}
+      _fallback="$_prefix$HOME$_suffix"
+    done
+    printf '%s\n' "$_fallback"
   fi
-  unset _var_name _fallback
+  unset _var_name _fallback _prefix _suffix
+}
+
+# Validate that a tap bind is host:port with a numeric port. Empty is allowed (native
+# lanes), but anything non-empty must be well-formed before it becomes a URL.
+_lane_tap_bind_is_valid() {
+  _ltb_value="$1"
+  if [ -z "$_ltb_value" ]; then
+    unset _ltb_value
+    return 0
+  fi
+  if printf '%s\n' "$_ltb_value" | grep -Eq '^[A-Za-z0-9._-]+:[0-9]+$'; then
+    unset _ltb_value
+    return 0
+  fi
+  unset _ltb_value
+  return 1
 }
 
 # Generic Claude-Code lane launcher.
@@ -74,6 +97,10 @@ _launch_claude_lane() {
   fi
 
   if [ -n "$LANE_TAP_BIND" ]; then
+    if ! _lane_tap_bind_is_valid "$LANE_TAP_BIND"; then
+      echo "lane-launcher.sh: invalid LANE_TAP_BIND ${LANE_TAP_BIND}; expected host:port with a numeric port" >&2
+      return 1
+    fi
     export ANTHROPIC_BASE_URL="http://${LANE_TAP_BIND}"
   fi
 

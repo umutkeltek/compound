@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -42,7 +43,68 @@ type execTransportConfig struct {
 const (
 	defaultExecTransportTimeout = 60 * time.Second
 	maxExecTransportOutput      = 64 * 1024
+	maxExecErrorOutputSummary   = 200
 )
+
+// execTransportAllowedNames is the allowlist of executable basenames a transport
+// config may invoke without an absolute path. It keeps the "named, home-configured
+// executable transport" model intentional: a transport is a deliberately enrolled
+// local program, not a shell or arbitrary command lookup.
+var execTransportAllowedNames = map[string]bool{
+	"claude":   true,
+	"codex":    true,
+	"compound": true,
+	"zai":      true,
+	"qwen":     true,
+	"minimax":  true,
+}
+
+// shellUnsafeRe rejects arguments that look like shell control operators, redirects,
+// command separators, or variable/command substitutions. The adapter does not use a
+// shell, but the config file is operator-edited, so we fail closed on characters that
+// could be misinterpreted by a downstream shell or by exec.Command's argument splitting.
+var shellUnsafeRe = regexp.MustCompile(`[;|&<>(){}\[\]\$\` + "`" + `*?\\\n\r]`)
+
+// shellExecutableDenylist rejects well-known interactive shells and interpreters even
+// when they are referenced by an absolute path. A transport is a deliberately enrolled
+// executable, not a shell or interpreter invocation. The map intentionally omits
+// version suffixes; isShellExecutable strips trailing version fragments like "3.9" or
+// "2.7" so that "/usr/local/bin/python3.9" is rejected as readily as "python".
+var shellExecutableDenylist = map[string]bool{
+	"sh":      true,
+	"bash":    true,
+	"zsh":     true,
+	"dash":    true,
+	"csh":     true,
+	"tcsh":    true,
+	"ksh":     true,
+	"fish":    true,
+	"python":  true,
+	"python3": true,
+	"perl":    true,
+	"ruby":    true,
+	"node":    true,
+	"nodejs":  true,
+}
+
+// shellExecutableVersionRe captures a base interpreter name followed by a trailing
+// version suffix (e.g. "python3.9", "ruby2.7", "perl5.34", "node18"). The non-greedy
+// group ensures we peel the smallest matching base, then check that base against the
+// denylist.
+var shellExecutableVersionRe = regexp.MustCompile(`^(.+?)[0-9][0-9.]*$`)
+
+// isShellExecutable reports whether a path's basename is a denied shell or interpreter,
+// including versioned variants like "python3.9".
+func isShellExecutable(path string) bool {
+	base := filepath.Base(path)
+	if shellExecutableDenylist[base] {
+		return true
+	}
+	if m := shellExecutableVersionRe.FindStringSubmatch(base); m != nil {
+		return shellExecutableDenylist[m[1]]
+	}
+	return false
+}
 
 type cappedTransportOutput struct {
 	bytes.Buffer
@@ -80,10 +142,58 @@ func (a ExecTransportAdapter) loadConfig() (execTransportConfig, error) {
 	if len(cfg.Argv) == 0 || strings.TrimSpace(cfg.Argv[0]) == "" {
 		return execTransportConfig{}, fmt.Errorf("transport %q config: argv must contain an executable", name)
 	}
+	if err := validateExecArgv(name, cfg.Argv); err != nil {
+		return execTransportConfig{}, err
+	}
 	if cfg.TimeoutS < 0 {
 		return execTransportConfig{}, fmt.Errorf("transport %q config: timeout_s must be non-negative", name)
 	}
 	return cfg, nil
+}
+
+// validateExecArgv enforces the executable allowlist / absolute-path + argument
+// validation rule. argv[0] must be either a clean absolute path to a non-shell
+// executable, or one of the allowed basenames. Every argument must be free of shell
+// metacharacters.
+func validateExecArgv(transportName string, argv []string) error {
+	exe := argv[0]
+	if strings.TrimSpace(exe) == "" {
+		return fmt.Errorf("transport %q config: argv[0] executable is empty", transportName)
+	}
+	if filepath.IsAbs(exe) {
+		if clean := filepath.Clean(exe); clean != exe || clean == "/" || strings.Contains(exe, "..") {
+			return fmt.Errorf("transport %q config: argv[0] must be a clean absolute path", transportName)
+		}
+		if isShellExecutable(exe) {
+			return fmt.Errorf("transport %q config: argv[0] is a shell/interpreter and cannot be used as a transport", transportName)
+		}
+	} else {
+		if filepath.Base(exe) != exe || filepath.Dir(exe) != "." || !execTransportAllowedNames[exe] {
+			return fmt.Errorf("transport %q config: argv[0] %q is not an allowed transport executable", transportName, exe)
+		}
+	}
+	for i, arg := range argv {
+		if shellUnsafeRe.MatchString(arg) {
+			return fmt.Errorf("transport %q config: argv[%d] contains unsafe characters", transportName, i)
+		}
+	}
+	return nil
+}
+
+// summarizeOutput returns a redacted, bounded summary of combined stdout/stderr for
+// error messages. The full output is retained in the cappedTransportOutput buffer for
+// separate recording if needed, but it is never echoed verbatim to callers.
+func summarizeOutput(out string) string {
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return "<no output>"
+	}
+	// Collapse runs of whitespace and strip control characters for a compact summary.
+	out = strings.Join(strings.Fields(out), " ")
+	if len(out) > maxExecErrorOutputSummary {
+		return out[:maxExecErrorOutputSummary] + "... [output redacted]"
+	}
+	return out
 }
 
 func (a ExecTransportAdapter) write(_ envelope.ActionTarget, newValue []byte) error {
@@ -104,10 +214,10 @@ func (a ExecTransportAdapter) write(_ envelope.ActionTarget, newValue []byte) er
 	cmd.Stderr = output
 	err = cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("transport %q timed out after %s; output: %s", strings.TrimSpace(a.Name), timeout, strings.TrimSpace(output.String()))
+		return fmt.Errorf("transport %q timed out after %s; output: %s", strings.TrimSpace(a.Name), timeout, summarizeOutput(output.String()))
 	}
 	if err != nil {
-		return fmt.Errorf("transport %q exec: %w; output: %s", strings.TrimSpace(a.Name), err, strings.TrimSpace(output.String()))
+		return fmt.Errorf("transport %q exec: %w; output: %s", strings.TrimSpace(a.Name), err, summarizeOutput(output.String()))
 	}
 	return nil
 }
