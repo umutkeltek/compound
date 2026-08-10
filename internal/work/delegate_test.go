@@ -1368,6 +1368,111 @@ func TestDelegateCreateFailureTerminalizesExactAttempt(t *testing.T) {
 	assertOneNewAttemptStatus(t, s, before, runattempt.StatusFailed)
 }
 
+// failingCommandStore fails SetCommand while letting every other write
+// (including Mint/SetOrigin/SetWorkspace) delegate to the real store. This
+// exercises the stamp-failure path where some audit context has already
+// landed and the failure reason must still be recorded on the terminal
+// RunAttempt.
+type failingCommandStore struct {
+	*runattempt.Store
+	mintedID string
+}
+
+func (f *failingCommandStore) Mint(workID, actor, harness string, now time.Time) (runattempt.RunAttempt, error) {
+	ra, err := f.Store.Mint(workID, actor, harness, now)
+	if err == nil {
+		f.mintedID = ra.ID
+	}
+	return ra, err
+}
+
+func (f *failingCommandStore) SetCommand(_, _ string) (runattempt.RunAttempt, error) {
+	return runattempt.RunAttempt{}, errors.New("injected command stamp failure")
+}
+
+// TestDelegateStampFailureRetainsAuditContextBeforeTerminalizing proves that a
+// stamp failure after Mint/SetOrigin/SetWorkspace still leaves the RunAttempt
+// with the context that already succeeded (origin and workspace), and records
+// a SweepReason naming the stamp failure. The old code terminalized with
+// Complete (no reason), so the persisted record gave an operator no hint why
+// the attempt died.
+func TestDelegateStampFailureRetainsAuditContextBeforeTerminalizing(t *testing.T) {
+	origGuard := LaneCapacityGuard
+	origResolver := DelegateHarnessResolver
+	origFactory := runAttemptsFactory
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	const resolvedCommand = "resolved-claude-zai"
+	DelegateHarnessResolver = func(req DelegateHarnessResolveRequest) (DelegateHarnessResolution, error) {
+		return DelegateHarnessResolution{
+			Harness:                    "claude-zai",
+			Command:                    resolvedCommand,
+			LaneID:                     "claude-zai",
+			RequestedModelID:           "claude-zai",
+			RequestedProviderRoute:     "claude-zai",
+			RequestedProviderRouteKind: "provider_class",
+			CapacityLane:               "claude-zai",
+			TupleBacked:                true,
+		}, nil
+	}
+	wrapper := &failingCommandStore{Store: nil}
+	runAttemptsFactory = func(home string) runAttemptStore {
+		if wrapper.Store == nil {
+			wrapper.Store = runattempt.Open(home)
+		}
+		return wrapper
+	}
+	defer func() {
+		LaneCapacityGuard = origGuard
+		DelegateHarnessResolver = origResolver
+		runAttemptsFactory = origFactory
+	}()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	workspace := t.TempDir()
+	runner := newFakeRunner()
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Actor: "orchestrator:test",
+		Command: "claude-zai", Workspace: workspace, Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Refusal == nil || result.Refusal.Reason != "mint_failed" {
+		t.Fatalf("result = %+v, want mint_failed refusal", result)
+	}
+	if len(runner.creates) != 0 {
+		t.Fatalf("stamp failure must not reach runner.Create: %+v", runner.creates)
+	}
+	if wrapper.mintedID == "" {
+		t.Fatal("failingCommandStore did not observe a Mint call")
+	}
+
+	got := runAttemptAt(t, runattempt.Open(s.home), wrapper.mintedID)
+	if got.Status != runattempt.StatusFailed {
+		t.Fatalf("RunAttempt status = %q, want failed", got.Status)
+	}
+	if got.Origin != runattempt.OriginHarnessExecution {
+		t.Fatalf("RunAttempt origin = %q, want %q", got.Origin, runattempt.OriginHarnessExecution)
+	}
+	if got.Workspace != workspace {
+		t.Fatalf("RunAttempt workspace = %q, want %q", got.Workspace, workspace)
+	}
+	if got.Command != "" {
+		t.Fatalf("RunAttempt command = %q, want empty because the stamp setter failed", got.Command)
+	}
+	if !strings.Contains(got.SweepReason, "command stamp failed") {
+		t.Fatalf("RunAttempt.SweepReason = %q, want it to name the command stamp failure", got.SweepReason)
+	}
+	body, rerr := os.ReadFile(filepath.Join(s.home, "run_attempts", wrapper.mintedID+".json"))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if !strings.Contains(string(body), "command stamp failed") {
+		t.Fatalf("persisted RunAttempt JSON must record the stamp failure reason; got:\n%s", body)
+	}
+}
+
 func TestDelegateAmbiguousPartialCreateNeverKillsOrBinds(t *testing.T) {
 	orig := LaneCapacityGuard
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")

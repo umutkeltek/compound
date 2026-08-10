@@ -1858,7 +1858,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	// argv, which may contain operator secrets. RunAttempt persistence is
 	// independent of the spawn side effect, so a Mint failure is a
 	// refuse -- ZERO Create side effects, ZERO session exists.
-	raStore := runattempt.Open(s.home)
+	raStore := runAttemptsFactory(s.home)
 	var minted runattempt.RunAttempt
 	mintErr := s.withLifecycleMutation(func() error {
 		current, err := s.Get(out.WorkID)
@@ -2013,8 +2013,16 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	// wrapper command only -- prompt text / args must NEVER reach
 	// RunAttempt on disk. Stamp failures terminalize the mint (the
 	// attempt is the only thing that exists at this point) and refuse.
+	// Best-effort context (origin/workspace/command) and the failure reason
+	// are persisted BEFORE terminalizing so the failed attempt remains auditable.
 	stamp := func(field, msg string) (DelegateResult, error) {
-		if _, terr := raStore.Complete(runAttemptID, runattempt.StatusFailed, opts.Now); terr != nil {
+		// Try to preserve audit context for the fields we already know.
+		// Ignore errors here: the underlying setter failure (or a terminal
+		// race) is not more important than completing the terminalization.
+		_ = ignoreSetterError(raStore.SetOrigin(runAttemptID, runattempt.OriginHarnessExecution))
+		_ = ignoreSetterError(raStore.SetWorkspace(runAttemptID, workspace))
+		_ = ignoreSetterError(raStore.SetCommand(runAttemptID, command))
+		if _, terr := raStore.CompleteWithReason(runAttemptID, runattempt.StatusFailed, "stamp "+field+": "+msg, opts.Now); terr != nil {
 			return out, terr
 		}
 		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "mint_failed", msg, opts.Now)
@@ -2260,6 +2268,11 @@ func (s *Store) finalizeSpawnFailureAfterBinding(runner SessionRunner, workID st
 	}
 	return errors.Join(cleanupErrs...)
 }
+
+// ignoreSetterError is a syntactic helper for best-effort stamp writes: it
+// lets the failure-closure attempt to backfill audit context without
+// shadowing the real terminalization error.
+func ignoreSetterError(_ runattempt.RunAttempt, _ error) error { return nil }
 
 // reapExitedDelegateSession removes a pane left behind by a delegate whose
 // exit is ALREADY recorded in the eventlog -- the retry path for a teardown

@@ -6251,6 +6251,96 @@ grants:
 	}
 }
 
+// TestRecordReviewFindingRecordsActionBeforeArtifactWrite proves the policy-
+// enforcement seam runs before any irreversible artifact write. We make the
+// artifact directory read-only so the MkdirAll after RecordAction fails. In the
+// old ordering (artifact write before RecordAction), the ActionIntent and
+// PolicyDecision would never have been recorded; in the fixed ordering they are
+// durable even though the artifact cannot be written.
+func TestRecordReviewFindingRecordsActionBeforeArtifactWrite(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	grantSource := filepath.Join(t.TempDir(), "standing-grants.yaml")
+	if err := os.WriteFile(grantSource, []byte(`generated_at: "2026-07-01T12:00:00Z"
+authority:
+  decision_ref: "grant:test-review-finding"
+  reviewed_by: "operator:test"
+grants:
+  - grant_id: grant_review_finding
+    capabilities:
+      - review.finding
+    target_scope: state/runs/*
+    reversibility_ceiling: reversible
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.ImportStandingGrants(homePath, grantSource, cliTestNow); err != nil {
+		t.Fatalf("import standing grants: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	w, err := store.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "review finding action recorded before artifact write",
+		DesiredOutcome:   "demonstrate policy seam ordering",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	runRoot := t.TempDir()
+	target := "state/runs/ordering-test/finding.json"
+	if err := os.Chmod(runRoot, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(runRoot, 0o755) })
+
+	_, err = recordReviewFinding(recordReviewFindingInput{
+		WorkID:     w.ID,
+		TargetPath: target,
+		Root:       runRoot,
+		Summary:    "ordering regression test",
+	}, cliTestNow)
+	if err == nil {
+		t.Fatal("expected artifact write failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("expected permission denied error, got %v", err)
+	}
+
+	if _, serr := os.Stat(filepath.Join(runRoot, target)); !os.IsNotExist(serr) {
+		t.Fatalf("artifact file must not exist after failed write: %v", serr)
+	}
+	markdownPath := strings.TrimSuffix(filepath.Join(runRoot, target), ".json") + ".md"
+	if _, serr := os.Stat(markdownPath); !os.IsNotExist(serr) {
+		t.Fatalf("markdown file must not exist after failed write: %v", serr)
+	}
+
+	got, _, err := store.Show(w.ID)
+	if err != nil {
+		t.Fatalf("show work: %v", err)
+	}
+	if got.State != w.State {
+		t.Fatalf("work state changed from %q to %q on artifact write failure; must stay unchanged", w.State, got.State)
+	}
+	if got.IDs.TransitionID != "" {
+		t.Fatalf("work transition id must be empty; got %q", got.IDs.TransitionID)
+	}
+	if len(got.ActionIntentIDs) == 0 || got.PolicyDecisionID == "" {
+		t.Fatalf("ActionIntent + PolicyDecision must be recorded before artifact write: work=%+v", got)
+	}
+	if !testEventExists(t, homePath, got.ActionIntentIDs[0]) {
+		t.Fatalf("ActionIntent envelope %q not persisted", got.ActionIntentIDs[0])
+	}
+	if !testEventExists(t, homePath, got.PolicyDecisionID) {
+		t.Fatalf("PolicyDecision envelope %q not persisted", got.PolicyDecisionID)
+	}
+}
+
 func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

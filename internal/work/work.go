@@ -146,10 +146,16 @@ func (s *Store) eventLogReadCount() int64 {
 type runAttemptStore interface {
 	Mint(workID, actor, harness string, now time.Time) (runattempt.RunAttempt, error)
 	SetOrigin(id, origin string) (runattempt.RunAttempt, error)
+	SetWorkspace(id, workspace string) (runattempt.RunAttempt, error)
+	SetCommand(id, command string) (runattempt.RunAttempt, error)
+	SetDispatchIntent(id, laneID, requestedModelID, requestedProviderRoute string) (runattempt.RunAttempt, error)
+	SetExecutionProfileIntent(id, planID, clientHarnessID, transportID, nativeEffort string) (runattempt.RunAttempt, error)
+	SetLaunchProfileIntent(id, profileID, revision, clientProfileID string) (runattempt.RunAttempt, error)
 	SetPredecessor(id, predecessorID string) (runattempt.RunAttempt, error)
 	Get(id string) (runattempt.RunAttempt, error)
 	Complete(id, status string, now time.Time) (runattempt.RunAttempt, error)
 	CompleteWithReason(id, status, reason string, now time.Time) (runattempt.RunAttempt, error)
+	MarkRunning(id string, now time.Time) (runattempt.RunAttempt, error)
 }
 
 // runAttemptsFactory is the test seam through which the claim path

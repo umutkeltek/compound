@@ -3106,10 +3106,12 @@ func (e *reviewFindingDeniedError) Error() string {
 }
 
 // recordReviewFinding is the governed review-finding door extracted as a
-// returning function. It evaluates policy, writes the finding artifact and its
-// markdown sibling only after an allowing PolicyDecision, and records the
-// ActionIntent on the WorkEnvelope. Behavior is identical to the prior inline
-// implementation; the CLI wrapper adds the os.Exit / printJSON shell.
+// returning function. It evaluates policy, records the ActionIntent and
+// allowing PolicyDecision on the WorkEnvelope FIRST, and only then writes the
+// finding artifact and its markdown sibling and advances/closes the work.
+// On any failure before the lifecycle transitions complete, no artifact is left
+// on disk and no orphaned lifecycle state is created. The CLI wrapper adds the
+// os.Exit / printJSON shell.
 func recordReviewFinding(in recordReviewFindingInput, now time.Time) (reviewFindingRecord, error) {
 	capability := reviewartifact.FirstNonEmpty(in.Capability, "review.finding")
 	target, err := normalizeRunReviewTarget(in.TargetPath)
@@ -3232,11 +3234,17 @@ func recordReviewFinding(in recordReviewFindingInput, now time.Time) (reviewFind
 		Warnings: []string{
 			"writes only under state/runs/**",
 			"requires allowing PolicyDecision before artifact write",
-			"records ActionIntent on WorkEnvelope after artifact write",
+			"records ActionIntent on WorkEnvelope before artifact write",
 		},
 	}
 	data, err := json.MarshalIndent(report, "", " ")
 	if err != nil {
+		return reviewFindingRecord{}, err
+	}
+	// POLICY-ENFORCEMENT SEAM: record the ActionIntent + PolicyDecision before
+	// any irreversible artifact write or lifecycle transition. If this fails, no
+	// files are on disk and the work has not been advanced/closed.
+	if _, err := store.RecordAction(workID, ai, pd, now); err != nil {
 		return reviewFindingRecord{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o755); err != nil {
@@ -3247,11 +3255,6 @@ func recordReviewFinding(in recordReviewFindingInput, now time.Time) (reviewFind
 	}
 	if err := os.WriteFile(markdownPath, []byte(renderReviewFindingMarkdown(report)), 0o644); err != nil {
 		_ = os.Remove(artifactPath)
-		return reviewFindingRecord{}, err
-	}
-	if _, err := store.RecordAction(workID, ai, pd, now); err != nil {
-		_ = os.Remove(artifactPath)
-		_ = os.Remove(markdownPath)
 		return reviewFindingRecord{}, err
 	}
 	if in.AutoWork {
