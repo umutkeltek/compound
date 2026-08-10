@@ -20,7 +20,17 @@ import (
 // older embed runs. The canonical namespace is the BARE claim id, matching the
 // ledger-computed allowlist (mem's relevance gate carries bare claim ids) — the
 // engine normalizes legacy rows at its boundary until they are re-embedded.
-const claimRefPrefix = "claim:"
+const (
+	claimRefPrefix = "claim:"
+
+	// vectorEmbedderLockKey1/2 form a hardcoded 64-bit namespaced advisory lock key
+	// for pg_advisory_xact_lock. We deliberately avoid the old hash-based key (which
+	// had a small collision space and could alias with unrelated keys). 8392753 is
+	// an arbitrary namespace picked to avoid Postgres key conventions; key2=1 is the
+	// lock instance for embedder-stamped vector writes.
+	vectorEmbedderLockKey1 = 8392753
+	vectorEmbedderLockKey2 = 1
+)
 
 // PgEngine implements mem.Engine backed by Postgres + pgvector. It embeds query
 // text via an OpenAI-compatible /v1/embeddings endpoint (e.g. Ollama) and
@@ -262,6 +272,10 @@ func (s *Store) VectorEmbedders(ctx context.Context) ([]string, error) {
 // vectors row with the producing embedder and REFUSES (mem.ErrEmbedderMismatch)
 // when existing rows carry a different identity — a silent model swap must never
 // mix two embedding spaces in one index.
+//
+// The embedder check+write is serialized with a transaction-scoped advisory lock
+// so that concurrent writers cannot both see an empty table and insert different
+// embedders under READ COMMITTED.
 func (s *Store) UpsertWithEmbedder(ref string, embedding []float32, metadata map[string]string, embedder string) error {
 	ctx := context.Background()
 	meta, _ := json.Marshal(metadata)
@@ -272,6 +286,12 @@ func (s *Store) UpsertWithEmbedder(ref string, embedding []float32, metadata map
 		return fmt.Errorf("persist/pg: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// Serialize all embedder-stamped writes to prevent a race where two
+	// transactions see no conflicting rows and commit different embedders.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, vectorEmbedderLockKey1, vectorEmbedderLockKey2); err != nil {
+		return fmt.Errorf("persist/pg: embedder lock: %w", err)
+	}
 
 	var other string
 	err = tx.QueryRow(ctx, `
