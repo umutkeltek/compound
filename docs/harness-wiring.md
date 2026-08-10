@@ -52,6 +52,14 @@ If an observation-only live hook cannot record its evidence, it reports the
 runtime error but still exits zero without a native permission decision; that
 path makes no containment claim. Explicitly enforced profiles remain blocking.
 
+Enforcement is never claimed from configuration alone. An enforcement claim
+requires behavioral proof for the exact launch profile: `compound doctor`
+probes the installed binary with a nonce-bound fixture before the posture
+counts as mutation-blocking, and a harness that cannot synchronously deny
+before tool execution is never mutation-ready. The supported scope for what a
+wired harness may claim is defined in
+[`security/supported-scope.md`](./security/supported-scope.md).
+
 Claude-family and Codex `compound hook install` consume this projection when
 they write managed hooks. The OpenCode installer asks Compound for the same
 projection and refuses adapter drift before writing its config/plugin. OpenCode

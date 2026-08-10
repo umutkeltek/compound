@@ -29,6 +29,23 @@ meaning in the ledger · rented executors at the edge · policy before mutation
 models, engines, and harnesses are replaceable edges. Search is not truth.
 Model output is not canon. Mutation requires an envelope and proof.
 
+## Supported Scope (Public Alpha)
+
+The public alpha is a strictly scoped, file-backed, single-user development
+system:
+
+- file backend only — Postgres remains an experimental, never-authority fence;
+- one trusted OS user on local disk;
+- explicit or enrolled home authority — ambient ancestor `.compound`
+  discovery is not an intended authority target;
+- interactive hooks may observe; enforcement claims require behavioral proof;
+- the console is projection-only by default, with mutations and private
+  reads disabled.
+
+Postgres-backed storage, shared homes, server/multi-tenant use, remote or
+proxied console, and arbitrary private embedding endpoints are unsupported.
+Full contract: [Supported Scope and Security Boundary](docs/security/supported-scope.md).
+
 ## Quickstart
 
 **New here?** Start with the [Getting Started guide](docs/getting-started.md) —
@@ -242,6 +259,13 @@ Resolution order:
 --home -> COMPOUND_HOME -> nearest .compound/manifest.yaml -> ~/.compound
 ```
 
+Ambient ancestor discovery (nearest `.compound/manifest.yaml`) is a
+compatibility behavior, not a supported authority target: supported home
+authority is explicit (`--home`, `COMPOUND_HOME`) or enrolled. Pin an
+explicit home for mutating commands and treat repository-local `.compound`
+directories as untrusted input; see the
+[supported scope contract](docs/security/supported-scope.md).
+
 Private paths, credentials, accounts, raw personal corpora, and real operator
 data belong in a private Compound instance, not tracked public files.
 
@@ -361,6 +385,7 @@ Adaptive systems:
 
 | Guide | For |
 |---|---|
+| [Supported Scope](docs/security/supported-scope.md) | What the public alpha supports, and where its security boundary is |
 | [Getting Started](docs/getting-started.md) | First-time users: install, orient, create work, wire your agent |
 | [Harness Wiring](docs/harness-wiring.md) | Connect Compound to Claude Code, Codex, OpenCode, or any CLI harness |
 | [Memory Quickstart](docs/memory-quickstart.md) | Semantic search over your docs in 10 minutes |

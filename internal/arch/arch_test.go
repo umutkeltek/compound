@@ -1556,6 +1556,42 @@ func TestASCDailySignalsPublicBoundaryContractFailsOnPrivateCollectorDependency(
 	}
 }
 
+func TestPublicAlphaSupportedScopeContractResolved(t *testing.T) {
+	findings := checkPublicAlphaSupportedScopeContract(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("public-alpha supported scope contract failed against real repo: %+v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "support boundary") {
+		t.Fatalf("finding should name the support boundary: %+v", findings)
+	}
+}
+
+func TestPublicAlphaSupportedScopeContractFailsWhenBoundaryStatementsDrift(t *testing.T) {
+	repo := writeWorkbenchActionCardFixtureRepo(t, map[string]string{
+		"docs/security/supported-scope.md": "# Supported Scope\n\nFile storage is one option among many.\n",
+		"README.md":                        "# compound\n",
+		"docs/getting-started.md":          "# Getting Started\n",
+		"docs/harness-wiring.md":           "# Harness Wiring\n",
+		"docs/architecture/status.md":      "# status\n",
+	})
+	findings := checkPublicAlphaSupportedScopeContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	msg := findings[0].Message
+	for _, want := range []string{
+		"the only supported storage backend",
+		"Supported Scope (Public Alpha)",
+		"file backend only",
+		"never mutation-ready",
+		"the only supported public-alpha backend",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("failure should name missing %q: %+v", want, findings)
+		}
+	}
+}
+
 func TestReviewSurfaceCoverageContractResolved(t *testing.T) {
 	findings := checkReviewSurfaceCoverageContract(repoRoot)
 	if len(findings) != 1 || findings[0].Severity == Fail {

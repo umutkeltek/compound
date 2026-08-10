@@ -404,6 +404,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkOperatorOrientAdjacentProgressContract(repoRoot)...)
 		f = append(f, checkOperatorSourceControlProjectionContract(repoRoot)...)
 		f = append(f, checkASCDailySignalsPublicBoundaryContract(repoRoot)...)
+		f = append(f, checkPublicAlphaSupportedScopeContract(repoRoot)...)
 		f = append(f, checkBuildFreshnessContract(repoRoot)...)
 		f = append(f, checkMintTwoClassHome(repoRoot)...)
 		f = append(f, checkCmdCompoundBudget(repoRoot, strict)...)
@@ -2067,6 +2068,67 @@ func checkASCDailySignalsPublicBoundaryContract(repoRoot string) []Finding {
 		return []Finding{{"asc-daily-signals-public-boundary-contract", Fail, "ASC daily signal docs lost generic public/private source boundary: " + strings.Join(failures, "; ")}}
 	}
 	return []Finding{{"asc-daily-signals-public-boundary-contract", Info, "ASC daily signal docs keep collectors private/generic while Compound owns product-signal normalization"}}
+}
+
+// checkPublicAlphaSupportedScopeContract keeps the public-alpha support
+// boundary from drifting in the public docs: file backend only; one trusted
+// OS user on local disk; explicit or enrolled home authority (ambient
+// ancestor discovery is not an intended authority target); interactive hooks
+// may observe while enforcement claims require behavioral proof; the console
+// is projection-only by default with mutations/private reads disabled; and
+// Postgres, shared homes, server/multi-tenant use, remote/proxied console,
+// and arbitrary private embedding endpoints are unsupported.
+func checkPublicAlphaSupportedScopeContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"docs/security/supported-scope.md": {
+			"the only supported storage backend",
+			"one trusted OS user and local disk",
+			"Ambient ancestor",
+			"is not an intended authority target",
+			"Interactive hooks may observe",
+			"Enforcement claims require behavioral proof",
+			"projection-only",
+			"mutations and private reads",
+			"Unsupported in the public alpha",
+			"shared homes",
+			"multi-tenant",
+			"proxied console",
+			"private embedding endpoints",
+		},
+		"README.md": {
+			"Supported Scope (Public Alpha)",
+			"docs/security/supported-scope.md",
+			"ambient ancestor",
+			"behavioral proof",
+		},
+		"docs/getting-started.md": {
+			"security/supported-scope.md",
+			"file backend only",
+		},
+		"docs/harness-wiring.md": {
+			"security/supported-scope.md",
+			"behavioral proof",
+			"never mutation-ready",
+		},
+		"docs/architecture/status.md": {
+			"the only supported public-alpha backend",
+			"unsupported in the public alpha",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"public-alpha-supported-scope-contract", Fail, "public-alpha supported scope drifted: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"public-alpha-supported-scope-contract", Info, "public docs keep the public-alpha support boundary: file backend only, one trusted user, explicit home authority, proven enforcement, projection-only console"}}
 }
 
 // checkReviewSurfaceCoverageContract keeps review queues from drifting back into

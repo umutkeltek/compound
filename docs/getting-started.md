@@ -27,6 +27,11 @@ Hold the whole system as five places; each step below visits one:
   path needs no Go).
 - That's it. No cloud account, no API key, no external service.
 
+Compound's public alpha is a strictly scoped, file-backed, single-user
+system: file backend only, one trusted OS user on local disk, and explicit
+home authority. The full support and security boundary:
+[`security/supported-scope.md`](./security/supported-scope.md).
+
 Optional (for the console): **Bun** and **Node 20+**.
 Optional (for semantic memory): a local **Ollama** server — see
 [`memory-quickstart.md`](./memory-quickstart.md).
@@ -221,6 +226,7 @@ last one proved.
 
 | I want to... | Read |
 |---|---|
+| Read the support and security boundary | [`security/supported-scope.md`](./security/supported-scope.md) |
 | Wire Compound into my agent harness | [`harness-wiring.md`](./harness-wiring.md) |
 | Set up semantic memory (search over my docs) | [`memory-quickstart.md`](./memory-quickstart.md) |
 | See the visual console | [`console.md`](./console.md) |
