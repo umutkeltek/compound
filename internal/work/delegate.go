@@ -1632,13 +1632,31 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		workspace = strings.TrimSpace(w.GitDelivery.TargetWorktreeRoot)
 	}
 	if workspace == "" {
-		workspace, err = os.Getwd()
+		workspace, err = delegateOsGetwd()
 		if err != nil {
-			return out, fmt.Errorf("delegate: resolve workspace: %w", err)
+			out.Refusal = &DelegateRefusal{
+				Reason:  "workspace_unresolvable",
+				Message: "no workspace resolved from --workspace, git_delivery.target_worktree_root, or cwd: " + err.Error(),
+			}
+			return out, nil
 		}
 	}
 	if strings.TrimSpace(workspace) == "" {
-		return out, errors.New("delegate: no workspace resolved from --workspace, git_delivery.target_worktree_root, or cwd")
+		out.Refusal = &DelegateRefusal{
+			Reason:  "workspace_unresolvable",
+			Message: "no workspace resolved from --workspace, git_delivery.target_worktree_root, or cwd",
+		}
+		return out, nil
+	}
+	// COMPOUND_HOME itself is never a valid workspace. Delegating into the
+	// compound home would write transcript/session evidence alongside lifecycle
+	// state, making attribution and cleanup impossible.
+	if sameWorkspacePath(workspace, s.home) {
+		out.Refusal = &DelegateRefusal{
+			Reason:  "workspace_occupied",
+			Message: fmt.Sprintf("workspace %s is COMPOUND_HOME; choose a distinct working directory", workspace),
+		}
+		return out, nil
 	}
 	// The workspace is the attribution key: TranscriptDirFor derives a lane's
 	// session store from it, so two live lanes sharing one workspace interleave
@@ -2874,6 +2892,11 @@ type DelegateSweepOutcome struct {
 	WorktreeLock      string `json:"worktree_lock,omitempty"`
 	WorktreeLockError string `json:"worktree_lock_error,omitempty"`
 }
+
+// delegateOsGetwd is the runtime seam for workspace resolution. Tests override
+// it to simulate an unresolvable cwd without changing the process working
+// directory. Production delegates always use os.Getwd.
+var delegateOsGetwd = os.Getwd
 
 // workspaceLiveOccupant reports whether a workspace is already bound to a
 // non-terminal run attempt belonging to a DIFFERENT work. It guards the

@@ -569,6 +569,7 @@ func (s *Store) completeStaleSnapshot(expected RunAttempt, threshold time.Durati
 	}
 	var classification string
 	var swept bool
+	committed := false
 	updated, err := s.mutate(expected.ID, func(current *RunAttempt) (bool, error) {
 		if IsTerminal(current.Status) || !reflect.DeepEqual(*current, expected) {
 			return false, nil
@@ -581,7 +582,7 @@ func (s *Store) completeStaleSnapshot(expected RunAttempt, threshold time.Durati
 		if age < threshold {
 			return false, nil
 		}
-		classification = ClassifyStaleRunAttempt(*current)
+		classification = classifyStaleRunAttemptForTest(*current)
 		if classification != SweepClassificationSideEffectFree && classification != SweepClassificationAmbiguous {
 			return false, fmt.Errorf("runattempt complete %s: classification %q is not a valid SweepClassification", current.ID, classification)
 		}
@@ -590,11 +591,18 @@ func (s *Store) completeStaleSnapshot(expected RunAttempt, threshold time.Durati
 		current.SweepReason = fmt.Sprintf("stale: %s — no activity for %s (threshold %s)",
 			classification, age.Round(time.Second), threshold)
 		current.SweepClassification = classification
-		swept = true
+		committed = true
 		return true, nil
 	})
+	if err == nil {
+		swept = committed
+	}
 	return updated, classification, swept, err
 }
+
+// classifyStaleRunAttemptForTest is the production ClassifyStaleRunAttempt by
+// default. Tests override it to simulate classification regressions.
+var classifyStaleRunAttemptForTest = ClassifyStaleRunAttempt
 
 // MarkRunning transitions a RunAttempt from pending to running (F5). This is
 // the setter observe-run's "running"/"in_progress" job-status branch was
@@ -1437,11 +1445,23 @@ func (s *Store) writeLocked(ra RunAttempt) error {
 	} else if !errors.Is(err, ErrNotFound) {
 		return err
 	}
+	if err := runattemptWriteFile(s.path(ra.ID), ra); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.cache[ra.ID] = cloneExecutionPosture(ra)
+	s.mu.Unlock()
+	return nil
+}
+
+// runattemptWriteFile is the production atomic write implementation for a
+// RunAttempt. Tests override it to inject write failures.
+var runattemptWriteFile = func(path string, ra RunAttempt) error {
 	data, err := json.MarshalIndent(ra, "", "  ")
 	if err != nil {
 		return fmt.Errorf("runattempt write: encode %s: %w", ra.ID, err)
 	}
-	tmp := s.path(ra.ID) + ".tmp"
+	tmp := path + ".tmp"
 	f, err := os.Create(tmp)
 	if err != nil {
 		return fmt.Errorf("runattempt write: create %s: %w", tmp, err)
@@ -1457,11 +1477,8 @@ func (s *Store) writeLocked(ra RunAttempt) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("runattempt write: close %s: %w", tmp, err)
 	}
-	if err := os.Rename(tmp, s.path(ra.ID)); err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("runattempt write: rename %s: %w", tmp, err)
 	}
-	s.mu.Lock()
-	s.cache[ra.ID] = cloneExecutionPosture(ra)
-	s.mu.Unlock()
 	return nil
 }

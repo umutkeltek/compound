@@ -47,43 +47,89 @@ func TestClassifyToolActionCoversConsequentialDomains(t *testing.T) {
 	}
 }
 
-func TestMonitorToolActionFailsClosedOnUnknownSchemaAndDestination(t *testing.T) {
+func TestMonitorToolActionExactReasonStrings(t *testing.T) {
 	cfg := DefaultConfig()
-	requests := []ToolActionRequest{
-		monitorRequest("unregistered_tool", map[string]any{"value": "fixture"}),
-		monitorRequest("mcp__github__create_issue", map[string]any{"title": "fixture"}),
-		func() ToolActionRequest {
-			r := monitorRequest("mcp__github__create_issue", map[string]any{"repo": "example/repo"})
-			r.ToolSchemaRevision = ""
-			return r
-		}(),
+	tests := []struct {
+		name        string
+		request     ToolActionRequest
+		wantReason  string
+		wantOutcome string
+	}{
+		{
+			name:        "unknown tool",
+			request:     monitorRequest("unregistered_tool", map[string]any{"value": "fixture"}),
+			wantReason:  "unknown tool/action classification fails closed",
+			wantOutcome: "hold",
+		},
+		{
+			name:        "missing destination",
+			request:     monitorRequest("mcp__github__create_issue", map[string]any{"title": "fixture"}),
+			wantReason:  "missing or unresolved destination fails closed",
+			wantOutcome: "hold",
+		},
+		{
+			name: "missing schema revision",
+			request: func() ToolActionRequest {
+				r := monitorRequest("mcp__github__create_issue", map[string]any{"repo": "example/repo"})
+				r.ToolSchemaRevision = ""
+				return r
+			}(),
+			wantReason:  "missing tool schema revision fails closed",
+			wantOutcome: "hold",
+		},
 	}
 
-	for _, request := range requests {
-		monitored := MonitorToolAction(request, cfg, fixedNow)
-		if Allowed(monitored.Decision) {
-			t.Fatalf("%q unexpectedly allowed: %+v", request.Tool, monitored.Decision)
-		}
-		if monitored.Decision.Outcome != "hold" && monitored.Decision.Outcome != "deny" {
-			t.Fatalf("%q outcome = %q, want hold/deny", request.Tool, monitored.Decision.Outcome)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			monitored := MonitorToolAction(tt.request, cfg, fixedNow)
+			if Allowed(monitored.Decision) {
+				t.Fatalf("expected refusal, got allowed: %+v", monitored.Decision)
+			}
+			if monitored.Decision.Outcome != tt.wantOutcome {
+				t.Fatalf("outcome = %q, want %q", monitored.Decision.Outcome, tt.wantOutcome)
+			}
+			reasons := strings.Join(monitored.Decision.Reasons, "\n")
+			if !strings.Contains(reasons, tt.wantReason) {
+				t.Fatalf("reasons do not contain exact string %q:\n%s", tt.wantReason, reasons)
+			}
+			// The corresponding SecurityReason must also carry the exact string so
+			// the fail-closed rationale is preserved in the action intent.
+			secReasons := strings.Join(monitored.Intent.SecurityReasons, "\n")
+			if !strings.Contains(secReasons, tt.wantReason) {
+				t.Fatalf("security reasons do not contain exact string %q:\n%s", tt.wantReason, secReasons)
+			}
+		})
 	}
 }
 
-func TestMonitorToolActionDoesNotLetClassifierGrantAuthority(t *testing.T) {
+func TestMonitorToolActionClassifierCannotLowerSecurityFloor(t *testing.T) {
 	cfg := DefaultConfig()
+
+	// A deploy tool that is held by policy. A benign classifier label must not
+	// turn it into an allow; the outcome must stay at least as severe.
 	request := monitorRequest("vercel.deploy", map[string]any{"project": "fixture"})
 	base := MonitorToolAction(request, cfg, fixedNow)
+	if Allowed(base.Decision) {
+		t.Fatalf("deploy tool unexpectedly allowed without classifier: %+v", base.Decision)
+	}
+
 	request.ClassifierRisk = ClassifierRiskBenign
 	benign := MonitorToolAction(request, cfg, fixedNow)
+	if Allowed(benign.Decision) {
+		t.Fatalf("benign classifier granted authority: %+v", benign.Decision)
+	}
 	if severity[benign.Decision.Outcome] < severity[base.Decision.Outcome] {
 		t.Fatalf("benign classifier lowered policy burden: base=%q benign=%q", base.Decision.Outcome, benign.Decision.Outcome)
 	}
 
 	request.ClassifierRisk = ClassifierRiskMalicious
-	hostile := MonitorToolAction(request, cfg, fixedNow)
-	if hostile.Decision.Outcome != "deny" {
-		t.Fatalf("malicious classifier should quarantine/deny, got %+v", hostile.Decision)
+	malicious := MonitorToolAction(request, cfg, fixedNow)
+	if malicious.Decision.Outcome != "deny" {
+		t.Fatalf("malicious classifier outcome = %q, want deny", malicious.Decision.Outcome)
+	}
+	wantReason := "classifier marked content malicious; classifier may quarantine but never grant"
+	if !strings.Contains(strings.Join(malicious.Decision.Reasons, "\n"), wantReason) {
+		t.Fatalf("malicious classifier reason missing %q: %v", wantReason, malicious.Decision.Reasons)
 	}
 }
 

@@ -23,6 +23,17 @@ func withPermissiveGuard(t *testing.T) {
 	t.Cleanup(func() { LaneCapacityGuard = orig })
 }
 
+// withNonHomeWorkspace populates opts.Workspace with a temp directory if it is
+// empty. The delegate orchestrator refuses to fall back to COMPOUND_HOME as a
+// workspace, so tests that only care about spawn/steer/projection behavior must
+// supply an explicit workspace.
+func withNonHomeWorkspace(t *testing.T, opts *DelegateOptions) {
+	t.Helper()
+	if strings.TrimSpace(opts.Workspace) == "" {
+		opts.Workspace = t.TempDir()
+	}
+}
+
 func delegatedRowsFor(t *testing.T, s *Store) []DelegatedSessionRow {
 	t.Helper()
 	proj, err := s.ExecutorsProjection(fixedNow)
@@ -65,10 +76,12 @@ func TestDelegatedSessionsSpawnedRunning(t *testing.T) {
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
 
-	res, err := s.Delegate(DelegateOptions{
+	opts := DelegateOptions{
 		WorkID: wID, Harness: "claude", Actor: "codex",
 		Command: "claude", Args: []string{"--print", "TOP-SECRET-PROMPT"}, Now: fixedNow,
-	}, runner)
+	}
+	withNonHomeWorkspace(t, &opts)
+	res, err := s.Delegate(opts, runner)
 	if err != nil {
 		t.Fatalf("delegate: %v", err)
 	}
@@ -110,9 +123,11 @@ func TestDelegatedSessionsExposeRunProgress(t *testing.T) {
 	withPermissiveGuard(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
-	res, err := s.Delegate(DelegateOptions{
+	opts := DelegateOptions{
 		WorkID: wID, Harness: "claude-minimax", Actor: "codex", Command: "claude-minimax", Now: fixedNow,
-	}, runner)
+	}
+	withNonHomeWorkspace(t, &opts)
+	res, err := s.Delegate(opts, runner)
 	if err != nil || res.Status != "spawned" {
 		t.Fatalf("delegate: %v %+v", err, res)
 	}
@@ -144,6 +159,7 @@ func TestDelegatedSessionsReuseWorkbenchEventSnapshot(t *testing.T) {
 	runner := newFakeRunner()
 	if _, err := s.Delegate(DelegateOptions{
 		WorkID: wID, Harness: "claude", Actor: "codex", Command: "claude", Now: fixedNow,
+		Workspace: t.TempDir(),
 	}, runner); err != nil {
 		t.Fatalf("delegate: %v", err)
 	}
@@ -173,10 +189,12 @@ func TestDelegatedSessionsPreserveLatestSessionPerLane(t *testing.T) {
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
 
-	qwen, err := s.Delegate(DelegateOptions{
+	qwenOpts := DelegateOptions{
 		WorkID: wID, Harness: "claude-qwen", Actor: "codex", Command: "claude",
 		Session: "compound-qwen-review", Now: fixedNow,
-	}, runner)
+	}
+	withNonHomeWorkspace(t, &qwenOpts)
+	qwen, err := s.Delegate(qwenOpts, runner)
 	if err != nil || qwen.Status != "spawned" {
 		t.Fatalf("qwen delegate: %v %+v", err, qwen)
 	}
@@ -186,10 +204,12 @@ func TestDelegatedSessionsPreserveLatestSessionPerLane(t *testing.T) {
 		t.Fatalf("qwen sweep: %v", err)
 	}
 
-	minimax, err := s.Delegate(DelegateOptions{
+	minimaxOpts := DelegateOptions{
 		WorkID: wID, Harness: "claude-minimax", Actor: "codex", Command: "claude",
 		Session: "compound-minimax-build", Now: fixedNow.Add(2),
-	}, runner)
+	}
+	withNonHomeWorkspace(t, &minimaxOpts)
+	minimax, err := s.Delegate(minimaxOpts, runner)
 	if err != nil || minimax.Status != "spawned" {
 		t.Fatalf("minimax delegate: %v %+v", err, minimax)
 	}
@@ -221,10 +241,12 @@ func TestDelegatedSessionsNewerRefusalSupersedesExitedBinding(t *testing.T) {
 	s := newStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
-	spawned, err := s.Delegate(DelegateOptions{
+	spawnedOpts := DelegateOptions{
 		WorkID: wID, Harness: "claude-qwen", Actor: "codex", Command: "claude",
 		Session: "compound-qwen-review", Now: fixedNow,
-	}, runner)
+	}
+	withNonHomeWorkspace(t, &spawnedOpts)
+	spawned, err := s.Delegate(spawnedOpts, runner)
 	if err != nil || spawned.Status != "spawned" {
 		t.Fatalf("delegate: %v %+v", err, spawned)
 	}
@@ -235,10 +257,12 @@ func TestDelegatedSessionsNewerRefusalSupersedesExitedBinding(t *testing.T) {
 	}
 
 	LaneCapacityGuard = fakeGuard(true, false, "walled: capacity exhausted", "walled")
-	refused, err := s.Delegate(DelegateOptions{
+	refusedOpts := DelegateOptions{
 		WorkID: wID, Harness: "claude-qwen", Actor: "codex", Command: "claude",
 		Session: "compound-qwen-retry", Now: fixedNow.Add(2),
-	}, runner)
+	}
+	withNonHomeWorkspace(t, &refusedOpts)
+	refused, err := s.Delegate(refusedOpts, runner)
 	if err != nil || refused.Status != "refused" {
 		t.Fatalf("refusal: %v %+v", err, refused)
 	}
@@ -264,6 +288,7 @@ func TestDelegatedSessionsExitedTerminalWins(t *testing.T) {
 
 	res, err := s.Delegate(DelegateOptions{
 		WorkID: wID, Harness: "claude", Actor: "codex", Command: "claude", Now: fixedNow,
+		Workspace: t.TempDir(),
 	}, runner)
 	if err != nil || res.Status != "spawned" {
 		t.Fatalf("delegate: %v %+v", err, res)
@@ -300,7 +325,7 @@ func TestDelegatedSessionsRefusedRow(t *testing.T) {
 	s := newStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
-	if _, err := s.Delegate(DelegateOptions{WorkID: wID, Harness: "claude", Actor: "codex", Command: "claude", Now: fixedNow}, runner); err != nil {
+	if _, err := s.Delegate(DelegateOptions{WorkID: wID, Harness: "claude", Actor: "codex", Command: "claude", Now: fixedNow, Workspace: t.TempDir()}, runner); err != nil {
 		t.Fatalf("delegate: %v", err)
 	}
 
@@ -327,6 +352,7 @@ func TestDelegatedSessionsPrivacy(t *testing.T) {
 	if _, err := s.Delegate(DelegateOptions{
 		WorkID: wID, Harness: "claude", Actor: "codex",
 		Command: "claude", Args: []string{"--system", secret}, Now: fixedNow,
+		Workspace: t.TempDir(),
 	}, runner); err != nil {
 		t.Fatalf("delegate: %v", err)
 	}
@@ -366,7 +392,7 @@ func TestDelegatedSessionsUnknownWhenNamedRattMissing(t *testing.T) {
 	withPermissiveGuard(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
-	res, err := s.Delegate(DelegateOptions{WorkID: wID, Harness: "claude", Actor: "codex", Command: "claude", Now: fixedNow}, runner)
+	res, err := s.Delegate(DelegateOptions{WorkID: wID, Harness: "claude", Actor: "codex", Command: "claude", Now: fixedNow, Workspace: t.TempDir()}, runner)
 	if err != nil || res.Status != "spawned" {
 		t.Fatalf("delegate: %v %+v", err, res)
 	}

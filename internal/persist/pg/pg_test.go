@@ -420,8 +420,25 @@ func TestVectorUpsertOverwrites(t *testing.T) {
 	if err := store.Upsert(ref, v1, nil); err != nil {
 		t.Fatalf("Upsert v1: %v", err)
 	}
+
+	count1, err := store.Count()
+	if err != nil {
+		t.Fatalf("Count after v1: %v", err)
+	}
+	if count1 != 1 {
+		t.Fatalf("count after v1 = %d, want 1", count1)
+	}
+
 	if err := store.Upsert(ref, v2, nil); err != nil {
 		t.Fatalf("Upsert v2 (overwrite): %v", err)
+	}
+
+	count2, err := store.Count()
+	if err != nil {
+		t.Fatalf("Count after v2: %v", err)
+	}
+	if count2 != 1 {
+		t.Fatalf("upsert same ref changed count from %d to %d, want 1 (overwrite)", count1, count2)
 	}
 
 	// Search with v2 direction — should find the updated vector
@@ -431,6 +448,22 @@ func TestVectorUpsertOverwrites(t *testing.T) {
 	}
 	if len(hits) == 0 || hits[0].Ref != ref {
 		t.Error("Upsert did not overwrite — search with v2 did not find ref")
+	}
+
+	// The old vector direction must NOT still match: if Upsert created a
+	// duplicate or left the old embedding, v1 would also score near 1.
+	hitsOld, err := store.Search(v1, 1, nil)
+	if err != nil {
+		t.Fatalf("Search old direction: %v", err)
+	}
+	if len(hitsOld) == 0 {
+		t.Fatal("search with old direction returned 0 hits")
+	}
+	if hitsOld[0].Ref != ref {
+		t.Fatalf("old direction returned different ref %q, want %q", hitsOld[0].Ref, ref)
+	}
+	if hitsOld[0].Score > 0.1 {
+		t.Fatalf("old direction still scores %.3f after overwrite; old vector not replaced", hitsOld[0].Score)
 	}
 }
 

@@ -1,6 +1,7 @@
 package work
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -316,6 +317,76 @@ func TestAdmitCreatePlanCreatesWorkAndRetiresPreview(t *testing.T) {
 	}
 	if again.Status != "already_admitted" || again.NoAction == "" || len(repeatedEvents) != 1 {
 		t.Fatalf("repeat admission should be idempotent: report=%+v events=%+v", again, repeatedEvents)
+	}
+}
+
+// TestAdmitCreatePlanEvidenceDurabilityOrdering proves the fail-closed
+// ordering: the action_intent and policy_decision evidence must be durable in
+// the eventstore BEFORE the WorkEnvelope becomes visible at its canonical path.
+// The test blocks the work-file rename by pre-creating a directory at the
+// destination, then verifies that (a) the error surfaces, (b) the work file
+// does not exist, and (c) the evidence files DO exist.
+func TestAdmitCreatePlanEvidenceDurabilityOrdering(t *testing.T) {
+	s := newStore(t)
+	plan, err := s.CreatePlan(CreateInput{
+		WorkID:           "work_evidence_ordering",
+		Owner:            "compound-core",
+		Actor:            "codex",
+		State:            "proposed",
+		SuccessPredicate: "evidence-before-work",
+	}, fixedNow, CreatePlanOptions{Record: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "create_policy_allowed" {
+		t.Fatalf("plan not allowed: %+v", plan.Policy)
+	}
+
+	// Block the final work-file stage by making its parent directory read-only.
+	// The staged file is created in the same directory, so os.CreateTemp fails
+	// without preventing the preceding eventstore evidence writes (which land in
+	// COMPOUND_HOME/events). The work file path itself remains absent, so s.Get
+	// still returns os.ErrNotExist during the admission existence check.
+	workDir := filepath.Join(s.home, "work", "work")
+	if err := os.Chmod(workDir, 0o555); err != nil {
+		t.Fatalf("chmod work dir read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(workDir, 0o755)
+	})
+
+	_, err = s.AdmitCreatePlanPath(plan.PlanPath, fixedNow.Add(time.Minute), AdmitCreatePlanOptions{Actor: "operator-test"})
+	if err == nil {
+		t.Fatal("expected work-file stage error, got nil")
+	}
+
+	// The WorkEnvelope must NOT be visible as a file.
+	if _, err := os.Stat(s.workPath(plan.WorkID)); !os.IsNotExist(err) {
+		t.Fatalf("work file exists after failed stage: %v", err)
+	}
+
+	// The action intent and policy decision must be durable.
+	aiBytes, err := s.eventBytes(plan.ActionIntent.ID)
+	if err != nil {
+		t.Fatalf("action_intent not durable: %v", err)
+	}
+	var ai envelope.ActionIntent
+	if err := json.Unmarshal(aiBytes, &ai); err != nil {
+		t.Fatalf("action_intent unmarshal: %v", err)
+	}
+	if ai.ID != plan.ActionIntent.ID {
+		t.Fatalf("durable action_intent id mismatch: %q vs %q", ai.ID, plan.ActionIntent.ID)
+	}
+	pdBytes, err := s.eventBytes(plan.Decision.ID)
+	if err != nil {
+		t.Fatalf("policy_decision not durable: %v", err)
+	}
+	var decision envelope.PolicyDecision
+	if err := json.Unmarshal(pdBytes, &decision); err != nil {
+		t.Fatalf("policy_decision unmarshal: %v", err)
+	}
+	if decision.ID != plan.Decision.ID {
+		t.Fatalf("durable policy_decision id mismatch: %q vs %q", decision.ID, plan.Decision.ID)
 	}
 }
 
