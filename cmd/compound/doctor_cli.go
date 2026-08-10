@@ -160,12 +160,36 @@ type surfacingRow struct {
 // the injection-observation report attributes sessions to work ids, not to harnesses, so an
 // honest matrix shows the same numbers on every row rather than faking a per-lane split. Scope
 // is always "global" and Note says so; a future per-lane consumption signal would refine this.
+//
+// MEASURED vs UNMEASURED is load-bearing, not a nicety. A session's consumption is only ever
+// OBSERVED when its close declared one (Receipt.Skills.UsedDeclared — the session-end detector
+// actually ran over a transcript). internal/hook/consumption.go states the invariant the detector
+// is built on: "UNDER-DETECTION IS SAFE: a missed consumption becomes UNKNOWN, never ignored."
+// Summing served events across undeclared sessions and printing one ConsumedEvents beside the
+// total silently converts those unknowns into observed zeros, and the resulting ratio reads as a
+// consumption rate it has no standing to be. So ConsumedEvents pairs with MeasuredServedEvents
+// ONLY; UnmeasuredServedEvents is reported separately and is never a denominator.
+// ServedEvents keeps its original meaning (the total) so an existing reader is not silently
+// re-pointed at a different quantity: Measured + Unmeasured always reconstructs it.
 type surfacingInjection struct {
-	Scope          string `json:"scope"` // always "global" in v1
-	ServedEvents   int    `json:"served_events"`
-	ConsumedEvents int    `json:"consumed_events"`
-	LastConsumed   string `json:"last_consumed"` // coarse age or "never"
-	Note           string `json:"note"`
+	Scope string `json:"scope"` // always "global" in v1
+
+	// ServedEvents is every served claim event, measured or not. It is NOT a denominator.
+	ServedEvents int `json:"served_events"`
+	// MeasuredServedEvents is the served events from sessions whose consumption detector ran
+	// (used_declared=true). This is the only honest denominator for ConsumedEvents.
+	MeasuredServedEvents int `json:"measured_served_events"`
+	// UnmeasuredServedEvents is the served events from sessions whose detector never ran. Their
+	// consumption is UNKNOWN — reporting it as zero is the defect this split exists to prevent.
+	UnmeasuredServedEvents int `json:"unmeasured_served_events"`
+
+	ConsumedEvents int `json:"consumed_events"`
+
+	MeasuredSessions   int `json:"measured_sessions"`
+	UnmeasuredSessions int `json:"unmeasured_sessions"`
+
+	LastConsumed string `json:"last_consumed"` // coarse age or "never"
+	Note         string `json:"note"`
 }
 
 func doctorUsage() string {
@@ -758,9 +782,26 @@ func printSurfacing(stdout io.Writer, rep doctorReport) {
 		fmt.Fprintf(stdout, "-> %s\n", rep.SurfacingNote)
 	}
 	inj := rep.SurfacingInjection
-	fmt.Fprintf(stdout, "-> injection %s: served %d, consumed %d, last-consumed %s (%s)\n",
-		inj.Scope, inj.ServedEvents, inj.ConsumedEvents, inj.LastConsumed, inj.Note)
+	fmt.Fprintf(stdout, "-> injection %s: served %d = measured %d + unmeasured %d, consumed %d of %d measured, last-consumed %s (%s)\n",
+		inj.Scope, inj.ServedEvents, inj.MeasuredServedEvents, inj.UnmeasuredServedEvents,
+		inj.ConsumedEvents, inj.MeasuredServedEvents, inj.LastConsumed, inj.Note)
+	if inj.UnmeasuredServedEvents > 0 {
+		fmt.Fprintf(stdout, "-> injection unmeasured: %d served event(s) across %d session(s) whose consumption detector never ran (used_declared=false) — consumption UNKNOWN, never counted as zero; only the %d measured event(s) are a denominator\n",
+			inj.UnmeasuredServedEvents, inj.UnmeasuredSessions, inj.MeasuredServedEvents)
+	}
 	fmt.Fprintln(stdout, "-> peers: active leases + agent-lane cards render in each harness's orient ContextPack (contextual, display-only)")
+}
+
+// surfacingInjectionCell renders the matrix's injection cell. It keeps the established
+// served/consumed order, but the served half is the MEASURED count — the only one that pairs with
+// consumed — and any unmeasured remainder is appended with a "?" so the cell can never be read as
+// a complete measurement. With nothing unmeasured the cell keeps its original "(global)" shape.
+// The arrow lines under the matrix carry the full sentence; this cell is the glance.
+func surfacingInjectionCell(inj surfacingInjection) string {
+	if inj.UnmeasuredServedEvents > 0 {
+		return fmt.Sprintf("%d/%d (+%d?)", inj.MeasuredServedEvents, inj.ConsumedEvents, inj.UnmeasuredServedEvents)
+	}
+	return fmt.Sprintf("%d/%d (global)", inj.MeasuredServedEvents, inj.ConsumedEvents)
 }
 
 // surfacingLaneCell renders a lane name into the fixed-width lane column. When the name exceeds the
@@ -875,7 +916,7 @@ func surfacingRowFor(lane, rawHarness string, guardBy map[string]string, orientB
 		Guard:     guard,
 		Orient:    orient,
 		OrientAge: orientAge,
-		Injection: fmt.Sprintf("%d/%d (global)", inj.ServedEvents, inj.ConsumedEvents),
+		Injection: surfacingInjectionCell(inj),
 		Peers:     peers,
 	}
 	if guard == "absent" || guard == "drift" {
@@ -1034,9 +1075,21 @@ func injectionGlobalSummary(homePath string, now time.Time) surfacingInjection {
 	if err != nil {
 		return inj
 	}
-	for _, c := range rep.Conditions {
-		inj.ServedEvents += c.ServedClaimEvents
-		inj.ConsumedEvents += c.ConsumedClaimEvents
+	// Rolled up from Sessions, not Conditions: the used_declared discriminator only exists at
+	// session granularity, and it is the whole point of this summary. The totals are identical
+	// either way (a condition summary is a sum over its own sessions), so nothing is traded for
+	// it — the session walk simply keeps the measured/unmeasured split that the condition rollup
+	// has already flattened away.
+	for _, s := range rep.Sessions {
+		inj.ServedEvents += s.ServedCount
+		inj.ConsumedEvents += s.ConsumedCount
+		if s.UsedDeclared {
+			inj.MeasuredSessions++
+			inj.MeasuredServedEvents += s.ServedCount
+			continue
+		}
+		inj.UnmeasuredSessions++
+		inj.UnmeasuredServedEvents += s.ServedCount
 	}
 	var last time.Time
 	for _, s := range rep.Sessions {

@@ -13,7 +13,9 @@ import (
 
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/finding"
+	"compound/internal/home"
 	"compound/internal/hookplan"
 	"compound/internal/policy"
 	"compound/internal/runattempt"
@@ -207,7 +209,18 @@ func TestDoctorSurfacing_F4_JSONAndTextAgree(t *testing.T) {
 	if !strings.Contains(text, "## surfacing coverage") {
 		t.Fatalf("text missing surfacing section:\n%s", text)
 	}
-	injLine := fmt.Sprintf("served %d, consumed %d", rep.SurfacingInjection.ServedEvents, rep.SurfacingInjection.ConsumedEvents)
+	// The JSON↔text agreement invariant is unchanged; the numbers it agrees ON are not. This
+	// assertion used to read `served <ServedEvents>, consumed <ConsumedEvents>` — pinning the
+	// total against consumed as one pair, which is exactly the misreading the measured/unmeasured
+	// split exists to prevent (see TestDoctorInjectionRollupSeparatesMeasuredFromUnmeasuredSessions).
+	// It now pins the honest pairing: consumed is quoted against the MEASURED denominator, and the
+	// total is quoted as a decomposition rather than a ratio.
+	injLine := fmt.Sprintf("served %d = measured %d + unmeasured %d, consumed %d of %d measured",
+		rep.SurfacingInjection.ServedEvents,
+		rep.SurfacingInjection.MeasuredServedEvents,
+		rep.SurfacingInjection.UnmeasuredServedEvents,
+		rep.SurfacingInjection.ConsumedEvents,
+		rep.SurfacingInjection.MeasuredServedEvents)
 	if !strings.Contains(text, injLine) {
 		t.Fatalf("text injection numbers must match json (%s):\n%s", injLine, text)
 	}
@@ -602,5 +615,180 @@ func TestDoctorReportsSweepTeethCountersOnFreshHome(t *testing.T) {
 	}
 	if len(rep.RunAttemptsSweptAmbiguousIDs) != 0 {
 		t.Fatalf("fresh home: SweptAmbiguousIDs should be empty, got %v", rep.RunAttemptsSweptAmbiguousIDs)
+	}
+}
+
+// seedInjectionSession writes one ContextPack carrying servedClaims in active_memory plus the
+// receipt that closed it, mirroring the shape a real close writes: ids.context_pack_id joins the
+// two, skills.used_declared records whether the consumption detector actually RAN, and
+// skills.used carries any claim refs it detected. usedDeclared=false is the production case this
+// test exists for — the detector never ran, so this session's consumption is UNKNOWN.
+func seedInjectionSession(t *testing.T, homePath, recID, packID string, createdAt time.Time, servedClaims, consumedClaims []string, usedDeclared bool) {
+	t.Helper()
+	pack := envelope.ContextPack{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVContextPack,
+			ID:            packID,
+			CreatedAt:     createdAt.UTC().Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "compound"},
+			Authority:     envelope.Authority{SourceClass: "generated", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		SummaryMD:          "injection honesty fixture",
+		Included:           []envelope.IncludedRef{},
+		Excluded:           []envelope.ExcludedRef{},
+		ActiveInstructions: []string{},
+		ActiveHooks:        []string{},
+		ActiveDecisions:    []string{},
+		ActiveMemory:       servedClaims,
+		RequiredChecks:     []string{},
+		Avoid:              []string{},
+	}
+	if err := pack.Validate(); err != nil {
+		t.Fatalf("fixture pack %s invalid: %v", packID, err)
+	}
+	b, err := json.MarshalIndent(pack, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	packPath := filepath.Join(homePath, "context", "packs", packID+".json")
+	if err := os.MkdirAll(filepath.Dir(packPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(packPath, append(b, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if consumedClaims == nil {
+		consumedClaims = []string{}
+	}
+	rec := envelope.Receipt{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVReceipt,
+			ID:            recID,
+			CreatedAt:     createdAt.UTC().Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: "work_" + recID, ContextPackID: packID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Outcome:    "completed",
+		MoveType:   "outward_delta",
+		StateDelta: envelope.StateDelta{Changed: true, Summary: "fixture", FilesChanged: []string{}, Artifacts: []string{}, Verification: []string{}},
+		Cost:       envelope.ReceiptCost{ModelCalls: []string{}},
+		Skills:     envelope.ReceiptSkills{Used: consumedClaims, Missed: []string{}, Candidate: []string{}, UsedDeclared: usedDeclared},
+		Memory:     envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}},
+		Next:       envelope.ReceiptNext{SuggestedWork: []string{}},
+		ProofRefs:  []string{"check:fixture"},
+	}
+	if err := rec.Validate(); err != nil {
+		t.Fatalf("fixture receipt %s invalid: %v", recID, err)
+	}
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(rec.ID, &rec, " "); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A session whose consumption detector NEVER RAN must never be counted as a measured zero.
+//
+// internal/hook/consumption.go:25-27 states the invariant the detector is built on: "UNDER-
+// DETECTION IS SAFE: a missed consumption becomes UNKNOWN, never ignored, because the usage
+// projection only cools injected refs from receipts that DECLARED (used_declared)." The projection
+// honors it — InjectionSessionRow carries used_declared per session. The doctor rollup did not: it
+// summed served and consumed across every session regardless, so an unmeasured session's served
+// claims entered the denominator while its unknown consumption was printed as if it were an
+// observed zero.
+//
+// Measured on the operator's real home 2026-08-10 (find_9e53b1cad88c): 299 on-condition sessions,
+// 202 of them used_declared=false, contributing 717 of 1142 served claim events — 63% of the
+// denominator was unmeasured and rendered as `served 1142, consumed 5`.
+//
+// The fixture: one measured session (2 served, 1 consumed) and two unmeasured sessions (3 and 4
+// served, detector never ran). An honest surface must keep 2 as the denominator that pairs with
+// consumed, report 7 separately as unmeasured, and never render a bare `served 9, consumed 1`.
+func TestDoctorInjectionRollupSeparatesMeasuredFromUnmeasuredSessions(t *testing.T) {
+	homePath := t.TempDir()
+	base := t.TempDir()
+	binary := "/opt/compound/compound"
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	seedInjectionSession(t, homePath, "rec_measured", "ctx_measured", cliTestNow,
+		[]string{"claim://claim_m1", "claim://claim_m2"}, []string{"claim://claim_m1"}, true)
+	seedInjectionSession(t, homePath, "rec_unmeasured_a", "ctx_unmeasured_a", cliTestNow.Add(time.Minute),
+		[]string{"claim://claim_a1", "claim://claim_a2", "claim://claim_a3"}, nil, false)
+	seedInjectionSession(t, homePath, "rec_unmeasured_b", "ctx_unmeasured_b", cliTestNow.Add(2*time.Minute),
+		[]string{"claim://claim_b1", "claim://claim_b2", "claim://claim_b3", "claim://claim_b4"}, nil, false)
+
+	var jsonOut, errOut bytes.Buffer
+	if code := runDoctor([]string{"--home", homePath, "--base", base, "--binary", binary, "--json"}, &jsonOut, &errOut); code != 0 {
+		t.Fatalf("json doctor failed: %s", errOut.String())
+	}
+	// Decoded into a LOCAL struct, not doctorReport: this test must compile and run red against a
+	// build whose surfacingInjection lacks the split fields, so the falsifier proves behavior
+	// rather than the presence of a symbol.
+	var got struct {
+		Inj struct {
+			ServedEvents           int `json:"served_events"`
+			MeasuredServedEvents   int `json:"measured_served_events"`
+			UnmeasuredServedEvents int `json:"unmeasured_served_events"`
+			ConsumedEvents         int `json:"consumed_events"`
+			MeasuredSessions       int `json:"measured_sessions"`
+			UnmeasuredSessions     int `json:"unmeasured_sessions"`
+		} `json:"surfacing_injection"`
+	}
+	if err := json.Unmarshal(jsonOut.Bytes(), &got); err != nil {
+		t.Fatalf("parse json: %v", err)
+	}
+
+	for _, c := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"served_events (total, unchanged)", got.Inj.ServedEvents, 9},
+		{"measured_served_events", got.Inj.MeasuredServedEvents, 2},
+		{"unmeasured_served_events", got.Inj.UnmeasuredServedEvents, 7},
+		{"consumed_events", got.Inj.ConsumedEvents, 1},
+		{"measured_sessions", got.Inj.MeasuredSessions, 1},
+		{"unmeasured_sessions", got.Inj.UnmeasuredSessions, 2},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s = %d, want %d", c.name, c.got, c.want)
+		}
+	}
+
+	// The consumed count may only ever be divided by the MEASURED denominator. An unmeasured
+	// session can never move it.
+	if got.Inj.MeasuredServedEvents+got.Inj.UnmeasuredServedEvents != got.Inj.ServedEvents {
+		t.Errorf("measured+unmeasured must reconstruct the total: %d+%d != %d",
+			got.Inj.MeasuredServedEvents, got.Inj.UnmeasuredServedEvents, got.Inj.ServedEvents)
+	}
+
+	text := runDoctorText(t, homePath, base, binary)
+	// The exact misreading this slice exists to prevent: a bare total-served/consumed pair that
+	// reads as a consumption rate.
+	if strings.Contains(text, "served 9, consumed 1") {
+		t.Errorf("text still pairs the TOTAL served with consumed as if it were measured:\n%s", text)
+	}
+	for _, want := range []string{"measured 2", "unmeasured 7"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text missing %q — the split must be visible where an operator reads it:\n%s", want, text)
+		}
+	}
+	// The legend must say what unmeasured MEANS, or the number is just another opaque figure.
+	if !strings.Contains(text, "used_declared=false") {
+		t.Errorf("text must name the discriminator (used_declared=false) behind unmeasured:\n%s", text)
 	}
 }
