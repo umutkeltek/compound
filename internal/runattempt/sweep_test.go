@@ -15,6 +15,7 @@
 package runattempt
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -722,11 +723,12 @@ func TestSweepStaleMixedBatchClassification(t *testing.T) {
 	}
 }
 
-// TestSweepStaleAlwaysClassifiesAllStale: a stale attempt whose
-// classification call returns the empty string (impossible today, but
-// defensive) must NOT silently skip — the sweep terminates with an error
-// so the operator sees the misconfiguration rather than a partial sweep
-// with no escalation.
+// TestSweepStaleRefusesEmptyClassification pins the fail-closed behavior that
+// a stale attempt with an unrecognized classification must surface an error,
+// not silently skip the candidate. The production path never produces an
+// unrecognized classification because ClassifyStaleRunAttempt is total, but a
+// future regression (e.g. ClassifyStaleRunAttempt returning "") must not leave
+// the candidate non-terminal.
 func TestSweepStaleRefusesEmptyClassification(t *testing.T) {
 	home := t.TempDir()
 	s := Open(home)
@@ -740,5 +742,108 @@ func TestSweepStaleRefusesEmptyClassification(t *testing.T) {
 	// cannot reach this — the test pins the rejection at the entrypoint.
 	if _, err := s.CompleteWithReasonAndClassification(ra.ID, StatusAbandoned, "stale: test", "", t0.Add(time.Hour)); err == nil {
 		t.Fatal("CompleteWithReasonAndClassification with empty classification must reject (sweep must always classify)")
+	}
+}
+
+// TestCompleteStaleSnapshotSurfacesClassificationError is the direct falsifier for
+// completeStaleSnapshot: if ClassifyStaleRunAttempt returns an unrecognized
+// value, the helper must return an error and leave the attempt non-terminal.
+func TestCompleteStaleSnapshotSurfacesClassificationError(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+
+	ra, err := s.Mint("work_classify_error", "actor", "fake", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetOrigin(ra.ID, OriginClaimReservation); err != nil {
+		t.Fatal(err)
+	}
+
+	// Snapshot the stale candidate exactly as the sweep would see it.
+	candidate, err := s.Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Corrupt classification by tampering with the recognized set. We simulate
+	// the regression by replacing ClassifyStaleRunAttempt with a function that
+	// returns an unrecognized value. The production implementation is restored.
+	origClassify := classifyStaleRunAttemptForTest
+	classifyStaleRunAttemptForTest = func(RunAttempt) string { return "not_a_classification" }
+	defer func() { classifyStaleRunAttemptForTest = origClassify }()
+
+	_, _, swept, cerr := s.completeStaleSnapshot(candidate, 30*time.Minute, t0.Add(time.Hour))
+	if cerr == nil {
+		t.Fatal("completeStaleSnapshot with unrecognized classification must error")
+	}
+	if !strings.Contains(cerr.Error(), "not a valid SweepClassification") {
+		t.Fatalf("error = %q, want classification invalid", cerr)
+	}
+	if swept {
+		t.Fatal("unrecognized classification must not sweep the attempt")
+	}
+
+	got, err := s.Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsTerminal(got.Status) {
+		t.Fatalf("attempt became terminal despite classification error: %s", got.Status)
+	}
+}
+
+// TestCompleteStaleSnapshotSurfacesWriteError is the direct falsifier for the
+// write path inside completeStaleSnapshot: if the terminal write fails, the
+// helper must return the error and leave the attempt non-terminal.
+func TestCompleteStaleSnapshotSurfacesWriteError(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+
+	ra, err := s.Mint("work_write_error", "actor", "fake", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetOrigin(ra.ID, OriginClaimReservation); err != nil {
+		t.Fatal(err)
+	}
+
+	candidate, err := s.Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Force the atomic write to fail by overriding the production write helper.
+	// This directly exercises the regression: if write failure inside
+	// completeStaleSnapshot is ignored, swept=true is returned and the candidate
+	// is left terminal.
+	origWrite := runattemptWriteFile
+	runattemptWriteFile = func(path string, ra RunAttempt) error {
+		return errors.New("injected: runattempt write blocked")
+	}
+	defer func() { runattemptWriteFile = origWrite }()
+
+	_, _, swept, cerr := s.completeStaleSnapshot(candidate, 30*time.Minute, t0.Add(time.Hour))
+	if cerr == nil {
+		t.Fatal("completeStaleSnapshot with blocked write must error")
+	}
+	if swept {
+		t.Fatal("blocked write must not report swept=true")
+	}
+	if !strings.Contains(cerr.Error(), "runattempt write blocked") {
+		t.Fatalf("expected injected write error, got %v", cerr)
+	}
+
+	// Restore the writer so the Get below reads the untampered original file.
+	runattemptWriteFile = origWrite
+
+	got, err := s.Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsTerminal(got.Status) {
+		t.Fatalf("attempt became terminal despite write error: %s", got.Status)
 	}
 }

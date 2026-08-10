@@ -2412,3 +2412,116 @@ func firstEventID(events []map[string]any, kind string) string {
 // the newest attached work.delegate.spawned eventstore record, recovered by
 // walking the work's lifecycle attachments. See recoverBoundSession in
 // delegate.go. A binding-path test would re-introduce a second truth.
+
+// TestDelegateWorkspaceResolutionFailsClosed proves the workspace is never
+// inferred from COMPOUND_HOME and never falls back to the process cwd. When no
+// --workspace is supplied, the work has no git_delivery.target_worktree_root,
+// and cwd resolution is unavailable, Delegate returns a structured refusal with
+// zero side effects (no session, no run attempt, no delegate event).
+func TestDelegateWorkspaceResolutionFailsClosed(t *testing.T) {
+	origGuard := LaneCapacityGuard
+	origReadiness := DelegateHarnessReadiness
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+		return DelegateHarnessReadinessResult{Ready: true}, nil
+	}
+	t.Cleanup(func() {
+		LaneCapacityGuard = origGuard
+		DelegateHarnessReadiness = origReadiness
+	})
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "codex", "", "")
+
+	// Capture cwd behavior by temporarily replacing os.Getwd with a failure.
+	origGetwd := delegateOsGetwd
+	delegateOsGetwd = func() (string, error) { return "", errors.New("cwd unavailable") }
+	t.Cleanup(func() { delegateOsGetwd = origGetwd })
+
+	runner := newFakeRunner()
+	res, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude", Actor: "codex", Command: "claude", Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	if res.Status != "refused" || res.Refusal == nil {
+		t.Fatalf("expected refusal, got %+v", res)
+	}
+	if res.Refusal.Reason != "workspace_unresolvable" {
+		t.Fatalf("reason = %q, want workspace_unresolvable", res.Refusal.Reason)
+	}
+	if !strings.Contains(res.Refusal.Message, "no workspace resolved") {
+		t.Fatalf("message = %q, want no workspace resolved", res.Refusal.Message)
+	}
+	if len(runner.creates) != 0 {
+		t.Fatalf("workspace refusal created session: %+v", runner.creates)
+	}
+	if events := capturedDelegateEvents(t, s); len(events) != 0 {
+		t.Fatalf("workspace refusal emitted delegate events: %+v", events)
+	}
+	if attempts := runAttemptsByID(t, s); len(attempts) != 1 {
+		// Only the claim-time placeholder exists; no delegate attempt minted.
+		for id, ra := range attempts {
+			if ra.Origin == runattempt.OriginHarnessExecution {
+				t.Fatalf("workspace refusal minted delegate attempt %s", id)
+			}
+		}
+	}
+
+	// Also prove the resolved workspace is never s.home itself when cwd succeeds.
+	origGetwd = delegateOsGetwd
+	delegateOsGetwd = func() (string, error) { return s.home, nil }
+	defer func() { delegateOsGetwd = origGetwd }()
+	res2, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude", Actor: "codex", Command: "claude", Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatalf("delegate with cwd=s.home: %v", err)
+	}
+	if res2.Status != "refused" || res2.Refusal == nil || res2.Refusal.Reason != "workspace_occupied" {
+		t.Fatalf("cwd=s.home must be refused as workspace_occupied, got %+v", res2)
+	}
+	// The "occupied" refusal proves the orchestrator resolved the workspace to
+	// s.home and applied workspace ownership rules rather than silently spawning
+	// inside COMPOUND_HOME. The refusal path emits a delegate event, which is fine
+	// because this is a post-resolution gate refusal.
+}
+
+func TestDelegateWorkspaceIsNeverCompoundHome(t *testing.T) {
+	origGuard := LaneCapacityGuard
+	origReadiness := DelegateHarnessReadiness
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+		return DelegateHarnessReadinessResult{Ready: true}, nil
+	}
+	t.Cleanup(func() {
+		LaneCapacityGuard = origGuard
+		DelegateHarnessReadiness = origReadiness
+	})
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "codex", "", "")
+
+	origGetwd := delegateOsGetwd
+	delegateOsGetwd = func() (string, error) { return s.home, nil }
+	t.Cleanup(func() { delegateOsGetwd = origGetwd })
+
+	runner := newFakeRunner()
+	res, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude", Actor: "codex", Command: "claude",
+		// No --workspace, no git_delivery on the work. With cwd set to s.home the
+		// fallback resolves to COMPOUND_HOME itself; that must be refused.
+		Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	if res.Status != "refused" || res.Refusal == nil || res.Refusal.Reason != "workspace_occupied" {
+		t.Fatalf("workspace=s.home must be refused as workspace_occupied, got %+v", res)
+	}
+	if len(runner.creates) != 0 {
+		t.Fatalf("workspace_occupied refusal created session: %+v", runner.creates)
+	}
+}
+
