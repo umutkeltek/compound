@@ -177,11 +177,16 @@ CREATE TABLE IF NOT EXISTS vectors (
     ref         TEXT PRIMARY KEY,
     embedding   vector(%d) NOT NULL,
     metadata    JSONB DEFAULT '{}',
+    embedder    TEXT NOT NULL DEFAULT '',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_vectors_embedding ON vectors
     USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+
+-- Databases created before embedder custody was added do not have this column.
+-- Empty means "written before stamping" and is ignored by the custody check.
+ALTER TABLE vectors ADD COLUMN IF NOT EXISTS embedder TEXT NOT NULL DEFAULT '';
 `, vectorDims)
 }
 
