@@ -61,11 +61,20 @@ func actIDFor(prefix string, parts ...string) string {
 	return prefix + hex.EncodeToString(sum[:])[:12]
 }
 
+// eventstoreRecorder is the narrow surface the store organ needs to persist
+// proof envelopes. It matches *eventstore.Store and can be implemented by
+// test fakes to exercise failure paths.
+type eventstoreRecorder interface {
+	PutJSON(id string, value any, indent string) (eventstore.PutResult, error)
+	Read(raw string) (eventstore.Record, error)
+	Remove(raw string) error
+}
+
 // recordEventstoreEnvelope persists a receipt/transition through the canonical
 // event store and proves it resolvable via a post-write Read, mirroring the
 // helper in cmd/compound/eventstore_rebaseline.go (which mirrors package act's
 // own unexported recorder).
-func recordEventstoreEnvelope(store *eventstore.Store, value envelope.Envelope) error {
+func recordEventstoreEnvelope(store eventstoreRecorder, value envelope.Envelope) error {
 	if err := value.Validate(); err != nil {
 		return err
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -188,7 +189,203 @@ func TestAppendEdge(t *testing.T) {
 	}
 }
 
-// ─── Candidates ──────────────────────────────────────────────────────────────────
+func TestAppendClaimRejectsDivergentContent(t *testing.T) {
+	store := testStore(t)
+	now := time.Now()
+	claim := persist.Claim{
+		ID:         fmt.Sprintf("divergent-%d", now.UnixNano()),
+		Entity:     "test::divergent",
+		Predicate:  "color",
+		Object:     "blue",
+		Confidence: 0.9,
+		Derivation: "extracted",
+		Visibility: "operational",
+		State:      "promoted",
+	}
+
+	seq1, err := store.AppendClaim(claim, now)
+	if err != nil {
+		t.Fatalf("AppendClaim 1st: %v", err)
+	}
+	if seq1 <= 0 {
+		t.Fatalf("expected positive seq, got %d", seq1)
+	}
+
+	// Identical re-insert must be idempotent and return the existing seq.
+	seq2, err := store.AppendClaim(claim, now)
+	if err != nil {
+		t.Fatalf("AppendClaim identical: %v", err)
+	}
+	if seq2 != seq1 {
+		t.Fatalf("idempotent insert returned different seq: %d != %d", seq2, seq1)
+	}
+
+	// Divergent content with the same id must be rejected, not silently dropped.
+	claim.Object = "red"
+	_, err = store.AppendClaim(claim, now)
+	if err == nil {
+		t.Fatal("expected error for divergent claim id, got nil")
+	}
+	if !strings.Contains(err.Error(), "different content") {
+		t.Fatalf("expected different-content error, got: %v", err)
+	}
+
+	// Fold must still expose the original (immutable) claim.
+	claims, err := store.FoldClaims(persist.ClaimFilter{Entity: "test::divergent"})
+	if err != nil {
+		t.Fatalf("FoldClaims: %v", err)
+	}
+	for _, c := range claims {
+		if c.ID == claim.ID && c.Object != "blue" {
+			t.Fatalf("divergent insert corrupted original claim: object=%q", c.Object)
+		}
+	}
+}
+
+func TestBulkAppendClaimsRollsBackOnConflict(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	sharedID := fmt.Sprintf("bulk-conflict-%d", now.UnixNano())
+
+	// Seed the first claim so the second bulk insert conflicts.
+	first := persist.Claim{
+		ID: sharedID, Entity: "test::bulk", Predicate: "p", Object: "first",
+		Confidence: 0.5, Derivation: "extracted", Visibility: "operational", State: "promoted",
+	}
+	if _, err := store.AppendClaim(first, now); err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+
+	second := persist.Claim{
+		ID: fmt.Sprintf("bulk-ok-%d", now.UnixNano()), Entity: "test::bulk", Predicate: "p", Object: "second",
+		Confidence: 0.5, Derivation: "extracted", Visibility: "operational", State: "promoted",
+	}
+	conflict := persist.Claim{
+		ID: sharedID, Entity: "test::bulk", Predicate: "p", Object: "second",
+		Confidence: 0.5, Derivation: "extracted", Visibility: "operational", State: "promoted",
+	}
+
+	_, err := store.BulkAppendClaims(ctx, []persist.Claim{second, conflict})
+	if err == nil {
+		t.Fatal("expected bulk append to fail on divergent id conflict")
+	}
+
+	// The successful second claim must NOT be visible: the whole phase rolled back.
+	claims, err := store.FoldClaims(persist.ClaimFilter{Entity: "test::bulk"})
+	if err != nil {
+		t.Fatalf("FoldClaims: %v", err)
+	}
+	for _, c := range claims {
+		if c.ID == second.ID {
+			t.Fatalf("bulk phase was not rolled back; found %s after conflict", second.ID)
+		}
+	}
+}
+
+func TestCandidateFullSchemaRoundTrip(t *testing.T) {
+	store := testStore(t)
+	now := time.Now()
+	cand := persist.Candidate{
+		ID:              fmt.Sprintf("cand-full-%d", now.UnixNano()),
+		Entity:          "test::full-candidate",
+		Predicate:       "hypothesis",
+		Object:          "postgres-carries-all-fields",
+		ObservationDate: "2026-08-10",
+		Confidence:      0.8,
+		Derivation:      "extracted",
+		ClaimType:       "architecture",
+		CanonClass:      "system",
+		Qualifiers:      map[string]string{"domain": "storage"},
+		Visibility:      "candidate",
+		State:           "proposed",
+		SourceTraceRef:  "trace://abc",
+		EvidenceRefs:    []string{"ev://1", "ev://2"},
+		Reason:          "initial extraction",
+		AdjudicatedBy:   "operator-1",
+		AdjudicatedAt:   now.UTC().Format(time.RFC3339),
+		CreatedAt:       now.UTC().Format(time.RFC3339),
+	}
+
+	if err := store.AppendCandidate(cand, now); err != nil {
+		t.Fatalf("AppendCandidate: %v", err)
+	}
+
+	got, err := store.GetCandidate(cand.ID)
+	if err != nil {
+		t.Fatalf("GetCandidate: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetCandidate returned nil")
+	}
+	if got.ClaimType != cand.ClaimType {
+		t.Errorf("claim_type lost: got %q want %q", got.ClaimType, cand.ClaimType)
+	}
+	if got.CanonClass != cand.CanonClass {
+		t.Errorf("canon_class lost: got %q want %q", got.CanonClass, cand.CanonClass)
+	}
+	if len(got.Qualifiers) != 1 || got.Qualifiers["domain"] != "storage" {
+		t.Errorf("qualifiers lost: got %v", got.Qualifiers)
+	}
+	if got.Reason != cand.Reason {
+		t.Errorf("reason lost: got %q want %q", got.Reason, cand.Reason)
+	}
+	if got.AdjudicatedBy != cand.AdjudicatedBy {
+		t.Errorf("adjudicated_by lost: got %q want %q", got.AdjudicatedBy, cand.AdjudicatedBy)
+	}
+	if got.AdjudicatedAt != cand.AdjudicatedAt {
+		t.Errorf("adjudicated_at lost: got %q want %q", got.AdjudicatedAt, cand.AdjudicatedAt)
+	}
+	if len(got.EvidenceRefs) != 2 || got.EvidenceRefs[0] != "ev://1" {
+		t.Errorf("evidence_refs lost: got %v", got.EvidenceRefs)
+	}
+
+	// UpdateCandidate must preserve the full schema when the mutate callback changes
+	// fields beyond visibility/state.
+	if err := store.UpdateCandidate(cand.ID, func(c *persist.Candidate) error {
+		c.State = "parked"
+		c.Reason = "operator reviewed"
+		c.AdjudicatedBy = "operator-2"
+		c.AdjudicatedAt = now.UTC().Format(time.RFC3339)
+		c.ClaimType = "status"
+		c.Qualifiers["domain"] = "governance"
+		return nil
+	}); err != nil {
+		t.Fatalf("UpdateCandidate: %v", err)
+	}
+
+	updated, err := store.GetCandidate(cand.ID)
+	if err != nil {
+		t.Fatalf("GetCandidate after update: %v", err)
+	}
+	if updated.State != "parked" {
+		t.Errorf("state update lost: got %q", updated.State)
+	}
+	if updated.Reason != "operator reviewed" {
+		t.Errorf("reason update lost: got %q", updated.Reason)
+	}
+	if updated.AdjudicatedBy != "operator-2" {
+		t.Errorf("adjudicated_by update lost: got %q", updated.AdjudicatedBy)
+	}
+	if updated.ClaimType != "status" {
+		t.Errorf("claim_type update lost: got %q", updated.ClaimType)
+	}
+	if updated.Qualifiers["domain"] != "governance" {
+		t.Errorf("qualifiers update lost: got %v", updated.Qualifiers)
+	}
+
+	list, err := store.ListCandidates(persist.CandidateFilter{Entity: cand.Entity})
+	if err != nil {
+		t.Fatalf("ListCandidates: %v", err)
+	}
+	if len(list) == 0 {
+		t.Fatal("ListCandidates returned no rows")
+	}
+	if list[0].Reason != "operator reviewed" {
+		t.Errorf("ListCandidates dropped reason: got %q", list[0].Reason)
+	}
+}
+
 
 func TestCandidateLifecycle(t *testing.T) {
 	store := testStore(t)

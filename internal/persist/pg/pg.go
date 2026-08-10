@@ -11,16 +11,23 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pgvector/pgvector-go"
 
 	"compound/internal/envelope"
 	"compound/internal/persist"
 )
+
+type dbExecer interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
 
 // Store is the Postgres-backed implementation of all persist interfaces.
 type Store struct {
@@ -129,6 +136,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     entity          TEXT NOT NULL,
     predicate       TEXT NOT NULL,
     object          TEXT NOT NULL,
+    observation_date TEXT,
     confidence      DOUBLE PRECISION DEFAULT 0,
     derivation      TEXT DEFAULT 'extracted',
     claim_type      TEXT DEFAULT '',
@@ -145,6 +153,9 @@ CREATE TABLE IF NOT EXISTS candidates (
 );
 CREATE INDEX IF NOT EXISTS idx_candidates_state ON candidates(state);
 CREATE INDEX IF NOT EXISTS idx_candidates_entity ON candidates(entity);
+
+-- Databases created before the observation_date column was added do not have it.
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS observation_date TEXT;
 
 -- Events: append-only event log (replaces JSONL segments).
 CREATE TABLE IF NOT EXISTS events (
@@ -195,41 +206,116 @@ ALTER TABLE vectors ADD COLUMN IF NOT EXISTS embedder TEXT NOT NULL DEFAULT '';
 var _ persist.LedgerStore = (*Store)(nil)
 
 func (s *Store) AppendClaim(claim persist.Claim, now time.Time) (int64, error) {
-	ctx := context.Background()
+	return appendClaimExec(context.Background(), s.pool, claim, now)
+}
+
+func appendClaimExec(ctx context.Context, exec dbExecer, claim persist.Claim, now time.Time) (int64, error) {
+	createdAt := now
+	if claim.CreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339, claim.CreatedAt); err == nil {
+			createdAt = t
+		}
+	}
 	qualifiers, _ := json.Marshal(claim.Qualifiers)
 	evidenceRefs, _ := json.Marshal(claim.EvidenceRefs)
 
 	var seq int64
-	err := s.pool.QueryRow(ctx, `
+	err := exec.QueryRow(ctx, `
 		INSERT INTO claims (id, entity, predicate, object, observation_date, confidence,
 			derivation, claim_type, canon_class, qualifiers, visibility, state,
 			source_trace_ref, evidence_refs, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-		ON CONFLICT (id) DO UPDATE SET entity = claims.entity
+		ON CONFLICT (id) DO UPDATE SET
+			entity = claims.entity
+		WHERE (
+			claims.entity = EXCLUDED.entity AND
+			claims.predicate = EXCLUDED.predicate AND
+			claims.object = EXCLUDED.object AND
+			claims.observation_date IS NOT DISTINCT FROM EXCLUDED.observation_date AND
+			claims.confidence IS NOT DISTINCT FROM EXCLUDED.confidence AND
+			claims.derivation IS NOT DISTINCT FROM EXCLUDED.derivation AND
+			claims.claim_type IS NOT DISTINCT FROM EXCLUDED.claim_type AND
+			claims.canon_class IS NOT DISTINCT FROM EXCLUDED.canon_class AND
+			claims.qualifiers IS NOT DISTINCT FROM EXCLUDED.qualifiers AND
+			claims.visibility IS NOT DISTINCT FROM EXCLUDED.visibility AND
+			claims.state IS NOT DISTINCT FROM EXCLUDED.state AND
+			claims.source_trace_ref IS NOT DISTINCT FROM EXCLUDED.source_trace_ref AND
+			claims.evidence_refs IS NOT DISTINCT FROM EXCLUDED.evidence_refs
+		)
 		RETURNING seq`,
 		claim.ID, claim.Entity, claim.Predicate, claim.Object, claim.ObservationDate,
 		claim.Confidence, claim.Derivation, claim.ClaimType, claim.CanonClass,
 		qualifiers, claim.Visibility, claim.State, claim.SourceTraceRef,
-		evidenceRefs, now,
+		evidenceRefs, createdAt,
 	).Scan(&seq)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, fmt.Errorf("persist/pg: append claim: id %s exists with different content", claim.ID)
+		}
 		return 0, fmt.Errorf("persist/pg: append claim: %w", err)
 	}
 	return seq, nil
 }
 
+func (s *Store) BulkAppendClaims(ctx context.Context, claims []persist.Claim) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("persist/pg: begin claims bulk tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	written := 0
+	for _, claim := range claims {
+		if _, err := appendClaimExec(ctx, tx, claim, time.Now()); err != nil {
+			return 0, fmt.Errorf("persist/pg: bulk claims at %s: %w", claim.ID, err)
+		}
+		written++
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("persist/pg: commit claims bulk tx: %w", err)
+	}
+	return written, nil
+}
+
 func (s *Store) AppendEdge(edge persist.Edge, now time.Time) error {
-	ctx := context.Background()
-	_, err := s.pool.Exec(ctx, `
+	return appendEdgeExec(context.Background(), s.pool, edge, now)
+}
+
+func appendEdgeExec(ctx context.Context, exec dbExecer, edge persist.Edge, now time.Time) error {
+	createdAt := now
+	if edge.CreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339, edge.CreatedAt); err == nil {
+			createdAt = t
+		}
+	}
+	_, err := exec.Exec(ctx, `
 		INSERT INTO edges (from_id, to_id, kind, claim_id, seq, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6)
 		ON CONFLICT ON CONSTRAINT edges_natural_key DO NOTHING`,
-		edge.From, edge.To, edge.Kind, edge.ClaimID, edge.Seq, now,
+		edge.From, edge.To, edge.Kind, edge.ClaimID, edge.Seq, createdAt,
 	)
 	if err != nil {
 		return fmt.Errorf("persist/pg: append edge: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) BulkAppendEdges(ctx context.Context, edges []persist.Edge) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("persist/pg: begin edges bulk tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	written := 0
+	for _, edge := range edges {
+		if err := appendEdgeExec(ctx, tx, edge, time.Now()); err != nil {
+			return 0, fmt.Errorf("persist/pg: bulk edges at %s->%s: %w", edge.From, edge.To, err)
+		}
+		written++
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("persist/pg: commit edges bulk tx: %w", err)
+	}
+	return written, nil
 }
 
 func (s *Store) FoldClaims(filter persist.ClaimFilter) ([]persist.Claim, error) {
@@ -345,19 +431,76 @@ func (s *Store) NextSeq() (int64, error) {
 }
 
 func (s *Store) AppendCandidate(cand persist.Candidate, now time.Time) error {
-	ctx := context.Background()
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO candidates (id, entity, predicate, object, confidence,
-			derivation, visibility, state, source_trace_ref, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (id) DO NOTHING`,
-		cand.ID, cand.Entity, cand.Predicate, cand.Object, cand.Confidence,
-		cand.Derivation, cand.Visibility, cand.State, cand.SourceTraceRef, now,
-	)
+	return appendCandidateExec(context.Background(), s.pool, cand, now)
+}
+
+func appendCandidateExec(ctx context.Context, exec dbExecer, cand persist.Candidate, now time.Time) error {
+	qualifiers, _ := json.Marshal(cand.Qualifiers)
+	evidenceRefs, _ := json.Marshal(cand.EvidenceRefs)
+	var adjudicatedAt *time.Time
+	if cand.AdjudicatedAt != "" {
+		if t, err := time.Parse(time.RFC3339, cand.AdjudicatedAt); err == nil {
+			adjudicatedAt = &t
+		}
+	}
+	var id string
+	err := exec.QueryRow(ctx, `
+		INSERT INTO candidates (id, entity, predicate, object, observation_date, confidence,
+			derivation, claim_type, canon_class, qualifiers, visibility, state,
+			source_trace_ref, evidence_refs, reason, adjudicated_by, adjudicated_at, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+		ON CONFLICT (id) DO UPDATE SET
+			entity = candidates.entity
+		WHERE (
+			candidates.entity = EXCLUDED.entity AND
+			candidates.predicate = EXCLUDED.predicate AND
+			candidates.object = EXCLUDED.object AND
+			candidates.observation_date IS NOT DISTINCT FROM EXCLUDED.observation_date AND
+			candidates.confidence IS NOT DISTINCT FROM EXCLUDED.confidence AND
+			candidates.derivation IS NOT DISTINCT FROM EXCLUDED.derivation AND
+			candidates.claim_type IS NOT DISTINCT FROM EXCLUDED.claim_type AND
+			candidates.canon_class IS NOT DISTINCT FROM EXCLUDED.canon_class AND
+			candidates.qualifiers IS NOT DISTINCT FROM EXCLUDED.qualifiers AND
+			candidates.visibility IS NOT DISTINCT FROM EXCLUDED.visibility AND
+			candidates.state IS NOT DISTINCT FROM EXCLUDED.state AND
+			candidates.source_trace_ref IS NOT DISTINCT FROM EXCLUDED.source_trace_ref AND
+			candidates.evidence_refs IS NOT DISTINCT FROM EXCLUDED.evidence_refs AND
+			candidates.reason IS NOT DISTINCT FROM EXCLUDED.reason AND
+			candidates.adjudicated_by IS NOT DISTINCT FROM EXCLUDED.adjudicated_by AND
+			candidates.adjudicated_at IS NOT DISTINCT FROM EXCLUDED.adjudicated_at
+		)
+		RETURNING id`,
+		cand.ID, cand.Entity, cand.Predicate, cand.Object, cand.ObservationDate,
+		cand.Confidence, cand.Derivation, cand.ClaimType, cand.CanonClass,
+		qualifiers, cand.Visibility, cand.State, cand.SourceTraceRef,
+		evidenceRefs, cand.Reason, cand.AdjudicatedBy, adjudicatedAt, now,
+	).Scan(&id)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("persist/pg: append candidate: id %s exists with different content", cand.ID)
+		}
 		return fmt.Errorf("persist/pg: append candidate: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) BulkAppendCandidates(ctx context.Context, cands []persist.Candidate) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("persist/pg: begin candidates bulk tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	written := 0
+	for _, cand := range cands {
+		if err := appendCandidateExec(ctx, tx, cand, time.Now()); err != nil {
+			return 0, fmt.Errorf("persist/pg: bulk candidates at %s: %w", cand.ID, err)
+		}
+		written++
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("persist/pg: commit candidates bulk tx: %w", err)
+	}
+	return written, nil
 }
 
 func (s *Store) UpdateCandidate(id string, mutate func(*persist.Candidate) error) error {
@@ -368,15 +511,11 @@ func (s *Store) UpdateCandidate(id string, mutate func(*persist.Candidate) error
 	}
 	defer tx.Rollback(ctx)
 
-	var cand persist.Candidate
-	var createdAt time.Time
-	err = tx.QueryRow(ctx, `
-		SELECT id, entity, predicate, object, confidence, derivation,
-			visibility, state, source_trace_ref, created_at
-		FROM candidates WHERE id = $1 FOR UPDATE`, id,
-	).Scan(&cand.ID, &cand.Entity, &cand.Predicate, &cand.Object,
-		&cand.Confidence, &cand.Derivation, &cand.Visibility, &cand.State,
-		&cand.SourceTraceRef, &createdAt)
+	cand, err := scanCandidateFromRow(tx.QueryRow(ctx, `
+		SELECT id, entity, predicate, object, observation_date, confidence, derivation,
+			claim_type, canon_class, qualifiers, visibility, state, source_trace_ref,
+			evidence_refs, reason, adjudicated_by, adjudicated_at, created_at
+		FROM candidates WHERE id = $1 FOR UPDATE`, id))
 	if err != nil {
 		return fmt.Errorf("persist/pg: get candidate for update: %w", err)
 	}
@@ -385,9 +524,26 @@ func (s *Store) UpdateCandidate(id string, mutate func(*persist.Candidate) error
 		return err
 	}
 
+	qualifiers, _ := json.Marshal(cand.Qualifiers)
+	evidenceRefs, _ := json.Marshal(cand.EvidenceRefs)
+	var adjudicatedAt *time.Time
+	if cand.AdjudicatedAt != "" {
+		if t, err := time.Parse(time.RFC3339, cand.AdjudicatedAt); err == nil {
+			adjudicatedAt = &t
+		}
+	}
+
 	_, err = tx.Exec(ctx, `
-		UPDATE candidates SET visibility=$1, state=$2 WHERE id=$3`,
-		cand.Visibility, cand.State, cand.ID,
+		UPDATE candidates SET
+			entity=$1, predicate=$2, object=$3, observation_date=$4, confidence=$5,
+			derivation=$6, claim_type=$7, canon_class=$8, qualifiers=$9, visibility=$10,
+			state=$11, source_trace_ref=$12, evidence_refs=$13, reason=$14,
+			adjudicated_by=$15, adjudicated_at=$16
+		WHERE id=$17`,
+		cand.Entity, cand.Predicate, cand.Object, cand.ObservationDate, cand.Confidence,
+		cand.Derivation, cand.ClaimType, cand.CanonClass, qualifiers, cand.Visibility,
+		cand.State, cand.SourceTraceRef, evidenceRefs, cand.Reason,
+		cand.AdjudicatedBy, adjudicatedAt, cand.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("persist/pg: update candidate: %w", err)
@@ -395,10 +551,37 @@ func (s *Store) UpdateCandidate(id string, mutate func(*persist.Candidate) error
 	return tx.Commit(ctx)
 }
 
+// scanCandidateFromRow populates a persist.Candidate from a pgx row scanner.
+func scanCandidateFromRow(row pgx.Row) (persist.Candidate, error) {
+	var c persist.Candidate
+	var createdAt time.Time
+	var qualifiers, evidenceRefs []byte
+	var adjudicatedAt *time.Time
+	err := row.Scan(&c.ID, &c.Entity, &c.Predicate, &c.Object, &c.ObservationDate,
+		&c.Confidence, &c.Derivation, &c.ClaimType, &c.CanonClass, &qualifiers,
+		&c.Visibility, &c.State, &c.SourceTraceRef, &evidenceRefs, &c.Reason,
+		&c.AdjudicatedBy, &adjudicatedAt, &createdAt)
+	if err != nil {
+		return persist.Candidate{}, err
+	}
+	if len(qualifiers) > 0 {
+		_ = json.Unmarshal(qualifiers, &c.Qualifiers)
+	}
+	if len(evidenceRefs) > 0 {
+		_ = json.Unmarshal(evidenceRefs, &c.EvidenceRefs)
+	}
+	if adjudicatedAt != nil {
+		c.AdjudicatedAt = adjudicatedAt.UTC().Format(time.RFC3339)
+	}
+	c.CreatedAt = createdAt.Format(time.RFC3339)
+	return c, nil
+}
+
 func (s *Store) ListCandidates(filter persist.CandidateFilter) ([]persist.Candidate, error) {
 	ctx := context.Background()
-	query := `SELECT id, entity, predicate, object, confidence, derivation,
-		visibility, state, source_trace_ref, created_at FROM candidates WHERE 1=1`
+	query := `SELECT id, entity, predicate, object, observation_date, confidence, derivation,
+		claim_type, canon_class, qualifiers, visibility, state, source_trace_ref,
+		evidence_refs, reason, adjudicated_by, adjudicated_at, created_at FROM candidates WHERE 1=1`
 	args := []any{}
 	argN := 1
 
@@ -426,14 +609,10 @@ func (s *Store) ListCandidates(filter persist.CandidateFilter) ([]persist.Candid
 
 	var cands []persist.Candidate
 	for rows.Next() {
-		var c persist.Candidate
-		var createdAt time.Time
-		if err := rows.Scan(&c.ID, &c.Entity, &c.Predicate, &c.Object,
-			&c.Confidence, &c.Derivation, &c.Visibility, &c.State,
-			&c.SourceTraceRef, &createdAt); err != nil {
+		c, err := scanCandidateFromRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("persist/pg: scan candidate: %w", err)
 		}
-		c.CreatedAt = createdAt.Format(time.RFC3339)
 		cands = append(cands, c)
 	}
 	return cands, rows.Err()
@@ -441,21 +620,17 @@ func (s *Store) ListCandidates(filter persist.CandidateFilter) ([]persist.Candid
 
 func (s *Store) GetCandidate(id string) (*persist.Candidate, error) {
 	ctx := context.Background()
-	var c persist.Candidate
-	var createdAt time.Time
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, entity, predicate, object, confidence, derivation,
-			visibility, state, source_trace_ref, created_at
-		FROM candidates WHERE id = $1`, id,
-	).Scan(&c.ID, &c.Entity, &c.Predicate, &c.Object, &c.Confidence,
-		&c.Derivation, &c.Visibility, &c.State, &c.SourceTraceRef, &createdAt)
+	c, err := scanCandidateFromRow(s.pool.QueryRow(ctx, `
+		SELECT id, entity, predicate, object, observation_date, confidence, derivation,
+			claim_type, canon_class, qualifiers, visibility, state, source_trace_ref,
+			evidence_refs, reason, adjudicated_by, adjudicated_at, created_at
+		FROM candidates WHERE id = $1`, id))
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("persist/pg: get candidate: %w", err)
 	}
-	c.CreatedAt = createdAt.Format(time.RFC3339)
 	return &c, nil
 }
 

@@ -800,7 +800,8 @@ func syncClaims(ctx context.Context, store *pg.Store, path string, stdout io.Wri
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
-	upserted, errors := 0, 0
+	parseErrors := 0
+	var claims []persist.Claim
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -808,7 +809,7 @@ func syncClaims(ctx context.Context, store *pg.Store, path string, stdout io.Wri
 		}
 		var row syncClaimRow
 		if err := json.Unmarshal(line, &row); err != nil {
-			errors++
+			parseErrors++
 			continue
 		}
 		createdAt := time.Now()
@@ -817,7 +818,7 @@ func syncClaims(ctx context.Context, store *pg.Store, path string, stdout io.Wri
 				createdAt = t
 			}
 		}
-		claim := persist.Claim{
+		claims = append(claims, persist.Claim{
 			ID:              row.ID,
 			Entity:          row.Entity,
 			Predicate:       row.Predicate,
@@ -830,14 +831,22 @@ func syncClaims(ctx context.Context, store *pg.Store, path string, stdout io.Wri
 			Visibility:      row.Visibility,
 			State:           row.State,
 			SourceTraceRef:  row.SourceTraceRef,
-		}
-		if _, err := store.AppendClaim(claim, createdAt); err != nil {
-			errors++
-			continue
-		}
-		upserted++
+			CreatedAt:       createdAt.Format(time.RFC3339),
+		})
 	}
-	return upserted, errors
+	if len(claims) == 0 {
+		return 0, parseErrors
+	}
+	// Sync each phase inside one Postgres transaction: a mid-stream failure
+	// rolls back the whole phase rather than tearing the ledger.
+	written, err := store.BulkAppendClaims(ctx, claims)
+	if err != nil {
+		if !jsonOut {
+			fmt.Fprintf(stdout, "  claims: bulk write failed: %v\n", err)
+		}
+		return 0, parseErrors + len(claims)
+	}
+	return written, parseErrors
 }
 
 func syncEdges(ctx context.Context, store *pg.Store, path string, stdout io.Writer, jsonOut bool) (int, int) {
@@ -851,7 +860,8 @@ func syncEdges(ctx context.Context, store *pg.Store, path string, stdout io.Writ
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
-	upserted, errors := 0, 0
+	parseErrors := 0
+	var edges []persist.Edge
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -859,7 +869,7 @@ func syncEdges(ctx context.Context, store *pg.Store, path string, stdout io.Writ
 		}
 		var row syncEdgeRow
 		if err := json.Unmarshal(line, &row); err != nil {
-			errors++
+			parseErrors++
 			continue
 		}
 		createdAt := time.Now()
@@ -868,20 +878,26 @@ func syncEdges(ctx context.Context, store *pg.Store, path string, stdout io.Writ
 				createdAt = t
 			}
 		}
-		edge := persist.Edge{
-			Seq:     row.Seq,
-			Kind:    row.Kind,
-			From:    row.From,
-			To:      row.To,
-			ClaimID: row.ClaimID,
-		}
-		if err := store.AppendEdge(edge, createdAt); err != nil {
-			errors++
-			continue
-		}
-		upserted++
+		edges = append(edges, persist.Edge{
+			Seq:       row.Seq,
+			Kind:      row.Kind,
+			From:      row.From,
+			To:        row.To,
+			ClaimID:   row.ClaimID,
+			CreatedAt: createdAt.Format(time.RFC3339),
+		})
 	}
-	return upserted, errors
+	if len(edges) == 0 {
+		return 0, parseErrors
+	}
+	written, err := store.BulkAppendEdges(ctx, edges)
+	if err != nil {
+		if !jsonOut {
+			fmt.Fprintf(stdout, "  edges: bulk write failed: %v\n", err)
+		}
+		return 0, parseErrors + len(edges)
+	}
+	return written, parseErrors
 }
 
 // ─── store embed ─────────────────────────────────────────────────────────────────

@@ -6,7 +6,6 @@ import (
 
 	"compound/internal/act"
 	"compound/internal/envelope"
-	"compound/internal/eventstore"
 	"compound/internal/policy"
 )
 
@@ -79,14 +78,24 @@ func gateStoreGovernedWrite(homePath string, ai envelope.ActionIntent, now time.
 
 // recordStoreGovernedProof mints and durably persists the Receipt+Transition
 // pair for a completed store write, so the export is reconstructable from the
-// home event log alone.
-func recordStoreGovernedProof(store *eventstore.Store, ai envelope.ActionIntent, summary string, now time.Time) (receiptID, transitionID string, err error) {
+// home event log alone. This is NOT a transactional atomic guarantee: the
+// event store backend currently writes each envelope separately. The function
+// therefore uses best-effort compensation: if the Transition write fails, the
+// already-written Receipt is removed so we never intentionally leave an orphan
+// proof of an incomplete act. If the Remove itself fails, the orphan receipt ID
+// is returned and the error names the orphan so the operator can repair by
+// deleting that receipt from the home event store.
+func recordStoreGovernedProof(store eventstoreRecorder, ai envelope.ActionIntent, summary string, now time.Time) (receiptID, transitionID string, err error) {
 	receipt, transition := storeGovernedReceiptAndTransition(ai, summary, now)
 	if err := recordEventstoreEnvelope(store, &receipt); err != nil {
 		return "", "", fmt.Errorf("record receipt: %w", err)
 	}
 	if err := recordEventstoreEnvelope(store, &transition); err != nil {
-		return receipt.ID, "", fmt.Errorf("record transition: %w", err)
+		compErr := store.Remove(receipt.ID)
+		if compErr != nil {
+			return receipt.ID, "", fmt.Errorf("record transition failed and orphan receipt %s compensation failed; manual repair required: remove the orphan receipt from the home event store: transition: %w; compensation: %v", receipt.ID, err, compErr)
+		}
+		return "", "", fmt.Errorf("record transition: %w", err)
 	}
 	return receipt.ID, transition.ID, nil
 }
