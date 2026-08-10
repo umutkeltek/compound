@@ -10142,17 +10142,18 @@ func TestCapabilityEvaluationPlanUsesUnknownEvaluationWithoutMutatingGraph(t *te
 	if strings.Contains(surfaceOut, "skill:web-design-guidelines") {
 		t.Fatalf("needs_review manifest draft must not surface:\n%s", surfaceOut)
 	}
-	activeImportOut := captureStdout(t, func() {
-		cmdCapability([]string{"import-skills", activeManifestPath})
-	})
-	if !strings.Contains(activeImportOut, "node: skill:web-design-guidelines") {
-		t.Fatalf("active manifest import output =\n%s", activeImportOut)
+	activeManifest, err := capgraph.LoadSkillManifest(activeManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capgraph.ApplySkillManifest(homePath, activeManifest, cliTestNow); err == nil || !strings.Contains(err.Error(), "resurrect") {
+		t.Fatalf("active manifest import must be refused by retired-state guard: %v", err)
 	}
 	activeSurfaceOut := captureStdout(t, func() {
 		cmdCapability([]string{"surface", "web design guidelines"})
 	})
-	if !strings.Contains(activeSurfaceOut, "skill:web-design-guidelines") {
-		t.Fatalf("reviewed active manifest should surface:\n%s", activeSurfaceOut)
+	if strings.Contains(activeSurfaceOut, "skill:web-design-guidelines") {
+		t.Fatalf("retired node must not surface after blocked activation attempt:\n%s", activeSurfaceOut)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("evaluation-plan must not promote claims, stat err=%v", err)

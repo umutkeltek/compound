@@ -1167,7 +1167,7 @@ func cmdCapability(args []string) {
 		if t := flag("--triggers"); t != "" {
 			trig = strings.Split(t, ",")
 		}
-		die(store.Add(capgraph.Node{ID: p[0], Kind: p[1], Name: p[2], Triggers: trig}))
+		die(capgraph.AddGoverned(homePath, capgraph.Node{ID: p[0], Kind: p[1], Name: p[2], Triggers: trig}, time.Now()))
 		fmt.Printf("added node %s (%s)\n", p[0], p[1])
 	case "retire":
 		// `capability retire <id>...` withdraws nodes from surfacing (durable
@@ -1179,7 +1179,7 @@ func cmdCapability(args []string) {
 			fmt.Fprintln(os.Stderr, "usage: compound capability retire <id> [<id>...]")
 			os.Exit(2)
 		}
-		retired, err := store.Retire(p...)
+		retired, err := capgraph.RetireGoverned(homePath, p, time.Now())
 		if err != nil {
 			// Unknown ids are reported; already-retired ones are still listed.
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -1241,7 +1241,7 @@ func cmdCapability(args []string) {
 			fmt.Fprintln(os.Stderr, "usage: compound capability observe <node> --signal <missed_when|false_triggered_by> --context <phrase> [--conf 0.8]")
 			os.Exit(2)
 		}
-		edges, err := store.Observe(node[0], signal, context, conf, time.Now())
+		edges, err := capgraph.ObserveGoverned(homePath, node[0], signal, context, conf, time.Now())
 		die(err)
 		for _, e := range edges {
 			fmt.Printf("recorded %s: %s -> %s (conf %.2f)\n", e.Kind, e.From, e.To, e.Confidence)

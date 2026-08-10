@@ -155,18 +155,18 @@ func TestCapabilityEvaluationPlanRecordsReviewArtifactsWithoutMutatingGraph(t *t
 		t.Fatalf("needs_review draft import must not surface: %+v", hits)
 	}
 	activeReport, err := ApplySkillManifest(home, activeManifest, t0)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.Contains(err.Error(), "resurrect") {
+		t.Fatalf("active manifest must not silently resurrect a retired needs_review node: %v", err)
 	}
-	if activeReport.Status != "ok" || len(activeReport.NodeIDs) != 1 {
-		t.Fatalf("active manifest report = %+v", activeReport)
+	if activeReport.Status != "ok" || len(activeReport.NodeIDs) != 0 {
+		t.Fatalf("blocked active manifest should report no nodes applied: %+v", activeReport)
 	}
 	hits, err = store.Surface("web design guidelines")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hits) == 0 || hits[0].Node.ID != "skill:web-design-guidelines" {
-		t.Fatalf("reviewed active manifest should surface: %+v", hits)
+	if len(hits) != 0 {
+		t.Fatalf("retired node must not surface after blocked activation attempt: %+v", hits)
 	}
 	review, err := os.ReadFile(paths.ReviewPath)
 	if err != nil {

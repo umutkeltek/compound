@@ -116,39 +116,79 @@ func ValidateSkillManifest(manifest SkillManifest) SkillManifestReport {
 	return r
 }
 
+// ApplySkillManifest is the governed commit boundary for importing a skill
+// manifest. It validates the manifest, mints an ActionIntent, obtains a
+// PolicyDecision, records the governance pair, and only then appends nodes and
+// edges. A manifest that would resurrect a previously retired node is refused
+// before any state change.
 func ApplySkillManifest(homePath string, manifest SkillManifest, now time.Time) (SkillManifestReport, error) {
 	report := ValidateSkillManifest(manifest)
 	if report.Status != "ok" {
 		return report, fmt.Errorf("skill manifest invalid")
 	}
+
 	store, err := Open(homePath)
 	if err != nil {
 		return report, err
 	}
+	existingNodes, err := store.loadNodes()
+	if err != nil {
+		return report, err
+	}
+	retired := map[string]bool{}
+	for _, n := range existingNodes {
+		if n.Retired {
+			retired[n.ID] = true
+		}
+	}
+
+	var nodeIDs, edgeIDs []string
 	for _, skill := range manifest.Skills {
-		node := Node{
-			ID:       skill.ID,
-			Kind:     skillKind(skill),
-			Name:     skill.Name,
-			Triggers: skillTriggers(skill),
-			Weight:   skill.Weight,
-			Retired:  skillRetired(skill),
-			When:     cleanOptionalInstructionWhen(skill.When),
-			Read:     cleanOptionalStrings(skill.Read),
-			Route:    cleanOptionalInstructionRoutes(skill.Route),
-			Boundary: cleanOptionalStrings(skill.Boundary),
-			Tier:     skill.Tier,
+		if retired[skill.ID] && !skillRetired(skill) {
+			return report, fmt.Errorf("skill manifest would resurrect retired node %s; use a new identity or an explicit lifecycle review", skill.ID)
 		}
-		if err := store.Add(node); err != nil {
-			return report, err
-		}
-		report.NodeIDs = append(report.NodeIDs, skill.ID)
+		nodeIDs = append(nodeIDs, skill.ID)
 		for _, edge := range skillEdges(skill, now) {
-			if err := store.AddEdge(edge, now); err != nil {
-				return report, err
-			}
-			report.EdgeIDs = append(report.EdgeIDs, edge.Kind+":"+edge.From+"->"+edge.To)
+			edgeIDs = append(edgeIDs, edge.Kind+":"+edge.From+"->"+edge.To)
 		}
+	}
+
+	mutation := capabilityGraphMutation{
+		kind:       "apply_skill_manifest",
+		nodeIDs:    nodeIDs,
+		edgeIDs:    edgeIDs,
+		manifestID: manifest.ID,
+		apply: func(s *Store) error {
+			for _, skill := range manifest.Skills {
+				node := Node{
+					ID:       skill.ID,
+					Kind:     skillKind(skill),
+					Name:     skill.Name,
+					Triggers: skillTriggers(skill),
+					Weight:   skill.Weight,
+					Retired:  skillRetired(skill),
+					When:     cleanOptionalInstructionWhen(skill.When),
+					Read:     cleanOptionalStrings(skill.Read),
+					Route:    cleanOptionalInstructionRoutes(skill.Route),
+					Boundary: cleanOptionalStrings(skill.Boundary),
+					Tier:     skill.Tier,
+				}
+				if err := s.Add(node); err != nil {
+					return err
+				}
+				report.NodeIDs = append(report.NodeIDs, skill.ID)
+				for _, edge := range skillEdges(skill, now) {
+					if err := s.AddEdge(edge, now); err != nil {
+						return err
+					}
+					report.EdgeIDs = append(report.EdgeIDs, edge.Kind+":"+edge.From+"->"+edge.To)
+				}
+			}
+			return nil
+		},
+	}
+	if err := applyGovernedCapabilityGraphMutation(homePath, mutation, now); err != nil {
+		return report, err
 	}
 	return report, nil
 }
