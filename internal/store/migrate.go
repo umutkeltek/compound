@@ -168,43 +168,44 @@ func runStoreMigrate(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Write claims
-	for _, c := range claims {
-		pc := mapMemClaimToPersist(c)
-		if _, err := store.AppendClaim(pc, time.Now()); err != nil {
-			summary.Errors++
-			if !jsonOut {
-				fmt.Fprintf(stderr, "  claim %s: %v\n", c.ID, err)
-			}
-			continue
-		}
-		summary.ClaimsWritten++
+	// Bulk-write each phase inside a single Postgres transaction. A mid-stream
+	// crash or row failure now rolls back the whole phase instead of tearing the
+	// ledger with a partial export. We stop at the first phase failure so we do
+	// not mask a broken earlier phase with a successful later one.
+	persistClaims := make([]persist.Claim, len(claims))
+	for i, c := range claims {
+		persistClaims[i] = mapMemClaimToPersist(c)
 	}
-
-	// Write edges
-	for _, e := range edges {
-		pe := mapMemEdgeToPersist(e)
-		if err := store.AppendEdge(pe, time.Now()); err != nil {
-			summary.Errors++
-			if !jsonOut {
-				fmt.Fprintf(stderr, "  edge %s→%s: %v\n", e.From, e.To, err)
-			}
-			continue
+	summary.ClaimsWritten, err = store.BulkAppendClaims(ctx, persistClaims)
+	if err != nil {
+		summary.Errors += len(claims)
+		if !jsonOut {
+			fmt.Fprintf(stderr, "  claims bulk write failed: %v\n", err)
 		}
-		summary.EdgesWritten++
-	}
-
-	// Write candidates
-	for _, c := range cands {
-		pc := mapMemCandidateToPersist(c)
-		if err := store.AppendCandidate(pc, time.Now()); err != nil {
-			summary.Errors++
-			if !jsonOut {
-				fmt.Fprintf(stderr, "  candidate %s: %v\n", c.ID, err)
-			}
-			continue
+	} else {
+		persistEdges := make([]persist.Edge, len(edges))
+		for i, e := range edges {
+			persistEdges[i] = mapMemEdgeToPersist(e)
 		}
-		summary.CandidatesWritten++
+		summary.EdgesWritten, err = store.BulkAppendEdges(ctx, persistEdges)
+		if err != nil {
+			summary.Errors += len(edges)
+			if !jsonOut {
+				fmt.Fprintf(stderr, "  edges bulk write failed: %v\n", err)
+			}
+		} else {
+			persistCands := make([]persist.Candidate, len(cands))
+			for i, c := range cands {
+				persistCands[i] = mapMemCandidateToPersist(c)
+			}
+			summary.CandidatesWritten, err = store.BulkAppendCandidates(ctx, persistCands)
+			if err != nil {
+				summary.Errors += len(cands)
+				if !jsonOut {
+					fmt.Fprintf(stderr, "  candidates bulk write failed: %v\n", err)
+				}
+			}
+		}
 	}
 
 	summary.Duration = time.Since(start).Round(time.Millisecond).String()
@@ -324,25 +325,34 @@ func mapMemClaimToPersist(c mem.Claim) persist.Claim {
 
 func mapMemEdgeToPersist(e mem.Edge) persist.Edge {
 	return persist.Edge{
-		From: e.From,
-		To:   e.To,
-		Kind: e.Kind,
-		Seq:  e.Seq,
+		From:      e.From,
+		To:        e.To,
+		Kind:      e.Kind,
+		Seq:       e.Seq,
+		CreatedAt: e.CreatedAt,
 	}
 }
 
 func mapMemCandidateToPersist(c mem.Candidate) persist.Candidate {
 	return persist.Candidate{
-		ID:             c.ID,
-		Entity:         c.Entity,
-		Predicate:      c.Predicate,
-		Object:         c.Object,
-		Confidence:     c.Confidence,
-		Derivation:     c.Derivation,
-		Visibility:     c.Visibility,
-		State:          c.State,
-		SourceTraceRef: c.SourceTraceRef,
-		CreatedAt:      c.CreatedAt,
+		ID:              c.ID,
+		Entity:          c.Entity,
+		Predicate:       c.Predicate,
+		Object:          c.Object,
+		ObservationDate: c.ObservationDate,
+		Confidence:      c.Confidence,
+		Derivation:      c.Derivation,
+		ClaimType:       c.ClaimType,
+		CanonClass:      c.CanonClass,
+		Qualifiers:      c.Qualifiers,
+		Visibility:      c.Visibility,
+		State:           c.State,
+		SourceTraceRef:  c.SourceTraceRef,
+		EvidenceRefs:    c.EvidenceRefs,
+		Reason:          c.Reason,
+		AdjudicatedBy:   c.AdjudicatedBy,
+		AdjudicatedAt:   c.AdjudicatedAt,
+		CreatedAt:       c.CreatedAt,
 	}
 }
 
