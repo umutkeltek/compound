@@ -2016,13 +2016,46 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	// Best-effort context (origin/workspace/command) and the failure reason
 	// are persisted BEFORE terminalizing so the failed attempt remains auditable.
 	stamp := func(field, msg string) (DelegateResult, error) {
-		// Try to preserve audit context for the fields we already know.
-		// Ignore errors here: the underlying setter failure (or a terminal
-		// race) is not more important than completing the terminalization.
-		_ = ignoreSetterError(raStore.SetOrigin(runAttemptID, runattempt.OriginHarnessExecution))
-		_ = ignoreSetterError(raStore.SetWorkspace(runAttemptID, workspace))
-		_ = ignoreSetterError(raStore.SetCommand(runAttemptID, command))
-		if _, terr := raStore.CompleteWithReason(runAttemptID, runattempt.StatusFailed, "stamp "+field+": "+msg, opts.Now); terr != nil {
+		var bestEffortDetails []string
+		if detail := bestEffortStamp(raStore, runAttemptID, "origin", func() (runattempt.RunAttempt, error) {
+			return raStore.SetOrigin(runAttemptID, runattempt.OriginHarnessExecution)
+		}); detail != "" {
+			bestEffortDetails = append(bestEffortDetails, detail)
+		}
+		if detail := bestEffortStamp(raStore, runAttemptID, "workspace", func() (runattempt.RunAttempt, error) {
+			return raStore.SetWorkspace(runAttemptID, workspace)
+		}); detail != "" {
+			bestEffortDetails = append(bestEffortDetails, detail)
+		}
+		if detail := bestEffortStamp(raStore, runAttemptID, "command", func() (runattempt.RunAttempt, error) {
+			return raStore.SetCommand(runAttemptID, command)
+		}); detail != "" {
+			bestEffortDetails = append(bestEffortDetails, detail)
+		}
+		if detail := bestEffortStamp(raStore, runAttemptID, "dispatch_intent", func() (runattempt.RunAttempt, error) {
+			return raStore.SetDispatchIntent(runAttemptID, resolution.LaneID, resolution.RequestedModelID, resolution.RequestedProviderRoute)
+		}); detail != "" {
+			bestEffortDetails = append(bestEffortDetails, detail)
+		}
+		if executionProfile != nil {
+			if detail := bestEffortStamp(raStore, runAttemptID, "execution_profile", func() (runattempt.RunAttempt, error) {
+				return raStore.SetExecutionProfileIntent(runAttemptID, executionProfile.ID, executionProfile.ClientHarnessID, executionProfile.TransportID, executionProfile.RequestedNativeEffort)
+			}); detail != "" {
+				bestEffortDetails = append(bestEffortDetails, detail)
+			}
+		}
+		if launchProfile != nil {
+			if detail := bestEffortStamp(raStore, runAttemptID, "launch_profile", func() (runattempt.RunAttempt, error) {
+				return raStore.SetLaunchProfileIntent(runAttemptID, launchProfile.ID, launchProfile.Revision, launchProfile.ClientProfileID)
+			}); detail != "" {
+				bestEffortDetails = append(bestEffortDetails, detail)
+			}
+		}
+		reason := "stamp " + field + ": " + msg
+		if len(bestEffortDetails) > 0 {
+			reason += "; " + strings.Join(bestEffortDetails, "; ")
+		}
+		if _, terr := raStore.CompleteWithReason(runAttemptID, runattempt.StatusFailed, reason, opts.Now); terr != nil {
 			return out, terr
 		}
 		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "mint_failed", msg, opts.Now)
@@ -2269,10 +2302,17 @@ func (s *Store) finalizeSpawnFailureAfterBinding(runner SessionRunner, workID st
 	return errors.Join(cleanupErrs...)
 }
 
-// ignoreSetterError is a syntactic helper for best-effort stamp writes: it
-// lets the failure-closure attempt to backfill audit context without
-// shadowing the real terminalization error.
-func ignoreSetterError(_ runattempt.RunAttempt, _ error) error { return nil }
+// bestEffortStamp writes audit context to a RunAttempt during a failure closure
+// and captures any error in the reason string so operators can see that the
+// backfill failed. The actual stamp error is preserved as a non-fatal audit
+// signal rather than shadowing the terminalization error.
+func bestEffortStamp(raStore runAttemptStore, runAttemptID, field string, setter func() (runattempt.RunAttempt, error)) string {
+	_, err := setter()
+	if err != nil {
+		return fmt.Sprintf("%s stamp failed: %v", field, err)
+	}
+	return ""
+}
 
 // reapExitedDelegateSession removes a pane left behind by a delegate whose
 // exit is ALREADY recorded in the eventlog -- the retry path for a teardown

@@ -6339,6 +6339,95 @@ grants:
 	if !testEventExists(t, homePath, got.PolicyDecisionID) {
 		t.Fatalf("PolicyDecision envelope %q not persisted", got.PolicyDecisionID)
 	}
+	// The ActionIntent was recorded before the artifact existed, so its evidence
+	// refs must reference inputs/source artifacts/work only, not the target path.
+	if len(got.ActionIntentIDs) == 0 {
+		t.Fatalf("expected at least one ActionIntentID, got %v", got.ActionIntentIDs)
+	}
+	var action envelope.ActionIntent
+	readTestEventJSON(t, homePath, got.ActionIntentIDs[len(got.ActionIntentIDs)-1], &action)
+	if action.Action != "record_review_finding" {
+		t.Fatalf("last action intent is %q, want record_review_finding", action.Action)
+	}
+	if stringSliceContains(action.EvidenceRefs, target) {
+		t.Fatalf("ActionIntent evidence_refs must not reference not-yet-written target %q", target)
+	}
+	if !stringSliceContains(action.EvidenceRefs, "work://"+w.ID) {
+		t.Fatalf("ActionIntent evidence_refs must still reference work %q; got %v", w.ID, action.EvidenceRefs)
+	}
+}
+
+// failingCloseWorkStore wraps a *work.Store and fails Close to simulate a
+// mid-lifecycle failure after the review-finding artifact has already been
+// written. It satisfies the reviewFindingWorkStore seam used by recordReviewFinding.
+type failingCloseWorkStore struct {
+	*work.Store
+}
+
+func (f *failingCloseWorkStore) Close(workID string, in work.CloseInput, now time.Time) (work.CloseResult, error) {
+	return work.CloseResult{}, errors.New("injected close failure after artifact write")
+}
+
+// TestRecordReviewFindingLifecycleFailureRollsBackArtifacts proves that if the
+// auto-work lifecycle transitions fail after the artifact files have been
+// written, the files are rolled back and no orphaned artifact remains.
+func TestRecordReviewFindingLifecycleFailureRollsBackArtifacts(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	grantSource := filepath.Join(t.TempDir(), "standing-grants.yaml")
+	if err := os.WriteFile(grantSource, []byte(`generated_at: "2026-07-01T12:00:00Z"
+authority:
+  decision_ref: "grant:test-review-finding"
+  reviewed_by: "operator:test"
+grants:
+  - grant_id: grant_review_finding
+    capabilities:
+      - review.finding
+    target_scope: state/runs/*
+    reversibility_ceiling: reversible
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.ImportStandingGrants(homePath, grantSource, cliTestNow); err != nil {
+		t.Fatalf("import standing grants: %v", err)
+	}
+	runRoot := t.TempDir()
+	target := "state/runs/rollback-test/finding.json"
+
+	orig := reviewFindingStoreOpener
+	reviewFindingStoreOpener = func(homePath string) (reviewFindingWorkStore, error) {
+		store, err := work.Open(homePath)
+		if err != nil {
+			return nil, err
+		}
+		return &failingCloseWorkStore{Store: store}, nil
+	}
+	defer func() { reviewFindingStoreOpener = orig }()
+
+	_, err := recordReviewFinding(recordReviewFindingInput{
+		AutoWork:   true,
+		TargetPath: target,
+		Root:       runRoot,
+		Summary:    "rollback regression test",
+	}, cliTestNow)
+	if err == nil {
+		t.Fatal("expected lifecycle failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "injected close failure") {
+		t.Fatalf("expected injected close failure, got %v", err)
+	}
+
+	artifactPath := filepath.Join(runRoot, target)
+	markdownPath := strings.TrimSuffix(artifactPath, ".json") + ".md"
+	if _, serr := os.Stat(artifactPath); !os.IsNotExist(serr) {
+		t.Fatalf("artifact file must be rolled back after lifecycle failure: %v", serr)
+	}
+	if _, serr := os.Stat(markdownPath); !os.IsNotExist(serr) {
+		t.Fatalf("markdown file must be rolled back after lifecycle failure: %v", serr)
+	}
 }
 
 func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {

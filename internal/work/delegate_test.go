@@ -1368,11 +1368,11 @@ func TestDelegateCreateFailureTerminalizesExactAttempt(t *testing.T) {
 	assertOneNewAttemptStatus(t, s, before, runattempt.StatusFailed)
 }
 
-// failingCommandStore fails SetCommand while letting every other write
-// (including Mint/SetOrigin/SetWorkspace) delegate to the real store. This
-// exercises the stamp-failure path where some audit context has already
-// landed and the failure reason must still be recorded on the terminal
-// RunAttempt.
+// failingCommandStore fails SetCommand, while letting SetOrigin/SetWorkspace
+// succeed once. This exercises the stamp-failure path where some audit context
+// has already landed, proves that already-stamped origin/workspace survive
+// rather than being tautologically guaranteed by a wrapper that never let them
+// succeed, and records the best-effort setter failures in the terminal reason.
 type failingCommandStore struct {
 	*runattempt.Store
 	mintedID string
