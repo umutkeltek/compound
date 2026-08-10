@@ -1,4 +1,4 @@
-package main
+package product
 
 import (
 	"fmt"
@@ -7,26 +7,30 @@ import (
 	"time"
 
 	"compound/internal/mem"
-	"compound/internal/product"
 )
 
-// tryProductPostHogSignal handles `product signal --posthog-report <json>`. It is
+// TryPostHogSignal handles `product signal --posthog-report <json>`. It is
 // the distribution loop's measurement ingest: a raw PostHog report export becomes
 // ProductSignals (with a real before -> after delta) that join the actuator-minted
 // distribution hypotheses and close the loop. Mirrors the Google report path.
-func tryProductPostHogSignal(args []string, homePath string, store *mem.Store) bool {
+//
+// The command body lives with its organ (matching lanematrix.Run / schedule.Run)
+// so cmd/compound stays a thin dispatch layer under its ratcheting size budget.
+// usage is passed in rather than owned here because productUsage() covers every
+// `compound product ...` verb, not just this one.
+func TryPostHogSignal(args []string, homePath string, store *mem.Store, usage string) bool {
 	if !hasPostHogReportFlag(args) {
 		return false
 	}
-	docs, sourcePath, err := loadPostHogSignalArgs(args)
+	docs, sourcePath, err := loadPostHogSignalArgs(args, usage)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "product signal:", err)
 		os.Exit(1)
 	}
 	now := time.Now()
-	var reports []product.Report
+	var reports []Report
 	for _, doc := range docs {
-		report, err := product.ApplySignal(homePath, store, doc, sourcePath, now)
+		report, err := ApplySignal(homePath, store, doc, sourcePath, now)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "product signal:", err)
 			os.Exit(1)
@@ -64,12 +68,12 @@ func hasPostHogReportFlag(args []string) bool {
 	return false
 }
 
-func loadPostHogSignalArgs(args []string) ([]product.SignalDocument, string, error) {
+func loadPostHogSignalArgs(args []string, usage string) ([]SignalDocument, string, error) {
 	var report string
-	opts := product.PostHogReportSignalOptions{}
+	opts := PostHogReportSignalOptions{}
 	for i := 0; i < len(args); i++ {
 		if i+1 >= len(args) {
-			return nil, "", fmt.Errorf("%s", productUsage())
+			return nil, "", fmt.Errorf("%s", usage)
 		}
 		value := args[i+1]
 		switch args[i] {
@@ -82,16 +86,16 @@ func loadPostHogSignalArgs(args []string) ([]product.SignalDocument, string, err
 		case "--metric":
 			opts.Metric = value
 		default:
-			return nil, "", fmt.Errorf("%s", productUsage())
+			return nil, "", fmt.Errorf("%s", usage)
 		}
 		i++
 	}
 	if strings.TrimSpace(report) == "" {
-		return nil, "", fmt.Errorf("%s", productUsage())
+		return nil, "", fmt.Errorf("%s", usage)
 	}
 	if strings.TrimSpace(opts.ProductID) == "" || strings.TrimSpace(opts.Project) == "" {
-		return nil, "", fmt.Errorf("%s", productUsage())
+		return nil, "", fmt.Errorf("%s", usage)
 	}
-	docs, err := product.LoadPostHogReportSignals(report, opts)
+	docs, err := LoadPostHogReportSignals(report, opts)
 	return docs, report, err
 }

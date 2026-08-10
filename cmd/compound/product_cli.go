@@ -245,7 +245,7 @@ func cmdProduct(args []string) {
 		if tryProductGoogleSignal(args[1:], homePath, store) {
 			return
 		}
-		if tryProductPostHogSignal(args[1:], homePath, store) {
+		if product.TryPostHogSignal(args[1:], homePath, store, productUsage()) {
 			return
 		}
 		doc, sourcePath, err := loadProductSignalArg(args[1:])
