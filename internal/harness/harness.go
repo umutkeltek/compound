@@ -619,9 +619,10 @@ func RegistryRevision(reg Registry) string {
 // switchback names its launch profiles with hyphens (`claude-kimi`) while the
 // registry keys on underscores, and every caller bridging the two used to do its
 // own ReplaceAll. One that forgot got Generic() with found=false — a fail-open
-// stand-in that looks like an unknown harness, which is precisely the
-// harness_unknown refusal lane enrollment exists to remove. Normalizing here
-// means a lane resolves under either form, from any caller.
+// stand-in that looks like an unknown harness. Normalizing here prevents that
+// static registry fallback so a lane resolves under either form, from any
+// caller; this is purely a key-shape concern and does not imply model-router or
+// work-delegate enrollment.
 func canonicalHarnessName(name string) string {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "claude" {
