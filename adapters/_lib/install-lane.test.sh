@@ -318,6 +318,18 @@ LANE_LAUNCHER_FILE="$LIB_DIR/lane-launcher.sh" \
     fi
     printf "ok: profile dir does not eval shell metacharacters\n"
 
+    # A literal ${HOME} with an embedded double-quote exercises the difference between
+    # string-substitution and eval: an eval-based implementation would see the unescaped
+    # quote and either terminate early or produce a syntax error.
+    _evil="\${HOME}/config\"evil"
+    _out=$(_lane_profile_dir "" "$_evil")
+    _expected="/tmp/lane-test-home/config\"evil"
+    if [ "$_out" != "$_expected" ]; then
+      echo "FAIL: profile dir embedded quote escape: $_out"
+      exit 1
+    fi
+    printf "ok: profile dir handles embedded quotes without eval\n"
+
     # Valid host:port bindings (including empty for native lanes).
     _lane_tap_bind_is_valid "127.0.0.1:8080" || { echo "FAIL: valid IP:port rejected"; exit 1; }
     _lane_tap_bind_is_valid "localhost:18772" || { echo "FAIL: valid hostname:port rejected"; exit 1; }
@@ -354,6 +366,15 @@ LANE_LAUNCHER_FILE="$LIB_DIR/lane-launcher.sh" \
       exit 1
     fi
     print -- "ok: zsh profile dir does not eval shell metacharacters"
+
+    _evil="\${HOME}/config\"evil"
+    _out=$(_lane_profile_dir "" "$_evil")
+    _expected="/tmp/lane-test-home/config\"evil"
+    if [ "$_out" != "$_expected" ]; then
+      print -- "FAIL: zsh profile dir embedded quote escape: $_out"
+      exit 1
+    fi
+    print -- "ok: zsh profile dir handles embedded quotes without eval"
 
     _lane_tap_bind_is_valid "127.0.0.1:8080" || { print -- "FAIL: zsh valid IP:port rejected"; exit 1; }
     _lane_tap_bind_is_valid "localhost:18772" || { print -- "FAIL: zsh valid hostname:port rejected"; exit 1; }

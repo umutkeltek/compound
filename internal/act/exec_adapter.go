@@ -65,9 +65,11 @@ var execTransportAllowedNames = map[string]bool{
 // could be misinterpreted by a downstream shell or by exec.Command's argument splitting.
 var shellUnsafeRe = regexp.MustCompile(`[;|&<>(){}\[\]\$\` + "`" + `*?\\\n\r]`)
 
-// shellExecutableDenylist rejects well-known interactive shells even when they are
-// referenced by an absolute path. A transport is a deliberately enrolled executable,
-// not a shell invocation.
+// shellExecutableDenylist rejects well-known interactive shells and interpreters even
+// when they are referenced by an absolute path. A transport is a deliberately enrolled
+// executable, not a shell or interpreter invocation. The map intentionally omits
+// version suffixes; isShellExecutable strips trailing version fragments like "3.9" or
+// "2.7" so that "/usr/local/bin/python3.9" is rejected as readily as "python".
 var shellExecutableDenylist = map[string]bool{
 	"sh":      true,
 	"bash":    true,
@@ -81,6 +83,27 @@ var shellExecutableDenylist = map[string]bool{
 	"python3": true,
 	"perl":    true,
 	"ruby":    true,
+	"node":    true,
+	"nodejs":  true,
+}
+
+// shellExecutableVersionRe captures a base interpreter name followed by a trailing
+// version suffix (e.g. "python3.9", "ruby2.7", "perl5.34", "node18"). The non-greedy
+// group ensures we peel the smallest matching base, then check that base against the
+// denylist.
+var shellExecutableVersionRe = regexp.MustCompile(`^(.+?)[0-9][0-9.]*$`)
+
+// isShellExecutable reports whether a path's basename is a denied shell or interpreter,
+// including versioned variants like "python3.9".
+func isShellExecutable(path string) bool {
+	base := filepath.Base(path)
+	if shellExecutableDenylist[base] {
+		return true
+	}
+	if m := shellExecutableVersionRe.FindStringSubmatch(base); m != nil {
+		return shellExecutableDenylist[m[1]]
+	}
+	return false
 }
 
 type cappedTransportOutput struct {
@@ -141,7 +164,7 @@ func validateExecArgv(transportName string, argv []string) error {
 		if clean := filepath.Clean(exe); clean != exe || clean == "/" || strings.Contains(exe, "..") {
 			return fmt.Errorf("transport %q config: argv[0] must be a clean absolute path", transportName)
 		}
-		if shellExecutableDenylist[filepath.Base(exe)] {
+		if isShellExecutable(exe) {
 			return fmt.Errorf("transport %q config: argv[0] is a shell/interpreter and cannot be used as a transport", transportName)
 		}
 	} else {

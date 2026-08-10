@@ -174,16 +174,18 @@ func TestExecTransportInvalidConfigFailsClosed(t *testing.T) {
 // fails closed before the process is spawned.
 func TestExecTransportArgvValidationFailsClosed(t *testing.T) {
 	tests := []struct {
-		name string
-		argv []string
+		name       string
+		argv       []string
+		wantDetail string
 	}{
-		{name: "unallowed basename", argv: []string{"rm", "-rf", "/"}},
-		{name: "shell interpreter basename", argv: []string{"sh", "-c", "echo pwned"}},
-		{name: "absolute shell path", argv: []string{"/bin/sh", "-c", "echo pwned"}},
-		{name: "relative path", argv: []string{"../spy-transport.sh"}},
-		{name: "traversal in absolute path", argv: []string{"/tmp/../etc/passwd"}},
-		{name: "unsafe argument", argv: []string{"echo", "foo; rm -rf /"}},
-		{name: "command substitution arg", argv: []string{"echo", "$(id)"}},
+		{name: "unallowed basename", argv: []string{"rm", "-rf", "/"}, wantDetail: "not an allowed transport executable"},
+		{name: "shell interpreter basename", argv: []string{"sh", "-c", "echo pwned"}, wantDetail: "not an allowed transport executable"},
+		{name: "absolute shell path", argv: []string{"/bin/sh", "-c", "echo pwned"}, wantDetail: "shell/interpreter"},
+		{name: "versioned interpreter path", argv: []string{"/usr/local/bin/python3.9", "-c", "print()"}, wantDetail: "shell/interpreter"},
+		{name: "relative path", argv: []string{"../spy-transport.sh"}, wantDetail: "not an allowed transport executable"},
+		{name: "traversal in absolute path", argv: []string{"/tmp/../etc/passwd"}, wantDetail: "clean absolute path"},
+		{name: "unsafe argument", argv: []string{"compound", "foo; rm -rf /"}, wantDetail: "unsafe characters"},
+		{name: "command substitution arg", argv: []string{"compound", "$(id)"}, wantDetail: "unsafe characters"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -192,6 +194,10 @@ func TestExecTransportArgvValidationFailsClosed(t *testing.T) {
 			err := runExecTransport(t, homePath, tt.argv)
 			if err == nil {
 				t.Fatalf("argv %v must be rejected", tt.argv)
+			}
+			errStr := err.Error()
+			if !strings.Contains(errStr, `transport "fixture" config`) || !strings.Contains(errStr, tt.wantDetail) {
+				t.Fatalf("argv %v error = %v, want config-validation error containing %q", tt.argv, err, tt.wantDetail)
 			}
 			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
 				t.Fatalf("argv %v ran the transport; marker stat error = %v", tt.argv, statErr)
