@@ -40,7 +40,7 @@ const (
 // Postgres, not in the engine process).
 type PgEngine struct {
 	store      *Store
-	embedURL   string // base URL, e.g. "http://localhost:11434/v1"
+	embedURL   string // OpenAI-compatible base (scheme://host:port/v1)
 	embedModel string // e.g. "nomic-embed-text"
 	dims       int
 }
