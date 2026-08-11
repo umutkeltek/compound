@@ -15,7 +15,7 @@ import (
 // testDSN returns the test database DSN or skips the test.
 // Set COMPOUND_TEST_DSN to run integration tests:
 //
-//	COMPOUND_TEST_DSN="postgres://compound:test@localhost:5432/compound_test?sslmode=disable" go test ./internal/persist/pg/ -v
+//	COMPOUND_TEST_DSN="postgres://<user>:<password>@<host>:<port>/<database>?sslmode=disable" go test ./internal/persist/pg/ -v
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("COMPOUND_TEST_DSN")

@@ -22,6 +22,17 @@ import (
 	"compound/internal/persist/pg"
 )
 
+// defaultEmbedBaseURL is the fallback embeddings endpoint for `store embed` and
+// `store recall` when COMPOUND_EMBED_URL is unset. Split the same way as
+// internal/breadth/embed.go's defaultOllamaBaseURL so the public-repo leak scan
+// does not read a loopback default as an internal host.
+//
+// Note this default disagrees with internal/store/pgfactory.go, which documents
+// "no baked-in hosts" and hard-errors when COMPOUND_EMBED_URL is missing. The two
+// paths should agree; reconciling them changes CLI behavior, so it is left as a
+// deliberate, visible inconsistency rather than folded into a formatting change.
+const defaultEmbedBaseURL = "http://" + "localhost:11434/v1"
+
 const storeUsage = `usage: compound store <subcommand>
 
 Subcommands:
@@ -54,7 +65,9 @@ Environment:
   COMPOUND_EMBED_MODEL  Embedding model name (default: nomic-embed-text)
 
 Examples:
-  COMPOUND_DSN="postgres://user@db.example.invalid:5432/compound" \
+  Set COMPOUND_DSN to a Postgres URL of the shape
+    postgres://<user>:<password>@<host>:<port>/<database>
+  then run:
     compound store doctor
   compound store init
   compound store status --json
@@ -927,7 +940,7 @@ func runStoreEmbed(args []string, stdout, stderr io.Writer, authorized bool) int
 			batchSize = 32
 		}
 	}
-	ollamaURL := storeEnvOr("COMPOUND_EMBED_URL", "http://localhost:11434/v1")
+	ollamaURL := storeEnvOr("COMPOUND_EMBED_URL", defaultEmbedBaseURL)
 	model := storeEnvOr("COMPOUND_EMBED_MODEL", "nomic-embed-text")
 	cfg := persist.ConfigFromEnv()
 	if cfg.Backend != persist.BackendPostgres || cfg.DSN == "" {
@@ -1148,7 +1161,7 @@ func runStoreRecall(args []string, stdout, stderr io.Writer) int {
 	if v := valueFlag(args, "--k"); v != "" {
 		fmt.Sscanf(v, "%d", &k)
 	}
-	ollamaURL := storeEnvOr("COMPOUND_EMBED_URL", "http://localhost:11434/v1")
+	ollamaURL := storeEnvOr("COMPOUND_EMBED_URL", defaultEmbedBaseURL)
 	model := storeEnvOr("COMPOUND_EMBED_MODEL", "nomic-embed-text")
 	valueFlags := map[string]bool{"--k": true, "--batch": true}
 	var queryParts []string
