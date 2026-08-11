@@ -202,6 +202,29 @@ var shellVersionProbeVersionFlags = map[string]bool{
 // prints and exits, while `python3 --version -c 'code'` reaches the interpreter
 // (some builds accept trailing work after a version flag) and must stay unknown.
 // Dynamic arguments are rejected because a substitution could supply the code.
+// shellPackageManagerVersionProbe reports whether a package-manager invocation
+// is exactly `<pm> --version`. Same sole-argument rule as the interpreter
+// roster: `npm --version install evil` must not read as a version probe.
+func shellPackageManagerVersionProbe(verb string, args []string) bool {
+	if !shellPackageManagerVerbs[verb] || len(args) != 1 {
+		return false
+	}
+	arg := strings.TrimSpace(args[0])
+	if strings.Contains(arg, shellSubstitutionPlaceholder) {
+		return false
+	}
+	return arg == "--version"
+}
+
+// shellPackageManagerVerbs mirrors the verbs shellPackageManagerClass switches
+// on. Kept as a table so the version probe cannot drift out of sync with the
+// install-classification path it front-runs.
+var shellPackageManagerVerbs = map[string]bool{
+	"npm": true, "pnpm": true, "yarn": true, "bun": true, "bunx": true,
+	"brew": true, "pip": true, "pip3": true, "gem": true, "cargo": true,
+	"go": true, "uv": true, "pipx": true, "apt": true, "apt-get": true,
+}
+
 func shellVersionProbeIsRead(verb string, args []string) bool {
 	if !shellVersionProbeVerbs[verb] || len(args) != 1 {
 		return false
@@ -1717,6 +1740,15 @@ func shellGoClass(args []string) string {
 
 func shellPackageManagerClass(verb string, args []string) (string, bool) {
 	sub, rest := shellFirstOperand(args, nil)
+	// A package manager asked only for its version installs nothing. This is
+	// checked before the subcommand switch because that switch returns
+	// (unknown, true) for anything it does not recognize, which swallowed
+	// `npm --version` and `pip3 --version` -- routine "is this toolchain here"
+	// probes -- into an operator prompt. Only the long flag is honored: -v means
+	// verbose to pip and version to npm, so the short form stays unrecognized.
+	if shellPackageManagerVersionProbe(verb, args) {
+		return shellClassRead, true
+	}
 	switch verb {
 	case "npm", "pnpm", "yarn", "bun", "bunx":
 		switch sub {

