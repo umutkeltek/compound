@@ -6,6 +6,7 @@ const adapterDir = dirname(fileURLToPath(import.meta.url))
 const pluginSource = join(adapterDir, "compound.ts")
 const registrationSource = join(adapterDir, "hook-registration.ts")
 const pluginRegistration = "./plugins/compound.ts"
+const pluginSDKPackage = "@opencode-ai/plugin"
 
 type ImportAuthority = (binary: string, registration: string, home: string) => Promise<unknown>
 type CompiledIntention = {
@@ -149,7 +150,11 @@ export async function installOpenCode(options: InstallOptions): Promise<InstallR
 
   const raw = (await exists(configPath)) ? await readFile(configPath, "utf8") : "{}"
   const config = parseConfig(raw, configPath)
-  const plugins = Array.isArray(config.plugin) ? [...config.plugin] : []
+  // The SDK is a package dependency for authoring plugins, not a runtime plugin factory.
+  // Older host configuration registered it in both places; subtract that invalid runtime entry.
+  const plugins = Array.isArray(config.plugin)
+    ? config.plugin.filter((plugin) => plugin !== pluginSDKPackage)
+    : []
   if (!plugins.includes(pluginRegistration)) plugins.push(pluginRegistration)
   config.plugin = plugins
 

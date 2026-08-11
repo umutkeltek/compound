@@ -42,7 +42,7 @@ function oneLine(error: unknown): string {
   return text.replace(/\s+/g, " ").trim() || "unknown error"
 }
 
-export function timeoutMS(name: CompoundHookName): number {
+function timeoutMS(name: CompoundHookName): number {
   const configured = Number.parseInt(process.env.COMPOUND_OPENCODE_HOOK_TIMEOUT_MS ?? "", 10)
   return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_TIMEOUT_MS[name]
 }
@@ -187,12 +187,14 @@ function createCompoundPlugin(runHook: HookRunner = runCompoundHook): Plugin {
 
 type TestablePlugin = Plugin & {
   createWithRunner: (runHook: HookRunner) => Plugin
+  timeoutMS: (name: CompoundHookName) => number
 }
 
 // opencode initializes every function exported by a plugin module. Keep the default plugin as the
-// only runtime function export; the property preserves dependency injection for adapter tests.
+// only runtime function export; properties preserve test access without becoming module exports.
 const CompoundPlugin = Object.assign(createCompoundPlugin(), {
   createWithRunner: createCompoundPlugin,
+  timeoutMS,
 }) as TestablePlugin
 
 export default CompoundPlugin

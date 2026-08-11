@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { PluginInput } from "@opencode-ai/plugin"
 import type { Part, UserMessage } from "@opencode-ai/sdk"
 
-import CompoundPlugin, { type HookRunner, timeoutMS } from "./compound.ts"
+import CompoundPlugin, { type HookRunner } from "./compound.ts"
 
 function pluginInput(): PluginInput {
   return {
@@ -34,6 +34,15 @@ function textPart(sessionID: string, text: string): Part {
 }
 
 describe("CompoundPlugin", () => {
+  test("exports only the default runtime plugin factory", async () => {
+    const module = await import("./compound.ts")
+    const runtimeFactories = Object.entries(module)
+      .filter(([, value]) => typeof value === "function")
+      .map(([name]) => name)
+
+    expect(runtimeFactories).toEqual(["default"])
+  })
+
   test("injects session context once and prompt context on every user message", async () => {
     const calls: string[] = []
     const runner: HookRunner = async (name, input) => {
@@ -122,26 +131,28 @@ describe("hook timeout budgets", () => {
   test("session start outlives a real ContextPack build", () => {
     // 13s was the slower observed build; the budget must clear it with headroom,
     // or this regression returns as a silent one.
-    expect(timeoutMS("session-start")).toBeGreaterThanOrEqual(20_000)
+    expect(CompoundPlugin.timeoutMS("session-start")).toBeGreaterThanOrEqual(20_000)
   })
 
   test("per-turn and per-tool hooks stay tight enough not to stall a turn", () => {
-    expect(timeoutMS("post-tool-use")).toBeLessThanOrEqual(2_000)
-    expect(timeoutMS("user-prompt-submit")).toBeLessThanOrEqual(10_000)
+    expect(CompoundPlugin.timeoutMS("post-tool-use")).toBeLessThanOrEqual(2_000)
+    expect(CompoundPlugin.timeoutMS("user-prompt-submit")).toBeLessThanOrEqual(10_000)
   })
 
   test("session start is not held to the per-tool budget", () => {
     // The falsifier for the original defect: a single shared budget makes these
     // equal. They must not be.
-    expect(timeoutMS("session-start")).toBeGreaterThan(timeoutMS("post-tool-use"))
+    expect(CompoundPlugin.timeoutMS("session-start")).toBeGreaterThan(
+      CompoundPlugin.timeoutMS("post-tool-use"),
+    )
   })
 
   test("an explicit env override still wins for every hook", () => {
     const previous = process.env.COMPOUND_OPENCODE_HOOK_TIMEOUT_MS
     process.env.COMPOUND_OPENCODE_HOOK_TIMEOUT_MS = "1234"
     try {
-      expect(timeoutMS("session-start")).toBe(1234)
-      expect(timeoutMS("post-tool-use")).toBe(1234)
+      expect(CompoundPlugin.timeoutMS("session-start")).toBe(1234)
+      expect(CompoundPlugin.timeoutMS("post-tool-use")).toBe(1234)
     } finally {
       if (previous === undefined) delete process.env.COMPOUND_OPENCODE_HOOK_TIMEOUT_MS
       else process.env.COMPOUND_OPENCODE_HOOK_TIMEOUT_MS = previous

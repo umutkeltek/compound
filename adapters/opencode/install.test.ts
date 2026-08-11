@@ -14,7 +14,7 @@ test("installer backs up and registers the local plugin without clobbering other
     "{\n" +
     "  // keep the unrelated setting\n" +
     '  "theme": "fixture",\n' +
-    '  "plugin": ["existing-plugin"]\n' +
+    '  "plugin": ["existing-plugin", "@opencode-ai/plugin"]\n' +
     "}\n"
   await writeFile(configPath, original)
   const imports: string[] = []
