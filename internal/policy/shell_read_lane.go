@@ -62,6 +62,10 @@ var shellReadVerbs = map[string]bool{
 	"du": true, "df": true, "uptime": true, "date": true, "whoami": true, "hostname": true,
 	"uname": true, "arch": true, "printenv": true, "which": true, "id": true, "groups": true,
 	"sw_vers": true, "vm_stat": true, "ps": true, "lsof": true, "nproc": true,
+	// Host inventory. Both dump hardware/driver state to stdout and have no
+	// write, exec, or egress flag, so a capability probe ("what machine is this,
+	// how much RAM") stays routine instead of prompting the operator.
+	"system_profiler": true, "ioreg": true,
 	// Emit and format.
 	"echo": true, "printf": true, "true": true, "false": true,
 	// Condition builtins. `[ -d dir ]` / `test -f file` inspect the filesystem
@@ -160,6 +164,53 @@ var goGlobalFlagsWithValue = map[string]bool{
 var goReadSubcommands = map[string]bool{
 	"test": true, "vet": true, "build": true, "list": true, "env": true,
 	"doc": true, "version": true,
+}
+
+// shellVersionProbeVerbs are interpreters and compilers deliberately kept OUT of
+// shellReadVerbs because they execute arbitrary input (`python3 -c`, `node -e`),
+// but whose version probe is a pure read. "Is python3 installed, and which one"
+// is the single most common capability check an agent makes before planning
+// work, and holding it trains the operator to click through holds -- the exact
+// failure docs/security/prompt-injection.md warns about.
+//
+// The table is an explicit roster, NOT a general "any verb plus --version" rule.
+// A general rule would admit any planted binary simply by naming it with a
+// version flag, which is precisely what unknown-verb fail-closed exists to stop.
+// Membership here is not permission to run the interpreter; see
+// shellVersionProbeIsRead for the argument restriction that keeps it that way.
+// Deliberately absent: node, bun, and tsc. Each already has a STRICTER owner
+// that must keep winning -- bun routes through shellPackageManagerClass, and
+// tsc/node require an exact trusted executable token
+// (shellVerificationExecutableTrusted), which is what stops a planted `tsc` on
+// PATH. Adding them here would reach past those rules.
+var shellVersionProbeVerbs = map[string]bool{
+	"python": true, "python3": true, "deno": true,
+	"ruby": true, "perl": true, "php": true, "java": true, "javac": true,
+	"rustc": true, "swiftc": true,
+}
+
+// shellVersionProbeVersionFlags are the only arguments a version probe may carry.
+// --help/-h are excluded on purpose: for several of these binaries a bare -h
+// takes a value (and for unknown-to-us builds could mean anything), while
+// --version/-V have one meaning across the roster -- print a version and exit.
+var shellVersionProbeVersionFlags = map[string]bool{
+	"--version": true, "-V": true,
+}
+
+// shellVersionProbeIsRead reports whether a rostered interpreter is being asked
+// only for its version. The flag must be the SOLE argument: `python3 --version`
+// prints and exits, while `python3 --version -c 'code'` reaches the interpreter
+// (some builds accept trailing work after a version flag) and must stay unknown.
+// Dynamic arguments are rejected because a substitution could supply the code.
+func shellVersionProbeIsRead(verb string, args []string) bool {
+	if !shellVersionProbeVerbs[verb] || len(args) != 1 {
+		return false
+	}
+	arg := strings.TrimSpace(args[0])
+	if strings.Contains(arg, shellSubstitutionPlaceholder) {
+		return false
+	}
+	return shellVersionProbeVersionFlags[arg]
 }
 
 func classifyShellAction(
@@ -1116,6 +1167,9 @@ func shellVerbClass(verb string, args []string, firstPartyCommands FirstPartyCom
 		return shellNestedClass(subcommands, args)
 	}
 	if shellReadVerbs[verb] {
+		return shellClassRead
+	}
+	if shellVersionProbeIsRead(verb, args) {
 		return shellClassRead
 	}
 	return shellClassUnknown
