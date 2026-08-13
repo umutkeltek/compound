@@ -3,34 +3,34 @@
 //
 // The proof chain is:
 //
-//   1. Load the live Compound model-capabilities authority from the operator
-//      home (same file `compound route import-model-capabilities` would
-//      merge into). No stub: the test reads what the delegate lane reads.
+//  1. Load the live Compound model-capabilities authority from the operator
+//     home (same file `compound route import-model-capabilities` would
+//     merge into). No stub: the test reads what the delegate lane reads.
 //
-//   2. ResolveModelCapabilityTuple("codex (gpt-5.5)") -> harness=codex,
-//      provider_route=codex-tap, and a populated aliases list. If aliases
-//      is empty the test fails — that is exactly the pre-fix state.
+//  2. ResolveModelCapabilityTuple("codex (gpt-5.5)") -> harness=codex,
+//     provider_route=codex-tap, and a populated aliases list. If aliases
+//     is empty the test fails — that is exactly the pre-fix state.
 //
-//   3. ResolveModelCapabilityExecutable(aliases) walks the alias list and
-//      LookPath's each one. The FIRST executable wins. The asserted winner
-//      is `codex-switchback-tap`, the Switchback capture tap wrapper
-//      (cli/wrappers/codex-switchback-tap → runtime execution that pins
-//      base_url to http://127.0.0.1:18771/v1 with
-//      requires_openai_auth=true). This refutes the empty-CODEX_HOME 401
-//      because the launched process never speaks to api.openai.com.
+//  3. ResolveModelCapabilityExecutable(aliases) walks the alias list and
+//     LookPath's each one. The FIRST executable wins. The asserted winner
+//     is `codex-switchback-tap`, the Switchback capture tap wrapper
+//     (cli/wrappers/codex-switchback-tap → runtime execution that pins
+//     base_url to the local capture-tap endpoint with
+//     requires_openai_auth=true). This refutes the empty-CODEX_HOME 401
+//     because the launched process never speaks to api.openai.com.
 //
-//   4. resolveDelegateHarness wires the tuple into the DelegateHarnessResolution
-//      that work delegate reads, so a delegate --dry-run for the harness
-//      string "codex (gpt-5.5)" returns a non-empty, TupleBacked resolution
-//      with a non-empty Command. The dry-run path reaches TupleBacked=true
-//      and the executable evidence kind passes.
+//  4. resolveDelegateHarness wires the tuple into the DelegateHarnessResolution
+//     that work delegate reads, so a delegate --dry-run for the harness
+//     string "codex (gpt-5.5)" returns a non-empty, TupleBacked resolution
+//     with a non-empty Command. The dry-run path reaches TupleBacked=true
+//     and the executable evidence kind passes.
 //
-//   5. Alias ordering: codex-switchback-tap is intentionally FIRST so the
-//      no-paid-spawn owned wrapper wins on hosts that ship both it AND the
-//      raw `codex` binary on PATH (the operator host carries both; the tap
-//      wrapper lives in the user-local bin directory ahead of raw codex).
-//      Raw `codex` is NOT in the aliases — that is the structural fix for
-//      find_062a2146cf8b (empty CODEX_HOME 401 against api.openai.com).
+//  5. Alias ordering: codex-switchback-tap is intentionally FIRST so the
+//     no-paid-spawn owned wrapper wins on hosts that ship both it AND the
+//     raw `codex` binary on PATH (the operator host carries both; the tap
+//     wrapper lives in the user-local bin directory ahead of raw codex).
+//     Raw `codex` is NOT in the aliases — that is the structural fix for
+//     find_062a2146cf8b (empty CODEX_HOME 401 against api.openai.com).
 //
 // This file does NOT mutate the home authority; it only reads.
 package routeevidence
@@ -111,13 +111,13 @@ func TestCodexGPT55TupleResolvesToOwnedWrapperInPath(t *testing.T) {
 	// 4) The picked executable must be one of the owned wrappers (NOT the
 	//    raw codex binary that hits api.openai.com with no auth header).
 	ownedWrappers := map[string]bool{
-		"codex-switchback-tap":          true,
-		"codex-gpt56-sol-wpcom":         true,
+		"codex-switchback-tap":           true,
+		"codex-gpt56-sol-wpcom":          true,
 		"codex-gpt56-sol-wpcom-headroom": true,
-		"codex-gpt56-sol-codex":         true,
-		"codex-minimax":                 true,
-		"codex-switchback-scout":        true,
-		"codex-switchback-traced":       true,
+		"codex-gpt56-sol-codex":          true,
+		"codex-minimax":                  true,
+		"codex-switchback-scout":         true,
+		"codex-switchback-traced":        true,
 	}
 	base := filepath.Base(command)
 	if !ownedWrappers[base] {
