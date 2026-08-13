@@ -3642,12 +3642,21 @@ func cmdContract(args []string) {
 			fmt.Fprintln(os.Stderr, "--check-instructions requires --instructions")
 			os.Exit(2)
 		}
+		preset := strings.TrimSpace(valueFlag(args[1:], "--preset"))
+		if preset != "" && !renderInstructions {
+			fmt.Fprintln(os.Stderr, "--preset requires --instructions")
+			os.Exit(2)
+		}
+		if checkInstructions && preset != "" {
+			fmt.Fprintln(os.Stderr, "--check-instructions is not supported with --preset (preset renders are not drift-checked)")
+			os.Exit(2)
+		}
 		homePath, err := home.Resolve("")
 		die(err)
 		in, err := parseOrientArgsWithHome(args[1:], homePath)
 		die(err)
 		if in.Harness == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>] [--instructions [--check-instructions]]")
+			fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>] [--instructions [--check-instructions]] [--preset <name>]")
 			os.Exit(2)
 		}
 		runtime, err := contract.MaterializeRuntime(in, orientPolicy(), homePath, time.Now())
@@ -3658,7 +3667,7 @@ func cmdContract(args []string) {
 		die(err)
 		ec := runtime.EffectiveContract
 		if renderInstructions {
-			render, err := contract.RenderInstructionBlock(ec, in.Cwd)
+			render, err := contract.RenderInstructionBlockVariant(ec, in.Cwd, preset)
 			die(err)
 			printJSON(render)
 			if checkInstructions && render.Drifted {
