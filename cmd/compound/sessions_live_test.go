@@ -65,7 +65,7 @@ func TestClassifySessionLivenessNeverInventsAGhost(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, detail := classifySessionLiveness("running", c.obs)
+			got, detail := work.ClassifySessionLiveness("running", c.obs)
 			if got != c.want {
 				t.Fatalf("state = %q, want %q (detail: %s)", got, c.want, detail)
 			}
@@ -92,7 +92,7 @@ func TestClassifyIgnoresActorNameResemblance(t *testing.T) {
 	}
 	// The actor is "claude-minimax:wave10-contract" and shares no substring
 	// with the session name. The classifier must not care.
-	if got, detail := classifySessionLiveness("running", obs); got != "live" {
+	if got, detail := work.ClassifySessionLiveness("running", obs); got != "live" {
 		t.Fatalf("a live session whose name does not resemble its actor is still live; got %q (%s)", got, detail)
 	}
 
@@ -103,7 +103,7 @@ func TestClassifyIgnoresActorNameResemblance(t *testing.T) {
 		Session:    "minimax-burst10-hook-unicode-20260726",
 		PaneStatus: work.SessionStatus{Exists: false},
 	}
-	if got, _ := classifySessionLiveness("running", obs2); got != "ghost" {
+	if got, _ := work.ClassifySessionLiveness("running", obs2); got != "ghost" {
 		t.Fatalf("a gone session is a ghost regardless of what other sessions are named; got %q", got)
 	}
 }

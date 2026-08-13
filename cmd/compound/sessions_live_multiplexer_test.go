@@ -145,12 +145,12 @@ func TestSessionsLiveReportsMultiplexerOnlyPanes(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("sessions live: exit %d, stderr=%s", code, stderr.String())
 	}
-	var report sessionsLiveReport
+	var report work.SessionsLiveReport
 	if err := json.Unmarshal([]byte(stdout.String()), &report); err != nil {
 		t.Fatalf("decode report: %v\nstdout=%s", err, stdout.String())
 	}
 
-	var row *sessionLiveRow
+	var row *work.SessionLiveRow
 	for i := range report.Rows {
 		if report.Rows[i].Session == sessName {
 			row = &report.Rows[i]
@@ -212,7 +212,7 @@ func TestSessionsLiveMergesCompoundAndMultiplexerOnSameSession(t *testing.T) {
 		Session:    sessName,
 		PaneStatus: work.SessionStatus{Exists: true, PaneDead: false, ExitCode: -1},
 	}
-	state, _ := classifySessionLiveness("running", obs)
+	state, _ := work.ClassifySessionLiveness("running", obs)
 	if state != "live" {
 		t.Fatalf("sanity: classifier state = %q, want live", state)
 	}

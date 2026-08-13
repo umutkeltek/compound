@@ -80,7 +80,7 @@ func TestMergeMultiplexerIntoEmptyCompound(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("sessions live: exit %d, stderr=%s", code, stderr.String())
 	}
-	var report sessionsLiveReport
+	var report work.SessionsLiveReport
 	if err := json.Unmarshal([]byte(stdout.String()), &report); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestMergeMultiplexerFailureProducesLoudRow(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("sessions live: exit %d, stderr=%s", code, stderr.String())
 	}
-	var report sessionsLiveReport
+	var report work.SessionsLiveReport
 	if err := json.Unmarshal([]byte(stdout.String()), &report); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestNoMultiplexerSourceLeavesReportUnchanged(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("sessions live: exit %d, stderr=%s", code, stderr.String())
 	}
-	var report sessionsLiveReport
+	var report work.SessionsLiveReport
 	if err := json.Unmarshal([]byte(stdout.String()), &report); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestRunattemptOriginReservationDoesNotInflateMultiplexerCount(t *testing.T)
 	if code != 0 {
 		t.Fatalf("sessions live: exit %d, stderr=%s", code, stderr.String())
 	}
-	var report sessionsLiveReport
+	var report work.SessionsLiveReport
 	if err := json.Unmarshal([]byte(stdout.String()), &report); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
