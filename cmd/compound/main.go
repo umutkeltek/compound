@@ -3643,12 +3643,8 @@ func cmdContract(args []string) {
 			os.Exit(2)
 		}
 		preset := strings.TrimSpace(valueFlag(args[1:], "--preset"))
-		if preset != "" && !renderInstructions {
-			fmt.Fprintln(os.Stderr, "--preset requires --instructions")
-			os.Exit(2)
-		}
-		if checkInstructions && preset != "" {
-			fmt.Fprintln(os.Stderr, "--check-instructions is not supported with --preset (preset renders are not drift-checked)")
+		if preset != "" && (!renderInstructions || checkInstructions) {
+			fmt.Fprintln(os.Stderr, "--preset requires --instructions and is not supported with --check-instructions")
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")

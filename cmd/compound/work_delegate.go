@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"compound/internal/contract"
-	"compound/internal/home"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
@@ -265,18 +264,12 @@ func runWorkDelegateCLI(sub string, args []string, store *work.Store, runner wor
 			return delegateCLIUsageError(stderr, "delegate", err)
 		}
 		if opts.instructionBlockPreset != "" {
-			// Optional opt-in: append a preset-scoped executor variant to the
-			// dispatch prompt. The variant is a render, not a write — never
-			// touches the repo file. The delegate flow does not currently
-			// materialize an EffectiveContract on the same path the prompt
-			// uses, so this is the always-on wire entry point until the
-			// S1 combinations registry makes the look-up structural.
-			append, appendErr := renderAndAppendInstructionBlockVariant(opts)
+			augmented, appendErr := contract.AppendDelegateVariantToPrompt(opts.harness, opts.workspace, opts.instructionBlockPreset, opts.prompt)
 			if appendErr != nil {
 				fmt.Fprintln(stderr, "error: --instruction-block:", appendErr)
 				return 1
 			}
-			opts = append
+			opts.args = []string{augmented}
 		}
 		result, err := store.Delegate(work.DelegateOptions{
 			WorkID:           opts.workID,
@@ -486,68 +479,6 @@ func splitDelegateRawCommand(args []string) ([]string, []string) {
 		}
 	}
 	return args, nil
-}
-
-// renderAndAppendInstructionBlockVariant materializes a minimal
-// EffectiveContract for the delegate's harness and renders the preset-scoped
-// variant. The variant is appended to the dispatch prompt (opts.args[0] from
-// --prompt). On any failure the function returns the original opts unchanged
-// plus the error so the caller can surface a clear message. The variant never
-// touches the repo file — RenderInstructionBlockVariant is a render.
-// renderAndAppendInstructionBlockVariant requires the env to be reachable
-// for the orientation policy and the home path; it does not require a
-// delegate ProfileID.
-func renderAndAppendInstructionBlockVariant(opts delegateCLIOptions) (delegateCLIOptions, error) {
-	if opts.instructionBlockPreset == "" {
-		return opts, nil
-	}
-	cwd := strings.TrimSpace(opts.workspace)
-	if cwd == "" {
-		cwd, _ = os.Getwd()
-	}
-	homePath, err := home.Resolve("")
-	if err != nil {
-		return opts, fmt.Errorf("resolve home: %w", err)
-	}
-	pol, err := loadOrientationPolicy()
-	if err != nil {
-		return opts, fmt.Errorf("load orientation policy: %w", err)
-	}
-	in := contract.Input{
-		Harness:     opts.harness,
-		Cwd:         cwd,
-		Task:        "",
-		RepoKind:    "control-plane",
-		RepoKindVia: "flag",
-		Mode:        "execute",
-	}
-	runtime, err := contract.MaterializeRuntime(in, pol, homePath, time.Now())
-	if err != nil {
-		return opts, fmt.Errorf("materialize runtime: %w", err)
-	}
-	runtime, err = contract.SealRuntimeMaterialization(runtime)
-	if err != nil {
-		return opts, fmt.Errorf("seal runtime: %w", err)
-	}
-	if _, err := contract.RecordRuntimeMaterialization(homePath, runtime); err != nil {
-		return opts, fmt.Errorf("record runtime: %w", err)
-	}
-	render, err := contract.RenderInstructionBlockVariant(runtime.EffectiveContract, cwd, opts.instructionBlockPreset)
-	if err != nil {
-		return opts, fmt.Errorf("render variant: %w", err)
-	}
-	if opts.args == nil {
-		opts.args = []string{}
-	}
-	if len(opts.args) == 0 {
-		opts.args = append(opts.args, "")
-	}
-	if opts.args[0] == "" {
-		opts.args[0] = render.Content
-	} else {
-		opts.args[0] = opts.args[0] + "\n\n" + render.Content
-	}
-	return opts, nil
 }
 
 func parseSteerCLI(args []string) (steerCLIOptions, error) {
