@@ -34,6 +34,18 @@ OBSERVABLE right now, and names the disagreement.
 // against session "mmx-w10-contract" called four healthy lanes ghosts; the same
 // guess, wired to a reaper, would have reclaimed leases from a live controller
 // whose sessions are named after their work rather than their owner.
+//
+// Each row carries Provenance so the operator can tell which observation
+// source contributed which columns:
+//
+//	"compound"    — the row's state and identity come from a recorded
+//	                 RunAttempt binding. CWD / LastActivity / ResumeCmd may
+//	                 be enriched from the multiplexer source when the same
+//	                 session name appears there.
+//	"multiplexer" — the row exists only because the terminal multiplexer
+//	                 (tmux) reported a session that compound never recorded.
+//	                 WorkID and RunAttemptID are empty; the row's identity
+//	                 is the session name itself.
 type sessionLiveRow struct {
 	State        string  `json:"state"`
 	WorkID       string  `json:"work_id"`
@@ -46,17 +58,48 @@ type sessionLiveRow struct {
 	PaneExists   bool    `json:"pane_exists"`
 	PaneDead     bool    `json:"pane_dead"`
 	Detail       string  `json:"detail,omitempty"`
+
+	// Provenance is "compound" for rows whose state comes from a recorded
+	// RunAttempt, "multiplexer" for rows that exist only because the
+	// terminal multiplexer reported the session. Always present.
+	Provenance string `json:"provenance"`
+	// Lane is the best-effort lane identity. For compound rows it is
+	// "<harness>/<actor>"; for multiplexer rows it falls back to the
+	// session name, which is the only signal the multiplexer itself
+	// carries. Empty string is allowed for unbound compound rows.
+	Lane string `json:"lane,omitempty"`
+	// CWD is the focused pane's working directory, observed via the
+	// multiplexer source. Empty for compound rows whose session the
+	// multiplexer did not see (a server crash, a different tmux server,
+	// etc).
+	CWD string `json:"cwd,omitempty"`
+	// LastActivity is the multiplexer's session_activity, formatted as
+	// RFC3339 in UTC. Empty when the multiplexer did not observe the
+	// pane (same conditions as CWD).
+	LastActivity string `json:"last_activity,omitempty"`
+	// ResumeCmd is the argv an operator can paste to put this pane back
+	// on screen. For compound-bound rows this is the compound attach
+	// command (`compound work delegate attach <work_id>` when a binding
+	// exists); for multiplexer-only rows it is `tmux attach-session -t
+	// <name>`. Empty for unbound compound rows with no multiplexer match.
+	ResumeCmd string `json:"resume_cmd,omitempty"`
 }
 
 type sessionsLiveReport struct {
-	SchemaVersion string           `json:"schema_version"`
-	GeneratedAt   string           `json:"generated_at"`
-	Live          int              `json:"live"`
-	Ghost         int              `json:"ghost"`
-	Unbound       int              `json:"unbound"`
-	Reservation   int              `json:"reservation"`
-	Unknown       int              `json:"unknown"`
-	Rows          []sessionLiveRow `json:"rows"`
+	SchemaVersion string `json:"schema_version"`
+	GeneratedAt   string `json:"generated_at"`
+	Live          int    `json:"live"`
+	Ghost         int    `json:"ghost"`
+	Unbound       int    `json:"unbound"`
+	Reservation   int    `json:"reservation"`
+	Unknown       int    `json:"unknown"`
+	// Multiplexer counts rows whose identity came from the terminal
+	// multiplexer source rather than a recorded RunAttempt. These panes
+	// are not compound-spawned, so they are NOT counted in Live/Ghost/
+	// Unbound/Reservation/Unknown — they are a separate population with
+	// a separate provenance.
+	Multiplexer int              `json:"multiplexer"`
+	Rows        []sessionLiveRow `json:"rows"`
 }
 
 func cmdSessionsLive(args []string) {
@@ -66,12 +109,15 @@ func cmdSessionsLive(args []string) {
 }
 
 func runSessionsLive(args []string, stdout, stderr io.Writer, now time.Time) int {
-	return runSessionsLiveWith(args, stdout, stderr, now, nil)
+	return runSessionsLiveWith(args, stdout, stderr, now, nil, nil)
 }
 
-// runSessionsLiveWith takes the session prober so tests can drive every
-// classification without a tmux server. nil means the real tmux runner.
-func runSessionsLiveWith(args []string, stdout, stderr io.Writer, now time.Time, runner work.SessionRunner) int {
+// runSessionsLiveWith takes the session prober and the multiplexer
+// observer so tests can drive every classification against private tmux
+// servers without touching the operator's real tmux. nil runner means a
+// real tmux runner; nil mux means a real multiplexer source bound to
+// that runner (so socketPrefix / test seams still apply).
+func runSessionsLiveWith(args []string, stdout, stderr io.Writer, now time.Time, runner work.SessionRunner, mux work.MultiplexerSource) int {
 	jsonOut, ghostsOnly, homeFlag := false, false, ""
 	for i := 0; i < len(args); i++ {
 		switch arg := args[i]; arg {
@@ -116,6 +162,16 @@ func runSessionsLiveWith(args []string, stdout, stderr io.Writer, now time.Time,
 	if runner == nil {
 		runner = work.NewTmuxRunner()
 	}
+	// Default the multiplexer source to a tmux-backed one bound to the
+	// same runner so a test that injects a private socket (and so a
+	// pinned server) sees multiplexer observations from THAT server,
+	// not the operator's. nil mux is "use the runner's Multiplexer()";
+	// a non-nil mux (e.g. a stub in a unit test) wins.
+	if mux == nil {
+		if tmuxRunner, ok := runner.(*work.TmuxRunner); ok {
+			mux = tmuxRunner.Multiplexer()
+		}
+	}
 	report := sessionsLiveReport{
 		SchemaVersion: "compound.sessions_live.v0.1",
 		GeneratedAt:   now.UTC().Format(time.RFC3339),
@@ -132,7 +188,9 @@ func runSessionsLiveWith(args []string, stdout, stderr io.Writer, now time.Time,
 			Harness:      ra.Harness,
 			Status:       ra.Status,
 			AgeHours:     now.Sub(ra.CreatedAt).Hours(),
+			Provenance:   "compound",
 		}
+		row.Lane = compoundLaneIdentity(ra.Harness, ra.Actor)
 
 		// A claim-time placeholder is not a session, and judging it as one is
 		// how a single status came to mean both "died" and "worked".
@@ -169,7 +227,50 @@ func runSessionsLiveWith(args []string, stdout, stderr io.Writer, now time.Time,
 		report.Rows = append(report.Rows, row)
 	}
 
-	rank := map[string]int{"ghost": 0, "unknown": 1, "unbound": 2, "live": 3, "reservation": 4}
+	// Second observation source: every tmux session the multiplexer itself
+	// can see. Rows that match a recorded binding by session name are
+	// merged INTO the existing compound row (provenance stays "compound";
+	// cwd / last_activity / resume_cmd come from the multiplexer). Rows
+	// the multiplexer sees but compound never recorded become their own
+	// rows with provenance="multiplexer" — these are the operator's own
+	// panes (claude, codex, manual work) that the report used to miss.
+	//
+	// The merge is deliberately one-row-per-pane. Two rows for the same
+	// pane would force the operator to pick which one to act on, and at
+	// least one pick would be wrong.
+	if mux != nil {
+		observations, muxErr := mux.List()
+		if muxErr != nil {
+			// A broken multiplexer source is a probe failure for the
+			// whole multiplexer column, NOT a reason to abort the report.
+			// Report the failure once via a multiplexer-only row whose
+			// detail names the underlying error so the operator sees
+			// "the multiplexer did not respond" instead of "nothing
+			// multiplexer-reported".
+			report.Rows = append(report.Rows, sessionLiveRow{
+				State:      "multiplexer_unknown",
+				Provenance: "multiplexer",
+				Session:    "-",
+				Detail:     "multiplexer source failed: " + muxErr.Error(),
+			})
+			report.Multiplexer++
+		} else {
+			matched := map[string]bool{}
+			for _, obs := range observations {
+				idx := findRowBySession(report.Rows, obs.Name)
+				if idx >= 0 {
+					applyMultiplexerToCompoundRow(&report.Rows[idx], obs)
+					matched[obs.Name] = true
+					continue
+				}
+				report.Rows = append(report.Rows, multiplexerOnlyRow(obs))
+				report.Multiplexer++
+			}
+			_ = matched // reserved for future "matched but unbound" reporting
+		}
+	}
+
+	rank := map[string]int{"ghost": 0, "unknown": 1, "unbound": 2, "live": 3, "reservation": 4, "multiplexer": 5, "multiplexer_unknown": 6}
 	sort.SliceStable(report.Rows, func(i, j int) bool {
 		ri, rj := rank[report.Rows[i].State], rank[report.Rows[j].State]
 		if ri != rj {
@@ -202,17 +303,46 @@ func runSessionsLiveWith(args []string, stdout, stderr io.Writer, now time.Time,
 		fmt.Fprintln(stdout, "no non-terminal run attempts")
 		return 0
 	}
-	fmt.Fprintf(stdout, "%-12s %-16s %-30s %8s  %s\n", "STATE", "HARNESS", "SESSION", "AGE", "WORK")
+	fmt.Fprintf(stdout, "%-12s %-16s %-30s %8s  %-44s\n", "STATE", "HARNESS", "SESSION", "AGE", "WORK")
 	for _, r := range report.Rows {
 		session := r.Session
 		if session == "" {
 			session = "-"
 		}
-		fmt.Fprintf(stdout, "%-12s %-16s %-30s %7.1fh  %s\n",
-			r.State, clipRunes(r.Harness, 16), clipRunes(session, 30), r.AgeHours, clipRunes(r.WorkID, 44))
+		harness := r.Harness
+		if harness == "" && r.Provenance == "multiplexer" {
+			harness = r.Lane
+		}
+		age := fmt.Sprintf("%7.1fh", r.AgeHours)
+		if r.AgeHours == 0 && r.LastActivity != "" {
+			if parsed, err := time.Parse(time.RFC3339, r.LastActivity); err == nil {
+				age = fmt.Sprintf("%7.1fh", now.Sub(parsed).Hours())
+			} else {
+				age = "-"
+			}
+		}
+		work := r.WorkID
+		if work == "" {
+			work = "-"
+		}
+		fmt.Fprintf(stdout, "%-12s %-16s %-30s %s  %-44s\n",
+			r.State, clipRunes(harness, 16), clipRunes(session, 30), age, clipRunes(work, 44))
+		if r.CWD != "" || r.LastActivity != "" || r.ResumeCmd != "" {
+			parts := []string{}
+			if r.CWD != "" {
+				parts = append(parts, "cwd="+r.CWD)
+			}
+			if r.LastActivity != "" {
+				parts = append(parts, "last="+r.LastActivity)
+			}
+			if r.ResumeCmd != "" {
+				parts = append(parts, "resume="+r.ResumeCmd)
+			}
+			fmt.Fprintf(stdout, "             └─ %s\n", strings.Join(parts, " "))
+		}
 	}
-	fmt.Fprintf(stdout, "\nlive=%d ghost=%d unbound=%d reservation=%d unknown=%d\n",
-		report.Live, report.Ghost, report.Unbound, report.Reservation, report.Unknown)
+	fmt.Fprintf(stdout, "\nlive=%d ghost=%d unbound=%d reservation=%d unknown=%d multiplexer=%d\n",
+		report.Live, report.Ghost, report.Unbound, report.Reservation, report.Unknown, report.Multiplexer)
 	if report.Ghost > 0 {
 		fmt.Fprintf(stdout, "\n%d attempt(s) claim to be running with no live session; each still holds its work lease.\n", report.Ghost)
 		fmt.Fprintln(stdout, "Confirm the owner is really gone before reclaiming:")
@@ -230,6 +360,89 @@ func clipRunes(s string, n int) string {
 		return string(r[:n])
 	}
 	return string(r[:n-1]) + "…"
+}
+
+// compoundLaneIdentity builds the lane string shown on every compound row
+// from the harness and actor recorded at spawn. Empty parts are dropped
+// so a row with no actor is not "codex/" with a trailing slash.
+func compoundLaneIdentity(harness, actor string) string {
+	harness = strings.TrimSpace(harness)
+	actor = strings.TrimSpace(actor)
+	switch {
+	case harness == "" && actor == "":
+		return ""
+	case actor == "":
+		return harness
+	case harness == "":
+		return actor
+	default:
+		return harness + "/" + actor
+	}
+}
+
+// findRowBySession returns the index of the first row whose Session
+// matches the given name, or -1 if none. Used by the multiplexer merge
+// to pair multiplexer observations with compound rows by session name.
+// It is intentionally substring-free — the prototype of this tool matched
+// actor name against session name and called healthy lanes ghosts.
+func findRowBySession(rows []sessionLiveRow, name string) int {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return -1
+	}
+	for i := range rows {
+		if rows[i].Session == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// applyMultiplexerToCompoundRow enriches an existing compound row with
+// the columns only the multiplexer source can answer: cwd, last activity,
+// and the resume command. Provenance stays "compound" — the row's
+// identity still comes from the recorded RunAttempt; the multiplexer
+// just observed the same pane.
+//
+// Existing values are not overwritten: a compound row's ResumeCmd may
+// already point at `compound work delegate attach <work_id>`, which is a
+// higher-level command than the multiplexer-resume `tmux attach-session
+// -t <name>` and is the one an operator under compound control wants.
+func applyMultiplexerToCompoundRow(row *sessionLiveRow, obs work.MultiplexerObservation) {
+	if row == nil {
+		return
+	}
+	if row.CWD == "" {
+		row.CWD = obs.CWD
+	}
+	if row.LastActivity == "" && !obs.LastActivity.IsZero() {
+		row.LastActivity = obs.LastActivity.UTC().Format(time.RFC3339)
+	}
+	if row.ResumeCmd == "" && obs.Name != "" {
+		row.ResumeCmd = "tmux attach-session -t " + obs.Name
+	}
+}
+
+// multiplexerOnlyRow builds the row emitted for a tmux session that
+// compound never recorded. State is "multiplexer" (a separate bucket
+// that does NOT inflate Live/Ghost/Unbound/Reservation/Unknown), and the
+// ResumeCmd is the raw `tmux attach-session -t <name>` the operator can
+// paste to put the pane back.
+func multiplexerOnlyRow(obs work.MultiplexerObservation) sessionLiveRow {
+	row := sessionLiveRow{
+		State:      "multiplexer",
+		Provenance: "multiplexer",
+		Session:    obs.Name,
+		Lane:       obs.Name,
+		CWD:        obs.CWD,
+	}
+	if !obs.LastActivity.IsZero() {
+		row.LastActivity = obs.LastActivity.UTC().Format(time.RFC3339)
+	}
+	if obs.Name != "" {
+		row.ResumeCmd = "tmux attach-session -t " + obs.Name
+	}
+	return row
 }
 
 // classifySessionLiveness decides one attempt's state from its recorded

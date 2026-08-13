@@ -95,6 +95,15 @@ func (r *TmuxRunner) setTestSocketPrefix(sock string) {
 	r.socketPrefix = []string{"-S", sock}
 }
 
+// SetTestSocketPrefix is the exported variant of setTestSocketPrefix,
+// used by tests that live outside the work package (e.g. cmd/compound's
+// multiplexer-observation tests). The behavior is identical: a non-empty
+// socket pins every tmux invocation at this runner — and at its
+// Multiplexer() — to that private server. Empty string clears the pin.
+func (r *TmuxRunner) SetTestSocketPrefix(sock string) {
+	r.setTestSocketPrefix(sock)
+}
+
 // setTestCommandFactory injects a *exec.Cmd builder. The default builder
 // calls exec.Command("tmux", argv...). Tests use it to capture production
 // argv from real launches and to inject per-subcommand failures against

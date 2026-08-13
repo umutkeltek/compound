@@ -247,17 +247,6 @@ func TestSessionsLiveMergesCompoundAndMultiplexerOnSameSession(t *testing.T) {
 	}
 }
 
-// containsString is a tiny helper to avoid importing slices just for one
-// check.
-func containsString(values []string, want string) bool {
-	for _, v := range values {
-		if v == want {
-			return true
-		}
-	}
-	return false
-}
-
 // The multiplexer source itself must fail loudly when the underlying tmux
 // server is unreachable, so the operator sees a real reason instead of an
 // empty report (the dangerous failure is "nothing reported, looks like
