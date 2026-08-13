@@ -27,8 +27,8 @@
 //
 //   5. Alias ordering: codex-switchback-tap is intentionally FIRST so the
 //      no-paid-spawn owned wrapper wins on hosts that ship both it AND the
-//      raw `codex` binary on PATH (this host has /Users/example/.bun/bin/codex;
-//      the Switchback tap is /Users/example/.local/bin/codex-switchback-tap).
+//      raw `codex` binary on PATH (the operator host carries both; the tap
+//      wrapper lives in the user-local bin directory ahead of raw codex).
 //      Raw `codex` is NOT in the aliases — that is the structural fix for
 //      find_062a2146cf8b (empty CODEX_HOME 401 against api.openai.com).
 //
