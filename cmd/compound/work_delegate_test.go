@@ -548,3 +548,92 @@ func snapshotFiles(t *testing.T, root string) map[string]string {
 	}
 	return out
 }
+
+// Falsifier B6: the --instruction-block opt-in flag renders the executor
+// variant and appends it to the dispatch prompt that the delegate forwards
+// to the harness lane. The original prompt is preserved; the variant lives
+// after a blank line; the executor charter is in the forwarded args; the
+// preset tag is in the body; the begin/end markers are present. The repo
+// file (CLAUDE.md / AGENTS.md) is NOT touched.
+func TestWorkDelegateInstructionBlockAppendsExecutorVariantToDispatchPrompt(t *testing.T) {
+	allowDelegateCLIGuard(t, false)
+	store, workID := claimedDelegateCLIWork(t, "orchestrator:test")
+	runner := newDelegateCLIFakeRunner()
+	workspace := t.TempDir()
+	// Plant a real instruction target so the (unused by the variant) target
+	// resolution has a file to walk past if a regression runs the default
+	// branch. The variant path skips drift and never reads the file.
+	target := filepath.Join(workspace, "CLAUDE.md")
+	before := "# untouched\n"
+	if err := os.WriteFile(target, []byte(before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const speech = "audit the executor branch and report a falsifier"
+	out, errOut, code := runDelegateCLIForTest(t, "delegate", store, runner, nil,
+		workID, "--harness", "claude_code", "--prompt", speech, "--workspace", workspace,
+		"--instruction-block", "executor", "--json")
+	if code != 0 || errOut != "" {
+		t.Fatalf("code=%d stderr=%q stdout=%q", code, errOut, out)
+	}
+	if len(runner.creates) != 1 {
+		t.Fatalf("creates = %+v", runner.creates)
+	}
+	forwarded := runner.creates[0].args
+	if len(forwarded) != 1 {
+		t.Fatalf("args len = %d, want 1", len(forwarded))
+	}
+	prompt := forwarded[0]
+	if !strings.HasPrefix(prompt, speech) {
+		t.Fatalf("forwarded prompt must start with the original --prompt text; got head: %q", prompt[:min(120, len(prompt))])
+	}
+	// The executor variant lives after a blank line.
+	wantCharter := []string{
+		"Work only inside the dispatched envelope/worktree",
+		"Commit incrementally on the dispatched branch",
+		"do not push, do not check out main",
+		"Report back in the handoff format",
+		"Escalate instead of improvising when blocked",
+		"preset=" + "`executor`",
+		"<!-- BEGIN COMPOUND GENERATED INSTRUCTIONS harness=claude_code -->",
+		"<!-- END COMPOUND GENERATED INSTRUCTIONS -->",
+	}
+	for _, want := range wantCharter {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("forwarded prompt missing %q", want)
+		}
+	}
+	// Repo file untouched.
+	after, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != before {
+		t.Fatalf("instruction-block mutated repo file:\nbefore=%q\nafter=%q", before, string(after))
+	}
+	// Task text does not leak into the appended variant.
+	if strings.Contains(prompt[strings.Index(prompt, "<!-- BEGIN"):], "audit the executor branch") {
+		t.Fatalf("task text leaked into the appended variant block:\n%s", prompt)
+	}
+}
+
+// Falsifier B6 (negative): without --instruction-block, the prompt is
+// forwarded verbatim — the wire is opt-in. This is the contract surface for
+// "do not invent plumbing": absent the flag, the dispatch path is unchanged.
+func TestWorkDelegateWithoutInstructionBlockForwardsPromptVerbatim(t *testing.T) {
+	allowDelegateCLIGuard(t, false)
+	store, workID := claimedDelegateCLIWork(t, "orchestrator:test")
+	runner := newDelegateCLIFakeRunner()
+	workspace := t.TempDir()
+	const speech = "verify the existing dispatch path is byte-identical"
+	out, errOut, code := runDelegateCLIForTest(t, "delegate", store, runner, nil,
+		workID, "--harness", "claude_zai", "--prompt", speech, "--workspace", workspace, "--json")
+	if code != 0 || errOut != "" {
+		t.Fatalf("code=%d stderr=%q stdout=%q", code, errOut, out)
+	}
+	if len(runner.creates) != 1 {
+		t.Fatalf("creates = %+v", runner.creates)
+	}
+	if len(runner.creates[0].args) != 1 || runner.creates[0].args[0] != speech {
+		t.Fatalf("args = %+v, want [speech]", runner.creates[0].args)
+	}
+}
