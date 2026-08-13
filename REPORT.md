@@ -6,13 +6,16 @@ Envelope: `work_7f2587ddf89d` · policy: `pol_65db532b2a2c` · base expected: `5
 
 - Branch: `instr-s4-preset-block`
 - Worktree: `/Users/example/.compound/delegate-workspaces/burst-renderblock-20260813/wt-instr-s4`
-- Commits (oldest first, all on `instr-s4-preset-block`, NOT pushed):
-  1. `2068cb72` — `feat(contract): RenderInstructionBlockVariant — preset-scoped executor render`
-  2. `ce9aa301` — `test(contract): falsifier tests for RenderInstructionBlockVariant`
-  3. `bb2aa321` — `feat(cli): contract compile --preset <name> renders the variant`
-  4. `d9629f4e` — `feat(delegate): --instruction-block <preset> appends variant to dispatch prompt`
-  5. `ff31e9c2` — `refactor(contract): relocate delegate variant logic to internal/contract` (rework after cmd-compound-budget gate block)
-  6. (this report) — `REPORT.md`
+- Base (rebased onto): `c638e4f7fc2a096a06cdc8961d07979d20f36c9d` (latest main as of 2026-08-14)
+- Tip: `5000c145` — `docs: REPORT — record cmd-compound-budget rework` (post-rebase)
+- Commits (oldest first, all on `instr-s4-preset-block`, NOT pushed, all rebased onto `c638e4f7`):
+  1. `fb53aa01` — `feat(contract): RenderInstructionBlockVariant — preset-scoped executor render`
+  2. `e54c519c` — `test(contract): falsifier tests for RenderInstructionBlockVariant`
+  3. `5594e15c` — `feat(cli): contract compile --preset <name> renders the variant`
+  4. `26bbe4ae` — `feat(delegate): --instruction-block <preset> appends variant to dispatch prompt`
+  5. `7d36133c` — `refactor(contract): relocate delegate variant logic to internal/contract` (rework after cmd-compound-budget gate block)
+  6. `5000c145` — `docs: REPORT — record cmd-compound-budget rework`
+  7. (this report) — `REPORT.md`
 
 ## Falsifier table
 
@@ -40,7 +43,7 @@ Seam location (post-rework): the prompt-append wire is split between `internal/c
 
 Keeper blocked the prior shape on the cmd-compound-budget gate: `cmd/compound` non-test LOC was 52859 over the 52791 ceiling (main at 52769, 90 lines of headroom consumed). The block was: "move the --instruction-block flag logic out of cmd/compound/work_delegate.go into an internal/ organ (internal/contract is where RenderInstructionBlockVariant lives), leaving only a thin call in cmd/compound".
 
-The rework is commit `ff31e9c2`. Before:
+The rework is commit `7d36133c` (post-rebase, was `ff31e9c2` pre-rebase). Before:
 
 - `cmd/compound/work_delegate.go` held a 54-line `renderAndAppendInstructionBlockVariant` helper, an `home` import, a `contract` import, and used `time.Now()` plus the orientation policy loader. The cmd/ non-test delta was +90 over main.
 
@@ -50,16 +53,16 @@ After:
 - `cmd/compound/work_delegate.go` is a thin call: 6 lines of wiring, the struct field, the parser case (1 line addition + 2 lines for the case body), and one `contract` import. The `home` import was dropped.
 - `internal/contract/instructions_delegate_test.go` is the unit test for the internal helper; the cmd/ tests stay and prove the flag wiring end-to-end.
 
-cmd/compound non-test delta after rework: **+17 lines** (20 insertions, 3 deletions), under the +20 budget. Verification:
+cmd/compound non-test delta after rework: **+17 lines** (20 insertions, 3 deletions), under the +20 budget. Verification (post-rebase onto `c638e4f7`):
 
 ```
-$ git diff main --stat -- cmd/compound/ ':!*_test.go'
+$ git diff c638e4f7fc2a096a06cdc8961d07979d20f36c9d --stat -- cmd/compound/ ':!*_test.go'
  cmd/compound/main.go          |  9 +++++++--
  cmd/compound/work_delegate.go | 14 +++++++++++++-
  2 files changed, 20 insertions(+), 3 deletions(-)
 ```
 
-`gofmt -l` on the changed files: clean.
+`gofmt -l` on the changed files: clean. The +17 delta was preserved across the rebase: main's `cmd/compound/` non-test LOC is still 52769 at `c638e4f7` (the intervening main commits do not touch `cmd/compound/`), so the new tip `5000c145` lands at `52769 + 17 = 52786`, under the 52791 ceiling.
 
 ## Follow-ups (named, not built)
 
@@ -85,10 +88,10 @@ $ git diff main --stat -- cmd/compound/ ':!*_test.go'
 
 ## Verification tails
 
-`go test ./internal/contract/... ./cmd/compound/... -count=1` (post-rework):
+`go test ./internal/contract/... ./cmd/compound/... -count=1` (post-rebase onto `c638e4f7`, tip `5000c145`):
 
 ```
-ok  	compound/internal/contract	15.088s
+ok  	compound/internal/contract	22.548s
 ok  	compound/cmd/compound	332.267s
 ```
 
@@ -98,26 +101,26 @@ ok  	compound/cmd/compound	332.267s
 
 `gofmt -l` on changed files: clean.
 
-cmd/compound non-test LOC delta vs main (post-rework): `+17` lines (20 insertions, 3 deletions), under the `+20` budget.
+cmd/compound non-test LOC delta vs base `c638e4f7`: **+17** lines (20 insertions, 3 deletions), under the +20 budget; absolute LOC `52769 + 17 = 52786` is under the 52791 ceiling.
 
-Falsifier-only run (subset, in order; pre-rework timing shown; post-rework identical and all PASS):
+Rebase result: `instr-s4-preset-block` rebased onto `c638e4f7` cleanly with no conflicts. All 7 prior commits preserved. Pre-rebase SHAs in this report have been updated to their post-rebase equivalents.
+
+Falsifier-only run (post-rebase, subset, all PASS):
 
 ```
---- PASS: TestRenderInstructionBlockCarriesStableAuthorityAndProjectRules (0.05s)
---- PASS: TestInstructionBlockIgnoresTaskTextAndDetectsOnlyManagedBlockDrift (0.05s)
 --- PASS: TestTrackedHarnessInstructionBlocksMatchCompiler (0.00s)            # B2 unmodified
---- PASS: TestDefaultBlockIsByteIdenticalPostChange (0.06s)                    # B1
---- PASS: TestExecutorVariantDiffersAndCarriesCharterAndMarkers (0.09s)        # B3
---- PASS: TestEmptyPresetEqualsDefaultExactly (0.06s)                          # B4
---- PASS: TestExecutorVariantIgnoresTaskText (0.03s)                           # B7
---- PASS: TestContractCompileInstructionsCheckFailsOnDriftAndPassesOnExactBlock (0.67s)
---- PASS: TestContractCompileInstructionsPresetVariant (0.66s)                 # B5
---- PASS: TestWorkDelegateInstructionBlockAppendsExecutorVariantToDispatchPrompt (2.02s)  # B6
---- PASS: TestWorkDelegateWithoutInstructionBlockForwardsPromptVerbatim (0.82s)
---- PASS: TestAppendDelegateVariantToPrompt_ValidatesInputs                   # unit (rework)
---- PASS: TestAppendDelegateVariantToPrompt_RendersAndPreservesPrompt          # unit (rework)
---- PASS: TestAppendDelegateVariantToPrompt_EmptyPromptBecomesVariant         # unit (rework)
---- PASS: TestAppendDelegateVariantToPrompt_DoesNotLeakTaskText                # unit (rework)
+--- PASS: TestDefaultBlockIsByteIdenticalPostChange (0.01s)                   # B1
+--- PASS: TestExecutorVariantDiffersAndCarriesCharterAndMarkers (0.03s)       # B3
+--- PASS: TestEmptyPresetEqualsDefaultExactly (0.04s)                         # B4
+--- PASS: TestExecutorVariantIgnoresTaskText (0.00s)                          # B7
+--- PASS: TestContractCompileInstructionsCheckFailsOnDriftAndPassesOnExactBlock (0.25s)
+--- PASS: TestContractCompileInstructionsPresetVariant (0.29s)                # B5
+--- PASS: TestWorkDelegateInstructionBlockAppendsExecutorVariantToDispatchPrompt (0.63s)  # B6
+--- PASS: TestWorkDelegateWithoutInstructionBlockForwardsPromptVerbatim (0.58s)
+--- PASS: TestAppendDelegateVariantToPrompt_ValidatesInputs                  # unit
+--- PASS: TestAppendDelegateVariantToPrompt_RendersAndPreservesPrompt         # unit
+--- PASS: TestAppendDelegateVariantToPrompt_EmptyPromptBecomesVariant         # unit
+--- PASS: TestAppendDelegateVariantToPrompt_DoesNotLeakTaskText               # unit
 ```
 
 Falsifier-only run (subset, in order):
