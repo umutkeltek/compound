@@ -177,7 +177,10 @@ type Result struct {
 // NativePermissionDecision projects the typed PreToolUse result into the
 // host-neutral permission decision exposed by live adapters. Approval-plan
 // prose is accepted only when one canonical evidence ref backs one exact,
-// command-free operator-review sentence.
+// command-free operator-review sentence. When the hook also minted an
+// operator-approval-frontier request, its id and resolve command appear in
+// the agent-visible message so the agent can wait, take an alternative, or
+// record blocked-with-ticket against a stable id.
 func NativePermissionDecision(res Result) (string, string) {
 	coordinationDeny := res.CoordinationDelivery != nil &&
 		res.CoordinationDelivery.ExecutionHeld
@@ -208,7 +211,7 @@ func NativePermissionDecision(res Result) (string, string) {
 		}
 		if pd.Outcome == "hold" {
 			if reason := exactApprovalOperatorReviewReason(pd.Reasons, pd.EvidenceRefs); reason != "" {
-				return "ask", reason
+				return "ask", operatorActionApprovalFrontierSuffix(pd.Reasons, reason)
 			}
 		}
 		reason := nativePolicyDecisionReason(pd.Reasons, res.Summary)
@@ -218,6 +221,27 @@ func NativePermissionDecision(res Result) (string, string) {
 		return "deny", reason
 	}
 	return "", ""
+}
+
+// operatorActionApprovalFrontierSuffix locates the "Operator approval request
+// <id> filed ...; resolve with: <cmd>" reason in the policy decision reasons
+// and appends it (or its essential id+command) to the agent-visible message
+// when it would otherwise be filtered. The existing exact-approval reason is
+// preserved so older adapters keep their stable text; the frontier suffix is
+// added only when present.
+func operatorActionApprovalFrontierSuffix(reasons []string, baseReason string) string {
+	const prefix = "Operator approval request "
+	for _, reason := range reasons {
+		trimmed := strings.TrimSpace(reason)
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		if strings.Contains(trimmed, baseReason) {
+			return baseReason
+		}
+		return baseReason + "; " + trimmed
+	}
+	return baseReason
 }
 
 func exactApprovalOperatorReviewReason(reasons, evidenceRefs []string) string {
@@ -1020,6 +1044,33 @@ func applyExactApprovalEdge(
 	pd.Reasons = append(pd.Reasons,
 		fmt.Sprintf("Exact approval plan %s is ready for operator review.", plan.ID))
 	sideEffects = mergeRefs(sideEffects, []string{planRef})
+
+	// When compound home is configured, mint a durable action-approval request
+	// in the operator-approval-frontier registry so the agent-visible message
+	// can carry a stable id plus the exact resolve command. The original hold
+	// remains authoritative: a frontier registry failure must never break the
+	// gate, only reduce the legibility of the agent-visible reason.
+	if strings.TrimSpace(deps.HomePath) != "" {
+		request, resolveCmd, mintErr := policy.MintOperatorActionApprovalRequest(
+			deps.HomePath,
+			ai.ID,
+			fx.Harness,
+			ai.Action,
+			ai.Capability,
+			ai.Target.Path,
+			now,
+		)
+		if mintErr != nil {
+			pd.Reasons = append(pd.Reasons, "operator-approval-frontier registry unavailable for operator review")
+		} else {
+			frontierRef := "compound://registries/operator-approval-frontier#" + request.ID
+			pd.EvidenceRefs = mergeRefs(pd.EvidenceRefs, []string{frontierRef})
+			pd.Reasons = append(pd.Reasons,
+				fmt.Sprintf("Operator approval request %s filed in compound://registries/operator-approval-frontier; resolve with: %s",
+					request.ID, resolveCmd))
+			sideEffects = mergeRefs(sideEffects, []string{frontierRef})
+		}
+	}
 	return pd, sideEffects
 }
 

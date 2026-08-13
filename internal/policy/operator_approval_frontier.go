@@ -19,18 +19,22 @@ const (
 )
 
 type OperatorApprovalFrontier struct {
-	SchemaVersion             int                      `json:"schema_version,omitempty"`
-	GeneratedAt               string                   `json:"generated_at,omitempty"`
-	RunID                     string                   `json:"run_id,omitempty"`
-	Status                    string                   `json:"status,omitempty"`
-	AuthorityBoundary         string                   `json:"authority_boundary,omitempty"`
-	CurrentState              map[string]interface{}   `json:"current_state,omitempty"`
-	DecisionFamilyCount       int                      `json:"decision_family_count,omitempty"`
-	ApprovalRequiredCount     int                      `json:"approval_required_count,omitempty"`
-	ApprovalRequiredOpenCount int                      `json:"approval_required_open_count,omitempty"`
-	ConsumedFamilies          []map[string]interface{} `json:"consumed_families,omitempty"`
-	Families                  []OperatorApprovalFamily `json:"families,omitempty"`
-	Raw                       map[string]interface{}   `json:"-"`
+	SchemaVersion             int                             `json:"schema_version,omitempty"`
+	GeneratedAt               string                          `json:"generated_at,omitempty"`
+	RunID                     string                          `json:"run_id,omitempty"`
+	Status                    string                          `json:"status,omitempty"`
+	AuthorityBoundary         string                          `json:"authority_boundary,omitempty"`
+	CurrentState              map[string]interface{}          `json:"current_state,omitempty"`
+	DecisionFamilyCount       int                             `json:"decision_family_count,omitempty"`
+	ApprovalRequiredCount     int                             `json:"approval_required_count,omitempty"`
+	ApprovalRequiredOpenCount int                             `json:"approval_required_open_count,omitempty"`
+	ConsumedFamilies          []map[string]interface{}        `json:"consumed_families,omitempty"`
+	Families                  []OperatorApprovalFamily        `json:"families,omitempty"`
+	ActionApprovalCount       int                             `json:"action_approval_count,omitempty"`
+	ActionApprovals           []OperatorActionApprovalRequest `json:"action_approvals,omitempty"`
+	ActionApprovalsSeeded     bool                            `json:"action_approvals_seeded,omitempty"`
+	ActionApprovalsSeededAt   string                          `json:"action_approvals_seeded_at,omitempty"`
+	Raw                       map[string]interface{}          `json:"-"`
 }
 
 type OperatorApprovalFamily struct {
