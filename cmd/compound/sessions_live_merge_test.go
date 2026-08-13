@@ -64,12 +64,12 @@ func TestMergeMultiplexerIntoEmptyCompound(t *testing.T) {
 		observations: []work.MultiplexerObservation{
 			{
 				Name:         "operator-claude-1",
-				CWD:          "/Users/example/work/foo",
+				CWD:          "/tmp/work/foo",
 				LastActivity: now.Add(-2 * time.Minute),
 			},
 			{
 				Name:         "operator-codex-2",
-				CWD:          "/Users/example/work/bar",
+				CWD:          "/tmp/work/bar",
 				LastActivity: now.Add(-30 * time.Second),
 			},
 		},
