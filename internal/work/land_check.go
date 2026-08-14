@@ -786,8 +786,35 @@ func (s *Store) validateRecordedLandCheckProofResult(w envelope.WorkEnvelope, re
 			report.CandidateTipSHA,
 		)
 	}
-	if report.ProofVerificationRef != result.VerificationRef ||
-		report.ProofHeadSHA != result.SourceSnapshot.HeadSHA ||
+	if report.ProofVerificationRef != result.VerificationRef {
+		// Recorded before a later battery stored: the land-check cites the
+		// pre-land verification while the envelope's latest verification_ids
+		// entry is a newer proof battery sealing the SAME tip. That is the
+		// post-land-battery-not-yet-attached shape (recorded twice in
+		// production: landcheck_87ffb48c4f08 p13 and the p15 first attempt).
+		// Quoting a "proof mismatch" between two identical tips is meaningless;
+		// name the missing post-land verification and its repair instead.
+		if report.ProofHeadSHA == report.CandidateTipSHA &&
+			report.CandidateTipSHA == result.SourceSnapshot.HeadSHA {
+			return fmt.Errorf(
+				"recorded land-check %s cites proof verification %s, but the latest proof verification stored on work %s is %s at the identical tip %s; missing post-land verification %s — record a fresh land-check after that post-land battery stored",
+				report.ID,
+				report.ProofVerificationRef,
+				w.ID,
+				result.VerificationRef,
+				result.SourceSnapshot.HeadSHA,
+				result.VerificationRef,
+			)
+		}
+		return fmt.Errorf(
+			"recorded land-check %s proof tip %s does not match current stored proof %s tip %s",
+			report.ID,
+			report.ProofHeadSHA,
+			result.VerificationRef,
+			result.SourceSnapshot.HeadSHA,
+		)
+	}
+	if report.ProofHeadSHA != result.SourceSnapshot.HeadSHA ||
 		report.CandidateTipSHA != result.SourceSnapshot.HeadSHA {
 		return fmt.Errorf(
 			"recorded land-check %s proof tip %s does not match current stored proof %s tip %s",
