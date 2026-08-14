@@ -100,7 +100,8 @@ func DelegateClientHarnessesCompatible(selectedHarness, selectedLaneID, clientHa
 
 func registeredDelegateClientHarnessFamily(harness string) (string, bool) {
 	switch normalizeModelCapabilitySelector(harness) {
-	case "claude_code", "claude_zai", "claude_minimax", "claude_qwen", "claude_zai_full":
+	case "claude_code", "claude_zai", "claude_minimax", "claude_qwen", "claude_zai_full",
+		"claude_kimi", "claude_deepseek_flash_nvidia":
 		return "claude_code", true
 	case "codex":
 		return "codex", true
