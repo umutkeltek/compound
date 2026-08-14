@@ -813,6 +813,14 @@ func terminalWorkCandidates(homePath string) ([]operationalCandidate, error) {
 // release existed, and a crash inside the close's release window. The candidate
 // predicates are unchanged — the set they select simply stops being fed by
 // every normal close.
+//
+// Liveness override (work_9d627f1cb724): a lease whose work item carries a
+// non-terminal RunAttempt with a fresh heartbeat is a live delegate pane,
+// even when the hot work envelope has reached a terminal state or vanished
+// out from under the pane. Such a lease must NOT be a candidate — archiving
+// it would silently kill the pane's claim. The check is read-only and
+// best-effort; a probe failure reads as "no live pane" so the orphan backstop
+// still fires on homes that never had a run_attempts/ directory.
 func staleLeaseCandidates(homePath string) ([]operationalCandidate, error) {
 	dir := filepath.Join(homePath, "work", "leases")
 	entries, err := os.ReadDir(dir)
@@ -830,6 +838,10 @@ func staleLeaseCandidates(homePath string) ([]operationalCandidate, error) {
 		}
 		workID := strings.TrimSuffix(entry.Name(), ".json")
 		rel := filepath.ToSlash(filepath.Join("work", "leases", entry.Name()))
+		if liveRunAttemptForWork(homePath, workID, time.Now()) {
+			// live delegate pane for this work item; lease survives.
+			continue
+		}
 		state, err := jsonStringField(filepath.Join(homePath, "work", "work", workID+".json"), "state")
 		switch {
 		case err == nil && !terminalWorkStatus(state):
