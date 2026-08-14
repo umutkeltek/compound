@@ -1698,3 +1698,76 @@ func publishedGitDelivery(repo, base string) *envelope.GitDeliveryContract {
 		PublicationRef:     "refs/remotes/origin/main",
 	}
 }
+
+// TestCloseRefusalNamesMissingPostLandProof reproduces the recorded p13/p15
+// beat (keeper log, vacation-burst-20260813, pulses 13-15; first-attempt
+// landcheck_87ffb48c4f08 for work_7f2587ddf89d): land-check runs at a landed
+// tip, records "landed" against the pre-land proof battery, and only afterwards
+// does the post-land battery's proof-check:pfrs_* store into the envelope's
+// verification_ids. Close then refuses with the "proof tip X does not match
+// current stored proof Y tip X" message quoting two identical tips -- a
+// nonsense "proof mismatch" that cost a keeper rerun to diagnose both times.
+// The refusal must instead detect the exact-shaped condition (recorded proof
+// cites a verification ref no longer the latest attached proof) and name the
+// missing post-land verification proof.
+func TestCloseRefusalNamesMissingPostLandProof(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
+	now := time.Date(2026, 8, 14, 6, 31, 0, 0, time.UTC)
+	fixture := newLandingProofFixture(t, now)
+	proof := fixture.proof
+	if proof.ProofVerificationRef == "" || proof.ProofHeadSHA != fixture.candidate {
+		t.Fatalf("fixture recorded proof must cite the landed tip: %+v", proof)
+	}
+
+	// The post-land battery completes at the identical landed tip, through the
+	// real governed completion path. Its proof-check:pfrs_* verification stores
+	// into the envelope only now -- after the recorded land-check -- exactly as
+	// in the beat.
+	completed := completeSourceBoundProofForWork(t, fixture.store, fixture.workID, "codex", fixture.repo, now.Add(5*time.Minute))
+	verificationRef := completed.VerificationRef
+	if verificationRef == proof.ProofVerificationRef {
+		t.Fatalf("second battery must store a distinct verification ref: %s", verificationRef)
+	}
+
+	current, err := fixture.store.Get(fixture.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fixture.store.recordedLandedProofForClose(current, []string{proof.EvidenceRef})
+	if err == nil {
+		t.Fatal("close must refuse a land-check recorded before its post-land proof stored")
+	}
+	if strings.Contains(err.Error(), "does not match current stored proof") {
+		t.Fatalf("close refusal must not quote a same-tip proof mismatch (misleading, hit twice in production): %v", err)
+	}
+	if !strings.Contains(err.Error(), "missing post-land") ||
+		!strings.Contains(err.Error(), "record a fresh land-check") ||
+		!strings.Contains(err.Error(), verificationRef) {
+		t.Fatalf("close refusal must name the missing post-land verification proof %s and its repair: %v", verificationRef, err)
+	}
+
+	// The documented repair from the beat -- rerun land-check after the
+	// post-land proof stored -- must close cleanly. No assertion beyond the
+	// refusal shape is relaxed to get here.
+	fresh, err := fixture.store.LandCheck(fixture.workID, LandCheckOptions{
+		RepoPath:        fixture.repo,
+		CandidateTipSHA: fixture.candidate,
+		TargetRef:       "main",
+		Record:          true,
+	}, now.Add(7*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status != "landed" || fresh.ProofVerificationRef != verificationRef {
+		t.Fatalf("fresh land-check must certify against the post-land proof: %+v", fresh)
+	}
+	current, err = fixture.store.Get(fixture.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.recordedLandedProofForClose(current, []string{fresh.EvidenceRef}); err != nil {
+		t.Fatalf("close must accept the fresh post-land land-check: %v", err)
+	}
+}
