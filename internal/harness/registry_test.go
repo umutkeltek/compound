@@ -36,6 +36,7 @@ func TestAdapterRegistryNewHasBuiltins(t *testing.T) {
 		"claude_zai_full",
 		"codex",
 		"os-harness-entrypoints",
+		"prime_agent",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("NewAdapterRegistry names = %v, want %v", got, want)

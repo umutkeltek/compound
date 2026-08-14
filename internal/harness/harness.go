@@ -442,6 +442,38 @@ func DefaultRegistry() Registry {
 			},
 			InjectBudgetMS: 1000,
 		},
+		"prime_agent": {
+			Name:                 "prime_agent",
+			InstructionMechanism: "AGENTS.md + system-prompt arg + --no-session headless invocation + persistent-kernel RPC supervisor",
+			// Prime-agent has no SessionStart/UserPromptSubmit/PreToolUse/PostToolUse hook
+			// protocol -- its native hook surface is tool-policy allowlists (`-t/--tools`
+			// and `-nbt/--no-builtin-tools`) plus its persistent-kernel supervisor that
+			// exposes an RPC daemon on 127.0.0.1:18774 (kernel-venv socket under
+			// /Users/example/.prime/agent/). The registry floor is therefore deliberately
+			// empty on the hook flags: Compound injects context via `--system-prompt` /
+			// `--append-system-prompt` argv at dispatch time and observes outcomes through
+			// the shared runattempt.Store, not through Prime-agent hooks. NativeSkills and
+			// MCP stay true: Prime-agent discovers both via its own extension loader and
+			// the daemon's `--mcp` server config, exactly like Codex's pattern.
+			//
+			// The "registry identity only" limitation is the same admission Codex used
+			// before its switchback landing: the harness row exists so the runner and
+			// work-delegate resolver have a stable id to dispatch into; the
+			// capability-floor raise (and the persistent-kernel governor) land in a
+			// follow-up slice.
+			Capabilities: Capabilities{
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"no SessionStart/UserPromptSubmit/PreToolUse/PostToolUse hook protocol — context is injected via `--system-prompt` / `--append-system-prompt` argv at dispatch",
+				"no SessionEnd or Stop feedback — terminal status is derived from the subprocess exit code under the shared runWithSubprocess core",
+				"persistent-kernel executor runs as a separate daemon over 127.0.0.1:18774 (configured in ~/.prime/agent/models.json); read-only consumer, never rewires the tap",
+				"headless invocation is `--mode rpc` or `-p --no-session`; the run-attempt chrome is the only audit trail",
+				"tool policy is enforced via `-t/--tools` allowlist at dispatch — see prime_agent_adapter.go buildCmd",
+				"registry identity only — capability-floor raise and persistent-kernel governor land in a follow-up slice",
+			},
+			InjectBudgetMS: 1500,
+		},
 	}}
 }
 

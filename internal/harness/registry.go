@@ -48,6 +48,7 @@ func NewAdapterRegistry(store *runattempt.Store) *AdapterRegistry {
 		r.RegisterAdapter(newClaudeLaneAdapter(store, name, defaultHeartbeatInterval))
 	}
 	r.RegisterAdapter(NewCodexAdapter(store))
+	r.RegisterAdapter(NewPrimeAgentAdapter(store))
 	return r
 }
 

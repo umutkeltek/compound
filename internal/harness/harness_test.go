@@ -103,6 +103,7 @@ func TestNamesSorted(t *testing.T) {
 		"codex",
 		"hermes",
 		"opencode",
+		"prime_agent",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("Names() = %v, want %v", got, want)
