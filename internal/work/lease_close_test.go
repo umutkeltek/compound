@@ -4,12 +4,63 @@ package work
 // docs_private/plan/packets/2026-07-09-close-gate-lease.md) showed leases exist but nothing
 // enforces them at close: a non-holder actor could close a work another actor's executor
 // was still mid-build on. These tests pin the falsifier list from that packet.
+//
+// 2026-07-31 incident (work_close_steal_lease_corruption_20260731): a close --steal that
+// PASSED the lease gate transferred the lease BEFORE a downstream validation refused
+// the closure, leaving the work bricked — lease named actor-b, but the work was still in
+// "running" state under actor-a's original build. Refusal must be atomic across every
+// lifecycle surface, including the lease itself and any audit records the gate would
+// otherwise append eagerly. See TestCloseStealRefusalLeavesLifecycleByteIdentical.
 
 import (
 	"os"
 	"strings"
 	"testing"
 )
+
+// Regression for work_close_steal_lease_corruption_20260731. A close --steal may pass the
+// lease gate and re-point the lease BEFORE a later close validation refuses the closure
+// (e.g. control_plane_repair outcome with no proof refs). The lease and every audit
+// record the gate eagerly appended must be rolled back so the work is not bricked.
+//
+// Today's bug: leaseHolderCloseGate runs at the top of closeLocked (before ClosePlan
+// and policy evaluation), so a valid --steal --reason transfers the lease to actor-b,
+// then ClosePlan/policy refuses the close. The work is left in its pre-close state
+// (e.g. "running") with a lease naming actor-b — exactly the wave10 brick pattern from
+// 2026-07-31. After the fix, the lease must be byte-identical to before the attempt and
+// no audit/event/ActionIntent may have been appended.
+func TestCloseStealRefusalLeavesLifecycleByteIdentical(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "lane-w", SuccessPredicate: "refused steal is atomic"}, fixedNow)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.Claim(w.ID, "actor-a", fixedNow); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "actor-a"}, fixedNow); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	before := snapshotLifecycleAuthority(t, s)
+
+	_, err = s.Close(w.ID, CloseInput{
+		Outcome:     "completed",
+		MoveType:    "control_plane_repair",
+		Changed:     true,
+		Actor:       "actor-b",
+		Steal:       true,
+		StealReason: "original executor is unavailable",
+	}, fixedNow)
+	if err == nil {
+		t.Fatal("expected close to refuse a changed control-plane repair without proof")
+	}
+	if !strings.Contains(err.Error(), "proof") {
+		t.Fatalf("expected proof refusal, got %v", err)
+	}
+
+	after := snapshotLifecycleAuthority(t, s)
+	assertLifecycleAuthorityUnchanged(t, before, after)
+}
 
 // Falsifier 1 (RED-first): a work claimed by one actor is closeable by a different actor
 // with no steal on today's code. This is the exact regression of tonight's canon_class

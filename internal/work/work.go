@@ -2015,9 +2015,6 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if err := heldReleaseOperatorError(w.State, in.Outcome, actor); err != nil {
 		return res, err
 	}
-	if err := s.leaseHolderCloseGate(w, actor, in, now); err != nil {
-		return res, err
-	}
 	if !oneOf(in.MoveType, envelope.MoveTypes) {
 		return res, fmt.Errorf("close --move-type must be one of %v, got %q", envelope.MoveTypes, in.MoveType)
 	}
@@ -2166,6 +2163,27 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 			}
 			return res, identityErr
 		}
+	}
+	// Atomic steal (2026-07-31 regression — work_close_steal_lease_corruption_20260731):
+	// the lease gate runs as the LAST pre-persistence gate, AFTER plan/policy
+	// evaluation, AFTER receipt/transition composition, AFTER the Git reference
+	// transaction is staged and identity-revalidated. Re-pointing the lease before
+	// every other check passed was the brick pattern from 2026-07-31 — a close
+	// --steal transferred the lease to actor-b, then a downstream validation refused
+	// the closure, leaving the work in actor-a's pre-close state with a lease naming
+	// actor-b. Now: any pre-persistence check failing causes the gate to never run,
+	// the Git ref transaction to abort, and the lease stays byte-identical. The
+	// gate's blocked path remains append-only audit (ActionIntent + PolicyDecision
+	// + lifecycle event) and writes no lease byte; the gate's stolen path is the
+	// only one that re-points the lease, and it is now the final gate before any
+	// terminal byte lands on disk.
+	if err := s.leaseHolderCloseGate(w, actor, in, now); err != nil {
+		if referenceTransaction != nil {
+			if abortErr := referenceTransaction.Abort(); abortErr != nil {
+				return res, errors.Join(err, fmt.Errorf("abort Git reference transaction: %w", abortErr))
+			}
+		}
+		return res, err
 	}
 	referenceTransactionFinished := false
 	defer func() {
