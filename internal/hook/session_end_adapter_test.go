@@ -116,15 +116,15 @@ func TestSessionEndAdapterPersistenceStatesDistinguishCommittedFromNotCommitted(
 
 	committedHome := t.TempDir()
 	committedAttempt := prepareSessionEndAdapterAcceptance(parsed, native, input, time.Unix(1_800_000_000, 1).UTC())
-	committed := persistSessionEndAdapterAcceptanceBounded(
-		committedHome,
-		committedAttempt,
-		input,
-		time.Second,
-		nil,
-	)
-	if committed.PersistenceState != sessionEndAdapterPersistenceCommitted || committed.Err != nil {
-		t.Fatalf("committed persistence result=%+v", committed)
+	// Assert on the synchronous persistence path rather than the deadline
+	// wrapper: this test's subject is committed-vs-not_committed
+	// classification, and routing it through a 1s wall-clock timer races real
+	// fsync latency under parallel load (a slow-but-successful write can be
+	// misclassified as unknown). Deadline behavior of the bounded wrapper is
+	// covered separately by channel-synchronized deadline tests.
+	committedState, committedErr := persistSessionEndAdapterAcceptanceDetailed(committedHome, committedAttempt, input)
+	if committedState != sessionEndAdapterPersistenceCommitted || committedErr != nil {
+		t.Fatalf("committed persistence state=%s err=%v", committedState, committedErr)
 	}
 
 	notCommittedHome := t.TempDir()
@@ -132,15 +132,9 @@ func TestSessionEndAdapterPersistenceStatesDistinguishCommittedFromNotCommitted(
 		t.Fatal(err)
 	}
 	notCommittedAttempt := prepareSessionEndAdapterAcceptance(parsed, native, input, time.Unix(1_800_000_000, 2).UTC())
-	notCommitted := persistSessionEndAdapterAcceptanceBounded(
-		notCommittedHome,
-		notCommittedAttempt,
-		input,
-		time.Second,
-		nil,
-	)
-	if notCommitted.PersistenceState != sessionEndAdapterPersistenceNotCommitted || notCommitted.Err == nil {
-		t.Fatalf("not-committed persistence result=%+v", notCommitted)
+	notCommittedState, notCommittedErr := persistSessionEndAdapterAcceptanceDetailed(notCommittedHome, notCommittedAttempt, input)
+	if notCommittedState != sessionEndAdapterPersistenceNotCommitted || notCommittedErr == nil {
+		t.Fatalf("not-committed persistence state=%s err=%v", notCommittedState, notCommittedErr)
 	}
 }
 
@@ -446,9 +440,22 @@ func TestSessionEndAdapterManualReplayCanUseLongerBoundedTimeout(t *testing.T) {
 	compoundHome := t.TempDir()
 	t.Setenv("COMPOUND_HOME", compoundHome)
 
-	workerPath := filepath.Join(t.TempDir(), "slow-valid-session-end-worker.sh")
-	worker := "#!/bin/sh\nsleep 0.3\nprintf '%s\\n' '{}'\n"
+	// The worker must exceed the 100ms live deadline yet complete inside the 1s
+	// replay deadline. A fixed sleep races load: under contention the child can
+	// be starved past the replay deadline (observed duration_ms≈1001-1003 red).
+	// Synchronize instead of guessing: the live run is expected to time out
+	// while the worker is still running, so the first worker invocation marks
+	// readiness and then blocks on a gate file that only the replayed
+	// invocation (a fresh process) removes. This keeps "exceeds the live
+	// deadline" true by construction rather than by a sleep length.
+	workerDir := t.TempDir()
+	gatePath := filepath.Join(workerDir, "gate")
+	workerPath := filepath.Join(workerDir, "slow-valid-session-end-worker.sh")
+	worker := fmt.Sprintf("#!/bin/sh\nwhile [ -e %q ]; do sleep 0.05; done\nprintf '%%s\\n' '{}'\n", gatePath)
 	if err := os.WriteFile(workerPath, []byte(worker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gatePath, []byte("gated"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	input := `{"hook_event_name":"SessionEnd","session_id":"sess_longer_manual_replay","unknown_future_field":{"kept":true}}`
@@ -461,6 +468,13 @@ func TestSessionEndAdapterManualReplayCanUseLongerBoundedTimeout(t *testing.T) {
 	}
 	if !strings.Contains(liveStderr.String(), "worker timed out after 100ms") {
 		t.Fatalf("live attempt did not reproduce the short-deadline failure: %s", liveStderr.String())
+	}
+	// Release the gate only after the live deadline was observed to fire: the
+	// replay's worker invocation now exits promptly, so the 1s replay deadline
+	// only needs to cover process spawn plus a 50ms poll, not a fixed sleep
+	// racing scheduler starvation.
+	if err := os.Remove(gatePath); err != nil {
+		t.Fatal(err)
 	}
 	parentID := requireSessionEndAdapterDiagnosticValue(t, liveStderr.String(), "retry evidence=")
 	events, err := eventstore.Open(compoundHome)
