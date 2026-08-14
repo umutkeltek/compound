@@ -5,6 +5,7 @@ package schedule
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -141,6 +142,37 @@ func TestValidateScheduleFlagsFailsClosedOnUnknown(t *testing.T) {
 		err := validateScheduleFlags(c.sub, c.args, c.maxPos)
 		if (err == nil) != c.wantOK {
 			t.Errorf("validateScheduleFlags(%s, %v) err=%v, wantOK=%v", c.sub, c.args, err, c.wantOK)
+		}
+	}
+}
+
+// TestValidateScheduleSourceCoversClauseA locks clause (a): the canonical set
+// is accepted, every other value is rejected with an error that names the
+// set so the operator can see what they should have typed. The default
+// ("all") is intentionally NOT exercised here — cmdScheduleList only calls
+// this helper when --source is passed explicitly.
+func TestValidateScheduleSourceCoversClauseA(t *testing.T) {
+	for _, ok := range scheduleValidSources {
+		if err := validateScheduleSource(ok); err != nil {
+			t.Errorf("validateScheduleSource(%q) = %v, want nil", ok, err)
+		}
+	}
+	bad := []string{"", "all ", "user,system", "USER", "launchd", "anything-bogus"}
+	for _, b := range bad {
+		err := validateScheduleSource(b)
+		if err == nil {
+			t.Errorf("validateScheduleSource(%q) = nil, want error", b)
+			continue
+		}
+		msg := err.Error()
+		// Error message must name the valid set so the operator can recover.
+		for _, ok := range scheduleValidSources {
+			if !strings.Contains(msg, ok) {
+				t.Errorf("error for %q does not name valid source %q: %s", b, ok, msg)
+			}
+		}
+		if !strings.Contains(msg, "--source") {
+			t.Errorf("error for %q does not mention --source flag: %s", b, msg)
 		}
 	}
 }

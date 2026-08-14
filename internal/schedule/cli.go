@@ -120,6 +120,11 @@ func cmdScheduleList(args []string) {
 	jsonOut := hasFlag(args, "--json")
 	source := "all"
 	if v := strings.TrimSpace(valueFlag(args, "--source")); v != "" {
+		if err := validateScheduleSource(v); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, scheduleUsage)
+			os.Exit(2)
+		}
 		source = v
 	}
 	nsFilter := strings.TrimSpace(valueFlag(args, "--namespace"))
@@ -694,6 +699,30 @@ func validateScheduleFlags(sub string, args []string, maxPos int) error {
 		return fmt.Errorf("too many positional args (got %d, max %d)", positional, maxPos)
 	}
 	return nil
+}
+
+// scheduleValidSources is the canonical set accepted by --source. Listed
+// here, not in collectSchedule's switch, so the error message and the
+// happy-path filter cannot drift: validateScheduleSource and collectSchedule
+// both reference the same table. Adding a new source means one entry here
+// + the switch arms in collectSchedule (failure mode: validate accepts a
+// value the filter silently drops to zero entries, which is exactly the
+// silent-empty bug clause (a) exists to prevent).
+var scheduleValidSources = []string{"all", "user", "system", "crontab"}
+
+// validateScheduleSource fails closed on an unknown --source value with an
+// error message that names the canonical set. Called from cmdScheduleList
+// before collectSchedule so a typo cannot silently produce an empty
+// projection. The default ("all") is set at the call site and is not
+// re-validated; this helper only runs when the user passed --source
+// explicitly.
+func validateScheduleSource(v string) error {
+	for _, s := range scheduleValidSources {
+		if v == s {
+			return nil
+		}
+	}
+	return fmt.Errorf("--source %q invalid; valid values: %s", v, strings.Join(scheduleValidSources, ", "))
 }
 
 // prepareScheduleEntries is the shared seam for list/doctor/anything that
