@@ -414,9 +414,12 @@ func loadProbeGroupedRefsFromView(in Input, rule MemoryRule, semanticRanks map[s
 		candidates := make([]probeMemoryCandidate, 0)
 		if len(group.topicSet) > 0 {
 			for _, claim := range claims {
-				candidate, ok, omitted := probeClaimCandidate(in, rule, semanticRanks, dependencies, entities, taskTokens, group, claim)
+				candidate, ok, omitted, exclusion := probeClaimCandidate(in, rule, semanticRanks, dependencies, entities, taskTokens, group, claim)
 				if omitted {
 					productFenceOmitted = true
+				}
+				if exclusion.Ref != "" {
+					excluded = append(excluded, exclusion)
 				}
 				if ok {
 					candidates = append(candidates, candidate)
@@ -427,9 +430,12 @@ func loadProbeGroupedRefsFromView(in Input, rule MemoryRule, semanticRanks map[s
 				if !ok {
 					continue
 				}
-				candidate, ok, omitted := probePositionCandidate(in, rule, semanticRanks, dependencies, entities, taskTokens, group, position, claim)
+				candidate, ok, omitted, exclusion := probePositionCandidate(in, rule, semanticRanks, dependencies, entities, taskTokens, group, position, claim)
 				if omitted {
 					productFenceOmitted = true
+				}
+				if exclusion.Ref != "" {
+					excluded = append(excluded, exclusion)
 				}
 				if ok {
 					candidates = append(candidates, candidate)
@@ -486,19 +492,30 @@ func loadProbeGroupedRefsFromView(in Input, rule MemoryRule, semanticRanks map[s
 	return memoryRefs, positionRefs, excluded, selections
 }
 
-func probeClaimCandidate(in Input, rule MemoryRule, semanticRanks map[string]float64, dependencies *runtimeMemoryDependencies, entities, taskTokens map[string]bool, group probeGroupPlan, claim mem.Claim) (probeMemoryCandidate, bool, bool) {
+func probeClaimCandidate(in Input, rule MemoryRule, semanticRanks map[string]float64, dependencies *runtimeMemoryDependencies, entities, taskTokens map[string]bool, group probeGroupPlan, claim mem.Claim) (probeMemoryCandidate, bool, bool, envelope.ExcludedRef) {
 	if !probeClaimInTopicSet(claim, group.topicSet) || !probeClaimInInputTopic(claim, dependencies) || !memoryAbsoluteGateAllowsOrient(claim) {
-		return probeMemoryCandidate{}, false, false
+		return probeMemoryCandidate{}, false, false, envelope.ExcludedRef{}
 	}
 	sem := semanticRanks[claim.ID]
 	baseRelevance := memoryRelevanceRank(claim, entities, taskTokens, sem, nil)
-	if !probeMemoryPolicyAllows(claim, rule, baseRelevance, dependencySelfEntities(dependencies)) {
-		return probeMemoryCandidate{}, false, false
+	selfEntities := dependencySelfEntities(dependencies)
+	if !probeMemoryPolicyAllows(claim, rule, baseRelevance, selfEntities) {
+		// audit-20260723 E12: per-claim policy exclusions are NEVER silently dropped —
+		// the Excluded ledger is the single observable record of "evaluated, but not
+		// loaded, and here's why", regardless of whether the surrounding probe group
+		// itself ends up empty.
+		if reason := memoryPolicyExclusionReason(claim, rule, baseRelevance, selfEntities); reason != "" {
+			return probeMemoryCandidate{}, false, false, envelope.ExcludedRef{
+				Ref:    "claim://" + claim.ID,
+				Reason: reason,
+			}
+		}
+		return probeMemoryCandidate{}, false, false, envelope.ExcludedRef{}
 	}
 	temps := dependencies.Temperatures
 	relevance := memoryRelevanceRank(claim, entities, taskTokens, sem, temps)
 	if !productRecallFenceAllowsClaim(dependencies.ProductFence, claim) {
-		return probeMemoryCandidate{}, false, true
+		return probeMemoryCandidate{}, false, true, envelope.ExcludedRef{}
 	}
 	if baseRelevance > 0 {
 		if temperature := memoryTemperatureTerm(temps, claim.ID); temperature != 0 {
@@ -514,24 +531,36 @@ func probeClaimCandidate(in Input, rule MemoryRule, semanticRanks map[string]flo
 		Seq:        claim.Seq,
 		Rank:       probeGroupBaseRank + relevance,
 	}
-	return probeMemoryCandidate{kind: "claim", ref: ref.Ref, line: line, rank: ref.Rank, seq: ref.Seq, memory: ref}, true, false
+	return probeMemoryCandidate{kind: "claim", ref: ref.Ref, line: line, rank: ref.Rank, seq: ref.Seq, memory: ref}, true, false, envelope.ExcludedRef{}
 }
 
-func probePositionCandidate(in Input, rule MemoryRule, semanticRanks map[string]float64, dependencies *runtimeMemoryDependencies, entities, taskTokens map[string]bool, group probeGroupPlan, position mem.Position, claim mem.Claim) (probeMemoryCandidate, bool, bool) {
+func probePositionCandidate(in Input, rule MemoryRule, semanticRanks map[string]float64, dependencies *runtimeMemoryDependencies, entities, taskTokens map[string]bool, group probeGroupPlan, position mem.Position, claim mem.Claim) (probeMemoryCandidate, bool, bool, envelope.ExcludedRef) {
 	active := activePositionFromFold(position, claim)
 	if active.Ref == "" || !probePositionInTopicSet(active, claim, group.topicSet) || !probePositionInInputTopic(active, claim, dependencies) || !memoryAbsoluteGateAllowsOrient(claim) {
-		return probeMemoryCandidate{}, false, false
+		return probeMemoryCandidate{}, false, false, envelope.ExcludedRef{}
 	}
 	sem := semanticRanks[claim.ID]
 	relevance := memoryRelevanceRank(claim, entities, taskTokens, sem, nil)
-	if !probeMemoryPolicyAllows(claim, rule, relevance, dependencySelfEntities(dependencies)) {
-		return probeMemoryCandidate{}, false, false
+	selfEntities := dependencySelfEntities(dependencies)
+	if !probeMemoryPolicyAllows(claim, rule, relevance, selfEntities) {
+		// audit-20260723 E12: per-claim policy exclusions on the position path are NEVER
+		// silently dropped — the Excluded ledger records the claim that backed the
+		// position (not the position ref itself, which is derived state) so operators
+		// can answer "why didn't this position surface" from a single grep on
+		// pack.Excluded / ec.Excluded.
+		if reason := memoryPolicyExclusionReason(claim, rule, relevance, selfEntities); reason != "" {
+			return probeMemoryCandidate{}, false, false, envelope.ExcludedRef{
+				Ref:    "claim://" + claim.ID,
+				Reason: reason,
+			}
+		}
+		return probeMemoryCandidate{}, false, false, envelope.ExcludedRef{}
 	}
 	if currentStatePositionFreshnessExclusionReason(active.Ref, claim) != "" {
-		return probeMemoryCandidate{}, false, false
+		return probeMemoryCandidate{}, false, false, envelope.ExcludedRef{}
 	}
 	if !productRecallFenceAllowsClaim(dependencies.ProductFence, claim) {
-		return probeMemoryCandidate{}, false, true
+		return probeMemoryCandidate{}, false, true, envelope.ExcludedRef{}
 	}
 	ref := contextPositionRef{
 		Ref:        active.Ref,
@@ -542,7 +571,7 @@ func probePositionCandidate(in Input, rule MemoryRule, semanticRanks map[string]
 		Seq:        claim.Seq,
 		Rank:       probeGroupBaseRank + relevance,
 	}
-	return probeMemoryCandidate{kind: "position", ref: ref.Ref, line: ref.Line, rank: ref.Rank, seq: ref.Seq, position: ref}, true, false
+	return probeMemoryCandidate{kind: "position", ref: ref.Ref, line: ref.Line, rank: ref.Rank, seq: ref.Seq, position: ref}, true, false, envelope.ExcludedRef{}
 }
 
 func probeMemoryPolicyAllows(claim mem.Claim, rule MemoryRule, relevance float64, selfEntities map[string]bool) bool {

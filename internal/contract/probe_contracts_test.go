@@ -437,3 +437,88 @@ func includedReasonContains(pack envelope.ContextPack, ref, want string) bool {
 	}
 	return false
 }
+
+// TestProbeSelectionRecordsPerClaimPolicyExclusionInExcludedLedger pins audit-20260723 E12:
+// when the probe-selection path is active and a topic-relevant claim is filtered out by
+// memory policy (ExplicitOnly self-model / Forbidden self-model / Forbidden personal-corpus),
+// the rejected claim must surface in pack.Excluded with a claim:// ref + reasoned exclusion
+// line — never be silently dropped. Before the fix, loadProbeGroupedRefsFromView only
+// recorded the whole-group "probed-and-empty" case, leaving per-claim policy rejections
+// invisible whenever at least one other candidate passed.
+func TestProbeSelectionRecordsPerClaimPolicyExclusionInExcludedLedger(t *testing.T) {
+	home := t.TempDir()
+	writeProbeContracts(t, home, `{
+	  "schema_version": "compound.probe_contracts.v0.1",
+	  "default_class": "general",
+	  "task_classes": [{
+	    "class": "system-work",
+	    "match": {"topics_any": ["system"]},
+	    "probes": [
+	      {"group": "system", "budget": 5}
+	    ]
+	  }]
+	}`)
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	topics := []byte(`{
+	  "schema_version": "compound.memory_topics.v0.1",
+	  "topics": [
+	    {"slug": "system"}
+	  ]
+	}`)
+	if _, err := store.ImportTopics(topics, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	candidatesIn := []mem.Candidate{
+		probeCandidate("WidgetAuthority", "head", "fictional widget authority owner", "system", "architecture", "contextual"),
+		probeCandidate("WidgetRetrieval", "head", "fictional widget retrieval owner", "system", "architecture", "contextual"),
+		probeCandidate("WidgetSpan", "head", "fictional widget span owner", "system", "architecture", "contextual"),
+		probeCandidate("WidgetLedger", "head", "fictional widget ledger owner", "system", "architecture", "contextual"),
+		probeCandidate("WidgetProbe", "head", "fictional widget probe owner", "system", "architecture", "contextual"),
+		// self-model claim: entity "operator" + non-explicit promotion basis + topic "system"
+		// triggers the ExplicitOnly self-model branch in memoryPolicyExclusionReason for
+		// control-plane repos (rule.ExplicitOnly = ["self-model","personal-corpus"]), which
+		// returns a non-empty reason; probeMemoryPolicyAllows returns false; the claim must
+		// NOT vanish — it must be recorded in pack.Excluded with ref + reason.
+		probeCandidate("operator", "head", "fictional self-model operator note", "system", "architecture", "contextual"),
+	}
+	promoteProbeCandidates(t, store, candidatesIn)
+
+	pack, err := PackWithCapabilities(Input{
+		Harness: "codex", Cwd: "/repo/widget", Task: "system operator inspection",
+		RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute",
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Self-model claim MUST appear in Excluded with a claim:// ref and a policy reason
+	// naming "self-model" or "personal-corpus" — the never-silently-dropped invariant.
+	var selfModelExclusion envelope.ExcludedRef
+	for _, exc := range pack.Excluded {
+		if strings.HasPrefix(exc.Ref, "claim://") &&
+			(strings.Contains(exc.Reason, "self-model") || strings.Contains(exc.Reason, "personal-corpus")) {
+			selfModelExclusion = exc
+			break
+		}
+	}
+	if selfModelExclusion.Ref == "" {
+		t.Fatalf("policy-excluded self-model claim not recorded in Excluded ledger (audit E12): %+v", pack.Excluded)
+	}
+	// The group must NOT be marked empty — the sibling ordinary claims kept the group alive.
+	if hasExcluded(pack, "probe://system") && excludedReasonContains(pack, "probe://system", "probed-and-empty") {
+		t.Fatalf("system group mis-recorded as probed-and-empty despite surviving ordinary claims: %+v", pack.Excluded)
+	}
+	// And the self-model claim must NOT appear in ActiveMemory/ActivePositions (it was excluded).
+	for _, line := range pack.ActiveMemory {
+		if strings.Contains(line, "fictional self-model operator note") {
+			t.Fatalf("policy-excluded self-model claim leaked into ActiveMemory: %q", line)
+		}
+	}
+	for _, position := range pack.ActivePositions {
+		if position.Entity == "operator" {
+			t.Fatalf("policy-excluded self-model claim leaked into ActivePositions: %+v", position)
+		}
+	}
+}
