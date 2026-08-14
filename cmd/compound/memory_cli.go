@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/capgraph"
 	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/retrievalparity"
@@ -324,6 +325,35 @@ func cmdMemory(args []string) {
 			res, err = store.AdjudicateAsOperator(candidateID, verdict, flag("--work"), flag("--by"), time.Now())
 		}
 		die(err)
+		// Loop piece 2/4 (work_57f80593eb2d): a freshly promoted Claim becomes
+		// a validated_by edge on the matching capability-graph node so the
+		// next orient offer scoring (Surface) re-orders matching offers by it.
+		// Resolved through the candidate's explicit `capability` qualifier, or
+		// inferred from the candidate's Predicate / Subject so a wide range of
+		// promoted candidates enrich the latent space without each call having
+		// to know its target node id. A clean no-match is silent (false): a
+		// Claim about a topic with no matching capability must NOT mint a
+		// phantom node. Enrichment errors are NOT fatal — the ledger promote
+		// already committed, so we log a stderr note and let the verb return
+		// the adjudicate result the operator asked for.
+		if res.Claim != nil && strings.TrimSpace(homePath) != "" {
+			hint, token := memoryAdjudicateEnrichHints(res.Candidate, *res.Claim)
+			if hint != "" || token != "" {
+				enrichHome := homePath
+				if _, wrote, enrichErr := capgraph.EnrichFromPromotedClaim(
+					enrichHome,
+					res.Claim.ID,
+					capgraph.ProvenanceAdjudicateMemEnrich,
+					hint,
+					token,
+					time.Now(),
+				); enrichErr != nil {
+					fmt.Fprintf(os.Stderr, "capgraph enrichment error for %s: %v (adjudicate result still stands)\n", res.Claim.ID, enrichErr)
+				} else if wrote {
+					fmt.Fprintf(os.Stderr, "capgraph enrichment: %s -> validated_by edge\n", res.Claim.ID)
+				}
+			}
+		}
 		if res.Claim != nil {
 			line := fmt.Sprintf("%s: promoted claim %s (seq %d)", res.Candidate.ID, res.Claim.ID, res.Claim.Seq)
 			if res.Superseded != "" {
@@ -689,4 +719,44 @@ func cmdMemory(args []string) {
 		fmt.Fprintln(os.Stderr, memoryUsage(""))
 		os.Exit(2)
 	}
+}
+
+// memoryAdjudicateEnrichHints derives the (capabilityHint, contextToken)
+// pair the capgraph enrichment seam consumes after a successful promote.
+//
+// Resolution rules (first non-empty hit wins for the hint):
+//  1. Candidate.Qualifiers["capability"] (explicit node id / name /
+//     capability:// URI the caller already knows the target of).
+//  2. Candidate.Qualifiers["node_id"] (canonical node id when the
+//     candidate's author knew exactly which node the claim should land
+//     on).
+//  3. Candidate.Qualifiers["capability_kind"] + ":" + Candidate.Entity
+//     fallback (the kind+subject shape used by distiller-source
+//     CapabilityObservation candidates).
+//
+// The context token is the Claim.Entity when set, falling back to the
+// Candidate.Predicate — either is a stable, surface-tokenizer-friendly
+// piece of evidence that maps to a future orient task.
+//
+// Both hint and token may be empty, in which case the caller skips the
+// enrichment call (a candidate about a topic with no capability hint and
+// no usable predicate is intentionally left alone).
+func memoryAdjudicateEnrichHints(c mem.Candidate, claim mem.Claim) (string, string) {
+	hint := firstNonEmpty(
+		strings.TrimSpace(c.Qualifiers["capability"]),
+		strings.TrimSpace(c.Qualifiers["node_id"]),
+	)
+	if hint == "" {
+		kind := strings.TrimSpace(c.Qualifiers["capability_kind"])
+		entity := strings.TrimSpace(c.Entity)
+		if kind != "" && entity != "" {
+			hint = kind + ":" + entity
+		} else if kind != "" {
+			hint = kind
+		} else if entity != "" {
+			hint = entity
+		}
+	}
+	token := firstNonEmpty(claim.Entity, c.Predicate, c.Entity)
+	return hint, token
 }
