@@ -12,6 +12,7 @@ overlay.
 | **compound-land** | Getting a change onto main: scope claim, verification battery, rehearsed `--ff-only` with a fresh-SHA guard, post-land duties. | [`compound-land/SKILL.md`](./compound-land/SKILL.md) |
 | **compound-verify** | Proving a change is ALIVE (wired, fed, cut over, provable) — not merely merged — before closing any work item. | [`compound-verify/SKILL.md`](./compound-verify/SKILL.md) |
 | **extract-approach** | After any non-trivial solved problem: extract the approach and route each learning to the owner that will consume it, in the same change. | [`extract-approach/SKILL.md`](./extract-approach/SKILL.md) |
+| **memory-injection-rules** | Compiling ambient memory-injection rules from receipt evidence — what to inject, when, and never ambient by default. Default for general users is pull-only. | [`memory-injection-rules/SKILL.md`](./memory-injection-rules/SKILL.md) |
 
 ## Tracked bodies vs. harness overlay
 
