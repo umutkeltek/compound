@@ -2,6 +2,8 @@ package harness
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -36,12 +38,12 @@ func TestPrimeAgentAdapterRunMintsRunAttempt(t *testing.T) {
 	a := NewPrimeAgentAdapter(store)
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	out, err := a.Run(context.Background(), RunInput{
-		WorkID:    "work_primeagent_unit",
-		Workspace: t.TempDir(),
-		Command:   "true",
+		WorkID:         "work_primeagent_unit",
+		Workspace:      t.TempDir(),
+		Command:        "true",
 		PermissionMode: "oneshot",
-		Prompt:    "hello",
-		Now:       now,
+		Prompt:         "hello",
+		Now:            now,
 	})
 	if err != nil {
 		t.Fatalf("Run returned err: %v", err)
@@ -128,8 +130,12 @@ func TestPrimeAgentAdapterWorkspaceNeverCompoundHome(t *testing.T) {
 		Prompt:    "echo hello",
 		Now:       time.Now(),
 	})
-	if strings.HasPrefix(cmd.Dir, "/Users/example/.compound") {
-		t.Fatalf("cmd.Dir = %q must not resolve to ~/.compound", cmd.Dir)
+	// Derive the operator home at runtime: hardcoding an absolute home path
+	// would both leak it into a public-destined tree and only assert for one user.
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if strings.HasPrefix(cmd.Dir, filepath.Join(home, ".compound")) {
+			t.Fatalf("cmd.Dir = %q must not resolve to ~/.compound", cmd.Dir)
+		}
 	}
 }
 

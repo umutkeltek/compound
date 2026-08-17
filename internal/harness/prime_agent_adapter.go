@@ -34,8 +34,8 @@ import (
 //
 // The adapter does NOT implement Prime-agent's persistent kernel. It
 // drives a fresh subprocess for every Run(); the persistent kernel is a
-// separate daemon process (see /Users/example/.prime/agent/daemon-workers/
-// and the supervisor-config snapshot). Compound is the orchestrator;
+// separate daemon process (see the operator's ~/.prime/agent daemon-workers
+// directory and its supervisor-config snapshot). Compound is the orchestrator;
 // this adapter is the dispatch driver — the persistent-kernel wiring
 // stays where it lives. Adapter scope is "Run the headless Prime-agent
 // CLI in a RunAttempt-chrome wrapper."
@@ -147,7 +147,15 @@ func (a *PrimeAgentAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd
 		args = append(args, prompt)
 	}
 
-	cmd := exec.CommandContext(ctx, "prime-agent", args...)
+	// Honour the caller-supplied binary. Hardcoding the literal here would
+	// make Run()'s in.Command default dead code and silently ignore an
+	// explicit override. buildCmd defaults independently because tests and
+	// readiness probes call it directly, without going through Run().
+	binary := strings.TrimSpace(in.Command)
+	if binary == "" {
+		binary = "prime-agent"
+	}
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = workspace
 
 	// Prime-agent has the same COMPOUND_HOME / ~/.prime-agent isolation

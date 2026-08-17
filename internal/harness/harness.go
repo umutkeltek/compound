@@ -449,7 +449,7 @@ func DefaultRegistry() Registry {
 			// protocol -- its native hook surface is tool-policy allowlists (`-t/--tools`
 			// and `-nbt/--no-builtin-tools`) plus its persistent-kernel supervisor that
 			// exposes an RPC daemon on 127.0.0.1:18774 (kernel-venv socket under
-			// /Users/example/.prime/agent/). The registry floor is therefore deliberately
+			// the operator's ~/.prime/agent tree). The registry floor is therefore deliberately
 			// empty on the hook flags: Compound injects context via `--system-prompt` /
 			// `--append-system-prompt` argv at dispatch time and observes outcomes through
 			// the shared runattempt.Store, not through Prime-agent hooks. NativeSkills and
