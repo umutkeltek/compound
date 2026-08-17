@@ -1362,6 +1362,186 @@ func (s *Store) SweepStaleWithProbe(threshold time.Duration, now time.Time, prob
 	return rep, nil
 }
 
+// ObservedLivenessProbe is the work-owned liveness probe that returns the
+// time of last observed per-attempt activity. It is the rich sibling of
+// LivenessProbe -- the difference matters: LivenessProbe answers
+// "is the bound pane alive in some sense (exists, not marked dead)?"
+// while ObservedLivenessProbe answers "did I observe per-attempt
+// activity at time observed-at?".
+//
+// Contract:
+//   - live=false, observedAt=zero: pane is gone / dead / unbound.
+//   - live=true, observedAt=zero: probe saw liveness but did not observe
+//     per-attempt activity. Treated as "live but no activity evidence"
+//     -- the sweep WILL terminalize (a stale candidate with no
+//     observable activity is exactly the byte-identical-heartbeat bug
+//     shape and must surface to doctor as stuck_past_ttl, not stay
+//     hidden as Protected).
+//   - live=true, observedAt=set: probe observed per-attempt activity at
+//     observed-at. The sweep stamps observed-at as the heartbeat
+//     (forward-only monotonic rule) and protects the attempt. A
+//     genuinely live pane producing fresh output therefore keeps a
+//     fresh heartbeat; a lingering pane for a dead lane carries a stale
+//     observed-at and ages out on the next pass.
+//   - err != nil: SKIP the candidate (transient probe fault -- the
+//     next sweep retries). Identical to LivenessProbe error semantics.
+//
+// The probe receives the full RunAttempt so work-owned binding lookup
+// stays in work/, not runattempt/.
+type ObservedLivenessProbe func(ra RunAttempt) (live bool, observedAt time.Time, err error)
+
+// SweepStaleWithObservedProbe is the per-attempt-activity-aware sweep.
+// It is the fix for the byte-identical-heartbeat defect (work_c772671637c7,
+// verified 2026-08-17 20:02Z on main 18645ea7). The CLI probe in
+// cmd/compound/runattempt_cli.go returns live=true for any pane that
+// exists and is not marked dead, so a lingering tmux pane for a
+// long-dead lane keeps satisfying the probe and the old SweepStaleWithProbe
+// stamps sweep-time across every probe-live candidate. SweepStaleWithObservedProbe
+// replaces sweep-time stamping with probe's observed-at stamping, so:
+//
+//   - live=true AND observed-at fresh (within threshold) → heartbeat
+//     advances to observed-at (forward-only, monotonic), Protected++.
+//     This is the safety property: genuinely live delegated panes
+//     producing real output stay protected.
+//   - live=true AND observed-at stale (past threshold) OR observed-at
+//     zero → terminalize as abandoned (NOT protected). The lingering-
+//     pane-no-actual-output shape surfaces to doctor as stuck_past_ttl,
+//     not as a heartbeat that hides its 4-day-old age.
+//   - live=false → ordinary stale abandonment, classified identically
+//     to SweepStale. DelegateSweep that already mapped observed exit
+//     would have terminalized earlier; this pass does not duplicate.
+//   - err != nil → SKIP the candidate. A transient probe fault does
+//     not strand an attempt; the next pass retries.
+//
+// Heartbeat stamping uses observed-at (NOT the sweep's `now`), so two
+// candidates the probe observed at distinct times carry distinct
+// heartbeat timestamps on disk -- the byte-identical heartbeat symptom
+// is broken at the seam.
+func (s *Store) SweepStaleWithObservedProbe(threshold time.Duration, now time.Time, probe ObservedLivenessProbe) (SweepReport, error) {
+	if probe == nil {
+		return SweepReport{}, errors.New("runattempt sweep: SweepStaleWithObservedProbe requires a non-nil probe")
+	}
+	if threshold <= 0 {
+		threshold = DefaultSweepThreshold
+	}
+	stuck, err := s.ListNonTerminal()
+	if err != nil {
+		return SweepReport{}, err
+	}
+	var rep SweepReport
+	rep.Scanned = len(stuck)
+	for _, ra := range stuck {
+		lastActivity := ra.CreatedAt
+		if ra.LastHeartbeatAt != nil {
+			lastActivity = *ra.LastHeartbeatAt
+		}
+		age := now.Sub(lastActivity)
+		if age < threshold {
+			rep.Skipped++
+			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+			continue
+		}
+		live, observedAt, perr := probe(ra)
+		if perr != nil {
+			rep.Skipped++
+			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+			continue
+		}
+		// Probe error path above already returned; here we have a verdict.
+		if !live {
+			// Vanished or dead → ordinary stale abandonment.
+			_, classification, swept, cerr := s.completeStaleSnapshot(ra, threshold, now)
+			if cerr != nil || !swept {
+				rep.Skipped++
+				rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+				continue
+			}
+			rep.Swept++
+			rep.SweptIDs = append(rep.SweptIDs, ra.ID)
+			switch classification {
+			case SweepClassificationSideEffectFree:
+				rep.AutoClosed++
+				rep.AutoClosedIDs = append(rep.AutoClosedIDs, ra.ID)
+			case SweepClassificationAmbiguous:
+				rep.Escalated++
+				rep.EscalatedIDs = append(rep.EscalatedIDs, ra.ID)
+			}
+			continue
+		}
+		// live=true. The probe vouches for liveness; the question now is
+		// whether the probe ALSO observed recent per-attempt activity.
+		// observedAt == zero means "live but no activity evidence" -- the
+		// lingering-pane bug shape. Treat as dead for sweep purposes:
+		// the candidate ages out and surfaces to doctor as stuck_past_ttl.
+		if observedAt.IsZero() {
+			_, classification, swept, cerr := s.completeStaleSnapshot(ra, threshold, now)
+			if cerr != nil || !swept {
+				rep.Skipped++
+				rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+				continue
+			}
+			rep.Swept++
+			rep.SweptIDs = append(rep.SweptIDs, ra.ID)
+			switch classification {
+			case SweepClassificationSideEffectFree:
+				rep.AutoClosed++
+				rep.AutoClosedIDs = append(rep.AutoClosedIDs, ra.ID)
+			case SweepClassificationAmbiguous:
+				rep.Escalated++
+				rep.EscalatedIDs = append(rep.EscalatedIDs, ra.ID)
+			}
+			continue
+		}
+		// live=true AND observed-at set. Observed-at must be within
+		// threshold of `now` for the safety property to hold (a genuinely
+		// live pane is observed at recent times). If observed-at is itself
+		// past threshold, the candidate is stale by definition -- the
+		// lingering-pane-with-old-output bug shape. Terminalize without
+		// stamping the heartbeat, so the on-disk heartbeat reflects the
+		// last activity that actually happened (or nil if none). This
+		// restores the run_attempts_stuck_past_ttl vs run_attempts_stuck_oldest
+		// split the bug erased.
+		if now.Sub(observedAt) >= threshold {
+			_, classification, swept, cerr := s.completeStaleSnapshot(ra, threshold, now)
+			if cerr != nil || !swept {
+				rep.Skipped++
+				rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+				continue
+			}
+			rep.Swept++
+			rep.SweptIDs = append(rep.SweptIDs, ra.ID)
+			switch classification {
+			case SweepClassificationSideEffectFree:
+				rep.AutoClosed++
+				rep.AutoClosedIDs = append(rep.AutoClosedIDs, ra.ID)
+			case SweepClassificationAmbiguous:
+				rep.Escalated++
+				rep.EscalatedIDs = append(rep.EscalatedIDs, ra.ID)
+			}
+			continue
+		}
+		// live=true AND observed-at within threshold. Stamp observed-at
+		// as the heartbeat (NOT sweep's `now`). The Heartbeat call's
+		// forward-only monotonic rule applies: if a more recent heartbeat
+		// landed between ListNonTerminal() and this write, the observed-at
+		// stamp is a no-op and the candidate stays current.
+		if _, herr := s.Heartbeat(ra.ID, observedAt); herr != nil {
+			// Heartbeat-refresh write failures are best-effort per
+			// attempt: skip this candidate and let later stale
+			// candidates be processed by the same pass. Aborting on a
+			// single transient failure would strand every subsequent
+			// candidate.
+			rep.Skipped++
+			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+			continue
+		}
+		rep.Protected++
+		rep.Skipped++
+		rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+	}
+	return rep, nil
+}
+
 func (s *Store) path(id string) string {
 	return filepath.Join(s.home, "run_attempts", id+".json")
 }
