@@ -40,6 +40,13 @@ type desiredHookBinding struct {
 	Matcher  string
 	Command  string
 	Blocking bool
+	// Timeout is the per-binding hook timeout in seconds. It is the integer
+	// sibling to matcher in the harness hook JSON schema. Zero means "no
+	// timeout override": the harness applies its own default. The install
+	// path carries the installed Compound binding's timeout forward across
+	// reinstalls so a hand-set timeout is not silently dropped when the
+	// installer replaces Compound-owned entries wholesale.
+	Timeout int
 }
 
 // HarnessMatcher deliberately covers every tool. Interactive postures need a
@@ -173,6 +180,12 @@ type HookInstallBinding struct {
 	Matcher  string `json:"matcher,omitempty"`
 	Command  string `json:"command"`
 	Blocking bool   `json:"blocking"`
+	// Timeout is the per-binding hook timeout in seconds carried into the
+	// harness hook JSON. Empty when the binding has no timeout override
+	// (the harness applies its own default). When set, the install path
+	// round-trips it across reinstalls so a hand-set timeout is never
+	// silently dropped with the wholesale Compound-entry replace.
+	Timeout int `json:"timeout,omitempty"`
 }
 
 // HookInstallEntry is the per-harness outcome of an install/check pass.
@@ -307,9 +320,18 @@ func installHooksImpl(
 			})
 		}
 		matcher, command := installedGuardProjection(bindings)
-		staged, err := prepareHookBindings(harness, configPath, bindings, check)
+		staged, installedTimeouts, err := prepareHookBindings(harness, configPath, bindings, check)
 		if err != nil {
 			return report, fmt.Errorf("%s: %w", harness, err)
+		}
+		// Project the installed per-event timeout onto the reported bindings so
+		// the install report reflects the live, on-disk timeout that survived
+		// the wholesale Compound-entry replace (hand-set timeout adopted from
+		// the prior entry, or the desired timeout if pinned).
+		for i := range reportedBindings {
+			if t, ok := installedTimeouts[reportedBindings[i].Event]; ok {
+				reportedBindings[i].Timeout = t
+			}
 		}
 		prepared = append(prepared, staged)
 		report.Entries = append(report.Entries, HookInstallEntry{
@@ -494,7 +516,7 @@ func mergePreToolUseBinding(configPath, matcher, command string, check bool) (st
 // mergeHookBindings retains the narrow single-config seam used by package tests. Multi-harness
 // installs use InstallHooksWithConfigDirAndPublish so every selected config is prepared first.
 func mergeHookBindings(configPath string, bindings []desiredHookBinding, check bool) (string, error) {
-	prepared, err := prepareHookBindings("", configPath, bindings, check)
+	prepared, _, err := prepareHookBindings("", configPath, bindings, check)
 	if err != nil {
 		return "", err
 	}
@@ -507,7 +529,7 @@ func mergeHookBindings(configPath string, bindings []desiredHookBinding, check b
 	return prepared.action, nil
 }
 
-func prepareHookBindings(harnessName, configPath string, bindings []desiredHookBinding, check bool) (preparedHookConfig, error) {
+func prepareHookBindings(harnessName, configPath string, bindings []desiredHookBinding, check bool) (preparedHookConfig, map[string]int, error) {
 	prepared := preparedHookConfig{
 		harness: harnessName,
 		path:    configPath,
@@ -515,7 +537,7 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 	}
 	for _, binding := range bindings {
 		if strings.TrimSpace(binding.Event) == "" || strings.TrimSpace(binding.Command) == "" {
-			return preparedHookConfig{}, fmt.Errorf("hook binding needs event and command")
+			return preparedHookConfig{}, nil, fmt.Errorf("hook binding needs event and command")
 		}
 	}
 
@@ -524,21 +546,21 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 	switch {
 	case err == nil:
 		if info.Mode()&os.ModeSymlink != 0 {
-			return preparedHookConfig{}, fmt.Errorf("refuse symlinked hook config %s", configPath)
+			return preparedHookConfig{}, nil, fmt.Errorf("refuse symlinked hook config %s", configPath)
 		}
 		if !info.Mode().IsRegular() {
-			return preparedHookConfig{}, fmt.Errorf("hook config %s must be a regular file", configPath)
+			return preparedHookConfig{}, nil, fmt.Errorf("hook config %s must be a regular file", configPath)
 		}
 		data, readErr := os.ReadFile(configPath)
 		if readErr != nil {
-			return preparedHookConfig{}, readErr
+			return preparedHookConfig{}, nil, readErr
 		}
 		afterReadInfo, statErr := os.Lstat(configPath)
 		if statErr != nil {
-			return preparedHookConfig{}, fmt.Errorf("hook config %s changed during preflight: %w", configPath, statErr)
+			return preparedHookConfig{}, nil, fmt.Errorf("hook config %s changed during preflight: %w", configPath, statErr)
 		}
 		if afterReadInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(info, afterReadInfo) {
-			return preparedHookConfig{}, fmt.Errorf("hook config %s changed during preflight", configPath)
+			return preparedHookConfig{}, nil, fmt.Errorf("hook config %s changed during preflight", configPath)
 		}
 		prepared.existed = true
 		prepared.before = append([]byte(nil), data...)
@@ -546,7 +568,7 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 		prepared.preimage = afterReadInfo
 		if len(strings.TrimSpace(string(data))) > 0 {
 			if err := json.Unmarshal(data, &root); err != nil {
-				return preparedHookConfig{}, fmt.Errorf("parse %s: %w", configPath, err)
+				return preparedHookConfig{}, nil, fmt.Errorf("parse %s: %w", configPath, err)
 			}
 			if root == nil {
 				root = map[string]any{}
@@ -554,7 +576,7 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 		}
 	case os.IsNotExist(err):
 	case err != nil:
-		return preparedHookConfig{}, err
+		return preparedHookConfig{}, nil, err
 	}
 
 	hooks, _ := root["hooks"].(map[string]any)
@@ -566,6 +588,12 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 	for _, binding := range bindings {
 		desiredByEvent[binding.Event] = binding
 	}
+	// installedTimeoutByEvent records the per-binding timeout (seconds) that
+	// reconcileHookEventGroups actually installed for each event. Per-event
+	// here so the install report can echo the live, on-disk timeout — not
+	// just the desired timeout — so the caller observes the hand-set
+	// timeout that survived the wholesale Compound-entry replace.
+	installedTimeoutByEvent := make(map[string]int, len(bindings))
 	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"} {
 		groups, _ := hooks[event].([]any)
 		binding, desired := desiredByEvent[event]
@@ -573,7 +601,10 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 		if desired {
 			desiredBinding = &binding
 		}
-		reconciled, removed := reconcileHookEventGroups(groups, event, desiredBinding)
+		reconciled, removed, installedTimeout := reconcileHookEventGroups(groups, event, desiredBinding)
+		if installedTimeout > 0 {
+			installedTimeoutByEvent[event] = installedTimeout
+		}
 		if sameHookGroups(groups, reconciled) {
 			continue
 		}
@@ -599,16 +630,16 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 	prepared.action = action
 	if action == "ok" {
 		prepared.after = append([]byte(nil), prepared.before...)
-		return prepared, nil
+		return prepared, installedTimeoutByEvent, nil
 	}
 	root["hooks"] = hooks
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return preparedHookConfig{}, err
+		return preparedHookConfig{}, nil, err
 	}
 	prepared.after = append(data, '\n')
 	prepared.shouldWrite = !check
-	return prepared, nil
+	return prepared, installedTimeoutByEvent, nil
 }
 
 func hookConfigRevision(data []byte) string {
@@ -916,10 +947,18 @@ func reconcileHookEventGroups(
 	groups []any,
 	event string,
 	desired *desiredHookBinding,
-) ([]any, int) {
+) ([]any, int, int) {
 	reconciled := make([]any, 0, len(groups)+1)
 	insertAt := -1
 	removed := 0
+	// adoptedTimeout is the integer seconds timeout observed on the existing
+	// Compound entry (if any). The install path carries it forward across
+	// wholesale replaces so a hand-set timeout survives reinstall. It is
+	// only adopted when the desired binding did not pin a timeout and the
+	// existing entry explicitly set one (timeout > 0); a zero valued
+	// already-installed binding is a deliberate "no override" and is
+	// preserved as such — adopting 0 would be a no-op anyway.
+	adoptedTimeout := 0
 	for _, group := range groups {
 		entry, ok := group.(map[string]any)
 		if !ok {
@@ -931,6 +970,13 @@ func reconcileHookEventGroups(
 			reconciled = append(reconciled, group)
 			continue
 		}
+		groupHasCompound := false
+		for _, hook := range inner {
+			if hookIsCompoundEvent(hook, event) {
+				groupHasCompound = true
+				break
+			}
+		}
 		kept := make([]any, 0, len(inner))
 		removedFromGroup := 0
 		for _, hook := range inner {
@@ -940,6 +986,13 @@ func reconcileHookEventGroups(
 				continue
 			}
 			kept = append(kept, hook)
+		}
+		if adoptedTimeout == 0 && groupHasCompound {
+			if t, ok := entry["timeout"].(float64); ok && t > 0 {
+				adoptedTimeout = int(t)
+			} else if t, ok := entry["timeout"].(int); ok && t > 0 {
+				adoptedTimeout = t
+			}
 		}
 		if removedFromGroup == 0 {
 			reconciled = append(reconciled, group)
@@ -959,9 +1012,9 @@ func reconcileHookEventGroups(
 	}
 	if desired == nil {
 		if removed == 0 {
-			return groups, 0
+			return groups, 0, 0
 		}
-		return reconciled, removed
+		return reconciled, removed, 0
 	}
 	desiredEntry := map[string]any{
 		"hooks": []any{map[string]any{"type": "command", "command": desired.Command}},
@@ -969,13 +1022,25 @@ func reconcileHookEventGroups(
 	if strings.TrimSpace(desired.Matcher) != "" {
 		desiredEntry["matcher"] = desired.Matcher
 	}
+	// Per-binding timeout round-trip: when the desired binding did not pin
+	// a timeout but the prior Compound entry had one, carry it forward so a
+	// hand-set timeout is not silently dropped on reinstall. A desired-side
+	// timeout (e.g. from the compiled posture) wins, matching the rest of
+	// the desiredEntry semantics.
+	timeout := desired.Timeout
+	if timeout == 0 && adoptedTimeout > 0 {
+		timeout = adoptedTimeout
+	}
+	if timeout > 0 {
+		desiredEntry["timeout"] = timeout
+	}
 	if insertAt < 0 {
 		insertAt = len(reconciled)
 	}
 	reconciled = append(reconciled, nil)
 	copy(reconciled[insertAt+1:], reconciled[insertAt:])
 	reconciled[insertAt] = desiredEntry
-	return reconciled, removed
+	return reconciled, removed, timeout
 }
 
 func sameHookGroups(a, b []any) bool {

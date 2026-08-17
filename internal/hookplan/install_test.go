@@ -623,7 +623,7 @@ func TestCommitPreparedHookConfigRefusesPreimageDrift(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			prepared, err := prepareHookBindings(
+			prepared, _, err := prepareHookBindings(
 				"codex",
 				path,
 				[]desiredHookBinding{{
@@ -656,11 +656,11 @@ func TestHookInstallTransactionRollsBackPriorCommitsOnLaterPreimageDrift(t *test
 		Matcher: "*",
 		Command: "compound hook pre-tool-use --live",
 	}}
-	first, err := prepareHookBindings("claude-code", firstPath, bindings, false)
+	first, _, err := prepareHookBindings("claude-code", firstPath, bindings, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	later, err := prepareHookBindings("codex", laterPath, bindings, false)
+	later, _, err := prepareHookBindings("codex", laterPath, bindings, false)
 	if err != nil {
 		t.Fatal(err)
 	}
