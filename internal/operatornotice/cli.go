@@ -8,9 +8,16 @@ import (
 	"time"
 
 	"compound/internal/home"
+	"compound/internal/reviewartifact"
 )
 
 const noticeUsage = "usage: compound notice flush [--transport buzz] [--home P] [--json]"
+
+// ReviewsBuilder assembles the annotated, authority-stamped review queue for a
+// home. It is injected because building it is reviewqueue.Build, which depends
+// on six organs — see NotifyWithReviews for why this package must not import
+// that chain itself.
+type ReviewsBuilder func(homePath string, now time.Time) (*reviewartifact.QueueReport, error)
 
 // Run is the organ entry point behind `compound notice` (the cmd-budget ratchet
 // keeps cmd/compound a dispatch layer; the surface lives here).
@@ -19,7 +26,15 @@ const noticeUsage = "usage: compound notice flush [--transport buzz] [--home P] 
 // caller, Notify is a function nobody runs, and the operator keeps clearing
 // dialogs by hand. It stays a manual verb — emitting is governed by the act
 // seam's standing grant, so a missing grant reports Refused rather than posting.
-func Run(args []string) {
+//
+// Run keeps the review frontier out; RunWith is the wired entry point. Run
+// exists for callers that genuinely have no review queue.
+func Run(args []string) { RunWith(args, nil) }
+
+// RunWith is Run with the review queue supplied. Without it the notifier sees
+// workbench and executor holds only, which is a small minority of what actually
+// needs the operator.
+func RunWith(args []string, reviews ReviewsBuilder) {
 	if len(args) == 0 || args[0] != "flush" {
 		fmt.Fprintln(os.Stderr, noticeUsage)
 		os.Exit(2)
@@ -52,7 +67,20 @@ func Run(args []string) {
 		}
 		homePath = resolved
 	}
-	report, err := Notify(homePath, transport, time.Now().UTC())
+	now := time.Now().UTC()
+	var queue *reviewartifact.QueueReport
+	if reviews != nil {
+		built, berr := reviews(homePath, now)
+		if berr != nil {
+			// Fail rather than silently notifying against a partial frontier:
+			// a flush that quietly saw only workbench holds is exactly the
+			// failure this wiring exists to remove.
+			fmt.Fprintf(os.Stderr, "notice: build review queue: %v\n", berr)
+			os.Exit(1)
+		}
+		queue = built
+	}
+	report, err := NotifyWithReviews(homePath, transport, queue, now)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "notice: %v\n", err)
 		os.Exit(1)

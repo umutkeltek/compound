@@ -1236,6 +1236,17 @@ func buildReviewQueueReport(homePath, area string, includeArchived bool) (review
 	return report, nil
 }
 
+// noticeReviewQueue adapts buildReviewQueueReport to operatornotice's injected
+// builder. The notifier cannot assemble this itself without importing six
+// organs into a leaf package; this is the whole reason the seam exists.
+func noticeReviewQueue(homePath string, _ time.Time) (*reviewartifact.QueueReport, error) {
+	report, err := buildReviewQueueReport(homePath, "", false)
+	if err != nil {
+		return nil, err
+	}
+	return &report, nil
+}
+
 func buildWorkbenchReviewQueue(report reviewartifact.QueueReport) workbenchReviewQueue {
 	out := workbenchReviewQueue{
 		SchemaVersion: reviewartifact.QueueSchemaVersion,

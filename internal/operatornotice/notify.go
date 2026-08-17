@@ -28,6 +28,7 @@ import (
 	"compound/internal/home"
 	"compound/internal/policy"
 	"compound/internal/product"
+	"compound/internal/reviewartifact"
 	"compound/internal/work"
 )
 
@@ -162,6 +163,29 @@ type NoticeReport struct {
 // drive the function off a prepared attention.Report without rebuilding the
 // event store every call.
 func Notify(homePath, transport string, now time.Time) (NoticeReport, error) {
+	return NotifyWithReviews(homePath, transport, nil, now)
+}
+
+// NotifyWithReviews is Notify with the review queue supplied by the caller.
+//
+// The reviews report is an ARGUMENT rather than something this package builds,
+// on purpose. Assembling it is reviewqueue.Build, which pulls in decisions,
+// product, authority, director, runtimebinding and capgraph; importing that
+// chain would turn a leaf whose whole job is "wire three existing surfaces
+// together" into a package that depends on six organs. The CLI already has the
+// assembled report (cmd/compound buildReviewQueueReport) and hands it over.
+//
+// This matters because it is the difference between the notifier seeing the
+// operator's real frontier and seeing almost none of it: attention.Build only
+// walks review groups when Reviews is non-nil, so with nil the notifier sees
+// workbench and executor groups alone. That is exactly what produced the one
+// flush this system has ever run — a single aggregate card reading "33 open
+// work items are blocked on operator review", because the workbench group was
+// the only thing it could see.
+//
+// A nil report stays valid: it degrades to the previous behaviour rather than
+// failing, so a caller without a review queue still notifies workbench holds.
+func NotifyWithReviews(homePath, transport string, reviews *reviewartifact.QueueReport, now time.Time) (NoticeReport, error) {
 	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		return NoticeReport{}, fmt.Errorf("operatornotice: open work: %w", err)
@@ -175,6 +199,7 @@ func Notify(homePath, transport string, now time.Time) (NoticeReport, error) {
 		return NoticeReport{}, fmt.Errorf("operatornotice: build executors: %w", err)
 	}
 	report := attention.Build(attention.Inputs{
+		Reviews:   reviews,
 		Workbench: &wb,
 		Executors: &execs,
 	}, now)
