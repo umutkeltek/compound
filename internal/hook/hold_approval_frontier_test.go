@@ -75,8 +75,11 @@ func TestPreToolUseHoldMintsOperatorApprovalFrontierRequestAndMovesAllTimeCountO
 		t.Fatalf("resolve_command=%q, want exact compound policy operator-action-approve prefix", mint.ResolveCommand)
 	}
 
-	// Agent-visible text must surface the request id and the resolve command
-	// so the agent can wait, take an alternative, or record blocked-with-ticket.
+	// Agent-visible text surfaces the request id — and only the id — so the agent
+	// can wait, take an alternative, or record blocked-with-ticket against a stable
+	// reference. The resolve command must NOT reach the agent: handing a held agent
+	// the exact approve command would let it drive its own approval path. The
+	// command belongs on the PolicyDecision reasons, which are operator-facing.
 	decision, reason := NativePermissionDecision(res)
 	if decision != "ask" {
 		t.Fatalf("permission decision=%q, want ask", decision)
@@ -84,8 +87,23 @@ func TestPreToolUseHoldMintsOperatorApprovalFrontierRequestAndMovesAllTimeCountO
 	if !strings.Contains(reason, mint.ID) {
 		t.Fatalf("agent-visible reason=%q does not contain request id %q", reason, mint.ID)
 	}
-	if !strings.Contains(reason, mint.ResolveCommand) {
-		t.Fatalf("agent-visible reason=%q does not contain resolve command %q", reason, mint.ResolveCommand)
+	if strings.Contains(reason, mint.ResolveCommand) {
+		t.Fatalf("agent-visible reason=%q leaked the resolve command %q", reason, mint.ResolveCommand)
+	}
+	for _, forbidden := range []string{"action-approve", "--granted-by", "operator:", "human:"} {
+		if strings.Contains(strings.ToLower(reason), forbidden) {
+			t.Fatalf("agent-visible reason exposed forbidden command token %q: %q", forbidden, reason)
+		}
+	}
+	operatorFacing := false
+	for _, r := range pd.Reasons {
+		if strings.Contains(r, mint.ResolveCommand) {
+			operatorFacing = true
+			break
+		}
+	}
+	if !operatorFacing {
+		t.Fatalf("resolve command %q missing from operator-facing PolicyDecision reasons %+v", mint.ResolveCommand, pd.Reasons)
 	}
 
 	// Evidence refs must also carry the frontier ref so downstream tooling can

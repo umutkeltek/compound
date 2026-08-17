@@ -247,8 +247,11 @@ func TestLivePreToolUseOnlyPublishesNativePermissionDecisionWhenEnforced(t *test
 				t.Fatalf("enforced PreToolUse plans=%d, want one: %+v", len(plans), plans)
 			}
 			wantReason := "Exact approval plan " + plans[0].ID + " is ready for operator review."
-			if got := enforced.HookSpecificOutput.PermissionDecisionReason; got != wantReason {
-				t.Fatalf("enforced native reason=%q, want %q", got, wantReason)
+			// The reason may carry a trailing operator-approval request id, but
+			// never a resolve command — the forbidden-token sweep below is the
+			// load-bearing check.
+			if got := enforced.HookSpecificOutput.PermissionDecisionReason; !strings.HasPrefix(got, wantReason) {
+				t.Fatalf("enforced native reason=%q, want prefix %q", got, wantReason)
 			}
 			for _, forbidden := range []string{"action-approve", "--granted-by", "operator:", "human:"} {
 				if strings.Contains(strings.ToLower(enforced.HookSpecificOutput.PermissionDecisionReason), forbidden) {

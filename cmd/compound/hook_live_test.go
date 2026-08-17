@@ -1241,8 +1241,10 @@ func TestLivePreToolUseConsumesPersistedExactApprovalWithoutChangingGlobalPermis
 	planA := plans[0]
 	planARef := "compound://events/" + planA.ID
 	wantReasonA := "Exact approval plan " + planA.ID + " is ready for operator review."
-	if got := first.HookSpecificOutput.PermissionDecisionReason; got != wantReasonA {
-		t.Fatalf("first enforced hold reason=%q, want neutral plan reason %q", got, wantReasonA)
+	// The reason may carry a trailing operator-approval request id, but never a
+	// resolve command — the forbidden-token sweep below is the load-bearing check.
+	if got := first.HookSpecificOutput.PermissionDecisionReason; !strings.HasPrefix(got, wantReasonA) {
+		t.Fatalf("first enforced hold reason=%q, want prefix neutral plan reason %q", got, wantReasonA)
 	}
 	for _, forbidden := range []string{"action-approve", "--granted-by", "operator:", "human:", "<id>", "$", "`"} {
 		if strings.Contains(strings.ToLower(first.HookSpecificOutput.PermissionDecisionReason), forbidden) {
@@ -1258,8 +1260,15 @@ func TestLivePreToolUseConsumesPersistedExactApprovalWithoutChangingGlobalPermis
 	if len(plans) != 1 || plans[0].ID != planA.ID {
 		t.Fatalf("repeated hold created approval debt: plans=%+v want only %s", plans, planA.ID)
 	}
-	if got := repeated.HookSpecificOutput.PermissionDecisionReason; got != wantReasonA {
-		t.Fatalf("repeated hold reason=%q, want reused plan %q", got, wantReasonA)
+	// As above: a trailing operator-approval request id is permitted, a resolve
+	// command is not. The reused plan id must still lead the reason.
+	if got := repeated.HookSpecificOutput.PermissionDecisionReason; !strings.HasPrefix(got, wantReasonA) {
+		t.Fatalf("repeated hold reason=%q, want reused plan prefix %q", got, wantReasonA)
+	}
+	for _, forbidden := range []string{"action-approve", "--granted-by", "operator:", "human:", "<id>", "$", "`"} {
+		if strings.Contains(strings.ToLower(repeated.HookSpecificOutput.PermissionDecisionReason), forbidden) {
+			t.Fatalf("repeated hold reason exposed forbidden command token %q: %q", forbidden, repeated.HookSpecificOutput.PermissionDecisionReason)
+		}
 	}
 
 	// Approve the plan through the explicit operator test helper, with the
@@ -1309,8 +1318,14 @@ func TestLivePreToolUseConsumesPersistedExactApprovalWithoutChangingGlobalPermis
 		t.Fatalf("fresh plan generation missing after consuming %s: %+v", planA.ID, plans)
 	}
 	wantReasonB := "Exact approval plan " + planB.ID + " is ready for operator review."
-	if got := replay.HookSpecificOutput.PermissionDecisionReason; got != wantReasonB {
-		t.Fatalf("post-consumption reason=%q, want fresh plan %q", got, wantReasonB)
+	// As above: trailing operator-approval request id permitted, resolve command not.
+	if got := replay.HookSpecificOutput.PermissionDecisionReason; !strings.HasPrefix(got, wantReasonB) {
+		t.Fatalf("post-consumption reason=%q, want fresh plan prefix %q", got, wantReasonB)
+	}
+	for _, forbidden := range []string{"action-approve", "--granted-by", "operator:", "human:", "<id>", "$", "`"} {
+		if strings.Contains(strings.ToLower(replay.HookSpecificOutput.PermissionDecisionReason), forbidden) {
+			t.Fatalf("post-consumption reason exposed forbidden command token %q: %q", forbidden, replay.HookSpecificOutput.PermissionDecisionReason)
+		}
 	}
 	approvalB, _, err := approvals.Approve(planB.ID, "operator:fixture", cfg, time.Now().UTC())
 	if err != nil {

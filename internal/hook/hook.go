@@ -178,9 +178,12 @@ type Result struct {
 // host-neutral permission decision exposed by live adapters. Approval-plan
 // prose is accepted only when one canonical evidence ref backs one exact,
 // command-free operator-review sentence. When the hook also minted an
-// operator-approval-frontier request, its id and resolve command appear in
-// the agent-visible message so the agent can wait, take an alternative, or
-// record blocked-with-ticket against a stable id.
+// operator-approval-frontier request, its id — and only its id — is appended
+// so the agent can wait, take an alternative, or record blocked-with-ticket
+// against a stable reference. The resolve command stays OUT of this
+// agent-visible message on purpose: handing a held agent the exact approve
+// command would let it drive its own approval path. The full command remains
+// on the PolicyDecision reasons and evidence refs, the operator-facing surface.
 func NativePermissionDecision(res Result) (string, string) {
 	coordinationDeny := res.CoordinationDelivery != nil &&
 		res.CoordinationDelivery.ExecutionHeld
@@ -211,7 +214,7 @@ func NativePermissionDecision(res Result) (string, string) {
 		}
 		if pd.Outcome == "hold" {
 			if reason := exactApprovalOperatorReviewReason(pd.Reasons, pd.EvidenceRefs); reason != "" {
-				return "ask", operatorActionApprovalFrontierSuffix(pd.Reasons, reason)
+				return "ask", operatorActionApprovalFrontierIDSuffix(pd.Reasons, reason)
 			}
 		}
 		reason := nativePolicyDecisionReason(pd.Reasons, res.Summary)
@@ -223,23 +226,32 @@ func NativePermissionDecision(res Result) (string, string) {
 	return "", ""
 }
 
-// operatorActionApprovalFrontierSuffix locates the "Operator approval request
-// <id> filed ...; resolve with: <cmd>" reason in the policy decision reasons
-// and appends it (or its essential id+command) to the agent-visible message
-// when it would otherwise be filtered. The existing exact-approval reason is
-// preserved so older adapters keep their stable text; the frontier suffix is
-// added only when present.
-func operatorActionApprovalFrontierSuffix(reasons []string, baseReason string) string {
+// operatorActionApprovalFrontierIDSuffix appends the minted operator-approval
+// request id — and only the id — to the agent-visible message. The resolve
+// command is withheld deliberately: the id is inert (approving still requires
+// the operator-only command, itself a governed action) while the command would
+// hand a held agent the exact means to clear its own hold. Callers rely on this
+// function never emitting the approve command, "--granted-by", or an
+// "operator:"/"human:" grantee token.
+func operatorActionApprovalFrontierIDSuffix(reasons []string, baseReason string) string {
 	const prefix = "Operator approval request "
 	for _, reason := range reasons {
 		trimmed := strings.TrimSpace(reason)
 		if !strings.HasPrefix(trimmed, prefix) {
 			continue
 		}
-		if strings.Contains(trimmed, baseReason) {
+		rest := strings.TrimPrefix(trimmed, prefix)
+		id := rest
+		if idx := strings.IndexAny(rest, " ;"); idx >= 0 {
+			id = rest[:idx]
+		}
+		if id = strings.TrimSpace(id); id == "" {
 			return baseReason
 		}
-		return baseReason + "; " + trimmed
+		if strings.Contains(baseReason, id) {
+			return baseReason
+		}
+		return baseReason + " Operator approval request " + id + " is pending operator review."
 	}
 	return baseReason
 }
