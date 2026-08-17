@@ -283,13 +283,14 @@ type ProofResourceHeldError struct {
 
 func (e *ProofResourceHeldError) Error() string {
 	return fmt.Sprintf(
-		"proof resource %s held by %q until %s (%ds remaining); refusal recorded as %s on %s",
+		"proof resource %s held by %q until %s (%ds remaining); refusal recorded as %s on %s; release via --terminated-run RATT_ID --termination-evidence ARTIFACT_REF after predecessor RunAttempt %s supplies termination evidence",
 		ProofResourceName,
 		e.Holder,
 		e.ExpiresAt,
 		e.Remaining,
 		e.ReservationID,
 		e.WorkID,
+		e.Holder,
 	)
 }
 
