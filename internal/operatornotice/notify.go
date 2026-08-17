@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,6 +33,39 @@ import (
 
 // SchemaVersion identifies the NoticeReport wire shape.
 const SchemaVersion = "compound.operatornotice.v0.1"
+
+// Notice outcomes recorded per hold. Only "emitted" occupies the operator
+// channel; a refused or unnotifiable ask is nobody's pending decision.
+const (
+	outcomeEmitted      = "emitted"
+	outcomeRefused      = "refused"
+	outcomeUnnotifiable = "unnotifiable"
+)
+
+// MaxOpenHolds caps how many asks may be unanswered at once.
+//
+// One, deliberately. The scarce resource is not the operator's inbox, it is
+// their decisions: this home has ~19,619 holds raised against 3 approvals, and
+// the live frontier carries 18 needs-you groups. Emitting all 18 produces one
+// ignored batch, not 18 decisions. Serving strictly one at a time turns the
+// frontier into a queue that drains at the rate decisions are actually made.
+var MaxOpenHolds = 1
+
+// Channel occupancy is derived from the CURRENT frontier, never from a stored
+// index: a hold is open exactly when it is still on the frontier and already
+// has an emitted ask record. That needs no extra state and self-corrects — when
+// the operator answers, the hold leaves the frontier and stops being counted.
+//
+// Closure evidence (how LONG an ask waited, and how many were answered) is a
+// different question and is deliberately NOT implemented here. It requires
+// seeing holds that have LEFT the frontier, which needs either a prefix Scan —
+// "opnotice_" is not in eventstore's idPrefixFamilies, and an unmapped prefix
+// disables routing and makes the scan parse every segment in the store, the
+// exact failure the approval_ mapping exists to prevent — or a declared
+// projection path under COMPOUND_HOME, which is another owner's decision.
+// Both are real design calls; neither belongs in a change whose point is to
+// make one ask decidable. Resolved/latency stay unmeasured and unclaimed
+// rather than approximated.
 
 // executeFn is the seam that drives the act.Execute call. Production routes
 // to act.Execute directly; tests swap this to assert the once-and-only-once
@@ -95,13 +129,6 @@ type NoticeRecord struct {
 	ReceiptID      string   `json:"receipt_id,omitempty"`
 	TransitionID   string   `json:"transition_id,omitempty"`
 	NotifiedAt     string   `json:"notified_at"`
-
-	// ResolvedAt and DecisionLatencySeconds are stamped when the hold leaves
-	// the needs-you frontier, which is the observable event that means the
-	// operator decided it. They are the closure half of the loop: NotifiedAt
-	// alone proves only that the system asked.
-	ResolvedAt             string `json:"resolved_at,omitempty"`
-	DecisionLatencySeconds int64  `json:"decision_latency_seconds,omitempty"`
 }
 
 // NoticeReport is the public return value of Notify / NotifyFromInputs. All
@@ -117,14 +144,9 @@ type NoticeReport struct {
 	Unnotifiable    int    `json:"unnotifiable"`
 	DoctorCount     int    `json:"doctor_count"`
 
-	// Resolved counts holds that left the needs-you frontier since the last
-	// flush — the only evidence this system has that an ask was ANSWERED
-	// rather than merely sent. Without it the sole measurable rate is holds
-	// raised per day, which is the rate that already reads ~19,619 raised
-	// against 3 approvals.
-	Resolved int `json:"resolved"`
-	// OpenHolds is how many emitted asks are still unanswered. It is the
-	// channel occupancy that MaxOpenHolds caps.
+	// OpenHolds is how many asks on the current frontier are still unanswered
+	// — the channel occupancy that MaxOpenHolds caps. It is derived from the
+	// frontier, not stored, so it self-corrects when a hold is answered.
 	OpenHolds int `json:"open_holds"`
 	// Queued counts needs-you holds that were eligible but did not get the
 	// channel this flush. They are deliberately left unrecorded so a later
@@ -190,35 +212,61 @@ func NotifyFromInputs(homePath, transport string, in attention.Report, now time.
 	}
 	_ = store
 
-	// Iterate ONLY the BandNeedsYou groups. Other bands are operator-visible
+	// Consider ONLY the BandNeedsYou groups. Other bands are operator-visible
 	// but not blocking — wiring them to the buzz transport would create
 	// noise; the predicate says "a hold that needs a human".
+	//
+	// Decidable groups are served first. When the channel holds one ask at a
+	// time, an undecidable hold winning it starves every hold the operator
+	// could actually have acted on.
+	pending := make([]attention.Group, 0, len(in.Groups))
 	for _, group := range in.Groups {
-		if group.Band != attention.BandNeedsYou {
-			continue
+		if group.Band == attention.BandNeedsYou {
+			pending = append(pending, group)
 		}
-		report.Scanned++
+	}
+	sort.SliceStable(pending, func(i, j int) bool {
+		return decideCommand(pending[i]) != "" && decideCommand(pending[j]) == ""
+	})
 
+	// Pass A: classify against prior records without emitting anything, so
+	// channel occupancy is known BEFORE the first emit decision. A one-pass
+	// loop would let a hold already occupying the channel be counted after a
+	// new emit had already been sent, overshooting the cap.
+	type candidate struct {
+		group  attention.Group
+		holdID string
+		workID string
+	}
+	fresh := make([]candidate, 0, len(pending))
+	occupancy := 0
+	for _, group := range pending {
+		report.Scanned++
 		holdID := HoldIDFor(group)
 		workID := firstWorkID(group.ItemIDs)
 
-		// Idempotency check: a prior record on this hold id is the once-and-
-		// only-once promise. Emitted, refused, and unnotifiable each write
-		// their own record, so re-scans are a no-op across all paths.
 		already, prior, err := findPriorNotification(homePath, holdID)
 		if err != nil {
 			report.Refused++
-			report.DoctorCount++
 			recordDoctorReadFailure(homePath, group, holdID, err, now)
+			continue
 		}
 		if already {
 			report.AlreadyNotified++
-			// Anything previously emitted/refused/unnotifiable is already
-			// counted once; the second scan is the no-op this falsifier
-			// promises.
-			_ = prior
+			// Still on the frontier and already asked = still unanswered, so
+			// it holds the channel. Refused and unnotifiable records do not:
+			// nothing is waiting on the operator for those.
+			if prior != nil && prior.Outcome == outcomeEmitted {
+				occupancy++
+			}
 			continue
 		}
+		fresh = append(fresh, candidate{group: group, holdID: holdID, workID: workID})
+	}
+
+	// Pass B: serve the fresh holds, at most MaxOpenHolds unanswered at once.
+	for _, c := range fresh {
+		group, holdID, workID := c.group, c.holdID, c.workID
 
 		// Unnotifiable: holds without a candidate work id cannot be
 		// expressed as a writable notice. Count it; write the record so
@@ -228,6 +276,16 @@ func NotifyFromInputs(homePath, transport string, in attention.Report, now time.
 			report.DoctorCount++
 			recordDoctorUnnotifiable(homePath, group, holdID, now)
 			persistNoticeRecord(homePath, holdID, group, workID, transport, "", "", "unnotifiable", "no actionable work id", now)
+			continue
+		}
+
+		// The channel is full: this hold is eligible but does not get served
+		// now. Deliberately write NOTHING — a record here would read as an
+		// idempotency hit on the next flush and the hold could never be
+		// notified at all. Leaving it unrecorded is what makes it a queue
+		// rather than a silent drop.
+		if occupancy >= MaxOpenHolds {
+			report.Queued++
 			continue
 		}
 
@@ -258,7 +316,10 @@ func NotifyFromInputs(homePath, transport string, in attention.Report, now time.
 			continue
 		}
 		report.Emitted++
+		occupancy++
 	}
+
+	report.OpenHolds = occupancy
 	report.DoctorCount = report.Refused + report.Unnotifiable
 	return report, nil
 }
