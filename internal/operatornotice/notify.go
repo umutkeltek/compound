@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -253,16 +252,20 @@ func persistNoticeRecord(homePath, holdID string, g attention.Group, workID, tra
 		return err
 	}
 	notice := NoticeRecord{
-		ID:             holdID,
-		SchemaVersion:  NoticeRecordSchemaVersion,
-		HoldID:         holdID,
-		GroupKey:       g.Key,
-		GroupArea:      g.Area,
-		GroupSource:    g.Source,
-		WorkID:         workID,
-		ItemIDs:        append([]string{}, g.ItemIDs...),
-		OperatorAsk:    g.OperatorSummary,
-		ApproveCommand: cardBody(g, holdID, workID, transport),
+		ID:            holdID,
+		SchemaVersion: NoticeRecordSchemaVersion,
+		HoldID:        holdID,
+		GroupKey:      g.Key,
+		GroupArea:     g.Area,
+		GroupSource:   g.Source,
+		WorkID:        workID,
+		ItemIDs:       append([]string{}, g.ItemIDs...),
+		OperatorAsk:   g.OperatorSummary,
+		// The decidable command alone, not the whole rendered card. The record
+		// is the queryable evidence of what the operator was asked to run; a
+		// field named ApproveCommand holding a four-line card body cannot be
+		// joined against anything.
+		ApproveCommand: decideCommand(g),
 		Transport:      transport,
 		Outcome:        outcome,
 		RefusalReason:  refusalReason,
@@ -278,6 +281,18 @@ func persistNoticeRecord(homePath, holdID string, g attention.Group, workID, tra
 // content-addressed over the group shape so the same hold across scans always
 // resolves to the same record; the brief's once-and-only-once falsifier rides
 // on this exact function.
+//
+// The id keys on WHAT THE OPERATOR MUST DECIDE — area, kind, source, and the
+// action's identity — and deliberately NOT on the item set or its oldest
+// timestamp. A hold is the same hold as items join and leave it: "resolve the
+// source-control-cleanup queue" does not become a different question when the
+// queue gains a row.
+//
+// Hashing ItemIDs and OldestCreatedAt (the original shape) made the id churn
+// with the frontier, so findPriorNotification missed and the operator was
+// re-notified about a hold they had already seen. That is tolerable on a verb a
+// human runs by hand and a notification loop on a schedule, which is why this
+// keying is a precondition for scheduling `notice flush` at all.
 func HoldIDFor(g attention.Group) string {
 	h := sha256.New()
 	h.Write([]byte(g.Area))
@@ -286,13 +301,9 @@ func HoldIDFor(g attention.Group) string {
 	h.Write([]byte{0})
 	h.Write([]byte(g.Source))
 	h.Write([]byte{0})
-	ids := append([]string{}, g.ItemIDs...)
-	sort.Strings(ids)
-	for _, id := range ids {
-		h.Write([]byte(id))
-		h.Write([]byte{0})
+	if g.Action != nil {
+		h.Write([]byte(g.Action.ID))
 	}
-	h.Write([]byte(g.OldestCreatedAt))
 	return "opnotice_" + hex.EncodeToString(h.Sum(nil))[:24]
 }
 
@@ -342,20 +353,53 @@ func noticeActionID(workID, transport, body string, now time.Time) string {
 	return "act_opnotice_" + hex.EncodeToString(h[:])[:16]
 }
 
-// cardBody builds the one-line card body the operator receives. It carries
-// hold id + work id + a one-line ask + the exact approve command so the
-// buzz transport reaches the operator with everything the predicate promised.
+// cardBody builds the card body the operator receives: hold id + work id + a
+// one-line ask +, when the group carries one, the exact command that DECIDES
+// the hold.
+//
+// The decide line is g.Action.Argv verbatim — the policy-stamped argv that
+// review groups already carry (attention.groupsFromReviews, sourced from
+// reviewartifact.QueueItem.DecisionCard). It is reproduced, never synthesized:
+// a command this function invents is a command no authority has approved.
+//
+// It previously emitted `compound act post --from-work <id> ... --confirm`
+// regardless of the group. That line re-posts the notification to the same
+// transport that just carried it, so the one flush this system has ever run
+// (2026-08-06) delivered a card the operator could not act on. A group with no
+// action now says so plainly and carries no command at all, which lets the
+// caller count it as unnotifiable instead of shipping a dead end.
 func cardBody(g attention.Group, holdID, workID, transport string) string {
 	ask := strings.TrimSpace(g.OperatorSummary)
 	if ask == "" {
 		ask = "attention hold requires operator review"
 	}
-	return strings.Join([]string{
+	lines := []string{
 		fmt.Sprintf("🛎 hold=%s", holdID),
 		fmt.Sprintf("work=%s", workID),
 		fmt.Sprintf("ask=%s", ask),
-		fmt.Sprintf("approve=compound act post --from-work %s --work %s --transport %s --confirm", workID, workID, transport),
-	}, "\n")
+	}
+	if cmd := decideCommand(g); cmd != "" {
+		lines = append(lines, "decide="+cmd)
+	} else {
+		lines = append(lines, "decide=(none available; this hold carries no adjudicating command)")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// decideCommand renders the group's policy-stamped argv as a runnable line, or
+// "" when the group carries no action. Empty is a real answer: it is what makes
+// an undecidable hold countable rather than shippable.
+func decideCommand(g attention.Group) string {
+	if g.Action == nil || len(g.Action.Argv) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(g.Action.Argv))
+	for _, a := range g.Action.Argv {
+		if s := strings.TrimSpace(a); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // findPriorNotification returns true if a NoticeRecord with the given hold id
