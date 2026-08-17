@@ -95,6 +95,13 @@ type NoticeRecord struct {
 	ReceiptID      string   `json:"receipt_id,omitempty"`
 	TransitionID   string   `json:"transition_id,omitempty"`
 	NotifiedAt     string   `json:"notified_at"`
+
+	// ResolvedAt and DecisionLatencySeconds are stamped when the hold leaves
+	// the needs-you frontier, which is the observable event that means the
+	// operator decided it. They are the closure half of the loop: NotifiedAt
+	// alone proves only that the system asked.
+	ResolvedAt             string `json:"resolved_at,omitempty"`
+	DecisionLatencySeconds int64  `json:"decision_latency_seconds,omitempty"`
 }
 
 // NoticeReport is the public return value of Notify / NotifyFromInputs. All
@@ -109,6 +116,20 @@ type NoticeReport struct {
 	Refused         int    `json:"refused"`
 	Unnotifiable    int    `json:"unnotifiable"`
 	DoctorCount     int    `json:"doctor_count"`
+
+	// Resolved counts holds that left the needs-you frontier since the last
+	// flush — the only evidence this system has that an ask was ANSWERED
+	// rather than merely sent. Without it the sole measurable rate is holds
+	// raised per day, which is the rate that already reads ~19,619 raised
+	// against 3 approvals.
+	Resolved int `json:"resolved"`
+	// OpenHolds is how many emitted asks are still unanswered. It is the
+	// channel occupancy that MaxOpenHolds caps.
+	OpenHolds int `json:"open_holds"`
+	// Queued counts needs-you holds that were eligible but did not get the
+	// channel this flush. They are deliberately left unrecorded so a later
+	// flush can still reach them.
+	Queued int `json:"queued"`
 }
 
 // Notify is the public entry point: it builds the attention frontier from the
