@@ -9,9 +9,9 @@ package hook
 //     with the observed session's true transcript, used_declared=true, and declared all five
 //     injected claims of pack ctx_61592fc04708 consumed.
 //   - The observed session genuinely referenced ONE claim: claim_6a6fb980bf59 (bare id in its
-//     final report's CLAIMS CONSUMED section; see also state/runs/exampleapp-dogfood-2026-07-11/
-//     diagnosis.md). The other four claims appear ONLY inside the injected block, which sits
-//     entirely on ONE transcript line (a single JSONL record).
+//     final report's CLAIMS CONSUMED section; see also the corresponding operator-private
+//     dogfood diagnosis note). The other four claims appear ONLY inside the injected block,
+//     which sits entirely on ONE transcript line (a single JSONL record).
 //   - Fixture testdata/dogfood_repro_rec_396a4e3ccee2.jsonl holds the two detector-relevant
 //     records of that transcript byte-exact (the injection-echo record and the final-report
 //     record; the 90 intermediate records contain none of the five claim ids — verified by
@@ -54,13 +54,47 @@ type dogfoodReproClaim struct {
 	Reason string `json:"reason"`
 }
 
+// dogfoodReproEnv opts this falsifier in. It is OFF by default on purpose.
+//
+// This is a RED-FIRST test: it encodes the CORRECT verdict against a detector flaw that is
+// filed, not fixed, so it FAILS whenever it runs. Gating it behind an explicit opt-in keeps
+// main and every branch green; without the gate, merely having the private fixtures on disk
+// would make the whole suite red for anyone who has them.
+//
+// To watch the flaw:
+//
+//	COMPOUND_DOGFOOD_REPRO=1 go test ./internal/hook/ -run TestDetectSessionConsumptionDogfoodRepro
+const dogfoodReproEnv = "COMPOUND_DOGFOOD_REPRO"
+
+// dogfoodReproFixture resolves a preserved-transcript fixture under the operator-private,
+// gitignored docs_private/hook-fixtures/ tree.
+//
+// These fixtures are byte-exact captures of a REAL product session, so they carry a product
+// name, pricing, and private source paths that must never enter this public-destined repo —
+// the architecture doctor's doc-leak gate blocks them on sight. Byte-exactness is load-bearing
+// for the flaw under test (a <=200-byte content-key window over one JSONL line, plus the
+// pack's own "..." truncation), so sanitizing the bytes would destroy the reproduction.
+// Keeping them private and skipping by default is the only option that preserves both.
+func dogfoodReproFixture(name string) string {
+	return filepath.Join("..", "..", "docs_private", "hook-fixtures", name)
+}
+
+// requireDogfoodReproOptIn skips unless the operator explicitly asked for the red falsifier.
+func requireDogfoodReproOptIn(t *testing.T) {
+	t.Helper()
+	if os.Getenv(dogfoodReproEnv) == "" {
+		t.Skipf("red-first falsifier is opt-in; set %s=1 with the operator-private fixtures present to reproduce the over-credit", dogfoodReproEnv)
+	}
+}
+
 // loadDogfoodReproPackClaims reads the five included claim refs + reasons exactly as the real
 // pack ctx_61592fc04708 stores them (truncation included).
 func loadDogfoodReproPackClaims(t *testing.T) []dogfoodReproClaim {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", "ctx_61592fc04708_included_claims.json"))
+	path := dogfoodReproFixture("ctx_61592fc04708_included_claims.json")
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read preserved pack claims: %v", err)
+		t.Skipf("operator-private pack-claims fixture absent (%s); skipping preserved-transcript falsifier", path)
 	}
 	var claims []dogfoodReproClaim
 	if err := json.Unmarshal(data, &claims); err != nil {
@@ -128,6 +162,7 @@ func writeDogfoodReproPack(t *testing.T, home, packID string, claims []dogfoodRe
 // referenced claim (claim_6a6fb980bf59) consumed, the four echo-only claims not-consumed.
 // RED-FIRST: red until the one-line-echo content-key over-credit is fixed.
 func TestDetectSessionConsumptionDogfoodRepro(t *testing.T) {
+	requireDogfoodReproOptIn(t)
 	deps, home, store := consumptionEnv(t)
 
 	claims := loadDogfoodReproPackClaims(t)
@@ -135,9 +170,9 @@ func TestDetectSessionConsumptionDogfoodRepro(t *testing.T) {
 	writeDogfoodReproPack(t, home, packID, claims)
 	wid := closeableWork(t, store, packID)
 
-	transcriptPath := filepath.Join("testdata", "dogfood_repro_rec_396a4e3ccee2.jsonl")
+	transcriptPath := dogfoodReproFixture("dogfood_repro_rec_396a4e3ccee2.jsonl")
 	if _, err := os.Stat(transcriptPath); err != nil {
-		t.Fatalf("preserved repro transcript fixture missing: %v", err)
+		t.Skipf("operator-private repro transcript absent (%s); skipping preserved-transcript falsifier", transcriptPath)
 	}
 
 	// The genuinely consumed claim, per the observed session's final report (bare id, no
