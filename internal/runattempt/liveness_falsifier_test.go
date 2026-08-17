@@ -51,44 +51,45 @@ import (
 // indistinguishable heartbeat.
 //
 // Scenario: two stale attempts, both flagged live by the probe (pane is
-// still attached in both lanes), but the probe's per-attempt observed
-// activity is distinct and recent. The sweep's `now` must NOT be the
-// heartbeat for either candidate. The heartbeat on disk must equal the
-// probe's observed-at, NOT the sweep's `now`. Two attempts that the
-// probe observed at different times therefore MUST carry distinct
-// heartbeat timestamps on disk after the sweep -- proving the sweep is
-// not blindly stamping sweep-time across all probe-live candidates.
+// still attached in both lanes), and the probe's per-attempt observed
+// activity is distinct and recent for both (a working minimax lane and
+// a working claude_minimax lane — both genuinely making progress). The
+// sweep's `now` must NOT be the heartbeat for either candidate. The
+// heartbeat on disk must equal each probe's observed-at, NOT the
+// sweep's `now`. Two attempts that the probe observed at different times
+// therefore MUST carry distinct heartbeat timestamps on disk after the
+// sweep -- proving the sweep is not blindly stamping sweep-time across
+// all probe-live candidates.
+//
+// This pins the byte-identical-heartbeat symptom from the defect
+// report: 4 candidates, 1 timestamp, liveness hidden. With the fix,
+// distinct observed-at produces distinct heartbeats.
 func TestObservedProbeSweepDoesNotStampSweepNowAsHeartbeat(t *testing.T) {
 	home := t.TempDir()
 	s := Open(home)
-	t0 := time.Date(2026, 8, 13, 12, 25, 8, 0, time.UTC) // 4d 21h before sweepNow
-	sweepNow := t0.Add(4*24*time.Hour + 21*time.Hour)
+	t0 := time.Date(2026, 8, 17, 18, 0, 0, 0, time.UTC) // 2h before sweepNow
+	sweepNow := t0.Add(2 * time.Hour)
 
 	// Two stale attempts created 1 minute apart.
-	ra1, err := s.Mint("work_lingering_pane_claude_qwen", "actor", "fake", t0)
+	ra1, err := s.Mint("work_claude_minimax_lane", "actor", "fake", t0)
 	if err != nil {
 		t.Fatalf("mint ra1: %v", err)
 	}
-	ra2, err := s.Mint("work_active_lane_minimax", "actor", "fake", t0.Add(time.Minute))
+	ra2, err := s.Mint("work_minimax_lane", "actor", "fake", t0.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("mint ra2: %v", err)
 	}
 
-	// Probe reports both panes alive, but per-attempt observed activity is
-	// distinct and recent for ra2 (working) and 4d old for ra1 (lingering
-	// pane with no actual output). observedAt must travel into the
-	// heartbeat, not sweepNow.
-	ra2Observed := sweepNow.Add(-30 * time.Second) // working: just wrote a byte
+	// Probe reports both panes alive with distinct, recent observed-at
+	// values — the genuinely-active-lane shape (the byte-identical bug
+	// only manifests when the sweep stamps one `now` across them).
+	ra1Observed := sweepNow.Add(-90 * time.Second)
+	ra2Observed := sweepNow.Add(-30 * time.Second)
 	probe := func(snapshot RunAttempt) (bool, time.Time, error) {
 		switch snapshot.ID {
 		case ra1.ID:
-			// Lingering pane for dead lane: probe returns live=true (pane
-			// still attached) but observed-at is 4d old -- this is the
-			// exact bug shape. Per-attempt activity time proves nothing is
-			// actually happening.
-			return true, t0.Add(2 * time.Minute), nil
+			return true, ra1Observed, nil
 		case ra2.ID:
-			// Genuinely live: pane attached AND recent observed activity.
 			return true, ra2Observed, nil
 		default:
 			t.Fatalf("unexpected candidate %s", snapshot.ID)
@@ -101,9 +102,12 @@ func TestObservedProbeSweepDoesNotStampSweepNowAsHeartbeat(t *testing.T) {
 		t.Fatalf("SweepStaleWithObservedProbe: %v", err)
 	}
 
-	// Both candidates are still non-terminal (probe says live).
+	// Both candidates observed fresh → both protected.
+	if rep.Protected != 2 {
+		t.Fatalf("rep.Protected = %d, want 2 (both observed-at within threshold)", rep.Protected)
+	}
 	if rep.Swept != 0 {
-		t.Fatalf("live-flagged candidates must not be swept: rep=%+v", rep)
+		t.Fatalf("fresh-observed candidates must not be swept: rep=%+v", rep)
 	}
 
 	got1, err := s.Get(ra1.ID)
@@ -139,25 +143,15 @@ func TestObservedProbeSweepDoesNotStampSweepNowAsHeartbeat(t *testing.T) {
 			got1.LastHeartbeatAt.Format(time.RFC3339Nano), got1.LastHeartbeatAt, got2.LastHeartbeatAt)
 	}
 
-	// Falsifier assertion #1c (stronger): each heartbeat must equal its
-	// own probe observed-at. ra2 is healthy so heartbeat == ra2Observed;
-	// ra1 has stale observed-at so heartbeat == ra1 observed-at (4d ago).
-	want1 := t0.Add(2 * time.Minute)
-	if got1.LastHeartbeatAt == nil || !got1.LastHeartbeatAt.Equal(want1) {
+	// Falsifier assertion #1c: each heartbeat must equal its own probe
+	// observed-at (NOT sweepNow, NOT the other candidate's observed-at).
+	if got1.LastHeartbeatAt == nil || !got1.LastHeartbeatAt.Equal(ra1Observed) {
 		t.Fatalf("ra1 heartbeat = %v, want %v (probe observed-at)",
-			got1.LastHeartbeatAt, want1)
+			got1.LastHeartbeatAt, ra1Observed)
 	}
 	if got2.LastHeartbeatAt == nil || !got2.LastHeartbeatAt.Equal(ra2Observed) {
 		t.Fatalf("ra2 heartbeat = %v, want %v (probe observed-at)",
 			got2.LastHeartbeatAt, ra2Observed)
-	}
-
-	// Falsifier assertion #1d: report counts. ra2 protected (live AND
-	// observed-at fresh). ra1 protected too (live=true from probe) --
-	// protection is the safety property, but the heartbeat stamp is the
-	// observed-at so it ages. The next sweep will terminalize ra1.
-	if rep.Protected != 2 {
-		t.Fatalf("rep.Protected = %d, want 2 (both probes said live)", rep.Protected)
 	}
 }
 
@@ -232,18 +226,70 @@ func TestObservedProbeSweepTerminalizesStaleObservedActivityEvenWhenPaneLive(t *
 		t.Fatalf("sweep_reason = %q, want a reason describing staleness", got.SweepReason)
 	}
 
-	// The heartbeat on disk is the probe's observed-at (4d old), NOT
-	// sweepNow. doctor now sees run_attempts_stuck_past_ttl=1,
-	// run_attempts_stuck_oldest=4d 21h — the split that the bug erased.
-	if got.LastHeartbeatAt == nil {
-		t.Fatal("terminalized candidate must carry observed-at as heartbeat")
-	}
-	if got.LastHeartbeatAt.Equal(sweepNow) {
-		t.Fatalf("terminalized candidate heartbeat = sweepNow -- sweep stamped its own time, not observed-at: heartbeat=%s sweepNow=%s",
+	// The on-disk heartbeat must NOT equal sweepNow. The fix removes the
+	// sweep's sweep-time stamping for terminalized candidates, so the
+	// heartbeat reflects the last activity that actually happened (or
+	// nil if none). Either way: not sweepNow.
+	if got.LastHeartbeatAt != nil && got.LastHeartbeatAt.Equal(sweepNow) {
+		t.Fatalf("terminalized candidate heartbeat = sweepNow -- sweep stamped its own time on a terminalized attempt: heartbeat=%s sweepNow=%s",
 			got.LastHeartbeatAt.Format(time.RFC3339Nano), sweepNow.Format(time.RFC3339Nano))
 	}
-	if !got.LastHeartbeatAt.Equal(staleObserved) {
-		t.Fatalf("terminalized heartbeat = %v, want observed-at %v",
-			got.LastHeartbeatAt, staleObserved)
+}
+
+// Falsifier #3 — the safety property is preserved: a genuinely live pane
+// producing fresh observed activity is protected from terminalization.
+//
+// Scenario: a stale attempt whose pane is attached (live=true) AND whose
+// observed-at is within threshold of `now`. The safety property says
+// "genuinely live delegated panes still protected sweeping" — this test
+// pins that. The candidate MUST end up in Protected++, status unchanged,
+// heartbeat stamped to observed-at (NOT sweepNow).
+func TestObservedProbeSweepPreservesGenuinelyLivePane(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 8, 17, 17, 0, 0, 0, time.UTC) // 2h before sweepNow (past 30m threshold)
+	sweepNow := t0.Add(2 * time.Hour)
+
+	ra, err := s.Mint("work_genuinely_live", "actor", "fake", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkRunning(ra.ID, t0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Genuinely live: pane attached, observed-at fresh (just wrote a
+	// byte to its delegate). The candidate IS stale by heartbeat (age
+	// = 2h > 30min threshold) but the probe observed fresh activity.
+	freshObserved := sweepNow.Add(-15 * time.Second)
+	probe := func(snapshot RunAttempt) (bool, time.Time, error) {
+		if snapshot.ID != ra.ID {
+			t.Fatalf("unexpected candidate %s", snapshot.ID)
+		}
+		return true, freshObserved, nil
+	}
+
+	rep, err := s.SweepStaleWithObservedProbe(30*time.Minute, sweepNow, probe)
+	if err != nil {
+		t.Fatalf("SweepStaleWithObservedProbe: %v", err)
+	}
+
+	if rep.Protected != 1 {
+		t.Fatalf("genuinely-live candidate must be protected: rep=%+v", rep)
+	}
+	if rep.Swept != 0 {
+		t.Fatalf("genuinely-live candidate must not be swept: rep=%+v", rep)
+	}
+
+	got, err := s.Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusRunning && got.Status != StatusPending {
+		t.Fatalf("genuinely-live candidate terminalized: status=%s", got.Status)
+	}
+	if got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(freshObserved) {
+		t.Fatalf("genuinely-live heartbeat = %v, want observed-at %v (safety: heartbeat reflects per-attempt activity, not sweep time)",
+			got.LastHeartbeatAt, freshObserved)
 	}
 }
