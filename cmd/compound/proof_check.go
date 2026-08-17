@@ -1324,6 +1324,21 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 			return result
 		}
 	}
+	// Console battery fast-fail: detect (a) absent console/node_modules and (b) an inherited
+	// HTTPS_PROXY/https_proxy pointing at a loopback (model-gateway signature) BEFORE invoking
+	// bun, so the bun auto-install path never gets a chance to block on a TCP CONNECT that
+	// will never complete. Recorded signature on 2026-08-14: a 64-minute hang followed by an
+	// identical-signature cascade on the following day. The named reason surface is part of
+	// the contract — stable strings the discriminator (and on-call) can match on.
+	if reason := work.ConsoleBatteryFastFailReason(repo, step); reason != "" {
+		failOutput := fmt.Sprintf("proof-check console battery fast-fail: %s — step=%s; documented in REPORT (2026-08-14): unset HTTPS_PROXY/https_proxy OR populate console/node_modules before re-running\n", reason, step.Name)
+		result.Status = "failed"
+		result.OutputTail = proofCheckTail([]byte(failOutput), 4000)
+		result.FailureFacts = work.CanonicalProofFailureFacts(repo, step.Name, []byte(failOutput), errors.New(reason))
+		result.ExitCode = 1
+		result.DurationMS = time.Since(start).Milliseconds()
+		return result
+	}
 	if step.Name == "redact-public" {
 		output, err = runProofCheckRedactContext(ctx, repo, baseRef, headRefs...)
 	} else if step.Name == "gofmt" {
