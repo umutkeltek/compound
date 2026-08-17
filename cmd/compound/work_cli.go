@@ -108,8 +108,8 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work show work_abc123 --json",
 	},
 	"list": {
-		Usage:   "usage: compound work list",
-		Example: "compound work list",
+		Usage:   "usage: compound work list [--json]",
+		Example: "compound work list --json",
 	},
 	"leases": {
 		Usage:   "usage: compound work leases [--json]",
@@ -712,8 +712,25 @@ func cmdWork(args []string) {
 			fmt.Printf("%s -> %s  %s %s\n", emptyDash(e.From), e.To, e.By, e.Note)
 		}
 	case "list":
+		if err := work.ValidateWorkListFlags(rest); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, work.WorkListUsage)
+			os.Exit(2)
+		}
 		ws, err := store.List()
 		die(err)
+		if has("--json") {
+			printJSON(struct {
+				SchemaVersion string                  `json:"schema_version"`
+				AuthorityRef  string                  `json:"authority_ref"`
+				Work          []envelope.WorkEnvelope `json:"work"`
+			}{
+				SchemaVersion: "compound.work_list_projection.v0.1",
+				AuthorityRef:  "compound://work/list",
+				Work:          ws,
+			})
+			return
+		}
 		for _, w := range ws {
 			fmt.Printf("%s  %-10s %s\n", w.ID, w.State, w.SuccessPredicate)
 		}

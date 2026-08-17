@@ -28,6 +28,7 @@ func TestValidateWorkListFlagsCoversSilentIgnoreBug(t *testing.T) {
 		"--json=pretty",
 		"-j",
 		"--source",
+		"--state",
 		"work_id_positional",
 	}
 	for _, b := range bad {
