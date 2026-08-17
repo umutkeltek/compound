@@ -55,9 +55,16 @@ type InstructionPackRoster struct {
 // over identical inputs yield the same identity (the stability falsifier
 // depends on this). GeneratedAt IS recorded on the body — only the hash
 // excludes it.
+// Preset is the optional second identity axis (packet S2, work_ff2ca97d915f):
+// two switchback presets over ONE harness must produce distinct packs rather
+// than racing for the same latest.json. It is `omitempty` and excluded from
+// the content hash when empty so the default (presetless) pack keeps the
+// byte-identical body and identity it had before the axis existed — every
+// pack already on disk in every existing home depends on that.
 type InstructionPack struct {
 	SchemaVersion string                `json:"schema_version"`
 	Harness       string                `json:"harness"`
+	Preset        string                `json:"preset,omitempty"`
 	PolicyCore    InstructionPackLayer  `json:"policy_core"`
 	Posture       InstructionPackLayer  `json:"posture"`
 	Roster        InstructionPackRoster `json:"roster"`
@@ -80,16 +87,49 @@ func effectiveContractLatestPath(homePath string) string {
 	return filepath.Join(homePath, "contracts", "effective", "latest.json")
 }
 
-// InstructionPackPath returns the write path for the harness-scoped pack
-// projection: $COMPOUND_HOME/context/instruction-packs/<harness>/latest.json.
-func InstructionPackPath(homePath, harness string) string {
-	return filepath.Join(
+// validateInstructionPackPreset trims and validates a preset name. The preset
+// becomes a filesystem path segment, so a value carrying a separator or a
+// parent-dir hop would let a caller write outside the instruction-packs tree.
+// Rejection is loud and happens BEFORE any directory is created, so an invalid
+// preset is inert (P5).
+//
+// The empty preset is valid and means "no preset" — it selects the legacy
+// harness-only path and identity.
+func validateInstructionPackPreset(preset string) (string, error) {
+	preset = strings.TrimSpace(preset)
+	if preset == "" {
+		return "", nil
+	}
+	if strings.ContainsAny(preset, `/\`) {
+		return "", fmt.Errorf("invalid preset %q: must not contain a path separator", preset)
+	}
+	if preset == "." || preset == ".." || strings.Contains(preset, "..") {
+		return "", fmt.Errorf("invalid preset %q: must not contain a parent-directory reference", preset)
+	}
+	return preset, nil
+}
+
+// InstructionPackPath returns the write path for the pack projection:
+// $COMPOUND_HOME/context/instruction-packs/<harness>/latest.json when preset
+// is empty, and .../<harness>/<preset>/latest.json when it is not.
+//
+// The empty-preset branch reproduces the pre-preset path EXACTLY (P1) — a
+// path change would orphan every pack already written under every existing
+// home. An invalid preset is not sanitized into a neighbouring path here;
+// it is rejected upstream by validateInstructionPackPreset before any write
+// or read is attempted.
+func InstructionPackPath(homePath, harness, preset string) string {
+	parts := []string{
 		strings.TrimSpace(homePath),
 		"context",
 		"instruction-packs",
 		strings.TrimSpace(harness),
-		"latest.json",
-	)
+	}
+	if trimmed := strings.TrimSpace(preset); trimmed != "" {
+		parts = append(parts, trimmed)
+	}
+	parts = append(parts, "latest.json")
+	return filepath.Join(parts...)
 }
 
 // RenderInstructionPack assembles and writes the harness-scoped pack
@@ -103,12 +143,12 @@ func InstructionPackPath(homePath, harness string) string {
 // calls renderInstructionPack (the in-memory twin below) so drift probes
 // never mutate the on-disk projection — a re-run against an unchanged home
 // would otherwise always see self-cancelled drift (F10 invariant).
-func RenderInstructionPack(homePath, harness string, now time.Time) (InstructionPack, error) {
-	pack, err := renderInstructionPack(homePath, harness, now)
+func RenderInstructionPack(homePath, harness, preset string, now time.Time) (InstructionPack, error) {
+	pack, err := renderInstructionPack(homePath, harness, preset, now)
 	if err != nil {
 		return InstructionPack{}, err
 	}
-	if err := writeInstructionPackAtomic(InstructionPackPath(homePath, harness), pack); err != nil {
+	if err := writeInstructionPackAtomic(InstructionPackPath(homePath, harness, pack.Preset), pack); err != nil {
 		return InstructionPack{}, fmt.Errorf("write pack latest.json: %w", err)
 	}
 	return pack, nil
@@ -119,10 +159,14 @@ func RenderInstructionPack(homePath, harness string, now time.Time) (Instruction
 // the result to the on-disk latest.json. Splitting render from write keeps
 // the drift comparator read-only (F10) — without the split, every drift
 // invocation would self-cancel by writing its own fresh pack first.
-func renderInstructionPack(homePath, harness string, now time.Time) (InstructionPack, error) {
+func renderInstructionPack(homePath, harness, preset string, now time.Time) (InstructionPack, error) {
 	harness = strings.TrimSpace(harness)
 	if harness == "" {
 		return InstructionPack{}, fmt.Errorf("harness required")
+	}
+	preset, err := validateInstructionPackPreset(preset)
+	if err != nil {
+		return InstructionPack{}, err
 	}
 	now = now.UTC()
 
@@ -174,6 +218,7 @@ func renderInstructionPack(homePath, harness string, now time.Time) (Instruction
 	pack := InstructionPack{
 		SchemaVersion: InstructionPackSchemaVersion,
 		Harness:       harness,
+		Preset:        preset,
 		PolicyCore:    policyLayer,
 		Posture:       postureLayer,
 		Roster: InstructionPackRoster{
@@ -195,6 +240,7 @@ func renderInstructionPack(homePath, harness string, now time.Time) (Instruction
 // regardless of clock variance (F5).
 type InstructionPackDriftReport struct {
 	Harness        string   `json:"harness"`
+	Preset         string   `json:"preset,omitempty"`
 	Path           string   `json:"path"`
 	Drifted        bool     `json:"drifted"`
 	Details        []string `json:"details,omitempty"`
@@ -208,20 +254,28 @@ type InstructionPackDriftReport struct {
 // authority, never moves the on-disk projection. A missing on-disk file is
 // treated as drift with ObservedDigest="" (F11) so the cold-start case
 // surfaces to the intake seam instead of staying invisible.
-func InstructionPackDrift(homePath, harness string, now time.Time) (InstructionPackDriftReport, error) {
+//
+// A preset pack is compared against its OWN preset path only: a sibling
+// preset's file on disk neither satisfies nor drifts this one.
+func InstructionPackDrift(homePath, harness, preset string, now time.Time) (InstructionPackDriftReport, error) {
 	harness = strings.TrimSpace(harness)
 	if harness == "" {
 		return InstructionPackDriftReport{}, fmt.Errorf("harness required")
 	}
+	preset, err := validateInstructionPackPreset(preset)
+	if err != nil {
+		return InstructionPackDriftReport{}, err
+	}
 	now = now.UTC()
-	path := InstructionPackPath(homePath, harness)
-	fresh, err := renderInstructionPack(homePath, harness, now)
+	path := InstructionPackPath(homePath, harness, preset)
+	fresh, err := renderInstructionPack(homePath, harness, preset, now)
 	if err != nil {
 		return InstructionPackDriftReport{}, err
 	}
 	expected := instructionPackDriftDigest(fresh)
 	report := InstructionPackDriftReport{
 		Harness:        harness,
+		Preset:         preset,
 		Path:           path,
 		ExpectedDigest: expected,
 	}
@@ -273,6 +327,14 @@ func instructionPackDriftDigest(p InstructionPack) string {
 		"roster.effective_contract.revision=" + p.Roster.EffectiveContract.Revision,
 		"roster.effective_contract.absent=" + boolStr(p.Roster.EffectiveContract.Absent),
 	}
+	// Conditional for the same reason instructionPackBody is: an
+	// unconditional "preset=" term would change the managed-surface digest
+	// of every presetless pack. The preset is already covered transitively
+	// via content_sha256; this term makes a misplaced pack (right path,
+	// wrong preset in the body) legible in the delta.
+	if p.Preset != "" {
+		parts = append(parts, "preset="+p.Preset)
+	}
 	return digest([]byte(strings.Join(parts, "\x00")))
 }
 
@@ -290,6 +352,10 @@ func boolStr(b bool) string {
 // rotated, …).
 func instructionPackDeltaDetails(fresh, observed InstructionPack) []string {
 	var details []string
+	if fresh.Preset != observed.Preset {
+		details = append(details, fmt.Sprintf(
+			"preset mismatch (fresh=%q observed=%q)", fresh.Preset, observed.Preset))
+	}
 	if fresh.PolicyCore.SourceRevision != observed.PolicyCore.SourceRevision ||
 		fresh.PolicyCore.ContentSHA256 != observed.PolicyCore.ContentSHA256 ||
 		fresh.PolicyCore.AuthorityRef != observed.PolicyCore.AuthorityRef {
@@ -351,6 +417,13 @@ func instructionPackBody(p InstructionPack) []byte {
 		"policy_core":    layerToMap(p.PolicyCore),
 		"posture":        layerToMap(p.Posture),
 		"roster":         rosterToMap(p.Roster),
+	}
+	// The preset key is added ONLY when non-empty. Adding it
+	// unconditionally (even as "") would perturb the hash of every
+	// presetless pack and re-identify every pack already on disk — P4
+	// pins that against a literal captured before this axis existed.
+	if p.Preset != "" {
+		body["preset"] = p.Preset
 	}
 	normalized := normalizeJSONValue(body)
 	out, err := json.Marshal(normalized)

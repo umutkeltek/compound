@@ -88,7 +88,7 @@ func TestRenderInstructionPack_F1_AllLayersPopulated(t *testing.T) {
 	contractBody := []byte(`{"schema_version":"compound.effective_contract.v0.1","header":{"id":"contract_seed"},"harness":"claude_code","active_instructions":[],"active_decisions":[]}` + "\n")
 	writeContractLatest(t, homePath, contractBody)
 
-	pack, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow)
+	pack, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow)
 	if err != nil {
 		t.Fatalf("RenderInstructionPack: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestRenderInstructionPack_F1_AllLayersPopulated(t *testing.T) {
 		t.Fatalf("GeneratedAt must reflect the supplied now: %+v", pack)
 	}
 
-	if _, err := os.Stat(InstructionPackPath(homePath, "claude_code")); err != nil {
+	if _, err := os.Stat(InstructionPackPath(homePath, "claude_code", "")); err != nil {
 		t.Fatalf("pack latest.json must exist on disk: %v", err)
 	}
 }
@@ -141,7 +141,7 @@ func TestRenderInstructionPack_F1_AllLayersPopulated(t *testing.T) {
 // layer carries the absent marker; no error returned (fail-open falsifier).
 func TestRenderInstructionPack_F2_DegradedRender(t *testing.T) {
 	homePath := t.TempDir()
-	pack, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow)
+	pack, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow)
 	if err != nil {
 		t.Fatalf("RenderInstructionPack must not error on empty home: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestRenderInstructionPack_F2_DegradedRender(t *testing.T) {
 		t.Fatalf("ContentSHA256 must be set even on degraded render: %+v", pack)
 	}
 
-	if _, err := os.Stat(InstructionPackPath(homePath, "claude_code")); err != nil {
+	if _, err := os.Stat(InstructionPackPath(homePath, "claude_code", "")); err != nil {
 		t.Fatalf("pack latest.json must still be written on degraded render: %v", err)
 	}
 }
@@ -194,12 +194,12 @@ func TestRenderInstructionPack_F3_StableIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow)
+	first, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
 	other := instructionPackTestNow.Add(7 * time.Hour)
-	second, err := RenderInstructionPack(homePath, "claude_code", other)
+	second, err := RenderInstructionPack(homePath, "claude_code", "", other)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestRenderInstructionPack_F3_StableIdentity(t *testing.T) {
 	if err := os.WriteFile(unrelated, []byte("harmless"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	third, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow)
+	third, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestRenderInstructionPack_F3_StableIdentity(t *testing.T) {
 	// Bump authority yaml (new source_revision) — must change hash.
 	policyBumped := permissionFixture([]string{"Read", "mcp__gbrain__*", "WebFetch"})
 	writePermissionFixture(t, homePath, targetPath, policyBumped)
-	fourth, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow)
+	fourth, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,11 +243,11 @@ func TestRenderInstructionPack_F3_StableIdentity(t *testing.T) {
 func TestRenderInstructionPack_F4_RoundtripJSON(t *testing.T) {
 	homePath, _, _ := buildInstructionPackFullFixture(t)
 
-	written, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow)
+	written, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := os.ReadFile(InstructionPackPath(homePath, "claude_code"))
+	body, err := os.ReadFile(InstructionPackPath(homePath, "claude_code", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestRenderInstructionPack_F5_InstalledHooksLayer(t *testing.T) {
 		Ref:      "compound://hooks/session-start",
 		Revision: "rev_one", Status: "active",
 	}})
-	first, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow)
+	first, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +293,7 @@ func TestRenderInstructionPack_F5_InstalledHooksLayer(t *testing.T) {
 		Ref:      "compound://hooks/session-start",
 		Revision: "rev_two", Status: "active",
 	}})
-	second, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow)
+	second, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestRenderInstructionPack_F6_EffectiveContractLayer(t *testing.T) {
 
 	body := []byte(`{"schema_version":"compound.effective_contract.v0.1","header":{"id":"contract_seed"},"harness":"claude_code","active_instructions":[],"active_decisions":[]}` + "\n")
 	writeContractLatest(t, homePath, body)
-	first, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow)
+	first, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +322,7 @@ func TestRenderInstructionPack_F6_EffectiveContractLayer(t *testing.T) {
 
 	bodyB := []byte(`{"schema_version":"compound.effective_contract.v0.1","header":{"id":"contract_seed"},"harness":"claude_code","active_instructions":["Bump"],"active_decisions":[]}` + "\n")
 	writeContractLatest(t, homePath, bodyB)
-	second, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow)
+	second, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,17 +340,17 @@ func TestRenderInstructionPack_F6_EffectiveContractLayer(t *testing.T) {
 func TestRenderInstructionPack_F7_IdempotentWrite(t *testing.T) {
 	homePath, _, _ := buildInstructionPackFullFixture(t)
 
-	if _, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow); err != nil {
+	if _, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow); err != nil {
 		t.Fatal(err)
 	}
-	bodyA, err := os.ReadFile(InstructionPackPath(homePath, "claude_code"))
+	bodyA, err := os.ReadFile(InstructionPackPath(homePath, "claude_code", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow); err != nil {
+	if _, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow); err != nil {
 		t.Fatal(err)
 	}
-	bodyB, err := os.ReadFile(InstructionPackPath(homePath, "claude_code"))
+	bodyB, err := os.ReadFile(InstructionPackPath(homePath, "claude_code", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,10 +368,10 @@ func TestRenderInstructionPack_F7_IdempotentWrite(t *testing.T) {
 // intake would drown in noise.
 func TestInstructionPackDrift_F8_SilenceOnMatch(t *testing.T) {
 	homePath, _, _ := buildInstructionPackFullFixture(t)
-	if _, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow); err != nil {
+	if _, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow); err != nil {
 		t.Fatal(err)
 	}
-	report, err := InstructionPackDrift(homePath, "claude_code", instructionPackTestNow)
+	report, err := InstructionPackDrift(homePath, "claude_code", "", instructionPackTestNow)
 	if err != nil {
 		t.Fatalf("InstructionPackDrift: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestInstructionPackDrift_F8_SilenceOnMatch(t *testing.T) {
 // mutate the on-disk pack — that's the next falsifier.
 func TestInstructionPackDrift_F9_DriftOnStaleOnDisk(t *testing.T) {
 	homePath, _, _ := buildInstructionPackFullFixture(t)
-	if _, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow); err != nil {
+	if _, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow); err != nil {
 		t.Fatal(err)
 	}
 	// Bump the authority (new source_revision) but leave latest.json stale.
@@ -405,7 +405,7 @@ func TestInstructionPackDrift_F9_DriftOnStaleOnDisk(t *testing.T) {
 	targetPath := filepath.Join(homePath, "config", "harness-permissions", "claude_code.yaml")
 	writePermissionFixture(t, homePath, targetPath, policyBumped)
 
-	report, err := InstructionPackDrift(homePath, "claude_code", instructionPackTestNow)
+	report, err := InstructionPackDrift(homePath, "claude_code", "", instructionPackTestNow)
 	if err != nil {
 		t.Fatalf("InstructionPackDrift: %v", err)
 	}
@@ -429,17 +429,17 @@ func TestInstructionPackDrift_F9_DriftOnStaleOnDisk(t *testing.T) {
 // variance captured pre/post.
 func TestInstructionPackDrift_F10_DoesNotMutateOnDisk(t *testing.T) {
 	homePath, _, _ := buildInstructionPackFullFixture(t)
-	if _, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow); err != nil {
+	if _, err := RenderInstructionPack(homePath, "claude_code", "", instructionPackTestNow); err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.ReadFile(InstructionPackPath(homePath, "claude_code"))
+	before, err := os.ReadFile(InstructionPackPath(homePath, "claude_code", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstructionPackDrift(homePath, "claude_code", instructionPackTestNow); err != nil {
+	if _, err := InstructionPackDrift(homePath, "claude_code", "", instructionPackTestNow); err != nil {
 		t.Fatal(err)
 	}
-	after, err := os.ReadFile(InstructionPackPath(homePath, "claude_code"))
+	after, err := os.ReadFile(InstructionPackPath(homePath, "claude_code", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestInstructionPackDrift_F11_MissingOnDiskIsDrift(t *testing.T) {
 	// Deliberately DO NOT call RenderInstructionPack — no latest.json on
 	// disk; the comparator should still report drifted with the missing
 	// detail and an empty ObservedDigest.
-	report, err := InstructionPackDrift(homePath, "claude_code", instructionPackTestNow)
+	report, err := InstructionPackDrift(homePath, "claude_code", "", instructionPackTestNow)
 	if err != nil {
 		t.Fatalf("InstructionPackDrift: %v", err)
 	}

@@ -46,7 +46,7 @@ func writeInstructionPackDriftObserveFixture(t *testing.T) (homePath, targetPath
 	}
 	// Initial render populates latest.json so a clean baseline exists for
 	// the drift comparator to compare against.
-	if _, err := harness.RenderInstructionPack(homePath, "claude_code", cliTestNow); err != nil {
+	if _, err := harness.RenderInstructionPack(homePath, "claude_code", "", cliTestNow); err != nil {
 		t.Fatal(err)
 	}
 	return homePath, targetPath, render
@@ -90,7 +90,7 @@ func driftInstructionPackFixture(t *testing.T, homePath, targetPath string, _ ha
 		AutoMode: harness.AutoModePolicy{Allow: []string{"$defaults", "Read"}},
 	}
 	writeInstructionPackDriftObserveJSON(t, harness.PermissionAuthorityPath(homePath, "claude_code"), policyBumped)
-	report, err := harness.InstructionPackDrift(homePath, "claude_code", cliTestNow)
+	report, err := harness.InstructionPackDrift(homePath, "claude_code", "", cliTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestEmitInstructionPackDivergence_F2_CardEndToEnd(t *testing.T) {
 // observations and write NOTHING.
 func TestEmitInstructionPackDivergence_F3_SilenceOnMatch(t *testing.T) {
 	homePath, _, _ := writeInstructionPackDriftObserveFixture(t)
-	report, err := harness.InstructionPackDrift(homePath, "claude_code", cliTestNow)
+	report, err := harness.InstructionPackDrift(homePath, "claude_code", "", cliTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestEmitInstructionPackDivergence_F4_StableIdentity(t *testing.T) {
 		AutoMode: harness.AutoModePolicy{Allow: []string{"$defaults", "Read"}},
 	}
 	writeInstructionPackDriftObserveJSON(t, harness.PermissionAuthorityPath(homePath, "claude_code"), policyFurtherBumped)
-	reportChanged, err := harness.InstructionPackDrift(homePath, "claude_code", cliTestNow)
+	reportChanged, err := harness.InstructionPackDrift(homePath, "claude_code", "", cliTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestEmitInstructionPackDivergence_F4_StableIdentity(t *testing.T) {
 // variance.
 func TestInstructionPackDrift_F5_GeneratedAtIgnored(t *testing.T) {
 	homePath, _, _ := writeInstructionPackDriftObserveFixture(t)
-	first, err := harness.InstructionPackDrift(homePath, "claude_code", cliTestNow)
+	first, err := harness.InstructionPackDrift(homePath, "claude_code", "", cliTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,14 +277,14 @@ func TestInstructionPackDrift_F5_GeneratedAtIgnored(t *testing.T) {
 	// Re-render latest.json on disk with a NEW clock value (no input
 	// changes — same authority, same artifact, same manifest) so the
 	// only delta is GeneratedAt.
-	pack, err := harness.RenderInstructionPack(homePath, "claude_code", cliTestNow.Add(7*time.Hour))
+	pack, err := harness.RenderInstructionPack(homePath, "claude_code", "", cliTestNow.Add(7*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if pack.GeneratedAt.Equal(cliTestNow) {
 		t.Fatal("GeneratedAt must actually advance to exercise this falsifier")
 	}
-	second, err := harness.InstructionPackDrift(homePath, "claude_code", cliTestNow)
+	second, err := harness.InstructionPackDrift(homePath, "claude_code", "", cliTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}

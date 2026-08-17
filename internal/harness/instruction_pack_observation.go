@@ -50,11 +50,24 @@ func BuildInstructionPackObservation(report InstructionPackDriftReport) (Instruc
 	if expected == observed {
 		return InstructionPackObservation{}, false
 	}
+	// The preset joins the id hash ONLY when non-empty, so presetless
+	// observation ids stay byte-identical to the ones already recorded in
+	// existing intake stores. Two presets over one harness that drift the
+	// same way must NOT dedupe onto one card — the preset term is what
+	// keeps them distinct.
+	hashParts := []string{report.Harness}
+	title := fmt.Sprintf("%s instruction-pack drift", report.Harness)
+	if report.Preset != "" {
+		hashParts = append(hashParts, report.Preset)
+		title = fmt.Sprintf("%s[%s] instruction-pack drift", report.Harness, report.Preset)
+	}
+	hashParts = append(hashParts, expected, observed)
+
 	return InstructionPackObservation{
-		ObservationID: instructionPackObservationHash("packdrift_", report.Harness, expected, observed),
+		ObservationID: instructionPackObservationHash("packdrift_", hashParts...),
 		ExpectedState: expected,
 		ObservedState: observed,
-		Title:         fmt.Sprintf("%s instruction-pack drift", report.Harness),
+		Title:         title,
 		EvidenceRefs: []string{
 			report.Path,
 			"context_expected_sha256:" + expected,

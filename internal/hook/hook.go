@@ -2501,13 +2501,13 @@ func renderAndWriteInstructionPack(homePath, harnessName string) (ref string, fi
 	if strings.TrimSpace(harnessName) == "" || strings.TrimSpace(homePath) == "" {
 		return "", "", nil
 	}
-	pack, packErr := harness.RenderInstructionPack(homePath, harnessName, time.Now().UTC())
+	pack, packErr := harness.RenderInstructionPack(homePath, harnessName, "", time.Now().UTC())
 	if packErr != nil {
 		return "", "", packErr
 	}
-	rel := filepath.ToSlash(strings.TrimPrefix(harness.InstructionPackPath(homePath, harnessName), strings.TrimSpace(homePath)+"/"))
+	rel := filepath.ToSlash(strings.TrimPrefix(harness.InstructionPackPath(homePath, harnessName, ""), strings.TrimSpace(homePath)+"/"))
 	if rel == "" {
-		rel = harness.InstructionPackPath(homePath, harnessName)
+		rel = harness.InstructionPackPath(homePath, harnessName, "")
 	}
 	ref = rel
 	short := strings.TrimPrefix(pack.ContentSHA256, "sha256:")
@@ -2549,7 +2549,7 @@ func instructionPackPointerLine(pack envelope.ContextPack) string {
 	if harnessName == "" {
 		return ""
 	}
-	path := harness.InstructionPackPath(homePath, harnessName)
+	path := harness.InstructionPackPath(homePath, harnessName, "")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return ""
@@ -2586,7 +2586,7 @@ func firstHookReadinessHarness(pack envelope.ContextPack) string {
 }
 
 func harnessInstructionPackRel(homePath, harnessName string) string {
-	abs := harness.InstructionPackPath(homePath, harnessName)
+	abs := harness.InstructionPackPath(homePath, harnessName, "")
 	rel := strings.TrimPrefix(abs, strings.TrimSpace(homePath)+"/")
 	if rel == abs || rel == "" {
 		return abs

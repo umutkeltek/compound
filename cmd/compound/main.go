@@ -1340,9 +1340,13 @@ func cmdHarness(args []string) {
 	if target == "instruction-pack" {
 		harnessName := valueFlag(args[1:], "--harness")
 		if harnessName == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound harness instruction-pack --harness <name> [--json] [--drift [--emit-divergence]]")
+			fmt.Fprintln(os.Stderr, "usage: compound harness instruction-pack --harness <name> [--preset <name>] [--json] [--drift [--emit-divergence]]")
 			os.Exit(2)
 		}
+		// --preset is the optional second identity axis: two switchback
+		// presets over one harness render to distinct preset-scoped packs.
+		// Omitted → today's harness-only path and pack identity, unchanged.
+		presetName := valueFlag(args[1:], "--preset")
 		homePath, err := home.Resolve("")
 		die(err)
 		// --drift compares on-disk latest.json against a fresh render
@@ -1354,7 +1358,7 @@ func cmdHarness(args []string) {
 		// out as the S5b extension that closes the cold-start loop from
 		// the S5 deviation (work_e9a494d5cf58).
 		if hasFlag(args[1:], "--drift") {
-			report, err := harness.InstructionPackDrift(homePath, harnessName, time.Now().UTC())
+			report, err := harness.InstructionPackDrift(homePath, harnessName, presetName, time.Now().UTC())
 			die(err)
 			var emission instructionPackDivergenceEmission
 			if hasFlag(args[1:], "--emit-divergence") {
@@ -1375,6 +1379,9 @@ func cmdHarness(args []string) {
 				fmt.Printf("- harness: %s\n", report.Harness)
 				fmt.Printf("- path: %s\n", report.Path)
 				fmt.Printf("- status: %s\n", map[bool]string{true: "drift", false: "clean"}[report.Drifted])
+				if report.Preset != "" {
+					fmt.Printf("- preset: %s\n", report.Preset)
+				}
 				for _, detail := range report.Details {
 					fmt.Printf("- detail: %s\n", detail)
 				}
@@ -1388,7 +1395,7 @@ func cmdHarness(args []string) {
 			}
 			return
 		}
-		pack, err := harness.RenderInstructionPack(homePath, harnessName, time.Now().UTC())
+		pack, err := harness.RenderInstructionPack(homePath, harnessName, presetName, time.Now().UTC())
 		die(err)
 		if hasFlag(args[1:], "--json") {
 			die(json.NewEncoder(os.Stdout).Encode(pack))
@@ -1396,6 +1403,9 @@ func cmdHarness(args []string) {
 		}
 		fmt.Println("# harness instruction-pack")
 		fmt.Printf("- harness: %s\n", pack.Harness)
+		if pack.Preset != "" {
+			fmt.Printf("- preset: %s\n", pack.Preset)
+		}
 		fmt.Printf("- schema_version: %s\n", pack.SchemaVersion)
 		fmt.Printf("- policy_core: ref=%s absent=%v\n", pack.PolicyCore.AuthorityRef, pack.PolicyCore.Absent)
 		fmt.Printf("- posture: ref=%s absent=%v\n", pack.Posture.AuthorityRef, pack.Posture.Absent)
@@ -1404,7 +1414,7 @@ func cmdHarness(args []string) {
 		fmt.Printf("- registry_revision: %s\n", pack.Roster.RegistryRevision)
 		fmt.Printf("- generated_at: %s\n", pack.GeneratedAt.Format(time.RFC3339))
 		fmt.Printf("- content_sha256: %s\n", pack.ContentSHA256)
-		fmt.Printf("- written_to: %s\n", harness.InstructionPackPath(homePath, harnessName))
+		fmt.Printf("- written_to: %s\n", harness.InstructionPackPath(homePath, harnessName, pack.Preset))
 		return
 	}
 	if target == "observe" {

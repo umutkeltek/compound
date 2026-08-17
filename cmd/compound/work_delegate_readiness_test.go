@@ -22,10 +22,10 @@ func TestEvaluateDelegateHarnessReadinessRejectsCleanDegradedInstructionPack(t *
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	const harnessName = "claude_minimax"
 
-	if _, err := harness.RenderInstructionPack(homePath, harnessName, now); err != nil {
+	if _, err := harness.RenderInstructionPack(homePath, harnessName, "", now); err != nil {
 		t.Fatal(err)
 	}
-	drift, err := harness.InstructionPackDrift(homePath, harnessName, now.Add(time.Minute))
+	drift, err := harness.InstructionPackDrift(homePath, harnessName, "", now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestEvaluateDelegateHarnessReadinessRejectsUnrelatedEffectiveContract(t *te
 	effective := fixture.effective
 	effective.Harness = "codex"
 	runtime := recordDelegateRuntimeForTest(t, fixture.compoundHome, effective, fixture.workID, fixture.workspace, fixture.now.Add(time.Minute))
-	if _, err := harness.RenderInstructionPack(fixture.compoundHome, fixture.harness, fixture.now.Add(time.Minute)); err != nil {
+	if _, err := harness.RenderInstructionPack(fixture.compoundHome, fixture.harness, "", fixture.now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -755,7 +755,7 @@ func buildReadyDelegateHarnessFixture(t *testing.T, workID string) readyDelegate
 	if _, err := contract.RecordRuntimeMaterialization(compoundHome, runtime); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := harness.RenderInstructionPack(compoundHome, harnessName, now); err != nil {
+	if _, err := harness.RenderInstructionPack(compoundHome, harnessName, "", now); err != nil {
 		t.Fatal(err)
 	}
 	effective = runtime.EffectiveContract
@@ -855,7 +855,7 @@ func installReadyReadButMissingMutationHook(t *testing.T, fixture readyDelegateH
 		"hooks":   commandHooks,
 	}}
 	writeDelegateReadinessJSON(t, fixture.profilePath, settings)
-	if _, err := harness.RenderInstructionPack(fixture.compoundHome, fixture.harness, fixture.now.Add(2*time.Minute)); err != nil {
+	if _, err := harness.RenderInstructionPack(fixture.compoundHome, fixture.harness, "", fixture.now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -103,7 +103,7 @@ func TestRenderInstructionPackPointer_F9_LineCitesOnDiskPack(t *testing.T) {
 	// find it on disk. (In practice writeContextArtifacts renders it
 	// during a session-start invocation; we drive it here so the test
 	// is deterministic.)
-	if _, err := harness.RenderInstructionPack(homePath, "claude_code", fixedNow); err != nil {
+	if _, err := harness.RenderInstructionPack(homePath, "claude_code", "", fixedNow); err != nil {
 		t.Fatal(err)
 	}
 

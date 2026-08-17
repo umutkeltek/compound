@@ -104,7 +104,7 @@ func TestHarnessInstructionPackCLI_F1_JSONShape(t *testing.T) {
 	}
 
 	// File on disk under temp home?
-	written, err := os.Stat(harness.InstructionPackPath(homePath, "claude_code"))
+	written, err := os.Stat(harness.InstructionPackPath(homePath, "claude_code", ""))
 	if err != nil {
 		t.Fatalf("pack latest.json not written: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestHarnessInstructionPackCLI_F4_DriftClean(t *testing.T) {
 	if err := os.WriteFile(authPath, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := harness.RenderInstructionPack(homePath, "claude_code", cliTestNow); err != nil {
+	if _, err := harness.RenderInstructionPack(homePath, "claude_code", "", cliTestNow); err != nil {
 		t.Fatal(err)
 	}
 	filesBefore := countFiles(t, homePath)

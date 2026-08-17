@@ -160,7 +160,7 @@ func evaluateDelegateHarnessReadiness(req work.DelegateHarnessReadinessRequest) 
 		}
 	}
 
-	packDrift, err := harness.InstructionPackDrift(req.HomePath, harnessName, req.Now)
+	packDrift, err := harness.InstructionPackDrift(req.HomePath, harnessName, "", req.Now)
 	blockingPackDrift := delegateBlockingInstructionPackDrift(packDrift.Details)
 	switch {
 	case err != nil:
@@ -485,7 +485,7 @@ func delegateReadinessBytesRevision(body []byte) string {
 }
 
 func loadDelegateInstructionPack(homePath, harnessName string) (harness.InstructionPack, error) {
-	body, err := os.ReadFile(harness.InstructionPackPath(homePath, harnessName))
+	body, err := os.ReadFile(harness.InstructionPackPath(homePath, harnessName, ""))
 	if err != nil {
 		return harness.InstructionPack{}, err
 	}

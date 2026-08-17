@@ -12,7 +12,7 @@ import (
 func TestBuildInstructionPackObservation_F1_SilenceOnClean(t *testing.T) {
 	report := InstructionPackDriftReport{
 		Harness:        "claude_code",
-		Path:           InstructionPackPath("", "claude_code"),
+		Path:           InstructionPackPath("", "claude_code", ""),
 		Drifted:        false,
 		ExpectedDigest: "sha256:abc",
 		ObservedDigest: "sha256:abc",
@@ -36,7 +36,7 @@ func TestBuildInstructionPackObservation_F1_SilenceOnClean(t *testing.T) {
 func TestBuildInstructionPackObservation_F2_DriftedStableId(t *testing.T) {
 	report := InstructionPackDriftReport{
 		Harness:        "claude_code",
-		Path:           InstructionPackPath("", "claude_code"),
+		Path:           InstructionPackPath("", "claude_code", ""),
 		Drifted:        true,
 		ExpectedDigest: "sha256:expected",
 		ObservedDigest: "sha256:observed",
@@ -98,7 +98,7 @@ func TestBuildInstructionPackObservation_F2_DriftedStableId(t *testing.T) {
 func TestBuildInstructionPackObservation_F3_MissingOnDiskMirrorsColdStart(t *testing.T) {
 	report := InstructionPackDriftReport{
 		Harness:        "claude_code",
-		Path:           InstructionPackPath("", "claude_code"),
+		Path:           InstructionPackPath("", "claude_code", ""),
 		Drifted:        true,
 		ExpectedDigest: "sha256:expected",
 		ObservedDigest: "", // file missing
@@ -125,7 +125,7 @@ func TestBuildInstructionPackObservation_F3_MissingOnDiskMirrorsColdStart(t *tes
 func TestBuildInstructionPackObservation_F4_DriftedReportNeverHasEqualStates(t *testing.T) {
 	report := InstructionPackDriftReport{
 		Harness:        "claude_code",
-		Path:           InstructionPackPath("", "claude_code"),
+		Path:           InstructionPackPath("", "claude_code", ""),
 		Drifted:        true,
 		ExpectedDigest: "sha256:same",
 		ObservedDigest: "sha256:same",
