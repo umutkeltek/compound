@@ -63,12 +63,12 @@ type LeaseRepairPlan struct {
 // content-addressed from the same atomic step, so any downstream consumer (close,
 // doctor, projection) can prove the repair by id.
 type LeaseRepairResult struct {
-	Lease      Lease                    `json:"lease"`
-	Work       envelope.WorkEnvelope    `json:"work"`
-	Action     envelope.ActionIntent    `json:"action_intent"`
-	Decision   envelope.PolicyDecision  `json:"policy_decision"`
-	Receipt    envelope.Receipt         `json:"receipt"`
-	Transition envelope.Transition      `json:"transition"`
+	Lease      Lease                   `json:"lease"`
+	Work       envelope.WorkEnvelope   `json:"work"`
+	Action     envelope.ActionIntent   `json:"action_intent"`
+	Decision   envelope.PolicyDecision `json:"policy_decision"`
+	Receipt    envelope.Receipt        `json:"receipt"`
+	Transition envelope.Transition     `json:"transition"`
 }
 
 // LeaseRepairPlan diagnoses the current lease against the operator's expected holder
@@ -194,10 +194,10 @@ func (s *Store) repairLeaseLocked(workID string, in LeaseRepairInput, now time.T
 			Artifacts:    []string{},
 			Verification: []string{},
 		},
-		Cost:   envelope.ReceiptCost{ModelCalls: []string{}},
-		Skills: envelope.ReceiptSkills{Used: []string{"cap:work.lease-repair"}, Missed: []string{}, Candidate: []string{}, UsedDeclared: true},
-		Memory: envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}, Rejected: []string{}},
-		Next:   envelope.ReceiptNext{SuggestedWork: []string{}},
+		Cost:      envelope.ReceiptCost{ModelCalls: []string{}},
+		Skills:    envelope.ReceiptSkills{Used: []string{"cap:work.lease-repair"}, Missed: []string{}, Candidate: []string{}, UsedDeclared: true},
+		Memory:    envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}, Rejected: []string{}},
+		Next:      envelope.ReceiptNext{SuggestedWork: []string{}},
 		ProofRefs: proofRefs,
 	}
 	if err := receipt.Validate(); err != nil {
