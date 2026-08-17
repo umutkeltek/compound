@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,6 +51,17 @@ type ClosePolicySummary struct {
 	EvidenceRefs     []string `json:"evidence_refs,omitempty"`
 }
 
+// ClosePrecondition is one named close-gate requirement reported on a ClosePlan: Met is
+// the verdict for THIS request and Detail states what the gate requires (which work
+// states may close to the requested outcome, which move types are accepted, who holds
+// the lease), so an unmet check teaches the remedy instead of hiding behind the
+// not_closeable verdict — every unmet precondition is readable in one plan.
+type ClosePrecondition struct {
+	Name   string `json:"name"`
+	Met    bool   `json:"met"`
+	Detail string `json:"detail,omitempty"`
+}
+
 type ClosePlan struct {
 	SchemaVersion           string                  `json:"schema_version"`
 	ID                      string                  `json:"id"`
@@ -77,6 +89,7 @@ type ClosePlan struct {
 	Decision                envelope.PolicyDecision `json:"policy_decision"`
 	NoAction                string                  `json:"no_action,omitempty"`
 	Warnings                []string                `json:"warnings,omitempty"`
+	Checks                  []ClosePrecondition     `json:"checks,omitempty"`
 }
 
 func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (ClosePlan, error) {
@@ -157,6 +170,10 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 	if _, err := s.gitDeliveryProofForClose(w, outcome, moveType, proofRefs, now); err != nil {
 		deliveryNoAction = err.Error()
 	}
+	// leaseHolderStatusFor is read-only, so computing it before the plan literal lets every
+	// returned plan (including the action-plan early return below) carry the full
+	// precondition enumeration, not just the first refusal NoAction names.
+	leaseStatus := s.leaseHolderStatusFor(w.ID, actor, opts.Steal, opts.StealReason, "close")
 	plan := ClosePlan{
 		SchemaVersion:      ClosePlanSchemaVersion,
 		ID:                 idFor("wclp_", workID, actor, outcome, moveType, ts(now)),
@@ -183,6 +200,7 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 			"does not emit receipt or transition",
 			"does not enforce policy; it reports close gate decision",
 		},
+		Checks: s.closePreconditionChecks(w, outcome, moveType, actor, leaseStatus),
 	}
 	if actionPlan != nil {
 		plan.ActionExecutionPlanPath = actionPlanPath
@@ -216,7 +234,6 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		}
 	}
 	heldReleaseErr := heldReleaseOperatorError(w.State, outcome, actor)
-	leaseStatus := s.leaseHolderStatusFor(w.ID, actor, opts.Steal, opts.StealReason, "close")
 	switch {
 	case !terminalStates[outcome]:
 		plan.NoAction = fmt.Sprintf("invalid close outcome %q", outcome)
@@ -335,5 +352,65 @@ func summarizeClosePolicy(pd envelope.PolicyDecision, source string) ClosePolicy
 		Reasons:          append([]string{}, pd.Reasons...),
 		Obligations:      append([]string{}, pd.Obligations...),
 		EvidenceRefs:     append([]string{}, pd.EvidenceRefs...),
+	}
+}
+
+// closeSourceStates returns the work states a close to outcome may legally start from —
+// the states holding a live state-machine edge to it (for "completed": running or
+// verifying). Sorted so the requirement reads deterministically.
+func closeSourceStates(outcome string) []string {
+	var states []string
+	for from := range transitions {
+		if canTransition(from, outcome) {
+			states = append(states, from)
+		}
+	}
+	sort.Strings(states)
+	return states
+}
+
+// closePreconditionChecks enumerates the close gate's named preconditions for one request,
+// each with its met/unmet verdict and a Detail stating what the gate requires, so a
+// not_closeable plan lists EVERY unmet precondition in one read instead of surfacing one
+// refusal per trial-and-error re-run. NoAction keeps reporting the first refusal; Checks
+// is the full enumeration. The verdicts mirror the ClosePlan switch: work_state needs a
+// live edge (or an already-terminal match) to the requested outcome, move_type must be
+// one of envelope.MoveTypes, and a lease held by another actor requires --by <holder> or
+// --steal --reason.
+func (s *Store) closePreconditionChecks(w envelope.WorkEnvelope, outcome, moveType, actor string, leaseStatus leaseHolderStatus) []ClosePrecondition {
+	stateMet := w.State == outcome || canTransition(w.State, outcome)
+	stateDetail := fmt.Sprintf("work state %q can close to %q", w.State, outcome)
+	switch {
+	case !terminalStates[outcome]:
+		stateMet = false
+		stateDetail = fmt.Sprintf("outcome %q is not a terminal close outcome; close outcomes are completed, failed, cancelled", outcome)
+	case !stateMet:
+		stateDetail = fmt.Sprintf("work state %q cannot close to %q; closing to %q requires work state %s", w.State, outcome, outcome, strings.Join(closeSourceStates(outcome), " or "))
+	}
+
+	moveMet := oneOf(moveType, envelope.MoveTypes)
+	moveDetail := fmt.Sprintf("move_type %q is an accepted move type", moveType)
+	if !moveMet {
+		moveDetail = fmt.Sprintf("move_type %q is not an accepted move type; accepted move types: %s", moveType, strings.Join(envelope.MoveTypes, ", "))
+	}
+
+	var leaseDetail string
+	switch {
+	case leaseStatus.Blocked:
+		leaseDetail = leaseStatus.Message
+	case leaseStatus.Stolen:
+		leaseDetail = fmt.Sprintf("--steal --reason overrides lease holder %q", leaseStatus.Holder)
+	default:
+		if lease, err := s.readLease(w.ID); err == nil && strings.TrimSpace(lease.By) != "" {
+			leaseDetail = fmt.Sprintf("--by %q matches lease holder %q", actor, strings.TrimSpace(lease.By))
+		} else {
+			leaseDetail = "no active lease; any --by actor may close"
+		}
+	}
+
+	return []ClosePrecondition{
+		{Name: "work_state", Met: stateMet, Detail: stateDetail},
+		{Name: "move_type", Met: moveMet, Detail: moveDetail},
+		{Name: "lease_holder", Met: !leaseStatus.Blocked, Detail: leaseDetail},
 	}
 }
