@@ -45,12 +45,18 @@ var DelegateSessionStoreResolver DelegateSessionStoreResolverFunc
 var ErrSessionStoreRootUnknown = errors.New("session store root unknown for lane")
 
 // transcriptSlug is the harness's own per-project directory name: the absolute
-// workspace path with every separator replaced by '-'. A workspace that already
-// contains '-' keeps it, which is why a nested path can yield a doubled dash --
-// that is the harness's encoding, not a bug to normalize away. Reproducing it
-// exactly is the whole point; a "tidier" slug finds nothing.
+// workspace path with every separator AND every '.' replaced by '-'. A workspace
+// that already contains '-' keeps it, which is why a nested path can yield a
+// doubled dash -- that is the harness's encoding, not a bug to normalize away.
+// The dot rule matters because every live workspace lives under a dot-directory
+// (e.g. ~/.compound/...), and the harness encodes ".compound" as "-compound",
+// producing a doubled dash after the parent directory. Reproducing it exactly
+// is the whole point; a "tidier" slug finds nothing.
 func transcriptSlug(workspace string) string {
-	return strings.ReplaceAll(filepath.Clean(workspace), string(filepath.Separator), "-")
+	s := filepath.Clean(workspace)
+	s = strings.ReplaceAll(s, string(filepath.Separator), "-")
+	s = strings.ReplaceAll(s, ".", "-")
+	return s
 }
 
 // TranscriptDirFor resolves the directory holding a delegated run's transcripts

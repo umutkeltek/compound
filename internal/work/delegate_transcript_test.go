@@ -32,6 +32,30 @@ func TestTranscriptDirReproducesTheHarnessSlugExactly(t *testing.T) {
 	}
 }
 
+// The harness's per-project directory name turns EVERY path separator AND every
+// '.' into '-'. A workspace under ~/.compound/... therefore yields a doubled
+// dash after the home directory: ".compound" becomes "-compound", and the '/'
+// that preceded it is also '-'. The liveness signal for compound's own
+// delegate lanes had been dead for the whole campaign because the slug builder
+// preserved the literal dot, producing a directory that did not exist on disk
+// while the real one sat next to it. This test pins the rule the harness
+// actually applies, so reproducing it becomes a contract instead of a guess.
+func TestTranscriptSlugTurnsDotsIntoDashesToo(t *testing.T) {
+	root := "/profiles/_providers/example-lane"
+	ws := "/home/example/.compound/delegate-workspaces/foo"
+	want := filepath.Join(
+		root, "projects",
+		"-home-example--compound-delegate-workspaces-foo",
+	)
+	got, err := TranscriptDirFor(root, ws)
+	if err != nil {
+		t.Fatalf("TranscriptDirFor: %v", err)
+	}
+	if got != want {
+		t.Fatalf("slug mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
 // An unknown root must be an error, never a guess. If this ever degrades into
 // scanning candidate homes, a miss reads as "the run produced nothing" and a
 // completed run gets closed as cancelled -- which is precisely what happened.
