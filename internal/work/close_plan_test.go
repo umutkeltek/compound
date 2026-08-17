@@ -1,6 +1,7 @@
 package work
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,6 +153,80 @@ func TestClosePlanRequiresDeliveryContractForCommitProofFromActionPlan(t *testin
 	}
 	if plan.Status != "not_closeable" || len(plan.CloseCommand) != 0 || !strings.Contains(plan.NoAction, "git_delivery") {
 		t.Fatalf("action-plan commit proof without delivery contract must not be closeable: %+v", plan)
+	}
+}
+
+// TestClosePlanEnumeratesEveryUnmetPreconditionAsNamedChecks pins the one-read contract:
+// a not_closeable close-plan must carry EVERY unmet close precondition as a named check
+// with a met/unmet verdict — the required work state (close to "completed" needs
+// running/verifying), the accepted move types ("system_delta" is NOT a move type), and the
+// --by lease holder requirement — not a bare verdict that reveals one refusal per
+// trial-and-error re-run. The work here fails exactly two of the three: it is claimed
+// (not running/verifying) and requests move_type "system_delta", while --by "codex"
+// matches the lease holder, so that check is the met one. Assertions decode the plan's
+// serialized JSON (the recorded artifact and --json surface operators read) so the checks
+// must survive on the wire, not just in memory.
+func TestClosePlanEnumeratesEveryUnmetPreconditionAsNamedChecks(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "close preconditions enumerated in one read"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.ClosePlan(w.ID, fixedNow, ClosePlanOptions{
+		Actor:    "codex",
+		Outcome:  "completed",
+		MoveType: "system_delta",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "not_closeable" {
+		t.Fatalf("close plan status = %q, want not_closeable", plan.Status)
+	}
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type planCheck struct {
+		Name   string `json:"name"`
+		Met    bool   `json:"met"`
+		Detail string `json:"detail"`
+	}
+	var decoded struct {
+		Checks []planCheck `json:"checks"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	checks := map[string]planCheck{}
+	for _, check := range decoded.Checks {
+		checks[check.Name] = check
+	}
+	for _, name := range []string{"work_state", "move_type", "lease_holder"} {
+		if _, ok := checks[name]; !ok {
+			t.Fatalf("close plan missing named check %q with met/unmet; checks = %+v (serialized plan: %s)", name, decoded.Checks, raw)
+		}
+	}
+	state := checks["work_state"]
+	if state.Met {
+		t.Fatalf("work_state check must be unmet for claimed work: %+v", state)
+	}
+	if !strings.Contains(state.Detail, "running") || !strings.Contains(state.Detail, "verifying") {
+		t.Fatalf("work_state detail must name the required work states (running/verifying): %+v", state)
+	}
+	move := checks["move_type"]
+	if move.Met {
+		t.Fatalf("move_type check must be unmet for system_delta: %+v", move)
+	}
+	if !strings.Contains(move.Detail, "system_delta") || !strings.Contains(move.Detail, "outward_delta") || !strings.Contains(move.Detail, "audit_only") {
+		t.Fatalf("move_type detail must name the requested type and the accepted move types: %+v", move)
+	}
+	holder := checks["lease_holder"]
+	if !holder.Met {
+		t.Fatalf("lease_holder check must be met when --by matches the lease holder: %+v", holder)
 	}
 }
 
