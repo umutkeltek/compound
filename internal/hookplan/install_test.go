@@ -1612,3 +1612,130 @@ func hasHookCommand(cfg map[string]any, event, command string) bool {
 	}
 	return false
 }
+
+// findCompoundHookGroup returns the first hook group whose entry-level matcher
+// (when present) matches the compound matcher "*" and whose inner hook command
+// contains the live compound marker. It returns the group map and true on a
+// match, or nil/false when no such group is present. The red test uses it to
+// inspect the timeout field at the group level after a re-install.
+func findCompoundHookGroup(cfg map[string]any, event string) (map[string]any, bool) {
+	hooks, _ := cfg["hooks"].(map[string]any)
+	groups, _ := hooks[event].([]any)
+	for _, group := range groups {
+		entry, ok := group.(map[string]any)
+		if !ok {
+			continue
+		}
+		inner, _ := entry["hooks"].([]any)
+		if len(inner) == 0 {
+			continue
+		}
+		first, ok := inner[0].(map[string]any)
+		if !ok {
+			continue
+		}
+		cmd, _ := first["command"].(string)
+		if !strings.Contains(cmd, hookCommandMarker) {
+			continue
+		}
+		return entry, true
+	}
+	return nil, false
+}
+
+// TestReinstallPreservesHandSetTimeoutOnCompoundBinding is the falsifier for
+// the per-binding timeout regression. A user (or an operator) hand-sets a
+// `timeout` integer (seconds) on the live Compound binding in settings.json;
+// `compound hook install` re-runs and the installer replaces Compound-owned
+// entries wholesale. The timeout must SURVIVE the wholesale replace because
+// timeout containment is a known hook-cost blowup we explicitly want to keep
+// in place. The non-Compound hooks and every other settings key stay
+// byte-preserved (existing no-clobber invariant).
+func TestReinstallPreservesHandSetTimeoutOnCompoundBinding(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, ".claude")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Hand-set state: a Compound binding (live PreToolUse marker) with the
+	// harness-schema sibling `timeout` integer (seconds); an unrelated
+	// user-owned hook; an unrelated top-level key (`permissions`) that the
+	// no-clobber invariant must preserve.
+	existing := `{
+  "permissions": {"allow": ["Bash(ls)"]},
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "timeout": 30,
+        "hooks": [
+          {"type": "command", "command": "'/old/compound' hook pre-tool-use --live --harness claude-code --enforce"}
+        ]
+      },
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "my-own-hook"}]}
+    ]
+  }
+}`
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reinstall: the installer identifies Compound's own entry by the live
+	// marker and replaces it wholesale. The hand-set timeout must persist on
+	// the replacement entry.
+	rep, err := InstallHooks(base, "/bin/compound", "global", []string{"claude-code"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Entries[0].Action != "updated" {
+		t.Fatalf("reinstall action = %q, want updated (Compound entry was replaced in place)", rep.Entries[0].Action)
+	}
+
+	got := readJSON(t, path)
+	// Existing no-clobber invariant: unrelated top-level key preserved.
+	if _, ok := got["permissions"]; !ok {
+		t.Fatalf("no-clobber broken: permissions key dropped (top-level byte preservation)")
+	}
+	// Non-Compound hook survives.
+	preGroups := got["hooks"].(map[string]any)["PreToolUse"].([]any)
+	foundUser := false
+	for _, group := range preGroups {
+		entry, _ := group.(map[string]any)
+		if firstCommand(entry) == "my-own-hook" {
+			foundUser = true
+		}
+	}
+	if !foundUser {
+		t.Fatalf("no-clobber broken: user hook dropped from PreToolUse: %+v", preGroups)
+	}
+
+	// The core falsifier: the Compound binding must still carry the timeout
+	// integer (seconds) after reinstall. The harness hook JSON schema allows
+	// a sibling `timeout` on the hook entry; losing it on reinstall is a
+	// known hook-cost blowup.
+	entry, ok := findCompoundHookGroup(got, "PreToolUse")
+	if !ok {
+		t.Fatalf("reinstall dropped the Compound binding entirely: %+v", preGroups)
+	}
+	timeout, ok := entry["timeout"]
+	if !ok {
+		t.Fatalf("reinstall lost the hand-set timeout on the Compound binding: entry=%+v", entry)
+	}
+	// JSON numbers decode to float64; an integer timeout is the schema.
+	asFloat, ok := timeout.(float64)
+	if !ok {
+		t.Fatalf("Compound binding timeout = %T(%v), want integer seconds", timeout, timeout)
+	}
+	if asFloat != 30 {
+		t.Fatalf("Compound binding timeout = %v, want 30 (seconds)", asFloat)
+	}
+	// The new Compound command must reflect the current binary path so the
+	// entry is genuinely replaced, not just left as-is.
+	inner, _ := entry["hooks"].([]any)
+	first, _ := inner[0].(map[string]any)
+	cmd, _ := first["command"].(string)
+	if cmd != HookCommandForEvent("/bin/compound", "claude-code", "PreToolUse") {
+		t.Fatalf("replaced Compound command = %q, want current binary", cmd)
+	}
+}
