@@ -213,13 +213,13 @@ func TestRenderInstructionPack_P3_TwoPresetsDistinctAndEachDriftClean(t *testing
 // empty-preset identity *should* be at runtime, by reusing the same code
 // path with two complementary observations:
 //
-//   (a) id stability — two empty-preset renders over the same home at the
-//       same clock must be byte-identical. If they ever differ, the preset
-//       axis is leaking clock or randomness into the body.
+//	(a) id stability — two empty-preset renders over the same home at the
+//	    same clock must be byte-identical. If they ever differ, the preset
+//	    axis is leaking clock or randomness into the body.
 //
-//   (b) preset sensitivity — a non-empty preset over the same home must
-//       produce a DIFFERENT identity. If it does not, the preset axis is
-//       inert and the wire feature has no effect.
+//	(b) preset sensitivity — a non-empty preset over the same home must
+//	    produce a DIFFERENT identity. If it does not, the preset axis is
+//	    inert and the wire feature has no effect.
 //
 // The conjunction: empty is stable AND empty differs from non-empty. That
 // pins "empty preset = today, exactly" without naming any external commit.
