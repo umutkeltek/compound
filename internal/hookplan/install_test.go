@@ -1234,6 +1234,126 @@ func TestInstallHooksCheckModeDoesNotWrite(t *testing.T) {
 	}
 }
 
+// TestInstallHooksCheckDetectsStaleUserPromptSubmitOnClaudeCode is the falsifier for
+// burst-guarddrift-20260817. Commit 711ce64f (2026-08-07) removed UserPromptSubmit from
+// claude-code's desired event set; pre-711ce64f binaries (and the settings.json they
+// wrote) still carry a UserPromptSubmit compound hook. The doctor reports this as
+// guard=drift for claude-code lanes; claude-zai lanes are unaffected because their
+// desired event set is unchanged.
+//
+// This test pins the real defect: the check MUST read Action="drift" when the actual
+// settings.json carries an event the current desired bindings no longer want. If a
+// future change ever weakens the drift signal (e.g. silently reconciles extra compound
+// events, demotes drift to ok, or stops comparing the event set), this test fails and
+// the vanished symptom of "guard column is wrong" is caught before it can come back.
+//
+// Reference evidence: the burst-guarddrift-20260817 lane REPORT.md, kept as an
+// untracked workspace artifact alongside this branch's worktree.
+func TestInstallHooksCheckDetectsStaleUserPromptSubmitOnClaudeCode(t *testing.T) {
+	base := t.TempDir()
+	binary := "/opt/compound/compound"
+
+	// Pre-populate settings.json with the OLD pre-711ce64f shape: claude-code desired
+	// events were 5 (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, SessionEnd).
+	// The current main (18645ea7) wants 4 — UserPromptSubmit is gone. This is exactly the
+	// shape an installed binary older than 711ce64f would have written.
+	//
+	// Commands are shell-quoted (HookCommandForEvent wraps the binary path in single
+	// quotes via shellQuote) so they byte-equal the desired bindings the current main
+	// computes; the only difference between actual and desired is the event set.
+	settingsPath := filepath.Join(base, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldShape := `{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "'` + binary + `' hook session-start --live --harness claude_code"}]}
+    ],
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "'` + binary + `' hook user-prompt-submit --live --harness claude_code"}]}
+    ],
+    "PreToolUse": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "'` + binary + `' hook pre-tool-use --live --harness claude_code"}]}
+    ],
+    "PostToolUse": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "'` + binary + `' hook post-tool-use --live --harness claude_code"}]}
+    ],
+    "SessionEnd": [
+      {"hooks": [{"type": "command", "command": "'` + binary + `' hook session-end-adapter --live --harness claude_code"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(oldShape), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Check mode (writes nothing). The desired bindings from the current main will be
+	// 4 events for claude-code; the actual has 5. The check must report drift.
+	rep, err := InstallHooks(base, binary, "global", []string{"claude-code"}, true)
+	if err != nil {
+		t.Fatalf("check returned err: %v", err)
+	}
+	if len(rep.Entries) != 1 {
+		t.Fatalf("want 1 entry, got %d: %+v", len(rep.Entries), rep.Entries)
+	}
+	// The honest reading. If this ever flips to "ok", the drift signal is broken and
+	// the burst-guarddrift-20260817 symptom returns silently.
+	if rep.Entries[0].Action != "drift" {
+		t.Fatalf("stale UserPromptSubmit must read drift, got %q (action=%q binding shape on disk does not match current main's desired event set; check signal is broken)",
+			rep.Entries[0].Action, rep.Entries[0].Action)
+	}
+
+	// Check mode must still be read-only: a previous regression here would mask the
+	// drift by silently rewriting the settings.json to the new shape.
+	if _, err := os.Stat(settingsPath); err != nil {
+		t.Fatalf("check mode must not delete the file: %v", err)
+	}
+	got := readJSON(t, settingsPath)
+	if _, ok := got["hooks"].(map[string]any)["UserPromptSubmit"]; !ok {
+		t.Fatal("check mode must not modify the on-disk file: UserPromptSubmit was present before the check and must remain")
+	}
+
+	// Negative falsifier: the same shape with a different harness (claude-zai) where
+	// the event set is unchanged must NOT read drift. This protects against a future
+	// change that over-reports drift and false-positives the column.
+	base2 := t.TempDir()
+	settingsPath2 := filepath.Join(base2, ".config", "switchback", "claude", "zai-direct", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath2), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	zaiShape := `{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "'` + binary + `' hook session-start --live --harness claude_zai"}]}
+    ],
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "'` + binary + `' hook user-prompt-submit --live --harness claude_zai"}]}
+    ],
+    "PreToolUse": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "'` + binary + `' hook pre-tool-use --live --harness claude_zai --enforce"}]}
+    ],
+    "PostToolUse": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "'` + binary + `' hook post-tool-use --live --harness claude_zai"}]}
+    ],
+    "SessionEnd": [
+      {"hooks": [{"type": "command", "command": "'` + binary + `' hook session-end-adapter --live --harness claude_zai"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath2, []byte(zaiShape), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep2, err := InstallHooks(base2, binary, "global", []string{"claude-zai"}, true)
+	if err != nil {
+		t.Fatalf("claude-zai check returned err: %v", err)
+	}
+	if rep2.Entries[0].Action == "drift" {
+		t.Fatalf("claude-zai shape with UserPromptSubmit is the CURRENT desired set and must NOT read drift; got %q (a change has falsely demoted claude-zai's UserPromptSubmit from desired)",
+			rep2.Entries[0].Action)
+	}
+}
+
 func TestInstallHooksProjectScope(t *testing.T) {
 	base := t.TempDir()
 	if _, err := InstallHooks(base, "/bin/compound", "project", []string{"claude-code"}, false); err != nil {
