@@ -1351,12 +1351,7 @@ func reviewSourceID(item reviewartifact.QueueItem) string {
 }
 
 func reviewStatusTerminal(status string) bool {
-	switch strings.TrimSpace(status) {
-	case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded":
-		return true
-	default:
-		return false
-	}
+	return reviewartifact.TerminalStatus(status)
 }
 
 func workStateTerminal(state string) bool {

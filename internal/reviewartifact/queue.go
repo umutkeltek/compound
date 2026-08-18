@@ -324,10 +324,9 @@ func Recount(report *QueueReport) {
 		if len(item.Actions) > 0 {
 			report.Counts.ActionableCount++
 		}
-		switch item.Status {
-		case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded":
+		if TerminalStatus(item.Status) {
 			report.Counts.OK++
-		default:
+		} else {
 			report.Counts.ReviewRequired++
 			if item.SummarySource == SummarySourceFallback {
 				report.Counts.ReviewRequiredFallbackSummary++
@@ -416,12 +415,7 @@ func itemNeedsReviewGroup(item QueueItem) bool {
 	if item.Status == "" || item.Status == "unknown" || item.Status == "review_required" || item.Readiness == "needs_review" || item.Readiness == "ready_to_apply" || len(item.Actions) > 0 {
 		return true
 	}
-	switch item.Status {
-	case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded":
-		return false
-	default:
-		return true
-	}
+	return !TerminalStatus(item.Status)
 }
 
 func queueGroupKey(item QueueItem) string {
@@ -1091,11 +1085,11 @@ func statusPriority(status string) int {
 		return 0
 	case "held", "blocked":
 		return 1
-	case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded":
-		return 3
-	default:
-		return 2
 	}
+	if TerminalStatus(status) {
+		return 3
+	}
+	return 2
 }
 
 func firstString(payload map[string]any, keys ...string) string {

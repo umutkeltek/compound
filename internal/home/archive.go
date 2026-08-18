@@ -2213,9 +2213,15 @@ func terminalWorkStatus(status string) bool {
 	}
 }
 
+// terminalReviewStatus deliberately re-lists what reviewartifact.TerminalStatus
+// owns. It cannot call the owner: reviewartifact imports internal/home (see
+// reviewartifact/queue.go), so depending upward would be an import cycle.
+// Keep this set in sync with reviewartifact.terminalStatuses — "completed" was
+// missing from every copy of this literal until 2026-08-18, which made archive
+// skip finished review artifacts.
 func terminalReviewStatus(status string) bool {
 	switch strings.TrimSpace(status) {
-	case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded":
+	case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded", "completed":
 		return true
 	default:
 		return false

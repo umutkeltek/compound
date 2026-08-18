@@ -435,12 +435,7 @@ func writeExclusiveJSON(path string, payload any) error {
 }
 
 func terminalResolutionStatus(status string) bool {
-	switch strings.TrimSpace(status) {
-	case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded":
-		return true
-	default:
-		return false
-	}
+	return TerminalStatus(status)
 }
 
 func relativeHomeRef(homePath, path string) string {
