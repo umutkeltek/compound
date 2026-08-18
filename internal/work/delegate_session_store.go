@@ -36,6 +36,49 @@ type DelegateSessionStorePlanLookupFunc func(profile string) (artifacts map[stri
 // nil, lane artifact resolution fails closed rather than guessing homes.
 var DelegateSessionStorePlanLookup DelegateSessionStorePlanLookupFunc
 
+// SessionStoreRepair is the actionable form of an unresolvable session store.
+// It names the lane, every launch profile consulted, and the exact artifact
+// none of them published, so an operator repairs the lane owner's publication
+// instead of guessing which home holds the transcripts. A blind
+// transcript_dir_exists=false is a refusal to answer; this is the answer's
+// repair instruction.
+type SessionStoreRepair struct {
+	Lane            string   `json:"lane"`
+	LaunchProfiles  []string `json:"launch_profiles_consulted"`
+	MissingArtifact string   `json:"missing_artifact"`
+}
+
+// SessionStoreRootUnknownError is ErrSessionStoreRootUnknown carrying the
+// facts behind the refusal. Callers that render JSON for operators extract
+// the Repair() instead of presenting the prose alone -- the prose explains,
+// the repair instructs.
+type SessionStoreRootUnknownError struct {
+	Lane            string
+	LaunchProfiles  []string
+	MissingArtifact string
+	reason          string
+}
+
+func (e *SessionStoreRootUnknownError) Error() string {
+	return ErrSessionStoreRootUnknown.Error() + ": " + e.reason
+}
+
+func (e *SessionStoreRootUnknownError) Unwrap() error { return ErrSessionStoreRootUnknown }
+
+// Repair renders the operator-facing repair instruction. The missing artifact
+// defaults to the settings artifact so a zero-value error cannot name nothing.
+func (e *SessionStoreRootUnknownError) Repair() SessionStoreRepair {
+	artifact := strings.TrimSpace(e.MissingArtifact)
+	if artifact == "" {
+		artifact = SessionStoreSettingsArtifactKind
+	}
+	return SessionStoreRepair{
+		Lane:            strings.TrimSpace(e.Lane),
+		LaunchProfiles:  append([]string(nil), e.LaunchProfiles...),
+		MissingArtifact: artifact,
+	}
+}
+
 // laneProfileCandidates maps a binding's harness/lane onto the launch-profile
 // ids the lane owner might know it by. Historical bindings recorded the lane
 // inconsistently -- bare (`minimax`) and prefixed (`claude-minimax`) forms both
@@ -67,10 +110,22 @@ func laneProfileCandidates(harness, lane string) []string {
 // ResolveLaneArtifacts asks the lane owner what it publishes for a harness and
 // returns artifact kind -> path. One query serves every consumer that needs a
 // lane's real files, so no caller has to learn the profile-id conventions twice.
+// Every unknown-root failure is a SessionStoreRootUnknownError so callers can
+// surface a repair instead of prose.
 func ResolveLaneArtifacts(harness, lane string) (map[string]string, error) {
 	candidates := laneProfileCandidates(harness, lane)
+	// Legacy bindings recorded no lane; the harness is then the lane identity
+	// the repair can still name.
+	namedLane := strings.TrimSpace(lane)
+	if namedLane == "" {
+		namedLane = strings.TrimSpace(harness)
+	}
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("%w: names neither a lane nor a harness", ErrSessionStoreRootUnknown)
+		return nil, &SessionStoreRootUnknownError{
+			Lane:            namedLane,
+			MissingArtifact: SessionStoreSettingsArtifactKind,
+			reason:          "names neither a lane nor a harness",
+		}
 	}
 	if DelegateSessionStorePlanLookup == nil {
 		return nil, fmt.Errorf("%w: no launch-profile plan lookup is installed", ErrSessionStoreRootUnknown)
@@ -84,10 +139,15 @@ func ResolveLaneArtifacts(harness, lane string) (map[string]string, error) {
 			return artifacts, nil
 		}
 	}
-	return nil, fmt.Errorf(
-		"%w: no launch profile among [%s] published a %s artifact",
-		ErrSessionStoreRootUnknown, strings.Join(candidates, ", "), SessionStoreSettingsArtifactKind,
-	)
+	return nil, &SessionStoreRootUnknownError{
+		Lane:            namedLane,
+		LaunchProfiles:  candidates,
+		MissingArtifact: SessionStoreSettingsArtifactKind,
+		reason: fmt.Sprintf(
+			"no launch profile among [%s] published a %s artifact",
+			strings.Join(candidates, ", "), SessionStoreSettingsArtifactKind,
+		),
+	}
 }
 
 // ResolveDelegateSessionStore resolves the profile home root for a lane's

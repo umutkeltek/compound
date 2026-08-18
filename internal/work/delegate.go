@@ -2839,6 +2839,14 @@ func (s *Store) DelegateStatus(workID string, runner SessionRunner) (DelegateSta
 			root, rErr := DelegateSessionStoreResolver(b.Harness, b.Lane)
 			if rErr != nil {
 				out.TranscriptError = rErr.Error()
+				// Prose alone is blindness with an explanation. When the
+				// resolver can say WHAT is missing, the status carries the
+				// repair so the keeper can act instead of guess.
+				var unknown *SessionStoreRootUnknownError
+				if errors.As(rErr, &unknown) {
+					repair := unknown.Repair()
+					out.SessionStoreRepair = &repair
+				}
 			} else {
 				dir, files, exists, tErr := TranscriptsFor(root, ra.Workspace)
 				out.TranscriptDir = dir
@@ -2879,6 +2887,11 @@ type DelegateStatusObservation struct {
 	Transcripts         []string `json:"transcripts,omitempty"`
 	TranscriptDirExists bool     `json:"transcript_dir_exists"`
 	TranscriptError     string   `json:"transcript_error,omitempty"`
+	// SessionStoreRepair is set exactly when the lane's session store root
+	// could not be resolved: the actionable instruction (lane, launch profiles
+	// consulted, exact missing artifact) instead of a blind false. A blind
+	// enrolled lane is a verification hole, never a clean "no transcript".
+	SessionStoreRepair *SessionStoreRepair `json:"session_store_repair,omitempty"`
 }
 
 // DelegateProgressResult is the content-free progress receipt returned after
