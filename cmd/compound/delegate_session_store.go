@@ -21,8 +21,11 @@ import (
 // already reports one path while the launcher uses another, and the harvester
 // trusted the reported one and found nothing. A second hand-maintained copy in
 // Compound would drift the same way. Ask the owner, or admit you do not know.
+//
+// The candidate enumeration and the owner consultation live in internal/work
+// (delegate_session_store.go); this file only adapts the owner's process
+// output to that seam.
 const (
-	laneSettingsArtifactKind        = "harness_settings"
 	laneLaunchProfilePlanSchema     = "switchback/launch-profile-plan@1"
 	laneLaunchProfileOwner          = "switchback"
 	laneLaunchProfileCompoundRole   = "consumer"
@@ -76,75 +79,26 @@ type lanePlan struct {
 	Artifacts         []lanePlanArtifact `json:"artifacts"`
 }
 
-// laneProfileCandidates maps a binding's harness/lane onto the launch-profile
-// ids the lane owner might know it by. Historical bindings recorded the lane
-// inconsistently -- bare (`minimax`) and prefixed (`claude-minimax`) forms both
-// exist -- so try the specific form first and fall back, rather than assuming
-// one convention and reporting "unknown" for every older binding.
-func laneProfileCandidates(harness, lane string) []string {
-	lane = strings.TrimSpace(lane)
-	harness = strings.TrimSpace(harness)
-	seen := map[string]bool{}
-	var out []string
-	add := func(c string) {
-		c = strings.TrimSpace(c)
-		if c == "" || seen[c] {
-			return
-		}
-		seen[c] = true
-		out = append(out, c)
-	}
-	add(lane)
-	if lane != "" && !strings.HasPrefix(lane, "claude-") {
-		add("claude-" + lane)
-	}
-	// Compound spells harnesses with underscores (`claude_minimax`); the lane
-	// owner spells profiles with dashes.
-	add(strings.ReplaceAll(harness, "_", "-"))
-	return out
-}
-
-// resolveLaneArtifacts asks the lane owner what it publishes for a harness and
-// returns artifact kind -> path. One query serves every consumer that needs a
-// lane's real files, so no caller has to learn the profile-id conventions twice.
-func resolveLaneArtifacts(harness, lane string) (map[string]string, error) {
-	candidates := laneProfileCandidates(harness, lane)
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("%w: names neither a lane nor a harness", work.ErrSessionStoreRootUnknown)
-	}
-	for _, profile := range candidates {
-		out, runErr := laneProfilePlanOutput(profile)
-		if runErr != nil {
-			continue
-		}
-		var plan lanePlan
-		if json.Unmarshal(out, &plan) != nil {
-			continue
-		}
-		artifacts := make(map[string]string, len(plan.Artifacts))
-		for _, a := range plan.Artifacts {
-			if p := strings.TrimSpace(a.Path); p != "" {
-				artifacts[a.Kind] = p
-			}
-		}
-		if _, ok := artifacts[laneSettingsArtifactKind]; ok {
-			return artifacts, nil
-		}
-	}
-	return nil, fmt.Errorf(
-		"%w: no launch profile among [%s] published a %s artifact",
-		work.ErrSessionStoreRootUnknown, strings.Join(candidates, ", "), laneSettingsArtifactKind,
-	)
-}
-
-func resolveLaneSessionStore(harness, lane string) (string, error) {
-	artifacts, err := resolveLaneArtifacts(harness, lane)
+// laneProfilePlanArtifacts adapts the lane owner's `sb profile plan --json`
+// output to internal/work's plan-lookup seam (artifact kind -> path). A
+// profile the owner cannot plan is an error, exactly like the owner refusing
+// on the command line.
+func laneProfilePlanArtifacts(profile string) (map[string]string, error) {
+	out, err := laneProfilePlanOutput(profile)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	// The artifact is the settings FILE; the profile home is its parent, which is
-	// what holds `projects/`.
-	return filepath.Dir(artifacts[laneSettingsArtifactKind]), nil
+	var plan lanePlan
+	if err := json.Unmarshal(out, &plan); err != nil {
+		return nil, err
+	}
+	artifacts := make(map[string]string, len(plan.Artifacts))
+	for _, a := range plan.Artifacts {
+		if p := strings.TrimSpace(a.Path); p != "" {
+			artifacts[a.Kind] = p
+		}
+	}
+	return artifacts, nil
 }
 
 func laneProfilePlanOutput(profile string) ([]byte, error) {
@@ -408,6 +362,7 @@ func oneOfLaneValue(value string, allowed ...string) bool {
 }
 
 func init() {
-	work.DelegateSessionStoreResolver = resolveLaneSessionStore
+	work.DelegateSessionStorePlanLookup = laneProfilePlanArtifacts
+	work.DelegateSessionStoreResolver = work.ResolveDelegateSessionStore
 	work.DelegateLaunchProfileResolver = resolveDelegateLaunchProfile
 }

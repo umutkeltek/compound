@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"compound/internal/harness"
+	"compound/internal/work"
 )
 
 // `compound harness capability-drift` answers a question the registry could not:
@@ -71,7 +72,7 @@ func cmdHarnessCapabilityDrift(args []string) {
 		// A harness name like `claude_minimax` carries its lane in the suffix; the
 		// resolver owns the spelling conventions.
 		lane := strings.TrimPrefix(strings.ReplaceAll(name, "_", "-"), "claude-")
-		artifacts, err := resolveLaneArtifacts(name, lane)
+		artifacts, err := work.ResolveLaneArtifacts(name, lane)
 		if err != nil {
 			// Unknown is not clean. A harness whose real files cannot be located
 			// is exactly the case that hid this bug, so it must not read as pass.
@@ -79,7 +80,7 @@ func cmdHarnessCapabilityDrift(args []string) {
 			continue
 		}
 		observed, obsErr := harness.ObserveLaneCapabilities(
-			artifacts[laneSettingsArtifactKind], artifacts[laneWrapperArtifactKind],
+			artifacts[work.SessionStoreSettingsArtifactKind], artifacts[laneWrapperArtifactKind],
 		)
 		if obsErr != nil {
 			rows = append(rows, row{Harness: name, Status: "unknown", Reason: obsErr.Error()})
