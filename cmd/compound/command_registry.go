@@ -6,6 +6,7 @@ import (
 	archcli "compound/internal/arch"
 	browsercli "compound/internal/browser"
 	executorlenscli "compound/internal/executorlens"
+	flagaudit "compound/internal/flagaudit"
 	gamecli "compound/internal/game/cli"
 	lanematrixcli "compound/internal/lanematrix"
 	noticecli "compound/internal/operatornotice"
@@ -93,19 +94,23 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"version":   readCommand(cmdVersion),
 		"--version": readCommand(cmdVersion),
 		"-v":        readCommand(cmdVersion),
-		"distill":   readCommand(retiredCommand("distill")),
-		"scope":     readCommand(retiredCommand("scope")),
-		"promote":   readCommand(retiredCommand("promote")),
-		"build":     readCommand(retiredCommand("build")),
-		"reconcile": readCommand(retiredCommand("reconcile")),
-		"timeline":  readCommand(retiredCommand("timeline")),
-		"recall":    readCommand(retiredCommand("recall")),
-		"pack":      readCommand(retiredCommand("pack")),
-		"ledger":    readCommand(retiredCommand("ledger")),
-		"authority": governedCommand(cmdAuthority),
-		"decisions": heldCommand(cmdDecisions),
-		"director":  heldCommand(cmdDirector),
-		"jobprobe":  heldCommand(cmdJobProbe),
+		// RED proof for the flag-validation ratchet: a registry row with no
+		// flag validation must fail TestFirstPartyFlagValidationRatchet.
+		// Removed again by the GREEN commit — do not ship.
+		"flag-ratchet-fixture": readCommand(flagaudit.UnvalidatedFixtureCommand),
+		"distill":              readCommand(retiredCommand("distill")),
+		"scope":                readCommand(retiredCommand("scope")),
+		"promote":              readCommand(retiredCommand("promote")),
+		"build":                readCommand(retiredCommand("build")),
+		"reconcile":            readCommand(retiredCommand("reconcile")),
+		"timeline":             readCommand(retiredCommand("timeline")),
+		"recall":               readCommand(retiredCommand("recall")),
+		"pack":                 readCommand(retiredCommand("pack")),
+		"ledger":               readCommand(retiredCommand("ledger")),
+		"authority":            governedCommand(cmdAuthority),
+		"decisions":            heldCommand(cmdDecisions),
+		"director":             heldCommand(cmdDirector),
+		"jobprobe":             heldCommand(cmdJobProbe),
 		"runtime": heldCommand(cmdRuntime).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandGoverned),
 		"projection":  heldCommand(cmdProjection),
