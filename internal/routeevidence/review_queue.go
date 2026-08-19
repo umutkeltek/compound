@@ -98,12 +98,17 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 		item.ExtraPaths = reviewartifact.UniqueSorted(append(item.ExtraPaths, reviewedPath))
 		return
 	}
-	switch strings.TrimSpace(review.Status) {
-	case "ok", "applied", "resolved", "accepted", "recorded":
+	// Terminal words are owned by reviewartifact.TerminalStatus; the switch
+	// this replaced listed five of the seven and billed candidate_recorded
+	// and completed reviews to the operator as open decisions.
+	if reviewartifact.TerminalStatus(review.Status) {
 		item.Readiness = "no_action"
 		item.NextAction = "route promotion review artifact terminal"
 		item.Actions = nil
 		annotatePromotionOperatorCard(item, review, reviewartifact.BandFiled, "")
+		return
+	}
+	switch strings.TrimSpace(review.Status) {
 	case "review_required":
 		item.Readiness = "needs_review"
 		item.BlockedReason = ""
