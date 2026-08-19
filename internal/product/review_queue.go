@@ -43,15 +43,16 @@ func annotateProductReviewItem(item *reviewartifact.QueueItem) {
 		item.Actions = nil
 		return
 	}
-	switch strings.TrimSpace(item.Status) {
-	case "ok", "applied", "resolved", "accepted", "recorded":
+	// Terminal words are owned by reviewartifact.TerminalStatus; the switch
+	// this replaced listed five of the seven and billed candidate_recorded
+	// and completed reviews to the operator as missing drafts.
+	if reviewartifact.TerminalStatus(item.Status) {
 		item.Readiness = "no_action"
 		item.NextAction = "product review artifact is terminal"
 		return
-	default:
-		item.Readiness = "needs_review"
-		item.NextAction = "fill review YAML after evidence review, then record product review"
 	}
+	item.Readiness = "needs_review"
+	item.NextAction = "fill review YAML after evidence review, then record product review"
 	reviewYAML := productReviewYAMLPath(*item)
 	if reviewYAML == "" {
 		item.Readiness = "blocked"
@@ -96,8 +97,9 @@ func annotateProductActionReviewItem(item *reviewartifact.QueueItem) {
 		}
 		return
 	}
-	switch strings.TrimSpace(item.Status) {
-	case "ok", "applied", "resolved", "accepted", "recorded":
+	// Terminal words are owned by reviewartifact.TerminalStatus; this switch
+	// carried the same stale five-word copy as the product review annotator.
+	if reviewartifact.TerminalStatus(item.Status) {
 		item.Readiness = "no_action"
 		item.NextAction = "product action review artifact terminal"
 		item.Actions = nil
@@ -105,12 +107,11 @@ func annotateProductActionReviewItem(item *reviewartifact.QueueItem) {
 			annotateActionPlanOperatorCard(item, plan, reviewartifact.BandFiled)
 		}
 		return
-	default:
-		item.Readiness = "needs_review"
-		item.NextAction = "fill action review YAML, then record product action review"
-		if planErr == nil {
-			annotateActionPlanOperatorCard(item, plan, reviewartifact.BandNeedsYou)
-		}
+	}
+	item.Readiness = "needs_review"
+	item.NextAction = "fill action review YAML, then record product action review"
+	if planErr == nil {
+		annotateActionPlanOperatorCard(item, plan, reviewartifact.BandNeedsYou)
 	}
 	reviewYAML := productActionReviewYAMLPath(*item)
 	if reviewYAML == "" {
