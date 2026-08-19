@@ -913,15 +913,16 @@ func annotateSkillCandidateQueueItem(item *reviewartifact.QueueItem) {
 			return
 		}
 	}
-	switch strings.TrimSpace(item.Status) {
-	case "ok", "applied", "resolved", "accepted", "candidate_recorded", "recorded":
+	// Terminal words are owned by reviewartifact.TerminalStatus; this used to
+	// re-list them inline and its stale copy omitted "completed", billing
+	// finished work to the operator as a pending decision.
+	if reviewartifact.TerminalStatus(item.Status) {
 		item.Readiness = "no_action"
 		item.NextAction = "skill candidate review artifact terminal"
 		return
-	default:
-		item.Readiness = "needs_review"
-		item.NextAction = "fill review YAML after source/eval review, then record skill candidate decision"
 	}
+	item.Readiness = "needs_review"
+	item.NextAction = "fill review YAML after source/eval review, then record skill candidate decision"
 	reviewYAML := skillCandidateDecisionYAMLPath(*item)
 	if reviewYAML == "" {
 		item.Readiness = "blocked"

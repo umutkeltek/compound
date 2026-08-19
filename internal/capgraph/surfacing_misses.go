@@ -19,19 +19,6 @@ import (
 // (compound.tools.skill_surfacing_feedback_bridge, packet backfill jobs).
 const skillSurfacingReviewArea = "skill-surfacing"
 
-// skillSurfacingTerminalStatuses mirrors the terminal-status set queue.go /
-// resolution.go keep unexported (statusPriority, terminalResolutionStatus):
-// an item whose OWNER already marked it terminal via a native status field --
-// not only via a generic resolution sidecar -- also gets no import action.
-var skillSurfacingTerminalStatuses = map[string]bool{
-	"ok":                 true,
-	"applied":            true,
-	"resolved":           true,
-	"accepted":           true,
-	"recorded":           true,
-	"candidate_recorded": true,
-}
-
 type SkillSurfacingMisses struct {
 	ID            string
 	SourcePath    string
@@ -343,7 +330,10 @@ func annotateSkillSurfacingItem(item *reviewartifact.QueueItem) {
 	// Resolved items (a generic resolution sidecar already recorded, or the
 	// owner marked the item terminal by a native status field) get NO
 	// action — the card is already closed, one-shot import stays one-shot.
-	if item.Resolution != nil || skillSurfacingTerminalStatuses[strings.TrimSpace(item.Status)] {
+	// Terminal words are owned by reviewartifact.TerminalStatus; the local
+	// mirror this replaced omitted "completed", so finished items were
+	// re-offered their one-shot import.
+	if item.Resolution != nil || reviewartifact.TerminalStatus(item.Status) {
 		item.Actions = nil
 		return
 	}

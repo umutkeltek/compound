@@ -30,8 +30,10 @@ func AnnotateCapabilityEvaluationQueue(report *reviewartifact.QueueReport) {
 func annotateCapabilityEvaluationQueueItem(item *reviewartifact.QueueItem) {
 	item.EvidenceRefs = reviewartifact.UniqueSorted(item.EvidenceRefs)
 	plan, ok := capabilityEvaluationPlanFromQueueItem(*item)
-	switch strings.TrimSpace(item.Status) {
-	case "recorded", "candidate_recorded", "ok", "resolved", "accepted", "applied":
+	// Terminal words are owned by reviewartifact.TerminalStatus; this used to
+	// re-list them inline and its stale copy omitted "completed", so completed
+	// artifacts matched no case and left the annotator without a readiness.
+	if reviewartifact.TerminalStatus(item.Status) {
 		item.Readiness = "no_action"
 		item.BlockedReason = ""
 		item.NextAction = "capability evaluation review recorded; graph mutation requires separate reviewed manifest import"
@@ -39,6 +41,9 @@ func annotateCapabilityEvaluationQueueItem(item *reviewartifact.QueueItem) {
 		if ok {
 			annotateCapabilityEvaluationOperatorCard(item, plan, reviewartifact.BandFiled)
 		}
+		return
+	}
+	switch strings.TrimSpace(item.Status) {
 	case "", "unknown", "review_required":
 		if !ok {
 			item.Status = "blocked"

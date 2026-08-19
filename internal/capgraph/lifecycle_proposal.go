@@ -224,7 +224,7 @@ func annotateCapabilityLifecycleProposalItem(item *reviewartifact.QueueItem, now
 			item.Readiness = "no_action"
 			item.NextAction = "capability lifecycle proposal rejected and filed"
 		}
-	} else if proposal.Status == "recorded" || proposal.Status == "resolved" || proposal.Status == "accepted" || proposal.Status == "applied" || proposal.Status == "ok" {
+	} else if reviewartifact.TerminalStatus(proposal.Status) {
 		choicesAvailable = false
 		item.Actions = nil
 		band = reviewartifact.BandFiled
