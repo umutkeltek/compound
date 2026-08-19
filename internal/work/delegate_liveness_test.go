@@ -101,6 +101,9 @@ func probePane(t *testing.T, s *Store, runner *fakeSessionRunner, workID string,
 	if err != nil || b == nil {
 		t.Fatalf("recoverBoundSession: %v %+v", err, b)
 	}
+	if runner.panes == nil {
+		runner.panes = map[string]SessionStatus{}
+	}
 	runner.panes[b.Session] = pane
 }
 

@@ -2855,13 +2855,66 @@ func (s *Store) DelegateStatus(workID string, runner SessionRunner) (DelegateSta
 				if tErr != nil {
 					out.TranscriptError = tErr.Error()
 				}
+				if newest := newestTranscriptMtime(files); !newest.IsZero() {
+					out.TranscriptWriteAge = time.Since(newest).Truncate(time.Second).String()
+				}
 			}
 		} else {
 			out.TranscriptError = ErrSessionStoreRootUnknown.Error() + " (no resolver installed)"
 		}
 	}
+	out.LivenessVerdict = classifyLivenessVerdict(out)
 	return out, nil
 }
+
+// newestTranscriptMtime returns the most recent mtime across files, or
+// the zero Time when the slice is empty or every stat fails. Stale runs
+// still produce a verdict (stalled), so a stat error on every file does
+// not panic -- it just leaves the age field unset.
+func newestTranscriptMtime(files []string) time.Time {
+	var newest time.Time
+	for _, p := range files {
+		info, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+	}
+	return newest
+}
+
+// classifyLivenessVerdict reduces a DelegateStatusObservation to the
+// single word a keeper reads from --json. Order is load-bearing: probe
+// failure first so a broken prober never manufactures ghosts, unbound
+// before pane state so an unbound attempt cannot be mis-classified by
+// a stale PaneStatus from a prior run, and starting before stalled so a
+// brand-new lane never pages on its first few seconds.
+func classifyLivenessVerdict(obs DelegateStatusObservation) string {
+	switch {
+	case obs.ProbeError != "":
+		return "unknown"
+	case !obs.Bound:
+		return "unbound"
+	case !obs.PaneStatus.Exists || obs.PaneStatus.PaneDead:
+		return "exited"
+	case obs.TranscriptWriteAge == "":
+		return "starting"
+	default:
+		age, err := time.ParseDuration(obs.TranscriptWriteAge)
+		if err != nil || age < livenessStallThreshold {
+			return "working"
+		}
+		return "stalled"
+	}
+}
+
+// livenessStallThreshold is the silence after which a live pane with a
+// stale transcript reads as stalled. 90s is short enough that a frozen
+// permission dialog surfaces in the next status poll and long enough
+// that normal "thinking" pauses do not page.
+const livenessStallThreshold = 90 * time.Second
 
 // DelegateStatusObservation is the read-only, JSON-friendly payload of
 // `compound work delegate status`.
@@ -2892,6 +2945,19 @@ type DelegateStatusObservation struct {
 	// consulted, exact missing artifact) instead of a blind false. A blind
 	// enrolled lane is a verification hole, never a clean "no transcript".
 	SessionStoreRepair *SessionStoreRepair `json:"session_store_repair,omitempty"`
+	// TranscriptWriteAge is the time since the newest transcript file was
+	// modified, formatted as a Go duration string ("30s", "5m12s"). Empty
+	// when there are no transcripts -- a lane that has never produced output
+	// has nothing to age. Source of truth: newest mtime across
+	// Transcripts; a keeper reading --json sees "this lane has been silent
+	// for N" without stat'ing a file.
+	TranscriptWriteAge string `json:"transcript_write_age,omitempty"`
+	// LivenessVerdict is the keeper-visible single word: working, stalled,
+	// starting, exited, unbound, or unknown. Distinguishes a lane that is
+	// actively progressing from one frozen on an unanswered permission
+	// dialog (the failure mode this field exists to surface). Order in
+	// classifyLivenessVerdict is load-bearing; see its doc.
+	LivenessVerdict string `json:"liveness_verdict"`
 }
 
 // DelegateProgressResult is the content-free progress receipt returned after
