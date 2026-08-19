@@ -379,6 +379,24 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "operator-facing named discipline: every agent claim is paired with a content-bound, replayable proof of what actually changed (Receipt + Transition, ActionIntent + Receipt, model argument + Lean certificate); the architecture doctor's checkProveablePairLaw fails the build on any orphan receipt or transition",
 		Consumer: "compound architecture doctor checkProveablePairLaw (which scans the eventstore on every doctor run and fails on any work with one side of the pair but not both) plus the docs/architecture/status.md status surface",
 	},
+	// flagaudit is the flag-validation ratchet: it enumerates every command path the CLI runtime
+	// registry exposes, probes each in a hermetic subprocess with one unknown flag, and censuses the
+	// paths that silently accept it (exit 0 AND no mention of the flag). EnforceCeiling pins that
+	// census — the set may only shrink, never grow — and cmd/compound's flag_validation_ratchet_test
+	// t.Fatalf's on its error, so a new first-party command that swallows unknown flags cannot land.
+	// It is enforcement, not evidence, on the eventstore / proveable-pair pattern: the organ OWNS the
+	// refusal (EnforceCeiling returns the blocking error; the ceiling is the teeth) and the failure is
+	// terminal rather than advisory — nothing downstream decides whether to act on it. That it fails a
+	// certifying test rather than a runtime PolicyDecision door is the same shape as organ:eventstore
+	// (architecture doctor blocks the boundary violation) and the proveable-pair note (checkProveablePairLaw
+	// fails the doctor run): neither carries PolicyDecision/Receipt/undo either. Contrast organ:landlease,
+	// which is evidence precisely because its refusal is a cooperative hint that a SEPARATE enforcement
+	// point (the compound-land ceremony) chooses to act on; flagaudit has no such downstream decider.
+	"organ:flagaudit": {
+		Class:    MintEnforcement,
+		Purpose:  "flag-validation ratchet over the cmd/compound command registry: censuses first-party command paths that silently accept an unknown flag (exit 0 with no mention of it) and pins that census as a ceiling that may only shrink, so a new command that swallows typo'd flags cannot land",
+		Consumer: "cmd/compound/flag_validation_ratchet_test.go, which runs the census over the command registry and t.Fatalf's on EnforceCeiling's error, plus internal/flagaudit.PinnedSilentAcceptors as the recorded ceiling",
+	},
 }
 
 // grandfatheredOrgans — internal/ packages present when the ratchet landed (2026-07-12). Pre-law
