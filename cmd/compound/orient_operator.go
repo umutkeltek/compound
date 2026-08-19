@@ -845,11 +845,8 @@ func sourceControlReviewItemRecorded(item reviewartifact.QueueItem) bool {
 	case "review_recorded", "no_action":
 		return true
 	}
-	switch strings.TrimSpace(item.Status) {
-	case "recorded", "applied", "resolved", "accepted":
-		return true
-	}
-	return false
+	// Terminal words are owned by reviewartifact.TerminalStatus.
+	return reviewartifact.TerminalStatus(item.Status)
 }
 
 func sourceControlHeadReviewRecorded(reviews reviewartifact.QueueReport, evidenceRef string) bool {
@@ -1270,11 +1267,8 @@ func adaptationReviewItemRecorded(item reviewartifact.QueueItem) bool {
 	case "review_recorded", "no_action":
 		return true
 	}
-	switch strings.TrimSpace(item.Status) {
-	case "recorded", "applied", "resolved", "accepted":
-		return true
-	}
-	return false
+	// Terminal words are owned by reviewartifact.TerminalStatus.
+	return reviewartifact.TerminalStatus(item.Status)
 }
 
 func reviewItemNeedsOwner(item reviewartifact.QueueItem) bool {
