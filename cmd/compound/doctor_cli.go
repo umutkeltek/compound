@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"compound/internal/capgraph"
+	"compound/internal/doctor"
 	"compound/internal/envelope"
 	"compound/internal/finding"
 	"compound/internal/harness"
@@ -136,6 +137,11 @@ type doctorReport struct {
 	ProjectionsUndated int                        `json:"projections_undated"`
 	ProjectionsOldest  string                     `json:"projections_oldest,omitempty"`
 	ProjectionsNote    string                     `json:"projections_note,omitempty"`
+
+	// BinaryStaleness is installed binary as new as repo's target tip. Named signal:
+	// installed SHA + target tip + relation, never bare boolean. Closes 2026-08-17
+	// gap where doctor said all-clear while installed five commits behind main.
+	BinaryStaleness doctor.BinaryStalenessReport `json:"binary_staleness"`
 }
 
 // surfacingRow is one lane/harness × the communication surfaces it should see. Cell vocabulary
@@ -396,6 +402,27 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 	} else {
 		rep.ProjectionsNote = "projection freshness unavailable: cannot resolve the running binary: " + exeErr.Error()
+
+		// 8) Binary staleness — is installed binary at least as new as repo's target
+		// tip? Named signal (installed SHA + target tip + relation) so operator
+		// reads verdict instead of guessing from green light. Closes 2026-08-17
+		// gap: doctor said all-clear while installed five commits behind main.
+		cwd, _ := os.Getwd()
+		if repoRoot, ok := findRepoRootFrom(cwd); ok {
+			rep.BinaryStaleness = doctor.ComputeBinaryStaleness(
+				repoRoot,
+				doctor.InstalledBinaryPath(),
+				doctor.RunInstalledVersion,
+				doctor.ParseInstalledBuildSHA,
+				doctor.GitHeadSHA,
+				doctor.GitIsAncestor,
+			)
+		} else {
+			rep.BinaryStaleness = doctor.BinaryStalenessReport{
+				Relation: doctor.RelationUnknown,
+				Note:     "binary staleness unavailable: cwd not inside a git checkout",
+			}
+		}
 	}
 
 	if hasFlag(args, "--json") {
@@ -462,6 +489,7 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	printRetention(stdout, rep)
 
 	printProjectionFreshness(stdout, rep)
+	doctor.RenderBinaryStaleness(stdout, rep.BinaryStaleness)
 	printPermissionPosture(stdout, rep)
 	printSurfacing(stdout, rep)
 }
