@@ -92,8 +92,10 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 	}
 
 	status := strings.TrimSpace(item.Status)
-	switch status {
-	case "ok", "applied", "resolved", "accepted", "recorded":
+	// Terminal words are owned by reviewartifact.TerminalStatus; the switch
+	// this replaced listed five of the seven and billed candidate_recorded
+	// and completed verdicts to the operator as open decisions.
+	if reviewartifact.TerminalStatus(status) {
 		item.Readiness = "no_action"
 		item.BlockedReason = ""
 		item.NextAction = "panel verdict artifact terminal"
