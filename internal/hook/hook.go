@@ -1059,11 +1059,11 @@ func applyExactApprovalEdge(
 
 	// When compound home is configured, mint a durable action-approval request
 	// in the operator-approval-frontier registry so the agent-visible message
-	// can carry a stable id plus the exact resolve command. The original hold
-	// remains authoritative: a frontier registry failure must never break the
-	// gate, only reduce the legibility of the agent-visible reason.
+	// can carry a stable id. The original hold remains authoritative: a
+	// frontier registry failure must never break the gate, only reduce the
+	// legibility of the agent-visible reason.
 	if strings.TrimSpace(deps.HomePath) != "" {
-		request, resolveCmd, mintErr := policy.MintOperatorActionApprovalRequest(
+		request, mintErr := policy.MintOperatorActionApprovalRequest(
 			deps.HomePath,
 			ai.ID,
 			fx.Harness,
@@ -1078,8 +1078,8 @@ func applyExactApprovalEdge(
 			frontierRef := "compound://registries/operator-approval-frontier#" + request.ID
 			pd.EvidenceRefs = mergeRefs(pd.EvidenceRefs, []string{frontierRef})
 			pd.Reasons = append(pd.Reasons,
-				fmt.Sprintf("Operator approval request %s filed in compound://registries/operator-approval-frontier; resolve with: %s",
-					request.ID, resolveCmd))
+				fmt.Sprintf("Operator approval request %s filed in compound://registries/operator-approval-frontier; agent may wait, take an alternative, or record blocked against this id",
+					request.ID))
 			sideEffects = mergeRefs(sideEffects, []string{frontierRef})
 		}
 	}

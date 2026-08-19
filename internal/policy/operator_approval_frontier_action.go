@@ -28,7 +28,6 @@ type OperatorActionApprovalRequest struct {
 	Harness         string `json:"harness"`
 	MintedAt        string `json:"minted_at"`
 	Status          string `json:"status"`
-	ResolveCommand  string `json:"resolve_command"`
 	OperatorGrantor string `json:"operator_grantor,omitempty"`
 }
 
@@ -45,10 +44,14 @@ var ErrOperatorActionApprovalFrontierUnavailable = errors.New("operator-approval
 var operatorActionApprovalFrontierLock sync.Mutex
 
 // MintOperatorActionApprovalRequest records a new action-approval request in
-// the operator-approval-frontier registry and returns the assigned id together
-// with the exact resolve command an agent should surface. All-time count moves
-// forward by exactly one on success; an existing seed of 3 therefore moves to
-// 4 the first time a blocked action calls this function.
+// the operator-approval-frontier registry and returns the minted entry. The
+// entry's id is the stable reference a held agent can wait on, take an
+// alternative against, or record blocked-with-ticket against. The mint
+// deliberately carries no resolve command: no CLI verb exists to approve
+// these entries, and instructing one would convert a legible hold into a
+// dead end. All-time count moves forward by exactly one on success; an
+// existing seed of 3 therefore moves to 4 the first time a blocked action
+// calls this function.
 //
 // The registry is loaded (or initialized when missing) and rewritten under a
 // tmp-file + rename so a concurrent reader never observes a half-written file.
@@ -56,9 +59,9 @@ func MintOperatorActionApprovalRequest(
 	homePath string,
 	intentID, harness, action, capability, target string,
 	now time.Time,
-) (OperatorActionApprovalRequest, string, error) {
+) (OperatorActionApprovalRequest, error) {
 	if strings.TrimSpace(homePath) == "" {
-		return OperatorActionApprovalRequest{}, "", fmt.Errorf("%w: compound home required", ErrOperatorActionApprovalFrontierUnavailable)
+		return OperatorActionApprovalRequest{}, fmt.Errorf("%w: compound home required", ErrOperatorActionApprovalFrontierUnavailable)
 	}
 	operatorActionApprovalFrontierLock.Lock()
 	defer operatorActionApprovalFrontierLock.Unlock()
@@ -66,14 +69,10 @@ func MintOperatorActionApprovalRequest(
 	path := OperatorApprovalFrontierPath(homePath)
 	frontier, err := loadOrSeedOperatorApprovalFrontier(path)
 	if err != nil {
-		return OperatorActionApprovalRequest{}, "", err
+		return OperatorActionApprovalRequest{}, err
 	}
 
 	requestID := "opactreq_" + shortOperatorActionApprovalHash(intentID, harness, action, target, now.UTC().Format(time.RFC3339Nano))
-	resolveCommand := fmt.Sprintf(
-		"compound policy operator-action-approve %s --granted-by operator:<id>",
-		requestID,
-	)
 	request := OperatorActionApprovalRequest{
 		SchemaVersion:  OperatorActionApprovalRequestSchema,
 		ID:             requestID,
@@ -84,15 +83,14 @@ func MintOperatorActionApprovalRequest(
 		Harness:        strings.TrimSpace(harness),
 		MintedAt:       now.UTC().Format(time.RFC3339Nano),
 		Status:         "pending",
-		ResolveCommand: resolveCommand,
 	}
 
 	frontier.ActionApprovalCount++
 	frontier.ActionApprovals = append(frontier.ActionApprovals, request)
 	if err := writeOperatorApprovalFrontierAtomic(path, frontier); err != nil {
-		return OperatorActionApprovalRequest{}, "", err
+		return OperatorActionApprovalRequest{}, err
 	}
-	return request, resolveCommand, nil
+	return request, nil
 }
 
 // OperatorActionApprovalCount returns the all-time count of action-approval
