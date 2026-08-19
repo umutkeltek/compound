@@ -203,9 +203,13 @@ func SetOperatorCard(item *QueueItem, card OperatorCard, source, band string) er
 func BandForStatus(status, readiness string) string {
 	status = strings.TrimSpace(status)
 	readiness = strings.TrimSpace(readiness)
-	switch status {
-	case "recorded", "applied", "resolved", "ok", "accepted", "candidate_recorded":
+	// Terminal words are owned by terminalStatuses above; this switch used to
+	// re-list them and its copy omitted "completed", banding finished work
+	// needs_you whenever no annotator had set a readiness.
+	if TerminalStatus(status) {
 		return BandFiled
+	}
+	switch status {
 	case "held", "blocked":
 		return BandWatching
 	case "review_required", "unknown", "":
