@@ -15,6 +15,20 @@ import (
 // is the work_dcbe604d1916 falsifier: one blocked action produces a frontier
 // entry whose id appears in the agent-visible text, and the all-time
 // action-approval count moves off 3.
+//
+// Extended 2026-08-19 as the red-first falsifier for retiring the fabricated
+// resolve command: the mint used to carry "compound policy
+// operator-action-approve <id> --granted-by operator:<id>" — a verb that does
+// not exist on any CLI surface — and the operator-facing PolicyDecision
+// reasons instructed the operator to run it. An instruction that cannot be
+// executed is worse than none: it converts a legible hold into a dead end.
+// The frontier registry on a live home has never recorded a mint
+// (action_approvals: []), so no persisted artifact depends on the field.
+//
+// Red output at this commit:
+//
+//	frontier registry names the nonexistent verb compound policy operator-action-approve
+//	operator-facing PolicyDecision reasons instruct the nonexistent verb operator-action-approve
 func TestPreToolUseHoldMintsOperatorApprovalFrontierRequestAndMovesAllTimeCountOffSeed(t *testing.T) {
 	homePath := initHookApprovalHome(t)
 	if err := policy.SeedOperatorActionApprovalFrontier(homePath, 3, fixedNow); err != nil {
@@ -54,9 +68,10 @@ func TestPreToolUseHoldMintsOperatorApprovalFrontierRequestAndMovesAllTimeCountO
 		t.Fatalf("all-time approval count=%d, want %d (seed + 1)", postCount, preCount+1)
 	}
 
-	// Frontier entry must include the request id and a resolve command line.
-	// The seed only sets the count, not the entries; the mint is the only
-	// entry, so the slice length must equal 1 (one mint) regardless of seed.
+	// Frontier entry must include the request id and nothing that instructs a
+	// command that does not exist. The seed only sets the count, not the
+	// entries; the mint is the only entry, so the slice length must equal 1
+	// (one mint) regardless of seed.
 	frontier, err := policy.LoadOperatorApprovalFrontierFromHome(homePath)
 	if err != nil {
 		t.Fatalf("load frontier: %v", err)
@@ -71,15 +86,21 @@ func TestPreToolUseHoldMintsOperatorApprovalFrontierRequestAndMovesAllTimeCountO
 	if !strings.HasPrefix(mint.ID, "opactreq_") {
 		t.Fatalf("minted id=%q, want opactreq_ prefix", mint.ID)
 	}
-	if !strings.HasPrefix(mint.ResolveCommand, "compound policy operator-action-approve ") {
-		t.Fatalf("resolve_command=%q, want exact compound policy operator-action-approve prefix", mint.ResolveCommand)
+	// The persisted registry itself must not name the nonexistent verb — not
+	// in the entry, not anywhere. Checked against raw bytes so a renamed or
+	// re-added field cannot smuggle it back.
+	rawFrontier, err := os.ReadFile(policy.OperatorApprovalFrontierPath(homePath))
+	if err != nil {
+		t.Fatalf("read frontier registry: %v", err)
+	}
+	if strings.Contains(string(rawFrontier), "operator-action-approve") {
+		t.Fatalf("frontier registry names the nonexistent verb compound policy operator-action-approve: %s", string(rawFrontier))
 	}
 
 	// Agent-visible text surfaces the request id — and only the id — so the agent
 	// can wait, take an alternative, or record blocked-with-ticket against a stable
-	// reference. The resolve command must NOT reach the agent: handing a held agent
-	// the exact approve command would let it drive its own approval path. The
-	// command belongs on the PolicyDecision reasons, which are operator-facing.
+	// reference. No command token may reach the agent: handing a held agent
+	// an approve command would let it drive its own approval path.
 	decision, reason := NativePermissionDecision(res)
 	if decision != "ask" {
 		t.Fatalf("permission decision=%q, want ask", decision)
@@ -87,23 +108,27 @@ func TestPreToolUseHoldMintsOperatorApprovalFrontierRequestAndMovesAllTimeCountO
 	if !strings.Contains(reason, mint.ID) {
 		t.Fatalf("agent-visible reason=%q does not contain request id %q", reason, mint.ID)
 	}
-	if strings.Contains(reason, mint.ResolveCommand) {
-		t.Fatalf("agent-visible reason=%q leaked the resolve command %q", reason, mint.ResolveCommand)
-	}
 	for _, forbidden := range []string{"action-approve", "--granted-by", "operator:", "human:"} {
 		if strings.Contains(strings.ToLower(reason), forbidden) {
 			t.Fatalf("agent-visible reason exposed forbidden command token %q: %q", forbidden, reason)
 		}
 	}
-	operatorFacing := false
+	// Operator-facing PolicyDecision reasons must keep the door legible — the
+	// frontier registry ref — without instructing the nonexistent verb.
 	for _, r := range pd.Reasons {
-		if strings.Contains(r, mint.ResolveCommand) {
-			operatorFacing = true
+		if strings.Contains(r, "operator-action-approve") {
+			t.Fatalf("operator-facing PolicyDecision reasons instruct the nonexistent verb operator-action-approve: %+v", pd.Reasons)
+		}
+	}
+	namesRegistry := false
+	for _, r := range pd.Reasons {
+		if strings.Contains(r, "compound://registries/operator-approval-frontier") {
+			namesRegistry = true
 			break
 		}
 	}
-	if !operatorFacing {
-		t.Fatalf("resolve command %q missing from operator-facing PolicyDecision reasons %+v", mint.ResolveCommand, pd.Reasons)
+	if !namesRegistry {
+		t.Fatalf("operator-facing PolicyDecision reasons=%+v do not name the operator-approval-frontier registry: the hold loses its legible door", pd.Reasons)
 	}
 
 	// Evidence refs must also carry the frontier ref so downstream tooling can
