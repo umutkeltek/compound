@@ -368,6 +368,20 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "concrete record of one harness execution attempt against a work_id (who/what/when), persisted under COMPOUND_HOME/run_attempts for proof-chain linkage",
 		Consumer: "internal/work WorkEnvelope RunAttemptIDs slot, work proof-chain doctor, and orient execution history",
 	},
+	// doctor is the health-signal organ behind `compound doctor`: it answers "is the INSTALLED binary at
+	// least as new as the repo's target tip?" and reports the answer as a named signal (installed SHA +
+	// target tip + relation), never a bare boolean. It is evidence, not enforcement, on the
+	// organ:landlease pattern: RenderBinaryStaleness prints the verdict into the operator's health
+	// report (and the --json payload) and the SEPARATE decider — the operator, who runs `make install`
+	// — chooses whether to act on it. Nothing here returns a blocking error, changes doctor's exit
+	// code, or fails a certifying test, which is exactly what separates it from organ:eventstore and
+	// organ:flagaudit, where the organ itself owns the refusal. Every failure seam degrades to
+	// RelationUnknown rather than a false "stale" verdict, so the signal informs and never blocks.
+	"organ:doctor": {
+		Class:    MintEvidence,
+		Purpose:  "names how the installed compound binary's build SHA relates to the repo's target tip (equal/descendant/ancestor/unknown) so an out-of-date install is read as a verdict instead of being hidden behind a green health report",
+		Consumer: "the `compound doctor` operator surface (cmd/compound/doctor_cli.go), which carries the report in doctorReport.BinaryStaleness for `--json` consumers and renders the installed-SHA/target-tip/relation line through doctor.RenderBinaryStaleness; the operator is the decider that acts on it with `make install`",
+	},
 	// proveable-pair law status note marks the named discipline: every claim produced by an agent must be
 	// paired with a content-bound, mechanically-verifiable, replayable record of what actually changed.
 	// The law holds by construction in the close path (work.go close emits Receipt + Transition
