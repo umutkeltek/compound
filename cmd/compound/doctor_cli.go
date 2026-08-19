@@ -402,26 +402,30 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 	} else {
 		rep.ProjectionsNote = "projection freshness unavailable: cannot resolve the running binary: " + exeErr.Error()
+	}
 
-		// 8) Binary staleness — is installed binary at least as new as repo's target
-		// tip? Named signal (installed SHA + target tip + relation) so operator
-		// reads verdict instead of guessing from green light. Closes 2026-08-17
-		// gap: doctor said all-clear while installed five commits behind main.
-		cwd, _ := os.Getwd()
-		if repoRoot, ok := findRepoRootFrom(cwd); ok {
-			rep.BinaryStaleness = doctor.ComputeBinaryStaleness(
-				repoRoot,
-				doctor.InstalledBinaryPath(),
-				doctor.RunInstalledVersion,
-				doctor.ParseInstalledBuildSHA,
-				doctor.GitHeadSHA,
-				doctor.GitIsAncestor,
-			)
-		} else {
-			rep.BinaryStaleness = doctor.BinaryStalenessReport{
-				Relation: doctor.RelationUnknown,
-				Note:     "binary staleness unavailable: cwd not inside a git checkout",
-			}
+	// 8) Binary staleness — is installed binary at least as new as repo's target
+	// tip? Named signal (installed SHA + target tip + relation) so operator
+	// reads verdict instead of guessing from green light. Closes 2026-08-17
+	// gap: doctor said all-clear while installed five commits behind main.
+	// Unconditional, and deliberately NOT nested in the projections branch above:
+	// that check asks whether a projection is as new as the running binary, this one
+	// asks whether the running binary is as new as main. Riding on its failure path
+	// served the signal only when there was no installed SHA left to compare.
+	cwd, _ := os.Getwd()
+	if repoRoot, ok := findRepoRootFrom(cwd); ok {
+		rep.BinaryStaleness = doctor.ComputeBinaryStaleness(
+			repoRoot,
+			doctor.InstalledBinaryPath(),
+			doctor.RunInstalledVersion,
+			doctor.ParseInstalledBuildSHA,
+			doctor.GitHeadSHA,
+			doctor.GitIsAncestor,
+		)
+	} else {
+		rep.BinaryStaleness = doctor.BinaryStalenessReport{
+			Relation: doctor.RelationUnknown,
+			Note:     "binary staleness unavailable: cwd not inside a git checkout",
 		}
 	}
 
