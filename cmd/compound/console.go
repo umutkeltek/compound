@@ -16,34 +16,36 @@ import (
 	"syscall"
 	"time"
 
+	"compound/internal/console"
 	"compound/internal/home"
 )
 
+const consoleStatusSchemaVersion = "compound.console_status.v0.2"
+
+// internal/console is the single authority for the launch-plan schema, env
+// names, lifecycle names, and capability gate. These aliases keep the cmd-
+// level CLI tests, flags, and conditionals readable without duplicating any
+// approval logic in this file.
 const (
-	consoleLaunchSchemaVersion = "compound.console_launch.v0.2"
-	consoleStatusSchemaVersion = "compound.console_status.v0.2"
+	consoleLifecycleDev   = console.LifecycleDev
+	consoleLifecycleBuild = console.LifecycleBuild
+	consoleLifecycleServe = console.LifecycleServe
 )
 
 const (
-	consoleLifecycleDev   = "dev"
-	consoleLifecycleBuild = "build"
-	consoleLifecycleServe = "serve"
-	consoleListenAddress  = "127.0.0.1:3777"
-	consoleShutdownGrace  = 2 * time.Second
+	consoleCapabilityEnv       = console.CapabilityEnv
+	consoleLegacySessionEnv    = console.LegacySessionEnv
+	consoleMutationsEnv        = console.MutationsEnv
+	consolePrivateFallbacksEnv = console.PrivateFallbacksEnv
 )
 
-type consoleLaunchPlan struct {
-	SchemaVersion    string            `json:"schema_version"`
-	GeneratedAt      string            `json:"generated_at"`
-	Mode             string            `json:"mode"`
-	Lifecycle        string            `json:"lifecycle"`
-	ConsoleDir       string            `json:"console_dir"`
-	Command          []string          `json:"command"`
-	Env              map[string]string `json:"env"`
-	MutationsEnabled bool              `json:"mutations_enabled"`
-	PrivateFallbacks bool              `json:"private_fallbacks"`
-	DryRun           bool              `json:"dry_run"`
-}
+const consoleListenAddress = console.ListenAddress
+
+const consoleShutdownGrace = 2 * time.Second
+
+// consoleLaunchPlan is the cmd-side alias of internal/console.LaunchPlan so
+// existing call sites keep their short names and tests stay unchanged.
+type consoleLaunchPlan = console.LaunchPlan
 
 type consoleRuntimeStatus struct {
 	SchemaVersion string `json:"schema_version"`
@@ -380,7 +382,7 @@ func consoleCommandSummary(plan consoleLaunchPlan) string {
 func executeConsoleCommand(plan consoleLaunchPlan, command []string) error {
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Dir = plan.ConsoleDir
-	cmd.Env = consoleLaunchEnv(plan.Env)
+	cmd.Env = consoleLaunchEnv(plan)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -397,7 +399,7 @@ func executeConsoleSupervisedCommand(plan consoleLaunchPlan, command []string) e
 func runConsoleSupervisedCommand(plan consoleLaunchPlan, command []string, signals <-chan os.Signal) error {
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Dir = plan.ConsoleDir
-	cmd.Env = consoleLaunchEnv(plan.Env)
+	cmd.Env = consoleLaunchEnv(plan)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -540,142 +542,35 @@ func releaseConsoleLifecycleLock(lock *os.File) {
 }
 
 func validateConsoleProductionBuild(consoleDir string) error {
-	productionDir := filepath.Join(consoleDir, ".next", "production")
-	buildID, err := os.ReadFile(filepath.Join(productionDir, "BUILD_ID"))
-	if err != nil || strings.TrimSpace(string(buildID)) == "" {
-		return fmt.Errorf("production BUILD_ID is missing; run compound console build --operator --console-dir %s", consoleDir)
-	}
-	for _, name := range []string{"prerender-manifest.json", "required-server-files.json", "routes-manifest.json"} {
-		info, err := os.Stat(filepath.Join(productionDir, name))
-		if err != nil || info.IsDir() {
-			return fmt.Errorf("production %s is missing; run compound console build --operator --console-dir %s", name, consoleDir)
-		}
-	}
-	return nil
+	return console.ValidateProductionBuild(consoleDir)
 }
 
 func buildConsoleLaunchPlan(consoleDirFlag string, privateFallbacks, dryRun bool) (consoleLaunchPlan, error) {
-	return buildConsoleLifecycleLaunchPlan(consoleLifecycleDev, consoleDirFlag, false, privateFallbacks, dryRun)
+	return console.BuildLaunchPlan(consoleDirFlag, privateFallbacks, dryRun)
 }
 
 func buildConsoleLifecycleLaunchPlan(lifecycle, consoleDirFlag string, mutations, privateFallbacks, dryRun bool) (consoleLaunchPlan, error) {
-	if lifecycle != consoleLifecycleDev && lifecycle != consoleLifecycleBuild && lifecycle != consoleLifecycleServe {
-		return consoleLaunchPlan{}, fmt.Errorf("unknown console lifecycle %q", lifecycle)
-	}
-	consoleDir, err := resolveConsoleDir(consoleDirFlag)
-	if err != nil {
-		return consoleLaunchPlan{}, err
-	}
-	homePath, err := home.Resolve("")
-	if err != nil {
-		return consoleLaunchPlan{}, fmt.Errorf("resolve COMPOUND_HOME: %w", err)
-	}
-	compoundExe, _ := os.Executable()
-	compoundBin := resolveConsoleCompoundBin(compoundExe, exec.LookPath)
-	env := map[string]string{
-		"COMPOUND_BIN":                       compoundBin,
-		"COMPOUND_CONSOLE_BUILD_KIND":        "development",
-		"COMPOUND_CONSOLE_MUTATIONS":         "0",
-		"COMPOUND_CONSOLE_PRIVATE_FALLBACKS": "0",
-		"COMPOUND_HOME":                      homePath,
-	}
-	if mutations {
-		env["COMPOUND_CONSOLE_MUTATIONS"] = "1"
-	}
-	command := []string{"bun", "run", "next", "dev", "-H", "127.0.0.1", "-p", "3777"}
-	if lifecycle == consoleLifecycleBuild {
-		env["COMPOUND_CONSOLE_BUILD_KIND"] = "production"
-		command = []string{"bun", "run", "next", "build"}
-	}
-	if lifecycle == consoleLifecycleServe {
-		env["COMPOUND_CONSOLE_BUILD_KIND"] = "production"
-		command = []string{"bun", "run", "next", "start", "-H", "127.0.0.1", "-p", "3777"}
-	}
-	if privateFallbacks {
-		env["COMPOUND_CONSOLE_PRIVATE_FALLBACKS"] = "1"
-	}
-	return consoleLaunchPlan{
-		SchemaVersion:    consoleLaunchSchemaVersion,
-		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
-		Mode:             "operator",
-		Lifecycle:        lifecycle,
-		ConsoleDir:       consoleDir,
-		Command:          command,
-		Env:              env,
-		MutationsEnabled: mutations,
-		PrivateFallbacks: privateFallbacks,
-		DryRun:           dryRun,
-	}, nil
+	return console.BuildLifecycleLaunchPlan(lifecycle, consoleDirFlag, mutations, privateFallbacks, dryRun)
+}
+
+func validateConsoleMutationLaunchEnvironment(mutations bool) error {
+	return console.ValidateMutationLaunchEnvironment(mutations)
 }
 
 func resolveConsoleCompoundBin(currentExe string, lookPath func(string) (string, error)) string {
-	currentExe = strings.TrimSpace(currentExe)
-	if currentExe == "" || consoleExecutableIsTemporary(currentExe) {
-		if stable, err := lookPath("compound"); err == nil && strings.TrimSpace(stable) != "" {
-			return stable
-		}
-	}
-	if currentExe != "" {
-		return currentExe
-	}
-	if stable, err := lookPath("compound"); err == nil && strings.TrimSpace(stable) != "" {
-		return stable
-	}
-	return "compound"
+	return console.ResolveCompoundBin(currentExe, lookPath)
 }
 
 func consoleExecutableIsTemporary(path string) bool {
-	cleaned := filepath.Clean(strings.TrimSpace(path))
-	if cleaned == "." || cleaned == "" {
-		return false
-	}
-	tempRoots := []string{filepath.Clean(os.TempDir()), string(filepath.Separator) + "tmp"}
-	for _, root := range tempRoots {
-		if cleaned == root || strings.HasPrefix(cleaned, root+string(filepath.Separator)) {
-			return true
-		}
-	}
-	base := filepath.Base(cleaned)
-	return strings.Contains(cleaned, string(filepath.Separator)+"go-build") ||
-		strings.HasPrefix(base, "compound-dashboard")
+	return console.ExecutableIsTemporary(path)
 }
 
 func resolveConsoleDir(explicit string) (string, error) {
-	if strings.TrimSpace(explicit) != "" {
-		return validateConsoleDir(explicit)
-	}
-	if fromEnv := strings.TrimSpace(os.Getenv("COMPOUND_CONSOLE_DIR")); fromEnv != "" {
-		return validateConsoleDir(fromEnv)
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for dir := cwd; ; dir = filepath.Dir(dir) {
-		if candidate, err := validateConsoleDir(filepath.Join(dir, "console")); err == nil {
-			return candidate, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-	}
-	return "", fmt.Errorf("console directory not found; run from the compound repo or pass --console-dir")
+	return console.ResolveDir(explicit)
 }
 
 func validateConsoleDir(dir string) (string, error) {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return "", err
-	}
-	info, err := os.Stat(filepath.Join(abs, "package.json"))
-	if err != nil {
-		return "", fmt.Errorf("console package.json not found at %s: %w", abs, err)
-	}
-	if info.IsDir() {
-		return "", fmt.Errorf("console package.json is a directory at %s", abs)
-	}
-	return abs, nil
+	return console.ValidateDir(dir)
 }
 
 // consoleHomeShortHash fingerprints an absolute home path. It mirrors the
@@ -683,34 +578,14 @@ func validateConsoleDir(dir string) (string, error) {
 // the terminal launch line and the browser InstanceBadge show the SAME hash for
 // the same instance — an operator can match them by eye across ports.
 func consoleHomeShortHash(homePath string) string {
-	sum := sha256.Sum256([]byte(homePath))
-	return hex.EncodeToString(sum[:])[:7]
+	return console.HomeShortHash(homePath)
 }
 
 // consoleInstancePinLabel renders the human pin identity: "<leaf> #<hash> (<abs>)".
 func consoleInstancePinLabel(homePath string) string {
-	homePath = strings.TrimSpace(homePath)
-	if homePath == "" {
-		return "(unpinned)"
-	}
-	return fmt.Sprintf("%s #%s (%s)", filepath.Base(homePath), consoleHomeShortHash(homePath), homePath)
+	return console.InstancePinLabel(homePath)
 }
 
-func consoleLaunchEnv(extra map[string]string) []string {
-	env := os.Environ()
-	for key, value := range extra {
-		prefix := key + "="
-		replaced := false
-		for i, entry := range env {
-			if strings.HasPrefix(entry, prefix) {
-				env[i] = prefix + value
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			env = append(env, prefix+value)
-		}
-	}
-	return env
+func consoleLaunchEnv(plan consoleLaunchPlan) []string {
+	return console.LaunchEnv(plan)
 }

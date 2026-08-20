@@ -12,22 +12,23 @@ const COVERAGE_TONE: Record<AreaCoverage, string> = {
 };
 
 const COVERAGE_LABEL: Record<AreaCoverage, string> = {
-  bespoke: "one-click (bespoke)",
-  generic: "one-click (generic)",
-  fallback: "copy-only fallback",
+  bespoke: "server adapter (bespoke)",
+  generic: "server adapter (generic)",
+  fallback: "copy-only (no adapter)",
 };
 
 /**
  * Group 6 — Console & environment. Live mutation-gate booleans, and THE
  * transparency table: every wired bespoke area + every generic-certified verb
  * cross-referenced against the live review areas, so the operator sees exactly
- * which areas have a one-click act vs an honest copy-only fallback. Burn-down
- * chips track the fallback debt toward zero.
+ * which areas have server-adapter coverage vs an honest copy-only fallback.
+ * This is backend coverage, not a claim that the standard browser may invoke it.
  */
 export function ConsoleEnv({
   mutationsEnabled,
   mutationFlagEnabled,
   instancePinned,
+  standardClientAuthorized,
   privateFallbacks,
   attention,
   generatedAt,
@@ -35,13 +36,14 @@ export function ConsoleEnv({
   mutationsEnabled: boolean;
   mutationFlagEnabled: boolean;
   instancePinned: boolean;
+  standardClientAuthorized: boolean;
   privateFallbacks: boolean;
   attention: AttentionReport | null;
   generatedAt?: string;
 }) {
   const coverage = buildCoverage(attention);
   const needsYouGroups = num(attention?.counts?.needs_you_groups);
-  const actionableNow = num(attention?.counts?.actionable_now);
+  const serverActionable = num(attention?.counts?.actionable_now);
   const fallbackGroups = num(attention?.counts?.fallback_groups);
 
   return (
@@ -50,7 +52,7 @@ export function ConsoleEnv({
       icon={<GearIcon />}
       tone="neutral"
       title="Console & environment"
-      question="Can this console mutate, and which review areas actually have a one-click act?"
+      question="Can this console mutate, and which review areas have server-adapter coverage?"
       source="compound attention --json"
       generatedAt={generatedAt}
     >
@@ -59,12 +61,13 @@ export function ConsoleEnv({
           <KV k="effective readiness" v={mutationsEnabled ? "ready" : "read-only"} />
           <KV k="mutation flag" v={mutationFlagEnabled ? "enabled" : "disabled"} />
           <KV k="instance pin" v={instancePinned ? "explicit" : "missing"} />
+          <KV k="standard client" v={standardClientAuthorized ? "authorized" : "projection-only"} />
           <KV k="privateFallbacksEnabled()" v={privateFallbacks ? "true" : "false"} />
           <DoctrineNote>
             <span className="mt-2 block">
               {mutationsEnabled
                 ? "Mutations are enabled — governed acts run through /api/decision/execute behind the argv allowlist. Every act is still a human click (DEC-0021: nothing auto-runs)."
-                : "Read-only. Live acts require both the mutation flag and an explicit instance home; unavailable acts stay copy-only."}
+                : "Read-only. The standard browser never receives the server capability; unsupported API extensions require an explicit home, opt-in flag, and out-of-band header."}
             </span>
           </DoctrineNote>
         </Card>
@@ -72,14 +75,19 @@ export function ConsoleEnv({
         <Card title="Coverage burn-down">
           <div className="flex flex-wrap gap-2">
             <CountChip n={needsYouGroups} label="need you" tone={needsYouGroups > 0 ? "seam" : "good"} title="counts.needs_you_groups" />
-            <CountChip n={actionableNow} label="one-click" tone="muted" title="counts.actionable_now" />
+            <CountChip
+              n={serverActionable}
+              label="server-ready"
+              tone="muted"
+              title="counts.actionable_now — server-side action candidates; the standard browser remains projection-only"
+            />
             <CountChip n={fallbackGroups} label="fallback" tone={fallbackGroups > 0 ? "seam" : "good"} title="counts.fallback_groups" />
           </div>
           <DoctrineNote>
             <span className="mt-3 block">
               {fallbackGroups > 0
-                ? `${fallbackGroups.toLocaleString("en-US")} group${fallbackGroups === 1 ? "" : "s"} still fall back to copy-only. The client fallback net retires when this reaches 0.`
-                : "No fallback groups. Every live area resolves to a wired act."}
+                ? `${fallbackGroups.toLocaleString("en-US")} group${fallbackGroups === 1 ? "" : "s"} still lack a server adapter and fall back to copy-only.`
+                : "No server-adapter gaps. Every live area resolves to a wired server act; the standard browser remains projection-only."}
             </span>
           </DoctrineNote>
         </Card>
@@ -87,17 +95,17 @@ export function ConsoleEnv({
 
       {/* THE transparency table. */}
       <Card
-        title="Decision-registry coverage"
+        title="Server-adapter coverage"
         badge={
           <span className="flex items-center gap-1.5">
-            <CountChip n={coverage.oneClickAreas} label="live one-click" tone="good" />
+            <CountChip n={coverage.serverAdapterAreas} label="live adapters" tone="good" />
             <CountChip n={coverage.fallbackAreas} label="live fallback" tone={coverage.fallbackAreas > 0 ? "seam" : "good"} />
-            {/* Burn-down lead: one-click areas minus fallback areas — positive =
-                winning the debt burn-down. Derived from live coverage, not faked. */}
+            {/* Burn-down lead: server-adapter areas minus fallback areas —
+                positive means adapter coverage leads copy-only debt. */}
             <DeltaPill
-              value={coverage.oneClickAreas - coverage.fallbackAreas}
+              value={coverage.serverAdapterAreas - coverage.fallbackAreas}
               showZero
-              title="live one-click areas minus live fallback areas — the coverage lead over copy-only debt"
+              title="live server-adapter areas minus live fallback areas — the coverage lead over copy-only debt"
             />
           </span>
         }
@@ -163,9 +171,9 @@ export function ConsoleEnv({
         </div>
         <div className="mt-3">
           <DoctrineNote>
-            Adding a bespoke one-click for a fallback area is one registry entry (REGISTRY in decision-registry.ts);
-            certifying a generic verb is one allowlist row (GENERIC_ACTION_ALLOWLIST in generic-actions.ts). This
-            table is the honest ledger of that debt.
+            Adding a bespoke server adapter for a fallback area is one registry entry (REGISTRY in
+            decision-registry.ts); certifying a generic verb is one allowlist row (GENERIC_ACTION_ALLOWLIST in
+            generic-actions.ts). This table records server coverage only; it does not authorize the standard client.
           </DoctrineNote>
         </div>
       </Card>

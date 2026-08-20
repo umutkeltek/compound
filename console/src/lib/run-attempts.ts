@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { COMPOUND_BIN, COMPOUND_HOME, privateFallbacksEnabled, str, type Json } from "@/lib/compound";
+import { consoleChildEnv } from "@/lib/console-child-env";
 
 /*
  * Run-attempt door — the "how was this work executed" evidence layer
@@ -64,7 +65,7 @@ export async function getRunAttempts(): Promise<RunAttempt[] | null> {
   if (!privateFallbacksEnabled()) return null;
   try {
     const { stdout } = await exec(COMPOUND_BIN, ["run-attempt", "list", "--json"], {
-      env: { ...process.env, COMPOUND_HOME },
+      env: consoleChildEnv({ COMPOUND_HOME }),
       timeout: 15_000,
       maxBuffer: 64 * 1024 * 1024,
     });

@@ -1,17 +1,16 @@
 /*
- * Falsifier for E17 (audit 2026-07-23): the private-fallback candidate reader
- * behind /map/lineage must never let an untrusted id segment escape
- * inbox/memory-candidates. The route hands `traceLineage` a decoded URL
- * segment, so `cand_../../../secret`-shaped input used to build a path
- * straight into readFile — any JSON file reachable by `..` became readable.
+ * Falsifier for the public-alpha projection-only boundary. The former
+ * private-fallback candidate reader behind /map/lineage is retired, so even a
+ * valid candidate id and the legacy fallback environment must never cause a
+ * direct read beneath inbox/memory-candidates. Traversal-shaped ids remain in
+ * the fixture as adversarial controls for the older E17 failure mode.
  *
  * This test proves the FILESYSTEM-READ boundary, not a string predicate: it
  * plants real, parseable sentinel files outside the candidate directory
  * (inside COMPOUND_HOME and one level ABOVE it) plus a decoy with a
- * non-canonical name inside it, then asserts traversal and invalid ids never
- * surface their contents (found:false, no sentinel in the projection). Before
- * the containment fix, checks 1/2/5 FAIL (the reads land); canonical
- * cand_<minted-token> ids keep resolving their direct-child JSON.
+ * non-canonical name inside it, then asserts no id surfaces private file
+ * contents (found:false, no sentinel in the projection). Before the fallback
+ * retirement, the canonical-id checks resolved the planted direct children.
  *
  * Run from console/: `bun scripts/lineage.selftest.ts`
  * (bun resolves the `@/lib` alias lineage.ts pulls in).
@@ -125,26 +124,21 @@ export async function runLineageSelfTest(): Promise<{ ok: boolean; details: stri
     }
 
     // 3. Canonical minted ids (cand_ + 12-hex mem/idFor, + 16-hex
-    //    knowledge/shortDigest) still resolve their direct-child JSON file.
+    //    knowledge/shortDigest) no longer reactivate direct private reads.
     {
       const { lineage, threw } = await trace("cand_9df96833602e");
-      const step = lineage?.steps.find((s) => s.kind === "candidate");
       push(
-        "canonical-12hex-resolves-direct-child",
-        !threw &&
-          lineage?.found === true &&
-          step?.label === "cand_9df96833602e" &&
-          (step?.detail ?? "").includes("entity:canonical-12"),
-        `found=${lineage?.found} step=${step?.label ?? "none"} threw=${threw || "no"}`,
+        "canonical-12hex-private-read-retired",
+        !threw && lineage?.found === false && !JSON.stringify(lineage).includes("entity:canonical-12"),
+        `found=${lineage?.found} steps=${lineage?.steps.length} threw=${threw || "no"}`,
       );
     }
     {
       const { lineage, threw } = await trace("cand_0123456789abcdef");
-      const step = lineage?.steps.find((s) => s.kind === "candidate");
       push(
-        "canonical-16hex-resolves-direct-child",
-        !threw && lineage?.found === true && step?.label === "cand_0123456789abcdef",
-        `found=${lineage?.found} step=${step?.label ?? "none"} threw=${threw || "no"}`,
+        "canonical-16hex-private-read-retired",
+        !threw && lineage?.found === false && !JSON.stringify(lineage).includes("entity:canonical-16"),
+        `found=${lineage?.found} steps=${lineage?.steps.length} threw=${threw || "no"}`,
       );
     }
 
@@ -199,6 +193,6 @@ if ((import.meta as { main?: boolean }).main) {
     process.exit(1);
   }
   console.log(
-    "lineage selftest ok: candidate reads stay inside inbox/memory-candidates; canonical ids still resolve",
+    "lineage selftest ok: private candidate reads stay retired for canonical and adversarial ids",
   );
 }

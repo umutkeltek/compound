@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { COMPOUND_BIN, COMPOUND_HOME, runJson } from "@/lib/compound";
+import { consoleChildEnv } from "@/lib/console-child-env";
 import { dedupeKey, parseWorkEventLine } from "@/lib/stream/tail-parser";
 
 /*
@@ -103,7 +104,7 @@ export async function GET(request: Request) {
       }
 
       child = spawn(COMPOUND_BIN, ["stream", "--follow", "--cursor", String(cursor), "--json"], {
-        env: { ...process.env, COMPOUND_HOME },
+        env: consoleChildEnv({ COMPOUND_HOME }),
         stdio: ["ignore", "pipe", "ignore"],
       });
 

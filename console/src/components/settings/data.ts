@@ -9,7 +9,7 @@ import { GENERIC_ACTION_ALLOWLIST } from "@/lib/generic-actions";
  *   1. parse `compound harness list` (text output — it ignores --json) into
  *      structured capability cards;
  *   2. compute THE decision-registry coverage table — the transparency matrix
- *      of which live review areas have a one-click act vs a copy-only fallback.
+ *      of which live review areas have a server adapter vs a copy-only fallback.
  */
 
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
@@ -83,15 +83,16 @@ export type CoverageReport = {
   bespokeAreas: { area: string; source: string }[];
   genericAreas: string[];
   liveAreas: number;
-  oneClickAreas: number;
+  serverAdapterAreas: number;
   fallbackAreas: number;
 };
 
 /**
  * Cross-reference the two console-owned certification registries against the
- * live review areas the attention projection is actually surfacing. An area is
- * one-click if it is either a bespoke spec OR a generic-certified verb; a live
- * area that is neither is honest copy-only fallback.
+ * live review areas the attention projection is actually surfacing. An area has
+ * server-adapter coverage if it is either a bespoke spec OR a generic-certified
+ * verb; a live area that is neither is honest copy-only fallback. This report
+ * does not claim that the standard browser is authorized to invoke the adapter.
  */
 export function buildCoverage(attention: AttentionReport | null): CoverageReport {
   const bespokeAreas = Object.entries(REGISTRY).map(([area, spec]) => ({
@@ -140,7 +141,7 @@ export function buildCoverage(attention: AttentionReport | null): CoverageReport
     bespokeAreas: bespokeAreas.sort((a, b) => a.area.localeCompare(b.area)),
     genericAreas: genericAreas.sort(),
     liveAreas: liveCounts.size,
-    oneClickAreas: rows.filter((r) => r.live && r.coverage !== "fallback").length,
+    serverAdapterAreas: rows.filter((r) => r.live && r.coverage !== "fallback").length,
     fallbackAreas: rows.filter((r) => r.live && r.coverage === "fallback").length,
   };
 }

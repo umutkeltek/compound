@@ -46,7 +46,7 @@ calling `next start` directly:
 
 ```bash
 exec "${HOME}/.local/bin/compound" console serve --operator \
-  --console-dir "/path/to/compound/console" --private-fallbacks
+  --console-dir "/path/to/compound/console"
 ```
 
 Run `compound console build --operator --console-dir /path/to/compound/console`
@@ -58,31 +58,41 @@ Optional local-only gates:
 
 - `compound console --operator` is projection-only. `--mutations` explicitly
   sets `COMPOUND_CONSOLE_MUTATIONS=1`; that environment value is necessary but
-  not sufficient for POST
-  mutation routes. The serving process must also start with an explicit
-  `COMPOUND_HOME`; otherwise the console stays copy-command/read-only and the
-  API fails closed.
-- `COMPOUND_CONSOLE_SESSION_TOKEN=<token>` additionally requires header
-  `x-compound-console-token` on mutation and private document requests.
-- `COMPOUND_CONSOLE_PRIVATE_FALLBACKS=1` enables temporary direct reads from
-  `COMPOUND_HOME` and the local repo when projection doors do not exist. Keep it
-  off public-facing/default operation.
-- `COMPOUND_CONSOLE_DOCUMENT_ROOT=/path/to/root` allows one extra private
-  document root for local inspection.
+  not sufficient for POST mutation routes. The serving process must also start
+  with an operator-selected `COMPOUND_HOME` and an out-of-band capability:
+
+  ```bash
+  export COMPOUND_HOME="/path/to/operator-home"
+  export COMPOUND_CONSOLE_CAPABILITY="$(openssl rand -hex 32)"
+  compound console --operator --mutations
+  ```
+
+  The operator owns high-entropy generation. The launcher and request gate
+  validate only its exact 64-hex-character transport encoding and value.
+  Direct extension clients must send that exact value in
+  `x-compound-console-capability`. Missing, malformed, or wrong capabilities fail
+  closed. The standard browser UI never receives the capability, so it remains
+  projection-only even when the unsupported API extension is configured.
+  Capability bytes are never rendered in launch JSON, issued by middleware,
+  or accepted from cookies.
+- Direct private document reads are unavailable. `--private-fallbacks` is
+  retained only as an explicit refusal, and the legacy fallback/document-root
+  environment variables do not enable a read path. Use a Compound-owned
+  projection or a scoped CLI read surface.
 
 ## Truth Contract
 
 - Every card declares source freshness.
-- Reads are projection-first. Temporary direct runtime/private readers are
-  disabled unless `COMPOUND_CONSOLE_PRIVATE_FALLBACKS=1`, require local operator
-  requests, and return `scope: private_local`.
+- Reads are projection-only. The document API has no private file-read path and
+  returns 403; new private data must first reach a Compound-owned projection or
+  scoped CLI read surface.
 - Most acts surface exact CLI commands you copy. Mutation routes are
   default-off, require `COMPOUND_CONSOLE_MUTATIONS=1` plus an explicit frozen
-  `COMPOUND_HOME`, require same-origin localhost POSTs, and execute through the
-  server-resolved decision endpoint.
+  `COMPOUND_HOME`, require same-origin localhost POSTs plus the out-of-band
+  capability header, and execute through the server-resolved decision
+  endpoint. The standard UI remains copy-only.
   Legacy mutation routes are compatibility adapters only.
-- If a card cannot name a projection or an explicit private fallback, it does
-  not ship.
+- If a card cannot name a projection, it does not ship.
 
 ## Stable destinations + contextual append
 

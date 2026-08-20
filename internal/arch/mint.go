@@ -411,6 +411,19 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "flag-validation ratchet over the cmd/compound command registry: censuses first-party command paths that silently accept an unknown flag (exit 0 with no mention of it) and pins that census as a ceiling that may only shrink, so a new command that swallows typo'd flags cannot land",
 		Consumer: "cmd/compound/flag_validation_ratchet_test.go, which runs the census over the command registry and t.Fatalf's on EnforceCeiling's error, plus internal/flagaudit.PinnedSilentAcceptors as the recorded ceiling",
 	},
+	// organ:console owns the `compound console` launch-plan construction, capability
+	// gate, sanitized child-launch env, and instance-pinning inputs. Its runtime
+	// launch gate (BuildLifecycleLaunchPlan + ValidateMutationLaunchEnvironment)
+	// blocks unsafe mutation activation: build-mode refuses mutations, private
+	// fallbacks are rejected, mutation-mode requires an explicit COMPOUND_HOME
+	// plus a 64-hex out-of-band capability, and the LaunchPlan JSON never carries
+	// the capability value. The gate is a permission boundary, so this organ is
+	// enforcement.
+	"organ:console": {
+		Class:    MintEnforcement,
+		Purpose:  "console launch-plan construction, capability gate, sanitized child-launch env, and instance-pinning inputs; BuildLifecycleLaunchPlan blocks unsafe mutation activation (build-mode rejects mutations, mutation-mode requires explicit home + 64-hex capability, refutes private fallbacks) so the JSON LaunchPlan only ever exposes CapabilityRequired without leaking the value",
+		Consumer: "cmd/compound cmdConsole shim (`compound console dev|build|serve --operator`); tests across internal/console (BuildLifecycleLaunchPlan, ValidateMutationLaunchEnvironment, LaunchEnv) plus console cap-v2 smokes and the public-alpha capability-profile canary",
+	},
 }
 
 // grandfatheredOrgans — internal/ packages present when the ratchet landed (2026-07-12). Pre-law

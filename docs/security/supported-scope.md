@@ -54,9 +54,15 @@ execution (currently OpenCode) is never mutation-ready.
 ### Console: projection-only by default
 
 The console is a local projection of spine objects for the single trusted
-user. The supported target is projection-only: mutations and private reads
-are off, and enabling either is an explicit, separately guarded opt-in. The
-supported console is not a shared, remote, or proxied surface.
+user. The supported target is projection-only. The standard browser never
+receives or mints the server capability; mutations and private reads remain
+unavailable in the supported default. Unsupported mutation API extensions
+require an operator-selected home and an out-of-band capability header in
+addition to their explicit flag and local-origin checks. The operator owns
+high-entropy generation; Compound validates the exact 64-hex transport format
+and value. Direct private document reads are
+unavailable; the legacy flag and document-root environment cannot enable them.
+The supported console is not a shared, remote, or proxied surface.
 
 ## Current blockers (behavior not yet hardened)
 
@@ -71,9 +77,6 @@ marker. Ancestor discovery remains available only as a non-authoritative
 read-only compatibility API; mutating commands require an explicit
 `--home`, `COMPOUND_HOME`, or `--local` selection.
 
-- The console launcher is projection-only by default. Mutations and private
-  reads require separate explicit local opt-ins and remain outside the
-  supported public-alpha console surface.
 - Enforcement is observed, not yet behaviorally proven per launch profile. A
   configured binary is not mutation-ready without a fresh nonce-bound
   behavioral probe for the exact profile; until that proof exists for a

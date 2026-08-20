@@ -40,6 +40,8 @@ export type InstancePin = {
 export type ConsoleMutationReadiness = {
   flagEnabled: boolean;
   instancePinned: boolean;
+  /** The standard browser never receives the server capability. */
+  standardClientAuthorized: false;
   ready: boolean;
 };
 
@@ -61,16 +63,18 @@ export function computeInstancePin(env: NodeJS.ProcessEnv = process.env): Instan
 export const INSTANCE_PIN: InstancePin = computeInstancePin(process.env);
 
 /**
- * The one render-time mutation readiness contract. The environment flag is
- * necessary but never sufficient: a live action is honest only when this
- * process is also frozen to an explicit COMPOUND_HOME.
+ * The one render-time mutation readiness contract for the standard browser.
+ * The public-alpha UI never receives the server's out-of-band capability, so
+ * it remains projection-only even when an operator configures the unsupported
+ * local API extension. Direct extension callers authenticate separately at
+ * the request gate in console-mutations.ts.
  */
 export function computeConsoleMutationReadiness(
   flagEnabled: boolean,
   pin: InstancePin = INSTANCE_PIN,
 ): ConsoleMutationReadiness {
   const instancePinned = pin.explicit;
-  return { flagEnabled, instancePinned, ready: flagEnabled && instancePinned };
+  return { flagEnabled, instancePinned, standardClientAuthorized: false, ready: false };
 }
 
 /**

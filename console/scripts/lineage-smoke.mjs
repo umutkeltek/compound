@@ -16,5 +16,5 @@ if (!result.ok) {
 }
 
 console.log(
-  "lineage smoke ok: candidate reads stay contained and only exact minted id lengths resolve",
+  "lineage smoke ok: private candidate reads stay retired for canonical and adversarial ids",
 );

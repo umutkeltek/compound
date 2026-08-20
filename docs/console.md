@@ -5,9 +5,11 @@
 > meaning and never becomes a second authority. It is a **projection**: a
 > rebuildable view over the spine's objects. The default launcher leaves both
 > mutations and private fallbacks disabled. `--mutations` is an explicit local
-> opt-in; even then, `POST /api/decision/execute` still requires a same-origin
-> localhost request carrying the console session token, and every act remains
-> a human click through a governed argv allowlist.
+> API-extension opt-in; even then, mutation routes require a same-origin
+> localhost request carrying an out-of-band 64-hex-character capability in
+> `x-compound-console-capability`. The standard browser never receives that
+> capability and remains projection-only. Direct private document reads are
+> unavailable; use a Compound-owned projection or scoped CLI read surface.
 
 ## Quick start
 
@@ -19,9 +21,20 @@ compound console --operator
 ```
 
 This default is projection-only. A trusted local operator may opt into the
-existing governed mutation adapter with `compound console --operator
---mutations`; that opt-in is outside the supported public-alpha console
-surface.
+existing governed mutation adapter outside the supported public-alpha console
+surface:
+
+```sh
+export COMPOUND_HOME="/path/to/operator-home"
+export COMPOUND_CONSOLE_CAPABILITY="$(openssl rand -hex 32)"
+compound console --operator --mutations
+```
+
+The operator owns high-entropy generation; Compound validates the exact
+64-hex-character transport encoding and value. A direct extension client sends
+that exact value only in the capability header. Missing, malformed, or wrong
+configuration fails closed, and Compound does not issue capability cookies or
+include the value in launch JSON.
 
 Or using the package.json scripts:
 
@@ -33,8 +46,10 @@ bun run build      # production build
 bun run serve      # serve the production build
 ```
 
-The `--operator` flag enables operator-level views (workbench, reviews,
-decisions). Without it, the console runs in a restricted read-only mode.
+The `--operator` flag explicitly selects the local operator console lifecycle;
+the launcher refuses to start without it. It does not grant mutation authority.
+The normal operator console remains projection-only, and only the unsupported
+`--mutations` API extension enables mutation routes for an out-of-band client.
 
 ## What you'll see
 
@@ -83,9 +98,11 @@ Browser
       → COMPOUND_HOME (read-only)
 ```
 
-- The console **never writes** to `COMPOUND_HOME`. It is a read-only projection.
+- The supported standard console **never writes** to `COMPOUND_HOME`. It is a
+  read-only projection.
 - All data comes through the `compound` CLI as JSON subprocess calls.
-- Mutations (when enabled) go through the same policy-gated seams as the CLI.
+- The unsupported mutation API extension, when explicitly enabled, goes
+  through the same policy-gated seams as the CLI.
 - The console is rebuildable: delete it, re-run `compound console --operator`,
   and it regenerates from the same spine objects.
 
@@ -106,6 +123,23 @@ compound console status --json
 ```
 
 Verifies: console identity, HTTP reachability, and static-asset health.
+
+## Capability non-disclosure canary
+
+Before certifying a release candidate, run:
+
+```sh
+node console/scripts/capability-profile-canary.mjs
+```
+
+The canary builds the candidate binary, initializes a throwaway home, performs
+a sanitized production build, and launches real Next development and
+production profiles on an ephemeral loopback port with a nonce capability. It
+checks HTML, RSC payloads, every referenced static asset, mutation error
+responses, cookies, and captured process output for raw or encoded capability
+or legacy-session material. It also proves that missing, wrong, cookie-only,
+query-only, and body-only credentials fail closed while the exact header reaches
+request validation without executing a mutation.
 
 ## Troubleshooting
 

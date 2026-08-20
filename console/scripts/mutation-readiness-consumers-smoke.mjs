@@ -45,8 +45,21 @@ assert.ok(
   settings.includes("const mutationReadiness = computeConsoleMutationReadiness(consoleMutationsEnabled());") &&
     settings.includes("mutationsEnabled={mutationReadiness.ready}") &&
     settings.includes("mutationFlagEnabled={mutationReadiness.flagEnabled}") &&
-    settings.includes("instancePinned={mutationReadiness.instancePinned}"),
-  "settings must distinguish effective readiness from its two inputs",
+    settings.includes("instancePinned={mutationReadiness.instancePinned}") &&
+    settings.includes("standardClientAuthorized={mutationReadiness.standardClientAuthorized}"),
+  "settings must distinguish API opt-in, instance pin, and the projection-only standard client",
 );
 
-console.log("mutation-readiness consumer smoke ok: every action page consumes flag + frozen pin");
+const consoleEnv = fs.readFileSync("src/components/settings/ConsoleEnv.tsx", "utf8");
+const settingsData = fs.readFileSync("src/components/settings/data.ts", "utf8");
+assert.doesNotMatch(
+  `${consoleEnv}\n${settingsData}`,
+  /one-click/i,
+  "projection-only settings must describe server-adapter coverage, not advertise one-click client acts",
+);
+assert.ok(
+  consoleEnv.includes('title="Server-adapter coverage"') && settingsData.includes("serverAdapterAreas"),
+  "settings must name the server-adapter coverage seam explicitly",
+);
+
+console.log("mutation-readiness consumer smoke ok: every standard action page remains projection-only");

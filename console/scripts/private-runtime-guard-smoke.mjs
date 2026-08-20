@@ -31,16 +31,17 @@ for (const file of await sourceFiles(sourceRoot)) {
   if (ownerExceptions.has(rel)) continue;
 
   const reachesPrivateRuntime = source.includes("COMPOUND_HOME") || source.includes("docs_private");
-  if (reachesPrivateRuntime && !source.includes("privateFallbacksEnabled")) {
+  const hasStandardProjectionGate = source.includes("privateFallbacksEnabled");
+  if (reachesPrivateRuntime && !hasStandardProjectionGate) {
     violations.push(`${rel}: private runtime read must be gated by privateFallbacksEnabled()`);
   }
 
   if (rel === "app/api/document/route.ts") {
-    if (!source.includes("consolePrivateReadBlockedResponse")) {
-      violations.push(`${rel}: private document reads must require local operator request guard`);
+    if (/\breadFile\b|COMPOUND_HOME|docs_private|DOCUMENT_ROOT/.test(source)) {
+      violations.push(`${rel}: deferred document API must not retain a private file-read path`);
     }
-    if (!source.includes('scope: "private_local"')) {
-      violations.push(`${rel}: private document responses must label private_local scope`);
+    if (!source.includes("direct document reads are unavailable") || !source.includes("status: 403")) {
+      violations.push(`${rel}: deferred document API must fail closed with an explicit 403`);
     }
   }
 
@@ -50,4 +51,4 @@ for (const file of await sourceFiles(sourceRoot)) {
 }
 
 assert.deepEqual(violations, []);
-console.log("private runtime guard smoke ok: console private readers are opt-in");
+console.log("private runtime guard smoke ok: direct private reads are absent and fail closed");

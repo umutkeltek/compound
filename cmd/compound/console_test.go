@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+const consoleTestFormatValidCapability = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 func TestConsoleLifecycleDryRunsExposeDistinctDevBuildAndServePlans(t *testing.T) {
 	root := t.TempDir()
 	consoleDir := filepath.Join(root, "console")
@@ -741,14 +743,56 @@ func TestConsoleOperatorDryRunIsProjectionOnlyByDefault(t *testing.T) {
 	}
 	t.Setenv("COMPOUND_CONSOLE_MUTATIONS", "1")
 	t.Setenv("COMPOUND_CONSOLE_PRIVATE_FALLBACKS", "1")
-	launched := consoleLaunchEnv(plan.Env)
+	t.Setenv("COMPOUND_CONSOLE_SESSION_TOKEN", "legacy-session-sentinel")
+	t.Setenv("COMPOUND_CONSOLE_CAPABILITY", consoleTestFormatValidCapability)
+	launched := consoleLaunchEnv(plan)
 	for _, want := range []string{
 		"COMPOUND_CONSOLE_MUTATIONS=0",
 		"COMPOUND_CONSOLE_PRIVATE_FALLBACKS=0",
 	} {
 		if !containsString(launched, want) {
-			t.Fatalf("launch environment inherited an unsafe parent value; missing %q in %v", want, launched)
+			key, _, _ := strings.Cut(want, "=")
+			t.Fatalf("launch environment missing safe override for %s", key)
 		}
+	}
+	for _, forbiddenKey := range []string{"COMPOUND_CONSOLE_SESSION_TOKEN", "COMPOUND_CONSOLE_CAPABILITY"} {
+		for _, entry := range launched {
+			if strings.HasPrefix(entry, forbiddenKey+"=") {
+				t.Fatalf("projection-only launch inherited forbidden key %s", forbiddenKey)
+			}
+		}
+	}
+}
+
+func TestConsoleBuildRejectsMutationExtensionAndStripsAmbientSecrets(t *testing.T) {
+	root := t.TempDir()
+	consoleDir := filepath.Join(root, "console")
+	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{"private":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOUND_HOME", filepath.Join(root, ".compound"))
+	t.Setenv("COMPOUND_CONSOLE_MUTATIONS", "1")
+	t.Setenv("COMPOUND_CONSOLE_PRIVATE_FALLBACKS", "1")
+	t.Setenv("COMPOUND_CONSOLE_SESSION_TOKEN", "legacy-session-sentinel")
+	t.Setenv("COMPOUND_CONSOLE_CAPABILITY", consoleTestFormatValidCapability)
+
+	plan, err := buildConsoleLifecycleLaunchPlan(consoleLifecycleBuild, consoleDir, false, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range consoleLaunchEnv(plan) {
+		for _, forbiddenKey := range []string{"COMPOUND_CONSOLE_SESSION_TOKEN", "COMPOUND_CONSOLE_CAPABILITY"} {
+			if strings.HasPrefix(entry, forbiddenKey+"=") {
+				t.Fatalf("build inherited forbidden key %s", forbiddenKey)
+			}
+		}
+	}
+
+	if mutationPlan, err := buildConsoleLifecycleLaunchPlan(consoleLifecycleBuild, consoleDir, true, false, true); err == nil {
+		t.Fatalf("build accepted a runtime mutation extension: %+v", mutationPlan)
 	}
 }
 
@@ -763,6 +807,7 @@ func TestConsoleOperatorDryRunRequiresExplicitMutationOptIn(t *testing.T) {
 	}
 	homePath := filepath.Join(root, ".compound")
 	t.Setenv("COMPOUND_HOME", homePath)
+	t.Setenv("COMPOUND_CONSOLE_CAPABILITY", consoleTestFormatValidCapability)
 
 	out := captureStdout(t, func() {
 		cmdConsole([]string{"--operator", "--mutations", "--console-dir", consoleDir, "--dry-run", "--json"})
@@ -777,6 +822,108 @@ func TestConsoleOperatorDryRunRequiresExplicitMutationOptIn(t *testing.T) {
 	}
 	if !plan.MutationsEnabled || plan.Env["COMPOUND_CONSOLE_MUTATIONS"] != "1" {
 		t.Fatalf("explicit mutation opt-in was not carried by launch plan: %+v", plan)
+	}
+	if !plan.CapabilityRequired {
+		t.Fatal("mutation launch did not disclose the out-of-band capability requirement")
+	}
+	if _, exposed := plan.Env["COMPOUND_CONSOLE_CAPABILITY"]; exposed {
+		t.Fatal("launch plan rendered the forbidden capability key")
+	}
+}
+
+func TestConsoleMutationModeRequiresExplicitHomeAndFormatValidCapabilityBeforePlan(t *testing.T) {
+	root := t.TempDir()
+	consoleDir := filepath.Join(root, "console")
+	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{"private":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("implicit home", func(t *testing.T) {
+		stdout, stderr, err := invokeConsoleCommand(
+			t,
+			[]string{
+				"COMPOUND_HOME=",
+				"COMPOUND_CONSOLE_CAPABILITY=" + consoleTestFormatValidCapability,
+			},
+			"dev", "--operator", "--mutations", "--console-dir", consoleDir, "--dry-run", "--json",
+		)
+		if err == nil {
+			t.Fatalf("mutation launch accepted an implicit canonical home:\n%s", stdout)
+		}
+		if strings.TrimSpace(stdout) != "" {
+			t.Fatalf("refused mutation launch emitted a plan:\n%s", stdout)
+		}
+		if !strings.Contains(stderr, "explicit COMPOUND_HOME") {
+			t.Fatalf("implicit-home refusal did not explain the requirement:\n%s", stderr)
+		}
+	})
+
+	for _, tc := range []struct {
+		name       string
+		capability string
+	}{
+		{name: "missing", capability: ""},
+		{name: "short", capability: "abcd"},
+		{name: "non hexadecimal", capability: strings.Repeat("z", 64)},
+		{name: "too long", capability: consoleTestFormatValidCapability + "00"},
+	} {
+		t.Run(tc.name+" capability", func(t *testing.T) {
+			stdout, stderr, err := invokeConsoleCommand(
+				t,
+				[]string{
+					"COMPOUND_HOME=" + filepath.Join(root, ".compound"),
+					"COMPOUND_CONSOLE_CAPABILITY=" + tc.capability,
+				},
+				"dev", "--operator", "--mutations", "--console-dir", consoleDir, "--dry-run", "--json",
+			)
+			if err == nil {
+				t.Fatalf("mutation launch accepted malformed capability %q:\n%s", tc.name, stdout)
+			}
+			if strings.TrimSpace(stdout) != "" {
+				t.Fatalf("refused mutation launch emitted a plan:\n%s", stdout)
+			}
+			if !strings.Contains(stderr, "exactly 64 hexadecimal characters") {
+				t.Fatalf("capability refusal did not explain the accepted encoding:\n%s", stderr)
+			}
+		})
+	}
+}
+
+func TestConsoleExtensionPlanDisclosesCapabilityWithoutRenderingIt(t *testing.T) {
+	root := t.TempDir()
+	consoleDir := filepath.Join(root, "console")
+	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{"private":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOUND_HOME", filepath.Join(root, ".compound"))
+	capability := consoleTestFormatValidCapability
+	t.Setenv("COMPOUND_CONSOLE_CAPABILITY", capability)
+
+	plan, err := buildConsoleLifecycleLaunchPlan(consoleLifecycleDev, consoleDir, true, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.CapabilityRequired {
+		t.Fatal("extension plan must disclose capability requirement")
+	}
+	if _, exposed := plan.Env["COMPOUND_CONSOLE_CAPABILITY"]; exposed {
+		t.Fatal("launch JSON env contains the forbidden capability key")
+	}
+	body, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(body, []byte(capability)) {
+		t.Fatal("launch JSON exposed out-of-band capability material")
+	}
+	if !containsString(consoleLaunchEnv(plan), "COMPOUND_CONSOLE_CAPABILITY="+capability) {
+		t.Fatal("console child process did not inherit the out-of-band capability")
 	}
 }
 
@@ -838,7 +985,7 @@ func TestConsoleLaunchPlanPinsResolvedHome(t *testing.T) {
 		t.Fatalf("pinned home must be absolute, got %q", plan.Env["COMPOUND_HOME"])
 	}
 	t.Setenv("COMPOUND_HOME", filepath.Join(root, "scratch-b", ".compound"))
-	env := consoleLaunchEnv(plan.Env)
+	env := consoleLaunchEnv(plan)
 	var got string
 	for _, entry := range env {
 		if strings.HasPrefix(entry, "COMPOUND_HOME=") {
@@ -850,7 +997,7 @@ func TestConsoleLaunchPlanPinsResolvedHome(t *testing.T) {
 	}
 }
 
-func TestConsoleOperatorDryRunCanEnablePrivateFallbacks(t *testing.T) {
+func TestConsoleOperatorDryRunRefusesPrivateFallbacks(t *testing.T) {
 	root := t.TempDir()
 	consoleDir := filepath.Join(root, "console")
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
@@ -862,10 +1009,7 @@ func TestConsoleOperatorDryRunCanEnablePrivateFallbacks(t *testing.T) {
 	t.Setenv("COMPOUND_HOME", filepath.Join(root, ".compound"))
 
 	plan, err := buildConsoleLaunchPlan(consoleDir, true, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !plan.PrivateFallbacks || plan.Env["COMPOUND_CONSOLE_PRIVATE_FALLBACKS"] != "1" {
-		t.Fatalf("private fallback env missing: %+v", plan)
+	if err == nil || !strings.Contains(err.Error(), "private fallbacks are unavailable") {
+		t.Fatalf("private fallback plan = %+v, error = %v; want enforced deferral", plan, err)
 	}
 }

@@ -57,22 +57,23 @@ assert.equal(
 );
 assert.equal(pinnedA.buildKind, "unknown", "an unclassified runtime must not impersonate dev or production");
 
-// 3b. Render-time readiness is the conjunction of the mutation flag and the
-// frozen instance pin. The flag alone must never advertise a live act.
+// 3b. Render-time readiness reports the extension flag and frozen instance pin
+// but keeps the standard browser unauthorized. Neither input may advertise a
+// live browser act because the capability is deliberately absent client-side.
 assert.deepEqual(
   computeConsoleMutationReadiness(true, unpinned),
-  { flagEnabled: true, instancePinned: false, ready: false },
+  { flagEnabled: true, instancePinned: false, standardClientAuthorized: false, ready: false },
   "enabled flag on an unpinned instance must remain read-only",
 );
 assert.deepEqual(
   computeConsoleMutationReadiness(false, pinnedA),
-  { flagEnabled: false, instancePinned: true, ready: false },
+  { flagEnabled: false, instancePinned: true, standardClientAuthorized: false, ready: false },
   "pinned instance without the mutation flag must remain read-only",
 );
 assert.deepEqual(
   computeConsoleMutationReadiness(true, pinnedA),
-  { flagEnabled: true, instancePinned: true, ready: true },
-  "only flag + explicit pin may expose live mutations",
+  { flagEnabled: true, instancePinned: true, standardClientAuthorized: false, ready: false },
+  "the standard browser client remains projection-only even when the API extension is configured",
 );
 
 // 4. Home identity: distinct homes hash distinct; two spellings of the same

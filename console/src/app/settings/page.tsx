@@ -126,6 +126,7 @@ export default async function Settings() {
         mutationsEnabled={mutationReadiness.ready}
         mutationFlagEnabled={mutationReadiness.flagEnabled}
         instancePinned={mutationReadiness.instancePinned}
+        standardClientAuthorized={mutationReadiness.standardClientAuthorized}
         privateFallbacks={privateFallbacks}
         attention={attention}
         generatedAt={str(attention?.generated_at) || undefined}

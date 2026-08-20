@@ -10,7 +10,7 @@ This packet implements the confirmed hardening work from the local cross-check o
 - Collapse legacy console mutation routes into the generic decision executor seam.
 - Stop `SessionEnd` from treating harness shutdown as task completion unless explicit close proof is supplied.
 - Add console and TypeScript edge checks to `compound proof-check`.
-- Guard console direct runtime/private readers behind an explicit private fallback flag.
+- Retire console direct runtime/private readers until a rooted no-follow owner exists.
 
 ## Evidence
 
@@ -27,7 +27,11 @@ This packet implements the confirmed hardening work from the local cross-check o
    - Add one server-side mutation guard.
    - Require `COMPOUND_CONSOLE_MUTATIONS=1`.
    - Require same-origin local browser POSTs.
-   - Keep an optional `COMPOUND_CONSOLE_SESSION_TOKEN` header gate for scripted clients.
+   - Require an operator-generated, out-of-band
+     `COMPOUND_CONSOLE_CAPABILITY` header gate for every scripted mutation
+     client; validate its 64-hex transport encoding without claiming that
+     formatting proves entropy, and never mint or cookie it through the
+     standard UI.
    - Move decision execution into a reusable server helper.
    - Make `/api/work/act` and `/api/reviews/record` compatibility adapters, not separate mutation owners.
 
@@ -43,14 +47,18 @@ This packet implements the confirmed hardening work from the local cross-check o
    - Add Bun tool tests when Bun is available.
    - Keep missing Bun as an explicit skipped check, not a silent pass.
 
-4. Private fallback guard
+4. Private fallback retirement
    - Keep CLI projections as the default.
-   - Disable direct `COMPOUND_HOME` / `docs_private` fallback readers unless `COMPOUND_CONSOLE_PRIVATE_FALLBACKS=1`.
+   - Remove the document API's file-read path and refuse the legacy private-fallback opt-in until a rooted no-follow owner exists.
 
 ## Acceptance
 
 - Legacy console mutation routes cannot mutate with console mutations disabled.
 - All console mutation routes reject non-local cross-origin POSTs.
+- Mutation-mode launch refuses an implicit home or a missing/malformed
+  out-of-band capability before emitting a launch plan.
+- The real decision route rejects missing/wrong capabilities before JSON
+  parsing and admits the exact capability to the governed executor.
 - Generic decision route remains the only mutation executor path.
 - `landed_owner` is no longer a console move-type option.
 - `SessionEnd` no longer closes work by default.
@@ -68,7 +76,7 @@ This packet implements the confirmed hardening work from the local cross-check o
 - Changed `SessionEnd` so `work_id` without explicit `outcome` and `move_type` records an event only.
 - Added hook regression coverage for no-default-close.
 - Added proof-check gates for console TypeScript, console smoke, console mutation-gate smoke, and Bun tool tests.
-- Guarded direct console runtime/private readers behind `COMPOUND_CONSOLE_PRIVATE_FALLBACKS=1`.
+- Retired direct console runtime/private readers; the document API now returns 403 and the legacy opt-in is refused.
 
 ## Proof Run
 

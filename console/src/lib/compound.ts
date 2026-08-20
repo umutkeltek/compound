@@ -4,6 +4,8 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 
+import { consoleChildEnv } from "./console-child-env.ts";
+
 const exec = promisify(execFile);
 
 /** Runtime home: never repo. Resolved to an absolute path ONCE at module load
@@ -14,8 +16,10 @@ export const COMPOUND_HOME = resolve(
   (process.env.COMPOUND_HOME ?? "").trim() || `${homedir()}/.compound`,
 );
 
+/** Direct private readers are retired. The legacy fallback environment cannot
+ * reactivate them, so every standard consumer remains projection-only. */
 export function privateFallbacksEnabled(): boolean {
-  return process.env.COMPOUND_CONSOLE_PRIVATE_FALLBACKS === "1";
+  return false;
 }
 
 function resolveBin(): string {
@@ -90,7 +94,7 @@ function firstJsonObject(text: string): string | null {
 
 export async function runCompound(args: string[]): Promise<CompoundRunResult> {
   const { stdout, stderr } = await exec(COMPOUND_BIN, args, {
-    env: { ...process.env, COMPOUND_HOME },
+    env: consoleChildEnv({ COMPOUND_HOME }),
     timeout: 30_000,
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -111,7 +115,7 @@ export function compoundFailure(error: unknown): CompoundRunFailure {
 
 async function execRunJson(args: string[], timeoutMs: number): Promise<Json | null> {
   const { stdout } = await exec(COMPOUND_BIN, args, {
-    env: { ...process.env, COMPOUND_HOME },
+    env: consoleChildEnv({ COMPOUND_HOME }),
     timeout: timeoutMs,
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -413,8 +417,11 @@ export async function getInstalledBinaryFreshness(): Promise<InstalledBinaryFres
 
   try {
     const [{ stdout: versionOut }, { stdout: headOut }] = await Promise.all([
-      exec(binary, ["version"], { timeout: 1_500 }),
-      exec("git", ["-C", repoRootFromConsole(), "rev-parse", "--short", "HEAD"], { timeout: 1_500 }),
+      exec(binary, ["version"], { env: consoleChildEnv(), timeout: 1_500 }),
+      exec("git", ["-C", repoRootFromConsole(), "rev-parse", "--short", "HEAD"], {
+        env: consoleChildEnv(),
+        timeout: 1_500,
+      }),
     ]);
     const installedBuild = parseBuildSHA(versionOut);
     const head = headOut.trim();
