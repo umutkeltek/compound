@@ -84,15 +84,33 @@ func TestPrimeAgentAdapterBuildCmdRPC(t *testing.T) {
 	if !reflect.DeepEqual(cmd.Args[:3], []string{"prime-agent", "--mode", "rpc"}) {
 		t.Fatalf("cmd.Args = %v, want first three to be [prime-agent --mode rpc]", cmd.Args)
 	}
-	// PRIME_AGENT_HOME isolation line must be present (per-run, never ~/.prime/agent).
+	// PRIME_AGENT_CODING_AGENT_DIR isolation line must be present (per-run, never ~/.prime/agent).
 	var sawPrimeHome bool
 	for _, kv := range cmd.Env {
-		if strings.HasPrefix(kv, "PRIME_AGENT_HOME=") && !strings.Contains(kv, "/.prime/agent") {
+		if strings.HasPrefix(kv, "PRIME_AGENT_CODING_AGENT_DIR=") && !strings.Contains(kv, "/.prime/agent") {
 			sawPrimeHome = true
 		}
 	}
 	if !sawPrimeHome {
-		t.Fatal("PRIME_AGENT_HOME isolation env missing or pointing at ~/.prime/agent")
+		t.Fatal("PRIME_AGENT_CODING_AGENT_DIR isolation env missing or pointing at ~/.prime/agent")
+	}
+	// PI_SKIP_VERSION_CHECK=1 must be set so prime does not self-update mid-run.
+	var sawSkipUpdate bool
+	for _, kv := range cmd.Env {
+		if kv == "PI_SKIP_VERSION_CHECK=1" {
+			sawSkipUpdate = true
+		}
+	}
+	if !sawSkipUpdate {
+		t.Fatal("PI_SKIP_VERSION_CHECK=1 missing — prime would self-update mid-run and invalidate the RunAttempt chrome")
+	}
+	// The adapter MUST NOT set the legacy/wrong PRIME_AGENT_HOME: upstream
+	// prime-agent reads PRIME_AGENT_CODING_AGENT_DIR (packages/coding-agent/src/config.ts);
+	// PRIME_AGENT_HOME would silently share ~/.prime/agent across runs.
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "PRIME_AGENT_HOME=") {
+			t.Fatalf("legacy PRIME_AGENT_HOME present (%q); upstream prime-agent does not read this env", kv)
+		}
 	}
 }
 

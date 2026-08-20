@@ -160,18 +160,28 @@ func (a *PrimeAgentAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd
 
 	// Prime-agent has the same COMPOUND_HOME / ~/.prime-agent isolation
 	// problem that codex had (CLAUDE_HOME in the Claude lane); every
-	// governed dispatch needs a fresh PRIME_AGENT_HOME so two
-	// concurrent runs (or an exec running while an interactive
-	// `prime-agent` TUI is active) cannot share state through
-	// ~/.prime/agent. The persistent-kernel daemon at 127.0.0.1:18774
-	// is system-wide and lives OUTSIDE this isolation (read-only
-	// consumer); we only fence the per-run local state.
+	// governed dispatch needs a fresh per-run home so two concurrent
+	// runs (or an exec running while an interactive `prime-agent` TUI
+	// is active) cannot share state through ~/.prime/agent. Upstream
+	// prime-agent reads its per-process home from
+	// PRIME_AGENT_CODING_AGENT_DIR (packages/coding-agent/src/config.ts),
+	// so we set that env var verbatim. We also set PI_SKIP_VERSION_CHECK=1
+	// so prime does not try to self-update mid-run — a mid-run update
+	// is a different binary's audit trail and would invalidate the
+	// RunAttempt chrome. The persistent-kernel daemon at 127.0.0.1:18774
+	// (a Switchback capture tap that prime's models.json points LLM
+	// calls at, not prime's IPC) is system-wide and lives OUTSIDE this
+	// isolation (read-only consumer); we only fence the per-run local
+	// state.
 	primeHome, err := os.MkdirTemp("", "prime-agent-")
 	if err != nil {
 		primeHome = filepath.Join(os.TempDir(), "prime-agent-fallback-"+in.WorkID)
 		_ = os.MkdirAll(primeHome, 0o700)
 	}
-	cmd.Env = append(os.Environ(), "PRIME_AGENT_HOME="+primeHome)
+	cmd.Env = append(os.Environ(),
+		"PRIME_AGENT_CODING_AGENT_DIR="+primeHome,
+		"PI_SKIP_VERSION_CHECK=1",
+	)
 	cmd.Env = append(cmd.Env, in.Env...)
 	return cmd
 }
