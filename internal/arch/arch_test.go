@@ -68,6 +68,57 @@ func TestDoctorGreenAgainstRealRepo(t *testing.T) {
 	}
 }
 
+func TestPostgresADRAuthorityParity(t *testing.T) {
+	read := func(rel string) string {
+		t.Helper()
+		body, err := os.ReadFile(filepath.Join(repoRoot, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		return string(body)
+	}
+
+	accepted := read("docs/adr/0005-postgres-pgvector-storage-experiment.md")
+	if !strings.Contains(accepted, "**Status:** Accepted for additive, opt-in experimentation; production authority cutover is not ratified") {
+		t.Fatal("bounded Postgres experiment is not identified as the one accepted runtime ADR")
+	}
+	consolidation := read("docs/adr/0006-consolidation-freeze-protocol.md")
+	for rel, body := range map[string]string{
+		"docs/adr/0005-postgres-pgvector-storage-experiment.md": accepted,
+		"docs/adr/0006-consolidation-freeze-protocol.md":        consolidation,
+	} {
+		for _, want := range []string{
+			"process-memory-only DSN",
+			"unknown/partial configuration",
+			"without file or breadth fallback",
+		} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("%s does not preserve experimental Postgres boundary %q", rel, want)
+			}
+		}
+	}
+	for _, rel := range []string{
+		"docs/adr/0005-storage-interface-extraction.md",
+		"docs/adr/0006-postgres-pgvector-adoption.md",
+	} {
+		body := read(rel)
+		if !strings.Contains(body, "**Status:** Historical proposal — never ratified; not the current runtime decision") {
+			t.Fatalf("%s is not classified as historical and non-authoritative", rel)
+		}
+	}
+	for _, stale := range []string{
+		"remains independently proposed and deferred",
+		"ADR-0006 (Postgres+pgvector adoption — DEFERRED)",
+		"ADR-0006 (Package Consolidation Freeze Protocol)",
+		"ADR-0006 defines the operator freeze protocol",
+		"Package consolidation — ADR-0006 only",
+	} {
+		if strings.Contains(accepted+read("docs/adr/0005-storage-interface-extraction.md"), stale) {
+			t.Fatalf("stale Postgres ADR authority label remains: %q", stale)
+		}
+	}
+}
+
 // Physical custody is the retirement ratchet: if future edits drift back to
 // "the path and hash are enough," legacy note trees and databases become
 // permanent co-owners again. Pin the focused owner doc, its served build-guide

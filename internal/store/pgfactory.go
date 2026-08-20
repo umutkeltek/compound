@@ -19,15 +19,17 @@ import (
 // mechanics). Every connection parameter comes from the environment; there are
 // no baked-in hosts. A missing COMPOUND_DSN or COMPOUND_EMBED_URL under
 // COMPOUND_STORE=postgres is a factory error the spine records as Degraded
-// evidence, never a silent fall-through to another engine.
+// evidence, never a silent fall-through to another engine. Selection alone is
+// insufficient: ConfigFromEnv also requires the separate experimental opt-in
+// and a nonsecret profile label before this factory can parse or dial the DSN.
 func InstallPgvectorEngineFactory() {
 	contract.SetPgvectorEngineFactory(func() (contract.CloseableEngine, error) {
-		cfg := persist.ConfigFromEnv()
-		if cfg.Backend != persist.BackendPostgres {
-			return nil, fmt.Errorf("postgres store backend not selected (COMPOUND_STORE=%q)", cfg.Backend)
+		cfg, err := persist.ConfigFromEnv()
+		if err != nil {
+			return nil, err
 		}
-		if strings.TrimSpace(cfg.DSN) == "" {
-			return nil, fmt.Errorf("COMPOUND_DSN is required when COMPOUND_STORE=postgres")
+		if err := cfg.ValidatePostgresExperiment(); err != nil {
+			return nil, err
 		}
 		embedURL := strings.TrimSpace(os.Getenv("COMPOUND_EMBED_URL"))
 		if embedURL == "" {

@@ -1,12 +1,18 @@
 # ADR-0005: Storage Interface Extraction
 
-**Status:** Proposed (pending operator ratification)
+**Status:** Historical proposal — never ratified; not the current runtime decision
 **Date:** 2026-08-02
 **Supersedes:** none
 **Split from:** the draft ADR-0005 "Postgres+pgvector Storage Engine and
 Package Consolidation" (dated 2026-07-31; never ratified)
-**Continued by:** ADR-0006 (Postgres+pgvector adoption — DEFERRED),
-ADR-0007 (package consolidation + CLI decomposition)
+**Historical companions:** ADR-0006 (Postgres+pgvector adoption — never
+ratified), ADR-0007 (package consolidation + CLI decomposition)
+
+> This split proposal is retained as design history, not current authority.
+> The accepted bounded runtime decision is
+> [ADR-0005: Postgres+pgvector Storage Experiment](0005-postgres-pgvector-storage-experiment.md):
+> file storage is the sole supported public-alpha backend, while the existing
+> Postgres adapter remains an explicitly gated, non-authoritative experiment.
 
 ## Context
 
@@ -41,8 +47,9 @@ under the rules in "Lane-safety."
 
 This ADR decides the shape of the seam ONLY. It decides no backend. The
 existing file stores remain the sole implementation and the permanent
-default. Whether a second implementation is ever added, and how a
-backend would be selected, is ADR-0006's question and stays DEFERRED.
+default. Whether a second implementation is ever added, and how a backend
+would be selected, was the historical ADR-0006 proposal's question. The
+accepted bounded experiment now owns the runtime answer.
 Package consolidation (ADR-0007) is independent of this work and needs
 no storage change at all.
 

@@ -235,7 +235,7 @@ compound placement <resolve|target> where a write belongs: positive canonical-ta
 compound schedule <list|show|doctor> [--json] [--source user|system|crontab|all] [--namespace N] [--stale-days N] read-only launchd + crontab projection; no --fix
   compound browser <list|show|doctor> [--json] [--instance UUID] [--swiftshader-only] [--stale-min M] [--idle-cpu-pct PCT] [--fix|--dry-run|--yes-each] read-only agent-browser / chrome projection; --fix is B-scope: orphan swiftshader only, per-target confirmation
   compound doctor [--json] [--base DIR] [--binary PATH] one legible operator health surface: hooks, leases, findings, placement freshness, retention; writes nothing
-compound store <doctor|init|status|migrate|sync|embed|recall> [--json]  Postgres+pgvector storage backend lifecycle (ADR-0005); requires COMPOUND_STORE=postgres + COMPOUND_DSN; sync/embed/migrate --apply are governed writes (dry-run default, --confirm --work)
+compound store <doctor|init|status|migrate|sync|embed|recall> [--json]  EXPERIMENTAL/unsupported Postgres+pgvector; requires COMPOUND_STORE=postgres + COMPOUND_EXPERIMENTAL_POSTGRES=1 + COMPOUND_POSTGRES_PROFILE + COMPOUND_DSN; DSNs are never rendered/persisted
 compound retention <classes|scan|plan> [--json]                 declare and inspect artifact retention; plans only, never reclaims
 compound proof-check [--json] [--dry-run] [--dev] [--repo P] [--out FILE] deterministic verification bundle; --dev is fast, cache-enabled, non-certifying feedback while canonical proof stays fresh
   compound director propose [--dry-run|--apply] --json          suggested work; apply may evidence-admit job_health but never executes it

@@ -8,6 +8,10 @@ This decision is independent of the storage experiment. Nothing in ADR-0005
 ratifies package moves, and this protocol must not be executed as part of the
 current additive persistence burst.
 
+The freeze cannot change the storage experiment's admission contract:
+`COMPOUND_DSN` remains a process-memory-only DSN; unknown/partial configuration
+continues to fail closed without file or breadth fallback.
+
 ## Problem
 
 Package consolidation (Phase 3) rewrites import paths across ~90K files.

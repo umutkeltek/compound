@@ -4,8 +4,11 @@
 // Postgres+pgvector backend (internal/persist/pg) implements explicitly.
 //
 // Design constraints (ADR-0005):
-//   - The file backend remains the DEFAULT. Postgres is opt-in via COMPOUND_STORE=postgres.
-//   - This package is ADDITIVE: no existing import path or function signature changes.
+//   - The file backend remains the supported DEFAULT. Postgres requires both
+//     COMPOUND_STORE=postgres and a separate experimental opt-in.
+//   - Domain import paths and persistence interfaces stay additive. Configuration
+//     admission returns an explicit error so unknown or partial selection cannot
+//     silently fall back to the supported file backend.
 //   - The interfaces reference existing domain types (envelope, mem) to avoid mapping overhead.
 //   - No import cycle: persist imports envelope/mem; they never import persist.
 //
@@ -13,8 +16,9 @@
 package persist
 
 import (
-	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"compound/internal/envelope"
@@ -209,8 +213,18 @@ type Backend string
 const (
 	// BackendFile is the default JSON-file-on-disk storage (current behavior).
 	BackendFile Backend = "file"
-	// BackendPostgres is the Postgres+pgvector storage (opt-in via COMPOUND_STORE).
+	// BackendPostgres is the experimental Postgres+pgvector storage. Backend
+	// selection alone is intentionally insufficient for admission.
 	BackendPostgres Backend = "postgres"
+
+	// ExperimentalPostgresEnv is the second, explicit gate required in addition
+	// to selecting BackendPostgres. Postgres is preserved for parity work but is
+	// outside the supported public-alpha backend surface.
+	ExperimentalPostgresEnv = "COMPOUND_EXPERIMENTAL_POSTGRES"
+	// PostgresProfileEnv names a nonsecret operator profile. This opaque label,
+	// never a raw or masked DSN, is the only connection target that may be
+	// rendered or persisted in Compound authority objects.
+	PostgresProfileEnv = "COMPOUND_POSTGRES_PROFILE"
 )
 
 // Config holds the storage backend selection and connection parameters.
@@ -220,9 +234,34 @@ type Config struct {
 	// DSN is the Postgres connection string (required when Backend=postgres).
 	// Example: "postgres://<user>:<password>@<host>:5432/compound?sslmode=disable"
 	DSN string
+	// ExperimentalPostgres is the separate, explicit acknowledgement that the
+	// selected backend is experimental and unsupported by the public alpha.
+	ExperimentalPostgres bool
+	// PostgresProfile is a nonsecret opaque label used for reports, policy
+	// targets, receipts, and transitions. It must never contain connection data.
+	PostgresProfile string
 	// VectorDimensions is the embedding dimension for pgvector columns.
 	// Must match the embedding model output. Default: 1536 (OpenAI ada-002).
 	VectorDimensions int
+}
+
+// ConfigError is a safe, typed backend-selection refusal. Reason and Recovery
+// are fixed contract text; rejected environment values and DSNs are never
+// copied into the error.
+type ConfigError struct {
+	Field    string
+	Reason   string
+	Recovery string
+}
+
+func (e *ConfigError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Recovery == "" {
+		return e.Field + ": " + e.Reason
+	}
+	return e.Field + ": " + e.Reason + "; " + e.Recovery
 }
 
 // DefaultConfig returns the file backend (zero-change default).
@@ -233,28 +272,138 @@ func DefaultConfig() Config {
 	}
 }
 
-// ConfigFromEnv reads COMPOUND_STORE and COMPOUND_DSN from the environment.
-// Returns DefaultConfig() when COMPOUND_STORE is unset or "file".
-func ConfigFromEnv() Config {
+// ConfigFromEnv reads backend configuration from the environment. The file
+// backend is the sole supported public-alpha backend and remains the
+// zero-configuration default. Selecting Postgres requires a second explicit
+// experimental opt-in plus a nonsecret profile label and a DSN. Unknown or
+// partial selections fail closed rather than falling back to files.
+func ConfigFromEnv() (Config, error) {
 	cfg := DefaultConfig()
 
 	store := envOr("COMPOUND_STORE", "file")
 	switch Backend(store) {
 	case BackendPostgres:
 		cfg.Backend = BackendPostgres
-		cfg.DSN = envOr("COMPOUND_DSN", "")
+		cfg.ExperimentalPostgres = os.Getenv(ExperimentalPostgresEnv) == "1"
+		cfg.PostgresProfile = strings.TrimSpace(os.Getenv(PostgresProfileEnv))
+		cfg.DSN = strings.TrimSpace(os.Getenv("COMPOUND_DSN"))
 	case BackendFile:
-		// default, no change
-	}
-
-	if dims := envOr("COMPOUND_VECTOR_DIMS", ""); dims != "" {
-		var d int
-		if _, err := fmt.Sscanf(dims, "%d", &d); err == nil && d > 0 {
-			cfg.VectorDimensions = d
+		for _, key := range []string{ExperimentalPostgresEnv, PostgresProfileEnv, "COMPOUND_DSN", "COMPOUND_VECTOR_DIMS"} {
+			if os.Getenv(key) != "" {
+				return Config{}, &ConfigError{
+					Field:    "COMPOUND_STORE",
+					Reason:   "partial Postgres configuration is present without selecting the Postgres backend",
+					Recovery: "unset Postgres-only variables for file mode, or select postgres with the complete experimental gate",
+				}
+			}
+		}
+	default:
+		return Config{}, &ConfigError{
+			Field:    "COMPOUND_STORE",
+			Reason:   "unsupported COMPOUND_STORE value",
+			Recovery: "use file (supported) or postgres with the explicit experimental gate",
 		}
 	}
 
-	return cfg
+	if dims := os.Getenv("COMPOUND_VECTOR_DIMS"); dims != "" {
+		d, ok := parseExactPositiveDecimal(dims)
+		if !ok {
+			return Config{}, &ConfigError{
+				Field:    "COMPOUND_VECTOR_DIMS",
+				Reason:   "vector dimensions must be an exact positive base-10 integer",
+				Recovery: "set a positive dimension matching the experimental embedding model",
+			}
+		}
+		cfg.VectorDimensions = d
+	}
+
+	if cfg.Backend == BackendPostgres {
+		if err := cfg.ValidatePostgresExperiment(); err != nil {
+			return Config{}, err
+		}
+	}
+	return cfg, nil
+}
+
+func parseExactPositiveDecimal(raw string) (int, bool) {
+	if raw == "" {
+		return 0, false
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] < '0' || raw[i] > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.Atoi(raw)
+	return n, err == nil && n > 0
+}
+
+// ValidatePostgresExperiment protects every construction path, including
+// callers that build Config directly instead of using ConfigFromEnv. It must be
+// called before parsing a DSN, dialing a service, or writing any Postgres row.
+func (c Config) ValidatePostgresExperiment() error {
+	if c.Backend != BackendPostgres {
+		return &ConfigError{
+			Field:    "COMPOUND_STORE",
+			Reason:   "Postgres backend is not selected",
+			Recovery: "set COMPOUND_STORE=postgres only for explicit experimental use",
+		}
+	}
+	if !c.ExperimentalPostgres {
+		return &ConfigError{
+			Field:    ExperimentalPostgresEnv,
+			Reason:   "Postgres is experimental and outside the supported public alpha",
+			Recovery: "set " + ExperimentalPostgresEnv + "=1 to opt in explicitly",
+		}
+	}
+	if !validPostgresProfile(c.PostgresProfile) {
+		return &ConfigError{
+			Field:    PostgresProfileEnv,
+			Reason:   "a safe profile label is required (1-64 ASCII letters, digits, '.', '_' or '-', beginning with a letter or digit)",
+			Recovery: "set " + PostgresProfileEnv + " to a nonsecret label; never put a DSN or credential in it",
+		}
+	}
+	if strings.TrimSpace(c.DSN) == "" {
+		return &ConfigError{
+			Field:    "COMPOUND_DSN",
+			Reason:   "connection configuration is required for the selected experimental profile",
+			Recovery: "set COMPOUND_DSN in the process environment; Compound will not render or persist it",
+		}
+	}
+	if c.VectorDimensions <= 0 {
+		return &ConfigError{
+			Field:    "COMPOUND_VECTOR_DIMS",
+			Reason:   "vector dimensions must be positive",
+			Recovery: "set a positive dimension matching the experimental embedding model",
+		}
+	}
+	return nil
+}
+
+// PostgresTargetRef returns the only Postgres identity safe for reports and
+// authority objects. Callers must validate the config first.
+func (c Config) PostgresTargetRef() string {
+	if !validPostgresProfile(c.PostgresProfile) {
+		return ""
+	}
+	return "postgres-profile:" + c.PostgresProfile
+}
+
+func validPostgresProfile(profile string) bool {
+	if len(profile) == 0 || len(profile) > 64 {
+		return false
+	}
+	for i := 0; i < len(profile); i++ {
+		ch := profile[i]
+		alphaNumeric := ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9'
+		if i == 0 && !alphaNumeric {
+			return false
+		}
+		if !alphaNumeric && ch != '.' && ch != '_' && ch != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func envOr(key, fallback string) string {

@@ -7,15 +7,29 @@ import (
 	"time"
 
 	"compound/internal/eventstore"
+	"compound/internal/persist"
 )
+
+func validExperimentalPostgresConfig(profile string) persist.Config {
+	return persist.Config{
+		Backend:              persist.BackendPostgres,
+		DSN:                  "process-memory-test-dsn",
+		ExperimentalPostgres: true,
+		PostgresProfile:      profile,
+		VectorDimensions:     1536,
+	}
+}
 
 // gated-write-refuses-without-grant: an external_side_effect store export must
 // be refused by the default policy (no standing grant), never silently allowed.
 func TestStoreGovernedGateRefusesWithoutGrant(t *testing.T) {
 	homePath := t.TempDir()
 	now := time.Now()
-	dsn := "postgres://u:****@db.example.invalid/compound"
-	ai := storeGovernedIntent("work_testgate", "migrate_apply", dsn, "preview", now)
+	cfg := validExperimentalPostgresConfig("test")
+	ai, err := storeGovernedIntent("work_testgate", "migrate_apply", cfg, "preview", now)
+	if err != nil {
+		t.Fatalf("build intent: %v", err)
+	}
 	evaluation, err := gateStoreGovernedWrite(homePath, ai, now)
 	if err == nil {
 		t.Fatalf("expected refusal without a standing grant, got allowed (outcome=%s)", evaluation.Decision.Outcome)
@@ -29,7 +43,10 @@ func TestStoreGovernedGateRefusesWithoutGrant(t *testing.T) {
 // schema — a proof that cannot be recorded is a governance hole.
 func TestStoreGovernedProofPairValidates(t *testing.T) {
 	now := time.Now()
-	ai := storeGovernedIntent("work_testgate", "sync_apply", "postgres://u:****@db.example.invalid/compound", "preview", now)
+	ai, err := storeGovernedIntent("work_testgate", "sync_apply", validExperimentalPostgresConfig("test"), "preview", now)
+	if err != nil {
+		t.Fatalf("build intent: %v", err)
+	}
 	receipt, transition := storeGovernedReceiptAndTransition(ai, "store sync --confirm: 3 claims, 2 edges → postgres", now)
 	if err := receipt.Validate(); err != nil {
 		t.Fatalf("receipt must validate: %v", err)
@@ -54,7 +71,10 @@ func TestRecordStoreGovernedProofPersistsPair(t *testing.T) {
 		t.Fatalf("open event store: %v", err)
 	}
 	now := time.Now()
-	ai := storeGovernedIntent("work_pair", "sync_apply", "postgres://u:****@db.example.invalid/compound", "preview", now)
+	ai, err := storeGovernedIntent("work_pair", "sync_apply", validExperimentalPostgresConfig("test"), "preview", now)
+	if err != nil {
+		t.Fatalf("build intent: %v", err)
+	}
 	receiptID, transitionID, err := recordStoreGovernedProof(store, ai, "summary", now)
 	if err != nil {
 		t.Fatalf("record proof: %v", err)
@@ -75,7 +95,10 @@ func TestRecordStoreGovernedProofPersistsPair(t *testing.T) {
 func TestRecordStoreGovernedProofCompensatesOrphanReceipt(t *testing.T) {
 	fake := &fakeEventstoreRecorder{failAfter: 1}
 	now := time.Now()
-	ai := storeGovernedIntent("work_orphan", "sync_apply", "postgres://u:****@db.example.invalid/compound", "preview", now)
+	ai, err := storeGovernedIntent("work_orphan", "sync_apply", validExperimentalPostgresConfig("test"), "preview", now)
+	if err != nil {
+		t.Fatalf("build intent: %v", err)
+	}
 	receiptID, transitionID, err := recordStoreGovernedProof(fake, ai, "summary", now)
 	if err == nil {
 		t.Fatal("expected error when transition write fails")
@@ -96,7 +119,10 @@ func TestRecordStoreGovernedProofCompensatesOrphanReceipt(t *testing.T) {
 func TestRecordStoreGovernedProofSurfacesCompensationFailure(t *testing.T) {
 	fake := &fakeEventstoreRecorder{failAfter: 1, failRemove: true}
 	now := time.Now()
-	ai := storeGovernedIntent("work_orphan2", "sync_apply", "postgres://u:****@db.example.invalid/compound", "preview", now)
+	ai, err := storeGovernedIntent("work_orphan2", "sync_apply", validExperimentalPostgresConfig("test"), "preview", now)
+	if err != nil {
+		t.Fatalf("build intent: %v", err)
+	}
 	receiptID, transitionID, err := recordStoreGovernedProof(fake, ai, "summary", now)
 	if err == nil {
 		t.Fatal("expected error")

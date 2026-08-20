@@ -32,14 +32,16 @@ Flags:
   --apply     Actually write records to Postgres; governed write — requires
               --work W and an allowing PolicyDecision (standing grant for
               capability store.postgres_export.write, external_side_effect
-              class, scoped to the masked DSN target). On success a
+              class, scoped to the opaque nonsecret profile target). On success a
               Receipt+Transition pair is recorded in the home event store.
   --json      Machine-readable output
   --home P    COMPOUND_HOME path (default: home.Resolve — env, then global default; no ancestor adoption)
 
 Environment:
-  COMPOUND_STORE  must be 'postgres' for --apply
-  COMPOUND_DSN    Postgres connection string (required for --apply)
+  COMPOUND_STORE                 must be 'postgres'
+  COMPOUND_EXPERIMENTAL_POSTGRES must be exactly '1'
+  COMPOUND_POSTGRES_PROFILE      nonsecret opaque profile label
+  COMPOUND_DSN                   Postgres connection string (never rendered or persisted)
 `
 
 type migrateSummary struct {
@@ -66,6 +68,12 @@ func runStoreMigrate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, storeMigrateUsage)
 		return 0
 	}
+	cfg, cfgErr := loadExperimentalPostgresConfig()
+	if cfgErr != nil {
+		fmt.Fprintln(stderr, "store migrate:", cfgErr)
+		return 1
+	}
+	targetRef := cfg.PostgresTargetRef()
 	if !apply && !hasFlag(args, "--dry-run") {
 		// Default to dry-run
 		fmt.Fprintln(stderr, "store migrate: no mode specified, defaulting to --dry-run")
@@ -135,19 +143,13 @@ func runStoreMigrate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error: --work W is required for --apply (a governed act belongs to a work)")
 		return 2
 	}
-	cfg := persist.ConfigFromEnv()
-	if cfg.Backend != persist.BackendPostgres {
-		fmt.Fprintln(stderr, "store migrate --apply: COMPOUND_STORE must be 'postgres'")
-		return 1
-	}
-	if cfg.DSN == "" {
-		fmt.Fprintln(stderr, "store migrate --apply: COMPOUND_DSN is required")
-		return 1
-	}
-
 	now := time.Now()
-	ai := storeGovernedIntent(work, "migrate_apply", maskDSN(cfg.DSN),
+	ai, intentErr := storeGovernedIntent(work, "migrate_apply", cfg,
 		fmt.Sprintf("bulk-load %d claims, %d edges, %d candidates from %s into Postgres", len(claims), len(edges), len(cands), homePath), now)
+	if intentErr != nil {
+		fmt.Fprintln(stderr, "store migrate: build governed intent:", intentErr)
+		return 1
+	}
 	if _, err := gateStoreGovernedWrite(homePath, ai, now); err != nil {
 		fmt.Fprintln(stderr, "store migrate --apply:", err)
 		return 1
@@ -158,13 +160,13 @@ func runStoreMigrate(args []string, stdout, stderr io.Writer) int {
 
 	store, err := pg.Open(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(stderr, "store migrate: connect: %v\n", err)
+		writePostgresFailure(stderr, "store migrate", targetRef, "connect", err)
 		return 1
 	}
 	defer store.Close()
 
 	if err := store.EnsureSchema(ctx); err != nil {
-		fmt.Fprintf(stderr, "store migrate: schema: %v\n", err)
+		writePostgresFailure(stderr, "store migrate", targetRef, "schema", err)
 		return 1
 	}
 
@@ -180,7 +182,7 @@ func runStoreMigrate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		summary.Errors += len(claims)
 		if !jsonOut {
-			fmt.Fprintf(stderr, "  claims bulk write failed: %v\n", err)
+			writePostgresFailure(stderr, "  claims", targetRef, "bulk write", err)
 		}
 	} else {
 		persistEdges := make([]persist.Edge, len(edges))
@@ -191,7 +193,7 @@ func runStoreMigrate(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			summary.Errors += len(edges)
 			if !jsonOut {
-				fmt.Fprintf(stderr, "  edges bulk write failed: %v\n", err)
+				writePostgresFailure(stderr, "  edges", targetRef, "bulk write", err)
 			}
 		} else {
 			persistCands := make([]persist.Candidate, len(cands))
@@ -202,7 +204,7 @@ func runStoreMigrate(args []string, stdout, stderr io.Writer) int {
 			if err != nil {
 				summary.Errors += len(cands)
 				if !jsonOut {
-					fmt.Fprintf(stderr, "  candidates bulk write failed: %v\n", err)
+					writePostgresFailure(stderr, "  candidates", targetRef, "bulk write", err)
 				}
 			}
 		}

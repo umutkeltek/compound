@@ -100,6 +100,13 @@ func TestContextPackRetrievalPostureAcceptsCanonicalCombinations(t *testing.T) {
 				Authority: RetrievalAuthorityCompoundLedger,
 			},
 		},
+		{
+			name: "not attempted after selecting an unavailable engine",
+			retrieval: RetrievalPosture{
+				Level: RetrievalLevelNotAttempted, Fallback: RetrievalFallbackLedgerRanker,
+				Authority: RetrievalAuthorityCompoundLedger, RequestedEngine: "pgvector",
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -131,7 +138,7 @@ func TestContextPackRetrievalPostureRejectsContradictions(t *testing.T) {
 		{name: "degraded with refusal error", retrieval: RetrievalPosture{Level: RetrievalLevelDegraded, Authority: RetrievalAuthorityCompoundLedger, RequestedEngine: "protocol", Fallback: RetrievalFallbackLedgerRanker, ErrorClass: RetrievalErrorProtocolVersion}, want: "degradable error_class"},
 		{name: "refused without fallback", retrieval: RetrievalPosture{Level: RetrievalLevelRefused, Authority: RetrievalAuthorityCompoundLedger, RequestedEngine: "protocol", ErrorClass: RetrievalErrorProtocolVersion}, want: "fallback"},
 		{name: "refused with degraded error", retrieval: RetrievalPosture{Level: RetrievalLevelRefused, Authority: RetrievalAuthorityCompoundLedger, RequestedEngine: "protocol", Fallback: RetrievalFallbackLedgerRanker, ErrorClass: RetrievalErrorUnavailable}, want: "integrity-refusal error_class"},
-		{name: "not attempted with requested engine", retrieval: RetrievalPosture{Level: RetrievalLevelNotAttempted, Authority: RetrievalAuthorityCompoundLedger, Fallback: RetrievalFallbackLedgerRanker, RequestedEngine: "protocol"}, want: "must not carry engine identities"},
+		{name: "not attempted with observed engine", retrieval: RetrievalPosture{Level: RetrievalLevelNotAttempted, Authority: RetrievalAuthorityCompoundLedger, Fallback: RetrievalFallbackLedgerRanker, ObservedEngine: "semantic-index"}, want: "must not carry observed_engine"},
 		{name: "not attempted with error", retrieval: RetrievalPosture{Level: RetrievalLevelNotAttempted, Authority: RetrievalAuthorityCompoundLedger, Fallback: RetrievalFallbackLedgerRanker, ErrorClass: RetrievalErrorRetrieval}, want: "must not carry error_class"},
 		{name: "wrong authority", retrieval: RetrievalPosture{Level: RetrievalLevelNotAttempted, Authority: "provider_index", Fallback: RetrievalFallbackLedgerRanker}, want: "authority"},
 		{name: "wrong fallback", retrieval: RetrievalPosture{Level: RetrievalLevelDegraded, Authority: RetrievalAuthorityCompoundLedger, Fallback: "retry_provider", RequestedEngine: "protocol", ErrorClass: RetrievalErrorUnavailable}, want: "fallback"},

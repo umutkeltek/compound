@@ -1,12 +1,19 @@
 # ADR-0006: Postgres+pgvector Adoption
 
-**Status:** DEFERRED — pending a measured trigger (see "Trigger")
+**Status:** Historical proposal — never ratified; not the current runtime decision
 **Date:** 2026-08-02
 **Depends on:** ADR-0005 (the storage seam this would plug a second
 implementation into)
 **In tension with:** ADR-0001 (local monolith information kernel)
 **Split from:** the draft ADR-0005 "Postgres+pgvector Storage Engine and
 Package Consolidation" (dated 2026-07-31; never ratified)
+
+> This trigger proposal remains useful design evidence but is not current
+> authority. The accepted bounded decision is
+> [ADR-0005: Postgres+pgvector Storage Experiment](0005-postgres-pgvector-storage-experiment.md):
+> preserve the already-built adapter for explicit parity experiments, keep file
+> storage as the sole supported authority, and require a separate experimental
+> gate plus opaque nonsecret profile identity. No production cutover is ratified.
 
 ## Context
 
@@ -42,10 +49,12 @@ here, so the re-proposal is a measurement attachment, not a redesign:
   is a ceiling. pgvector supplies native similarity search. Postgres
   runs as a local service (Postgres.app, Homebrew, Docker), keeping
   the local-first model — no cloud dependency.
-- **Opt-in, second implementation, never a replacement.** Selection
-  via `COMPOUND_STORE=postgres` + `COMPOUND_DSN=postgres://...`
-  against the ADR-0005 interfaces. The file backend stays default and
-  must keep working forever.
+- **Historical proposed opt-in shape, never a replacement.** This proposal
+  named `COMPOUND_STORE=postgres` plus `COMPOUND_DSN`; that two-input shape was
+  not ratified and is not the current admission contract. The accepted
+  experiment additionally requires `COMPOUND_EXPERIMENTAL_POSTGRES=1` and an
+  opaque `COMPOUND_POSTGRES_PROFILE`. The file backend stays default and must
+  keep working forever.
 - **Migration per object family, not all-or-nothing.** A
   `compound store migrate` command copies file-based state into
   Postgres; it never deletes the files. A `compound store doctor`
@@ -59,7 +68,8 @@ here, so the re-proposal is a measurement attachment, not a redesign:
 
 ## Trigger
 
-The re-proposal that moves this ADR from DEFERRED to Proposed must
+This section records the trigger the historical proposal required. This ADR
+will not change state; any future adoption decision must be a new ADR and must
 attach a measurement filing containing ALL of:
 
 1. **Corpus tiers.** `compound memory recall` end-to-end p95 latency
@@ -132,7 +142,7 @@ violates ADR-0001 rather than merely tensioning it:
 - The trigger is never measured because the milestone obligation goes
   unenforced. Mitigation: the obligation is named per-change, not
   per-quarter; the arch doctor or a recall-scale check can pick it up
-  if this ADR is still DEFERRED when the corpus is clearly large.
+  if no replacement decision exists when the corpus is clearly large.
 - The tension with ADR-0001 gets "resolved" by quietly making Postgres
   required. Mitigation: the constraints above are written as violation
   conditions, so a future re-proposal that drops them is visibly a

@@ -86,6 +86,7 @@ func retrievalPostureFromEngineTrace(trace EngineDependencyTrace) *envelope.Retr
 		posture.ObservedEngine = trace.ObservedEngine
 		posture.ErrorClass = trace.ErrorClass
 	case EngineOutcomeNotAttempted:
+		posture.RequestedEngine = boundedEngineIdentity(trace.RequestedEngine)
 		posture.Fallback = envelope.RetrievalFallbackLedgerRanker
 	default:
 		// Preserve an impossible internal outcome so ContextPack validation fails
@@ -2192,9 +2193,35 @@ type contextPositionRef struct {
 // measured recall.
 var breadthEngineFactory = mem.DefaultBreadthEngine
 
-// pgvectorEnabled reports whether the postgres+pgvector store backend is active.
+// externalStoreSelected reports whether the operator selected anything other
+// than the supported file backend or supplied any Postgres-only configuration.
+// Unknown and partial values deliberately return true: the injected factory
+// then rejects them as degraded configuration, so a typo or stray credential
+// can never silently fall back to file/breadth recall.
+func externalStoreSelected() bool {
+	selected := os.Getenv("COMPOUND_STORE")
+	if selected != "" && selected != "file" {
+		return true
+	}
+	for _, key := range []string{
+		"COMPOUND_EXPERIMENTAL_POSTGRES",
+		"COMPOUND_POSTGRES_PROFILE",
+		"COMPOUND_DSN",
+		"COMPOUND_VECTOR_DIMS",
+	} {
+		if os.Getenv(key) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// pgvectorEnabled preserves the existing composition predicate name while the
+// experimental adapter remains the only external-store factory. Admission
+// (exact postgres selection + separate opt-in + profile + DSN) is enforced by
+// that factory before it parses or dials connection data.
 func pgvectorEnabled() bool {
-	return strings.TrimSpace(os.Getenv("COMPOUND_STORE")) == "postgres"
+	return externalStoreSelected()
 }
 
 // CloseableEngine is a rented recall engine whose connections the caller closes
@@ -2342,7 +2369,7 @@ type semanticTaskRankResult struct {
 // instead of swamping them.
 func semanticTaskRankResultWithEmbedderFromView(homePath string, in Input, trace *EngineDependencyTrace, embedder breadth.EmbedderAdapter, store *mem.Store, view *mem.CurrentView, expanded *mem.ExpandedQuery) semanticTaskRankResult {
 	if trace != nil {
-		if in.ReadOnlyRetrieval && embedder != nil {
+		if in.ReadOnlyRetrieval && embedder != nil && !pgvectorEnabled() {
 			trace.RequestedEngine = breadth.Name
 		} else {
 			trace.RequestedEngine = requestedEngineIdentity()
@@ -2456,6 +2483,9 @@ func semanticTaskRankResultWithEmbedderFromView(homePath string, in Input, trace
 }
 
 func requestedEngineIdentity() string {
+	if pgvectorEnabled() {
+		return "pgvector"
+	}
 	if profile := boundedEngineIdentity(os.Getenv("COMPOUND_MEMORY_CLI_PROFILE")); profile != "" {
 		return profile
 	}

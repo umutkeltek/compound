@@ -1,6 +1,7 @@
 // Package pg implements the persist interfaces backed by Postgres + pgvector.
-// It is opt-in (COMPOUND_STORE=postgres) and requires a running Postgres instance
-// with the vector extension enabled.
+// It is experimental: COMPOUND_STORE=postgres plus a separate explicit opt-in
+// and nonsecret profile label are required before a DSN is parsed or a running
+// Postgres instance with the vector extension is contacted.
 //
 // The schema is auto-created on first connection via EnsureSchema().
 // The file-based backend remains the default; this package is never imported
@@ -38,13 +39,14 @@ type Store struct {
 // Open connects to Postgres and verifies the vector extension is available.
 // It does NOT create tables — call EnsureSchema() for that.
 func Open(ctx context.Context, cfg persist.Config) (*Store, error) {
-	if cfg.DSN == "" {
-		return nil, fmt.Errorf("persist/pg: COMPOUND_DSN required when COMPOUND_STORE=postgres")
+	if err := cfg.ValidatePostgresExperiment(); err != nil {
+		return nil, fmt.Errorf("persist/pg: %w", err)
 	}
+	profile := cfg.PostgresTargetRef()
 
 	poolCfg, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {
-		return nil, fmt.Errorf("persist/pg: parse DSN: %w", err)
+		return nil, fmt.Errorf("persist/pg: connection configuration for %s is invalid", profile)
 	}
 
 	// Conservative pool for a local-first tool
@@ -54,13 +56,13 @@ func Open(ctx context.Context, cfg persist.Config) (*Store, error) {
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
-		return nil, fmt.Errorf("persist/pg: connect: %w", err)
+		return nil, fmt.Errorf("persist/pg: connection pool for %s could not be created", profile)
 	}
 
 	// Verify connectivity
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("persist/pg: ping: %w", err)
+		return nil, fmt.Errorf("persist/pg: %s is unavailable", profile)
 	}
 
 	return &Store{pool: pool, cfg: cfg}, nil

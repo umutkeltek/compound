@@ -744,8 +744,8 @@ func validateRetrievalPosture(v *verr, posture RetrievalPosture) {
 		}
 	case RetrievalLevelNotAttempted:
 		requireLedgerFallback()
-		if posture.RequestedEngine != "" || posture.ObservedEngine != "" {
-			v.addf("retrieval level not_attempted must not carry engine identities")
+		if posture.ObservedEngine != "" {
+			v.addf("retrieval level not_attempted must not carry observed_engine")
 		}
 		if posture.ErrorClass != "" {
 			v.addf("retrieval level not_attempted must not carry error_class")

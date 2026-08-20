@@ -33,9 +33,11 @@ func testStore(t *testing.T) *pg.Store {
 	dsn := testDSN(t)
 	ctx := context.Background()
 	cfg := persist.Config{
-		Backend:          persist.BackendPostgres,
-		DSN:              dsn,
-		VectorDimensions: 8, // small dims for fast tests
+		Backend:              persist.BackendPostgres,
+		DSN:                  dsn,
+		ExperimentalPostgres: true,
+		PostgresProfile:      "doctor-integration-test",
+		VectorDimensions:     8, // small dims for fast tests
 	}
 	store, err := pg.Open(ctx, cfg)
 	if err != nil {
@@ -194,6 +196,8 @@ func TestDoctorVectorProbeStampsEmbedderIdentity(t *testing.T) {
 func TestStoreDoctorRunsWithoutError(t *testing.T) {
 	t.Setenv("COMPOUND_STORE", "postgres")
 	t.Setenv("COMPOUND_DSN", testDSN(t))
+	t.Setenv(persist.ExperimentalPostgresEnv, "1")
+	t.Setenv(persist.PostgresProfileEnv, "doctor-integration-test")
 	t.Setenv("COMPOUND_VECTOR_DIMS", "8")
 
 	var stdout, stderr bytes.Buffer

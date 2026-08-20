@@ -4,7 +4,7 @@
 **Date:** 2026-07-31
 **Supersedes:** none
 **Retires:** nothing yet; the file backend remains authoritative
-**Related:** ADR-0006 (Package Consolidation Freeze Protocol)
+**Related:** ADR-0007 (package consolidation and CLI decomposition)
 
 Implementation has advanced beyond the original proposal: an experimental
 `internal/persist/pg` adapter and `compound store` operator surface now exist.
@@ -59,13 +59,21 @@ The corrected target is:
 
 **Why an interface layer, not a big-bang migration:**
 - Active lanes must not break. The interface layer is purely additive.
-- The file-based implementation remains the DEFAULT. Postgres is opt-in via
-  `COMPOUND_STORE=postgres` + `COMPOUND_DSN=postgres://...`.
+- The file-based implementation remains the supported DEFAULT. Postgres is
+  admitted only when all four process-local inputs are present:
+  `COMPOUND_STORE=postgres`, `COMPOUND_EXPERIMENTAL_POSTGRES=1`, a nonsecret
+  `COMPOUND_POSTGRES_PROFILE`, and `COMPOUND_DSN`. Selection alone fails closed.
+  `COMPOUND_DSN` is a process-memory-only DSN: it may be used to establish the
+  connection but never becomes a report, receipt, transition, or persisted
+  configuration value. Every unknown/partial configuration is refused
+  without file or breadth fallback.
+  Runtime output and durable authority objects use only
+  `postgres-profile:<label>`; even a masked DSN is never rendered or persisted.
 - Migration is per-object-family, not all-or-nothing.
 
 ### 2. Package consolidation is a separate deferred decision
 
-Package moves are not part of this storage experiment. ADR-0006 defines the
+Package moves are not part of this storage experiment. ADR-0007 defines the
 operator freeze protocol if consolidation is ever separately approved.
 
 ### 3. CLI decomposition is out of scope
@@ -89,7 +97,7 @@ Future cutover proposal — requires separate operator approval
   ├── Shadow reads with zero-bypass evidence
   └── Family-by-family authority decision
 
-Package consolidation — ADR-0006 only
+Package consolidation — ADR-0007 only
   └── No package move occurs in the storage burst
 ```
 
@@ -103,6 +111,9 @@ Package consolidation — ADR-0006 only
 4. Existing files are never deleted or rewritten by migration in this burst.
 5. No production authority cutover occurs until file/Postgres contract parity,
    strict migration, backup/restore, and anti-bypass evidence are ratified.
+6. Unknown backend names and incomplete experimental configuration are
+   selected-but-unavailable states, never permission to fall back silently to
+   the file/breadth lane.
 
 ## Current implementation and required correction
 
@@ -147,4 +158,5 @@ only the persistence adapter imports pgx.
 This ADR ratifies only additive experimentation and proof work. Production
 authority cutover requires a later decision backed by owner-level contract
 parity, strict resumable migration, backup/restore rehearsal, and zero-bypass
-evidence. ADR-0006 remains independently proposed and deferred.
+evidence. The conflicting ADR-0006 adoption proposal remains historical and
+never ratified; any future production cutover requires a new decision.

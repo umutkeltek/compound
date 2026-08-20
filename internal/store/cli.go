@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -58,16 +59,16 @@ Subcommands:
                      compound memory recall — this is an operator debug surface.
 
 Environment:
-  COMPOUND_DSN          Postgres connection string (required)
-  COMPOUND_STORE        Must be "postgres" for store commands
+  COMPOUND_STORE        Must be "postgres" for this experimental surface
+  COMPOUND_EXPERIMENTAL_POSTGRES  Must be exactly "1" (separate explicit opt-in)
+  COMPOUND_POSTGRES_PROFILE       Nonsecret opaque profile label (required)
+  COMPOUND_DSN          Postgres connection string (required; never rendered or persisted)
   COMPOUND_VECTOR_DIMS  Embedding dimensions (default: 1536)
   COMPOUND_EMBED_URL    OpenAI-compatible embeddings API base URL (required for embed/recall)
   COMPOUND_EMBED_MODEL  Embedding model name (default: nomic-embed-text)
 
 Examples:
-  Set COMPOUND_DSN to a Postgres URL of the shape
-    postgres://<user>:<password>@<host>:<port>/<database>
-  then run:
+  Configure the three experimental environment variables above, then run:
     compound store doctor
   compound store init
   compound store status --json
@@ -119,7 +120,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 type storeDoctorReport struct {
 	Backend  string             `json:"backend"`
-	DSN      string             `json:"dsn_masked"`
+	Profile  string             `json:"profile,omitempty"`
 	Checks   []storeDoctorCheck `json:"checks"`
 	AllOK    bool               `json:"all_ok"`
 	Duration string             `json:"duration"`
@@ -139,26 +140,17 @@ func runStoreDoctor(args []string, stdout, stderr io.Writer) int {
 	start := time.Now()
 	report := storeDoctorReport{Backend: "postgres"}
 
-	cfg := persist.ConfigFromEnv()
-	if cfg.Backend != persist.BackendPostgres {
+	cfg, cfgErr := loadExperimentalPostgresConfig()
+	if cfgErr != nil {
 		report.Checks = append(report.Checks, storeDoctorCheck{
 			Name: "env", Status: "fail",
-			Detail: "COMPOUND_STORE is not set to 'postgres' (got: " + string(cfg.Backend) + ")",
+			Detail: cfgErr.Error(),
 		})
 		report.AllOK = false
 		emitStoreDoctor(stdout, report, jsonOut)
 		return 1
 	}
-	report.DSN = maskDSN(cfg.DSN)
-
-	if cfg.DSN == "" {
-		report.Checks = append(report.Checks, storeDoctorCheck{
-			Name: "env", Status: "fail", Detail: "COMPOUND_DSN is empty",
-		})
-		report.AllOK = false
-		emitStoreDoctor(stdout, report, jsonOut)
-		return 1
-	}
+	report.Profile = cfg.PostgresTargetRef()
 
 	// 1. Connect
 	store, err := pg.Open(ctx, cfg)
@@ -208,7 +200,7 @@ func runStoreDoctor(args []string, stdout, stderr io.Writer) int {
 
 	// 8. Remove every probe row (claims/candidates/events/work_envelopes); the
 	// vector probe is removed inside checkVectors through the store's own Delete.
-	checkCleanup(ctx, cfg.DSN, probe, &report)
+	checkCleanup(ctx, cfg.DSN, cfg.PostgresTargetRef(), probe, &report)
 
 	report.AllOK = true
 	for _, c := range report.Checks {
@@ -443,11 +435,11 @@ func checkCandidates(ctx context.Context, store *pg.Store, probe storeDoctorProb
 // deliberately exposes no row deletes for the append-only authority tables, so
 // cleanup runs through a short-lived raw connection scoped to the exact probe
 // ids. A cleanup failure is a failed check — never a silent leak.
-func checkCleanup(ctx context.Context, dsn string, probe storeDoctorProbe, report *storeDoctorReport) {
+func checkCleanup(ctx context.Context, dsn, profile string, probe storeDoctorProbe, report *storeDoctorReport) {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		report.Checks = append(report.Checks, storeDoctorCheck{
-			Name: "cleanup", Status: "fail", Detail: "connect: " + err.Error(),
+			Name: "cleanup", Status: "fail", Detail: "connection for " + profile + " is unavailable",
 		})
 		return
 	}
@@ -467,7 +459,7 @@ func checkCleanup(ctx context.Context, dsn string, probe storeDoctorProbe, repor
 	for _, d := range deletes {
 		if _, err := conn.Exec(ctx, "DELETE FROM "+d.table+" WHERE "+d.column+" = $1", d.id); err != nil {
 			report.Checks = append(report.Checks, storeDoctorCheck{
-				Name: "cleanup", Status: "fail", Detail: fmt.Sprintf("delete %s: %v", d.table, err),
+				Name: "cleanup", Status: "fail", Detail: fmt.Sprintf("delete %s for %s failed", d.table, profile),
 			})
 			return
 		}
@@ -478,6 +470,15 @@ func checkCleanup(ctx context.Context, dsn string, probe storeDoctorProbe, repor
 }
 
 func emitStoreDoctor(stdout io.Writer, report storeDoctorReport, jsonOut bool) {
+	if report.Profile != "" {
+		checks := append([]storeDoctorCheck(nil), report.Checks...)
+		for i := range checks {
+			if checks[i].Status != "ok" && checks[i].Detail != "" {
+				checks[i].Detail = safePostgresDetail(report.Profile, checks[i].Name, errors.New(checks[i].Detail))
+			}
+		}
+		report.Checks = checks
+	}
 	if jsonOut {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
@@ -489,7 +490,9 @@ func emitStoreDoctor(stdout io.Writer, report storeDoctorReport, jsonOut bool) {
 	// Human-readable output
 	fmt.Fprintf(stdout, "store doctor (%s)\n", report.Duration)
 	fmt.Fprintf(stdout, "  backend: %s\n", report.Backend)
-	fmt.Fprintf(stdout, "  dsn:     %s\n", report.DSN)
+	if report.Profile != "" {
+		fmt.Fprintf(stdout, "  profile: %s\n", report.Profile)
+	}
 	fmt.Fprintln(stdout)
 	for _, c := range report.Checks {
 		mark := "✓"
@@ -517,25 +520,21 @@ func runStoreInit(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cfg := persist.ConfigFromEnv()
-	if cfg.Backend != persist.BackendPostgres {
-		fmt.Fprintln(stderr, "store init: COMPOUND_STORE must be 'postgres'")
-		return 1
-	}
-	if cfg.DSN == "" {
-		fmt.Fprintln(stderr, "store init: COMPOUND_DSN is required")
+	cfg, cfgErr := loadExperimentalPostgresConfig()
+	if cfgErr != nil {
+		fmt.Fprintln(stderr, "store init:", cfgErr)
 		return 1
 	}
 
 	store, err := pg.Open(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(stderr, "store init: connect: %v\n", err)
+		writePostgresFailure(stderr, "store init", cfg.PostgresTargetRef(), "connect", err)
 		return 1
 	}
 	defer store.Close()
 
 	if err := store.EnsureSchema(ctx); err != nil {
-		fmt.Fprintf(stderr, "store init: schema: %v\n", err)
+		writePostgresFailure(stderr, "store init", cfg.PostgresTargetRef(), "schema", err)
 		return 1
 	}
 
@@ -544,7 +543,7 @@ func runStoreInit(args []string, stdout, stderr io.Writer) int {
 			"status":  "ok",
 			"backend": "postgres",
 			"schema":  "created",
-			"dsn":     maskDSN(cfg.DSN),
+			"profile": cfg.PostgresTargetRef(),
 		})
 		return 0
 	}
@@ -559,7 +558,7 @@ func runStoreInit(args []string, stdout, stderr io.Writer) int {
 
 type storeStatusReport struct {
 	Backend    string           `json:"backend"`
-	DSN        string           `json:"dsn_masked"`
+	Profile    string           `json:"profile,omitempty"`
 	Connected  bool             `json:"connected"`
 	Tables     map[string]int64 `json:"tables,omitempty"`
 	VectorDims int              `json:"vector_dims"`
@@ -571,24 +570,18 @@ func runStoreStatus(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cfg := persist.ConfigFromEnv()
+	cfg, cfgErr := loadExperimentalPostgresConfig()
 	report := storeStatusReport{
 		Backend:    string(cfg.Backend),
 		VectorDims: cfg.VectorDimensions,
 	}
 
-	if cfg.Backend != persist.BackendPostgres {
-		report.Error = "COMPOUND_STORE is not 'postgres'"
+	if cfgErr != nil {
+		report.Error = cfgErr.Error()
 		emitStoreStatus(stdout, report, jsonOut)
 		return 1
 	}
-	report.DSN = maskDSN(cfg.DSN)
-
-	if cfg.DSN == "" {
-		report.Error = "COMPOUND_DSN is empty"
-		emitStoreStatus(stdout, report, jsonOut)
-		return 1
-	}
+	report.Profile = cfg.PostgresTargetRef()
 
 	store, err := pg.Open(ctx, cfg)
 	if err != nil {
@@ -607,6 +600,9 @@ func runStoreStatus(args []string, stdout, stderr io.Writer) int {
 }
 
 func emitStoreStatus(stdout io.Writer, report storeStatusReport, jsonOut bool) {
+	if report.Profile != "" && report.Error != "" {
+		report.Error = safePostgresDetail(report.Profile, "status", errors.New(report.Error))
+	}
 	if jsonOut {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
@@ -625,7 +621,7 @@ func emitStoreStatus(stdout io.Writer, report storeStatusReport, jsonOut bool) {
 		return
 	}
 	fmt.Fprintf(stdout, "  connected: yes\n")
-	fmt.Fprintf(stdout, "  dsn: %s\n", report.DSN)
+	fmt.Fprintf(stdout, "  profile: %s\n", report.Profile)
 	fmt.Fprintf(stdout, "  vector_dims: %d\n", report.VectorDims)
 	if len(report.Tables) > 0 {
 		fmt.Fprintln(stdout, "  tables:")
@@ -665,14 +661,15 @@ type syncEdgeRow struct {
 
 func runStoreSync(args []string, stdout, stderr io.Writer) int {
 	jsonOut := hasFlag(args, "--json")
+	cfg, cfgErr := loadExperimentalPostgresConfig()
+	if cfgErr != nil {
+		fmt.Fprintln(stderr, "store sync:", cfgErr)
+		return 1
+	}
+	targetRef := cfg.PostgresTargetRef()
 	homePath, err := home.Resolve(valueFlag(args, "--home"))
 	if err != nil {
 		fmt.Fprintf(stderr, "store sync: resolve home: %v (run `compound home init`)\n", err)
-		return 1
-	}
-	cfg := persist.ConfigFromEnv()
-	if cfg.Backend != persist.BackendPostgres || cfg.DSN == "" {
-		fmt.Fprintln(stderr, "store sync: COMPOUND_STORE=postgres and COMPOUND_DSN required")
 		return 1
 	}
 
@@ -680,8 +677,12 @@ func runStoreSync(args []string, stdout, stderr io.Writer) int {
 	// an allowing PolicyDecision (mirrors `event-store rebaseline`).
 	if !hasFlag(args, "--confirm") {
 		claimsN, edgesN := countLedgerRows(homePath)
-		ai := storeGovernedIntent("work_dryrun", "sync_apply", maskDSN(cfg.DSN),
+		ai, intentErr := storeGovernedIntent("work_dryrun", "sync_apply", cfg,
 			fmt.Sprintf("incremental sync of ~%d claims, ~%d edges from %s into Postgres", claimsN, edgesN, homePath), time.Now())
+		if intentErr != nil {
+			fmt.Fprintln(stderr, "store sync: build governed intent:", intentErr)
+			return 1
+		}
 		_, gateErr := gateStoreGovernedWrite(homePath, ai, time.Now())
 		if jsonOut {
 			if err := encodeJSON(stdout, map[string]any{
@@ -708,8 +709,12 @@ func runStoreSync(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	now := time.Now()
-	ai := storeGovernedIntent(work, "sync_apply", maskDSN(cfg.DSN),
+	ai, intentErr := storeGovernedIntent(work, "sync_apply", cfg,
 		fmt.Sprintf("incremental sync of the file ledger from %s into Postgres", homePath), now)
+	if intentErr != nil {
+		fmt.Fprintln(stderr, "store sync: build governed intent:", intentErr)
+		return 1
+	}
 	if _, err := gateStoreGovernedWrite(homePath, ai, now); err != nil {
 		fmt.Fprintln(stderr, "store sync --confirm:", err)
 		return 1
@@ -719,20 +724,20 @@ func runStoreSync(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	store, err := pg.Open(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(stderr, "store sync: connect: %v\n", err)
+		writePostgresFailure(stderr, "store sync", targetRef, "connect", err)
 		return 1
 	}
 	defer store.Close()
 	if err := store.EnsureSchema(ctx); err != nil {
-		fmt.Fprintf(stderr, "store sync: schema: %v\n", err)
+		writePostgresFailure(stderr, "store sync", targetRef, "schema", err)
 		return 1
 	}
 	if !jsonOut {
 		fmt.Fprintf(stdout, "store sync: %s → postgres\n", homePath)
 	}
 	start := time.Now()
-	claimsUp, claimsErr := syncClaims(ctx, store, filepath.Join(homePath, "ledger", "claims.jsonl"), stdout, jsonOut)
-	edgesUp, edgesErr := syncEdges(ctx, store, filepath.Join(homePath, "ledger", "edges.jsonl"), stdout, jsonOut)
+	claimsUp, claimsErr := syncClaims(ctx, store, filepath.Join(homePath, "ledger", "claims.jsonl"), targetRef, stdout, jsonOut)
+	edgesUp, edgesErr := syncEdges(ctx, store, filepath.Join(homePath, "ledger", "edges.jsonl"), targetRef, stdout, jsonOut)
 	duration := time.Since(start).Round(time.Second)
 
 	var receiptID, transitionID string
@@ -807,7 +812,7 @@ func countLedgerRows(homePath string) (claims, edges int) {
 	return count("claims.jsonl"), count("edges.jsonl")
 }
 
-func syncClaims(ctx context.Context, store *pg.Store, path string, stdout io.Writer, jsonOut bool) (int, int) {
+func syncClaims(ctx context.Context, store *pg.Store, path, profile string, stdout io.Writer, jsonOut bool) (int, int) {
 	f, err := os.Open(path)
 	if err != nil {
 		if !jsonOut {
@@ -860,14 +865,14 @@ func syncClaims(ctx context.Context, store *pg.Store, path string, stdout io.Wri
 	written, err := store.BulkAppendClaims(ctx, claims)
 	if err != nil {
 		if !jsonOut {
-			fmt.Fprintf(stdout, "  claims: bulk write failed: %v\n", err)
+			writePostgresFailure(stdout, "  claims", profile, "bulk write", err)
 		}
 		return 0, parseErrors + len(claims)
 	}
 	return written, parseErrors
 }
 
-func syncEdges(ctx context.Context, store *pg.Store, path string, stdout io.Writer, jsonOut bool) (int, int) {
+func syncEdges(ctx context.Context, store *pg.Store, path, profile string, stdout io.Writer, jsonOut bool) (int, int) {
 	f, err := os.Open(path)
 	if err != nil {
 		if !jsonOut {
@@ -911,7 +916,7 @@ func syncEdges(ctx context.Context, store *pg.Store, path string, stdout io.Writ
 	written, err := store.BulkAppendEdges(ctx, edges)
 	if err != nil {
 		if !jsonOut {
-			fmt.Fprintf(stdout, "  edges: bulk write failed: %v\n", err)
+			writePostgresFailure(stdout, "  edges", profile, "bulk write", err)
 		}
 		return 0, parseErrors + len(edges)
 	}
@@ -942,11 +947,12 @@ func runStoreEmbed(args []string, stdout, stderr io.Writer, authorized bool) int
 	}
 	ollamaURL := storeEnvOr("COMPOUND_EMBED_URL", defaultEmbedBaseURL)
 	model := storeEnvOr("COMPOUND_EMBED_MODEL", "nomic-embed-text")
-	cfg := persist.ConfigFromEnv()
-	if cfg.Backend != persist.BackendPostgres || cfg.DSN == "" {
-		fmt.Fprintln(stderr, "store embed: COMPOUND_STORE=postgres and COMPOUND_DSN required")
+	cfg, cfgErr := loadExperimentalPostgresConfig()
+	if cfgErr != nil {
+		fmt.Fprintln(stderr, "store embed:", cfgErr)
 		return 1
 	}
+	targetRef := cfg.PostgresTargetRef()
 	dims := cfg.VectorDimensions
 	if dims <= 0 {
 		dims = 1536
@@ -966,8 +972,12 @@ func runStoreEmbed(args []string, stdout, stderr io.Writer, authorized bool) int
 			return 1
 		}
 		if !hasFlag(args, "--confirm") {
-			ai := storeGovernedIntent("work_dryrun", "embed_apply", maskDSN(cfg.DSN),
+			ai, intentErr := storeGovernedIntent("work_dryrun", "embed_apply", cfg,
 				"embed unembedded claims into pgvector", proofNow)
+			if intentErr != nil {
+				fmt.Fprintln(stderr, "store embed: build governed intent:", intentErr)
+				return 1
+			}
 			_, gateErr := gateStoreGovernedWrite(homePath, ai, proofNow)
 			if jsonOut {
 				if err := encodeJSON(stdout, map[string]any{"mode": "dry-run", "allowed": gateErr == nil}); err != nil {
@@ -989,8 +999,13 @@ func runStoreEmbed(args []string, stdout, stderr io.Writer, authorized bool) int
 			fmt.Fprintln(stderr, "error: --work W is required for --confirm (a governed act belongs to a work)")
 			return 2
 		}
-		proofAI = storeGovernedIntent(work, "embed_apply", maskDSN(cfg.DSN),
+		var intentErr error
+		proofAI, intentErr = storeGovernedIntent(work, "embed_apply", cfg,
 			"embed unembedded claims into pgvector", proofNow)
+		if intentErr != nil {
+			fmt.Fprintln(stderr, "store embed: build governed intent:", intentErr)
+			return 1
+		}
 		if _, err := gateStoreGovernedWrite(homePath, proofAI, proofNow); err != nil {
 			fmt.Fprintln(stderr, "store embed --confirm:", err)
 			return 1
@@ -1002,7 +1017,7 @@ func runStoreEmbed(args []string, stdout, stderr io.Writer, authorized bool) int
 	defer cancel()
 	store, err := pg.Open(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(stderr, "store embed: connect: %v\n", err)
+		writePostgresFailure(stderr, "store embed", targetRef, "connect", err)
 		return 1
 	}
 	defer store.Close()
@@ -1011,7 +1026,7 @@ func runStoreEmbed(args []string, stdout, stderr io.Writer, authorized bool) int
 		Limit:      0,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "store embed: load claims: %v\n", err)
+		writePostgresFailure(stderr, "store embed", targetRef, "load claims", err)
 		return 1
 	}
 	existing, _ := store.Count()
@@ -1182,14 +1197,14 @@ func runStoreRecall(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cfg := persist.ConfigFromEnv()
-	if cfg.Backend != persist.BackendPostgres || cfg.DSN == "" {
-		fmt.Fprintln(stderr, "store recall: COMPOUND_STORE=postgres and COMPOUND_DSN required")
+	cfg, cfgErr := loadExperimentalPostgresConfig()
+	if cfgErr != nil {
+		fmt.Fprintln(stderr, "store recall:", cfgErr)
 		return 1
 	}
 	store, err := pg.Open(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(stderr, "store recall: connect: %v\n", err)
+		writePostgresFailure(stderr, "store recall", cfg.PostgresTargetRef(), "connect", err)
 		return 1
 	}
 	defer store.Close()
@@ -1204,7 +1219,7 @@ func runStoreRecall(args []string, stdout, stderr io.Writer) int {
 	}
 	hits, err := store.Search(vectors[0], k, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "store recall: search: %v\n", err)
+		writePostgresFailure(stderr, "store recall", cfg.PostgresTargetRef(), "search", err)
 		return 1
 	}
 	if jsonOut {
@@ -1238,40 +1253,4 @@ func storeEnvOr(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-// maskDSN redacts the password from a DSN for safe display.
-func maskDSN(dsn string) string {
-	if dsn == "" {
-		return "(unset)"
-	}
-	at := -1
-	for i := len(dsn) - 1; i >= 0; i-- {
-		if dsn[i] == '@' {
-			at = i
-			break
-		}
-	}
-	if at < 0 {
-		return dsn
-	}
-	prefix := dsn[:at]
-	schemeEnd := 0
-	for i := 0; i < len(prefix)-2; i++ {
-		if prefix[i:i+3] == "://" {
-			schemeEnd = i + 3
-			break
-		}
-	}
-	colonIdx := -1
-	for i := schemeEnd; i < len(prefix); i++ {
-		if prefix[i] == ':' {
-			colonIdx = i
-			break
-		}
-	}
-	if colonIdx < 0 {
-		return dsn
-	}
-	return prefix[:colonIdx+1] + "****" + dsn[at:]
 }

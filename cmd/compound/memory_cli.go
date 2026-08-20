@@ -689,6 +689,17 @@ func cmdMemory(args []string) {
 	case "doctor":
 		var r mem.Report
 		var eng mem.Engine
+		// A selected or malformed external store is a categorical refusal;
+		// otherwise an empty home lets doctor report the supported file lane as
+		// healthy without ever invoking the refusing engine.
+		if externalStoreErr := memoryExternalStoreRefusal(); externalStoreErr != nil {
+			if has("--json") {
+				printJSON(map[string]any{"ok": false, "error": externalStoreErr.Error()})
+			} else {
+				fmt.Fprintln(os.Stderr, "memory doctor:", externalStoreErr)
+			}
+			os.Exit(1)
+		}
 		if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) != "" {
 			var closeEng func()
 			eng, closeEng = memBreadthEngine()

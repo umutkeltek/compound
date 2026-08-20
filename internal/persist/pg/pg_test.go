@@ -30,9 +30,11 @@ func testStore(t *testing.T) *Store {
 	dsn := testDSN(t)
 	ctx := context.Background()
 	cfg := persist.Config{
-		Backend:          persist.BackendPostgres,
-		DSN:              dsn,
-		VectorDimensions: 8, // small dims for fast tests
+		Backend:              persist.BackendPostgres,
+		DSN:                  dsn,
+		ExperimentalPostgres: true,
+		PostgresProfile:      "integration-test",
+		VectorDimensions:     8, // small dims for fast tests
 	}
 	store, err := Open(ctx, cfg)
 	if err != nil {

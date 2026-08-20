@@ -347,8 +347,8 @@ var mintHomes = map[string]MintHome{
 	},
 	"organ:persist": {
 		Class:    MintEvidence,
-		Purpose:  "storage abstraction layer defining LedgerStore/EventStore/WorkStore/VectorStore interfaces with a Postgres+pgvector backend selectable via COMPOUND_STORE env; file backend remains default",
-		Consumer: "home.Open backend selection (COMPOUND_STORE=postgres) and future compound store doctor validation",
+		Purpose:  "storage abstraction layer defining LedgerStore/EventStore/WorkStore/VectorStore interfaces; file is the sole supported backend and the Postgres+pgvector adapter is behind fail-closed experimental admission",
+		Consumer: "internal/store operator verbs and internal/contract's injected experimental recall-engine factory",
 	},
 	// stream is the read-only tail organ over the work-event log + ledger seq: it emits JSONL frames
 	// (a finite --once snapshot with an end-of-log cursor + generated_at, or a long-running --follow

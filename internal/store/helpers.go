@@ -4,12 +4,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
+	"compound/internal/persist"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Small CLI helpers the organ needs, mirrored from cmd/compound (actIDFor from
@@ -52,6 +56,47 @@ func encodeJSON(w io.Writer, v any) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+// loadExperimentalPostgresConfig is the single admission door for the store
+// organ. It refuses unknown, partial, or merely-selected Postgres
+// configurations before any connection or mutation. The raw DSN stays inside
+// the returned in-memory config; callers render and persist only
+// cfg.PostgresTargetRef().
+func loadExperimentalPostgresConfig() (persist.Config, error) {
+	cfg, err := persist.ConfigFromEnv()
+	if err != nil {
+		return cfg, err
+	}
+	if cfg.Backend != persist.BackendPostgres {
+		return cfg, &persist.ConfigError{
+			Field:    "COMPOUND_STORE",
+			Reason:   "Postgres backend is not selected",
+			Recovery: "the file backend is the sole supported public-alpha backend; select postgres only for explicit experimental use",
+		}
+	}
+	if err := cfg.ValidatePostgresExperiment(); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// safePostgresDetail is the only public rendering shape for errors returned
+// after the experimental adapter has parsed a DSN. pgx connection errors can
+// contain user, database, host, and port data; those details are connection
+// topology and may not enter reports, receipts, or transitions. SQLSTATE is a
+// bounded protocol code and remains useful without exposing that topology.
+func safePostgresDetail(profile, operation string, err error) string {
+	detail := operation + " for " + profile + " failed"
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code != "" {
+		detail += " (SQLSTATE " + pgErr.Code + ")"
+	}
+	return detail
+}
+
+func writePostgresFailure(w io.Writer, prefix, profile, operation string, err error) {
+	fmt.Fprintf(w, "%s: %s\n", prefix, safePostgresDetail(profile, operation, err))
 }
 
 // actIDFor mints deterministic content-addressed ids, mirroring

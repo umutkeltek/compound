@@ -6,6 +6,7 @@ import (
 
 	"compound/internal/act"
 	"compound/internal/envelope"
+	"compound/internal/persist"
 	"compound/internal/policy"
 )
 
@@ -18,9 +19,15 @@ const storeGovernedCapability = "store.postgres_export.write"
 // storeGovernedIntent builds the external_side_effect / easy / local
 // ActionIntent for one governed store write (migrate --apply, sync --confirm,
 // embed --confirm), mirroring rebaselineIntent in eventstore_rebaseline.go.
-// targetPath is the MASKED DSN: the raw DSN carries a password and must never
-// land in a persisted envelope, so grants bind the masked target.
-func storeGovernedIntent(workID, action, targetPath, preview string, now time.Time) envelope.ActionIntent {
+// The validated config derives the opaque `postgres-profile:<label>` target.
+// Callers cannot supply an arbitrary path: raw and masked DSNs both expose
+// connection topology and can mishandle keyword/value forms, so neither may
+// land in a persisted envelope, report, receipt, or transition.
+func storeGovernedIntent(workID, action string, cfg persist.Config, preview string, now time.Time) (envelope.ActionIntent, error) {
+	if err := cfg.ValidatePostgresExperiment(); err != nil {
+		return envelope.ActionIntent{}, fmt.Errorf("validate experimental Postgres target: %w", err)
+	}
+	targetPath := cfg.PostgresTargetRef()
 	nowStr := now.UTC().Format(time.RFC3339Nano)
 	return envelope.ActionIntent{
 		Header: envelope.Header{
@@ -44,7 +51,7 @@ func storeGovernedIntent(workID, action, targetPath, preview string, now time.Ti
 		BlastRadius:   "local",
 		Preview:       preview,
 		RollbackPlan:  "delete the exported rows from the Postgres copy (the file ledger under COMPOUND_HOME is untouched)",
-	}
+	}, nil
 }
 
 func storeGovernedAuthorityContext(targetPath string) policy.EvaluationContext {

@@ -53,6 +53,7 @@ import (
 	"compound/internal/corpus"
 	"compound/internal/home"
 	"compound/internal/mem"
+	"compound/internal/persist"
 
 	"gopkg.in/yaml.v3"
 )
@@ -63,6 +64,9 @@ import (
 // speaks a different protocol and retires with the legacy engine. COMPOUND_MEM_ENGINE_EMBEDDER is
 // compound's record of what it indexed with; it drives the identity guard (empty = adopt on first use).
 func memBreadthEngine() (mem.Engine, func()) {
+	if err := memoryExternalStoreRefusal(); err != nil {
+		return refusedMemoryBreadthEngine{err: err}, func() {}
+	}
 	// One shared factory (mem.DefaultBreadthEngine) so the CLI and the orient/ContextPack
 	// path build the identical engine. Resolve the home here (CLI layer owns home resolution)
 	// and hand it to the factory, which forwards it to the sidecar's vector cache.
@@ -71,6 +75,41 @@ func memBreadthEngine() (mem.Engine, func()) {
 		resolved = strings.TrimSpace(hp)
 	}
 	return mem.DefaultBreadthEngine(resolved)
+}
+
+// memoryExternalStoreRefusal keeps the public memory CLI from silently using
+// the file-backed breadth lane when an external store was selected. The
+// Postgres experiment has its own explicit `compound store` surface; until the
+// memory CLI is wired to that engine, selecting it is a categorical refusal.
+func memoryExternalStoreRefusal() error {
+	cfg, err := persist.ConfigFromEnv()
+	if err != nil {
+		return err
+	}
+	if cfg.Backend == persist.BackendPostgres {
+		return &persist.ConfigError{
+			Field:    "COMPOUND_STORE",
+			Reason:   "the selected experimental Postgres backend is not wired to the memory breadth CLI",
+			Recovery: "use the explicit experimental `compound store` commands, or unset Postgres selection for the supported file-backed memory CLI",
+		}
+	}
+	return nil
+}
+
+type refusedMemoryBreadthEngine struct {
+	err error
+}
+
+func (e refusedMemoryBreadthEngine) Capabilities() mem.EngineCapabilities {
+	return mem.EngineCapabilities{Name: "external-store-refused", Breadth: true}
+}
+
+func (e refusedMemoryBreadthEngine) Index([]mem.Claim, int64) error {
+	return e.err
+}
+
+func (e refusedMemoryBreadthEngine) Query(string, string, []string, int) ([]mem.Hit, error) {
+	return nil, e.err
 }
 
 const memoryEngineConfigSchemaVersion = "compound.memory_engine_config.v0.1"
