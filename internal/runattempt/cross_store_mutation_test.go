@@ -14,11 +14,33 @@ import (
 func TestRunAttemptLockUsesCanonicalHabitat(t *testing.T) {
 	home := t.TempDir()
 	store := Open(home)
-	if _, err := store.Mint("work_lock_habitat", "codex", "claude", time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC)); err != nil {
+	ra, err := store.Mint("work_lock_habitat", "codex", "claude", time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(home, "lock", "runattempts.lock")); err != nil {
+	if _, err := os.Stat(filepath.Join(home, "lock", "runattempts", ra.ID+".lock")); err != nil {
 		t.Fatalf("canonical RunAttempt lock is absent: %v", err)
+	}
+	legacy, err := os.Stat(filepath.Join(home, "lock", "runattempts.lock"))
+	if err != nil {
+		t.Fatalf("v0.1 legacy compatibility fence is absent: %v", err)
+	}
+	if legacy.Mode().Perm() != 0o600 {
+		t.Fatalf("legacy compatibility fence mode = %04o, want 0600", legacy.Mode().Perm())
+	}
+	perAttemptDir, err := os.Stat(filepath.Join(home, "lock", "runattempts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perAttemptDir.Mode().Perm() != 0o700 {
+		t.Fatalf("per-attempt lock directory mode = %04o, want 0700", perAttemptDir.Mode().Perm())
+	}
+	perAttempt, err := os.Stat(filepath.Join(home, "lock", "runattempts", ra.ID+".lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perAttempt.Mode().Perm() != 0o600 {
+		t.Fatalf("per-attempt lock mode = %04o, want 0600", perAttempt.Mode().Perm())
 	}
 	if _, err := os.Stat(filepath.Join(home, "locks")); !os.IsNotExist(err) {
 		t.Fatalf("RunAttempt mutation materialized legacy locks habitat: %v", err)

@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -104,6 +103,19 @@ type ExecutionPosture struct {
 	PermissionMode    string                     `json:"permission_mode"`
 	PolicyDecisionID  string                     `json:"policy_decision_id"`
 	AuthorityEvidence []ExecutionPostureEvidence `json:"authority_evidence,omitempty"`
+}
+
+// LaunchLifecycle is the materialized, content-free boundary around starting
+// an external harness process. Its immutable events are custodied separately
+// beneath run_attempts/launch rather than in the v0.1 main JSON. PreparedAt is
+// committed before the start callback. A successful callback is followed by
+// CommittedAt; a returned start error is followed by StartErrorAt. A process
+// crash or disposition-write failure can leave a durable prepared-only record
+// for stale recovery to escalate.
+type LaunchLifecycle struct {
+	PreparedAt   *time.Time `json:"prepared_at,omitempty"`
+	CommittedAt  *time.Time `json:"committed_at,omitempty"`
+	StartErrorAt *time.Time `json:"start_error_at,omitempty"`
 }
 
 // RunAttempt is the S1 type. Fields are deliberately minimal: enough to bind a RunAttempt to
@@ -251,6 +263,10 @@ type RunAttempt struct {
 	// harness subprocess starts. Pointer + omitempty preserves byte identity
 	// for pre-posture records.
 	ExecutionPosture *ExecutionPosture `json:"execution_posture,omitempty"`
+	// Launch materializes the exact prepared|committed|start_error external-start
+	// boundary for API consumers. runattemptWriteFile deliberately omits it
+	// from the v0.1 main JSON; immutable sidecars are the durable authority.
+	Launch *LaunchLifecycle `json:"launch,omitempty"`
 }
 
 // RunProgress is the reduced, content-free progress shape shared by
@@ -281,6 +297,12 @@ type Store struct {
 // JSON files. Pinned by S3 (harness adapter) consumers.
 func (s *Store) Home() string { return s.home }
 func Open(home string) *Store {
+	// Pin an explicitly selected home alias once. A later alias retarget must
+	// not split the per-attempt lock, legacy JSON fence, sidecars, and record
+	// writes across two physical homes.
+	if canonical, err := canonicalRunAttemptHome(home); err == nil {
+		home = canonical
+	}
 	return &Store{home: home, cache: map[string]RunAttempt{}}
 }
 
@@ -399,6 +421,15 @@ func (s *Store) Get(id string) (RunAttempt, error) {
 	if ra, ok := s.cache[id]; ok {
 		ra = cloneExecutionPosture(ra)
 		s.mu.RUnlock()
+		// Launch authority lives only in validated rooted sidecars. Never let a
+		// cached view (including one decoded by an older process generation)
+		// stand in for those immutable events.
+		ra.Launch = nil
+		if launch, err := loadLaunchLifecycle(s.home, id); err != nil {
+			return RunAttempt{}, fmt.Errorf("runattempt get %s: launch evidence: %w", id, err)
+		} else if launch != nil {
+			ra.Launch = launch
+		}
 		return ra, nil
 	}
 	s.mu.RUnlock()
@@ -414,8 +445,24 @@ func (s *Store) Get(id string) (RunAttempt, error) {
 	if err := json.Unmarshal(data, &ra); err != nil {
 		return RunAttempt{}, fmt.Errorf("runattempt get %s: decode: %w", id, err)
 	}
+	// The v0.1 JSON is mutable compatibility state, not launch authority. A
+	// planted inline field must never be observed or promoted into sidecars.
+	ra.Launch = nil
+	if launch, err := loadLaunchLifecycle(s.home, id); err != nil {
+		return RunAttempt{}, fmt.Errorf("runattempt get %s: launch evidence: %w", id, err)
+	} else if launch != nil {
+		ra.Launch = launch
+	}
 	s.mu.Lock()
-	s.cache[id] = cloneExecutionPosture(ra)
+	// A concurrent same-Store mutation may have published and cached a newer
+	// main-record generation while this read validated launch sidecars. Cache
+	// the observation only when no newer local generation appeared; launch
+	// authority is deliberately reloaded from sidecars on every cache hit.
+	if _, exists := s.cache[id]; !exists {
+		cached := cloneExecutionPosture(ra)
+		cached.Launch = nil
+		s.cache[id] = cached
+	}
 	s.mu.Unlock()
 	return ra, nil
 }
@@ -434,6 +481,13 @@ func (s *Store) getFresh(id string) (RunAttempt, error) {
 	var ra RunAttempt
 	if err := json.Unmarshal(data, &ra); err != nil {
 		return RunAttempt{}, fmt.Errorf("runattempt get %s: decode: %w", id, err)
+	}
+	// See Get: launch state is reconstructed only from rooted sidecars.
+	ra.Launch = nil
+	if launch, err := loadLaunchLifecycle(s.home, id); err != nil {
+		return RunAttempt{}, fmt.Errorf("runattempt get %s: launch evidence: %w", id, err)
+	} else if launch != nil {
+		ra.Launch = launch
 	}
 	s.mu.Lock()
 	s.cache[id] = cloneExecutionPosture(ra)
@@ -535,11 +589,17 @@ func (s *Store) CompleteWithReasonAndClassification(id, status, reason, classifi
 //  2. origin == observed_external → ambiguous. Someone observed evidence
 //     outside our control; we don't know what they saw or whether it was
 //     acted on.
-//  3. origin empty (pre-F2 legacy) → ambiguous. We can't tell what produced
-//     this attempt; conservative = operator review.
-//  4. otherwise (claim_reservation placeholder, OR harness_execution with
-//     no transcript/diff/test) → side_effect_free. The attempt itself
-//     produced nothing we have to preserve.
+//  3. an exact prepared + start_error harness launch with no committed start
+//     → side_effect_free. The start callback returned an error before a
+//     successful external launch, and the content-free terminal disposition
+//     is rooted authority rather than mutable inline JSON.
+//  4. any other launch evidence → ambiguous. Prepared-only and committed
+//     launches may have crossed an external side-effect boundary.
+//  5. anything other than an explicit claim_reservation → ambiguous. This
+//     includes harness executions without launch evidence, legacy/empty
+//     origins, and unknown future origins.
+//  6. an evidence-free claim_reservation is side_effect_free: it reserves
+//     work but performs no execution itself.
 //
 // Exposed at package level (not method) so callers can dry-run classification
 // without minting/loading a store — useful for tests and for the sweep CLI's
@@ -551,10 +611,23 @@ func ClassifyStaleRunAttempt(ra RunAttempt) string {
 	if ra.Origin == OriginObservedExternal {
 		return SweepClassificationAmbiguous
 	}
-	if ra.Origin == "" {
+	if ra.Launch != nil && exactStartErrorLifecycle(ra) {
+		return SweepClassificationSideEffectFree
+	}
+	if ra.Launch != nil {
+		return SweepClassificationAmbiguous
+	}
+	if ra.Origin != OriginClaimReservation {
 		return SweepClassificationAmbiguous
 	}
 	return SweepClassificationSideEffectFree
+}
+
+func exactStartErrorLifecycle(ra RunAttempt) bool {
+	launch := ra.Launch
+	return ra.Origin == OriginHarnessExecution &&
+		launch != nil && launch.PreparedAt != nil && launch.StartErrorAt != nil &&
+		launch.CommittedAt == nil && launch.PreparedAt.Equal(*launch.StartErrorAt)
 }
 
 // completeStaleSnapshot terminalizes only the exact non-terminal snapshot a
@@ -570,7 +643,7 @@ func (s *Store) completeStaleSnapshot(expected RunAttempt, threshold time.Durati
 	var classification string
 	var swept bool
 	committed := false
-	updated, err := s.mutate(expected.ID, func(current *RunAttempt) (bool, error) {
+	updated, acquired, err := s.tryMutate(expected.ID, func(current *RunAttempt) (bool, error) {
 		if IsTerminal(current.Status) || !reflect.DeepEqual(*current, expected) {
 			return false, nil
 		}
@@ -594,7 +667,7 @@ func (s *Store) completeStaleSnapshot(expected RunAttempt, threshold time.Durati
 		committed = true
 		return true, nil
 	})
-	if err == nil {
+	if err == nil && acquired {
 		swept = committed
 	}
 	return updated, classification, swept, err
@@ -622,12 +695,11 @@ func (s *Store) MarkRunning(id string, now time.Time) (RunAttempt, error) {
 }
 
 // CommitLaunch is the one-shot pending -> running boundary for a real
-// subprocess. It persists a launch-time heartbeat and invokes start while
-// holding the canonical RunAttempt lock, so a stale sweep cannot terminalize
-// the attempt between the status check and the external side effect. A
-// terminal or already-running attempt refuses the callback. If start returns
-// an error after the running record is committed, the caller must terminalize
-// the attempt on its ordinary failure path.
+// subprocess. Content-free launch evidence lives in immutable per-attempt
+// sidecars, so a v0.1 writer that does not know the additive Launch field
+// cannot erase it while rewriting the main RunAttempt JSON. The per-attempt
+// lock spans the external start callback; the legacy global lock is held only
+// for the short main-JSON read-modify-write, so unrelated attempts continue.
 func (s *Store) CommitLaunch(id string, now time.Time, start func() error) (RunAttempt, error) {
 	if !Valid(id) {
 		return RunAttempt{}, fmt.Errorf("runattempt launch %s: id does not match %s pattern", id, Prefix)
@@ -636,33 +708,92 @@ func (s *Store) CommitLaunch(id string, now time.Time, start func() error) (RunA
 		return RunAttempt{}, fmt.Errorf("runattempt launch %s: start callback required", id)
 	}
 	var out RunAttempt
-	err := s.withAttemptLock(id, func() error {
-		ra, err := s.getFresh(id)
-		if err != nil {
-			return err
+	err := s.withPerAttemptLock(id, func() error {
+		var prepared RunAttempt
+		legacyAcquired, prepareErr := s.withLegacyRunAttemptLockMode(false, func() error {
+			ra, err := s.getFresh(id)
+			if err != nil {
+				return err
+			}
+			if IsTerminal(ra.Status) {
+				out = ra
+				return fmt.Errorf("runattempt launch %s: %w (status=%s)", id, terminalRefusal, ra.Status)
+			}
+			if ra.Status != StatusPending {
+				out = ra
+				return fmt.Errorf("runattempt launch %s: status %s is not pending", id, ra.Status)
+			}
+			if ra.Launch != nil {
+				out = ra
+				return fmt.Errorf("runattempt launch %s: prepared launch evidence already exists", id)
+			}
+			launchAt := now.UTC()
+			if launchAt.IsZero() || launchAt.Before(ra.CreatedAt) {
+				launchAt = ra.CreatedAt
+			}
+			if ra.LastHeartbeatAt != nil && launchAt.Before(*ra.LastHeartbeatAt) {
+				launchAt = *ra.LastHeartbeatAt
+			}
+			preparedAt := launchAt
+			if err := runattemptWriteLaunchEvidence(s.home, launchEvidence{
+				SchemaVersion: launchEvidenceSchemaVersion,
+				AttemptID:     id,
+				Kind:          launchEvidencePrepared,
+				At:            preparedAt,
+			}); err != nil {
+				return fmt.Errorf("runattempt launch %s: publish prepared boundary: %w", id, err)
+			}
+			ra.Launch = &LaunchLifecycle{PreparedAt: timePointer(preparedAt)}
+			out = cloneExecutionPosture(ra)
+			ra.Status = StatusRunning
+			ra.LastHeartbeatAt = timePointer(launchAt)
+			if err := s.writeLocked(ra); err != nil {
+				return fmt.Errorf("runattempt launch %s: publish running generation: %w", id, err)
+			}
+			prepared = cloneExecutionPosture(ra)
+			out = prepared
+			return nil
+		})
+		if prepareErr != nil {
+			return prepareErr
 		}
-		if IsTerminal(ra.Status) {
-			out = ra
-			return fmt.Errorf("runattempt launch %s: %w (status=%s)", id, terminalRefusal, ra.Status)
+		if !legacyAcquired {
+			return fmt.Errorf("runattempt launch %s: blocking legacy acquisition returned without lock", id)
 		}
-		if ra.Status != StatusPending {
-			out = ra
-			return fmt.Errorf("runattempt launch %s: status %s is not pending", id, ra.Status)
+
+		launchAt := *prepared.Launch.PreparedAt
+		startErr := start()
+		if startErr != nil {
+			writeErr := runattemptWriteLaunchEvidence(s.home, launchEvidence{
+				SchemaVersion: launchEvidenceSchemaVersion,
+				AttemptID:     id,
+				Kind:          launchEvidenceStartError,
+				At:            launchAt,
+			})
+			if writeErr != nil {
+				out = prepared
+				return errors.Join(
+					startErr,
+					fmt.Errorf("runattempt launch %s: publish start_error disposition: %w", id, writeErr),
+				)
+			}
+			prepared.Launch.StartErrorAt = timePointer(launchAt)
+			out = prepared
+			return startErr
 		}
-		launchAt := now.UTC()
-		if launchAt.IsZero() || launchAt.Before(ra.CreatedAt) {
-			launchAt = ra.CreatedAt
+
+		if err := runattemptWriteLaunchEvidence(s.home, launchEvidence{
+			SchemaVersion: launchEvidenceSchemaVersion,
+			AttemptID:     id,
+			Kind:          launchEvidenceCommitted,
+			At:            launchAt,
+		}); err != nil {
+			out = prepared
+			return fmt.Errorf("runattempt launch %s: publish committed start: %w", id, err)
 		}
-		if ra.LastHeartbeatAt != nil && launchAt.Before(*ra.LastHeartbeatAt) {
-			launchAt = *ra.LastHeartbeatAt
-		}
-		ra.Status = StatusRunning
-		ra.LastHeartbeatAt = &launchAt
-		if err := s.writeLocked(ra); err != nil {
-			return err
-		}
-		out = ra
-		return start()
+		prepared.Launch.CommittedAt = timePointer(launchAt)
+		out = prepared
+		return nil
 	})
 	return cloneExecutionPosture(out), err
 }
@@ -735,29 +866,55 @@ func (s *Store) mutate(id string, fn func(*RunAttempt) (bool, error)) (RunAttemp
 	}
 	var out RunAttempt
 	err := s.withAttemptLock(id, func() error {
-		// The read is intentionally inside the filesystem lock. A different
-		// Store or Compound process may have changed immutable bindings,
-		// terminality, progress, or evidence since this Store last observed it.
-		ra, err := s.getFresh(id)
-		if err != nil {
-			return err
-		}
-		changed, err := fn(&ra)
-		if err != nil {
-			return err
-		}
-		if changed {
-			if err := s.writeLocked(ra); err != nil {
-				return err
-			}
-		}
-		out = ra
-		return nil
+		var err error
+		out, err = s.mutateLocked(id, fn)
+		return err
 	})
 	if err != nil {
 		return RunAttempt{}, err
 	}
 	return cloneExecutionPosture(out), nil
+}
+
+// tryMutate is the nonblocking sweep seam. A busy launch for one attempt is
+// skipped so later stale attempts can still be reconciled in the same pass.
+func (s *Store) tryMutate(id string, fn func(*RunAttempt) (bool, error)) (RunAttempt, bool, error) {
+	if !Valid(id) {
+		return RunAttempt{}, false, fmt.Errorf("runattempt mutation %s: id does not match %s pattern", id, Prefix)
+	}
+	if fn == nil {
+		return RunAttempt{}, false, fmt.Errorf("runattempt mutation %s: callback required", id)
+	}
+	var out RunAttempt
+	acquired, err := s.tryWithAttemptLock(id, func() error {
+		var mutateErr error
+		out, mutateErr = s.mutateLocked(id, fn)
+		return mutateErr
+	})
+	if err != nil || !acquired {
+		return RunAttempt{}, acquired, err
+	}
+	return cloneExecutionPosture(out), true, nil
+}
+
+func (s *Store) mutateLocked(id string, fn func(*RunAttempt) (bool, error)) (RunAttempt, error) {
+	// The read is inside the per-attempt process and filesystem locks. Another
+	// Store or process may have changed terminality or evidence since any prior
+	// observation, so cached state is never mutation authority.
+	ra, err := s.getFresh(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	changed, err := fn(&ra)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	if changed {
+		if err := s.writeLocked(ra); err != nil {
+			return RunAttempt{}, err
+		}
+	}
+	return ra, nil
 }
 
 func (s *Store) mutateMutable(id string, fn func(*RunAttempt) (bool, error)) (RunAttempt, error) {
@@ -885,12 +1042,27 @@ func (s *Store) SetExecutionPosture(id string, posture ExecutionPosture) (RunAtt
 }
 
 func cloneExecutionPosture(ra RunAttempt) RunAttempt {
-	if ra.ExecutionPosture == nil {
-		return ra
+	if ra.ExecutionPosture != nil {
+		posture := *ra.ExecutionPosture
+		posture.AuthorityEvidence = append([]ExecutionPostureEvidence(nil), posture.AuthorityEvidence...)
+		ra.ExecutionPosture = &posture
 	}
-	posture := *ra.ExecutionPosture
-	posture.AuthorityEvidence = append([]ExecutionPostureEvidence(nil), posture.AuthorityEvidence...)
-	ra.ExecutionPosture = &posture
+	if ra.Launch != nil {
+		launch := *ra.Launch
+		if launch.PreparedAt != nil {
+			prepared := *launch.PreparedAt
+			launch.PreparedAt = &prepared
+		}
+		if launch.CommittedAt != nil {
+			committed := *launch.CommittedAt
+			launch.CommittedAt = &committed
+		}
+		if launch.StartErrorAt != nil {
+			startError := *launch.StartErrorAt
+			launch.StartErrorAt = &startError
+		}
+		ra.Launch = &launch
+	}
 	return ra
 }
 
@@ -900,13 +1072,26 @@ func cloneExecutionPosture(ra RunAttempt) RunAttempt {
 // also refuses on terminal attempts -- a heartbeat on a "succeeded" run
 // would imply the attempt is still running, contradicting the terminal status.
 func (s *Store) Heartbeat(id string, now time.Time) (RunAttempt, error) {
-	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+	return s.mutateMutable(id, heartbeatMutation(now))
+}
+
+func heartbeatMutation(now time.Time) func(*RunAttempt) (bool, error) {
+	return func(ra *RunAttempt) (bool, error) {
 		t := now.UTC()
 		if ra.LastHeartbeatAt != nil && !t.After(*ra.LastHeartbeatAt) {
 			return false, nil
 		}
 		ra.LastHeartbeatAt = &t
 		return true, nil
+	}
+}
+
+func (s *Store) tryHeartbeat(id string, now time.Time) (RunAttempt, bool, error) {
+	return s.tryMutate(id, func(ra *RunAttempt) (bool, error) {
+		if IsTerminal(ra.Status) {
+			return false, fmt.Errorf("runattempt %s: %w (status=%s)", id, terminalRefusal, ra.Status)
+		}
+		return heartbeatMutation(now)(ra)
 	})
 }
 
@@ -1116,11 +1301,17 @@ func (s *Store) SetPredecessor(id, predecessorID string) (RunAttempt, error) {
 // failed lands in Skipped instead. The three counters are independently
 // counted so a partial sweep is still legible.
 type SweepReport struct {
-	Scanned    int      `json:"scanned"` // total non-terminal attempts examined
+	Scanned    int      `json:"scanned"` // readable non-terminal attempts plus unreadable candidates examined
 	Swept      int      `json:"swept"`   // terminalized this pass
 	Skipped    int      `json:"skipped"` // fresh enough to keep
 	SweptIDs   []string `json:"swept_ids,omitempty"`
 	SkippedIDs []string `json:"skipped_ids,omitempty"`
+	// Unreadable counts valid RunAttempt records whose main record or launch
+	// evidence could not be validated. They are conservatively included in
+	// Scanned and Skipped: the sweep cannot prove their lifecycle state, so it
+	// must neither omit nor terminalize them.
+	Unreadable    int      `json:"unreadable,omitempty"`
+	UnreadableIDs []string `json:"unreadable_ids,omitempty"`
 	// Protected counts stale candidates whose probe declared live=true
 	// and which SweepStaleWithProbe heartbeated without terminalizing.
 	// Always 0 for the no-probe SweepStale path; surfaced separately so
@@ -1146,10 +1337,54 @@ type SweepReport struct {
 // cadence (the plugin pings every ~5 minutes; six missed pings = dead).
 const DefaultSweepThreshold = 30 * time.Minute
 
+// RunAttemptReadIssue identifies one valid RunAttempt filename that could
+// not be materialized. The cause is retained for local diagnosis; callers
+// that surface operator health can use only ID and keep private paths out of
+// public output.
+type RunAttemptReadIssue struct {
+	ID    string
+	Cause error
+}
+
+// UnreadableRunAttemptsError reports every valid RunAttempt record that a
+// directory walk could not materialize. List and ListNonTerminal still return
+// every readable record alongside this error so recovery consumers can make
+// progress without making corruption invisible.
+type UnreadableRunAttemptsError struct {
+	Issues []RunAttemptReadIssue
+}
+
+func (e *UnreadableRunAttemptsError) Error() string {
+	if e == nil || len(e.Issues) == 0 {
+		return "runattempt list: unreadable run attempt"
+	}
+	parts := make([]string, 0, len(e.Issues))
+	for _, issue := range e.Issues {
+		parts = append(parts, issue.ID)
+	}
+	return fmt.Sprintf("runattempt list: %d unreadable run attempt(s): %s", len(e.Issues), strings.Join(parts, "; "))
+}
+
+// UnreadableRunAttemptIDs returns a stable copy of the ids carried by a
+// typed list error. A non-list error returns nil.
+func UnreadableRunAttemptIDs(err error) []string {
+	var unreadable *UnreadableRunAttemptsError
+	if !errors.As(err, &unreadable) {
+		return nil
+	}
+	ids := make([]string, 0, len(unreadable.Issues))
+	for _, issue := range unreadable.Issues {
+		ids = append(ids, issue.ID)
+	}
+	return ids
+}
+
 // List returns every RunAttempt on disk, sorted by CreatedAt ascending.
-// A missing run_attempts/ directory is not an error (fresh home). Torn or
-// foreign files are skipped, never fatal — matching the read-only tolerance
-// of doctor's contract walks.
+// A missing run_attempts/ directory is not an error (fresh home). Foreign
+// filenames are skipped. A valid ratt_ filename whose record or launch
+// evidence cannot be validated is returned as a typed error alongside every
+// readable record; recovery and health consumers must never mistake corrupt
+// authority evidence for an empty successful walk.
 func (s *Store) List() ([]RunAttempt, error) {
 	dir := filepath.Join(s.home, "run_attempts")
 	entries, err := os.ReadDir(dir)
@@ -1160,14 +1395,19 @@ func (s *Store) List() ([]RunAttempt, error) {
 		return nil, fmt.Errorf("runattempt list: %w", err)
 	}
 	var out []RunAttempt
+	var issues []RunAttemptReadIssue
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".json")
+		if !Valid(id) {
+			continue
+		}
 		ra, gerr := s.Get(id)
 		if gerr != nil {
-			continue // torn or foreign — skip, never fatal
+			issues = append(issues, RunAttemptReadIssue{ID: id, Cause: gerr})
+			continue
 		}
 		out = append(out, ra)
 	}
@@ -1177,6 +1417,9 @@ func (s *Store) List() ([]RunAttempt, error) {
 		}
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})
+	if len(issues) > 0 {
+		return out, &UnreadableRunAttemptsError{Issues: issues}
+	}
 	return out, nil
 }
 
@@ -1184,16 +1427,13 @@ func (s *Store) List() ([]RunAttempt, error) {
 // sweep would examine. Sorted by CreatedAt ascending (List order).
 func (s *Store) ListNonTerminal() ([]RunAttempt, error) {
 	all, err := s.List()
-	if err != nil {
-		return nil, err
-	}
 	var out []RunAttempt
 	for _, ra := range all {
 		if !IsTerminal(ra.Status) {
 			out = append(out, ra)
 		}
 	}
-	return out, nil
+	return out, err
 }
 
 // SweepStale terminalizes every non-terminal RunAttempt whose last activity
@@ -1213,12 +1453,18 @@ func (s *Store) SweepStale(threshold time.Duration, now time.Time) (SweepReport,
 	if threshold <= 0 {
 		threshold = DefaultSweepThreshold
 	}
-	stuck, err := s.ListNonTerminal()
-	if err != nil {
-		return SweepReport{}, err
+	stuck, listErr := s.ListNonTerminal()
+	unreadableIDs := UnreadableRunAttemptIDs(listErr)
+	if listErr != nil && len(unreadableIDs) == 0 {
+		return SweepReport{}, listErr
 	}
-	var rep SweepReport
-	rep.Scanned = len(stuck)
+	rep := SweepReport{
+		Scanned:       len(stuck) + len(unreadableIDs),
+		Skipped:       len(unreadableIDs),
+		SkippedIDs:    append([]string(nil), unreadableIDs...),
+		Unreadable:    len(unreadableIDs),
+		UnreadableIDs: append([]string(nil), unreadableIDs...),
+	}
 	for _, ra := range stuck {
 		lastActivity := ra.CreatedAt
 		if ra.LastHeartbeatAt != nil {
@@ -1250,7 +1496,7 @@ func (s *Store) SweepStale(threshold time.Duration, now time.Time) (SweepReport,
 			rep.EscalatedIDs = append(rep.EscalatedIDs, ra.ID)
 		}
 	}
-	return rep, nil
+	return rep, listErr
 }
 
 // LivenessProbe abstracts the behind-the-scenes check a SweepStaleWithProbe
@@ -1297,12 +1543,18 @@ func (s *Store) SweepStaleWithProbe(threshold time.Duration, now time.Time, prob
 	if threshold <= 0 {
 		threshold = DefaultSweepThreshold
 	}
-	stuck, err := s.ListNonTerminal()
-	if err != nil {
-		return SweepReport{}, err
+	stuck, listErr := s.ListNonTerminal()
+	unreadableIDs := UnreadableRunAttemptIDs(listErr)
+	if listErr != nil && len(unreadableIDs) == 0 {
+		return SweepReport{}, listErr
 	}
-	var rep SweepReport
-	rep.Scanned = len(stuck)
+	rep := SweepReport{
+		Scanned:       len(stuck) + len(unreadableIDs),
+		Skipped:       len(unreadableIDs),
+		SkippedIDs:    append([]string(nil), unreadableIDs...),
+		Unreadable:    len(unreadableIDs),
+		UnreadableIDs: append([]string(nil), unreadableIDs...),
+	}
 	for _, ra := range stuck {
 		lastActivity := ra.CreatedAt
 		if ra.LastHeartbeatAt != nil {
@@ -1321,7 +1573,7 @@ func (s *Store) SweepStaleWithProbe(threshold time.Duration, now time.Time, prob
 			continue
 		}
 		if live {
-			if _, herr := s.Heartbeat(ra.ID, now); herr != nil {
+			if _, acquired, herr := s.tryHeartbeat(ra.ID, now); herr != nil || !acquired {
 				// Heartbeat-refresh write failures are best-effort per
 				// attempt (same shape as the probe-error branch above and
 				// the CompleteWithReason branch below): skip this candidate
@@ -1359,7 +1611,7 @@ func (s *Store) SweepStaleWithProbe(threshold time.Duration, now time.Time, prob
 			rep.EscalatedIDs = append(rep.EscalatedIDs, ra.ID)
 		}
 	}
-	return rep, nil
+	return rep, listErr
 }
 
 // ObservedLivenessProbe is the work-owned liveness probe that returns the
@@ -1546,36 +1798,90 @@ func (s *Store) path(id string) string {
 	return filepath.Join(s.home, "run_attempts", id+".json")
 }
 
+type processAttemptLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+var processAttemptLockRegistry = struct {
+	sync.Mutex
+	locks map[string]*processAttemptLock
+}{locks: map[string]*processAttemptLock{}}
+
+func canonicalAttemptLockKey(home, id string) (string, error) {
+	if !Valid(id) {
+		return "", fmt.Errorf("runattempt lock: id %q does not match %s pattern", id, Prefix)
+	}
+	absolute, err := canonicalRunAttemptHome(home)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(absolute) + "\x00" + id, nil
+}
+
+func acquireProcessAttemptLock(key string, nonblocking bool) (func(), bool) {
+	processAttemptLockRegistry.Lock()
+	entry := processAttemptLockRegistry.locks[key]
+	if entry == nil {
+		entry = &processAttemptLock{}
+		processAttemptLockRegistry.locks[key] = entry
+	}
+	entry.refs++
+	processAttemptLockRegistry.Unlock()
+
+	acquired := true
+	if nonblocking {
+		acquired = entry.mu.TryLock()
+	} else {
+		entry.mu.Lock()
+	}
+	if !acquired {
+		releaseProcessAttemptLockRef(key, entry)
+		return nil, false
+	}
+	return func() {
+		entry.mu.Unlock()
+		releaseProcessAttemptLockRef(key, entry)
+	}, true
+}
+
+func releaseProcessAttemptLockRef(key string, entry *processAttemptLock) {
+	processAttemptLockRegistry.Lock()
+	defer processAttemptLockRegistry.Unlock()
+	entry.refs--
+	if entry.refs == 0 && processAttemptLockRegistry.locks[key] == entry {
+		delete(processAttemptLockRegistry.locks, key)
+	}
+}
+
 // write persists ra atomically (write to .tmp, fsync, rename) so a partial write cannot
 // leave a half-decoded file in place. Same shape as internal/work.eventLogWrites and
 // internal/landlease.writeAtomic so a crash mid-write loses at most one RunAttempt.
 // C5: the fsync is real now (previously the comment claimed it but the code did not).
 // The store is an evidence organ — durability matters.
 func (s *Store) withAttemptLock(id string, fn func() error) error {
+	acquired, err := s.withAttemptLockMode(id, false, fn)
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return errors.New("runattempt lock: blocking acquisition returned without lock")
+	}
+	return nil
+}
+
+func (s *Store) tryWithAttemptLock(id string, fn func() error) (bool, error) {
+	return s.withAttemptLockMode(id, true, fn)
+}
+
+func (s *Store) withAttemptLockMode(id string, nonblocking bool, fn func() error) (bool, error) {
 	if !Valid(id) {
-		return fmt.Errorf("runattempt mutation: id %q does not match %s pattern", id, Prefix)
+		return false, fmt.Errorf("runattempt mutation: id %q does not match %s pattern", id, Prefix)
 	}
 	if fn == nil {
-		return errors.New("runattempt mutation callback required")
+		return false, errors.New("runattempt mutation callback required")
 	}
-	lockDir := filepath.Join(s.home, "lock")
-	if err := os.MkdirAll(lockDir, 0o755); err != nil {
-		return fmt.Errorf("runattempt lock: mkdir %s: %w", lockDir, err)
-	}
-	// One stable inode serializes RunAttempt read-modify-write transactions
-	// across Store instances and processes without accumulating one permanent
-	// lock file per historical attempt.
-	lockPath := filepath.Join(lockDir, "runattempts.lock")
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return fmt.Errorf("runattempt lock: open %s: %w", lockPath, err)
-	}
-	defer file.Close()
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("runattempt lock: acquire %s: %w", lockPath, err)
-	}
-	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-	return fn()
+	return s.withAttemptMutationLocks(id, nonblocking, fn)
 }
 
 func (s *Store) write(ra RunAttempt) error {
@@ -1637,21 +1943,38 @@ func (s *Store) writeLocked(ra RunAttempt) error {
 // runattemptWriteFile is the production atomic write implementation for a
 // RunAttempt. Tests override it to inject write failures.
 var runattemptWriteFile = func(path string, ra RunAttempt) error {
-	data, err := json.MarshalIndent(ra, "", "  ")
+	// Launch evidence is independently custodied beneath run_attempts/launch.
+	// Keeping it out of the v0.1 main JSON makes an old whole-record decoder
+	// unable to erase the external-start boundary.
+	persisted := cloneExecutionPosture(ra)
+	persisted.Launch = nil
+	data, err := json.MarshalIndent(persisted, "", "  ")
 	if err != nil {
 		return fmt.Errorf("runattempt write: encode %s: %w", ra.ID, err)
 	}
-	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return fmt.Errorf("runattempt write: create %s: %w", tmp, err)
+	dir := filepath.Dir(path)
+	// Refuse a planted run_attempts symlink before CreateTemp can publish
+	// outside the pinned home. The post-rename sync below revalidates the same
+	// directory identity and reports publication ambiguity if it changed.
+	if err := syncRunAttemptDirectory(dir); err != nil {
+		return err
 	}
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("runattempt write: create temp for %s: %w", path, err)
+	}
+	tmp := f.Name()
+	defer func() { _ = os.Remove(tmp) }()
 	if _, err := f.Write(data); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("runattempt write: write %s: %w", tmp, err)
 	}
+	if err := f.Chmod(0o644); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("runattempt write: chmod %s: %w", tmp, err)
+	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("runattempt write: fsync %s: %w", tmp, err)
 	}
 	if err := f.Close(); err != nil {
@@ -1659,6 +1982,9 @@ var runattemptWriteFile = func(path string, ra RunAttempt) error {
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("runattempt write: rename %s: %w", tmp, err)
+	}
+	if err := runattemptSyncDirectory(dir); err != nil {
+		return fmt.Errorf("runattempt write: sync containing directory %s: %w", dir, err)
 	}
 	return nil
 }

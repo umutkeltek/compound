@@ -616,6 +616,57 @@ func TestDoctorReportsSweepTeethCountersOnFreshHome(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsUnreadableRunAttemptLaunchEvidence(t *testing.T) {
+	for _, corruption := range []string{"malformed-json", "unsafe-mode"} {
+		t.Run(corruption, func(t *testing.T) {
+			homePath := t.TempDir()
+			base := t.TempDir()
+			created := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
+			store := runattempt.Open(homePath)
+			attempt, err := store.Mint("work_doctor_unreadable_"+corruption, "actor:test", "harness:test", created)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.SetOrigin(attempt.ID, runattempt.OriginHarnessExecution); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.CommitLaunch(attempt.ID, created.Add(time.Minute), func() error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			preparedPath := filepath.Join(homePath, "run_attempts", "launch", attempt.ID+".prepared.json")
+			switch corruption {
+			case "malformed-json":
+				if err := os.WriteFile(preparedPath, []byte("{\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(preparedPath, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "unsafe-mode":
+				if err := os.Chmod(preparedPath, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var out, errOut bytes.Buffer
+			args := []string{"--home", homePath, "--base", base, "--binary", "/opt/compound/compound", "--json"}
+			if code := runDoctor(args, &out, &errOut); code != 0 {
+				t.Fatalf("doctor exit=%d stderr=%q", code, errOut.String())
+			}
+			var rep struct {
+				RunAttemptsUnreadable    int      `json:"run_attempts_unreadable"`
+				RunAttemptsUnreadableIDs []string `json:"run_attempts_unreadable_ids"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+				t.Fatalf("parse json: %v (%q)", err, out.String())
+			}
+			if rep.RunAttemptsUnreadable != 1 || len(rep.RunAttemptsUnreadableIDs) != 1 || rep.RunAttemptsUnreadableIDs[0] != attempt.ID {
+				t.Fatalf("doctor unreadable evidence = %+v, want count=1 id=%s", rep, attempt.ID)
+			}
+		})
+	}
+}
+
 // seedInjectionSession writes one ContextPack carrying servedClaims in active_memory plus the
 // receipt that closed it, mirroring the shape a real close writes: ids.context_pack_id joins the
 // two, skills.used_declared records whether the consumption detector actually RAN, and

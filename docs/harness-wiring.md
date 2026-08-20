@@ -477,11 +477,42 @@ the child, while a later reservation change preserves the newer lifecycle
 generation byte-for-byte. The CLI explicitly reports that the durable refused
 attempt is reverse-linked only by `work_id` and `action_intent_id`; it never
 mints a same-state policy/action generation merely to manufacture a forward
-link. The RunAttempt's `pending → running` launch heartbeat and `cmd.Start`
-share the canonical RunAttempt lock, so a stale sweep cannot abandon the
-attempt and then let its child start. Every Claude-family execution RunAttempt
-persists the resolved mode, actual running PolicyDecision id, and exact
-authority revisions.
+link. The RunAttempt durably records immutable, content-free event sidecars
+beneath `run_attempts/launch/`: `prepared` before `cmd.Start`, then exactly one
+terminal disposition: `committed` after success or `start_error` when the
+callback returned an error before a successful start. Prepared-only and
+committed stale launches remain ambiguous; an exact content-free `start_error`
+may be recovered as side-effect-free.
+Readers materialize `LaunchLifecycle` from those sidecars; the v0.1 main JSON
+does not carry the evidence, so an old whole-record decoder cannot erase it.
+Malformed or mode-unsafe sidecars on a valid `ratt_*` never disappear from a
+successful directory walk: list returns the readable partial set with a typed
+unreadable error, sweep counts the affected ids as scanned/skipped/unreadable,
+and doctor names them instead of claiming every attempt is terminal. The
+operator-facing list and sweep commands emit their readable/partial result
+before exiting nonzero; public errors name attempt ids without rendering the
+private underlying path cause.
+The canonical per-attempt lock spans the callback, while the legacy
+`lock/runattempts.lock` fence is held only around short main-JSON transactions.
+A start-capable caller must enter that boundary before its external side effect;
+this includes both direct harness `cmd.Start` and delegated session `Create`.
+A stale current-version sweep therefore cannot abandon an attempt and then let
+its child start, and one slow launch does not block unrelated heartbeats or
+terminalization.
+If delegated `Create` succeeds but later evidence attachment fails, cleanup
+terminalizes only after it proves the owned session stopped. A session that
+cannot be stopped remains visible as a live binding with its lock and
+non-terminal attempt intact; recovery forward-links that attempt through the
+same-state WorkEnvelope advance when possible, and returns both the live
+binding and an explicit error when the forward link itself cannot commit.
+
+The sidecar boundary is a one-way home-runtime cutover. Before the first
+sidecar-backed launch, stop pre-sidecar Compound processes and sweepers; do not
+run an older binary against that home afterward. The legacy fence safely drains
+an in-flight v0.1 JSON writer, but an old sweeper does not know the per-attempt
+launch lock and is not supported in a rolling old/new mix. Every Claude-family
+execution RunAttempt persists the resolved mode, actual running PolicyDecision
+id, and exact authority revisions.
 
 Run a supervised task in tmux so an operator or agent can inspect and steer it:
 

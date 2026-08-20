@@ -15,6 +15,7 @@
 package runattempt
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -100,6 +101,139 @@ func TestListEmptyDirNoError(t *testing.T) {
 	if len(stuck) != 0 {
 		t.Fatalf("ListNonTerminal on fresh home returned %d, want 0", len(stuck))
 	}
+}
+
+func TestListNonTerminalSurfacesUnreadableLaunchEvidence(t *testing.T) {
+	for _, corruption := range []string{"malformed-json", "unsafe-mode"} {
+		t.Run(corruption, func(t *testing.T) {
+			home := t.TempDir()
+			attempt, _ := seedUnreadableLaunchAttempt(t, home, corruption)
+
+			got, err := Open(home).ListNonTerminal()
+			if err == nil {
+				t.Fatalf("ListNonTerminal silently omitted %s attempt: got %+v", corruption, got)
+			}
+			if !strings.Contains(err.Error(), attempt.ID) {
+				t.Fatalf("ListNonTerminal error = %q, want unreadable attempt id %s", err, attempt.ID)
+			}
+			if len(got) != 0 {
+				t.Fatalf("ListNonTerminal returned unreadable attempt material: %+v", got)
+			}
+		})
+	}
+}
+
+func TestUnreadableRunAttemptsErrorDoesNotRenderPrivateCauses(t *testing.T) {
+	const privateCause = "private local launch-evidence path detail"
+	err := (&UnreadableRunAttemptsError{Issues: []RunAttemptReadIssue{
+		{ID: "ratt_20260814T080000Z_abcdef12", Cause: errors.New(privateCause)},
+	}}).Error()
+	if strings.Contains(err, privateCause) {
+		t.Fatalf("public unreadable error rendered private cause: %q", err)
+	}
+	if !strings.Contains(err, "ratt_20260814T080000Z_abcdef12") {
+		t.Fatalf("public unreadable error omitted safe attempt identity: %q", err)
+	}
+}
+
+func TestSweepStaleReportsUnreadableLaunchEvidence(t *testing.T) {
+	for _, corruption := range []string{"malformed-json", "unsafe-mode"} {
+		t.Run(corruption, func(t *testing.T) {
+			home := t.TempDir()
+			attempt, launchAt := seedUnreadableLaunchAttempt(t, home, corruption)
+
+			report, err := Open(home).SweepStale(time.Minute, launchAt.Add(time.Hour))
+			if err == nil {
+				t.Fatalf("SweepStale silently accepted %s launch evidence: %+v", corruption, report)
+			}
+			if report.Scanned != 1 || report.Skipped != 1 || report.Swept != 0 {
+				t.Fatalf("SweepStale report = %+v, want scanned=1 skipped=1 swept=0", report)
+			}
+
+			body, marshalErr := json.Marshal(report)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			var raw struct {
+				Unreadable    int      `json:"unreadable"`
+				UnreadableIDs []string `json:"unreadable_ids"`
+			}
+			if unmarshalErr := json.Unmarshal(body, &raw); unmarshalErr != nil {
+				t.Fatal(unmarshalErr)
+			}
+			if raw.Unreadable != 1 || len(raw.UnreadableIDs) != 1 || raw.UnreadableIDs[0] != attempt.ID {
+				t.Fatalf("SweepStale unreadable evidence = %+v, want count=1 id=%s", raw, attempt.ID)
+			}
+		})
+	}
+}
+
+func TestSweepStaleContinuesPastUnreadableLaunchEvidence(t *testing.T) {
+	home := t.TempDir()
+	unreadable, launchAt := seedUnreadableLaunchAttempt(t, home, "unsafe-mode")
+	store := Open(home)
+	readable, err := store.Mint("work_readable_after_unreadable", "actor:test", "harness:test", launchAt.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetOrigin(readable.ID, OriginClaimReservation); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Open(home).SweepStale(time.Minute, launchAt.Add(time.Hour))
+	if err == nil {
+		t.Fatalf("SweepStale omitted unreadable evidence from its error: %+v", report)
+	}
+	if report.Scanned != 2 || report.Skipped != 1 || report.Swept != 1 {
+		t.Fatalf("SweepStale report = %+v, want scanned=2 skipped=1 swept=1", report)
+	}
+	if len(report.UnreadableIDs) != 1 || report.UnreadableIDs[0] != unreadable.ID {
+		t.Fatalf("unreadable ids = %v, want [%s]", report.UnreadableIDs, unreadable.ID)
+	}
+	if len(report.SweptIDs) != 1 || report.SweptIDs[0] != readable.ID {
+		t.Fatalf("swept ids = %v, want [%s]", report.SweptIDs, readable.ID)
+	}
+	got, getErr := Open(home).Get(readable.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if got.Status != StatusAbandoned {
+		t.Fatalf("readable stale status = %q, want abandoned", got.Status)
+	}
+}
+
+func seedUnreadableLaunchAttempt(t *testing.T, home, corruption string) (RunAttempt, time.Time) {
+	t.Helper()
+	store := Open(home)
+	created := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
+	attempt, err := store.Mint("work_unreadable_launch_"+corruption, "actor:test", "harness:test", created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetOrigin(attempt.ID, OriginHarnessExecution); err != nil {
+		t.Fatal(err)
+	}
+	launchAt := created.Add(time.Minute)
+	if _, err := store.CommitLaunch(attempt.ID, launchAt, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	preparedPath := launchEvidencePath(home, attempt.ID, launchEvidencePrepared)
+	switch corruption {
+	case "malformed-json":
+		if err := os.WriteFile(preparedPath, []byte("{\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(preparedPath, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	case "unsafe-mode":
+		if err := os.Chmod(preparedPath, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatalf("unknown corruption fixture %q", corruption)
+	}
+	return attempt, launchAt
 }
 
 func TestSweepStaleTerminalizesOldPending(t *testing.T) {
@@ -392,12 +526,19 @@ func TestSweepStaleWithProbeHeartbeatFailureContinuesPastIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Block ra1's atomic .tmp with a directory so Heartbeat's underlying
-	// Store.write (os.Create -> IsExist/EISDIR) fails. ra2's write path is
-	// untouched, so the falsifier is observed only if the sweep reaches ra2.
-	if err := os.MkdirAll(filepath.Join(home, "run_attempts", ra1.ID+".json.tmp"), 0o755); err != nil {
-		t.Fatal(err)
+	// Fail only ra1's heartbeat publication through the package's explicit
+	// write seam. Production publication uses random exclusive temp names, so
+	// poisoning a historical fixed .tmp path would no longer inject a failure.
+	// ra2 still uses the real writer, preserving the test's progress proof.
+	originalWrite := runattemptWriteFile
+	injected := errors.New("injected ra1 heartbeat write failure")
+	runattemptWriteFile = func(path string, attempt RunAttempt) error {
+		if attempt.ID == ra1.ID && attempt.LastHeartbeatAt != nil {
+			return injected
+		}
+		return originalWrite(path, attempt)
 	}
+	defer func() { runattemptWriteFile = originalWrite }()
 
 	probe := func(ra RunAttempt) (bool, error) {
 		return true, nil // every probe says "live" -> heartbeat path
@@ -538,10 +679,17 @@ func TestClassifyStaleRunAttemptClaimReservationIsSideEffectFree(t *testing.T) {
 	}
 }
 
-func TestClassifyStaleRunAttemptHarnessExecutionNoArtifactsIsSideEffectFree(t *testing.T) {
+func TestClassifyStaleRunAttemptHarnessExecutionWithoutConclusiveLaunchIsAmbiguous(t *testing.T) {
 	ra := RunAttempt{Origin: OriginHarnessExecution}
-	if got := ClassifyStaleRunAttempt(ra); got != SweepClassificationSideEffectFree {
-		t.Fatalf("classify(harness_execution, no artifacts) = %q, want %q", got, SweepClassificationSideEffectFree)
+	if got := ClassifyStaleRunAttempt(ra); got != SweepClassificationAmbiguous {
+		t.Fatalf("classify(harness_execution, no launch or artifacts) = %q, want %q", got, SweepClassificationAmbiguous)
+	}
+}
+
+func TestClassifyStaleRunAttemptUnknownOriginIsAmbiguous(t *testing.T) {
+	ra := RunAttempt{Origin: "future_or_corrupt_origin"}
+	if got := ClassifyStaleRunAttempt(ra); got != SweepClassificationAmbiguous {
+		t.Fatalf("classify(unknown origin) = %q, want %q", got, SweepClassificationAmbiguous)
 	}
 }
 

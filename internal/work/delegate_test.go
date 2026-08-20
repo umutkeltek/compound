@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1267,7 +1268,7 @@ func TestDelegateDoesNotPersistPromptArguments(t *testing.T) {
 	}
 }
 
-func TestDelegateMintsBeforeCreateAndMarksRunningAfterBinding(t *testing.T) {
+func TestDelegatePersistsPreparedRunningLaunchBoundaryBeforeCreate(t *testing.T) {
 	orig := LaneCapacityGuard
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
@@ -1286,8 +1287,11 @@ func TestDelegateMintsBeforeCreateAndMarksRunningAfterBinding(t *testing.T) {
 				t.Fatalf("more than one delegate attempt existed before Create: %s and %s", seenAtCreate, id)
 			}
 			seenAtCreate = id
-			if ra.Status != runattempt.StatusPending {
-				t.Fatalf("attempt status at Create = %s, want pending until binding is durable", ra.Status)
+			if ra.Status != runattempt.StatusRunning || ra.Launch == nil || ra.Launch.PreparedAt == nil {
+				t.Fatalf("attempt at Create = status %s launch %+v, want running+prepared before side effects", ra.Status, ra.Launch)
+			}
+			if ra.Launch.CommittedAt != nil || ra.Launch.StartErrorAt != nil {
+				t.Fatalf("attempt launch disposition existed before Create returned: %+v", ra.Launch)
 			}
 		}
 	}
@@ -1301,8 +1305,8 @@ func TestDelegateMintsBeforeCreateAndMarksRunningAfterBinding(t *testing.T) {
 	if seenAtCreate == "" || result.RunAttemptID != seenAtCreate {
 		t.Fatalf("mint/create identity: at_create=%q result=%q", seenAtCreate, result.RunAttemptID)
 	}
-	if got := runAttemptAt(t, runattempt.Open(s.home), seenAtCreate); got.Status != runattempt.StatusRunning {
-		t.Fatalf("delegate attempt status after durable binding = %s, want running", got.Status)
+	if got := runAttemptAt(t, runattempt.Open(s.home), seenAtCreate); got.Status != runattempt.StatusRunning || got.Launch == nil || got.Launch.CommittedAt == nil {
+		t.Fatalf("delegate attempt after durable binding = status %s launch %+v, want running+committed", got.Status, got.Launch)
 	}
 	linked, err := s.Get(wID)
 	if err != nil {
@@ -1366,6 +1370,280 @@ func TestDelegateCreateFailureTerminalizesExactAttempt(t *testing.T) {
 		t.Fatalf("result = %+v, want spawn_failed", result)
 	}
 	assertOneNewAttemptStatus(t, s, before, runattempt.StatusFailed)
+}
+
+func TestDelegateCreateCannotLaunchAfterTerminalSweep(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	before := runAttemptsByID(t, s)
+	runner := newFakeRunner()
+	createEntered := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	runner.onCreate = func() {
+		close(createEntered)
+		<-releaseCreate
+	}
+
+	type delegateOutcome struct {
+		result DelegateResult
+		err    error
+	}
+	delegateDone := make(chan delegateOutcome, 1)
+	delegateNow := fixedNow.Add(time.Minute)
+	workspace := t.TempDir()
+	go func() {
+		result, err := s.Delegate(DelegateOptions{
+			WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+			Workspace: workspace, Now: delegateNow,
+		}, runner)
+		delegateDone <- delegateOutcome{result: result, err: err}
+	}()
+	<-createEntered
+
+	var launchingID string
+	for id := range runAttemptsByID(t, s) {
+		if _, existed := before[id]; !existed {
+			if launchingID != "" {
+				close(releaseCreate)
+				t.Fatalf("more than one delegate attempt minted before Create returned: %s and %s", launchingID, id)
+			}
+			launchingID = id
+		}
+	}
+	if launchingID == "" {
+		close(releaseCreate)
+		t.Fatal("delegate did not mint a RunAttempt before Create")
+	}
+
+	// A sweep that races the blocked external Create must observe the exact
+	// per-attempt launch boundary as busy. Terminalizing first and allowing
+	// Create to return later would permit side effects after a terminal record.
+	sweep, sweepErr := runattempt.Open(s.home).SweepStale(time.Second, delegateNow.Add(time.Hour))
+
+	// The launch boundary is per attempt, not global: unrelated progress must
+	// remain writable while this Create callback is blocked.
+	progressDone := make(chan error, 1)
+	go func() {
+		store := runattempt.Open(s.home)
+		unrelated, err := store.Mint("work_unrelated_during_delegate_create", "actor:test", "harness:test", delegateNow)
+		if err == nil {
+			_, err = store.MarkRunning(unrelated.ID, delegateNow.Add(time.Second))
+		}
+		progressDone <- err
+	}()
+	select {
+	case err := <-progressDone:
+		if err != nil {
+			close(releaseCreate)
+			t.Fatalf("unrelated attempt could not progress during Create: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(releaseCreate)
+		t.Fatal("unrelated attempt blocked behind another delegate Create")
+	}
+
+	close(releaseCreate)
+	var outcome delegateOutcome
+	select {
+	case outcome = <-delegateDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Delegate did not return after Create was released")
+	}
+
+	if sweepErr != nil {
+		t.Fatalf("SweepStale: %v", sweepErr)
+	}
+	if slices.Contains(sweep.SweptIDs, launchingID) || !slices.Contains(sweep.SkippedIDs, launchingID) {
+		t.Fatalf("sweep during Create = %+v, want launching attempt %s skipped and never swept", sweep, launchingID)
+	}
+	if outcome.err != nil {
+		t.Fatalf("Delegate after protected Create: %v", outcome.err)
+	}
+	if outcome.result.Status != "spawned" || outcome.result.RunAttemptID != launchingID {
+		t.Fatalf("delegate result = %+v, want spawned attempt %s", outcome.result, launchingID)
+	}
+	got := runAttemptAt(t, runattempt.Open(s.home), launchingID)
+	if got.Status != runattempt.StatusRunning || got.Launch == nil || got.Launch.CommittedAt == nil {
+		t.Fatalf("delegate launch evidence = status %q launch %+v, want running+committed", got.Status, got.Launch)
+	}
+}
+
+// failingLaunchCommitStore preserves the real prepared/committed launch
+// transaction and then reports a post-start publication failure to Delegate.
+// It exercises the definitely-owned-session cleanup path without replacing
+// the RunAttempt store's launch sequencing with a fake.
+type failingLaunchCommitStore struct {
+	*runattempt.Store
+	err error
+}
+
+func (f *failingLaunchCommitStore) CommitLaunch(id string, now time.Time, start func() error) (runattempt.RunAttempt, error) {
+	ra, err := f.Store.CommitLaunch(id, now, start)
+	if err != nil {
+		return ra, err
+	}
+	return ra, f.err
+}
+
+func TestDelegateLaunchEvidenceFailureStopsOwnedSessionAndRecordsFixedRefusal(t *testing.T) {
+	originalGuard := LaneCapacityGuard
+	originalFactory := runAttemptsFactory
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	const privateFailure = "adapter echoed private launch argument"
+	var wrapped *failingLaunchCommitStore
+	runAttemptsFactory = func(home string) runAttemptStore {
+		if wrapped == nil {
+			wrapped = &failingLaunchCommitStore{Store: runattempt.Open(home), err: errors.New(privateFailure)}
+		}
+		return wrapped
+	}
+	defer func() {
+		LaneCapacityGuard = originalGuard
+		runAttemptsFactory = originalFactory
+	}()
+
+	s := newStore(t)
+	workID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	before := runAttemptsByID(t, s)
+	runner := newFakeRunner()
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: workID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err == nil || !strings.Contains(err.Error(), privateFailure) {
+		t.Fatalf("Delegate error = %v, want live post-start publication error", err)
+	}
+	if result.Refusal == nil || result.Refusal.Reason != "spawn_ambiguous" || result.Refusal.Message != delegateLaunchEvidenceFailureNote {
+		t.Fatalf("Delegate result = %+v, want fixed-content spawn_ambiguous refusal", result)
+	}
+	if len(runner.creates) != 1 || len(runner.kills) != 1 || runner.kills[0] != delegateSessionName(workID) {
+		t.Fatalf("owned-session cleanup = creates=%+v kills=%+v", runner.creates, runner.kills)
+	}
+	if live, _ := runner.Has(delegateSessionName(workID)); live {
+		t.Fatal("definitely-owned session survived launch-evidence failure")
+	}
+	id := assertOneNewAttemptStatus(t, s, before, runattempt.StatusFailed)
+	got := runAttemptAt(t, runattempt.Open(s.home), id)
+	if got.Launch == nil || got.Launch.PreparedAt == nil || got.Launch.CommittedAt == nil {
+		t.Fatalf("terminal attempt lost durable launch evidence: %+v", got.Launch)
+	}
+	for _, event := range capturedDelegateEvents(t, s) {
+		canonical, marshalErr := json.Marshal(event)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if bytes.Contains(canonical, []byte(privateFailure)) {
+			t.Fatalf("durable delegate event persisted live adapter error: %s", canonical)
+		}
+		if event["kind"] == "work.delegate.spawned" {
+			t.Fatalf("stopped launch-evidence failure emitted a spawned binding: %+v", event)
+		}
+	}
+}
+
+func TestDelegateLaunchEvidenceFailurePreservesBindingWhenKillFails(t *testing.T) {
+	originalGuard := LaneCapacityGuard
+	originalFactory := runAttemptsFactory
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	var wrapped *failingLaunchCommitStore
+	runAttemptsFactory = func(home string) runAttemptStore {
+		if wrapped == nil {
+			wrapped = &failingLaunchCommitStore{Store: runattempt.Open(home), err: errors.New("injected launch evidence failure")}
+		}
+		return wrapped
+	}
+	defer func() {
+		LaneCapacityGuard = originalGuard
+		runAttemptsFactory = originalFactory
+	}()
+
+	s := newStore(t)
+	workID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	before := runAttemptsByID(t, s)
+	runner := newFakeRunner()
+	runner.killErr = errors.New("injected kill failure")
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: workID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err == nil || !strings.Contains(err.Error(), "launch evidence failure") || !strings.Contains(err.Error(), "kill failure") {
+		t.Fatalf("Delegate error = %v, want launch-publication and kill failures", err)
+	}
+	if result.Status != "spawned" || result.Binding == nil {
+		t.Fatalf("live session was not returned as a preserved binding: %+v", result)
+	}
+	if live, _ := runner.Has(delegateSessionName(workID)); !live {
+		t.Fatal("failed cleanup silently lost the still-live session")
+	}
+	id := assertOneNewAttemptStatus(t, s, before, runattempt.StatusRunning)
+	got := runAttemptAt(t, runattempt.Open(s.home), id)
+	if got.Launch == nil || got.Launch.PreparedAt == nil || got.Launch.CommittedAt == nil {
+		t.Fatalf("live attempt launch evidence = %+v, want prepared+committed", got.Launch)
+	}
+	linked, getErr := s.Get(workID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if !slices.Contains(linked.RunAttemptIDs, id) {
+		t.Fatalf("preserved live attempt %s is absent from work run_attempt_ids: %v", id, linked.RunAttemptIDs)
+	}
+	binding, alive, bindingErr := s.latestDelegateBinding(workID)
+	if bindingErr != nil || !alive || binding == nil || binding.RunAttemptID != id {
+		t.Fatalf("preserved binding = %+v alive=%v err=%v, want attempt %s", binding, alive, bindingErr, id)
+	}
+}
+
+func TestDelegateLaunchEvidenceFailureAdvanceFailureStillSurfacesLiveBinding(t *testing.T) {
+	originalGuard := LaneCapacityGuard
+	originalFactory := runAttemptsFactory
+	originalAdvanceHook := advanceBeforeWorkCommit
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	var wrapped *failingLaunchCommitStore
+	runAttemptsFactory = func(home string) runAttemptStore {
+		if wrapped == nil {
+			wrapped = &failingLaunchCommitStore{Store: runattempt.Open(home), err: errors.New("injected launch evidence failure")}
+		}
+		return wrapped
+	}
+	defer func() {
+		LaneCapacityGuard = originalGuard
+		runAttemptsFactory = originalFactory
+		advanceBeforeWorkCommit = originalAdvanceHook
+	}()
+
+	s := newStore(t)
+	workID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	before := runAttemptsByID(t, s)
+	runner := newFakeRunner()
+	runner.killErr = errors.New("injected kill failure")
+	advanceBeforeWorkCommit = func() {
+		_ = os.Remove(s.advancePendingPath(workID))
+	}
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: workID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err == nil || !strings.Contains(err.Error(), "launch evidence failure") || !strings.Contains(err.Error(), "kill failure") {
+		t.Fatalf("Delegate error = %v, want launch-publication, kill, and forward-link failures", err)
+	}
+	if result.Status != "spawned" || result.Binding == nil {
+		t.Fatalf("live session was hidden after forward-link failure: %+v", result)
+	}
+	if live, _ := runner.Has(delegateSessionName(workID)); !live {
+		t.Fatal("failed cleanup silently lost the still-live session")
+	}
+	id := assertOneNewAttemptStatus(t, s, before, runattempt.StatusRunning)
+	if result.Binding.RunAttemptID != id {
+		t.Fatalf("surfaced binding attempt = %q, want %q", result.Binding.RunAttemptID, id)
+	}
+	binding, alive, bindingErr := s.latestDelegateBinding(workID)
+	if bindingErr != nil || !alive || binding == nil || binding.RunAttemptID != id {
+		t.Fatalf("durable binding = %+v alive=%v err=%v, want attempt %s", binding, alive, bindingErr, id)
+	}
 }
 
 // failingCommandStore fails SetCommand, while letting SetOrigin/SetWorkspace
@@ -1795,12 +2073,15 @@ func TestDelegatePostCreateCleanupReportsKillFailure(t *testing.T) {
 	}
 	defer func() { writeWorkEvent = origWrite }()
 
-	_, err := s.Delegate(DelegateOptions{
+	result, err := s.Delegate(DelegateOptions{
 		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
 		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
 	}, runner)
 	if err == nil || !strings.Contains(err.Error(), "injected lifecycle append failure") || !strings.Contains(err.Error(), "injected kill failure") {
 		t.Fatalf("cleanup hid a failure: %v", err)
+	}
+	if result.Status != "spawned" || result.Binding == nil {
+		t.Fatalf("cleanup hid the definitely-live session: %+v", result)
 	}
 }
 
@@ -1841,6 +2122,55 @@ func TestDelegateAdvanceFailureFinalizesAttachedBinding(t *testing.T) {
 	}
 	if binding, _, recoverErr := s.recoverBoundSession(wID); recoverErr != nil || binding != nil {
 		t.Fatalf("spawn-finalize exit left active binding=%+v err=%v", binding, recoverErr)
+	}
+}
+
+func TestDelegateAdvanceFailureKillFailureSurfacesForwardLinkAmbiguity(t *testing.T) {
+	originalGuard := LaneCapacityGuard
+	originalAdvanceHook := advanceBeforeWorkCommit
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() {
+		LaneCapacityGuard = originalGuard
+		advanceBeforeWorkCommit = originalAdvanceHook
+	}()
+
+	s := newStore(t)
+	workID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	before := runAttemptsByID(t, s)
+	runner := newFakeRunner()
+	runner.killErr = errors.New("injected kill failure")
+	advanceCalls := 0
+	advanceBeforeWorkCommit = func() {
+		advanceCalls++
+		if advanceCalls == 1 {
+			_ = os.Remove(s.advancePendingPath(workID))
+		}
+	}
+
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: workID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err == nil || !strings.Contains(err.Error(), "kill failure") || !strings.Contains(err.Error(), "forward-link preserved live run attempt") {
+		t.Fatalf("Delegate error = %v, want initial Advance, kill, and forward-link recovery failures", err)
+	}
+	if result.Status != "spawned" || result.Binding == nil {
+		t.Fatalf("live session was hidden after cleanup failure: %+v", result)
+	}
+	if live, _ := runner.Has(delegateSessionName(workID)); !live {
+		t.Fatal("failed cleanup silently lost the still-live session")
+	}
+	id := assertOneNewAttemptStatus(t, s, before, runattempt.StatusRunning)
+	linked, getErr := s.Get(workID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if advanceCalls != 1 || slices.Contains(linked.RunAttemptIDs, id) {
+		t.Fatalf("authority-losing Advance must preserve the old work generation: calls=%d ids=%v attempt=%s", advanceCalls, linked.RunAttemptIDs, id)
+	}
+	binding, alive, bindingErr := s.latestDelegateBinding(workID)
+	if bindingErr != nil || !alive || binding == nil || binding.RunAttemptID != id {
+		t.Fatalf("preserved binding = %+v alive=%v err=%v, want attempt %s", binding, alive, bindingErr, id)
 	}
 }
 

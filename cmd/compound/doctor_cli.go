@@ -109,6 +109,12 @@ type doctorReport struct {
 	RunAttemptsSweptAmbiguous       int      `json:"run_attempts_swept_ambiguous"`
 	RunAttemptsSweptAmbiguousIDs    []string `json:"run_attempts_swept_ambiguous_ids,omitempty"`
 	RunAttemptsSweptAmbiguousOldest string   `json:"run_attempts_swept_ambiguous_oldest,omitempty"`
+	// Unreadable RunAttempts are valid ratt_ records whose main JSON or
+	// launch sidecars failed validation. The doctor keeps this separate from
+	// stuck/terminal counts because their lifecycle state cannot be trusted.
+	RunAttemptsUnreadable    int      `json:"run_attempts_unreadable"`
+	RunAttemptsUnreadableIDs []string `json:"run_attempts_unreadable_ids,omitempty"`
+	RunAttemptsReadError     bool     `json:"run_attempts_read_error,omitempty"`
 
 	// Hook enforcement: for each binary the installed hooks would invoke, whether it really
 	// gates. Every other hook signal above compares CONFIG bytes and stays green when the file
@@ -311,7 +317,17 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	// All three counters come from one walk of the on-disk run_attempts
 	// JSON — doctor never invokes the sweep, never writes, never crosses
 	// the read-only boundary this section already lives inside.
-	if stuck, serr := runattempt.Open(homePath).ListNonTerminal(); serr == nil && len(stuck) > 0 {
+	runAttempts, runAttemptsErr := runattempt.Open(homePath).List()
+	rep.RunAttemptsReadError = runAttemptsErr != nil
+	rep.RunAttemptsUnreadableIDs = runattempt.UnreadableRunAttemptIDs(runAttemptsErr)
+	rep.RunAttemptsUnreadable = len(rep.RunAttemptsUnreadableIDs)
+	var stuck []runattempt.RunAttempt
+	for _, ra := range runAttempts {
+		if !runattempt.IsTerminal(ra.Status) {
+			stuck = append(stuck, ra)
+		}
+	}
+	if len(stuck) > 0 {
 		rep.RunAttemptsStuck = len(stuck)
 		oldest := stuck[0].CreatedAt // List sorts by CreatedAt ascending
 		var stuckPastTTLOldest time.Time
@@ -336,30 +352,26 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// RunAttemptsSweptAmbiguous is read from the FULL attempt list (not
-	// just non-terminal) because these are terminalized-but-flagged. A
-	// separate Open/List call is cheaper than re-walking the data we
-	// already have; doctor is allowed two reads here because the
-	// non-terminal walk above has a different shape (ListNonTerminal
-	// filters, we need everything).
-	if all, lerr := runattempt.Open(homePath).List(); lerr == nil {
-		var ambiguousOldest time.Time
-		for _, ra := range all {
-			if ra.Status != runattempt.StatusAbandoned {
-				continue
-			}
-			if ra.SweepClassification != runattempt.SweepClassificationAmbiguous {
-				continue
-			}
-			rep.RunAttemptsSweptAmbiguous++
-			rep.RunAttemptsSweptAmbiguousIDs = append(rep.RunAttemptsSweptAmbiguousIDs, ra.ID)
-			if ambiguousOldest.IsZero() || ra.CompletedAt.Before(ambiguousOldest) {
-				ambiguousOldest = ra.CompletedAt
-			}
+	// RunAttemptsSweptAmbiguous is read from the same FULL attempt snapshot:
+	// these are terminalized-but-flagged, while the stuck counters above are
+	// the non-terminal subset. One walk also makes unreadable evidence visible
+	// consistently across both views.
+	var ambiguousOldest time.Time
+	for _, ra := range runAttempts {
+		if ra.Status != runattempt.StatusAbandoned {
+			continue
 		}
-		if rep.RunAttemptsSweptAmbiguous > 0 {
-			rep.RunAttemptsSweptAmbiguousOldest = surfacingAge(time.Since(ambiguousOldest))
+		if ra.SweepClassification != runattempt.SweepClassificationAmbiguous {
+			continue
 		}
+		rep.RunAttemptsSweptAmbiguous++
+		rep.RunAttemptsSweptAmbiguousIDs = append(rep.RunAttemptsSweptAmbiguousIDs, ra.ID)
+		if ambiguousOldest.IsZero() || ra.CompletedAt.Before(ambiguousOldest) {
+			ambiguousOldest = ra.CompletedAt
+		}
+	}
+	if rep.RunAttemptsSweptAmbiguous > 0 {
+		rep.RunAttemptsSweptAmbiguousOldest = surfacingAge(time.Since(ambiguousOldest))
 	}
 
 	// 3c: worktree locks whose owning delegate is terminal. Read-only; the
@@ -485,8 +497,18 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	}
 
 	fmt.Fprintln(stdout, "\n## run attempts (crash terminality)")
+	if rep.RunAttemptsUnreadable > 0 {
+		fmt.Fprintf(stdout, "- UNREADABLE: %d run attempt(s): %s\n", rep.RunAttemptsUnreadable, strings.Join(rep.RunAttemptsUnreadableIDs, ", "))
+		fmt.Fprintln(stdout, "  -> inspect or restore the named record/launch evidence before sweeping")
+	} else if rep.RunAttemptsReadError {
+		fmt.Fprintln(stdout, "- UNREADABLE: run-attempt store could not be inspected; lifecycle counts are incomplete")
+	}
 	if rep.RunAttemptsStuck == 0 {
-		fmt.Fprintln(stdout, "- no stuck attempts (all terminal)")
+		if rep.RunAttemptsReadError {
+			fmt.Fprintln(stdout, "- no readable stuck attempts; terminality is unproven while evidence is unreadable")
+		} else {
+			fmt.Fprintln(stdout, "- no stuck attempts (all terminal)")
+		}
 	} else {
 		fmt.Fprintf(stdout, "- %d stuck (pending/running), oldest %s ago\n", rep.RunAttemptsStuck, rep.RunAttemptsStuckOldest)
 		fmt.Fprintln(stdout, "  -> `compound run-attempt sweep` to terminalize stale attempts")

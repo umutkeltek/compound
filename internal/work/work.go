@@ -155,6 +155,7 @@ type runAttemptStore interface {
 	Get(id string) (runattempt.RunAttempt, error)
 	Complete(id, status string, now time.Time) (runattempt.RunAttempt, error)
 	CompleteWithReason(id, status, reason string, now time.Time) (runattempt.RunAttempt, error)
+	CommitLaunch(id string, now time.Time, start func() error) (runattempt.RunAttempt, error)
 	MarkRunning(id string, now time.Time) (runattempt.RunAttempt, error)
 }
 

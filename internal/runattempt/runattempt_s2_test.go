@@ -39,6 +39,7 @@ func TestRunAttemptHashNeutralityForPreS2Records(t *testing.T) {
 		`"tokens_in"`,
 		`"tokens_out"`,
 		`"execution_posture"`,
+		`"launch"`,
 	}
 
 	assertNeutral := func(t *testing.T, label string, fixture []byte) {

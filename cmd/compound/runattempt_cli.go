@@ -121,41 +121,54 @@ func cmdRunAttemptList(args []string) {
 	} else {
 		attempts, err = store.List()
 	}
-	if err != nil {
+	unreadableIDs := runattempt.UnreadableRunAttemptIDs(err)
+	if err != nil && len(unreadableIDs) == 0 {
 		fmt.Fprintf(os.Stderr, "run-attempt list: %v\n", err)
 		os.Exit(1)
 	}
 	if jsonOut {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		if err := enc.Encode(attempts); err != nil {
-			fmt.Fprintf(os.Stderr, "run-attempt list: encode: %v\n", err)
+		if encodeErr := enc.Encode(attempts); encodeErr != nil {
+			fmt.Fprintf(os.Stderr, "run-attempt list: encode: %v\n", encodeErr)
 			os.Exit(1)
 		}
-		return
-	}
-	if len(attempts) == 0 {
-		fmt.Println("no run attempts found")
-		return
-	}
-	for _, ra := range attempts {
-		age := time.Since(ra.CreatedAt).Round(time.Second)
-		origin := ra.Origin
-		if origin == "" {
-			origin = "unknown"
+	} else {
+		if len(attempts) == 0 {
+			if err != nil {
+				fmt.Println("no readable run attempts found")
+			} else {
+				fmt.Println("no run attempts found")
+			}
+		} else {
+			for _, ra := range attempts {
+				age := time.Since(ra.CreatedAt).Round(time.Second)
+				origin := ra.Origin
+				if origin == "" {
+					origin = "unknown"
+				}
+				hb := ""
+				if ra.LastHeartbeatAt != nil {
+					hb = fmt.Sprintf(" hb=%s", time.Since(*ra.LastHeartbeatAt).Round(time.Second))
+				}
+				reason := ""
+				if ra.SweepReason != "" {
+					reason = " (" + ra.SweepReason + ")"
+				}
+				fmt.Printf("%s  status=%-9s origin=%s work=%s actor=%s harness=%s age=%s%s%s\n",
+					ra.ID, ra.Status, origin, ra.WorkID, ra.Actor, ra.Harness, age, hb, reason)
+			}
+			if err != nil {
+				fmt.Printf("\n%d readable attempt(s)\n", len(attempts))
+			} else {
+				fmt.Printf("\n%d attempt(s)\n", len(attempts))
+			}
 		}
-		hb := ""
-		if ra.LastHeartbeatAt != nil {
-			hb = fmt.Sprintf(" hb=%s", time.Since(*ra.LastHeartbeatAt).Round(time.Second))
-		}
-		reason := ""
-		if ra.SweepReason != "" {
-			reason = " (" + ra.SweepReason + ")"
-		}
-		fmt.Printf("%s  status=%-9s origin=%s work=%s actor=%s harness=%s age=%s%s%s\n",
-			ra.ID, ra.Status, origin, ra.WorkID, ra.Actor, ra.Harness, age, hb, reason)
 	}
-	fmt.Printf("\n%d attempt(s)\n", len(attempts))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "run-attempt list: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func cmdRunAttemptSweep(args []string) {
@@ -202,26 +215,41 @@ func cmdRunAttemptSweep(args []string) {
 	// abandon a healthy in-flight session.
 	probe := buildDelegateLivenessProbe(homePath)
 	rep, err := store.SweepStaleWithProbe(threshold, time.Now().UTC(), probe)
-	if err != nil {
+	unreadableIDs := runattempt.UnreadableRunAttemptIDs(err)
+	if err != nil && len(unreadableIDs) == 0 {
 		fmt.Fprintf(os.Stderr, "run-attempt sweep: %v\n", err)
 		os.Exit(1)
 	}
 	if jsonOut {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		if err := enc.Encode(rep); err != nil {
-			fmt.Fprintf(os.Stderr, "run-attempt sweep: encode: %v\n", err)
+		if encodeErr := enc.Encode(rep); encodeErr != nil {
+			fmt.Fprintf(os.Stderr, "run-attempt sweep: encode: %v\n", encodeErr)
 			os.Exit(1)
 		}
-		return
+	} else {
+		fmt.Printf("swept %d/%d stale attempt(s) (threshold %s, protected %d, unreadable %d)\n",
+			rep.Swept, rep.Scanned, threshold, rep.Protected, rep.Unreadable)
+		for _, id := range rep.SweptIDs {
+			fmt.Printf("  swept:     %s\n", id)
+		}
+		unreadable := make(map[string]struct{}, len(rep.UnreadableIDs))
+		for _, id := range rep.UnreadableIDs {
+			unreadable[id] = struct{}{}
+		}
+		for _, id := range rep.SkippedIDs {
+			if _, unsafe := unreadable[id]; unsafe {
+				continue
+			}
+			fmt.Printf("  kept:      %s\n", id)
+		}
+		for _, id := range rep.UnreadableIDs {
+			fmt.Printf("  unreadable: %s\n", id)
+		}
 	}
-	fmt.Printf("swept %d/%d stale attempt(s) (threshold %s, protected %d)\n",
-		rep.Swept, rep.Scanned, threshold, rep.Protected)
-	for _, id := range rep.SweptIDs {
-		fmt.Printf("  swept: %s\n", id)
-	}
-	for _, id := range rep.SkippedIDs {
-		fmt.Printf("  kept:  %s\n", id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "run-attempt sweep: %v\n", err)
+		os.Exit(1)
 	}
 }
 

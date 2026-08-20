@@ -173,8 +173,8 @@ func TestRunnerSweptWhileStartGuardWaitsDoesNotLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Swept != 1 || report.AutoClosed != 1 {
-		t.Fatalf("blocked pre-start attempt was not swept side-effect-free: %+v", report)
+	if report.Swept != 1 || report.Escalated != 1 || report.AutoClosed != 0 {
+		t.Fatalf("blocked pre-start harness attempt was not swept conservatively ambiguous: %+v", report)
 	}
 	close(releaseGuard)
 

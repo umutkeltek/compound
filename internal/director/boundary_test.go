@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"compound/internal/runattempt"
 )
 
 // TestProposeApplyWritesConfinedToProposalSurfaces is the non-autonomous-class
@@ -70,10 +72,10 @@ func TestProposeApplyWritesConfinedToProposalSurfaces(t *testing.T) {
 		// enclosing director run claims its WorkEnvelope, so a run-attempt is
 		// minted; it is an execution-record artifact, not an owner-state escape.
 		"run_attempts/",
-		// Cross-process RunAttempt mutations use one canonical flock companion.
-		// This exact file is persistence infrastructure for run_attempts/, not a
-		// broader grant over lock/.
+		// v0.1 RunAttempt mutations retain the exact legacy compatibility fence
+		// and layer valid per-attempt flock companions beneath it.
 		"lock/runattempts.lock",
+		"lock/runattempts/",
 	}
 
 	var escaped []string
@@ -115,6 +117,16 @@ func TestProposeApplyWritesConfinedToProposalSurfaces(t *testing.T) {
 
 func hasAllowedPrefix(rel string, prefixes []string) bool {
 	for _, p := range prefixes {
+		if p == "lock/runattempts/" && strings.HasPrefix(rel, p) {
+			leaf := strings.TrimPrefix(rel, p)
+			if strings.Contains(leaf, "/") || !strings.HasSuffix(leaf, ".lock") {
+				continue
+			}
+			if runattempt.Valid(strings.TrimSuffix(leaf, ".lock")) {
+				return true
+			}
+			continue
+		}
 		if strings.HasSuffix(p, "/") && strings.HasPrefix(rel, p) {
 			return true
 		}
@@ -126,12 +138,23 @@ func hasAllowedPrefix(rel string, prefixes []string) bool {
 }
 
 func TestHasAllowedPrefixTreatsFileEntriesAsExact(t *testing.T) {
-	allowed := []string{"run_attempts/", "lock/runattempts.lock"}
+	allowed := []string{"run_attempts/", "lock/runattempts.lock", "lock/runattempts/"}
 	if !hasAllowedPrefix("lock/runattempts.lock", allowed) {
+		t.Fatal("legacy v0.1 compatibility fence must be allowed exactly")
+	}
+	if !hasAllowedPrefix("lock/runattempts/ratt_20260814T080000Z_deadbeef.lock", allowed) {
 		t.Fatal("canonical RunAttempt lock must be allowed")
 	}
-	if hasAllowedPrefix("lock/runattempts.lock.backup", allowed) {
-		t.Fatal("exact lock-file allowance must not admit suffixed paths")
+	for _, rejected := range []string{
+		"lock/runattempts.lock.backup",
+		"lock/runattempts-legacy.lock",
+		"lock/runattempts/not-a-runattempt.lock",
+		"lock/runattempts/ratt_20260814T080000Z_deadbeef",
+		"lock/runattempts/ratt_20260814T080000Z_deadbeef.lock/nested",
+	} {
+		if hasAllowedPrefix(rejected, allowed) {
+			t.Fatalf("RunAttempt lock allowance admitted invalid leaf %q", rejected)
+		}
 	}
 }
 

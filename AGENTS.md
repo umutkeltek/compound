@@ -96,8 +96,14 @@ compound **observes** executions; it does not become one. The rail is proven by 
   EVERY return path** (`succeeded|failed|abandoned`) — never leave `pending`/`running` (a stuck attempt is a
   crash, not a state). `Heartbeat` marks liveness for long runs. `run-attempt sweep [--threshold 30m]`
   terminalizes stale attempts with a `SweepReason` — sweeping is audit-only, it **never touches the work state
-  machine**. A real subprocess commits `pending → running` + launch heartbeat and `cmd.Start` under the same
-  RunAttempt lock; a swept/terminal attempt never launches afterward. Retry lineage is `PredecessorID`
+  machine**. A real subprocess durably records content-free launch evidence beneath `run_attempts/launch/`:
+  `prepared` before `cmd.Start`, then exactly one terminal disposition: `committed` after success or
+  `start_error` when the callback returned an error before a successful start. Prepared-only and committed stale
+  attempts remain ambiguous; an exact content-free `start_error` may be recovered as side-effect-free. The
+  per-attempt lock spans that callback, while the legacy global lock covers only short v0.1 JSON transactions,
+  so a swept/terminal attempt never launches afterward and one slow launch does not block unrelated attempts.
+  Launch sidecars are a one-way runtime cutover: quiesce pre-sidecar binaries and sweepers before first use; a
+  rolling old/new binary mix against the same home is unsupported. Retry lineage is `PredecessorID`
   (append-only: idempotent re-link, refuses a different predecessor).
   One RunAttempt per harness run against one `work_id` — a persistence primitive, not meaning authority; it fills
   the WorkEnvelope `run_attempt_ids[]` (`ratt_`-only) slot, and subprocess exit codes are **not** infra errors

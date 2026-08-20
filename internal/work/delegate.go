@@ -18,8 +18,9 @@
 //     objects through the same eventstore API. A later work.delegate.exited
 //     record kills the binding; steer/attach probe SessionRunner.HasSession
 //     regardless. A delegate RunAttempt is minted before the first spawn side
-//     effect, marked running only after the session exists, heartbeated while
-//     live, and terminalized from an observed pane exit or disappearance.
+//     effect; its per-attempt launch boundary publishes running+prepared before
+//     Create and committed after success. It is then heartbeated while live and
+//     terminalized from an observed pane exit or disappearance.
 //   - One live session per work. A second delegate on a live session
 //     REFUSES with reason=session_live and the existing session returned.
 //   - Lifecycle events, not logs. Each verb emits a structured eventstore
@@ -52,11 +53,12 @@ import (
 )
 
 const (
-	delegateEventSchemaVersion       = "compound.work_delegate_event.v0.2"
-	delegateLegacyEventSchemaVersion = "compound.work_delegate_event.v0.1"
-	delegateSpawnFailureNote         = "session runner could not create the governed session"
-	delegateAmbiguousNote            = "Create failed but the named session exists; classified as spawn_ambiguous (the session may be a stranger's); no kill performed"
-	delegateProbeUnknownNote         = "Create failed and session ownership could not be determined; classified as spawn_ambiguous; no kill performed"
+	delegateEventSchemaVersion        = "compound.work_delegate_event.v0.2"
+	delegateLegacyEventSchemaVersion  = "compound.work_delegate_event.v0.1"
+	delegateSpawnFailureNote          = "session runner could not create the governed session"
+	delegateAmbiguousNote             = "Create failed but the named session exists; classified as spawn_ambiguous (the session may be a stranger's); no kill performed"
+	delegateProbeUnknownNote          = "Create failed and session ownership could not be determined; classified as spawn_ambiguous; no kill performed"
+	delegateLaunchEvidenceFailureNote = "Create succeeded but committed launch evidence could not be published; the definitely-owned session was stopped and the attempt was terminalized"
 )
 
 type delegateAuthorityChangedError struct {
@@ -2125,33 +2127,72 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		"COMPOUND_WORK_ID":        out.WorkID,
 		"COMPOUND_RUN_ATTEMPT_ID": runAttemptID,
 	}
-	var createErr error
-	if environmentRunner, ok := runner.(SessionEnvironmentRunner); ok {
-		if executionProfile != nil {
-			launchEnvironment["COMPOUND_EXECUTION_PROFILE_PLAN_ID"] = executionProfile.ID
-			launchEnvironment["COMPOUND_EXECUTION_PROFILE_REVISION"] = readiness.ExecutionProfile.Revision
-		}
-		if launchProfile != nil {
-			launchEnvironment["SB_LAUNCH_PROFILE_ID"] = launchProfile.ID
-			launchEnvironment["SB_LAUNCH_PROFILE_REVISION"] = launchProfile.Revision
-			launchEnvironment["SB_LAUNCH_HARNESS"] = launchProfile.Harness
-			launchEnvironment["SB_LAUNCH_CAPTURE_POLICY"] = launchProfile.CaptureMode
-			launchEnvironment["SB_LAUNCH_CLIENT_PROFILE"] = launchProfile.ClientProfileID
-			launchEnvironment["COMPOUND_CLIENT_PROFILE_ID"] = launchProfile.ClientProfileID
-		}
-		createErr = environmentRunner.CreateWithEnvironment(
-			sessionName,
-			workspace,
-			command,
-			activationArgs,
-			launchEnvironment,
-		)
-	} else if executionProfile != nil {
-		createErr = errors.New("session runner cannot bind supervised launch environment")
-	} else {
-		createErr = runner.Create(sessionName, workspace, command, activationArgs)
+	binding := &DelegateBinding{
+		WorkID:                    out.WorkID,
+		Session:                   sessionName,
+		Harness:                   resolvedHarness,
+		Lane:                      laneForGuard,
+		Holder:                    holder,
+		CapacityState:             decision.Capacity.State,
+		RecordedAt:                ts(opts.Now),
+		WorkSHA256:                authorizedWorkSHA,
+		SelectedProviderRoute:     selectedProviderRoute,
+		SelectedProviderRouteKind: selectedProviderRouteKind,
+		Readiness:                 out.Readiness,
+		ExecutionProfile:          cloneDelegateExecutionProfilePlan(executionProfile),
+		LaunchProfile:             cloneDelegateLaunchProfilePlan(launchProfile),
+		RunAttemptID:              runAttemptID,
 	}
+	createInvoked := false
+	createSucceeded := false
+	_, createErr := raStore.CommitLaunch(runAttemptID, opts.Now, func() error {
+		createInvoked = true
+		var err error
+		if environmentRunner, ok := runner.(SessionEnvironmentRunner); ok {
+			if executionProfile != nil {
+				launchEnvironment["COMPOUND_EXECUTION_PROFILE_PLAN_ID"] = executionProfile.ID
+				launchEnvironment["COMPOUND_EXECUTION_PROFILE_REVISION"] = readiness.ExecutionProfile.Revision
+			}
+			if launchProfile != nil {
+				launchEnvironment["SB_LAUNCH_PROFILE_ID"] = launchProfile.ID
+				launchEnvironment["SB_LAUNCH_PROFILE_REVISION"] = launchProfile.Revision
+				launchEnvironment["SB_LAUNCH_HARNESS"] = launchProfile.Harness
+				launchEnvironment["SB_LAUNCH_CAPTURE_POLICY"] = launchProfile.CaptureMode
+				launchEnvironment["SB_LAUNCH_CLIENT_PROFILE"] = launchProfile.ClientProfileID
+				launchEnvironment["COMPOUND_CLIENT_PROFILE_ID"] = launchProfile.ClientProfileID
+			}
+			err = environmentRunner.CreateWithEnvironment(
+				sessionName,
+				workspace,
+				command,
+				activationArgs,
+				launchEnvironment,
+			)
+		} else if executionProfile != nil {
+			err = errors.New("session runner cannot bind supervised launch environment")
+		} else {
+			err = runner.Create(sessionName, workspace, command, activationArgs)
+		}
+		createSucceeded = err == nil
+		return err
+	})
 	if createErr != nil {
+		if !createInvoked {
+			// Prepared launch evidence could not be published, so the external
+			// callback never ran. Terminalize the mint if possible and surface
+			// the infrastructure error without persisting its text.
+			if _, terminalErr := raStore.Complete(runAttemptID, runattempt.StatusFailed, opts.Now); terminalErr != nil {
+				return out, errors.Join(createErr, terminalErr)
+			}
+			return out, createErr
+		}
+		if createSucceeded {
+			// Create returned success but committed launch evidence did not.
+			// The session is definitely ours; it must not remain live without
+			// a durable binding. The cleanup helper preserves a binding instead
+			// of terminalizing if it cannot prove the session stopped.
+			return s.finalizeLaunchEvidenceFailure(out, runner, binding, holder, w.State, createErr, opts.Confirm, opts.Now)
+		}
 		// Create failed. Probe to detect partial / ambiguous: if the
 		// session exists on the server we DO NOT kill it (it may be a
 		// stranger's session) and we DO NOT emit a spawned binding. We
@@ -2182,24 +2223,8 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		return out, nil
 	}
 
-	binding := &DelegateBinding{
-		WorkID:                    out.WorkID,
-		Session:                   sessionName,
-		Harness:                   resolvedHarness,
-		Lane:                      laneForGuard,
-		Holder:                    holder,
-		CapacityState:             decision.Capacity.State,
-		RecordedAt:                ts(opts.Now),
-		WorkSHA256:                authorizedWorkSHA,
-		SelectedProviderRoute:     selectedProviderRoute,
-		SelectedProviderRouteKind: selectedProviderRouteKind,
-		Readiness:                 out.Readiness,
-		ExecutionProfile:          cloneDelegateExecutionProfilePlan(executionProfile),
-		LaunchProfile:             cloneDelegateLaunchProfilePlan(launchProfile),
-		RunAttemptID:              runAttemptID,
-	}
-	// APPROVED ORDER: Create success -> record+attach spawned binding ->
-	// MarkRunning. Any failure AFTER the spawn + binding is a
+	// APPROVED ORDER: committed Create success -> record+attach spawned
+	// binding. Any failure AFTER the spawn + binding is a
 	// finalize-spawn-failure: kill the definitely-owned session,
 	// terminalize the attempt, and record a truthful exited artifact.
 	evID, evErr := s.recordDelegateSpawned(out.WorkID, binding, opts.Confirm, runAttemptID, opts.Now)
@@ -2208,7 +2233,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		// Kill definitely-owned session + terminalize attempt + return.
 		// Do NOT write a work.delegate.exited (that would create an
 		// exit-without-spawn).
-		return out, s.finalizeSpawnFailureAfterBinding(runner, out.WorkID, binding, holder, w.State, evErr, false, opts.Now)
+		return out, s.finalizeSpawnFailureAfterBinding(&out, runner, out.WorkID, binding, holder, w.State, evErr, false, opts.Confirm, opts.Now)
 	}
 	if err := s.appendEvent(Event{
 		TS:       ts(opts.Now),
@@ -2221,7 +2246,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	}); err != nil {
 		// Lifecycle append failed: same as recordDelegateSpawned failure
 		// -- no recoverable binding, no exited artifact.
-		return out, s.finalizeSpawnFailureAfterBinding(runner, out.WorkID, binding, holder, w.State, err, false, opts.Now)
+		return out, s.finalizeSpawnFailureAfterBinding(&out, runner, out.WorkID, binding, holder, w.State, err, false, opts.Confirm, opts.Now)
 	}
 	// Forward-link the exact delegate attempt from the WorkEnvelope through
 	// the existing governed same-state Advance seam. The binding is already
@@ -2234,15 +2259,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		RunAttemptIDs: []string{runAttemptID},
 		Note:          "delegate run attempt attached",
 	}, opts.Now); advanceErr != nil {
-		return out, s.finalizeSpawnFailureAfterBinding(runner, out.WorkID, binding, holder, w.State, advanceErr, true, opts.Now)
-	}
-	if _, mErr := raStore.MarkRunning(runAttemptID, opts.Now); mErr != nil {
-		// MarkRunning failure: binding IS attached in the eventstore
-		// (so a future recovery could return a stale live binding). We
-		// write the truthful work.delegate.exited here, kill the
-		// session, and terminalize. Without this, the orchestrator
-		// could later recover a binding with no matching run attempt.
-		return out, s.finalizeSpawnFailureAfterBinding(runner, out.WorkID, binding, holder, w.State, mErr, true, opts.Now)
+		return out, s.finalizeSpawnFailureAfterBinding(&out, runner, out.WorkID, binding, holder, w.State, advanceErr, true, opts.Confirm, opts.Now)
 	}
 	out.Status = "spawned"
 	out.Binding = binding
@@ -2252,39 +2269,45 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 }
 
 // finalizeSpawnFailureAfterBinding is the post-Create failure-finalization
-// helper. bindingAttached controls whether the caller had already attached
-// the spawned lifecycle binding BEFORE the failure:
-//
-//	false -- recordDelegateSpawned failed, or the lifecycle append failed:
-//	  no binding is recoverable from the eventstore. Kill the session,
-//	  terminalize the attempt, and DO NOT write a work.delegate.exited
-//	  (emitting one here would create an exit-without-spawn).
-//	true  -- MarkRunning failed AFTER the binding was attached. Kill the
-//	  session, terminalize the attempt, AND write a truthful
-//	  work.delegate.exited so a future recovery does not surface a
-//	  stale live binding with no matching run attempt.
-//
-// In both branches the cause is returned unchanged. The cause's Error()
-// is NEVER persisted -- adapter errors may echo prompt argv.
-func (s *Store) finalizeSpawnFailureAfterBinding(runner SessionRunner, workID string, b *DelegateBinding, holder, state string, cause error, bindingAttached bool, now time.Time) error {
+// helper. If cleanup cannot prove the session stopped, the attempt stays
+// nonterminal, its worktree lock stays held, and a missing spawned binding is
+// attached so a later sweep can recover the definitely-owned live session.
+// The cause's Error() is NEVER persisted -- adapter errors may echo prompt argv.
+func (s *Store) finalizeSpawnFailureAfterBinding(out *DelegateResult, runner SessionRunner, workID string, b *DelegateBinding, holder, state string, cause error, bindingAttached, confirm bool, now time.Time) error {
 	if b == nil {
 		return cause
 	}
 	cleanupErrs := []error{cause}
-	if runner != nil {
-		if killErr := runner.Kill(b.Session); killErr != nil {
-			cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: kill definitely-owned session %s: %w", b.Session, killErr))
+	killed := false
+	if runner == nil {
+		cleanupErrs = append(cleanupErrs, errors.New("delegate: definitely-owned session cleanup runner is unavailable"))
+	} else if killErr := runner.Kill(b.Session); killErr != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: kill definitely-owned session %s: %w", b.Session, killErr))
+	} else {
+		killed = true
+	}
+	if !killed {
+		if out != nil {
+			out.Status = "spawned"
+			out.Binding = b
+			out.RunAttemptID = b.RunAttemptID
 		}
+		if preserveErr := s.preserveLiveDelegateBinding(workID, b, holder, state, bindingAttached, confirm, now); preserveErr != nil {
+			cleanupErrs = append(cleanupErrs, preserveErr)
+		}
+		return errors.Join(cleanupErrs...)
 	}
-	raStore := runattempt.Open(s.home)
-	if _, terr := raStore.Complete(b.RunAttemptID, runattempt.StatusFailed, now); terr != nil {
-		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: terminalize spawned attempt %s: %w", b.RunAttemptID, terr))
+
+	terminalized := false
+	if _, terminalErr := runattempt.Open(s.home).Complete(b.RunAttemptID, runattempt.StatusFailed, now); terminalErr != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: terminalize spawned attempt %s: %w", b.RunAttemptID, terminalErr))
+	} else {
+		terminalized = true
 	}
-	// This is a terminal path too: the attempt is now failed, so the worktree
-	// lock over its workspace protects nothing and is reaped on the same
-	// evidence rule as an ordinary sweep.
-	if _, lockErr := s.reapDelegateWorktreeLock(b); lockErr != nil {
-		cleanupErrs = append(cleanupErrs, lockErr)
+	if terminalized {
+		if _, lockErr := s.reapDelegateWorktreeLock(b); lockErr != nil {
+			cleanupErrs = append(cleanupErrs, lockErr)
+		}
 	}
 	if !bindingAttached {
 		return errors.Join(cleanupErrs...)
@@ -2318,6 +2341,88 @@ func (s *Store) finalizeSpawnFailureAfterBinding(runner SessionRunner, workID st
 		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: attach spawn-finalize exit: %w", err))
 	}
 	return errors.Join(cleanupErrs...)
+}
+
+// finalizeLaunchEvidenceFailure handles the narrow ambiguity where Create
+// returned success but CommitLaunch could not publish the committed boundary.
+// A stopped session produces a fixed-content refusal; a session that cannot be
+// stopped stays nonterminal and gets a recoverable binding. The live adapter
+// error is returned to the caller but never persisted.
+func (s *Store) finalizeLaunchEvidenceFailure(out DelegateResult, runner SessionRunner, b *DelegateBinding, holder, state string, cause error, confirm bool, now time.Time) (DelegateResult, error) {
+	if b == nil {
+		return out, cause
+	}
+	cleanupErrs := []error{cause}
+	killed := false
+	if runner == nil {
+		cleanupErrs = append(cleanupErrs, errors.New("delegate: definitely-owned session cleanup runner is unavailable"))
+	} else if killErr := runner.Kill(b.Session); killErr != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: kill definitely-owned session %s: %w", b.Session, killErr))
+	} else {
+		killed = true
+	}
+	if !killed {
+		out.Status = "spawned"
+		out.Binding = b
+		out.RunAttemptID = b.RunAttemptID
+		if preserveErr := s.preserveLiveDelegateBinding(out.WorkID, b, holder, state, false, confirm, now); preserveErr != nil {
+			cleanupErrs = append(cleanupErrs, preserveErr)
+		}
+		return out, errors.Join(cleanupErrs...)
+	}
+
+	terminalized := false
+	if _, terminalErr := runattempt.Open(s.home).Complete(b.RunAttemptID, runattempt.StatusFailed, now); terminalErr != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: terminalize ambiguous launch attempt %s: %w", b.RunAttemptID, terminalErr))
+	} else {
+		terminalized = true
+	}
+	if terminalized {
+		if _, lockErr := s.reapDelegateWorktreeLock(b); lockErr != nil {
+			cleanupErrs = append(cleanupErrs, lockErr)
+		}
+	}
+
+	evID, eventErr := s.recordDelegateRefused(out.WorkID, b.Harness, b.Lane, holder, "spawn_ambiguous", delegateLaunchEvidenceFailureNote, now)
+	if eventErr != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: record launch-evidence refusal: %w", eventErr))
+	} else if attachErr := s.appendDelegateLifecycleEvent(out.WorkID, state, holder, evID, "delegate refused reason=spawn_ambiguous", now); attachErr != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: attach launch-evidence refusal: %w", attachErr))
+	} else {
+		out.EventID = evID
+		out.RunAttemptID = b.RunAttemptID
+		out.Refusal = &DelegateRefusal{Reason: "spawn_ambiguous", Message: delegateLaunchEvidenceFailureNote}
+	}
+	return out, errors.Join(cleanupErrs...)
+}
+
+func (s *Store) preserveLiveDelegateBinding(workID string, b *DelegateBinding, holder, state string, bindingAttached, confirm bool, now time.Time) error {
+	if !bindingAttached {
+		evID, err := s.recordDelegateSpawned(workID, b, confirm, b.RunAttemptID, now)
+		if err != nil {
+			return fmt.Errorf("delegate: preserve live session binding: %w", err)
+		}
+		if err := s.appendEvent(Event{
+			TS:       ts(now),
+			WorkID:   workID,
+			From:     state,
+			To:       state,
+			By:       holder,
+			Note:     fmt.Sprintf("delegate preserved live session %s after cleanup failure", b.Session),
+			Attached: []string{evID},
+		}); err != nil {
+			return fmt.Errorf("delegate: attach preserved live session binding: %w", err)
+		}
+	}
+	if _, err := s.Advance(workID, AdvanceInput{
+		To:            state,
+		Actor:         holder,
+		RunAttemptIDs: []string{b.RunAttemptID},
+		Note:          "preserved live delegate run attempt attached",
+	}, now); err != nil {
+		return fmt.Errorf("delegate: forward-link preserved live run attempt %s: %w", b.RunAttemptID, err)
+	}
+	return nil
 }
 
 // bestEffortStamp writes audit context to a RunAttempt during a failure closure
