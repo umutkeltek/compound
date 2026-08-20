@@ -550,6 +550,21 @@ ingestion yet — they all need this spine first.
 
 Home durability is part of the runtime contract:
 
+`manifest.yaml` compatibility fails closed around the fixed identity
+`schema_version: compound.home.v0.1` plus `kind: compound_home`. `home_kind` is
+nonblank profile/placement metadata, so historical and harness-specific values
+remain valid. Legacy v0.1 manifests without `kind` are readable and normalized
+only in memory; their bytes are never silently rewritten. Init validates an
+existing manifest before mutation and revalidates it through the pinned home
+root before scaffolding. Every non-read command admission checks the selected
+home before dispatch, while init, restore, and read-only recovery diagnostics
+retain their explicit boundaries. Doctor and typed compatibility errors report
+whether the home manifest or archive envelope failed, with a backup-first,
+restore-to-a-new-absent-target recovery path. Backup pins the exact manifest
+bytes before walking and verification checks both envelope metadata and those
+embedded bytes. Fresh identity and interrupted-init quarantine publication use
+atomic no-replace operations; a partial or raced write never becomes authority.
+
 ```text
 compound home backup [--target archive.tar.gz]
 compound home verify [archive.tar.gz]

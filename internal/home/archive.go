@@ -64,6 +64,11 @@ var defaultArchiveReadLimits = archiveReadLimits{
 	MaxDecodedBytes:  archiveMaxDecodedBytes,
 }
 
+// archiveAfterHomeManifestPinned is a deterministic test seam. Production
+// leaves it inert; backup tests use it to replace the manifest pathname after
+// the writer is expected to have captured the exact identity bytes.
+var archiveAfterHomeManifestPinned = func(string) error { return nil }
+
 // Compatibility projection for archive manifests and existing callers. The
 // HabitatCatalog owns inclusion policy, including protected descendants under
 // otherwise rebuildable roots such as projections.
@@ -78,13 +83,14 @@ type ArchiveEntry struct {
 
 // ArchiveManifest is stored inside every home archive.
 type ArchiveManifest struct {
-	SchemaVersion     string         `json:"schema_version"`
-	Kind              string         `json:"kind"`
-	CreatedAt         string         `json:"created_at"`
-	SourceHome        string         `json:"source_home,omitempty"`
-	HomeSchemaVersion string         `json:"home_schema_version,omitempty"`
-	ExcludedRoots     []string       `json:"excluded_roots,omitempty"`
-	Entries           []ArchiveEntry `json:"entries"`
+	SchemaVersion        string         `json:"schema_version"`
+	Kind                 string         `json:"kind"`
+	CreatedAt            string         `json:"created_at"`
+	SourceHome           string         `json:"source_home,omitempty"`
+	HomeSchemaVersion    string         `json:"home_schema_version,omitempty"`
+	ExcludedRoots        []string       `json:"excluded_roots,omitempty"`
+	Entries              []ArchiveEntry `json:"entries"`
+	embeddedHomeManifest []byte
 }
 
 type ArchiveReport struct {
@@ -251,6 +257,7 @@ func writePublicFixtureArchive(homePath, targetPath string, now time.Time) (Arch
 	}
 	fixtureManifest := Manifest{
 		SchemaVersion: SchemaVersion,
+		Kind:          ManifestKind,
 		HomeKind:      ArchiveKindPublicFixture,
 		CreatedAt:     now.UTC().Format(time.RFC3339),
 		ActiveModules: []string{},
@@ -330,10 +337,13 @@ func verifyArchiveManifestWithLimits(archivePath string, manifest ArchiveManifes
 	if err := validateArchiveReadLimits(limits); err != nil {
 		return VerifyReport{}, err
 	}
+	if manifest.SchemaVersion != ArchiveSchemaVersion {
+		return VerifyReport{}, asArchiveCompatibilityError(fmt.Errorf("archive manifest schema_version must be %s, got %q", ArchiveSchemaVersion, manifest.SchemaVersion))
+	}
 	switch manifest.Kind {
 	case ArchiveKindBackup, ArchiveKindPublicFixture:
 	default:
-		return VerifyReport{}, fmt.Errorf("archive kind must be %s or %s, got %q", ArchiveKindBackup, ArchiveKindPublicFixture, manifest.Kind)
+		return VerifyReport{}, asArchiveCompatibilityError(fmt.Errorf("archive kind must be %s or %s, got %q", ArchiveKindBackup, ArchiveKindPublicFixture, manifest.Kind))
 	}
 	// The raw manifest byte ceiling bounds JSON decode allocation. Apply the
 	// semantic count ceiling before allocating the expected-entry map.
@@ -376,7 +386,7 @@ func verifyArchiveManifestWithLimits(archivePath string, manifest ArchiveManifes
 		expected[entry.Path] = entry
 	}
 	if manifest.HomeSchemaVersion != SchemaVersion {
-		return VerifyReport{}, fmt.Errorf("archive home_schema_version must be %s, got %q", SchemaVersion, manifest.HomeSchemaVersion)
+		return VerifyReport{}, asArchiveCompatibilityError(fmt.Errorf("archive home_schema_version must be %s, got %q", SchemaVersion, manifest.HomeSchemaVersion))
 	}
 	if len(expected) != len(actual) {
 		return VerifyReport{}, fmt.Errorf("archive entry count mismatch: manifest=%d actual=%d", len(expected), len(actual))
@@ -394,6 +404,20 @@ func verifyArchiveManifestWithLimits(archivePath string, manifest ArchiveManifes
 			return VerifyReport{}, fmt.Errorf("archive verified bytes exceed %d", limits.MaxExpandedBytes)
 		}
 		bytesTotal += got.Size
+	}
+	if _, ok := expected[ManifestName]; !ok || len(manifest.embeddedHomeManifest) == 0 {
+		return VerifyReport{}, fmt.Errorf("archive embedded home manifest is missing")
+	}
+	embedded, err := decodeHomeManifest(manifest.embeddedHomeManifest)
+	if err != nil {
+		return VerifyReport{}, err
+	}
+	if embedded.SchemaVersion != manifest.HomeSchemaVersion {
+		return VerifyReport{}, asArchiveCompatibilityError(fmt.Errorf(
+			"archive home_schema_version %q does not match embedded manifest schema_version %q",
+			manifest.HomeSchemaVersion,
+			embedded.SchemaVersion,
+		))
 	}
 	return VerifyReport{
 		Kind:        manifest.Kind,
@@ -2006,9 +2030,25 @@ func writeHomeArchive(homePath, targetPath, kind string, excluded []string, now 
 	defer aw.cleanup()
 	gz := gzip.NewWriter(aw.file)
 	tw := tar.NewWriter(gz)
+	manifestPath := filepath.Join(homePath, ManifestName)
+	pinnedManifestBytes, err := readManifestNoFollowBounded(manifestPath)
+	if err != nil {
+		return ArchiveReport{}, fmt.Errorf("pin home manifest for archive: %w", err)
+	}
+	pinnedManifest, err := decodeHomeManifest(pinnedManifestBytes)
+	if err != nil {
+		return ArchiveReport{}, err
+	}
+	if err := archiveAfterHomeManifestPinned(filepath.Join(homePath, ManifestName)); err != nil {
+		return ArchiveReport{}, err
+	}
 
-	entries := []ArchiveEntry{}
-	var bytesWritten int64
+	manifestEntry, err := writeBytesEntry(tw, ManifestName, pinnedManifestBytes, 0o644)
+	if err != nil {
+		return ArchiveReport{}, err
+	}
+	entries := []ArchiveEntry{manifestEntry}
+	bytesWritten := manifestEntry.Size
 	err = filepath.WalkDir(homePath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -2021,6 +2061,9 @@ func writeHomeArchive(homePath, targetPath, kind string, excluded []string, now 
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if rel == ManifestName {
+			return nil
+		}
 		info, err := d.Info()
 		if err != nil {
 			return err
@@ -2053,7 +2096,7 @@ func writeHomeArchive(homePath, targetPath, kind string, excluded []string, now 
 		Kind:              kind,
 		CreatedAt:         now.UTC().Format(time.RFC3339),
 		SourceHome:        homePath,
-		HomeSchemaVersion: SchemaVersion,
+		HomeSchemaVersion: pinnedManifest.SchemaVersion,
 		ExcludedRoots:     append([]string(nil), excluded...),
 		Entries:           sortedArchiveEntries(entries),
 	}
@@ -2466,7 +2509,7 @@ func openVerifiedBackupArchive(archivePath string, limits archiveReadLimits) (*v
 		return fail(err)
 	}
 	if manifest.Kind != ArchiveKindBackup {
-		return fail(fmt.Errorf("restore requires archive kind %s, got %q", ArchiveKindBackup, manifest.Kind))
+		return fail(asArchiveCompatibilityError(fmt.Errorf("restore requires archive kind %s, got %q", ArchiveKindBackup, manifest.Kind)))
 	}
 	if _, err := verifyArchiveManifestWithLimits(archivePath, manifest, actual, limits); err != nil {
 		return fail(err)
@@ -2523,6 +2566,7 @@ func readOpenedArchiveWithLimits(archivePath string, f *os.File, restore *archiv
 	seen := map[string]struct{}{}
 	directories := map[string]struct{}{}
 	var manifest ArchiveManifest
+	var embeddedHomeManifest []byte
 	manifestSeen := false
 	entryCount := 0
 	var expandedBytes int64
@@ -2614,13 +2658,21 @@ func readOpenedArchiveWithLimits(archivePath string, f *os.File, restore *archiv
 			continue
 		}
 		sum := sha256.New()
+		entryDigestWriter := io.Writer(sum)
+		var homeManifestBytes bytes.Buffer
+		if name == ManifestName {
+			if hdr.Size > manifestMaxBytes {
+				return ArchiveManifest{}, nil, fmt.Errorf("embedded home manifest exceeds %d bytes", manifestMaxBytes)
+			}
+			entryDigestWriter = io.MultiWriter(sum, &homeManifestBytes)
+		}
 		var n int64
 		if restore != nil {
 			out, err := restore.createFile(name, fs.FileMode(hdr.Mode))
 			if err != nil {
 				return ArchiveManifest{}, nil, err
 			}
-			n, err = io.CopyN(out.file, io.TeeReader(tr, sum), hdr.Size)
+			n, err = io.CopyN(out.file, io.TeeReader(tr, entryDigestWriter), hdr.Size)
 			if err != nil {
 				if limitErr := decoded.limitErrorFor("decoded archive", "tar stream"); limitErr != nil {
 					return ArchiveManifest{}, nil, out.abort(limitErr)
@@ -2634,7 +2686,7 @@ func readOpenedArchiveWithLimits(archivePath string, f *os.File, restore *archiv
 				return ArchiveManifest{}, nil, err
 			}
 		} else {
-			n, err = io.CopyN(sum, tr, hdr.Size)
+			n, err = io.CopyN(entryDigestWriter, tr, hdr.Size)
 			if err != nil {
 				if limitErr := decoded.limitErrorFor("decoded archive", "tar stream"); limitErr != nil {
 					return ArchiveManifest{}, nil, limitErr
@@ -2644,6 +2696,9 @@ func readOpenedArchiveWithLimits(archivePath string, f *os.File, restore *archiv
 				}
 				return ArchiveManifest{}, nil, err
 			}
+		}
+		if name == ManifestName {
+			embeddedHomeManifest = append([]byte(nil), homeManifestBytes.Bytes()...)
 		}
 		actual[name] = ArchiveEntry{Path: name, Size: n, SHA256: hex.EncodeToString(sum.Sum(nil))}
 	}
@@ -2674,8 +2729,9 @@ func readOpenedArchiveWithLimits(archivePath string, f *os.File, restore *archiv
 		return ArchiveManifest{}, nil, fmt.Errorf("archive manifest is missing")
 	}
 	if manifest.SchemaVersion != ArchiveSchemaVersion {
-		return ArchiveManifest{}, nil, fmt.Errorf("archive manifest schema_version must be %s, got %q", ArchiveSchemaVersion, manifest.SchemaVersion)
+		return ArchiveManifest{}, nil, asArchiveCompatibilityError(fmt.Errorf("archive manifest schema_version must be %s, got %q", ArchiveSchemaVersion, manifest.SchemaVersion))
 	}
+	manifest.embeddedHomeManifest = embeddedHomeManifest
 	return manifest, actual, nil
 }
 

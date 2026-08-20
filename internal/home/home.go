@@ -26,6 +26,11 @@ const ManifestName = "manifest.yaml"
 // SchemaVersion of the home manifest.
 const SchemaVersion = "compound.home.v0.1"
 
+// ManifestKind is the fixed discriminator for a Compound home identity. The
+// home_kind field remains placement/profile metadata and is deliberately not
+// an identity discriminator.
+const ManifestKind = "compound_home"
+
 const (
 	HomeConfigSchemaVersion = "compound.home_config.v0.1"
 	BackupFreshnessMaxAge   = 48 * time.Hour
@@ -35,23 +40,21 @@ var initAfterRootSecured = func(string) error { return nil }
 
 // Manifest is the home's identity record.
 type Manifest struct {
-	SchemaVersion string   `yaml:"schema_version"`
-	HomeKind      string   `yaml:"home_kind"` // global | local
-	CreatedAt     string   `yaml:"created_at"`
-	ActiveModules []string `yaml:"active_modules"`
+	SchemaVersion  string   `yaml:"schema_version"`
+	Kind           string   `yaml:"kind,omitempty"`
+	HomeKind       string   `yaml:"home_kind"`
+	CreatedAt      string   `yaml:"created_at"`
+	ActiveModules  []string `yaml:"active_modules"`
+	LegacyIdentity bool     `yaml:"-"`
 }
 
 // LoadManifest reads the identity record without mutating the home.
 func LoadManifest(homePath string) (Manifest, error) {
-	data, err := os.ReadFile(filepath.Join(homePath, ManifestName))
+	data, err := readManifestNoFollowBounded(filepath.Join(homePath, ManifestName))
 	if err != nil {
 		return Manifest{}, err
 	}
-	var manifest Manifest
-	if err := yaml.Unmarshal(data, &manifest); err != nil {
-		return Manifest{}, err
-	}
-	return manifest, nil
+	return decodeHomeManifest(data)
 }
 
 // HomeConfig is the optional COMPOUND_HOME/config/home.yaml operator config.
@@ -96,9 +99,9 @@ const (
 )
 
 const (
-	authoritativeLocalHomeKind = "local_monolith"
-	legacyLocalHomeKind        = "local"
-	manifestMaxBytes           = 64 * 1024
+	discoveryLegacyHomeKind = "local_monolith"
+	discoveryLocalHomeKind  = "local"
+	manifestMaxBytes        = 64 * 1024
 )
 
 // Resolution describes a COMPOUND_HOME resolution decision.
@@ -170,7 +173,7 @@ func findAncestorHome() string {
 	}
 	for {
 		cand := filepath.Join(dir, ".compound")
-		if err := validateAuthoritativeManifest(filepath.Join(cand, ManifestName)); err == nil {
+		if err := validateDiscoverableLocalManifest(filepath.Join(cand, ManifestName)); err == nil {
 			return cand
 		}
 		parent := filepath.Dir(dir)
@@ -181,7 +184,11 @@ func findAncestorHome() string {
 	}
 }
 
-func validateAuthoritativeManifest(path string) error {
+// validateDiscoverableLocalManifest recognizes only the historical local
+// markers used by the explicitly non-authoritative DiscoverAncestorHome
+// bridge. Runtime identity validation is broader: any nonblank home_kind is
+// profile metadata once the fixed schema_version and kind are compatible.
+func validateDiscoverableLocalManifest(path string) error {
 	data, err := readManifestNoFollowBounded(path)
 	if err != nil {
 		return err
@@ -193,8 +200,8 @@ func validateAuthoritativeManifest(path string) error {
 	if manifest.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("unsupported home schema %q", manifest.SchemaVersion)
 	}
-	if manifest.HomeKind != authoritativeLocalHomeKind && manifest.HomeKind != legacyLocalHomeKind {
-		return fmt.Errorf("unsupported authoritative local home kind %q", manifest.HomeKind)
+	if manifest.HomeKind != discoveryLegacyHomeKind && manifest.HomeKind != discoveryLocalHomeKind {
+		return fmt.Errorf("unsupported discoverable local home kind %q", manifest.HomeKind)
 	}
 	return nil
 }
@@ -227,9 +234,19 @@ func readManifestNoFollowBounded(path string) ([]byte, error) {
 
 // Init creates the habitat dirs and writes the manifest if absent. Idempotent:
 // re-running never destroys existing state, only fills missing dirs.
-func Init(homePath, kind string, now time.Time) error {
+func Init(homePath, kind string, now time.Time) (resultErr error) {
+	defer func() {
+		resultErr = withManifestRecoveryGuidance(resultErr)
+	}()
 	if kind == "" {
-		kind = "global"
+		kind = HomeKindGlobal
+	}
+	if err := validateHomeKind(kind); err != nil {
+		return err
+	}
+	preflightManifest, hadPreflightManifest, err := preflightInitManifest(homePath)
+	if err != nil {
+		return fmt.Errorf("validate existing home manifest before initialization: %w", err)
 	}
 	root, rootInfo, err := secureHomeRootForInit(homePath)
 	if err != nil {
@@ -239,17 +256,18 @@ func Init(homePath, kind string, now time.Time) error {
 	if err := initAfterRootSecured(homePath); err != nil {
 		return err
 	}
-	for _, d := range HabitatDirs() {
-		if err := ensureRootedInitDirectory(root, filepath.FromSlash(d), 0o755, filepath.Join(homePath, d)); err != nil {
-			return fmt.Errorf("mkdir %s: %w", d, err)
+	var newManifestBytes []byte
+	if hadPreflightManifest {
+		if _, err := validateRootedInitManifest(root, homePath, kind, preflightManifest); err != nil {
+			return fmt.Errorf("validate rooted home manifest before scaffolding: %w", err)
 		}
-	}
-	if err := initializePrivateCustodyDirsRooted(root, homePath); err != nil {
-		return fmt.Errorf("initialize private custody: %w", err)
-	}
-	if info, err := root.Lstat(ManifestName); errors.Is(err, os.ErrNotExist) {
+	} else if _, err := root.Lstat(ManifestName); errors.Is(err, os.ErrNotExist) {
+		if err := requireEmptyRootForFreshManifest(root, homePath); err != nil {
+			return err
+		}
 		m := Manifest{
 			SchemaVersion: SchemaVersion,
+			Kind:          ManifestKind,
 			HomeKind:      kind,
 			CreatedAt:     now.UTC().Format(time.RFC3339),
 			ActiveModules: []string{},
@@ -258,24 +276,30 @@ func Init(homePath, kind string, now time.Time) error {
 		if err != nil {
 			return err
 		}
-		file, err := root.OpenFile(ManifestName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err != nil {
-			return err
-		}
-		_, writeErr := file.Write(b)
-		chmodErr := file.Chmod(0o644)
-		syncErr := file.Sync()
-		closeErr := file.Close()
-		if err := errors.Join(writeErr, chmodErr, syncErr, closeErr); err != nil {
-			return err
-		}
-		if err := syncRootedDirectory(root, ".", homePath, "home init"); err != nil {
+		newManifestBytes = b
+		if err := writeRootedInitManifest(root, b, homePath); err != nil {
 			return err
 		}
 	} else if err != nil {
 		return err
-	} else if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("manifest must be a regular non-symlink file")
+	} else {
+		return fmt.Errorf("home manifest appeared after initialization preflight; refusing to adopt or rewrite it: %s", filepath.Join(homePath, ManifestName))
+	}
+	if !hadPreflightManifest {
+		if _, err := validateRootedInitManifest(root, homePath, kind, newManifestBytes); err != nil {
+			return fmt.Errorf("validate rooted home manifest before scaffolding: %w", err)
+		}
+	}
+	if err := recoverOwnedInitManifestStaging(root, homePath); err != nil {
+		return err
+	}
+	for _, d := range HabitatDirs() {
+		if err := ensureRootedInitDirectory(root, filepath.FromSlash(d), 0o755, filepath.Join(homePath, d)); err != nil {
+			return fmt.Errorf("mkdir %s: %w", d, err)
+		}
+	}
+	if err := initializePrivateCustodyDirsRooted(root, homePath); err != nil {
+		return fmt.Errorf("initialize private custody: %w", err)
 	}
 	opened, openErr := root.Stat(".")
 	pathInfo, pathErr := os.Lstat(homePath)
@@ -367,21 +391,23 @@ type SetupReport struct {
 
 // Report is the doctor result.
 type Report struct {
-	Home           string
-	ManifestOK     bool
-	Manifest       Manifest
-	Dirs           []CheckItem
-	DirsOK         int
-	Habitat        HabitatInventory
-	HabitatOK      bool
-	InsideGitRepo  bool        // a global home inside a git repo is a "generated-state-in-source" smell
-	Hygiene        []CheckItem // operational hygiene: terminal work swept, leases live-only
-	HygieneOK      bool
-	BackupWarnings []CheckItem
-	Setup          SetupReport
-	SetupOK        bool
-	PrivateCustody PrivateCustodyReport
-	OK             bool
+	Home             string
+	ManifestOK       bool
+	Manifest         Manifest
+	ManifestError    string
+	ManifestRecovery string
+	Dirs             []CheckItem
+	DirsOK           int
+	Habitat          HabitatInventory
+	HabitatOK        bool
+	InsideGitRepo    bool        // a global home inside a git repo is a "generated-state-in-source" smell
+	Hygiene          []CheckItem // operational hygiene: terminal work swept, leases live-only
+	HygieneOK        bool
+	BackupWarnings   []CheckItem
+	Setup            SetupReport
+	SetupOK          bool
+	PrivateCustody   PrivateCustodyReport
+	OK               bool
 }
 
 // Doctor inspects a home: manifest present + parseable, every habitat dir present,
@@ -405,10 +431,17 @@ func DoctorWithOptions(homePath string, opts DoctorOptions) Report {
 		now = time.Now()
 	}
 	r := Report{Home: homePath}
-	if b, err := os.ReadFile(filepath.Join(homePath, ManifestName)); err == nil {
-		if yaml.Unmarshal(b, &r.Manifest) == nil && r.Manifest.SchemaVersion != "" {
-			r.ManifestOK = true
+	if b, err := readManifestNoFollowBounded(filepath.Join(homePath, ManifestName)); err != nil {
+		r.ManifestError = fmt.Sprintf("read home manifest: %v", err)
+	} else if manifest, err := decodeHomeManifest(b); err != nil {
+		r.Manifest = manifest
+		r.ManifestError = err.Error()
+		if isManifestCompatibilityError(err) {
+			r.ManifestRecovery = manifestRecoveryGuidance
 		}
+	} else {
+		r.Manifest = manifest
+		r.ManifestOK = true
 	}
 	dirs := HabitatDirs()
 	for _, d := range dirs {

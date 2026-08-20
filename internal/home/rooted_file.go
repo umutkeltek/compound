@@ -192,6 +192,11 @@ func RemoveRootedRegularFileDurable(homePath, path, kind string) error {
 // is bound to the validated inode rather than to a predictable pathname.
 var removeRootedBeforeUnlink func(quarantinePath string) error
 
+// removeRootedBeforeQuarantinePublish is a deterministic test seam invoked
+// immediately before the removal quarantine is published. Production leaves
+// it nil; tests use it to prove a competing quarantine is never replaced.
+var removeRootedBeforeQuarantinePublish func(quarantinePath string) error
+
 // RemoveRootedRegularFileDurableValidated removes an owned regular file only
 // when validator accepts the exact content and inode moved into quarantine.
 // The final unlink re-verifies the quarantined inode identity: a foreign file
@@ -202,7 +207,17 @@ func RemoveRootedRegularFileDurableValidated(homePath, path, kind string, valida
 		return err
 	}
 	defer root.Close()
+	return removeRootedRegularFileDurableValidatedAt(root, relativePath, displayPath, kind, validator, nil)
+}
 
+func removeRootedRegularFileDurableValidatedAt(
+	root *os.Root,
+	relativePath string,
+	displayPath string,
+	kind string,
+	validator func([]byte) error,
+	infoValidator func(os.FileInfo) error,
+) error {
 	before, err := lstatRootedRegularPath(root, relativePath, displayPath, kind)
 	if err != nil {
 		return err
@@ -226,6 +241,14 @@ func RemoveRootedRegularFileDurableValidated(homePath, path, kind string, valida
 		_ = file.Close()
 		return fmt.Errorf("%s file must be a stable regular file: %s", kind, displayPath)
 	}
+	if infoValidator != nil {
+		for _, info := range []os.FileInfo{leaf, opened, after[len(after)-1]} {
+			if err := infoValidator(info); err != nil {
+				_ = file.Close()
+				return err
+			}
+		}
+	}
 	data, err := io.ReadAll(file)
 	if err != nil {
 		_ = file.Close()
@@ -248,78 +271,110 @@ func RemoveRootedRegularFileDurableValidated(homePath, path, kind string, valida
 		_ = file.Close()
 		return fmt.Errorf("%s path must be stable beneath compound home: %s", kind, displayPath)
 	}
-	quarantinePath := relativePath + ".remove-pending"
-	if _, err := root.Lstat(quarantinePath); err == nil {
-		_ = file.Close()
-		return fmt.Errorf("%s removal quarantine already exists: %s", kind, displayPath)
-	} else if !errors.Is(err, os.ErrNotExist) {
+	parentRoot, err := root.OpenRoot(parentPath)
+	if err != nil {
 		_ = file.Close()
 		return err
 	}
-	if err := root.Rename(relativePath, quarantinePath); err != nil {
+	defer parentRoot.Close()
+	parentOpened, err := parentRoot.Stat(".")
+	if err != nil {
 		_ = file.Close()
 		return err
+	}
+	if len(parents) == 0 || !parentOpened.IsDir() || !os.SameFile(parents[len(parents)-1], parentOpened) {
+		_ = file.Close()
+		return fmt.Errorf("%s parent changed before removal quarantine: %s", kind, displayPath)
+	}
+	originalLeaf := filepath.Base(relativePath)
+	quarantineLeaf := originalLeaf + ".remove-pending"
+	quarantineDisplay := displayPath + ".remove-pending"
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if removeRootedBeforeQuarantinePublish != nil {
+		if err := removeRootedBeforeQuarantinePublish(quarantineDisplay); err != nil {
+			return err
+		}
+	}
+	publication, err := BeginRootedFileCAS(parentRoot, quarantineLeaf, originalLeaf, nil, nil, data, opened)
+	if err != nil {
+		if publication != nil && publication.State() != RootedFileCASNotPublished {
+			return fmt.Errorf("%s removal quarantine publication is ambiguous; preserve both names for recovery: %w", kind, err)
+		}
+		return fmt.Errorf("publish %s removal quarantine without replacement: %w", kind, err)
+	}
+	if err := publication.Commit(); err != nil {
+		return fmt.Errorf("%s removal quarantine finalization is ambiguous; preserve the quarantine for recovery: %w", kind, err)
 	}
 	restore := func(cause error) error {
-		_ = file.Close()
-		if _, err := root.Lstat(relativePath); err == nil {
-			return fmt.Errorf("%w; %s replacement retained at quarantine because original path is occupied", cause, kind)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%w; inspect %s original path before quarantine restore: %v", cause, kind, err)
+		quarantineData, quarantineInfo, err := readRootedCASRegularFile(parentRoot, quarantineLeaf)
+		if err != nil {
+			return fmt.Errorf("%w; inspect %s quarantine before restore: %v", cause, kind, err)
 		}
-		if err := root.Rename(quarantinePath, relativePath); err != nil {
-			return fmt.Errorf("%w; restore %s quarantine: %v", cause, kind, err)
+		if !os.SameFile(opened, quarantineInfo) || !bytes.Equal(data, quarantineData) {
+			return fmt.Errorf("%w; %s quarantine changed and was not promoted back to authority", cause, kind)
 		}
-		if err := syncRootedDirectory(root, parentPath, displayPath, kind); err != nil {
-			return fmt.Errorf("%w; sync restored %s quarantine: %v", cause, kind, err)
+		if infoValidator != nil {
+			if err := infoValidator(quarantineInfo); err != nil {
+				return fmt.Errorf("%w; %s quarantine failed restore validation: %v", cause, kind, err)
+			}
+		}
+		restoration, err := BeginRootedFileCAS(parentRoot, originalLeaf, quarantineLeaf, nil, nil, data, quarantineInfo)
+		if err != nil {
+			if restoration != nil && restoration.State() != RootedFileCASNotPublished {
+				return fmt.Errorf("%w; restore %s quarantine is ambiguous; preserve both names for recovery: %v", cause, kind, err)
+			}
+			return fmt.Errorf("%w; restore %s quarantine without replacement: %v; quarantine retained", cause, kind, err)
+		}
+		if err := restoration.Commit(); err != nil {
+			return fmt.Errorf("%w; restore %s quarantine finalization is ambiguous: %v", cause, kind, err)
 		}
 		return cause
 	}
 
-	quarantined, err := root.Lstat(quarantinePath)
+	quarantineData, quarantined, err := readRootedCASRegularFile(parentRoot, quarantineLeaf)
 	if err != nil {
 		return restore(err)
 	}
-	quarantineFile, err := root.Open(quarantinePath)
-	if err != nil {
-		return restore(err)
-	}
-	quarantineOpened, err := quarantineFile.Stat()
-	if err != nil {
-		_ = quarantineFile.Close()
-		return restore(err)
-	}
-	quarantineData, err := io.ReadAll(quarantineFile)
-	if err != nil {
-		_ = quarantineFile.Close()
-		return restore(err)
-	}
-	if err := quarantineFile.Close(); err != nil {
-		return restore(err)
-	}
-	if quarantined.Mode()&os.ModeSymlink != 0 || !quarantined.Mode().IsRegular() ||
-		!quarantineOpened.Mode().IsRegular() || !os.SameFile(opened, quarantineOpened) || !bytes.Equal(data, quarantineData) {
-		return restore(fmt.Errorf("%s file changed after validation: %s", kind, displayPath))
-	}
-	if err := file.Close(); err != nil {
-		return restore(err)
-	}
-	if removeRootedBeforeUnlink != nil {
-		if err := removeRootedBeforeUnlink(displayPath + ".remove-pending"); err != nil {
+	if infoValidator != nil {
+		if err := infoValidator(quarantined); err != nil {
 			return restore(err)
 		}
 	}
-	final, err := root.Lstat(quarantinePath)
+	if quarantined.Mode()&os.ModeSymlink != 0 || !quarantined.Mode().IsRegular() ||
+		!os.SameFile(opened, quarantined) || !bytes.Equal(data, quarantineData) {
+		return restore(fmt.Errorf("%s file changed after validation: %s", kind, displayPath))
+	}
+	if infoValidator != nil {
+		if err := infoValidator(quarantined); err != nil {
+			return restore(err)
+		}
+	}
+	if removeRootedBeforeUnlink != nil {
+		if err := removeRootedBeforeUnlink(quarantineDisplay); err != nil {
+			return restore(err)
+		}
+	}
+	finalData, final, err := readRootedCASRegularFile(parentRoot, quarantineLeaf)
 	if err != nil {
 		return restore(err)
 	}
-	if final.Mode()&os.ModeSymlink != 0 || !final.Mode().IsRegular() || !os.SameFile(quarantined, final) {
+	if final.Mode()&os.ModeSymlink != 0 || !final.Mode().IsRegular() || !os.SameFile(quarantined, final) || !bytes.Equal(quarantineData, finalData) {
 		return restore(fmt.Errorf("%s file changed after validation: %s", kind, displayPath))
 	}
-	if err := root.Remove(quarantinePath); err != nil {
+	if infoValidator != nil {
+		if err := infoValidator(final); err != nil {
+			return restore(err)
+		}
+	}
+	if err := parentRoot.Remove(quarantineLeaf); err != nil {
 		return restore(err)
 	}
-	return syncRootedDirectory(root, parentPath, displayPath, kind)
+	if err := syncRootedCASDirectory(parentRoot); err != nil {
+		return fmt.Errorf("%s quarantine removed but parent sync failed: %w", kind, err)
+	}
+	return nil
 }
 
 func openRootedPath(homePath, path, kind string) (*os.Root, string, string, error) {

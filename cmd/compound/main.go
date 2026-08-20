@@ -140,6 +140,7 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	die(firstPartyCommandCatalog().RequireHomeCompatibility(os.Args[1], os.Args[2:]))
 	command.Run(os.Args[2:])
 }
 
@@ -4201,6 +4202,8 @@ type homeDoctorJSONReport struct {
 	Home                       string                     `json:"home"`
 	Kind                       string                     `json:"kind,omitempty"`
 	ManifestOK                 bool                       `json:"manifest_ok"`
+	ManifestError              string                     `json:"manifest_error,omitempty"`
+	ManifestRecovery           string                     `json:"manifest_recovery,omitempty"`
 	DirsOK                     int                        `json:"dirs_ok"`
 	DirsTotal                  int                        `json:"dirs_total"`
 	Habitat                    home.HabitatInventory      `json:"habitat"`
@@ -4274,6 +4277,8 @@ func buildHomeDoctorReport(r home.Report) homeDoctorJSONReport {
 		Home:                       r.Home,
 		Kind:                       r.Manifest.HomeKind,
 		ManifestOK:                 r.ManifestOK,
+		ManifestError:              r.ManifestError,
+		ManifestRecovery:           r.ManifestRecovery,
 		DirsOK:                     r.DirsOK,
 		DirsTotal:                  len(home.HabitatDirs()),
 		Habitat:                    r.Habitat,
@@ -4359,6 +4364,9 @@ func printHomeDoctor(r home.Report) {
 	fmt.Printf("home: %s\n", r.Home)
 	fmt.Printf("kind: %s\n", r.Manifest.HomeKind)
 	fmt.Printf("manifest: %s\n", homeOKStr(r.ManifestOK))
+	if !r.ManifestOK {
+		fmt.Printf("manifest_error: %s\nmanifest_recovery: %s\n", r.ManifestError, r.ManifestRecovery)
+	}
 	fmt.Printf("dirs: %d/%d ok\n", r.DirsOK, len(home.HabitatDirs()))
 	for _, line := range homeDoctorHabitatLines(r) {
 		fmt.Println(line)

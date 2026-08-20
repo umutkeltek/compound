@@ -39,6 +39,30 @@ func TestRepairPrivateCustodyCreatesMissingDirs(t *testing.T) {
 	}
 }
 
+func TestRunPrivateCustodyCLISelectsLocalHome(t *testing.T) {
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+	ambientHome := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(ambientHome, "ambient-profile", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOUND_HOME", ambientHome)
+	localHome := filepath.Join(workspace, ".compound")
+	if err := Init(localHome, "local-profile", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(localHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := RunPrivateCustodyCLI([]string{"private-custody", "repair", "--local"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("private-custody --local exit=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	if info, err := os.Lstat(localHome); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("local home mode=%v err=%v, want 0700", info, err)
+	}
+}
+
 func TestRepairPrivateCustodyFixesDriftThenNoop(t *testing.T) {
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	body := []byte("private artifact")
@@ -210,10 +234,10 @@ func findPrivateCustodyFinding(t *testing.T, findings []PrivateCustodyFinding, k
 func TestInitCreatesMissingPrivateCustodyWithoutRepairingExistingDrift(t *testing.T) {
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	privatePath := filepath.Join(homePath, "private")
-	if err := os.Mkdir(homePath, 0o700); err != nil {
+	if err := Init(homePath, HomeKindGlobal, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(privatePath, 0o755); err != nil {
+	if err := os.RemoveAll(filepath.Join(privatePath, "artifacts")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(privatePath, 0o755); err != nil {

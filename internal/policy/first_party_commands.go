@@ -1,6 +1,11 @@
 package policy
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+
+	homepkg "compound/internal/home"
+)
 
 type FirstPartyCommandAdmission string
 
@@ -76,6 +81,59 @@ func (c FirstPartyCommandCatalog) LookupSubcommandWithFlags(
 		return admission, true
 	}
 	return rule.admission, true
+}
+
+// RequireHomeCompatibility binds the executable command registry's admission
+// posture to the selected Compound home before dispatch. Read/help invocations
+// remain available for recovery. Init and restore enforce compatibility at
+// their own fresh-target boundaries.
+func (c FirstPartyCommandCatalog) RequireHomeCompatibility(command string, args []string) error {
+	if firstPartyUsageRequested(args) {
+		return nil
+	}
+	subcommand := firstPartySubcommand(args)
+	admission, ok := c.LookupSubcommandWithFlags(command, subcommand, args)
+	if !ok {
+		return fmt.Errorf("command %q has no first-party admission metadata", command)
+	}
+	if admission == FirstPartyCommandRead {
+		return nil
+	}
+	command = strings.ToLower(strings.TrimSpace(command))
+	if command == "home" && (subcommand == "" || subcommand == "init" || subcommand == "restore") {
+		return nil
+	}
+	homePath, err := homepkg.Resolve("")
+	if command == "home" && firstPartyFlagPresent(args, "--local") {
+		homePath, err = homepkg.LocalPath()
+	}
+	if err != nil {
+		return err
+	}
+	return homepkg.RequireMutationCompatible(homePath)
+}
+
+func firstPartySubcommand(args []string) string {
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if arg != "" && arg != "--" && !strings.HasPrefix(arg, "-") {
+			return strings.ToLower(arg)
+		}
+	}
+	return ""
+}
+
+func firstPartyUsageRequested(args []string) bool {
+	return firstPartyFlagPresent(args, "-h") || firstPartyFlagPresent(args, "--help")
+}
+
+func firstPartyFlagPresent(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
 }
 
 func (c FirstPartyCommandCatalog) WithSubcommands(

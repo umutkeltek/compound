@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const PrivateCustodyUsage = "usage: compound home private-custody repair [--home <path>] [--dry-run] [--json]\n"
+const PrivateCustodyUsage = "usage: compound home private-custody repair [--home <path>|--local|--global] [--dry-run] [--json]\n"
 
 // RunPrivateCustodyCLI owns the nested private-custody grammar and rendering.
 // cmd/compound only selects the home subcommand so the command boundary stays
@@ -18,7 +18,7 @@ func RunPrivateCustodyCLI(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	flagHome := ""
-	dryRun, jsonOut := false, false
+	dryRun, jsonOut, local, global := false, false, false, false
 	positionals := make([]string, 0, 2)
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -27,6 +27,10 @@ func RunPrivateCustodyCLI(args []string, stdout, stderr io.Writer) int {
 			dryRun = true
 		case "--json":
 			jsonOut = true
+		case "--local":
+			local = true
+		case "--global":
+			global = true
 		case "--home":
 			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" || strings.HasPrefix(args[i+1], "-") {
 				fmt.Fprintln(stderr, "home private-custody repair: --home requires a value")
@@ -46,7 +50,14 @@ func RunPrivateCustodyCLI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, PrivateCustodyUsage)
 		return 2
 	}
+	if local && global || flagHome != "" && (local || global) {
+		fmt.Fprintln(stderr, "home private-custody repair: choose exactly one of --home, --local, or --global")
+		return 2
+	}
 	homePath, err := Resolve(flagHome)
+	if local {
+		homePath, err = LocalPath()
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "home private-custody repair:", err)
 		return 1

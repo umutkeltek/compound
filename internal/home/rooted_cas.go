@@ -32,6 +32,8 @@ type RootedFileCAS struct {
 	replacementInfo os.FileInfo
 	displacedData   []byte
 	displacedInfo   os.FileInfo
+	requiredMode    os.FileMode
+	requireMode     bool
 	state           RootedFileCASState
 	resolved        bool
 }
@@ -61,6 +63,33 @@ func BeginRootedFileCAS(
 	replacementData []byte,
 	replacementInfo os.FileInfo,
 ) (*RootedFileCAS, error) {
+	return beginRootedFileCAS(root, canonicalName, recoveryName, expectedData, expectedInfo, replacementData, replacementInfo, 0, false)
+}
+
+func beginRootedFileCASWithRequiredMode(
+	root *os.Root,
+	canonicalName string,
+	recoveryName string,
+	expectedData []byte,
+	expectedInfo os.FileInfo,
+	replacementData []byte,
+	replacementInfo os.FileInfo,
+	requiredMode os.FileMode,
+) (*RootedFileCAS, error) {
+	return beginRootedFileCAS(root, canonicalName, recoveryName, expectedData, expectedInfo, replacementData, replacementInfo, requiredMode, true)
+}
+
+func beginRootedFileCAS(
+	root *os.Root,
+	canonicalName string,
+	recoveryName string,
+	expectedData []byte,
+	expectedInfo os.FileInfo,
+	replacementData []byte,
+	replacementInfo os.FileInfo,
+	requiredMode os.FileMode,
+	requireMode bool,
+) (*RootedFileCAS, error) {
 	publication := &RootedFileCAS{
 		root:            root,
 		canonicalName:   canonicalName,
@@ -68,6 +97,8 @@ func BeginRootedFileCAS(
 		expectedAbsent:  expectedInfo == nil,
 		replacementData: append([]byte(nil), replacementData...),
 		replacementInfo: replacementInfo,
+		requiredMode:    requiredMode.Perm(),
+		requireMode:     requireMode,
 		state:           RootedFileCASNotPublished,
 	}
 	if root == nil {
@@ -88,6 +119,9 @@ func BeginRootedFileCAS(
 	}
 	if replacementInfo == nil || !os.SameFile(replacementInfo, preparedInfo) || !bytes.Equal(replacementData, preparedData) {
 		return publication, fmt.Errorf("rooted file CAS replacement changed before publication")
+	}
+	if err := publication.validateReplacementMode(preparedInfo); err != nil {
+		return publication, err
 	}
 	publication.replacementInfo = preparedInfo
 
@@ -160,7 +194,7 @@ func (publication *RootedFileCAS) Rollback() error {
 		return fmt.Errorf("rooted file CAS publication is not rollbackable")
 	}
 	if publication.expectedAbsent {
-		if err := publication.validateLinkedPublication(); err != nil {
+		if err := publication.validateLinkedPublicationIdentity(); err != nil {
 			publication.state = RootedFileCASAmbiguous
 			return err
 		}
@@ -251,6 +285,9 @@ func (publication *RootedFileCAS) captureExchangedFiles() error {
 	if !os.SameFile(publication.replacementInfo, canonicalInfo) || !bytes.Equal(publication.replacementData, canonicalData) {
 		return fmt.Errorf("rooted file CAS published postimage changed during exchange")
 	}
+	if err := publication.validateReplacementMode(canonicalInfo); err != nil {
+		return err
+	}
 	displacedData, displacedInfo, err := readRootedCASRegularFile(publication.root, publication.recoveryName)
 	if err != nil {
 		return fmt.Errorf("read rooted file CAS displaced preimage: %w", err)
@@ -273,10 +310,21 @@ func (publication *RootedFileCAS) validateExchangedPublication() error {
 		!os.SameFile(publication.displacedInfo, recoveryInfo) || !bytes.Equal(publication.displacedData, recoveryData) {
 		return fmt.Errorf("rooted file CAS publication changed before resolution")
 	}
+	if err := publication.validateReplacementMode(canonicalInfo); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (publication *RootedFileCAS) validateLinkedPublication() error {
+	return publication.validateLinkedPublicationWithMode(true)
+}
+
+func (publication *RootedFileCAS) validateLinkedPublicationIdentity() error {
+	return publication.validateLinkedPublicationWithMode(false)
+}
+
+func (publication *RootedFileCAS) validateLinkedPublicationWithMode(validateMode bool) error {
 	canonicalData, canonicalInfo, err := readRootedCASRegularFile(publication.root, publication.canonicalName)
 	if err != nil {
 		return err
@@ -288,6 +336,28 @@ func (publication *RootedFileCAS) validateLinkedPublication() error {
 	if !os.SameFile(publication.replacementInfo, canonicalInfo) || !os.SameFile(canonicalInfo, recoveryInfo) ||
 		!bytes.Equal(publication.replacementData, canonicalData) || !bytes.Equal(publication.replacementData, recoveryData) {
 		return fmt.Errorf("conditionally published rooted file changed before resolution")
+	}
+	if validateMode {
+		if err := publication.validateReplacementMode(canonicalInfo); err != nil {
+			return err
+		}
+		if err := publication.validateReplacementMode(recoveryInfo); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (publication *RootedFileCAS) validateReplacementMode(info os.FileInfo) error {
+	if publication == nil || !publication.requireMode {
+		return nil
+	}
+	if info == nil || info.Mode().Perm() != publication.requiredMode.Perm() {
+		got := os.FileMode(0)
+		if info != nil {
+			got = info.Mode().Perm()
+		}
+		return fmt.Errorf("rooted file CAS replacement mode changed: got %04o want %04o", got, publication.requiredMode.Perm())
 	}
 	return nil
 }

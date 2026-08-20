@@ -11,8 +11,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 const restoreStagingPrefix = ".compound-restore-staging-"
@@ -38,7 +36,8 @@ var (
 // a private sibling staging directory, validates the staged home, and only then
 // publishes it to a new absent target name.
 func RestoreArchive(archivePath, targetHome string, now time.Time) (RestoreReport, error) {
-	return restoreArchiveWithLimits(archivePath, targetHome, now, defaultArchiveReadLimits)
+	report, err := restoreArchiveWithLimits(archivePath, targetHome, now, defaultArchiveReadLimits)
+	return report, withManifestRecoveryGuidance(err)
 }
 
 func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, limits archiveReadLimits) (report RestoreReport, resultErr error) {
@@ -436,6 +435,13 @@ func (t *archiveRestoreTarget) ensureDirectory(name string, mode fs.FileMode) er
 }
 
 func (t *archiveRestoreTarget) completeHabitat() error {
+	manifestRaw, err := t.readRegularFile(ManifestName)
+	if err != nil {
+		return fmt.Errorf("read restored manifest: %w", err)
+	}
+	if _, err := decodeHomeManifest(manifestRaw); err != nil {
+		return fmt.Errorf("validate restored manifest: %w", err)
+	}
 	for _, rel := range HabitatDirs() {
 		if err := t.ensureHabitatDirectory(filepath.ToSlash(rel), archiveHabitatDirMode(rel)); err != nil {
 			return err
@@ -445,17 +451,6 @@ func (t *archiveRestoreTarget) completeHabitat() error {
 		if err := t.ensureDirectory(filepath.ToSlash(rel), 0o700); err != nil {
 			return err
 		}
-	}
-	manifestRaw, err := t.readRegularFile(ManifestName)
-	if err != nil {
-		return fmt.Errorf("read restored manifest: %w", err)
-	}
-	var manifest Manifest
-	if err := yaml.Unmarshal(manifestRaw, &manifest); err != nil {
-		return fmt.Errorf("parse restored manifest: %w", err)
-	}
-	if manifest.SchemaVersion != SchemaVersion {
-		return fmt.Errorf("restored manifest schema_version must be %s, got %q", SchemaVersion, manifest.SchemaVersion)
 	}
 	return nil
 }
@@ -548,12 +543,8 @@ func (t *archiveRestoreTarget) validatePinnedHome() error {
 	if err != nil {
 		return fmt.Errorf("read restored manifest: %w", err)
 	}
-	var manifest Manifest
-	if err := yaml.Unmarshal(manifestRaw, &manifest); err != nil {
-		return fmt.Errorf("parse restored manifest: %w", err)
-	}
-	if manifest.SchemaVersion != SchemaVersion {
-		return fmt.Errorf("restored manifest schema_version must be %s, got %q", SchemaVersion, manifest.SchemaVersion)
+	if _, err := decodeHomeManifest(manifestRaw); err != nil {
+		return fmt.Errorf("validate restored manifest: %w", err)
 	}
 
 	privateReport := PrivateCustodyReport{
