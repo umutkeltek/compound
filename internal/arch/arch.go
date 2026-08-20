@@ -2074,22 +2074,23 @@ func checkASCDailySignalsPublicBoundaryContract(repoRoot string) []Finding {
 
 // checkPublicAlphaSupportedScopeContract keeps the public-alpha support
 // boundary from drifting in the public docs: file backend only; one trusted
-// OS user on local disk; explicit or enrolled home authority (ambient
-// ancestor discovery is not an intended authority target); interactive hooks
-// may observe while enforcement claims require behavioral proof; the console
-// target is projection-only with mutations/private reads off; and Postgres,
-// shared homes, server/multi-tenant use, remote/proxied console, and
-// arbitrary private embedding endpoints are unsupported. It also pins the
-// honesty phrases: the contract must name the current blockers (ambient
-// ancestor discovery still resolves a home; console mutations are enabled by
-// default) so the public docs never claim a hardening fix before it lands.
+// OS user on local disk; explicit home authority (ambient ancestor
+// discovery is not an authority target); interactive hooks may observe
+// while enforcement claims require behavioral proof; the console target is
+// projection-only with mutations/private reads off; and Postgres, shared
+// homes, server/multi-tenant use, remote/proxied console, and arbitrary
+// private embedding endpoints are unsupported. It also pins the honesty
+// phrases: the contract must name the remaining current blockers (console
+// mutations are enabled by default) so the public docs never claim a
+// hardening fix before it lands. The earlier ancestor-authority blocker is
+// closed by the strict resolver and is no longer a "current blocker" entry.
 func checkPublicAlphaSupportedScopeContract(repoRoot string) []Finding {
 	requiredByFile := map[string][]string{
 		"docs/security/supported-scope.md": {
 			"the only supported storage backend",
 			"one trusted OS user and local disk",
 			"Ambient ancestor",
-			"is not an intended authority target",
+			"is not an authority target",
 			"Interactive hooks may observe",
 			"Enforcement claims require behavioral proof",
 			"projection-only",
@@ -2100,7 +2101,6 @@ func checkPublicAlphaSupportedScopeContract(repoRoot string) []Finding {
 			"proxied console",
 			"private embedding endpoints",
 			"Current blockers",
-			"still resolves a home",
 			"mutations are enabled by default",
 		},
 		"README.md": {

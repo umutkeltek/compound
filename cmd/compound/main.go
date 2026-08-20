@@ -3934,6 +3934,14 @@ func cmdHome(args []string) {
 		return
 	}
 	resolve := func() string {
+		if flagHome == "" && kind == "local" {
+			lp, err := home.LocalPath()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+			return lp
+		}
 		p, err := home.Resolve(flagHome)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -3943,17 +3951,7 @@ func cmdHome(args []string) {
 	}
 	switch sub {
 	case "init":
-		var hp string
-		if flagHome == "" && kind == "local" && os.Getenv("COMPOUND_HOME") == "" {
-			lp, err := home.LocalPath()
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "error:", err)
-				os.Exit(1)
-			}
-			hp = lp
-		} else {
-			hp = resolve()
-		}
+		hp := resolve()
 		if err := home.Init(hp, kind, time.Now()); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)

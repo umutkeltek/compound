@@ -248,7 +248,7 @@ func TestResolveHomeExplicitPathsDoNotValidateManifest(t *testing.T) {
 	}
 }
 
-func TestResolveHomeEnrolledLocalNearestValidAncestor(t *testing.T) {
+func TestResolveHomeNearestValidAncestorIsNotAuthority(t *testing.T) {
 	root := t.TempDir()
 	parent := filepath.Join(root, "repo")
 	child := filepath.Join(parent, "pkg")
@@ -264,13 +264,23 @@ func TestResolveHomeEnrolledLocalNearestValidAncestor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(parent, ".compound")
-	if got.Path != want || got.Source != ResolutionSourceEnrolledLocal {
-		t.Fatalf("ancestor resolution = %+v, want path %q source %q", got, want, ResolutionSourceEnrolledLocal)
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGlobal := filepath.Join(homeDir, ".compound")
+	if got.Path == filepath.Join(parent, ".compound") || got.Source == ResolutionSourceEnrolledLocal {
+		t.Fatalf("authoritative Resolve adopted ancestor authority: %+v", got)
+	}
+	if got.Path != wantGlobal || got.Source != ResolutionSourceGlobalDefault {
+		t.Fatalf("authoritative Resolve = %+v, want global default %q source %q", got, wantGlobal, ResolutionSourceGlobalDefault)
+	}
+	if d := DiscoverAncestorHome(); d != filepath.Join(parent, ".compound") {
+		t.Fatalf("DiscoverAncestorHome() = %q, want ancestor %q", d, filepath.Join(parent, ".compound"))
 	}
 }
 
-func TestResolveHomeEnrolledLocalAcceptsLegacyLocalInit(t *testing.T) {
+func TestResolveHomeLegacyLocalInitIsNotAuthority(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
 	child := filepath.Join(repo, "pkg")
@@ -292,8 +302,11 @@ func TestResolveHomeEnrolledLocalAcceptsLegacyLocalInit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Path != localHome || got.Source != ResolutionSourceEnrolledLocal {
-		t.Fatalf("legacy local init resolution = %+v, want path %q source %q", got, localHome, ResolutionSourceEnrolledLocal)
+	if got.Path == localHome || got.Source == ResolutionSourceEnrolledLocal {
+		t.Fatalf("authoritative Resolve adopted legacy-local ancestor authority: %+v", got)
+	}
+	if d := DiscoverAncestorHome(); d != localHome {
+		t.Fatalf("DiscoverAncestorHome() = %q, want legacy-local ancestor %q", d, localHome)
 	}
 }
 
@@ -391,6 +404,106 @@ func TestResolveHomeGlobalFallback(t *testing.T) {
 	want := filepath.Join(homeDir, ".compound")
 	if got.Path != want || got.Source != ResolutionSourceGlobalDefault {
 		t.Fatalf("global fallback = %+v, want path %q source %q", got, want, ResolutionSourceGlobalDefault)
+	}
+}
+
+// TestResolveDoesNotAdoptAncestorHome covers the strict-resolver guarantee:
+// a valid ancestor .compound manifest must never be authority for an
+// ambient cwd. Authoritative Resolve only consults --home, $COMPOUND_HOME,
+// and the global default; ancestor discovery belongs to the non-authoritative
+// compatibility API (DiscoverAncestorHome).
+func TestResolveDoesNotAdoptAncestorHome(t *testing.T) {
+	t.Setenv("COMPOUND_HOME", "")
+	root := t.TempDir()
+	ancestor := filepath.Join(root, ".compound")
+	if err := Init(ancestor, "local", archiveTestNow); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(root, "repo", "nested")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(child); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+
+	got, err := Resolve("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == ancestor {
+		t.Fatalf("Resolve adopted ancestor authority %q", got)
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(homeDir, ".compound")
+	if got != want {
+		t.Fatalf("Resolve() = %q, want global default %q", got, want)
+	}
+}
+
+// TestResolveExplicitFlagAndEnvStillSelectLocalHome locks in the explicit
+// selectors: a --home path or $COMPOUND_HOME path still selects the local
+// home an operator explicitly pointed at, even when a sibling .compound
+// exists.
+func TestResolveExplicitFlagAndEnvStillSelectLocalHome(t *testing.T) {
+	explicit := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(explicit, "local", archiveTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Resolve(explicit); err != nil || got != explicit {
+		t.Fatalf("Resolve(flag) = %q, %v; want %q", got, err, explicit)
+	}
+	t.Setenv("COMPOUND_HOME", explicit)
+	if got, err := Resolve(""); err != nil || got != explicit {
+		t.Fatalf("Resolve(env) = %q, %v; want %q", got, err, explicit)
+	}
+}
+
+// TestDiscoverAncestorHomeIsNonAuthoritativeCompatibilityAPI confirms the
+// ancestor-discovery API still surfaces the nearest valid manifest (read-
+// only), while authoritative Resolve ignores it.
+func TestDiscoverAncestorHomeIsNonAuthoritativeCompatibilityAPI(t *testing.T) {
+	t.Setenv("COMPOUND_HOME", "")
+	root := t.TempDir()
+	ancestor := filepath.Join(root, ".compound")
+	if err := Init(ancestor, "local", archiveTestNow); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(root, "repo", "nested")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(child); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+
+	gotDiscovery := DiscoverAncestorHome()
+	gotDiscoveryReal, err := filepath.EvalSymlinks(gotDiscovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ancestorReal, err := filepath.EvalSymlinks(ancestor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotDiscoveryReal != ancestorReal {
+		t.Fatalf("DiscoverAncestorHome() = %q, want %q", gotDiscovery, ancestor)
+	}
+	if got, err := Resolve(""); err != nil || got == gotDiscovery {
+		t.Fatalf("Resolve() = %q, %v; discovery API must not affect authority", got, err)
 	}
 }
 

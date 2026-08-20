@@ -36,16 +36,15 @@ system. Its intended boundary (target contract):
 
 - file backend only — Postgres remains an experimental, never-authority fence;
 - one trusted OS user on local disk;
-- explicit or enrolled home authority — ambient ancestor `.compound`
-  discovery is not an intended authority target;
+- explicit home authority — ambient ancestor `.compound` discovery is not
+  an authority target;
 - interactive hooks may observe; enforcement claims require behavioral proof;
 - the console is projection-only, with mutations and private reads off.
 
 The runtime is being hardened to enforce that boundary. Until each hardening
 commit lands, current behavior is more permissive than the target, and the
-contract names those gaps instead of papering over them: ambient ancestor
-home discovery is still live today, and console mutations are enabled by
-default today.
+contract names those gaps instead of papering over them: console mutations
+are enabled by default today.
 
 Postgres-backed storage, shared homes, server/multi-tenant use, remote or
 proxied console, and arbitrary private embedding endpoints are unsupported.
@@ -262,15 +261,15 @@ indexes/projections.
 Resolution order:
 
 ```text
---home -> COMPOUND_HOME -> nearest .compound/manifest.yaml -> ~/.compound
+--home -> --local (for commands that support it) -> COMPOUND_HOME -> ~/.compound
 ```
 
-Ambient ancestor discovery (nearest `.compound/manifest.yaml`) is a
-compatibility behavior, not a supported authority target: supported home
-authority is explicit (`--home`, `COMPOUND_HOME`) or enrolled. Pin an
-explicit home for mutating commands and treat repository-local `.compound`
-directories as untrusted input; see the
-[supported scope contract](docs/security/supported-scope.md).
+Ambient ancestor discovery (nearest `.compound/manifest.yaml`) is retained only
+as a non-authoritative internal compatibility/read-only discovery API. Normal
+home resolution never selects an ancestor marker as authority: use `--home`,
+`COMPOUND_HOME`, or an explicit local selector such as `compound home --local`
+for mutating commands that should operate on a repository-local `.compound`
+home; see the [supported scope contract](docs/security/supported-scope.md).
 
 Private paths, credentials, accounts, raw personal corpora, and real operator
 data belong in a private Compound instance, not tracked public files.

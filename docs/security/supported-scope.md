@@ -32,12 +32,14 @@ account, or a shared disk.
 ### Explicit or enrolled home authority
 
 The supported home authority target is explicit: the `--home` flag, the
-`COMPOUND_HOME` environment variable, or a home the user enrolled.
+`COMPOUND_HOME` environment variable, a command's explicit local selection
+(for example `compound home --local`), or a home the user enrolled.
 
-Ambient ancestor `.compound/manifest.yaml` discovery is not an intended authority target:
-a cloned repository or ancestor directory must never select policy,
-credentials, transports, storage, or harness authority merely because a
-manifest file exists.
+Ambient ancestor `.compound/manifest.yaml` discovery is not an authority target:
+a cloned repository or ancestor directory does not select policy, credentials,
+transports, storage, or harness authority merely because a manifest file
+exists. Pin `COMPOUND_HOME`, `--home`, or an explicit local selector for
+mutating commands that should operate on a repository-local `.compound` home.
 
 ### Hooks: observation by default, enforcement by proof
 
@@ -63,12 +65,12 @@ of it yet. These gaps are named so the docs do not claim a fix already
 landed. Each is closed by a focused hardening commit, and until it is closed
 the target contract is a commitment, not a description of current behavior.
 
-- Ambient ancestor discovery still resolves a home. When no explicit home is
-  given, `compound` currently walks up to the nearest ancestor
-  `.compound/manifest.yaml`, so ambient ancestor authority is a current
-  blocker until the strict resolver lands. Until then, pin `COMPOUND_HOME`
-  (or `--home`) explicitly for mutating commands and treat repository-local
-  `.compound` directories as untrusted input.
+The strict-resolver hardening (closing the ambient ancestor authority blocker)
+has landed: authoritative `Resolve` no longer adopts an ancestor `.compound`
+marker. Ancestor discovery remains available only as a non-authoritative
+read-only compatibility API; mutating commands require an explicit
+`--home`, `COMPOUND_HOME`, or `--local` selection.
+
 - Console mutations are enabled by default, and private reads are an opt-in
   flag. The console is not yet projection-only by default; mutations and
   private reads being reachable is a current blocker until the

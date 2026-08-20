@@ -26,8 +26,7 @@ COMPOUND_HOME   = owned private runtime state + durable bodies (a typed habitat,
 private overlay = ingress bindings, credentials/secret refs, and operator-specific adapter configuration
 ```
 
-Resolution order: `1) --home <path>  2) $COMPOUND_HOME  3) nearest ancestor .compound/manifest.yaml
-4) ~/.compound`. Commands: `compound home init [--global|--local]`, `home doctor`, `home where`.
+Resolution order: `1) --home <path>  2) $COMPOUND_HOME  3) ~/.compound`. Repository-local homes are authority-bearing and are never selected by ancestor marker presence; use an explicit `--local`, `--home`, or `COMPOUND_HOME` selection when a command should operate on `<cwd>/.compound`. Commands: `compound home init [--global|--local]`, `home doctor`, `home where`.
 
 ```text
 $COMPOUND_HOME/

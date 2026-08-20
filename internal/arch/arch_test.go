@@ -1586,7 +1586,6 @@ func TestPublicAlphaSupportedScopeContractFailsWhenBoundaryStatementsDrift(t *te
 		"never mutation-ready",
 		"the only supported public-alpha backend",
 		"Current blockers",
-		"still resolves a home",
 		"mutations are enabled by default",
 	} {
 		if !strings.Contains(msg, want) {

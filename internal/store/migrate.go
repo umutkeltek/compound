@@ -35,7 +35,7 @@ Flags:
               class, scoped to the masked DSN target). On success a
               Receipt+Transition pair is recorded in the home event store.
   --json      Machine-readable output
-  --home P    COMPOUND_HOME path (default: home.Resolve — env, then ancestors)
+  --home P    COMPOUND_HOME path (default: home.Resolve — env, then global default; no ancestor adoption)
 
 Environment:
   COMPOUND_STORE  must be 'postgres' for --apply

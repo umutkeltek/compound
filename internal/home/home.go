@@ -105,11 +105,15 @@ type Resolution struct {
 	Source ResolutionSource
 }
 
-// Resolve returns the COMPOUND_HOME path using strict precedence:
+// Resolve returns the authoritative COMPOUND_HOME path using strict precedence:
 //  1. flagHome (--home)
 //  2. $COMPOUND_HOME
-//  3. nearest ancestor .compound/manifest.yaml (a workspace-local home)
-//  4. ~/.compound (the global default)
+//  3. ~/.compound (the global default)
+//
+// It deliberately does not adopt an ancestor .compound marker. Repository-local
+// homes carry mutable authority (policy, harness, storage, ledgers); selecting
+// one must be explicit at the composition root (for example --local or --home),
+// never ambiently controlled by the current working directory.
 func Resolve(flagHome string) (string, error) {
 	resolution, err := ResolveHome(flagHome)
 	if err != nil {
@@ -118,9 +122,11 @@ func Resolve(flagHome string) (string, error) {
 	return resolution.Path, nil
 }
 
-// ResolveHome returns the COMPOUND_HOME path and provenance using strict
-// precedence. Explicit flag/env paths are resolved without manifest validation
-// so existing callers can diagnose bad homes in their normal command flow.
+// ResolveHome returns the authoritative COMPOUND_HOME path and provenance.
+// Explicit flag/env paths are resolved without manifest validation so existing
+// callers can diagnose bad homes in their normal command flow. Ancestor
+// .compound markers are never authority here; see DiscoverAncestorHome for the
+// non-authoritative compatibility API.
 func ResolveHome(flagHome string) (Resolution, error) {
 	if s := strings.TrimSpace(flagHome); s != "" {
 		p, err := filepath.Abs(s)
@@ -130,14 +136,20 @@ func ResolveHome(flagHome string) (Resolution, error) {
 		p, err := filepath.Abs(s)
 		return Resolution{Path: p, Source: ResolutionSourceEnvironment}, err
 	}
-	if p := findAncestorHome(); p != "" {
-		return Resolution{Path: p, Source: ResolutionSourceEnrolledLocal}, nil
-	}
 	h, err := os.UserHomeDir()
 	if err != nil {
 		return Resolution{}, err
 	}
 	return Resolution{Path: filepath.Join(h, ".compound"), Source: ResolutionSourceGlobalDefault}, nil
+}
+
+// DiscoverAncestorHome returns the nearest ancestor .compound/manifest.yaml
+// for non-authoritative compatibility and read-only discovery workflows.
+// Callers must not use this to select a mutating/policy/harness/storage home;
+// use Resolve (or an explicit --local/--home selection at the CLI composition
+// root) for authority.
+func DiscoverAncestorHome() string {
+	return findAncestorHome()
 }
 
 // LocalPath is <cwd>/.compound — the target for `home init --local`.
