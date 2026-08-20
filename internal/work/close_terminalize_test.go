@@ -153,33 +153,12 @@ func TestCloseSkipsAlreadyTerminalRunAttempts(t *testing.T) {
 	if len(rattIDs) == 0 {
 		t.Fatal("setup: claim must mint a RunAttempt")
 	}
-	// Plant an already-terminal RunAttempt on the work's RunAttemptIDs and on disk.
-	preTerminalID := runattempt.MintDeterministic("close-skips-terminal", fixedNow)
-	preTerminal := runattempt.RunAttempt{
-		SchemaVersion: runattempt.SchemaVersion,
-		ID:            preTerminalID,
-		WorkID:        id,
-		Actor:         "codex",
-		Harness:       runattempt.HarnessPlaceholder,
-		Origin:        runattempt.OriginClaimReservation,
-		Status:        runattempt.StatusSucceeded,
-		CreatedAt:     fixedNow.UTC(),
-		CompletedAt:   fixedNow.Add(time.Hour).UTC(),
-	}
-	if _, err := runattempt.Open(s.home).MintWithID(preTerminalID, id, "codex", runattempt.HarnessPlaceholder, fixedNow); err != nil {
-		t.Fatalf("plant pre-terminal RunAttempt: %v", err)
-	}
-	if _, err := runattempt.Open(s.home).Complete(preTerminalID, runattempt.StatusSucceeded, fixedNow.Add(time.Hour)); err != nil {
-		t.Fatalf("plant pre-terminal RunAttempt terminal status: %v", err)
-	}
-	// Attach it to the work envelope (close will see it in w.RunAttemptIDs).
-	w, err := s.Get(id)
+	// Terminalize the claim-minted attempt, which already has exact claim
+	// action/policy authority. A free-floating body is not valid close proof.
+	preTerminalID := rattIDs[0]
+	preTerminal, err := runattempt.Open(s.home).Complete(preTerminalID, runattempt.StatusSucceeded, fixedNow.Add(time.Hour))
 	if err != nil {
-		t.Fatal(err)
-	}
-	w.RunAttemptIDs = append(w.RunAttemptIDs, preTerminalID)
-	if err := s.writeJSON(s.workPath(id), &w); err != nil {
-		t.Fatalf("attach pre-terminal RunAttempt to work: %v", err)
+		t.Fatalf("plant pre-terminal RunAttempt terminal status: %v", err)
 	}
 
 	if _, err := s.Close(id, CloseInput{
@@ -203,17 +182,6 @@ func TestCloseSkipsAlreadyTerminalRunAttempts(t *testing.T) {
 	if !after.CompletedAt.Equal(preTerminal.CompletedAt) {
 		t.Fatalf("pre-terminal RunAttempt CompletedAt moved: was %v, now %v", preTerminal.CompletedAt, after.CompletedAt)
 	}
-
-	// The claim-minted RunAttempt must still have been terminalized.
-	for _, rid := range rattIDs {
-		ra, err := runattempt.Open(s.home).Get(rid)
-		if err != nil {
-			t.Fatalf("RunAttempt %s lookup after close: %v", rid, err)
-		}
-		if ra.Status != runattempt.StatusSucceeded {
-			t.Fatalf("RunAttempt %s status = %q, want %q (completed close must terminalize as succeeded)", rid, ra.Status, runattempt.StatusSucceeded)
-		}
-	}
 }
 
 // TestCloseSkipRunAttemptTerminalizationLeavesAttemptMutable: a caller that owns
@@ -230,6 +198,14 @@ func TestCloseSkipRunAttemptTerminalizationLeavesAttemptMutable(t *testing.T) {
 	if len(rattIDs) == 0 {
 		t.Fatal("setup: claim must mint a RunAttempt")
 	}
+	requests := make([]RunAttemptTerminalizationRequest, 0, len(rattIDs))
+	for _, rid := range rattIDs {
+		requests = append(requests, RunAttemptTerminalizationRequest{
+			RunAttemptID: rid,
+			Owner:        runattempt.TerminalizationOwnerPanelApply,
+			TargetStatus: runattempt.StatusFailed,
+		})
+	}
 	if _, err := s.Close(id, CloseInput{
 		Outcome:                       "completed",
 		MoveType:                      "outward_delta",
@@ -237,6 +213,7 @@ func TestCloseSkipRunAttemptTerminalizationLeavesAttemptMutable(t *testing.T) {
 		Changed:                       true,
 		ProofRefs:                     []string{"check:close-skip-runattempt-termination"},
 		SkipRunAttemptTerminalization: true,
+		RunAttemptTerminalizations:    requests,
 	}, fixedNow.Add(5*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -248,13 +225,16 @@ func TestCloseSkipRunAttemptTerminalizationLeavesAttemptMutable(t *testing.T) {
 		if runattempt.IsTerminal(ra.Status) {
 			t.Fatalf("RunAttempt %s status = %q, want non-terminal (opt-out must leave the attempt mutable for the caller's own completion)", rid, ra.Status)
 		}
+		if ra.TerminalizationIntent == nil {
+			t.Fatalf("RunAttempt %s has no durable caller-owned terminalization intent", rid)
+		}
 		// The caller's post-close proof-ref binding + completion must still land
 		// (this is what internal/panel apply does after its fail-soft close).
 		if _, err := runattempt.Open(s.home).SetProofRefs(rid, []string{"proof:post-close"}); err != nil {
 			t.Fatalf("post-close SetProofRefs on opted-out RunAttempt %s: %v", rid, err)
 		}
-		if _, err := runattempt.Open(s.home).Complete(rid, runattempt.StatusFailed, fixedNow.Add(6*time.Minute)); err != nil {
-			t.Fatalf("post-close Complete on opted-out RunAttempt %s: %v", rid, err)
+		if _, err := runattempt.Open(s.home).CompletePreparedTerminalization(rid, *ra.TerminalizationIntent, fixedNow.Add(6*time.Minute)); err != nil {
+			t.Fatalf("post-close exact prepared completion on opted-out RunAttempt %s: %v", rid, err)
 		}
 	}
 }

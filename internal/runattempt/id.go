@@ -18,8 +18,28 @@ import (
 	"time"
 )
 
-// SchemaVersion is the on-disk schema tag for RunAttempt artifacts.
-const SchemaVersion = "compound.runattempt.v0.1"
+const (
+	// SchemaVersion is the current on-disk writer schema for RunAttempt
+	// artifacts. v0.2 introduces the load-bearing terminalization reservation
+	// and exact completion proof fields. Launch authority remains in its
+	// independently versioned immutable sidecars.
+	SchemaVersion = "compound.runattempt.v0.2"
+	// LegacySchemaVersionV01 remains readable during the explicit compatibility
+	// window. Ordinary mutations preserve it; preparing an exact terminalization
+	// reservation performs the narrow v0.1 -> v0.2 migration.
+	LegacySchemaVersionV01 = "compound.runattempt.v0.1"
+)
+
+var acceptedSchemaVersions = map[string]bool{
+	SchemaVersion:          true,
+	LegacySchemaVersionV01: true,
+}
+
+// AcceptsSchemaVersion reports whether this binary can safely decode a
+// RunAttempt writer generation. Unknown future versions fail closed.
+func AcceptsSchemaVersion(version string) bool {
+	return acceptedSchemaVersions[version]
+}
 
 // Prefix is the only accepted RunAttempt id prefix. Tightened in envelope.validateRunAttemptIDs.
 const Prefix = "ratt_"

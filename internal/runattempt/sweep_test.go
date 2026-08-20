@@ -24,6 +24,25 @@ import (
 	"time"
 )
 
+func TestListFailsClosedOnMalformedRunAttempt(t *testing.T) {
+	home := t.TempDir()
+	store := Open(home)
+	now := time.Date(2026, 8, 13, 16, 0, 0, 0, time.UTC)
+	if _, err := store.Mint("work_list_malformed", "codex", HarnessPlaceholder, now); err != nil {
+		t.Fatalf("mint valid RunAttempt: %v", err)
+	}
+	malformedID := MintDeterministic("list-malformed", now.Add(time.Second))
+	if err := os.WriteFile(filepath.Join(home, "run_attempts", malformedID+".json"), []byte("{not-json\n"), 0o600); err != nil {
+		t.Fatalf("write malformed RunAttempt: %v", err)
+	}
+	if _, err := Open(home).List(); err == nil || !strings.Contains(err.Error(), malformedID) {
+		t.Fatalf("List malformed error = %v, want id-bearing refusal", err)
+	}
+	if _, err := Open(home).ListNonTerminal(); err == nil || !strings.Contains(err.Error(), malformedID) {
+		t.Fatalf("ListNonTerminal malformed error = %v, want id-bearing refusal", err)
+	}
+}
+
 func TestListReturnsAllSortedByCreatedAt(t *testing.T) {
 	home := t.TempDir()
 	s := Open(home)

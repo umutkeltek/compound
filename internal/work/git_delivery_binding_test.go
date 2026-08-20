@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"compound/internal/envelope"
-	"compound/internal/runattempt"
 )
 
 func TestPreFingerprintGitDeliveryPreservesCanonicalWorkHash(t *testing.T) {
@@ -463,13 +462,6 @@ func TestRepoTargetActionRequiresDeclaredDeliveryForEveryNonAuditMove(t *testing
 	if err := store.writeJSON(store.envPath(action.ID), &action); err != nil {
 		t.Fatal(err)
 	}
-	gitDeliveryRunAttempt, err := runattempt.Mint(now.Add(4 * time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex", RunAttemptIDs: []string{gitDeliveryRunAttempt}}, now.Add(4*time.Minute)); err != nil {
-		t.Fatal(err)
-	}
 	// S1: ActionIntentIDs is now act_*-only and the legacy RunID seam is gone.
 	// The pre-written action envelope above is what the close gate needs to
 	// find to detect a git-scoped target; wire it onto the work envelope by
@@ -504,13 +496,6 @@ func TestRepoTargetActionRequiresDeclaredDeliveryForEveryNonAuditMove(t *testing
 		t.Fatal(err)
 	}
 	if err := store.writeJSON(store.envPath(auditAction.ID), &auditAction); err != nil {
-		t.Fatal(err)
-	}
-	auditRunAttempt, err := runattempt.Mint(now.Add(9 * time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Advance(audit.ID, AdvanceInput{To: "running", Actor: "codex", RunAttemptIDs: []string{auditRunAttempt}}, now.Add(9*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	// S1: same attribution note as above -- attach the pre-written audit

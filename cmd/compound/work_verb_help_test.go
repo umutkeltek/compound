@@ -8,7 +8,7 @@ import (
 func TestEveryWorkVerbHelpIncludesUsageAndExecutableExample(t *testing.T) {
 	verbs := []string{
 		"create-plan", "admit-plan", "review-card-plan", "create", "import-packet",
-		"show", "list", "leases", "active-packet-proof", "proof-chain-doctor", "continue",
+		"show", "list", "leases", "active-packet-proof", "proof-chain-doctor", "reconcile-run-attempts", "continue",
 		"dispatch-plan", "dispatch-claim", "dispatch-advance", "dispatch-close-plan",
 		"dispatch-close", "dispatch-step", "claim-plan", "claim", "advance-plan", "advance",
 		"delegate", "steer", "attach", "observe-run", "land-check", "salvage-plan",

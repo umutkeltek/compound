@@ -933,3 +933,45 @@ func TestProbeErrorSkipsRatherThanAbandon(t *testing.T) {
 		t.Fatalf("probe error must not terminalize: %s", after.Status)
 	}
 }
+
+func TestCompleteForWorkCloseRecordsOwnerProofAndIsIdempotent(t *testing.T) {
+	store := Open(t.TempDir())
+	now := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	ra, err := store.Mint("work_owner_proof", "codex", HarnessPlaceholder, now)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	completed, err := store.CompleteForWorkClose(ra.ID, StatusSucceeded, "rec_ownerproof", "tr_ownerproof", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("CompleteForWorkClose: %v", err)
+	}
+	if completed.TerminalizationOwner != TerminalizationOwnerWorkClose || completed.TerminalizationReceiptID != "rec_ownerproof" || completed.TerminalizationTransitionID != "tr_ownerproof" {
+		t.Fatalf("terminalization proof not recorded: %+v", completed)
+	}
+	again, err := store.CompleteForWorkClose(ra.ID, StatusSucceeded, "rec_ownerproof", "tr_ownerproof", now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("idempotent CompleteForWorkClose: %v", err)
+	}
+	if !again.CompletedAt.Equal(completed.CompletedAt) {
+		t.Fatalf("idempotent CompleteForWorkClose moved completed_at: %v -> %v", completed.CompletedAt, again.CompletedAt)
+	}
+	if _, err := store.CompleteForWorkClose(ra.ID, StatusSucceeded, "rec_other", "tr_ownerproof", now.Add(3*time.Minute)); err == nil {
+		t.Fatal("CompleteForWorkClose with mismatched close proof on terminal attempt must fail")
+	}
+}
+
+func TestCompleteWithOwnerProofRecordsCallerOwnedTerminalization(t *testing.T) {
+	store := Open(t.TempDir())
+	now := time.Date(2026, 8, 11, 11, 0, 0, 0, time.UTC)
+	ra, err := store.Mint("work_panel_owned", "panel.apply", HarnessPlaceholder, now)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	completed, err := store.CompleteWithOwnerProof(ra.ID, StatusFailed, TerminalizationOwnerPanelApply, "rec_panel", "tr_panel", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("CompleteWithOwnerProof: %v", err)
+	}
+	if completed.TerminalizationOwner != TerminalizationOwnerPanelApply || completed.TerminalizationReceiptID != "rec_panel" || completed.TerminalizationTransitionID != "tr_panel" {
+		t.Fatalf("caller terminalization proof not recorded: %+v", completed)
+	}
+}

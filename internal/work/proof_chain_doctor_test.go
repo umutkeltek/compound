@@ -3,8 +3,10 @@ package work
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/envelope"
 	"compound/internal/runattempt"
@@ -655,23 +657,43 @@ func TestProofChainDoctorAcceptsLegacyRunAttemptWithEmptyActionIntentID(t *testi
 		t.Fatalf("close: %v", err)
 	}
 
-	// Mint a RunAttempt bound to this work_id with NO action_intent_id;
-	// terminalize as succeeded. Doctor must accept (empty is allowed).
-	raStore := runAttemptStoreForTest(s)
-	legacy, err := raStore.Mint(w.ID, "codex", "os-harness-entrypoints", fixedNow)
-	if err != nil {
-		t.Fatalf("mint legacy: %v", err)
-	}
-	if _, err := raStore.Complete(legacy.ID, runattempt.StatusSucceeded, fixedNow); err != nil {
-		t.Fatalf("complete legacy: %v", err)
-	}
+	// Rewrite the already-bound claim attempt into its real v0.1 shape:
+	// action_intent_id and all v0.2 terminalization fields are absent. Keeping
+	// the WorkEnvelope byte-identical matters: appending a new attempt after
+	// close would invalidate the closing event's exact work digest and test a
+	// corrupt chain instead of legacy compatibility.
 	final, err := s.Get(w.ID)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	final.RunAttemptIDs = append(final.RunAttemptIDs, legacy.ID)
-	if err := s.writeJSON(s.workPath(w.ID), &final); err != nil {
-		t.Fatalf("rewrite: %v", err)
+	if len(final.RunAttemptIDs) != 1 {
+		t.Fatalf("closed work RunAttemptIDs = %v, want one claim attempt", final.RunAttemptIDs)
+	}
+	legacyPath := filepath.Join(s.home, "run_attempts", final.RunAttemptIDs[0]+".json")
+	body, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatalf("read modern RunAttempt: %v", err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(body, &legacy); err != nil {
+		t.Fatalf("decode modern RunAttempt: %v", err)
+	}
+	legacy["schema_version"] = runattempt.LegacySchemaVersionV01
+	for _, field := range []string{
+		"action_intent_id", "terminalization_intent", "terminalization_owner",
+		"terminalization_receipt_id", "terminalization_transition_id", "terminalization_reason",
+		"terminalization_corrected_from_status", "terminalization_corrected_from_completed_at",
+		"terminalization_corrected_from_sweep_reason", "terminalization_corrected_from_sweep_classification",
+	} {
+		delete(legacy, field)
+	}
+	body, err = json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatalf("encode legacy RunAttempt: %v", err)
+	}
+	body = append(body, '\n')
+	if err := os.WriteFile(legacyPath, body, 0o600); err != nil {
+		t.Fatalf("write legacy RunAttempt: %v", err)
 	}
 
 	report, err := s.ProofChainDoctor(fixedNow, ProofChainDoctorOptions{})
@@ -854,4 +876,139 @@ func proofChainFindingContains(report ProofChainDoctorReport, code string) bool 
 		}
 	}
 	return false
+}
+
+func TestProofChainDoctorFindsTerminalizationReasonMismatch(t *testing.T) {
+	s := newStore(t)
+	workID, runAttemptIDs := closeTerminalizeWork(t, s, "doctor-terminalization-reason-mismatch", fixedNow)
+	closed, err := s.Close(workID, CloseInput{
+		Outcome:                       "completed",
+		MoveType:                      "control_plane_repair",
+		Summary:                       "doctor binds complete caller intent",
+		SkipRunAttemptTerminalization: true,
+		RunAttemptTerminalizations: []RunAttemptTerminalizationRequest{{
+			RunAttemptID: runAttemptIDs[0],
+			Owner:        runattempt.TerminalizationOwnerPanelApply,
+			TargetStatus: runattempt.StatusFailed,
+			Reason:       "target failed before close",
+		}},
+	}, fixedNow.Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ra, err := runattempt.Open(s.home).Get(runAttemptIDs[0])
+	if err != nil || ra.TerminalizationIntent == nil {
+		t.Fatalf("get prepared attempt: ra=%+v err=%v", ra, err)
+	}
+	if _, err := runattempt.Open(s.home).CompletePreparedTerminalization(ra.ID, *ra.TerminalizationIntent, fixedNow.Add(6*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	ra, err = runattempt.Open(s.home).Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := *ra.TerminalizationIntent
+	tampered.TerminalizationReason = "tampered after close"
+	ra.TerminalizationIntent = &tampered
+	writeRunAttemptForReconcileTest(t, s, ra)
+
+	report, err := s.ProofChainDoctor(fixedNow.Add(7*time.Minute), ProofChainDoctorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.RunAttemptTerminalizationMismatch != 1 {
+		t.Fatalf("terminalization mismatch count=%d, want 1; work=%s receipt=%s findings=%+v", report.Counts.RunAttemptTerminalizationMismatch, closed.Work.ID, closed.Receipt.ID, report.Findings)
+	}
+	if !proofChainFindingContains(report, "run_attempt_terminalization_mismatch") {
+		t.Fatalf("doctor omitted terminalization mismatch finding: %+v", report.Findings)
+	}
+}
+
+func TestProofChainDoctorFindsRunAttemptOutcomeMismatch(t *testing.T) {
+	s := newStore(t)
+	workID, runAttemptIDs := closeTerminalizeWork(t, s, "doctor-outcome-mismatch", fixedNow)
+	if _, err := s.Close(workID, CloseInput{
+		Outcome: "completed", MoveType: "control_plane_repair", Summary: "seed completed work",
+	}, fixedNow.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	ra, err := runattempt.Open(s.home).Get(runAttemptIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ra.Status = runattempt.StatusFailed
+	writeRunAttemptForReconcileTest(t, s, ra)
+	report, err := s.ProofChainDoctor(fixedNow.Add(6*time.Minute), ProofChainDoctorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.RunAttemptOutcomeMismatch != 1 || !proofChainFindingContains(report, "run_attempt_outcome_mismatch") {
+		t.Fatalf("outcome mismatch missing: counts=%+v findings=%+v", report.Counts, report.Findings)
+	}
+}
+
+func TestProofChainDoctorRejectsEveryExactTerminalizationBindingTamper(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*runattempt.TerminalizationIntent)
+	}{
+		{"expected_work_hash", func(in *runattempt.TerminalizationIntent) {
+			in.ExpectedWorkSHA256 = "sha256:" + strings.Repeat("b", 64)
+		}},
+		{"expected_work_state", func(in *runattempt.TerminalizationIntent) { in.ExpectedWorkState = "running" }},
+		{"expected_action", func(in *runattempt.TerminalizationIntent) { in.ExpectedActionIntentID = "act_validlooking_stale" }},
+		{"expected_policy", func(in *runattempt.TerminalizationIntent) { in.ExpectedPolicyDecisionID = "pol_validlooking_stale" }},
+		{"authority_action", func(in *runattempt.TerminalizationIntent) { in.AuthorityActionIntentID = "act_validlooking_foreign" }},
+		{"authority_policy", func(in *runattempt.TerminalizationIntent) { in.AuthorityPolicyDecisionID = "pol_validlooking_foreign" }},
+		{"close_action", func(in *runattempt.TerminalizationIntent) { in.CloseActionIntentID = "act_validlooking_close" }},
+		{"close_policy", func(in *runattempt.TerminalizationIntent) { in.ClosePolicyDecisionID = "pol_validlooking_close" }},
+		{"close_input_digest", func(in *runattempt.TerminalizationIntent) {
+			in.CloseInputSHA256 = "sha256:" + strings.Repeat("c", 64)
+		}},
+		{"prepared_at", func(in *runattempt.TerminalizationIntent) { in.PreparedAt = in.PreparedAt.Add(time.Second) }},
+		{"reason", func(in *runattempt.TerminalizationIntent) { in.TerminalizationReason = "tampered reason" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newStore(t)
+			workID, runAttemptIDs := closeTerminalizeWork(t, s, "doctor-intent-tamper-"+tt.name, fixedNow)
+			if _, err := s.Close(workID, CloseInput{
+				Outcome:                       "completed",
+				MoveType:                      "control_plane_repair",
+				Summary:                       "doctor exact intent tamper",
+				SkipRunAttemptTerminalization: true,
+				RunAttemptTerminalizations: []RunAttemptTerminalizationRequest{{
+					RunAttemptID: runAttemptIDs[0], Owner: runattempt.TerminalizationOwnerPanelApply,
+					TargetStatus: runattempt.StatusFailed, Reason: "original reason",
+				}},
+			}, fixedNow.Add(5*time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			ra, err := runattempt.Open(s.home).Get(runAttemptIDs[0])
+			if err != nil || ra.TerminalizationIntent == nil {
+				t.Fatalf("get prepared attempt: ra=%+v err=%v", ra, err)
+			}
+			if _, err := runattempt.Open(s.home).CompletePreparedTerminalization(ra.ID, *ra.TerminalizationIntent, fixedNow.Add(6*time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			ra, err = runattempt.Open(s.home).Get(ra.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tampered := *ra.TerminalizationIntent
+			tt.mutate(&tampered)
+			if err := tampered.Validate(); err != nil {
+				t.Fatalf("test tamper must remain structurally valid: %v", err)
+			}
+			ra.TerminalizationIntent = &tampered
+			writeRunAttemptForReconcileTest(t, s, ra)
+			report, err := s.ProofChainDoctor(fixedNow.Add(7*time.Minute), ProofChainDoctorOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Counts.RunAttemptTerminalizationMismatch != 1 || !proofChainFindingContains(report, "run_attempt_terminalization_mismatch") {
+				t.Fatalf("doctor accepted %s tamper: counts=%+v findings=%+v", tt.name, report.Counts, report.Findings)
+			}
+		})
+	}
 }

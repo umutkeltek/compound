@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"compound/internal/home"
-	"compound/internal/runattempt"
 )
 
 func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
@@ -1263,11 +1262,7 @@ func TestWorkbenchSurfacesTerminalActivePacketProof(t *testing.T) {
 	if _, err := s.Claim(imported.Work.ID, "codex", fixedNow.Add(time.Second)); err != nil {
 		t.Fatalf("claim packet work: %v", err)
 	}
-	workbenchRunAttemptID, err := runattempt.Mint(fixedNow.Add(2 * time.Second))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "running", RunAttemptIDs: []string{workbenchRunAttemptID}}, fixedNow.Add(2*time.Second)); err != nil {
+	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "running"}, fixedNow.Add(2*time.Second)); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:active-packet-lifecycle"}, fixedNow.Add(3*time.Second)); err != nil {

@@ -48,6 +48,11 @@ func TestWorkProofChainDoctorCLIJSON(t *testing.T) {
 	out := captureStdout(t, func() {
 		cmdWork([]string{"proof-chain-doctor", "--json"})
 	})
+	for _, field := range []string{`"run_attempt_outcome_mismatch": 0`, `"run_attempt_terminalization_mismatch": 0`} {
+		if !strings.Contains(out, field) {
+			t.Fatalf("v0.3 report omitted always-serialized field %s:\n%s", field, out)
+		}
+	}
 	var report work.ProofChainDoctorReport
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("parse report: %v\n%s", err, out)
@@ -169,7 +174,7 @@ func TestWorkAdvanceExecuteThenClose(t *testing.T) {
 		t.Fatalf("expected one harness execution RunAttempt; rattIDs=%v actions=%v", rattIDs, actionIDs)
 	}
 
-	// Intact chain: doctor must report status:"ok" complete:1, schema v0.2,
+	// Intact chain: doctor must report status:"ok" complete:1, schema v0.3,
 	// the new proof ref, and the work item RunAttemptIDs that include the
 	// execution attempt (the public JSON contract, not storage-only).
 	doctorOut, err := runCompound(t, homePath, "work", "proof-chain-doctor", "--json")
@@ -180,8 +185,8 @@ func TestWorkAdvanceExecuteThenClose(t *testing.T) {
 	if err := json.Unmarshal([]byte(doctorOut), &report); err != nil {
 		t.Fatalf("parse intact report: %v\n%s", err, doctorOut)
 	}
-	if report.SchemaVersion != "compound.work_proof_chain_doctor.v0.2" {
-		t.Fatalf("schema_version = %q, want compound.work_proof_chain_doctor.v0.2", report.SchemaVersion)
+	if report.SchemaVersion != "compound.work_proof_chain_doctor.v0.3" {
+		t.Fatalf("schema_version = %q, want compound.work_proof_chain_doctor.v0.3", report.SchemaVersion)
 	}
 	if report.Status != "ok" || report.Counts.Complete != 1 || report.Counts.MissingRunAttempt != 0 {
 		t.Fatalf("intact chain rejected: status=%q counts=%+v", report.Status, report.Counts)

@@ -255,16 +255,26 @@ func (s *Store) leasePath(id string) string { return filepath.Join(s.home, "work
 
 // Event is one append-only lifecycle record.
 type Event struct {
-	TS                 string   `json:"ts"`
-	WorkID             string   `json:"work_id"`
-	From               string   `json:"from"`
-	To                 string   `json:"to"`
-	By                 string   `json:"by,omitempty"`
-	Note               string   `json:"note,omitempty"`
-	Attached           []string `json:"attached,omitempty"`
-	PreviousWorkSHA256 string   `json:"previous_work_sha256,omitempty"`
-	WorkSHA256         string   `json:"work_sha256,omitempty"`
-	ReceiptSHA256      string   `json:"receipt_sha256,omitempty"`
+	TS                               string                            `json:"ts"`
+	WorkID                           string                            `json:"work_id"`
+	From                             string                            `json:"from"`
+	To                               string                            `json:"to"`
+	By                               string                            `json:"by,omitempty"`
+	Note                             string                            `json:"note,omitempty"`
+	Attached                         []string                          `json:"attached,omitempty"`
+	PreviousWorkSHA256               string                            `json:"previous_work_sha256,omitempty"`
+	WorkSHA256                       string                            `json:"work_sha256,omitempty"`
+	ReceiptSHA256                    string                            `json:"receipt_sha256,omitempty"`
+	RunAttemptTerminalizationDigests []RunAttemptTerminalizationDigest `json:"run_attempt_terminalization_digests,omitempty"`
+}
+
+// RunAttemptTerminalizationDigest binds the full immutable per-attempt intent
+// into the closing lifecycle event. Shared close-generation fields alone are
+// insufficient: owner, target, reason, or attempt authority could otherwise
+// be rewritten after close and accepted by reconciliation.
+type RunAttemptTerminalizationDigest struct {
+	RunAttemptID string `json:"run_attempt_id"`
+	IntentSHA256 string `json:"intent_sha256"`
 }
 
 // Lease records who holds a claimed work (claim-before-you-touch / D7).
@@ -924,6 +934,19 @@ func (s *Store) recoverPendingClaim(current envelope.WorkEnvelope) (envelope.Wor
 }
 
 func (s *Store) recoverPendingClaimBeforeMutation(workID string) (envelope.WorkEnvelope, error) {
+	return s.recoverPendingClaimBeforeLifecycleMutation(workID, false)
+}
+
+// recoverPendingClaimBeforeClose permits only the exact Close retry to enter
+// while a durable RunAttempt terminalization reservation exists. Every other
+// lifecycle mutation is held by recoverPendingClaimBeforeMutation so a crash
+// between prepare and terminal work publication cannot be bypassed by an
+// unrelated advance, claim, or close generation.
+func (s *Store) recoverPendingClaimBeforeClose(workID string) (envelope.WorkEnvelope, error) {
+	return s.recoverPendingClaimBeforeLifecycleMutation(workID, true)
+}
+
+func (s *Store) recoverPendingClaimBeforeLifecycleMutation(workID string, allowPreparedClose bool) (envelope.WorkEnvelope, error) {
 	current, err := s.Get(workID)
 	if err != nil {
 		return current, err
@@ -940,7 +963,42 @@ func (s *Store) recoverPendingClaimBeforeMutation(workID string) (envelope.WorkE
 			return current, fmt.Errorf("work %s claimed authority is inconsistent: %w", workID, err)
 		}
 	}
+	if !allowPreparedClose && !terminalStates[current.State] {
+		intent, err := s.preparedCloseIntentForWork(workID)
+		if err != nil {
+			return current, err
+		}
+		if intent != nil {
+			return current, fmt.Errorf("work %s has prepared close %s/%s from %s; retry the exact work close before another lifecycle mutation", workID, intent.CloseActionIntentID, intent.ClosePolicyDecisionID, intent.PreparedAt.UTC().Format(time.RFC3339Nano))
+		}
+	}
 	return current, nil
+}
+
+func (s *Store) preparedCloseIntentForWork(workID string) (*runattempt.TerminalizationIntent, error) {
+	attempts, err := s.runAttempts().List()
+	if err != nil {
+		return nil, fmt.Errorf("scan prepared close for work %s: %w", workID, err)
+	}
+	var found *runattempt.TerminalizationIntent
+	for _, ra := range attempts {
+		if ra.WorkID != workID || ra.TerminalizationIntent == nil {
+			continue
+		}
+		intent := *ra.TerminalizationIntent
+		if err := intent.Validate(); err != nil {
+			return nil, fmt.Errorf("prepared close on runattempt %s is invalid: %w", ra.ID, err)
+		}
+		if found == nil {
+			copyIntent := intent
+			found = &copyIntent
+			continue
+		}
+		if !samePreparedCloseGeneration(*found, intent) {
+			return nil, fmt.Errorf("work %s has conflicting prepared close generations", workID)
+		}
+	}
+	return found, nil
 }
 
 func (s *Store) completePendingClaim(pending claimPending, runCrashSeams bool) (envelope.WorkEnvelope, error) {
@@ -1482,6 +1540,16 @@ var advanceBeforeWorkCommit = func() {}
 // durable and before the claim lease is released (see releaseLease).
 var closeBeforeLeaseRelease = func() {}
 
+// closeAfterTerminalizationPrepare models process death after every exact
+// RunAttempt intent is durable but before the first close envelope is written.
+// Production leaves it as a no-op.
+var closeAfterTerminalizationPrepare = func() {}
+
+// closeAfterFirstEnvelopeWrite models a crash after the closing ActionIntent
+// is published. Exact retry must reuse that generation rather than minting a
+// new action/policy/proof chain.
+var closeAfterFirstEnvelopeWrite = func() {}
+
 func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.Time) (envelope.WorkEnvelope, error) {
 	workID := w.ID
 	if recovered, ok, err := s.recoverPendingAdvance(w, in.To); err != nil {
@@ -1888,6 +1956,11 @@ type CloseInput struct {
 	// run is reachable from the envelope, not only from the run_attempts dir).
 	// Same ratt_ prefix rule as AdvanceInput.RunAttemptIDs (enforced below).
 	RunAttemptIDs []string
+	// RunAttemptTerminalizations declares caller-owned terminal statuses that
+	// intentionally differ from the work outcome. Close prepares these exact
+	// requests before publishing any close byte, but leaves completion to the
+	// named owner so it can attach post-close proof first.
+	RunAttemptTerminalizations []RunAttemptTerminalizationRequest
 	// OpensBranches is the executor's declared future-branch set (the model
 	// PROPOSES; envelope validation decides; the BranchCoverage read model
 	// verifies over later flow). Empty means this close opens no checkable
@@ -1904,15 +1977,404 @@ type CloseInput struct {
 	SkipRunAttemptTerminalization bool
 }
 
+// RunAttemptTerminalizationRequest is the closed-vocabulary caller-owned
+// terminalization reservation accepted by Close.
+type RunAttemptTerminalizationRequest struct {
+	RunAttemptID string `json:"run_attempt_id"`
+	Owner        string `json:"owner"`
+	TargetStatus string `json:"target_status"`
+	Reason       string `json:"reason,omitempty"`
+}
+
 // CloseResult is the connected chain proof: the final work plus the Receipt and the
 // apex Transition emitted at close, all carrying the same work_id.
 type CloseResult struct {
-	Work       envelope.WorkEnvelope `json:"work"`
-	Receipt    envelope.Receipt      `json:"receipt"`
-	Transition envelope.Transition   `json:"transition"`
+	Work                        envelope.WorkEnvelope `json:"work"`
+	Receipt                     envelope.Receipt      `json:"receipt"`
+	Transition                  envelope.Transition   `json:"transition"`
+	UnterminalizedRunAttemptIDs []string              `json:"unterminalized_run_attempt_ids,omitempty"`
 }
 
 var receiptOutcome = map[string]string{"completed": "completed", "failed": "failed", "cancelled": "no_op"}
+
+func runAttemptStatusForCloseOutcome(outcome string) string {
+	return map[string]string{
+		"completed": runattempt.StatusSucceeded,
+		"failed":    runattempt.StatusFailed,
+		"cancelled": runattempt.StatusAbandoned,
+	}[outcome]
+}
+
+type runAttemptTerminalizationPlan struct {
+	Attempt    runattempt.RunAttempt
+	Intent     runattempt.TerminalizationIntent
+	CallerOwns bool
+}
+
+type runAttemptAuthority struct {
+	ActionIntentID   string
+	PolicyDecisionID string
+}
+
+func closeInputSHA256(in CloseInput) (string, error) {
+	return canonicalEnvelopeSHA256(in)
+}
+
+// samePreparedCloseGeneration compares only the fields shared by every
+// attempt participating in one close. Per-attempt owner/status/bindings are
+// compared against the newly derived full intent in
+// buildRunAttemptTerminalizationPlans before any close mutation.
+func samePreparedCloseGeneration(a, b runattempt.TerminalizationIntent) bool {
+	return a.SchemaVersion == b.SchemaVersion &&
+		a.WorkID == b.WorkID &&
+		a.ExpectedWorkState == b.ExpectedWorkState &&
+		a.ExpectedWorkSHA256 == b.ExpectedWorkSHA256 &&
+		a.ExpectedActionIntentID == b.ExpectedActionIntentID &&
+		a.ExpectedPolicyDecisionID == b.ExpectedPolicyDecisionID &&
+		a.CloseInputSHA256 == b.CloseInputSHA256 &&
+		a.CloseActionIntentID == b.CloseActionIntentID &&
+		a.ClosePolicyDecisionID == b.ClosePolicyDecisionID &&
+		a.Outcome == b.Outcome &&
+		a.ReceiptID == b.ReceiptID &&
+		a.TransitionID == b.TransitionID &&
+		a.PreparedAt.Equal(b.PreparedAt)
+}
+
+func (s *Store) closeGenerationTime(reserved envelope.WorkEnvelope, reservedSHA, inputSHA string, runAttemptIDs []string, requested time.Time) (time.Time, error) {
+	var found *runattempt.TerminalizationIntent
+	store := s.runAttempts()
+	for _, id := range dedupeStrings(runAttemptIDs) {
+		if !runattempt.Valid(id) {
+			continue
+		}
+		ra, err := store.Get(id)
+		if err != nil || ra.TerminalizationIntent == nil {
+			continue
+		}
+		intent := *ra.TerminalizationIntent
+		if err := intent.Validate(); err != nil {
+			return time.Time{}, fmt.Errorf("runattempt %s prepared close invalid: %w", id, err)
+		}
+		if intent.WorkID != reserved.ID || intent.ExpectedWorkState != reserved.State || intent.ExpectedWorkSHA256 != reservedSHA ||
+			intent.ExpectedActionIntentID != latestActionIntentID(reserved) || intent.ExpectedPolicyDecisionID != reserved.PolicyDecisionID {
+			return time.Time{}, fmt.Errorf("runattempt %s prepared close no longer matches current work generation", id)
+		}
+		if intent.CloseInputSHA256 != inputSHA {
+			return time.Time{}, fmt.Errorf("runattempt %s prepared close input %s differs from retry close input %s", id, intent.CloseInputSHA256, inputSHA)
+		}
+		if found == nil {
+			copyIntent := intent
+			found = &copyIntent
+			continue
+		}
+		if !samePreparedCloseGeneration(*found, intent) {
+			return time.Time{}, fmt.Errorf("work %s has conflicting prepared close generations", reserved.ID)
+		}
+	}
+	if found != nil {
+		return found.PreparedAt.UTC(), nil
+	}
+	return requested.UTC(), nil
+}
+
+func validateRunAttemptRecord(id string, w envelope.WorkEnvelope, ra runattempt.RunAttempt) error {
+	if !runattempt.Valid(id) || ra.ID != id || !runattempt.AcceptsSchemaVersion(ra.SchemaVersion) {
+		return fmt.Errorf("runattempt %s has invalid embedded identity id=%q schema=%q", id, ra.ID, ra.SchemaVersion)
+	}
+	if ra.WorkID != w.ID {
+		return fmt.Errorf("runattempt %s belongs to work %s, not work %s", ra.ID, ra.WorkID, w.ID)
+	}
+	switch ra.Status {
+	case runattempt.StatusPending, runattempt.StatusRunning,
+		runattempt.StatusSucceeded, runattempt.StatusFailed,
+		runattempt.StatusAbandoned, runattempt.StatusSuperseded:
+	default:
+		return fmt.Errorf("runattempt %s status %q is invalid", ra.ID, ra.Status)
+	}
+	if ra.TerminalizationOwner == "" && (ra.TerminalizationReceiptID != "" || ra.TerminalizationTransitionID != "" || ra.TerminalizationReason != "") {
+		return fmt.Errorf("runattempt %s has terminalization evidence without an owner", ra.ID)
+	}
+	if ra.TerminalizationOwner != "" && ((ra.TerminalizationReceiptID == "") != (ra.TerminalizationTransitionID == "")) {
+		return fmt.Errorf("runattempt %s has a partial terminalization proof pair", ra.ID)
+	}
+	if !runattempt.IsTerminal(ra.Status) && (ra.TerminalizationOwner != "" ||
+		ra.TerminalizationReceiptID != "" || ra.TerminalizationTransitionID != "" ||
+		ra.TerminalizationReason != "") {
+		return fmt.Errorf("runattempt %s is nonterminal but already carries terminalization completion evidence", ra.ID)
+	}
+	return nil
+}
+
+func attachedHas(values []string, want string) bool {
+	return slices.Contains(values, want)
+}
+
+// resolveRunAttemptAuthority binds one attempt to one exact allowed
+// ActionIntent/PolicyDecision generation. Modern governed attempts carry the
+// pair directly; claim reservations and legacy panel attempts recover the
+// unique pair from the lifecycle event that attached their ratt_ id.
+func (s *Store) resolveRunAttemptAuthority(w envelope.WorkEnvelope, ra runattempt.RunAttempt) (runAttemptAuthority, error) {
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		return runAttemptAuthority{}, err
+	}
+	return s.resolveRunAttemptAuthorityFromEvents(w, ra, events)
+}
+
+func (s *Store) resolveRunAttemptAuthorityFromEvents(w envelope.WorkEnvelope, ra runattempt.RunAttempt, events []Event) (runAttemptAuthority, error) {
+	actionID := strings.TrimSpace(ra.ActionIntentID)
+	policyID := ""
+	if ra.ExecutionPosture != nil {
+		policyID = strings.TrimSpace(ra.ExecutionPosture.PolicyDecisionID)
+	}
+	type pair struct{ action, policy string }
+	pairs := map[pair]bool{}
+	if actionID != "" && policyID != "" {
+		pairs[pair{actionID, policyID}] = true
+	} else {
+		for _, event := range events {
+			if actionID == "" && !attachedHas(event.Attached, ra.ID) {
+				continue
+			}
+			if ra.Origin == runattempt.OriginClaimReservation &&
+				(event.To != "claimed" || !attachedHas(event.Attached, ra.ID)) {
+				continue
+			}
+			var actions, policies []string
+			for _, ref := range event.Attached {
+				switch {
+				case strings.HasPrefix(ref, "act_"):
+					if actionID == "" || ref == actionID {
+						actions = append(actions, ref)
+					}
+				case strings.HasPrefix(ref, "pol_"):
+					if policyID == "" || ref == policyID {
+						policies = append(policies, ref)
+					}
+				}
+			}
+			for _, candidateAction := range actions {
+				for _, candidatePolicy := range policies {
+					var decision envelope.PolicyDecision
+					if err := s.readEventJSON(candidatePolicy, &decision); err == nil && decision.ActionIntentID == candidateAction {
+						pairs[pair{candidateAction, candidatePolicy}] = true
+					}
+				}
+			}
+		}
+	}
+	if len(pairs) != 1 {
+		disposition := "ambiguous"
+		if len(pairs) == 0 {
+			disposition = "missing"
+		}
+		return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority generation is %s (pairs=%d)", ra.ID, disposition, len(pairs))
+	}
+	var resolved pair
+	for candidate := range pairs {
+		resolved = candidate
+	}
+	if !slices.Contains(w.ActionIntentIDs, resolved.action) {
+		return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority action %s is not in work %s action chain", ra.ID, resolved.action, w.ID)
+	}
+	var action envelope.ActionIntent
+	if err := s.readEventJSON(resolved.action, &action); err != nil {
+		return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority action %s unreadable: %w", ra.ID, resolved.action, err)
+	}
+	if err := action.Validate(); err != nil || action.IDs.WorkID != w.ID {
+		return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority action %s is invalid or belongs to another work", ra.ID, resolved.action)
+	}
+	var decision envelope.PolicyDecision
+	if err := s.readEventJSON(resolved.policy, &decision); err != nil {
+		return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority policy %s unreadable: %w", ra.ID, resolved.policy, err)
+	}
+	if err := decision.Validate(); err != nil || decision.IDs.WorkID != w.ID || decision.ActionIntentID != action.ID || !policy.Allowed(decision) {
+		return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority policy %s does not allow action %s for work %s", ra.ID, resolved.policy, action.ID, w.ID)
+	}
+	return runAttemptAuthority{ActionIntentID: resolved.action, PolicyDecisionID: resolved.policy}, nil
+}
+
+func latestActionIntentID(w envelope.WorkEnvelope) string {
+	for i := len(w.ActionIntentIDs) - 1; i >= 0; i-- {
+		if strings.HasPrefix(w.ActionIntentIDs[i], "act_") {
+			return w.ActionIntentIDs[i]
+		}
+	}
+	return ""
+}
+
+func (s *Store) buildRunAttemptTerminalizationPlans(
+	reserved envelope.WorkEnvelope,
+	reservedSHA string,
+	closing envelope.WorkEnvelope,
+	plan ClosePlan,
+	receipt envelope.Receipt,
+	transition envelope.Transition,
+	in CloseInput,
+	inputSHA string,
+	now time.Time,
+) ([]runAttemptTerminalizationPlan, error) {
+	if in.SkipRunAttemptTerminalization && len(in.RunAttemptTerminalizations) == 0 {
+		return nil, errors.New("SkipRunAttemptTerminalization requires explicit RunAttemptTerminalizations")
+	}
+	if !in.SkipRunAttemptTerminalization && len(in.RunAttemptTerminalizations) > 0 {
+		return nil, errors.New("RunAttemptTerminalizations requires SkipRunAttemptTerminalization")
+	}
+	requests := map[string]RunAttemptTerminalizationRequest{}
+	for _, request := range in.RunAttemptTerminalizations {
+		request.RunAttemptID = strings.TrimSpace(request.RunAttemptID)
+		request.Owner = strings.TrimSpace(request.Owner)
+		request.TargetStatus = strings.TrimSpace(request.TargetStatus)
+		request.Reason = strings.TrimSpace(request.Reason)
+		if !runattempt.Valid(request.RunAttemptID) {
+			return nil, fmt.Errorf("caller terminalization run_attempt_id %q is invalid", request.RunAttemptID)
+		}
+		if _, duplicate := requests[request.RunAttemptID]; duplicate {
+			return nil, fmt.Errorf("caller terminalization duplicates %s", request.RunAttemptID)
+		}
+		if request.Owner == runattempt.TerminalizationOwnerWorkClose || request.Owner == runattempt.TerminalizationOwnerWorkSupersede {
+			return nil, fmt.Errorf("caller terminalization %s cannot claim work-owned terminalization owner %s", request.RunAttemptID, request.Owner)
+		}
+		requests[request.RunAttemptID] = request
+	}
+
+	workTarget := runAttemptStatusForCloseOutcome(in.Outcome)
+	preparedAt := now.UTC()
+	var plans []runAttemptTerminalizationPlan
+	seen := map[string]bool{}
+	store := s.runAttempts()
+	attempts := map[string]runattempt.RunAttempt{}
+	hasHarnessExecution := false
+	var harnessExecutionIDs []string
+	for _, id := range dedupeStrings(closing.RunAttemptIDs) {
+		if id == "" || !runattempt.Valid(id) {
+			return nil, fmt.Errorf("close RunAttemptIDs contains invalid id %q", id)
+		}
+		ra, err := store.Get(id)
+		if err != nil {
+			return nil, fmt.Errorf("close runattempt %s unreadable: %w", id, err)
+		}
+		if err := validateRunAttemptRecord(id, closing, ra); err != nil {
+			return nil, err
+		}
+		attempts[id] = ra
+		if ra.Origin == runattempt.OriginHarnessExecution {
+			hasHarnessExecution = true
+			harnessExecutionIDs = append(harnessExecutionIDs, id)
+		}
+	}
+	events, err := s.eventsFor(reserved.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range dedupeStrings(closing.RunAttemptIDs) {
+		ra := attempts[id]
+		request, callerOwns := requests[id]
+		if callerOwns {
+			seen[id] = true
+		}
+		if runattempt.IsTerminal(ra.Status) {
+			if callerOwns {
+				return nil, fmt.Errorf("caller terminalization %s targets an already-terminal attempt", id)
+			}
+			if ra.Status != runattempt.StatusSuperseded && ra.Status != workTarget {
+				return nil, fmt.Errorf("terminal runattempt %s status %s contradicts close outcome %s (want %s)", id, ra.Status, in.Outcome, workTarget)
+			}
+			if _, err := s.resolveRunAttemptAuthorityFromEvents(reserved, ra, events); err != nil {
+				return nil, err
+			}
+			if ra.TerminalizationIntent != nil {
+				return nil, fmt.Errorf("terminal runattempt %s already carries a prepared intent while work %s is nonterminal", id, reserved.ID)
+			}
+			continue
+		}
+		authority, err := s.resolveRunAttemptAuthorityFromEvents(reserved, ra, events)
+		if err != nil {
+			return nil, err
+		}
+		owner, target := runattempt.TerminalizationOwnerWorkClose, workTarget
+		if ra.Origin == runattempt.OriginClaimReservation && hasHarnessExecution {
+			owner, target = runattempt.TerminalizationOwnerWorkSupersede, runattempt.StatusSuperseded
+		}
+		if callerOwns {
+			owner, target = request.Owner, request.TargetStatus
+		}
+		intent := runattempt.TerminalizationIntent{
+			SchemaVersion:             runattempt.TerminalizationIntentSchemaVersion,
+			Owner:                     owner,
+			WorkID:                    reserved.ID,
+			RunAttemptActionIntentID:  ra.ActionIntentID,
+			AuthorityActionIntentID:   authority.ActionIntentID,
+			AuthorityPolicyDecisionID: authority.PolicyDecisionID,
+			ExpectedWorkState:         reserved.State,
+			ExpectedWorkSHA256:        reservedSHA,
+			ExpectedActionIntentID:    latestActionIntentID(reserved),
+			ExpectedPolicyDecisionID:  reserved.PolicyDecisionID,
+			CloseInputSHA256:          inputSHA,
+			CloseActionIntentID:       plan.ActionIntent.ID,
+			ClosePolicyDecisionID:     plan.Decision.ID,
+			Outcome:                   in.Outcome,
+			TargetStatus:              target,
+			ReceiptID:                 receipt.ID,
+			TransitionID:              transition.ID,
+			PreparedAt:                preparedAt,
+		}
+		if owner == runattempt.TerminalizationOwnerWorkSupersede {
+			intent.TerminalizationReason = "superseded by " + strings.Join(harnessExecutionIDs, ",")
+		} else if callerOwns {
+			intent.TerminalizationReason = request.Reason
+		}
+		if ra.ExecutionPosture != nil {
+			intent.RunAttemptPolicyDecisionID = ra.ExecutionPosture.PolicyDecisionID
+		}
+		if err := intent.Validate(); err != nil {
+			return nil, fmt.Errorf("runattempt %s terminalization intent invalid: %w", id, err)
+		}
+		// This exact comparison is deliberately before leaseHolderCloseGate.
+		// A prepared retry may reuse only the complete immutable intent; a
+		// conflict in owner, target, reason, authority, proof ids, digests, or
+		// prepared timestamp must leave the entire home byte-identical.
+		if ra.TerminalizationIntent != nil && !reflect.DeepEqual(*ra.TerminalizationIntent, intent) {
+			return nil, fmt.Errorf("runattempt %s prepared terminalization differs from the exact requested close", id)
+		}
+		plans = append(plans, runAttemptTerminalizationPlan{Attempt: ra, Intent: intent, CallerOwns: callerOwns})
+	}
+	for id := range requests {
+		if !seen[id] {
+			return nil, fmt.Errorf("caller terminalization %s is not a non-terminal RunAttempt bound to work %s", id, reserved.ID)
+		}
+	}
+	return plans, nil
+}
+
+func (s *Store) prepareRunAttemptTerminalizations(plans []runAttemptTerminalizationPlan) error {
+	store := s.runAttempts()
+	for _, plan := range plans {
+		if _, err := store.PrepareTerminalization(plan.Attempt.ID, plan.Intent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func terminalizationIntentSHA256(intent runattempt.TerminalizationIntent) (string, error) {
+	return canonicalEnvelopeSHA256(intent)
+}
+
+func terminalizationDigestsForPlans(plans []runAttemptTerminalizationPlan) ([]RunAttemptTerminalizationDigest, error) {
+	out := make([]RunAttemptTerminalizationDigest, 0, len(plans))
+	for _, plan := range plans {
+		digest, err := terminalizationIntentSHA256(plan.Intent)
+		if err != nil {
+			return nil, fmt.Errorf("runattempt %s terminalization digest: %w", plan.Attempt.ID, err)
+		}
+		out = append(out, RunAttemptTerminalizationDigest{
+			RunAttemptID: plan.Attempt.ID,
+			IntentSHA256: digest,
+		})
+	}
+	return out, nil
+}
 
 // Close lands a work in a terminal state and emits the Receipt + Transition that tie the
 // whole chain (context -> runs -> outputs) to this work_id.
@@ -1928,7 +2390,7 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 
 func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseResult, error) {
 	var res CloseResult
-	w, err := s.recoverPendingClaimBeforeMutation(workID)
+	w, err := s.recoverPendingClaimBeforeClose(workID)
 	if err != nil {
 		return res, err
 	}
@@ -2019,7 +2481,32 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if !oneOf(in.MoveType, envelope.MoveTypes) {
 		return res, fmt.Errorf("close --move-type must be one of %v, got %q", envelope.MoveTypes, in.MoveType)
 	}
-	plan, err := s.ClosePlan(workID, now, ClosePlanOptions{Actor: in.Actor, Outcome: in.Outcome, MoveType: in.MoveType, ProofRefs: in.ProofRefs})
+	reservedWork := w
+	reservedWorkSHA256, err := workEnvelopeSHA256(reservedWork)
+	if err != nil {
+		return res, err
+	}
+	inputSHA256, err := closeInputSHA256(in)
+	if err != nil {
+		return res, err
+	}
+	// Assemble and validate the complete final RunAttempt union before the
+	// lease gate can record a denial/steal or transfer the live lease.
+	for _, rid := range in.RunAttemptIDs {
+		rid = strings.TrimSpace(rid)
+		if rid == "" {
+			continue
+		}
+		if !runattempt.Valid(rid) {
+			return res, fmt.Errorf("close RunAttemptIDs contains invalid id %q", rid)
+		}
+		w.RunAttemptIDs = mergeUnique(w.RunAttemptIDs, []string{rid})
+	}
+	closeNow, err := s.closeGenerationTime(reservedWork, reservedWorkSHA256, inputSHA256, w.RunAttemptIDs, now)
+	if err != nil {
+		return res, err
+	}
+	plan, err := s.ClosePlan(workID, closeNow, ClosePlanOptions{Actor: in.Actor, Outcome: in.Outcome, MoveType: in.MoveType, ProofRefs: in.ProofRefs})
 	if err != nil {
 		return res, err
 	}
@@ -2050,7 +2537,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	// Receipt — how the run is learned from.
 	rOut := receiptOutcome[in.Outcome]
 	rec := envelope.Receipt{
-		Header:   newHeaderWithLane(envelope.SVReceipt, idFor("rec_", workID, ts(now)), now, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
+		Header:   newHeaderWithLane(envelope.SVReceipt, idFor("rec_", workID, ts(closeNow)), closeNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
 		Outcome:  rOut,
 		MoveType: in.MoveType,
 		Surprise: surprise,
@@ -2111,7 +2598,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		}
 	}
 	tr := envelope.Transition{
-		Header:     newHeaderWithLane(envelope.SVTransition, idFor("tr_", workID, ts(now)), now, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
+		Header:     newHeaderWithLane(envelope.SVTransition, idFor("tr_", workID, ts(closeNow)), closeNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
 		BeforeRefs: before,
 		ActionRefs: orEmpty(actionRefs),
 		AfterRefs:  after,
@@ -2133,6 +2620,16 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	}
 	if err := tr.Validate(); err != nil {
 		return res, fmt.Errorf("emitted transition invalid: %w", err)
+	}
+	terminalizationPlans, err := s.buildRunAttemptTerminalizationPlans(
+		reservedWork, reservedWorkSHA256, w, plan, rec, tr, in, inputSHA256, closeNow,
+	)
+	if err != nil {
+		return res, err
+	}
+	terminalizationDigests, err := terminalizationDigestsForPlans(terminalizationPlans)
+	if err != nil {
+		return res, err
 	}
 	var referenceTransaction gitReferenceTransaction
 	if landingProof != nil {
@@ -2205,11 +2702,24 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		}
 		return cause
 	}
+	// The complete attempt union and every full prepared-intent retry have
+	// already been validated. Only now may the lease gate leave its auditable
+	// denial/steal trail or transfer the lease.
+	if err := s.leaseHolderCloseGate(w, actor, in, now); err != nil {
+		return res, abortReferenceTransaction(err)
+	}
+	// Preparing every non-terminal attempt is the durable recovery boundary;
+	// it precedes the close action, policy, receipt, transition, and work bytes.
+	if err := s.prepareRunAttemptTerminalizations(terminalizationPlans); err != nil {
+		return res, abortReferenceTransaction(err)
+	}
+	closeAfterTerminalizationPrepare()
 
 	// Persist the emitted envelopes, then land the work terminal and link the transition.
 	if err := s.writeEventJSON(plan.ActionIntent.ID, &plan.ActionIntent); err != nil {
 		return res, abortReferenceTransaction(err)
 	}
+	closeAfterFirstEnvelopeWrite()
 	if err := s.writeEventJSON(plan.Decision.ID, &plan.Decision); err != nil {
 		return res, abortReferenceTransaction(err)
 	}
@@ -2220,20 +2730,6 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		return res, abortReferenceTransaction(err)
 	}
 	from := w.State
-	existingRunAttemptIDs := append([]string{}, w.RunAttemptIDs...)
-	// Attach close-time RunAttempt ids (the failed-harness-run forward link)
-	// before the envelope is written. Same ratt_ prefix rule as Advance; a
-	// non-ratt_ id is a caller bug, not a retry, so it aborts the close.
-	for _, rid := range in.RunAttemptIDs {
-		rid = strings.TrimSpace(rid)
-		if rid == "" {
-			continue
-		}
-		if !strings.HasPrefix(rid, "ratt_") {
-			return res, fmt.Errorf("close RunAttemptIDs contains non-ratt_ id %q (settled in S1; see internal/runattempt.Prefix)", rid)
-		}
-		w.RunAttemptIDs = mergeUnique(w.RunAttemptIDs, []string{rid})
-	}
 	w.State = in.Outcome
 	w.IDs.TransitionID = tr.ID
 	// Never persist an envelope that fails the current schema: the lifecycle
@@ -2252,7 +2748,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if err != nil {
 		return res, abortReferenceTransaction(err)
 	}
-	if err := s.appendEvent(Event{TS: ts(now), WorkID: workID, From: from, To: in.Outcome, Note: "closed: " + in.MoveType + " (policy " + plan.Policy.Outcome + ")", Attached: []string{plan.ActionIntent.ID, plan.Decision.ID, rec.ID, tr.ID}, WorkSHA256: workSHA256, ReceiptSHA256: receiptSHA256}); err != nil {
+	if err := s.appendEvent(Event{TS: ts(closeNow), WorkID: workID, From: from, To: in.Outcome, Note: "closed: " + in.MoveType + " (policy " + plan.Policy.Outcome + ")", Attached: []string{plan.ActionIntent.ID, plan.Decision.ID, rec.ID, tr.ID}, PreviousWorkSHA256: reservedWorkSHA256, WorkSHA256: workSHA256, ReceiptSHA256: receiptSHA256, RunAttemptTerminalizationDigests: terminalizationDigests}); err != nil {
 		return res, abortReferenceTransaction(err)
 	}
 	if referenceTransaction != nil {
@@ -2279,69 +2775,342 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	// exactly the pair internal/home's sweep already backstops.
 	closeBeforeLeaseRelease()
 	s.releaseLease(workID)
-	// A failed governed execution attaches its harness_execution attempt through
-	// Close rather than Advance. Retire any still-pending claim reservation only
-	// after the terminal work/event/ref transaction is durable, mirroring
-	// Advance's supersede-at-attach posture without abandoning a reservation for
-	// a close that later fails.
-	if len(in.RunAttemptIDs) > 0 {
-		s.supersedeClaimReservations(existingRunAttemptIDs, in.RunAttemptIDs, now)
-	}
-	// `work close` terminalizes every bound non-terminal RunAttempt by outcome
-	// (completed→succeeded, failed→failed, cancelled→abandoned). Already-terminal
-	// attempts are skipped. Without this the doctor's stuck-attempt count
-	// inflates correctly-closed work, so "something died" becomes unreadable.
-	// Best-effort: errors are silently dropped (mirror abandonRunAttempts) —
-	// the close is already committed, terminalization is evidence not
-	// enforcement, and a missed terminalization is a doctor-visible gap that
-	// the C3 sweeper backstops. SkipRunAttemptTerminalization lets a caller
-	// that OWNS its own RunAttempt lifecycle (binds close-produced proof refs
-	// to the attempt and completes it with its honest status AFTER the close,
-	// e.g. internal/panel apply's fail-soft flow) opt out: terminalizing at
-	// close would freeze the attempt before those refs land.
-	if !in.SkipRunAttemptTerminalization {
-		s.terminalizeRunAttemptsForOutcome(w.RunAttemptIDs, in.Outcome, now)
-	}
-	return CloseResult{Work: w, Receipt: rec, Transition: tr}, nil
+	// Only work-owned exact prepared intents complete here. Caller-owned plans
+	// remain non-terminal until their owner attaches post-close proof and
+	// completes the same immutable reservation. Any missed write is recoverable
+	// from the prepared intent plus the exact close chain.
+	unterminalizedRunAttemptIDs := s.terminalizePreparedRunAttempts(terminalizationPlans, now)
+	return CloseResult{
+		Work: w, Receipt: rec, Transition: tr,
+		UnterminalizedRunAttemptIDs: unterminalizedRunAttemptIDs,
+	}, nil
 }
 
-// terminalizeRunAttemptsForOutcome closes every non-terminal RunAttempt in ids
-// in the status that matches the close outcome. The mapping is fixed:
-//
-//	completed -> succeeded
-//	failed    -> failed
-//	cancelled -> abandoned
-//
-// Already-terminal attempts (succeeded/failed/abandoned/superseded) are
-// skipped — they cannot be rewritten, and an idempotent re-close must not
-// disturb a terminal attempt from a prior close. Best-effort: errors are
-// silently dropped because the close is already durable and a RunAttempt is
-// evidence, not enforcement (same posture as abandonRunAttempts and
-// supersedeClaimReservations). Unknown outcomes are no-ops.
-func (s *Store) terminalizeRunAttemptsForOutcome(ids []string, outcome string, now time.Time) {
-	target := map[string]string{
-		"completed": runattempt.StatusSucceeded,
-		"failed":    runattempt.StatusFailed,
-		"cancelled": runattempt.StatusAbandoned,
-	}[outcome]
-	if target == "" {
-		return
-	}
+// terminalizePreparedRunAttempts writes only work-owned exact intents.
+// Caller-owned plans remain mutable for post-close proof attachment. Failures
+// remain recoverable from the durable intent and terminal close chain, and the
+// returned ids make that non-fatal recovery obligation visible to the caller.
+func (s *Store) terminalizePreparedRunAttempts(plans []runAttemptTerminalizationPlan, now time.Time) []string {
 	store := s.runAttempts()
-	for _, id := range ids {
-		id = strings.TrimSpace(id)
-		if id == "" {
+	var unterminalized []string
+	for _, plan := range plans {
+		if plan.CallerOwns {
+			continue
+		}
+		if _, err := completePreparedTerminalization(store, plan.Attempt.ID, plan.Intent, now); err != nil {
+			unterminalized = append(unterminalized, plan.Attempt.ID)
+		}
+	}
+	return unterminalized
+}
+
+// completePreparedTerminalization is the production completion call and a
+// deterministic test seam for post-publication failure and CAS-loss paths.
+var completePreparedTerminalization = func(store *runattempt.Store, id string, intent runattempt.TerminalizationIntent, now time.Time) (runattempt.RunAttempt, error) {
+	return store.CompletePreparedTerminalization(id, intent, now)
+}
+
+const RunAttemptReconcileReportSchemaVersion = "compound.runattempt_reconcile_report.v0.1"
+
+type RunAttemptReconcileIssue struct {
+	RunAttemptID string `json:"run_attempt_id,omitempty"`
+	Code         string `json:"code"`
+	Disposition  string `json:"disposition"`
+	Message      string `json:"message"`
+}
+
+type RunAttemptReconcileReport struct {
+	SchemaVersion        string                     `json:"schema_version"`
+	Status               string                     `json:"status"`
+	WorkID               string                     `json:"work_id"`
+	Outcome              string                     `json:"outcome"`
+	ReceiptID            string                     `json:"receipt_id,omitempty"`
+	TransitionID         string                     `json:"transition_id,omitempty"`
+	TargetStatus         string                     `json:"target_status"`
+	ReconciledIDs        []string                   `json:"reconciled_ids,omitempty"`
+	AlreadyConsistentIDs []string                   `json:"already_consistent_ids,omitempty"`
+	HeldIDs              []string                   `json:"held_ids,omitempty"`
+	Issues               []RunAttemptReconcileIssue `json:"issues,omitempty"`
+}
+
+type exactTerminalClose struct {
+	Event      Event
+	Events     []Event
+	Action     envelope.ActionIntent
+	Decision   envelope.PolicyDecision
+	Receipt    envelope.Receipt
+	Transition envelope.Transition
+	WorkSHA256 string
+}
+
+func oneAttachedWithPrefix(values []string, prefix string) (string, error) {
+	var found string
+	for _, value := range values {
+		if !strings.HasPrefix(value, prefix) {
+			continue
+		}
+		if found != "" && found != value {
+			return "", fmt.Errorf("multiple %s attachments", prefix)
+		}
+		found = value
+	}
+	if found == "" {
+		return "", fmt.Errorf("missing %s attachment", prefix)
+	}
+	return found, nil
+}
+
+func (s *Store) loadExactTerminalClose(w envelope.WorkEnvelope) (exactTerminalClose, error) {
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		return exactTerminalClose{}, err
+	}
+	return s.loadExactTerminalCloseFromEvents(w, events)
+}
+
+func (s *Store) loadExactTerminalCloseFromEvents(w envelope.WorkEnvelope, events []Event) (exactTerminalClose, error) {
+	var out exactTerminalClose
+	workSHA, err := workEnvelopeSHA256(w)
+	if err != nil {
+		return out, err
+	}
+	var matches []Event
+	for _, event := range events {
+		if event.To == w.State && event.WorkSHA256 == workSHA {
+			matches = append(matches, event)
+		}
+	}
+	if len(matches) != 1 {
+		return out, fmt.Errorf("terminal work %s has %d exact closing lifecycle events", w.ID, len(matches))
+	}
+	event := matches[0]
+	if event.PreviousWorkSHA256 == "" {
+		return out, fmt.Errorf("terminal work %s close event lacks previous_work_sha256", w.ID)
+	}
+	actionID, err := oneAttachedWithPrefix(event.Attached, "act_")
+	if err != nil {
+		return out, err
+	}
+	policyID, err := oneAttachedWithPrefix(event.Attached, "pol_")
+	if err != nil {
+		return out, err
+	}
+	receiptID, err := oneAttachedWithPrefix(event.Attached, "rec_")
+	if err != nil {
+		return out, err
+	}
+	transitionID, err := oneAttachedWithPrefix(event.Attached, "tr_")
+	if err != nil {
+		return out, err
+	}
+	if w.IDs.TransitionID != transitionID || latestActionIntentID(w) != actionID || w.PolicyDecisionID != policyID {
+		return out, fmt.Errorf("terminal work %s does not retain exact close action/policy/transition generation", w.ID)
+	}
+	if err := s.readEventJSON(actionID, &out.Action); err != nil {
+		return out, err
+	}
+	if err := s.readEventJSON(policyID, &out.Decision); err != nil {
+		return out, err
+	}
+	if err := s.readEventJSON(receiptID, &out.Receipt); err != nil {
+		return out, err
+	}
+	if err := s.readEventJSON(transitionID, &out.Transition); err != nil {
+		return out, err
+	}
+	if err := out.Action.Validate(); err != nil || out.Action.IDs.WorkID != w.ID {
+		return out, fmt.Errorf("closing action %s invalid or work-mismatched", actionID)
+	}
+	if err := out.Decision.Validate(); err != nil || out.Decision.IDs.WorkID != w.ID || out.Decision.ActionIntentID != actionID || !policy.Allowed(out.Decision) {
+		return out, fmt.Errorf("closing policy %s invalid, denied, or action-mismatched", policyID)
+	}
+	if err := out.Receipt.Validate(); err != nil || out.Receipt.IDs.WorkID != w.ID || out.Receipt.Outcome != receiptOutcome[w.State] {
+		return out, fmt.Errorf("closing receipt %s invalid, work-mismatched, or outcome-mismatched", receiptID)
+	}
+	if err := out.Transition.Validate(); err != nil || out.Transition.IDs.WorkID != w.ID || !slices.Contains(out.Transition.ActionRefs, actionID) || !slices.Contains(out.Transition.AfterRefs, receiptID) {
+		return out, fmt.Errorf("closing transition %s invalid or does not bind action/receipt", transitionID)
+	}
+	receiptSHA, err := receiptEnvelopeSHA256(out.Receipt)
+	if err != nil || event.ReceiptSHA256 != receiptSHA {
+		return out, fmt.Errorf("closing event receipt digest does not match receipt %s", receiptID)
+	}
+	out.Event = event
+	out.Events = append([]Event(nil), events...)
+	out.WorkSHA256 = workSHA
+	return out, nil
+}
+
+func exactTerminalizationDigest(event Event, runAttemptID string) (string, error) {
+	var found string
+	for _, binding := range event.RunAttemptTerminalizationDigests {
+		if !runattempt.Valid(binding.RunAttemptID) || binding.IntentSHA256 == "" {
+			return "", fmt.Errorf("closing event carries invalid RunAttempt terminalization digest binding for %q", binding.RunAttemptID)
+		}
+		if binding.RunAttemptID != runAttemptID {
+			continue
+		}
+		if found != "" {
+			return "", fmt.Errorf("closing event duplicates terminalization digest for %s", runAttemptID)
+		}
+		found = binding.IntentSHA256
+	}
+	if found == "" {
+		return "", fmt.Errorf("closing event lacks terminalization digest for %s", runAttemptID)
+	}
+	return found, nil
+}
+
+func (s *Store) validateTerminalizationIntentAgainstClose(w envelope.WorkEnvelope, ra runattempt.RunAttempt, intent runattempt.TerminalizationIntent, close exactTerminalClose) error {
+	if err := intent.Validate(); err != nil {
+		return err
+	}
+	if intent.WorkID != w.ID || intent.Outcome != w.State || intent.ReceiptID != close.Receipt.ID || intent.TransitionID != close.Transition.ID ||
+		intent.CloseActionIntentID != close.Action.ID || intent.ClosePolicyDecisionID != close.Decision.ID || intent.ExpectedWorkSHA256 != close.Event.PreviousWorkSHA256 {
+		return errors.New("terminalization intent does not bind the exact terminal close generation")
+	}
+	if ra.ActionIntentID != intent.RunAttemptActionIntentID {
+		return fmt.Errorf("runattempt action binding %q differs from prepared %q", ra.ActionIntentID, intent.RunAttemptActionIntentID)
+	}
+	actualRunPolicy := ""
+	if ra.ExecutionPosture != nil {
+		actualRunPolicy = ra.ExecutionPosture.PolicyDecisionID
+	}
+	if actualRunPolicy != intent.RunAttemptPolicyDecisionID {
+		return fmt.Errorf("runattempt policy binding %q differs from prepared %q", actualRunPolicy, intent.RunAttemptPolicyDecisionID)
+	}
+	authority, err := s.resolveRunAttemptAuthorityFromEvents(w, ra, close.Events)
+	if err != nil {
+		return err
+	}
+	if authority.ActionIntentID != intent.AuthorityActionIntentID || authority.PolicyDecisionID != intent.AuthorityPolicyDecisionID {
+		return errors.New("runattempt authority generation differs from prepared intent")
+	}
+	wantDigest, err := exactTerminalizationDigest(close.Event, ra.ID)
+	if err != nil {
+		return err
+	}
+	gotDigest, err := terminalizationIntentSHA256(intent)
+	if err != nil {
+		return err
+	}
+	if gotDigest != wantDigest {
+		return fmt.Errorf("runattempt terminalization intent digest %s differs from closing event %s", gotDigest, wantDigest)
+	}
+	precloseMatches := 0
+	for _, event := range close.Events {
+		if event.WorkSHA256 != intent.ExpectedWorkSHA256 || event.To != intent.ExpectedWorkState {
+			continue
+		}
+		if intent.ExpectedActionIntentID != "" && !attachedHas(event.Attached, intent.ExpectedActionIntentID) {
+			continue
+		}
+		if intent.ExpectedPolicyDecisionID != "" && !attachedHas(event.Attached, intent.ExpectedPolicyDecisionID) {
+			continue
+		}
+		precloseMatches++
+	}
+	if precloseMatches != 1 {
+		return fmt.Errorf("prepared pre-close work/action/policy generation has %d exact lifecycle matches", precloseMatches)
+	}
+	return nil
+}
+
+func reconcileIssue(report *RunAttemptReconcileReport, id, code, message string) {
+	report.Status = "held"
+	report.Issues = append(report.Issues, RunAttemptReconcileIssue{
+		RunAttemptID: id,
+		Code:         code,
+		Disposition:  "manual_review",
+		Message:      message,
+	})
+	if id != "" && !slices.Contains(report.HeldIDs, id) {
+		report.HeldIDs = append(report.HeldIDs, id)
+	}
+}
+
+// ReconcileRunAttemptsForTerminalWork repairs only attempts carrying an exact
+// pre-close terminalization intent. Missing, malformed, foreign, stale, or
+// contradictory evidence is held for manual review and never inferred.
+func (s *Store) ReconcileRunAttemptsForTerminalWork(workID string, now time.Time) (RunAttemptReconcileReport, error) {
+	report := RunAttemptReconcileReport{
+		SchemaVersion: RunAttemptReconcileReportSchemaVersion,
+		Status:        "ok",
+		WorkID:        workID,
+	}
+	w, err := s.Get(workID)
+	if err != nil {
+		return report, err
+	}
+	report.Outcome = w.State
+	report.TargetStatus = runAttemptStatusForCloseOutcome(w.State)
+	if !terminalStates[w.State] {
+		return report, fmt.Errorf("work %s is %q, not terminal", workID, w.State)
+	}
+	closeEvidence, err := s.loadExactTerminalClose(w)
+	if err != nil {
+		reconcileIssue(&report, "", "close_evidence_mismatch", err.Error())
+		return report, nil
+	}
+	report.ReceiptID = closeEvidence.Receipt.ID
+	report.TransitionID = closeEvidence.Transition.ID
+
+	type eligible struct {
+		id     string
+		intent runattempt.TerminalizationIntent
+	}
+	var eligibleAttempts []eligible
+	store := s.runAttempts()
+	for _, id := range dedupeStrings(w.RunAttemptIDs) {
+		if !runattempt.Valid(id) {
+			reconcileIssue(&report, id, "run_attempt_invalid", "invalid RunAttempt reference")
 			continue
 		}
 		ra, err := store.Get(id)
 		if err != nil {
-			continue // not found or unreadable — nothing to terminalize
+			reconcileIssue(&report, id, "run_attempt_unreadable", err.Error())
+			continue
+		}
+		if err := validateRunAttemptRecord(id, w, ra); err != nil {
+			reconcileIssue(&report, id, "run_attempt_mismatch", err.Error())
+			continue
+		}
+		if ra.TerminalizationIntent == nil {
+			if runattempt.IsTerminal(ra.Status) && (ra.Status == runattempt.StatusSuperseded || ra.Status == report.TargetStatus) {
+				report.AlreadyConsistentIDs = append(report.AlreadyConsistentIDs, id)
+				continue
+			}
+			reconcileIssue(&report, id, "terminalization_intent_missing", "no exact pre-close terminalization intent; automatic repair is forbidden")
+			continue
+		}
+		intent := *ra.TerminalizationIntent
+		if err := s.validateTerminalizationIntentAgainstClose(w, ra, intent, closeEvidence); err != nil {
+			reconcileIssue(&report, id, "terminalization_intent_mismatch", err.Error())
+			continue
+		}
+		if ra.Status == intent.TargetStatus && ra.TerminalizationOwner == intent.Owner && ra.TerminalizationReceiptID == intent.ReceiptID && ra.TerminalizationTransitionID == intent.TransitionID && ra.TerminalizationReason == intent.TerminalizationReason {
+			report.AlreadyConsistentIDs = append(report.AlreadyConsistentIDs, id)
+			continue
 		}
 		if runattempt.IsTerminal(ra.Status) {
-			continue // already terminal — skip (idempotent re-close path)
+			reconcileIssue(&report, id, "terminal_status_conflict", fmt.Sprintf("terminal status %s conflicts with prepared %s", ra.Status, intent.TargetStatus))
+			continue
 		}
-		_, _ = store.Complete(id, target, now)
+		eligibleAttempts = append(eligibleAttempts, eligible{id: id, intent: intent})
 	}
+	if report.Status == "held" {
+		return report, nil
+	}
+	for _, candidate := range eligibleAttempts {
+		if _, err := completePreparedTerminalization(store, candidate.id, candidate.intent, now); err != nil {
+			reconcileIssue(&report, candidate.id, "terminalization_cas_lost", err.Error())
+			continue
+		}
+		report.ReconciledIDs = append(report.ReconciledIDs, candidate.id)
+	}
+	if len(report.ReconciledIDs) > 0 && len(report.Issues) > 0 {
+		report.Status = "partially_reconciled"
+	}
+	return report, nil
 }
 
 // releaseLease deletes workID's claim lease, if one is still held. Called only

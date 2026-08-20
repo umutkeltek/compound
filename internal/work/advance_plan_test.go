@@ -56,10 +56,15 @@ func TestAdvanceRecordsPolicyAction(t *testing.T) {
 	// S1: RunAttempt ids are minted externally and attached via RunAttemptIDs. The
 	// pre-S1 field `RunID` (which stuffed `run_real` into ActionIntentIDs) was retired
 	// when ActionIntentIDs went act_*-only.
-	runAttemptID, err := runattempt.Mint(fixedNow)
+	raStore := runattempt.Open(s.home)
+	ra, err := raStore.Mint(w.ID, "codex", runattempt.HarnessPlaceholder, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := raStore.SetOrigin(ra.ID, runattempt.OriginHarnessExecution); err != nil {
+		t.Fatal(err)
+	}
+	runAttemptID := ra.ID
 	advanced, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex", RunAttemptIDs: []string{runAttemptID}}, fixedNow)
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +82,9 @@ func TestAdvanceRecordsPolicyAction(t *testing.T) {
 		t.Fatalf("RunAttemptIDs missing %q, got %v", runAttemptID, advanced.RunAttemptIDs)
 	}
 	advanceActionID := advanced.ActionIntentIDs[len(claimed.ActionIntentIDs)]
+	if err := raStore.AttachActionIntent(runAttemptID, advanceActionID); err != nil {
+		t.Fatalf("bind execution RunAttempt to advance action: %v", err)
+	}
 	if exists, err := s.eventExists(advanceActionID); err != nil || !exists {
 		t.Fatalf("advance action envelope missing: %v", err)
 	}

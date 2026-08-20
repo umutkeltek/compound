@@ -15,7 +15,6 @@ import (
 
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
-	"compound/internal/runattempt"
 )
 
 func TestMain(m *testing.M) {
@@ -1026,11 +1025,7 @@ func TestDispatchStepReportsTerminalSourcePacket(t *testing.T) {
 	if _, err := s.Claim(imported.Work.ID, "codex", fixedNow.Add(time.Second)); err != nil {
 		t.Fatalf("claim packet work: %v", err)
 	}
-	dispatchRunAttemptID, err := runattempt.Mint(fixedNow.Add(2 * time.Second))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "running", RunAttemptIDs: []string{dispatchRunAttemptID}}, fixedNow.Add(2*time.Second)); err != nil {
+	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "running"}, fixedNow.Add(2*time.Second)); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:terminal-source"}, fixedNow.Add(3*time.Second)); err != nil {

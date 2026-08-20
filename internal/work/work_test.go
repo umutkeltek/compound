@@ -40,13 +40,14 @@ func TestWorkLifecycleThreadsOneID(t *testing.T) {
 	}
 	id := w.ID
 
-	if _, err := s.Claim(id, "claude_code", fixedNow); err != nil {
+	claimed, err := s.Claim(id, "claude_code", fixedNow)
+	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	workRunAttemptID, err := runattempt.Mint(fixedNow)
-	if err != nil {
-		t.Fatal(err)
+	if len(claimed.RunAttemptIDs) != 1 {
+		t.Fatalf("claim RunAttemptIDs = %v, want one reservation", claimed.RunAttemptIDs)
 	}
+	workRunAttemptID := claimed.RunAttemptIDs[0]
 	if _, err := s.Advance(id, AdvanceInput{To: "running", Actor: "claude_code", RunAttemptIDs: []string{workRunAttemptID}, Note: "executing"}, fixedNow); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
@@ -1147,16 +1148,17 @@ func TestCloseSupersedesClaimReservationOnHarnessExecutionAttach(t *testing.T) {
 		t.Fatalf("claim must mint one reservation, got %v", claimed.RunAttemptIDs)
 	}
 	claimAttemptID := claimed.RunAttemptIDs[0]
-	if _, err := s.Advance(w.ID, AdvanceInput{
+	running, err := s.Advance(w.ID, AdvanceInput{
 		To:    "running",
 		Actor: "agent_a",
 		Note:  "dispatching governed harness execution",
-	}, fixedNow.Add(2*time.Minute)); err != nil {
+	}, fixedNow.Add(2*time.Minute))
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	attempts := runattempt.Open(s.home)
-	execution, err := attempts.Mint(w.ID, "agent_a", "claude", fixedNow.Add(3*time.Minute))
+	execution, err := attempts.MintWithActionIntent(w.ID, "agent_a", "claude", running.ActionIntentIDs[len(running.ActionIntentIDs)-1], fixedNow.Add(3*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1188,8 +1190,15 @@ func TestCloseSupersedesClaimReservationOnHarnessExecutionAttach(t *testing.T) {
 	if claimAttempt.Status != "superseded" {
 		t.Fatalf("claim reservation status = %q, want superseded", claimAttempt.Status)
 	}
-	if !strings.Contains(claimAttempt.SweepReason, execution.ID) {
-		t.Fatalf("claim reservation supersede reason %q must name execution %s", claimAttempt.SweepReason, execution.ID)
+	if claimAttempt.TerminalizationOwner != runattempt.TerminalizationOwnerWorkSupersede ||
+		claimAttempt.TerminalizationReceiptID != closed.Receipt.ID || claimAttempt.TerminalizationTransitionID != closed.Transition.ID {
+		t.Fatalf("claim reservation terminalization proof = owner %q receipt %q transition %q", claimAttempt.TerminalizationOwner, claimAttempt.TerminalizationReceiptID, claimAttempt.TerminalizationTransitionID)
+	}
+	if !strings.Contains(claimAttempt.TerminalizationReason, execution.ID) {
+		t.Fatalf("claim reservation supersede reason %q must name execution %s", claimAttempt.TerminalizationReason, execution.ID)
+	}
+	if claimAttempt.SweepReason != "" {
+		t.Fatalf("exact work supersession leaked into sweep_reason: %q", claimAttempt.SweepReason)
 	}
 	failedExecution, err := attempts.Get(execution.ID)
 	if err != nil {

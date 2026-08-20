@@ -10,9 +10,9 @@ import (
 	"compound/internal/runattempt"
 )
 
-// Schema bumped to v0.2 to add the RunAttempt proof dimension while retaining
-// every v0.1 field for tolerant existing consumers.
-const ProofChainDoctorSchemaVersion = "compound.work_proof_chain_doctor.v0.2"
+// v0.3 adds the always-serialized RunAttempt outcome and exact
+// terminalization-intent integrity dimensions.
+const ProofChainDoctorSchemaVersion = "compound.work_proof_chain_doctor.v0.3"
 
 type ProofChainDoctorOptions struct {
 	IncludeArchived bool
@@ -54,12 +54,14 @@ type ProofChainDoctorCounts struct {
 	// report.Findings is the narrow reason (missing_run_attempt,
 	// run_attempt_unreadable, run_attempt_invalid, run_attempt_work_mismatch,
 	// run_attempt_action_mismatch, run_attempt_nonterminal).
-	MissingRunAttempt        int `json:"missing_run_attempt"`
-	UnreadableRunAttempt     int `json:"unreadable_run_attempt"`
-	InvalidRunAttempt        int `json:"invalid_run_attempt"`
-	RunAttemptWorkMismatch   int `json:"run_attempt_work_mismatch"`
-	RunAttemptActionMismatch int `json:"run_attempt_action_mismatch"`
-	RunAttemptNonterminal    int `json:"run_attempt_nonterminal"`
+	MissingRunAttempt                 int `json:"missing_run_attempt"`
+	UnreadableRunAttempt              int `json:"unreadable_run_attempt"`
+	InvalidRunAttempt                 int `json:"invalid_run_attempt"`
+	RunAttemptWorkMismatch            int `json:"run_attempt_work_mismatch"`
+	RunAttemptActionMismatch          int `json:"run_attempt_action_mismatch"`
+	RunAttemptNonterminal             int `json:"run_attempt_nonterminal"`
+	RunAttemptOutcomeMismatch         int `json:"run_attempt_outcome_mismatch"`
+	RunAttemptTerminalizationMismatch int `json:"run_attempt_terminalization_mismatch"`
 }
 
 type ProofChainDoctorItem struct {
@@ -129,7 +131,7 @@ func (s *Store) ProofChainDoctor(now time.Time, opts ProofChainDoctorOptions) (P
 		report.Counts.TerminalChecked++
 		item := s.proofChainItem(w, eventsByWork[w.ID], &report)
 		if len(item.RunAttemptIDs) > 0 {
-			s.checkRunAttemptProof(w, raStore, &item, &report)
+			s.checkRunAttemptProof(w, eventsByWork[w.ID], raStore, &item, &report)
 		}
 		if len(item.Problems) == 0 {
 			item.ProofComplete = true
@@ -404,11 +406,12 @@ func proofChainContains(values []string, want string) bool {
 // work_id / action / terminal checks only run on records with valid
 // embedded identity, because those checks would otherwise misattribute the
 // half-decoded record's emptiness as additional defects.
-func (s *Store) checkRunAttemptProof(w envelope.WorkEnvelope, raStore *runattempt.Store, item *ProofChainDoctorItem, report *ProofChainDoctorReport) {
+func (s *Store) checkRunAttemptProof(w envelope.WorkEnvelope, events []Event, raStore *runattempt.Store, item *ProofChainDoctorItem, report *ProofChainDoctorReport) {
 	actionSet := map[string]bool{}
 	for _, actionID := range item.ActionIntentIDs {
 		actionSet[actionID] = true
 	}
+	closeEvidence, closeEvidenceErr := s.loadExactTerminalCloseFromEvents(w, events)
 	for _, rattID := range item.RunAttemptIDs {
 		// Validate the EXACT raw entry. No trimming -- whitespace-only and
 		// padded canonical refs are run_attempt_invalid.
@@ -432,7 +435,7 @@ func (s *Store) checkRunAttemptProof(w envelope.WorkEnvelope, raStore *runattemp
 		// classifies as run_attempt_invalid and the loop continues to the
 		// next reference -- the work/action/terminal checks would otherwise
 		// misattribute the half-decoded record's emptiness.
-		if ra.ID != rattID || ra.SchemaVersion != runattempt.SchemaVersion {
+		if ra.ID != rattID || !runattempt.AcceptsSchemaVersion(ra.SchemaVersion) {
 			report.Counts.InvalidRunAttempt++
 			addProofChainProblem(report, item, "run_attempt_invalid", "run attempt "+rattID+" embedded identity mismatches: embedded id="+ra.ID+" schema="+ra.SchemaVersion)
 			continue
@@ -450,6 +453,37 @@ func (s *Store) checkRunAttemptProof(w envelope.WorkEnvelope, raStore *runattemp
 		if !runattempt.IsTerminal(ra.Status) {
 			report.Counts.RunAttemptNonterminal++
 			addProofChainProblem(report, item, "run_attempt_nonterminal", "run attempt "+rattID+" status "+ra.Status+" is not terminal while work "+w.ID+" is terminal")
+			continue
+		}
+		if ra.TerminalizationIntent != nil {
+			intent := *ra.TerminalizationIntent
+			intentErr := closeEvidenceErr
+			if intentErr == nil {
+				intentErr = s.validateTerminalizationIntentAgainstClose(w, ra, intent, closeEvidence)
+			}
+			if intentErr != nil || ra.TerminalizationOwner != intent.Owner || ra.TerminalizationReceiptID != intent.ReceiptID || ra.TerminalizationTransitionID != intent.TransitionID || ra.TerminalizationReason != intent.TerminalizationReason {
+				report.Counts.RunAttemptTerminalizationMismatch++
+				message := "run attempt " + rattID + " terminalization does not match its exact prepared intent and closing proof"
+				if intentErr != nil {
+					message += ": " + intentErr.Error()
+				}
+				addProofChainProblem(report, item, "run_attempt_terminalization_mismatch", message)
+			}
+			if ra.Status != intent.TargetStatus {
+				report.Counts.RunAttemptOutcomeMismatch++
+				addProofChainProblem(report, item, "run_attempt_outcome_mismatch", "run attempt "+rattID+" status "+ra.Status+" does not match prepared target "+intent.TargetStatus)
+			}
+			continue
+		}
+		want := runAttemptStatusForCloseOutcome(w.State)
+		if ra.Status != runattempt.StatusSuperseded && ra.Status != want {
+			report.Counts.RunAttemptOutcomeMismatch++
+			addProofChainProblem(report, item, "run_attempt_outcome_mismatch", "run attempt "+rattID+" status "+ra.Status+" contradicts terminal work outcome "+w.State+" (want "+want+")")
+		}
+		if ra.TerminalizationOwner == runattempt.TerminalizationOwnerWorkClose &&
+			(ra.TerminalizationReceiptID != item.ReceiptID || ra.TerminalizationTransitionID != item.TransitionID) {
+			report.Counts.RunAttemptTerminalizationMismatch++
+			addProofChainProblem(report, item, "run_attempt_terminalization_mismatch", "run attempt "+rattID+" work.close proof pair "+ra.TerminalizationReceiptID+"/"+ra.TerminalizationTransitionID+" does not match closing proof "+item.ReceiptID+"/"+item.TransitionID)
 		}
 	}
 }

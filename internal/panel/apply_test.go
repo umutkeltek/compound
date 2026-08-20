@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -456,6 +457,15 @@ func TestApplyRecordsRunAttemptChain(t *testing.T) {
 	if len(ra.ProofRefs) == 0 {
 		t.Fatalf("runattempt proof_refs must include at least the panel run record and the receipt/transition ids")
 	}
+	if !slices.Contains(ra.ProofRefs, got.ReceiptID) || !slices.Contains(ra.ProofRefs, got.TransitionID) {
+		t.Fatalf("runattempt proof_refs = %v, want close proof %s and %s", ra.ProofRefs, got.ReceiptID, got.TransitionID)
+	}
+	if ra.TerminalizationIntent == nil || ra.TerminalizationIntent.Owner != runattempt.TerminalizationOwnerPanelApply || ra.TerminalizationIntent.TargetStatus != runattempt.StatusSucceeded {
+		t.Fatalf("runattempt exact prepared terminalization = %+v, want panel-owned succeeded intent", ra.TerminalizationIntent)
+	}
+	if ra.TerminalizationOwner != runattempt.TerminalizationOwnerPanelApply || ra.TerminalizationReceiptID != got.ReceiptID || ra.TerminalizationTransitionID != got.TransitionID {
+		t.Fatalf("runattempt terminalization proof = owner %q receipt %q transition %q, want panel-owned close proof", ra.TerminalizationOwner, ra.TerminalizationReceiptID, ra.TerminalizationTransitionID)
+	}
 	// F2: panel apply IS the execution, so its attempt is stamped
 	// harness_execution immediately after Mint.
 	if ra.Origin != runattempt.OriginHarnessExecution {
@@ -544,6 +554,18 @@ func TestApplyRecordsRunAttemptChainFailed(t *testing.T) {
 	if ra.Status != runattempt.StatusFailed {
 		t.Fatalf("runattempt status = %q, want failed", ra.Status)
 	}
+	if ra.TerminalizationIntent == nil || ra.TerminalizationIntent.Owner != runattempt.TerminalizationOwnerPanelApply || ra.TerminalizationIntent.TargetStatus != runattempt.StatusFailed {
+		t.Fatalf("failed runattempt exact prepared terminalization = %+v, want panel-owned failed intent", ra.TerminalizationIntent)
+	}
+	if ra.TerminalizationOwner != runattempt.TerminalizationOwnerPanelApply || ra.TerminalizationReceiptID != got.ReceiptID || ra.TerminalizationTransitionID != got.TransitionID {
+		t.Fatalf("failed runattempt terminalization proof = owner %q receipt %q transition %q, want panel-owned close proof", ra.TerminalizationOwner, ra.TerminalizationReceiptID, ra.TerminalizationTransitionID)
+	}
+	if !strings.Contains(ra.TerminalizationReason, "1 target failure") {
+		t.Fatalf("failed runattempt terminalization reason = %q, want target-failure count", ra.TerminalizationReason)
+	}
+	if !slices.Contains(ra.ProofRefs, got.ReceiptID) || !slices.Contains(ra.ProofRefs, got.TransitionID) {
+		t.Fatalf("failed runattempt proof_refs = %v, want close proof %s and %s", ra.ProofRefs, got.ReceiptID, got.TransitionID)
+	}
 }
 
 // TestApplyAbortTerminalizesAttemptAndClosesEnvelope pins the deferred
@@ -592,8 +614,18 @@ func TestApplyAbortTerminalizesAttemptAndClosesEnvelope(t *testing.T) {
 			if candidate.Status != runattempt.StatusFailed {
 				t.Fatalf("execution attempt status = %q, want failed (the deferred guard terminalized the abort)", candidate.Status)
 			}
-			if !strings.Contains(candidate.SweepReason, "panel apply aborted") {
-				t.Fatalf("execution attempt reason = %q, want it to name the abort", candidate.SweepReason)
+			if candidate.TerminalizationIntent == nil || candidate.TerminalizationIntent.Owner != runattempt.TerminalizationOwnerPanelApply || candidate.TerminalizationIntent.TargetStatus != runattempt.StatusFailed {
+				t.Fatalf("execution attempt exact prepared terminalization = %+v, want panel-owned failed intent", candidate.TerminalizationIntent)
+			}
+			if candidate.TerminalizationOwner != runattempt.TerminalizationOwnerPanelApply {
+				t.Fatalf("execution attempt terminalization owner = %q, want %q", candidate.TerminalizationOwner, runattempt.TerminalizationOwnerPanelApply)
+			}
+			if !strings.Contains(candidate.TerminalizationReason, "panel apply aborted") {
+				t.Fatalf("execution attempt reason = %q, want it to name the abort", candidate.TerminalizationReason)
+			}
+			if candidate.TerminalizationReceiptID == "" || candidate.TerminalizationTransitionID == "" ||
+				!slices.Contains(candidate.ProofRefs, candidate.TerminalizationReceiptID) || !slices.Contains(candidate.ProofRefs, candidate.TerminalizationTransitionID) {
+				t.Fatalf("execution attempt proof refs = %v, receipt=%q transition=%q", candidate.ProofRefs, candidate.TerminalizationReceiptID, candidate.TerminalizationTransitionID)
 			}
 		case runattempt.OriginClaimReservation:
 			if candidate.Status != runattempt.StatusSuperseded {

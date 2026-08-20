@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"compound/internal/runattempt"
 )
 
 func TestParsePacketMarkdownExtractsWorkFields(t *testing.T) {
@@ -174,13 +172,14 @@ func TestImportedPacketCanDriveReceiptTransition(t *testing.T) {
 	if !contains(report.Work.EvidenceRefs, report.EvidenceRef) {
 		t.Fatalf("packet evidence ref missing from work: %v", report.Work.EvidenceRefs)
 	}
-	if _, err := store.Claim(workID, "codex", fixedNow.Add(time.Second)); err != nil {
+	claimed, err := store.Claim(workID, "codex", fixedNow.Add(time.Second))
+	if err != nil {
 		t.Fatalf("claim packet work: %v", err)
 	}
-	packetRunAttemptID, err := runattempt.Mint(fixedNow.Add(2 * time.Second))
-	if err != nil {
-		t.Fatal(err)
+	if len(claimed.RunAttemptIDs) != 1 {
+		t.Fatalf("claim RunAttemptIDs = %v, want one reservation", claimed.RunAttemptIDs)
 	}
+	packetRunAttemptID := claimed.RunAttemptIDs[0]
 	if _, err := store.Advance(workID, AdvanceInput{To: "running", RunAttemptIDs: []string{packetRunAttemptID}, Note: "executing packet work"}, fixedNow.Add(2*time.Second)); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}

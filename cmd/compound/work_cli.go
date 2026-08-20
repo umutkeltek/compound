@@ -80,7 +80,7 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
@@ -122,6 +122,10 @@ var workVerbHelpByName = map[string]workVerbHelp{
 	"proof-chain-doctor": {
 		Usage:   "usage: compound work proof-chain-doctor [--include-archived] [--json]",
 		Example: "compound work proof-chain-doctor --json",
+	},
+	"reconcile-run-attempts": {
+		Usage:   "usage: compound work reconcile-run-attempts <work_id> [--json]",
+		Example: "compound work reconcile-run-attempts work_abc123 --json",
 	},
 	"continue": {
 		Usage:   "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--json]",
@@ -847,6 +851,28 @@ func cmdWork(args []string) {
 				for _, finding := range report.Findings {
 					fmt.Printf("- %s %s: %s\n", finding.WorkID, finding.Code, finding.Message)
 				}
+			}
+		}
+		if report.Status != "ok" {
+			os.Exit(1)
+		}
+	case "reconcile-run-attempts":
+		usage := workUsage("reconcile-run-attempts")
+		if err := validateWorkArguments(rest, nil, map[string]bool{"--json": true}, 1); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		workID := pos(nil)
+		report, err := store.ReconcileRunAttemptsForTerminalWork(workID, time.Now())
+		die(err)
+		if has("--json") {
+			printJSON(report)
+		} else {
+			fmt.Printf("work run-attempt reconciliation %s: work=%s reconciled=%d consistent=%d held=%d\n",
+				report.Status, report.WorkID, len(report.ReconciledIDs), len(report.AlreadyConsistentIDs), len(report.HeldIDs))
+			for _, issue := range report.Issues {
+				fmt.Printf("- %s %s: %s\n", issue.RunAttemptID, issue.Code, issue.Message)
 			}
 		}
 		if report.Status != "ok" {
@@ -1802,9 +1828,7 @@ func cmdWork(args []string) {
 			}
 		}
 		die(err)
-		fmt.Printf("%s closed: %s  move_type=%s  policy=%s  receipt=%s  transition=%s\n",
-			res.Work.ID, res.Work.State, res.Receipt.MoveType, res.Work.PolicyDecisionID, res.Receipt.ID, res.Transition.ID)
-		printJSON(res)
+		printWorkCloseResult(res)
 		observeWorkSurpriseOnDivergedClose(homePath, res)
 		observeEVCardCalibrationOnClose(homePath, res)
 		offerStandingProofGraduationOnClose(homePath, res)
@@ -1890,6 +1914,16 @@ func cmdWork(args []string) {
 		fmt.Fprintln(os.Stderr, workUsage(""))
 		os.Exit(2)
 	}
+}
+
+func printWorkCloseResult(res work.CloseResult) {
+	fmt.Printf("%s closed: %s  move_type=%s  policy=%s  receipt=%s  transition=%s\n",
+		res.Work.ID, res.Work.State, res.Receipt.MoveType, res.Work.PolicyDecisionID, res.Receipt.ID, res.Transition.ID)
+	if len(res.UnterminalizedRunAttemptIDs) > 0 {
+		fmt.Printf("warning: unterminalized_run_attempts=%s; recover with: compound work reconcile-run-attempts %s\n",
+			strings.Join(res.UnterminalizedRunAttemptIDs, ","), res.Work.ID)
+	}
+	printJSON(res)
 }
 
 // observeWorkSurpriseOnDivergedClose is the cmd-layer wiring for the prediction/surprise

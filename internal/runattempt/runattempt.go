@@ -118,6 +118,138 @@ type LaunchLifecycle struct {
 	StartErrorAt *time.Time `json:"start_error_at,omitempty"`
 }
 
+const (
+	// TerminalizationIntentSchemaVersion is the durable prepare record written
+	// before a WorkEnvelope close publishes its first authoritative byte.
+	TerminalizationIntentSchemaVersion = "compound.runattempt_terminalization_intent.v0.1"
+	TerminalizationOwnerWorkClose      = "work.close"
+	TerminalizationOwnerWorkSupersede  = "work.close.supersede"
+	TerminalizationOwnerPanelApply     = "panel.apply"
+)
+
+// TerminalizationIntent is the immutable prepare half of RunAttempt
+// terminalization. It binds one attempt to both the exact pre-close work
+// generation and the exact close authority/proof generation. A crash after
+// terminal work publication can therefore be repaired without inferring from
+// PID, elapsed time, an ID prefix, or the latest event.
+type TerminalizationIntent struct {
+	SchemaVersion              string    `json:"schema_version"`
+	Owner                      string    `json:"owner"`
+	WorkID                     string    `json:"work_id"`
+	RunAttemptActionIntentID   string    `json:"run_attempt_action_intent_id,omitempty"`
+	RunAttemptPolicyDecisionID string    `json:"run_attempt_policy_decision_id,omitempty"`
+	AuthorityActionIntentID    string    `json:"authority_action_intent_id"`
+	AuthorityPolicyDecisionID  string    `json:"authority_policy_decision_id"`
+	ExpectedWorkState          string    `json:"expected_work_state"`
+	ExpectedWorkSHA256         string    `json:"expected_work_sha256"`
+	ExpectedActionIntentID     string    `json:"expected_action_intent_id,omitempty"`
+	ExpectedPolicyDecisionID   string    `json:"expected_policy_decision_id,omitempty"`
+	CloseInputSHA256           string    `json:"close_input_sha256"`
+	CloseActionIntentID        string    `json:"close_action_intent_id"`
+	ClosePolicyDecisionID      string    `json:"close_policy_decision_id"`
+	Outcome                    string    `json:"outcome"`
+	TargetStatus               string    `json:"target_status"`
+	TerminalizationReason      string    `json:"terminalization_reason,omitempty"`
+	ReceiptID                  string    `json:"receipt_id"`
+	TransitionID               string    `json:"transition_id"`
+	PreparedAt                 time.Time `json:"prepared_at"`
+}
+
+// Validate rejects partial or open-vocabulary terminalization intents. The
+// optional run-attempt and expected-generation action/policy ids are absent
+// only for legacy records that never carried those bindings.
+func (in TerminalizationIntent) Validate() error {
+	if in.SchemaVersion != TerminalizationIntentSchemaVersion {
+		return fmt.Errorf("terminalization intent schema_version = %q, want %q", in.SchemaVersion, TerminalizationIntentSchemaVersion)
+	}
+	switch in.Owner {
+	case TerminalizationOwnerWorkClose, TerminalizationOwnerWorkSupersede, TerminalizationOwnerPanelApply:
+	default:
+		return fmt.Errorf("terminalization intent owner %q is unsupported", in.Owner)
+	}
+	if strings.TrimSpace(in.WorkID) == "" {
+		return errors.New("terminalization intent work_id is required")
+	}
+	for name, value := range map[string]string{
+		"run_attempt_action_intent_id": in.RunAttemptActionIntentID,
+		"authority_action_intent_id":   in.AuthorityActionIntentID,
+		"expected_action_intent_id":    in.ExpectedActionIntentID,
+		"close_action_intent_id":       in.CloseActionIntentID,
+	} {
+		if value != "" && !strings.HasPrefix(value, "act_") {
+			return fmt.Errorf("terminalization intent %s %q must start act_", name, value)
+		}
+	}
+	for name, value := range map[string]string{
+		"run_attempt_policy_decision_id": in.RunAttemptPolicyDecisionID,
+		"authority_policy_decision_id":   in.AuthorityPolicyDecisionID,
+		"expected_policy_decision_id":    in.ExpectedPolicyDecisionID,
+		"close_policy_decision_id":       in.ClosePolicyDecisionID,
+	} {
+		if value != "" && !strings.HasPrefix(value, "pol_") {
+			return fmt.Errorf("terminalization intent %s %q must start pol_", name, value)
+		}
+	}
+	if strings.TrimSpace(in.ExpectedWorkState) == "" {
+		return errors.New("terminalization intent expected_work_state is required")
+	}
+	if in.AuthorityActionIntentID == "" || in.AuthorityPolicyDecisionID == "" {
+		return errors.New("terminalization intent exact attempt authority action and policy ids are required")
+	}
+	if !validSHA256Ref(in.ExpectedWorkSHA256) {
+		return fmt.Errorf("terminalization intent expected_work_sha256 %q is invalid", in.ExpectedWorkSHA256)
+	}
+	if !validSHA256Ref(in.CloseInputSHA256) {
+		return fmt.Errorf("terminalization intent close_input_sha256 %q is invalid", in.CloseInputSHA256)
+	}
+	if in.CloseActionIntentID == "" || in.ClosePolicyDecisionID == "" {
+		return errors.New("terminalization intent close action and policy ids are required")
+	}
+	switch in.Outcome {
+	case "completed", "failed", "cancelled":
+	default:
+		return fmt.Errorf("terminalization intent outcome %q is invalid", in.Outcome)
+	}
+	if !IsTerminal(in.TargetStatus) {
+		return fmt.Errorf("terminalization intent target_status %q is invalid", in.TargetStatus)
+	}
+	if in.Owner == TerminalizationOwnerWorkClose {
+		want := map[string]string{"completed": StatusSucceeded, "failed": StatusFailed, "cancelled": StatusAbandoned}[in.Outcome]
+		if in.TargetStatus != want {
+			return fmt.Errorf("work.close terminalization target_status %q does not match outcome %q (want %q)", in.TargetStatus, in.Outcome, want)
+		}
+	}
+	if in.Owner == TerminalizationOwnerWorkSupersede && in.TargetStatus != StatusSuperseded {
+		return fmt.Errorf("work.close.supersede terminalization target_status %q must be %q", in.TargetStatus, StatusSuperseded)
+	}
+	if in.Owner == TerminalizationOwnerWorkSupersede {
+		if !strings.HasPrefix(in.TerminalizationReason, "superseded by ratt_") {
+			return errors.New("work.close.supersede terminalization requires a reason naming the replacing RunAttempt")
+		}
+	} else if in.Owner != TerminalizationOwnerPanelApply && in.TerminalizationReason != "" {
+		return fmt.Errorf("terminalization intent owner %q cannot carry terminalization_reason", in.Owner)
+	}
+	if !strings.HasPrefix(in.ReceiptID, "rec_") || !strings.HasPrefix(in.TransitionID, "tr_") {
+		return errors.New("terminalization intent requires rec_ receipt and tr_ transition ids")
+	}
+	if in.PreparedAt.IsZero() {
+		return errors.New("terminalization intent prepared_at is required")
+	}
+	return nil
+}
+
+func validSHA256Ref(value string) bool {
+	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	for _, r := range value[len("sha256:"):] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // RunAttempt is the S1 type. Fields are deliberately minimal: enough to bind a RunAttempt to
 // a work_id and to record who/what ran and when. Transcript, diff, test, proof refs are not
 // part of S1 -- they land when a real harness adapter actually produces them.
@@ -182,6 +314,15 @@ type RunAttempt struct {
 	// verifications) that corroborate the attempt's outcome. Empty slice clears (intentional,
 	// see TestRunAttemptSetProofRefsClearsOnEmpty).
 	ProofRefs []string `json:"proof_refs,omitempty"`
+
+	// TerminalizationIntent is written before work close publication. It is
+	// immutable once prepared and remains after completion so recovery can
+	// prove the exact authority generation that justified the terminal status.
+	TerminalizationIntent       *TerminalizationIntent `json:"terminalization_intent,omitempty"`
+	TerminalizationOwner        string                 `json:"terminalization_owner,omitempty"`
+	TerminalizationReceiptID    string                 `json:"terminalization_receipt_id,omitempty"`
+	TerminalizationTransitionID string                 `json:"terminalization_transition_id,omitempty"`
+	TerminalizationReason       string                 `json:"terminalization_reason,omitempty"`
 
 	// SweepReason records WHY a sweep terminalized this attempt (C3). Set only by
 	// SweepStale / CompleteWithReason; empty on normally-completed attempts.
@@ -430,6 +571,9 @@ func (s *Store) Get(id string) (RunAttempt, error) {
 		} else if launch != nil {
 			ra.Launch = launch
 		}
+		if err := validateDecodedRunAttempt(ra); err != nil {
+			return RunAttempt{}, fmt.Errorf("runattempt get %s: %w", id, err)
+		}
 		return ra, nil
 	}
 	s.mu.RUnlock()
@@ -452,6 +596,9 @@ func (s *Store) Get(id string) (RunAttempt, error) {
 		return RunAttempt{}, fmt.Errorf("runattempt get %s: launch evidence: %w", id, err)
 	} else if launch != nil {
 		ra.Launch = launch
+	}
+	if err := validateDecodedRunAttempt(ra); err != nil {
+		return RunAttempt{}, fmt.Errorf("runattempt get %s: %w", id, err)
 	}
 	s.mu.Lock()
 	// A concurrent same-Store mutation may have published and cached a newer
@@ -489,10 +636,52 @@ func (s *Store) getFresh(id string) (RunAttempt, error) {
 	} else if launch != nil {
 		ra.Launch = launch
 	}
+	if err := validateDecodedRunAttempt(ra); err != nil {
+		return RunAttempt{}, fmt.Errorf("runattempt get %s: %w", id, err)
+	}
 	s.mu.Lock()
 	s.cache[id] = cloneExecutionPosture(ra)
 	s.mu.Unlock()
 	return ra, nil
+}
+
+// validateDecodedRunAttempt is the single compatibility gate shared by cache
+// misses and mutation-authority reads. Nested intent validation must never
+// differ between Get and getFresh: a cached read accepting a record that a
+// mutator rejects (or the reverse) would split the durable lifecycle view.
+func validateDecodedRunAttempt(ra RunAttempt) error {
+	if !AcceptsSchemaVersion(ra.SchemaVersion) {
+		return fmt.Errorf("unsupported schema_version %q", ra.SchemaVersion)
+	}
+	if ra.SchemaVersion != SchemaVersion {
+		if ra.TerminalizationIntent != nil || ra.TerminalizationOwner != "" ||
+			ra.TerminalizationReceiptID != "" || ra.TerminalizationTransitionID != "" ||
+			ra.TerminalizationReason != "" {
+			return fmt.Errorf("schema_version %q cannot carry v0.2 terminalization fields", ra.SchemaVersion)
+		}
+		return nil
+	}
+	if ra.TerminalizationIntent == nil {
+		return nil
+	}
+	intent := ra.TerminalizationIntent
+	if err := intent.Validate(); err != nil {
+		return fmt.Errorf("terminalization_intent: %w", err)
+	}
+	if ra.WorkID != intent.WorkID {
+		return fmt.Errorf("terminalization_intent work_id %q does not match RunAttempt work_id %q", intent.WorkID, ra.WorkID)
+	}
+	if ra.ActionIntentID != intent.RunAttemptActionIntentID {
+		return fmt.Errorf("terminalization_intent action binding %q does not match RunAttempt %q", intent.RunAttemptActionIntentID, ra.ActionIntentID)
+	}
+	policyID := ""
+	if ra.ExecutionPosture != nil {
+		policyID = ra.ExecutionPosture.PolicyDecisionID
+	}
+	if policyID != intent.RunAttemptPolicyDecisionID {
+		return fmt.Errorf("terminalization_intent policy binding %q does not match RunAttempt %q", intent.RunAttemptPolicyDecisionID, policyID)
+	}
+	return nil
 }
 
 // IsTerminal reports whether status is a terminal RunAttempt status
@@ -513,6 +702,9 @@ func (s *Store) Complete(id string, status string, now time.Time) (RunAttempt, e
 		return RunAttempt{}, fmt.Errorf("runattempt complete %s: status %q is not terminal", id, status)
 	}
 	return s.mutate(id, func(ra *RunAttempt) (bool, error) {
+		if ra.TerminalizationIntent != nil {
+			return false, fmt.Errorf("runattempt complete %s: prepared terminalization must use CompletePreparedTerminalization", id)
+		}
 		if IsTerminal(ra.Status) {
 			return false, fmt.Errorf("runattempt complete %s: already terminal (%s)", id, ra.Status)
 		}
@@ -520,6 +712,155 @@ func (s *Store) Complete(id string, status string, now time.Time) (RunAttempt, e
 		ra.CompletedAt = now.UTC()
 		return true, nil
 	})
+}
+
+// PrepareTerminalization durably installs the immutable intent that must be
+// present before the owning work close publishes. Repeating the exact intent
+// is idempotent; a different intent is a lost-reservation error, never an
+// overwrite.
+func (s *Store) PrepareTerminalization(id string, intent TerminalizationIntent) (RunAttempt, error) {
+	if err := intent.Validate(); err != nil {
+		return RunAttempt{}, fmt.Errorf("runattempt prepare terminalization %s: %w", id, err)
+	}
+	return s.mutate(id, func(ra *RunAttempt) (bool, error) {
+		if ra.WorkID != intent.WorkID {
+			return false, fmt.Errorf("runattempt prepare terminalization %s: work_id %s does not match %s", id, ra.WorkID, intent.WorkID)
+		}
+		if ra.ActionIntentID != intent.RunAttemptActionIntentID {
+			return false, fmt.Errorf("runattempt prepare terminalization %s: action_intent_id %s changed from reserved %s", id, ra.ActionIntentID, intent.RunAttemptActionIntentID)
+		}
+		actualPolicyID := ""
+		if ra.ExecutionPosture != nil {
+			actualPolicyID = ra.ExecutionPosture.PolicyDecisionID
+		}
+		if actualPolicyID != intent.RunAttemptPolicyDecisionID {
+			return false, fmt.Errorf("runattempt prepare terminalization %s: execution policy %s changed from reserved %s", id, actualPolicyID, intent.RunAttemptPolicyDecisionID)
+		}
+		if ra.TerminalizationIntent != nil {
+			if reflect.DeepEqual(*ra.TerminalizationIntent, intent) {
+				return false, nil
+			}
+			return false, fmt.Errorf("runattempt prepare terminalization %s: intent is already bound", id)
+		}
+		if IsTerminal(ra.Status) {
+			return false, fmt.Errorf("runattempt prepare terminalization %s: already terminal (%s)", id, ra.Status)
+		}
+		copyIntent := intent
+		ra.SchemaVersion = SchemaVersion
+		ra.TerminalizationIntent = &copyIntent
+		return true, nil
+	})
+}
+
+// CompletePreparedTerminalization completes only the exact prepared intent.
+// It is idempotent for an already-completed exact intent. Every other terminal
+// record remains immutable, including a malformed swept-abandoned record that
+// somehow carries an intent no production sweep is allowed to terminalize.
+func (s *Store) CompletePreparedTerminalization(id string, expected TerminalizationIntent, now time.Time) (RunAttempt, error) {
+	if err := expected.Validate(); err != nil {
+		return RunAttempt{}, fmt.Errorf("runattempt complete prepared terminalization %s: %w", id, err)
+	}
+	if !Valid(id) {
+		return RunAttempt{}, fmt.Errorf("runattempt mutation %s: id does not match %s pattern", id, Prefix)
+	}
+	var out RunAttempt
+	err := s.withAttemptLock(id, func() error {
+		ra, err := s.getFresh(id)
+		if err != nil {
+			return err
+		}
+		if ra.TerminalizationIntent == nil || !reflect.DeepEqual(*ra.TerminalizationIntent, expected) {
+			return fmt.Errorf("runattempt complete prepared terminalization %s: exact intent is not installed", id)
+		}
+		if ra.WorkID != expected.WorkID || ra.ActionIntentID != expected.RunAttemptActionIntentID {
+			return fmt.Errorf("runattempt complete prepared terminalization %s: work/action binding changed after prepare", id)
+		}
+		actualPolicyID := ""
+		if ra.ExecutionPosture != nil {
+			actualPolicyID = ra.ExecutionPosture.PolicyDecisionID
+		}
+		if actualPolicyID != expected.RunAttemptPolicyDecisionID {
+			return fmt.Errorf("runattempt complete prepared terminalization %s: execution policy binding changed after prepare", id)
+		}
+		if ra.Status == expected.TargetStatus &&
+			ra.TerminalizationOwner == expected.Owner &&
+			ra.TerminalizationReceiptID == expected.ReceiptID &&
+			ra.TerminalizationTransitionID == expected.TransitionID &&
+			ra.TerminalizationReason == expected.TerminalizationReason {
+			out = ra
+			return nil
+		}
+		if IsTerminal(ra.Status) {
+			return fmt.Errorf("runattempt complete prepared terminalization %s: conflicting terminal status %s", id, ra.Status)
+		}
+		ra.Status = expected.TargetStatus
+		ra.CompletedAt = now.UTC()
+		ra.TerminalizationOwner = expected.Owner
+		ra.TerminalizationReceiptID = expected.ReceiptID
+		ra.TerminalizationTransitionID = expected.TransitionID
+		ra.TerminalizationReason = expected.TerminalizationReason
+		if err := s.writeLocked(ra); err != nil {
+			return err
+		}
+		out = ra
+		return nil
+	})
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	return cloneExecutionPosture(out), nil
+}
+
+// CompleteWithOwnerProof terminalizes a RunAttempt while recording the
+// component that owns the terminal write and its proof pair. It remains
+// available for terminal harness-owned completions that have no prepared
+// work-close intent.
+func (s *Store) CompleteWithOwnerProof(id, status, owner, receiptID, transitionID string, now time.Time) (RunAttempt, error) {
+	if !IsTerminal(status) {
+		return RunAttempt{}, fmt.Errorf("runattempt complete %s: status %q is not terminal", id, status)
+	}
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return RunAttempt{}, fmt.Errorf("runattempt complete %s: terminalization owner required", id)
+	}
+	receiptID = strings.TrimSpace(receiptID)
+	transitionID = strings.TrimSpace(transitionID)
+	if receiptID != "" && !strings.HasPrefix(receiptID, "rec_") {
+		return RunAttempt{}, fmt.Errorf("runattempt complete %s: receipt_id %q must start rec_", id, receiptID)
+	}
+	if transitionID != "" && !strings.HasPrefix(transitionID, "tr_") {
+		return RunAttempt{}, fmt.Errorf("runattempt complete %s: transition_id %q must start tr_", id, transitionID)
+	}
+	return s.mutate(id, func(ra *RunAttempt) (bool, error) {
+		if ra.TerminalizationIntent != nil {
+			return false, fmt.Errorf("runattempt complete %s: prepared terminalization must use CompletePreparedTerminalization", id)
+		}
+		if IsTerminal(ra.Status) {
+			if ra.Status == status && ra.TerminalizationOwner == owner && ra.TerminalizationReceiptID == receiptID && ra.TerminalizationTransitionID == transitionID {
+				return false, nil
+			}
+			return false, fmt.Errorf("runattempt complete %s: already terminal (%s)", id, ra.Status)
+		}
+		ra.Status = status
+		ra.CompletedAt = now.UTC()
+		ra.SchemaVersion = SchemaVersion
+		ra.TerminalizationOwner = owner
+		ra.TerminalizationReceiptID = receiptID
+		ra.TerminalizationTransitionID = transitionID
+		return true, nil
+	})
+}
+
+func (s *Store) CompleteForWorkClose(id, status, receiptID, transitionID string, now time.Time) (RunAttempt, error) {
+	if !IsTerminal(status) {
+		return RunAttempt{}, fmt.Errorf("runattempt complete-for-work-close %s: status %q is not terminal", id, status)
+	}
+	receiptID = strings.TrimSpace(receiptID)
+	transitionID = strings.TrimSpace(transitionID)
+	if !strings.HasPrefix(receiptID, "rec_") || !strings.HasPrefix(transitionID, "tr_") {
+		return RunAttempt{}, fmt.Errorf("runattempt complete-for-work-close %s: rec_ receipt and tr_ transition are required", id)
+	}
+	return s.CompleteWithOwnerProof(id, status, TerminalizationOwnerWorkClose, receiptID, transitionID, now)
 }
 
 // CompleteWithReason transitions a RunAttempt to terminal status and records
@@ -533,6 +874,9 @@ func (s *Store) CompleteWithReason(id, status, reason string, now time.Time) (Ru
 		return RunAttempt{}, fmt.Errorf("runattempt complete %s: status %q is not terminal", id, status)
 	}
 	return s.mutate(id, func(ra *RunAttempt) (bool, error) {
+		if ra.TerminalizationIntent != nil {
+			return false, fmt.Errorf("runattempt complete %s: prepared terminalization must use CompletePreparedTerminalization", id)
+		}
 		if IsTerminal(ra.Status) {
 			return false, fmt.Errorf("runattempt complete %s: already terminal (%s)", id, ra.Status)
 		}
@@ -566,6 +910,9 @@ func (s *Store) CompleteWithReasonAndClassification(id, status, reason, classifi
 		return RunAttempt{}, fmt.Errorf("runattempt complete %s: classification %q is not a valid SweepClassification", id, classification)
 	}
 	return s.mutate(id, func(ra *RunAttempt) (bool, error) {
+		if ra.TerminalizationIntent != nil {
+			return false, fmt.Errorf("runattempt complete %s: prepared terminalization must use CompletePreparedTerminalization", id)
+		}
 		if IsTerminal(ra.Status) {
 			return false, fmt.Errorf("runattempt complete %s: already terminal (%s)", id, ra.Status)
 		}
@@ -645,6 +992,9 @@ func (s *Store) completeStaleSnapshot(expected RunAttempt, threshold time.Durati
 	committed := false
 	updated, acquired, err := s.tryMutate(expected.ID, func(current *RunAttempt) (bool, error) {
 		if IsTerminal(current.Status) || !reflect.DeepEqual(*current, expected) {
+			return false, nil
+		}
+		if current.TerminalizationIntent != nil {
 			return false, nil
 		}
 		lastActivity := current.CreatedAt
@@ -826,6 +1176,9 @@ func (s *Store) AttachActionIntent(id, actionIntentID string) error {
 		return fmt.Errorf("runattempt attach %s: action_intent_id %q must start with act_", id, actionIntentID)
 	}
 	_, err := s.mutate(id, func(ra *RunAttempt) (bool, error) {
+		if ra.TerminalizationIntent != nil {
+			return false, fmt.Errorf("runattempt attach %s: prepared terminalization freezes action binding", id)
+		}
 		if IsTerminal(ra.Status) {
 			return false, fmt.Errorf("runattempt attach %s: already terminal (%s); binding after terminalization is a bug", id, ra.Status)
 		}
@@ -1028,6 +1381,9 @@ func (s *Store) SetExecutionPosture(id string, posture ExecutionPosture) (RunAtt
 	})
 	posture.AuthorityEvidence = evidence
 	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		if ra.TerminalizationIntent != nil {
+			return false, fmt.Errorf("runattempt %s: prepared terminalization freezes execution posture binding", id)
+		}
 		if ra.ExecutionPosture != nil {
 			if reflect.DeepEqual(*ra.ExecutionPosture, posture) {
 				return false, nil
@@ -1062,6 +1418,10 @@ func cloneExecutionPosture(ra RunAttempt) RunAttempt {
 			launch.StartErrorAt = &startError
 		}
 		ra.Launch = &launch
+	}
+	if ra.TerminalizationIntent != nil {
+		intent := *ra.TerminalizationIntent
+		ra.TerminalizationIntent = &intent
 	}
 	return ra
 }
@@ -1466,6 +1826,11 @@ func (s *Store) SweepStale(threshold time.Duration, now time.Time) (SweepReport,
 		UnreadableIDs: append([]string(nil), unreadableIDs...),
 	}
 	for _, ra := range stuck {
+		if ra.TerminalizationIntent != nil {
+			rep.Skipped++
+			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+			continue
+		}
 		lastActivity := ra.CreatedAt
 		if ra.LastHeartbeatAt != nil {
 			lastActivity = *ra.LastHeartbeatAt
@@ -1556,6 +1921,11 @@ func (s *Store) SweepStaleWithProbe(threshold time.Duration, now time.Time, prob
 		UnreadableIDs: append([]string(nil), unreadableIDs...),
 	}
 	for _, ra := range stuck {
+		if ra.TerminalizationIntent != nil {
+			rep.Skipped++
+			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+			continue
+		}
 		lastActivity := ra.CreatedAt
 		if ra.LastHeartbeatAt != nil {
 			lastActivity = *ra.LastHeartbeatAt
@@ -1904,7 +2274,10 @@ func (s *Store) writeLocked(ra RunAttempt) error {
 		return fmt.Errorf("runattempt write: mkdir %s: %w", dir, err)
 	}
 	if current, err := s.getFresh(ra.ID); err == nil {
-		if current.SchemaVersion != ra.SchemaVersion || current.ID != ra.ID || current.WorkID != ra.WorkID ||
+		schemaMigration := current.SchemaVersion == LegacySchemaVersionV01 && ra.SchemaVersion == SchemaVersion &&
+			((current.TerminalizationIntent == nil && ra.TerminalizationIntent != nil) ||
+				(current.TerminalizationOwner == "" && ra.TerminalizationOwner != ""))
+		if (!schemaMigration && current.SchemaVersion != ra.SchemaVersion) || current.ID != ra.ID || current.WorkID != ra.WorkID ||
 			current.Actor != ra.Actor || current.Harness != ra.Harness || !current.CreatedAt.Equal(ra.CreatedAt) {
 			return fmt.Errorf("runattempt write %s: immutable identity changed", ra.ID)
 		}
@@ -1921,6 +2294,15 @@ func (s *Store) writeLocked(ra RunAttempt) error {
 				return fmt.Errorf("runattempt %s: execution posture is already bound", ra.ID)
 			}
 		}
+		if current.TerminalizationIntent != nil {
+			switch {
+			case ra.TerminalizationIntent == nil:
+				intent := *current.TerminalizationIntent
+				ra.TerminalizationIntent = &intent
+			case !reflect.DeepEqual(*current.TerminalizationIntent, *ra.TerminalizationIntent):
+				return fmt.Errorf("runattempt %s: terminalization intent is already bound", ra.ID)
+			}
+		}
 		if current.Status == StatusRunning && ra.Status == StatusPending {
 			ra.Status = StatusRunning
 		}
@@ -1930,6 +2312,9 @@ func (s *Store) writeLocked(ra RunAttempt) error {
 		}
 	} else if !errors.Is(err, ErrNotFound) {
 		return err
+	}
+	if err := validateDecodedRunAttempt(ra); err != nil {
+		return fmt.Errorf("runattempt write %s: %w", ra.ID, err)
 	}
 	if err := runattemptWriteFile(s.path(ra.ID), ra); err != nil {
 		return err
@@ -1944,7 +2329,7 @@ func (s *Store) writeLocked(ra RunAttempt) error {
 // RunAttempt. Tests override it to inject write failures.
 var runattemptWriteFile = func(path string, ra RunAttempt) error {
 	// Launch evidence is independently custodied beneath run_attempts/launch.
-	// Keeping it out of the v0.1 main JSON makes an old whole-record decoder
+	// Keeping it out of the main JSON makes an old whole-record decoder
 	// unable to erase the external-start boundary.
 	persisted := cloneExecutionPosture(ra)
 	persisted.Launch = nil

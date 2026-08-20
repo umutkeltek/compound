@@ -127,20 +127,40 @@ func Apply(homePath string, run Run, now func() time.Time) (result Run, err erro
 	// function's own error return remains the truth we surface.
 	attemptTerminal := false
 	envelopeOpen := false
+	completePreparedRunAttempt := func(receiptID, transitionID string, at time.Time) error {
+		// Work.Close prepares through its own Store instance. Open a fresh
+		// RunAttempt view so this caller never mistakes its pre-close cache for
+		// the durable post-close intent.
+		freshStore := runattempt.Open(homePath)
+		current, getErr := freshStore.Get(ra.ID)
+		if getErr != nil {
+			return getErr
+		}
+		if current.TerminalizationIntent == nil {
+			return fmt.Errorf("panel run attempt %s has no prepared terminalization intent", ra.ID)
+		}
+		fullProofRefs := append([]string(nil), proofRefs...)
+		fullProofRefs = append(fullProofRefs, receiptID, transitionID)
+		if _, setErr := freshStore.SetProofRefs(ra.ID, fullProofRefs); setErr != nil {
+			return setErr
+		}
+		if _, completeErr := freshStore.CompletePreparedTerminalization(ra.ID, *current.TerminalizationIntent, at); completeErr != nil {
+			return completeErr
+		}
+		attemptTerminal = true
+		return nil
+	}
 	defer func() {
-		if !attemptTerminal {
-			reason := "panel apply aborted before completing the run attempt"
-			if err != nil {
-				reason = "panel apply aborted: " + err.Error()
-			}
-			_, _ = runAttemptStore.CompleteWithReason(ra.ID, runattempt.StatusFailed, reason, now().UTC())
+		reason := "panel apply aborted before completing the run attempt"
+		if err != nil {
+			reason = "panel apply aborted: " + err.Error()
 		}
 		if envelopeOpen {
 			summary := "panel apply aborted before work close"
 			if err != nil {
 				summary = "panel apply aborted: " + err.Error()
 			}
-			_, _ = workStore.Close(run.WorkID, work.CloseInput{
+			closeResult, closeErr := workStore.Close(run.WorkID, work.CloseInput{
 				Outcome:       "failed",
 				MoveType:      "audit_only",
 				Actor:         panelApplyActor,
@@ -149,10 +169,30 @@ func Apply(homePath string, run Run, now func() time.Time) (result Run, err erro
 				ProofRefs:     proofRefs,
 				RunAttemptIDs: []string{ra.ID},
 				// panel owns its RunAttempt lifecycle end-to-end: the deferred
-				// guard completes the attempt (with reason) after the close, so
-				// close-time terminalization would freeze it before that.
+				// guard attaches the close proof and completes the exact prepared
+				// intent after publication.
 				SkipRunAttemptTerminalization: true,
+				RunAttemptTerminalizations: []work.RunAttemptTerminalizationRequest{{
+					RunAttemptID: ra.ID,
+					Owner:        runattempt.TerminalizationOwnerPanelApply,
+					TargetStatus: runattempt.StatusFailed,
+					Reason:       reason,
+				}},
 			}, now().UTC())
+			if closeErr == nil {
+				envelopeOpen = false
+				run.ReceiptID = closeResult.Receipt.ID
+				run.TransitionID = closeResult.Transition.ID
+				_ = completePreparedRunAttempt(closeResult.Receipt.ID, closeResult.Transition.ID, now().UTC())
+			}
+		}
+		if !attemptTerminal {
+			current, getErr := runattempt.Open(homePath).Get(ra.ID)
+			if getErr == nil && current.TerminalizationIntent != nil {
+				_ = completePreparedRunAttempt(current.TerminalizationIntent.ReceiptID, current.TerminalizationIntent.TransitionID, now().UTC())
+				return
+			}
+			_, _ = runAttemptStore.CompleteWithReason(ra.ID, runattempt.StatusFailed, reason, now().UTC())
 		}
 	}()
 	// F2: stamp provenance immediately after Mint, before any other side
@@ -240,6 +280,11 @@ func Apply(homePath string, run Run, now func() time.Time) (result Run, err erro
 	if closeState.changed {
 		moveType = "memory_delta"
 	}
+	runAttemptReason := ""
+	if applyFailures > 0 {
+		runAttemptStatus = runattempt.StatusFailed
+		runAttemptReason = fmt.Sprintf("panel apply completed with %d target failure(s)", applyFailures)
+	}
 	closeResult, err := workStore.Close(run.WorkID, work.CloseInput{
 		Outcome:          "completed",
 		MoveType:         moveType,
@@ -257,6 +302,12 @@ func Apply(homePath string, run Run, now func() time.Time) (result Run, err erro
 		// Close-time terminalization would freeze the attempt before those
 		// refs land and would mislabel target failures as succeeded.
 		SkipRunAttemptTerminalization: true,
+		RunAttemptTerminalizations: []work.RunAttemptTerminalizationRequest{{
+			RunAttemptID: ra.ID,
+			Owner:        runattempt.TerminalizationOwnerPanelApply,
+			TargetStatus: runAttemptStatus,
+			Reason:       runAttemptReason,
+		}},
 	}, now().UTC())
 	if err != nil {
 		return run, err
@@ -267,22 +318,12 @@ func Apply(homePath string, run Run, now func() time.Time) (result Run, err erro
 	if err := store.SaveRun(run); err != nil {
 		return run, err
 	}
-	// S2: bind the work proof chain (the panel run record plus every verdict / route /
-	// receipt / transition id) to the RunAttempt. The audit can now trace from the
-	// RunAttempt through ProofRefs to the work receipt/transition. Refs land before
-	// Complete (terminal setters refuse).
-	fullProofRefs := append([]string(nil), proofRefs...)
-	fullProofRefs = append(fullProofRefs, closeResult.Receipt.ID, closeResult.Transition.ID)
-	if _, err := runAttemptStore.SetProofRefs(ra.ID, fullProofRefs); err != nil {
+	// Bind the work proof chain before completing the exact prepared intent.
+	// Generic completion is forbidden once Close has reserved caller-owned
+	// terminalization evidence.
+	if err := completePreparedRunAttempt(closeResult.Receipt.ID, closeResult.Transition.ID, now().UTC()); err != nil {
 		return run, err
 	}
-	if applyFailures > 0 {
-		runAttemptStatus = runattempt.StatusFailed
-	}
-	if _, err := runAttemptStore.Complete(ra.ID, runAttemptStatus, now().UTC()); err != nil {
-		return run, err
-	}
-	attemptTerminal = true // the attempt terminalized on the explicit path; the deferred guard must not re-complete it
 	if applyFailures > 0 {
 		return run, fmt.Errorf("panel apply completed with %d target failure(s); run %s remains re-applyable for the failed targets", applyFailures, run.ID)
 	}

@@ -9,7 +9,6 @@ import (
 	"compound/internal/contract"
 	"compound/internal/envelope"
 	"compound/internal/mem"
-	"compound/internal/runattempt"
 	"compound/internal/work"
 )
 
@@ -268,11 +267,7 @@ func claimAndRun(t *testing.T, s *work.Store, workID string, now time.Time) {
 	if _, err := s.Claim(workID, "codex", now); err != nil {
 		t.Fatal(err)
 	}
-	causalRunAttemptID, err := runattempt.Mint(now.Add(time.Second))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Advance(workID, work.AdvanceInput{To: "running", Actor: "codex", RunAttemptIDs: []string{causalRunAttemptID}}, now.Add(time.Second)); err != nil {
+	if _, err := s.Advance(workID, work.AdvanceInput{To: "running", Actor: "codex"}, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 }
