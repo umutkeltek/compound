@@ -69,6 +69,7 @@ type sessionEndAdapterAttempt struct {
 	WorkID        string   `json:"work_id,omitempty"`
 	InputHash     string   `json:"input_hash"`
 	InputRef      string   `json:"input_ref"`
+	InputCustody  string   `json:"input_custody,omitempty"`
 	PredecessorID string   `json:"predecessor_id,omitempty"`
 	RetryArgv     []string `json:"retry_argv"`
 	TimeoutMS     int64    `json:"timeout_ms"`
@@ -84,12 +85,13 @@ type sessionEndAdapterAcceptanceResult struct {
 
 type sessionEndAdapterOutcome struct {
 	envelope.Header
-	AttemptID   string `json:"attempt_id"`
-	ExecutionID string `json:"execution_id"`
-	InputRef    string `json:"input_ref"`
-	Status      string `json:"status"`
-	ErrorClass  string `json:"error_class,omitempty"`
-	DurationMS  int64  `json:"duration_ms"`
+	AttemptID    string `json:"attempt_id"`
+	ExecutionID  string `json:"execution_id"`
+	InputRef     string `json:"input_ref"`
+	InputCustody string `json:"input_custody,omitempty"`
+	Status       string `json:"status"`
+	ErrorClass   string `json:"error_class,omitempty"`
+	DurationMS   int64  `json:"duration_ms"`
 }
 
 type sessionEndAdapterOutcomeResult struct {
@@ -339,12 +341,13 @@ func persistSessionEndAdapterOutcomeDetailed(
 			EvidenceRefs:  []string{"compound://events/" + attempt.ID, attempt.InputRef},
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
-		AttemptID:   attempt.ID,
-		ExecutionID: executionID,
-		InputRef:    attempt.InputRef,
-		Status:      status,
-		ErrorClass:  errorClass,
-		DurationMS:  duration.Milliseconds(),
+		AttemptID:    attempt.ID,
+		ExecutionID:  executionID,
+		InputRef:     attempt.InputRef,
+		InputCustody: attempt.InputCustody,
+		Status:       status,
+		ErrorClass:   errorClass,
+		DurationMS:   duration.Milliseconds(),
 	}
 	put, err := events.PutJSON(outcome.ID, outcome, "  ")
 	state := classifySessionEndAdapterEventPersistence(events, outcome.ID, put, err)
@@ -598,7 +601,7 @@ func runSessionEndAdapterReplay(parsed sessionEndAdapterArgs, homePath string, s
 		fmt.Fprintln(stderr, "session-end adapter replay: open artifact store:", err)
 		return 1
 	}
-	input, err := artifacts.Get(parent.InputRef)
+	input, err := sessionEndAdapterLoadAcceptedInput(artifacts, parent)
 	if err != nil {
 		fmt.Fprintf(stderr, "session-end adapter replay: load exact input %s: %v\n", parent.InputRef, err)
 		return 1
@@ -648,6 +651,17 @@ func runSessionEndAdapterReplay(parsed sessionEndAdapterArgs, homePath string, s
 		return 1
 	}
 	return 0
+}
+
+func sessionEndAdapterLoadAcceptedInput(artifacts *home.ArtifactStore, attempt sessionEndAdapterAttempt) ([]byte, error) {
+	switch strings.TrimSpace(attempt.InputCustody) {
+	case "private_artifact":
+		return artifacts.GetPrivate(attempt.InputRef)
+	case "", "public_artifact":
+		return artifacts.Get(attempt.InputRef)
+	default:
+		return nil, fmt.Errorf("SessionEnd adapter acceptance %s has unknown input_custody=%q", attempt.ID, attempt.InputCustody)
+	}
 }
 
 func validateSessionEndAdapterAttempt(attempt sessionEndAdapterAttempt, requestedID string) error {
@@ -790,14 +804,15 @@ func prepareSessionEndAdapterAcceptance(
 			EvidenceRefs:  []string{inputRef},
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
-		Harness:   canonicalHarness,
-		SessionID: strings.TrimSpace(native.SessionID),
-		WorkID:    workID,
-		InputHash: inputHash,
-		InputRef:  inputRef,
-		RetryArgv: sessionEndAdapterRetryArgv(attemptID),
-		TimeoutMS: parsed.Timeout.Milliseconds(),
-		Status:    sessionEndAdapterStatusAccepted,
+		Harness:      canonicalHarness,
+		SessionID:    strings.TrimSpace(native.SessionID),
+		WorkID:       workID,
+		InputHash:    inputHash,
+		InputRef:     inputRef,
+		InputCustody: "private_artifact",
+		RetryArgv:    sessionEndAdapterRetryArgv(attemptID),
+		TimeoutMS:    parsed.Timeout.Milliseconds(),
+		Status:       sessionEndAdapterStatusAccepted,
 	}
 }
 
@@ -826,7 +841,7 @@ func persistSessionEndAdapterAcceptanceDetailed(
 	if err != nil {
 		return sessionEndAdapterPersistenceNotCommitted, err
 	}
-	inputRef, err := artifacts.Put(input)
+	inputRef, err := artifacts.PutPrivate(input)
 	if err != nil {
 		return sessionEndAdapterPersistenceNotCommitted, err
 	}

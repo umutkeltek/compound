@@ -2048,14 +2048,13 @@ func postToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, err
 		if err != nil {
 			return Result{}, fmt.Errorf("post-tool-use externalize tool output: %w", err)
 		}
-		cid, pointer, err := store.CaptureToolOutput(fx.Tool, fx.WorkID, body, now)
+		capture, err := store.CaptureToolOutputDetailed(fx.Tool, fx.WorkID, body, now)
 		if err != nil {
 			return Result{}, fmt.Errorf("post-tool-use externalize tool output: %w", err)
 		}
-		ref := "observed/tool-output/" + cid
-		ev.SideEffects = append(ev.SideEffects, ref)
-		ev.OutputRef = ref
-		summary = fmt.Sprintf("recorded tool event: %s — externalized %d-byte output as observed candidate (%s); retrieve via `compound memory show-output %s`", orDash(fx.Tool), len(body), pointer, cid)
+		ev.SideEffects = append(ev.SideEffects, capture.Ref)
+		ev.OutputRef = capture.Ref
+		summary = fmt.Sprintf("recorded tool event: %s — externalized %d-byte output as observed candidate (%s); retrieve via `compound memory show-output %s`", orDash(fx.Tool), len(body), capture.Pointer, capture.CID)
 	}
 	return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
 }

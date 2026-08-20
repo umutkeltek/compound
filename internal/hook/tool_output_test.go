@@ -90,6 +90,19 @@ func TestLargeToolOutputExternalizedAsObservedNotAmbient(t *testing.T) {
 		t.Fatalf("candidate not observed/no_promote/no-basis: derivation=%q state=%q basis=%q", cand.Derivation, cand.State, cand.PromotionBasis)
 	}
 
+	if res.Event.OutputRef != mem.ToolOutputPrivateRef(cid) {
+		t.Fatalf("output_ref = %q, want private opaque ref", res.Event.OutputRef)
+	}
+	if strings.Contains(res.Event.OutputRef, "/") || strings.HasPrefix(res.Event.OutputRef, "observed/tool-output/") {
+		t.Fatalf("output_ref must be opaque and non-path, got %q", res.Event.OutputRef)
+	}
+	if !containsString(res.Event.SideEffects, mem.ToolOutputPrivateRef(cid)) {
+		t.Fatalf("side effects = %v, want private opaque tool-output ref", res.Event.SideEffects)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "observed", "tool-output", cid)); !os.IsNotExist(err) {
+		t.Fatalf("new hook capture wrote observed blob: %v", err)
+	}
+
 	// (c) Ledger byte-identical: capture added zero ledger bytes.
 	after, err := store.LedgerDigest()
 	if err != nil {

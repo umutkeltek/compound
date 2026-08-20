@@ -49,13 +49,14 @@ func TestCaptureToolOutputRoundTripObservedNeverLedger(t *testing.T) {
 		t.Fatalf("pointer must carry the cid, got %q", pointer)
 	}
 
-	// Blob under observed/, NEVER under ledger/.
+	// Body is private-only: new captures do not write observed/tool-output.
 	blob := filepath.Join(home, "observed", "tool-output", cid)
-	if _, err := os.Stat(blob); err != nil {
-		t.Fatalf("blob not written at %s: %v", blob, err)
+	if _, err := os.Stat(blob); !os.IsNotExist(err) {
+		t.Fatalf("new capture wrote legacy observed blob %s: %v", blob, err)
 	}
-	if strings.HasPrefix(blob, filepath.Join(home, "ledger")+string(filepath.Separator)) {
-		t.Fatalf("blob path must not live under ledger/: %s", blob)
+	privateBlob := filepath.Join(home, "private", "artifacts", "sha256", strings.TrimPrefix(cid, "sha256:"))
+	if _, err := os.Stat(privateBlob); err != nil {
+		t.Fatalf("private blob not written at %s: %v", privateBlob, err)
 	}
 
 	// Round-trip the exact bytes.
@@ -104,6 +105,9 @@ func TestCaptureToolOutputRoundTripObservedNeverLedger(t *testing.T) {
 	}
 	if c.SnippetHash == "" {
 		t.Error("snippet_hash must be set (bounded head snippet hash)")
+	}
+	if c.Qualifiers["custody"] != "private_artifact" {
+		t.Errorf("custody qualifier = %q, want private_artifact", c.Qualifiers["custody"])
 	}
 	raw, _ := os.ReadFile(filepath.Join(home, "inbox", "memory-candidates", id+".json"))
 	if strings.Contains(string(raw), body[:200]) {
@@ -170,5 +174,29 @@ func TestReadToolOutputMissingIsExplicitError(t *testing.T) {
 	}
 	if _, err := s.ReadToolOutput("../../etc/passwd"); err == nil {
 		t.Fatal("malformed/path-shaped cid must be rejected before any read")
+	}
+}
+
+func TestReadToolOutputFallsBackToLegacyObservedBlob(t *testing.T) {
+	homeDir := t.TempDir()
+	s, err := Open(homeDir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	body := []byte("legacy observed body")
+	cid := ToolOutputCID(body)
+	dir := filepath.Join(homeDir, "observed", "tool-output")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, cid), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadToolOutput(cid)
+	if err != nil {
+		t.Fatalf("read legacy: %v", err)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("legacy round trip = %q, want %q", got, body)
 	}
 }

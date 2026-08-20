@@ -213,9 +213,12 @@ func TestSessionEndAdapterCommitAtDeadlineReportsUnknownPersistenceState(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored, err := artifacts.Get(prepared.InputRef)
+	stored, err := artifacts.GetPrivate(prepared.InputRef)
 	if err != nil {
-		t.Fatalf("committed exact input is not replayable after deadline: %v", err)
+		t.Fatalf("committed exact input is not privately replayable after deadline: %v", err)
+	}
+	if _, err := artifacts.Get(prepared.InputRef); err == nil {
+		t.Fatalf("new SessionEnd input must not be present in public artifact custody: %s", prepared.InputRef)
 	}
 	if !bytes.Equal(stored, input) {
 		t.Fatalf("pending input changed: want=%q got=%q", input, stored)
@@ -557,8 +560,8 @@ func TestSessionEndAdapterBoundsAcceptancePersistenceBeforeStartingWorker(t *tes
 	}
 	input := `{"hook_event_name":"SessionEnd","session_id":"sess_slow_acceptance","cwd":"/repo/example"}`
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(input)))
-	artifactDir := filepath.Join(compoundHome, "artifacts", "sha256")
-	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+	artifactDir := filepath.Join(compoundHome, "private", "artifacts", "sha256")
+	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if output, err := exec.Command("mkfifo", filepath.Join(artifactDir, digest)).CombinedOutput(); err != nil {
@@ -583,11 +586,11 @@ func TestSessionEndAdapterBoundsAcceptancePersistenceBeforeStartingWorker(t *tes
 		t.Fatalf("SessionEnd acceptance exceeded its bounded handoff window: %s", elapsed)
 	}
 	requireGenericSessionEndHookResponse(t, stdout.Bytes())
-	if !strings.Contains(stderr.String(), "acceptance persistence timed out") || !strings.Contains(stderr.String(), "sha256:"+digest) {
-		t.Fatalf("SessionEnd acceptance timeout was not explicit: %s", stderr.String())
+	if !strings.Contains(stderr.String(), "acceptance persistence failed") || !strings.Contains(stderr.String(), "sha256:"+digest) {
+		t.Fatalf("SessionEnd acceptance private-custody failure was not explicit: %s", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "state=unknown") {
-		t.Fatalf("SessionEnd acceptance timeout did not preserve deadline ambiguity: %s", stderr.String())
+	if !strings.Contains(stderr.String(), "state=not_committed") {
+		t.Fatalf("SessionEnd acceptance failure did not preserve non-committed state: %s", stderr.String())
 	}
 	for _, forbidden := range []string{"pending=", "retry=", sessionEndAdapterAttemptIDPrefix} {
 		if strings.Contains(stderr.String(), forbidden) {
@@ -794,9 +797,12 @@ func TestSessionEndAdapterTimesOutSlowWorkerWithoutCancellingHookAndKeepsRetryEv
 	if err != nil {
 		t.Fatal(err)
 	}
-	storedInput, err := artifacts.Get(attempt.InputRef)
+	storedInput, err := artifacts.GetPrivate(attempt.InputRef)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := artifacts.Get(attempt.InputRef); err == nil {
+		t.Fatalf("new SessionEnd input must not be present in public artifact custody: %s", attempt.InputRef)
 	}
 	if string(storedInput) != input {
 		t.Fatalf("durable SessionEnd input changed:\nwant=%s\ngot=%s", input, storedInput)
