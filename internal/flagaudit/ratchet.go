@@ -273,7 +273,7 @@ var PinnedSilentAcceptors = []string{
 	// shares that loop.
 	"home",
 	"home doctor",
-	"home init",
+	// "home init" no longer pinned: it validates its own args before the cmdHome loop pockets them.
 	"home verify",
 	"home where",
 	// cmdHookInstall scans only its known flags, then installs with defaults —
