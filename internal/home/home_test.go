@@ -182,6 +182,233 @@ func TestResolvePrecedence(t *testing.T) {
 	}
 }
 
+func TestResolveHomePrecedenceProvenanceAndCanonicalPaths(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+
+	envRel := filepath.Join("env-home")
+	t.Setenv("COMPOUND_HOME", envRel)
+	got, err := ResolveHome("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEnv, err := filepath.Abs(envRel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != wantEnv || got.Source != ResolutionSourceEnvironment {
+		t.Fatalf("env resolution = %+v, want path %q source %q", got, wantEnv, ResolutionSourceEnvironment)
+	}
+
+	flagRel := filepath.Join("flag-home")
+	got, err = ResolveHome(flagRel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFlag, err := filepath.Abs(flagRel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != wantFlag || got.Source != ResolutionSourceFlag {
+		t.Fatalf("flag resolution = %+v, want path %q source %q", got, wantFlag, ResolutionSourceFlag)
+	}
+}
+
+func TestResolveHomeExplicitPathsDoNotValidateManifest(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+
+	envRel := filepath.Join("bad-env-home")
+	writeManifestFile(t, filepath.Join(envRel, ManifestName), "schema_version: compound.home.v9.9\nhome_kind: wrong\n")
+	t.Setenv("COMPOUND_HOME", envRel)
+	got, err := ResolveHome("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEnv, err := filepath.Abs(envRel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != wantEnv || got.Source != ResolutionSourceEnvironment {
+		t.Fatalf("env resolution = %+v, want path %q source %q", got, wantEnv, ResolutionSourceEnvironment)
+	}
+
+	flagRel := filepath.Join("bad-flag-home")
+	writeManifestFile(t, filepath.Join(flagRel, ManifestName), "schema_version: [")
+	got, err = ResolveHome(flagRel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFlag, err := filepath.Abs(flagRel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != wantFlag || got.Source != ResolutionSourceFlag {
+		t.Fatalf("flag resolution = %+v, want path %q source %q", got, wantFlag, ResolutionSourceFlag)
+	}
+}
+
+func TestResolveHomeEnrolledLocalNearestValidAncestor(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "repo")
+	child := filepath.Join(parent, "pkg")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAuthoritativeManifest(t, filepath.Join(parent, ".compound", ManifestName))
+	writeManifestFile(t, filepath.Join(child, ".compound", ManifestName), "schema_version: compound.home.v0.1\nhome_kind: global\n")
+
+	t.Setenv("COMPOUND_HOME", "")
+	t.Chdir(child)
+	got, err := ResolveHome("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(parent, ".compound")
+	if got.Path != want || got.Source != ResolutionSourceEnrolledLocal {
+		t.Fatalf("ancestor resolution = %+v, want path %q source %q", got, want, ResolutionSourceEnrolledLocal)
+	}
+}
+
+func TestResolveHomeEnrolledLocalAcceptsLegacyLocalInit(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	child := filepath.Join(repo, "pkg")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOUND_HOME", "")
+	t.Chdir(repo)
+	localHome, err := LocalPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(localHome, "local", time.Unix(0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(child)
+
+	got, err := ResolveHome("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != localHome || got.Source != ResolutionSourceEnrolledLocal {
+		t.Fatalf("legacy local init resolution = %+v, want path %q source %q", got, localHome, ResolutionSourceEnrolledLocal)
+	}
+}
+
+func TestResolveHomeSkipsInvalidAncestorManifests(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, manifestPath string)
+	}{
+		{
+			name: "malformed",
+			setup: func(t *testing.T, manifestPath string) {
+				writeManifestFile(t, manifestPath, "schema_version: [")
+			},
+		},
+		{
+			name: "future-schema",
+			setup: func(t *testing.T, manifestPath string) {
+				writeManifestFile(t, manifestPath, "schema_version: compound.home.v9.9\nhome_kind: local_monolith\n")
+			},
+		},
+		{
+			name: "wrong-kind",
+			setup: func(t *testing.T, manifestPath string) {
+				writeManifestFile(t, manifestPath, "schema_version: compound.home.v0.1\nhome_kind: global\n")
+			},
+		},
+		{
+			name: "oversized",
+			setup: func(t *testing.T, manifestPath string) {
+				writeManifestFile(t, manifestPath, strings.Repeat("a", manifestMaxBytes+1))
+			},
+		},
+		{
+			name: "symlink",
+			setup: func(t *testing.T, manifestPath string) {
+				target := filepath.Join(t.TempDir(), "manifest.yaml")
+				writeManifestFile(t, target, "schema_version: compound.home.v0.1\nhome_kind: local_monolith\n")
+				if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, manifestPath); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "nonregular",
+			setup: func(t *testing.T, manifestPath string) {
+				if err := os.MkdirAll(manifestPath, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			cwd := filepath.Join(root, "repo", "pkg")
+			if err := os.MkdirAll(cwd, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			manifestPath := filepath.Join(cwd, ".compound", ManifestName)
+			tc.setup(t, manifestPath)
+
+			homeDir := filepath.Join(root, "home")
+			t.Setenv("HOME", homeDir)
+			t.Setenv("COMPOUND_HOME", "")
+			t.Chdir(cwd)
+			got, err := ResolveHome("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := filepath.Join(homeDir, ".compound")
+			if got.Path != want || got.Source != ResolutionSourceGlobalDefault {
+				t.Fatalf("resolution = %+v, want path %q source %q", got, want, ResolutionSourceGlobalDefault)
+			}
+		})
+	}
+}
+
+func TestResolveHomeGlobalFallback(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(root, "repo")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	homeDir := filepath.Join(root, "home")
+	t.Setenv("HOME", homeDir)
+	t.Setenv("COMPOUND_HOME", "")
+	t.Chdir(cwd)
+
+	got, err := ResolveHome("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(homeDir, ".compound")
+	if got.Path != want || got.Source != ResolutionSourceGlobalDefault {
+		t.Fatalf("global fallback = %+v, want path %q source %q", got, want, ResolutionSourceGlobalDefault)
+	}
+}
+
+func writeAuthoritativeManifest(t *testing.T, path string) {
+	t.Helper()
+	writeManifestFile(t, path, "schema_version: compound.home.v0.1\nhome_kind: local_monolith\n")
+}
+
+func writeManifestFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBackupVerifyRestoreRoundTrip(t *testing.T) {
 	now := archiveTestNow
 	h := filepath.Join(t.TempDir(), ".compound")

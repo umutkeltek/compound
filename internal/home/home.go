@@ -9,6 +9,7 @@ package home
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,26 +83,61 @@ func LoadHomeConfig(homePath string) (HomeConfig, string, error) {
 	return cfg, path, nil
 }
 
+// ResolutionSource identifies which input selected COMPOUND_HOME.
+type ResolutionSource string
+
+const (
+	ResolutionSourceFlag          ResolutionSource = "flag"
+	ResolutionSourceEnvironment   ResolutionSource = "environment"
+	ResolutionSourceEnrolledLocal ResolutionSource = "enrolled-local"
+	ResolutionSourceGlobalDefault ResolutionSource = "global-default"
+)
+
+const (
+	authoritativeLocalHomeKind = "local_monolith"
+	legacyLocalHomeKind        = "local"
+	manifestMaxBytes           = 64 * 1024
+)
+
+// Resolution describes a COMPOUND_HOME resolution decision.
+type Resolution struct {
+	Path   string
+	Source ResolutionSource
+}
+
 // Resolve returns the COMPOUND_HOME path using strict precedence:
 //  1. flagHome (--home)
 //  2. $COMPOUND_HOME
 //  3. nearest ancestor .compound/manifest.yaml (a workspace-local home)
 //  4. ~/.compound (the global default)
 func Resolve(flagHome string) (string, error) {
-	if s := strings.TrimSpace(flagHome); s != "" {
-		return filepath.Abs(s)
-	}
-	if s := strings.TrimSpace(os.Getenv("COMPOUND_HOME")); s != "" {
-		return filepath.Abs(s)
-	}
-	if p := findAncestorHome(); p != "" {
-		return p, nil
-	}
-	h, err := os.UserHomeDir()
+	resolution, err := ResolveHome(flagHome)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(h, ".compound"), nil
+	return resolution.Path, nil
+}
+
+// ResolveHome returns the COMPOUND_HOME path and provenance using strict
+// precedence. Explicit flag/env paths are resolved without manifest validation
+// so existing callers can diagnose bad homes in their normal command flow.
+func ResolveHome(flagHome string) (Resolution, error) {
+	if s := strings.TrimSpace(flagHome); s != "" {
+		p, err := filepath.Abs(s)
+		return Resolution{Path: p, Source: ResolutionSourceFlag}, err
+	}
+	if s := strings.TrimSpace(os.Getenv("COMPOUND_HOME")); s != "" {
+		p, err := filepath.Abs(s)
+		return Resolution{Path: p, Source: ResolutionSourceEnvironment}, err
+	}
+	if p := findAncestorHome(); p != "" {
+		return Resolution{Path: p, Source: ResolutionSourceEnrolledLocal}, nil
+	}
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return Resolution{}, err
+	}
+	return Resolution{Path: filepath.Join(h, ".compound"), Source: ResolutionSourceGlobalDefault}, nil
 }
 
 // LocalPath is <cwd>/.compound — the target for `home init --local`.
@@ -120,7 +156,7 @@ func findAncestorHome() string {
 	}
 	for {
 		cand := filepath.Join(dir, ".compound")
-		if fi, err := os.Stat(filepath.Join(cand, ManifestName)); err == nil && !fi.IsDir() {
+		if err := validateAuthoritativeManifest(filepath.Join(cand, ManifestName)); err == nil {
 			return cand
 		}
 		parent := filepath.Dir(dir)
@@ -129,6 +165,50 @@ func findAncestorHome() string {
 		}
 		dir = parent
 	}
+}
+
+func validateAuthoritativeManifest(path string) error {
+	data, err := readManifestNoFollowBounded(path)
+	if err != nil {
+		return err
+	}
+	var manifest Manifest
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	if manifest.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("unsupported home schema %q", manifest.SchemaVersion)
+	}
+	if manifest.HomeKind != authoritativeLocalHomeKind && manifest.HomeKind != legacyLocalHomeKind {
+		return fmt.Errorf("unsupported authoritative local home kind %q", manifest.HomeKind)
+	}
+	return nil
+}
+
+func readManifestNoFollowBounded(path string) ([]byte, error) {
+	f, err := openManifestNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("manifest %s is not a regular file", path)
+	}
+	if fi.Size() > manifestMaxBytes {
+		return nil, fmt.Errorf("manifest %s exceeds %d byte limit", path, manifestMaxBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, manifestMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > manifestMaxBytes {
+		return nil, fmt.Errorf("manifest %s exceeds %d byte limit", path, manifestMaxBytes)
+	}
+	return data, nil
 }
 
 // Init creates the habitat dirs and writes the manifest if absent. Idempotent:
