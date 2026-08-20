@@ -388,13 +388,20 @@ func ensureRootedDirectories(root *os.Root, relativePath, displayPath, kind stri
 	components := strings.Split(relativePath, string(filepath.Separator))
 	for index := len(existing); index < len(components); index++ {
 		componentPath := filepath.Join(components[:index+1]...)
+		created := false
 		if err := root.Mkdir(componentPath, perm); err != nil {
-			return nil, err
+			if !errors.Is(err, os.ErrExist) {
+				return nil, err
+			}
+		} else {
+			created = true
 		}
 		parentPath := filepath.Dir(componentPath)
 		if err := syncRootedDirectory(root, parentPath, displayPath, kind); err != nil {
-			_ = root.Remove(componentPath)
-			_ = syncRootedDirectory(root, parentPath, displayPath, kind)
+			if created {
+				_ = root.Remove(componentPath)
+				_ = syncRootedDirectory(root, parentPath, displayPath, kind)
+			}
 			return nil, err
 		}
 	}
