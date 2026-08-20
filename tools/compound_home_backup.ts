@@ -110,7 +110,7 @@ function archiveEntries(dir: string): { path: string; mtimeMs: number }[] {
 }
 
 function isHomeArchiveName(name: string): boolean {
-  return (name.startsWith("home-") || name.startsWith("compound-home-")) && name.endsWith(".tar.gz");
+  return (name.startsWith("home-") || name.startsWith("compound-home-")) && name.endsWith(".tar.gz") && !name.includes(".tmp");
 }
 
 function newestArchive(dir: string): string {
@@ -147,18 +147,23 @@ function countFiles(root: string): number {
 
 function backup(cfg: Config): void {
   mkdirSync(cfg.backupLocalDir, { recursive: true });
-  const archive = join(cfg.backupLocalDir, `home-${isoForFilename()}.tar.gz`);
+  const archive = join(cfg.backupLocalDir, `home-${isoForFilename()}-${process.pid}-${Math.random().toString(16).slice(2)}.tar.gz`);
   run(cfg.compoundBin, ["home", "backup", "--target", archive], childEnv(cfg));
   const verify = run(cfg.compoundBin, ["home", "verify", archive], childEnv(cfg));
   const files = parseMetric(verify.stdout, "files");
   let remote = "skipped";
+  let remoteUploaded = false;
   if (cfg.backupRemote) {
     const target = cfg.backupRemote.endsWith("/") ? cfg.backupRemote : `${cfg.backupRemote}/`;
     run("rsync", ["-a", archive, target], process.env);
     remote = target;
+    remoteUploaded = true;
+  } else if (cfg.keepLocal === 0) {
+    throw new Error("KEEP_LOCAL=0 requires BACKUP_REMOTE; refusing to prune the last local verified copy");
   }
-  const pruned = pruneLocal(cfg.backupLocalDir, cfg.keepLocal);
   const bytes = statSync(archive).size;
+  const safeKeep = Math.max(cfg.keepLocal, 1);
+  const pruned = remoteUploaded ? pruneLocal(cfg.backupLocalDir, cfg.keepLocal) : pruneLocal(cfg.backupLocalDir, safeKeep);
   console.log(
     `compound_home_backup status=ok archive=${archive} bytes=${bytes} files=${files ?? "unknown"} verified=true remote=${remote} pruned=${pruned.length}`,
   );

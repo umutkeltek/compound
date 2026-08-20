@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -158,10 +159,18 @@ func Backup(homePath, targetPath string, now time.Time) (ArchiveReport, error) {
 	if err != nil {
 		return ArchiveReport{}, err
 	}
-	if err := requireHealthyHome(homePath); err != nil {
-		return ArchiveReport{}, err
-	}
-	report, err := writeHomeArchive(homePath, targetPath, ArchiveKindBackup, backupExcludedRoots, now, includeBackupPath)
+	var report ArchiveReport
+	err = WithAutonomyAdmissionLock(homePath, func() error {
+		if err := prepareArchiveTarget(homePath, targetPath, includeBackupPath); err != nil {
+			return err
+		}
+		if err := requireHealthyHome(homePath); err != nil {
+			return err
+		}
+		var writeErr error
+		report, writeErr = writeHomeArchive(homePath, targetPath, ArchiveKindBackup, backupExcludedRoots, now, includeBackupPath)
+		return writeErr
+	})
 	if err != nil {
 		return ArchiveReport{}, err
 	}
@@ -175,21 +184,32 @@ func ExportPublicFixture(homePath, targetPath string, now time.Time) (ArchiveRep
 	if err != nil {
 		return ArchiveReport{}, err
 	}
-	if err := requireHealthyHome(homePath); err != nil {
-		return ArchiveReport{}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return ArchiveReport{}, err
-	}
-	f, err := os.Create(targetPath)
+	var report ArchiveReport
+	err = WithAutonomyAdmissionLock(homePath, func() error {
+		if err := prepareArchiveTarget(homePath, targetPath, func(string, fs.FileInfo) bool { return false }); err != nil {
+			return err
+		}
+		if err := requireHealthyHome(homePath); err != nil {
+			return err
+		}
+		var writeErr error
+		report, writeErr = writePublicFixtureArchive(homePath, targetPath, now)
+		return writeErr
+	})
 	if err != nil {
 		return ArchiveReport{}, err
 	}
-	defer f.Close()
-	gz := gzip.NewWriter(f)
-	defer gz.Close()
+	return report, nil
+}
+
+func writePublicFixtureArchive(homePath, targetPath string, now time.Time) (ArchiveReport, error) {
+	aw, err := beginArchivePublication(homePath, targetPath)
+	if err != nil {
+		return ArchiveReport{}, err
+	}
+	defer aw.cleanup()
+	gz := gzip.NewWriter(aw.file)
 	tw := tar.NewWriter(gz)
-	defer tw.Close()
 
 	entries := []ArchiveEntry{}
 	var bytesWritten int64
@@ -243,6 +263,12 @@ func ExportPublicFixture(homePath, targetPath string, now time.Time) (ArchiveRep
 		Entries:           sortedArchiveEntries(entries),
 	}
 	if err := writeArchiveManifest(tw, archiveManifest); err != nil {
+		return ArchiveReport{}, err
+	}
+	if err := closeArchiveWriters(tw, gz); err != nil {
+		return ArchiveReport{}, err
+	}
+	if err := aw.publish(); err != nil {
 		return ArchiveReport{}, err
 	}
 	return ArchiveReport{
@@ -1923,18 +1949,13 @@ func syncOperationalArchiveRoot(root *os.Root) error {
 }
 
 func writeHomeArchive(homePath, targetPath, kind string, excluded []string, now time.Time, include func(string, fs.FileInfo) bool) (ArchiveReport, error) {
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return ArchiveReport{}, err
-	}
-	f, err := os.Create(targetPath)
+	aw, err := beginArchivePublication(homePath, targetPath)
 	if err != nil {
 		return ArchiveReport{}, err
 	}
-	defer f.Close()
-	gz := gzip.NewWriter(f)
-	defer gz.Close()
+	defer aw.cleanup()
+	gz := gzip.NewWriter(aw.file)
 	tw := tar.NewWriter(gz)
-	defer tw.Close()
 
 	entries := []ArchiveEntry{}
 	var bytesWritten int64
@@ -1989,6 +2010,12 @@ func writeHomeArchive(homePath, targetPath, kind string, excluded []string, now 
 	if err := writeArchiveManifest(tw, archiveManifest); err != nil {
 		return ArchiveReport{}, err
 	}
+	if err := closeArchiveWriters(tw, gz); err != nil {
+		return ArchiveReport{}, err
+	}
+	if err := aw.publish(); err != nil {
+		return ArchiveReport{}, err
+	}
 	return ArchiveReport{
 		Kind:        kind,
 		ArchivePath: targetPath,
@@ -1996,6 +2023,266 @@ func writeHomeArchive(homePath, targetPath, kind string, excluded []string, now 
 		Bytes:       bytesWritten,
 		Skipped:     archiveManifest.ExcludedRoots,
 	}, nil
+}
+
+type archivePublication struct {
+	targetPath string
+	tempPath   string
+	tempName   string
+	targetName string
+	parentRoot *os.Root
+	file       *os.File
+	published  bool
+}
+
+var (
+	archiveFileSync               = func(f *os.File) error { return f.Sync() }
+	archiveParentSync             = syncArchiveParentDir
+	archiveBeforePublish          = func(string, string) {}
+	archiveBeforeOpenExportParent = func(string) {}
+)
+
+func prepareArchiveTarget(homePath, targetPath string, include func(string, fs.FileInfo) bool) error {
+	if targetPath == "" {
+		return fmt.Errorf("archive target required")
+	}
+	if info, err := os.Lstat(targetPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("archive target must not already exist as a symlink: %s", targetPath)
+		}
+		return fmt.Errorf("archive target already exists: %s", targetPath)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	parent := filepath.Dir(targetPath)
+	exports := filepath.Join(homePath, "exports")
+	if parent == exports || isUnderPath(exports, parent) {
+		if info, err := os.Lstat(exports); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("home exports directory must not be a symlink: %s", exports)
+		} else if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if isUnderPath(homePath, targetPath) {
+		rel, err := filepath.Rel(homePath, targetPath)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if strings.HasPrefix(rel, "exports/") || rel == "exports" {
+			return nil
+		}
+		if entry, ok := HabitatForPath(rel); ok && entry.Backup {
+			return fmt.Errorf("archive target is inside included home root %s: %s", entry.Prefix, targetPath)
+		}
+		if info, err := os.Stat(parent); err == nil && include(rel, info) {
+			return fmt.Errorf("archive target overlaps included home snapshot: %s", targetPath)
+		}
+	}
+	return nil
+}
+
+func beginArchivePublication(homePath, targetPath string) (*archivePublication, error) {
+	if exportRel, ok, err := exportTargetParentRel(homePath, targetPath); err != nil {
+		return nil, err
+	} else if ok {
+		return beginRootedExportArchivePublication(homePath, targetPath, exportRel)
+	}
+	parent := filepath.Dir(targetPath)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return nil, err
+	}
+	if err := archiveParentSync(parent); err != nil {
+		return nil, err
+	}
+	base := filepath.Base(targetPath)
+	for i := 0; i < 16; i++ {
+		tempPath := filepath.Join(parent, fmt.Sprintf(".%s.%d.%s.tmp", base, os.Getpid(), randomArchiveSuffix()))
+		f, err := os.OpenFile(tempPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return &archivePublication{targetPath: targetPath, tempPath: tempPath, targetName: base, file: f}, nil
+	}
+	return nil, fmt.Errorf("could not allocate archive temp file for %s", targetPath)
+}
+
+func exportTargetParentRel(homePath, targetPath string) (string, bool, error) {
+	exports := filepath.Join(homePath, "exports")
+	parent := filepath.Dir(targetPath)
+	if parent != exports && !isUnderPath(exports, parent) {
+		return "", false, nil
+	}
+	rel, err := filepath.Rel(homePath, parent)
+	if err != nil {
+		return "", false, err
+	}
+	return filepath.Clean(rel), true, nil
+}
+
+func beginRootedExportArchivePublication(homePath, targetPath, parentRel string) (*archivePublication, error) {
+	homeRoot, err := os.OpenRoot(homePath)
+	if err != nil {
+		return nil, err
+	}
+	defer homeRoot.Close()
+	displayPath := filepath.Dir(targetPath)
+	infos, err := ensureRootedDirectories(homeRoot, parentRel, displayPath, "archive export target", 0o755)
+	if err != nil {
+		return nil, err
+	}
+	if err := syncRootedDirectory(homeRoot, parentRel, displayPath, "archive export target"); err != nil {
+		return nil, err
+	}
+	archiveBeforeOpenExportParent(parentRel)
+	parentRoot, err := homeRoot.OpenRoot(parentRel)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := parentRoot.Stat(".")
+	if err != nil {
+		_ = parentRoot.Close()
+		return nil, err
+	}
+	after, err := lstatRootedDirectoryPath(homeRoot, parentRel, displayPath, "archive export target", false)
+	if err != nil {
+		_ = parentRoot.Close()
+		return nil, err
+	}
+	if !sameRootedPath(infos, after) || !opened.IsDir() || !os.SameFile(after[len(after)-1], opened) {
+		_ = parentRoot.Close()
+		return nil, fmt.Errorf("archive export target parent changed before publication: %s", displayPath)
+	}
+	base := filepath.Base(targetPath)
+	if info, err := parentRoot.Lstat(base); err == nil {
+		_ = parentRoot.Close()
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("archive target must not already exist as a symlink: %s", targetPath)
+		}
+		return nil, fmt.Errorf("archive target already exists: %s", targetPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		_ = parentRoot.Close()
+		return nil, err
+	}
+	for i := 0; i < 16; i++ {
+		tempName := fmt.Sprintf(".%s.%d.%s.tmp", base, os.Getpid(), randomArchiveSuffix())
+		f, err := parentRoot.OpenFile(tempName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			_ = parentRoot.Close()
+			return nil, err
+		}
+		return &archivePublication{targetPath: targetPath, tempPath: filepath.Join(displayPath, tempName), tempName: tempName, targetName: base, parentRoot: parentRoot, file: f}, nil
+	}
+	_ = parentRoot.Close()
+	return nil, fmt.Errorf("could not allocate archive temp file for %s", targetPath)
+}
+
+func closeArchiveWriters(tw *tar.Writer, gz *gzip.Writer) error {
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	if err := gz.Close(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (aw *archivePublication) publish() error {
+	if aw == nil || aw.file == nil {
+		return fmt.Errorf("archive publication missing temp file")
+	}
+	if err := archiveFileSync(aw.file); err != nil {
+		return err
+	}
+	if err := aw.file.Close(); err != nil {
+		aw.file = nil
+		return err
+	}
+	aw.file = nil
+	archiveBeforePublish(aw.tempPath, aw.targetPath)
+	if aw.parentRoot != nil {
+		if err := aw.parentRoot.Link(aw.tempName, aw.targetName); err != nil {
+			if _, statErr := aw.parentRoot.Lstat(aw.targetName); statErr == nil {
+				return fmt.Errorf("archive publication ambiguous after target appeared; verify before trusting %s: %w", aw.targetPath, err)
+			}
+			return err
+		}
+	} else if err := os.Link(aw.tempPath, aw.targetPath); err != nil {
+		if _, statErr := os.Lstat(aw.targetPath); statErr == nil {
+			return fmt.Errorf("archive publication ambiguous after target appeared; verify before trusting %s: %w", aw.targetPath, err)
+		}
+		return err
+	}
+	aw.published = true
+	if err := aw.syncParent(); err != nil {
+		return fmt.Errorf("archive publication ambiguous after target link; verify before trusting %s: %w", aw.targetPath, err)
+	}
+	if aw.parentRoot != nil {
+		if err := aw.parentRoot.Remove(aw.tempName); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	} else if err := os.Remove(aw.tempPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := aw.syncParent(); err != nil {
+		return fmt.Errorf("archive publication ambiguous after target cleanup; verify before trusting %s: %w", aw.targetPath, err)
+	}
+	return nil
+}
+
+func (aw *archivePublication) cleanup() {
+	if aw == nil {
+		return
+	}
+	if aw.file != nil {
+		_ = aw.file.Close()
+		aw.file = nil
+	}
+	if !aw.published && aw.tempPath != "" {
+		if aw.parentRoot != nil && aw.tempName != "" {
+			_ = aw.parentRoot.Remove(aw.tempName)
+		} else {
+			_ = os.Remove(aw.tempPath)
+		}
+	}
+	if aw.parentRoot != nil {
+		_ = aw.parentRoot.Close()
+		aw.parentRoot = nil
+	}
+}
+
+func (aw *archivePublication) syncParent() error {
+	if aw.parentRoot != nil {
+		return syncOperationalArchiveRoot(aw.parentRoot)
+	}
+	return archiveParentSync(filepath.Dir(aw.targetPath))
+}
+
+func syncArchiveParentDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) {
+		return syncErr
+	}
+	return closeErr
+}
+
+func isUnderPath(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
 }
 
 func includeBackupPath(rel string, info fs.FileInfo) bool {
@@ -2171,7 +2458,15 @@ func defaultArchivePath(homePath, kind string, now time.Time) string {
 	if kind == ArchiveKindPublicFixture {
 		prefix = "compound-home-public-fixture"
 	}
-	return filepath.Join(homePath, "exports", fmt.Sprintf("%s-%s.tar.gz", prefix, now.UTC().Format("20060102T150405Z")))
+	return filepath.Join(homePath, "exports", fmt.Sprintf("%s-%s-%09d-%s.tar.gz", prefix, now.UTC().Format("20060102T150405Z"), now.UTC().Nanosecond(), randomArchiveSuffix()))
+}
+
+func randomArchiveSuffix() string {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("pid%d", os.Getpid())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func requireHealthyHome(homePath string) error {
