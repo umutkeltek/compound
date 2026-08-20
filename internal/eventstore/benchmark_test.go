@@ -27,10 +27,10 @@ func BenchmarkPutHotSegmentGrowth(b *testing.B) {
 	}
 }
 
-// BenchmarkPutRecentWriteDedup measures the O(1) dedup fast path: re-putting the
-// same id+hash that this process appended moments ago must be served from the
-// recent-write cache without touching the hot segment at all.
-func BenchmarkPutRecentWriteDedup(b *testing.B) {
+// BenchmarkPutDurableDedup measures the durable hot-segment memo path:
+// re-putting the same id+hash must prove the frame still exists without
+// reparsing the segment on every retry.
+func BenchmarkPutDurableDedup(b *testing.B) {
 	now := time.Date(2026, 8, 8, 9, 0, 0, 0, time.UTC)
 	store, err := openWithConfig(b.TempDir(), engineConfig{clock: func() time.Time { return now }})
 	if err != nil {

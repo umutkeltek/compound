@@ -1117,7 +1117,9 @@ func (s *Store) applyPostCompletionRepairOutcome(planPath string, authorization 
 				return zero, err
 			}
 			segmentErr := func() (retErr error) {
-				defer releaseAll()
+				defer func() {
+					retErr = errors.Join(retErr, releaseAll())
+				}()
 				if repairPhaseRank(progress.Phase) < repairPhaseRank(repairPhaseAppendReserved) {
 					if err := s.validatePostCompletionRepairMutationBoundary(census, opts); err != nil {
 						return err
@@ -2162,7 +2164,7 @@ func (s *Store) ReadPostCompletionRepairPending(planID string) (PostCompletionRe
 // every physical repair phase is complete, and the durable result is the only
 // missing artifact. ApplyPostCompletionRepair repeats the proof under its
 // mutation locks before it permits result finalization without current policy.
-func (s *Store) PostCompletionRepairPhysicalCompletionForFinalization(planPath string, authorization PostCompletionRepairAuthorization) (bool, error) {
+func (s *Store) PostCompletionRepairPhysicalCompletionForFinalization(planPath string, authorization PostCompletionRepairAuthorization) (complete bool, retErr error) {
 	if s == nil || s.engine == nil {
 		return false, fmt.Errorf("event store requires a home")
 	}
@@ -2190,7 +2192,9 @@ func (s *Store) PostCompletionRepairPhysicalCompletionForFinalization(planPath s
 	if err != nil {
 		return false, err
 	}
-	defer releaseAll()
+	defer func() {
+		retErr = errors.Join(retErr, releaseAll())
+	}()
 	return s.postCompletionRepairPhysicalCompletionForFinalization(plan, authorization)
 }
 

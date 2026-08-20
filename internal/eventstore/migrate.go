@@ -89,10 +89,9 @@ const (
 	ModeVerify
 )
 
-// MigrateOptions parameterizes a single migration invocation. The two hooks are
-// test-only fault injectors: returning a non-nil error simulates a process kill
-// at a precise phase boundary for one id (segment committed / manifest written)
-// so the resume-idempotency falsifiers exercise real crash windows.
+// MigrateOptions parameterizes a single migration invocation. Unexported hooks
+// are test-only fault injectors and phase observers so crash/race falsifiers can
+// exercise exact durable boundaries.
 type MigrateOptions struct {
 	Mode                  MigrateMode
 	BatchSize             int
@@ -100,6 +99,8 @@ type MigrateOptions struct {
 	beforeArchive         func(id string) error
 	beforeInitialBaseline func() error
 	afterRetirementCensus func() error
+	beforeFinalization    func() error
+	afterFinalPresence    func() error
 }
 
 // MigrateRejection names a loose file that could not be folded and why. A
@@ -1232,10 +1233,6 @@ func (m *migrator) apply() (MigrateReport, error) {
 	if err != nil {
 		return MigrateReport{}, err
 	}
-	presence, err := m.engine.buildSegmentPresence()
-	if err != nil {
-		return MigrateReport{}, err
-	}
 	loose, err := m.enumerateLoose()
 	if err != nil {
 		return MigrateReport{}, err
@@ -1248,7 +1245,7 @@ func (m *migrator) apply() (MigrateReport, error) {
 	report := MigrateReport{Mode: "apply", Discovered: plan.DiscoveredCount, PerFamily: map[string]int{}}
 	for start := 0; start < len(loose); start += m.opts.BatchSize {
 		end := min(start+m.opts.BatchSize, len(loose))
-		if err := m.processBatch(loose[start:end], presence, manifest, &report); err != nil {
+		if err := m.processBatch(loose[start:end], manifest, &report); err != nil {
 			if errors.Is(err, ErrMigrationConflict) {
 				report.Conflicts++
 			}
@@ -1256,22 +1253,16 @@ func (m *migrator) apply() (MigrateReport, error) {
 		}
 	}
 
-	// Re-derive presence from disk for the gate so completion proves segment
-	// truth, not the in-memory projection of what this run appended.
-	finalPresence, err := m.engine.buildSegmentPresence()
-	if err != nil {
-		return report, err
+	if m.opts.beforeFinalization != nil {
+		if err := m.opts.beforeFinalization(); err != nil {
+			return report, err
+		}
 	}
-	comp, err := m.evaluateCompletion(plan, finalPresence)
+	comp, err := m.evaluateAndPublishCompletion(plan)
 	if err != nil {
 		return report, err
 	}
 	report.Completion = comp
-	if comp.Complete && !m.engine.migrationComplete() {
-		if err := m.writeCompletion(comp); err != nil {
-			return report, err
-		}
-	}
 	return report, nil
 }
 
@@ -1279,12 +1270,22 @@ func (m *migrator) apply() (MigrateReport, error) {
 // the whole run) so live writers interleave between batches. It locks every
 // family shard so its segment folds stay mutually exclusive with put's
 // per-family appends.
-func (m *migrator) processBatch(batch []looseFile, presence map[string]segmentLocation, manifest map[string]manifestRow, report *MigrateReport) (retErr error) {
+func (m *migrator) processBatch(batch []looseFile, manifest map[string]manifestRow, report *MigrateReport) (retErr error) {
 	releaseAll, err := m.engine.lockAllFamilyShards()
 	if err != nil {
 		return err
 	}
-	defer releaseAll()
+	defer func() {
+		retErr = errors.Join(retErr, releaseAll())
+	}()
+	// The run-level presence map was built without the family mutation lock so
+	// a cooperating Remove may have committed after that census. Rebuild only
+	// after every family is locked; otherwise stale "already present" evidence
+	// can archive the last surviving loose body after segment truth disappeared.
+	presence, err := m.engine.buildSegmentPresence()
+	if err != nil {
+		return err
+	}
 	repaired := map[string]bool{}
 	today := ingestionDay(m.engine.clock())
 	for _, lf := range batch {
@@ -1905,15 +1906,56 @@ func (m *migrator) dryRun() (MigrateReport, error) {
 	return report, nil
 }
 
-func (m *migrator) writeCompletion(comp CompletionReport) error {
+// evaluateAndPublishCompletion preserves the process-wide lock order shared
+// with WithRebaselineTransaction: rebaseline first, then all event families.
+// The final segment census, completion evaluation, initial stream baseline,
+// and completion.json publication are one exclusive boundary.
+func (m *migrator) evaluateAndPublishCompletion(plan migratePlan) (comp CompletionReport, retErr error) {
+	if err := os.MkdirAll(m.engine.migrationRoot(), 0o755); err != nil {
+		return CompletionReport{}, err
+	}
+	rebaseline, err := m.engine.acquireRebaselineLock()
+	if err != nil {
+		return CompletionReport{}, err
+	}
+	defer func() {
+		retErr = errors.Join(retErr, rebaseline.release())
+	}()
+	releaseAll, err := m.engine.lockAllFamilyShards()
+	if err != nil {
+		return CompletionReport{}, err
+	}
+	defer func() {
+		retErr = errors.Join(retErr, releaseAll())
+	}()
+
+	finalPresence, err := m.engine.buildSegmentPresence()
+	if err != nil {
+		return CompletionReport{}, err
+	}
+	if m.opts.afterFinalPresence != nil {
+		if err := m.opts.afterFinalPresence(); err != nil {
+			return CompletionReport{}, err
+		}
+	}
+	comp, err = m.evaluateCompletion(plan, finalPresence)
+	if err != nil {
+		return CompletionReport{}, err
+	}
+	if comp.Complete && !m.engine.migrationComplete() {
+		if err := m.writeCompletionLocked(comp); err != nil {
+			return CompletionReport{}, err
+		}
+	}
+	return comp, nil
+}
+
+// writeCompletionLocked publishes the baseline and completion marker while
+// its caller holds both the rebaseline lock and every family mutation lock.
+func (m *migrator) writeCompletionLocked(comp CompletionReport) error {
 	if err := os.MkdirAll(m.engine.migrationRoot(), 0o755); err != nil {
 		return err
 	}
-	lock, err := m.engine.acquireRebaselineLock()
-	if err != nil {
-		return err
-	}
-	defer lock.release()
 	if _, exists, err := readRebaselinePendingRaw(filepath.Join(m.engine.migrationRoot(), rebaselinePendingFileName)); err != nil {
 		return err
 	} else if exists {

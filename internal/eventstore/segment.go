@@ -244,7 +244,7 @@ func (e *engine) appendTarget(family, today string) (string, bool, error) {
 	return path, true, nil
 }
 
-func (e *engine) put(id string, record []byte, mode putMode, opts AtomicOptions) (outcome putOutcome, retErr error) {
+func (e *engine) put(id string, record []byte, mode putMode, opts AtomicOptions) (putOutcome, error) {
 	frame, _, err := buildFrame(id, record)
 	if err != nil {
 		return putOutcome{}, err
@@ -263,73 +263,54 @@ func (e *engine) put(id string, record []byte, mode putMode, opts AtomicOptions)
 		return e.legacyPut(frame, record, mode, opts)
 	}
 
+	// Validate the current durable state under the family lock. Plain puts keep
+	// this one acquisition through append. Atomic puts with pre-publication
+	// callbacks release it because those callbacks are arbitrary and may re-enter
+	// this store, then reacquire and revalidate before publication.
 	lock, err := e.appendShards.acquire(frame.Family)
 	if err != nil {
 		return putOutcome{}, err
 	}
-	defer func() {
-		if releaseErr := e.appendShards.release(frame.Family, lock); retErr == nil && releaseErr != nil {
-			retErr = releaseErr
-		}
-	}()
-
-	// O(1) dedup fast path: an id this process appended to this family moments
-	// ago (same frame SHA256) is already present — no hot-segment parse, no tail
-	// repair. A miss falls through to the durable checkID scan below.
-	if sharedRecentWrites.seen(e.segRoot, frame.Family, id, frame.SHA256) {
-		switch mode {
-		case putExclusive:
-			return putOutcome{}, fmt.Errorf("%s: %w", id, os.ErrExist)
-		case putIfAbsent:
-			return putOutcome{created: false, diagnosticPath: logicalReferencePrefix + id}, nil
-		default:
-			return putOutcome{created: false, diagnosticPath: logicalReferencePrefix + id}, nil
-		}
+	outcome, handled, checkErr := e.checkPutLocked(frame, mode)
+	if checkErr != nil || handled {
+		releaseErr := e.appendShards.release(frame.Family, lock)
+		return outcome, errors.Join(checkErr, releaseErr)
 	}
 
-	last, exists, err := e.lastWritten(frame.Family)
-	if err != nil {
-		return putOutcome{}, err
-	}
-	if exists {
-		if err := e.repairTail(last.path); err != nil {
-			return putOutcome{}, err
+	if opts.Write != nil || opts.BeforePublish != nil {
+		if releaseErr := e.appendShards.release(frame.Family, lock); releaseErr != nil {
+			return putOutcome{}, releaseErr
 		}
-	}
-	today := ingestionDay(e.clock())
-	presence, existingPath, err := e.checkID(frame.Family, id, frame.SHA256)
-	if err != nil {
-		return putOutcome{}, err
-	}
-	if presence != idAbsent {
-		switch mode {
-		case putExclusive:
-			return putOutcome{}, fmt.Errorf("%s: %w", id, os.ErrExist)
-		case putIfAbsent:
-			return putOutcome{created: false, diagnosticPath: existingPath}, nil
-		default:
-			if presence == idConflict {
-				return putOutcome{}, fmt.Errorf("%w: %s", ErrIDConflict, id)
+		if opts.Write != nil {
+			if err := e.exerciseAtomicWriter(opts.Write, line); err != nil {
+				return putOutcome{}, err
 			}
-			return putOutcome{created: false, diagnosticPath: existingPath}, nil
 		}
-	}
+		if opts.BeforePublish != nil {
+			if err := opts.BeforePublish(); err != nil {
+				return putOutcome{}, err
+			}
+		}
 
-	if opts.Write != nil {
-		if err := e.exerciseAtomicWriter(opts.Write, line); err != nil {
+		// The callbacks may have changed durable truth. Reacquire in canonical
+		// order, repair the live tail again, and prove full id presence again.
+		lock, err = e.appendShards.acquire(frame.Family)
+		if err != nil {
 			return putOutcome{}, err
 		}
-	}
-	if opts.BeforePublish != nil {
-		if err := opts.BeforePublish(); err != nil {
-			return putOutcome{}, err
+		outcome, handled, checkErr = e.checkPutLocked(frame, mode)
+		if checkErr != nil || handled {
+			releaseErr := e.appendShards.release(frame.Family, lock)
+			return outcome, errors.Join(checkErr, releaseErr)
 		}
 	}
+	// This held family lock is the publication linearization point.
+	today := ingestionDay(e.clock())
 	relPath, start, err := e.appendFrameAt(frame.Family, today, line)
 	if err != nil {
-		return putOutcome{}, err
+		releaseErr := e.appendShards.release(frame.Family, lock)
+		return putOutcome{}, errors.Join(err, releaseErr)
 	}
-	sharedRecentWrites.remember(e.segRoot, frame.Family, id, frame.SHA256)
 	// Keep the hot-segment memo warm in place so the NEXT put's repairTail does
 	// not reparse the whole hot segment: pre-append size == start, post-append
 	// size/mtime from a stat. See hotSegmentAppend's freshness guard.
@@ -340,12 +321,43 @@ func (e *engine) put(id string, record []byte, mode putMode, opts AtomicOptions)
 		})
 	}
 	outcome = putOutcome{created: true, diagnosticPath: logicalReferencePrefix + id}
+	releaseErr := e.appendShards.release(frame.Family, lock)
 	if opts.AfterPublish != nil {
-		if err := opts.AfterPublish(); err != nil {
-			return outcome, err
+		return outcome, errors.Join(releaseErr, opts.AfterPublish())
+	}
+	return outcome, releaseErr
+}
+
+// checkPutLocked repairs the current family tail and resolves the complete id
+// history. The caller must hold the family's process mutex and flock.
+func (e *engine) checkPutLocked(frame Frame, mode putMode) (putOutcome, bool, error) {
+	last, exists, err := e.lastWritten(frame.Family)
+	if err != nil {
+		return putOutcome{}, false, err
+	}
+	if exists {
+		if err := e.repairTail(last.path); err != nil {
+			return putOutcome{}, false, err
 		}
 	}
-	return outcome, nil
+	presence, existingPath, err := e.checkID(frame.Family, frame.ID, frame.SHA256)
+	if err != nil {
+		return putOutcome{}, false, err
+	}
+	if presence == idAbsent {
+		return putOutcome{}, false, nil
+	}
+	switch mode {
+	case putExclusive:
+		return putOutcome{}, true, fmt.Errorf("%s: %w", frame.ID, os.ErrExist)
+	case putIfAbsent:
+		return putOutcome{created: false, diagnosticPath: existingPath}, true, nil
+	default:
+		if presence == idConflict {
+			return putOutcome{}, true, fmt.Errorf("%w: %s", ErrIDConflict, frame.ID)
+		}
+		return putOutcome{created: false, diagnosticPath: existingPath}, true, nil
+	}
 }
 
 // appendFrameAt appends one encoded frame line to the family's current segment.
@@ -625,7 +637,7 @@ func (e *engine) legacyAtomicPut(id, path string, record []byte, opts AtomicOpti
 // put's per-family appends; locking all of them (≤ a dozen, sorted, deadlock-
 // free) is cheap on these rare paths and never touches the hot per-tool-call
 // put. Callers that rewrite one known family can lock just that shard instead.
-func (e *engine) lockAllFamilyShards() (func(), error) {
+func (e *engine) lockAllFamilyShards() (func() error, error) {
 	fams, err := e.segmentFamilies()
 	if err != nil {
 		return nil, err
@@ -639,6 +651,9 @@ func (e *engine) lockAllFamilyShards() (func(), error) {
 			seen[pf.family] = true
 			fams = append(fams, pf.family)
 		}
+	}
+	if !seen["other"] {
+		fams = append(fams, "other")
 	}
 	return e.appendShards.acquireAll(fams)
 }
