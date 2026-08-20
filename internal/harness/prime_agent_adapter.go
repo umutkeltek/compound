@@ -20,13 +20,16 @@ import (
 //
 // Prime-agent's headless invocation is documented in `prime-agent --help`:
 //
-//	prime-agent --mode rpc   <prompt>     # JSON-RPC over stdin/stdout, persistent-kernel
+//	prime-agent --mode rpc   <prompt>     # structured IPC over stdin/stdout
 //	prime-agent -p --no-session <prompt>  # one-shot print, no session persistence
 //
 // The adapter:
 //   - prefers `--mode rpc` when the prompt is small and the caller wants
-//     structured JSON output (the persistent-kernel IPC reuses the live
-//     daemon on 127.0.0.1:18774 — read-only, never rewires the tap);
+//     structured JSON output (the structured-output IPC over stdin/stdout;
+//     prime's daemon itself listens on a Unix socket under
+//     $TMPDIR/prime-agent-<uid>/daemon.sock — NOT a localhost TCP port —
+//     and port 18774 is Switchback's capture tap that prime's models.json
+//     points its LLM calls at, never a prime IPC surface);
 //   - falls back to `-p --no-session` for one-shot dry-runs and CI;
 //   - never uses COMPOUND_HOME or ~/.compound as the workspace root —
 //     callers MUST supply RunInput.Workspace (the run delegate resolves
@@ -34,8 +37,8 @@ import (
 //
 // The adapter does NOT implement Prime-agent's persistent kernel. It
 // drives a fresh subprocess for every Run(); the persistent kernel is a
-// separate daemon process (see the operator's ~/.prime/agent daemon-workers
-// directory and its supervisor-config snapshot). Compound is the orchestrator;
+// separate daemon process (Unix socket under
+// $TMPDIR/prime-agent-<uid>/daemon.sock). Compound is the orchestrator;
 // this adapter is the dispatch driver — the persistent-kernel wiring
 // stays where it lives. Adapter scope is "Run the headless Prime-agent
 // CLI in a RunAttempt-chrome wrapper."
@@ -85,8 +88,7 @@ func (a *PrimeAgentAdapter) Run(ctx context.Context, in RunInput) (RunOutput, er
 //
 // Notes on each flag (verified against `prime-agent --help`):
 //
-//   - `--mode rpc` is the structured-output mode (JSON-RPC over
-//     stdin/stdout), which the persistent-kernel supervisor consumes;
+//   - `--mode rpc` is the structured-output mode (IPC over stdin/stdout);
 //     we leave rpc on by default so the audit trail is structured.
 //   - `-p --no-session` is the one-shot headless print path that does
 //     NOT persist session state to ~/.prime/agent/sessions/ — the
