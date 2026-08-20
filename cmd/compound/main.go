@@ -1721,6 +1721,12 @@ func runHookCommandWithoutHome(parsed hookCommandArgs, now time.Time, compatibil
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return hookRuntimeErrorExit(parsed)
 	}
+	if parsed.HookName == "pre-tool-use" {
+		// Without compatible home authority, reads may remain observable but no
+		// mutation may inherit the built-in local-reversible allowance. All other
+		// mutation classes already hold (or deny) in the built-in policy.
+		policyCfg.ClassOutcome["local_reversible"] = policy.ClassRule{Outcome: "hold"}
+	}
 	fx, err := loadHookFixture(parsed, now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

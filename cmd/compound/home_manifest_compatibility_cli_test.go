@@ -335,6 +335,102 @@ func TestHookCompatibilityFailureStaysProtocolShapedAndWriteFree(t *testing.T) {
 	}
 }
 
+func TestLivePreToolUseCompatibilityFailureHoldsRoutineWrite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and executes the compound binary: skipped in -short mode")
+	}
+	binary := compoundTestBinary(t)
+	for _, harnessName := range []string{"claude_code", "claude-zai"} {
+		for _, homeState := range []string{"missing", "incompatible"} {
+			for _, posture := range []string{hookPostureObservationOnly, hookPostureEnforced} {
+				t.Run(harnessName+"/"+homeState+"/"+posture, func(t *testing.T) {
+					root := t.TempDir()
+					homePath := filepath.Join(root, ".compound")
+					var manifestBefore []byte
+					if homeState == "incompatible" {
+						homePath = incompatibleCanonicalHome(t)
+						var err error
+						manifestBefore, err = os.ReadFile(filepath.Join(homePath, home.ManifestName))
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+
+					targetPath := filepath.Join(root, "routine-write.txt")
+					input, err := json.Marshal(claudeLiveHookInput{
+						HookEventName:      "PreToolUse",
+						SessionID:          "sess_compatibility_" + strings.ReplaceAll(harnessName, "-", "_") + "_" + homeState + "_" + posture,
+						Cwd:                root,
+						ToolName:           "Write",
+						ToolSchemaRevision: "builtin:write",
+						ToolInput: map[string]any{
+							"file_path": targetPath,
+							"content":   "fixture",
+						},
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					args := []string{"hook", "pre-tool-use", "--live", "--harness", harnessName}
+					if posture == hookPostureEnforced {
+						args = append(args, "--enforce")
+					}
+					cmd := exec.Command(binary, args...)
+					cmd.Dir = root
+					cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+					cmd.Stdin = bytes.NewReader(input)
+					out, runErr := cmd.Output()
+					exitCode := 0
+					if runErr != nil {
+						var exitErr *exec.ExitError
+						if !errors.As(runErr, &exitErr) {
+							t.Fatalf("run live hook: %v", runErr)
+						}
+						exitCode = exitErr.ExitCode()
+					}
+
+					var response claudeLiveHookResponse
+					if err := json.Unmarshal(out, &response); err != nil {
+						t.Fatalf("hook response is not protocol-shaped: %v\n%s", err, out)
+					}
+					if response.HookSpecificOutput.HookEventName != "PreToolUse" {
+						t.Fatalf("hook response event = %q, want PreToolUse: %s", response.HookSpecificOutput.HookEventName, out)
+					}
+					decision := response.HookSpecificOutput.PermissionDecision
+					if posture == hookPostureObservationOnly {
+						if exitCode != 0 || decision != "" {
+							t.Fatalf("observation-only hook exit=%d decision=%q, want 0 and no native decision: %s", exitCode, decision, out)
+						}
+					} else {
+						wantExit := map[string]int{"ask": 3, "deny": 4}[decision]
+						if wantExit == 0 || exitCode != wantExit {
+							t.Fatalf("enforced hook exit=%d decision=%q, want ask/3 or deny/4: %s", exitCode, decision, out)
+						}
+					}
+
+					if _, err := os.Lstat(targetPath); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("hook executed the routine write target: %v", err)
+					}
+					if homeState == "missing" {
+						if _, err := os.Lstat(homePath); !errors.Is(err, os.ErrNotExist) {
+							t.Fatalf("hook created missing home: %v", err)
+						}
+						return
+					}
+					manifestAfter, err := os.ReadFile(filepath.Join(homePath, home.ManifestName))
+					if err != nil || !bytes.Equal(manifestAfter, manifestBefore) {
+						t.Fatalf("hook changed incompatible manifest: body=%q err=%v", manifestAfter, err)
+					}
+					entries, err := os.ReadDir(homePath)
+					if err != nil || len(entries) != 1 || entries[0].Name() != home.ManifestName {
+						t.Fatalf("hook wrote into incompatible home: entries=%v err=%v", entries, err)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestSessionEndAdapterCompatibilityFailureStaysProtocolShapedAndWriteFree(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and executes the compound binary: skipped in -short mode")
