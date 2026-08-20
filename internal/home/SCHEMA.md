@@ -35,18 +35,28 @@ manifestless directory. A fresh identity is written and synced to a rooted
 same-directory staging file, published with an atomic no-replace link, synced,
 and byte-revalidated before habitat scaffolding. An interrupted owned staging
 file does not become authority or block a retry: retry reclaims only a stable,
-regular, current-UID staging entry through rooted validated removal. A
-symlinked, foreign-owner, or raced staging entry fails closed and remains for
-inspection. Quarantine publication and restoration are atomic no-replace
-operations, so a competing file is never overwritten; arbitrary root content
-still blocks adoption and is never removed.
+regular, current-UID staging entry through rooted validated removal. Recovery
+also recognizes that exact staging name followed by one or more
+`.remove-pending` suffixes and requires coexisting names in a removal chain to
+identify one inode. Fresh publication remains stricter and never treats those
+quarantine names as ignorable root content. A symlinked, foreign-owner, or
+raced staging entry fails closed and remains for inspection. Quarantine
+publication and restoration are atomic no-replace operations, so a competing
+file is never overwritten; arbitrary root content still blocks adoption and is
+never removed.
 
-Every non-read CLI admission checks the selected home before dispatch. Held,
-governed, install, and mutating commands refuse an incompatible or missing
-manifest before their first write; `home init` and `home restore` retain their
-own fresh-target compatibility boundaries, and read-only recovery diagnostics
-remain available. Compatibility failures expose a typed surface
-(`home_manifest` or `archive_envelope`) plus recovery guidance.
+Every non-read CLI admission checks the selected home before dispatch or hands
+that check to a narrower protocol boundary. Held, governed, install, and
+mutating commands refuse an incompatible or missing manifest before their first
+write. Admission consumes `home` option values with the same grammar as the
+handler, matches read-only flags as exact case-sensitive tokens, and exempts help only where a
+specific handler proves it returns before mutation. Runtime hook commands are
+the narrow exception: they must still emit a
+protocol-shaped fail-open or deny response, so they run without a writable home
+when compatibility fails and never persist into that home. `home init` and
+`home restore` retain their own fresh-target compatibility boundaries, and
+read-only recovery diagnostics remain available. Compatibility failures expose
+a typed surface (`home_manifest` or `archive_envelope`) plus recovery guidance.
 
 Archive creation pins and decodes the exact manifest bytes before walking the
 home, writes those pinned bytes into the archive, and derives envelope metadata

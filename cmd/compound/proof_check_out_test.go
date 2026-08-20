@@ -889,10 +889,14 @@ func TestProofCheckOutTruthfulExitOneOnRedBattery(t *testing.T) {
 	runCommandGit(t, fixture, "add", "-A")
 
 	outPath := filepath.Join(t.TempDir(), "report.json")
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := home.Init(homePath, home.HomeKindGlobal, time.Unix(0, 0)); err != nil {
+		t.Fatalf("init compatible proof-check home: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, "proof-check", "--ci", "--out", outPath, "--repo", fixture)
-	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+t.TempDir(), "GOTOOLCHAIN=local")
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath, "GOTOOLCHAIN=local")
 	output, err := cmd.CombinedOutput()
 
 	var exitErr *exec.ExitError

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -36,7 +37,10 @@ const (
 	BackupFreshnessMaxAge   = 48 * time.Hour
 )
 
-var initAfterRootSecured = func(string) error { return nil }
+var (
+	initAfterRootSecured = func(string) error { return nil }
+	initRootFlock        = syscall.Flock
+)
 
 // Manifest is the home's identity record.
 type Manifest struct {
@@ -256,6 +260,13 @@ func Init(homePath, kind string, now time.Time) (resultErr error) {
 	if err := initAfterRootSecured(homePath); err != nil {
 		return err
 	}
+	initLock, err := acquireRootedInitLock(root, rootInfo)
+	if err != nil {
+		return fmt.Errorf("lock compound home root for initialization: %w", err)
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, releaseRootedInitLock(initLock))
+	}()
 	var newManifestBytes []byte
 	if hadPreflightManifest {
 		if _, err := validateRootedInitManifest(root, homePath, kind, preflightManifest); err != nil {
@@ -310,6 +321,43 @@ func Init(homePath, kind string, now time.Time) (resultErr error) {
 		return fmt.Errorf("compound home root identity changed during initialization: %s", homePath)
 	}
 	return nil
+}
+
+func acquireRootedInitLock(root *os.Root, expectedRoot os.FileInfo) (*os.File, error) {
+	dir, err := root.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	opened, err := dir.Stat()
+	if err != nil {
+		_ = dir.Close()
+		return nil, err
+	}
+	if expectedRoot == nil || opened.Mode()&os.ModeSymlink != 0 || !opened.IsDir() || !os.SameFile(expectedRoot, opened) {
+		_ = dir.Close()
+		return nil, fmt.Errorf("compound home init lock descriptor does not identify the pinned home root")
+	}
+	for {
+		err = initRootFlock(int(dir.Fd()), syscall.LOCK_EX)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		break
+	}
+	if err != nil {
+		_ = dir.Close()
+		return nil, err
+	}
+	return dir, nil
+}
+
+func releaseRootedInitLock(dir *os.File) error {
+	if dir == nil {
+		return nil
+	}
+	unlockErr := initRootFlock(int(dir.Fd()), syscall.LOCK_UN)
+	closeErr := dir.Close()
+	return errors.Join(unlockErr, closeErr)
 }
 
 func ensureRootedInitDirectory(root *os.Root, rel string, mode os.FileMode, display string) error {

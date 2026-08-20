@@ -98,33 +98,8 @@ func versionReport(challenge string) arch.VersionReport {
 	return report
 }
 
-func prepareGlobalArgs(args []string) ([]string, error) {
-	prepared := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		if args[i] != "--home" {
-			prepared = append(prepared, args[i])
-			continue
-		}
-		if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
-			return nil, fmt.Errorf("--home requires a non-blank value")
-		}
-
-		// This exact-token scan intentionally shares the existing CLI helpers' known
-		// blindness: a bare --home intended as another flag's value is still global.
-		absHome, err := filepath.Abs(args[i+1])
-		if err != nil {
-			return nil, fmt.Errorf("resolve --home: %w", err)
-		}
-		if err := os.Setenv("COMPOUND_HOME", absHome); err != nil {
-			return nil, fmt.Errorf("set COMPOUND_HOME: %w", err)
-		}
-		i++
-	}
-	return prepared, nil
-}
-
 func main() {
-	args, err := prepareGlobalArgs(os.Args[1:])
+	args, err := home.PrepareGlobalCLIArgs(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		usage()
@@ -1497,7 +1472,18 @@ func cmdHook(args []string) {
 		return
 	}
 	if len(args) > 0 && args[0] == "session-end-adapter" {
-		if code := hook.RunSessionEndAdapterCommand(args[1:], os.Stdin, os.Stdout, os.Stderr); code != 0 {
+		adapterArgs := args[1:]
+		if hasFlag(adapterArgs, "--live") {
+			homePath, compatibilityErr := home.Resolve("")
+			if compatibilityErr == nil {
+				compatibilityErr = home.RequireMutationCompatible(homePath)
+			}
+			if compatibilityErr != nil {
+				hook.WriteSessionEndAdapterHomeUnavailable(os.Stdout, os.Stderr, compatibilityErr)
+				return
+			}
+		}
+		if code := hook.RunSessionEndAdapterCommand(adapterArgs, os.Stdin, os.Stdout, os.Stderr); code != 0 {
 			os.Exit(code)
 		}
 		return
@@ -1627,7 +1613,13 @@ func runHookCommand(args []string) int {
 		return 2
 	}
 	now := time.Now()
-	homePath := ""
+	homePath, compatibilityErr := home.Resolve("")
+	if compatibilityErr == nil {
+		compatibilityErr = home.RequireMutationCompatible(homePath)
+	}
+	if compatibilityErr != nil {
+		return runHookCommandWithoutHome(parsed, now, compatibilityErr)
+	}
 	orientation, err := loadOrientationPolicy()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -1638,18 +1630,14 @@ func runHookCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return hookRuntimeErrorExit(parsed)
 	}
-	deps := hook.Deps{Registry: harness.DefaultRegistry(), Orient: orientation, Policy: policyCfg}
-	if resolvedHome, err := home.Resolve(""); err == nil {
-		homePath = resolvedHome
-		deps.HomePath = homePath
-		if store, err := work.Open(homePath); err == nil {
-			deps.Store = store // session-end needs it; others tolerate nil
-		}
-		// Resolve the memory-engine profile so a session-start / user-prompt-submit hook injects
-		// ambient recall from the SAME owned engine `memory query` uses (else it stays lexical).
-		if restoreEngine, err := configureMemoryEngineFromHome(homePath, ""); err == nil {
-			defer restoreEngine()
-		}
+	deps := hook.Deps{Registry: harness.DefaultRegistry(), Orient: orientation, Policy: policyCfg, HomePath: homePath}
+	if store, err := work.Open(homePath); err == nil {
+		deps.Store = store // session-end needs it; others tolerate nil
+	}
+	// Resolve the memory-engine profile so a session-start / user-prompt-submit hook injects
+	// ambient recall from the SAME owned engine `memory query` uses (else it stays lexical).
+	if restoreEngine, err := configureMemoryEngineFromHome(homePath, ""); err == nil {
+		defer restoreEngine()
 	}
 	fx, err := loadHookFixtureForHome(parsed, now, homePath)
 	if err != nil {
@@ -1712,6 +1700,49 @@ func runHookCommand(args []string) int {
 		fmt.Fprintf(os.Stderr, " (%s)", res.Event.FailOpenReason)
 	}
 	fmt.Fprintf(os.Stderr, " — %s\n", res.Summary)
+	if parsed.Enforce {
+		return hookEnforceExit(parsed.HookName, res)
+	}
+	return 0
+}
+
+// runHookCommandWithoutHome is the protocol-only recovery path for a missing
+// or incompatible home. It uses built-in policy, never enters a home-aware
+// fixture/resolver seam, and returns before every persistence/parity/feedback
+// helper in the normal hook path.
+func runHookCommandWithoutHome(parsed hookCommandArgs, now time.Time, compatibilityErr error) int {
+	orientation, _, err := contract.LoadPolicy("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return hookRuntimeErrorExit(parsed)
+	}
+	policyCfg, _, err := policy.LoadConfig("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return hookRuntimeErrorExit(parsed)
+	}
+	fx, err := loadHookFixture(parsed, now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return hookRuntimeErrorExit(parsed)
+	}
+	fx.Enforced = parsed.Enforce
+	res, err := hook.Run(fx, hook.Deps{
+		Registry: harness.DefaultRegistry(),
+		Orient:   orientation,
+		Policy:   policyCfg,
+	}, now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return hookRuntimeErrorExit(parsed)
+	}
+	if parsed.Live {
+		printJSON(liveHookResponseWithEnforcement(parsed.Harness, parsed.HookName, res, parsed.Enforce, nil))
+	} else {
+		printJSON(res)
+	}
+	fmt.Fprintf(os.Stderr, "[%s/%s] %s — %s\n", fx.Harness, res.Event.Status, res.Event.HookName, res.Summary)
+	fmt.Fprintln(os.Stderr, "home unavailable; hook response was not persisted:", compatibilityErr)
 	if parsed.Enforce {
 		return hookEnforceExit(parsed.HookName, res)
 	}
@@ -3904,33 +3935,8 @@ func cmdStore(args []string) {
 }
 
 func cmdHome(args []string) {
-	flagHome, sub, kind := "", "", "global"
-	positionals := []string{}
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--home" && i+1 < len(args):
-			flagHome = args[i+1]
-			i++
-		case (a == "--target" || a == "--archive") && i+1 < len(args):
-			i++
-		case a == "--local":
-			kind = "local"
-		case a == "--global":
-			kind = "global"
-		case strings.HasPrefix(a, "-"):
-			// command-specific boolean flags are read below.
-		default:
-			positionals = append(positionals, a)
-		}
-	}
-	if len(positionals) > 0 {
-		sub = positionals[0]
-	}
-	restPos := []string{}
-	if len(positionals) > 1 {
-		restPos = positionals[1:]
-	}
+	parsed := home.ParseCLIArgs(args)
+	sub, kind, restPos := parsed.Subcommand, parsed.HomeKind, parsed.RemainingPositionals
 	if hasUsageFlag(args) {
 		switch sub {
 		case "archive-history":
@@ -3946,19 +3952,8 @@ func cmdHome(args []string) {
 		return
 	}
 	resolve := func() string {
-		if flagHome == "" && kind == "local" {
-			lp, err := home.LocalPath()
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "error:", err)
-				os.Exit(1)
-			}
-			return lp
-		}
-		p, err := home.Resolve(flagHome)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
+		p, err := parsed.ResolveHome()
+		die(err)
 		return p
 	}
 	switch sub {

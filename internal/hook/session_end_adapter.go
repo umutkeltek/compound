@@ -113,6 +113,14 @@ type sessionEndAdapterWorkerResult struct {
 // accept hookSpecificOutput, whose event-specific union excludes SessionEnd.
 type sessionEndAdapterResponse struct{}
 
+// WriteSessionEndAdapterHomeUnavailable preserves Claude's native SessionEnd
+// fail-open response when the CLI composition root refuses to hand the adapter
+// a missing or incompatible writable home.
+func WriteSessionEndAdapterHomeUnavailable(stdout, stderr io.Writer, err error) {
+	writeSessionEndAdapterResponse(stdout)
+	fmt.Fprintln(stderr, "session-end adapter: Compound home unavailable:", err)
+}
+
 // RunSessionEndAdapterCommand executes the bounded Claude-family SessionEnd
 // adapter behind the thin cmd/compound dispatch seam.
 func RunSessionEndAdapterCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) int {

@@ -162,7 +162,7 @@ func TestRouteEvidenceAuthorityUsesGlobalHome(t *testing.T) {
 func TestGlobalHomeOverridesEnvironment(t *testing.T) {
 	t.Setenv("COMPOUND_HOME", "fallback-home")
 	target := filepath.Join(t.TempDir(), "selected-home")
-	if _, err := prepareGlobalArgs([]string{"narrate", "--home", target, "--json"}); err != nil {
+	if _, err := home.PrepareGlobalCLIArgs([]string{"narrate", "--home", target, "--json"}); err != nil {
 		t.Fatalf("prepare global args: %v", err)
 	}
 	want, err := filepath.Abs(target)

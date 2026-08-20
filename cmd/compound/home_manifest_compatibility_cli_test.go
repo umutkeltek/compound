@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/json"
@@ -81,6 +82,360 @@ func TestDispatchCompatibilityGateBlocksFindingRecordBeforeAnyWrite(t *testing.T
 	assertHomeManifestCompatibilityCLIError(t, err, out, "manifest kind")
 	if _, statErr := os.Lstat(filepath.Join(homePath, "observed")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("finding record bypass mutated incompatible home: %v", statErr)
+	}
+}
+
+func TestDispatchCompatibilityGateDoesNotTreatHelpLookingValueAsUsage(t *testing.T) {
+	if os.Getenv(homeManifestCompatibilityChildEnv) == "help-looking-value" {
+		os.Args = []string{"compound", "finding", "record", "--topic", "compatibility-gate", "--body", "--help"}
+		main()
+		return
+	}
+	homePath := incompatibleCanonicalHome(t)
+	manifestPath := filepath.Join(homePath, home.ManifestName)
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDispatchCompatibilityGateDoesNotTreatHelpLookingValueAsUsage$")
+	cmd.Env = append(os.Environ(),
+		homeManifestCompatibilityChildEnv+"=help-looking-value",
+		"COMPOUND_HOME="+homePath,
+	)
+	out, err := cmd.CombinedOutput()
+	assertHomeManifestCompatibilityCLIError(t, err, out, "manifest kind")
+	after, readErr := os.ReadFile(manifestPath)
+	if readErr != nil || string(after) != string(before) {
+		t.Fatalf("help-looking value bypass changed manifest: body=%q err=%v", after, readErr)
+	}
+	if _, statErr := os.Lstat(filepath.Join(homePath, "observed")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("help-looking value bypass mutated incompatible home: %v", statErr)
+	}
+}
+
+func TestDispatchCompatibilityGateDoesNotTreatGenericHelpAsAdmission(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and executes the compound binary: skipped in -short mode")
+	}
+	binary := compoundTestBinary(t)
+	root := t.TempDir()
+	homePath := filepath.Join(root, "missing-home")
+	cmd := exec.Command(binary, "orient", "--help", "--harness", "codex", "--cwd", root, "--task", "compatibility probe")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("orient --help bypassed mutation admission; output:\n%s", out)
+	}
+	if _, statErr := os.Lstat(homePath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("orient --help created a manifestless home: %v", statErr)
+	}
+}
+
+func TestDispatchCompatibilityGateAdmitsParserProvenHomeHelpOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and executes the compound binary: skipped in -short mode")
+	}
+	binary := compoundTestBinary(t)
+	root := t.TempDir()
+	homePath := filepath.Join(root, "missing-home")
+	archivePath := filepath.Join(root, "must-not-exist.tar.gz")
+	cmd := exec.Command(binary, "home", "--target", archivePath, "backup", "--help")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("parser-proven home help was blocked: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "usage: compound home") {
+		t.Fatalf("home help output missing usage:\n%s", out)
+	}
+	for _, path := range []string{homePath, archivePath} {
+		if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("home help wrote %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestDispatchCompatibilityGateAdmitsParserProvenHookInstallHelpOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and executes the compound binary: skipped in -short mode")
+	}
+	binary := compoundTestBinary(t)
+	root := t.TempDir()
+	homePath := filepath.Join(root, "missing-home")
+	basePath := filepath.Join(root, "missing-base")
+	cmd := exec.Command(binary, "hook", "install", "--harness", "codex", "--scope", "global", "--base", basePath, "--binary", binary, "--help")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("parser-proven hook install help was blocked: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "usage: compound hook install") {
+		t.Fatalf("hook install help output missing usage:\n%s", out)
+	}
+	for _, path := range []string{homePath, basePath} {
+		if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("hook install help wrote %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestDispatchCompatibilityGateMatchesReadFlagsExactly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and executes the compound binary: skipped in -short mode")
+	}
+	binary := compoundTestBinary(t)
+	for _, flag := range []string{"--CHECK", " --check ", "--check "} {
+		t.Run(strings.ReplaceAll(flag, " ", "space"), func(t *testing.T) {
+			root := t.TempDir()
+			homePath := filepath.Join(root, "missing-home")
+			basePath := filepath.Join(root, "missing-base")
+			cmd := exec.Command(binary, "hook", "install", flag, "--harness", "codex", "--scope", "global", "--base", basePath, "--binary", binary)
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("inexact read flag %q bypassed mutation admission; output:\n%s", flag, out)
+			}
+			for _, path := range []string{homePath, basePath} {
+				if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("inexact read flag %q wrote %s: %v", flag, path, statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestDispatchCompatibilityGateConsumesHomeOptionValuesBeforeClassifyingSubcommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and executes the compound binary: skipped in -short mode")
+	}
+	binary := compoundTestBinary(t)
+	tests := []struct {
+		name       string
+		args       []string
+		wantOutput string
+		noWriteRel []string
+	}{
+		{
+			name:       "prefixed archive verify reaches recovery reader",
+			args:       []string{"home", "--archive", "missing.tar.gz", "verify"},
+			wantOutput: "home verify:",
+			noWriteRel: []string{"missing.tar.gz"},
+		},
+		{
+			name:       "prefixed target and archive restore reaches recovery reader",
+			args:       []string{"home", "--target", "restored-home", "--archive", "missing.tar.gz", "restore"},
+			wantOutput: "home restore:",
+			noWriteRel: []string{"missing.tar.gz", "restored-home"},
+		},
+		{
+			name:       "read-looking target value cannot disguise backup",
+			args:       []string{"home", "--target", "verify", "backup"},
+			wantOutput: "home manifest is missing",
+			noWriteRel: []string{"verify"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			homePath := filepath.Join(root, "missing-home")
+			cmd := exec.Command(binary, tc.args...)
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("home command unexpectedly succeeded; output:\n%s", out)
+			}
+			if !strings.Contains(strings.ToLower(string(out)), strings.ToLower(tc.wantOutput)) {
+				t.Fatalf("home command output missing %q:\n%s", tc.wantOutput, out)
+			}
+			if _, statErr := os.Lstat(homePath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("home option classification wrote manifestless home: %v", statErr)
+			}
+			for _, rel := range tc.noWriteRel {
+				path := filepath.Join(root, rel)
+				if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("home option classification wrote %s: %v", path, statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestHookCompatibilityFailureStaysProtocolShapedAndWriteFree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and executes the compound binary: skipped in -short mode")
+	}
+	binary := compoundTestBinary(t)
+	for _, homeState := range []string{"missing", "incompatible"} {
+		for _, posture := range []string{hookPostureObservationOnly, hookPostureEnforced} {
+			t.Run(homeState+"/"+posture, func(t *testing.T) {
+				root := t.TempDir()
+				homePath := filepath.Join(root, ".compound")
+				var manifestBefore []byte
+				if homeState == "incompatible" {
+					homePath = incompatibleCanonicalHome(t)
+					var err error
+					manifestBefore, err = os.ReadFile(filepath.Join(homePath, home.ManifestName))
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				nonce := "act_compatprobe" + strings.ReplaceAll(homeState+posture, "_", "")
+				fixturePath := filepath.Join(root, "pre-tool-use.json")
+				if err := os.WriteFile(fixturePath, hookEnforcementProbeFixture(nonce), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				args := []string{"hook", "pre-tool-use"}
+				if posture == hookPostureEnforced {
+					args = append(args, "--enforce")
+				}
+				args = append(args, fixturePath)
+				cmd := exec.Command(binary, args...)
+				cmd.Dir = root
+				cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+				out, runErr := cmd.Output()
+				exitCode := 0
+				if runErr != nil {
+					var exitErr *exec.ExitError
+					if !errors.As(runErr, &exitErr) {
+						t.Fatalf("run hook: %v", runErr)
+					}
+					exitCode = exitErr.ExitCode()
+				}
+				outcome, detail := inspectHookEnforcementResponse(out, nonce)
+				if detail != "" {
+					t.Fatalf("hook response is not protocol-shaped: %s\n%s", detail, out)
+				}
+				wantExit, ok := hookPostureExpectedExit(posture, outcome)
+				if !ok || exitCode != wantExit {
+					t.Fatalf("hook posture=%s outcome=%s exit=%d, want supported outcome and exit=%d", posture, outcome, exitCode, wantExit)
+				}
+
+				if homeState == "missing" {
+					if _, err := os.Lstat(homePath); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("hook created missing incompatible home: %v", err)
+					}
+					return
+				}
+				manifestAfter, err := os.ReadFile(filepath.Join(homePath, home.ManifestName))
+				if err != nil || string(manifestAfter) != string(manifestBefore) {
+					t.Fatalf("hook changed incompatible manifest: body=%q err=%v", manifestAfter, err)
+				}
+				entries, err := os.ReadDir(homePath)
+				if err != nil || len(entries) != 1 || entries[0].Name() != home.ManifestName {
+					t.Fatalf("hook wrote into incompatible home: entries=%v err=%v", entries, err)
+				}
+			})
+		}
+	}
+}
+
+func TestSessionEndAdapterCompatibilityFailureStaysProtocolShapedAndWriteFree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and executes the compound binary: skipped in -short mode")
+	}
+	binary := compoundTestBinary(t)
+	for _, homeState := range []string{"missing", "incompatible"} {
+		t.Run(homeState, func(t *testing.T) {
+			root := t.TempDir()
+			homePath := filepath.Join(root, ".compound")
+			var manifestBefore []byte
+			if homeState == "incompatible" {
+				homePath = incompatibleCanonicalHome(t)
+				var err error
+				manifestBefore, err = os.ReadFile(filepath.Join(homePath, home.ManifestName))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			cmd := exec.Command(binary, "hook", "session-end-adapter", "--live", "--harness", "claude_code")
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+			cmd.Stdin = strings.NewReader(`{"hook_event_name":"SessionEnd","session_id":"session_compatibility_probe"}`)
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("session-end adapter must fail open through native response: %v\n%s", err, out)
+			}
+			var response map[string]any
+			if err := json.Unmarshal(out, &response); err != nil || response == nil {
+				t.Fatalf("session-end adapter response is not protocol-shaped: body=%q err=%v", out, err)
+			}
+
+			if homeState == "missing" {
+				if _, err := os.Lstat(homePath); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("session-end adapter created missing incompatible home: %v", err)
+				}
+				return
+			}
+			manifestAfter, err := os.ReadFile(filepath.Join(homePath, home.ManifestName))
+			if err != nil || string(manifestAfter) != string(manifestBefore) {
+				t.Fatalf("session-end adapter changed incompatible manifest: body=%q err=%v", manifestAfter, err)
+			}
+			entries, err := os.ReadDir(homePath)
+			if err != nil || len(entries) != 1 || entries[0].Name() != home.ManifestName {
+				t.Fatalf("session-end adapter wrote into incompatible home: entries=%v err=%v", entries, err)
+			}
+		})
+	}
+}
+
+func TestLiveContextHookCompatibilityFailureNeverFallsThroughToHomeAwareWriters(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and executes the compound binary: skipped in -short mode")
+	}
+	binary := compoundTestBinary(t)
+	for _, homeState := range []string{"missing", "incompatible"} {
+		t.Run(homeState, func(t *testing.T) {
+			root := t.TempDir()
+			homePath := filepath.Join(root, ".compound")
+			var manifestBefore []byte
+			if homeState == "incompatible" {
+				homePath = incompatibleCanonicalHome(t)
+				var err error
+				manifestBefore, err = os.ReadFile(filepath.Join(homePath, home.ManifestName))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			cmd := exec.Command(binary, "hook", "session-start", "--live", "--harness", "claude_code")
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+			cmd.Stdin = strings.NewReader(`{"hook_event_name":"SessionStart","session_id":"session_compatibility_probe","cwd":"` + root + `"}`)
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("live context hook must fail open through native response: %v\n%s", err, out)
+			}
+			var response map[string]any
+			if err := json.Unmarshal(out, &response); err != nil || response == nil {
+				t.Fatalf("live context hook response is not protocol-shaped: body=%q err=%v", out, err)
+			}
+			rootEntries, err := os.ReadDir(root)
+			if err != nil || len(rootEntries) != 0 {
+				t.Fatalf("empty-home hook fell through to a cwd-relative writer: entries=%v err=%v", rootEntries, err)
+			}
+
+			if homeState == "missing" {
+				if _, err := os.Lstat(homePath); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("live context hook created missing incompatible home: %v", err)
+				}
+				return
+			}
+			manifestAfter, err := os.ReadFile(filepath.Join(homePath, home.ManifestName))
+			if err != nil || string(manifestAfter) != string(manifestBefore) {
+				t.Fatalf("live context hook changed incompatible manifest: body=%q err=%v", manifestAfter, err)
+			}
+			entries, err := os.ReadDir(homePath)
+			if err != nil || len(entries) != 1 || entries[0].Name() != home.ManifestName {
+				t.Fatalf("live context hook wrote into incompatible home: entries=%v err=%v", entries, err)
+			}
+		})
 	}
 }
 
@@ -184,6 +539,86 @@ func TestDispatchCompatibilityGateUsesLocalHomeForLocalMutation(t *testing.T) {
 	info, statErr := os.Lstat(localHome)
 	if statErr != nil || info.Mode().Perm() != 0o755 {
 		t.Fatalf("local compatibility failure changed home mode: info=%v err=%v", info, statErr)
+	}
+}
+
+func TestDispatchCompatibilityGateUsesExplicitHomeAroundCommand(t *testing.T) {
+	childMode := os.Getenv(homeManifestCompatibilityChildEnv)
+	selectedHome := os.Getenv(homeManifestCompatibilityHomeEnv)
+	if childMode == "explicit-home-after-command" {
+		os.Args = []string{"compound", "home", "--home", selectedHome, "private-custody", "repair"}
+		main()
+		return
+	}
+	if childMode == "explicit-home-before-command" {
+		os.Args = []string{"compound", "--home", selectedHome, "home", "private-custody", "repair"}
+		main()
+		return
+	}
+
+	ambientHome := filepath.Join(t.TempDir(), "ambient")
+	if err := home.Init(ambientHome, "ambient-profile", time.Unix(0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"explicit-home-after-command", "explicit-home-before-command"} {
+		t.Run(mode, func(t *testing.T) {
+			selected := incompatibleCanonicalHome(t)
+			manifestPath := filepath.Join(selected, home.ManifestName)
+			before, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(os.Args[0], "-test.run=^TestDispatchCompatibilityGateUsesExplicitHomeAroundCommand$/"+mode+"$")
+			cmd.Env = append(os.Environ(),
+				homeManifestCompatibilityChildEnv+"="+mode,
+				homeManifestCompatibilityHomeEnv+"="+selected,
+				"COMPOUND_HOME="+ambientHome,
+			)
+			out, runErr := cmd.CombinedOutput()
+			assertHomeManifestCompatibilityCLIError(t, runErr, out, "manifest kind")
+			after, readErr := os.ReadFile(manifestPath)
+			if readErr != nil || !bytes.Equal(after, before) {
+				t.Fatalf("explicit-home refusal changed selected manifest: body=%q err=%v", after, readErr)
+			}
+		})
+	}
+}
+
+func TestDispatchCompatibilityGateDoesNotNormalizeHomeFlagTokens(t *testing.T) {
+	childMode := os.Getenv(homeManifestCompatibilityChildEnv)
+	selectedHome := os.Getenv(homeManifestCompatibilityHomeEnv)
+	if childMode == "padded-home-flag" {
+		os.Args = []string{"compound", "home", "private-custody", "repair", " --home ", selectedHome}
+		main()
+		return
+	}
+
+	ambientHome := incompatibleCanonicalHome(t)
+	manifestPath := filepath.Join(ambientHome, home.ManifestName)
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := filepath.Join(t.TempDir(), "selected")
+	if err := home.Init(selected, home.HomeKindGlobal, time.Unix(0, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDispatchCompatibilityGateDoesNotNormalizeHomeFlagTokens$")
+	cmd.Env = append(os.Environ(),
+		homeManifestCompatibilityChildEnv+"=padded-home-flag",
+		homeManifestCompatibilityHomeEnv+"="+selected,
+		"COMPOUND_HOME="+ambientHome,
+	)
+	out, runErr := cmd.CombinedOutput()
+	assertHomeManifestCompatibilityCLIError(t, runErr, out, "manifest kind")
+	after, readErr := os.ReadFile(manifestPath)
+	if readErr != nil || !bytes.Equal(after, before) {
+		t.Fatalf("padded --home admission changed ambient manifest: body=%q err=%v", after, readErr)
+	}
+	entries, readDirErr := os.ReadDir(ambientHome)
+	if readDirErr != nil || len(entries) != 1 || entries[0].Name() != home.ManifestName {
+		t.Fatalf("padded --home admission mutated ambient home: entries=%v err=%v", entries, readDirErr)
 	}
 }
 

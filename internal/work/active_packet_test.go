@@ -65,7 +65,14 @@ func TestActivePacketProofReportsClosedPacketChain(t *testing.T) {
 }
 
 func TestActivePacketProofReportsArchivedClosedPacketChain(t *testing.T) {
-	s := newStore(t)
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := home.Init(homePath, "test", fixedNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	s, err := Open(homePath)
+	if err != nil {
+		t.Fatalf("open initialized store: %v", err)
+	}
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
 	writeContextPack(t, s, "ctx_packet")
 	imported, err := s.ImportPacket(packetPath, PacketImportOptions{
@@ -98,9 +105,6 @@ func TestActivePacketProofReportsArchivedClosedPacketChain(t *testing.T) {
 	}, fixedNow.Add(4*time.Second))
 	if err != nil {
 		t.Fatalf("close packet work: %v", err)
-	}
-	if err := home.Init(s.home, "test", fixedNow); err != nil {
-		t.Fatalf("init home: %v", err)
 	}
 	if _, err := home.ArchiveOperationalHistory(s.home, home.OperationalArchiveOptions{Kinds: []string{"work"}}, fixedNow.Add(5*time.Second)); err != nil {
 		t.Fatalf("archive terminal work: %v", err)

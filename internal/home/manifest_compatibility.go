@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -260,30 +261,76 @@ func recoverOwnedInitManifestStaging(root *os.Root, homePath string) error {
 	if err != nil {
 		return err
 	}
+	type residue struct {
+		name  string
+		base  string
+		depth int
+		info  os.FileInfo
+	}
+	residues := make([]residue, 0)
 	for _, entry := range entries {
 		name := entry.Name()
-		if !isManifestInitStagingName(name) {
+		base, depth, ok := recoverableManifestInitStagingName(name)
+		if !ok {
 			continue
 		}
 		display := filepath.Join(homePath, name)
-		if err := removeRootedRegularFileDurableValidatedAt(
-			root,
-			name,
-			display,
-			"home init manifest staging residue",
-			nil,
-			func(info os.FileInfo) error {
-				if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-					return fmt.Errorf("home init manifest staging residue must be a regular non-symlink file: %s", display)
-				}
-				if !manifestInitResidueOwnedByCurrent(info) {
-					return fmt.Errorf("home init manifest staging residue must be current-user-owned: %s", display)
-				}
-				return nil
-			},
-		); err != nil {
-			return fmt.Errorf("recover interrupted home init manifest staging: %w", err)
+		info, err := root.Lstat(name)
+		if err != nil {
+			return fmt.Errorf("inspect interrupted home init manifest staging: %w", err)
 		}
+		if err := validateManifestInitRecoveryResidue(info, display); err != nil {
+			return err
+		}
+		residues = append(residues, residue{name: name, base: base, depth: depth, info: info})
+	}
+	sort.Slice(residues, func(i, j int) bool {
+		if residues[i].base != residues[j].base {
+			return residues[i].base < residues[j].base
+		}
+		return residues[i].depth > residues[j].depth
+	})
+	for start := 0; start < len(residues); {
+		end := start + 1
+		for end < len(residues) && residues[end].base == residues[start].base {
+			if !os.SameFile(residues[start].info, residues[end].info) {
+				return fmt.Errorf("interrupted home init manifest staging names do not identify one owned residue; preserve them for recovery: %s", filepath.Join(homePath, residues[start].base))
+			}
+			end++
+		}
+		for _, candidate := range residues[start:end] {
+			candidate := candidate
+			display := filepath.Join(homePath, candidate.name)
+			if err := removeRootedRegularFileDurableValidatedAt(
+				root,
+				candidate.name,
+				display,
+				"home init manifest staging residue",
+				nil,
+				func(info os.FileInfo) error {
+					if err := validateManifestInitRecoveryResidue(info, display); err != nil {
+						return err
+					}
+					if !os.SameFile(candidate.info, info) {
+						return fmt.Errorf("home init manifest staging residue identity changed before recovery: %s", display)
+					}
+					return nil
+				},
+			); err != nil {
+				return fmt.Errorf("recover interrupted home init manifest staging: %w", err)
+			}
+		}
+		start = end
+	}
+	return nil
+}
+
+func validateManifestInitRecoveryResidue(info os.FileInfo, display string) error {
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("home init manifest staging residue must be a regular non-symlink file: %s", display)
+	}
+	if !manifestInitResidueOwnedByCurrent(info) {
+		return fmt.Errorf("home init manifest staging residue must be current-user-owned: %s", display)
 	}
 	return nil
 }
@@ -341,8 +388,39 @@ func writeRootedInitManifest(root *os.Root, manifestBytes []byte, homePath strin
 		return cleanup(fmt.Errorf("publish home manifest without replacement: %w", err))
 	}
 	published = true
+	if err := validateFreshManifestPublicationRoot(root, homePath, tempName, publication); err != nil {
+		if rollbackErr := publication.Rollback(); rollbackErr != nil {
+			return fmt.Errorf("home manifest publication is ambiguous after the home root was populated during initialization; preserve the home for recovery: %w", errors.Join(err, rollbackErr))
+		}
+		return err
+	}
 	if err := publication.Commit(); err != nil {
 		return fmt.Errorf("home manifest was published but publication finalization is ambiguous; preserve the home for recovery: %w", err)
+	}
+	return nil
+}
+
+func validateFreshManifestPublicationRoot(root *os.Root, homePath, ownedStagingName string, publication *RootedFileCAS) error {
+	if err := publication.validateLinkedPublication(); err != nil {
+		return fmt.Errorf("validate newly published home manifest identity: %w", err)
+	}
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == ManifestName || name == ownedStagingName {
+			continue
+		}
+		if isManifestInitStagingName(name) {
+			info, statErr := root.Lstat(name)
+			if statErr == nil && info.Mode()&os.ModeSymlink == 0 && info.Mode().IsRegular() &&
+				info.Mode().Perm() == 0o644 && manifestInitResidueOwnedByCurrent(info) {
+				continue
+			}
+		}
+		return fmt.Errorf("home root was populated during initialization; refusing to adopt or rewrite it: %s", filepath.Join(homePath, name))
 	}
 	return nil
 }
@@ -415,4 +493,16 @@ func isManifestInitStagingName(name string) bool {
 		}
 	}
 	return true
+}
+
+func recoverableManifestInitStagingName(name string) (base string, removalDepth int, ok bool) {
+	base = name
+	for strings.HasSuffix(base, ".remove-pending") {
+		base = strings.TrimSuffix(base, ".remove-pending")
+		removalDepth++
+	}
+	if !isManifestInitStagingName(base) {
+		return "", 0, false
+	}
+	return base, removalDepth, true
 }

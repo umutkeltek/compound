@@ -22,6 +22,65 @@ type firstPartyCommandRule struct {
 	subcommandFlags map[string]map[string]FirstPartyCommandAdmission
 }
 
+// FirstPartyCommandSpec is executable-registry admission metadata before it is
+// compiled into the catalog used at dispatch. The executable owns handlers;
+// policy owns how their command, subcommand, and flag postures compose.
+type FirstPartyCommandSpec struct {
+	Admission               FirstPartyCommandAdmission
+	SubcommandAdmission     map[string]FirstPartyCommandAdmission
+	SubcommandFlagAdmission map[string]map[string]FirstPartyCommandAdmission
+}
+
+func NewFirstPartyCommandSpec(admission FirstPartyCommandAdmission) FirstPartyCommandSpec {
+	return FirstPartyCommandSpec{Admission: validFirstPartyAdmission(admission)}
+}
+
+func (spec FirstPartyCommandSpec) WithSubcommand(
+	subcommand string,
+	admission FirstPartyCommandAdmission,
+) FirstPartyCommandSpec {
+	next := spec.clone()
+	if next.SubcommandAdmission == nil {
+		next.SubcommandAdmission = map[string]FirstPartyCommandAdmission{}
+	}
+	next.SubcommandAdmission[subcommand] = validFirstPartyAdmission(admission)
+	return next
+}
+
+func (spec FirstPartyCommandSpec) WithSubcommandFlag(
+	subcommand string,
+	flag string,
+	admission FirstPartyCommandAdmission,
+) FirstPartyCommandSpec {
+	next := spec.clone()
+	if next.SubcommandFlagAdmission == nil {
+		next.SubcommandFlagAdmission = map[string]map[string]FirstPartyCommandAdmission{}
+	}
+	if next.SubcommandFlagAdmission[subcommand] == nil {
+		next.SubcommandFlagAdmission[subcommand] = map[string]FirstPartyCommandAdmission{}
+	}
+	next.SubcommandFlagAdmission[subcommand][flag] = validFirstPartyAdmission(admission)
+	return next
+}
+
+func (spec FirstPartyCommandSpec) clone() FirstPartyCommandSpec {
+	next := FirstPartyCommandSpec{
+		Admission:               spec.Admission,
+		SubcommandAdmission:     make(map[string]FirstPartyCommandAdmission, len(spec.SubcommandAdmission)),
+		SubcommandFlagAdmission: make(map[string]map[string]FirstPartyCommandAdmission, len(spec.SubcommandFlagAdmission)),
+	}
+	for subcommand, admission := range spec.SubcommandAdmission {
+		next.SubcommandAdmission[subcommand] = admission
+	}
+	for subcommand, flags := range spec.SubcommandFlagAdmission {
+		next.SubcommandFlagAdmission[subcommand] = make(map[string]FirstPartyCommandAdmission, len(flags))
+		for flag, admission := range flags {
+			next.SubcommandFlagAdmission[subcommand][flag] = admission
+		}
+	}
+	return next
+}
+
 // FirstPartyCommandCatalog is the shell monitor's read-only view of the
 // executable Compound CLI registry. It deliberately knows command names and
 // admission posture, including the small number of flags that make an otherwise
@@ -44,6 +103,23 @@ func NewFirstPartyCommandCatalog(commands map[string]FirstPartyCommandAdmission)
 			continue
 		}
 		catalog.commands[name] = firstPartyCommandRule{admission: validFirstPartyAdmission(admission)}
+	}
+	return catalog
+}
+
+func NewFirstPartyCommandCatalogFromSpecs(specs map[string]FirstPartyCommandSpec) FirstPartyCommandCatalog {
+	commands := make(map[string]FirstPartyCommandAdmission, len(specs))
+	for name, spec := range specs {
+		commands[name] = spec.Admission
+	}
+	catalog := NewFirstPartyCommandCatalog(commands)
+	for name, spec := range specs {
+		catalog = catalog.WithSubcommands(name, spec.SubcommandAdmission)
+		for subcommand, flags := range spec.SubcommandFlagAdmission {
+			for flag, admission := range flags {
+				catalog = catalog.WithSubcommandFlagAdmission(name, subcommand, flag, admission)
+			}
+		}
 	}
 	return catalog
 }
@@ -72,7 +148,7 @@ func (c FirstPartyCommandCatalog) LookupSubcommandWithFlags(
 	subcommand = strings.ToLower(strings.TrimSpace(subcommand))
 	if flagAdmissions := rule.subcommandFlags[subcommand]; len(flagAdmissions) > 0 {
 		for _, arg := range args {
-			if admission, exists := flagAdmissions[strings.ToLower(strings.TrimSpace(arg))]; exists {
+			if admission, exists := flagAdmissions[arg]; exists {
 				return admission, true
 			}
 		}
@@ -88,10 +164,15 @@ func (c FirstPartyCommandCatalog) LookupSubcommandWithFlags(
 // remain available for recovery. Init and restore enforce compatibility at
 // their own fresh-target boundaries.
 func (c FirstPartyCommandCatalog) RequireHomeCompatibility(command string, args []string) error {
-	if firstPartyUsageRequested(args) {
+	command = strings.ToLower(strings.TrimSpace(command))
+	subcommand := firstPartySubcommand(args)
+	// cmdHome and cmdHookInstall check hasUsageFlag before resolving a home or
+	// dispatching any mutation. Bind these exemptions to those exact parsers
+	// instead of treating help as a global admission bypass for handlers that
+	// may ignore it.
+	if firstPartyUsageRequested(args) && (command == "home" || (command == "hook" && subcommand == "install")) {
 		return nil
 	}
-	subcommand := firstPartySubcommand(args)
 	admission, ok := c.LookupSubcommandWithFlags(command, subcommand, args)
 	if !ok {
 		return fmt.Errorf("command %q has no first-party admission metadata", command)
@@ -99,13 +180,25 @@ func (c FirstPartyCommandCatalog) RequireHomeCompatibility(command string, args 
 	if admission == FirstPartyCommandRead {
 		return nil
 	}
-	command = strings.ToLower(strings.TrimSpace(command))
 	if command == "home" && (subcommand == "" || subcommand == "init" || subcommand == "restore") {
 		return nil
 	}
+	// Runtime hooks own a protocol-shaped fail-open/deny response. Letting a
+	// generic pre-dispatch error replace that response makes the harness treat
+	// an unavailable home as silence. The hook composition root separately
+	// proves compatibility before it gives the hook any writable home path.
+	if command == "hook" && firstPartyRuntimeHook(subcommand, args) {
+		return nil
+	}
 	homePath, err := homepkg.Resolve("")
-	if command == "home" && firstPartyFlagPresent(args, "--local") {
-		homePath, err = homepkg.LocalPath()
+	if command == "home" {
+		if explicitHome, ok, selectionErr := firstPartyHomeFlagValue(args); selectionErr != nil {
+			return selectionErr
+		} else if ok {
+			homePath, err = homepkg.Resolve(explicitHome)
+		} else if firstPartyFlagPresent(args, "--local") {
+			homePath, err = homepkg.LocalPath()
+		}
 	}
 	if err != nil {
 		return err
@@ -114,7 +207,15 @@ func (c FirstPartyCommandCatalog) RequireHomeCompatibility(command string, args 
 }
 
 func firstPartySubcommand(args []string) string {
-	for _, arg := range args {
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		switch arg {
+		case "--home", "--archive", "--target":
+			if index+1 < len(args) {
+				index++
+			}
+			continue
+		}
 		arg = strings.TrimSpace(arg)
 		if arg != "" && arg != "--" && !strings.HasPrefix(arg, "-") {
 			return strings.ToLower(arg)
@@ -123,8 +224,39 @@ func firstPartySubcommand(args []string) string {
 	return ""
 }
 
+func firstPartyHomeFlagValue(args []string) (string, bool, error) {
+	selected := ""
+	found := false
+	for index := 0; index < len(args); index++ {
+		if args[index] != "--home" {
+			continue
+		}
+		if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+			return "", false, fmt.Errorf("--home requires a non-blank value")
+		}
+		selected = args[index+1]
+		found = true
+		index++
+	}
+	return selected, found, nil
+}
+
 func firstPartyUsageRequested(args []string) bool {
 	return firstPartyFlagPresent(args, "-h") || firstPartyFlagPresent(args, "--help")
+}
+
+func firstPartyRuntimeHook(subcommand string, args []string) bool {
+	switch strings.ToLower(strings.TrimSpace(subcommand)) {
+	case "session-start", "user-prompt-submit", "pre-tool-use", "post-tool-use", "session-end", "stop":
+		return true
+	case "session-end-adapter":
+		// Live SessionEnd is a native hook callback and must fail open with its
+		// protocol response. Explicit replay is an operator mutation and keeps
+		// the ordinary compatibility gate.
+		return firstPartyFlagPresent(args, "--live")
+	default:
+		return false
+	}
 }
 
 func firstPartyFlagPresent(args []string, flag string) bool {
@@ -170,7 +302,7 @@ func (c FirstPartyCommandCatalog) WithSubcommandFlagAdmission(
 		return next
 	}
 	subcommand = strings.ToLower(strings.TrimSpace(subcommand))
-	flag = strings.ToLower(strings.TrimSpace(flag))
+	flag = strings.TrimSpace(flag)
 	if subcommand == "" || flag == "" {
 		return next
 	}

@@ -557,13 +557,21 @@ remain valid. Legacy v0.1 manifests without `kind` are readable and normalized
 only in memory; their bytes are never silently rewritten. Init validates an
 existing manifest before mutation and revalidates it through the pinned home
 root before scaffolding. Every non-read command admission checks the selected
-home before dispatch, while init, restore, and read-only recovery diagnostics
-retain their explicit boundaries. Doctor and typed compatibility errors report
-whether the home manifest or archive envelope failed, with a backup-first,
-restore-to-a-new-absent-target recovery path. Backup pins the exact manifest
-bytes before walking and verification checks both envelope metadata and those
-embedded bytes. Fresh identity and interrupted-init quarantine publication use
-atomic no-replace operations; a partial or raced write never becomes authority.
+home before dispatch or delegates that check to a narrower protocol boundary;
+read-only flags match exact, case-sensitive tokens and help bypasses admission only for handlers
+that prove help returns before mutation.
+Runtime hooks preserve their harness response contract when a home is missing
+or incompatible: they receive no writable home path, emit a protocol-shaped
+fail-open or deny result, and persist nothing there. Init, restore, and
+read-only recovery diagnostics retain their explicit boundaries. Doctor and
+typed compatibility errors report whether the home manifest or archive
+envelope failed, with a backup-first, restore-to-a-new-absent-target recovery
+path. Backup pins the exact manifest bytes before walking and verification
+checks both envelope metadata and those embedded bytes. Fresh identity and
+interrupted-init quarantine publication use atomic no-replace operations; a
+retry can reclaim exact owned staging-removal quarantine chains, while fresh
+publication still treats those quarantine names as concurrent population. A
+partial or raced write never becomes authority.
 
 ```text
 compound home backup [--target archive.tar.gz]

@@ -261,6 +261,40 @@ func TestInitDoesNotAdoptPopulatedManifestlessDirectory(t *testing.T) {
 	}
 }
 
+func TestInitRollsBackFreshManifestWhenRootIsPopulatedBeforePublication(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	markerBody := []byte("foreign content\n")
+	oldBeforePublish := initManifestBeforePublish
+	t.Cleanup(func() { initManifestBeforePublish = oldBeforePublish })
+	initManifestBeforePublish = func(root *os.Root, _ string, _ []byte) error {
+		marker, err := root.OpenFile("foreign-marker", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		if _, err := marker.Write(markerBody); err != nil {
+			_ = marker.Close()
+			return err
+		}
+		return errors.Join(marker.Sync(), marker.Close())
+	}
+
+	err := Init(homePath, HomeKindGlobal, time.Unix(0, 0))
+	if err == nil || !strings.Contains(err.Error(), "populated during initialization") {
+		t.Fatalf("Init error = %v, want concurrent-population refusal", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(homePath, ManifestName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("Init adopted concurrently populated root: %v", statErr)
+	}
+	got, readErr := os.ReadFile(filepath.Join(homePath, "foreign-marker"))
+	if readErr != nil || !bytes.Equal(got, markerBody) {
+		t.Fatalf("foreign marker changed: body=%q err=%v", got, readErr)
+	}
+	entries, readDirErr := os.ReadDir(homePath)
+	if readDirErr != nil || len(entries) != 1 || entries[0].Name() != "foreign-marker" {
+		t.Fatalf("failed init left non-foreign entries: entries=%v err=%v", entries, readDirErr)
+	}
+}
+
 func TestLoadManifestAndDoctorRejectIncompatibleManifestWithRecoveryGuidance(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -722,6 +756,138 @@ func TestInitRetriesPastOwnedManifestStagingResidue(t *testing.T) {
 	}
 }
 
+func TestInitRetriesPastOwnedManifestStagingRemovalResidue(t *testing.T) {
+	baseName := manifestInitStagingPrefix + "0123456789abcdef0123456789abcdef"
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, homePath string)
+	}{
+		{
+			name: "quarantine only",
+			setup: func(t *testing.T, homePath string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(homePath, baseName+".remove-pending"), []byte("interrupted cleanup"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "original and quarantine hardlink",
+			setup: func(t *testing.T, homePath string) {
+				t.Helper()
+				originalPath := filepath.Join(homePath, baseName)
+				if err := os.WriteFile(originalPath, []byte("interrupted publication"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Link(originalPath, originalPath+".remove-pending"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "repeated quarantine suffix",
+			setup: func(t *testing.T, homePath string) {
+				t.Helper()
+				name := baseName + ".remove-pending.remove-pending"
+				if err := os.WriteFile(filepath.Join(homePath, name), []byte("repeated interrupted cleanup"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			homePath := filepath.Join(t.TempDir(), ".compound")
+			if err := os.Mkdir(homePath, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			tc.setup(t, homePath)
+
+			if err := Init(homePath, HomeKindGlobal, time.Unix(0, 0)); err != nil {
+				t.Fatalf("Init with owned staging removal residue: %v", err)
+			}
+			if _, err := LoadManifest(homePath); err != nil {
+				t.Fatalf("LoadManifest after staging-removal recovery: %v", err)
+			}
+			entries, err := os.ReadDir(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), manifestInitStagingPrefix) {
+					t.Fatalf("Init retry left staging removal residue %q", entry.Name())
+				}
+			}
+		})
+	}
+}
+
+func TestInitRefusesSplitManifestStagingRemovalChainWithoutRemovingEither(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := os.Mkdir(homePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	baseName := manifestInitStagingPrefix + "0123456789abcdef0123456789abcdef"
+	originalPath := filepath.Join(homePath, baseName)
+	quarantinePath := originalPath + ".remove-pending"
+	originalBody := []byte("original inode must survive")
+	quarantineBody := []byte("different quarantine inode must survive")
+	if err := os.WriteFile(originalPath, originalBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(quarantinePath, quarantineBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Init(homePath, HomeKindGlobal, time.Unix(0, 0))
+	if err == nil || !strings.Contains(err.Error(), "do not identify one owned residue") {
+		t.Fatalf("Init split staging removal chain error = %v", err)
+	}
+	for path, want := range map[string][]byte{
+		originalPath:   originalBody,
+		quarantinePath: quarantineBody,
+	} {
+		got, readErr := os.ReadFile(path)
+		if readErr != nil || !bytes.Equal(got, want) {
+			t.Fatalf("split staging removal chain changed %s: body=%q err=%v", path, got, readErr)
+		}
+	}
+	if _, statErr := os.Lstat(filepath.Join(homePath, ManifestName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("Init published manifest beside split staging removal chain: %v", statErr)
+	}
+}
+
+func TestInitFreshPublicationDoesNotAdoptStagingRemovalName(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	residueName := manifestInitStagingPrefix + "0123456789abcdef0123456789abcdef.remove-pending"
+	residueBody := []byte("concurrent population must survive")
+	oldBeforePublish := initManifestBeforePublish
+	t.Cleanup(func() { initManifestBeforePublish = oldBeforePublish })
+	initManifestBeforePublish = func(root *os.Root, _ string, _ []byte) error {
+		file, err := root.OpenFile(residueName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		if _, err := file.Write(residueBody); err != nil {
+			_ = file.Close()
+			return err
+		}
+		return errors.Join(file.Sync(), file.Close())
+	}
+
+	err := Init(homePath, HomeKindGlobal, time.Unix(0, 0))
+	if err == nil || !strings.Contains(err.Error(), "populated during initialization") {
+		t.Fatalf("Init fresh-publication removal-name error = %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(homePath, ManifestName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("Init adopted a concurrent staging-removal name: %v", statErr)
+	}
+	residuePath := filepath.Join(homePath, residueName)
+	if got, readErr := os.ReadFile(residuePath); readErr != nil || !bytes.Equal(got, residueBody) {
+		t.Fatalf("concurrent staging-removal residue changed: body=%q err=%v", got, readErr)
+	}
+}
+
 func TestInitRefusesSymlinkManifestStagingResidueWithoutRemovingIt(t *testing.T) {
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := os.Mkdir(homePath, 0o700); err != nil {
@@ -914,73 +1080,81 @@ func TestInitNeverReplacesManifestPublishedByConcurrentInitializer(t *testing.T)
 }
 
 func TestConcurrentInitPublishesExactlyOneManifestWithoutAdoption(t *testing.T) {
-	homePath := filepath.Join(t.TempDir(), ".compound")
-	ready := make(chan struct{}, 2)
-	release := make(chan struct{})
-	released := false
-	t.Cleanup(func() {
-		if !released {
-			close(release)
-		}
-	})
-	oldBeforePublish := initManifestBeforePublish
-	t.Cleanup(func() { initManifestBeforePublish = oldBeforePublish })
-	initManifestBeforePublish = func(*os.Root, string, []byte) error {
-		ready <- struct{}{}
-		<-release
-		return nil
-	}
-	type result struct {
-		kind string
-		err  error
-	}
-	results := make(chan result, 2)
-	for index, kind := range []string{HomeKindGlobal, HomeKindLocal} {
-		go func(index int, kind string) {
-			results <- result{kind: kind, err: Init(homePath, kind, time.Unix(int64(index), 0))}
-		}(index, kind)
-	}
-	for range 2 {
-		select {
-		case <-ready:
-		case <-time.After(5 * time.Second):
-			t.Fatal("concurrent Init did not both reach the publication boundary")
-		}
-	}
-	close(release)
-	released = true
-
-	var succeeded, failed []result
-	for range 2 {
-		select {
-		case got := <-results:
-			if got.err == nil {
-				succeeded = append(succeeded, got)
-			} else {
-				failed = append(failed, got)
+	for attempt := range 20 {
+		t.Run(fmt.Sprintf("attempt-%02d", attempt), func(t *testing.T) {
+			homePath := filepath.Join(t.TempDir(), ".compound")
+			lockContended := instrumentInitRootLockContention(t)
+			ready := make(chan struct{}, 1)
+			release := make(chan struct{})
+			released := false
+			t.Cleanup(func() {
+				if !released {
+					close(release)
+				}
+			})
+			oldBeforePublish := initManifestBeforePublish
+			t.Cleanup(func() { initManifestBeforePublish = oldBeforePublish })
+			initManifestBeforePublish = func(*os.Root, string, []byte) error {
+				ready <- struct{}{}
+				<-release
+				return nil
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("concurrent Init did not return")
-		}
-	}
-	if len(succeeded) != 1 || len(failed) != 1 {
-		t.Fatalf("concurrent Init results: succeeded=%+v failed=%+v", succeeded, failed)
-	}
-	manifest, err := LoadManifest(homePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifest.HomeKind != succeeded[0].kind {
-		t.Fatalf("published kind = %q, successful initializer = %q", manifest.HomeKind, succeeded[0].kind)
-	}
-	entries, err := os.ReadDir(homePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), manifestInitStagingPrefix) {
-			t.Fatalf("concurrent Init left staging entry %q", entry.Name())
-		}
+			type result struct {
+				kind string
+				err  error
+			}
+			results := make(chan result, 2)
+			for index, kind := range []string{HomeKindGlobal, HomeKindLocal} {
+				go func(index int, kind string) {
+					results <- result{kind: kind, err: Init(homePath, kind, time.Unix(int64(index), 0))}
+				}(index, kind)
+			}
+			select {
+			case <-ready:
+			case <-time.After(5 * time.Second):
+				t.Fatal("concurrent Init did not reach the publication boundary")
+			}
+			select {
+			case <-lockContended:
+			case <-time.After(5 * time.Second):
+				t.Fatal("concurrent Init did not contend on the pinned directory lock")
+			}
+			close(release)
+			released = true
+
+			var succeeded, failed []result
+			for range 2 {
+				select {
+				case got := <-results:
+					if got.err == nil {
+						succeeded = append(succeeded, got)
+					} else {
+						failed = append(failed, got)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("concurrent Init did not return")
+				}
+			}
+			if len(succeeded) != 1 || len(failed) != 1 {
+				t.Fatalf("concurrent Init results: succeeded=%+v failed=%+v", succeeded, failed)
+			}
+			manifest, err := LoadManifest(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if manifest.HomeKind != succeeded[0].kind {
+				t.Fatalf("published kind = %q, successful initializer = %q", manifest.HomeKind, succeeded[0].kind)
+			}
+			entries, err := os.ReadDir(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), manifestInitStagingPrefix) {
+					t.Fatalf("concurrent Init left staging entry %q", entry.Name())
+				}
+			}
+		})
 	}
 }
 

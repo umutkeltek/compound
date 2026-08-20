@@ -335,7 +335,14 @@ func TestWorkbenchRecentOrdersByCompletionTimeNotWorkID(t *testing.T) {
 }
 
 func TestWorkbenchExcludesArchivedWorkByDefaultAndResolvesByID(t *testing.T) {
-	s := newStore(t)
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := home.Init(homePath, "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready work stays hot"}, fixedNow)
 	if err != nil {
 		t.Fatal(err)
@@ -360,9 +367,6 @@ func TestWorkbenchExcludesArchivedWorkByDefaultAndResolvesByID(t *testing.T) {
 		Changed:   true,
 		ProofRefs: []string{"proof:archive"},
 	}, fixedNow); err != nil {
-		t.Fatal(err)
-	}
-	if err := home.Init(s.home, "test", fixedNow); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := home.ArchiveOperationalHistory(s.home, home.OperationalArchiveOptions{Kinds: []string{"work"}}, fixedNow.Add(time.Hour)); err != nil {

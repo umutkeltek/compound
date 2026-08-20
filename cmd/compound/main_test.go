@@ -102,7 +102,7 @@ func containsString(set []string, v string) bool {
 func TestPrepareGlobalArgs(t *testing.T) {
 	t.Run("strips home and sets absolute environment", func(t *testing.T) {
 		t.Setenv("COMPOUND_HOME", "fallback-home")
-		got, err := prepareGlobalArgs([]string{"work", "show", "--home", "relative-home", "work_123", "--json"})
+		got, err := home.PrepareGlobalCLIArgs([]string{"work", "show", "--home", "relative-home", "work_123", "--json"})
 		if err != nil {
 			t.Fatalf("prepare global args: %v", err)
 		}
@@ -121,7 +121,7 @@ func TestPrepareGlobalArgs(t *testing.T) {
 
 	t.Run("rejects missing home value", func(t *testing.T) {
 		t.Setenv("COMPOUND_HOME", "fallback-home")
-		if _, err := prepareGlobalArgs([]string{"work", "show", "--home"}); err == nil {
+		if _, err := home.PrepareGlobalCLIArgs([]string{"work", "show", "--home"}); err == nil {
 			t.Fatal("trailing --home must fail")
 		}
 		if got := os.Getenv("COMPOUND_HOME"); got != "fallback-home" {
@@ -131,7 +131,7 @@ func TestPrepareGlobalArgs(t *testing.T) {
 
 	t.Run("rejects blank home value", func(t *testing.T) {
 		t.Setenv("COMPOUND_HOME", "fallback-home")
-		if _, err := prepareGlobalArgs([]string{"work", "show", "--home", "  "}); err == nil {
+		if _, err := home.PrepareGlobalCLIArgs([]string{"work", "show", "--home", "  "}); err == nil {
 			t.Fatal("blank --home value must fail")
 		}
 		if got := os.Getenv("COMPOUND_HOME"); got != "fallback-home" {
@@ -142,7 +142,7 @@ func TestPrepareGlobalArgs(t *testing.T) {
 	t.Run("passes non-home args through untouched", func(t *testing.T) {
 		t.Setenv("COMPOUND_HOME", "fallback-home")
 		input := []string{"work", "show", "--home=elsewhere", "work_123", "--json"}
-		got, err := prepareGlobalArgs(input)
+		got, err := home.PrepareGlobalCLIArgs(input)
 		if err != nil {
 			t.Fatalf("prepare global args: %v", err)
 		}
@@ -7174,8 +7174,8 @@ func TestHookPreToolUseHoldsDirtySourceControlMutation(t *testing.T) {
 	// gate-review mint still fires — see internal/hook's scope+dedup guard.
 	repo := initCompoundCommandGitRepo(t)
 	homePath := filepath.Join(repo, ".compound")
-	if err := os.MkdirAll(homePath, 0o755); err != nil {
-		t.Fatal(err)
+	if err := home.Init(homePath, home.HomeKindLocal, cliTestNow); err != nil {
+		t.Fatalf("init compatible hook home: %v", err)
 	}
 	t.Setenv("COMPOUND_HOME", homePath)
 	target := filepath.Join(repo, "README.md")
@@ -7384,6 +7384,9 @@ func TestHookPreToolUseEnforceBlocksPlacementGuard(t *testing.T) {
 func TestPolicyPlacementRulesAuthorityFeedsPreToolUse(t *testing.T) {
 	homePath := t.TempDir()
 	userHome := t.TempDir()
+	if err := home.Init(homePath, home.HomeKindGlobal, cliTestNow); err != nil {
+		t.Fatalf("init compatible placement-policy home: %v", err)
+	}
 	t.Setenv("COMPOUND_HOME", homePath)
 	t.Setenv("HOME", userHome)
 	t.Setenv("PLACEMENT_GUARD_MODE", "block")

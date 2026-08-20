@@ -122,10 +122,20 @@ type liveHookParityRecord struct {
 }
 
 func loadHookFixture(parsed hookCommandArgs, now time.Time) (hook.Fixture, error) {
-	return loadHookFixtureForHome(parsed, now, "")
+	if parsed.Live {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return hook.Fixture{}, err
+		}
+		return liveHookFixture(parsed, data, now)
+	}
+	return loadRecordedHookFixture(parsed)
 }
 
 func loadHookFixtureForHome(parsed hookCommandArgs, now time.Time, homePath string) (hook.Fixture, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return hook.Fixture{}, fmt.Errorf("home-aware hook fixture load requires compatible home")
+	}
 	if parsed.Live {
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -133,6 +143,10 @@ func loadHookFixtureForHome(parsed hookCommandArgs, now time.Time, homePath stri
 		}
 		return liveHookFixtureForHome(parsed, data, now, homePath)
 	}
+	return loadRecordedHookFixture(parsed)
+}
+
+func loadRecordedHookFixture(parsed hookCommandArgs) (hook.Fixture, error) {
 	data, err := readHookFixtureReference(parsed.FixturePath)
 	if err != nil {
 		return hook.Fixture{}, err
@@ -153,17 +167,29 @@ func readHookFixtureReference(ref string) ([]byte, error) {
 }
 
 func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.Fixture, error) {
-	return liveHookFixtureForHome(parsed, data, now, "")
+	return buildLiveHookFixture(parsed, data, now, "", false)
 }
 
 func liveHookFixtureForHome(parsed hookCommandArgs, data []byte, now time.Time, homePath string) (hook.Fixture, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return hook.Fixture{}, fmt.Errorf("home-aware live hook fixture requires compatible home")
+	}
+	return buildLiveHookFixture(parsed, data, now, homePath, true)
+}
+
+func buildLiveHookFixture(parsed hookCommandArgs, data []byte, now time.Time, homePath string, homeAware bool) (hook.Fixture, error) {
 	var in claudeLiveHookInput
 	if err := json.Unmarshal(data, &in); err != nil {
 		return hook.Fixture{}, fmt.Errorf("parse live hook stdin: %w", err)
 	}
-	activeSources, sourceEffects, err := liveIngressSourcesForHome(homePath, parsed.Harness, parsed.HookName, in, now)
-	if err != nil {
-		return hook.Fixture{}, err
+	var activeSources []envelope.SourceEnvelope
+	var sourceEffects []string
+	if homeAware {
+		var err error
+		activeSources, sourceEffects, err = liveIngressSourcesForHome(homePath, parsed.Harness, parsed.HookName, in, now)
+		if err != nil {
+			return hook.Fixture{}, err
+		}
 	}
 	in.SourceEnvelopes = mergeLiveSourceEnvelopes(activeSources, in.SourceEnvelopes)
 	fx := hook.Fixture{
@@ -181,19 +207,27 @@ func liveHookFixtureForHome(parsed hookCommandArgs, data []byte, now time.Time, 
 	if fx.Cwd == "" {
 		fx.Cwd = os.Getenv("CLAUDE_PROJECT_DIR")
 	}
-	coordination, err := resolveLiveCoordinationDelivery(homePath, fx.Harness, parsed.HookName, in)
-	if err != nil {
-		return hook.Fixture{}, err
-	}
-	if coordination != nil {
-		fx.CoordinationDelivery = coordination
-		fx.WorkID = coordination.Recipient.WorkID
-		in.WorkID = coordination.Recipient.WorkID
-		in.CompoundWorkID = ""
+	if homeAware {
+		coordination, err := resolveLiveCoordinationDelivery(homePath, fx.Harness, parsed.HookName, in)
+		if err != nil {
+			return hook.Fixture{}, err
+		}
+		if coordination != nil {
+			fx.CoordinationDelivery = coordination
+			fx.WorkID = coordination.Recipient.WorkID
+			in.WorkID = coordination.Recipient.WorkID
+			in.CompoundWorkID = ""
+		}
 	}
 	switch parsed.HookName {
 	case "pre-tool-use":
-		actions, err := liveActionIntentsForHome(homePath, fx.Harness, in, now)
+		var actions []envelope.ActionIntent
+		var err error
+		if homeAware {
+			actions, err = liveActionIntentsForHome(homePath, fx.Harness, in, now)
+		} else {
+			actions, err = liveActionIntents(fx.Harness, in, now)
+		}
 		if err != nil {
 			return hook.Fixture{}, err
 		}

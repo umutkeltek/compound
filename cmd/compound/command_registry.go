@@ -15,17 +15,12 @@ import (
 )
 
 type compoundCommand struct {
-	Admission               policy.FirstPartyCommandAdmission
-	SubcommandAdmission     map[string]policy.FirstPartyCommandAdmission
-	SubcommandFlagAdmission map[string]map[string]policy.FirstPartyCommandAdmission
-	Run                     func([]string)
+	policy.FirstPartyCommandSpec
+	Run func([]string)
 }
 
-func registeredCommand(
-	admission policy.FirstPartyCommandAdmission,
-	run func([]string),
-) compoundCommand {
-	return compoundCommand{Admission: admission, Run: run}
+func registeredCommand(admission policy.FirstPartyCommandAdmission, run func([]string)) compoundCommand {
+	return compoundCommand{FirstPartyCommandSpec: policy.NewFirstPartyCommandSpec(admission), Run: run}
 }
 
 func heldCommand(run func([]string)) compoundCommand {
@@ -40,29 +35,13 @@ func governedCommand(run func([]string)) compoundCommand {
 	return registeredCommand(policy.FirstPartyCommandGoverned, run)
 }
 
-func (command compoundCommand) withSubcommandAdmission(
-	subcommand string,
-	admission policy.FirstPartyCommandAdmission,
-) compoundCommand {
-	if command.SubcommandAdmission == nil {
-		command.SubcommandAdmission = map[string]policy.FirstPartyCommandAdmission{}
-	}
-	command.SubcommandAdmission[subcommand] = admission
+func (command compoundCommand) withSubcommandAdmission(subcommand string, admission policy.FirstPartyCommandAdmission) compoundCommand {
+	command.FirstPartyCommandSpec = command.FirstPartyCommandSpec.WithSubcommand(subcommand, admission)
 	return command
 }
 
-func (command compoundCommand) withSubcommandFlagAdmission(
-	subcommand string,
-	flag string,
-	admission policy.FirstPartyCommandAdmission,
-) compoundCommand {
-	if command.SubcommandFlagAdmission == nil {
-		command.SubcommandFlagAdmission = map[string]map[string]policy.FirstPartyCommandAdmission{}
-	}
-	if command.SubcommandFlagAdmission[subcommand] == nil {
-		command.SubcommandFlagAdmission[subcommand] = map[string]policy.FirstPartyCommandAdmission{}
-	}
-	command.SubcommandFlagAdmission[subcommand][flag] = admission
+func (command compoundCommand) withSubcommandFlagAdmission(subcommand, flag string, admission policy.FirstPartyCommandAdmission) compoundCommand {
+	command.FirstPartyCommandSpec = command.FirstPartyCommandSpec.WithSubcommandFlag(subcommand, flag, admission)
 	return command
 }
 
@@ -186,13 +165,14 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"profiles": heldCommand(cmdProfiles).
 			withSubcommandAdmission("check", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("generate", policy.FirstPartyCommandGoverned),
-		"memory":          heldCommand(cmdMemory),
-		"corpus":          heldCommand(cmdCorpus),
-		"synthesis":       heldCommand(cmdSynthesis),
-		"knowledge":       heldCommand(cmdKnowledge),
-		"sessions":        heldCommand(cmdSessions),
-		"distiller":       heldCommand(cmdDistiller),
-		"capability":      heldCommand(cmdCapability),
+		"memory":    heldCommand(cmdMemory),
+		"corpus":    heldCommand(cmdCorpus),
+		"synthesis": heldCommand(cmdSynthesis),
+		"knowledge": heldCommand(cmdKnowledge),
+		"sessions":  heldCommand(cmdSessions),
+		"distiller": heldCommand(cmdDistiller),
+		"capability": heldCommand(cmdCapability).
+			withSubcommandFlagAdmission("import-skills", "--dry-run", policy.FirstPartyCommandRead),
 		"bench":           heldCommand(cmdBench),
 		"latent-tax":      heldCommand(cmdLatentTax),
 		"behavioral-lens": heldCommand(cmdBehavioralLens),
@@ -236,20 +216,9 @@ func compoundCommandRegistry() map[string]compoundCommand {
 
 func firstPartyCommandCatalog() policy.FirstPartyCommandCatalog {
 	registry := compoundCommandRegistry()
-	commands := make(map[string]policy.FirstPartyCommandAdmission, len(registry))
+	specs := make(map[string]policy.FirstPartyCommandSpec, len(registry))
 	for name, command := range registry {
-		commands[name] = command.Admission
+		specs[name] = command.FirstPartyCommandSpec
 	}
-	catalog := policy.NewFirstPartyCommandCatalog(commands)
-	for name, command := range registry {
-		if len(command.SubcommandAdmission) > 0 {
-			catalog = catalog.WithSubcommands(name, command.SubcommandAdmission)
-		}
-		for subcommand, flagAdmissions := range command.SubcommandFlagAdmission {
-			for flag, admission := range flagAdmissions {
-				catalog = catalog.WithSubcommandFlagAdmission(name, subcommand, flag, admission)
-			}
-		}
-	}
-	return catalog
+	return policy.NewFirstPartyCommandCatalogFromSpecs(specs)
 }
