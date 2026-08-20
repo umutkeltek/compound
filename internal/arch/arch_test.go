@@ -1586,7 +1586,7 @@ func TestPublicAlphaSupportedScopeContractFailsWhenBoundaryStatementsDrift(t *te
 		"never mutation-ready",
 		"the only supported public-alpha backend",
 		"Current blockers",
-		"mutations are enabled by default",
+		"projection-only by default",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("failure should name missing %q: %+v", want, findings)

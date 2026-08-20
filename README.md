@@ -41,10 +41,9 @@ system. Its intended boundary (target contract):
 - interactive hooks may observe; enforcement claims require behavioral proof;
 - the console is projection-only, with mutations and private reads off.
 
-The runtime is being hardened to enforce that boundary. Until each hardening
-commit lands, current behavior is more permissive than the target, and the
-contract names those gaps instead of papering over them: console mutations
-are enabled by default today.
+The runtime enforces the projection-only console default. Mutation and private
+read adapters remain explicit local opt-ins outside the supported alpha
+console surface.
 
 Postgres-backed storage, shared homes, server/multi-tenant use, remote or
 proxied console, and arbitrary private embedding endpoints are unsupported.

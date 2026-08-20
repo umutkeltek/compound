@@ -56,7 +56,9 @@ launchd label owns only process supervision.
 
 Optional local-only gates:
 
-- `COMPOUND_CONSOLE_MUTATIONS=1` is necessary but not sufficient for POST
+- `compound console --operator` is projection-only. `--mutations` explicitly
+  sets `COMPOUND_CONSOLE_MUTATIONS=1`; that environment value is necessary but
+  not sufficient for POST
   mutation routes. The serving process must also start with an explicit
   `COMPOUND_HOME`; otherwise the console stays copy-command/read-only and the
   API fails closed.

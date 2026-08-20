@@ -3,11 +3,11 @@
 > The console is a **local, operator-owned** web dashboard on port 3777. It
 > reads from `COMPOUND_HOME` through the `compound` CLI — it never owns
 > meaning and never becomes a second authority. It is a **projection**: a
-> rebuildable view over the spine's objects. Mutations flow only through the
-> DEC-0021 gated path: `POST /api/decision/execute` refuses every call unless
-> `COMPOUND_CONSOLE_MUTATIONS=1` is set and the request is a same-origin
-> localhost call carrying the console session token — every act remains a
-> human click through a governed argv allowlist.
+> rebuildable view over the spine's objects. The default launcher leaves both
+> mutations and private fallbacks disabled. `--mutations` is an explicit local
+> opt-in; even then, `POST /api/decision/execute` still requires a same-origin
+> localhost request carrying the console session token, and every act remains
+> a human click through a governed argv allowlist.
 
 ## Quick start
 
@@ -17,6 +17,11 @@ bun install
 compound console --operator
 # → http://localhost:3777
 ```
+
+This default is projection-only. A trusted local operator may opt into the
+existing governed mutation adapter with `compound console --operator
+--mutations`; that opt-in is outside the supported public-alpha console
+surface.
 
 Or using the package.json scripts:
 

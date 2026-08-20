@@ -71,10 +71,9 @@ marker. Ancestor discovery remains available only as a non-authoritative
 read-only compatibility API; mutating commands require an explicit
 `--home`, `COMPOUND_HOME`, or `--local` selection.
 
-- Console mutations are enabled by default, and private reads are an opt-in
-  flag. The console is not yet projection-only by default; mutations and
-  private reads being reachable is a current blocker until the
-  projection-only default and the deny-first access policy land.
+- The console launcher is projection-only by default. Mutations and private
+  reads require separate explicit local opt-ins and remain outside the
+  supported public-alpha console surface.
 - Enforcement is observed, not yet behaviorally proven per launch profile. A
   configured binary is not mutation-ready without a fresh nonce-bound
   behavioral probe for the exact profile; until that proof exists for a

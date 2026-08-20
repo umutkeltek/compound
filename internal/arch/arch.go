@@ -2080,10 +2080,10 @@ func checkASCDailySignalsPublicBoundaryContract(repoRoot string) []Finding {
 // projection-only with mutations/private reads off; and Postgres, shared
 // homes, server/multi-tenant use, remote/proxied console, and arbitrary
 // private embedding endpoints are unsupported. It also pins the honesty
-// phrases: the contract must name the remaining current blockers (console
-// mutations are enabled by default) so the public docs never claim a
-// hardening fix before it lands. The earlier ancestor-authority blocker is
-// closed by the strict resolver and is no longer a "current blocker" entry.
+// phrases: the contract must name any remaining current blockers, while the
+// projection-only console default is pinned as current behavior rather than a
+// future promise. The earlier ancestor-authority and console-default blockers
+// are closed and are no longer "current blocker" entries.
 func checkPublicAlphaSupportedScopeContract(repoRoot string) []Finding {
 	requiredByFile := map[string][]string{
 		"docs/security/supported-scope.md": {
@@ -2101,7 +2101,7 @@ func checkPublicAlphaSupportedScopeContract(repoRoot string) []Finding {
 			"proxied console",
 			"private embedding endpoints",
 			"Current blockers",
-			"mutations are enabled by default",
+			"projection-only by default",
 		},
 		"README.md": {
 			"Supported Scope (Public Alpha)",
@@ -2136,7 +2136,7 @@ func checkPublicAlphaSupportedScopeContract(repoRoot string) []Finding {
 		sort.Strings(failures)
 		return []Finding{{"public-alpha-supported-scope-contract", Fail, "public-alpha supported scope drifted: " + strings.Join(failures, "; ")}}
 	}
-	return []Finding{{"public-alpha-supported-scope-contract", Info, "public docs keep the public-alpha support boundary: file backend only, one trusted user, explicit home authority, proven enforcement, projection-only console target, current blockers named"}}
+	return []Finding{{"public-alpha-supported-scope-contract", Info, "public docs keep the public-alpha support boundary: file backend only, one trusted user, explicit home authority, proven enforcement, projection-only console default, current blockers named"}}
 }
 
 // checkReviewSurfaceCoverageContract keeps review queues from drifting back into

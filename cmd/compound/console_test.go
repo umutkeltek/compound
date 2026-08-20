@@ -701,7 +701,7 @@ func TestConsoleCompoundBinKeepsStableExecutable(t *testing.T) {
 	}
 }
 
-func TestConsoleOperatorDryRunWiresLocalMutationEnv(t *testing.T) {
+func TestConsoleOperatorDryRunIsProjectionOnlyByDefault(t *testing.T) {
 	root := t.TempDir()
 	consoleDir := filepath.Join(root, "console")
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
@@ -724,7 +724,7 @@ func TestConsoleOperatorDryRunWiresLocalMutationEnv(t *testing.T) {
 	if err := json.Unmarshal([]byte(out[start:]), &plan); err != nil {
 		t.Fatalf("parse console launch plan: %v\n%s", err, out)
 	}
-	if plan.Mode != "operator" || !plan.DryRun || !plan.MutationsEnabled || plan.PrivateFallbacks {
+	if plan.Mode != "operator" || !plan.DryRun || plan.MutationsEnabled || plan.PrivateFallbacks {
 		t.Fatalf("operator launch flags = %+v", plan)
 	}
 	if got, want := plan.Command, []string{"bun", "run", "next", "dev", "-H", "127.0.0.1", "-p", "3777"}; !sameStringSlice(got, want) {
@@ -734,10 +734,49 @@ func TestConsoleOperatorDryRunWiresLocalMutationEnv(t *testing.T) {
 		t.Fatalf("console_dir = %q, want %q", plan.ConsoleDir, consoleDir)
 	}
 	if plan.Env["COMPOUND_HOME"] != homePath ||
-		plan.Env["COMPOUND_CONSOLE_MUTATIONS"] != "1" ||
+		plan.Env["COMPOUND_CONSOLE_MUTATIONS"] != "0" ||
 		strings.TrimSpace(plan.Env["COMPOUND_BIN"]) == "" ||
-		plan.Env["COMPOUND_CONSOLE_PRIVATE_FALLBACKS"] != "" {
+		plan.Env["COMPOUND_CONSOLE_PRIVATE_FALLBACKS"] != "0" {
 		t.Fatalf("env = %+v", plan.Env)
+	}
+	t.Setenv("COMPOUND_CONSOLE_MUTATIONS", "1")
+	t.Setenv("COMPOUND_CONSOLE_PRIVATE_FALLBACKS", "1")
+	launched := consoleLaunchEnv(plan.Env)
+	for _, want := range []string{
+		"COMPOUND_CONSOLE_MUTATIONS=0",
+		"COMPOUND_CONSOLE_PRIVATE_FALLBACKS=0",
+	} {
+		if !containsString(launched, want) {
+			t.Fatalf("launch environment inherited an unsafe parent value; missing %q in %v", want, launched)
+		}
+	}
+}
+
+func TestConsoleOperatorDryRunRequiresExplicitMutationOptIn(t *testing.T) {
+	root := t.TempDir()
+	consoleDir := filepath.Join(root, "console")
+	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{"scripts":{"dev":"next dev -p 3777"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	homePath := filepath.Join(root, ".compound")
+	t.Setenv("COMPOUND_HOME", homePath)
+
+	out := captureStdout(t, func() {
+		cmdConsole([]string{"--operator", "--mutations", "--console-dir", consoleDir, "--dry-run", "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("console dry-run missing JSON:\n%s", out)
+	}
+	var plan consoleLaunchPlan
+	if err := json.Unmarshal([]byte(out[start:]), &plan); err != nil {
+		t.Fatalf("parse console launch plan: %v\n%s", err, out)
+	}
+	if !plan.MutationsEnabled || plan.Env["COMPOUND_CONSOLE_MUTATIONS"] != "1" {
+		t.Fatalf("explicit mutation opt-in was not carried by launch plan: %+v", plan)
 	}
 }
 

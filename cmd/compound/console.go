@@ -77,6 +77,7 @@ func cmdConsole(args []string) {
 		args = args[1:]
 	}
 	operator := false
+	mutations := false
 	privateFallbacks := false
 	dryRun := false
 	jsonOut := false
@@ -86,6 +87,8 @@ func cmdConsole(args []string) {
 		switch args[i] {
 		case "--operator":
 			operator = true
+		case "--mutations":
+			mutations = true
 		case "--private-fallbacks":
 			privateFallbacks = true
 		case "--dry-run":
@@ -114,7 +117,7 @@ func cmdConsole(args []string) {
 		fmt.Fprintln(os.Stderr, "error: this lifecycle entrypoint requires an explicit COMPOUND_HOME; use compound console dev --operator when you intend the canonical default")
 		os.Exit(1)
 	}
-	plan, err := buildConsoleLifecycleLaunchPlan(lifecycle, consoleDirFlag, privateFallbacks, dryRun)
+	plan, err := buildConsoleLifecycleLaunchPlan(lifecycle, consoleDirFlag, mutations, privateFallbacks, dryRun)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -367,7 +370,7 @@ func reserveConsolePort(address string) (net.Listener, error) {
 }
 
 func consoleUsage() string {
-	return "usage: compound console [dev|build|serve] --operator [--require-explicit-home] [--console-dir DIR] [--private-fallbacks] [--dry-run] [--json] | compound console status [--json]"
+	return "usage: compound console [dev|build|serve] --operator [--require-explicit-home] [--console-dir DIR] [--mutations] [--private-fallbacks] [--dry-run] [--json] | compound console status [--json]"
 }
 
 func consoleCommandSummary(plan consoleLaunchPlan) string {
@@ -552,10 +555,10 @@ func validateConsoleProductionBuild(consoleDir string) error {
 }
 
 func buildConsoleLaunchPlan(consoleDirFlag string, privateFallbacks, dryRun bool) (consoleLaunchPlan, error) {
-	return buildConsoleLifecycleLaunchPlan(consoleLifecycleDev, consoleDirFlag, privateFallbacks, dryRun)
+	return buildConsoleLifecycleLaunchPlan(consoleLifecycleDev, consoleDirFlag, false, privateFallbacks, dryRun)
 }
 
-func buildConsoleLifecycleLaunchPlan(lifecycle, consoleDirFlag string, privateFallbacks, dryRun bool) (consoleLaunchPlan, error) {
+func buildConsoleLifecycleLaunchPlan(lifecycle, consoleDirFlag string, mutations, privateFallbacks, dryRun bool) (consoleLaunchPlan, error) {
 	if lifecycle != consoleLifecycleDev && lifecycle != consoleLifecycleBuild && lifecycle != consoleLifecycleServe {
 		return consoleLaunchPlan{}, fmt.Errorf("unknown console lifecycle %q", lifecycle)
 	}
@@ -570,10 +573,14 @@ func buildConsoleLifecycleLaunchPlan(lifecycle, consoleDirFlag string, privateFa
 	compoundExe, _ := os.Executable()
 	compoundBin := resolveConsoleCompoundBin(compoundExe, exec.LookPath)
 	env := map[string]string{
-		"COMPOUND_BIN":                compoundBin,
-		"COMPOUND_CONSOLE_BUILD_KIND": "development",
-		"COMPOUND_CONSOLE_MUTATIONS":  "1",
-		"COMPOUND_HOME":               homePath,
+		"COMPOUND_BIN":                       compoundBin,
+		"COMPOUND_CONSOLE_BUILD_KIND":        "development",
+		"COMPOUND_CONSOLE_MUTATIONS":         "0",
+		"COMPOUND_CONSOLE_PRIVATE_FALLBACKS": "0",
+		"COMPOUND_HOME":                      homePath,
+	}
+	if mutations {
+		env["COMPOUND_CONSOLE_MUTATIONS"] = "1"
 	}
 	command := []string{"bun", "run", "next", "dev", "-H", "127.0.0.1", "-p", "3777"}
 	if lifecycle == consoleLifecycleBuild {
@@ -595,7 +602,7 @@ func buildConsoleLifecycleLaunchPlan(lifecycle, consoleDirFlag string, privateFa
 		ConsoleDir:       consoleDir,
 		Command:          command,
 		Env:              env,
-		MutationsEnabled: true,
+		MutationsEnabled: mutations,
 		PrivateFallbacks: privateFallbacks,
 		DryRun:           dryRun,
 	}, nil
