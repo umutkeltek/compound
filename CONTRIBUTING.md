@@ -188,3 +188,7 @@ must match; close refuses a missing, mismatched, or rebased proof.
 
 Open an issue. Compound's architecture docs are thorough — start with
 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the reading order.
+Potential vulnerabilities must use the private reporting path in
+[`SECURITY.md`](./SECURITY.md) after that route is verified. Before then, a
+public issue may request a private channel but must not contain exploit details
+or private runtime data.

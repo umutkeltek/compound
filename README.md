@@ -39,16 +39,18 @@ system. Its intended boundary (target contract):
 - explicit home authority — ambient ancestor `.compound` discovery is not
   an authority target;
 - interactive hooks may observe; enforcement claims require behavioral proof;
-- the console is projection-only, with mutations and private reads off.
+- the console is projection-only; direct private reads are unavailable.
 
-The runtime enforces the projection-only console default. Mutation and private
-read adapters remain explicit local opt-ins outside the supported alpha
-console surface.
+The runtime enforces the projection-only console default. The unsupported
+mutation extension requires an explicit home and an out-of-band capability;
+it is outside the supported alpha console surface.
 
 Postgres-backed storage, shared homes, server/multi-tenant use, remote or
 proxied console, and arbitrary private embedding endpoints are unsupported.
 Full contract, including current blockers:
 [Supported Scope and Security Boundary](docs/security/supported-scope.md).
+See also the [support matrix](SUPPORT.md), [security policy](SECURITY.md),
+[recovery procedure](docs/operations/recovery.md), and [changelog](CHANGELOG.md).
 
 ## Quickstart
 
