@@ -20,6 +20,14 @@ session-end        → Receipt + Transition (what was learned, what changed)
 The harness calls Compound; Compound never calls the harness. This is
 **hooks-as-clients**: the harness is the client, Compound is the authority.
 
+Every task-scoped CLI orientation path (`orient`, `contract compile`, and
+`intent plan`) validates its client identity before repo detection or runtime
+materialization. Dashed aliases resolve to the canonical HarnessRegistry name,
+and the requested working directory must resolve to an existing directory.
+Unknown harnesses and fictitious workspaces fail without persisting a
+ContextPack or EffectiveContract. Operator orientation is a separate aggregate
+view and intentionally does not impersonate a task harness or project root.
+
 ## One semantic front door
 
 Choose the posture in Compound terms, not in vendor event names:

@@ -91,6 +91,13 @@ cd /path/to/your/project
 compound orient --harness claude-code --cwd . --task "describe what this project does"
 ```
 
+Orientation is bound to real identities before it writes anything. Compound
+resolves the harness through its registry (`claude-code` becomes the canonical
+`claude_code` identity), resolves `--cwd` to an absolute symlink-free existing
+directory, and refuses unknown harnesses, missing paths, or files used as a
+workspace. A successful ContextPack therefore describes a registered harness
+and a real project directory rather than a caller-supplied fiction.
+
 You'll see a JSON ContextPack. Key fields:
 
 - `summary_md` — plain-language orientation summary

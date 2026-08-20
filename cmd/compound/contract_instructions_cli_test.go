@@ -37,6 +37,11 @@ func TestContractCompileInstructionsCheckFailsOnDriftAndPassesOnExactBlock(t *te
 	}
 	repoRoot := t.TempDir()
 	target := filepath.Join(repoRoot, "AGENTS.md")
+	canonicalRepoRoot, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalTarget := filepath.Join(canonicalRepoRoot, "AGENTS.md")
 	if err := os.WriteFile(target, []byte("# unmanaged\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +65,7 @@ func TestContractCompileInstructionsCheckFailsOnDriftAndPassesOnExactBlock(t *te
 	if err := json.NewDecoder(bytes.NewReader(driftOutput)).Decode(&drift); err != nil {
 		t.Fatalf("parse drift render: %v\n%s", err, driftOutput)
 	}
-	if !drift.Drifted || drift.Content == "" || drift.TargetPath != target {
+	if !drift.Drifted || drift.Content == "" || drift.TargetPath != canonicalTarget {
 		t.Fatalf("drift render = %+v", drift)
 	}
 	if err := os.WriteFile(target, []byte("# unmanaged\n\n"+drift.Content), 0o644); err != nil {

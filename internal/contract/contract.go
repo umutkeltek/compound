@@ -257,7 +257,7 @@ func DetectRepoKind(cwd string) (kind, via string) {
 // ResolveRepoKind picks the repo kind: explicit flag wins, else a committed marker,
 // else the product default. `via` explains the source for the contract's record.
 func DetectRepoKindFromRegistry(reg RepoKindRegistry, registryPath, cwd string) (kind, via string) {
-	cwdAbs, err := filepath.Abs(expandPath(cwd))
+	cwdAbs, err := canonicalContainmentPath(expandPath(cwd))
 	if err != nil {
 		return "", ""
 	}
@@ -268,7 +268,7 @@ func DetectRepoKindFromRegistry(reg RepoKindRegistry, registryPath, cwd string) 
 			if !filepath.IsAbs(root) && registryPath != "" {
 				root = filepath.Join(filepath.Dir(registryPath), root)
 			}
-			rootAbs, err := filepath.Abs(root)
+			rootAbs, err := canonicalContainmentPath(root)
 			if err != nil || !isWithin(rootAbs, cwdAbs) {
 				continue
 			}
@@ -280,6 +280,27 @@ func DetectRepoKindFromRegistry(reg RepoKindRegistry, registryPath, cwd string) 
 		}
 	}
 	return kind, via
+}
+
+// canonicalContainmentPath keeps registry roots and orientation cwd values in
+// the same physical namespace. On platforms where a public temporary-path
+// prefix is itself a symlink, canonicalizing only the cwd makes a valid
+// registry root look unrelated to its child. Missing registry roots retain
+// their absolute lexical identity so existing declarative entries do not
+// become parse errors merely because a checkout is currently absent.
+func canonicalContainmentPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	canonical, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return filepath.Clean(canonical), nil
+	}
+	if os.IsNotExist(err) {
+		return filepath.Clean(abs), nil
+	}
+	return "", err
 }
 
 func ResolveRepoKindWithHome(homePath, flag, cwd string) (kind, via string, err error) {
@@ -315,6 +336,51 @@ type Input struct {
 	Mode              string // observe | plan | execute | review
 	Topic             string // optional topic slug; when set, ambient recall narrows to this topic's subtree. Empty = behavior unchanged.
 	ReadOnlyRetrieval bool   // transient callers may rank through breadth without capturing observed_fact proposals
+}
+
+// ResolveOrientationIdentity validates and canonicalizes the two identities
+// that anchor an orientation request before repo detection or runtime
+// materialization. An unknown harness must not silently fall through to the
+// generic capability profile, and a fictitious workspace must not produce a
+// ContextPack that looks like evidence of a real checkout.
+//
+// An empty harness is preserved for the CLI's usage-error path. Callers are
+// still required to supply a real cwd; parseOrientArgsWithHome fills the
+// process cwd when --cwd is omitted.
+func ResolveOrientationIdentity(in Input, registry harness.Registry) (Input, error) {
+	resolved := in
+	requestedHarness := strings.TrimSpace(in.Harness)
+	if requestedHarness != "" {
+		registered, ok := registry.Get(requestedHarness)
+		if !ok {
+			return Input{}, fmt.Errorf("orientation harness %q is not registered", requestedHarness)
+		}
+		resolved.Harness = registered.Name
+	} else {
+		resolved.Harness = ""
+	}
+
+	requestedCWD := in.Cwd
+	if strings.TrimSpace(requestedCWD) == "" {
+		return Input{}, errors.New("orientation cwd is unavailable: path is empty")
+	}
+	absCWD, err := filepath.Abs(requestedCWD)
+	if err != nil {
+		return Input{}, fmt.Errorf("orientation cwd %q is unavailable: %w", requestedCWD, err)
+	}
+	canonicalCWD, err := filepath.EvalSymlinks(absCWD)
+	if err != nil {
+		return Input{}, fmt.Errorf("orientation cwd %q is unavailable: %w", requestedCWD, err)
+	}
+	info, err := os.Stat(canonicalCWD)
+	if err != nil {
+		return Input{}, fmt.Errorf("orientation cwd %q is unavailable: %w", requestedCWD, err)
+	}
+	if !info.IsDir() {
+		return Input{}, fmt.Errorf("orientation cwd %q is not a directory", requestedCWD)
+	}
+	resolved.Cwd = filepath.Clean(canonicalCWD)
+	return resolved, nil
 }
 
 const installedHooksSchemaVersion = "compound.installed_hooks.v0.1"

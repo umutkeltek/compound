@@ -3493,21 +3493,14 @@ func emptyDash(s string) string {
 	return s
 }
 
-// parseOrientArgs reads the shared orientation flags and resolves the repo kind
-// (explicit flag > committed marker > product default). Path-independent by design.
-func parseOrientArgs(args []string) contract.Input {
-	in, _ := parseOrientArgsWithHome(args, "")
-	return in
-}
-
 func parseOrientArgsWithHome(args []string, homePath string) (contract.Input, error) {
-	var harness, cwd, task, repoKind, mode, topic string
+	var harnessName, cwd, task, repoKind, mode, topic string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--harness":
 			if i+1 < len(args) {
 				i++
-				harness = args[i]
+				harnessName = args[i]
 			}
 		case "--cwd":
 			if i+1 < len(args) {
@@ -3537,13 +3530,29 @@ func parseOrientArgsWithHome(args []string, homePath string) (contract.Input, er
 		}
 	}
 	if cwd == "" {
-		cwd, _ = os.Getwd()
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return contract.Input{}, fmt.Errorf("resolve orientation cwd: %w", err)
+		}
 	}
-	kind, via, err := contract.ResolveRepoKindWithHome(homePath, repoKind, cwd)
+	resolved, err := contract.ResolveOrientationIdentity(contract.Input{
+		Harness: harnessName,
+		Cwd:     cwd,
+		Task:    task,
+		Mode:    mode,
+		Topic:   topic,
+	}, harness.DefaultRegistry())
 	if err != nil {
 		return contract.Input{}, err
 	}
-	return contract.Input{Harness: harness, Cwd: cwd, Task: task, RepoKind: kind, RepoKindVia: via, Mode: mode, Topic: topic}, nil
+	kind, via, err := contract.ResolveRepoKindWithHome(homePath, repoKind, resolved.Cwd)
+	if err != nil {
+		return contract.Input{}, err
+	}
+	resolved.RepoKind = kind
+	resolved.RepoKindVia = via
+	return resolved, nil
 }
 
 func orientPolicy() contract.OrientationPolicy {
