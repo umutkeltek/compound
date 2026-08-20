@@ -32,19 +32,25 @@ Model output is not canon. Mutation requires an envelope and proof.
 ## Supported Scope (Public Alpha)
 
 The public alpha is a strictly scoped, file-backed, single-user development
-system:
+system. Its intended boundary (target contract):
 
 - file backend only — Postgres remains an experimental, never-authority fence;
 - one trusted OS user on local disk;
 - explicit or enrolled home authority — ambient ancestor `.compound`
   discovery is not an intended authority target;
 - interactive hooks may observe; enforcement claims require behavioral proof;
-- the console is projection-only by default, with mutations and private
-  reads disabled.
+- the console is projection-only, with mutations and private reads off.
+
+The runtime is being hardened to enforce that boundary. Until each hardening
+commit lands, current behavior is more permissive than the target, and the
+contract names those gaps instead of papering over them: ambient ancestor
+home discovery is still live today, and console mutations are enabled by
+default today.
 
 Postgres-backed storage, shared homes, server/multi-tenant use, remote or
 proxied console, and arbitrary private embedding endpoints are unsupported.
-Full contract: [Supported Scope and Security Boundary](docs/security/supported-scope.md).
+Full contract, including current blockers:
+[Supported Scope and Security Boundary](docs/security/supported-scope.md).
 
 ## Quickstart
 

@@ -3,12 +3,16 @@
 Status: public-alpha support contract, frozen 2026-08-10.
 
 This page defines the supported authority and runtime scope of the public
-alpha. Everything outside this boundary is unsupported, not merely
-undocumented. The architecture doctor pins these statements; runtime
-hardening lands the enforcement in focused commits, and this contract is the
-boundary those commits prove.
+alpha. It states the intended boundary as a **target contract**, and it is
+careful to separate that target from **current behavior**: where the runtime
+has not yet been hardened to enforce the boundary, the gap is named below as
+a current blocker, not described as if it were already closed. Everything
+outside this boundary is unsupported, not merely undocumented. The
+architecture doctor pins these statements; runtime hardening lands the
+enforcement in focused commits, and this contract is the boundary those
+commits prove.
 
-## Supported
+## Supported target contract
 
 ### File backend only
 
@@ -27,32 +31,52 @@ account, or a shared disk.
 
 ### Explicit or enrolled home authority
 
-Supported home authority is explicit: the `--home` flag, the `COMPOUND_HOME`
-environment variable, or a home the user enrolled. Ambient ancestor
-`.compound/manifest.yaml` discovery is not an intended authority target: a
-cloned repository or ancestor directory must never select policy,
+The supported home authority target is explicit: the `--home` flag, the
+`COMPOUND_HOME` environment variable, or a home the user enrolled.
+
+Ambient ancestor `.compound/manifest.yaml` discovery is not an intended authority target:
+a cloned repository or ancestor directory must never select policy,
 credentials, transports, storage, or harness authority merely because a
-manifest file exists. Until the strict resolver lands, pin `COMPOUND_HOME`
-(or `--home`) explicitly for mutating commands and treat repository-local
-`.compound` directories as untrusted input.
+manifest file exists.
 
 ### Hooks: observation by default, enforcement by proof
 
 Interactive hooks may observe: the default interactive posture records
 ActionIntent/PolicyDecision evidence and makes no containment claim.
-Enforcement claims require behavioral proof — an explicitly enforced
-isolated profile plus a nonce-bound behavioral probe (`compound doctor`) for
-the exact launch profile. A configured binary or installed hook is not
-mutation-ready by configuration alone. A harness that cannot synchronously
-deny before tool execution (currently OpenCode) is never mutation-ready.
+Enforcement claims require behavioral proof — an explicitly enforced isolated
+profile plus a nonce-bound behavioral probe (`compound doctor`) for the exact
+launch profile. A configured binary or installed hook is not mutation-ready
+by configuration alone. A harness that cannot synchronously deny before tool
+execution (currently OpenCode) is never mutation-ready.
 
 ### Console: projection-only by default
 
 The console is a local projection of spine objects for the single trusted
-user. The supported default is projection-only: mutations and private reads
-are disabled by default, and enabling either is an explicit, separately
-guarded opt-in. The supported console is not a shared, remote, or proxied
-surface.
+user. The supported target is projection-only: mutations and private reads
+are off, and enabling either is an explicit, separately guarded opt-in. The
+supported console is not a shared, remote, or proxied surface.
+
+## Current blockers (behavior not yet hardened)
+
+The target contract above is the boundary; the runtime does not enforce all
+of it yet. These gaps are named so the docs do not claim a fix already
+landed. Each is closed by a focused hardening commit, and until it is closed
+the target contract is a commitment, not a description of current behavior.
+
+- Ambient ancestor discovery still resolves a home. When no explicit home is
+  given, `compound` currently walks up to the nearest ancestor
+  `.compound/manifest.yaml`, so ambient ancestor authority is a current
+  blocker until the strict resolver lands. Until then, pin `COMPOUND_HOME`
+  (or `--home`) explicitly for mutating commands and treat repository-local
+  `.compound` directories as untrusted input.
+- Console mutations are enabled by default, and private reads are an opt-in
+  flag. The console is not yet projection-only by default; mutations and
+  private reads being reachable is a current blocker until the
+  projection-only default and the deny-first access policy land.
+- Enforcement is observed, not yet behaviorally proven per launch profile. A
+  configured binary is not mutation-ready without a fresh nonce-bound
+  behavioral probe for the exact profile; until that proof exists for a
+  profile, treat it as observation-only.
 
 ## Unsupported
 
@@ -74,4 +98,6 @@ posture observed there is not a defect report against this contract.
 This contract moves only through receipted changes: a supported-scope change
 lands together with the runtime proof that the boundary holds, and the
 architecture doctor fails when these statements drift out of the public
-docs.
+docs. When a current blocker is closed, the hardening commit that closes it
+updates this page in the same change, and the doctor's required phrases move
+with it.

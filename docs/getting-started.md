@@ -29,7 +29,8 @@ Hold the whole system as five places; each step below visits one:
 
 Compound's public alpha is a strictly scoped, file-backed, single-user
 system: file backend only, one trusted OS user on local disk, and explicit
-home authority. The full support and security boundary:
+home authority. The full support and security boundary — including the
+current hardening gaps the docs name rather than paper over:
 [`security/supported-scope.md`](./security/supported-scope.md).
 
 Optional (for the console): **Bun** and **Node 20+**.
