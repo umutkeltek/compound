@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -76,10 +78,142 @@ func TestRepairPrivateCustodyFixesDriftThenNoop(t *testing.T) {
 	}
 }
 
+func TestInitCreatesPrivateHomeRootIndependentOfUmask(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(homePath, "global", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("fresh home root mode = %04o, want 0700", info.Mode().Perm())
+	}
+}
+
+func TestInitSecuresExistingEmptyHomeRoot(t *testing.T) {
+	for _, mode := range []os.FileMode{0o755, 0o777} {
+		t.Run(fmt.Sprintf("%04o", mode), func(t *testing.T) {
+			homePath := t.TempDir()
+			if err := os.Chmod(homePath, mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := Init(homePath, "global", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Lstat(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0o700 {
+				t.Fatalf("secured existing empty root mode = %04o, want 0700", info.Mode().Perm())
+			}
+		})
+	}
+}
+
+func TestInitRefusesPopulatedPermissiveHomeRoot(t *testing.T) {
+	homePath := t.TempDir()
+	marker := filepath.Join(homePath, "existing")
+	if err := os.WriteFile(marker, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(homePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := Init(homePath, "global", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "existing populated home root must be mode 0700") {
+		t.Fatalf("populated permissive home init err = %v", err)
+	}
+	info, statErr := os.Lstat(homePath)
+	if statErr != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("populated root mode changed: mode=%v err=%v", info.Mode(), statErr)
+	}
+	got, readErr := os.ReadFile(marker)
+	if readErr != nil || string(got) != "keep" {
+		t.Fatalf("populated root marker changed: body=%q err=%v", got, readErr)
+	}
+}
+
+func TestInitKeepsOnePinnedRootThroughScaffolding(t *testing.T) {
+	parent := t.TempDir()
+	homePath := filepath.Join(parent, "home")
+	if err := os.Mkdir(homePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(parent, "moved-home")
+	replacementMarker := filepath.Join(homePath, "replacement")
+	oldHook := initAfterRootSecured
+	t.Cleanup(func() { initAfterRootSecured = oldHook })
+	initAfterRootSecured = func(string) error {
+		if err := os.Rename(homePath, moved); err != nil {
+			return err
+		}
+		if err := os.Mkdir(homePath, 0o700); err != nil {
+			return err
+		}
+		return os.WriteFile(replacementMarker, []byte("keep"), 0o600)
+	}
+	err := Init(homePath, "global", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "identity changed during initialization") {
+		t.Fatalf("root replacement init err = %v", err)
+	}
+	got, readErr := os.ReadFile(replacementMarker)
+	if readErr != nil || string(got) != "keep" {
+		t.Fatalf("replacement marker changed: body=%q err=%v", got, readErr)
+	}
+	if _, statErr := os.Lstat(filepath.Join(homePath, ManifestName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("replacement received manifest: %v", statErr)
+	}
+	if _, statErr := os.Lstat(filepath.Join(moved, ManifestName)); statErr != nil {
+		t.Fatalf("pinned original did not receive scaffold before drift refusal: %v", statErr)
+	}
+}
+
+func TestRepairPrivateCustodyDiagnosesAndRepairsHomeRootMode(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(homePath, "global", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(homePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	diagnosis := DiagnosePrivateCustody(homePath)
+	if diagnosis.OK || diagnosis.Status != "drift" {
+		t.Fatalf("0755 home root diagnosis = %+v", diagnosis)
+	}
+	if got := findPrivateCustodyFinding(t, diagnosis.Findings, "home_root"); got.Expected != "mode=0700" || got.Actual != "mode=0755" || got.Status != "drift" {
+		t.Fatalf("home root finding = %+v", got)
+	}
+	repair := RepairPrivateCustody(homePath, PrivateCustodyOptions{})
+	if !repair.OK || !repair.Changed || repair.Counts.Repaired == 0 {
+		t.Fatalf("home root repair = %+v", repair)
+	}
+	info, err := os.Lstat(homePath)
+	if err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("home root after repair mode=%v err=%v", info.Mode(), err)
+	}
+}
+
+func findPrivateCustodyFinding(t *testing.T, findings []PrivateCustodyFinding, kind string) PrivateCustodyFinding {
+	t.Helper()
+	for _, finding := range findings {
+		if finding.Kind == kind {
+			return finding
+		}
+	}
+	t.Fatalf("missing private custody finding kind %s: %+v", kind, findings)
+	return PrivateCustodyFinding{}
+}
+
 func TestInitCreatesMissingPrivateCustodyWithoutRepairingExistingDrift(t *testing.T) {
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	privatePath := filepath.Join(homePath, "private")
-	if err := os.MkdirAll(privatePath, 0o755); err != nil {
+	if err := os.Mkdir(homePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(privatePath, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(privatePath, 0o755); err != nil {

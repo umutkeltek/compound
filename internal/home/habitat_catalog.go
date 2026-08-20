@@ -2,6 +2,7 @@ package home
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -339,6 +340,10 @@ func InspectHabitat(homePath string) (HabitatInventory, error) {
 		}
 		return HabitatInventory{}, err
 	}
+	return inspectHabitatEntries(entries), nil
+}
+
+func inspectHabitatEntries(entries []fs.DirEntry) HabitatInventory {
 	knownRoots := map[string]HabitatEntry{}
 	knownFiles := map[string]HabitatEntry{}
 	for _, entry := range habitatEntries {
@@ -376,7 +381,7 @@ func InspectHabitat(homePath string) (HabitatInventory, error) {
 	sort.Strings(inventory.UnknownEntries)
 	sort.Strings(inventory.BridgeRoots)
 	inventory.OK = len(inventory.UnknownRoots) == 0 && len(inventory.UnknownEntries) == 0
-	return inventory, nil
+	return inventory
 }
 
 func habitatBackupIncluded(rel string, isDir bool) bool {

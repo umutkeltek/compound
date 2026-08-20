@@ -31,6 +31,8 @@ const (
 	BackupFreshnessMaxAge   = 48 * time.Hour
 )
 
+var initAfterRootSecured = func(string) error { return nil }
+
 // Manifest is the home's identity record.
 type Manifest struct {
 	SchemaVersion string   `yaml:"schema_version"`
@@ -229,19 +231,23 @@ func Init(homePath, kind string, now time.Time) error {
 	if kind == "" {
 		kind = "global"
 	}
-	if err := validateExistingHomeForPrivateInit(homePath); err != nil {
-		return fmt.Errorf("private custody home root: %w", err)
+	root, rootInfo, err := secureHomeRootForInit(homePath)
+	if err != nil {
+		return fmt.Errorf("secure home root: %w", err)
+	}
+	defer root.Close()
+	if err := initAfterRootSecured(homePath); err != nil {
+		return err
 	}
 	for _, d := range HabitatDirs() {
-		if err := os.MkdirAll(filepath.Join(homePath, d), 0o755); err != nil {
+		if err := ensureRootedInitDirectory(root, filepath.FromSlash(d), 0o755, filepath.Join(homePath, d)); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
-	if err := initializePrivateCustodyDirs(homePath); err != nil {
+	if err := initializePrivateCustodyDirsRooted(root, homePath); err != nil {
 		return fmt.Errorf("initialize private custody: %w", err)
 	}
-	mp := filepath.Join(homePath, ManifestName)
-	if _, err := os.Stat(mp); errors.Is(err, os.ErrNotExist) {
+	if info, err := root.Lstat(ManifestName); errors.Is(err, os.ErrNotExist) {
 		m := Manifest{
 			SchemaVersion: SchemaVersion,
 			HomeKind:      kind,
@@ -252,7 +258,83 @@ func Init(homePath, kind string, now time.Time) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(mp, b, 0o644); err != nil {
+		file, err := root.OpenFile(ManifestName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		_, writeErr := file.Write(b)
+		chmodErr := file.Chmod(0o644)
+		syncErr := file.Sync()
+		closeErr := file.Close()
+		if err := errors.Join(writeErr, chmodErr, syncErr, closeErr); err != nil {
+			return err
+		}
+		if err := syncRootedDirectory(root, ".", homePath, "home init"); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("manifest must be a regular non-symlink file")
+	}
+	opened, openErr := root.Stat(".")
+	pathInfo, pathErr := os.Lstat(homePath)
+	if err := errors.Join(openErr, pathErr); err != nil {
+		return err
+	}
+	if !os.SameFile(rootInfo, opened) || !os.SameFile(rootInfo, pathInfo) || pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.IsDir() || !ownedByCurrent(pathInfo) || pathInfo.Mode().Perm() != 0o700 {
+		return fmt.Errorf("compound home root identity changed during initialization: %s", homePath)
+	}
+	return nil
+}
+
+func ensureRootedInitDirectory(root *os.Root, rel string, mode os.FileMode, display string) error {
+	rel = filepath.Clean(rel)
+	if !filepath.IsLocal(rel) || rel == "." {
+		return fmt.Errorf("invalid habitat directory path %q", rel)
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	current := ""
+	for _, part := range parts {
+		if current == "" {
+			current = part
+		} else {
+			current = filepath.Join(current, part)
+		}
+		info, err := root.Lstat(current)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Errorf("habitat path must be a non-symlink directory: %s", display)
+			}
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := root.Mkdir(current, mode); err != nil {
+			return err
+		}
+		// The path was just created beneath the pinned private home root.
+		// Correct the process umask before opening or descending into it.
+		if err := root.Chmod(current, mode); err != nil {
+			return err
+		}
+		dir, err := root.Open(current)
+		if err != nil {
+			return err
+		}
+		opened, statErr := dir.Stat()
+		chmodErr := dir.Chmod(mode)
+		syncErr := dir.Sync()
+		closeErr := dir.Close()
+		final, finalErr := root.Lstat(current)
+		if err := errors.Join(statErr, chmodErr, syncErr, closeErr, finalErr); err != nil {
+			return err
+		}
+		if opened == nil || final == nil || !os.SameFile(opened, final) || final.Mode()&os.ModeSymlink != 0 || !final.IsDir() || final.Mode().Perm() != mode.Perm() {
+			return fmt.Errorf("habitat directory identity or mode changed during init: %s", display)
+		}
+		if err := syncRootedDirectory(root, filepath.Dir(current), display, "home init"); err != nil {
 			return err
 		}
 	}

@@ -553,7 +553,7 @@ Home durability is part of the runtime contract:
 ```text
 compound home backup [--target archive.tar.gz]
 compound home verify [archive.tar.gz]
-compound home restore archive.tar.gz --target <empty-home-path>
+compound home restore archive.tar.gz --target <new-absent-home-path>
 compound home archive-history --kind work|lease|review|comparison [--dry-run]   # --kind required to archive
 compound home restore-history (--all|--id ID...)
 compound home export --public-fixture [--target fixture.tar.gz]
@@ -563,6 +563,13 @@ compound home compact [--dry-run] [--rebuildable]
 `backup` stores catalog-classified durable owned state and intentionally excludes transient or
 rebuildable paths, while preserving behavior-bearing exceptions even when their historical parent is named
 `projections`. `compact --rebuildable` consults the same classification and cannot remove those exceptions.
+`restore` consumes one pinned archive handle into a private sibling staging directory, verifies checksums,
+home health, and private custody before atomically publishing to an absent target name on Darwin or Linux;
+an existing target is never reused or replaced, and other platforms fail closed before publication. Restore
+accepts backup archives only (never public fixtures), completes preflight before allocating staging, and on a
+post-staging failure reports and retains the exact empty `0700` staging directory for explicit cleanup. Fresh
+home roots are `0700`; an older permissive root is diagnosed by doctor and changes only through the explicit
+`compound home private-custody repair [--dry-run]` path.
 `export --public-fixture` emits only sanitized layout/manifest
 metadata, not private events, ledgers, context packs, or work records.
 `archive-history` moves terminal operational history out of hot surfaces into

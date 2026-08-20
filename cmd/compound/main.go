@@ -4008,7 +4008,7 @@ func cmdHome(args []string) {
 		}
 		targetPath := valueFlag(args, "--target")
 		if archivePath == "" || targetPath == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound home restore <archive.tar.gz> --target <empty-home-path>")
+			fmt.Fprintln(os.Stderr, "usage: compound home restore <archive.tar.gz> --target <new-absent-home-path>")
 			os.Exit(2)
 		}
 		report, err := home.RestoreArchive(archivePath, targetPath, time.Now())

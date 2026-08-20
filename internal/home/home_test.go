@@ -605,15 +605,14 @@ func TestExportPublicFixtureOmitsRuntimeData(t *testing.T) {
 			t.Fatalf("public fixture leaked private runtime entry %s", name)
 		}
 	}
-	restored := filepath.Join(t.TempDir(), ".compound-fixture")
-	if _, err := RestoreArchive(archivePath, restored, now); err != nil {
-		t.Fatal(err)
+	restoreParent := t.TempDir()
+	restored := filepath.Join(restoreParent, ".compound-fixture")
+	_, restoreErr := RestoreArchive(archivePath, restored, now)
+	if restoreErr == nil || !strings.Contains(restoreErr.Error(), "restore requires archive kind backup") {
+		t.Fatalf("restore public fixture err = %v", restoreErr)
 	}
-	if !Doctor(restored).OK {
-		t.Fatalf("restored fixture doctor = %+v", Doctor(restored))
-	}
-	assertMissing(t, filepath.Join(restored, "events/private.json"))
-	assertMissing(t, filepath.Join(restored, "ledger/private.json"))
+	assertMissing(t, restored)
+	assertNoRestoreStaging(t, restoreParent)
 }
 
 func TestCompactClearsTransientAndOptionalRebuildableDirs(t *testing.T) {

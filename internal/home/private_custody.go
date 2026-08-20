@@ -21,8 +21,9 @@ var privateCustodyKnownDirs = []string{"private", "private/artifacts", "private/
 type PrivateCustodyOptions struct{ DryRun, Repair bool }
 
 type privateCustodyHooks struct {
-	beforeRootOpen  func()
-	beforeChmodOpen func(string)
+	beforeRootOpen      func()
+	beforeRootChmodOpen func()
+	beforeChmodOpen     func(string)
 }
 
 type PrivateCustodyReport struct {
@@ -91,13 +92,17 @@ func privateCustodyWithHooks(homePath string, opts PrivateCustodyOptions, hooks 
 		r.finish(opts)
 		return r
 	}
-	root, err := openStableOwnedHomeRoot(homePath, hooks)
+	root, err := openStableOwnedHomeRootPermissive(homePath, hooks)
 	if err != nil {
-		r.addFinding(absDisplay(homePath, "."), "home_root", "manual", "stable current-user-owned directory", "unsafe", "manual", err.Error())
+		r.addFinding(absDisplay(homePath, "."), "home_root", "manual", "stable current-user-owned directory mode=0700", "unsafe", "manual", err.Error())
 		r.finish(opts)
 		return r
 	}
 	defer root.Close()
+	if !checkPrivateHomeRoot(&r, root, homePath, opts, hooks) {
+		r.finish(opts)
+		return r
+	}
 	safe := true
 	for _, rel := range privateCustodyKnownDirs {
 		if !safe {
@@ -113,6 +118,23 @@ func privateCustodyWithHooks(homePath string, opts PrivateCustodyOptions, hooks 
 }
 
 func openStableOwnedHomeRoot(homePath string, hooks privateCustodyHooks) (*os.Root, error) {
+	root, err := openStableOwnedHomeRootPermissive(homePath, hooks)
+	if err != nil {
+		return nil, err
+	}
+	info, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	if info.Mode().Perm() != 0o700 {
+		_ = root.Close()
+		return nil, fmt.Errorf("compound home root must be mode 0700: mode=%04o", info.Mode().Perm())
+	}
+	return root, nil
+}
+
+func openStableOwnedHomeRootPermissive(homePath string, hooks privateCustodyHooks) (*os.Root, error) {
 	before, err := os.Lstat(homePath)
 	if err != nil {
 		return nil, err
@@ -161,6 +183,138 @@ func validateHomeRootInfo(info os.FileInfo) error {
 	return nil
 }
 
+func secureHomeRootForInit(homePath string) (*os.Root, os.FileInfo, error) {
+	if _, err := os.Lstat(homePath); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(homePath, 0o700); err != nil {
+			return nil, nil, fmt.Errorf("mkdir home root: %w", err)
+		}
+		// Mkdir is umask-filtered. Tighten the freshly created leaf before it
+		// is opened or populated so even a restrictive umask has one exact
+		// private home-root contract.
+		if err := os.Chmod(homePath, 0o700); err != nil {
+			return nil, nil, fmt.Errorf("chmod fresh home root: %w", err)
+		}
+	} else if err != nil {
+		return nil, nil, err
+	}
+	before, err := os.Lstat(homePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.IsDir() {
+		return nil, nil, fmt.Errorf("compound home root must be a non-symlink directory")
+	}
+	if !ownedByCurrent(before) {
+		return nil, nil, fmt.Errorf("compound home root must be owned by the current uid: %s", ownerModeString(before))
+	}
+	root, err := os.OpenRoot(homePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	fail := func(err error) (*os.Root, os.FileInfo, error) {
+		_ = root.Close()
+		return nil, nil, err
+	}
+	opened, openErr := root.Stat(".")
+	after, afterErr := os.Lstat(homePath)
+	if err := errors.Join(openErr, afterErr); err != nil {
+		return fail(err)
+	}
+	for _, info := range []os.FileInfo{opened, after} {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !ownedByCurrent(info) {
+			return fail(fmt.Errorf("compound home root must remain a current-user-owned non-symlink directory"))
+		}
+	}
+	if !os.SameFile(before, opened) || !os.SameFile(before, after) {
+		return fail(fmt.Errorf("compound home root identity changed while opening: %s", homePath))
+	}
+	if opened.Mode().Perm() == 0o700 {
+		return root, opened, nil
+	}
+	dir, err := root.Open(".")
+	if err != nil {
+		return fail(err)
+	}
+	openedInfo, statErr := dir.Stat()
+	names, readErr := dir.Readdirnames(1)
+	if errors.Is(readErr, io.EOF) {
+		readErr = nil
+	}
+	if err := errors.Join(statErr, readErr); err != nil {
+		_ = dir.Close()
+		return fail(err)
+	}
+	if len(names) != 0 {
+		_ = dir.Close()
+		if opened.Mode().Perm()&0o022 != 0 {
+			return fail(fmt.Errorf("existing populated home root is group/world writable (mode %04o); inspect it manually before migration", opened.Mode().Perm()))
+		}
+		return fail(fmt.Errorf("existing populated home root must be mode 0700 (got %04o); run compound home private-custody repair", opened.Mode().Perm()))
+	}
+	chmodErr := dir.Chmod(0o700)
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	finalOpened, finalOpenErr := root.Stat(".")
+	finalPath, finalPathErr := os.Lstat(homePath)
+	if err := errors.Join(chmodErr, syncErr, closeErr, finalOpenErr, finalPathErr); err != nil {
+		return fail(err)
+	}
+	if openedInfo == nil || finalOpened == nil || finalPath == nil || !os.SameFile(opened, openedInfo) || !os.SameFile(opened, finalOpened) || !os.SameFile(opened, finalPath) || !ownedByCurrent(finalPath) || finalOpened.Mode().Perm() != 0o700 || finalPath.Mode().Perm() != 0o700 {
+		return fail(fmt.Errorf("compound home root identity or mode changed while securing empty root"))
+	}
+	return root, finalOpened, nil
+}
+
+func checkPrivateHomeRoot(r *PrivateCustodyReport, root *os.Root, homePath string, opts PrivateCustodyOptions, hooks privateCustodyHooks) bool {
+	info, err := root.Stat(".")
+	if err != nil {
+		r.addFinding(homePath, "home_root", "manual", "current-user-owned dir mode=0700", "unsafe", "manual", err.Error())
+		return false
+	}
+	if info.Mode().Perm() == 0o700 {
+		r.addFinding(homePath, "home_root", "ok", "mode=0700", "mode=0700", "none", "")
+		return true
+	}
+	r.addFinding(homePath, "home_root", "drift", "mode=0700", fmt.Sprintf("mode=%04o", info.Mode().Perm()), "chmod", "permission drift exposes operational home bodies")
+	finding := len(r.Findings) - 1
+	if !opts.Repair {
+		return false
+	}
+	if opts.DryRun {
+		r.addAction("chmod", homePath, "home_root", "dry_run", "would chmod 0700")
+		return false
+	}
+	if hooks.beforeRootChmodOpen != nil {
+		hooks.beforeRootChmodOpen()
+	}
+	opened, err := root.Open(".")
+	if err != nil {
+		r.Findings[finding].Status = "manual"
+		r.Findings[finding].Action = "manual"
+		r.Findings[finding].Detail = err.Error()
+		return false
+	}
+	openedInfo, statErr := opened.Stat()
+	chmodErr := opened.Chmod(0o700)
+	syncErr := opened.Sync()
+	closeErr := opened.Close()
+	after, afterErr := os.Lstat(homePath)
+	if err := errors.Join(statErr, chmodErr, syncErr, closeErr, afterErr); err != nil || openedInfo == nil || after == nil || !os.SameFile(info, openedInfo) || !os.SameFile(info, after) || !ownedByCurrent(after) || after.Mode().Perm() != 0o700 {
+		if err == nil {
+			err = fmt.Errorf("compound home root identity or mode changed during repair")
+		}
+		r.Findings[finding].Status = "manual"
+		r.Findings[finding].Action = "manual"
+		r.Findings[finding].Detail = err.Error()
+		return false
+	}
+	r.Findings[finding].Status = "repaired"
+	r.Findings[finding].Actual = "mode=0700"
+	r.Findings[finding].Detail = "permission repaired"
+	r.addAction("chmod", homePath, "home_root", "repaired", "chmod 0700")
+	return true
+}
+
 func validateExistingHomeForPrivateInit(homePath string) error {
 	info, err := os.Lstat(homePath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -172,12 +326,7 @@ func validateExistingHomeForPrivateInit(homePath string) error {
 	return validateHomeRootInfo(info)
 }
 
-func initializePrivateCustodyDirs(homePath string) error {
-	root, err := openStableOwnedHomeRoot(homePath, privateCustodyHooks{})
-	if err != nil {
-		return err
-	}
-	defer root.Close()
+func initializePrivateCustodyDirsRooted(root *os.Root, homePath string) error {
 	for _, rel := range privateCustodyKnownDirs {
 		relPath := filepath.FromSlash(rel)
 		display := absDisplay(homePath, rel)
@@ -309,6 +458,12 @@ func createRootedPrivateDirectory(root *os.Root, rel, display string, hooks priv
 		removeErr := root.Remove(rel)
 		syncErr := syncRootedDirectory(root, filepath.Dir(rel), display, "private custody")
 		return errors.Join(cause, removeErr, syncErr)
+	}
+	// Mkdir is umask-filtered. This leaf was just created beneath a pinned
+	// private root, so make it traversable at the exact private mode before
+	// descriptor-based validation.
+	if err := root.Chmod(rel, 0o700); err != nil {
+		return cleanup(err)
 	}
 	if err := syncRootedDirectory(root, filepath.Dir(rel), display, "private custody"); err != nil {
 		return cleanup(err)

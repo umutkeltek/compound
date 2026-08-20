@@ -280,9 +280,19 @@ Useful home commands:
 compound home backup [--target archive.tar.gz]
 compound home export --public-fixture [--target fixture.tar.gz]
 compound home verify [archive.tar.gz]
-compound home restore archive.tar.gz --target <empty-home-path>
+compound home restore archive.tar.gz --target <new-absent-home-path>
 compound home compact [--dry-run] [--rebuildable]
 ```
+
+Atomic `home restore` publication is supported on Darwin and Linux. Other
+platforms fail closed before publishing the staged home.
+
+Restore accepts Compound backup archives only; public fixtures are not recovery
+artifacts. Verification completes before a staging directory is allocated. If a
+later restore step fails, Compound reports and retains the exact empty `0700`
+staging directory for explicit inspection and cleanup. A Compound home root is
+private (`0700`); diagnose or repair an older root explicitly with
+`compound home private-custody repair [--dry-run]`.
 
 Backups preserve durable evidence/work/config state while excluding transient or
 rebuildable roots such as `tmp`, `lock`, `exports`, `indexes`, and

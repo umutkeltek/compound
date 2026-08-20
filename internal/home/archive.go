@@ -2,6 +2,7 @@ package home
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/rand"
@@ -32,7 +33,36 @@ const (
 	ArchiveKindBackup        = "backup"
 	ArchiveKindPublicFixture = "public_fixture"
 	ArchiveKindOperational   = "operational_history"
+
+	archiveManifestMaxBytes       = 64 << 20
+	archiveMaxSourceBytes         = int64(64 << 30)
+	archiveMaxEntries             = 250_000
+	archiveMaxPathBytes           = 4 << 10
+	archiveMaxPathDepth           = 64
+	archiveMaxEntryBytes    int64 = 8 << 30
+	archiveMaxExpandedBytes int64 = 64 << 30
+	archiveMaxDecodedBytes  int64 = 72 << 30
 )
+
+type archiveReadLimits struct {
+	MaxSourceBytes   int64
+	MaxEntries       int
+	MaxPathBytes     int
+	MaxPathDepth     int
+	MaxEntryBytes    int64
+	MaxExpandedBytes int64
+	MaxDecodedBytes  int64
+}
+
+var defaultArchiveReadLimits = archiveReadLimits{
+	MaxSourceBytes:   archiveMaxSourceBytes,
+	MaxEntries:       archiveMaxEntries,
+	MaxPathBytes:     archiveMaxPathBytes,
+	MaxPathDepth:     archiveMaxPathDepth,
+	MaxEntryBytes:    archiveMaxEntryBytes,
+	MaxExpandedBytes: archiveMaxExpandedBytes,
+	MaxDecodedBytes:  archiveMaxDecodedBytes,
+}
 
 // Compatibility projection for archive manifests and existing callers. The
 // HabitatCatalog owns inclusion policy, including protected descendants under
@@ -215,7 +245,7 @@ func writePublicFixtureArchive(homePath, targetPath string, now time.Time) (Arch
 	var bytesWritten int64
 	dirs := HabitatDirs()
 	for _, dir := range dirs {
-		if err := writeDirEntry(tw, filepath.ToSlash(dir)); err != nil {
+		if err := writeDirEntry(tw, filepath.ToSlash(dir), archiveHabitatDirMode(dir)); err != nil {
 			return ArchiveReport{}, err
 		}
 	}
@@ -257,7 +287,6 @@ func writePublicFixtureArchive(homePath, targetPath string, now time.Time) (Arch
 		SchemaVersion:     ArchiveSchemaVersion,
 		Kind:              ArchiveKindPublicFixture,
 		CreatedAt:         now.UTC().Format(time.RFC3339),
-		SourceHome:        homePath,
 		HomeSchemaVersion: SchemaVersion,
 		ExcludedRoots:     []string{"all runtime files"},
 		Entries:           sortedArchiveEntries(entries),
@@ -282,18 +311,72 @@ func writePublicFixtureArchive(homePath, targetPath string, now time.Time) (Arch
 
 // VerifyArchive checks the archive manifest and file checksums.
 func VerifyArchive(archivePath string) (VerifyReport, error) {
-	manifest, actual, err := readArchive(archivePath, false, "")
+	archivePath, err := filepath.Abs(expandUser(archivePath))
 	if err != nil {
 		return VerifyReport{}, err
 	}
+	manifest, actual, err := readArchive(archivePath, nil)
+	if err != nil {
+		return VerifyReport{}, err
+	}
+	return verifyArchiveManifest(archivePath, manifest, actual)
+}
+
+func verifyArchiveManifest(archivePath string, manifest ArchiveManifest, actual map[string]ArchiveEntry) (VerifyReport, error) {
+	return verifyArchiveManifestWithLimits(archivePath, manifest, actual, defaultArchiveReadLimits)
+}
+
+func verifyArchiveManifestWithLimits(archivePath string, manifest ArchiveManifest, actual map[string]ArchiveEntry, limits archiveReadLimits) (VerifyReport, error) {
+	if err := validateArchiveReadLimits(limits); err != nil {
+		return VerifyReport{}, err
+	}
+	switch manifest.Kind {
+	case ArchiveKindBackup, ArchiveKindPublicFixture:
+	default:
+		return VerifyReport{}, fmt.Errorf("archive kind must be %s or %s, got %q", ArchiveKindBackup, ArchiveKindPublicFixture, manifest.Kind)
+	}
+	// The raw manifest byte ceiling bounds JSON decode allocation. Apply the
+	// semantic count ceiling before allocating the expected-entry map.
+	if len(manifest.Entries) > limits.MaxEntries {
+		return VerifyReport{}, fmt.Errorf("archive manifest entry count exceeds %d", limits.MaxEntries)
+	}
+	if len(actual) > limits.MaxEntries {
+		return VerifyReport{}, fmt.Errorf("archive actual entry count exceeds %d", limits.MaxEntries)
+	}
 	expected := map[string]ArchiveEntry{}
+	var declaredBytes int64
 	for _, entry := range manifest.Entries {
+		if err := validateArchivePath(entry.Path); err != nil || strings.HasSuffix(entry.Path, "/") {
+			return VerifyReport{}, fmt.Errorf("archive manifest contains invalid file path %q", entry.Path)
+		}
+		if len(entry.Path) > limits.MaxPathBytes {
+			return VerifyReport{}, fmt.Errorf("archive manifest path exceeds %d bytes: %s", limits.MaxPathBytes, entry.Path)
+		}
+		if depth := len(strings.Split(entry.Path, "/")); depth > limits.MaxPathDepth {
+			return VerifyReport{}, fmt.Errorf("archive manifest path depth exceeds %d: %s", limits.MaxPathDepth, entry.Path)
+		}
+		if entry.Size < 0 || entry.Size > limits.MaxEntryBytes || len(entry.SHA256) != sha256.Size*2 {
+			return VerifyReport{}, fmt.Errorf("archive manifest contains invalid metadata for %s", entry.Path)
+		}
+		if declaredBytes > limits.MaxExpandedBytes-entry.Size {
+			return VerifyReport{}, fmt.Errorf("archive manifest expanded bytes exceed %d", limits.MaxExpandedBytes)
+		}
+		declaredBytes += entry.Size
+		if digest, err := hex.DecodeString(entry.SHA256); err != nil || len(digest) != sha256.Size || entry.SHA256 != strings.ToLower(entry.SHA256) {
+			return VerifyReport{}, fmt.Errorf("archive manifest contains invalid checksum for %s", entry.Path)
+		}
 		if entry.Path != ManifestName {
 			if _, ok := HabitatForPath(entry.Path); !ok {
 				return VerifyReport{}, fmt.Errorf("archive contains unknown habitat entry %s", entry.Path)
 			}
 		}
+		if _, exists := expected[entry.Path]; exists {
+			return VerifyReport{}, fmt.Errorf("archive manifest contains duplicate entry %s", entry.Path)
+		}
 		expected[entry.Path] = entry
+	}
+	if manifest.HomeSchemaVersion != SchemaVersion {
+		return VerifyReport{}, fmt.Errorf("archive home_schema_version must be %s, got %q", SchemaVersion, manifest.HomeSchemaVersion)
 	}
 	if len(expected) != len(actual) {
 		return VerifyReport{}, fmt.Errorf("archive entry count mismatch: manifest=%d actual=%d", len(expected), len(actual))
@@ -307,6 +390,9 @@ func VerifyArchive(archivePath string) (VerifyReport, error) {
 		if got.Size != want.Size || got.SHA256 != want.SHA256 {
 			return VerifyReport{}, fmt.Errorf("archive checksum mismatch for %s", path)
 		}
+		if bytesTotal > limits.MaxExpandedBytes-got.Size {
+			return VerifyReport{}, fmt.Errorf("archive verified bytes exceed %d", limits.MaxExpandedBytes)
+		}
 		bytesTotal += got.Size
 	}
 	return VerifyReport{
@@ -315,42 +401,6 @@ func VerifyArchive(archivePath string) (VerifyReport, error) {
 		Files:       len(actual),
 		Bytes:       bytesTotal,
 		OK:          true,
-	}, nil
-}
-
-// RestoreArchive extracts a verified archive into an empty target home.
-func RestoreArchive(archivePath, targetHome string, now time.Time) (RestoreReport, error) {
-	if strings.TrimSpace(targetHome) == "" {
-		return RestoreReport{}, fmt.Errorf("target home required")
-	}
-	targetHome, err := filepath.Abs(expandUser(targetHome))
-	if err != nil {
-		return RestoreReport{}, err
-	}
-	if ok, err := dirEmptyOrMissing(targetHome); err != nil {
-		return RestoreReport{}, err
-	} else if !ok {
-		return RestoreReport{}, fmt.Errorf("target home %s is not empty", targetHome)
-	}
-	verify, err := VerifyArchive(archivePath)
-	if err != nil {
-		return RestoreReport{}, err
-	}
-	if _, _, err := readArchive(archivePath, true, targetHome); err != nil {
-		return RestoreReport{}, err
-	}
-	if err := Init(targetHome, "restored", now); err != nil {
-		return RestoreReport{}, err
-	}
-	if !Doctor(targetHome).OK {
-		return RestoreReport{}, fmt.Errorf("restored home failed doctor")
-	}
-	return RestoreReport{
-		ArchivePath: archivePath,
-		TargetHome:  targetHome,
-		Kind:        verify.Kind,
-		Files:       verify.Files,
-		Bytes:       verify.Bytes,
 	}, nil
 }
 
@@ -1982,7 +2032,7 @@ func writeHomeArchive(homePath, targetPath, kind string, excluded []string, now 
 			return nil
 		}
 		if d.IsDir() {
-			return writeDirEntry(tw, rel)
+			return writeDirEntry(tw, rel, info.Mode())
 		}
 		if !info.Mode().IsRegular() {
 			return nil
@@ -2329,14 +2379,22 @@ func writeBytesEntry(tw *tar.Writer, rel string, data []byte, mode int64) (Archi
 	return ArchiveEntry{Path: rel, Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:])}, nil
 }
 
-func writeDirEntry(tw *tar.Writer, rel string) error {
+func writeDirEntry(tw *tar.Writer, rel string, mode fs.FileMode) error {
 	if err := validateArchivePath(rel); err != nil {
 		return err
 	}
 	if rel == "." || rel == "" {
 		return nil
 	}
-	return tw.WriteHeader(&tar.Header{Name: strings.TrimSuffix(rel, "/") + "/", Typeflag: tar.TypeDir, Mode: 0o755, ModTime: time.Unix(0, 0).UTC()})
+	return tw.WriteHeader(&tar.Header{Name: strings.TrimSuffix(rel, "/") + "/", Typeflag: tar.TypeDir, Mode: int64(mode.Perm()), ModTime: time.Unix(0, 0).UTC()})
+}
+
+func archiveHabitatDirMode(rel string) fs.FileMode {
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	if rel == "private" || strings.HasPrefix(rel, "private/") {
+		return 0o700
+	}
+	return 0o755
 }
 
 func writeArchiveManifest(tw *tar.Writer, manifest ArchiveManifest) error {
@@ -2349,53 +2407,206 @@ func writeArchiveManifest(tw *tar.Writer, manifest ArchiveManifest) error {
 	return err
 }
 
-func readArchive(archivePath string, restore bool, targetHome string) (ArchiveManifest, map[string]ArchiveEntry, error) {
+func readArchive(archivePath string, restore *archiveRestoreTarget) (ArchiveManifest, map[string]ArchiveEntry, error) {
+	return readArchiveWithLimits(archivePath, restore, defaultArchiveReadLimits)
+}
+
+func readArchiveWithLimits(archivePath string, restore *archiveRestoreTarget, limits archiveReadLimits) (ArchiveManifest, map[string]ArchiveEntry, error) {
 	archivePath, err := filepath.Abs(expandUser(archivePath))
 	if err != nil {
 		return ArchiveManifest{}, nil, err
 	}
-	f, err := os.Open(archivePath)
+	if err := validateArchiveReadLimits(limits); err != nil {
+		return ArchiveManifest{}, nil, err
+	}
+	f, err := openArchiveNoFollow(archivePath, limits.MaxSourceBytes)
 	if err != nil {
 		return ArchiveManifest{}, nil, err
 	}
 	defer f.Close()
-	gz, err := gzip.NewReader(f)
+	if restore != nil && restoreArchiveOpened != nil {
+		if err := restoreArchiveOpened(archivePath); err != nil {
+			return ArchiveManifest{}, nil, err
+		}
+	}
+	return readOpenedArchiveWithLimits(archivePath, f, restore, limits, nil)
+}
+
+type verifiedBackupArchive struct {
+	path            string
+	file            *os.File
+	limits          archiveReadLimits
+	preflightDigest []byte
+}
+
+func openVerifiedBackupArchive(archivePath string, limits archiveReadLimits) (*verifiedBackupArchive, error) {
+	archivePath, err := filepath.Abs(expandUser(archivePath))
 	if err != nil {
+		return nil, err
+	}
+	if err := validateArchiveReadLimits(limits); err != nil {
+		return nil, err
+	}
+	f, err := openArchiveNoFollow(archivePath, limits.MaxSourceBytes)
+	if err != nil {
+		return nil, err
+	}
+	fail := func(cause error) (*verifiedBackupArchive, error) {
+		return nil, errors.Join(cause, f.Close())
+	}
+	if restoreArchiveOpened != nil {
+		if err := restoreArchiveOpened(archivePath); err != nil {
+			return fail(err)
+		}
+	}
+
+	preflightDigest := sha256.New()
+	manifest, actual, err := readOpenedArchiveWithLimits(archivePath, f, nil, limits, preflightDigest)
+	if err != nil {
+		return fail(err)
+	}
+	if manifest.Kind != ArchiveKindBackup {
+		return fail(fmt.Errorf("restore requires archive kind %s, got %q", ArchiveKindBackup, manifest.Kind))
+	}
+	if _, err := verifyArchiveManifestWithLimits(archivePath, manifest, actual, limits); err != nil {
+		return fail(err)
+	}
+	return &verifiedBackupArchive{path: archivePath, file: f, limits: limits, preflightDigest: preflightDigest.Sum(nil)}, nil
+}
+
+func (a *verifiedBackupArchive) extract(restore *archiveRestoreTarget) (ArchiveManifest, map[string]ArchiveEntry, error) {
+	if a == nil || a.file == nil {
+		return ArchiveManifest{}, nil, fmt.Errorf("verified backup archive is closed")
+	}
+	if _, err := a.file.Seek(0, io.SeekStart); err != nil {
+		return ArchiveManifest{}, nil, fmt.Errorf("rewind verified archive source: %w", err)
+	}
+	restoreDigest := sha256.New()
+	restoredManifest, restoredActual, err := readOpenedArchiveWithLimits(a.path, a.file, restore, a.limits, restoreDigest)
+	if err != nil {
+		return ArchiveManifest{}, nil, err
+	}
+	if !bytes.Equal(a.preflightDigest, restoreDigest.Sum(nil)) {
+		return ArchiveManifest{}, nil, fmt.Errorf("archive source changed between preflight and restore extraction: %s", a.path)
+	}
+	return restoredManifest, restoredActual, nil
+}
+
+func (a *verifiedBackupArchive) Close() error {
+	if a == nil || a.file == nil {
+		return nil
+	}
+	err := a.file.Close()
+	a.file = nil
+	return err
+}
+
+func readOpenedArchiveWithLimits(archivePath string, f *os.File, restore *archiveRestoreTarget, limits archiveReadLimits, digest io.Writer) (ArchiveManifest, map[string]ArchiveEntry, error) {
+	var sourceReader io.Reader = f
+	if digest != nil {
+		sourceReader = io.TeeReader(f, digest)
+	}
+	source := newBoundedArchiveSource(sourceReader, limits.MaxSourceBytes)
+	buffered := bufio.NewReader(source)
+	gz, err := gzip.NewReader(buffered)
+	if err != nil {
+		if limitErr := source.limitError(archivePath); limitErr != nil {
+			return ArchiveManifest{}, nil, limitErr
+		}
 		return ArchiveManifest{}, nil, fmt.Errorf("open gzip archive: %w", err)
 	}
+	gz.Multistream(false)
 	defer gz.Close()
-	tr := tar.NewReader(gz)
-
+	decoded := newBoundedArchiveSource(gz, limits.MaxDecodedBytes)
+	tr := tar.NewReader(decoded)
 	actual := map[string]ArchiveEntry{}
+	seen := map[string]struct{}{}
+	directories := map[string]struct{}{}
 	var manifest ArchiveManifest
+	manifestSeen := false
+	entryCount := 0
+	var expandedBytes int64
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			if limitErr := decoded.limitErrorFor("decoded archive", "tar stream"); limitErr != nil {
+				return ArchiveManifest{}, nil, limitErr
+			}
+			if limitErr := source.limitError(archivePath); limitErr != nil {
+				return ArchiveManifest{}, nil, limitErr
+			}
 			return ArchiveManifest{}, nil, err
 		}
 		name := filepath.ToSlash(hdr.Name)
 		if err := validateArchivePath(name); err != nil {
 			return ArchiveManifest{}, nil, err
 		}
+		entryCount++
+		if entryCount > limits.MaxEntries {
+			return ArchiveManifest{}, nil, fmt.Errorf("archive entry count exceeds %d", limits.MaxEntries)
+		}
+		canonicalName := strings.TrimSuffix(name, "/")
+		if len(name) > limits.MaxPathBytes {
+			return ArchiveManifest{}, nil, fmt.Errorf("archive path exceeds %d bytes: %s", limits.MaxPathBytes, name)
+		}
+		if depth := len(strings.Split(canonicalName, "/")); depth > limits.MaxPathDepth {
+			return ArchiveManifest{}, nil, fmt.Errorf("archive path depth exceeds %d: %s", limits.MaxPathDepth, name)
+		}
+		if hdr.Size < 0 || hdr.Size > limits.MaxEntryBytes {
+			return ArchiveManifest{}, nil, fmt.Errorf("archive entry %s exceeds %d bytes", name, limits.MaxEntryBytes)
+		}
+		if expandedBytes > limits.MaxExpandedBytes-hdr.Size {
+			return ArchiveManifest{}, nil, fmt.Errorf("archive expanded bytes exceed %d", limits.MaxExpandedBytes)
+		}
+		expandedBytes += hdr.Size
+		if _, exists := seen[canonicalName]; exists {
+			return ArchiveManifest{}, nil, fmt.Errorf("archive contains duplicate entry %s", name)
+		}
+		if parent := filepath.ToSlash(filepath.Dir(canonicalName)); parent != "." {
+			if _, exists := directories[parent]; !exists {
+				return ArchiveManifest{}, nil, fmt.Errorf("archive directory parent must precede child %s", name)
+			}
+		}
+		seen[canonicalName] = struct{}{}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if restore {
-				if err := os.MkdirAll(filepath.Join(targetHome, filepath.FromSlash(name)), fs.FileMode(hdr.Mode)); err != nil {
+			if hdr.Size != 0 {
+				return ArchiveManifest{}, nil, fmt.Errorf("archive directory entry %s declares %d bytes", name, hdr.Size)
+			}
+			if restore != nil {
+				if err := restore.ensureDirectory(name, fs.FileMode(hdr.Mode)); err != nil {
 					return ArchiveManifest{}, nil, err
 				}
 			}
+			directories[canonicalName] = struct{}{}
 			continue
 		case tar.TypeReg, tar.TypeRegA:
 		default:
 			return ArchiveManifest{}, nil, fmt.Errorf("archive contains unsupported entry %s", name)
 		}
 		if name == ArchiveManifestName {
-			data, err := io.ReadAll(tr)
+			if manifestSeen {
+				return ArchiveManifest{}, nil, fmt.Errorf("archive contains duplicate manifest")
+			}
+			manifestSeen = true
+			if hdr.Size > archiveManifestMaxBytes {
+				return ArchiveManifest{}, nil, fmt.Errorf("archive manifest exceeds %d bytes", archiveManifestMaxBytes)
+			}
+			data, err := io.ReadAll(io.LimitReader(tr, archiveManifestMaxBytes+1))
 			if err != nil {
+				if limitErr := decoded.limitErrorFor("decoded archive", "tar stream"); limitErr != nil {
+					return ArchiveManifest{}, nil, limitErr
+				}
+				if limitErr := source.limitError(archivePath); limitErr != nil {
+					return ArchiveManifest{}, nil, limitErr
+				}
 				return ArchiveManifest{}, nil, err
+			}
+			if len(data) > archiveManifestMaxBytes {
+				return ArchiveManifest{}, nil, fmt.Errorf("archive manifest exceeds %d bytes", archiveManifestMaxBytes)
 			}
 			if err := json.Unmarshal(data, &manifest); err != nil {
 				return ArchiveManifest{}, nil, fmt.Errorf("parse archive manifest: %w", err)
@@ -2404,38 +2615,138 @@ func readArchive(archivePath string, restore bool, targetHome string) (ArchiveMa
 		}
 		sum := sha256.New()
 		var n int64
-		if restore {
-			target := filepath.Join(targetHome, filepath.FromSlash(name))
-			if !isUnderHome(targetHome, target) {
-				return ArchiveManifest{}, nil, fmt.Errorf("archive entry escapes target: %s", name)
-			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return ArchiveManifest{}, nil, err
-			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fs.FileMode(hdr.Mode))
+		if restore != nil {
+			out, err := restore.createFile(name, fs.FileMode(hdr.Mode))
 			if err != nil {
 				return ArchiveManifest{}, nil, err
 			}
-			n, err = io.Copy(out, io.TeeReader(tr, sum))
-			closeErr := out.Close()
+			n, err = io.CopyN(out.file, io.TeeReader(tr, sum), hdr.Size)
 			if err != nil {
-				return ArchiveManifest{}, nil, err
+				if limitErr := decoded.limitErrorFor("decoded archive", "tar stream"); limitErr != nil {
+					return ArchiveManifest{}, nil, out.abort(limitErr)
+				}
+				if limitErr := source.limitError(archivePath); limitErr != nil {
+					return ArchiveManifest{}, nil, out.abort(limitErr)
+				}
+				return ArchiveManifest{}, nil, out.abort(err)
 			}
-			if closeErr != nil {
-				return ArchiveManifest{}, nil, closeErr
+			if err := out.commit(); err != nil {
+				return ArchiveManifest{}, nil, err
 			}
 		} else {
-			n, err = io.Copy(sum, tr)
+			n, err = io.CopyN(sum, tr, hdr.Size)
 			if err != nil {
+				if limitErr := decoded.limitErrorFor("decoded archive", "tar stream"); limitErr != nil {
+					return ArchiveManifest{}, nil, limitErr
+				}
+				if limitErr := source.limitError(archivePath); limitErr != nil {
+					return ArchiveManifest{}, nil, limitErr
+				}
 				return ArchiveManifest{}, nil, err
 			}
 		}
 		actual[name] = ArchiveEntry{Path: name, Size: n, SHA256: hex.EncodeToString(sum.Sum(nil))}
 	}
+	if err := rejectTrailingDecodedArchiveData(decoded); err != nil {
+		if limitErr := decoded.limitErrorFor("decoded archive", "tar stream"); limitErr != nil {
+			return ArchiveManifest{}, nil, limitErr
+		}
+		if limitErr := source.limitError(archivePath); limitErr != nil {
+			return ArchiveManifest{}, nil, limitErr
+		}
+		return ArchiveManifest{}, nil, err
+	}
+	if _, err := buffered.Peek(1); err == nil {
+		return ArchiveManifest{}, nil, fmt.Errorf("archive contains trailing compressed data")
+	} else if !errors.Is(err, io.EOF) {
+		if limitErr := source.limitError(archivePath); limitErr != nil {
+			return ArchiveManifest{}, nil, limitErr
+		}
+		return ArchiveManifest{}, nil, fmt.Errorf("inspect archive trailing data: %w", err)
+	}
+	if limitErr := source.limitError(archivePath); limitErr != nil {
+		return ArchiveManifest{}, nil, limitErr
+	}
+	if limitErr := decoded.limitErrorFor("decoded archive", "tar stream"); limitErr != nil {
+		return ArchiveManifest{}, nil, limitErr
+	}
+	if !manifestSeen {
+		return ArchiveManifest{}, nil, fmt.Errorf("archive manifest is missing")
+	}
 	if manifest.SchemaVersion != ArchiveSchemaVersion {
 		return ArchiveManifest{}, nil, fmt.Errorf("archive manifest schema_version must be %s, got %q", ArchiveSchemaVersion, manifest.SchemaVersion)
 	}
 	return manifest, actual, nil
+}
+
+type boundedArchiveSource struct {
+	reader   io.Reader
+	limit    int64
+	consumed int64
+	exceeded bool
+}
+
+func newBoundedArchiveSource(reader io.Reader, limit int64) *boundedArchiveSource {
+	return &boundedArchiveSource{reader: reader, limit: limit}
+}
+
+func (r *boundedArchiveSource) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.consumed >= r.limit {
+		var probe [1]byte
+		n, err := r.reader.Read(probe[:])
+		if n > 0 {
+			r.exceeded = true
+			return 0, errArchiveSourceReadLimit
+		}
+		return 0, err
+	}
+	remaining := r.limit - r.consumed
+	if int64(len(p)) > remaining {
+		p = p[:remaining]
+	}
+	n, err := r.reader.Read(p)
+	r.consumed += int64(n)
+	return n, err
+}
+
+func (r *boundedArchiveSource) limitError(path string) error {
+	return r.limitErrorFor("archive source", path)
+}
+
+func (r *boundedArchiveSource) limitErrorFor(kind, path string) error {
+	if r.exceeded {
+		return fmt.Errorf("%s exceeds %d bytes while reading: %s", kind, r.limit, path)
+	}
+	return nil
+}
+
+var errArchiveSourceReadLimit = errors.New("archive source read limit exceeded")
+
+func rejectTrailingDecodedArchiveData(reader io.Reader) error {
+	trailingDecoded, err := io.CopyN(io.Discard, reader, 1)
+	if trailingDecoded != 0 {
+		return fmt.Errorf("archive contains trailing decoded data")
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("verify gzip archive footer: %w", err)
+	}
+	return nil
+}
+
+func validateArchiveReadLimits(limits archiveReadLimits) error {
+	if limits.MaxSourceBytes < 1 || limits.MaxEntries < 1 || limits.MaxPathBytes < 1 || limits.MaxPathDepth < 1 || limits.MaxEntryBytes < 1 || limits.MaxExpandedBytes < 1 || limits.MaxDecodedBytes < 1 {
+		return fmt.Errorf("archive read limits must all be positive")
+	}
+	if limits.MaxEntryBytes > limits.MaxExpandedBytes {
+		return fmt.Errorf("archive max entry bytes cannot exceed max expanded bytes")
+	}
+	if limits.MaxDecodedBytes < limits.MaxExpandedBytes {
+		return fmt.Errorf("archive max decoded bytes cannot be less than max expanded bytes")
+	}
+	return nil
 }
 
 func normalizeArchiveInputs(homePath, targetPath, kind string, now time.Time) (string, string, error) {
@@ -2483,15 +2794,21 @@ func requireHealthyHome(homePath string) error {
 }
 
 func validateArchivePath(name string) error {
-	name = filepath.ToSlash(strings.TrimSpace(name))
-	if name == "" || strings.HasPrefix(name, "/") || strings.Contains(name, "\x00") {
+	name = filepath.ToSlash(name)
+	if name == "" || strings.TrimSpace(name) != name || strings.HasPrefix(name, "/") || strings.Contains(name, "\x00") {
 		return fmt.Errorf("invalid archive path %q", name)
 	}
-	clean := filepath.ToSlash(filepath.Clean(name))
-	if clean == "." || clean != name && !strings.HasSuffix(name, "/") {
+	for i := 0; i < len(name); i++ {
+		if name[i] < 0x20 || name[i] == 0x7f {
+			return fmt.Errorf("invalid archive path %q", name)
+		}
+	}
+	base := strings.TrimSuffix(name, "/")
+	clean := filepath.ToSlash(filepath.Clean(base))
+	if clean == "." || clean != base {
 		return fmt.Errorf("invalid archive path %q", name)
 	}
-	for _, part := range strings.Split(strings.TrimSuffix(clean, "/"), "/") {
+	for _, part := range strings.Split(clean, "/") {
 		if part == "" || part == "." || part == ".." {
 			return fmt.Errorf("invalid archive path %q", name)
 		}
@@ -2671,17 +2988,6 @@ func sortedArchiveEntries(entries []ArchiveEntry) []ArchiveEntry {
 	out := append([]ArchiveEntry(nil), entries...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
-}
-
-func dirEmptyOrMissing(path string) (bool, error) {
-	entries, err := os.ReadDir(path)
-	if os.IsNotExist(err) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return len(entries) == 0, nil
 }
 
 func measureTree(root string) (int, int64, error) {

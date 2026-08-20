@@ -1,7 +1,10 @@
 package home
 
 import (
+	"bytes"
+	"compress/gzip"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +14,7 @@ import (
 )
 
 func TestBackupRejectsExistingTarget(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := Init(homePath, "test", time.Unix(0, 0)); err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +33,7 @@ func TestBackupRejectsExistingTarget(t *testing.T) {
 }
 
 func TestBackupRejectsIncludedHomeTarget(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := Init(homePath, "test", time.Unix(0, 0)); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +48,7 @@ func TestBackupRejectsIncludedHomeTarget(t *testing.T) {
 }
 
 func TestBackupRejectsSymlinkedExports(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := Init(homePath, "test", time.Unix(0, 0)); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +65,7 @@ func TestBackupRejectsSymlinkedExports(t *testing.T) {
 }
 
 func TestBackupRejectsSymlinkedExportsDescendant(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := filepath.Join(t.TempDir(), ".compound")
 	outside := t.TempDir()
 	if err := Init(homePath, "test", time.Unix(0, 0)); err != nil {
 		t.Fatal(err)
@@ -83,7 +86,7 @@ func TestBackupRejectsSymlinkedExportsDescendant(t *testing.T) {
 }
 
 func TestBackupRejectsExportParentSwapRace(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := filepath.Join(t.TempDir(), ".compound")
 	outside := t.TempDir()
 	if err := Init(homePath, "test", time.Unix(0, 0)); err != nil {
 		t.Fatal(err)
@@ -118,7 +121,7 @@ func TestBackupRejectsExportParentSwapRace(t *testing.T) {
 }
 
 func TestBackupSyncFailureLeavesNoPartialFinal(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := Init(homePath, "test", time.Unix(0, 0)); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +139,7 @@ func TestBackupSyncFailureLeavesNoPartialFinal(t *testing.T) {
 }
 
 func TestBackupSameTargetOneWinner(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := Init(homePath, "test", time.Unix(0, 0)); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +169,7 @@ func TestBackupSameTargetOneWinner(t *testing.T) {
 }
 
 func TestExportPublicFixtureTransactionalVerify(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := Init(homePath, "test", time.Unix(0, 0)); err != nil {
 		t.Fatal(err)
 	}
@@ -180,5 +183,38 @@ func TestExportPublicFixtureTransactionalVerify(t *testing.T) {
 	}
 	if verify.Kind != ArchiveKindPublicFixture || !verify.OK {
 		t.Fatalf("unexpected verify report: %+v", verify)
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(homePath)) {
+		t.Fatalf("public fixture compressed bytes contain source home %q", homePath)
+	}
+	f, err := os.Open(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	decoded, err := io.ReadAll(gz)
+	if closeErr := errors.Join(gz.Close(), f.Close()); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(decoded, []byte(homePath)) {
+		t.Fatalf("public fixture decoded bytes contain source home %q", homePath)
+	}
+	manifest, _, err := readArchive(target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.SourceHome != "" {
+		t.Fatalf("public fixture source_home = %q, want omitted", manifest.SourceHome)
 	}
 }

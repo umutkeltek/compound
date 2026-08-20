@@ -1818,6 +1818,9 @@ func cloneParityHomeWithoutClaim(t *testing.T, sourceHome, claimID string, now t
 	if err := os.CopyFS(maskedHome, os.DirFS(sourceHome)); err != nil {
 		t.Fatalf("clone scratch home: %v", err)
 	}
+	if err := os.Chmod(maskedHome, 0o700); err != nil {
+		t.Fatalf("secure cloned scratch home: %v", err)
+	}
 	if err := home.Init(maskedHome, "test", now); err != nil {
 		t.Fatalf("init cloned scratch home: %v", err)
 	}

@@ -26,9 +26,6 @@ func initBodyPackTestHome(t *testing.T) (homePath, cwd string) {
 	t.Helper()
 	homePath = t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := os.MkdirAll(filepath.Join(homePath, "config"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("home init: %v", err)
 	}
