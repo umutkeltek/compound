@@ -25,7 +25,11 @@ Hold the whole system as five places; each step below visits one:
 - **Git** (Compound uses git for delivery proof).
 - **Go 1.26.4+** — only required if you build from source (the prebuilt binary
   path needs no Go).
-- That's it. No cloud account, no API key, no external service.
+- For a prebuilt release: `curl`, `gh`, `sha256sum` or `shasum`, `gzip`, and
+  `tar`. The installer also requires FD-mode `lockf -s -t 0 9` on macOS 15 or
+  newer, or BusyBox-compatible `flock -n 9` on Linux. Authenticate `gh` before
+  using the provenance check below. Compound itself needs no cloud account,
+  API key, or external service at runtime.
 
 Compound's public alpha is a strictly scoped, file-backed, single-user
 system: file backend only, one trusted OS user on local disk, and explicit
@@ -43,42 +47,211 @@ Pick one:
 
 ### Option A — prebuilt binary (no Go required)
 
-Download a checksummed tarball from the [latest release](https://github.com/umutkeltek/compound/releases/latest)
-and run the installer. Defaults install to `~/.local/bin` and initialize
-`~/.compound`; override with `GOBIN` and `COMPOUND_HOME`.
+These are release-consumer instructions, not evidence that a release exists.
+Use only a stable version that is already listed on the repository's Releases
+page; the numeric value below is an example, not a claim that its assets have
+been published. If no stable release is listed, the release URLs intentionally
+fail—use the unreleased contributor-checkout path below instead.
+
+Prebuilt public-alpha releases support exactly `darwin/arm64` on macOS 15 or newer
+and `linux/amd64`. On another platform, build from source.
+
+Choose an explicit stable release version and download its exact nine-file
+inventory into a fresh directory. Do not pipe an installer from the mutable
+`main` branch into a shell. Set `COMPOUND_RELEASE_REPOSITORY` to the exact
+`owner/repository` identity shown on the public release page; the same value
+binds downloads, attestations, and the source remote below.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/umutkeltek/compound/main/scripts/install-release.sh \
-  | sh
+set -eu
+
+VERSION=0.1.0
+REPOSITORY=${COMPOUND_RELEASE_REPOSITORY:?set the public owner/repository identity}
+if ! printf '%s\n' "$VERSION" | awk '
+  $0 ~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { ok = 1 }
+  END { if (!ok) exit 1 }
+'; then
+  echo "VERSION must be strict stable SemVer" >&2
+  exit 1
+fi
+TAG="v${VERSION}"
+RELEASE_DIR="compound-release-${VERSION}"
+BASE_URL="https://github.com/${REPOSITORY}/releases/download/${TAG}"
+
+mkdir "$RELEASE_DIR"
+ASSETS="
+RELEASE
+SHA256SUMS
+install-release.sh
+compound_${VERSION}_darwin_arm64.tar.gz
+compound_${VERSION}_darwin_arm64.cdx.json
+compound_${VERSION}_darwin_arm64_compound-breadth-engine.cdx.json
+compound_${VERSION}_linux_amd64.tar.gz
+compound_${VERSION}_linux_amd64.cdx.json
+compound_${VERSION}_linux_amd64_compound-breadth-engine.cdx.json
+"
+for ASSET in $ASSETS; do
+  curl --fail --location \
+    --output "$RELEASE_DIR/$ASSET" \
+    "$BASE_URL/$ASSET"
+done
 ```
 
-That one-liner downloads the right tarball for your OS/arch, verifies its
-SHA256 against the bundled `SHA256SUMS`, drops the binaries on your PATH, and
-runs `compound home init` + `home doctor`.
+`SHA256SUMS` detects corruption and proves that the manifest, installer, and
+archives are internally consistent with one release set. Because the checksum
+file comes from the same release location as those files, checksums alone do
+**not** authenticate who published them.
 
-Offline / air-gapped? Point the installer at a tarball you already have:
+Before executing the installer, use GitHub's signed build attestation to check
+every downloaded file against the expected repository and release workflow:
 
 ```sh
-COMPOUND_RELEASE_TARBALL=/path/to/compound_0.1.0_<os>_<arch>.tar.gz \
-  sh scripts/install-release.sh
+for ASSET in $ASSETS; do
+  gh attestation verify "$RELEASE_DIR/$ASSET" \
+    --repo "$REPOSITORY" \
+    --signer-workflow "$REPOSITORY/.github/workflows/release.yml" \
+    --source-ref "refs/tags/$TAG"
+done
+```
+
+This is the authenticated provenance step. The installer does not run or
+enforce `gh attestation verify`, and verification does not make a Git tag or
+GitHub release immutable. It proves that the bytes you checked have an
+attestation from the expected repository workflow.
+
+Select the archive for the current supported platform and run the verified
+installer from its regular file. Defaults install to `~/.local/bin` and
+initialize `~/.compound`; override those locations with `GOBIN` and
+`COMPOUND_HOME`.
+
+```sh
+case "$(uname -s)/$(uname -m)" in
+  Darwin/arm64) PLATFORM=darwin_arm64 ;;
+  Linux/x86_64|Linux/amd64) PLATFORM=linux_amd64 ;;
+  *) echo "unsupported prebuilt platform" >&2; exit 1 ;;
+esac
+
+COMPOUND_VERSION="$VERSION" \
+COMPOUND_RELEASE_TARBALL="$RELEASE_DIR/compound_${VERSION}_${PLATFORM}.tar.gz" \
+  sh "$RELEASE_DIR/install-release.sh"
+```
+
+The installer first verifies its own bytes against the colocated
+`SHA256SUMS`, then validates `RELEASE`, the selected archive's checksum and
+closed member layout, both binary identities, and the `compound` version/full
+commit identity. It publishes both binaries under one install lock, restores
+the previous pair on failure when possible, preserves recovery state if a
+restore fails, and runs `compound home init` plus `home doctor`. If the
+installer process is interrupted after preparing publication, the next
+invocation acquires the persistent kernel lock, validates the rooted private
+owner record, exact journal, retained old/new bytes, and both target hashes,
+then either restores the pre-commit pair or finishes cleanup for an exact pair
+already marked committed. Unexpected or mismatched recovery state is preserved
+and future installs fail closed pending manual inspection; it is never guessed
+away. Exact private `journal.next`, `.publish`, and `.restore` files are
+unpublished scratch, not authority: only a validated prepared generation may
+discard them, sync that cleanup, reparse the owner and main journal, and re-enter
+strict inventory validation before recovery continues.
+
+Target publication uses two sequential renames, not an atomic pair switch. A
+crash can therefore leave a durable partial pair visible until the next installer
+invocation acquires the lock and deterministically restores or reconciles the
+journaled generation. Consumers that cannot tolerate that bounded interval must
+stop invoking either binary until recovery completes.
+
+For an offline or air-gapped installation, verify the attestations on a
+connected machine before transfer, then carry the unchanged, exact nine-file
+directory listed above. Keep all names unchanged and all files colocated. The
+offline installer reads these four files directly:
+
+- `install-release.sh`
+- `SHA256SUMS`
+- `RELEASE`
+- `compound_<version>_<supported-platform>.tar.gz`
+
+The remaining four SBOM files and the other supported platform archive stay in
+the exact release directory as the release's provenance and inventory
+evidence. On the offline machine, run the same platform-selection block above,
+or point to the selected archive explicitly:
+
+```sh
+COMPOUND_VERSION=0.1.0 \
+COMPOUND_RELEASE_TARBALL=/path/to/compound-release-0.1.0/compound_0.1.0_linux_amd64.tar.gz \
+  sh /path/to/compound-release-0.1.0/install-release.sh
 ```
 
 ### Option B — build from source
 
+Select the same stable tag and authenticate its `RELEASE` manifest before
+trusting the full commit recorded inside it. This path fetches only that tag;
+it never builds the repository's mutable default branch.
+
 ```sh
-git clone https://github.com/umutkeltek/compound.git
+set -eu
+
+VERSION=0.1.0
+REPOSITORY=${COMPOUND_RELEASE_REPOSITORY:?set the public owner/repository identity}
+TAG="v${VERSION}"
+SOURCE_EVIDENCE="compound-${VERSION}-RELEASE"
+curl --fail --location \
+  --output "$SOURCE_EVIDENCE" \
+  "https://github.com/${REPOSITORY}/releases/download/${TAG}/RELEASE"
+gh attestation verify "$SOURCE_EVIDENCE" \
+  --repo "$REPOSITORY" \
+  --signer-workflow "$REPOSITORY/.github/workflows/release.yml" \
+  --source-ref "refs/tags/$TAG"
+
+COMMIT=$(awk '
+  NR == 1 { if (NF != 2 || $1 != "schema" || $2 != "compound.release.v0.2") exit 1; next }
+  NR == 2 { if (NF != 2 || $1 != "version" || $2 != version) exit 1; next }
+  NR == 3 { if (NF != 2 || $1 != "commit" || length($2) != 40 || $2 ~ /[^0-9a-f]/) exit 1; print $2; next }
+  NR == 4 { if (NF != 2 || $1 != "installer" || $2 != "install-release.sh") exit 1; next }
+  NR == 5 { if (NF != 6 || $1 != "artifact" || $2 != "darwin" || $3 != "arm64") exit 1; next }
+  NR == 6 { if (NF != 6 || $1 != "artifact" || $2 != "linux" || $3 != "amd64") exit 1; next }
+  { exit 1 }
+  END { if (NR != 6) exit 1 }
+' version="$VERSION" "$SOURCE_EVIDENCE")
+
+mkdir compound
+git init compound
 cd compound
+git remote add origin "https://github.com/${REPOSITORY}.git"
+git fetch --no-tags --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
+test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$COMMIT"
+git checkout --detach "$COMMIT"
+test "$(git rev-parse HEAD)" = "$COMMIT"
 make install
 ```
 
 This builds the `compound` binary into `~/.local/bin/`, initializes a
 `COMPOUND_HOME` at `~/.compound`, and runs `home doctor` to verify the layout.
+The release workflow proves the tag commit is contained in remote `main` before
+building and publishing. Repository administrators must still activate tag
+immutability, protected-branch rules, and the private vulnerability-reporting
+channel before cutting the first tag; those external controls are pre-tag gates,
+not properties this source checkout can create.
 
 ```sh
 # Make sure it's on your PATH:
 export PATH="$HOME/.local/bin:$PATH"
 compound version
 ```
+
+### Unreleased contributor checkout
+
+Before the first stable tag—or when testing a change that has not been
+released—work only from a source checkout already pinned to a commit you have
+reviewed:
+
+```sh
+test -z "$(git status --short)"
+git rev-parse HEAD
+make install
+```
+
+This produces an unreleased development build, not a release artifact. Record
+the printed commit before testing, and do not present that installation as a
+published Compound version.
 
 ## 2. Orient on YOUR repo
 
