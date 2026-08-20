@@ -229,10 +229,16 @@ func Init(homePath, kind string, now time.Time) error {
 	if kind == "" {
 		kind = "global"
 	}
+	if err := validateExistingHomeForPrivateInit(homePath); err != nil {
+		return fmt.Errorf("private custody home root: %w", err)
+	}
 	for _, d := range HabitatDirs() {
 		if err := os.MkdirAll(filepath.Join(homePath, d), 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
+	}
+	if err := initializePrivateCustodyDirs(homePath); err != nil {
+		return fmt.Errorf("initialize private custody: %w", err)
 	}
 	mp := filepath.Join(homePath, ManifestName)
 	if _, err := os.Stat(mp); errors.Is(err, os.ErrNotExist) {
@@ -292,6 +298,7 @@ type Report struct {
 	BackupWarnings []CheckItem
 	Setup          SetupReport
 	SetupOK        bool
+	PrivateCustody PrivateCustodyReport
 	OK             bool
 }
 
@@ -339,6 +346,7 @@ func DoctorWithOptions(homePath string, opts DoctorOptions) Report {
 	r.BackupWarnings = backupFreshnessWarnings(homePath, now)
 	r.Setup = DoctorSetup(SetupOptions{})
 	r.SetupOK = r.Setup.OK
+	r.PrivateCustody = DiagnosePrivateCustody(homePath)
 	// r.OK is the HOME-health verdict: manifest, scaffold dirs, and a clean habitat inventory.
 	// It deliberately does NOT fold in SetupOK — SetupOK checks the machine's install environment
 	// (setup.compound_on_path, setup.install_dir_on_path), which is orthogonal to whether THIS home

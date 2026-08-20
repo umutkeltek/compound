@@ -168,6 +168,12 @@ func buildHabitatEntries() []HabitatEntry {
 		active("artifacts", "artifacts", HabitatClassEvidence, true, true, false),
 		child("artifacts.sha256", "artifacts/sha256", HabitatClassEvidence, true, true, false),
 		child("artifacts.refs", "artifacts/refs", HabitatClassEvidence, true, true, false),
+		// Private immutable artifacts are canonical evidence, but their
+		// directories are created by Init's rooted 0700 path instead of the
+		// generic 0755 habitat scaffolder.
+		{ID: "private", Prefix: "private", Class: HabitatClassEvidence, Status: HabitatStatusActive, Backup: true},
+		{ID: "private.artifacts", Prefix: "private/artifacts", Class: HabitatClassEvidence, Status: HabitatStatusActive, Backup: true},
+		{ID: "private.artifacts.sha256", Prefix: "private/artifacts/sha256", Class: HabitatClassEvidence, Status: HabitatStatusActive, Backup: true},
 		active("indexes", "indexes", HabitatClassRebuildable, true, false, true),
 		active("projections", "projections", HabitatClassRebuildable, true, false, true),
 		child("projections.account-admission", "projections/account-projection.json", HabitatClassOperational, false, true, false),
@@ -212,7 +218,6 @@ func buildHabitatEntries() []HabitatEntry {
 		bridge("legacy.events.logs", "logs", "events/logs"),
 		bridge("legacy.context.packs", "packs", "context/packs"),
 		bridge("legacy.work.panel-runs", "panel-runs", "work/runs/panel"),
-		bridge("legacy.config.private", "private", "config/private"),
 		bridge("legacy.reviews.reports", "reports", "reviews/reports"),
 		bridge("legacy.reviews.fixtures", "reviewed-fixtures", "reviews/fixtures"),
 		bridge("legacy.work.run-observations", "run-observations", "work/run-observations"),

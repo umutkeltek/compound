@@ -135,6 +135,10 @@ func TestFirstPartyCommandAdmissionDistinguishesMutatingSubcommands(t *testing.T
 			wantOperation: "governed_command",
 		},
 		{
+			command:       "compound home private-custody repair --home /synthetic/home",
+			wantOperation: "governed_command",
+		},
+		{
 			command:       "compound runtime doctor fixtures/runtime/synthetic-service.yaml",
 			wantOperation: "governed_command",
 		},

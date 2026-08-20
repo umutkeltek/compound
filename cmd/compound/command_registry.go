@@ -120,7 +120,8 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("where", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("verify", policy.FirstPartyCommandRead).
-			withSubcommandAdmission("init", policy.FirstPartyCommandGoverned),
+			withSubcommandAdmission("init", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("private-custody", policy.FirstPartyCommandGoverned),
 		"store": heldCommand(cmdStore).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandGoverned).
 			withSubcommandAdmission("status", policy.FirstPartyCommandRead).

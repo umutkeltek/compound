@@ -229,7 +229,7 @@ func usage() {
 
 usage:
   compound version
-compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore; archive-history requires --kind work|lease|review|comparison|create-plan|memory-candidate to archive (or --dry-run to preview) and accepts --path <rel>
+compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore; private-custody repair is explicit permission repair; archive-history requires --kind work|lease|review|comparison|create-plan|memory-candidate to archive (or --dry-run to preview) and accepts --path <rel>
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
@@ -3928,8 +3928,10 @@ func cmdHome(args []string) {
 			fmt.Println("  --kind is required to archive; --dry-run previews every kind without moving anything")
 		case "restore-history":
 			fmt.Println("usage: compound home restore-history (--all|--id id[,id...]) [--dry-run]")
+		case "private-custody":
+			fmt.Print(home.PrivateCustodyUsage)
 		default:
-			fmt.Println("usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home <path>] [--local|--global]")
+			fmt.Println("usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody> [--home <path>] [--local|--global]")
 		}
 		return
 	}
@@ -4060,8 +4062,12 @@ func cmdHome(args []string) {
 			os.Exit(1)
 		}
 		printHomeCompactReport(report)
+	case "private-custody":
+		if code := home.RunPrivateCustodyCLI(args, os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
+		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home <path>] [--local|--global]; archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--dry-run]")
+		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody> [--home <path>] [--local|--global]; archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--dry-run]")
 		os.Exit(2)
 	}
 }
@@ -4202,6 +4208,7 @@ type homeDoctorJSONReport struct {
 	// usage-supplement.jsonl) but nothing fresh in 4x its own freshness window. Additive only —
 	// never folded into Verdict below.
 	CapacityFeedWarnings []routeevidence.CapacityFeedWarning `json:"capacity_feed_warnings,omitempty"`
+	PrivateCustody       home.PrivateCustodyReport           `json:"private_custody"`
 	Verdict              string                              `json:"verdict"`
 }
 
@@ -4249,7 +4256,7 @@ func buildHomeDoctorReport(r home.Report) homeDoctorJSONReport {
 	operational.TerminalHotWorkCount = len(operational.TerminalHotWork)
 	operational.StaleLeaseCount = len(operational.StaleLeases)
 	verdict := "ok"
-	if !r.OK || smell {
+	if !r.OK || smell || !r.PrivateCustody.OK {
 		verdict = "fail"
 	}
 	return homeDoctorJSONReport{
@@ -4270,6 +4277,7 @@ func buildHomeDoctorReport(r home.Report) homeDoctorJSONReport {
 		Setup:                      r.Setup,
 		SetupOK:                    r.SetupOK,
 		CapacityFeedWarnings:       homeDoctorCapacityFeedWarnings(r.Home),
+		PrivateCustody:             r.PrivateCustody,
 		Verdict:                    verdict,
 	}
 }
@@ -4358,6 +4366,7 @@ func printHomeDoctor(r home.Report) {
 	for _, w := range homeDoctorCapacityFeedWarnings(r.Home) {
 		fmt.Printf("%s: %s — %s\n", w.Name, homeCleanStr(w.OK), w.Detail)
 	}
+	_ = home.WritePrivateCustodyReport(os.Stdout, r.PrivateCustody)
 	for _, action := range buildHomeDoctorReport(r).OperationalHygieneActions {
 		fmt.Printf("hygiene_action: %s kind=%s\n", action.ID, action.Kind)
 		fmt.Printf("  command: %s\n", strings.Join(action.Command, " "))
@@ -4385,8 +4394,8 @@ func printHomeDoctor(r home.Report) {
 		}
 	}
 	printHomeGovernanceDoctor(r.Home)
-	fmt.Printf("verdict: %s\n", homeOKStr(r.OK && !smell))
-	if !r.OK {
+	fmt.Printf("verdict: %s\n", homeOKStr(r.OK && !smell && r.PrivateCustody.OK))
+	if !r.OK || !r.PrivateCustody.OK {
 		os.Exit(1)
 	}
 }

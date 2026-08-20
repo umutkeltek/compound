@@ -264,6 +264,29 @@ func TestHabitatCatalogOwnsCanonicalSourceManifestsAndNamesLegacyRetirement(t *t
 	}
 }
 
+func TestHabitatCatalogOwnsPrivateArtifactCustodyCanonically(t *testing.T) {
+	for _, tc := range []struct {
+		path   string
+		prefix string
+		id     string
+	}{
+		{path: "private", prefix: "private", id: "private"},
+		{path: "private/artifacts", prefix: "private/artifacts", id: "private.artifacts"},
+		{path: "private/artifacts/sha256/example", prefix: "private/artifacts/sha256", id: "private.artifacts.sha256"},
+	} {
+		entry, ok := HabitatForPath(tc.path)
+		if !ok || entry.ID != tc.id || entry.Prefix != tc.prefix || entry.Status != HabitatStatusActive || entry.Class != HabitatClassEvidence || !entry.Backup || entry.Compact {
+			t.Fatalf("private custody habitat %q is not canonical durable evidence: %+v ok=%t", tc.path, entry, ok)
+		}
+		if entry.Scaffold {
+			t.Fatalf("private custody habitat %q must not use generic 0755 scaffolding: %+v", tc.path, entry)
+		}
+		if entry.PlacementAllowed {
+			t.Fatalf("private custody habitat %q must remain writer-restricted: %+v", tc.path, entry)
+		}
+	}
+}
+
 func TestHabitatCatalogProjectionsCannotMutateAuthority(t *testing.T) {
 	entries := HabitatEntries()
 	dirs := HabitatDirs()
