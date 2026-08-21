@@ -285,8 +285,7 @@ var PinnedSilentAcceptors = []string{
 	"route evidence-authority",
 	// schedule doctor reports without validating argv.
 	"schedule doctor",
-	// store migrate runs the migration while dropping unrecognized flags.
-	"store migrate",
+	// "store migrate" no longer pinned: it validates its own flags before migration.
 }
 
 func sliceSet(items []string) map[string]struct{} {
