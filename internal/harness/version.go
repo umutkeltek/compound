@@ -71,7 +71,10 @@ func ObservedVersionWithRunner(name string, runner func(binary string) (string, 
 func defaultVersionProbe(binary string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), versionProbeTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binary, "--version").Output()
+	// CombinedOutput, not Output: prime-agent prints its version to STDERR
+	// (claude/codex use stdout). Output() would drop it and read as unobserved.
+	// The parser is lenient, so merging streams is safe for the stdout emitters.
+	out, err := exec.CommandContext(ctx, binary, "--version").CombinedOutput()
 	return string(out), err
 }
 

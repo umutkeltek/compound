@@ -1,6 +1,8 @@
 package harness
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -147,5 +149,25 @@ func TestObservedVersionDefaultsPrimeAgentToPrimeAgentBinary(t *testing.T) {
 		if got != wantBinary {
 			t.Fatalf("binaryForHarness[%q] = %q, want %q", harnessName, got, wantBinary)
 		}
+	}
+}
+
+// TestDefaultVersionProbeReadsStderr pins the real prime-agent behaviour that
+// the doctor drift signal depends on: prime-agent emits its version on STDERR,
+// not stdout. Before the CombinedOutput fix this returned "" (rendered
+// "unobserved" in doctor even though prime-agent --version prints 0.7.x fine).
+func TestDefaultVersionProbeReadsStderr(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "stderr-versioner")
+	// #nosec G306 -- test fixture, must be executable
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 9.9.9 >&2\n"), 0o755); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	out, err := defaultVersionProbe(script)
+	if err != nil {
+		t.Fatalf("probe errored: %v", err)
+	}
+	if got := parseSemverToken(out); got != "9.9.9" {
+		t.Fatalf("stderr version not observed: parsed %q from %q", got, out)
 	}
 }
