@@ -61,11 +61,11 @@ func TestLoadRuntimeSourcesFromClosedHookWork(t *testing.T) {
 	if _, err := workStore.Claim(w.ID, "codex", runtimeSourcesT0); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	runPricingDistillAttemptID, err := runattempt.Mint(runtimeSourcesT0)
+	runPricingDistillAttempt, err := runattempt.Open(homePath).Mint(w.ID, "codex", "codex", runtimeSourcesT0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{runPricingDistillAttemptID}}, runtimeSourcesT0); err != nil {
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{runPricingDistillAttempt.ID}}, runtimeSourcesT0); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := workStore.Advance(w.ID, work.AdvanceInput{To: "verifying", ArtifactID: "artifact_pricing_summary", VerificationID: "ver_pricing_summary"}, runtimeSourcesT0); err != nil {
@@ -134,8 +134,8 @@ func TestLoadRuntimeSourcesFromClosedHookWork(t *testing.T) {
 	if containsString(req.Work.ActionIntentIDs, "run_pricing_distill") {
 		t.Fatalf("ActionIntentIDs must not contain legacy run id after S1; got %v", req.Work.ActionIntentIDs)
 	}
-	if !containsString(req.Work.RunAttemptIDs, runPricingDistillAttemptID) {
-		t.Fatalf("RunAttemptIDs missing %q, got %v", runPricingDistillAttemptID, req.Work.RunAttemptIDs)
+	if !containsString(req.Work.RunAttemptIDs, runPricingDistillAttempt.ID) {
+		t.Fatalf("RunAttemptIDs missing %q, got %v", runPricingDistillAttempt.ID, req.Work.RunAttemptIDs)
 	}
 	if req.Context == nil || !strings.Contains(req.Context.SummaryMD, "product") {
 		t.Fatalf("request context summary incomplete: %+v", req.Context)

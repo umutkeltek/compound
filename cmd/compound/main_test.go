@@ -3195,8 +3195,12 @@ func TestWorkImportPacketReadyClosesThroughReceiptTransition(t *testing.T) {
 	captureStdout(t, func() {
 		cmdWork([]string{"claim", workID, "--by", "codex"})
 	})
+	packetRunAttemptID := "ratt_20260720T000000Z_aabbccdd"
+	if _, err := runattempt.Open(homePath).MintWithID(packetRunAttemptID, workID, "codex", "codex", cliTestNow); err != nil {
+		t.Fatalf("mint packet CLI RunAttempt: %v", err)
+	}
 	captureStdout(t, func() {
-		cmdWork([]string{"advance", workID, "--to", "running", "--run-attempt", "ratt_20260720T000000Z_aabbccdd"})
+		cmdWork([]string{"advance", workID, "--to", "running", "--run-attempt", packetRunAttemptID})
 	})
 	captureStdout(t, func() {
 		cmdWork([]string{"advance", workID, "--to", "verifying", "--artifact", "artifact_packet_cli", "--verification", "ver_packet_cli"})
@@ -3221,7 +3225,7 @@ func TestWorkImportPacketReadyClosesThroughReceiptTransition(t *testing.T) {
 	if stringSliceContains(closed.Transition.ActionRefs, "run_packet_cli") {
 		t.Fatalf("transition action_refs must not contain legacy run id after S1; got %v", closed.Transition.ActionRefs)
 	}
-	if !stringSliceContains(closed.Work.RunAttemptIDs, "ratt_20260720T000000Z_aabbccdd") {
+	if !stringSliceContains(closed.Work.RunAttemptIDs, packetRunAttemptID) {
 		t.Fatalf("work RunAttemptIDs missing the ratt_ id attached via --run-attempt; got %v", closed.Work.RunAttemptIDs)
 	}
 	if !stringSliceContains(closed.Transition.AfterRefs, "artifact_packet_cli") ||

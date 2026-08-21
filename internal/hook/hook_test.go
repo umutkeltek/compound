@@ -1568,11 +1568,11 @@ func TestPromptWorkClosesWithContextTransition(t *testing.T) {
 	if _, err := store.Claim(w.ID, "codex", fixedNow); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	runPricingTestRunAttemptID, err := runattempt.Mint(fixedNow)
+	runPricingTestRunAttempt, err := runattempt.Open(homePath).Mint(w.ID, "codex", "codex", fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{runPricingTestRunAttemptID}}, fixedNow); err != nil {
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{runPricingTestRunAttempt.ID}}, fixedNow); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying", ArtifactID: "artifact_pricing_plan", VerificationID: "ver_pricing_plan"}, fixedNow); err != nil {
