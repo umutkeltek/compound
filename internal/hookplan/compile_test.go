@@ -427,3 +427,75 @@ func testClaudeAttestation() HarnessAttestation {
 		},
 	}
 }
+
+// TestCompileDefaultPostureAttestationUsesObservedVersion pins the contract
+// that CompileDefaultPosture stamps the OBSERVED installed version into
+// HarnessAttestation.Version when ObservedVersion returns a non-empty
+// string. Before this change the attestation carried "registry:<name>" — an
+// empty socket that lost the version signal entirely. This test pins the
+// falsifier: an ObservedVersion return of "0.7.4" must surface verbatim.
+//
+// We exercise through codex because CompileDefaultPosture requires a known
+// semantic adapter (claude/codex/opencode) — prime_agent itself has no
+// semantic adapter yet, but the contract under test is the attestation
+// stamping path which is identical for every registry name. The observedFn
+// seam lets us simulate the prime_agent path: the harness arg drives the
+// default registry lookup, the observedFn returns whatever the binary probe
+// would have surfaced.
+func TestCompileDefaultPostureAttestationUsesObservedVersion(t *testing.T) {
+	t.Parallel()
+
+	prev := observedVersionFn
+	defer func() { observedVersionFn = prev }()
+
+	cases := []struct {
+		name        string
+		harnessName string
+		observed    string
+		wantVersion string
+	}{
+		{
+			name:        "observed version surfaces verbatim",
+			harnessName: "codex",
+			observed:    "0.7.4",
+			wantVersion: "0.7.4",
+		},
+		{
+			name:        "unobservable falls back to registry socket",
+			harnessName: "codex",
+			observed:    "",
+			wantVersion: "registry:codex",
+		},
+		{
+			name:        "different observed still surfaces verbatim",
+			harnessName: "codex",
+			observed:    "0.7.1",
+			wantVersion: "0.7.1",
+		},
+	}
+
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			observedVersionFn = func(name string) string {
+				if name == c.harnessName {
+					return c.observed
+				}
+				return ""
+			}
+
+			compiled, err := CompileDefaultPosture(DefaultPostureRequest{
+				Harness:         c.harnessName,
+				Registry:        harness.DefaultRegistry(),
+				HandlerRef:      "compound",
+				HandlerRevision: "sha256:handler-fixture",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := compiled.CompiledFrom.HarnessVersion; got != c.wantVersion {
+				t.Fatalf("HarnessVersion = %q, want %q", got, c.wantVersion)
+			}
+		})
+	}
+}

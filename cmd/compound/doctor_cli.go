@@ -142,6 +142,11 @@ type doctorReport struct {
 	// installed SHA + target tip + relation, never bare boolean. Closes 2026-08-17
 	// gap where doctor said all-clear while installed five commits behind main.
 	BinaryStaleness doctor.BinaryStalenessReport `json:"binary_staleness"`
+
+	// HarnessVersionDrift surfaces the named signal "harness_version_drift":
+	// installed binary version vs the harness row's ExpectedVersion. One row
+	// per registered harness, status vocabulary match|drift|unpinned|unobserved.
+	HarnessVersionDrift doctor.HarnessVersionDriftReport `json:"harness_version_drift"`
 }
 
 // surfacingRow is one lane/harness × the communication surfaces it should see. Cell vocabulary
@@ -428,6 +433,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 			Note:     "binary staleness unavailable: cwd not inside a git checkout",
 		}
 	}
+	// 9) Harness version drift — installed binary version vs ExpectedVersion
+	// per registered harness. Non-failing named signal: even when DriftCount
+	// is non-zero the doctor reports rows + count and exits 0 (the operator
+	// decides whether to upgrade). Pattern matches BinaryStaleness above.
+	rep.HarnessVersionDrift = doctor.ComputeHarnessVersionDrift(harness.DefaultRegistry())
 
 	if hasFlag(args, "--json") {
 		if err := encodeJSON(stdout, rep); err != nil {
@@ -494,6 +504,7 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 
 	printProjectionFreshness(stdout, rep)
 	doctor.RenderBinaryStaleness(stdout, rep.BinaryStaleness)
+	doctor.RenderHarnessVersionDrift(stdout, rep.HarnessVersionDrift)
 	printPermissionPosture(stdout, rep)
 	printSurfacing(stdout, rep)
 }

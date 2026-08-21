@@ -48,6 +48,16 @@ type Harness struct {
 	Limitations          []string     `json:"limitations"`
 	InjectBudgetMS       int          `json:"inject_budget_ms,omitempty"`
 	Fallback             bool         `json:"fallback,omitempty"` // true when this is the generic stand-in
+
+	// ExpectedVersion is the operator-blessed semver for the binary this
+	// harness wraps. Empty means "unpinned" — doctor won't flag drift for
+	// it. Non-empty values are the contract: doctor surfaces drift as the
+	// "harness_version_drift" named signal when the installed version
+	// (recovered by ObservedVersion) does not match. The default registry
+	// pins prime_agent to "0.7.4" because that is the upstream latest and
+	// the installed 0.7.1 had self-update behavior unless PI_SKIP_VERSION_CHECK
+	// is set on dispatch (see prime_agent_adapter.go).
+	ExpectedVersion string `json:"expected_version,omitempty"`
 }
 
 // Registry maps harness name -> capabilities.
@@ -98,6 +108,7 @@ type ManifestHarness struct {
 	Limitations          []string             `json:"limitations" yaml:"limitations"`
 	InjectBudgetMS       int                  `json:"inject_budget_ms,omitempty" yaml:"inject_budget_ms,omitempty"`
 	Fallback             bool                 `json:"fallback,omitempty" yaml:"fallback,omitempty"`
+	ExpectedVersion      string               `json:"expected_version,omitempty" yaml:"expected_version,omitempty"`
 }
 
 type ManifestCapabilities struct {
@@ -471,6 +482,11 @@ func DefaultRegistry() Registry {
 				"registry identity only — capability-floor raise and persistent-kernel governor land in a follow-up slice",
 			},
 			InjectBudgetMS: 1500,
+			// Upstream latest at 2026-08-19 was 0.7.4; installed 0.7.1 has the
+			// self-update path (PI_SKIP_VERSION_CHECK=1 neutralizes it on dispatch
+			// — see prime_agent_adapter.go buildCmd) and the operator-visible
+			// drift is what the harness_version_drift doctor signal reports.
+			ExpectedVersion: "0.7.4",
 		},
 	}}
 }
@@ -607,9 +623,10 @@ func (m RegistryManifest) Registry() (Registry, error) {
 				NativeSkills:        in.Capabilities.NativeSkills,
 				MCP:                 in.Capabilities.MCP,
 			},
-			Limitations:    append([]string(nil), in.Limitations...),
-			InjectBudgetMS: firstPositive(in.InjectBudgetMS, defaultInjectBudgetMS(name)),
-			Fallback:       in.Fallback,
+			Limitations:     append([]string(nil), in.Limitations...),
+			InjectBudgetMS:  firstPositive(in.InjectBudgetMS, defaultInjectBudgetMS(name)),
+			Fallback:        in.Fallback,
+			ExpectedVersion: strings.TrimSpace(in.ExpectedVersion),
 		}
 	}
 	return Registry{Harnesses: byName}, nil
@@ -623,6 +640,7 @@ func RegistryRevision(reg Registry) string {
 		Limitations          []string     `json:"limitations"`
 		InjectBudgetMS       int          `json:"inject_budget_ms,omitempty"`
 		Fallback             bool         `json:"fallback,omitempty"`
+		ExpectedVersion      string       `json:"expected_version,omitempty"`
 	}
 	names := reg.Names()
 	snapshot := make([]harnessSnapshot, 0, len(names))
@@ -637,6 +655,7 @@ func RegistryRevision(reg Registry) string {
 			Limitations:          limitations,
 			InjectBudgetMS:       h.InjectBudgetMS,
 			Fallback:             h.Fallback,
+			ExpectedVersion:      h.ExpectedVersion,
 		})
 	}
 	data, _ := json.Marshal(snapshot)

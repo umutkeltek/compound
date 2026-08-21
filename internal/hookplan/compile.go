@@ -105,6 +105,13 @@ type semanticHarnessAdapter interface {
 	Attest(harness.Capabilities) map[string]bool
 }
 
+// observedVersionFn is the seam CompileDefaultPosture uses to recover the
+// installed binary's version. Tests substitute a fake via package-private
+// assignment; production callers hit harness.ObservedVersion through the
+// default wiring. Kept as a package var so the compile path stays pure and
+// the version probe can be silenced in tests where no real binary is on PATH.
+var observedVersionFn = harness.ObservedVersion
+
 func unsupportedIntention(intention HarnessIntention, reason string) CompiledIntention {
 	return CompiledIntention{
 		Intention:           intention,
@@ -204,6 +211,18 @@ func CompileDefaultPosture(request DefaultPostureRequest) (CompiledPosture, erro
 		configScope = defaultScope
 	}
 	revision := harness.RegistryRevision(request.Registry)
+	// Prefer the OBSERVED installed version (prime-agent --version / claude
+	// --version / codex --version) when the binary is reachable; fall back
+	// to the "registry:<name>" empty socket only when ObservedVersion returns
+	// "" (binary missing, --version failed, or unparseable output). The
+	// registry name is the only fallback because the harness row's Name is
+	// the one thing that is always reachable even when the binary is not —
+	// it is the same string the RunAttempt.Harness field carries, so a
+	// doctor that keys off Version can correlate with the audit trail.
+	version := observedVersionFn(registryName)
+	if version == "" {
+		version = "registry:" + registered.Name
+	}
 	return CompileSemanticPosture(SemanticPosture{
 		ID:                 "hpost_default_" + registryName,
 		Revision:           revision,
@@ -217,7 +236,7 @@ func CompileDefaultPosture(request DefaultPostureRequest) (CompiledPosture, erro
 		Harness:          harnessName,
 		Family:           family,
 		Surface:          surface,
-		Version:          "registry:" + registered.Name,
+		Version:          version,
 		FeatureState:     "declared",
 		ConfigScope:      configScope,
 		Revision:         revision,
