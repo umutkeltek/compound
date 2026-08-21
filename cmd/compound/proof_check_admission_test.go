@@ -1719,10 +1719,10 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.Close(w.ID, work.CloseInput{
-		Outcome:  "failed",
+		Outcome:  "completed",
 		MoveType: "audit_only",
 		Actor:    "codex:release-pending-cli",
-		Summary:  "test projection after governed proof release",
+		Summary:  "successful governed proof release",
 	}, now.Add(3*time.Second)); err != nil {
 		t.Fatal(err)
 	}

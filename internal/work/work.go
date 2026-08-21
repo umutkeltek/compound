@@ -2278,7 +2278,13 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 				return nil, fmt.Errorf("caller terminalization %s targets an already-terminal attempt", id)
 			}
 			if ra.Status != runattempt.StatusSuperseded && ra.Status != workTarget {
-				return nil, fmt.Errorf("terminal runattempt %s status %s contradicts close outcome %s (want %s)", id, ra.Status, in.Outcome, workTarget)
+				verifiedProof, err := s.committedVerifiedProofRunAttempt(closing, ra)
+				if err != nil {
+					return nil, fmt.Errorf("terminal runattempt %s proof-resource exception invalid: %w", id, err)
+				}
+				if !verifiedProof {
+					return nil, fmt.Errorf("terminal runattempt %s status %s contradicts close outcome %s (want %s)", id, ra.Status, in.Outcome, workTarget)
+				}
 			}
 			if _, err := s.resolveRunAttemptAuthorityFromEvents(reserved, ra, events); err != nil {
 				return nil, err

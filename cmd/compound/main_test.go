@@ -4126,11 +4126,11 @@ func TestWorkActivePacketProofCommand(t *testing.T) {
 	if _, err := store.Claim(imported.Work.ID, "codex", cliTestNow.Add(time.Second)); err != nil {
 		t.Fatalf("claim packet: %v", err)
 	}
-	mainPacketRunAttemptID, err := runattempt.Mint(cliTestNow.Add(2 * time.Second))
+	mainPacketRunAttempt, err := runattempt.Open(homePath).Mint(imported.Work.ID, "codex", "codex", cliTestNow.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{mainPacketRunAttemptID}}, cliTestNow.Add(2*time.Second)); err != nil {
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{mainPacketRunAttempt.ID}}, cliTestNow.Add(2*time.Second)); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:active-packet-lifecycle"}, cliTestNow.Add(3*time.Second)); err != nil {
@@ -4213,11 +4213,11 @@ func TestWorkActivePacketProofDetectsChangedSourcePacket(t *testing.T) {
 	if _, err := store.Claim(imported.Work.ID, "codex", cliTestNow.Add(time.Second)); err != nil {
 		t.Fatalf("claim packet: %v", err)
 	}
-	mainPacketRunAttemptID, err := runattempt.Mint(cliTestNow.Add(2 * time.Second))
+	mainPacketRunAttempt, err := runattempt.Open(homePath).Mint(imported.Work.ID, "codex", "codex", cliTestNow.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{mainPacketRunAttemptID}}, cliTestNow.Add(2*time.Second)); err != nil {
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{mainPacketRunAttempt.ID}}, cliTestNow.Add(2*time.Second)); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:active-packet-lifecycle"}, cliTestNow.Add(3*time.Second)); err != nil {
@@ -4800,11 +4800,11 @@ func TestWorkDispatchStepCommandReportsTerminalSourcePacket(t *testing.T) {
 	if _, err := store.Claim(imported.Work.ID, "codex", cliTestNow.Add(time.Second)); err != nil {
 		t.Fatalf("claim packet: %v", err)
 	}
-	mainTerminalRunAttemptID, err := runattempt.Mint(cliTestNow.Add(2 * time.Second))
+	mainTerminalRunAttempt, err := runattempt.Open(homePath).Mint(imported.Work.ID, "codex", "codex", cliTestNow.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{mainTerminalRunAttemptID}}, cliTestNow.Add(2*time.Second)); err != nil {
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{mainTerminalRunAttempt.ID}}, cliTestNow.Add(2*time.Second)); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:terminal-source"}, cliTestNow.Add(3*time.Second)); err != nil {

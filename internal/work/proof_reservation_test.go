@@ -130,6 +130,89 @@ func TestProofResourceReservationExclusiveUntilReleaseAndGovernedResultReachable
 	}
 }
 
+func TestCloseFailedWorkPreservesCommittedVerifiedProofRunAttemptOutcome(t *testing.T) {
+	fixture := newSourceBoundProofCompletionFixture(t, fixedNow)
+	completed, err := fixture.store.CompleteProofResource(fixture.item.ID, ProofResourceCompleteInput{
+		Actor:             proofActorAlpha,
+		ReservationID:     fixture.reserved.Reservation.ID,
+		ReportArtifactRef: fixture.reportRef,
+		ProducerExitKnown: true,
+		ProducerExitCode:  0,
+	}, fixedNow.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.Advance(fixture.item.ID, AdvanceInput{To: "running", Actor: proofActorAlpha}, fixedNow.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := fixture.store.Close(fixture.item.ID, CloseInput{
+		Outcome:  "failed",
+		MoveType: "audit_only",
+		Actor:    proofActorAlpha,
+		Summary:  "task failed after its certifying subprocess completed",
+	}, fixedNow.Add(5*time.Second))
+	if err != nil {
+		t.Fatalf("close failed work with committed verified proof: %v", err)
+	}
+	if closed.Work.State != "failed" {
+		t.Fatalf("closed work state = %q, want failed", closed.Work.State)
+	}
+	attempt, err := fixture.store.runAttempts().Get(completed.Result.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Status != runattempt.StatusSucceeded {
+		t.Fatalf("verified proof RunAttempt status = %q, want succeeded execution evidence", attempt.Status)
+	}
+	proof, err := fixture.store.ProofChainForWork(fixture.item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proof.ProofComplete || len(proof.Problems) != 0 {
+		t.Fatalf("failed work proof chain rejected typed verified proof RunAttempt: %+v", proof)
+	}
+}
+
+func TestCloseFailedWorkRejectsProofShapedSucceededAttemptWithoutCommittedFinalizer(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "reject proof-shaped attempt without finalizer", proofActorAlpha, fixedNow)
+	attempt, err := s.runAttempts().Mint(w.ID, proofActorAlpha, proofResourceHarness, fixedNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.runAttempts().SetOrigin(attempt.ID, runattempt.OriginHarnessExecution); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.runAttempts().Complete(attempt.ID, runattempt.StatusSucceeded, fixedNow.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{
+		Actor:          proofActorAlpha,
+		To:             "running",
+		RunAttemptIDs:  []string{attempt.ID},
+		VerificationID: "proof-check:pfrs_missing_finalizer",
+	}, fixedNow.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.Close(w.ID, CloseInput{
+		Outcome:  "failed",
+		MoveType: "audit_only",
+		Actor:    proofActorAlpha,
+		Summary:  "must not trust a proof-shaped harness attempt",
+	}, fixedNow.Add(5*time.Second))
+	if err == nil || !strings.Contains(err.Error(), "proof-resource exception invalid") {
+		t.Fatalf("close with proof-shaped uncommitted attempt error = %v, want fail-closed proof-resource error", err)
+	}
+	after, getErr := s.Get(w.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if after.State != "running" {
+		t.Fatalf("failed close mutated work state = %q, want running", after.State)
+	}
+}
+
 func TestProofResourceCompleteCanonicalFailedReportReleasesWithoutVerification(t *testing.T) {
 	s := newStore(t)
 	first := claimedProofWork(t, s, "complete failed proof work", proofActorAlpha, fixedNow)

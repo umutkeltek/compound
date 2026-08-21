@@ -1138,11 +1138,11 @@ func seedOrientOperatorHome(t *testing.T, homePath string, now time.Time) {
 	if _, err := workStore.Claim(running.ID, "codex", now.Add(-45*time.Minute)); err != nil {
 		t.Fatalf("claim running work: %v", err)
 	}
-	orientRunningRunAttemptID, err := runattempt.Mint(now.Add(-40 * time.Minute))
+	orientRunningRunAttempt, err := runattempt.Open(homePath).Mint(running.ID, "codex", "codex", now.Add(-40*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := workStore.Advance(running.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{orientRunningRunAttemptID}}, now.Add(-40*time.Minute)); err != nil {
+	if _, err := workStore.Advance(running.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{orientRunningRunAttempt.ID}}, now.Add(-40*time.Minute)); err != nil {
 		t.Fatalf("advance running work: %v", err)
 	}
 	done, err := workStore.Create(work.CreateInput{Owner: "codex", SuccessPredicate: "operator orient closed proof"}, now.Add(-35*time.Minute))
@@ -1152,11 +1152,11 @@ func seedOrientOperatorHome(t *testing.T, homePath string, now time.Time) {
 	if _, err := workStore.Claim(done.ID, "codex", now.Add(-34*time.Minute)); err != nil {
 		t.Fatalf("claim done work: %v", err)
 	}
-	orientDoneRunAttemptID, err := runattempt.Mint(now.Add(-33 * time.Minute))
+	orientDoneRunAttempt, err := runattempt.Open(homePath).Mint(done.ID, "codex", "codex", now.Add(-33*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := workStore.Advance(done.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{orientDoneRunAttemptID}}, now.Add(-33*time.Minute)); err != nil {
+	if _, err := workStore.Advance(done.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{orientDoneRunAttempt.ID}}, now.Add(-33*time.Minute)); err != nil {
 		t.Fatalf("advance done running: %v", err)
 	}
 	if _, err := workStore.Advance(done.ID, work.AdvanceInput{To: "verifying", VerificationID: "ver_orient_done"}, now.Add(-32*time.Minute)); err != nil {

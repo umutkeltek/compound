@@ -2178,6 +2178,49 @@ func (s *Store) validateCommittedProofResourceChain(
 	return s.validateCommittedProofResourceChainStatus(w, result, report, ProofResourceVerified)
 }
 
+// committedVerifiedProofRunAttempt distinguishes the proof subprocess outcome
+// from the Work outcome. A successful canonical battery proves that exact
+// proof-check execution succeeded; it does not by itself mean the governed
+// task later closed completed. The exception is accepted only through the
+// complete committed proof-resource finalizer chain, never from harness name,
+// status, or caller-authored refs alone.
+func (s *Store) committedVerifiedProofRunAttempt(w envelope.WorkEnvelope, attempt runattempt.RunAttempt) (bool, error) {
+	if attempt.Status != runattempt.StatusSucceeded {
+		return false, nil
+	}
+	for _, ref := range w.VerificationIDs {
+		ref = strings.TrimSpace(ref)
+		if !strings.HasPrefix(ref, "proof-check:pfrs_") {
+			continue
+		}
+		resultID := strings.TrimPrefix(ref, "proof-check:")
+		var result ProofResourceResult
+		if err := s.readEventJSON(resultID, &result); err != nil {
+			return false, fmt.Errorf("proof verification %s result: %w", ref, err)
+		}
+		if result.RunAttemptID != attempt.ID {
+			continue
+		}
+		artifacts, err := home.NewArtifactStore(s.home)
+		if err != nil {
+			return false, err
+		}
+		body, err := artifacts.Get(result.ReportArtifactRef)
+		if err != nil {
+			return false, fmt.Errorf("proof verification %s report artifact: %w", ref, err)
+		}
+		report, err := decodeOwnedProofReport(body)
+		if err != nil {
+			return false, fmt.Errorf("proof verification %s report: %w", ref, err)
+		}
+		if err := s.validateCommittedProofResourceChain(w, result, report); err != nil {
+			return false, fmt.Errorf("proof verification %s finalizer chain: %w", ref, err)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 func (s *Store) validateCommittedFailedProofResourceChain(
 	w envelope.WorkEnvelope,
 	result ProofResourceResult,

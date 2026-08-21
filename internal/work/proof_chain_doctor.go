@@ -477,8 +477,15 @@ func (s *Store) checkRunAttemptProof(w envelope.WorkEnvelope, events []Event, ra
 		}
 		want := runAttemptStatusForCloseOutcome(w.State)
 		if ra.Status != runattempt.StatusSuperseded && ra.Status != want {
-			report.Counts.RunAttemptOutcomeMismatch++
-			addProofChainProblem(report, item, "run_attempt_outcome_mismatch", "run attempt "+rattID+" status "+ra.Status+" contradicts terminal work outcome "+w.State+" (want "+want+")")
+			verifiedProof, proofErr := s.committedVerifiedProofRunAttempt(w, ra)
+			if !verifiedProof {
+				report.Counts.RunAttemptOutcomeMismatch++
+				message := "run attempt " + rattID + " status " + ra.Status + " contradicts terminal work outcome " + w.State + " (want " + want + ")"
+				if proofErr != nil {
+					message += ": proof-resource exception invalid: " + proofErr.Error()
+				}
+				addProofChainProblem(report, item, "run_attempt_outcome_mismatch", message)
+			}
 		}
 		if ra.TerminalizationOwner == runattempt.TerminalizationOwnerWorkClose &&
 			(ra.TerminalizationReceiptID != item.ReceiptID || ra.TerminalizationTransitionID != item.TransitionID) {
