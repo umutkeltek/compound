@@ -2935,8 +2935,8 @@ func TestProofCheckCompletionRetainsHolderUntilBackgroundDescendantExits(t *test
 }
 
 func TestProofCheckGoCacheIsPerWorktree(t *testing.T) {
-	first, firstOK := proofCheckGoCache(t.TempDir())
-	second, secondOK := proofCheckGoCache(t.TempDir())
+	first, firstOK := work.ProofGoCache(t.TempDir())
+	second, secondOK := work.ProofGoCache(t.TempDir())
 	t.Cleanup(func() {
 		_ = os.RemoveAll(first)
 		_ = os.RemoveAll(second)
@@ -2951,8 +2951,8 @@ func TestProofCheckGoCacheIsPerWorktree(t *testing.T) {
 
 func TestProofCheckGoCacheIsStableForOneWorktree(t *testing.T) {
 	worktree := t.TempDir()
-	first, firstOK := proofCheckGoCache(worktree)
-	second, secondOK := proofCheckGoCache(worktree)
+	first, firstOK := work.ProofGoCache(worktree)
+	second, secondOK := work.ProofGoCache(worktree)
 	t.Cleanup(func() { _ = os.RemoveAll(first) })
 	if !firstOK || !secondOK {
 		t.Fatal("no cache chosen for a real worktree")
@@ -2964,7 +2964,7 @@ func TestProofCheckGoCacheIsStableForOneWorktree(t *testing.T) {
 
 func TestProofCheckGoCacheLivesOutsideWorktree(t *testing.T) {
 	worktree := t.TempDir()
-	cache, ok := proofCheckGoCache(worktree)
+	cache, ok := work.ProofGoCache(worktree)
 	t.Cleanup(func() { _ = os.RemoveAll(cache) })
 	if !ok {
 		t.Fatal("no cache chosen for a real worktree")
@@ -2977,7 +2977,7 @@ func TestProofCheckGoCacheLivesOutsideWorktree(t *testing.T) {
 
 func TestProofCheckGoCacheHonorsSharedOptOut(t *testing.T) {
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "1")
-	if _, ok := proofCheckGoCache(t.TempDir()); ok {
+	if _, ok := work.ProofGoCache(t.TempDir()); ok {
 		t.Fatal("shared-cache opt-out ignored")
 	}
 }
@@ -2986,7 +2986,7 @@ func TestProofCheckGoCacheHonorsSharedOptOut(t *testing.T) {
 // per-worktree cache even while every proofCheckGoCache unit test remains green.
 func TestRunProofCheckStepInjectsWorktreeGoCache(t *testing.T) {
 	repo := initCompoundCommandGitRepo(t)
-	want, ok := proofCheckGoCache(repo)
+	want, ok := work.ProofGoCache(repo)
 	if !ok {
 		t.Fatal("no cache chosen for a real worktree")
 	}
@@ -3022,7 +3022,7 @@ func TestRunProofCheckBunToolsInjectsWorktreeGoCache(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(toolsDir, "cache.test.ts"), []byte("test fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	want, ok := proofCheckGoCache(repo)
+	want, ok := work.ProofGoCache(repo)
 	if !ok {
 		t.Fatal("no cache chosen for a real worktree")
 	}
@@ -3059,12 +3059,12 @@ func TestPrepareProofCheckRuntimeExecutableSurvivesTemporarySourceRemoval(t *tes
 	}
 	t.Cleanup(func() { proofCheckRuntimeExecutable = originalResolver })
 
-	ctx, cleanup, err := prepareProofCheckRuntimeExecutable(context.Background())
+	ctx, cleanup, err := work.PinProofRuntimeExecutable(context.Background(), proofCheckRuntimeExecutable)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	staged, err := proofCheckRuntimeExecutableForContext(ctx, "compound")
+	staged, err := work.ProofRuntimeExecutable(ctx, "compound", proofCheckRuntimeExecutable)
 	if err != nil {
 		t.Fatal(err)
 	}

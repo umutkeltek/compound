@@ -10,6 +10,7 @@ import (
 
 	"compound/internal/attention"
 	"compound/internal/home"
+	"compound/internal/work"
 )
 
 // The attention-consistency smoke was the single most expensive gate after go-test: 60s,
@@ -65,7 +66,7 @@ func runProofCheckConsoleAttentionInHomeContext(ctx context.Context, repo, homeP
 	if err != nil {
 		return evidence, err
 	}
-	executable, err := proofCheckRuntimeExecutableForContext(ctx, step.Command[0])
+	executable, err := work.ProofRuntimeExecutable(ctx, step.Command[0], proofCheckRuntimeExecutable)
 	if err != nil {
 		return evidence, err
 	}

@@ -558,7 +558,7 @@ func TestRustCanonicalProofPublishesOwnedVerificationWithoutCompoundRuntimeArtif
 			if logical == "cargo" {
 				return os.Getenv("COMPOUND_RUST_FAKE_CARGO"), nil
 			}
-			return resolveProofCheckRuntimeExecutable(logical)
+			return work.ResolveProofRuntimeCommand(logical)
 		}
 		proofCheckRuntimeArtifactRecorder = func(string, proofCheckReport) (proofCheckReport, error) {
 			if err := os.WriteFile(os.Getenv("COMPOUND_RUST_RUNTIME_ARTIFACT_MARKER"), []byte("called\n"), 0o600); err != nil {

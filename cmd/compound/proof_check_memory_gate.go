@@ -10,6 +10,7 @@ import (
 	"compound/internal/candidates"
 	"compound/internal/home"
 	"compound/internal/mem"
+	"compound/internal/work"
 )
 
 // The memory-doctor gate runs on a home this gate OWNS, seeded in-process, and it asserts
@@ -99,7 +100,7 @@ func runProofCheckMemoryDoctorInHome(repo, homePath string, step proofCheckStep)
 }
 
 func runProofCheckMemoryDoctorInHomeContext(ctx context.Context, repo, homePath string, step proofCheckStep) ([]byte, error) {
-	executable, err := proofCheckRuntimeExecutableForContext(ctx, step.Command[0])
+	executable, err := work.ProofRuntimeExecutable(ctx, step.Command[0], proofCheckRuntimeExecutable)
 	if err != nil {
 		return nil, err
 	}

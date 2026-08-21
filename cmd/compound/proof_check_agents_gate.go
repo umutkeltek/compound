@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/home"
+	"compound/internal/work"
 )
 
 // The agents-consistency smoke is the fourth gate with the live-home shape, and the cheapest
@@ -61,7 +62,7 @@ func runProofCheckConsoleAgentsInHomeContext(ctx context.Context, repo, homePath
 	if err != nil {
 		return evidence, err
 	}
-	executable, err := proofCheckRuntimeExecutableForContext(ctx, step.Command[0])
+	executable, err := work.ProofRuntimeExecutable(ctx, step.Command[0], proofCheckRuntimeExecutable)
 	if err != nil {
 		return evidence, err
 	}
