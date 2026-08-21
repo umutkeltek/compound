@@ -78,7 +78,7 @@ Two corollaries worth their own line:
    non-terminal, redirected, and backgrounded stdout are supported; the authoritative full report
    is `--out`. Run it unpiped as its own command by default and preserve the actual process exit
    because zsh pipelines can mask failure. This is shell-observation safety, not proof admission.
-   Custom `--ttl` values below 3s are refused before
+   Custom `--ttl` values below 30s are refused before
    admission; accepted windows refresh at `min(TTL/3, 5s)` and monitor holder loss continuously.
    Each gate inherits the shared land-lease kernel execution barrier. Lease loss, SIGINT/SIGTERM,
    and governed steal requests cancel and wait the whole gate process group; generic landing

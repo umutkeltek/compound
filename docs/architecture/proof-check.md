@@ -14,7 +14,7 @@ report under the still-held lease is the proof, so any harness or model invoked
 as a capability can certify, as can a scheduled queue with no controlling
 terminal.
 
-Custom TTLs below 3s are refused as usage before reservation; accepted windows
+Custom TTLs below 30s are refused as usage before reservation; accepted windows
 refresh at `min(TTL/3, 5s)` and continuously monitor holder loss.
 
 ## The execution barrier

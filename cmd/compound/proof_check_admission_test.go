@@ -832,7 +832,7 @@ func TestProofCheckAdmissionSweepAndExpiryCannotBypassLiveProcessTree(t *testing
 		Command:   "compound proof-check --out /synthetic/sweep-beta.json",
 		Profile:   syntheticAdmissionProfile(t, "/synthetic/repo-beta"),
 		TTL:       minimumProofCheckReservationTTL,
-		Now:       func() time.Time { return now.Add(6 * time.Second) },
+		Now:       func() time.Time { return now.Add(minimumProofCheckReservationTTL + 3*time.Second) },
 	}, func(context.Context) (proofCheckReport, error) {
 		successorStarts.Add(1)
 		return successfulProofCheckReport(), nil
@@ -1164,7 +1164,7 @@ func TestProofCheckAdmissionExpiryRequiresGovernedTerminationEvidenceBeforeRunne
 	secondProfile := syntheticAdmissionProfile(t, "/synthetic/repo-beta")
 	acquired, err := store.ReserveProofResource(first.ID, work.ProofResourceReserveInput{
 		Actor:     "codex:expiry-first",
-		TTL:       3 * time.Second,
+		TTL:       minimumProofCheckReservationTTL,
 		Workspace: "/synthetic/repo-alpha",
 		Command:   "compound proof-check --out /synthetic/report-alpha.json",
 		Profile:   firstProfile,
@@ -1181,8 +1181,8 @@ func TestProofCheckAdmissionExpiryRequiresGovernedTerminationEvidenceBeforeRunne
 		Workspace: "/synthetic/repo-beta",
 		Command:   "compound proof-check --out /synthetic/report-beta.json",
 		Profile:   secondProfile,
-		TTL:       3 * time.Second,
-		Now:       func() time.Time { return now.Add(5 * time.Second) },
+		TTL:       minimumProofCheckReservationTTL,
+		Now:       func() time.Time { return now.Add(minimumProofCheckReservationTTL + 3*time.Second) },
 	}
 	_, _, err = runProofCheckWithAdmissionContext(input, func(context.Context) (proofCheckReport, error) {
 		runnerStarts.Add(1)
@@ -1202,7 +1202,7 @@ func TestProofCheckAdmissionExpiryRequiresGovernedTerminationEvidenceBeforeRunne
 	input.Steal = true
 	input.StealReason = "predecessor process group was terminated and waited"
 	input.TerminatedRunAttemptID = acquired.Reservation.RunAttemptID
-	input.Now = func() time.Time { return now.Add(7 * time.Second) }
+	input.Now = func() time.Time { return now.Add(minimumProofCheckReservationTTL + 5*time.Second) }
 	_, _, err = runProofCheckWithAdmissionContext(input, func(context.Context) (proofCheckReport, error) {
 		runnerStarts.Add(1)
 		return proofCheckReport{}, errors.New("synthetic post-admission stop")
@@ -2282,7 +2282,7 @@ func TestProofCheckCommandPostReportFailuresAlwaysPrintFailedVerdict(t *testing.
 				}
 				select {
 				case <-ctx.Done():
-				case <-time.After(3 * time.Second):
+				case <-time.After(minimumProofCheckReservationTTL):
 					return proofCheckReport{}, errors.New("heartbeat cancellation did not reach runner")
 				}
 			default:
@@ -2296,7 +2296,7 @@ func TestProofCheckCommandPostReportFailuresAlwaysPrintFailedVerdict(t *testing.
 			"--work", os.Getenv("COMPOUND_PROOF_POST_REPORT_ERROR_WORK"),
 			"--actor", "codex:post-report-error-cli",
 			"--out", os.Getenv("COMPOUND_PROOF_POST_REPORT_ERROR_OUT"),
-			"--ttl", "3s",
+			"--ttl", minimumProofCheckReservationTTL.String(),
 		})
 		os.Exit(0)
 	}
@@ -2374,7 +2374,7 @@ func TestProofCheckCommandRejectsUnsafeTTLBeforeAdmission(t *testing.T) {
 			"--work", os.Getenv("COMPOUND_PROOF_UNSAFE_TTL_WORK"),
 			"--actor", "codex:unsafe-ttl-cli",
 			"--out", os.Getenv("COMPOUND_PROOF_UNSAFE_TTL_OUT"),
-			"--ttl", "1s",
+			"--ttl", "3s",
 		})
 		os.Exit(0)
 	}
@@ -2461,7 +2461,7 @@ func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing
 			"--work", os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_WORK"),
 			"--actor", os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_ACTOR"),
 			"--out", os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_OUT"),
-			"--ttl", "3s",
+			"--ttl", minimumProofCheckReservationTTL.String(),
 		})
 		os.Exit(0)
 	}
@@ -2529,7 +2529,7 @@ func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	time.Sleep(3500 * time.Millisecond)
+	time.Sleep(minimumProofCheckReservationTTL + 500*time.Millisecond)
 	secondOutput, secondErr := newCommand("second", secondWork.ID, "codex:min-ttl-second", secondOut).CombinedOutput()
 	var secondExit *exec.ExitError
 	if !errors.As(secondErr, &secondExit) || secondExit.ExitCode() != 2 {

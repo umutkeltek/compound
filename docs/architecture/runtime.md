@@ -298,7 +298,7 @@ enters its first subprocess, `work` records an allowing reservation ActionIntent
 mints and durably links one same-work `ratt_*`, then acquires the existing TTL lease with a
 `canonical_full` digest over profile kind, repo, base ref, and the ordered inventory supplied by
 `proofCheckSteps`. A live conflict is terminalized and attached as refused evidence before runner
-entry. The public and adapter boundaries reject custom TTLs below three seconds before reservation;
+entry. The public and adapter boundaries reject custom TTLs below thirty seconds before reservation;
 accepted TTLs refresh at `min(TTL/3, 5s)` and continuously monitor the exact holder. Expiry or an
 exceptional steal cancels the active gate process group, and successor admission waits for the
 predecessor RunAttempt to confirm termination. Expiry itself never terminalizes a predecessor.

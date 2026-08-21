@@ -206,7 +206,7 @@ Current source-delivery close rule (superseding the earlier v0.4 migration wordi
 Full-proof reservation is additive WorkEnvelope evidence over the existing `landlease`, not a
 scheduler or second coordination authority. The canonical command names the claimed `work_id`,
 actor, and `--out`; direct-terminal transport is validated before reservation or runner entry.
-Custom TTLs below three seconds are rejected as usage at both public and admission boundaries;
+Custom TTLs below thirty seconds are rejected as usage at both public and admission boundaries;
 accepted TTLs refresh at `min(TTL/3, 5s)` and continuously monitor holder identity. Lease loss
 cancels the active process group, and a recovery/steal does not admit its runner until the
 oldest nonterminal predecessor RunAttempt confirms termination. Expiry never synthesizes that

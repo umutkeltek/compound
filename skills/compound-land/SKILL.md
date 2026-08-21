@@ -86,7 +86,7 @@ go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
 - The actor must already hold the named WorkEnvelope's work lease. Full local proof is a
   `canonical_full` profile: Compound reserves the existing scarce land-lease resource and binds it
   to that `work_id`, exact `ratt_*`, repo/base, and gate digest before the first subprocess. A
-  conflicting run is refused before execution. Custom `--ttl` values below 3s are refused before
+  conflicting run is refused before execution. Custom `--ttl` values below 30s are refused before
   reservation; accepted values refresh at `min(TTL/3, 5s)` and monitor holder loss continuously.
   Each gate inherits the shared land-lease kernel execution barrier. Lease loss, SIGINT/SIGTERM, or
   a governed steal request cancels and waits the whole gate process group; generic landing acquire,

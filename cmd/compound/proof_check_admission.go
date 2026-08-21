@@ -22,7 +22,10 @@ import (
 
 const (
 	defaultProofCheckReservationTTL = 45 * time.Minute
-	minimumProofCheckReservationTTL = 3 * time.Second
+	// A refresh persists governed preparation before extending the scarce lease.
+	// Keep the public floor above ordinary fsync/admission contention so a supported
+	// custom window does not expire while its unchanged holder is proving authority.
+	minimumProofCheckReservationTTL = 30 * time.Second
 )
 
 type proofCheckAdmissionInput struct {

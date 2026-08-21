@@ -58,7 +58,7 @@ func cmdProofCheck(args []string) {
 		fmt.Println("  --timings     report the recorded per-gate duration history instead of running the battery")
 		fmt.Println("                (--dev selects the development lane, --window N the sample depth)")
 		fmt.Println("  --work ID --actor ACTOR  required for a full local battery; reserves the scarce proof resource")
-		fmt.Println("  --ttl DURATION            reservation TTL (minimum 3s, default 45m; renewed by RunAttempt heartbeat)")
+		fmt.Println("  --ttl DURATION            reservation TTL (minimum 30s, default 45m; renewed by RunAttempt heartbeat)")
 		fmt.Println("  --steal --reason TEXT     exceptional audited transfer of a live proof/land resource")
 		fmt.Println("  --terminated-run RATT_ID --termination-evidence ARTIFACT_REF")
 		fmt.Println("                governed proof that the oldest stopped predecessor was terminated and waited")
