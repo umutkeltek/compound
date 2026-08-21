@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { buildPreflightReport, expandASCCommand } from "./asc_preflight.ts";
+import { initializeCompoundHome } from "./test_support.ts";
 
 function buildCompound(): string {
   const bin = join(mkdtempSync(join(tmpdir(), "compound-asc-preflight-bin-")), "compound");
@@ -23,7 +24,7 @@ describe("asc_preflight edge", () => {
   test("passes private mapping, product authority, smoke, and scheduler checks without applying", () => {
     const home = mkdtempSync(join(tmpdir(), "compound-asc-preflight-home-"));
     const bin = buildCompound();
-    const env = { ...process.env, COMPOUND_HOME: home };
+    const env = initializeCompoundHome(bin, home);
     const imported = spawnSync(bin, ["product", "import", "fixtures/product/market-loop.yaml"], {
       encoding: "utf8",
       env,
@@ -93,6 +94,7 @@ describe("asc_preflight edge", () => {
   test("fails when private ASC mapping references an unregistered product", () => {
     const home = mkdtempSync(join(tmpdir(), "compound-asc-preflight-home-"));
     const bin = buildCompound();
+    const env = initializeCompoundHome(bin, home);
     const configPath = writeConfig([
       {
         product_id: "product:missing",
@@ -106,7 +108,7 @@ describe("asc_preflight edge", () => {
       date: "2026-07-04",
       smokeLimit: 1,
       plistPath: "tools/templates/ai.compound.asc-daily.plist",
-      env: { ...process.env, COMPOUND_HOME: home },
+      env,
     });
 
     expect(report.status).toBe("fail");

@@ -10,6 +10,7 @@ import {
   parseMetricList,
   planSalesSeriesApplications,
 } from "./asc_sales_series_bridge.ts";
+import { initializeCompoundHome } from "./test_support.ts";
 
 const seriesPath = "fixtures/product/asc-sales-series.jsonl";
 
@@ -106,7 +107,7 @@ describe("asc_sales_series_bridge edge", () => {
       throw new Error(build.stderr || build.stdout);
     }
 
-    const env = { ...process.env, COMPOUND_HOME: home };
+    const env = initializeCompoundHome(bin, home);
     const args = [
       "tools/asc_sales_series_bridge.ts",
       "--config",

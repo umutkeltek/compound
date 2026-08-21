@@ -8,6 +8,20 @@ import {
   normalizeHFCandidates,
   normalizeSemanticCandidates,
 } from "./paper_selection_edge.ts";
+import { initializeCompoundHome } from "./test_support.ts";
+
+function buildCompound(): string {
+  const bin = join(mkdtempSync(join(tmpdir(), "compound-paper-selection-bin-")), "compound");
+  const build = spawnSync("go", ["build", "-o", bin, "./cmd/compound"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+  if (build.status !== 0) throw new Error(build.stderr || build.stdout);
+  return bin;
+}
+
+// Keep compilation outside the per-test timeout so the test measures the import path.
+const COMPOUND_BIN = buildCompound();
 
 const hfFixture = [
   {
@@ -115,17 +129,12 @@ test("cli export imports idempotently through generic Compound knowledge import"
   const hfPath = join(root, "hf-daily.json");
   const semanticPath = join(root, "semantic-scholar.json");
   const exportPath = join(root, "paper-selection-export.json");
-  const compoundPath = join(root, "compound");
   const homePath = join(root, "compound-home");
 
   writeFileSync(hfPath, JSON.stringify(hfFixture), "utf8");
   writeFileSync(semanticPath, JSON.stringify(semanticFixture), "utf8");
 
-  const build = spawnSync("go", ["build", "-o", compoundPath, "./cmd/compound"], {
-    cwd: process.cwd(),
-    encoding: "utf8",
-  });
-  expect(build.status).toBe(0);
+  initializeCompoundHome(COMPOUND_BIN, homePath);
 
   const edge = spawnSync(
     "bun",
@@ -159,7 +168,7 @@ test("cli export imports idempotently through generic Compound knowledge import"
   expect(exported.privacy).toBe("public");
   expect(exported.items).toHaveLength(4);
 
-  const first = spawnSync(compoundPath, ["knowledge", "import", exportPath, "--json"], {
+  const first = spawnSync(COMPOUND_BIN, ["knowledge", "import", exportPath, "--json"], {
     cwd: process.cwd(),
     encoding: "utf8",
     env: { ...process.env, COMPOUND_HOME: homePath },
@@ -171,7 +180,7 @@ test("cli export imports idempotently through generic Compound knowledge import"
   expect(firstReport.extraction_ids).toHaveLength(4);
   expect(firstReport.candidate_ids.length).toBeGreaterThan(4);
 
-  const second = spawnSync(compoundPath, ["knowledge", "import", exportPath, "--json"], {
+  const second = spawnSync(COMPOUND_BIN, ["knowledge", "import", exportPath, "--json"], {
     cwd: process.cwd(),
     encoding: "utf8",
     env: { ...process.env, COMPOUND_HOME: homePath },

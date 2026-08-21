@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { buildPlaytestBatch, emitPlaytestObservations } from "./playtest_findings_observe.ts";
+import { initializeCompoundHome } from "./test_support.ts";
 
 // Built once per test process rather than via `go run` per invocation: `go run` puts a compile and
 // link inside the per-test timeout, so the budget ends up measuring machine load instead of the
@@ -34,6 +35,7 @@ function tempHome(): string {
 describe("playtest_findings_observe — falsifier 1: run dir to routed source observations", () => {
   test("emits a 2-observation batch, 1 provenance warning, dry-run routes both to source observations", () => {
     const homePath = tempHome();
+    initializeCompoundHome(COMPOUND_BIN, homePath);
     const report = emitPlaytestObservations(SAMPLE_RUN, {
       product: "sample-app",
       capturedAt: CAPTURED_AT,

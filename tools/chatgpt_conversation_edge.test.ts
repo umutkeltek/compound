@@ -8,6 +8,7 @@ import {
   buildChatGPTKnowledgeExport,
   normalizeConversations,
 } from "./chatgpt_conversation_edge.ts";
+import { initializeCompoundHome } from "./test_support.ts";
 
 const openAIExportFixture = {
   conversations: [
@@ -144,6 +145,7 @@ describe("chatgpt_conversation_edge", () => {
     const inputPath = join(root, "conversations.json");
     const exportPath = join(root, "chatgpt-export.json");
     const homePath = join(root, "home");
+    initializeCompoundHome(COMPOUND_BIN, homePath);
     writeFileSync(inputPath, JSON.stringify(openAIExportFixture), "utf8");
 
     const edge = spawnSync(

@@ -255,6 +255,8 @@ function preflight(argv: string[]): PreflightReport {
   const tempHome = join(tempRoot, "home");
   const exportPath = join(tempRoot, "chatgpt-batch.json");
 
+  run(compound, ["home", "init"], { COMPOUND_HOME: tempHome });
+
   run("bun", [
     "tools/chatgpt_conversation_edge.ts",
     input,
