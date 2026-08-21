@@ -1165,6 +1165,9 @@ func TestCloseSupersedesClaimReservationOnHarnessExecutionAttach(t *testing.T) {
 	if _, err := attempts.SetOrigin(execution.ID, runattempt.OriginHarnessExecution); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := attempts.CommitLaunch(execution.ID, fixedNow.Add(3*time.Minute+500*time.Millisecond), func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := attempts.Complete(execution.ID, runattempt.StatusFailed, fixedNow.Add(4*time.Minute)); err != nil {
 		t.Fatal(err)
 	}

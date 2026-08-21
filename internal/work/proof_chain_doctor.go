@@ -411,6 +411,41 @@ func (s *Store) checkRunAttemptProof(w envelope.WorkEnvelope, events []Event, ra
 	for _, actionID := range item.ActionIntentIDs {
 		actionSet[actionID] = true
 	}
+	type historyEligibilityProblem struct {
+		code    string
+		message string
+	}
+	attachedAttempts := map[string]runattempt.RunAttempt{}
+	eligibleIDs := []string{}
+	historyProblems := map[string]historyEligibilityProblem{}
+	for _, rattID := range item.RunAttemptIDs {
+		if !runattempt.Valid(rattID) {
+			continue
+		}
+		ra, err := raStore.Get(rattID)
+		if err != nil || ra.ID != rattID || !runattempt.AcceptsSchemaVersion(ra.SchemaVersion) || ra.WorkID != w.ID {
+			continue
+		}
+		if err := validateRunAttemptRecord(rattID, w, ra); err != nil {
+			historyProblems[rattID] = historyEligibilityProblem{code: "run_attempt_invalid", message: err.Error()}
+			continue
+		}
+		if _, err := s.resolveRunAttemptAuthorityFromEvents(w, ra, events); err != nil {
+			historyProblems[rattID] = historyEligibilityProblem{code: "run_attempt_action_mismatch", message: err.Error()}
+			continue
+		}
+		attachedAttempts[rattID] = ra
+		eligibleIDs = append(eligibleIDs, rattID)
+	}
+	history, lineageErr := buildAttachedRunAttemptHistory(eligibleIDs, attachedAttempts)
+	if lineageErr != nil {
+		report.Counts.InvalidRunAttempt++
+		addProofChainProblem(report, item, "run_attempt_invalid", "run attempt retry lineage is invalid: "+lineageErr.Error())
+		history = attachedRunAttemptHistory{
+			SuccessfulRetryPredecessors: map[string]bool{},
+			ReplacedClaimReservations:   map[string][]string{},
+		}
+	}
 	closeEvidence, closeEvidenceErr := s.loadExactTerminalCloseFromEvents(w, events)
 	for _, rattID := range item.RunAttemptIDs {
 		// Validate the EXACT raw entry. No trimming -- whitespace-only and
@@ -446,14 +481,28 @@ func (s *Store) checkRunAttemptProof(w envelope.WorkEnvelope, events []Event, ra
 			report.Counts.MismatchedWorkID++
 			addProofChainProblem(report, item, "run_attempt_work_mismatch", "run attempt "+rattID+" belongs to work "+ra.WorkID+", not "+w.ID)
 		}
-		if ra.ActionIntentID != "" && !actionSet[ra.ActionIntentID] {
-			report.Counts.RunAttemptActionMismatch++
-			addProofChainProblem(report, item, "run_attempt_action_mismatch", "run attempt "+rattID+" action_intent_id "+ra.ActionIntentID+" is not present in work "+w.ID+" action intent ids")
-		}
 		if !runattempt.IsTerminal(ra.Status) {
+			if ra.ActionIntentID != "" && !actionSet[ra.ActionIntentID] {
+				report.Counts.RunAttemptActionMismatch++
+				addProofChainProblem(report, item, "run_attempt_action_mismatch", "run attempt "+rattID+" action_intent_id "+ra.ActionIntentID+" is not present in work "+w.ID+" action intent ids")
+			}
 			report.Counts.RunAttemptNonterminal++
 			addProofChainProblem(report, item, "run_attempt_nonterminal", "run attempt "+rattID+" status "+ra.Status+" is not terminal while work "+w.ID+" is terminal")
 			continue
+		}
+		if problem, ok := historyProblems[rattID]; ok {
+			switch problem.code {
+			case "run_attempt_invalid":
+				report.Counts.InvalidRunAttempt++
+			case "run_attempt_action_mismatch":
+				report.Counts.RunAttemptActionMismatch++
+			}
+			addProofChainProblem(report, item, problem.code, "run attempt "+rattID+" is ineligible for retry history: "+problem.message)
+			continue
+		}
+		if ra.ActionIntentID != "" && !actionSet[ra.ActionIntentID] {
+			report.Counts.RunAttemptActionMismatch++
+			addProofChainProblem(report, item, "run_attempt_action_mismatch", "run attempt "+rattID+" action_intent_id "+ra.ActionIntentID+" is not present in work "+w.ID+" action intent ids")
 		}
 		if ra.TerminalizationIntent != nil {
 			intent := *ra.TerminalizationIntent
@@ -476,7 +525,10 @@ func (s *Store) checkRunAttemptProof(w envelope.WorkEnvelope, events []Event, ra
 			continue
 		}
 		want := runAttemptStatusForCloseOutcome(w.State)
-		if ra.Status != runattempt.StatusSuperseded && ra.Status != want {
+		historicalCompletedAttempt := w.State == "completed" &&
+			(history.SuccessfulRetryPredecessors[rattID] || len(history.ReplacedClaimReservations[rattID]) > 0)
+		if ra.Status != runattempt.StatusSuperseded && ra.Status != want &&
+			!historicalCompletedAttempt {
 			verifiedProof, proofErr := s.committedVerifiedProofRunAttempt(w, ra)
 			if !verifiedProof {
 				report.Counts.RunAttemptOutcomeMismatch++

@@ -947,6 +947,44 @@ func TestProofChainDoctorFindsRunAttemptOutcomeMismatch(t *testing.T) {
 	}
 }
 
+func TestProofChainDoctorRejectsMalformedRetryChildBeforeHistoryExemption(t *testing.T) {
+	s := newStore(t)
+	workID, claimAttemptIDs := closeTerminalizeWork(t, s, "doctor-malformed-retry-child", fixedNow)
+	attempts := runattempt.Open(s.home)
+	if _, err := attempts.CompleteWithReason(
+		claimAttemptIDs[0],
+		runattempt.StatusAbandoned,
+		"historical claim lane ended before retry execution",
+		fixedNow.Add(4*time.Minute),
+	); err != nil {
+		t.Fatal(err)
+	}
+	failed := attachTerminalCloseHistoryAttempt(
+		t, s, workID, "", runattempt.StatusFailed, true, fixedNow.Add(5*time.Minute),
+	)
+	succeeded := attachTerminalCloseHistoryAttempt(
+		t, s, workID, failed.ID, runattempt.StatusSucceeded, true, fixedNow.Add(6*time.Minute),
+	)
+	if _, err := s.Close(workID, CloseInput{
+		Outcome:  "completed",
+		MoveType: "control_plane_repair",
+		Summary:  "seed valid retry history",
+	}, fixedNow.Add(7*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	succeeded.TerminalizationOwner = runattempt.TerminalizationOwnerPanelApply
+	succeeded.TerminalizationReceiptID = "rec_partial_retry_child"
+	writeRunAttemptForReconcileTest(t, s, succeeded)
+
+	report, err := s.ProofChainDoctor(fixedNow.Add(8*time.Minute), ProofChainDoctorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.InvalidRunAttempt == 0 || !proofChainFindingContains(report, "run_attempt_invalid") {
+		t.Fatalf("doctor accepted malformed retry child: counts=%+v findings=%+v", report.Counts, report.Findings)
+	}
+}
+
 func TestProofChainDoctorRejectsEveryExactTerminalizationBindingTamper(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -2203,6 +2203,87 @@ func latestActionIntentID(w envelope.WorkEnvelope) string {
 	return ""
 }
 
+type attachedRunAttemptHistory struct {
+	SuccessfulRetryPredecessors map[string]bool
+	ReplacedClaimReservations   map[string][]string
+}
+
+func runAttemptHasExecuted(ra runattempt.RunAttempt) bool {
+	if ra.Origin != runattempt.OriginHarnessExecution {
+		return false
+	}
+	if ra.Launch != nil {
+		return ra.Launch.CommittedAt != nil
+	}
+	if ra.LastHeartbeatAt == nil || !ra.LastHeartbeatAt.After(ra.CreatedAt) {
+		return false
+	}
+	return ra.CompletedAt.IsZero() || !ra.LastHeartbeatAt.After(ra.CompletedAt)
+}
+
+func buildAttachedRunAttemptHistory(ids []string, attempts map[string]runattempt.RunAttempt) (attachedRunAttemptHistory, error) {
+	history := attachedRunAttemptHistory{
+		SuccessfulRetryPredecessors: map[string]bool{},
+		ReplacedClaimReservations:   map[string][]string{},
+	}
+	orderedIDs := dedupeStrings(ids)
+	positions := make(map[string]int, len(orderedIDs))
+	for index, id := range orderedIDs {
+		if _, ok := attempts[id]; ok {
+			positions[id] = index
+		}
+	}
+	parents := map[string]string{}
+	for _, id := range orderedIDs {
+		child, ok := attempts[id]
+		if !ok || child.PredecessorID == "" {
+			continue
+		}
+		predecessorID := child.PredecessorID
+		if !runattempt.Valid(predecessorID) {
+			return attachedRunAttemptHistory{}, fmt.Errorf("runattempt %s retry predecessor %q is not a canonical ratt_ id", id, predecessorID)
+		}
+		if predecessorID == id {
+			return attachedRunAttemptHistory{}, fmt.Errorf("runattempt retry lineage contains a cycle at %s", id)
+		}
+		predecessor, ok := attempts[predecessorID]
+		if !ok {
+			return attachedRunAttemptHistory{}, fmt.Errorf("runattempt %s retry predecessor %s is not attached to the work", id, predecessorID)
+		}
+		if positions[predecessorID] >= positions[id] {
+			return attachedRunAttemptHistory{}, fmt.Errorf("runattempt %s retry predecessor %s is not earlier in attachment order", id, predecessorID)
+		}
+		if !child.CreatedAt.After(predecessor.CreatedAt) {
+			return attachedRunAttemptHistory{}, fmt.Errorf("runattempt %s retry predecessor %s is not earlier in creation order", id, predecessorID)
+		}
+		parents[id] = predecessorID
+	}
+	for _, id := range orderedIDs {
+		ra, ok := attempts[id]
+		if !ok || ra.Status != runattempt.StatusSucceeded || !runAttemptHasExecuted(ra) {
+			continue
+		}
+		for predecessorID := parents[id]; predecessorID != ""; predecessorID = parents[predecessorID] {
+			history.SuccessfulRetryPredecessors[predecessorID] = true
+		}
+	}
+	for claimIndex, claimID := range orderedIDs {
+		claim, ok := attempts[claimID]
+		if !ok || claim.Origin != runattempt.OriginClaimReservation {
+			continue
+		}
+		for executionIndex := claimIndex + 1; executionIndex < len(orderedIDs); executionIndex++ {
+			executionID := orderedIDs[executionIndex]
+			execution, ok := attempts[executionID]
+			if !ok || !execution.CreatedAt.After(claim.CreatedAt) || !runAttemptHasExecuted(execution) {
+				continue
+			}
+			history.ReplacedClaimReservations[claimID] = append(history.ReplacedClaimReservations[claimID], executionID)
+		}
+	}
+	return history, nil
+}
+
 func (s *Store) buildRunAttemptTerminalizationPlans(
 	reserved envelope.WorkEnvelope,
 	reservedSHA string,
@@ -2244,8 +2325,6 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 	seen := map[string]bool{}
 	store := s.runAttempts()
 	attempts := map[string]runattempt.RunAttempt{}
-	hasHarnessExecution := false
-	var harnessExecutionIDs []string
 	for _, id := range dedupeStrings(closing.RunAttemptIDs) {
 		if id == "" || !runattempt.Valid(id) {
 			return nil, fmt.Errorf("close RunAttemptIDs contains invalid id %q", id)
@@ -2258,10 +2337,10 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 			return nil, err
 		}
 		attempts[id] = ra
-		if ra.Origin == runattempt.OriginHarnessExecution {
-			hasHarnessExecution = true
-			harnessExecutionIDs = append(harnessExecutionIDs, id)
-		}
+	}
+	history, err := buildAttachedRunAttemptHistory(closing.RunAttemptIDs, attempts)
+	if err != nil {
+		return nil, err
 	}
 	events, err := s.eventsFor(reserved.ID)
 	if err != nil {
@@ -2277,7 +2356,10 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 			if callerOwns {
 				return nil, fmt.Errorf("caller terminalization %s targets an already-terminal attempt", id)
 			}
-			if ra.Status != runattempt.StatusSuperseded && ra.Status != workTarget {
+			historicalCompletedAttempt := in.Outcome == "completed" &&
+				(history.SuccessfulRetryPredecessors[id] || len(history.ReplacedClaimReservations[id]) > 0)
+			if ra.Status != runattempt.StatusSuperseded && ra.Status != workTarget &&
+				!historicalCompletedAttempt {
 				verifiedProof, err := s.committedVerifiedProofRunAttempt(closing, ra)
 				if err != nil {
 					return nil, fmt.Errorf("terminal runattempt %s proof-resource exception invalid: %w", id, err)
@@ -2289,6 +2371,10 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 			if _, err := s.resolveRunAttemptAuthorityFromEvents(reserved, ra, events); err != nil {
 				return nil, err
 			}
+			if ra.TerminalizationOwner == runattempt.TerminalizationOwnerWorkClose &&
+				(ra.TerminalizationReceiptID != receipt.ID || ra.TerminalizationTransitionID != transition.ID) {
+				return nil, fmt.Errorf("terminal runattempt %s work.close proof pair %s/%s does not match closing proof %s/%s", id, ra.TerminalizationReceiptID, ra.TerminalizationTransitionID, receipt.ID, transition.ID)
+			}
 			if ra.TerminalizationIntent != nil {
 				return nil, fmt.Errorf("terminal runattempt %s already carries a prepared intent while work %s is nonterminal", id, reserved.ID)
 			}
@@ -2299,7 +2385,7 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 			return nil, err
 		}
 		owner, target := runattempt.TerminalizationOwnerWorkClose, workTarget
-		if ra.Origin == runattempt.OriginClaimReservation && hasHarnessExecution {
+		if ra.Origin == runattempt.OriginClaimReservation && len(history.ReplacedClaimReservations[id]) > 0 {
 			owner, target = runattempt.TerminalizationOwnerWorkSupersede, runattempt.StatusSuperseded
 		}
 		if callerOwns {
@@ -2326,7 +2412,7 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 			PreparedAt:                preparedAt,
 		}
 		if owner == runattempt.TerminalizationOwnerWorkSupersede {
-			intent.TerminalizationReason = "superseded by " + strings.Join(harnessExecutionIDs, ",")
+			intent.TerminalizationReason = "superseded by " + strings.Join(history.ReplacedClaimReservations[id], ",")
 		} else if callerOwns {
 			intent.TerminalizationReason = request.Reason
 		}
