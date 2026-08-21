@@ -61,7 +61,7 @@ func runProofCheckConsoleAgentsInHomeContext(ctx context.Context, repo, homePath
 	if err != nil {
 		return evidence, err
 	}
-	executable, err := proofCheckRuntimeExecutable(step.Command[0])
+	executable, err := proofCheckRuntimeExecutableForContext(ctx, step.Command[0])
 	if err != nil {
 		return evidence, err
 	}

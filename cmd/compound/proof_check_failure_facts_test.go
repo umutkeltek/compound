@@ -33,6 +33,20 @@ func TestProofCheckFailedStepFactsUseFullOutputBeforeTailTruncation(t *testing.T
 	}
 }
 
+func TestProofCheckFailedStepSurfacesProcessStartError(t *testing.T) {
+	result := runProofCheckStep(t.TempDir(), proofCheckStep{
+		Name:     "synthetic-start-failure",
+		Command:  []string{"compound-proofcheck-definitely-missing-executable"},
+		ProofRef: "synthetic-start-failure-proof",
+	}, "")
+	if result.Status != "failed" {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+	if !strings.Contains(result.OutputTail, "compound-proofcheck-definitely-missing-executable") {
+		t.Fatalf("output tail omitted process start error: %q", result.OutputTail)
+	}
+}
+
 func TestProofCheckFailureFactsNormalizeObservedEnvironmentalNondeterminism(t *testing.T) {
 	goBaseline := `panic: test timed out after 40m0s
 	running tests:

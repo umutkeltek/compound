@@ -3012,3 +3012,73 @@ func TestRunProofCheckStepInjectsWorktreeGoCache(t *testing.T) {
 		t.Fatalf("Go gate saw GOCACHE %q, want per-worktree cache %q", got.OutputTail, want)
 	}
 }
+
+func TestRunProofCheckBunToolsInjectsWorktreeGoCache(t *testing.T) {
+	repo := t.TempDir()
+	toolsDir := filepath.Join(repo, "tools")
+	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(toolsDir, "cache.test.ts"), []byte("test fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want, ok := proofCheckGoCache(repo)
+	if !ok {
+		t.Fatal("no cache chosen for a real worktree")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(want) })
+
+	binDir := t.TempDir()
+	fakeBun := filepath.Join(binDir, "bun")
+	if err := os.WriteFile(fakeBun, []byte("#!/bin/sh\nprintf '%s\\n' \"$GOCACHE\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GOCACHE", "shared-parent-cache")
+
+	output, err := runProofCheckBunTools(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(output)); got != want {
+		t.Fatalf("Bun tool children saw GOCACHE %q, want per-worktree cache %q", got, want)
+	}
+}
+
+func TestPrepareProofCheckRuntimeExecutableSurvivesTemporarySourceRemoval(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "compound")
+	if err := os.WriteFile(source, []byte("#!/bin/sh\nprintf 'staged-candidate\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	originalResolver := proofCheckRuntimeExecutable
+	proofCheckRuntimeExecutable = func(logical string) (string, error) {
+		if logical != "compound" {
+			return logical, nil
+		}
+		return source, nil
+	}
+	t.Cleanup(func() { proofCheckRuntimeExecutable = originalResolver })
+
+	ctx, cleanup, err := prepareProofCheckRuntimeExecutable(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	staged, err := proofCheckRuntimeExecutableForContext(ctx, "compound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged == source {
+		t.Fatal("temporary candidate executable was not staged")
+	}
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command(staged).CombinedOutput()
+	if err != nil {
+		t.Fatalf("staged candidate did not survive source removal: %v: %s", err, output)
+	}
+	if got := strings.TrimSpace(string(output)); got != "staged-candidate" {
+		t.Fatalf("staged candidate output = %q", got)
+	}
+}

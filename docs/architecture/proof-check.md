@@ -17,6 +17,12 @@ terminal.
 Custom TTLs below 30s are refused as usage before reservation; accepted windows
 refresh at `min(TTL/3, 5s)` and continuously monitor holder loss.
 
+Before the first gate, a `go run`/temporary Compound executable is copied into a
+private, synced proof-owned directory and every logical `compound` child uses
+that pinned candidate. Direct Go gates and the Bun tools gate also share one
+sealed-workspace Go build cache outside the repository, so child `go build`
+calls cannot race an unrelated host cache cleanup or pollute public redact.
+
 ## The execution barrier
 
 Expiry alone never makes a successor executable: every proof gate inherits a

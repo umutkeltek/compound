@@ -1047,6 +1047,14 @@ func runProofCheckWithRangeContext(
 	} else if ciOnly {
 		steps = ciPortableSteps(steps)
 	}
+	if !dryRun {
+		var cleanupRuntimeExecutable func()
+		ctx, cleanupRuntimeExecutable, err = prepareProofCheckRuntimeExecutable(ctx)
+		if err != nil {
+			return proofCheckReport{}, err
+		}
+		defer cleanupRuntimeExecutable()
+	}
 	report := proofCheckReport{
 		SchemaVersion:  proofCheckSchemaVersion,
 		ProfileKind:    work.ProofResourceProfileCanonicalFull,
@@ -1348,7 +1356,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 	} else if runner, owns := proofCheckHomeOwningGates[step.Name]; owns {
 		output, err = runner(ctx, repo, step)
 	} else {
-		executable, executableErr := proofCheckRuntimeExecutable(step.Command[0])
+		executable, executableErr := proofCheckRuntimeExecutableForContext(ctx, step.Command[0])
 		if executableErr != nil {
 			result.Status = "failed"
 			result.OutputTail = executableErr.Error()
@@ -1374,6 +1382,9 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 	result.OutputTail = proofCheckTail(output, 4000)
 	if err != nil {
 		result.Status = "failed"
+		if strings.TrimSpace(result.OutputTail) == "" {
+			result.OutputTail = err.Error()
+		}
 		result.FailureFacts = work.CanonicalProofFailureFacts(repo, step.Name, output, err)
 		result.ExitCode = proofCheckExitCode(err)
 	}
@@ -1438,7 +1449,7 @@ func runProofCheckCodexPreToolUseNativeGateContext(ctx context.Context, repo str
 
 	runPatch := func(sessionID, patch string) (claudeLiveHookResponse, []byte, int, error) {
 		input := fmt.Sprintf(`{"hook_event_name":"PreToolUse","session_id":%q,"cwd":%q,"tool_name":"apply_patch","tool_input":{"command":%q}}`, sessionID, tmpRepo, patch)
-		executable, err := proofCheckRuntimeExecutable(step.Command[0])
+		executable, err := proofCheckRuntimeExecutableForContext(ctx, step.Command[0])
 		if err != nil {
 			return claudeLiveHookResponse{}, nil, 0, err
 		}
@@ -1528,7 +1539,10 @@ func runProofCheckBunTools(ctx context.Context, repo string) ([]byte, error) {
 	}
 	cmd := proofCheckCommandContext(ctx, "bun", args...)
 	cmd.Dir = repo
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	if cache, ok := proofCheckGoCache(repo); ok {
+		cmd.Env = append(cmd.Env, "GOCACHE="+cache)
+	}
 	return cmd.CombinedOutput()
 }
 
@@ -1562,6 +1576,98 @@ func proofCheckUsesGo(step proofCheckStep) bool {
 }
 
 var proofCheckRuntimeExecutable = resolveProofCheckRuntimeExecutable
+
+type proofCheckRuntimeExecutableContextKey struct{}
+
+func prepareProofCheckRuntimeExecutable(ctx context.Context) (context.Context, func(), error) {
+	executable, err := proofCheckRuntimeExecutable("compound")
+	if err != nil {
+		return ctx, func() {}, err
+	}
+	executable = filepath.Clean(strings.TrimSpace(executable))
+	if executable == "." || executable == "" {
+		return ctx, func() {}, fmt.Errorf("compound runtime executable is empty")
+	}
+	if !proofCheckExecutableIsTemporary(executable) {
+		return context.WithValue(ctx, proofCheckRuntimeExecutableContextKey{}, executable), func() {}, nil
+	}
+
+	source, err := os.Open(executable)
+	if err != nil {
+		return ctx, func() {}, fmt.Errorf("open temporary compound runtime executable: %w", err)
+	}
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil {
+		return ctx, func() {}, fmt.Errorf("stat temporary compound runtime executable: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return ctx, func() {}, fmt.Errorf("temporary compound runtime executable is not a regular file: %s", executable)
+	}
+
+	dir, err := os.MkdirTemp("", "compound-proofcheck-bin-*")
+	if err != nil {
+		return ctx, func() {}, fmt.Errorf("create stable compound runtime directory: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	target := filepath.Join(dir, "compound")
+	destination, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
+	if err != nil {
+		cleanup()
+		return ctx, func() {}, fmt.Errorf("create stable compound runtime executable: %w", err)
+	}
+	if _, err := io.Copy(destination, source); err != nil {
+		_ = destination.Close()
+		cleanup()
+		return ctx, func() {}, fmt.Errorf("copy stable compound runtime executable: %w", err)
+	}
+	if err := destination.Sync(); err != nil {
+		_ = destination.Close()
+		cleanup()
+		return ctx, func() {}, fmt.Errorf("sync stable compound runtime executable: %w", err)
+	}
+	if err := destination.Close(); err != nil {
+		cleanup()
+		return ctx, func() {}, fmt.Errorf("close stable compound runtime executable: %w", err)
+	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		cleanup()
+		return ctx, func() {}, fmt.Errorf("open stable compound runtime directory: %w", err)
+	}
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+		cleanup()
+		return ctx, func() {}, fmt.Errorf("sync stable compound runtime directory: %w", err)
+	}
+	if err := directory.Close(); err != nil {
+		cleanup()
+		return ctx, func() {}, fmt.Errorf("close stable compound runtime directory: %w", err)
+	}
+	return context.WithValue(ctx, proofCheckRuntimeExecutableContextKey{}, target), cleanup, nil
+}
+
+func proofCheckRuntimeExecutableForContext(ctx context.Context, logical string) (string, error) {
+	if logical == "compound" && ctx != nil {
+		if executable, ok := ctx.Value(proofCheckRuntimeExecutableContextKey{}).(string); ok && strings.TrimSpace(executable) != "" {
+			return executable, nil
+		}
+	}
+	return proofCheckRuntimeExecutable(logical)
+}
+
+func proofCheckExecutableIsTemporary(path string) bool {
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if cleaned == "." || cleaned == "" {
+		return false
+	}
+	for _, root := range []string{filepath.Clean(os.TempDir()), string(filepath.Separator) + "tmp"} {
+		if cleaned == root || strings.HasPrefix(cleaned, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return strings.Contains(cleaned, string(filepath.Separator)+"go-build")
+}
 
 func resolveProofCheckRuntimeExecutable(logical string) (string, error) {
 	if logical == "compound" {

@@ -124,7 +124,7 @@ func runProofCheckWorkbenchInHome(repo, homePath string, step proofCheckStep) ([
 }
 
 func runProofCheckWorkbenchInHomeContext(ctx context.Context, repo, homePath string, step proofCheckStep) ([]byte, error) {
-	executable, err := proofCheckRuntimeExecutable(step.Command[0])
+	executable, err := proofCheckRuntimeExecutableForContext(ctx, step.Command[0])
 	if err != nil {
 		return nil, err
 	}
