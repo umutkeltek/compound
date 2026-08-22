@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -556,4 +558,194 @@ func recordCLISourceLifecycleEvidence(t *testing.T, homePath, family string, gat
 		t.Fatal(err)
 	}
 	return "transition:" + closed.Transition.ID
+}
+
+func TestSourceManifestCreateUsageNamesDirectoryModeExactly(t *testing.T) {
+	const want = "usage: compound source manifest-create --family <id> ((<source>... | --source-dir <dir>) [--source-in-place] | --from-export <export.json> [--dump <dump>]) [--json]"
+	if sourceManifestCreateUsage != want {
+		t.Fatalf("source manifest-create usage = %q, want %q", sourceManifestCreateUsage, want)
+	}
+	if fragment := strings.TrimPrefix(want, "usage: compound source "); !strings.Contains(sourceUsage(), fragment) {
+		t.Fatalf("source usage does not include exact manifest-create usage fragment %q", fragment)
+	}
+}
+
+func TestSourceManifestDirectoryCLIReplayMatchesExplicitFiles(t *testing.T) {
+	sourceRoot := t.TempDir()
+	firstPath := filepath.Join(sourceRoot, "00-first.md")
+	nestedPath := filepath.Join(sourceRoot, "nested", "10-second.md")
+	lastPath := filepath.Join(sourceRoot, "z-last.md")
+	if err := os.MkdirAll(filepath.Dir(nestedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{
+		firstPath:  "# First\n",
+		nestedPath: "# Second\n",
+		lastPath:   "# Last\n",
+		filepath.Join(sourceRoot, "ignored.txt"): "not markdown\n",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const family = "directory_cli_equivalence"
+	directoryHome := t.TempDir()
+	if err := home.Init(directoryHome, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOUND_HOME", directoryHome)
+	captureStdout(t, func() {
+		cmdSource([]string{"manifest-create", "--family", family, "--source-dir", sourceRoot, "--json"})
+	})
+	directoryManifest, err := sourceobs.LoadSourceManifest(directoryHome, family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(directoryManifest.Items) != 3 {
+		t.Fatalf("directory manifest items = %d, want 3: %+v", len(directoryManifest.Items), directoryManifest.Items)
+	}
+	for _, item := range directoryManifest.Items {
+		if item.SourceRef == sourceRoot || item.Privacy != "private" || item.BodyPolicy != "owned_snapshot" || item.BodyRef == "" {
+			t.Fatalf("directory intake changed the SourceManifest item contract: %+v", item)
+		}
+	}
+
+	manifestPath := sourceobs.SourceManifestPath(directoryHome, family)
+	beforeReplay, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captureStdout(t, func() {
+		cmdSource([]string{"manifest-create", "--family", family, "--source-dir", sourceRoot, "--json"})
+	})
+	afterReplay, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeReplay, afterReplay) {
+		t.Fatal("directory replay changed the recorded SourceManifest")
+	}
+
+	explicitHome := t.TempDir()
+	if err := home.Init(explicitHome, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOUND_HOME", explicitHome)
+	captureStdout(t, func() {
+		cmdSource([]string{"manifest-create", "--family", family, firstPath, nestedPath, lastPath, "--json"})
+	})
+	explicitManifest, err := sourceobs.LoadSourceManifest(explicitHome, family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(directoryManifest, explicitManifest) {
+		t.Fatalf("directory manifest differs from explicit files:\ndirectory=%+v\nexplicit=%+v", directoryManifest, explicitManifest)
+	}
+}
+
+const sourceManifestDirectoryConflictChild = "COMPOUND_SOURCE_MANIFEST_DIRECTORY_CONFLICT_CHILD"
+
+func TestSourceManifestDirectoryRejectsConflictingInputModesBeforeWrite(t *testing.T) {
+	if mode := os.Getenv(sourceManifestDirectoryConflictChild); mode != "" {
+		family := "directory_conflict_" + mode
+		sourceRoot := os.Getenv("COMPOUND_SOURCE_MANIFEST_DIRECTORY_ROOT")
+		sourcePath := os.Getenv("COMPOUND_SOURCE_MANIFEST_DIRECTORY_FILE")
+		switch mode {
+		case "positional":
+			cmdSource([]string{"manifest-create", "--family", family, "--source-dir", sourceRoot, sourcePath})
+		case "export":
+			cmdSource([]string{"manifest-create", "--family", family, "--source-dir", sourceRoot, "--from-export", sourcePath})
+		default:
+			os.Exit(3)
+		}
+		return
+	}
+
+	sourceRoot := t.TempDir()
+	sourcePath := filepath.Join(sourceRoot, "source.md")
+	if err := os.WriteFile(sourcePath, []byte("# Conflict\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"positional", "export"} {
+		t.Run(mode, func(t *testing.T) {
+			homePath := t.TempDir()
+			if err := home.Init(homePath, "test", cliTestNow); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(os.Args[0], "-test.run=^TestSourceManifestDirectoryRejectsConflictingInputModesBeforeWrite$")
+			cmd.Env = append(os.Environ(),
+				sourceManifestDirectoryConflictChild+"="+mode,
+				"COMPOUND_HOME="+homePath,
+				"COMPOUND_SOURCE_MANIFEST_DIRECTORY_ROOT="+sourceRoot,
+				"COMPOUND_SOURCE_MANIFEST_DIRECTORY_FILE="+sourcePath,
+			)
+			output, err := cmd.CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != 2 {
+				t.Fatalf("conflicting mode exit = %v, output:\n%s", err, output)
+			}
+			if !strings.Contains(string(output), "--source-dir") {
+				t.Fatalf("conflicting mode error does not name --source-dir:\n%s", output)
+			}
+			family := "directory_conflict_" + mode
+			if _, err := os.Stat(sourceobs.SourceManifestPath(homePath, family)); !os.IsNotExist(err) {
+				t.Fatalf("conflicting mode wrote manifest authority: %v", err)
+			}
+		})
+	}
+}
+
+const sourceManifestDirectoryAtomicChild = "COMPOUND_SOURCE_MANIFEST_DIRECTORY_ATOMIC_CHILD"
+
+func TestSourceManifestDirectoryErrorIsAtomicBeforeCustodyOrAuthority(t *testing.T) {
+	if os.Getenv(sourceManifestDirectoryAtomicChild) != "" {
+		cmdSource([]string{
+			"manifest-create",
+			"--family", "directory_atomic_error",
+			"--source-dir", os.Getenv("COMPOUND_SOURCE_MANIFEST_DIRECTORY_ROOT"),
+		})
+		return
+	}
+
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	sourceRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceRoot, "00-before.md"), []byte("# Before\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(outside, []byte("# Outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(sourceRoot, "z-escape.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSourceManifestDirectoryErrorIsAtomicBeforeCustodyOrAuthority$")
+	cmd.Env = append(os.Environ(),
+		sourceManifestDirectoryAtomicChild+"=1",
+		"COMPOUND_HOME="+homePath,
+		"COMPOUND_SOURCE_MANIFEST_DIRECTORY_ROOT="+sourceRoot,
+	)
+	output, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 1 {
+		t.Fatalf("directory error exit = %v, output:\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "symlink") {
+		t.Fatalf("directory error does not explain symlink refusal:\n%s", output)
+	}
+	if _, err := os.Stat(sourceobs.SourceManifestPath(homePath, "directory_atomic_error")); !os.IsNotExist(err) {
+		t.Fatalf("directory error wrote manifest authority: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(homePath, "artifacts", "sha256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("directory error published partial artifact custody: %v", entries)
+	}
 }
