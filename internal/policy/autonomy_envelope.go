@@ -123,20 +123,29 @@ func autonomyEnvelopeBlocked(ai envelope.ActionIntent) bool {
 }
 
 // autonomyEnvelopeGrant finds the standing grant whose SCOPE covers this intent.
-// It matches on what the operator drew -- target_path, and capability or
-// destination where the grant narrowed them -- and deliberately not on
-// mutation class, reversibility, or blast radius, which are the very fields the
-// envelope exists to stop gating on. The money caps stay enforced: a spend
-// ceiling is a scope the operator drew, not a class description.
+//
+// It matches on the PATH the operator drew and, where the grant narrowed one, a
+// destination and a spend ceiling. It deliberately does not match capability,
+// mutation class, reversibility, or blast radius. Those four are exactly what
+// the envelope exists to stop gating on: a grant that must pre-name every
+// capability a build might invoke is another allowlist, and the allowlist is
+// what this change is retiring. matchGrant still enforces all of them on the
+// ordinary path, which is why a capability-pinned grant keeps working as the
+// narrow authorization it was written to be -- the envelope is the wider
+// statement layered over it, not a replacement for it.
+//
+// The one class rule that survives: a READ grant cannot draw an envelope. "You
+// may read this tree" is not an authorization to mutate it, and letting a read
+// grant open a mutation envelope would let the narrowest grant in the registry
+// authorize the widest thing in it.
 func autonomyEnvelopeGrant(ai envelope.ActionIntent, cfg Config, now time.Time) (StandingGrant, bool) {
+	var best StandingGrant
+	bestRank := -1
 	for _, g := range cfg.StandingGrants {
 		if strings.TrimSpace(g.TargetPath) == "" {
 			continue
 		}
-		if g.Capability != "" && g.Capability != ai.Capability {
-			continue
-		}
-		if g.MutationClass != "" && g.MutationClass != ai.MutationClass {
+		if g.MutationClass == "read" {
 			continue
 		}
 		if g.Destination != "" && strings.TrimSpace(g.Destination) != strings.TrimSpace(ai.Destination) {
@@ -156,9 +165,36 @@ func autonomyEnvelopeGrant(ai envelope.ActionIntent, cfg Config, now time.Time) 
 		if _, ok := matchForbidden([]string{g.TargetPath}, filepath.ToSlash(ai.Target.Path)); !ok {
 			continue
 		}
-		return g, true
+		if rank := autonomyEnvelopeGrantRank(g, cfg); rank > bestRank {
+			best, bestRank = g, rank
+		}
 	}
-	return StandingGrant{}, false
+	return best, bestRank >= 0
+}
+
+// autonomyEnvelopeGrantRank orders candidate grants by how much consequence the
+// operator already accepted in that path, so the decision names the STRONGEST
+// true statement backing the clearance rather than whichever grant happened to
+// be first in the file.
+//
+// This matters only for the audit trail -- every candidate here would clear the
+// same hold -- but the audit trail is the whole point of naming a grant. A real
+// registry can hold twenty path-scoped grants, and a decision reading
+// "cleared inside <a collaboration-followup grant>" because that row sorted
+// first tells an auditor something misleading, while "cleared inside <the
+// destructive-shell-in-projects grant>" tells them the thing that actually
+// makes clearing an install coherent.
+//
+// The ordering is the config's own class baseline, not a new scale invented
+// here: a grant for a class the policy holds by default outranks one for a
+// class it allows by default.
+func autonomyEnvelopeGrantRank(g StandingGrant, cfg Config) int {
+	if g.MutationClass == "" {
+		// A grant that names a path and no class is the operator drawing the
+		// scope itself, which is the widest statement available.
+		return len(severity)
+	}
+	return severity[cfg.ClassOutcome[g.MutationClass].Outcome]
 }
 
 // shellTargetPath gives a shell (or PTY) intent the one path it can honestly

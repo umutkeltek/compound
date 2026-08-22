@@ -331,6 +331,65 @@ func TestAutonomyEnvelopeNeedsTheOperatorToHaveSetIt(t *testing.T) {
 			t.Fatalf("outcome=%q; an intent that states no scope is not inside one", got.Decision.Outcome)
 		}
 	})
+
+	// "You may read this tree" is not an authorization to mutate it. Without
+	// this rule the narrowest grant in a registry could open the widest
+	// envelope in it, which is the opposite of what the operator drew.
+	t.Run("a read grant does not draw an envelope", func(t *testing.T) {
+		cfg := envelopeConfig(scope)
+		cfg.StandingGrants = []StandingGrant{{
+			ID: "grant_read_only", Capability: "filesystem.read",
+			MutationClass: "read", TargetPath: filepath.ToSlash(scope) + "/**",
+		}}
+		if got := monitorShell(t, cfg, cwd, probe); Allowed(got.Decision) {
+			t.Fatalf("outcome=%q; a read grant opened a mutation envelope", got.Decision.Outcome)
+		}
+	})
+
+	// Provenance: with several path-scoped grants in force, the decision must
+	// name the one that makes the clearance coherent, not whichever row sorted
+	// first. An auditor reading "cleared inside <a followup-task grant>" learns
+	// something misleading about why an install was allowed.
+	t.Run("the strongest grant over the path is the one named", func(t *testing.T) {
+		cfg := envelopeConfig(scope)
+		cfg.StandingGrants = []StandingGrant{
+			{ID: "grant_read", Capability: "filesystem.read", MutationClass: "read",
+				TargetPath: filepath.ToSlash(scope) + "/**"},
+			{ID: "grant_followup_task", Capability: "control.followup_task",
+				MutationClass: "local_reversible", TargetPath: filepath.ToSlash(scope) + "/**"},
+			{ID: "grant_destructive_shell", Capability: "shell.destructive_command",
+				MutationClass: "destructive", TargetPath: filepath.ToSlash(scope) + "/**"},
+		}
+		got := monitorShell(t, cfg, cwd, probe)
+		if !Allowed(got.Decision) {
+			t.Fatalf("outcome=%q reasons=%v", got.Decision.Outcome, got.Decision.Reasons)
+		}
+		if got.Decision.StandingGrantID != "grant_destructive_shell" {
+			t.Fatalf("named grant=%q, want grant_destructive_shell -- the decision must cite the "+
+				"strongest true statement backing it", got.Decision.StandingGrantID)
+		}
+	})
+
+	// The counterpart: a grant pinned to ONE capability still draws the
+	// envelope, because pre-naming every capability a build invokes is the
+	// allowlist this change retires. matchGrant keeps enforcing the pin on the
+	// ordinary path; the envelope is the wider statement layered over it.
+	t.Run("a capability-pinned mutation grant draws the envelope", func(t *testing.T) {
+		cfg := envelopeConfig(scope)
+		cfg.StandingGrants = []StandingGrant{{
+			ID: "grant_destructive_shell", Capability: "shell.destructive_command",
+			MutationClass: "destructive", TargetPath: filepath.ToSlash(scope) + "/**",
+		}}
+		got := monitorShell(t, cfg, cwd, probe)
+		if !Allowed(got.Decision) {
+			t.Fatalf("outcome=%q reasons=%v; a mutation grant over the path draws the envelope",
+				got.Decision.Outcome, got.Decision.Reasons)
+		}
+		if got.Decision.StandingGrantID != "grant_destructive_shell" {
+			t.Fatalf("standing_grant_id=%q; the decision must name the grant that drew the envelope",
+				got.Decision.StandingGrantID)
+		}
+	})
 }
 
 // TestAutonomyEnvelopeNeverClearsADeny walks the outcomes the envelope must not
