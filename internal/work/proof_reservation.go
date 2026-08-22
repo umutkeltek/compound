@@ -2094,18 +2094,18 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 		finalResult.RunAttemptStatus = terminal.Status
 		finalResult.VerificationRef = pending.VerificationRef
 		return ProofResourceCompleteResult{
-				SchemaVersion:           ProofResourceResultSchemaVersion,
-				Result:                  finalResult,
-				VerificationRef:         pending.VerificationRef,
-				ResourceReleased:        false,
-				RecoveryJournalRetained: true,
-				ReleaseWarning:          releaseErr.Error(),
-				Work:                    finalWork,
-			}, &ProofResourceReleasePendingError{
-				ReservationID: reservation.ID,
-				Holder:        reservation.Holder,
-				Cause:         releaseErr,
-			}
+			SchemaVersion:           ProofResourceResultSchemaVersion,
+			Result:                  finalResult,
+			VerificationRef:         pending.VerificationRef,
+			ResourceReleased:        false,
+			RecoveryJournalRetained: true,
+			ReleaseWarning:          releaseErr.Error(),
+			Work:                    finalWork,
+		}, &ProofResourceReleasePendingError{
+			ReservationID: reservation.ID,
+			Holder:        reservation.Holder,
+			Cause:         releaseErr,
+		}
 	}
 	cleanupErr := s.clearProofResourceCompletionPending(pendingPath, pending)
 	finalResult := pending.Result

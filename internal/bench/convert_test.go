@@ -608,7 +608,7 @@ func TestConvertAcceptanceV1ByteStableAcrossV2Addition(t *testing.T) {
 		"skill:skill-creator",
 		"skill:superpowers",
 		"skill:taste-skill",
-		"skill.codex.skills.diff.cleanup.and.parking", // not a v1 shape, stays raw
+		"skill.codex.skills.diff.cleanup.and.parking",            // not a v1 shape, stays raw
 		"skill.codex.superpowers.finishing.a.development.branch", // not a v1 shape, stays raw
 		"tool:mcporter",
 	}

@@ -1193,13 +1193,13 @@ type ActionIntent struct {
 	// them. The source-control gate uses it to tell the actions a foreign dirty
 	// path is actually at risk from apart from the ones that just happen to run
 	// in the same repository.
-	CapturesWorkInProgress bool `json:"captures_work_in_progress,omitempty"`
-	MutationClass        string          `json:"mutation_class"`
-	Reversibility        string          `json:"reversibility"`
-	BlastRadius          string          `json:"blast_radius,omitempty"`
-	EstimatedCost        EstimatedCost   `json:"estimated_cost"`
-	Preview              string          `json:"preview,omitempty"`
-	RollbackPlan         string          `json:"rollback_plan,omitempty"`
+	CapturesWorkInProgress bool          `json:"captures_work_in_progress,omitempty"`
+	MutationClass          string        `json:"mutation_class"`
+	Reversibility          string        `json:"reversibility"`
+	BlastRadius            string        `json:"blast_radius,omitempty"`
+	EstimatedCost          EstimatedCost `json:"estimated_cost"`
+	Preview                string        `json:"preview,omitempty"`
+	RollbackPlan           string        `json:"rollback_plan,omitempty"`
 }
 
 func (e *ActionIntent) Kind() string { return "action_intent" }
