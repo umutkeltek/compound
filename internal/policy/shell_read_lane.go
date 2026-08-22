@@ -31,23 +31,25 @@ import (
 // or egress — including through its own flags (`sed -i`, `find -exec`).
 
 const (
-	shellClassRead        = "read"
-	shellClassGoverned    = "governed"
-	shellClassInstall     = "install"
-	shellClassUnknown     = "unknown"
-	shellClassNetwork     = "network"
-	shellClassDestructive = "destructive"
+	shellClassRead          = "read"
+	shellClassGoverned      = "governed"
+	shellClassInstall       = "install"
+	shellClassUnknown       = "unknown"
+	shellClassNetwork       = "network"
+	shellClassDestructive   = "destructive"
+	shellClassOperatorGated = "operator_gated"
 )
 
 // shellClassSeverity orders escalation when one command mixes classes: the
 // worst segment decides the whole command.
 var shellClassSeverity = map[string]int{
-	shellClassRead:        0,
-	shellClassGoverned:    1,
-	shellClassInstall:     2,
-	shellClassUnknown:     3,
-	shellClassNetwork:     4,
-	shellClassDestructive: 5,
+	shellClassRead:          0,
+	shellClassGoverned:      1,
+	shellClassInstall:       2,
+	shellClassUnknown:       3,
+	shellClassNetwork:       4,
+	shellClassDestructive:   5,
+	shellClassOperatorGated: 6,
 }
 
 // shellSubstitutionPlaceholder stands in for a command substitution body in the
@@ -240,6 +242,7 @@ func classifyShellAction(
 	classification ActionClassification,
 	command string,
 	firstPartyCommands FirstPartyCommandCatalog,
+	cwd string,
 ) ActionClassification {
 	if strings.TrimSpace(command) == "" {
 		classification.Known = false
@@ -251,7 +254,21 @@ func classifyShellAction(
 	}
 	segments, ok := shellLex(command)
 	if !ok || len(segments) == 0 {
-		return shellClassificationFor(classification, shellClassUnknown)
+		classification = shellClassificationFor(classification, shellClassUnknown)
+		// A command the lexer could not decompose classifies exactly as it did
+		// before -- unknown, fail closed to hold. What changes is that the hold
+		// is not clearable: an autonomy envelope may widen what a lane does with
+		// commands the boundary READ, never with commands it could not read.
+		classification.OperatorGated = true
+		return classification
+	}
+	// The gated roster runs ahead of every narrower recognizer, because those
+	// recognizers can only DOWNGRADE: `git push --force origin main` would
+	// otherwise be classified by the generic network lane and become clearable.
+	for _, segment := range segments {
+		if shellSegmentOperatorGated(segment, cwd) {
+			return shellClassificationFor(classification, shellClassOperatorGated)
+		}
 	}
 	if len(segments) == 1 {
 		if shellExistingRemotePush(segments[0]) {
@@ -404,6 +421,12 @@ func shellClassificationFor(classification ActionClassification, class string) A
 		classification.MutationClass = "security"
 		classification.Reversibility = "manual"
 		classification.BlastRadius = "host"
+	case shellClassOperatorGated:
+		classification.Operation = OperatorGatedOperation
+		classification.OperatorGated = true
+		classification.MutationClass = "destructive"
+		classification.Reversibility = "irreversible"
+		classification.BlastRadius = "host"
 	default:
 		classification.Known = false
 		classification.Operation = "unknown_command"
@@ -422,6 +445,11 @@ type shellSegment struct {
 	writes     bool
 	obfuscated bool
 	dynamic    bool
+	// writeTargets are the literal redirection destinations this segment keeps
+	// data in. Recorded only for the operator-gated roster, which must be able
+	// to name WHICH file a write lands on: the routine-read lane itself never
+	// needs the target, because any keeping write already leaves the lane.
+	writeTargets []string
 }
 
 // shellLex decomposes a command into its executable segments in one pass,
@@ -795,7 +823,11 @@ func shellReadRedirection(runes []rune, start int, word *strings.Builder, curren
 		}
 		return i, false, true
 	}
-	return i, target.String() != "/dev/null", true
+	writes := target.String() != "/dev/null"
+	if writes {
+		current.writeTargets = append(current.writeTargets, target.String())
+	}
+	return i, writes, true
 }
 
 // shellWordContinues reports whether the character after a closing quote keeps

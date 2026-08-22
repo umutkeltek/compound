@@ -39,11 +39,18 @@ const (
 )
 
 type ToolActionRequest struct {
-	WorkID             string
-	Actor              string
-	Harness            string
-	Tool               string
-	Arguments          map[string]any
+	WorkID    string
+	Actor     string
+	Harness   string
+	Tool      string
+	Arguments map[string]any
+	// Cwd is the directory the tool call runs in. It is the minimum blast scope
+	// a shell intent can state about itself: a command carries no file_path, so
+	// without a cwd its ActionTarget has no Path at all, and a path-scoped
+	// standing grant can never match it -- the grant misses with "target path
+	// empty", and every mutating command in a granted project falls back to the
+	// class baseline. Supplying it is what makes an envelope an envelope.
+	Cwd                string
 	ToolSchemaRevision string
 	Sources            []envelope.SourceEnvelope
 	ClassifierRisk     string
@@ -62,6 +69,9 @@ type ActionClassification struct {
 	RequiredSink     string
 	NeedsSchema      bool
 	NeedsDestination bool
+	// OperatorGated marks a shape whose hold no autonomy envelope may clear.
+	// See operator_gated_shell.go for the roster and why each entry is on it.
+	OperatorGated bool
 }
 
 type ActionBinding struct {
@@ -178,6 +188,7 @@ func ClassifyToolAction(request ToolActionRequest) ActionClassification {
 			classification,
 			stringArgument(request.Arguments, "chars"),
 			request.FirstPartyCommands,
+			request.Cwd,
 		)
 	case isShellTool(tool):
 		classification.Domain = ActionDomainShell
@@ -187,6 +198,7 @@ func ClassifyToolAction(request ToolActionRequest) ActionClassification {
 			classification,
 			stringArgument(request.Arguments, "command", "cmd"),
 			request.FirstPartyCommands,
+			request.Cwd,
 		)
 	default:
 		classification.Known = false
@@ -240,7 +252,7 @@ func MonitorToolAction(request ToolActionRequest, cfg Config, now time.Time) Mon
 		Actor:          firstNonEmptyMonitor(request.Actor, request.Harness, "unknown-actor"),
 		Capability:     classification.Domain + "." + classification.Operation,
 		Action:         classification.Operation,
-		Target:         envelope.ActionTarget{Kind: classification.TargetKind, ID: targetID},
+		Target:         envelope.ActionTarget{Kind: classification.TargetKind, ID: targetID, Path: shellTargetPath(classification, request.Cwd)},
 		Destination:    classification.Destination,
 		ArgumentsHash:  argumentsHash,
 		InputSources:   inputBindings,
@@ -262,7 +274,14 @@ func MonitorToolAction(request ToolActionRequest, cfg Config, now time.Time) Mon
 		securityReasons = append(securityReasons, reason)
 	}
 	if !classification.Known {
-		constrain("hold", "unknown tool/action classification fails closed")
+		constrain("hold", UnknownClassificationFloorReason)
+	}
+	if classification.OperatorGated {
+		if classification.Known {
+			constrain("hold", OperatorGatedFloorReason)
+		} else {
+			constrain("hold", UnreadableCommandFloorReason)
+		}
 	}
 	if classification.NeedsSchema && strings.TrimSpace(request.ToolSchemaRevision) == "" {
 		constrain("hold", "missing tool schema revision fails closed")
@@ -292,6 +311,11 @@ func MonitorToolAction(request ToolActionRequest, cfg Config, now time.Time) Mon
 	}
 	intent.SecurityFloorOutcome = securityFloor
 	intent.SecurityReasons = append([]string{}, securityReasons...)
+	// The envelope runs LAST, on the fully-constrained decision: the security
+	// floor has to be on the intent before the envelope can decide whether this
+	// particular hold is one it may clear. Evaluate applies the same owner for
+	// callers that never pass through the monitor.
+	decision = applyAutonomyEnvelope(decision, intent, cfg, now)
 
 	binding := ActionBinding{
 		SchemaVersion:      ActionBindingSchema,
@@ -611,6 +635,7 @@ func classifyPTYAction(
 	classification ActionClassification,
 	chars string,
 	firstPartyCommands FirstPartyCommandCatalog,
+	cwd string,
 ) ActionClassification {
 	switch chars {
 	case "":
@@ -624,7 +649,7 @@ func classifyPTYAction(
 		classification.Reversibility = "easy"
 		classification.BlastRadius = "local"
 	default:
-		classification = classifyShellAction(classification, chars, firstPartyCommands)
+		classification = classifyShellAction(classification, chars, firstPartyCommands, cwd)
 	}
 	return classification
 }

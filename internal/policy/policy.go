@@ -199,6 +199,11 @@ func Evaluate(ai envelope.ActionIntent, cfg Config, now time.Time) envelope.Poli
 func EvaluateWithContext(ai envelope.ActionIntent, cfg Config, ctx EvaluationContext, now time.Time) envelope.PolicyDecision {
 	pd := evaluateBase(ai, cfg, now)
 	pd = applyActionSecurityFloor(pd, ai, now)
+	// The envelope sits between the declarative baseline and the live context on
+	// purpose. Before it, a clearable hold is still a hold. After it, context can
+	// raise caution again -- a dirty repo or a placement miss re-escalates a
+	// cleared action, which keeps "context only ever raises" true.
+	pd = applyAutonomyEnvelope(pd, ai, cfg, now)
 	if ctx.SourceControl != nil {
 		pd = applySourceControlContext(pd, ai, *ctx.SourceControl, now)
 	}
