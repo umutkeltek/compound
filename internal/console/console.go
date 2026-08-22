@@ -281,8 +281,18 @@ func InstancePinLabel(homePath string) string {
 
 // ValidateProductionBuild enforces BUILD_ID + manifest presence in a
 // production console dir. It is the build-lifecycle gate.
+//
+// The on-disk layout matches what `next build` emits under the custom
+// production distDir declared in console/next.config.ts (`.next/production`).
+// This is the SAME tree `next start` reads from when serve runs the
+// production server, so the gate cannot point at a different path or it
+// will refuse a tree the serve step then happily boots from — a crash
+// loop the launchd console service hit once before this contract was
+// pinned (commit be911fd6 originally looked at `.next/standalone`, which
+// is only produced when the standalone output feature is enabled and
+// otherwise never exists).
 func ValidateProductionBuild(consoleDir string) error {
-	productionDir := filepath.Join(consoleDir, ".next", "standalone")
+	productionDir := filepath.Join(consoleDir, ".next", "production")
 	buildID, err := os.ReadFile(filepath.Join(productionDir, "BUILD_ID"))
 	if err != nil || strings.TrimSpace(string(buildID)) == "" {
 		return fmt.Errorf("production BUILD_ID is missing; run compound console build --operator --console-dir %s", consoleDir)

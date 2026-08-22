@@ -73,6 +73,46 @@ func TestValidateProductionBuildAcceptsMissingArtifactsAsRefusal(t *testing.T) {
 	}
 }
 
+// TestValidateProductionBuildAcceptsRealNextBuildLayout is the layout-fidelity
+// falsifier: the gate MUST pass against the exact tree `next build` emits
+// under the production distDir (console/next.config.ts sets `distDir:
+// .next/${buildKind}`). If a future regression points the gate at a path
+// `next build` does not produce (e.g. `.next/standalone`, which only exists
+// when the standalone output feature is enabled), this test surfaces it
+// before the launchd console service can crash-loop on the missing BUILD_ID.
+func TestValidateProductionBuildAcceptsRealNextBuildLayout(t *testing.T) {
+	consoleDir := t.TempDir()
+	productionDir := filepath.Join(consoleDir, ".next", "production")
+	if err := os.MkdirAll(productionDir, 0o755); err != nil {
+		t.Fatalf("create production dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(productionDir, "BUILD_ID"), []byte("test-build-id\n"), 0o644); err != nil {
+		t.Fatalf("write BUILD_ID: %v", err)
+	}
+	for _, name := range []string{"prerender-manifest.json", "required-server-files.json", "routes-manifest.json"} {
+		if err := os.WriteFile(filepath.Join(productionDir, name), []byte("{}"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	if err := ValidateProductionBuild(consoleDir); err != nil {
+		t.Fatalf("ValidateProductionBuild refused a real next build layout (.next/production); want pass: %v", err)
+	}
+}
+
+func TestValidateProductionBuildRejectsBuildArtifactsInWrongLocation(t *testing.T) {
+	consoleDir := t.TempDir()
+	wrongDir := filepath.Join(consoleDir, ".next", "standalone")
+	if err := os.MkdirAll(wrongDir, 0o755); err != nil {
+		t.Fatalf("create wrong dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wrongDir, "BUILD_ID"), []byte("test-build-id\n"), 0o644); err != nil {
+		t.Fatalf("write BUILD_ID: %v", err)
+	}
+	if err := ValidateProductionBuild(consoleDir); err == nil {
+		t.Fatalf("ValidateProductionBuild passed against a tree placed at .next/standalone; want refusal because the production build emits .next/production")
+	}
+}
+
 // capability non-disclosure in JSON
 
 func TestLaunchPlanJSONOpaqueCapabilityRequirementNotValue(t *testing.T) {
