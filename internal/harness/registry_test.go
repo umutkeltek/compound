@@ -35,6 +35,7 @@ func TestAdapterRegistryNewHasBuiltins(t *testing.T) {
 		"claude_zai",
 		"claude_zai_full",
 		"codex",
+		"oh_my_pi",
 		"os-harness-entrypoints",
 		"prime_agent",
 	}

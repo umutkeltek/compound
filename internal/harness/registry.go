@@ -48,7 +48,20 @@ func NewAdapterRegistry(store *runattempt.Store) *AdapterRegistry {
 		r.RegisterAdapter(newClaudeLaneAdapter(store, name, defaultHeartbeatInterval))
 	}
 	r.RegisterAdapter(NewCodexAdapter(store))
+	// The pi coding-agent family. Both forks share one adapter implementation
+	// (pi_coding_agent_adapter.go); registering each by its own name keeps the
+	// AdapterRegistry key, the DefaultRegistry row and RunAttempt.Harness
+	// spelled the same way, which is what makes a routing miss loud instead of
+	// a silent fall-through to the generic stand-in.
+	//
+	// qwen_code and deepseek_harness are deliberately NOT here. They have
+	// DefaultRegistry identity rows and no executor: qwen-code is a different
+	// lineage with no --cwd, and deepseek-harness's headless surface is one
+	// string in and one string out with nothing for an adapter to hold onto.
+	// A registry row without an adapter is an honest "known but not dispatchable";
+	// an adapter without a proven contract is a routing hole.
 	r.RegisterAdapter(NewPrimeAgentAdapter(store))
+	r.RegisterAdapter(NewOhMyPiAdapter(store))
 	return r
 }
 
