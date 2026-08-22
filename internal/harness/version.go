@@ -18,8 +18,18 @@ const versionProbeTimeout = 3 * time.Second
 // unobserved path — the caller (compile.go / doctor) MUST fall back to the
 // "registry:<name>" empty socket rather than fabricate a version. Keep this
 // table small: every entry is a contract the doctor renders to the operator.
+//
+// deepseek_harness is deliberately ABSENT even though it carries an
+// ExpectedVersion pin. Its version is "0.1.0-rc.7", and parseSemverToken
+// recovers only "0.1.0" from it — the pre-release suffix is not part of the
+// token grammar. Mapping the binary would therefore report drift on every
+// probe of a machine running exactly the pinned build: a permanent false
+// positive, which is how a doctor signal turns into background noise. Add the
+// row when the harness ships a plain X.Y.Z release, not before.
 var binaryForHarness = map[string]string{
 	"prime_agent": "prime-agent",
+	"oh_my_pi":    "omp",
+	"qwen_code":   "qwen",
 	"claude_code": "claude",
 	"claude_zai":  "claude",
 	"codex":       "codex",

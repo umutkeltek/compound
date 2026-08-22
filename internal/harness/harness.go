@@ -53,10 +53,18 @@ type Harness struct {
 	// harness wraps. Empty means "unpinned" — doctor won't flag drift for
 	// it. Non-empty values are the contract: doctor surfaces drift as the
 	// "harness_version_drift" named signal when the installed version
-	// (recovered by ObservedVersion) does not match. The default registry
-	// pins prime_agent to "0.7.4" because that is the upstream latest and
-	// the installed 0.7.1 had self-update behavior unless PI_SKIP_VERSION_CHECK
-	// is set on dispatch (see prime_agent_adapter.go).
+	// (recovered by ObservedVersion) does not match.
+	//
+	// The pin names the binary that is INSTALLED and proven here, not
+	// upstream's head. Pinning ahead of the installed binary makes the signal
+	// fire on every probe, and a signal that is always on is one the operator
+	// learns to skip — which is how a real drift would then go unread. Raising
+	// a pin is an operator act that ships with the upgrade and a lane re-proof.
+	//
+	// A pin is only compared for harnesses in binaryForHarness (version.go).
+	// It must also round-trip through that file's parseSemverToken, which
+	// understands X.Y.Z and nothing else — see the deepseek_harness note there
+	// for the pre-release case that is deliberately left unprobed.
 	ExpectedVersion string `json:"expected_version,omitempty"`
 }
 
@@ -461,32 +469,196 @@ func DefaultRegistry() Registry {
 			// and `-nbt/--no-builtin-tools`). The registry floor is therefore deliberately
 			// empty on the hook flags: Compound injects context via `--system-prompt` /
 			// `--append-system-prompt` argv at dispatch time and observes outcomes through
-			// the shared runattempt.Store, not through Prime-agent hooks. NativeSkills and
-			// MCP stay true: Prime-agent discovers both via its own extension loader and
-			// the daemon's `--mcp` server config, exactly like Codex's pattern.
+			// the shared runattempt.Store, not through Prime-agent hooks.
+			//
+			// NativeSkills and MCP are FALSE, and that is a correction rather than a
+			// downgrade of the product. Prime-agent supports both: skills load from
+			// <agentDir>/skills (user) and <cwd>/.prime/agent/skills (project), and MCP
+			// servers are declared under the `mcpServers` key of the agent home's
+			// settings.json (dist/core/settings-manager.d.ts declares
+			// `mcpServers?: Record<string, McpServerConfig>`). Neither is INSTALLED: the
+			// user skills directory does not exist and settings.json carries no
+			// mcpServers key. The claude_minimax comment above sets the precedent that
+			// these flags describe installed bindings on disk, so declaring them true
+			// routed skill-bearing work at a lane where no skill body would load.
+			//
+			// The claim this replaces said MCP arrived "via the daemon's `--mcp` server
+			// config, exactly like Codex's pattern." There is no `--mcp` flag in
+			// `prime-agent --help` at 0.7.1. That was a wrong-but-plausible detail on its
+			// way to becoming a load-bearing premise for the next reader. The raise path
+			// is unchanged: install the binding (create the skills directory, write the
+			// mcpServers key), observe it loading, then flip the flag in the same change.
 			//
 			// The "registry identity only" limitation is the same admission Codex used
 			// before its switchback landing: the harness row exists so the runner and
 			// work-delegate resolver have a stable id to dispatch into; the
 			// capability-floor raise (and the persistent-kernel governor) land in a
 			// follow-up slice.
-			Capabilities: Capabilities{
-				NativeSkills: true, MCP: true,
-			},
+			Capabilities: Capabilities{},
 			Limitations: []string{
 				"no SessionStart/UserPromptSubmit/PreToolUse/PostToolUse hook protocol — context is injected via `--system-prompt` / `--append-system-prompt` argv at dispatch",
 				"no SessionEnd or Stop feedback — terminal status is derived from the subprocess exit code under the shared runWithSubprocess core",
 				"prime-agent daemon listens on a Unix socket under $TMPDIR/prime-agent-<uid>/daemon.sock (NOT a localhost TCP port); port 18774 is Switchback's capture tap that prime's models.json points its LLM calls at — outbound model target, never prime IPC",
 				"headless invocation is `--mode rpc` or `-p --no-session`; the run-attempt chrome is the only audit trail",
-				"tool policy is enforced via `-t/--tools` allowlist at dispatch — see prime_agent_adapter.go buildCmd",
+				"tool policy is enforced via `-t/--tools` allowlist at dispatch — see the pi-family adapter buildCmd in pi_coding_agent_adapter.go",
+				"NativeSkills/MCP are SUPPORTED-not-installed: skills load from <agentDir>/skills (user) and <cwd>/.prime/agent/skills (project), but the user skills directory does not exist and settings.json carries no mcpServers key — the floor stays false until a binding is on disk",
+				"MCP is configured through the `mcpServers` key of the agent home settings.json — there is no `--mcp` flag on the CLI",
 				"registry identity only — capability-floor raise and persistent-kernel governor land in a follow-up slice",
 			},
 			InjectBudgetMS: 1500,
-			// Upstream latest at 2026-08-19 was 0.7.4; installed 0.7.1 has the
-			// self-update path (PI_SKIP_VERSION_CHECK=1 neutralizes it on dispatch
-			// — see prime_agent_adapter.go buildCmd) and the operator-visible
-			// drift is what the harness_version_drift doctor signal reports.
-			ExpectedVersion: "0.7.4",
+			// The pin tracks the INSTALLED and proven binary, not upstream's head.
+			// 0.7.4 was upstream latest at 2026-08-19; upstream is 0.8.0 as of
+			// 2026-08-22 (GitHub releases API, tag v0.8.0), so the old pin matched
+			// neither what runs here nor what upstream ships — it just made
+			// harness_version_drift fire forever, and a signal that is always on is a
+			// signal the operator learns to ignore. Raising this is an operator act
+			// that ships WITH the upgrade and a lane re-proof: a lane that has not
+			// restarted since its upgrade is unproven. PI_SKIP_VERSION_CHECK=1 on
+			// dispatch (see the pi-family adapter buildCmd) stops the binary
+			// self-updating mid-run and invalidating the RunAttempt chrome.
+			ExpectedVersion: "0.7.1",
+		},
+		"oh_my_pi": {
+			Name:                 "oh_my_pi",
+			InstructionMechanism: "AGENTS.md/CLAUDE.md context-file discovery + --system-prompt/--append-system-prompt argv + -p/--mode headless invocation",
+			// Same codebase family as prime_agent (both fork the pi coding agent), so
+			// the standing pi-family boundaries are inherited verbatim: rented executor
+			// only, private memory stays dark, disposable workspaces, provider traffic
+			// only through a body-captured tap.
+			//
+			// Conservative FLOOR: this row describes what is INSTALLED, not what the
+			// product can do. Its hook surface is the richest in the family — a typed
+			// `agent.v1` RPC whose PreToolUseRequestResponse carries a `permission`
+			// field (a real veto), alongside PostToolUse, PostToolUseFailure,
+			// BeforeSubmitPrompt, Stop, SubagentStart/Stop and PreCompact. Every hook
+			// flag is still false, because discovery is by FILE: the loader walks
+			// <configDir>/hooks/pre and <configDir>/hooks/post and takes each entry's
+			// base name as the tool matcher (shipped src/discovery/builtin.ts,
+			// loadHooks). Compound's hookplan installer writes shell-command entries
+			// into a settings.json instead, so nothing it installs is discoverable
+			// here. Raising a flag before a shim exists AND an event has been observed
+			// would repeat the claude_minimax failure: routing believes the intended
+			// end state, work goes to an executor that cannot report back, and the
+			// failure looks like silence.
+			//
+			// SessionStart and SessionEnd are not in the catalog at all, so those two
+			// can never rise from a hook — terminal status comes from the subprocess
+			// exit under the shared runWithSubprocess core, same as prime_agent.
+			//
+			// NativeSkills is true and it is an installed-binding claim, not a
+			// capability claim: oh-my-pi registers a `.claude` discovery provider
+			// ("Load skills from .claude/skills/*/SKILL.md") and that directory is
+			// populated on this host, so the corpus loads with zero wiring. Scope it
+			// with `--skills <glob>` — an unscoped corpus is a context tax paid on
+			// every session, not a feature.
+			//
+			// MCP stays false: the loader reads <agentDir>/mcp.json,
+			// <cwd>/.omp/.mcp.json, <cwd>/.mcp.json and .claude-plugin/plugin.json,
+			// and none of them exist. Supported is not installed. Flip it in the same
+			// change that generates the config file, never before.
+			Capabilities: Capabilities{
+				NativeSkills: true,
+			},
+			Limitations: []string{
+				"hook discovery is by FILE under <configDir>/hooks/{pre,post}/ with the file base name as the tool matcher — NOT shell-command entries in a settings.json, so `compound hook install` cannot write it; a shim that dispatches to the Compound hook binary is required before any hook flag rises",
+				"no SessionStart and no SessionEnd event exists in the agent.v1 catalog — session-boundary receipts are derived from the subprocess exit under the shared runWithSubprocess core",
+				"MCP discovery paths exist (<agentDir>/mcp.json, <cwd>/.omp/.mcp.json, <cwd>/.mcp.json, .claude-plugin/plugin.json) but no server config is installed for this harness",
+				"skill discovery resolves its .claude root through CLAUDE_CONFIG_DIR (src/config/claude-paths.ts), so a lane launched under per-profile isolation sees that profile's skills and not the shared corpus — NativeSkills=true is host-scoped, not lane-scoped",
+				"keeps a private memory store under <agentDir> (memories/, history.db) — same class as prime_agent's; it stays dark and Compound remains the meaning authority",
+				"executes model-generated Python and shell with the caller's permissions and is not a sandbox — disposable clones/worktrees only",
+				"tools.approvalMode is a host config default that can be yolo; governed dispatch MUST pass `--approval-mode always-ask|write` explicitly and never inherit the config default",
+				"runs on Bun (engines.bun >=1.3.14) and reads Bun.env; its proxy support accepts only http:// and https:// proxy URLs — SOCKS (socks5://, socks5h://) is rejected outright (src/utils/fetch-timeout.ts)",
+				"no version-check suppression env exists (unlike prime_agent's PI_SKIP_VERSION_CHECK); `omp update` is explicit but marketplace.autoUpdate can still fetch mid-session, so the ExpectedVersion pin is load-bearing at a 17.x release cadence",
+				"registry identity only — hook installation and the capability-floor raise land in a follow-up slice",
+			},
+			InjectBudgetMS:  1500,
+			ExpectedVersion: "17.4.0",
+		},
+		"qwen_code": {
+			Name:                 "qwen_code",
+			InstructionMechanism: "QWEN.md/AGENTS.md context files + .qwen/ project dirs + -p headless with -o text|json|stream-json",
+			// Conservative FLOOR. qwen-code is the one harness here whose hook surface
+			// has the same SHAPE as claude_code's — SessionStart, UserPromptSubmit,
+			// PreToolUse, PostToolUse, SessionEnd, Stop and Notification all appear as
+			// first-party event names, managed by `qwen hooks` and a .qwen/hooks/
+			// project dir. Every hook flag stays false anyway, for the reason at the
+			// top of DefaultRegistry: an event NAME is not an enforcement point, and
+			// assuming a block that does not exist is a silent fail-open.
+			// `qwen hooks --help` prints NOTHING at 0.21.15, so PreToolUse's veto power
+			// is unproven. Raise these only after an installer genuinely writes the
+			// bindings AND a denial is observed end to end.
+			//
+			// MCP is true and it is the one genuinely-installed capability in this
+			// batch: the user settings file carries an mcpServers map with a live
+			// entry, managed by `qwen mcp add|list|approve`.
+			//
+			// NativeSkills stays false: the loader is real
+			// (.qwen/skills/<name>/SKILL.md, surfaced as /<name> commands) but the
+			// skills directory is EMPTY. A loader with no bodies is exactly what the
+			// floor rule exists to catch — it routes skill-bearing work into a hole.
+			//
+			// No adapter is registered. Gemini-CLI lineage, not the pi family: it
+			// shares no argv, settings schema or session layout with prime_agent /
+			// oh_my_pi and cannot reuse their adapter, and it has no `--cwd`, so a
+			// governed dispatch can only set the workspace through the child process
+			// working directory. The headless form IS verified
+			// (`qwen -p "<prompt>" -o json --approval-mode <mode>`), so an adapter is
+			// tractable — it is deferred, not blocked.
+			Capabilities: Capabilities{
+				MCP: true,
+			},
+			Limitations: []string{
+				"hook events (SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/SessionEnd/Stop/Notification) exist by name, but no binding is installed and PreToolUse veto power is UNVERIFIED — `qwen hooks --help` prints nothing at 0.21.15",
+				"skills loader is present (.qwen/skills/<name>/SKILL.md, surfaced as /<name> commands) but the skills directory is empty — no bodies installed",
+				"Gemini-CLI lineage, not the pi family — settings schema, session layout and ACP surface share nothing with prime_agent/oh_my_pi and cannot reuse their adapter",
+				"no `--cwd` flag: the workspace can only be set through the child process working directory, so a governed dispatch cannot stamp it into argv the way the pi family does",
+				"`--approval-mode plan|default|auto-edit|auto|yolo` and `-y/--yolo` ARE accepted on the top-level CLI but are omitted from `--help`; a governed lane must pass the posture explicitly rather than discover it from help output",
+				"setting tools.approvalMode to yolo is refused through the runtime /config path and can only be written to settings.json — the CLI flag is the governed way to state a posture per dispatch",
+				"--insecure / QWEN_TLS_INSECURE=1 disables TLS verification for EVERY upstream, not just a local tap — it must never be used to shortcut CA trust in a lane",
+				"`qwen serve` exposes a local HTTP daemon (default port 4170) whose loopback bind is auth-free; --require-auth plus --token/QWEN_SERVER_TOKEN must be set before any shared-host use",
+				"registry identity only — no adapter is registered for this harness; hook installation and the capability-floor raise land in a follow-up slice",
+			},
+			InjectBudgetMS:  1500,
+			ExpectedVersion: "0.21.15",
+		},
+		"deepseek_harness": {
+			Name:                 "deepseek_harness",
+			InstructionMechanism: "cordis plugin profile layers under $DSH_HOME/profiles/<name> + --patch overlays + `dsh --profile headless <task>` one-shot",
+			// ADOPT-LATER row. The identity is recorded so the decision has a written
+			// owner instead of being re-derived, and so a later lane has a stable id to
+			// bind. There is no adapter and there must not be one yet: the entire
+			// headless surface is `dsh --profile headless "<task>"`, whose own --help
+			// lists exactly one option (-h). No --model, no --output-format, no session
+			// handle, no structured result — nothing a governed adapter can hold onto.
+			// At 0.1.0-rc.7 the plugin API will move under anything written against it.
+			//
+			// Every capability flag is false and each is a VERIFIED ABSENCE rather than
+			// an unknown: no hook plugin of any kind exists in the shipped plugin tree,
+			// the skills loader's roots are plugin config and none are set, and MCP
+			// servers are declared inside the profile's cordis config rather than a
+			// standalone file.
+			//
+			// The durable finding is capture: the DeepSeek LLM adapter calls bare fetch
+			// with no global undici dispatcher, so an HTTPS_PROXY-style tap will not
+			// intercept its model traffic. The lane mechanism is endpoint redirection
+			// through DEEPSEEK_BASE_URL (declared as BASE_URL_ENV in the shipped
+			// llm-deepseek plugin) — a difference in kind, not degree, and the reason
+			// this row exists before the harness is adoptable.
+			Capabilities: Capabilities{},
+			Limitations: []string{
+				"headless is one string in and one string out: `dsh --profile headless \"<task>\"` — its own --help lists only -h; no --model, no --output-format, no session id, no structured result",
+				"no hook protocol of any kind — the only extension seam is publishing a cordis plugin package, which is a fork-scale commitment rather than an integration",
+				"MCP servers are declared inside the profile's cordis config in the patch layer, not a standalone mcp.json",
+				"skills loader exists but its discovery roots are plugin config and none are configured",
+				"LLM calls use bare fetch with no global undici dispatcher, so proxy-based capture will NOT intercept them — a lane must redirect the endpoint with DEEPSEEK_BASE_URL instead",
+				"DSH_PERMISSION_MODE (read-only|workspace-write|danger-full-access) is the only posture control, and danger-full-access also auto-disables the approval plugin",
+				"profiles are real pnpm workspaces under $DSH_HOME/profiles/<name> and `dsh plugin` shells out to pnpm — a profile is a mutable dependency tree, not a config file",
+				"`dsh --profile <name> --help` MATERIALISES the profile workspace on disk as a side effect — there is no read-only probe, so a readiness check cannot be run without mutating $DSH_HOME",
+				"0.1.0-rc.7 — pre-1.0 plugin API; expect breaking change between any two versions, and the pre-release suffix is why this harness is deliberately absent from binaryForHarness (see version.go)",
+				"registry identity only, adopt-later — no adapter is registered; re-evaluate at >=1.0 or when `--profile headless` gains --model and --output-format",
+			},
+			InjectBudgetMS:  1500,
+			ExpectedVersion: "0.1.0-rc.7",
 		},
 	}}
 }
