@@ -241,16 +241,16 @@ func printWorktreeInventory(w io.Writer, inv authority.WorktreeInventory) {
 	}
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 	if showWork {
-		fmt.Fprintln(tw, "CLASS\tWORKTREE\tWORK\tAHEAD\tDIRTY\tAGE\tNEXT ACTION")
+		fmt.Fprintln(tw, "CLASS\tWORKTREE\tWORK\tUNLANDED\tAHEAD\tDIRTY\tAGE\tNEXT ACTION")
 		for _, row := range inv.Rows {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
-				row.Class, worktreeRowLabel(row), worktreeWorkLabel(row), row.AheadCommits, row.DirtyFiles, worktreeAgeLabel(row.AgeSeconds), row.NextAction)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\n",
+				row.Class, worktreeRowLabel(row), worktreeWorkLabel(row), row.UnlandedCommits, row.AheadCommits, row.DirtyFiles, worktreeAgeLabel(row.AgeSeconds), row.NextAction)
 		}
 	} else {
-		fmt.Fprintln(tw, "CLASS\tWORKTREE\tAHEAD\tDIRTY\tAGE\tNEXT ACTION")
+		fmt.Fprintln(tw, "CLASS\tWORKTREE\tUNLANDED\tAHEAD\tDIRTY\tAGE\tNEXT ACTION")
 		for _, row := range inv.Rows {
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\t%s\n",
-				row.Class, worktreeRowLabel(row), row.AheadCommits, row.DirtyFiles, worktreeAgeLabel(row.AgeSeconds), row.NextAction)
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\t%s\t%s\n",
+				row.Class, worktreeRowLabel(row), row.UnlandedCommits, row.AheadCommits, row.DirtyFiles, worktreeAgeLabel(row.AgeSeconds), row.NextAction)
 		}
 	}
 	tw.Flush()

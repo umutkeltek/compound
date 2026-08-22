@@ -683,23 +683,15 @@ func retirementIsAncestor(ctx context.Context, git WorktreeRetirementGit, repo, 
 	return false, fmt.Errorf("check candidate ancestry: %w", err)
 }
 
+// retirementCherryHasNoPlus reads patch-equivalence off the shared `git cherry`
+// count owner, so the retirement gate and the inventory classifier can never
+// disagree about whether a branch still holds unlanded work.
 func retirementCherryHasNoPlus(ctx context.Context, git WorktreeRetirementGit, repo, upstream, candidate string) (bool, error) {
-	out, err := git.Run(ctx, repo, "cherry", upstream, candidate)
+	unlanded, landed, err := worktreeUnlandedCount(ctx, git, repo, upstream, candidate)
 	if err != nil {
 		return false, fmt.Errorf("classify candidate patches: %w", err)
 	}
-	seen := false
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		seen = true
-		if strings.HasPrefix(line, "+") {
-			return false, nil
-		}
-	}
-	return seen, nil
+	return unlanded == 0 && landed > 0, nil
 }
 
 func sameRetirementPath(a, b string) bool {

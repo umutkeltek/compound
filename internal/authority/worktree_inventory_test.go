@@ -512,7 +512,7 @@ func TestBuildWorktreeInventoryIsReadOnly(t *testing.T) {
 		t.Fatalf("build inventory: %v", err)
 	}
 
-	readOnly := map[string]bool{"rev-parse": true, "worktree": true, "status": true, "show": true, "merge-base": true, "rev-list": true}
+	readOnly := map[string]bool{"rev-parse": true, "worktree": true, "status": true, "show": true, "merge-base": true, "rev-list": true, "cherry": true}
 	mutatingTokens := map[string]bool{
 		"add": true, "commit": true, "rm": true, "update-ref": true, "checkout": true,
 		"switch": true, "reset": true, "branch": true, "stash": true, "clean": true,

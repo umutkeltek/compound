@@ -29,8 +29,9 @@ const WorktreeInventoryAuthorityRef = "compound://executors/worktree-inventory"
 // stalled_unlanded. An unreadable primary checkout is unknown, never a
 // clean-looking main row.
 // A live lane must NEVER read as landed_clean or stalled_unlanded, and unlanded
-// work (unique commits or a dirty tree) must NEVER read as landed_clean — those
-// two invariants are the entire point of the feature (cleanup-sweep safety).
+// work (commits whose patch-id is absent from main, or a dirty tree) must NEVER
+// read as landed_clean — those two invariants are the entire point of the
+// feature (cleanup-sweep safety).
 const (
 	WorktreeClassMain            = "main"
 	WorktreeClassProbe           = "probe"
@@ -373,22 +374,28 @@ type WorktreeInventoryOptions struct {
 // internals-speak, and never a ready-to-run retire command with filled args for
 // a live or stalled_unlanded row.
 type WorktreeInventoryRow struct {
-	Path           string                      `json:"path"`
-	Class          string                      `json:"class"`
-	Branch         string                      `json:"branch,omitempty"`
-	BranchRef      string                      `json:"branch_ref,omitempty"`
-	Detached       bool                        `json:"detached"`
-	Head           string                      `json:"head,omitempty"`
-	AheadCommits   int                         `json:"ahead_commits"`
-	DirtyFiles     int                         `json:"dirty_files"`
-	Contained      bool                        `json:"contained"`
-	Live           bool                        `json:"live"`
-	ActivityRecent bool                        `json:"activity_recent"`
-	AgeSeconds     *int64                      `json:"age_seconds,omitempty"`
-	Liveness       WorktreeLivenessObservation `json:"liveness"`
-	Reason         string                      `json:"reason"`
-	NextAction     string                      `json:"next_action"`
-	IsMain         bool                        `json:"is_main"`
+	Path      string `json:"path"`
+	Class     string `json:"class"`
+	Branch    string `json:"branch,omitempty"`
+	BranchRef string `json:"branch_ref,omitempty"`
+	Detached  bool   `json:"detached"`
+	Head      string `json:"head,omitempty"`
+	// AheadCommits is the raw `git rev-list --count main..HEAD` and is
+	// DISPLAY-ONLY. Main moves by rebase and squash, so a fully-landed branch
+	// reads hundreds of commits "ahead" by SHA. UnlandedCommits is the load-bearing
+	// number: commits whose patch-id is absent upstream (`git cherry` `+` lines).
+	AheadCommits    int                         `json:"ahead_commits"`
+	UnlandedCommits int                         `json:"unlanded_commits"`
+	LandedByPatchID int                         `json:"landed_by_patch_id"`
+	DirtyFiles      int                         `json:"dirty_files"`
+	Contained       bool                        `json:"contained"`
+	Live            bool                        `json:"live"`
+	ActivityRecent  bool                        `json:"activity_recent"`
+	AgeSeconds      *int64                      `json:"age_seconds,omitempty"`
+	Liveness        WorktreeLivenessObservation `json:"liveness"`
+	Reason          string                      `json:"reason"`
+	NextAction      string                      `json:"next_action"`
+	IsMain          bool                        `json:"is_main"`
 	// Work identity joins through an exact branch artifact, or through a running
 	// envelope whose canonical Git delivery root names the primary checkout. If
 	// several running envelopes name that root, singular identity stays empty and
@@ -817,12 +824,15 @@ func classifyWorktreeInventoryRow(ctx context.Context, deps WorktreeInventoryDep
 		return row
 	}
 
-	// Containment and unique-commit count are best-effort here: they are only
+	// Containment and the commit counts are best-effort here: they are only
 	// load-bearing for the non-live, non-probe classes decided below.
 	contained, containErr := retirementIsAncestor(ctx, deps.Git, root, rec.Head, mainTip)
 	row.Contained = contained
 	ahead, aheadErr := worktreeAheadCount(ctx, deps.Git, root, mainTip, rec.Head)
 	row.AheadCommits = ahead
+	unlanded, landedByPatchID, unlandedErr := worktreeUnlandedCount(ctx, deps.Git, root, mainTip, rec.Head)
+	row.UnlandedCommits = unlanded
+	row.LandedByPatchID = landedByPatchID
 
 	switch {
 	case row.Live:
@@ -847,20 +857,28 @@ func classifyWorktreeInventoryRow(ctx context.Context, deps WorktreeInventoryDep
 		row.NextAction = "facts unreadable — inspect this worktree manually before any cleanup"
 	case aheadErr != nil:
 		row.Class = WorktreeClassUnknown
-		row.Reason = "could not read unique-commit count (git rev-list): " + aheadErr.Error()
+		row.Reason = "could not read ahead-commit count (git rev-list): " + aheadErr.Error()
+		row.NextAction = "facts unreadable — inspect this worktree manually before any cleanup"
+	case unlandedErr != nil:
+		row.Class = WorktreeClassUnknown
+		row.Reason = "could not read unlanded-commit count (git cherry): " + unlandedErr.Error()
 		row.NextAction = "facts unreadable — inspect this worktree manually before any cleanup"
 	case contained && row.DirtyFiles == 0:
 		row.Class = WorktreeClassLandedClean
 		row.Reason = "HEAD is contained in main and the working tree is clean — nothing unlanded here"
 		row.NextAction = "retire via compound authority worktree-retire (governed)"
-	case ahead > 0 || row.DirtyFiles > 0:
+	case unlanded > 0 || row.DirtyFiles > 0:
 		row.Class = WorktreeClassStalledUnlanded
-		row.Reason = stalledWorktreeReason(ahead, row.DirtyFiles)
+		row.Reason = stalledWorktreeReason(unlanded, row.DirtyFiles)
 		row.NextAction = "unlanded work — check lane liveness before salvage or keep"
 	default:
-		row.Class = WorktreeClassUnknown
-		row.Reason = "inconsistent ground truth — not contained in main yet reports zero unique commits"
-		row.NextAction = "facts unreadable — inspect this worktree manually before any cleanup"
+		// HEAD is not an ancestor of main by SHA, yet every commit it carries is
+		// already upstream by patch-id — the shape a rebased or squashed main
+		// leaves behind. Reading the raw ahead count here is what buried
+		// genuinely-retirable trees under stalled_unlanded and emptied the plan.
+		row.Class = WorktreeClassLandedClean
+		row.Reason = landedByPatchIDReason(landedByPatchID, ahead)
+		row.NextAction = "retire via compound authority worktree-retire (governed)"
 	}
 	// A git lock outranks every retire-eligible next_action: the holder claimed
 	// this checkout, and the Git facts cannot tell us why. Annotation only — the
@@ -1001,13 +1019,46 @@ func livenessReason(obs WorktreeLivenessObservation, recent bool, age *int64) st
 	}
 }
 
-func stalledWorktreeReason(ahead, dirty int) string {
+// stalledWorktreeReason counts by patch-id, not by SHA. A branch that main
+// absorbed by rebase or squash reads hundreds of commits "ahead" while holding
+// zero unlanded patches, so quoting the SHA count here reported work at risk
+// that no longer exists.
+func stalledWorktreeReason(unlanded, dirty int) string {
 	switch {
-	case ahead > 0 && dirty > 0:
-		return fmt.Sprintf("holds %d commit(s) not in main and %d uncommitted file(s)", ahead, dirty)
-	case ahead > 0:
-		return fmt.Sprintf("holds %d commit(s) not contained in main", ahead)
+	case unlanded > 0 && dirty > 0:
+		return fmt.Sprintf("holds %d commit(s) whose patch is not in main and %d uncommitted file(s)", unlanded, dirty)
+	case unlanded > 0:
+		return fmt.Sprintf("holds %d commit(s) whose patch is not in main", unlanded)
 	default:
 		return fmt.Sprintf("holds %d uncommitted file(s) not saved anywhere", dirty)
 	}
+}
+
+// landedByPatchIDReason names the case raw SHA counting gets wrong: HEAD is not
+// an ancestor of main, yet every patch it carries is already upstream. Both
+// numbers are quoted so the operator can see the SHA count is the misleading one.
+func landedByPatchIDReason(landed, ahead int) string {
+	return fmt.Sprintf("every commit already in main by patch-id (%d landed by patch-id, %d ahead by SHA after rebase/squash) and working tree clean — nothing unlanded here", landed, ahead)
+}
+
+// worktreeUnlandedCount is the load-bearing "is there work here" read: `git
+// cherry` compares patch-ids, so a commit main absorbed under a different SHA
+// counts as landed ("-") rather than unique ("+"). It returns the raw Git error
+// unwrapped so each caller can name its own failure; callers MUST fail closed on
+// error, because an unreadable count that defaults to zero would classify a tree
+// holding real work as retirable.
+func worktreeUnlandedCount(ctx context.Context, git WorktreeRetirementGit, root, upstream, head string) (unlanded, landed int, err error) {
+	out, err := git.Run(ctx, root, "cherry", upstream, head)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(strings.TrimSpace(line), "+"):
+			unlanded++
+		case strings.HasPrefix(strings.TrimSpace(line), "-"):
+			landed++
+		}
+	}
+	return unlanded, landed, nil
 }
