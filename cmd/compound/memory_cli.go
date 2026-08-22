@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -212,9 +213,10 @@ func cmdMemory(args []string) {
 			}
 			limit = n
 		}
+		kindFilter := flag("--kind")
 		report, err := store.ListCandidates(time.Now(), mem.CandidateListOptions{
 			State:           flag("--state"),
-			Kind:            flag("--kind"),
+			Kind:            kindFilter,
 			Limit:           limit,
 			IncludeEvidence: has("--include-evidence"),
 		})
@@ -227,6 +229,16 @@ func cmdMemory(args []string) {
 		if report.Counts.Truncated {
 			fmt.Printf("# showing %d of %d matched (--limit %d); raise --limit to see the rest\n",
 				report.Counts.Returned, report.Counts.Matched, limit)
+		}
+		// Falsifier 3 (packet work_3c70f011f6ba): when --kind names a candidate
+		// kind whose adjudication door is elsewhere (e.g. capability_observation
+		// is consumed via `compound capability consume`), a bare "0/N" is a
+		// silent miss. Surface a one-line pointer to the owning door so the
+		// operator knows the kind exists, just not in this namespace.
+		if kindFilter != "" {
+			if msg := memoryCandidatesCrossKindPointer(kindFilter); msg != "" {
+				fmt.Println(msg)
+			}
 		}
 		for _, item := range report.Items {
 			line := fmt.Sprintf("%s %s %s.%s = %s", item.ID, item.State, item.Entity, item.Predicate, item.Object)
@@ -378,6 +390,15 @@ func cmdMemory(args []string) {
 			fmt.Fprintln(os.Stderr, "usage: --confirmation-ref is valid only with --verdict promote")
 			os.Exit(2)
 		}
+		// Empty/missing id → usage class (exit 2) BEFORE we ever reach the store.
+		// Without this guard, firstPos("") flows into store.AdjudicateAsOperator
+		// → getCandidate("") → readJSON("<home>/inbox/memory-candidates/.json")
+		// → "not found: .json" — a nonsense error the operator cannot act on.
+		// See packet work_3c70f011f6ba falsifier 1.
+		if candidateID == "" {
+			fmt.Fprintln(os.Stderr, memoryUsage("adjudicate"))
+			os.Exit(2)
+		}
 		var res mem.AdjudicateResult
 		if confirmationRef != "" {
 			res, err = store.AdjudicateExplicitConfirmation(candidateID, confirmationRef, flag("--work"), time.Now())
@@ -389,7 +410,19 @@ func cmdMemory(args []string) {
 			// evidence. See mem.Candidate.AdjudicatedBy.
 			res, err = store.AdjudicateAsOperator(candidateID, verdict, flag("--work"), flag("--by"), time.Now())
 		}
-		die(err)
+		if err != nil {
+			// The store surfaces "not found: <id>.json" for any unresolvable
+			// candidate id (readJSON at internal/mem/mem.go encodes the basename
+			// of the missing path). We can't import a sentinel without touching
+			// internal/, so we match the exact prefix the store emits today and
+			// wrap it with the searched location + cross-namespace door hints.
+			// See packet work_3c70f011f6ba falsifier 2.
+			if msg := err.Error(); strings.HasPrefix(msg, "not found: ") {
+				memoryAdjudicateUnknownID(candidateID, msg)
+				return
+			}
+			die(err)
+		}
 		// Loop piece 2/4 (work_57f80593eb2d): a freshly promoted Claim becomes
 		// a validated_by edge on the matching capability-graph node so the
 		// next orient offer scoring (Surface) re-orders matching offers by it.
@@ -794,6 +827,94 @@ func cmdMemory(args []string) {
 	default:
 		fmt.Fprintln(os.Stderr, memoryUsage(""))
 		os.Exit(2)
+	}
+}
+
+// memoryAdjudicateUnknownID is the operator-facing verb handler for the
+// "operator asked to adjudicate an id that does not resolve in the memory
+// candidate inbox" error class. The store surfaces this as
+// "not found: <id>.json" from readJSON (internal/mem/mem.go) when neither
+// the explicit-confirmation nor the operator-ratification path can resolve
+// the id. The operator most commonly hits this when an observation-side
+// producer (e.g. `compound source observe`) minted a `src_cand_*` id into
+// a different inbox — capability_observation lands in
+// inbox/capability-observations and is consumed via `compound capability
+// consume`. The CLI surface area is the only seam we can fix without
+// touching internal/ (per packet work_3c70f011f6ba hard boundaries).
+//
+// The output names the searched inbox dir, prints the owning door for the
+// most common misroute (capability_observation), and points at
+// `compound memory candidates` as the lookup aid. We deliberately keep the
+// exit code at 1 (operator-facing fail, not usage class) — see packet
+// falsifier 2.
+func memoryAdjudicateUnknownID(id, storeErr string) {
+	dir := filepath.Join("$COMPOUND_HOME", candidates.InboxDir(candidates.Memory))
+	fmt.Fprintf(os.Stderr, "error: %s\n", storeErr)
+	fmt.Fprintf(os.Stderr, "  searched: %s/%s.json\n", dir, id)
+	fmt.Fprintf(os.Stderr, "  try: `compound memory candidates --state proposed` to list current ids\n")
+	if hint := memoryCandidatesCrossKindPointer(idFromPrefix(id)); hint != "" {
+		fmt.Fprintf(os.Stderr, "  note: %s\n", hint)
+	} else {
+		fmt.Fprintf(os.Stderr, "  note: ids minted by other producers (e.g. `compound source observe` -> `src_cand_*`) live in other inboxes; run `compound memory candidates` with no --kind for the cross-namespace list footer\n")
+	}
+	os.Exit(1)
+}
+
+// memoryCandidatesCrossKindPointer returns a one-line pointer to the owning
+// adjudication door when kind identifies a candidate whose adjudication
+// happens outside the memory namespace. Returns "" when kind is the memory
+// kind itself or unknown (no hint is better than a misleading one).
+//
+// This is the operator's aid for falsifier 3: a `--kind capability_observation`
+// filter against the memory inbox always reports 0/N — the kind is real,
+// it just doesn't live here. We never refuse the request; we surface the
+// pointer and let the listing print.
+//
+// The candidates.Spec.Consumer field is sometimes a Go symbol (e.g.
+// "capgraph.Consume"); consumers at the CLI surface translate it to the
+// operator-facing command. The candidateKindDoorTranslations table covers
+// only those symbol forms we have actually observed in the spec table
+// today — a fresh entry is cheap to add when another arrives.
+func memoryCandidatesCrossKindPointer(kind string) string {
+	kind = strings.TrimSpace(kind)
+	if kind == "" || string(candidates.Memory) == kind {
+		return ""
+	}
+	spec, ok := candidates.SpecFor(candidates.Kind(kind))
+	if !ok {
+		return ""
+	}
+	if spec.InboxDir == candidates.InboxDir(candidates.Memory) {
+		return "" // same inbox, no cross-namespace hint needed
+	}
+	return fmt.Sprintf("# --kind %s is adjudicated via %s (inbox: %s, %d verdict(s) allowed)", kind, candidateDoorCommand(spec.Consumer), spec.InboxDir, len(spec.Verdicts))
+}
+
+// candidateKindDoorTranslations maps the (currently-symbol) Consumer values
+// from candidates.Spec to the operator-facing CLI command. Kept narrow on
+// purpose — every entry has to be tied to a known producer elsewhere in the
+// codebase; the table failing open to spec.Consumer keeps an unknown
+// symbol honest (the operator gets the string we have, not a guess).
+func candidateDoorCommand(consumer string) string {
+	switch consumer {
+	case "capgraph.Consume":
+		return "compound capability consume"
+	default:
+		return consumer
+	}
+}
+
+// idFromPrefix is a best-effort shard extractor: when the operator typed
+// `memory adjudicate src_cand_xyz`, we hand back `capability_observation`
+// so the cross-kind pointer can match the right door. The mapping below is
+// intentionally narrow (one entry per documented producer prefix); a miss
+// returns "" and the helper falls back to the generic-looking message.
+func idFromPrefix(id string) string {
+	switch {
+	case strings.HasPrefix(id, "src_cand_"):
+		return string(candidates.CapabilityObs)
+	default:
+		return ""
 	}
 }
 
