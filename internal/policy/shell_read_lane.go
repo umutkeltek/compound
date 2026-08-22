@@ -269,6 +269,9 @@ func classifyShellAction(
 		if shellSegmentOperatorGated(segment, cwd) {
 			return shellClassificationFor(classification, shellClassOperatorGated)
 		}
+		if shellSegmentCapturesWorkInProgress(segment, cwd) {
+			classification.CapturesWorkInProgress = true
+		}
 	}
 	if len(segments) == 1 {
 		if shellExistingRemotePush(segments[0]) {

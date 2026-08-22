@@ -72,6 +72,9 @@ type ActionClassification struct {
 	// OperatorGated marks a shape whose hold no autonomy envelope may clear.
 	// See operator_gated_shell.go for the roster and why each entry is on it.
 	OperatorGated bool
+	// CapturesWorkInProgress marks a shape that commits, stages, stashes, or
+	// destroys working-tree changes. See wip_capture_shell.go.
+	CapturesWorkInProgress bool
 }
 
 type ActionBinding struct {
@@ -261,6 +264,8 @@ func MonitorToolAction(request ToolActionRequest, cfg Config, now time.Time) Mon
 		Reversibility:  classification.Reversibility,
 		BlastRadius:    classification.BlastRadius,
 		RollbackPlan:   defaultActionRollback(classification),
+
+		CapturesWorkInProgress: classification.CapturesWorkInProgress,
 	}
 
 	decision := Evaluate(intent, cfg, now)

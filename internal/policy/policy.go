@@ -205,7 +205,7 @@ func EvaluateWithContext(ai envelope.ActionIntent, cfg Config, ctx EvaluationCon
 	// cleared action, which keeps "context only ever raises" true.
 	pd = applyAutonomyEnvelope(pd, ai, cfg, now)
 	if ctx.SourceControl != nil {
-		pd = applySourceControlContext(pd, ai, *ctx.SourceControl, now)
+		pd = applySourceControlContext(pd, ai, cfg, *ctx.SourceControl, now)
 	}
 	if ctx.Placement != nil {
 		pd = applyPlacementGuardContext(pd, ai, cfg, *ctx.Placement, now)
@@ -332,7 +332,7 @@ func grantObligations(ai envelope.ActionIntent, cfg Config) []string {
 	return obligations
 }
 
-func applySourceControlContext(pd envelope.PolicyDecision, ai envelope.ActionIntent, sc SourceControlContext, now time.Time) envelope.PolicyDecision {
+func applySourceControlContext(pd envelope.PolicyDecision, ai envelope.ActionIntent, cfg Config, sc SourceControlContext, now time.Time) envelope.PolicyDecision {
 	if len(sc.EvidenceRefs) > 0 {
 		pd.EvidenceRefs = mergeStrings(pd.EvidenceRefs, sc.EvidenceRefs...)
 	}
@@ -354,6 +354,21 @@ func applySourceControlContext(pd envelope.PolicyDecision, ai envelope.ActionInt
 		return pd
 	}
 	if !sc.SessionOwnershipKnown && targetStatus == "clean" {
+		return pd
+	}
+	// Inside an in-force autonomy envelope the foreign-dirty rule narrows from
+	// "the repo has unowned changes" to "this action would capture or destroy
+	// them". The old rule keyed on the STATE OF THE REPO rather than on what the
+	// action touches, so an operator carrying work in progress across fifteen
+	// repositories had every lane held on `git fetch`, on a test run, and on an
+	// install -- commands that cannot alter a working tree at all. A hold that
+	// fires where the harm is impossible is a broader gate, not a narrower one,
+	// and it is what made this read as friction rather than protection. The
+	// capturing shapes (see wip_capture_shell.go) still hold, unchanged.
+	if autonomyEnvelopeCovers(ai, cfg, now) && !intentCapturesForeignWorkInProgress(ai, sc) {
+		pd.Reasons = append(pd.Reasons, fmt.Sprintf(
+			"%d foreign dirty source-control path(s) present, but this action neither captures nor destroys working-tree changes; autonomy envelope %s leaves the dirty escalation off",
+			sc.SessionForeignChangedPaths, AutonomyLevelFullProjectScope))
 		return pd
 	}
 	entity := strings.TrimSpace(sc.EntityRef)

@@ -210,3 +210,46 @@ func shellTargetPath(classification ActionClassification, cwd string) string {
 	}
 	return filepath.Clean(cwd)
 }
+
+// autonomyEnvelopeCovers reports whether the operator's envelope is in force
+// FOR THIS INTENT: L3 with a named authority, a grant drawn over the intent's
+// path, no forbidden path, and no non-clearable floor. It is the same test
+// applyAutonomyEnvelope runs, factored out so the source-control gate narrows
+// on exactly the same condition rather than on a second, drifting copy of it.
+func autonomyEnvelopeCovers(ai envelope.ActionIntent, cfg Config, now time.Time) bool {
+	if !autonomyEnvelopeInForce(cfg) || autonomyEnvelopeBlocked(ai) {
+		return false
+	}
+	path := strings.TrimSpace(ai.Target.Path)
+	if path == "" {
+		return false
+	}
+	if _, forbidden := matchForbidden(cfg.ForbiddenPaths, path); forbidden {
+		return false
+	}
+	_, ok := autonomyEnvelopeGrant(ai, cfg, now)
+	return ok
+}
+
+// intentCapturesForeignWorkInProgress reports whether this action could record
+// or destroy uncommitted changes it does not own.
+//
+// The shell answer comes from the command shape, never from target_status: a
+// shell intent's target path is the DIRECTORY it runs in, so "target dirty"
+// only ever means "something under here is modified" -- it says nothing about
+// whether this command touches it. Reading it as a per-action signal is exactly
+// the conflation that held every command in a dirty repo.
+//
+// The file answer is the opposite: a write names the file it lands on, so the
+// question is simply whether THAT file carries changes. Anything the boundary
+// cannot resolve to a clean file stays held.
+func intentCapturesForeignWorkInProgress(ai envelope.ActionIntent, sc SourceControlContext) bool {
+	if ai.CapturesWorkInProgress {
+		return true
+	}
+	switch strings.TrimSpace(ai.Target.Kind) {
+	case "command", "session":
+		return false
+	}
+	return sourceControlTargetStatus(ai, sc) != "clean"
+}

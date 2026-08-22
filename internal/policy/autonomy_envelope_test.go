@@ -457,10 +457,32 @@ func TestAutonomyEnvelopeLeavesContextFreeToRaise(t *testing.T) {
 	if pd := Evaluate(ai, cfg, envelopeNow()); !Allowed(pd) {
 		t.Fatalf("baseline outcome=%q, want the envelope to clear it first", pd.Outcome)
 	}
-	raised := EvaluateWithContext(ai, cfg, EvaluationContext{
-		SourceControl: &SourceControlContext{Status: "dirty", GitRoot: scope, ChangedPaths: 3},
+	// The escalating observation has to be one that actually applies to this
+	// action. A dirty repo alone no longer escalates a command that cannot touch
+	// a working tree (see wip_capture_shell.go) -- so the intent below is marked
+	// as capturing, which is the case that still re-escalates. The invariant
+	// under test is unchanged: context runs AFTER the envelope and can raise.
+	capturing := ai
+	capturing.CapturesWorkInProgress = true
+	raised := EvaluateWithContext(capturing, cfg, EvaluationContext{
+		SourceControl: &SourceControlContext{
+			Status: "dirty", GitRoot: scope, ChangedPaths: 3,
+			SessionOwnershipKnown: true, SessionForeignChangedPaths: 3,
+		},
 	}, envelopeNow())
 	if Allowed(raised) {
 		t.Fatalf("outcome=%q; live context must still be able to raise caution on a cleared action", raised.Outcome)
+	}
+
+	// And a placement miss, which has nothing to do with working-tree state,
+	// must still raise on the ordinary (non-capturing) intent.
+	placement := EvaluateWithContext(ai, cfg, EvaluationContext{
+		Placement: &PlacementGuardContext{
+			Mode: "block", Confidence: "block", OwnerRef: "owner://elsewhere",
+			TargetRef: filepath.Join(scope, "repo"), Reason: "wrong owner",
+		},
+	}, envelopeNow())
+	if Allowed(placement) {
+		t.Fatalf("outcome=%q; a placement block must still raise on a cleared action", placement.Outcome)
 	}
 }

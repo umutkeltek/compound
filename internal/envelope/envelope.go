@@ -1188,6 +1188,12 @@ type ActionIntent struct {
 	SchemaRevision       string          `json:"schema_revision,omitempty"`
 	SecurityFloorOutcome string          `json:"security_floor_outcome,omitempty"`
 	SecurityReasons      []string        `json:"security_reasons,omitempty"`
+	// CapturesWorkInProgress marks an action that would COMMIT, STAGE, STASH, or
+	// DESTROY uncommitted working-tree changes rather than merely run beside
+	// them. The source-control gate uses it to tell the actions a foreign dirty
+	// path is actually at risk from apart from the ones that just happen to run
+	// in the same repository.
+	CapturesWorkInProgress bool `json:"captures_work_in_progress,omitempty"`
 	MutationClass        string          `json:"mutation_class"`
 	Reversibility        string          `json:"reversibility"`
 	BlastRadius          string          `json:"blast_radius,omitempty"`
