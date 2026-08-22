@@ -154,6 +154,9 @@ func BuildSourceManifest(sourceFamily string, paths []string, now time.Time) (So
 	if len(paths) == 0 {
 		return SourceManifest{}, fmt.Errorf("at least one source path required")
 	}
+	if err := validateUniqueSourceManifestPaths(paths); err != nil {
+		return SourceManifest{}, err
+	}
 	if now.IsZero() {
 		now = time.Now()
 	}

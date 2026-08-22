@@ -67,8 +67,10 @@ func cmdSource(args []string) {
 	}
 }
 
+const sourceManifestCreateUsage = "usage: compound source manifest-create --family <id> ((<source>... | --source-dir <dir>) [--source-in-place] | --from-export <export.json> [--dump <dump>]) [--json]"
+
 func sourceUsage() string {
-	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json> [--dump <dump>]) [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-advance <family> --to <state> --work <id> --by <actor> --proof <gate>=<ref>... [--confirm] [--json] | manifest-drilldown <family> --item <id> [--json] | manifest-materialize <family> --item <id> --target <path> [--json] | manifest-materialize-dump <family> --target <path> [--json] | canon-observe --family <id> [--file <path>=<node-id> ...] [--cause-class repair|retire|accept|invalidate] [--caused-by <ref> ...] [--next-consumer <who>] [--json] | change-stream-observe --intake <intake.json> [--json] | inventory-observe --intake <intake.json> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
+	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | " + strings.TrimPrefix(sourceManifestCreateUsage, "usage: compound source ") + " | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-advance <family> --to <state> --work <id> --by <actor> --proof <gate>=<ref>... [--confirm] [--json] | manifest-drilldown <family> --item <id> [--json] | manifest-materialize <family> --item <id> --target <path> [--json] | manifest-materialize-dump <family> --target <path> [--json] | canon-observe --family <id> [--file <path>=<node-id> ...] [--cause-class repair|retire|accept|invalidate] [--caused-by <ref> ...] [--next-consumer <who>] [--json] | change-stream-observe --intake <intake.json> [--json] | inventory-observe --intake <intake.json> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
 }
 
 func cmdSourceObserve(args []string) {
@@ -377,10 +379,12 @@ func cmdSourceManifestCreate(args []string) {
 	family := ""
 	fromExport := ""
 	dumpPath := ""
+	sourceDir := ""
+	sourceDirSet := false
 	sourceInPlace := false
 	jsonOut := false
 	var paths []string
-	usage := "usage: compound source manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json> [--dump <dump>]) [--json]"
+	usage := sourceManifestCreateUsage
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
@@ -401,6 +405,14 @@ func cmdSourceManifestCreate(args []string) {
 			}
 			fromExport = args[i+1]
 			i++
+		case "--source-dir":
+			if i+1 >= len(args) || sourceDirSet {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			sourceDir = args[i+1]
+			sourceDirSet = true
+			i++
 		case "--dump":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, usage)
@@ -420,8 +432,20 @@ func cmdSourceManifestCreate(args []string) {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
+	if sourceDirSet && strings.TrimSpace(sourceDir) == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
 	if strings.TrimSpace(fromExport) != "" && len(paths) > 0 {
 		fmt.Fprintln(os.Stderr, "source manifest-create: use either --from-export or positional sources, not both")
+		os.Exit(2)
+	}
+	if strings.TrimSpace(fromExport) != "" && sourceDirSet {
+		fmt.Fprintln(os.Stderr, "source manifest-create: use either --from-export or --source-dir, not both")
+		os.Exit(2)
+	}
+	if sourceDirSet && len(paths) > 0 {
+		fmt.Fprintln(os.Stderr, "source manifest-create: use either --source-dir or positional sources, not both")
 		os.Exit(2)
 	}
 	if strings.TrimSpace(fromExport) != "" && sourceInPlace {
@@ -432,9 +456,17 @@ func cmdSourceManifestCreate(args []string) {
 		fmt.Fprintln(os.Stderr, "source manifest-create: --dump requires --from-export")
 		os.Exit(2)
 	}
-	if strings.TrimSpace(fromExport) == "" && len(paths) == 0 {
+	if strings.TrimSpace(fromExport) == "" && !sourceDirSet && len(paths) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
+	}
+	if sourceDirSet {
+		enumerated, err := sourceobs.EnumerateSourceManifestDirectory(sourceDir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "source manifest-create:", err)
+			os.Exit(1)
+		}
+		paths = enumerated
 	}
 	homePath, err := home.Resolve("")
 	if err != nil {
