@@ -1662,6 +1662,7 @@ func runHookCommand(args []string) int {
 			failClosed := res
 			failClosed.ContextOutput = ""
 			printJSON(liveHookResponseWithEnforcement(
+				deps.Registry,
 				parsed.Harness,
 				parsed.HookName,
 				failClosed,
@@ -1683,6 +1684,7 @@ func runHookCommand(args []string) int {
 	}
 	if parsed.Live {
 		printJSON(liveHookResponseWithEnforcement(
+			deps.Registry,
 			parsed.Harness,
 			parsed.HookName,
 			res,
@@ -1743,7 +1745,7 @@ func runHookCommandWithoutHome(parsed hookCommandArgs, now time.Time, compatibil
 		return hookRuntimeErrorExit(parsed)
 	}
 	if parsed.Live {
-		printJSON(liveHookResponseWithEnforcement(parsed.Harness, parsed.HookName, res, parsed.Enforce, nil))
+		printJSON(liveHookResponseWithEnforcement(harness.DefaultRegistry(), parsed.Harness, parsed.HookName, res, parsed.Enforce, nil))
 	} else {
 		printJSON(res)
 	}

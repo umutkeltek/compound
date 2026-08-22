@@ -16,6 +16,7 @@ import (
 	hookfixtures "compound/fixtures/hooks"
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
+	"compound/internal/harness"
 	"compound/internal/harvest"
 	"compound/internal/hook"
 	"compound/internal/hookplan"
@@ -962,6 +963,7 @@ func liveMonitoredAction(
 		Harness:            normalizeLiveHarness(harnessName),
 		Tool:               strings.TrimSpace(in.ToolName),
 		Arguments:          arguments,
+		Cwd:                strings.TrimSpace(in.Cwd),
 		ToolSchemaRevision: schemaRevision,
 		Sources:            append([]envelope.SourceEnvelope{}, in.SourceEnvelopes...),
 		ClassifierRisk:     in.ClassifierRisk,
@@ -1081,10 +1083,11 @@ func liveHookResponse(
 	res hook.Result,
 	stopOutcome *liveStopTriageOutcome,
 ) any {
-	return liveHookResponseWithEnforcement(harnessName, hookName, res, true, stopOutcome)
+	return liveHookResponseWithEnforcement(harness.DefaultRegistry(), harnessName, hookName, res, true, stopOutcome)
 }
 
 func liveHookResponseWithEnforcement(
+	registry harness.Registry,
 	harnessName, hookName string,
 	res hook.Result,
 	enforce bool,
@@ -1104,7 +1107,7 @@ func liveHookResponseWithEnforcement(
 				AdditionalContext: res.ContextOutput,
 			}
 			if enforce {
-				decision, reason := livePermissionDecision(res)
+				decision, reason := livePermissionDecision(registry, harnessName, res)
 				if decision == "" {
 					return claudeLiveHookResponse{HookSpecificOutput: out}
 				}
@@ -1135,7 +1138,7 @@ func liveHookResponseWithEnforcement(
 		case "user-prompt-submit":
 			out.AdditionalContext = res.ContextOutput
 		case "pre-tool-use":
-			if decision, reason := livePermissionDecision(res); decision != "" {
+			if decision, reason := livePermissionDecision(registry, harnessName, res); decision != "" {
 				out.PermissionDecision = decision
 				out.PermissionReason = reason
 			}
@@ -1156,7 +1159,7 @@ func liveHookResponseWithEnforcement(
 		out.AdditionalContext = res.ContextOutput
 	case "pre-tool-use":
 		if enforce {
-			decision, reason := livePermissionDecision(res)
+			decision, reason := livePermissionDecision(registry, harnessName, res)
 			if decision == "" {
 				return claudeLiveHookResponse{HookSpecificOutput: out}
 			}
@@ -1264,8 +1267,8 @@ func liveProducedKinds(produced []envelope.Envelope) []string {
 	return out
 }
 
-func livePermissionDecision(res hook.Result) (string, string) {
-	return hook.NativePermissionDecision(res)
+func livePermissionDecision(registry harness.Registry, harnessName string, res hook.Result) (string, string) {
+	return hook.NativePermissionDecisionForHarness(res, registry, normalizeLiveHarness(harnessName))
 }
 
 func hookEnumName(hookName string) string {

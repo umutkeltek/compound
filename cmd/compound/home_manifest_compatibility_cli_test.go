@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/harness"
 	"compound/internal/home"
 )
 
@@ -402,9 +403,24 @@ func TestLivePreToolUseCompatibilityFailureHoldsRoutineWrite(t *testing.T) {
 							t.Fatalf("observation-only hook exit=%d decision=%q, want 0 and no native decision: %s", exitCode, decision, out)
 						}
 					} else {
-						wantExit := map[string]int{"ask": 3, "deny": 4}[decision]
-						if wantExit == 0 || exitCode != wantExit {
-							t.Fatalf("enforced hook exit=%d decision=%q, want ask/3 or deny/4: %s", exitCode, decision, out)
+						// Two channels, two facts. The EXIT CODE reports the governed
+						// outcome (hold=3, deny=4) and is what tells an auditor whether
+						// a lane was held -- recoverable through approval -- or denied.
+						// The JSON permissionDecision is the harness-facing PROJECTION,
+						// and posture decides it: a hold reaches an operator session as
+						// `ask` and an unattended lane as `deny`, because a lane has
+						// nobody to answer a prompt. This assertion used to derive one
+						// from the other, which only worked while they were the same
+						// fact.
+						wantDecision := map[string]string{
+							harness.PostureInteractive: "ask",
+							harness.PostureUnattended:  "deny",
+						}[harness.DefaultRegistry().Posture(harnessName)]
+						if decision != wantDecision {
+							t.Fatalf("enforced hook decision=%q for %s, want %q: %s", decision, harnessName, wantDecision, out)
+						}
+						if exitCode != 3 && exitCode != 4 {
+							t.Fatalf("enforced hook exit=%d, want the governed gate code 3 (hold) or 4 (deny): %s", exitCode, out)
 						}
 					}
 

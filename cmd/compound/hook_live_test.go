@@ -19,6 +19,7 @@ import (
 	"compound/internal/capgraph"
 	"compound/internal/contract"
 	"compound/internal/envelope"
+	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/hook"
 	"compound/internal/hookplan"
@@ -2397,7 +2398,11 @@ func TestNativeApprovalPlanReasonRequiresCanonicalEvidenceRef(t *testing.T) {
 				Reasons:        []string{ordinaryReason, tt.planReason},
 				Obligations:    []string{},
 			}
-			permission, reason := livePermissionDecision(hook.Result{
+			// claude_code on purpose: this case is about which PROSE reaches the
+			// native adapter, so it needs the interactive posture where a hold
+			// still projects to ask. The unattended projection is covered in
+			// hook_live_autonomy_test.go.
+			permission, reason := livePermissionDecision(harness.DefaultRegistry(), "claude_code", hook.Result{
 				Event:    envelope.HookEvent{Status: "blocked"},
 				Produced: []envelope.Envelope{decision},
 			})
