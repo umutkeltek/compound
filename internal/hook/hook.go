@@ -184,7 +184,32 @@ type Result struct {
 // agent-visible message on purpose: handing a held agent the exact approve
 // command would let it drive its own approval path. The full command remains
 // on the PolicyDecision reasons and evidence refs, the operator-facing surface.
+//
+// The projection is posture-aware. A surviving `hold` becomes `ask` only where
+// a human can answer it; on an unattended lane it becomes `deny` carrying the
+// SAME reason and the SAME approval-request id. See harness.Posture for why the
+// decision itself does not change: an unanswerable prompt is not a stricter
+// gate, it is an outage that reports itself as work in progress.
 func NativePermissionDecision(res Result) (string, string) {
+	return NativePermissionDecisionForPosture(res, harness.PostureInteractive)
+}
+
+// NativePermissionDecisionForHarness resolves the posture from the registry
+// that is already in force for this hook run, then projects. This is the seam
+// live adapters use: they know the harness name, and the registry is the one
+// place that records what that name's posture is.
+func NativePermissionDecisionForHarness(res Result, registry harness.Registry, harnessName string) (string, string) {
+	return NativePermissionDecisionForPosture(res, registry.Posture(harnessName))
+}
+
+// NativePermissionDecisionForPosture is the posture-taking owner. An
+// unrecognized posture resolves through harness.DefaultPosture rather than
+// falling back to `ask`, so a mis-typed posture cannot reintroduce the freeze.
+func NativePermissionDecisionForPosture(res Result, posture string) (string, string) {
+	holdDecision := "ask"
+	if harness.NormalizePosture(posture) == harness.PostureUnattended {
+		holdDecision = "deny"
+	}
 	coordinationDeny := res.CoordinationDelivery != nil &&
 		res.CoordinationDelivery.ExecutionHeld
 	if coordinationDeny {
@@ -214,12 +239,12 @@ func NativePermissionDecision(res Result) (string, string) {
 		}
 		if pd.Outcome == "hold" {
 			if reason := exactApprovalOperatorReviewReason(pd.Reasons, pd.EvidenceRefs); reason != "" {
-				return "ask", operatorActionApprovalFrontierIDSuffix(pd.Reasons, reason)
+				return holdDecision, operatorActionApprovalFrontierIDSuffix(pd.Reasons, reason)
 			}
 		}
 		reason := nativePolicyDecisionReason(pd.Reasons, res.Summary)
 		if pd.Outcome == "hold" {
-			return "ask", reason
+			return holdDecision, reason
 		}
 		return "deny", reason
 	}

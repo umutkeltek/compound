@@ -20,6 +20,26 @@ import (
 
 const RegistryManifestSchemaVersion = "compound.harness_registry.v0.1"
 
+// Posture is whether a human is at the keyboard while this harness runs. It is
+// a registry fact, not a preference: it decides what a governed hold PROJECTS
+// to at the native permission surface.
+//
+// An interactive harness can be asked. An unattended one cannot -- an "ask" on
+// a lane running in a detached pane has no one to answer it, so the lane sits
+// on the prompt until a human happens to look, and every downstream measure of
+// that lane (heartbeat, transcript, run attempt) keeps reporting "running".
+// That is strictly worse than a denial: a denial is a fact the agent can act on
+// (take the alternative, record blocked-with-ticket against the minted approval
+// request), while a silent freeze is an outage that looks like work.
+//
+// So the projection differs while the DECISION does not: the same hold, the
+// same reason, the same approval-request id, delivered as `ask` where someone
+// can answer and `deny` where no one can.
+const (
+	PostureInteractive = "interactive"
+	PostureUnattended  = "unattended"
+)
+
 const OSEntrypointsAdapterID = "compound.os-harness-entrypoints"
 
 // Capabilities is what a harness can verifiably do across the hook lifecycle.
@@ -48,6 +68,12 @@ type Harness struct {
 	Limitations          []string     `json:"limitations"`
 	InjectBudgetMS       int          `json:"inject_budget_ms,omitempty"`
 	Fallback             bool         `json:"fallback,omitempty"` // true when this is the generic stand-in
+
+	// Posture is PostureInteractive or PostureUnattended. Empty resolves through
+	// DefaultPosture, which answers PostureUnattended for anything it does not
+	// recognize: a harness nobody classified is far more likely to be a lane than
+	// a person, and guessing "interactive" is the guess that freezes it.
+	Posture string `json:"posture,omitempty"`
 
 	// ExpectedVersion is the operator-blessed semver for the binary this
 	// harness wraps. Empty means "unpinned" — doctor won't flag drift for
@@ -117,6 +143,7 @@ type ManifestHarness struct {
 	InjectBudgetMS       int                  `json:"inject_budget_ms,omitempty" yaml:"inject_budget_ms,omitempty"`
 	Fallback             bool                 `json:"fallback,omitempty" yaml:"fallback,omitempty"`
 	ExpectedVersion      string               `json:"expected_version,omitempty" yaml:"expected_version,omitempty"`
+	Posture              string               `json:"posture,omitempty" yaml:"posture,omitempty"`
 }
 
 type ManifestCapabilities struct {
@@ -137,6 +164,7 @@ func DefaultRegistry() Registry {
 	return Registry{Harnesses: map[string]Harness{
 		"claude_code": {
 			Name:                 "claude_code",
+			Posture:              PostureInteractive,
 			InstructionMechanism: "settings + hooks + CLAUDE.md",
 			Capabilities: Capabilities{
 				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
@@ -155,6 +183,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_zai": {
 			Name:                 "claude_zai",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Unlike the `_providers` lanes, this one is a FULL Claude profile with
 			// hooks genuinely installed: its settings register SessionStart,
@@ -179,6 +208,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_minimax": {
 			Name:                 "claude_minimax",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// A lane declaration is a conservative FLOOR, not an aspiration. Every hook flag here
 			// used to be true while the lane's settings registered no hooks at all -- the
@@ -219,6 +249,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_qwen": {
 			Name:                 "claude_qwen",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// This is the raise, mirroring claude_minimax: `compound hook install
 			// --harness claude-qwen` (see internal/hookplan/install.go) now genuinely
@@ -249,6 +280,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_zai_full": {
 			Name:                 "claude_zai_full",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Hook flags once sat at zero because this lane's settings registered no
 			// hooks. They do now -- `compound harness capability-drift` observes all five
@@ -271,6 +303,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_neuralwatt": {
 			Name:                 "claude_neuralwatt",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. This lane is a Claude-family launch profile that
 			// was previously absent from the registry; its settings have no
@@ -298,6 +331,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_gpt56_sol_wpcom": {
 			Name:                 "claude_gpt56_sol_wpcom",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. Same floor as claude_neuralwatt: no installed hook
 			// bindings yet, so all hook flags stay false. The next slice installs hooks
@@ -317,6 +351,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_gpt56_sol_wpcom_headroom": {
 			Name:                 "claude_gpt56_sol_wpcom_headroom",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. Same floor as claude_gpt56_sol_wpcom; the
 			// headroom transport (compression on, hosted tool-search off) is a
@@ -336,6 +371,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_gpt": {
 			Name:                 "claude_gpt",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. Same floor as the other new lanes; this one routes
 			// through the strict native Codex OAuth lane (no wpcom, no provider fallback)
@@ -355,6 +391,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_kimi": {
 			Name:                 "claude_kimi",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. Kimi K3 coding plan via rotating OAuth is a
 			// subscription, not API billing; that is captured in the limitations string
@@ -374,6 +411,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_deepseek_flash_api": {
 			Name:                 "claude_deepseek_flash_api",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. Direct DEEPSEEK_API_KEY upstream, falls back to the
 			// NVIDIA Build variant when the direct upstream rejects. The fallback is a
@@ -393,6 +431,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_deepseek_flash_nvidia": {
 			Name:                 "claude_deepseek_flash_nvidia",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. NVIDIA Build free tier, rate-limited; multiple
 			// targets keep the lane alive when a single target rejects. Same hook-floor
@@ -412,6 +451,7 @@ func DefaultRegistry() Registry {
 		},
 		"codex": {
 			Name:                 "codex",
+			Posture:              PostureInteractive,
 			InstructionMechanism: "AGENTS.md + hooks + skills (progressive disclosure)",
 			Capabilities: Capabilities{
 				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
@@ -428,6 +468,7 @@ func DefaultRegistry() Registry {
 		},
 		"hermes": {
 			Name:                 "hermes",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "AGENTS.md + plugin lifecycle hooks + skills + MCP",
 			Capabilities: Capabilities{
 				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
@@ -445,6 +486,7 @@ func DefaultRegistry() Registry {
 		},
 		"opencode": {
 			Name:                 "opencode",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "config instructions + plugins + native skills",
 			Capabilities: Capabilities{
 				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: false,
@@ -463,6 +505,7 @@ func DefaultRegistry() Registry {
 		},
 		"prime_agent": {
 			Name:                 "prime_agent",
+			Posture:              PostureUnattended,
 			InstructionMechanism: "AGENTS.md + system-prompt arg + --no-session headless invocation + structured-IPC mode",
 			// Prime-agent has no SessionStart/UserPromptSubmit/PreToolUse/PostToolUse hook
 			// protocol -- its native hook surface is tool-policy allowlists (`-t/--tools`
@@ -799,6 +842,9 @@ func (m RegistryManifest) Registry() (Registry, error) {
 			InjectBudgetMS:  firstPositive(in.InjectBudgetMS, defaultInjectBudgetMS(name)),
 			Fallback:        in.Fallback,
 			ExpectedVersion: strings.TrimSpace(in.ExpectedVersion),
+			// Resolved here rather than left empty so the manifest-loaded registry
+			// answers the same posture as the built-in one for the same name.
+			Posture: firstNonEmptyString(NormalizePosture(in.Posture), DefaultPosture(name)),
 		}
 	}
 	return Registry{Harnesses: byName}, nil
@@ -813,6 +859,11 @@ func RegistryRevision(reg Registry) string {
 		InjectBudgetMS       int          `json:"inject_budget_ms,omitempty"`
 		Fallback             bool         `json:"fallback,omitempty"`
 		ExpectedVersion      string       `json:"expected_version,omitempty"`
+		// Posture is part of the registry's identity: two registries that differ
+		// only in whether a lane's hold projects to ask or deny are not the same
+		// registry, and a revision that hashed them alike would let a rendered
+		// instruction pack validate against the wrong one.
+		Posture string `json:"posture,omitempty"`
 	}
 	names := reg.Names()
 	snapshot := make([]harnessSnapshot, 0, len(names))
@@ -828,6 +879,7 @@ func RegistryRevision(reg Registry) string {
 			InjectBudgetMS:       h.InjectBudgetMS,
 			Fallback:             h.Fallback,
 			ExpectedVersion:      h.ExpectedVersion,
+			Posture:              reg.Posture(name),
 		})
 	}
 	data, _ := json.Marshal(snapshot)
@@ -892,6 +944,53 @@ func Generic() Harness {
 		InjectBudgetMS:       1000,
 		Fallback:             true,
 	}
+}
+
+// DefaultPosture answers the posture for a harness that did not declare one.
+// Only the two harnesses a human actually sits in front of are interactive:
+// `claude_code` is the operator's own session and `codex` is the interactive
+// CLI. Every other registered name -- the `claude_*` executor lanes,
+// prime_agent, hermes, opencode -- is dispatched into a pane or a subprocess
+// with nobody watching, and so is every name this function has never heard of.
+func DefaultPosture(name string) string {
+	switch canonicalHarnessName(name) {
+	case "claude_code", "codex":
+		return PostureInteractive
+	}
+	return PostureUnattended
+}
+
+// NormalizePosture accepts only the two known values; anything else (including
+// a typo in a manifest) resolves to empty so DefaultPosture decides. A posture
+// the registry cannot read must not silently become "interactive".
+func NormalizePosture(posture string) string {
+	switch strings.ToLower(strings.TrimSpace(posture)) {
+	case PostureInteractive:
+		return PostureInteractive
+	case PostureUnattended:
+		return PostureUnattended
+	}
+	return ""
+}
+
+// Posture returns the posture in force for name: the registry's declaration
+// where it has one, otherwise DefaultPosture.
+func (r Registry) Posture(name string) string {
+	if h, ok := r.Get(name); ok {
+		if posture := NormalizePosture(h.Posture); posture != "" {
+			return posture
+		}
+	}
+	return DefaultPosture(name)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func defaultInjectBudgetMS(name string) int {
