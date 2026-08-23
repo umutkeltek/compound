@@ -35,16 +35,16 @@ func TestStructuredExtractorStripsSystemDerivedPromotionBasis(t *testing.T) {
 			now := time.Date(2026, 7, 9, 9, 0, 0, 0, time.UTC)
 			trace := map[string]any{
 				"candidates": []map[string]any{{
-					"entity":         "project:compound",
-					"predicate":      "envelope_" + basis,
-					"object":         "v",
+					"entity":           "project:compound",
+					"predicate":        "envelope_" + basis,
+					"object":           "v",
 					"observation_date": now.Format(time.RFC3339),
-					"confidence":     0.9,
-					"derivation":     "deterministic",
-					"claim_type":     "decision",
-					"promotion_basis": basis,
+					"confidence":       0.9,
+					"derivation":       "deterministic",
+					"claim_type":       "decision",
+					"promotion_basis":  basis,
 					"source_trace_ref": "t_" + basis,
-					"snippet_hash":    "h_" + basis,
+					"snippet_hash":     "h_" + basis,
 				}},
 				"relations": []any{},
 			}
@@ -206,13 +206,13 @@ func TestStructuredExtractorPreservesExplicitConfirmationBasis(t *testing.T) {
 func TestCaptureExplicitConfirmationPositiveGovernedDoorStillWorks(t *testing.T) {
 	s := newStore(t)
 	seeded := []Candidate{{
-		Entity:     "operator",
-		Predicate:  "preference.communication",
-		Object:     "prefer concise updates",
-		Confidence: 0.9,
-		Derivation: "extracted",
-		ClaimType:  "preference",
-		Qualifiers: map[string]string{"domain": "comm"},
+		Entity:         "operator",
+		Predicate:      "preference.communication",
+		Object:         "prefer concise updates",
+		Confidence:     0.9,
+		Derivation:     "extracted",
+		ClaimType:      "preference",
+		Qualifiers:     map[string]string{"domain": "comm"},
 		PromotionBasis: candidates.BasisExplicitConfirmation,
 		SourceTraceRef: "t_efc_pos",
 		SnippetHash:    "h_efc_pos",
@@ -289,13 +289,13 @@ func TestCaptureDirectDoesNotStripVettedBases(t *testing.T) {
 // alone).
 func TestSystemDerivedPromotionBasisClassifier(t *testing.T) {
 	cases := map[string]bool{
-		candidates.BasisRuntimeProof:                true,
-		candidates.BasisCuratedPage:                 true,
-		candidates.BasisDecisionRecord:              true,
-		candidates.BasisTrustedDeterministic:        true,
-		candidates.BasisExplicitConfirmation:        false, // self-attested
-		"":                                         false,
-		"garbage":                                  false,
+		candidates.BasisRuntimeProof:         true,
+		candidates.BasisCuratedPage:          true,
+		candidates.BasisDecisionRecord:       true,
+		candidates.BasisTrustedDeterministic: true,
+		candidates.BasisExplicitConfirmation: false, // self-attested
+		"":                                   false,
+		"garbage":                            false,
 	}
 	for basis, want := range cases {
 		basis, want := basis, want

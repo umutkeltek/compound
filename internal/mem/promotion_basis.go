@@ -20,12 +20,12 @@ const PromotionBasisStrippedQualifier = "promotion_basis_stripped"
 // mints ONLY server-side via its owning derivation path:
 //
 //   - runtime_proof                → corroboration edges at Adjudicate time
-//                                    (corroborationPromotionBasis).
+//     (corroborationPromotionBasis).
 //   - curated_page                 → knowledge-page import tooling at the
-//                                    page-import door (not via Capture).
+//     page-import door (not via Capture).
 //   - decision_record              → Decisions authority (not via Capture).
 //   - trusted_deterministic_import → a trusted deterministic adapter (not
-//                                    via raw intake).
+//     via raw intake).
 //
 // A raw-intake candidate carrying one of these is the doctrine violation
 // the packet work_2742cffbeb5f closes: "evidence is not truth; a model-
