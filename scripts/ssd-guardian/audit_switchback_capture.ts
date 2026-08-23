@@ -3,21 +3,19 @@
  * audit_switchback_capture.ts — empirical capture-coverage report for Switchback.
  *
  * Cross-references:
- *   1. ~/.switchback/config/switchback.yaml + mode-d.yaml  (configured taps)
+ *   1. ~/.switchback/config/switchback.yaml + mode-d.yaml + omp-tap.yaml (configured taps)
  *   2. ~/.switchback/state/body/index-v2.sqlite             (live capture state)
  *   3. ~/.switchback/state/body/pressure-state.json          (live degradation mode)
- *   4. ~/.codex/config.toml                                  (client base URLs)
+ *   4. ~/.codex/config.toml + ~/.prime/agent/models.json     (client base URLs)
  *   5. live listening ports via lsof                        (runtime topology)
  *
  * Reports, per lane (harness / client / upstream):
  *   - configured: does any active tap cover this path with capture_bodies=true?
  *   - observed:   is the live bodylog recording events for this upstream?
  *   - degraded:   is the PressureController currently in metadata_only mode?
- *   - last_event_at, event_count_24h, body_bytes_24h
  *
- * The operator asked for capture coverage to be verified across all harnesses,
- * models, and providers. Run it after any switchback config change to confirm
- * coverage did not silently regress.
+ * The operator asked for capture coverage across all harnesses/models/providers.
+ * This script is the verification. Run it after any switchback config change.
  *
  * Output: JSON to stdout. --markdown emits a human-readable report.
  */
@@ -33,9 +31,11 @@ const MODE_DASH = process.argv.includes("--markdown");
 
 const SWITCHBACK_YAML = join(HOME, ".switchback/config/switchback.yaml");
 const MODE_D_YAML = join(HOME, ".switchback/config/mode-d.yaml");
+const OMP_TAP_YAML = join(HOME, ".switchback/config/omp-tap.yaml");
 const PRESSURE_STATE = join(HOME, ".switchback/state/body/pressure-state.json");
 const BODY_INDEX = join(HOME, ".switchback/state/body/index-v2.sqlite");
 const CODEX_CONFIG = join(HOME, ".codex/config.toml");
+const PRIME_AGENT_MODELS = join(HOME, ".prime/agent/models.json");
 
 type Tap = { id: string; bind: string; capture_bodies: boolean; upstream: string | undefined };
 type Lane = {
@@ -45,7 +45,7 @@ type Lane = {
   observed_event_count_24h: number;
   observed_body_bytes_24h: number;
   last_event_at: string | null;
-  coverage: "captured" | "metadata_only" | "uncovered";
+  coverage: "captured" | "metadata_only" | "uncovered" | "n/a";
 };
 type Observed = { upstream: string; count_24h: number; bytes_24h: number; last_at_unix_ms: number | null };
 
@@ -78,11 +78,10 @@ function readTaps(path: string): Tap[] {
       current = mId ? { id: mId[1] } : { id: current?.id, bind: mBind?.[1] ?? "" };
       continue;
     }
-    const mBindCont = trimmed.match(/^bind:\s*"?([^"\s]+)"?\s*$/);
-    if (current && mBindCont && !current.bind) current.bind = mBindCont[1];
-    else if (current && trimmed.startsWith("id: ")) current.id = trimmed.slice("id: ".length).trim();
+    if (current && trimmed.startsWith("bind: ")) current.bind = trimmed.slice("bind: ".length).trim().replace(/^"|"$/g, "");
+    else if (current && trimmed.startsWith("id: ")) current.id = trimmed.slice("id: ".length).trim().replace(/^"|"$/g, "");
     else if (current && trimmed.startsWith("capture_bodies: ")) current.capture_bodies = trimmed.slice("capture_bodies: ".length).trim() === "true";
-    else if (current && trimmed.startsWith("upstream: ")) current.upstream = trimmed.slice("upstream: ".length).trim();
+    else if (current && trimmed.startsWith("upstream: ")) current.upstream = trimmed.slice("upstream: ".length).trim().replace(/^"|"$/g, "");
   }
   if (current && current.bind) {
     taps.push({ id: current.id ?? "?", bind: current.bind, capture_bodies: current.capture_bodies ?? false, upstream: current.upstream });
@@ -110,6 +109,16 @@ function readCodexProviderUrl(): string {
   const text = readFileSync(CODEX_CONFIG, "utf8");
   const m = text.match(/^openai_base_url\s*=\s*"([^"]+)"/m);
   return m ? m[1] : "";
+}
+
+function readPrimeAgentBaseUrl(): string {
+  if (!existsSync(PRIME_AGENT_MODELS)) return "";
+  try {
+    const j = JSON.parse(readFileSync(PRIME_AGENT_MODELS, "utf8"));
+    return j?.providers?.switchback?.baseUrl ?? "";
+  } catch {
+    return "";
+  }
 }
 
 function readListeningPorts(): string[] {
@@ -160,7 +169,8 @@ function buildLane(harness: string, clientUrl: string, tapByPort: Map<string, Ta
     }
   }
   let coverage: Lane["coverage"];
-  if (pressure.mode !== "segmented_full_wire") coverage = "metadata_only";
+  if (clientUrl === "n/a") coverage = "n/a";
+  else if (pressure.mode !== "segmented_full_wire") coverage = "metadata_only";
   else if (!tap) coverage = "uncovered";
   else if (!tap.capture_bodies) coverage = "metadata_only";
   else if (count === 0) coverage = "uncovered";
@@ -176,18 +186,26 @@ function buildLane(harness: string, clientUrl: string, tapByPort: Map<string, Ta
   };
 }
 
-const allTaps = [...readTaps(SWITCHBACK_YAML), ...readTaps(MODE_D_YAML)];
+const allTaps = [...readTaps(SWITCHBACK_YAML), ...readTaps(MODE_D_YAML), ...readTaps(OMP_TAP_YAML)];
 const tapByPort = new Map<string, Tap>();
 for (const t of allTaps) tapByPort.set(t.bind, t);
 
 const pressure = readPressureMode();
 const observed = readObserved();
 const codexUrl = readCodexProviderUrl();
+const primeAgentUrl = readPrimeAgentBaseUrl();
 const listening = readListeningPorts();
 
+// Each lane represents one (harness, model/provider combo) → tap → bodylog chain.
 const lanes: Lane[] = [
   buildLane("claude (mode-d)", "127.0.0.1:18780", tapByPort, observed.map, pressure),
+  // Prime-agent routes its switchback calls through this tap (per its
+  // ~/.prime/agent/models.json baseUrl); bodies captured here flow into
+  // bodylog as "switchback/<model>".
+  buildLane("prime-agent (switchback)", primeAgentUrl || "127.0.0.1:18774", tapByPort, observed.map, pressure),
   buildLane("omp (anthropic-tap)", "127.0.0.1:18790", tapByPort, observed.map, pressure),
+  buildLane("claude-tap (bare)", "127.0.0.1:18770", tapByPort, observed.map, pressure),
+  buildLane("codex-tap (bare)", "127.0.0.1:18771", tapByPort, observed.map, pressure),
   buildLane("claude-zai", "127.0.0.1:18772", tapByPort, observed.map, pressure),
   buildLane("claude-zai-direct", "127.0.0.1:18773", tapByPort, observed.map, pressure),
   buildLane("claude-gpt56-ultra", "127.0.0.1:18774", tapByPort, observed.map, pressure),
@@ -201,11 +219,14 @@ const lanes: Lane[] = [
   buildLane("claude-kimi", "127.0.0.1:18784", tapByPort, observed.map, pressure),
   buildLane("claude-deepseek-flash-api", "127.0.0.1:18785", tapByPort, observed.map, pressure),
   buildLane("claude-deepseek-flash-nvidia", "127.0.0.1:18786", tapByPort, observed.map, pressure),
+  // Hermes is the orchestrator; it doesn't make LLM API calls of its own.
+  buildLane("hermes (orchestrator, not an LLM harness)", "n/a", tapByPort, observed.map, pressure),
+  // Codex default headroom direct — bypasses switchback tap entirely.
   buildLane("codex (default headroom)", codexUrl || "n/a", tapByPort, observed.map, pressure),
 ];
 
 const summary = {
-  schema_version: "compound.ssd-guardian.audit_switchback_capture.v1",
+  schema_version: "compound.ssd-guardian.audit_switchback_capture.v2",
   generated_at: new Date().toISOString(),
   pressure_mode: pressure.mode,
   pressure_reasons: pressure.reasons,
@@ -232,7 +253,7 @@ if (MODE_DASH) {
   lines.push(`| Lane | Tap | Capture | 24h events | 24h bytes | Last event | Status |`);
   lines.push(`|---|---|---|---|---|---|---|`);
   for (const l of lanes) {
-    const status = l.coverage === "captured" ? "✓ captured" : l.coverage === "metadata_only" ? "⚠ metadata-only" : "� uncovered";
+    const status = l.coverage === "captured" ? "✓ captured" : l.coverage === "metadata_only" ? "⚠ metadata-only" : l.coverage === "n/a" ? "— n/a" : "✗ uncovered";
     const tap = l.tap ? `${l.tap.id} (${l.tap.bind})` : "—";
     const cap = l.tap ? (l.tap.capture_bodies ? "yes" : "no") : "—";
     lines.push(`| ${l.harness} | ${tap} | ${cap} | ${l.observed_event_count_24h} | ${Math.round(l.observed_body_bytes_24h / 1024 / 1024)} MB | ${l.last_event_at ?? "—"} | ${status} |`);
