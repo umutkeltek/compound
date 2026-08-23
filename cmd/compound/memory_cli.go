@@ -316,7 +316,12 @@ func cmdMemory(args []string) {
 				fmt.Fprintln(os.Stderr, pendingUsage)
 				os.Exit(2)
 			}
-			opts := mem.AdjudicatePendingOptions{Verdict: verdict, WorkID: flag("--work")}
+			// --dry-run short-circuits the per-candidate adjudication so a
+			// 132k-candidate backlog is previewable in seconds, not minutes.
+			// --dry-run is the DEFAULT for the verb: --yes is the only way to
+			// mutate, so a stray script cannot drain the inbox by accident.
+			dryRun := has("--dry-run") || !yes
+			opts := mem.AdjudicatePendingOptions{Verdict: verdict, WorkID: flag("--work"), DryRun: dryRun}
 			report := store.AdjudicatePending(opts, time.Now())
 			if limit > 0 {
 				// report is a single struct, not iterable; --limit is a
