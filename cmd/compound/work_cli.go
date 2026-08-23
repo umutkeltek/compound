@@ -217,7 +217,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work close-plan work_abc123 --outcome completed --move-type outward_delta --dry-run",
 	},
 	"close": {
-		Usage:   "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--steal --reason R]",
+		Usage:   "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--acknowledge-abandoned ratt_X --reason R]... [--steal --reason R]",
 		Example: "compound work close work_abc123 --outcome completed --move-type outward_delta --summary \"shipped\" --changed",
 	},
 	"set-aside": {
