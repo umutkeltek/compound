@@ -1594,12 +1594,21 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 			if !strings.HasPrefix(rid, "ratt_") {
 				return envelope.WorkEnvelope{}, fmt.Errorf("advance RunAttemptIDs contains non-ratt_ id %q (settled in S1; see internal/runattempt.Prefix)", rid)
 			}
-			// WEDGE PREVENTION
-			if err := s.refuseRunAttemptReAttachMismatch(w, rid, in.To); err != nil {
+			// WEDGE PREVENTION: if a prior lifecycle event already attached this
+			// ratt_, do NOT attach it again — the close-time authority gate builds
+			// one (act_, pol_) pair per attaching event, and a second attach with a
+			// fresh pair wedges the envelope forever (lived 2026-08-23,
+			// work_1d968c3f0522). The attach is idempotent-dropped (the advance
+			// itself still proceeds: same run, no new information); a genuinely new
+			// execution must mint a fresh ratt_ via runattempt.Mint.
+			already, err := s.runAttemptAlreadyAttached(w, rid)
+			if err != nil {
 				return envelope.WorkEnvelope{}, err
 			}
+			if !already {
+				attached = append(attached, rid)
+			}
 			w.RunAttemptIDs = mergeUnique(w.RunAttemptIDs, []string{rid})
-			attached = append(attached, rid)
 		}
 	}
 	if in.ArtifactID != "" {
@@ -2113,44 +2122,28 @@ func attachedHas(values []string, want string) bool {
 	return slices.Contains(values, want)
 }
 
-// refuseRunAttemptReAttachMismatch enforces the wedge-prevention invariant:
-// the SAME ratt_ id may appear in AT MOST ONE lifecycle event per target
-// state. The lived 2026-08-23 wedge (work_1d968c3f0522) wrote two events
-// with `to=running` that both attached the same ratt_ -- the close-time
-// authority gate then built a pair-set of size 2 and refused forever.
-//
-// The legitimate claim -> running flow is structurally distinct: the claim
-// event has `to=claimed` and the advance event has `to=running`, so the
-// same ratt_ can appear in both events WITHOUT conflict. Same-state
-// re-attach (e.g. same-state claim repair: from=claimed, to=claimed)
-// reuses the ratt_ under the same `to` state and is also allowed IF AND
-// ONLY IF the existing attaching event uses the SAME (act_, pol_) pair
-// (an idempotent re-link, not a wedge).
-func (s *Store) refuseRunAttemptReAttachMismatch(w envelope.WorkEnvelope, rattID, currentTo string) error {
+// runAttemptAlreadyAttached reports whether any prior lifecycle event for this
+// work already attached the given ratt_ id. The close-time authority gate builds
+// one (act_, pol_) pair per attaching event, so a second attach of the same id —
+// under ANY target state, since the gate does not scope by state — wedges the
+// envelope (lived 2026-08-23, work_1d968c3f0522). Callers must treat a second
+// attach as an idempotent no-op (drop the attach, keep the advance), never write
+// it. The claim -> running flow is structurally distinct because the claim
+// reservation and the execution attempts carry DIFFERENT ratt_ ids.
+func (s *Store) runAttemptAlreadyAttached(w envelope.WorkEnvelope, rattID string) (bool, error) {
 	if rattID == "" || !strings.HasPrefix(rattID, "ratt_") {
-		return nil
+		return false, nil
 	}
 	events, err := s.eventsFor(w.ID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, event := range events {
-		if !attachedHas(event.Attached, rattID) {
-			continue
+		if attachedHas(event.Attached, rattID) {
+			return true, nil
 		}
-		if event.To != currentTo {
-			continue
-		}
-		return fmt.Errorf(
-			"runattempt %s already attached to work %s by lifecycle event at %s (note=%q) with to=%q; "+
-				"refusing to write a second attaching event with the same to=%q "+
-				"because that creates the runattempt-authority wedge (lived 2026-08-23, work_1d968c3f0522). "+
-				"remediation: if this is an idempotent same-state re-link, reuse the SAME (act_, pol_) pair "+
-				"so the close-time gate collapses both events back to one authority; otherwise mint a fresh ratt_ via runattempt.Mint",
-			rattID, w.ID, event.TS, event.Note, event.To, currentTo,
-		)
 	}
-	return nil
+	return false, nil
 }
 
 // resolveRunAttemptAuthority binds one attempt to one exact allowed

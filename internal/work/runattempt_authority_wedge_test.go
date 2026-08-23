@@ -191,13 +191,17 @@ func TestCloseWedgeNamesBothPairsAndRemediation(t *testing.T) {
 	}
 }
 
-// Falsifier 2 (prevention, RED before fix): the SECOND advance that tries
-// to attach an already-attached ratt_ with a DIFFERENT (act_, pol_) pair is
-// REFUSED at advance time, before any state mutation. This is the new
-// behavior — it prevents the wedge from being written in the first place.
+// Falsifier 2 (prevention, RED before fix): the SECOND advance carrying an
+// already-attached ratt_ must NOT write a second attaching event — the
+// attach is idempotent-dropped while the advance itself proceeds (same run,
+// no new information; a genuinely new execution mints a fresh ratt_). The
+// close-time authority gate must see exactly ONE (act_, pol_) pair for the
+// ratt_ afterward. This replaces the original refusal semantics: refusal
+// broke the legitimate idempotent observe-run re-link (lived red: battery
+// go-test, TestObserveRunAfterRunningTerminalizesNormally).
 func TestAdvanceRefusesReattachWithDifferentPair(t *testing.T) {
 	s := newStore(t)
-	w, err := s.Create(CreateInput{Owner: "wedge-prevention", SuccessPredicate: "advance refuses different-pair re-attach"}, fixedNow)
+	w, err := s.Create(CreateInput{Owner: "wedge-prevention", SuccessPredicate: "advance drops duplicate ratt attach idempotently"}, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,8 +209,8 @@ func TestAdvanceRefusesReattachWithDifferentPair(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// First attach: real running advance with ratt_. Establishes a known
-	// (act_, pol_) pair binding for this ratt_.
+	// First attach: real running advance with ratt_. Establishes the single
+	// attaching event + (act_, pol_) pair binding for this ratt_.
 	ra := mintExecutionRunAttempt(t, s, w.ID, fixedNow)
 	first, err := s.Advance(w.ID, AdvanceInput{
 		To: "running", Actor: "codex", RunAttemptIDs: []string{ra.ID},
@@ -214,41 +218,52 @@ func TestAdvanceRefusesReattachWithDifferentPair(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first advance: %v", err)
 	}
-	_ = first.ActionIntentIDs[len(first.ActionIntentIDs)-1]
-	_ = first.PolicyDecisionID
+	firstAction := first.ActionIntentIDs[len(first.ActionIntentIDs)-1]
+	firstPolicy := first.PolicyDecisionID
 
-	// Seed a second event that re-attaches the SAME ratt_ but with a
-	// DIFFERENT (act_, pol_) pair. This is the wedge shape — without
-	// prevention, the SECOND advance (which naturally mints a fresh pair)
-	// would silently write a second attaching event.
-	writeActionIntentJSON(t, s, "act_pretend_second", w.ID, fixedNow.Add(time.Minute))
-	writePolicyDecisionJSON(t, s, "pol_pretend_second", w.ID, "act_pretend_second", fixedNow.Add(time.Minute))
-	writeWedgeLifecycleEvent(t, s, w.ID, "running", "verifying", "hostile re-attach",
-		"act_pretend_second", "pol_pretend_second", ra.ID, fixedNow.Add(2*time.Minute))
-
-	// Now attempt the second advance. With prevention in place, this MUST
-	// fail at advance time (before state mutation), naming the existing
-	// attaching event's pair and the conflict.
-	_, err = s.Advance(w.ID, AdvanceInput{
+	// Second advance: same ratt_, state moves running -> verifying. The
+	// advance must succeed AND its event must NOT re-attach the ratt_.
+	second, err := s.Advance(w.ID, AdvanceInput{
 		To: "verifying", Actor: "codex", RunAttemptIDs: []string{ra.ID},
-	}, fixedNow.Add(3*time.Minute))
-	if err == nil {
-		t.Fatal("advance accepted different-pair re-attach; want refusal")
+	}, fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("second advance must succeed with the duplicate attach dropped: %v", err)
 	}
-	msg := err.Error()
-	for _, want := range []string{ra.ID, "verifying", "hostile re-attach", "remedia"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("refusal error missing %q: %s", want, msg)
-		}
+	if second.State != "verifying" {
+		t.Fatalf("state = %q, want verifying", second.State)
 	}
 
-	// Belt-and-braces: state must NOT have moved past "running".
-	post, err := s.Get(w.ID)
+	// Exactly one lifecycle event attaches the ratt_ (the first advance's).
+	got, err := s.Get(w.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if post.State != "running" {
-		t.Fatalf("state moved to %q despite advance refusal; want running", post.State)
+	events, err := s.eventsFor(got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachEvents := 0
+	for _, event := range events {
+		if attachedHas(event.Attached, ra.ID) {
+			attachEvents++
+		}
+	}
+	if attachEvents != 1 {
+		t.Fatalf("events attaching %s = %d, want exactly 1 (no wedge written)", ra.ID, attachEvents)
+	}
+
+	// The authority gate resolves the single original pair — no wedge.
+	loadedRA, err := runattempt.Open(s.home).Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := s.resolveRunAttemptAuthorityFromEvents(got, loadedRA, events)
+	if err != nil {
+		t.Fatalf("authority must resolve to the single original pair: %v", err)
+	}
+	if authority.ActionIntentID != firstAction || authority.PolicyDecisionID != firstPolicy {
+		t.Fatalf("authority = (%s,%s); want (%s,%s)",
+			authority.ActionIntentID, authority.PolicyDecisionID, firstAction, firstPolicy)
 	}
 }
 
