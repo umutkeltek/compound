@@ -213,6 +213,74 @@ func TestSourceManifestLifecycleLegacySchemasLoadRegisteredAndRecoveryStaysAvail
 	}
 }
 
+func TestSourceManifestCreateAndLifecycleAdvanceShareAuthorityLock(t *testing.T) {
+	homePath, family, _ := lifecycleOwnedManifest(t)
+	sourceRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceRoot, "new.md"), []byte("# New source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- withSourceManifestAuthorityLock(homePath, func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+
+	advanceDone := make(chan error, 1)
+	go func() {
+		_, err := AdvanceSourceManifestLifecycle(homePath, family, SourceManifestLifecycleAdvanceRequest{
+			ToState:          SourceLifecycleCapturing,
+			ExpectedRevision: 0,
+			WorkID:           "work_shared_authority_lock",
+			Actor:            "codex:test",
+			ActionIntentID:   "act_shared_authority_lock",
+			PolicyDecisionID: "pol_shared_authority_lock",
+			Proofs:           lifecycleProofs(SourceLifecycleGateSourceInventory),
+		}, lifecycleTestNow.Add(time.Minute))
+		advanceDone <- err
+	}()
+	createDone := make(chan error, 1)
+	go func() {
+		_, _, err := CreateSourceManifestDirectory(homePath, family, sourceRoot, false, lifecycleTestNow.Add(2*time.Minute))
+		createDone <- err
+	}()
+
+	select {
+	case err := <-advanceDone:
+		t.Fatalf("lifecycle advance bypassed shared authority lock: %v", err)
+	case err := <-createDone:
+		t.Fatalf("directory create bypassed shared authority lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-lockDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-advanceDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-createDone; err != nil {
+		t.Fatal(err)
+	}
+
+	manifest, err := LoadSourceManifest(homePath, family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Items) != 2 {
+		t.Fatalf("concurrent create/lifecycle lost items: %+v", manifest.Items)
+	}
+	if manifest.Lifecycle == nil || manifest.Lifecycle.State != SourceLifecycleCapturing || manifest.Lifecycle.Revision != 1 {
+		t.Fatalf("concurrent create/lifecycle lost lifecycle: %+v", manifest.Lifecycle)
+	}
+}
+
 func lifecycleOwnedManifest(t *testing.T) (string, string, string) {
 	t.Helper()
 	homePath := t.TempDir()

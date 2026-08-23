@@ -94,13 +94,13 @@ func BuildOwnedSourceManifestDirectory(homePath, sourceFamily, root string, now 
 	if err != nil {
 		return SourceManifest{}, err
 	}
-	manifest, _, err = captureOwnedSourceManifest(homePath, manifest, batch.files, nil)
+	manifest, err = captureOwnedSourceManifest(homePath, manifest, batch.files, nil)
 	return manifest, err
 }
 
 // CreateSourceManifestDirectory owns the directory capture transaction used by
-// the CLI: snapshot, custody publication, and authority record either all
-// succeed or newly-published unretained artifacts are removed.
+// the CLI. Authority never references partial custody; a failure after artifact
+// publication retains safe content-addressed orphans for grace-period GC.
 func CreateSourceManifestDirectory(homePath, sourceFamily, root string, sourceInPlace bool, now time.Time) (SourceManifestReport, SourceManifest, error) {
 	return createSourceManifestDirectory(homePath, sourceFamily, root, sourceInPlace, now, sourceManifestDirectoryBuildHooks{})
 }
@@ -130,26 +130,23 @@ func createSourceManifestDirectory(homePath, sourceFamily, root string, sourceIn
 	}
 
 	var report SourceManifestReport
-	err = withSourceManifestCustodyLock(homePath, func() error {
+	err = withSourceManifestAuthorityLock(homePath, func() error {
 		if sourceInPlace {
 			var recordErr error
 			report, recordErr = recorder(homePath, manifest)
 			return recordErr
 		}
-		owned, created, captureErr := captureOwnedSourceManifest(homePath, manifest, batch.files, hooks.putArtifact)
+		owned, captureErr := captureOwnedSourceManifest(homePath, manifest, batch.files, hooks.putArtifact)
 		if captureErr != nil {
 			return captureErr
 		}
 		manifest = owned
 		var recordErr error
 		report, recordErr = recorder(homePath, manifest)
-		if recordErr == nil {
-			return nil
+		if recordErr != nil {
+			return fmt.Errorf("%w; content-addressed custody retained as unreferenced orphan evidence", recordErr)
 		}
-		if cleanupErr := cleanupSourceManifestArtifacts(homePath, created); cleanupErr != nil {
-			return fmt.Errorf("%w; cleanup newly-created custody: %v", recordErr, cleanupErr)
-		}
-		return recordErr
+		return nil
 	})
 	if err != nil {
 		return SourceManifestReport{}, SourceManifest{}, err

@@ -224,17 +224,11 @@ func BuildOwnedSourceManifest(homePath, sourceFamily string, paths []string, now
 	if err != nil {
 		return SourceManifest{}, err
 	}
-	manifest, _, err = captureOwnedSourceManifest(homePath, manifest, batch.files, nil)
+	manifest, err = captureOwnedSourceManifest(homePath, manifest, batch.files, nil)
 	return manifest, err
 }
 
-type sourceManifestArtifactPutter func(*home.ArtifactStore, []byte) (string, bool, error)
-
-type sourceManifestCreatedArtifact struct {
-	path     string
-	ref      string
-	fileHash string
-}
+type sourceManifestArtifactPutter func(*home.ArtifactStore, []byte) (string, error)
 
 func validateSourceManifestBuildInput(sourceFamily string, paths []string) error {
 	if strings.TrimSpace(sourceFamily) == "" {
@@ -275,53 +269,37 @@ func buildSourceManifestSnapshots(sourceFamily string, snapshots []sourceManifes
 	return manifest, nil
 }
 
-func captureOwnedSourceManifest(homePath string, manifest SourceManifest, snapshots []sourceManifestFileSnapshot, putter sourceManifestArtifactPutter) (SourceManifest, []sourceManifestCreatedArtifact, error) {
+func captureOwnedSourceManifest(homePath string, manifest SourceManifest, snapshots []sourceManifestFileSnapshot, putter sourceManifestArtifactPutter) (SourceManifest, error) {
 	store, err := home.NewArtifactStore(homePath)
 	if err != nil {
-		return SourceManifest{}, nil, err
+		return SourceManifest{}, err
 	}
 	if putter == nil {
-		putter = func(store *home.ArtifactStore, body []byte) (string, bool, error) {
-			return store.PutTracked(body)
+		putter = func(store *home.ArtifactStore, body []byte) (string, error) {
+			return store.Put(body)
 		}
 	}
 	byPath := make(map[string]sourceManifestFileSnapshot, len(snapshots))
 	for _, snapshot := range snapshots {
 		byPath[snapshot.path] = snapshot
 	}
-	created := make([]sourceManifestCreatedArtifact, 0, len(snapshots))
-	cleanup := func(primary error) (SourceManifest, []sourceManifestCreatedArtifact, error) {
-		if cleanupErr := cleanupSourceManifestArtifacts(homePath, created); cleanupErr != nil {
-			return SourceManifest{}, nil, fmt.Errorf("%w; cleanup newly-created custody: %v", primary, cleanupErr)
-		}
-		return SourceManifest{}, nil, primary
-	}
-
 	for i := range manifest.Items {
 		item := &manifest.Items[i]
 		snapshot, ok := byPath[item.SourceRef]
 		if !ok {
-			return cleanup(fmt.Errorf("capture source %s: snapshot missing", item.SourceRef))
+			return SourceManifest{}, fmt.Errorf("capture source %s: snapshot missing", item.SourceRef)
 		}
 		body, err := readSourceManifestSnapshotBody(snapshot)
 		if err != nil {
-			return cleanup(err)
+			return SourceManifest{}, err
 		}
 		expectedRef := home.ArtifactRefPrefix + strings.TrimPrefix(item.FileHash, "sha256:")
-		ref, createdByPut, putErr := putter(store, body)
-		if createdByPut {
-			hexDigest := strings.TrimPrefix(expectedRef, home.ArtifactRefPrefix)
-			created = append(created, sourceManifestCreatedArtifact{
-				path:     filepath.Join(homePath, "artifacts", "sha256", hexDigest),
-				ref:      expectedRef,
-				fileHash: item.FileHash,
-			})
-		}
-		if putErr != nil {
-			return cleanup(fmt.Errorf("capture source %s: %w", item.SourceRef, putErr))
+		ref, err := putter(store, body)
+		if err != nil {
+			return SourceManifest{}, fmt.Errorf("capture source %s: %w", item.SourceRef, err)
 		}
 		if ref != expectedRef {
-			return cleanup(fmt.Errorf("capture source %s: artifact ref %s does not match %s", item.SourceRef, ref, expectedRef))
+			return SourceManifest{}, fmt.Errorf("capture source %s: artifact ref %s does not match %s", item.SourceRef, ref, expectedRef)
 		}
 		item.BodyPolicy = "owned_snapshot"
 		item.BodyRef = ref
@@ -330,83 +308,12 @@ func captureOwnedSourceManifest(homePath string, manifest SourceManifest, snapsh
 		item.EvidenceRefs = append(item.EvidenceRefs, ref)
 		item.ID = idFor("srcitem_", manifest.SourceFamily, item.SourceKey, item.FileHash)
 	}
-	return manifest, created, nil
-}
-
-func cleanupSourceManifestArtifacts(homePath string, created []sourceManifestCreatedArtifact) error {
-	var cleanupErrors []string
-	for i := len(created) - 1; i >= 0; i-- {
-		retained, err := sourceManifestArtifactRetained(homePath, created[i].ref)
-		if err != nil {
-			cleanupErrors = append(cleanupErrors, err.Error())
-			continue
-		}
-		if retained {
-			continue
-		}
-		body, err := os.ReadFile(created[i].path)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			cleanupErrors = append(cleanupErrors, err.Error())
-			continue
-		}
-		if hashBytes(body) != created[i].fileHash {
-			cleanupErrors = append(cleanupErrors, "refused to remove changed artifact "+created[i].path)
-			continue
-		}
-		if err := os.Remove(created[i].path); err != nil && !os.IsNotExist(err) {
-			cleanupErrors = append(cleanupErrors, err.Error())
-		}
-	}
-	if len(cleanupErrors) != 0 {
-		return fmt.Errorf("%s", strings.Join(cleanupErrors, "; "))
-	}
-	return nil
-}
-
-func sourceManifestArtifactRetained(homePath, ref string) (bool, error) {
-	for _, root := range []string{
-		filepath.Join(homePath, "sources", "manifests"),
-		filepath.Join(homePath, "registries", "source-manifests"),
-	} {
-		entries, err := os.ReadDir(root)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return true, fmt.Errorf("inspect source manifest retention %s: %w", root, err)
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-				continue
-			}
-			path := filepath.Join(root, entry.Name())
-			body, err := os.ReadFile(path)
-			if err != nil {
-				return true, fmt.Errorf("read source manifest retention %s: %w", path, err)
-			}
-			var manifest SourceManifest
-			if err := json.Unmarshal(body, &manifest); err != nil {
-				return true, fmt.Errorf("parse source manifest retention %s: %w", path, err)
-			}
-			if manifest.FamilyMeta != nil && manifest.FamilyMeta.DumpBodyRef == ref {
-				return true, nil
-			}
-			for _, item := range manifest.Items {
-				if item.BodyRef == ref {
-					return true, nil
-				}
-			}
-		}
-	}
-	return false, nil
+	return manifest, nil
 }
 
 func RecordSourceManifest(homePath string, manifest SourceManifest) (SourceManifestReport, error) {
 	var report SourceManifestReport
-	err := withSourceManifestCustodyLock(homePath, func() error {
+	err := withSourceManifestAuthorityLock(homePath, func() error {
 		var recordErr error
 		report, recordErr = recordSourceManifestUnlocked(homePath, manifest)
 		return recordErr

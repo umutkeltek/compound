@@ -222,30 +222,32 @@ func PlanSourceManifestLifecycleAdvance(homePath, sourceFamily string, req Sourc
 
 func AdvanceSourceManifestLifecycle(homePath, sourceFamily string, req SourceManifestLifecycleAdvanceRequest, now time.Time) (SourceManifestLifecycleAdvanceReport, error) {
 	var report SourceManifestLifecycleAdvanceReport
-	err := withSourceManifestLifecycleLock(homePath, sourceFamily, func() error {
-		manifest, err := LoadSourceManifest(homePath, sourceFamily)
-		if err != nil {
-			return err
-		}
-		report, err = planSourceManifestLifecycleAdvance(homePath, manifest, req, now)
-		if err != nil {
-			return err
-		}
-		manifest.SchemaVersion = SourceManifestSchemaVersion
-		manifest.AuthorityRef = SourceManifestAuthorityRef(sourceFamily)
-		manifest.Lifecycle = cloneSourceManifestLifecycle(&report.Lifecycle)
-		if err := validateSourceManifest(manifest); err != nil {
-			return fmt.Errorf("validate source lifecycle publication: %w", err)
-		}
-		body, err := json.MarshalIndent(manifest, "", "  ")
-		if err != nil {
-			return err
-		}
-		if err := writeSourceManifestAtomic(SourceManifestPath(homePath, sourceFamily), append(body, '\n')); err != nil {
-			return err
-		}
-		report.Applied = true
-		return nil
+	err := withSourceManifestAuthorityLock(homePath, func() error {
+		return withSourceManifestLifecycleLock(homePath, sourceFamily, func() error {
+			manifest, err := LoadSourceManifest(homePath, sourceFamily)
+			if err != nil {
+				return err
+			}
+			report, err = planSourceManifestLifecycleAdvance(homePath, manifest, req, now)
+			if err != nil {
+				return err
+			}
+			manifest.SchemaVersion = SourceManifestSchemaVersion
+			manifest.AuthorityRef = SourceManifestAuthorityRef(sourceFamily)
+			manifest.Lifecycle = cloneSourceManifestLifecycle(&report.Lifecycle)
+			if err := validateSourceManifest(manifest); err != nil {
+				return fmt.Errorf("validate source lifecycle publication: %w", err)
+			}
+			body, err := json.MarshalIndent(manifest, "", "  ")
+			if err != nil {
+				return err
+			}
+			if err := writeSourceManifestAtomic(SourceManifestPath(homePath, sourceFamily), append(body, '\n')); err != nil {
+				return err
+			}
+			report.Applied = true
+			return nil
+		})
 	})
 	return report, err
 }
@@ -611,11 +613,11 @@ func cloneSourceWriterHandoff(in *SourceWriterHandoff) *SourceWriterHandoff {
 	return &out
 }
 
-func withSourceManifestCustodyLock(homePath string, fn func() error) error {
+func withSourceManifestAuthorityLock(homePath string, fn func() error) error {
 	if strings.TrimSpace(homePath) == "" {
 		return fmt.Errorf("COMPOUND_HOME required")
 	}
-	lockPath := filepath.Join(homePath, "lock", "source-manifest-custody.lock")
+	lockPath := filepath.Join(homePath, "lock", "source-manifest-authority.lock")
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return err
 	}

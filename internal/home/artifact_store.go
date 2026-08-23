@@ -46,13 +46,6 @@ func (s *ArtifactStore) Put(body []byte) (string, error) {
 	return s.put(body, s.dir, 0o644)
 }
 
-// PutTracked stores body and reports whether this call atomically published
-// the canonical digest link. Callers may use created for rollback; a deduping
-// caller that lost the publication race receives created=false.
-func (s *ArtifactStore) PutTracked(body []byte) (ref string, created bool, err error) {
-	return s.putTracked(body, s.dir, 0o644)
-}
-
 // PutPrivate stores body in COMPOUND_HOME/private/artifacts/sha256 without ever
 // entering the public artifact root.
 func (s *ArtifactStore) PutPrivate(body []byte) (string, error) {
@@ -128,66 +121,59 @@ func (s *ArtifactStore) PutPrivate(body []byte) (string, error) {
 }
 
 func (s *ArtifactStore) put(body []byte, dir string, mode os.FileMode) (string, error) {
-	ref, _, err := s.putTracked(body, dir, mode)
-	return ref, err
-}
-
-func (s *ArtifactStore) putTracked(body []byte, dir string, mode os.FileMode) (string, bool, error) {
 	sum := sha256.Sum256(body)
 	hexDigest := hex.EncodeToString(sum[:])
 	ref := ArtifactRefPrefix + hexDigest
 	path := filepath.Join(dir, hexDigest)
 	if existing, err := os.ReadFile(path); err == nil {
 		if !bytes.Equal(existing, body) {
-			return "", false, fmt.Errorf("artifact %s content-address collision", ref)
+			return "", fmt.Errorf("artifact %s content-address collision", ref)
 		}
-		return ref, false, nil
+		return ref, nil
 	} else if !os.IsNotExist(err) {
-		return "", false, err
+		return "", err
 	}
 
 	tmp, err := os.CreateTemp(dir, ".artifact-*")
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
-		return "", false, err
+		return "", err
 	}
 	if _, err := tmp.Write(body); err != nil {
 		tmp.Close()
-		return "", false, err
+		return "", err
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		return "", false, err
+		return "", err
 	}
 	if err := tmp.Close(); err != nil {
-		return "", false, err
+		return "", err
 	}
-	created := true
 	if err := os.Link(tmpPath, path); err != nil {
 		if !os.IsExist(err) {
-			return "", false, err
+			return "", err
 		}
-		created = false
 		existing, readErr := os.ReadFile(path)
 		if readErr != nil {
-			return "", false, readErr
+			return "", readErr
 		}
 		if !bytes.Equal(existing, body) {
-			return "", false, fmt.Errorf("artifact %s content-address collision", ref)
+			return "", fmt.Errorf("artifact %s content-address collision", ref)
 		}
 	}
 	// The file bytes were synced before publication. Sync the containing
 	// directory as well so a successful Put means the name-to-inode link is
 	// durable across a crash, not merely visible to this process.
 	if err := syncDirectory(dir); err != nil {
-		return ref, created, fmt.Errorf("sync artifact directory: %w", err)
+		return "", fmt.Errorf("sync artifact directory: %w", err)
 	}
-	return ref, created, nil
+	return ref, nil
 }
 
 // PutFileExpected streams sourcePath into immutable custody and publishes it

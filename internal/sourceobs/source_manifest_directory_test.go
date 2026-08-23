@@ -181,7 +181,7 @@ func TestBuildOwnedSourceManifestDirectoryUsesOneRootConfinedSnapshot(t *testing
 	}
 }
 
-func TestBuildOwnedSourceManifestDirectoryRollsBackOnlyNewArtifactsOnLaterFailure(t *testing.T) {
+func TestBuildOwnedSourceManifestDirectoryRetainsSafeOrphanOnLaterFailure(t *testing.T) {
 	for _, preexisting := range []bool{false, true} {
 		t.Run(fmt.Sprintf("preexisting=%t", preexisting), func(t *testing.T) {
 			root := t.TempDir()
@@ -207,12 +207,12 @@ func TestBuildOwnedSourceManifestDirectoryRollsBackOnlyNewArtifactsOnLaterFailur
 			}
 			putCalls := 0
 			_, _, err = createSourceManifestDirectory(homePath, "atomic_custody", root, false, time.Now(), sourceManifestDirectoryBuildHooks{
-				putArtifact: func(store *home.ArtifactStore, body []byte) (string, bool, error) {
+				putArtifact: func(store *home.ArtifactStore, body []byte) (string, error) {
 					putCalls++
 					if putCalls == 2 {
-						return "", false, errors.New("injected later artifact failure")
+						return "", errors.New("injected later artifact failure")
 					}
-					return store.PutTracked(body)
+					return store.Put(body)
 				},
 			})
 			if err == nil || !strings.Contains(err.Error(), "injected later artifact failure") {
@@ -222,12 +222,11 @@ func TestBuildOwnedSourceManifestDirectoryRollsBackOnlyNewArtifactsOnLaterFailur
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantEntries := 0
-			if preexisting {
-				wantEntries = 1
+			if len(entries) != 1 {
+				t.Fatalf("artifact entries after failure = %d, want one retained CAS body: %v", len(entries), entries)
 			}
-			if len(entries) != wantEntries {
-				t.Fatalf("artifact entries after rollback = %d, want %d: %v", len(entries), wantEntries, entries)
+			if _, err := os.Stat(SourceManifestPath(homePath, "atomic_custody")); !os.IsNotExist(err) {
+				t.Fatalf("capture failure published partial authority: %v", err)
 			}
 			if preexisting {
 				body, err := store.Get(preexistingRef)
@@ -272,7 +271,7 @@ func TestBuildSourceManifestDirectoryResolvesGitRevisionOnce(t *testing.T) {
 	}
 }
 
-func TestCreateSourceManifestDirectoryRollsBackCustodyWhenAuthorityRecordFails(t *testing.T) {
+func TestCreateSourceManifestDirectoryRecordFailureRetainsOrphanWithoutPartialAuthority(t *testing.T) {
 	root := t.TempDir()
 	writeSourceManifestDirectoryFixture(t, root, "source.md", "# Record failure\n")
 	homePath := t.TempDir()
@@ -282,22 +281,22 @@ func TestCreateSourceManifestDirectoryRollsBackCustodyWhenAuthorityRecordFails(t
 			return SourceManifestReport{}, errors.New("injected authority record failure")
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "injected authority record failure") {
+	if err == nil || !strings.Contains(err.Error(), "injected authority record failure") || !strings.Contains(err.Error(), "unreferenced orphan evidence") {
 		t.Fatalf("record failure = %v", err)
 	}
 	entries, err := os.ReadDir(filepath.Join(homePath, "artifacts", "sha256"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("record failure leaked custody: %v", entries)
+	if len(entries) != 1 {
+		t.Fatalf("record failure must retain one safe CAS orphan, got %v", entries)
 	}
 	if _, err := os.Stat(SourceManifestPath(homePath, "record_failure")); !os.IsNotExist(err) {
 		t.Fatalf("record failure published authority: %v", err)
 	}
 }
 
-func TestConcurrentDirectoryRollbackCannotDeleteWinnerCustody(t *testing.T) {
+func TestConcurrentFailedCaptureCannotPublishPartialAuthorityOrBreakWinnerCustody(t *testing.T) {
 	root := t.TempDir()
 	writeSourceManifestDirectoryFixture(t, root, "source.md", "# Concurrent\n")
 	homePath := t.TempDir()
@@ -312,11 +311,11 @@ func TestConcurrentDirectoryRollbackCannotDeleteWinnerCustody(t *testing.T) {
 	failedDone := make(chan result, 1)
 	go func() {
 		report, manifest, err := createSourceManifestDirectory(homePath, "concurrent_failure", root, false, time.Now(), sourceManifestDirectoryBuildHooks{
-			putArtifact: func(store *home.ArtifactStore, body []byte) (string, bool, error) {
-				ref, created, err := store.PutTracked(body)
+			putArtifact: func(store *home.ArtifactStore, body []byte) (string, error) {
+				ref, err := store.Put(body)
 				close(published)
 				<-releaseFailure
-				return ref, created, err
+				return ref, err
 			},
 			record: func(string, SourceManifest) (SourceManifestReport, error) {
 				return SourceManifestReport{}, errors.New("injected losing record failure")
@@ -350,7 +349,7 @@ func TestConcurrentDirectoryRollbackCannotDeleteWinnerCustody(t *testing.T) {
 	}
 	body, err := store.Get(winner.manifest.Items[0].BodyRef)
 	if err != nil {
-		t.Fatalf("winner custody was deleted by losing rollback: %v", err)
+		t.Fatalf("winner custody missing after failed concurrent capture: %v", err)
 	}
 	if string(body) != "# Concurrent\n" {
 		t.Fatalf("winner custody = %q", body)
