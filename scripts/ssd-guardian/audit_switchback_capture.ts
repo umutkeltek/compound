@@ -187,8 +187,7 @@ const listening = readListeningPorts();
 
 const lanes: Lane[] = [
   buildLane("claude (mode-d)", "127.0.0.1:18780", tapByPort, observed.map, pressure),
-  buildLane("claude-tap (bare)", "127.0.0.1:18770", tapByPort, observed.map, pressure),
-  buildLane("codex-tap (bare)", "127.0.0.1:18771", tapByPort, observed.map, pressure),
+  buildLane("omp (anthropic-tap)", "127.0.0.1:18790", tapByPort, observed.map, pressure),
   buildLane("claude-zai", "127.0.0.1:18772", tapByPort, observed.map, pressure),
   buildLane("claude-zai-direct", "127.0.0.1:18773", tapByPort, observed.map, pressure),
   buildLane("claude-gpt56-ultra", "127.0.0.1:18774", tapByPort, observed.map, pressure),
