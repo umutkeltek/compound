@@ -5,19 +5,21 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"compound/internal/policy"
 )
 
 func TestResolveReclaimTargetRequiresExplicitConsumerAndThreshold(t *testing.T) {
-	if _, err := resolveReclaimTarget([]string{"--required-bytes", "100"}); err == nil {
+	if _, err := policy.ResolveReclaimTargetForTest([]string{"--required-bytes", "100"}); err == nil {
 		t.Fatal("missing --consumer must fail closed")
 	}
-	if _, err := resolveReclaimTarget([]string{"--consumer", "fixture"}); err == nil {
+	if _, err := policy.ResolveReclaimTargetForTest([]string{"--consumer", "fixture"}); err == nil {
 		t.Fatal("missing published threshold must fail closed")
 	}
 }
 
 func TestResolveReclaimTargetUsesCallerPublishedValues(t *testing.T) {
-	got, err := resolveReclaimTarget([]string{
+	got, err := policy.ResolveReclaimTargetForTest([]string{
 		"--consumer", "fixture",
 		"--free-bytes", "50",
 		"--capacity-bytes", "1000",
@@ -40,7 +42,7 @@ func TestChangedCommandsAreDiscoverable(t *testing.T) {
 	if got := routeUsage(""); !containsAll(got, "lane-projection", "--harness H") {
 		t.Fatalf("route usage does not expose lane projection: %s", got)
 	}
-	if got := retentionUsage(); !containsAll(got, "classes", "scan", "plan", "never reclaims") {
+	if got := policy.RetentionUsageForTest(); !containsAll(got, "classes", "scan", "plan", "never reclaims") {
 		t.Fatalf("retention usage is incomplete: %s", got)
 	}
 }
