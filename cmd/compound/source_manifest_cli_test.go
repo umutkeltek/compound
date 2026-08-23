@@ -579,9 +579,9 @@ func TestSourceManifestDirectoryCLIReplayMatchesExplicitFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for path, body := range map[string]string{
-		firstPath:  "# First\n",
-		nestedPath: "# Second\n",
-		lastPath:   "# Last\n",
+		firstPath:                                "# First\n",
+		nestedPath:                               "# Second\n",
+		lastPath:                                 "# Last\n",
 		filepath.Join(sourceRoot, "ignored.txt"): "not markdown\n",
 	} {
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
