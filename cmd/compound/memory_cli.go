@@ -328,15 +328,14 @@ func cmdMemory(args []string) {
 			// --dry-run is the DEFAULT for the verb: --yes is the only way to
 			// mutate, so a stray script cannot drain the inbox by accident.
 			dryRun := has("--dry-run") || !yes
-			opts := mem.AdjudicatePendingOptions{Verdict: verdict, WorkID: flag("--work"), DryRun: dryRun}
+			opts := mem.AdjudicatePendingOptions{Verdict: verdict, WorkID: flag("--work"), DryRun: dryRun, Limit: limit}
 			report := store.AdjudicatePending(opts, time.Now())
-			if limit > 0 {
-				// report is a single struct, not iterable; --limit is a
-				// future cap on the inbox walk. Today the inbox is walked
-				// whole so the operator sees the full count for one dry-run;
-				// a follow-up patch can short-circuit at limit. Document
-				// the cap as no-op for now so the surface doesn't lie.
-				fmt.Fprintf(os.Stderr, "note: --limit %d is reserved for a future per-pass cap; current pass walked the whole inbox (scanned=%d)\n", limit, report.Scanned)
+			if report.LimitReached {
+				// The cap bounds ADJUDICATED candidates, not scanning: a
+				// pass over a saturated inbox may skip tens of thousands of
+				// already-closed candidates before it adjudicates N. Tell the
+				// operator the drain is resumable, not complete.
+				fmt.Fprintf(os.Stderr, "note: --limit %d reached; pass stopped early (adjudicated=%d of scan, skipped=%d already closed) — re-run to continue the drain\n", limit, report.Adjudicated, report.Skipped)
 			}
 			if !yes {
 				if has("--json") {

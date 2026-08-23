@@ -1995,3 +1995,50 @@ func TestAdjudicatePendingCounterReflectsActualCloses(t *testing.T) {
 		t.Fatalf("verdict counts = %+v, want park=3", r.VerdictCounts)
 	}
 }
+
+// TestAdjudicatePendingLimitCapsAdjudicatedNotSkipped: --limit bounds
+// ADJUDICATED candidates, not scanning. Falsifies the old no-op surface
+// where --limit was parsed, echoed as "reserved", and the whole inbox was
+// adjudicated anyway. Capture mints hash IDs, so candidate order is not
+// under the test's control — every assertion below is order-independent.
+func TestAdjudicatePendingLimitCapsAdjudicatedNotSkipped(t *testing.T) {
+	s := newStore(t)
+	// 3 admission-parked candidates (skipped by every pass; they must
+	// never consume the cap — the cap counts Adjudicated, not Scanned).
+	for i := 0; i < 3; i++ {
+		pc := cand("e", "p", fmt.Sprintf("parked-%d", i), "")
+		pc.Qualifiers = map[string]string{"source": "knowledge_import"}
+		if _, err := s.Capture([]Candidate{pc}, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 2 bare proposed candidates (adjudicable).
+	for i := 0; i < 2; i++ {
+		if _, err := s.Capture([]Candidate{cand("e", "p", fmt.Sprintf("bare-%d", i), "")}, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Dry-run honors the cap: plans exactly one adjudication, then stops.
+	rd := s.AdjudicatePending(AdjudicatePendingOptions{DryRun: true, Limit: 1}, t0.Add(time.Minute))
+	if rd.Adjudicated != 1 || !rd.LimitReached {
+		t.Fatalf("limited dry-run adjudicated=%d limitReached=%v, want 1/true", rd.Adjudicated, rd.LimitReached)
+	}
+	// Real capped pass: exactly one candidate is closed, cap flagged.
+	r := s.AdjudicatePending(AdjudicatePendingOptions{Limit: 1}, t0.Add(2*time.Minute))
+	if r.Adjudicated != 1 || !r.LimitReached {
+		t.Fatalf("limited pass adjudicated=%d limitReached=%v, want 1/true (skips must not consume the cap)", r.Adjudicated, r.LimitReached)
+	}
+	if r.Limit != 1 {
+		t.Fatalf("report limit=%d, want echo of opts.Limit", r.Limit)
+	}
+	// The drain is resumable: an uncapped pass finishes the remainder.
+	r2 := s.AdjudicatePending(AdjudicatePendingOptions{}, t0.Add(3*time.Minute))
+	if r2.Adjudicated != 1 || r2.LimitReached {
+		t.Fatalf("resume pass adjudicated=%d limitReached=%v, want 1/false", r2.Adjudicated, r2.LimitReached)
+	}
+	// Idempotent end state: nothing adjudicable, all five closed.
+	r3 := s.AdjudicatePending(AdjudicatePendingOptions{}, t0.Add(4*time.Minute))
+	if r3.Adjudicated != 0 || r3.Skipped != 5 {
+		t.Fatalf("final pass adjudicated=%d skipped=%d, want 0/5", r3.Adjudicated, r3.Skipped)
+	}
+}

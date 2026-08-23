@@ -558,6 +558,8 @@ type AdjudicatePendingReport struct {
 	VerdictCounts map[string]int           `json:"verdict_counts"`
 	FirstID       string                   `json:"first_id,omitempty"`
 	LastID        string                   `json:"last_id,omitempty"`
+	Limit         int                      `json:"limit,omitempty"`
+	LimitReached  bool                     `json:"limit_reached,omitempty"`
 	Errors        []AdjudicatePendingError `json:"errors,omitempty"`
 }
 
@@ -582,7 +584,7 @@ type AdjudicatePendingError struct {
 // makes the verb idempotent — running it twice produces the same report
 // modulo the Errors slice.
 func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) AdjudicatePendingReport {
-	r := AdjudicatePendingReport{VerdictCounts: map[string]int{}}
+	r := AdjudicatePendingReport{VerdictCounts: map[string]int{}, Limit: opts.Limit}
 	// DryRun path uses a lightweight inbox walker that only reads the
 	// fields the disposition needs (State, ID, Qualifiers.source). Decoding
 	// 132k full Candidate structs is the slow path; this is a 10x+ speed-up
@@ -644,6 +646,10 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 		if opts.DryRun {
 			r.VerdictCounts[verdict]++
 			r.Adjudicated++
+			if opts.Limit > 0 && r.Adjudicated >= opts.Limit {
+				r.LimitReached = true
+				break
+			}
 			continue
 		}
 		if _, err := s.Adjudicate(c.ID, verdict, opts.WorkID, now); err != nil {
@@ -652,6 +658,10 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 		}
 		r.VerdictCounts[verdict]++
 		r.Adjudicated++
+		if opts.Limit > 0 && r.Adjudicated >= opts.Limit {
+			r.LimitReached = true
+			break
+		}
 	}
 	return r
 }
@@ -665,6 +675,7 @@ type AdjudicatePendingOptions struct {
 	Verdict string // empty -> per-candidate disposition; fixed verdict applied uniformly
 	WorkID  string // optional --work binding for the batch receipts
 	DryRun  bool   // scan + plan only; do not mutate
+	Limit   int    // 0 = uncapped. >0 stops the pass after N candidates are ADJUDICATED; already-closed (skipped) candidates never count toward the cap, so the cap bounds writes, not scanning.
 }
 
 // dispositionVerdict returns the verdict a candidate with no explicit
