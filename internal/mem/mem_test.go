@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"fmt"
+
 	"compound/internal/eventstore"
 )
 
@@ -1314,7 +1316,7 @@ func TestDoctorReportsHops(t *testing.T) {
 	s := newStore(t)
 	c, _ := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0)
 	_, _ = promoteForTest(t, s, c[0].ID, "", t0)
-	r := s.Doctor()
+	r := s.DoctorAt(nil, t0.Add(time.Minute))
 	if !r.OK {
 		t.Errorf("doctor should be OK after a clean promote; note=%q", r.Note)
 	}
@@ -1355,7 +1357,7 @@ func TestDoctorReportsRecallQualityHop(t *testing.T) {
 func TestDoctorWithConfiguredEngineReportsHealthyHop(t *testing.T) {
 	s := storeWith(t, "project:api", "language", "go")
 
-	r := s.DoctorWithEngine(&LexicalEngine{})
+	r := s.DoctorAt(&LexicalEngine{}, t0.Add(time.Minute))
 	if !r.OK {
 		t.Fatalf("doctor with lexical engine should pass: %+v", r)
 	}
@@ -1790,6 +1792,103 @@ func TestValidateAdjudicationIntentEnforcesEachRuleInIsolation(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestDoctorFreshnessPromotionStalledSignalsFail: when the newest claim is
+// older than the staleness threshold AND the inbox still has candidates,
+// promotion reports fail and stamps the freshness fields. This is the
+// stall signature that the pre-freshness doctor masked by reporting ok.
+func TestDoctorFreshnessPromotionStalledSignalsFail(t *testing.T) {
+	s := newStore(t)
+	c, _ := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0)
+	_, _ = promoteForTest(t, s, c[0].ID, "", t0)
+	// Advance past memDoctorThresholds.ClaimStaleAfter (72h) + slack so the fixture
+	// ages into the staleness band while the inbox remains non-empty.
+	now := t0.Add(memDoctorThresholds.ClaimStaleAfter + time.Hour)
+	r := s.DoctorAt(nil, now)
+	promotion := hopByName(t, r, "promotion")
+	if promotion.Status != "fail" {
+		t.Fatalf("stalled promotion status = %q, want fail (detail=%q)", promotion.Status, promotion.Detail)
+	}
+	if promotion.NewestClaimAt == "" {
+		t.Fatalf("stalled promotion must carry newest_claim_at, got %+v", promotion)
+	}
+	capture := hopByName(t, r, "capture")
+	if capture.NewestCandidateAt == "" {
+		t.Fatalf("capture hop must carry newest_candidate_at, got %+v", capture)
+	}
+	if capture.InboxBacklog == 0 {
+		t.Fatalf("capture hop must carry inbox_backlog > 0 when inbox non-empty, got %+v", capture)
+	}
+}
+
+// TestDoctorFreshnessQuietInboxNotStalled: a stale claim with an empty
+// inbox is a quiet system, NOT a stall — the doctor must report ok.
+func TestDoctorFreshnessQuietInboxNotStalled(t *testing.T) {
+	s := newStore(t)
+	c, _ := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0)
+	_, _ = promoteForTest(t, s, c[0].ID, "", t0)
+	// Remove the candidate so the inbox is empty.
+	if err := os.Remove(filepath.Join(s.candDir(), c[0].ID+".json")); err != nil {
+		t.Fatal(err)
+	}
+	now := t0.Add(memDoctorThresholds.ClaimStaleAfter + time.Hour)
+	r := s.DoctorAt(nil, now)
+	promotion := hopByName(t, r, "promotion")
+	if promotion.Status != "ok" {
+		t.Fatalf("quiet inbox promotion status = %q, want ok (quiet != stalled)", promotion.Status)
+	}
+}
+
+// TestDoctorFreshnessInboxBacklogWarnAndFail: the inbox-backlog thresholds
+// flip the capture hop's status independently of the promotion gate.
+func TestDoctorFreshnessInboxBacklogWarnAndFail(t *testing.T) {
+	// Shrink production thresholds so the test exercises the boundary in
+	// reasonable time. Defaults are 5_000 (warn) and 50_000 (fail); the
+	// test uses 10 and 20 respectively.
+	orig := memDoctorThresholds
+	t.Cleanup(func() { memDoctorThresholds = orig })
+	memDoctorThresholds.InboxBacklogWarn = 10
+	memDoctorThresholds.InboxBacklogFail = 20
+
+	// No claims — promotion has no stall signature. Capture status is
+	// driven purely by inbox size.
+	// Use small thresholds for the test: production values
+	// (memDoctorInboxBacklogWarn=5_000, memDoctorInboxBacklogFail=50_000)
+	// are too slow to instantiate in a unit test.
+	cases := []struct {
+		name      string
+		backlog   int
+		want      string
+	}{
+		{"empty", 0, "empty"},
+		{"under_warn", memDoctorThresholds.InboxBacklogWarn - 1, "ok"},
+		{"at_warn", memDoctorThresholds.InboxBacklogWarn, "warn"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStore(t)
+			// Pre-write empty directory — read fresh count.
+			before, _ := os.ReadDir(s.candDir())
+			for _, e := range before {
+				_ = os.Remove(filepath.Join(s.candDir(), e.Name()))
+			}
+			for i := 0; i < tc.backlog; i++ {
+				// Unique per candidate so Capture does not dedupe-as-echo.
+				c := cand("e", "p", fmt.Sprintf("v-%d", i), "")
+				c.ID = fmt.Sprintf("cand-%05d", i)
+				if _, err := s.Capture([]Candidate{c}, t0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r := s.DoctorAt(nil, t0.Add(time.Minute))
+			h := hopByName(t, r, "capture")
+			if h.Status != tc.want {
+				t.Fatalf("backlog=%d capture status = %q, want %q (detail=%q)",
+					tc.backlog, h.Status, tc.want, h.Detail)
 			}
 		})
 	}

@@ -1448,12 +1448,35 @@ func (s *Store) currentEchoClaimWithResolver(cand Candidate, asOf int64, resolve
 	return best, found, nil
 }
 
+// --- doctor freshness thresholds ---
+//
+// A stalled pipeline produces an "ok" doctor with stale evidence: the inbox
+// grows while claim writes are flat. The thresholds below surface that as
+// warn/fail so the operator sees the stall signature, not just totals.
+// Quiet inbox (no candidates) is fine — quiet != stalled.
+// memDoctorThresholds holds the freshness gates. Vars (not consts) so
+// tests can shrink them; production callers use the defaults.
+var memDoctorThresholds = struct {
+	ClaimStaleAfter       time.Duration
+	CandidateStaleAfter   time.Duration
+	InboxBacklogWarn      int
+	InboxBacklogFail      int
+}{
+	ClaimStaleAfter:     72 * time.Hour,
+	CandidateStaleAfter: 168 * time.Hour,
+	InboxBacklogWarn:    5_000,
+	InboxBacklogFail:    50_000,
+}
+
 // --- doctor (which hop) ---
 
 type Hop struct {
-	Name   string `json:"name"`
-	Status string `json:"status"` // ok | empty | skipped | fail
-	Detail string `json:"detail"`
+	Name             string `json:"name"`
+	Status           string `json:"status"` // ok | empty | skipped | warn | fail
+	Detail           string `json:"detail"`
+	NewestClaimAt    string `json:"newest_claim_at,omitempty"`
+	NewestCandidateAt string `json:"newest_candidate_at,omitempty"`
+	InboxBacklog     int    `json:"inbox_backlog,omitempty"`
 }
 type Report struct {
 	Hops              []Hop              `json:"hops"`
@@ -1481,29 +1504,82 @@ type SemanticReadiness struct {
 
 // Doctor reports WHICH hop is healthy or failed, not just "missing" — the fix differs per hop.
 func (s *Store) Doctor() Report {
-	return s.DoctorWithEngine(nil)
+	return s.DoctorAt(nil, time.Now().UTC())
 }
 
-// DoctorWithEngine reports the normal memory chain plus an optional configured
-// rented breadth engine. The ledger still owns truth; the engine hop only proves
-// the configured index can serve a current claim without mutating ledger bytes.
+// DoctorWithEngine is Doctor plus an optional rented breadth engine. The clock is
+// time.Now().UTC(); tests inject a fixed timestamp via DoctorAt.
 func (s *Store) DoctorWithEngine(eng Engine) Report {
+	return s.DoctorAt(eng, time.Now().UTC())
+}
+
+// DoctorAt is DoctorWithEngine plus a caller-supplied clock. The freshness gates
+// depend on wall-clock comparisons and would silently red days after the fixture
+// date ages past the staleness window — pass time.Now() in production, a fixed
+// timestamp in tests so the staleness rule stays deterministic.
+func (s *Store) DoctorAt(eng Engine, now time.Time) Report {
 	r := Report{OK: true}
-	add := func(name, status, detail string) {
-		r.Hops = append(r.Hops, Hop{name, status, detail})
+	now = now.UTC()
+	add := func(name, status, detail string, extras ...hopExtras) {
+		h := Hop{Name: name, Status: status, Detail: detail}
+		for _, e := range extras {
+			if e.newestClaimAt != "" {
+				h.NewestClaimAt = e.newestClaimAt
+			}
+			if e.newestCandidateAt != "" {
+				h.NewestCandidateAt = e.newestCandidateAt
+			}
+			if e.inboxBacklog > 0 {
+				h.InboxBacklog = e.inboxBacklog
+			}
+		}
+		r.Hops = append(r.Hops, h)
 		if status == "fail" {
 			r.OK = false
 		}
 	}
 
+	// --- capture hop ---
+	// Inbox backlog + newest-candidate age are the stall signature: a flat
+	// claim count + a growing inbox + an old newest-candidate means
+	// capture writes still flow but adjudication is wedged.
 	cands, _ := os.ReadDir(s.candDir())
-	add("capture", statusOf(len(cands) > 0), fmt.Sprintf("%d candidate(s) in inbox", len(cands)))
+	captureExtras := hopExtras{inboxBacklog: len(cands)}
+	if newestAt := newestCandidateModTime(s); !newestAt.IsZero() {
+		captureExtras.newestCandidateAt = rfc3339(newestAt)
+	}
+	captureStatus := statusOf(len(cands) > 0)
+	if len(cands) >= memDoctorThresholds.InboxBacklogFail {
+		captureStatus = "fail"
+	} else if len(cands) >= memDoctorThresholds.InboxBacklogWarn {
+		captureStatus = "warn"
+	}
+	add("capture", captureStatus, fmt.Sprintf("%d candidate(s) in inbox", len(cands)), captureExtras)
 
+	// --- promotion hop ---
+	// Newest-claim age vs inbox: stale claim + non-empty inbox = stalled.
 	claims, err := s.loadClaims()
 	if err != nil {
 		add("promotion", "fail", "cannot read claims: "+err.Error())
 	} else {
-		add("promotion", statusOf(len(claims) > 0), fmt.Sprintf("%d claim(s) promoted to ledger", len(claims)))
+		newestClaimAt := newestClaimCreatedAt(claims)
+		extras := hopExtras{}
+		if !newestClaimAt.IsZero() {
+			extras.newestClaimAt = rfc3339(newestClaimAt)
+		}
+		detail := fmt.Sprintf("%d claim(s) promoted to ledger", len(claims))
+		status := statusOf(len(claims) > 0)
+		// Stall signature: a flat ledger (old newest claim) while capture
+		// is still writing means candidate -> claim promotion is wedged.
+		// A quiet inbox (no candidates) is not stalled; a stale ledger
+		// alone is also not a fail.
+		if !newestClaimAt.IsZero() && len(cands) > 0 &&
+			now.Sub(newestClaimAt) > memDoctorThresholds.ClaimStaleAfter {
+			detail += fmt.Sprintf(" (newest claim %s old; capture still writing %d)",
+				truncateAge(now.Sub(newestClaimAt)), len(cands))
+			status = "fail"
+		}
+		add("promotion", status, detail, extras)
 	}
 	if eng == nil {
 		add("sync/embedding", "skipped", "no engine wired (ledger answers exact/as-of without one)")
@@ -1545,7 +1621,7 @@ func (s *Store) DoctorWithEngine(eng Engine) Report {
 	return r
 }
 
-func (s *Store) doctorRecallQualityHop(add func(name, status, detail string)) {
+func (s *Store) doctorRecallQualityHop(add func(name, status, detail string, extras ...hopExtras)) {
 	cur, err := s.currentVisible()
 	if err != nil {
 		add("recall-quality", "fail", "cannot read current claims: "+err.Error())
@@ -1599,7 +1675,7 @@ func alternateCaseProbe(entity string) string {
 	return ""
 }
 
-func (s *Store) doctorEngineHop(eng Engine, add func(name, status, detail string)) {
+func (s *Store) doctorEngineHop(eng Engine, add func(name, status, detail string, extras ...hopExtras)) {
 	caps := eng.Capabilities()
 	cur, err := s.currentVisible()
 	if err != nil {
@@ -2069,6 +2145,74 @@ func idFor(prefix string, parts ...string) string {
 func shortHash(s string) string    { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:])[:12] }
 func ts(now time.Time) string      { return strconv.FormatInt(now.UTC().UnixNano(), 10) }
 func rfc3339(now time.Time) string { return now.UTC().Format(time.RFC3339) }
+
+// hopExtras carries the optional freshness fields a Doctor hop may stamp.
+// Zero-value fields are omitted from JSON.
+type hopExtras struct {
+	newestClaimAt     string
+	newestCandidateAt string
+	inboxBacklog      int
+}
+
+// newestCandidateModTime walks the candidate inbox and returns the most recent
+// mtime. Zero when the inbox is unreadable or empty. Pure stat walk; does not
+// decode payloads (the inbox can hold >100 k files).
+func newestCandidateModTime(s *Store) time.Time {
+	entries, err := os.ReadDir(s.candDir())
+	if err != nil {
+		return time.Time{}
+	}
+	var newest time.Time
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if fi.ModTime().After(newest) {
+			newest = fi.ModTime()
+		}
+	}
+	return newest
+}
+
+// newestClaimCreatedAt returns the most recent CreatedAt across the loaded
+// claims. Zero when claims are empty or all carry an unparseable timestamp.
+func newestClaimCreatedAt(claims []Claim) time.Time {
+	var newest time.Time
+	for _, c := range claims {
+		t, err := time.Parse(time.RFC3339, strings.TrimSpace(c.CreatedAt))
+		if err != nil {
+			continue
+		}
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	return newest
+}
+
+// truncateAge renders a time.Duration as a terse human-readable string for
+// doctor output ("13d", "4h12m", "0s"). Rounds to days for >=24h, hours
+// otherwise, so the freshness field reads "newest claim 13d old" not
+// "newest claim 312h0m0s old".
+func truncateAge(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	if d >= 24*time.Hour {
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+	if d >= time.Hour {
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	if d >= time.Minute {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return d.String()
+}
 
 func statusOf(ok bool) string {
 	if ok {

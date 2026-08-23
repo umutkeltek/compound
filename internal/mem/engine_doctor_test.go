@@ -146,7 +146,7 @@ func TestEngineDoctorReportsBusyUnderSustainedGovernedWrites(t *testing.T) {
 func TestDoctorEngineHopTreatsGovernedActivityAsSkippedNotFailed(t *testing.T) {
 	s := storeWith(t, "system:compound", "owner", "ledger")
 	var got Hop
-	s.doctorEngineHop(&sustainedExternalWriterEngine{store: s}, func(name, status, detail string) {
+	s.doctorEngineHop(&sustainedExternalWriterEngine{store: s}, func(name, status, detail string, extras ...hopExtras) {
 		got = Hop{Name: name, Status: status, Detail: detail}
 	})
 	if got.Name != "sync/embedding" || got.Status != "skipped" {
