@@ -31,6 +31,10 @@ const APPLY = process.argv.includes("--apply");
 const SCRIPT_DIR = import.meta.dir;
 const HOME = homedir();
 const REPORT_ROOT = join(HOME, "Projects/operating-system/umut-os/state/runs");
+function runScript(name: string, args: string[]): { ok: boolean; stdout: string; stderr: string } {
+  const r = spawnSync("bun", [join(SCRIPT_DIR, name), ...args], { stdio: "pipe", timeout: 1800_000 });
+  return { ok: r.status === 0, stdout: r.stdout?.toString() ?? "", stderr: r.stderr?.toString() ?? "" };
+}
 
 type Step = {
   id: string;
@@ -38,11 +42,6 @@ type Step = {
   reason?: string;
   reclaimed_bytes?: number;
 };
-
-function runScript(args: string[]): { ok: boolean; stdout: string; stderr: string } {
-  const r = spawnSync("bun", [join(SCRIPT_DIR, ...args)], { stdio: "pipe", timeout: 1800_000 });
-  return { ok: r.status === 0, stdout: r.stdout?.toString() ?? "", stderr: r.stderr?.toString() ?? "" };
-}
 
 function runBin(cmd: string[], timeoutMs = 600_000): { ok: boolean; stdout: string; stderr: string } {
   const r = spawnSync(cmd[0], cmd.slice(1), { stdio: "pipe", timeout: timeoutMs, shell: false });
@@ -60,7 +59,7 @@ const logs: Record<string, string> = {};
 
 // Step 1: capture-coverage audit (always; non-destructive).
 {
-  const r = runScript(["audit_switchback_capture.ts", "--markdown"]);
+  const r = runScript("audit_switchback_capture.ts", ["--markdown"]);
   logs.audit = r.stdout;
   writeFileSync(join(reportDir, "capture-coverage.md"), r.stdout);
   steps.push({ id: "capture-coverage-audit", status: r.ok ? "executed" : "failed", reason: r.ok ? undefined : r.stderr.slice(0, 200) });
@@ -68,7 +67,7 @@ const logs: Record<string, string> = {};
 
 // Step 2: symlink drift repair.
 if (APPLY) {
-  const r = runScript(["fix_work_symlink_drift.ts", "--apply"]);
+  const r = runScript("fix_work_symlink_drift.ts", ["--apply"]);
   logs.drift = r.stdout;
   steps.push({ id: "symlink-drift-fix", status: r.ok ? "executed" : "failed", reason: r.ok ? undefined : r.stderr.slice(0, 200) });
 } else {
@@ -77,7 +76,7 @@ if (APPLY) {
 
 // Step 3: build cache sweep.
 if (APPLY) {
-  const r = runScript(["sweep_build_caches.ts", "--apply"]);
+  const r = runScript("sweep_build_caches.ts", ["--apply"]);
   logs.sweep = r.stdout;
   let reclaimed = 0;
   try {
