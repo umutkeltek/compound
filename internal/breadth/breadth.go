@@ -438,7 +438,14 @@ func (e *Engine) indexVectors(ctx context.Context, gen int64) error {
 	existing := map[vectorKey]vectorRow{}
 	var loadedManifest vectorManifest
 	cacheLoaded := false
-	if e.cache == nil && e.embedder.Dim() > 0 {
+	// The cache key is home + embedder identity — NOT the dimension, which an
+	// OpenAI-compatible embedder may only learn after its first call. Gating
+	// construction on Dim()>0 silently disabled the persistent cache for every
+	// model outside the static inference table (measured 2026-08-23: qwen3-
+	// embedding re-embedded the full corpus on each sidecar spawn because its
+	// dim was unknown at construction time). Load validates dims against the
+	// manifest, so construct whenever a home exists.
+	if e.cache == nil && strings.TrimSpace(e.compoundHome) != "" {
 		cache, err := newVectorCache(e.compoundHome, e.embedder.Identity())
 		if err != nil {
 			return err

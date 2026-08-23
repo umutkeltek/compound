@@ -235,6 +235,14 @@ func inferEmbeddingDim(model string) int {
 		return 768
 	case strings.Contains(low, "mxbai-embed-large"):
 		return 1024
+	case strings.Contains(low, "bge-m3"):
+		return 1024
+	case strings.Contains(low, "qwen3-embedding"):
+		return 4096
+	case strings.Contains(low, "gemini-embedding-2"):
+		return 3072
+	case strings.Contains(low, "gemini-embedding"):
+		return 3072
 	case strings.Contains(low, "text-embedding-3-large"):
 		return 3072
 	case strings.Contains(low, "text-embedding-3-small"), strings.Contains(low, "text-embedding-ada-002"):

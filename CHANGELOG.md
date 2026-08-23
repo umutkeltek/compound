@@ -6,6 +6,19 @@ for tagged releases, subject to the public-alpha compatibility policy in
 
 ## [Unreleased]
 
+### Fixed
+
+- The breadth vector cache is now constructed whenever a compound home
+  exists, instead of only when the embedder's dimension was already known.
+  OpenAI-compatible embedders learn their dimension lazily, so models
+  outside the static inference table (e.g. `qwen3-embedding`) silently
+  skipped the persistent cache and re-embedded the whole corpus on every
+  sidecar spawn, blowing the transport deadline and degrading breadth to
+  lexical recall. Cache load already validates dimensions against the
+  manifest, so construction no longer depends on them; the dimension
+  inference table also recognizes `qwen3-embedding`, `bge-m3`, and the
+  `gemini-embedding` family.
+
 ### Added
 
 - A file-backed, single-user public-alpha support and security contract.
