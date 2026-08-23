@@ -30,6 +30,7 @@ func TestDesktopZipExcludesRuntimeTreesAndDocumentsTheSnapshotBoundary(t *testin
 		".pytest_cache/",
 		".ua/",
 		".hermes/",
+		"body/",
 	} {
 		if !strings.Contains(string(help), want) {
 			t.Fatalf("help does not document %q:\n%s", want, help)
@@ -46,6 +47,8 @@ func TestDesktopZipExcludesRuntimeTreesAndDocumentsTheSnapshotBoundary(t *testin
 		".pytest_cache/cache",
 		".ua/graph.json",
 		".hermes/worktrees/duplicate.txt",
+		"body/index-v2.sqlite",
+		"body/backup/operation.lock",
 		"memory/compound/directory-only/.keep-dir",
 	} {
 		fullPath := filepath.Join(source, path)
@@ -82,7 +85,7 @@ func TestDesktopZipExcludesRuntimeTreesAndDocumentsTheSnapshotBoundary(t *testin
 	if _, err := os.Stat(filepath.Join(stage, "keep.txt")); err != nil {
 		t.Fatalf("ordinary source file missing: %v", err)
 	}
-	for _, excluded := range []string{".claude", ".codex", ".agents", "state", ".pytest_cache", ".ua", ".hermes"} {
+	for _, excluded := range []string{".claude", ".codex", ".agents", "state", ".pytest_cache", ".ua", ".hermes", "body"} {
 		if _, err := os.Stat(filepath.Join(stage, excluded)); !os.IsNotExist(err) {
 			t.Fatalf("runtime tree %q was packaged: %v", excluded, err)
 		}
@@ -91,7 +94,7 @@ func TestDesktopZipExcludesRuntimeTreesAndDocumentsTheSnapshotBoundary(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, excluded := range []string{".claude/", ".codex/", ".agents/", "state/", ".pytest_cache/", ".ua/", ".hermes/"} {
+	for _, excluded := range []string{".claude/", ".codex/", ".agents/", "state/", ".pytest_cache/", ".ua/", ".hermes/", "body/"} {
 		if !strings.Contains(string(notes), excluded) {
 			t.Fatalf("AUDIT-NOTES.md omits always-excluded %q:\n%s", excluded, notes)
 		}
