@@ -81,7 +81,7 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
@@ -127,6 +127,10 @@ var workVerbHelpByName = map[string]workVerbHelp{
 	"reconcile-run-attempts": {
 		Usage:   "usage: compound work reconcile-run-attempts <work_id> [--json]",
 		Example: "compound work reconcile-run-attempts work_abc123 --json",
+	},
+	"run-attempt-link": {
+		Usage:   "usage: compound work run-attempt-link --attempt ratt_X --predecessor ratt_Y [--json]",
+		Example: "compound work run-attempt-link --attempt ratt_20260823T120500Z_real --predecessor ratt_20260823T120000Z_abandoned",
 	},
 	"continue": {
 		Usage:   "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--json]",
@@ -878,6 +882,31 @@ func cmdWork(args []string) {
 		}
 		if report.Status != "ok" {
 			os.Exit(1)
+		}
+	case "run-attempt-link":
+		runAttemptLinkUsage := "usage: compound work run-attempt-link --attempt ratt_X --predecessor ratt_Y [--json]"
+		runAttemptLinkValueFlags := map[string]bool{"--attempt": true, "--predecessor": true}
+		if err := validateWorkArguments(rest, runAttemptLinkValueFlags, map[string]bool{"--json": true}, 0); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, runAttemptLinkUsage)
+			os.Exit(2)
+		}
+		attemptID := flag("--attempt")
+		predecessorID := flag("--predecessor")
+		if attemptID == "" || predecessorID == "" {
+			fmt.Fprintln(os.Stderr, "error: --attempt and --predecessor are required")
+			fmt.Fprintln(os.Stderr, runAttemptLinkUsage)
+			os.Exit(2)
+		}
+		ra, err := runattempt.Open(homePath).SetPredecessor(attemptID, predecessorID)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error: run-attempt-link:", err)
+			os.Exit(1)
+		}
+		if has("--json") {
+			printJSON(ra)
+		} else {
+			fmt.Printf("linked %s -> %s (work=%s, status=%s)\n", ra.ID, ra.PredecessorID, ra.WorkID, ra.Status)
 		}
 	case "continue":
 		usage := "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--json]"
