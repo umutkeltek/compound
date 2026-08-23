@@ -86,10 +86,37 @@ func TestSwitchbackPulseHealthyReport(t *testing.T) {
 	}
 }
 
-func TestSwitchbackPulseRejectsSchemaMismatch(t *testing.T) {
+func TestSwitchbackPulseAcceptsV2Schema(t *testing.T) {
 	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
 	body := fmt.Sprintf(`{
   "schema": "switchback/pulse@2",
+  "ts": %q,
+  "mode": "fast",
+  "overall": "ok",
+  "summary": {"ok": 2, "warn": 0, "fail": 0},
+  "duration_ms": 12,
+  "checks": [
+    {"name": "engine", "area": "engine", "level": "ok", "detail": "synthetic engine is healthy"},
+    {"name": "headroom", "area": "headroom", "level": "ok", "detail": "synthetic optimizer is healthy"}
+  ]
+}`, now.Add(-time.Minute).Format(time.RFC3339))
+
+	report, err := ReadSwitchbackPulseReport(strings.NewReader(body), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || checkStatus(report, "live:schema") != "ok" {
+		t.Fatalf("v2 schema should be accepted: %+v", report)
+	}
+	if got := checkDetail(report, "live:schema"); got != "switchback/pulse@2" {
+		t.Fatalf("expected schema detail to reflect observed version, got %q", got)
+	}
+}
+
+func TestSwitchbackPulseRejectsSchemaMismatch(t *testing.T) {
+	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
+	body := fmt.Sprintf(`{
+  "schema": "switchback/pulse@999",
   "ts": %q,
   "mode": "fast",
   "overall": "ok",

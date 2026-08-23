@@ -12,7 +12,11 @@ import (
 )
 
 const (
-	SwitchbackPulseSchema = "switchback/pulse@1"
+	// SwitchbackPulseSchema is the canonical schema name accepted by the
+	// runtime doctor. Both v1 and v2 are accepted for backward compatibility
+	// while the served surface evolves; the doctor reports the observed version.
+	SwitchbackPulseSchema  = "switchback/pulse@1"
+	SwitchbackPulseSchema2 = "switchback/pulse@2"
 	// The source collector runs on a 15-minute cadence; five minutes of bounded
 	// scheduler/runtime jitter must not flap healthy evidence stale.
 	SwitchbackPulseMaxAge = 20 * time.Minute
@@ -92,11 +96,12 @@ func switchbackPulseDoctorReport(receipt switchbackPulseReceipt, now time.Time) 
 		}
 	}
 
-	if strings.TrimSpace(receipt.Schema) != SwitchbackPulseSchema {
-		add("live:schema", "fail", "expected switchback/pulse@1 receipt")
+	schema := strings.TrimSpace(receipt.Schema)
+	if schema != SwitchbackPulseSchema && schema != SwitchbackPulseSchema2 {
+		add("live:schema", "fail", "expected switchback/pulse@1 or switchback/pulse@2 receipt")
 		return report
 	}
-	add("live:schema", "ok", SwitchbackPulseSchema)
+	add("live:schema", "ok", schema)
 	mode := strings.ToLower(strings.TrimSpace(receipt.Mode))
 	if mode != "fast" && mode != "live" {
 		add("live:receipt", "fail", "receipt mode must be fast or live")
