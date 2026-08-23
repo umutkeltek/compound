@@ -2553,3 +2553,48 @@ func TestLiveReadBuiltinDoesNotAskAtEnforcedHookBoundary(t *testing.T) {
 			got, unknownResponse.HookSpecificOutput.PermissionDecisionReason)
 	}
 }
+
+// TestLoadHookFixtureEmptyStdinReturnsNoOp: empty stdin is a real-world
+// scenario (background dispatch, harness recovery, missing payload).
+// The hook must NOT block the harness with a parse error; it returns a
+// no-op fixture so the caller still gets a well-formed response.
+//
+// Regression test for the "Context build failed" failure that surfaced
+// when a Claude Code session invoked the UserPromptSubmit hook without
+// a payload (e.g., on background dispatch).
+func TestLoadHookFixtureEmptyStdinReturnsNoOp(t *testing.T) {
+	t.Helper()
+	parsed := hookCommandArgs{HookName: "user-prompt-submit", Harness: "claude-code", Live: true}
+	fx, err := loadHookFixture(parsed, cliTestNow)
+	if err != nil {
+		t.Fatalf("empty stdin must not error, got: %v", err)
+	}
+	if fx.Hook != "user-prompt-submit" {
+		t.Fatalf("fixture hook = %q, want user-prompt-submit", fx.Hook)
+	}
+	if !fx.Live {
+		t.Fatalf("fixture Live = false, want true")
+	}
+	if fx.Harness != "claude_code" {
+		t.Fatalf("fixture harness = %q, want claude-code", fx.Harness)
+	}
+	if fx.Prompt != "" {
+		t.Fatalf("fixture prompt = %q, want empty for no-op", fx.Prompt)
+	}
+}
+
+func TestLoadHookFixtureForHomeEmptyStdinReturnsNoOp(t *testing.T) {
+	t.Helper()
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	parsed := hookCommandArgs{HookName: "user-prompt-submit", Harness: "claude-code", Live: true}
+	fx, err := loadHookFixtureForHome(parsed, cliTestNow, homePath)
+	if err != nil {
+		t.Fatalf("empty stdin must not error, got: %v", err)
+	}
+	if fx.Hook != "user-prompt-submit" || !fx.Live {
+		t.Fatalf("fixture missing live fields: %+v", fx)
+	}
+}

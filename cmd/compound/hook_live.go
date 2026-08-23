@@ -128,6 +128,13 @@ func loadHookFixture(parsed hookCommandArgs, now time.Time) (hook.Fixture, error
 		if err != nil {
 			return hook.Fixture{}, err
 		}
+		// Empty stdin is a real-world scenario (background dispatch,
+		// harness recovery paths, missing payload) — return a no-op
+		// fixture so the caller still gets a well-formed response
+		// instead of a parse error that blocks the harness.
+		if len(data) == 0 {
+			return hook.Fixture{Hook: parsed.HookName, Harness: normalizeLiveHarness(parsed.Harness), Live: parsed.Live}, nil
+		}
 		return liveHookFixture(parsed, data, now)
 	}
 	return loadRecordedHookFixture(parsed)
@@ -141,6 +148,9 @@ func loadHookFixtureForHome(parsed hookCommandArgs, now time.Time, homePath stri
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return hook.Fixture{}, err
+		}
+		if len(data) == 0 {
+			return hook.Fixture{Hook: parsed.HookName, Harness: normalizeLiveHarness(parsed.Harness), Live: parsed.Live}, nil
 		}
 		return liveHookFixtureForHome(parsed, data, now, homePath)
 	}
