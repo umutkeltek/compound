@@ -545,6 +545,109 @@ func (s *Store) AdjudicateAsOperator(candID, verdict, workID, actor string, now 
 	return s.adjudicate(candID, verdict, workID, now, false, "", actor)
 }
 
+// AdjudicatePendingReport summarises one batch adjudicate pass. The VerdictCounts
+// map keys are the verbatim verdict strings ("reject", "no_promote", "park",
+// "promote"); FirstID and LastID name the inboxes walked for repeatable log
+// runs; Errors is the slice of per-candidate errors (adjudicate halts on a
+// hard failure but tolerates per-candidate errors so a single corrupt file
+// does not strand the whole batch).
+type AdjudicatePendingReport struct {
+	Scanned       int                  `json:"scanned"`
+	Adjudicated   int                  `json:"adjudicated"`
+	Skipped       int                  `json:"skipped"`
+	VerdictCounts map[string]int       `json:"verdict_counts"`
+	FirstID       string               `json:"first_id,omitempty"`
+	LastID        string               `json:"last_id,omitempty"`
+	Errors        []AdjudicatePendingError `json:"errors,omitempty"`
+}
+
+// AdjudicatePendingError names one candidate the batch could not adjudicate.
+// Reported inline so the operator can re-drive the failure without re-walking
+// the whole inbox.
+type AdjudicatePendingError struct {
+	CandidateID string `json:"candidate_id"`
+	Err         string `json:"error"`
+}
+
+// AdjudicatePending walks the inbox in stable id order and applies a verdict
+// per candidate. With VerdictPolicy=Disposition, each candidate's own
+// admission-class disposition drives its verdict (auto no_promote/park for
+// non-memory kinds, leave proposed-for-operator otherwise). With
+// VerdictPolicy=Fixed, the caller-supplied verdict is applied uniformly.
+// Promotion stays per-id: an explicit fixed "promote" verdict is REFUSED,
+// forcing the operator to drive promotion through the single-id door.
+//
+// The function does NOT recurse into candidates the inbox write already
+// closed (State != "proposed"); they are counted in Skipped. This is what
+// makes the verb idempotent — running it twice produces the same report
+// modulo the Errors slice.
+func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) AdjudicatePendingReport {
+	r := AdjudicatePendingReport{VerdictCounts: map[string]int{}}
+	cands, err := s.AllCandidates()
+	if err != nil {
+		r.Errors = append(r.Errors, AdjudicatePendingError{CandidateID: "*", Err: err.Error()})
+		return r
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].ID < cands[j].ID })
+	for _, c := range cands {
+		r.Scanned++
+		if r.FirstID == "" {
+			r.FirstID = c.ID
+		}
+		r.LastID = c.ID
+		// Idempotency: a candidate the inbox write already closed (parked
+		// or promoted) stays untouched. The disposal state is durable on
+		// disk — re-running this verb must not re-classify it.
+		if c.State != "" && c.State != "proposed" {
+			r.Skipped++
+			continue
+		}
+		verdict := opts.Verdict
+		if opts.Verdict == "" {
+			verdict = dispositionVerdict(c)
+		}
+		// Refuse closed-form "promote" in batch mode — the packet's settled
+		// design decision 3: promotion requires a per-candidate basis and
+		// stays per-id so a stale batch cannot promote without the operator.
+		if verdict == "promote" {
+			r.Errors = append(r.Errors, AdjudicatePendingError{
+				CandidateID: c.ID,
+				Err:         "batch mode refuses --verdict promote; promote per-id with `compound memory adjudicate <id> --verdict promote`",
+			})
+			continue
+		}
+		if _, err := s.Adjudicate(c.ID, verdict, opts.WorkID, now); err != nil {
+			r.Errors = append(r.Errors, AdjudicatePendingError{CandidateID: c.ID, Err: err.Error()})
+			continue
+		}
+		r.VerdictCounts[verdict]++
+		r.Adjudicated++
+	}
+	return r
+}
+
+// AdjudicatePendingOptions configures one AdjudicatePending pass. With Verdict
+// empty, each candidate's own admission-class disposition drives its verdict.
+type AdjudicatePendingOptions struct {
+	Verdict string // empty -> per-candidate disposition; fixed verdict applied uniformly
+	WorkID  string // optional --work binding for the batch receipts
+}
+
+// dispositionVerdict returns the verdict a candidate with no explicit
+// --verdict flag would receive. source_metadata / annotated_evidence are
+// not memory; they auto-reject (no_promote). A bare proposed candidate
+// without a definite disposition parks itself so the operator can rule.
+func dispositionVerdict(c Candidate) string {
+	switch strings.TrimSpace(c.Qualifiers["source"]) {
+	case "knowledge_import":
+		return "no_promote"
+	case "knowledge_extraction":
+		return "no_promote"
+	default:
+		return "park"
+	}
+}
+
 // AdjudicateExplicitConfirmation is the only ordinary-memory door that may
 // attach an explicit_confirmation basis to an already-parked candidate. The
 // caller must cite a content-addressed EvidenceItem bound to this candidate

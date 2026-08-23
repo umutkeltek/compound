@@ -1893,3 +1893,69 @@ func TestDoctorFreshnessInboxBacklogWarnAndFail(t *testing.T) {
 		})
 	}
 }
+
+// TestAdjudicatePendingDispositions: the inbox walker applies each
+// candidate's own admission-class disposition: source_metadata +
+// annotated_evidence candidates auto-reject (no_promote); bare proposed
+// candidates park. Re-running the verb is idempotent because parked /
+// promoted candidates carry durable state and the walker skips them.
+func TestAdjudicatePendingDispositions(t *testing.T) {
+	s := newStore(t)
+	// 3 source_metadata candidates -> no_promote
+	for i := 0; i < 3; i++ {
+		c := cand("e", "p", fmt.Sprintf("v-%d", i), "")
+		c.Qualifiers = map[string]string{"source": "knowledge_import"}
+		c.ID = fmt.Sprintf("cand-import-%d", i)
+		if _, err := s.Capture([]Candidate{c}, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 2 bare proposed candidates -> park
+	for i := 0; i < 2; i++ {
+		c := cand("e", "p", fmt.Sprintf("bare-%d", i), "")
+		c.ID = fmt.Sprintf("cand-bare-%d", i)
+		if _, err := s.Capture([]Candidate{c}, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := s.AdjudicatePending(AdjudicatePendingOptions{}, t0.Add(time.Minute))
+	// source_metadata + annotated_evidence candidates auto-park at
+	// admission (their State is already 'parked'); the walker skips
+	// them. Only the 2 bare proposed candidates get adjudicated here.
+	if r.Adjudicated != 2 {
+		t.Fatalf("adjudicated = %d, want 2 (only the bare proposed candidates)", r.Adjudicated)
+	}
+	if r.VerdictCounts["park"] != 2 {
+		t.Fatalf("verdict counts = %+v, want park=2", r.VerdictCounts)
+	}
+	if r.Scanned != 5 {
+		t.Fatalf("scanned = %d, want 5", r.Scanned)
+	}
+	if r.Skipped != 3 {
+		t.Fatalf("skipped = %d, want 3 (already-parked source_metadata)", r.Skipped)
+	}
+
+	// Idempotency: re-running sees nothing to do.
+	r2 := s.AdjudicatePending(AdjudicatePendingOptions{}, t0.Add(2*time.Minute))
+	if r2.Adjudicated != 0 || r2.Skipped != 5 {
+		t.Fatalf("re-run adjudicated=%d skipped=%d, want 0/5", r2.Adjudicated, r2.Skipped)
+	}
+}
+
+// TestAdjudicatePendingRefusesFixedPromote: the walker refuses --verdict
+// promote even when the operator passes it — promotion is per-id only.
+func TestAdjudicatePendingRefusesFixedPromote(t *testing.T) {
+	s := newStore(t)
+	c := cand("e", "p", "v", "")
+	c.ID = "cand-promote-attempt"
+	if _, err := s.Capture([]Candidate{c}, t0); err != nil {
+		t.Fatal(err)
+	}
+	r := s.AdjudicatePending(AdjudicatePendingOptions{Verdict: "promote"}, t0.Add(time.Minute))
+	if r.Adjudicated != 0 {
+		t.Fatalf("batch refused promote but adjudicated=%d", r.Adjudicated)
+	}
+	if len(r.Errors) != 1 || !strings.Contains(r.Errors[0].Err, "refuses --verdict promote") {
+		t.Fatalf("expected promote-refusal error, got %+v", r.Errors)
+	}
+}

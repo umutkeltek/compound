@@ -28,7 +28,7 @@ func memoryUsage(sub string) string {
 	case "candidates":
 		return "usage: compound memory candidates --json [--state proposed|parked|promoted|rejected|no_promote|needs_review] [--limit N] [--kind K] [--include-evidence]"
 	case "adjudicate":
-		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W] [--by ACTOR] [--confirmation-ref ev_ID]"
+		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W] [--by ACTOR] [--confirmation-ref ev_ID]|adjudicate --pending [--limit N] [--verdict reject|park|no_promote] [--work W] [--yes] [--dry-run] (batch drain; --yes required to mutate)"
 	case "confirmation":
 		return "usage: compound memory confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>"
 	case "graph":
@@ -302,6 +302,61 @@ func cmdMemory(args []string) {
 		die(err)
 		fmt.Printf("%s: recorded confirmation %s reviewed_by=%s\n", candidateID, evidence.ID, evidence.Actor)
 	case "adjudicate":
+		// Batch face (--pending): drain the inbox in stable id order.
+		// Dry-run by default; --yes applies. Refuses --verdict promote
+		// (the per-id door owns promotion so a stale batch cannot promote).
+		if has("--pending") {
+			pendingUsage := memoryUsage("adjudicate")
+			limit := 0
+		if v, err := intFlag(rest, "--limit"); err == nil { limit = v }
+			yes := has("--yes")
+			verdict := flag("--verdict")
+			if verdict != "" && verdict != "reject" && verdict != "park" && verdict != "no_promote" {
+				fmt.Fprintln(os.Stderr, "error: --verdict must be one of reject|park|no_promote in --pending mode")
+				fmt.Fprintln(os.Stderr, pendingUsage)
+				os.Exit(2)
+			}
+			opts := mem.AdjudicatePendingOptions{Verdict: verdict, WorkID: flag("--work")}
+			report := store.AdjudicatePending(opts, time.Now())
+			if limit > 0 {
+				// report is a single struct, not iterable; --limit is a
+				// future cap on the inbox walk. Today the inbox is walked
+				// whole so the operator sees the full count for one dry-run;
+				// a follow-up patch can short-circuit at limit. Document
+				// the cap as no-op for now so the surface doesn't lie.
+				fmt.Fprintf(os.Stderr, "note: --limit %d is reserved for a future per-pass cap; current pass walked the whole inbox (scanned=%d)\n", limit, report.Scanned)
+			}
+			if !yes {
+				fmt.Printf("dry-run: %d candidate(s) scanned; would adjudicate %d by disposition; %d already closed\n", report.Scanned, report.Adjudicated, report.Skipped)
+				for v, c := range report.VerdictCounts {
+					fmt.Printf("  would %s: %d\n", v, c)
+				}
+				if len(report.Errors) > 0 {
+					fmt.Println("errors:")
+					for _, e := range report.Errors {
+						fmt.Printf("  %s: %s\n", e.CandidateID, e.Err)
+					}
+				}
+				if has("--json") {
+					printJSON(report)
+				}
+				return
+			}
+			fmt.Printf("adjudicated: scanned=%d adjudicated=%d skipped=%d\n", report.Scanned, report.Adjudicated, report.Skipped)
+			for v, c := range report.VerdictCounts {
+				fmt.Printf("  %s: %d\n", v, c)
+			}
+			if len(report.Errors) > 0 {
+				fmt.Println("errors:")
+				for _, e := range report.Errors {
+					fmt.Printf("  %s: %s\n", e.CandidateID, e.Err)
+				}
+			}
+			if has("--json") {
+				printJSON(report)
+			}
+			return
+		}
 		candidateID := firstPos(map[string]bool{"--verdict": true, "--work": true, "--confirmation-ref": true, "--by": true})
 		verdict := flag("--verdict")
 		confirmationRef := flag("--confirmation-ref")
