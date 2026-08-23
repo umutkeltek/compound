@@ -1594,6 +1594,10 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 			if !strings.HasPrefix(rid, "ratt_") {
 				return envelope.WorkEnvelope{}, fmt.Errorf("advance RunAttemptIDs contains non-ratt_ id %q (settled in S1; see internal/runattempt.Prefix)", rid)
 			}
+			// WEDGE PREVENTION
+			if err := s.refuseRunAttemptReAttachMismatch(w, rid, in.To); err != nil {
+				return envelope.WorkEnvelope{}, err
+			}
 			w.RunAttemptIDs = mergeUnique(w.RunAttemptIDs, []string{rid})
 			attached = append(attached, rid)
 		}
@@ -2109,6 +2113,46 @@ func attachedHas(values []string, want string) bool {
 	return slices.Contains(values, want)
 }
 
+// refuseRunAttemptReAttachMismatch enforces the wedge-prevention invariant:
+// the SAME ratt_ id may appear in AT MOST ONE lifecycle event per target
+// state. The lived 2026-08-23 wedge (work_1d968c3f0522) wrote two events
+// with `to=running` that both attached the same ratt_ -- the close-time
+// authority gate then built a pair-set of size 2 and refused forever.
+//
+// The legitimate claim -> running flow is structurally distinct: the claim
+// event has `to=claimed` and the advance event has `to=running`, so the
+// same ratt_ can appear in both events WITHOUT conflict. Same-state
+// re-attach (e.g. same-state claim repair: from=claimed, to=claimed)
+// reuses the ratt_ under the same `to` state and is also allowed IF AND
+// ONLY IF the existing attaching event uses the SAME (act_, pol_) pair
+// (an idempotent re-link, not a wedge).
+func (s *Store) refuseRunAttemptReAttachMismatch(w envelope.WorkEnvelope, rattID, currentTo string) error {
+	if rattID == "" || !strings.HasPrefix(rattID, "ratt_") {
+		return nil
+	}
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if !attachedHas(event.Attached, rattID) {
+			continue
+		}
+		if event.To != currentTo {
+			continue
+		}
+		return fmt.Errorf(
+			"runattempt %s already attached to work %s by lifecycle event at %s (note=%q) with to=%q; "+
+				"refusing to write a second attaching event with the same to=%q "+
+				"because that creates the runattempt-authority wedge (lived 2026-08-23, work_1d968c3f0522). "+
+				"remediation: if this is an idempotent same-state re-link, reuse the SAME (act_, pol_) pair "+
+				"so the close-time gate collapses both events back to one authority; otherwise mint a fresh ratt_ via runattempt.Mint",
+			rattID, w.ID, event.TS, event.Note, event.To, currentTo,
+		)
+	}
+	return nil
+}
+
 // resolveRunAttemptAuthority binds one attempt to one exact allowed
 // ActionIntent/PolicyDecision generation. Modern governed attempts carry the
 // pair directly; claim reservations and legacy panel attempts recover the
@@ -2168,7 +2212,29 @@ func (s *Store) resolveRunAttemptAuthorityFromEvents(w envelope.WorkEnvelope, ra
 		if len(pairs) == 0 {
 			disposition = "missing"
 		}
-		return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority generation is %s (pairs=%d)", ra.ID, disposition, len(pairs))
+		if len(pairs) <= 1 {
+			return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority generation is %s (pairs=%d)", ra.ID, disposition, len(pairs))
+		}
+		// Pair ambiguity is the lived 2026-08-23 wedge. Name EVERY pair and
+		// the events that attached it so an operator can audit the wedge
+		// without diffing events files by hand. The prevention at
+		// applyAdvance stops new wedges; this error is defense-in-depth for
+		// histories already on disk.
+		var pairDescs []string
+		for p := range pairs {
+			pairDescs = append(pairDescs, fmt.Sprintf("(act=%s, pol=%s)", p.action, p.policy))
+		}
+		attachingEvents := []string{}
+		for _, event := range events {
+			if !attachedHas(event.Attached, ra.ID) {
+				continue
+			}
+			attachingEvents = append(attachingEvents, fmt.Sprintf("event@%s note=%q", event.TS, event.Note))
+		}
+		return runAttemptAuthority{}, fmt.Errorf(
+			"runattempt %s authority generation is ambiguous (pairs=%d): %s; attached by lifecycle events: %s. remediation: run compound work reconcile-run-attempts %s, or fix the source that wrote the second attach",
+			ra.ID, len(pairs), strings.Join(pairDescs, " vs "), strings.Join(attachingEvents, "; "), w.ID,
+		)
 	}
 	var resolved pair
 	for candidate := range pairs {
