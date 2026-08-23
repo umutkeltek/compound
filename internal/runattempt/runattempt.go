@@ -122,9 +122,9 @@ const (
 	// TerminalizationIntentSchemaVersion is the durable prepare record written
 	// before a WorkEnvelope close publishes its first authoritative byte.
 	TerminalizationIntentSchemaVersion = "compound.runattempt_terminalization_intent.v0.1"
-	TerminalizationOwnerWorkClose                 = "work.close"
-	TerminalizationOwnerWorkSupersede             = "work.close.supersede"
-	TerminalizationOwnerPanelApply                = "panel.apply"
+	TerminalizationOwnerWorkClose      = "work.close"
+	TerminalizationOwnerWorkSupersede  = "work.close.supersede"
+	TerminalizationOwnerPanelApply     = "panel.apply"
 	// TerminalizationOwnerWorkAcknowledgeAbandoned is the work.close
 	// caller-owned acknowledgement of an ALREADY-terminal abandoned
 	// RunAttempt (close-gate-recovery door, lived wedge work_2742cffbeb5f).

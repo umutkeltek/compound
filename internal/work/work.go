@@ -1609,7 +1609,7 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 				attached = append(attached, rid)
 			}
 			w.RunAttemptIDs = mergeUnique(w.RunAttemptIDs, []string{rid})
-	}
+		}
 	}
 	if in.ArtifactID != "" {
 		w.ArtifactIDs = append(w.ArtifactIDs, in.ArtifactID)

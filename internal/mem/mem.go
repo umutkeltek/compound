@@ -552,12 +552,12 @@ func (s *Store) AdjudicateAsOperator(candID, verdict, workID, actor string, now 
 // hard failure but tolerates per-candidate errors so a single corrupt file
 // does not strand the whole batch).
 type AdjudicatePendingReport struct {
-	Scanned       int                  `json:"scanned"`
-	Adjudicated   int                  `json:"adjudicated"`
-	Skipped       int                  `json:"skipped"`
-	VerdictCounts map[string]int       `json:"verdict_counts"`
-	FirstID       string               `json:"first_id,omitempty"`
-	LastID        string               `json:"last_id,omitempty"`
+	Scanned       int                      `json:"scanned"`
+	Adjudicated   int                      `json:"adjudicated"`
+	Skipped       int                      `json:"skipped"`
+	VerdictCounts map[string]int           `json:"verdict_counts"`
+	FirstID       string                   `json:"first_id,omitempty"`
+	LastID        string                   `json:"last_id,omitempty"`
 	Errors        []AdjudicatePendingError `json:"errors,omitempty"`
 }
 
@@ -1626,10 +1626,10 @@ func (s *Store) currentEchoClaimWithResolver(cand Candidate, asOf int64, resolve
 // memDoctorThresholds holds the freshness gates. Vars (not consts) so
 // tests can shrink them; production callers use the defaults.
 var memDoctorThresholds = struct {
-	ClaimStaleAfter       time.Duration
-	CandidateStaleAfter   time.Duration
-	InboxBacklogWarn      int
-	InboxBacklogFail      int
+	ClaimStaleAfter     time.Duration
+	CandidateStaleAfter time.Duration
+	InboxBacklogWarn    int
+	InboxBacklogFail    int
 }{
 	ClaimStaleAfter:     72 * time.Hour,
 	CandidateStaleAfter: 168 * time.Hour,
@@ -1640,12 +1640,12 @@ var memDoctorThresholds = struct {
 // --- doctor (which hop) ---
 
 type Hop struct {
-	Name             string `json:"name"`
-	Status           string `json:"status"` // ok | empty | skipped | warn | fail
-	Detail           string `json:"detail"`
-	NewestClaimAt    string `json:"newest_claim_at,omitempty"`
+	Name              string `json:"name"`
+	Status            string `json:"status"` // ok | empty | skipped | warn | fail
+	Detail            string `json:"detail"`
+	NewestClaimAt     string `json:"newest_claim_at,omitempty"`
 	NewestCandidateAt string `json:"newest_candidate_at,omitempty"`
-	InboxBacklog     int    `json:"inbox_backlog,omitempty"`
+	InboxBacklog      int    `json:"inbox_backlog,omitempty"`
 }
 type Report struct {
 	Hops              []Hop              `json:"hops"`

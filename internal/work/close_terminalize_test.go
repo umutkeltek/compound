@@ -674,11 +674,11 @@ func TestCloseAcknowledgeAbandonedAllowsClose(t *testing.T) {
 	real := attachTerminalCloseHistoryAttempt(t, s, id, abandoned.ID, runattempt.StatusSucceeded, true, fixedNow.Add(5*time.Minute))
 
 	res, err := s.Close(id, CloseInput{
-		Outcome:          "completed",
-		MoveType:         "outward_delta",
-		Summary:          "acknowledge-abandoned door unblocks lived wedge",
-		Changed:          true,
-		ProofRefs:        []string{"check:ack-abandoned"},
+		Outcome:   "completed",
+		MoveType:  "outward_delta",
+		Summary:   "acknowledge-abandoned door unblocks lived wedge",
+		Changed:   true,
+		ProofRefs: []string{"check:ack-abandoned"},
 		RunAttemptTerminalizations: []RunAttemptTerminalizationRequest{{
 			RunAttemptID: abandoned.ID,
 			Owner:        runattempt.TerminalizationOwnerWorkAcknowledgeAbandoned,
@@ -736,11 +736,11 @@ func TestCloseAcknowledgeAbandonedRejectsEmptyReason(t *testing.T) {
 	attachTerminalCloseHistoryAttempt(t, s, id, abandoned.ID, runattempt.StatusSucceeded, true, fixedNow.Add(5*time.Minute))
 
 	_, err := s.Close(id, CloseInput{
-		Outcome:          "completed",
-		MoveType:         "outward_delta",
-		Summary:          "acknowledge-abandoned must require reason",
-		Changed:          true,
-		ProofRefs:        []string{"check:ack-abandoned-no-reason"},
+		Outcome:   "completed",
+		MoveType:  "outward_delta",
+		Summary:   "acknowledge-abandoned must require reason",
+		Changed:   true,
+		ProofRefs: []string{"check:ack-abandoned-no-reason"},
 		RunAttemptTerminalizations: []RunAttemptTerminalizationRequest{{
 			RunAttemptID: abandoned.ID,
 			Owner:        runattempt.TerminalizationOwnerWorkAcknowledgeAbandoned,

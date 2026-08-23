@@ -40,10 +40,10 @@ import (
 // shape).
 
 const (
-	scaleWorkCount      = 800
-	scaleEventsPerWork  = 94 // 800 * 94 ≈ 75,200 events (packet spec)
-	scaleItemBudget     = 25 * time.Millisecond
-	scaleTotalBudget    = scaleWorkCount * scaleItemBudget / 4 // 200 work items per ms — generous
+	scaleWorkCount     = 800
+	scaleEventsPerWork = 94 // 800 * 94 ≈ 75,200 events (packet spec)
+	scaleItemBudget    = 25 * time.Millisecond
+	scaleTotalBudget   = scaleWorkCount * scaleItemBudget / 4 // 200 work items per ms — generous
 )
 
 // writeSyntheticHome builds a synthetic COMPOUND_HOME at packet scale: ~800

@@ -1860,9 +1860,9 @@ func TestDoctorFreshnessInboxBacklogWarnAndFail(t *testing.T) {
 	// (memDoctorInboxBacklogWarn=5_000, memDoctorInboxBacklogFail=50_000)
 	// are too slow to instantiate in a unit test.
 	cases := []struct {
-		name      string
-		backlog   int
-		want      string
+		name    string
+		backlog int
+		want    string
 	}{
 		{"empty", 0, "empty"},
 		{"under_warn", memDoctorThresholds.InboxBacklogWarn - 1, "ok"},

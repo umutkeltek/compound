@@ -308,7 +308,9 @@ func cmdMemory(args []string) {
 		if has("--pending") {
 			pendingUsage := memoryUsage("adjudicate")
 			limit := 0
-		if v, err := intFlag(rest, "--limit"); err == nil { limit = v }
+			if v, err := intFlag(rest, "--limit"); err == nil {
+				limit = v
+			}
 			yes := has("--yes")
 			verdict := flag("--verdict")
 			if verdict != "" && verdict != "reject" && verdict != "park" && verdict != "no_promote" {

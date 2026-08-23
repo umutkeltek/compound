@@ -177,27 +177,27 @@ func TestCloseWedgeNamesBothPairsAndRemediation(t *testing.T) {
 		RunAttemptIDs: []string{ra.ID},
 	}, fixedNow.Add(10*time.Minute))
 	if closeErr != nil {
-	if closeErr != nil {
-		t.Fatalf("close must resolve via tiebreak; got %v", closeErr)
-	}
-	// Sanity: the resolved authority must match the running-reservation pair.
-	events, err := s.eventsFor(w.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	loadedRA, err := runattempt.Open(s.home).Get(ra.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	authority, err := s.resolveRunAttemptAuthorityFromEvents(closeOut.Work, loadedRA, events)
-	if err != nil {
-		t.Fatalf("authority resolution must succeed under tiebreak: %v", err)
-	}
-	if authority.ActionIntentID != firstAction || authority.PolicyDecisionID != firstPolicy {
-		t.Fatalf("authority = (%s,%s); want tiebreak pair (%s,%s)",
-			authority.ActionIntentID, authority.PolicyDecisionID, firstAction, firstPolicy)
-	}
-	_ = firstPolicy // used above; suppress unused warning if any
+		if closeErr != nil {
+			t.Fatalf("close must resolve via tiebreak; got %v", closeErr)
+		}
+		// Sanity: the resolved authority must match the running-reservation pair.
+		events, err := s.eventsFor(w.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loadedRA, err := runattempt.Open(s.home).Get(ra.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		authority, err := s.resolveRunAttemptAuthorityFromEvents(closeOut.Work, loadedRA, events)
+		if err != nil {
+			t.Fatalf("authority resolution must succeed under tiebreak: %v", err)
+		}
+		if authority.ActionIntentID != firstAction || authority.PolicyDecisionID != firstPolicy {
+			t.Fatalf("authority = (%s,%s); want tiebreak pair (%s,%s)",
+				authority.ActionIntentID, authority.PolicyDecisionID, firstAction, firstPolicy)
+		}
+		_ = firstPolicy // used above; suppress unused warning if any
 	}
 }
 
