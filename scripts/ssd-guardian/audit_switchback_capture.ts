@@ -217,8 +217,13 @@ const lanes: Lane[] = [
   buildLane("claude-codex-oauth", "127.0.0.1:18782", tapByPort, observed.map, pressure),
   buildLane("claude-wpcom-headroom", "127.0.0.1:18783", tapByPort, observed.map, pressure),
   buildLane("claude-kimi", "127.0.0.1:18784", tapByPort, observed.map, pressure),
-  buildLane("claude-deepseek-flash-api", "127.0.0.1:18785", tapByPort, observed.map, pressure),
-  buildLane("claude-deepseek-flash-nvidia", "127.0.0.1:18786", tapByPort, observed.map, pressure),
+  buildLane("qwen-openai-tap", "127.0.0.1:18787", tapByPort, observed.map, pressure),
+  buildLane("deepseek-openai-tap", "127.0.0.1:18788", tapByPort, observed.map, pressure),
+  buildLane("openrouter-openai-tap", "127.0.0.1:18795", tapByPort, observed.map, pressure),
+  buildLane("nvidia-openai-tap", "127.0.0.1:18791", tapByPort, observed.map, pressure),
+  buildLane("gemini-google-tap", "127.0.0.1:18792", tapByPort, observed.map, pressure),
+  buildLane("zai-openai-tap", "127.0.0.1:18793", tapByPort, observed.map, pressure),
+  buildLane("minimax-openai-tap", "127.0.0.1:18794", tapByPort, observed.map, pressure),
   // Hermes is the orchestrator; it doesn't make LLM API calls of its own.
   buildLane("hermes (orchestrator, not an LLM harness)", "n/a", tapByPort, observed.map, pressure),
   // Codex default headroom direct — bypasses switchback tap entirely.
