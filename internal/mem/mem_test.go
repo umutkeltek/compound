@@ -1797,14 +1797,22 @@ func TestValidateAdjudicationIntentEnforcesEachRuleInIsolation(t *testing.T) {
 	}
 }
 
-// TestDoctorFreshnessPromotionStalledSignalsFail: when the newest claim is
-// older than the staleness threshold AND the inbox still has candidates,
-// promotion reports fail and stamps the freshness fields. This is the
-// stall signature that the pre-freshness doctor masked by reporting ok.
+// TestDoctorFreshnessPromotionStalledSignalsFail: when the claims ledger
+// stopped being appended to (append evidence older than the staleness
+// threshold) AND the inbox still has candidates, promotion reports fail and
+// stamps the freshness fields. This is the stall signature that the
+// pre-freshness doctor masked by reporting ok.
 func TestDoctorFreshnessPromotionStalledSignalsFail(t *testing.T) {
 	s := newStore(t)
 	c, _ := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0)
 	_, _ = promoteForTest(t, s, c[0].ID, "", t0)
+	// Age the ledger's append evidence into the staleness band: the stall
+	// signal is claims.jsonl's mtime (the pipeline stopped writing), NOT the
+	// claim's declared created_at.
+	old := t0.Add(-time.Hour)
+	if err := os.Chtimes(s.claimsLog(), old, old); err != nil {
+		t.Fatal(err)
+	}
 	// Advance past memDoctorThresholds.ClaimStaleAfter (72h) + slack so the fixture
 	// ages into the staleness band while the inbox remains non-empty.
 	now := t0.Add(memDoctorThresholds.ClaimStaleAfter + time.Hour)

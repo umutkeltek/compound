@@ -1737,25 +1737,31 @@ func (s *Store) DoctorAt(eng Engine, now time.Time) Report {
 	add("capture", captureStatus, fmt.Sprintf("%d candidate(s) in inbox", len(cands)), captureExtras)
 
 	// --- promotion hop ---
-	// Newest-claim age vs inbox: stale claim + non-empty inbox = stalled.
+	// Newest claim-ledger WRITE age vs inbox: the promotion pipeline stopping
+	// while capture still flows is the stall. The signal is the ledger's
+	// append evidence (claims.jsonl mtime), NEVER a claim's declared
+	// created_at — imports, backfills, and test fixtures legitimately carry
+	// old declared dates on rows appended seconds ago (lived false-positive
+	// 2026-08-24: TestMemoryDoctorUsesConfiguredSidecarEngine exited silently
+	// because a 55d-old fixture claim read as a stalled pipeline).
 	claims, err := s.loadClaims()
 	if err != nil {
 		add("promotion", "fail", "cannot read claims: "+err.Error())
 	} else {
-		newestClaimAt := newestClaimCreatedAt(claims)
+		newestClaimAt := ledgerAppendTime(s.claimsLog())
 		extras := hopExtras{}
 		if !newestClaimAt.IsZero() {
 			extras.newestClaimAt = rfc3339(newestClaimAt)
 		}
 		detail := fmt.Sprintf("%d claim(s) promoted to ledger", len(claims))
 		status := statusOf(len(claims) > 0)
-		// Stall signature: a flat ledger (old newest claim) while capture
+		// Stall signature: the ledger stopped being appended to while capture
 		// is still writing means candidate -> claim promotion is wedged.
-		// A quiet inbox (no candidates) is not stalled; a stale ledger
-		// alone is also not a fail.
+		// A quiet inbox (no candidates) is not stalled; an old declared
+		// created_at alone is also not a fail.
 		if !newestClaimAt.IsZero() && len(cands) > 0 &&
 			now.Sub(newestClaimAt) > memDoctorThresholds.ClaimStaleAfter {
-			detail += fmt.Sprintf(" (newest claim %s old; capture still writing %d)",
+			detail += fmt.Sprintf(" (newest claim write %s old; capture still writing %d)",
 				truncateAge(now.Sub(newestClaimAt)), len(cands))
 			status = "fail"
 		}
@@ -2360,6 +2366,8 @@ func newestCandidateModTime(s *Store) time.Time {
 
 // newestClaimCreatedAt returns the most recent CreatedAt across the loaded
 // claims. Zero when claims are empty or all carry an unparseable timestamp.
+// NOTE: declared claim dates are NOT pipeline evidence (see the promotion
+// hop comment); this exists for display surfaces, never for stall detection.
 func newestClaimCreatedAt(claims []Claim) time.Time {
 	var newest time.Time
 	for _, c := range claims {
@@ -2372,6 +2380,19 @@ func newestClaimCreatedAt(claims []Claim) time.Time {
 		}
 	}
 	return newest
+}
+
+// ledgerAppendTime returns the mtime of a ledger file — the append evidence
+// of the pipeline that owns it. Zero when the file is missing or unreadable.
+// Stall detection keys on THIS (the pipeline stopped writing), never on the
+// declared timestamps of the rows inside (fixtures/imports can be arbitrarily
+// old on rows appended seconds ago).
+func ledgerAppendTime(path string) time.Time {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return fi.ModTime()
 }
 
 // truncateAge renders a time.Duration as a terse human-readable string for
