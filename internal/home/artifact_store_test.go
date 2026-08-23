@@ -547,6 +547,43 @@ func TestArtifactStorePutPrivateConcurrentIdenticalDeduplicates(t *testing.T) {
 	}
 }
 
+func TestArtifactStorePutTrackedHasOneConcurrentPublisher(t *testing.T) {
+	store, err := NewArtifactStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(strings.Repeat("tracked concurrent body\n", 1024))
+	const workers = 24
+	refs := make([]string, workers)
+	created := make([]bool, workers)
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			refs[i], created[i], errs[i] = store.PutTracked(body)
+		}(i)
+	}
+	wg.Wait()
+
+	createdCount := 0
+	for i := range workers {
+		if errs[i] != nil {
+			t.Fatalf("PutTracked[%d] err = %v", i, errs[i])
+		}
+		if refs[i] != refs[0] {
+			t.Fatalf("PutTracked[%d] ref = %q, want %q", i, refs[i], refs[0])
+		}
+		if created[i] {
+			createdCount++
+		}
+	}
+	if createdCount != 1 {
+		t.Fatalf("created publishers = %d, want exactly 1", createdCount)
+	}
+}
+
 func TestArtifactStoreMaterializeGeneralBehaviorUnchanged(t *testing.T) {
 	homePath := t.TempDir()
 	store, err := NewArtifactStore(homePath)

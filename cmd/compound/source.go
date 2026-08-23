@@ -472,6 +472,8 @@ func cmdSourceManifestCreate(args []string) {
 		os.Exit(1)
 	}
 	var manifest sourceobs.SourceManifest
+	var report sourceobs.SourceManifestReport
+	recorded := false
 	if fromExportSet {
 		if family != sourceobs.GbrainDBExportManifestFamily {
 			fmt.Fprintf(os.Stderr, "source manifest-create: --from-export currently supports family %s only\n", sourceobs.GbrainDBExportManifestFamily)
@@ -482,10 +484,9 @@ func cmdSourceManifestCreate(args []string) {
 		} else {
 			manifest, err = sourceobs.BuildGbrainExportManifest(fromExport, time.Now())
 		}
-	} else if sourceDirSet && sourceInPlace {
-		manifest, err = sourceobs.BuildSourceManifestDirectory(family, sourceDir, time.Now())
 	} else if sourceDirSet {
-		manifest, err = sourceobs.BuildOwnedSourceManifestDirectory(homePath, family, sourceDir, time.Now())
+		report, manifest, err = sourceobs.CreateSourceManifestDirectory(homePath, family, sourceDir, sourceInPlace, time.Now())
+		recorded = true
 	} else if sourceInPlace {
 		manifest, err = sourceobs.BuildSourceManifest(family, paths, time.Now())
 	} else {
@@ -495,10 +496,12 @@ func cmdSourceManifestCreate(args []string) {
 		fmt.Fprintln(os.Stderr, "source manifest-create:", err)
 		os.Exit(1)
 	}
-	report, err := sourceobs.RecordSourceManifest(homePath, manifest)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "source manifest-create:", err)
-		os.Exit(1)
+	if !recorded {
+		report, err = sourceobs.RecordSourceManifest(homePath, manifest)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "source manifest-create:", err)
+			os.Exit(1)
+		}
 	}
 	if jsonOut {
 		printJSON(report)

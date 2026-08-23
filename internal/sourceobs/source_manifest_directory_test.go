@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -143,7 +144,7 @@ func TestBuildOwnedSourceManifestDirectoryUsesOneRootConfinedSnapshot(t *testing
 	}
 
 	homePath := t.TempDir()
-	manifest, err := buildOwnedSourceManifestDirectory(homePath, "snapshot_once", root, time.Now(), sourceManifestDirectoryBuildHooks{
+	_, manifest, err := createSourceManifestDirectory(homePath, "snapshot_once", root, false, time.Now(), sourceManifestDirectoryBuildHooks{
 		afterSnapshot: func(snapshots []sourceManifestFileSnapshot) error {
 			if len(snapshots) != 1 {
 				return fmt.Errorf("snapshots = %d, want 1", len(snapshots))
@@ -205,13 +206,13 @@ func TestBuildOwnedSourceManifestDirectoryRollsBackOnlyNewArtifactsOnLaterFailur
 				}
 			}
 			putCalls := 0
-			_, err = buildOwnedSourceManifestDirectory(homePath, "atomic_custody", root, time.Now(), sourceManifestDirectoryBuildHooks{
-				putArtifact: func(store *home.ArtifactStore, body []byte) (string, error) {
+			_, _, err = createSourceManifestDirectory(homePath, "atomic_custody", root, false, time.Now(), sourceManifestDirectoryBuildHooks{
+				putArtifact: func(store *home.ArtifactStore, body []byte) (string, bool, error) {
 					putCalls++
 					if putCalls == 2 {
-						return "", errors.New("injected later artifact failure")
+						return "", false, errors.New("injected later artifact failure")
 					}
-					return store.Put(body)
+					return store.PutTracked(body)
 				},
 			})
 			if err == nil || !strings.Contains(err.Error(), "injected later artifact failure") {
@@ -268,6 +269,131 @@ func TestBuildSourceManifestDirectoryResolvesGitRevisionOnce(t *testing.T) {
 		if item.GitRevision != "abcdef12" {
 			t.Fatalf("item git revision = %q, want cached revision", item.GitRevision)
 		}
+	}
+}
+
+func TestCreateSourceManifestDirectoryRollsBackCustodyWhenAuthorityRecordFails(t *testing.T) {
+	root := t.TempDir()
+	writeSourceManifestDirectoryFixture(t, root, "source.md", "# Record failure\n")
+	homePath := t.TempDir()
+
+	_, _, err := createSourceManifestDirectory(homePath, "record_failure", root, false, time.Now(), sourceManifestDirectoryBuildHooks{
+		record: func(string, SourceManifest) (SourceManifestReport, error) {
+			return SourceManifestReport{}, errors.New("injected authority record failure")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected authority record failure") {
+		t.Fatalf("record failure = %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(homePath, "artifacts", "sha256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("record failure leaked custody: %v", entries)
+	}
+	if _, err := os.Stat(SourceManifestPath(homePath, "record_failure")); !os.IsNotExist(err) {
+		t.Fatalf("record failure published authority: %v", err)
+	}
+}
+
+func TestConcurrentDirectoryRollbackCannotDeleteWinnerCustody(t *testing.T) {
+	root := t.TempDir()
+	writeSourceManifestDirectoryFixture(t, root, "source.md", "# Concurrent\n")
+	homePath := t.TempDir()
+
+	type result struct {
+		report   SourceManifestReport
+		manifest SourceManifest
+		err      error
+	}
+	published := make(chan struct{})
+	releaseFailure := make(chan struct{})
+	failedDone := make(chan result, 1)
+	go func() {
+		report, manifest, err := createSourceManifestDirectory(homePath, "concurrent_failure", root, false, time.Now(), sourceManifestDirectoryBuildHooks{
+			putArtifact: func(store *home.ArtifactStore, body []byte) (string, bool, error) {
+				ref, created, err := store.PutTracked(body)
+				close(published)
+				<-releaseFailure
+				return ref, created, err
+			},
+			record: func(string, SourceManifest) (SourceManifestReport, error) {
+				return SourceManifestReport{}, errors.New("injected losing record failure")
+			},
+		})
+		failedDone <- result{report: report, manifest: manifest, err: err}
+	}()
+	<-published
+
+	winnerDone := make(chan result, 1)
+	go func() {
+		report, manifest, err := CreateSourceManifestDirectory(homePath, "concurrent_winner", root, false, time.Now())
+		winnerDone <- result{report: report, manifest: manifest, err: err}
+	}()
+	close(releaseFailure)
+
+	failed := <-failedDone
+	if failed.err == nil || !strings.Contains(failed.err.Error(), "injected losing record failure") {
+		t.Fatalf("losing transaction error = %v", failed.err)
+	}
+	winner := <-winnerDone
+	if winner.err != nil {
+		t.Fatal(winner.err)
+	}
+	if len(winner.manifest.Items) != 1 || winner.report.ItemCount != 1 {
+		t.Fatalf("winner = report=%+v manifest=%+v", winner.report, winner.manifest)
+	}
+	store, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := store.Get(winner.manifest.Items[0].BodyRef)
+	if err != nil {
+		t.Fatalf("winner custody was deleted by losing rollback: %v", err)
+	}
+	if string(body) != "# Concurrent\n" {
+		t.Fatalf("winner custody = %q", body)
+	}
+	if _, err := os.Stat(SourceManifestPath(homePath, "concurrent_failure")); !os.IsNotExist(err) {
+		t.Fatalf("losing authority was published: %v", err)
+	}
+}
+
+func TestDirectorySnapshotBatchSpoolsBodiesWithoutRetainingByteSlices(t *testing.T) {
+	root := t.TempDir()
+	for i := range 3 {
+		writeSourceManifestDirectoryFixture(t, root, fmt.Sprintf("%d.md", i), strings.Repeat(string(rune('a'+i)), 512*1024))
+	}
+	_, batch, err := snapshotSourceManifestDirectory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer batch.Close()
+
+	snapshotType := reflect.TypeOf(sourceManifestFileSnapshot{})
+	for i := range snapshotType.NumField() {
+		field := snapshotType.Field(i)
+		if field.Type.Kind() == reflect.Slice && field.Type.Elem().Kind() == reflect.Uint8 {
+			t.Fatalf("snapshot retains source bytes in memory through field %s", field.Name)
+		}
+	}
+	var totalBytes, largestFile int64
+	for _, snapshot := range batch.files {
+		info, err := os.Stat(snapshot.spoolPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 || info.Size() != snapshot.bodyBytes {
+			t.Fatalf("spool metadata = mode=%04o size=%d snapshot=%+v", info.Mode().Perm(), info.Size(), snapshot)
+		}
+		totalBytes += snapshot.bodyBytes
+		if snapshot.bodyBytes > largestFile {
+			largestFile = snapshot.bodyBytes
+		}
+	}
+	if totalBytes <= largestFile {
+		t.Fatalf("fixture does not prove batch-vs-largest bound: total=%d largest=%d", totalBytes, largestFile)
 	}
 }
 
