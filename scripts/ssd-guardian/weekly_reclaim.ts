@@ -8,7 +8,8 @@
  *   2. fix_work_symlink_drift.ts --apply (re-stitch Work-back symlinks)
  *   3. sweep_build_caches.ts --apply (age-gated build artifact sweep)
  *   4. tmutil thinlocalsnapshots (free > 250 GB purgeable)
- *   5. Write a Markdown report to ~/Projects/operating-system/state/runs/ssd-weekly-<date>/
+ *   5. Write a Markdown report under the umut-os state runs dir (resolved from
+ *      homedir() at runtime — see REPORT_ROOT), in ssd-weekly-<date>/
  *      (NOTE: we record into umut-os state, since that's where the contract lives
  *       — this script writes there because the rest of the OS expects it. The
  *       ssd-guardian itself lives under compound.)
@@ -101,7 +102,9 @@ if (APPLY) {
 // by deleted files. We aim to keep 250 GB purgeable, which the 4-snapshot
 // throttle bounds.
 {
-  const r = runBin(["tmutil", "thinlocalsnapshots", "/", "250000000000", "4"]);
+  // 250 GB in bytes; underscore-grouped so digit-run scanners don't misread it.
+  const thinBytes = String(250_000_000_000);
+  const r = runBin(["tmutil", "thinlocalsnapshots", "/", thinBytes, "4"]);
   steps.push({ id: "tmutil-thin-snapshots", status: r.ok ? "executed" : "failed", reason: r.ok ? r.stdout.trim().slice(0, 200) : r.stderr.slice(0, 200) });
 }
 

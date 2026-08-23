@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Install: sed "s|__HOME__|$HOME|g" com.ssd-guardian.weekly-reclaim.plist.template > "$HOME/Library/LaunchAgents/com.ssd-guardian.weekly-reclaim.plist" && launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.ssd-guardian.weekly-reclaim.plist" -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
@@ -7,8 +8,8 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/example/.bun/bin/bun</string>
-    <string>/Users/example/Projects/systems/compound/scripts/ssd-guardian/weekly_reclaim.ts</string>
+    <string>__HOME__/.bun/bin/bun</string>
+    <string>__HOME__/Projects/systems/compound/scripts/ssd-guardian/weekly_reclaim.ts</string>
     <string>--apply</string>
   </array>
 
@@ -24,14 +25,14 @@
   </dict>
 
   <key>StandardOutPath</key>
-  <string>/Users/example/Library/Logs/ssd-guardian-weekly.out.log</string>
+  <string>__HOME__/Library/Logs/ssd-guardian-weekly.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/example/Library/Logs/ssd-guardian-weekly.err.log</string>
+  <string>__HOME__/Library/Logs/ssd-guardian-weekly.err.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/example/.bun/bin:/Users/example/.local/bin</string>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.bun/bin:__HOME__/.local/bin</string>
   </dict>
 
   <key>RunAtLoad</key>
