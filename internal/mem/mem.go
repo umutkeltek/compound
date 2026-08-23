@@ -609,7 +609,21 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 		// Idempotency: a candidate the inbox write already closed (parked
 		// or promoted) stays untouched. The disposal state is durable on
 		// disk — re-running this verb must not re-classify it.
-		if c.State != "" && c.State != "proposed" {
+		// Re-read live state at the top of every iteration. AllCandidates()
+		// captured the inbox once at the top of the verb, but a concurrent
+		// writer (admission auto-park on knowledge_import / decay_park,
+		// another --yes invocation, a side-door Adjudicate) can close a
+		// candidate between that snapshot and this iteration. The local
+		// var `c` is a value copy of the stale snapshot; consulting it
+		// would mis-classify a candidate the live file already closed as
+		// either a false skip (underreporting Adjudicated) or a no-op
+		// double-write. Re-reading makes the counter reflect what
+		// actually closed and keeps idempotency against any writer.
+		state := c.State
+		if live, liveErr := s.getCandidate(c.ID); liveErr == nil {
+			state = live.State
+		}
+		if state != "" && state != "proposed" {
 			r.Skipped++
 			continue
 		}

@@ -1959,3 +1959,39 @@ func TestAdjudicatePendingRefusesFixedPromote(t *testing.T) {
 		t.Fatalf("expected promote-refusal error, got %+v", r.Errors)
 	}
 }
+
+// TestAdjudicatePendingCounterReflectsActualCloses: regression for the
+// AdjudicatePending counter bug. Three candidates captured with
+// PromotionBasis = BasisExplicitConfirmation land in state "proposed"
+// (no source qualifier, so dispositionVerdict returns "park"). The
+// batch must adjudicate all 3 and report Adjudicated=3, Skipped=0,
+// verdict_counts["park"]=3. Prior to the fix, the loop relied on the
+// stale snapshot returned by AllCandidates() at the top of the verb;
+// a successful Adjudicate that flipped State to "parked" was not
+// reflected in the local var `c`, but a concurrent writer
+// (admission/auto-park race) could close candidates between the
+// snapshot and the iteration, leaving the loop with a populated
+// Skipped bucket and an empty Adjudicated bucket. The fix re-reads
+// each candidate's live state at the top of the loop iteration so
+// the counter reflects what actually closed in this pass.
+func TestAdjudicatePendingCounterReflectsActualCloses(t *testing.T) {
+	s := newStore(t)
+	for i := range 3 {
+		c := cand("e", "p", fmt.Sprintf("counter-%d", i), "")
+		c.ID = fmt.Sprintf("cand-counter-%d", i)
+		c.PromotionBasis = candidates.BasisExplicitConfirmation
+		if _, err := s.Capture([]Candidate{c}, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := s.AdjudicatePending(AdjudicatePendingOptions{}, t0.Add(time.Minute))
+	if r.Adjudicated != 3 {
+		t.Fatalf("adjudicated = %d, want 3 (bug observation: counter underreports successful closes)", r.Adjudicated)
+	}
+	if r.Skipped != 0 {
+		t.Fatalf("skipped = %d, want 0 (3 bare proposed candidates must not be skipped)", r.Skipped)
+	}
+	if r.VerdictCounts["park"] != 3 {
+		t.Fatalf("verdict counts = %+v, want park=3", r.VerdictCounts)
+	}
+}
