@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -111,20 +112,24 @@ func compoundTestBinary(t *testing.T) string {
 	return compoundBinPath
 }
 
-// compoundMockEngineTestBinary builds ../compound-mock-engine (relative to cmd/compound,
-// i.e. ./cmd/compound-mock-engine relative to the repo root) exactly once per test binary
-// run and returns the path to the built executable. Lazy for the same reason as
-// compoundTestBinary.
+// compoundMockEngineTestBinary builds cmd/compound-mock-engine exactly once
+// per test binary run and returns the path to the built executable. The
+// build uses an absolute package path resolved via `go list -m`, so it
+// works from any cwd (the prior `cmd.Dir = testRepoRoot` form only worked
+// when the test binary was started from cmd/compound/; running it from
+// anywhere else produced a silent "go: go.mod file not found" failure
+// because testRepoRoot = wd/../.. only resolves to the repo root when wd
+// is the package directory). Lazy for the same reason as compoundTestBinary.
 func compoundMockEngineTestBinary(t *testing.T) string {
 	t.Helper()
 	compoundMockEngineBinOnce.Do(func() {
 		exe := filepath.Join(testBinDir, "compound-mock-engine")
-		cmd := exec.Command("go", "build", "-o", exe, "./cmd/compound-mock-engine")
-		cmd.Dir = testRepoRoot
+		pkgPath := compoundModuleRoot(t) + string(filepath.Separator) + "cmd" + string(filepath.Separator) + "compound-mock-engine"
+		cmd := exec.Command("go", "build", "-o", exe, pkgPath)
 		cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			compoundMockEngineBinErr = fmt.Errorf("build ./cmd/compound-mock-engine: %w\n%s", err, out)
+			compoundMockEngineBinErr = fmt.Errorf("build %s: %w\n%s", pkgPath, err, out)
 			return
 		}
 		compoundMockEngineBinPath = exe
@@ -133,6 +138,32 @@ func compoundMockEngineTestBinary(t *testing.T) string {
 		t.Fatalf("%v", compoundMockEngineBinErr)
 	}
 	return compoundMockEngineBinPath
+}
+
+var (
+	moduleRootOnce sync.Once
+	moduleRootDir  string
+	moduleRootErr  error
+)
+
+// compoundModuleRoot returns the absolute path of the Go module root,
+// resolved once per test binary run via `go list -m -f {{.Dir}}`. Used by
+// helpers that need an absolute package path so `go build` works from
+// any cwd.
+func compoundModuleRoot(t *testing.T) string {
+	t.Helper()
+	moduleRootOnce.Do(func() {
+		out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+		if err != nil {
+			moduleRootErr = fmt.Errorf("go list -m: %w", err)
+			return
+		}
+		moduleRootDir = strings.TrimSpace(string(out))
+	})
+	if moduleRootErr != nil {
+		t.Fatalf("%v", moduleRootErr)
+	}
+	return moduleRootDir
 }
 
 // telemetryOffHome disables Go telemetry inside an existing directory and returns it,
