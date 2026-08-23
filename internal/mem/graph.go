@@ -36,17 +36,30 @@ type Extractor interface {
 }
 
 // StructuredExtractor parses either a bare []Candidate for compatibility or a
-// {candidates, relations} object.
+// {candidates, relations} object. It is the JSON-parsing boundary the CLI's
+// raw-intake path uses (cmd/compound/memory_cli.go: "compound memory candidate
+// <trace.json>"). Per en.work_2742cffbeb5f, system-derived promotion_basis
+// values arriving through this parser are stripped at THIS seam — the only
+// door raw intake actually uses — so a model-supplied basis never reaches
+// Capture or Adjudicate. Direct callers of Capture (system adapters, tests
+// that legitimately seed candidates) are unaffected: their Candidate literals
+// never visit the parser.
 type StructuredExtractor struct{}
 
 func (StructuredExtractor) Extract(trace []byte) (Extraction, error) {
 	var ext Extraction
 	if err := json.Unmarshal(trace, &ext); err == nil && (len(ext.Candidates) > 0 || len(ext.Relations) > 0) {
+		for i := range ext.Candidates {
+			stripIntakePromotionBasis(&ext.Candidates[i])
+		}
 		return ext, nil
 	}
 	var cands []Candidate
 	if err := json.Unmarshal(trace, &cands); err != nil {
 		return Extraction{}, fmt.Errorf("trace is neither {candidates,relations} nor [candidates]: %w", err)
+	}
+	for i := range cands {
+		stripIntakePromotionBasis(&cands[i])
 	}
 	return Extraction{Candidates: cands}, nil
 }
