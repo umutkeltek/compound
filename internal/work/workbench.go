@@ -296,6 +296,14 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	if opts.RecentLimit <= 0 {
 		opts.RecentLimit = 5
 	}
+	profileWorkbench := os.Getenv("COMPOUND_PROFILE_WORKBENCH") == "1"
+	wbT0 := time.Now()
+	wbLogStage := func(label string, t time.Time) {
+		if !profileWorkbench {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "[WB-PROFILE] %s: %s (cum=%s)\n", label, time.Since(t), time.Since(wbT0))
+	}
 	report := WorkbenchReport{
 		GeneratedAt: now.UTC().Format(time.RFC3339),
 		Counts:      WorkbenchCounts{ByState: map[string]int{}},
@@ -309,6 +317,7 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 			report.OfferedPackets = &offered
 		}
 	}
+	wbLogStage("setup", time.Now())
 	// list() (not List/ListWithArchived) so a work item that fails to parse is
 	// reported through report.Integrity instead of silently vanishing from
 	// every count built below.
@@ -317,6 +326,7 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		return report, err
 	}
 	report.Integrity = append(report.Integrity, listWarnings...)
+	wbLogStage("list_works", time.Now())
 	// Loaded once and threaded through the rest of this build: every Get/
 	// archivedWorkPath lookup on the workbench path uses this snapshot instead
 	// of re-reading the archive index per work item. A malformed/missing index
@@ -331,6 +341,7 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	for _, warning := range routeWarnings {
 		report.Integrity = append(report.Integrity, warning)
 	}
+	wbLogStage("indices", time.Now())
 	admissionPreviews, admissionWarnings := s.workbenchAdmissionPreviews(now, opts.RecentLimit, archiveIndex)
 	report.AdmissionPreviews = admissionPreviews
 	report.Counts.AdmissionPreviews = len(admissionPreviews)
@@ -346,6 +357,7 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		return report, err
 	}
 	report.eventsByWork = eventsByWork
+	wbLogStage("events_by_work", time.Now())
 	for _, w := range works {
 		events := eventsByWork[w.ID]
 		item := s.workbenchItem(w, events, &report, holdEvidence, now)
@@ -375,6 +387,7 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		}
 		report.Open = append(report.Open, item)
 	}
+	wbLogStage("item_loop", time.Now())
 	runs, warnings := s.workbenchDispatchStepRuns(opts.RecentLimit, archiveIndex)
 	report.DispatchStepRuns = runs
 	report.Counts.DispatchStepRuns = len(runs)
@@ -2528,3 +2541,4 @@ func statePriority(state string) int {
 		return 9
 	}
 }
+// UNIQUE_MARKER_1787445728
