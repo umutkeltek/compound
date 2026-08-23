@@ -360,7 +360,9 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	wbLogStage("events_by_work", time.Now())
 	for _, w := range works {
 		events := eventsByWork[w.ID]
+		wbItemT := time.Now()
 		item := s.workbenchItem(w, events, &report, holdEvidence, now)
+		wbLogStage("item", wbItemT)
 		routeOutcomes.attach(&item)
 		item.ObservatoryTags = workbenchObservatoryTags(item)
 		report.Counts.RunObservations += len(item.RunObservations)
@@ -389,18 +391,21 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	}
 	wbLogStage("item_loop", time.Now())
 	runs, warnings := s.workbenchDispatchStepRuns(opts.RecentLimit, archiveIndex)
+	wbLogStage("dispatch_step_runs", time.Now())
 	report.DispatchStepRuns = runs
 	report.Counts.DispatchStepRuns = len(runs)
 	for _, warning := range warnings {
 		report.Integrity = append(report.Integrity, warning)
 	}
 	continueRuns, continueWarnings := s.workbenchContinueRuns(opts.RecentLimit, archiveIndex)
+	wbLogStage("continue_runs", time.Now())
 	report.ContinueRuns = continueRuns
 	report.Counts.ContinueRuns = len(continueRuns)
 	for _, warning := range continueWarnings {
 		report.Integrity = append(report.Integrity, warning)
 	}
 	activePacket, activeWarnings := s.workbenchActivePacketProof(now, opts.ActivePacketSurface, opts.ActivePacketExpectedEvidenceRef)
+	wbLogStage("active_packet_proof", time.Now())
 	report.ActivePacketProof = activePacket
 	for _, warning := range activeWarnings {
 		report.Integrity = append(report.Integrity, warning)
@@ -433,6 +438,7 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	} else {
 		report.BranchDebt = &coverage
 	}
+	wbLogStage("branch_coverage", time.Now())
 	return report, nil
 }
 
