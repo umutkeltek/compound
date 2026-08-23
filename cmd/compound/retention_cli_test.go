@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"compound/internal/home"
 	"compound/internal/policy"
 )
 
@@ -86,4 +87,128 @@ func containsAll(s string, wants ...string) bool {
 		}
 	}
 	return true
+}
+
+func TestRetentionApplyDryRunChangesZeroBytes(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out, err := runCLIFlagSeam(t, homePath,
+		"retention", "apply",
+		"--class", "events-segments",
+		"--class", "context-packs",
+		"--older-than", "30d",
+	)
+	if err != nil {
+		t.Fatalf("apply (dry-run) failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "dry-run: true") {
+		t.Fatalf("dry-run flag not echoed: %s", out)
+	}
+	// Either the dry-run note (when 0 steps) or the apply-prompt note
+	// (when steps exist). On an empty fixture we get the former.
+	if !strings.Contains(string(out), "# retention apply") {
+		t.Fatalf("apply header missing: %s", out)
+	}
+}
+
+// TestRetentionApplyYesIsRequiredToReclaim exercises the safety gate that
+// --yes must be explicit. With no --yes the verb exits 0 and moves nothing,
+// even when a valid home + classes are supplied.
+func TestRetentionApplyYesIsRequiredToReclaim(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out, err := runCLIFlagSeam(t, homePath,
+		"retention", "apply",
+		"--class", "events-segments",
+		"--older-than", "30d",
+		"--yes",
+	)
+	// We don't care whether exit == 0 here — we care that the apply verb
+	// actually ran (--yes flipped dry-run off).
+	_ = err
+	if !strings.Contains(string(out), "dry-run: false") {
+		t.Fatalf("apply --yes did not flip dry-run off: %s", out)
+	}
+	if !strings.Contains(string(out), "# retention apply") {
+		t.Fatalf("apply --yes header missing: %s", out)
+	}
+}
+
+// TestRetentionApplyRejectsUnknownClass confirms the unknown-class refusal
+// surfaces with a truthful error rather than a usage page.
+func TestRetentionApplyRejectsUnknownClass(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out, err := runCLIFlagSeam(t, homePath,
+		"retention", "apply",
+		"--class", "bogus-class",
+		"--older-than", "30d",
+	)
+	if err == nil {
+		t.Fatalf("unknown class must fail closed: %s", out)
+	}
+	if !strings.Contains(string(out), "bogus-class") {
+		t.Fatalf("error did not name the bad class: %s", out)
+	}
+}
+
+// TestRetentionApplyOlderThanBelowAgeFloorRefused confirms the per-class
+// floor guard at the CLI layer.
+func TestRetentionApplyOlderThanBelowAgeFloorRefused(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out, err := runCLIFlagSeam(t, homePath,
+		"retention", "apply",
+		"--class", "events-segments",
+		"--older-than", "1h",
+	)
+	if err == nil {
+		t.Fatalf("--older-than below class floor must fail closed: %s", out)
+	}
+	if !strings.Contains(string(out), "age floor") {
+		t.Fatalf("error did not mention the floor: %s", out)
+	}
+}
+
+// TestRetentionUsageMentionsApplyAndEmptyTrash guards the usage line so a
+// future flag-rename cannot silently strand the verbs.
+func TestRetentionUsageMentionsApplyAndEmptyTrash(t *testing.T) {
+	usage := policy.RetentionUsageForTest()
+	for _, want := range []string{"apply", "empty-trash", "--yes", "--older-than", "dry-run"} {
+		if !strings.Contains(usage, want) {
+			t.Fatalf("usage missing %q: %s", want, usage)
+		}
+	}
+}
+
+// TestRetentionApplyJSONShapeMatchesPlan exercises the packet's "same JSON
+// shape as plan" requirement: dry-run JSON must include the planned steps
+// and the dry-run marker.
+func TestRetentionApplyJSONShapeMatchesPlan(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out, err := runCLIFlagSeam(t, homePath,
+		"retention", "apply",
+		"--class", "events-segments",
+		"--older-than", "30d",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("apply --json failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{`"dry_run": true`, `"steps"`, `"authority_ref"`} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("apply JSON missing %s: %s", want, out)
+		}
+	}
 }

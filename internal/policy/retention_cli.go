@@ -8,6 +8,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	homepkg "compound/internal/home"
 )
 
 // RetentionCLI is the body of the `compound retention` verb. Exported so
@@ -31,6 +34,7 @@ func RetentionCLI(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	asJSON := containsFlag(args[1:], "--json")
+	yes := containsFlag(args[1:], "--yes")
 	switch sub {
 	case "classes":
 		return retentionClassesBody(stdout, asJSON)
@@ -38,6 +42,10 @@ func RetentionCLI(args []string, stdout, stderr io.Writer) int {
 		return retentionScanBody(stdout, stderr, args[1:], asJSON)
 	case "plan":
 		return retentionPlanBody(stdout, stderr, args[1:], asJSON)
+	case "apply":
+		return retentionApplyBody(stdout, stderr, args[1:], yes, asJSON)
+	case "empty-trash":
+		return retentionEmptyTrashBody(stdout, stderr, args[1:], yes, asJSON)
 	default:
 		fmt.Fprintln(stderr, "error: unknown retention subcommand ", sub)
 		fmt.Fprintln(stderr, retentionUsage())
@@ -49,7 +57,7 @@ func RetentionCLI(args []string, stdout, stderr io.Writer) int {
 func RetentionUsageForTest() string { return retentionUsage() }
 
 func retentionUsage() string {
-	return "usage: compound retention <classes|scan|plan> [--json]\n" +
+	return "usage: compound retention <classes|scan|plan|apply|empty-trash> [--json]\n" +
 		"  classes            declared artifact classes: owner, retention rule, reclaim command\n" +
 		"  scan               what is accumulating in this repo, and whether a class claims it\n" +
 		"  plan               ordered reclaim plan from caller-supplied consumer thresholds\n" +
@@ -58,7 +66,18 @@ func retentionUsage() string {
 		"    --capacity-bytes N     override the observed capacity\n" +
 		"    --required-bytes N     override the consumer's byte floor\n" +
 		"    --required-bps N       override the consumer's ratio floor (basis points)\n" +
-		"  plans only; never reclaims."
+		"  apply              move eligible home files to <home>/trash/<class>/<date>/\n" +
+		"    --class ID             required, repeatable; one of " + strings.Join(ApplyClassIDs(), ", ") + "\n" +
+		"    --older-than DUR       age floor (e.g. 30d, 14h); default = class age floor\n" +
+		"    --limit-bytes N        cap on total bytes reclaimed\n" +
+		"    --yes                  actually rename; absent = dry-run, prints the plan and exits 0\n" +
+		"    --home DIR             target home (default: $COMPOUND_HOME)\n" +
+		"  empty-trash         unlink <home>/trash/<class>/<date>/ older than --older-than\n" +
+		"    --older-than DUR       age floor (default 30d)\n" +
+		"    --limit-bytes N        cap on total bytes unlinked\n" +
+		"    --yes                  actually unlink; absent = dry-run\n" +
+		"    --home DIR             target home (default: $COMPOUND_HOME)\n" +
+		"  plans only; never reclaims (apply and empty-trash are governed mutations)."
 }
 
 // retention flag helpers — package-local, NOT exported. The cmd/compound
@@ -97,6 +116,16 @@ func validateRetentionFlagsLocal(subcommand string, args []string) error {
 		} {
 			valueFlags[flag] = true
 		}
+	case "apply":
+		for _, flag := range []string{"--class", "--older-than", "--limit-bytes", "--home"} {
+			valueFlags[flag] = true
+		}
+		boolFlags["--yes"] = true
+	case "empty-trash":
+		for _, flag := range []string{"--older-than", "--limit-bytes", "--home"} {
+			valueFlags[flag] = true
+		}
+		boolFlags["--yes"] = true
 	default:
 		return fmt.Errorf("unknown subcommand %q", subcommand)
 	}
@@ -359,4 +388,207 @@ func retentionPlanBody(stdout, stderr io.Writer, args []string, asJSON bool) int
 // of encoding/json at the top — the policy package already imports it).
 func writeRetentionJSON(w io.Writer, v any) int {
 	return writeRetentionJSONImpl(w, v)
+}
+
+// retentionApplyBody is the governed mutation half of `compound retention`.
+//
+// DRY-RUN IS THE DEFAULT: with no --yes, it builds and prints the plan and
+// exits 0. Only --yes triggers the rename, and only after BuildApplyPlan has
+// already refused unknown classes and forbidden-path intersections.
+func retentionApplyBody(stdout, stderr io.Writer, args []string, yes, asJSON bool) int {
+	classIDs := valuesFlagLocal(args, "--class")
+	if len(classIDs) == 0 {
+		fmt.Fprintf(stderr, "retention apply: --class is required (repeatable); declared: %s\n", strings.Join(ApplyClassIDs(), ", "))
+		return 1
+	}
+	homePath, err := homepkg.Resolve(valueFlagLocal(args, "--home"))
+	if err != nil {
+		fmt.Fprintf(stderr, "retention apply: resolve COMPOUND_HOME: %v\n", err)
+		return 1
+	}
+	if err := homepkg.RequireMutationCompatible(homePath); err != nil {
+		fmt.Fprintf(stderr, "retention apply: refusing to mutate %s: %v\n", homePath, err)
+		return 1
+	}
+
+	// Default --older-than: take the maximum age floor across the requested
+	// classes, so a typo cannot silently widen the eligible window.
+	var defaultFloor time.Duration
+	for _, id := range classIDs {
+		class, ok := ApplyClassByID(id)
+		if !ok {
+			fmt.Fprintf(stderr, "retention apply: %v\n", &UnknownApplyClassError{ClassID: id})
+			return 1
+		}
+		if class.DefaultOlderThan > defaultFloor {
+			defaultFloor = class.DefaultOlderThan
+		}
+	}
+	ageFloor := defaultFloor
+	if raw := strings.TrimSpace(valueFlagLocal(args, "--older-than")); raw != "" {
+		parsed, parseErr := ParseApplyDuration(raw)
+		if parseErr != nil {
+			fmt.Fprintf(stderr, "retention apply: --older-than: %v\n", parseErr)
+			return 1
+		}
+		ageFloor = parsed
+	}
+	// The class age floor is a HARD floor: --older-than cannot lower it.
+	for _, id := range classIDs {
+		class, _ := ApplyClassByID(id)
+		if ageFloor < class.AgeFloor {
+			fmt.Fprintf(stderr, "retention apply: --older-than %s is below the age floor for class %q (%s); refusing\n", ageFloor, id, class.AgeFloor)
+			return 1
+		}
+	}
+
+	var limitBytes int64
+	if raw := strings.TrimSpace(valueFlagLocal(args, "--limit-bytes")); raw != "" {
+		parsed, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil {
+			fmt.Fprintf(stderr, "retention apply: --limit-bytes: %v\n", parseErr)
+			return 1
+		}
+		if parsed <= 0 {
+			fmt.Fprintln(stderr, "retention apply: --limit-bytes must be > 0")
+			return 1
+		}
+		limitBytes = parsed
+	}
+
+	plan, err := BuildApplyPlan(ApplyRequest{
+		Home:       homePath,
+		ClassIDs:   classIDs,
+		OlderThan:  ageFloor,
+		LimitBytes: limitBytes,
+		DryRun:     !yes,
+		Now:        time.Now().UTC(),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "retention apply: %v\n", err)
+		return 1
+	}
+	if yes {
+		plan, err = ExecuteApplyPlan(plan, time.Now().UTC())
+		if err != nil {
+			fmt.Fprintf(stderr, "retention apply: %v\n", err)
+			return 1
+		}
+	}
+
+	if asJSON {
+		return writeRetentionJSON(stdout, plan)
+	}
+	fmt.Fprintln(stdout, "# retention apply")
+	fmt.Fprintf(stdout, "- home: %s\n", plan.Home)
+	fmt.Fprintf(stdout, "- classes: %s\n", strings.Join(plan.Classes, ", "))
+	fmt.Fprintf(stdout, "- older-than: %s\n", plan.OlderThan)
+	if plan.LimitBytes > 0 {
+		fmt.Fprintf(stdout, "- limit-bytes: %s\n", humanBytes(plan.LimitBytes))
+	}
+	fmt.Fprintf(stdout, "- dry-run: %v\n", plan.DryRun)
+	fmt.Fprintf(stdout, "- planned: %d steps, %s\n", len(plan.Steps), humanBytes(plan.PlannedBytes))
+	if yes {
+		fmt.Fprintf(stdout, "- applied: %d steps, %s\n", plan.AppliedCount, humanBytes(plan.AppliedBytes))
+		if plan.ReceiptPath != "" {
+			fmt.Fprintf(stdout, "- receipt: %s\n", plan.ReceiptPath)
+		}
+	}
+	for i, step := range plan.Steps {
+		fmt.Fprintf(stdout, "  %d. %-20s %10s  %s -> %s\n", i+1, step.ClassID, humanBytes(step.Bytes), step.SourcePath, step.TrashPath)
+	}
+	fmt.Fprintf(stdout, "- note: %s\n", plan.Note)
+	return 0
+}
+
+// retentionEmptyTrashBody unlinks dated trash subdirs older than --older-than.
+// DRY-RUN IS THE DEFAULT; only --yes triggers os.RemoveAll, and only on paths
+// BuildEmptyTrashReport itself emitted.
+func retentionEmptyTrashBody(stdout, stderr io.Writer, args []string, yes, asJSON bool) int {
+	homePath, err := homepkg.Resolve(valueFlagLocal(args, "--home"))
+	if err != nil {
+		fmt.Fprintf(stderr, "retention empty-trash: resolve COMPOUND_HOME: %v\n", err)
+		return 1
+	}
+	if err := homepkg.RequireMutationCompatible(homePath); err != nil {
+		fmt.Fprintf(stderr, "retention empty-trash: refusing to mutate %s: %v\n", homePath, err)
+		return 1
+	}
+
+	ageFloor := 30 * 24 * time.Hour
+	if raw := strings.TrimSpace(valueFlagLocal(args, "--older-than")); raw != "" {
+		parsed, parseErr := ParseApplyDuration(raw)
+		if parseErr != nil {
+			fmt.Fprintf(stderr, "retention empty-trash: --older-than: %v\n", parseErr)
+			return 1
+		}
+		ageFloor = parsed
+	}
+
+	var limitBytes int64
+	if raw := strings.TrimSpace(valueFlagLocal(args, "--limit-bytes")); raw != "" {
+		parsed, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil {
+			fmt.Fprintf(stderr, "retention empty-trash: --limit-bytes: %v\n", parseErr)
+			return 1
+		}
+		if parsed <= 0 {
+			fmt.Fprintln(stderr, "retention empty-trash: --limit-bytes must be > 0")
+			return 1
+		}
+		limitBytes = parsed
+	}
+
+	report, err := BuildEmptyTrashReport(EmptyTrashRequest{
+		Home:       homePath,
+		OlderThan:  ageFloor,
+		LimitBytes: limitBytes,
+		DryRun:     !yes,
+		Now:        time.Now().UTC(),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "retention empty-trash: %v\n", err)
+		return 1
+	}
+	if yes {
+		report, err = ExecuteEmptyTrash(report, time.Now().UTC())
+		if err != nil {
+			fmt.Fprintf(stderr, "retention empty-trash: %v\n", err)
+			return 1
+		}
+	}
+
+	if asJSON {
+		return writeRetentionJSON(stdout, report)
+	}
+	fmt.Fprintln(stdout, "# retention empty-trash")
+	fmt.Fprintf(stdout, "- home: %s\n", report.Home)
+	fmt.Fprintf(stdout, "- older-than: %s\n", report.OlderThan)
+	if report.LimitBytes > 0 {
+		fmt.Fprintf(stdout, "- limit-bytes: %s\n", humanBytes(report.LimitBytes))
+	}
+	fmt.Fprintf(stdout, "- dry-run: %v\n", report.DryRun)
+	fmt.Fprintf(stdout, "- planned: %d date directories, %s\n", len(report.Steps), humanBytes(report.PlannedBytes))
+	if yes {
+		fmt.Fprintf(stdout, "- emptied: %d date directories, %s\n", report.AppliedCount, humanBytes(report.AppliedBytes))
+		if report.ReceiptPath != "" {
+			fmt.Fprintf(stdout, "- receipt: %s\n", report.ReceiptPath)
+		}
+	}
+	for i, step := range report.Steps {
+		fmt.Fprintf(stdout, "  %d. %-20s %10s  %s\n", i+1, step.ClassID, humanBytes(step.Bytes), step.TrashPath)
+	}
+	fmt.Fprintf(stdout, "- note: %s\n", report.Note)
+	return 0
+}
+
+// valuesFlagLocal collects repeated values of a flag (e.g. --class a --class b).
+func valuesFlagLocal(args []string, name string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == name && i+1 < len(args) {
+			out = append(out, args[i+1])
+		}
+	}
+	return out
 }
