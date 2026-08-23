@@ -125,14 +125,17 @@ func mintExecutionRunAttempt(t *testing.T, s *Store, workID string, at time.Time
 	return ra
 }
 
-// Falsifier 1 (close-time error naming, RED before fix): a wedged-history
-// work whose close is attempted must fail with an error that NAMES both
-// (act_, pol_) pairs + both event timestamps + a remediation hint. This
-// stays valid as defense-in-depth even after the prevention ships — older
-// histories already on disk need a readable failure mode.
+// Falsifier 1 (tiebreak, GREEN after fix): a wedged-history work whose
+// close is attempted must be recovered by the deterministic tiebreak
+// (the running reservation's PolicyDecisionID is the authoritative pair
+// for the lifecycle that executed the attempt). Close must SUCCEED under
+// the tiebreak pair, not fail with the loud ambiguous error. The loud
+// ambiguous error is reserved for histories where the tiebreak cannot
+// resolve (no running event, no matching pair) — see
+// TestCloseWedgeLoudErrorWhenNoRunningPolicy.
 func TestCloseWedgeNamesBothPairsAndRemediation(t *testing.T) {
 	s := newStore(t)
-	w, err := s.Create(CreateInput{Owner: "wedge-test", SuccessPredicate: "wedge resolves with named pairs"}, fixedNow)
+	w, err := s.Create(CreateInput{Owner: "wedge-test", SuccessPredicate: "wedge resolves with the running-state policy"}, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +147,8 @@ func TestCloseWedgeNamesBothPairsAndRemediation(t *testing.T) {
 
 	// First (legitimate) attach: real running advance with ratt_. The
 	// advance mints its own (act_first, pol_first) and stamps them on the
-	// lifecycle event; we capture them here.
+	// lifecycle event; we capture them here. pol_first is the running
+	// reservation's PolicyDecisionID and is therefore the tiebreak pair.
 	advanced, err := s.Advance(w.ID, AdvanceInput{
 		To: "running", Actor: "codex", RunAttemptIDs: []string{ra.ID},
 	}, fixedNow)
@@ -155,33 +159,93 @@ func TestCloseWedgeNamesBothPairsAndRemediation(t *testing.T) {
 	firstPolicy := advanced.PolicyDecisionID
 
 	// Seed a SECOND lifecycle event that re-attaches the SAME ratt_ but
-	// with a DIFFERENT (act_, pol_) pair. This is the wedge shape — the
-	// close-time gate must surface both pairs and remediation, not just
-	// "pairs=2".
+	// with a DIFFERENT (act_, pol_) pair. This is the wedge shape — under
+	// the deterministic tiebreak the close resolves to the running pair.
 	writeActionIntentJSON(t, s, "act_wedge_second", w.ID, fixedNow.Add(time.Minute))
 	writePolicyDecisionJSON(t, s, "pol_wedge_second", w.ID, "act_wedge_second", fixedNow.Add(time.Minute))
 	writeWedgeLifecycleEvent(t, s, w.ID, "running", "verifying", "manual advance re-attach",
 		"act_wedge_second", "pol_wedge_second", ra.ID, fixedNow.Add(2*time.Minute))
 
-	// Close MUST fail with an authority-generation error that NAMES both
-	// pairs AND offers a remediation hint.
-	_, closeErr := s.Close(w.ID, CloseInput{
+	// Close MUST succeed under the tiebreak pair (firstAction, firstPolicy).
+	closeOut, closeErr := s.Close(w.ID, CloseInput{
 		Outcome:       "completed",
 		MoveType:      "outward_delta",
 		Actor:         "codex",
-		Summary:       "wedge should refuse",
+		Summary:       "wedge should resolve via running-policy tiebreak",
 		Changed:       true,
 		ProofRefs:     []string{"proof:wedge"},
 		RunAttemptIDs: []string{ra.ID},
 	}, fixedNow.Add(10*time.Minute))
+	if closeErr != nil {
+	if closeErr != nil {
+		t.Fatalf("close must resolve via tiebreak; got %v", closeErr)
+	}
+	// Sanity: the resolved authority must match the running-reservation pair.
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadedRA, err := runattempt.Open(s.home).Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := s.resolveRunAttemptAuthorityFromEvents(closeOut.Work, loadedRA, events)
+	if err != nil {
+		t.Fatalf("authority resolution must succeed under tiebreak: %v", err)
+	}
+	if authority.ActionIntentID != firstAction || authority.PolicyDecisionID != firstPolicy {
+		t.Fatalf("authority = (%s,%s); want tiebreak pair (%s,%s)",
+			authority.ActionIntentID, authority.PolicyDecisionID, firstAction, firstPolicy)
+	}
+	_ = firstPolicy // used above; suppress unused warning if any
+	}
+}
+
+// Falsifier 1b (defense-in-depth): when the tiebreak cannot apply (no
+// running event exists), the close-time gate must still fail loudly with
+// an error that NAMES both pairs + both events + remediation. This
+// protects histories where the wedge shape has no recoverable signal.
+func TestCloseWedgeLoudErrorWhenNoRunningPolicy(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "wedge-loud", SuccessPredicate: "wedge without running event stays loud"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+
+	ra := mintExecutionRunAttempt(t, s, w.ID, fixedNow)
+
+	// Real running advance (with NO ratt_ attached) to put the work in
+	// running state. The tiebreak looks for an event with To=running AND
+	// the ratt_ in Attached — since this advance has no ratt_, the
+	// tiebreak finds no running-with-ratt_ event and the loud error
+	// must surface when close tries to resolve authority for the ratt_.
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex"}, fixedNow); err != nil {
+		t.Fatalf("prime running advance: %v", err)
+	}
+	// No real running advance with ratt_:
+	writePolicyDecisionJSON(t, s, "pol_wedge_loud_a", w.ID, "act_wedge_loud_a", fixedNow.Add(time.Minute))
+	writeWedgeLifecycleEvent(t, s, w.ID, "claimed", "claimed", "stale attach a", "act_wedge_loud_a", "pol_wedge_loud_a", ra.ID, fixedNow.Add(time.Minute))
+	writeActionIntentJSON(t, s, "act_wedge_loud_b", w.ID, fixedNow.Add(2*time.Minute))
+	writePolicyDecisionJSON(t, s, "pol_wedge_loud_b", w.ID, "act_wedge_loud_b", fixedNow.Add(2*time.Minute))
+	writeWedgeLifecycleEvent(t, s, w.ID, "claimed", "claimed", "stale attach b", "act_wedge_loud_b", "pol_wedge_loud_b", ra.ID, fixedNow.Add(2*time.Minute))
+
+	_, closeErr := s.Close(w.ID, CloseInput{
+		Outcome:       "completed",
+		MoveType:      "outward_delta",
+		Actor:         "codex",
+		Summary:       "wedge without tiebreak stays loud",
+		Changed:       true,
+		ProofRefs:     []string{"proof:wedge-loud"},
+		RunAttemptIDs: []string{ra.ID},
+	}, fixedNow.Add(10*time.Minute))
 	if closeErr == nil {
-		t.Fatal("close accepted a wedged history; want authority-generation error")
+		t.Fatal("close must fail loudly when no running event exists")
 	}
 	msg := closeErr.Error()
-	for _, want := range []string{
-		firstAction, firstPolicy,
-		"act_wedge_second", "pol_wedge_second",
-	} {
+	for _, want := range []string{"act_wedge_loud_a", "pol_wedge_loud_a", "act_wedge_loud_b", "pol_wedge_loud_b"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("close error missing %q: %s", want, msg)
 		}

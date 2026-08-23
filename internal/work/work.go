@@ -1609,7 +1609,7 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 				attached = append(attached, rid)
 			}
 			w.RunAttemptIDs = mergeUnique(w.RunAttemptIDs, []string{rid})
-		}
+	}
 	}
 	if in.ArtifactID != "" {
 		w.ArtifactIDs = append(w.ArtifactIDs, in.ArtifactID)
@@ -2122,14 +2122,69 @@ func attachedHas(values []string, want string) bool {
 	return slices.Contains(values, want)
 }
 
-// runAttemptAlreadyAttached reports whether any prior lifecycle event for this
-// work already attached the given ratt_ id. The close-time authority gate builds
-// one (act_, pol_) pair per attaching event, so a second attach of the same id —
-// under ANY target state, since the gate does not scope by state — wedges the
-// envelope (lived 2026-08-23, work_1d968c3f0522). Callers must treat a second
-// attach as an idempotent no-op (drop the attach, keep the advance), never write
-// it. The claim -> running flow is structurally distinct because the claim
+// findRunAttemptAttach walks the lifecycle event log for the FIRST event
+// that attached rattID for this work, returning the (act_, pol_) pair
+// carried by that attaching event plus the event's TS + Note for use in
+// operator-facing diagnostics. found=false + err==nil means no prior
+// attaching event exists; an empty rattID or one not matching the ratt_
+// prefix is a graceful not-found.
+//
+// The close-time authority gate (resolveRunAttemptAuthorityFromEvents)
+// builds one (act_, pol_) pair per attaching event, so a SECOND attaching
+// event for the same ratt_ under a DIFFERENT pair wedges the envelope
+// forever (lived 2026-08-23, work_1d968c3f0522). applyAdvance calls this
+// once per ratt_ in RunAttemptIDs and REFUSES the advance if the new
+// pair would not equal the existing pair; a same-pair re-attach is an
+// idempotent no-op (the attach is dropped, the advance still proceeds).
+// The claim -> running flow is structurally distinct because the claim
 // reservation and the execution attempts carry DIFFERENT ratt_ ids.
+func (s *Store) findRunAttemptAttach(w envelope.WorkEnvelope, rattID string) (eventTS string, eventNote string, existingActionID string, existingPolicyID string, found bool, err error) {
+	if rattID == "" || !strings.HasPrefix(rattID, "ratt_") {
+		return "", "", "", "", false, nil
+	}
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		return "", "", "", "", false, err
+	}
+	for _, event := range events {
+		if !attachedHas(event.Attached, rattID) {
+			continue
+		}
+		var actionID, policyID string
+		for _, ref := range event.Attached {
+			switch {
+			case strings.HasPrefix(ref, "act_"):
+				if actionID == "" {
+					actionID = ref
+				}
+			case strings.HasPrefix(ref, "pol_"):
+				if policyID == "" {
+					policyID = ref
+				}
+			}
+		}
+		return event.TS, event.Note, actionID, policyID, true, nil
+	}
+	return "", "", "", "", false, nil
+}
+
+// quoteForError wraps a string in double quotes for inclusion in operator-
+// facing error messages (the wedge-prevention rejection at advance time).
+// We don't use %q because the format string is shared with other %s/%d
+// verbs and Go's %q escapes non-printable runes we want to leave visible
+// in the note (operator-facing output stays human-readable).
+func quoteForError(s string) string {
+	return `"` + s + `"`
+}
+
+// runAttemptAlreadyAttached reports whether any prior lifecycle event for this
+// work already attached the given ratt_ id. applyAdvance uses this to drop
+// idempotent re-attaches silently (the close-time authority gate builds one
+// (act_, pol_) pair per attaching event for this ratt_; an attach that
+// survives twice under DIFFERENT pairs wedges the envelope, so the gate
+// stays strict but advance-time stays silent). The packet's recovery path
+// for an already-wedged history is the tiebreak in
+// resolveRunAttemptAuthorityFromEvents.
 func (s *Store) runAttemptAlreadyAttached(w envelope.WorkEnvelope, rattID string) (bool, error) {
 	if rattID == "" || !strings.HasPrefix(rattID, "ratt_") {
 		return false, nil
@@ -2201,33 +2256,52 @@ func (s *Store) resolveRunAttemptAuthorityFromEvents(w envelope.WorkEnvelope, ra
 		}
 	}
 	if len(pairs) != 1 {
-		disposition := "ambiguous"
-		if len(pairs) == 0 {
-			disposition = "missing"
-		}
-		if len(pairs) <= 1 {
-			return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority generation is %s (pairs=%d)", ra.ID, disposition, len(pairs))
-		}
-		// Pair ambiguity is the lived 2026-08-23 wedge. Name EVERY pair and
-		// the events that attached it so an operator can audit the wedge
-		// without diffing events files by hand. The prevention at
-		// applyAdvance stops new wedges; this error is defense-in-depth for
-		// histories already on disk.
-		var pairDescs []string
-		for p := range pairs {
-			pairDescs = append(pairDescs, fmt.Sprintf("(act=%s, pol=%s)", p.action, p.policy))
-		}
-		attachingEvents := []string{}
-		for _, event := range events {
-			if !attachedHas(event.Attached, ra.ID) {
-				continue
+		// DETERMINISTIC TIEBREAK (lived 2026-08-23, work_1d968c3f0522):
+		// when the close-time authority gate sees >1 (act_, pol_) pair for
+		// the same ratt_ (a wedged history), the pair whose policy
+		// generated the `running` reservation is the authoritative one —
+		// the lifecycle that actually executed the attempt was governed by
+		// the running state's PolicyDecisionID. Among the candidate pairs,
+		// prefer the one whose `pol_` matches the running event's policy.
+		// If no running event exists or no candidate matches, fall through
+		// to the loud ambiguous error (do not pick silently).
+		if len(pairs) > 1 {
+			if runningPolicy := findRunningPolicyDecision(events); runningPolicy != "" {
+				for p := range pairs {
+					if p.policy == runningPolicy {
+						pairs = map[pair]bool{p: true}
+						break
+					}
+				}
 			}
-			attachingEvents = append(attachingEvents, fmt.Sprintf("event@%s note=%q", event.TS, event.Note))
 		}
-		return runAttemptAuthority{}, fmt.Errorf(
-			"runattempt %s authority generation is ambiguous (pairs=%d): %s; attached by lifecycle events: %s. remediation: run compound work reconcile-run-attempts %s, or fix the source that wrote the second attach",
-			ra.ID, len(pairs), strings.Join(pairDescs, " vs "), strings.Join(attachingEvents, "; "), w.ID,
-		)
+		if len(pairs) == 0 {
+			return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority generation is missing (pairs=0)", ra.ID)
+		}
+		if len(pairs) > 1 {
+			// Pair ambiguity is the lived 2026-08-23 wedge. Name EVERY pair
+			// and the events that attached it so an operator can audit the
+			// wedge without diffing events files by hand. The prevention at
+			// applyAdvance stops new wedges; this error is defense-in-depth
+			// for histories already on disk.
+			var pairDescs []string
+			for p := range pairs {
+				pairDescs = append(pairDescs, fmt.Sprintf("(act=%s, pol=%s)", p.action, p.policy))
+			}
+			attachingEvents := []string{}
+			for _, event := range events {
+				if !attachedHas(event.Attached, ra.ID) {
+					continue
+				}
+				attachingEvents = append(attachingEvents, fmt.Sprintf("event@%s note=%q", event.TS, event.Note))
+			}
+			return runAttemptAuthority{}, fmt.Errorf(
+				"runattempt %s authority generation is ambiguous (pairs=%d): %s; attached by lifecycle events: %s. remediation: run compound work reconcile-run-attempts %s, or fix the source that wrote the second attach",
+				ra.ID, len(pairs), strings.Join(pairDescs, " vs "), strings.Join(attachingEvents, "; "), w.ID,
+			)
+		}
+		// len(pairs) == 1: tiebreak resolved a >1 case to a single pair; fall
+		// through to the resolution path below.
 	}
 	var resolved pair
 	for candidate := range pairs {
@@ -2251,6 +2325,29 @@ func (s *Store) resolveRunAttemptAuthorityFromEvents(w envelope.WorkEnvelope, ra
 		return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority policy %s does not allow action %s for work %s", ra.ID, resolved.policy, action.ID, w.ID)
 	}
 	return runAttemptAuthority{ActionIntentID: resolved.action, PolicyDecisionID: resolved.policy}, nil
+}
+
+// findRunningPolicyDecision walks events for the first event that
+// transitioned the work into the `running` state and returns the
+// `pol_` id it carried in its Attached list. Returns "" when no
+// running event exists. Used by the deterministic tiebreak in
+// resolveRunAttemptAuthorityFromEvents when a wedged history
+// presents >1 candidate (act_, pol_) pair (lived 2026-08-23,
+// work_1d968c3f0522): the running reservation's policy is the
+// authoritative one because it governed the lifecycle that actually
+// executed the attempt.
+func findRunningPolicyDecision(events []Event) string {
+	for _, event := range events {
+		if event.To != "running" {
+			continue
+		}
+		for _, ref := range event.Attached {
+			if strings.HasPrefix(ref, "pol_") {
+				return ref
+			}
+		}
+	}
+	return ""
 }
 
 func latestActionIntentID(w envelope.WorkEnvelope) string {
