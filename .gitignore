@@ -17,6 +17,9 @@ node_modules/
 # runtime/evidence state produced by lanes (playtest runs etc.) — generated, never committed
 /state/
 
+# switchback body-store sidecar (lives at ~/.switchback/state/body/, never in the repo)
+/body/
+
 # External memory systems cloned for audit (P6 evidence-gathering, never vendored)
 /memory/
 
