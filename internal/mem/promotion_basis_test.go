@@ -1,6 +1,7 @@
 package mem
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -8,14 +9,15 @@ import (
 	"compound/internal/candidates"
 )
 
-// Falsifier F1 (per packet work_2742cffbeb5f): a candidate captured through
-// the raw intake door with a system-derived promotion_basis is stripped at
-// the write seam — the stored candidate carries an empty basis, the original
-// is recorded under Qualifiers[promotion_basis_stripped], and the existing
-// promote gate at mem.go:680 rejects promote with the canonical
-// "cannot promote without valid promotion_basis" error. Subtests cover every
-// system-derived basis.
-func TestCaptureStripsSystemDerivedPromotionBasis(t *testing.T) {
+// Falsifier F1 (per packet work_2742cffbeb5f, scoped to the actual raw-intake
+// door): a candidate arriving through the CLI's JSON-parsing boundary
+// (StructuredExtractor) carrying a system-derived promotion_basis is stripped
+// at write seam — the candidate captured via Capture(...) lands with an empty
+// basis, the original is recorded under Qualifiers[promotion_basis_stripped],
+// and the existing promote gate at mem.go:680 rejects promote with the
+// canonical "cannot promote without valid promotion_basis" error. Subtests
+// cover every system-derived basis.
+func TestStructuredExtractorStripsSystemDerivedPromotionBasis(t *testing.T) {
 	bases := []string{
 		candidates.BasisRuntimeProof,
 		candidates.BasisCuratedPage,
@@ -31,19 +33,36 @@ func TestCaptureStripsSystemDerivedPromotionBasis(t *testing.T) {
 				t.Fatalf("open: %v", err)
 			}
 			now := time.Date(2026, 7, 9, 9, 0, 0, 0, time.UTC)
-			seeded := []Candidate{{
-				Entity:         "project:compound",
-				Predicate:      "envelope_" + basis,
-				Object:         "v",
-				ObservationDate: now.Format(time.RFC3339),
-				Confidence:     0.9,
-				Derivation:     "deterministic",
-				ClaimType:      "decision",
-				PromotionBasis: basis,
-				SourceTraceRef: "t_" + basis,
-				SnippetHash:    "h_" + basis,
-			}}
-			captured, err := s.Capture(seeded, now)
+			trace := map[string]any{
+				"candidates": []map[string]any{{
+					"entity":         "project:compound",
+					"predicate":      "envelope_" + basis,
+					"object":         "v",
+					"observation_date": now.Format(time.RFC3339),
+					"confidence":     0.9,
+					"derivation":     "deterministic",
+					"claim_type":     "decision",
+					"promotion_basis": basis,
+					"source_trace_ref": "t_" + basis,
+					"snippet_hash":    "h_" + basis,
+				}},
+				"relations": []any{},
+			}
+			bytes, err := json.Marshal(trace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ext, err := StructuredExtractor{}.Extract(bytes)
+			if err != nil {
+				t.Fatalf("extract: %v", err)
+			}
+			if got := ext.Candidates[0].PromotionBasis; got != "" {
+				t.Fatalf("extracted basis = %q, want empty (stripped at parser)", got)
+			}
+			if got := ext.Candidates[0].Qualifiers[PromotionBasisStrippedQualifier]; got != basis {
+				t.Fatalf("extracted stripped qualifier = %q, want %q", got, basis)
+			}
+			captured, err := s.Capture(ext.Candidates, now)
 			if err != nil {
 				t.Fatalf("capture: %v", err)
 			}
@@ -51,10 +70,10 @@ func TestCaptureStripsSystemDerivedPromotionBasis(t *testing.T) {
 				t.Fatalf("captured len = %d, want 1", len(captured))
 			}
 			if captured[0].PromotionBasis != "" {
-				t.Fatalf("stored basis = %q, want empty (stripped)", captured[0].PromotionBasis)
+				t.Fatalf("stored basis = %q, want empty", captured[0].PromotionBasis)
 			}
 			if got := captured[0].Qualifiers[PromotionBasisStrippedQualifier]; got != basis {
-				t.Fatalf("stripped qualifier = %q, want %q", got, basis)
+				t.Fatalf("stripped qualifier after capture = %q, want %q", got, basis)
 			}
 			// Re-read from disk to confirm the persisted candidate carries
 			// the stripped value, not just the in-memory return value.
@@ -64,10 +83,6 @@ func TestCaptureStripsSystemDerivedPromotionBasis(t *testing.T) {
 			}
 			if persisted.PromotionBasis != "" {
 				t.Fatalf("persisted basis = %q, want empty", persisted.PromotionBasis)
-			}
-			if persisted.Qualifiers[PromotionBasisStrippedQualifier] != basis {
-				t.Fatalf("persisted stripped qualifier = %q, want %q",
-					persisted.Qualifiers[PromotionBasisStrippedQualifier], basis)
 			}
 			_, err = s.Adjudicate(captured[0].ID, "promote", "work_strip_f1", now)
 			if err == nil {
@@ -87,44 +102,95 @@ func TestCaptureStripsSystemDerivedPromotionBasis(t *testing.T) {
 	}
 }
 
-// Falsifier F2 (negative path only, per packet): intake with
-// promotion_basis=explicit_confirmation is preserved through the write seam
-// (it is self-attested), and Adjudicate("promote") without
-// intent.ExplicitConfirmationRef still fails with the existing
-// "explicit confirmation requires governed confirmation evidence" guard.
-// The positive path (governed confirmation evidence unlocks promotion) is
-// already covered by the existing TestAdjudicateExplicitConfirmation*
-// family at mem_test.go:328+.
-func TestCapturePreservesExplicitConfirmationBasis(t *testing.T) {
-	s := newStore(t)
-	seeded := []Candidate{{
-		Entity:     "operator",
-		Predicate:  "preference.communication",
-		Object:     "prefer concise updates",
-		Confidence: 0.9,
-		Derivation: "extracted",
-		ClaimType:  "preference",
-		Qualifiers: map[string]string{"domain": "comm"},
-		PromotionBasis: candidates.BasisExplicitConfirmation,
-		SourceTraceRef: "t_efc",
-		SnippetHash:    "h_efc",
+// Negative mirror: a bare []Candidate JSON shape (the alternate parser form)
+// also has its system-derived basis stripped. The two forms share the same
+// compiler path; explicit assertion keeps the contract visible.
+func TestStructuredExtractorBareListStripsSystemDerivedPromotionBasis(t *testing.T) {
+	now := time.Date(2026, 7, 9, 9, 1, 0, 0, time.UTC)
+	trace := []map[string]any{{
+		"entity":           "project:compound",
+		"predicate":        "intake_bare",
+		"object":           "v",
+		"observation_date": now.Format(time.RFC3339),
+		"confidence":       0.9,
+		"derivation":       "deterministic",
+		"claim_type":       "decision",
+		"promotion_basis":  candidates.BasisRuntimeProof,
+		"source_trace_ref": "t_bare",
+		"snippet_hash":     "h_bare",
 	}}
-	captured, err := s.Capture(seeded, t0)
+	bytes, err := json.Marshal(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ext, err := StructuredExtractor{}.Extract(bytes)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if ext.Candidates[0].PromotionBasis != "" {
+		t.Fatalf("bare-form extracted basis = %q, want empty", ext.Candidates[0].PromotionBasis)
+	}
+}
+
+// Falsifier F2 (negative path only, per packet): intake with
+// promotion_basis=explicit_confirmation is preserved through the
+// StructuredExtractor (it is self-attested), and Adjudicate("promote")
+// without intent.ExplicitConfirmationRef still fails with the existing
+// "explicit confirmation requires governed confirmation evidence" guard. The
+// positive path is exercised by TestCaptureExplicitConfirmationPositive
+// below (governed confirmation door produces a claim with
+// BasisExplicitConfirmation).
+func TestStructuredExtractorPreservesExplicitConfirmationBasis(t *testing.T) {
+	home := t.TempDir()
+	s, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 9, 9, 2, 0, 0, time.UTC)
+	trace := map[string]any{
+		"candidates": []map[string]any{{
+			"entity":           "operator",
+			"predicate":        "preference.communication",
+			"object":           "prefer concise updates",
+			"observation_date": now.Format(time.RFC3339),
+			"confidence":       0.9,
+			"derivation":       "extracted",
+			"claim_type":       "preference",
+			"qualifiers":       map[string]string{"domain": "comm"},
+			"promotion_basis":  candidates.BasisExplicitConfirmation,
+			"source_trace_ref": "t_efc",
+			"snippet_hash":     "h_efc",
+		}},
+		"relations": []any{},
+	}
+	bytes, err := json.Marshal(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ext, err := StructuredExtractor{}.Extract(bytes)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if ext.Candidates[0].PromotionBasis != candidates.BasisExplicitConfirmation {
+		t.Fatalf("explicit_confirmation must survive the parser strip; got %q",
+			ext.Candidates[0].PromotionBasis)
+	}
+	if _, flagged := ext.Candidates[0].Qualifiers[PromotionBasisStrippedQualifier]; flagged {
+		t.Fatalf("explicit_confirmation must not be flagged as stripped: %+v",
+			ext.Candidates[0])
+	}
+	captured, err := s.Capture(ext.Candidates, now)
 	if err != nil {
 		t.Fatalf("capture: %v", err)
 	}
-	if len(captured) != 1 {
-		t.Fatalf("captured len = %d", len(captured))
-	}
 	if captured[0].PromotionBasis != candidates.BasisExplicitConfirmation {
-		t.Fatalf("stored basis = %q, want preserved explicit_confirmation",
-			captured[0].PromotionBasis)
+		t.Fatalf("stored basis = %q, want preserved", captured[0].PromotionBasis)
 	}
 	if _, flagged := captured[0].Qualifiers[PromotionBasisStrippedQualifier]; flagged {
-		t.Fatalf("explicit_confirmation must not be flagged as stripped: %+v",
+		t.Fatalf("explicit_confirmation must not be flagged as stripped after capture: %+v",
 			captured[0])
 	}
-	_, err = s.Adjudicate(captured[0].ID, "promote", "work_efc_neg", t0)
+	_, err = s.Adjudicate(captured[0].ID, "promote", "work_efc_neg", now)
 	if err == nil {
 		t.Fatal("ordinary adjudication accepted unproven explicit confirmation")
 	}
@@ -133,11 +199,10 @@ func TestCapturePreservesExplicitConfirmationBasis(t *testing.T) {
 	}
 }
 
-// Falsifier F2 (positive path): a captured explicit_confirmation candidate
-// promoted through the governed confirmation door does promote and stamps
-// BasisExplicitConfirmation onto the resulting claim. This is the positive
-// mirror of the negative test above and proves the self-attested class is
-// not destroyed by the intake strip.
+// F2 positive path: a captured explicit_confirmation candidate promoted
+// through the governed confirmation door does promote and stamps
+// BasisExplicitConfirmation onto the resulting claim. This proves the
+// self-attested class is not destroyed by the intake strip.
 func TestCaptureExplicitConfirmationPositiveGovernedDoorStillWorks(t *testing.T) {
 	s := newStore(t)
 	seeded := []Candidate{{
@@ -147,6 +212,7 @@ func TestCaptureExplicitConfirmationPositiveGovernedDoorStillWorks(t *testing.T)
 		Confidence: 0.9,
 		Derivation: "extracted",
 		ClaimType:  "preference",
+		Qualifiers: map[string]string{"domain": "comm"},
 		PromotionBasis: candidates.BasisExplicitConfirmation,
 		SourceTraceRef: "t_efc_pos",
 		SnippetHash:    "h_efc_pos",
@@ -174,6 +240,47 @@ func TestCaptureExplicitConfirmationPositiveGovernedDoorStillWorks(t *testing.T)
 	if res.Claim.PromotionBasis != candidates.BasisExplicitConfirmation {
 		t.Fatalf("claim basis = %q, want %q",
 			res.Claim.PromotionBasis, candidates.BasisExplicitConfirmation)
+	}
+}
+
+// Negative mirror on Capture direct path: the doctrinally important guarantee
+// is that direct Capture does NOT strip (system adapters and tests carry
+// vetted bases through that door unchanged). This guardrail would catch any
+// future regression that moves the strip back into Capture.
+func TestCaptureDirectDoesNotStripVettedBases(t *testing.T) {
+	s := newStore(t)
+	bases := []string{
+		candidates.BasisRuntimeProof,
+		candidates.BasisCuratedPage,
+		candidates.BasisDecisionRecord,
+		candidates.BasisTrustedDeterministic,
+		candidates.BasisExplicitConfirmation,
+	}
+	for _, basis := range bases {
+		basis := basis
+		t.Run(basis, func(t *testing.T) {
+			c := Candidate{
+				Entity:         "project:compound",
+				Predicate:      "direct_" + basis,
+				Object:         "v",
+				Confidence:     0.9,
+				Derivation:     "deterministic",
+				ClaimType:      "decision",
+				PromotionBasis: basis,
+				SourceTraceRef: "t_" + basis,
+				SnippetHash:    "h_" + basis,
+			}
+			captured, err := s.Capture([]Candidate{c}, t0)
+			if err != nil {
+				t.Fatalf("capture: %v", err)
+			}
+			if captured[0].PromotionBasis != basis {
+				t.Fatalf("direct Capture stripped %q → %q; capture must preserve vetted bases", basis, captured[0].PromotionBasis)
+			}
+			if _, flagged := captured[0].Qualifiers[PromotionBasisStrippedQualifier]; flagged {
+				t.Fatalf("direct Capture must not flag %q as stripped: %+v", basis, captured[0])
+			}
+		})
 	}
 }
 
