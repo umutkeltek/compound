@@ -137,7 +137,7 @@ function readObserved(): { map: Map<string, Observed>; total: number } {
   let total = 0;
   if (!existsSync(BODY_INDEX)) return { map, total };
   try {
-    const db = new Database(BODY_INDEX, { readonly: true });
+    const db = new Database(BODY_INDEX);
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
     const rows = db
       .query("SELECT upstream, COUNT(*) AS c, COALESCE(SUM(body_bytes), 0) AS b, MAX(observed_at_unix_ms) AS last_ms FROM body_events WHERE observed_at_unix_ms > ? GROUP BY upstream")
