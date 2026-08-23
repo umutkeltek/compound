@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"compound/internal/home"
+	"compound/internal/runattempt"
 	"compound/internal/work"
 )
 
@@ -76,5 +77,55 @@ func TestParseOpensBranchFlagRejectsMalformed(t *testing.T) {
 	}
 	if ref.Branch != "branch-lifecycle" || ref.Owner != "claude:orchestrator" || ref.Kind != "opens" {
 		t.Fatalf("colon-bearing owner must parse whole: %+v", ref)
+	}
+}
+
+func TestParseAcknowledgeAbandonedHappy(t *testing.T) {
+	got, err := parseAcknowledgeAbandoned(
+		[]string{
+			"work_abc123",
+			"--acknowledge-abandoned", "ratt_20260823T120000Z_aaaaaaa",
+			"--reason", "mis-dispatch killed; real attempt did the work",
+			"--changed",
+		},
+		"",
+	)
+	if err != nil {
+		t.Fatalf("parseAcknowledgeAbandoned: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("requests = %d, want 1", len(got))
+	}
+	if got[0].RunAttemptID != "ratt_20260823T120000Z_aaaaaaa" {
+		t.Fatalf("RunAttemptID = %q", got[0].RunAttemptID)
+	}
+	if got[0].Owner != runattempt.TerminalizationOwnerWorkAcknowledgeAbandoned {
+		t.Fatalf("Owner = %q, want %q", got[0].Owner, runattempt.TerminalizationOwnerWorkAcknowledgeAbandoned)
+	}
+	if got[0].TargetStatus != runattempt.StatusAbandoned {
+		t.Fatalf("TargetStatus = %q, want %q", got[0].TargetStatus, runattempt.StatusAbandoned)
+	}
+	if got[0].Reason != "mis-dispatch killed; real attempt did the work" {
+		t.Fatalf("Reason = %q", got[0].Reason)
+	}
+}
+
+func TestParseAcknowledgeAbandonedRequiresReason(t *testing.T) {
+	_, err := parseAcknowledgeAbandoned(
+		[]string{"work_abc123", "--acknowledge-abandoned", "ratt_aaaa", "--reason", ""},
+		"",
+	)
+	if err == nil || !strings.Contains(err.Error(), "non-empty --reason") {
+		t.Fatalf("err = %v, want non-empty --reason refusal", err)
+	}
+}
+
+func TestParseAcknowledgeAbandonedRequiresRattID(t *testing.T) {
+	_, err := parseAcknowledgeAbandoned(
+		[]string{"work_abc123", "--acknowledge-abandoned"},
+		"",
+	)
+	if err == nil || !strings.Contains(err.Error(), "requires a following ratt_") {
+		t.Fatalf("err = %v, want requires-ratt-id refusal", err)
 	}
 }
