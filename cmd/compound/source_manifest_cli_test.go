@@ -656,6 +656,10 @@ func TestSourceManifestDirectoryRejectsConflictingInputModesBeforeWrite(t *testi
 			cmdSource([]string{"manifest-create", "--family", family, "--source-dir", sourceRoot, sourcePath})
 		case "export":
 			cmdSource([]string{"manifest-create", "--family", family, "--source-dir", sourceRoot, "--from-export", sourcePath})
+		case "blank-export":
+			cmdSource([]string{"manifest-create", "--family", family, "--source-dir", sourceRoot, "--from-export", ""})
+		case "repeated-export":
+			cmdSource([]string{"manifest-create", "--family", family, "--from-export", sourcePath, "--from-export", sourcePath})
 		default:
 			os.Exit(3)
 		}
@@ -667,7 +671,7 @@ func TestSourceManifestDirectoryRejectsConflictingInputModesBeforeWrite(t *testi
 	if err := os.WriteFile(sourcePath, []byte("# Conflict\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"positional", "export"} {
+	for _, mode := range []string{"positional", "export", "blank-export", "repeated-export"} {
 		t.Run(mode, func(t *testing.T) {
 			homePath := t.TempDir()
 			if err := home.Init(homePath, "test", cliTestNow); err != nil {

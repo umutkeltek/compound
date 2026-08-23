@@ -378,6 +378,7 @@ func cmdSourceIntakeWorkPlan(args []string) {
 func cmdSourceManifestCreate(args []string) {
 	family := ""
 	fromExport := ""
+	fromExportSet := false
 	dumpPath := ""
 	sourceDir := ""
 	sourceDirSet := false
@@ -399,14 +400,15 @@ func cmdSourceManifestCreate(args []string) {
 			family = args[i+1]
 			i++
 		case "--from-export":
-			if i+1 >= len(args) {
+			if i+1 >= len(args) || fromExportSet || strings.HasPrefix(args[i+1], "--") {
 				fmt.Fprintln(os.Stderr, usage)
 				os.Exit(2)
 			}
 			fromExport = args[i+1]
+			fromExportSet = true
 			i++
 		case "--source-dir":
-			if i+1 >= len(args) || sourceDirSet {
+			if i+1 >= len(args) || sourceDirSet || strings.HasPrefix(args[i+1], "--") {
 				fmt.Fprintln(os.Stderr, usage)
 				os.Exit(2)
 			}
@@ -432,41 +434,37 @@ func cmdSourceManifestCreate(args []string) {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
-	if sourceDirSet && strings.TrimSpace(sourceDir) == "" {
-		fmt.Fprintln(os.Stderr, usage)
-		os.Exit(2)
-	}
-	if strings.TrimSpace(fromExport) != "" && len(paths) > 0 {
-		fmt.Fprintln(os.Stderr, "source manifest-create: use either --from-export or positional sources, not both")
-		os.Exit(2)
-	}
-	if strings.TrimSpace(fromExport) != "" && sourceDirSet {
+	if fromExportSet && sourceDirSet {
 		fmt.Fprintln(os.Stderr, "source manifest-create: use either --from-export or --source-dir, not both")
+		os.Exit(2)
+	}
+	if fromExportSet && len(paths) > 0 {
+		fmt.Fprintln(os.Stderr, "source manifest-create: use either --from-export or positional sources, not both")
 		os.Exit(2)
 	}
 	if sourceDirSet && len(paths) > 0 {
 		fmt.Fprintln(os.Stderr, "source manifest-create: use either --source-dir or positional sources, not both")
 		os.Exit(2)
 	}
-	if strings.TrimSpace(fromExport) != "" && sourceInPlace {
-		fmt.Fprintln(os.Stderr, "source manifest-create: --source-in-place cannot be used with --from-export")
-		os.Exit(2)
-	}
-	if strings.TrimSpace(dumpPath) != "" && strings.TrimSpace(fromExport) == "" {
-		fmt.Fprintln(os.Stderr, "source manifest-create: --dump requires --from-export")
-		os.Exit(2)
-	}
-	if strings.TrimSpace(fromExport) == "" && !sourceDirSet && len(paths) == 0 {
+	if fromExportSet && strings.TrimSpace(fromExport) == "" {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
-	if sourceDirSet {
-		enumerated, err := sourceobs.EnumerateSourceManifestDirectory(sourceDir)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "source manifest-create:", err)
-			os.Exit(1)
-		}
-		paths = enumerated
+	if sourceDirSet && strings.TrimSpace(sourceDir) == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	if fromExportSet && sourceInPlace {
+		fmt.Fprintln(os.Stderr, "source manifest-create: --source-in-place cannot be used with --from-export")
+		os.Exit(2)
+	}
+	if strings.TrimSpace(dumpPath) != "" && !fromExportSet {
+		fmt.Fprintln(os.Stderr, "source manifest-create: --dump requires --from-export")
+		os.Exit(2)
+	}
+	if !fromExportSet && !sourceDirSet && len(paths) == 0 {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
 	if err != nil {
@@ -474,7 +472,7 @@ func cmdSourceManifestCreate(args []string) {
 		os.Exit(1)
 	}
 	var manifest sourceobs.SourceManifest
-	if strings.TrimSpace(fromExport) != "" {
+	if fromExportSet {
 		if family != sourceobs.GbrainDBExportManifestFamily {
 			fmt.Fprintf(os.Stderr, "source manifest-create: --from-export currently supports family %s only\n", sourceobs.GbrainDBExportManifestFamily)
 			os.Exit(2)
@@ -484,6 +482,10 @@ func cmdSourceManifestCreate(args []string) {
 		} else {
 			manifest, err = sourceobs.BuildGbrainExportManifest(fromExport, time.Now())
 		}
+	} else if sourceDirSet && sourceInPlace {
+		manifest, err = sourceobs.BuildSourceManifestDirectory(family, sourceDir, time.Now())
+	} else if sourceDirSet {
+		manifest, err = sourceobs.BuildOwnedSourceManifestDirectory(homePath, family, sourceDir, time.Now())
 	} else if sourceInPlace {
 		manifest, err = sourceobs.BuildSourceManifest(family, paths, time.Now())
 	} else {

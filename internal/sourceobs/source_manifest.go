@@ -147,36 +147,14 @@ type SourceManifestMaterializeReport struct {
 }
 
 func BuildSourceManifest(sourceFamily string, paths []string, now time.Time) (SourceManifest, error) {
-	sourceFamily = strings.TrimSpace(sourceFamily)
-	if sourceFamily == "" {
-		return SourceManifest{}, fmt.Errorf("source family required")
-	}
-	if len(paths) == 0 {
-		return SourceManifest{}, fmt.Errorf("at least one source path required")
-	}
-	if err := validateUniqueSourceManifestPaths(paths); err != nil {
+	if err := validateSourceManifestBuildInput(sourceFamily, paths); err != nil {
 		return SourceManifest{}, err
 	}
-	if now.IsZero() {
-		now = time.Now()
+	snapshots, err := snapshotSourceManifestPaths(paths)
+	if err != nil {
+		return SourceManifest{}, err
 	}
-	manifest := SourceManifest{
-		SchemaVersion: SourceManifestSchemaVersion,
-		ID:            "srcman_" + safeManifestName(sourceFamily),
-		SourceFamily:  sourceFamily,
-		AuthorityRef:  SourceManifestAuthorityRef(sourceFamily),
-		Lifecycle:     defaultSourceManifestLifecycle(),
-	}
-	for _, sourcePath := range paths {
-		item, err := buildSourceManifestItem(sourceFamily, sourcePath)
-		if err != nil {
-			return SourceManifest{}, err
-		}
-		manifest.Items = append(manifest.Items, item)
-	}
-	sort.SliceStable(manifest.Items, func(i, j int) bool { return manifest.Items[i].ID < manifest.Items[j].ID })
-	manifest.GeneratedAt = sourceManifestGeneratedAt(manifest.Items, now)
-	return manifest, nil
+	return buildSourceManifestSnapshots(sourceFamily, snapshots, now, gitRevision)
 }
 
 // CanonPathNode binds one harness-canon source file to the capability-graph node it evolves.
@@ -229,34 +207,149 @@ func BuildCanonManifest(sourceFamily string, pairs []CanonPathNode, now time.Tim
 }
 
 // BuildOwnedSourceManifest captures exact source bytes into Compound's immutable
-// artifact store. SourceRef remains provenance; it is no longer needed to recover
-// the body after this function succeeds.
+// artifact store. Each source is opened and read once; SourceRef remains
+// provenance and is no longer needed to recover the body after this function
+// succeeds.
 func BuildOwnedSourceManifest(homePath, sourceFamily string, paths []string, now time.Time) (SourceManifest, error) {
-	manifest, err := BuildSourceManifest(sourceFamily, paths, now)
+	if err := validateSourceManifestBuildInput(sourceFamily, paths); err != nil {
+		return SourceManifest{}, err
+	}
+	snapshots, err := snapshotSourceManifestPaths(paths)
 	if err != nil {
 		return SourceManifest{}, err
 	}
+	manifest, err := buildSourceManifestSnapshots(sourceFamily, snapshots, now, gitRevision)
+	if err != nil {
+		return SourceManifest{}, err
+	}
+	return captureOwnedSourceManifest(homePath, manifest, snapshots, nil)
+}
+
+type sourceManifestArtifactPutter func(*home.ArtifactStore, []byte) (string, error)
+
+type sourceManifestCreatedArtifact struct {
+	path     string
+	fileHash string
+}
+
+func validateSourceManifestBuildInput(sourceFamily string, paths []string) error {
+	if strings.TrimSpace(sourceFamily) == "" {
+		return fmt.Errorf("source family required")
+	}
+	if len(paths) == 0 {
+		return fmt.Errorf("at least one source path required")
+	}
+	return validateUniqueSourceManifestPaths(paths)
+}
+
+func buildSourceManifestSnapshots(sourceFamily string, snapshots []sourceManifestFileSnapshot, now time.Time, revisionForPath func(string) string) (SourceManifest, error) {
+	sourceFamily = strings.TrimSpace(sourceFamily)
+	if now.IsZero() {
+		now = time.Now()
+	}
+	manifest := SourceManifest{
+		SchemaVersion: SourceManifestSchemaVersion,
+		ID:            "srcman_" + safeManifestName(sourceFamily),
+		SourceFamily:  sourceFamily,
+		AuthorityRef:  SourceManifestAuthorityRef(sourceFamily),
+		Lifecycle:     defaultSourceManifestLifecycle(),
+		Items:         make([]SourceManifestItem, 0, len(snapshots)),
+	}
+	for _, snapshot := range snapshots {
+		revision := ""
+		if revisionForPath != nil {
+			revision = revisionForPath(snapshot.path)
+		}
+		item, err := buildSourceManifestItemFromSnapshot(sourceFamily, snapshot, revision)
+		if err != nil {
+			return SourceManifest{}, err
+		}
+		manifest.Items = append(manifest.Items, item)
+	}
+	sort.SliceStable(manifest.Items, func(i, j int) bool { return manifest.Items[i].ID < manifest.Items[j].ID })
+	manifest.GeneratedAt = sourceManifestGeneratedAt(manifest.Items, now)
+	return manifest, nil
+}
+
+func captureOwnedSourceManifest(homePath string, manifest SourceManifest, snapshots []sourceManifestFileSnapshot, putter sourceManifestArtifactPutter) (SourceManifest, error) {
 	store, err := home.NewArtifactStore(homePath)
 	if err != nil {
 		return SourceManifest{}, err
 	}
+	if putter == nil {
+		putter = func(store *home.ArtifactStore, body []byte) (string, error) {
+			return store.Put(body)
+		}
+	}
+	byPath := make(map[string]sourceManifestFileSnapshot, len(snapshots))
+	for _, snapshot := range snapshots {
+		byPath[snapshot.path] = snapshot
+	}
+	created := make([]sourceManifestCreatedArtifact, 0, len(snapshots))
+	cleanup := func(primary error) (SourceManifest, error) {
+		if cleanupErr := cleanupSourceManifestArtifacts(created); cleanupErr != nil {
+			return SourceManifest{}, fmt.Errorf("%w; cleanup newly-created custody: %v", primary, cleanupErr)
+		}
+		return SourceManifest{}, primary
+	}
+
 	for i := range manifest.Items {
-		body, err := os.ReadFile(manifest.Items[i].SourceRef)
-		if err != nil {
-			return SourceManifest{}, fmt.Errorf("capture source %s: %w", manifest.Items[i].SourceRef, err)
+		item := &manifest.Items[i]
+		snapshot, ok := byPath[item.SourceRef]
+		if !ok {
+			return cleanup(fmt.Errorf("capture source %s: snapshot missing", item.SourceRef))
 		}
-		ref, err := store.Put(body)
-		if err != nil {
-			return SourceManifest{}, fmt.Errorf("capture source %s: %w", manifest.Items[i].SourceRef, err)
+		hexDigest := strings.TrimPrefix(item.FileHash, "sha256:")
+		expectedRef := home.ArtifactRefPrefix + hexDigest
+		artifactPath := filepath.Join(homePath, "artifacts", "sha256", hexDigest)
+		_, statErr := os.Lstat(artifactPath)
+		existed := statErr == nil
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return cleanup(fmt.Errorf("capture source %s: inspect custody: %w", item.SourceRef, statErr))
 		}
-		manifest.Items[i].BodyPolicy = "owned_snapshot"
-		manifest.Items[i].BodyRef = ref
-		manifest.Items[i].BodyBytes = int64(len(body))
-		manifest.Items[i].MediaType = inferMediaType(manifest.Items[i].SourceRef)
-		manifest.Items[i].EvidenceRefs = append(manifest.Items[i].EvidenceRefs, ref)
-		manifest.Items[i].ID = idFor("srcitem_", sourceFamily, manifest.Items[i].SourceKey, manifest.Items[i].FileHash)
+		ref, putErr := putter(store, snapshot.body)
+		if !existed {
+			created = append(created, sourceManifestCreatedArtifact{path: artifactPath, fileHash: item.FileHash})
+		}
+		if putErr != nil {
+			return cleanup(fmt.Errorf("capture source %s: %w", item.SourceRef, putErr))
+		}
+		if ref != expectedRef {
+			return cleanup(fmt.Errorf("capture source %s: artifact ref %s does not match %s", item.SourceRef, ref, expectedRef))
+		}
+		item.BodyPolicy = "owned_snapshot"
+		item.BodyRef = ref
+		item.BodyBytes = int64(len(snapshot.body))
+		item.MediaType = inferMediaType(item.SourceRef)
+		item.EvidenceRefs = append(item.EvidenceRefs, ref)
+		item.ID = idFor("srcitem_", manifest.SourceFamily, item.SourceKey, item.FileHash)
 	}
 	return manifest, nil
+}
+
+func cleanupSourceManifestArtifacts(created []sourceManifestCreatedArtifact) error {
+	var cleanupErrors []string
+	for i := len(created) - 1; i >= 0; i-- {
+		body, err := os.ReadFile(created[i].path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			cleanupErrors = append(cleanupErrors, err.Error())
+			continue
+		}
+		if hashBytes(body) != created[i].fileHash {
+			cleanupErrors = append(cleanupErrors, "refused to remove changed artifact "+created[i].path)
+			continue
+		}
+		if err := os.Remove(created[i].path); err != nil && !os.IsNotExist(err) {
+			cleanupErrors = append(cleanupErrors, err.Error())
+		}
+	}
+	if len(cleanupErrors) != 0 {
+		return fmt.Errorf("%s", strings.Join(cleanupErrors, "; "))
+	}
+	return nil
 }
 
 func RecordSourceManifest(homePath string, manifest SourceManifest) (SourceManifestReport, error) {
@@ -686,41 +779,34 @@ func SourceManifestAuthorityRef(sourceFamily string) string {
 }
 
 func buildSourceManifestItem(sourceFamily, sourcePath string) (SourceManifestItem, error) {
-	sourcePath = strings.TrimSpace(sourcePath)
-	if sourcePath == "" {
-		return SourceManifestItem{}, fmt.Errorf("source path required")
-	}
-	info, err := os.Stat(sourcePath)
+	snapshot, err := snapshotSourceManifestFile(sourcePath)
 	if err != nil {
-		return SourceManifestItem{}, fmt.Errorf("stat source %s: %w", sourcePath, err)
+		return SourceManifestItem{}, err
 	}
-	hash, err := hashFile(sourcePath)
-	if err != nil {
-		return SourceManifestItem{}, fmt.Errorf("hash source %s: %w", sourcePath, err)
-	}
-	data, err := os.ReadFile(sourcePath)
-	if err != nil {
-		return SourceManifestItem{}, fmt.Errorf("read source %s: %w", sourcePath, err)
-	}
-	overlays := structureOverlays(sourcePath, data)
-	instructionOverlays, err := instructionSupplyChainOverlays(sourcePath, data)
+	return buildSourceManifestItemFromSnapshot(sourceFamily, snapshot, gitRevision(snapshot.path))
+}
+
+func buildSourceManifestItemFromSnapshot(sourceFamily string, snapshot sourceManifestFileSnapshot, revision string) (SourceManifestItem, error) {
+	hash := hashBytes(snapshot.body)
+	overlays := structureOverlays(snapshot.path, snapshot.body)
+	instructionOverlays, err := instructionSupplyChainOverlays(snapshot.path, snapshot.body)
 	if err != nil {
 		return SourceManifestItem{}, err
 	}
 	overlays = append(overlays, instructionOverlays...)
 	item := SourceManifestItem{
-		ID:                 idFor("srcitem_", sourceFamily, sourcePath),
-		SourceKind:         inferSourceKind(sourcePath),
-		SourceRef:          sourcePath,
+		ID:                 idFor("srcitem_", sourceFamily, snapshot.path),
+		SourceKind:         inferSourceKind(snapshot.path),
+		SourceRef:          snapshot.path,
 		FileHash:           hash,
-		GitRevision:        gitRevision(sourcePath),
-		SnapshotTime:       info.ModTime().UTC().Format(time.RFC3339),
+		GitRevision:        revision,
+		SnapshotTime:       snapshot.modTime.UTC().Format(time.RFC3339),
 		Privacy:            "private",
 		BodyPolicy:         "source_in_place",
-		FileMode:           fmt.Sprintf("%04o", info.Mode().Perm()),
+		FileMode:           fmt.Sprintf("%04o", snapshot.mode.Perm()),
 		StructureOverlays:  overlays,
-		CompoundEntityRefs: inferCompoundEntityRefs(sourcePath),
-		EvidenceRefs:       []string{"source:" + sourcePath, hash},
+		CompoundEntityRefs: inferCompoundEntityRefs(snapshot.path),
+		EvidenceRefs:       []string{"source:" + snapshot.path, hash},
 	}
 	normalizeSourceManifestItem(&item, sourceFamily)
 	return item, nil
@@ -863,15 +949,6 @@ func inferMediaType(sourcePath string) string {
 	}
 }
 
-func hashFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(data)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
-}
-
 func hashBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
@@ -892,9 +969,16 @@ func parseFileMode(value string) (os.FileMode, error) {
 	return os.FileMode(mode), nil
 }
 
+var sourceManifestGitRevisionCommand = func(dir string) ([]byte, error) {
+	return exec.Command("git", "-C", dir, "rev-parse", "--short", "HEAD").Output()
+}
+
 func gitRevision(sourcePath string) string {
-	dir := filepath.Dir(sourcePath)
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "--short", "HEAD").Output()
+	return gitRevisionDirectory(filepath.Dir(sourcePath))
+}
+
+func gitRevisionDirectory(dir string) string {
+	out, err := sourceManifestGitRevisionCommand(dir)
 	if err != nil {
 		return ""
 	}
