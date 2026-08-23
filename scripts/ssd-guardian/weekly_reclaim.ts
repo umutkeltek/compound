@@ -57,11 +57,20 @@ mkdirSync(reportDir, { recursive: true });
 const steps: Step[] = [];
 const logs: Record<string, string> = {};
 
-// Step 1: capture-coverage audit (always; non-destructive).
+// Step 0: backup freshness gate.
+{
+  const r = runScript("check_backup_freshness.ts", []);
+  logs.backup = r.stdout;
+  try {
+    const j = JSON.parse(r.stdout);
+    steps.push({ id: "backup-freshness-check", status: "executed", reason: `${j.status} (latest: ${j.latest ?? "none"}, ${j.age_hours ?? "?"}h)` });
+  } catch {
+    steps.push({ id: "backup-freshness-check", status: "failed", reason: r.stderr.slice(0, 200) });
+  }
+}
 {
   const r = runScript("audit_switchback_capture.ts", ["--markdown"]);
   logs.audit = r.stdout;
-  writeFileSync(join(reportDir, "capture-coverage.md"), r.stdout);
   steps.push({ id: "capture-coverage-audit", status: r.ok ? "executed" : "failed", reason: r.ok ? undefined : r.stderr.slice(0, 200) });
 }
 
