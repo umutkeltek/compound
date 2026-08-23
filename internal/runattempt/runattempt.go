@@ -122,9 +122,16 @@ const (
 	// TerminalizationIntentSchemaVersion is the durable prepare record written
 	// before a WorkEnvelope close publishes its first authoritative byte.
 	TerminalizationIntentSchemaVersion = "compound.runattempt_terminalization_intent.v0.1"
-	TerminalizationOwnerWorkClose      = "work.close"
-	TerminalizationOwnerWorkSupersede  = "work.close.supersede"
-	TerminalizationOwnerPanelApply     = "panel.apply"
+	TerminalizationOwnerWorkClose                 = "work.close"
+	TerminalizationOwnerWorkSupersede             = "work.close.supersede"
+	TerminalizationOwnerPanelApply                = "panel.apply"
+	// TerminalizationOwnerWorkAcknowledgeAbandoned is the work.close
+	// caller-owned acknowledgement of an ALREADY-terminal abandoned
+	// RunAttempt (close-gate-recovery door, lived wedge work_2742cffbeb5f).
+	// The attempt's status is NOT rewritten by this owner; it exists only so
+	// the receipt carries a structured acknowledgement under a name the audit
+	// can branch on.
+	TerminalizationOwnerWorkAcknowledgeAbandoned = "work.close.ack_abandoned"
 )
 
 // TerminalizationIntent is the immutable prepare half of RunAttempt
@@ -163,7 +170,7 @@ func (in TerminalizationIntent) Validate() error {
 		return fmt.Errorf("terminalization intent schema_version = %q, want %q", in.SchemaVersion, TerminalizationIntentSchemaVersion)
 	}
 	switch in.Owner {
-	case TerminalizationOwnerWorkClose, TerminalizationOwnerWorkSupersede, TerminalizationOwnerPanelApply:
+	case TerminalizationOwnerWorkClose, TerminalizationOwnerWorkSupersede, TerminalizationOwnerPanelApply, TerminalizationOwnerWorkAcknowledgeAbandoned:
 	default:
 		return fmt.Errorf("terminalization intent owner %q is unsupported", in.Owner)
 	}

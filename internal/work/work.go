@@ -2348,7 +2348,7 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 	reservedSHA string,
 	closing envelope.WorkEnvelope,
 	plan ClosePlan,
-	receipt envelope.Receipt,
+	receipt *envelope.Receipt,
 	transition envelope.Transition,
 	in CloseInput,
 	inputSHA string,
@@ -2358,7 +2358,21 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 		return nil, errors.New("SkipRunAttemptTerminalization requires explicit RunAttemptTerminalizations")
 	}
 	if !in.SkipRunAttemptTerminalization && len(in.RunAttemptTerminalizations) > 0 {
-		return nil, errors.New("RunAttemptTerminalizations requires SkipRunAttemptTerminalization")
+		// Caller-owned terminalization is allowed WITHOUT SkipRunAttemptTerminalization
+		// only when every request targets an ALREADY-terminal abandoned attempt
+		// (the acknowledge-abandoned door for lived wedges like work_2742cffbeb5f).
+		// Non-terminal targets still require SkipRunAttemptTerminalization so the
+		// gate owns the terminalization of bound attempts.
+		store := s.runAttempts()
+		for _, req := range in.RunAttemptTerminalizations {
+			ra, err := store.Get(req.RunAttemptID)
+			if err != nil {
+				return nil, fmt.Errorf("caller terminalization run_attempt_id %s unreadable: %w", req.RunAttemptID, err)
+			}
+			if !runattempt.IsTerminal(ra.Status) || ra.Status != runattempt.StatusAbandoned {
+				return nil, fmt.Errorf("RunAttemptTerminalizations requires SkipRunAttemptTerminalization (only acknowledge-abandoned is allowed without it)")
+			}
+		}
 	}
 	requests := map[string]RunAttemptTerminalizationRequest{}
 	for _, request := range in.RunAttemptTerminalizations {
@@ -2374,6 +2388,14 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 		}
 		if request.Owner == runattempt.TerminalizationOwnerWorkClose || request.Owner == runattempt.TerminalizationOwnerWorkSupersede {
 			return nil, fmt.Errorf("caller terminalization %s cannot claim work-owned terminalization owner %s", request.RunAttemptID, request.Owner)
+		}
+		// acknowledge-abandoned is a sub-owner of work.close: it is the ONLY
+		// caller-owned owner the close gate accepts for an already-terminal
+		// abandoned RunAttempt. Its semantic is record-only (no status rewrite);
+		// the receipt proof_ref carries the acknowledgement under that owner.
+		if request.Owner == runattempt.TerminalizationOwnerWorkAcknowledgeAbandoned &&
+			request.TargetStatus != runattempt.StatusAbandoned {
+			return nil, fmt.Errorf("caller terminalization %s owner %q requires target_status %q", request.RunAttemptID, request.Owner, runattempt.StatusAbandoned)
 		}
 		requests[request.RunAttemptID] = request
 	}
@@ -2413,7 +2435,36 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 		}
 		if runattempt.IsTerminal(ra.Status) {
 			if callerOwns {
-				return nil, fmt.Errorf("caller terminalization %s targets an already-terminal attempt", id)
+				// Acknowledgement of an already-terminal abandoned attempt is
+				// the only legitimate caller-owns on a terminal attempt: the
+				// real attempt did the work; this one was killed before any
+				// side effect and the operator is naming it for the audit.
+				// Refuses for any other terminal status — supersede and the
+				// work.close outcome pair are owned by the gate, not the
+				// caller.
+				if ra.Status != runattempt.StatusAbandoned || request.TargetStatus != runattempt.StatusAbandoned {
+					return nil, fmt.Errorf("caller terminalization %s targets an already-terminal attempt", id)
+				}
+				if strings.TrimSpace(request.Reason) == "" {
+					return nil, fmt.Errorf("caller terminalization %s (acknowledge-abandoned) requires a non-empty reason", id)
+				}
+				if _, err := s.resolveRunAttemptAuthorityFromEvents(reserved, ra, events); err != nil {
+					return nil, err
+				}
+				if ra.TerminalizationOwner == runattempt.TerminalizationOwnerWorkClose &&
+					(ra.TerminalizationReceiptID != receipt.ID || ra.TerminalizationTransitionID != transition.ID) {
+					return nil, fmt.Errorf("terminal runattempt %s work.close proof pair %s/%s does not match closing proof %s/%s", id, ra.TerminalizationReceiptID, ra.TerminalizationTransitionID, receipt.ID, transition.ID)
+				}
+				if ra.TerminalizationIntent != nil {
+					return nil, fmt.Errorf("terminal runattempt %s already carries a prepared intent while work %s is nonterminal", id, reserved.ID)
+				}
+				// Stamp the acknowledgement on the receipt's proof_refs so
+				// the operator-visible audit carries it (no Receipt schema
+				// change — proof refs are already the structured-evidence
+				// surface and `abandon_ack:` is a documented namespace).
+				receipt.ProofRefs = append(receipt.ProofRefs,
+					fmt.Sprintf("abandon_ack:%s:%s", id, strings.TrimSpace(request.Reason)))
+				continue
 			}
 			historicalCompletedAttempt := in.Outcome == "completed" &&
 				(history.SuccessfulRetryPredecessors[id] || len(history.ReplacedClaimReservations[id]) > 0)
@@ -2773,7 +2824,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		return res, fmt.Errorf("emitted transition invalid: %w", err)
 	}
 	terminalizationPlans, err := s.buildRunAttemptTerminalizationPlans(
-		reservedWork, reservedWorkSHA256, w, plan, rec, tr, in, inputSHA256, closeNow,
+		reservedWork, reservedWorkSHA256, w, plan, &rec, tr, in, inputSHA256, closeNow,
 	)
 	if err != nil {
 		return res, err

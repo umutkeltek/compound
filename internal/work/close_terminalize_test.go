@@ -645,3 +645,110 @@ func TestCloseSkipRunAttemptTerminalizationLeavesAttemptMutable(t *testing.T) {
 		}
 	}
 }
+
+// TestCloseAcknowledgeAbandonedAllowsClose: closes a work whose recorded run
+// attempts include a real succeeded attempt AND a pre-attempt abandoned
+// attempt. The close would otherwise fail with "terminal runattempt <id>
+// status abandoned contradicts close outcome completed". Caller-owned
+// acknowledgement of the abandoned attempt (target_status=abandoned,
+// non-empty reason) is the wedge-fix door: the close lands completed, the
+// real attempt stays succeeded, the abandoned attempt keeps its status, and
+// the receipt carries an `abandon_ack:<id>:<reason>` proof ref so the audit
+// reads the operator's named acknowledgement.
+//
+// This is the lived 2026-08-23 wedge for work_2742cffbeb5f: a mis-dispatch
+// was killed before any work; the real attempt did the work but had no
+// PredecessorID link to the abandoned one.
+func TestCloseAcknowledgeAbandonedAllowsClose(t *testing.T) {
+	s := newStore(t)
+	id, _ := closeTerminalizeWork(t, s, "close-acknowledge-abandoned", fixedNow)
+
+	// Plant a pre-attempt that is already abandoned, attached to the same
+	// work via Advance. It carries the claim-reservation authority, so the
+	// close-time terminal-attempt branch hits it.
+	abandoned := attachTerminalCloseHistoryAttempt(t, s, id, "", runattempt.StatusAbandoned, false, fixedNow.Add(4*time.Minute))
+
+	// Plant the real attempt that did the work — committed launch,
+	// succeeded completion, same authority bound via SetPredecessor so the
+	// retry-predecessor exception does not fire.
+	real := attachTerminalCloseHistoryAttempt(t, s, id, abandoned.ID, runattempt.StatusSucceeded, true, fixedNow.Add(5*time.Minute))
+
+	res, err := s.Close(id, CloseInput{
+		Outcome:          "completed",
+		MoveType:         "outward_delta",
+		Summary:          "acknowledge-abandoned door unblocks lived wedge",
+		Changed:          true,
+		ProofRefs:        []string{"check:ack-abandoned"},
+		RunAttemptTerminalizations: []RunAttemptTerminalizationRequest{{
+			RunAttemptID: abandoned.ID,
+			Owner:        runattempt.TerminalizationOwnerWorkAcknowledgeAbandoned,
+			TargetStatus: runattempt.StatusAbandoned,
+			Reason:       "mis-dispatch killed before any side effect; real attempt did the work",
+		}},
+	}, fixedNow.Add(10*time.Minute))
+	if err != nil {
+		t.Fatalf("acknowledge-abandoned close: %v", err)
+	}
+	if res.Work.State != "completed" {
+		t.Fatalf("acknowledge-abandoned close state = %q, want completed", res.Work.State)
+	}
+
+	// Real attempt keeps succeeded; abandoned attempt keeps abandoned.
+	attempts := runattempt.Open(s.home)
+	afterReal, err := attempts.Get(real.ID)
+	if err != nil {
+		t.Fatalf("real attempt lookup: %v", err)
+	}
+	if afterReal.Status != runattempt.StatusSucceeded {
+		t.Fatalf("real attempt status = %q, want succeeded (acknowledge-abandoned must not rewrite non-target attempts)", afterReal.Status)
+	}
+	afterAbandoned, err := attempts.Get(abandoned.ID)
+	if err != nil {
+		t.Fatalf("abandoned attempt lookup: %v", err)
+	}
+	if afterAbandoned.Status != runattempt.StatusAbandoned {
+		t.Fatalf("abandoned attempt status = %q, want abandoned (acknowledge is not a rewrite)", afterAbandoned.Status)
+	}
+
+	// Receipt carries the structured acknowledgement.
+	found := false
+	wantPrefix := "abandon_ack:" + abandoned.ID + ":"
+	for _, ref := range res.Receipt.ProofRefs {
+		if strings.HasPrefix(ref, wantPrefix) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("receipt proof_refs = %v, want one starting with %q", res.Receipt.ProofRefs, wantPrefix)
+	}
+}
+
+// TestCloseAcknowledgeAbandonedRejectsEmptyReason: the door refuses when
+// the caller omits a reason — naming the abandoned attempt is the whole
+// point of the acknowledgement, and a silent skip would be the original
+// wedge recreated.
+func TestCloseAcknowledgeAbandonedRejectsEmptyReason(t *testing.T) {
+	s := newStore(t)
+	id, _ := closeTerminalizeWork(t, s, "close-ack-rejects-empty", fixedNow)
+	abandoned := attachTerminalCloseHistoryAttempt(t, s, id, "", runattempt.StatusAbandoned, false, fixedNow.Add(4*time.Minute))
+	// Plant a real succeeded attempt so the close can otherwise succeed.
+	attachTerminalCloseHistoryAttempt(t, s, id, abandoned.ID, runattempt.StatusSucceeded, true, fixedNow.Add(5*time.Minute))
+
+	_, err := s.Close(id, CloseInput{
+		Outcome:          "completed",
+		MoveType:         "outward_delta",
+		Summary:          "acknowledge-abandoned must require reason",
+		Changed:          true,
+		ProofRefs:        []string{"check:ack-abandoned-no-reason"},
+		RunAttemptTerminalizations: []RunAttemptTerminalizationRequest{{
+			RunAttemptID: abandoned.ID,
+			Owner:        runattempt.TerminalizationOwnerWorkAcknowledgeAbandoned,
+			TargetStatus: runattempt.StatusAbandoned,
+			Reason:       "",
+		}},
+	}, fixedNow.Add(10*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "requires a non-empty reason") {
+		t.Fatalf("Close error = %v, want requires-non-empty-reason refusal", err)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/runattempt"
 	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/policy"
@@ -168,7 +169,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work advance-plan work_abc123 --to running --actor codex --dry-run",
 	},
 	"advance": {
-		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--execute --harness <name> [--prompt <text> | -- <command> [args...]]]",
+		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--acknowledge-abandoned ratt_X --reason R] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--execute --harness <name> [--prompt <text> | -- <command> [args...]]]",
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"delegate": {
@@ -1754,24 +1755,25 @@ func cmdWork(args []string) {
 	case "close":
 		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--opens-branch slug:owner:kind]... [--steal --reason R]\n  (passing --used at all — even --used \"\" for declared-none — stamps skills.used_declared=true, so injected-but-unused refs count as ignored; omitting --used leaves them unknown)\n  (--opens-branch declares a future branch on the emitted transition: kind is opens|blocks|supersedes|validates|retires|routes_to; the owner may itself contain colons)\n  (a work held by another actor's lease refuses close unless --by/--actor matches the holder, or --steal --reason \"...\" is given)"
 		closeValueFlags := map[string]bool{
-			"--outcome":           true,
-			"--move-type":         true,
-			"--summary":           true,
-			"--by":                true,
-			"--actor":             true,
-			"--used":              true,
-			"--missed":            true,
-			"--false-triggered":   true,
-			"--failure-surface":   true,
-			"--failure-mechanism": true,
-			"--proof":             true,
-			"--proof-ref":         true,
-			"--memory-candidate":  true,
-			"--memory-promoted":   true,
-			"--memory-parked":     true,
-			"--memory-rejected":   true,
-			"--opens-branch":      true,
-			"--reason":            true,
+			"--outcome":               true,
+			"--move-type":             true,
+			"--summary":               true,
+			"--by":                    true,
+			"--actor":                 true,
+			"--used":                  true,
+			"--missed":                true,
+			"--false-triggered":       true,
+			"--failure-surface":       true,
+			"--failure-mechanism":     true,
+			"--proof":                 true,
+			"--proof-ref":             true,
+			"--memory-candidate":      true,
+			"--memory-promoted":       true,
+			"--memory-parked":         true,
+			"--memory-rejected":       true,
+			"--opens-branch":          true,
+			"--reason":                true,
+			"--acknowledge-abandoned": true,
 		}
 		if err := validateKnownFlags(rest, closeValueFlags, map[string]bool{
 			"--changed": true,
@@ -1784,6 +1786,12 @@ func cmdWork(args []string) {
 		branchRefs, branchErr := parseOpensBranchFlags(flagCSVValues(rest, "--opens-branch"))
 		if branchErr != nil {
 			fmt.Fprintln(os.Stderr, "error:", branchErr)
+			fmt.Fprintln(os.Stderr, closeUsage)
+			os.Exit(2)
+		}
+		ackAttempts, ackErr := parseAcknowledgeAbandoned(rest, flag("--reason"))
+		if ackErr != nil {
+			fmt.Fprintln(os.Stderr, "error:", ackErr)
 			fmt.Fprintln(os.Stderr, closeUsage)
 			os.Exit(2)
 		}
@@ -1812,6 +1820,7 @@ func cmdWork(args []string) {
 			Steal:                      has("--steal"),
 			StealReason:                flag("--reason"),
 			OpensBranches:              branchRefs,
+			RunAttemptTerminalizations: ackAttempts,
 		}, time.Now())
 		if err != nil {
 			// Close has two fail-closed gates worth teaching. The lease gate is decided
@@ -1981,6 +1990,57 @@ func parseOpensBranchFlag(value string) (envelope.BranchRef, error) {
 		return ref, fmt.Errorf("--opens-branch kind must be one of %v, got %q", envelope.BranchKinds, ref.Kind)
 	}
 	return ref, nil
+}
+
+// parseAcknowledgeAbandoned scans the args linearly for --acknowledge-abandoned
+// ratt_X --reason R pairs and returns one caller-owned terminalization
+// reservation per pair. The reason is required and is later stamped on the
+// receipt as `abandon_ack:<id>:<reason>` so the operator-visible audit
+// carries the explicit acknowledgement (see internal/work buildRunAttemptTerminalizationPlans).
+// Refused if --acknowledge-abandoned is present without a following ratt_ id,
+// or if the --reason paired with it is empty. The CLI does not consult
+// RunAttempt status here -- the close-time gate is the only authority on
+// whether the acknowledgement is legal for the specific attempt status; this
+// parser only guarantees the pair is well-formed at the door.
+func parseAcknowledgeAbandoned(args []string, stealReason string) ([]work.RunAttemptTerminalizationRequest, error) {
+	var out []work.RunAttemptTerminalizationRequest
+	for i := 0; i < len(args); i++ {
+		if args[i] != "--acknowledge-abandoned" {
+			continue
+		}
+		if i+1 >= len(args) {
+			return nil, fmt.Errorf("--acknowledge-abandoned requires a following ratt_ id")
+		}
+		id := strings.TrimSpace(args[i+1])
+		if id == "" {
+			return nil, fmt.Errorf("--acknowledge-abandoned ratt_ id must be non-empty")
+		}
+		i++
+		// Scan ahead for the nearest --reason R whose R is non-empty and
+		// whose R is not itself a flag (so the value can carry colons).
+		reason := ""
+		for j := i + 1; j+1 < len(args); j++ {
+			if args[j] == "--reason" {
+				if strings.HasPrefix(args[j+1], "--") {
+					return nil, fmt.Errorf("--acknowledge-abandoned %s: --reason value must not start with --", id)
+				}
+				reason = strings.TrimSpace(args[j+1])
+				break
+			}
+		}
+		if reason == "" {
+			return nil, fmt.Errorf("--acknowledge-abandoned %s requires a non-empty --reason", id)
+		}
+		out = append(out, work.RunAttemptTerminalizationRequest{
+			RunAttemptID: id,
+			Owner:        runattempt.TerminalizationOwnerWorkAcknowledgeAbandoned,
+			TargetStatus: runattempt.StatusAbandoned,
+			Reason:       reason,
+		})
+	}
+	// The steal --reason (if any) is independent of acknowledgement reasons.
+	_ = stealReason
+	return out, nil
 }
 
 func observeWorkSurpriseOnDivergedClose(homePath string, res work.CloseResult) {
