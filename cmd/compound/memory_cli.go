@@ -332,6 +332,12 @@ func cmdMemory(args []string) {
 				fmt.Fprintf(os.Stderr, "note: --limit %d is reserved for a future per-pass cap; current pass walked the whole inbox (scanned=%d)\n", limit, report.Scanned)
 			}
 			if !yes {
+				if has("--json") {
+					// JSON-only output: the human preamble would corrupt
+					// downstream parsing.
+					printJSON(report)
+					return
+				}
 				fmt.Printf("dry-run: %d candidate(s) scanned; would adjudicate %d by disposition; %d already closed\n", report.Scanned, report.Adjudicated, report.Skipped)
 				for v, c := range report.VerdictCounts {
 					fmt.Printf("  would %s: %d\n", v, c)
@@ -341,9 +347,6 @@ func cmdMemory(args []string) {
 					for _, e := range report.Errors {
 						fmt.Printf("  %s: %s\n", e.CandidateID, e.Err)
 					}
-				}
-				if has("--json") {
-					printJSON(report)
 				}
 				return
 			}
