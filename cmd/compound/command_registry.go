@@ -136,8 +136,8 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"lanes":     readCommand(lanematrixcli.Run),
 		"presence": readCommand(cmdPresence).
 			withSubcommandAdmission("announce", policy.FirstPartyCommandGoverned),
-		"proof-check":        governedCommand(cmdProofCheck),
-		"doctor":             readCommand(cmdDoctor),
+		"proof-check": governedCommand(cmdProofCheck),
+		"doctor":      readCommand(cmdDoctor),
 		"retention": heldCommand(cmdRetention).
 			withSubcommandAdmission("classes", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("scan", policy.FirstPartyCommandRead).

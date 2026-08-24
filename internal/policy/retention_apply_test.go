@@ -282,12 +282,12 @@ func TestFalsifier2ApplyReclaimsOnlyEligibleAndForbiddenDirsUnchanged(t *testing
 func TestFalsifier3TrashRestoreRoundTripsOriginalBytes(t *testing.T) {
 	home, seeded := seedApplyHome(t)
 	req := ApplyRequest{
-		Home:       home,
-		ClassIDs:   []string{"events-segments", "context-packs"},
-		OlderThan:  30 * 24 * time.Hour,
-		DryRun:     false,
-		Now:        fixedNow,
-		TrashDate:  fixedNow,
+		Home:      home,
+		ClassIDs:  []string{"events-segments", "context-packs"},
+		OlderThan: 30 * 24 * time.Hour,
+		DryRun:    false,
+		Now:       fixedNow,
+		TrashDate: fixedNow,
 	}
 	plan, err := BuildApplyPlan(req)
 	if err != nil {

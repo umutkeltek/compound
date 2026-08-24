@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/eventstore"
 )
 
 // ApplyClass is one path-shape the apply verb knows how to trash.
@@ -53,7 +55,7 @@ var applyClasses = []ApplyClass{
 		ID:               "events-segments",
 		Description:      "Sealed event segment files under events/segments (rolling append-only log).",
 		Owner:            "compound events",
-		PathUnderHome:    "events/segments",
+		PathUnderHome:    eventstore.SegmentsRelativeDir(),
 		AgeFloor:         30 * 24 * time.Hour,
 		DefaultOlderThan: 30 * 24 * time.Hour,
 	},
@@ -148,18 +150,18 @@ var forbiddenApplyRoots = []string{
 // downstream tooling that already understands plan output can read apply's
 // dry-run report without a second parser.
 type ApplyPlan struct {
-	AuthorityRef  string      `json:"authority_ref"`
-	Home          string      `json:"home,omitempty"`
-	Classes       []string    `json:"classes"`
-	Steps         []ApplyStep `json:"steps"`
-	PlannedBytes  int64       `json:"planned_bytes"`
-	LimitBytes    int64       `json:"limit_bytes,omitempty"`
-	OlderThan     string      `json:"older_than"`
-	DryRun        bool        `json:"dry_run"`
-	AppliedCount  int         `json:"applied_count"`
-	AppliedBytes  int64       `json:"applied_bytes"`
-	ReceiptPath   string      `json:"receipt_path,omitempty"`
-	Note          string      `json:"note"`
+	AuthorityRef string      `json:"authority_ref"`
+	Home         string      `json:"home,omitempty"`
+	Classes      []string    `json:"classes"`
+	Steps        []ApplyStep `json:"steps"`
+	PlannedBytes int64       `json:"planned_bytes"`
+	LimitBytes   int64       `json:"limit_bytes,omitempty"`
+	OlderThan    string      `json:"older_than"`
+	DryRun       bool        `json:"dry_run"`
+	AppliedCount int         `json:"applied_count"`
+	AppliedBytes int64       `json:"applied_bytes"`
+	ReceiptPath  string      `json:"receipt_path,omitempty"`
+	Note         string      `json:"note"`
 }
 
 // ApplyStep is one trash-move action.

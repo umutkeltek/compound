@@ -82,12 +82,12 @@ func parseIntStrict(s string) (int64, error) {
 //
 // BuildApplyPlan uses it as input; the cmd-layer assembles one from flags.
 type ApplyRequest struct {
-	Home        string
-	ClassIDs    []string
-	OlderThan   time.Duration
-	LimitBytes  int64
-	DryRun      bool
-	Now         time.Time
+	Home       string
+	ClassIDs   []string
+	OlderThan  time.Duration
+	LimitBytes int64
+	DryRun     bool
+	Now        time.Time
 	// TrashDate is the date used as the trash subdir leaf (YYYY-MM-DD).
 	// Pass zero to derive from Now.
 	TrashDate time.Time

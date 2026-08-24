@@ -692,3 +692,11 @@ func (e *engine) preflight() error {
 	}
 	return os.Remove(name)
 }
+
+// SegmentsRelativeDir returns the home-relative physical path of the sealed
+// event segments directory ("events/segments"). internal/eventstore is the
+// only package that may know this layout (the arch eventstore-ownership
+// gate); other packages must resolve it here rather than spell the literal.
+func SegmentsRelativeDir() string {
+	return filepath.Join(eventsDirName, segmentsDirName)
+}

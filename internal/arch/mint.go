@@ -251,7 +251,8 @@ var mintHomes = map[string]MintHome{
 	// unowned), and the reclaim planner REFUSES to hand an operator-gated, non-rebuildable, or
 	// currently-in-use instance to an unattended reclaimer. It decides what may be deleted
 	// without a human, which is a gate rather than an observation.
-	"registry:retention-classes": {Class: MintEnforcement},
+	"registry:retention-classes":       {Class: MintEnforcement},
+	"registry:retention-apply-classes": {Class: MintEnforcement},
 	"registry:data-sources": {
 		Class:    MintEvidence,
 		Purpose:  "infra-os database/data-authority registry (database.yaml) installed verbatim under COMPOUND_HOME with source hash + revision recorded",
