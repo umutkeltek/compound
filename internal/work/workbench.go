@@ -2547,4 +2547,3 @@ func statePriority(state string) int {
 		return 9
 	}
 }
-
