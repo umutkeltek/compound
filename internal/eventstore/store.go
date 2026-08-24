@@ -66,6 +66,13 @@ type ScanOptions struct {
 	// engine returns a complete deterministic scan when it is empty; segmented
 	// engines may issue and consume opaque cursors without changing callers.
 	Cursor string
+	// RecentSegments caps each family to its N most-recent segment files
+	// (day DESC, then sequence DESC). 0 (default) reads every segment.
+	// Used by callers that only need the freshest records in a family
+	// (e.g. the workbench hook-events scan keeps only the latest event per
+	// harness, so 41 days × ~12MB is wasteful when the last 2 days cover
+	// the live executors).
+	RecentSegments int
 }
 
 // Entry is an event discovered by Scan. Segment scans already decode each
@@ -287,7 +294,7 @@ func scanFamilyRestriction(prefixes []string) map[string]bool {
 // Scan validates segment truth, unions legacy loose records, and returns stable
 // logical entries. Segment records win duplicate ids.
 func (s *Store) Scan(opts ScanOptions) ([]Entry, error) {
-	records, invalid, err := s.engine.scanAll(opts.RegularOnly, scanFamilyRestriction(opts.Prefixes))
+	records, invalid, err := s.engine.scanAll(opts.RegularOnly, opts.RecentSegments, scanFamilyRestriction(opts.Prefixes))
 	if err != nil {
 		return nil, err
 	}

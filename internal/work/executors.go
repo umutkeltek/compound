@@ -162,6 +162,14 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 	if now.IsZero() {
 		now = time.Now()
 	}
+	profileExecs := os.Getenv("COMPOUND_PROFILE_EXECUTORS") == "1"
+	epT := time.Now()
+	epLog := func(label string) {
+		if profileExecs {
+			fmt.Fprintf(os.Stderr, "[EXEC-PROFILE] %s (cum=%s)\n", label, time.Since(epT))
+		}
+	}
+	epLog("setup")
 	opts := ExecutorsProjectionOptions{}
 	if len(optionSets) > 0 {
 		opts = optionSets[0]
@@ -180,6 +188,7 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 	if err != nil {
 		return ExecutorsProjection{}, err
 	}
+	epLog("leases")
 
 	projection := ExecutorsProjection{
 		SchemaVersion: ExecutorsProjectionSchemaVersion,
@@ -219,6 +228,7 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 		dispatch := workbenchDispatchNext(workbench, executorDispatchActor(profile))
 		row.WaitReason = firstNonEmptyExecutorString(dispatch.WaitReason, dispatch.Reason)
 	}
+	epLog("profile_dispatch")
 
 	// Hook evidence now comes from the authoritative hook_ records via the Scan
 	// seam (the hook-events.ndjson compatibility stream is frozen post-migration).
@@ -228,6 +238,7 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 	if err != nil {
 		return ExecutorsProjection{}, err
 	}
+	epLog("hook_events")
 	if hookEventsPresent {
 		projection.SourceRefs = appendSourceRef(projection.SourceRefs, "compound.events.hook_events")
 		projection.Integrity = append(projection.Integrity, hookWarnings...)
@@ -243,6 +254,7 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 		projection.Integrity = append(projection.Integrity, warnings...)
 		applyExecutorRouteEvidence(rows, profiles, report)
 	}
+	epLog("route_evidence")
 
 	if opts.ProbeLocal {
 		applyLocalLMStudioProbe(rows["local_lm_studio"], opts.LMStudioClient)
@@ -324,6 +336,7 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 		}
 		projection.Counts.Leases++
 	}
+	epLog("leases_loop")
 
 	for _, item := range workbench.Recent {
 		row := rows[executorIDForActor(executorActor(item))]
@@ -410,7 +423,12 @@ func (s *Store) loadExecutorHookEvents() ([]executorHookEventLine, []string, boo
 	// projection proceeds, exactly as the prior lenient existence probe swallowed
 	// stat errors. A record that EXISTS but cannot be read is a hard error below —
 	// that is the attention-unavailable path.
-	entries, err := s.events.Scan(eventstore.ScanOptions{Prefixes: []string{"hook_"}, RegularOnly: true})
+	// RecentSegments caps the hook family to its most-recent day files
+	// (applyExecutorHookEvents keeps only the LATEST event per harness, so a
+	// 41-day × ~12MB hook family can be reduced to the most recent few days
+	// without changing the projection result on a home whose executors
+	// emitted within that window).
+	entries, err := s.events.Scan(eventstore.ScanOptions{Prefixes: []string{"hook_"}, RegularOnly: true, RecentSegments: 2})
 	if err != nil {
 		return nil, nil, false, nil
 	}

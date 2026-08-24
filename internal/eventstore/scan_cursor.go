@@ -102,7 +102,7 @@ func decodeScanCursor(raw string) (scanCursor, bool) {
 // never a narrower one that could skip a record.
 func (e *engine) scanFrom(regularOnly bool, cursorStr string, restrictFamilies map[string]bool) (map[string]storedRecord, []invalidLooseEntry, string, bool, error) {
 	if e.legacyFallbackEnabled() {
-		records, invalid, err := e.scanAll(regularOnly, restrictFamilies)
+		records, invalid, err := e.scanAll(regularOnly, 0, restrictFamilies)
 		return records, invalid, "", false, err
 	}
 

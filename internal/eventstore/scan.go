@@ -156,7 +156,7 @@ type invalidLooseEntry struct {
 // store.go); families outside that set are skipped without a readdir or
 // parse. nil means no restriction -- walk every family, the same behavior as
 // before routing existed.
-func (e *engine) scanAll(regularOnly bool, restrictFamilies map[string]bool) (map[string]storedRecord, []invalidLooseEntry, error) {
+func (e *engine) scanAll(regularOnly bool, recentSegments int, restrictFamilies map[string]bool) (map[string]storedRecord, []invalidLooseEntry, error) {
 	records := map[string]storedRecord{}
 	var invalid []invalidLooseEntry
 
@@ -176,6 +176,9 @@ func (e *engine) scanAll(regularOnly bool, restrictFamilies map[string]bool) (ma
 			segments, err := e.familySegments(family)
 			if err != nil {
 				return nil, nil, err
+			}
+			if recentSegments > 0 && len(segments) > recentSegments {
+				segments = segments[:recentSegments]
 			}
 			for index, segment := range segments {
 				frames, err := e.readSegment(segment.path, index == 0, regularKindForScan(regularOnly))
