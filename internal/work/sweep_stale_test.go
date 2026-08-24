@@ -3,17 +3,17 @@
 // -work-sweep-stale.md §"Falsifiers").
 //
 // The three required cases:
-//   1. claimed+stale envelope with an abandoned attempt and no pane ->
-//      reclaimed to cancelled with the sweep_reason recorded on the event.
-//   2. claimed+stale envelope WITH a live heartbeat -> excluded.
-//   3. running+fresh envelope -> excluded (last event age < threshold).
+//  1. claimed+stale envelope with an abandoned attempt and no pane ->
+//     reclaimed to cancelled with the sweep_reason recorded on the event.
+//  2. claimed+stale envelope WITH a live heartbeat -> excluded.
+//  3. running+fresh envelope -> excluded (last event age < threshold).
 //
 // Plus four belt-and-suspenders gates the design implies:
-//   4. probe error -> fail closed (unreadable).
-//   5. live delegate / held lease -> excluded (safe, not unreadable).
-//   6. verifying -> failed (NOT cancelled).
-//   7. run_attempts are NEVER touched by sweep-stale.
-//   8. terminal-state envelopes are never candidates.
+//  4. probe error -> fail closed (unreadable).
+//  5. live delegate / held lease -> excluded (safe, not unreadable).
+//  6. verifying -> failed (NOT cancelled).
+//  7. run_attempts are NEVER touched by sweep-stale.
+//  8. terminal-state envelopes are never candidates.
 //
 // Each test uses an injected probe (SweepStaleProbe) so the sweep logic is
 // exercised end-to-end without driving tmux, the run-attempt store, or the

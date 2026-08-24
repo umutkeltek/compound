@@ -11,15 +11,13 @@
 // explicit on this: a sweep-stale that accidentally abandoned a live envelope
 // is exactly the fossilization we are trying to prevent — the verb exists to
 // audit and operator-review the candidate set, not to silently reap it.
-package main
+package work
 
 import (
 	"encoding/json"
 	"fmt"
 	"io"
 	"time"
-
-	"compound/internal/work"
 )
 
 // runWorkSweepStaleCLI is the testable command edge for
@@ -31,9 +29,9 @@ import (
 //
 // Positional arguments are rejected: sweep-stale is a global operation, not a
 // per-work command, and a stray work_id would invite silent misuse.
-func runWorkSweepStaleCLI(args []string, store *work.Store, homePath string, now time.Time, stdout, stderr io.Writer) int {
-	if hasUsageFlag(args) {
-		fmt.Fprintln(stdout, workHelpText("sweep-stale"))
+func RunWorkSweepStaleCLI(args []string, store *Store, homePath string, now time.Time, stdout, stderr io.Writer) int {
+	if sweepStaleHasUsageFlag(args) {
+		fmt.Fprintln(stdout, sweepStaleUsageText())
 		return 0
 	}
 	// Argument validation. sweep-stale accepts no positional; --dry-run
@@ -47,7 +45,7 @@ func runWorkSweepStaleCLI(args []string, store *work.Store, homePath string, now
 		default:
 			if !looksLikeValueOf(args, a, "--threshold") {
 				fmt.Fprintf(stderr, "error: unexpected argument %q\n", a)
-				fmt.Fprintln(stderr, workUsage("sweep-stale"))
+				fmt.Fprintln(stderr, sweepStaleUsageText())
 				return 2
 			}
 		}
@@ -66,32 +64,32 @@ func runWorkSweepStaleCLI(args []string, store *work.Store, homePath string, now
 		case "--threshold":
 			if i+1 >= len(args) {
 				fmt.Fprintln(stderr, "error: --threshold requires a value")
-				fmt.Fprintln(stderr, workUsage("sweep-stale"))
+				fmt.Fprintln(stderr, sweepStaleUsageText())
 				return 2
 			}
 			i++
 			thresholdStr = args[i]
 		}
 	}
-	threshold := work.DefaultSweepStaleThreshold
+	threshold := DefaultSweepStaleThreshold
 	if thresholdStr != "" {
 		parsed, err := time.ParseDuration(thresholdStr)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: --threshold %q is not a valid duration: %v\n", thresholdStr, err)
-			fmt.Fprintln(stderr, workUsage("sweep-stale"))
+			fmt.Fprintln(stderr, sweepStaleUsageText())
 			return 2
 		}
 		if parsed <= 0 {
 			fmt.Fprintf(stderr, "error: --threshold must be greater than zero, got %q\n", thresholdStr)
-			fmt.Fprintln(stderr, workUsage("sweep-stale"))
+			fmt.Fprintln(stderr, sweepStaleUsageText())
 			return 2
 		}
 		threshold = parsed
 	}
 
-	probe := work.NewDefaultSweepStaleProbe(homePath)
+	probe := NewDefaultSweepStaleProbe(homePath)
 	var (
-		rep work.SweepStaleReport
+		rep SweepStaleReport
 		err error
 	)
 	if dryRun {
@@ -163,4 +161,17 @@ func looksLikeValueOf(args []string, token, flagName string) bool {
 		}
 	}
 	return false
+}
+
+func sweepStaleHasUsageFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--help" || a == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+func sweepStaleUsageText() string {
+	return "usage: compound work sweep-stale [--threshold 72h] [--dry-run|--yes] [--json]\n  default is dry-run (prints candidate set + reasons, exits 0).\n  --yes applies: advances reclaimed envelopes to failed/cancelled with sweep_reason.\n  Never touches run_attempts (compound run-attempt sweep owns that)."
 }

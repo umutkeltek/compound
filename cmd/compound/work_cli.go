@@ -1887,7 +1887,7 @@ func cmdWork(args []string) {
 		// work state machine), sweep-stale advances stuck WorkEnvelopes to
 		// failed/cancelled and explicitly does NOT touch RunAttempts. The
 		// two never run on the same byte; each owns its organ.
-		runWorkSweepStaleCLI(rest, store, homePath, time.Now(), os.Stdout, os.Stderr)
+		os.Exit(work.RunWorkSweepStaleCLI(rest, store, homePath, time.Now(), os.Stdout, os.Stderr))
 	case "set-aside":
 		usage := workUsage("set-aside")
 		if len(rest) == 0 {

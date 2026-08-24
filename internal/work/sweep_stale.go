@@ -8,14 +8,14 @@
 //
 // Design contract (pinned by docs_private/plan/packets/2026-08-24-work-sweep-stale.md):
 //   - An envelope is a candidate ONLY IF:
-//       1. state in {claimed, running, verifying}, AND
-//       2. no lifecycle event newer than threshold (last event -> RFC3339), AND
-//       3. no non-terminal run attempt bound to it with LastHeartbeatAt within
-//          threshold, AND
-//       4. no live delegate pane (work-owned probe — reuses RecoverBoundSession
-//          + SessionStatus, mirrors buildDelegateLivenessProbe in runattempt_cli.go),
-//          AND
-//       5. no held land-lease naming it.
+//     1. state in {claimed, running, verifying}, AND
+//     2. no lifecycle event newer than threshold (last event -> RFC3339), AND
+//     3. no non-terminal run attempt bound to it with LastHeartbeatAt within
+//     threshold, AND
+//     4. no live delegate pane (work-owned probe — reuses RecoverBoundSession
+//   - SessionStatus, mirrors buildDelegateLivenessProbe in runattempt_cli.go),
+//     AND
+//     5. no held land-lease naming it.
 //   - Fail CLOSED: any probe error excludes the envelope (never reclaim on doubt).
 //   - Reclaim action: advance to failed (running/verifying) or cancelled (claimed),
 //     emit one lifecycle Event with the sweep_reason naming the evidence, release
@@ -71,18 +71,18 @@ const DefaultSweepStaleThreshold = 72 * time.Hour
 // AND the per-envelope entry of SweepStaleReport — same shape, one source
 // of truth, so JSON consumers do not need to reconcile two projections.
 type SweepStaleCandidate struct {
-	WorkID          string    `json:"work_id"`
-	State           string    `json:"state"`
-	TargetState     string    `json:"target_state"`
-	LastEventTS     string    `json:"last_event_ts,omitempty"`
-	LastEventAge    string    `json:"last_event_age"`
-	LastHeartbeatAt string    `json:"last_heartbeat_at,omitempty"`
-	LiveAttempts    int       `json:"live_attempts"`     // non-terminal attempts bound to this work
-	DelegateLive    bool      `json:"delegate_live"`     // true iff a live delegate pane is bound
-	LeaseHeld       bool      `json:"lease_held"`        // true iff a land-lease names this work
-	SweepReason     string    `json:"sweep_reason"`      // evidence recorded on the reclaim event
-	Reclaimed       bool      `json:"reclaimed"`         // true when Apply actually terminalized the envelope
-	ReclaimError    string    `json:"reclaim_error,omitempty"`
+	WorkID          string `json:"work_id"`
+	State           string `json:"state"`
+	TargetState     string `json:"target_state"`
+	LastEventTS     string `json:"last_event_ts,omitempty"`
+	LastEventAge    string `json:"last_event_age"`
+	LastHeartbeatAt string `json:"last_heartbeat_at,omitempty"`
+	LiveAttempts    int    `json:"live_attempts"` // non-terminal attempts bound to this work
+	DelegateLive    bool   `json:"delegate_live"` // true iff a live delegate pane is bound
+	LeaseHeld       bool   `json:"lease_held"`    // true iff a land-lease names this work
+	SweepReason     string `json:"sweep_reason"`  // evidence recorded on the reclaim event
+	Reclaimed       bool   `json:"reclaimed"`     // true when Apply actually terminalized the envelope
+	ReclaimError    string `json:"reclaim_error,omitempty"`
 }
 
 // SweepStaleReport is the operator-visible outcome of one sweep-stale pass.
@@ -372,10 +372,10 @@ func evaluateEnvelopeCandidate(s *Store, w envelope.WorkEnvelope, threshold time
 	)
 
 	return SweepStaleCandidate{
-		WorkID:      w.ID,
-		State:       w.State,
-		TargetState: target,
-		LastEventTS: lastEventTS,
+		WorkID:       w.ID,
+		State:        w.State,
+		TargetState:  target,
+		LastEventTS:  lastEventTS,
 		LastEventAge: ageSeconds.Round(time.Second).String(),
 		LiveAttempts: 0,
 		DelegateLive: false,
