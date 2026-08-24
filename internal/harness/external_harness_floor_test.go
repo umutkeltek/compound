@@ -17,12 +17,12 @@ import (
 // the failure looks like silence rather than an error.
 
 // TestExternalHarnessFloorsClaimNoHookSurface pins the single most expensive
-// over-claim. None of these three has an installed hook binding, so every hook
+// over-claim. Neither of these two has an installed hook binding, so every hook
 // flag must be false — including PreToolUseBlock, where assuming a block that
 // does not exist is a silent fail-open rather than a missing feature.
 func TestExternalHarnessFloorsClaimNoHookSurface(t *testing.T) {
 	reg := DefaultRegistry()
-	for _, name := range []string{"oh_my_pi", "qwen_code", "deepseek_harness"} {
+	for _, name := range []string{"qwen_code", "deepseek_harness"} {
 		h, ok := reg.Get(name)
 		if !ok {
 			t.Fatalf("DefaultRegistry() missing %q", name)
@@ -50,6 +50,41 @@ func TestExternalHarnessFloorsClaimNoHookSurface(t *testing.T) {
 		if strings.TrimSpace(h.ExpectedVersion) == "" {
 			t.Errorf("%s has no ExpectedVersion pin; an unpinned external harness self-updates into a different audit trail", name)
 		}
+	}
+}
+
+// TestOhMyPiShimRaisesOnlyObservedFlags pins the evidence split from the
+// 2026-08-25 shim landing: the compound-owned TS shim
+// (~/.omp/agent/hooks/pre/compound.ts, `compound hook install --harness
+// oh-my-pi`) was observed end-to-end delivering UserPromptSubmit context
+// injection (a live model named the injected ctx_ id), PostToolUse telemetry,
+// and a SessionEnd receipt. SessionStart has no context-return surface, and a
+// PreToolUse deny was never observed blocking — those stay false. A future
+// edit must argue with this table, not with vibes.
+func TestOhMyPiShimRaisesOnlyObservedFlags(t *testing.T) {
+	h, ok := DefaultRegistry().Get("oh_my_pi")
+	if !ok {
+		t.Fatal("DefaultRegistry() missing oh_my_pi")
+	}
+	c := h.Capabilities
+	for _, flag := range []struct {
+		hook string
+		got  bool
+		want bool
+	}{
+		{"SessionStartContext", c.SessionStartContext, false},
+		{"UserPromptContext", c.UserPromptContext, true},
+		{"PreToolUseBlock", c.PreToolUseBlock, false},
+		{"PostToolUseEvent", c.PostToolUseEvent, true},
+		{"StopFeedback", c.StopFeedback, false},
+		{"SessionEndReceipt", c.SessionEndReceipt, true},
+	} {
+		if flag.got != flag.want {
+			t.Errorf("oh_my_pi %s = %v, want %v — raise/lower only with a receipt the floor comment names", flag.hook, flag.got, flag.want)
+		}
+	}
+	if h.Capabilities.NativeSkills != true {
+		t.Error("oh_my_pi NativeSkills = false, want true (populated skills root discovered with zero wiring)")
 	}
 }
 

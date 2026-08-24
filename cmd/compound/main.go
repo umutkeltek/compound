@@ -1500,7 +1500,7 @@ func cmdHook(args []string) {
 // selects the roster explicitly or overrides the manifest's declaration.
 func cmdHookInstall(args []string) {
 	if hasUsageFlag(args) {
-		fmt.Println("usage: compound hook install [--lane-file lane.yaml | --harness claude-code|claude-zai|claude-minimax|claude-qwen|codex|all] [--roster minimal|full] [--scope global|project] [--config-dir DIR] [--base DIR] [--binary PATH] [--check] [--json]")
+		fmt.Println("usage: compound hook install [--lane-file lane.yaml | --harness claude-code|claude-zai|claude-minimax|claude-qwen|codex|oh-my-pi|all] [--roster minimal|full] [--scope global|project] [--config-dir DIR] [--base DIR] [--binary PATH] [--check] [--json]")
 		return
 	}
 	check := hasFlag(args, "--check")
@@ -1557,6 +1557,10 @@ func cmdHookInstall(args []string) {
 	var rep hookplan.HookInstallReport
 	install := func() error {
 		var err error
+		if len(req.Harnesses) == 1 && req.Harnesses[0] == "oh-my-pi" {
+			rep, err = hookplan.InstallOhMyPiShim(base, check)
+			return err
+		}
 		rep, err = hookplan.InstallHooksWithRoster(
 			base,
 			binary,

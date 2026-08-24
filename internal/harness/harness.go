@@ -600,11 +600,14 @@ func DefaultRegistry() Registry {
 			// and none of them exist. Supported is not installed. Flip it in the same
 			// change that generates the config file, never before.
 			Capabilities: Capabilities{
-				NativeSkills: true,
+				UserPromptContext: true,
+				PostToolUseEvent:  true,
+				SessionEndReceipt: true,
+				NativeSkills:      true,
 			},
 			Limitations: []string{
-				"hook discovery is by FILE under <configDir>/hooks/{pre,post}/ with the file base name as the tool matcher — NOT shell-command entries in a settings.json, so `compound hook install` cannot write it; a shim that dispatches to the Compound hook binary is required before any hook flag rises",
-				"no SessionStart and no SessionEnd event exists in the agent.v1 catalog — session-boundary receipts are derived from the subprocess exit under the shared runWithSubprocess core",
+				"hook discovery loads TS modules under <agentDir>/hooks/{pre,post} via native Bun import — shell files are discovered but never executed; compound owns the TS shim ~/.omp/agent/hooks/pre/compound.ts (installed by `compound hook install --harness oh-my-pi`), which dispatches session_start/before_agent_start/tool_call/tool_result/session_shutdown to the compound hook verbs",
+				"PreToolUseBlock stays false on evidence: the shim can return {block:true}, but only observation receipts were observed end-to-end; raise it after a real deny blocks a tool call",
 				"MCP discovery paths exist (<agentDir>/mcp.json, <cwd>/.omp/.mcp.json, <cwd>/.mcp.json, .claude-plugin/plugin.json) but no server config is installed for this harness",
 				"skill discovery resolves its .claude root through CLAUDE_CONFIG_DIR (src/config/claude-paths.ts), so a lane launched under per-profile isolation sees that profile's skills and not the shared corpus — NativeSkills=true is host-scoped, not lane-scoped",
 				"keeps a private memory store under <agentDir> (memories/, history.db) — same class as prime_agent's; it stays dark and Compound remains the meaning authority",
@@ -612,7 +615,7 @@ func DefaultRegistry() Registry {
 				"tools.approvalMode is a host config default that can be yolo; governed dispatch MUST pass `--approval-mode always-ask|write` explicitly and never inherit the config default",
 				"runs on Bun (engines.bun >=1.3.14) and reads Bun.env; its proxy support accepts only http:// and https:// proxy URLs — SOCKS (socks5://, socks5h://) is rejected outright (src/utils/fetch-timeout.ts)",
 				"no version-check suppression env exists (unlike prime_agent's PI_SKIP_VERSION_CHECK); `omp update` is explicit but marketplace.autoUpdate can still fetch mid-session, so the ExpectedVersion pin is load-bearing at a 17.x release cadence",
-				"registry identity only — hook installation and the capability-floor raise land in a follow-up slice",
+				"SessionStartContext stays false: omp's session_start event has no context-return surface; ContextPack injection enters at the prompt boundary (before_agent_start), reported as UserPromptContext",
 			},
 			InjectBudgetMS:  1500,
 			ExpectedVersion: "18.0.4",
