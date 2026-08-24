@@ -136,19 +136,34 @@ function readObserved(): { map: Map<string, Observed>; total: number } {
   const map = new Map<string, Observed>();
   let total = 0;
   if (!existsSync(BODY_INDEX)) return { map, total };
-  try {
-    const db = new Database(BODY_INDEX, { readonly: true });
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    const rows = db
-      .query("SELECT upstream, COUNT(*) AS c, COALESCE(SUM(body_bytes), 0) AS b, MAX(observed_at_unix_ms) AS last_ms FROM body_events WHERE observed_at_unix_ms > ? GROUP BY upstream")
-      .all(cutoff) as Array<{ upstream: string; c: number; b: number; last_ms: number | null }>;
-    for (const r of rows) {
-      map.set(r.upstream, { upstream: r.upstream, count_24h: r.c, bytes_24h: r.b, last_at_unix_ms: r.last_ms });
-      total += r.c;
+  // The capture writer rolls WAL segments continuously. A plain readonly
+  // handle can fail at PREPARE ("unable to open database file") while the
+  // -shm is being recovered, and bun:sqlite opens lazily — so the retry must
+  // wrap the whole open+query, and the handle must be read-write (guarded by
+  // query_only) to recover the WAL-index. Mutating the body store from here
+  // is structurally impossible: only a SELECT runs.
+  let rows: Array<{ upstream: string; c: number; b: number; last_ms: number | null }> | null = null;
+  for (let attempt = 0; attempt < 5 && rows === null; attempt++) {
+    let db: Database | null = null;
+    try {
+      db = new Database(BODY_INDEX);
+      db.query("PRAGMA query_only = ON").run();
+      db.query("PRAGMA busy_timeout = 2000").run();
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      rows = db
+        .query("SELECT upstream, COUNT(*) AS c, COALESCE(SUM(body_bytes), 0) AS b, MAX(observed_at_unix_ms) AS last_ms FROM body_events WHERE observed_at_unix_ms > ? GROUP BY upstream")
+        .all(cutoff) as Array<{ upstream: string; c: number; b: number; last_ms: number | null }>;
+    } catch {
+      rows = null;
+      Bun.sleepSync(150);
+    } finally {
+      try { db?.close(); } catch { /* already closed */ }
     }
-    db.close();
-  } catch {
-    // Index busy / unreadable.
+  }
+  if (!rows) return { map, total };
+  for (const r of rows) {
+    map.set(r.upstream, { upstream: r.upstream, count_24h: r.c, bytes_24h: r.b, last_at_unix_ms: r.last_ms });
+    total += r.c;
   }
   return { map, total };
 }
