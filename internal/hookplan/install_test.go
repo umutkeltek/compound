@@ -313,6 +313,149 @@ func assertSessionEndInstallShape(t *testing.T, settingsPath string) {
 	}
 }
 
+func TestLegacyRecallContextClassifierIsExactAndSessionStartOnly(t *testing.T) {
+	for _, command := range []string{
+		`"$HOME/.claude/hooks/RecallContext.hook.ts"`,
+		`/Users/example/.claude/hooks/RecallContext.hook.ts`,
+		`/opt/bun $HOME/.codex/hooks/RecallContext.hook.ts`,
+		`RECALL_HARNESS=codex /Users/example/.bun/bin/bun /Users/example/.codex/hooks/RecallContext.hook.ts`,
+	} {
+		hook := map[string]any{"type": "command", "command": command}
+		if !hookIsCompoundEvent(hook, "SessionStart") {
+			t.Errorf("canonical legacy SessionStart not recognized: %q", command)
+		}
+		if hookIsCompoundEvent(hook, "PreToolUse") {
+			t.Errorf("legacy SessionStart misclassified for another event: %q", command)
+		}
+	}
+	for _, command := range []string{
+		`$HOME/.codex/hooks/RecallContext.hook.ts`,
+		`node $HOME/.codex/hooks/RecallContext.hook.ts`,
+		`RECALL_HARNESS=claude /opt/bun $HOME/.codex/hooks/RecallContext.hook.ts`,
+		`RECALL_HARNESS=codex /opt/bun $HOME/.codex/hooks/RecallContext.hook.ts --extra`,
+		`/foreign/RecallContext.hook.ts`,
+		`foreign RecallContext.hook.ts --audit`,
+	} {
+		if hookIsCompoundEvent(map[string]any{"type": "command", "command": command}, "SessionStart") {
+			t.Errorf("near-match foreign hook was classified as legacy: %q", command)
+		}
+	}
+}
+
+func TestClaudeSessionStartInstallRetiresRecallContextAndPreservesForeignHooks(t *testing.T) {
+	base := t.TempDir()
+	profileDir := t.TempDir()
+	settingsPath := filepath.Join(profileDir, "settings.json")
+	before := `{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [
+        {"type": "command", "command": "\"$HOME/.claude/hooks/RecallContext.hook.ts\""},
+        {"type": "command", "command": "\"$HOME/.claude/hooks/KittyEnvPersist.hook.ts\""},
+        {"type": "command", "command": "foreign RecallContext.hook.ts --audit"}
+      ]},
+      {"hooks": [{"type": "command", "command": "/old/compound hook session-start --live --harness claude_code"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check, err := InstallHooksWithConfigDir(base, "/opt/compound", "global", []string{"claude-code"}, profileDir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Entries[0].Action != "drift" {
+		t.Fatalf("pre-cutover check action = %q, want drift", check.Entries[0].Action)
+	}
+	if got, err := os.ReadFile(settingsPath); err != nil || string(got) != before {
+		t.Fatalf("check mode changed settings: err=%v body=%q", err, got)
+	}
+
+	first, err := InstallHooksWithConfigDir(base, "/opt/compound", "global", []string{"claude-code"}, profileDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSessionStartCutoverShape(t, settingsPath, HookCommandForEvent("/opt/compound", "claude-code", "SessionStart"), []string{
+		`"$HOME/.claude/hooks/KittyEnvPersist.hook.ts"`,
+		"foreign RecallContext.hook.ts --audit",
+	})
+	second, err := InstallHooksWithConfigDir(base, "/opt/compound", "global", []string{"claude-code"}, profileDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Entries[0].Action != "updated" || second.Entries[0].Action != "ok" {
+		t.Fatalf("install actions first=%q second=%q", first.Entries[0].Action, second.Entries[0].Action)
+	}
+}
+
+func TestCodexSessionStartInstallRetiresOnlyCanonicalRecallContext(t *testing.T) {
+	base := t.TempDir()
+	hooksPath := filepath.Join(base, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := `{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [
+        {"type": "command", "command": "RECALL_HARNESS=codex /Users/example/.bun/bin/bun /Users/example/.codex/hooks/RecallContext.hook.ts"},
+        {"type": "command", "command": "RECALL_HARNESS=codex /opt/bun /foreign/RecallContext.hook.ts"},
+        {"type": "command", "command": "foreign-only"}
+      ]},
+      {"hooks": [{"type": "command", "command": "/old/compound hook session-start --live --harness codex"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(hooksPath, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := InstallHooks(base, "/opt/compound", "global", []string{"codex"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSessionStartCutoverShape(t, hooksPath, HookCommandForEvent("/opt/compound", "codex", "SessionStart"), []string{
+		"RECALL_HARNESS=codex /opt/bun /foreign/RecallContext.hook.ts",
+		"foreign-only",
+	})
+	second, err := InstallHooks(base, "/opt/compound", "global", []string{"codex"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Entries[0].Action != "updated" || second.Entries[0].Action != "ok" {
+		t.Fatalf("install actions first=%q second=%q", first.Entries[0].Action, second.Entries[0].Action)
+	}
+}
+
+func assertSessionStartCutoverShape(t *testing.T, configPath, desired string, foreign []string) {
+	t.Helper()
+	cfg := readJSON(t, configPath)
+	hooks := cfg["hooks"].(map[string]any)
+	groups := hooks["SessionStart"].([]any)
+	counts := map[string]int{}
+	for _, rawGroup := range groups {
+		group := rawGroup.(map[string]any)
+		for _, rawHook := range group["hooks"].([]any) {
+			hook := rawHook.(map[string]any)
+			command, _ := hook["command"].(string)
+			counts[command]++
+		}
+	}
+	if counts[desired] != 1 {
+		t.Fatalf("desired Compound SessionStart count=%d; counts=%+v", counts[desired], counts)
+	}
+	for command := range counts {
+		if isLegacyRecallContextSessionStartCommand(command) {
+			t.Fatalf("legacy RecallContext survived: %q counts=%+v", command, counts)
+		}
+	}
+	for _, command := range foreign {
+		if counts[command] != 1 {
+			t.Fatalf("foreign hook %q count=%d; counts=%+v", command, counts[command], counts)
+		}
+	}
+}
+
 // Installer profile names use dashes because they are operator-facing launch labels,
 // while HookEvent/ContextPack harness identities use the registry's snake_case keys.
 // The installed command is the boundary between those namespaces: emitting the

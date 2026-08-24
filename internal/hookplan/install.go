@@ -878,6 +878,9 @@ func hookIsCompoundEvent(hook any, event string) bool {
 		return false
 	}
 	command, _ := hookMap["command"].(string)
+	if event == "SessionStart" && isLegacyRecallContextSessionStartCommand(command) {
+		return true
+	}
 	if event == "SessionEnd" {
 		trimmed := strings.TrimSpace(command)
 		return trimmed == `"$HOME/.claude/hooks/SessionReceipt.hook.ts"` ||
@@ -891,6 +894,40 @@ func hookIsCompoundEvent(hook any, event string) bool {
 	}[event]
 	marker := "hook " + verb + " --live"
 	return strings.Contains(command, marker)
+}
+
+func isLegacyRecallContextSessionStartCommand(command string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 1 {
+		return isLegacyRecallContextPath(fields[0], ".claude")
+	}
+	if len(fields) == 3 {
+		if fields[0] != "RECALL_HARNESS=codex" {
+			return false
+		}
+		fields = fields[1:]
+	}
+	if len(fields) != 2 ||
+		filepath.Base(filepath.Clean(trimHookShellToken(fields[0]))) != "bun" {
+		return false
+	}
+	return isLegacyRecallContextPath(fields[1], ".codex")
+}
+
+func isLegacyRecallContextPath(token, harnessDir string) bool {
+	token = filepath.ToSlash(filepath.Clean(trimHookShellToken(token)))
+	return strings.HasSuffix(token, "/"+harnessDir+"/hooks/RecallContext.hook.ts")
+}
+
+func trimHookShellToken(token string) string {
+	token = strings.TrimSpace(token)
+	if len(token) >= 2 {
+		if (token[0] == '\'' && token[len(token)-1] == '\'') ||
+			(token[0] == '"' && token[len(token)-1] == '"') {
+			return token[1 : len(token)-1]
+		}
+	}
+	return token
 }
 
 func isCompoundSessionEndCommand(command string) bool {

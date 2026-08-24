@@ -8,6 +8,12 @@ purpose — fragmenting "generated-state", "envelopes", and "hooks" into three w
 installs proven generated hook rosters as `compound://config/installed-hooks`; after import, `contract compile`
 and runtime ContextPacks read the Compound-owned manifest while generated sources remain evidence/rollback input.
 
+For `SessionStart`, the same hook-install transaction owns predecessor retirement: it removes only exact
+Claude/Codex `RecallContext.hook.ts` command shapes plus older Compound bindings, preserves unrelated hooks,
+installs one current Compound binding, verifies the written bytes, and restores native configs and authority
+preimages on any commit, verification, or publication failure. The disconnected legacy handler files may remain
+rollback evidence; they are not an active hook owner.
+
 `compound contract compile --instructions` is also the sole installed static-instruction compiler. Its
 `--materialize-instructions` mode atomically replaces only the unique Compound-managed region and preserves
 unmanaged bytes; `--bootstrap-replace` is an explicit one-time whole-file takeover restricted to recognized
