@@ -559,7 +559,7 @@ func DefaultRegistry() Registry {
 			// restarted since its upgrade is unproven. PI_SKIP_VERSION_CHECK=1 on
 			// dispatch (see the pi-family adapter buildCmd) stops the binary
 			// self-updating mid-run and invalidating the RunAttempt chrome.
-			ExpectedVersion: "0.7.1",
+			ExpectedVersion: "0.8.0",
 		},
 		"oh_my_pi": {
 			Name:                 "oh_my_pi",
@@ -615,7 +615,7 @@ func DefaultRegistry() Registry {
 				"registry identity only — hook installation and the capability-floor raise land in a follow-up slice",
 			},
 			InjectBudgetMS:  1500,
-			ExpectedVersion: "17.4.0",
+			ExpectedVersion: "18.0.4",
 		},
 		"qwen_code": {
 			Name:                 "qwen_code",
