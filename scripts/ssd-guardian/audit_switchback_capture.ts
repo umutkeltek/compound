@@ -137,7 +137,7 @@ function readObserved(): { map: Map<string, Observed>; total: number } {
   let total = 0;
   if (!existsSync(BODY_INDEX)) return { map, total };
   try {
-    const db = new Database(BODY_INDEX);
+    const db = new Database(BODY_INDEX, { readonly: true });
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
     const rows = db
       .query("SELECT upstream, COUNT(*) AS c, COALESCE(SUM(body_bytes), 0) AS b, MAX(observed_at_unix_ms) AS last_ms FROM body_events WHERE observed_at_unix_ms > ? GROUP BY upstream")
@@ -153,15 +153,15 @@ function readObserved(): { map: Map<string, Observed>; total: number } {
   return { map, total };
 }
 
-function buildLane(harness: string, clientUrl: string, tapByPort: Map<string, Tap>, observed: Map<string, Observed>, pressure: { mode: string }): Lane {
+function buildLane(harness: string, clientUrl: string, tapByPort: Map<string, Tap>, observed: Map<string, Observed>, pressure: { mode: string }, observedUpstreamOverride?: string): Lane {
   const m = clientUrl.match(/127\.0\.0\.1:(\d+)/);
   const port = m ? `127.0.0.1:${m[1]}` : null;
   const tap = port ? tapByPort.get(port) ?? null : null;
   let count = 0;
   let bytes = 0;
   let lastMs: number | null = null;
-  if (tap && tap.upstream) {
-    const obs = observed.get(tap.upstream);
+  if (tap && (tap.upstream || observedUpstreamOverride)) {
+    const obs = observed.get(observedUpstreamOverride ?? tap.upstream!);
     if (obs) {
       count = obs.count_24h;
       bytes = obs.bytes_24h;
@@ -203,7 +203,12 @@ const lanes: Lane[] = [
   // ~/.prime/agent/models.json baseUrl); bodies captured here flow into
   // bodylog as "switchback/<model>".
   buildLane("prime-agent (switchback)", primeAgentUrl || "127.0.0.1:18774", tapByPort, observed.map, pressure),
-  buildLane("omp (anthropic-tap)", "127.0.0.1:18790", tapByPort, observed.map, pressure),
+  // oh-my-pi: interactive omp (~/.omp/agent/models.yml switchback provider) and
+  // the governed headless profile (sb profile omp-qwen) both ride qwen-openai-tap
+  // :18787 → relay route qwen/qwen3.8-max. The retired forward-proxy experiment
+  // (:18790, omp-tap.yaml, no LaunchAgent — dead since 2026-08-23) is archived.
+  buildLane("omp (interactive, models.yml switchback)", "127.0.0.1:18787", tapByPort, observed.map, pressure, "http://127.0.0.1:18765"),
+  buildLane("omp-qwen (headless, governed)", "127.0.0.1:18787", tapByPort, observed.map, pressure, "http://127.0.0.1:18765"),
   buildLane("claude-tap (bare)", "127.0.0.1:18770", tapByPort, observed.map, pressure),
   buildLane("codex-tap (bare)", "127.0.0.1:18771", tapByPort, observed.map, pressure),
   buildLane("claude-zai", "127.0.0.1:18772", tapByPort, observed.map, pressure),
@@ -219,11 +224,9 @@ const lanes: Lane[] = [
   buildLane("claude-kimi", "127.0.0.1:18784", tapByPort, observed.map, pressure),
   buildLane("qwen-openai-tap", "127.0.0.1:18787", tapByPort, observed.map, pressure),
   buildLane("deepseek-openai-tap", "127.0.0.1:18788", tapByPort, observed.map, pressure),
-  buildLane("openrouter-openai-tap", "127.0.0.1:18795", tapByPort, observed.map, pressure),
-  buildLane("nvidia-openai-tap", "127.0.0.1:18791", tapByPort, observed.map, pressure),
-  buildLane("gemini-google-tap", "127.0.0.1:18792", tapByPort, observed.map, pressure),
-  buildLane("zai-openai-tap", "127.0.0.1:18793", tapByPort, observed.map, pressure),
-  buildLane("minimax-openai-tap", "127.0.0.1:18794", tapByPort, observed.map, pressure),
+  // The overlay-era forward-proxy ports (18791-18795) were never defined as
+  // taps in any served config; they are omitted — relay routes + taps are the
+  // only governed capture topology now.
   // Hermes is the orchestrator; it doesn't make LLM API calls of its own.
   buildLane("hermes (orchestrator, not an LLM harness)", "n/a", tapByPort, observed.map, pressure),
   // Codex default headroom direct — bypasses switchback tap entirely.
