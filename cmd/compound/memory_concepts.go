@@ -130,7 +130,7 @@ func cmdMemoryRecall(homePath string, store *mem.Store, args []string) {
 
 func cmdMemoryBakeoff(store *mem.Store, args []string, engineFactory func() (mem.Engine, func())) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound memory bakeoff <init|run --queries file>")
+		fmt.Fprintln(os.Stderr, "usage: compound memory bakeoff <init|seed|run --queries file>")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -150,6 +150,40 @@ func cmdMemoryBakeoff(store *mem.Store, args []string, engineFactory func() (mem
 		fmt.Printf("- created: %t\n", report.Created)
 		fmt.Printf("- queries: %d\n", report.QueryCount)
 		fmt.Printf("- lanes: %s\n", strings.Join(report.Lanes, ","))
+	case "seed":
+		// Writes the three fixture-shaped claims (claim_memory_spine,
+		// claim_reference_engine, claim_no_mutation) through the trusted
+		// adapter door so a freshly-initialized home can run bakeoff end-to-end.
+		// Idempotent: re-seeding on an already-seeded home reports
+		// already_seeded and writes nothing new.
+		rest := args[1:]
+		if err := validateKnownFlags(rest, nil, map[string]bool{"--json": true}); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, "usage: compound memory bakeoff seed [--json]")
+			os.Exit(2)
+		}
+		report, err := store.SeedBakeoffClaims(time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "memory bakeoff seed:", err)
+			os.Exit(1)
+		}
+		if hasFlag(rest, "--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Println("# memory bakeoff seed")
+		fmt.Printf("- schema_version: %s\n", report.SchemaVersion)
+		fmt.Printf("- seeded: %d\n", len(report.Seeded))
+		for _, row := range report.Seeded {
+			fmt.Printf("  %s evidence=%s created=%t\n", row.ClaimID, row.EvidenceID, row.Created)
+		}
+		fmt.Printf("- already_seeded: %d\n", len(report.AlreadySeeded))
+		for _, id := range report.AlreadySeeded {
+			fmt.Printf("  %s\n", id)
+		}
+		if len(report.Errors) > 0 {
+			fmt.Fprintf(os.Stderr, "- errors: %s\n", strings.Join(report.Errors, "; "))
+		}
 	case "run":
 		rest := args[1:]
 		queriesPath := valueFlag(rest, "--queries")
@@ -216,7 +250,7 @@ func cmdMemoryBakeoff(store *mem.Store, args []string, engineFactory func() (mem
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound memory bakeoff <init|run --queries file>")
+		fmt.Fprintln(os.Stderr, "usage: compound memory bakeoff <init|seed|run --queries file>")
 		os.Exit(2)
 	}
 }

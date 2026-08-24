@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/reviewartifact"
 	"gopkg.in/yaml.v3"
 )
@@ -39,6 +40,31 @@ type BakeoffInitReport struct {
 	QueryCount int      `json:"query_count"`
 	Lanes      []string `json:"lanes"`
 }
+
+// BakeoffSeedReport summarises one SeedBakeoffClaims pass: each seed action
+// is either "created" (a new claim + evidence landed) or "already_seeded" (the
+// literal claim id was already on disk, so the verb is idempotent). The
+// evidence ids are the content-addressed ev_ records each promoted claim
+// references, recorded through the canonical RecordEvidence door so the
+// evidence refs are durable and content-validatable.
+type BakeoffSeedReport struct {
+	SchemaVersion string                  `json:"schema_version"`
+	Seeded        []BakeoffSeedClaim      `json:"seeded"`
+	AlreadySeeded []string                `json:"already_seeded"`
+	Errors        []string                `json:"errors,omitempty"`
+	ClinicCause   string                  `json:"clinic_cause,omitempty"`
+}
+
+// BakeoffSeedClaim is the per-claim row of a seed report. IDs are LITERAL
+// ("claim_memory_spine" etc.) because the bakeoff fixture queries those
+// exact strings — derived IDs would never resolve the fixture.
+type BakeoffSeedClaim struct {
+	ClaimID    string `json:"claim_id"`
+	EvidenceID string `json:"evidence_id"`
+	Created    bool   `json:"created"`
+}
+
+const BakeoffSeedReportSchemaVersion = "compound.memory_bakeoff_seed.v0.1"
 
 type BakeoffRunOptions struct {
 	QueriesPath    string
@@ -147,6 +173,166 @@ func WriteDefaultBakeoffQueries(path string, force bool) (BakeoffInitReport, err
 		return BakeoffInitReport{}, err
 	}
 	return BakeoffInitReport{Path: path, Created: true, QueryCount: len(set.Queries), Lanes: bakeoffLanes(set.Queries)}, nil
+}
+
+// SeedBakeoffClaims writes the three fixture-shaped claims the bakeoff
+// queries.yaml references (claim_memory_spine / claim_reference_engine /
+// claim_no_mutation) so a freshly-initialized home can run `memory bakeoff
+// run` end-to-end. Idempotent: re-running on an already-seeded home reports
+// AlreadySeeded for each claim instead of minting duplicates.
+//
+// Path: this is a trusted-deterministic adapter write (the same door the
+// knowledge-page importer uses), not raw intake. The packet's promotion-
+// basis strip lives ONLY on the Capture() intake door — adapter writes via
+// RecordEvidence + the canonical appendJSONL ledger door are unaffected.
+// Each seeded claim carries:
+//   - a real, content-addressed EvidenceItem ("tool" actor, source_kind
+//     "note"), so the claim's EvidenceRefs are durable and revalidate;
+//   - PromotionBasis = trusted_deterministic_import — the canonical basis
+//     for adapter-side writes;
+//   - Qualifiers["bakeoff_seed"] = "true" so an operator who seeds a scratch
+//     home can grep/filter the fixture content away from their real ambient
+//     recall lanes (the claims are operational visibility, but the qualifier
+//     marks them as synthetic fixture material);
+//   - literal Claim IDs (claim_memory_spine etc.), because the bakeoff
+//     fixture's expected_claim_ids are those exact strings — derived IDs
+//     from the Capture/Adjudicate path would never resolve the fixture.
+//
+// The Claims are appended through appendJSONL(s.claimsLog(), ...) — the
+// same canonical append door Adjudicate uses — so they land in the same
+// byte stream the ledger reader folds. Re-running SeedBakeoffClaims does
+// NOT re-append: each claim is checked against the existing ledger first.
+func (s *Store) SeedBakeoffClaims(now time.Time) (BakeoffSeedReport, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	report := BakeoffSeedReport{SchemaVersion: BakeoffSeedReportSchemaVersion}
+	for _, def := range defaultBakeoffSeedClaims {
+		existing, err := s.findBakeoffSeedClaim(def.ID)
+		if err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("lookup %s: %v", def.ID, err))
+			continue
+		}
+		if existing != nil {
+			report.AlreadySeeded = append(report.AlreadySeeded, def.ID)
+			// Surface the existing evidence id so callers can audit which
+			// record the already-seeded claim points at.
+			evidenceID := ""
+			if len(existing.EvidenceRefs) > 0 {
+				evidenceID = existing.EvidenceRefs[0]
+			}
+			report.Seeded = append(report.Seeded, BakeoffSeedClaim{ClaimID: def.ID, EvidenceID: evidenceID, Created: false})
+			continue
+		}
+		evidence, err := s.RecordEvidence(EvidenceItem{
+			SourceKind: "note",
+			SourceID:   "bakeoff_seed:" + def.ID,
+			QuoteText:  def.EvidenceQuote,
+			Actor:      "tool",
+			Visibility: "operational",
+		}, now)
+		if err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("record evidence %s: %v", def.ID, err))
+			continue
+		}
+		claim := Claim{
+			ID:             def.ID,
+			Seq:            def.Seq,
+			Entity:         def.Entity,
+			Predicate:      def.Predicate,
+			Object:         def.Object,
+			ValidFrom:      rfc3339(now),
+			Confidence:     0.95,
+			Derivation:     "deterministic",
+			ProvenanceLane: def.Lane,
+			PromotionBasis: candidates.BasisTrustedDeterministic,
+			EvidenceRefs:   []string{evidence.ID},
+			Qualifiers: map[string]string{
+				"bakeoff_seed": "true",
+				"source":       "bakeoff_seed",
+				"seed_kind":    def.Kind,
+			},
+			Visibility: "operational",
+			CreatedAt:  rfc3339(now),
+		}
+		if err := appendJSONL(s.claimsLog(), &claim); err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("append claim %s: %v", def.ID, err))
+			continue
+		}
+		report.Seeded = append(report.Seeded, BakeoffSeedClaim{ClaimID: def.ID, EvidenceID: evidence.ID, Created: true})
+	}
+	if len(report.Seeded) == 0 && len(report.AlreadySeeded) == 0 && len(report.Errors) > 0 {
+		return report, fmt.Errorf("bakeoff seed: no claims seeded (%s)", strings.Join(report.Errors, "; "))
+	}
+	return report, nil
+}
+
+// bakeoffSeedClaim is the static definition of one fixture-shaped claim. The
+// Entity/Predicate/Object are deliberately truthful-shaped: each claim
+// literally describes what its id says (the memory spine is owned by the
+// compound ledger; the reference engine baseline-checks candidate answers;
+// the bakeoff recall pass mutates no claim). Object content is short,
+// neutral, and free of real product names per the privacy law.
+type bakeoffSeedClaim struct {
+	ID            string
+	Seq           int64
+	Entity        string
+	Predicate     string
+	Object        string
+	Lane          string
+	Kind          string // semantic category for the seed_kind qualifier
+	EvidenceQuote string // the durable quote the content-addressed evidence item carries
+}
+
+var defaultBakeoffSeedClaims = []bakeoffSeedClaim{
+	{
+		ID:            "claim_memory_spine",
+		Seq:           1,
+		Entity:        "system-memory-spine",
+		Predicate:     "authority_owner",
+		Object:        "compound ledger owns real memory truth and is the single meaning owner for promoted memory facts",
+		Lane:          "exact",
+		Kind:          "memory_spine",
+		EvidenceQuote: "the compound memory ledger is the single authority owner for promoted memory facts; recall is a projection, not an authority",
+	},
+	{
+		ID:            "claim_reference_engine",
+		Seq:           2,
+		Entity:        "reference-engine",
+		Predicate:     "baseline_check",
+		Object:        "the reference engine baseline-checks candidate answers against the lexical reference set and reports covered fraction",
+		Lane:          "paraphrase",
+		Kind:          "reference_engine",
+		EvidenceQuote: "reference engine answers are baseline-checked against a lexical reference claim set; coverage is reported as reference_covered",
+	},
+	{
+		ID:            "claim_no_mutation",
+		Seq:           3,
+		Entity:        "recall-bakeoff",
+		Predicate:     "mutation_policy",
+		Object:        "the bakeoff recall pass never mutates the real memory ledger; ledger digest is byte-identical before and after a run",
+		Lane:          "casual",
+		Kind:          "no_mutation",
+		EvidenceQuote: "bakeoff run reports ledger_digest_unchanged=true; a query that mutates the ledger fails the bakeoff with an explicit mutation error",
+	},
+}
+
+// findBakeoffSeedClaim locates an existing claim by literal ID. Used to
+// make SeedBakeoffClaims idempotent without a separate index: a single
+// fold over the ledger is bounded and cheap for the bakeoff scale (a
+// seeded home has <100 claims at the fixture surface). Returns nil, nil
+// when the claim is absent.
+func (s *Store) findBakeoffSeedClaim(id string) (*Claim, error) {
+	claims, err := s.loadClaimsRaw()
+	if err != nil {
+		return nil, err
+	}
+	for i := range claims {
+		if claims[i].ID == id {
+			return &claims[i], nil
+		}
+	}
+	return nil, nil
 }
 
 func LoadBakeoffQueries(path string) (BakeoffQuerySet, error) {

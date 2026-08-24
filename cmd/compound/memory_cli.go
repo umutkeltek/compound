@@ -54,7 +54,7 @@ func memoryUsage(sub string) string {
 	case "engine-config":
 		return "usage: compound memory engine-config [--profile generic|memory-cli|breadth] [--clear] [--json]"
 	case "bakeoff":
-		return "usage: compound memory bakeoff <init [--queries file] [--force]|run --queries file [--engine bin] [--k N] [--json]>"
+		return "usage: compound memory bakeoff <init [--queries file] [--force]|seed [--json]|run --queries file [--engine bin] [--k N] [--json]>"
 	case "concur":
 		return "usage: compound memory concur --claim <claim_id> --content \"<text>\" --lanes zai,minimax,qwen [--threshold N] [--id <probe_id>] [--json]"
 	case "parity-replay":
@@ -70,7 +70,7 @@ func memoryUsage(sub string) string {
 	case "digest-doctor":
 		return "usage: compound memory digest-doctor --path <file> [--json]"
 	default:
-		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|show-output <cid>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|concur --claim C --content Q --lanes a,b [--threshold N] [--json]|parity-replay --fixture F --consumer orient|query [--resume-from checkpoint.json]|parity-freeze --from-journal --window-days N --control-report report.json|temperature [--rebuild]|observation [--json] [--record]|render-harness-digest --harness H --out FILE|digest-doctor --path FILE|doctor>"
+		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|show-output <cid>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|seed|run>|concur --claim C --content Q --lanes a,b [--threshold N] [--json]|parity-replay --fixture F --consumer orient|query [--resume-from checkpoint.json]|parity-freeze --from-journal --window-days N --control-report report.json|temperature [--rebuild]|observation [--json] [--record]|render-harness-digest --harness H --out FILE|digest-doctor --path FILE|doctor>"
 	}
 }
 func cmdMemory(args []string) {
