@@ -358,10 +358,33 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	}
 	report.eventsByWork = eventsByWork
 	wbLogStage("events_by_work", time.Now())
+	// Pre-index run-observations by work_id once. The per-item path
+	// (workbenchRunObservations) used to ReadDir+read+parse every file in
+	// run-observations/ for every work item — O(works × run-observations).
+	// The index makes the per-item lookup O(1) so the loop scales linearly
+	// with the actual evidence, not with the full directory.
+	runObsByWork, runObsWarnings := s.workbenchRunObservationsIndex()
+	for _, warning := range runObsWarnings {
+		report.Integrity = append(report.Integrity, warning)
+	}
+	// Cache the ASC product-signal state. The held/blocked review-card path
+	// used to read product-signals.jsonl and parse every row per held/blocked
+	// work item; the ledger is independent of the work item, so this is a
+	// single per-workbench load.
+	ascSignals := s.ascProductSignalState()
+	// Per-call memo for envelope.Read (Transition/Receipt payloads). Without
+	// this every terminal item walks the segment files independently; with
+	// it the unique-ID cost is paid exactly once per Workbench call.
+	envelopeMemo := map[string]envelopeMemoEntry{}
+	wbLogStage("obs_asc_indices", time.Now())
 	for _, w := range works {
 		events := eventsByWork[w.ID]
 		wbItemT := time.Now()
-		item := s.workbenchItem(w, events, &report, holdEvidence, now)
+		item := s.workbenchItemWithCaches(w, events, &report, holdEvidence, now, workbenchItemCaches{
+			RunObservations: runObsByWork[w.ID],
+			ASCSignals:      &ascSignals,
+			EnvelopeMemo:    &envelopeMemo,
+		})
 		wbLogStage("item", wbItemT)
 		routeOutcomes.attach(&item)
 		item.ObservatoryTags = workbenchObservatoryTags(item)
@@ -686,7 +709,91 @@ func lastCreatePlanID(events []Event) string {
 	return ""
 }
 
+// workbenchItemCaches carries pre-resolved per-workbench evidence shared by
+// the whole loop. Each field is optional: nil means "fall back to a per-item
+// lookup" so the standalone callers (active_packet_proof, tests) still work
+// without precomputing the full board.
+type workbenchItemCaches struct {
+	RunObservations []RunObservationSummary
+	ASCSignals      *ascProductSignalState
+
+	// envelopeMemo memoizes readEventJSON (the segment-walking read of
+	// transition / receipt payloads) for the duration of one Workbench
+	// call. A live home can reference the same envelope ID from many
+	// terminal items (a Transition closes exactly one work_id, but the
+	// receipt it links frequently re-links to future audits), so a
+	// single-call cache turns the O(items × segment-walk) cost into
+	// O(unique IDs × segment-walk). Failures are cached too so a
+	// missing id never re-asks the segment engine.
+	EnvelopeMemo *map[string]envelopeMemoEntry
+}
+
+type envelopeMemoEntry struct {
+	value []byte
+	err   error
+}
+
+// memoEnvelope returns the bytes for ref via the per-call cache, falling back
+// to readEventJSON on a miss and writing the result back into the cache.
+func (s *Store) memoEnvelope(memo *map[string]envelopeMemoEntry, ref string) ([]byte, error) {
+	if memo == nil {
+		record, err := s.events.Read(ref)
+		if err != nil {
+			return nil, err
+		}
+		return record.Bytes, nil
+	}
+	if entry, ok := (*memo)[ref]; ok {
+		return entry.value, entry.err
+	}
+	record, err := s.events.Read(ref)
+	var entry envelopeMemoEntry
+	if err != nil {
+		entry = envelopeMemoEntry{err: err}
+	} else {
+		entry = envelopeMemoEntry{value: record.Bytes}
+	}
+	(*memo)[ref] = entry
+	return entry.value, entry.err
+}
+
+// readEnvelopeJSON is the unified read for terminal items: the memoized path
+// when EnvelopeMemo is wired (the Workbench loop), and the plain readEventJSON
+// when called from a single-shot path (active_packet_proof, tests).
+func (s *Store) readEnvelopeJSON(memo *map[string]envelopeMemoEntry, ref string, v any) error {
+	if memo == nil {
+		return s.readEventJSON(ref, v)
+	}
+	bytes, err := s.memoEnvelope(memo, ref)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(bytes, v)
+}
+
 func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *WorkbenchReport, holdEvidence holdEvidenceIndex, now time.Time) WorkbenchItem {
+	return s.workbenchItemWithCaches(w, events, report, holdEvidence, now, workbenchItemCaches{})
+}
+
+func (s *Store) workbenchItemWithCaches(w envelope.WorkEnvelope, events []Event, report *WorkbenchReport, holdEvidence holdEvidenceIndex, now time.Time, caches workbenchItemCaches) WorkbenchItem {
+	// COMPOUND_PROFILE_WORKBENCH_SLOW_ITEMS_MS=<n>: only log items whose
+	// total wall exceeds the threshold. Per-stage logging would serialise
+	// through stderr's mutex and inflate the very cost we're measuring.
+	slowThresholdMS := 0
+	if v := os.Getenv("COMPOUND_PROFILE_WORKBENCH_SLOW_ITEMS_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			slowThresholdMS = n
+		}
+	}
+	if slowThresholdMS > 0 {
+		itemT := time.Now()
+		defer func() {
+			d := time.Since(itemT)
+			if d >= time.Duration(slowThresholdMS)*time.Millisecond {
+				fmt.Fprintf(os.Stderr, "[WB-SLOW] %s state=%s total=%s\n", w.ID, w.State, d)
+			}
+		}()
+	}
 	item := WorkbenchItem{
 		WorkID:             w.ID,
 		State:              w.State,
@@ -707,7 +814,11 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 		recentAt:           w.CreatedAt,
 	}
 	s.applyWorkbenchGitDelivery(&item, w, report, now)
-	if observations, warnings := s.workbenchRunObservations(w.ID); len(observations) > 0 || len(warnings) > 0 {
+	if caches.RunObservations != nil {
+		if len(caches.RunObservations) > 0 {
+			item.RunObservations = caches.RunObservations
+		}
+	} else if observations, warnings := s.workbenchRunObservations(w.ID); len(observations) > 0 || len(warnings) > 0 {
 		item.RunObservations = observations
 		for _, warning := range warnings {
 			report.Integrity = append(report.Integrity, w.ID+": "+warning)
@@ -729,7 +840,7 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 		}
 	}
 	item.ReviewCards = s.workbenchReviewCards(w.ID, item.RunArtifacts)
-	item.ReviewCards = append(item.ReviewCards, s.workbenchOperatorGateCards(w, item)...)
+	item.ReviewCards = append(item.ReviewCards, s.workbenchOperatorGateCardsWithCache(w, item, caches.ASCSignals)...)
 	item.ReviewCards = markStaleHoldReviewCards(w, item, item.ReviewCards, holdEvidence)
 	if len(item.ReviewCards) > 0 && (w.State == "held" || w.State == "blocked") {
 		item.NextAction = firstNonEmpty(item.ReviewCards[0].NextAction, item.ReviewCards[0].Title)
@@ -753,8 +864,9 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 	if terminalStates[w.State] {
 		if item.TransitionID != "" {
 			var tr envelope.Transition
-			if err := s.readEventJSON(item.TransitionID, &tr); err != nil {
-				report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" unreadable: "+err.Error())
+			readErr := s.readEnvelopeJSON(caches.EnvelopeMemo, item.TransitionID, &tr)
+			if readErr != nil {
+				report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" unreadable: "+readErr.Error())
 			} else if err := tr.Validate(); err != nil {
 				report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" invalid: "+err.Error())
 			} else if tr.IDs.WorkID != w.ID {
@@ -774,7 +886,7 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 		}
 		if item.ReceiptID != "" {
 			var rec envelope.Receipt
-			if err := s.readEventJSON(item.ReceiptID, &rec); err != nil {
+			if err := s.readEnvelopeJSON(caches.EnvelopeMemo, item.ReceiptID, &rec); err != nil {
 				report.Integrity = append(report.Integrity, w.ID+": receipt "+item.ReceiptID+" unreadable: "+err.Error())
 			} else if err := rec.Validate(); err != nil {
 				report.Integrity = append(report.Integrity, w.ID+": receipt "+item.ReceiptID+" invalid: "+err.Error())
@@ -1050,6 +1162,60 @@ func (s *Store) workbenchRunObservations(workID string) ([]RunObservationSummary
 	return out, warnings
 }
 
+// workbenchRunObservationsIndex reads run-observations/ ONCE and groups the
+// summaries by work_id. Replaces the per-item ReadDir-and-parse loop in
+// workbenchRunObservations, which was the dominant cost of the item loop on a
+// live home (790 items × 856 observation files = ~677k reads+parses per
+// workbench call).
+func (s *Store) workbenchRunObservationsIndex() (map[string][]RunObservationSummary, []string) {
+	dir := filepath.Join(s.home, "run-observations")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string][]RunObservationSummary{}, nil
+		}
+		return nil, []string{"run observations unreadable: " + err.Error()}
+	}
+	byWork := make(map[string][]RunObservationSummary, len(entries))
+	warnings := []string{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		var result RunObservationResult
+		if err := s.readJSON(path, &result); err != nil {
+			warnings = append(warnings, "run observation "+entry.Name()+" unreadable: "+err.Error())
+			continue
+		}
+		if strings.TrimSpace(result.WorkID) == "" {
+			continue
+		}
+		byWork[result.WorkID] = append(byWork[result.WorkID], RunObservationSummary{
+			ID:               result.ID,
+			GeneratedAt:      result.GeneratedAt,
+			Actor:            result.Actor,
+			Note:             result.Note,
+			TraceID:          result.TraceID,
+			State:            result.State,
+			ActionIntentID:   result.ActionIntentID,
+			PolicyDecisionID: result.PolicyDecisionID,
+			ResultPath:       path,
+		})
+	}
+	for workID := range byWork {
+		summaries := byWork[workID]
+		sort.Slice(summaries, func(i, j int) bool {
+			if summaries[i].GeneratedAt != summaries[j].GeneratedAt {
+				return summaries[i].GeneratedAt > summaries[j].GeneratedAt
+			}
+			return summaries[i].ID > summaries[j].ID
+		})
+		byWork[workID] = summaries
+	}
+	return byWork, warnings
+}
+
 func (s *Store) workbenchRunArtifacts(workID string) ([]WorkbenchRunArtifact, []string) {
 	workID = strings.TrimSpace(workID)
 	if workID == "" {
@@ -1246,6 +1412,10 @@ func (s *Store) workbenchReviewCards(workID string, artifacts []WorkbenchRunArti
 }
 
 func (s *Store) workbenchOperatorGateCards(w envelope.WorkEnvelope, item WorkbenchItem) []WorkbenchReviewCard {
+	return s.workbenchOperatorGateCardsWithCache(w, item, nil)
+}
+
+func (s *Store) workbenchOperatorGateCardsWithCache(w envelope.WorkEnvelope, item WorkbenchItem, cached *ascProductSignalState) []WorkbenchReviewCard {
 	if w.State != "held" && w.State != "blocked" {
 		return nil
 	}
@@ -1258,7 +1428,11 @@ func (s *Store) workbenchOperatorGateCards(w envelope.WorkEnvelope, item Workben
 	if !(strings.Contains(context, "asc") || strings.Contains(context, "app-store-connect") || strings.Contains(context, "app store connect")) {
 		return nil
 	}
-	ascSignals := s.ascProductSignalState()
+	ascSignals := cached
+	if ascSignals == nil {
+		fresh := s.ascProductSignalState()
+		ascSignals = &fresh
+	}
 	if ascSignals.Count > 0 {
 		card := WorkbenchReviewCard{
 			ID:              "operator-gate-" + w.ID + "-app-store-connect-refresh-decision",

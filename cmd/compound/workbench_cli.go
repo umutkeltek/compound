@@ -266,6 +266,14 @@ func cmdWorkbench(args []string) {
 			os.Exit(2)
 		}
 	}
+	profileWorkbench := os.Getenv("COMPOUND_PROFILE_WORKBENCH") == "1"
+	cliT0 := time.Now()
+	wbCliLogStage := func(label string, t time.Time) {
+		if !profileWorkbench {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "[WB-CLI-PROFILE] %s: %s (cum=%s)\n", label, time.Since(t), time.Since(cliT0))
+	}
 	report, err := store.Workbench(time.Now(), work.WorkbenchOptions{
 		RecentLimit:                     recent,
 		Actor:                           actor,
@@ -274,6 +282,7 @@ func cmdWorkbench(args []string) {
 		IncludeArchived:                 includeArchived,
 		PacketDir:                       packetDir,
 	})
+	wbCliLogStage("workbench", cliT0)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -317,6 +326,7 @@ func cmdWorkbench(args []string) {
 		routePlan = &plan
 	}
 	reviewReport, err := buildReviewQueueReport(homePath, reviewArea, includeArchived)
+	wbCliLogStage("review_queue", cliT0)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -327,6 +337,7 @@ func cmdWorkbench(args []string) {
 	// non-archived board); an --include-archived report would fold archived work
 	// into the executor counts, so that path still builds its own board.
 	applyAttentionMeter(&reviewQueue, store, reviewReport, report, !includeArchived, time.Now())
+	wbCliLogStage("attention_meter", cliT0)
 	output := workbenchCLIOutput{WorkbenchReport: report, CapabilitySurface: capabilitySurface, RoutePlan: routePlan, ReviewQueue: &reviewQueue}
 	if jsonOut {
 		printJSON(output)
