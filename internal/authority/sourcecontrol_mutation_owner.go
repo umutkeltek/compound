@@ -1,4 +1,4 @@
-package main
+package authority
 
 import (
 	"errors"
@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"compound/internal/authority"
 	"compound/internal/work"
 )
 
@@ -14,7 +13,7 @@ import (
 // Cleanup-only evidence never enters this door. A review owner must be a real,
 // current WorkEnvelope so immutable historical authorizations cannot be minted
 // under a synthetic session correlation id or already-finished work.
-func validateSourceControlMutationOwner(homePath, ownerWorkID string) error {
+func ValidateSourceControlMutationOwner(homePath, ownerWorkID string) error {
 	ownerWorkID = strings.TrimSpace(ownerWorkID)
 	if ownerWorkID == "" {
 		return fmt.Errorf("durable owner work_id required for source-control mutation review")
@@ -36,7 +35,7 @@ func validateSourceControlMutationOwner(homePath, ownerWorkID string) error {
 	if err != nil {
 		return fmt.Errorf("read durable owner work_id %q: %w", ownerWorkID, err)
 	}
-	if !authority.SourceControlMutationOwnerCurrent(ownerWorkID, owner.State) {
+	if !SourceControlMutationOwnerCurrent(ownerWorkID, owner.State) {
 		return fmt.Errorf("durable owner work_id %q must be claimed|running|verifying|held, got %q", ownerWorkID, owner.State)
 	}
 	return nil

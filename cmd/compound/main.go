@@ -3948,8 +3948,7 @@ func cmdHome(args []string) {
 	if hasUsageFlag(args) {
 		switch sub {
 		case "archive-history":
-			fmt.Println("usage: compound home archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--dry-run]")
-			fmt.Println("  --kind is required to archive; --dry-run previews every kind without moving anything")
+			fmt.Println("usage: compound home archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--dry-run]; --kind is required to archive; --dry-run previews every kind without moving anything")
 		case "restore-history":
 			fmt.Println("usage: compound home restore-history (--all|--id id[,id...]) [--dry-run]")
 		case "private-custody":
@@ -4079,8 +4078,10 @@ func cmdHome(args []string) {
 		if code := home.RunPrivateCustodyCLI(args, os.Stdout, os.Stderr); code != 0 {
 			os.Exit(code)
 		}
+	case "route-swap-repair":
+		os.Exit(mem.RouteEvidenceSwapRepairCLI(resolve(), args, os.Stdout, os.Stderr))
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody> [--home <path>] [--local|--global]; archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--dry-run]")
+		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody|route-swap-repair> [--home <path>] [--local|--global]; archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--dry-run]")
 		os.Exit(2)
 	}
 }

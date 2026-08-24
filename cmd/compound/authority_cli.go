@@ -802,7 +802,7 @@ func cmdAuthority(args []string) {
 				fmt.Fprintln(os.Stderr, "authority dirty-plan:", bindingErr)
 				os.Exit(1)
 			}
-			if ownerErr := validateSourceControlMutationOwner(homePath, workID); ownerErr != nil {
+			if ownerErr := authority.ValidateSourceControlMutationOwner(homePath, workID); ownerErr != nil {
 				fmt.Fprintln(os.Stderr, "authority dirty-plan:", ownerErr)
 				os.Exit(1)
 			}
