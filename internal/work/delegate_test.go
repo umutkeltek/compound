@@ -232,6 +232,8 @@ type scanOptionsForDelegate = struct {
 	Prefixes    []string
 	RegularOnly bool
 	Cursor      string
+	// RecentSegments: see eventstore.ScanOptions; tests use the zero value.
+	RecentSegments int
 }
 
 // requireEventKind fails if the captured slice does not contain exactly one
