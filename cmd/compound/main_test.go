@@ -11558,9 +11558,17 @@ func TestMemoryGraphCommandSupportsDirectionAndKind(t *testing.T) {
 }
 
 func TestMemoryDoctorUsesConfiguredSidecarEngine(t *testing.T) {
+	// Freshness gates (memDoctorThresholds) compare claim ages against
+	// real time.Now(); cliTestNow is a fixed 2026-06-29 clock, so a claim
+	// minted at cliTestNow reads ~2 months stale and the doctor's !ok path
+	// os.Exit(1)s — which kills the test BINARY silently mid-run. This
+	// fixture therefore uses a live clock: the claim is seconds old, the
+	// promotion hop is fresh, and the doctor proves the engine hop the
+	// test exists to prove.
+	now := time.Now().UTC()
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+	if err := home.Init(homePath, "test", now); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
 	store, err := mem.Open(homePath)
@@ -11576,11 +11584,11 @@ func TestMemoryDoctorUsesConfiguredSidecarEngine(t *testing.T) {
 		PromotionBasis: candidates.BasisTrustedDeterministic,
 		SourceTraceRef: "trace_cli_memory_doctor",
 		SnippetHash:    "sha256:test",
-	}}, cliTestNow)
+	}}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Adjudicate(got[0].ID, "promote", "work_cli_memory_doctor", cliTestNow); err != nil {
+	if _, err := store.Adjudicate(got[0].ID, "promote", "work_cli_memory_doctor", now); err != nil {
 		t.Fatal(err)
 	}
 
