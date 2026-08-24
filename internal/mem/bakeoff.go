@@ -48,11 +48,11 @@ type BakeoffInitReport struct {
 // references, recorded through the canonical RecordEvidence door so the
 // evidence refs are durable and content-validatable.
 type BakeoffSeedReport struct {
-	SchemaVersion string                  `json:"schema_version"`
-	Seeded        []BakeoffSeedClaim      `json:"seeded"`
-	AlreadySeeded []string                `json:"already_seeded"`
-	Errors        []string                `json:"errors,omitempty"`
-	ClinicCause   string                  `json:"clinic_cause,omitempty"`
+	SchemaVersion string             `json:"schema_version"`
+	Seeded        []BakeoffSeedClaim `json:"seeded"`
+	AlreadySeeded []string           `json:"already_seeded"`
+	Errors        []string           `json:"errors,omitempty"`
+	ClinicCause   string             `json:"clinic_cause,omitempty"`
 }
 
 // BakeoffSeedClaim is the per-claim row of a seed report. IDs are LITERAL
