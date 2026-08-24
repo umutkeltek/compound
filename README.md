@@ -4,10 +4,13 @@ Local-first, agent-agnostic substrate that makes the flow of agent work leave
 reusable structure behind — without freezing the flow.
 
 Concretely: one Go binary (`compound`) and one local runtime directory
-(`COMPOUND_HOME`, default `~/.compound`). No cloud, no account, no daemon
-required. Your agent harnesses — Claude Code, Codex, OpenCode, or any CLI —
-call it at session start for oriented context and through hooks for governed
-execution; everything learned lands in local, typed, inspectable records.
+(`COMPOUND_HOME`, default `~/.compound`). No cloud, no account. The
+interactive core requires no daemon: your agent harnesses — Claude Code,
+Codex, OpenCode, or any CLI — call it at session start for oriented context
+and through hooks for governed execution, and everything learned lands in
+local, typed, inspectable records. Optional unattended maintenance (scheduled
+memory drains, disk reclamation) additionally requires an explicitly
+installed scheduler; nothing self-installs one.
 
 Agent sessions are amnesiac by default: whatever an agent learned, decided, or
 broke evaporates when the context window closes. Compound records the work as
