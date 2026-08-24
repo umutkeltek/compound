@@ -11714,9 +11714,13 @@ func TestMemoryDoctorEngineProfileWiresReadOnlyCLISidecar(t *testing.T) {
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
+	// Live clock for the same freshness-gate reason as
+	// TestMemoryDoctorUsesConfiguredSidecarEngine: a cliTestNow claim reads
+	// months stale and the doctor's !ok path os.Exit(1)s the test binary.
+	now := time.Now().UTC()
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+	if err := home.Init(homePath, "test", now); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
 	store, err := mem.Open(homePath)
@@ -11732,11 +11736,11 @@ func TestMemoryDoctorEngineProfileWiresReadOnlyCLISidecar(t *testing.T) {
 		PromotionBasis: candidates.BasisTrustedDeterministic,
 		SourceTraceRef: "trace_cli_memory_profile",
 		SnippetHash:    "sha256:test",
-	}}, cliTestNow)
+	}}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Adjudicate(got[0].ID, "promote", "work_cli_memory_profile", cliTestNow); err != nil {
+	if _, err := store.Adjudicate(got[0].ID, "promote", "work_cli_memory_profile", now); err != nil {
 		t.Fatal(err)
 	}
 	fakeCLI := filepath.Join(t.TempDir(), "memory-cli")
