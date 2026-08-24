@@ -257,6 +257,8 @@ func TestPackWithCapabilitiesPopulatedTaxonomyWithoutClassifierSeedStaysFlat(t *
 }
 
 func TestPackWithCapabilitiesWithoutProbeTriggerMatchesFlatPackByteForByte(t *testing.T) {
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+	t.Setenv("COMPOUND_MEM_ENGINE_TIMEOUT", "")
 	home := t.TempDir()
 	store, err := mem.Open(home)
 	if err != nil {
