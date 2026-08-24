@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	routecodec "compound/internal/routeevidence/codec"
@@ -104,6 +103,13 @@ func classifySwap(current, swap []byte) string {
 // apply — quarantines the provable residue (rename into .swap-resolved/) and
 // appends one receipt line per quarantine to route-evidence-swap-repairs.jsonl.
 // Committable swaps are reported and left untouched. Dry-run by default.
+//
+// Receipt ordering: the repair log is opened for append BEFORE the first
+// rename, and each receipt line is written (and synced) immediately after the
+// rename it describes. Mutating first and batching receipts at the end meant
+// a failed log write — most plausibly under the same disk pressure that
+// strands these swaps — could leave quarantined artifacts with no durable
+// record of the repair.
 func RouteEvidenceSwapRepair(homePath string, apply bool, now time.Time) (SwapRepairReport, error) {
 	report := SwapRepairReport{
 		DryRun:      !apply,
@@ -132,12 +138,20 @@ func RouteEvidenceSwapRepair(homePath string, apply bool, now time.Time) (SwapRe
 		return report, fmt.Errorf("read current ledger: %w", err)
 	}
 	quarantineDir := filepath.Join(report.LedgerPath, RouteEvidenceSwapQuarantineDir)
+	var repairLog *os.File
 	if apply {
 		if err := os.MkdirAll(quarantineDir, 0o755); err != nil {
 			return report, fmt.Errorf("quarantine dir: %w", err)
 		}
+		// Preflight: if the receipt journal cannot be opened, no rename may
+		// happen. This is the write-side twin of the audit rule that
+		// mutation without a durable receipt is a proof hole, not a repair.
+		repairLog, err = os.OpenFile(filepath.Join(report.LedgerPath, RouteEvidenceSwapRepairLog), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return report, fmt.Errorf("repair log preflight: %w", err)
+		}
+		defer repairLog.Close()
 	}
-	var receiptLines []string
 	for _, name := range swapNames {
 		swap, err := os.ReadFile(filepath.Join(report.LedgerPath, name))
 		if err != nil {
@@ -172,19 +186,24 @@ func RouteEvidenceSwapRepair(homePath string, apply bool, now time.Time) (SwapRe
 			if err != nil {
 				return report, err
 			}
-			receiptLines = append(receiptLines, string(line))
+			// Receipt line goes durable NOW, not at the end of the batch.
+			// If it fails after the rename, the artifact is already moved:
+			// leave a pending-repair marker next to the quarantine so a
+			// later run or an operator can reconcile the receiptless
+			// quarantine instead of discovering it by diffing directories.
+			if _, err := repairLog.Write(append(line, '\n')); err != nil {
+				markerErr := os.WriteFile(
+					filepath.Join(quarantineDir, stamped+".pending-receipt"),
+					[]byte(line), 0o644)
+				return report, fmt.Errorf(
+					"quarantined %s as %s but repair receipt write failed: %w (pending-receipt marker: %v)",
+					name, stamped, err, markerErr)
+			}
+			if err := repairLog.Sync(); err != nil {
+				return report, fmt.Errorf("repair log sync after quarantining %s: %w", name, err)
+			}
 		}
 		report.Items = append(report.Items, item)
-	}
-	if apply && len(receiptLines) > 0 {
-		f, err := os.OpenFile(filepath.Join(report.LedgerPath, RouteEvidenceSwapRepairLog), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return report, fmt.Errorf("repair log: %w", err)
-		}
-		defer f.Close()
-		if _, err := f.WriteString(strings.Join(receiptLines, "\n") + "\n"); err != nil {
-			return report, fmt.Errorf("repair log write: %w", err)
-		}
 	}
 	return report, nil
 }
@@ -192,17 +211,40 @@ func RouteEvidenceSwapRepair(homePath string, apply bool, now time.Time) (SwapRe
 // RouteEvidenceSwapRepairCLI is the budget-extracted CLI body for
 // `compound home route-swap-repair` (same pattern as policy.RetentionCLI):
 // parse the flags, run the repair, print, return the exit code.
+//
+// Unknown flags are a usage error (exit 2), never a silent default: a typo'd
+// `--aply` silently dry-running a command whose real form mutates the ledger
+// trains operators to trust an exit 0 that did not do what they asked.
 func RouteEvidenceSwapRepairCLI(homePath string, args []string, stdout, stderr io.Writer) int {
 	apply := false
 	jsonOut := false
-	for _, a := range args {
-		switch a {
+	usage := "usage: compound home route-swap-repair [--apply] [--dry-run] [--json] [--home <path>] [--local|--global]"
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "--apply":
 			apply = true
 		case "--json":
 			jsonOut = true
-		case "--dry-run", "--home":
-			// --dry-run is the default; --home consumed by the caller.
+		case "--dry-run":
+			// Default; accepted explicitly.
+		case "--home":
+			// Consumed by the caller's home resolver; value is skipped here.
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "error: --home requires a value")
+				fmt.Fprintln(stderr, usage)
+				return 2
+			}
+			i++
+		case "--local", "--global":
+			// Consumed by the caller's home resolver.
+		case "-h", "--help":
+			fmt.Fprintln(stdout, usage)
+			fmt.Fprintln(stdout, "dry-run is the default; --apply quarantines provable residue with a per-rename receipt")
+			return 0
+		default:
+			fmt.Fprintf(stderr, "error: unknown flag %s\n", args[i])
+			fmt.Fprintln(stderr, usage)
+			return 2
 		}
 	}
 	report, err := RouteEvidenceSwapRepair(homePath, apply, time.Now())

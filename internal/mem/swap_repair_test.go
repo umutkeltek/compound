@@ -150,3 +150,79 @@ func TestRouteEvidenceSwapRepairClassifiesAndQuarantinesResidue(t *testing.T) {
 		t.Fatalf("re-run items=%+v quarantined=%d, want 1 committable / 0", rep2.Items, rep2.Quarantined)
 	}
 }
+
+// TestRouteEvidenceSwapRepairPreflightsReceiptLogBeforeMutation: when the
+// receipt journal cannot be opened, apply must fail BEFORE renaming anything.
+// Mutating first and discovering the unwritable log afterward is how an
+// artifact ends up quarantined with no durable record of the repair — under
+// exactly the disk pressure this subsystem exists to manage.
+func TestRouteEvidenceSwapRepairPreflightsReceiptLogBeforeMutation(t *testing.T) {
+	home := t.TempDir()
+	ledgerDir := filepath.Join(home, "ledger")
+	if err := os.MkdirAll(ledgerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	row1, row2 := swapRow(t, "ev_1"), swapRow(t, "ev_2")
+	current := append(append([]byte{}, row1...), row2...)
+	if err := os.WriteFile(filepath.Join(ledgerDir, routeEvidenceLedgerFile), current, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Residue swap (bytes already in current) that apply would quarantine.
+	name := swapName(t, row1, current)
+	writeSwapFixture(t, ledgerDir, name, current)
+
+	// Make the receipt journal unopenable: a directory where the log goes.
+	if err := os.Mkdir(filepath.Join(ledgerDir, RouteEvidenceSwapRepairLog), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 8, 24, 16, 0, 0, 0, time.UTC)
+	_, err := RouteEvidenceSwapRepair(home, true, now)
+	if err == nil {
+		t.Fatal("apply must fail when the receipt log cannot be opened")
+	}
+	if !strings.Contains(err.Error(), "repair log preflight") {
+		t.Fatalf("error should name the preflight, got: %v", err)
+	}
+	// The swap must still be in place: no mutation without a durable receipt.
+	if _, statErr := os.Stat(filepath.Join(ledgerDir, name)); statErr != nil {
+		t.Fatalf("preflight failure must not quarantine %s: %v", name, statErr)
+	}
+	// And nothing may have landed in quarantine.
+	entries, readErr := os.ReadDir(filepath.Join(ledgerDir, RouteEvidenceSwapQuarantineDir))
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatal(readErr)
+	}
+	if readErr == nil && len(entries) > 0 {
+		t.Fatalf("quarantine dir must be empty after failed preflight, found %d entries", len(entries))
+	}
+}
+
+// TestRouteEvidenceSwapRepairCLIRejectsUnknownFlags: a typo must be a usage
+// error (exit 2), not a silent dry-run of a mutating command.
+func TestRouteEvidenceSwapRepairCLIRejectsUnknownFlags(t *testing.T) {
+	home := t.TempDir()
+	var out, errBuf bytes.Buffer
+	code := RouteEvidenceSwapRepairCLI(home, []string{"--aply"}, &out, &errBuf)
+	if code != 2 {
+		t.Fatalf("unknown flag exit=%d, want 2 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "unknown flag") {
+		t.Fatalf("stderr should name the unknown flag: %s", errBuf.String())
+	}
+}
+
+// TestRouteEvidenceSwapRepairCLIAcceptsCallerFlags: the home-layer flags the
+// caller resolves (--home <path>, --local, --global) plus the explicit
+// --dry-run must all stay accepted.
+func TestRouteEvidenceSwapRepairCLIAcceptsCallerFlags(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "ledger"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out, errBuf bytes.Buffer
+	code := RouteEvidenceSwapRepairCLI(home, []string{"--dry-run", "--home", home, "--local", "--json"}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("accepted flags exit=%d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+}
