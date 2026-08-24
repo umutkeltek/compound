@@ -383,9 +383,9 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		events := eventsByWork[w.ID]
 		wbItemT := time.Now()
 		item := s.workbenchItemWithCaches(w, events, &report, holdEvidence, now, workbenchItemCaches{
-			RunObservations: runObsByWork[w.ID],
-			ASCSignals:      &ascSignals,
-			EnvelopeMemo:    &envelopeMemo,
+			RunObservations:  runObsByWork[w.ID],
+			ASCSignals:       &ascSignals,
+			EnvelopeMemo:     &envelopeMemo,
 			GitLandCheckMemo: &gitLandCheckMemo,
 		})
 		wbLogStage("item", wbItemT)

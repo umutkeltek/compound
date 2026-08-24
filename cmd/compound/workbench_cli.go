@@ -266,14 +266,6 @@ func cmdWorkbench(args []string) {
 			os.Exit(2)
 		}
 	}
-	profileWorkbench := os.Getenv("COMPOUND_PROFILE_WORKBENCH") == "1"
-	cliT0 := time.Now()
-	wbCliLogStage := func(label string, t time.Time) {
-		if !profileWorkbench {
-			return
-		}
-		fmt.Fprintf(os.Stderr, "[WB-CLI-PROFILE] %s: %s (cum=%s)\n", label, time.Since(t), time.Since(cliT0))
-	}
 	report, err := store.Workbench(time.Now(), work.WorkbenchOptions{
 		RecentLimit:                     recent,
 		Actor:                           actor,
@@ -282,7 +274,6 @@ func cmdWorkbench(args []string) {
 		IncludeArchived:                 includeArchived,
 		PacketDir:                       packetDir,
 	})
-	wbCliLogStage("workbench", cliT0)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -326,7 +317,6 @@ func cmdWorkbench(args []string) {
 		routePlan = &plan
 	}
 	reviewReport, err := buildReviewQueueReport(homePath, reviewArea, includeArchived)
-	wbCliLogStage("review_queue", cliT0)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -337,7 +327,6 @@ func cmdWorkbench(args []string) {
 	// non-archived board); an --include-archived report would fold archived work
 	// into the executor counts, so that path still builds its own board.
 	applyAttentionMeter(&reviewQueue, store, reviewReport, report, !includeArchived, time.Now())
-	wbCliLogStage("attention_meter", cliT0)
 	output := workbenchCLIOutput{WorkbenchReport: report, CapabilitySurface: capabilitySurface, RoutePlan: routePlan, ReviewQueue: &reviewQueue}
 	if jsonOut {
 		printJSON(output)
@@ -1221,21 +1210,10 @@ func operatorList(values []string) string {
 // reviews-resolve, experiential-smoke, the two main.go workbench
 // commands, and the orient report) keep this signature unchanged.
 func buildReviewQueueReport(homePath, area string, includeArchived bool) (reviewartifact.QueueReport, error) {
-	rqT := time.Now()
-	rqLog := func(label string) {
-		if os.Getenv("COMPOUND_PROFILE_REVIEWQUEUE") == "1" {
-			fmt.Fprintf(os.Stderr, "[RQ-PROFILE] %s: %s\n", label, time.Since(rqT))
-		}
-		if os.Getenv("COMPOUND_PROFILE_WORKBENCH") == "1" {
-			fmt.Fprintf(os.Stderr, "[WB-RQ-STG] %s: %s\n", label, time.Since(rqT))
-		}
-	}
-	rqLog("start")
 	report, err := reviewqueue.Build(homePath, reviewqueue.Options{
 		Area:            area,
 		IncludeArchived: includeArchived,
 	})
-	rqLog("build")
 	if err != nil {
 		return reviewartifact.QueueReport{}, err
 	}
@@ -1244,7 +1222,6 @@ func buildReviewQueueReport(homePath, area string, includeArchived bool) (review
 	// does not run it; this wrapper preserves the legacy
 	// "synthesis for free" behavior by chaining it on top of Build.
 	annotateSynthesisReviewQueue(&report)
-	rqLog("annotate_synth")
 	// Re-run the count rollup after the synthesis annotator. The
 	// prior shape called Recount once, after both the 24-Annotate
 	// pass and the synthesis annotator; the canonical builder
@@ -1252,13 +1229,10 @@ func buildReviewQueueReport(homePath, area string, includeArchived bool) (review
 	// wrapper re-rolls counts here to capture the synthesis-driven
 	// status changes.
 	reviewartifact.Recount(&report)
-	rqLog("recount_synth")
 	if err := reviewqueue.StampReviewGroupActionAuthority(homePath, &report, time.Now()); err != nil {
 		return reviewartifact.QueueReport{}, err
 	}
-	rqLog("group_authority")
 	reviewartifact.RefreshSystemicBlocker(&report)
-	rqLog("systemic_blocker")
 	return report, nil
 }
 
