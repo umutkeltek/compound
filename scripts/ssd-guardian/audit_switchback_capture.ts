@@ -227,6 +227,11 @@ const lanes: Lane[] = [
   // Hermes is the orchestrator; it doesn't make LLM API calls of its own.
   buildLane("hermes (orchestrator, not an LLM harness)", "n/a", tapByPort, observed.map, pressure),
   // Codex default headroom direct — bypasses switchback tap entirely.
+  // Anthropic direct — bare switchback gateway uses the Claude Code OAuth token
+  // from the keychain (provider: anthropic, ANTHROPIC_OAUTH_TOKEN env). All
+  // claude-haiku-4-5, claude-sonnet-4-5, claude-opus-4-1, claude-opus-4-5,
+  // claude-sonnet-4-6 routes through this.
+  buildLane("anthropic-direct", "127.0.0.1:18765", tapByPort, observed.map, pressure),
   buildLane("codex (default headroom)", codexUrl || "n/a", tapByPort, observed.map, pressure),
 ];
 
