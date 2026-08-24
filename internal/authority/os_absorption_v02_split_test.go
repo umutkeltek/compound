@@ -33,7 +33,7 @@ func TestOSAbsorptionV02GbrainFalseRetirement(t *testing.T) {
 		Rows: []OSAbsorptionMatrixRow{
 			{
 				ID:                  "os_source_gbrain",
-				SourceRef:           "gbrain://example-db.internal",
+				SourceRef:           "gbrain://db.example.invalid",
 				SourceKind:          "memory_engine_index",
 				OldOwner:            "gbrain",
 				OldRole:             "live Postgres retrieval layer and raw corpus/index access",
@@ -300,10 +300,10 @@ func TestOSAbsorptionV02ConsumersAllRetiredIsComplete(t *testing.T) {
 // is the exact regression work_b28abf9a8718 was opened for.
 func TestOSAbsorptionV02VerdictUnitTable(t *testing.T) {
 	cases := []struct {
-		name       string
+		name        string
 		integration string
-		live       bool
-		want       string
+		live        bool
+		want        string
 	}{
 		{"retired_no_live_is_complete", "retired", false, OSAbsorptionVerdictComplete},
 		{"absorbed_no_live_is_complete", "absorbed", false, OSAbsorptionVerdictComplete},

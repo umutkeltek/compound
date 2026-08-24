@@ -350,11 +350,7 @@ func cmdAuthority(args []string) {
 		fmt.Printf("os absorption doctor: %s\n", report.Status)
 		fmt.Printf("rows: %d auto_proved=%d pending_with_gate=%d missing=%d failed_auto=%d\n", report.RowCount, report.AutoProofCount, report.PendingWithGateCount, report.MissingRequiredCount, report.FailedAutoProofCount)
 		fmt.Printf("proof split: machine_proven=%d asserted=%d pending=%d failed_proof=%d skipped=%d (absorbed_count=%d is status-string only, not proof)\n", report.MachineProvenCount, report.AssertedCount, report.PendingCount, report.FailedProofCount, report.SkippedProofCount, report.AbsorbedCount)
-		// v0.2 meter summary: how many rows finish complete vs. the
-		// false-retirement buckets. Kept terse so the existing check line
-		// below still carries the operator-actionable detail.
-		complete, retiredWithLive, absorbedWithLive, activeOrWrapper := osAbsorptionDoctorSummaryCounts(report.Rows)
-		fmt.Printf("v0.2 meter: complete=%d retired_with_live_consumers=%d absorbed_with_live_consumers=%d active_or_wrapper=%d\n", complete, retiredWithLive, absorbedWithLive, activeOrWrapper)
+		fmt.Println(authority.OSAbsorptionDoctorMeterLine(report.Rows))
 		for _, check := range report.Checks {
 			fmt.Printf("- %s: %s", check.Name, check.Status)
 			if check.Detail != "" {
@@ -1034,30 +1030,6 @@ func cmdAuthority(args []string) {
 	if !found {
 		fmt.Printf("(no authority claims for %s; run compound authority import first)\n", entity)
 	}
-}
-
-// osAbsorptionDoctorSummaryCounts tallies the v0.2 meter verdict buckets
-// from one doctor report. The summary line in os-absorption-doctor prints
-// these alongside the legacy status-string counts so an operator can read
-// the difference at a glance: complete + active_or_wrapper is what the
-// legacy absorbed_count + pending_count roughly meant, while
-// retired_with_live_consumers / absorbed_with_live_consumers are the
-// new failure modes that the legacy single-axis meter swallowed
-// (work_b28abf9a8718).
-func osAbsorptionDoctorSummaryCounts(rows []authority.OSAbsorptionDoctorRow) (complete, retiredWithLive, absorbedWithLive, activeOrWrapper int) {
-	for _, r := range rows {
-		switch r.IntegrationVerdict {
-		case authority.OSAbsorptionVerdictComplete:
-			complete++
-		case authority.OSAbsorptionVerdictIntegrationRetiredWithLiveConsumers:
-			retiredWithLive++
-		case authority.OSAbsorptionVerdictIntegrationAbsorbedWithLiveConsumers:
-			absorbedWithLive++
-		case authority.OSAbsorptionVerdictIntegrationActiveOrWrapper:
-			activeOrWrapper++
-		}
-	}
-	return complete, retiredWithLive, absorbedWithLive, activeOrWrapper
 }
 
 // loadSourceControlMutationBinding derives executable identity only from

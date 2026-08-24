@@ -55,10 +55,10 @@ const (
 	// mode — especially integration_retired_with_live_consumers, which is
 	// the os_source_gbrain false-retirement the meter must catch.
 	// Exported so the CLI surface can render summary buckets.
-	OSAbsorptionVerdictComplete                            = "complete"
-	OSAbsorptionVerdictIntegrationRetiredWithLiveConsumers = "integration_retired_with_live_consumers"
+	OSAbsorptionVerdictComplete                             = "complete"
+	OSAbsorptionVerdictIntegrationRetiredWithLiveConsumers  = "integration_retired_with_live_consumers"
 	OSAbsorptionVerdictIntegrationAbsorbedWithLiveConsumers = "integration_absorbed_with_live_consumers"
-	OSAbsorptionVerdictIntegrationActiveOrWrapper          = "integration_active_or_wrapper"
+	OSAbsorptionVerdictIntegrationActiveOrWrapper           = "integration_active_or_wrapper"
 
 	// osAbsorptionDecisionsLedgerRef is the compound_owner ref used by the
 	// os_source_decisions_repo absorption row. It is proven by the decisions
@@ -175,10 +175,10 @@ type OSAbsorptionMatrixRow struct {
 // context that does not fit anywhere else.
 type OSAbsorptionLiveConsumer struct {
 	Name                 string `json:"name"`
-	Surface              string   `json:"surface,omitempty"`
-	LastSeenEvidenceDate string   `json:"last_seen_evidence_date,omitempty"`
-	RetiredAt            string   `json:"retired_at,omitempty"`
-	Notes                string   `json:"notes,omitempty"`
+	Surface              string `json:"surface,omitempty"`
+	LastSeenEvidenceDate string `json:"last_seen_evidence_date,omitempty"`
+	RetiredAt            string `json:"retired_at,omitempty"`
+	Notes                string `json:"notes,omitempty"`
 }
 
 type OSAbsorptionImportReport struct {
@@ -3298,4 +3298,35 @@ func cleanStrings(values []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// OSAbsorptionDoctorSummaryCounts tallies the v0.2 meter verdict buckets
+// from one doctor report. The summary line in os-absorption-doctor prints
+// these alongside the legacy status-string counts so an operator can read
+// the difference at a glance: complete + active_or_wrapper is what the
+// legacy absorbed_count + pending_count roughly meant, while
+// retired_with_live_consumers / absorbed_with_live_consumers are the
+// new failure modes that the legacy single-axis meter swallowed
+// (work_b28abf9a8718).
+func OSAbsorptionDoctorSummaryCounts(rows []OSAbsorptionDoctorRow) (complete, retiredWithLive, absorbedWithLive, activeOrWrapper int) {
+	for _, r := range rows {
+		switch r.IntegrationVerdict {
+		case OSAbsorptionVerdictComplete:
+			complete++
+		case OSAbsorptionVerdictIntegrationRetiredWithLiveConsumers:
+			retiredWithLive++
+		case OSAbsorptionVerdictIntegrationAbsorbedWithLiveConsumers:
+			absorbedWithLive++
+		case OSAbsorptionVerdictIntegrationActiveOrWrapper:
+			activeOrWrapper++
+		}
+	}
+	return complete, retiredWithLive, absorbedWithLive, activeOrWrapper
+}
+
+// OSAbsorptionDoctorMeterLine renders the summary counts as the single
+// operator-facing v0.2 meter line.
+func OSAbsorptionDoctorMeterLine(rows []OSAbsorptionDoctorRow) string {
+	complete, retiredWithLive, absorbedWithLive, activeOrWrapper := OSAbsorptionDoctorSummaryCounts(rows)
+	return fmt.Sprintf("v0.2 meter: complete=%d retired_with_live_consumers=%d absorbed_with_live_consumers=%d active_or_wrapper=%d", complete, retiredWithLive, absorbedWithLive, activeOrWrapper)
 }
