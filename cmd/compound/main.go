@@ -3701,13 +3701,23 @@ func cmdContract(args []string) {
 	case "compile":
 		renderInstructions := hasFlag(args[1:], "--instructions")
 		checkInstructions := hasFlag(args[1:], "--check-instructions")
-		if checkInstructions && !renderInstructions {
-			fmt.Fprintln(os.Stderr, "--check-instructions requires --instructions")
+		materializeInstructions := hasFlag(args[1:], "--materialize-instructions")
+		bootstrapReplace := hasFlag(args[1:], "--bootstrap-replace")
+		if (checkInstructions || materializeInstructions) && !renderInstructions {
+			fmt.Fprintln(os.Stderr, "--check-instructions and --materialize-instructions require --instructions")
+			os.Exit(2)
+		}
+		if checkInstructions && materializeInstructions {
+			fmt.Fprintln(os.Stderr, "--check-instructions and --materialize-instructions are mutually exclusive")
+			os.Exit(2)
+		}
+		if bootstrapReplace && !materializeInstructions {
+			fmt.Fprintln(os.Stderr, "--bootstrap-replace requires --materialize-instructions")
 			os.Exit(2)
 		}
 		preset := strings.TrimSpace(valueFlag(args[1:], "--preset"))
-		if preset != "" && (!renderInstructions || checkInstructions) {
-			fmt.Fprintln(os.Stderr, "--preset requires --instructions and is not supported with --check-instructions")
+		if preset != "" && (!renderInstructions || checkInstructions || materializeInstructions) {
+			fmt.Fprintln(os.Stderr, "--preset requires --instructions and is not supported with instruction check/materialization")
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")
@@ -3715,7 +3725,7 @@ func cmdContract(args []string) {
 		in, err := parseOrientArgsWithHome(args[1:], homePath)
 		die(err)
 		if in.Harness == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>] [--instructions [--check-instructions]] [--preset <name>]")
+			fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>] [--instructions [--check-instructions|--materialize-instructions [--bootstrap-replace]]] [--preset <name>]")
 			os.Exit(2)
 		}
 		runtime, err := contract.MaterializeRuntime(in, orientPolicy(), homePath, time.Now())
@@ -3728,6 +3738,12 @@ func cmdContract(args []string) {
 		if renderInstructions {
 			render, err := contract.RenderInstructionBlockVariant(ec, in.Cwd, preset)
 			die(err)
+			if materializeInstructions {
+				report, err := contract.MaterializeInstructionBlock(render, contract.InstructionMaterializationOptions{BootstrapTakeover: bootstrapReplace})
+				die(err)
+				printJSON(report)
+				return
+			}
 			printJSON(render)
 			if checkInstructions && render.Drifted {
 				os.Exit(1)

@@ -8,6 +8,13 @@ purpose — fragmenting "generated-state", "envelopes", and "hooks" into three w
 installs proven generated hook rosters as `compound://config/installed-hooks`; after import, `contract compile`
 and runtime ContextPacks read the Compound-owned manifest while generated sources remain evidence/rollback input.
 
+`compound contract compile --instructions` is also the sole installed static-instruction compiler. Its
+`--materialize-instructions` mode atomically replaces only the unique Compound-managed region and preserves
+unmanaged bytes; `--bootstrap-replace` is an explicit one-time whole-file takeover restricted to recognized
+legacy-generated `CLAUDE.md` / `AGENTS.md` targets. Preset renders, symlinks, malformed markers, and raced
+preimages are refused. The compiled `InstructionBlockRender` plus the installed region is the check surface;
+no parallel installed-instruction registry or generator exists.
+
 `compound policy import-operator-state <operator-state.json>` installs the global autonomy ceiling
 `compound://registries/operator-state` under `COMPOUND_HOME`; policy evaluation cites that authority and uses
 it as a ceiling, not a bypass for public, spend, destructive, or security holds.

@@ -176,3 +176,168 @@ func TestTrackedHarnessInstructionBlocksMatchCompiler(t *testing.T) {
 		}
 	}
 }
+
+func TestMaterializeInstructionBlockRequiresExplicitRecognizedBootstrapTakeover(t *testing.T) {
+	for _, tc := range []struct {
+		harness string
+		target  string
+	}{
+		{harness: "claude_code", target: "CLAUDE.md"},
+		{harness: "codex", target: "AGENTS.md"},
+	} {
+		t.Run(tc.harness, func(t *testing.T) {
+			root := t.TempDir()
+			target := filepath.Join(root, tc.target)
+			legacy := "<!-- GENERATED from operating-system/umut-os/spine/steering.config.ts; do NOT hand-edit. -->\n\n# Legacy authority\n"
+			if err := os.WriteFile(target, []byte(legacy), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			render, err := RenderInstructionBlock(instructionContractForTest(tc.harness, "bootstrap"), root)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := MaterializeInstructionBlock(render, InstructionMaterializationOptions{}); err == nil {
+				t.Fatal("markerless legacy target materialized without explicit bootstrap takeover")
+			}
+			if got, err := os.ReadFile(target); err != nil || string(got) != legacy {
+				t.Fatalf("refused bootstrap changed target: err=%v body=%q", err, got)
+			}
+
+			report, err := MaterializeInstructionBlock(render, InstructionMaterializationOptions{BootstrapTakeover: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !report.Changed || !report.BootstrapTakeover || report.BeforeSHA256 == report.AfterSHA256 {
+				t.Fatalf("bootstrap report = %+v", report)
+			}
+			got, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != strings.TrimRight(render.Content, "\n")+"\n" {
+				t.Fatalf("bootstrap body = %q, want managed content only", got)
+			}
+			if strings.Contains(string(got), "operating-system") || strings.Contains(string(got), "Legacy authority") {
+				t.Fatalf("bootstrap retained legacy active body:\n%s", got)
+			}
+			info, err := os.Stat(target)
+			if err != nil || info.Mode().Perm() != 0o640 {
+				t.Fatalf("bootstrap mode = %v err=%v, want 0640", info.Mode().Perm(), err)
+			}
+
+			cleanRender, err := RenderInstructionBlock(instructionContractForTest(tc.harness, "bootstrap"), root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := MaterializeInstructionBlock(cleanRender, InstructionMaterializationOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if second.Changed || second.BootstrapTakeover {
+				t.Fatalf("idempotent materialization = %+v", second)
+			}
+		})
+	}
+}
+
+func TestMaterializeInstructionBlockPreservesUnmanagedTextAndRefusesUnsafeTargets(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "AGENTS.md")
+	render, err := RenderInstructionBlock(instructionContractForTest("codex", "managed update"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := "before\n\n" + strings.Replace(render.Content, "single authority", "old authority", 1) + "after\n"
+	if err := os.WriteFile(target, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	render, err = RenderInstructionBlock(instructionContractForTest("codex", "managed update"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := MaterializeInstructionBlock(render, InstructionMaterializationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Changed || report.BootstrapTakeover {
+		t.Fatalf("managed update report = %+v", report)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(got), "before\n\n") || !strings.HasSuffix(string(got), "after\n") {
+		t.Fatalf("managed update changed unmanaged text:\n%s", got)
+	}
+
+	duplicate := render.Content + render.Content
+	if err := os.WriteFile(target, []byte(duplicate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	duplicateRender, err := RenderInstructionBlock(instructionContractForTest("codex", "duplicate"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MaterializeInstructionBlock(duplicateRender, InstructionMaterializationOptions{}); err == nil {
+		t.Fatal("duplicate markers materialized")
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != duplicate {
+		t.Fatalf("duplicate-marker refusal changed target: err=%v body=%q", err, got)
+	}
+
+	preset, err := RenderInstructionBlockVariant(instructionContractForTest("codex", "preset"), root, "executor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MaterializeInstructionBlock(preset, InstructionMaterializationOptions{}); err == nil {
+		t.Fatal("preset render materialized")
+	}
+
+	realTarget := filepath.Join(root, "real-AGENTS.md")
+	if err := os.WriteFile(realTarget, []byte(render.Content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realTarget, target); err != nil {
+		t.Fatal(err)
+	}
+	symlinkRender := render
+	symlinkRender.TargetPath = target
+	if _, err := MaterializeInstructionBlock(symlinkRender, InstructionMaterializationOptions{}); err == nil {
+		t.Fatal("symlink target materialized")
+	}
+}
+
+func TestMaterializeInstructionBlockRefusesPreimageRace(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "AGENTS.md")
+	render, err := RenderInstructionBlock(instructionContractForTest("codex", "race"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := "before\n" + strings.Replace(render.Content, "single authority", "old authority", 1)
+	if err := os.WriteFile(target, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	render, err = RenderInstructionBlock(instructionContractForTest("codex", "race"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	concurrent := []byte("concurrent owner\n")
+	fsOps := defaultInstructionMaterializeFS()
+	fsOps.beforeCommit = func() {
+		if err := os.WriteFile(target, concurrent, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := materializeInstructionBlockWithFS(render, InstructionMaterializationOptions{}, fsOps); err == nil ||
+		!strings.Contains(err.Error(), "changed since preflight") {
+		t.Fatalf("preimage race error = %v", err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != string(concurrent) {
+		t.Fatalf("preimage race overwrote concurrent owner: err=%v body=%q", err, got)
+	}
+}

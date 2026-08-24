@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -13,8 +14,9 @@ import (
 )
 
 const (
-	InstructionBlockRenderSchemaVersion = "compound.instruction_block_render.v0.1"
-	instructionBlockEndMarker           = "<!-- END COMPOUND GENERATED INSTRUCTIONS -->"
+	InstructionBlockRenderSchemaVersion     = "compound.instruction_block_render.v0.1"
+	InstructionMaterializationSchemaVersion = "compound.instruction_materialization.v0.1"
+	instructionBlockEndMarker               = "<!-- END COMPOUND GENERATED INSTRUCTIONS -->"
 )
 
 // InstructionBlockRender is the read-only compiler projection for the stable
@@ -31,6 +33,191 @@ type InstructionBlockRender struct {
 	ObservedSHA256 string   `json:"observed_sha256,omitempty"`
 	Drifted        bool     `json:"drifted"`
 	Details        []string `json:"details,omitempty"`
+}
+
+type InstructionMaterializationOptions struct {
+	BootstrapTakeover bool
+}
+
+type InstructionMaterializationReport struct {
+	SchemaVersion     string `json:"schema_version"`
+	Harness           string `json:"harness"`
+	TargetPath        string `json:"target_path"`
+	BeforeSHA256      string `json:"before_sha256"`
+	AfterSHA256       string `json:"after_sha256"`
+	Changed           bool   `json:"changed"`
+	BootstrapTakeover bool   `json:"bootstrap_takeover"`
+}
+
+type instructionMaterializeFS struct {
+	createTemp   func(string, string) (*os.File, error)
+	rename       func(string, string) error
+	beforeCommit func()
+}
+
+func defaultInstructionMaterializeFS() instructionMaterializeFS {
+	return instructionMaterializeFS{createTemp: os.CreateTemp, rename: os.Rename}
+}
+
+// MaterializeInstructionBlock atomically makes the compiled default render the
+// installed static instruction surface. Normal operation replaces only the
+// unique Compound-managed block. BootstrapTakeover is a one-time cutover for a
+// recognized Umut OS-generated whole file; it refuses every other unmanaged
+// file rather than claiming foreign instructions.
+func MaterializeInstructionBlock(
+	render InstructionBlockRender,
+	options InstructionMaterializationOptions,
+) (InstructionMaterializationReport, error) {
+	return materializeInstructionBlockWithFS(render, options, defaultInstructionMaterializeFS())
+}
+
+func materializeInstructionBlockWithFS(
+	render InstructionBlockRender,
+	options InstructionMaterializationOptions,
+	fsOps instructionMaterializeFS,
+) (InstructionMaterializationReport, error) {
+	report := InstructionMaterializationReport{
+		SchemaVersion: InstructionMaterializationSchemaVersion,
+		Harness:       render.Harness,
+		TargetPath:    render.TargetPath,
+	}
+	if render.TargetPath == "" || !filepath.IsAbs(render.TargetPath) {
+		return report, fmt.Errorf("instruction target must be an absolute path")
+	}
+	if instructionRenderIsPreset(render) {
+		return report, fmt.Errorf("preset instruction renders cannot be materialized")
+	}
+	info, err := os.Lstat(render.TargetPath)
+	if err != nil {
+		return report, fmt.Errorf("inspect instruction target %s: %w", render.TargetPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return report, fmt.Errorf("instruction target %s is a symlink", render.TargetPath)
+	}
+	if !info.Mode().IsRegular() {
+		return report, fmt.Errorf("instruction target %s is not a regular file", render.TargetPath)
+	}
+	before, err := os.ReadFile(render.TargetPath)
+	if err != nil {
+		return report, fmt.Errorf("read instruction target %s: %w", render.TargetPath, err)
+	}
+	report.BeforeSHA256 = instructionBlockDigest(string(before))
+
+	beginAt, endAt, details := managedInstructionBlockBounds(string(before), render.Harness)
+	var after []byte
+	switch {
+	case len(details) == 0:
+		after = append(after, before[:beginAt]...)
+		after = append(after, render.Content...)
+		after = append(after, before[endAt:]...)
+	case options.BootstrapTakeover && recognizedLegacyInstructionFile(render.TargetPath, string(before)):
+		after = []byte(strings.TrimRight(render.Content, "\n") + "\n")
+		report.BootstrapTakeover = true
+	case options.BootstrapTakeover:
+		return report, fmt.Errorf(
+			"bootstrap instruction takeover refused for unrecognized unmanaged target %s",
+			render.TargetPath,
+		)
+	default:
+		return report, fmt.Errorf(
+			"instruction target %s has no valid managed block; explicit bootstrap takeover is required only for a recognized legacy file",
+			render.TargetPath,
+		)
+	}
+	report.AfterSHA256 = instructionBlockDigest(string(after))
+	report.Changed = !bytes.Equal(before, after)
+	if !report.Changed {
+		return report, nil
+	}
+
+	dir := filepath.Dir(render.TargetPath)
+	temp, err := fsOps.createTemp(dir, ".compound-instructions-*")
+	if err != nil {
+		return report, fmt.Errorf("stage instruction target: %w", err)
+	}
+	tempPath := temp.Name()
+	keepTemp := true
+	defer func() {
+		_ = temp.Close()
+		if keepTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := temp.Chmod(info.Mode().Perm()); err != nil {
+		return report, fmt.Errorf("chmod staged instruction target: %w", err)
+	}
+	if _, err := temp.Write(after); err != nil {
+		return report, fmt.Errorf("write staged instruction target: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		return report, fmt.Errorf("sync staged instruction target: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return report, fmt.Errorf("close staged instruction target: %w", err)
+	}
+	if fsOps.beforeCommit != nil {
+		fsOps.beforeCommit()
+	}
+	if err := verifyInstructionPreimage(render.TargetPath, info, before); err != nil {
+		return report, err
+	}
+	if err := fsOps.rename(tempPath, render.TargetPath); err != nil {
+		return report, fmt.Errorf("commit instruction target: %w", err)
+	}
+	keepTemp = false
+	if directory, err := os.Open(dir); err == nil {
+		_ = directory.Sync()
+		_ = directory.Close()
+	}
+	return report, nil
+}
+
+func verifyInstructionPreimage(path string, beforeInfo os.FileInfo, before []byte) error {
+	currentInfo, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("instruction target changed since preflight: %w", err)
+	}
+	if currentInfo.Mode()&os.ModeSymlink != 0 ||
+		!currentInfo.Mode().IsRegular() ||
+		!os.SameFile(beforeInfo, currentInfo) {
+		return fmt.Errorf("instruction target changed since preflight: file identity changed")
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("instruction target changed since preflight: %w", err)
+	}
+	afterReadInfo, err := os.Lstat(path)
+	if err != nil ||
+		!os.SameFile(currentInfo, afterReadInfo) ||
+		!os.SameFile(beforeInfo, afterReadInfo) {
+		return fmt.Errorf("instruction target changed since preflight: file identity changed")
+	}
+	if !bytes.Equal(current, before) {
+		return fmt.Errorf("instruction target changed since preflight: content changed")
+	}
+	return nil
+}
+
+func instructionRenderIsPreset(render InstructionBlockRender) bool {
+	for _, detail := range render.Details {
+		if detail == "preset variant render; no tracked surface" {
+			return true
+		}
+	}
+	return false
+}
+
+func recognizedLegacyInstructionFile(path, body string) bool {
+	switch filepath.Base(path) {
+	case "CLAUDE.md", "AGENTS.md":
+	default:
+		return false
+	}
+	first, _, _ := strings.Cut(body, "\n")
+	return strings.HasPrefix(
+		strings.TrimSpace(first),
+		"<!-- GENERATED from operating-system/umut-os/spine/steering.config.ts",
+	)
 }
 
 // RenderInstructionBlock emits the stable, managed instruction block for an
@@ -223,26 +410,34 @@ func instructionBlockBeginMarker(harnessName string) string {
 }
 
 func extractManagedInstructionBlock(body, harnessName string) (string, []string) {
+	beginAt, endAt, details := managedInstructionBlockBounds(body, harnessName)
+	if len(details) > 0 {
+		return "", details
+	}
+	return body[beginAt:endAt], nil
+}
+
+func managedInstructionBlockBounds(body, harnessName string) (int, int, []string) {
 	begin := instructionBlockBeginMarker(harnessName)
 	beginAt := strings.Index(body, begin)
 	endAt := strings.Index(body, instructionBlockEndMarker)
 	if beginAt < 0 && endAt < 0 {
-		return "", []string{"managed instruction block is missing"}
+		return 0, 0, []string{"managed instruction block is missing"}
 	}
 	if beginAt < 0 {
-		return "", []string{"managed instruction block begin marker is missing"}
+		return 0, 0, []string{"managed instruction block begin marker is missing"}
 	}
 	if endAt < 0 || endAt < beginAt {
-		return "", []string{"managed instruction block end marker is missing or precedes the begin marker"}
+		return 0, 0, []string{"managed instruction block end marker is missing or precedes the begin marker"}
 	}
 	if strings.Count(body, begin) != 1 || strings.Count(body, instructionBlockEndMarker) != 1 {
-		return "", []string{"managed instruction block markers are duplicated"}
+		return 0, 0, []string{"managed instruction block markers are duplicated"}
 	}
 	endAt += len(instructionBlockEndMarker)
 	if endAt < len(body) && body[endAt] == '\n' {
 		endAt++
 	}
-	return body[beginAt:endAt], nil
+	return beginAt, endAt, nil
 }
 
 func instructionPolicyList(values []string) string {

@@ -15,6 +15,7 @@ import (
 )
 
 const contractInstructionsChildEnv = "COMPOUND_TEST_CONTRACT_INSTRUCTIONS_CHILD"
+const contractInstructionsMaterializeChildEnv = "COMPOUND_TEST_CONTRACT_INSTRUCTIONS_MATERIALIZE_CHILD"
 
 func TestContractCompileInstructionsCheckFailsOnDriftAndPassesOnExactBlock(t *testing.T) {
 	if os.Getenv(contractInstructionsChildEnv) == "1" {
@@ -195,5 +196,110 @@ func TestContractCompileInstructionsPresetVariant(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "preset") {
 		t.Fatalf("rejection stderr should mention preset; got: %s", out)
+	}
+}
+
+func TestContractCompileMaterializesRecognizedBootstrapAndThenChecksClean(t *testing.T) {
+	if os.Getenv(contractInstructionsMaterializeChildEnv) == "1" {
+		args := []string{
+			"compile",
+			"--harness", os.Getenv("COMPOUND_TEST_INSTRUCTION_HARNESS"),
+			"--cwd", os.Getenv("COMPOUND_TEST_INSTRUCTION_REPO"),
+			"--task", "installed static contract",
+			"--repo-kind", "control-plane",
+			"--mode", "execute",
+			"--instructions",
+		}
+		switch os.Getenv("COMPOUND_TEST_INSTRUCTION_ACTION") {
+		case "materialize":
+			args = append(args, "--materialize-instructions")
+			if os.Getenv("COMPOUND_TEST_INSTRUCTION_BOOTSTRAP") == "1" {
+				args = append(args, "--bootstrap-replace")
+			}
+		case "check":
+			args = append(args, "--check-instructions")
+		}
+		cmdContract(args)
+		return
+	}
+
+	for _, tc := range []struct {
+		harness string
+		target  string
+	}{
+		{harness: "claude_code", target: "CLAUDE.md"},
+		{harness: "codex", target: "AGENTS.md"},
+	} {
+		t.Run(tc.harness, func(t *testing.T) {
+			homePath := filepath.Join(t.TempDir(), ".compound")
+			if err := home.Init(homePath, "test", cliTestNow); err != nil {
+				t.Fatal(err)
+			}
+			repoRoot := t.TempDir()
+			target := filepath.Join(repoRoot, tc.target)
+			legacy := "<!-- GENERATED from operating-system/umut-os/spine/steering.config.ts; do NOT hand-edit. -->\nlegacy\n"
+			if err := os.WriteFile(target, []byte(legacy), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			run := func(action string, bootstrap bool) ([]byte, error) {
+				cmd := exec.Command(os.Args[0], "-test.run=^TestContractCompileMaterializesRecognizedBootstrapAndThenChecksClean$")
+				env := append(os.Environ(),
+					contractInstructionsMaterializeChildEnv+"=1",
+					"COMPOUND_HOME="+homePath,
+					"COMPOUND_TEST_INSTRUCTION_REPO="+repoRoot,
+					"COMPOUND_TEST_INSTRUCTION_HARNESS="+tc.harness,
+					"COMPOUND_TEST_INSTRUCTION_ACTION="+action,
+				)
+				if bootstrap {
+					env = append(env, "COMPOUND_TEST_INSTRUCTION_BOOTSTRAP=1")
+				}
+				cmd.Env = env
+				return cmd.CombinedOutput()
+			}
+
+			refused, err := run("materialize", false)
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+				t.Fatalf("markerless materialization exit=%v, want 1; output=%s", err, refused)
+			}
+			if got, err := os.ReadFile(target); err != nil || string(got) != legacy {
+				t.Fatalf("refused CLI materialization changed target: err=%v body=%q", err, got)
+			}
+
+			output, err := run("materialize", true)
+			if err != nil {
+				t.Fatalf("bootstrap materialization failed: %v\n%s", err, output)
+			}
+			var report contract.InstructionMaterializationReport
+			if err := json.NewDecoder(bytes.NewReader(output)).Decode(&report); err != nil {
+				t.Fatalf("parse materialization report: %v\n%s", err, output)
+			}
+			if !report.Changed || !report.BootstrapTakeover || filepath.Base(report.TargetPath) != tc.target {
+				t.Fatalf("materialization report = %+v", report)
+			}
+			body, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(body), "operating-system") || !strings.Contains(string(body), "Compound-generated contract") {
+				t.Fatalf("materialized body retained legacy authority:\n%s", body)
+			}
+			info, err := os.Stat(target)
+			if err != nil || info.Mode().Perm() != 0o640 {
+				t.Fatalf("materialized mode=%v err=%v", info.Mode().Perm(), err)
+			}
+
+			checkOutput, err := run("check", false)
+			if err != nil {
+				t.Fatalf("post-materialization check failed: %v\n%s", err, checkOutput)
+			}
+			var render contract.InstructionBlockRender
+			if err := json.NewDecoder(bytes.NewReader(checkOutput)).Decode(&render); err != nil {
+				t.Fatalf("parse clean render: %v\n%s", err, checkOutput)
+			}
+			if render.Drifted || render.ObservedSHA256 != render.ContentSHA256 {
+				t.Fatalf("post-materialization render = %+v", render)
+			}
+		})
 	}
 }
