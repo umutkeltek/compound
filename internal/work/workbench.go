@@ -376,6 +376,8 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	// this every terminal item walks the segment files independently; with
 	// it the unique-ID cost is paid exactly once per Workbench call.
 	envelopeMemo := map[string]envelopeMemoEntry{}
+	// Per-call memo for evaluateLandCheck by (repo, candidate tip).
+	gitLandCheckMemo := map[string]landCheckMemoEntry{}
 	wbLogStage("obs_asc_indices", time.Now())
 	for _, w := range works {
 		events := eventsByWork[w.ID]
@@ -384,6 +386,7 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 			RunObservations: runObsByWork[w.ID],
 			ASCSignals:      &ascSignals,
 			EnvelopeMemo:    &envelopeMemo,
+			GitLandCheckMemo: &gitLandCheckMemo,
 		})
 		wbLogStage("item", wbItemT)
 		routeOutcomes.attach(&item)
@@ -726,6 +729,19 @@ type workbenchItemCaches struct {
 	// O(unique IDs × segment-walk). Failures are cached too so a
 	// missing id never re-asks the segment engine.
 	EnvelopeMemo *map[string]envelopeMemoEntry
+
+	// GitLandCheckMemo memoizes evaluateLandCheck by (repo | candidate) for
+	// one Workbench call. The function issues 10+ git subprocess calls per
+	// invocation, all read-only and bound to the worktree + candidate tip,
+	// not to the work item; multiple items bound to the same repository
+	// with the same candidate tip (the common case in a multi-lane home)
+	// would otherwise repeat every git round-trip.
+	GitLandCheckMemo *map[string]landCheckMemoEntry
+}
+
+type landCheckMemoEntry struct {
+	report LandCheckReport
+	err    error
 }
 
 type envelopeMemoEntry struct {
@@ -785,15 +801,21 @@ func (s *Store) workbenchItemWithCaches(w envelope.WorkEnvelope, events []Event,
 			slowThresholdMS = n
 		}
 	}
-	if slowThresholdMS > 0 {
-		itemT := time.Now()
-		defer func() {
+	profileSlow := slowThresholdMS > 0
+	itemT := time.Now()
+	subLog := func(label string) {
+		if profileSlow {
+			fmt.Fprintf(os.Stderr, "[WB-SLOW-STG] %s %s=%s\n", w.ID, label, time.Since(itemT))
+		}
+	}
+	defer func() {
+		if profileSlow {
 			d := time.Since(itemT)
 			if d >= time.Duration(slowThresholdMS)*time.Millisecond {
 				fmt.Fprintf(os.Stderr, "[WB-SLOW] %s state=%s total=%s\n", w.ID, w.State, d)
 			}
-		}()
-	}
+		}
+	}()
 	item := WorkbenchItem{
 		WorkID:             w.ID,
 		State:              w.State,
@@ -813,7 +835,8 @@ func (s *Store) workbenchItemWithCaches(w envelope.WorkEnvelope, events []Event,
 		MemoryCandidateIDs: append([]string{}, w.MemoryCandidateIDs...),
 		recentAt:           w.CreatedAt,
 	}
-	s.applyWorkbenchGitDelivery(&item, w, report, now)
+	s.applyWorkbenchGitDeliveryWithMemo(&item, w, report, now, caches.GitLandCheckMemo)
+	subLog("git_delivery")
 	if caches.RunObservations != nil {
 		if len(caches.RunObservations) > 0 {
 			item.RunObservations = caches.RunObservations
@@ -907,6 +930,10 @@ func (s *Store) workbenchItemWithCaches(w envelope.WorkEnvelope, events []Event,
 }
 
 func (s *Store) applyWorkbenchGitDelivery(item *WorkbenchItem, w envelope.WorkEnvelope, report *WorkbenchReport, now time.Time) {
+	s.applyWorkbenchGitDeliveryWithMemo(item, w, report, now, nil)
+}
+
+func (s *Store) applyWorkbenchGitDeliveryWithMemo(item *WorkbenchItem, w envelope.WorkEnvelope, report *WorkbenchReport, now time.Time, memo *map[string]landCheckMemoEntry) {
 	if item == nil {
 		return
 	}
@@ -949,12 +976,37 @@ func (s *Store) applyWorkbenchGitDelivery(item *WorkbenchItem, w envelope.WorkEn
 		return
 	}
 
-	live, err := s.evaluateLandCheck(w, LandCheckOptions{CandidateTipSHA: tip}, now)
-	if err != nil {
-		item.LandingStatus = "delivery_check_error"
-		item.NextAction = "repair the bound Git delivery target, then rerun compound work land-check " + w.ID + " --tip " + tip
-		report.Integrity = append(report.Integrity, w.ID+": Git delivery check failed: "+err.Error())
-		return
+	// Cache the git land-check by (repo, candidate tip). All git ops the
+	// check performs are repo+candidate-scoped, never work-specific; the
+	// work-specific latestSourceBoundProofResult is already absent on cache
+	// hits (we re-add it below), so the report fields applyWorkbenchGitDelivery
+	// actually reads (Status, NextAction) stay correct.
+	var live LandCheckReport
+	if memo != nil {
+		key := contract.TargetWorktreeRoot + "|" + tip
+		if entry, ok := (*memo)[key]; ok {
+			live = entry.report
+			live.WorkID = w.ID
+		} else {
+			report2, err := s.evaluateLandCheck(w, LandCheckOptions{CandidateTipSHA: tip}, now)
+			(*memo)[key] = landCheckMemoEntry{report: report2, err: err}
+			live = report2
+			if err != nil {
+				item.LandingStatus = "delivery_check_error"
+				item.NextAction = "repair the bound Git delivery target, then rerun compound work land-check " + w.ID + " --tip " + tip
+				report.Integrity = append(report.Integrity, w.ID+": Git delivery check failed: "+err.Error())
+				return
+			}
+		}
+	} else {
+		check, err := s.evaluateLandCheck(w, LandCheckOptions{CandidateTipSHA: tip}, now)
+		if err != nil {
+			item.LandingStatus = "delivery_check_error"
+			item.NextAction = "repair the bound Git delivery target, then rerun compound work land-check " + w.ID + " --tip " + tip
+			report.Integrity = append(report.Integrity, w.ID+": Git delivery check failed: "+err.Error())
+			return
+		}
+		live = check
 	}
 	switch live.Status {
 	case "missing_source_bound_proof":
