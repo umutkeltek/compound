@@ -31,7 +31,11 @@ import { join } from "node:path";
 const APPLY = process.argv.includes("--apply");
 const SCRIPT_DIR = import.meta.dir;
 const HOME = homedir();
-const REPORT_ROOT = join(HOME, "Projects/operating-system/umut-os/state/runs");
+// Reports live under the COMPOUND_HOME estate (or an explicit override), not
+// the retired umut-os root. 2026-08-24 external audit P0-5: no runtime state
+// may point back at a retired project tree.
+const REPORT_ROOT = process.env.COMPOUND_SSD_REPORT_DIR
+  ?? join(process.env.COMPOUND_HOME ?? join(HOME, ".compound"), "state", "ssd-guardian");
 function runScript(name: string, args: string[]): { ok: boolean; stdout: string; stderr: string } {
   const r = spawnSync("bun", [join(SCRIPT_DIR, name), ...args], { stdio: "pipe", timeout: 1800_000 });
   return { ok: r.status === 0, stdout: r.stdout?.toString() ?? "", stderr: r.stderr?.toString() ?? "" };
@@ -53,10 +57,15 @@ const now = new Date();
 const stamp = now.toISOString().replace(/[:.]/g, "-");
 const runId = `ssd-weekly-${stamp}`;
 const reportDir = join(REPORT_ROOT, runId);
-mkdirSync(reportDir, { recursive: true });
+// Dry-run is observational: no directories, no report files, no receipts on
+// disk (audit P0-5 — a nominal dry-run must not mutate anything).
+if (APPLY) mkdirSync(reportDir, { recursive: true });
 
 const steps: Step[] = [];
 const logs: Record<string, string> = {};
+// Hard-abort reason set by the backup-freshness gate; when set, later steps
+// are skipped and the run exits 2 after the report is emitted.
+let abortReason: string | null = null;
 
 // Step 0: backup freshness gate.
 {
@@ -65,8 +74,19 @@ const logs: Record<string, string> = {};
   try {
     const j = JSON.parse(r.stdout);
     steps.push({ id: "backup-freshness-check", status: "executed", reason: `${j.status} (latest: ${j.latest ?? "none"}, ${j.age_hours ?? "?"}h)` });
+    // Audit P0-5: stale-or-missing backup is a HARD precondition for the
+    // destructive steps. Dry-run may proceed (it mutates nothing); apply
+    // must not.
+    if (APPLY && j.status !== "ok") {
+      abortReason = `backup freshness gate refused apply (status=${j.status})`;
+      steps.push({ id: "abort", status: "failed", reason: abortReason });
+    }
   } catch {
     steps.push({ id: "backup-freshness-check", status: "failed", reason: r.stderr.slice(0, 200) });
+    if (APPLY) {
+      abortReason = "backup freshness unreadable; refusing apply";
+      steps.push({ id: "abort", status: "failed", reason: abortReason });
+    }
   }
 }
 {
@@ -76,7 +96,7 @@ const logs: Record<string, string> = {};
 }
 
 // Step 2: symlink drift repair.
-if (APPLY) {
+if (APPLY && !abortReason) {
   const r = runScript("fix_work_symlink_drift.ts", ["--apply"]);
   logs.drift = r.stdout;
   steps.push({ id: "symlink-drift-fix", status: r.ok ? "executed" : "failed", reason: r.ok ? undefined : r.stderr.slice(0, 200) });
@@ -85,7 +105,7 @@ if (APPLY) {
 }
 
 // Step 3: build cache sweep.
-if (APPLY) {
+if (APPLY && !abortReason) {
   const r = runScript("sweep_build_caches.ts", ["--apply"]);
   logs.sweep = r.stdout;
   let reclaimed = 0;
@@ -104,8 +124,12 @@ if (APPLY) {
 {
   // 250 GB in bytes; underscore-grouped so digit-run scanners don't misread it.
   const thinBytes = String(250_000_000_000);
-  const r = runBin(["tmutil", "thinlocalsnapshots", "/", thinBytes, "4"]);
-  steps.push({ id: "tmutil-thin-snapshots", status: r.ok ? "executed" : "failed", reason: r.ok ? r.stdout.trim().slice(0, 200) : r.stderr.slice(0, 200) });
+  if (APPLY && !abortReason) {
+    const r = runBin(["tmutil", "thinlocalsnapshots", "/", thinBytes, "4"]);
+    steps.push({ id: "tmutil-thin-snapshots", status: r.ok ? "executed" : "failed", reason: r.ok ? r.stdout.trim().slice(0, 200) : r.stderr.slice(0, 200) });
+  } else {
+    steps.push({ id: "tmutil-thin-snapshots", status: "skipped", reason: "dry_run" });
+  }
 }
 
 const totalReclaimed = steps.reduce((acc, s) => acc + (s.reclaimed_bytes ?? 0), 0);
@@ -125,7 +149,7 @@ lines.push(``);
 lines.push(`Run id: \`${runId}\``);
 lines.push(`Mode: ${APPLY ? "**apply**" : "dry_run"}`);
 lines.push(`Free bytes after: ${(freeKiB / 1024 / 1024 / 1024).toFixed(1)} GiB`);
-lines.push(`Total reclaimed this run: ${(totalReclaimed / 1024 / 1024 / 1024).toFixed(1)} GiB`);
+lines.push(`${APPLY ? "Total reclaimed this run" : "Would reclaim (dry-run; nothing deleted)"}: ${(totalReclaimed / 1024 / 1024 / 1024).toFixed(1)} GiB`);
 lines.push(``);
 lines.push(`## Steps`);
 lines.push(``);
@@ -137,18 +161,26 @@ lines.push(``);
 lines.push(`## Capture coverage snapshot`);
 lines.push(``);
 lines.push(`See \`capture-coverage.md\` in this directory for the full table.`);
-const report = lines.join("\n") + "\n\n" + logs.audit + "\n";
-writeFileSync(join(reportDir, "report.md"), report);
-
-const summary = {
-  schema_version: "compound.ssd-guardian.weekly_reclaim.v1",
-  run_id: runId,
-  mode: APPLY ? "apply" : "dry_run",
-  generated_at: now.toISOString(),
-  free_bytes_after: freeKiB,
-  total_reclaimed_bytes: totalReclaimed,
-  steps,
-  report_dir: reportDir,
-};
-writeFileSync(join(reportDir, "summary.json"), JSON.stringify(summary, null, 2));
-console.log(JSON.stringify(summary, null, 2));
+// writeReport: apply mode persists report.md + summary.json under the report
+// root; dry-run writes NOTHING to disk and prints the summary to stdout only
+// (audit P0-5 — a nominal dry-run must not create state).
+function writeReport(): void {
+  const report = lines.join("\n") + "\n\n" + logs.audit + "\n";
+  const summary = {
+    schema_version: "compound.ssd-guardian.weekly_reclaim.v1",
+    run_id: runId,
+    mode: APPLY ? "apply" : "dry_run",
+    generated_at: now.toISOString(),
+    free_bytes_after: freeKiB,
+    total_reclaimed_bytes: totalReclaimed,
+    steps,
+    report_dir: APPLY ? reportDir : "(dry-run: nothing written)",
+  };
+  if (APPLY) {
+    writeFileSync(join(reportDir, "report.md"), report);
+    writeFileSync(join(reportDir, "summary.json"), JSON.stringify(summary, null, 2));
+  }
+  console.log(JSON.stringify(summary, null, 2));
+}
+writeReport();
+if (abortReason) process.exit(2);
