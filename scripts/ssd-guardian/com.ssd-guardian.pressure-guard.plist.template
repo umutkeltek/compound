@@ -37,6 +37,8 @@
     <string>8</string>
     <key>SSD_GUARDIAN_LMSTUDIO_MIN_IDLE_SECONDS</key>
     <string>1800</string>
+    <key>SSD_GUARDIAN_TEMP_CACHE_MIN_AGE_SECONDS</key>
+    <string>3600</string>
   </dict>
 </dict>
 </plist>

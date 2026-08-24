@@ -1,9 +1,21 @@
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
   decideGuardAction,
+  isRebuildableTemporaryGoCache,
   parseDeletedOpenFiles,
   parseLoadedModels,
   parseElapsedSeconds,
+  temporaryGoCaches,
   type DeletedOpenFile,
   type ModelProcess,
 } from "./disk_pressure_guard";
@@ -126,5 +138,47 @@ describe("elapsed process age", () => {
     expect(parseElapsedSeconds("02:17:08")).toBe(8228);
     expect(parseElapsedSeconds("2-03:17:08")).toBe(184628);
     expect(parseElapsedSeconds("not-a-duration")).toBeNull();
+  });
+});
+
+describe("temporary Go cache selection", () => {
+  test("matches only known rebuildable cache root names", () => {
+    expect(isRebuildableTemporaryGoCache("gocache")).toBe(true);
+    expect(isRebuildableTemporaryGoCache("gocache-proof-7")).toBe(true);
+    expect(isRebuildableTemporaryGoCache("go-cache")).toBe(true);
+    expect(isRebuildableTemporaryGoCache("go-cache-project")).toBe(false);
+    expect(isRebuildableTemporaryGoCache("compound-copy")).toBe(false);
+    expect(isRebuildableTemporaryGoCache("source")).toBe(false);
+  });
+
+  test("selects only old real directories and never symlinks or user trees", () => {
+    const root = mkdtempSync(join(tmpdir(), "ssd-guardian-cache-test-"));
+    try {
+      const oldCache = join(root, "gocache-old");
+      const freshCache = join(root, "gocache-fresh");
+      const userTree = join(root, "compound-copy");
+      const unmarkedCache = join(root, "gocache-user-source");
+      mkdirSync(oldCache);
+      mkdirSync(freshCache);
+      mkdirSync(userTree);
+      mkdirSync(unmarkedCache);
+      writeFileSync(
+        join(oldCache, "README"),
+        "This directory holds cached build artifacts from the Go build system.\n",
+      );
+      const nowMs = Date.now();
+      const old = new Date(nowMs - 8 * 60 * 60 * 1000);
+      utimesSync(oldCache, old, old);
+      utimesSync(unmarkedCache, old, old);
+      symlinkSync(oldCache, join(root, "gocache-link"));
+
+      const candidates = temporaryGoCaches(root, 60 * 60, nowMs);
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]?.path).toBe(oldCache);
+      expect(candidates[0]?.ageSeconds).toBe(8 * 60 * 60);
+      expect(candidates[0]?.sizeBytes).toBeGreaterThan(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -1,5 +1,13 @@
 #!/usr/bin/env bun
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -8,6 +16,9 @@ const GIB = 1024 ** 3;
 const DEFAULT_FREE_FLOOR_BYTES = 140 * GIB;
 const DEFAULT_GIANT_FILE_BYTES = 8 * GIB;
 const DEFAULT_MIN_IDLE_SECONDS = 30 * 60;
+const DEFAULT_TEMP_CACHE_MIN_AGE_SECONDS = 60 * 60;
+const DEFAULT_TEMP_ROOT = "/private/tmp";
+const GO_BUILD_CACHE_MARKER = "This directory holds cached build artifacts from the Go build system.";
 const LM_STUDIO_PORT = 1234;
 
 export type DeletedOpenFile = {
@@ -30,6 +41,17 @@ export type GuardDecision = {
   reasons: string[];
 };
 
+export type TemporaryCacheCandidate = {
+  path: string;
+  sizeBytes: number;
+  ageSeconds: number;
+};
+
+export type TemporaryCacheAction = TemporaryCacheCandidate & {
+  status: "candidate" | "reclaimed" | "skipped_open" | "failed";
+  error?: string;
+};
+
 type CommandResult = {
   ok: boolean;
   stdout: string;
@@ -47,6 +69,104 @@ function run(command: string[], timeoutMs = 30_000): CommandResult {
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
   };
+}
+
+export function isRebuildableTemporaryGoCache(name: string): boolean {
+  return name === "go-cache"
+    || name === "gocache"
+    || name.startsWith("gocache-");
+}
+
+function hasGoBuildCacheMarker(path: string): boolean {
+  try {
+    return readFileSync(join(path, "README"), "utf8").includes(GO_BUILD_CACHE_MARKER);
+  } catch {
+    return false;
+  }
+}
+
+export function temporaryGoCaches(
+  root: string,
+  minimumAgeSeconds: number,
+  nowMs: number,
+): TemporaryCacheCandidate[] {
+  const candidates: TemporaryCacheCandidate[] = [];
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return candidates;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !isRebuildableTemporaryGoCache(entry.name)) {
+      continue;
+    }
+    const path = join(root, entry.name);
+    try {
+      const stat = lstatSync(path);
+      const ageSeconds = Math.floor((nowMs - stat.mtimeMs) / 1000);
+      if (
+        !stat.isDirectory()
+        || stat.isSymbolicLink()
+        || ageSeconds < minimumAgeSeconds
+        || !hasGoBuildCacheMarker(path)
+      ) {
+        continue;
+      }
+      const size = run(["du", "-sk", path], 120_000);
+      const sizeKiB = Number(size.stdout.trim().split(/\s+/)[0]);
+      candidates.push({
+        path,
+        sizeBytes: size.ok && Number.isFinite(sizeKiB) ? sizeKiB * 1024 : 0,
+        ageSeconds,
+      });
+    } catch {
+      // A raced removal is no longer a candidate.
+    }
+  }
+  return candidates.sort((a, b) => b.sizeBytes - a.sizeBytes);
+}
+
+function reclaimTemporaryGoCaches(
+  candidates: TemporaryCacheCandidate[],
+  apply: boolean,
+  minimumAgeSeconds: number,
+  nowMs: number,
+): TemporaryCacheAction[] {
+  return candidates.map((candidate) => {
+    if (!apply) return { ...candidate, status: "candidate" };
+    try {
+      const stat = lstatSync(candidate.path);
+      const ageSeconds = Math.floor((nowMs - stat.mtimeMs) / 1000);
+      if (
+        !stat.isDirectory()
+        || stat.isSymbolicLink()
+        || ageSeconds < minimumAgeSeconds
+        || !hasGoBuildCacheMarker(candidate.path)
+      ) {
+        return { ...candidate, status: "failed", error: "candidate changed before reclaim" };
+      }
+      const holders = run(["lsof", "-F", "p", "+D", candidate.path], 120_000);
+      if (holders.stdout.trim().length > 0) {
+        return { ...candidate, status: "skipped_open" };
+      }
+      if (!holders.ok && holders.stderr.trim().length > 0) {
+        return {
+          ...candidate,
+          status: "failed",
+          error: holders.stderr.trim().slice(0, 300),
+        };
+      }
+      rmSync(candidate.path, { recursive: true });
+      return { ...candidate, status: "reclaimed" };
+    } catch (error) {
+      return {
+        ...candidate,
+        status: "failed",
+        error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
+      };
+    }
+  });
 }
 
 export function parseDeletedOpenFiles(raw: string): DeletedOpenFile[] {
@@ -235,8 +355,23 @@ async function main(): Promise<void> {
   const minimumIdleSeconds = Number(
     process.env.SSD_GUARDIAN_LMSTUDIO_MIN_IDLE_SECONDS ?? DEFAULT_MIN_IDLE_SECONDS,
   );
+  const temporaryCacheMinimumAgeSeconds = Number(
+    process.env.SSD_GUARDIAN_TEMP_CACHE_MIN_AGE_SECONDS
+      ?? DEFAULT_TEMP_CACHE_MIN_AGE_SECONDS,
+  );
+  const temporaryRoot = process.env.SSD_GUARDIAN_TEMP_ROOT ?? DEFAULT_TEMP_ROOT;
 
   const beforeFreeBytes = freeBytes();
+  const temporaryCacheCandidates = beforeFreeBytes < freeFloorBytes
+    ? temporaryGoCaches(temporaryRoot, temporaryCacheMinimumAgeSeconds, Date.now())
+    : [];
+  const temporaryCacheActions = reclaimTemporaryGoCaches(
+    temporaryCacheCandidates,
+    apply,
+    temporaryCacheMinimumAgeSeconds,
+    Date.now(),
+  );
+  const decisionFreeBytes = apply ? freeBytes() : beforeFreeBytes;
   const lsof = run(["lsof", "+L1", "-F", "pcfsn"], 60_000);
   const deletedFiles = lsof.ok ? parseDeletedOpenFiles(lsof.stdout) : [];
   const giantFiles = deletedFiles
@@ -253,7 +388,7 @@ async function main(): Promise<void> {
   const hasActiveClients = activeLocalClients();
   const nowMs = Date.now();
   const decision = decideGuardAction({
-    freeBytes: beforeFreeBytes,
+    freeBytes: decisionFreeBytes,
     freeFloorBytes,
     giantFiles,
     lmStudioHolderPids,
@@ -301,10 +436,17 @@ async function main(): Promise<void> {
     schema_version: "compound.ssd-guardian.pressure.v1",
     generated_at: new Date().toISOString(),
     mode: apply ? "apply" : "dry_run",
-    thresholds: { freeFloorBytes, giantThresholdBytes, minimumIdleSeconds },
+    thresholds: {
+      freeFloorBytes,
+      giantThresholdBytes,
+      minimumIdleSeconds,
+      temporaryCacheMinimumAgeSeconds,
+    },
     beforeFreeBytes,
     afterFreeBytes,
     reclaimedBytes: Math.max(0, afterFreeBytes - beforeFreeBytes),
+    temporaryCacheCandidates,
+    temporaryCacheActions,
     decision,
     actionRecheck,
     giantDeletedFiles: giantFiles.slice(0, 20).map((file) => ({
@@ -320,11 +462,17 @@ async function main(): Promise<void> {
     hasActiveClients,
     actions,
   };
-  const receiptPath = apply ? writeReceipt(receipt, decision.action !== "none") : null;
+  const receiptPath = apply
+    ? writeReceipt(
+      receipt,
+      decision.action !== "none" || temporaryCacheCandidates.length > 0,
+    )
+    : null;
   console.log(JSON.stringify({ ...receipt, receiptPath }, null, 2));
 
-  const failedAction = actions.some((action) => !action.ok);
-  if (failedAction || (decision.action === "report_only" && beforeFreeBytes < freeFloorBytes)) {
+  const failedAction = actions.some((action) => !action.ok)
+    || temporaryCacheActions.some((action) => action.status === "failed");
+  if (failedAction || afterFreeBytes < freeFloorBytes) {
     process.exitCode = 2;
   }
 }
