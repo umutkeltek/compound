@@ -81,7 +81,7 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside|sweep-stale> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
@@ -223,6 +223,15 @@ var workVerbHelpByName = map[string]workVerbHelp{
 	"set-aside": {
 		Usage:   "usage: compound work set-aside <begin|end> <work_id> ...\n  begin <work_id> --candidate <full-sha> --file <path> [--file ...] --by <actor> --reason \"<why the dirt is foreign>\" [--json]\n  end <work_id> [--by <actor>] [--json]",
 		Example: "compound work set-aside begin work_abc123 --candidate 0123456789012345678901234567890123456789 --file internal/foo.go --by codex --reason \"neighbor lane WIP\"",
+	},
+	"sweep-stale": {
+		// DRY-RUN IS THE DEFAULT. --yes is the only mutation gate. The packet
+		// is explicit on this: a sweep-stale that accidentally abandoned a
+		// live envelope is exactly the fossilization we are trying to
+		// prevent — the verb exists to audit and operator-review the
+		// candidate set, not to silently reap it.
+		Usage:   "usage: compound work sweep-stale [--threshold 72h] [--dry-run|--yes] [--json]\n  default is dry-run (prints candidate set + reasons, exits 0).\n  --yes applies: advances reclaimed envelopes to failed/cancelled,\n  releases the claim lease, appends one lifecycle event with sweep_reason.\n  Never touches run_attempts (compound run-attempt sweep owns that).",
+		Example: "compound work sweep-stale --threshold 48h",
 	},
 }
 
@@ -1871,6 +1880,14 @@ func cmdWork(args []string) {
 		observeEVCardCalibrationOnClose(homePath, res)
 		offerStandingProofGraduationOnClose(homePath, res)
 		autoConsumeCapabilityFeedback(homePath)
+	case "sweep-stale":
+		// sweep-stale is the work-state-machine counterpart to
+		// `compound run-attempt sweep`: where the run-attempt sweep
+		// terminalizes stuck RunAttempts (and explicitly does NOT touch the
+		// work state machine), sweep-stale advances stuck WorkEnvelopes to
+		// failed/cancelled and explicitly does NOT touch RunAttempts. The
+		// two never run on the same byte; each owns its organ.
+		runWorkSweepStaleCLI(rest, store, homePath, time.Now(), os.Stdout, os.Stderr)
 	case "set-aside":
 		usage := workUsage("set-aside")
 		if len(rest) == 0 {
