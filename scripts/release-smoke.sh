@@ -10,7 +10,7 @@
 
 set -u
 
-REPO="${REPO:-/Users/example/Projects/systems/compound}"
+REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 COMPOUND="${COMPOUND:-${HOME}/.local/bin/compound}"
 COMPOUND_HOME="${COMPOUND_HOME:-${HOME}/.compound}"
 LOG_DIR="${LOG_DIR:-/tmp/release-smoke}"
