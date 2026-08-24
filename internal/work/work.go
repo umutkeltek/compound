@@ -2258,20 +2258,21 @@ func (s *Store) resolveRunAttemptAuthorityFromEvents(w envelope.WorkEnvelope, ra
 	if len(pairs) != 1 {
 		// DETERMINISTIC TIEBREAK (lived 2026-08-23, work_1d968c3f0522):
 		// when the close-time authority gate sees >1 (act_, pol_) pair for
-		// the same ratt_ (a wedged history), the pair whose policy
-		// generated the `running` reservation is the authoritative one —
-		// the lifecycle that actually executed the attempt was governed by
-		// the running state's PolicyDecisionID. Among the candidate pairs,
-		// prefer the one whose `pol_` matches the running event's policy.
-		// If no running event exists or no candidate matches, fall through
-		// to the loud ambiguous error (do not pick silently).
+		// the same ratt_ (a wedged history), the pair attached by the
+		// lifecycle event that transitioned THIS attempt into `running` is
+		// the authoritative one — the lifecycle that actually executed the
+		// attempt was governed by that event's PolicyDecisionID. The lookup
+		// is bound to the exact ratt_ and takes the LATEST running
+		// generation: a work that was claimed, run, retried, and run again
+		// has running events from every generation, and closing the later
+		// attempt under the earlier generation's policy is confidently
+		// wrong rather than loudly ambiguous. The tiebreak only resolves
+		// when the running event's full (act_, pol_) pair is among the
+		// candidates; anything else falls through to the loud error.
 		if len(pairs) > 1 {
-			if runningPolicy := findRunningPolicyDecision(events); runningPolicy != "" {
-				for p := range pairs {
-					if p.policy == runningPolicy {
-						pairs = map[pair]bool{p: true}
-						break
-					}
+			if actionID, policyID, ok := findRunningAuthorityForAttempt(events, ra.ID); ok {
+				if pairs[pair{actionID, policyID}] {
+					pairs = map[pair]bool{{actionID, policyID}: true}
 				}
 			}
 		}
@@ -2327,27 +2328,55 @@ func (s *Store) resolveRunAttemptAuthorityFromEvents(w envelope.WorkEnvelope, ra
 	return runAttemptAuthority{ActionIntentID: resolved.action, PolicyDecisionID: resolved.policy}, nil
 }
 
-// findRunningPolicyDecision walks events for the first event that
-// transitioned the work into the `running` state and returns the
-// `pol_` id it carried in its Attached list. Returns "" when no
-// running event exists. Used by the deterministic tiebreak in
-// resolveRunAttemptAuthorityFromEvents when a wedged history
-// presents >1 candidate (act_, pol_) pair (lived 2026-08-23,
-// work_1d968c3f0522): the running reservation's policy is the
-// authoritative one because it governed the lifecycle that actually
-// executed the attempt.
-func findRunningPolicyDecision(events []Event) string {
-	for _, event := range events {
-		if event.To != "running" {
+// findRunningAuthorityForAttempt resolves the (act_, pol_) authority pair from
+// the lifecycle event that transitioned the work into `running` while attaching
+// exactly this run attempt. Used by the deterministic tiebreak in
+// resolveRunAttemptAuthorityFromEvents when a wedged history presents >1
+// candidate (act_, pol_) pair (lived 2026-08-23, work_1d968c3f0522).
+//
+// Binding rules, each closing a way the old first-policy-anywhere lookup could
+// select an authority the attempt never ran under:
+//
+//   - only `running` events that attach the exact ratt_ count — a running event
+//     from a different attempt of the same work must never decide this one;
+//   - when several lifecycle generations attached the same ratt_ (claim, run,
+//     retry, run again), the LATEST running generation wins, because that is
+//     the lifecycle the attempt actually executed last;
+//   - the chosen event must carry exactly one act_ and exactly one pol_ —
+//     zero or several on the governing event is ambiguity, not a preference.
+//
+// ok=false means no governing pair could be established; the caller must then
+// fail loudly instead of picking silently.
+func findRunningAuthorityForAttempt(events []Event, runAttemptID string) (actionID string, policyID string, ok bool) {
+	if !strings.HasPrefix(runAttemptID, "ratt_") {
+		return "", "", false
+	}
+	var latest *Event
+	for i := range events {
+		event := &events[i]
+		if event.To != "running" || !attachedHas(event.Attached, runAttemptID) {
 			continue
 		}
-		for _, ref := range event.Attached {
-			if strings.HasPrefix(ref, "pol_") {
-				return ref
-			}
+		if latest == nil || event.TS >= latest.TS {
+			latest = event
 		}
 	}
-	return ""
+	if latest == nil {
+		return "", "", false
+	}
+	var actions, policies []string
+	for _, ref := range latest.Attached {
+		switch {
+		case strings.HasPrefix(ref, "act_"):
+			actions = append(actions, ref)
+		case strings.HasPrefix(ref, "pol_"):
+			policies = append(policies, ref)
+		}
+	}
+	if len(actions) != 1 || len(policies) != 1 {
+		return "", "", false
+	}
+	return actions[0], policies[0], true
 }
 
 func latestActionIntentID(w envelope.WorkEnvelope) string {

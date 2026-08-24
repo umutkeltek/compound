@@ -167,7 +167,7 @@ func TestCloseWedgeNamesBothPairsAndRemediation(t *testing.T) {
 		"act_wedge_second", "pol_wedge_second", ra.ID, fixedNow.Add(2*time.Minute))
 
 	// Close MUST succeed under the tiebreak pair (firstAction, firstPolicy).
-	closeOut, closeErr := s.Close(w.ID, CloseInput{
+	_, closeErr := s.Close(w.ID, CloseInput{
 		Outcome:       "completed",
 		MoveType:      "outward_delta",
 		Actor:         "codex",
@@ -177,27 +177,27 @@ func TestCloseWedgeNamesBothPairsAndRemediation(t *testing.T) {
 		RunAttemptIDs: []string{ra.ID},
 	}, fixedNow.Add(10*time.Minute))
 	if closeErr != nil {
-		if closeErr != nil {
-			t.Fatalf("close must resolve via tiebreak; got %v", closeErr)
-		}
-		// Sanity: the resolved authority must match the running-reservation pair.
-		events, err := s.eventsFor(w.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		loadedRA, err := runattempt.Open(s.home).Get(ra.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		authority, err := s.resolveRunAttemptAuthorityFromEvents(closeOut.Work, loadedRA, events)
-		if err != nil {
-			t.Fatalf("authority resolution must succeed under tiebreak: %v", err)
-		}
-		if authority.ActionIntentID != firstAction || authority.PolicyDecisionID != firstPolicy {
-			t.Fatalf("authority = (%s,%s); want tiebreak pair (%s,%s)",
-				authority.ActionIntentID, authority.PolicyDecisionID, firstAction, firstPolicy)
-		}
-		_ = firstPolicy // used above; suppress unused warning if any
+		t.Fatalf("close must resolve via tiebreak; got %v", closeErr)
+	}
+	// The release gate is the SELECTED PAIR, not successful closure: a
+	// tiebreak that closes under the WRONG pair while appearing successful
+	// is worse than the loud ambiguity it replaced. The close-time gate
+	// records exactly what it selected in the attempt's terminalization
+	// intent, so assert THAT. (This block previously lived inside
+	// `if closeErr != nil` behind a nested fatal and never executed when
+	// close succeeded — the test proved nothing.)
+	loadedRA, err := runattempt.Open(s.home).Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedRA.TerminalizationIntent == nil {
+		t.Fatal("closed attempt must carry a terminalization intent naming the selected authority")
+	}
+	if got := loadedRA.TerminalizationIntent.AuthorityActionIntentID; got != firstAction {
+		t.Fatalf("tiebreak selected action %s; want running-state pair action %s", got, firstAction)
+	}
+	if got := loadedRA.TerminalizationIntent.AuthorityPolicyDecisionID; got != firstPolicy {
+		t.Fatalf("tiebreak selected policy %s; want running-state pair policy %s", got, firstPolicy)
 	}
 }
 
@@ -385,5 +385,199 @@ func TestAdvanceAllowsReattachWithSamePair(t *testing.T) {
 	if authority.ActionIntentID != firstAction || authority.PolicyDecisionID != firstPolicy {
 		t.Fatalf("authority = (%s,%s); want (%s,%s)",
 			authority.ActionIntentID, authority.PolicyDecisionID, firstAction, firstPolicy)
+	}
+}
+
+// --- findRunningAuthorityForAttempt: unit falsifiers on plain event slices ---
+
+func TestFindRunningAuthorityForAttemptBindsToExactAttempt(t *testing.T) {
+	base := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name       string
+		events     []Event
+		ratt       string
+		wantAction string
+		wantPolicy string
+		wantOK     bool
+	}{
+		{
+			name:   "no events",
+			ratt:   "ratt_a",
+			events: nil,
+		},
+		{
+			name: "running event attaching a different attempt is ignored",
+			ratt: "ratt_a",
+			events: []Event{{
+				TS: ts(base), To: "running",
+				Attached: []string{"act_other", "pol_other", "ratt_b"},
+			}},
+		},
+		{
+			name: "running event attaching the attempt resolves its pair",
+			ratt: "ratt_a",
+			events: []Event{{
+				TS: ts(base), To: "running",
+				Attached: []string{"act_1", "pol_1", "ratt_a"},
+			}},
+			wantAction: "act_1", wantPolicy: "pol_1", wantOK: true,
+		},
+		{
+			name: "latest of two running generations wins",
+			ratt: "ratt_a",
+			events: []Event{
+				{TS: ts(base), To: "running", Attached: []string{"act_1", "pol_1", "ratt_a"}},
+				{TS: ts(base.Add(time.Hour)), To: "verifying", Attached: []string{"act_1", "pol_1", "ratt_a"}},
+				{TS: ts(base.Add(2 * time.Hour)), To: "running", Attached: []string{"act_2", "pol_2", "ratt_a"}},
+			},
+			wantAction: "act_2", wantPolicy: "pol_2", wantOK: true,
+		},
+		{
+			name: "governing running event with two policies is ambiguity, not preference",
+			ratt: "ratt_a",
+			events: []Event{{
+				TS: ts(base), To: "running",
+				Attached: []string{"act_1", "pol_1", "pol_2", "ratt_a"},
+			}},
+		},
+		{
+			name: "governing running event with two actions is ambiguity, not preference",
+			ratt: "ratt_a",
+			events: []Event{{
+				TS: ts(base), To: "running",
+				Attached: []string{"act_1", "act_2", "pol_1", "ratt_a"},
+			}},
+		},
+		{
+			name: "non-ratt id never resolves",
+			ratt: "not-an-attempt",
+			events: []Event{{
+				TS: ts(base), To: "running",
+				Attached: []string{"act_1", "pol_1", "not-an-attempt"},
+			}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			action, policy, ok := findRunningAuthorityForAttempt(tc.events, tc.ratt)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v; want %v", ok, tc.wantOK)
+			}
+			if !tc.wantOK {
+				return
+			}
+			if action != tc.wantAction || policy != tc.wantPolicy {
+				t.Fatalf("pair = (%s,%s); want (%s,%s)", action, policy, tc.wantAction, tc.wantPolicy)
+			}
+		})
+	}
+}
+
+// Falsifier 2 (lived shape: claim → run → retry → run again): the SAME ratt_
+// re-entered `running` under a second (act_, pol_) generation. The first
+// running event anywhere in the work history carries the OLD policy; closing
+// under it is confidently wrong. The tiebreak must resolve the LATEST running
+// generation for the exact attempt.
+func TestWedgeTiebreakUsesLatestRunningGenerationForSameAttempt(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "wedge-gen", SuccessPredicate: "retry closes under its own generation"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	ra := mintExecutionRunAttempt(t, s, w.ID, fixedNow)
+
+	advanced, err := s.Advance(w.ID, AdvanceInput{
+		To: "running", Actor: "codex", RunAttemptIDs: []string{ra.ID},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAction := advanced.ActionIntentIDs[len(advanced.ActionIntentIDs)-1]
+	firstPolicy := advanced.PolicyDecisionID
+
+	// Retry generation: the attempt re-enters running under a NEW pair.
+	writeActionIntentJSON(t, s, "act_retry_gen", w.ID, fixedNow.Add(3*time.Minute))
+	writePolicyDecisionJSON(t, s, "pol_retry_gen", w.ID, "act_retry_gen", fixedNow.Add(3*time.Minute))
+	writeWedgeLifecycleEvent(t, s, w.ID, "verifying", "running", "retry re-entry under new policy",
+		"act_retry_gen", "pol_retry_gen", ra.ID, fixedNow.Add(4*time.Minute))
+
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Resolution validates the action against the work's action chain; the
+	// retry generation's action must be part of the chain for a valid close.
+	// Extend the in-memory envelope the same way a real retry advance would.
+	loaded, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.ActionIntentIDs = append(loaded.ActionIntentIDs, "act_retry_gen")
+
+	authority, err := s.resolveRunAttemptAuthorityFromEvents(loaded, ra, events)
+	if err != nil {
+		t.Fatalf("tiebreak must resolve the retry generation: %v", err)
+	}
+	if authority.ActionIntentID != "act_retry_gen" || authority.PolicyDecisionID != "pol_retry_gen" {
+		t.Fatalf("authority = (%s,%s); want retry generation (act_retry_gen,pol_retry_gen); first generation was (%s,%s)",
+			authority.ActionIntentID, authority.PolicyDecisionID, firstAction, firstPolicy)
+	}
+}
+
+// Falsifier 3: a DIFFERENT attempt's earlier running event must not decide
+// this attempt's authority. The pre-fix lookup scanned for the first
+// running event anywhere in the work history; with two attempts that is the
+// other attempt's policy, and the close would bind the wrong pair.
+func TestWedgeTiebreakIgnoresOtherAttemptsRunningEvents(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "wedge-foreign", SuccessPredicate: "foreign running events do not govern"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	raOther := mintExecutionRunAttempt(t, s, w.ID, fixedNow)
+	raMine := mintExecutionRunAttempt(t, s, w.ID, fixedNow.Add(time.Second))
+
+	// An EARLIER running generation for a different attempt of this work.
+	writeActionIntentJSON(t, s, "act_foreign", w.ID, fixedNow)
+	writePolicyDecisionJSON(t, s, "pol_foreign", w.ID, "act_foreign", fixedNow)
+	writeWedgeLifecycleEvent(t, s, w.ID, "claimed", "running", "foreign attempt ran first",
+		"act_foreign", "pol_foreign", raOther.ID, fixedNow.Add(time.Minute))
+
+	// My attempt's real running advance mints its own pair.
+	if _, err := s.Advance(w.ID, AdvanceInput{
+		To: "running", Actor: "codex", RunAttemptIDs: []string{raMine.ID},
+	}, fixedNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	// Wedge: the foreign pair re-attached to MY attempt on a non-running
+	// event, so both pairs are candidates for raMine.
+	writeWedgeLifecycleEvent(t, s, w.ID, "running", "verifying", "foreign pair re-attach",
+		"act_foreign", "pol_foreign", raMine.ID, fixedNow.Add(3*time.Minute))
+
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.ActionIntentIDs = append(loaded.ActionIntentIDs, "act_foreign")
+
+	authority, err := s.resolveRunAttemptAuthorityFromEvents(loaded, raMine, events)
+	if err != nil {
+		t.Fatalf("tiebreak must resolve via my attempt's running event: %v", err)
+	}
+	if authority.PolicyDecisionID == "pol_foreign" {
+		t.Fatalf("tiebreak selected foreign attempt's policy %s; the pre-fix first-running-event-anywhere lookup is exactly this bug", authority.PolicyDecisionID)
+	}
+	if !strings.HasPrefix(authority.ActionIntentID, "act_") || authority.PolicyDecisionID == "" {
+		t.Fatalf("authority = (%s,%s); want the pair minted by my attempt's running advance", authority.ActionIntentID, authority.PolicyDecisionID)
 	}
 }
