@@ -99,7 +99,13 @@ func versionReport(challenge string) arch.VersionReport {
 }
 
 func main() {
-	args, err := home.PrepareGlobalCLIArgs(os.Args[1:])
+	rawArgs, err := prepareCompoundEntrypointArgs(os.Args[0], os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "os:", err)
+		fmt.Fprintln(os.Stderr, osAliasUsage)
+		os.Exit(2)
+	}
+	args, err := home.PrepareGlobalCLIArgs(rawArgs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		usage()
@@ -117,6 +123,118 @@ func main() {
 	}
 	die(firstPartyCommandCatalog().RequireHomeCompatibility(os.Args[1], os.Args[2:]))
 	command.Run(os.Args[2:])
+}
+
+const osAliasUsage = "usage: os [status|doctor|capability <task>|skills [query]|route <class>] [options]"
+
+func prepareCompoundEntrypointArgs(argv0 string, args []string) ([]string, error) {
+	if filepath.Base(argv0) != "os" {
+		return append([]string(nil), args...), nil
+	}
+	return rewriteOSAliasArgs(args)
+}
+
+func rewriteOSAliasArgs(args []string) ([]string, error) {
+	if len(args) == 0 {
+		return []string{"system", "status"}, nil
+	}
+	switch args[0] {
+	case "status":
+		return append([]string{"system", "status"}, args[1:]...), nil
+	case "doctor":
+		return append([]string{"doctor"}, args[1:]...), nil
+	case "capability":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("capability requires a task")
+		}
+		rewritten, err := rewriteOSAliasFlags(args[1:], false)
+		if err != nil {
+			return nil, err
+		}
+		return append([]string{"capability", "resolve"}, rewritten...), nil
+	case "skills":
+		rewritten, positional, err := rewriteOSSkillsArgs(args[1:])
+		if err != nil {
+			return nil, err
+		}
+		subcommand := "surface"
+		if positional == 0 {
+			subcommand = "list"
+		}
+		return append([]string{"capability", subcommand}, rewritten...), nil
+	case "route":
+		if len(args) < 2 || args[1] == "--list" || strings.HasPrefix(args[1], "-") {
+			return nil, fmt.Errorf("route requires a capability class; --list is retired")
+		}
+		class := canonicalOSRouteClass(args[1])
+		rewritten, err := rewriteOSAliasFlags(args[2:], false)
+		if err != nil {
+			return nil, err
+		}
+		out := []string{"route", "plan", "--capability-class", class}
+		return append(out, rewritten...), nil
+	default:
+		return nil, fmt.Errorf("legacy command %q is retired", args[0])
+	}
+}
+
+func rewriteOSAliasFlags(args []string, skills bool) ([]string, error) {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--privacy":
+			out = append(out, "--privacy-sensitive")
+		case "--write-packet":
+			return nil, fmt.Errorf("--write-packet is retired; use Compound work packet doors")
+		case "--host":
+			if !skills || i+1 >= len(args) {
+				return nil, fmt.Errorf("--host requires a value and is supported only by os skills")
+			}
+			i++
+			out = append(out, "--harness", canonicalOSHarness(args[i]))
+		default:
+			out = append(out, args[i])
+		}
+	}
+	return out, nil
+}
+
+func rewriteOSSkillsArgs(args []string) ([]string, int, error) {
+	rewritten, err := rewriteOSAliasFlags(args, true)
+	if err != nil {
+		return nil, 0, err
+	}
+	positional := 0
+	for i := 0; i < len(rewritten); i++ {
+		if rewritten[i] == "--harness" {
+			i++
+			continue
+		}
+		if !strings.HasPrefix(rewritten[i], "-") {
+			positional++
+		}
+	}
+	return rewritten, positional, nil
+}
+
+func canonicalOSHarness(value string) string {
+	switch strings.TrimSpace(value) {
+	case "claude", "claude-code":
+		return "claude_code"
+	default:
+		return strings.TrimSpace(value)
+	}
+}
+
+func canonicalOSRouteClass(value string) string {
+	switch strings.TrimSpace(value) {
+	case "extraction", "extract", "classify":
+		return "classify-extract"
+	case "architecture", "architect", "planning":
+		return "plan-decompose"
+	default:
+		return strings.TrimSpace(value)
+	}
 }
 
 // The pg recall-engine factory is installed by the internal/store organ (ADR-0005:

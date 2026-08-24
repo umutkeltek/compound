@@ -155,6 +155,47 @@ func TestPrepareGlobalArgs(t *testing.T) {
 	})
 }
 
+func TestPrepareCompoundEntrypointArgsRewritesOnlyOSAlias(t *testing.T) {
+	tests := []struct {
+		name    string
+		argv0   string
+		args    []string
+		want    []string
+		wantErr bool
+	}{
+		{name: "compound unchanged", argv0: "/opt/bin/compound", args: []string{"system", "status", "--json"}, want: []string{"system", "status", "--json"}},
+		{name: "default status", argv0: "/opt/bin/os", want: []string{"system", "status"}},
+		{name: "status", argv0: "os", args: []string{"status", "--json"}, want: []string{"system", "status", "--json"}},
+		{name: "doctor", argv0: "os", args: []string{"doctor", "--json"}, want: []string{"doctor", "--json"}},
+		{name: "capability", argv0: "os", args: []string{"capability", "ship", "ios", "--privacy", "--json"}, want: []string{"capability", "resolve", "ship", "ios", "--privacy-sensitive", "--json"}},
+		{name: "capability missing", argv0: "os", args: []string{"capability"}, wantErr: true},
+		{name: "capability packet retired", argv0: "os", args: []string{"capability", "task", "--write-packet"}, wantErr: true},
+		{name: "skills query", argv0: "os", args: []string{"skills", "app", "store", "--host", "claude", "--json"}, want: []string{"capability", "surface", "app", "store", "--harness", "claude_code", "--json"}},
+		{name: "skills inventory", argv0: "os", args: []string{"skills", "--host", "codex", "--json"}, want: []string{"capability", "list", "--harness", "codex", "--json"}},
+		{name: "route alias", argv0: "os", args: []string{"route", "architecture", "--privacy", "--json"}, want: []string{"route", "plan", "--capability-class", "plan-decompose", "--privacy-sensitive", "--json"}},
+		{name: "route extraction alias", argv0: "os", args: []string{"route", "extract"}, want: []string{"route", "plan", "--capability-class", "classify-extract"}},
+		{name: "route list retired", argv0: "os", args: []string{"route", "--list"}, wantErr: true},
+		{name: "unknown retired", argv0: "os", args: []string{"proof"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := prepareCompoundEntrypointArgs(tc.argv0, tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("prepare args = %#v, want error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("prepared args = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestVersionStringEmbedsBuildSHA proves `compound version` carries the build SHA that
 // install.sh's ldflags embed — buildSHA is a package var (set via -X at build time), so
 // the test sets it directly rather than needing a real ldflags-built binary (T3).
@@ -5432,6 +5473,13 @@ func TestInstallScriptBuildsInitializesAndDoctorsTempHome(t *testing.T) {
 	installDir := filepath.Join(t.TempDir(), "bin")
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	tempHome := t.TempDir()
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacyAlias := "#!/bin/sh\n# shim only — logic lives in umut-os/exec-lane/os.ts\nexec \"${HOME}/.bun/bin/bun\" \"${HOME}/Projects/operating-system/umut-os/exec-lane/os.ts\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(installDir, "os"), []byte(legacyAlias), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	modCacheOut, err := exec.Command("go", "env", "GOMODCACHE").Output()
 	if err != nil {
 		t.Fatalf("go env GOMODCACHE: %v", err)
@@ -5456,6 +5504,34 @@ func TestInstallScriptBuildsInitializesAndDoctorsTempHome(t *testing.T) {
 	if _, err := os.Stat(binaryPath); err != nil {
 		t.Fatalf("installed binary missing: %v\n%s", err, out)
 	}
+	aliasPath := filepath.Join(installDir, "os")
+	aliasInfo, err := os.Lstat(aliasPath)
+	if err != nil {
+		t.Fatalf("installed os alias missing: %v\n%s", err, out)
+	}
+	if aliasInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("installed os alias is not a symlink: %v", aliasInfo.Mode())
+	}
+	aliasTarget, err := os.Readlink(aliasPath)
+	if err != nil || aliasTarget != "compound" {
+		t.Fatalf("installed os alias target=%q err=%v, want relative compound", aliasTarget, err)
+	}
+	if strings.Contains(aliasTarget, "operating-system") || strings.Contains(aliasTarget, "umut-os") {
+		t.Fatalf("installed os alias retains legacy dependency: %q", aliasTarget)
+	}
+	aliasCommand := exec.Command(aliasPath, "status", "--json")
+	aliasCommand.Env = append(os.Environ(), "HOME="+tempHome, "COMPOUND_HOME="+homePath)
+	aliasOut, err := aliasCommand.CombinedOutput()
+	if err != nil {
+		t.Fatalf("installed os alias failed: %v\n%s", err, aliasOut)
+	}
+	var aliasReport projection.SystemStatusProjection
+	if err := json.Unmarshal(aliasOut, &aliasReport); err != nil {
+		t.Fatalf("installed os alias output is not Compound system status: %v\n%s", err, aliasOut)
+	}
+	if aliasReport.SchemaVersion != projection.SystemStatusSchemaVersion {
+		t.Fatalf("installed os alias schema=%q, want %q", aliasReport.SchemaVersion, projection.SystemStatusSchemaVersion)
+	}
 	if _, err := os.Stat(filepath.Join(homePath, home.ManifestName)); err != nil {
 		t.Fatalf("home manifest missing: %v\n%s", err, out)
 	}
@@ -5467,7 +5543,7 @@ func TestInstallScriptBuildsInitializesAndDoctorsTempHome(t *testing.T) {
 	}
 	// The artifact is built to a staging path and only moved in once verified, so a completed
 	// install leaves no staged file behind — and a failed one replaces nothing.
-	staged, err := filepath.Glob(filepath.Join(installDir, ".compound.incoming.*"))
+	staged, err := filepath.Glob(filepath.Join(installDir, ".*.incoming.*"))
 	if err != nil {
 		t.Fatalf("glob staged artifacts: %v", err)
 	}
@@ -5481,6 +5557,40 @@ func TestInstallScriptBuildsInitializesAndDoctorsTempHome(t *testing.T) {
 	}
 	if _, err := arch.VerifyInstalledArtifact(binaryPath, headSHA); err != nil {
 		t.Fatalf("the artifact install.sh actually placed does not verify: %v", err)
+	}
+}
+
+func TestInstallScriptRefusesForeignOSAliasBeforeBuild(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	aliasPath := filepath.Join(installDir, "os")
+	foreign := []byte("#!/bin/sh\necho foreign-owner\n")
+	if err := os.WriteFile(aliasPath, foreign, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", filepath.Join(repoRoot, "install.sh"))
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"HOME="+t.TempDir(),
+		"GOBIN="+installDir,
+		"COMPOUND_HOME="+filepath.Join(t.TempDir(), ".compound"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "refusing to replace foreign os file") {
+		t.Fatalf("foreign os preflight err=%v output=%s", err, out)
+	}
+	got, readErr := os.ReadFile(aliasPath)
+	if readErr != nil || !bytes.Equal(got, foreign) {
+		t.Fatalf("foreign os file changed: err=%v body=%q", readErr, got)
+	}
+	if _, statErr := os.Stat(filepath.Join(installDir, "compound")); !os.IsNotExist(statErr) {
+		t.Fatalf("foreign alias refusal still installed compound: %v", statErr)
 	}
 }
 
