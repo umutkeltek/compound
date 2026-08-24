@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"compound/internal/authority/gitrepository"
@@ -100,6 +101,37 @@ func ImportGitSnapshot(path string, existing []mem.Entity) (SourceControlSnapsho
 }
 
 func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
+	return readGitSnapshotWithCache(path, readGitSnapshotCache)
+}
+
+// snapshotCacheEntry memoizes a single (path, error) pair for one repo.
+type snapshotCacheEntry struct {
+	snap SourceControlSnapshot
+	err  error
+}
+
+var (
+	readGitSnapshotCacheMu sync.Mutex
+	readGitSnapshotCache   = map[string]snapshotCacheEntry{}
+)
+
+// ResetReadGitSnapshotCache clears the process-local snapshot memo. Called by
+// callers that need a fresh read after a git mutation in this process.
+func ResetReadGitSnapshotCache() {
+	readGitSnapshotCacheMu.Lock()
+	readGitSnapshotCache = map[string]snapshotCacheEntry{}
+	readGitSnapshotCacheMu.Unlock()
+}
+
+func readGitSnapshotWithCache(path string, cache map[string]snapshotCacheEntry) (SourceControlSnapshot, error) {
+	if path != "" {
+		readGitSnapshotCacheMu.Lock()
+		if entry, ok := cache[path]; ok {
+			readGitSnapshotCacheMu.Unlock()
+			return entry.snap, entry.err
+		}
+		readGitSnapshotCacheMu.Unlock()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	requestedPath, inspectDir, err := gitInspectionPath(path)
@@ -178,6 +210,11 @@ func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
 		TargetStatus:            targetStatus,
 		ChangedStateFingerprint: fingerprint,
 		EvidenceRef:             sourceControlEvidenceRef(repositoryID, strings.TrimSpace(head), fingerprint),
+	}
+	if path != "" {
+		readGitSnapshotCacheMu.Lock()
+		cache[path] = snapshotCacheEntry{snap: snap}
+		readGitSnapshotCacheMu.Unlock()
 	}
 	return snap, nil
 }

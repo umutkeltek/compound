@@ -104,30 +104,49 @@ func Build(homePath string, opts Options) (reviewartifact.QueueReport, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
+	rqLog := func(label string, t time.Time) {
+		if os.Getenv("COMPOUND_PROFILE_REVIEWQUEUE") == "1" {
+			fmt.Fprintf(os.Stderr, "[RQ-BUILD] %s: %s\n", label, time.Since(t))
+		}
+	}
+	t0 := time.Now()
 	report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{
 		Area:            opts.Area,
 		IncludeArchived: opts.IncludeArchived,
 	}, now)
+	rqLog("queue_walk", t0)
 	if err != nil {
 		return reviewartifact.QueueReport{}, err
 	}
 	decisions.AnnotateLifecycleRepairQueue(&report)
+	rqLog("annot_lifecycle", t0)
 	decisions.AnnotateDecisionCandidateQueue(&report)
+	rqLog("annot_decisions", t0)
 	decisions.AnnotateAutonomyGrantMintQueue(&report, homePath)
+	rqLog("annot_autonomy", t0)
 	product.AnnotateReviewQueue(&report)
+	rqLog("annot_product", t0)
 	product.AnnotateOutboundDryRunEvidenceQueue(&report)
+	rqLog("annot_outbound", t0)
 	product.AnnotateContentQueue(&report)
+	rqLog("annot_content", t0)
 	authority.AnnotateJobHealthQueue(&report)
+	rqLog("annot_job_health", t0)
 	authority.AnnotateSourceControlCleanupQueue(&report)
+	rqLog("annot_source_control", t0)
 	director.AnnotateHarnessEditProposalQueue(&report)
+	rqLog("annot_harness_edit", t0)
 	runtimebinding.AnnotateRepairQueue(&report)
+	rqLog("annot_repair", t0)
 	capgraph.AnnotateCapabilityEvaluationQueue(&report)
+	rqLog("annot_capgraph1", t0)
 	capgraph.AnnotateExternalRepoIntakeQueue(&report)
 	capgraph.AnnotateOutboundDistributionVerdictQueue(&report)
 	capgraph.AnnotateOutboundDistributionDryRunQueue(&report)
 	capgraph.AnnotateSkillCandidateQueue(&report)
 	capgraph.AnnotateCapabilityLifecycleProposalQueue(&report)
 	capgraph.AnnotateSkillSurfacingQueue(&report)
+	rqLog("annot_capgraph2", t0)
 	distiller.AnnotateImprovementQueue(&report)
 	distiller.AnnotateRequestQueue(&report)
 	mem.AnnotateBakeoffQueue(&report)
@@ -138,14 +157,18 @@ func Build(homePath string, opts Options) (reviewartifact.QueueReport, error) {
 	routeevidence.AnnotatePromotionReviewQueue(&report)
 	routeevidence.AnnotateRouteOutcomeQueue(&report)
 	sourceobs.AnnotateObservationVerdictQueue(&report)
+	rqLog("annotators_done", t0)
 	if err := StampReviewActionAuthority(homePath, &report, now); err != nil {
 		return reviewartifact.QueueReport{}, err
 	}
+	rqLog("stamp_authority", t0)
 	reviewartifact.Recount(&report)
 	if err := StampReviewGroupActionAuthority(homePath, &report, now); err != nil {
 		return reviewartifact.QueueReport{}, err
 	}
+	rqLog("group_authority", t0)
 	reviewartifact.RefreshSystemicBlocker(&report)
+	rqLog("systemic_blocker", t0)
 	return report, nil
 }
 
