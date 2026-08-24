@@ -11595,6 +11595,13 @@ func TestMemoryDoctorUsesConfiguredSidecarEngine(t *testing.T) {
 	bin := compoundMockEngineTestBinary(t)
 	t.Setenv("COMPOUND_MEM_ENGINE_BIN", bin)
 	t.Setenv("COMPOUND_MEM_ENGINE_EMBEDDER", "reference:lexical:0:0")
+	// Clear ambient breadth-embedder env so a developer shell's live
+	// embedder (e.g. ollama:nomic-embed-text) cannot leak into the fixture
+	// and flip semantic_readiness to embedder_mismatch against the mock's
+	// reference:lexical:0:0 stamp. Regression pin for the 2026-08-23/24 flake.
+	t.Setenv("COMPOUND_BREADTH_EMBED_MODEL", "")
+	t.Setenv("COMPOUND_BREADTH_EMBED_PROVIDER", "")
+	t.Setenv("COMPOUND_BREADTH_EMBED_BASE_URL", "")
 
 	out := captureStdout(t, func() { cmdMemory([]string{"doctor"}) })
 	if !strings.Contains(out, "sync/embedding") || !strings.Contains(out, "ok       reference") || !strings.Contains(out, "ledger_unchanged=true") {
@@ -11750,6 +11757,12 @@ func TestMemoryDoctorEngineProfileWiresReadOnlyCLISidecar(t *testing.T) {
 	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
 	t.Setenv("COMPOUND_MEMORY_CLI_BIN", fakeCLI)
 	t.Setenv("COMPOUND_MEMORY_CLI_LIMIT", "1")
+	// Same ambient-shell isolation as TestMemoryDoctorUsesConfiguredSidecarEngine:
+	// a live COMPOUND_BREADTH_EMBED_* from the developer shell must not flip the
+	// sync/embedding hop to embedder_mismatch under the memory-cli profile.
+	t.Setenv("COMPOUND_BREADTH_EMBED_MODEL", "")
+	t.Setenv("COMPOUND_BREADTH_EMBED_PROVIDER", "")
+	t.Setenv("COMPOUND_BREADTH_EMBED_BASE_URL", "")
 
 	jsonOut := captureStdout(t, func() {
 		cmdMemory([]string{"doctor", "--engine-profile", "memory-cli", "--json"})
