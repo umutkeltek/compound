@@ -95,8 +95,11 @@ var retentionClasses = []ArtifactClass{
 		// The owner executes; compound only names the entrypoint. The command self-gates on a
 		// per-day content-hash comparison against the remote and refuses to delete anything when
 		// a sealed day is short, so an unverified custody claim cannot reach a deletion.
-		ReclaimCommand:     "~/Projects/systems/compound/scripts/switchback-capture-maintenance.sh --prune",
-		ReclaimCommandArgv: []string{"bash", "~/Projects/systems/compound/scripts/switchback-capture-maintenance.sh", "--prune"},
+		// The path is repo-relative on purpose: a leading ~ never expands in an argv (there is
+		// no shell to expand it), and an absolute operator path in a compiled-in registry is a
+		// machine-specific promise this registry cannot keep. Run it from the compound repo.
+		ReclaimCommand:     "scripts/switchback-capture-maintenance.sh --prune --yes",
+		ReclaimCommandArgv: []string{"bash", "scripts/switchback-capture-maintenance.sh", "--prune", "--yes"},
 		Mode:               ReclaimOperatorGated,
 		Rebuildable:        false,
 	},
