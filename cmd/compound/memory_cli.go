@@ -28,7 +28,7 @@ func memoryUsage(sub string) string {
 	case "candidates":
 		return "usage: compound memory candidates --json [--state proposed|parked|promoted|rejected|no_promote|needs_review] [--limit N] [--kind K] [--include-evidence]"
 	case "adjudicate":
-		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W] [--by ACTOR] [--confirmation-ref ev_ID]|adjudicate --pending [--limit N] [--verdict reject|park|no_promote] [--work W] [--yes] [--dry-run] (batch drain; --yes required to mutate)"
+		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W] [--by ACTOR] [--confirmation-ref ev_ID]|adjudicate --pending [--limit N] [--scan-limit N] [--after <candidate-id>] [--verdict reject|park|no_promote] [--work W] [--yes] [--dry-run] (batch drain; --yes required to mutate; --limit caps adjudications, --scan-limit caps entries read, --after resumes from a prior pass's next cursor)"
 	case "confirmation":
 		return "usage: compound memory confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>"
 	case "graph":
@@ -313,9 +313,25 @@ func cmdMemory(args []string) {
 		if has("--pending") {
 			pendingUsage := memoryUsage("adjudicate")
 			limit := 0
-			if v, err := intFlag(rest, "--limit"); err == nil {
+			if v, err := intFlag(rest, "--limit"); err != nil {
+				// An unparseable --limit must never fall back to zero,
+				// because zero means UNCAPPED — a typo would turn a bounded
+				// drain into a full-inbox mutation.
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				fmt.Fprintln(os.Stderr, pendingUsage)
+				os.Exit(2)
+			} else {
 				limit = v
 			}
+			scanLimit := 0
+			if v, err := intFlag(rest, "--scan-limit"); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				fmt.Fprintln(os.Stderr, pendingUsage)
+				os.Exit(2)
+			} else {
+				scanLimit = v
+			}
+			afterID := strings.TrimSpace(flag("--after"))
 			yes := has("--yes")
 			verdict := flag("--verdict")
 			if verdict != "" && verdict != "reject" && verdict != "park" && verdict != "no_promote" {
@@ -328,14 +344,20 @@ func cmdMemory(args []string) {
 			// --dry-run is the DEFAULT for the verb: --yes is the only way to
 			// mutate, so a stray script cannot drain the inbox by accident.
 			dryRun := has("--dry-run") || !yes
-			opts := mem.AdjudicatePendingOptions{Verdict: verdict, WorkID: flag("--work"), DryRun: dryRun, Limit: limit}
+			opts := mem.AdjudicatePendingOptions{Verdict: verdict, WorkID: flag("--work"), DryRun: dryRun, Limit: limit, ScanLimit: scanLimit, AfterID: afterID}
 			report := store.AdjudicatePending(opts, time.Now())
-			if report.LimitReached {
-				// The cap bounds ADJUDICATED candidates, not scanning: a
-				// pass over a saturated inbox may skip tens of thousands of
-				// already-closed candidates before it adjudicates N. Tell the
-				// operator the drain is resumable, not complete.
-				fmt.Fprintf(os.Stderr, "note: --limit %d reached; pass stopped early (adjudicated=%d of scan, skipped=%d already closed) — re-run to continue the drain\n", limit, report.Adjudicated, report.Skipped)
+			if report.LimitReached || report.ScanCapHit {
+				// The caps are budgets, not completion claims: tell the
+				// operator the drain is resumable and exactly where from.
+				if report.LimitReached {
+					fmt.Fprintf(os.Stderr, "note: --limit %d reached (adjudicated=%d, skipped=%d already closed) — re-run to continue the drain\n", limit, report.Adjudicated, report.Skipped)
+				}
+				if report.ScanCapHit {
+					fmt.Fprintf(os.Stderr, "note: --scan-limit %d reached (scanned=%d) — re-run to continue the scan\n", scanLimit, report.Scanned)
+				}
+				if report.NextCursor != "" {
+					fmt.Fprintf(os.Stderr, "next cursor: --after %s\n", report.NextCursor)
+				}
 			}
 			if !yes {
 				if has("--json") {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -2102,4 +2103,125 @@ func sumCounts(m map[string]int) int {
 		n += v
 	}
 	return n
+}
+
+// TestAdjudicatePendingScanLimitBoundsReadsNotJustWrites: --scan-limit is the
+// operational budget. A cap that bounds only writes forced `--limit 1` to
+// enumerate, decode, and sort the whole inbox to perform one write — on the
+// live 132k-candidate estate that is minutes of I/O for one mutation.
+func TestAdjudicatePendingScanLimitBoundsReadsNotJustWrites(t *testing.T) {
+	s := newStore(t)
+	for i := 0; i < 5; i++ {
+		c := cand("e", "p", fmt.Sprintf("scan-%d", i), "")
+		c.ID = fmt.Sprintf("cand-scan-%d", i)
+		if _, err := s.Capture([]Candidate{c}, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := s.AdjudicatePending(AdjudicatePendingOptions{ScanLimit: 2}, t0.Add(time.Minute))
+	if r.Scanned != 2 {
+		t.Fatalf("scanned = %d, want 2 (scan budget bounds reads)", r.Scanned)
+	}
+	if !r.ScanCapHit {
+		t.Fatal("scan cap must be reported hit when entries remain unread")
+	}
+	if r.NextCursor == "" || r.NextCursor != r.LastID {
+		t.Fatalf("next cursor = %q, want the last scanned id %q", r.NextCursor, r.LastID)
+	}
+	// Resume from the cursor: the drain continues where it stopped and
+	// never reprocesses prior entries.
+	r2 := s.AdjudicatePending(AdjudicatePendingOptions{ScanLimit: 2, AfterID: r.NextCursor}, t0.Add(2*time.Minute))
+	if r2.Scanned != 2 {
+		t.Fatalf("resumed scan = %d, want 2 (entries after the cursor)", r2.Scanned)
+	}
+	if r2.FirstID <= r.NextCursor {
+		t.Fatalf("resumed first id = %q must be after the cursor %q (cursor excludes covered entries)", r2.FirstID, r.NextCursor)
+	}
+	r3 := s.AdjudicatePending(AdjudicatePendingOptions{AfterID: r2.NextCursor}, t0.Add(3*time.Minute))
+	if r3.Scanned != 1 || r3.LimitReached || r3.ScanCapHit || r3.NextCursor != "" {
+		t.Fatalf("final pass scanned=%d limit_reached=%v scan_cap_hit=%v cursor=%q, want 1/false/false/empty", r3.Scanned, r3.LimitReached, r3.ScanCapHit, r3.NextCursor)
+	}
+}
+
+// TestAdjudicatePendingExactLimitIsNotLimitReached: a pass that adjudicates
+// exactly N of N candidates walked the whole inbox — reporting
+// limit_reached=true (the old behavior whenever Adjudicated==Limit) claimed
+// resumable work existed where there was none.
+func TestAdjudicatePendingExactLimitIsNotLimitReached(t *testing.T) {
+	s := newStore(t)
+	for i := 0; i < 3; i++ {
+		c := cand("e", "p", fmt.Sprintf("exact-%d", i), "")
+		c.ID = fmt.Sprintf("cand-exact-%d", i)
+		if _, err := s.Capture([]Candidate{c}, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := s.AdjudicatePending(AdjudicatePendingOptions{Limit: 3}, t0.Add(time.Minute))
+	if r.Adjudicated != 3 {
+		t.Fatalf("adjudicated = %d, want 3", r.Adjudicated)
+	}
+	if r.LimitReached {
+		t.Fatal("limit_reached must be false when the whole inbox was walked; there is nothing to resume into")
+	}
+	if r.NextCursor != "" {
+		t.Fatalf("next cursor = %q, want empty (nothing remains)", r.NextCursor)
+	}
+	// The same inbox with a limit BELOW the total must report resumable.
+	s2 := newStore(t)
+	for i := 0; i < 3; i++ {
+		c := cand("e", "p", fmt.Sprintf("exact2-%d", i), "")
+		c.ID = fmt.Sprintf("cand-exact2-%d", i)
+		if _, err := s2.Capture([]Candidate{c}, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r2 := s2.AdjudicatePending(AdjudicatePendingOptions{Limit: 2}, t0.Add(time.Minute))
+	if !r2.LimitReached || r2.NextCursor == "" {
+		t.Fatalf("limit below total: limit_reached=%v cursor=%q, want true and a cursor", r2.LimitReached, r2.NextCursor)
+	}
+}
+
+// TestAdjudicatePendingNamesCorruptAndChangedIDs: an unreadable candidate
+// file is named in the report (not silently skipped, not batch-fatal), and
+// ChangedIDs enumerates exactly what the pass closed so `adjudicated: N` can
+// be reconciled file by file.
+func TestAdjudicatePendingNamesCorruptAndChangedIDs(t *testing.T) {
+	s := newStore(t)
+	// Capture derives content-addressed ids, so collect the ids it minted.
+	var minted []string
+	for i := 0; i < 2; i++ {
+		c := cand("e", "p", fmt.Sprintf("mixed-%d", i), "")
+		c.ID = fmt.Sprintf("cand-mixed-%d", i)
+		stored, err := s.Capture([]Candidate{c}, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, sc := range stored {
+			minted = append(minted, sc.ID)
+		}
+	}
+	sort.Strings(minted)
+	// A corrupt candidate between the two valid ones.
+	if err := os.WriteFile(filepath.Join(s.candDir(), "cand-corrupt.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := s.AdjudicatePending(AdjudicatePendingOptions{}, t0.Add(time.Minute))
+	if len(r.CorruptIDs) != 1 || r.CorruptIDs[0] != "cand-corrupt" {
+		t.Fatalf("corrupt ids = %v, want [cand-corrupt]", r.CorruptIDs)
+	}
+	if r.Adjudicated != 2 {
+		t.Fatalf("adjudicated = %d, want 2 (one corrupt file must not strand the batch)", r.Adjudicated)
+	}
+	if len(r.ChangedIDs) != 2 || r.ChangedIDs[0] != minted[0] || r.ChangedIDs[1] != minted[1] {
+		t.Fatalf("changed ids = %v, want the minted ids %v in order", r.ChangedIDs, minted)
+	}
+	foundCorruptErr := false
+	for _, e := range r.Errors {
+		if e.CandidateID == "cand-corrupt" {
+			foundCorruptErr = true
+		}
+	}
+	if !foundCorruptErr {
+		t.Fatalf("errors must name the corrupt candidate per-id: %+v", r.Errors)
+	}
 }

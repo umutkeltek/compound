@@ -552,15 +552,31 @@ func (s *Store) AdjudicateAsOperator(candID, verdict, workID, actor string, now 
 // hard failure but tolerates per-candidate errors so a single corrupt file
 // does not strand the whole batch).
 type AdjudicatePendingReport struct {
-	Scanned       int                      `json:"scanned"`
-	Adjudicated   int                      `json:"adjudicated"`
-	Skipped       int                      `json:"skipped"`
-	VerdictCounts map[string]int           `json:"verdict_counts"`
-	FirstID       string                   `json:"first_id,omitempty"`
-	LastID        string                   `json:"last_id,omitempty"`
-	Limit         int                      `json:"limit,omitempty"`
-	LimitReached  bool                     `json:"limit_reached,omitempty"`
-	Errors        []AdjudicatePendingError `json:"errors,omitempty"`
+	Scanned       int            `json:"scanned"`
+	Adjudicated   int            `json:"adjudicated"`
+	Skipped       int            `json:"skipped"`
+	VerdictCounts map[string]int `json:"verdict_counts"`
+	FirstID       string         `json:"first_id,omitempty"`
+	LastID        string         `json:"last_id,omitempty"`
+	Limit         int            `json:"limit,omitempty"`
+	LimitReached  bool           `json:"limit_reached,omitempty"`
+	// ScanLimit mirrors the pass's scan budget (0 = uncapped) and ScanCapHit
+	// reports whether the pass stopped READING because of it. A cap on
+	// writes alone is not an operational budget: `--limit 1` used to
+	// enumerate, decode, and sort the whole 132k inbox to perform one write.
+	ScanLimit  int  `json:"scan_limit,omitempty"`
+	ScanCapHit bool `json:"scan_cap_hit,omitempty"`
+	// NextCursor is the candidate id to resume after (pass --after <id>).
+	// Set only when the pass stopped early (apply limit or scan cap), so an
+	// absent cursor means "the inbox was walked to the end".
+	NextCursor string `json:"next_cursor,omitempty"`
+	// ChangedIDs names every candidate this pass actually adjudicated, so a
+	// pass that reports `adjudicated: N` can be reconciled file by file.
+	ChangedIDs []string `json:"changed_ids,omitempty"`
+	// CorruptIDs names inbox files that could not be decoded. A walker that
+	// silently skipped unreadable JSON made the scan count a fiction.
+	CorruptIDs []string                 `json:"corrupt_ids,omitempty"`
+	Errors     []AdjudicatePendingError `json:"errors,omitempty"`
 }
 
 // AdjudicatePendingError names one candidate the batch could not adjudicate.
@@ -584,24 +600,21 @@ type AdjudicatePendingError struct {
 // makes the verb idempotent — running it twice produces the same report
 // modulo the Errors slice.
 func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) AdjudicatePendingReport {
-	r := AdjudicatePendingReport{VerdictCounts: map[string]int{}, Limit: opts.Limit}
-	// DryRun path uses a lightweight inbox walker that only reads the
-	// fields the disposition needs (State, ID, Qualifiers.source). Decoding
-	// 132k full Candidate structs is the slow path; this is a 10x+ speed-up
-	// for the --dry-run preview the operator runs against a saturated
-	// backlog.
-	var cands []Candidate
-	var err error
-	if opts.DryRun {
-		cands, err = s.pendingInboxSnapshot()
-	} else {
-		cands, err = s.AllCandidates()
-	}
+	r := AdjudicatePendingReport{VerdictCounts: map[string]int{}, Limit: opts.Limit, ScanLimit: opts.ScanLimit}
+	// Both paths use the lightweight, cursor-aware, budget-bounded walker.
+	// The mutation path does not need the full Candidate struct either:
+	// Adjudicate re-reads the live candidate by id before writing, and the
+	// old full-decode walk aborted the WHOLE batch on the first unreadable
+	// candidate instead of isolating it as a per-candidate finding.
+	cands, corrupt, total, err := s.pendingInboxSnapshot(opts.AfterID, opts.ScanLimit)
 	if err != nil {
 		r.Errors = append(r.Errors, AdjudicatePendingError{CandidateID: "*", Err: err.Error()})
 		return r
 	}
-	sort.Slice(cands, func(i, j int) bool { return cands[i].ID < cands[j].ID })
+	r.CorruptIDs = corrupt
+	for _, id := range corrupt {
+		r.Errors = append(r.Errors, AdjudicatePendingError{CandidateID: id, Err: "candidate file unreadable"})
+	}
 	for _, c := range cands {
 		r.Scanned++
 		if r.FirstID == "" {
@@ -611,7 +624,7 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 		// Idempotency: a candidate the inbox write already closed (parked
 		// or promoted) stays untouched. The disposal state is durable on
 		// disk — re-running this verb must not re-classify it.
-		// Re-read live state at the top of every iteration. AllCandidates()
+		// Re-read live state at the top of every iteration. The snapshot
 		// captured the inbox once at the top of the verb, but a concurrent
 		// writer (admission auto-park on knowledge_import / decay_park,
 		// another --yes invocation, a side-door Adjudicate) can close a
@@ -646,6 +659,7 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 		if opts.DryRun {
 			r.VerdictCounts[verdict]++
 			r.Adjudicated++
+			r.ChangedIDs = append(r.ChangedIDs, c.ID)
 			if opts.Limit > 0 && r.Adjudicated >= opts.Limit {
 				r.LimitReached = true
 				break
@@ -658,10 +672,31 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 		}
 		r.VerdictCounts[verdict]++
 		r.Adjudicated++
+		r.ChangedIDs = append(r.ChangedIDs, c.ID)
 		if opts.Limit > 0 && r.Adjudicated >= opts.Limit {
 			r.LimitReached = true
 			break
 		}
+	}
+	// Truthful stop flags. The walker names the denominator: if every inbox
+	// entry was read this pass, a cap that fired on the LAST candidate is
+	// not "limit reached" — there is nothing left to resume into. The old
+	// behavior reported limit_reached=true whenever Adjudicated==Limit,
+	// even on an inbox of exactly N candidates.
+	walkedAll := r.Scanned+len(corrupt) >= total
+	if walkedAll {
+		r.LimitReached = false
+		r.ScanCapHit = false
+		return r
+	}
+	// Stopped early and entries remain: the pass is resumable, so name the
+	// continuation point.
+	scanBudgetSpent := opts.ScanLimit > 0 && r.Scanned+len(corrupt) >= opts.ScanLimit
+	if scanBudgetSpent {
+		r.ScanCapHit = true
+	}
+	if (r.LimitReached || r.ScanCapHit) && r.LastID != "" {
+		r.NextCursor = r.LastID
 	}
 	return r
 }
@@ -676,6 +711,15 @@ type AdjudicatePendingOptions struct {
 	WorkID  string // optional --work binding for the batch receipts
 	DryRun  bool   // scan + plan only; do not mutate
 	Limit   int    // 0 = uncapped. >0 stops the pass after N candidates are ADJUDICATED; already-closed (skipped) candidates never count toward the cap, so the cap bounds writes, not scanning.
+	// ScanLimit bounds how many inbox entries one pass READS (0 = uncapped).
+	// It is the operational budget: without it, `--limit 1` enumerates,
+	// decodes, and sorts the entire inbox to perform one write.
+	ScanLimit int
+	// AfterID resumes the walk after this candidate id (the previous pass's
+	// NextCursor). Entries at or before it are not read, so a multi-pass
+	// drain over a saturated inbox costs O(total) across all passes, not
+	// O(total) per pass.
+	AfterID string
 }
 
 // dispositionVerdict returns the verdict a candidate with no explicit
@@ -683,18 +727,43 @@ type AdjudicatePendingOptions struct {
 // not memory; they auto-reject (no_promote). A bare proposed candidate
 // without a definite disposition parks itself so the operator can rule.
 // pendingInboxSnapshot walks the inbox and returns the lightweight fields
-// the dry-run adjudicate needs: ID, State, and Qualifiers.source. The State
+// the batch adjudicator needs: ID, State, and Qualifiers.source. The State
 // alone decides proposed-vs-closed; Qualifiers.source alone decides
 // admission-class disposition. Decoding the rest of the Candidate struct
-// is pure cost for the dry-run path (132k files is the live inbox).
-func (s *Store) pendingInboxSnapshot() ([]Candidate, error) {
+// is pure cost — and the mutation path does not need it either, because
+// Adjudicate re-reads the live candidate by id before writing.
+//
+// The walker NEVER aborts on one unreadable candidate and NEVER skips one
+// silently: undecodable files are returned in corrupt so the report can
+// name them. total is the count of inbox .json entries (before any cursor
+// or scan-budget filtering) — the denominator that makes "limit reached"
+// truthful instead of speculative.
+func (s *Store) pendingInboxSnapshot(afterID string, scanLimit int) (cands []Candidate, corrupt []string, total int, err error) {
 	entries, err := os.ReadDir(s.candDir())
 	if err != nil {
-		return nil, err
+		return nil, nil, 0, err
 	}
-	out := make([]Candidate, 0, len(entries))
+	jsonEntries := 0
+	var names []string
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		jsonEntries++
+		names = append(names, entry.Name())
+	}
+	total = jsonEntries
+	sort.Strings(names)
+	budget := scanLimit
+	for _, name := range names {
+		if budget == 0 && scanLimit > 0 {
+			break
+		}
+		// Cursor resume happens on the FILE NAME (files are <id>.json, the
+		// same identity getCandidate reads by), so entries covered by an
+		// earlier pass cost nothing — not even a decode.
+		fileID := strings.TrimSuffix(name, ".json")
+		if afterID != "" && fileID <= afterID {
 			continue
 		}
 		// Decode only the fields we need. JSON unmarshal into the
@@ -705,13 +774,23 @@ func (s *Store) pendingInboxSnapshot() ([]Candidate, error) {
 			State      string            `json:"state"`
 			Qualifiers map[string]string `json:"qualifiers,omitempty"`
 		}
-		if err := readJSON(filepath.Join(s.candDir(), entry.Name()), &lite); err != nil {
+		path := filepath.Join(s.candDir(), name)
+		if err := readJSON(path, &lite); err != nil {
+			// A corrupt candidate is a per-file finding, not a reason to
+			// abort or undercount the batch. Name it; the caller decides
+			// whether it is an error (apply) or a report row (dry-run).
+			corrupt = append(corrupt, fileID)
+			if scanLimit > 0 {
+				budget--
+			}
 			continue
 		}
-		out = append(out, Candidate{ID: lite.ID, State: lite.State, Qualifiers: lite.Qualifiers})
+		cands = append(cands, Candidate{ID: lite.ID, State: lite.State, Qualifiers: lite.Qualifiers})
+		if scanLimit > 0 {
+			budget--
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out, nil
+	return cands, corrupt, total, nil
 }
 
 func dispositionVerdict(c Candidate) string {
