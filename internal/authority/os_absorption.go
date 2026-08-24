@@ -26,10 +26,39 @@ import (
 )
 
 const (
-	OSAbsorptionMatrixSchema = "compound.os_absorption_source_matrix.v0.1"
-	OSAbsorptionAuthorityRef = "compound://registries/os-absorption-source-matrix"
+	// OSAbsorptionMatrixSchema is the CURRENT schema id written by
+	// ImportOSAbsorptionMatrix. v0.2 introduces the compound_integration /
+	// live_consumers split (work_b28abf9a8718); v0.1 files still load and
+	// migrate on read.
+	OSAbsorptionMatrixSchema    = "compound.os_absorption_source_matrix.v0.2"
+	OSAbsorptionMatrixSchemaV01 = "compound.os_absorption_source_matrix.v0.1"
+	OSAbsorptionAuthorityRef    = "compound://registries/os-absorption-source-matrix"
 
 	osAbsorptionMatrixFile = "os-absorption-source-matrix.json"
+
+	// compound_integration enum values for the v0.2 row. They split the
+	// old single-axis `status` into two independent facts: how compound
+	// itself treats the source (this enum) and whether live services
+	// outside compound still reach it (live_consumers). A row can carry
+	// compound_integration=retired AND a non-empty live_consumers list;
+	// that combination is exactly the "false retirement" the os-absorption
+	// meter is supposed to surface (work_b28abf9a8718).
+	osAbsorptionIntegrationRetired  = "retired"
+	osAbsorptionIntegrationAbsorbed = "absorbed"
+	osAbsorptionIntegrationActive   = "active"
+	osAbsorptionIntegrationWrapper  = "wrapper"
+
+	// Integration verdict values surfaced by the doctor on every matrix row.
+	// "complete" means compound considers the source retired or absorbed
+	// AND no live consumer is still reaching it (or every consumer has a
+	// retired_at date). The other values explicitly name the failure
+	// mode — especially integration_retired_with_live_consumers, which is
+	// the os_source_gbrain false-retirement the meter must catch.
+	// Exported so the CLI surface can render summary buckets.
+	OSAbsorptionVerdictComplete                            = "complete"
+	OSAbsorptionVerdictIntegrationRetiredWithLiveConsumers = "integration_retired_with_live_consumers"
+	OSAbsorptionVerdictIntegrationAbsorbedWithLiveConsumers = "integration_absorbed_with_live_consumers"
+	OSAbsorptionVerdictIntegrationActiveOrWrapper          = "integration_active_or_wrapper"
 
 	// osAbsorptionDecisionsLedgerRef is the compound_owner ref used by the
 	// os_source_decisions_repo absorption row. It is proven by the decisions
@@ -119,6 +148,37 @@ type OSAbsorptionMatrixRow struct {
 	RetirementGate string   `json:"retirement_gate"`
 	Status         string   `json:"status"`
 	EvidenceRefs   []string `json:"evidence_refs,omitempty"`
+
+	// CompoundIntegration is compound's own engine-profile/caller status
+	// for this source — independent of whether live services outside
+	// compound still reach it (see LiveConsumers). Introduced in
+	// schema v0.2 (work_b28abf9a8718); on a v0.1 row the normalizer
+	// migrates this from Status (retired/evidence_only=retired|absorbed,
+	// pending=active, wrapper=wrapper) so existing files keep loading
+	// without the meter silently swallowing the false-retirement case.
+	CompoundIntegration string `json:"compound_integration,omitempty"`
+
+	// LiveConsumers enumerates services that still reach the source, each
+	// backed by an evidence date (LastSeenEvidenceDate). A consumer with a
+	// non-empty RetiredAt is considered retired; the meter treats the row
+	// as complete only when every remaining consumer has one. Empty list
+	// means "no live consumers reported" (the default for unmeasured rows
+	// — see os_source_brain_solo_builder_doctrine and os_source_umut_events
+	// in the live matrix).
+	LiveConsumers []OSAbsorptionLiveConsumer `json:"live_consumers,omitempty"`
+}
+
+// OSAbsorptionLiveConsumer is one entry in a v0.2 row's live_consumers
+// array. Surface and the evidence date are the two load-bearing fields the
+// meter uses; RetiredAt turns the entry into "live but retired" once an
+// operator has actually shut the consumer down; Notes carries operator
+// context that does not fit anywhere else.
+type OSAbsorptionLiveConsumer struct {
+	Name                 string `json:"name"`
+	Surface              string   `json:"surface,omitempty"`
+	LastSeenEvidenceDate string   `json:"last_seen_evidence_date,omitempty"`
+	RetiredAt            string   `json:"retired_at,omitempty"`
+	Notes                string   `json:"notes,omitempty"`
 }
 
 type OSAbsorptionImportReport struct {
@@ -178,6 +238,18 @@ type OSAbsorptionDoctorRow struct {
 	ProofRef      string   `json:"proof_ref,omitempty"`
 	ProofDetail   string   `json:"proof_detail,omitempty"`
 	MissingFields []string `json:"missing_fields,omitempty"`
+
+	// v0.2 row metrics: surfaced so a doctor run that hits
+	// integration_retired_with_live_consumers cannot stay hidden inside a
+	// status-string-only report. Both fields mirror the corresponding
+	// matrix row fields after normalize-time migration.
+	CompoundIntegration string                     `json:"compound_integration,omitempty"`
+	LiveConsumers       []OSAbsorptionLiveConsumer `json:"live_consumers,omitempty"`
+	// IntegrationVerdict names the meter's per-row conclusion
+	// (see the osAbsorptionVerdict* constants). "complete" only when
+	// compound_integration is retired/absorbed AND live_consumers is empty
+	// or fully retired.
+	IntegrationVerdict string `json:"integration_verdict,omitempty"`
 }
 
 func ImportOSAbsorptionMatrix(homePath, sourcePath string, now time.Time) (OSAbsorptionImportReport, error) {
@@ -274,11 +346,14 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 	}
 	for _, row := range matrix.Rows {
 		dr := OSAbsorptionDoctorRow{
-			ID:            row.ID,
-			Status:        row.Status,
-			SourceRef:     row.SourceRef,
-			CompoundOwner: row.CompoundOwner,
-			ProofStatus:   "manual",
+			ID:                  row.ID,
+			Status:              row.Status,
+			SourceRef:           row.SourceRef,
+			CompoundOwner:       row.CompoundOwner,
+			ProofStatus:         "manual",
+			CompoundIntegration: row.CompoundIntegration,
+			LiveConsumers:       row.LiveConsumers,
+			IntegrationVerdict:  osAbsorptionRowVerdict(row),
 		}
 		dr.MissingFields = missingOSAbsorptionFields(row)
 		if len(dr.MissingFields) > 0 {
@@ -388,6 +463,13 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 		// pending row is honestly resolved; never raise it to paper over a
 		// regression.
 		doctorCheck("pending_retirement_gates", report.PendingWithGateCount >= 3, fmt.Sprintf("pending_with_gate=%d", report.PendingWithGateCount)),
+		// v0.2 meter check: any row whose compound_integration claims
+		// retired or absorbed while live_consumers still names live services
+		// (or vice-versa: absorbed but live services still reach the source)
+		// fails this check with the row IDs named in detail. This is the
+		// false-retirement gate the meter must catch — see
+		// work_b28abf9a8718.
+		osAbsorptionAbsorptionCompleteCheck(matrix.Rows),
 	)
 	report.Status = "ok"
 	for _, check := range report.Checks {
@@ -411,7 +493,14 @@ func parseOSAbsorptionMatrix(data []byte) (OSAbsorptionSourceMatrix, error) {
 	if strings.TrimSpace(matrix.SchemaVersion) == "" {
 		matrix.SchemaVersion = OSAbsorptionMatrixSchema
 	}
-	if matrix.SchemaVersion != OSAbsorptionMatrixSchema {
+	// Accept the current v0.2 schema and the legacy v0.1 schema. v0.1 rows
+	// without compound_integration / live_consumers are migrated in
+	// normalizeOSAbsorptionRows; any other version is rejected explicitly
+	// so a stale or wrong-shape file fails closed instead of being read
+	// through with a guessed schema.
+	switch matrix.SchemaVersion {
+	case OSAbsorptionMatrixSchema, OSAbsorptionMatrixSchemaV01:
+	default:
 		return matrix, fmt.Errorf("unsupported schema_version %q", matrix.SchemaVersion)
 	}
 	return matrix, nil
@@ -436,8 +525,121 @@ func normalizeOSAbsorptionRows(matrix *OSAbsorptionSourceMatrix) {
 		row.RetirementGate = strings.TrimSpace(row.RetirementGate)
 		row.Status = firstNonEmpty(row.Status, "pending")
 		row.EvidenceRefs = cleanStrings(row.EvidenceRefs)
+
+		// v0.1 → v0.2 row migration. A row that does not declare
+		// compound_integration is migrated from Status; this is the only
+		// place that decides the meter's verdict for legacy files. A
+		// freshly-declared compound_integration is left as-is — that is
+		// the whole point of the split: it overrides a misleading Status.
+		row.CompoundIntegration = strings.TrimSpace(row.CompoundIntegration)
+		if row.CompoundIntegration == "" {
+			row.CompoundIntegration = osAbsorptionIntegrationFromStatus(row.Status)
+		}
+		row.CompoundIntegration = osAbsorptionNormalizeIntegration(row.CompoundIntegration)
+
+		row.LiveConsumers = normalizeOSAbsorptionLiveConsumers(row.LiveConsumers)
+	}
+	// Bump legacy v0.1 files to v0.2 in memory so re-import persists the
+	// migrated shape — without this the matrix round-trips forever as
+	// v0.1 and the meter would never surface in the file header.
+	if matrix.SchemaVersion == OSAbsorptionMatrixSchemaV01 {
+		matrix.SchemaVersion = OSAbsorptionMatrixSchema
 	}
 	sort.SliceStable(matrix.Rows, func(i, j int) bool { return matrix.Rows[i].ID < matrix.Rows[j].ID })
+}
+
+// osAbsorptionIntegrationFromStatus maps the legacy v0.1 Status enum onto
+// the v0.2 compound_integration enum. The mapping is the v0.1
+// status-string meaning as documented for the source matrix before the
+// split: retired stays retired; absorbed / evidence_only both name a source
+// compound has finished absorbing (evidence_only is functionally absorbed
+// from compound's POV — see osAbsorptionCounts); wrapper stays wrapper;
+// pending becomes active (work is in progress, source is still a live
+// candidate). This is a one-way migration; an explicit compound_integration
+// on the row is never overwritten.
+func osAbsorptionIntegrationFromStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case "retired":
+		return osAbsorptionIntegrationRetired
+	case "absorbed", "evidence_only":
+		return osAbsorptionIntegrationAbsorbed
+	case "wrapper":
+		return osAbsorptionIntegrationWrapper
+	case "pending":
+		return osAbsorptionIntegrationActive
+	default:
+		return osAbsorptionIntegrationActive
+	}
+}
+
+// osAbsorptionNormalizeIntegration trims whitespace and rejects unknown
+// integration values so the meter never silently passes on a typo'd enum.
+// Unknown values fall back to the conservative reading: active (i.e. still
+// a live candidate), so the row cannot be mistaken for retired/absorbed.
+func osAbsorptionNormalizeIntegration(value string) string {
+	switch strings.TrimSpace(value) {
+	case osAbsorptionIntegrationRetired, osAbsorptionIntegrationAbsorbed, osAbsorptionIntegrationActive, osAbsorptionIntegrationWrapper:
+		return strings.TrimSpace(value)
+	default:
+		return osAbsorptionIntegrationActive
+	}
+}
+
+// normalizeOSAbsorptionLiveConsumers trims each entry, drops entries with
+// no Name (an unnamed consumer is unverifiable), and preserves order. A
+// non-empty RetiredAt turns the entry into "live-but-retired" for the
+// verdict function; absent RetiredAt the consumer is treated as still
+// live (work_b28abf9a8718).
+func normalizeOSAbsorptionLiveConsumers(consumers []OSAbsorptionLiveConsumer) []OSAbsorptionLiveConsumer {
+	if len(consumers) == 0 {
+		return nil
+	}
+	out := make([]OSAbsorptionLiveConsumer, 0, len(consumers))
+	for _, c := range consumers {
+		c.Name = strings.TrimSpace(c.Name)
+		c.Surface = strings.TrimSpace(c.Surface)
+		c.LastSeenEvidenceDate = strings.TrimSpace(c.LastSeenEvidenceDate)
+		c.RetiredAt = strings.TrimSpace(c.RetiredAt)
+		c.Notes = strings.TrimSpace(c.Notes)
+		if c.Name == "" {
+			continue
+		}
+		out = append(out, c)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// osAbsorptionRowVerdict is the meter's per-row conclusion (see the
+// osAbsorptionVerdict* constants). The packet's hard requirement
+// (work_b28abf9a8718): a row with compound_integration=retired AND a
+// non-empty live_consumers list MUST NOT be reported as complete — it is
+// exactly the false-retirement case the os_source_gbrain row exposed.
+func osAbsorptionRowVerdict(row OSAbsorptionMatrixRow) string {
+	hasLiveUnretired := false
+	for _, c := range row.LiveConsumers {
+		if c.RetiredAt == "" {
+			hasLiveUnretired = true
+			break
+		}
+	}
+	if !hasLiveUnretired {
+		if row.CompoundIntegration == osAbsorptionIntegrationRetired ||
+			row.CompoundIntegration == osAbsorptionIntegrationAbsorbed {
+			return OSAbsorptionVerdictComplete
+		}
+		return OSAbsorptionVerdictIntegrationActiveOrWrapper
+	}
+	switch row.CompoundIntegration {
+	case osAbsorptionIntegrationRetired:
+		return OSAbsorptionVerdictIntegrationRetiredWithLiveConsumers
+	case osAbsorptionIntegrationAbsorbed:
+		return OSAbsorptionVerdictIntegrationAbsorbedWithLiveConsumers
+	default:
+		return OSAbsorptionVerdictIntegrationActiveOrWrapper
+	}
 }
 
 func validateOSAbsorptionMatrix(matrix OSAbsorptionSourceMatrix) error {
@@ -2698,6 +2900,33 @@ func doctorCheck(name string, ok bool, detail string) OSAbsorptionDoctorCheck {
 		status = "fail"
 	}
 	return OSAbsorptionDoctorCheck{Name: name, Status: status, Detail: detail}
+}
+
+// osAbsorptionAbsorptionCompleteCheck is the v0.2 meter's top-level gate.
+// A row that reports compound_integration=retired or absorbed but still
+// has live, un-retired consumers is a false-retirement claim — exactly
+// the case work_b28abf9a8718 was opened for. Active/wrapper rows are
+// intentionally not gated here: those are honest "still working on it"
+// rows and are already covered by the existing pending_retirement_gates
+// and capability_auto_proofs checks.
+func osAbsorptionAbsorptionCompleteCheck(rows []OSAbsorptionMatrixRow) OSAbsorptionDoctorCheck {
+	var bad []string
+	for _, row := range rows {
+		switch osAbsorptionRowVerdict(row) {
+		case OSAbsorptionVerdictIntegrationRetiredWithLiveConsumers,
+			OSAbsorptionVerdictIntegrationAbsorbedWithLiveConsumers:
+			bad = append(bad, row.ID)
+		}
+	}
+	if len(bad) == 0 {
+		return OSAbsorptionDoctorCheck{Name: "absorption_complete", Status: "ok", Detail: "no false-retirement rows"}
+	}
+	sort.Strings(bad)
+	return OSAbsorptionDoctorCheck{
+		Name:   "absorption_complete",
+		Status: "fail",
+		Detail: "false_retirement=" + strings.Join(bad, ","),
+	}
 }
 
 // osAbsorptionNeedsInfraRegistryProof matches the os_source_infra_database
