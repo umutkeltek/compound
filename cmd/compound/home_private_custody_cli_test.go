@@ -127,7 +127,7 @@ func TestHomePrivateCustodyCLIParserErrorsAndHelp(t *testing.T) {
 		{name: "help", env: "repair-help", want: 0, text: "compound home private-custody repair"},
 		{name: "home_help", env: "home-help", want: 0, text: "compact|private-custody"},
 		{name: "top_help", env: "top-help", want: 0, text: "private-custody repair is explicit permission repair"},
-		{name: "old_grammar", env: "old-grammar", want: 2, text: "compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody>"},
+		{name: "old_grammar", env: "old-grammar", want: 2, text: "compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody|route-swap-repair>"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
