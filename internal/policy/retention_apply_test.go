@@ -343,15 +343,19 @@ func TestFalsifier4ReceiptHasCorrectBytesAndPerStepEntries(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 
-	// Read the receipt file directly to assert JSONL line count = step count.
+	// Read the receipt journal directly. Every applied step is bracketed:
+	// one durable intent line BEFORE the rename and one committed line after
+	// it, so the raw file holds 2×AppliedCount lines and the reader surfaces
+	// exactly AppliedCount committed rows.
 	raw, err := os.ReadFile(filepath.Join(home, ReceiptDirRel, "apply.jsonl"))
 	if err != nil {
 		t.Fatalf("read receipt log: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-	if len(lines) != plan.AppliedCount {
-		t.Fatalf("receipt line count = %d, want %d", len(lines), plan.AppliedCount)
+	if len(lines) != 2*plan.AppliedCount {
+		t.Fatalf("journal line count = %d, want %d (intent+committed per step)", len(lines), 2*plan.AppliedCount)
 	}
+	committed := 0
 	for i, line := range lines {
 		var rec applyReceipt
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
@@ -366,6 +370,27 @@ func TestFalsifier4ReceiptHasCorrectBytesAndPerStepEntries(t *testing.T) {
 		if rec.Bytes <= 0 {
 			t.Fatalf("line %d bytes = %d", i+1, rec.Bytes)
 		}
+		switch rec.Phase {
+		case applyPhaseIntent:
+			if i%2 != 0 {
+				t.Fatalf("line %d is an intent line but appears after a same-step phase", i+1)
+			}
+		case applyPhaseCommitted:
+			committed++
+		default:
+			t.Fatalf("line %d phase = %q, want intent or committed", i+1, rec.Phase)
+		}
+	}
+	if committed != plan.AppliedCount {
+		t.Fatalf("committed rows = %d, want %d", committed, plan.AppliedCount)
+	}
+	// The reader must surface committed rows only.
+	read, err := ReadApplyReceipts(home)
+	if err != nil {
+		t.Fatalf("read receipts: %v", err)
+	}
+	if len(read) != plan.AppliedCount {
+		t.Fatalf("reader returned %d rows, want %d committed", len(read), plan.AppliedCount)
 	}
 }
 
@@ -581,4 +606,137 @@ func snapshotHas(t *testing.T, home, rel string) ([]byte, bool) {
 // errorsAs wraps errors.As so tests read more cleanly.
 func errorsAs(err error, target interface{}) bool {
 	return errors.As(err, target)
+}
+
+// TestPathInsideRootRejectsPrefixSiblings: raw strings.HasPrefix accepted
+// <home>/trash-malicious as "inside" <home>/trash because the sibling merely
+// shares a name prefix. Containment for irreversible mutation must be a real
+// sub-path relation.
+func TestPathInsideRootRejectsPrefixSiblings(t *testing.T) {
+	home := t.TempDir()
+	trashRoot := filepath.Join(home, TrashRootRel)
+	if err := os.MkdirAll(trashRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The lived escape shape: sibling whose name starts with the root name.
+	sibling := filepath.Join(home, "trash-malicious")
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{filepath.Join(trashRoot, "2026-08-01"), true},
+		{trashRoot, false},                // the root itself is not a child
+		{sibling, false},                  // prefix sibling
+		{home, false},                     // ancestor
+		{trashRoot + "/../ledger", false}, // .. escape
+	}
+	for _, tc := range cases {
+		if got := pathInsideRoot(tc.path, trashRoot); got != tc.want {
+			t.Fatalf("pathInsideRoot(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestEmptyTrashRefusesPathsOutsideTrashRoot: even a step list widened by a
+// future bug must not reach RemoveAll for anything that is not strictly
+// inside trash/.
+func TestEmptyTrashRefusesPathsOutsideTrashRoot(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ReceiptDirRel), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sibling := filepath.Join(home, "trash-malicious")
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(sibling, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("operator data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report := EmptyTrashReport{
+		Home:      home,
+		OlderThan: "30d",
+		Steps: []EmptyTrashStep{{
+			ClassID:   "tool-output",
+			TrashPath: sibling,
+			Bytes:     16,
+			Date:      "2026-08-01",
+		}},
+	}
+	_, err := ExecuteEmptyTrash(report, fixedNow)
+	if err == nil {
+		t.Fatal("empty-trash must refuse a path outside the trash root")
+	}
+	if !strings.Contains(err.Error(), "refusing to unlink outside") {
+		t.Fatalf("error should name the refusal: %v", err)
+	}
+	if _, statErr := os.Stat(sentinel); statErr != nil {
+		t.Fatalf("refusal must leave the sibling untouched: %v", statErr)
+	}
+}
+
+// TestApplyJournalsIntentBeforeMutation: a mid-run mutation failure must
+// leave the journal showing a durable intent line and a failed line for the
+// failing step, and durable intent+committed for the steps before it. The
+// pre-journal behavior wrote receipts only after successful renames, so a
+// crash deleted the evidence of what was in flight.
+func TestApplyJournalsIntentBeforeMutation(t *testing.T) {
+	home, _ := seedApplyHome(t)
+	req := ApplyRequest{
+		Home:      home,
+		ClassIDs:  []string{"tool-output", "delegate-workspaces"},
+		OlderThan: 14 * 24 * time.Hour,
+		DryRun:    false,
+		Now:       fixedNow,
+	}
+	plan, err := BuildApplyPlan(req)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(plan.Steps) < 2 {
+		t.Fatalf("fixture must seed at least two steps, got %d", len(plan.Steps))
+	}
+	// Sabotage the SECOND step: remove its source between plan and execute.
+	if err := os.Remove(plan.Steps[1].SourcePath); err != nil {
+		t.Fatalf("sabotage step 2 source: %v", err)
+	}
+	executed, execErr := ExecuteApplyPlan(plan, fixedNow)
+	if execErr == nil {
+		t.Fatal("execute must fail when a rename fails")
+	}
+	if executed.AppliedCount != 1 {
+		t.Fatalf("applied count = %d, want 1 (only the step before the failure)", executed.AppliedCount)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ReceiptDirRel, "apply.jsonl"))
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	var phases []string
+	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+		var rec applyReceipt
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("bad journal line: %v", err)
+		}
+		phases = append(phases, rec.Phase)
+	}
+	want := []string{applyPhaseIntent, applyPhaseCommitted, applyPhaseIntent, applyPhaseFailed}
+	if len(phases) != len(want) {
+		t.Fatalf("journal phases = %v, want %v", phases, want)
+	}
+	for i := range want {
+		if phases[i] != want[i] {
+			t.Fatalf("journal phases = %v, want %v", phases, want)
+		}
+	}
+	// The reader surfaces only committed rows — the failed step is not applied.
+	read, err := ReadApplyReceipts(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 1 || read[0].Phase != applyPhaseCommitted {
+		t.Fatalf("reader returned %+v, want exactly one committed row", read)
+	}
 }

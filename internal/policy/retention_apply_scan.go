@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -134,6 +135,62 @@ func pathIntersects(child, parent string) bool {
 		return false
 	}
 	return child == parent || strings.HasPrefix(child, parent+"/")
+}
+
+// pathInsideRoot is the strict containment used before irreversible
+// mutations: child must be a real sub-path of root. It rejects the root
+// itself, sibling directories whose names merely begin with the root's name
+// (the raw strings.HasPrefix bug: <home>/trash-malicious passed a check
+// intended for <home>/trash), and any .. escape resolved or not.
+func pathInsideRoot(child, root string) bool {
+	child = filepath.ToSlash(filepath.Clean(strings.TrimSpace(child)))
+	root = filepath.ToSlash(filepath.Clean(strings.TrimSpace(root)))
+	if child == "" || root == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, child)
+	if err != nil {
+		return false
+	}
+	rel = path.Clean(rel)
+	if rel == "." || rel == "" || rel == ".." || strings.HasPrefix(rel, "../") {
+		return false
+	}
+	return filepath.IsAbs(rel) == false && !strings.HasPrefix(rel, "/")
+}
+
+// receiptJournal is the write-ahead receipt stream shared by apply and
+// empty-trash. Every mutating step is bracketed: an intent line is made
+// durable BEFORE the mutation, and a committed (or failed) line follows it.
+// A mutation with no receipt was the old failure mode — under the disk
+// pressure this subsystem exists to manage, the receipt write failing AFTER
+// an irreversible delete destroyed the evidence of what was deleted.
+type receiptJournal struct {
+	f *os.File
+}
+
+func openReceiptJournal(path string) (*receiptJournal, error) {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	return &receiptJournal{f: f}, nil
+}
+
+// writeLine makes one JSONL line durable before returning. A line sitting in
+// the OS buffer is not a receipt; it is a hope.
+func (j *receiptJournal) writeLine(line []byte) error {
+	if _, err := j.f.Write(append(line, '\n')); err != nil {
+		return err
+	}
+	return j.f.Sync()
+}
+
+func (j *receiptJournal) Close() error {
+	if j.f == nil {
+		return nil
+	}
+	return j.f.Close()
 }
 
 // BuildApplyPlan walks the home for files matching each requested class and
@@ -289,7 +346,8 @@ func scanClass(home string, class ApplyClass, ageFloor time.Duration, now time.T
 }
 
 // ExecuteApplyPlan performs the rename for every step in plan.Steps and
-// appends one JSONL receipt line per step on success.
+// journals one bracketed receipt pair per step: a durable intent line BEFORE
+// the rename and a committed line after it.
 //
 // Returns the same plan with AppliedCount/AppliedBytes/ReceiptPath populated.
 // Errors mid-execute stop the run and return what was applied so far plus
@@ -307,16 +365,13 @@ func ExecuteApplyPlan(plan ApplyPlan, now time.Time) (ApplyPlan, error) {
 	if err := os.MkdirAll(filepath.Dir(receiptPath), 0o755); err != nil {
 		return plan, fmt.Errorf("mkdir %s: %w", filepath.Dir(receiptPath), err)
 	}
-	receiptFile, err := os.OpenFile(receiptPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	journal, err := openReceiptJournal(receiptPath)
 	if err != nil {
 		return plan, fmt.Errorf("open receipt %s: %w", receiptPath, err)
 	}
-	defer receiptFile.Close()
+	defer journal.Close()
 
 	for _, step := range plan.Steps {
-		if err := moveToTrash(step.SourcePath, step.TrashPath); err != nil {
-			return plan, fmt.Errorf("apply step %s: %w", step.SourcePath, err)
-		}
 		rec := applyReceipt{
 			TS:         now.UTC().Format(time.RFC3339Nano),
 			Authority:  ApplyAuthorityRef,
@@ -324,13 +379,34 @@ func ExecuteApplyPlan(plan ApplyPlan, now time.Time) (ApplyPlan, error) {
 			SourcePath: step.SourcePath,
 			TrashPath:  step.TrashPath,
 			Bytes:      step.Bytes,
+			Phase:      applyPhaseIntent,
 		}
-		line, mErr := json.Marshal(rec)
+		intentLine, mErr := json.Marshal(rec)
 		if mErr != nil {
 			return plan, fmt.Errorf("marshal receipt: %w", mErr)
 		}
-		if _, wErr := receiptFile.Write(append(line, '\n')); wErr != nil {
-			return plan, fmt.Errorf("append receipt: %w", wErr)
+		if wErr := journal.writeLine(intentLine); wErr != nil {
+			return plan, fmt.Errorf("apply step %s: durable intent receipt: %w", step.SourcePath, wErr)
+		}
+		if err := moveToTrash(step.SourcePath, step.TrashPath); err != nil {
+			rec.Phase = applyPhaseFailed
+			if failedLine, mErr := json.Marshal(rec); mErr == nil {
+				_ = journal.writeLine(failedLine)
+			}
+			return plan, fmt.Errorf("apply step %s: %w", step.SourcePath, err)
+		}
+		rec.Phase = applyPhaseCommitted
+		committedLine, mErr := json.Marshal(rec)
+		if mErr != nil {
+			return plan, fmt.Errorf("marshal receipt: %w", mErr)
+		}
+		if wErr := journal.writeLine(committedLine); wErr != nil {
+			// The rename already happened; leave a machine-readable marker
+			// beside the trashed file so a receiptless mutation is
+			// discoverable without diffing the tree by hand.
+			markerErr := os.WriteFile(step.TrashPath+".pending-receipt", committedLine, 0o644)
+			return plan, fmt.Errorf("apply step %s: renamed but committed receipt write failed: %w (pending-receipt marker: %v)",
+				step.SourcePath, wErr, markerErr)
 		}
 		plan.AppliedCount++
 		plan.AppliedBytes += step.Bytes
@@ -495,7 +571,10 @@ func BuildEmptyTrashReport(req EmptyTrashRequest) (EmptyTrashReport, error) {
 	return report, nil
 }
 
-// ExecuteEmptyTrash unlinks every step and appends one receipt per step.
+// ExecuteEmptyTrash unlinks every step, bracketed by durable intent and
+// committed receipt lines. Deletion is irreversible, so the intent line is
+// the only record that survives a crash between the two: it names exactly
+// what was being destroyed.
 func ExecuteEmptyTrash(report EmptyTrashReport, now time.Time) (EmptyTrashReport, error) {
 	if report.DryRun {
 		return report, nil
@@ -504,22 +583,22 @@ func ExecuteEmptyTrash(report EmptyTrashReport, now time.Time) (EmptyTrashReport
 	if err := os.MkdirAll(filepath.Dir(receiptPath), 0o755); err != nil {
 		return report, fmt.Errorf("mkdir %s: %w", filepath.Dir(receiptPath), err)
 	}
-	receiptFile, err := os.OpenFile(receiptPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	journal, err := openReceiptJournal(receiptPath)
 	if err != nil {
 		return report, fmt.Errorf("open receipt %s: %w", receiptPath, err)
 	}
-	defer receiptFile.Close()
+	defer journal.Close()
 
+	trashRoot := filepath.Join(report.Home, TrashRootRel)
 	for _, step := range report.Steps {
 		// Refuse to unlink anything outside the trash root, even though the
 		// build path only emits paths under trash/. The guard exists because
 		// a future change to BuildEmptyTrashReport that accidentally widens
 		// step.TrashPath must NOT silently translate into unlink.
-		if !strings.HasPrefix(filepath.Clean(step.TrashPath), filepath.Clean(filepath.Join(report.Home, TrashRootRel))) {
-			return report, fmt.Errorf("refusing to unlink outside %s: %s", filepath.Join(report.Home, TrashRootRel), step.TrashPath)
-		}
-		if err := os.RemoveAll(step.TrashPath); err != nil {
-			return report, fmt.Errorf("unlink %s: %w", step.TrashPath, err)
+		// Strict containment (filepath.Rel, rejecting the root itself and
+		// same-prefix siblings): a raw HasPrefix accepted <home>/trash-malicious.
+		if !pathInsideRoot(step.TrashPath, trashRoot) {
+			return report, fmt.Errorf("refusing to unlink outside %s: %s", trashRoot, step.TrashPath)
 		}
 		rec := emptyTrashReceipt{
 			TS:        now.UTC().Format(time.RFC3339Nano),
@@ -528,13 +607,29 @@ func ExecuteEmptyTrash(report EmptyTrashReport, now time.Time) (EmptyTrashReport
 			TrashPath: step.TrashPath,
 			Bytes:     step.Bytes,
 			Date:      step.Date,
+			Phase:     applyPhaseIntent,
 		}
-		line, mErr := json.Marshal(rec)
+		intentLine, mErr := json.Marshal(rec)
 		if mErr != nil {
 			return report, fmt.Errorf("marshal receipt: %w", mErr)
 		}
-		if _, wErr := receiptFile.Write(append(line, '\n')); wErr != nil {
-			return report, fmt.Errorf("append receipt: %w", wErr)
+		if wErr := journal.writeLine(intentLine); wErr != nil {
+			return report, fmt.Errorf("unlink %s: durable intent receipt: %w", step.TrashPath, wErr)
+		}
+		if err := os.RemoveAll(step.TrashPath); err != nil {
+			rec.Phase = applyPhaseFailed
+			if failedLine, mErr := json.Marshal(rec); mErr == nil {
+				_ = journal.writeLine(failedLine)
+			}
+			return report, fmt.Errorf("unlink %s: %w", step.TrashPath, err)
+		}
+		rec.Phase = applyPhaseCommitted
+		committedLine, mErr := json.Marshal(rec)
+		if mErr != nil {
+			return report, fmt.Errorf("marshal receipt: %w", mErr)
+		}
+		if wErr := journal.writeLine(committedLine); wErr != nil {
+			return report, fmt.Errorf("unlink %s: deleted but committed receipt write failed: %w (intent line is durable above)", step.TrashPath, wErr)
 		}
 		report.AppliedCount++
 		report.AppliedBytes += step.Bytes
@@ -601,6 +696,13 @@ func readApplyReceipts(path string) ([]applyReceipt, error) {
 			}
 			return out, err
 		}
+		// The journal holds intent/failed/committed rows for every mutation;
+		// historical logs (pre-journal) have no phase, and a missing phase on
+		// a legacy line means it was written after a successful mutation, so
+		// it is committed. Only explicit non-committed phases are skipped.
+		if rec.Phase != "" && rec.Phase != applyPhaseCommitted {
+			continue
+		}
 		out = append(out, rec)
 	}
 	return out, nil
@@ -625,10 +727,23 @@ func readEmptyTrashReceipts(path string) ([]emptyTrashReceipt, error) {
 			}
 			return out, err
 		}
+		if rec.Phase != "" && rec.Phase != applyPhaseCommitted {
+			continue
+		}
 		out = append(out, rec)
 	}
 	return out, nil
 }
+
+// Receipt journal phases: every mutation is bracketed by a durable intent
+// line followed by a committed (or failed) line. Readers surface committed
+// rows; intent-without-committed rows are crash evidence, surfaced by count
+// where it matters, never silently dropped.
+const (
+	applyPhaseIntent    = "intent"
+	applyPhaseCommitted = "committed"
+	applyPhaseFailed    = "failed"
+)
 
 type applyReceipt struct {
 	TS         string `json:"ts"`
@@ -637,6 +752,7 @@ type applyReceipt struct {
 	SourcePath string `json:"source_path"`
 	TrashPath  string `json:"trash_path"`
 	Bytes      int64  `json:"bytes"`
+	Phase      string `json:"phase,omitempty"`
 }
 
 type emptyTrashReceipt struct {
@@ -646,6 +762,7 @@ type emptyTrashReceipt struct {
 	TrashPath string `json:"trash_path"`
 	Bytes     int64  `json:"bytes"`
 	Date      string `json:"date"`
+	Phase     string `json:"phase,omitempty"`
 }
 
 // humanDuration renders a duration for plan output.
