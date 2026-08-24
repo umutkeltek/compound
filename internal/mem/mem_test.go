@@ -2042,3 +2042,56 @@ func TestAdjudicatePendingLimitCapsAdjudicatedNotSkipped(t *testing.T) {
 		t.Fatalf("final pass adjudicated=%d skipped=%d, want 0/5", r3.Adjudicated, r3.Skipped)
 	}
 }
+
+// TestAdjudicatePendingReportAccountingInvariants pins the report-truth
+// contract the 2026-08-24 external audit demanded, after a live run changed
+// 636 candidate states while reporting adjudicated=0:
+//
+//	adjudicated == sum(verdict_counts)
+//	scanned     == adjudicated + skipped + len(errors)
+//	re-run is idempotent (no additional mutation)
+func TestAdjudicatePendingReportAccountingInvariants(t *testing.T) {
+	s := newStore(t)
+	for i := 0; i < 4; i++ {
+		pc := cand("e", "p", fmt.Sprintf("parked-%d", i), "")
+		pc.Qualifiers = map[string]string{"source": "knowledge_import"}
+		if _, err := s.Capture([]Candidate{pc}, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := s.Capture([]Candidate{cand("e", "p", fmt.Sprintf("bare-%d", i), "")}, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := s.AdjudicatePending(AdjudicatePendingOptions{Verdict: "park"}, t0.Add(time.Minute))
+	sum := 0
+	for _, c := range r.VerdictCounts {
+		sum += c
+	}
+	if r.Adjudicated != sum {
+		t.Fatalf("adjudicated=%d != sum(verdict_counts)=%d — the report must never disagree with its own counts", r.Adjudicated, sum)
+	}
+	if r.Scanned != r.Adjudicated+r.Skipped+len(r.Errors) {
+		t.Fatalf("scanned=%d != adjudicated(%d)+skipped(%d)+errors(%d) — every scanned candidate must land in exactly one bucket", r.Scanned, r.Adjudicated, r.Skipped, len(r.Errors))
+	}
+	if r.Adjudicated != 3 || r.Skipped != 4 {
+		t.Fatalf("adjudicated=%d skipped=%d, want 3/4", r.Adjudicated, r.Skipped)
+	}
+	// Idempotency: the second pass closes nothing new.
+	r2 := s.AdjudicatePending(AdjudicatePendingOptions{Verdict: "park"}, t0.Add(2*time.Minute))
+	if r2.Adjudicated != 0 || r2.Skipped != 7 {
+		t.Fatalf("re-run adjudicated=%d skipped=%d, want 0/7 (idempotent)", r2.Adjudicated, r2.Skipped)
+	}
+	if r2.Adjudicated != sumCounts(r2.VerdictCounts) {
+		t.Fatalf("re-run report disagrees with its own counts")
+	}
+}
+
+func sumCounts(m map[string]int) int {
+	n := 0
+	for _, v := range m {
+		n += v
+	}
+	return n
+}
