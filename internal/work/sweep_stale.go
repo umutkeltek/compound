@@ -137,6 +137,13 @@ type DefaultSweepStaleProbe struct {
 	Home   string
 	Runner SessionRunner
 	Now    func() time.Time
+	// AttemptLivenessThreshold is the run-attempt liveness window for
+	// LiveRunAttempt. Zero falls back to runattempt.DefaultSweepThreshold.
+	// The envelope sweep threads its own --threshold here so one coherent
+	// staleness definition governs the whole pass: an operator asking for
+	// `--threshold 72h` must not have a 30m-hot attempt counted live
+	// against a 72h sweep, and vice versa.
+	AttemptLivenessThreshold time.Duration
 }
 
 // NewDefaultSweepStaleProbe returns the production probe rooted at home, with
@@ -173,13 +180,15 @@ func (p *DefaultSweepStaleProbe) LiveRunAttempt(workID string) (bool, error) {
 		if ra.LastHeartbeatAt != nil {
 			lastActivity = *ra.LastHeartbeatAt
 		}
-		// The probe is "any live activity within threshold" — match the
-		// sweep-stale threshold default but it is the caller's
-		// responsibility to pass a coherent threshold via the probe
-		// context (today the envelope sweep does not thread it through;
-		// the probe falls back to DefaultSweepThreshold because a live
-		// attempt must be live by the run-attempt measure of live).
-		if now.Sub(lastActivity) < runattempt.DefaultSweepThreshold {
+		// The liveness window comes from the sweep's own threshold when the
+		// caller threaded it (the CLI does), falling back to the run-attempt
+		// default so the probe stays usable standalone. One pass, one
+		// definition of stale.
+		threshold := p.AttemptLivenessThreshold
+		if threshold <= 0 {
+			threshold = runattempt.DefaultSweepThreshold
+		}
+		if now.Sub(lastActivity) < threshold {
 			return true, nil
 		}
 	}
@@ -235,14 +244,14 @@ func (p *DefaultSweepStaleProbe) LeaseHeld(workID string) (bool, error) {
 // facing report WITHOUT mutating anything. Use this as the read-only
 // preview; --dry-run calls it.
 func (s *Store) SweepStalePlan(threshold time.Duration, probe SweepStaleProbe) (SweepStaleReport, error) {
-	return sweepStaleEvaluate(s, threshold, probe, false)
+	return sweepStaleEvaluate(s, threshold, probe, false, time.Time{})
 }
 
 // SweepStaleApply diagnoses every reclaim candidate and APPLIES the reclaim
 // for those that fail the liveness probes. --yes calls this. Probe faults
 // are surfaced (not retried inside the sweep); the next pass retries.
 func (s *Store) SweepStaleApply(threshold time.Duration, probe SweepStaleProbe, now time.Time) (SweepStaleReport, error) {
-	return sweepStaleEvaluate(s, threshold, probe, true)
+	return sweepStaleEvaluate(s, threshold, probe, true, now)
 }
 
 // sweepStaleEvaluate is the shared read/apply spine. apply=false returns the
@@ -251,12 +260,19 @@ func (s *Store) SweepStaleApply(threshold time.Duration, probe SweepStaleProbe, 
 // failure on one envelope leaves the others reclaimable, and the failed
 // envelope is surfaced via SweepStaleCandidate.ReclaimError so the operator
 // can reconcile.
-func sweepStaleEvaluate(s *Store, threshold time.Duration, probe SweepStaleProbe, apply bool) (SweepStaleReport, error) {
+func sweepStaleEvaluate(s *Store, threshold time.Duration, probe SweepStaleProbe, apply bool, now time.Time) (SweepStaleReport, error) {
 	if threshold <= 0 {
 		threshold = DefaultSweepStaleThreshold
 	}
 	if probe == nil {
 		return SweepStaleReport{}, errors.New("sweep-stale: probe is required")
+	}
+	// The caller's clock is the sweep's clock: tests pin determinism through
+	// it, and a sweep that silently re-derived time.Now() could disagree with
+	// the CLI's --threshold parse and the probe's liveness window within one
+	// pass. Zero means the caller wants the real clock (CLI default).
+	if now.IsZero() {
+		now = time.Now().UTC()
 	}
 	rep := SweepStaleReport{Threshold: threshold}
 
@@ -271,8 +287,6 @@ func sweepStaleEvaluate(s *Store, threshold time.Duration, probe SweepStaleProbe
 	// Canonical ordering: by work_id so dry-run output is stable across
 	// runs (the underlying directory enumeration is not).
 	sort.Slice(envelopes, func(i, j int) bool { return envelopes[i].ID < envelopes[j].ID })
-
-	now := time.Now().UTC()
 
 	for _, w := range envelopes {
 		if !sweepStaleEnvelopeStates[w.State] {
@@ -459,12 +473,24 @@ func reclaimEnvelope(s *Store, w envelope.WorkEnvelope, candidate SweepStaleCand
 	}
 	target := sweepStaleTargetState(w.State)
 
-	// The lease is a per-work artifact, not an event. Release it as a
-	// separate atomic step: the close ceremony always does this in
-	// releaseLease; we mirror that exactly so doctor counts and
-	// `home archive-history --kind lease` see the same residue rules.
-	if w.State == "claimed" {
-		s.releaseLease(w.ID)
+	// The lease is a per-work artifact, not an event. Release it only AFTER
+	// the envelope is durably terminalized and its lifecycle event appended:
+	// releasing first meant a failed envelope write left the work claimed
+	// with no lease — unprotectable by the next sweep's lease check while
+	// still looking claimed to every operator surface.
+	leaseHeld := w.State == "claimed"
+
+	// CAS-style precondition: the candidate was diagnosed against a
+	// snapshot taken at pass start, and a live agent can advance the work
+	// between the probes and this write. Re-read the envelope and refuse
+	// when its state moved — reclaiming a work that is no longer in the
+	// diagnosed state is a mutation without a diagnosis.
+	var current envelope.WorkEnvelope
+	if err := s.readJSON(s.workPath(w.ID), &current); err != nil {
+		return fmt.Errorf("recheck envelope %s before reclaim: %w", w.ID, err)
+	}
+	if current.State != w.State {
+		return fmt.Errorf("work %s state changed from %q to %q between sweep diagnosis and reclaim; refusing (next pass re-diagnoses)", w.ID, w.State, current.State)
 	}
 
 	// Mutate the on-disk envelope state. Reuse writeJSON's atomic
@@ -477,7 +503,8 @@ func reclaimEnvelope(s *Store, w envelope.WorkEnvelope, candidate SweepStaleCand
 
 	// Append the lifecycle event carrying sweep_reason. The From/To
 	// pair is the authoritative state transition; Note carries the
-	// evidence. Append is the same path Close and Advance use.
+	// evidence. Append is the same path Close and Advance use
+	// (envelope write first, event second; reconciliation reads both).
 	event := Event{
 		TS:     ts(now),
 		WorkID: w.ID,
@@ -488,6 +515,10 @@ func reclaimEnvelope(s *Store, w envelope.WorkEnvelope, candidate SweepStaleCand
 	}
 	if err := s.appendEvent(event); err != nil {
 		return fmt.Errorf("append reclaim event for %s: %w", w.ID, err)
+	}
+
+	if leaseHeld {
+		s.releaseLease(w.ID)
 	}
 
 	return nil

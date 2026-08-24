@@ -570,3 +570,44 @@ func TestSweepStaleIgnoresTerminalEnvelopes(t *testing.T) {
 		t.Fatalf("candidates=%d, want 0 (terminal envelope must not surface)", len(rep.Candidates))
 	}
 }
+
+// Falsifier: the candidate was diagnosed against a snapshot, and a live
+// agent can advance the work between the liveness probes and the reclaim
+// write. reclaimEnvelope must re-read the envelope and refuse when its state
+// moved — reclaiming a work that is no longer in the diagnosed state is a
+// mutation without a diagnosis (the CAS-shaped guard the apply path owes).
+func TestReclaimEnvelopeRefusesWhenStateChangedUnderneath(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "sweep-cas", SuccessPredicate: "reclaim refuses moved state"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	// Stale snapshot: the envelope as the sweep saw it at diagnosis time.
+	stale, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A live agent advances the work to running AFTER the sweep snapshotted it.
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex"}, fixedNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	candidate := SweepStaleCandidate{WorkID: w.ID, State: stale.State, TargetState: sweepStaleTargetState(stale.State), SweepReason: "falsifier"}
+	reclaimErr := reclaimEnvelope(s, stale, candidate, fixedNow.Add(2*time.Minute))
+	if reclaimErr == nil {
+		t.Fatal("reclaim must refuse when the live state moved underneath the diagnosis")
+	}
+	if !strings.Contains(reclaimErr.Error(), "state changed") {
+		t.Fatalf("error should name the moved state, got: %v", reclaimErr)
+	}
+	// The envelope must still be running — untouched by the refused reclaim.
+	live, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.State != "running" {
+		t.Fatalf("live state = %q, want running (refused reclaim must not mutate)", live.State)
+	}
+}

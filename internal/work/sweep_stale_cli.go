@@ -88,6 +88,11 @@ func RunWorkSweepStaleCLI(args []string, store *Store, homePath string, now time
 	}
 
 	probe := NewDefaultSweepStaleProbe(homePath)
+	// One coherent staleness definition per pass: the run-attempt liveness
+	// probe uses the same window as the envelope threshold instead of the
+	// fixed 30m default (a 72h sweep must not count a 31m-old heartbeat as
+	// live protection).
+	probe.AttemptLivenessThreshold = threshold
 	var (
 		rep SweepStaleReport
 		err error
