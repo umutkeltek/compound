@@ -320,4 +320,9 @@ else
 fi
 
 "$BUN_BIN" "$TRANSFER_TOOL"
-log "Switchback sealed-capture maintenance complete (mode=$MODE)"
+EFFECTIVE_MODE="$MODE"
+if [ "$MODE" = "status" ]; then
+  # Bare invocation (the scheduled lane's form) is a backup, not a status.
+  EFFECTIVE_MODE="backup"
+fi
+log "Switchback sealed-capture maintenance complete (mode=$EFFECTIVE_MODE)"
