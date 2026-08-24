@@ -221,6 +221,7 @@ type OSAbsorptionDoctorReport struct {
 	Checks                 []OSAbsorptionDoctorCheck        `json:"checks"`
 	Rows                   []OSAbsorptionDoctorRow          `json:"rows,omitempty"`
 	SourceAuthorityRecords []capgraph.SourceAuthorityRecord `json:"-"`
+	RootDependencies       OSRootDependencyReport           `json:"root_dependencies"`
 }
 
 type OSAbsorptionDoctorCheck struct {
@@ -344,6 +345,11 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 	if err != nil {
 		return report, err
 	}
+	rootDependencies, err := inspectOSRootDependencies(homePath)
+	if err != nil {
+		return report, err
+	}
+	report.RootDependencies = rootDependencies
 	for _, row := range matrix.Rows {
 		dr := OSAbsorptionDoctorRow{
 			ID:                  row.ID,
@@ -451,18 +457,22 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 		doctorCheck("required_fields", report.MissingRequiredCount == 0, fmt.Sprintf("missing=%d", report.MissingRequiredCount)),
 		servedSourceRowsCheck,
 		doctorCheck("capability_auto_proofs", report.AutoProofCount >= 3 && report.FailedAutoProofCount == 0, fmt.Sprintf("auto=%d failed=%d", report.AutoProofCount, report.FailedAutoProofCount)),
-		// This floor is a liveness/honesty sanity check ("the matrix still
-		// names real, gated pending work — it hasn't been gamed into
-		// 100% absorbed"), not a target to hit. It tracks the real,
-		// currently-known pending backlog and is expected to step DOWN as
-		// rows are honestly resolved (most recently: os_source_os_skills_cli
-		// and os_source_os_status_cli moved from pending to proven wrapper
-		// rows here, dropping the live count from 5 to 3 — see
-		// os_source_brain_solo_builder_doctrine, os_source_gbrain,
-		// os_source_example_events). Re-tune it down again the next time a
-		// pending row is honestly resolved; never raise it to paper over a
-		// regression.
-		doctorCheck("pending_retirement_gates", report.PendingWithGateCount >= 3, fmt.Sprintf("pending_with_gate=%d", report.PendingWithGateCount)),
+		doctorCheck(
+			"pending_retirement_gates",
+			report.PendingWithGateCount == 0,
+			fmt.Sprintf("pending_with_gate=%d", report.PendingWithGateCount),
+		),
+		doctorCheck(
+			"active_root_dependencies",
+			rootDependencies.Status == "ok" || rootDependencies.Status == "not_configured",
+			fmt.Sprintf(
+				"status=%s; %s; decisions: %s; custody: %s",
+				rootDependencies.Status,
+				rootDependencyDetail(rootDependencies),
+				decisionCoverageDetail(rootDependencies.DecisionCoverage),
+				custodyDetail(rootDependencies.Custody),
+			),
+		),
 		// v0.2 meter check: any row whose compound_integration claims
 		// retired or absorbed while live_consumers still names live services
 		// (or vice-versa: absorbed but live services still reach the source)

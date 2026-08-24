@@ -63,11 +63,14 @@ func TestOSAbsorptionMatrixImportAndDoctor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
-	if doctor.Status != "ok" {
-		t.Fatalf("doctor should pass: %+v", doctor)
+	if doctor.Status != "fail" {
+		t.Fatalf("pending retirement rows must keep the doctor red: %+v", doctor)
 	}
 	if doctor.AutoProofCount != 3 || doctor.PendingWithGateCount != 4 {
 		t.Fatalf("doctor proof counts wrong: %+v", doctor)
+	}
+	if check, ok := findOSAbsorptionDoctorCheck(doctor.Checks, "pending_retirement_gates"); !ok || check.Status != "fail" {
+		t.Fatalf("pending retirement gate must fail until count reaches zero: %+v", doctor.Checks)
 	}
 }
 

@@ -43,10 +43,10 @@ func TestAuthorityOSAbsorptionCLICommands(t *testing.T) {
 			osAbsorptionCLIRow("skill_manifest", capSources[0], "sha256:"+testDigest(capSources[0]), "absorbed", capgraph.CapabilityGraphAuthorityRef, "compound capability authority", "capability_source_authority"),
 			osAbsorptionCLIRow("tool_topology", capSources[1], "sha256:"+testDigest(capSources[1]), "absorbed", capgraph.CapabilityGraphAuthorityRef, "compound capability authority", "capability_source_authority"),
 			osAbsorptionCLIRow("skills_selection_board", capSources[2], "sha256:"+testDigest(capSources[2]), "absorbed", capgraph.CapabilityGraphAuthorityRef, "compound capability authority", "capability_source_authority"),
-			osAbsorptionCLIRow("brain", "/synthetic/brain/projects/compound.md", "", "pending", "compound://ledger/memory", "compound memory recall", "manual"),
-			osAbsorptionCLIRow("gbrain", "gbrain://synthetic-store", "", "pending", "compound://adapters/memory-engine/gbrain", "compound memory recall", "manual"),
-			osAbsorptionCLIRow("infra_os", "/synthetic/infra-os/project-registry.yaml", "", "pending", "compound://registries/projects", "compound system map", "manual"),
-			osAbsorptionCLIRow("packets", "/synthetic/example-os/packets", "", "pending", "compound://work/packets", "compound workbench", "manual"),
+			osAbsorptionCLIRow("brain", "/synthetic/brain/projects/compound.md", "", "absorbed", "compound://ledger/memory", "compound memory recall", "manual"),
+			osAbsorptionCLIRow("gbrain", "gbrain://synthetic-store", "", "absorbed", "compound://adapters/memory-engine/gbrain", "compound memory recall", "manual"),
+			osAbsorptionCLIRow("infra_os", "/synthetic/infra-os/project-registry.yaml", "", "absorbed", "compound://registries/projects", "compound system map", "manual"),
+			osAbsorptionCLIRow("packets", "/synthetic/example-os/packets", "", "absorbed", "compound://work/packets", "compound workbench", "manual"),
 		},
 	}
 	matrixPath := filepath.Join(t.TempDir(), "matrix.json")
@@ -59,7 +59,7 @@ func TestAuthorityOSAbsorptionCLICommands(t *testing.T) {
 	if err := json.Unmarshal([]byte(importOut), &importReport); err != nil {
 		t.Fatalf("parse import report: %v\n%s", err, importOut)
 	}
-	if importReport.RowCount != 7 || importReport.AbsorbedCount != 3 || importReport.PendingCount != 4 {
+	if importReport.RowCount != 7 || importReport.AbsorbedCount != 7 || importReport.PendingCount != 0 {
 		t.Fatalf("import report = %+v", importReport)
 	}
 
@@ -81,7 +81,7 @@ func TestAuthorityOSAbsorptionCLICommands(t *testing.T) {
 	if err := json.Unmarshal([]byte(doctorOut), &doctor); err != nil {
 		t.Fatalf("parse doctor: %v\n%s", err, doctorOut)
 	}
-	if doctor.Status != "ok" || doctor.AutoProofCount != 3 || doctor.PendingWithGateCount != 4 {
+	if doctor.Status != "ok" || doctor.AutoProofCount != 3 || doctor.PendingWithGateCount != 0 {
 		t.Fatalf("doctor = %+v", doctor)
 	}
 }
