@@ -12,7 +12,7 @@
       "ansi_hex": "5DB4FF",
       "profile_dir_var": "CLAUDE_ZAI_PROFILE_DIR",
       "tap_bind": "127.0.0.1:18772",
-      "profile_default": "${HOME}/.config/switchback/claude/zai-direct",
+      "profile_default": "${HOME}/.switchback/config/claude/zai-direct",
       "title_suffix": "GLM-5.2",
       "hook_harness": "claude-zai"
     },
@@ -27,7 +27,7 @@
       "ansi_hex": "28C8FF",
       "profile_dir_var": "CLAUDE_ZAI_DIRECT_PROFILE_DIR",
       "tap_bind": "127.0.0.1:18773",
-      "profile_default": "${HOME}/.config/switchback/claude/zai-direct-full",
+      "profile_default": "${HOME}/.switchback/config/claude/zai-direct-full",
       "title_suffix": "GLM-5.2 (direct)",
       "hook_harness": "claude-zai"
     },
@@ -42,7 +42,7 @@
       "ansi_hex": "50C85A",
       "profile_dir_var": "CLAUDE_CODEX_PROFILE_DIR",
       "tap_bind": "127.0.0.1:18774",
-      "profile_default": "${HOME}/.config/switchback/claude/codex-tap",
+      "profile_default": "${HOME}/.switchback/config/claude/codex-tap",
       "title_suffix": "gpt-5.6 (ultra)",
       "hook_harness": "claude-zai"
     },
@@ -57,7 +57,7 @@
       "ansi_hex": "FF9132",
       "profile_dir_var": "CLAUDE_MINIMAX_PROFILE_DIR",
       "tap_bind": "127.0.0.1:18776",
-      "profile_default": "${HOME}/.config/switchback/claude/minimax-direct",
+      "profile_default": "${HOME}/.switchback/config/claude/minimax-direct",
       "title_suffix": "MiniMax-M3",
       "hook_harness": "claude-minimax"
     },
@@ -72,7 +72,7 @@
       "ansi_hex": "AA5ADC",
       "profile_dir_var": "CLAUDE_QWEN_PROFILE_DIR",
       "tap_bind": "127.0.0.1:18777",
-      "profile_default": "${HOME}/.config/switchback/claude/_providers/qwen",
+      "profile_default": "${HOME}/.switchback/config/claude/_providers/qwen",
       "title_suffix": "qwen3.8",
       "hook_harness": "claude-qwen"
     },

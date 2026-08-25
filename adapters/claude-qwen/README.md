@@ -10,7 +10,7 @@ This adapter is a thin wrapper over the shared installer in
 
 ```sh
 adapters/claude-qwen/install.sh \
-  --profile-dir "$HOME/.config/switchback/claude/qwen" \
+  --profile-dir "$HOME/.switchback/config/claude/qwen" \
   --compound "$HOME/.local/bin/compound" \
   --steering-source "$HOME/.claude/CLAUDE.md"
 ```

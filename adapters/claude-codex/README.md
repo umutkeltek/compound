@@ -10,7 +10,7 @@ This adapter is a thin wrapper over the shared installer in
 
 ```sh
 adapters/claude-codex/install.sh \
-  --profile-dir "$HOME/.config/switchback/claude/codex" \
+  --profile-dir "$HOME/.switchback/config/claude/codex" \
   --compound "$HOME/.local/bin/compound" \
   --steering-source "$HOME/.claude/CLAUDE.md"
 ```

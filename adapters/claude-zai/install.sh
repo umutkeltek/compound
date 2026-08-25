@@ -23,7 +23,7 @@ if [ -z "${HOME:-}" ]; then
   exit 1
 fi
 if [ -z "$profile_dir" ]; then
-  profile_dir=${CLAUDE_CONFIG_DIR:-"$HOME/.config/switchback/claude/$lane"}
+  profile_dir=${CLAUDE_CONFIG_DIR:-"$HOME/.switchback/config/claude/$lane"}
 fi
 if [ -z "$compound_bin" ]; then
   compound_bin=$HOME/.local/bin/compound

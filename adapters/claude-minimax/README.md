@@ -10,7 +10,7 @@ This adapter is a thin wrapper over the shared installer in
 
 ```sh
 adapters/claude-minimax/install.sh \
-  --profile-dir "$HOME/.config/switchback/claude/minimax" \
+  --profile-dir "$HOME/.switchback/config/claude/minimax" \
   --compound "$HOME/.local/bin/compound" \
   --steering-source "$HOME/.claude/CLAUDE.md"
 ```

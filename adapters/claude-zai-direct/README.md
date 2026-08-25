@@ -10,7 +10,7 @@ This adapter is a thin wrapper over the shared installer in
 
 ```sh
 adapters/claude-zai-direct/install.sh \
-  --profile-dir "$HOME/.config/switchback/claude/zai-direct" \
+  --profile-dir "$HOME/.switchback/config/claude/zai-direct" \
   --compound "$HOME/.local/bin/compound" \
   --steering-source "$HOME/.claude/CLAUDE.md"
 ```

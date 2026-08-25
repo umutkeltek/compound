@@ -77,7 +77,7 @@ A typical new block to `lanes.json`:
   "ansi_hex": "7850C8",
   "profile_dir_var": "CLAUDE_DEEPSEEK_PROFILE_DIR",
   "tap_bind": "127.0.0.1:18800",
-  "profile_default": "${HOME}/.config/switchback/claude/deepseek",
+  "profile_default": "${HOME}/.switchback/config/claude/deepseek",
   "title_suffix": "v4-pro"
 }
 ```
