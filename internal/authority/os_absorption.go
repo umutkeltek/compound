@@ -1224,6 +1224,133 @@ func osAbsorptionIsServedOrientationAuthorityRow(row OSAbsorptionMatrixRow) bool
 	return row.CompoundOwner == osAbsorptionEffectiveContractAuthorityRef
 }
 
+const (
+	osAbsorptionServedManifestFamily     = "os"
+	osAbsorptionServedManifestItemPrefix = "compound://sources/manifests/os/items/"
+)
+
+type osAbsorptionServedManifest struct {
+	SourceFamily string                              `json:"source_family"`
+	Lifecycle    osAbsorptionServedManifestLifecycle `json:"lifecycle"`
+	Items        []osAbsorptionServedManifestItem    `json:"items"`
+}
+
+type osAbsorptionServedManifestLifecycle struct {
+	State string `json:"state"`
+}
+
+type osAbsorptionServedManifestItem struct {
+	ID         string `json:"id"`
+	SourceRef  string `json:"source_ref"`
+	BodyPolicy string `json:"body_policy"`
+	BodyRef    string `json:"body_ref"`
+}
+
+func osAbsorptionServedManifestItemRef(itemID string) string {
+	return osAbsorptionServedManifestItemPrefix + strings.TrimSpace(itemID)
+}
+
+func osAbsorptionServedManifestItemID(ref string) (string, bool) {
+	if !strings.HasPrefix(ref, osAbsorptionServedManifestItemPrefix) {
+		return "", false
+	}
+	id := strings.TrimSpace(strings.TrimPrefix(ref, osAbsorptionServedManifestItemPrefix))
+	return id, safeOSAbsorptionRuntimeID(id, "srcitem_")
+}
+
+func loadOSAbsorptionServedManifest(homePath string) (osAbsorptionServedManifest, error) {
+	path := filepath.Join(homePath, "sources", "manifests", osAbsorptionServedManifestFamily+".json")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return osAbsorptionServedManifest{}, err
+	}
+	var manifest osAbsorptionServedManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return osAbsorptionServedManifest{}, fmt.Errorf("decode %s: %w", path, err)
+	}
+	if manifest.SourceFamily != osAbsorptionServedManifestFamily {
+		return osAbsorptionServedManifest{}, fmt.Errorf(
+			"served source manifest family %q, want %q",
+			manifest.SourceFamily,
+			osAbsorptionServedManifestFamily,
+		)
+	}
+	if !osAbsorptionServedManifestLifecycleOwned(manifest.Lifecycle.State) {
+		return osAbsorptionServedManifest{}, fmt.Errorf(
+			"served source manifest lifecycle %q has not reached verified custody",
+			manifest.Lifecycle.State,
+		)
+	}
+	return manifest, nil
+}
+
+func osAbsorptionServedManifestLifecycleOwned(state string) bool {
+	switch state {
+	case "verified", "compound_primary_writer", "legacy_frozen", "quiet_window_proven", "archived", "retired":
+		return true
+	default:
+		return false
+	}
+}
+
+func osAbsorptionServedManifestItemRole(item osAbsorptionServedManifestItem) string {
+	sourceRef := filepath.ToSlash(filepath.Clean(strings.TrimSpace(item.SourceRef)))
+	if strings.Contains(sourceRef, "/worktrees/") {
+		return ""
+	}
+	switch {
+	case strings.HasSuffix(sourceRef, "/"+osAbsorptionServedLiveStart):
+		return osAbsorptionServedLiveStart
+	case strings.HasSuffix(sourceRef, "/"+osAbsorptionServedWholeSystemMap):
+		return osAbsorptionServedWholeSystemMap
+	default:
+		return ""
+	}
+}
+
+func osAbsorptionServedManifestSourceRowsCheck(
+	manifest osAbsorptionServedManifest,
+	rows []OSAbsorptionMatrixRow,
+) OSAbsorptionDoctorCheck {
+	items := make(map[string]osAbsorptionServedManifestItem, len(manifest.Items))
+	for _, item := range manifest.Items {
+		items[item.ID] = item
+	}
+	counts := map[string]int{
+		osAbsorptionServedLiveStart:      0,
+		osAbsorptionServedWholeSystemMap: 0,
+	}
+	for _, row := range rows {
+		if !osAbsorptionIsServedOrientationAuthorityRow(row) ||
+			row.ProofMode != osAbsorptionProofModeServedOrient {
+			continue
+		}
+		itemID, ok := osAbsorptionServedManifestItemID(row.SourceRef)
+		if !ok {
+			continue
+		}
+		item, ok := items[itemID]
+		if !ok || item.BodyPolicy != "owned_snapshot" || strings.TrimSpace(item.BodyRef) == "" {
+			continue
+		}
+		if role := osAbsorptionServedManifestItemRole(item); role != "" {
+			counts[role]++
+		}
+	}
+	ok := counts[osAbsorptionServedLiveStart] == 1 && counts[osAbsorptionServedWholeSystemMap] == 1
+	return doctorCheck(
+		"served_orientation_source_rows",
+		ok,
+		fmt.Sprintf(
+			"SourceManifest os owned items: %s count=%d, %s count=%d",
+			osAbsorptionServedLiveStart,
+			counts[osAbsorptionServedLiveStart],
+			osAbsorptionServedWholeSystemMap,
+			counts[osAbsorptionServedWholeSystemMap],
+		),
+	)
+}
+
 func osAbsorptionExpectedServedSourceRefs(homePath string) ([]string, bool, error) {
 	absorbedOSRoot, found, err := ResolveAbsorbedOSRoot(homePath)
 	if err != nil {
@@ -1252,17 +1379,19 @@ func osAbsorptionServedOrientationSourceRowsCheck(
 	}
 	if !found {
 		if installedHarnessFound {
-			return doctorCheck(
-				"served_orientation_source_rows",
-				false,
-				fmt.Sprintf(
-					"%s is installed but canonical_roots.%s and exact %s / %s served rows are missing",
-					InstalledHarnessHomeKey,
-					AbsorbedOSRegistryKey,
-					osAbsorptionServedLiveStart,
-					osAbsorptionServedWholeSystemMap,
-				),
-			), nil
+			manifest, manifestErr := loadOSAbsorptionServedManifest(homePath)
+			if manifestErr != nil {
+				return doctorCheck(
+					"served_orientation_source_rows",
+					false,
+					fmt.Sprintf(
+						"%s is installed but verified compound://sources/manifests/os custody is unavailable: %v",
+						InstalledHarnessHomeKey,
+						manifestErr,
+					),
+				), nil
+			}
+			return osAbsorptionServedManifestSourceRowsCheck(manifest, rows), nil
 		}
 		return doctorCheck(
 			"served_orientation_source_rows",
@@ -1436,12 +1565,17 @@ func osAbsorptionServedOrientationStructuralProof(
 	if err := validateOSAbsorptionServedOrientationBinding(homePath, row, evidence); err != nil {
 		return osAbsorptionProofResult{reason: err.Error()}, inputs
 	}
-	expectedSourceRefs, found, err := osAbsorptionExpectedServedSourceRefs(homePath)
-	if err != nil {
-		return osAbsorptionProofResult{reason: fmt.Sprintf("resolve served orientation rollback refs: %v", err)}, inputs
-	}
-	if !found {
-		return osAbsorptionProofResult{reason: "served orientation evidence has no declared absorbed-OS rollback refs"}, inputs
+	_, manifestBacked := osAbsorptionServedManifestItemID(row.SourceRef)
+	var expectedSourceRefs []string
+	if !manifestBacked {
+		var found bool
+		expectedSourceRefs, found, err = osAbsorptionExpectedServedSourceRefs(homePath)
+		if err != nil {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("resolve served orientation rollback refs: %v", err)}, inputs
+		}
+		if !found {
+			return osAbsorptionProofResult{reason: "served orientation evidence has no declared absorbed-OS rollback refs"}, inputs
+		}
 	}
 
 	inputs.evidence = evidence
@@ -1465,7 +1599,11 @@ func osAbsorptionServedOrientationStructuralProof(
 			)}, inputs
 		}
 		inputs.snapshots[harness] = snapshot
-		if err := validateOSAbsorptionServedEntrypointSources(harness, expectedSourceRefs, string(snapshot.body)); err != nil {
+		if manifestBacked {
+			if err := validateOSAbsorptionGeneratedInstructionEntrypoint(harness, string(snapshot.body)); err != nil {
+				return osAbsorptionProofResult{reason: err.Error()}, inputs
+			}
+		} else if err := validateOSAbsorptionServedEntrypointSources(harness, expectedSourceRefs, string(snapshot.body)); err != nil {
 			return osAbsorptionProofResult{reason: err.Error()}, inputs
 		}
 	}
@@ -1838,40 +1976,64 @@ const (
 )
 
 // validateOSAbsorptionServedOrientationBinding prevents copied files from
-// masquerading as live evidence. Compound owns both sides of the binding:
-// the absorbed-OS root and installed harness home both come from promoted
-// path-authority claims, while source/installed entrypoint layouts are code.
-// Evidence refs may attest those exact paths; they may not choose new ones.
+// masquerading as live evidence. The rollback side is either a promoted legacy
+// root (compatibility) or a verified owned SourceManifest item; the served side
+// is always the promoted installed harness home.
 func validateOSAbsorptionServedOrientationBinding(
 	homePath string,
 	row OSAbsorptionMatrixRow,
 	evidence osAbsorptionServedOrientationEvidence,
 ) error {
-	absorbedOSRoot, found, err := ResolveAbsorbedOSRoot(homePath)
-	if err != nil {
-		return fmt.Errorf("resolve declared absorbed-OS root: %w", err)
-	}
-	if !found || !absorbedOSRootPresentOnDisk(absorbedOSRoot) {
-		return fmt.Errorf("served orientation evidence has no declared live absorbed-OS root")
-	}
-
-	sourceRef := filepath.Clean(strings.TrimSpace(row.SourceRef))
-	allowedSources := map[string]bool{
-		filepath.Clean(filepath.Join(absorbedOSRoot, filepath.FromSlash(osAbsorptionServedLiveStart))):      true,
-		filepath.Clean(filepath.Join(absorbedOSRoot, filepath.FromSlash(osAbsorptionServedWholeSystemMap))): true,
-	}
-	if !allowedSources[sourceRef] {
-		return fmt.Errorf(
-			"served orientation source_ref %s is not a declared absorbed-OS source entrypoint",
-			row.SourceRef,
-		)
-	}
-	sourceInfo, err := os.Stat(sourceRef)
-	if err != nil {
-		return fmt.Errorf("declared absorbed-OS source entrypoint %s: %w", sourceRef, err)
-	}
-	if !sourceInfo.Mode().IsRegular() {
-		return fmt.Errorf("declared absorbed-OS source entrypoint %s is not a regular file", sourceRef)
+	itemID, manifestBacked := osAbsorptionServedManifestItemID(row.SourceRef)
+	if manifestBacked {
+		manifest, manifestErr := loadOSAbsorptionServedManifest(homePath)
+		if manifestErr != nil {
+			return fmt.Errorf("load served SourceManifest custody: %w", manifestErr)
+		}
+		var item osAbsorptionServedManifestItem
+		for _, candidate := range manifest.Items {
+			if candidate.ID == itemID {
+				item = candidate
+				break
+			}
+		}
+		if item.ID == "" || osAbsorptionServedManifestItemRole(item) == "" ||
+			item.BodyPolicy != "owned_snapshot" || strings.TrimSpace(item.BodyRef) == "" {
+			return fmt.Errorf("served orientation SourceManifest item %q is not an owned canonical entrypoint", itemID)
+		}
+		store, storeErr := home.NewArtifactStore(homePath)
+		if storeErr != nil {
+			return fmt.Errorf("open served SourceManifest artifact store: %w", storeErr)
+		}
+		if _, verifyErr := store.VerifyPrivate(item.BodyRef); verifyErr != nil {
+			return fmt.Errorf("verify served SourceManifest item %q body: %w", itemID, verifyErr)
+		}
+	} else {
+		absorbedOSRoot, found, err := ResolveAbsorbedOSRoot(homePath)
+		if err != nil {
+			return fmt.Errorf("resolve declared absorbed-OS root: %w", err)
+		}
+		if !found || !absorbedOSRootPresentOnDisk(absorbedOSRoot) {
+			return fmt.Errorf("served orientation evidence has no declared live absorbed-OS root or owned SourceManifest item")
+		}
+		sourceRef := filepath.Clean(strings.TrimSpace(row.SourceRef))
+		allowedSources := map[string]bool{
+			filepath.Clean(filepath.Join(absorbedOSRoot, filepath.FromSlash(osAbsorptionServedLiveStart))):      true,
+			filepath.Clean(filepath.Join(absorbedOSRoot, filepath.FromSlash(osAbsorptionServedWholeSystemMap))): true,
+		}
+		if !allowedSources[sourceRef] {
+			return fmt.Errorf(
+				"served orientation source_ref %s is not a declared absorbed-OS source entrypoint",
+				row.SourceRef,
+			)
+		}
+		sourceInfo, statErr := os.Stat(sourceRef)
+		if statErr != nil {
+			return fmt.Errorf("declared absorbed-OS source entrypoint %s: %w", sourceRef, statErr)
+		}
+		if !sourceInfo.Mode().IsRegular() {
+			return fmt.Errorf("declared absorbed-OS source entrypoint %s is not a regular file", sourceRef)
+		}
 	}
 
 	installedHome, found, err := ResolveInstalledHarnessHome(homePath)
@@ -1902,6 +2064,38 @@ func validateOSAbsorptionServedOrientationBinding(
 
 func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error {
 	return validateOSAbsorptionServedEntrypointSources(harness, []string{sourceRef}, body)
+}
+func validateOSAbsorptionGeneratedInstructionEntrypoint(harness, body string) error {
+	renderHarness := harness
+	if harness == "claude" {
+		renderHarness = "claude_code"
+	}
+	begin := "<!-- BEGIN COMPOUND GENERATED INSTRUCTIONS harness=" + renderHarness + " -->"
+	end := "<!-- END COMPOUND GENERATED INSTRUCTIONS -->"
+	if strings.Count(body, begin) != 1 || strings.Count(body, end) != 1 {
+		return fmt.Errorf("%s entrypoint lacks one exact Compound-generated instruction block", harness)
+	}
+	start := strings.Index(body, begin)
+	finish := strings.Index(body[start:], end)
+	if finish < 0 {
+		return fmt.Errorf("%s entrypoint Compound-generated instruction block is unterminated", harness)
+	}
+	block := body[start : start+finish+len(end)]
+	required := []string{
+		"## Compound-generated contract",
+		"Generated by `compound contract compile` for **" + renderHarness + "**.",
+		"Compound is the authority",
+		"`compound orient`",
+	}
+	for _, want := range required {
+		if !strings.Contains(block, want) {
+			return fmt.Errorf("%s entrypoint Compound-generated instruction block missing %q", harness, want)
+		}
+	}
+	if strings.Contains(body, osAbsorptionServedBlockBegin) {
+		return fmt.Errorf("%s entrypoint retains the retired served-orientation rollback block", harness)
+	}
+	return nil
 }
 
 func validateOSAbsorptionServedEntrypointSources(harness string, sourceRefs []string, body string) error {

@@ -89,6 +89,11 @@ Retire this storage fallback only after the canonical materializer/doctor and a 
 with the legacy path unavailable. This storage bridge proof does not by itself advance or retire the source system's
 own lifecycle.
 
+Served instruction rollback sources use owned item refs such as
+`compound://sources/manifests/<family>/items/<item-id>`. Once those item bodies are verified,
+the live harness entrypoints and fresh ContextPacks bind to the item refs; do not materialize a
+second “absorbed root” merely to keep legacy filenames available.
+
 `manifest-doctor` names the exact next gates and posture. Forward skips, proof-class substitution, stale lifecycle
 revisions, incomplete writer handoff fields, short/dirty quiet windows, and non-operator retirement decisions are
 rejected without changing the manifest. Writer cutover and every later operational state are policy-held by default.
