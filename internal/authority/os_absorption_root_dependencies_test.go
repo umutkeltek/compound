@@ -57,7 +57,7 @@ func TestInspectOSRootDependenciesFindsActiveBindingsAndIgnoresDisabledOnes(t *t
 	writeOSRootFixture(t, filepath.Join(launchRoot, "ai.disabled.plist.disabled"), "<string>"+filepath.Join(umutOS, "cron", "disabled.sh")+"</string>\n")
 	indirectWriter := filepath.Join(installedHome, ".hermes", "scripts", "brain-circulation.py")
 	writeOSRootFixture(t, indirectWriter, "legacy_root = '"+filepath.Join(umutOS, "state", "runs")+"'\n")
-	writeOSRootFixture(t, filepath.Join(launchRoot, "ai.indirect.plist"), "<string>"+indirectWriter+"</string>\n")
+	writeOSRootFixture(t, filepath.Join(launchRoot, "ai.indirect.plist"), "<string>"+indirectWriter+"</string>\n<string>2>&1</string>\n")
 
 	hermesScript := filepath.Join(installedHome, ".hermes", "scripts", "legacy-job.py")
 	writeOSRootFixture(t, hermesScript, "exec_path = '"+filepath.Join(umutOS, "cron", "legacy_job.py")+"'\n")

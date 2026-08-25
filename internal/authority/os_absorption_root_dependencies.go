@@ -3,10 +3,8 @@ package authority
 import (
 	"crypto/sha256"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -404,40 +402,26 @@ func launchAgentStringValues(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	decoder := xml.NewDecoder(strings.NewReader(string(body)))
+	const (
+		openTag  = "<string>"
+		closeTag = "</string>"
+	)
+	remaining := string(body)
 	var values []string
-	var current strings.Builder
-	inString := false
 	for {
-		token, tokenErr := decoder.Token()
-		if errors.Is(tokenErr, io.EOF) {
+		openAt := strings.Index(remaining, openTag)
+		if openAt < 0 {
 			break
 		}
-		if tokenErr != nil {
-			return nil, tokenErr
+		remaining = remaining[openAt+len(openTag):]
+		closeAt := strings.Index(remaining, closeTag)
+		if closeAt < 0 {
+			break
 		}
-		switch typed := token.(type) {
-		case xml.StartElement:
-			if isXMLStringElement(typed.Name) {
-				inString = true
-				current.Reset()
-			}
-		case xml.CharData:
-			if inString {
-				current.Write([]byte(typed))
-			}
-		case xml.EndElement:
-			if isXMLStringElement(typed.Name) && inString {
-				values = append(values, strings.TrimSpace(current.String()))
-				inString = false
-			}
-		}
+		values = append(values, strings.TrimSpace(remaining[:closeAt]))
+		remaining = remaining[closeAt+len(closeTag):]
 	}
 	return values, nil
-}
-
-func isXMLStringElement(name xml.Name) bool {
-	return name == (xml.Name{Local: "string"})
 }
 func osRootPathWithin(root, candidate string) bool {
 	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(candidate))
