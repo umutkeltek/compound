@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,9 @@ func TestInspectOSRootDependenciesFindsActiveBindingsAndIgnoresDisabledOnes(t *t
 	launchRoot := filepath.Join(installedHome, "Library", "LaunchAgents")
 	writeOSRootFixture(t, filepath.Join(launchRoot, "ai.legacy.plist"), "<string>"+filepath.Join(umutOS, "cron", "tick.sh")+"</string>\n")
 	writeOSRootFixture(t, filepath.Join(launchRoot, "ai.disabled.plist.disabled"), "<string>"+filepath.Join(umutOS, "cron", "disabled.sh")+"</string>\n")
+	indirectWriter := filepath.Join(installedHome, ".hermes", "scripts", "brain-circulation.py")
+	writeOSRootFixture(t, indirectWriter, "legacy_root = '"+filepath.Join(umutOS, "state", "runs")+"'\n")
+	writeOSRootFixture(t, filepath.Join(launchRoot, "ai.indirect.plist"), "<string>"+indirectWriter+"</string>\n")
 
 	hermesScript := filepath.Join(installedHome, ".hermes", "scripts", "legacy-job.py")
 	writeOSRootFixture(t, hermesScript, "exec_path = '"+filepath.Join(umutOS, "cron", "legacy_job.py")+"'\n")
@@ -72,7 +76,7 @@ func TestInspectOSRootDependenciesFindsActiveBindingsAndIgnoresDisabledOnes(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "fail" || report.DependencyCount != 10 {
+	if report.Status != "fail" || report.DependencyCount != 11 {
 		t.Fatalf("dependency status=%s count=%d kinds=%v dependencies=%+v", report.Status, report.DependencyCount, report.CountsByKind, report.Dependencies)
 	}
 	wantKinds := map[string]int{
@@ -80,7 +84,7 @@ func TestInspectOSRootDependenciesFindsActiveBindingsAndIgnoresDisabledOnes(t *t
 		"hermes_job":            1,
 		"installed_instruction": 1,
 		"installed_shim":        1,
-		"launchd":               1,
+		"launchd":               2,
 		"source_bootstrap":      2,
 		"session_hook":          3,
 	}
@@ -111,6 +115,61 @@ func TestInspectLegacyDecisionCoverageExcludesHistoricalReviewEvidence(t *testin
 	coverage := inspectLegacyDecisionCoverage(homePath, []string{decisionRoot})
 	if coverage.Eligible != 1 || coverage.Covered != 0 || coverage.Missing != 1 {
 		t.Fatalf("decision coverage treated custody-only Markdown as semantic decisions: %+v", coverage)
+	}
+}
+
+func TestInspectLegacyDecisionCoverageUsesFrozenCustodyWhenRootIsUnavailable(t *testing.T) {
+	homePath := t.TempDir()
+	decisionRoot := filepath.Join(t.TempDir(), "decisions")
+	store, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("# Frozen decision source\n")
+	bodyRef, err := store.Put(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(body))
+	manifest := map[string]any{
+		"lifecycle": map[string]any{"state": "legacy_frozen"},
+		"items": []map[string]any{{
+			"body_policy": "owned_snapshot",
+			"body_ref":    bodyRef,
+			"body_bytes":  len(body),
+			"file_hash":   digest,
+		}},
+	}
+	manifestBody, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeOSRootFixture(t, filepath.Join(homePath, "sources", "manifests", "decisions.json"), string(manifestBody))
+
+	var authorityRows []string
+	for i, name := range []string{"DEC-0001-one.md", "DEC-0002-two.md"} {
+		sourcePath := filepath.Join(decisionRoot, "decisions", "agents", name)
+		row, err := json.Marshal(map[string]any{
+			"id":               fmt.Sprintf("decsrc_%d", i),
+			"source_path":      sourcePath,
+			"source_kind":      "policy",
+			"authority_status": "compound_primary",
+			"retires":          "decision_source_authority:" + sourcePath,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		authorityRows = append(authorityRows, string(row))
+	}
+	writeOSRootFixture(
+		t,
+		filepath.Join(homePath, "registries", "decision-source-authority.jsonl"),
+		strings.Join(authorityRows, "\n")+"\n",
+	)
+
+	coverage := inspectLegacyDecisionCoverage(homePath, []string{decisionRoot})
+	if coverage.Status != "ok" || coverage.Eligible != 2 || coverage.Covered != 2 || coverage.Missing != 0 {
+		t.Fatalf("unavailable root should use frozen custody plus Compound-primary records: %+v", coverage)
 	}
 }
 

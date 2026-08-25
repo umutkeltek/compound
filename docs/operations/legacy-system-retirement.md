@@ -127,6 +127,10 @@ A retirement row is not green until all applicable checks pass:
   false-green result;
 - **write-path ownership**: new writes enter through Compound policy, candidate,
   decision, event, registry, or work doors;
+- **indirect writers**: scheduler definitions are traced through referenced shim/script bodies, and a
+  checksum restore comparison must show no post-capture writes before the quiet window starts;
+- **root-unavailable decision coverage**: once the source path is absent, the prior eligible set is
+  reconstructed only from frozen complete custody plus Compound-primary decision source records;
 - **quiet window**: no unexplained reads or writes hit the old system for the agreed
   observation period;
 - **rollback**: the export, source refs, adapter configuration, and one-line restore

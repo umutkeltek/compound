@@ -3,8 +3,10 @@ package authority
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -360,6 +362,7 @@ func inspectLaunchAgentDependencies(root string, needles []string) ([]OSRootDepe
 	if err != nil {
 		return nil, fmt.Errorf("read launch agents: %w", err)
 	}
+	installedHome := filepath.Dir(filepath.Dir(root))
 	var dependencies []OSRootDependency
 	for _, entry := range entries {
 		name := entry.Name()
@@ -367,7 +370,24 @@ func inspectLaunchAgentDependencies(root string, needles []string) ([]OSRootDepe
 			continue
 		}
 		path := filepath.Join(root, name)
-		if dependent, detail := fileReferencesLegacyOS(path, needles); dependent {
+		dependent, detail := fileReferencesLegacyOS(path, needles)
+		if !dependent {
+			references, decodeErr := launchAgentStringValues(path)
+			if decodeErr != nil {
+				return nil, fmt.Errorf("parse launch agent %s: %w", path, decodeErr)
+			}
+			for _, reference := range references {
+				if !filepath.IsAbs(reference) || !osRootPathWithin(installedHome, reference) {
+					continue
+				}
+				if targetDependent, targetDetail := fileReferencesLegacyOS(reference, needles); targetDependent {
+					dependent = true
+					detail = "target " + reference + " " + targetDetail
+					break
+				}
+			}
+		}
+		if dependent {
 			dependencies = append(dependencies, OSRootDependency{
 				Kind:   "launchd",
 				Name:   strings.TrimSuffix(name, ".plist"),
@@ -377,6 +397,51 @@ func inspectLaunchAgentDependencies(root string, needles []string) ([]OSRootDepe
 		}
 	}
 	return dependencies, nil
+}
+
+func launchAgentStringValues(path string) ([]string, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	decoder := xml.NewDecoder(strings.NewReader(string(body)))
+	var values []string
+	var current strings.Builder
+	inString := false
+	for {
+		token, tokenErr := decoder.Token()
+		if errors.Is(tokenErr, io.EOF) {
+			break
+		}
+		if tokenErr != nil {
+			return nil, tokenErr
+		}
+		switch typed := token.(type) {
+		case xml.StartElement:
+			if isXMLStringElement(typed.Name) {
+				inString = true
+				current.Reset()
+			}
+		case xml.CharData:
+			if inString {
+				current.Write([]byte(typed))
+			}
+		case xml.EndElement:
+			if isXMLStringElement(typed.Name) && inString {
+				values = append(values, strings.TrimSpace(current.String()))
+				inString = false
+			}
+		}
+	}
+	return values, nil
+}
+
+func isXMLStringElement(name xml.Name) bool {
+	return name == (xml.Name{Local: "string"})
+}
+func osRootPathWithin(root, candidate string) bool {
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(candidate))
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func inspectHermesJobDependencies(installedHome string, needles []string) ([]OSRootDependency, error) {
@@ -440,6 +505,9 @@ func inspectLegacyDecisionCoverage(homePath string, roots []string) OSRootDecisi
 	}
 	coverage := OSRootDecisionCoverage{Status: "fail", Root: root}
 	eligible, err := decisions.EligiblePolicyDecisionFiles(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return inspectUnavailableLegacyDecisionCoverage(homePath, root)
+	}
 	if err != nil {
 		coverage.Error = err.Error()
 		return coverage
@@ -456,6 +524,57 @@ func inspectLegacyDecisionCoverage(homePath string, roots []string) OSRootDecisi
 		coverage.Status = "ok"
 	}
 	return coverage
+}
+
+func inspectUnavailableLegacyDecisionCoverage(homePath, root string) OSRootDecisionCoverage {
+	coverage := OSRootDecisionCoverage{Status: "fail", Root: root}
+	custody := inspectLegacySourceFamilyCustody(homePath, "decisions", root)
+	if !custody.CustodyComplete || !legacySourceLifecycleFrozen(custody.LifecycleState) {
+		coverage.Error = fmt.Sprintf(
+			"legacy decision root unavailable without frozen complete custody: status=%s lifecycle=%s error=%s",
+			custody.Status,
+			custody.LifecycleState,
+			custody.Error,
+		)
+		return coverage
+	}
+	records, err := decisions.LoadSourceAuthority(homePath)
+	if err != nil {
+		coverage.Error = err.Error()
+		return coverage
+	}
+	eligible := map[string]bool{}
+	covered := map[string]bool{}
+	for _, record := range records {
+		sourcePath := filepath.Clean(strings.TrimSpace(record.SourcePath))
+		if record.SourceKind != "policy" || !osRootPathWithin(root, sourcePath) {
+			continue
+		}
+		eligible[sourcePath] = true
+		if record.AuthorityStatus == "compound_primary" {
+			covered[sourcePath] = true
+		}
+	}
+	coverage.Eligible = len(eligible)
+	coverage.Covered = len(covered)
+	coverage.Missing = coverage.Eligible - coverage.Covered
+	if coverage.Eligible == 0 {
+		coverage.Error = "frozen custody has no Compound decision-source authority records for the retired root"
+		return coverage
+	}
+	if coverage.Missing == 0 {
+		coverage.Status = "ok"
+	}
+	return coverage
+}
+
+func legacySourceLifecycleFrozen(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "legacy_frozen", "quiet_window_proven", "archived", "retired":
+		return true
+	default:
+		return false
+	}
 }
 
 func inspectLegacySourceCustody(homePath string, roots []string) []OSRootSourceCustody {
