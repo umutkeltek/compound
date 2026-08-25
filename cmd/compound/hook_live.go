@@ -26,14 +26,7 @@ import (
 
 const hookUsage = "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json> OR compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> --live --harness <claude_code|claude_zai|claude_minimax|claude_qwen|codex|opencode> [--parity-log <dir>]"
 
-type hookCommandArgs struct {
-	HookName     string
-	FixturePath  string
-	Enforce      bool
-	Live         bool
-	Harness      string
-	ParityLogDir string
-}
+type hookCommandArgs = hook.BudgetCommand
 
 type claudeLiveHookInput struct {
 	HookEventName      string                    `json:"hook_event_name"`
@@ -133,7 +126,7 @@ func loadHookFixture(parsed hookCommandArgs, now time.Time) (hook.Fixture, error
 		// fixture so the caller still gets a well-formed response
 		// instead of a parse error that blocks the harness.
 		if len(data) == 0 {
-			return hook.Fixture{Hook: parsed.HookName, Harness: normalizeLiveHarness(parsed.Harness), Live: parsed.Live}, nil
+			return hook.Fixture{Hook: parsed.HookName, Harness: hook.NormalizeHarness(parsed.Harness), Live: parsed.Live}, nil
 		}
 		return liveHookFixture(parsed, data, now)
 	}
@@ -150,7 +143,7 @@ func loadHookFixtureForHome(parsed hookCommandArgs, now time.Time, homePath stri
 			return hook.Fixture{}, err
 		}
 		if len(data) == 0 {
-			return hook.Fixture{Hook: parsed.HookName, Harness: normalizeLiveHarness(parsed.Harness), Live: parsed.Live}, nil
+			return hook.Fixture{Hook: parsed.HookName, Harness: hook.NormalizeHarness(parsed.Harness), Live: parsed.Live}, nil
 		}
 		return liveHookFixtureForHome(parsed, data, now, homePath)
 	}
@@ -205,7 +198,7 @@ func buildLiveHookFixture(parsed hookCommandArgs, data []byte, now time.Time, ho
 	in.SourceEnvelopes = mergeLiveSourceEnvelopes(activeSources, in.SourceEnvelopes)
 	fx := hook.Fixture{
 		Hook:               parsed.HookName,
-		Harness:            normalizeLiveHarness(parsed.Harness),
+		Harness:            hook.NormalizeHarness(parsed.Harness),
 		Live:               parsed.Live,
 		Cwd:                in.Cwd,
 		SessionID:          strings.TrimSpace(in.SessionID),
@@ -325,11 +318,11 @@ func liveIngressSourcesForHome(
 			liveSourceHeader(in, "compaction", content, now),
 			envelope.SourceOrigin{
 				Kind:    "compaction",
-				Locator: normalizeLiveHarness(harnessName) + ":session-start",
+				Locator: hook.NormalizeHarness(harnessName) + ":session-start",
 			},
 			envelope.SourceTransformation{
 				Kind:     "compaction",
-				Producer: normalizeLiveHarness(harnessName),
+				Producer: hook.NormalizeHarness(harnessName),
 				Model:    strings.TrimSpace(in.Model),
 			},
 			content,
@@ -378,7 +371,7 @@ func liveOperatorPromptSource(harnessName string, in claudeLiveHookInput, now ti
 		liveSourceHeader(in, "operator-prompt", content, now),
 		envelope.SourceOrigin{
 			Kind:          "operator",
-			Locator:       normalizeLiveHarness(harnessName) + ":user-prompt-submit",
+			Locator:       hook.NormalizeHarness(harnessName) + ":user-prompt-submit",
 			Principal:     "operator:local-harness",
 			Authenticated: true,
 		},
@@ -420,7 +413,7 @@ func liveToolResultSource(
 		origin,
 		envelope.SourceTransformation{
 			Kind:     transformationKind,
-			Producer: normalizeLiveHarness(harnessName),
+			Producer: hook.NormalizeHarness(harnessName),
 			Tool:     strings.TrimSpace(in.ToolName),
 		},
 		content,
@@ -640,7 +633,7 @@ func resolveLiveCoordinationDelivery(homePath, harnessName, hookName string, in 
 	}
 	boundarySource := liveCoordinationBoundarySource(hookName, in.Source)
 	cursorKey := strings.Join([]string{
-		"harness=" + normalizeLiveHarness(harnessName),
+		"harness=" + hook.NormalizeHarness(harnessName),
 		"session=" + sessionID,
 		"work=" + resolved.WorkID,
 	}, "|")
@@ -808,7 +801,7 @@ func liveActionIntentsForHome(homePath, harnessName string, in claudeLiveHookInp
 				EvidenceRefs:  []string{mutationInputRef},
 				Uncertainty:   envelope.Uncertainty{Level: "known"},
 			},
-			Actor:                  normalizeLiveHarness(harnessName),
+			Actor:                  hook.NormalizeHarness(harnessName),
 			Capability:             capability,
 			Action:                 action,
 			Target:                 envelope.ActionTarget{Kind: "file", Path: targetPath},
@@ -970,8 +963,8 @@ func liveMonitoredAction(
 ) policy.MonitoredAction {
 	return policy.MonitorToolAction(policy.ToolActionRequest{
 		WorkID:             workID,
-		Actor:              firstNonEmpty(in.Actor, in.CompoundActor, normalizeLiveHarness(harnessName)),
-		Harness:            normalizeLiveHarness(harnessName),
+		Actor:              firstNonEmpty(in.Actor, in.CompoundActor, hook.NormalizeHarness(harnessName)),
+		Harness:            hook.NormalizeHarness(harnessName),
 		Tool:               strings.TrimSpace(in.ToolName),
 		Arguments:          arguments,
 		Cwd:                strings.TrimSpace(in.Cwd),
@@ -1014,7 +1007,7 @@ func liveMutationInputReference(harnessName string, in claudeLiveHookInput, targ
 		ToolInput     string   `json:"tool_input_json"`
 	}{
 		SchemaVersion: "compound.live_mutation_input.v0.1",
-		Harness:       normalizeLiveHarness(harnessName),
+		Harness:       hook.NormalizeHarness(harnessName),
 		SessionID:     strings.TrimSpace(in.SessionID),
 		ToolName:      strings.TrimSpace(in.ToolName),
 		TargetPaths:   canonicalTargets,
@@ -1106,15 +1099,15 @@ func liveHookResponseWithEnforcement(
 ) any {
 	if hookName == "user-prompt-submit" {
 		return claudeLiveHookResponse{HookSpecificOutput: claudeHookSpecificOutput{
-			HookEventName:     hookEnumName(hookName),
+			HookEventName:     hook.EnumName(hookName),
 			AdditionalContext: livePromptAdditionalContext(res),
 		}}
 	}
-	if normalizeLiveHarness(harnessName) == "codex" &&
+	if hook.NormalizeHarness(harnessName) == "codex" &&
 		hookName != "session-start" && hookName != "post-tool-use" {
 		if hookName == "pre-tool-use" {
 			out := claudeHookSpecificOutput{
-				HookEventName:     hookEnumName(hookName),
+				HookEventName:     hook.EnumName(hookName),
 				AdditionalContext: res.ContextOutput,
 			}
 			if enforce {
@@ -1131,7 +1124,7 @@ func liveHookResponseWithEnforcement(
 		}
 		out := codexLiveHookResponse{
 			SchemaVersion:  "compound.codex_live_hook_response.v0.1",
-			HookName:       hookEnumName(hookName),
+			HookName:       hook.EnumName(hookName),
 			EventID:        res.Event.Header.ID,
 			Status:         res.Event.Status,
 			FailOpenReason: res.Event.FailOpenReason,
@@ -1159,7 +1152,7 @@ func liveHookResponseWithEnforcement(
 	if hookName == "session-end" {
 		return claudeSessionEndHookResponse{}
 	}
-	out := claudeHookSpecificOutput{HookEventName: hookEnumName(hookName)}
+	out := claudeHookSpecificOutput{HookEventName: hook.EnumName(hookName)}
 	if strings.TrimSpace(res.ContextOutput) != "" {
 		out.AdditionalContext = res.ContextOutput
 	}
@@ -1206,7 +1199,7 @@ func liveAdditionalContext(parts ...string) string {
 }
 
 func prepareLiveStopTriage(parsed hookCommandArgs, homePath string, fx *hook.Fixture, now time.Time) (*liveStopTriageOutcome, error) {
-	if fx == nil || !parsed.Live || parsed.HookName != "stop" || normalizeLiveHarness(parsed.Harness) != "codex" || strings.TrimSpace(homePath) == "" {
+	if fx == nil || !parsed.Live || parsed.HookName != "stop" || hook.NormalizeHarness(parsed.Harness) != "codex" || strings.TrimSpace(homePath) == "" {
 		return nil, nil
 	}
 	out, err := harvest.HandleCodexStop(homePath, harvest.CodexStopInput{
@@ -1241,7 +1234,7 @@ func writeLiveHookParityLog(dir string, res hook.Result, now time.Time) error {
 		FailOpenReason: res.Event.FailOpenReason,
 		InputHash:      res.Event.InputHash,
 		SummaryHash:    shortHash(res.Summary),
-		ProducedKinds:  liveProducedKinds(res.Produced),
+		ProducedKinds:  hook.ProducedKinds(res.Produced),
 		WorkID:         res.Event.IDs.WorkID,
 		SessionID:      res.Event.IDs.SessionID,
 		CreatedAt:      now.UTC().Format(time.RFC3339),
@@ -1267,37 +1260,8 @@ func writeLiveHookParityLog(dir string, res hook.Result, now time.Time) error {
 	return os.WriteFile(filepath.Join(dir, name), b, 0o644)
 }
 
-func liveProducedKinds(produced []envelope.Envelope) []string {
-	out := make([]string, 0, len(produced))
-	for _, item := range produced {
-		if item == nil {
-			continue
-		}
-		out = append(out, item.Kind())
-	}
-	return out
-}
-
 func livePermissionDecision(registry harness.Registry, harnessName string, res hook.Result) (string, string) {
-	return hook.NativePermissionDecisionForHarness(res, registry, normalizeLiveHarness(harnessName))
-}
-
-func hookEnumName(hookName string) string {
-	if v, ok := map[string]string{
-		"session-start":      "SessionStart",
-		"user-prompt-submit": "UserPromptSubmit",
-		"pre-tool-use":       "PreToolUse",
-		"post-tool-use":      "PostToolUse",
-		"session-end":        "SessionEnd",
-		"stop":               "Stop",
-	}[hookName]; ok {
-		return v
-	}
-	return hookName
-}
-
-func normalizeLiveHarness(harnessName string) string {
-	return strings.ReplaceAll(strings.TrimSpace(harnessName), "-", "_")
+	return hook.NativePermissionDecisionForHarness(res, registry, hook.NormalizeHarness(harnessName))
 }
 
 func shortHash(parts ...string) string {

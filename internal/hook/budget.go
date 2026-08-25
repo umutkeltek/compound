@@ -1,0 +1,134 @@
+package hook
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"compound/internal/envelope"
+)
+
+const DefaultBudget = 45 * time.Second
+
+type BudgetCommand struct {
+	HookName     string
+	FixturePath  string
+	Enforce      bool
+	Live         bool
+	Harness      string
+	ParityLogDir string
+}
+
+type BudgetAnswer struct {
+	Result     Result
+	StderrLine string
+	Exit       int
+}
+
+func BudgetFromEnv(getenv func(string) string) time.Duration {
+	raw := ""
+	if getenv != nil {
+		raw = getenv("COMPOUND_HOOK_BUDGET")
+	}
+	if raw == "" {
+		return DefaultBudget
+	}
+	budget, err := time.ParseDuration(raw)
+	if err != nil || budget <= 0 {
+		return DefaultBudget
+	}
+	return budget
+}
+
+func EnumName(name string) string {
+	if value, ok := map[string]string{
+		"session-start":      "SessionStart",
+		"user-prompt-submit": "UserPromptSubmit",
+		"pre-tool-use":       "PreToolUse",
+		"post-tool-use":      "PostToolUse",
+		"session-end":        "SessionEnd",
+		"stop":               "Stop",
+	}[name]; ok {
+		return value
+	}
+	return name
+}
+
+func NormalizeHarness(name string) string {
+	return strings.ReplaceAll(strings.TrimSpace(name), "-", "_")
+}
+
+func BudgetExpiryAnswer(command BudgetCommand, budget time.Duration, now time.Time) BudgetAnswer {
+	event := envelope.HookEvent{
+		Harness:        command.Harness,
+		HookName:       EnumName(command.HookName),
+		Status:         "fail_open",
+		FailOpenReason: envelope.FailOpenBudgetExceeded,
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("budget:%s:%s:%d", command.Harness, command.HookName, now.UnixNano())))
+	event.Header = envelope.Header{
+		SchemaVersion: envelope.SVHookEvent,
+		ID:            "hook_" + hex.EncodeToString(sum[:6]),
+		CreatedAt:     now.UTC().Format(time.RFC3339Nano),
+		Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
+	}
+	result := Result{Event: event, Summary: fmt.Sprintf("hook exceeded its %s wall-clock budget; answered fail-open instead of being killed silently", budget)}
+	exit := 0
+	if command.Enforce && command.HookName == "pre-tool-use" {
+		exit = 4
+	}
+	return BudgetAnswer{
+		Result:     result,
+		Exit:       exit,
+		StderrLine: fmt.Sprintf("[%s/fail_open] %s (%s) — %s", command.Harness, event.HookName, envelope.FailOpenBudgetExceeded, result.Summary),
+	}
+}
+
+type AnswerGate struct {
+	once        sync.Once
+	watchdogWon atomic.Bool
+}
+
+func NewAnswerGate() *AnswerGate { return &AnswerGate{} }
+
+func (g *AnswerGate) MainAnswer(publish func()) { g.once.Do(publish) }
+
+func (g *AnswerGate) WatchdogAnswer(publish func()) bool {
+	won := false
+	g.once.Do(func() {
+		won = true
+		g.watchdogWon.Store(true)
+		publish()
+	})
+	return won
+}
+
+func StartBudgetWatchdog(command BudgetCommand, gate *AnswerGate, now func() time.Time, publish func(BudgetAnswer)) func() {
+	budget := BudgetFromEnv(os.Getenv)
+	if !command.Live || budget <= 0 {
+		return func() {}
+	}
+	timer := time.AfterFunc(budget, func() {
+		clock := now
+		if clock == nil {
+			clock = time.Now
+		}
+		gate.WatchdogAnswer(func() { publish(BudgetExpiryAnswer(command, budget, clock())) })
+	})
+	return func() { timer.Stop() }
+}
+
+func ProducedKinds(produced []envelope.Envelope) []string {
+	out := make([]string, 0, len(produced))
+	for _, item := range produced {
+		if item != nil {
+			out = append(out, item.Kind())
+		}
+	}
+	return out
+}
