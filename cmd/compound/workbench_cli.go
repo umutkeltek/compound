@@ -28,6 +28,8 @@ const workbenchOperatorProofMaxRunes = 72
 const workbenchOperatorSummaryOpportunityMaxRunes = 44
 const workbenchOperatorSummaryChoiceMaxRunes = 32
 
+var workbenchNow = time.Now
+
 const workbenchUsage = "usage: compound workbench [--json] [--operator] [--advanced|--operator-advanced] [--operator-limit N] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]\n  (branch_debt surfaces the open/covered/stale/dangling/unverifiable transition fold from `internal/work.BranchCoverage`; counts are advisory visibility pressure, never auto-closed; the text render caps at 3 entries when present, the precise counts and full lists are in `compound workbench --json` under `.branch_debt`)"
 
 var (
@@ -266,7 +268,8 @@ func cmdWorkbench(args []string) {
 			os.Exit(2)
 		}
 	}
-	report, err := store.Workbench(time.Now(), work.WorkbenchOptions{
+	now := workbenchNow()
+	report, err := store.Workbench(now, work.WorkbenchOptions{
 		RecentLimit:                     recent,
 		Actor:                           actor,
 		ActivePacketSurface:             activePacketSurface,
@@ -309,7 +312,7 @@ func cmdWorkbench(args []string) {
 	if routeClass != "" {
 		plan, err := routeevidence.PlanCapabilityRoute(homePath, routeClass, routeevidence.CapabilityRoutePlanOptions{
 			PrivacySensitive: routePrivacySensitive,
-		}, time.Now())
+		}, now)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
@@ -326,7 +329,7 @@ func cmdWorkbench(args []string) {
 	// when it was built non-archived (the meter has always been computed from the
 	// non-archived board); an --include-archived report would fold archived work
 	// into the executor counts, so that path still builds its own board.
-	applyAttentionMeter(&reviewQueue, store, reviewReport, report, !includeArchived, time.Now())
+	applyAttentionMeter(&reviewQueue, store, reviewReport, report, !includeArchived, now)
 	output := workbenchCLIOutput{WorkbenchReport: report, CapabilitySurface: capabilitySurface, RoutePlan: routePlan, ReviewQueue: &reviewQueue}
 	if jsonOut {
 		printJSON(output)

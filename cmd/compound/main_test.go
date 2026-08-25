@@ -49,6 +49,10 @@ import (
 
 var cliTestNow = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 
+func init() {
+	workbenchNow = func() time.Time { return cliTestNow }
+}
+
 const workCLIBoundarySubEnv = "COMPOUND_WORK_CLI_BOUNDARY_SUB"
 
 func writeCLITrace(t *testing.T, homePath, id, workID string) envelope.TraceEnvelope {
@@ -4077,7 +4081,9 @@ func TestWorkbenchCommandShowsDispatchStepRuns(t *testing.T) {
 	out := captureStdout(t, func() {
 		cmdWorkbench([]string{"--recent", "10"})
 	})
-	if !strings.Contains(out, "dispatch_step_runs=1") || !strings.Contains(out, "dispatch_wait: run_evidence") || !strings.Contains(out, "wait=run_evidence") || !strings.Contains(out, run.ID) {
+	if !strings.Contains(out, "dispatch_step_runs=1") ||
+		!strings.Contains(out, "wait="+run.WaitReason) ||
+		!strings.Contains(out, run.ID) {
 		t.Fatalf("workbench output missing dispatch run:\n%s", out)
 	}
 }
@@ -4106,7 +4112,9 @@ func TestWorkbenchCommandShowsContinueRuns(t *testing.T) {
 	out := captureStdout(t, func() {
 		cmdWorkbench([]string{"--recent", "10"})
 	})
-	if !strings.Contains(out, "continue_runs=1") || !strings.Contains(out, "wait=run_evidence") || !strings.Contains(out, run.ID) {
+	if !strings.Contains(out, "continue_runs=1") ||
+		!strings.Contains(out, "wait="+run.WaitReason) ||
+		!strings.Contains(out, run.ID) {
 		t.Fatalf("workbench output missing continue run:\n%s", out)
 	}
 }

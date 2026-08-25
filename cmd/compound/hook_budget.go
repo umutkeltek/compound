@@ -11,13 +11,9 @@ import (
 
 type hookAnswerGate struct{ *hook.AnswerGate }
 
-func newHookAnswerGate() *hookAnswerGate {
-	return &hookAnswerGate{AnswerGate: hook.NewAnswerGate()}
-}
+func newHookAnswerGate() *hookAnswerGate { return &hookAnswerGate{AnswerGate: hook.NewAnswerGate()} }
 
-func (g *hookAnswerGate) mainAnswer(publish func()) {
-	g.MainAnswer(publish)
-}
+func (g *hookAnswerGate) mainAnswer(publish func()) { g.MainAnswer(publish) }
 
 func (g *hookAnswerGate) watchdogAnswer(publish func()) bool {
 	return g.WatchdogAnswer(publish)
