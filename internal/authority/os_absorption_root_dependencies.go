@@ -439,7 +439,7 @@ func inspectLegacyDecisionCoverage(homePath string, roots []string) OSRootDecisi
 		return OSRootDecisionCoverage{Status: "not_configured"}
 	}
 	coverage := OSRootDecisionCoverage{Status: "fail", Root: root}
-	eligible, err := decisions.EligibleNoteDecisionFiles(root)
+	eligible, err := decisions.EligiblePolicyDecisionFiles(root)
 	if err != nil {
 		coverage.Error = err.Error()
 		return coverage

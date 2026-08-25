@@ -29,7 +29,7 @@ func TestInspectOSRootDependenciesFindsActiveBindingsAndIgnoresDisabledOnes(t *t
 			t.Fatal(err)
 		}
 	}
-	writeOSRootFixture(t, filepath.Join(decisionRoot, "active-decision.md"), "# Active decision\n")
+	writeOSRootFixture(t, filepath.Join(decisionRoot, "decisions", "agents", "DEC-0001-active-decision.md"), "# Active decision\n")
 	seedLegacyOSRegistry(t, compoundHome, installedHome, umutOS, infraOS, decisionRoot)
 	writeOSRootFixture(t, filepath.Join(legacyRoot, "AGENTS.md"), "# Legacy root instructions\n")
 	writeOSRootFixture(t, filepath.Join(umutOS, "LIVE_START.md"), "# Legacy live start\n")
@@ -97,6 +97,20 @@ func TestInspectOSRootDependenciesFindsActiveBindingsAndIgnoresDisabledOnes(t *t
 		if custody.Status != "missing" || custody.CustodyComplete {
 			t.Fatalf("missing custody must stay incomplete: %+v", custody)
 		}
+	}
+}
+
+func TestInspectLegacyDecisionCoverageExcludesHistoricalReviewEvidence(t *testing.T) {
+	homePath := t.TempDir()
+	decisionRoot := filepath.Join(t.TempDir(), "decisions")
+	writeOSRootFixture(t, filepath.Join(decisionRoot, "decisions", "agents", "DEC-0001-active.md"), "# Active decision\n")
+	writeOSRootFixture(t, filepath.Join(decisionRoot, "reviews", "2026-01-01-probe.md"), "# Historical review evidence\n")
+	writeOSRootFixture(t, filepath.Join(decisionRoot, "AGENTS.md"), "# Bootstrap instructions\n")
+	writeOSRootFixture(t, filepath.Join(decisionRoot, "INDEX.md"), "# Decision index\n")
+
+	coverage := inspectLegacyDecisionCoverage(homePath, []string{decisionRoot})
+	if coverage.Eligible != 1 || coverage.Covered != 0 || coverage.Missing != 1 {
+		t.Fatalf("decision coverage treated custody-only Markdown as semantic decisions: %+v", coverage)
 	}
 }
 

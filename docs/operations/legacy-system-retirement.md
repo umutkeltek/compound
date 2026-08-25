@@ -113,6 +113,9 @@ A retirement row is not green until all applicable checks pass:
   hashes are stable, and a restore drill works in an empty home with original sources unavailable;
 - **semantic parity**: frozen queries or fixtures meet explicit recall/lookup
   predicates; broad benchmark scores alone are insufficient;
+- **decision/evidence separation**: semantic decision authority covers canonical
+  policy records; indexes, bootstrap instructions, and historical review notes
+  prove physical custody through the source manifest instead of entering the decision candidate queue;
 - **real consumer replay**: the production client consumes the Compound path on the
   same task/data shape it uses in practice;
 - **negative control**: disabling the legacy path causes no hidden fallback and no
