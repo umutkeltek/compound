@@ -162,6 +162,15 @@ func (s *Store) ComputeReachability() (Reachability, error) {
 		if strings.TrimSpace(cs.Endpoint) == "" && len(cs.ConfigPaths) == 0 {
 			continue
 		}
+		// Slice-2: a skill node stamped with Source.Reachable=false (its on-disk
+		// skill dir is gone or a dangling symlink) is gated out of `reachable`
+		// regardless of its connection surface. A nil Source means "no disk
+		// evidence at import time" and falls through to the pre-slice-2
+		// behaviour (reachable iff a connection surface exists). Non-skill
+		// kinds are unaffected.
+		if n.Kind == "skill" && n.Source != nil && !n.Source.Reachable {
+			continue
+		}
 		k.Reachable++
 		if strings.TrimSpace(cs.CredentialHandle.Ref) != "" {
 			k.Unlockable++

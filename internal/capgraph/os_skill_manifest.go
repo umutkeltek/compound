@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -108,6 +109,14 @@ func osSkillToManifestEntry(entry osSkillEntry, nameCounts map[string]int, evide
 		CompatibleHarnesses: osSkillHarnesses(entry),
 		EvidenceRefs:        []string{evidenceRef},
 		Weight:              osSkillWeight(entry),
+	}
+	// Slice-2 reachability stamp: entry.Path is the absolute dir containing
+	// the skill's SKILL.md (verified against the existing os-skill-manifest
+	// fixture at os_skill_manifest_test.go:79). ApplySkillManifest will look
+	// it up via DoctorSkillSourceEntry and stamp Node.Source on the node;
+	// a stale or broken dir becomes Source.Reachable=false WITHIN ONE IMPORT.
+	if clean := strings.TrimSpace(entry.Path); clean != "" && filepath.IsAbs(clean) {
+		skill.SkillPath = clean
 	}
 	// Migrate mangled pre-fix ids: retired stub + retired_by edge (via ReplacementFor).
 	legacyID := kind + ":" + legacySlugSkill(name)

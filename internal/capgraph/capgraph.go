@@ -100,6 +100,31 @@ type Node struct {
 	Route        []InstructionRoute    `json:"route,omitempty"`
 	Boundary     []string              `json:"boundary,omitempty"`
 	Tier         int                   `json:"tier,omitempty"`
+	// Source is the on-disk reachability stamp for kind:"skill" nodes,
+	// populated from skill_source_doctor each ApplySkillManifest run. A nil
+	// Source means "no disk evidence yet": ComputeReachability treats skill
+	// nodes without a Source the same as the pre-slice-2 era (reachable if
+	// they carry a connection surface). A non-nil Source with
+	// Reachable=false gates the skill out of `reachable` regardless of
+	// connection-surface facts -- the live falsifier is `skill:web-perf`
+	// (whose source dir is gone) showing Reachable=false even though it
+	// would otherwise look reachable on paper. Reason vocabulary:
+	// ok | dangling_symlink | missing | unreadable | no_frontmatter.
+	Source *NodeSource `json:"source,omitempty"`
+}
+
+// NodeSource pins the per-import disk evidence for a skill node. It is the
+// thing ComputeReachability honours for kind:"skill" reachability so a
+// dangling symlink at the skill's source dir reads as unreachable WITHIN ONE
+// IMPORT (no manual cleanup of the register required). The existing Health
+// field stays reserved for "not working right now" (transient); a missing
+// skill source is durable and lives here.
+type NodeSource struct {
+	Root      string `json:"root,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Reachable bool   `json:"reachable"`
+	Reason    string `json:"reason,omitempty"`
+	CheckedAt string `json:"checked_at,omitempty"`
 }
 
 // Edge is a typed relation. For feedback edges From is "context:<token>" and To is a node id.

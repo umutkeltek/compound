@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -52,6 +53,17 @@ type SkillManifestEntry struct {
 	Route               []InstructionRoute    `json:"route,omitempty" yaml:"route,omitempty"`
 	Boundary            []string              `json:"boundary,omitempty" yaml:"boundary,omitempty"`
 	Tier                int                   `json:"tier,omitempty" yaml:"tier,omitempty"`
+	// SkillPath is the per-skill on-disk anchor ApplySkillManifest uses to
+	// stamp Node.Source via skill_source_doctor. Loaders populate it where
+	// they know the absolute path to the skill's SKILL.md (currently
+	// LoadOSSkillManifest). When SkillPath is empty, ApplySkillManifest does
+	// NOT stamp Source — the node stays in the pre-slice-2 state
+	// (Source=nil → ComputeReachability treats it the same as a node that
+	// has a connection surface). Raw YAML manifests get SkillPath from the
+	// YAML itself; brain_recipe_tree doesn't carry per-skill paths so no
+	// stamping happens for those imports (recorded as a deliberate limit
+	// in the report — next slice's follow-up).
+	SkillPath string `json:"skill_path,omitempty" yaml:"skill_path,omitempty"`
 }
 
 type SkillManifestCheck struct {
@@ -172,6 +184,26 @@ func ApplySkillManifest(homePath string, manifest SkillManifest, now time.Time) 
 					Route:    cleanOptionalInstructionRoutes(skill.Route),
 					Boundary: cleanOptionalStrings(skill.Boundary),
 					Tier:     skill.Tier,
+				}
+				// Slice-2 reachability stamp: where the manifest carries a
+				// SkillPath (currently LoadOSSkillManifest only; brain_recipe_tree
+				// has no per-skill dirs, by design), run the doctor on the parent
+				// dir + this dir's basename so a dangling symlink or absent dir
+				// makes Node.Source.Reachable=false WITHIN ONE IMPORT. A nil
+				// Source means "no disk evidence at import time"; ComputeReachability
+				// treats it the same as a pre-slice-2 node (reachable iff a
+				// connection surface exists).
+				if p := strings.TrimSpace(skill.SkillPath); p != "" {
+					root := filepath.Dir(p)
+					rel := filepath.Base(p)
+					rep := DoctorSkillSourceEntry(root, rel)
+					node.Source = &NodeSource{
+						Root:      root,
+						Path:      p,
+						Reachable: rep.Reachable,
+						Reason:    rep.Reason,
+						CheckedAt: now.UTC().Format(time.RFC3339),
+					}
 				}
 				if err := s.Add(node); err != nil {
 					return err
