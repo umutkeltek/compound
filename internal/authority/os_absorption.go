@@ -2005,7 +2005,7 @@ func validateOSAbsorptionServedOrientationBinding(
 		if storeErr != nil {
 			return fmt.Errorf("open served SourceManifest artifact store: %w", storeErr)
 		}
-		if _, verifyErr := store.VerifyPrivate(item.BodyRef); verifyErr != nil {
+		if _, verifyErr := store.Verify(item.BodyRef); verifyErr != nil {
 			return fmt.Errorf("verify served SourceManifest item %q body: %w", itemID, verifyErr)
 		}
 	} else {
@@ -2821,6 +2821,27 @@ func osAbsorptionWorkPacketProof(homePath string, row OSAbsorptionMatrixRow) osA
 	if len(workIDs) == 0 {
 		return osAbsorptionProofResult{reason: "work packet authority requires at least one work_* evidence_ref"}
 	}
+	sourceDir := strings.TrimSpace(row.SourceRef)
+	if _, statErr := os.Stat(sourceDir); os.IsNotExist(statErr) {
+		custody := inspectLegacySourceFamilyCustody(homePath, "os", filepath.Dir(sourceDir))
+		if !custody.CustodyComplete || !legacySourceLifecycleFrozen(custody.LifecycleState) {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"work packet authority source directory unavailable without frozen complete OS custody: status=%s lifecycle=%s error=%s",
+				custody.Status,
+				custody.LifecycleState,
+				custody.Error,
+			)}
+		}
+		var result osAbsorptionProofResult
+		lockErr := home.WithAutonomyAdmissionLock(homePath, func() error {
+			result = osAbsorptionFrozenWorkPacketProofLocked(homePath, workIDs)
+			return nil
+		})
+		if lockErr != nil {
+			return osAbsorptionProofResult{reason: "work packet authority snapshot: " + lockErr.Error()}
+		}
+		return result
+	}
 	candidates, packetFiles, parseFailures, err := osAbsorptionSourcePacketCandidates(row)
 	if err != nil {
 		return osAbsorptionProofResult{reason: err.Error()}
@@ -2863,6 +2884,32 @@ func osAbsorptionWorkPacketProofLocked(homePath string, workIDs []string, candid
 	sort.Strings(prerequisiteIDs)
 	proofRef := osAbsorptionProofModeWorkPacket + ":prerequisite=" + strings.Join(prerequisiteIDs, ",") + ";source_consumer=" + sourceWorkID
 	return osAbsorptionProofResult{ok: true, proofRef: proofRef}
+}
+
+func osAbsorptionFrozenWorkPacketProofLocked(homePath string, workIDs []string) osAbsorptionProofResult {
+	store, err := work.Open(homePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: "work packet authority: " + err.Error()}
+	}
+	for _, workID := range workIDs {
+		w, getErr := store.Get(workID)
+		if getErr != nil {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("work packet authority %s: %v", workID, getErr)}
+		}
+		item, proofErr := store.ProofChainForWork(workID)
+		if proofErr != nil {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("work packet authority %s proof chain: %v", workID, proofErr)}
+		}
+		if validateErr := validateOSAbsorptionPacketWork(homePath, w, workID, item); validateErr != nil {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("work packet authority %s: %v", workID, validateErr)}
+		}
+	}
+	prerequisiteIDs := append([]string(nil), workIDs...)
+	sort.Strings(prerequisiteIDs)
+	return osAbsorptionProofResult{
+		ok:       true,
+		proofRef: osAbsorptionProofModeWorkPacket + ":frozen-custody=" + strings.Join(prerequisiteIDs, ","),
+	}
 }
 
 func osAbsorptionWorkEvidenceIDs(refs []string) ([]string, error) {
@@ -3231,22 +3278,41 @@ func infraRegistryProof(homePath string, row OSAbsorptionMatrixRow) (osAbsorptio
 		return osAbsorptionProofResult{reason: label + " row missing source_ref"}, false
 	}
 	liveBody, err := os.ReadFile(liveSourcePath)
-	if err != nil {
+	frozenCustody := false
+	if os.IsNotExist(err) {
+		custody := inspectLegacySourceFamilyCustody(homePath, "infra", filepath.Dir(liveSourcePath))
+		if !custody.CustodyComplete || !legacySourceLifecycleFrozen(custody.LifecycleState) {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"%s live source unavailable without frozen complete infra custody: status=%s lifecycle=%s error=%s",
+				label,
+				custody.Status,
+				custody.LifecycleState,
+				custody.Error,
+			)}, false
+		}
+		frozenCustody = true
+	} else if err != nil {
 		return osAbsorptionProofResult{reason: fmt.Sprintf("%s live source %s: %v", label, liveSourcePath, err)}, false
+	} else {
+		liveRevision := "sha256:" + digestBytes(liveBody)
+		if liveRevision != rec.SourceRevision {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("%s live source %s sha256 %s has drifted from imported record %s revision %s; re-run authority import-%s to refresh", label, liveSourcePath, liveRevision, rec.ID, rec.SourceRevision, label)}, true
+		}
 	}
-	liveRevision := "sha256:" + digestBytes(liveBody)
-	if liveRevision != rec.SourceRevision {
-		return osAbsorptionProofResult{reason: fmt.Sprintf("%s live source %s sha256 %s has drifted from imported record %s revision %s; re-run authority import-%s to refresh", label, liveSourcePath, liveRevision, rec.ID, rec.SourceRevision, label)}, true
+	sourceProof := "live-source"
+	if frozenCustody {
+		sourceProof = "frozen-custody"
 	}
 
 	return osAbsorptionProofResult{
 		ok: true,
 		proofRef: fmt.Sprintf(
-			"%s:source_authority=%s;revision=%s;installed=%s",
+			"%s:source_authority=%s;revision=%s;installed=%s;source=%s",
 			osAbsorptionProofModeInfraRegistry,
 			rec.ID,
 			rec.SourceRevision,
 			installedPath,
+			sourceProof,
 		),
 	}, false
 }
@@ -3289,6 +3355,9 @@ func eventSourceAuthorityProof(homePath string, row OSAbsorptionMatrixRow) (osAb
 		return osAbsorptionProofResult{reason: "event source authority: source_ref must be an absolute directory"}, false
 	}
 	entries, err := os.ReadDir(sourceDir)
+	if os.IsNotExist(err) {
+		return frozenEventSourceAuthorityProof(homePath, sourceDir)
+	}
 	if err != nil {
 		return osAbsorptionProofResult{reason: fmt.Sprintf("event source authority: source directory %s: %v", sourceDir, err)}, false
 	}
@@ -3389,6 +3458,70 @@ func eventSourceAuthorityProof(homePath string, row OSAbsorptionMatrixRow) (osAb
 	proofRefs = mergeStrings(proofRefs)
 	sort.Strings(proofRefs)
 	return osAbsorptionProofResult{ok: true, proofRef: strings.Join(proofRefs, ",")}, false
+}
+
+func frozenEventSourceAuthorityProof(homePath, sourceDir string) (osAbsorptionProofResult, bool) {
+	custody := inspectLegacySourceFamilyCustody(homePath, "os", filepath.Dir(sourceDir))
+	if !custody.CustodyComplete || !legacySourceLifecycleFrozen(custody.LifecycleState) {
+		return osAbsorptionProofResult{reason: fmt.Sprintf(
+			"event source authority: source directory unavailable without frozen complete OS custody: status=%s lifecycle=%s error=%s",
+			custody.Status,
+			custody.LifecycleState,
+			custody.Error,
+		)}, false
+	}
+	records, err := eventsource.LoadSourceAuthority(homePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: "event source authority: " + err.Error()}, false
+	}
+	best := map[string]eventsource.SourceAuthorityRecord{}
+	for _, record := range records {
+		name := filepath.Base(strings.TrimSpace(record.SourcePath))
+		if strings.ToLower(filepath.Ext(name)) != ".ndjson" ||
+			record.AuthorityRef != eventsource.TraceEventsAuthorityRef ||
+			record.AuthorityStatus != "compound_primary" {
+			continue
+		}
+		current := best[name]
+		if current.ID == "" ||
+			record.Imported+record.Skipped > current.Imported+current.Skipped ||
+			record.Imported+record.Skipped == current.Imported+current.Skipped && record.CreatedAt > current.CreatedAt {
+			best[name] = record
+		}
+	}
+	if len(best) == 0 {
+		return osAbsorptionProofResult{reason: "event source authority: frozen custody has no Compound-primary event imports"}, false
+	}
+	eventStore, err := eventstore.Open(homePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: "event source authority: " + err.Error()}, false
+	}
+	var proofRefs []string
+	for _, record := range best {
+		sample := record.TraceIDs
+		if len(sample) > osAbsorptionEventSourceTraceSpotCheckSample {
+			sample = sample[:osAbsorptionEventSourceTraceSpotCheckSample]
+		}
+		for _, traceID := range sample {
+			exists, existsErr := eventStore.Exists(traceID)
+			if existsErr != nil || !exists {
+				return osAbsorptionProofResult{reason: fmt.Sprintf(
+					"event source authority: frozen trace %s from record %s does not resolve: exists=%v err=%v",
+					traceID,
+					record.ID,
+					exists,
+					existsErr,
+				)}, false
+			}
+		}
+		proofRefs = append(proofRefs, record.ID)
+	}
+	proofRefs = mergeStrings(proofRefs)
+	sort.Strings(proofRefs)
+	return osAbsorptionProofResult{
+		ok:       true,
+		proofRef: "frozen-custody:" + strings.Join(proofRefs, ","),
+	}, false
 }
 
 // osAbsorptionNonBlankLineCount counts non-blank lines in path the same way
