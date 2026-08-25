@@ -195,7 +195,10 @@ func snapshotSourceManifestDirectory(root string) (string, *sourceManifestSnapsh
 		}
 		relative = filepath.ToSlash(relative)
 		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("source directory %s contains symlink %s; symlinks are refused", absoluteRoot, relative)
+			if filepath.Ext(entry.Name()) == ".md" {
+				return fmt.Errorf("source directory %s contains markdown symlink %s; symlinks are refused", absoluteRoot, relative)
+			}
+			return nil
 		}
 		info, err := entry.Info()
 		if err != nil {

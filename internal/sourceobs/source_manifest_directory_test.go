@@ -24,6 +24,10 @@ func TestEnumerateSourceManifestDirectoryIsRecursiveLexicalAndMarkdownOnly(t *te
 	writeSourceManifestDirectoryFixture(t, root, "a/deeper/ignored.txt", "not markdown\n")
 	writeSourceManifestDirectoryFixture(t, root, "ignored.markdown", "not eligible\n")
 	writeSourceManifestDirectoryFixture(t, root, "ignored.MD", "not eligible\n")
+	nonMarkdownTarget := writeSourceManifestDirectoryFixture(t, t.TempDir(), "tool", "binary\n")
+	if err := os.Symlink(nonMarkdownTarget, filepath.Join(root, "a", "tool")); err != nil {
+		t.Fatal(err)
+	}
 
 	got, err := EnumerateSourceManifestDirectory(root)
 	if err != nil {
