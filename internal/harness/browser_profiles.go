@@ -358,3 +358,42 @@ func containsString(xs []string, want string) bool {
 	}
 	return false
 }
+
+// FormatBrowserProfileReport renders the doctor report as compact CLI text.
+// Used by the CLI dispatcher so cmd/compound stays at a tiny delta.
+func FormatBrowserProfileReport(rep BrowserProfileDoctorReport) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# harness browser-profiles doctor profiles=%d enrolled=%d pending=%d\n",
+		rep.ProfileCount, rep.EnrolledCount, rep.PendingCount)
+	for _, p := range rep.Profiles {
+		fmt.Fprintf(&b, "- %s status=%s dir=%s logins=%v backends=%v\n",
+			p.ID, p.Status, p.UserDataDir, p.Logins, p.Backends)
+	}
+	if len(rep.UnresolvedPaths) > 0 {
+		b.WriteString("- unresolved_paths:\n")
+		for _, u := range rep.UnresolvedPaths {
+			fmt.Fprintf(&b, "  %s\n", u)
+		}
+	}
+	return b.String()
+}
+
+// RunBrowserProfileDoctorCLI parses flags, runs the doctor, prints. The
+// cmd/compound dispatcher hands off everything to here so the cmd delta
+// stays small.
+func RunBrowserProfileDoctorCLI(homePath string, asJSON bool) error {
+	rep, err := DoctorBrowserProfileRegistry(homePath)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		b, err := json.Marshal(rep)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+	fmt.Print(FormatBrowserProfileReport(rep))
+	return nil
+}

@@ -27,6 +27,7 @@ package harness
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -501,4 +502,59 @@ func mustReadBody() []byte {
 		return []byte{}
 	}
 	return body
+}
+
+// FormatInstallReport renders an InstallReport as the compact CLI text
+// shape. Used by the CLI dispatcher; --json path uses json.Marshal directly.
+func FormatInstallReport(rep InstallReport) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# harness skill-adapter skill=%s apply=%t\n", rep.Skill, rep.Apply)
+	for _, a := range rep.Adapters {
+		fmt.Fprintf(&b, "- harness=%s action=%s path=%s\n", a.Harness, a.Action, a.Path)
+		if a.Detail != "" {
+			fmt.Fprintf(&b, "  detail: %s\n", a.Detail)
+		}
+	}
+	return b.String()
+}
+
+// RunSkillAdapterCLI parses flags + dispatches + prints. It exists so the
+// cmd/compound dispatcher stays at a tiny delta — the work lives here.
+func RunSkillAdapterCLI(args []string, apply, asJSON bool, now time.Time) error {
+	skill := strings.TrimSpace(skillAdapterFlag(args, "--skill"))
+	if skill == "" {
+		return fmt.Errorf("usage: compound harness skill-adapter --skill NAME [--harness H] [--apply] [--json]")
+	}
+	adapters := SkillAdaptersFor(strings.Split(skillAdapterFlag(args, "--harness"), ","))
+	if len(adapters) == 0 {
+		adapters = DefaultSkillAdapters()
+	}
+	rep, err := InstallSkillAdapters(skill, adapters, apply, now, nil)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		b, err := json.Marshal(rep)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+	fmt.Print(FormatInstallReport(rep))
+	return nil
+}
+
+// skillAdapterFlag parses --flag value out of an args slice. Tiny copy of
+// cmd/compound's flagValue so the package owns its CLI.
+func skillAdapterFlag(args []string, name string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == name && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(args[i], name+"=") {
+			return strings.TrimPrefix(args[i], name+"=")
+		}
+	}
+	return ""
 }

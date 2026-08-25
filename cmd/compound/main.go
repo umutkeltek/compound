@@ -1568,6 +1568,16 @@ func cmdHarness(args []string) {
 		}
 		return
 	}
+	if target == "skill-adapter" {
+		die(harness.RunSkillAdapterCLI(args[1:], hasFlag(args[1:], "--apply"), hasFlag(args[1:], "--json"), time.Now()))
+		return
+	}
+	if target == "browser-profiles" && len(args) > 1 && args[1] == "doctor" {
+		homePath, err := home.Resolve(flagValue(args[2:], "--home"))
+		die(err)
+		die(harness.RunBrowserProfileDoctorCLI(homePath, hasFlag(args[2:], "--json")))
+		return
+	}
 	h, ok := reg.Get(target)
 	if !ok {
 		fmt.Printf("(unknown harness %q — falling back to generic)\n", target)
