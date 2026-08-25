@@ -28,7 +28,7 @@ import (
 // cmdCapability is the P8 capability graph: surface relevant capabilities for a task (never
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
-	usage := "usage: compound capability <add|retire|resolve|surface|observe|consume|consume-receipts|usage|list|graph|authority|lifecycle-review|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-connections|import-gateway|import-skills|import-agent-lanes|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
+	usage := "usage: compound capability <add|retire|resolve|surface|observe|consume|consume-receipts|usage|list|graph|authority|lifecycle-review|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-connections|import-gateway|import-skills|import-agent-lanes|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision|compact> ..."
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -1392,6 +1392,15 @@ func cmdCapability(args []string) {
 		fmt.Printf("- nodes: %d\n", out.NodeCount)
 		fmt.Printf("- edges: %d\n", out.EdgeCount)
 		fmt.Printf("- decisions: %d\n", out.DecisionCount)
+	case "compact":
+		jsonOut, write := hasFlag(rest, "--json"), hasFlag(rest, "--yes") || hasFlag(rest, "--confirm")
+		r, err := store.CompactOrPreview(write)
+		die(err)
+		if jsonOut {
+			printJSON(r)
+			return
+		}
+		fmt.Printf("# capability compact rows_before=%d rows_after=%d duplicate_ids=%d\n", r.RowsBefore, r.RowsAfter, r.DuplicateIDs)
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)

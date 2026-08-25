@@ -51,7 +51,7 @@ func TestOmpShimSourceCarriesTranscriptPathContract(t *testing.T) {
 // whose line-2 cwd matches the test cwd and one that does not, plus a stale
 // older match. The Go mirror must return the matching one.
 func TestOmpDeriveSessionPicksMatchingCwd(t *testing.T) {
-	cwd := "/Users/test/projects/sample"
+	cwd := "/tmp/x/sample"
 	home := t.TempDir()
 	slug := ompSlugFromCwd(cwd)
 	dir := filepath.Join(home, ".omp", "agent", "sessions", slug)
@@ -59,7 +59,7 @@ func TestOmpDeriveSessionPicksMatchingCwd(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Stale match (oldest mtime) — wrong cwd; must NOT be returned.
-	writeSessionFile(t, dir, "2026-08-22T10-00-00-000Z_uuid-old.jsonl", "/Users/other/projects/sample", "old-uuid", false)
+	writeSessionFile(t, dir, "2026-08-22T10-00-00-000Z_uuid-old.jsonl", "/tmp/x/other", "old-uuid", false)
 	// Right match (middle mtime).
 	writeSessionFile(t, dir, "2026-08-25T12-00-00-000Z_uuid-mid.jsonl", cwd, "mid-uuid", false)
 	// Right match (newest mtime) — must be returned.
@@ -82,13 +82,13 @@ func TestOmpDeriveSessionPicksMatchingCwd(t *testing.T) {
 // the parser MUST treat "" as "no transcript", never as a probing fallback.
 func TestOmpDeriveSessionReturnsFalseOnMismatch(t *testing.T) {
 	home := t.TempDir()
-	cwd := "/Users/test/projects/sample"
+	cwd := "/tmp/x/sample"
 	slug := ompSlugFromCwd(cwd)
 	dir := filepath.Join(home, ".omp", "agent", "sessions", slug)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeSessionFile(t, dir, "2026-08-25T10-00-00-000Z_uuid-other.jsonl", "/Users/other/agent", "wrong", false)
+	writeSessionFile(t, dir, "2026-08-25T10-00-00-000Z_uuid-other.jsonl", "/tmp/x/other", "wrong", false)
 	gotPath, _, ok := OmpDeriveSession(home, cwd)
 	if ok {
 		t.Fatalf("expected ok=false on cwd mismatch, got path=%q", gotPath)

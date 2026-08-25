@@ -25,6 +25,17 @@ type CompactReport struct {
 	DuplicateIDList []string `json:"duplicate_id_list,omitempty"`
 }
 
+// CompactOrPreview dispatches by write flag so the CLI verb stays a single
+// call site (cmd/compound budget ratchet -- see slice 4 report). write=true
+// rewrites the log; write=false reports only. The contract is otherwise
+// identical: byte-equivalent loadNodes() before vs after, same report shape.
+func (s *Store) CompactOrPreview(write bool) (CompactReport, error) {
+	if write {
+		return s.CompactNodes()
+	}
+	return s.PreviewCompact()
+}
+
 // PreviewCompact reports what CompactNodes WOULD do without rewriting the log.
 // Operators run this first to see the duplicate count and the affected ids
 // before opting in with `compound capability compact --yes`.

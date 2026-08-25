@@ -54,13 +54,18 @@ func TestExternalHarnessFloorsClaimNoHookSurface(t *testing.T) {
 }
 
 // TestOhMyPiShimRaisesOnlyObservedFlags pins the evidence split from the
-// 2026-08-25 shim landing: the compound-owned TS shim
-// (~/.omp/agent/hooks/pre/compound.ts, `compound hook install --harness
-// oh-my-pi`) was observed end-to-end delivering UserPromptSubmit context
-// injection (a live model named the injected ctx_ id), PostToolUse telemetry,
-// and a SessionEnd receipt. SessionStart has no context-return surface, and a
-// PreToolUse deny was never observed blocking — those stay false. A future
-// edit must argue with this table, not with vibes.
+// 2026-08-25 shim landing, revised 2026-08-26 by packet
+// 2026-08-25-skills-graph-truth (slice 3): the compound-owned TS shim
+// (oh-my-pi-hook-shim@2 at ~/.omp/agent/hooks/pre/compound.ts, installed by
+// `compound hook install --harness oh-my-pi`) was observed end-to-end
+// delivering UserPromptSubmit context injection (a live model named the
+// injected ctx_ id), PostToolUse telemetry, and a SessionEnd receipt that
+// now carries skills_fired evidence because the shim derives transcript_path
+// from the omp session directory (F6). SessionStart has no context-return
+// surface, and a PreToolUse deny was never observed blocking — those stay
+// false. A future edit must argue with this table, not with vibes; the
+// SessionEndReceipt=true claim in particular now has live proof in the
+// 2026-08-25-skills-graph-truth.REPORT.md (live proof 3).
 func TestOhMyPiShimRaisesOnlyObservedFlags(t *testing.T) {
 	h, ok := DefaultRegistry().Get("oh_my_pi")
 	if !ok {

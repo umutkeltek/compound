@@ -24,7 +24,7 @@ no parallel installed-instruction registry or generator exists.
 `install.sh` publishes `os` only as a relative symlink to the verified `compound` binary. Basename-aware
 dispatch translates the retained muscle-memory verbs to existing Compound commands (`system status`, `doctor`,
 `capability resolve|surface|list`, and `route plan`). The installer replaces only the recognized legacy
-Umut-OS shim or an existing Compound alias and refuses a foreign `os` file/symlink. The alias never reads or
+OS shim or an existing Compound alias and refuses a foreign `os` file/symlink. The alias never reads or
 writes an OS dashboard and contains no operating-system path.
 
 `compound policy import-operator-state <operator-state.json>` installs the global autonomy ceiling

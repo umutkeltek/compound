@@ -28,8 +28,9 @@ import (
 //
 // Slug derivation: strip a leading `/`, replace every `/` with `-`, replace
 // any non-[A-Za-z0-9._-] with `-`, and wrap in `--`. Examples:
-//   /Users/example/Projects/systems/compound -> --Users-example-Projects-systems-compound--
-//   /tmp/x                                 -> --tmp-x--
+//
+//	/private/home/operator/projects/sample -> --private-home-operator-projects-sample--
+//	/tmp/x                                -> --tmp-x--
 func OmpDeriveSession(homedir, cwd string) (transcriptPath, sessionID string, ok bool) {
 	slug := ompSlugFromCwd(cwd)
 	dir := filepath.Join(homedir, ".omp", "agent", "sessions", slug)
