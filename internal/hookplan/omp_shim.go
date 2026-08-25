@@ -13,8 +13,9 @@ var ompHookShimSource string
 
 // OmpShimMarker is the ownership line compound writes at the top of the shim.
 // An update replaces only compound-owned bytes; a file without the marker is a
-// user's own hook and is never clobbered.
-const OmpShimMarker = "// compound-owned: oh-my-pi-hook-shim@1"
+// user's own hook and is never clobbered. Bumped to @2 by slice 3 (the shim
+// gained transcript_path and session_id derivation).
+const OmpShimMarker = "// compound-owned: oh-my-pi-hook-shim@2"
 
 // OmpShimRelPath is the shim's location inside omp's agent dir. omp's builtin
 // discovery loads every non-dotfile under hooks/{pre,post} as a Bun module;

@@ -1,4 +1,4 @@
-// compound-owned: oh-my-pi-hook-shim@1
+// compound-owned: oh-my-pi-hook-shim@2
 /**
  * compound ↔ oh-my-pi hook shim (installed by `compound hook install --harness
  * oh-my-pi` into <agentDir>/hooks/pre/compound.ts).
@@ -23,6 +23,7 @@
  * never load this shim; it serves interactive omp only.
  */
 import { spawnSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 
 /** Structural slice of omp's HookAPI this shim consumes. */
@@ -59,11 +60,89 @@ const COMPOUND = `${homedir()}/.local/bin/compound`;
 const HARNESS = "oh_my_pi";
 const CALL_TIMEOUT_MS = 8_000;
 
-// Synthetic but stable per-process session identity: omp does not expose its
-// session file to hooks, and compound only needs a correlation key for the
-// SessionStart/SessionEnd receipt pair.
-const sessionId = `omp-${process.pid}-${Date.now().toString(36)}`;
-const sessionFixture = { session_id: sessionId, cwd: process.cwd() };
+// Session-file discovery (slice 3). omp DOES persist session files at
+// ~/.omp/agent/sessions/<cwd-slug>/<ISO>_<uuid>.jsonl where the second
+// line of every file is `{"type":"session","version":3,"id":"<uuid>",
+// "cwd":"<abs>"}`. We pick the newest file whose line-2 cwd matches the
+// current process and forward its absolute path as `transcript_path` on
+// every call. The Go-side mirror lives in internal/hookplan/omp_derive.go
+// and is the testable companion; the two MUST stay in lockstep.
+//
+// When discovery fails (no matching session file) we OMIT transcript_path
+// rather than send a wrong path -- scanSessionTranscript would mistake a
+// neighbouring agent's log for ours and inflate skills_fired with phantom
+// evidence. session_id keeps the synthetic value as a fallback; if omp's
+// embedded id is recoverable we prefer it so SessionStart/SessionEnd share
+// the same correlation key.
+function deriveOmpSession(homedirValue: string, cwd: string): { sessionId: string; transcriptPath: string | null } {
+	const slug = slugFromCwd(cwd);
+	const dir = `${homedirValue}/.omp/agent/sessions/${slug}`;
+	if (!existsSync(dir)) {
+		return { sessionId: `omp-${process.pid}-${Date.now().toString(36)}`, transcriptPath: null };
+	}
+	let newestPath: string | null = null;
+	let newestMtime = 0;
+	let newestEmbeddedId = "";
+	try {
+		for (const entry of readdirSync(dir).sort()) {
+			const full = `${dir}/${entry}`;
+			if (!entry.endsWith(".jsonl")) continue;
+			let st: import("node:fs").Stats;
+			try { st = statSync(full); } catch { continue; }
+			if (st.mtimeMs <= newestMtime) continue;
+			// Read first ~1KB to inspect the two header lines without streaming.
+			let head = "";
+			try {
+				const buf = readFileSync(full, { encoding: "utf-8", flag: "r" });
+				head = buf.slice(0, 1024);
+			} catch { continue; }
+			const lines = head.split("\n");
+			const headerLine = lines.find((ln) => ln.trim().length > 0 && ln.includes('"type":"session"')) ?? "";
+			const headerProbe = parseSessionHeader(headerLine);
+			if (!headerProbe) continue;
+			if (headerProbe.cwd !== cwd) continue;
+			newestPath = full;
+			newestMtime = st.mtimeMs;
+			newestEmbeddedId = headerProbe.id;
+		}
+	} catch {
+		// readdir raced or dir vanished mid-loop; treat as miss.
+	}
+	if (!newestPath) {
+		return { sessionId: `omp-${process.pid}-${Date.now().toString(36)}`, transcriptPath: null };
+	}
+	const fallbackId = `omp-${process.pid}-${Date.now().toString(36)}`;
+	return { sessionId: newestEmbeddedId || fallbackId, transcriptPath: newestPath };
+}
+
+function slugFromCwd(cwd: string): string {
+	// omp's on-disk convention: strip the leading "/", replace every "/" with
+	// "-", then wrap in "--". Examples:
+	//   /Users/example/Projects/systems/compound -> --Users-example-Projects-systems-compound--
+	let s = cwd.replace(/^\/+/, "").replace(/\//g, "-");
+	s = s.replace(/[^A-Za-z0-9._-]/g, "-");
+	return `--${s}--`;
+}
+
+function parseSessionHeader(line: string): { id: string; cwd: string } | null {
+	try {
+		const j = JSON.parse(line) as { type?: string; id?: string; cwd?: string };
+		if (j.type !== "session" || typeof j.id !== "string" || typeof j.cwd !== "string") return null;
+		return { id: j.id, cwd: j.cwd };
+	} catch {
+		return null;
+	}
+}
+
+const discovered = deriveOmpSession(homedir(), process.cwd());
+const sessionId = discovered.sessionId;
+const sessionFixture: { session_id: string; cwd: string; transcript_path?: string } = {
+	session_id: sessionId,
+	cwd: process.cwd(),
+};
+if (discovered.transcriptPath) {
+	sessionFixture.transcript_path = discovered.transcriptPath;
+}
 
 function callCompound(verb: string, fixture: Record<string, unknown>): CompoundHookDocument | null {
 	try {

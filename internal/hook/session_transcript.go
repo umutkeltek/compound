@@ -2,6 +2,7 @@ package hook
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -39,6 +40,50 @@ type sessionTranscriptSummary struct {
 	BashCalls        int
 	ConsumedRefs     []string
 	UsedDeclared     bool
+	// Format is "claude" (default) or "omp" -- set by detectTranscriptFormat
+	// after a one-line header sniff. Skill evidence rules are IDENTICAL
+	// across formats (a Skill tool_use block counts; an input mentioning
+	// skills/<name>/SKILL.md counts; prose does not). The flag is for
+	// observability and future per-format routing, not for skill detection.
+	Format string
+}
+
+// sniffTranscriptFormat peeks the first 4 KB of the file for a
+// `{"type":"session","version":N,...}` line. omp writes such a line on
+// its second JSON line (the first is "title"); claude-code never does.
+// The 4 KB window is generous for the omp header (a typical omp session
+// line is < 200 B) and bounded so we never read the whole transcript
+// twice. The caller (scanSessionTranscript) MUST Seek(0,0) after this
+// before resuming the main scan -- we only peek, never consume.
+func sniffTranscriptFormat(f *os.File) string {
+	var head [4096]byte
+	n, _ := f.Read(head[:])
+	sc := bufio.NewScanner(bytes.NewReader(head[:n]))
+	seen := 0
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		seen++
+		if seen > 6 {
+			break
+		}
+		if line[0] != '{' {
+			continue
+		}
+		var probe struct {
+			Type    string `json:"type"`
+			Version int    `json:"version"`
+		}
+		if err := json.Unmarshal(line, &probe); err != nil {
+			continue
+		}
+		if probe.Type == "session" && probe.Version > 0 {
+			return "omp"
+		}
+	}
+	return "claude"
 }
 
 type transcriptEntry struct {
@@ -309,6 +354,7 @@ func isOperatorUtterance(cleaned string) bool {
 
 func scanSessionTranscript(path string) (sessionTranscriptSummary, error) {
 	var out sessionTranscriptSummary
+	out.Format = "claude" // safe default -- the pre-slice-3 behaviour
 	f, err := os.Open(path)
 	if err != nil {
 		return out, err
@@ -317,6 +363,18 @@ func scanSessionTranscript(path string) (sessionTranscriptSummary, error) {
 
 	files := map[string]bool{}
 	skills := map[string]bool{}
+	// Format sniff: peek the first 4 KB for a `{"type":"session","version":N,...}`
+	// line, then rewind. omp's session line is line 2 (line 1 is "title");
+	// peeking the head lets us classify before the main scan, so a future
+	// per-format router can branch on summary.Format. Skill-evidence rules
+	// are IDENTICAL across formats either way -- entry.Message's fallback in
+	// transcriptRoleContent already maps omp tool_use blocks to the same
+	// toolBlocks shape claude uses (F7 pins this end-to-end).
+	out.Format = sniffTranscriptFormat(f)
+	if _, err := f.Seek(0, 0); err != nil {
+		return out, err
+	}
+
 	reader := bufio.NewReaderSize(f, 64*1024)
 	lineNo := 0
 	for {
