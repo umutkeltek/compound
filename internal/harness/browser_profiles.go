@@ -36,12 +36,12 @@ const SocialAccountsSchemaVersion = "compound.social_account_registry.v0.1"
 // per-backend launch args (Playwright MCP `--user-data-dir`, agent-browser
 // `--profile`, hermes CDP user dir, etc.).
 type BrowserProfile struct {
-	ID          string                       `json:"id"`
-	UserDataDir string                       `json:"user_data_dir"`
-	Backends    BrowserProfileBackends       `json:"backends"`
-	Logins      []string                     `json:"logins"`
-	Status      BrowserProfileStatus         `json:"status"`
-	UpdatedAt   string                       `json:"updated_at,omitempty"`
+	ID          string                 `json:"id"`
+	UserDataDir string                 `json:"user_data_dir"`
+	Backends    BrowserProfileBackends `json:"backends"`
+	Logins      []string               `json:"logins"`
+	Status      BrowserProfileStatus   `json:"status"`
+	UpdatedAt   string                 `json:"updated_at,omitempty"`
 }
 
 // BrowserProfileBackends carries per-backend launch args. Each field is
@@ -68,7 +68,7 @@ type BrowserProfileBackend struct {
 type BrowserProfileStatus string
 
 const (
-	StatusEnrolled         BrowserProfileStatus = "enrolled"
+	StatusEnrolled          BrowserProfileStatus = "enrolled"
 	StatusPendingEnrollment BrowserProfileStatus = "pending_enrollment"
 )
 
@@ -84,7 +84,7 @@ type BrowserProfileRegistry struct {
 // ~/.compound/registries/social-accounts.json; the doctor reads it
 // directly.
 type SocialAccount struct {
-	ID            string `json:"id"`
+	ID             string `json:"id"`
 	BrowserProfile string `json:"browser_profile"`
 }
 
@@ -169,7 +169,7 @@ func SeedBrowserProfileRegistry(home string, now time.Time) (BrowserProfileRegis
 	}
 
 	for _, acct := range accounts {
-		dir := expandHome(acct.BrowserProfile, home)
+		dir := expandHome(acct.BrowserProfile, currentHome())
 		if dir == "" {
 			continue
 		}
@@ -231,13 +231,13 @@ func WriteBrowserProfileRegistry(home string, reg BrowserProfileRegistry) error 
 // BrowserProfileDoctorReport is the doctor's projection of the registry.
 // Counts and lists come from the in-memory join; never a directory listing.
 type BrowserProfileDoctorReport struct {
-	SchemaVersion     string                  `json:"schema_version"`
-	UpdatedAt         string                  `json:"updated_at"`
-	ProfileCount      int                     `json:"profile_count"`
-	EnrolledCount     int                     `json:"enrolled_count"`
-	PendingCount      int                     `json:"pending_count"`
-	UnresolvedPaths   []string                `json:"unresolved_paths,omitempty"`
-	Profiles          []BrowserProfileSummary `json:"profiles"`
+	SchemaVersion   string                  `json:"schema_version"`
+	UpdatedAt       string                  `json:"updated_at"`
+	ProfileCount    int                     `json:"profile_count"`
+	EnrolledCount   int                     `json:"enrolled_count"`
+	PendingCount    int                     `json:"pending_count"`
+	UnresolvedPaths []string                `json:"unresolved_paths,omitempty"`
+	Profiles        []BrowserProfileSummary `json:"profiles"`
 }
 
 // BrowserProfileSummary is one row in the report.
@@ -253,6 +253,11 @@ type BrowserProfileSummary struct {
 // social-accounts to the registry by path; an account whose path does not
 // resolve to a profile is reported in `unresolved_paths` (the operator can
 // run the seed command to bring them in).
+//
+// If the registry file does not exist yet (fresh home), the doctor auto-
+// seeds from social-accounts.json so the report is meaningful on first run.
+// The seed write is best-effort: a permission failure leaves the doctor in
+// unresolved-paths mode.
 func DoctorBrowserProfileRegistry(home string) (BrowserProfileDoctorReport, error) {
 	rep := BrowserProfileDoctorReport{
 		SchemaVersion: BrowserProfileRegistrySchemaVersion,
@@ -260,6 +265,14 @@ func DoctorBrowserProfileRegistry(home string) (BrowserProfileDoctorReport, erro
 	reg, err := LoadBrowserProfileRegistry(home)
 	if err != nil {
 		return rep, err
+	}
+	// First-run auto-seed so doctor is meaningful on a fresh home.
+	if len(reg.Profiles) == 0 {
+		seeded, serr := SeedBrowserProfileRegistry(home, time.Now())
+		if serr == nil && len(seeded.Profiles) > 0 {
+			_ = WriteBrowserProfileRegistry(home, seeded)
+			reg = seeded
+		}
 	}
 	accounts, err := LoadSocialAccounts(home)
 	if err != nil {
@@ -270,7 +283,7 @@ func DoctorBrowserProfileRegistry(home string) (BrowserProfileDoctorReport, erro
 		byDir[p.UserDataDir] = true
 	}
 	for _, acct := range accounts {
-		dir := expandHome(acct.BrowserProfile, home)
+		dir := expandHome(acct.BrowserProfile, currentHome())
 		if dir == "" {
 			continue
 		}
@@ -319,23 +332,27 @@ func DoctorBrowserProfileRegistry(home string) (BrowserProfileDoctorReport, erro
 	return rep, nil
 }
 
-// expandHome resolves "~/" prefix to the home argument. Social accounts
-// carry browser_profile as "~/.compound/social-profiles/<account>" — the
-// tilde must expand against the COMPOUND_HOME we resolve at runtime, not
-// against the user's $HOME.
-func expandHome(p, home string) string {
+// expandHome resolves "~/" prefix. The default userHome is $HOME; tests
+// inject via the userHome parameter to keep the join deterministic.
+func expandHome(p, userHome string) string {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return ""
 	}
 	if strings.HasPrefix(p, "~/") {
-		return filepath.Join(home, strings.TrimPrefix(p, "~/"))
+		if strings.TrimSpace(userHome) == "" {
+			return p
+		}
+		return filepath.Join(userHome, strings.TrimPrefix(p, "~/"))
 	}
 	if p == "~" {
-		return home
+		return userHome
 	}
 	return p
 }
+
+// currentHome returns $HOME for production; tests inject via t.Setenv.
+func currentHome() string { return os.Getenv("HOME") }
 
 // deriveStatus maps a user_data_dir's filesystem state to the registry row.
 // Missing dir is pending_enrollment by design — that is the human enrollment

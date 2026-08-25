@@ -279,9 +279,11 @@ func homeEnv() string {
 }
 
 // RenderSkillAdapter deterministically combines header + body + footer.
-// Same (body, adapter, now) ⇒ byte-identical output. The footer carries the
-// body's sha256 so a reader can verify the adapter matches the current body.
-// now is injected so tests can pin time and prove byte-identical re-renders.
+// Same (body, adapter) ⇒ byte-identical output (no timestamp in the footer
+// — that would make every run "drift" against its prior self). The footer
+// carries the body's sha256 so a reader can verify the adapter matches the
+// current body. now is still accepted for callers that want a one-shot
+// timestamped render; it does NOT appear in the output.
 func RenderSkillAdapter(body []byte, h HarnessAdapter, now time.Time) ([]byte, error) {
 	if len(body) == 0 {
 		return nil, fmt.Errorf("render skill adapter %q: body is empty", h.ID)
@@ -304,11 +306,11 @@ func RenderSkillAdapter(body []byte, h HarnessAdapter, now time.Time) ([]byte, e
 	if len(body) > 0 && body[len(body)-1] != '\n' {
 		b.WriteByte('\n')
 	}
-	// Footer: schema version + harness id + body sha256 + generation time.
-	// The generation time is injected (zero ⇒ now) so two renders of the
-	// same body+adapter+time are byte-identical.
-	fmt.Fprintf(&b, "\n<!-- %s harness=%s body_sha256=%s generated=%s -->\n",
-		SkillAdapterSchemaVersion, h.ID, bodyHash, now.UTC().Format(time.RFC3339))
+	// Footer: schema version + harness id + body sha256. NO timestamp — a
+	// timestamp in the footer would make every re-render "drift" against
+	// its prior self, defeating the unchanged-detection contract.
+	fmt.Fprintf(&b, "\n<!-- %s harness=%s body_sha256=%s -->\n",
+		SkillAdapterSchemaVersion, h.ID, bodyHash)
 	return []byte(b.String()), nil
 }
 
@@ -326,11 +328,11 @@ const (
 
 // AdapterInstall is one adapter's outcome.
 type AdapterInstall struct {
-	Harness    string       `json:"harness"`
-	Path       string       `json:"path"`
+	Harness    string        `json:"harness"`
+	Path       string        `json:"path"`
 	Action     InstallAction `json:"action"`
-	BodySHA256 string       `json:"body_sha256"`
-	Detail     string       `json:"detail,omitempty"`
+	BodySHA256 string        `json:"body_sha256"`
+	Detail     string        `json:"detail,omitempty"`
 }
 
 // InstallReport summarizes one install run.

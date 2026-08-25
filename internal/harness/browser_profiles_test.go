@@ -44,6 +44,9 @@ func fixedProfileNow() time.Time {
 // that one to enrolled; an account whose path has no profile is named.
 func TestBrowserProfileRegistryJoinsSocialAccounts(t *testing.T) {
 	home := t.TempDir()
+	// expandHome reads $HOME; redirect it to the test temp dir so
+	// "~/social-profiles/profile-a" expands under the test fixture.
+	t.Setenv("HOME", home)
 	now := fixedProfileNow()
 
 	// Three accounts, all pointing at profile dirs that do NOT exist yet.
@@ -133,6 +136,7 @@ func TestBrowserProfileRegistryJoinsSocialAccounts(t *testing.T) {
 // row AFTER the seed — the next doctor run should name that path.
 func TestBrowserProfileRegistryUnresolvedPaths(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	now := fixedProfileNow()
 
 	accounts := []map[string]string{
