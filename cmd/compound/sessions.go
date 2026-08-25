@@ -804,6 +804,7 @@ func sessionMiningStuckPoints(workbench work.WorkbenchReport) []sessionMiningFin
 		seen[key] = true
 		out = append(out, sessionMiningFinding{
 			Kind:         "held_work",
+			SemanticKey:  sessionMiningSemanticKey("held_work", item.WorkID),
 			Summary:      summary,
 			EvidenceRefs: []string{"work:" + item.WorkID},
 			Confidence:   0.8,
@@ -824,6 +825,7 @@ func sessionMiningMemoryCandidates(workbench work.WorkbenchReport) []sessionMini
 			summary := firstNonEmpty(card.CandidateObject, card.Title, "memory candidate needs review")
 			out = append(out, sessionMiningFinding{
 				Kind:         "memory_candidate",
+				SemanticKey:  sessionMiningSemanticKey("memory_candidate", card.CandidateID),
 				Summary:      summary,
 				EvidenceRefs: compactSessionRefs("work:"+item.WorkID, "memory_candidate:"+card.CandidateID, "panel_run:"+card.PanelRunID),
 				Confidence:   0.72,
@@ -865,6 +867,7 @@ func sessionMiningSkillUpdates(events []sessionHookEvent) []sessionMiningFinding
 		}
 		out = append(out, sessionMiningFinding{
 			Kind:         "session_pattern_review",
+			SemanticKey:  sessionMiningSemanticKey("session_pattern_review", harness),
 			Summary:      fmt.Sprintf("Review %d recent %s hook events for repeated tool gaps or reusable skill updates.", count, harness),
 			EvidenceRefs: sessionEventGroupEvidenceRefs(grouped),
 			Confidence:   0.35,
@@ -879,9 +882,10 @@ func sessionMiningRepeatedReinventions(workbench work.WorkbenchReport) []session
 		return nil
 	}
 	return []sessionMiningFinding{{
-		Kind:       "control_plane_movement",
-		Summary:    "Multiple recent continue/dispatch runs exist; inspect whether repeated lifecycle movement should become a smoother control.",
-		Confidence: 0.4,
+		Kind:        "control_plane_movement",
+		SemanticKey: sessionMiningSemanticKey("control_plane_movement", "continue-dispatch"),
+		Summary:     "Multiple recent continue/dispatch runs exist; inspect whether repeated lifecycle movement should become a smoother control.",
+		Confidence:  0.4,
 	}}
 }
 
@@ -901,6 +905,7 @@ func sessionMiningRulesToRetire(workbench work.WorkbenchReport) []sessionMiningF
 	}
 	return []sessionMiningFinding{{
 		Kind:         "review_friction",
+		SemanticKey:  sessionMiningSemanticKey("review_friction", "held-work-decision-cards"),
 		Summary:      "Review-held work exists; retire or hide any rule that only creates a decision card without changing future execution.",
 		EvidenceRefs: refs,
 		Confidence:   0.3,
@@ -950,6 +955,7 @@ func sessionMiningPreferences(events []sessionHookEvent, workbench work.Workbenc
 		}
 		out = append(out, sessionMiningFinding{
 			Kind:         group.Kind,
+			SemanticKey:  sessionMiningSemanticKey(group.Kind, group.Label),
 			Summary:      sessionPreferenceSummary(group.Kind, group.Label, group.Count),
 			EvidenceRefs: group.EvidenceRefs,
 			Confidence:   sessionPreferenceConfidence(group.Kind, group.Count),

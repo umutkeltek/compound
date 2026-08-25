@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -246,6 +247,84 @@ func TestSessionsMineApplyRoutesSyntheticFindingsProposeOnly(t *testing.T) {
 	}
 	if !stringSliceContains(skillProposal.Warnings, "does not mutate CapabilityGraph") {
 		t.Fatalf("skill proposal missing no-mutation warning: %+v", skillProposal.Warnings)
+	}
+}
+
+func TestSessionsMineApplyReusesSemanticReviewArtifactsAcrossOverlappingWindows(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	first := sessionMiningReport{
+		PreferencesFound: []sessionMiningFinding{{
+			Kind:         "repeated_tool_choice",
+			SemanticKey:  "repeated_tool_choice:terminal",
+			Summary:      `Operator repeatedly chose tool "terminal" across 20 session evidence refs.`,
+			EvidenceRefs: []string{"hook:first", "session:first"},
+			Confidence:   0.8,
+		}},
+		RulesToRetire: []sessionMiningFinding{{
+			Kind:         "review_friction",
+			SemanticKey:  "review_friction:held-work",
+			Summary:      "Review-held work exists; retire review-only friction.",
+			EvidenceRefs: []string{"work:first"},
+			Confidence:   0.3,
+		}},
+		CandidateSkillUpdates: []sessionMiningFinding{{
+			Kind:         "session_pattern_review",
+			SemanticKey:  "session_pattern_review:codex",
+			Summary:      "Review 20 recent codex hook events for repeated tool gaps or reusable skill updates.",
+			EvidenceRefs: []string{"hook:first", "session:first"},
+			Confidence:   0.35,
+		}},
+	}
+	firstApply, err := applySessionMiningReport(homePath, &first, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.PreferencesFound = []sessionMiningFinding{{
+		Kind:         "repeated_tool_choice",
+		SemanticKey:  "repeated_tool_choice:terminal",
+		Summary:      `Operator repeatedly chose tool "terminal" across 21 session evidence refs.`,
+		EvidenceRefs: []string{"hook:first", "session:first", "hook:second", "session:second"},
+		Confidence:   0.82,
+	}}
+	second.RulesToRetire = []sessionMiningFinding{{
+		Kind:         "review_friction",
+		SemanticKey:  "review_friction:held-work",
+		Summary:      "Review-held work still exists; retire review-only friction.",
+		EvidenceRefs: []string{"work:first", "work:second", "check:first", "check:second"},
+		Confidence:   0.3,
+	}}
+	second.CandidateSkillUpdates = []sessionMiningFinding{{
+		Kind:         "session_pattern_review",
+		SemanticKey:  "session_pattern_review:codex",
+		Summary:      "Review 21 recent codex hook events for repeated tool gaps or reusable skill updates.",
+		EvidenceRefs: []string{"hook:first", "session:first", "hook:second", "session:second"},
+		Confidence:   0.35,
+	}}
+	secondApply, err := applySessionMiningReport(homePath, &second, cliTestNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := secondApply.PreferenceCandidateIDs, firstApply.PreferenceCandidateIDs; !slices.Equal(got, want) {
+		t.Fatalf("overlapping preference window minted duplicate ids: first=%v second=%v", want, got)
+	}
+	if got, want := secondApply.RetireProposalIDs, firstApply.RetireProposalIDs; !slices.Equal(got, want) {
+		t.Fatalf("overlapping rule-retirement window minted duplicate ids: first=%v second=%v", want, got)
+	}
+	if got, want := secondApply.SkillUpdateProposalIDs, firstApply.SkillUpdateProposalIDs; !slices.Equal(got, want) {
+		t.Fatalf("overlapping skill window minted duplicate ids: first=%v second=%v", want, got)
+	}
+	for _, artifact := range secondApply.RoutedArtifacts {
+		if len(artifact.EvidenceRefs) != 4 {
+			t.Fatalf("reused route lost current evidence refs: %+v", artifact)
+		}
 	}
 }
 
