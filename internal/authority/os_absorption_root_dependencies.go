@@ -375,7 +375,7 @@ func inspectLaunchAgentDependencies(root string, needles []string) ([]OSRootDepe
 				return nil, fmt.Errorf("parse launch agent %s: %w", path, decodeErr)
 			}
 			for _, reference := range references {
-				if !filepath.IsAbs(reference) || !osRootPathWithin(installedHome, reference) {
+				if !osRootPathWithin(installedHome, reference) || !launchAgentExecutableReference(reference) {
 					continue
 				}
 				if targetDependent, targetDetail := fileReferencesLegacyOS(reference, needles); targetDependent {
@@ -422,6 +422,25 @@ func launchAgentStringValues(path string) ([]string, error) {
 		remaining = remaining[closeAt+len(closeTag):]
 	}
 	return values, nil
+}
+
+func launchAgentExecutableReference(path string) bool {
+	if !filepath.IsAbs(path) || strings.ContainsRune(path, os.PathListSeparator) {
+		return false
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false
+	}
+	if info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o111 != 0 {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".sh", ".zsh", ".bash", ".py", ".ts", ".js", ".mjs":
+		return true
+	default:
+		return false
+	}
 }
 func osRootPathWithin(root, candidate string) bool {
 	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(candidate))
