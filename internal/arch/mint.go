@@ -101,6 +101,11 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "read-only launchd+crontab projection surface (list/show/doctor); no mutation door; owns no authority object",
 		Consumer: "cmd/compound command-registry dispatch (`compound schedule ...`) via schedule.Run",
 	},
+	"organ:sessionmining": {
+		Class:    MintEvidence,
+		Purpose:  "deterministic propose-only router for session-mined preferences, rule-retirement plans, and capability lifecycle proposals with semantic-key idempotency across overlapping windows",
+		Consumer: "compound sessions mine --apply through cmd/compound's thin applySessionMiningReport adapter; operator review queues consume the emitted memory, distiller, and capability artifacts",
+	},
 	// lanemanifest is the one declarative unit that names a harness lane. Compound's
 	// consumption is the hook projection: `compound hook install --lane-file` derives
 	// the install harness and hook roster from it, and governed spawn refuses a lane

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,20 +11,16 @@ import (
 	"syscall"
 	"time"
 
-	"compound/internal/candidates"
-	"compound/internal/capgraph"
-	"compound/internal/distiller"
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/harvest"
 	"compound/internal/home"
 	"compound/internal/mem"
-	"compound/internal/reviewartifact"
+	"compound/internal/sessionmining"
 	"compound/internal/work"
 )
 
 const sessionMiningReportSchemaVersion = "compound.sessions_mine_report.v0.1"
-const sessionMiningApplyReportSchemaVersion = "compound.sessions_mine_apply_report.v0.1"
 const sessionMiningCheckpointSchemaVersion = "compound.sessions_mine_checkpoint.v0.1"
 const sessionMiningJobID = "sessions-mine-daily-dry-run"
 
@@ -78,12 +72,7 @@ type sessionMiningReport struct {
 	Apply                 *sessionMiningApplyReport `json:"apply,omitempty"`
 }
 
-type sessionMiningFinding struct {
-	Kind         string   `json:"kind"`
-	Summary      string   `json:"summary"`
-	EvidenceRefs []string `json:"evidence_refs,omitempty"`
-	Confidence   float64  `json:"confidence,omitempty"`
-}
+type sessionMiningFinding = sessionmining.Finding
 
 type sessionMiningCheck struct {
 	Name   string `json:"name"`
@@ -91,27 +80,9 @@ type sessionMiningCheck struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-type sessionMiningApplyReport struct {
-	SchemaVersion          string                        `json:"schema_version"`
-	Status                 string                        `json:"status"`
-	CreatedAt              string                        `json:"created_at"`
-	DryRun                 bool                          `json:"dry_run"`
-	PreferenceCandidateIDs []string                      `json:"preference_candidate_ids,omitempty"`
-	RetireProposalIDs      []string                      `json:"retire_proposal_ids,omitempty"`
-	SkillUpdateProposalIDs []string                      `json:"skill_update_proposal_ids,omitempty"`
-	RoutedArtifacts        []sessionMiningRoutedArtifact `json:"routed_artifacts,omitempty"`
-	Warnings               []string                      `json:"warnings,omitempty"`
-}
+type sessionMiningApplyReport = sessionmining.ApplyReport
 
-type sessionMiningRoutedArtifact struct {
-	Route          string   `json:"route"`
-	ID             string   `json:"id"`
-	CandidateID    string   `json:"candidate_id,omitempty"`
-	PlanPath       string   `json:"plan_path,omitempty"`
-	ReviewPath     string   `json:"review_path,omitempty"`
-	ReviewYAMLPath string   `json:"review_yaml_path,omitempty"`
-	EvidenceRefs   []string `json:"evidence_refs"`
-}
+type sessionMiningRoutedArtifact = sessionmining.RoutedArtifact
 
 type sessionHookEvent = envelope.HookEvent
 
@@ -1150,161 +1121,13 @@ func sortSessionFindings(findings []sessionMiningFinding) {
 }
 
 func applySessionMiningReport(homePath string, report *sessionMiningReport, now time.Time) (sessionMiningApplyReport, error) {
-	out := sessionMiningApplyReport{
-		SchemaVersion: sessionMiningApplyReportSchemaVersion,
-		Status:        "review_required",
-		CreatedAt:     now.UTC().Format(time.RFC3339),
-		DryRun:        false,
-	}
-	for _, finding := range report.PreferencesFound {
-		candidateID, err := recordSessionPreferenceCandidate(homePath, finding, now)
-		if err != nil {
-			return out, err
-		}
-		out.PreferenceCandidateIDs = append(out.PreferenceCandidateIDs, candidateID)
-		out.RoutedArtifacts = append(out.RoutedArtifacts, sessionMiningRoutedArtifact{
-			Route:        "memory_candidate",
-			ID:           candidateID,
-			EvidenceRefs: finding.EvidenceRefs,
-		})
-	}
-	for _, finding := range report.RulesToRetire {
-		artifact, err := recordSessionRuleRetireProposal(homePath, finding, now)
-		if err != nil {
-			return out, err
-		}
-		out.RetireProposalIDs = append(out.RetireProposalIDs, artifact.ID)
-		out.RoutedArtifacts = append(out.RoutedArtifacts, artifact)
-	}
-	for _, finding := range report.CandidateSkillUpdates {
-		artifact, err := recordSessionSkillLifecycleProposal(homePath, finding, now)
-		if err != nil {
-			return out, err
-		}
-		out.SkillUpdateProposalIDs = append(out.SkillUpdateProposalIDs, artifact.ID)
-		out.RoutedArtifacts = append(out.RoutedArtifacts, artifact)
-	}
-	if len(out.PreferenceCandidateIDs) == 0 && len(out.RetireProposalIDs) == 0 && len(out.SkillUpdateProposalIDs) == 0 {
-		out.Status = "ok"
-		out.Warnings = append(out.Warnings, "no routed findings met deterministic thresholds")
-	}
-	sort.Strings(out.PreferenceCandidateIDs)
-	sort.Strings(out.RetireProposalIDs)
-	sort.Strings(out.SkillUpdateProposalIDs)
-	return out, nil
-}
-
-func recordSessionPreferenceCandidate(homePath string, finding sessionMiningFinding, now time.Time) (string, error) {
-	if err := requireSessionFindingEvidence(finding); err != nil {
-		return "", err
-	}
-	store, err := mem.Open(homePath)
-	if err != nil {
-		return "", err
-	}
-	candidates, err := store.Capture([]mem.Candidate{{
-		Entity:          "operator",
-		Predicate:       "preference." + reviewartifact.Slugify(finding.Kind, 32),
-		Object:          finding.Summary,
-		ObservationDate: now.UTC().Format(time.RFC3339),
-		Confidence:      finding.Confidence,
-		Derivation:      "deterministic",
-		ProvenanceLane:  "deterministic",
-		ClaimType:       "preference",
-		Qualifiers: map[string]string{
-			"domain":       "behavioral",
-			"source":       "sessions_mine",
-			"finding_kind": finding.Kind,
-		},
-		SourceTraceRef: finding.EvidenceRefs[0],
-		SnippetHash:    "sha256:" + sessionMiningDigest(finding.Summary, strings.Join(finding.EvidenceRefs, "\n")),
-		Visibility:     "contextual",
-		Reason:         "session-mined behavioral preference candidate; requires adjudication before recall",
-	}}, now)
-	if err != nil {
-		return "", err
-	}
-	if len(candidates) == 0 {
-		return "", fmt.Errorf("preference candidate was not recorded for finding %q", finding.Summary)
-	}
-	return candidates[0].ID, nil
-}
-
-func recordSessionRuleRetireProposal(homePath string, finding sessionMiningFinding, now time.Time) (sessionMiningRoutedArtifact, error) {
-	if err := requireSessionFindingEvidence(finding); err != nil {
-		return sessionMiningRoutedArtifact{}, err
-	}
-	candidateID := "session_rule_retire_" + reviewartifact.Digest12(finding.Kind+finding.Summary+strings.Join(finding.EvidenceRefs, "\x00"))
-	candidate := distiller.Candidate{
-		ID:            candidateID,
-		Kind:          distiller.KindPolicyPatch,
-		Subject:       "session-mined rule retirement proposal",
-		Statement:     finding.Summary,
-		Detail:        "Review whether this rule only creates review friction without changing future execution. Do not retire any rule without an operator-recorded review.",
-		Confidence:    finding.Confidence,
-		Derivation:    "deterministic",
-		EvidenceRefs:  compactSessionRefs(finding.EvidenceRefs...),
-		PolicyVersion: distiller.DefaultPolicy().Stamp(),
-		Verdict:       candidates.NoPromote,
-	}
-	if err := candidates.WriteCandidate(homePath, candidates.PolicyPatch, candidateID, candidate); err != nil {
-		return sessionMiningRoutedArtifact{}, err
-	}
-	plan, err := distiller.BuildImprovementPlan(homePath, candidateID, "", now)
-	if err != nil {
-		return sessionMiningRoutedArtifact{}, err
-	}
-	paths, err := distiller.RecordImprovementPlan(homePath, plan)
-	if err != nil {
-		return sessionMiningRoutedArtifact{}, err
-	}
-	return sessionMiningRoutedArtifact{
-		Route:          "distiller_improvement_plan",
-		ID:             plan.ID,
-		CandidateID:    candidateID,
-		PlanPath:       paths.PlanPath,
-		ReviewPath:     paths.ReviewPath,
-		ReviewYAMLPath: paths.ReviewYAMLPath,
-		EvidenceRefs:   plan.EvidenceRefs,
-	}, nil
-}
-
-func recordSessionSkillLifecycleProposal(homePath string, finding sessionMiningFinding, now time.Time) (sessionMiningRoutedArtifact, error) {
-	if err := requireSessionFindingEvidence(finding); err != nil {
-		return sessionMiningRoutedArtifact{}, err
-	}
-	proposal, err := capgraph.BuildCapabilityLifecycleProposal(capgraph.CapabilityLifecycleProposalInput{
-		ProposalKind: "revise",
-		Subject:      "session-mined skill update proposal",
-		Statement:    finding.Summary,
-		Detail:       "Review whether the repeated session pattern should revise, narrow, or retire an existing capability. Do not install or mutate skills from this proposal.",
-		Confidence:   finding.Confidence,
-		EvidenceRefs: finding.EvidenceRefs,
+	return sessionmining.Apply(homePath, sessionmining.ApplyInput{
+		Preferences:   report.PreferencesFound,
+		RulesToRetire: report.RulesToRetire,
+		SkillUpdates:  report.CandidateSkillUpdates,
 	}, now)
-	if err != nil {
-		return sessionMiningRoutedArtifact{}, err
-	}
-	paths, err := capgraph.RecordCapabilityLifecycleProposal(homePath, proposal)
-	if err != nil {
-		return sessionMiningRoutedArtifact{}, err
-	}
-	return sessionMiningRoutedArtifact{
-		Route:        "capability_lifecycle_proposal",
-		ID:           proposal.ID,
-		PlanPath:     paths.PlanPath,
-		ReviewPath:   paths.ReviewPath,
-		EvidenceRefs: proposal.EvidenceRefs,
-	}, nil
 }
 
-func requireSessionFindingEvidence(finding sessionMiningFinding) error {
-	if len(compactSessionRefs(finding.EvidenceRefs...)) == 0 {
-		return fmt.Errorf("finding %q missing session evidence refs", finding.Summary)
-	}
-	return nil
-}
-
-func sessionMiningDigest(values ...string) string {
-	sum := sha256.Sum256([]byte(strings.Join(values, "\x00")))
-	return hex.EncodeToString(sum[:])
+func sessionMiningSemanticKey(kind, identity string) string {
+	return sessionmining.SemanticKey(kind, identity)
 }
