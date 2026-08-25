@@ -24,8 +24,8 @@ package harness
 //
 // Privacy: tracked templates are GENERIC — they name tool verbs and CLI
 // shapes, never product handles, personal paths, or private URLs. Harness-
-// specific private content (the Claude MCP tool namespace, voice-notify curl,
-// PAI customizations dir, MEMORY/SKILLS/execution.jsonl log) lives in a
+// specific private content (Claude MCP tool namespace, voice-notify endpoint,
+// Claude-only customizations directory + execution-log path) lives in a
 // gitignored overlay at <skills-root>/Browser/adapters/<harness>.extras.md;
 // the door substitutes its contents into the {{harness_extras}} slot at
 // render time when present. TestRedactGateOnSkillAdapterFile is the public
@@ -113,8 +113,8 @@ func SkillAdaptersFor(names []string) []HarnessAdapter {
 
 // claudeCodeAdapter: the tracked template carries ONLY a generic slot
 // ({{claude_extras}}); every harness-specific MCP-tool-name reference AND
-// every Claude-only extra (voice-notify curl, PAI customizations dir,
-// MEMORY/SKILLS/execution.jsonl log) lives in the private overlay at
+// every Claude-only extra (voice-notify endpoint, Claude customizations
+// directory, execution-log path) lives in the private overlay at
 // .compound-private/skills/Browser/adapters/claude_code.extras.md
 // (gitignored). Render reads the overlay at render time and substitutes its
 // contents verbatim for the slot when present. The function comment and the
