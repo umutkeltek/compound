@@ -70,7 +70,7 @@ func Doctor(homePath string, lane LaneConfig) (DoctorReport, error) {
 	lossyOrder := 0
 	chunkHashes := map[string]string{}
 	for _, item := range manifest.Items {
-		if err := validateChunkRecords(item.ID, item.Chunks); err != nil {
+		if err := validateChunkRecords(item); err != nil {
 			lossyOrder++
 		}
 		for _, chunk := range item.Chunks {
@@ -141,18 +141,24 @@ func rawMissingChunkFields(path string) (int, error) {
 	return missing, nil
 }
 
-func validateChunkRecords(itemID string, chunks []sourceobs.SourceManifestChunk) error {
-	if len(chunks) == 0 {
-		return fmt.Errorf("item %s has no chunks", itemID)
+func validateChunkRecords(item sourceobs.SourceManifestItem) error {
+	if len(item.Chunks) == 0 {
+		const emptyDigest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+		if item.BodyPolicy == "owned_snapshot" &&
+			item.FileHash == "sha256:"+emptyDigest &&
+			item.BodyRef == "artifact:sha256:"+emptyDigest {
+			return nil
+		}
+		return fmt.Errorf("item %s has no chunks", item.ID)
 	}
-	ords := make([]int, 0, len(chunks))
+	ords := make([]int, 0, len(item.Chunks))
 	seen := map[int]bool{}
-	for _, chunk := range chunks {
+	for _, chunk := range item.Chunks {
 		if strings.TrimSpace(chunk.ChunkHash) == "" {
-			return fmt.Errorf("item %s has empty chunk hash", itemID)
+			return fmt.Errorf("item %s has empty chunk hash", item.ID)
 		}
 		if seen[chunk.Ordinal] {
-			return fmt.Errorf("item %s duplicate chunk ordinal %d", itemID, chunk.Ordinal)
+			return fmt.Errorf("item %s duplicate chunk ordinal %d", item.ID, chunk.Ordinal)
 		}
 		seen[chunk.Ordinal] = true
 		ords = append(ords, chunk.Ordinal)
@@ -160,7 +166,7 @@ func validateChunkRecords(itemID string, chunks []sourceobs.SourceManifestChunk)
 	sort.Ints(ords)
 	for i, ord := range ords {
 		if ord != i {
-			return fmt.Errorf("item %s non-contiguous chunk ordinal %d at %d", itemID, ord, i)
+			return fmt.Errorf("item %s non-contiguous chunk ordinal %d at %d", item.ID, ord, i)
 		}
 	}
 	return nil

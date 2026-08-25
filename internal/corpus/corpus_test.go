@@ -147,6 +147,44 @@ func TestDoctorFailsWhenChunkRecordMissingOrdinalOrHash(t *testing.T) {
 	}
 }
 
+func TestDoctorAcceptsOwnedZeroByteItemWithoutChunks(t *testing.T) {
+	homePath := t.TempDir()
+	lane, _ := seedCorpusLane(t, homePath, 1, 48, 0)
+	dir := IndexDir(homePath, lane)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, filepath.Join(dir, "identity.json"), map[string]any{
+		"schema_version":        IdentitySchemaVersion,
+		"embedder_identity":     lane.Embedder.Identity(),
+		"prefix_schema_version": "v1",
+	})
+	const emptyDigest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	writeRaw(t, filepath.Join(dir, "manifest.json"), `{
+  "schema_version": "compound.corpus.manifest.v0.1",
+  "lane": "corpus-fixture",
+  "items": [{
+    "id": "item_empty",
+    "source_kind": "markdown",
+    "source_ref": "fixture-empty.md",
+    "file_hash": "sha256:`+emptyDigest+`",
+    "privacy": "private",
+    "body_policy": "owned_snapshot",
+    "body_ref": "artifact:sha256:`+emptyDigest+`",
+    "chunks": []
+  }]
+}`)
+	writeJSON(t, filepath.Join(dir, "vectors.json"), VectorFile{Vectors: map[string][]float32{}})
+
+	report, err := Doctor(homePath, lane)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if report.Status != "ok" || report.Items != 1 || report.Chunks != 0 || report.EmbeddedChunks != 0 {
+		t.Fatalf("zero-byte doctor report = %+v", report)
+	}
+}
+
 func TestIndexRefusesMixedEmbedderIdentityInIndexDir(t *testing.T) {
 	homePath := t.TempDir()
 	lane, _ := seedCorpusLane(t, homePath, 1, 48, 0)
