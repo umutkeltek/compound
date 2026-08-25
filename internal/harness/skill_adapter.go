@@ -572,6 +572,76 @@ func RunSkillAdapterCLI(args []string, apply, asJSON bool, now time.Time) error 
 	return nil
 }
 
+// RunBrowserOwnerSubcommand is the SINGLE entry point cmd/compound/main.go
+// calls for all browser-owner subcommands. Returning true means the
+// dispatcher handled it; false means the caller should keep searching its
+// own tables. The name is exported via internal/harness so cmd/compound keeps
+// only the if-and-return case line — no flag parsing, no imports, no logic.
+//
+// Home-flag resolution uses $COMPOUND_HOME (via home.Resolve); passing an
+// empty string defers to the door's env-driven default.
+func RunBrowserOwnerSubcommand(target string, args []string) bool {
+	switch target {
+	case "skill-adapter":
+		now := time.Now()
+		return runBrowserOwnerErr(RunSkillAdapterCLI(args, hasFlag(args, "--apply"), hasFlag(args, "--json"), now))
+	case "browser-profiles":
+		if len(args) == 0 || args[0] != "doctor" {
+			fmt.Fprintln(os.Stderr, "usage: compound harness browser-profiles doctor [--json] [--home P]")
+			return true
+		}
+		homePath, err := browserOwnerHome(flagValue(args[1:], "--home"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return true
+		}
+		return runBrowserOwnerErr(RunBrowserProfileDoctorCLI(homePath, hasFlag(args[1:], "--json")))
+	}
+	return false
+}
+
+// runBrowserOwnerErr prints an error to stderr and returns true (handled)
+// uniformly so RunBrowserOwnerSubcommand can be a single boolean expression.
+func runBrowserOwnerErr(err error) bool {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+	}
+	return true
+}
+
+// browserOwnerHome resolves the optional --home flag value; empty ⇒ use
+// env-derived COMPOUND_HOME. Indirection keeps home.Resolve imports out of
+// cmd/compound/main.go.
+func browserOwnerHome(flag string) (string, error) {
+	if strings.TrimSpace(flag) == "" {
+		return os.Getenv("COMPOUND_HOME"), nil
+	}
+	return flag, nil
+}
+
+// minimal flag-parsing helper mirrors cmd/compound's flagValue without
+// pulling main.go's flag layer across the package boundary.
+func flagValue(args []string, name string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == name && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(args[i], name+"=") {
+			return strings.TrimPrefix(args[i], name+"=")
+		}
+	}
+	return ""
+}
+
+func hasFlag(args []string, name string) bool {
+	for _, a := range args {
+		if a == name || strings.HasPrefix(a, name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
 // skillAdapterFlag parses --flag value out of an args slice. Tiny copy of
 // cmd/compound's flagValue so the package owns its CLI.
 func skillAdapterFlag(args []string, name string) string {
