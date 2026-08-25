@@ -252,10 +252,11 @@ $ahead_behind_line
    NOT repo state. Judge modes against this note, not the extracted tree.
 2. Push/branch state advances after snapshot; "ahead N" above reflects
    package time only.
-3. .claude/, .codex/, .agents/, state/, .pytest_cache/, .ua/, .hermes/, and
-   body/ are always excluded because they contain harness/runtime state, caches,
-   generated analysis output, duplicate agent checkouts, or live body-store
-   sidecar databases (body/ is the switchback body-store SQLite/WAL/lock state).
+3. .claude/, .codex/, .agents/, state/, .pytest_cache/, .ua/, .hermes/,
+   body/, and graphify-out/ are always excluded because they contain
+   harness/runtime state, caches, generated analysis output, duplicate
+   agent checkouts, or live body-store sidecar databases (body/ is the
+   switchback body-store SQLite/WAL/lock state).
    Their absence is a packaging rule, not repo state.
 
 Cross-check findings against this note before flagging repo hygiene.
@@ -275,6 +276,7 @@ rsync_args=(
   --exclude "/.ua/"
   --exclude "/.hermes/"
   --exclude "/body/"
+  --exclude "/graphify-out/"
   --filter "+ /memory/"
 )
 
