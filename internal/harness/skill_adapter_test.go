@@ -132,9 +132,14 @@ func TestRenderSkillAdapterPerHarnessIsDeterministic(t *testing.T) {
 			if !strings.Contains(string(a), "body_sha256="+wantHex) {
 				t.Errorf("F2 FAIL: %s adapter footer missing body sha256 %s", h.ID, wantHex)
 			}
-			// Each adapter must carry a harness-specific header.
-			if !strings.Contains(string(a), h.Header) {
-				t.Errorf("F2 FAIL: %s adapter header missing", h.ID)
+			// Each adapter must carry a harness-specific header. Check by
+			// name (the slot may be substituted with the private overlay in
+			// production, so we don't byte-compare against h.Header verbatim
+			// for claude_code). The harness name + "Adapter (rendered)"
+			// marker survives substitution.
+			wantMarker := strings.Split(h.Header, "Adapter")[0]
+			if !strings.Contains(string(a), wantMarker) {
+				t.Errorf("F2 FAIL: %s adapter header missing (marker %q not found)", h.ID, wantMarker)
 			}
 		})
 	}
@@ -151,6 +156,98 @@ func TestRenderSkillAdapterPerHarnessIsDeterministic(t *testing.T) {
 func TestRenderSkillAdapterRefusesEmptyBody(t *testing.T) {
 	if _, err := RenderSkillAdapter(nil, DefaultSkillAdapters()[0], fixedNow()); err == nil {
 		t.Fatal("expected refusal on empty body")
+	}
+}
+
+// F10: the tracked claude_code template is free of private-tool references.
+// Private content lives in the overlay file at
+// .compound-private/skills/Browser/adapters/claude_code.extras.md (gitignored).
+// Render with overlay present → includes private content. Render without →
+// omits it. F2 determinism still holds.
+func TestClaudeExtrasComeFromPrivateOverlayNotTemplate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// The compiled template (the header string) MUST NOT carry any
+	// private-tool reference. Only the generic {{claude_extras}} slot.
+	for _, a := range DefaultSkillAdapters() {
+		if a.ID != "claude_code" {
+			continue
+		}
+		banned := []string{"localhost", "PAI", "~/.claude"}
+		for _, needle := range banned {
+			if strings.Contains(a.Header, needle) {
+				t.Errorf("F10 FAIL: compiled claude_code template still carries %q — must live in the private overlay only", needle)
+			}
+		}
+		// The slot itself MUST be present so the door knows where to substitute.
+		if !strings.Contains(a.Header, "{{claude_extras}}") {
+			t.Errorf("F10 FAIL: claude_code template is missing the {{claude_extras}} slot")
+		}
+	}
+
+	claude := HarnessAdapter{
+		ID:        "claude_code",
+		SkillDir:  func(s string) string { return filepath.Join(home, ".claude", "skills", s) },
+		SkillPath: func(s string) string { return filepath.Join(home, ".claude", "skills", s, "SKILL.md") },
+		Header:    DefaultSkillAdapters()[0].Header, // same tracked template
+	}
+	overlay := []byte("OVERLAY_PRIVATE_CONTENT\n")
+
+	overlayDir := filepath.Join(home, ".agents", "skills", "Browser", "adapters")
+	if err := os.MkdirAll(overlayDir, 0o755); err != nil {
+		t.Fatalf("mkdir overlay dir: %v", err)
+	}
+	overlayPath := filepath.Join(overlayDir, "claude_code.extras.md")
+	if err := os.WriteFile(overlayPath, overlay, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	now := fixedNow()
+	body := fixtureBody(t)
+
+	// Render WITH overlay — private content must appear.
+	with, err := RenderSkillAdapter(body, claude, now)
+	if err != nil {
+		t.Fatalf("render with overlay: %v", err)
+	}
+	if !strings.Contains(string(with), string(overlay)) {
+		t.Errorf("F10 FAIL: render with overlay present does not include private content")
+	}
+
+	// Remove the overlay — render must omit it (no error, no leftover slot).
+	if err := os.Remove(overlayPath); err != nil {
+		t.Fatalf("remove overlay: %v", err)
+	}
+	without, err := RenderSkillAdapter(body, claude, now)
+	if err != nil {
+		t.Fatalf("render without overlay: %v", err)
+	}
+	if strings.Contains(string(without), string(overlay)) {
+		t.Errorf("F10 FAIL: render without overlay still includes private content")
+	}
+	if strings.Contains(string(without), "{{claude_extras}}") {
+		t.Errorf("F10 FAIL: render without overlay still has an unfilled slot — template must substitute empty")
+	}
+
+	// F2 determinism: two renders with the same overlay state are byte-identical.
+	if err := os.WriteFile(overlayPath, overlay, 0o644); err != nil {
+		t.Fatalf("rewrite overlay: %v", err)
+	}
+	a, _ := RenderSkillAdapter(body, claude, now)
+	b, _ := RenderSkillAdapter(body, claude, now)
+	if string(a) != string(b) {
+		t.Errorf("F10 determinism: two renders with overlay are NOT byte-identical")
+	}
+
+	// And without the overlay — same property.
+	if err := os.Remove(overlayPath); err != nil {
+		t.Fatalf("remove overlay (2): %v", err)
+	}
+	c, _ := RenderSkillAdapter(body, claude, now)
+	d, _ := RenderSkillAdapter(body, claude, now)
+	if string(c) != string(d) {
+		t.Errorf("F10 determinism: two renders without overlay are NOT byte-identical")
 	}
 }
 
