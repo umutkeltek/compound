@@ -246,25 +246,7 @@ func Exists(homePath string) bool {
 	return err == nil
 }
 
-// Add upserts a node by id. The append-only nodes log used to mask duplicate
-// ids behind loadNodes' last-write-wins-first-seen read, so offer scoring and
-// edge counters could over-count phantom rows on a re-imported skill manifest
-// with drift (one extra trigger flips "same id, identical bytes" into a second
-// row the reader silently collapsed). Add now honors the last-wins invariant
-// on DISK instead of only at read time:
-//
-//   - same id, byte-identical → no-op (replay stays a no-op at file level);
-//   - same id, drifted content → the log is rewritten atomically (temp file +
-//     rename in the same dir) with the new row REPLACING the old at the old
-//     row's position. First-seen order — what loadNodes already returns — is
-//     preserved, so the byte-equivalence guarantee holds across a drift Add.
-//     This is what F1 pins;
-//   - different id → appendJSONL, as before.
-//
-// Every writer (ApplySkillManifest, AddGoverned, panel imports) inherits this
-// without change; the legacy 302-row duplicate pile is the orphan of the
-// pre-upsert era and is collapsed by the one-shot CompactNodes call wired into
-// the end of ApplySkillManifest (slice 4).
+// Add upserts a node (append-only; last write wins on load).
 func (s *Store) Add(n Node) error {
 	if !contains(NodeKinds, n.Kind) {
 		return fmt.Errorf("node kind must be one of %v, got %q", NodeKinds, n.Kind)
@@ -276,15 +258,10 @@ func (s *Store) Add(n Node) error {
 	if err != nil {
 		return err
 	}
-	for i := range nodes {
-		if nodes[i].ID != n.ID {
-			continue
-		}
-		if reflect.DeepEqual(nodes[i], n) {
+	for _, existing := range nodes {
+		if existing.ID == n.ID && reflect.DeepEqual(existing, n) {
 			return nil
 		}
-		nodes[i] = n
-		return s.rewriteNodesAtomic(nodes)
 	}
 	return appendJSONL(s.nodesLog(), &n)
 }
