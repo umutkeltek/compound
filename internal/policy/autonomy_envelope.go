@@ -250,6 +250,17 @@ func intentCapturesForeignWorkInProgress(ai envelope.ActionIntent, sc SourceCont
 	switch strings.TrimSpace(ai.Target.Kind) {
 	case "command", "session":
 		return false
+	case "file":
+		status := sourceControlTargetStatus(ai, sc)
+		if status == "clean" {
+			return false
+		}
+		// A dirty file target is foreign work in progress UNLESS this session
+		// wrote the dirt itself: continuing to edit a file the session already
+		// touched rewrites its own work in progress, never anyone else's, and
+		// a single-file write cannot record or destroy the foreign dirt that
+		// lives on other paths. Unknown ownership stays fail-closed.
+		return !(status == "dirty" && sc.SessionOwnsTarget)
 	}
 	return sourceControlTargetStatus(ai, sc) != "clean"
 }

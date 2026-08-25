@@ -28,6 +28,7 @@ const (
 	ActionDomainDeploy     = "deploy"
 	ActionDomainMemory     = "memory"
 	ActionDomainControl    = "control"
+	ActionDomainHarness    = "harness"
 
 	ClassifierRiskUnknown    = ""
 	ClassifierRiskBenign     = "benign"
@@ -143,6 +144,18 @@ func ClassifyToolAction(request ToolActionRequest) ActionClassification {
 		classification.BlastRadius = "host"
 	case isControlTool(tool):
 		classification = classifyControlAction(classification, tool)
+	case isHarnessInteractionTool(tool):
+		// Operator-facing questions and session-local bookkeeping: the entire
+		// effect lives and dies inside the live session. Nothing is written to
+		// any persistent sink and there is no destination outside the session,
+		// so the lineage sink gate and the destination floor have nothing to
+		// check here. This is a closed set -- see isHarnessInteractionTool.
+		classification.Domain = ActionDomainHarness
+		classification.MutationClass = "read"
+		classification.Reversibility = "none"
+		classification.BlastRadius = "local"
+		classification.RequiredSink = ""
+		classification.NeedsDestination = false
 	case isMessagingTool(tool):
 		classification.Domain = ActionDomainMessaging
 		classification.TargetKind = "recipient"
@@ -206,7 +219,11 @@ func ClassifyToolAction(request ToolActionRequest) ActionClassification {
 	default:
 		classification.Known = false
 		classification.Domain = ActionDomainUnknown
-		classification.Operation = "unknown"
+		// Keep the raw tool-derived operation instead of collapsing it to
+		// "unknown": the segment record is the only place the original tool
+		// name survives, and a floor that erases the name of what it caught
+		// cannot be diagnosed after the fact. The unknown classification and
+		// every floor it raises are unchanged.
 		classification.RequiredSink = "unknown"
 		classification.NeedsSchema = true
 	}
@@ -686,6 +703,26 @@ func isHarnessControlTool(tool string) bool {
 		"taskcreate", "taskupdate", "tasklist", "taskget", "taskoutput", "taskstop",
 		"enterplanmode", "exitplanmode", "enterworktree", "exitworktree",
 		"endconversation":
+		return true
+	}
+	return false
+}
+
+// isHarnessInteractionTool is a CLOSED enumeration of harness-internal tools
+// whose entire effect stays inside the live session: asking the operator a
+// question, or keeping session-local task bookkeeping. They have no
+// destination outside the session, no outbound side effect, no scheduling,
+// and no dispatch of other agents. Agent fan-out and collaboration tools are
+// classified as control; cron and wakeup creators, artifact publication,
+// notifications, workflow orchestration, and MCP resource readers carry host
+// or outbound side effects (or leave the session) and stay unlisted on
+// purpose, keeping the fail-closed default until each gets an explicit
+// domain of its own.
+func isHarnessInteractionTool(tool string) bool {
+	switch tool {
+	case "askuserquestion", "ask_user_question",
+		"todowrite", "todo_write",
+		"todoread", "todo_read":
 		return true
 	}
 	return false

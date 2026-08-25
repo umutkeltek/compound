@@ -998,7 +998,7 @@ func TestReconcileInstalledHooksObservesClaudeQwenProfile(t *testing.T) {
 //
 // The fifth harness claude_qwen used to point at "qwen-tap", a directory
 // InstallHooks never creates -- the switchback published layout for qwen is
-// ".config/switchback/claude/_providers/qwen/settings.json", matching the
+// ".switchback/config/claude/_providers/qwen/settings.json", matching the
 // claude_minimax line directly above it. With the stale "qwen-tap" entry, the
 // source list read a path that no installer ever writes, so the bindings were
 // never observed and the blocking_hook_live readiness gate could never see them.

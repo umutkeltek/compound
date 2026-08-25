@@ -1508,6 +1508,7 @@ func sourceControlContextForAction(homePath, targetPath, sessionID, actor string
 		return nil, "", nil, nil
 	}
 	ownedChangedPaths, foreignChangedPaths := 0, 0
+	sessionOwnsTarget := false
 	claimedWorkID := ""
 	if live && snapshot.Status == "dirty" {
 		changedPaths, changedErr := readSourceControlChangedPaths(snapshot.GitRoot)
@@ -1525,6 +1526,9 @@ func sourceControlContextForAction(homePath, targetPath, sessionID, actor string
 		for _, path := range changedPaths {
 			if _, ok := owned[filepath.Clean(path)]; ok {
 				ownedChangedPaths++
+				if filepath.Clean(path) == filepath.Clean(snapshot.TargetPath) {
+					sessionOwnsTarget = true
+				}
 			} else {
 				foreignChangedPaths++
 			}
@@ -1556,6 +1560,7 @@ func sourceControlContextForAction(homePath, targetPath, sessionID, actor string
 		SessionOwnershipKnown:      live,
 		SessionOwnedChangedPaths:   ownedChangedPaths,
 		SessionForeignChangedPaths: foreignChangedPaths,
+		SessionOwnsTarget:          sessionOwnsTarget,
 		ClaimedWorkID:              claimedWorkID,
 		ChangedStateFingerprint:    snapshot.ChangedStateFingerprint,
 		EvidenceRefs:               evidenceRefs,

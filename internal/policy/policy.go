@@ -91,6 +91,7 @@ type SourceControlContext struct {
 	SessionOwnershipKnown      bool                           `json:"session_ownership_known,omitempty"`
 	SessionOwnedChangedPaths   int                            `json:"session_owned_changed_paths,omitempty"`
 	SessionForeignChangedPaths int                            `json:"session_foreign_changed_paths,omitempty"`
+	SessionOwnsTarget          bool                           `json:"session_owns_target,omitempty"`
 	ClaimedWorkID              string                         `json:"claimed_work_id,omitempty"`
 	ChangedStateFingerprint    string                         `json:"changed_state_fingerprint,omitempty"`
 	ReviewedMutation           *ReviewedSourceControlMutation `json:"reviewed_mutation,omitempty"`

@@ -129,6 +129,24 @@ func buildHabitatEntries() []HabitatEntry {
 		// control-plane plan docs. Config-class: operator-authored, backed
 		// up, never compacted; Scaffold=false like profiles.
 		active("scripts", "scripts", HabitatClassConfig, false, true, false),
+		// campaigns/ holds operator campaign working state (camp-* dirs).
+		// Scaffold=false: only campaign automation creates it.
+		active("campaigns", "campaigns", HabitatClassOperational, false, true, false),
+		// env/ custodies lane env bodies (GEMINI_API_KEY and friends).
+		// Backup=false is deliberate, same rule as secrets/: credential
+		// bodies must NEVER flow into backup bundles — a lost env body is
+		// re-provisioned, not restored.
+		active("env", "env", HabitatClassConfig, false, false, false),
+		// evals/ holds lane bakeoff/evaluation evidence. Scaffold=false:
+		// only evaluation runs create it.
+		active("evals", "evals", HabitatClassEvidence, false, true, false),
+		// lane-ledger/ is the live lane-state ledger (snapshots/ + LATEST)
+		// maintained by the lane-ledger automation. Recorded state that
+		// backups must preserve; never compacted.
+		active("lane-ledger", "lane-ledger", HabitatClassEvidence, false, true, false),
+		// proof-reports/ holds pre/post-land proof JSON produced by the
+		// proof automation. Mode-600 evidence, backed up.
+		active("proof-reports", "proof-reports", HabitatClassEvidence, false, true, false),
 		// nightly-continue.*.log are the receipt logs the
 		// compound-nightly-continue.sh launchd job appends one line per
 		// run (outcome or skip-reason). Top-level files so `tail
@@ -136,6 +154,18 @@ func buildHabitatEntries() []HabitatEntry {
 		{ID: "nightly-continue.log", Prefix: "nightly-continue.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
 		{ID: "nightly-continue.stderr.log", Prefix: "nightly-continue.stderr.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
 		{ID: "nightly-continue.stdout.log", Prefix: "nightly-continue.stdout.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
+		// daily-digest.*.log, notice-flush.*.log and autonomy-heartbeat.*.log
+		// are the receipt logs the com.compound.daily-digest,
+		// com.compound.notice-flush and com.compound.autonomy-heartbeat
+		// launchd jobs append per run. Modeled on nightly-continue.*.log.
+		{ID: "daily-digest.log", Prefix: "daily-digest.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
+		{ID: "daily-digest.stderr.log", Prefix: "daily-digest.stderr.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
+		{ID: "daily-digest.stdout.log", Prefix: "daily-digest.stdout.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
+		{ID: "notice-flush.log", Prefix: "notice-flush.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
+		{ID: "notice-flush.stderr.log", Prefix: "notice-flush.stderr.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
+		{ID: "notice-flush.stdout.log", Prefix: "notice-flush.stdout.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
+		{ID: "autonomy-heartbeat.log", Prefix: "autonomy-heartbeat.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
+		{ID: "autonomy-heartbeat.stderr.log", Prefix: "autonomy-heartbeat.stderr.log", Class: HabitatClassOperational, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
 		active("context", "context", HabitatClassOperational, true, true, false),
 		child("context.requests", "context/requests", HabitatClassOperational, true, true, false),
 		child("context.packs", "context/packs", HabitatClassOperational, true, true, false),
