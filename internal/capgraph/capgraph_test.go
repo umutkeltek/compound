@@ -41,8 +41,12 @@ func TestAddNodeSkipsIdenticalReplayButKeepsUpdates(t *testing.T) {
 	if err := s.Add(node); err != nil {
 		t.Fatal(err)
 	}
-	if got := len(readNonEmptyLines(t, filepath.Join(home, "registries", "capability-nodes.jsonl"))); got != 2 {
-		t.Fatalf("node update should append exactly one new row, got %d", got)
+	// Add is upsert-by-id (slice 1): a same-id drift REPLACES in place, so the
+	// row count stays at 1 -- the update is visible via List(), not via a new
+	// file row. See TestStoreAddReplacesDriftedSameIDRow for the full assertion
+	// including order preservation.
+	if got := len(readNonEmptyLines(t, filepath.Join(home, "registries", "capability-nodes.jsonl"))); got != 1 {
+		t.Fatalf("drift Add should replace in place (one row), got %d", got)
 	}
 	nodes, err := s.List()
 	if err != nil {
