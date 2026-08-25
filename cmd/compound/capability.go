@@ -307,7 +307,7 @@ func cmdCapability(args []string) {
 		case osPluginBoardPath != "" && brainRecipeDir == "" && osSkillPath == "" && len(p) == 0:
 			manifest, err = capgraph.LoadOSPluginBoard(osPluginBoardPath, now)
 		case osSkillPath == "" && osPluginBoardPath == "" && brainRecipeDir == "" && len(p) == 1:
-			manifest, err = capgraph.LoadSkillManifest(p[0])
+			manifest, err = capgraph.LoadSkillManifestForPath(p[0], now)
 		default:
 			fmt.Fprintln(os.Stderr, "usage: compound capability import-skills <skill-manifest.yaml> | --os-skill-json <skill-manifest.json> | --os-plugin-board-json <skills-selection-board.json> | --brain-recipe-dir <dir> [--dry-run]")
 			os.Exit(2)
