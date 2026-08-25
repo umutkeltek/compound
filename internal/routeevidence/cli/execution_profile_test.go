@@ -1,8 +1,9 @@
-package main
+package routeevidencecli
 
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,12 +12,12 @@ import (
 	"compound/internal/routeevidence"
 )
 
-func TestRouteExecutionProfileJSONDoesNotCreateCOMPOUNDHOME(t *testing.T) {
+func TestExecutionProfileJSONDoesNotCreateCOMPOUNDHOME(t *testing.T) {
 	missingHome := filepath.Join(t.TempDir(), "must-remain-absent")
 	t.Setenv("COMPOUND_HOME", missingHome)
 
-	out := captureStdout(t, func() {
-		cmdRoute([]string{
+	out := captureExecProfileStdout(t, func() {
+		TryExecutionProfileCommand([]string{
 			"execution-profile",
 			"--profile", "mining-bulk",
 			"--role", "miner",
@@ -48,9 +49,9 @@ func TestRouteExecutionProfileJSONDoesNotCreateCOMPOUNDHOME(t *testing.T) {
 	}
 }
 
-func TestRouteExecutionProfileRejectsClaudeUltraWithPath(t *testing.T) {
+func TestExecutionProfileRejectsClaudeUltraWithPath(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := runRouteExecutionProfileCommand([]string{
+	code := RunExecutionProfileCommand([]string{
 		"--profile", "coding-implementation",
 		"--harness", "claude-code",
 		"--transport", "native",
@@ -65,9 +66,9 @@ func TestRouteExecutionProfileRejectsClaudeUltraWithPath(t *testing.T) {
 	}
 }
 
-func TestRouteExecutionProfileListsBuiltIns(t *testing.T) {
+func TestExecutionProfileListsBuiltIns(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := runRouteExecutionProfileCommand([]string{"--list", "--json"}, &stdout, &stderr)
+	code := RunExecutionProfileCommand([]string{"--list", "--json"}, &stdout, &stderr)
 	if code != 0 || stderr.Len() != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
@@ -80,8 +81,43 @@ func TestRouteExecutionProfileListsBuiltIns(t *testing.T) {
 	}
 }
 
-func TestRouteUsageMentionsExecutionProfile(t *testing.T) {
-	if !strings.Contains(routeUsage(""), "execution-profile") || !strings.Contains(routeUsage("execution-profile"), "--profile") {
-		t.Fatalf("route usage omits execution-profile:\n%s\n%s", routeUsage(""), routeUsage("execution-profile"))
+func TestExecutionProfileUsageMentionsProfileFlag(t *testing.T) {
+	if !strings.Contains(ExecutionProfileUsage(), "execution-profile") || !strings.Contains(ExecutionProfileUsage(), "--profile") {
+		t.Fatalf("execution-profile usage omits --profile:\n%s", ExecutionProfileUsage())
 	}
+}
+
+func captureExecProfileStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		out []byte
+		err error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		out, err := io.ReadAll(r)
+		readDone <- readResult{out: out, err: err}
+	}()
+
+	os.Stdout = w
+	defer func() {
+		os.Stdout = old
+		_ = w.Close()
+		_ = r.Close()
+	}()
+	fn()
+	os.Stdout = old
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	res := <-readDone
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
+	return string(res.out)
 }

@@ -275,7 +275,7 @@ func routeUsage(sub string) string {
 	case "promotion-record":
 		return "usage: compound route promotion-record --review <route_promotion.json> --rationale <text> [--json]"
 	case "execution-profile":
-		return "usage: compound route execution-profile (--list|--profile ID [--role R] [--capability-class C] [--harness claude-code|codex|worker] [--transport native|switchback|local] [--route-alias A] [--model provider/model] [--semantic-effort economy|balanced|deep|max] [--effort E] [--orchestration direct|standard|ultracode]) [--json]"
+		return routeevidencecli.ExecutionProfileUsage()
 	case "ev":
 		return routeEvUsage
 	default:
