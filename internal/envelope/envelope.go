@@ -60,7 +60,7 @@ var (
 	HookStatuses    = []string{"ok", "fail_open", "blocked", "error"}
 	// FailOpenReasons name WHY a hook failed open. Empty is always legal (pre-existing
 	// events state no reason); a non-empty value must be one of these.
-	FailOpenReasons = []string{FailOpenCapabilityAbsent, FailOpenContextUnavailable}
+	FailOpenReasons = []string{FailOpenCapabilityAbsent, FailOpenContextUnavailable, FailOpenBudgetExceeded}
 	ReceiptOutcomes = []string{"completed", "blocked", "failed", "no_op"}
 	RequestedModes  = []string{"observe", "plan", "execute", "review"}
 	// CloseOutcomes is the CLOSE outcome enum (CloseInput.Outcome in internal/work): the state a
@@ -1273,7 +1273,7 @@ type HookEvent struct {
 	FailOpenReason string `json:"fail_open_reason,omitempty"`
 }
 
-// The two meanings of Status=="fail_open". See HookEvent.FailOpenReason.
+// The meanings of Status=="fail_open". See HookEvent.FailOpenReason.
 const (
 	// FailOpenCapabilityAbsent: the harness has no native hook, so enforcement or
 	// delivery is delegated to an adapter. Expected, static, not alarming.
@@ -1281,6 +1281,15 @@ const (
 	// FailOpenContextUnavailable: context construction errored or exceeded its budget,
 	// so NO context reached the model. A runtime failure, and the alarming one.
 	FailOpenContextUnavailable = "context_unavailable"
+	// FailOpenBudgetExceeded: the hook command as a whole exceeded its wall-clock
+	// budget and answered fail-open from the watchdog instead of finishing.
+	// Lived 2026-08-24: hooks outran the harness's kill timeout and died with
+	// no output at all, which reads as a broken hook rather than a bounded
+	// one. This reason names that the answer is a budget decision, not a
+	// finished evaluation; the event carrying it never reaches disk (the
+	// process exits at the watchdog), so it exists to make the RESPONSE
+	// truthful.
+	FailOpenBudgetExceeded = "budget_exceeded"
 )
 
 func (e *HookEvent) Kind() string { return "hook_event" }

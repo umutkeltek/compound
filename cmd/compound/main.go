@@ -1735,6 +1735,12 @@ func runHookCommand(args []string) int {
 		return 2
 	}
 	now := time.Now()
+	// Arm the wall-clock budget BEFORE any work: the harness kills a slow
+	// hook with no output at all, which reads as a broken hook. The watchdog
+	// publishes a truthful fail-open answer before that can happen.
+	hookGate := newHookAnswerGate()
+	stopBudget := startHookBudgetWatchdog(parsed, hookGate, nil)
+	defer stopBudget()
 	homePath, compatibilityErr := home.Resolve("")
 	if compatibilityErr == nil {
 		compatibilityErr = home.RequireMutationCompatible(homePath)
@@ -1783,14 +1789,16 @@ func runHookCommand(args []string) int {
 			// semantic card undisclosed so retry can deliver it exactly once.
 			failClosed := res
 			failClosed.ContextOutput = ""
-			printJSON(liveHookResponseWithEnforcement(
-				deps.Registry,
-				parsed.Harness,
-				parsed.HookName,
-				failClosed,
-				parsed.Enforce,
-				stopOutcome,
-			))
+			hookGate.mainAnswer(func() {
+				printJSON(liveHookResponseWithEnforcement(
+					deps.Registry,
+					parsed.Harness,
+					parsed.HookName,
+					failClosed,
+					parsed.Enforce,
+					stopOutcome,
+				))
+			})
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return preToolDeliveryFailureExit(parsed.Enforce, failClosed)
 		}
@@ -1805,14 +1813,16 @@ func runHookCommand(args []string) int {
 		}
 	}
 	if parsed.Live {
-		printJSON(liveHookResponseWithEnforcement(
-			deps.Registry,
-			parsed.Harness,
-			parsed.HookName,
-			res,
-			parsed.Enforce,
-			stopOutcome,
-		))
+		hookGate.mainAnswer(func() {
+			printJSON(liveHookResponseWithEnforcement(
+				deps.Registry,
+				parsed.Harness,
+				parsed.HookName,
+				res,
+				parsed.Enforce,
+				stopOutcome,
+			))
+		})
 	} else {
 		printJSON(res)
 	}
@@ -1835,6 +1845,9 @@ func runHookCommand(args []string) int {
 // fixture/resolver seam, and returns before every persistence/parity/feedback
 // helper in the normal hook path.
 func runHookCommandWithoutHome(parsed hookCommandArgs, now time.Time, compatibilityErr error) int {
+	gate := newHookAnswerGate()
+	stopBudget := startHookBudgetWatchdog(parsed, gate, nil)
+	defer stopBudget()
 	orientation, _, err := contract.LoadPolicy("")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -1867,7 +1880,9 @@ func runHookCommandWithoutHome(parsed hookCommandArgs, now time.Time, compatibil
 		return hookRuntimeErrorExit(parsed)
 	}
 	if parsed.Live {
-		printJSON(liveHookResponseWithEnforcement(harness.DefaultRegistry(), parsed.Harness, parsed.HookName, res, parsed.Enforce, nil))
+		gate.mainAnswer(func() {
+			printJSON(liveHookResponseWithEnforcement(harness.DefaultRegistry(), parsed.Harness, parsed.HookName, res, parsed.Enforce, nil))
+		})
 	} else {
 		printJSON(res)
 	}
