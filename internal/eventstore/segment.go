@@ -15,8 +15,19 @@ import (
 )
 
 const (
-	segmentsDirName       = "segments"
-	maxBytes        int64 = 64 << 20
+	segmentsDirName = "segments"
+	// maxBytes bounds ONE segment file before the append path rolls to the
+	// next seq. It is first a HOT-PATH bound, not a disk-ergonomics bound:
+	// every put in a short-lived process (each agent hook invocation is a
+	// fresh process) fully parses the family's hot segment to prove
+	// id-absence before appending. At 64 MiB that parse was the dominant
+	// cost of a PreToolUse hook on a busy estate — measured 2026-08-24 at
+	// 4.5–9.4s per tool call, occasionally past the harness's 60s hook
+	// timeout, which kills the hook with NO output ("hook exited without a
+	// status code"). At 8 MiB the per-put parse stays a fraction of that
+	// for the whole day; rollover already existed (seq segments are in the
+	// wild), so nothing else changes shape.
+	maxBytes int64 = 8 << 20
 )
 
 type engineConfig struct {

@@ -90,6 +90,19 @@ type indexCacheEntry struct {
 // work_dde825bbd7a5).
 var indexParseObserver func(path string)
 
+// sourceHashObserver is a test-only seam fired whenever a segment's content
+// hash is actually COMPUTED (read + sha256) — the exact cost the durable
+// .verified memo exists to skip for already-validated stat tuples. Nil in
+// production; falsifiers install it to prove the memo works across processes
+// (counter-seam precedent: indexParseObserver).
+var sourceHashObserver func(path string)
+
+func notifySourceHash(path string) {
+	if sourceHashObserver != nil {
+		sourceHashObserver(path)
+	}
+}
+
 func notifyIndexParse(path string) {
 	if indexParseObserver != nil {
 		indexParseObserver(path)
@@ -159,7 +172,7 @@ func (e *engine) loadOrBuildIndex(family string, segment segmentFile) (segmentIn
 	if err := json.Unmarshal(data, &index); err != nil {
 		return e.rebuildIndex(family, segment, fmt.Sprintf("index decode failed: %v", err))
 	}
-	if reason, err := e.validateLoadedIndex(segment, index); err != nil {
+	if reason, err := e.validateLoadedIndex(path, segment, index); err != nil {
 		return segmentIndex{}, err
 	} else if reason != "" {
 		return e.rebuildIndex(family, segment, reason)
@@ -220,7 +233,7 @@ func (e *engine) rememberIndex(idxPath, segPath string, index segmentIndex) {
 	}
 }
 
-func (e *engine) validateLoadedIndex(segment segmentFile, index segmentIndex) (string, error) {
+func (e *engine) validateLoadedIndex(idxPath string, segment segmentFile, index segmentIndex) (string, error) {
 	if index.IndexVersion != indexVersion {
 		return fmt.Sprintf("index version %d differs from %d", index.IndexVersion, indexVersion), nil
 	}
@@ -245,6 +258,21 @@ func (e *engine) validateLoadedIndex(segment segmentFile, index segmentIndex) (s
 			return fmt.Sprintf("entry %q has invalid range offset=%d length=%d", id, entry.Offset, entry.Length), nil
 		}
 	}
+	// Durable validation memo: when a PREVIOUS process fully validated THIS
+	// exact (idx, segment) stat pair — including the content hash below — the
+	// expensive re-hash can be skipped. This is the same trust tuple the
+	// in-process segmentIndexCache already relies on, persisted so the
+	// per-tool-call hook processes (fresh process each time) stop re-hashing
+	// every sealed segment of a family on every put. Measured 2026-08-24:
+	// that re-hash was the dominant cost of a PreToolUse hook (3.5–9s per
+	// tool call; past the harness kill timeout under load, hooks died with
+	// no output). Any stat change on either file falls through to the full
+	// path, so first-load-after-drift keeps its teeth; a locally forged
+	// marker is equivalent to local write access to the home, which is
+	// already inside the boundary the hashes defend (drift, not adversaries).
+	if e.indexValidationMemoized(idxPath, segment.path, index, info) {
+		return "", nil
+	}
 	actualHash, err := e.sourceHash(segment.path, info)
 	if err != nil {
 		return "", err
@@ -255,7 +283,95 @@ func (e *engine) validateLoadedIndex(segment segmentFile, index segmentIndex) (s
 	if index.Segment.ModifiedUnixNano != info.ModTime().UnixNano() {
 		return fmt.Sprintf("source modification time drift: index=%d segment=%d", index.Segment.ModifiedUnixNano, info.ModTime().UnixNano()), nil
 	}
+	e.rememberIndexValidation(idxPath, segment.path, index, info)
 	return "", nil
+}
+
+// indexVerifiedMarker is the durable record that one .idx was fully
+// validated (structural + content hash) against one exact segment stat
+// tuple. Presence is a memo, never authority: any mismatch with current
+// stats discards it.
+type indexVerifiedMarker struct {
+	SchemaVersion    int    `json:"schema_version"`
+	IdxSizeBytes     int64  `json:"idx_size_bytes"`
+	IdxMtimeUnixNano int64  `json:"idx_mtime_unix_nano"`
+	SegSizeBytes     int64  `json:"seg_size_bytes"`
+	SegMtimeUnixNano int64  `json:"seg_mtime_unix_nano"`
+	SegSHA256        string `json:"seg_sha256"`
+}
+
+const indexVerifiedMarkerSchema = 1
+
+// indexValidationMemoized reports whether the durable marker proves THIS
+// index was already validated against the segment's CURRENT bytes. It checks
+// both files' stats AND that the index's own recorded hash matches the
+// marker's (so a repaired/rewritten index cannot inherit a stale proof).
+func (e *engine) indexValidationMemoized(idxPath, segPath string, index segmentIndex, segInfo os.FileInfo) bool {
+	idxInfo, err := os.Stat(idxPath)
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(idxPath + ".verified")
+	if err != nil {
+		return false
+	}
+	var marker indexVerifiedMarker
+	if err := json.Unmarshal(data, &marker); err != nil {
+		return false
+	}
+	if marker.SchemaVersion != indexVerifiedMarkerSchema {
+		return false
+	}
+	return marker.IdxSizeBytes == idxInfo.Size() &&
+		marker.IdxMtimeUnixNano == idxInfo.ModTime().UnixNano() &&
+		marker.SegSizeBytes == segInfo.Size() &&
+		marker.SegMtimeUnixNano == segInfo.ModTime().UnixNano() &&
+		marker.SegSHA256 == index.Segment.SHA256 &&
+		marker.SegSizeBytes == index.Segment.Size
+}
+
+// rememberIndexValidation durably memoizes a completed full validation. Best
+// effort: a write failure means the next process revalidates (slower, never
+// wrong), so it is never surfaced as an error.
+func (e *engine) rememberIndexValidation(idxPath, segPath string, index segmentIndex, segInfo os.FileInfo) {
+	idxInfo, err := os.Stat(idxPath)
+	if err != nil {
+		return
+	}
+	marker := indexVerifiedMarker{
+		SchemaVersion:    indexVerifiedMarkerSchema,
+		IdxSizeBytes:     idxInfo.Size(),
+		IdxMtimeUnixNano: idxInfo.ModTime().UnixNano(),
+		SegSizeBytes:     segInfo.Size(),
+		SegMtimeUnixNano: segInfo.ModTime().UnixNano(),
+		SegSHA256:        index.Segment.SHA256,
+	}
+	data, err := json.Marshal(marker)
+	if err != nil {
+		return
+	}
+	dir := filepath.Dir(idxPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	tmp, err := os.CreateTemp(dir, ".verified-tmp-*")
+	if err != nil {
+		return
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		return
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		return
+	}
+	_ = os.Rename(tmpPath, idxPath+".verified")
 }
 
 func (e *engine) rebuildIndex(family string, segment segmentFile, reason string) (segmentIndex, error) {
@@ -294,6 +410,10 @@ func (e *engine) rebuildIndex(family string, segment segmentFile, reason string)
 	if err := writeIndex(path, index); err != nil {
 		return segmentIndex{}, err
 	}
+	// A rebuilt index is validated by construction against the bytes it was
+	// just parsed from; memoize that proof so the next process skips the
+	// re-hash.
+	e.rememberIndexValidation(path, segment.path, index, info)
 	e.logf("eventstore: rebuilt index %s from %s (%s)", path, segment.path, reason)
 	return index, nil
 }
@@ -390,6 +510,7 @@ func (e *engine) sourceHash(path string, info os.FileInfo) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	notifySourceHash(path)
 	after, err := os.Stat(path)
 	if err != nil {
 		return "", err
