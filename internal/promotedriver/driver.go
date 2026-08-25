@@ -1,0 +1,713 @@
+// Package promotedriver is the governed auto-promote actuator for compound
+// memory. It exists because capture loops run (session mining, product
+// signals, lane receipts) while adjudication and promotion had no loop at
+// all — the ledger stalled 2026-08-09 and stayed stalled sixteen days
+// while the inbox grew past 133k files and doctor reported the file count
+// as "backlog".
+//
+// Doctrine the driver enforces, never relaxes:
+//
+//   - Promotion stays PER-ID through the existing single-id adjudication
+//     door. The batch door's refusal of --verdict promote (design decision
+//     3) is untouched; the driver never calls it with promote.
+//   - A candidate promotes only on a system-derived promotion basis it
+//     already carries. The driver mints no basis; "the model extracted it"
+//     is still not one.
+//   - One lane at a time: a single-flight lock, a per-pass promote limit
+//     (default 1), and budget-bounded cursor walks.
+//   - Everything is receipted (append-only JSONL) and nothing is deleted:
+//     the sweep parks or no_promotes, the dedupe phase no_promotes exact
+//     duplicates in favor of a named keeper — every verdict is reversible
+//     per-id through the same doors a human uses.
+//   - The operator stays on irreversible/expunge decisions only: dry-run
+//     is the default; apply is an explicit --confirm at the CLI, admitted
+//     as a governed first-party command.
+//
+// Phase order matters: basis promotion and duplicate collapse run BEFORE
+// the disposition sweep, because the sweep closes every remaining proposed
+// candidate (park / no_promote by admission class).
+package promotedriver
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"syscall"
+	"time"
+
+	"compound/internal/candidates"
+	"compound/internal/lanebeliefs"
+	"compound/internal/mem"
+	"compound/internal/product"
+)
+
+const (
+	ReportSchemaVersion = "compound.promotedriver.report.v0.1"
+
+	// DefaultPromoteLimit is the per-pass promotion ceiling: one lane at a
+	// time, literally. Raising it is an explicit operator choice (--promote-limit).
+	DefaultPromoteLimit = 1
+	// DefaultWalkScanLimit bounds how many inbox entries one pass reads per
+	// phase walk. Resumable passes keep each heartbeat cheap; the sweep
+	// carries its own cursor across passes.
+	DefaultWalkScanLimit = 20_000
+	// DefaultSweepScanLimit bounds the disposition sweep's read budget per
+	// pass; it resumes via cursor until the inbox is walked to the end.
+	DefaultSweepScanLimit = 20_000
+
+	lockFileName          = "lock/promote-driver.lock"
+	stateDirName          = "state/promote-driver"
+	receiptFileName       = "receipts.jsonl"
+	cursorFileName        = "sweep-cursor.json"
+	promoteCursorFileName = "promote-cursor.json"
+	hashFileName          = "import-hashes.json"
+
+	stagePlanned   = "planned"
+	stageCommitted = "committed"
+	stageFailed    = "failed"
+)
+
+// Options configures one driver pass. The zero value is a bounded PLAN pass
+// (dry-run): Apply is the opt-in mutation switch, so a caller that
+// constructs Options{} can never mutate — the safe mode is the
+// language-level zero value, not just a CLI default.
+type Options struct {
+	Apply bool // false (zero) = report the plan without mutating; true = the --confirm door
+
+	PromoteLimit   int // max promotions this pass (default DefaultPromoteLimit)
+	WalkScanLimit  int // read budget for the basis/dedupe walk (default DefaultWalkScanLimit)
+	SweepScanLimit int // read budget for the disposition sweep (default DefaultSweepScanLimit)
+
+	// RegistryPaths are product-registry project-contract files to refresh
+	// deterministically: a changed content hash re-runs the trusted
+	// deterministic import; an unchanged hash is a no-op. This is the
+	// importer whose stall froze the ledger 2026-08-09.
+	RegistryPaths []string
+
+	WorkID string // governance work id stamped on the pass's verdicts
+}
+
+// Run executes one driver pass against homePath. It returns the pass
+// report and only hard errors; per-candidate failures live in the report.
+//
+// Mode discipline:
+//
+//   - PLAN (!opts.Apply): the pass is a read. It opens the ledger
+//     read-only, never takes or creates the single-flight lock, never
+//     writes cursors, receipts, pending state, or any event — a plan pass
+//     on a fresh home leaves the home byte-identical.
+//
+//   - APPLY (opts.Apply): the pass journals BEFORE it mutates — a
+//     "planned" receipt, then the mutations, then one terminal receipt
+//     ("committed", or "failed" with the error). A crash between journal
+//     entries leaves a planned-without-terminal receipt the next pass and
+//     the operator can reconcile by inspection; a mutation without a
+//     durable driver-level explanation is the failure shape the journal
+//     exists to prevent.
+func Run(homePath string, opts Options, now time.Time) (Report, error) {
+	now = now.UTC()
+	report := Report{
+		SchemaVersion: ReportSchemaVersion,
+		PassID:        passID(now),
+		Home:          homePath,
+		DryRun:        !opts.Apply,
+		StartedAt:     rfc3339(now),
+	}
+	if opts.PromoteLimit <= 0 {
+		opts.PromoteLimit = DefaultPromoteLimit
+	}
+	if opts.WalkScanLimit <= 0 {
+		opts.WalkScanLimit = DefaultWalkScanLimit
+	}
+	if opts.SweepScanLimit <= 0 {
+		opts.SweepScanLimit = DefaultSweepScanLimit
+	}
+	if strings.TrimSpace(opts.WorkID) == "" {
+		opts.WorkID = "work_promote_driver"
+	}
+
+	if !opts.Apply {
+		return runPlan(homePath, opts, now, report)
+	}
+
+	release, locked, err := acquireSingleFlight(homePath)
+	if err != nil {
+		return report, err
+	}
+	if locked {
+		report.Locked = true
+		report.FinishedAt = rfc3339(now)
+		return report, nil
+	}
+	defer release()
+
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return report, fmt.Errorf("open memory store: %w", err)
+	}
+
+	// Journal the intent BEFORE any mutation: the pass is now accountable
+	// even if it crashes mid-flight.
+	report.Stage = stagePlanned
+	if err := appendReceipt(homePath, report); err != nil {
+		return report, fmt.Errorf("journal planned pass: %w", err)
+	}
+
+	runErr := runPass(homePath, store, opts, now, &report)
+	report.FinishedAt = rfc3339(time.Now().UTC())
+	if runErr != nil {
+		report.Stage = stageFailed
+		report.Error = runErr.Error()
+		if err := appendReceipt(homePath, report); err != nil {
+			return report, fmt.Errorf("journal failed pass: %w (pass: %w)", err, runErr)
+		}
+		return report, runErr
+	}
+	report.Stage = stageCommitted
+	if err := appendReceipt(homePath, report); err != nil {
+		return report, fmt.Errorf("append receipt: %w", err)
+	}
+	report.ReceiptPath = filepath.Join(homePath, stateDirName, receiptFileName)
+	return report, nil
+}
+
+// runPass executes the mutating phases in doctrine order against an open
+// store. Errors here fail the pass and are journaled as stage=failed.
+func runPass(homePath string, store *mem.Store, opts Options, now time.Time, report *Report) error {
+	promote, dedupe, err := runBasisAndDedupe(store, opts, now)
+	if err != nil {
+		return fmt.Errorf("basis/dedupe phase: %w", err)
+	}
+	report.Promote, report.Dedupe = promote, dedupe
+	report.Imports = runImports(homePath, store, opts, now)
+	report.LaneBeliefs = runLaneBeliefs(homePath, opts, now)
+	sweep, err := runSweep(store, opts, now)
+	if err != nil {
+		report.Sweep = sweep
+		return fmt.Errorf("sweep phase: %w", err)
+	}
+	report.Sweep = sweep
+	report.PendingAfter = sweep.ReconciledPending
+	return nil
+}
+
+// runPlan is the read-only pass. It opens the ledger read-only and touches
+// nothing: no lock, no cursors, no receipts, no pending-state writes. A
+// plan pass must be runnable from any read-classified scheduler on any home
+// without leaving footprints. A home with no memory ledger yet (never
+// captured) is a legitimate plan target: the pass reports empty phases and
+// still exits 0, because "nothing to digest" is a true plan, not an error.
+func runPlan(homePath string, opts Options, now time.Time, report Report) (Report, error) {
+	store, err := mem.OpenScan(homePath)
+	if err != nil {
+		return report, fmt.Errorf("open memory store for scan: %w", err)
+	}
+	report.Promote, report.Dedupe, err = runBasisAndDedupe(store, opts, now)
+	if err != nil {
+		return report, fmt.Errorf("basis/dedupe phase: %w", err)
+	}
+	report.Imports = runImports(homePath, store, opts, now)
+	report.LaneBeliefs = runLaneBeliefs(homePath, Options{}, now)
+	sweep, err := runSweep(store, opts, now)
+	if err != nil {
+		report.Sweep = sweep
+		return report, fmt.Errorf("sweep phase: %w", err)
+	}
+	report.Sweep = sweep
+	report.FinishedAt = rfc3339(time.Now().UTC())
+	return report, nil
+}
+
+// runBasisAndDedupe performs one budget-bounded walk over the inbox and
+// applies the two pre-sweep phases to proposed candidates: basis-gated
+// promotion (per-id, limited) and exact duplicate collapse.
+//
+// The walk carries its OWN resume cursor, separate from the sweep's. This
+// is what keeps the promotion chance alive on a saturated inbox: closed
+// candidates stay on disk forever (adjudication never deletes), so a
+// walk-from-start with a fixed budget would re-read the same leading
+// window every pass and never reach proposed candidates sorting past it.
+// With the cursor, successive passes tile the whole inbox; the worst-case
+// discovery latency for a new basis-carrying candidate is one full cycle
+// (total / budget passes).
+//
+// Duplicate collapse is stricter: it runs ONLY when a walk started at the
+// beginning and reached the end within the pass, so no group ever splits
+// across passes. On an inbox larger than the walk budget this phase
+// reports skipped — the operator can force it with a larger
+// --walk-scan-limit during maintenance.
+func runBasisAndDedupe(store *mem.Store, opts Options, now time.Time) (PromotePhaseReport, DedupePhaseReport, error) {
+	dryRun := !opts.Apply
+	promote := PromotePhaseReport{Limit: opts.PromoteLimit}
+	dedupe := DedupePhaseReport{}
+
+	homePath := store.HomePath()
+	cursor := readPromoteCursor(homePath)
+	promote.ResumedFrom = cursor.AfterID
+
+	entries, corrupt, lastWalked, reachedEnd, err := store.ListCandidatesLite(cursor.AfterID, opts.WalkScanLimit)
+	if err != nil {
+		return promote, dedupe, err
+	}
+	promote.Scanned = len(entries)
+	promote.CorruptIDs = corrupt
+	walkedAll := cursor.AfterID == "" && reachedEnd
+	if reachedEnd && opts.Apply {
+		if err := clearPromoteCursor(homePath); err != nil {
+			promote.Errors = append(promote.Errors, "clear promote cursor: "+err.Error())
+		}
+	}
+
+	groups := map[string][]mem.CandidateLite{}
+	for _, entry := range entries {
+		if entry.State != "proposed" {
+			continue
+		}
+		promote.Considered++
+		basis := strings.TrimSpace(entry.PromotionBasis)
+		if candidates.ValidBasis(basis) && basis != candidates.BasisExplicitConfirmation {
+			if promote.Promoted < opts.PromoteLimit {
+				receipt := PromotionReceipt{CandidateID: entry.ID, Basis: basis}
+				if dryRun {
+					receipt.Action = "would_promote"
+					promote.Promotions = append(promote.Promotions, receipt)
+					promote.Promoted++
+					continue
+				}
+				res, err := store.Adjudicate(entry.ID, candidates.Promote, opts.WorkID, now)
+				if err != nil {
+					promote.Errors = append(promote.Errors, fmt.Sprintf("%s: %v", entry.ID, err))
+					continue
+				}
+				receipt.Action = "promoted"
+				if res.Claim != nil {
+					receipt.ClaimID = res.Claim.ID
+				}
+				promote.Promotions = append(promote.Promotions, receipt)
+				promote.Promoted++
+			} else {
+				promote.Deferred = append(promote.Deferred, entry.ID)
+			}
+			continue
+		}
+		key := dedupeKey(entry)
+		groups[key] = append(groups[key], entry)
+	}
+
+	if !reachedEnd {
+		// The walk stopped early: name the continuation point. Progress is
+		// the last DIRECTORY ENTRY walked — valid or corrupt — so a page
+		// ending on an unreadable file is never re-read on resume. The
+		// cursor persists only in apply mode; a plan pass reports the point
+		// without writing it.
+		if lastWalked != "" {
+			promote.NextCursor = lastWalked
+			if opts.Apply {
+				if err := writePromoteCursor(homePath, promoteCursor{AfterID: lastWalked, UpdatedAt: rfc3339(now)}); err != nil {
+					promote.Errors = append(promote.Errors, "write promote cursor: "+err.Error())
+				}
+			}
+		}
+	}
+	if !walkedAll {
+		if cursor.AfterID != "" {
+			dedupe.Skipped = "resume walk: duplicate groups may split across passes; collapse runs on a full walk from the start"
+		} else {
+			dedupe.Skipped = "walk budget exhausted before the inbox end; collapse runs on a full walk (raise --walk-scan-limit)"
+		}
+		return promote, dedupe, nil
+	}
+	var keys []string
+	for key, group := range groups {
+		if len(group) > 1 {
+			keys = append(keys, key)
+			dedupe.Groups++
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		group := groups[key]
+		sort.Slice(group, func(i, j int) bool {
+			if group[i].CreatedAt != group[j].CreatedAt {
+				return group[i].CreatedAt < group[j].CreatedAt
+			}
+			return group[i].ID < group[j].ID
+		})
+		keeper := group[0]
+		action := DedupeAction{Key: key, Kept: keeper.ID}
+		for _, dup := range group[1:] {
+			if dryRun {
+				action.NoPromoted = append(action.NoPromoted, dup.ID)
+				continue
+			}
+			if _, err := store.Adjudicate(dup.ID, candidates.NoPromote, opts.WorkID, now); err != nil {
+				dedupe.Errors = append(dedupe.Errors, fmt.Sprintf("%s: %v", dup.ID, err))
+				continue
+			}
+			action.NoPromoted = append(action.NoPromoted, dup.ID)
+		}
+		if dryRun {
+			action.Action = "would_collapse"
+		} else {
+			action.Action = "collapsed"
+		}
+		dedupe.Actions = append(dedupe.Actions, action)
+		dedupe.Collapsed += len(action.NoPromoted)
+	}
+	return promote, dedupe, nil
+}
+
+// dedupeKey identifies EXACT duplicates: same entity, predicate, and
+// object text. Near-duplicates (a re-mined preference whose object text
+// carries a changed evidence count) are deliberately NOT collapsed — they
+// park with the sweep and remain operator material.
+func dedupeKey(c mem.CandidateLite) string {
+	return c.Entity + "\x1f" + c.Predicate + "\x1f" + c.Object
+}
+
+// runImports refreshes the deterministic product-registry imports: content
+// hash per source file, re-Apply only when the content changed. Idempotent
+// by construction — an unchanged registry costs one hash read.
+func runImports(homePath string, store *mem.Store, opts Options, now time.Time) ImportsPhaseReport {
+	report := ImportsPhaseReport{}
+	if len(opts.RegistryPaths) == 0 {
+		report.Skipped = "no registry paths configured"
+		return report
+	}
+	hashes := readImportHashes(homePath)
+	// Registry entries may be glob patterns (the heartbeat passes
+	// ~/Projects/products/*/project.yaml): expand before the per-source loop
+	// so one pattern covers every contract in the registry. A pattern that
+	// matches nothing is reported, never silently dropped.
+	var paths []string
+	for _, pattern := range opts.RegistryPaths {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			report.Sources = append(report.Sources, ImportSourceReport{Path: pattern, Action: "error", Error: "bad glob: " + err.Error()})
+			continue
+		}
+		if len(matches) == 0 {
+			report.Sources = append(report.Sources, ImportSourceReport{Path: pattern, Action: "error", Error: "glob matched no files"})
+			continue
+		}
+		paths = append(paths, matches...)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		source := ImportSourceReport{Path: path}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			source.Error = err.Error()
+			report.Sources = append(report.Sources, source)
+			continue
+		}
+		sum := sha256.Sum256(data)
+		hash := hex.EncodeToString(sum[:])
+		source.HashBefore = hashes[path]
+		source.HashAfter = hash
+		if source.HashBefore == hash {
+			source.Action = "up_to_date"
+			report.Sources = append(report.Sources, source)
+			continue
+		}
+		if !opts.Apply {
+			source.Action = "would_import"
+			report.Sources = append(report.Sources, source)
+			continue
+		}
+		bundle, err := product.LoadProjectContractBundle(path, "")
+		if err != nil {
+			source.Error = "load project contract: " + err.Error()
+			report.Sources = append(report.Sources, source)
+			continue
+		}
+		applyReport, err := product.Apply(homePath, store, bundle, path, now)
+		if err != nil {
+			source.Error = "apply: " + err.Error()
+			report.Sources = append(report.Sources, source)
+			continue
+		}
+		source.Action = "imported"
+		source.ClaimIDs = applyReport.ClaimIDs
+		hashes[path] = hash
+		report.Sources = append(report.Sources, source)
+	}
+	if opts.Apply {
+		if err := writeImportHashes(homePath, hashes); err != nil {
+			report.Error = err.Error()
+		}
+	}
+	return report
+}
+
+// runLaneBeliefs runs the B2/B3/B4 lane-belief pipeline in order: fold
+// (propose), promote (cross-lane gate), cool. Each phase is the existing
+// organ with its own gates; the driver only sequences them. Apply passes
+// run the real pipeline; the plan pass sequences the same organs in
+// dry-run so a plan never writes through them.
+func runLaneBeliefs(homePath string, opts Options, now time.Time) LaneBeliefsPhaseReport {
+	dryRun := !opts.Apply
+	report := LaneBeliefsPhaseReport{}
+	fold, err := lanebeliefs.Fold(homePath, lanebeliefs.FoldOptions{DryRun: dryRun, Now: now})
+	if err != nil {
+		report.Error = "fold: " + err.Error()
+		return report
+	}
+	report.Fold = fold
+	promote, err := lanebeliefs.Promote(homePath, lanebeliefs.PromoteOptions{DryRun: dryRun, Now: now})
+	if err != nil {
+		report.Error = "promote: " + err.Error()
+		return report
+	}
+	report.Promote = promote
+	cool, err := lanebeliefs.Cool(homePath, lanebeliefs.CoolOptions{DryRun: dryRun, Now: now})
+	if err != nil {
+		report.Error = "cool: " + err.Error()
+		return report
+	}
+	report.Cool = cool
+	return report
+}
+
+// runSweep runs the budget-bounded disposition pass (auto no_promote/park;
+// promotion is refused by that door and the driver never asks it to). The
+// cursor persists between APPLY passes; a pass that walks the whole inbox
+// reconciles the pending count — the honest backlog number doctor reads.
+// Cursor persistence failures are reported, never swallowed: a sweep that
+// mutated candidates but failed to persist its continuation point must say
+// so, because the next pass will repeat or resume inconsistently.
+func runSweep(store *mem.Store, opts Options, now time.Time) (SweepPhaseReport, error) {
+	report := SweepPhaseReport{ScanLimit: opts.SweepScanLimit}
+	homePath := store.HomePath()
+	cursor := readSweepCursor(homePath)
+	pendingReport := store.AdjudicatePending(mem.AdjudicatePendingOptions{
+		WorkID:    opts.WorkID,
+		DryRun:    !opts.Apply,
+		ScanLimit: opts.SweepScanLimit,
+		AfterID:   cursor.AfterID,
+	}, now)
+	report.Scanned = pendingReport.Scanned
+	report.Adjudicated = pendingReport.Adjudicated
+	report.Skipped = pendingReport.Skipped
+	report.BasisDeferred = pendingReport.BasisDeferred
+	report.VerdictCounts = pendingReport.VerdictCounts
+	report.CorruptIDs = pendingReport.CorruptIDs
+	for _, e := range pendingReport.Errors {
+		report.Errors = append(report.Errors, fmt.Sprintf("%s: %s", e.CandidateID, e.Err))
+	}
+	if pendingReport.AtEnd {
+		report.WalkedAll = true
+		if opts.Apply {
+			if err := clearSweepCursor(homePath); err != nil {
+				report.Errors = append(report.Errors, "clear sweep cursor: "+err.Error())
+			}
+			st, err := store.ReconcilePendingState("promote-driver sweep", now)
+			if err != nil {
+				report.Errors = append(report.Errors, "reconcile pending state: "+err.Error())
+			} else {
+				report.ReconciledPending = &st.Pending
+			}
+		}
+		return report, nil
+	}
+	if pendingReport.NextCursor != "" {
+		report.NextCursor = pendingReport.NextCursor
+		if opts.Apply {
+			if err := writeSweepCursor(homePath, sweepCursor{AfterID: pendingReport.NextCursor, UpdatedAt: rfc3339(now)}); err != nil {
+				// The sweep may already have adjudicated candidates this
+				// page: losing the continuation point silently would repeat
+				// or strand them. Name it — in apply mode this fails the
+				// pass so the journal records stage=failed.
+				return report, fmt.Errorf("write sweep cursor: %w", err)
+			}
+		}
+	}
+	return report, nil
+}
+
+// --- single flight ---
+
+// acquireSingleFlight takes the driver's lock without blocking. A held
+// lock means another pass is running; the doctrine is keep waiting, never
+// contend — the caller gets Locked=true and does nothing.
+func acquireSingleFlight(homePath string) (release func(), locked bool, err error) {
+	lockPath := filepath.Join(homePath, lockFileName)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return nil, false, fmt.Errorf("create lock directory: %w", err)
+	}
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, false, fmt.Errorf("open driver lock: %w", err)
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			_ = file.Close()
+			return nil, true, nil
+		}
+		_ = file.Close()
+		return nil, false, fmt.Errorf("lock driver pass: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = file.Close()
+	}, false, nil
+}
+
+// --- state + receipts ---
+
+type sweepCursor struct {
+	AfterID   string `json:"after_id"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type promoteCursor struct {
+	AfterID   string `json:"after_id"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+func readPromoteCursor(homePath string) promoteCursor {
+	var c promoteCursor
+	data, err := os.ReadFile(filepath.Join(stateDir(homePath), promoteCursorFileName))
+	if err != nil {
+		return promoteCursor{}
+	}
+	if err := json.Unmarshal(data, &c); err != nil {
+		return promoteCursor{}
+	}
+	return c
+}
+
+func writePromoteCursor(homePath string, c promoteCursor) error {
+	return writeStateFile(homePath, promoteCursorFileName, c)
+}
+
+func clearPromoteCursor(homePath string) error {
+	if err := os.Remove(filepath.Join(stateDir(homePath), promoteCursorFileName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func stateDir(homePath string) string { return filepath.Join(homePath, stateDirName) }
+
+func readSweepCursor(homePath string) sweepCursor {
+	var c sweepCursor
+	data, err := os.ReadFile(filepath.Join(stateDir(homePath), cursorFileName))
+	if err != nil {
+		return sweepCursor{}
+	}
+	if err := json.Unmarshal(data, &c); err != nil {
+		return sweepCursor{}
+	}
+	return c
+}
+
+// sweepCursorWriter is a test seam for deterministic cursor-persistence
+// failure at the exact point an apply pass needs its continuation point.
+// Production passes leave it nil and persist through the owned state file.
+var sweepCursorWriter func(homePath string, c sweepCursor) error
+
+func writeSweepCursor(homePath string, c sweepCursor) error {
+	if sweepCursorWriter != nil {
+		return sweepCursorWriter(homePath, c)
+	}
+	return writeStateFile(homePath, cursorFileName, c)
+}
+
+func clearSweepCursor(homePath string) error {
+	if err := os.Remove(filepath.Join(stateDir(homePath), cursorFileName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func readImportHashes(homePath string) map[string]string {
+	out := map[string]string{}
+	data, err := os.ReadFile(filepath.Join(stateDir(homePath), hashFileName))
+	if err != nil {
+		return out
+	}
+	_ = json.Unmarshal(data, &out)
+	return out
+}
+
+func writeImportHashes(homePath string, hashes map[string]string) error {
+	return writeStateFile(homePath, hashFileName, hashes)
+}
+
+func writeStateFile(homePath, name string, v any) error {
+	dir := stateDir(homePath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "."+name+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, filepath.Join(dir, name))
+}
+
+// appendReceipt adds the pass report to the append-only receipt log.
+// Receipts are never rewritten or deleted: the log is the audit trail that
+// makes every autonomous verdict reversible-by-inspection.
+func appendReceipt(homePath string, report Report) error {
+	dir := stateDir(homePath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	b, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, receiptFileName), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+// passID mints a collision-proof pass identifier: nanosecond-resolution time
+// plus cryptographic randomness. Second-resolution time hashed with the home
+// path collided on two sequential passes within one second; a journal that
+// keys receipts on the pass id must never be able to mint duplicates.
+func passID(now time.Time) string {
+	var nonce [4]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		// crypto/rand failing is a host anomaly; fall back to the clock's
+		// own nanosecond bits rather than aborting the pass.
+		binary.BigEndian.PutUint32(nonce[:], uint32(now.UnixNano()))
+	}
+	return fmt.Sprintf("pass_%s_%s", now.Format("20060102T150405.000000000Z"), hex.EncodeToString(nonce[:]))
+}
+
+func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339) }

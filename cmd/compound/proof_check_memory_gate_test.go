@@ -74,10 +74,14 @@ func TestProofCheckMemoryDoctorUsesCandidateRuntimeInsteadOfPATHCompound(t *test
 }
 
 // proofCheckMemoryGateHome returns an initialized home, seeded unless bare is true.
+// The seed clock is WALL TIME, not a fixed fixture date: `memory doctor`
+// runs on the gate's own clock and its freshness gates (pending-state
+// reconciliation age) compare against it — a fixture date that ages past
+// the freshness window would red the capture hop days after a green land.
 func proofCheckMemoryGateHome(t *testing.T, bare bool) string {
 	t.Helper()
 	dir := t.TempDir()
-	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	if err := home.Init(dir, "proof-check-test", now); err != nil {
 		t.Fatalf("home.Init: %v", err)
 	}

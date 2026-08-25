@@ -89,6 +89,12 @@ func seedProofCheckMemoryHome(homePath string, now time.Time) error {
 	if _, err := store.Adjudicate(captured[0].ID, "promote", "", now); err != nil {
 		return fmt.Errorf("promote fixture candidate: %w", err)
 	}
+	// Reconcile: the capture hop only reports a truthful backlog from a
+	// reconciled state (the promote-driver sweep writes it in production),
+	// so the fixture models the driver-ran steady state — zero pending.
+	if _, err := store.ReconcilePendingState("proof-check fixture", now); err != nil {
+		return fmt.Errorf("reconcile fixture pending state: %w", err)
+	}
 	return nil
 }
 

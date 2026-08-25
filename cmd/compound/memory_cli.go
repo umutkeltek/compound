@@ -18,6 +18,7 @@ import (
 	"compound/internal/capgraph"
 	"compound/internal/home"
 	"compound/internal/mem"
+	"compound/internal/promotedriver"
 	"compound/internal/retrievalparity"
 )
 
@@ -69,8 +70,10 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory render-harness-digest --harness <name> --out <absolute path> [--json]"
 	case "digest-doctor":
 		return "usage: compound memory digest-doctor --path <file> [--json]"
+	case "promote-driver":
+		return promotedriver.Usage
 	default:
-		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|show-output <cid>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|seed|run>|concur --claim C --content Q --lanes a,b [--threshold N] [--json]|parity-replay --fixture F --consumer orient|query [--resume-from checkpoint.json]|parity-freeze --from-journal --window-days N --control-report report.json|temperature [--rebuild]|observation [--json] [--record]|render-harness-digest --harness H --out FILE|digest-doctor --path FILE|doctor>"
+		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|show-output <cid>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|seed|run>|concur --claim C --content Q --lanes a,b [--threshold N] [--json]|parity-replay --fixture F --consumer orient|query [--resume-from checkpoint.json]|parity-freeze --from-journal --window-days N --control-report report.json|temperature [--rebuild]|observation [--json] [--record]|render-harness-digest --harness H --out FILE|digest-doctor --path FILE|promote-driver [--confirm] [--json]|doctor>"
 	}
 }
 func cmdMemory(args []string) {
@@ -366,7 +369,11 @@ func cmdMemory(args []string) {
 					printJSON(report)
 					return
 				}
-				fmt.Printf("dry-run: %d candidate(s) scanned; would adjudicate %d by disposition; %d already closed\n", report.Scanned, report.Adjudicated, report.Skipped)
+				fmt.Printf("dry-run: %d candidate(s) scanned; would adjudicate %d by disposition; %d already closed", report.Scanned, report.Adjudicated, report.Skipped)
+				if report.BasisDeferred > 0 {
+					fmt.Printf("; %d basis candidate(s) left proposed for per-id promotion", report.BasisDeferred)
+				}
+				fmt.Println()
 				for v, c := range report.VerdictCounts {
 					fmt.Printf("  would %s: %d\n", v, c)
 				}
@@ -378,7 +385,11 @@ func cmdMemory(args []string) {
 				}
 				return
 			}
-			fmt.Printf("adjudicated: scanned=%d adjudicated=%d skipped=%d\n", report.Scanned, report.Adjudicated, report.Skipped)
+			fmt.Printf("adjudicated: scanned=%d adjudicated=%d skipped=%d", report.Scanned, report.Adjudicated, report.Skipped)
+			if report.BasisDeferred > 0 {
+				fmt.Printf(" basis-deferred=%d", report.BasisDeferred)
+			}
+			fmt.Println()
 			for v, c := range report.VerdictCounts {
 				fmt.Printf("  %s: %d\n", v, c)
 			}
@@ -829,6 +840,8 @@ func cmdMemory(args []string) {
 		if !r.OK {
 			os.Exit(1)
 		}
+	case "promote-driver":
+		os.Exit(promotedriver.RunCLI(rest))
 	default:
 		fmt.Fprintln(os.Stderr, memoryUsage(""))
 		os.Exit(2)

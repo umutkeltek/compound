@@ -142,7 +142,7 @@ func Cool(homePath string, opts CoolOptions) (CoolReport, error) {
 	if err != nil {
 		return report, err
 	}
-	store, err := mem.Open(homePath)
+	store, err := openStoreForScan(homePath, opts.DryRun)
 	if err != nil {
 		return report, err
 	}

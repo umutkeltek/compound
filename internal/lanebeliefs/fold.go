@@ -364,7 +364,7 @@ func Fold(homePath string, opts FoldOptions) (FoldReport, error) {
 	report.Aggregates = aggregateObservations(allObservations)
 
 	if len(newObservations) > 0 {
-		store, err := mem.Open(homePath)
+		store, err := openStoreForScan(homePath, opts.DryRun)
 		if err != nil {
 			return report, err
 		}
@@ -798,6 +798,18 @@ func openLaneResolver(homePath string) (mem.LaneResolver, error) {
 		return nullLaneResolver{}, nil
 	}
 	return capgraph.OpenReadOnly(homePath)
+}
+
+// openStoreForScan is the store door the belief pipeline uses. An APPLY pass
+// needs the writer's scaffolding (it promotes through the real adjudication
+// API); a DRY-RUN pass must not scaffold ledger/ or events/ just by looking —
+// the plan pass reads the inbox and claims through the scan opener, which
+// treats an absent ledger as an empty view instead of creating one.
+func openStoreForScan(homePath string, dryRun bool) (*mem.Store, error) {
+	if dryRun {
+		return mem.OpenScan(homePath)
+	}
+	return mem.Open(homePath)
 }
 
 type nullLaneResolver struct{}

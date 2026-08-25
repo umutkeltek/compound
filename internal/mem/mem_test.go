@@ -1317,6 +1317,13 @@ func TestDoctorReportsHops(t *testing.T) {
 	s := newStore(t)
 	c, _ := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0)
 	_, _ = promoteForTest(t, s, c[0].ID, "", t0)
+	// The capture hop reads the RECONCILED pending count, never the raw file
+	// count: a home the promote-driver sweep has not walked yet cannot prove
+	// its backlog small and warns. Reconcile here so the test asserts the
+	// steady-state (driver-ran) doctor, which is what a healthy home sees.
+	if _, err := s.ReconcilePendingState("test", t0); err != nil {
+		t.Fatal(err)
+	}
 	r := s.DoctorAt(nil, t0.Add(time.Minute))
 	if !r.OK {
 		t.Errorf("doctor should be OK after a clean promote; note=%q", r.Note)
@@ -1800,13 +1807,22 @@ func TestValidateAdjudicationIntentEnforcesEachRuleInIsolation(t *testing.T) {
 
 // TestDoctorFreshnessPromotionStalledSignalsFail: when the claims ledger
 // stopped being appended to (append evidence older than the staleness
-// threshold) AND the inbox still has candidates, promotion reports fail and
-// stamps the freshness fields. This is the stall signature that the
-// pre-freshness doctor masked by reporting ok.
+// threshold) AND live promotion pressure remains, promotion reports fail and
+// stamps the freshness fields. Pressure here is the reconciled pending
+// count — a still-proposed candidate an authoritative full walk counted.
+// This is the stall signature that the pre-freshness doctor masked by
+// reporting ok.
 func TestDoctorFreshnessPromotionStalledSignalsFail(t *testing.T) {
 	s := newStore(t)
-	c, _ := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0)
-	_, _ = promoteForTest(t, s, c[0].ID, "", t0)
+	cs, _ := s.Capture([]Candidate{cand("e", "p", "v-promoted", ""), cand("e", "p", "v-still-proposed", "")}, t0)
+	_, _ = promoteForTest(t, s, cs[0].ID, "", t0)
+	// Advance past memDoctorThresholds.ClaimStaleAfter (72h) + slack so the
+	// fixture ages into the staleness band, then reconcile AT the doctor
+	// clock so the pending count is authoritative: 1 still proposed.
+	now := t0.Add(memDoctorThresholds.ClaimStaleAfter + time.Hour)
+	if _, err := s.ReconcilePendingState("test", now); err != nil {
+		t.Fatal(err)
+	}
 	// Age the ledger's append evidence into the staleness band: the stall
 	// signal is claims.jsonl's mtime (the pipeline stopped writing), NOT the
 	// claim's declared created_at.
@@ -1814,9 +1830,6 @@ func TestDoctorFreshnessPromotionStalledSignalsFail(t *testing.T) {
 	if err := os.Chtimes(s.claimsLog(), old, old); err != nil {
 		t.Fatal(err)
 	}
-	// Advance past memDoctorThresholds.ClaimStaleAfter (72h) + slack so the fixture
-	// ages into the staleness band while the inbox remains non-empty.
-	now := t0.Add(memDoctorThresholds.ClaimStaleAfter + time.Hour)
 	r := s.DoctorAt(nil, now)
 	promotion := hopByName(t, r, "promotion")
 	if promotion.Status != "fail" {
@@ -1829,8 +1842,138 @@ func TestDoctorFreshnessPromotionStalledSignalsFail(t *testing.T) {
 	if capture.NewestCandidateAt == "" {
 		t.Fatalf("capture hop must carry newest_candidate_at, got %+v", capture)
 	}
-	if capture.InboxBacklog == 0 {
-		t.Fatalf("capture hop must carry inbox_backlog > 0 when inbox non-empty, got %+v", capture)
+	if capture.InboxBacklog != 1 {
+		t.Fatalf("capture backlog = %d, want the reconciled pending 1", capture.InboxBacklog)
+	}
+}
+
+// TestDoctorPromotionNotStalledWhenOnlyClosedCandidatesRemain is the exact
+// regression the memory-health truth model demands: candidate files are
+// append-only historical evidence, so a directory FULL of parked/promoted/
+// no_promote candidates with zero pending must not read as a promotion
+// backlog. Otherwise the promote-driver's drive-down to zero would leave
+// doctor permanently red no matter how well it worked.
+func TestDoctorPromotionNotStalledWhenOnlyClosedCandidatesRemain(t *testing.T) {
+	s := newStore(t)
+	cs, _ := s.Capture([]Candidate{cand("e", "p", "v-promoted", ""), cand("e", "p", "v-parked-a", ""), cand("e", "p", "v-parked-b", "")}, t0)
+	_, _ = promoteForTest(t, s, cs[0].ID, "", t0)
+	for _, c := range cs[1:] {
+		if _, err := s.Adjudicate(c.ID, "park", "work_test", t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Reconcile at the doctor clock: directory non-empty (3 closed files),
+	// pending authoritatively 0.
+	now := t0.Add(memDoctorThresholds.ClaimStaleAfter + time.Hour)
+	st, err := s.ReconcilePendingState("test", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Pending != 0 || st.Files != 3 {
+		t.Fatalf("reconcile = %+v, want pending 0 / files 3", st)
+	}
+	// Age the ledger past the stall threshold — the old trap now fires:
+	// stale ledger + non-empty candidate directory used to read as a stall
+	// even with nothing left to promote.
+	old := t0.Add(-time.Hour)
+	if err := os.Chtimes(s.claimsLog(), old, old); err != nil {
+		t.Fatal(err)
+	}
+	r := s.DoctorAt(nil, now)
+	promotion := hopByName(t, r, "promotion")
+	if promotion.Status != "ok" {
+		t.Fatalf("closed-only inbox promotion status = %q, want ok (zero pending is not pressure; detail=%q)", promotion.Status, promotion.Detail)
+	}
+}
+
+// TestDoctorPendingStateStaleIsNotAuthoritative: a reconciled count is a
+// snapshot. Past the freshness window — or once the inbox generation moves
+// (files added after reconciliation) — it can lie in both directions, so
+// the doctor must report it stale/unknown, never a confident backlog.
+func TestDoctorPendingStateStaleIsNotAuthoritative(t *testing.T) {
+	t.Run("age defeats the count", func(t *testing.T) {
+		s := newStore(t)
+		if _, err := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ReconcilePendingState("test", t0); err != nil {
+			t.Fatal(err)
+		}
+		// Past PendingStateFreshFor: the count reads stale, the capture hop
+		// warns instead of asserting a backlog.
+		h := hopByName(t, s.DoctorAt(nil, t0.Add(memDoctorThresholds.PendingStateFreshFor+time.Hour)), "capture")
+		if h.Status != "warn" {
+			t.Fatalf("stale reconcile capture status = %q, want warn (detail=%q)", h.Status, h.Detail)
+		}
+		if h.InboxBacklog != 0 {
+			t.Fatalf("stale reconcile must not assert a backlog, got %+v", h)
+		}
+		if !strings.Contains(h.Detail, "stale") {
+			t.Fatalf("capture detail must name the staleness, got %q", h.Detail)
+		}
+	})
+	t.Run("corpus movement defeats the count", func(t *testing.T) {
+		s := newStore(t)
+		if _, err := s.Capture([]Candidate{cand("e", "p", "v-old", "")}, t0); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ReconcilePendingState("test", t0); err != nil {
+			t.Fatal(err)
+		}
+		// A new candidate lands AFTER reconciliation: the recorded count no
+		// longer describes this inbox generation even though the clock says
+		// fresh.
+		if _, err := s.Capture([]Candidate{cand("e", "p", "v-new", "")}, t0.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		h := hopByName(t, s.DoctorAt(nil, t0.Add(2*time.Hour)), "capture")
+		if h.Status != "warn" {
+			t.Fatalf("generation-moved capture status = %q, want warn (detail=%q)", h.Status, h.Detail)
+		}
+		if h.InboxBacklog != 0 {
+			t.Fatalf("generation-moved reconcile must not assert a backlog, got %+v", h)
+		}
+	})
+}
+
+// TestDoctorCaptureBacklogCountsPendingNotFiles: the capture hop's backlog
+// is the reconciled PENDING count, not the raw file count. Closed
+// candidates stay on disk and must not read as backlog — the lived defect
+// reported 133k files as backlog while 34 were pending. Unreconciled but
+// non-empty warns; a reconciled count applies the thresholds to pending.
+func TestDoctorCaptureBacklogCountsPendingNotFiles(t *testing.T) {
+	s := newStore(t)
+	// Two candidates: close one, leave one proposed.
+	cs, err := s.Capture([]Candidate{cand("e", "p", "v-closed", ""), cand("e", "p", "v-open", "")}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(cs[0].ID, "park", "work_test", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unreconciled: files present, pending unknown -> warn, no backlog number.
+	h := hopByName(t, s.DoctorAt(nil, t0.Add(time.Minute)), "capture")
+	if h.Status != "warn" {
+		t.Fatalf("unreconciled capture status = %q, want warn (detail=%q)", h.Status, h.Detail)
+	}
+	if h.InboxBacklog != 0 {
+		t.Fatalf("unreconciled capture must not assert a backlog, got %+v", h)
+	}
+
+	// Reconciled: backlog is the pending count (1), not the file count (2).
+	if _, err := s.ReconcilePendingState("test", t0); err != nil {
+		t.Fatal(err)
+	}
+	h = hopByName(t, s.DoctorAt(nil, t0.Add(time.Minute)), "capture")
+	if h.InboxBacklog != 1 {
+		t.Fatalf("reconciled capture backlog = %d, want 1 pending (detail=%q)", h.InboxBacklog, h.Detail)
+	}
+	if h.Status != "ok" {
+		t.Fatalf("reconciled capture status = %q, want ok for 1 pending (detail=%q)", h.Status, h.Detail)
+	}
+	if !strings.Contains(h.Detail, "1 pending / 2 candidate file(s)") {
+		t.Fatalf("capture detail must name pending AND files, got %q", h.Detail)
 	}
 }
 
@@ -1853,7 +1996,8 @@ func TestDoctorFreshnessQuietInboxNotStalled(t *testing.T) {
 }
 
 // TestDoctorFreshnessInboxBacklogWarnAndFail: the inbox-backlog thresholds
-// flip the capture hop's status independently of the promotion gate.
+// apply to the RECONCILED PENDING count and flip the capture hop's status
+// independently of the promotion gate.
 func TestDoctorFreshnessInboxBacklogWarnAndFail(t *testing.T) {
 	// Shrink production thresholds so the test exercises the boundary in
 	// reasonable time. Defaults are 5_000 (warn) and 50_000 (fail); the
@@ -1864,10 +2008,7 @@ func TestDoctorFreshnessInboxBacklogWarnAndFail(t *testing.T) {
 	memDoctorThresholds.InboxBacklogFail = 20
 
 	// No claims — promotion has no stall signature. Capture status is
-	// driven purely by inbox size.
-	// Use small thresholds for the test: production values
-	// (memDoctorInboxBacklogWarn=5_000, memDoctorInboxBacklogFail=50_000)
-	// are too slow to instantiate in a unit test.
+	// driven purely by the reconciled pending count.
 	cases := []struct {
 		name    string
 		backlog int
@@ -1876,6 +2017,7 @@ func TestDoctorFreshnessInboxBacklogWarnAndFail(t *testing.T) {
 		{"empty", 0, "empty"},
 		{"under_warn", memDoctorThresholds.InboxBacklogWarn - 1, "ok"},
 		{"at_warn", memDoctorThresholds.InboxBacklogWarn, "warn"},
+		{"at_fail", memDoctorThresholds.InboxBacklogFail, "fail"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1892,6 +2034,11 @@ func TestDoctorFreshnessInboxBacklogWarnAndFail(t *testing.T) {
 				if _, err := s.Capture([]Candidate{c}, t0); err != nil {
 					t.Fatal(err)
 				}
+			}
+			// Thresholds apply to the reconciled pending count; without a
+			// reconciliation the hop warns instead of measuring.
+			if _, err := s.ReconcilePendingState("test", t0); err != nil {
+				t.Fatal(err)
 			}
 			r := s.DoctorAt(nil, t0.Add(time.Minute))
 			h := hopByName(t, r, "capture")

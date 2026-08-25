@@ -160,6 +160,14 @@ var mintHomes = map[string]MintHome{
 	// act.Execute seams). It blocks and passes, so it is enforcement, not evidence — the consumption
 	// ledger it records is the audit of that enforcement, the same posture as act's receipts.
 	"organ:actuator": {Class: MintEnforcement},
+	// promotedriver is the governed auto-promote actuator behind `compound memory
+	// promote-driver` and the autonomy heartbeat. Its teeth ARE the gate:
+	// single-flight flock refuses concurrent passes, PromoteLimit 1 bounds the
+	// mutation blast, ValidBasis refuses promotion without an operator-grade basis
+	// (explicit-confirmation is NOT a basis), and dry-run is the default with
+	// --confirm as the sole mutation door (admission grades it Governed). Receipts
+	// append to state/promote-driver/receipts.jsonl — enforcement, not evidence.
+	"organ:promotedriver": {Class: MintEnforcement},
 	// verdictflow is the shared plan->record->render->load->annotate scaffolding the three
 	// panel-verdict review bridges had copy-pasted. It writes review artifacts through reviewartifact
 	// and reads them back, but touches no ledger/store/writeback surface and performs no terminal

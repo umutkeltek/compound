@@ -171,7 +171,7 @@ func Promote(homePath string, opts PromoteOptions) (PromoteReport, error) {
 	}
 	aggregates := buildPromoteAggregates(observations)
 
-	store, err := mem.Open(homePath)
+	store, err := openStoreForScan(homePath, opts.DryRun)
 	if err != nil {
 		return report, err
 	}

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -286,6 +287,24 @@ func OpenReadOnly(homePath string) (*Store, error) {
 	return &Store{home: homePath, eventStore: events}, nil
 }
 
+// OpenScan opens the store for bounded walks and dry-run gates without
+// scaffolding: unlike Open it creates no ledger/ or events/ directories,
+// and unlike OpenReadOnly an ABSENT ledger is a legitimate empty view, not
+// an error — a home that captured candidates but never promoted has no
+// claims.jsonl yet, and plan passes and dry-run gates must still walk its
+// inbox. Callers that must distinguish "no ledger" from "empty ledger"
+// (authority proofs) stay on OpenReadOnly.
+func OpenScan(homePath string) (*Store, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return nil, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
+	}
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{home: homePath, eventStore: events}, nil
+}
+
 // HomePath exposes the runtime root to sibling authority owners that must
 // coordinate one cross-object critical section. It is not an authority read;
 // callers still use the owning package for ledger operations.
@@ -485,6 +504,11 @@ func candidateHasAnnotation(annotations []CandidateAnnotation, id string) bool {
 func (s *Store) AllCandidates() ([]Candidate, error) {
 	entries, err := os.ReadDir(s.candDir())
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// An absent inbox (read-only open on a home that never captured)
+			// is an empty inbox, not a failure.
+			return nil, nil
+		}
 		return nil, err
 	}
 	out := make([]Candidate, 0, len(entries))
@@ -558,8 +582,18 @@ type AdjudicatePendingReport struct {
 	VerdictCounts map[string]int `json:"verdict_counts"`
 	FirstID       string         `json:"first_id,omitempty"`
 	LastID        string         `json:"last_id,omitempty"`
-	Limit         int            `json:"limit,omitempty"`
-	LimitReached  bool           `json:"limit_reached,omitempty"`
+	// LastWalkedID is the LAST DIRECTORY ENTRY the pass walked, valid or
+	// corrupt — the true continuation point. NextCursor derives from it (or
+	// from LastID on a write-cap stop): a cursor that only advanced on
+	// successfully decoded candidates trapped a pass on a page ending in an
+	// unreadable file, re-reading it forever.
+	LastWalkedID string `json:"last_walked_id,omitempty"`
+	// AtEnd reports whether the walk reached the directory's final entry —
+	// answered by the walker from the directory itself, never derived from
+	// a pre-cursor total.
+	AtEnd        bool `json:"at_end,omitempty"`
+	Limit        int  `json:"limit,omitempty"`
+	LimitReached bool `json:"limit_reached,omitempty"`
 	// ScanLimit mirrors the pass's scan budget (0 = uncapped) and ScanCapHit
 	// reports whether the pass stopped READING because of it. A cap on
 	// writes alone is not an operational budget: `--limit 1` used to
@@ -577,6 +611,12 @@ type AdjudicatePendingReport struct {
 	// silently skipped unreadable JSON made the scan count a fiction.
 	CorruptIDs []string                 `json:"corrupt_ids,omitempty"`
 	Errors     []AdjudicatePendingError `json:"errors,omitempty"`
+	// BasisDeferred counts proposed candidates the disposition pass LEFT
+	// proposed because they carry a promotable basis: disposition must not
+	// pre-empt the per-id promotion gate (design decision 3's corollary —
+	// the batch neither promotes nor forecloses promotion). Fixed-verdict
+	// passes (--verdict park) are explicit operator intent and still apply.
+	BasisDeferred int `json:"basis_deferred,omitempty"`
 }
 
 // AdjudicatePendingError names one candidate the batch could not adjudicate.
@@ -606,7 +646,7 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 	// Adjudicate re-reads the live candidate by id before writing, and the
 	// old full-decode walk aborted the WHOLE batch on the first unreadable
 	// candidate instead of isolating it as a per-candidate finding.
-	cands, corrupt, total, err := s.pendingInboxSnapshot(opts.AfterID, opts.ScanLimit)
+	cands, corrupt, lastWalked, atEnd, err := s.pendingInboxSnapshot(opts.AfterID, opts.ScanLimit)
 	if err != nil {
 		r.Errors = append(r.Errors, AdjudicatePendingError{CandidateID: "*", Err: err.Error()})
 		return r
@@ -640,6 +680,16 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 		}
 		if state != "" && state != "proposed" {
 			r.Skipped++
+			continue
+		}
+		// Basis deferral: in disposition mode (no explicit --verdict), a
+		// candidate carrying a promotable basis stays proposed so the per-id
+		// promotion door — the operator or the governed promote-driver — can
+		// rule on it. Parking it here would foreclose the promotion chance
+		// (design decision 3's corollary: the batch neither promotes nor
+		// forecloses promotion).
+		if opts.Verdict == "" && basisDefers(c) {
+			r.BasisDeferred++
 			continue
 		}
 		verdict := opts.Verdict
@@ -678,24 +728,40 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 			break
 		}
 	}
-	// Truthful stop flags. The walker names the denominator: if every inbox
-	// entry was read this pass, a cap that fired on the LAST candidate is
-	// not "limit reached" — there is nothing left to resume into. The old
-	// behavior reported limit_reached=true whenever Adjudicated==Limit,
-	// even on an inbox of exactly N candidates.
-	walkedAll := r.Scanned+len(corrupt) >= total
-	if walkedAll {
+	r.LastWalkedID = lastWalked
+	r.AtEnd = atEnd
+	// The READ side is complete when the walker reached the directory's
+	// final entry — answered by the walker itself, never derived from the
+	// pre-cursor directory total (that denominator arithmetic was false on
+	// every resumed walk: scanned-after-cursor could never reach the whole-
+	// directory total, so a completed resume never reported completion).
+	// The WRITE cap is a separate dimension: a pass may read the whole
+	// directory yet close only Limit candidates, leaving the remainder
+	// resumable — so atEnd must never clear LimitReached, only decide
+	// whether the scan budget fired (it cannot have, once the walk
+	// finished) and whether an exact-limit pass still has work left.
+	loopFinished := len(cands) == 0 || r.LastID == cands[len(cands)-1].ID
+	if r.LimitReached && loopFinished {
+		// The cap fired on the final candidate: nothing remains to resume
+		// into, so "limit reached" would claim resumable work that does
+		// not exist.
 		r.LimitReached = false
-		r.ScanCapHit = false
+	}
+	if !atEnd {
+		// The walk stopped early; with an uncapped scan that cannot happen,
+		// so the budget fired. Progress is the last DIRECTORY ENTRY walked —
+		// valid or corrupt — so a page ending on an unreadable file never
+		// re-reads it on resume (a cursor keyed on decoded candidates alone
+		// trapped the pass re-reporting the same corrupt tail forever).
+		r.ScanCapHit = opts.ScanLimit > 0
+		r.NextCursor = r.LastWalkedID
 		return r
 	}
-	// Stopped early and entries remain: the pass is resumable, so name the
-	// continuation point.
-	scanBudgetSpent := opts.ScanLimit > 0 && r.Scanned+len(corrupt) >= opts.ScanLimit
-	if scanBudgetSpent {
-		r.ScanCapHit = true
-	}
-	if (r.LimitReached || r.ScanCapHit) && r.LastID != "" {
+	if r.LimitReached && r.LastID != "" {
+		// The write cap stopped the pass before the directory's end: resume
+		// from the last adjudicated candidate so the page's unadjudicated
+		// remainder is re-read (already-closed candidates skip
+		// idempotently).
 		r.NextCursor = r.LastID
 	}
 	return r
@@ -727,33 +793,50 @@ type AdjudicatePendingOptions struct {
 // not memory; they auto-reject (no_promote). A bare proposed candidate
 // without a definite disposition parks itself so the operator can rule.
 // pendingInboxSnapshot walks the inbox and returns the lightweight fields
-// the batch adjudicator needs: ID, State, and Qualifiers.source. The State
-// alone decides proposed-vs-closed; Qualifiers.source alone decides
-// admission-class disposition. Decoding the rest of the Candidate struct
-// is pure cost — and the mutation path does not need it either, because
-// Adjudicate re-reads the live candidate by id before writing.
+// the batch adjudicator needs: ID, State, PromotionBasis, and
+// Qualifiers.source. The State alone decides proposed-vs-closed;
+// Qualifiers.source alone decides admission-class disposition. Decoding the
+// rest of the Candidate struct is pure cost — and the mutation path does not
+// need it either, because Adjudicate re-reads the live candidate by id
+// before writing.
 //
 // The walker NEVER aborts on one unreadable candidate and NEVER skips one
 // silently: undecodable files are returned in corrupt so the report can
-// name them. total is the count of inbox .json entries (before any cursor
-// or scan-budget filtering) — the denominator that makes "limit reached"
-// truthful instead of speculative.
-func (s *Store) pendingInboxSnapshot(afterID string, scanLimit int) (cands []Candidate, corrupt []string, total int, err error) {
+// name them. lastWalked is the last directory entry walked (valid or
+// corrupt) and atEnd reports whether the walk reached the directory's final
+// entry — the two dimensions pagination correctness needs. Progress and
+// candidate validity are separate: a cursor that advances only on
+// successfully decoded candidates traps a pass on a page that ends in an
+// unreadable file.
+func (s *Store) pendingInboxSnapshot(afterID string, scanLimit int) (cands []Candidate, corrupt []string, lastWalked string, atEnd bool, err error) {
 	entries, err := os.ReadDir(s.candDir())
 	if err != nil {
-		return nil, nil, 0, err
+		if errors.Is(err, fs.ErrNotExist) {
+			// An absent inbox (read-only open on a home that never captured)
+			// is an empty walk, not a failure.
+			return nil, nil, "", true, nil
+		}
+		return nil, nil, "", false, err
 	}
-	jsonEntries := 0
 	var names []string
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		jsonEntries++
 		names = append(names, entry.Name())
 	}
-	total = jsonEntries
 	sort.Strings(names)
+	lastID := ""
+	if len(names) == 0 {
+		// Nothing in the inbox: the walk is complete by definition.
+		return nil, nil, "", true, nil
+	}
+	lastID = strings.TrimSuffix(names[len(names)-1], ".json")
+	if afterID != "" && (lastID == "" || lastID <= afterID) {
+		// The cursor already sits at or past the directory's final entry:
+		// the walk is complete by definition, even though it reads nothing.
+		return nil, nil, "", true, nil
+	}
 	budget := scanLimit
 	for _, name := range names {
 		if budget == 0 && scanLimit > 0 {
@@ -770,9 +853,10 @@ func (s *Store) pendingInboxSnapshot(afterID string, scanLimit int) (cands []Can
 		// lightweight struct ignores the rest; this avoids the
 		// per-candidate full-Candidate decode cost.
 		var lite struct {
-			ID         string            `json:"id"`
-			State      string            `json:"state"`
-			Qualifiers map[string]string `json:"qualifiers,omitempty"`
+			ID             string            `json:"id"`
+			State          string            `json:"state"`
+			PromotionBasis string            `json:"promotion_basis,omitempty"`
+			Qualifiers     map[string]string `json:"qualifiers,omitempty"`
 		}
 		path := filepath.Join(s.candDir(), name)
 		if err := readJSON(path, &lite); err != nil {
@@ -780,17 +864,26 @@ func (s *Store) pendingInboxSnapshot(afterID string, scanLimit int) (cands []Can
 			// abort or undercount the batch. Name it; the caller decides
 			// whether it is an error (apply) or a report row (dry-run).
 			corrupt = append(corrupt, fileID)
-			if scanLimit > 0 {
-				budget--
-			}
-			continue
+		} else {
+			cands = append(cands, Candidate{ID: lite.ID, State: lite.State, PromotionBasis: lite.PromotionBasis, Qualifiers: lite.Qualifiers})
 		}
-		cands = append(cands, Candidate{ID: lite.ID, State: lite.State, Qualifiers: lite.Qualifiers})
+		lastWalked = fileID
+		atEnd = fileID == lastID
 		if scanLimit > 0 {
 			budget--
 		}
 	}
-	return cands, corrupt, total, nil
+	return cands, corrupt, lastWalked, atEnd, nil
+}
+
+// basisDefers reports whether a candidate carries a promotable promotion
+// basis that disposition must leave alone. explicit_confirmation is the
+// exception: it is self-attested and only the governed confirmation door
+// (AdjudicateExplicitConfirmation) can make it real, so disposition parks
+// it like any other operator-material candidate.
+func basisDefers(c Candidate) bool {
+	basis := strings.TrimSpace(c.PromotionBasis)
+	return candidates.ValidBasis(basis) && basis != candidates.BasisExplicitConfirmation
 }
 
 func dispositionVerdict(c Candidate) string {
@@ -1718,13 +1811,18 @@ func (s *Store) currentEchoClaimWithResolver(cand Candidate, asOf int64, resolve
 var memDoctorThresholds = struct {
 	ClaimStaleAfter     time.Duration
 	CandidateStaleAfter time.Duration
-	InboxBacklogWarn    int
-	InboxBacklogFail    int
+	// PendingStateFreshFor bounds how long a reconciled pending count stays
+	// authoritative. Past it (or once the inbox generation moves) the doctor
+	// reports the count as stale instead of silently re-serving it.
+	PendingStateFreshFor time.Duration
+	InboxBacklogWarn     int
+	InboxBacklogFail     int
 }{
-	ClaimStaleAfter:     72 * time.Hour,
-	CandidateStaleAfter: 168 * time.Hour,
-	InboxBacklogWarn:    5_000,
-	InboxBacklogFail:    50_000,
+	ClaimStaleAfter:      72 * time.Hour,
+	CandidateStaleAfter:  168 * time.Hour,
+	PendingStateFreshFor: 24 * time.Hour,
+	InboxBacklogWarn:     5_000,
+	InboxBacklogFail:     50_000,
 }
 
 // --- doctor (which hop) ---
@@ -1802,18 +1900,57 @@ func (s *Store) DoctorAt(eng Engine, now time.Time) Report {
 	// Inbox backlog + newest-candidate age are the stall signature: a flat
 	// claim count + a growing inbox + an old newest-candidate means
 	// capture writes still flow but adjudication is wedged.
+	//
+	// The backlog is the PENDING (proposed) count, never the raw file count:
+	// closed candidates (parked/promoted/rejected/no_promote) stay on disk,
+	// and counting them as backlog fails the hop forever (lived 2026-08-25:
+	// 133,542 files reported as backlog while 34 were actually pending).
+	// The pending count comes from the reconciled state the promote-driver
+	// sweep writes after a full-budget walk — and it is authoritative ONLY
+	// while fresh: reconciled recently enough AND against the same inbox
+	// generation (the file count has not moved since). A stale or
+	// generation-mismatched count can lie in BOTH directions (thousands of
+	// new candidates arrived after reconciliation), so it reads as "stale /
+	// unknown", never as a confident number. Never reconciled means the hop
+	// cannot prove the backlog small, so it warns instead of guessing.
 	cands, _ := os.ReadDir(s.candDir())
-	captureExtras := hopExtras{inboxBacklog: len(cands)}
-	if newestAt := newestCandidateModTime(s); !newestAt.IsZero() {
-		captureExtras.newestCandidateAt = rfc3339(newestAt)
+	fileCount := len(cands)
+	newestCandidateAt := newestCandidateModTime(s)
+	captureExtras := hopExtras{}
+	if !newestCandidateAt.IsZero() {
+		captureExtras.newestCandidateAt = rfc3339(newestCandidateAt)
 	}
-	captureStatus := statusOf(len(cands) > 0)
-	if len(cands) >= memDoctorThresholds.InboxBacklogFail {
-		captureStatus = "fail"
-	} else if len(cands) >= memDoctorThresholds.InboxBacklogWarn {
-		captureStatus = "warn"
+	captureStatus := statusOf(fileCount > 0)
+	captureDetail := fmt.Sprintf("%d candidate file(s) in inbox", fileCount)
+	// pendingPressure is the stall signal the promotion hop consumes: the
+	// reconciled pending count when authoritative, -1 when unknown (never
+	// reconciled, stale, or generation-mismatched).
+	pendingPressure := -1
+	if pendingState, err := s.ReadPendingState(); err == nil {
+		if pendingStateFresh(pendingState, fileCount, now) {
+			pendingPressure = pendingState.Pending
+			captureExtras.inboxBacklog = pendingState.Pending
+			captureDetail = fmt.Sprintf("%d pending / %d candidate file(s) (reconciled %s)",
+				pendingState.Pending, fileCount, pendingState.AsOf)
+			if pendingState.Pending >= memDoctorThresholds.InboxBacklogFail {
+				captureStatus = "fail"
+			} else if pendingState.Pending >= memDoctorThresholds.InboxBacklogWarn {
+				captureStatus = "warn"
+			}
+		} else {
+			captureDetail += fmt.Sprintf("; reconciled pending count stale (as of %s, inbox now %d file(s)) — run the memory promote-driver sweep",
+				pendingState.AsOf, fileCount)
+			if captureStatus == "ok" {
+				captureStatus = "warn"
+			}
+		}
+	} else if fileCount > 0 {
+		captureDetail += "; pending count not reconciled (run the memory promote-driver sweep)"
+		if captureStatus == "ok" {
+			captureStatus = "warn"
+		}
 	}
-	add("capture", captureStatus, fmt.Sprintf("%d candidate(s) in inbox", len(cands)), captureExtras)
+	add("capture", captureStatus, captureDetail, captureExtras)
 
 	// --- promotion hop ---
 	// Newest claim-ledger WRITE age vs inbox: the promotion pipeline stopping
@@ -1834,14 +1971,26 @@ func (s *Store) DoctorAt(eng Engine, now time.Time) Report {
 		}
 		detail := fmt.Sprintf("%d claim(s) promoted to ledger", len(claims))
 		status := statusOf(len(claims) > 0)
-		// Stall signature: the ledger stopped being appended to while capture
-		// is still writing means candidate -> claim promotion is wedged.
-		// A quiet inbox (no candidates) is not stalled; an old declared
-		// created_at alone is also not a fail.
-		if !newestClaimAt.IsZero() && len(cands) > 0 &&
-			now.Sub(newestClaimAt) > memDoctorThresholds.ClaimStaleAfter {
-			detail += fmt.Sprintf(" (newest claim write %s old; capture still writing %d)",
-				truncateAge(now.Sub(newestClaimAt)), len(cands))
+		// Stall signature: the ledger stopped being appended to while LIVE
+		// promotion pressure exists. Pressure is the reconciled pending count
+		// when authoritative (>0), otherwise the capture-write signal — a
+		// fresh candidate mtime — and NEVER the mere existence of candidate
+		// files: closed candidates stay on disk forever, so a directory of
+		// parked/promoted/no_promote files with zero pending must not read
+		// as a backlog (the drive-down to zero would leave doctor red
+		// forever). An old declared created_at alone is also not a fail.
+		stalled := false
+		if !newestClaimAt.IsZero() && now.Sub(newestClaimAt) > memDoctorThresholds.ClaimStaleAfter {
+			if pendingPressure >= 0 {
+				stalled = pendingPressure > 0
+			} else {
+				stalled = fileCount > 0 && !newestCandidateAt.IsZero() &&
+					now.Sub(newestCandidateAt) <= memDoctorThresholds.CandidateStaleAfter
+			}
+		}
+		if stalled {
+			detail += fmt.Sprintf(" (newest claim write %s old; live promotion pressure remains)",
+				truncateAge(now.Sub(newestClaimAt)))
 			status = "fail"
 		}
 		add("promotion", status, detail, extras)
