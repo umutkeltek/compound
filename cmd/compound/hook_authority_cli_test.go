@@ -48,14 +48,17 @@ func TestInstalledRuntimeSupportUsesBoundedSessionEndForEveryInstalledClaudeProf
 		"claude_zai":     "compound hook session-end-adapter --live --harness claude_zai",
 		"claude_minimax": "compound hook session-end-adapter --live --harness claude_minimax",
 		"claude_qwen":    "compound hook session-end-adapter --live --harness claude_qwen",
+		// codex 0.149.x fires a native SessionEnd with transcript_path (rule_delta 2026-08-26);
+		// it routes through the generic verb, never the bounded Claude adapter.
+		"codex": "compound hook session-end --live --harness codex",
 	}
 	seen := map[string]bool{}
 	for _, support := range installedHookRuntimeSupport() {
 		if support.Hook != "SessionEnd" {
 			continue
 		}
-		if support.Harness == "codex" {
-			t.Fatalf("Codex runtime support unexpectedly advertises SessionEnd: %+v", support)
+		if support.Harness == "codex" && strings.Contains(support.LiveCommand, "session-end-adapter") {
+			t.Fatalf("Codex SessionEnd must use the generic session-end verb, not the bounded Claude adapter: %+v", support)
 		}
 		command, ok := want[support.Harness]
 		if !ok {
