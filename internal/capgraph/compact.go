@@ -59,11 +59,27 @@ func (s *Store) PreviewCompact() (CompactReport, error) {
 // mid-Compact leaves the previous bytes intact. F2 pins the report shape and
 // the loadNodes-before vs loadNodes-after byte equivalence.
 func (s *Store) CompactNodes() (CompactReport, error) {
-	report, nodes, err := computeCompactReport(s.nodesLog())
+	// The rewrite here is the dangerous one: without the graph write lock, a
+	// node APPENDED between computeCompactReport's read and the rename below
+	// is silently erased — compaction converting concurrency into deletion.
+	// The lock spans load-validate-rewrite so an in-flight Add either lands
+	// before the read (and survives) or after the rename (and lands on the
+	// compacted log).
+	return s.compactNodesLocked()
+}
+
+func (s *Store) compactNodesLocked() (CompactReport, error) {
+	var report CompactReport
+	err := s.withGraphWriteLock(func() error {
+		var nodes []Node
+		var cerr error
+		report, nodes, cerr = computeCompactReport(s.nodesLog())
+		if cerr != nil {
+			return cerr
+		}
+		return s.rewriteNodesAtomic(nodes)
+	})
 	if err != nil {
-		return report, err
-	}
-	if err := s.rewriteNodesAtomic(nodes); err != nil {
 		return report, err
 	}
 	return report, nil

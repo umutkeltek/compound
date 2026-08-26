@@ -53,7 +53,7 @@ func (s *Store) connectionSurfacesLog() string {
 // appended and false when an identical record already exists -- so a re-import
 // with unchanged sources is a no-op at the file level (DeepEqual dedupe,
 // mirroring Store.Add for nodes).
-func (s *Store) AddConnectionSurface(cs ConnectionSurface) (bool, error) {
+func (s *Store) AddConnectionSurface(cs ConnectionSurface) (added bool, retErr error) {
 	if strings.TrimSpace(cs.NodeID) == "" {
 		return false, fmt.Errorf("connection surface needs a node id")
 	}
@@ -63,19 +63,23 @@ func (s *Store) AddConnectionSurface(cs ConnectionSurface) (bool, error) {
 	if err := ValidateCredentialHandle(cs.CredentialHandle); err != nil {
 		return false, fmt.Errorf("connection surface %s: %w", cs.NodeID, err)
 	}
-	existing, err := s.loadConnectionSurfaces()
-	if err != nil {
-		return false, err
-	}
-	for _, prev := range existing {
-		if prev.NodeID == cs.NodeID && reflect.DeepEqual(prev, cs) {
-			return false, nil
+	retErr = s.withGraphWriteLock(func() error {
+		existing, err := s.loadConnectionSurfaces()
+		if err != nil {
+			return err
 		}
-	}
-	if err := appendJSONL(s.connectionSurfacesLog(), &cs); err != nil {
-		return false, err
-	}
-	return true, nil
+		for _, prev := range existing {
+			if prev.NodeID == cs.NodeID && reflect.DeepEqual(prev, cs) {
+				return nil
+			}
+		}
+		if err := appendJSONL(s.connectionSurfacesLog(), &cs); err != nil {
+			return err
+		}
+		added = true
+		return nil
+	})
+	return added, retErr
 }
 
 // SetConnectionSurfaceCredential attaches (or replaces) a CredentialHandle on an
@@ -90,29 +94,37 @@ func (s *Store) SetConnectionSurfaceCredential(nodeID string, h CredentialHandle
 	if err := ValidateCredentialHandle(h); err != nil {
 		return false, fmt.Errorf("connection surface %s: %w", nodeID, err)
 	}
-	existing, err := s.loadConnectionSurfaces()
+	var updated bool
+	err := s.withGraphWriteLock(func() error {
+		existing, err := s.loadConnectionSurfaces()
+		if err != nil {
+			return err
+		}
+		var current *ConnectionSurface
+		for i := range existing {
+			if existing[i].NodeID == nodeID {
+				current = &existing[i]
+				break
+			}
+		}
+		if current == nil {
+			return fmt.Errorf("no connection surface for node %q (create it first)", nodeID)
+		}
+		next := *current
+		next.CredentialHandle = h
+		if current.CredentialHandle == h {
+			return nil // already bound identically — no-op
+		}
+		if err := appendJSONL(s.connectionSurfacesLog(), &next); err != nil {
+			return err
+		}
+		updated = true
+		return nil
+	})
 	if err != nil {
 		return false, err
 	}
-	var current *ConnectionSurface
-	for i := range existing {
-		if existing[i].NodeID == nodeID {
-			current = &existing[i]
-			break
-		}
-	}
-	if current == nil {
-		return false, fmt.Errorf("no connection surface for node %q (create it first)", nodeID)
-	}
-	updated := *current
-	updated.CredentialHandle = h
-	if current.CredentialHandle == h {
-		return false, nil // already bound identically — no-op
-	}
-	if err := appendJSONL(s.connectionSurfacesLog(), &updated); err != nil {
-		return false, err
-	}
-	return true, nil
+	return updated, nil
 }
 
 // loadConnectionSurfaces reads the sidecar, last-write-wins by NodeID with

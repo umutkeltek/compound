@@ -3,7 +3,9 @@
 Local-first, agent-agnostic substrate that makes the flow of agent work leave
 reusable structure behind — without freezing the flow.
 
-Concretely: one Go binary (`compound`) and one local runtime directory
+Concretely: a primary Go binary (`compound`) plus an optional semantic
+engine companion (`compound-breadth-engine`, installed by `install.sh` when
+you want embedding-based recall), and one local runtime directory
 (`COMPOUND_HOME`, default `~/.compound`). No cloud, no account. The
 interactive core requires no daemon: your agent harnesses — Claude Code,
 Codex, OpenCode, or any CLI — call it at session start for oriented context

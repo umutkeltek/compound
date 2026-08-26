@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"compound/internal/candidates"
@@ -146,6 +147,33 @@ type Store struct {
 	semanticLane string
 }
 
+// withGraphWriteLock holds an exclusive advisory flock around one
+// read-modify-write critical section on the capability graph. The graph's
+// mutation paths are load -> decide -> rewrite (Add's update arm, Retire,
+// CompactNodes) or load -> dedupe -> append (AddConnectionSurface): without
+// a cross-process lock, two concurrent writers can both load the same old
+// state and the later rename erases the earlier writer's changes — and a
+// compaction racing an append silently deletes the appended rows. The graph
+// is an authority/routing registry; a lost update here is a silently wrong
+// system belief, so mutation serializes. Pure appends with no load-decide
+// arm (AddEdge) stay lock-free: single-line appends are atomic and the edge
+// log is never rewritten. Leaf functions only — a locked body must never
+// call another locked function (flock is per-fd; a nested OpenFile of the
+// same lock file would self-block).
+func (s *Store) withGraphWriteLock(fn func() error) error {
+	lockPath := filepath.Join(s.home, "registries", "capability-graph.write.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return fmt.Errorf("open capability graph write lock: %w", err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("lock capability graph: %w", err)
+	}
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	return fn()
+}
+
 type Stats struct {
 	NodeCount      int            `json:"node_count"`
 	EdgeCount      int            `json:"edge_count"`
@@ -272,21 +300,23 @@ func (s *Store) Add(n Node) error {
 	if n.Weight == 0 {
 		n.Weight = 1.0
 	}
-	nodes, err := s.loadNodes()
-	if err != nil {
-		return err
-	}
-	for i := range nodes {
-		if nodes[i].ID != n.ID {
-			continue
+	return s.withGraphWriteLock(func() error {
+		nodes, err := s.loadNodes()
+		if err != nil {
+			return err
 		}
-		if reflect.DeepEqual(nodes[i], n) {
-			return nil
+		for i := range nodes {
+			if nodes[i].ID != n.ID {
+				continue
+			}
+			if reflect.DeepEqual(nodes[i], n) {
+				return nil
+			}
+			nodes[i] = n
+			return s.rewriteNodesAtomic(nodes)
 		}
-		nodes[i] = n
-		return s.rewriteNodesAtomic(nodes)
-	}
-	return appendJSONL(s.nodesLog(), &n)
+		return appendJSONL(s.nodesLog(), &n)
+	})
 }
 
 // Retire marks one or more capability nodes WITHDRAWN (the durable lifecycle
@@ -296,44 +326,46 @@ func (s *Store) Add(n Node) error {
 // withdrawal, distinct from Health (a broken-but-live node stays named and is
 // merely not offered). Unknown ids are reported, not silently dropped, so a
 // caller can tell a typo from a no-op. A node already retired is left untouched.
-func (s *Store) Retire(ids ...string) ([]string, error) {
+func (s *Store) Retire(ids ...string) (retired []string, retErr error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("retire requires at least one node id")
 	}
-	nodes, err := s.loadNodes()
-	if err != nil {
-		return nil, err
-	}
-	byID := make(map[string]Node, len(nodes))
-	for _, n := range nodes {
-		byID[n.ID] = n
-	}
-	unknown := make([]string, 0, len(ids))
-	retired := make([]string, 0, len(ids))
-	for _, id := range ids {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
+	retErr = s.withGraphWriteLock(func() error {
+		nodes, err := s.loadNodes()
+		if err != nil {
+			return err
 		}
-		n, ok := byID[id]
-		if !ok {
-			unknown = append(unknown, id)
-			continue
+		byID := make(map[string]Node, len(nodes))
+		for _, n := range nodes {
+			byID[n.ID] = n
 		}
-		if n.Retired {
+		unknown := make([]string, 0, len(ids))
+		for _, id := range ids {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			n, ok := byID[id]
+			if !ok {
+				unknown = append(unknown, id)
+				continue
+			}
+			if n.Retired {
+				retired = append(retired, id)
+				continue
+			}
+			n.Retired = true
+			if err := appendJSONL(s.nodesLog(), &n); err != nil {
+				return fmt.Errorf("retire %s: %w", id, err)
+			}
 			retired = append(retired, id)
-			continue
 		}
-		n.Retired = true
-		if err := appendJSONL(s.nodesLog(), &n); err != nil {
-			return retired, fmt.Errorf("retire %s: %w", id, err)
+		if len(unknown) > 0 {
+			return fmt.Errorf("retire: unknown node id(s) %v", unknown)
 		}
-		retired = append(retired, id)
-	}
-	if len(unknown) > 0 {
-		return retired, fmt.Errorf("retire: unknown node id(s) %v", unknown)
-	}
-	return retired, nil
+		return nil
+	})
+	return retired, retErr
 }
 
 // AddEdge appends a typed graph edge. It is for deterministic importers such as
