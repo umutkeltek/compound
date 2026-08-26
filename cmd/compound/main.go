@@ -4009,7 +4009,7 @@ func liveHookCommand(harnessName, hookName string, liveAdapter bool) string {
 	if !liveAdapter {
 		return ""
 	}
-	if strings.TrimSpace(hookName) == "SessionEnd" {
+	if strings.TrimSpace(hookName) == "SessionEnd" && strings.HasPrefix(harnessName, "claude") {
 		return fmt.Sprintf("compound hook session-end-adapter --live --harness %s", harnessName)
 	}
 	return fmt.Sprintf("compound hook %s --live --harness %s", hookCommandName(hookName), harnessName)
