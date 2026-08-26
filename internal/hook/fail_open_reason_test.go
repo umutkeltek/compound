@@ -59,7 +59,7 @@ func TestFailOpenDistinguishesContextFailureFromAbsentCapability(t *testing.T) {
 			breaker.Event.FailOpenReason, envelope.FailOpenContextUnavailable)
 	}
 
-	fxA := Fixture{Harness: "codex", SessionID: "sess_absent", Cwd: t.TempDir()}
+	fxA := Fixture{Harness: "opencode", SessionID: "sess_absent", Cwd: t.TempDir()}
 	st := status(deps, fxA.Harness, "SessionEnd")
 	if st != "fail_open" {
 		t.Fatalf("precondition: unsupported hook must fail open, got %q", st)

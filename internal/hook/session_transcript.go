@@ -52,8 +52,10 @@ type sessionTranscriptSummary struct {
 // sniffTranscriptFormat peeks the first 4 KB of the file for a
 // `{"type":"session","version":N,...}` line. omp writes such a line on
 // its second JSON line (the first is "title"); claude-code never does.
-// The 4 KB window is generous for the omp header (a typical omp session
-// line is < 200 B) and bounded so we never read the whole transcript
+// Codex 0.149.x writes `{"type":"session_meta",...}` on its first line;
+// response_item is the function_call carrier, so the meta line is the
+// most reliable header. The 4 KB window is generous for either header
+// (both are < 200 B) and bounded so we never read the whole transcript
 // twice. The caller (scanSessionTranscript) MUST Seek(0,0) after this
 // before resuming the main scan -- we only peek, never consume.
 func sniffTranscriptFormat(f *os.File) string {
@@ -83,6 +85,9 @@ func sniffTranscriptFormat(f *os.File) string {
 		if probe.Type == "session" && probe.Version > 0 {
 			return "omp"
 		}
+		if probe.Type == "session_meta" || probe.Type == "response_item" {
+			return "codex"
+		}
 	}
 	return "claude"
 }
@@ -95,6 +100,12 @@ type transcriptEntry struct {
 	Content   json.RawMessage    `json:"content"`
 	Message   *transcriptMessage `json:"message"`
 	Payload   *transcriptMessage `json:"payload"`
+	// CodexRolloutPayload carries the codex-native `{"type":"function_call","name":...,
+	// "arguments":"<json string>"}` shape on response_item lines. The existing Payload
+	// field cannot read it (codex omits role/content on the inner object), so a sibling
+	// field is added instead of overloading Payload's meaning. Both forms are populated
+	// by the same parseTranscriptEntry call; only one is non-nil per line.
+	CodexRolloutPayload *codexRolloutPayload `json:"-"`
 }
 
 type transcriptMessage struct {
@@ -107,6 +118,20 @@ type transcriptContentBlock struct {
 	Text  string         `json:"text"`
 	Name  string         `json:"name"`
 	Input map[string]any `json:"input"`
+}
+
+// codexRolloutPayload is the per-line shape codex 0.149.x emits for tool calls:
+// `{"type":"function_call","name":"<tool>","arguments":"<json string>"}` under a
+// response_item entry's payload field. The arguments string is a nested JSON
+// document representing the tool's input -- the shape claude-code expresses as a
+// tool_use block's `input`. Keeping it as a raw string matches codex's wire shape
+// verbatim so a future codex-side change to the arguments schema (e.g. switching to
+// a structured object) only has to touch this struct.
+type codexRolloutPayload struct {
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	CallID    string `json:"call_id,omitempty"`
 }
 
 // ResolveCodexRolloutPath locates the newest codex rollout JSONL for the given session id,
@@ -507,6 +532,23 @@ func parseTranscriptEntry(line []byte) (transcriptEntry, error) {
 	if err := json.Unmarshal(line, &entry); err != nil {
 		return entry, err
 	}
+	// Codex 0.149.x response_item lines carry their function_call under an untyped
+	// `payload` field; the generic transcriptEntry.Payload (a *transcriptMessage
+	// looking for `role`/`content`) is the wrong shape. Decode a sibling struct
+	// here so applyEntry can switch on Type == "response_item" and reuse the
+	// existing tool-block semantics for skill detection. Parsing is gated on the
+	// entry's Type so non-codex lines never pay the cost.
+	if entry.Type == "response_item" {
+		var probe struct {
+			Payload json.RawMessage `json:"payload"`
+		}
+		if err := json.Unmarshal(line, &probe); err == nil && len(probe.Payload) > 0 {
+			var pl codexRolloutPayload
+			if err := json.Unmarshal(probe.Payload, &pl); err == nil {
+				entry.CodexRolloutPayload = &pl
+			}
+		}
+	}
 	return entry, nil
 }
 
@@ -517,6 +559,16 @@ func (s *sessionTranscriptSummary) applyEntry(entry transcriptEntry, files, skil
 			s.FirstTimestamp = timestamp
 		}
 		s.LastTimestamp = timestamp
+	}
+	// Codex 0.149.x response_item lines do not carry role/content; their tool call
+	// arrives under CodexRolloutPayload as a name + raw arguments JSON string. Map
+	// that into the same tool-block semantics so the existing Skill / skill-path /
+	// files-changed rules apply without duplication. The role guard below is a
+	// no-op for codex (role is empty for response_item), so we short-circuit on
+	// codex FIRST to keep the assistant-role prose branch honest.
+	if entry.CodexRolloutPayload != nil {
+		s.applyCodexRollout(entry.CodexRolloutPayload, files, skills)
+		return
 	}
 	role, content := transcriptRoleContent(entry)
 	if role == "" {
@@ -559,6 +611,52 @@ func (s *sessionTranscriptSummary) applyEntry(entry transcriptEntry, files, skil
 			}
 		}
 	}
+}
+
+// applyCodexRollout folds one codex response_item line into the summary using the
+// same Skill / skill-path / files-changed rules the claude branch enforces -- only
+// the input shape differs (raw arguments JSON string vs a typed input object).
+// Naming a skill in arguments still does not count as use: Skill tool calls and
+// SKILL.md reads do (TestScanSessionTranscriptParsesCodexRollout, F5).
+func (s *sessionTranscriptSummary) applyCodexRollout(pl *codexRolloutPayload, files, skills map[string]bool) {
+	if pl.Type != "function_call" {
+		return
+	}
+	s.ToolCalls++
+	if pl.Name == "Bash" {
+		s.BashCalls++
+	}
+	input := codexArgumentsToMap(pl.Arguments)
+	if pl.Name == "Skill" {
+		if skill := skillFromInput(input); skill != "" {
+			skills[skill] = true
+		}
+	}
+	for _, skill := range skillsFromLine(pl.Arguments) {
+		skills[skill] = true
+	}
+	if mutatingTranscriptTools[pl.Name] {
+		if path := toolInputPath(input); path != "" {
+			files[path] = true
+		}
+	}
+}
+
+// codexArgumentsToMap decodes codex's raw `arguments` JSON string into a map so the
+// existing skillFromInput / toolInputPath / skillsFromLine rules can treat it
+// uniformly. An empty / unparseable arguments string is a silent empty input --
+// not an error, because codex 0.149.x does emit argumentless function calls for
+// some meta tools, and a noisy failure here would overclaim parser breakage.
+func codexArgumentsToMap(raw string) map[string]any {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &m); err != nil {
+		return nil
+	}
+	return m
 }
 
 func textOfContent(raw json.RawMessage) string {

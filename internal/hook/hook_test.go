@@ -2464,11 +2464,12 @@ func TestHandledOrActiveStopWithWorkIDSuppressesSessionClose(t *testing.T) {
 	}
 }
 
-// codex has no native SessionEnd event (Stop, via JSON block/continuation, is its only
-// end-of-turn hook); claude_code has both. TestSessionEndCapabilityAware proves the
-// registry split is actually consulted end-to-end through hook.Run, mirroring the
-// TestPreToolUseCapabilityAware honesty-seam proof: same computation, capability-aware
-// enforcement/status, never a silent pretense of a receipt the harness never delivers.
+// codex AND claude_code both have a native SessionEnd event (codex 0.149.x ships native
+// SessionEnd with transcript_path; the rule_delta flipped codex.SessionEndReceipt false->true
+// in harness.go:458). TestSessionEndCapabilityAware proves the registry is consulted
+// end-to-end through hook.Run: both harnesses report ok and no WARNING. The inverse (Stop is
+// supported by both) and the negative case (an unsupported harness still fails open + WARN)
+// remain the load-bearing honesty seam.
 func TestSessionEndCapabilityAware(t *testing.T) {
 	mkFx := func(h string) Fixture {
 		return Fixture{Hook: "session-end", Harness: h, SessionID: "sess_cap_aware", Summary: "session ended"}
@@ -2489,11 +2490,11 @@ func TestSessionEndCapabilityAware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("codex run: %v", err)
 	}
-	if codex.Event.Status != "fail_open" {
-		t.Errorf("codex has no native SessionEnd event → should be fail_open, got %q", codex.Event.Status)
+	if codex.Event.Status != "ok" {
+		t.Errorf("codex has a native SessionEnd event → should be ok, got %q", codex.Event.Status)
 	}
-	if !strings.Contains(codex.Summary, "WARNING") || !strings.Contains(codex.Summary, "no native SessionEnd event") {
-		t.Errorf("codex summary should warn honestly about the missing event, got %q", codex.Summary)
+	if strings.Contains(codex.Summary, "WARNING") {
+		t.Errorf("codex summary should not warn -- SessionEnd is native, got %q", codex.Summary)
 	}
 
 	// Stop is the inverse: codex supports it (JSON continuation exists) just like claude_code.
