@@ -224,23 +224,6 @@ func ApplySkillManifest(homePath string, manifest SkillManifest, now time.Time) 
 		report.EdgeIDs = nil
 		return report, err
 	}
-	// Slice-1 + slice-4: collapse the append-only nodes log so "within one
-	// import" holds -- a manifest re-imported with drift cannot leave a
-	// phantom row per id behind. Compaction runs AFTER policy + mutation
-	// so a denied import leaves the log untouched; errors are reported
-	// on the SkillManifestReport so callers can decide whether to retry.
-	//
-	// The slice-1 carry (compact.go) is byte-for-byte idempotent at
-	// loadNodes -- a no-op on a clean log returns DuplicateIDs=0 and never
-	// touches the file, so this is the cheapest possible end-of-import
-	// call. Non-skill writers (import-topology, import-gateway,
-	// import-connections) do NOT call CompactNodes: their rows do not
-	// carry the same drift risk, and forcing them through compaction
-	// would mint needless governance side effects.
-	if _, cerr := store.CompactNodes(); cerr != nil {
-		report.Checks = append(report.Checks, SkillManifestCheck{Name: "compact_nodes", Status: "fail", Detail: cerr.Error()})
-		return report, cerr
-	}
 	return report, nil
 }
 
