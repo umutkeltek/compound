@@ -408,3 +408,137 @@ func assertStringSet(t *testing.T, got, want []string) {
 		}
 	}
 }
+
+// writeCodexRollout writes a minimal codex-format rollout JSONL under
+// <root>/sessions/YYYY/MM/DD/ using <sessionID> as the rolling file suffix. The body mirrors
+// the shape live codex writes (session_meta header + response_item function_call) so slice 4's
+// parser branch can be tested against the same shape live traffic produces.
+func writeCodexRollout(t *testing.T, root, sessionID string, lines []string) string {
+	t.Helper()
+	day := time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC)
+	dir := filepath.Join(root, "sessions",
+		fmt.Sprintf("%04d", day.Year()),
+		fmt.Sprintf("%02d", int(day.Month())),
+		fmt.Sprintf("%02d", day.Day()),
+	)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, fmt.Sprintf("rollout-1724697600000-%s.jsonl", sessionID))
+	body := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestSessionEndCodexBuildsWorklessReceiptFromRollout (F3) -- codex SessionEnd with a wire
+// transcript_path builds the workless receipt exactly like Claude: Skills.Used carries the
+// skill the rollout's function_call actually invoked. The fixture writes a single codex
+// response_item whose arguments point at skills/example-skill/SKILL.md (the same path the
+// skillsFromLine rule already scans for in tool-call inputs). On base this fails twice:
+// the receipt is either not delivered (SessionEndReceipt=false in harness registry) or
+// returned with no Skills.Used entries (parser does not recognise codex format).
+func TestSessionEndCodexBuildsWorklessReceiptFromRollout(t *testing.T) {
+	const sessionID = "sess-0001"
+	transcriptHome := t.TempDir()
+	rollout := writeCodexRollout(t, transcriptHome, sessionID, []string{
+		`{"type":"session_meta","timestamp":"2026-08-26T15:00:00Z","payload":{"id":"` + sessionID + `","cwd":"/repo/product"}}`,
+		`{"type":"response_item","timestamp":"2026-08-26T15:05:00Z","payload":{"type":"function_call","name":"Bash","arguments":"{\"command\":\"cat /repo/skills/example-skill/SKILL.md\"}"}}`,
+	})
+	deps := baseDeps()
+	deps.HomePath = t.TempDir()
+	res, err := Run(Fixture{
+		Hook:           "session-end",
+		Harness:        "codex",
+		SessionID:      sessionID,
+		Cwd:            "/repo/product",
+		TranscriptPath: rollout,
+	}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := kinds(res.Produced); len(got) != 1 || got[0] != "receipt" {
+		t.Fatalf("produced = %v, want [receipt]", got)
+	}
+	rec := res.Produced[0].(*envelope.Receipt)
+	if rec.IDs.WorkID != "" || rec.IDs.SessionID != sessionID {
+		t.Fatalf("receipt ids = %+v, want session-only receipt", rec.IDs)
+	}
+	if !containsString(rec.Skills.Used, "capability://skill:example-skill") {
+		t.Fatalf("skills used = %v, want capability://skill:example-skill", rec.Skills.Used)
+	}
+	if !containsString(res.Event.SideEffects, "compound://events/"+rec.ID) {
+		t.Fatalf("hook side effects = %v, want receipt event ref", res.Event.SideEffects)
+	}
+}
+
+// TestSessionEndCodexDerivesRolloutFromSessionID (F4) -- codex SessionEnd with an EMPTY
+// transcript_path still produces a receipt by deriving the rollout from session_id and
+// CODEX_HOME. The fixture lays a codex-format rollout under a tempdir and points CODEX_HOME
+// at it; buildWorklessSessionReceipt must resolve and read it. On base the receipt is nil
+// because the empty-transcript_path branch was a hard return.
+func TestSessionEndCodexDerivesRolloutFromSessionID(t *testing.T) {
+	const sessionID = "sess-derive"
+	codexHome := t.TempDir()
+	writeCodexRollout(t, codexHome, sessionID, []string{
+		`{"type":"session_meta","timestamp":"2026-08-26T15:00:00Z","payload":{"id":"` + sessionID + `","cwd":"/repo/product"}}`,
+		`{"type":"response_item","timestamp":"2026-08-26T15:05:00Z","payload":{"type":"function_call","name":"Skill","arguments":"{\"skill\":\"example-skill\"}"}}`,
+	})
+	prev := os.Getenv("CODEX_HOME")
+	t.Cleanup(func() { os.Setenv("CODEX_HOME", prev) })
+	if err := os.Setenv("CODEX_HOME", codexHome); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := baseDeps()
+	deps.HomePath = t.TempDir()
+	res, err := Run(Fixture{
+		Hook:      "session-end",
+		Harness:   "codex",
+		SessionID: sessionID,
+		Cwd:       "/repo/product",
+		// TranscriptPath intentionally empty: derives from session_id + CODEX_HOME.
+	}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := kinds(res.Produced); len(got) != 1 || got[0] != "receipt" {
+		t.Fatalf("produced = %v, want [receipt]", got)
+	}
+	rec := res.Produced[0].(*envelope.Receipt)
+	if !containsString(rec.Skills.Used, "capability://skill:example-skill") {
+		t.Fatalf("skills used = %v, want capability://skill:example-skill (derived from rollout)", rec.Skills.Used)
+	}
+}
+
+// TestResolveCodexRolloutPathHonoursCodexHome is the unit-level companion to F4: the
+// resolver picks the newest rollout under CODEX_HOME that ends in <session-id>.jsonl,
+// ignoring unrelated rollouts and timestamps that do not match.
+func TestResolveCodexRolloutPathHonoursCodexHome(t *testing.T) {
+	prev := os.Getenv("CODEX_HOME")
+	t.Cleanup(func() { os.Setenv("CODEX_HOME", prev) })
+	home := t.TempDir()
+	if err := os.Setenv("CODEX_HOME", home); err != nil {
+		t.Fatal(err)
+	}
+	writeCodexRollout(t, home, "sess-a", []string{`{"type":"session_meta"}`})
+	time.Sleep(10 * time.Millisecond)
+	writeCodexRollout(t, home, "sess-b", []string{`{"type":"session_meta"}`})
+	time.Sleep(10 * time.Millisecond)
+	newerPath := writeCodexRollout(t, home, "sess-a", []string{`{"type":"session_meta","timestamp":"2026-08-26T16:00:00Z"}`})
+
+	got := ResolveCodexRolloutPath("sess-a")
+	if got == "" {
+		t.Fatalf("ResolveCodexRolloutPath returned empty; rollouts under %s", home)
+	}
+	if got != newerPath {
+		t.Fatalf("ResolveCodexRolloutPath = %q, want newest %q", got, newerPath)
+	}
+	if ResolveCodexRolloutPath("sess-missing") != "" {
+		t.Fatal("ResolveCodexRolloutPath returned a path for an unknown session id")
+	}
+	if ResolveCodexRolloutPath("") != "" {
+		t.Fatal("ResolveCodexRolloutPath returned a path for empty session id")
+	}
+}

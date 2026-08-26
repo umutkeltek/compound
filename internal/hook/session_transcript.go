@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -108,8 +109,84 @@ type transcriptContentBlock struct {
 	Input map[string]any `json:"input"`
 }
 
+// ResolveCodexRolloutPath locates the newest codex rollout JSONL for the given session id,
+// honouring CODEX_HOME (with the same resolution rule codex itself uses). The rollout
+// filename shape codex writes is `rollout-<unix-millis>-<session-id>.jsonl`; only the
+// session-id suffix is load-bearing for this resolver -- we read the directory newest-first
+// and match the trailing `<session-id>.jsonl` so a clock skew on the timestamp prefix
+// (or a codex-side bump to the timestamp shape) cannot strand a SessionEnd receipt.
+//
+// Codex 0.149.x exposes transcript_path directly in the SessionEnd wire payload; this
+// resolver is the FALLBACK for older codex releases (or for any future codex build that
+// decides to omit transcript_path) so a codex SessionEnd still produces a skills receipt
+// rather than a silent gap. If CODEX_HOME is unset we fall back to $HOME/.codex (the codex
+// CLI's documented default), keeping the resolution close to what a human operator would
+// check.
+func ResolveCodexRolloutPath(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	root := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	if root == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			root = filepath.Join(home, ".codex")
+		}
+	}
+	if root == "" {
+		return ""
+	}
+	// Codex writes rollouts under sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl. The deepest
+	// level (DD) is the only one that varies in practice; we walk one level deeper than
+	// that so any future layout shift doesn't strand the resolver. The session-id suffix
+	// is the only load-bearing match -- a codex-side change to the timestamp prefix (e.g.
+	// extra precision) cannot strand a SessionEnd receipt because we key off the trailing
+	// `<session-id>.jsonl` shape, not the timestamp.
+	suffix := sessionID + ".jsonl"
+	suffixAlt := sessionID + ".jsonl.gz" // codex has gzip-compressed mode in some builds
+	cutoff := time.Now().Add(-30 * 24 * time.Hour)
+	var newest string
+	var newestMod time.Time
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			info, infoErr := d.Info()
+			if infoErr == nil && info.ModTime().Before(cutoff) && !samePath(path, root) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, suffix) && !strings.HasSuffix(path, suffixAlt) {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return nil
+		}
+		if newest == "" || info.ModTime().After(newestMod) {
+			newest = path
+			newestMod = info.ModTime()
+		}
+		return nil
+	})
+	return newest
+}
+
+func samePath(a, b string) bool {
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
 func buildWorklessSessionReceipt(name string, fx Fixture, now time.Time) (*envelope.Receipt, error) {
 	path := strings.TrimSpace(fx.TranscriptPath)
+	// Codex 0.149.x SessionEnd usually arrives with transcript_path in the wire payload,
+	// but older releases and some codex-server builds omit it; fall back to deriving the
+	// rollout path from session_id so the receipt is built either way. Non-codex harnesses
+	// keep their existing behaviour (empty path => no receipt, exactly as before).
+	if path == "" && fx.Harness == "codex" {
+		path = ResolveCodexRolloutPath(fx.SessionID)
+	}
 	if path == "" {
 		return nil, nil
 	}
