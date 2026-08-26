@@ -71,7 +71,8 @@ build_sha=$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo "")
 staged=$install_dir/.compound.incoming.$$
 alias_staged=$install_dir/.os.incoming.$$
 heartbeat_staged=$install_dir/.compound-autonomy-heartbeat.incoming.$$
-trap 'rm -f "$staged" "$alias_staged" "$heartbeat_staged"' EXIT HUP INT TERM
+attention_staged=$compound_home/scripts/.attention-letter.incoming.$$
+trap 'rm -f "$staged" "$alias_staged" "$heartbeat_staged" "$attention_staged"' EXIT HUP INT TERM
 go build -ldflags "-X main.buildSHA=$build_sha" -o "$staged" ./cmd/compound
 go run ./cmd/compound-install-verify --binary "$staged" --build-sha "$build_sha"
 mv -f "$staged" "$install_dir/compound"
@@ -87,6 +88,11 @@ mv -f "$heartbeat_staged" "$install_dir/compound-autonomy-heartbeat.sh"
 go build -o "$install_dir/compound-breadth-engine" ./cmd/compound-breadth-engine
 
 PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home init --home "$compound_home" --global
+mkdir -p "$compound_home/scripts"
+cp "$repo_root/scripts/attention-letter.py" "$attention_staged"
+chmod 0755 "$attention_staged"
+python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$attention_staged"
+mv -f "$attention_staged" "$compound_home/scripts/attention-letter.py"
 PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home doctor --home "$compound_home"
 PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" runtime doctor "$repo_root/fixtures/runtime/synthetic-service.yaml"
 
@@ -97,6 +103,7 @@ compound installed
 - breadth_engine: $install_dir/compound-breadth-engine
 - os_alias: opt-in via COMPOUND_INSTALL_OS_ALIAS=1 (existing path left unchanged otherwise)
 - autonomy_heartbeat: $install_dir/compound-autonomy-heartbeat.sh
+- attention_letter: $compound_home/scripts/attention-letter.py (max 3 decisions per cycle)
 - home: $compound_home
 
 next:

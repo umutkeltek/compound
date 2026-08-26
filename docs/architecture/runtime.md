@@ -29,6 +29,12 @@ recognized legacy OS shim or existing Compound alias and refuses a foreign
 file/symlink. Basename-aware dispatch retains the migrated muscle-memory verbs;
 the alias never reads an OS dashboard or embeds an operating-system path.
 
+The installed `attention-letter.py` is the interruption budget for the private
+operator loop: it renders at most three already-ranked `needs_you` groups per
+cycle. Omitted groups remain ledger-visible and are not re-presented in that
+cycle; authoritative counts and review state stay in `compound attention`.
+This is decision compression, not hidden approval or deletion.
+
 `compound policy import-operator-state <operator-state.json>` installs the global autonomy ceiling
 `compound://registries/operator-state` under `COMPOUND_HOME`; policy evaluation cites that authority and uses
 it as a ceiling, not a bypass for public, spend, destructive, or security holds.

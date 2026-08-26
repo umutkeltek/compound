@@ -129,6 +129,17 @@ EOF
   fi
 fi
 
+STALE_OUT=$("$TIMEOUT_BIN" 300 "$BIN" work sweep-stale --threshold 168h --yes --json 2>&1)
+STALE_RC=$?
+STALE_SUM=$(printf '%s' "$STALE_OUT" | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)
+    print("safe=%s reclaimed=%s skipped=%s" % (d.get("safe"), d.get("reclaimed"), d.get("skipped")))
+except Exception:
+    print("unparseable")' 2>/dev/null)
+[ "$STALE_RC" -ne 0 ] && STALE_SUM="ERR: $(printf '%.160s' "$STALE_OUT")"
+[ "$STALE_SUM" = "unparseable" ] && STALE_RC=65 && STALE_SUM="ERR: unparseable JSON"
+
 CONT_OUT=$("$TIMEOUT_BIN" 600 "$BIN" work continue --actor claude-minimax --until-wait --max-steps 3 --json 2>&1)
 CONT_RC=$?
 CONT_SUM=$(printf '%s' "$CONT_OUT" | python3 -c 'import json,sys
@@ -141,8 +152,8 @@ except Exception:
 [ "$CONT_SUM" = "unparseable" ] && CONT_RC=65 && CONT_SUM="ERR: unparseable JSON"
 
 FINAL_RC=0
-if [ "$DIR_RC" -ne 0 ] || [ "$PD_RC" -ne 0 ] || [ "$CONT_RC" -ne 0 ]; then
+if [ "$DIR_RC" -ne 0 ] || [ "$PD_RC" -ne 0 ] || [ "$STALE_RC" -ne 0 ] || [ "$CONT_RC" -ne 0 ]; then
   FINAL_RC=1
 fi
-echo "$TS final rc=$FINAL_RC | director rc=$DIR_RC $DIR_SUM | promote-driver rc=$PD_RC $PD_SUM | continue rc=$CONT_RC $CONT_SUM" >> "$LOG"
+echo "$TS final rc=$FINAL_RC | director rc=$DIR_RC $DIR_SUM | promote-driver rc=$PD_RC $PD_SUM | stale-work rc=$STALE_RC $STALE_SUM | continue rc=$CONT_RC $CONT_SUM" >> "$LOG"
 exit "$FINAL_RC"
