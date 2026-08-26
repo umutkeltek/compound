@@ -18,25 +18,29 @@ import (
 
 func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fromWork := strings.TrimSpace(flagValue(args, "--from-work"))
+	draftID := strings.TrimSpace(flagValue(args, "--draft"))
 	hasContent := hasFlag(args, "--content")
-	// --transport is required: compound is transport-agnostic, so there is no
-	// implicit default to fall back to. This refusal (and the --capability one
-	// below) happens before home resolution, policy evaluation, or adapter
-	// resolution — a refused invocation mints nothing.
 	transport := strings.TrimSpace(flagValue(args, "--transport"))
-	if (fromWork == "") == !hasContent || (hasContent && flagValue(args, "--content") != "-") || transport == "" {
-		fmt.Fprintln(stderr, "usage: compound act post (--from-work W | --content -) --work W --transport NAME [--confirm]")
+	sourceCount := 0
+	if fromWork != "" {
+		sourceCount++
+	}
+	if draftID != "" {
+		sourceCount++
+	}
+	if hasContent {
+		sourceCount++
+	}
+	if sourceCount != 1 || (hasContent && flagValue(args, "--content") != "-") || transport == "" {
+		fmt.Fprintln(stderr, "usage: compound act post (--from-work W | --draft D --at RFC3339 | --content -) [--work W] --transport NAME [--confirm]")
 		return 2
 	}
-	// The capability of a governed post is fixed: callers must not select it,
-	// or a post could be laundered through a different capability's standing
-	// grants.
 	if hasFlag(args, "--capability") {
 		fmt.Fprintln(stderr, "error: --capability is not caller-selectable for act post; the capability is always "+product.ContentPostCapability)
 		return 2
 	}
 	workID := strings.TrimSpace(flagValue(args, "--work"))
-	if hasFlag(args, "--confirm") && workID == "" {
+	if hasFlag(args, "--confirm") && workID == "" && draftID == "" {
 		fmt.Fprintln(stderr, "error: --work W is required for --confirm (a governed act belongs to a work)")
 		return 1
 	}
@@ -45,18 +49,50 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	var body string
-	if fromWork != "" {
+
+	var (
+		body      string
+		forward   []byte
+		draftReq  *product.ContentPostTransportRequest
+		draftAuth product.ContentPostAuthorization
+	)
+	switch {
+	case draftID != "":
+		scheduleAt, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(flagValue(args, "--at")))
+		if parseErr != nil {
+			fmt.Fprintln(stderr, "error: --at must be a future RFC3339 timestamp")
+			return 2
+		}
+		request, auth, buildErr := product.BuildContentPostTransportRequest(homePath, draftID, transport, scheduleAt, time.Now())
+		if buildErr != nil {
+			fmt.Fprintln(stderr, "error:", buildErr)
+			return 1
+		}
+		draftReq = &request
+		draftAuth = auth
+		body = request.Body
+		forward, err = json.Marshal(request)
+		if err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+		if workID == "" {
+			workID = auth.ActionIntent.IDs.WorkID
+		}
+	case fromWork != "":
 		body, err = composeReceiptCard(homePath, fromWork)
-	} else {
+		forward = []byte(body)
+	default:
 		var content []byte
 		content, err = io.ReadAll(stdin)
 		body = string(content)
+		forward = content
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+
 	capability := product.ContentPostCapability
 	if workID == "" {
 		workID = "work_dryrun"
@@ -67,7 +103,10 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		Path: "actuator/transports/" + transport + ".json",
 	}
 	now := time.Now()
-	ai := governedPostIntent(workID, capability, target, body, now)
+	ai := governedPostIntent(workID, capability, target, string(forward), now)
+	if draftReq != nil {
+		ai = governedDraftPostIntent(workID, target, *draftReq, draftAuth, forward, now)
+	}
 	cfg, _, err := policy.LoadConfig(homePath)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -75,7 +114,7 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	pd := policy.Evaluate(ai, cfg, now)
 	if !hasFlag(args, "--confirm") {
-		return printActPostPreview(stdout, transport, target.Path, body, pd, hasFlag(args, "--json"))
+		return printActPostPreview(stdout, transport, target.Path, body, draftReq, pd, hasFlag(args, "--json"))
 	}
 	if !policy.Allowed(pd) {
 		return printActPostHeld(stdout, transport, body, pd, hasFlag(args, "--json"))
@@ -85,7 +124,7 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	result, err := act.Execute(artifactStore, act.NewExecTransportAdapter(transport, homePath), ai, pd, []byte(body), now)
+	result, err := act.Execute(artifactStore, act.NewExecTransportAdapter(transport, homePath), ai, pd, forward, now)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
@@ -123,16 +162,54 @@ func governedPostIntent(workID, capability string, target envelope.ActionTarget,
 	}
 }
 
+func governedDraftPostIntent(workID string, target envelope.ActionTarget, request product.ContentPostTransportRequest, auth product.ContentPostAuthorization, forward []byte, now time.Time) envelope.ActionIntent {
+	evidence := append([]string(nil), auth.ActionIntent.EvidenceRefs...)
+	evidence = append(evidence,
+		auth.BodyRef,
+		"content-post-authorization:"+auth.DraftID,
+		"action:"+auth.ActionIntentID,
+		"policy:"+auth.PolicyDecisionID,
+	)
+	return envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent,
+			ID:            actIDFor("act_", workID, product.ContentPostCapability, target.ID, request.DraftID, request.ScheduleAt, string(forward)),
+			CreatedAt:     now.UTC().Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: workID},
+			Scope:         envelope.Scope{ProductID: request.ProductID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  evidence,
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Actor:         "operator",
+		Capability:    product.ContentPostCapability,
+		Action:        "post_content",
+		Target:        target,
+		MutationClass: "external_side_effect",
+		Reversibility: "irreversible",
+		BlastRadius:   "local",
+		Preview:       fmt.Sprintf("schedule approved draft %s to %s through transport %s", request.DraftID, request.Platform, target.ID),
+		RollbackPlan:  "delete or return the scheduled transport post to draft before publication; no deletion is guaranteed after publication",
+	}
+}
+
 // printActPostPreview names the exact resolved transport and its adapter
 // config path so the operator sees precisely which authority would fire on
 // --confirm.
-func printActPostPreview(stdout io.Writer, transport, transportConfig, body string, pd envelope.PolicyDecision, asJSON bool) int {
+func printActPostPreview(stdout io.Writer, transport, transportConfig, body string, draft *product.ContentPostTransportRequest, pd envelope.PolicyDecision, asJSON bool) int {
 	allowed := policy.Allowed(pd)
 	if asJSON {
-		if err := encodeJSON(stdout, map[string]any{
+		payload := map[string]any{
 			"mode": "dry-run", "transport": transport, "transport_config": transportConfig, "card": body,
 			"policy_outcome": pd.Outcome, "allowed": allowed,
-		}); err != nil {
+		}
+		if draft != nil {
+			payload["draft"] = draft
+		}
+		if err := encodeJSON(stdout, payload); err != nil {
 			fmt.Fprintln(stdout, "error:", err)
 			return 1
 		}
@@ -142,6 +219,10 @@ func printActPostPreview(stdout io.Writer, transport, transportConfig, body stri
 	fmt.Fprintln(stdout, body)
 	fmt.Fprintf(stdout, "- transport: %s\n", transport)
 	fmt.Fprintf(stdout, "- transport-config: %s\n", transportConfig)
+	if draft != nil {
+		fmt.Fprintf(stdout, "- draft: %s product=%s platform=%s integration=%s schedule=%s\n",
+			draft.DraftID, draft.ProductID, draft.Platform, draft.IntegrationID, draft.ScheduleAt)
+	}
 	if allowed {
 		fmt.Fprintf(stdout, "- policy: %s (ALLOWED) — run again with --confirm --work W to execute\n", pd.Outcome)
 	} else {

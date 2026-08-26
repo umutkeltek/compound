@@ -255,6 +255,37 @@ func TestExecTransportFailureRedactsLongOutput(t *testing.T) {
 	}
 }
 
+func TestExecTransportCapturesSuccessfulOutputAsPostImage(t *testing.T) {
+	homePath := t.TempDir()
+	script := filepath.Join(homePath, "verified-transport.sh")
+	scriptBody := "#!/bin/sh\ncat >/dev/null\nprintf '{\"remote_id\":\"post-synth\",\"verified\":true}'\n"
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTransportConfig(t, homePath, "fixture", []string{script}, 30)
+	store, err := NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ai := execTransportIntent(t, "work_transport_output", "fixture")
+	pd := policy.Evaluate(ai, execTransportGrantConfig(ai), fixedNow())
+
+	result, err := Execute(store, NewExecTransportAdapter("fixture", homePath), ai, pd, []byte("body"), fixedNow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	postImage, err := store.Get(result.PostImageRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(postImage) != `{"remote_id":"post-synth","verified":true}` {
+		t.Fatalf("post image = %q", postImage)
+	}
+	if !containsRef(result.Receipt.ProofRefs, result.PostImageRef) {
+		t.Fatalf("receipt does not carry verified transport post-image: %+v", result.Receipt.ProofRefs)
+	}
+}
+
 // F6: transport failures surface bounded combined output and mint no Receipt or post image.
 func TestExecTransportExitFailureIncludesOutputWithoutReceipt(t *testing.T) {
 	homePath := t.TempDir()

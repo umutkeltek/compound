@@ -19,20 +19,25 @@ import (
 // executable transport. Its unexported write method keeps execution behind Execute's
 // PolicyDecision gate.
 type ExecTransportAdapter struct {
-	Name string
-	Home string
+	Name       string
+	Home       string
+	lastOutput []byte
 }
 
-var _ Adapter = ExecTransportAdapter{}
+var _ Adapter = (*ExecTransportAdapter)(nil)
 
 func NewExecTransportAdapter(name, home string) Adapter {
-	return ExecTransportAdapter{Name: name, Home: home}
+	return &ExecTransportAdapter{Name: name, Home: home}
 }
 
-// ReadCurrent returns the empty outbound-state sentinel: a post has no meaningful
-// remote pre-image available through this transport.
-func (ExecTransportAdapter) ReadCurrent(envelope.ActionTarget) ([]byte, error) {
-	return []byte("{}"), nil
+// ReadCurrent returns the successful transport's bounded stdout after a write,
+// making a remote id or verification object the governed post-image. Before a
+// write, the outbound state has no remote pre-image and remains the empty sentinel.
+func (a *ExecTransportAdapter) ReadCurrent(envelope.ActionTarget) ([]byte, error) {
+	if len(a.lastOutput) == 0 {
+		return []byte("{}"), nil
+	}
+	return append([]byte(nil), a.lastOutput...), nil
 }
 
 type execTransportConfig struct {
@@ -196,7 +201,8 @@ func summarizeOutput(out string) string {
 	return out
 }
 
-func (a ExecTransportAdapter) write(_ envelope.ActionTarget, newValue []byte) error {
+func (a *ExecTransportAdapter) write(_ envelope.ActionTarget, newValue []byte) error {
+	a.lastOutput = nil
 	cfg, err := a.loadConfig()
 	if err != nil {
 		return err
@@ -218,6 +224,9 @@ func (a ExecTransportAdapter) write(_ envelope.ActionTarget, newValue []byte) er
 	}
 	if err != nil {
 		return fmt.Errorf("transport %q exec: %w; output: %s", strings.TrimSpace(a.Name), err, summarizeOutput(output.String()))
+	}
+	if len(bytes.TrimSpace(output.Bytes())) > 0 {
+		a.lastOutput = append([]byte(nil), output.Bytes()...)
 	}
 	return nil
 }

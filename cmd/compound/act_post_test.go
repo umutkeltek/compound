@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
@@ -102,6 +103,67 @@ func writePostSpyTransport(t *testing.T, homePath, name string) string {
 	}
 	if err := os.WriteFile(filepath.Join(dir, name+".json"), config, 0o644); err != nil {
 		t.Fatalf("write transport config: %v", err)
+	}
+	return marker
+}
+
+func seedAuthorizedPostDraft(t *testing.T, homePath, accountStatus, integrationID string) product.ContentDraft {
+	t.Helper()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	draft, err := product.RecordContentDraft(homePath, product.ContentDraftInput{
+		ProductID:    "product:prod_synth_a",
+		Platform:     "x",
+		Body:         "grounded synthetic post",
+		EvidenceRefs: []string{"finding:prod-synth"},
+		ExpiresAt:    cliTestNow.Add(72 * time.Hour),
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := product.ContentQueueReview{
+		SchemaVersion: product.ContentQueueReviewSchemaVersion,
+		ID:            "cqr_act_post",
+		Drafts:        []product.ContentQueueReviewRow{{DraftID: draft.ID, Verdict: "approve"}},
+	}
+	if _, err := product.ApplyContentQueueReview(homePath, review, "", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := json.Marshal(map[string]any{
+		"schema_version": product.SocialAccountRegistrySchemaVersion,
+		"accounts": []map[string]string{{
+			"id": "prod-synth-x", "product_id": draft.ProductID, "platform": draft.Platform,
+			"transport": "fixture", "postiz_integration_id": integrationID, "status": accountStatus,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(homePath, "registries", "social-accounts.json"), registry, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return draft
+}
+
+func writeVerifiedPostTransport(t *testing.T, homePath, name string) string {
+	t.Helper()
+	marker := filepath.Join(homePath, "verified-post-marker")
+	script := filepath.Join(homePath, "verified-post-transport.sh")
+	body := "#!/bin/sh\ncat > \"$1\"\nprintf '{\"remote_id\":\"post-synth\",\"verified\":true}'\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(homePath, "actuator", "transports")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config, err := json.Marshal(map[string]any{"argv": []string{script, marker}, "timeout_s": 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name+".json"), config, 0o644); err != nil {
+		t.Fatal(err)
 	}
 	return marker
 }
@@ -282,5 +344,90 @@ func TestActPostConfirmWithoutGrantHoldsWithoutExecuting(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("held post executed transport; marker stat error = %v", err)
+	}
+}
+
+func TestActPostDraftRefusesPendingEnrollmentBeforeTransport(t *testing.T) {
+	homePath := t.TempDir()
+	draft := seedAuthorizedPostDraft(t, homePath, "pending_enrollment", "")
+	marker := writeVerifiedPostTransport(t, homePath, "fixture")
+	scheduleAt := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+
+	var stdout, stderr bytes.Buffer
+	code := runActWithInput([]string{
+		"post", "--draft", draft.ID, "--at", scheduleAt,
+		"--transport", "fixture", "--home", homePath,
+	}, strings.NewReader(""), &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "human enrollment") {
+		t.Fatalf("pending account exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("pending account executed transport: %v", err)
+	}
+}
+
+func TestActPostDraftWithGrantSendsCompleteRequestAndCapturesRemoteProof(t *testing.T) {
+	homePath := t.TempDir()
+	draft := seedAuthorizedPostDraft(t, homePath, "active", "integration-synth")
+	marker := writeVerifiedPostTransport(t, homePath, "fixture")
+	grantSource := filepath.Join(homePath, "standing-grants.yaml")
+	grantBody := "generated_at: \"2026-07-01T12:00:00Z\"\n" +
+		"authority:\n" +
+		"  decision_ref: \"grant:test-content-draft-post\"\n" +
+		"  reviewed_by: \"operator:test\"\n" +
+		"grants:\n" +
+		"  - grant_id: grant_content_draft_post\n" +
+		"    capabilities: [\"" + product.ContentPostCapability + "\"]\n" +
+		"    target_scope: \"actuator/transports/fixture.json\"\n" +
+		"    mutation_class: external_side_effect\n" +
+		"    reversibility_ceiling: irreversible\n" +
+		"    blast_radius: local\n"
+	if err := os.WriteFile(grantSource, []byte(grantBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.ImportStandingGrants(homePath, grantSource, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	scheduleAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339)
+
+	var stdout, stderr bytes.Buffer
+	code := runActWithInput([]string{
+		"post", "--draft", draft.ID, "--at", scheduleAt,
+		"--work", "work_publish_synth", "--transport", "fixture",
+		"--home", homePath, "--confirm", "--json",
+	}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("draft post exit=%d stderr=%q", code, stderr.String())
+	}
+	requestBody, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request product.ContentPostTransportRequest
+	if err := json.Unmarshal(requestBody, &request); err != nil {
+		t.Fatalf("transport did not receive request JSON: %v\n%s", err, requestBody)
+	}
+	if request.DraftID != draft.ID || request.ProductID != draft.ProductID ||
+		request.Platform != draft.Platform || request.IntegrationID != "integration-synth" ||
+		request.ScheduleAt != scheduleAt || request.Body != "grounded synthetic post" {
+		t.Fatalf("transport request incomplete: %+v", request)
+	}
+	var result struct {
+		ReceiptID    string `json:"receipt_id"`
+		PostImageRef string `json:"post_image_ref"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, stdout.String())
+	}
+	store, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	postImage, err := store.Get(result.PostImageRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(postImage) != `{"remote_id":"post-synth","verified":true}` {
+		t.Fatalf("remote proof post-image = %q", postImage)
 	}
 }
