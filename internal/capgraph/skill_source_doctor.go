@@ -36,6 +36,11 @@ type SkillSourceDoctorCheck struct {
 }
 
 type SkillSourceFileReport struct {
+	// Path is the SKILL.md path relative to the root, ending in "SKILL.md"
+	// for layout-A (root/<name>/SKILL.md) and layout-B
+	// (root/skills/<name>/SKILL.md). Matches the shape the pre-slice-2 /
+	// pre-slice-8 doctor produced, so downstream consumers (CLI renderer,
+	// ApplySkillManifest slice-2 stamping) see the same path spelling.
 	Path        string `json:"path"`
 	Name        string `json:"name,omitempty"`
 	Description string `json:"description,omitempty"`
@@ -44,14 +49,19 @@ type SkillSourceFileReport struct {
 	// disk (Lstat+Stat dance: a real dir, a non-dangling symlink, or a
 	// symlink whose target resolves and is the expected kind). False means
 	// the skill CANNOT fire from disk as of this report, regardless of any
-	// ConnectionSurface facts the graph carries. For ComputeReachability,
-	// `Source == nil || Source.Reachable` is what counts.
+	// ConnectionSurface facts the graph carries. ComputeReachability
+	// counts reachability as `Source == nil || Source.Reachable`.
 	Reachable bool `json:"reachable"`
-	// Reason names WHICH step failed: ok | dangling_symlink | missing |
-	// unreadable | no_frontmatter. ok is reserved for entries whose content
-	// AND reachability are both clean. The doctor's CLI renderer AND the
-	// ApplySkillManifest stamp both consume Reason -- the CLI lists Dangling
-	// from Files+Reason; the import path stamps Node.Source from Reachable+Reason.
+	// Reason names WHICH step failed:
+	//
+	//	ok                entry resolved, SKILL.md present and well-formed
+	//	dangling_symlink  symlink whose target is gone (Lstat-success, Stat-fail)
+	//	missing           symlink-to-dir-without-SKILL.md (intended skill, broken wiring)
+	//	not_a_skill       entry is structurally ineligible (real file or real
+	//	                  dir with no SKILL.md) — silent skip; not an error,
+	//	                  not dangling, just not part of this manifest
+	//	unreadable        SKILL.md present but os.ReadFile failed
+	//	no_frontmatter    SKILL.md present but frontmatter malformed/missing
 	Reason string   `json:"reason,omitempty"`
 	Errors []string `json:"errors,omitempty"`
 }
@@ -61,6 +71,15 @@ type SkillSourceDuplicateName struct {
 	Paths []string `json:"paths"`
 }
 
+// DoctorSkillSource walks both supported skill-source layouts simultaneously
+// (`root/<name>/SKILL.md` AND `root/skills/<name>/SKILL.md`) and reports
+// the reachability of each. Real directories with no SKILL.md are silently
+// ignored — they are not skills, not dangling, just not part of the
+// manifest. Symlinks whose target resolves to a dir without SKILL.md are
+// reported as "missing" (the author intended a skill there, the wiring is
+// broken). Symlinks whose target is gone are "dangling_symlink". The
+// layout-B container `root/skills/` is itself excluded from the report
+// (it's a directory OF skills, not one).
 func DoctorSkillSource(root string) (SkillSourceDoctorReport, error) {
 	root = filepath.Clean(root)
 	entries, err := skillSourceEntries(root)
@@ -81,16 +100,31 @@ func DoctorSkillSource(root string) (SkillSourceDoctorReport, error) {
 		report.Checks = append(report.Checks, SkillSourceDoctorCheck{Name: name, Status: status, Detail: detail})
 	}
 	addCheck("skill_files", len(entries) > 0, fmt.Sprintf("%d", len(entries)))
-	report.SkillFileCount = len(entries)
+	// SkillFileCount is the count of valid skill entries in the report's
+	// Files list (NOT the count of candidates inspected). A real-dir with
+	// no SKILL.md (sibling notes folder, layout container, etc.) is
+	// silently skipped — it never claimed to be a skill — so it does
+	// not count. This matches the pre-slice-2 doctor behaviour where the
+	// glob `root/*/SKILL.md` only matched entries that had a SKILL.md,
+	// making SkillFileCount==len(Files) by construction.
+	report.SkillFileCount = 0 // assigned below, after the loop filter
 
 	namePaths := map[string][]int{}
 	for _, absDir := range entries {
 		fileReport := inspectSkillSourceEntry(root, absDir)
+		// "not_a_skill" means the entry is structurally ineligible (real
+		// file in a skill layout, or a real dir with no SKILL.md inside).
+		// These are not skills and not dangling: drop them silently so
+		// they don't fail the doctor or appear in Files. The author may
+		// have created the dir mid-edit; we don't penalise that.
+		if fileReport.Reason == "not_a_skill" {
+			continue
+		}
 		if fileReport.Status != "ok" {
 			report.Status = "fail"
 			report.ErrorCount += len(fileReport.Errors)
 		}
-		if fileReport.Reachable == false && fileReport.Reason == "dangling_symlink" {
+		if !fileReport.Reachable && fileReport.Reason == "dangling_symlink" {
 			report.Dangling = append(report.Dangling, fileReport.Path)
 		}
 		if strings.TrimSpace(fileReport.Name) != "" {
@@ -121,26 +155,33 @@ func DoctorSkillSource(root string) (SkillSourceDoctorReport, error) {
 	})
 	addCheck("duplicate_names", len(report.DuplicateNames) == 0, fmt.Sprintf("%d", len(report.DuplicateNames)))
 	addCheck("dangling_entries", len(report.Dangling) == 0, fmt.Sprintf("%d", len(report.Dangling)))
+	report.SkillFileCount = len(report.Files)
 	return report, nil
 }
 
 // DoctorSkillSourceEntry is the per-entry surface the import path uses
-// (ApplySkillManifest stamps Node.Source from its result). It walks the
-// Lstat+Stat dance on `root/relDir` and `root/relDir/SKILL.md`, and never
-// treats a dangling symlink as "file absent" — a dangling link is its own
-// reason (Reason="dangling_symlink"). Existing callers (DoctorSkillSource)
-// iterate entries and call this; the export is for ApplySkillManifest.
+// (ApplySkillManifest stamps Node.Source from its result). Behaviour
+// matches DoctorSkillSource for one entry.
 func DoctorSkillSourceEntry(root, relDir string) SkillSourceFileReport {
 	absDir := filepath.Join(root, relDir)
 	return inspectSkillSourceEntry(root, absDir)
 }
 
-// skillSourceEntries lists every candidate skill entry under root (and
-// root/skills). Unlike the old root/*/SKILL.md glob it also surfaces entries
-// whose SKILL.md is gone — including dangling symlinks — so the doctor can
-// report them as `dangling_symlink` instead of silently dropping them. The
-// per-entry inspector handles the Lstat+Stat dance itself; this function
-// only enumerates dirs (real or symlink).
+// skillSourceEntries lists every candidate skill entry under root. Both
+// supported layouts are walked:
+//   - root/<name>           (layout A: direct)
+//   - root/skills/<name>    (layout B: nested, container is `skills/`)
+//
+// The layout-B container itself is NEVER added as a candidate: it is a
+// directory OF skill dirs, not a skill. Regular files under either
+// root or root/skills/ are not candidates either — a README.md or
+// stray .DS_Store isn't a skill.
+//
+// Whatever remains is either:
+//   - a real directory (may or may not contain SKILL.md — the inspector
+//     decides "ok" vs "not_a_skill" per entry), or
+//   - a symlink (whose lstat+stat dance classifies dangling / missing
+//     / ok per the rules in inspectSkillSourceEntry).
 func skillSourceEntries(root string) ([]string, error) {
 	info, err := os.Stat(root)
 	if err != nil {
@@ -154,102 +195,134 @@ func skillSourceEntries(root string) ([]string, error) {
 	}
 	seen := map[string]bool{}
 	var dirs []string
-	for _, parent := range []string{root, filepath.Join(root, "skills")} {
+	skillContainer := filepath.Join(root, "skills")
+
+	// Scan both roots; a single helper keeps the skip-container rule and
+	// the regular-file filter in one place.
+	addNonFile := func(parent string, skipContainer bool) error {
 		dh, err := os.ReadDir(parent)
 		if err != nil {
 			if os.IsNotExist(err) {
-				continue
+				return nil
 			}
-			if parent == root {
-				return nil, err
-			}
-			continue
+			return err
 		}
 		for _, de := range dh {
 			abs := filepath.Join(parent, de.Name())
+			if skipContainer && abs == skillContainer {
+				// Layout-B container: do not surface as a skill.
+				continue
+			}
+			di, err := de.Info()
+			if err != nil {
+				continue
+			}
+			// Regular files (READMEs, lock files, .DS_Store, etc.) are
+			// never skill dirs. Keep dirs and symlinks; the inspector
+			// decides between real-dir-no-SKILL.md (not_a_skill) and
+			// the rest.
+			if di.Mode().IsRegular() {
+				continue
+			}
 			if seen[abs] {
 				continue
 			}
-			// ALL entries are candidates; the inspector below decides
-			// missing vs dangling via Lstat+Stat. We intentionally do not
-			// skip entries that look like non-dir entries -- a symlink to a
-			// nonexistent target must NOT be silently dropped here. The
-			// previous impl's `root/*/SKILL.md` glob was the source of the
-			// "phantom reachability" bug F3 pins.
 			seen[abs] = true
 			dirs = append(dirs, abs)
 		}
+		return nil
 	}
+
+	if err := addNonFile(root, true); err != nil {
+		return nil, err
+	}
+	// Layout B: only meaningful if the container is itself a directory.
+	// Skip silently when absent (NOT an error — that's the layout-A case).
+	if ci, err := os.Stat(skillContainer); err == nil && ci.IsDir() {
+		if err := addNonFile(skillContainer, false); err != nil {
+			return nil, err
+		}
+	}
+
 	sort.Strings(dirs)
 	return dirs, nil
 }
 
-// inspectSkillSourceEntry is the canonical reachability inspector. It walks
-// the Lstat+Stat dance on the dir AND its SKILL.md, parses the frontmatter
-// when reachable, and returns a SkillSourceFileReport whose Reason names
-// exactly what failed (if anything). It is the only place reachability is
-// derived for skill nodes; DoctorSkillSource, DoctorSkillSourceEntry, and
-// ApplySkillManifest all share it.
+// inspectSkillSourceEntry is the canonical reachability inspector. It
+// walks the Lstat+Stat dance on the entry itself AND its SKILL.md, and
+// returns a SkillSourceFileReport whose Reason names exactly what
+// happened (if anything). It is the only place reachability is derived
+// for skill nodes; DoctorSkillSource, DoctorSkillSourceEntry, and
+// ApplySkillManifest all share it. See Reason vocabulary on
+// SkillSourceFileReport.
 func inspectSkillSourceEntry(root, absDir string) SkillSourceFileReport {
-	rel := absDir
-	if r, err := filepath.Rel(root, absDir); err == nil {
-		rel = r
+	rel, err := filepath.Rel(root, absDir)
+	if err != nil {
+		rel = absDir
 	}
-	report := SkillSourceFileReport{Path: rel, Status: "fail", Reachable: false}
+	report := SkillSourceFileReport{Path: filepath.Join(rel, "SKILL.md"), Status: "fail", Reachable: false}
 	absFile := filepath.Join(absDir, "SKILL.md")
 
-	// Lstat the dir: distinguishes missing (lerr != nil) from a dangling
-	// symlink (lstat succeeds, Stat fails).
-	switch linfo, lerr := os.Lstat(absDir); {
-	case lerr != nil:
+	// 1) Lstat the entry itself.
+	linfo, lerr := os.Lstat(absDir)
+	if lerr != nil {
 		report.Reason = "missing"
 		return report
-	case linfo.Mode()&os.ModeSymlink != 0:
-		sinfo, serr := os.Stat(absDir)
-		if serr != nil {
+	}
+	mode := linfo.Mode()
+
+	// 1a) Regular file (README.md, .DS_Store, lockfile, etc.) → silent
+	// "not a skill". These are siblings of skill dirs, not candidates.
+	if mode.IsRegular() {
+		report.Reason = "not_a_skill"
+		return report
+	}
+
+	// 2) Symlink? Stat the target to tell dangling from resolved.
+	if mode&os.ModeSymlink != 0 {
+		if sinfo, serr := os.Stat(absDir); serr != nil || !sinfo.IsDir() {
 			report.Reason = "dangling_symlink"
 			return report
 		}
-		if !sinfo.IsDir() {
-			report.Reason = "missing"
-			return report
-		}
-	case !linfo.IsDir():
-		report.Reason = "missing"
+		// symlink → real dir: fall through to the SKILL.md check below.
+	} else if !mode.IsDir() {
+		// neither regular file nor symlink nor directory → ineligible.
+		report.Reason = "not_a_skill"
 		return report
 	}
 
-	// Lstat the SKILL.md: the same dance applies. A dir can be present and
-	// look reachable, but a SKILL.md whose link is broken means the skill
-	// still cannot fire from disk -- reason=dangling_symlink, not the
-	// generic "unreadable" the old path produced.
-	switch flinfo, ferr := os.Lstat(absFile); {
-	case ferr != nil:
-		report.Reason = "missing"
+	// 3) The entry IS (or resolves to) a directory. Check for SKILL.md.
+	flinfo, ferr := os.Lstat(absFile)
+	if ferr != nil {
+		// Real dir without SKILL.md — the operator may simply be mid-edit
+		// or the dir is a non-skill neighbour. Per the spec, this is
+		// NOT dangling — it never claimed to be a skill. Silent skip.
+		report.Reason = "not_a_skill"
 		return report
-	case flinfo.Mode()&os.ModeSymlink != 0:
+	}
+	if flinfo.Mode()&os.ModeSymlink != 0 {
 		if _, fserr := os.Stat(absFile); fserr != nil {
 			report.Reason = "dangling_symlink"
 			return report
 		}
 	}
-
-	data, err := os.ReadFile(absFile)
-	if err != nil {
+	data, rerr := os.ReadFile(absFile)
+	if rerr != nil {
 		report.Reason = "unreadable"
+		report.Errors = append(report.Errors, rerr.Error())
 		return report
 	}
-	frontmatter, err := skillSourceFrontmatter(data)
-	if err != nil {
+	frontmatter, ferr := skillSourceFrontmatter(data)
+	if ferr != nil {
 		report.Reason = "no_frontmatter"
-		report.Errors = append(report.Errors, err.Error())
+		report.Errors = append(report.Errors, ferr.Error())
 		return report
 	}
 	var fields map[string]any
-	if err := yaml.Unmarshal([]byte(frontmatter), &fields); err != nil || fields == nil {
+	if uerr := yaml.Unmarshal([]byte(frontmatter), &fields); uerr != nil || fields == nil {
 		report.Reason = "no_frontmatter"
-		if err != nil {
-			report.Errors = append(report.Errors, fmt.Sprintf("YAML: %v", err))
+		if uerr != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("YAML: %v", uerr))
 		} else {
 			report.Errors = append(report.Errors, "front matter YAML mapping")
 		}
@@ -257,14 +330,14 @@ func inspectSkillSourceEntry(root, absDir string) SkillSourceFileReport {
 	}
 	report.Name = skillSourceStringField(fields, "name")
 	report.Description = skillSourceStringField(fields, "description")
-	if report.Name == "" || report.Description == "" {
+	if report.Name == "" {
 		report.Reason = "no_frontmatter"
-		if report.Name == "" {
-			report.Errors = append(report.Errors, "missing non-empty string field: name")
-		}
-		if report.Description == "" {
-			report.Errors = append(report.Errors, "missing non-empty string field: description")
-		}
+		report.Errors = append(report.Errors, "missing non-empty string field: name")
+		return report
+	}
+	if report.Description == "" {
+		report.Reason = "no_frontmatter"
+		report.Errors = append(report.Errors, "missing non-empty string field: description")
 		return report
 	}
 	report.Status = "ok"

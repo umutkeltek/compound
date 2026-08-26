@@ -46,17 +46,20 @@ description: "Good skill"
 		t.Fatalf("doctor SkillFileCount = %d, want 2 (bad symlink counts too)", report.SkillFileCount)
 	}
 	// Dangling list surfaces the bad symlink; on base this stayed empty.
-	if len(report.Dangling) != 1 || report.Dangling[0] != "bad" {
-		t.Fatalf("Dangling = %v, want [bad]", report.Dangling)
+	// Slice-8 update: Path is now the SKILL.md-relative file path
+	// ("bad/SKILL.md"), not the dir ("bad") — the doctor's report shape
+	// matches the pre-slice-2 doctor that this slice recovers.
+	if len(report.Dangling) != 1 || report.Dangling[0] != "bad/SKILL.md" {
+		t.Fatalf("Dangling = %v, want [bad/SKILL.md]", report.Dangling)
 	}
 	// Per-entry assertions: good is ok and reachable; bad is dangling_symlink.
 	var good, bad *SkillSourceFileReport
 	for i := range report.Files {
 		f := &report.Files[i]
 		switch f.Path {
-		case "good":
+		case "good/SKILL.md":
 			good = f
-		case "bad":
+		case "bad/SKILL.md":
 			bad = f
 		}
 	}
