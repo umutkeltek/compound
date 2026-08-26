@@ -207,6 +207,14 @@ exact dirty snapshot remains reviewable; a changed dirty snapshot or unreadable 
 blocked without authority; a clean repository files the old dirty plan as resolved historical
 evidence. The original plan and sidecars remain intact in every case.
 
+Unique branch retirement may use `candidate_relation=archived_unique` only
+when the ordinary contained/patch-equivalent checks fail and a byte-verified
+Git bundle recovery proof lists the exact candidate ref at the exact candidate
+tip. The plan/review/apply ceremony, liveness checks, main/publication SHA
+guards, keep decisions, non-force worktree removal, and CAS ref deletion remain
+mandatory. A generic file named `.bundle` is not enough: Compound checks the
+Git bundle magic and exact `bundle list-heads` identity before eligibility.
+
 ## First Acceptance Test
 
 The first implementation should be deliberately narrow:
