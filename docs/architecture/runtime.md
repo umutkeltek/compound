@@ -21,11 +21,13 @@ legacy-generated `CLAUDE.md` / `AGENTS.md` targets. Preset renders, symlinks, ma
 preimages are refused. The compiled `InstructionBlockRender` plus the installed region is the check surface;
 no parallel installed-instruction registry or generator exists.
 
-`install.sh` publishes `os` only as a relative symlink to the verified `compound` binary. Basename-aware
-dispatch translates the retained muscle-memory verbs to existing Compound commands (`system status`, `doctor`,
-`capability resolve|surface|list`, and `route plan`). The installer replaces only the recognized legacy
-OS shim or an existing Compound alias and refuses a foreign `os` file/symlink. The alias never reads or
-writes an OS dashboard and contains no operating-system path.
+`install.sh` publishes the verified `compound` binary, the optional breadth
+engine, and the Compound-owned autonomy-heartbeat script. The compatibility
+`os` alias is a private migration opt-in (`COMPOUND_INSTALL_OS_ALIAS=1`), not
+part of a default public install. When opted in, the installer replaces only a
+recognized legacy OS shim or existing Compound alias and refuses a foreign
+file/symlink. Basename-aware dispatch retains the migrated muscle-memory verbs;
+the alias never reads an OS dashboard or embeds an operating-system path.
 
 `compound policy import-operator-state <operator-state.json>` installs the global autonomy ceiling
 `compound://registries/operator-state` under `COMPOUND_HOME`; policy evaluation cites that authority and uses

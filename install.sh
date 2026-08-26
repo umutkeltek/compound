@@ -29,28 +29,38 @@ fi
 mkdir -p "$install_dir"
 
 os_alias=$install_dir/os
-if [ -L "$os_alias" ]; then
-  os_alias_target=$(readlink "$os_alias")
-  case "$os_alias_target" in
-    compound|"$install_dir/compound") ;;
-    *)
-      echo "install: refusing to replace foreign os symlink: $os_alias -> $os_alias_target" >&2
-      exit 1
-      ;;
-  esac
-elif [ -e "$os_alias" ]; then
-  if [ ! -f "$os_alias" ]; then
-    echo "install: refusing to replace non-file os path: $os_alias" >&2
+install_os_alias=${COMPOUND_INSTALL_OS_ALIAS:-0}
+case "$install_os_alias" in
+  0|1) ;;
+  *)
+    echo "install: COMPOUND_INSTALL_OS_ALIAS must be 0 or 1" >&2
     exit 1
-  fi
-  os_alias_body=$(cat "$os_alias")
-  case "$os_alias_body" in
-    '#!/bin/sh'*'shim only'*'operating-system/umut-os/exec-lane/os.ts'*) ;;
-    *)
-      echo "install: refusing to replace foreign os file: $os_alias" >&2
+    ;;
+esac
+if [ "$install_os_alias" = 1 ]; then
+  if [ -L "$os_alias" ]; then
+    os_alias_target=$(readlink "$os_alias")
+    case "$os_alias_target" in
+      compound|"$install_dir/compound") ;;
+      *)
+        echo "install: refusing to replace foreign os symlink: $os_alias -> $os_alias_target" >&2
+        exit 1
+        ;;
+    esac
+  elif [ -e "$os_alias" ]; then
+    if [ ! -f "$os_alias" ]; then
+      echo "install: refusing to replace non-file os path: $os_alias" >&2
       exit 1
-      ;;
-  esac
+    fi
+    os_alias_body=$(cat "$os_alias")
+    case "$os_alias_body" in
+      '#!/bin/sh'*'shim only'*'operating-system/umut-os/exec-lane/os.ts'*) ;;
+      *)
+        echo "install: refusing to replace foreign os file: $os_alias" >&2
+        exit 1
+        ;;
+    esac
+  fi
 fi
 build_sha=$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo "")
 
@@ -60,12 +70,19 @@ build_sha=$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo "")
 # with no signal. `set -e` plus this trap means a failed verification replaces nothing.
 staged=$install_dir/.compound.incoming.$$
 alias_staged=$install_dir/.os.incoming.$$
-trap 'rm -f "$staged" "$alias_staged"' EXIT HUP INT TERM
+heartbeat_staged=$install_dir/.compound-autonomy-heartbeat.incoming.$$
+trap 'rm -f "$staged" "$alias_staged" "$heartbeat_staged"' EXIT HUP INT TERM
 go build -ldflags "-X main.buildSHA=$build_sha" -o "$staged" ./cmd/compound
 go run ./cmd/compound-install-verify --binary "$staged" --build-sha "$build_sha"
 mv -f "$staged" "$install_dir/compound"
-ln -s compound "$alias_staged"
-mv -f "$alias_staged" "$os_alias"
+if [ "$install_os_alias" = 1 ]; then
+  ln -s compound "$alias_staged"
+  mv -f "$alias_staged" "$os_alias"
+fi
+cp "$repo_root/scripts/compound-autonomy-heartbeat.sh" "$heartbeat_staged"
+chmod 0755 "$heartbeat_staged"
+sh -n "$heartbeat_staged"
+mv -f "$heartbeat_staged" "$install_dir/compound-autonomy-heartbeat.sh"
 
 go build -o "$install_dir/compound-breadth-engine" ./cmd/compound-breadth-engine
 
@@ -78,7 +95,8 @@ cat <<EOF
 compound installed
 - binary: $install_dir/compound
 - breadth_engine: $install_dir/compound-breadth-engine
-- os_alias: $os_alias -> compound
+- os_alias: opt-in via COMPOUND_INSTALL_OS_ALIAS=1 (existing path left unchanged otherwise)
+- autonomy_heartbeat: $install_dir/compound-autonomy-heartbeat.sh
 - home: $compound_home
 
 next:
