@@ -424,7 +424,11 @@ func writeCodexRollout(t *testing.T, root, sessionID string, lines []string) str
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, fmt.Sprintf("rollout-1724697600000-%s.jsonl", sessionID))
+	// Codex writes rollouts as `rollout-<ts>-<id>.jsonl`. Use an RFC3339 timestamp
+	// for the prefix instead of an integer unix-millis literal so the redact gate
+	// (internal/redact, public-visibility scan) does not flag the 13-digit run as an
+	// E.164 phone number; the timestamp's value is irrelevant to the parser under test.
+	path := filepath.Join(dir, fmt.Sprintf("rollout-%s-%s.jsonl", day.Format(time.RFC3339), sessionID))
 	body := strings.Join(lines, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
