@@ -455,12 +455,22 @@ func DefaultRegistry() Registry {
 			InstructionMechanism: "AGENTS.md + hooks + skills (progressive disclosure)",
 			Capabilities: Capabilities{
 				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
-				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: false,
+				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
 				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{
 				"native PreToolUse requires the stable hooks feature and an installed trusted hook",
-				"no SessionEnd event — Stop (JSON block/continuation) is the only end-of-turn hook",
+				// Codex 0.149.x fires a native SessionEnd event with transcript_path (binary
+				// evidence: `strings /opt/homebrew/Caskroom/codex/0.149.1/bin/codex | grep`
+				// surfaces session_end in the hook event vocabulary and session_id,
+				// transcript_path, hook_event_name, stop_hook_active in the wire payload). The
+				// Stop binding stays -- Stop is its own end-of-turn channel (JSON block /
+				// continuation) and the SessionEnd receipt path adds rather than replaces it.
+				// Receipt is routed through the generic `compound hook session-end --live`
+				// verb (NOT session-end-adapter, which is the Claude-family bounded adapter),
+				// so Stop and SessionEnd share hook.go's sessionEnd() handler but exercise
+				// different code paths inside it.
+				"SessionEnd receipt shares sessionEnd() with Stop; Stop's stop_hook_active short-circuit still owns end-of-turn continuation",
 				"initial skill list capped (progressive disclosure)",
 				"cwd-dependent guidance",
 			},

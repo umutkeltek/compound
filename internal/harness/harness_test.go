@@ -22,14 +22,17 @@ func TestSupportsByHarness(t *testing.T) {
 	if !r.Supports("claude_zai", "PreToolUse") {
 		t.Error("claude_zai should support the Claude Code native PreToolUse block")
 	}
-	// claude_code has a real SessionEnd event; codex has none (Stop is its only
-	// end-of-turn hook) — conflating them would silently overclaim a receipt codex
-	// never delivers.
+	// claude_code AND codex now both have native SessionEnd events with transcript_path in
+	// the wire payload. codex 0.149.x confirmed via binary strings|grep (see harness.go
+	// codex limitations comment + packet premise verification). Conflating SessionEnd and
+	// Stop would still silently overclaim, but the independence proof
+	// (TestStopAndSessionEndCapabilitiesAreIndependent) is the right fence against that --
+	// this test pins the table stakes.
 	if !r.Supports("claude_code", "SessionEnd") {
 		t.Error("claude_code should support session-end receipts")
 	}
-	if r.Supports("codex", "SessionEnd") {
-		t.Error("codex should NOT claim session-end receipts — no such event exists")
+	if !r.Supports("codex", "SessionEnd") {
+		t.Error("codex should support session-end receipts — 0.149.x ships native SessionEnd with transcript_path")
 	}
 	// Both can inject/continue at end-of-turn via Stop (codex via JSON block/continuation).
 	if !r.Supports("claude_code", "Stop") || !r.Supports("codex", "Stop") {
@@ -238,8 +241,8 @@ func TestLoadRegistryManifest(t *testing.T) {
 	if !reg.Supports("codex", "PreToolUse") {
 		t.Fatal("codex fixture should expose the stable native pre-tool block")
 	}
-	if reg.Supports("codex", "SessionEnd") || !reg.Supports("codex", "Stop") {
-		t.Fatalf("codex fixture must model Stop=true and SessionEnd=false")
+	if !reg.Supports("codex", "SessionEnd") || !reg.Supports("codex", "Stop") {
+		t.Fatalf("codex fixture must model Stop=true AND SessionEnd=true (binary 0.149.x proves native SessionEnd)")
 	}
 	if got := RegistryRevision(reg); !strings.HasPrefix(got, "sha256:") {
 		t.Fatalf("registry revision = %q", got)

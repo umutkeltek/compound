@@ -971,15 +971,31 @@ func trimHookShellToken(token string) string {
 
 func isCompoundSessionEndCommand(command string) bool {
 	trimmed := strings.TrimSpace(command)
-	for _, verb := range []string{"session-end-adapter", "session-end"} {
-		marker := " hook " + verb + " --live --harness "
+	// Two verb paths feed the SessionEnd binding: session-end-adapter (Claude family only,
+	// bounded adapter seam) and session-end (generic; routes through sessionEnd() in
+	// hook.go, which is what codex 0.149.x uses post rule_delta). The harness gate below
+	// matches what HookCommandForEvent actually emits: the bounded adapter stays
+	// Claude-family, the generic verb is permitted for codex and any future lane with a
+	// native SessionEnd event. The legacy `$HOME/.claude/hooks/SessionReceipt.hook.ts`
+	// path is captured earlier in hookIsCompoundEvent and does not reach this function.
+	for _, c := range []struct {
+		verb       string
+		claudeOnly bool
+	}{
+		{verb: "session-end-adapter", claudeOnly: true},
+		{verb: "session-end", claudeOnly: false},
+	} {
+		marker := " hook " + c.verb + " --live --harness "
 		markerAt := strings.LastIndex(trimmed, marker)
 		if markerAt < 0 {
 			continue
 		}
 		executable := strings.TrimSpace(trimmed[:markerAt])
 		harnessName := strings.TrimSpace(trimmed[markerAt+len(marker):])
-		if !isClaudeFamilyHarnessName(harnessName) || !isCompoundExecutableToken(executable) {
+		if c.claudeOnly && !isClaudeFamilyHarnessName(harnessName) {
+			continue
+		}
+		if !isCompoundExecutableToken(executable) {
 			continue
 		}
 		return true

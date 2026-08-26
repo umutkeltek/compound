@@ -18,7 +18,7 @@ harnesses:
       pre_tool_use_block: true
       post_tool_use_event: true
       stop_feedback: true
-      session_end_receipt: false
+      session_end_receipt: true
       native_skills: true
       mcp: true
     limitations:

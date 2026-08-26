@@ -250,12 +250,13 @@ func TestClaudeProfilesInstallOneBoundedSessionEndAndCodexDoesNot(t *testing.T) 
 	if strings.Contains(sessionEnd[0].Command, "session-end-adapter") {
 		t.Fatalf("Codex SessionEnd must NOT use the Claude-only session-end-adapter verb: %q", sessionEnd[0].Command)
 	}
-	// The rendered hooks.json must carry the SessionEnd key (F2 falsifier).
-	cfg := readJSON(t, filepath.Join(t.TempDir(), ".codex", "hooks.json"))
-	if cfg == nil {
-		// fresh config under t.TempDir() not where InstallHooks wrote; re-read the install dir.
+	// The rendered hooks.json must carry the SessionEnd key (F2 falsifier). t.TempDir() returns a
+	// fresh dir per call, so we capture the install dir before issuing a second tempdir for the
+	// re-install (the re-install is what asserts the *rendered* JSON; the first install's bindings
+	// already prove the verb shape).
+	if report.Entries[0].ConfigPath == "" {
+		t.Fatalf("Codex install report missing ConfigPath: %+v", report.Entries[0])
 	}
-	// Re-install into a fresh dir we control so the JSON check is deterministic.
 	fresh := t.TempDir()
 	freshReport, err := InstallHooks(fresh, "/opt/compound", "global", []string{"codex"}, false)
 	if err != nil {
@@ -264,7 +265,7 @@ func TestClaudeProfilesInstallOneBoundedSessionEndAndCodexDoesNot(t *testing.T) 
 	if freshReport.Entries[0].ConfigPath != filepath.Join(fresh, ".codex", "hooks.json") {
 		t.Fatalf("Codex config path = %q, want %q", freshReport.Entries[0].ConfigPath, filepath.Join(fresh, ".codex", "hooks.json"))
 	}
-	cfg = readJSON(t, freshReport.Entries[0].ConfigPath)
+	cfg := readJSON(t, freshReport.Entries[0].ConfigPath)
 	hooks, _ := cfg["hooks"].(map[string]any)
 	if _, ok := hooks["SessionEnd"]; !ok {
 		t.Fatalf("Codex hooks.json missing SessionEnd key after install: %+v", hooks)
