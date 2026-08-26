@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -128,4 +129,31 @@ func TestBudgetExceededReasonIsInEnum(t *testing.T) {
 		}
 	}
 	t.Fatalf("%q missing from FailOpenReasons", envelope.FailOpenBudgetExceeded)
+}
+
+// TestHookBudgetHarnessTierBeatsDefault: the internal fail-open deadline
+// must sit under the OUTER harness kill. oh_my_pi's shim kills wrapped hooks
+// at ~8s, so its registry budget (6s) must displace the 45s default — a
+// 45s watchdog under an 8s kill is one that never gets to bark.
+func TestHookBudgetHarnessTierBeatsDefault(t *testing.T) {
+	t.Setenv("COMPOUND_HOOK_BUDGET", "")
+	omp := hookCommandArgs{HookName: "pre-tool-use", Live: true, Harness: "oh_my_pi"}
+	budget := hook.BudgetFromEnv(os.Getenv)
+	if strings.TrimSpace(os.Getenv("COMPOUND_HOOK_BUDGET")) == "" {
+		if ms := harness.DefaultRegistry().HookBudgetMS(omp.Harness); ms > 0 {
+			budget = time.Duration(ms) * time.Millisecond
+		}
+	}
+	if budget != 6*time.Second {
+		t.Fatalf("oh_my_pi budget = %v, want the registry's 6s (under its ~8s outer kill)", budget)
+	}
+	// An explicit env override still wins, even when equal to the default.
+	t.Setenv("COMPOUND_HOOK_BUDGET", "10s")
+	if d := hook.BudgetFromEnv(os.Getenv); d != 10*time.Second {
+		t.Fatalf("explicit env override = %v, want 10s", d)
+	}
+	// Harnesses without a registry budget keep the default.
+	if ms := harness.DefaultRegistry().HookBudgetMS("claude_code"); ms != 0 {
+		t.Fatalf("claude_code unexpectedly declares a hook budget: %dms", ms)
+	}
 }
