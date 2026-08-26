@@ -5484,10 +5484,6 @@ func TestInstallScriptBuildsInitializesAndDoctorsTempHome(t *testing.T) {
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	legacyAlias := "#!/bin/sh\n# shim only — logic lives in umut-os/exec-lane/os.ts\nexec \"${HOME}/.bun/bin/bun\" \"${HOME}/Projects/operating-system/umut-os/exec-lane/os.ts\" \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(installDir, "os"), []byte(legacyAlias), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	modCacheOut, err := exec.Command("go", "env", "GOMODCACHE").Output()
 	if err != nil {
 		t.Fatalf("go env GOMODCACHE: %v", err)
@@ -5513,32 +5509,14 @@ func TestInstallScriptBuildsInitializesAndDoctorsTempHome(t *testing.T) {
 		t.Fatalf("installed binary missing: %v\n%s", err, out)
 	}
 	aliasPath := filepath.Join(installDir, "os")
-	aliasInfo, err := os.Lstat(aliasPath)
-	if err != nil {
-		t.Fatalf("installed os alias missing: %v\n%s", err, out)
+	if _, err := os.Lstat(aliasPath); !os.IsNotExist(err) {
+		t.Fatalf("default public install created an os alias: %v", err)
 	}
-	if aliasInfo.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("installed os alias is not a symlink: %v", aliasInfo.Mode())
+	if _, err := os.Stat(filepath.Join(installDir, "compound-autonomy-heartbeat.sh")); !os.IsNotExist(err) {
+		t.Fatalf("default public install created the private autonomy heartbeat: %v", err)
 	}
-	aliasTarget, err := os.Readlink(aliasPath)
-	if err != nil || aliasTarget != "compound" {
-		t.Fatalf("installed os alias target=%q err=%v, want relative compound", aliasTarget, err)
-	}
-	if strings.Contains(aliasTarget, "operating-system") || strings.Contains(aliasTarget, "umut-os") {
-		t.Fatalf("installed os alias retains legacy dependency: %q", aliasTarget)
-	}
-	aliasCommand := exec.Command(aliasPath, "status", "--json")
-	aliasCommand.Env = append(os.Environ(), "HOME="+tempHome, "COMPOUND_HOME="+homePath)
-	aliasOut, err := aliasCommand.CombinedOutput()
-	if err != nil {
-		t.Fatalf("installed os alias failed: %v\n%s", err, aliasOut)
-	}
-	var aliasReport projection.SystemStatusProjection
-	if err := json.Unmarshal(aliasOut, &aliasReport); err != nil {
-		t.Fatalf("installed os alias output is not Compound system status: %v\n%s", err, aliasOut)
-	}
-	if aliasReport.SchemaVersion != projection.SystemStatusSchemaVersion {
-		t.Fatalf("installed os alias schema=%q, want %q", aliasReport.SchemaVersion, projection.SystemStatusSchemaVersion)
+	if _, err := os.Stat(filepath.Join(homePath, "scripts", "attention-letter.py")); !os.IsNotExist(err) {
+		t.Fatalf("default public install created the private decision renderer: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, home.ManifestName)); err != nil {
 		t.Fatalf("home manifest missing: %v\n%s", err, out)
@@ -5588,6 +5566,7 @@ func TestInstallScriptRefusesForeignOSAliasBeforeBuild(t *testing.T) {
 		"HOME="+t.TempDir(),
 		"GOBIN="+installDir,
 		"COMPOUND_HOME="+filepath.Join(t.TempDir(), ".compound"),
+		"COMPOUND_INSTALL_OS_ALIAS=1",
 	)
 	out, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "refusing to replace foreign os file") {
