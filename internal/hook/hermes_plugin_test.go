@@ -262,7 +262,7 @@ print(json.dumps({
 // ~/.hermes/profiles/compoundcanary/plugins/compound_memory/__init__.py when that path
 // exists. The check skips cleanly on a fresh clone that has never installed the plugin;
 //
-//// the install path is documented in this packet's live proof (not the test). We use
+// // the install path is documented in this packet's live proof (not the test). We use
 // $HOME resolution + an env override so the test does NOT bake a personal path into
 // tracked source.
 func TestHermesInstalledPluginMatchesRepoCopy(t *testing.T) {
