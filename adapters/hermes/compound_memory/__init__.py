@@ -162,16 +162,12 @@ def _export_session_to_jsonl(
 
 
 def _hermes_tool_blocks(tool_calls_raw: Any, tool_name: Any) -> list[dict[str, Any]]:
-    """Convert a hermes tool_calls column + tool_name into claude-code-shaped tool_use blocks.
+    """Convert Hermes tool_calls into Claude-shaped tool_use blocks.
 
-    Hermes's tool_calls column is a JSON-encoded list (each entry typically carries
-    `name` and `arguments`/input fields). We tolerate three shapes:
-      1. A JSON list of {name, arguments/args/input} dicts -- the live hermes shape.
-      2. A JSON string of that list -- older builds.
-      3. A bare tool_name with no structured tool_calls -- synthesize an empty-input
-         tool_use block so the parser still sees the tool invocation.
-    Each emitted block is a claude-code-shaped {type: tool_use, name, input} dict,
-    ready for the parser's existing rules.
+    Current Hermes stores OpenAI calls as
+    ``{"type": "function", "function": {"name": ..., "arguments": "..."}}``.
+    Older rows put name and arguments directly on the entry. Accept both, plus
+    bare ``tool_name`` rows, without dropping structured arguments.
     """
     blocks: list[dict[str, Any]] = []
     parsed: Any = None
@@ -182,22 +178,40 @@ def _hermes_tool_blocks(tool_calls_raw: Any, tool_name: Any) -> list[dict[str, A
             parsed = None
     elif isinstance(tool_calls_raw, list):
         parsed = tool_calls_raw
+
     if isinstance(parsed, list):
         for entry in parsed:
             if not isinstance(entry, dict):
                 continue
-            name = entry.get("name") or entry.get("tool_name") or entry.get("type")
+
+            function = entry.get("function")
+            if not isinstance(function, dict):
+                function = {}
+            name = (
+                function.get("name")
+                or entry.get("name")
+                or entry.get("tool_name")
+                or entry.get("type")
+            )
             if not isinstance(name, str) or not name:
                 continue
-            # Hermes uses `arguments`; OpenAI-style uses `args`; claude-style uses `input`.
-            input_obj = entry.get("arguments")
-            if not isinstance(input_obj, dict):
+
+            input_obj = function.get("arguments")
+            if input_obj is None:
+                input_obj = entry.get("arguments")
+            if input_obj is None:
                 input_obj = entry.get("args")
-            if not isinstance(input_obj, dict):
+            if input_obj is None:
                 input_obj = entry.get("input")
+            if isinstance(input_obj, str):
+                try:
+                    input_obj = json.loads(input_obj)
+                except (TypeError, ValueError):
+                    input_obj = {}
             if not isinstance(input_obj, dict):
                 input_obj = {}
             blocks.append({"type": "tool_use", "name": name, "input": input_obj})
+
     if not blocks and isinstance(tool_name, str) and tool_name:
         blocks.append({"type": "tool_use", "name": tool_name, "input": {}})
     return blocks
