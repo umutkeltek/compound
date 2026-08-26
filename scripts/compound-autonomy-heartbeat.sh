@@ -41,6 +41,16 @@ PD_SUM="not-run"
 PD_TMP=$(mktemp -d "${TMPDIR:-/tmp}/compound-promote-heartbeat.XXXXXX") || exit 70
 trap 'rm -rf "$PD_TMP"' EXIT HUP INT TERM
 
+terminalize_failed_work() {
+  failure_summary=$1
+  failure_proof=$2
+  if "$BIN" work close "$PD_WORK_ID" --outcome failed --move-type control_plane_repair --by "$PD_ACTOR" --summary "$failure_summary" --proof "$failure_proof" >"$PD_TMP/close.out" 2>"$PD_TMP/close.err"; then
+    return 0
+  fi
+  "$BIN" work advance "$PD_WORK_ID" --to verifying --by "$PD_ACTOR" --verification "$failure_proof" --note "$failure_summary" >"$PD_TMP/recover.out" 2>"$PD_TMP/recover.err" || return 1
+  "$BIN" work close "$PD_WORK_ID" --outcome failed --move-type control_plane_repair --by "$PD_ACTOR" --summary "$failure_summary" --proof "$failure_proof" >"$PD_TMP/close.out" 2>"$PD_TMP/close.err"
+}
+
 if ! "$BIN" work create \
   --work-id "$PD_WORK_ID" \
   --owner compound:memory-maintenance \
@@ -58,9 +68,11 @@ if ! "$BIN" work create \
 elif ! "$BIN" work claim "$PD_WORK_ID" --by "$PD_ACTOR" >"$PD_TMP/claim.out" 2>"$PD_TMP/claim.err"; then
   PD_RC=1
   PD_SUM="ERR: work claim $(printf '%.120s' "$(cat "$PD_TMP/claim.err")")"
+  terminalize_failed_work "Scheduled memory maintenance claim failed" "failure:promote-driver:claim" || PD_SUM="$PD_SUM; terminalization failed"
 elif ! "$BIN" work advance "$PD_WORK_ID" --to running --by "$PD_ACTOR" --note "scheduled bounded promote-driver pass" >"$PD_TMP/run.out" 2>"$PD_TMP/run.err"; then
   PD_RC=1
   PD_SUM="ERR: work advance $(printf '%.120s' "$(cat "$PD_TMP/run.err")")"
+  terminalize_failed_work "Scheduled memory maintenance running advance failed" "failure:promote-driver:advance" || PD_SUM="$PD_SUM; terminalization failed"
 else
   "$TIMEOUT_BIN" 600 "$BIN" memory promote-driver \
     --confirm --work "$PD_WORK_ID" \
@@ -105,7 +117,10 @@ EOF
       "$@" >"$PD_TMP/close.out" 2>"$PD_TMP/close.err" || PD_RC=1
     fi
   else
-    "$BIN" work close "$PD_WORK_ID" --outcome failed --move-type control_plane_repair --by "$PD_ACTOR" --summary "Scheduled memory maintenance did not commit ($PD_STAGE)" --proof "failure:promote-driver:$PD_PASS:$PD_STAGE" >"$PD_TMP/close.out" 2>"$PD_TMP/close.err" || true
+    terminalize_failed_work "Scheduled memory maintenance did not commit ($PD_STAGE)" "failure:promote-driver:$PD_PASS:$PD_STAGE" || PD_SUM="ERR: driver failed and work terminalization failed"
+  fi
+  if [ "$PD_RC" -ne 0 ] && [ "$PD_STAGE" = "committed" ]; then
+    terminalize_failed_work "Scheduled memory maintenance receipt close failed" "failure:promote-driver:$PD_PASS:work-close" || PD_SUM="ERR: committed driver pass left work nonterminal"
   fi
   if [ "$PD_RC" -eq 0 ]; then
     PD_SUM="stage=$PD_STAGE pass=$PD_PASS promoted=$PD_PROMOTED_N swept=$PD_SWEPT_N pending=$PD_PENDING work=$PD_WORK_ID"
