@@ -301,9 +301,9 @@ func (s *Store) Add(n Node) error {
 		n.Weight = 1.0
 	}
 	return s.withGraphWriteLock(func() error {
-		nodes, err := s.loadNodes()
+		_, nodes, err := computeCompactReport(s.nodesLog())
 		if err != nil {
-			return err
+			return fmt.Errorf("validate capability nodes before add: %w", err)
 		}
 		for i := range nodes {
 			if nodes[i].ID != n.ID {

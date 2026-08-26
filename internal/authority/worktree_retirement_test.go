@@ -199,6 +199,33 @@ func TestWorktreeRetirementReviewRejectsDifferentSecondReviewWithoutMutatingFirs
 // review family — its own review YAML, its own authorization report, its own
 // apply path — so it belongs in its own area and must leave no residue in the
 // area it used to pollute.
+func TestWorktreeRetirementAllowsUniqueBranchSealedInVerifiedBundle(t *testing.T) {
+	fixture := newDivergentRetirementGitFixture(t, false)
+	bundlePath := filepath.Join(filepath.Dir(fixture.repo), "all-refs.bundle")
+	retirementRunGit(t, fixture.repo, "bundle", "create", bundlePath, fixture.candidateRef)
+	bundle, err := os.ReadFile(bundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := retirementPlanRequest(fixture)
+	req.RecoveryRefs = []string{"sha256-file:" + digestRetirementHex(bundle) + ":" + bundlePath}
+	// The cleanup program's source proof is its landed main commit; the
+	// candidate's unique history is instead sealed by the exact bundle ref.
+	req.SourceProof = validRetirementSourceProof(fixture.mainTip)
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}, time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Eligible || plan.CandidateRelation != WorktreeCandidateArchivedUnique || plan.SourceRelation != WorktreeCandidateArchivedUnique {
+		t.Fatalf("bundle-sealed unique branch = %+v", plan)
+	}
+	if err := ValidateWorktreeRetirementPlan(plan); err != nil {
+		t.Fatalf("archived-unique plan rejected by validator: %v", err)
+	}
+}
+
 func TestRecordWorktreeRetirementPlanUsesItsOwnReviewArea(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
 	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{

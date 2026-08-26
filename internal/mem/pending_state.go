@@ -1,6 +1,8 @@
 package mem
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -27,6 +29,7 @@ import (
 type PendingState struct {
 	Pending      int    `json:"pending"`                 // candidates in state proposed at reconciliation time
 	Files        int    `json:"files"`                   // total candidate files in the inbox directory
+	Generation   string `json:"generation,omitempty"`    // sha256 of the sorted candidate JSON name set
 	Corrupt      int    `json:"corrupt,omitempty"`       // inbox files unreadable at reconciliation time
 	AsOf         string `json:"as_of"`                   // RFC3339 reconciliation time
 	ReconciledBy string `json:"reconciled_by,omitempty"` // who reconciled ("promote-driver sweep", "manual", ...)
@@ -89,7 +92,7 @@ func (s *Store) WritePendingState(st PendingState) error {
 // the bounded sweep isolates. Callers are the promote-driver sweep (already
 // walking) and explicit maintenance, never the doctor.
 func (s *Store) ReconcilePendingState(reconciledBy string, now time.Time) (PendingState, error) {
-	pending, files, corrupt, err := s.pendingInboxCensus()
+	pending, files, corrupt, generation, err := s.pendingInboxCensus()
 	if err != nil {
 		return PendingState{}, err
 	}
@@ -97,6 +100,7 @@ func (s *Store) ReconcilePendingState(reconciledBy string, now time.Time) (Pendi
 		Pending:      pending,
 		Files:        files,
 		Corrupt:      corrupt,
+		Generation:   generation,
 		AsOf:         rfc3339(now),
 		ReconciledBy: reconciledBy,
 	}
@@ -108,24 +112,15 @@ func (s *Store) ReconcilePendingState(reconciledBy string, now time.Time) (Pendi
 
 // pendingInboxCensus counts the inbox in one bounded-memory walk: per file it
 // decodes only {"state"}, counting proposed entries. An absent inbox is an
-// empty census, not an error. files counts every .json entry; corrupt counts
-// the entries that would not decode.
-func (s *Store) pendingInboxCensus() (pending, files, corrupt int, err error) {
-	dirEntries, err := os.ReadDir(s.candDir())
+// empty census, not an error. files counts candidate JSON entries only;
+// corrupt counts entries that would not decode; generation identifies the
+// sorted candidate name set so remove-one/add-one cannot masquerade as the
+// same corpus merely because the count stayed constant.
+func (s *Store) pendingInboxCensus() (pending, files, corrupt int, generation string, err error) {
+	names, generation, _, err := s.candidateInboxMetadata()
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return 0, 0, 0, nil
-		}
-		return 0, 0, 0, err
+		return 0, 0, 0, "", err
 	}
-	var names []string
-	for _, entry := range dirEntries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		names = append(names, entry.Name())
-	}
-	sort.Strings(names)
 	for _, name := range names {
 		files++
 		var state struct {
@@ -139,24 +134,43 @@ func (s *Store) pendingInboxCensus() (pending, files, corrupt int, err error) {
 			pending++
 		}
 	}
-	return pending, files, corrupt, nil
+	return pending, files, corrupt, generation, nil
+}
+
+func (s *Store) candidateInboxMetadata() (names []string, generation string, newest time.Time, err error) {
+	dirEntries, err := os.ReadDir(s.candDir())
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			sum := sha256.Sum256(nil)
+			return nil, "sha256:" + hex.EncodeToString(sum[:]), time.Time{}, nil
+		}
+		return nil, "", time.Time{}, err
+	}
+	for _, entry := range dirEntries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		names = append(names, entry.Name())
+		if info, infoErr := entry.Info(); infoErr == nil && info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+	}
+	sort.Strings(names)
+	sum := sha256.Sum256([]byte(strings.Join(names, "\x00")))
+	return names, "sha256:" + hex.EncodeToString(sum[:]), newest, nil
 }
 
 // pendingStateFresh reports whether a reconciled pending count is still
 // authoritative for the doctor: reconciled recently enough AND against the
-// SAME inbox generation. Two independent lies defeat a stale count: age (the
-// reconciliation predates the freshness window) and corpus movement (the
-// file count has changed since — new candidates arrived or files vanished,
-// so the recorded pending number no longer describes this inbox). Either
-// flips the count to "unknown" so the doctor warns instead of re-serving a
-// confident-but-wrong backlog. An unparseable AsOf is unknown by definition.
-func pendingStateFresh(st PendingState, fileCount int, now time.Time) bool {
+// same candidate-name generation. Legacy states without a generation fall
+// back to the old count check so stored v0.1 state remains readable.
+func pendingStateFresh(st PendingState, fileCount int, generation string, now time.Time) bool {
 	asOf, err := time.Parse(time.RFC3339, strings.TrimSpace(st.AsOf))
-	if err != nil {
+	if err != nil || now.Sub(asOf) > memDoctorThresholds.PendingStateFreshFor {
 		return false
 	}
-	if now.Sub(asOf) > memDoctorThresholds.PendingStateFreshFor {
-		return false
+	if strings.TrimSpace(st.Generation) != "" {
+		return st.Generation == generation
 	}
 	return st.Files == fileCount
 }

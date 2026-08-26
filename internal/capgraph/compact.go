@@ -19,10 +19,12 @@ import (
 // DuplicateIDList is observable additive so the operator can audit a run
 // without re-scanning the log.
 type CompactReport struct {
-	RowsBefore      int      `json:"rows_before"`
-	RowsAfter       int      `json:"rows_after"`
-	DuplicateIDs    int      `json:"duplicate_ids"`
-	DuplicateIDList []string `json:"duplicate_id_list,omitempty"`
+	RowsBefore           int      `json:"rows_before"`
+	RowsAfter            int      `json:"rows_after"`
+	DuplicateIDs         int      `json:"duplicate_ids"`
+	DuplicateIDList      []string `json:"duplicate_id_list,omitempty"`
+	MalformedRows        int      `json:"malformed_rows,omitempty"`
+	MalformedLineNumbers []int    `json:"malformed_line_numbers,omitempty"`
 }
 
 // CompactOrPreview dispatches by write flag so the CLI verb stays a single
@@ -102,17 +104,23 @@ func computeCompactReport(logPath string) (CompactReport, []Node, error) {
 	byID := map[string]Node{}
 	order := []string{}
 	var rawIDs []string
+	rawRows := 0
+	lineNumber := 0
+	var malformedLines []int
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for sc.Scan() {
+		lineNumber++
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
 			continue
 		}
+		rawRows++
 		var n Node
 		if err := json.Unmarshal([]byte(line), &n); err != nil {
-			// Skip torn / malformed lines the same way loadNodes does -- a
-			// single bad row must not brick the whole report.
+			// Compaction is a rewrite, not a repair door. Keep scanning so the
+			// report names every malformed line, then refuse before rename.
+			malformedLines = append(malformedLines, lineNumber)
 			continue
 		}
 		rawIDs = append(rawIDs, n.ID)
@@ -135,8 +143,10 @@ func computeCompactReport(logPath string) (CompactReport, []Node, error) {
 		counts[id]++
 	}
 	report := CompactReport{
-		RowsBefore: len(rawIDs),
-		RowsAfter:  len(nodes),
+		RowsBefore:           rawRows,
+		RowsAfter:            len(nodes),
+		MalformedRows:        len(malformedLines),
+		MalformedLineNumbers: malformedLines,
 	}
 	for id, n := range counts {
 		if n < 2 {
@@ -146,6 +156,9 @@ func computeCompactReport(logPath string) (CompactReport, []Node, error) {
 		report.DuplicateIDList = append(report.DuplicateIDList, id)
 	}
 	sort.Strings(report.DuplicateIDList)
+	if report.MalformedRows > 0 {
+		return report, nil, fmt.Errorf("nodes log contains %d malformed row(s) at lines %v; use an explicit repair operation", report.MalformedRows, report.MalformedLineNumbers)
+	}
 	return report, nodes, nil
 }
 

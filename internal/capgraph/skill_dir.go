@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -44,11 +45,14 @@ func LoadSkillDirManifest(root string, now time.Time) (SkillManifest, error) {
 	if len(entries) == 0 {
 		return SkillManifest{}, fmt.Errorf("skill dir root %s has no entries", root)
 	}
-	// Deterministic revision from the directory path so two loads of the
-	// same root produce identical SourceAuthority rows -- the upsert gate
-	// in ImportExternalRepoReviewedManifests and friends keys on this.
-	sum := sha256.Sum256([]byte(root))
-	revision := "sha256:" + hex.EncodeToString(sum[:])
+	// Revision is a stable content manifest, not a hash of the root path.
+	// Provenance must identify what was observed: relative path, file type,
+	// content hash, and symlink target. Moving identical contents preserves
+	// identity; changing bytes beneath the same root moves it.
+	revision, err := skillDirContentRevision(root)
+	if err != nil {
+		return SkillManifest{}, err
+	}
 	evidenceRef := "skill_dir:" + revision[:19]
 	manifest := SkillManifest{
 		SchemaVersion: SkillManifestSchemaVersion,
@@ -113,6 +117,61 @@ func LoadSkillDirManifest(root string, now time.Time) (SkillManifest, error) {
 		return manifest.Skills[i].ID < manifest.Skills[j].ID
 	})
 	return manifest, nil
+}
+
+func skillDirContentRevision(root string) (string, error) {
+	var rows []string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "." {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			if entry.Type()&os.ModeSymlink != 0 {
+				target, targetErr := os.Readlink(path)
+				if targetErr != nil {
+					return targetErr
+				}
+				rows = append(rows, "L\t"+rel+"\t"+target)
+				return nil
+			}
+			return err
+		}
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			rows = append(rows, "L\t"+rel+"\t"+target)
+		case info.IsDir():
+			rows = append(rows, "D\t"+rel)
+		case info.Mode().IsRegular():
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			sum := sha256.Sum256(data)
+			rows = append(rows, "F\t"+rel+"\t"+hex.EncodeToString(sum[:]))
+		default:
+			rows = append(rows, "O\t"+rel+"\t"+info.Mode().String())
+		}
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("manifest skill directory %s: %w", root, err)
+	}
+	sort.Strings(rows)
+	sum := sha256.Sum256([]byte(strings.Join(rows, "\n")))
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 // LoadSkillManifestForPath routes by file type: a directory goes through

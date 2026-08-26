@@ -21,6 +21,7 @@ const (
 	WorktreeCandidateContained       = "contained"
 	WorktreeCandidatePatchEquivalent = "patch_equivalent"
 	WorktreeCandidateUnique          = "unique"
+	WorktreeCandidateArchivedUnique  = "archived_unique"
 
 	WorktreeLivenessUnused  WorktreeLivenessState = "unused"
 	WorktreeLivenessActive  WorktreeLivenessState = "active"
@@ -370,18 +371,28 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 		if relationErr != nil {
 			return WorktreeRetirementPlan{}, relationErr
 		}
-		plan.CandidateRelation = relation
 		if relation == WorktreeCandidateUnique {
-			block("candidate_contains_unique_commits")
+			archived, archiveErr := retirementBundleContainsCandidate(ctx, deps.Git, root, plan.RecoveryProofs, plan.CandidateRef, candidateTip)
+			if archiveErr != nil {
+				return WorktreeRetirementPlan{}, archiveErr
+			}
+			if archived {
+				relation = WorktreeCandidateArchivedUnique
+			} else {
+				block("candidate_contains_unique_commits")
+			}
 		}
+		plan.CandidateRelation = relation
 		sourceRelation, sourceRelationErr := classifyRetirementCandidateAgainst(ctx, deps.Git, root, candidateTip, req.SourceProof.CommitTip)
 		if sourceRelationErr != nil {
 			return WorktreeRetirementPlan{}, sourceRelationErr
 		}
-		plan.SourceRelation = sourceRelation
-		if sourceRelation == WorktreeCandidateUnique {
+		if sourceRelation == WorktreeCandidateUnique && relation == WorktreeCandidateArchivedUnique {
+			sourceRelation = WorktreeCandidateArchivedUnique
+		} else if sourceRelation == WorktreeCandidateUnique {
 			block("candidate_not_contained_or_patch_equivalent_to_source_commit")
 		}
+		plan.SourceRelation = sourceRelation
 	}
 
 	// Operator keep-decisions pin a branch against cleanup (worktree-tracking
@@ -405,6 +416,49 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 	plan.ID = WorktreeRetirementPlanID(plan)
 	plan.PlanDigest = WorktreeRetirementPlanDigest(plan)
 	return plan, nil
+}
+func retirementBundleContainsCandidate(ctx context.Context, git WorktreeRetirementGit, repo string, proofs []WorktreeRetirementRecoveryProof, ref, tip string) (bool, error) {
+	if strings.TrimSpace(ref) == "" || !validRetirementObjectID(tip) {
+		return false, nil
+	}
+	for _, proof := range proofs {
+		bundle, err := recoveryProofIsGitBundle(proof)
+		if err != nil {
+			return false, err
+		}
+		if !bundle {
+			continue
+		}
+		out, err := git.Run(ctx, repo, "bundle", "list-heads", proof.Path, ref)
+		if err != nil {
+			return false, fmt.Errorf("inspect recovery bundle %s: %w", proof.Path, err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 && fields[0] == tip && fields[1] == ref {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func recoveryProofIsGitBundle(proof WorktreeRetirementRecoveryProof) (bool, error) {
+	if filepath.Ext(proof.Path) != ".bundle" {
+		return false, nil
+	}
+	file, err := os.Open(proof.Path)
+	if err != nil {
+		return false, fmt.Errorf("open recovery evidence %s: %w", proof.Path, err)
+	}
+	defer file.Close()
+	header := make([]byte, 32)
+	n, readErr := file.Read(header)
+	if readErr != nil && n == 0 {
+		return false, fmt.Errorf("read recovery evidence %s: %w", proof.Path, readErr)
+	}
+	magic := string(header[:n])
+	return strings.HasPrefix(magic, "# v2 git bundle") || strings.HasPrefix(magic, "# v3 git bundle"), nil
 }
 
 // worktreeRetirementKeepTarget is the branch ref an operator keep-decision

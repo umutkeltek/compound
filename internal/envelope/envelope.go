@@ -1271,6 +1271,13 @@ type HookEvent struct {
 	// event re-marshals byte-identically, and no reader is required to consult it. Values
 	// are FailOpenReasons; empty stays legal so this can never fail a stored event.
 	FailOpenReason string `json:"fail_open_reason,omitempty"`
+	// Budget watchdog responses state policy intent separately from what the
+	// harness actually observes. These are optional because ordinary events
+	// and pre-budget envelopes predate the distinction.
+	PolicyPosture       string `json:"policy_posture,omitempty"`
+	EffectiveOutcome    string `json:"effective_outcome,omitempty"`
+	HarnessExitBehavior string `json:"harness_exit_behavior,omitempty"`
+	EvidencePersistence string `json:"evidence_persistence,omitempty"`
 }
 
 // The meanings of Status=="fail_open". See HookEvent.FailOpenReason.
@@ -1303,6 +1310,13 @@ func (e *HookEvent) Validate() error {
 	// reason must be a known one, so an unrecognized free string can never reach disk and
 	// become a silently unreadable signal.
 	v.enum("fail_open_reason", e.FailOpenReason, FailOpenReasons, false)
+	if e.Status != "fail_open" && e.FailOpenReason != "" {
+		v.addf("fail_open_reason requires status=fail_open")
+	}
+	v.enum("policy_posture", e.PolicyPosture, []string{"fail_open", "enforced_block"}, false)
+	v.enum("effective_outcome", e.EffectiveOutcome, []string{"allow", "block"}, false)
+	v.enum("harness_exit_behavior", e.HarnessExitBehavior, []string{"exit_0", "exit_4"}, false)
+	v.enum("evidence_persistence", e.EvidencePersistence, []string{"not_persisted_watchdog_response", "persisted"}, false)
 	return v.result(e.Kind())
 }
 

@@ -47,3 +47,10 @@ func TestRunCLIAcceptsDryRunAlone(t *testing.T) {
 		t.Fatalf("--dry-run alone must not be usage-rejected: %s", stderr)
 	}
 }
+
+func TestRunCLIRequiresRealWorkIdentityForApply(t *testing.T) {
+	stderr, code := captureCLI(func() int { return RunCLI([]string{"--confirm"}) })
+	if code != 2 || !strings.Contains(stderr, "--work") {
+		t.Fatalf("confirm without work identity = exit %d stderr %q, want usage refusal", code, stderr)
+	}
+}

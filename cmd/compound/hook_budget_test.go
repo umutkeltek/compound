@@ -76,9 +76,16 @@ func TestHookBudgetAnswerShapesAndExits(t *testing.T) {
 	}
 
 	enforced := hookCommandArgs{HookName: "pre-tool-use", Live: true, Harness: "claude_code", Enforce: true}
-	_, _, exit = budgetResponse(enforced, budget, now)
-	if exit != 4 {
-		t.Fatalf("enforced pre-tool-use exit = %d, want 4", exit)
+	enforcedAnswer := hook.BudgetExpiryAnswer(enforced, budget, now)
+	if enforcedAnswer.Exit != 4 {
+		t.Fatalf("enforced pre-tool-use exit = %d, want 4", enforcedAnswer.Exit)
+	}
+	if enforcedAnswer.Result.Event.Status != "blocked" || enforcedAnswer.Result.Event.FailOpenReason != "" ||
+		enforcedAnswer.Result.Event.PolicyPosture != "enforced_block" ||
+		enforcedAnswer.Result.Event.EffectiveOutcome != "block" ||
+		enforcedAnswer.Result.Event.HarnessExitBehavior != "exit_4" ||
+		enforcedAnswer.Result.Event.EvidencePersistence != "not_persisted_watchdog_response" {
+		t.Fatalf("enforced timeout event lies about effective outcome: %+v", enforcedAnswer.Result.Event)
 	}
 
 	post := hookCommandArgs{HookName: "post-tool-use", Live: true, Harness: "claude_code", Enforce: true}

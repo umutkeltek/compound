@@ -493,6 +493,9 @@ func TestSweepCursorResumesAcrossPasses(t *testing.T) {
 // walked, valid or corrupt.
 func TestSweepCursorAdvancesPastCorruptPageTail(t *testing.T) {
 	home := t.TempDir()
+	previousLaneBeliefs := runLaneBeliefs
+	runLaneBeliefs = func(string, Options, time.Time) LaneBeliefsPhaseReport { return LaneBeliefsPhaseReport{} }
+	t.Cleanup(func() { runLaneBeliefs = previousLaneBeliefs })
 	seedCandidate(t, home, "cand_01", mem.Candidate{Entity: "a", Predicate: "value", Object: "x"})
 	seedCandidate(t, home, "cand_02", mem.Candidate{Entity: "b", Predicate: "value", Object: "y"})
 	// cand_90 sorts third and is unreadable: with a budget of 3 the page
@@ -505,8 +508,8 @@ func TestSweepCursorAdvancesPastCorruptPageTail(t *testing.T) {
 	seedCandidate(t, home, "cand_91", mem.Candidate{Entity: "c", Predicate: "value", Object: "z"})
 
 	report, err := Run(home, Options{Apply: true, SweepScanLimit: 3}, testNow)
-	if err != nil {
-		t.Fatalf("pass 1: %v", err)
+	if err == nil || report.Stage != stagePartial {
+		t.Fatalf("pass 1 must terminalize partial while preserving progress: stage=%q err=%v", report.Stage, err)
 	}
 	if report.Sweep.WalkedAll {
 		t.Fatal("pass 1 must stop at the scan cap")
@@ -660,5 +663,117 @@ func TestImportHashWriteFailureFailsTheApplyPass(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "write import hashes") {
 		t.Fatalf("error = %v, want the hash persistence failure named", err)
+	}
+}
+
+func TestPlannedReceiptCarriesExactCandidateIntent(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_basis", mem.Candidate{
+		Entity: "a", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+	})
+	seedCandidate(t, home, "cand_plain", mem.Candidate{Entity: "b", Predicate: "value", Object: "y"})
+
+	report, err := Run(home, Options{Apply: true, PromoteLimit: 1}, testNow)
+	if err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	receipts := readReceipts(t, home)
+	if len(receipts) != 2 || receipts[0].Stage != stagePlanned || receipts[0].Intent == nil {
+		t.Fatalf("planned intent missing: %+v", receipts)
+	}
+	if strings.Join(receipts[0].Intent.CandidateIDs, ",") != "cand_basis,cand_plain" {
+		t.Fatalf("intent candidate window = %v", receipts[0].Intent.CandidateIDs)
+	}
+	if len(receipts[0].Intent.Operations) != 2 {
+		t.Fatalf("intent operations = %+v, want promote + disposition", receipts[0].Intent.Operations)
+	}
+	if report.Intent == nil || report.Intent.Operations[0].Key == "" {
+		t.Fatalf("terminal report lost planned intent: %+v", report.Intent)
+	}
+}
+
+func TestLaneBeliefFailureCannotCommitPass(t *testing.T) {
+	home := t.TempDir()
+	previous := runLaneBeliefs
+	runLaneBeliefs = func(string, Options, time.Time) LaneBeliefsPhaseReport {
+		return LaneBeliefsPhaseReport{Error: "fold: injected failure"}
+	}
+	t.Cleanup(func() { runLaneBeliefs = previous })
+
+	report, err := Run(home, Options{Apply: true}, testNow)
+	if err == nil || report.Stage != stageFailed || !strings.Contains(report.Error, "lane-beliefs phase") {
+		t.Fatalf("lane failure must be failed: stage=%q err=%v report=%+v", report.Stage, err, report)
+	}
+	receipts := readReceipts(t, home)
+	if len(receipts) != 2 || receipts[1].Stage != stageFailed {
+		t.Fatalf("journal = %+v, want planned/failed", receipts)
+	}
+}
+
+func TestTerminalReceiptFailureWritesRecoveryMarker(t *testing.T) {
+	home := t.TempDir()
+	previous := receiptAppender
+	receiptAppender = func(homePath string, report Report) error {
+		if report.Stage != stagePlanned {
+			return os.ErrPermission
+		}
+		return appendReceipt(homePath, report)
+	}
+	t.Cleanup(func() { receiptAppender = previous })
+
+	report, err := Run(home, Options{Apply: true}, testNow)
+	if err == nil || report.Stage != stageRecoveryRequired {
+		t.Fatalf("terminal receipt failure must require recovery: stage=%q err=%v", report.Stage, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(stateDir(home), "recovery-"+report.PassID+".json")); statErr != nil {
+		t.Fatalf("recovery marker missing: %v", statErr)
+	}
+}
+
+func TestSuccessorTerminalizesPlannedOnlyPassBeforeMutation(t *testing.T) {
+	home := t.TempDir()
+	orphan := Report{
+		SchemaVersion: ReportSchemaVersion,
+		PassID:        "pass_orphan",
+		Home:          home,
+		Stage:         stagePlanned,
+		StartedAt:     rfc3339(testNow.Add(-time.Minute)),
+		Intent:        &PassIntent{CandidateIDs: []string{}, Operations: []PassIntentOperation{}},
+	}
+	if err := appendReceipt(home, orphan); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Run(home, Options{Apply: true}, testNow)
+	if err != nil {
+		t.Fatalf("successor: %v", err)
+	}
+	if strings.Join(report.ReconciledPassIDs, ",") != orphan.PassID {
+		t.Fatalf("reconciled passes = %v, want %s", report.ReconciledPassIDs, orphan.PassID)
+	}
+	receipts := readReceipts(t, home)
+	if len(receipts) != 4 || receipts[1].PassID != orphan.PassID || receipts[1].Stage != stageRecoveryRequired {
+		t.Fatalf("orphan was not terminalized before successor: %+v", receipts)
+	}
+}
+
+func TestCorruptCursorFailsBeforePlannedReceipt(t *testing.T) {
+	for _, name := range []string{promoteCursorFileName, cursorFileName} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.MkdirAll(stateDir(home), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(stateDir(home), name), []byte("{not json"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			report, err := Run(home, Options{Apply: true}, testNow)
+			if err == nil || report.Stage != "" || !strings.Contains(err.Error(), "corrupt") {
+				t.Fatalf("corrupt cursor must refuse before journaling: stage=%q err=%v", report.Stage, err)
+			}
+			if _, statErr := os.Stat(filepath.Join(stateDir(home), receiptFileName)); !os.IsNotExist(statErr) {
+				t.Fatalf("corrupt cursor wrote planned receipt: %v", statErr)
+			}
+		})
 	}
 }

@@ -161,12 +161,11 @@ var mintHomes = map[string]MintHome{
 	// ledger it records is the audit of that enforcement, the same posture as act's receipts.
 	"organ:actuator": {Class: MintEnforcement},
 	// promotedriver is the governed auto-promote actuator behind `compound memory
-	// promote-driver` and the autonomy heartbeat. Its teeth ARE the gate:
-	// single-flight flock refuses concurrent passes, PromoteLimit 1 bounds the
-	// mutation blast, ValidBasis refuses promotion without an operator-grade basis
-	// (explicit-confirmation is NOT a basis), and dry-run is the default with
-	// --confirm as the sole mutation door (admission grades it Governed). Receipts
-	// append to state/promote-driver/receipts.jsonl — enforcement, not evidence.
+	// promote-driver` and the autonomy heartbeat. Its teeth are the single-flight
+	// lock, exact planned intent, per-id basis/limit gate, strict state writes, and
+	// terminal committed|partial|failed|recovery_required receipt. Dry-run is the
+	// default; apply requires --confirm plus a current maintenance work identity.
+	// The receipt ledger audits enforcement; it is not separate meaning authority.
 	"organ:promotedriver": {Class: MintEnforcement},
 	// verdictflow is the shared plan->record->render->load->annotate scaffolding the three
 	// panel-verdict review bridges had copy-pasted. It writes review artifacts through reviewartifact

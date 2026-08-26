@@ -31,9 +31,10 @@ func TestMemoryPromoteDriverDryRunDoesNotMutateCompoundHome(t *testing.T) {
 	cmd := exec.Command(compoundTestBinary(t), "memory", "promote-driver", "--dry-run", "--json")
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
-	// A dry-run plan over an empty home is a legitimate outcome either way
-	// (exit 0 with an empty report); we only assert the SIDE EFFECTS.
-	_ = cmd.Run()
+	output, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("dry-run over absent home failed: %v\n%s", runErr, output)
+	}
 
 	for _, name := range []string{"ledger", "inbox", "events", filepath.Join("state", "promote-driver")} {
 		if _, err := os.Stat(filepath.Join(homePath, name)); err == nil {

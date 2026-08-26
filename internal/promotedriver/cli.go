@@ -17,7 +17,7 @@ import (
 // in this organ: the cmd layer stays a thin dispatch, and the cmd/compound LOC
 // budget ratchet (internal/arch.checkCmdCompoundBudget) only lets cmd/compound
 // shrink.
-const Usage = "usage: compound memory promote-driver [--confirm] [--dry-run] [--json] [--promote-limit N] [--scan-limit N] [--walk-scan-limit N] [--registry GLOB[,GLOB]...] [--work W]  (governed auto-promote pass: dry-run by default; --confirm applies; promotion stays per-id and basis-gated; sweep parks/no_promotes the rest; receipts append to state/promote-driver/receipts.jsonl)"
+const Usage = "usage: compound memory promote-driver [--confirm --work W] [--dry-run] [--json] [--promote-limit N] [--scan-limit N] [--walk-scan-limit N] [--registry GLOB[,GLOB]...]  (governed auto-promote pass: dry-run by default; apply requires --confirm plus a real maintenance WorkEnvelope id; promotion stays per-id and basis-gated; receipts append to state/promote-driver/receipts.jsonl)"
 
 // RunCLI runs the `compound memory promote-driver` subcommand over rest (the
 // arguments after the subcommand name) and returns the process exit code: 2 on
@@ -75,6 +75,10 @@ func RunCLI(rest []string) int {
 	}
 	if has("--confirm") && has("--dry-run") {
 		fmt.Fprintf(os.Stderr, "error: --confirm and --dry-run are contradictory; a pass is dry-run by default and --confirm applies it\n%s\n", Usage)
+		return 2
+	}
+	if has("--confirm") && strings.TrimSpace(stringFlagValue(rest, "--work")) == "" {
+		fmt.Fprintf(os.Stderr, "error: --confirm requires --work with the current maintenance WorkEnvelope id; autonomous schedulers must mint/claim that work before applying\n%s\n", Usage)
 		return 2
 	}
 	intVals := map[string]int{}

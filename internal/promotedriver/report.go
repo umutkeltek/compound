@@ -15,17 +15,22 @@ type Report struct {
 	// Locked is true when another pass held the single-flight lock; the
 	// pass did nothing else. Not an error — the doctrine is keep waiting.
 	Locked bool `json:"locked,omitempty"`
-	// Stage journals the pass's intent lifecycle in apply mode: "planned"
-	// is written BEFORE any mutation, then exactly one terminal entry —
-	// "committed" or "failed". A planned receipt without a terminal twin is
-	// the crash signature the next pass (and the operator) reconciles. Plan
-	// passes journal nothing, so their stage stays empty.
+	// Stage is planned, then exactly one terminal state:
+	// committed (all required work succeeded), partial (bounded candidate-local
+	// failures are named), failed (a phase or integrity write failed), or
+	// recovery_required (mutations may have occurred but the terminal receipt
+	// could not be durably appended).
 	Stage string `json:"stage,omitempty"`
-	// Error carries the pass-level failure for stage=failed receipts.
+	// Error carries the terminal failure/partial/recovery explanation.
 	Error       string `json:"error,omitempty"`
 	StartedAt   string `json:"started_at"`
 	FinishedAt  string `json:"finished_at"`
 	ReceiptPath string `json:"receipt_path,omitempty"`
+	// Intent is frozen on the planned receipt before mutation. It binds the
+	// candidate window, proposed per-candidate operations, cursors, and pending
+	// generation so a planned-only pass is reconstructible.
+	Intent            *PassIntent `json:"intent,omitempty"`
+	ReconciledPassIDs []string    `json:"reconciled_pass_ids,omitempty"`
 
 	Promote     PromotePhaseReport     `json:"promote"`
 	Dedupe      DedupePhaseReport      `json:"dedupe"`
@@ -37,6 +42,21 @@ type Report struct {
 	// whole inbox this pass — the honest backlog number. Nil when the pass
 	// stopped early (cursor-bounded) or ran dry.
 	PendingAfter *int `json:"pending_after,omitempty"`
+}
+
+type PassIntent struct {
+	PromoteCursorBefore string                `json:"promote_cursor_before,omitempty"`
+	SweepCursorBefore   string                `json:"sweep_cursor_before,omitempty"`
+	PendingGeneration   string                `json:"pending_generation,omitempty"`
+	CandidateIDs        []string              `json:"candidate_ids"`
+	Operations          []PassIntentOperation `json:"operations"`
+}
+
+type PassIntentOperation struct {
+	Key         string `json:"key"`
+	CandidateID string `json:"candidate_id"`
+	Phase       string `json:"phase"`
+	Operation   string `json:"operation"`
 }
 
 // PromotePhaseReport receipts the basis-gated promotion phase. The walk

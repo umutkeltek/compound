@@ -64,11 +64,30 @@ func NormalizeHarness(name string) string {
 }
 
 func BudgetExpiryAnswer(command BudgetCommand, budget time.Duration, now time.Time) BudgetAnswer {
+	blocked := command.Enforce && command.HookName == "pre-tool-use"
+	status := "fail_open"
+	failOpenReason := envelope.FailOpenBudgetExceeded
+	policyPosture := "fail_open"
+	effectiveOutcome := "allow"
+	exitBehavior := "exit_0"
+	exit := 0
+	if blocked {
+		status = "blocked"
+		failOpenReason = ""
+		policyPosture = "enforced_block"
+		effectiveOutcome = "block"
+		exitBehavior = "exit_4"
+		exit = 4
+	}
 	event := envelope.HookEvent{
-		Harness:        command.Harness,
-		HookName:       EnumName(command.HookName),
-		Status:         "fail_open",
-		FailOpenReason: envelope.FailOpenBudgetExceeded,
+		Harness:             command.Harness,
+		HookName:            EnumName(command.HookName),
+		Status:              status,
+		FailOpenReason:      failOpenReason,
+		PolicyPosture:       policyPosture,
+		EffectiveOutcome:    effectiveOutcome,
+		HarnessExitBehavior: exitBehavior,
+		EvidencePersistence: "not_persisted_watchdog_response",
 	}
 	sum := sha256.Sum256([]byte(fmt.Sprintf("budget:%s:%s:%d", command.Harness, command.HookName, now.UnixNano())))
 	event.Header = envelope.Header{
@@ -77,15 +96,12 @@ func BudgetExpiryAnswer(command BudgetCommand, budget time.Duration, now time.Ti
 		CreatedAt:     now.UTC().Format(time.RFC3339Nano),
 		Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
 	}
-	result := Result{Event: event, Summary: fmt.Sprintf("hook exceeded its %s wall-clock budget; answered fail-open instead of being killed silently", budget)}
-	exit := 0
-	if command.Enforce && command.HookName == "pre-tool-use" {
-		exit = 4
-	}
+	summary := fmt.Sprintf("hook exceeded its %s wall-clock budget; answered %s before the outer harness kill", budget, status)
+	result := Result{Event: event, Summary: summary}
 	return BudgetAnswer{
 		Result:     result,
 		Exit:       exit,
-		StderrLine: fmt.Sprintf("[%s/fail_open] %s (%s) — %s", command.Harness, event.HookName, envelope.FailOpenBudgetExceeded, result.Summary),
+		StderrLine: fmt.Sprintf("[%s/%s] %s (budget_exceeded) — %s", command.Harness, status, event.HookName, summary),
 	}
 }
 

@@ -199,6 +199,38 @@ func TestCompactNodesLastWinsFirstSeenOrder(t *testing.T) {
 	}
 }
 
+func TestCompactNodesRefusesMalformedRowsWithoutRewriting(t *testing.T) {
+	home := t.TempDir()
+	store, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(home, "registries", "capability-nodes.jsonl")
+	original := []byte("{\"id\":\"skill:a\",\"kind\":\"skill\",\"name\":\"a\"}\n{torn\n")
+	if err := os.WriteFile(logPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := store.PreviewCompact()
+	if err == nil || preview.MalformedRows != 1 {
+		t.Fatalf("preview must report malformed row and refuse: report=%+v err=%v", preview, err)
+	}
+	report, err := store.CompactNodes()
+	if err == nil || report.MalformedRows != 1 {
+		t.Fatalf("compact must report malformed row and refuse: report=%+v err=%v", report, err)
+	}
+	if err := store.Add(Node{ID: "skill:a", Kind: "skill", Name: "changed"}); err == nil {
+		t.Fatal("drifted Add must not rewrite around a malformed row")
+	}
+	after, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !reflect.DeepEqual(after, original) {
+		t.Fatalf("refused compact rewrote corrupt evidence:\n got %q\nwant %q", after, original)
+	}
+}
+
 // writeSeedNodesLog drops a hand-crafted raw nodes log into a home's
 // registries dir so tests can pin behaviour against a known-dirty starting
 // state without going through the public Store surface. JSON encoding mirrors

@@ -51,7 +51,7 @@ import (
 )
 
 const (
-	ReportSchemaVersion = "compound.promotedriver.report.v0.1"
+	ReportSchemaVersion = "compound.promotedriver.report.v0.2"
 
 	// DefaultPromoteLimit is the per-pass promotion ceiling: one lane at a
 	// time, literally. Raising it is an explicit operator choice (--promote-limit).
@@ -71,9 +71,11 @@ const (
 	promoteCursorFileName = "promote-cursor.json"
 	hashFileName          = "import-hashes.json"
 
-	stagePlanned   = "planned"
-	stageCommitted = "committed"
-	stageFailed    = "failed"
+	stagePlanned          = "planned"
+	stageCommitted        = "committed"
+	stagePartial          = "partial"
+	stageFailed           = "failed"
+	stageRecoveryRequired = "recovery_required"
 )
 
 // Options configures one driver pass. The zero value is a bounded PLAN pass
@@ -93,26 +95,18 @@ type Options struct {
 	// importer whose stall froze the ledger 2026-08-09.
 	RegistryPaths []string
 
-	WorkID string // governance work id stamped on the pass's verdicts
+	WorkID               string // governance work id stamped on the pass's verdicts
+	passID               string
+	reservedCandidateIDs map[string]bool
 }
 
-// Run executes one driver pass against homePath. It returns the pass
-// report and only hard errors; per-candidate failures live in the report.
+// Run executes one driver pass against homePath. Apply passes return a
+// non-nil error for partial, failed, and recovery_required outcomes so an
+// unattended scheduler cannot mistake a durable non-committed receipt for
+// success.
 //
-// Mode discipline:
-//
-//   - PLAN (!opts.Apply): the pass is a read. It opens the ledger
-//     read-only, never takes or creates the single-flight lock, never
-//     writes cursors, receipts, pending state, or any event — a plan pass
-//     on a fresh home leaves the home byte-identical.
-//
-//   - APPLY (opts.Apply): the pass journals BEFORE it mutates — a
-//     "planned" receipt, then the mutations, then one terminal receipt
-//     ("committed", or "failed" with the error). A crash between journal
-//     entries leaves a planned-without-terminal receipt the next pass and
-//     the operator can reconcile by inspection; a mutation without a
-//     durable driver-level explanation is the failure shape the journal
-//     exists to prevent.
+// PLAN is read-only. APPLY freezes a reconstructible planned intent before
+// mutation, then appends exactly one terminal receipt.
 func Run(homePath string, opts Options, now time.Time) (Report, error) {
 	now = now.UTC()
 	report := Report{
@@ -134,6 +128,7 @@ func Run(homePath string, opts Options, now time.Time) (Report, error) {
 	if strings.TrimSpace(opts.WorkID) == "" {
 		opts.WorkID = "work_promote_driver"
 	}
+	opts.passID = report.PassID
 
 	if !opts.Apply {
 		return runPlan(homePath, opts, now, report)
@@ -154,34 +149,198 @@ func Run(homePath string, opts Options, now time.Time) (Report, error) {
 	if err != nil {
 		return report, fmt.Errorf("open memory store: %w", err)
 	}
+	reconciled, err := reconcilePlannedPasses(homePath, now)
+	if err != nil {
+		return report, fmt.Errorf("reconcile incomplete passes: %w", err)
+	}
+	report.ReconciledPassIDs = reconciled
+	intent, err := buildPassIntent(store, opts)
+	if err != nil {
+		return report, fmt.Errorf("build pass intent: %w", err)
+	}
+	report.Intent = &intent
+	opts.reservedCandidateIDs = map[string]bool{}
+	for _, operation := range intent.Operations {
+		if operation.Phase != "sweep" {
+			opts.reservedCandidateIDs[operation.CandidateID] = true
+		}
+	}
 
-	// Journal the intent BEFORE any mutation: the pass is now accountable
-	// even if it crashes mid-flight.
 	report.Stage = stagePlanned
-	if err := appendReceipt(homePath, report); err != nil {
+	if err := receiptAppender(homePath, report); err != nil {
 		return report, fmt.Errorf("journal planned pass: %w", err)
 	}
 
 	runErr := runPass(homePath, store, opts, now, &report)
 	report.FinishedAt = rfc3339(time.Now().UTC())
-	if runErr != nil {
-		report.Stage = stageFailed
-		report.Error = runErr.Error()
-		if err := appendReceipt(homePath, report); err != nil {
-			return report, fmt.Errorf("journal failed pass: %w (pass: %w)", err, runErr)
-		}
-		return report, runErr
-	}
 	report.Stage = stageCommitted
-	if err := appendReceipt(homePath, report); err != nil {
-		return report, fmt.Errorf("append receipt: %w", err)
+	if runErr != nil {
+		var partial partialPassError
+		if errors.As(runErr, &partial) {
+			report.Stage = stagePartial
+		} else {
+			report.Stage = stageFailed
+		}
+		report.Error = runErr.Error()
+	}
+	if err := receiptAppender(homePath, report); err != nil {
+		report.Stage = stageRecoveryRequired
+		report.Error = fmt.Sprintf("terminal receipt unavailable after stage %s: %v", terminalStageForError(runErr), err)
+		markerErr := writeStateFile(homePath, "recovery-"+report.PassID+".json", report)
+		if markerErr != nil {
+			return report, fmt.Errorf("terminal receipt and recovery marker unavailable: receipt=%v marker=%v", err, markerErr)
+		}
+		return report, fmt.Errorf("terminal receipt unavailable; recovery marker persisted: %w", err)
 	}
 	report.ReceiptPath = filepath.Join(homePath, stateDirName, receiptFileName)
+	if runErr != nil {
+		return report, runErr
+	}
 	return report, nil
 }
 
-// runPass executes the mutating phases in doctrine order against an open
-// store. Errors here fail the pass and are journaled as stage=failed.
+func buildPassIntent(store *mem.Store, opts Options) (PassIntent, error) {
+	homePath := store.HomePath()
+	promoteCursor, err := readPromoteCursor(homePath)
+	if err != nil {
+		return PassIntent{}, err
+	}
+	sweepCursor, err := readSweepCursor(homePath)
+	if err != nil {
+		return PassIntent{}, err
+	}
+	intent := PassIntent{
+		PromoteCursorBefore: promoteCursor.AfterID,
+		SweepCursorBefore:   sweepCursor.AfterID,
+	}
+	if pending, pendingErr := store.ReadPendingState(); pendingErr == nil {
+		intent.PendingGeneration = pending.Generation
+	}
+	seenCandidate := map[string]bool{}
+	addCandidate := func(id string) {
+		if id != "" && !seenCandidate[id] {
+			seenCandidate[id] = true
+			intent.CandidateIDs = append(intent.CandidateIDs, id)
+		}
+	}
+	candidateOperation := map[string]bool{}
+	addOperation := func(candidateID, phase, operation string) {
+		addCandidate(candidateID)
+		if candidateOperation[candidateID] {
+			return
+		}
+		candidateOperation[candidateID] = true
+		key := opts.passID + ":" + candidateID + ":" + operation
+		intent.Operations = append(intent.Operations, PassIntentOperation{
+			Key: key, CandidateID: candidateID, Phase: phase, Operation: operation,
+		})
+	}
+
+	entries, corrupt, _, reachedEnd, err := store.ListCandidatesLite(promoteCursor.AfterID, opts.WalkScanLimit)
+	if err != nil {
+		return PassIntent{}, err
+	}
+	for _, id := range corrupt {
+		addCandidate(id)
+	}
+	groups := map[string][]mem.CandidateLite{}
+	promotions := 0
+	for _, entry := range entries {
+		addCandidate(entry.ID)
+		if entry.State != "proposed" {
+			continue
+		}
+		basis := strings.TrimSpace(entry.PromotionBasis)
+		if candidates.ValidBasis(basis) && basis != candidates.BasisExplicitConfirmation {
+			if promotions < opts.PromoteLimit {
+				addOperation(entry.ID, "promote", candidates.Promote)
+				promotions++
+			}
+			continue
+		}
+		groups[dedupeKey(entry)] = append(groups[dedupeKey(entry)], entry)
+	}
+	if promoteCursor.AfterID == "" && reachedEnd {
+		for _, group := range groups {
+			if len(group) < 2 {
+				continue
+			}
+			sort.Slice(group, func(i, j int) bool {
+				if group[i].CreatedAt != group[j].CreatedAt {
+					return group[i].CreatedAt < group[j].CreatedAt
+				}
+				return group[i].ID < group[j].ID
+			})
+			for _, duplicate := range group[1:] {
+				addOperation(duplicate.ID, "dedupe", candidates.NoPromote)
+			}
+		}
+	}
+	sweepPlan := store.AdjudicatePending(mem.AdjudicatePendingOptions{
+		WorkID: opts.WorkID, DryRun: true, ScanLimit: opts.SweepScanLimit, AfterID: sweepCursor.AfterID,
+		ReservedIDs: candidateOperation,
+	}, time.Time{})
+	for _, id := range sweepPlan.CorruptIDs {
+		addCandidate(id)
+	}
+	for _, action := range sweepPlan.Actions {
+		addOperation(action.CandidateID, "sweep", action.Verdict)
+	}
+	sort.Strings(intent.CandidateIDs)
+	sort.Slice(intent.Operations, func(i, j int) bool { return intent.Operations[i].Key < intent.Operations[j].Key })
+	return intent, nil
+}
+
+func reconcilePlannedPasses(homePath string, now time.Time) ([]string, error) {
+	path := filepath.Join(stateDir(homePath), receiptFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	planned := map[string]Report{}
+	terminal := map[string]bool{}
+	for lineNo, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var receipt Report
+		if err := json.Unmarshal([]byte(line), &receipt); err != nil {
+			return nil, fmt.Errorf("receipt line %d is corrupt: %w", lineNo+1, err)
+		}
+		if receipt.Stage == stagePlanned {
+			planned[receipt.PassID] = receipt
+			continue
+		}
+		if receipt.Stage != "" {
+			terminal[receipt.PassID] = true
+		}
+	}
+	var passIDs []string
+	for passID := range planned {
+		if !terminal[passID] {
+			passIDs = append(passIDs, passID)
+		}
+	}
+	sort.Strings(passIDs)
+	for _, passID := range passIDs {
+		recovery := planned[passID]
+		recovery.Stage = stageRecoveryRequired
+		recovery.FinishedAt = rfc3339(now)
+		recovery.Error = "planned pass had no terminal receipt; successor re-runs the bounded idempotent phases from the durable intent and current cursors"
+		if err := receiptAppender(homePath, recovery); err != nil {
+			return nil, fmt.Errorf("terminalize planned-only pass %s: %w", passID, err)
+		}
+	}
+	return passIDs, nil
+}
+
+// runPass executes every independent bounded phase. Phase/integrity failures
+// fail immediately; candidate-local failures are collected and returned as a
+// typed partial outcome only after the remaining phases have had a chance to
+// make useful progress.
 func runPass(homePath string, store *mem.Store, opts Options, now time.Time, report *Report) error {
 	promote, dedupe, err := runBasisAndDedupe(store, opts, now)
 	if err != nil {
@@ -194,6 +353,9 @@ func runPass(homePath string, store *mem.Store, opts Options, now time.Time, rep
 		return fmt.Errorf("imports phase: %w", err)
 	}
 	report.LaneBeliefs = runLaneBeliefs(homePath, opts, now)
+	if report.LaneBeliefs.Error != "" {
+		return fmt.Errorf("lane-beliefs phase: %s", report.LaneBeliefs.Error)
+	}
 	sweep, err := runSweep(store, opts, now)
 	if err != nil {
 		report.Sweep = sweep
@@ -201,7 +363,46 @@ func runPass(homePath string, store *mem.Store, opts Options, now time.Time, rep
 	}
 	report.Sweep = sweep
 	report.PendingAfter = sweep.ReconciledPending
+	if failures := partialFailures(*report); len(failures) > 0 {
+		return partialPassError{failures: failures}
+	}
 	return nil
+}
+
+type partialPassError struct{ failures []string }
+
+func (e partialPassError) Error() string {
+	return "partial pass: " + strings.Join(e.failures, "; ")
+}
+
+func partialFailures(report Report) []string {
+	var failures []string
+	for _, value := range report.Promote.Errors {
+		failures = append(failures, "promote: "+value)
+	}
+	for _, value := range report.Dedupe.Errors {
+		failures = append(failures, "dedupe: "+value)
+	}
+	for _, source := range report.Imports.Sources {
+		if source.Error != "" {
+			failures = append(failures, "import "+source.Path+": "+source.Error)
+		}
+	}
+	for _, value := range report.Sweep.Errors {
+		failures = append(failures, "sweep: "+value)
+	}
+	return failures
+}
+
+func terminalStageForError(err error) string {
+	if err == nil {
+		return stageCommitted
+	}
+	var partial partialPassError
+	if errors.As(err, &partial) {
+		return stagePartial
+	}
+	return stageFailed
 }
 
 // runPlan is the read-only pass. It opens the ledger read-only and touches
@@ -215,6 +416,11 @@ func runPlan(homePath string, opts Options, now time.Time, report Report) (Repor
 	if err != nil {
 		return report, fmt.Errorf("open memory store for scan: %w", err)
 	}
+	intent, err := buildPassIntent(store, opts)
+	if err != nil {
+		return report, fmt.Errorf("build pass intent: %w", err)
+	}
+	report.Intent = &intent
 	report.Promote, report.Dedupe, err = runBasisAndDedupe(store, opts, now)
 	if err != nil {
 		return report, fmt.Errorf("basis/dedupe phase: %w", err)
@@ -225,6 +431,9 @@ func runPlan(homePath string, opts Options, now time.Time, report Report) (Repor
 		return report, fmt.Errorf("imports phase: %w", err)
 	}
 	report.LaneBeliefs = runLaneBeliefs(homePath, Options{}, now)
+	if report.LaneBeliefs.Error != "" {
+		return report, fmt.Errorf("lane-beliefs phase: %s", report.LaneBeliefs.Error)
+	}
 	sweep, err := runSweep(store, opts, now)
 	if err != nil {
 		report.Sweep = sweep
@@ -232,6 +441,9 @@ func runPlan(homePath string, opts Options, now time.Time, report Report) (Repor
 	}
 	report.Sweep = sweep
 	report.FinishedAt = rfc3339(time.Now().UTC())
+	if failures := partialFailures(report); len(failures) > 0 {
+		return report, partialPassError{failures: failures}
+	}
 	return report, nil
 }
 
@@ -259,7 +471,10 @@ func runBasisAndDedupe(store *mem.Store, opts Options, now time.Time) (PromotePh
 	dedupe := DedupePhaseReport{}
 
 	homePath := store.HomePath()
-	cursor := readPromoteCursor(homePath)
+	cursor, err := readPromoteCursor(homePath)
+	if err != nil {
+		return promote, dedupe, err
+	}
 	promote.ResumedFrom = cursor.AfterID
 
 	entries, corrupt, lastWalked, reachedEnd, err := store.ListCandidatesLite(cursor.AfterID, opts.WalkScanLimit)
@@ -271,7 +486,7 @@ func runBasisAndDedupe(store *mem.Store, opts Options, now time.Time) (PromotePh
 	walkedAll := cursor.AfterID == "" && reachedEnd
 	if reachedEnd && opts.Apply {
 		if err := clearPromoteCursor(homePath); err != nil {
-			promote.Errors = append(promote.Errors, "clear promote cursor: "+err.Error())
+			return promote, dedupe, fmt.Errorf("clear promote cursor: %w", err)
 		}
 	}
 
@@ -479,7 +694,9 @@ func runImports(homePath string, store *mem.Store, opts Options, now time.Time) 
 // organ with its own gates; the driver only sequences them. Apply passes
 // run the real pipeline; the plan pass sequences the same organs in
 // dry-run so a plan never writes through them.
-func runLaneBeliefs(homePath string, opts Options, now time.Time) LaneBeliefsPhaseReport {
+var runLaneBeliefs = runLaneBeliefsOwned
+
+func runLaneBeliefsOwned(homePath string, opts Options, now time.Time) LaneBeliefsPhaseReport {
 	dryRun := !opts.Apply
 	report := LaneBeliefsPhaseReport{}
 	fold, err := lanebeliefs.Fold(homePath, lanebeliefs.FoldOptions{DryRun: dryRun, Now: now})
@@ -513,16 +730,21 @@ func runLaneBeliefs(homePath string, opts Options, now time.Time) LaneBeliefsPha
 func runSweep(store *mem.Store, opts Options, now time.Time) (SweepPhaseReport, error) {
 	report := SweepPhaseReport{ScanLimit: opts.SweepScanLimit}
 	homePath := store.HomePath()
-	cursor := readSweepCursor(homePath)
+	cursor, err := readSweepCursor(homePath)
+	if err != nil {
+		return report, err
+	}
 	pendingReport := store.AdjudicatePending(mem.AdjudicatePendingOptions{
-		WorkID:    opts.WorkID,
-		DryRun:    !opts.Apply,
-		ScanLimit: opts.SweepScanLimit,
-		AfterID:   cursor.AfterID,
+		WorkID:      opts.WorkID,
+		DryRun:      !opts.Apply,
+		ScanLimit:   opts.SweepScanLimit,
+		AfterID:     cursor.AfterID,
+		ReservedIDs: opts.reservedCandidateIDs,
 	}, now)
 	report.Scanned = pendingReport.Scanned
 	report.Adjudicated = pendingReport.Adjudicated
 	report.Skipped = pendingReport.Skipped
+
 	report.BasisDeferred = pendingReport.BasisDeferred
 	report.VerdictCounts = pendingReport.VerdictCounts
 	report.CorruptIDs = pendingReport.CorruptIDs
@@ -533,14 +755,13 @@ func runSweep(store *mem.Store, opts Options, now time.Time) (SweepPhaseReport, 
 		report.WalkedAll = true
 		if opts.Apply {
 			if err := clearSweepCursor(homePath); err != nil {
-				report.Errors = append(report.Errors, "clear sweep cursor: "+err.Error())
+				return report, fmt.Errorf("clear sweep cursor: %w", err)
 			}
 			st, err := store.ReconcilePendingState("promote-driver sweep", now)
 			if err != nil {
-				report.Errors = append(report.Errors, "reconcile pending state: "+err.Error())
-			} else {
-				report.ReconciledPending = &st.Pending
+				return report, fmt.Errorf("reconcile pending state: %w", err)
 			}
+			report.ReconciledPending = &st.Pending
 		}
 		return report, nil
 	}
@@ -599,16 +820,20 @@ type promoteCursor struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
-func readPromoteCursor(homePath string) promoteCursor {
+func readPromoteCursor(homePath string) (promoteCursor, error) {
+	path := filepath.Join(stateDir(homePath), promoteCursorFileName)
 	var c promoteCursor
-	data, err := os.ReadFile(filepath.Join(stateDir(homePath), promoteCursorFileName))
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return promoteCursor{}
+		if os.IsNotExist(err) {
+			return c, nil
+		}
+		return c, err
 	}
 	if err := json.Unmarshal(data, &c); err != nil {
-		return promoteCursor{}
+		return promoteCursor{}, fmt.Errorf("promote cursor %s is corrupt: %w", path, err)
 	}
-	return c
+	return c, nil
 }
 
 func writePromoteCursor(homePath string, c promoteCursor) error {
@@ -624,16 +849,20 @@ func clearPromoteCursor(homePath string) error {
 
 func stateDir(homePath string) string { return filepath.Join(homePath, stateDirName) }
 
-func readSweepCursor(homePath string) sweepCursor {
+func readSweepCursor(homePath string) (sweepCursor, error) {
+	path := filepath.Join(stateDir(homePath), cursorFileName)
 	var c sweepCursor
-	data, err := os.ReadFile(filepath.Join(stateDir(homePath), cursorFileName))
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return sweepCursor{}
+		if os.IsNotExist(err) {
+			return c, nil
+		}
+		return c, err
 	}
 	if err := json.Unmarshal(data, &c); err != nil {
-		return sweepCursor{}
+		return sweepCursor{}, fmt.Errorf("sweep cursor %s is corrupt: %w", path, err)
 	}
-	return c
+	return c, nil
 }
 
 // promoteCursorWriter is a test seam for deterministic promote-cursor
@@ -718,6 +947,8 @@ func writeStateFile(homePath, name string, v any) error {
 	}
 	return os.Rename(tmpName, filepath.Join(dir, name))
 }
+
+var receiptAppender = appendReceipt
 
 // appendReceipt adds the pass report to the append-only receipt log.
 // Receipts are never rewritten or deleted: the log is the audit trail that

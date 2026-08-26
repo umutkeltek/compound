@@ -143,7 +143,7 @@ func ValidateWorktreeRetirementPlan(plan WorktreeRetirementPlan) error {
 		return fmt.Errorf("worktree retirement plan has no retirement target")
 	}
 	if plan.Eligible {
-		if plan.Status != "review_required" || len(plan.BlockReasons) != 0 || (plan.CandidateRelation != WorktreeCandidateContained && plan.CandidateRelation != WorktreeCandidatePatchEquivalent) {
+		if plan.Status != "review_required" || len(plan.BlockReasons) != 0 || (plan.CandidateRelation != WorktreeCandidateContained && plan.CandidateRelation != WorktreeCandidatePatchEquivalent && plan.CandidateRelation != WorktreeCandidateArchivedUnique) {
 			return fmt.Errorf("eligible worktree retirement plan has inconsistent eligibility")
 		}
 		if !validRetirementObjectID(plan.CandidateTip) {

@@ -182,3 +182,50 @@ skills:
 		t.Fatalf("file dispatch returned %+v, want yaml-skill", m2.Skills)
 	}
 }
+
+func TestSkillDirectoryRevisionTracksContentsAndSymlinkTargets(t *testing.T) {
+	root := t.TempDir()
+	writeSkillSource(t, root, "alpha", `---
+name: alpha
+description: "first"
+---
+# alpha
+`)
+	first, err := LoadSkillDirManifest(root, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillPath := filepath.Join(root, "alpha", "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte("---\nname: alpha\ndescription: \"changed\"\n---\n# alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := LoadSkillDirManifest(root, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SourceRef.Revision == second.SourceRef.Revision {
+		t.Fatalf("content change left revision at %q", first.SourceRef.Revision)
+	}
+
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(filepath.Join(root, "alpha"), link); err != nil {
+		t.Fatal(err)
+	}
+	withLink, err := LoadSkillDirManifest(root, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "missing"), link); err != nil {
+		t.Fatal(err)
+	}
+	retargeted, err := LoadSkillDirManifest(root, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withLink.SourceRef.Revision == retargeted.SourceRef.Revision {
+		t.Fatal("symlink target change did not move source revision")
+	}
+}

@@ -609,8 +609,9 @@ type AdjudicatePendingReport struct {
 	ChangedIDs []string `json:"changed_ids,omitempty"`
 	// CorruptIDs names inbox files that could not be decoded. A walker that
 	// silently skipped unreadable JSON made the scan count a fiction.
-	CorruptIDs []string                 `json:"corrupt_ids,omitempty"`
-	Errors     []AdjudicatePendingError `json:"errors,omitempty"`
+	CorruptIDs []string                  `json:"corrupt_ids,omitempty"`
+	Errors     []AdjudicatePendingError  `json:"errors,omitempty"`
+	Actions    []AdjudicatePendingAction `json:"actions,omitempty"`
 	// BasisDeferred counts proposed candidates the disposition pass LEFT
 	// proposed because they carry a promotable basis: disposition must not
 	// pre-empt the per-id promotion gate (design decision 3's corollary —
@@ -625,6 +626,14 @@ type AdjudicatePendingReport struct {
 type AdjudicatePendingError struct {
 	CandidateID string `json:"candidate_id"`
 	Err         string `json:"error"`
+}
+
+// AdjudicatePendingAction is the exact per-candidate operation a dry-run
+// planned or an apply pass attempted. It lets higher-level drivers freeze a
+// reconstructible intent before mutation instead of journaling only counts.
+type AdjudicatePendingAction struct {
+	CandidateID string `json:"candidate_id"`
+	Verdict     string `json:"verdict"`
 }
 
 // AdjudicatePending walks the inbox in stable id order and applies a verdict
@@ -682,6 +691,10 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 			r.Skipped++
 			continue
 		}
+		if opts.ReservedIDs[c.ID] {
+			r.Skipped++
+			continue
+		}
 		// Basis deferral: in disposition mode (no explicit --verdict), a
 		// candidate carrying a promotable basis stays proposed so the per-id
 		// promotion door — the operator or the governed promote-driver — can
@@ -706,6 +719,7 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 			})
 			continue
 		}
+		r.Actions = append(r.Actions, AdjudicatePendingAction{CandidateID: c.ID, Verdict: verdict})
 		if opts.DryRun {
 			r.VerdictCounts[verdict]++
 			r.Adjudicated++
@@ -786,6 +800,10 @@ type AdjudicatePendingOptions struct {
 	// drain over a saturated inbox costs O(total) across all passes, not
 	// O(total) per pass.
 	AfterID string
+	// ReservedIDs excludes candidates already owned by an earlier phase in
+	// the same planned driver pass. It prevents a failed promote/dedupe
+	// operation from silently falling through to a different sweep verdict.
+	ReservedIDs map[string]bool
 }
 
 // dispositionVerdict returns the verdict a candidate with no explicit
@@ -1913,9 +1931,8 @@ func (s *Store) DoctorAt(eng Engine, now time.Time) Report {
 	// new candidates arrived after reconciliation), so it reads as "stale /
 	// unknown", never as a confident number. Never reconciled means the hop
 	// cannot prove the backlog small, so it warns instead of guessing.
-	cands, _ := os.ReadDir(s.candDir())
-	fileCount := len(cands)
-	newestCandidateAt := newestCandidateModTime(s)
+	candidateNames, generation, newestCandidateAt, _ := s.candidateInboxMetadata()
+	fileCount := len(candidateNames)
 	captureExtras := hopExtras{}
 	if !newestCandidateAt.IsZero() {
 		captureExtras.newestCandidateAt = rfc3339(newestCandidateAt)
@@ -1927,7 +1944,7 @@ func (s *Store) DoctorAt(eng Engine, now time.Time) Report {
 	// reconciled, stale, or generation-mismatched).
 	pendingPressure := -1
 	if pendingState, err := s.ReadPendingState(); err == nil {
-		if pendingStateFresh(pendingState, fileCount, now) {
+		if pendingStateFresh(pendingState, fileCount, generation, now) {
 			pendingPressure = pendingState.Pending
 			captureExtras.inboxBacklog = pendingState.Pending
 			captureDetail = fmt.Sprintf("%d pending / %d candidate file(s) (reconciled %s)",
@@ -2566,30 +2583,6 @@ type hopExtras struct {
 	newestClaimAt     string
 	newestCandidateAt string
 	inboxBacklog      int
-}
-
-// newestCandidateModTime walks the candidate inbox and returns the most recent
-// mtime. Zero when the inbox is unreadable or empty. Pure stat walk; does not
-// decode payloads (the inbox can hold >100 k files).
-func newestCandidateModTime(s *Store) time.Time {
-	entries, err := os.ReadDir(s.candDir())
-	if err != nil {
-		return time.Time{}
-	}
-	var newest time.Time
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		fi, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if fi.ModTime().After(newest) {
-			newest = fi.ModTime()
-		}
-	}
-	return newest
 }
 
 // newestClaimCreatedAt returns the most recent CreatedAt across the loaded
