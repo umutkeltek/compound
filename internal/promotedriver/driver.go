@@ -748,6 +748,10 @@ func runSweep(store *mem.Store, opts Options, now time.Time) (SweepPhaseReport, 
 	report.BasisDeferred = pendingReport.BasisDeferred
 	report.VerdictCounts = pendingReport.VerdictCounts
 	report.CorruptIDs = pendingReport.CorruptIDs
+	report.ChangedIDs = append([]string(nil), pendingReport.ChangedIDs...)
+	for _, action := range pendingReport.Actions {
+		report.Actions = append(report.Actions, SweepAction{CandidateID: action.CandidateID, Verdict: action.Verdict})
+	}
 	for _, e := range pendingReport.Errors {
 		report.Errors = append(report.Errors, fmt.Sprintf("%s: %s", e.CandidateID, e.Err))
 	}

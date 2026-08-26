@@ -143,6 +143,8 @@ type SweepPhaseReport struct {
 	Adjudicated   int            `json:"adjudicated"`
 	Skipped       int            `json:"skipped"`
 	VerdictCounts map[string]int `json:"verdict_counts,omitempty"`
+	Actions       []SweepAction  `json:"actions,omitempty"`
+	ChangedIDs    []string       `json:"changed_ids,omitempty"`
 	// BasisDeferred counts candidates the sweep left proposed because they
 	// carry a promotable basis — reserved for the promotion walk, never
 	// foreclosed by disposition.
@@ -154,4 +156,9 @@ type SweepPhaseReport struct {
 	ReconciledPending *int     `json:"reconciled_pending,omitempty"`
 	CorruptIDs        []string `json:"corrupt_ids,omitempty"`
 	Errors            []string `json:"errors,omitempty"`
+}
+
+type SweepAction struct {
+	CandidateID string `json:"candidate_id"`
+	Verdict     string `json:"verdict"`
 }

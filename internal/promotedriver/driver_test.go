@@ -453,6 +453,9 @@ func TestSweepCursorResumesAcrossPasses(t *testing.T) {
 	if first.Sweep.Scanned != 2 || first.Sweep.NextCursor == "" {
 		t.Fatalf("pass 1 scanned=%d cursor=%q, want 2 and a resume point", first.Sweep.Scanned, first.Sweep.NextCursor)
 	}
+	if len(first.Sweep.ChangedIDs) != 2 || len(first.Sweep.Actions) != 2 {
+		t.Fatalf("sweep operation receipt = changed %v actions %+v, want two exact operations", first.Sweep.ChangedIDs, first.Sweep.Actions)
+	}
 	if first.Sweep.ReconciledPending != nil {
 		t.Fatal("partial walk must not reconcile")
 	}
