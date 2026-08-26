@@ -206,10 +206,17 @@ func TestClaudeReceiptIntentionCompilesOnlyWhenSessionEndIsAttested(t *testing.T
 	}
 }
 
-func TestDefaultClaudePosturesRecordSessionEndAndCodexDoesNot(t *testing.T) {
+func TestDefaultClaudePosturesRecordSessionEndAndCodexAlsoBindsSessionEnd(t *testing.T) {
+	// Codex 0.149.x exposes a native SessionEnd event with transcript_path (binary evidence in
+	// the work item's premise verification). The previous "codex does NOT bind SessionEnd"
+	// invariant is stale; the new rule_delta (codex.SessionEndReceipt=true, see harness.go:458
+	// and adapter_codex.go IntentionRecordReceipt) puts codex on the same receipt path as
+	// Claude, routed through the generic session-end verb (NOT session-end-adapter, which is
+	// Claude-only). Hermes is intentionally absent: its SessionEnd lives behind a plugin the
+	// operator must install, not a native event the binary always fires.
 	t.Parallel()
 
-	for _, harnessName := range []string{"claude-code", "claude-zai", "claude-minimax", "claude-qwen"} {
+	for _, harnessName := range []string{"claude-code", "claude-zai", "claude-minimax", "claude-qwen", "codex"} {
 		harnessName := harnessName
 		t.Run(harnessName, func(t *testing.T) {
 			t.Parallel()
@@ -225,25 +232,64 @@ func TestDefaultClaudePosturesRecordSessionEndAndCodexDoesNot(t *testing.T) {
 			assertCompiledIntention(t, compiled, HarnessIntention("record_receipt"), DispositionNative, []string{"SessionEnd"})
 		})
 	}
+}
 
-	compiled, err := CompileDefaultPosture(DefaultPostureRequest{
-		Harness:         "codex",
-		Registry:        harness.DefaultRegistry(),
-		HandlerRef:      "compound",
-		HandlerRevision: "sha256:handler-fixture",
-	})
-	if err != nil {
-		t.Fatal(err)
+// TestCodexAdapterCompilesRecordReceiptToSessionEnd (F1) — the headlined codex falsifier.
+// Before the rule_delta, codex had no case for IntentionRecordReceipt and returned
+// unsupportedIntention. After it, the adapter maps the intention to SessionEnd (Native,
+// "receipt" enforcement), producing one nativeBinding{event: "SessionEnd"}. The test also
+// proves the attestation gate: turning session_end_receipt off drops the intention back to
+// unsupported so the adapter never silently binds a receipt it can't deliver.
+func TestCodexAdapterCompilesRecordReceiptToSessionEnd(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		attest  bool
+		want    Disposition
+		wantEvt []string
+	}{
+		{name: "attested session_end_receipt binds SessionEnd", attest: true, want: DispositionNative, wantEvt: []string{"SessionEnd"}},
+		{name: "unattested session_end_receipt is unsupported", attest: false, want: DispositionUnsupported, wantEvt: nil},
 	}
-	for _, intention := range compiled.Intentions {
-		if intention.Intention == HarnessIntention("record_receipt") {
-			t.Fatalf("Codex default posture installed a Claude SessionEnd receipt intention: %+v", intention)
-		}
-	}
-	for _, binding := range compiled.HookPlan.Bindings {
-		if binding.Event == "SessionEnd" {
-			t.Fatalf("Codex default posture installed SessionEnd: %+v", binding)
-		}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			att := HarnessAttestation{
+				Harness:          "codex",
+				Family:           "codex",
+				Surface:          "hooks.json",
+				Version:          "fixture",
+				FeatureState:     "trusted",
+				ConfigScope:      "user",
+				Revision:         "sha256:codex-fixture",
+				FallbackRevision: "none",
+				Features: map[string]bool{
+					"session_start_context": true,
+					"user_prompt_context":   true,
+					"pre_tool_use_block":    true,
+					"post_tool_use_event":   true,
+					"session_end_receipt":   c.attest,
+				},
+			}
+			adapter := codexSemanticAdapter{}
+			compiled, bindings := adapter.Compile(IntentionRecordReceipt, att)
+			if compiled.Disposition != c.want {
+				t.Fatalf("Compile(RecordReceipt) disposition = %q, want %q", compiled.Disposition, c.want)
+			}
+			if !slices.Equal(compiled.NativeEvents, c.wantEvt) {
+				t.Fatalf("NativeEvents = %v, want %v", compiled.NativeEvents, c.wantEvt)
+			}
+			if c.want == DispositionNative {
+				if len(bindings) != 1 || bindings[0].event != "SessionEnd" {
+					t.Fatalf("bindings = %+v, want exactly one SessionEnd", bindings)
+				}
+				if compiled.EnforcementStrength != "receipt" {
+					t.Fatalf("EnforcementStrength = %q, want receipt", compiled.EnforcementStrength)
+				}
+			}
+		})
 	}
 }
 

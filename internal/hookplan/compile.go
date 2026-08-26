@@ -269,7 +269,15 @@ func defaultPostureIntentions(registryName string) []HarnessIntention {
 	} else {
 		intentions = append(intentions, IntentionGuardMutation, IntentionObserveOutcome)
 	}
-	if strings.HasPrefix(registryName, "claude_") {
+	// Codex 0.149.x exposes a native SessionEnd event with transcript_path; its receipt
+	// capability is now true (rule_delta, see harness.go:458). The Claude-* lanes still own
+	// the bounded adapter seam (session-end-adapter); codex routes through the generic
+	// session-end verb instead, so both are installed under the same IntentionRecordReceipt
+	// but compiled to different runtimeHarnessName-verbed commands. Hermes is intentionally
+	// absent: its SessionEnd lives behind a plugin the operator must install, not a native
+	// event the binary always fires, so the registry truth (harness.go:475) is unchanged and
+	// its harness tests stay green.
+	if registryName == "codex" || strings.HasPrefix(registryName, "claude_") {
 		intentions = append(intentions, IntentionRecordReceipt)
 	}
 	return intentions

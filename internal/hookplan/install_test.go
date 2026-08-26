@@ -104,11 +104,12 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 	}
 	for i, entry := range publicReport.Entries {
 		harnessName := rep.Entries[i].Harness
-		// Codex is one short because it has no SessionEnd receipt hook. claude-code is
-		// one short for the opposite reason: it keeps the receipt and drops per-turn
-		// UserPromptSubmit injection, taking its orientation at SessionStart only.
+		// claude-code is one short because it drops per-turn UserPromptSubmit injection,
+		// taking its orientation at SessionStart only. codex (post rule_delta, see
+		// adapter_codex.go IntentionRecordReceipt) now binds SessionEnd too, so it matches
+		// the full 5-binding shape like the isolated Claude lanes.
 		wantBindings := 5
-		if harnessName == "codex" || harnessName == "claude-code" {
+		if harnessName == "claude-code" {
 			wantBindings = 4
 		}
 		if len(entry.Bindings) != wantBindings {
@@ -228,10 +229,45 @@ func TestClaudeProfilesInstallOneBoundedSessionEndAndCodexDoesNot(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// codex now binds SessionEnd too (rule_delta, see adapter_codex.go IntentionRecordReceipt):
+	// it routes through the generic `compound hook session-end --live --harness codex` verb
+	// (NOT session-end-adapter, which is the Claude-family-only bounded adapter seam). The
+	// command verb is the wire-level honesty signal: codex never claimed the bounded adapter.
+	var sessionEnd []HookInstallBinding
 	for _, binding := range report.Entries[0].Bindings {
 		if binding.Event == "SessionEnd" {
-			t.Fatalf("Codex install unexpectedly contains SessionEnd: %+v", binding)
+			sessionEnd = append(sessionEnd, binding)
 		}
+	}
+	if len(sessionEnd) != 1 {
+		t.Fatalf("Codex SessionEnd bindings = %+v, want exactly one", sessionEnd)
+	}
+	for _, want := range []string{" hook session-end --live", " --harness codex"} {
+		if !strings.Contains(sessionEnd[0].Command, want) {
+			t.Fatalf("Codex SessionEnd command = %q, missing %q", sessionEnd[0].Command, want)
+		}
+	}
+	if strings.Contains(sessionEnd[0].Command, "session-end-adapter") {
+		t.Fatalf("Codex SessionEnd must NOT use the Claude-only session-end-adapter verb: %q", sessionEnd[0].Command)
+	}
+	// The rendered hooks.json must carry the SessionEnd key (F2 falsifier).
+	cfg := readJSON(t, filepath.Join(t.TempDir(), ".codex", "hooks.json"))
+	if cfg == nil {
+		// fresh config under t.TempDir() not where InstallHooks wrote; re-read the install dir.
+	}
+	// Re-install into a fresh dir we control so the JSON check is deterministic.
+	fresh := t.TempDir()
+	freshReport, err := InstallHooks(fresh, "/opt/compound", "global", []string{"codex"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freshReport.Entries[0].ConfigPath != filepath.Join(fresh, ".codex", "hooks.json") {
+		t.Fatalf("Codex config path = %q, want %q", freshReport.Entries[0].ConfigPath, filepath.Join(fresh, ".codex", "hooks.json"))
+	}
+	cfg = readJSON(t, freshReport.Entries[0].ConfigPath)
+	hooks, _ := cfg["hooks"].(map[string]any)
+	if _, ok := hooks["SessionEnd"]; !ok {
+		t.Fatalf("Codex hooks.json missing SessionEnd key after install: %+v", hooks)
 	}
 }
 

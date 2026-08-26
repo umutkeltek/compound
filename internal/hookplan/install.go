@@ -133,7 +133,17 @@ func HookCommand(binaryPath, harness string) string {
 // HookCommandForEvent is the exact command a harness runs for one Compound live-hook event.
 func HookCommandForEvent(binaryPath, harness, event string) string {
 	if event == "SessionEnd" {
-		return fmt.Sprintf("%s hook session-end-adapter --live --harness %s", shellQuote(binaryPath), runtimeHarnessName(harness))
+		// Claude-family lanes route through the bounded adapter seam (claude_*|claude-* only;
+		// session_end_adapter.go hard-allowlists those names). Every other harness with a
+		// SessionEnd event uses the generic verb, which honours the same routing on the
+		// handler side (hook.go routes "SessionEnd","Stop" to sessionEnd()) and degrades to
+		// fail_open + WARNING when the registry lacks the capability (hook.go:~2091-2095).
+		// Adding a SessionEnd binding for a non-claude harness therefore costs no new seam:
+		// the same generic verb handles codex now and hermes once its plugin is installed.
+		if isClaudeFamilyInstallerLabel(harness) {
+			return fmt.Sprintf("%s hook session-end-adapter --live --harness %s", shellQuote(binaryPath), runtimeHarnessName(harness))
+		}
+		return fmt.Sprintf("%s hook session-end --live --harness %s", shellQuote(binaryPath), runtimeHarnessName(harness))
 	}
 	verb := map[string]string{
 		"SessionStart":     "session-start",
@@ -142,6 +152,23 @@ func HookCommandForEvent(binaryPath, harness, event string) string {
 		"PostToolUse":      "post-tool-use",
 	}[event]
 	return fmt.Sprintf("%s hook %s --live --harness %s", shellQuote(binaryPath), verb, runtimeHarnessName(harness))
+}
+
+// isClaudeFamilyInstallerLabel matches the dashed installer labels (claude-code, claude-zai,
+// claude-minimax, claude-qwen) AND the runtimeHarnessName translation (claude_code,
+// claude_zai, claude_minimax, claude_qwen) so a SessionEnd binding installed under either
+// label routes to the bounded adapter. Anything else -- codex, opencode, hermes, an
+// unconfigured future lane -- falls through to the generic session-end verb.
+func isClaudeFamilyInstallerLabel(harness string) bool {
+	switch strings.TrimSpace(harness) {
+	case "claude-code", "claude_code",
+		"claude-zai", "claude_zai",
+		"claude-minimax", "claude_minimax",
+		"claude-qwen", "claude_qwen":
+		return true
+	default:
+		return false
+	}
 }
 
 // runtimeHarnessName translates the operator-facing installer/profile label to
@@ -464,13 +491,24 @@ func isInteractiveObservationalDefault(intentions []CompiledIntention) bool {
 	// grew by one when per-turn injection became its own intention. It is a
 	// nothing-unexpected-snuck-in count, not a substitute for the per-intention checks:
 	// unknown intentions, guard_mutation, and any non-native disposition are still
-	// refused one by one.
+	// refused one by one -- EXCEPT record_receipt, which carries its own attestation
+	// gate (the adapter returns DispositionUnsupported when its capability feature is
+	// false). The default posture for an interactive harness asks for record_receipt
+	// unconditionally so the flip from "registry says false" to "registry says true" (or
+	// vice versa) lands as a registry-only change; refusing the install because the receipt
+	// compiled Unsupported would defeat the rule_delta seam (the codex rule_delta flipped
+	// SessionEndReceipt false->true, see harness.go:458). Tolerating Unsupported for
+	// record_receipt keeps the invariant the function exists to defend: no blocking guard
+	// is added. record_receipt has no blocking shape by construction.
 	if len(intentions) < 3 || len(intentions) > 5 {
 		return false
 	}
 	seen := map[HarnessIntention]bool{}
 	for _, intention := range intentions {
-		if intention.Intention == IntentionGuardMutation ||
+		if intention.Intention == IntentionGuardMutation {
+			return false
+		}
+		if intention.Intention != IntentionRecordReceipt &&
 			intention.Disposition != DispositionNative {
 			return false
 		}
@@ -484,7 +522,8 @@ func isInteractiveObservationalDefault(intentions []CompiledIntention) bool {
 				return false
 			}
 		case IntentionRecordReceipt:
-			if intention.EnforcementStrength != "receipt" {
+			if intention.Disposition == DispositionNative &&
+				intention.EnforcementStrength != "receipt" {
 				return false
 			}
 		default:
