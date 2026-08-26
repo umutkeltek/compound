@@ -393,7 +393,15 @@ func sameCreatePlanWork(existing, planned envelope.WorkEnvelope) bool {
 		sameGitDeliveryContract(existing.GitDelivery, planned.GitDelivery) &&
 		existing.RouteDecisionID == planned.RouteDecisionID &&
 		sameStringSlice(existing.NonGoals, planned.NonGoals) &&
-		sameStringSlice(existing.EvidenceRefs, planned.EvidenceRefs)
+		sameStringSlice(existing.EvidenceRefs, planned.EvidenceRefs) &&
+		sameWorkOrigin(existing.Origin, planned.Origin)
+}
+
+func sameWorkOrigin(a, b *envelope.WorkOrigin) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func sameStringSlice(a, b []string) bool {

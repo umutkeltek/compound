@@ -79,3 +79,17 @@ func TestWorkbenchProjectsSpecificOriginBesideLegacyOwner(t *testing.T) {
 	}
 	t.Fatalf("created work %s missing from workbench", created.ID)
 }
+
+func TestCreatePlanEqualityBindsOrigin(t *testing.T) {
+	first := BuildWork(CreateInput{
+		Owner: "compound:memory", Actor: "codex:lane", CreatorHarness: "codex",
+		CreatorModel: "model-a", CreatorLaneID: "lane", SuccessPredicate: "origin is bound",
+	}, fixedNow)
+	second := first
+	origin := *second.Origin
+	origin.RequestedModel = "model-b"
+	second.Origin = &origin
+	if sameCreatePlanWork(first, second) {
+		t.Fatal("create-plan equality ignored creator model drift")
+	}
+}
