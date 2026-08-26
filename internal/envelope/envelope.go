@@ -801,6 +801,20 @@ type GitDeliveryContract struct {
 	PublicationRef        string `json:"publication_ref,omitempty"`
 }
 
+// WorkOrigin separates accountable ownership from the executor identity that
+// created the work. Owner remains the legacy lifecycle label; this additive
+// record answers who is accountable, which harness/model authored the intent,
+// and which lane did so without pretending that requested model identity is
+// observed provider execution.
+type WorkOrigin struct {
+	AccountableOwner string `json:"accountable_owner"`
+	Actor            string `json:"actor"`
+	Harness          string `json:"harness"`
+	RequestedModel   string `json:"requested_model"`
+	LaneID           string `json:"lane_id"`
+	IdentitySource   string `json:"identity_source"`
+}
+
 type WorkEnvelope struct {
 	Header
 	Owner            string `json:"owner"`
@@ -909,6 +923,9 @@ type WorkEnvelope struct {
 	// so the additive field never reorders existing marshaled bytes (see the workEnvelopeSHA256
 	// discipline on ActionIntentIDs above).
 	ReworkOfWorkID string `json:"rework_of_work_id,omitempty"`
+	// Origin is populated for newly built work. It is optional so pre-origin
+	// v0.1 envelopes remain valid and re-marshal byte-identically.
+	Origin *WorkOrigin `json:"origin,omitempty"`
 }
 
 // WorkPrediction is staked at create time and predicts the CLOSE outcome enum
@@ -985,7 +1002,19 @@ func (e *WorkEnvelope) Validate() error {
 	}
 	validateRunAttemptIDs(v, e.RunAttemptIDs)
 	validateReworkOfWorkID(v, e.ReworkOfWorkID, e.ID)
+	if e.Origin != nil {
+		validateWorkOrigin(v, *e.Origin)
+	}
 	return v.result(e.Kind())
+}
+
+func validateWorkOrigin(v *verr, origin WorkOrigin) {
+	v.req("origin.accountable_owner", origin.AccountableOwner)
+	v.req("origin.actor", origin.Actor)
+	v.req("origin.harness", origin.Harness)
+	v.req("origin.requested_model", origin.RequestedModel)
+	v.req("origin.lane_id", origin.LaneID)
+	v.enum("origin.identity_source", origin.IdentitySource, []string{"explicit_or_environment", "derived"}, true)
 }
 
 // validateReworkOfWorkID enforces the shape of the rework lineage edge (see

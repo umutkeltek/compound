@@ -70,6 +70,11 @@ type JobSummary struct {
 	Script            string `json:"script,omitempty"`
 	NoAgent           bool   `json:"no_agent,omitempty"`
 	Lane              string `json:"lane,omitempty"`
+	AccountableOwner  string `json:"accountable_owner"`
+	Harness           string `json:"harness"`
+	RequestedModel    string `json:"requested_model"`
+	ProviderRoute     string `json:"provider_route"`
+	IdentitySource    string `json:"identity_source"`
 	LastStatus        string `json:"last_status,omitempty"`
 	LastError         string `json:"last_error,omitempty"`
 	LastRunAt         string `json:"last_run_at,omitempty"`
@@ -148,7 +153,7 @@ func ImportJobRoster(homePath, sourcePath string, now time.Time) (JobRosterImpor
 	if err != nil {
 		return JobRosterImportReport{}, fmt.Errorf("read job roster %s: %w", sourcePath, err)
 	}
-	jobs, err := parseJobRoster(data)
+	jobs, err := parseJobRoster(data, sourcePath)
 	if err != nil {
 		return JobRosterImportReport{}, fmt.Errorf("parse job roster %s: %w", sourcePath, err)
 	}
@@ -233,7 +238,7 @@ func ImportJobTokenGovernance(homePath, sourcePath string, now time.Time) (JobTo
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return JobTokenGovernanceImportReport{}, fmt.Errorf("parse job token governance metadata %s: %w", sourcePath, err)
 	}
-	usageJobs, err := parseJobRoster(data)
+	usageJobs, err := parseJobRoster(data, sourcePath)
 	if err != nil {
 		return JobTokenGovernanceImportReport{}, fmt.Errorf("parse job token governance %s: %w", sourcePath, err)
 	}
@@ -459,7 +464,7 @@ func JobRosterSourceAuthorityPath(homePath string) string {
 	return filepath.Join(homePath, "registries", jobRosterSourceAuthorityFile)
 }
 
-func parseJobRoster(data []byte) ([]JobSummary, error) {
+func parseJobRoster(data []byte, sourcePath string) ([]JobSummary, error) {
 	var doc struct {
 		Jobs json.RawMessage `json:"jobs"`
 	}
@@ -504,6 +509,7 @@ func parseJobRoster(data []byte) ([]JobSummary, error) {
 			AvgTokensPerRun:   jsonInt64(row["avg_tokens_per_run"]),
 			RiskClass:         firstJSONText(row, "risk_class"),
 		}
+		completeJobIdentity(&job, row, sourcePath)
 		if strings.TrimSpace(job.Name) == "" {
 			continue
 		}
@@ -513,6 +519,77 @@ func parseJobRoster(data []byte) ([]JobSummary, error) {
 		return nil, fmt.Errorf("no jobs found")
 	}
 	return jobs, nil
+}
+
+func completeJobIdentity(job *JobSummary, row map[string]any, sourcePath string) {
+	explicitOwner := firstJSONText(row, "accountable_owner", "owner", "owned_by")
+	explicitHarness := firstJSONText(row, "harness")
+	explicitModel := firstJSONText(row, "requested_model", "model")
+	explicitProvider := firstJSONText(row, "provider_route", "provider", "route")
+
+	job.AccountableOwner = explicitOwner
+	job.Harness = explicitHarness
+	job.RequestedModel = explicitModel
+	job.ProviderRoute = explicitProvider
+
+	sourceHarness := jobRosterSourceHarness(sourcePath)
+	identity := firstNonEmptyJobID(job.JobID, slugToken(job.Name))
+	if job.AccountableOwner == "" {
+		job.AccountableOwner = sourceHarness + "-job:" + identity
+	}
+	if job.Harness == "" {
+		if job.NoAgent {
+			job.Harness = "script"
+		} else {
+			job.Harness = sourceHarness
+		}
+	}
+	if job.RequestedModel == "" {
+		if job.NoAgent {
+			job.RequestedModel = "none"
+		} else {
+			job.RequestedModel = "router-default"
+		}
+	}
+	if job.ProviderRoute == "" {
+		if job.NoAgent {
+			job.ProviderRoute = "local"
+		} else {
+			job.ProviderRoute = "router-default"
+		}
+	}
+
+	explicit := 0
+	for _, value := range []string{explicitOwner, explicitHarness, explicitModel, explicitProvider} {
+		if value != "" {
+			explicit++
+		}
+	}
+	switch explicit {
+	case 0:
+		job.IdentitySource = "derived"
+	case 4:
+		job.IdentitySource = "explicit"
+	default:
+		job.IdentitySource = "mixed"
+	}
+}
+
+func jobRosterSourceHarness(sourcePath string) string {
+	lower := strings.ToLower(filepath.ToSlash(sourcePath))
+	if strings.Contains(lower, "/.hermes/") || filepath.Base(lower) == "jobs.json" {
+		return "hermes"
+	}
+	return "scheduler"
+}
+
+func firstNonEmptyJobID(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return "unknown"
 }
 
 func appendJobRosterSourceAuthority(homePath string, rec JobRosterSourceAuthorityRecord) error {

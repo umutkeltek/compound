@@ -45,14 +45,17 @@ type CoordinationLane struct {
 	Message              string  `json:"message,omitempty"`
 }
 
-// CoordinationDoing is the work an actor is currently on, when any.
 type CoordinationDoing struct {
-	WorkID     string `json:"work_id,omitempty"`
-	Title      string `json:"title,omitempty"`
-	State      string `json:"state,omitempty"`
-	NextAction string `json:"next_action,omitempty"`
-	ClaimedBy  string `json:"claimed_by,omitempty"`
-	Owner      string `json:"owner,omitempty"`
+	WorkID                string `json:"work_id,omitempty"`
+	Title                 string `json:"title,omitempty"`
+	State                 string `json:"state,omitempty"`
+	NextAction            string `json:"next_action,omitempty"`
+	ClaimedBy             string `json:"claimed_by,omitempty"`
+	Owner                 string `json:"owner,omitempty"`
+	AccountableOwner      string `json:"accountable_owner,omitempty"`
+	CreatorHarness        string `json:"creator_harness,omitempty"`
+	CreatorRequestedModel string `json:"creator_requested_model,omitempty"`
+	CreatorLaneID         string `json:"creator_lane_id,omitempty"`
 }
 
 // ActorCoordination is one actor's coordination face — the same shape for
@@ -398,12 +401,16 @@ func coordinationDoing(wb WorkbenchReport, actor string) *CoordinationDoing {
 	}
 	item := wb.Open[pick]
 	return &CoordinationDoing{
-		WorkID:     item.WorkID,
-		Title:      firstNonEmpty(item.DesiredOutcome, item.WorkID),
-		State:      item.State,
-		NextAction: item.NextAction,
-		ClaimedBy:  item.ClaimedBy,
-		Owner:      item.Owner,
+		WorkID:                item.WorkID,
+		Title:                 firstNonEmpty(item.DesiredOutcome, item.WorkID),
+		State:                 item.State,
+		NextAction:            item.NextAction,
+		ClaimedBy:             item.ClaimedBy,
+		Owner:                 item.Owner,
+		AccountableOwner:      item.AccountableOwner,
+		CreatorHarness:        item.CreatorHarness,
+		CreatorRequestedModel: item.CreatorRequestedModel,
+		CreatorLaneID:         item.CreatorLaneID,
 	}
 }
 

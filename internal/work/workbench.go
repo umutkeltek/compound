@@ -173,6 +173,10 @@ type WorkbenchItem struct {
 	WorkID                string                  `json:"work_id"`
 	State                 string                  `json:"state"`
 	Owner                 string                  `json:"owner,omitempty"`
+	AccountableOwner      string                  `json:"accountable_owner,omitempty"`
+	CreatorHarness        string                  `json:"creator_harness,omitempty"`
+	CreatorRequestedModel string                  `json:"creator_requested_model,omitempty"`
+	CreatorLaneID         string                  `json:"creator_lane_id,omitempty"`
 	GitDeliveryBound      bool                    `json:"git_delivery_bound,omitempty"`
 	TargetWorktreeRoot    string                  `json:"target_worktree_root,omitempty"`
 	RepositoryFingerprint string                  `json:"repository_fingerprint,omitempty"`
@@ -834,6 +838,12 @@ func (s *Store) workbenchItemWithCaches(w envelope.WorkEnvelope, events []Event,
 		VerificationIDs:    append([]string{}, w.VerificationIDs...),
 		MemoryCandidateIDs: append([]string{}, w.MemoryCandidateIDs...),
 		recentAt:           w.CreatedAt,
+	}
+	if w.Origin != nil {
+		item.AccountableOwner = w.Origin.AccountableOwner
+		item.CreatorHarness = w.Origin.Harness
+		item.CreatorRequestedModel = w.Origin.RequestedModel
+		item.CreatorLaneID = w.Origin.LaneID
 	}
 	s.applyWorkbenchGitDeliveryWithMemo(&item, w, report, now, caches.GitLandCheckMemo)
 	subLog("git_delivery")

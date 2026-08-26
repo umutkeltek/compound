@@ -320,6 +320,9 @@ type CreateInput struct {
 	Owner            string
 	Actor            string
 	CanonicalSurface string
+	CreatorHarness   string
+	CreatorModel     string
+	CreatorLaneID    string
 	TargetSurface    string
 	SuccessPredicate string
 	DesiredOutcome   string
@@ -383,6 +386,7 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		copy := *in.RouteDeviation
 		routeDeviation = &copy
 	}
+	origin := deriveWorkOrigin(in)
 	w := envelope.WorkEnvelope{
 		Header:             newHeader(envelope.SVWork, workID, now, "", in.ContextPackID, orDefault(in.Privacy, "private"), orDefault(in.Risk, "tier1")),
 		Owner:              in.Owner,
@@ -403,12 +407,101 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		RouteDeviation:     routeDeviation,
 		PlanClass:          in.PlanClass,
 		ReworkOfWorkID:     strings.TrimSpace(in.ReworkOfWorkID),
+		Origin:             &origin,
 	}
 	if strings.TrimSpace(in.Uncertainty.Level) != "" || strings.TrimSpace(in.Uncertainty.Reason) != "" {
 		w.Uncertainty = in.Uncertainty
 	}
 	w.EvidenceRefs = orEmpty(in.EvidenceRefs)
 	return w
+}
+
+func deriveWorkOrigin(in CreateInput) envelope.WorkOrigin {
+	actor := firstNonEmpty(strings.TrimSpace(in.Actor), strings.TrimSpace(in.Owner), "compound")
+	harness := strings.TrimSpace(in.CreatorHarness)
+	requestedModel := strings.TrimSpace(in.CreatorModel)
+	laneID := strings.TrimSpace(in.CreatorLaneID)
+	identitySource := "explicit_or_environment"
+	if harness == "" && requestedModel == "" && laneID == "" {
+		identitySource = "derived"
+	}
+	if harness == "" {
+		harness = inferCreatorHarness(actor)
+	}
+	if requestedModel == "" {
+		switch harness {
+		case "compound", "operator", "script", "scheduler":
+			requestedModel = "none"
+		default:
+			requestedModel = "unknown"
+		}
+	}
+	if laneID == "" {
+		laneID = actor
+	}
+	return envelope.WorkOrigin{
+		AccountableOwner: accountableOwnerRef(in.Owner),
+		Actor:            actor,
+		Harness:          harness,
+		RequestedModel:   requestedModel,
+		LaneID:           laneID,
+		IdentitySource:   identitySource,
+	}
+}
+
+func accountableOwnerRef(owner string) string {
+	owner = strings.TrimSpace(owner)
+	if before, after, ok := strings.Cut(owner, ":"); ok && strings.TrimSpace(before) != "" && strings.TrimSpace(after) != "" {
+		return owner
+	}
+	normalized := slug(owner)
+	if normalized == "" {
+		return "owner:unknown"
+	}
+	lower := strings.ToLower(owner)
+	switch lower {
+	case "codex", "claude", "claude_code", "oh_my_pi", "hermes", "opencode", "minimax", "claude-minimax", "claude-qwen":
+		return "harness:" + normalized
+	case "compound":
+		return "compound:core"
+	case "operator":
+		return "operator:unknown"
+	}
+	if strings.HasPrefix(lower, "compound ") {
+		return "compound:" + slug(strings.TrimSpace(owner[len("compound "):]))
+	}
+	if strings.ContainsAny(owner, `/\`) {
+		return "surface:" + normalized
+	}
+	return "owner:" + normalized
+}
+
+func inferCreatorHarness(actor string) string {
+	for _, token := range strings.FieldsFunc(strings.ToLower(actor), func(r rune) bool {
+		return r == ':' || r == '/' || r == ' '
+	}) {
+		switch {
+		case token == "codex":
+			return "codex"
+		case token == "claude_code" || token == "claude-code":
+			return "claude_code"
+		case token == "claude":
+			return "claude"
+		case strings.HasPrefix(token, "claude-"):
+			return token
+		case token == "oh_my_pi" || token == "omp":
+			return "oh_my_pi"
+		case token == "hermes":
+			return "hermes"
+		case token == "opencode":
+			return "opencode"
+		case token == "operator":
+			return "operator"
+		case token == "compound":
+			return "compound"
+		}
+	}
+	return "unknown"
 }
 
 // Create writes a new WorkEnvelope and its first lifecycle event only after the

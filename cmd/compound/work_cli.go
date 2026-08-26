@@ -85,7 +85,7 @@ const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-ca
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
-		Usage:   "usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--deviation-lane L [--deviation-class C] [--deviation-card REF] [--deviation-risk gate|judge|tidy]] [--plan-class oneshot|plan_doc|phased] [--rework-of work_id] [--json] [--dry-run]",
+		Usage:   "usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--creator-harness H] [--creator-model M] [--creator-lane L] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--deviation-lane L [--deviation-class C] [--deviation-card REF] [--deviation-risk gate|judge|tidy]] [--plan-class oneshot|plan_doc|phased] [--rework-of work_id] [--json] [--dry-run]",
 		Example: "compound work create-plan --owner codex --predicate \"tests pass\" --dry-run",
 	},
 	"admit-plan": {
@@ -97,7 +97,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work review-card-plan --card wrc_abc123 --json",
 	},
 	"create": {
-		Usage:   "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--deviation-lane L [--deviation-class C] [--deviation-card REF] [--deviation-risk gate|judge|tidy]] [--plan-class oneshot|plan_doc|phased] [--rework-of work_id]",
+		Usage:   "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--creator-harness H] [--creator-model M] [--creator-lane L] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--deviation-lane L [--deviation-class C] [--deviation-card REF] [--deviation-risk gate|judge|tidy]] [--plan-class oneshot|plan_doc|phased] [--rework-of work_id]",
 		Example: "compound work create --owner codex --predicate \"tests pass\"",
 	},
 	"import-packet": {
@@ -487,6 +487,9 @@ func cmdWork(args []string) {
 		base.WorkID = flag("--work-id")
 		base.Owner = flag("--owner")
 		base.CanonicalSurface = flag("--canonical-surface")
+		base.CreatorHarness = firstNonEmpty(flag("--creator-harness"), os.Getenv("COMPOUND_HARNESS"))
+		base.CreatorModel = firstNonEmpty(flag("--creator-model"), os.Getenv("COMPOUND_MODEL"))
+		base.CreatorLaneID = firstNonEmpty(flag("--creator-lane"), os.Getenv("COMPOUND_LANE_ID"))
 		base.SuccessPredicate = flag("--predicate")
 		base.DesiredOutcome = flag("--outcome")
 		base.NonGoals = flagCSVValues(rest, "--non-goal", "--non-goals")
@@ -527,6 +530,7 @@ func cmdWork(args []string) {
 			"--predicted-outcome": true, "--predicted-move-type": true, "--prediction-note": true,
 			"--deviation-lane": true, "--deviation-card": true, "--deviation-class": true, "--deviation-risk": true,
 			"--plan-class": true, "--rework-of": true,
+			"--creator-harness": true, "--creator-model": true, "--creator-lane": true,
 		}, map[string]bool{"--json": true, "--dry-run": true, "--local-only": true}, 0); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
@@ -643,6 +647,7 @@ func cmdWork(args []string) {
 			"--predicted-outcome": true, "--predicted-move-type": true, "--prediction-note": true,
 			"--deviation-lane": true, "--deviation-card": true, "--deviation-class": true, "--deviation-risk": true,
 			"--plan-class": true, "--rework-of": true,
+			"--creator-harness": true, "--creator-model": true, "--creator-lane": true,
 		}, map[string]bool{"--local-only": true}, 0); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)

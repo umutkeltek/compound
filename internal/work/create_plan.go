@@ -620,6 +620,13 @@ func createCommandForWork(w envelope.WorkEnvelope, actor string) []string {
 			cmd = append(cmd, "--publication-ref", w.GitDelivery.PublicationRef)
 		}
 	}
+	if w.Origin != nil {
+		cmd = append(cmd,
+			"--creator-harness", w.Origin.Harness,
+			"--creator-model", w.Origin.RequestedModel,
+			"--creator-lane", w.Origin.LaneID,
+		)
+	}
 	if strings.TrimSpace(w.State) != "" {
 		cmd = append(cmd, "--state", w.State)
 	}
