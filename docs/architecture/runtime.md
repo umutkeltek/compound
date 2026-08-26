@@ -21,15 +21,16 @@ legacy-generated `CLAUDE.md` / `AGENTS.md` targets. Preset renders, symlinks, ma
 preimages are refused. The compiled `InstructionBlockRender` plus the installed region is the check surface;
 no parallel installed-instruction registry or generator exists.
 
-`install.sh` publishes the verified `compound` binary, the optional breadth
-engine, and the Compound-owned autonomy-heartbeat script. The compatibility
-`os` alias is a private migration opt-in (`COMPOUND_INSTALL_OS_ALIAS=1`), not
+`install.sh` publishes the verified `compound` binary and optional breadth
+engine. The Compound-owned heartbeat plus bounded decision letter are private
+autonomy-lab opt-ins (`COMPOUND_INSTALL_AUTONOMY_LAB=1`); the compatibility
+`os` alias is a separate migration opt-in (`COMPOUND_INSTALL_OS_ALIAS=1`), not
 part of a default public install. When opted in, the installer replaces only a
 recognized legacy OS shim or existing Compound alias and refuses a foreign
 file/symlink. Basename-aware dispatch retains the migrated muscle-memory verbs;
 the alias never reads an OS dashboard or embeds an operating-system path.
 
-The installed `attention-letter.py` is the interruption budget for the private
+When the autonomy lab is opted in, `attention-letter.py` is the interruption budget for the private
 operator loop: it renders at most three already-ranked `needs_you` groups per
 cycle. Omitted groups remain ledger-visible and are not re-presented in that
 cycle; authoritative counts and review state stay in `compound attention`.
