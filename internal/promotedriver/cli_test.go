@@ -1,0 +1,49 @@
+package promotedriver
+
+import (
+	"io"
+	"os"
+	"strings"
+	"testing"
+)
+
+// captureCLI runs fn with os.Stdout/os.Stderr swapped for pipes and returns
+// (captured stderr, fn's return).
+func captureCLI(fn func() int) (string, int) {
+	oldOut, oldErr := os.Stdout, os.Stderr
+	rOut, wOut, _ := os.Pipe()
+	rErr, wErr, _ := os.Pipe()
+	os.Stdout, os.Stderr = wOut, wErr
+	code := fn()
+	wOut.Close()
+	wErr.Close()
+	os.Stdout, os.Stderr = oldOut, oldErr
+	errBytes, _ := io.ReadAll(rErr)
+	outBytes, _ := io.ReadAll(rOut)
+	_ = outBytes
+	return string(errBytes), code
+}
+
+// TestRunCLIRejectsContradictoryConfirmAndDryRun: --confirm --dry-run used
+// to quietly mean dry-run, letting an automation script believe it applied a
+// pass it did not. Contradictory mutation flags are a usage error. The check
+// fires before home resolution, so the test has no filesystem side effects.
+func TestRunCLIRejectsContradictoryConfirmAndDryRun(t *testing.T) {
+	stderr, code := captureCLI(func() int { return RunCLI([]string{"--confirm", "--dry-run"}) })
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr: %s)", code, stderr)
+	}
+	if !strings.Contains(stderr, "contradictory") {
+		t.Fatalf("stderr must name the contradiction: %s", stderr)
+	}
+}
+
+// TestRunCLIAcceptsDryRunAlone pins that the rejection is about the PAIR,
+// not either flag individually. --dry-run alone must plan (no mutation), so
+// the exit must not be the usage error.
+func TestRunCLIAcceptsDryRunAlone(t *testing.T) {
+	stderr, code := captureCLI(func() int { return RunCLI([]string{"--dry-run"}) })
+	if code == 2 {
+		t.Fatalf("--dry-run alone must not be usage-rejected: %s", stderr)
+	}
+}

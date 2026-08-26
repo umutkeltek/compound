@@ -188,7 +188,11 @@ func runPass(homePath string, store *mem.Store, opts Options, now time.Time, rep
 		return fmt.Errorf("basis/dedupe phase: %w", err)
 	}
 	report.Promote, report.Dedupe = promote, dedupe
-	report.Imports = runImports(homePath, store, opts, now)
+	imports, err := runImports(homePath, store, opts, now)
+	report.Imports = imports
+	if err != nil {
+		return fmt.Errorf("imports phase: %w", err)
+	}
 	report.LaneBeliefs = runLaneBeliefs(homePath, opts, now)
 	sweep, err := runSweep(store, opts, now)
 	if err != nil {
@@ -215,7 +219,11 @@ func runPlan(homePath string, opts Options, now time.Time, report Report) (Repor
 	if err != nil {
 		return report, fmt.Errorf("basis/dedupe phase: %w", err)
 	}
-	report.Imports = runImports(homePath, store, opts, now)
+	imports, err := runImports(homePath, store, opts, now)
+	report.Imports = imports
+	if err != nil {
+		return report, fmt.Errorf("imports phase: %w", err)
+	}
 	report.LaneBeliefs = runLaneBeliefs(homePath, Options{}, now)
 	sweep, err := runSweep(store, opts, now)
 	if err != nil {
@@ -312,8 +320,15 @@ func runBasisAndDedupe(store *mem.Store, opts Options, now time.Time) (PromotePh
 		if lastWalked != "" {
 			promote.NextCursor = lastWalked
 			if opts.Apply {
-				if err := writePromoteCursor(homePath, promoteCursor{AfterID: lastWalked, UpdatedAt: rfc3339(now)}); err != nil {
-					promote.Errors = append(promote.Errors, "write promote cursor: "+err.Error())
+				if err := promoteCursorPersist(homePath, promoteCursor{AfterID: lastWalked, UpdatedAt: rfc3339(now)}); err != nil {
+					// The cursor is forward progress across a huge inbox: a
+					// pass that cannot persist it may have promoted THIS page
+					// but leaves the next pass re-walking the same prefix,
+					// starving later candidates — while still stamping
+					// stage=committed. Same posture as the sweep cursor
+					// below: state-persistence failures fail the pass and
+					// journal stage=failed.
+					return promote, dedupe, fmt.Errorf("write promote cursor: %w", err)
 				}
 			}
 		}
@@ -377,13 +392,17 @@ func dedupeKey(c mem.CandidateLite) string {
 // runImports refreshes the deterministic product-registry imports: content
 // hash per source file, re-Apply only when the content changed. Idempotent
 // by construction — an unchanged registry costs one hash read.
-func runImports(homePath string, store *mem.Store, opts Options, now time.Time) ImportsPhaseReport {
+func runImports(homePath string, store *mem.Store, opts Options, now time.Time) (ImportsPhaseReport, error) {
 	report := ImportsPhaseReport{}
 	if len(opts.RegistryPaths) == 0 {
 		report.Skipped = "no registry paths configured"
-		return report
+		return report, nil
 	}
-	hashes := readImportHashes(homePath)
+	hashes, hashErr := readImportHashes(homePath)
+	if hashErr != nil {
+		report.Error = hashErr.Error()
+		return report, hashErr
+	}
 	// Registry entries may be glob patterns (the heartbeat passes
 	// ~/Projects/products/*/project.yaml): expand before the per-source loop
 	// so one pattern covers every contract in the registry. A pattern that
@@ -444,9 +463,15 @@ func runImports(homePath string, store *mem.Store, opts Options, now time.Time) 
 	if opts.Apply {
 		if err := writeImportHashes(homePath, hashes); err != nil {
 			report.Error = err.Error()
+			// The hash ledger is what makes re-import idempotent: losing
+			// this write after applying imports means the NEXT pass
+			// re-imports everything while this one stamps stage=committed.
+			// State persistence failures fail the pass (same posture as the
+			// promote/sweep cursors).
+			return report, fmt.Errorf("write import hashes: %w", err)
 		}
 	}
-	return report
+	return report, nil
 }
 
 // runLaneBeliefs runs the B2/B3/B4 lane-belief pipeline in order: fold
@@ -611,6 +636,17 @@ func readSweepCursor(homePath string) sweepCursor {
 	return c
 }
 
+// promoteCursorWriter is a test seam for deterministic promote-cursor
+// persistence failure, mirroring sweepCursorWriter.
+var promoteCursorWriter func(homePath string, c promoteCursor) error
+
+func promoteCursorPersist(homePath string, c promoteCursor) error {
+	if promoteCursorWriter != nil {
+		return promoteCursorWriter(homePath, c)
+	}
+	return writePromoteCursor(homePath, c)
+}
+
 // sweepCursorWriter is a test seam for deterministic cursor-persistence
 // failure at the exact point an apply pass needs its continuation point.
 // Production passes leave it nil and persist through the owned state file.
@@ -630,14 +666,24 @@ func clearSweepCursor(homePath string) error {
 	return nil
 }
 
-func readImportHashes(homePath string) map[string]string {
+func readImportHashes(homePath string) (map[string]string, error) {
 	out := map[string]string{}
 	data, err := os.ReadFile(filepath.Join(stateDir(homePath), hashFileName))
 	if err != nil {
-		return out
+		if os.IsNotExist(err) {
+			return out, nil
+		}
+		return nil, err
 	}
-	_ = json.Unmarshal(data, &out)
-	return out
+	if err := json.Unmarshal(data, &out); err != nil {
+		// A corrupt hash ledger is NOT "no hashes": silently treating it as
+		// empty re-imports everything, and the next successful write
+		// overwrites the evidence. Surface it and let the caller fail the
+		// pass; repair is an explicit operator action, not a side effect of
+		// a scheduled pump.
+		return nil, fmt.Errorf("import hash state %s is corrupt: %w (repair deliberately, e.g. remove the file to force a full re-import)", filepath.Join(stateDir(homePath), hashFileName), err)
+	}
+	return out, nil
 }
 
 func writeImportHashes(homePath string, hashes map[string]string) error {

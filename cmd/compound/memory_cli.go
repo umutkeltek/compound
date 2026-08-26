@@ -100,7 +100,12 @@ func cmdMemory(args []string) {
 	// digest-doctor reads an arbitrary operator-local file (usually OUTSIDE
 	// COMPOUND_HOME entirely) and must stay read-only over the ledger too —
 	// same rationale as the consumption/search exclusion just above.
-	if sub != "consumption" && sub != "search" && sub != "digest-doctor" {
+	// promote-driver is dry-run BY DEFAULT and opens the ledger read-only
+	// (mem.OpenScan) for its plan passes; a mutable mem.Open here would
+	// materialize ledger/inbox/events on every scheduled read pass — the
+	// read path must actually be read-only, not merely non-mutating by
+	// convention. Pinned by TestMemoryPromoteDriverDryRunDoesNotMutateCompoundHome.
+	if sub != "consumption" && sub != "search" && sub != "digest-doctor" && sub != "promote-driver" {
 		store, err = mem.Open(homePath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)

@@ -67,7 +67,13 @@ type Harness struct {
 	Capabilities         Capabilities `json:"capabilities"`
 	Limitations          []string     `json:"limitations"`
 	InjectBudgetMS       int          `json:"inject_budget_ms,omitempty"`
-	Fallback             bool         `json:"fallback,omitempty"` // true when this is the generic stand-in
+	// HookBudgetMS is the whole-command wall-clock budget the compound hook
+	// should honor for THIS harness: the internal fail-open deadline must sit
+	// safely UNDER the harness's own hook kill timeout. Zero means "use the
+	// compound default" (45s, under Claude Code's 60s); harnesses with
+	// tighter outer timeouts (oh_my_pi's ~8s shim kill) declare theirs here.
+	HookBudgetMS int  `json:"hook_budget_ms,omitempty"`
+	Fallback     bool `json:"fallback,omitempty"` // true when this is the generic stand-in
 
 	// Posture is PostureInteractive or PostureUnattended. Empty resolves through
 	// DefaultPosture, which answers PostureUnattended for anything it does not
@@ -141,6 +147,7 @@ type ManifestHarness struct {
 	Capabilities         ManifestCapabilities `json:"capabilities" yaml:"capabilities"`
 	Limitations          []string             `json:"limitations" yaml:"limitations"`
 	InjectBudgetMS       int                  `json:"inject_budget_ms,omitempty" yaml:"inject_budget_ms,omitempty"`
+	HookBudgetMS         int                  `json:"hook_budget_ms,omitempty" yaml:"hook_budget_ms,omitempty"`
 	Fallback             bool                 `json:"fallback,omitempty" yaml:"fallback,omitempty"`
 	ExpectedVersion      string               `json:"expected_version,omitempty" yaml:"expected_version,omitempty"`
 	Posture              string               `json:"posture,omitempty" yaml:"posture,omitempty"`
@@ -572,7 +579,13 @@ func DefaultRegistry() Registry {
 			ExpectedVersion: "0.8.0",
 		},
 		"oh_my_pi": {
-			Name:                 "oh_my_pi",
+			Name: "oh_my_pi",
+			// The OMP hook shim wraps compound with its own ~8s hard kill. The
+			// internal fail-open watchdog MUST answer before that (5-6s, with a
+			// margin to persist the timeout evidence), or the outer kill wins
+			// and the hook dies with no output at all — the failure shape the
+			// budget exists to prevent.
+			HookBudgetMS:         6000,
 			InstructionMechanism: "AGENTS.md/CLAUDE.md context-file discovery + --system-prompt/--append-system-prompt argv + -p/--mode headless invocation",
 			// Same codebase family as prime_agent (both fork the pi coding agent), so
 			// the standing pi-family boundaries are inherited verbatim: rented executor
@@ -1028,6 +1041,15 @@ func firstPositive(values ...int) int {
 func (r Registry) InjectionBudgetMS(name string) int {
 	h, _ := r.Get(name)
 	return firstPositive(h.InjectBudgetMS, defaultInjectBudgetMS(name))
+}
+
+// HookBudgetMS returns the whole-command hook wall-clock budget for a
+// harness: the internal fail-open deadline that must fire before the
+// harness's own hook kill timeout does. Zero (unset everywhere) means the
+// caller's default applies.
+func (r Registry) HookBudgetMS(name string) int {
+	h, _ := r.Get(name)
+	return h.HookBudgetMS
 }
 
 // Get returns the harness by name, or the generic fallback with found=false.

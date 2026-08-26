@@ -560,3 +560,105 @@ func TestCursorPersistenceFailureFailsTheApplyPass(t *testing.T) {
 		t.Fatalf("failed receipt must carry the cursor error, got %q", receipts[1].Error)
 	}
 }
+
+// TestPromoteCursorPersistenceFailureFailsTheApplyPass mirrors the sweep
+// contract: the promote cursor is forward progress across a huge inbox, so a
+// pass that cannot persist it must NOT stamp stage=committed — the next pass
+// would re-walk the same prefix and starve later candidates while the
+// journal claims success. Pre-fix this error was only appended to the
+// phase's Errors and the pass committed anyway.
+func TestPromoteCursorPersistenceFailureFailsTheApplyPass(t *testing.T) {
+	home := t.TempDir()
+	for _, id := range []string{"cand_pc1", "cand_pc2", "cand_pc3"} {
+		seedCandidate(t, home, id, mem.Candidate{Entity: id, Predicate: "value", Object: id})
+	}
+	promoteCursorWriter = func(string, promoteCursor) error { return os.ErrPermission }
+	t.Cleanup(func() { promoteCursorWriter = nil })
+
+	report, err := Run(home, Options{Apply: true, WalkScanLimit: 2}, testNow)
+	if err == nil {
+		t.Fatalf("pass must fail when the promote cursor cannot persist; report=%+v", report)
+	}
+	if !strings.Contains(err.Error(), "write promote cursor") {
+		t.Fatalf("error = %v, want the cursor persistence failure named", err)
+	}
+	receipts := readReceipts(t, home)
+	if len(receipts) != 2 || receipts[0].Stage != stagePlanned || receipts[1].Stage != stageFailed {
+		t.Fatalf("journal stages = %+v, want planned then failed", receipts)
+	}
+	if !strings.Contains(receipts[1].Error, "write promote cursor") {
+		t.Fatalf("failed receipt must carry the cursor error, got %q", receipts[1].Error)
+	}
+}
+
+// TestCorruptImportHashesFailThePass: a corrupt import-hashes ledger is not
+// "no hashes". The pre-fix reader swallowed the unmarshal error, so a
+// scheduled pass silently re-imported everything and overwrote the evidence
+// on its next write. Now the pass fails and names the file and the repair
+// path.
+func TestCorruptImportHashesFailThePass(t *testing.T) {
+	home := t.TempDir()
+	registry := filepath.Join(home, "registry.yaml")
+	if err := os.WriteFile(registry, []byte("kind: product\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateDir(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir(home), hashFileName), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dry-run must also refuse to bless a plan over untrustworthy state.
+	_, err := Run(home, Options{RegistryPaths: []string{registry}}, testNow)
+	if err == nil {
+		t.Fatal("dry-run must fail over a corrupt import-hash ledger")
+	}
+	if !strings.Contains(err.Error(), "corrupt") {
+		t.Fatalf("error must name the corruption: %v", err)
+	}
+	// The corrupt ledger must survive untouched for deliberate repair.
+	data, readErr := os.ReadFile(filepath.Join(stateDir(home), hashFileName))
+	if readErr != nil || string(data) != "{not json" {
+		t.Fatalf("corrupt ledger must not be silently rewritten: %q %v", data, readErr)
+	}
+}
+
+// TestImportHashWriteFailureFailsTheApplyPass: the hash ledger is what makes
+// re-import idempotent; losing the write after applying imports must fail
+// the pass instead of stamping committed.
+func TestImportHashWriteFailureFailsTheApplyPass(t *testing.T) {
+	home := t.TempDir()
+	registry := filepath.Join(home, "registry.yaml")
+	if err := os.WriteFile(registry, []byte("kind: product\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Seed a VALID hash ledger and an existing receipts journal, then make
+	// the state directory read-only: the planned receipt can still APPEND to
+	// the existing journal file (no directory write needed to open an
+	// existing file), but writeStateFile's CreateTemp+rename in that
+	// directory fails deterministically. The driver lock lives at the home
+	// root, so single-flight is unaffected.
+	dir := stateDir(home)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, hashFileName), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, receiptFileName), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	report, err := Run(home, Options{Apply: true, RegistryPaths: []string{registry}}, testNow)
+	if err == nil {
+		t.Fatalf("pass must fail when import hashes cannot persist; report=%+v", report)
+	}
+	if !strings.Contains(err.Error(), "write import hashes") {
+		t.Fatalf("error = %v, want the hash persistence failure named", err)
+	}
+}

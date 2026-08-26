@@ -73,6 +73,10 @@ func RunCLI(rest []string) int {
 		fmt.Println(Usage)
 		return 0
 	}
+	if has("--confirm") && has("--dry-run") {
+		fmt.Fprintf(os.Stderr, "error: --confirm and --dry-run are contradictory; a pass is dry-run by default and --confirm applies it\n%s\n", Usage)
+		return 2
+	}
 	intVals := map[string]int{}
 	for _, name := range []string{"--promote-limit", "--scan-limit", "--walk-scan-limit"} {
 		v, err := intFlagValue(rest, name)
@@ -86,6 +90,12 @@ func RunCLI(rest []string) int {
 		// The safe zero value is a plan: only --confirm (and not --dry-run)
 		// opens the mutation door. The programmatic API inherits the same
 		// posture — an Options{} caller can never mutate.
+		//
+		// The pair is also REFUSED rather than silently reconciled:
+		// --confirm --dry-run used to quietly mean dry-run, which lets an
+		// automation script believe it applied a pass it did not. A
+		// contradictory mutation request is a usage error (exit 2), the same
+		// posture as the flag-validation ratchet above.
 		Apply:          has("--confirm") && !has("--dry-run"),
 		PromoteLimit:   intVals["--promote-limit"],
 		SweepScanLimit: intVals["--scan-limit"],
