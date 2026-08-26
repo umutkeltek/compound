@@ -52,12 +52,12 @@ type sessionTranscriptSummary struct {
 // sniffTranscriptFormat peeks the first 4 KB of the file for a
 // `{"type":"session","version":N,...}` line. omp writes such a line on
 // its second JSON line (the first is "title"); claude-code never does.
-// Codex 0.149.x writes `{"type":"session_meta",...}` on its first line;
-// response_item is the function_call carrier, so the meta line is the
-// most reliable header. The 4 KB window is generous for either header
-// (both are < 200 B) and bounded so we never read the whole transcript
-// twice. The caller (scanSessionTranscript) MUST Seek(0,0) after this
-// before resuming the main scan -- we only peek, never consume.
+// Codex 0.149.x writes `{"type":"session_meta",...}` on its first line.
+// Tool calls currently use response_item custom_tool_call entries followed by
+// event_msg CommandExecution items; older 0.149.x rollouts used function_call.
+// The 4 KB window is generous for the bounded header sniff. The caller
+// (scanSessionTranscript) MUST Seek(0,0) after this before resuming the main
+// scan: we only peek, never consume.
 func sniffTranscriptFormat(f *os.File) string {
 	var head [4096]byte
 	n, _ := f.Read(head[:])
@@ -105,7 +105,8 @@ type transcriptEntry struct {
 	// field cannot read it (codex omits role/content on the inner object), so a sibling
 	// field is added instead of overloading Payload's meaning. Both forms are populated
 	// by the same parseTranscriptEntry call; only one is non-nil per line.
-	CodexRolloutPayload *codexRolloutPayload `json:"-"`
+	CodexRolloutPayload   *codexRolloutPayload   `json:"-"`
+	CodexCommandExecution *codexCommandExecution `json:"-"`
 }
 
 type transcriptMessage struct {
@@ -120,18 +121,18 @@ type transcriptContentBlock struct {
 	Input map[string]any `json:"input"`
 }
 
-// codexRolloutPayload is the per-line shape codex 0.149.x emits for tool calls:
-// `{"type":"function_call","name":"<tool>","arguments":"<json string>"}` under a
-// response_item entry's payload field. The arguments string is a nested JSON
-// document representing the tool's input -- the shape claude-code expresses as a
-// tool_use block's `input`. Keeping it as a raw string matches codex's wire shape
-// verbatim so a future codex-side change to the arguments schema (e.g. switching to
-// a structured object) only has to touch this struct.
+// codexRolloutPayload covers both older function_call entries (`arguments`) and
+// current custom_tool_call entries (`input`) under response_item.payload.
 type codexRolloutPayload struct {
 	Type      string `json:"type"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
+	Input     string `json:"input"`
 	CallID    string `json:"call_id,omitempty"`
+}
+
+type codexCommandExecution struct {
+	Command []string
 }
 
 // ResolveCodexRolloutPath locates the newest codex rollout JSONL for the given session id,
@@ -549,6 +550,21 @@ func parseTranscriptEntry(line []byte) (transcriptEntry, error) {
 			}
 		}
 	}
+	if entry.Type == "event_msg" {
+		var probe struct {
+			Payload struct {
+				Item struct {
+					Type    string   `json:"type"`
+					Command []string `json:"command"`
+				} `json:"item"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(line, &probe); err == nil &&
+			probe.Payload.Item.Type == "CommandExecution" &&
+			len(probe.Payload.Item.Command) > 0 {
+			entry.CodexCommandExecution = &codexCommandExecution{Command: probe.Payload.Item.Command}
+		}
+	}
 	return entry, nil
 }
 
@@ -568,6 +584,16 @@ func (s *sessionTranscriptSummary) applyEntry(entry transcriptEntry, files, skil
 	// codex FIRST to keep the assistant-role prose branch honest.
 	if entry.CodexRolloutPayload != nil {
 		s.applyCodexRollout(entry.CodexRolloutPayload, files, skills)
+		return
+	}
+	if entry.CodexCommandExecution != nil {
+		// Current Codex also emits a normalized CommandExecution event after the
+		// custom tool call. Re-scan its argv for skill/file evidence, but do not
+		// increment ToolCalls a second time.
+		command := strings.Join(entry.CodexCommandExecution.Command, " ")
+		for _, skill := range skillsFromLine(command) {
+			skills[skill] = true
+		}
 		return
 	}
 	role, content := transcriptRoleContent(entry)
@@ -613,26 +639,29 @@ func (s *sessionTranscriptSummary) applyEntry(entry transcriptEntry, files, skil
 	}
 }
 
-// applyCodexRollout folds one codex response_item line into the summary using the
-// same Skill / skill-path / files-changed rules the claude branch enforces -- only
-// the input shape differs (raw arguments JSON string vs a typed input object).
-// Naming a skill in arguments still does not count as use: Skill tool calls and
-// SKILL.md reads do (TestScanSessionTranscriptParsesCodexRollout, F5).
+// applyCodexRollout folds one Codex response_item into the summary. Both the
+// legacy function_call arguments JSON and current custom_tool_call JavaScript
+// input carry the exact command, so skill-path evidence is never inferred from
+// assistant prose.
 func (s *sessionTranscriptSummary) applyCodexRollout(pl *codexRolloutPayload, files, skills map[string]bool) {
-	if pl.Type != "function_call" {
+	if pl.Type != "function_call" && pl.Type != "custom_tool_call" {
 		return
 	}
 	s.ToolCalls++
-	if pl.Name == "Bash" {
+	if pl.Name == "Bash" || pl.Name == "exec" {
 		s.BashCalls++
 	}
-	input := codexArgumentsToMap(pl.Arguments)
+	rawInput := pl.Arguments
+	if pl.Type == "custom_tool_call" {
+		rawInput = pl.Input
+	}
+	input := codexArgumentsToMap(rawInput)
 	if pl.Name == "Skill" {
 		if skill := skillFromInput(input); skill != "" {
 			skills[skill] = true
 		}
 	}
-	for _, skill := range skillsFromLine(pl.Arguments) {
+	for _, skill := range skillsFromLine(rawInput) {
 		skills[skill] = true
 	}
 	if mutatingTranscriptTools[pl.Name] {

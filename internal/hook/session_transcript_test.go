@@ -477,6 +477,43 @@ func TestSessionEndCodexBuildsWorklessReceiptFromRollout(t *testing.T) {
 	}
 }
 
+func TestSessionEndCodexCurrentCustomToolCallCarriesSkillUse(t *testing.T) {
+	const sessionID = "sess-current-custom-tool"
+	transcriptHome := t.TempDir()
+	rollout := writeCodexRollout(t, transcriptHome, sessionID, []string{
+		`{"type":"session_meta","timestamp":"2026-08-26T15:00:00Z","payload":{"id":"` + sessionID + `","cwd":"/repo/product"}}`,
+		`{"type":"response_item","timestamp":"2026-08-26T15:05:00Z","payload":{"type":"custom_tool_call","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"cat /repo/skills/current-codex/SKILL.md\"});","call_id":"call_current"}}`,
+		`{"type":"event_msg","timestamp":"2026-08-26T15:05:01Z","payload":{"type":"item_completed","item":{"type":"CommandExecution","command":["/bin/zsh","-lc","cat /repo/skills/current-codex/SKILL.md"]}}}`,
+	})
+	summary, err := scanSessionTranscript(rollout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Format != "codex" || summary.ToolCalls != 1 || summary.BashCalls != 1 {
+		t.Fatalf("summary = %+v, want one current Codex custom tool call", summary)
+	}
+	if !containsString(summary.SkillsFired, "capability://skill:current-codex") {
+		t.Fatalf("skills fired = %v, want capability://skill:current-codex", summary.SkillsFired)
+	}
+
+	deps := baseDeps()
+	deps.HomePath = t.TempDir()
+	res, err := Run(Fixture{
+		Hook:           "session-end",
+		Harness:        "codex",
+		SessionID:      sessionID,
+		Cwd:            "/repo/product",
+		TranscriptPath: rollout,
+	}, deps, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := res.Produced[0].(*envelope.Receipt)
+	if !ok || !containsString(rec.Skills.Used, "capability://skill:current-codex") {
+		t.Fatalf("receipt = %+v, want current Codex skill use", res.Produced)
+	}
+}
+
 // TestSessionEndCodexDerivesRolloutFromSessionID (F4) -- codex SessionEnd with an EMPTY
 // transcript_path still produces a receipt by deriving the rollout from session_id and
 // CODEX_HOME. The fixture lays a codex-format rollout under a tempdir and points CODEX_HOME
