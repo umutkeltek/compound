@@ -137,6 +137,15 @@ func renderReport(report Report) {
 		return
 	}
 	fmt.Printf("# memory promote-driver pass %s (%s)\n", report.PassID, mode)
+	if report.Stage != "" {
+		fmt.Printf("stage:      %s\n", report.Stage)
+	}
+	if len(report.ReconciledPassIDs) > 0 {
+		fmt.Printf("recovered:  %s\n", strings.Join(report.ReconciledPassIDs, ","))
+	}
+	if report.Intent != nil {
+		fmt.Printf("intent:     %d candidate(s), %d operation(s)\n", len(report.Intent.CandidateIDs), len(report.Intent.Operations))
+	}
 	fmt.Printf("promote:    %d promoted, %d deferred (limit %d)\n", report.Promote.Promoted, len(report.Promote.Deferred), report.Promote.Limit)
 	for _, p := range report.Promote.Promotions {
 		fmt.Printf("  - %s basis=%s (%s)\n", p.CandidateID, p.Basis, p.Action)
