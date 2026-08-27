@@ -76,7 +76,7 @@ func TestLiveShellIntentCarriesTheHookCwd(t *testing.T) {
 
 func TestLivePreToolUseRemoteURIDoesNotInheritLocalProjectGrant(t *testing.T) {
 	workspace := t.TempDir()
-	locator := "ssh://example-apps.internal/srv/stacks/searxng"
+	locator := "ssh://apps.example.invalid/srv/stacks/search"
 	payload, err := json.Marshal(claudeLiveHookInput{
 		HookEventName:      "PreToolUse",
 		SessionID:          "sess_remote_uri",
