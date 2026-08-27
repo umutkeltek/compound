@@ -32,7 +32,7 @@
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.bun/bin:__HOME__/.local/bin</string>
     <key>SSD_GUARDIAN_FREE_FLOOR_GIB</key>
-    <string>140</string>
+    <string>200</string>
     <key>SSD_GUARDIAN_GIANT_FILE_GIB</key>
     <string>8</string>
     <key>SSD_GUARDIAN_LMSTUDIO_MIN_IDLE_SECONDS</key>

@@ -19,6 +19,13 @@ const DEFAULT_MIN_IDLE_SECONDS = 30 * 60;
 const DEFAULT_TEMP_CACHE_MIN_AGE_SECONDS = 60 * 60;
 const DEFAULT_TEMP_ROOT = "/private/tmp";
 const GO_BUILD_CACHE_MARKER = "This directory holds cached build artifacts from the Go build system.";
+const REBUILDABLE_TEMP_PREFIXES = [
+  "agent-session-backup-",
+  "compound-proofcheck-sealed-",
+  "go-build",
+  "switchback-forward-proxy-",
+  "switchback-tap-bodylog-",
+] as const;
 const LM_STUDIO_PORT = 1234;
 
 export type DeletedOpenFile = {
@@ -77,6 +84,12 @@ export function isRebuildableTemporaryGoCache(name: string): boolean {
     || name.startsWith("gocache-");
 }
 
+export function isRebuildableTemporaryTree(name: string): boolean {
+  return isRebuildableTemporaryGoCache(name)
+    || name === "pytest-of-umut"
+    || REBUILDABLE_TEMP_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
 function hasGoBuildCacheMarker(path: string): boolean {
   try {
     return readFileSync(join(path, "README"), "utf8").includes(GO_BUILD_CACHE_MARKER);
@@ -98,7 +111,7 @@ export function temporaryGoCaches(
     return candidates;
   }
   for (const entry of entries) {
-    if (!entry.isDirectory() || entry.isSymbolicLink() || !isRebuildableTemporaryGoCache(entry.name)) {
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !isRebuildableTemporaryTree(entry.name)) {
       continue;
     }
     const path = join(root, entry.name);
@@ -109,7 +122,7 @@ export function temporaryGoCaches(
         !stat.isDirectory()
         || stat.isSymbolicLink()
         || ageSeconds < minimumAgeSeconds
-        || !hasGoBuildCacheMarker(path)
+        || (isRebuildableTemporaryGoCache(entry.name) && !hasGoBuildCacheMarker(path))
       ) {
         continue;
       }
@@ -127,6 +140,15 @@ export function temporaryGoCaches(
   return candidates.sort((a, b) => b.sizeBytes - a.sizeBytes);
 }
 
+function lsofHasOnlyUnrelatedMountWarnings(stderr: string): boolean {
+  const lines = stderr.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.length > 0 && lines.every((line) =>
+    line.startsWith("lsof: WARNING: can't stat()")
+    || line === "Output information may be incomplete."
+    || line.startsWith("assuming \"dev=")
+  );
+}
+
 function reclaimTemporaryGoCaches(
   candidates: TemporaryCacheCandidate[],
   apply: boolean,
@@ -142,7 +164,10 @@ function reclaimTemporaryGoCaches(
         !stat.isDirectory()
         || stat.isSymbolicLink()
         || ageSeconds < minimumAgeSeconds
-        || !hasGoBuildCacheMarker(candidate.path)
+        || (
+          isRebuildableTemporaryGoCache(basename(candidate.path))
+          && !hasGoBuildCacheMarker(candidate.path)
+        )
       ) {
         return { ...candidate, status: "failed", error: "candidate changed before reclaim" };
       }
@@ -150,7 +175,11 @@ function reclaimTemporaryGoCaches(
       if (holders.stdout.trim().length > 0) {
         return { ...candidate, status: "skipped_open" };
       }
-      if (!holders.ok && holders.stderr.trim().length > 0) {
+      if (
+        !holders.ok
+        && holders.stderr.trim().length > 0
+        && !lsofHasOnlyUnrelatedMountWarnings(holders.stderr)
+      ) {
         return {
           ...candidate,
           status: "failed",
@@ -273,6 +302,17 @@ export function decideGuardAction(input: {
   return { action: "unload_idle_lmstudio", reasons: [...reasons, "safe_idle_unload"] };
 }
 
+function macOSUserTemporaryRoot(): string {
+  const result = run(["getconf", "DARWIN_USER_TEMP_DIR"]);
+  const path = result.stdout.trim();
+  return result.ok && (
+      path.startsWith("/private/var/folders/")
+      || path.startsWith("/var/folders/")
+    )
+    ? path
+    : DEFAULT_TEMP_ROOT;
+}
+
 function freeBytes(): number {
   const result = run(["df", "-k", "/System/Volumes/Data"]);
   if (!result.ok) throw new Error(`df failed: ${result.stderr.trim()}`);
@@ -359,7 +399,7 @@ async function main(): Promise<void> {
     process.env.SSD_GUARDIAN_TEMP_CACHE_MIN_AGE_SECONDS
       ?? DEFAULT_TEMP_CACHE_MIN_AGE_SECONDS,
   );
-  const temporaryRoot = process.env.SSD_GUARDIAN_TEMP_ROOT ?? DEFAULT_TEMP_ROOT;
+  const temporaryRoot = process.env.SSD_GUARDIAN_TEMP_ROOT ?? macOSUserTemporaryRoot();
 
   const beforeFreeBytes = freeBytes();
   const temporaryCacheCandidates = beforeFreeBytes < freeFloorBytes

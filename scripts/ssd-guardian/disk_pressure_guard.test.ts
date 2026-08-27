@@ -12,6 +12,7 @@ import { describe, expect, test } from "bun:test";
 import {
   decideGuardAction,
   isRebuildableTemporaryGoCache,
+  isRebuildableTemporaryTree,
   parseDeletedOpenFiles,
   parseLoadedModels,
   parseElapsedSeconds,
@@ -151,15 +152,31 @@ describe("temporary Go cache selection", () => {
     expect(isRebuildableTemporaryGoCache("source")).toBe(false);
   });
 
+  test("matches only explicit rebuildable macOS temp-tree families", () => {
+    expect(isRebuildableTemporaryTree("agent-session-backup-deadbeef")).toBe(true);
+    expect(isRebuildableTemporaryTree("compound-proofcheck-sealed-123")).toBe(true);
+    expect(isRebuildableTemporaryTree("go-build123456")).toBe(true);
+    expect(isRebuildableTemporaryTree("switchback-tap-bodylog-http-123")).toBe(true);
+    expect(isRebuildableTemporaryTree("switchback-forward-proxy-https-123")).toBe(true);
+    expect(isRebuildableTemporaryTree("pytest-of-umut")).toBe(true);
+    expect(isRebuildableTemporaryTree("agent-session-backups-important")).toBe(false);
+    expect(isRebuildableTemporaryTree("compound-copy")).toBe(false);
+  });
+
   test("selects only old real directories and never symlinks or user trees", () => {
     const root = mkdtempSync(join(tmpdir(), "ssd-guardian-cache-test-"));
     try {
       const oldCache = join(root, "gocache-old");
       const freshCache = join(root, "gocache-fresh");
+      const staleBackup = join(root, "agent-session-backup-stale");
+      const freshBackup = join(root, "agent-session-backup-fresh");
       const userTree = join(root, "compound-copy");
       const unmarkedCache = join(root, "gocache-user-source");
       mkdirSync(oldCache);
       mkdirSync(freshCache);
+      mkdirSync(staleBackup);
+      mkdirSync(freshBackup);
+      writeFileSync(join(staleBackup, "manifest.json"), "{}\n");
       mkdirSync(userTree);
       mkdirSync(unmarkedCache);
       writeFileSync(
@@ -169,14 +186,18 @@ describe("temporary Go cache selection", () => {
       const nowMs = Date.now();
       const old = new Date(nowMs - 8 * 60 * 60 * 1000);
       utimesSync(oldCache, old, old);
+      utimesSync(staleBackup, old, old);
       utimesSync(unmarkedCache, old, old);
       symlinkSync(oldCache, join(root, "gocache-link"));
 
       const candidates = temporaryGoCaches(root, 60 * 60, nowMs);
-      expect(candidates).toHaveLength(1);
-      expect(candidates[0]?.path).toBe(oldCache);
-      expect(candidates[0]?.ageSeconds).toBe(8 * 60 * 60);
-      expect(candidates[0]?.sizeBytes).toBeGreaterThan(0);
+      expect(candidates).toHaveLength(2);
+      expect(candidates.map((candidate) => candidate.path).sort()).toEqual([
+        oldCache,
+        staleBackup,
+      ].sort());
+      expect(candidates.every((candidate) => candidate.ageSeconds === 8 * 60 * 60)).toBe(true);
+      expect(candidates.every((candidate) => candidate.sizeBytes > 0)).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
