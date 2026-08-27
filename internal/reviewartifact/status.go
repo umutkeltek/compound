@@ -1,6 +1,12 @@
 package reviewartifact
 
-import "strings"
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+)
 
 // terminalStatuses is the ONE owner of "this review artifact is finished".
 //
@@ -35,4 +41,46 @@ var terminalStatuses = map[string]bool{
 // packages must use this instead of re-listing the words.
 func TerminalStatus(status string) bool {
 	return terminalStatuses[strings.TrimSpace(status)]
+}
+
+// OwnerResult is an owner-written `<stem>.result.json` sibling of a core
+// review artifact whose status is terminal. It is the owner saying "this plan
+// ran to completion" in its own schema, outside the generic
+// `<stem>.reviewed.json` resolution sidecar.
+type OwnerResult struct {
+	ID     string
+	Status string
+	Path   string
+}
+
+// ownerTerminalResult reads `<dir>/<stem>.result.json` and returns it only
+// when its status is terminal. A missing or non-terminal result returns nil.
+//
+// Why this exists: a plan artifact freezes its birth status (`review_required`)
+// into the file; the owner later records the outcome in a sibling result. The
+// result is itself counted OK, but nothing carried that verdict back onto the
+// plan, so 651 completed worktree retirements kept surfacing as decisions the
+// operator owed. The rule: a terminal owner result on the same stem
+// terminalizes the plan. A result that is not terminal (still running) leaves
+// the plan open — the fold must never hide a retirement that has not happened.
+func ownerTerminalResult(dir, stem string) (*OwnerResult, error) {
+	path := filepath.Join(dir, stem+".result.json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, nil // an unreadable result is no verdict; leave the plan open
+	}
+	if !TerminalStatus(payload.Status) {
+		return nil, nil
+	}
+	return &OwnerResult{ID: strings.TrimSpace(payload.ID), Status: strings.TrimSpace(payload.Status), Path: path}, nil
 }

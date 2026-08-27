@@ -921,6 +921,18 @@ func queueItemForRel(path, rel string) (QueueItem, error) {
 		return QueueItem{}, err
 	}
 	item.ExtraPaths = extras
+	if result, err := ownerTerminalResult(filepath.Dir(path), stem); err != nil {
+		return QueueItem{}, err
+	} else if result != nil && !TerminalStatus(item.Status) {
+		// The owner already ran this plan to completion; the plan's frozen birth
+		// status is not a decision the operator still owes.
+		item.Status = result.Status
+		item.Readiness = "no_action"
+		item.Band = BandFiled
+		item.Actions = nil
+		item.BlockedReason = ""
+		item.NextAction = "owner result recorded: " + FirstNonEmpty(result.ID, filepath.Base(result.Path)) + " (" + result.Status + ")"
+	}
 	if resolution, warning := reviewResolutionForCore(path); resolution != nil {
 		item.Resolution = resolution
 	} else if warning != "" {
