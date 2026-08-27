@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/contract"
 	"compound/internal/envelope"
 	"compound/internal/harness"
 	"compound/internal/hook"
@@ -67,6 +70,68 @@ func TestLiveShellIntentCarriesTheHookCwd(t *testing.T) {
 	}
 	if pd := policy.Evaluate(held[0], cfg, autonomyLiveNow()); !policy.Allowed(pd) {
 		t.Fatalf("in-envelope command outcome=%q reasons=%v; want allowed", pd.Outcome, pd.Reasons)
+	}
+}
+
+func TestLivePreToolUseRemoteURIDoesNotInheritLocalProjectGrant(t *testing.T) {
+	workspace := t.TempDir()
+	locator := "ssh://example-apps.internal/srv/stacks/searxng"
+	payload, err := json.Marshal(claudeLiveHookInput{
+		HookEventName:      "PreToolUse",
+		SessionID:          "sess_remote_uri",
+		Cwd:                workspace,
+		ToolName:           "mcp__fixture__probe",
+		ToolSchemaRevision: "fixture:v1",
+		ToolInput:          map[string]any{"path": locator},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := liveHookFixture(hookCommandArgs{
+		HookName: "pre-tool-use",
+		Harness:  "claude_minimax",
+		Live:     true,
+		Enforce:  true,
+	}, payload, autonomyLiveNow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := policy.DefaultConfig()
+	cfg.OperatorAutonomyLevel = policy.AutonomyLevelFullProjectScope
+	cfg.OperatorAutonomyAuthorityRef = policy.OperatorStateAuthorityRef
+	cfg.StandingGrants = []policy.StandingGrant{{
+		ID:         "grant_local_project_only",
+		TargetPath: filepath.ToSlash(workspace) + "/**",
+	}}
+	result, err := hook.Run(fixture, hook.Deps{
+		Registry: harness.DefaultRegistry(),
+		Orient:   contract.DefaultPolicy(),
+		Policy:   cfg,
+	}, autonomyLiveNow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var action *envelope.ActionIntent
+	var decision *envelope.PolicyDecision
+	for _, produced := range result.Produced {
+		switch typed := produced.(type) {
+		case *envelope.ActionIntent:
+			action = typed
+		case *envelope.PolicyDecision:
+			decision = typed
+		}
+	}
+	if action == nil || decision == nil {
+		t.Fatalf("produced=%+v, want action and policy decision", result.Produced)
+	}
+	if action.Target.Path != "" || action.Target.ID != locator || action.Destination != locator {
+		t.Fatalf("remote target localized: %+v", action)
+	}
+	if action.SecurityFloorOutcome != "hold" || !slices.Contains(action.SecurityReasons, hook.NonLocalTargetSecurityReason) {
+		t.Fatalf("remote target security floor=%q reasons=%v", action.SecurityFloorOutcome, action.SecurityReasons)
+	}
+	if policy.Allowed(*decision) || decision.StandingGrantID != "" {
+		t.Fatalf("remote target inherited local grant: %+v", decision)
 	}
 }
 

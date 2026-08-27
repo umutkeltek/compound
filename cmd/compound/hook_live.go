@@ -985,10 +985,11 @@ func liveMutationInputReference(harnessName string, in claudeLiveHookInput, targ
 		if target == "" {
 			continue
 		}
-		if !filepath.IsAbs(target) && strings.TrimSpace(in.Cwd) != "" {
-			target = filepath.Join(in.Cwd, target)
+		if localPath, local := hook.LocalTargetPath(target, in.Cwd); local {
+			targets = append(targets, localPath)
+		} else {
+			targets = append(targets, "locator:"+target)
 		}
-		targets = append(targets, filepath.Clean(target))
 	}
 	sort.Strings(targets)
 	canonicalTargets := targets[:0]
