@@ -11,6 +11,7 @@ import (
 
 	"compound/internal/envelope"
 	"compound/internal/home"
+	"compound/internal/hook"
 	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/routeev"
@@ -1796,7 +1797,7 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "close":
-		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--opens-branch slug:owner:kind]... [--steal --reason R]\n  (passing --used at all — even --used \"\" for declared-none — stamps skills.used_declared=true, so injected-but-unused refs count as ignored; omitting --used leaves them unknown)\n  (--opens-branch declares a future branch on the emitted transition: kind is opens|blocks|supersedes|validates|retires|routes_to; the owner may itself contain colons)\n  (a work held by another actor's lease refuses close unless --by/--actor matches the holder, or --steal --reason \"...\" is given)"
+		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--opens-branch slug:owner:kind]... [--steal --reason R] [--transcript PATH]\n  (passing --used at all — even --used \"\" for declared-none — stamps skills.used_declared=true, so injected-but-unused refs count as ignored; omitting --used leaves them unknown)\n  (--transcript PATH, or COMPOUND_TRANSCRIPT_PATH, runs the same injected-ref consumption detector the SessionEnd hook runs, so a governed close can declare what it consumed; an absent or unreadable transcript is fail-open — unknown, never ignored, never a blocked close)\n  (--opens-branch declares a future branch on the emitted transition: kind is opens|blocks|supersedes|validates|retires|routes_to; the owner may itself contain colons)\n  (a work held by another actor's lease refuses close unless --by/--actor matches the holder, or --steal --reason \"...\" is given)"
 		closeValueFlags := map[string]bool{
 			"--outcome":               true,
 			"--move-type":             true,
@@ -1817,6 +1818,7 @@ func cmdWork(args []string) {
 			"--opens-branch":          true,
 			"--reason":                true,
 			"--acknowledge-abandoned": true,
+			"--transcript":            true,
 		}
 		if err := validateKnownFlags(rest, closeValueFlags, map[string]bool{
 			"--changed": true,
@@ -1841,6 +1843,13 @@ func cmdWork(args []string) {
 		closeID := pos(closeValueFlags)
 		closeActor := firstNonEmpty(flag("--by"), flag("--actor"))
 		closeProofRefs := flagCSVValues(rest, "--proof", "--proof-ref")
+		// The close-side consumption edge. When a transcript is reachable, the governed close runs
+		// the SAME detector the SessionEnd hook runs, so a governed close can finally make an
+		// honest statement about which injected refs it consumed instead of leaving every one of
+		// them UNKNOWN. Fail-open by construction: no transcript means (nil, false) — unknown, not
+		// ignored — and never a blocked close. See hook.ConsumptionForClose.
+		closeTranscript := firstNonEmpty(flag("--transcript"), os.Getenv("COMPOUND_TRANSCRIPT_PATH"))
+		closeConsumedRefs, closeTranscriptDeclared := hook.ConsumptionForClose(store, homePath, closeID, closeTranscript)
 		res, err := store.Close(closeID, work.CloseInput{
 			Outcome:          flag("--outcome"),
 			MoveType:         flag("--move-type"),
@@ -1848,9 +1857,11 @@ func cmdWork(args []string) {
 			Summary:          flag("--summary"),
 			Changed:          has("--changed"),
 			UsedCapabilities: splitCSV(flag("--used")),
-			// Declared iff --used was EXPLICITLY passed (even --used "" = declared-none). Omitting
-			// the flag leaves used_declared=false, so injected refs stay unknown, not ignored.
-			UsedDeclared:               has("--used"),
+			// Declared iff --used was EXPLICITLY passed (even --used "" = declared-none), OR the
+			// transcript detector actually ran. Omitting both leaves used_declared=false, so
+			// injected refs stay unknown, not ignored.
+			UsedDeclared:               has("--used") || closeTranscriptDeclared,
+			ConsumedRefs:               closeConsumedRefs,
 			MissedCapabilities:         splitCSV(flag("--missed")),
 			FalseTriggeredCapabilities: splitCSV(flag("--false-triggered")),
 			ProofRefs:                  closeProofRefs,
