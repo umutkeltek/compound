@@ -500,6 +500,30 @@ func reclaimEnvelope(s *Store, w envelope.WorkEnvelope, candidate SweepStaleCand
 	// temp+rename seam so a partial write cannot corrupt work.json.
 	updated := w
 	updated.State = target
+
+	// CUSTODY: a writer that MUTATES a work envelope must RE-SEAL it.
+	//
+	// The autonomy director verifies a terminal work by re-hashing its envelope and
+	// comparing that to the most recent work_sha256 recorded on the work's lifecycle
+	// events. Close and Advance have always carried that seal (see the Event built in
+	// work.go). sweep-stale did not: it rewrote the envelope's state and appended an
+	// UNSEALED event, so the newest recorded hash still described the pre-sweep bytes.
+	// Every work this reclaimed therefore failed the director's custody check, and
+	// because that check fail-closes on the whole cohort rather than excluding one
+	// sample, a single swept envelope silently vetoed `director propose` — i.e. one
+	// governed subsystem disabled another, with no error surfaced at the sweep.
+	//
+	// Hash BEFORE the write so a hashing failure cannot leave a mutated envelope on
+	// disk with no matching seal.
+	previousWorkSHA256, err := workEnvelopeSHA256(w)
+	if err != nil {
+		return fmt.Errorf("seal pre-sweep envelope %s: %w", w.ID, err)
+	}
+	sweptWorkSHA256, err := workEnvelopeSHA256(updated)
+	if err != nil {
+		return fmt.Errorf("seal swept envelope %s: %w", w.ID, err)
+	}
+
 	if err := s.writeJSON(s.workPath(w.ID), &updated); err != nil {
 		return fmt.Errorf("write envelope %s: %w", w.ID, err)
 	}
@@ -509,12 +533,14 @@ func reclaimEnvelope(s *Store, w envelope.WorkEnvelope, candidate SweepStaleCand
 	// evidence. Append is the same path Close and Advance use
 	// (envelope write first, event second; reconciliation reads both).
 	event := Event{
-		TS:     ts(now),
-		WorkID: w.ID,
-		From:   w.State,
-		To:     target,
-		By:     "sweep-stale",
-		Note:   candidate.SweepReason,
+		TS:                 ts(now),
+		WorkID:             w.ID,
+		From:               w.State,
+		To:                 target,
+		By:                 "sweep-stale",
+		Note:               candidate.SweepReason,
+		PreviousWorkSHA256: previousWorkSHA256,
+		WorkSHA256:         sweptWorkSHA256,
 	}
 	if err := s.appendEvent(event); err != nil {
 		return fmt.Errorf("append reclaim event for %s: %w", w.ID, err)
