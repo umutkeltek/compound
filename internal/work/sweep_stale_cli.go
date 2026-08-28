@@ -98,7 +98,7 @@ func RunWorkSweepStaleCLI(args []string, store *Store, homePath string, now time
 		err error
 	)
 	if dryRun {
-		rep, err = store.SweepStalePlan(threshold, probe)
+		rep, err = store.SweepStalePlan(threshold, probe, time.Time{})
 	} else {
 		rep, err = store.SweepStaleApply(threshold, probe, now)
 	}

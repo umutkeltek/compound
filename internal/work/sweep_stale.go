@@ -242,9 +242,12 @@ func (p *DefaultSweepStaleProbe) LeaseHeld(workID string) (bool, error) {
 
 // SweepStalePlan diagnoses every reclaim candidate and returns the operator-
 // facing report WITHOUT mutating anything. Use this as the read-only
-// preview; --dry-run calls it.
-func (s *Store) SweepStalePlan(threshold time.Duration, probe SweepStaleProbe) (SweepStaleReport, error) {
-	return sweepStaleEvaluate(s, threshold, probe, false, time.Time{})
+// preview; --dry-run calls it. Like SweepStaleApply it takes the caller's clock
+// (zero = real clock): a plan that silently re-derived time.Now() while apply
+// took `now` let a test pinned to a fixed date expire 72h later and turn
+// main red for every lane (lived 2026-08-27).
+func (s *Store) SweepStalePlan(threshold time.Duration, probe SweepStaleProbe, now time.Time) (SweepStaleReport, error) {
+	return sweepStaleEvaluate(s, threshold, probe, false, now)
 }
 
 // SweepStaleApply diagnoses every reclaim candidate and APPLIES the reclaim

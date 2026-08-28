@@ -227,7 +227,7 @@ func TestSweepStaleReclaimsClaimedEnvelopeWithAbandonedAttempt(t *testing.T) {
 	probe := newFakeProbe()
 	// All probe methods return live=false; envelope is reclaimable.
 
-	rep, err := s.SweepStalePlan(72*time.Hour, probe)
+	rep, err := s.SweepStalePlan(72*time.Hour, probe, now)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestSweepStaleExcludesEnvelopeWithLiveRunAttempt(t *testing.T) {
 	probe := newFakeProbe()
 	probe.liveAttempts[w.ID] = true // Live attempt bound to this work.
 
-	rep, err := s.SweepStalePlan(72*time.Hour, probe)
+	rep, err := s.SweepStalePlan(72*time.Hour, probe, now)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestSweepStaleExcludesFreshRunningEnvelope(t *testing.T) {
 
 	probe := newFakeProbe()
 
-	rep, err := s.SweepStalePlan(72*time.Hour, probe)
+	rep, err := s.SweepStalePlan(72*time.Hour, probe, now)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestSweepStaleFailClosedOnProbeError(t *testing.T) {
 	// Simulate a transient probe fault on the delegate lookup.
 	probe.probeErrOnWorkIDs[w.ID] = errors.New("delegate runner unavailable")
 
-	rep, err := s.SweepStalePlan(72*time.Hour, probe)
+	rep, err := s.SweepStalePlan(72*time.Hour, probe, now)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestSweepStaleExcludesOnLiveDelegateAndLease(t *testing.T) {
 	probe.liveDelegates[delegateLive.ID] = true
 	probe.heldLeases[leaseHeld.ID] = true
 
-	rep, err := s.SweepStalePlan(72*time.Hour, probe)
+	rep, err := s.SweepStalePlan(72*time.Hour, probe, now)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -562,7 +562,7 @@ func TestSweepStaleIgnoresTerminalEnvelopes(t *testing.T) {
 	}
 
 	probe := newFakeProbe()
-	rep, err := s.SweepStalePlan(72*time.Hour, probe)
+	rep, err := s.SweepStalePlan(72*time.Hour, probe, now)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
