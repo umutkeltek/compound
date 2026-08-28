@@ -37,3 +37,9 @@ node_modules/
 
 # understand/knowledge-graph analysis output (generated, ~745 MB) — never committed
 /graphify-out/
+
+# Python bytecode. Untracked __pycache__ dirs dirty the worktree, and a dirty tree
+# refuses every certifying proof-check battery ("certifying proof requires a clean
+# committed Git worktree") — so a missing ignore here silently blocks landing.
+__pycache__/
+*.py[cod]
