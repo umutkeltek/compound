@@ -1,8 +1,10 @@
 package work
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -69,9 +71,48 @@ func writeTamperedClosePending(t *testing.T, s *Store, pending closePending, res
 
 func assertClosePendingFrameRejected(t *testing.T, s *Store, workID string) {
 	t.Helper()
+	beforeWork, err := s.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents, err := s.eventsFor(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeLease := readOptionalCloseAuthorityFile(t, s.leasePath(workID))
 	if _, present, err := s.loadClosePending(workID); err == nil || present || !strings.Contains(err.Error(), "close recovery_required") {
 		t.Fatalf("tampered close frame load: present=%v err=%v, want recovery_required rejection", present, err)
 	}
+	afterWork, err := s.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterEvents, err := s.eventsFor(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterLease := readOptionalCloseAuthorityFile(t, s.leasePath(workID))
+	if !reflect.DeepEqual(afterWork, beforeWork) {
+		t.Fatal("tampered close frame load changed the WorkEnvelope")
+	}
+	if !reflect.DeepEqual(afterEvents, beforeEvents) {
+		t.Fatal("tampered close frame load changed lifecycle events")
+	}
+	if !bytes.Equal(afterLease, beforeLease) {
+		t.Fatal("tampered close frame load changed lease bytes")
+	}
+}
+
+func readOptionalCloseAuthorityFile(t *testing.T, path string) []byte {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }
 
 func TestClosePendingFrameChecksumRejectsParseableTamper(t *testing.T) {
@@ -122,6 +163,16 @@ func TestClosePendingFrameRejectsResealedSemanticTamper(t *testing.T) {
 				p.RunAttempts[0].Attempt.ActionIntentID = "act_tampered_snapshot"
 			},
 		},
+		{
+			name: "runattempt_status_precondition",
+			mutate: func(p *closePending) {
+				if p.RunAttempts[0].Attempt.Status == "pending" {
+					p.RunAttempts[0].Attempt.Status = "running"
+				} else {
+					p.RunAttempts[0].Attempt.Status = "pending"
+				}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -151,19 +202,70 @@ func TestClosePendingFrameRejectsResealedSemanticTamper(t *testing.T) {
 }
 
 func TestClosePendingFrameRejectsResealedGitExpectationTamper(t *testing.T) {
-	now := time.Date(2026, 7, 14, 6, 0, 0, 0, time.UTC)
-	fixture := newLandingProofFixture(t, now)
-	pending := freezeClosePendingAfterPrepare(t, fixture.store, fixture.workID, CloseInput{
-		Outcome:   "completed",
-		MoveType:  "outward_delta",
-		Actor:     "codex",
-		Summary:   "bind Git expectation to frozen landing proof",
-		ProofRefs: []string{fixture.proof.EvidenceRef},
-	}, now.Add(10*time.Minute))
-	if len(pending.Git.Expectations) != 1 {
-		t.Fatalf("Git expectations = %+v, want one local target", pending.Git.Expectations)
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *closePending)
+	}{
+		{name: "repository_path", mutate: func(t *testing.T, p *closePending) {
+			p.Git.RepositoryPath = t.TempDir()
+		}},
+		{name: "ref", mutate: func(_ *testing.T, p *closePending) {
+			p.Git.Expectations[0].Ref = "refs/heads/tampered"
+		}},
+		{name: "sha", mutate: func(_ *testing.T, p *closePending) {
+			p.Git.Expectations[0].SHA = strings.Repeat("a", 40)
+		}},
 	}
-	pending.Git.Expectations[0].Ref = "refs/heads/tampered"
-	writeTamperedClosePending(t, fixture.store, pending, true)
-	assertClosePendingFrameRejected(t, fixture.store, fixture.workID)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 7, 14, 6, 0, 0, 0, time.UTC)
+			fixture := newLandingProofFixture(t, now)
+			pending := freezeClosePendingAfterPrepare(t, fixture.store, fixture.workID, CloseInput{
+				Outcome:   "completed",
+				MoveType:  "outward_delta",
+				Actor:     "codex",
+				Summary:   "bind Git expectation to frozen landing proof",
+				ProofRefs: []string{fixture.proof.EvidenceRef},
+			}, now.Add(10*time.Minute))
+			if len(pending.Git.Expectations) != 1 {
+				t.Fatalf("Git expectations = %+v, want one local target", pending.Git.Expectations)
+			}
+			tt.mutate(t, &pending)
+			writeTamperedClosePending(t, fixture.store, pending, true)
+			assertClosePendingFrameRejected(t, fixture.store, fixture.workID)
+		})
+	}
+}
+
+func TestClosePendingFrameRejectsRunAttemptMembershipTamper(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*closePending)
+	}{
+		{name: "omitted", mutate: func(p *closePending) {
+			p.RunAttempts = nil
+		}},
+		{name: "duplicated", mutate: func(p *closePending) {
+			p.RunAttempts = append(p.RunAttempts, p.RunAttempts[0])
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newStore(t)
+			workID, _ := closeTerminalizeWork(t, s, "close-frame-membership-"+tt.name, fixedNow)
+			pending := freezeClosePendingAfterPrepare(t, s, workID, CloseInput{
+				Outcome:   "completed",
+				MoveType:  "control_plane_repair",
+				Actor:     "codex",
+				Summary:   "bind exact RunAttempt membership",
+				ProofRefs: []string{"check:close-frame-membership"},
+			}, fixedNow.Add(5*time.Minute))
+			if len(pending.RunAttempts) == 0 {
+				t.Fatal("membership fixture has no frozen RunAttempt")
+			}
+			tt.mutate(&pending)
+			writeTamperedClosePending(t, s, pending, true)
+			assertClosePendingFrameRejected(t, s, workID)
+		})
+	}
 }
