@@ -2722,8 +2722,11 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 			}
 			historicalCompletedAttempt := in.Outcome == "completed" &&
 				(history.SuccessfulRetryPredecessors[id] || len(history.ReplacedClaimReservations[id]) > 0)
+			// A policy refusal before execution has no task outcome. Completed
+			// close may bind only the helper's exact no-side-effect shape.
+			preExecRefusal := in.Outcome == "completed" && runAttemptPolicyRefusedBeforeExecution(ra)
 			if ra.Status != runattempt.StatusSuperseded && ra.Status != workTarget &&
-				!historicalCompletedAttempt {
+				!historicalCompletedAttempt && !preExecRefusal {
 				verifiedProof, err := s.committedVerifiedProofRunAttempt(closing, ra)
 				if err != nil {
 					return nil, fmt.Errorf("terminal runattempt %s proof-resource exception invalid: %w", id, err)
