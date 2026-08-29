@@ -506,13 +506,14 @@ func (s *Store) closePendingAuthorityStarted(pending closePending) (bool, error)
 		}
 	}
 	for _, id := range []string{pending.Action.ID, pending.Decision.ID, pending.Receipt.ID, pending.Transition.ID} {
-		exists, err := s.eventExists(id)
-		if err != nil {
+		var record json.RawMessage
+		if err := s.readEventJSON(id, &record); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			return true, err
 		}
-		if exists {
-			return true, nil
-		}
+		return true, nil
 	}
 	store := s.runAttempts()
 	for _, frozen := range pending.RunAttempts {
