@@ -1064,6 +1064,13 @@ func (s *Store) recoverPendingClaimBeforeLifecycleMutation(workID string, allowP
 			return current, fmt.Errorf("work %s claimed authority is inconsistent: %w", workID, err)
 		}
 	}
+	if !allowPreparedClose {
+		if pending, present, err := s.loadClosePending(workID); err != nil {
+			return current, err
+		} else if present {
+			return current, closeRecoveryRequired("work %s has frozen close %s/%s; retry the exact work close before another lifecycle mutation", workID, pending.Action.ID, pending.Decision.ID)
+		}
+	}
 	if !allowPreparedClose && !terminalStates[current.State] {
 		intent, err := s.preparedCloseIntentForWork(workID)
 		if err != nil {
@@ -2862,6 +2869,11 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if err != nil {
 		return res, err
 	}
+	if pending, present, err := s.loadClosePending(workID); err != nil {
+		return res, err
+	} else if present {
+		return s.completeClosePending(pending, in)
+	}
 	if err := validateExpectedExecutionReservation(w, in.ExpectedWorkState, in.ExpectedPolicyDecisionID, in.ExpectedActionIntentID); err != nil {
 		return res, err
 	}
@@ -3111,35 +3123,28 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if err != nil {
 		return res, err
 	}
-	var referenceTransaction gitReferenceTransaction
+	var referenceRepositoryPath string
+	var referenceExpectations []gitReferenceExpectation
 	if landingProof != nil {
 		currentProof, err := s.revalidateLandedProof(w, *landingProof, now)
 		if err != nil {
 			return res, err
 		}
-		expectations := []gitReferenceExpectation{{
+		referenceExpectations = []gitReferenceExpectation{{
 			Ref: currentProof.TargetBranchRef,
 			SHA: currentProof.TargetSHA,
 		}}
 		if currentProof.PublicationMode == "required" {
-			expectations = append(expectations, gitReferenceExpectation{
+			referenceExpectations = append(referenceExpectations, gitReferenceExpectation{
 				Ref: currentProof.PublicationRef,
 				SHA: currentProof.PublicationSHA,
 			})
 		}
-		referenceTransaction, err = startGitReferenceTransaction(currentProof.RepoPath, expectations)
-		if err != nil {
-			return res, fmt.Errorf("prepare Git reference transaction: %w", err)
-		}
-		// Git's transaction makes only the target/publication ref values atomic.
-		// Revalidate repository identity once more while those locks are held and
-		// before the first terminal byte; Git does not lock config or object roots.
+		referenceRepositoryPath = currentProof.RepoPath
+		// Freeze repository identity before the pending frame. Recovery repeats
+		// this validation and re-prepares the exact ref expectations.
 		if err := s.validateBoundGitDelivery(w); err != nil {
-			identityErr := fmt.Errorf("final repository identity revalidation: %w", err)
-			if abortErr := referenceTransaction.Abort(); abortErr != nil {
-				return res, errors.Join(identityErr, fmt.Errorf("abort Git reference transaction: %w", abortErr))
-			}
-			return res, identityErr
+			return res, fmt.Errorf("final repository identity revalidation: %w", err)
 		}
 	}
 	// Decide lease authority read-only before preparing terminalization intents.
@@ -3149,11 +3154,6 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	// recovery boundary and success is published with the terminal close event.
 	closeLeaseStatus := s.leaseHolderStatusFor(w.ID, actor, in.Steal, in.StealReason, "close")
 	if closeLeaseStatus.Err != nil {
-		if referenceTransaction != nil {
-			if abortErr := referenceTransaction.Abort(); abortErr != nil {
-				return res, errors.Join(closeLeaseStatus.Err, fmt.Errorf("abort Git reference transaction: %w", abortErr))
-			}
-		}
 		return res, closeLeaseStatus.Err
 	}
 	if closeLeaseStatus.Blocked {
@@ -3169,81 +3169,24 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		if gateErr == nil {
 			gateErr = fmt.Errorf("cannot close %s: %s", w.ID, closeLeaseStatus.Message)
 		}
-		if referenceTransaction != nil {
-			if abortErr := referenceTransaction.Abort(); abortErr != nil {
-				return res, errors.Join(gateErr, fmt.Errorf("abort Git reference transaction: %w", abortErr))
-			}
-		}
 		return res, gateErr
 	}
-	referenceTransactionFinished := false
-	defer func() {
-		// An unexpected panic must not strand Git ref locks. Ordinary persistence
-		// failures abort explicitly below so an abort failure can be reported.
-		if referenceTransaction != nil && !referenceTransactionFinished {
-			_ = referenceTransaction.Abort()
-		}
-	}()
-	abortReferenceTransaction := func(cause error) error {
-		if referenceTransaction == nil {
-			return cause
-		}
-		abortErr := referenceTransaction.Abort()
-		referenceTransactionFinished = true
-		if abortErr != nil {
-			return errors.Join(cause, fmt.Errorf("abort Git reference transaction: %w", abortErr))
-		}
-		return cause
-	}
-	// Preparing every non-terminal attempt is the durable recovery boundary;
-	// it precedes a successful lease transfer and every close envelope/work byte.
-	if err := s.prepareRunAttemptTerminalizations(terminalizationPlans); err != nil {
-		return res, abortReferenceTransaction(err)
-	}
-	closeAfterTerminalizationPrepare()
-	// REL-P0-001: a terminal override is one final authorization decision, not a
-	// transient lease rewrite. Re-read the holder under the lifecycle lock and
-	// require the exact decision retained above. The ActionIntent already binds
-	// holder/reason; success is published only with the terminal close event.
-	if closeLeaseStatus.Stolen {
-		if err := s.leaseHolderCloseGate(w, actor, in, closeLeaseStatus); err != nil {
-			return res, abortReferenceTransaction(err)
-		}
-		closeAfterLeaseStealDecision()
-	}
 
-	// Persist the emitted envelopes, then land the work terminal and link the transition.
-	if err := s.writeEventJSON(plan.ActionIntent.ID, &plan.ActionIntent); err != nil {
-		return res, abortReferenceTransaction(err)
-	}
-	closeAfterFirstEnvelopeWrite()
-	if err := s.writeEventJSON(plan.Decision.ID, &plan.Decision); err != nil {
-		return res, abortReferenceTransaction(err)
-	}
-	if err := s.writeEventJSON(rec.ID, &rec); err != nil {
-		return res, abortReferenceTransaction(err)
-	}
-	if err := s.writeEventJSON(tr.ID, &tr); err != nil {
-		return res, abortReferenceTransaction(err)
-	}
 	from := w.State
 	w.State = in.Outcome
 	w.IDs.TransitionID = tr.ID
 	// Never persist an envelope that fails the current schema: the lifecycle
 	// must not mint valid receipts/transitions citing an invalid spine object.
 	if err := w.Validate(); err != nil {
-		return res, abortReferenceTransaction(fmt.Errorf("refusing to persist invalid terminal envelope: %w", err))
-	}
-	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
-		return res, abortReferenceTransaction(err)
+		return res, fmt.Errorf("refusing to persist invalid terminal envelope: %w", err)
 	}
 	workSHA256, err := workEnvelopeSHA256(w)
 	if err != nil {
-		return res, abortReferenceTransaction(err)
+		return res, err
 	}
 	receiptSHA256, err := receiptEnvelopeSHA256(rec)
 	if err != nil {
-		return res, abortReferenceTransaction(err)
+		return res, err
 	}
 	closeEvent := Event{
 		TS:                               ts(closeNow),
@@ -3266,42 +3209,27 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 			closeEvent.Note,
 		)
 	}
-	if err := s.appendEvent(closeEvent); err != nil {
-		return res, abortReferenceTransaction(err)
+	leaseSnapshot, capturedLease, err := s.captureClosePendingLease(workID)
+	if err != nil {
+		return res, err
 	}
-	if referenceTransaction != nil {
-		if err := referenceTransaction.Commit(); err != nil {
-			referenceTransactionFinished = true
-			return res, fmt.Errorf("commit Git reference transaction: %w", err)
-		}
-		referenceTransactionFinished = true
+	frozenLeaseHolder := strings.TrimSpace(capturedLease.By)
+	if closeLeaseStatus.Holder != "" && closeLeaseStatus.Holder != frozenLeaseHolder {
+		return res, fmt.Errorf("close lease authority changed before recovery frame: expected holder %q, got holder %q", closeLeaseStatus.Holder, capturedLease.By)
 	}
-	// I1: a lease must not outlive its work's terminal state. Close is the ONLY
-	// path into a terminal state (Advance refuses one — terminalStateRequiresClose),
-	// so releasing here retires the whole lease lifetime rather than deferring it
-	// to a sweep that may not run for weeks.
-	//
-	// Ordering is the invariant, not an implementation detail. The release runs
-	// only AFTER the terminal WorkEnvelope, receipt, transition, lifecycle event
-	// and Git reference transaction are durable, mirroring abandonRunAttempts'
-	// posture below: at this point the close cannot be rolled back, so cleanup
-	// is best-effort and a failure is a doctor-visible gap, not a lost close.
-	// The reverse order would be a real regression — a crash after an early
-	// release would leave a still-live claimed work with no lease, silently
-	// disarming leaseHolderCloseGate/leaseHolderAdvanceGate for whoever runs
-	// next. The residue this ordering can leave (terminal work + lease) is
-	// exactly the pair internal/home's sweep already backstops.
-	closeBeforeLeaseRelease()
-	s.releaseLease(workID)
-	// Only work-owned exact prepared intents complete here. Caller-owned plans
-	// remain non-terminal until their owner attaches post-close proof and
-	// completes the same immutable reservation. Any missed write is recoverable
-	// from the prepared intent plus the exact close chain.
-	unterminalizedRunAttemptIDs := s.terminalizePreparedRunAttempts(terminalizationPlans, now)
-	return CloseResult{
-		Work: w, Receipt: rec, Transition: tr,
-		UnterminalizedRunAttemptIDs: unterminalizedRunAttemptIDs,
-	}, nil
+	pending, err := newClosePending(
+		reservedWork, w, inputSHA256,
+		plan.ActionIntent, plan.Decision, rec, tr, closeEvent,
+		leaseSnapshot, frozenLeaseHolder, closeLeaseStatus.Stolen,
+		terminalizationPlans, referenceRepositoryPath, referenceExpectations,
+	)
+	if err != nil {
+		return res, fmt.Errorf("build close recovery frame: %w", err)
+	}
+	if err := s.persistClosePending(pending); err != nil {
+		return res, fmt.Errorf("persist close recovery frame: %w", err)
+	}
+	return s.completeClosePending(pending, in)
 }
 
 // terminalizePreparedRunAttempts writes only work-owned exact intents.
