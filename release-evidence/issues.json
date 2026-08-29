@@ -2,27 +2,36 @@
   "schema_version": "compound.release_issues.v0.1",
   "base_sha": "e5ecfd350e07286c8022b2efe5f86b8b9a7b2d3f",
   "branch": "release/harden-20260829",
-  "updated_at": "2026-08-29T13:15:00Z",
+  "updated_at": "2026-08-29T14:52:13Z",
   "issues": [
     {
       "id": "REL-P0-001",
       "severity": "P0",
       "subsystem": "work-close",
       "title": "Duplicate close lease-transfer gate",
-      "status": "reproduced",
-      "reproducer": "rg -n 'leaseHolderCloseGate\\(w, actor, in, now\\)' internal/work/work.go returns mutating calls at lines 3099 and 3129",
-      "root_cause": "Commit 95ad9e04 added a second leaseHolderCloseGate call while retaining the original call, allowing lease transfer before RunAttempt terminalization preparation can fail.",
+      "status": "fixing",
+      "reproducer": "Inject close failures before terminal publication and after WorkEnvelope publication but before lifecycle-event append; replace an existing lease with {} or a mismatched work_id; compare close ActionIntent IDs for delimiter-ambiguous holder/reason tuples.",
+      "root_cause": "The duplicate pre-terminal lease gate was removed, but close still publishes terminal work before its sole event without a resumable frame, lease reads do not validate exact work identity plus nonblank holder, and idFor lengthlessly joins authority fields with |.",
       "invariant": "A failed close cannot transfer the lease or publish a successful steal trail; the only lease-transfer decision occurs at the final recoverable boundary and an exact retry succeeds.",
-      "red_test": "TestCloseStealPrepareFailureLeavesLeaseAndWorkUnchangedThenRetries",
-      "fix_commits": [],
-      "focused_tests": [],
-      "broad_tests": [],
-      "evidence_paths": [
-        "release-evidence/runs/20260829-initial-inventory.json"
+      "red_test": "Existing red/green: TestCloseStealPrepareFailureLeavesLeaseAndWorkUnchangedThenRetries and deterministic post-gate crash coverage. Missing red coverage: work-before-event append failure recovery, parseable lease corruption, delimiter-safe authority identity, and Git-commit failure lease cleanup.",
+      "fix_commits": [
+        "ec080dbe12c72029d2b0cfa51c30ba9b5212fe7b",
+        "3eb9ea6bb0dde318db42a26e65c663ea8960c87e"
       ],
-      "residual_risk": "The regression test and fix are not yet committed; an active external lane currently owns internal/work.",
+      "focused_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/work -run <close-focused-regressions> -count=1 (pass, 10.879s)",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/work -run <close-focused-regressions> -count=1 (pass, 10.999s)"
+      ],
+      "broad_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/work -count=1 (failed: default 10m timeout)"
+      ],
+      "evidence_paths": [
+        "release-evidence/runs/20260829-initial-inventory.json",
+        "release-evidence/runs/20260829-p0-001-close-review.json"
+      ],
+      "residual_risk": "A close can durably publish terminal work without its event and become unretryable, parseable lease corruption can bypass close authority, authority IDs can collide, and Git transaction commit failure can retain a terminal lease.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-29T13:04:00Z"
+      "updated_at": "2026-08-29T14:52:13Z"
     },
     {
       "id": "REL-P0-002",
@@ -101,18 +110,29 @@
       "severity": "P0",
       "subsystem": "hook-budget",
       "title": "Harness-safe hook-budget resolution",
-      "status": "open",
-      "reproducer": "Set invalid, zero, negative, excessive, absent, valid, and harness-specific COMPOUND_HOOK_BUDGET values and resolve the effective deadline through production code.",
+      "status": "focused_green",
+      "reproducer": "TestHookBudgetInvalidOverrideCannotDefeatHarnessDeadline returned 45s for invalid oh_my_pi input while the harness ceiling was 6s; the fallback regression initially failed to compile against the old three-argument gate seam; the usage regression showed oh_my_pi absent.",
       "root_cause": "Invalid nonempty environment input collapses to the generic default while separately suppressing the shorter harness-specific deadline.",
       "invariant": "Absent, valid, and invalid inputs are distinct; invalid or unsafe overrides cannot defeat the harness deadline.",
-      "red_test": "Production resolver tri-state table not yet established.",
-      "fix_commits": [],
-      "focused_tests": [],
-      "broad_tests": [],
-      "evidence_paths": [],
-      "residual_risk": "oh_my_pi is currently dispatchable with a short harness budget, so this remains P0 unless that harness is explicitly gated out.",
+      "red_test": "TestHookBudgetInvalidOverrideCannotDefeatHarnessDeadline; TestRunHookCommandWithoutHomeReusesOuterAnswerGate; TestHookUsageNamesSupportedOmpHarness",
+      "fix_commits": [
+        "77d506af33a61c9d14d8effb17a23009b7e9dea4",
+        "dde11ad5eabf288672281c73d14fbc14248e8695"
+      ],
+      "focused_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound -run <hook-budget-regressions> -count=1 (pass, 0.593s)",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/hook ./cmd/compound -run <hook-budget-regressions> -count=1 (pass: 1.943s and 2.279s)",
+        "GOTOOLCHAIN=go1.26.4 go vet ./internal/hook ./internal/hookplan ./cmd/compound (pass)"
+      ],
+      "broad_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/hook ./internal/hookplan -count=1 (pass: 140.779s and 89.154s)"
+      ],
+      "evidence_paths": [
+        "release-evidence/runs/20260829-p0-006-hook-budget.json"
+      ],
+      "residual_risk": "Canonical proof, integration with current main, landing, and live OMP consumption remain pending. The fallback regression detects a second gate/output but source inspection, not a behavioral counter, proves no second watchdog shares the same gate.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-29T13:04:00Z"
+      "updated_at": "2026-08-29T14:52:13Z"
     },
     {
       "id": "REL-P0-007",
@@ -133,6 +153,29 @@
       "residual_risk": "A supported failing execution can remain running until an actor discovers the reverse-linked attempt and manually acknowledges the abandoned reservation.",
       "owner": "orchestrator:codex:release-harden-20260829",
       "updated_at": "2026-08-29T13:15:00Z"
+    },
+    {
+      "id": "REL-P0-008",
+      "severity": "P0",
+      "subsystem": "proof-runtime",
+      "title": "Canonical internal/work suite exceeds the proof deadline",
+      "status": "reproduced",
+      "reproducer": "GOTOOLCHAIN=go1.26.4 go test ./internal/work -json -timeout=20m",
+      "root_cause": "The package has 763 serial top-level tests and zero t.Parallel calls while many isolated fixtures execute real file fsync, rename, directory fsync, and event-sync chains; concurrent broad batteries amplify the elapsed time but do not explain away the missing isolated margin.",
+      "invariant": "The unchanged durability assertions and real persistence paths complete within the canonical proof budget with enough isolated and contended margin; proof scheduling single-flights broad batteries.",
+      "red_test": "The 20-minute diagnostic timed out after 581 of 763 top-level tests; the active stack was in os.File.Sync, not deadlocked.",
+      "fix_commits": [],
+      "focused_tests": [],
+      "broad_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/work -count=1 (failed: default 10m timeout)",
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/work -json -timeout=20m (failed: 1201.554s package timeout)"
+      ],
+      "evidence_paths": [
+        "release-evidence/runs/20260829-p0-008-internal-work-timeout.json"
+      ],
+      "residual_risk": "Canonical go test ./... and proof-check cannot certify the candidate. Raising timeouts or stubbing durability would weaken proof and is forbidden.",
+      "owner": "orchestrator:codex:release-harden-20260829",
+      "updated_at": "2026-08-29T14:52:13Z"
     },
     {
       "id": "REL-P1-001",
