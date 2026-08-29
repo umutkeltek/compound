@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -323,7 +324,7 @@ func (s *Store) closeActionIntent(w envelope.WorkEnvelope, actor, outcome, moveT
 	return envelope.ActionIntent{
 		Header: newHeader(
 			envelope.SVActionIntent,
-			idFor("act_", capability, action, targetKind, targetID, targetPath, mutationClass, reversibility, blastRadius, actor, outcome, moveType, fmt.Sprintf("%t", opts.Steal), leaseStatus.Holder, stealReason, ts(now)),
+			closeActionIntentIDFor(capability, action, targetKind, targetID, targetPath, mutationClass, reversibility, blastRadius, actor, outcome, moveType, fmt.Sprintf("%t", opts.Steal), leaseStatus.Holder, stealReason, ts(now)),
 			now,
 			w.ID,
 			w.IDs.ContextPackID,
@@ -340,6 +341,18 @@ func (s *Store) closeActionIntent(w envelope.WorkEnvelope, actor, outcome, moveT
 		Preview:       preview,
 		RollbackPlan:  fmt.Sprintf("reopen work from %s if receipt/transition proof is invalid", outcome),
 	}
+}
+
+// closeActionIntentIDFor frames every field before using the package's stable
+// digest helper. Close authority contains operator-provided holder and reason
+// strings, so a bare "|" join can map two different authority tuples to the
+// same ActionIntent identity.
+func closeActionIntentIDFor(parts ...string) string {
+	framed := make([]string, len(parts))
+	for i, part := range parts {
+		framed[i] = strconv.Itoa(len(part)) + ":" + part
+	}
+	return idFor("act_", framed...)
 }
 
 func summarizeClosePolicy(pd envelope.PolicyDecision, source string) ClosePolicySummary {

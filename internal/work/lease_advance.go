@@ -18,8 +18,9 @@ package work
 //     stealing actor) and the caller proceeds.
 //
 // Lease TRANSFER on steal is conditional on the verb, unlike the trail above (see
-// recordLeaseSteal/transferLeaseOnSteal in lease_close.go). A close-gate steal always
-// transfers: Close is terminal, so there is no "next mutation" for a stale lease to
+// recordLeaseSteal/transferLeaseOnSteal in lease_close.go). A terminal Close does not
+// transfer: it binds the override into terminal publication, retains the original lease
+// through the recoverable boundary, and releases it last, so it cannot
 // mis-authorize. An advance-gate steal transfers only when in.To != w.State — a real
 // lifecycle transition (the E1 twin-collision class: running->verifying and friends). A
 // SAME-STATE advance steal (in.To == w.State) is the land-check/proof-attachment class

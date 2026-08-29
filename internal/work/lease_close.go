@@ -76,7 +76,19 @@ func (s *Store) leaseHolderStatusFor(workID, actor string, steal bool, stealReas
 		}
 	}
 	holder := strings.TrimSpace(lease.By)
-	if holder == "" || holder == actor {
+	if lease.WorkID != workID || holder == "" {
+		authorityErr := fmt.Errorf(
+			"work %s lease authority invalid: expected work_id %q and nonblank holder",
+			workID,
+			workID,
+		)
+		return leaseHolderStatus{
+			Blocked: true,
+			Message: authorityErr.Error(),
+			Err:     authorityErr,
+		}
+	}
+	if holder == actor {
 		return leaseHolderStatus{}
 	}
 	reason := strings.TrimSpace(stealReason)

@@ -38,6 +38,56 @@ func TestClosePlanEvaluatesPolicyWithoutClosing(t *testing.T) {
 	}
 }
 
+func TestCloseActionIntentIDSeparatesDelimiterAmbiguousLeaseAuthority(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "close identity frames authority fields"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstLease := Lease{
+		WorkID:  w.ID,
+		By:      "holder|reason",
+		ClaimAt: "2026-08-29T00:00:00Z",
+	}
+	if err := s.writeJSON(s.leasePath(w.ID), &firstLease); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.ClosePlan(w.ID, fixedNow, ClosePlanOptions{
+		Actor:       "closer",
+		Outcome:     "cancelled",
+		MoveType:    "audit_only",
+		Steal:       true,
+		StealReason: "tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondLease := Lease{
+		WorkID:  w.ID,
+		By:      "holder",
+		ClaimAt: "2026-08-29T00:00:00Z",
+	}
+	if err := s.writeJSON(s.leasePath(w.ID), &secondLease); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.ClosePlan(w.ID, fixedNow, ClosePlanOptions{
+		Actor:       "closer",
+		Outcome:     "cancelled",
+		MoveType:    "audit_only",
+		Steal:       true,
+		StealReason: "reason|tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.ActionIntent.ID == second.ActionIntent.ID {
+		t.Fatalf("delimiter-ambiguous authority tuples collided at %s", first.ActionIntent.ID)
+	}
+}
+
 func TestClosePlanSurfacesObservedRunEvidenceWithoutClosing(t *testing.T) {
 	s := newStore(t)
 	w := runningWork(t, s, "close plan uses observed evidence")

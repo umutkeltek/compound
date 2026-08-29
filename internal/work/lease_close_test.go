@@ -321,6 +321,57 @@ func TestCloseFailsClosedOnUnreadableLeaseAuthority(t *testing.T) {
 	}
 }
 
+func TestCloseFailsClosedOnParseableLeaseAuthorityCorruption(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "blank authority", body: "{}"},
+		{name: "mismatched work id", body: `{"work_id":"work_other","by":"codex","claimed_at":"2026-08-29T00:00:00Z"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newStore(t)
+			workID, _ := closeTerminalizeWork(t, s, "close-parseable-lease-"+tt.name, fixedNow)
+			workPath := filepath.Join(s.home, "work", "work", workID+".json")
+			beforeWork, err := os.ReadFile(workPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			corruptLease := []byte(tt.body)
+			if err := os.WriteFile(s.leasePath(workID), corruptLease, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = s.Close(workID, CloseInput{
+				Outcome:  "completed",
+				MoveType: "audit_only",
+				Actor:    "codex",
+			}, fixedNow)
+			if err == nil {
+				t.Fatal("expected parseable corrupt lease authority to fail closed")
+			}
+			if !strings.Contains(err.Error(), "lease authority") {
+				t.Fatalf("error does not name lease authority: %v", err)
+			}
+			afterWork, readErr := os.ReadFile(workPath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(afterWork) != string(beforeWork) {
+				t.Fatal("parseable corrupt lease authority changed the WorkEnvelope")
+			}
+			afterLease, readErr := os.ReadFile(s.leasePath(workID))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(afterLease) != string(corruptLease) {
+				t.Fatal("parseable corrupt lease authority was rewritten")
+			}
+		})
+	}
+}
+
 // Falsifier 1 (RED-first): a work claimed by one actor is closeable by a different actor
 // with no steal on today's code. This is the exact regression of tonight's canon_class
 // close. On the gated code this must refuse, naming the holder and the remedy paths.
