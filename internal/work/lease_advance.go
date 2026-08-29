@@ -45,6 +45,9 @@ import (
 // directly, bypassing this gate on purpose (its own kill-switch/eligibility gates apply).
 func (s *Store) leaseHolderAdvanceGate(w envelope.WorkEnvelope, actor string, in AdvanceInput, now time.Time) error {
 	status := s.leaseHolderStatusFor(w.ID, actor, in.Steal, in.StealReason, "advance")
+	if status.Err != nil {
+		return status.Err
+	}
 	switch {
 	case status.Blocked:
 		if err := s.recordLeaseHolderDeny(w, actor, status.Holder, status.Message, "work.advance", "advance_denied_not_lease_holder", now); err != nil {

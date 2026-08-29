@@ -13,10 +13,13 @@ package work
 // otherwise append eagerly. See TestCloseStealRefusalLeavesLifecycleByteIdentical.
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"compound/internal/runattempt"
 )
 
 // Regression for work_close_steal_lease_corruption_20260731. A close --steal may pass the
@@ -70,23 +73,21 @@ func TestCloseStealRefusalLeavesLifecycleByteIdentical(t *testing.T) {
 // remain byte-identical and the exact close must remain retryable.
 func TestCloseStealPrepareFailureLeavesLeaseAndWorkUnchangedThenRetries(t *testing.T) {
 	s := newStore(t)
-	workID, _ := closeTerminalizeWork(t, s, "close-steal-prepare-failure", fixedNow)
+	workID, rattIDs := closeTerminalizeWork(t, s, "close-steal-prepare-failure", fixedNow)
 	before := snapshotLifecycleAuthority(t, s)
-
-	runAttemptsDir := filepath.Join(s.home, "run_attempts")
-	info, err := os.Stat(runAttemptsDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	originalMode := info.Mode().Perm()
-	restored := false
-	t.Cleanup(func() {
-		if !restored {
-			_ = os.Chmod(runAttemptsDir, originalMode)
+	beforeAttempts := map[string][]byte{}
+	for _, id := range rattIDs {
+		body, err := os.ReadFile(filepath.Join(s.home, "run_attempts", id+".json"))
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
-	if err := os.Chmod(runAttemptsDir, 0o500); err != nil {
-		t.Fatal(err)
+		beforeAttempts[id] = body
+	}
+
+	previousPrepare := prepareRunAttemptTerminalization
+	t.Cleanup(func() { prepareRunAttemptTerminalization = previousPrepare })
+	prepareRunAttemptTerminalization = func(_ *runattempt.Store, _ string, _ runattempt.TerminalizationIntent) (runattempt.RunAttempt, error) {
+		return runattempt.RunAttempt{}, errors.New("injected runattempt prepare terminalization failure")
 	}
 
 	closeInput := CloseInput{
@@ -98,13 +99,10 @@ func TestCloseStealPrepareFailureLeavesLeaseAndWorkUnchangedThenRetries(t *testi
 	}
 	if _, err := s.Close(workID, closeInput, fixedNow); err == nil {
 		t.Fatal("expected RunAttempt terminalization preparation to fail")
-	} else if !strings.Contains(strings.ToLower(err.Error()), "runattempt") {
+	} else if !strings.Contains(strings.ToLower(err.Error()), "injected runattempt prepare") {
 		t.Fatalf("expected RunAttempt preparation error, got %v", err)
 	}
-	if err := os.Chmod(runAttemptsDir, originalMode); err != nil {
-		t.Fatal(err)
-	}
-	restored = true
+	prepareRunAttemptTerminalization = previousPrepare
 
 	gotWork, err := s.Get(workID)
 	if err != nil {
@@ -130,6 +128,15 @@ func TestCloseStealPrepareFailureLeavesLeaseAndWorkUnchangedThenRetries(t *testi
 		}
 	}
 	assertLifecycleAuthorityUnchanged(t, before, snapshotLifecycleAuthority(t, s))
+	for id, beforeBody := range beforeAttempts {
+		afterBody, err := os.ReadFile(filepath.Join(s.home, "run_attempts", id+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(afterBody) != string(beforeBody) {
+			t.Errorf("failed preparation changed RunAttempt %s", id)
+		}
+	}
 
 	result, err := s.Close(workID, closeInput, fixedNow)
 	if err != nil {
@@ -156,6 +163,161 @@ func TestCloseStealPrepareFailureLeavesLeaseAndWorkUnchangedThenRetries(t *testi
 	}
 	if _, err := os.Stat(s.leasePath(workID)); !os.IsNotExist(err) {
 		t.Fatalf("terminal retry lease residue: %v", err)
+	}
+}
+
+// The final steal decision is authorization for a terminal close, not a
+// transient lease hand-off. A crash immediately after that decision or after
+// the first close envelope must leave the live work and lease byte-identical,
+// publish no successful steal trail, and keep the exact generation retryable.
+func TestCloseStealPostGateFailureLeavesLeaseAndWorkUnchangedThenRetries(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		afterFirstEnvelope bool
+	}{
+		{name: "after_steal_decision"},
+		{name: "after_first_envelope", afterFirstEnvelope: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newStore(t)
+			workID, _ := closeTerminalizeWork(t, s, "close-steal-post-gate-"+tt.name, fixedNow)
+			workPath := filepath.Join(s.home, "work", "work", workID+".json")
+			beforeWork, err := os.ReadFile(workPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeLease, err := os.ReadFile(s.leasePath(workID))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			closeInput := CloseInput{
+				Outcome:     "completed",
+				MoveType:    "audit_only",
+				Actor:       "actor-b",
+				Steal:       true,
+				StealReason: "the original executor is unavailable",
+			}
+			previousDecisionSeam := closeAfterLeaseStealDecision
+			previousFirstEnvelopeSeam := closeAfterFirstEnvelopeWrite
+			t.Cleanup(func() {
+				closeAfterLeaseStealDecision = previousDecisionSeam
+				closeAfterFirstEnvelopeWrite = previousFirstEnvelopeSeam
+			})
+			if tt.afterFirstEnvelope {
+				closeAfterFirstEnvelopeWrite = func() { panic("injected crash after first close envelope") }
+			} else {
+				closeAfterLeaseStealDecision = func() { panic("injected crash after close steal decision") }
+			}
+
+			crashed := false
+			var closeErr error
+			func() {
+				defer func() {
+					if recover() != nil {
+						crashed = true
+					}
+				}()
+				_, closeErr = s.Close(workID, closeInput, fixedNow)
+			}()
+			closeAfterLeaseStealDecision = previousDecisionSeam
+			closeAfterFirstEnvelopeWrite = previousFirstEnvelopeSeam
+			if !crashed {
+				t.Fatalf("expected injected post-gate crash, close error=%v", closeErr)
+			}
+
+			afterWork, err := os.ReadFile(workPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(afterWork) != string(beforeWork) {
+				t.Errorf("post-gate failure changed the WorkEnvelope")
+			}
+			afterLease, err := os.ReadFile(s.leasePath(workID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(afterLease) != string(beforeLease) {
+				t.Errorf("post-gate failure transferred the lease")
+			}
+			gotWork, err := s.Get(workID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotWork.State != "verifying" {
+				t.Errorf("post-gate failure work state = %q, want verifying", gotWork.State)
+			}
+			_, events, err := s.Show(workID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, event := range events {
+				if strings.Contains(event.Note, "lease stolen") {
+					t.Errorf("post-gate failure published a successful steal trail: %q", event.Note)
+				}
+			}
+
+			result, err := s.Close(workID, closeInput, fixedNow)
+			if err != nil {
+				t.Fatalf("retry exact close: %v", err)
+			}
+			if result.Work.State != "completed" {
+				t.Fatalf("retry state = %q, want completed", result.Work.State)
+			}
+			_, events, err = s.Show(workID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stealTrails := 0
+			for _, event := range events {
+				if strings.Contains(event.Note, "lease stolen") {
+					stealTrails++
+				}
+			}
+			if stealTrails != 1 {
+				t.Fatalf("successful retry steal trails = %d, want exactly 1", stealTrails)
+			}
+		})
+	}
+}
+
+func TestCloseFailsClosedOnUnreadableLeaseAuthority(t *testing.T) {
+	s := newStore(t)
+	workID, _ := closeTerminalizeWork(t, s, "close-unreadable-lease", fixedNow)
+	workPath := filepath.Join(s.home, "work", "work", workID+".json")
+	beforeWork, err := os.ReadFile(workPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corruptLease := []byte("{not-json")
+	if err := os.WriteFile(s.leasePath(workID), corruptLease, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.Close(workID, CloseInput{
+		Outcome:  "completed",
+		MoveType: "audit_only",
+		Actor:    "codex",
+	}, fixedNow)
+	if err == nil {
+		t.Fatal("expected unreadable lease authority to fail closed")
+	}
+	if !strings.Contains(err.Error(), "lease authority") {
+		t.Fatalf("error does not name lease authority: %v", err)
+	}
+	afterWork, err := os.ReadFile(workPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterWork) != string(beforeWork) {
+		t.Fatal("unreadable lease authority changed the WorkEnvelope")
+	}
+	afterLease, err := os.ReadFile(s.leasePath(workID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterLease) != string(corruptLease) {
+		t.Fatal("unreadable lease authority was rewritten")
 	}
 }
 
@@ -219,11 +381,25 @@ func TestCloseStealOverridesLeaseHolder(t *testing.T) {
 		t.Fatalf("empty-reason steal attempt must not mutate work: state=%q err=%v", got.State, err)
 	}
 
-	// The close-steal both TRANSFERS the lease and (since I1) releases it when the
-	// work lands terminal. Observing the transfer therefore requires looking inside
-	// the close, at the seam that runs after the terminal publish and immediately
-	// before the release — otherwise the strengthened post-condition below would
-	// silently pass even if recordLeaseSteal stopped writing the file at all.
+	stealReason := "actor-a's executor died mid-build"
+	plan, err := s.ClosePlan(w.ID, fixedNow, ClosePlanOptions{
+		Actor:       "actor-b",
+		Outcome:     "cancelled",
+		MoveType:    "audit_only",
+		Steal:       true,
+		StealReason: stealReason,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan.ActionIntent.Preview, "lease_override_from \"actor-a\"") ||
+		!strings.Contains(plan.ActionIntent.Preview, stealReason) {
+		t.Fatalf("close ActionIntent does not bind exact lease override: %q", plan.ActionIntent.Preview)
+	}
+
+	// A terminal close does not transiently hand the lease to actor-b. The exact
+	// close ActionIntent binds holder and reason, the terminal event publishes the
+	// successful override, and release deletes the original lease last.
 	var holderAtRelease string
 	var holderAtReleaseErr error
 	previousSeam := closeBeforeLeaseRelease
@@ -238,7 +414,7 @@ func TestCloseStealOverridesLeaseHolder(t *testing.T) {
 		MoveType:    "audit_only",
 		Actor:       "actor-b",
 		Steal:       true,
-		StealReason: "actor-a's executor died mid-build",
+		StealReason: stealReason,
 	}, fixedNow)
 	closeBeforeLeaseRelease = previousSeam
 	if err != nil {
@@ -247,8 +423,8 @@ func TestCloseStealOverridesLeaseHolder(t *testing.T) {
 	if holderAtReleaseErr != nil {
 		t.Fatalf("read lease at the release seam: %v", holderAtReleaseErr)
 	}
-	if holderAtRelease != "actor-b" {
-		t.Fatalf("close-steal must rewrite the lease file's holder to the stealing actor: got %q, want %q", holderAtRelease, "actor-b")
+	if holderAtRelease != "actor-a" {
+		t.Fatalf("terminal close must retain the original holder until release: got %q, want %q", holderAtRelease, "actor-a")
 	}
 	if res.Work.State != "cancelled" {
 		t.Fatalf("stolen close should land the work terminal, got %q", res.Work.State)
@@ -259,11 +435,17 @@ func TestCloseStealOverridesLeaseHolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stealNote string
+	closeActionAttached := false
 	for _, e := range evs {
 		if strings.Contains(e.Note, "stolen") {
 			stealNote = e.Note
 			if e.By != "actor-b" {
 				t.Fatalf("steal event must be attributed to the stealing actor actor-b, got %q", e.By)
+			}
+			for _, attached := range e.Attached {
+				if attached == plan.ActionIntent.ID {
+					closeActionAttached = true
+				}
 			}
 		}
 	}
@@ -276,13 +458,11 @@ func TestCloseStealOverridesLeaseHolder(t *testing.T) {
 	if !strings.Contains(stealNote, "actor-a's executor died mid-build") {
 		t.Fatalf("steal event must carry the reason string: %q", stealNote)
 	}
-	// P0: a close-steal must never leave a lease still naming the ORIGINAL holder —
-	// that is what let actor-a's next unguarded mutation pass leaseHolderStatusFor's
-	// holder==actor short-circuit as if the steal had never happened. The steal still
-	// transfers the file (recordLeaseSteal, the one write path shared by both gates,
-	// and the fail-closed point proven by TestAdvanceStealFailsClosedWhenLeaseTransferWriteFails);
-	// since I1, the terminal close then RELEASES that transferred lease, so the P0
-	// holds in its strongest form: no lease survives the close at all.
+	if !closeActionAttached {
+		t.Fatalf("steal event does not attach exact close ActionIntent %s", plan.ActionIntent.ID)
+	}
+	// The terminal close releases the original lease only after work and the
+	// combined close/steal event are durable, so no live lease survives.
 	if _, err := s.readLease(w.ID); err == nil {
 		t.Fatal("a terminal close must release the lease it stole, leaving no residue behind")
 	}

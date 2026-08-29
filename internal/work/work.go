@@ -167,6 +167,14 @@ var runAttemptsFactory = func(home string) runAttemptStore {
 	return runattempt.Open(home)
 }
 
+// prepareRunAttemptTerminalization is the deterministic failure-injection seam
+// for the recoverable close boundary. Production delegates byte-for-byte to the
+// RunAttempt store; tests can refuse one preparation without relying on host
+// filesystem permissions.
+var prepareRunAttemptTerminalization = func(store *runattempt.Store, id string, intent runattempt.TerminalizationIntent) (runattempt.RunAttempt, error) {
+	return store.PrepareTerminalization(id, intent)
+}
+
 // runAttempts returns the RunAttempt evidence store rooted at the same
 // COMPOUND_HOME. C1 mints a RunAttempt on every claim so the execution
 // organ fires in production, not just in panel.Apply tests. The store is
@@ -1638,6 +1646,10 @@ var closeBeforeLeaseRelease = func() {}
 // Production leaves it as a no-op.
 var closeAfterTerminalizationPrepare = func() {}
 
+// closeAfterLeaseStealDecision models process death after the final close
+// lease-override decision and before the first close envelope is written.
+var closeAfterLeaseStealDecision = func() {}
+
 // closeAfterFirstEnvelopeWrite models a crash after the closing ActionIntent
 // is published. Exact retry must reuse that generation rather than minting a
 // new action/policy/proof chain.
@@ -2771,7 +2783,7 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 func (s *Store) prepareRunAttemptTerminalizations(plans []runAttemptTerminalizationPlan) error {
 	store := s.runAttempts()
 	for _, plan := range plans {
-		if _, err := store.PrepareTerminalization(plan.Attempt.ID, plan.Intent); err != nil {
+		if _, err := prepareRunAttemptTerminalization(store, plan.Attempt.ID, plan.Intent); err != nil {
 			return err
 		}
 	}
@@ -2927,7 +2939,14 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if err != nil {
 		return res, err
 	}
-	plan, err := s.ClosePlan(workID, closeNow, ClosePlanOptions{Actor: in.Actor, Outcome: in.Outcome, MoveType: in.MoveType, ProofRefs: in.ProofRefs})
+	plan, err := s.ClosePlan(workID, closeNow, ClosePlanOptions{
+		Actor:       in.Actor,
+		Outcome:     in.Outcome,
+		MoveType:    in.MoveType,
+		ProofRefs:   in.ProofRefs,
+		Steal:       in.Steal,
+		StealReason: in.StealReason,
+	})
 	if err != nil {
 		return res, err
 	}
@@ -3086,8 +3105,17 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	// Decide lease authority read-only before preparing terminalization intents.
 	// A denied close must keep its existing early audit trail and must never wedge
 	// a RunAttempt behind a prepared intent. A valid steal is retained but does
-	// not transfer here: the transfer belongs after the durable recovery boundary.
+	// not transfer: terminal override authorization belongs after the durable
+	// recovery boundary and success is published with the terminal close event.
 	closeLeaseStatus := s.leaseHolderStatusFor(w.ID, actor, in.Steal, in.StealReason, "close")
+	if closeLeaseStatus.Err != nil {
+		if referenceTransaction != nil {
+			if abortErr := referenceTransaction.Abort(); abortErr != nil {
+				return res, errors.Join(closeLeaseStatus.Err, fmt.Errorf("abort Git reference transaction: %w", abortErr))
+			}
+		}
+		return res, closeLeaseStatus.Err
+	}
 	if closeLeaseStatus.Blocked {
 		gateErr := s.recordLeaseHolderDeny(
 			w,
@@ -3133,22 +3161,15 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		return res, abortReferenceTransaction(err)
 	}
 	closeAfterTerminalizationPrepare()
-	// REL-P0-001: a successful steal is the final recoverable gate. Re-read the
-	// holder under the lifecycle lock and require the exact decision retained
-	// above, then invoke the mutating gate exactly once. From this point onward,
-	// the prepared intents let reconciliation resume the exact close generation.
+	// REL-P0-001: a terminal override is one final authorization decision, not a
+	// transient lease rewrite. Re-read the holder under the lifecycle lock and
+	// require the exact decision retained above. The ActionIntent already binds
+	// holder/reason; success is published only with the terminal close event.
 	if closeLeaseStatus.Stolen {
-		currentLeaseStatus := s.leaseHolderStatusFor(w.ID, actor, in.Steal, in.StealReason, "close")
-		if !currentLeaseStatus.Stolen || currentLeaseStatus.Holder != closeLeaseStatus.Holder {
-			return res, abortReferenceTransaction(fmt.Errorf(
-				"close lease authority changed before transfer: expected holder %q, got holder %q",
-				closeLeaseStatus.Holder,
-				currentLeaseStatus.Holder,
-			))
-		}
-		if err := s.leaseHolderCloseGate(w, actor, in, now); err != nil {
+		if err := s.leaseHolderCloseGate(w, actor, in, closeLeaseStatus); err != nil {
 			return res, abortReferenceTransaction(err)
 		}
+		closeAfterLeaseStealDecision()
 	}
 
 	// Persist the emitted envelopes, then land the work terminal and link the transition.
@@ -3184,7 +3205,28 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if err != nil {
 		return res, abortReferenceTransaction(err)
 	}
-	if err := s.appendEvent(Event{TS: ts(closeNow), WorkID: workID, From: from, To: in.Outcome, Note: "closed: " + in.MoveType + " (policy " + plan.Policy.Outcome + ")", Attached: []string{plan.ActionIntent.ID, plan.Decision.ID, rec.ID, tr.ID}, PreviousWorkSHA256: reservedWorkSHA256, WorkSHA256: workSHA256, ReceiptSHA256: receiptSHA256, RunAttemptTerminalizationDigests: terminalizationDigests}); err != nil {
+	closeEvent := Event{
+		TS:                               ts(closeNow),
+		WorkID:                           workID,
+		From:                             from,
+		To:                               in.Outcome,
+		Note:                             "closed: " + in.MoveType + " (policy " + plan.Policy.Outcome + ")",
+		Attached:                         []string{plan.ActionIntent.ID, plan.Decision.ID, rec.ID, tr.ID},
+		PreviousWorkSHA256:               reservedWorkSHA256,
+		WorkSHA256:                       workSHA256,
+		ReceiptSHA256:                    receiptSHA256,
+		RunAttemptTerminalizationDigests: terminalizationDigests,
+	}
+	if closeLeaseStatus.Stolen {
+		closeEvent.By = actor
+		closeEvent.Note = fmt.Sprintf(
+			"lease stolen from %q: %s; %s",
+			closeLeaseStatus.Holder,
+			strings.TrimSpace(in.StealReason),
+			closeEvent.Note,
+		)
+	}
+	if err := s.appendEvent(closeEvent); err != nil {
 		return res, abortReferenceTransaction(err)
 	}
 	if referenceTransaction != nil {

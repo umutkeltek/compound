@@ -145,7 +145,8 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 	if actor == "" {
 		actor = "codex"
 	}
-	ai := s.closeActionIntent(w, actor, outcome, moveType, now, opts)
+	leaseStatus := s.leaseHolderStatusFor(w.ID, actor, opts.Steal, opts.StealReason, "close")
+	ai := s.closeActionIntent(w, actor, outcome, moveType, now, opts, leaseStatus)
 	if err := ai.Validate(); err != nil {
 		return ClosePlan{}, err
 	}
@@ -173,10 +174,9 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 	// leaseHolderStatusFor is read-only, so computing it before the plan literal lets every
 	// returned plan (including the action-plan early return below) carry the full
 	// precondition enumeration, not just the first refusal NoAction names.
-	leaseStatus := s.leaseHolderStatusFor(w.ID, actor, opts.Steal, opts.StealReason, "close")
 	plan := ClosePlan{
 		SchemaVersion:      ClosePlanSchemaVersion,
-		ID:                 idFor("wclp_", workID, actor, outcome, moveType, ts(now)),
+		ID:                 idFor("wclp_", workID, actor, outcome, moveType, ai.ID, ts(now)),
 		GeneratedAt:        now.UTC().Format(time.RFC3339),
 		Status:             "not_closeable",
 		Mode:               "proposal_only",
@@ -300,7 +300,7 @@ func (s *Store) RecordClosePlan(plan ClosePlan) (string, error) {
 	return path, nil
 }
 
-func (s *Store) closeActionIntent(w envelope.WorkEnvelope, actor, outcome, moveType string, now time.Time, opts ClosePlanOptions) envelope.ActionIntent {
+func (s *Store) closeActionIntent(w envelope.WorkEnvelope, actor, outcome, moveType string, now time.Time, opts ClosePlanOptions, leaseStatus leaseHolderStatus) envelope.ActionIntent {
 	targetID := strings.TrimSpace(opts.TargetID)
 	if targetID == "" {
 		targetID = w.ID
@@ -315,10 +315,15 @@ func (s *Store) closeActionIntent(w envelope.WorkEnvelope, actor, outcome, moveT
 	mutationClass := orDefault(opts.MutationClass, "local_reversible")
 	reversibility := orDefault(opts.Reversibility, "manual")
 	blastRadius := orDefault(opts.BlastRadius, "local")
+	stealReason := strings.TrimSpace(opts.StealReason)
+	preview := fmt.Sprintf("close work %s from %s to %s move_type %s actor %s", w.ID, w.State, outcome, moveType, actor)
+	if opts.Steal {
+		preview += fmt.Sprintf(" lease_override_from %q reason %q", leaseStatus.Holder, stealReason)
+	}
 	return envelope.ActionIntent{
 		Header: newHeader(
 			envelope.SVActionIntent,
-			idFor("act_", capability, action, targetKind, targetID, targetPath, mutationClass, reversibility, blastRadius, actor, outcome, moveType, ts(now)),
+			idFor("act_", capability, action, targetKind, targetID, targetPath, mutationClass, reversibility, blastRadius, actor, outcome, moveType, fmt.Sprintf("%t", opts.Steal), leaseStatus.Holder, stealReason, ts(now)),
 			now,
 			w.ID,
 			w.IDs.ContextPackID,
@@ -332,7 +337,7 @@ func (s *Store) closeActionIntent(w envelope.WorkEnvelope, actor, outcome, moveT
 		MutationClass: mutationClass,
 		Reversibility: reversibility,
 		BlastRadius:   blastRadius,
-		Preview:       fmt.Sprintf("close work %s from %s to %s move_type %s actor %s", w.ID, w.State, outcome, moveType, actor),
+		Preview:       preview,
 		RollbackPlan:  fmt.Sprintf("reopen work from %s if receipt/transition proof is invalid", outcome),
 	}
 }
