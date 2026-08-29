@@ -641,7 +641,7 @@ func DefaultRegistry() Registry {
 				"SessionStartContext stays false: omp's session_start event has no context-return surface; ContextPack injection enters at the prompt boundary (before_agent_start), reported as UserPromptContext",
 			},
 			InjectBudgetMS:  1500,
-			ExpectedVersion: "18.0.4",
+			ExpectedVersion: "18.0.10",
 		},
 		"qwen_code": {
 			Name:                 "qwen_code",
