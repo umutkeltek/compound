@@ -3030,7 +3030,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	// Receipt — how the run is learned from.
 	rOut := receiptOutcome[in.Outcome]
 	rec := envelope.Receipt{
-		Header:   newHeaderWithLane(envelope.SVReceipt, idFor("rec_", workID, ts(closeNow)), closeNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
+		Header:   newCloseHeaderWithLane(envelope.SVReceipt, idFor("rec_", workID, ts(closeNow)), closeNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
 		Outcome:  rOut,
 		MoveType: in.MoveType,
 		Surprise: surprise,
@@ -3091,7 +3091,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		}
 	}
 	tr := envelope.Transition{
-		Header:     newHeaderWithLane(envelope.SVTransition, idFor("tr_", workID, ts(closeNow)), closeNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
+		Header:     newCloseHeaderWithLane(envelope.SVTransition, idFor("tr_", workID, ts(closeNow)), closeNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
 		BeforeRefs: before,
 		ActionRefs: orEmpty(actionRefs),
 		AfterRefs:  after,
@@ -4209,6 +4209,16 @@ func (s *Store) readAllEventsStrictUnlocked() ([]Event, error) {
 
 func newHeader(sv, id string, now time.Time, workID, contextPackID, privacy, risk string) envelope.Header {
 	return newHeaderWithLane(sv, id, now, workID, contextPackID, privacy, risk, "")
+}
+
+func newCloseHeader(sv, id string, now time.Time, workID, contextPackID, privacy, risk string) envelope.Header {
+	return newCloseHeaderWithLane(sv, id, now, workID, contextPackID, privacy, risk, "")
+}
+
+func newCloseHeaderWithLane(sv, id string, now time.Time, workID, contextPackID, privacy, risk, laneID string) envelope.Header {
+	header := newHeaderWithLane(sv, id, now, workID, contextPackID, privacy, risk, laneID)
+	header.CreatedAt = now.UTC().Format(time.RFC3339Nano)
+	return header
 }
 
 // newHeaderWithLane is newHeader plus a declared lane id stamped into Producer.LaneID. laneID

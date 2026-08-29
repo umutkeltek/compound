@@ -22,6 +22,50 @@ func countCloseActionID(ids []string, want string) int {
 	return count
 }
 
+func TestCloseNonWholeSecondPersistsOneExactTimestamp(t *testing.T) {
+	s := newStore(t)
+	createdAt := time.Date(2026, 8, 30, 1, 2, 3, 456789123, time.UTC)
+	w, err := s.Create(CreateInput{
+		Owner:            "close-timestamp-identity",
+		SuccessPredicate: "receipt transition and lifecycle event share one close instant",
+	}, createdAt.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	closed, err := s.Close(w.ID, CloseInput{
+		Outcome:  "cancelled",
+		MoveType: "audit_only",
+		Actor:    "close-timestamp-identity",
+		Summary:  "persist one exact close timestamp",
+	}, createdAt)
+	if err != nil {
+		t.Fatalf("close at non-whole-second instant: %v", err)
+	}
+	if closed.Receipt.CreatedAt != closed.Transition.CreatedAt {
+		t.Fatalf("receipt created_at %q differs from transition created_at %q", closed.Receipt.CreatedAt, closed.Transition.CreatedAt)
+	}
+	receiptAt, err := time.Parse(time.RFC3339Nano, closed.Receipt.CreatedAt)
+	if err != nil {
+		t.Fatalf("parse receipt created_at: %v", err)
+	}
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closing := events[len(events)-1]
+	closingAt, err := parseLifecycleTS(closing.TS)
+	if err != nil {
+		t.Fatalf("parse closing lifecycle timestamp: %v", err)
+	}
+	if !closingAt.Equal(receiptAt) {
+		t.Fatalf("closing event timestamp %s differs from receipt timestamp %s", closingAt, receiptAt)
+	}
+	if _, err := os.Stat(closePendingTestPath(s, w.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successful close left recovery frame: %v", err)
+	}
+}
+
 func TestCloseCrashAfterFirstEnvelopeWithNoPreparedAttemptsUsesOneGeneration(t *testing.T) {
 	s := newStore(t)
 	w, err := s.Create(CreateInput{

@@ -163,6 +163,11 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		return ClosePlan{}, err
 	}
 	pd := policy.Evaluate(ai, cfg, now)
+	// Close recovery seals every authority object and the lifecycle event to one
+	// exact instant. Policy's generic header is second-resolution, so finalize
+	// this close-specific decision from the already validated ActionIntent clock
+	// before its final validation and persistence.
+	pd.CreatedAt = ai.CreatedAt
 	if err := pd.Validate(); err != nil {
 		return ClosePlan{}, err
 	}
@@ -353,7 +358,7 @@ func (s *Store) closeActionIntent(w envelope.WorkEnvelope, actor, outcome, moveT
 		}
 	}
 	return envelope.ActionIntent{
-		Header: newHeader(
+		Header: newCloseHeader(
 			envelope.SVActionIntent,
 			actionID,
 			now,
