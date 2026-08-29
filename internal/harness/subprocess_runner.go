@@ -123,7 +123,9 @@ func runWithSubprocess(
 				_, _ = store.SetTranscript(ra.ID, transcriptPath)
 			}
 		} else {
-			_, _ = store.SetProofRefs(ra.ID, []string{"infra_error:" + reason})
+			refs := append([]string(nil), in.ProofRefs...)
+			refs = append(refs, "infra_error:"+reason)
+			_, _ = store.SetProofRefs(ra.ID, refs)
 		}
 		if t, cerr := store.Complete(ra.ID, runattempt.StatusFailed, started.Add(time.Since(started))); cerr == nil {
 			ra = t
@@ -155,6 +157,11 @@ func runWithSubprocess(
 			return failTerm("set execution posture"), fmt.Errorf("%s: set execution posture: %w", harnessName, err)
 		}
 	}
+	if len(in.ProofRefs) > 0 {
+		if _, err := store.SetProofRefs(ra.ID, append([]string(nil), in.ProofRefs...)); err != nil {
+			return failTerm("set dispatch proof refs"), fmt.Errorf("%s: set dispatch proof refs: %w", harnessName, err)
+		}
+	}
 
 	// Stamp the resolved lane identity onto the attempt pre-terminalization.
 	// SetAttribution refuses a terminal attempt, so this MUST run before
@@ -166,7 +173,9 @@ func runWithSubprocess(
 	// and terminalizes regardless. An empty LaneID stamps nothing.
 	if in.LaneID != "" || in.RequestedModelID != "" || in.RequestedProviderRoute != "" {
 		if _, err := store.SetDispatchIntent(ra.ID, in.LaneID, in.RequestedModelID, in.RequestedProviderRoute); err != nil {
-			_, _ = store.SetProofRefs(ra.ID, []string{"lane_id_stamp_error:" + err.Error()})
+			refs := append([]string(nil), in.ProofRefs...)
+			refs = append(refs, "lane_id_stamp_error:"+err.Error())
+			_, _ = store.SetProofRefs(ra.ID, refs)
 		}
 	}
 
@@ -281,7 +290,9 @@ func runWithSubprocess(
 		// A failed flush loses buffered transcript lines but is not fatal --
 		// the run still produced a result. Surface it on the transcript ref
 		// so the audit is honest about the partial capture.
-		_, _ = store.SetProofRefs(ra.ID, []string{"transcript_flush_error:" + err.Error()})
+		refs := append([]string(nil), in.ProofRefs...)
+		refs = append(refs, "transcript_flush_error:"+err.Error())
+		_, _ = store.SetProofRefs(ra.ID, refs)
 	}
 
 	exitCode := -1

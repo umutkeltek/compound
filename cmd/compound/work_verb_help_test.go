@@ -5,11 +5,29 @@ import (
 	"testing"
 )
 
+func TestRootUsageListsDispatchExecute(t *testing.T) {
+	out := captureStderr(t, usage)
+	if !strings.Contains(out, "dispatch-claim|dispatch-execute|dispatch-advance") {
+		t.Fatalf("root usage omits selector execution:\n%s", out)
+	}
+}
+
+func TestDispatchExecuteHelpExcludesHumanRouteSelection(t *testing.T) {
+	out := captureStdout(t, func() {
+		cmdWork([]string{"dispatch-execute", "--help"})
+	})
+	for _, forbidden := range []string{"--actor", "--harness", "--model"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("dispatch-execute exposes human route selector %q:\n%s", forbidden, out)
+		}
+	}
+}
+
 func TestEveryWorkVerbHelpIncludesUsageAndExecutableExample(t *testing.T) {
 	verbs := []string{
 		"create-plan", "admit-plan", "review-card-plan", "create", "import-packet",
 		"show", "list", "leases", "active-packet-proof", "proof-chain-doctor", "reconcile-run-attempts", "continue",
-		"dispatch-plan", "dispatch-claim", "dispatch-advance", "dispatch-close-plan",
+		"dispatch-plan", "dispatch-claim", "dispatch-execute", "dispatch-advance", "dispatch-close-plan",
 		"dispatch-close", "dispatch-step", "claim-plan", "claim", "advance-plan", "advance",
 		"delegate", "steer", "attach", "observe-run", "land-check", "salvage-plan",
 		"action-plan", "act", "close-plan", "close",
@@ -36,11 +54,12 @@ func TestEveryWorkVerbHelpIncludesUsageAndExecutableExample(t *testing.T) {
 
 func TestWorkVerbHelpShowsOwnFlags(t *testing.T) {
 	tests := map[string][]string{
-		"dispatch-claim": {"--confirm", "without --confirm previews"},
-		"delegate":       {"--harness", "--prompt", "--dry-run"},
-		"steer":          {"--text", "--enter"},
-		"show":           {"--json"},
-		"close":          {"--outcome", "--move-type"},
+		"dispatch-claim":   {"--confirm", "without --confirm previews"},
+		"dispatch-execute": {"--workspace", "--permission-mode", "--confirm", "without --confirm previews"},
+		"delegate":         {"--harness", "--prompt", "--dry-run"},
+		"steer":            {"--text", "--enter"},
+		"show":             {"--json"},
+		"close":            {"--outcome", "--move-type"},
 	}
 	for verb, fragments := range tests {
 		out := captureStdout(t, func() {

@@ -142,6 +142,14 @@ type RunInput struct {
 	// model/provider fields remain empty until route evidence attests them.
 	RequestedModelID       string
 	RequestedProviderRoute string
+	// ExpectedModelRouterRevision binds a selected tuple's executable aliases
+	// to the same model-router authority revision cited by the route plan.
+	ExpectedModelRouterRevision string
+	// ProofRefs are dispatch-time authority references the shared runner must
+	// bind to the RunAttempt before subprocess start. They describe why this
+	// executor tuple was selected; they are not proof that the model actually
+	// consumed the run.
+	ProofRefs []string
 	// preflighted is an adapter-owned handoff marker. Governed callers cannot
 	// forge it outside this package; it prevents Run from repeating an
 	// evidence-writing capacity check after the caller has moved work to

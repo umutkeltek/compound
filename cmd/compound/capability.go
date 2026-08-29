@@ -1147,7 +1147,7 @@ func cmdCapability(args []string) {
 			fmt.Fprintln(os.Stderr, `usage: compound capability resolve [--harness codex|claude_code] [--privacy-sensitive] [--json] "<task>"`)
 			os.Exit(2)
 		}
-		report, err := buildCapabilityResolutionReport(store, homePath, strings.Join(p, " "), harness, hasFlag(rest, "--privacy-sensitive"), time.Now())
+		report, err := buildCapabilityResolutionReport(store, homePath, strings.Join(p, " "), harness, hasFlag(rest, "--privacy-sensitive"), false, time.Now())
 		die(err)
 		if jsonOut {
 			die(json.NewEncoder(os.Stdout).Encode(report))

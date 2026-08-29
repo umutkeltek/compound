@@ -93,7 +93,7 @@ func TestCapabilityResolveAppliesPrivacyAtCompoundRouteOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	report, err := buildCapabilityResolutionReport(store, homePath, "extract private records", "", true, cliTestNow)
+	report, err := buildCapabilityResolutionReport(store, homePath, "extract private records", "", true, false, cliTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestCapabilityResolveRejectsMissingCapabilityGraphAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, cliTestNow); err == nil || !strings.Contains(err.Error(), "capability graph authority has no nodes") {
+	if _, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, false, cliTestNow); err == nil || !strings.Contains(err.Error(), "capability graph authority has no nodes") {
 		t.Fatalf("missing graph authority error = %v", err)
 	}
 }
@@ -137,7 +137,7 @@ func TestCapabilityResolveAcceptsNativeGraphWithoutSourceHandoff(t *testing.T) {
 	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
 		t.Fatal(err)
 	}
-	report, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, cliTestNow)
+	report, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, false, cliTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestCapabilityResolveRejectsMissingModelRouterProvenance(t *testing.T) {
 	if err := os.WriteFile(routeevidence.ModelCapabilitiesPath(homePath), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, cliTestNow); err == nil || !strings.Contains(err.Error(), "model-router authority has no source provenance") {
+	if _, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, false, cliTestNow); err == nil || !strings.Contains(err.Error(), "model-router authority has no source provenance") {
 		t.Fatalf("missing router provenance error = %v", err)
 	}
 }
@@ -183,7 +183,7 @@ func TestCapabilityResolveRejectsStaleModelRouterProvenance(t *testing.T) {
 	if err := os.WriteFile(authorityPath, append(data, []byte("\n# changed after source binding\n")...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, cliTestNow); err == nil || !strings.Contains(err.Error(), "does not match parsed authority") {
+	if _, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, false, cliTestNow); err == nil || !strings.Contains(err.Error(), "does not match parsed authority") {
 		t.Fatalf("stale router provenance error = %v", err)
 	}
 }
@@ -197,7 +197,7 @@ func TestCapabilityResolveRejectsPrivacyPlanWithoutEligibleLane(t *testing.T) {
 	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildCapabilityResolutionReport(store, homePath, "audit private records", "", true, cliTestNow); err == nil || !strings.Contains(err.Error(), "no eligible lane") {
+	if _, err := buildCapabilityResolutionReport(store, homePath, "audit private records", "", true, false, cliTestNow); err == nil || !strings.Contains(err.Error(), "no eligible lane") {
 		t.Fatalf("empty privacy route error = %v", err)
 	}
 }

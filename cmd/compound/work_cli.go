@@ -82,7 +82,7 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside|sweep-stale> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside|sweep-stale> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
@@ -144,6 +144,10 @@ var workVerbHelpByName = map[string]workVerbHelp{
 	"dispatch-claim": {
 		Usage:   "usage: compound work dispatch-claim [--next|<work_id>] [--confirm] [--actor A] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json]\n  without --confirm previews; with --confirm claims",
 		Example: "compound work dispatch-claim --next --actor codex --json",
+	},
+	"dispatch-execute": {
+		Usage:   "usage: compound work dispatch-execute <work_id> [--workspace PATH] [--permission-mode MODE] [--privacy-sensitive] [--confirm] [--json]\n  without --confirm previews the Compound-selected harness/model/lane and mutates nothing",
+		Example: "compound work dispatch-execute work_abc123 --workspace /path/to/project --json",
 	},
 	"dispatch-advance": {
 		Usage:   "usage: compound work dispatch-advance (--next|<work_id>) [--actor A] [--json]",
@@ -1092,6 +1096,47 @@ func cmdWork(args []string) {
 		if result.ResultPath != "" {
 			fmt.Printf("result: %s\n", result.ResultPath)
 		}
+	case "dispatch-execute":
+		usage := workUsage("dispatch-execute")
+		valueFlags := map[string]bool{"--workspace": true, "--permission-mode": true}
+		if err := validateWorkArguments(rest, valueFlags, map[string]bool{"--privacy-sensitive": true, "--confirm": true, "--json": true}, 1); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		workID := pos(valueFlags)
+		if workID == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		executeOpts := workDispatchExecuteOptions{
+			Workspace:        flag("--workspace"),
+			PrivacySensitive: has("--privacy-sensitive"),
+			PermissionMode:   flag("--permission-mode"),
+		}
+		now := time.Now()
+		plan, err := buildWorkDispatchExecutionPlan(homePath, store, workID, executeOpts, now)
+		die(err)
+		if has("--confirm") {
+			result, err := executeWorkDispatchExecution(homePath, store, plan, executeOpts, now)
+			die(err)
+			if has("--json") {
+				printJSON(result)
+			} else {
+				fmt.Printf("dispatch-execute %s status=%s adapter=%s model=%s run=%s\n", result.WorkID, result.FinalState, result.Adapter, result.Selected.ModelID, result.RunAttemptID)
+			}
+			if result.FinalState != "verifying" {
+				os.Exit(1)
+			}
+			return
+		}
+		if has("--json") {
+			printJSON(plan)
+		} else {
+			fmt.Printf("dispatch-execute PREVIEW work=%s adapter=%s model=%s lane=%s\n", plan.WorkID, plan.Adapter, plan.Selected.ModelID, plan.Selected.Lane)
+			fmt.Println("nothing claimed or executed; re-run with --confirm to perform the governed launch")
+		}
+		os.Exit(1)
 	case "dispatch-advance":
 		usage := "usage: compound work dispatch-advance (--next|<work_id>) [--actor A] [--json]"
 		targetWorkID := parseExplicitDispatchTarget(

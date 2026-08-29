@@ -303,7 +303,7 @@ func TestCapabilityImportConnections_F3_RendersAcrossOrientWorkbenchResolve(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	report, err := buildCapabilityResolutionReport(store, homePath, "extract claude code config export", "claude_code", false, cliTestNow)
+	report, err := buildCapabilityResolutionReport(store, homePath, "extract claude code config export", "claude_code", false, false, cliTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +373,7 @@ func TestCapabilityImportConnections_F4_AbsentRecordsByteIdentical(t *testing.T)
 		t.Fatalf("workbench JSON leaked a connection_surface field with no records:\n%s", wbOut)
 	}
 
-	report, err := buildCapabilityResolutionReport(store, homePath, task, "", false, cliTestNow)
+	report, err := buildCapabilityResolutionReport(store, homePath, task, "", false, false, cliTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}

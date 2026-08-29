@@ -197,7 +197,7 @@ Work close proof note: `work close` rejects unknown flags before terminal write 
 
 Workbench capability surface note: `workbench --capability-task ...` embeds a bounded operator offer window (`offer_limit`, `omitted_offer_count`) while preserving full `offer_count`; exhaustive surfacing remains `capability surface`.
 
-Work dispatch status note: `work dispatch-claim` attaches a capability-only worker ContextPack with explicit work/capability source revisions and an excluded contract marker rather than pretending a fresh EffectiveContract was compiled.
+Work dispatch status note: `work dispatch-claim` attaches a capability-only worker ContextPack with explicit work/capability source revisions and an excluded contract marker rather than pretending a fresh EffectiveContract was compiled. `work dispatch-execute <work_id>` is the bounded selector consumer: preview is read-only; confirmed execution derives one capability resolution from the WorkEnvelope, chooses the first eligible adapter-backed route without caller actor/harness/model flags, validates workspace and roster and runs the selected adapter's preflight before claim when it exposes one, then reuses the governed executor to reach `verifying` or `failed` and records route authority on its terminal RunAttempt. It is explicit one-shot execution, not a scheduler or daemon.
 
 Work ContextPack status note: Work admission/import/advance validate any supplied `context_pack_id` resolves to a recorded `COMPOUND_HOME/context/packs/<id>.json` artifact and any declared `contract_id` resolves to a matching validated `contracts/effective/<date>/<id>.json` artifact before persisting lifecycle mutation.
 

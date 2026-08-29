@@ -88,6 +88,15 @@ type GovernedHarnessReservation struct {
 	ActionIntentID string
 }
 
+// GovernedHarnessAdvanceExecution is the shared reserve/run/finalize result
+// consumed by explicit and selector-driven governed execution commands.
+type GovernedHarnessAdvanceExecution struct {
+	RunningWork envelope.WorkEnvelope
+	Output      harness.RunOutput
+	RunError    error
+	Finalized   GovernedHarnessFinalizationResult
+}
+
 // ReserveGovernedHarnessLaunch resolves the Claude posture, atomically claims
 // the one-shot claimed->running execution generation, binds its ActionIntent,
 // and installs the final start guard. No adapter subprocess is constructed or
@@ -167,6 +176,56 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 		RunningWork:    running,
 		RunInput:       runInput,
 		ActionIntentID: actionIntentID,
+	}, nil
+}
+
+// ExecuteGovernedHarnessAdvance runs the one mutation seam shared by explicit
+// work advance --execute and selector-driven execution. Callers must complete
+// all read-only adapter, workspace, roster, and preflight checks first.
+func ExecuteGovernedHarnessAdvance(
+	homePath string,
+	store *work.Store,
+	claimedWork envelope.WorkEnvelope,
+	adapter harness.Adapter,
+	runInput harness.RunInput,
+	actor string,
+	target string,
+	note string,
+	existingRunAttempts []string,
+	now time.Time,
+) (GovernedHarnessAdvanceExecution, error) {
+	reserved, err := ReserveGovernedHarnessLaunch(GovernedHarnessReservationInput{
+		HomePath: homePath, Store: store, ClaimedWork: claimedWork, Adapter: adapter,
+		RunInput: runInput, Actor: actor, Target: target, Note: note, Now: now,
+	})
+	if err != nil {
+		return GovernedHarnessAdvanceExecution{}, err
+	}
+	out, runErr := adapter.Run(context.Background(), reserved.RunInput)
+	harnessName := strings.TrimSpace(runInput.Harness)
+	if harnessName == "" {
+		harnessName = adapter.Name()
+	}
+	finalized, err := FinalizeGovernedHarnessRun(GovernedHarnessFinalizationInput{
+		Store:                 store,
+		WorkID:                claimedWork.ID,
+		Actor:                 actor,
+		HarnessName:           harnessName,
+		RunningPolicyID:       reserved.RunningWork.PolicyDecisionID,
+		RunningActionIntentID: reserved.ActionIntentID,
+		ExistingRunAttemptIDs: existingRunAttempts,
+		Output:                out,
+		RunError:              runErr,
+		Now:                   time.Now().UTC(),
+	})
+	if err != nil {
+		return GovernedHarnessAdvanceExecution{}, err
+	}
+	return GovernedHarnessAdvanceExecution{
+		RunningWork: reserved.RunningWork,
+		Output:      out,
+		RunError:    runErr,
+		Finalized:   finalized,
 	}, nil
 }
 

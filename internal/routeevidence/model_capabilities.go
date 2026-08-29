@@ -174,8 +174,11 @@ type ModelCapabilitiesSourceAuthority struct {
 type CapabilityRoutePlanOptions struct {
 	PrivacySensitive            bool
 	SuppressPendingObservations bool
-	ExpectedMinutes             int
-	Confirm                     bool
+	// SuppressRefusalEvidence makes planning projection-only: hard capacity
+	// walls remain visible in Omitted and Warnings but append no route evidence.
+	SuppressRefusalEvidence bool
+	ExpectedMinutes         int
+	Confirm                 bool
 	// CapacityConfig injects source paths for tests and alternate runtime projections. Nil uses
 	// the production defaults rooted at the supplied Compound home.
 	CapacityConfig *LaneCapacityConfig
@@ -476,6 +479,12 @@ func LoadModelCapabilitiesFromHome(homePath string) (ModelCapabilitiesManifest, 
 	return manifest, path, err
 }
 
+// LoadModelCapabilitiesSnapshot returns the validated authority plus its
+// content revision so execution preflight can bind tuple lookup to a plan.
+func LoadModelCapabilitiesSnapshot(homePath string) (ModelCapabilitiesManifest, string, string, error) {
+	return loadModelCapabilitiesSnapshot(homePath)
+}
+
 func loadModelCapabilitiesSnapshot(homePath string) (ModelCapabilitiesManifest, string, string, error) {
 	path := ModelCapabilitiesPath(homePath)
 	data, err := os.ReadFile(path)
@@ -621,6 +630,7 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 		capacityConfig = *opts.CapacityConfig
 	}
 	capacityConfig = normalizeLaneCapacityConfig(capacityConfig, homePath)
+	capacityConfig.SuppressRefusalEvidence = opts.SuppressRefusalEvidence
 	if opts.ExpectedMinutes > 0 {
 		capacityConfig.ExpectedMinutes = opts.ExpectedMinutes
 	}
@@ -699,7 +709,7 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 				capacityConfig.ExpectedMinutes,
 				opts.Confirm,
 				defaults,
-				false,
+				opts.SuppressRefusalEvidence,
 				capacityConfig,
 			)
 			if err != nil {
