@@ -15,6 +15,21 @@ import (
 
 const DefaultBudget = 45 * time.Second
 
+type BudgetEnvState string
+
+const (
+	BudgetEnvAbsent  BudgetEnvState = "absent"
+	BudgetEnvValid   BudgetEnvState = "valid"
+	BudgetEnvInvalid BudgetEnvState = "invalid"
+)
+
+type BudgetResolution struct {
+	State     BudgetEnvState
+	Budget    time.Duration
+	Requested time.Duration
+	Clamped   bool
+}
+
 type BudgetCommand struct {
 	HookName     string
 	FixturePath  string
@@ -35,14 +50,39 @@ func BudgetFromEnv(getenv func(string) string) time.Duration {
 	if getenv != nil {
 		raw = getenv("COMPOUND_HOOK_BUDGET")
 	}
-	if raw == "" {
-		return DefaultBudget
+	return ResolveBudget(raw, 0).Budget
+}
+
+// ResolveBudget treats the generic budget and any positive harness deadline as
+// safety ceilings. An environment value may shorten that ceiling, never extend
+// it; malformed and non-positive values retain the safe ceiling while exposing
+// an invalid state to callers and tests.
+func ResolveBudget(raw string, harnessBudget time.Duration) BudgetResolution {
+	ceiling := DefaultBudget
+	if harnessBudget > 0 && harnessBudget < ceiling {
+		ceiling = harnessBudget
 	}
-	budget, err := time.ParseDuration(raw)
-	if err != nil || budget <= 0 {
-		return DefaultBudget
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return BudgetResolution{State: BudgetEnvAbsent, Budget: ceiling}
 	}
-	return budget
+	requested, err := time.ParseDuration(trimmed)
+	if err != nil || requested <= 0 {
+		return BudgetResolution{State: BudgetEnvInvalid, Budget: ceiling}
+	}
+	if requested > ceiling {
+		return BudgetResolution{
+			State:     BudgetEnvValid,
+			Budget:    ceiling,
+			Requested: requested,
+			Clamped:   true,
+		}
+	}
+	return BudgetResolution{
+		State:     BudgetEnvValid,
+		Budget:    requested,
+		Requested: requested,
+	}
 }
 
 func EnumName(name string) string {

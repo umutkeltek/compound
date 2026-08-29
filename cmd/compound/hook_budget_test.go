@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -36,6 +38,15 @@ func TestHookBudgetFromEnv(t *testing.T) {
 	}
 	if hook.DefaultBudget >= 60*time.Second {
 		t.Fatalf("default budget %v must sit under the harness's 60s hook kill timeout", hook.DefaultBudget)
+	}
+}
+
+func TestHookBudgetInvalidOverrideCannotDefeatHarnessDeadline(t *testing.T) {
+	for _, alias := range []string{"oh_my_pi", "oh-my-pi"} {
+		command := hookCommandArgs{HookName: "pre-tool-use", Live: true, Harness: alias}
+		if got := resolveHookBudget(command, "soon"); got != 6*time.Second {
+			t.Fatalf("%s invalid override budget = %v, want 6s", alias, got)
+		}
 	}
 }
 
@@ -129,6 +140,67 @@ func TestHookAnswerGateArbitratesExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestRunHookCommandWithoutHomeReusesOuterAnswerGate(t *testing.T) {
+	stdinReader, stdinWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"hook_event_name": "SessionStart",
+		"session_id":      "synthetic-session",
+		"cwd":             t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stdinWriter.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stdoutReader, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdin, oldStdout := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = stdinReader, stdoutWriter
+	defer func() {
+		os.Stdin, os.Stdout = oldStdin, oldStdout
+		stdinReader.Close()
+		stdoutReader.Close()
+	}()
+
+	gate := newHookAnswerGate()
+	gate.mainAnswer(func() {})
+	code := runHookCommandWithoutHome(
+		hookCommandArgs{HookName: "session-start", Live: true, Harness: "oh_my_pi"},
+		time.Date(2026, 8, 29, 14, 0, 0, 0, time.UTC),
+		errors.New("synthetic incompatible home"),
+		gate,
+	)
+	os.Stdout = oldStdout
+	if err := stdoutWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(stdoutReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Fatalf("fallback exit = %d, want 0", code)
+	}
+	if got := strings.TrimSpace(string(output)); got != "" {
+		t.Fatalf("pre-won outer gate allowed fallback to publish a second answer: %s", got)
+	}
+}
+
+func TestHookUsageNamesSupportedOmpHarness(t *testing.T) {
+	if !strings.Contains(hookUsage, "oh_my_pi") {
+		t.Fatalf("live hook usage omits supported oh_my_pi harness: %s", hookUsage)
+	}
+}
+
 func TestBudgetExceededReasonIsInEnum(t *testing.T) {
 	for _, reason := range envelope.FailOpenReasons {
 		if reason == envelope.FailOpenBudgetExceeded {
@@ -143,24 +215,21 @@ func TestBudgetExceededReasonIsInEnum(t *testing.T) {
 // at ~8s, so its registry budget (6s) must displace the 45s default — a
 // 45s watchdog under an 8s kill is one that never gets to bark.
 func TestHookBudgetHarnessTierBeatsDefault(t *testing.T) {
-	t.Setenv("COMPOUND_HOOK_BUDGET", "")
-	omp := hookCommandArgs{HookName: "pre-tool-use", Live: true, Harness: "oh_my_pi"}
-	budget := hook.BudgetFromEnv(os.Getenv)
-	if strings.TrimSpace(os.Getenv("COMPOUND_HOOK_BUDGET")) == "" {
-		if ms := harness.DefaultRegistry().HookBudgetMS(omp.Harness); ms > 0 {
-			budget = time.Duration(ms) * time.Millisecond
+	for _, alias := range []string{"oh_my_pi", "oh-my-pi"} {
+		omp := hookCommandArgs{HookName: "pre-tool-use", Live: true, Harness: alias}
+		if got := resolveHookBudget(omp, ""); got != 6*time.Second {
+			t.Fatalf("%s absent override budget = %v, want the registry's 6s", alias, got)
+		}
+		if got := resolveHookBudget(omp, "2s"); got != 2*time.Second {
+			t.Fatalf("%s shorter override budget = %v, want 2s", alias, got)
+		}
+		if got := resolveHookBudget(omp, "10s"); got != 6*time.Second {
+			t.Fatalf("%s excessive override budget = %v, want clamp to 6s", alias, got)
 		}
 	}
-	if budget != 6*time.Second {
-		t.Fatalf("oh_my_pi budget = %v, want the registry's 6s (under its ~8s outer kill)", budget)
-	}
-	// An explicit env override still wins, even when equal to the default.
-	t.Setenv("COMPOUND_HOOK_BUDGET", "10s")
-	if d := hook.BudgetFromEnv(os.Getenv); d != 10*time.Second {
-		t.Fatalf("explicit env override = %v, want 10s", d)
-	}
 	// Harnesses without a registry budget keep the default.
-	if ms := harness.DefaultRegistry().HookBudgetMS("claude_code"); ms != 0 {
-		t.Fatalf("claude_code unexpectedly declares a hook budget: %dms", ms)
+	claude := hookCommandArgs{HookName: "pre-tool-use", Live: true, Harness: "claude_code"}
+	if got := resolveHookBudget(claude, ""); got != hook.DefaultBudget {
+		t.Fatalf("claude_code absent override budget = %v, want %v", got, hook.DefaultBudget)
 	}
 }

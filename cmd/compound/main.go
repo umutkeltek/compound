@@ -1749,7 +1749,7 @@ func runHookCommand(args []string) int {
 		compatibilityErr = home.RequireMutationCompatible(homePath)
 	}
 	if compatibilityErr != nil {
-		return runHookCommandWithoutHome(parsed, now, compatibilityErr)
+		return runHookCommandWithoutHome(parsed, now, compatibilityErr, hookGate)
 	}
 	orientation, err := loadOrientationPolicy()
 	if err != nil {
@@ -1847,10 +1847,7 @@ func runHookCommand(args []string) int {
 // or incompatible home. It uses built-in policy, never enters a home-aware
 // fixture/resolver seam, and returns before every persistence/parity/feedback
 // helper in the normal hook path.
-func runHookCommandWithoutHome(parsed hookCommandArgs, now time.Time, compatibilityErr error) int {
-	gate := newHookAnswerGate()
-	stopBudget := startHookBudgetWatchdog(parsed, gate, nil)
-	defer stopBudget()
+func runHookCommandWithoutHome(parsed hookCommandArgs, now time.Time, compatibilityErr error, gate *hookAnswerGate) int {
 	orientation, _, err := contract.LoadPolicy("")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
