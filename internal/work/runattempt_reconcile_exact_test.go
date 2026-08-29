@@ -180,13 +180,13 @@ func TestCloseResumesExactPreparedGenerationAfterCrash(t *testing.T) {
 	}
 	firstIntent := *prepared.TerminalizationIntent
 
-	if _, err := s.Advance(workID, AdvanceInput{To: "running", Actor: "codex"}, fixedNow.Add(6*time.Minute)); err == nil || !strings.Contains(err.Error(), "frozen close") {
-		t.Fatalf("competing lifecycle mutation error = %v, want frozen-close fence", err)
+	if _, err := s.Advance(workID, AdvanceInput{To: "running", Actor: "codex"}, fixedNow.Add(6*time.Minute)); err == nil || !strings.Contains(err.Error(), "prepared close") {
+		t.Fatalf("competing lifecycle mutation error = %v, want prepared-close fence", err)
 	}
 	changed := input
 	changed.Summary = "different retry input"
-	if _, err := s.Close(workID, changed, fixedNow.Add(7*time.Minute)); err == nil || !strings.Contains(err.Error(), "retry input") {
-		t.Fatalf("changed close retry error = %v, want retry-input mismatch", err)
+	if _, err := s.Close(workID, changed, fixedNow.Add(7*time.Minute)); err == nil || !strings.Contains(err.Error(), "close input") {
+		t.Fatalf("changed close retry error = %v, want close-input mismatch", err)
 	}
 
 	closed, err := s.Close(workID, input, fixedNow.Add(8*time.Minute))
@@ -468,13 +468,12 @@ func TestCloseReportsWorkOwnedRunAttemptTerminalizationFailure(t *testing.T) {
 		return previous(store, id, intent, at)
 	}
 
-	input := CloseInput{
+	closed, err := s.Close(workID, CloseInput{
 		Outcome: "completed", MoveType: "control_plane_repair",
-		Summary: "close reports incomplete RunAttempt as recovery required",
-	}
-	closed, err := s.Close(workID, input, fixedNow.Add(5*time.Minute))
-	if err == nil || !strings.Contains(err.Error(), "close recovery_required") {
-		t.Fatalf("incomplete RunAttempt close error = %v, want recovery_required", err)
+		Summary: "close stays committed while exposing the incomplete RunAttempt",
+	}, fixedNow.Add(5*time.Minute))
+	if err != nil {
+		t.Fatalf("committed close must not be reported failed: %v", err)
 	}
 	if !reflect.DeepEqual(closed.UnterminalizedRunAttemptIDs, []string{wantID}) {
 		t.Fatalf("unterminalized attempts = %v, want [%s]", closed.UnterminalizedRunAttemptIDs, wantID)
@@ -483,66 +482,11 @@ func TestCloseReportsWorkOwnedRunAttemptTerminalizationFailure(t *testing.T) {
 	if err != nil || runattempt.IsTerminal(prepared.Status) || prepared.TerminalizationIntent == nil {
 		t.Fatalf("failed completion did not preserve exact repair intent: attempt=%+v err=%v", prepared, err)
 	}
-	if _, present, err := s.loadClosePending(workID); err != nil || !present {
-		t.Fatalf("failed completion did not retain exact close frame: present=%v err=%v", present, err)
-	}
-	if _, err := os.Stat(s.leasePath(workID)); err != nil {
-		t.Fatalf("failed completion did not retain lease: %v", err)
-	}
 
 	completePreparedTerminalization = previous
-	retryAt := fixedNow.Add(6 * time.Minute)
-	closed, err = s.Close(workID, input, retryAt)
-	if err != nil || len(closed.UnterminalizedRunAttemptIDs) != 0 {
-		t.Fatalf("exact retry did not finish terminal close: result=%+v err=%v", closed, err)
-	}
-	after, err := runattempt.Open(s.home).Get(wantID)
-	if err != nil || after.Status != runattempt.StatusSucceeded || !after.CompletedAt.Equal(retryAt) {
-		t.Fatalf("exact retry did not terminalize at actual retry time %s: attempt=%+v err=%v", retryAt, after, err)
-	}
-	if _, present, err := s.loadClosePending(workID); err != nil || present {
-		t.Fatalf("exact retry left close frame: present=%v err=%v", present, err)
-	}
-	if _, err := os.Stat(s.leasePath(workID)); !os.IsNotExist(err) {
-		t.Fatalf("exact retry left lease: %v", err)
-	}
-}
-
-func TestReconcileFinishesClosePendingFrameAndLeaseCleanup(t *testing.T) {
-	s := newStore(t)
-	workID, runAttemptIDs := closeTerminalizeWork(t, s, "reconcile-finishes-close-cleanup", fixedNow)
-	wantID := runAttemptIDs[0]
-	previous := completePreparedTerminalization
-	t.Cleanup(func() { completePreparedTerminalization = previous })
-	completePreparedTerminalization = func(store *runattempt.Store, id string, intent runattempt.TerminalizationIntent, at time.Time) (runattempt.RunAttempt, error) {
-		if id == wantID {
-			return runattempt.RunAttempt{}, errors.New("injected terminalization failure before reconcile")
-		}
-		return previous(store, id, intent, at)
-	}
-	input := CloseInput{
-		Outcome: "completed", MoveType: "control_plane_repair",
-		Summary: "reconciler owns terminal close cleanup",
-	}
-	if _, err := s.Close(workID, input, fixedNow.Add(5*time.Minute)); err == nil || !strings.Contains(err.Error(), "close recovery_required") {
-		t.Fatalf("incomplete close error = %v, want recovery_required", err)
-	}
-
-	completePreparedTerminalization = previous
-	reconcileAt := fixedNow.Add(7 * time.Minute)
-	report, err := s.ReconcileRunAttemptsForTerminalWork(workID, reconcileAt)
+	report, err := s.ReconcileRunAttemptsForTerminalWork(workID, fixedNow.Add(6*time.Minute))
 	if err != nil || report.Status != "ok" || !reflect.DeepEqual(report.ReconciledIDs, []string{wantID}) {
-		t.Fatalf("reconcile incomplete close: report=%+v err=%v", report, err)
-	}
-	after, err := runattempt.Open(s.home).Get(wantID)
-	if err != nil || after.Status != runattempt.StatusSucceeded || !after.CompletedAt.Equal(reconcileAt) {
-		t.Fatalf("reconcile did not terminalize at actual recovery time %s: attempt=%+v err=%v", reconcileAt, after, err)
-	}
-	if _, present, err := s.loadClosePending(workID); err != nil || present {
-		t.Fatalf("reconcile left close frame: present=%v err=%v", present, err)
-	}
-	if _, err := os.Stat(s.leasePath(workID)); !os.IsNotExist(err) {
-		t.Fatalf("reconcile left lease: %v", err)
+		t.Fatalf("reconcile exposed incomplete attempt: report=%+v err=%v", report, err)
 	}
 }
 

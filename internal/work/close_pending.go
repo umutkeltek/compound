@@ -929,7 +929,7 @@ func (s *Store) clearClosePending(pending closePending) error {
 	})
 }
 
-func (s *Store) completeClosePending(pending closePending, in CloseInput, now time.Time) (CloseResult, error) {
+func (s *Store) completeClosePending(pending closePending, in CloseInput) (CloseResult, error) {
 	res := CloseResult{Work: pending.SourceWork, Receipt: pending.Receipt, Transition: pending.Transition}
 	inputSHA, err := closeInputSHA256(in)
 	if err != nil {
@@ -1017,14 +1017,11 @@ func (s *Store) completeClosePending(pending closePending, in CloseInput, now ti
 		}
 		referenceFinished = true
 	}
-	unterminalized := s.terminalizePreparedRunAttempts(plans, now)
+	completedAt, _ := time.Parse(time.RFC3339Nano, pending.CompletedAt)
+	unterminalized := s.terminalizePreparedRunAttempts(plans, completedAt)
 	res = CloseResult{Work: pending.FinalWork, Receipt: pending.Receipt, Transition: pending.Transition, UnterminalizedRunAttemptIDs: unterminalized}
 	if len(unterminalized) > 0 {
-		return res, closeRecoveryRequired(
-			"work %s RunAttempt terminalization incomplete for %s; retry the exact close or reconcile the terminal work",
-			pending.WorkID,
-			strings.Join(unterminalized, ","),
-		)
+		return res, nil
 	}
 	closeBeforeLeaseRelease()
 	if err := s.removeClosePendingLease(pending); err != nil {
@@ -1034,47 +1031,4 @@ func (s *Store) completeClosePending(pending closePending, in CloseInput, now ti
 		return res, closeRecoveryRequired("clear work %s frame: %w", pending.WorkID, err)
 	}
 	return res, nil
-}
-
-func (s *Store) finishReconciledClosePending(workID string) error {
-	pending, present, err := s.loadClosePending(workID)
-	if err != nil || !present {
-		return err
-	}
-	current, err := s.Get(workID)
-	if err != nil {
-		return err
-	}
-	currentSHA, err := workEnvelopeSHA256(current)
-	if err != nil {
-		return err
-	}
-	if currentSHA != pending.FinalWorkSHA256 {
-		return closeRecoveryRequired("work %s is not the frozen terminal generation", workID)
-	}
-	store := s.runAttempts()
-	for _, frozen := range pending.RunAttempts {
-		if frozen.CallerOwns {
-			continue
-		}
-		attempt, err := store.Get(frozen.Attempt.ID)
-		if err != nil {
-			return closeRecoveryRequired("read reconciled RunAttempt %s: %v", frozen.Attempt.ID, err)
-		}
-		intent := frozen.Intent
-		if attempt.Status != intent.TargetStatus ||
-			attempt.TerminalizationOwner != intent.Owner ||
-			attempt.TerminalizationReceiptID != intent.ReceiptID ||
-			attempt.TerminalizationTransitionID != intent.TransitionID ||
-			attempt.TerminalizationReason != intent.TerminalizationReason {
-			return closeRecoveryRequired("RunAttempt %s has not converged to its frozen terminalization", frozen.Attempt.ID)
-		}
-	}
-	if err := s.removeClosePendingLease(pending); err != nil {
-		return closeRecoveryRequired("release work %s lease after reconciliation: %v", workID, err)
-	}
-	if err := s.clearClosePending(pending); err != nil {
-		return closeRecoveryRequired("clear work %s frame after reconciliation: %v", workID, err)
-	}
-	return nil
 }

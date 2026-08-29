@@ -2869,7 +2869,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if pending, present, err := s.loadClosePending(workID); err != nil {
 		return res, err
 	} else if present {
-		return s.completeClosePending(pending, in, now)
+		return s.completeClosePending(pending, in)
 	}
 	w, err := s.recoverPendingClaimBeforeClose(workID)
 	if err != nil {
@@ -3234,7 +3234,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if err := s.persistClosePending(pending); err != nil {
 		return res, fmt.Errorf("persist close recovery frame: %w", err)
 	}
-	return s.completeClosePending(pending, in, now)
+	return s.completeClosePending(pending, in)
 }
 
 // terminalizePreparedRunAttempts writes only work-owned exact intents.
@@ -3560,11 +3560,6 @@ func (s *Store) ReconcileRunAttemptsForTerminalWork(workID string, now time.Time
 	}
 	if len(report.ReconciledIDs) > 0 && len(report.Issues) > 0 {
 		report.Status = "partially_reconciled"
-	}
-	if report.Status == "ok" {
-		if err := s.finishReconciledClosePending(workID); err != nil {
-			return report, err
-		}
 	}
 	return report, nil
 }
