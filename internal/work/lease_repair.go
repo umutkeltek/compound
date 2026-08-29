@@ -131,6 +131,9 @@ func (s *Store) RepairLease(workID string, in LeaseRepairInput, now time.Time) (
 
 func (s *Store) repairLeaseLocked(workID string, in LeaseRepairInput, now time.Time) (LeaseRepairResult, error) {
 	var out LeaseRepairResult
+	if err := s.fenceClosePendingMutation(workID); err != nil {
+		return out, err
+	}
 	actor := strings.TrimSpace(in.Actor)
 	reason := strings.TrimSpace(in.Reason)
 	if actor == "" {

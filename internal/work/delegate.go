@@ -1881,6 +1881,9 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	raStore := runAttemptsFactory(s.home)
 	var minted runattempt.RunAttempt
 	mintErr := s.withLifecycleMutation(func() error {
+		if err := s.fenceClosePendingMutation(out.WorkID); err != nil {
+			return &delegateAuthorityChangedError{detail: err.Error()}
+		}
 		current, err := s.Get(out.WorkID)
 		if err != nil {
 			return &delegateAuthorityChangedError{detail: "work envelope is no longer readable"}

@@ -471,6 +471,15 @@ func parseLifecycleTS(value string) (time.Time, error) {
 // audit hook a downstream reconciliation can match on. The audit reclaimer
 // itself is the operator running this command, not a third-party tool.
 func reclaimEnvelope(s *Store, w envelope.WorkEnvelope, candidate SweepStaleCandidate, now time.Time) error {
+	return s.withLifecycleMutation(func() error {
+		return s.reclaimEnvelopeLocked(w, candidate, now)
+	})
+}
+
+func (s *Store) reclaimEnvelopeLocked(w envelope.WorkEnvelope, candidate SweepStaleCandidate, now time.Time) error {
+	if err := s.fenceClosePendingMutation(w.ID); err != nil {
+		return err
+	}
 	if !sweepStaleEnvelopeStates[w.State] {
 		return fmt.Errorf("work %s: state %q is not reclaimable", w.ID, w.State)
 	}
