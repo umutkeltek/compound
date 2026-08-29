@@ -520,7 +520,19 @@ func normalizeGroup(g *Group, generatedAt string, now time.Time) {
 		g.Count = maxInt(1, len(g.ItemIDs))
 	}
 	if strings.TrimSpace(g.OperatorSummary) == "" {
-		g.OperatorSummary = reviewartifact.PlainLabel(g.Area) + " needs attention."
+		// Last-resort prose: every real producer authors a summary, so this
+		// only fires on malformed inputs — but it still must state why the
+		// group is in front of the operator and, for needs-you, one concrete
+		// action (never a generic "needs attention" line). Renderers print
+		// Area/Key beside the summary, so identity lives there, not in prose.
+		if g.Band == BandNeedsYou {
+			g.OperatorSummary = plural(g.Count, "item needs your decision.", "items need your decision.")
+			if strings.TrimSpace(g.OperatorUnlock) == "" {
+				g.OperatorUnlock = "Open the review queue to read the details."
+			}
+		} else {
+			g.OperatorSummary = "Background work moved; nothing is needed from you."
+		}
 	}
 	if strings.TrimSpace(g.OldestCreatedAt) == "" {
 		g.OldestCreatedAt = generatedAt

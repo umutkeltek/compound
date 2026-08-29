@@ -103,11 +103,12 @@ func Write(homePath, area, id string, payload any, indent, markdown string) (Pat
 	if err != nil {
 		return Paths{}, err
 	}
-	card, ok, err := operatorCardFromJSON(data)
-	if err != nil {
+	var payloadMap map[string]any
+	if err := json.Unmarshal(data, &payloadMap); err != nil {
 		return Paths{}, err
 	}
-	if !ok {
+	card, hasCard := OperatorCardFromMap(payloadMap)
+	if !hasCard {
 		provider, providesCard := payload.(operatorCardProvider)
 		source := SummarySourceWriter
 		if providesCard {
@@ -116,7 +117,11 @@ func Write(homePath, area, id string, payload any, indent, markdown string) (Pat
 				return Paths{}, fmt.Errorf("review artifact %s/%s operator card: %w", area, id, err)
 			}
 		} else {
-			card = FallbackOperatorCard(area, id)
+			// No authored card and no provider: derive the plain-language card
+			// (what/why/one action) from the payload itself — never a generic
+			// placeholder. "fallback" stays the source stamp so queue debt
+			// counters still track cards the writer did not author.
+			card = DerivedOperatorCard(payloadMap, area)
 			source = SummarySourceFallback
 		}
 		data, err = injectOperatorCardJSON(data, card, indent, source)

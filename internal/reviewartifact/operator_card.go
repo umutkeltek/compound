@@ -105,15 +105,6 @@ func ValidateOperatorCard(card OperatorCard) error {
 	return nil
 }
 
-func operatorCardFromJSON(data []byte) (OperatorCard, bool, error) {
-	var payload map[string]any
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return OperatorCard{}, false, err
-	}
-	card, ok := OperatorCardFromMap(payload)
-	return card, ok, nil
-}
-
 type operatorCardProvider interface {
 	ReviewOperatorCard() (OperatorCard, error)
 }
@@ -227,17 +218,167 @@ func BandForStatus(status, readiness string) string {
 	}
 }
 
-func FallbackOperatorCard(area, id string) OperatorCard {
-	plain := PlainLabel(area)
-	if plain == "" {
-		plain = "Review"
+// DerivedOperatorCard composes the plain-language card for a core review
+// artifact whose writer authored none: it states WHAT the record is, WHY it
+// sits in front of the operator, and ONE concrete action — derived from the
+// record's own payload, never a generic placeholder. Every candidate is gated
+// by ValidateOperatorCard and the eighth-grade readability ceiling, degrading
+// deterministically (record title → plain area → "review record") until one
+// passes, so the returned card always validates and always reads at or below
+// the ceiling.
+func DerivedOperatorCard(payload map[string]any, area string) OperatorCard {
+	context := derivedContextLabel(area)
+	groupKey := FirstNonEmpty(area, "unclassified") + "|review"
+	unlocks := derivedUnlocks(payload, area)
+	for _, summary := range derivedSummaries(payload, area) {
+		for _, unlock := range unlocks {
+			card := OperatorCard{
+				Summary:      summary,
+				ContextLabel: context,
+				GroupKey:     groupKey,
+				Unlock:       unlock,
+			}
+			if ValidateOperatorCard(card) != nil {
+				continue
+			}
+			if !Readable(card.Summary) || !Readable(card.Unlock) {
+				continue
+			}
+			return card
+		}
 	}
-	context := ShortLabel(plain, 60)
+	// Terminal rung: constant prose that passes both gates by construction.
+	// Reachable only when the area itself is pathological; it still states
+	// what, why, and one action.
 	return OperatorCard{
-		Summary:      ShortLabel(plain+": a new record needs your read.", 160),
-		ContextLabel: context,
-		GroupKey:     FirstNonEmpty(area, "unclassified") + "|fallback",
+		Summary:      "A new review record needs your decision.",
+		ContextLabel: "Review",
+		GroupKey:     groupKey,
+		Unlock:       "Open the review queue and read this record.",
 	}
+}
+
+// derivedContextLabel plain-language-izes the area, degrading to "Review"
+// when the label would carry banned machine syntax.
+func derivedContextLabel(area string) string {
+	label := ShortLabel(PlainLabel(area), 60)
+	if label == "" || operatorCardBanlist.MatchString(label) {
+		return "Review"
+	}
+	return label
+}
+
+// derivedTitleClause lifts the record's own title-ish first clause to name
+// WHAT the artifact is, capped at 90 runes so the fused sentence stays inside
+// the 160-rune summary cap.
+func derivedTitleClause(payload map[string]any) string {
+	raw := firstString(payload, "title", "subject", "summary", "claim", "question")
+	if raw == "" {
+		return ""
+	}
+	clause := SanitizeFragment(strings.TrimSuffix(FirstClause(raw), "."))
+	clause = ShortLabel(clause, 90)
+	clause = strings.TrimRight(clause, " .,:;-…")
+	return strings.TrimSpace(clause)
+}
+
+// derivedWhats names the record for the summary sentence, most specific first.
+func derivedWhats(payload map[string]any, area string) []string {
+	var whats []string
+	if title := derivedTitleClause(payload); title != "" {
+		whats = append(whats, title)
+	}
+	if plain := PlainLabel(area); plain != "" {
+		whats = append(whats, "A new "+plain+" record")
+	}
+	return append(whats, "A new review record")
+}
+
+// derivedReasonClause reduces blocked_reason to a short plain clause.
+func derivedReasonClause(raw string) string {
+	clause := SanitizeFragment(strings.TrimSuffix(FirstClause(raw), "."))
+	clause = ShortLabel(clause, 60)
+	clause = strings.TrimRight(clause, " .,:;-…")
+	return strings.TrimSpace(clause)
+}
+
+// derivedSummaries fuses WHAT and WHY into one sentence per (what × why)
+// candidate, ordered most specific first. The why clause comes from the
+// record's own status/readiness/blocked_reason; each why has a shorter
+// fallback that drops the free-text clause.
+func derivedSummaries(payload map[string]any, area string) []string {
+	status := firstString(payload, "status", "verdict", "result")
+	readiness := firstString(payload, "readiness")
+	blocked := derivedReasonClause(firstString(payload, "blocked_reason"))
+	var out []string
+	for _, what := range derivedWhats(payload, area) {
+		var variants []string
+		switch {
+		case TerminalStatus(status):
+			variants = []string{what + " is already finished.", what + " has an outcome recorded."}
+		case blocked != "":
+			variants = []string{what + " is blocked: " + blocked + ".", what + " is blocked."}
+		case status == "held" || status == "blocked" || readiness == "blocked":
+			variants = []string{what + " is held until you decide.", what + " needs your decision."}
+		case readiness == "ready_to_apply":
+			variants = []string{what + " is ready to apply."}
+		default:
+			// review_required, unknown, and anything unclassified: the honest ask.
+			variants = []string{what + " needs your decision."}
+		}
+		out = append(out, variants...)
+	}
+	return out
+}
+
+// derivedUnlocks names ONE concrete action, most specific first: the record's
+// own next_action, then its first exposed action label, then the review verb.
+func derivedUnlocks(payload map[string]any, area string) []string {
+	var out []string
+	if next := plainUnlockText(firstString(payload, "next_action")); next != "" {
+		out = append(out, next)
+	}
+	if label := plainUnlockText(firstActionLabel(payload)); label != "" {
+		out = append(out, label)
+	}
+	out = append(out,
+		"Open it with compound reviews --area "+FirstNonEmpty(area, "review")+".",
+		"Open the review queue and read this record.")
+	return out
+}
+
+// plainUnlockText scrubs free text into unlock grammar: one line, no question,
+// at most 90 runes.
+func plainUnlockText(raw string) string {
+	raw = SanitizeFragment(raw)
+	raw = strings.ReplaceAll(raw, "?", "")
+	raw = ShortLabel(raw, 90)
+	return strings.TrimSpace(strings.TrimRight(raw, " ,:;-"))
+}
+
+func firstActionLabel(payload map[string]any) string {
+	actions, ok := payload["actions"].([]any)
+	if !ok || len(actions) == 0 {
+		return ""
+	}
+	first, ok := actions[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return firstString(first, "label")
+}
+
+// LegacyGenericCardSummary reports whether summary is the retired generic
+// fallback sentence ("…: a new record needs your read.") that pre-derivation
+// writers stamped on cardless records. Queue loads re-derive those cards from
+// the payload so the operator never sees the placeholder again — including on
+// artifacts already written to disk.
+func LegacyGenericCardSummary(summary string) bool {
+	trimmed := strings.TrimSpace(summary)
+	trimmed = strings.TrimSuffix(trimmed, ".")
+	trimmed = strings.TrimSuffix(trimmed, "…")
+	trimmed = strings.TrimSpace(trimmed)
+	return strings.HasSuffix(strings.ToLower(trimmed), "a new record needs your read")
 }
 
 func PlainLabel(value string) string {
@@ -303,18 +444,4 @@ func HumanizeEntity(value string) string {
 		return "arXiv " + value
 	}
 	return value
-}
-
-func shortID(id string) string {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return "new"
-	}
-	id = strings.TrimSuffix(id, ".json")
-	id = strings.TrimSuffix(id, ".md")
-	if utf8.RuneCountInString(id) <= 12 {
-		return id
-	}
-	runes := []rune(id)
-	return string(runes[:12])
 }

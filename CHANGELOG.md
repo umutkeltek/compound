@@ -6,7 +6,29 @@ for tagged releases, subject to the public-alpha compatibility policy in
 
 ## [Unreleased]
 
+### Added
+
+- Plain-language review cards for every needs_you item: a cardless core
+  review artifact now gets a derived operator card stating what the record
+  is, why it sits in front of the operator, and one concrete action —
+  composed from the artifact's own payload (title clause, status, blocked
+  reason, next action) by `reviewartifact.DerivedOperatorCard`, gated by
+  the operator-card grammar and a new shared deterministic eighth-grade
+  readability ceiling (`reviewartifact.GradeLevel` /
+  `narrate.CheckScriptReadability`). The daily digest letter renders each
+  needs_you group's card and self-gates on the same ceiling, degrading a
+  too-dense card to a plain count-and-reply line rather than shipping
+  jargon.
+
 ### Fixed
+
+- The generic "a new record needs your read" fallback card is gone. Queue
+  loads re-derive cards for artifacts already on disk that carry the
+  retired sentence, attention's last-resort needs_you group prose now
+  states the decision and carries an unlock action, and narrate's
+  malformed-fixture beat fallback names the queue instead of returning the
+  generic line. Narrate acknowledgements dropped the "Recorded —" lead
+  that pushed them above the readability ceiling.
 
 - The breadth vector cache is now constructed whenever a compound home
   exists, instead of only when the embedder's dimension was already known.

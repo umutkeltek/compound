@@ -373,7 +373,7 @@ func buildQueueGroups(items []QueueItem) []QueueGroup {
 				Status:          item.Status,
 				Readiness:       item.Readiness,
 				Band:            item.Band,
-				OperatorSummary: FirstNonEmpty(item.OperatorSummary, item.NextAction, item.ContextLabel, item.ID, "Review this item."),
+				OperatorSummary: FirstNonEmpty(item.OperatorSummary, item.NextAction, item.ContextLabel, "This record waits on your decision."),
 				ContextLabel:    FirstNonEmpty(item.ContextLabel, item.Area),
 				OperatorUnlock:  item.OperatorUnlock,
 				SummarySource:   item.SummarySource,
@@ -889,7 +889,7 @@ func queueItemForRel(path, rel string) (QueueItem, error) {
 	if item.Band == "" {
 		item.Band = BandForStatus(item.Status, item.Readiness)
 	}
-	if card, ok := OperatorCardFromMap(payload); ok && ValidateOperatorCard(card) == nil {
+	if card, ok := OperatorCardFromMap(payload); ok && ValidateOperatorCard(card) == nil && !LegacyGenericCardSummary(card.Summary) {
 		item.OperatorSummary = card.Summary
 		item.ContextLabel = card.ContextLabel
 		item.GroupKey = card.GroupKey
@@ -898,7 +898,13 @@ func queueItemForRel(path, rel string) (QueueItem, error) {
 			item.SummarySource = SummarySourceWriter
 		}
 	} else {
-		card := FallbackOperatorCard(area, item.ID)
+		// Missing, invalid, or retired-generic card: derive the plain-language
+		// card (what/why/one action) from the payload so every queued item —
+		// including artifacts written before derivation existed — reads
+		// specifically. The card the operator sees is projection-derived, so
+		// summary_source says so; the debt counters keep tracking cards the
+		// writer did not author.
+		card := DerivedOperatorCard(payload, area)
 		item.OperatorSummary = card.Summary
 		item.ContextLabel = card.ContextLabel
 		item.GroupKey = card.GroupKey

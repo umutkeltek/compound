@@ -550,16 +550,26 @@ func buildAttentionBeat(m member, mood Mood) Beat {
 }
 
 // beatProse takes the operator sentence verbatim from attention (already
-// validated upstream) and falls back to a valid authored sentence only if a
-// fixture is malformed — so every beat body passes ValidateOperatorCard (F6).
+// validated upstream) and falls back to a specific, plain sentence only if a
+// fixture is malformed — so every beat body passes ValidateOperatorCard (F6)
+// and every FALLBACK body narrate itself authors also clears the eighth-grade
+// readability ceiling. The retired generic "A new item needs your read." line
+// never returns: the fallback names the queue the item came from, and degrades
+// to a plain terminal sentence when that name is too dense to read.
 func beatProse(g attention.Group) (string, string) {
 	body := strings.TrimSpace(g.OperatorSummary)
 	unlock := reviewartifact.ShortLabel(g.OperatorUnlock, 90)
-	if !proseOK(body, unlock, voiceFor(ActReport), ActReport) {
-		body = "A new item needs your read."
-		unlock = ""
+	if proseOK(body, unlock, voiceFor(ActReport), ActReport) {
+		return body, unlock
 	}
-	return body, unlock
+	const fallbackUnlock = "Open the review queue to read it."
+	if area := reviewartifact.PlainLabel(g.Area); area != "" {
+		areaBody := fmt.Sprintf("A %s item needs your decision.", area)
+		if proseOK(areaBody, fallbackUnlock, voiceFor(ActReport), ActReport) && reviewartifact.Readable(areaBody) {
+			return areaBody, fallbackUnlock
+		}
+	}
+	return "A review item needs your decision.", fallbackUnlock
 }
 
 func proseOK(body, unlock, label, act string) bool {
@@ -670,27 +680,28 @@ func composeAcks(receipts []ReceiptSummary, resolved bool, mood Mood) ([]Beat, [
 	return beats, folds
 }
 
-// ackBody composes the honest split sentence and falls back to a valid generic
-// line if the composed reason cannot pass the grammar (keeps F6 green).
+// ackBody composes the honest split sentence in plain words and falls back to
+// a simpler true-count line if the composed reason cannot pass the grammar or
+// the eighth-grade ceiling (keeps F6 and the readability gate green).
 func ackBody(moveType string, applied, total int, reason string) string {
 	phrase := moveTypePhrase(moveType)
 	failed := total - applied
 	var body string
 	switch {
 	case failed == 0:
-		body = fmt.Sprintf("Recorded — %d of %d %s joined.", applied, total, phrase)
+		body = fmt.Sprintf("%d of %d %s joined.", applied, total, phrase)
 	case strings.TrimSpace(reason) != "":
 		clean := reviewartifact.SanitizeFragment(reason)
 		clean = reviewartifact.ShortLabel(clean, 60)
-		body = fmt.Sprintf("Recorded — %d of %d %s joined; %d failed — %s.", applied, total, phrase, failed, strings.TrimRight(clean, "."))
+		body = fmt.Sprintf("%d of %d %s joined; %d failed on %s.", applied, total, phrase, failed, strings.TrimRight(clean, "."))
 	default:
-		body = fmt.Sprintf("Recorded — %d of %d %s joined; %d failed.", applied, total, phrase, failed)
+		body = fmt.Sprintf("%d of %d %s joined; %d failed.", applied, total, phrase, failed)
 	}
-	if proseOK(body, "", ackVoice(moveType), ActAcknowledge) {
+	if proseOK(body, "", ackVoice(moveType), ActAcknowledge) && reviewartifact.Readable(body) {
 		return body
 	}
 	// safe fallback that still reports the true counts.
-	fallback := fmt.Sprintf("Recorded — %d of %d applied; %d failed.", applied, total, failed)
+	fallback := fmt.Sprintf("%d of %d applied; %d failed.", applied, total, failed)
 	if proseOK(fallback, "", ackVoice(moveType), ActAcknowledge) {
 		return fallback
 	}

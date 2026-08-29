@@ -2,6 +2,7 @@ package attention
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -559,5 +560,55 @@ func TestAreaMappingCoversKnownAreasAndUnknownDefault(t *testing.T) {
 	kind, blast, reversibility := ClassifyArea("unknown-area")
 	if kind != KindAdjudicate || blast != BlastLocalReversible || reversibility != Reversible {
 		t.Fatalf("unknown default = %q/%q/%q, want %q/%q/%q", kind, blast, reversibility, KindAdjudicate, BlastLocalReversible, Reversible)
+	}
+}
+
+// TestNeedsYouLastResortSummaryCarriesWhyAndAction pins the normalizeGroup
+// net: when no producer authored a summary, a needs_you group still states
+// why it is in front of the operator and one concrete action — and the prose
+// holds the shared eighth-grade ceiling. Renderers print Area/Key beside the
+// sentence, so identity lives in those fields, not in denser prose.
+func TestNeedsYouLastResortSummaryCarriesWhyAndAction(t *testing.T) {
+	now := time.Date(2026, 8, 29, 6, 0, 0, 0, time.UTC)
+	report := Build(Inputs{Reviews: &reviewartifact.QueueReport{
+		Groups: []reviewartifact.QueueGroup{
+			{Key: "bare", Area: "", Band: reviewartifact.BandNeedsYou, Status: "review_required", Count: 2},
+		},
+	}}, now)
+	if len(report.Groups) == 0 {
+		t.Fatal("no attention group built")
+	}
+	g := report.Groups[0]
+	if g.Band != BandNeedsYou {
+		t.Fatalf("band = %q", g.Band)
+	}
+	if g.OperatorSummary != "2 items need your decision." {
+		t.Fatalf("summary = %q, want the decision why", g.OperatorSummary)
+	}
+	if g.OperatorUnlock == "" {
+		t.Fatal("needs_you last-resort group carries no action unlock")
+	}
+	if reviewartifact.GradeLevel(g.OperatorSummary) > reviewartifact.ReadabilityGradeCeiling {
+		t.Fatalf("last-resort summary above grade: %q (%.2f)", g.OperatorSummary, reviewartifact.GradeLevel(g.OperatorSummary))
+	}
+	if strings.Contains(g.OperatorSummary, "needs attention") || strings.Contains(g.OperatorSummary, "needs your read") {
+		t.Fatalf("generic fallback survived: %q", g.OperatorSummary)
+	}
+}
+
+// TestWatchingLastResortSummaryStaysPlain pins the non-needs-you branch of
+// the same net.
+func TestWatchingLastResortSummaryStaysPlain(t *testing.T) {
+	now := time.Date(2026, 8, 29, 6, 0, 0, 0, time.UTC)
+	report := Build(Inputs{Reviews: &reviewartifact.QueueReport{
+		Groups: []reviewartifact.QueueGroup{
+			{Key: "bare-watch", Area: "", Band: reviewartifact.BandWatching, Status: "held", Count: 1},
+		},
+	}}, now)
+	if len(report.Groups) == 0 {
+		t.Fatal("no attention group built")
+	}
+	if summary := report.Groups[0].OperatorSummary; summary != "Background work moved; nothing is needed from you." {
+		t.Fatalf("watching summary = %q", summary)
 	}
 }
