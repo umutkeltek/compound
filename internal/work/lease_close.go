@@ -82,9 +82,11 @@ func (s *Store) leaseHolderStatusFor(workID, actor string, steal bool, stealReas
 	}
 }
 
-// leaseHolderCloseGate is the enforcement seam Close calls immediately after
-// heldReleaseOperatorError. It refuses (recording a deny) a non-holder close, records an
-// explicit steal, and is a no-op for an unclaimed work or a same-actor close.
+// leaseHolderCloseGate is the mutating enforcement seam Close invokes once on
+// an authorized steal path after RunAttempt terminalization preparation. Close
+// handles a read-only blocked decision earlier so it can record the denial
+// without preparing an intent; this seam re-reads authority at the final
+// recoverable boundary, records an explicit steal, and transfers the lease.
 func (s *Store) leaseHolderCloseGate(w envelope.WorkEnvelope, actor string, in CloseInput, now time.Time) error {
 	status := s.leaseHolderStatusFor(w.ID, actor, in.Steal, in.StealReason, "close")
 	switch {

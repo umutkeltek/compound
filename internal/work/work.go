@@ -3083,26 +3083,30 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 			return res, identityErr
 		}
 	}
-	// Atomic steal (2026-07-31 regression — work_close_steal_lease_corruption_20260731):
-	// the lease gate runs as the LAST pre-persistence gate, AFTER plan/policy
-	// evaluation, AFTER receipt/transition composition, AFTER the Git reference
-	// transaction is staged and identity-revalidated. Re-pointing the lease before
-	// every other check passed was the brick pattern from 2026-07-31 — a close
-	// --steal transferred the lease to actor-b, then a downstream validation refused
-	// the closure, leaving the work in actor-a's pre-close state with a lease naming
-	// actor-b. Now: any pre-persistence check failing causes the gate to never run,
-	// the Git ref transaction to abort, and the lease stays byte-identical. The
-	// gate's blocked path remains append-only audit (ActionIntent + PolicyDecision
-	// + lifecycle event) and writes no lease byte; the gate's stolen path is the
-	// only one that re-points the lease, and it is now the final gate before any
-	// terminal byte lands on disk.
-	if err := s.leaseHolderCloseGate(w, actor, in, now); err != nil {
+	// Decide lease authority read-only before preparing terminalization intents.
+	// A denied close must keep its existing early audit trail and must never wedge
+	// a RunAttempt behind a prepared intent. A valid steal is retained but does
+	// not transfer here: the transfer belongs after the durable recovery boundary.
+	closeLeaseStatus := s.leaseHolderStatusFor(w.ID, actor, in.Steal, in.StealReason, "close")
+	if closeLeaseStatus.Blocked {
+		gateErr := s.recordLeaseHolderDeny(
+			w,
+			actor,
+			closeLeaseStatus.Holder,
+			closeLeaseStatus.Message,
+			"work.close",
+			"close_denied_not_lease_holder",
+			now,
+		)
+		if gateErr == nil {
+			gateErr = fmt.Errorf("cannot close %s: %s", w.ID, closeLeaseStatus.Message)
+		}
 		if referenceTransaction != nil {
 			if abortErr := referenceTransaction.Abort(); abortErr != nil {
-				return res, errors.Join(err, fmt.Errorf("abort Git reference transaction: %w", abortErr))
+				return res, errors.Join(gateErr, fmt.Errorf("abort Git reference transaction: %w", abortErr))
 			}
 		}
-		return res, err
+		return res, gateErr
 	}
 	referenceTransactionFinished := false
 	defer func() {
@@ -3123,18 +3127,29 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		}
 		return cause
 	}
-	// The complete attempt union and every full prepared-intent retry have
-	// already been validated. Only now may the lease gate leave its auditable
-	// denial/steal trail or transfer the lease.
-	if err := s.leaseHolderCloseGate(w, actor, in, now); err != nil {
-		return res, abortReferenceTransaction(err)
-	}
 	// Preparing every non-terminal attempt is the durable recovery boundary;
-	// it precedes the close action, policy, receipt, transition, and work bytes.
+	// it precedes a successful lease transfer and every close envelope/work byte.
 	if err := s.prepareRunAttemptTerminalizations(terminalizationPlans); err != nil {
 		return res, abortReferenceTransaction(err)
 	}
 	closeAfterTerminalizationPrepare()
+	// REL-P0-001: a successful steal is the final recoverable gate. Re-read the
+	// holder under the lifecycle lock and require the exact decision retained
+	// above, then invoke the mutating gate exactly once. From this point onward,
+	// the prepared intents let reconciliation resume the exact close generation.
+	if closeLeaseStatus.Stolen {
+		currentLeaseStatus := s.leaseHolderStatusFor(w.ID, actor, in.Steal, in.StealReason, "close")
+		if !currentLeaseStatus.Stolen || currentLeaseStatus.Holder != closeLeaseStatus.Holder {
+			return res, abortReferenceTransaction(fmt.Errorf(
+				"close lease authority changed before transfer: expected holder %q, got holder %q",
+				closeLeaseStatus.Holder,
+				currentLeaseStatus.Holder,
+			))
+		}
+		if err := s.leaseHolderCloseGate(w, actor, in, now); err != nil {
+			return res, abortReferenceTransaction(err)
+		}
+	}
 
 	// Persist the emitted envelopes, then land the work terminal and link the transition.
 	if err := s.writeEventJSON(plan.ActionIntent.ID, &plan.ActionIntent); err != nil {

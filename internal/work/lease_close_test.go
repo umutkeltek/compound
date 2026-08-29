@@ -14,6 +14,7 @@ package work
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -62,6 +63,102 @@ func TestCloseStealRefusalLeavesLifecycleByteIdentical(t *testing.T) {
 	assertLifecycleAuthorityUnchanged(t, before, after)
 }
 
+// Regression for REL-P0-001. A valid steal must not transfer the lease or
+// publish a successful steal trail until every RunAttempt terminalization
+// intent is durably prepared. A preparation failure is still before the
+// recoverable close boundary, so work, lease, and lifecycle authority must
+// remain byte-identical and the exact close must remain retryable.
+func TestCloseStealPrepareFailureLeavesLeaseAndWorkUnchangedThenRetries(t *testing.T) {
+	s := newStore(t)
+	workID, _ := closeTerminalizeWork(t, s, "close-steal-prepare-failure", fixedNow)
+	before := snapshotLifecycleAuthority(t, s)
+
+	runAttemptsDir := filepath.Join(s.home, "run_attempts")
+	info, err := os.Stat(runAttemptsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalMode := info.Mode().Perm()
+	restored := false
+	t.Cleanup(func() {
+		if !restored {
+			_ = os.Chmod(runAttemptsDir, originalMode)
+		}
+	})
+	if err := os.Chmod(runAttemptsDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+
+	closeInput := CloseInput{
+		Outcome:     "completed",
+		MoveType:    "audit_only",
+		Actor:       "actor-b",
+		Steal:       true,
+		StealReason: "the original executor is unavailable",
+	}
+	if _, err := s.Close(workID, closeInput, fixedNow); err == nil {
+		t.Fatal("expected RunAttempt terminalization preparation to fail")
+	} else if !strings.Contains(strings.ToLower(err.Error()), "runattempt") {
+		t.Fatalf("expected RunAttempt preparation error, got %v", err)
+	}
+	if err := os.Chmod(runAttemptsDir, originalMode); err != nil {
+		t.Fatal(err)
+	}
+	restored = true
+
+	gotWork, err := s.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotWork.State != "verifying" {
+		t.Errorf("failed close changed work state to %q, want verifying", gotWork.State)
+	}
+	gotLease, err := s.readLease(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotLease.By != "codex" {
+		t.Errorf("failed close transferred lease to %q, want original holder codex", gotLease.By)
+	}
+	_, events, err := s.Show(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if strings.Contains(event.Note, "lease stolen") {
+			t.Errorf("failed close published a successful steal trail: %q", event.Note)
+		}
+	}
+	assertLifecycleAuthorityUnchanged(t, before, snapshotLifecycleAuthority(t, s))
+
+	result, err := s.Close(workID, closeInput, fixedNow)
+	if err != nil {
+		t.Fatalf("retry exact close: %v", err)
+	}
+	if result.Work.State != "completed" {
+		t.Fatalf("retry state = %q, want completed", result.Work.State)
+	}
+	_, events, err = s.Show(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stealTrails := 0
+	for _, event := range events {
+		if strings.Contains(event.Note, "lease stolen") {
+			stealTrails++
+		}
+	}
+	if stealTrails != 1 {
+		t.Fatalf("successful retry steal trails = %d, want exactly 1", stealTrails)
+	}
+	if _, err := s.readLease(workID); err == nil {
+		t.Fatal("terminal retry left a lease behind")
+	}
+	if _, err := os.Stat(s.leasePath(workID)); !os.IsNotExist(err) {
+		t.Fatalf("terminal retry lease residue: %v", err)
+	}
+}
+
 // Falsifier 1 (RED-first): a work claimed by one actor is closeable by a different actor
 // with no steal on today's code. This is the exact regression of tonight's canon_class
 // close. On the gated code this must refuse, naming the holder and the remedy paths.
@@ -74,9 +171,17 @@ func TestCloseRefusesNonLeaseHolder(t *testing.T) {
 	if _, err := s.Claim(w.ID, "actor-a", fixedNow); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
+	reachedPrepare := false
+	previousPrepareSeam := closeAfterTerminalizationPrepare
+	t.Cleanup(func() { closeAfterTerminalizationPrepare = previousPrepareSeam })
+	closeAfterTerminalizationPrepare = func() { reachedPrepare = true }
 	_, err = s.Close(w.ID, CloseInput{Outcome: "cancelled", MoveType: "audit_only", Actor: "actor-b"}, fixedNow)
+	closeAfterTerminalizationPrepare = previousPrepareSeam
 	if err == nil {
 		t.Fatal("expected close by non-holder actor-b to be refused (work held by actor-a)")
+	}
+	if reachedPrepare {
+		t.Fatal("denied close reached the RunAttempt terminalization preparation boundary")
 	}
 	if !strings.Contains(err.Error(), "actor-a") {
 		t.Fatalf("refusal error must name the holder actor-a: %v", err)
