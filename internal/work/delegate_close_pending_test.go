@@ -182,19 +182,35 @@ func TestDelegateFrozenCloseFencesPreMintSessionCleanup(t *testing.T) {
 				t.Fatalf("seed delegate: result=%+v err=%v", spawned, err)
 			}
 			dead := SessionStatus{Exists: true, PaneDead: true, ExitCode: 0}
-			closeOutcome := "cancelled"
-			if name == "recorded_exit_pane_reap" {
-				current, err := s.Get(workID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := s.recordAndAttachDelegateExited(
-					workID, current.State, spawned.Binding, holder, dead, fixedNow.Add(20*time.Second),
-				); err != nil {
-					t.Fatalf("seed recorded exit without terminalizing attempt: %v", err)
-				}
-			}
 			runner.panes = map[string]SessionStatus{spawned.Binding.Session: dead}
+			closeOutcome := "completed"
+			switch name {
+			case "dead_binding_sweep":
+				if _, err := runattempt.Open(s.home).Complete(
+					spawned.Binding.RunAttemptID,
+					runattempt.StatusSucceeded,
+					fixedNow.Add(20*time.Second),
+				); err != nil {
+					t.Fatalf("terminalize seeded delegate as succeeded: %v", err)
+				}
+			case "recorded_exit_pane_reap":
+				dead.ExitCode = 1
+				runner.panes[spawned.Binding.Session] = dead
+				runner.killErr = errors.New("injected pane reap failure")
+				if _, err := s.DelegateSweep(
+					spawned.Binding,
+					dead,
+					runner,
+					holder,
+					fixedNow.Add(20*time.Second),
+				); err == nil || !strings.Contains(err.Error(), "injected pane reap failure") {
+					t.Fatalf("seed real recorded exit with retained pane: %v", err)
+				}
+				runner.killErr = nil
+				closeOutcome = "failed"
+			default:
+				t.Fatalf("unknown case %q", name)
+			}
 			frozen := freezeClosePendingAfterPrepare(t, s, workID, CloseInput{
 				Outcome: closeOutcome, MoveType: "audit_only", Actor: holder,
 				Summary: "freeze close before delegate cleanup",
