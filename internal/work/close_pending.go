@@ -19,12 +19,23 @@ import (
 	"compound/internal/runattempt"
 )
 
-const closePendingSchemaVersion = "compound.work_close_pending.v0.1"
+const closePendingSchemaVersion = "compound.work_close_pending.v0.2"
+
+type closePendingAuthority struct {
+	Actor                         string                             `json:"actor"`
+	Outcome                       string                             `json:"outcome"`
+	MoveType                      string                             `json:"move_type"`
+	Steal                         bool                               `json:"steal,omitempty"`
+	StealReason                   string                             `json:"steal_reason,omitempty"`
+	SkipRunAttemptTerminalization bool                               `json:"skip_run_attempt_terminalization,omitempty"`
+	RunAttemptTerminalizations    []RunAttemptTerminalizationRequest `json:"run_attempt_terminalizations,omitempty"`
+}
 
 type closePendingRunAttempt struct {
-	Attempt    runattempt.RunAttempt            `json:"attempt"`
-	Intent     runattempt.TerminalizationIntent `json:"intent"`
-	CallerOwns bool                             `json:"caller_owns,omitempty"`
+	Attempt        runattempt.RunAttempt            `json:"attempt"`
+	ExpectedStatus string                           `json:"expected_status"`
+	Intent         runattempt.TerminalizationIntent `json:"intent"`
+	CallerOwns     bool                             `json:"caller_owns,omitempty"`
 }
 
 type closePendingLease struct {
@@ -36,6 +47,7 @@ type closePendingLease struct {
 type closePendingGit struct {
 	RepositoryPath string                    `json:"repository_path,omitempty"`
 	Expectations   []gitReferenceExpectation `json:"expectations,omitempty"`
+	Proof          *LandCheckReport          `json:"proof,omitempty"`
 }
 
 // closePending is the exact transaction identity for one terminal close. It
@@ -44,8 +56,10 @@ type closePendingGit struct {
 // captured lease have all converged.
 type closePending struct {
 	SchemaVersion    string                   `json:"schema_version"`
+	FrameSHA256      string                   `json:"frame_sha256"`
 	WorkID           string                   `json:"work_id"`
 	InputSHA256      string                   `json:"input_sha256"`
+	Authority        closePendingAuthority    `json:"authority"`
 	CompletedAt      string                   `json:"completed_at"`
 	SourceWork       envelope.WorkEnvelope    `json:"source_work"`
 	SourceWorkSHA256 string                   `json:"source_work_sha256"`
@@ -74,6 +88,49 @@ func closeRecoveryRequired(format string, args ...any) error {
 func closePendingSHA256(body []byte) string {
 	sum := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// closePendingFrameSHA256 hashes a recursively canonical JSON representation
+// with the digest field normalized to the empty string. The digest therefore
+// covers every other frame field without self-hash ambiguity.
+func closePendingFrameSHA256(pending closePending) (string, error) {
+	pending.FrameSHA256 = ""
+	body, err := json.Marshal(&pending)
+	if err != nil {
+		return "", err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var normalized any
+	if err := decoder.Decode(&normalized); err != nil {
+		return "", err
+	}
+	canonical, err := canonicalCloseJSON(normalized)
+	if err != nil {
+		return "", err
+	}
+	return closePendingSHA256(canonical), nil
+}
+
+func sealClosePending(pending *closePending) error {
+	if pending == nil {
+		return errors.New("close pending frame is nil")
+	}
+	digest, err := closePendingFrameSHA256(*pending)
+	if err != nil {
+		return err
+	}
+	pending.FrameSHA256 = digest
+	return nil
+}
+
+func validClosePendingSHA256(value string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(value, prefix) || len(value) != len(prefix)+sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, prefix))
+	return err == nil
 }
 
 func canonicalCloseJSON(value any) ([]byte, error) {
@@ -118,7 +175,7 @@ func (s *Store) loadClosePending(workID string) (closePending, bool, error) {
 	if err := decodeStrictCloseJSON(body, &pending); err != nil {
 		return pending, false, closeRecoveryRequired("decode work %s frame: %w", workID, err)
 	}
-	if err := validateClosePending(pending); err != nil {
+	if err := s.validateClosePending(pending); err != nil {
 		return pending, false, closeRecoveryRequired("validate work %s frame: %w", workID, err)
 	}
 	if pending.WorkID != workID {
@@ -138,19 +195,30 @@ func (s *Store) fenceClosePendingMutation(workID string) error {
 	return nil
 }
 
-func validateClosePending(p closePending) error {
+func (s *Store) validateClosePending(p closePending) error {
+	frameSHA, err := closePendingFrameSHA256(p)
+	if err != nil {
+		return fmt.Errorf("frame checksum: %w", err)
+	}
+	if !validClosePendingSHA256(p.FrameSHA256) || p.FrameSHA256 != frameSHA {
+		return errors.New("frame_sha256 does not seal the canonical full frame")
+	}
 	if p.SchemaVersion != closePendingSchemaVersion {
 		return fmt.Errorf("schema_version must be %q", closePendingSchemaVersion)
 	}
 	if strings.TrimSpace(p.WorkID) == "" || p.SourceWork.ID != p.WorkID || p.FinalWork.ID != p.WorkID {
 		return errors.New("work identity mismatch")
 	}
-	if strings.TrimSpace(p.InputSHA256) == "" {
-		return errors.New("input_sha256 required")
+	if !validClosePendingSHA256(p.InputSHA256) {
+		return errors.New("input_sha256 must be a sha256 reference")
 	}
 	completedAt, err := time.Parse(time.RFC3339Nano, p.CompletedAt)
 	if err != nil || completedAt.IsZero() {
 		return errors.New("completed_at must be an RFC3339 timestamp")
+	}
+	eventAt, err := parseLifecycleTS(p.Event.TS)
+	if p.CompletedAt != p.Receipt.CreatedAt || err != nil || !eventAt.Equal(completedAt) {
+		return errors.New("completed_at must equal Receipt.created_at and closing event timestamp")
 	}
 	if err := p.SourceWork.Validate(); err != nil {
 		return fmt.Errorf("source WorkEnvelope invalid: %w", err)
@@ -177,6 +245,9 @@ func validateClosePending(p closePending) error {
 	}
 	if err := p.Transition.Validate(); err != nil || p.Transition.IDs.WorkID != p.WorkID {
 		return errors.New("close Transition invalid or work-mismatched")
+	}
+	if err := s.validateClosePendingAuthority(p); err != nil {
+		return err
 	}
 	if p.FinalWork.State != p.Event.To || p.SourceWork.State != p.Event.From ||
 		p.Event.WorkID != p.WorkID || p.Event.PreviousWorkSHA256 != p.SourceWorkSHA256 ||
@@ -205,19 +276,307 @@ func validateClosePending(p closePending) error {
 	} else if len(p.Lease.Body) != 0 || p.Lease.SHA256 != "" || p.LeaseHolder != "" || p.LeaseStolen {
 		return errors.New("absent lease carries authority data")
 	}
-	if (p.Git.RepositoryPath == "") != (len(p.Git.Expectations) == 0) {
-		return errors.New("Git repository and expectations must be present together")
+	if err := s.validateClosePendingGit(p); err != nil {
+		return err
+	}
+	return validateClosePendingRunAttempts(p, completedAt)
+}
+
+func closePendingAuthorityFromInput(in CloseInput) closePendingAuthority {
+	actor := strings.TrimSpace(in.Actor)
+	if actor == "" {
+		actor = "codex"
+	}
+	authority := closePendingAuthority{
+		Actor:                         actor,
+		Outcome:                       in.Outcome,
+		MoveType:                      in.MoveType,
+		Steal:                         in.Steal,
+		StealReason:                   strings.TrimSpace(in.StealReason),
+		SkipRunAttemptTerminalization: in.SkipRunAttemptTerminalization,
+	}
+	for _, request := range in.RunAttemptTerminalizations {
+		request.RunAttemptID = strings.TrimSpace(request.RunAttemptID)
+		request.Owner = strings.TrimSpace(request.Owner)
+		request.TargetStatus = strings.TrimSpace(request.TargetStatus)
+		request.Reason = strings.TrimSpace(request.Reason)
+		authority.RunAttemptTerminalizations = append(authority.RunAttemptTerminalizations, request)
+	}
+	return authority
+}
+
+func closePendingRequests(authority closePendingAuthority) (map[string]RunAttemptTerminalizationRequest, error) {
+	if authority.SkipRunAttemptTerminalization && len(authority.RunAttemptTerminalizations) == 0 {
+		return nil, errors.New("frozen skip_run_attempt_terminalization lacks explicit requests")
+	}
+	requests := make(map[string]RunAttemptTerminalizationRequest, len(authority.RunAttemptTerminalizations))
+	for _, request := range authority.RunAttemptTerminalizations {
+		if request.RunAttemptID != strings.TrimSpace(request.RunAttemptID) ||
+			request.Owner != strings.TrimSpace(request.Owner) ||
+			request.TargetStatus != strings.TrimSpace(request.TargetStatus) ||
+			request.Reason != strings.TrimSpace(request.Reason) {
+			return nil, errors.New("frozen RunAttempt terminalization request is not normalized")
+		}
+		if !runattempt.Valid(request.RunAttemptID) || request.Owner == "" || !runattempt.IsTerminal(request.TargetStatus) {
+			return nil, fmt.Errorf("frozen RunAttempt terminalization request %q is invalid", request.RunAttemptID)
+		}
+		if request.Owner == runattempt.TerminalizationOwnerWorkClose || request.Owner == runattempt.TerminalizationOwnerWorkSupersede {
+			return nil, fmt.Errorf("frozen caller request %s claims work-owned terminalization", request.RunAttemptID)
+		}
+		if request.Owner == runattempt.TerminalizationOwnerWorkAcknowledgeAbandoned &&
+			request.TargetStatus != runattempt.StatusAbandoned {
+			return nil, fmt.Errorf("frozen acknowledge-abandoned request %s targets %s", request.RunAttemptID, request.TargetStatus)
+		}
+		if _, duplicate := requests[request.RunAttemptID]; duplicate {
+			return nil, fmt.Errorf("frozen RunAttempt terminalization duplicates %s", request.RunAttemptID)
+		}
+		requests[request.RunAttemptID] = request
+	}
+	return requests, nil
+}
+
+func (s *Store) validateClosePendingAuthority(p closePending) error {
+	authority := p.Authority
+	if authority.Actor == "" || authority.Actor != strings.TrimSpace(authority.Actor) ||
+		authority.StealReason != strings.TrimSpace(authority.StealReason) {
+		return errors.New("frozen close authority is not normalized")
+	}
+	if !terminalStates[authority.Outcome] || !oneOf(authority.MoveType, envelope.MoveTypes) {
+		return errors.New("frozen close authority outcome or move_type is invalid")
+	}
+	if p.FinalWork.State != authority.Outcome || p.Receipt.Outcome != receiptOutcome[authority.Outcome] ||
+		p.Receipt.MoveType != authority.MoveType {
+		return errors.New("frozen close authority does not bind final WorkEnvelope and Receipt")
+	}
+	if p.Action.Actor != authority.Actor || p.Action.Capability != "work.close" ||
+		p.Action.Action != "close_work_as_"+authority.Outcome ||
+		p.Action.Target.Kind != "work" || p.Action.Target.ID != p.WorkID ||
+		p.Action.Target.Path != s.workPath(p.WorkID) ||
+		p.Action.MutationClass != "local_reversible" || p.Action.Reversibility != "manual" ||
+		p.Action.BlastRadius != "local" {
+		return errors.New("close ActionIntent does not match frozen normalized input")
+	}
+	if p.Action.CreatedAt != p.CompletedAt || p.Decision.CreatedAt != p.CompletedAt ||
+		p.Transition.CreatedAt != p.CompletedAt {
+		return errors.New("close authority envelope timestamps differ from completed_at")
+	}
+	if p.Action.IDs.ContextPackID != p.SourceWork.IDs.ContextPackID ||
+		p.Decision.IDs.ContextPackID != p.SourceWork.IDs.ContextPackID ||
+		p.Receipt.IDs.ContextPackID != p.SourceWork.IDs.ContextPackID ||
+		p.Transition.IDs.ContextPackID != p.SourceWork.IDs.ContextPackID {
+		return errors.New("close authority context-pack binding mismatch")
+	}
+	actionLeaseHolder := ""
+	if p.Lease.Present && p.LeaseHolder != authority.Actor {
+		actionLeaseHolder = p.LeaseHolder
+	}
+	preview := fmt.Sprintf("close work %s from %s to %s move_type %s actor %s",
+		p.WorkID, p.SourceWork.State, authority.Outcome, authority.MoveType, authority.Actor)
+	if authority.Steal {
+		preview += fmt.Sprintf(" lease_override_from %q reason %q", actionLeaseHolder, authority.StealReason)
+	}
+	if p.Action.Preview != preview {
+		return errors.New("close ActionIntent preview does not match frozen normalized input")
+	}
+	identityParts := []string{
+		"work.close", "close_work_as_" + authority.Outcome, "work", p.WorkID,
+		s.workPath(p.WorkID), "local_reversible", "manual", "local",
+		authority.Actor, authority.Outcome, authority.MoveType,
+		fmt.Sprintf("%t", authority.Steal), actionLeaseHolder, authority.StealReason, p.Event.TS,
+	}
+	expectedActionID := closeActionIntentIDFor(identityParts...)
+	legacyActionID := idFor("act_", identityParts...)
+	if p.Action.ID != expectedActionID && p.Action.ID != legacyActionID {
+		return errors.New("close ActionIntent identity does not derive from frozen normalized input")
+	}
+	expectedStolen := p.Lease.Present && authority.Steal && p.LeaseHolder != authority.Actor
+	if p.LeaseStolen != expectedStolen {
+		return errors.New("lease_stolen does not derive from frozen close authority")
+	}
+	eventBy := ""
+	eventNote := fmt.Sprintf("closed: %s (policy %s)", authority.MoveType, p.Decision.Outcome)
+	if expectedStolen {
+		if authority.StealReason == "" {
+			return errors.New("stolen close authority requires a reason")
+		}
+		eventBy = authority.Actor
+		eventNote = fmt.Sprintf("lease stolen from %q: %s; %s",
+			p.LeaseHolder, authority.StealReason, eventNote)
+	}
+	if p.Event.By != eventBy || p.Event.Note != eventNote {
+		return errors.New("closing lifecycle event does not derive from frozen close authority")
+	}
+	return nil
+}
+
+func closePendingGitFromProof(
+	proof *LandCheckReport,
+	repositoryPath string,
+	expectations []gitReferenceExpectation,
+) closePendingGit {
+	if proof == nil {
+		return closePendingGit{}
+	}
+	proofCopy := *proof
+	return closePendingGit{
+		RepositoryPath: repositoryPath,
+		Expectations:   append([]gitReferenceExpectation(nil), expectations...),
+		Proof:          &proofCopy,
+	}
+}
+
+func (s *Store) validateClosePendingGit(p closePending) error {
+	if p.Git.Proof == nil {
+		if p.Git.RepositoryPath != "" || len(p.Git.Expectations) != 0 {
+			return errors.New("Git expectations lack their frozen landing proof")
+		}
+		return nil
+	}
+	proof := *p.Git.Proof
+	if proof.Status != "landed" {
+		return errors.New("frozen Git proof is not landed")
+	}
+	if err := validateRecordedLandCheck(p.SourceWork, proof.EvidenceRef, proof.ID, proof.ProofPath, proof); err != nil {
+		return fmt.Errorf("frozen Git proof invalid: %w", err)
+	}
+	proofCited := false
+	for _, ref := range p.Receipt.ProofRefs {
+		if ref == proof.EvidenceRef {
+			proofCited = true
+			break
+		}
+	}
+	if !proofCited {
+		return errors.New("frozen Git proof is not cited by the closing Receipt")
+	}
+	if err := s.validateBoundGitDelivery(p.SourceWork); err != nil {
+		return fmt.Errorf("frozen Git delivery identity invalid: %w", err)
+	}
+	wantRefs := []string{proof.TargetBranchRef}
+	if proof.PublicationMode == "required" {
+		wantRefs = append(wantRefs, proof.PublicationRef)
+	}
+	if p.Git.RepositoryPath != proof.RepoPath || len(p.Git.Expectations) != len(wantRefs) {
+		return errors.New("Git repository/ref expectations do not derive from the frozen landing proof")
+	}
+	for i, expectation := range p.Git.Expectations {
+		if expectation.Ref != wantRefs[i] || !validLandingObjectID(expectation.SHA) {
+			return errors.New("Git repository/ref/SHA expectations do not derive from the frozen landing proof")
+		}
+		currentSHA, err := runLandingGitOutput(
+			p.Git.RepositoryPath,
+			"rev-parse", "--verify", expectation.Ref+"^{commit}",
+		)
+		if err != nil {
+			return fmt.Errorf("resolve frozen Git expectation %s: %w", expectation.Ref, err)
+		}
+		if currentSHA != expectation.SHA {
+			return fmt.Errorf("Git expectation %s no longer matches frozen SHA %s", expectation.Ref, expectation.SHA)
+		}
+		containsCandidate, err := landingIsAncestor(
+			p.Git.RepositoryPath,
+			proof.CandidateTipSHA,
+			expectation.SHA,
+		)
+		if err != nil {
+			return fmt.Errorf("validate frozen Git expectation %s: %w", expectation.Ref, err)
+		}
+		if !containsCandidate {
+			return fmt.Errorf("Git expectation %s does not contain frozen candidate %s", expectation.Ref, proof.CandidateTipSHA)
+		}
+	}
+	return nil
+}
+
+func validateClosePendingRunAttempts(p closePending, completedAt time.Time) error {
+	requests, err := closePendingRequests(p.Authority)
+	if err != nil {
+		return err
+	}
+	finalIDs := make(map[string]int, len(p.FinalWork.RunAttemptIDs))
+	for _, id := range p.FinalWork.RunAttemptIDs {
+		finalIDs[id]++
 	}
 	digests := map[string]string{}
 	for _, binding := range p.Event.RunAttemptTerminalizationDigests {
 		if digests[binding.RunAttemptID] != "" {
 			return fmt.Errorf("duplicate RunAttempt terminalization digest for %s", binding.RunAttemptID)
 		}
+		if finalIDs[binding.RunAttemptID] != 1 {
+			return fmt.Errorf("RunAttempt terminalization digest %s is not uniquely bound to final WorkEnvelope", binding.RunAttemptID)
+		}
 		digests[binding.RunAttemptID] = binding.IntentSHA256
 	}
+	seen := map[string]bool{}
 	for _, frozen := range p.RunAttempts {
-		if err := frozen.Intent.Validate(); err != nil || frozen.Attempt.ID == "" || frozen.Attempt.WorkID != p.WorkID || frozen.Intent.WorkID != p.WorkID {
+		if seen[frozen.Attempt.ID] {
+			return fmt.Errorf("duplicate frozen RunAttempt %s", frozen.Attempt.ID)
+		}
+		seen[frozen.Attempt.ID] = true
+		if finalIDs[frozen.Attempt.ID] != 1 {
+			return fmt.Errorf("frozen RunAttempt %s is not uniquely bound to final WorkEnvelope", frozen.Attempt.ID)
+		}
+		if err := validateRunAttemptRecord(frozen.Attempt.ID, p.FinalWork, frozen.Attempt); err != nil ||
+			runattempt.IsTerminal(frozen.Attempt.Status) || frozen.ExpectedStatus != frozen.Attempt.Status {
+			return fmt.Errorf("frozen RunAttempt %s snapshot identity/status invalid", frozen.Attempt.ID)
+		}
+		if err := frozen.Intent.Validate(); err != nil || frozen.Intent.WorkID != p.WorkID {
 			return fmt.Errorf("frozen RunAttempt %s invalid or work-mismatched", frozen.Attempt.ID)
+		}
+		if frozen.Attempt.ActionIntentID != frozen.Intent.RunAttemptActionIntentID {
+			return fmt.Errorf("frozen RunAttempt %s action binding mismatch", frozen.Attempt.ID)
+		}
+		attemptPolicyID := ""
+		if frozen.Attempt.ExecutionPosture != nil {
+			attemptPolicyID = frozen.Attempt.ExecutionPosture.PolicyDecisionID
+		}
+		if attemptPolicyID != frozen.Intent.RunAttemptPolicyDecisionID {
+			return fmt.Errorf("frozen RunAttempt %s policy binding mismatch", frozen.Attempt.ID)
+		}
+		if frozen.Attempt.TerminalizationIntent != nil &&
+			!reflect.DeepEqual(*frozen.Attempt.TerminalizationIntent, frozen.Intent) {
+			return fmt.Errorf("frozen RunAttempt %s prepared intent differs from frame intent", frozen.Attempt.ID)
+		}
+		if frozen.Intent.ExpectedWorkState != p.SourceWork.State ||
+			frozen.Intent.ExpectedWorkSHA256 != p.SourceWorkSHA256 ||
+			frozen.Intent.ExpectedActionIntentID != latestActionIntentID(p.SourceWork) ||
+			frozen.Intent.ExpectedPolicyDecisionID != p.SourceWork.PolicyDecisionID ||
+			frozen.Intent.CloseInputSHA256 != p.InputSHA256 ||
+			frozen.Intent.CloseActionIntentID != p.Action.ID ||
+			frozen.Intent.ClosePolicyDecisionID != p.Decision.ID ||
+			frozen.Intent.Outcome != p.Authority.Outcome ||
+			frozen.Intent.ReceiptID != p.Receipt.ID ||
+			frozen.Intent.TransitionID != p.Transition.ID ||
+			!frozen.Intent.PreparedAt.Equal(completedAt) {
+			return fmt.Errorf("frozen RunAttempt %s intent does not bind close generation", frozen.Attempt.ID)
+		}
+		request, callerOwns := requests[frozen.Attempt.ID]
+		if frozen.CallerOwns != callerOwns {
+			return fmt.Errorf("frozen RunAttempt %s caller ownership does not derive from close input", frozen.Attempt.ID)
+		}
+		if callerOwns {
+			if !p.Authority.SkipRunAttemptTerminalization ||
+				frozen.Intent.Owner != request.Owner ||
+				frozen.Intent.TargetStatus != request.TargetStatus ||
+				frozen.Intent.TerminalizationReason != request.Reason {
+				return fmt.Errorf("frozen RunAttempt %s caller-owned intent differs from reservation", frozen.Attempt.ID)
+			}
+		} else {
+			switch frozen.Intent.Owner {
+			case runattempt.TerminalizationOwnerWorkClose:
+				if frozen.Intent.TargetStatus != runAttemptStatusForCloseOutcome(p.Authority.Outcome) ||
+					frozen.Intent.TerminalizationReason != "" {
+					return fmt.Errorf("frozen RunAttempt %s work-close target differs from outcome", frozen.Attempt.ID)
+				}
+			case runattempt.TerminalizationOwnerWorkSupersede:
+				if frozen.Intent.TargetStatus != runattempt.StatusSuperseded ||
+					frozen.Attempt.Origin != runattempt.OriginClaimReservation ||
+					!strings.HasPrefix(frozen.Intent.TerminalizationReason, "superseded by ") {
+					return fmt.Errorf("frozen RunAttempt %s supersede intent lacks snapshot preconditions", frozen.Attempt.ID)
+				}
+			default:
+				return fmt.Errorf("frozen RunAttempt %s has unreserved terminalization owner %s", frozen.Attempt.ID, frozen.Intent.Owner)
+			}
 		}
 		digest, err := terminalizationIntentSHA256(frozen.Intent)
 		if err != nil || digest != digests[frozen.Attempt.ID] {
@@ -249,9 +608,10 @@ func (s *Store) captureClosePendingLease(workID string) (closePendingLease, Leas
 	return closePendingLease{Present: true, Body: append([]byte(nil), body...), SHA256: closePendingSHA256(body)}, lease, nil
 }
 
-func newClosePending(
+func (s *Store) newClosePending(
 	sourceWork, finalWork envelope.WorkEnvelope,
 	inputSHA string,
+	input CloseInput,
 	action envelope.ActionIntent,
 	decision envelope.PolicyDecision,
 	receipt envelope.Receipt,
@@ -261,6 +621,7 @@ func newClosePending(
 	leaseHolder string,
 	leaseStolen bool,
 	plans []runAttemptTerminalizationPlan,
+	landingProof *LandCheckReport,
 	repositoryPath string,
 	expectations []gitReferenceExpectation,
 ) (closePending, error) {
@@ -276,6 +637,7 @@ func newClosePending(
 		SchemaVersion:    closePendingSchemaVersion,
 		WorkID:           sourceWork.ID,
 		InputSHA256:      inputSHA,
+		Authority:        closePendingAuthorityFromInput(input),
 		CompletedAt:      receipt.CreatedAt,
 		SourceWork:       sourceWork,
 		SourceWorkSHA256: sourceSHA,
@@ -289,12 +651,17 @@ func newClosePending(
 		Lease:            lease,
 		LeaseHolder:      leaseHolder,
 		LeaseStolen:      leaseStolen,
-		Git:              closePendingGit{RepositoryPath: repositoryPath, Expectations: append([]gitReferenceExpectation(nil), expectations...)},
+		Git:              closePendingGitFromProof(landingProof, repositoryPath, expectations),
 	}
 	for _, plan := range plans {
-		pending.RunAttempts = append(pending.RunAttempts, closePendingRunAttempt{Attempt: plan.Attempt, Intent: plan.Intent, CallerOwns: plan.CallerOwns})
+		pending.RunAttempts = append(pending.RunAttempts, closePendingRunAttempt{
+			Attempt: plan.Attempt, ExpectedStatus: plan.Attempt.Status, Intent: plan.Intent, CallerOwns: plan.CallerOwns,
+		})
 	}
-	if err := validateClosePending(pending); err != nil {
+	if err := sealClosePending(&pending); err != nil {
+		return closePending{}, err
+	}
+	if err := s.validateClosePending(pending); err != nil {
 		return closePending{}, err
 	}
 	return pending, nil

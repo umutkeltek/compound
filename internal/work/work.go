@@ -3124,6 +3124,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if err != nil {
 		return res, err
 	}
+	var frozenLandingProof *LandCheckReport
 	var referenceRepositoryPath string
 	var referenceExpectations []gitReferenceExpectation
 	if landingProof != nil {
@@ -3131,6 +3132,9 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		if err != nil {
 			return res, err
 		}
+		proofCopy := *landingProof
+		frozenLandingProof = &proofCopy
+		referenceRepositoryPath = currentProof.RepoPath
 		referenceExpectations = []gitReferenceExpectation{{
 			Ref: currentProof.TargetBranchRef,
 			SHA: currentProof.TargetSHA,
@@ -3141,7 +3145,6 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 				SHA: currentProof.PublicationSHA,
 			})
 		}
-		referenceRepositoryPath = currentProof.RepoPath
 		// Freeze repository identity before the pending frame. Recovery repeats
 		// this validation and re-prepares the exact ref expectations.
 		if err := s.validateBoundGitDelivery(w); err != nil {
@@ -3218,11 +3221,12 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if closeLeaseStatus.Holder != "" && closeLeaseStatus.Holder != frozenLeaseHolder {
 		return res, fmt.Errorf("close lease authority changed before recovery frame: expected holder %q, got holder %q", closeLeaseStatus.Holder, capturedLease.By)
 	}
-	pending, err := newClosePending(
-		reservedWork, w, inputSHA256,
+	pending, err := s.newClosePending(
+		reservedWork, w, inputSHA256, in,
 		plan.ActionIntent, plan.Decision, rec, tr, closeEvent,
 		leaseSnapshot, frozenLeaseHolder, closeLeaseStatus.Stolen,
-		terminalizationPlans, referenceRepositoryPath, referenceExpectations,
+		terminalizationPlans, frozenLandingProof,
+		referenceRepositoryPath, referenceExpectations,
 	)
 	if err != nil {
 		return res, fmt.Errorf("build close recovery frame: %w", err)
