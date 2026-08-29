@@ -2415,7 +2415,13 @@ func (s *Store) resolveRunAttemptAuthorityFromEvents(w envelope.WorkEnvelope, ra
 	if err := s.readEventJSON(resolved.policy, &decision); err != nil {
 		return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority policy %s unreadable: %w", ra.ID, resolved.policy, err)
 	}
-	if err := decision.Validate(); err != nil || decision.IDs.WorkID != w.ID || decision.ActionIntentID != action.ID || !policy.Allowed(decision) {
+	// Identity and validation are unconditional; the ONE non-allowing
+	// exception is the pre-execution refusal shape (lived close wedge,
+	// work_7a5836372f5e) — see runAttemptPolicyRefusedBeforeExecution.
+	if err := decision.Validate(); err != nil || decision.IDs.WorkID != w.ID || decision.ActionIntentID != action.ID {
+		return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority policy %s is invalid, work-mismatched, or not bound to action %s for work %s", ra.ID, resolved.policy, action.ID, w.ID)
+	}
+	if !policy.Allowed(decision) && !runAttemptPolicyRefusedBeforeExecution(ra) {
 		return runAttemptAuthority{}, fmt.Errorf("runattempt %s authority policy %s does not allow action %s for work %s", ra.ID, resolved.policy, action.ID, w.ID)
 	}
 	return runAttemptAuthority{ActionIntentID: resolved.action, PolicyDecisionID: resolved.policy}, nil
@@ -2497,6 +2503,35 @@ func runAttemptHasExecuted(ra runattempt.RunAttempt) bool {
 		return false
 	}
 	return ra.CompletedAt.IsZero() || !ra.LastHeartbeatAt.After(ra.CompletedAt)
+}
+
+// proofResourcePolicyRefusedBeforeExecution is the exact refusal reason the
+// proof-resource reservation stamps when its policy denies before any
+// execution (proof_reservation.go). It must stay byte-identical to that
+// writer's literal: near-miss reasons must keep rejecting.
+const proofResourcePolicyRefusedBeforeExecution = "proof resource policy refused before execution"
+
+// runAttemptPolicyRefusedBeforeExecution reports whether ra carries the exact
+// closed shape of a pre-execution policy refusal — the ONE non-allowing
+// authority pair the close-time gate may bind (lived close wedge,
+// work_7a5836372f5e). The refusal happened before any side effect, so the
+// refusing (act_, pol_) pair is the attempt's legitimate authority record.
+// Every field is an exact-match condition; a near-miss on any dimension
+// rejects.
+func runAttemptPolicyRefusedBeforeExecution(ra runattempt.RunAttempt) bool {
+	if ra.Status != runattempt.StatusAbandoned || ra.Origin != runattempt.OriginHarnessExecution {
+		return false
+	}
+	if ra.SweepReason != proofResourcePolicyRefusedBeforeExecution {
+		return false
+	}
+	if ra.Launch != nil || ra.LastHeartbeatAt != nil {
+		return false
+	}
+	if ra.CompletedAt.IsZero() || !ra.CompletedAt.Equal(ra.CreatedAt) {
+		return false
+	}
+	return !runAttemptHasExecuted(ra)
 }
 
 func buildAttachedRunAttemptHistory(ids []string, attempts map[string]runattempt.RunAttempt) (attachedRunAttemptHistory, error) {

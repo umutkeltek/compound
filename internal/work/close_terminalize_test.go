@@ -3,10 +3,12 @@ package work
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/runattempt"
 )
 
@@ -750,5 +752,239 @@ func TestCloseAcknowledgeAbandonedRejectsEmptyReason(t *testing.T) {
 	}, fixedNow.Add(10*time.Minute))
 	if err == nil || !strings.Contains(err.Error(), "requires a non-empty reason") {
 		t.Fatalf("Close error = %v, want requires-non-empty-reason refusal", err)
+	}
+}
+
+// --- Lived close wedge (work_7a5836372f5e): pre-execution policy refusal authority ---
+
+// writeDenyingPolicyDecisionJSON is writePolicyDecisionJSON
+// (runattempt_authority_wedge_test.go) with Outcome "deny": a decision that
+// validates yet policy.Allowed rejects.
+func writeDenyingPolicyDecisionJSON(t *testing.T, s *Store, id, workID, actionID string, at time.Time) {
+	t.Helper()
+	pd := envelope.PolicyDecision{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVPolicyDecision,
+			ID:            id,
+			CreatedAt:     at.UTC().Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "cli", Name: "test"},
+			IDs:           envelope.IDs{WorkID: workID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		ActionIntentID: actionID,
+		Outcome:        "deny",
+		Reasons:        []string{"synthetic pre-execution refusal"},
+	}
+	if err := pd.Validate(); err != nil {
+		t.Fatalf("fixture policy_decision %s invalid: %v", id, err)
+	}
+	if _, err := s.events.PutJSON(id, &pd, "  "); err != nil {
+		t.Fatalf("put policy decision %s: %v", id, err)
+	}
+}
+
+// mintPreExecutionRefusalAttempt binds a harness_execution attempt to a
+// denying (act_, pol_) pair and persists that pair onto the work envelope the
+// way persistProofReservation does. Returned pre-terminalization so each test
+// stamps its own disposition: the exact refusal shape, or a near-miss.
+func mintPreExecutionRefusalAttempt(t *testing.T, s *Store, workID string, at time.Time) (*runattempt.Store, runattempt.RunAttempt) {
+	t.Helper()
+	const (
+		actRefusal = "act_close_wedge_refused_before_exec"
+		polRefusal = "pol_close_wedge_refused_before_exec"
+	)
+	writeActionIntentJSON(t, s, actRefusal, workID, at)
+	writeDenyingPolicyDecisionJSON(t, s, polRefusal, workID, actRefusal, at)
+	attempts := runattempt.Open(s.home)
+	ra, err := attempts.MintWithActionIntent(workID, "codex", runattempt.HarnessPlaceholder, actRefusal, at)
+	if err != nil {
+		t.Fatalf("mint refusal RunAttempt: %v", err)
+	}
+	if ra, err = attempts.SetOrigin(ra.ID, runattempt.OriginHarnessExecution); err != nil {
+		t.Fatalf("SetOrigin: %v", err)
+	}
+	if ra, err = attempts.SetExecutionPosture(ra.ID, runattempt.ExecutionPosture{
+		PermissionMode:   "plan",
+		PolicyDecisionID: polRefusal,
+	}); err != nil {
+		t.Fatalf("SetExecutionPosture: %v", err)
+	}
+	w, err := s.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.ActionIntentIDs = append(w.ActionIntentIDs, actRefusal)
+	w.PolicyDecisionID = polRefusal
+	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
+		t.Fatalf("persist refusal pair onto work envelope: %v", err)
+	}
+	return attempts, ra
+}
+
+// TestRunAttemptPolicyRefusedBeforeExecutionExactShape covers the exact
+// refusal shape plus one near-miss per dimension: every field is a condition.
+func TestRunAttemptPolicyRefusedBeforeExecutionExactShape(t *testing.T) {
+	heartbeat := fixedNow.Add(time.Minute)
+	prepared := fixedNow.Add(30 * time.Second)
+	refusal := func(mutate func(*runattempt.RunAttempt)) runattempt.RunAttempt {
+		ra := runattempt.RunAttempt{
+			ID:          "ratt_refusal_shape",
+			Status:      runattempt.StatusAbandoned,
+			Origin:      runattempt.OriginHarnessExecution,
+			SweepReason: proofResourcePolicyRefusedBeforeExecution,
+			CreatedAt:   fixedNow,
+			CompletedAt: fixedNow,
+		}
+		if mutate != nil {
+			mutate(&ra)
+		}
+		return ra
+	}
+	tests := []struct {
+		name string
+		ra   runattempt.RunAttempt
+		want bool
+	}{
+		{name: "exact refusal shape", ra: refusal(nil), want: true},
+		{name: "status failed with exact reason", ra: refusal(func(ra *runattempt.RunAttempt) { ra.Status = runattempt.StatusFailed })},
+		{name: "status superseded with exact reason", ra: refusal(func(ra *runattempt.RunAttempt) { ra.Status = runattempt.StatusSuperseded })},
+		{name: "claim reservation origin", ra: refusal(func(ra *runattempt.RunAttempt) { ra.Origin = runattempt.OriginClaimReservation })},
+		{name: "lease variant reason", ra: refusal(func(ra *runattempt.RunAttempt) { ra.SweepReason = "proof resource refused before execution" })},
+		{name: "stale sweep reason", ra: refusal(func(ra *runattempt.RunAttempt) { ra.SweepReason = "stale: no heartbeat for 30m" })},
+		{name: "empty reason", ra: refusal(func(ra *runattempt.RunAttempt) { ra.SweepReason = "" })},
+		{name: "prepared launch", ra: refusal(func(ra *runattempt.RunAttempt) { ra.Launch = &runattempt.LaunchLifecycle{PreparedAt: &prepared} })},
+		{name: "committed launch", ra: refusal(func(ra *runattempt.RunAttempt) {
+			committed := prepared.Add(time.Second)
+			ra.Launch = &runattempt.LaunchLifecycle{PreparedAt: &prepared, CommittedAt: &committed}
+		})},
+		{name: "heartbeat observed", ra: refusal(func(ra *runattempt.RunAttempt) { ra.LastHeartbeatAt = &heartbeat })},
+		{name: "completed at zero", ra: refusal(func(ra *runattempt.RunAttempt) { ra.CompletedAt = time.Time{} })},
+		{name: "completed after mint", ra: refusal(func(ra *runattempt.RunAttempt) { ra.CompletedAt = fixedNow.Add(time.Second) })},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := runAttemptPolicyRefusedBeforeExecution(tt.ra); got != tt.want {
+				t.Fatalf("runAttemptPolicyRefusedBeforeExecution() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCloseBindsPolicyRefusedBeforeExecutionAuthority is the store-level
+// falsifier for the lived close wedge: a close must bind a refusing pair
+// whose attempt was abandoned before execution, not wedge on it.
+func TestCloseBindsPolicyRefusedBeforeExecutionAuthority(t *testing.T) {
+	s := newStore(t)
+	workID, _ := closeTerminalizeWorkClaimed(t, s, "close-refused-before-exec", fixedNow)
+	attempts, ra := mintPreExecutionRefusalAttempt(t, s, workID, fixedNow.Add(2*time.Minute))
+	refused, err := attempts.CompleteWithReason(ra.ID, runattempt.StatusAbandoned, proofResourcePolicyRefusedBeforeExecution, fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("abandon refusal RunAttempt: %v", err)
+	}
+
+	res, err := s.Close(workID, CloseInput{
+		Outcome:       "cancelled",
+		MoveType:      "audit_only",
+		Summary:       "close lands with pre-execution policy refusal as run attempt authority",
+		RunAttemptIDs: []string{refused.ID},
+	}, fixedNow.Add(5*time.Minute))
+	if err != nil {
+		t.Fatalf("close refused to bind pre-execution refusal authority: %v", err)
+	}
+	if res.Work.State != "cancelled" {
+		t.Fatalf("close state = %q, want cancelled", res.Work.State)
+	}
+	after, err := runattempt.Open(s.home).Get(refused.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != runattempt.StatusAbandoned || after.SweepReason != proofResourcePolicyRefusedBeforeExecution {
+		t.Fatalf("refused attempt rewritten by close: status=%q sweep_reason=%q", after.Status, after.SweepReason)
+	}
+	if after.Launch != nil || after.LastHeartbeatAt != nil {
+		t.Fatalf("refused attempt acquired execution evidence during close: launch=%v heartbeat=%v", after.Launch, after.LastHeartbeatAt)
+	}
+}
+
+// TestCloseRejectsNearMissPreExecutionRefusalEvidence: one dimension off the
+// exact shape and the exception must not fire — the does-not-allow rejection
+// returns and durable authority stays untouched.
+func TestCloseRejectsNearMissPreExecutionRefusalEvidence(t *testing.T) {
+	cases := []struct {
+		name string
+		// terminalize stamps the exact refusal shape minus one dimension.
+		terminalize func(t *testing.T, attempts *runattempt.Store, ra runattempt.RunAttempt, at time.Time) runattempt.RunAttempt
+	}{
+		{
+			name: "lease variant reason",
+			terminalize: func(t *testing.T, attempts *runattempt.Store, ra runattempt.RunAttempt, at time.Time) runattempt.RunAttempt {
+				out, err := attempts.CompleteWithReason(ra.ID, runattempt.StatusAbandoned, "proof resource refused before execution", at)
+				if err != nil {
+					t.Fatalf("abandon: %v", err)
+				}
+				return out
+			},
+		},
+		{
+			name: "heartbeat observed",
+			terminalize: func(t *testing.T, attempts *runattempt.Store, ra runattempt.RunAttempt, at time.Time) runattempt.RunAttempt {
+				if _, err := attempts.Heartbeat(ra.ID, at.Add(time.Second)); err != nil {
+					t.Fatalf("heartbeat: %v", err)
+				}
+				// CompletedAt stays on the mint instant: only the heartbeat differs.
+				out, err := attempts.CompleteWithReason(ra.ID, runattempt.StatusAbandoned, proofResourcePolicyRefusedBeforeExecution, at)
+				if err != nil {
+					t.Fatalf("abandon: %v", err)
+				}
+				return out
+			},
+		},
+		{
+			name: "prepared launch",
+			terminalize: func(t *testing.T, attempts *runattempt.Store, ra runattempt.RunAttempt, at time.Time) runattempt.RunAttempt {
+				if _, err := attempts.CommitLaunch(ra.ID, at.Add(500*time.Millisecond), func() error { return nil }); err != nil {
+					t.Fatalf("commit launch: %v", err)
+				}
+				out, err := attempts.CompleteWithReason(ra.ID, runattempt.StatusAbandoned, proofResourcePolicyRefusedBeforeExecution, at)
+				if err != nil {
+					t.Fatalf("abandon: %v", err)
+				}
+				return out
+			},
+		},
+		{
+			name: "completed after mint",
+			terminalize: func(t *testing.T, attempts *runattempt.Store, ra runattempt.RunAttempt, at time.Time) runattempt.RunAttempt {
+				out, err := attempts.CompleteWithReason(ra.ID, runattempt.StatusAbandoned, proofResourcePolicyRefusedBeforeExecution, at.Add(time.Second))
+				if err != nil {
+					t.Fatalf("abandon: %v", err)
+				}
+				return out
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStore(t)
+			workID, _ := closeTerminalizeWorkClaimed(t, s, "close-refusal-near-miss", fixedNow)
+			attempts, ra := mintPreExecutionRefusalAttempt(t, s, workID, fixedNow.Add(2*time.Minute))
+			stamped := tc.terminalize(t, attempts, ra, fixedNow.Add(2*time.Minute))
+			before := snapshotCloseAuthorityFiles(t, s.home)
+			_, err := s.Close(workID, CloseInput{
+				Outcome:       "cancelled",
+				MoveType:      "audit_only",
+				Summary:       "near-miss refusal evidence must stay a rejection",
+				RunAttemptIDs: []string{stamped.ID},
+			}, fixedNow.Add(5*time.Minute))
+			if err == nil || !strings.Contains(err.Error(), "does not allow action") {
+				t.Fatalf("Close error = %v, want the does-not-allow rejection", err)
+			}
+			if after := snapshotCloseAuthorityFiles(t, s.home); !reflect.DeepEqual(after, before) {
+				t.Fatal("near-miss refusal rejection mutated durable authority")
+			}
+		})
 	}
 }
