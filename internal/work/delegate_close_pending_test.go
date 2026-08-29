@@ -193,6 +193,13 @@ func TestDelegateFrozenCloseFencesPreMintSessionCleanup(t *testing.T) {
 				); err != nil {
 					t.Fatalf("terminalize seeded delegate as succeeded: %v", err)
 				}
+				if _, err := s.Advance(workID, AdvanceInput{
+					To:             "verifying",
+					Actor:          holder,
+					VerificationID: "check:seeded-delegate-succeeded",
+				}, fixedNow.Add(30*time.Second)); err != nil {
+					t.Fatalf("advance seeded delegate work to verifying: %v", err)
+				}
 			case "recorded_exit_pane_reap":
 				dead.ExitCode = 1
 				runner.panes[spawned.Binding.Session] = dead
@@ -207,8 +214,12 @@ func TestDelegateFrozenCloseFencesPreMintSessionCleanup(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), "injected pane reap failure") {
 					t.Fatalf("seed real recorded exit with retained pane: %v", err)
 				}
-				if seeded.TerminalStatus != runattempt.StatusFailed {
-					t.Fatalf("seed sweep terminal status = %q, want %q", seeded.TerminalStatus, runattempt.StatusFailed)
+				terminalized, err := runattempt.Open(s.home).Get(spawned.Binding.RunAttemptID)
+				if err != nil {
+					t.Fatalf("load seeded delegate attempt: %v", err)
+				}
+				if terminalized.Status != runattempt.StatusFailed {
+					t.Fatalf("seeded attempt status = %q, want %q; outcome=%+v", terminalized.Status, runattempt.StatusFailed, seeded)
 				}
 				runner.killErr = nil
 				closeOutcome = "failed"
