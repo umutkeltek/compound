@@ -111,6 +111,37 @@ func requireFrozenCloseAuthorityChanged(t *testing.T, result DelegateResult, err
 	}
 }
 
+func freezeDelegateClosePendingAfterPrepare(t *testing.T, s *Store, workID string, in CloseInput, at time.Time) closePending {
+	t.Helper()
+	token := &struct{}{}
+	previous := closeAfterTerminalizationPrepare
+	closeAfterTerminalizationPrepare = func() { panic(token) }
+	t.Cleanup(func() { closeAfterTerminalizationPrepare = previous })
+	crashed := false
+	var closeErr error
+	func() {
+		defer func() {
+			switch recovered := recover(); recovered {
+			case token:
+				crashed = true
+			case nil:
+			default:
+				panic(recovered)
+			}
+		}()
+		_, closeErr = s.Close(workID, in, at)
+	}()
+	closeAfterTerminalizationPrepare = previous
+	if !crashed {
+		t.Fatalf("close did not reach the post-prepare crash seam: %v", closeErr)
+	}
+	pending, present, err := s.loadClosePending(workID)
+	if err != nil || !present {
+		t.Fatalf("load frozen close frame: present=%v err=%v", present, err)
+	}
+	return pending
+}
+
 func TestDelegateFrozenCloseFencesPreMintRefusalPublications(t *testing.T) {
 	for _, name := range []string{
 		"lease_held",
@@ -194,6 +225,12 @@ func TestDelegateFrozenCloseFencesPreMintSessionCleanup(t *testing.T) {
 					t.Fatalf("terminalize seeded delegate as succeeded: %v", err)
 				}
 				if _, err := s.Advance(workID, AdvanceInput{
+					To:    "running",
+					Actor: holder,
+				}, fixedNow.Add(25*time.Second)); err != nil {
+					t.Fatalf("advance seeded delegate work to running: %v", err)
+				}
+				if _, err := s.Advance(workID, AdvanceInput{
 					To:             "verifying",
 					Actor:          holder,
 					VerificationID: "check:seeded-delegate-succeeded",
@@ -223,10 +260,16 @@ func TestDelegateFrozenCloseFencesPreMintSessionCleanup(t *testing.T) {
 				}
 				runner.killErr = nil
 				closeOutcome = "failed"
+				if _, err := s.Advance(workID, AdvanceInput{
+					To:    "running",
+					Actor: holder,
+				}, fixedNow.Add(30*time.Second)); err != nil {
+					t.Fatalf("advance failed delegate work to running: %v", err)
+				}
 			default:
 				t.Fatalf("unknown case %q", name)
 			}
-			frozen := freezeClosePendingAfterPrepare(t, s, workID, CloseInput{
+			frozen := freezeDelegateClosePendingAfterPrepare(t, s, workID, CloseInput{
 				Outcome: closeOutcome, MoveType: "audit_only", Actor: holder,
 				Summary: "freeze close before delegate cleanup",
 			}, fixedNow.Add(time.Minute))
