@@ -151,9 +151,93 @@ func allowDelegateCLIGuard(t *testing.T, confirmationRequired bool) {
 
 func runDelegateCLIForTest(t *testing.T, sub string, store *work.Store, runner work.SessionRunner, attach func([]string) error, args ...string) (string, string, int) {
 	t.Helper()
+	args = explicitExperimentalDelegateArgsForTest(sub, args)
 	var stdout, stderr bytes.Buffer
 	code := runWorkDelegateCLI(sub, args, store, runner, attach, delegateCLITestNow, &stdout, &stderr)
 	return stdout.String(), stderr.String(), code
+}
+
+// Most historical delegate fixtures exercise the now-unsupported mutation
+// engine deliberately. Keep that opt-in visible at their shared composition
+// seam while dedicated boundary tests below call runWorkDelegateCLI directly
+// to prove production remains default-off.
+func explicitExperimentalDelegateArgsForTest(sub string, args []string) []string {
+	out := append([]string(nil), args...)
+	mutation := sub == "steer"
+	if sub == "delegate" {
+		if len(out) > 0 && out[0] == "status" {
+			return out
+		}
+		for _, arg := range out {
+			if arg == "--dry-run" {
+				return out
+			}
+		}
+		mutation = true
+	}
+	if !mutation {
+		return out
+	}
+	for _, arg := range out {
+		if arg == work.ExperimentalDelegateMutationsFlag {
+			return out
+		}
+	}
+	insertAt := len(out)
+	for i, arg := range out {
+		if arg == "--" {
+			insertAt = i
+			break
+		}
+	}
+	out = append(out, "")
+	copy(out[insertAt+1:], out[insertAt:])
+	out[insertAt] = work.ExperimentalDelegateMutationsFlag
+	return out
+}
+
+func runDelegateCLIWithoutExperimentalGateForTest(t *testing.T, sub string, store *work.Store, runner work.SessionRunner, args ...string) (string, string, int) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	code := runWorkDelegateCLI(sub, args, store, runner, nil, delegateCLITestNow, &stdout, &stderr)
+	return stdout.String(), stderr.String(), code
+}
+
+func TestWorkDelegateMutationCLIGateDefaultsOffWithoutSideEffects(t *testing.T) {
+	tests := []struct {
+		name string
+		sub  string
+		args func(string) []string
+	}{
+		{name: "spawn", sub: "delegate", args: func(workID string) []string {
+			return []string{workID, "--harness", "claude-zai"}
+		}},
+		{name: "steer", sub: "steer", args: func(workID string) []string {
+			return []string{workID, "--text", "do not send"}
+		}},
+		{name: "progress", sub: "delegate", args: func(workID string) []string {
+			return []string{"progress", workID, "--done", "0", "--empty", "0", "--failed", "0", "--remaining", "1"}
+		}},
+		{name: "sweep", sub: "delegate", args: func(workID string) []string {
+			return []string{"sweep", workID}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, workID, homePath := claimedDelegateCLIWorkAt(t, "orchestrator:test")
+			runner := newDelegateCLIFakeRunner()
+			before := snapshotFiles(t, homePath)
+
+			_, errOut, code := runDelegateCLIWithoutExperimentalGateForTest(t, tc.sub, store, runner, tc.args(workID)...)
+			if code != 2 || !strings.Contains(errOut, work.ExperimentalDelegateMutationsFlag) || !strings.Contains(errOut, "unsupported in v0.1") {
+				t.Fatalf("code=%d stderr=%q", code, errOut)
+			}
+			after := snapshotFiles(t, homePath)
+			if !reflect.DeepEqual(before, after) || len(runner.creates) != 0 || len(runner.keys) != 0 || len(runner.kills) != 0 {
+				t.Fatalf("default-off %s mutated state: files_equal=%v creates=%v keys=%v kills=%v", tc.name, reflect.DeepEqual(before, after), runner.creates, runner.keys, runner.kills)
+			}
+		})
+	}
 }
 
 func TestWorkDelegateCLIPromptUsesNamedWrapperWithoutPersistingSpeech(t *testing.T) {
@@ -522,6 +606,12 @@ func TestWorkDelegateHelpInventory(t *testing.T) {
 	for _, verb := range []string{"delegate", "steer", "attach"} {
 		if !strings.Contains(workUsage(""), verb) || !strings.Contains(workUsage(verb), "usage: compound work "+verb) {
 			t.Fatalf("work help does not expose %s: root=%q sub=%q", verb, workUsage(""), workUsage(verb))
+		}
+	}
+	for _, verb := range []string{"delegate", "steer"} {
+		help := workUsage(verb)
+		if !strings.Contains(help, work.ExperimentalDelegateMutationsFlag) || !strings.Contains(help, "unsupported in v0.1") {
+			t.Fatalf("experimental mutation boundary missing from %s help: %q", verb, help)
 		}
 	}
 }

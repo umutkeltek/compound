@@ -95,7 +95,7 @@ func spawnDelegateForTeardown(t *testing.T, s *Store, workspace string) (string,
 // behind: today's failure mode is 60+ merged, clean, delegate-free worktrees
 // that `git worktree remove` refuses until somebody unlocks each one by hand.
 func TestDelegateSweepReleasesWorktreeLockOnTerminalExit(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	workspace := filepath.Join(t.TempDir(), "lane-worktree")
 	reaper := newFakeLockReaper()
 	reaper.locked[workspace] = "active governed delegate"
@@ -127,7 +127,7 @@ func TestDelegateSweepReleasesWorktreeLockOnTerminalExit(t *testing.T) {
 // Ownership, not proximity: a lock another LIVE delegate still depends on is
 // never released, even though this delegate's workspace matches.
 func TestDelegateSweepLeavesWorktreeLockHeldByAnotherLiveAttempt(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	workspace := filepath.Join(t.TempDir(), "shared-worktree")
 	reaper := newFakeLockReaper()
 	reaper.locked[workspace] = "active governed delegate"
@@ -165,7 +165,7 @@ func TestDelegateSweepLeavesWorktreeLockHeldByAnotherLiveAttempt(t *testing.T) {
 // A lock failure must not swallow the teardown: the attempt still terminalizes
 // and the reason is reported rather than silently dropped.
 func TestDelegateSweepReportsWorktreeLockFailureWithoutBlockingTeardown(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	workspace := filepath.Join(t.TempDir(), "lane-worktree")
 	reaper := newFakeLockReaper()
 	reaper.locked[workspace] = "active governed delegate"
@@ -194,7 +194,7 @@ func TestDelegateSweepReportsWorktreeLockFailureWithoutBlockingTeardown(t *testi
 // spawn_ambiguous with no way back except a manual tmux kill-session. Teardown
 // must retry the reap on its own recorded exit.
 func TestDelegateRespawnReapsOrphanPaneLeftByRecordedExit(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	workspace := filepath.Join(t.TempDir(), "lane-worktree")
 	installFakeLockReaper(t, newFakeLockReaper())
 
@@ -246,7 +246,7 @@ func TestDelegateRespawnReapsOrphanPaneLeftByRecordedExit(t *testing.T) {
 // recorded is exactly the ownership uncertainty spawn_ambiguous encodes. It is
 // left alone, and the spawn refuses on it.
 func TestDelegateRespawnDoesNotKillLivePaneUnderRecordedExit(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	workspace := filepath.Join(t.TempDir(), "lane-worktree")
 	installFakeLockReaper(t, newFakeLockReaper())
 
@@ -285,7 +285,7 @@ func TestDelegateRespawnDoesNotKillLivePaneUnderRecordedExit(t *testing.T) {
 // The doctor join: a locked workspace whose delegates are ALL terminal is
 // stale; one that still has a live attempt is not.
 func TestDelegateWorktreeLockReportMarksTerminalOwnersStale(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	stale := filepath.Join(t.TempDir(), "stale-worktree")
 	held := filepath.Join(t.TempDir(), "held-worktree")
 	unlocked := filepath.Join(t.TempDir(), "unlocked-worktree")

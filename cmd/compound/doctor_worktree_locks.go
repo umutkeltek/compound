@@ -14,8 +14,8 @@ import (
 // Both halves of the answer live in compound: the lock state on disk and the
 // RunAttempt records that say who ran in that workspace and whether they are
 // terminal. Reported, never repaired — doctor writes nothing, and releasing a
-// lock is teardown's job (`compound work delegate sweep`), not a health
-// command's.
+// lock is the experimental teardown path's job (`compound work delegate
+// sweep --experimental-delegate-mutations`), not a health command's.
 func buildWorktreeLockRows(homePath string) ([]work.DelegateWorktreeLockRow, int) {
 	// Doctor writes nothing, so its read of the lock table must not materialize
 	// work/ or events/ either (see work.OpenReadOnly).
@@ -56,6 +56,6 @@ func printWorktreeLocks(stdout io.Writer, rep doctorReport) {
 		}
 	}
 	if rep.WorktreeLocksStale > 0 {
-		fmt.Fprintf(stdout, "  -> %d lock(s) protect nobody; `compound work delegate sweep <work_id>` reaps a delegate's own lock\n", rep.WorktreeLocksStale)
+		fmt.Fprintf(stdout, "  -> %d lock(s) protect nobody; experimental `compound work delegate sweep <work_id> --experimental-delegate-mutations` reaps a delegate's own lock (unsupported in v0.1)\n", rep.WorktreeLocksStale)
 	}
 }

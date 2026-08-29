@@ -64,6 +64,9 @@ func TestDoctorFlagsWorktreeLockWhoseDelegateIsTerminal(t *testing.T) {
 	if !strings.Contains(rendered, "held (delegate live)") {
 		t.Fatalf("doctor output does not distinguish a lock still in use:\n%s", rendered)
 	}
+	if !strings.Contains(rendered, work.ExperimentalDelegateMutationsFlag) || !strings.Contains(rendered, "unsupported in v0.1") {
+		t.Fatalf("doctor advertised an ungated delegate teardown:\n%s", rendered)
+	}
 }
 
 func TestDoctorWorktreeLockSectionIsQuietWithoutLocks(t *testing.T) {

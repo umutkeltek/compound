@@ -295,7 +295,7 @@ func TestDelegateUsesInjectedTupleResolutionAndStampsAttribution(t *testing.T) {
 		DelegateHarnessResolver = origResolver
 	})
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
 	result, err := s.Delegate(DelegateOptions{
@@ -331,7 +331,7 @@ func TestDelegateTupleResolutionFailureCreatesNoSessionOrAttempt(t *testing.T) {
 		DelegateHarnessResolver = origResolver
 	})
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
 	result, err := s.Delegate(DelegateOptions{
@@ -369,7 +369,7 @@ func TestDelegateNilReadinessFailsClosedBeforeCapacityOrSpawn(t *testing.T) {
 		LaneCapacityGuard = originalGuard
 	})
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
 	result, err := s.Delegate(DelegateOptions{
@@ -399,7 +399,7 @@ func TestDelegateValidatesWorkAndLeaseBeforeReadiness(t *testing.T) {
 	}
 	t.Cleanup(func() { DelegateHarnessReadiness = originalReadiness })
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	runner := newFakeRunner()
 	if _, err := s.Delegate(DelegateOptions{
 		WorkID: "work_missing", Harness: "claude", Actor: "codex", Command: "claude", Now: fixedNow,
@@ -453,7 +453,7 @@ func TestDelegateRevalidatesReadinessSnapshotAfterCapacityAdmission(t *testing.T
 		LaneCapacityGuard = originalGuard
 	})
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	const holder = "orchestrator:test"
 	workID := prepareClaimedWork(t, s, holder, "", "")
 	beforeAttempts := runAttemptsByID(t, s)
@@ -507,7 +507,7 @@ func TestDelegateRevalidatesCapacityImmediatelyBeforeMint(t *testing.T) {
 		LaneCapacityGuard = originalGuard
 	})
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	const holder = "orchestrator:test"
 	workID := prepareClaimedWork(t, s, holder, "", "")
 	beforeAttempts := runAttemptsByID(t, s)
@@ -566,7 +566,7 @@ func assertNoNewDelegateAttempt(t *testing.T, before, after map[string]runattemp
 func assertDelegateConcurrentAuthorityMutationRefused(t *testing.T, mutate func(*Store, string, string) error) {
 	t.Helper()
 	originalGuard := LaneCapacityGuard
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	const holder = "orchestrator:test"
 	workID := prepareClaimedWork(t, s, holder, "", "")
 	beforeAttempts := runAttemptsByID(t, s)
@@ -640,7 +640,7 @@ func TestDelegateGateHonored_RefusedWalled(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(true, false, "walled: lane at 0% for 4d", "walled")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 
 	runner := newFakeRunner()
@@ -702,7 +702,7 @@ func TestDelegateWalledBeatsConfirm(t *testing.T) {
 	}
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 
 	runner := newFakeRunner()
@@ -735,7 +735,7 @@ func TestDelegateConfirmationRequired_NeedsConfirm(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, true, "expiring in 2m", "expiring")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 
 	runner := newFakeRunner()
@@ -777,7 +777,7 @@ func TestDelegateNilGuardFailsClosed(t *testing.T) {
 	LaneCapacityGuard = nil
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 
 	runner := newFakeRunner()
@@ -810,7 +810,7 @@ func TestDelegateSingleHolder(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 
 	runner := newFakeRunner()
@@ -879,7 +879,7 @@ func TestDelegateSteerRequiresLive(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 
 	runner := newFakeRunner()
@@ -932,7 +932,7 @@ func TestDelegateBindingRoundtrip(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 
 	runner := newFakeRunner()
@@ -980,7 +980,7 @@ func TestDelegateEventEmissionAndNoTranscript(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 
 	runner := newFakeRunner()
@@ -1032,7 +1032,7 @@ func TestDelegateTmuxAbsentFailsClosed(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 
 	runner := newFakeRunner()
@@ -1067,7 +1067,7 @@ func TestDelegateDryRunNeverSpawnsOrPersists(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, true, "expiring in 2m", "expiring")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 
 	runner := newFakeRunner()
@@ -1102,7 +1102,7 @@ func TestDelegateCapacityGuardTargetsRequestedLaneAndDefaultsMinutes(t *testing.
 		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ok"}}, nil
 	}
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	runner := newFakeRunner()
 	res, err := s.Delegate(DelegateOptions{
@@ -1128,7 +1128,7 @@ func TestDelegateUsesResolvedWorkspace(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	workspace := t.TempDir()
 	runner := newFakeRunner()
@@ -1160,7 +1160,7 @@ func TestDelegateRefusesWorkspaceHeldByAnotherLiveLane(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	workspace := t.TempDir()
 	runner := newFakeRunner()
 
@@ -1205,7 +1205,7 @@ func TestDelegateAllowsDistinctWorkspaces(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	runner := newFakeRunner()
 
 	firstID := prepareClaimedWork(t, s, "orchestrator:test", "", "first lane in its own workspace")
@@ -1238,7 +1238,7 @@ func TestDelegateDoesNotPersistPromptArguments(t *testing.T) {
 	defer func() { LaneCapacityGuard = orig }()
 
 	const privatePrompt = "PAINT-THE-THREAD-IN-CERULEAN"
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	runner := newFakeRunner()
 	_, err := s.Delegate(DelegateOptions{
@@ -1276,7 +1276,7 @@ func TestDelegatePersistsPreparedRunningLaunchBoundaryBeforeCreate(t *testing.T)
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	before := runAttemptsByID(t, s)
 	runner := newFakeRunner()
@@ -1329,7 +1329,7 @@ func TestDelegateMintFailureMeansZeroCreate(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	runDir := filepath.Join(s.home, "run_attempts")
 	if err := os.Chmod(runDir, 0o500); err != nil {
@@ -1357,7 +1357,7 @@ func TestDelegateCreateFailureTerminalizesExactAttempt(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	before := runAttemptsByID(t, s)
 	runner := newFakeRunner()
@@ -1380,7 +1380,7 @@ func TestDelegateCreateCannotLaunchAfterTerminalSweep(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	before := runAttemptsByID(t, s)
 	runner := newFakeRunner()
@@ -1509,7 +1509,7 @@ func TestDelegateLaunchEvidenceFailureStopsOwnedSessionAndRecordsFixedRefusal(t 
 		runAttemptsFactory = originalFactory
 	}()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	before := runAttemptsByID(t, s)
 	runner := newFakeRunner()
@@ -1564,7 +1564,7 @@ func TestDelegateLaunchEvidenceFailurePreservesBindingWhenKillFails(t *testing.T
 		runAttemptsFactory = originalFactory
 	}()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	before := runAttemptsByID(t, s)
 	runner := newFakeRunner()
@@ -1618,7 +1618,7 @@ func TestDelegateLaunchEvidenceFailureAdvanceFailureStillSurfacesLiveBinding(t *
 		advanceBeforeWorkCommit = originalAdvanceHook
 	}()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	before := runAttemptsByID(t, s)
 	runner := newFakeRunner()
@@ -1708,7 +1708,7 @@ func TestDelegateStampFailureRetainsAuditContextBeforeTerminalizing(t *testing.T
 		runAttemptsFactory = origFactory
 	}()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	workspace := t.TempDir()
 	runner := newFakeRunner()
@@ -1759,7 +1759,7 @@ func TestDelegateAmbiguousPartialCreateNeverKillsOrBinds(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	before := runAttemptsByID(t, s)
 	runner := newFakeRunner()
@@ -1791,7 +1791,7 @@ func TestDelegateCreateProbeUncertaintyIsAmbiguousAndNeverKills(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	before := runAttemptsByID(t, s)
 	runner := newFakeRunner()
@@ -1819,7 +1819,7 @@ func TestDelegateDoesNotPersistPromptFromSpawnFailure(t *testing.T) {
 	defer func() { LaneCapacityGuard = orig }()
 
 	const privatePrompt = "THE-RUNNER-ECHOED-MY-CERULEAN-PROMPT"
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	runner := newFakeRunner()
 	runner.createErr = errors.New("failed to spawn args: " + privatePrompt)
@@ -1842,7 +1842,7 @@ func TestDelegateDoesNotPersistPromptFromSpawnFailure(t *testing.T) {
 }
 
 func TestDelegateCorruptAttachedBindingFailsClosed(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	w, err := s.Get(wID)
 	if err != nil {
@@ -1862,7 +1862,7 @@ func TestDelegateCorruptAttachedBindingFailsClosed(t *testing.T) {
 }
 
 func TestDelegateMalformedAttachedBindingFailsClosed(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	w, err := s.Get(wID)
 	if err != nil {
@@ -1898,7 +1898,7 @@ func TestDelegateObservedExitIsAttachedToLifecycle(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	runner := newFakeRunner()
 	first, err := s.Delegate(DelegateOptions{
@@ -1933,7 +1933,7 @@ func TestSteerDeadSessionRecordsExitAndAttachRefuses(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	runner := newFakeRunner()
 	spawned, err := s.Delegate(DelegateOptions{
@@ -1979,7 +1979,7 @@ func TestDelegateRejectsActorDifferentFromLeaseHolder(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:owner", "", "")
 	runner := newFakeRunner()
 	res, err := s.Delegate(DelegateOptions{
@@ -2002,7 +2002,7 @@ func TestDelegateLiveDuplicateRefusalIsAttached(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	runner := newFakeRunner()
 	if _, err := s.Delegate(DelegateOptions{
@@ -2035,7 +2035,7 @@ func TestDelegateKillsSpawnWhenLifecycleAttachmentFails(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = origGuard }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	before := runAttemptsByID(t, s)
 	runner := newFakeRunner()
@@ -2066,7 +2066,7 @@ func TestDelegatePostCreateCleanupReportsKillFailure(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = origGuard }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	runner := newFakeRunner()
 	runner.killErr = errors.New("injected kill failure")
@@ -2093,7 +2093,7 @@ func TestDelegateAdvanceFailureFinalizesAttachedBinding(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = origGuard }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	before := runAttemptsByID(t, s)
 	runner := newFakeRunner()
@@ -2137,7 +2137,7 @@ func TestDelegateAdvanceFailureKillFailureSurfacesForwardLinkAmbiguity(t *testin
 		advanceBeforeWorkCommit = originalAdvanceHook
 	}()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	before := runAttemptsByID(t, s)
 	runner := newFakeRunner()
@@ -2220,7 +2220,7 @@ func TestDelegateWorkNotClaimedRefuses(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	w, err := s.Create(CreateInput{
 		Owner:            "compound-core",
 		SuccessPredicate: "ready delegate refuses",
@@ -2268,7 +2268,7 @@ func lifeHasAttached(events []Event, id string) bool {
 // mark the run attempt failed -- not what the operator wants for a
 // healthy in-flight session.
 func TestDelegateSweepLivePaneHeartbeatsAndProtects(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	writeContextPack(t, s, "ctx_sweep_live")
 	w, err := s.Create(CreateInput{
 		Owner: "memo", SuccessPredicate: "ok",
@@ -2348,7 +2348,7 @@ func TestDelegateSweepLivePaneHeartbeatsAndProtects(t *testing.T) {
 // red-first falsifier: DelegateSweep on a DEAD pane + observed exit 1
 // must terminalize the exact ratt as failed AND kill the session.
 func TestDelegateSweepDeadPaneExitOneTerminalizesFailed(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	writeContextPack(t, s, "ctx_sweep_fail")
 	w, err := s.Create(CreateInput{Owner: "memo", SuccessPredicate: "ok", ContextPackID: "ctx_sweep_fail", DesiredOutcome: "alive"}, fixedNow)
 	if err != nil {
@@ -2402,7 +2402,7 @@ func TestDelegateSweepDeadPaneExitOneTerminalizesFailed(t *testing.T) {
 // red-first falsifier: signal-only exit must NOT serialize ExitCode=-1
 // in the work.delegate.exited event.
 func TestDelegateExitedSignalOnlyOmitsExitCode(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	writeContextPack(t, s, "ctx_signal")
 	w, err := s.Create(CreateInput{Owner: "memo", SuccessPredicate: "ok", ContextPackID: "ctx_signal", DesiredOutcome: "alive"}, fixedNow)
 	if err != nil {
@@ -2434,7 +2434,7 @@ func TestDelegateExitedSignalOnlyOmitsExitCode(t *testing.T) {
 // event without RunAttemptID must still return the binding (terminalize
 // step is silently skipped, but exited event is recorded).
 func TestDelegateRecoverBoundSessionOlderRunsBackCompat(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	writeContextPack(t, s, "ctx_legacy")
 	w, err := s.Create(CreateInput{Owner: "memo", SuccessPredicate: "ok", ContextPackID: "ctx_legacy", DesiredOutcome: "alive"}, fixedNow)
 	if err != nil {
@@ -2476,7 +2476,7 @@ func TestDelegateRecoverBoundSessionOlderRunsBackCompat(t *testing.T) {
 // red-first falsifier: probe uncertainty (UnknownReason) must NOT map
 // to any terminal status; it surfaces as an error.
 func TestDelegateSweepProbeUncertaintyReturnsError(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	writeContextPack(t, s, "ctx_unk")
 	w, err := s.Create(CreateInput{Owner: "memo", SuccessPredicate: "ok", ContextPackID: "ctx_unk", DesiredOutcome: "alive"}, fixedNow)
 	if err != nil {
@@ -2502,7 +2502,7 @@ func TestDelegateDeadRemainedPaneAllowsRedelegate(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	runner := newFakeRunner()
 	first, err := s.Delegate(DelegateOptions{
@@ -2538,7 +2538,7 @@ func TestDelegateAttachDeadPaneIsReadOnly(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	runner := newFakeRunner()
 	spawned, err := s.Delegate(DelegateOptions{
@@ -2566,7 +2566,7 @@ func TestDelegateSweepTerminalizesOnlyBoundAttempt(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	claimed, err := s.Get(wID)
 	if err != nil || len(claimed.RunAttemptIDs) != 1 {
@@ -2607,7 +2607,7 @@ func TestDelegateSweepVanishedBecomesAbandonedWithoutKill(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	runner := newFakeRunner()
 	spawned, err := s.Delegate(DelegateOptions{
@@ -2632,7 +2632,7 @@ func TestDelegateSweepRetryDoesNotDuplicateExitedEvent(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	runner := newFakeRunner()
 	spawned, err := s.Delegate(DelegateOptions{
@@ -2664,7 +2664,7 @@ func TestDelegateSweepReportsFinishedPaneKillFailure(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	runner := newFakeRunner()
 	spawned, err := s.Delegate(DelegateOptions{
@@ -2868,7 +2868,7 @@ func TestDelegateWorkspaceResolutionFailsClosed(t *testing.T) {
 		DelegateHarnessReadiness = origReadiness
 	})
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 
 	// Capture cwd behavior by temporarily replacing os.Getwd with a failure.
@@ -2938,7 +2938,7 @@ func TestDelegateWorkspaceIsNeverCompoundHome(t *testing.T) {
 		DelegateHarnessReadiness = origReadiness
 	})
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 
 	origGetwd := delegateOsGetwd
@@ -2975,7 +2975,7 @@ func TestDelegateRefusesFrozenCloseBeforeMint(t *testing.T) {
 		LaneCapacityGuard = originalGuard
 	})
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	const holder = "orchestrator:test"
 	workID := prepareClaimedWork(t, s, holder, "", "a frozen close fences delegate mint")
 	frozen := freezeClosePendingAfterPrepare(t, s, workID, CloseInput{

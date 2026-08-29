@@ -43,7 +43,7 @@ func TestRouteExperimentPlanCLI(t *testing.T) {
 		t.Fatalf("text code=%d err=%s", code, errOut.String())
 	}
 	if !strings.Contains(out.String(), "- role_alias: opus\n") || strings.Contains(out.String(), "- role_aliases:") ||
-		!strings.Contains(out.String(), "- execution: execute each lane through governed compound work delegate; import Switchback trace evidence before comparison\n") {
+		!strings.Contains(out.String(), "- execution: experimental only (unsupported in v0.1): execute each lane through compound work delegate with --experimental-delegate-mutations; import Switchback trace evidence before comparison\n") {
 		t.Fatalf("legacy text output changed:\n%s", out.String())
 	}
 }

@@ -120,11 +120,12 @@ func claimEventFromIsLegal(from string, repairOwnerless bool) bool {
 
 // Store is the work lifecycle store rooted at a COMPOUND_HOME.
 type Store struct {
-	home                  string
-	events                *eventstore.Store
-	readOnly              bool
-	eventLogReads         atomic.Int64
-	holdEvidenceFileReads atomic.Int64
+	home                          string
+	events                        *eventstore.Store
+	readOnly                      bool
+	eventLogReads                 atomic.Int64
+	holdEvidenceFileReads         atomic.Int64
+	experimentalDelegateMutations atomic.Bool
 }
 
 func (s *Store) eventLogReadCount() int64 {

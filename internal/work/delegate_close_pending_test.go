@@ -142,6 +142,44 @@ func freezeDelegateClosePendingAfterPrepare(t *testing.T, s *Store, workID strin
 	return pending
 }
 
+func TestDelegateMutationPackageGateDefaultsOff(t *testing.T) {
+	installFrozenCloseDelegateDefaults(t)
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const holder = "orchestrator:test"
+	workID := prepareClaimedWork(t, s, holder, "", "delegated mutation is unsupported by default")
+	runner := newFakeRunner()
+	before := snapshotDelegateClosePending(t, s, runner)
+
+	delegated, err := s.Delegate(DelegateOptions{
+		WorkID: workID, Harness: "claude-zai", Actor: holder,
+		Command: "claude-zai", Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil || delegated.Refusal == nil || delegated.Refusal.Reason != "experimental_disabled" {
+		t.Fatalf("default delegate gate: result=%+v err=%v", delegated, err)
+	}
+	if _, err := s.Steer(SteerOptions{WorkID: workID, Text: "do not send", Now: fixedNow.Add(time.Minute)}, runner); !errors.Is(err, ErrExperimentalDelegateMutationsDisabled) {
+		t.Fatalf("default steer gate error = %v", err)
+	}
+	if _, err := s.DelegateSweep(&DelegateBinding{WorkID: workID, Session: "unsupported"}, SessionStatus{Exists: true, PaneDead: true}, runner, holder, fixedNow.Add(time.Minute)); !errors.Is(err, ErrExperimentalDelegateMutationsDisabled) {
+		t.Fatalf("default sweep gate error = %v", err)
+	}
+	if _, err := s.DelegateProgress(workID, runattempt.RunProgress{}, fixedNow.Add(time.Minute)); !errors.Is(err, ErrExperimentalDelegateMutationsDisabled) {
+		t.Fatalf("default progress gate error = %v", err)
+	}
+
+	dryRun, err := s.Delegate(DelegateOptions{
+		WorkID: workID, Harness: "claude-zai", Actor: holder,
+		Command: "claude-zai", Workspace: t.TempDir(), DryRun: true, Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil || (dryRun.Refusal != nil && dryRun.Refusal.Reason == "experimental_disabled") {
+		t.Fatalf("default-off dry-run must remain available: result=%+v err=%v", dryRun, err)
+	}
+	assertDelegateClosePendingUnchanged(t, before, snapshotDelegateClosePending(t, s, runner))
+}
+
 func TestDelegateFrozenCloseFencesPreMintRefusalPublications(t *testing.T) {
 	for _, name := range []string{
 		"lease_held",
@@ -153,7 +191,7 @@ func TestDelegateFrozenCloseFencesPreMintRefusalPublications(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			installFrozenCloseDelegateDefaults(t)
-			s := newStore(t)
+			s := newExperimentalDelegateStore(t)
 			const holder = "orchestrator:test"
 			workID := prepareClaimedWork(t, s, holder, "", "frozen close fences delegate refusal publication")
 			runner := newFakeRunner()
@@ -200,7 +238,7 @@ func TestDelegateFrozenCloseFencesPreMintSessionCleanup(t *testing.T) {
 	for _, name := range []string{"dead_binding_sweep", "recorded_exit_pane_reap"} {
 		t.Run(name, func(t *testing.T) {
 			installFrozenCloseDelegateDefaults(t)
-			s := newStore(t)
+			s := newExperimentalDelegateStore(t)
 			const holder = "orchestrator:test"
 			workID := prepareClaimedWork(t, s, holder, "", "frozen close fences delegate cleanup")
 			runner := newFakeRunner()
@@ -286,7 +324,7 @@ func TestDelegateFrozenCloseFencesPreMintSessionCleanup(t *testing.T) {
 
 func TestDelegateRefusalPublicationRechecksConcurrentFrozenClose(t *testing.T) {
 	installFrozenCloseDelegateDefaults(t)
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	const holder = "orchestrator:test"
 	workID := prepareClaimedWork(t, s, holder, "", "delegate refusal rechecks concurrent frozen close")
 	runner := newFakeRunner()
@@ -317,7 +355,7 @@ func TestDelegateRefusalPublicationRechecksConcurrentFrozenClose(t *testing.T) {
 
 func TestDelegateFrozenCloseDryRunRemainsReadOnly(t *testing.T) {
 	installFrozenCloseDelegateDefaults(t)
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	const holder = "orchestrator:test"
 	workID := prepareClaimedWork(t, s, holder, "", "frozen close keeps delegate dry-run read-only")
 	runner := newFakeRunner()

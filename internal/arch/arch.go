@@ -2081,8 +2081,8 @@ func checkASCDailySignalsPublicBoundaryContract(repoRoot string) []Finding {
 // discovery is not an authority target); interactive hooks may observe
 // while enforcement claims require behavioral proof; the console target is
 // projection-only with mutations/private reads off; and Postgres, shared
-// homes, server/multi-tenant use, remote/proxied console, and arbitrary
-// private embedding endpoints are unsupported. It also pins the honesty
+// homes, server/multi-tenant use, remote/proxied console, delegated mutation,
+// and arbitrary private embedding endpoints are unsupported. It also pins the honesty
 // phrases: the contract must name any remaining current blockers, while the
 // projection-only console default is pinned as current behavior rather than a
 // future promise. The earlier ancestor-authority and console-default blockers
@@ -2102,6 +2102,7 @@ func checkPublicAlphaSupportedScopeContract(repoRoot string) []Finding {
 			"shared homes",
 			"multi-tenant",
 			"proxied console",
+			"delegated launch, steer, progress",
 			"private embedding endpoints",
 			"Current blockers",
 			"projection-only by default",

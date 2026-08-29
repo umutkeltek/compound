@@ -44,7 +44,8 @@ permissions, and request/token/time/cost ceilings. It is a plan, not evidence th
 `compound route execution-profile` resolver proves profile coherence without contacting a provider or changing
 gateway/harness configuration.
 
-Governed `compound work delegate` can select an existing profile with `--execution-profile`. Optional
+Experimental `compound work delegate` can select an existing profile with `--execution-profile`, but its mutation
+surface is disabled by default and unsupported in v0.1; `work advance --execute` is the supported governed path. Optional
 role/capability/harness/transport/route/model/effort/orchestration/privacy selectors narrow that profile and are
 refused when no profile is selected. `--launch-profile` selects the executor owner's concrete launch/account-policy
 profile and is likewise invalid without an execution profile. The existing `--harness` flag still selects the exact
@@ -219,8 +220,9 @@ Harness execution consumes the same authority instead of maintaining a second wr
 model id, alias, then harness id form the resolution precedence; ambiguity fails closed. A declared
 `capacity_source` binds quota evidence to its own provider ref (for example
 `codexbar://provider/qwencloud`) even when the execution route has another name. Inline governed
-execution and delegated tmux sessions both resolve this tuple before work moves or a RunAttempt is
-minted. A raw command override is not executable authority: governed delegated activation refuses it
+execution and experimental delegated tmux sessions both resolve this tuple before work moves or a RunAttempt is
+minted. Delegated activation additionally requires the explicit process-local
+`--experimental-delegate-mutations` gate. A raw command override is not executable authority: delegated activation refuses it
 until an authority can attest that exact executable/profile. The delegated argv policy is also
 fail-closed: the current tuple-backed policy admits no argv or one non-flag positional prompt; it
 refuses flag-shaped or multi-token argv, so permission/profile flags cannot borrow the wrapper's

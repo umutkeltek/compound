@@ -59,7 +59,30 @@ const (
 	delegateAmbiguousNote             = "Create failed but the named session exists; classified as spawn_ambiguous (the session may be a stranger's); no kill performed"
 	delegateProbeUnknownNote          = "Create failed and session ownership could not be determined; classified as spawn_ambiguous; no kill performed"
 	delegateLaunchEvidenceFailureNote = "Create succeeded but committed launch evidence could not be published; the definitely-owned session was stopped and the attempt was terminalized"
+	ExperimentalDelegateMutationsFlag = "--experimental-delegate-mutations"
 )
+
+var ErrExperimentalDelegateMutationsDisabled = fmt.Errorf(
+	"delegate mutation is experimental and disabled; pass %s at the CLI composition root to opt in",
+	ExperimentalDelegateMutationsFlag,
+)
+
+// EnableExperimentalDelegateMutations opts this Store instance into the
+// unsupported delegated-mutation surface. The supported v0.1 execution path is
+// work advance --execute; status, attach, and dry-run do not require this opt-in.
+// The flag is process-local and must be selected explicitly for each CLI run.
+func (s *Store) EnableExperimentalDelegateMutations() {
+	if s != nil {
+		s.experimentalDelegateMutations.Store(true)
+	}
+}
+
+func (s *Store) requireExperimentalDelegateMutations() error {
+	if s == nil || !s.experimentalDelegateMutations.Load() {
+		return ErrExperimentalDelegateMutationsDisabled
+	}
+	return nil
+}
 
 type delegateAuthorityChangedError struct {
 	detail string
@@ -67,6 +90,32 @@ type delegateAuthorityChangedError struct {
 
 func (e *delegateAuthorityChangedError) Error() string {
 	return "delegate authority changed during admission: " + e.detail
+}
+
+func (s *Store) withDelegateLifecycleMutation(workID string, fn func() error) error {
+	return s.withLifecycleMutation(func() error {
+		if err := s.fenceClosePendingMutation(workID); err != nil {
+			return &delegateAuthorityChangedError{detail: err.Error()}
+		}
+		return fn()
+	})
+}
+
+func (s *Store) fenceDelegateLifecycleMutation(workID string) error {
+	return s.withDelegateLifecycleMutation(workID, func() error { return nil })
+}
+
+func delegateLifecycleMutationResult(out DelegateResult, err error) (DelegateResult, error) {
+	var authorityChanged *delegateAuthorityChangedError
+	if errors.As(err, &authorityChanged) {
+		out.EventID = ""
+		out.Refusal = &DelegateRefusal{
+			Reason:  "authority_changed",
+			Message: authorityChanged.Error(),
+		}
+		return out, nil
+	}
+	return out, err
 }
 
 type delegateExecutionProfileIncompatibleError struct {
@@ -1387,6 +1436,15 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	if runner == nil {
 		return out, errors.New("delegate: SessionRunner is nil")
 	}
+	if !opts.DryRun {
+		if err := s.requireExperimentalDelegateMutations(); err != nil {
+			out.Refusal = &DelegateRefusal{Reason: "experimental_disabled", Message: err.Error()}
+			return out, nil
+		}
+		if err := s.fenceDelegateLifecycleMutation(out.WorkID); err != nil {
+			return delegateLifecycleMutationResult(out, err)
+		}
+	}
 	resolution := DelegateHarnessResolution{
 		Harness:      strings.TrimSpace(opts.Harness),
 		Command:      strings.TrimSpace(opts.Command),
@@ -1612,12 +1670,9 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			out.Refusal = &DelegateRefusal{Reason: "lease_held", Message: message}
 			return out, nil
 		}
-		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "lease_held", message, opts.Now)
+		evID, eerr := s.recordAndAttachDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "lease_held", message, opts.Now)
 		if eerr != nil {
-			return out, eerr
-		}
-		if err := s.appendDelegateLifecycleEvent(out.WorkID, w.State, holder, evID, "delegate refused reason=lease_held", opts.Now); err != nil {
-			return out, err
+			return delegateLifecycleMutationResult(out, eerr)
 		}
 		out.EventID = evID
 		out.Refusal = &DelegateRefusal{Reason: "lease_held", Message: message}
@@ -1765,12 +1820,9 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	// gate_absent verdict (Refused=true). Treat that as the documented
 	// gate_absent refusal so the audit trail carries the canonical reason.
 	if decision.Refused && strings.TrimSpace(decision.Capacity.State) == "absent" {
-		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "gate_absent", decision.Message, opts.Now)
+		evID, eerr := s.recordAndAttachDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "gate_absent", decision.Message, opts.Now)
 		if eerr != nil {
-			return out, eerr
-		}
-		if err := s.appendDelegateLifecycleEvent(out.WorkID, w.State, holder, evID, "delegate refused reason=gate_absent", opts.Now); err != nil {
-			return out, err
+			return delegateLifecycleMutationResult(out, eerr)
 		}
 		out.EventID = evID
 		out.Refusal = &DelegateRefusal{Reason: "gate_absent", Message: decision.Message}
@@ -1781,24 +1833,18 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		if reason == "" {
 			reason = "walled"
 		}
-		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, reason, decision.Message, opts.Now)
+		evID, eerr := s.recordAndAttachDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, reason, decision.Message, opts.Now)
 		if eerr != nil {
-			return out, eerr
-		}
-		if err := s.appendDelegateLifecycleEvent(out.WorkID, w.State, holder, evID, fmt.Sprintf("delegate refused reason=%s", reason), opts.Now); err != nil {
-			return out, err
+			return delegateLifecycleMutationResult(out, eerr)
 		}
 		out.EventID = evID
 		out.Refusal = &DelegateRefusal{Reason: reason, Message: decision.Message}
 		return out, nil
 	}
 	if decision.ConfirmationRequired && !opts.Confirm {
-		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "expiring_unconfirmed", decision.Message, opts.Now)
+		evID, eerr := s.recordAndAttachDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "expiring_unconfirmed", decision.Message, opts.Now)
 		if eerr != nil {
-			return out, eerr
-		}
-		if err := s.appendDelegateLifecycleEvent(out.WorkID, w.State, holder, evID, "delegate refused reason=expiring_unconfirmed", opts.Now); err != nil {
-			return out, err
+			return delegateLifecycleMutationResult(out, eerr)
 		}
 		out.EventID = evID
 		out.Refusal = &DelegateRefusal{Reason: "expiring_unconfirmed", Message: decision.Message}
@@ -1835,12 +1881,9 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			return out, fmt.Errorf("delegate: probe session %s: %w", existing.Session, sessErr)
 		}
 		if st.Exists && !st.PaneDead {
-			evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "session_live", "a live bound session already exists for this work", opts.Now)
+			evID, eerr := s.recordAndAttachDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "session_live", "a live bound session already exists for this work", opts.Now)
 			if eerr != nil {
-				return out, eerr
-			}
-			if err := s.appendDelegateLifecycleEvent(out.WorkID, w.State, holder, evID, "delegate refused reason=session_live", opts.Now); err != nil {
-				return out, err
+				return delegateLifecycleMutationResult(out, eerr)
 			}
 			out.EventID = evID
 			out.Refusal = &DelegateRefusal{
@@ -1856,17 +1899,14 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		// on the same session name -- otherwise the next Create sees the
 		// orphan pane and classifies spawn_ambiguous.
 		if _, err := s.DelegateSweep(existing, st, runner, holder, opts.Now); err != nil {
-			return out, err
+			return delegateLifecycleMutationResult(out, err)
 		}
 	}
 
 	if availErr := runner.Available(); availErr != nil {
-		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "tmux_absent", availErr.Error(), opts.Now)
+		evID, eerr := s.recordAndAttachDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "tmux_absent", availErr.Error(), opts.Now)
 		if eerr != nil {
-			return out, eerr
-		}
-		if err := s.appendDelegateLifecycleEvent(out.WorkID, w.State, holder, evID, "delegate refused reason=tmux_absent", opts.Now); err != nil {
-			return out, err
+			return delegateLifecycleMutationResult(out, eerr)
 		}
 		out.EventID = evID
 		out.Refusal = &DelegateRefusal{Reason: "tmux_absent", Message: availErr.Error()}
@@ -1880,10 +1920,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	// refuse -- ZERO Create side effects, ZERO session exists.
 	raStore := runAttemptsFactory(s.home)
 	var minted runattempt.RunAttempt
-	mintErr := s.withLifecycleMutation(func() error {
-		if err := s.fenceClosePendingMutation(out.WorkID); err != nil {
-			return &delegateAuthorityChangedError{detail: err.Error()}
-		}
+	mintErr := s.withDelegateLifecycleMutation(out.WorkID, func() error {
 		current, err := s.Get(out.WorkID)
 		if err != nil {
 			return &delegateAuthorityChangedError{detail: "work envelope is no longer readable"}
@@ -2517,6 +2554,29 @@ func (s *Store) recordDelegateRefused(workID, harness, lane, holder, reason, mes
 	return id, nil
 }
 
+func (s *Store) recordAndAttachDelegateRefused(workID, harness, lane, holder, reason, message string, now time.Time) (string, error) {
+	var id string
+	err := s.withDelegateLifecycleMutation(workID, func() error {
+		current, err := s.Get(workID)
+		if err != nil {
+			return &delegateAuthorityChangedError{detail: "work envelope is no longer readable"}
+		}
+		id, err = s.recordDelegateRefused(workID, harness, lane, holder, reason, message, now)
+		if err != nil {
+			return err
+		}
+		return s.appendDelegateLifecycleEvent(
+			workID,
+			current.State,
+			holder,
+			id,
+			"delegate refused reason="+reason,
+			now,
+		)
+	})
+	return id, err
+}
+
 func (s *Store) recordDelegateSteered(workID string, b *DelegateBinding, holder, text string, enter bool, now time.Time) (string, error) {
 	id := delegateEventID("work.delegate.steered", workID, now)
 	if err := s.writeEventJSON(id, delegateEvent{
@@ -2626,12 +2686,18 @@ func (s *Store) Steer(opts SteerOptions, runner SessionRunner) (SteerResult, err
 	if runner == nil {
 		return out, errors.New("steer: SessionRunner is nil")
 	}
+	if err := s.requireExperimentalDelegateMutations(); err != nil {
+		return out, err
+	}
+	if err := s.fenceDelegateLifecycleMutation(out.WorkID); err != nil {
+		return out, err
+	}
 	binding, _, err := s.recoverBoundSession(out.WorkID)
 	if err != nil {
 		return out, err
 	}
 	if binding == nil {
-		return out, fmt.Errorf("steer: work %s has no bound session (call `compound work delegate` first)", out.WorkID)
+		return out, fmt.Errorf("steer: work %s has no bound session (experimental delegate mutation must be opted in first)", out.WorkID)
 	}
 	holder := strings.TrimSpace(opts.Actor)
 	if holder == "" {
@@ -2709,7 +2775,7 @@ func (s *Store) Attach(opts AttachOptions, runner SessionRunner) (AttachResult, 
 		return out, err
 	}
 	if binding == nil {
-		return out, fmt.Errorf("attach: work %s has no bound session (call `compound work delegate` first)", out.WorkID)
+		return out, fmt.Errorf("attach: work %s has no bound session (only an explicitly opted-in experimental delegate can create one)", out.WorkID)
 	}
 	out.Session = binding.Session
 	out.AttachArgv = runner.AttachArgv(binding.Session)
@@ -2772,6 +2838,12 @@ func (s *Store) DelegateSweep(b *DelegateBinding, observed SessionStatus, runner
 		return DelegateSweepOutcome{}, fmt.Errorf("delegate sweep: nil binding")
 	}
 	out := DelegateSweepOutcome{Session: b.Session, WorkID: b.WorkID, RunAttemptID: b.RunAttemptID}
+	if err := s.requireExperimentalDelegateMutations(); err != nil {
+		return out, err
+	}
+	if err := s.fenceDelegateLifecycleMutation(b.WorkID); err != nil {
+		return out, err
+	}
 	if observed.UnknownReason != "" {
 		// Probe error: do NOT claim an exit. Operator must re-run after
 		// the runner is fixed.
@@ -3085,6 +3157,12 @@ func (s *Store) DelegateProgress(workID string, progress runattempt.RunProgress,
 	workID = strings.TrimSpace(workID)
 	if workID == "" {
 		return DelegateProgressResult{}, errors.New("delegate progress: WorkID is required")
+	}
+	if err := s.requireExperimentalDelegateMutations(); err != nil {
+		return DelegateProgressResult{}, err
+	}
+	if err := s.fenceDelegateLifecycleMutation(workID); err != nil {
+		return DelegateProgressResult{}, err
 	}
 	binding, alive, err := s.recoverBoundSession(workID)
 	if err != nil {

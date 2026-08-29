@@ -30,12 +30,12 @@ type delegateCLIOptions struct {
 	args                                               []string
 	expectedMinutes                                    int
 	instructionBlockPreset                             string
-	confirm, dryRun, jsonOut                           bool
+	confirm, dryRun, jsonOut, experimentalMutation     bool
 }
 
 type steerCLIOptions struct {
-	workID, actor, text string
-	enter, jsonOut      bool
+	workID, actor, text                  string
+	enter, jsonOut, experimentalMutation bool
 }
 
 // runDelegateStatusCLI is the testable command edge for
@@ -90,12 +90,15 @@ func runDelegateSweepCLI(args []string, store *work.Store, runner work.SessionRu
 	var positional []string
 	dryRun := false
 	jsonOut := false
+	experimentalMutation := false
 	for _, a := range args {
 		switch a {
 		case "--dry-run":
 			dryRun = true
 		case "--json":
 			jsonOut = true
+		case work.ExperimentalDelegateMutationsFlag:
+			experimentalMutation = true
 		default:
 			if strings.HasPrefix(a, "-") {
 				fmt.Fprintln(stderr, "error: unknown flag", a)
@@ -129,6 +132,10 @@ func runDelegateSweepCLI(args []string, store *work.Store, runner work.SessionRu
 		_ = now
 		return 0
 	}
+	if !experimentalMutation {
+		return delegateCLIUsageError(stderr, "delegate", fmt.Errorf("mutating delegate sweep requires %s and is unsupported in v0.1", work.ExperimentalDelegateMutationsFlag))
+	}
+	store.EnableExperimentalDelegateMutations()
 	// Resolve the binding, probe the pane, and call DelegateSweep.
 	binding, err := store.DelegateSweepResolve(workID)
 	if err != nil {
@@ -174,11 +181,14 @@ func runDelegateProgressCLI(args []string, store *work.Store, now time.Time, std
 	values := map[string]int{}
 	seen := map[string]bool{}
 	jsonOut := false
+	experimentalMutation := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
 		case "--json":
 			jsonOut = true
+		case work.ExperimentalDelegateMutationsFlag:
+			experimentalMutation = true
 		case "--done", "--empty", "--failed", "--remaining":
 			if i+1 >= len(args) {
 				fmt.Fprintln(stderr, "error:", arg, "requires a value")
@@ -210,6 +220,10 @@ func runDelegateProgressCLI(args []string, store *work.Store, now time.Time, std
 			return 2
 		}
 	}
+	if !experimentalMutation {
+		return delegateCLIUsageError(stderr, "delegate", fmt.Errorf("delegate progress requires %s and is unsupported in v0.1", work.ExperimentalDelegateMutationsFlag))
+	}
+	store.EnableExperimentalDelegateMutations()
 	result, err := store.DelegateProgress(positional[0], runattempt.RunProgress{
 		Done: values["--done"], Empty: values["--empty"], Failed: values["--failed"], Remaining: values["--remaining"],
 	}, now)
@@ -263,6 +277,12 @@ func runWorkDelegateCLI(sub string, args []string, store *work.Store, runner wor
 		if err != nil {
 			return delegateCLIUsageError(stderr, "delegate", err)
 		}
+		if !opts.dryRun {
+			if !opts.experimentalMutation {
+				return delegateCLIUsageError(stderr, "delegate", fmt.Errorf("delegate mutation requires %s and is unsupported in v0.1", work.ExperimentalDelegateMutationsFlag))
+			}
+			store.EnableExperimentalDelegateMutations()
+		}
 		if opts.instructionBlockPreset != "" {
 			augmented, appendErr := contract.AppendDelegateVariantToPrompt(opts.harness, opts.workspace, opts.instructionBlockPreset, opts.prompt)
 			if appendErr != nil {
@@ -307,6 +327,10 @@ func runWorkDelegateCLI(sub string, args []string, store *work.Store, runner wor
 		if err != nil {
 			return delegateCLIUsageError(stderr, "steer", err)
 		}
+		if !opts.experimentalMutation {
+			return delegateCLIUsageError(stderr, "steer", fmt.Errorf("steer requires %s and is unsupported in v0.1", work.ExperimentalDelegateMutationsFlag))
+		}
+		store.EnableExperimentalDelegateMutations()
 		result, err := store.Steer(work.SteerOptions{
 			WorkID: opts.workID,
 			Actor:  opts.actor,
@@ -425,6 +449,8 @@ func parseDelegateCLI(args []string) (delegateCLIOptions, error) {
 			out.dryRun = true
 		case "--json":
 			out.jsonOut = true
+		case work.ExperimentalDelegateMutationsFlag:
+			out.experimentalMutation = true
 		default:
 			if strings.HasPrefix(arg, "-") {
 				return out, fmt.Errorf("unknown flag %s", arg)
@@ -501,6 +527,8 @@ func parseSteerCLI(args []string) (steerCLIOptions, error) {
 			out.enter = true
 		case "--json":
 			out.jsonOut = true
+		case work.ExperimentalDelegateMutationsFlag:
+			out.experimentalMutation = true
 		default:
 			if strings.HasPrefix(arg, "-") {
 				return out, fmt.Errorf("unknown flag %s", arg)

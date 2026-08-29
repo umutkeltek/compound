@@ -25,6 +25,13 @@ func newStore(t *testing.T) *Store {
 	return s
 }
 
+func newExperimentalDelegateStore(t *testing.T) *Store {
+	t.Helper()
+	s := newStore(t)
+	s.EnableExperimentalDelegateMutations()
+	return s
+}
+
 // The headline proof for P3: one work_id threads create -> claim -> advance -> close,
 // and close emits a Receipt and the apex Transition that BOTH carry that work_id and
 // reference the chain (context pack -> runs -> artifacts).

@@ -55,7 +55,7 @@ func findDelegatedRow(rows []DelegatedSessionRow, workID string) *DelegatedSessi
 // Empty state: a store with no delegate events yields a non-nil, empty
 // delegated-session board (clean empty state, never null).
 func TestDelegatedSessionsEmptyState(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	proj, err := s.ExecutorsProjection(fixedNow)
 	if err != nil {
 		t.Fatalf("projection: %v", err)
@@ -71,7 +71,7 @@ func TestDelegatedSessionsEmptyState(t *testing.T) {
 // Lifecycle reduction: a spawned session with a live (running) RunAttempt folds
 // to a running row carrying the exact ratt id/status and the last steer TIME.
 func TestDelegatedSessionsSpawnedRunning(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	withPermissiveGuard(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
@@ -119,7 +119,7 @@ func TestDelegatedSessionsSpawnedRunning(t *testing.T) {
 // projection carries the content-free cumulative progress stored on the exact
 // delegated RunAttempt. The console must not inspect tmux output to learn it.
 func TestDelegatedSessionsExposeRunProgress(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	withPermissiveGuard(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
@@ -153,7 +153,7 @@ func TestDelegatedSessionsExposeRunProgress(t *testing.T) {
 // loaded. Reusing that Workbench must preserve the row without a second
 // events/work.jsonl read.
 func TestDelegatedSessionsReuseWorkbenchEventSnapshot(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	withPermissiveGuard(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
@@ -184,7 +184,7 @@ func TestDelegatedSessionsReuseWorkbenchEventSnapshot(t *testing.T) {
 // Distinct rented lanes used on the same work remain distinct board rows. A
 // later MiniMax build must not erase the earlier Qwen review session.
 func TestDelegatedSessionsPreserveLatestSessionPerLane(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	withPermissiveGuard(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
@@ -238,7 +238,7 @@ func TestDelegatedSessionsNewerRefusalSupersedesExitedBinding(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(false, false, "", "open")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
 	spawnedOpts := DelegateOptions{
@@ -281,7 +281,7 @@ func TestDelegatedSessionsNewerRefusalSupersedesExitedBinding(t *testing.T) {
 // folds to exited with the exact RunAttempt terminal status — even though a
 // spawned binding still exists in the eventlog.
 func TestDelegatedSessionsExitedTerminalWins(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	withPermissiveGuard(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
@@ -322,7 +322,7 @@ func TestDelegatedSessionsRefusedRow(t *testing.T) {
 	LaneCapacityGuard = fakeGuard(true, false, "walled: lane at 0% for 4d", "walled")
 	defer func() { LaneCapacityGuard = orig }()
 
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
 	if _, err := s.Delegate(DelegateOptions{WorkID: wID, Harness: "claude", Actor: "codex", Command: "claude", Now: fixedNow, Workspace: t.TempDir()}, runner); err != nil {
@@ -345,7 +345,7 @@ func TestDelegatedSessionsRefusedRow(t *testing.T) {
 // prompt/argv the operator passed, nor any free-text guard message.
 func TestDelegatedSessionsPrivacy(t *testing.T) {
 	const secret = "TOP-SECRET-PROMPT-do-not-leak"
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	withPermissiveGuard(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
@@ -388,7 +388,7 @@ func statusOf(r *DelegatedSessionRow) string {
 // guessed running. Only an actually empty legacy RunAttemptID may lean on the
 // event binding as running evidence.
 func TestDelegatedSessionsUnknownWhenNamedRattMissing(t *testing.T) {
-	s := newStore(t)
+	s := newExperimentalDelegateStore(t)
 	withPermissiveGuard(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 	runner := newFakeRunner()
