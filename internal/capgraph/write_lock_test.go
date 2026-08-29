@@ -19,20 +19,33 @@ func TestGraphWriteLockSerializesMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	done := make(chan error, 1)
+	completedWhileHeld := false
 	blocked := s.withGraphWriteLock(func() error {
-		done := make(chan error, 1)
 		go func() {
 			done <- s.Add(Node{ID: "tool:lock-probe", Kind: "tool", Name: "Lock probe"})
 		}()
 		select {
 		case err := <-done:
-			return err // Add completing while the lock is held = no serialization
+			completedWhileHeld = true
+			return err
 		case <-time.After(300 * time.Millisecond):
-			return nil // Add stayed blocked for the whole window
+			return nil
 		}
 	})
 	if blocked != nil {
-		t.Fatalf("Add completed while the graph write lock was held (no serialization): %v", blocked)
+		t.Fatalf("Add returned an error while the graph write lock was held: %v", blocked)
+	}
+	if completedWhileHeld {
+		t.Fatal("Add completed while the graph write lock was held (no serialization)")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Add failed after the graph write lock was released: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Add stayed blocked after the graph write lock was released")
 	}
 }
 
