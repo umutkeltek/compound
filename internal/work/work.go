@@ -804,6 +804,9 @@ func (s *Store) recordDeclaredLaneOnLease(workID, laneID string) error {
 }
 
 func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.WorkEnvelope, error) {
+	if err := s.fenceClosePendingMutation(workID); err != nil {
+		return envelope.WorkEnvelope{}, err
+	}
 	w, err := s.Get(workID)
 	if err != nil {
 		return w, err
@@ -1048,6 +1051,11 @@ func (s *Store) recoverPendingClaimBeforeClose(workID string) (envelope.WorkEnve
 }
 
 func (s *Store) recoverPendingClaimBeforeLifecycleMutation(workID string, allowPreparedClose bool) (envelope.WorkEnvelope, error) {
+	if !allowPreparedClose {
+		if err := s.fenceClosePendingMutation(workID); err != nil {
+			return envelope.WorkEnvelope{}, err
+		}
+	}
 	current, err := s.Get(workID)
 	if err != nil {
 		return current, err
@@ -1062,13 +1070,6 @@ func (s *Store) recoverPendingClaimBeforeLifecycleMutation(workID string, allowP
 	if current.State == "claimed" {
 		if _, err := s.validateClaimAuthority(current, true); err != nil {
 			return current, fmt.Errorf("work %s claimed authority is inconsistent: %w", workID, err)
-		}
-	}
-	if !allowPreparedClose {
-		if pending, present, err := s.loadClosePending(workID); err != nil {
-			return current, err
-		} else if present {
-			return current, closeRecoveryRequired("work %s has frozen close %s/%s; retry the exact work close before another lifecycle mutation", workID, pending.Action.ID, pending.Decision.ID)
 		}
 	}
 	if !allowPreparedClose && !terminalStates[current.State] {
@@ -2865,14 +2866,14 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 
 func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseResult, error) {
 	var res CloseResult
-	w, err := s.recoverPendingClaimBeforeClose(workID)
-	if err != nil {
-		return res, err
-	}
 	if pending, present, err := s.loadClosePending(workID); err != nil {
 		return res, err
 	} else if present {
 		return s.completeClosePending(pending, in)
+	}
+	w, err := s.recoverPendingClaimBeforeClose(workID)
+	if err != nil {
+		return res, err
 	}
 	if err := validateExpectedExecutionReservation(w, in.ExpectedWorkState, in.ExpectedPolicyDecisionID, in.ExpectedActionIntentID); err != nil {
 		return res, err

@@ -127,6 +127,17 @@ func (s *Store) loadClosePending(workID string) (closePending, bool, error) {
 	return pending, true, nil
 }
 
+func (s *Store) fenceClosePendingMutation(workID string) error {
+	pending, present, err := s.loadClosePending(workID)
+	if err != nil {
+		return err
+	}
+	if present {
+		return closeRecoveryRequired("work %s has frozen close %s/%s; retry the exact work close before another lifecycle mutation", workID, pending.Action.ID, pending.Decision.ID)
+	}
+	return nil
+}
+
 func validateClosePending(p closePending) error {
 	if p.SchemaVersion != closePendingSchemaVersion {
 		return fmt.Errorf("schema_version must be %q", closePendingSchemaVersion)
@@ -470,6 +481,69 @@ func (s *Store) publishClosePendingEventAndWork(pending closePending) error {
 	return nil
 }
 
+// closePendingAuthorityStarted proves whether the frozen close has crossed any
+// authoritative boundary other than writing the recovery frame itself. It is
+// deliberately conservative: uncertainty retains the frame for exact recovery.
+func (s *Store) closePendingAuthorityStarted(pending closePending) (bool, error) {
+	current, err := s.Get(pending.WorkID)
+	if err != nil {
+		return true, err
+	}
+	currentSHA, err := workEnvelopeSHA256(current)
+	if err != nil {
+		return true, err
+	}
+	if currentSHA != pending.SourceWorkSHA256 {
+		return true, nil
+	}
+	events, err := s.eventsFor(pending.WorkID)
+	if err != nil {
+		return true, err
+	}
+	for _, event := range events {
+		if sameCanonicalCloseJSON(event, pending.Event) || event.WorkSHA256 == pending.FinalWorkSHA256 {
+			return true, nil
+		}
+	}
+	for _, id := range []string{pending.Action.ID, pending.Decision.ID, pending.Receipt.ID, pending.Transition.ID} {
+		exists, err := s.eventExists(id)
+		if err != nil {
+			return true, err
+		}
+		if exists {
+			return true, nil
+		}
+	}
+	store := s.runAttempts()
+	for _, frozen := range pending.RunAttempts {
+		currentAttempt, err := store.Get(frozen.Attempt.ID)
+		if err != nil {
+			return true, err
+		}
+		if currentAttempt.TerminalizationIntent != nil || currentAttempt.Status != frozen.Attempt.Status ||
+			currentAttempt.TerminalizationOwner != frozen.Attempt.TerminalizationOwner ||
+			currentAttempt.TerminalizationReceiptID != frozen.Attempt.TerminalizationReceiptID ||
+			currentAttempt.TerminalizationTransitionID != frozen.Attempt.TerminalizationTransitionID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *Store) failClosePendingBeforeAuthority(pending closePending, cause error) error {
+	started, err := s.closePendingAuthorityStarted(pending)
+	if err != nil {
+		return errors.Join(cause, closeRecoveryRequired("cannot prove work %s close remained side-effect-free: %v", pending.WorkID, err))
+	}
+	if started {
+		return closeRecoveryRequired("work %s close failed after authority preparation: %w", pending.WorkID, cause)
+	}
+	if err := s.clearClosePending(pending); err != nil {
+		return errors.Join(cause, closeRecoveryRequired("clear side-effect-free work %s close frame: %v", pending.WorkID, err))
+	}
+	return cause
+}
+
 func (s *Store) clearClosePending(pending closePending) error {
 	expectedBody, err := canonicalCloseJSON(&pending)
 	if err != nil {
@@ -504,10 +578,11 @@ func (s *Store) completeClosePending(pending closePending, in CloseInput) (Close
 	if err != nil {
 		return res, err
 	}
-	if currentSHA != pending.SourceWorkSHA256 && currentSHA != pending.FinalWorkSHA256 {
+	currentIsFinal := currentSHA == pending.FinalWorkSHA256
+	if currentSHA != pending.SourceWorkSHA256 && !currentIsFinal {
 		return res, closeRecoveryRequired("work %s current generation differs from frozen close", pending.WorkID)
 	}
-	if err := s.verifyClosePendingLease(pending, currentSHA == pending.FinalWorkSHA256); err != nil {
+	if err := s.verifyClosePendingLease(pending, currentIsFinal); err != nil {
 		return res, err
 	}
 
@@ -518,10 +593,17 @@ func (s *Store) completeClosePending(pending closePending, in CloseInput) (Close
 		}
 		referenceTransaction, err = startGitReferenceTransaction(pending.Git.RepositoryPath, pending.Git.Expectations)
 		if err != nil {
-			return res, closeRecoveryRequired("prepare Git reference transaction: %w", err)
+			return res, s.failClosePendingBeforeAuthority(pending, fmt.Errorf("prepare Git reference transaction: %w", err))
 		}
 	}
 	referenceFinished := false
+	if referenceTransaction != nil {
+		if err := s.validateBoundGitDelivery(pending.SourceWork); err != nil {
+			abortErr := referenceTransaction.Abort()
+			referenceFinished = true
+			return res, s.failClosePendingBeforeAuthority(pending, errors.Join(fmt.Errorf("final repository identity revalidation: %w", err), abortErr))
+		}
+	}
 	defer func() {
 		if referenceTransaction != nil && !referenceFinished {
 			_ = referenceTransaction.Abort()
@@ -541,10 +623,10 @@ func (s *Store) completeClosePending(pending closePending, in CloseInput) (Close
 
 	plans := plansFromClosePending(pending)
 	if err := s.prepareRunAttemptTerminalizations(plans); err != nil {
-		return res, abortReference(err)
+		return res, s.failClosePendingBeforeAuthority(pending, abortReference(err))
 	}
 	closeAfterTerminalizationPrepare()
-	if pending.LeaseStolen {
+	if pending.LeaseStolen && !currentIsFinal {
 		expected := leaseHolderStatus{Holder: pending.LeaseHolder, Stolen: true}
 		if err := s.leaseHolderCloseGate(pending.SourceWork, pending.Action.Actor, in, expected); err != nil {
 			return res, abortReference(err)
@@ -552,6 +634,9 @@ func (s *Store) completeClosePending(pending closePending, in CloseInput) (Close
 		closeAfterLeaseStealDecision()
 	}
 	if err := s.persistClosePendingEnvelopes(pending); err != nil {
+		return res, abortReference(err)
+	}
+	if err := s.verifyClosePendingLease(pending, currentIsFinal); err != nil {
 		return res, abortReference(err)
 	}
 	if err := s.publishClosePendingEventAndWork(pending); err != nil {
