@@ -212,36 +212,16 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	if note == "" {
 		note = "harness execute: " + harnessName
 	}
-	reserved, err := actuator.ReserveGovernedHarnessLaunch(actuator.GovernedHarnessReservationInput{
-		HomePath: homePath, Store: store, ClaimedWork: wenv, Adapter: adapter,
-		RunInput: runInput, Actor: actor, Target: target, Note: note, Now: now,
-	})
+	executed, err := actuator.ExecuteGovernedHarnessAdvance(homePath, store, wenv, adapter, runInput, actor, target, note, existingRunAttempts, now)
 	die(err)
-	w := reserved.RunningWork
-	runInput = reserved.RunInput
-	actionIntentID := reserved.ActionIntentID
+	w := executed.RunningWork
 	fmt.Printf("%s -> %s policy=%s\n", w.ID, w.State, w.PolicyDecisionID)
-
-	// Adapter failures terminalize their RunAttempt before returning; the
-	// actuator then CAS-finalizes the exact running work generation.
-	out, runErr := adapter.Run(context.Background(), runInput)
-
+	out := executed.Output
+	runErr := executed.RunError
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "harness %s run: %v\n", harnessName, runErr)
 	}
-	finalized, err := actuator.FinalizeGovernedHarnessRun(actuator.GovernedHarnessFinalizationInput{
-		Store:                 store,
-		WorkID:                workID,
-		Actor:                 actor,
-		HarnessName:           harnessName,
-		RunningPolicyID:       w.PolicyDecisionID,
-		RunningActionIntentID: actionIntentID,
-		ExistingRunAttemptIDs: existingRunAttempts,
-		Output:                out,
-		RunError:              runErr,
-		Now:                   time.Now().UTC(),
-	})
-	die(err)
+	finalized := executed.Finalized
 	if finalized.WorkID != "" {
 		if finalized.FailedAuditOnly {
 			fmt.Printf("%s -> %s (audit_only)\n", finalized.WorkID, finalized.FinalState)

@@ -93,6 +93,7 @@ func TestRunnerExecutionPostureFailureTerminalizesBeforeCommandConstruction(t *t
 		WorkID: "work_posture_fail", Harness: "os-harness-entrypoints", Workspace: home,
 		Command: "echo", Args: []string{"must-not-run"}, ActionIntentID: "act_posture_fail",
 		ExecutionPosture: &runattempt.ExecutionPosture{PermissionMode: "plan", PolicyDecisionID: "pol_running"},
+		ProofRefs:        []string{"capability-route-plan:crp_fixture"},
 		Now:              time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC),
 	}, build, defaultHeartbeatInterval)
 	if err == nil || !strings.Contains(err.Error(), "set execution posture") {
@@ -103,6 +104,14 @@ func TestRunnerExecutionPostureFailureTerminalizesBeforeCommandConstruction(t *t
 	}
 	if out.RunAttempt.ID != store.mintedID || out.RunAttempt.Status != runattempt.StatusFailed {
 		t.Fatalf("posture failure did not terminalize minted attempt: out=%+v minted=%s", out.RunAttempt, store.mintedID)
+	}
+	persisted, err := store.Store.Get(store.mintedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joinedProofs := strings.Join(persisted.ProofRefs, "\n")
+	if !strings.Contains(joinedProofs, "capability-route-plan:crp_fixture") || !strings.Contains(joinedProofs, "infra_error:set execution posture") {
+		t.Fatalf("pre-transcript failure replaced dispatch authority instead of appending its failure: %v", persisted.ProofRefs)
 	}
 }
 
@@ -450,6 +459,7 @@ func TestRunnerInfraFailureTerminalizes(t *testing.T) {
 		Harness:   "os-harness-entrypoints",
 		Workspace: home,
 		Command:   "/this/binary/does/not/exist/anywhere",
+		ProofRefs: []string{"capability-route-plan:crp_fixture"},
 		Now:       time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC),
 	})
 	if err == nil {
@@ -465,6 +475,16 @@ func TestRunnerInfraFailureTerminalizes(t *testing.T) {
 	}
 	if got.Status != runattempt.StatusFailed {
 		t.Fatalf("persisted status = %q, want failed (infra failure must terminalize, not leave pending)", got.Status)
+	}
+	if !strings.Contains(strings.Join(got.ProofRefs, "\n"), "capability-route-plan:crp_fixture") {
+		t.Fatalf("start failure replaced dispatch authority: %v", got.ProofRefs)
+	}
+	transcript, err := os.ReadFile(out.TranscriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(transcript), "infra_error:") {
+		t.Fatalf("start failure transcript omitted infra evidence:\n%s", transcript)
 	}
 }
 

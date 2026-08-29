@@ -50,9 +50,10 @@ type capabilityResolutionReport struct {
 	RoutePlan         boundedCapabilityRoutePlan       `json:"route_plan"`
 	Limits            capabilityResolutionLimits       `json:"limits"`
 	AuthorityRefs     []string                         `json:"authority_refs"`
+	selectionChain    []routeevidence.CapabilityRouteLane
 }
 
-func buildCapabilityResolutionReport(store *capgraph.Store, homePath, task, harness string, privacySensitive bool, now time.Time) (capabilityResolutionReport, error) {
+func buildCapabilityResolutionReport(store *capgraph.Store, homePath, task, harness string, privacySensitive, suppressRefusalEvidence bool, now time.Time) (capabilityResolutionReport, error) {
 	classification := routeevidence.ClassifyCapabilityTask(task)
 	surface, err := buildCapabilitySurfaceReport(store, homePath, task, harness)
 	if err != nil {
@@ -68,6 +69,7 @@ func buildCapabilityResolutionReport(store *capgraph.Store, homePath, task, harn
 	plan, err := routeevidence.PlanCapabilityRoute(homePath, classification.CapabilityClass, routeevidence.CapabilityRoutePlanOptions{
 		PrivacySensitive:            privacySensitive,
 		SuppressPendingObservations: true,
+		SuppressRefusalEvidence:     suppressRefusalEvidence,
 	}, now)
 	if err != nil {
 		return capabilityResolutionReport{}, err
@@ -87,6 +89,7 @@ func buildCapabilityResolutionReport(store *capgraph.Store, homePath, task, harn
 		Classification:    classification,
 		CapabilitySurface: surface,
 		RoutePlan:         boundCapabilityRoutePlan(plan),
+		selectionChain:    append([]routeevidence.CapabilityRouteLane(nil), plan.Chain...),
 		Limits: capabilityResolutionLimits{
 			OfferLimit:                   capabilityResolutionOfferLimit,
 			RouteLaneLimit:               capabilityResolutionRouteLaneLimit,

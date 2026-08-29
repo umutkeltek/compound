@@ -101,6 +101,65 @@ func TestCodexAdapterName(t *testing.T) {
 	}
 }
 
+func TestCodexAdapterSelectedTupleControlsExecutable(t *testing.T) {
+	binDir := t.TempDir()
+	rawLog := filepath.Join(t.TempDir(), "raw.log")
+	wrapperLog := filepath.Join(t.TempDir(), "wrapper.log")
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\nprintf raw > \"$RAW_LOG\"\nexit 91\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "fixture-codex-wrapper"), []byte("#!/bin/sh\nprintf wrapper > \"$WRAPPER_LOG\"\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withPATH(t, binDir)
+	t.Setenv("RAW_LOG", rawLog)
+	t.Setenv("WRAPPER_LOG", wrapperLog)
+
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "registries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `version: 1
+purpose: fixture
+capability_classes: [classify-extract]
+models:
+  fixture-codex:
+    lane: fixture codex lane
+    harness: codex
+    provider_route: fixture-provider
+    tier: free
+    packet_ceiling: single-file
+    aliases: [fixture-codex-wrapper]
+    capabilities: {classify-extract: {level: primary, evidence: fixture}}
+routing_defaults:
+  classify-extract: [fixture-codex]
+`
+	if err := os.WriteFile(filepath.Join(home, "registries", "model-capabilities.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := NewCodexAdapter(runattempt.Open(home))
+	out, err := a.Run(context.Background(), RunInput{
+		WorkID:                 "work_codex_selected_tuple",
+		Workspace:              t.TempDir(),
+		Prompt:                 "consume the selected tuple",
+		RequestedModelID:       "fixture-codex",
+		RequestedProviderRoute: "fixture-provider",
+		Now:                    time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.RunAttempt.Status != runattempt.StatusSucceeded || filepath.Base(out.RunAttempt.Command) != "fixture-codex-wrapper" {
+		t.Fatalf("selected tuple did not own launch: %+v", out.RunAttempt)
+	}
+	if _, err := os.Stat(wrapperLog); err != nil {
+		t.Fatalf("selected wrapper did not launch: %v", err)
+	}
+	if _, err := os.Stat(rawLog); !os.IsNotExist(err) {
+		t.Fatalf("raw codex launched despite selected tuple: err=%v", err)
+	}
+}
+
 // TestCodexAdapterPerInvocationCodexHome: buildCmd must produce a fresh
 // CODEX_HOME for every invocation so concurrent codex execs (or an exec
 // running while an interactive `codex` TUI is active) cannot share

@@ -2,11 +2,14 @@ package harness
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"compound/internal/routeevidence"
 	"compound/internal/runattempt"
 )
 
@@ -52,10 +55,56 @@ func NewCodexAdapterWithInterval(store *runattempt.Store, interval time.Duration
 // integration (C.3) keys on this.
 func (a *CodexAdapter) Name() string { return "codex" }
 
+// Preflight resolves a selected Compound LaneTuple to its owned executable
+// before a governed caller claims or advances work. Legacy direct callers
+// with no selected tuple retain the raw codex command.
+func (a *CodexAdapter) Preflight(_ context.Context, in RunInput) (RunInput, error) {
+	requestedModel := strings.TrimSpace(in.RequestedModelID)
+	requestedRoute := strings.TrimSpace(in.RequestedProviderRoute)
+	command := a.Name()
+	if requestedModel != "" || requestedRoute != "" {
+		if requestedModel == "" || requestedRoute == "" {
+			return RunInput{}, fmt.Errorf("codex adapter: selected tuple requires both model and provider route")
+		}
+		manifest, _, currentRevision, err := routeevidence.LoadModelCapabilitiesSnapshot(a.store.Home())
+		if err != nil {
+			return RunInput{}, fmt.Errorf("codex adapter: load Compound model-router authority: %w", err)
+		}
+		if expectedRevision := strings.TrimSpace(in.ExpectedModelRouterRevision); expectedRevision != "" && currentRevision != expectedRevision {
+			return RunInput{}, fmt.Errorf("codex adapter: model-router revision drifted: planned=%q current=%q", expectedRevision, currentRevision)
+		}
+		modelID, tuple, err := routeevidence.ResolveModelCapabilityTuple(manifest, requestedModel)
+		if err != nil {
+			return RunInput{}, fmt.Errorf("codex adapter: resolve selected tuple: %w", err)
+		}
+		if modelID != requestedModel || canonicalHarnessName(tuple.Harness) != a.Name() || strings.TrimSpace(tuple.ProviderRoute) != requestedRoute {
+			return RunInput{}, fmt.Errorf(
+				"codex adapter: selected route drifted: planned model=%q route=%q resolved model=%q route=%q harness=%q",
+				requestedModel, requestedRoute, modelID, tuple.ProviderRoute, tuple.Harness,
+			)
+		}
+		command, err = routeevidence.ResolveModelCapabilityExecutable(tuple.Aliases)
+		if err != nil {
+			return RunInput{}, fmt.Errorf("codex adapter: selected tuple %q: %w", modelID, err)
+		}
+	} else if _, err := exec.LookPath(command); err != nil {
+		return RunInput{}, fmt.Errorf("codex adapter: resolve codex executable: %w", err)
+	}
+	in.Command = command
+	in.preflighted = true
+	return in, nil
+}
+
 // Run drives the codex subprocess end-to-end. Mirrors ClaudeAdapter.Run.
 func (a *CodexAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error) {
+	if !in.preflighted {
+		resolved, err := a.Preflight(ctx, in)
+		if err != nil {
+			return RunOutput{}, err
+		}
+		in = resolved
+	}
 	in.Harness = a.Name()
-	in.Command = a.Name()
 	return runWithSubprocess(ctx, a.store, a.Name(), in, a.buildCmd, a.heartbeatInterval)
 }
 
@@ -84,7 +133,11 @@ func (a *CodexAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
 	if prompt != "" {
 		args = append(args, prompt)
 	}
-	cmd := exec.CommandContext(ctx, "codex", args...)
+	command := strings.TrimSpace(in.Command)
+	if command == "" {
+		command = a.Name()
+	}
+	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Dir = in.Workspace
 	codexHome, err := os.MkdirTemp("", "codex-")
 	if err != nil {
