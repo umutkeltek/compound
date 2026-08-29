@@ -170,10 +170,11 @@ func StartBudgetWatchdog(command BudgetCommand, gate *AnswerGate, now func() tim
 }
 
 // StartBudgetWatchdogWithBudget arms the watchdog with a caller-resolved
-// budget. The cmd layer resolves env > harness-specific > default: outer
-// kill timeouts differ per harness (the OMP shim kills wrapped hooks at
-// ~8s, so its internal deadline must answer at ~6s, not 45s), and the
-// harness registry lives outside this package's import graph.
+// budget. The cmd layer takes the smaller of the generic and harness-specific
+// ceilings, then permits a valid environment value to shorten it. Outer kill
+// timeouts differ per harness (the OMP shim kills wrapped hooks at ~8s, so its
+// internal deadline must answer at ~6s, not 45s), and the harness registry
+// lives outside this package's import graph.
 func StartBudgetWatchdogWithBudget(command BudgetCommand, gate *AnswerGate, now func() time.Time, budget time.Duration, publish func(BudgetAnswer)) func() {
 	if !command.Live || budget <= 0 {
 		return func() {}

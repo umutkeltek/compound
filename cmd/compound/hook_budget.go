@@ -28,12 +28,10 @@ func resolveHookBudget(parsed hookCommandArgs, raw string) time.Duration {
 }
 
 func startHookBudgetWatchdog(parsed hookCommandArgs, gate *hookAnswerGate, now func() time.Time) func() {
-	// Resolution order: operator env override > harness-specific budget >
-	// default. A harness whose outer shim kills hooks at ~8s (oh_my_pi)
-	// declares HookBudgetMS in the registry so the internal fail-open answer
-	// fires FIRST — a 45s default under an 8s kill is a watchdog that never
-	// gets to bark. An EXPLICIT env value (even the default duration) always
-	// wins over the registry tier.
+	// The safe ceiling is the smaller of the generic default and any
+	// harness-specific deadline. An operator override may shorten that
+	// ceiling, never extend it. For oh_my_pi this keeps the internal answer
+	// at or below 6s so it fires before the shim's ~8s outer kill.
 	raw := os.Getenv("COMPOUND_HOOK_BUDGET")
 	budget := resolveHookBudget(parsed, raw)
 	return hook.StartBudgetWatchdogWithBudget(parsed, gate.AnswerGate, now, budget, func(answer hook.BudgetAnswer) {
