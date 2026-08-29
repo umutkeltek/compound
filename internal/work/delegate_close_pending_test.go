@@ -197,14 +197,18 @@ func TestDelegateFrozenCloseFencesPreMintSessionCleanup(t *testing.T) {
 				dead.ExitCode = 1
 				runner.panes[spawned.Binding.Session] = dead
 				runner.killErr = errors.New("injected pane reap failure")
-				if _, err := s.DelegateSweep(
+				seeded, err := s.DelegateSweep(
 					spawned.Binding,
 					dead,
 					runner,
 					holder,
 					fixedNow.Add(20*time.Second),
-				); err == nil || !strings.Contains(err.Error(), "injected pane reap failure") {
+				)
+				if err == nil || !strings.Contains(err.Error(), "injected pane reap failure") {
 					t.Fatalf("seed real recorded exit with retained pane: %v", err)
+				}
+				if seeded.TerminalStatus != runattempt.StatusFailed {
+					t.Fatalf("seed sweep terminal status = %q, want %q", seeded.TerminalStatus, runattempt.StatusFailed)
 				}
 				runner.killErr = nil
 				closeOutcome = "failed"
