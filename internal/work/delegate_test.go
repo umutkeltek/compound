@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -2959,5 +2960,58 @@ func TestDelegateWorkspaceIsNeverCompoundHome(t *testing.T) {
 	}
 	if len(runner.creates) != 0 {
 		t.Fatalf("workspace_occupied refusal created session: %+v", runner.creates)
+	}
+}
+
+func TestDelegateRefusesFrozenCloseBeforeMint(t *testing.T) {
+	originalReadiness := DelegateHarnessReadiness
+	originalGuard := LaneCapacityGuard
+	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+		return DelegateHarnessReadinessResult{Ready: true}, nil
+	}
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	t.Cleanup(func() {
+		DelegateHarnessReadiness = originalReadiness
+		LaneCapacityGuard = originalGuard
+	})
+
+	s := newStore(t)
+	const holder = "orchestrator:test"
+	workID := prepareClaimedWork(t, s, holder, "", "a frozen close fences delegate mint")
+	frozen := freezeClosePendingAfterPrepare(t, s, workID, CloseInput{
+		Outcome:  "cancelled",
+		MoveType: "audit_only",
+		Actor:    holder,
+		Summary:  "freeze close before delegate mint",
+	}, fixedNow.Add(time.Minute))
+	beforeAuthority := snapshotLifecycleAuthority(t, s)
+	beforeAttempts := runAttemptsByID(t, s)
+
+	runner := newFakeRunner()
+	result, err := s.Delegate(DelegateOptions{
+		WorkID:    workID,
+		Harness:   "claude-zai",
+		Actor:     holder,
+		Command:   "claude-zai",
+		Workspace: t.TempDir(),
+		Now:       fixedNow.Add(2 * time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatalf("delegate over frozen close error = %v, want refused authority_changed before mint", err)
+	}
+	if result.Status != "refused" || result.Refusal == nil || result.Refusal.Reason != "authority_changed" {
+		t.Fatalf("delegate over frozen close result = %+v, want refused authority_changed", result)
+	}
+	if !strings.Contains(result.Refusal.Message, "close recovery_required") ||
+		!strings.Contains(result.Refusal.Message, frozen.Action.ID) {
+		t.Fatalf("delegate refusal %q does not bind frozen close action %s", result.Refusal.Message, frozen.Action.ID)
+	}
+	if len(runner.creates) != 0 {
+		t.Fatalf("delegate over frozen close created a session: %+v", runner.creates)
+	}
+	assertLifecycleAuthorityUnchanged(t, beforeAuthority, snapshotLifecycleAuthority(t, s))
+	afterAttempts := runAttemptsByID(t, s)
+	if !reflect.DeepEqual(beforeAttempts, afterAttempts) {
+		t.Fatalf("delegate over frozen close changed RunAttempts\nbefore=%+v\nafter=%+v", beforeAttempts, afterAttempts)
 	}
 }

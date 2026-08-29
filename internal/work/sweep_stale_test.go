@@ -26,6 +26,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -609,5 +610,40 @@ func TestReclaimEnvelopeRefusesWhenStateChangedUnderneath(t *testing.T) {
 	}
 	if live.State != "running" {
 		t.Fatalf("live state = %q, want running (refused reclaim must not mutate)", live.State)
+	}
+}
+
+func TestSweepStaleApplyRefusesFrozenCloseAuthority(t *testing.T) {
+	s := newStore(t)
+	workID := prepareClaimedWork(t, s, "test-fixture", "", "a frozen close fences stale reclaim")
+	frozen := freezeClosePendingAfterPrepare(t, s, workID, CloseInput{
+		Outcome:  "cancelled",
+		MoveType: "audit_only",
+		Actor:    "test-fixture",
+		Summary:  "freeze close before stale reclaim",
+	}, fixedNow.Add(time.Minute))
+	if err := backdateAllLifecycleEvents(s, fixedNow.Add(-30*24*time.Hour)); err != nil {
+		t.Fatalf("backdate frozen close fixture: %v", err)
+	}
+	beforeAuthority := snapshotLifecycleAuthority(t, s)
+	beforeAttempts := runAttemptsByID(t, s)
+
+	report, err := s.SweepStaleApply(72*time.Hour, newFakeProbe(), fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("sweep over frozen close: %v", err)
+	}
+	if report.Reclaimed != 0 || report.Skipped != 1 || len(report.Candidates) != 1 {
+		t.Fatalf("frozen close sweep report = %+v, want one skipped recovery_required candidate", report)
+	}
+	candidate := report.Candidates[0]
+	if candidate.Reclaimed ||
+		!strings.Contains(candidate.ReclaimError, "close recovery_required") ||
+		!strings.Contains(candidate.ReclaimError, frozen.Action.ID) {
+		t.Fatalf("frozen close candidate = %+v, want non-reclaimed error bound to %s", candidate, frozen.Action.ID)
+	}
+	assertLifecycleAuthorityUnchanged(t, beforeAuthority, snapshotLifecycleAuthority(t, s))
+	afterAttempts := runAttemptsByID(t, s)
+	if !reflect.DeepEqual(beforeAttempts, afterAttempts) {
+		t.Fatalf("sweep over frozen close changed RunAttempts\nbefore=%+v\nafter=%+v", beforeAttempts, afterAttempts)
 	}
 }
