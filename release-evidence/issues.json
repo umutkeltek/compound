@@ -2,7 +2,7 @@
   "schema_version": "compound.release_issues.v0.1",
   "base_sha": "e5ecfd350e07286c8022b2efe5f86b8b9a7b2d3f",
   "branch": "release/harden-20260829",
-  "updated_at": "2026-08-29T13:04:00Z",
+  "updated_at": "2026-08-29T13:15:00Z",
   "issues": [
     {
       "id": "REL-P0-001",
@@ -113,6 +113,26 @@
       "residual_risk": "oh_my_pi is currently dispatchable with a short harness budget, so this remains P0 unless that harness is explicitly gated out.",
       "owner": "orchestrator:codex:release-harden-20260829",
       "updated_at": "2026-08-29T13:04:00Z"
+    },
+    {
+      "id": "REL-P0-007",
+      "severity": "P0",
+      "subsystem": "governed-execution",
+      "title": "Swept claim reservation strands governed execution failure finalization",
+      "status": "reproduced",
+      "reproducer": "Claim a work, allow its side-effect-free claim-reservation RunAttempt to be swept, then run a failing work advance --execute; automatic failed close rejects the abandoned claim attempt and leaves the work running.",
+      "root_cause": "Provisional: the claim-reservation RunAttempt is independently sweepable, but failure finalization later treats that abandoned reservation as outcome evidence while the actual harness RunAttempt remains reverse-linked.",
+      "invariant": "Every governed execution failure forward-links its actual RunAttempt and closes failed/audit_only even when an earlier side-effect-free claim reservation was swept.",
+      "red_test": "TestWorkAdvanceExecuteFailureAfterSweptClaimReservationClosesFailed",
+      "fix_commits": [],
+      "focused_tests": [],
+      "broad_tests": [],
+      "evidence_paths": [
+        "release-evidence/runs/20260829-claim-reservation-sweep-repro.json"
+      ],
+      "residual_risk": "A supported failing execution can remain running until an actor discovers the reverse-linked attempt and manually acknowledges the abandoned reservation.",
+      "owner": "orchestrator:codex:release-harden-20260829",
+      "updated_at": "2026-08-29T13:15:00Z"
     },
     {
       "id": "REL-P1-001",
