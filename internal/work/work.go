@@ -2158,7 +2158,7 @@ func samePreparedCloseGeneration(a, b runattempt.TerminalizationIntent) bool {
 		a.PreparedAt.Equal(b.PreparedAt)
 }
 
-func (s *Store) closeGenerationTime(reserved envelope.WorkEnvelope, reservedSHA, inputSHA string, runAttemptIDs []string, requested time.Time) (time.Time, error) {
+func (s *Store) closeGenerationTime(reserved envelope.WorkEnvelope, reservedSHA, inputSHA string, runAttemptIDs []string, requested time.Time) (time.Time, *runattempt.TerminalizationIntent, error) {
 	var found *runattempt.TerminalizationIntent
 	store := s.runAttempts()
 	for _, id := range dedupeStrings(runAttemptIDs) {
@@ -2171,14 +2171,14 @@ func (s *Store) closeGenerationTime(reserved envelope.WorkEnvelope, reservedSHA,
 		}
 		intent := *ra.TerminalizationIntent
 		if err := intent.Validate(); err != nil {
-			return time.Time{}, fmt.Errorf("runattempt %s prepared close invalid: %w", id, err)
+			return time.Time{}, nil, fmt.Errorf("runattempt %s prepared close invalid: %w", id, err)
 		}
 		if intent.WorkID != reserved.ID || intent.ExpectedWorkState != reserved.State || intent.ExpectedWorkSHA256 != reservedSHA ||
 			intent.ExpectedActionIntentID != latestActionIntentID(reserved) || intent.ExpectedPolicyDecisionID != reserved.PolicyDecisionID {
-			return time.Time{}, fmt.Errorf("runattempt %s prepared close no longer matches current work generation", id)
+			return time.Time{}, nil, fmt.Errorf("runattempt %s prepared close no longer matches current work generation", id)
 		}
 		if intent.CloseInputSHA256 != inputSHA {
-			return time.Time{}, fmt.Errorf("runattempt %s prepared close input %s differs from retry close input %s", id, intent.CloseInputSHA256, inputSHA)
+			return time.Time{}, nil, fmt.Errorf("runattempt %s prepared close input %s differs from retry close input %s", id, intent.CloseInputSHA256, inputSHA)
 		}
 		if found == nil {
 			copyIntent := intent
@@ -2186,13 +2186,13 @@ func (s *Store) closeGenerationTime(reserved envelope.WorkEnvelope, reservedSHA,
 			continue
 		}
 		if !samePreparedCloseGeneration(*found, intent) {
-			return time.Time{}, fmt.Errorf("work %s has conflicting prepared close generations", reserved.ID)
+			return time.Time{}, nil, fmt.Errorf("work %s has conflicting prepared close generations", reserved.ID)
 		}
 	}
 	if found != nil {
-		return found.PreparedAt.UTC(), nil
+		return found.PreparedAt.UTC(), found, nil
 	}
-	return requested.UTC(), nil
+	return requested.UTC(), nil, nil
 }
 
 func validateRunAttemptRecord(id string, w envelope.WorkEnvelope, ra runattempt.RunAttempt) error {
@@ -2970,17 +2970,22 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		}
 		w.RunAttemptIDs = mergeUnique(w.RunAttemptIDs, []string{rid})
 	}
-	closeNow, err := s.closeGenerationTime(reservedWork, reservedWorkSHA256, inputSHA256, w.RunAttemptIDs, now)
+	closeNow, preparedGeneration, err := s.closeGenerationTime(reservedWork, reservedWorkSHA256, inputSHA256, w.RunAttemptIDs, now)
 	if err != nil {
 		return res, err
 	}
+	frozenCloseActionID := ""
+	if preparedGeneration != nil {
+		frozenCloseActionID = preparedGeneration.CloseActionIntentID
+	}
 	plan, err := s.ClosePlan(workID, closeNow, ClosePlanOptions{
-		Actor:       in.Actor,
-		Outcome:     in.Outcome,
-		MoveType:    in.MoveType,
-		ProofRefs:   in.ProofRefs,
-		Steal:       in.Steal,
-		StealReason: in.StealReason,
+		Actor:                in.Actor,
+		Outcome:              in.Outcome,
+		MoveType:             in.MoveType,
+		ProofRefs:            in.ProofRefs,
+		Steal:                in.Steal,
+		StealReason:          in.StealReason,
+		FrozenActionIntentID: frozenCloseActionID,
 	})
 	if err != nil {
 		return res, err

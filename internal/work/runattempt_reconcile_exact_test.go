@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/policy"
 	"compound/internal/runattempt"
 )
 
@@ -204,6 +205,98 @@ func TestCloseResumesExactPreparedGenerationAfterCrash(t *testing.T) {
 	}
 	if closed.Receipt.ID != firstIntent.ReceiptID || closed.Transition.ID != firstIntent.TransitionID {
 		t.Fatalf("resumed close proof ids changed: close=%+v intent=%+v", closed, firstIntent)
+	}
+}
+
+func TestCloseResumesLegacyPreparedActionIdentityAfterUpgrade(t *testing.T) {
+	s := newStore(t)
+	workID, runAttemptIDs := closeTerminalizeWork(t, s, "close-resumes-legacy-prepared-identity", fixedNow)
+	input := CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "resume legacy prepared close identity",
+		Changed:   true,
+		ProofRefs: []string{"check:legacy-prepared-close-identity"},
+	}
+	closeAt := fixedNow.Add(5 * time.Minute)
+
+	previous := closeAfterTerminalizationPrepare
+	t.Cleanup(func() { closeAfterTerminalizationPrepare = previous })
+	closeAfterTerminalizationPrepare = func() { panic("injected pre-upgrade crash after terminalization prepare") }
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("close did not reach post-prepare crash seam")
+			}
+		}()
+		_, _ = s.Close(workID, input, closeAt)
+	}()
+	closeAfterTerminalizationPrepare = previous
+
+	prepared, err := runattempt.Open(s.home).Get(runAttemptIDs[0])
+	if err != nil || prepared.TerminalizationIntent == nil {
+		t.Fatalf("post-crash terminalization reservation missing: ra=%+v err=%v", prepared, err)
+	}
+	intent := *prepared.TerminalizationIntent
+	plan, err := s.ClosePlan(workID, intent.PreparedAt, ClosePlanOptions{
+		Actor:     input.Actor,
+		Outcome:   input.Outcome,
+		MoveType:  input.MoveType,
+		ProofRefs: input.ProofRefs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := plan.ActionIntent
+	legacyActionID := idFor(
+		"act_",
+		action.Capability,
+		action.Action,
+		action.Target.Kind,
+		action.Target.ID,
+		action.Target.Path,
+		action.MutationClass,
+		action.Reversibility,
+		action.BlastRadius,
+		action.Actor,
+		input.Outcome,
+		input.MoveType,
+		"false",
+		"",
+		"",
+		ts(intent.PreparedAt),
+	)
+	if legacyActionID == action.ID {
+		t.Fatal("test did not construct distinct legacy and framed close identities")
+	}
+	legacyAction := action
+	legacyAction.ID = legacyActionID
+	cfg, _, err := policy.LoadConfig(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyDecision := policy.Evaluate(legacyAction, cfg, intent.PreparedAt)
+	if !policy.Allowed(legacyDecision) {
+		t.Fatalf("legacy close decision unexpectedly refused: %+v", legacyDecision)
+	}
+	intent.CloseActionIntentID = legacyAction.ID
+	intent.ClosePolicyDecisionID = legacyDecision.ID
+	prepared.TerminalizationIntent = &intent
+	writeRunAttemptForReconcileTest(t, s, prepared)
+
+	closed, err := s.Close(workID, input, closeAt.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("resume pre-upgrade prepared close: %v", err)
+	}
+	if closed.Receipt.ID != intent.ReceiptID || closed.Transition.ID != intent.TransitionID {
+		t.Fatalf("legacy retry changed frozen proof identity: close=%+v intent=%+v", closed, intent)
+	}
+	after, err := runattempt.Open(s.home).Get(runAttemptIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.TerminalizationIntent == nil || !reflect.DeepEqual(*after.TerminalizationIntent, intent) {
+		t.Fatalf("legacy retry rewrote prepared authority: before=%+v after=%+v", intent, after.TerminalizationIntent)
 	}
 }
 

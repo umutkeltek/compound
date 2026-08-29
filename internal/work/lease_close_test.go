@@ -332,7 +332,7 @@ func TestCloseFailsClosedOnParseableLeaseAuthorityCorruption(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newStore(t)
-			workID, _ := closeTerminalizeWork(t, s, "close-parseable-lease-"+tt.name, fixedNow)
+			workID, rattIDs := closeTerminalizeWork(t, s, "close-parseable-lease-"+tt.name, fixedNow)
 			workPath := filepath.Join(s.home, "work", "work", workID+".json")
 			beforeWork, err := os.ReadFile(workPath)
 			if err != nil {
@@ -341,6 +341,15 @@ func TestCloseFailsClosedOnParseableLeaseAuthorityCorruption(t *testing.T) {
 			corruptLease := []byte(tt.body)
 			if err := os.WriteFile(s.leasePath(workID), corruptLease, 0o644); err != nil {
 				t.Fatal(err)
+			}
+			before := snapshotLifecycleAuthority(t, s)
+			beforeAttempts := map[string][]byte{}
+			for _, id := range rattIDs {
+				body, err := os.ReadFile(filepath.Join(s.home, "run_attempts", id+".json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				beforeAttempts[id] = body
 			}
 
 			_, err = s.Close(workID, CloseInput{
@@ -367,6 +376,16 @@ func TestCloseFailsClosedOnParseableLeaseAuthorityCorruption(t *testing.T) {
 			}
 			if string(afterLease) != string(corruptLease) {
 				t.Fatal("parseable corrupt lease authority was rewritten")
+			}
+			assertLifecycleAuthorityUnchanged(t, before, snapshotLifecycleAuthority(t, s))
+			for id, beforeBody := range beforeAttempts {
+				afterBody, err := os.ReadFile(filepath.Join(s.home, "run_attempts", id+".json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(afterBody) != string(beforeBody) {
+					t.Fatalf("parseable corrupt lease authority changed RunAttempt %s", id)
+				}
 			}
 		})
 	}

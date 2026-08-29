@@ -37,6 +37,10 @@ type ClosePlanOptions struct {
 	// never mutates or records anything for this preview — only Close (work.go) does.
 	Steal       bool
 	StealReason string
+	// FrozenActionIntentID is internal recovery input. An exact prepared
+	// RunAttempt may carry the legacy delimiter-joined close identity minted
+	// before length framing shipped; ordinary callers leave this empty.
+	FrozenActionIntentID string
 }
 
 type ClosePolicySummary struct {
@@ -150,6 +154,9 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 	ai := s.closeActionIntent(w, actor, outcome, moveType, now, opts, leaseStatus)
 	if err := ai.Validate(); err != nil {
 		return ClosePlan{}, err
+	}
+	if frozen := strings.TrimSpace(opts.FrozenActionIntentID); frozen != "" && ai.ID != frozen {
+		return ClosePlan{}, fmt.Errorf("prepared close action identity %s is incompatible with current close input", frozen)
 	}
 	cfg, source, err := policy.LoadConfig(s.home)
 	if err != nil {
@@ -321,10 +328,34 @@ func (s *Store) closeActionIntent(w envelope.WorkEnvelope, actor, outcome, moveT
 	if opts.Steal {
 		preview += fmt.Sprintf(" lease_override_from %q reason %q", leaseStatus.Holder, stealReason)
 	}
+	identityParts := []string{
+		capability,
+		action,
+		targetKind,
+		targetID,
+		targetPath,
+		mutationClass,
+		reversibility,
+		blastRadius,
+		actor,
+		outcome,
+		moveType,
+		fmt.Sprintf("%t", opts.Steal),
+		leaseStatus.Holder,
+		stealReason,
+		ts(now),
+	}
+	actionID := closeActionIntentIDFor(identityParts...)
+	if frozen := strings.TrimSpace(opts.FrozenActionIntentID); frozen != "" {
+		legacyID := idFor("act_", identityParts...)
+		if frozen == actionID || frozen == legacyID {
+			actionID = frozen
+		}
+	}
 	return envelope.ActionIntent{
 		Header: newHeader(
 			envelope.SVActionIntent,
-			closeActionIntentIDFor(capability, action, targetKind, targetID, targetPath, mutationClass, reversibility, blastRadius, actor, outcome, moveType, fmt.Sprintf("%t", opts.Steal), leaseStatus.Holder, stealReason, ts(now)),
+			actionID,
 			now,
 			w.ID,
 			w.IDs.ContextPackID,
