@@ -100,6 +100,9 @@ type Fixture struct {
 	// MutationInputRef is adapter-derived on successful PostToolUse and can
 	// promote only the exact pending governed mutation for this session.
 	MutationInputRef string `json:"-"`
+	// CapabilityUse is adapter-derived, bounded Skill invocation metadata.
+	// Raw tool input never reaches the HookEvent.
+	CapabilityUse *envelope.CapabilityUse `json:"-"`
 	// CoordinationDelivery is adapter-derived recipient state. It is excluded
 	// from fixture JSON so replay fixtures cannot impersonate live relevance.
 	CoordinationDelivery *CoordinationDeliveryInput `json:"-"`
@@ -442,6 +445,7 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 			return res, fmt.Errorf("coordination delivery: %w", err)
 		}
 		res.CoordinationDelivery = &delivery
+		refreshPostToolCaches(deps.HomePath, fx.Live, name == "PostToolUse" && res.Event.CapabilityUse != nil, now)
 		return res, nil
 	}
 	if err := validateHookResult(res); err != nil {
@@ -457,6 +461,7 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 			return res, fmt.Errorf("persist hook event: %w", err)
 		}
 	}
+	refreshPostToolCaches(deps.HomePath, fx.Live, name == "PostToolUse" && res.Event.CapabilityUse != nil, now)
 	return res, nil
 }
 
@@ -2047,28 +2052,18 @@ func openGateReviewExists(store *work.Store, sc policy.SourceControlContext) (bo
 }
 
 func postToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
-	ev := newEvent(name, fx, "ok", hashStr(fx.Tool), mergeRefs(fx.AdapterSideEffects, []string{fx.Tool}), now)
+	inputHash := hashStr(fx.Tool)
+	if fx.CapabilityUse != nil {
+		inputHash = hashStr(fx.Tool + "\x00" + fx.CapabilityUse.Ref + "\x00" + fx.CapabilityUse.Trigger)
+	}
+	ev := newEvent(name, fx, "ok", inputHash, mergeRefs(fx.AdapterSideEffects, []string{fx.Tool}), now)
+	ev.CapabilityUse = fx.CapabilityUse
 	summary := "recorded tool event: " + orDash(fx.Tool) + " (ToolEvent/ArtifactRef land at P6+)"
 	if effect, err := promotePendingSessionMutation(deps.HomePath, fx); err != nil {
 		return Result{}, err
 	} else if effect != "" {
 		ev.SideEffects = append(ev.SideEffects, effect)
 	}
-	// Rebuild the capability-usage -> memory-temperature chain when it has gone stale.
-	// This hook is the affordable home for it: it builds no context and measures ~0.06s,
-	// where the prompt path already runs 0.88-1.46s against a 1500ms budget. Staleness-
-	// gated and attempt-throttled, so the ~0.8s cost lands on roughly one tool call per
-	// window rather than on every one. See refreshDerivedCaches.
-	//
-	// The rebuilt refs are deliberately NOT recorded on the event. A hook event's
-	// content must be a pure function of its INPUT — the event store keys on an input
-	// hash and rejects the same id arriving with different content — and whether a
-	// refresh fired depends on ambient cache age, not on this tool call. Recording it
-	// made an identical re-run produce different content and broke PostToolUse
-	// idempotence outright (caught by TestLargeToolOutputExternalizedAsObservedNotAmbient).
-	// The rebuild's own evidence is the timestamp inside each projection, which
-	// `compound doctor` reads.
-	_ = refreshDerivedCaches(deps.HomePath, fx.Live, now)
 	// C3: a tool body at or beyond the whole context budget must never flood the window. Externalize
 	// it to the rebuildable, content-addressed blob store and mint ONE observed-class candidate; only
 	// the compact pointer flows back into the summary — never the body. Below-threshold output and

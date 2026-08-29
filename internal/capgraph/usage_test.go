@@ -2,6 +2,7 @@ package capgraph
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -284,5 +285,113 @@ func TestBuildCapabilityUsageFailureCause(t *testing.T) {
 	fc := proj.FailureCauses[0]
 	if fc.SurfaceOutcome != "blank_screen" || fc.Mechanism != "readiness_gate_never_fired" || fc.Count != 1 {
 		t.Fatalf("failure_cause aggregate = %+v", fc)
+	}
+}
+
+func writeUsageHookEvent(t *testing.T, home string, ev envelope.HookEvent) {
+	t.Helper()
+	if err := ev.Validate(); err != nil {
+		t.Fatalf("hook event fixture invalid: %v", err)
+	}
+	body, err := json.MarshalIndent(ev, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(home, "events", ev.ID+".json"), string(body))
+}
+
+func addUsagePackOffers(t *testing.T, home, packID string, offers []envelope.CapabilityOffer) {
+	t.Helper()
+	path := filepath.Join(home, "context", "packs", packID+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pack envelope.ContextPack
+	if err := json.Unmarshal(data, &pack); err != nil {
+		t.Fatal(err)
+	}
+	pack.CapabilityOffers = offers
+	if err := pack.Validate(); err != nil {
+		t.Fatalf("context pack with offers invalid: %v", err)
+	}
+	updated, err := json.MarshalIndent(pack, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, string(updated))
+}
+
+func TestBuildCapabilityUsageFoldsOffersAndSkillUsesFromHookEvents(t *testing.T) {
+	home := t.TempDir()
+	const (
+		ref       = "capability://skill:diagnosing-bugs"
+		packID    = "ctx_usage_hooks"
+		sessionID = "sess_usage_hooks"
+		workID    = "work_0123456789ab"
+	)
+	writeContextPack(t, home, packID, nil)
+	addUsagePackOffers(t, home, packID, []envelope.CapabilityOffer{{
+		Ref: ref, Kind: "skill", Name: "diagnosing-bugs", Score: 1.5,
+		Why: "matched flaky regression",
+	}})
+	header := func(id, created string) envelope.Header {
+		return envelope.Header{
+			SchemaVersion: envelope.SVHookEvent,
+			ID:            id,
+			CreatedAt:     created,
+			Producer:      envelope.Producer{Kind: "hook", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: workID, SessionID: sessionID, ContextPackID: packID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier0",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		}
+	}
+	writeUsageHookEvent(t, home, envelope.HookEvent{
+		Header:  header("hook_usage_offer", t0.Format(time.RFC3339)),
+		Harness: "claude_code", HookName: "SessionStart", HookCapability: "context_injection",
+		SideEffects: []string{}, Status: "ok",
+	})
+	writeUsageHookEvent(t, home, envelope.HookEvent{
+		Header:  header("hook_usage_fire", t0.Add(time.Second).Format(time.RFC3339)),
+		Harness: "claude_code", HookName: "PostToolUse", HookCapability: "telemetry",
+		SideEffects: []string{"Skill"}, Status: "ok",
+		CapabilityUse: &envelope.CapabilityUse{
+			Ref: ref, Skill: "diagnosing-bugs", Lane: "claude_code", Outcome: "used",
+		},
+	})
+	rec := testReceipt("rec_usage_hooks", "completed", true, nil, nil, nil)
+	rec.IDs.ContextPackID = packID
+	rec.Skills.CapabilitiesOffered = []string{ref}
+	writeReceipt(t, home, rec)
+
+	proj, err := BuildCapabilityUsage(home, UsageBuildOptions{GeneratedAt: t0.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proj.HookEventsScanned != 2 || proj.HookEventsInWindow != 2 {
+		t.Fatalf("hook scan counts = %d/%d, want 2/2", proj.HookEventsScanned, proj.HookEventsInWindow)
+	}
+	capability := findCap(proj, ref)
+	if capability == nil || capability.OfferedCount != 1 || capability.FiredCount != 1 {
+		t.Fatalf("capability usage = %+v, want one deduplicated offer and one fire", capability)
+	}
+	if capability.LastFired != t0.Add(time.Second).Format(time.RFC3339) ||
+		len(capability.SourceEvents) != 1 || capability.SourceEvents[0] != "hook_usage_fire" {
+		t.Fatalf("capability fire evidence = %+v", capability)
+	}
+	if inSummary(proj.Summary.NeverFired, ref) {
+		t.Fatalf("fired capability reported as never fired: %+v", proj.Summary.NeverFired)
+	}
+	if len(proj.Events) != 2 {
+		t.Fatalf("usage events = %+v, want offered+used", proj.Events)
+	}
+	used := proj.Events[1]
+	if used.Skill != "diagnosing-bugs" || used.Harness != "claude_code" || used.Lane != "claude_code" ||
+		used.WorkID != workID || used.SessionID != sessionID || used.Trigger != "matched flaky regression" ||
+		used.Outcome != "used" {
+		t.Fatalf("used event lost attribution: %+v", used)
 	}
 }

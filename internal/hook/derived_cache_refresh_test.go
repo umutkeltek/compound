@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"compound/internal/home"
 )
 
 func writeCacheBody(t *testing.T, home, rel, stampField, stamp string) {
@@ -192,21 +194,25 @@ func TestRefreshDerivedCachesRebuildsInDependencyOrder(t *testing.T) {
 // This runs on every tool call, so a gate that does not hold turns ~0.8s of rebuild
 // into a per-tool-call tax.
 func TestRefreshDerivedCachesSkipsAFreshChain(t *testing.T) {
-	home := t.TempDir()
-	now := time.Now().UTC()
-	// Stamped NOW, not now-1h: refreshDerivedCaches also rebuilds anything predating
-	// the running binary, and the test binary is newer than any backdated fixture.
+	homePath := t.TempDir()
+	codeBuiltAt, err := home.RunningBinaryBuiltAt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Inject a clock strictly after the running binary at RFC3339 precision.
+	// time.Now().Format(RFC3339) can truncate below the binary's nanosecond mtime.
+	now := codeBuiltAt.Add(2 * time.Second).UTC().Truncate(time.Second)
 	fresh := now.Format(time.RFC3339)
-	writeAllCacheBodies(t, home, fresh)
+	writeAllCacheBodies(t, homePath, fresh)
 
-	if refs := refreshDerivedCaches(home, true, now); len(refs) != 0 {
+	if refs := refreshDerivedCaches(homePath, true, now); len(refs) != 0 {
 		t.Errorf("a fresh chain must not rebuild, got %v", refs)
 	}
 	// And it must not have written an attempt marker either — nothing was attempted.
-	if _, err := os.Stat(derivedCacheAttemptPath(home)); !os.IsNotExist(err) {
+	if _, err := os.Stat(derivedCacheAttemptPath(homePath)); !os.IsNotExist(err) {
 		t.Error("a skipped refresh must not claim an attempt")
 	}
-	if got := cacheStamp(t, home, tempRel, "computed_at"); got != fresh {
+	if got := cacheStamp(t, homePath, tempRel, "computed_at"); got != fresh {
 		t.Errorf("a fresh body must be left byte-identical, stamp moved to %q", got)
 	}
 }

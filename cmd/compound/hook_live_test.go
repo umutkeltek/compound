@@ -209,6 +209,101 @@ func TestHookLiveCodexPostToolUseEmitsNativeWireShape(t *testing.T) {
 	}
 }
 
+func TestHookLiveSkillUseRefreshesCrossHarnessUsageWithinOneCycle(t *testing.T) {
+	for _, harnessName := range []string{"claude_code", "codex"} {
+		t.Run(harnessName, func(t *testing.T) {
+			homePath := t.TempDir()
+			t.Setenv("COMPOUND_HOME", homePath)
+			if err := home.Init(homePath, "test", cliTestNow); err != nil {
+				t.Fatalf("init home: %v", err)
+			}
+			input := fmt.Sprintf(
+				`{"hook_event_name":"PostToolUse","session_id":"sess_skill_%s","work_id":"work_0123456789ab","cwd":%q,"tool_name":"Skill","tool_input":{"skill":"diagnosing-bugs","args":"  fix   flaky regression  "},"tool_response":"tool result body"}`,
+				harnessName,
+				t.TempDir(),
+			)
+			var code int
+			out := captureStdout(t, func() {
+				withStdin(t, input, func() {
+					code = runHookCommand([]string{"post-tool-use", "--live", "--harness", harnessName})
+				})
+			})
+			if code != 0 {
+				t.Fatalf("%s live Skill PostToolUse exit = %d\n%s", harnessName, code, out)
+			}
+
+			body, err := os.ReadFile(filepath.Join(homePath, filepath.FromSlash(capgraph.CapabilityUsageRelPath)))
+			if err != nil {
+				t.Fatalf("usage projection was not written before hook return: %v", err)
+			}
+			if strings.Contains(string(body), "tool result body") {
+				t.Fatal("raw tool output leaked into capability usage projection")
+			}
+			var projection capgraph.CapabilityUsageProjection
+			if err := json.Unmarshal(body, &projection); err != nil {
+				t.Fatal(err)
+			}
+			var used *capgraph.CapabilityUsageEvent
+			for i := range projection.Events {
+				if projection.Events[i].Outcome == "used" {
+					used = &projection.Events[i]
+					break
+				}
+			}
+			if used == nil {
+				t.Fatalf("usage projection has no used row after hook return: %+v", projection.Events)
+			}
+			if used.Skill != "diagnosing-bugs" || used.Harness != harnessName || used.Lane != harnessName ||
+				used.WorkID != "work_0123456789ab" || used.Trigger != "fix flaky regression" {
+				t.Fatalf("%s usage attribution = %+v", harnessName, used)
+			}
+			var capability *capgraph.CapabilityUsage
+			for i := range projection.Capabilities {
+				if projection.Capabilities[i].Ref == "capability://skill:diagnosing-bugs" {
+					capability = &projection.Capabilities[i]
+					break
+				}
+			}
+			if capability == nil || capability.FiredCount != 1 || capability.LastFired == "" {
+				t.Fatalf("%s capability fire stats = %+v", harnessName, capability)
+			}
+			human := captureStdout(t, func() {
+				cmdCapability([]string{"usage", "--top", "5"})
+			})
+			for _, want := range []string{
+				"## recent skill events",
+				"skill=diagnosing-bugs",
+				"harness=" + harnessName,
+				"lane=" + harnessName,
+				"work=work_0123456789ab",
+				`trigger="fix flaky regression"`,
+				"outcome=used",
+			} {
+				if !strings.Contains(human, want) {
+					t.Fatalf("%s capability usage output missing %q:\n%s", harnessName, want, human)
+				}
+			}
+		})
+	}
+}
+
+func TestLiveCapabilityUseRejectsUnboundedOrMalformedMetadata(t *testing.T) {
+	use := hook.NormalizeCapabilityUse("claude-code", "Skill", map[string]any{
+		"skill": "Diagnosing-Bugs",
+		"args":  strings.Repeat("bounded ", 200),
+	})
+	if use == nil || use.Ref != "capability://skill:diagnosing-bugs" || use.Lane != "claude_code" ||
+		len(use.Trigger) > 512 {
+		t.Fatalf("normalized capability use = %+v", use)
+	}
+	if got := hook.NormalizeCapabilityUse("claude-code", "Read", map[string]any{"skill": "diagnosing-bugs"}); got != nil {
+		t.Fatalf("non-Skill tool created capability use: %+v", got)
+	}
+	if got := hook.NormalizeCapabilityUse("claude-code", "Skill", map[string]any{"skill": "../private"}); got != nil {
+		t.Fatalf("path-like skill identity created capability use: %+v", got)
+	}
+}
+
 func TestHookLiveSessionStartParityRecordsContextSpineRefs(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

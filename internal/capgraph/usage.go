@@ -1,11 +1,10 @@
 // usage.go — the capability/skill usage telemetry projection.
 //
-// This is the receipt-feedback surface: it sweeps close receipts (events/*.json)
-// plus the context packs they reference and aggregates, per capability/skill ref,
-// how often it was OFFERED vs actually USED vs MISSED vs FALSE-TRIGGERED, and for
-// every ContextPack.included[] ref whether it was CONSUMED (echoed in a receipt's
-// used refs) or IGNORED (injected but never used) — the reinforcement signal the
-// memory-temperature design needs.
+// This generated view folds two evidence streams: immediate hook observations
+// (task-scoped capability offers and completed Skill tool calls) plus close
+// receipts and their referenced ContextPacks. Hook rows make a fired skill
+// observable before SessionEnd; receipts retain validated/missed/ignored
+// reinforcement.
 //
 // Honest attribution (the anti-famine rule): CONSUMED increments from ANY receipt that
 // lists the injected ref in Used. IGNORED increments ONLY from receipts whose Skills.
@@ -16,8 +15,8 @@
 // claim for the harness never reporting, the same error as treating a never-injected claim
 // as cold. (Falsifier: an undeclared receipt with injected-but-unused refs keeps ignored 0.)
 //
-// It is a projection, never truth: rebuilt from scratch on every call, derived only
-// from receipts, and written only under projections/ (never the ledger). See
+// It is a projection, never truth: rebuilt from scratch on every call and written
+// only under projections/ (never the ledger or capability registry). See
 // docs/architecture/runtime.md (§ home layout) and epistemics (generated view can
 // prove freshness/drift, it cannot promote truth).
 package capgraph
@@ -37,7 +36,7 @@ import (
 
 const (
 	// CapabilityUsageSchemaVersion versions the projection body.
-	CapabilityUsageSchemaVersion = "compound.capability_usage.v0.1"
+	CapabilityUsageSchemaVersion = "compound.capability_usage.v0.2"
 	// CapabilityUsageProjectionRef is the stable ref for this generated view.
 	CapabilityUsageProjectionRef = "compound://projections/capability-usage"
 	// CapabilityUsageRelPath is the home-relative path the projection is written to.
@@ -52,12 +51,32 @@ type CapabilityUsage struct {
 	Ref                 string   `json:"ref"`
 	OfferedCount        int      `json:"offered_count"`
 	UsedCount           int      `json:"used_count"`
+	FiredCount          int      `json:"fired_count"`
 	ValidatedCount      int      `json:"validated_count"`
 	MissedCount         int      `json:"missed_count"`
 	FalseTriggeredCount int      `json:"false_triggered_count"`
 	LastUsed            string   `json:"last_used,omitempty"`
+	LastFired           string   `json:"last_fired,omitempty"`
 	LastOffered         string   `json:"last_offered,omitempty"`
 	SourceReceipts      []string `json:"source_receipts"`
+	SourceEvents        []string `json:"source_events"`
+}
+
+// CapabilityUsageEvent is one immediate offer/use observation. Trigger is a
+// bounded explanation from CapabilityOffer.Why or normalized Skill tool args.
+type CapabilityUsageEvent struct {
+	EventID       string `json:"event_id"`
+	OccurredAt    string `json:"occurred_at"`
+	Ref           string `json:"ref"`
+	Skill         string `json:"skill"`
+	Harness       string `json:"harness"`
+	Lane          string `json:"lane"`
+	WorkID        string `json:"work_id,omitempty"`
+	SessionID     string `json:"session_id,omitempty"`
+	ContextPackID string `json:"context_pack_id,omitempty"`
+	HookName      string `json:"hook_name"`
+	Trigger       string `json:"trigger,omitempty"`
+	Outcome       string `json:"outcome"`
 }
 
 // InjectedRefUsage is per-ContextPack.included[] ref reinforcement telemetry:
@@ -105,17 +124,20 @@ type UsageSummary struct {
 
 // CapabilityUsageProjection is the full derived surface.
 type CapabilityUsageProjection struct {
-	SchemaVersion       string              `json:"schema_version"`
-	ProjectionRef       string              `json:"projection_ref"`
-	GeneratedAt         string              `json:"generated_at"`
-	Since               string              `json:"since,omitempty"`
-	ReceiptsScanned     int                 `json:"receipts_scanned"`
-	ReceiptsInWindow    int                 `json:"receipts_in_window"`
-	ContextPacksScanned int                 `json:"context_packs_scanned"`
-	Capabilities        []CapabilityUsage   `json:"capabilities"`
-	InjectedRefs        []InjectedRefUsage  `json:"injected_refs"`
-	FailureCauses       []FailureCauseCount `json:"failure_causes"`
-	Summary             UsageSummary        `json:"summary"`
+	SchemaVersion       string                 `json:"schema_version"`
+	ProjectionRef       string                 `json:"projection_ref"`
+	GeneratedAt         string                 `json:"generated_at"`
+	Since               string                 `json:"since,omitempty"`
+	ReceiptsScanned     int                    `json:"receipts_scanned"`
+	ReceiptsInWindow    int                    `json:"receipts_in_window"`
+	HookEventsScanned   int                    `json:"hook_events_scanned"`
+	HookEventsInWindow  int                    `json:"hook_events_in_window"`
+	ContextPacksScanned int                    `json:"context_packs_scanned"`
+	Capabilities        []CapabilityUsage      `json:"capabilities"`
+	Events              []CapabilityUsageEvent `json:"events"`
+	InjectedRefs        []InjectedRefUsage     `json:"injected_refs"`
+	FailureCauses       []FailureCauseCount    `json:"failure_causes"`
+	Summary             UsageSummary           `json:"summary"`
 }
 
 // UsageBuildOptions parameterizes the sweep. GeneratedAt is injected so the build
@@ -137,12 +159,16 @@ type refReceipt struct {
 type capAccum struct {
 	offered        int
 	used           int
+	fired          int
 	validated      int
 	missed         int
 	falseTriggered int
 	lastUsed       string
+	lastFired      string
 	lastOffered    string
-	usedIn         []refReceipt // receipts where this ref was used (evidence)
+	offerKeys      map[string]bool
+	usedIn         []refReceipt
+	firedIn        []refReceipt
 }
 
 type injAccum struct {
@@ -177,6 +203,7 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 		ProjectionRef: CapabilityUsageProjectionRef,
 		GeneratedAt:   gen.UTC().Format(time.RFC3339),
 		Capabilities:  []CapabilityUsage{},
+		Events:        []CapabilityUsageEvent{},
 		InjectedRefs:  []InjectedRefUsage{},
 		FailureCauses: []FailureCauseCount{},
 		Summary:       UsageSummary{TopIgnored: []UsageSummaryEntry{}, NeverFired: []UsageSummaryEntry{}},
@@ -237,7 +264,8 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 
 		ts := strings.TrimSpace(rec.CreatedAt)
 		validated := rec.Outcome == "completed" && rec.EffectiveChanged()
-		usedSet := dedupeSet(rec.Skills.Used)
+		usedSet := dedupeUsageSet(rec.Skills.Used)
+		packID := strings.TrimSpace(rec.IDs.ContextPackID)
 
 		for ref := range usedSet {
 			a := capFor(caps, ref)
@@ -248,16 +276,18 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 			a.lastUsed = laterTS(a.lastUsed, ts)
 			a.usedIn = append(a.usedIn, refReceipt{id: rec.ID, ts: ts})
 		}
-		offeredSet := dedupeSet(append(append([]string{}, rec.Skills.CapabilitiesOffered...), rec.Skills.Candidate...))
-		for ref := range offeredSet {
-			a := capFor(caps, ref)
-			a.offered++
-			a.lastOffered = laterTS(a.lastOffered, ts)
+		offerKey := "receipt:" + rec.ID
+		if packID != "" {
+			offerKey = "pack:" + packID
 		}
-		for ref := range dedupeSet(rec.Skills.Missed) {
+		offeredSet := dedupeUsageSet(append(append([]string{}, rec.Skills.CapabilitiesOffered...), rec.Skills.Candidate...))
+		for ref := range offeredSet {
+			addCapabilityOffer(capFor(caps, ref), offerKey, ts)
+		}
+		for ref := range dedupeUsageSet(rec.Skills.Missed) {
 			capFor(caps, ref).missed++
 		}
-		for ref := range dedupeSet(rec.Skills.FalseTriggered) {
+		for ref := range dedupeUsageSet(rec.Skills.FalseTriggered) {
 			capFor(caps, ref).falseTriggered++
 		}
 
@@ -276,7 +306,6 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 
 		// injected-ref reinforcement: resolve the receipt's context pack and join
 		// its included refs against this receipt's used set.
-		packID := strings.TrimSpace(rec.IDs.ContextPackID)
 		if packID == "" {
 			continue
 		}
@@ -321,20 +350,143 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 			a.injectedIn = append(a.injectedIn, refReceipt{id: rec.ID, ts: ts})
 		}
 	}
-	proj.ContextPacksScanned = len(packsLoaded)
+	hookEntries, err := events.Scan(eventstore.ScanOptions{Prefixes: []string{"hook_"}})
+	if err != nil && !os.IsNotExist(err) {
+		return proj, err
+	}
+	hookEvents := make([]envelope.HookEvent, 0, len(hookEntries))
+	for _, entry := range hookEntries {
+		record, readErr := entry.Read()
+		if readErr != nil {
+			return proj, readErr
+		}
+		var ev envelope.HookEvent
+		if json.Unmarshal(record.Bytes, &ev) != nil || ev.Validate() != nil {
+			continue
+		}
+		proj.HookEventsScanned++
+		if !opts.Since.IsZero() {
+			created, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(ev.CreatedAt))
+			if parseErr == nil && created.Before(opts.Since) {
+				continue
+			}
+		}
+		proj.HookEventsInWindow++
+		hookEvents = append(hookEvents, ev)
+	}
+	sort.Slice(hookEvents, func(i, j int) bool {
+		if hookEvents[i].CreatedAt != hookEvents[j].CreatedAt {
+			return hookEvents[i].CreatedAt < hookEvents[j].CreatedAt
+		}
+		return hookEvents[i].ID < hookEvents[j].ID
+	})
 
+	offerTriggers := map[string]string{}
+	usageEventKeys := map[string]bool{}
+	for _, ev := range hookEvents {
+		packID := strings.TrimSpace(ev.IDs.ContextPackID)
+		if packID == "" {
+			continue
+		}
+		pack, ok := packCache[packID]
+		if !ok {
+			pack = loadContextPack(homePath, packID)
+			packCache[packID] = pack
+			if pack != nil {
+				packsLoaded[packID] = true
+			}
+		}
+		if pack == nil {
+			continue
+		}
+		for _, offer := range pack.CapabilityOffers {
+			ref, ok := normalizeSkillRef(offer.Ref)
+			if !ok {
+				continue
+			}
+			trigger := boundedUsageTrigger(offer.Why)
+			if ev.IDs.SessionID != "" && trigger != "" {
+				offerTriggers[ev.IDs.SessionID+"\x00"+ref] = trigger
+			}
+			addCapabilityOffer(capFor(caps, ref), "pack:"+packID, ev.CreatedAt)
+			rowKey := "offered\x00" + packID + "\x00" + ref
+			if usageEventKeys[rowKey] {
+				continue
+			}
+			usageEventKeys[rowKey] = true
+			proj.Events = append(proj.Events, CapabilityUsageEvent{
+				EventID:       ev.ID,
+				OccurredAt:    ev.CreatedAt,
+				Ref:           ref,
+				Skill:         strings.TrimPrefix(ref, "capability://skill:"),
+				Harness:       ev.Harness,
+				Lane:          usageLane(ev, ""),
+				WorkID:        ev.IDs.WorkID,
+				SessionID:     ev.IDs.SessionID,
+				ContextPackID: packID,
+				HookName:      ev.HookName,
+				Trigger:       trigger,
+				Outcome:       "offered",
+			})
+		}
+	}
+	for _, ev := range hookEvents {
+		use := ev.CapabilityUse
+		if use == nil {
+			continue
+		}
+		ref, ok := normalizeSkillRef(use.Ref)
+		if !ok {
+			continue
+		}
+		trigger := boundedUsageTrigger(use.Trigger)
+		if trigger == "" {
+			trigger = offerTriggers[ev.IDs.SessionID+"\x00"+ref]
+		}
+		a := capFor(caps, ref)
+		a.fired++
+		a.lastFired = laterTS(a.lastFired, ev.CreatedAt)
+		a.firedIn = append(a.firedIn, refReceipt{id: ev.ID, ts: ev.CreatedAt})
+		proj.Events = append(proj.Events, CapabilityUsageEvent{
+			EventID:    ev.ID,
+			OccurredAt: ev.CreatedAt,
+			Ref:        ref,
+			Skill:      strings.TrimPrefix(ref, "capability://skill:"),
+			Harness:    ev.Harness,
+			Lane:       usageLane(ev, use.Lane),
+			WorkID:     ev.IDs.WorkID,
+			SessionID:  ev.IDs.SessionID,
+			HookName:   ev.HookName,
+			Trigger:    trigger,
+			Outcome:    use.Outcome,
+		})
+	}
+	sort.Slice(proj.Events, func(i, j int) bool {
+		if proj.Events[i].OccurredAt != proj.Events[j].OccurredAt {
+			return proj.Events[i].OccurredAt < proj.Events[j].OccurredAt
+		}
+		if proj.Events[i].EventID != proj.Events[j].EventID {
+			return proj.Events[i].EventID < proj.Events[j].EventID
+		}
+		return proj.Events[i].Outcome < proj.Events[j].Outcome
+	})
+
+	proj.ContextPacksScanned = len(packsLoaded)
 	// materialize capabilities, sorted by ref.
 	for ref, a := range caps {
 		proj.Capabilities = append(proj.Capabilities, CapabilityUsage{
 			Ref:                 ref,
 			OfferedCount:        a.offered,
 			UsedCount:           a.used,
+			FiredCount:          a.fired,
 			ValidatedCount:      a.validated,
 			MissedCount:         a.missed,
 			FalseTriggeredCount: a.falseTriggered,
 			LastUsed:            a.lastUsed,
+			LastFired:           a.lastFired,
 			LastOffered:         a.lastOffered,
 			SourceReceipts:      lastReceiptIDs(a.usedIn, srcCap),
+			SourceEvents:        lastReceiptIDs(a.firedIn, srcCap),
 		})
 	}
 	sort.Slice(proj.Capabilities, func(i, j int) bool {
@@ -411,7 +563,7 @@ func buildUsageSummary(capsList []CapabilityUsage, injList []InjectedRefUsage, t
 
 	never := make([]UsageSummaryEntry, 0, len(capsList))
 	for _, c := range capsList {
-		if c.OfferedCount > 0 && c.UsedCount == 0 {
+		if c.OfferedCount > 0 && c.UsedCount == 0 && c.FiredCount == 0 {
 			never = append(never, UsageSummaryEntry{Ref: c.Ref, Count: c.OfferedCount})
 		}
 	}
@@ -438,10 +590,19 @@ func capEntries(entries []UsageSummaryEntry, top int) []UsageSummaryEntry {
 func capFor(m map[string]*capAccum, ref string) *capAccum {
 	a := m[ref]
 	if a == nil {
-		a = &capAccum{}
+		a = &capAccum{offerKeys: map[string]bool{}}
 		m[ref] = a
 	}
 	return a
+}
+
+func addCapabilityOffer(a *capAccum, key, ts string) {
+	if a.offerKeys[key] {
+		return
+	}
+	a.offerKeys[key] = true
+	a.offered++
+	a.lastOffered = laterTS(a.lastOffered, ts)
 }
 
 func dedupeSet(values []string) map[string]bool {
@@ -452,6 +613,57 @@ func dedupeSet(values []string) map[string]bool {
 		}
 	}
 	return out
+}
+
+func dedupeUsageSet(values []string) map[string]bool {
+	out := map[string]bool{}
+	for _, value := range values {
+		ref := strings.TrimSpace(value)
+		if normalized, ok := normalizeSkillRef(ref); ok {
+			ref = normalized
+		}
+		if ref != "" {
+			out[ref] = true
+		}
+	}
+	return out
+}
+
+func normalizeSkillRef(raw string) (string, bool) {
+	ref := strings.TrimSpace(raw)
+	switch {
+	case strings.HasPrefix(ref, "capability://skill:"):
+		ref = strings.TrimPrefix(ref, "capability://skill:")
+	case strings.HasPrefix(ref, "skill://"):
+		ref = strings.TrimPrefix(ref, "skill://")
+	case strings.HasPrefix(ref, "skill:"):
+		ref = strings.TrimPrefix(ref, "skill:")
+	default:
+		return "", false
+	}
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", false
+	}
+	return "capability://skill:" + ref, true
+}
+
+func boundedUsageTrigger(raw string) string {
+	trigger := strings.Join(strings.Fields(raw), " ")
+	runes := []rune(trigger)
+	if len(runes) > 120 {
+		trigger = string(runes[:120])
+	}
+	return trigger
+}
+
+func usageLane(ev envelope.HookEvent, stated string) string {
+	for _, lane := range []string{stated, ev.Producer.LaneID, ev.Harness} {
+		if lane = strings.TrimSpace(lane); lane != "" {
+			return lane
+		}
+	}
+	return ""
 }
 
 // lastReceiptIDs returns the ids of the last N receipts (by created_at, then id),

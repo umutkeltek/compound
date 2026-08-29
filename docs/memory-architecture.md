@@ -230,6 +230,10 @@ against current claims, fed into ambient recall as a bounded (±0.25) additive r
 only from a receipt that *declared* its used-list (`skills.used_declared`); an undeclared close leaves
 the ref at its `injected` count (unknown, neutral), so a claim is never cooled for the harness simply
 never reporting what it used.
+Capability usage itself is a rebuildable view: v0.2 joins task-scoped `ContextPack.capability_offers[]`
+with bounded `PostToolUse` Skill metadata and later close receipts. Each immediate row carries capability,
+harness/lane, work/session, trigger explanation, and outcome; per-capability `fired_count` / `last_fired`
+become visible before SessionEnd without writing observations back into the capability authority.
 
 Temperature RANKS; the **volatile** visibility EXPIRES. A volatile claim is the ladder's "useful now,
 expires unless reinforced" made real: promoted and recallable under matching scope, never ambient, and
