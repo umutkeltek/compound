@@ -35,7 +35,7 @@
     {
       "command": "compound run-attempt list --json | jq <select the two exact RunAttempts>",
       "exit_code": 0,
-      "duration_ms": 1423.367334
+      "duration_ms": 1423
     },
     {
       "command": "compound work show work_7ffaaf2ac080 --json | jq <terminal lifecycle projection>",
