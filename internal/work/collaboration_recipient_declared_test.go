@@ -39,6 +39,7 @@ func declaredQuery(cwd string) CollaborationRecipientQuery {
 // The point of the slice: a session Compound never spawned, with no delegate
 // binding and no run attempt, resolves.
 func TestDeclaredSessionResolvesWhenCorroborated(t *testing.T) {
+	t.Parallel()
 	s, cwd, workID, claimAt := declaredFixture(t, "claude-code:declared-agent")
 
 	resolved, ok, err := s.resolveDeclaredCollaborationRecipient(
@@ -66,6 +67,7 @@ func TestDeclaredSessionResolvesWhenCorroborated(t *testing.T) {
 // Declaration without corroboration adopts nothing. This is the same property
 // presence enforces, now on the path that actually grants delivery.
 func TestDeclaredSessionWithoutAnyLeaseNeverResolves(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	cwd := t.TempDir()
 	if _, err := s.AnnouncePresenceSession(PresenceSessionInput{
@@ -89,6 +91,7 @@ func TestDeclaredSessionWithoutAnyLeaseNeverResolves(t *testing.T) {
 // A lease that has gone cold stops corroborating. Without this an actor that
 // stopped weeks ago would keep validating a session forever.
 func TestDeclaredSessionWithStaleLeaseNeverResolves(t *testing.T) {
+	t.Parallel()
 	s, cwd, _, claimAt := declaredFixture(t, "codex:went-quiet")
 
 	_, ok, err := s.resolveDeclaredCollaborationRecipient(
@@ -106,6 +109,7 @@ func TestDeclaredSessionWithStaleLeaseNeverResolves(t *testing.T) {
 // Guessing would deliver one lane's coordination into another's, so refuse --
 // mirroring the spawned path's exactly-one rule.
 func TestDeclaredSessionWithTwoLeasesIsAmbiguousAndRefuses(t *testing.T) {
+	t.Parallel()
 	s, cwd, _, claimAt := declaredFixture(t, "claude-code:busy-agent")
 
 	second, err := s.Create(CreateInput{Owner: "operator", SuccessPredicate: "second work"}, fixedNow)
@@ -130,6 +134,7 @@ func TestDeclaredSessionWithTwoLeasesIsAmbiguousAndRefuses(t *testing.T) {
 // the same directory is a different agent and must not inherit the identity --
 // this is the "proximity never adopts" rule, on the new path.
 func TestDeclaredResolutionRequiresTheExactSessionTriple(t *testing.T) {
+	t.Parallel()
 	s, cwd, _, claimAt := declaredFixture(t, "claude-code:declared-agent")
 
 	other := declaredQuery(cwd)
@@ -148,6 +153,7 @@ func TestDeclaredResolutionRequiresTheExactSessionTriple(t *testing.T) {
 // upstream; this pins that the declared path honours it rather than reaching
 // around it via the lease, which outlives the close.
 func TestDeclaredSessionIgnoresTerminalWork(t *testing.T) {
+	t.Parallel()
 	s, cwd, workID, claimAt := declaredFixture(t, "claude-code:finished-agent")
 
 	byID := s.nonTerminalWorkByID(t)

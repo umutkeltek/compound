@@ -11,6 +11,7 @@ import (
 // presence set. If corroboration ever starts reading announcements, this is
 // the test that goes red.
 func TestAnnouncementAloneNeverCorroboratesItself(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	now := fixedNow.Add(time.Minute)
 
@@ -50,6 +51,7 @@ func TestAnnouncementAloneNeverCorroboratesItself(t *testing.T) {
 // The other half of the conjunctive rule: with independent evidence, the
 // declaration becomes usable.
 func TestAnnouncementCorroboratedByIndependentLease(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "operator", SuccessPredicate: "corroborate me"}, fixedNow)
 	if err != nil {
@@ -90,6 +92,7 @@ func TestAnnouncementCorroboratedByIndependentLease(t *testing.T) {
 // Evidence that has gone cold is not corroboration. Without this, an actor
 // that held a lease weeks ago would keep validating a session forever.
 func TestStaleActorEvidenceDoesNotCorroborate(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "operator", SuccessPredicate: "cold evidence"}, fixedNow)
 	if err != nil {
@@ -125,6 +128,7 @@ func TestStaleActorEvidenceDoesNotCorroborate(t *testing.T) {
 // Repeat announcements are the normal case (every hook fire could emit one),
 // so they must refresh rather than accumulate.
 func TestAnnouncementIsIdempotentPerSessionTriple(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	cwd := t.TempDir()
 	in := PresenceSessionInput{
@@ -167,6 +171,7 @@ func TestAnnouncementIsIdempotentPerSessionTriple(t *testing.T) {
 // re-announcement REPLACES the claim; if the actor were keyed in, a session
 // could accumulate rival identities and resolution would face two candidates.
 func TestReannouncingSessionUnderNewActorReplacesTheClaim(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	cwd := t.TempDir()
 	base := PresenceSessionInput{Harness: "claude_code", SessionID: "shifty", Cwd: cwd}
@@ -196,6 +201,7 @@ func TestReannouncingSessionUnderNewActorReplacesTheClaim(t *testing.T) {
 
 // A declaration missing any coordinate is refused rather than stored partially.
 func TestAnnouncementRequiresEveryCoordinate(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	cwd := t.TempDir()
 	full := PresenceSessionInput{Harness: "claude_code", SessionID: "s", Cwd: cwd, Actor: "a"}

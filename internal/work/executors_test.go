@@ -15,6 +15,7 @@ import (
 )
 
 func TestExecutorsProjectionTreatsHookStreamStatErrorAsAbsent(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "test", now); err != nil {
@@ -38,6 +39,7 @@ func TestExecutorsProjectionTreatsHookStreamStatErrorAsAbsent(t *testing.T) {
 }
 
 func TestExecutorsProjectionProbeLocalLMStudio(t *testing.T) {
+	t.Parallel()
 	loaded := 4096
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v0/models" {
@@ -84,6 +86,7 @@ func TestExecutorsProjectionProbeLocalLMStudio(t *testing.T) {
 }
 
 func TestExecutorsProjectionDefaultDoesNotProbeLocalLMStudio(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "test", now); err != nil {

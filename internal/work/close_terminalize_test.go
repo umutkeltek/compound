@@ -64,6 +64,7 @@ func runAttemptBytesForCloseTest(t *testing.T, home, id string) []byte {
 }
 
 func TestRunAttemptHasExecutedRequiresObservedBoundary(t *testing.T) {
+	t.Parallel()
 	heartbeat := fixedNow.Add(time.Minute)
 	completed := fixedNow.Add(2 * time.Minute)
 	prepared := fixedNow.Add(30 * time.Second)
@@ -125,6 +126,7 @@ func TestRunAttemptHasExecutedRequiresObservedBoundary(t *testing.T) {
 }
 
 func TestRunAttemptOwnsHarnessOutcomeRequiresExecutedOrExactStartError(t *testing.T) {
+	t.Parallel()
 	prepared := fixedNow.Add(time.Minute)
 	other := prepared.Add(time.Second)
 	committed := prepared
@@ -235,6 +237,7 @@ func closeTerminalizeWorkClaimed(t *testing.T, s *Store, owner string, at time.T
 // TestCloseCompletedTerminalizesRunAttemptSucceeded: closing with outcome=completed
 // must terminalize every bound non-terminal RunAttempt as "succeeded".
 func TestCloseCompletedTerminalizesRunAttemptSucceeded(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id, rattIDs := closeTerminalizeWork(t, s, "close-completed-terminalizes", fixedNow)
 	if len(rattIDs) == 0 {
@@ -266,6 +269,7 @@ func TestCloseCompletedTerminalizesRunAttemptSucceeded(t *testing.T) {
 // TestCloseFailedTerminalizesRunAttemptFailed: closing with outcome=failed must
 // terminalize every bound non-terminal RunAttempt as "failed".
 func TestCloseFailedTerminalizesRunAttemptFailed(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id, rattIDs := closeTerminalizeWork(t, s, "close-failed-terminalizes", fixedNow)
 	if len(rattIDs) == 0 {
@@ -295,6 +299,7 @@ func TestCloseFailedTerminalizesRunAttemptFailed(t *testing.T) {
 // TestCloseCancelledTerminalizesRunAttemptAbandoned: closing with outcome=cancelled
 // must terminalize every bound non-terminal RunAttempt as "abandoned".
 func TestCloseCancelledTerminalizesRunAttemptAbandoned(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id, rattIDs := closeTerminalizeWorkClaimed(t, s, "close-cancelled-terminalizes", fixedNow)
 	if len(rattIDs) == 0 {
@@ -325,6 +330,7 @@ func TestCloseCancelledTerminalizesRunAttemptAbandoned(t *testing.T) {
 // (succeeded/failed/abandoned/superseded) when the close runs must NOT be
 // rewritten. Close must skip it.
 func TestCloseSkipsAlreadyTerminalRunAttempts(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id, rattIDs := closeTerminalizeWork(t, s, "close-skips-terminal", fixedNow)
 	if len(rattIDs) == 0 {
@@ -362,6 +368,7 @@ func TestCloseSkipsAlreadyTerminalRunAttempts(t *testing.T) {
 }
 
 func TestCloseRejectsTerminalWorkCloseAttemptWithStaleProofPair(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, runAttemptIDs := closeTerminalizeWork(t, s, "close-rejects-stale-work-close-proof", fixedNow)
 	if len(runAttemptIDs) != 1 {
@@ -397,6 +404,7 @@ func TestCloseRejectsTerminalWorkCloseAttemptWithStaleProofPair(t *testing.T) {
 }
 
 func TestCloseCompletedAcceptsImmutableTerminalRetryHistory(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, claimAttemptIDs := closeTerminalizeWork(t, s, "close-retry-history", fixedNow)
 	if len(claimAttemptIDs) != 1 {
@@ -452,6 +460,7 @@ func TestCloseCompletedAcceptsImmutableTerminalRetryHistory(t *testing.T) {
 }
 
 func TestCloseCompletedRejectsUnretriedTerminalFailure(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, _ := closeTerminalizeWork(t, s, "close-unretried-failure", fixedNow)
 	failed := attachTerminalCloseHistoryAttempt(
@@ -479,6 +488,7 @@ func TestCloseCompletedRejectsUnretriedTerminalFailure(t *testing.T) {
 }
 
 func TestCloseRejectsCyclicRetryLineage(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, _ := closeTerminalizeWork(t, s, "close-cyclic-retry-lineage", fixedNow)
 	failed := attachTerminalCloseHistoryAttempt(
@@ -509,6 +519,7 @@ func TestCloseRejectsCyclicRetryLineage(t *testing.T) {
 }
 
 func TestCloseCompletedRejectsOriginOnlyHarnessAsClaimReplacement(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, claimAttemptIDs := closeTerminalizeWork(t, s, "close-origin-only-claim-replacement", fixedNow)
 	attempts := runattempt.Open(s.home)
@@ -534,6 +545,7 @@ func TestCloseCompletedRejectsOriginOnlyHarnessAsClaimReplacement(t *testing.T) 
 }
 
 func TestCloseCompletedRejectsNoncausalRetryLineage(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		mutate func(runattempt.RunAttempt, runattempt.RunAttempt) runattempt.RunAttempt
@@ -577,6 +589,7 @@ func TestCloseCompletedRejectsNoncausalRetryLineage(t *testing.T) {
 }
 
 func TestCloseRetryHistoryExceptionIsCompletedOnly(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, _ := closeTerminalizeWork(t, s, "close-retry-exception-completed-only", fixedNow)
 	succeeded := attachTerminalCloseHistoryAttempt(
@@ -596,6 +609,7 @@ func TestCloseRetryHistoryExceptionIsCompletedOnly(t *testing.T) {
 }
 
 func TestCloseCompletedRejectsFailedExecutionFollowedOnlyByClaimReservation(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "close-claim-only-retry", SuccessPredicate: "claim reservation is not a successful retry"}, fixedNow)
 	if err != nil {
@@ -662,6 +676,7 @@ func TestCloseCompletedRejectsFailedExecutionFollowedOnlyByClaimReservation(t *t
 // the falsifier for the 2026-08-07 regression where close pre-terminalized the
 // attempt (completed→succeeded) and panel's post-close Complete refused.
 func TestCloseSkipRunAttemptTerminalizationLeavesAttemptMutable(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id, rattIDs := closeTerminalizeWork(t, s, "close-skip-runattempt-termination", fixedNow)
 	if len(rattIDs) == 0 {
@@ -722,6 +737,7 @@ func TestCloseSkipRunAttemptTerminalizationLeavesAttemptMutable(t *testing.T) {
 // was killed before any work; the real attempt did the work but had no
 // PredecessorID link to the abandoned one.
 func TestCloseAcknowledgeAbandonedAllowsClose(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id, _ := closeTerminalizeWork(t, s, "close-acknowledge-abandoned", fixedNow)
 
@@ -791,6 +807,7 @@ func TestCloseAcknowledgeAbandonedAllowsClose(t *testing.T) {
 // point of the acknowledgement, and a silent skip would be the original
 // wedge recreated.
 func TestCloseAcknowledgeAbandonedRejectsEmptyReason(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id, _ := closeTerminalizeWork(t, s, "close-ack-rejects-empty", fixedNow)
 	abandoned := attachTerminalCloseHistoryAttempt(t, s, id, "", runattempt.StatusAbandoned, false, fixedNow.Add(4*time.Minute))
@@ -887,6 +904,7 @@ func mintPreExecutionRefusalAttempt(t *testing.T, s *Store, workID string, at ti
 // TestRunAttemptPolicyRefusedBeforeExecutionExactShape covers the exact
 // refusal shape plus one near-miss per dimension: every field is a condition.
 func TestRunAttemptPolicyRefusedBeforeExecutionExactShape(t *testing.T) {
+	t.Parallel()
 	heartbeat := fixedNow.Add(time.Minute)
 	prepared := fixedNow.Add(30 * time.Second)
 	refusal := func(mutate func(*runattempt.RunAttempt)) runattempt.RunAttempt {
@@ -955,6 +973,7 @@ func sweptClaimReservationForClose(t *testing.T, s *Store, at time.Time) (string
 }
 
 func TestRunAttemptSweptSideEffectFreeReservationExactShape(t *testing.T) {
+	t.Parallel()
 	prepared := fixedNow.Add(time.Minute)
 	exact := func(mutate func(*runattempt.RunAttempt)) runattempt.RunAttempt {
 		ra := runattempt.RunAttempt{
@@ -996,6 +1015,7 @@ func TestRunAttemptSweptSideEffectFreeReservationExactShape(t *testing.T) {
 }
 
 func TestCloseCompletedAcceptsSweptSideEffectFreeReservation(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, swept := sweptClaimReservationForClose(t, s, fixedNow)
 
@@ -1024,6 +1044,7 @@ func TestCloseCompletedAcceptsSweptSideEffectFreeReservation(t *testing.T) {
 }
 
 func TestCloseRejectsSweptReservationNearMisses(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		reason         string
@@ -1073,6 +1094,7 @@ func TestCloseRejectsSweptReservationNearMisses(t *testing.T) {
 }
 
 func TestCloseFailedRejectsSweptSideEffectFreeReservation(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, _ := sweptClaimReservationForClose(t, s, fixedNow)
 	before := snapshotCloseAuthorityFiles(t, s.home)
@@ -1093,6 +1115,7 @@ func TestCloseFailedRejectsSweptSideEffectFreeReservation(t *testing.T) {
 // TestCloseCompletedAcceptsPolicyRefusedBeforeExecution exercises both the
 // authority and outcome-consistency gates for the lived close wedge.
 func TestCloseCompletedAcceptsPolicyRefusedBeforeExecution(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, _ := closeTerminalizeWork(t, s, "close-completed-accepts-pre-exec-refusal", fixedNow)
 	attempts, ra := mintPreExecutionRefusalAttempt(t, s, workID, fixedNow.Add(2*time.Minute))
@@ -1128,6 +1151,7 @@ func TestCloseCompletedAcceptsPolicyRefusedBeforeExecution(t *testing.T) {
 }
 
 func TestCloseFailedRejectsPolicyRefusedBeforeExecutionOutcome(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, _ := closeTerminalizeWork(t, s, "close-failed-rejects-pre-exec-refusal", fixedNow)
 	attempts, ra := mintPreExecutionRefusalAttempt(t, s, workID, fixedNow.Add(2*time.Minute))
@@ -1155,6 +1179,7 @@ func TestCloseFailedRejectsPolicyRefusedBeforeExecutionOutcome(t *testing.T) {
 // exact shape and the exception must not fire — the does-not-allow rejection
 // returns and durable authority stays untouched.
 func TestCloseRejectsNearMissPreExecutionRefusalEvidence(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		// terminalize stamps the exact refusal shape minus one dimension.

@@ -23,6 +23,7 @@ func runAttemptStoreForTest(s *Store) *runattempt.Store {
 }
 
 func TestProofChainDoctorReportsCleanTerminalWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "terminal proof chain"}, fixedNow)
 	if err != nil {
@@ -56,6 +57,7 @@ func TestProofChainDoctorReportsCleanTerminalWork(t *testing.T) {
 }
 
 func TestProofChainDoctorFailsTerminalWorkMissingReceiptTransition(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "broken terminal proof chain"}, fixedNow)
 	if err != nil {
@@ -82,6 +84,7 @@ func TestProofChainDoctorFailsTerminalWorkMissingReceiptTransition(t *testing.T)
 }
 
 func TestProofChainDoctorFailsMismatchedTerminalWorkID(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "mismatched terminal proof chain"}, fixedNow)
 	if err != nil {
@@ -120,6 +123,7 @@ func TestProofChainDoctorFailsMismatchedTerminalWorkID(t *testing.T) {
 }
 
 func TestProofChainDoctorFailsTerminalPolicyActionMismatch(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "policy action mismatch"}, fixedNow)
 	if err != nil {
@@ -163,6 +167,7 @@ func TestProofChainDoctorFailsTerminalPolicyActionMismatch(t *testing.T) {
 }
 
 func TestProofChainDoctorFailsMissingTransitionActionRef(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "transition action ref mismatch"}, fixedNow)
 	if err != nil {
@@ -202,6 +207,7 @@ func TestProofChainDoctorFailsMissingTransitionActionRef(t *testing.T) {
 }
 
 func TestProofChainDoctorFindsOrphanRuntimeEnvelopes(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "orphan envelope scan"}, fixedNow)
 	if err != nil {
@@ -278,6 +284,7 @@ func TestProofChainDoctorFindsOrphanRuntimeEnvelopes(t *testing.T) {
 // record was deleted would otherwise still report status:"ok" and complete:1
 // because the doctor never loaded RunAttempts.
 func TestProofChainDoctorFailsReferencedRunAttemptMissing(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "missing referenced RunAttempt"}, fixedNow)
 	if err != nil {
@@ -331,6 +338,7 @@ func TestProofChainDoctorFailsReferencedRunAttemptMissing(t *testing.T) {
 // run_attempt_work_mismatch. The audit chain breaks if a run attempt is
 // forward-linked from a work it was never authorized against.
 func TestProofChainDoctorFailsRunAttemptWorkIDMismatch(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "RunAttempt bound to other work"}, fixedNow)
 	if err != nil {
@@ -399,6 +407,7 @@ func TestProofChainDoctorFailsRunAttemptWorkIDMismatch(t *testing.T) {
 // The attempt-to-intent audit chain is broken when an act_ is forward-linked
 // from a work it never authorized.
 func TestProofChainDoctorFailsRunAttemptActionMismatch(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "RunAttempt bound to other action"}, fixedNow)
 	if err != nil {
@@ -463,6 +472,7 @@ func TestProofChainDoctorFailsRunAttemptActionMismatch(t *testing.T) {
 // terminal envelope whose executed attempt never reached a terminal status
 // is a contradiction -- the work says done, the attempt says still running.
 func TestProofChainDoctorFailsRunAttemptNonterminal(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "RunAttempt still nonterminal at terminal work"}, fixedNow)
 	if err != nil {
@@ -522,6 +532,7 @@ func TestProofChainDoctorFailsRunAttemptNonterminal(t *testing.T) {
 // run_attempt_unreadable. The audit chain is broken when the file is
 // present but its bytes do not parse.
 func TestProofChainDoctorFailsRunAttemptUnreadable(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "RunAttempt file unreadable"}, fixedNow)
 	if err != nil {
@@ -588,6 +599,7 @@ func TestProofChainDoctorFailsRunAttemptUnreadable(t *testing.T) {
 // (legacy, pre-S1 evidence) must remain accepted. The new dimension is
 // additive; not every terminal work has a RunAttempt.
 func TestProofChainDoctorAcceptsLegacyTerminalWorkWithZeroRunAttemptRefs(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "legacy zero refs"}, fixedNow)
 	if err != nil {
@@ -637,6 +649,7 @@ func TestProofChainDoctorAcceptsLegacyTerminalWorkWithZeroRunAttemptRefs(t *test
 // accepted. The action-mismatch check only fires when action_intent_id is
 // non-empty and absent from the work envelope.
 func TestProofChainDoctorAcceptsLegacyRunAttemptWithEmptyActionIntentID(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "legacy empty action"}, fixedNow)
 	if err != nil {
@@ -721,6 +734,7 @@ func TestProofChainDoctorAcceptsLegacyRunAttemptWithEmptyActionIntentID(t *testi
 // run_attempt_invalid instead of run_attempt_work_mismatch; that ordering
 // is the corrected behavior described in the v0.2 review.
 func TestProofChainDoctorFailsRunAttemptInvalidRecord(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "RunAttempt embedded id mismatches filename"}, fixedNow)
 	if err != nil {
@@ -811,6 +825,7 @@ func TestProofChainDoctorFailsRunAttemptInvalidRecord(t *testing.T) {
 // runattempt.Valid because the regex requires the exact `ratt_<UTC>_<8 hex>`
 // shape (no trimming is applied to the raw entry).
 func TestProofChainDoctorFailsRunAttemptInvalidReference(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		reference string
@@ -879,6 +894,7 @@ func proofChainFindingContains(report ProofChainDoctorReport, code string) bool 
 }
 
 func TestProofChainDoctorFindsTerminalizationReasonMismatch(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, runAttemptIDs := closeTerminalizeWork(t, s, "doctor-terminalization-reason-mismatch", fixedNow)
 	closed, err := s.Close(workID, CloseInput{
@@ -925,6 +941,7 @@ func TestProofChainDoctorFindsTerminalizationReasonMismatch(t *testing.T) {
 }
 
 func TestProofChainDoctorFindsRunAttemptOutcomeMismatch(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, runAttemptIDs := closeTerminalizeWork(t, s, "doctor-outcome-mismatch", fixedNow)
 	if _, err := s.Close(workID, CloseInput{
@@ -948,6 +965,7 @@ func TestProofChainDoctorFindsRunAttemptOutcomeMismatch(t *testing.T) {
 }
 
 func TestProofChainDoctorRejectsMalformedRetryChildBeforeHistoryExemption(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, claimAttemptIDs := closeTerminalizeWork(t, s, "doctor-malformed-retry-child", fixedNow)
 	attempts := runattempt.Open(s.home)
@@ -986,6 +1004,7 @@ func TestProofChainDoctorRejectsMalformedRetryChildBeforeHistoryExemption(t *tes
 }
 
 func TestProofChainDoctorRejectsEveryExactTerminalizationBindingTamper(t *testing.T) {
+	t.Parallel()
 	baselineStore := newStore(t)
 	workID, runAttemptIDs := closeTerminalizeWork(t, baselineStore, "doctor-intent-tamper", fixedNow)
 	if _, err := baselineStore.Close(workID, CloseInput{

@@ -43,6 +43,7 @@ func snapshotCloseAuthorityFiles(t *testing.T, home string) map[string][]byte {
 // CloseInput.RunAttemptIDs) is terminal proof. Invalid evidence must fail
 // before any close-owned file changes.
 func TestCloseFinalRunAttemptUnionFailsClosedBeforeFirstByte(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		seed func(t *testing.T, s *Store, workID string) string
@@ -141,6 +142,7 @@ func sortedSnapshotKeys(values map[string][]byte) []string {
 }
 
 func TestCloseFinalRunAttemptUnionRejectsForeignAuthority(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		mint func(*runattempt.Store, string) (runattempt.RunAttempt, error)
@@ -182,6 +184,7 @@ func TestCloseFinalRunAttemptUnionRejectsForeignAuthority(t *testing.T) {
 }
 
 func TestCloseReadsLegacyV01RunAttemptAndMigratesPreparedRecord(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, runAttemptIDs := closeTerminalizeWork(t, s, "close-legacy-v01-runattempt", fixedNow)
 	legacy, err := runattempt.Open(s.home).Get(runAttemptIDs[0])
@@ -269,6 +272,7 @@ func preparedIntentForCloseTest(t *testing.T, s *Store, workID, runAttemptID str
 }
 
 func TestCloseRejectsConflictingPreparedIntentBeforeLeaseStealOrAnyMutation(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, runAttemptIDs := closeTerminalizeWork(t, s, "close-conflict-before-steal", fixedNow)
 	closeAt := fixedNow.Add(5 * time.Minute)
@@ -293,6 +297,7 @@ func TestCloseRejectsConflictingPreparedIntentBeforeLeaseStealOrAnyMutation(t *t
 }
 
 func TestCloseRetriesExactPreparedIntentIdempotently(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID, runAttemptIDs := closeTerminalizeWork(t, s, "close-exact-prepared-retry", fixedNow)
 	closeAt := fixedNow.Add(5 * time.Minute)

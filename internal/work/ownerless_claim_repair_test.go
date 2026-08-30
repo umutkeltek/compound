@@ -13,6 +13,7 @@ import (
 const claimedAdvanceRefusal = "claimed is reached only via 'compound work claim' (claim-before-you-touch); bare advance cannot bind authority owner+lease"
 
 func TestAdvanceToClaimedRefusedWithoutBinding(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "bare advance cannot claim work"}, fixedNow)
 	if err != nil {
@@ -43,6 +44,7 @@ func TestAdvanceToClaimedRefusedWithoutBinding(t *testing.T) {
 }
 
 func TestAdvancePlanRefusesCrossStateClaimed(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "advance plan cannot propose bare claim"}, fixedNow)
 	if err != nil {
@@ -66,6 +68,7 @@ func TestAdvancePlanRefusesCrossStateClaimed(t *testing.T) {
 }
 
 func TestSameStateAdvanceOnClaimedStillAllowed(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "claimed work accepts delivery attachments"}, fixedNow)
 	if err != nil {
@@ -101,6 +104,7 @@ func TestSameStateAdvanceOnClaimedStillAllowed(t *testing.T) {
 }
 
 func TestClaimRepairsOwnerlessClaimedEnvelope(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := writeOwnerlessClaimWedge(t, s, fixedNow.Add(time.Minute))
 	beforeRuns := len(w.ActionIntentIDs)
@@ -146,6 +150,7 @@ func TestClaimRepairsOwnerlessClaimedEnvelope(t *testing.T) {
 }
 
 func TestClaimOnOwnedClaimedStillRefused(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "owned claim remains exclusive"}, fixedNow)
 	if err != nil {
