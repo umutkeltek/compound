@@ -283,9 +283,9 @@
       "title": "Plain full suite exhausts default package timeouts",
       "status": "fixing",
       "reproducer": "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound",
-      "root_cause": "At 15b8ec63, cmd/compound has 1381 top-level tests and 427 begin with t.Parallel, leaving about 954 tests in the serial admission phase. Two exact literal runs and a cap-5 falsifier all exhausted the unchanged ten-minute package timeout while the active parallel tests had run only 1 to 19 seconds, proving serial admission remains the dominant cost rather than an intrinsic Git-test hang. Concurrent durable packages also amplify fsync latency enough to push internal/work from 396.254s isolated to 605.424s.",
+      "root_cause": "At 2f76a2b1, cmd/compound has 1380 top-level tests and 514 begin with t.Parallel, leaving about 866 tests in serial admission. After 241 audited net parallel additions, three recent literal runs still timed out at 600.706s, 600.794s, and 600.574s package time. Two later literal runs passed at 584.513s and 591.868s, proving progress but leaving only 8.132s worst-case margin. Concurrent durable packages also amplify fsync latency enough to push internal/work beyond its isolated runtime.",
       "invariant": "The literal release-certifier command go test ./... passes with the repository-required toolchain and meaningful default-timeout margin, without hidden GOFLAGS, package exclusions, weakened durability, or raised timeouts.",
-      "red_test": "Governed exact runs ratt_20260830T072016Z_47f7e909 and ratt_20260830T073525Z_9157afc8 timed out after 602.884s and 602.727s; cap-5 run ratt_20260830T074816Z_797748c1 timed out after 603.167s. Focused run ratt_20260830T074608Z_36796d0a proved one Git test takes 1.493s, five take 6.758s serially, and the same five take 4.399s in parallel.",
+      "red_test": "Governed literal runs ratt_20260830T085041Z_f4b0f27c, ratt_20260830T091354Z_4d6eb7f2, and ratt_20260830T093739Z_92192984 timed out at 600.706s, 600.794s, and 600.574s package time. Earlier exact and cap-5 runs were also red. Later exact runs ratt_20260830T100805Z_d12c2f43 and ratt_20260830T102517Z_3f4af403 passed but expose only 15.487s and 8.132s package margin.",
       "fix_commits": [
         "5b669f1ce671457b12af17e276c17d4112c4d78d",
         "a4a45d37331c25896939181345429854057c8f51",
@@ -298,26 +298,37 @@
         "ee58e0d00fd0e53df61fc209fc3a460e175cc780",
         "7ff9794a3acebbf8f065fe534b4239f693348aff",
         "e07c5878709c71be125e98da0bdadd19651507b1",
-        "15b8ec63da9a6b551600a09e86e99a3e7df734de"
+        "15b8ec63da9a6b551600a09e86e99a3e7df734de",
+        "26f8096e8cd3e44b986bccfbad3116078e469480",
+        "0362e8a410cdcd6754bdcfb9dba9646d7e58c057",
+        "d5a5eec5307194018e51a6be3313215d769a9ac3",
+        "0ea1e98495a3c0085c13c9bf3fd24030681276a0",
+        "29b3d4355167f58d5710f53a79dc4537f0696cf5"
       ],
       "focused_tests": [
         "Every committed cohort passed its exact selected test set repeatedly with -count and under -race before commit.",
         "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound -run <five audited Git tests> (6.758s serial)",
-        "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound -run <same five tests after safe t.Parallel markers> (4.399s parallel)"
+        "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound -run <same five tests after safe t.Parallel markers> (4.399s parallel)",
+        "Execution, leaf, work, proof-check, and surface cohorts all passed selected repeated and race tests with sequential spec then quality review."
       ],
       "broad_tests": [
         "GOTOOLCHAIN=go1.26.4 go test ./... (failed: cmd/compound 602.390s and internal/work 605.424s)",
         "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound (failed: ratt_20260830T072016Z_47f7e909, 602.884s)",
         "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound (failed: ratt_20260830T073525Z_9157afc8, 602.727s)",
-        "GOTOOLCHAIN=go1.26.4 go test -p=5 ./cmd/compound (failed: ratt_20260830T074816Z_797748c1, 603.167s)"
+        "GOTOOLCHAIN=go1.26.4 go test -p=5 ./cmd/compound (failed: ratt_20260830T074816Z_797748c1, 603.167s)",
+        "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound (failed: ratt_20260830T085041Z_f4b0f27c, package 600.706s)",
+        "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound (failed: ratt_20260830T091354Z_4d6eb7f2, package 600.794s)",
+        "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound (failed: ratt_20260830T093739Z_92192984, package 600.574s)",
+        "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound (passed: ratt_20260830T100805Z_d12c2f43, package 584.513s)",
+        "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound (passed: ratt_20260830T102517Z_3f4af403, package 591.868s)"
       ],
       "evidence_paths": [
         "release-evidence/runs/20260830-release-broad-runtime-red.json",
         "release-evidence/runs/20260830-p0-010-cli-runtime-cohorts.json"
       ],
-      "residual_risk": "The exact literal package command is still red after 154 audited net parallel additions. Continue only independently safe cohorts; a global parallelism cap, timeout increase, hidden flag, or package exclusion would hide the release blocker.",
+      "residual_risk": "The exact literal package command is green twice but has only 8.132s worst-case margin and literal go test ./... has not passed. Continue only independently safe runtime reductions; a global parallelism cap, timeout increase, hidden flag, or package exclusion would hide the release blocker.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-30T08:25:38Z"
+      "updated_at": "2026-08-30T11:10:30Z"
     },
     {
       "id": "REL-P0-011",
@@ -346,22 +357,31 @@
       "severity": "P0",
       "subsystem": "architecture-budget",
       "title": "cmd/compound exceeds ratcheted production LOC budget",
-      "status": "reproduced",
+      "status": "focused_green",
       "reproducer": "GOTOOLCHAIN=go1.26.4 go test ./internal/arch -run 'TestCheckCmdCompoundBudgetPassesOnRealRepo|TestDoctorEmitsCmdCompoundBudgetFindings'",
-      "root_cause": "The candidate contains 52849 non-test Go LOC in cmd/compound, 58 above the ratcheted 52791 ceiling.",
+      "root_cause": "Cause-consumption command orchestration and rendering remained in a 64-line cmd/compound leaf even though internal/mem already owned the report and record APIs, leaving the CLI at 52849 non-test Go LOC, 58 above the immutable 52791 ceiling.",
       "invariant": "The CLI leaf remains at or below its ratcheted production budget; new behavior moves behind an existing deep internal owner rather than raising the ceiling.",
-      "red_test": "TestCheckCmdCompoundBudgetPassesOnRealRepo; TestDoctorEmitsCmdCompoundBudgetFindings.",
-      "fix_commits": [],
-      "focused_tests": [],
+      "red_test": "TestCheckCmdCompoundBudgetPassesOnRealRepo failed at 52849/52791 before the fix. Governed TDD run ratt_20260830T105101Z_1652a614 also proved the new internal/mem API tests failed on the missing RunCauseConsumptionCLI symbol before implementation.",
+      "fix_commits": [
+        "2f76a2b1181a305760a5ae90bfcc81c6aaf984ca"
+      ],
+      "focused_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/mem ./cmd/compound -count=5 -run ^(TestRunCauseConsumptionCLI|TestCmdMemoryConsumption) (passed)",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/mem ./cmd/compound -count=1 -run ^(TestRunCauseConsumptionCLI|TestCmdMemoryConsumption) (passed)",
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/mem -count=1 (passed 14.321s)",
+        "Independent sequential spec and quality reviews approved the ownership, output, record, error, and clock contracts."
+      ],
       "broad_tests": [
-        "GOTOOLCHAIN=go1.26.4 go test ./... (internal/arch failed after 562.259s)"
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/arch -count=1 (passed 319.974s)",
+        "GOTOOLCHAIN=go1.26.4 go test -count=1 -v ./internal/arch -run ^TestCheckCmdCompoundBudgetPassesOnRealRepo$ (passed on clean commit; 52786/52791, 5 lines headroom)"
       ],
       "evidence_paths": [
-        "release-evidence/runs/20260830-release-broad-runtime-red.json"
+        "release-evidence/runs/20260830-release-broad-runtime-red.json",
+        "release-evidence/runs/20260830-p0-012-cli-loc-owner.json"
       ],
-      "residual_risk": "The architecture doctor is red; raising the ratchet is forbidden. At least 58 lines must move to an existing internal owner with behavior unchanged.",
+      "residual_risk": "Focused, race, full internal/mem, full architecture, and clean-commit ratchet proof are green. Canonical go test ./..., proof-check, and isolated certifier remain required before closure.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-30T05:43:25Z"
+      "updated_at": "2026-08-30T11:10:30Z"
     },
     {
       "id": "REL-P0-013",
