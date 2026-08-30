@@ -7,7 +7,10 @@
     "REL-P1-002"
   ],
   "work_id": "work_768770e90170",
-  "run_attempt_id": "ratt_20260830T003951Z_8c7c974f",
+  "run_attempt_id": "ratt_20260830T004010Z_cffe0429",
+  "run_attempt_status": "succeeded",
+  "claim_reservation_run_attempt_id": "ratt_20260830T003951Z_8c7c974f",
+  "claim_reservation_status": "superseded",
   "source_head": "1fe0fcdca88669d7670b823b7bb5129f9878abac",
   "fix_commit": "1fe0fcdca88669d7670b823b7bb5129f9878abac",
   "red": [
