@@ -168,6 +168,7 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 	// this close-specific decision from the already validated ActionIntent clock
 	// before its final validation and persistence.
 	pd.CreatedAt = ai.CreatedAt
+	pd.IDs.ContextPackID = ai.IDs.ContextPackID
 	if err := pd.Validate(); err != nil {
 		return ClosePlan{}, err
 	}

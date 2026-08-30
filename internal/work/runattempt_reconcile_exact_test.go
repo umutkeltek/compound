@@ -269,6 +269,17 @@ func TestCloseResumesLegacyPreparedActionIdentityAfterUpgrade(t *testing.T) {
 	if legacyActionID == action.ID {
 		t.Fatal("test did not construct distinct legacy and framed close identities")
 	}
+	// A real home prepared by the legacy binary could not also carry the modern
+	// close-pending frame. Remove the injected modern crash residue before
+	// installing the legacy intent; otherwise the fixture combines two mutually
+	// exclusive generations and correctly trips the exact-intent fence.
+	pendingClose, present, err := s.loadClosePending(workID)
+	if err != nil || !present {
+		t.Fatalf("load modern close frame before simulating legacy home: present=%v err=%v", present, err)
+	}
+	if err := s.clearClosePending(pendingClose); err != nil {
+		t.Fatalf("clear modern close frame before simulating legacy home: %v", err)
+	}
 	legacyAction := action
 	legacyAction.ID = legacyActionID
 	cfg, _, err := policy.LoadConfig(s.home)
@@ -372,17 +383,45 @@ func TestCrashGapReconcileMapsEveryWorkCloseOutcome(t *testing.T) {
 			}()
 			closeBeforeLeaseRelease = previous
 
+			attemptPath := filepath.Join(s.home, "run_attempts", runAttemptIDs[0]+".json")
+			attemptBodyBeforeReconcile, err := os.ReadFile(attemptPath)
+			if err != nil {
+				t.Fatalf("read post-crash RunAttempt for %s: %v", tt.outcome, err)
+			}
 			pending, err := runattempt.Open(s.home).Get(runAttemptIDs[0])
-			if err != nil || runattempt.IsTerminal(pending.Status) || pending.TerminalizationIntent == nil || pending.TerminalizationIntent.TargetStatus != tt.want {
-				t.Fatalf("post-crash preparation for %s is wrong: ra=%+v err=%v", tt.outcome, pending, err)
+			if err != nil || !runattempt.IsTerminal(pending.Status) || pending.Status != tt.want || pending.TerminalizationIntent == nil || pending.TerminalizationIntent.TargetStatus != tt.want || pending.TerminalizationOwner != runattempt.TerminalizationOwnerWorkClose || pending.TerminalizationReceiptID == "" || pending.TerminalizationTransitionID == "" {
+				t.Fatalf("post-crash terminalization for %s is wrong: ra=%+v err=%v", tt.outcome, pending, err)
+			}
+			if _, present, err := s.loadClosePending(workID); err != nil || !present {
+				t.Fatalf("post-crash close frame for %s: present=%v err=%v", tt.outcome, present, err)
+			}
+			if _, err := os.Stat(s.leasePath(workID)); err != nil {
+				t.Fatalf("post-crash lease for %s was not retained: %v", tt.outcome, err)
 			}
 			report, err := s.ReconcileRunAttemptsForTerminalWork(workID, fixedNow.Add(6*time.Minute))
-			if err != nil || report.Status != "ok" || len(report.Issues) != 0 {
+			if err != nil || report.Status != "ok" || len(report.Issues) != 0 || !reflect.DeepEqual(report.AlreadyConsistentIDs, runAttemptIDs) || len(report.ReconciledIDs) != 0 {
 				t.Fatalf("reconcile %s: report=%+v err=%v", tt.outcome, report, err)
 			}
 			after, err := runattempt.Open(s.home).Get(runAttemptIDs[0])
-			if err != nil || after.Status != tt.want || after.TerminalizationOwner != runattempt.TerminalizationOwnerWorkClose {
+			if err != nil || after.Status != tt.want || after.TerminalizationOwner != runattempt.TerminalizationOwnerWorkClose || after.TerminalizationReceiptID != pending.TerminalizationReceiptID || after.TerminalizationTransitionID != pending.TerminalizationTransitionID {
 				t.Fatalf("reconciled %s attempt=%+v err=%v", tt.outcome, after, err)
+			}
+			attemptBodyAfterReconcile, err := os.ReadFile(attemptPath)
+			if err != nil {
+				t.Fatalf("read reconciled RunAttempt for %s: %v", tt.outcome, err)
+			}
+			if !reflect.DeepEqual(attemptBodyBeforeReconcile, attemptBodyAfterReconcile) {
+				t.Fatalf("already-consistent RunAttempt for %s changed during cleanup reconciliation", tt.outcome)
+			}
+			if _, present, err := s.loadClosePending(workID); err != nil || present {
+				t.Fatalf("reconcile left close frame for %s: present=%v err=%v", tt.outcome, present, err)
+			}
+			if _, err := os.Stat(s.leasePath(workID)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("reconcile left lease for %s: %v", tt.outcome, err)
+			}
+			again, err := s.ReconcileRunAttemptsForTerminalWork(workID, fixedNow.Add(7*time.Minute))
+			if err != nil || again.Status != "ok" || len(again.Issues) != 0 || !reflect.DeepEqual(again.AlreadyConsistentIDs, runAttemptIDs) {
+				t.Fatalf("idempotent reconcile %s: report=%+v err=%v", tt.outcome, again, err)
 			}
 		})
 	}

@@ -25,9 +25,12 @@ func countCloseActionID(ids []string, want string) int {
 func TestCloseNonWholeSecondPersistsOneExactTimestamp(t *testing.T) {
 	s := newStore(t)
 	createdAt := time.Date(2026, 8, 30, 1, 2, 3, 456789123, time.UTC)
+	const contextPackID = "ctx_close_timestamp_identity"
+	writeContextPack(t, s, contextPackID)
 	w, err := s.Create(CreateInput{
 		Owner:            "close-timestamp-identity",
 		SuccessPredicate: "receipt transition and lifecycle event share one close instant",
+		ContextPackID:    contextPackID,
 	}, createdAt.Add(-time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -44,6 +47,15 @@ func TestCloseNonWholeSecondPersistsOneExactTimestamp(t *testing.T) {
 	}
 	if closed.Receipt.CreatedAt != closed.Transition.CreatedAt {
 		t.Fatalf("receipt created_at %q differs from transition created_at %q", closed.Receipt.CreatedAt, closed.Transition.CreatedAt)
+	}
+	for name, got := range map[string]string{
+		"work":       closed.Work.IDs.ContextPackID,
+		"receipt":    closed.Receipt.IDs.ContextPackID,
+		"transition": closed.Transition.IDs.ContextPackID,
+	} {
+		if got != contextPackID {
+			t.Fatalf("%s context_pack_id = %q, want %q", name, got, contextPackID)
+		}
 	}
 	receiptAt, err := time.Parse(time.RFC3339Nano, closed.Receipt.CreatedAt)
 	if err != nil {
@@ -85,7 +97,7 @@ func TestCloseCrashAfterFirstEnvelopeWithNoPreparedAttemptsUsesOneGeneration(t *
 		Actor:    "whoever",
 		Summary:  "close one frozen zero-attempt generation",
 	}
-	closeAt := fixedNow.Add(5 * time.Minute)
+	closeAt := fixedNow.Add(5*time.Minute + 456789123*time.Nanosecond)
 	plan, err := s.ClosePlan(w.ID, closeAt, ClosePlanOptions{
 		Actor:    input.Actor,
 		Outcome:  input.Outcome,
@@ -124,8 +136,28 @@ func TestCloseCrashAfterFirstEnvelopeWithNoPreparedAttemptsUsesOneGeneration(t *
 	if _, err := os.Stat(closePendingTestPath(s, w.ID)); err != nil {
 		t.Errorf("interrupted close recovery frame: %v", err)
 	}
+	pending, present, err := s.loadClosePending(w.ID)
+	if err != nil || !present {
+		t.Fatalf("load interrupted close recovery frame: present=%v err=%v", present, err)
+	}
+	wantCreatedAt := closeAt.UTC().Format(time.RFC3339Nano)
+	for name, got := range map[string]string{
+		"completed_at": pending.CompletedAt,
+		"action":       pending.Action.CreatedAt,
+		"decision":     pending.Decision.CreatedAt,
+		"receipt":      pending.Receipt.CreatedAt,
+		"transition":   pending.Transition.CreatedAt,
+	} {
+		if got != wantCreatedAt {
+			t.Fatalf("interrupted %s timestamp = %q, want %q", name, got, wantCreatedAt)
+		}
+	}
 
-	closed, err := s.Close(w.ID, input, closeAt.Add(time.Hour))
+	reopened, err := Open(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := reopened.Close(w.ID, input, closeAt.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("resume exact zero-attempt close: %v", err)
 	}
@@ -138,7 +170,7 @@ func TestCloseCrashAfterFirstEnvelopeWithNoPreparedAttemptsUsesOneGeneration(t *
 	if closed.Receipt.ID != wantReceiptID || closed.Transition.ID != wantTransitionID {
 		t.Fatalf("resumed proof ids = (%s,%s), want frozen (%s,%s)", closed.Receipt.ID, closed.Transition.ID, wantReceiptID, wantTransitionID)
 	}
-	if _, err := os.Stat(closePendingTestPath(s, w.ID)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(closePendingTestPath(reopened, w.ID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("successful retry left close recovery frame: %v", err)
 	}
 }
