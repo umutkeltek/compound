@@ -8,11 +8,23 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unicode"
+	"unicode/utf8"
 )
 
 var (
-	linkCandidateFile        = os.Link
-	syncCandidateDirectoryFn = syncCandidateDirectory
+	linkCandidateFile = func(directory *candidateDirectory, source, target string) error {
+		return directory.link(source, target)
+	}
+	renameCandidateFile = func(directory *candidateDirectory, source, target string) error {
+		return directory.rename(source, target)
+	}
+	removeCandidateFile = func(directory *candidateDirectory, name string) error {
+		return directory.remove(name)
+	}
+	syncCandidateDirectoryFn = func(directory *candidateDirectory) error {
+		return directory.sync()
+	}
 )
 
 // candidateID rejects an id that is empty or path-shaped (a directory component,
@@ -21,6 +33,15 @@ var (
 func candidateID(id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("candidate id required")
+	}
+	if !utf8.ValidString(id) {
+		return fmt.Errorf("candidate id must be valid UTF-8")
+	}
+	if strings.IndexFunc(id, unicode.IsControl) >= 0 {
+		return fmt.Errorf("candidate id must not contain control characters, got %q", id)
+	}
+	if id != strings.TrimSpace(id) {
+		return fmt.Errorf("candidate id must not contain surrounding whitespace, got %q", id)
 	}
 	if id == "." || id == ".." || id != filepath.Base(id) || strings.ContainsAny(id, `/\`) {
 		return fmt.Errorf("candidate id must be a bare filename, got %q", id)
@@ -36,32 +57,16 @@ func candidateID(id string) error {
 // one owner of that read; target is any struct whose json tags project the
 // fields its package needs from the one record.
 //
-// A read error — including a missing file — is returned unwrapped so a caller
-// that probes several inboxes can test it with os.IsNotExist. A stored id that
-// is non-empty and differs from the requested id is the contract violation. An
-// empty stored id is left to the caller to default.
+// A read error — including a missing file — preserves os.IsNotExist semantics
+// so a caller that probes several inboxes can continue. Custody, canonical
+// filename, and nonblank matching JSON identity are enforced before target is
+// decoded.
 func ReadCandidate(homePath string, kind Kind, id string, target any) error {
-	dir := InboxDir(kind)
-	if dir == "" {
-		return fmt.Errorf("unknown candidate kind %q", kind)
-	}
-	if err := candidateID(id); err != nil {
-		return err
-	}
-	data, err := os.ReadFile(filepath.Join(homePath, dir, id+".json"))
+	record, err := ReadRecord(homePath, kind, id)
 	if err != nil {
 		return err
 	}
-	var idCheck struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(data, &idCheck); err != nil {
-		return err
-	}
-	if idCheck.ID != "" && idCheck.ID != id {
-		return fmt.Errorf("candidate file id %q does not match requested %q", idCheck.ID, id)
-	}
-	return json.Unmarshal(data, target)
+	return json.Unmarshal(record.Body, target)
 }
 
 // WriteCandidate persists a candidate record to inbox/<kind>-candidates/<id>.json
@@ -80,12 +85,8 @@ func WriteCandidate(homePath string, kind Kind, id string, payload any) error {
 	if err != nil {
 		return err
 	}
-	return withCandidatePublicationLock(homePath, func() error {
-		full := filepath.Join(homePath, dir)
-		if err := os.MkdirAll(full, 0o755); err != nil {
-			return err
-		}
-		return replaceCandidate(full, filepath.Join(full, id+".json"), data)
+	return withCandidatePublicationLock(homePath, dir, func(inbox *candidateInbox) error {
+		return replaceCandidate(inbox, kind, id, data)
 	})
 }
 
@@ -98,41 +99,38 @@ func CreateCandidateIfAbsent(homePath string, kind Kind, id string, payload any)
 		return false, err
 	}
 	created := false
-	err = withCandidatePublicationLock(homePath, func() error {
-		full := filepath.Join(homePath, dir)
-		if err := os.MkdirAll(full, 0o755); err != nil {
-			return err
-		}
-		target := filepath.Join(full, id+".json")
-		tempPath, err := stageCandidate(full, data)
+	err = withCandidatePublicationLock(homePath, dir, func(inbox *candidateInbox) error {
+		directory := inbox.directory
+		target := id + ".json"
+		tempName, err := stageCandidate(directory, data)
 		if err != nil {
 			return err
 		}
 		keepTemp := true
 		defer func() {
 			if keepTemp {
-				_ = os.Remove(tempPath)
+				_ = directory.remove(tempName)
 			}
 		}()
-		if err := linkCandidateFile(tempPath, target); err != nil {
-			if removeErr := os.Remove(tempPath); removeErr != nil {
+		if err := linkCandidateFile(directory, tempName, target); err != nil {
+			if removeErr := removeCandidateFile(directory, tempName); removeErr != nil {
 				return errors.Join(fmt.Errorf("publish candidate: %w", err), fmt.Errorf("remove candidate temp: %w", removeErr))
 			}
 			keepTemp = false
 			if os.IsExist(err) {
-				return classifyExistingCandidate(target, kind, id)
+				return classifyExistingCandidate(inbox, kind, id)
 			}
 			return fmt.Errorf("publish candidate: %w", err)
 		}
 		created = true
 		var cleanupErr error
-		if err := os.Remove(tempPath); err != nil {
+		if err := removeCandidateFile(directory, tempName); err != nil {
 			cleanupErr = fmt.Errorf("remove candidate temp: %w", err)
 		} else {
 			keepTemp = false
 		}
 		var syncErr error
-		if err := syncCandidateDirectoryFn(full); err != nil {
+		if err := syncCandidateDirectoryFn(directory); err != nil {
 			syncErr = fmt.Errorf("sync candidate directory: %w", err)
 		}
 		return errors.Join(cleanupErr, syncErr)
@@ -144,43 +142,69 @@ func CreateCandidateIfAbsent(homePath string, kind Kind, id string, payload any)
 // processes. Memory may call a candidate writer while holding mem.lock, so the
 // only permitted nesting is mem.lock -> candidates.lock; this leaf never
 // reaches back into memory or acquires another Compound lock.
-func withCandidatePublicationLock(homePath string, fn func() error) (resultErr error) {
-	lockPath := filepath.Join(homePath, "lock", "candidates.lock")
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
-		return fmt.Errorf("create candidate lock directory: %w", err)
-	}
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+func withCandidatePublicationLock(homePath, inboxPath string, fn func(*candidateInbox) error) (resultErr error) {
+	home, err := openCandidateHome(homePath)
 	if err != nil {
-		return fmt.Errorf("open candidate publication lock: %w", err)
-	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("lock candidate publication: %w", err)
+		return err
 	}
 	defer func() {
-		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_UN); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("unlock candidate publication: %w", err))
-		}
-		if err := file.Close(); err != nil {
+		resultErr = errors.Join(resultErr, home.close())
+	}()
+	lockDirectory, err := home.openDirectory("lock", true)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, lockDirectory.close())
+	}()
+	lockFile, err := lockDirectory.openPublicationLock()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := lockFile.Close(); err != nil {
 			resultErr = errors.Join(resultErr, fmt.Errorf("close candidate publication lock: %w", err))
 		}
 	}()
-	return fn()
-}
-
-func replaceCandidate(dir, target string, data []byte) error {
-	if err := candidateReplacementPreflight(target); err != nil {
-		return err
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("lock candidate publication: %w", err)
 	}
-	tempPath, err := stageCandidate(dir, data)
+	defer func() {
+		if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("unlock candidate publication: %w", err))
+		}
+	}()
+	directory, err := home.openDirectory(inboxPath, true)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tempPath)
-	if err := os.Rename(tempPath, target); err != nil {
+	defer func() {
+		resultErr = errors.Join(resultErr, directory.close())
+	}()
+	return fn(&candidateInbox{home: home, directory: directory})
+}
+
+func replaceCandidate(inbox *candidateInbox, kind Kind, id string, data []byte) error {
+	directory := inbox.directory
+	target := id + ".json"
+	if err := candidateReplacementPreflight(inbox, kind, id); err != nil {
+		return err
+	}
+	tempName, err := stageCandidate(directory, data)
+	if err != nil {
+		return err
+	}
+	keepTemp := true
+	defer func() {
+		if keepTemp {
+			_ = directory.remove(tempName)
+		}
+	}()
+	if err := renameCandidateFile(directory, tempName, target); err != nil {
 		return fmt.Errorf("replace candidate: %w", err)
 	}
-	if err := syncCandidateDirectoryFn(dir); err != nil {
+	keepTemp = false
+	if err := syncCandidateDirectoryFn(directory); err != nil {
 		return fmt.Errorf("sync candidate directory: %w", err)
 	}
 	return nil
@@ -189,36 +213,36 @@ func replaceCandidate(dir, target string, data []byte) error {
 // candidateReplacementPreflight preserves WriteCandidate's existing
 // authorization boundary: atomic rename must not make a read-only regular
 // target replaceable when the former in-place writer could not open it.
-func candidateReplacementPreflight(target string) error {
-	info, err := os.Lstat(target)
+func candidateReplacementPreflight(inbox *candidateInbox, kind Kind, id string) error {
+	record, err := readCandidateRecordFromDirectory(inbox, kind, id)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return fmt.Errorf("inspect candidate replacement target: %w", err)
 	}
-	if !info.Mode().IsRegular() {
-		return nil
+	if err := classifyCandidateRecord(record, kind, id); err != nil {
+		return err
 	}
-	file, err := os.OpenFile(target, os.O_WRONLY, 0)
+	file, err := inbox.directory.openExistingWritable(id + ".json")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return fmt.Errorf("authorize candidate replacement: %w", err)
 	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close candidate replacement preflight: %w", err)
+	identity, identityErr := candidateIdentityForFile(file)
+	if identityErr == nil && !identity.same(record.fileIdentity) {
+		identityErr = fmt.Errorf("candidate replacement target changed after custody read")
+	}
+	if closeErr := file.Close(); identityErr != nil || closeErr != nil {
+		return errors.Join(identityErr, closeErr)
 	}
 	return nil
 }
 
-func stageCandidate(dir string, data []byte) (_ string, resultErr error) {
-	file, err := os.CreateTemp(dir, ".candidate-publish-*")
+func stageCandidate(directory *candidateDirectory, data []byte) (_ string, resultErr error) {
+	tempName, file, err := directory.createTempFile()
 	if err != nil {
 		return "", fmt.Errorf("create candidate temp: %w", err)
 	}
-	tempPath := file.Name()
 	closed := false
 	keep := false
 	defer func() {
@@ -228,7 +252,7 @@ func stageCandidate(dir string, data []byte) (_ string, resultErr error) {
 			}
 		}
 		if !keep {
-			_ = os.Remove(tempPath)
+			_ = directory.remove(tempName)
 		}
 	}()
 	if err := file.Chmod(0o644); err != nil {
@@ -246,16 +270,7 @@ func stageCandidate(dir string, data []byte) (_ string, resultErr error) {
 		return "", fmt.Errorf("close candidate temp: %w", closeErr)
 	}
 	keep = true
-	return tempPath, nil
-}
-
-func syncCandidateDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return tempName, nil
 }
 
 func candidatePayload(kind Kind, id string, payload any) (string, []byte, error) {
@@ -270,14 +285,17 @@ func candidatePayload(kind Kind, id string, payload any) (string, []byte, error)
 	if err != nil {
 		return "", nil, err
 	}
-	var meta struct {
-		ID   string `json:"id"`
-		Kind string `json:"kind"`
-	}
-	if err := json.Unmarshal(data, &meta); err != nil {
+	meta, err := decodeCandidateJSONIdentity(data)
+	if err != nil {
 		return "", nil, err
 	}
-	if meta.ID != "" && meta.ID != id {
+	if meta.ID == "" {
+		return "", nil, fmt.Errorf("candidate payload id required")
+	}
+	if err := candidateID(meta.ID); err != nil {
+		return "", nil, fmt.Errorf("candidate payload id: %w", err)
+	}
+	if meta.ID != id {
 		return "", nil, fmt.Errorf("candidate payload id %q does not match requested %q", meta.ID, id)
 	}
 	if meta.Kind != "" && meta.Kind != string(kind) {
@@ -286,34 +304,21 @@ func candidatePayload(kind Kind, id string, payload any) (string, []byte, error)
 	return dir, append(data, '\n'), nil
 }
 
-func classifyExistingCandidate(path string, kind Kind, id string) error {
-	info, err := os.Lstat(path)
+func classifyExistingCandidate(inbox *candidateInbox, kind Kind, id string) error {
+	record, err := readCandidateRecordFromDirectory(inbox, kind, id)
 	if err != nil {
 		return fmt.Errorf("inspect existing candidate: %w", err)
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("existing candidate %s is not a regular file (%s)", path, info.Mode())
-	}
-	data, err := os.ReadFile(path)
+	return classifyCandidateRecord(record, kind, id)
+}
+
+func classifyCandidateRecord(record Record, kind Kind, id string) error {
+	meta, err := decodeCandidateJSONIdentity(record.Body)
 	if err != nil {
-		return fmt.Errorf("read existing candidate: %w", err)
-	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(data, &object); err != nil {
-		return fmt.Errorf("decode existing candidate: %w", err)
-	}
-	if object == nil {
-		return fmt.Errorf("decode existing candidate: expected JSON object")
-	}
-	var meta struct {
-		ID   string `json:"id"`
-		Kind string `json:"kind"`
-	}
-	if err := json.Unmarshal(data, &meta); err != nil {
 		return fmt.Errorf("decode existing candidate identity: %w", err)
 	}
-	if meta.ID != "" && meta.ID != id {
-		return fmt.Errorf("existing candidate id %q does not match requested %q", meta.ID, id)
+	if record.ID != id {
+		return fmt.Errorf("existing candidate id %q does not match requested %q", record.ID, id)
 	}
 	if meta.Kind != "" && meta.Kind != string(kind) {
 		return fmt.Errorf("existing candidate kind %q does not match requested kind %q", meta.Kind, kind)

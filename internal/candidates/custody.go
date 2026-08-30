@@ -1,0 +1,381 @@
+package candidates
+
+import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"sort"
+	"strings"
+)
+
+var candidateAfterOpenHook = func(string) {}
+
+const entryCursorJSONPrefix = "filename-v1:"
+
+// EntryCursor is the exact filename byte sequence returned by the candidate
+// directory. Its JSON form is versioned base64url so Linux filenames that are
+// not valid UTF-8 remain durable and resumable without replacement bytes.
+type EntryCursor string
+
+func (cursor EntryCursor) MarshalJSON() ([]byte, error) {
+	if err := candidateEntryCursor(cursor); err != nil {
+		return nil, err
+	}
+	token := entryCursorJSONPrefix + base64.RawURLEncoding.EncodeToString([]byte(cursor))
+	return json.Marshal(token)
+}
+
+func (cursor *EntryCursor) UnmarshalJSON(data []byte) error {
+	if cursor == nil {
+		return fmt.Errorf("candidate entry cursor target required")
+	}
+	var token string
+	if err := json.Unmarshal(data, &token); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(token, entryCursorJSONPrefix) {
+		return fmt.Errorf("candidate entry cursor token has unsupported version")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, entryCursorJSONPrefix))
+	if err != nil {
+		return fmt.Errorf("decode candidate entry cursor: %w", err)
+	}
+	decoded := EntryCursor(string(raw))
+	if err := candidateEntryCursor(decoded); err != nil {
+		return err
+	}
+	*cursor = decoded
+	return nil
+}
+
+// CorruptionCode is the stable reason a candidate directory entry cannot be
+// treated as an actionable candidate.
+type CorruptionCode string
+
+const (
+	CorruptionInvalidFilename CorruptionCode = "invalid_filename"
+	CorruptionSymlink         CorruptionCode = "symlink"
+	CorruptionNonRegular      CorruptionCode = "nonregular"
+	CorruptionUnreadable      CorruptionCode = "unreadable"
+	CorruptionInvalidJSON     CorruptionCode = "invalid_json"
+	CorruptionBlankID         CorruptionCode = "blank_id"
+	CorruptionInvalidID       CorruptionCode = "invalid_id"
+	CorruptionIDMismatch      CorruptionCode = "id_mismatch"
+	CorruptionRaced           CorruptionCode = "raced"
+)
+
+// Corruption names the exact directory entry and why it was refused. It is
+// returned as an error for point reads and as data for page walks so one bad
+// entry can never become actionable or disappear from pagination evidence.
+type Corruption struct {
+	EntryCursor EntryCursor    `json:"entry_cursor"`
+	Code        CorruptionCode `json:"code"`
+	Detail      string         `json:"detail,omitempty"`
+	cause       error
+}
+
+func (c *Corruption) Error() string {
+	if c == nil {
+		return "candidate corruption"
+	}
+	if c.Detail == "" {
+		return fmt.Sprintf("candidate entry %q is corrupt: %s", c.EntryCursor, c.Code)
+	}
+	return fmt.Sprintf("candidate entry %q is corrupt: %s (%s)", c.EntryCursor, c.Code, c.Detail)
+}
+
+func (c *Corruption) Unwrap() error {
+	if c == nil {
+		return nil
+	}
+	return c.cause
+}
+
+// Record is a descriptor-pinned snapshot. Body, Digest, EntryCursor, Kind,
+// and CustodyToken describe the same file generation. The unexported file and
+// directory identities prevent a reconstructed JSON value from impersonating
+// a live custody token in later compare-and-swap consumers.
+type Record struct {
+	Kind         Kind        `json:"kind"`
+	ID           string      `json:"id"`
+	Body         []byte      `json:"-"`
+	Digest       string      `json:"digest"`
+	EntryCursor  EntryCursor `json:"entry_cursor"`
+	CustodyToken string      `json:"custody_token"`
+
+	homeIdentity      candidateFileIdentity
+	directoryIdentity candidateFileIdentity
+	fileIdentity      candidateFileIdentity
+}
+
+// Validate proves the exported record fields still describe the descriptor-
+// pinned body and identities minted by this package.
+func (r Record) Validate() error {
+	if !Known(r.Kind) {
+		return fmt.Errorf("candidate record kind %q is unknown", r.Kind)
+	}
+	if err := candidateID(r.ID); err != nil {
+		return err
+	}
+	if r.EntryCursor != EntryCursor(r.ID+".json") {
+		return fmt.Errorf("candidate record cursor %q does not match id %q", r.EntryCursor, r.ID)
+	}
+	digest := candidateBodyDigest(r.Body)
+	if r.Digest != digest {
+		return fmt.Errorf("candidate record digest %q does not match body %q", r.Digest, digest)
+	}
+	want := candidateCustodyToken(r.Kind, r.EntryCursor, digest, r.homeIdentity, r.directoryIdentity, r.fileIdentity)
+	if r.CustodyToken == "" || r.CustodyToken != want {
+		return fmt.Errorf("candidate record custody token mismatch")
+	}
+	return nil
+}
+
+// PageEntry preserves directory order across valid and corrupt entries. The
+// order is the safe cursor frontier used by bounded mutation consumers.
+type PageEntry struct {
+	EntryCursor EntryCursor `json:"entry_cursor"`
+	Record      *Record     `json:"record,omitempty"`
+	Corruption  *Corruption `json:"corruption,omitempty"`
+}
+
+// Page is one stable, bounded directory walk. LastCursor is the exact filename
+// bytes returned by the directory, not a decoded candidate ID.
+type Page struct {
+	Entries    []PageEntry `json:"entries,omitempty"`
+	Walked     int         `json:"walked"`
+	LastCursor EntryCursor `json:"last_cursor,omitempty"`
+	AtEnd      bool        `json:"at_end"`
+}
+
+// ReadRecord reads one exact canonical candidate through a descriptor-rooted
+// inbox. Every directory component and the final file are opened without
+// following symlinks.
+func ReadRecord(homePath string, kind Kind, id string) (record Record, resultErr error) {
+	dir := InboxDir(kind)
+	if dir == "" {
+		return Record{}, fmt.Errorf("unknown candidate kind %q", kind)
+	}
+	if err := candidateID(id); err != nil {
+		return Record{}, err
+	}
+	inbox, err := openCandidateInbox(homePath, dir, false)
+	if err != nil {
+		return Record{}, err
+	}
+	defer func() {
+		if err := inbox.close(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close candidate custody: %w", err))
+		}
+	}()
+	return readCandidateRecordFromDirectory(inbox, kind, id)
+}
+
+func readCandidateRecordFromDirectory(inbox *candidateInbox, kind Kind, id string) (Record, error) {
+	entryCursor := id + ".json"
+	names, err := candidateReadDirectoryNames(inbox.directory)
+	if err != nil {
+		return Record{}, err
+	}
+	if !candidateExactEntryName(names, entryCursor) {
+		if _, statErr := inbox.directory.lstat(entryCursor); statErr == nil {
+			return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionInvalidFilename, Detail: "requested filename bytes do not match a directory entry"}
+		} else if errors.Is(statErr, fs.ErrNotExist) {
+			return Record{}, &os.PathError{Op: "open", Path: inbox.directory.path(entryCursor), Err: fs.ErrNotExist}
+		} else {
+			return Record{}, corruptionForReadError(entryCursor, statErr)
+		}
+	}
+	return readRootedRecord(inbox, kind, entryCursor, id)
+}
+
+func candidateExactEntryName(names []string, requested string) bool {
+	for _, name := range names {
+		if name == requested {
+			return true
+		}
+	}
+	return false
+}
+
+// ReadPage walks candidate directory entries in exact filename-byte order.
+// afterCursor is an opaque filename previously returned as LastCursor.
+func ReadPage(homePath string, kind Kind, afterCursor EntryCursor, scanLimit int) (page Page, resultErr error) {
+	dir := InboxDir(kind)
+	if dir == "" {
+		return Page{}, fmt.Errorf("unknown candidate kind %q", kind)
+	}
+	if scanLimit < 0 {
+		return Page{}, fmt.Errorf("candidate scan limit must be non-negative")
+	}
+	if err := candidateEntryCursor(afterCursor); err != nil {
+		return Page{}, err
+	}
+	inbox, err := openCandidateInbox(homePath, dir, false)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return Page{AtEnd: true}, nil
+		}
+		return Page{}, err
+	}
+	defer func() {
+		if err := inbox.close(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close candidate custody: %w", err))
+		}
+	}()
+	allNames, err := candidateReadDirectoryNames(inbox.directory)
+	if err != nil {
+		return Page{}, err
+	}
+	names := append([]string(nil), allNames...)
+	sort.Strings(names)
+	start := 0
+	if afterCursor != "" {
+		start = sort.Search(len(names), func(index int) bool { return names[index] > string(afterCursor) })
+	}
+	if start >= len(names) {
+		return Page{AtEnd: true}, nil
+	}
+	end := len(names)
+	if scanLimit > 0 && start+scanLimit < end {
+		end = start + scanLimit
+	}
+	for _, name := range names[start:end] {
+		page.Walked++
+		page.LastCursor = EntryCursor(name)
+		entry := PageEntry{EntryCursor: EntryCursor(name)}
+		expectedID := strings.TrimSuffix(name, ".json")
+		if !strings.HasSuffix(name, ".json") {
+			corruption := Corruption{EntryCursor: EntryCursor(name), Code: CorruptionInvalidFilename, Detail: "candidate filename must end in .json"}
+			entry.Corruption = &corruption
+		} else if err := candidateID(expectedID); err != nil {
+			corruption := Corruption{EntryCursor: EntryCursor(name), Code: CorruptionInvalidFilename, Detail: err.Error(), cause: err}
+			entry.Corruption = &corruption
+		} else if record, err := readRootedRecord(inbox, kind, name, expectedID); err != nil {
+			var corruption *Corruption
+			if !errors.As(err, &corruption) {
+				corruption = corruptionForReadError(name, err)
+			}
+			copyOfCorruption := *corruption
+			entry.Corruption = &copyOfCorruption
+		} else {
+			copyOfRecord := record
+			entry.Record = &copyOfRecord
+		}
+		page.Entries = append(page.Entries, entry)
+	}
+	page.AtEnd = end == len(names)
+	return page, nil
+}
+
+func candidateEntryCursor(cursor EntryCursor) error {
+	if cursor == "" {
+		return nil
+	}
+	if cursor == "." || cursor == ".." || strings.ContainsRune(string(cursor), 0) || strings.ContainsRune(string(cursor), '/') {
+		return fmt.Errorf("candidate entry cursor must be an opaque filename, got %q", cursor)
+	}
+	return nil
+}
+
+func readRootedRecord(inbox *candidateInbox, kind Kind, entryCursor, expectedID string) (Record, error) {
+	directory := inbox.directory
+	before, err := directory.lstat(entryCursor)
+	if err != nil {
+		return Record{}, corruptionForReadError(entryCursor, err)
+	}
+	if before.isSymlink() {
+		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionSymlink, Detail: before.detail()}
+	}
+	if !before.isRegular() {
+		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionNonRegular, Detail: before.detail()}
+	}
+	file, err := directory.openRead(entryCursor)
+	if err != nil {
+		return Record{}, corruptionForReadError(entryCursor, err)
+	}
+	opened, statErr := candidateIdentityForFile(file)
+	if statErr != nil {
+		_ = file.Close()
+		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionUnreadable, Detail: statErr.Error(), cause: statErr}
+	}
+	current, lstatErr := directory.lstat(entryCursor)
+	if lstatErr != nil || !opened.isRegular() || !current.isRegular() || !before.same(opened) || !before.same(current) {
+		_ = file.Close()
+		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionRaced, Detail: "entry changed while opening", cause: lstatErr}
+	}
+	candidateAfterOpenHook(entryCursor)
+	data, readErr := io.ReadAll(file)
+	afterRead, afterReadErr := candidateIdentityForFile(file)
+	closeErr := file.Close()
+	afterName, afterNameErr := directory.lstat(entryCursor)
+	if readErr != nil || closeErr != nil {
+		joined := errors.Join(readErr, closeErr)
+		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionUnreadable, Detail: joined.Error(), cause: joined}
+	}
+	if afterReadErr != nil || afterNameErr != nil || !opened.same(afterRead) || !opened.same(afterName) {
+		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionRaced, Detail: "entry changed while reading", cause: errors.Join(afterReadErr, afterNameErr)}
+	}
+	meta, err := decodeCandidateJSONIdentity(data)
+	if err != nil {
+		code := CorruptionInvalidJSON
+		var identityErr *candidateIdentityDecodeError
+		if errors.As(err, &identityErr) {
+			code = identityErr.code
+		}
+		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: code, Detail: err.Error(), cause: err}
+	}
+	if strings.TrimSpace(meta.ID) == "" {
+		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionBlankID}
+	}
+	if meta.ID != strings.TrimSpace(meta.ID) {
+		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionInvalidID, Detail: fmt.Sprintf("body id %q is not canonical", meta.ID)}
+	}
+	if err := candidateID(meta.ID); err != nil {
+		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionInvalidID, Detail: err.Error(), cause: err}
+	}
+	if meta.ID != expectedID {
+		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionIDMismatch, Detail: fmt.Sprintf("body id %q does not match filename id %q", meta.ID, expectedID)}
+	}
+	digest := candidateBodyDigest(data)
+	record := Record{
+		Kind:              kind,
+		ID:                meta.ID,
+		Body:              append([]byte(nil), data...),
+		Digest:            digest,
+		EntryCursor:       EntryCursor(entryCursor),
+		homeIdentity:      inbox.home.identity,
+		directoryIdentity: directory.identity,
+		fileIdentity:      opened,
+	}
+	record.CustodyToken = candidateCustodyToken(kind, EntryCursor(entryCursor), digest, record.homeIdentity, record.directoryIdentity, record.fileIdentity)
+	if err := record.Validate(); err != nil {
+		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionRaced, Detail: err.Error(), cause: err}
+	}
+	return record, nil
+}
+
+func corruptionForReadError(entryCursor string, err error) *Corruption {
+	code := CorruptionUnreadable
+	if errors.Is(err, fs.ErrNotExist) {
+		code = CorruptionRaced
+	}
+	return &Corruption{EntryCursor: EntryCursor(entryCursor), Code: code, Detail: err.Error(), cause: err}
+}
+
+func candidateBodyDigest(body []byte) string {
+	sum := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func candidateCustodyToken(kind Kind, entryCursor EntryCursor, digest string, home, directory, file candidateFileIdentity) string {
+	material := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s", kind, entryCursor, digest, home.tokenField(), directory.tokenField(), file.tokenField())
+	sum := sha256.Sum256([]byte(material))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}

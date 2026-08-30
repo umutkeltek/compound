@@ -9,7 +9,7 @@ import (
 )
 
 // Depth probe for the one candidate-inbox reader: it must enforce the id-match
-// contract, tolerate an empty stored id, surface a missing file as
+// contract, reject an empty stored id, surface a missing file as
 // os.IsNotExist (multi-inbox callers depend on it), and reject an unknown kind
 // before touching disk. Fails if any reader's guard semantics regress.
 func TestReadCandidate(t *testing.T) {
@@ -34,11 +34,11 @@ func TestReadCandidate(t *testing.T) {
 		t.Fatalf("matching id: %+v err=%v", c, err)
 	}
 
-	// An empty stored id is allowed — the caller defaults it.
+	// A stored id is custody identity, not an optional caller default.
 	write("c2.json", `{"entity":"y"}`)
 	c = rec{}
-	if err := ReadCandidate(home, Memory, "c2", &c); err != nil || c.Entity != "y" {
-		t.Fatalf("empty stored id: %+v err=%v", c, err)
+	if err := ReadCandidate(home, Memory, "c2", &c); err == nil {
+		t.Fatalf("empty stored id was actionable: %+v", c)
 	}
 
 	// A non-empty mismatched id is the contract violation.
@@ -264,8 +264,10 @@ func TestCreateCandidateIfAbsentPublishesWholeDurableJSON(t *testing.T) {
 		syncCandidateDirectoryFn = originalSync
 	})
 	events := make([]string, 0, 2)
-	linkCandidateFile = func(tempPath, targetPath string) error {
+	linkCandidateFile = func(directory *candidateDirectory, tempName, targetName string) error {
 		events = append(events, "link")
+		tempPath := directory.path(tempName)
+		targetPath := directory.path(targetName)
 		if targetPath != target {
 			t.Fatalf("link target = %s, want %s", targetPath, target)
 		}
@@ -286,14 +288,15 @@ func TestCreateCandidateIfAbsentPublishesWholeDurableJSON(t *testing.T) {
 		if info.Mode().Perm() != 0o644 {
 			t.Fatalf("staged candidate mode = %o, want 644", info.Mode().Perm())
 		}
-		return os.Link(tempPath, targetPath)
+		return directory.link(tempName, targetName)
 	}
-	syncCandidateDirectoryFn = func(path string) error {
+	syncCandidateDirectoryFn = func(directory *candidateDirectory) error {
 		events = append(events, "sync")
+		path := directory.displayPath
 		if path != filepath.Dir(target) {
 			t.Fatalf("synced directory = %s, want %s", path, filepath.Dir(target))
 		}
-		return syncCandidateDirectory(path)
+		return directory.sync()
 	}
 
 	created, err := CreateCandidateIfAbsent(home, Memory, "durable", payload)
@@ -342,10 +345,11 @@ func TestCreateCandidateIfAbsentSyncsPublishedLinkWhenTempCleanupFails(t *testin
 		syncCandidateDirectoryFn = originalSync
 	})
 	blockedTemp := ""
-	linkCandidateFile = func(tempPath, targetPath string) error {
-		if err := os.Link(tempPath, targetPath); err != nil {
+	linkCandidateFile = func(directory *candidateDirectory, tempName, targetName string) error {
+		if err := directory.link(tempName, targetName); err != nil {
 			return err
 		}
+		tempPath := directory.path(tempName)
 		// Simulate an external cleanup race after the authoritative hard link
 		// exists: replace the staging name with a non-empty directory so the
 		// writer's remove fails deterministically.
@@ -362,9 +366,9 @@ func TestCreateCandidateIfAbsentSyncsPublishedLinkWhenTempCleanupFails(t *testin
 		return nil
 	}
 	syncCalls := 0
-	syncCandidateDirectoryFn = func(path string) error {
+	syncCandidateDirectoryFn = func(directory *candidateDirectory) error {
 		syncCalls++
-		return syncCandidateDirectory(path)
+		return directory.sync()
 	}
 
 	created, err := CreateCandidateIfAbsent(home, Memory, "cleanup-failure", payload)
