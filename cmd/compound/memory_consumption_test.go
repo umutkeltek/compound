@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -50,7 +51,16 @@ func TestCmdMemoryConsumptionEndToEndViaRealMintPath(t *testing.T) {
 		t.Fatalf("thesis ratio = %v, want 1.0 (100%% unpromoted so far)", rep.ThesisRatio)
 	}
 
-	out := captureStdout(t, func() { printCauseConsumptionSummary(rep) })
+	var stdout, stderr bytes.Buffer
+	if err := mem.RunCauseConsumptionCLI(homePath, nil, &stdout, &stderr, func() time.Time {
+		return now.Add(time.Minute)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %q", stderr.String())
+	}
+	out := stdout.String()
 	if !strings.Contains(out, "observed_raw") || !strings.Contains(out, "motion_from_unpromoted_ratio") {
 		t.Fatalf("human summary missing bucket/ratio lines:\n%s", out)
 	}
@@ -66,7 +76,12 @@ func TestCmdMemoryConsumptionRecordWritesOnlyUnderStateRuns(t *testing.T) {
 	}
 
 	before := snapshotDirFiles(t, homePath)
-	captureStdout(t, func() { cmdMemoryConsumption(homePath, []string{"--record"}) })
+	var stdout, stderr bytes.Buffer
+	if err := mem.RunCauseConsumptionCLI(homePath, []string{"--record"}, &stdout, &stderr, func() time.Time {
+		return now
+	}); err != nil {
+		t.Fatal(err)
+	}
 	after := snapshotDirFiles(t, homePath)
 
 	var added []string
@@ -97,7 +112,13 @@ func TestCmdMemoryConsumptionJSONZeroIsHonestAndExitsZero(t *testing.T) {
 	}
 
 	before := snapshotDirFiles(t, homePath)
-	out := captureStdout(t, func() { cmdMemoryConsumption(homePath, []string{"--json"}) })
+	var stdout, stderr bytes.Buffer
+	if err := mem.RunCauseConsumptionCLI(homePath, []string{"--json"}, &stdout, &stderr, func() time.Time {
+		return now
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out := stdout.String()
 	after := snapshotDirFiles(t, homePath)
 
 	if !strings.Contains(out, `"transitions_scanned": 0`) {

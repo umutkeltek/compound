@@ -204,7 +204,8 @@ func cmdMemory(args []string) {
 	case "observation":
 		cmdMemoryObservation(homePath, rest)
 	case "consumption":
-		cmdMemoryConsumption(homePath, rest)
+		err = mem.RunCauseConsumptionCLI(homePath, rest, os.Stdout, os.Stderr, time.Now)
+		die(err)
 	case "canon":
 		cmdMemoryCanon(store, rest)
 	case "volatile-restore":
