@@ -84,6 +84,7 @@ func TestCapabilityResolveComposesOwnedSurfaceAndRouteWithoutMutation(t *testing
 }
 
 func TestCapabilityResolveAppliesPrivacyAtCompoundRouteOwner(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -106,6 +107,7 @@ func TestCapabilityResolveAppliesPrivacyAtCompoundRouteOwner(t *testing.T) {
 }
 
 func TestCapabilityResolveRejectsMissingCapabilityGraphAuthority(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -123,6 +125,7 @@ func TestCapabilityResolveRejectsMissingCapabilityGraphAuthority(t *testing.T) {
 }
 
 func TestCapabilityResolveAcceptsNativeGraphWithoutSourceHandoff(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -147,6 +150,7 @@ func TestCapabilityResolveAcceptsNativeGraphWithoutSourceHandoff(t *testing.T) {
 }
 
 func TestCapabilityResolveRejectsMissingModelRouterProvenance(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -166,6 +170,7 @@ func TestCapabilityResolveRejectsMissingModelRouterProvenance(t *testing.T) {
 }
 
 func TestCapabilityResolveRejectsStaleModelRouterProvenance(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -189,6 +194,7 @@ func TestCapabilityResolveRejectsStaleModelRouterProvenance(t *testing.T) {
 }
 
 func TestCapabilityResolveRejectsPrivacyPlanWithoutEligibleLane(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -203,6 +209,7 @@ func TestCapabilityResolveRejectsPrivacyPlanWithoutEligibleLane(t *testing.T) {
 }
 
 func TestCapabilityResolutionBoundsRouteAndEncodedBytes(t *testing.T) {
+	t.Parallel()
 	plan := routeevidence.CapabilityRoutePlan{
 		Chain:             make([]routeevidence.CapabilityRouteLane, capabilityResolutionRouteLaneLimit+4),
 		Omitted:           make([]routeevidence.CapabilityRouteLane, capabilityResolutionPolicyOmitLimit+3),
@@ -248,6 +255,7 @@ func TestCapabilityResolutionBoundsRouteAndEncodedBytes(t *testing.T) {
 const capabilityResolveMissingHomeHelper = "COMPOUND_CAPABILITY_RESOLVE_MISSING_HOME_HELPER"
 
 func TestCapabilityResolveMissingHomeFailsWithoutMutation(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(capabilityResolveMissingHomeHelper) == "1" {
 		cmdCapability([]string{"resolve", "--json", "extract metrics"})
 		return

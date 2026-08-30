@@ -561,6 +561,7 @@ func recordCLISourceLifecycleEvidence(t *testing.T, homePath, family string, gat
 }
 
 func TestSourceManifestCreateUsageNamesDirectoryModeExactly(t *testing.T) {
+	t.Parallel()
 	const want = "usage: compound source manifest-create --family <id> ((<source>... | --source-dir <dir>) [--source-in-place] | --from-export <export.json> [--dump <dump>]) [--json]"
 	if sourceManifestCreateUsage != want {
 		t.Fatalf("source manifest-create usage = %q, want %q", sourceManifestCreateUsage, want)
@@ -647,6 +648,7 @@ func TestSourceManifestDirectoryCLIReplayMatchesExplicitFiles(t *testing.T) {
 const sourceManifestDirectoryConflictChild = "COMPOUND_SOURCE_MANIFEST_DIRECTORY_CONFLICT_CHILD"
 
 func TestSourceManifestDirectoryRejectsConflictingInputModesBeforeWrite(t *testing.T) {
+	t.Parallel()
 	if mode := os.Getenv(sourceManifestDirectoryConflictChild); mode != "" {
 		family := "directory_conflict_" + mode
 		sourceRoot := os.Getenv("COMPOUND_SOURCE_MANIFEST_DIRECTORY_ROOT")
@@ -703,6 +705,7 @@ func TestSourceManifestDirectoryRejectsConflictingInputModesBeforeWrite(t *testi
 const sourceManifestDirectoryAtomicChild = "COMPOUND_SOURCE_MANIFEST_DIRECTORY_ATOMIC_CHILD"
 
 func TestSourceManifestDirectoryErrorIsAtomicBeforeCustodyOrAuthority(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(sourceManifestDirectoryAtomicChild) != "" {
 		cmdSource([]string{
 			"manifest-create",

@@ -241,6 +241,7 @@ func TestMaterializeOrientContextPackBindsInstalledEntrypointIntoBothArtifacts(t
 }
 
 func TestMaterializeOrientContextPackBindsClaudeFamilyAliasesCanonically(t *testing.T) {
+	t.Parallel()
 	for _, harness := range []string{"claude-code", "claude_lane_opus"} {
 		t.Run(harness, func(t *testing.T) {
 			homePath := t.TempDir()

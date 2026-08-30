@@ -33,6 +33,7 @@ func TestReviewsResolveCLISubprocess(t *testing.T) {
 }
 
 func TestReviewsResolveRequiresReasonUsage(t *testing.T) {
+	t.Parallel()
 	homePath := initReviewsResolveCLIHome(t)
 	revision := reviewResolveRevisionFor(t, homePath, "parity", "parity_unknown_fixture")
 	code, output := runReviewsResolveCLI(t, homePath,
@@ -48,6 +49,7 @@ func TestReviewsResolveRequiresReasonUsage(t *testing.T) {
 }
 
 func TestReviewsResolveRequiresOwnerAreaAndRevisionBeforeWriting(t *testing.T) {
+	t.Parallel()
 	homePath := initReviewsResolveCLIHome(t)
 	revision := reviewResolveRevisionFor(t, homePath, "parity", "parity_unknown_fixture")
 	tests := []struct {
@@ -82,6 +84,7 @@ func TestReviewsResolveRequiresOwnerAreaAndRevisionBeforeWriting(t *testing.T) {
 }
 
 func TestReviewsResolveGenericReviewIsSidecarOnlyAndUndoRestoresArchiveVisibility(t *testing.T) {
+	t.Parallel()
 	homePath := initReviewsResolveCLIHome(t)
 	revision := reviewResolveRevisionFor(t, homePath, "parity", "parity_unknown_fixture")
 	before := snapshotReviewsResolveHome(t, homePath)
@@ -321,6 +324,7 @@ func countMatchingFiles(files map[string]string, prefix, suffix string) int {
 }
 
 func TestReviewsResolveUnknownItem(t *testing.T) {
+	t.Parallel()
 	homePath := initReviewsResolveCLIHome(t)
 	code, output := runReviewsResolveCLI(t, homePath,
 		"resolve", "--item", "missing_review_item", "--area", "parity",
@@ -333,6 +337,7 @@ func TestReviewsResolveUnknownItem(t *testing.T) {
 }
 
 func TestReviewsResolveStaleRevisionWritesNeitherSidecarNorReceipt(t *testing.T) {
+	t.Parallel()
 	homePath := initReviewsResolveCLIHome(t)
 	staleRevision := reviewResolveRevisionFor(t, homePath, "parity", "parity_unknown_fixture")
 	path := filepath.Join(homePath, "reviews", "parity", "parity_unknown_fixture.json")
@@ -369,6 +374,7 @@ func TestReviewsResolveStaleRevisionWritesNeitherSidecarNorReceipt(t *testing.T)
 }
 
 func TestReviewsResolveWrongAreaWritesNeitherSidecarNorReceipt(t *testing.T) {
+	t.Parallel()
 	homePath := initReviewsResolveCLIHome(t)
 	revision := reviewResolveRevisionFor(t, homePath, "parity", "parity_unknown_fixture")
 	before := snapshotReviewsResolveHome(t, homePath)
@@ -384,6 +390,7 @@ func TestReviewsResolveWrongAreaWritesNeitherSidecarNorReceipt(t *testing.T) {
 }
 
 func TestReviewsResolveFreshOwnerActionWritesNeitherSidecarNorReceipt(t *testing.T) {
+	t.Parallel()
 	homePath := initReviewsResolveCLIHome(t)
 	revision := reviewResolveRevisionFor(t, homePath, "route-promotions", "route_promotion_resolve_fixture")
 	before := snapshotReviewsResolveHome(t, homePath)
@@ -403,6 +410,7 @@ func TestReviewsResolveFreshOwnerActionWritesNeitherSidecarNorReceipt(t *testing
 }
 
 func TestReviewResolutionGroupHasActionRejectsMatchingGroupOnlyAction(t *testing.T) {
+	t.Parallel()
 	item := reviewartifact.QueueItem{Area: "parity", ID: "parity_group_member"}
 	groups := []reviewartifact.QueueGroup{{
 		Area:            "parity",

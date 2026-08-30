@@ -577,6 +577,7 @@ func runFindingHumanScenario(t *testing.T) {
 }
 
 func TestFindingRecordJSONAckIsMinimalAndClassificationExplicit(t *testing.T) {
+	t.Parallel()
 	ack := findingRecordAck(finding.RecordResult{
 		Status: finding.StatusRecorded,
 		Finding: finding.Finding{
@@ -668,6 +669,7 @@ func TestResolveBodySourceBoundsStdinAtOneMiB(t *testing.T) {
 }
 
 func TestResolveBodySourceBoundsBodyFileAtOneMiB(t *testing.T) {
+	t.Parallel()
 	const maxBytes = finding.MaxBodyBytes
 	for _, tc := range []struct {
 		name      string
@@ -710,6 +712,7 @@ func TestResolveBodySourceBoundsBodyFileAtOneMiB(t *testing.T) {
 // not tell an oversize body from an unreadable path, and the rendered text was one line with
 // no gate name and no command — assertTeachingRefusal fails on its first assertion.
 func TestFindingBodyBoundRefusalTeachesTheCiteShape(t *testing.T) {
+	t.Parallel()
 	oversize := strings.Repeat("x", finding.MaxBodyBytes+1)
 	_, err := resolveBodySource([]string{"--body", oversize})
 	if err == nil {

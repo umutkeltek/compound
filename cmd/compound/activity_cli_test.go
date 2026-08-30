@@ -61,6 +61,7 @@ func TestActivityCLIStatusReportsDisabled(t *testing.T) {
 
 // An unknown verb or bare call prints usage and exits 2 — the operator door never guesses.
 func TestActivityCLIUnknownVerbPrintsUsage(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	if code := runActivity([]string{"bogus"}, &stdout, &stderr); code != 2 {
 		t.Fatalf("unknown verb must exit 2, got %d", code)
@@ -111,6 +112,7 @@ func TestActivityCLIAWMaterializeInvertedWindowExits2(t *testing.T) {
 // Direct unit coverage of the window resolver: defaults, explicit bounds, and
 // the "--flag=value" form (which valueFlag alone would silently drop).
 func TestParseAWMaterializeWindow(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	var stderr bytes.Buffer
 
