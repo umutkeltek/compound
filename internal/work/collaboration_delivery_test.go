@@ -16,6 +16,7 @@ import (
 )
 
 func TestRecordCollaborationPersistsCompactDeliveryMetadata(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	const actor = "codex:delivery"
 	item, err := store.Create(CreateInput{
@@ -134,6 +135,7 @@ func recordInterruptEligibilityEvidence(t *testing.T, store *Store, item envelop
 }
 
 func TestCollaborationLegacyEventRemainsReadable(t *testing.T) {
+	t.Parallel()
 	event := CollaborationEvent{
 		SchemaVersion:    CollaborationLegacySchemaVersion,
 		ID:               "wco_0123456789abcdef",
@@ -154,6 +156,7 @@ func TestCollaborationLegacyEventRemainsReadable(t *testing.T) {
 }
 
 func TestRecordCollaborationRejectsUnknownDeliveryClassBeforeEventWrite(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	const actor = "codex:delivery"
 	item, err := store.Create(CreateInput{Owner: "delivery", SuccessPredicate: "unknown delivery class is rejected"}, fixedNow)
@@ -176,6 +179,7 @@ func TestRecordCollaborationRejectsUnknownDeliveryClassBeforeEventWrite(t *testi
 }
 
 func TestRecordCollaborationRejectsInterruptWithoutExactInvalidationEvidence(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	const actor = "codex:delivery"
 	item, err := store.Create(CreateInput{Owner: "delivery", SuccessPredicate: "interrupt requires exact invalidation evidence"}, fixedNow)
@@ -199,6 +203,7 @@ func TestRecordCollaborationRejectsInterruptWithoutExactInvalidationEvidence(t *
 }
 
 func TestRecordCollaborationRejectsHumanAttentionWithoutUnresolvedAuthorityEvidence(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	const actor = "codex:delivery"
 	item, err := store.Create(CreateInput{Owner: "delivery", SuccessPredicate: "human attention requires unresolved authority"}, fixedNow)
@@ -222,6 +227,7 @@ func TestRecordCollaborationRejectsHumanAttentionWithoutUnresolvedAuthorityEvide
 }
 
 func TestRecordCollaborationAcceptsUnresolvedOperatorGatesBeyondIrreversibility(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		mutationClass string
@@ -312,6 +318,7 @@ func TestRecordCollaborationAcceptsUnresolvedOperatorGatesBeyondIrreversibility(
 }
 
 func TestRecordCollaborationRejectsHumanAttentionAfterCurrentOperatorResolution(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	const actor = "codex:delivery"
 	item, err := store.Create(CreateInput{
@@ -421,6 +428,7 @@ func writeOperatorAuthorityState(t *testing.T, homePath string, state policy.Ope
 }
 
 func TestRetrieveCollaborationBodyRequiresExactActiveRecipientAndWritesNoAcknowledgement(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	const (
 		sender   = "codex:sender"
@@ -514,6 +522,7 @@ func TestRetrieveCollaborationBodyRequiresExactActiveRecipientAndWritesNoAcknowl
 }
 
 func TestCollaborationBodyRequestCarriesExactSessionAuthority(t *testing.T) {
+	t.Parallel()
 	field, ok := reflect.TypeOf(CollaborationBodyRequest{}).FieldByName("SessionID")
 	if !ok || field.Type.Kind() != reflect.String {
 		t.Fatal("collaboration body request has no exact native session authority coordinate")
@@ -521,6 +530,7 @@ func TestCollaborationBodyRequestCarriesExactSessionAuthority(t *testing.T) {
 }
 
 func TestRetrieveUntargetedCollaborationBodyUsesExactActiveRunRelevanceWithoutAcknowledgement(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	const (
 		sender   = "codex:sender"
@@ -575,6 +585,7 @@ func TestRetrieveUntargetedCollaborationBodyUsesExactActiveRunRelevanceWithoutAc
 }
 
 func TestRetrieveWorkLevelCollaborationBodyUsesCurrentActiveRecipientWithoutPreNamedRun(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	const (
 		sender   = "codex:sender"

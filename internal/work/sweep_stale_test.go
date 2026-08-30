@@ -214,6 +214,7 @@ func seedRunAttemptBoundToWork(t *testing.T, home string, workID, attemptID stri
 // pane -> reclaimed to cancelled with the sweep_reason recorded on the
 // event.
 func TestSweepStaleReclaimsClaimedEnvelopeWithAbandonedAttempt(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("init home: %v", err)
@@ -291,6 +292,7 @@ func TestSweepStaleReclaimsClaimedEnvelopeWithAbandonedAttempt(t *testing.T) {
 
 // Falsifier 2: claimed+stale envelope WITH a live heartbeat -> excluded.
 func TestSweepStaleExcludesEnvelopeWithLiveRunAttempt(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -335,6 +337,7 @@ func TestSweepStaleExcludesEnvelopeWithLiveRunAttempt(t *testing.T) {
 
 // Falsifier 3: running+fresh envelope -> excluded (last event age < threshold).
 func TestSweepStaleExcludesFreshRunningEnvelope(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -378,6 +381,7 @@ func TestSweepStaleExcludesFreshRunningEnvelope(t *testing.T) {
 
 // Falsifier 4: probe error -> envelope is unreadable, sweep fails closed.
 func TestSweepStaleFailClosedOnProbeError(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -429,6 +433,7 @@ func TestSweepStaleFailClosedOnProbeError(t *testing.T) {
 // — operators reading the dry-run output must see that these envelopes were
 // alive, not that they were uncertain.
 func TestSweepStaleExcludesOnLiveDelegateAndLease(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -462,6 +467,7 @@ func TestSweepStaleExcludesOnLiveDelegateAndLease(t *testing.T) {
 // so the audit can tell apart a never-started work from one whose
 // execution went silent.
 func TestSweepStaleVerifyingReclaimsToFailedNotCancelled(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -495,6 +501,7 @@ func TestSweepStaleVerifyingReclaimsToFailedNotCancelled(t *testing.T) {
 // RunAttempt bound to a reclaimed work, then apply a sweep, then assert the
 // attempt is byte-identical to its pre-sweep state.
 func TestSweepStaleNeverTouchesRunAttempts(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -538,6 +545,7 @@ func TestSweepStaleNeverTouchesRunAttempts(t *testing.T) {
 // Falsifier 8: terminal-state envelopes are never candidates (sweep is a
 // no-op for {completed, failed, cancelled}).
 func TestSweepStaleIgnoresTerminalEnvelopes(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -578,6 +586,7 @@ func TestSweepStaleIgnoresTerminalEnvelopes(t *testing.T) {
 // moved — reclaiming a work that is no longer in the diagnosed state is a
 // mutation without a diagnosis (the CAS-shaped guard the apply path owes).
 func TestReclaimEnvelopeRefusesWhenStateChangedUnderneath(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "sweep-cas", SuccessPredicate: "reclaim refuses moved state"}, fixedNow)
 	if err != nil {
