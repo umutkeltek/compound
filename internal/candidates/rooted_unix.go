@@ -175,7 +175,15 @@ func (home *candidateHome) openDirectory(relativePath string, create bool) (*can
 		next, err := unix.Openat(current, component, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_DIRECTORY, 0)
 		if err != nil {
 			_ = closeCandidateFDs(opened)
-			return nil, fmt.Errorf("open candidate custody directory without symlink traversal %s: %w", filepath.Join(home.displayPath, filepath.Join(components[:index+1]...)), err)
+			path := filepath.Join(home.displayPath, filepath.Join(components[:index+1]...))
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil, &os.PathError{
+					Op:   "open candidate custody directory without symlink traversal",
+					Path: path,
+					Err:  err,
+				}
+			}
+			return nil, fmt.Errorf("open candidate custody directory without symlink traversal %s: %w", path, err)
 		}
 		opened = append(opened, next)
 		current = next

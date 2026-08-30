@@ -8,6 +8,22 @@ import (
 	"testing"
 )
 
+func TestReadCandidateMissingInboxPreservesNotExistWithoutScaffolding(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	var got struct {
+		ID string `json:"id"`
+	}
+
+	err := ReadCandidate(home, Memory, "missing", &got)
+	if !os.IsNotExist(err) {
+		t.Fatalf("missing inbox: want IsNotExist, got %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(home, filepath.Dir(InboxDir(Memory)))); !os.IsNotExist(statErr) {
+		t.Fatalf("read scaffolded candidate custody: %v", statErr)
+	}
+}
+
 // Depth probe for the one candidate-inbox reader: it must enforce the id-match
 // contract, reject an empty stored id, surface a missing file as
 // os.IsNotExist (multi-inbox callers depend on it), and reject an unknown kind
