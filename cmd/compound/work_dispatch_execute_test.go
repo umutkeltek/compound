@@ -17,6 +17,7 @@ import (
 )
 
 func TestWorkDispatchExecuteConfirmSelectsClaimsAndRunsGovernedAdapter(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -113,6 +114,7 @@ func TestWorkDispatchExecuteConfirmSelectsClaimsAndRunsGovernedAdapter(t *testin
 }
 
 func TestWorkDispatchExecuteRefusesMissingAdapterBeforeClaim(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -281,6 +283,7 @@ func TestWorkDispatchExecuteRefusesRouterRevisionDriftBeforeClaim(t *testing.T) 
 }
 
 func TestWorkDispatchExecuteFailedSubprocessTerminalizesWorkAndAttempts(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -372,6 +375,7 @@ func assertDispatchExecuteReadyAndUnchanged(t *testing.T, store *work.Store, wor
 }
 
 func TestWorkDispatchExecuteCLIUnconfirmedPreviewsWithoutMutation(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)

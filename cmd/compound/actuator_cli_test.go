@@ -34,6 +34,7 @@ func seedActuatorCLIWork(t *testing.T, homePath, workID string) {
 // must error naming the flag and the bad value, and must NOT write the budget file.
 // At base, actuatorInt silently returned the default (0 == unlimited) on parse failure.
 func TestActuatorBudgetSetRejectsUnparseableMaxActions(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	code := runActuator([]string{
@@ -57,6 +58,7 @@ func TestActuatorBudgetSetRejectsUnparseableMaxActions(t *testing.T) {
 // actuatorFloat gets the same falsifier as actuatorInt (T1's sibling): a
 // non-empty, non-parseable --max-spend-usd must error, not silently default.
 func TestActuatorBudgetSetRejectsUnparseableMaxSpendUSD(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	code := runActuator([]string{
@@ -81,6 +83,7 @@ func TestActuatorBudgetSetRejectsUnparseableMaxSpendUSD(t *testing.T) {
 // exactly as work_cli.go's validateKnownFlags pattern already does for work
 // subcommands. At base, actuator subcommands called validateKnownFlags zero times.
 func TestActuatorRunRejectsUnknownFlag(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	code := runActuator([]string{
 		"run", "--work", "w1", "--harness", "noop", "--max-actons", "3",
@@ -97,6 +100,7 @@ func TestActuatorRunRejectsUnknownFlag(t *testing.T) {
 // Decision 2 applies to every actuator subcommand, not just `run` — enumerate the
 // full dispatch table and prove each one rejects an unrecognized flag by name.
 func TestActuatorSubcommandsRejectUnknownFlag(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	cases := []struct {
 		name string
@@ -129,6 +133,7 @@ func TestActuatorSubcommandsRejectUnknownFlag(t *testing.T) {
 // changed subcommand, proving decisions 1+2 add zero behavior change for valid
 // input (existing green paths stay green).
 func TestActuatorSubcommandsAcceptKnownFlagsEndToEnd(t *testing.T) {
+	t.Parallel()
 	t.Run("plan", func(t *testing.T) {
 		homePath := t.TempDir()
 		var stdout, stderr bytes.Buffer
@@ -263,6 +268,7 @@ func postRecordFailureHome(t *testing.T) string {
 // consumption failure on stderr with exit 1. RED before the fix (result dropped:
 // stdout empty of the result, only stderr).
 func TestActuatorPostJSONSurfacesResultWithRecordError(t *testing.T) {
+	t.Parallel()
 	home := postRecordFailureHome(t)
 	var stdout, stderr bytes.Buffer
 	code := runActuator([]string{
@@ -295,6 +301,7 @@ func TestActuatorPostJSONSurfacesResultWithRecordError(t *testing.T) {
 // EXECUTED block (the receipt: line) AND name the failure on stderr with exit 1.
 // RED before the fix (block skipped: no receipt: line on stdout).
 func TestActuatorPostHumanSurfacesReceiptWithRecordError(t *testing.T) {
+	t.Parallel()
 	home := postRecordFailureHome(t)
 	var stdout, stderr bytes.Buffer
 	code := runActuator([]string{
@@ -318,6 +325,7 @@ func TestActuatorPostHumanSurfacesReceiptWithRecordError(t *testing.T) {
 // file), human mode must stay error-only: exit 1, NO EXECUTED block on stdout.
 // This guards the mirror against over-printing an EXECUTED block for a zero result.
 func TestActuatorPostPreStagingFailureStaysErrorOnly(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	seedActuatorCLIWork(t, home, "work_pre")
 	// Make the artifact-store path a FILE so act.NewArtifactStore's MkdirAll
@@ -391,6 +399,7 @@ func TestActuatorSwitchbackJSONPreservesAccountingFailureAndExitsNonzero(t *test
 }
 
 func TestActuatorRunJSONNamesMissingWorkError(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	var stdout, stderr bytes.Buffer
 
@@ -413,6 +422,7 @@ func TestActuatorRunJSONNamesMissingWorkError(t *testing.T) {
 }
 
 func TestActuatorRunHeldCardPersistenceFailureStaysErrorOnly(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	seedActuatorCLIWork(t, homePath, "work_hold")
 	actuatorDir := filepath.Join(homePath, "actuator")
