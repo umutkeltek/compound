@@ -573,6 +573,7 @@ func TestOrientOperatorTreatsConsumedSurfacingFeedbackReportTerminal(t *testing.
 }
 
 func TestCandidateInboxSummaryNeverCountsCustodyCorruptionAsActionable(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 3, 9, 0, 0, 0, time.UTC)
 	valid := map[string]any{"id": "zz-valid", "state": "proposed", "created_at": now.Add(-time.Minute).Format(time.RFC3339)}
@@ -1720,6 +1721,7 @@ func finalizeOrientStrangerForTest(t *testing.T, store *mem.Store, homePath, exc
 // TestOrientStrangerCardDealerFalsifiers covers the S3b dealer's F5-F7 falsifiers across its
 // prepare + Store-owned finalize seam (packet D4/D5/D7).
 func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
@@ -2021,6 +2023,7 @@ func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
 // eligible candidate produces exactly one stranger card inside the SAME TensionCards.Items list
 // contested-claim/standing-law cards use (no new report field).
 func TestOrientOperatorReportIncludesDealtStrangerCard(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
@@ -2123,6 +2126,7 @@ func TestOrientStrangerCardConcurrentReportsFinalizeOneDeal(t *testing.T) {
 }
 
 func TestOrientStrangerCardCursorFailureLeavesNoDealOrCard(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
