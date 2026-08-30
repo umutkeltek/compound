@@ -2529,6 +2529,23 @@ func runAttemptHasExecuted(ra runattempt.RunAttempt) bool {
 	return ra.CompletedAt.IsZero() || !ra.LastHeartbeatAt.After(ra.CompletedAt)
 }
 
+// runAttemptOwnsHarnessOutcome recognizes either a proved process launch or
+// the one exact pre-launch failure that still belongs to the harness attempt.
+// Origin alone is never enough: the start-error case must carry the rooted
+// prepared+start_error lifecycle that runattempt classifies side-effect-free.
+func runAttemptOwnsHarnessOutcome(ra runattempt.RunAttempt) bool {
+	launch := ra.Launch
+	if launch != nil && launch.CommittedAt != nil && launch.StartErrorAt != nil {
+		return false
+	}
+	if runAttemptHasExecuted(ra) {
+		return true
+	}
+	return ra.Origin == runattempt.OriginHarnessExecution &&
+		launch != nil && launch.PreparedAt != nil && launch.StartErrorAt != nil &&
+		launch.CommittedAt == nil && launch.PreparedAt.Equal(*launch.StartErrorAt)
+}
+
 // proofResourcePolicyRefusedBeforeExecution is the exact refusal reason the
 // proof-resource reservation stamps when its policy denies before any
 // execution (proof_reservation.go). It must stay byte-identical to that
@@ -2631,7 +2648,7 @@ func buildAttachedRunAttemptHistory(ids []string, attempts map[string]runattempt
 		for executionIndex := claimIndex + 1; executionIndex < len(orderedIDs); executionIndex++ {
 			executionID := orderedIDs[executionIndex]
 			execution, ok := attempts[executionID]
-			if !ok || execution.Origin != runattempt.OriginHarnessExecution || !execution.CreatedAt.After(claim.CreatedAt) {
+			if !ok || !execution.CreatedAt.After(claim.CreatedAt) || !runAttemptOwnsHarnessOutcome(execution) {
 				continue
 			}
 			history.ReplacedClaimReservations[claimID] = append(history.ReplacedClaimReservations[claimID], executionID)

@@ -124,6 +124,66 @@ func TestRunAttemptHasExecutedRequiresObservedBoundary(t *testing.T) {
 	}
 }
 
+func TestRunAttemptOwnsHarnessOutcomeRequiresExecutedOrExactStartError(t *testing.T) {
+	prepared := fixedNow.Add(time.Minute)
+	other := prepared.Add(time.Second)
+	committed := prepared
+	tests := []struct {
+		name string
+		ra   runattempt.RunAttempt
+		want bool
+	}{
+		{
+			name: "origin only",
+			ra:   runattempt.RunAttempt{Origin: runattempt.OriginHarnessExecution, CreatedAt: fixedNow},
+		},
+		{
+			name: "prepared only",
+			ra: runattempt.RunAttempt{
+				Origin: runattempt.OriginHarnessExecution,
+				Launch: &runattempt.LaunchLifecycle{PreparedAt: &prepared},
+			},
+		},
+		{
+			name: "mismatched start error",
+			ra: runattempt.RunAttempt{
+				Origin: runattempt.OriginHarnessExecution,
+				Launch: &runattempt.LaunchLifecycle{PreparedAt: &prepared, StartErrorAt: &other},
+			},
+		},
+		{
+			name: "conflicting committed and start error",
+			ra: runattempt.RunAttempt{
+				Origin: runattempt.OriginHarnessExecution,
+				Launch: &runattempt.LaunchLifecycle{PreparedAt: &prepared, CommittedAt: &committed, StartErrorAt: &prepared},
+			},
+		},
+		{
+			name: "exact start error",
+			ra: runattempt.RunAttempt{
+				Origin: runattempt.OriginHarnessExecution,
+				Launch: &runattempt.LaunchLifecycle{PreparedAt: &prepared, StartErrorAt: &prepared},
+			},
+			want: true,
+		},
+		{
+			name: "committed execution",
+			ra: runattempt.RunAttempt{
+				Origin: runattempt.OriginHarnessExecution,
+				Launch: &runattempt.LaunchLifecycle{PreparedAt: &prepared, CommittedAt: &committed},
+			},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := runAttemptOwnsHarnessOutcome(tt.ra); got != tt.want {
+				t.Fatalf("runAttemptOwnsHarnessOutcome() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // Falsifier for work_114bc68834fb: `work close` terminalizes the work's bound
 // non-terminal RunAttempts by outcome. Mapping (settled design):
 //
