@@ -43,6 +43,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestDispatchPlanSelectsReadyWorkWithoutClaiming(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	held, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "held needs review", State: "held"}, fixedNow)
 	if err != nil {
@@ -89,6 +90,7 @@ func TestDispatchPlanSelectsReadyWorkWithoutClaiming(t *testing.T) {
 }
 
 func TestDispatchPlanNoopsWhenNoOpenWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	plan, err := s.DispatchPlan(fixedNow, DispatchPlanOptions{Actor: "codex", Record: true})
 	if err != nil {
@@ -103,6 +105,7 @@ func TestDispatchPlanNoopsWhenNoOpenWork(t *testing.T) {
 }
 
 func TestDispatchPlanSourcePacketIsReadOnlyPreview(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
 	before, err := os.ReadFile(packetPath)
@@ -146,6 +149,7 @@ func TestDispatchPlanSourcePacketIsReadOnlyPreview(t *testing.T) {
 }
 
 func TestDispatchClaimClaimsSelectedReadyWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -190,6 +194,7 @@ func TestDispatchClaimClaimsSelectedReadyWork(t *testing.T) {
 }
 
 func TestDispatchClaimInjectsTaskScopedSkillOffersIntoWorkerPrompt(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	graph, err := capgraph.Open(s.home)
 	if err != nil {
@@ -250,6 +255,7 @@ func TestDispatchClaimInjectsTaskScopedSkillOffersIntoWorkerPrompt(t *testing.T)
 }
 
 func TestAttachDispatchPromptDoesNotOverwriteConcurrentLifecycleMutation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		prepare func(*testing.T, *Store, envelope.WorkEnvelope) envelope.WorkEnvelope
@@ -389,6 +395,7 @@ func TestAttachDispatchPromptRecoversPendingClaimBeforeAttachment(t *testing.T) 
 }
 
 func TestDispatchClaimBlockedByPolicyDoesNotClaim(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "policy hold blocks dispatch claim"}, fixedNow)
 	if err != nil {
@@ -525,6 +532,7 @@ func (b *dispatchGraphBarrier) waitUntilRead(t *testing.T) func() {
 }
 
 func TestDispatchAdvanceAdvancesOwnClaimedWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -567,6 +575,7 @@ func TestDispatchAdvanceAdvancesOwnClaimedWork(t *testing.T) {
 }
 
 func TestDispatchAdvanceIgnoresOtherActorClaim(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "other actor claim is not advanced"}, fixedNow)
 	if err != nil {
@@ -593,6 +602,7 @@ func TestDispatchAdvanceIgnoresOtherActorClaim(t *testing.T) {
 }
 
 func TestDispatchAdvanceBlockedByPolicyDoesNotAdvance(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "policy hold blocks dispatch advance"}, fixedNow)
 	if err != nil {
@@ -634,6 +644,7 @@ func TestDispatchAdvanceBlockedByPolicyDoesNotAdvance(t *testing.T) {
 }
 
 func TestDispatchClosePlanRecordsClosePlanWithoutClosing(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := runningWork(t, s, "dispatch close-plan uses observed proof")
 	trace := writeTrace(t, s, "trace_dispatch_close_plan_observed", w.ID)
@@ -677,6 +688,7 @@ func TestDispatchClosePlanRecordsClosePlanWithoutClosing(t *testing.T) {
 }
 
 func TestDispatchClosePlanRequiresProofEvidence(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := runningWork(t, s, "dispatch close-plan waits for proof")
 	verifying, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "codex"}, fixedNow)
@@ -703,6 +715,7 @@ func TestDispatchClosePlanRequiresProofEvidence(t *testing.T) {
 }
 
 func TestDispatchClosePlanBlockedByPolicyRecordsPlanWithoutClosing(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := runningWork(t, s, "dispatch close-plan policy hold")
 	trace := writeTrace(t, s, "trace_dispatch_close_plan_blocked", w.ID)
@@ -742,6 +755,7 @@ func TestDispatchClosePlanBlockedByPolicyRecordsPlanWithoutClosing(t *testing.T)
 }
 
 func TestDispatchCloseClosesProofReadyWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := runningWork(t, s, "dispatch close terminalizes observed proof")
 	trace := writeTrace(t, s, "trace_dispatch_close_observed", w.ID)
@@ -775,6 +789,7 @@ func TestDispatchCloseClosesProofReadyWork(t *testing.T) {
 }
 
 func TestDispatchCloseRequiresProofEvidence(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := runningWork(t, s, "dispatch close waits for proof")
 	verifying, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "codex"}, fixedNow)
@@ -801,6 +816,7 @@ func TestDispatchCloseRequiresProofEvidence(t *testing.T) {
 }
 
 func TestDispatchCloseBlockedByPolicyDoesNotClose(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := runningWork(t, s, "dispatch close policy hold")
 	trace := writeTrace(t, s, "trace_dispatch_close_blocked", w.ID)
@@ -840,6 +856,7 @@ func TestDispatchCloseBlockedByPolicyDoesNotClose(t *testing.T) {
 }
 
 func TestDispatchStepClosesBeforeAdvanceOrClaim(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready waits behind close"}, fixedNow)
 	if err != nil {
@@ -889,6 +906,7 @@ func TestDispatchStepClosesBeforeAdvanceOrClaim(t *testing.T) {
 }
 
 func TestDispatchStepAdvancesBeforeClaim(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready waits behind advance"}, fixedNow)
 	if err != nil {
@@ -926,6 +944,7 @@ func TestDispatchStepAdvancesBeforeClaim(t *testing.T) {
 }
 
 func TestDispatchStepClaimsReadyWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "dispatch step claims ready"}, fixedNow)
 	if err != nil {
@@ -954,6 +973,7 @@ func TestDispatchStepClaimsReadyWork(t *testing.T) {
 }
 
 func TestDispatchStepImportsSourcePacketAndClaimsIt(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
 	before, err := os.ReadFile(packetPath)
@@ -1013,6 +1033,7 @@ func TestDispatchStepImportsSourcePacketAndClaimsIt(t *testing.T) {
 }
 
 func TestDispatchStepReportsTerminalSourcePacket(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
 	imported, err := s.ImportPacket(packetPath, PacketImportOptions{
@@ -1071,6 +1092,7 @@ func TestDispatchStepReportsTerminalSourcePacket(t *testing.T) {
 }
 
 func TestDispatchStepRecordsNoAction(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	result, err := s.DispatchStep(fixedNow, DispatchStepOptions{Actor: "codex"})
 	if err != nil {
@@ -1094,6 +1116,7 @@ func TestDispatchStepRecordsNoAction(t *testing.T) {
 }
 
 func TestDispatchStepStopsAfterRunningOnlyAdvance(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	claimedCandidate, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "claimed advances then waits for run evidence"}, fixedNow)
 	if err != nil {
@@ -1122,6 +1145,7 @@ func TestDispatchStepStopsAfterRunningOnlyAdvance(t *testing.T) {
 }
 
 func TestDispatchStepWaitsForReviewWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	held, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "held work needs review", State: "held"}, fixedNow)
 	if err != nil {
@@ -1140,6 +1164,7 @@ func TestDispatchStepWaitsForReviewWork(t *testing.T) {
 }
 
 func TestDispatchStepWaitsForCloseProof(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	running := runningWork(t, s, "verifying waits for close proof")
 	verifying, err := s.Advance(running.ID, AdvanceInput{To: "verifying", Actor: "codex"}, fixedNow)
@@ -1159,6 +1184,7 @@ func TestDispatchStepWaitsForCloseProof(t *testing.T) {
 }
 
 func TestDispatchStepWaitsForOtherActorClaim(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	created, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "other actor claim waits"}, fixedNow)
 	if err != nil {
@@ -1181,6 +1207,7 @@ func TestDispatchStepWaitsForOtherActorClaim(t *testing.T) {
 }
 
 func TestDispatchStepRunClaimsAndAdvancesUntilRunEvidenceWait(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "loop claims then advances"}, fixedNow)
 	if err != nil {
@@ -1289,6 +1316,7 @@ func TestDispatchStepRunStopsAtNonProgressCapacityWait(t *testing.T) {
 }
 
 func TestDispatchStepRunStopsAtMaxStepsWithContinuation(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "loop bounded by max"}, fixedNow)
 	if err != nil {
@@ -1320,6 +1348,7 @@ func TestDispatchStepRunStopsAtMaxStepsWithContinuation(t *testing.T) {
 }
 
 func TestDispatchStepRunImportsSourcePacketOnceThenAdvances(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
 	before, err := os.ReadFile(packetPath)
@@ -1371,6 +1400,7 @@ func TestDispatchStepRunImportsSourcePacketOnceThenAdvances(t *testing.T) {
 // success predicate is command-shaped (single-line runnable command per CommandShapedPredicate),
 // absent for prose and multi-line predicates. Derived at plan render time, never stored.
 func TestDispatchPlanSurfacesPredicateCommand(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	cmdWork, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "go test ./internal/work/ -count=1"}, fixedNow)
 	if err != nil {

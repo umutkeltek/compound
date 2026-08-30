@@ -17,6 +17,7 @@ import (
 )
 
 func TestRecordReceiptedActionPersistsExactGovernedOutcome(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
@@ -283,6 +284,7 @@ func TestReceiptedActionPendingWritesV02WithCompletionTime(t *testing.T) {
 }
 
 func TestRecordReceiptedActionReplaysAuthenticV01PendingMarker(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		mutate func(map[string]any)
@@ -345,6 +347,7 @@ func TestRecordReceiptedActionReplaysAuthenticV01PendingMarker(t *testing.T) {
 }
 
 func TestRecordReservedReceiptedActionReplaysAuthenticV01PendingMarker(t *testing.T) {
+	t.Parallel()
 	s, w, in, authorizedAt, historicalCompletion, _ := governedV01PendingFixture(t, true, "head")
 	replayed, err := s.RecordReservedReceiptedAction(w.ID, in, authorizedAt)
 	if err != nil {
@@ -357,6 +360,7 @@ func TestRecordReservedReceiptedActionReplaysAuthenticV01PendingMarker(t *testin
 }
 
 func TestRecordReservedReceiptedActionRejectsV01SealedMaxTimestamp(t *testing.T) {
+	t.Parallel()
 	s, w, in, authorizedAt, _, pendingPath := governedV01PendingFixture(t, true, "sealed_max")
 	pendingBefore, err := os.ReadFile(pendingPath)
 	if err != nil {
@@ -545,6 +549,7 @@ func interruptedExpiringDirectGovernedAction(t *testing.T) (*Store, envelope.Wor
 }
 
 func TestReceiptedActionReservationBlocksLifecycleUntilFinalizeOrAbort(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
@@ -592,6 +597,7 @@ func TestReceiptedActionReservationBlocksLifecycleUntilFinalizeOrAbort(t *testin
 }
 
 func TestReceiptedActionReservationAuthorizationFailureDoesNotBlockWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := governedActionRunningWork(t, s, "operator:test")
 	action, decision := governedActionApproval(w, "operator:test", fixedNow.Add(time.Minute))
@@ -609,6 +615,7 @@ func TestReceiptedActionReservationAuthorizationFailureDoesNotBlockWork(t *testi
 }
 
 func TestReceiptedActionReservationSchemaVersionsRecoveryEvidence(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
@@ -701,6 +708,7 @@ func TestReceiptedActionReservationSchemaVersionsRecoveryEvidence(t *testing.T) 
 }
 
 func TestReceiptedActionReservationReauthorizationAtomicallyReplacesSameAction(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := governedActionRunningWork(t, s, "operator:test")
 	action, firstDecision := governedActionApproval(w, "operator:test", fixedNow.Add(time.Minute))
@@ -743,6 +751,7 @@ func TestReceiptedActionReservationReauthorizationAtomicallyReplacesSameAction(t
 }
 
 func TestReceiptedActionReservationReauthorizationFailurePreservesPriorReservation(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := governedActionRunningWork(t, s, "operator:test")
 	action, firstDecision := governedActionApproval(w, "operator:test", fixedNow.Add(time.Minute))
@@ -768,6 +777,7 @@ func TestReceiptedActionReservationReauthorizationFailurePreservesPriorReservati
 }
 
 func TestReceiptedActionReservationReauthorizationRejectsChangedActionSemantics(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := governedActionRunningWork(t, s, "operator:test")
 	action, firstDecision := governedActionApproval(w, "operator:test", fixedNow.Add(time.Minute))
@@ -797,6 +807,7 @@ func TestReceiptedActionReservationReauthorizationRejectsChangedActionSemantics(
 }
 
 func TestReceiptedActionReservationReauthorizationRejectsBackwardTime(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := governedActionRunningWork(t, s, "operator:test")
 	action, firstDecision := governedActionApproval(w, "operator:test", fixedNow.Add(time.Minute))
@@ -822,6 +833,7 @@ func TestReceiptedActionReservationReauthorizationRejectsBackwardTime(t *testing
 }
 
 func TestReceiptedActionReservationReauthorizationConvergesFromUnknownIntermediateReservation(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := governedActionRunningWork(t, s, "operator:test")
 	action, firstDecision := governedActionApproval(w, "operator:test", fixedNow.Add(time.Minute))
@@ -859,6 +871,7 @@ func TestReceiptedActionReservationReauthorizationConvergesFromUnknownIntermedia
 }
 
 func TestRecordReservedReceiptedActionReplaysCompletedOutcomeAfterLifecycleAdvances(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := governedActionRunningWork(t, s, "operator:test")
 	action, decision := governedActionApproval(w, "operator:test", fixedNow.Add(time.Minute))
@@ -888,6 +901,7 @@ func TestRecordReservedReceiptedActionReplaysCompletedOutcomeAfterLifecycleAdvan
 }
 
 func TestCompletedReceiptedActionPersistsExactOutputDigests(t *testing.T) {
+	t.Parallel()
 	s, w, in, authorizedAt, result := completedGovernedAction(t)
 	path := filepath.Join(s.home, "work", "receipted-action-completions", w.ID, in.Action.ID+".json")
 	body, err := os.ReadFile(path)
@@ -917,6 +931,7 @@ func TestCompletedReceiptedActionPersistsExactOutputDigests(t *testing.T) {
 }
 
 func TestCompletedReceiptedActionRejectsLegacyAndMissingExactOutputDigests(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
@@ -978,6 +993,7 @@ func TestCompletedReceiptedActionRejectsLegacyAndMissingExactOutputDigests(t *te
 }
 
 func TestCompletedReceiptedActionRejectsSchemaValidExactOutputTamper(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
@@ -1187,6 +1203,7 @@ func TestAbortReceiptedActionReservationRefusesAfterReceiptPublicationBegins(t *
 }
 
 func TestRecordReceiptedActionRefusesInvalidPreEvaluatedSecurityDecisionWithoutWriting(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
@@ -1297,6 +1314,7 @@ func TestRecordReceiptedActionRefusesInvalidPreEvaluatedSecurityDecisionWithoutW
 // operator actor, no standing grant, no policy.Evaluate — and it passed. This
 // proves the gate now closes for every dangerous class, not just security.
 func TestRecordReceiptedActionRefusesFabricatedDangerousMutationClassDecision(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}

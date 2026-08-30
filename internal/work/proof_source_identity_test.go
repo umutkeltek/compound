@@ -18,6 +18,7 @@ import (
 )
 
 func TestReserveProofResourceRejectsWorkRepositoryFingerprintMismatchBeforeMutation(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	repoA := initProofSourceRepo(t, "https://example.invalid/compound/repo-a.git")
 	repoB := initProofSourceRepo(t, "https://example.invalid/compound/repo-b.git")
@@ -91,6 +92,7 @@ func TestReserveProofResourceRejectsWorkRepositoryFingerprintMismatchBeforeMutat
 }
 
 func TestCompleteProofResourceStoresSealedSourceSnapshot(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	repo := initProofSourceRepo(t, "https://example.invalid/compound/repo-proof.git")
 	source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
@@ -243,6 +245,7 @@ func TestCompleteProofResourceStoresSealedSourceSnapshot(t *testing.T) {
 }
 
 func TestLandCheckRefusesSourceControlledCandidateWithoutCommittedProof(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 28, 7, 30, 0, 0, time.UTC)
 	repo, base, candidate := sharedLandingLandedRepo(t)
 	store, err := Open(t.TempDir())
@@ -284,6 +287,7 @@ func TestLandCheckRefusesSourceControlledCandidateWithoutCommittedProof(t *testi
 }
 
 func TestLandCheckRequiresSourceBoundProofBeforeFastForwardAdvice(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC)
 	repo, base, candidate := sharedLandingReadyRepo(t)
 	store, err := Open(t.TempDir())
@@ -318,6 +322,7 @@ func TestLandCheckRequiresSourceBoundProofBeforeFastForwardAdvice(t *testing.T) 
 }
 
 func TestRecordedLandedReportWithoutSourceProofCannotClose(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 28, 7, 40, 0, 0, time.UTC)
 	repo, base, candidate := sharedLandingLandedRepo(t)
 	store, err := Open(t.TempDir())
@@ -394,6 +399,7 @@ func TestRecordedLandedReportWithoutSourceProofCannotClose(t *testing.T) {
 }
 
 func TestSHA256SourceBoundProofAndLandBinding(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	repo := initSHA256ProofSourceRepo(t)
 	source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
@@ -659,6 +665,7 @@ func TestLandCheckAcceptsFinalizerCommittedRetryChain(t *testing.T) {
 }
 
 func TestLandCheckAcceptsExactProofReservationGovernanceVariants(t *testing.T) {
+	t.Parallel()
 	completeAndAttachCandidate := func(
 		t *testing.T,
 		fixture sourceBoundProofCompletionFixture,
@@ -1162,6 +1169,7 @@ func completeSourceBoundProofForWork(
 }
 
 func TestRecordedLandCheckRejectsCallerShapedProofResult(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		proofHead     func(f landingProofFixture) string

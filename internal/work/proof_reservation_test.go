@@ -28,6 +28,7 @@ const (
 )
 
 func TestProofResourceReservationExclusiveUntilReleaseAndGovernedResultReachable(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	first := claimedProofWork(t, s, "first proof work", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "second proof work", proofActorBeta, fixedNow.Add(time.Second))
@@ -131,6 +132,7 @@ func TestProofResourceReservationExclusiveUntilReleaseAndGovernedResultReachable
 }
 
 func TestCloseFailedWorkPreservesCommittedVerifiedProofRunAttemptOutcome(t *testing.T) {
+	t.Parallel()
 	fixture := newSourceBoundProofCompletionFixture(t, fixedNow)
 	completed, err := fixture.store.CompleteProofResource(fixture.item.ID, ProofResourceCompleteInput{
 		Actor:             proofActorAlpha,
@@ -174,6 +176,7 @@ func TestCloseFailedWorkPreservesCommittedVerifiedProofRunAttemptOutcome(t *test
 }
 
 func TestCloseFailedWorkRejectsProofShapedSucceededAttemptWithoutCommittedFinalizer(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := claimedProofWork(t, s, "reject proof-shaped attempt without finalizer", proofActorAlpha, fixedNow)
 	attempt, err := s.runAttempts().Mint(w.ID, proofActorAlpha, proofResourceHarness, fixedNow.Add(2*time.Second))
@@ -214,6 +217,7 @@ func TestCloseFailedWorkRejectsProofShapedSucceededAttemptWithoutCommittedFinali
 }
 
 func TestProofResourceCompleteCanonicalAllFailedNullProofRefsReleasesWithoutVerification(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	first := claimedProofWork(t, s, "complete failed proof work", proofActorAlpha, fixedNow)
 	successorWork := claimedProofWork(t, s, "proof after complete failure", proofActorBeta, fixedNow.Add(time.Second))
@@ -299,6 +303,7 @@ func TestProofResourceCompleteCanonicalAllFailedNullProofRefsReleasesWithoutVeri
 }
 
 func TestProofResourceReservationExpiryRetainsBarrierUntilTerminationIsGoverned(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	first := claimedProofWork(t, s, "expiring proof work", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "recovery proof work", proofActorBeta, fixedNow.Add(time.Second))
@@ -389,6 +394,7 @@ func TestProofResourceReservationExpiryRetainsBarrierUntilTerminationIsGoverned(
 }
 
 func TestProofResourceChainedStealWaitsForOldestNonterminalPredecessor(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	first := claimedProofWork(t, s, "stopped original proof", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "first takeover barrier", proofActorBeta, fixedNow.Add(time.Second))
@@ -488,6 +494,7 @@ func TestProofResourceChainedStealWaitsForOldestNonterminalPredecessor(t *testin
 }
 
 func TestProofResourceRecoveryLineageFailsClosedOnAmbiguityAndCycles(t *testing.T) {
+	t.Parallel()
 	t.Run("ambiguous predecessor branches", func(t *testing.T) {
 		s := newStore(t)
 		left := writeTestProofRecoveryNode(t, s, "pfr_lineage_left", "", "", fixedNow)
@@ -548,6 +555,7 @@ func TestProofResourceRecoveryLineageFailsClosedOnAmbiguityAndCycles(t *testing.
 }
 
 func TestProofResourceTerminationEvidenceMustBindExactRunAttempt(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	first := claimedProofWork(t, s, "termination evidence target", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "termination evidence verifier", proofActorBeta, fixedNow.Add(time.Second))
@@ -628,6 +636,7 @@ func TestProofResourceTerminationEvidenceMustBindExactRunAttempt(t *testing.T) {
 }
 
 func TestProofResourceProducesTrustedTerminationEvidenceFromReleasedBarrier(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	first := claimedProofWork(t, s, "trusted termination predecessor", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "trusted termination successor", proofActorBeta, fixedNow.Add(time.Second))
@@ -679,6 +688,7 @@ func TestProofResourceProducesTrustedTerminationEvidenceFromReleasedBarrier(t *t
 }
 
 func TestProofResourceTerminationEvidencePublicationRequiresPolicyAllow(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	first := claimedProofWork(t, s, "governed termination evidence predecessor", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "governed termination evidence successor", proofActorBeta, fixedNow.Add(time.Second))
@@ -722,6 +732,7 @@ func TestProofResourceTerminationEvidencePublicationRequiresPolicyAllow(t *testi
 }
 
 func TestProofResourceReservationHeartbeatExtendsOnlyTheCurrentHolder(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	first := claimedProofWork(t, s, "heartbeat proof work", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "heartbeat successor work", proofActorBeta, fixedNow.Add(time.Second))
@@ -796,6 +807,7 @@ func TestProofResourceReservationHeartbeatExtendsOnlyTheCurrentHolder(t *testing
 }
 
 func TestProofResourceRepeatedHeartbeatsKeepWorkLifecycleBounded(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := claimedProofWork(t, s, "bounded heartbeat proof work", proofActorAlpha, fixedNow)
 	w, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: proofActorAlpha}, fixedNow.Add(time.Second))
@@ -884,6 +896,7 @@ func TestProofResourceRepeatedHeartbeatsKeepWorkLifecycleBounded(t *testing.T) {
 }
 
 func TestProofResourceSameSecondRefreshesKeepDistinctOutcomeEvidence(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := claimedProofWork(t, s, "same-second heartbeat proof work", proofActorAlpha, fixedNow)
 	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
@@ -938,6 +951,7 @@ func TestProofResourceSameSecondRefreshesKeepDistinctOutcomeEvidence(t *testing.
 }
 
 func TestProofResourceScopedRefreshRequiresExactPreparation(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := claimedProofWork(t, s, "refresh preparation proof work", proofActorAlpha, fixedNow)
 	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
@@ -991,6 +1005,7 @@ func TestProofResourceScopedRefreshRequiresExactPreparation(t *testing.T) {
 }
 
 func TestProofResourceScopedRefreshRejectsArbitraryOutcomeIdentity(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := claimedProofWork(t, s, "arbitrary refresh identity proof work", proofActorAlpha, fixedNow)
 	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
@@ -1029,6 +1044,7 @@ func TestProofResourceScopedRefreshRejectsArbitraryOutcomeIdentity(t *testing.T)
 }
 
 func TestProofReservationWithLatestRefreshIgnoresHistoricalReservationLineage(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := claimedProofWork(t, s, "historical refresh lineage", proofActorAlpha, fixedNow)
 	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
@@ -1100,6 +1116,7 @@ func TestProofReservationWithLatestRefreshIgnoresHistoricalReservationLineage(t 
 }
 
 func TestProofResourceReservationExceptionalStealIsExplicitAndAudited(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	first := claimedProofWork(t, s, "steal source proof", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "steal successor proof", proofActorBeta, fixedNow.Add(time.Second))
@@ -1260,6 +1277,7 @@ func TestProofResourceReservationExceptionalStealIsExplicitAndAudited(t *testing
 }
 
 func TestProofResourceFailedStealRetainsTerminationBarrierAcrossExpiry(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	first := claimedProofWork(t, s, "active proof ignores takeover", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "failed takeover barrier", proofActorBeta, fixedNow.Add(time.Second))
@@ -1334,6 +1352,7 @@ func TestProofResourceFailedStealRetainsTerminationBarrierAcrossExpiry(t *testin
 }
 
 func TestProofResourceAcquisitionFailureAfterMintIsTerminalAndReachable(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := claimedProofWork(t, s, "non-contention acquisition failure", proofActorAlpha, fixedNow)
 	before, err := s.Get(w.ID)
@@ -1621,6 +1640,7 @@ func TestProofResourceScarceMutationCrashIsGovernedAndRecoverable(t *testing.T) 
 }
 
 func TestProofResourceUnknownProducerExitNeverBecomesVerification(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := claimedProofWork(t, s, "ambiguous producer proof", proofActorAlpha, fixedNow)
 	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
@@ -1656,6 +1676,7 @@ func TestProofResourceUnknownProducerExitNeverBecomesVerification(t *testing.T) 
 }
 
 func TestProofResourceCompletionRejectsInvalidOwnedReportAndExpiredLease(t *testing.T) {
+	t.Parallel()
 	t.Run("invalid JSON bytes", func(t *testing.T) {
 		s := newStore(t)
 		w := claimedProofWork(t, s, "invalid report proof", proofActorAlpha, fixedNow)
@@ -1767,6 +1788,7 @@ func TestProofResourceCompletionRejectsInvalidOwnedReportAndExpiredLease(t *test
 }
 
 func TestProofResourceCompletionRejectsCanonicalProfileDrift(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		mutate  func(map[string]any)
@@ -1903,6 +1925,7 @@ func TestProofResourceCompletionRejectsCanonicalProfileDrift(t *testing.T) {
 }
 
 func TestProofResourceProfileKindIsSealedAndNoncanonicalCannotVerify(t *testing.T) {
+	t.Parallel()
 	gates := []ProofResourceGateProfile{
 		{
 			Name:     "synthetic-gate-a",
@@ -1966,6 +1989,7 @@ func TestProofResourceProfileKindIsSealedAndNoncanonicalCannotVerify(t *testing.
 }
 
 func TestProofResourceCompletionRequiresActiveSameWorkRunAttempt(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := claimedProofWork(t, s, "terminal run proof", proofActorAlpha, fixedNow)
 	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
@@ -3259,6 +3283,7 @@ func writeTestProofRecoveryNode(
 }
 
 func TestResumeProofResourceCompletionRearmsExactExpiredHolderWithoutNewReservation(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := claimedProofWork(t, s, "resume exact expired proof completion", proofActorAlpha, fixedNow)
 	acquired, err := reserveProofResourceWithLiveBarrier(t, s, w.ID, ProofResourceReserveInput{

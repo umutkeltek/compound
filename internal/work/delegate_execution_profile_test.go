@@ -302,6 +302,7 @@ func TestDelegateRefusesMissingOrUnknownProviderRouteKindBeforeProfilesReadiness
 }
 
 func TestDelegateLaunchProfilePlanFromSnapshotRejectsMissingOrUnknownProviderRouteKind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		kind    string
@@ -1700,6 +1701,7 @@ func TestDelegateRefusesModelTupleResolverErrorBeforeMint(t *testing.T) {
 }
 
 func TestValidateDelegateLaunchProfileResolutionUsesOnlyDeclaredProviderRouteAxis(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		profileID       string

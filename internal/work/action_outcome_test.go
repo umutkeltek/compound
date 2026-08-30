@@ -17,6 +17,7 @@ import (
 )
 
 func TestRecordReceiptedActionKeepsParentOpenAndIsStateIdempotent(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := receiptedActionRunningWork(t, s)
 	claimID := receiptedActionRuling(t, s, "receipted-action-ruling", "", fixedNow)
@@ -122,6 +123,7 @@ func TestRecordReceiptedActionKeepsParentOpenAndIsStateIdempotent(t *testing.T) 
 }
 
 func TestRecordReceiptedActionReplaysHistoricalTransactionWithoutRewindingWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := receiptedActionRunningWork(t, s)
 	claimID := receiptedActionRuling(t, s, "receipted-action-historical-replay", "", fixedNow)
@@ -430,6 +432,7 @@ func TestPendingReceiptedActionExcludesCanonicalLifecycleWriters(t *testing.T) {
 }
 
 func TestRecordReceiptedActionRejectsReadyWorkBeforeWriting(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "codex", SuccessPredicate: "receipted action requires active execution", Risk: "tier1", Privacy: "private"}, fixedNow)
 	if err != nil {
@@ -470,6 +473,7 @@ func TestRecordReceiptedActionRejectsReadyWorkBeforeWriting(t *testing.T) {
 }
 
 func TestRecordReceiptedActionRejectsMalformedPendingRecord(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := receiptedActionRunningWork(t, s)
 	claimID := receiptedActionRuling(t, s, "receipted-action-malformed-pending", "", fixedNow)
@@ -671,6 +675,7 @@ func TestRecordReceiptedActionRetainsMarkerWhenCleanupFailsAfterDurableEvent(t *
 }
 
 func TestRecordReceiptedActionRejectsHistoricalReplayWithCorruptNewerPolicyLink(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := receiptedActionRunningWork(t, s)
 	claimID := receiptedActionRuling(t, s, "receipted-action-corrupt-newer-link", "", fixedNow)
@@ -717,6 +722,7 @@ func TestRecordReceiptedActionRejectsHistoricalReplayWithCorruptNewerPolicyLink(
 }
 
 func TestRecordReceiptedActionRejectsHistoricalReplayWithoutOriginalEvent(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := receiptedActionRunningWork(t, s)
 	claimID := receiptedActionRuling(t, s, "receipted-action-historical-event", "", fixedNow)
@@ -763,6 +769,7 @@ func TestRecordReceiptedActionRejectsHistoricalReplayWithoutOriginalEvent(t *tes
 }
 
 func TestRecordReceiptedActionTerminalProjectionUsesClosingTransitionReceipt(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := receiptedActionRunningWork(t, s)
 	claimID := receiptedActionRuling(t, s, "receipted-action-terminal-projection", "", fixedNow)
@@ -957,6 +964,7 @@ func TestRecordReceiptedActionRefusesConflictingPartialWork(t *testing.T) {
 }
 
 func TestRecordReceiptedActionRefusesInvalidWorkEnvelope(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := receiptedActionRunningWork(t, s)
 	claimID := receiptedActionRuling(t, s, "receipted-action-invalid-work", "", fixedNow)
@@ -1024,6 +1032,7 @@ func TestRecordReceiptedActionDiscardsTornStagedEventWrite(t *testing.T) {
 }
 
 func TestRecordReceiptedActionCrashDuringEventWriteLeavesCanonicalLogIntact(t *testing.T) {
+	t.Parallel()
 	const crashEnv = "COMPOUND_TEST_RECEIPTED_ACTION_EVENT_CRASH"
 	if os.Getenv(crashEnv) == "1" {
 		homePath := os.Getenv("COMPOUND_TEST_HOME")

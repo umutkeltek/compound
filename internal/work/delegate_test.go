@@ -1842,6 +1842,7 @@ func TestDelegateDoesNotPersistPromptFromSpawnFailure(t *testing.T) {
 }
 
 func TestDelegateCorruptAttachedBindingFailsClosed(t *testing.T) {
+	t.Parallel()
 	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	w, err := s.Get(wID)
@@ -1862,6 +1863,7 @@ func TestDelegateCorruptAttachedBindingFailsClosed(t *testing.T) {
 }
 
 func TestDelegateMalformedAttachedBindingFailsClosed(t *testing.T) {
+	t.Parallel()
 	s := newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
 	w, err := s.Get(wID)
@@ -2179,6 +2181,7 @@ func TestDelegateAdvanceFailureKillFailureSurfacesForwardLinkAmbiguity(t *testin
 
 // Naming invariant: session name is deterministic and scoped to the work id.
 func TestDelegateSessionNameDeterministic(t *testing.T) {
+	t.Parallel()
 	got := delegateSessionName("work_TEST")
 	want := "compound-work_TEST"
 	if got != want {
@@ -2187,6 +2190,7 @@ func TestDelegateSessionNameDeterministic(t *testing.T) {
 }
 
 func TestTmuxRunnerAttachArgv(t *testing.T) {
+	t.Parallel()
 	runner := NewTmuxRunner()
 	want := []string{"tmux", "attach-session", "-t", "compound-work_TEST"}
 	got := runner.AttachArgv("compound-work_TEST")
@@ -2196,6 +2200,7 @@ func TestTmuxRunnerAttachArgv(t *testing.T) {
 }
 
 func TestTmuxRunnerRejectsIncompleteSpawnWithoutTouchingTmux(t *testing.T) {
+	t.Parallel()
 	runner := NewTmuxRunner()
 	cases := []struct {
 		name, session, dir, command string
@@ -2268,6 +2273,7 @@ func lifeHasAttached(events []Event, id string) bool {
 // mark the run attempt failed -- not what the operator wants for a
 // healthy in-flight session.
 func TestDelegateSweepLivePaneHeartbeatsAndProtects(t *testing.T) {
+	t.Parallel()
 	s := newExperimentalDelegateStore(t)
 	writeContextPack(t, s, "ctx_sweep_live")
 	w, err := s.Create(CreateInput{
@@ -2348,6 +2354,7 @@ func TestDelegateSweepLivePaneHeartbeatsAndProtects(t *testing.T) {
 // red-first falsifier: DelegateSweep on a DEAD pane + observed exit 1
 // must terminalize the exact ratt as failed AND kill the session.
 func TestDelegateSweepDeadPaneExitOneTerminalizesFailed(t *testing.T) {
+	t.Parallel()
 	s := newExperimentalDelegateStore(t)
 	writeContextPack(t, s, "ctx_sweep_fail")
 	w, err := s.Create(CreateInput{Owner: "memo", SuccessPredicate: "ok", ContextPackID: "ctx_sweep_fail", DesiredOutcome: "alive"}, fixedNow)
@@ -2402,6 +2409,7 @@ func TestDelegateSweepDeadPaneExitOneTerminalizesFailed(t *testing.T) {
 // red-first falsifier: signal-only exit must NOT serialize ExitCode=-1
 // in the work.delegate.exited event.
 func TestDelegateExitedSignalOnlyOmitsExitCode(t *testing.T) {
+	t.Parallel()
 	s := newExperimentalDelegateStore(t)
 	writeContextPack(t, s, "ctx_signal")
 	w, err := s.Create(CreateInput{Owner: "memo", SuccessPredicate: "ok", ContextPackID: "ctx_signal", DesiredOutcome: "alive"}, fixedNow)
@@ -2434,6 +2442,7 @@ func TestDelegateExitedSignalOnlyOmitsExitCode(t *testing.T) {
 // event without RunAttemptID must still return the binding (terminalize
 // step is silently skipped, but exited event is recorded).
 func TestDelegateRecoverBoundSessionOlderRunsBackCompat(t *testing.T) {
+	t.Parallel()
 	s := newExperimentalDelegateStore(t)
 	writeContextPack(t, s, "ctx_legacy")
 	w, err := s.Create(CreateInput{Owner: "memo", SuccessPredicate: "ok", ContextPackID: "ctx_legacy", DesiredOutcome: "alive"}, fixedNow)
@@ -2476,6 +2485,7 @@ func TestDelegateRecoverBoundSessionOlderRunsBackCompat(t *testing.T) {
 // red-first falsifier: probe uncertainty (UnknownReason) must NOT map
 // to any terminal status; it surfaces as an error.
 func TestDelegateSweepProbeUncertaintyReturnsError(t *testing.T) {
+	t.Parallel()
 	s := newExperimentalDelegateStore(t)
 	writeContextPack(t, s, "ctx_unk")
 	w, err := s.Create(CreateInput{Owner: "memo", SuccessPredicate: "ok", ContextPackID: "ctx_unk", DesiredOutcome: "alive"}, fixedNow)
