@@ -1,6 +1,7 @@
 package candidates
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,6 +89,52 @@ func WriteCandidate(homePath string, kind Kind, id string, payload any) error {
 	return withCandidatePublicationLock(homePath, dir, func(inbox *candidateInbox) error {
 		return replaceCandidate(inbox, kind, id, data)
 	})
+}
+
+// ReplaceCandidateResult distinguishes a committed replacement from an exact
+// newer generation observed under the same candidate publication lock.
+type ReplaceCandidateResult struct {
+	Replaced bool
+	Current  Record
+}
+
+// ReplaceCandidateIfCurrent atomically replaces a candidate only when the
+// descriptor-pinned record read by an earlier page walk is still the exact
+// live generation. The comparison and replacement share the candidate
+// publication lock, so another producer cannot win between the precondition
+// check and rename. A valid newer generation returns replaced=false without
+// being overwritten; corruption or root-custody drift remains an error.
+func ReplaceCandidateIfCurrent(homePath string, expected Record, payload any) (result ReplaceCandidateResult, resultErr error) {
+	if err := expected.Validate(); err != nil {
+		return result, fmt.Errorf("validate expected candidate record: %w", err)
+	}
+	dir, data, err := candidatePayload(expected.Kind, expected.ID, payload)
+	if err != nil {
+		return result, err
+	}
+	err = withCandidatePublicationLock(homePath, dir, func(inbox *candidateInbox) error {
+		if !expected.homeIdentity.sameObject(inbox.home.identity) || !expected.directoryIdentity.sameObject(inbox.directory.identity) {
+			return &Corruption{
+				EntryCursor: expected.EntryCursor,
+				Code:        CorruptionRaced,
+				Detail:      "candidate root custody changed since page read",
+			}
+		}
+		current, err := readRootedRecord(inbox, expected.Kind, string(expected.EntryCursor), expected.ID)
+		if err != nil {
+			return err
+		}
+		if !expected.fileIdentity.same(current.fileIdentity) || expected.Digest != current.Digest || !bytes.Equal(expected.Body, current.Body) {
+			result.Current = current
+			return nil
+		}
+		if err := replaceCandidateFromRecord(inbox, expected.Kind, expected.ID, data, current); err != nil {
+			return err
+		}
+		result.Replaced = true
+		return nil
+	})
+	return result, err
 }
 
 // CreateCandidateIfAbsent persists a candidate only when its canonical inbox
@@ -185,11 +232,20 @@ func withCandidatePublicationLock(homePath, inboxPath string, fn func(*candidate
 }
 
 func replaceCandidate(inbox *candidateInbox, kind Kind, id string, data []byte) error {
-	directory := inbox.directory
-	target := id + ".json"
 	if err := candidateReplacementPreflight(inbox, kind, id); err != nil {
 		return err
 	}
+	return publishCandidateReplacement(inbox.directory, id+".json", data)
+}
+
+func replaceCandidateFromRecord(inbox *candidateInbox, kind Kind, id string, data []byte, current Record) error {
+	if err := authorizeCandidateReplacement(inbox, kind, id, current); err != nil {
+		return err
+	}
+	return publishCandidateReplacement(inbox.directory, id+".json", data)
+}
+
+func publishCandidateReplacement(directory *candidateDirectory, target string, data []byte) error {
 	tempName, err := stageCandidate(directory, data)
 	if err != nil {
 		return err
@@ -221,6 +277,10 @@ func candidateReplacementPreflight(inbox *candidateInbox, kind Kind, id string) 
 		}
 		return fmt.Errorf("inspect candidate replacement target: %w", err)
 	}
+	return authorizeCandidateReplacement(inbox, kind, id, record)
+}
+
+func authorizeCandidateReplacement(inbox *candidateInbox, kind Kind, id string, record Record) error {
 	if err := classifyCandidateRecord(record, kind, id); err != nil {
 		return err
 	}

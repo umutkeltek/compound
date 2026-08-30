@@ -1,6 +1,7 @@
 package promotedriver
 
 import (
+	"compound/internal/candidates"
 	"compound/internal/lanebeliefs"
 )
 
@@ -45,11 +46,12 @@ type Report struct {
 }
 
 type PassIntent struct {
-	PromoteCursorBefore string                `json:"promote_cursor_before,omitempty"`
-	SweepCursorBefore   string                `json:"sweep_cursor_before,omitempty"`
-	PendingGeneration   string                `json:"pending_generation,omitempty"`
-	CandidateIDs        []string              `json:"candidate_ids"`
-	Operations          []PassIntentOperation `json:"operations"`
+	PromoteCursorBefore candidates.EntryCursor   `json:"promote_cursor_before,omitempty"`
+	SweepCursorBefore   candidates.EntryCursor   `json:"sweep_cursor_before,omitempty"`
+	PendingGeneration   string                   `json:"pending_generation,omitempty"`
+	CandidateIDs        []string                 `json:"candidate_ids"`
+	CorruptEntries      []candidates.EntryCursor `json:"corrupt_entries,omitempty"`
+	Operations          []PassIntentOperation    `json:"operations"`
 }
 
 type PassIntentOperation struct {
@@ -64,16 +66,19 @@ type PassIntentOperation struct {
 // saturated inbox still gives every proposed candidate a promotion chance
 // within one full cycle.
 type PromotePhaseReport struct {
-	Limit       int                `json:"limit"`
-	Scanned     int                `json:"scanned"`
-	Considered  int                `json:"considered"` // proposed candidates seen this walk
-	Promoted    int                `json:"promoted"`
-	ResumedFrom string             `json:"resumed_from,omitempty"`
-	NextCursor  string             `json:"next_cursor,omitempty"`
-	Deferred    []string           `json:"deferred,omitempty"` // basis-eligible, over the per-pass limit
-	Promotions  []PromotionReceipt `json:"promotions,omitempty"`
-	Errors      []string           `json:"errors,omitempty"`
-	CorruptIDs  []string           `json:"corrupt_ids,omitempty"`
+	Limit       int                      `json:"limit"`
+	Walked      int                      `json:"walked"`
+	Decoded     int                      `json:"decoded"`
+	Corrupt     int                      `json:"corrupt"`
+	Scanned     int                      `json:"scanned"`
+	Considered  int                      `json:"considered"` // proposed candidates seen this walk
+	Promoted    int                      `json:"promoted"`
+	ResumedFrom candidates.EntryCursor   `json:"resumed_from,omitempty"`
+	NextCursor  candidates.EntryCursor   `json:"next_cursor,omitempty"`
+	Deferred    []string                 `json:"deferred,omitempty"` // basis-eligible, over the per-pass limit
+	Promotions  []PromotionReceipt       `json:"promotions,omitempty"`
+	Errors      []string                 `json:"errors,omitempty"`
+	CorruptIDs  []candidates.EntryCursor `json:"corrupt_ids,omitempty"`
 }
 
 // PromotionReceipt is one per-id promotion the pass performed (or, in a
@@ -139,9 +144,14 @@ type LaneBeliefsPhaseReport struct {
 // the verbatim verdict strings ("park", "no_promote", ...).
 type SweepPhaseReport struct {
 	ScanLimit     int            `json:"scan_limit"`
+	Walked        int            `json:"walked"`
+	Decoded       int            `json:"decoded"`
+	Corrupt       int            `json:"corrupt"`
 	Scanned       int            `json:"scanned"`
 	Adjudicated   int            `json:"adjudicated"`
 	Skipped       int            `json:"skipped"`
+	Deferred      int            `json:"deferred"`
+	Failed        int            `json:"failed"`
 	VerdictCounts map[string]int `json:"verdict_counts,omitempty"`
 	Actions       []SweepAction  `json:"actions,omitempty"`
 	ChangedIDs    []string       `json:"changed_ids,omitempty"`
@@ -151,11 +161,11 @@ type SweepPhaseReport struct {
 	BasisDeferred int `json:"basis_deferred,omitempty"`
 	// WalkedAll is true when the sweep read the inbox to the end this pass;
 	// only then may the pending count be reconciled.
-	WalkedAll         bool     `json:"walked_all,omitempty"`
-	NextCursor        string   `json:"next_cursor,omitempty"`
-	ReconciledPending *int     `json:"reconciled_pending,omitempty"`
-	CorruptIDs        []string `json:"corrupt_ids,omitempty"`
-	Errors            []string `json:"errors,omitempty"`
+	WalkedAll         bool                     `json:"walked_all,omitempty"`
+	NextCursor        candidates.EntryCursor   `json:"next_cursor,omitempty"`
+	ReconciledPending *int                     `json:"reconciled_pending,omitempty"`
+	CorruptIDs        []candidates.EntryCursor `json:"corrupt_ids,omitempty"`
+	Errors            []string                 `json:"errors,omitempty"`
 }
 
 type SweepAction struct {

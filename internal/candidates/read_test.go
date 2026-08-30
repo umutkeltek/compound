@@ -83,6 +83,101 @@ func TestWriteCandidate(t *testing.T) {
 	}
 }
 
+func TestReplaceCandidateIfCurrentUsesTargetGenerationNotDirectoryTimestamp(t *testing.T) {
+	type rec struct {
+		ID     string `json:"id"`
+		Marker string `json:"marker"`
+	}
+	home := t.TempDir()
+	if err := WriteCandidate(home, Memory, "c1", rec{ID: "c1", Marker: "before"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCandidate(home, Memory, "c2", rec{ID: "c2", Marker: "sibling-before"}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := ReadPage(home, Memory, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expected Record
+	for _, entry := range page.Entries {
+		if entry.Record != nil && entry.Record.ID == "c1" {
+			expected = *entry.Record
+		}
+	}
+	if expected.ID == "" {
+		t.Fatal("page did not return c1 record")
+	}
+
+	// A sibling publication changes directory timestamps but not c1's exact
+	// file generation; c1's CAS must remain eligible.
+	if err := WriteCandidate(home, Memory, "c2", rec{ID: "c2", Marker: "sibling-after"}); err != nil {
+		t.Fatal(err)
+	}
+	replaceResult, err := ReplaceCandidateIfCurrent(home, expected, rec{ID: "c1", Marker: "after"})
+	if err != nil || !replaceResult.Replaced {
+		t.Fatalf("replace after sibling mutation: result=%+v err=%v", replaceResult, err)
+	}
+
+	// The same pre-state cannot be applied twice: c1 now has a different file
+	// generation, so retry is an idempotent CAS miss and preserves the winner.
+	replaceResult, err = ReplaceCandidateIfCurrent(home, expected, rec{ID: "c1", Marker: "stale-overwrite"})
+	if err != nil {
+		t.Fatalf("stale replacement: %v", err)
+	}
+	if replaceResult.Replaced {
+		t.Fatal("stale candidate generation was replaced")
+	}
+	if replaceResult.Current.ID != "c1" {
+		t.Fatalf("stale CAS did not return the exact lock winner: %+v", replaceResult.Current)
+	}
+	var got rec
+	if err := ReadCandidate(home, Memory, "c1", &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Marker != "after" {
+		t.Fatalf("c1 marker = %q, want prior CAS winner", got.Marker)
+	}
+}
+
+func TestPageCASDoesNotRescanDirectoryPerCandidate(t *testing.T) {
+	type rec struct {
+		ID     string `json:"id"`
+		Marker string `json:"marker"`
+	}
+	home := t.TempDir()
+	for _, id := range []string{"c1", "c2", "c3"} {
+		if err := WriteCandidate(home, Memory, id, rec{ID: id, Marker: "before"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	originalReadDirectoryNames := candidateReadDirectoryNames
+	directoryReads := 0
+	candidateReadDirectoryNames = func(directory *candidateDirectory) ([]string, error) {
+		directoryReads++
+		return originalReadDirectoryNames(directory)
+	}
+	t.Cleanup(func() { candidateReadDirectoryNames = originalReadDirectoryNames })
+
+	page, err := ReadPage(home, Memory, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range page.Entries {
+		if entry.Record == nil {
+			t.Fatalf("unexpected corrupt page entry: %+v", entry)
+		}
+		replaceResult, err := ReplaceCandidateIfCurrent(home, *entry.Record, rec{ID: entry.Record.ID, Marker: "after"})
+		if err != nil || !replaceResult.Replaced {
+			t.Fatalf("replace %s: result=%+v err=%v", entry.Record.ID, replaceResult, err)
+		}
+	}
+	if directoryReads != 1 {
+		t.Fatalf("directory reads = %d, want one page enumeration and O(1) CAS per candidate", directoryReads)
+	}
+}
+
 func TestCreateCandidateIfAbsentPreservesExistingBytes(t *testing.T) {
 	type rec struct {
 		ID     string `json:"id"`

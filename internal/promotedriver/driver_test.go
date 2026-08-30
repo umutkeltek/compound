@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -163,14 +164,17 @@ func TestPlanPassLeavesHomeByteIdentical(t *testing.T) {
 	// Plan sweep plans every still-proposed candidate (the basis candidate
 	// was not actually promoted) — except the basis candidate itself:
 	// disposition defers it to the per-id promotion door.
-	if got := report.Sweep.Adjudicated; got != 4 {
-		t.Fatalf("sweep adjudicated = %d, want 4", got)
+	if got := report.Sweep.Adjudicated; got != 0 {
+		t.Fatalf("plan sweep adjudicated = %d, want 0 actual mutations", got)
+	}
+	if got := len(report.Sweep.Actions); got != 4 {
+		t.Fatalf("plan sweep actions = %d, want 4", got)
 	}
 	if report.Sweep.BasisDeferred != 1 {
 		t.Fatalf("sweep basis-deferred = %d, want 1", report.Sweep.BasisDeferred)
 	}
-	if report.Sweep.VerdictCounts["no_promote"] != 1 || report.Sweep.VerdictCounts["park"] != 3 {
-		t.Fatalf("sweep verdicts = %v, want park:3 no_promote:1", report.Sweep.VerdictCounts)
+	if len(report.Sweep.VerdictCounts) != 0 || len(report.Sweep.ChangedIDs) != 0 {
+		t.Fatalf("plan sweep claimed committed results: verdicts=%v changed=%v", report.Sweep.VerdictCounts, report.Sweep.ChangedIDs)
 	}
 	if report.Sweep.ReconciledPending != nil {
 		t.Fatal("plan must not reconcile pending state")
@@ -401,12 +405,8 @@ func TestApplyWalkResumesAndSweepNeverForeclosesBasis(t *testing.T) {
 			t.Fatalf("pass %d: %v", pass, err)
 		}
 		total += report.Promote.Promoted
-		wantScanned := 2
-		if pass == 2 {
-			wantScanned = 1 // the last window holds the single remaining entry
-		}
-		if report.Promote.Scanned != wantScanned {
-			t.Fatalf("pass %d scanned = %d, want %d", pass, report.Promote.Scanned, wantScanned)
+		if report.Promote.Scanned != 2 {
+			t.Fatalf("pass %d scanned = %d, want 2 (cursor pins before the deferred basis candidate)", pass, report.Promote.Scanned)
 		}
 		if report.Dedupe.Skipped == "" {
 			t.Fatal("dedupe must not run on budget-bounded walks")
@@ -419,8 +419,8 @@ func TestApplyWalkResumesAndSweepNeverForeclosesBasis(t *testing.T) {
 	// basis candidates the promotion walk deferred or has not reached yet.
 	// They stay proposed until their window comes around.
 	states := candidateStates(t, home)
-	if states["cand_b2"] != "proposed" || states["cand_b4"] != "proposed" {
-		t.Fatalf("deferred basis candidates foreclosed: b2=%q b4=%q, want proposed", states["cand_b2"], states["cand_b4"])
+	if states["cand_b4"] != "proposed" || states["cand_b5"] != "proposed" {
+		t.Fatalf("deferred basis candidates foreclosed: b4=%q b5=%q, want proposed", states["cand_b4"], states["cand_b5"])
 	}
 	// Two more cycles pick the deferred pair up.
 	for pass := 3; pass < 5; pass++ {
@@ -489,6 +489,111 @@ func TestSweepCursorResumesAcrossPasses(t *testing.T) {
 	}
 }
 
+func TestPromoteWriteCapPinsCursorBeforeDeferredBasisCandidate(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_01", mem.Candidate{Entity: "basis-1", Predicate: "value", Object: "one", PromotionBasis: candidates.BasisRuntimeProof})
+	seedCandidate(t, home, "cand_02", mem.Candidate{Entity: "basis-2", Predicate: "value", Object: "two", PromotionBasis: candidates.BasisRuntimeProof})
+	for _, id := range []string{"cand_03", "cand_04", "cand_05"} {
+		seedCandidate(t, home, id, mem.Candidate{Entity: id, Predicate: "value", Object: id})
+	}
+
+	opts := Options{Apply: true, PromoteLimit: 1, WalkScanLimit: 3, SweepScanLimit: 10}
+	first, err := Run(home, opts, testNow)
+	if err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	if first.Promote.Promoted != 1 {
+		t.Fatalf("pass 1 promoted = %d, want 1", first.Promote.Promoted)
+	}
+	if first.Promote.NextCursor != "cand_01.json" {
+		t.Fatalf("pass 1 cursor = %q, want cand_01.json before the first unexecuted actionable candidate", first.Promote.NextCursor)
+	}
+
+	second, err := Run(home, opts, testNow.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	if len(second.Promote.Promotions) != 1 || second.Promote.Promotions[0].CandidateID != "cand_02" {
+		t.Fatalf("pass 2 promotions = %+v, want deferred cand_02 without a full-cycle gap", second.Promote.Promotions)
+	}
+	if got := candidateStates(t, home)["cand_02"]; got != "promoted" {
+		t.Fatalf("cand_02 state = %q, want promoted", got)
+	}
+}
+
+func TestDriverPersistsVersionedFilenameCursorsAndReadsLegacyAfterID(t *testing.T) {
+	t.Run("writes versioned cursor", func(t *testing.T) {
+		home := t.TempDir()
+		for _, id := range []string{"cand_01", "cand_02", "cand_03"} {
+			seedCandidate(t, home, id, mem.Candidate{Entity: id, Predicate: "value", Object: id})
+		}
+		if _, err := Run(home, Options{Apply: true, WalkScanLimit: 1, SweepScanLimit: 1}, testNow); err != nil {
+			t.Fatalf("apply pass: %v", err)
+		}
+		for _, name := range []string{promoteCursorFileName, cursorFileName} {
+			data, err := os.ReadFile(filepath.Join(stateDir(home), name))
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			var state map[string]json.RawMessage
+			if err := json.Unmarshal(data, &state); err != nil {
+				t.Fatalf("decode %s: %v", name, err)
+			}
+			if _, exists := state["after_id"]; exists {
+				t.Fatalf("%s retained legacy after_id: %s", name, data)
+			}
+			rawCursor, exists := state["after_cursor"]
+			if !exists {
+				t.Fatalf("%s missing after_cursor: %s", name, data)
+			}
+			var cursor candidates.EntryCursor
+			if err := json.Unmarshal(rawCursor, &cursor); err != nil {
+				t.Fatalf("decode %s cursor: %v", name, err)
+			}
+			if cursor != "cand_01.json" {
+				t.Fatalf("%s cursor = %q, want cand_01.json", name, cursor)
+			}
+		}
+	})
+
+	t.Run("reads legacy after_id", func(t *testing.T) {
+		home := t.TempDir()
+		for _, id := range []string{"cand_01", "cand_02", "cand_03"} {
+			seedCandidate(t, home, id, mem.Candidate{Entity: id, Predicate: "value", Object: id})
+		}
+		if err := os.MkdirAll(stateDir(home), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		legacy := []byte(`{"after_id":"cand_02","updated_at":"2026-08-25T00:00:00Z"}`)
+		for _, name := range []string{promoteCursorFileName, cursorFileName} {
+			if err := os.WriteFile(filepath.Join(stateDir(home), name), legacy, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		report, err := Run(home, Options{WalkScanLimit: 1, SweepScanLimit: 1}, testNow)
+		if err != nil {
+			t.Fatalf("plan pass: %v", err)
+		}
+		if report.Promote.ResumedFrom != "cand_02.json" {
+			t.Fatalf("promote resumed_from = %q, want migrated filename cursor", report.Promote.ResumedFrom)
+		}
+		if len(report.Sweep.ChangedIDs) != 0 || len(report.Sweep.Actions) != 1 || report.Sweep.Actions[0].CandidateID != "cand_03" {
+			t.Fatalf("legacy sweep resume changed=%v actions=%v, want one cand_03 plan and no mutation", report.Sweep.ChangedIDs, report.Sweep.Actions)
+		}
+	})
+}
+
+func TestResolveStoredCursorMigratesLegacyIDWithTokenPrefix(t *testing.T) {
+	got, err := resolveStoredCursor("", "filename-v1:abc")
+	if err != nil {
+		t.Fatalf("migrate legacy cursor with reserved token prefix: %v", err)
+	}
+	if want := candidates.EntryCursor("filename-v1:abc.json"); got != want {
+		t.Fatalf("migrated cursor = %q, want %q", got, want)
+	}
+}
+
 // TestSweepCursorAdvancesPastCorruptPageTail: a bounded page ending on an
 // unreadable candidate file must advance the cursor PAST the corrupt entry.
 // The old cursor keyed on the last DECODED candidate re-read the corrupt
@@ -517,14 +622,15 @@ func TestSweepCursorAdvancesPastCorruptPageTail(t *testing.T) {
 	if report.Sweep.WalkedAll {
 		t.Fatal("pass 1 must stop at the scan cap")
 	}
-	if report.Sweep.NextCursor != "cand_90" {
-		t.Fatalf("cursor = %q, want cand_90 (the corrupt page tail is progress too)", report.Sweep.NextCursor)
+	if report.Sweep.NextCursor != "cand_90.json" {
+		t.Fatalf("cursor = %q, want cand_90.json (the corrupt page tail is progress too)", report.Sweep.NextCursor)
 	}
-	// The resume pass reads exactly the one entry past the corrupt tail and
-	// completes the walk — the corrupt entry is never re-read.
+	// The resume pass reads exactly the one entry past the corrupt tail, but
+	// the full reconciliation must still fail closed on the retained corrupt
+	// entry rather than certifying a clean completed pass.
 	second, err := Run(home, Options{Apply: true, SweepScanLimit: 3}, testNow.Add(time.Minute))
-	if err != nil {
-		t.Fatalf("pass 2: %v", err)
+	if err == nil || second.Stage != stageFailed || !strings.Contains(err.Error(), "cand_90.json") {
+		t.Fatalf("pass 2 must fail closed on retained corruption: stage=%q err=%v", second.Stage, err)
 	}
 	if !second.Sweep.WalkedAll || second.Sweep.Scanned != 1 {
 		t.Fatalf("pass 2 scanned=%d walkedAll=%v, want 1/true (no re-read of the corrupt tail)", second.Sweep.Scanned, second.Sweep.WalkedAll)
@@ -757,6 +863,56 @@ func TestSuccessorTerminalizesPlannedOnlyPassBeforeMutation(t *testing.T) {
 	receipts := readReceipts(t, home)
 	if len(receipts) != 4 || receipts[1].PassID != orphan.PassID || receipts[1].Stage != stageRecoveryRequired {
 		t.Fatalf("orphan was not terminalized before successor: %+v", receipts)
+	}
+}
+
+func TestSuccessorReconcilesLegacyRawCursorReceipt(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(stateDir(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"schema_version":"compound.promotedriver.report.v0.2","pass_id":"pass_legacy","stage":"planned","intent":{"promote_cursor_before":"cand_01","sweep_cursor_before":"cand_02","candidate_ids":[],"corrupt_entries":["cand_bad"],"operations":[]},"promote":{"resumed_from":"cand_01","next_cursor":"cand_02","corrupt_ids":["cand_bad"]},"sweep":{"next_cursor":"cand_02","corrupt_ids":["cand_bad"]}}`
+	if err := os.WriteFile(filepath.Join(stateDir(home), receiptFileName), []byte(legacy+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Run(home, Options{Apply: true}, testNow)
+	if err != nil {
+		t.Fatalf("successor must reconcile historical raw receipt cursors: %v", err)
+	}
+	if got := strings.Join(report.ReconciledPassIDs, ","); got != "pass_legacy" {
+		t.Fatalf("reconciled = %q, want pass_legacy", got)
+	}
+	if report.SchemaVersion == "compound.promotedriver.report.v0.2" {
+		t.Fatalf("new receipt reused legacy raw-cursor schema %q", report.SchemaVersion)
+	}
+	data, err := os.ReadFile(filepath.Join(stateDir(home), receiptFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("receipt lines = %d, want legacy plus recovery", len(lines))
+	}
+	var recovery Report
+	if err := json.Unmarshal([]byte(lines[1]), &recovery); err != nil {
+		t.Fatalf("decode migrated recovery receipt: %v", err)
+	}
+	if recovery.SchemaVersion != ReportSchemaVersion {
+		t.Fatalf("recovery schema = %q, want %q", recovery.SchemaVersion, ReportSchemaVersion)
+	}
+	if recovery.Intent == nil || recovery.Intent.PromoteCursorBefore != "cand_01.json" || recovery.Intent.SweepCursorBefore != "cand_02.json" {
+		t.Fatalf("recovery intent cursors = %+v, want cand_01.json/cand_02.json", recovery.Intent)
+	}
+	if !slices.Equal(recovery.Intent.CorruptEntries, []candidates.EntryCursor{"cand_bad.json"}) {
+		t.Fatalf("recovery corrupt entries = %q, want cand_bad.json", recovery.Intent.CorruptEntries)
+	}
+}
+
+func TestCurrentReceiptSchemaRejectsRawCursorJSON(t *testing.T) {
+	raw := []byte(`{"schema_version":"compound.promotedriver.report.v0.3","pass_id":"pass_raw","stage":"planned","intent":{"promote_cursor_before":"cand_01","candidate_ids":[],"operations":[]}}`)
+	if _, err := decodeReceiptLine(raw); err == nil {
+		t.Fatal("current receipt schema accepted an unversioned raw cursor")
 	}
 }
 

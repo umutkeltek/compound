@@ -42,6 +42,7 @@ func TestRunCLIRejectsContradictoryConfirmAndDryRun(t *testing.T) {
 // not either flag individually. --dry-run alone must plan (no mutation), so
 // the exit must not be the usage error.
 func TestRunCLIAcceptsDryRunAlone(t *testing.T) {
+	t.Setenv("COMPOUND_HOME", t.TempDir())
 	stderr, code := captureCLI(func() int { return RunCLI([]string{"--dry-run"}) })
 	if code == 2 {
 		t.Fatalf("--dry-run alone must not be usage-rejected: %s", stderr)

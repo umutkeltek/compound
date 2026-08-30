@@ -28,6 +28,28 @@ const (
 	memoryCliArgsEnv  = "COMPOUND_TEST_MEMORY_CLI_ARGS"
 )
 
+func TestParseMemoryAfterCursorAcceptsTokenOrFilenameAndRejectsPaths(t *testing.T) {
+	want := candidates.EntryCursor("cand_01.json")
+	token, err := want.Token()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"cand_01.json", token} {
+		got, err := parseMemoryAfterCursor(value)
+		if err != nil || got != want {
+			t.Fatalf("parse %q = %q, %v; want %q", value, got, err, want)
+		}
+	}
+	if got, err := parseMemoryAfterCursor(""); err != nil || got != "" {
+		t.Fatalf("empty cursor = %q, %v", got, err)
+	}
+	for _, value := range []string{"../escape.json", "/absolute.json", "filename-v1:not-base64***"} {
+		if got, err := parseMemoryAfterCursor(value); err == nil {
+			t.Fatalf("invalid cursor %q accepted as %q", value, got)
+		}
+	}
+}
+
 // memoryCliChildArgsEnv is set by the parent in addition to the
 // memoryCliChildEnv; it carries the full argv the child passes into
 // cmdMemory([]string{...}). Newlines are the separator (no real CLI arg

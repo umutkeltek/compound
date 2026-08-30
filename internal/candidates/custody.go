@@ -12,6 +12,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 var candidateAfterOpenHook = func(string) {}
@@ -24,10 +25,10 @@ const entryCursorJSONPrefix = "filename-v1:"
 type EntryCursor string
 
 func (cursor EntryCursor) MarshalJSON() ([]byte, error) {
-	if err := candidateEntryCursor(cursor); err != nil {
+	token, err := cursor.Token()
+	if err != nil {
 		return nil, err
 	}
-	token := entryCursorJSONPrefix + base64.RawURLEncoding.EncodeToString([]byte(cursor))
 	return json.Marshal(token)
 }
 
@@ -39,19 +40,52 @@ func (cursor *EntryCursor) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &token); err != nil {
 		return err
 	}
-	if !strings.HasPrefix(token, entryCursorJSONPrefix) {
-		return fmt.Errorf("candidate entry cursor token has unsupported version")
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, entryCursorJSONPrefix))
+	decoded, err := parseEntryCursorToken(token)
 	if err != nil {
-		return fmt.Errorf("decode candidate entry cursor: %w", err)
-	}
-	decoded := EntryCursor(string(raw))
-	if err := candidateEntryCursor(decoded); err != nil {
 		return err
 	}
 	*cursor = decoded
 	return nil
+}
+
+// Token returns the copy-safe, JSON-safe representation accepted by
+// ParseEntryCursor and CLI --after flags.
+func (cursor EntryCursor) Token() (string, error) {
+	if err := candidateEntryCursor(cursor); err != nil {
+		return "", err
+	}
+	return entryCursorJSONPrefix + base64.RawURLEncoding.EncodeToString([]byte(cursor)), nil
+}
+
+// ParseEntryCursor decodes a versioned cursor token. A raw filename remains
+// accepted for interactive compatibility, but durable JSON always emits the
+// versioned form through MarshalJSON.
+func ParseEntryCursor(value string) (EntryCursor, error) {
+	if !strings.HasPrefix(value, entryCursorJSONPrefix) {
+		return EntryCursorFromFilename(value)
+	}
+	return parseEntryCursorToken(value)
+}
+
+// EntryCursorFromFilename validates an exact candidate directory-entry name
+// without interpreting the versioned-token prefix. Internal migrations use
+// this when the legacy value is already known to be a filename rather than a
+// CLI token.
+func EntryCursorFromFilename(filename string) (EntryCursor, error) {
+	cursor := EntryCursor(filename)
+	return cursor, candidateEntryCursor(cursor)
+}
+
+func parseEntryCursorToken(value string) (EntryCursor, error) {
+	if !strings.HasPrefix(value, entryCursorJSONPrefix) {
+		return "", fmt.Errorf("candidate entry cursor token has unsupported version")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, entryCursorJSONPrefix))
+	if err != nil {
+		return "", fmt.Errorf("decode candidate entry cursor: %w", err)
+	}
+	cursor := EntryCursor(string(raw))
+	return cursor, candidateEntryCursor(cursor)
 }
 
 // CorruptionCode is the stable reason a candidate directory entry cannot be
@@ -112,6 +146,16 @@ type Record struct {
 	homeIdentity      candidateFileIdentity
 	directoryIdentity candidateFileIdentity
 	fileIdentity      candidateFileIdentity
+}
+
+// ModifiedAt returns the descriptor-pinned file modification time captured
+// with this record. Projections use it instead of reopening the pathname after
+// custody validation.
+func (r Record) ModifiedAt() time.Time {
+	if r.fileIdentity.mtimeSecond == 0 && r.fileIdentity.mtimeNano == 0 {
+		return time.Time{}
+	}
+	return time.Unix(r.fileIdentity.mtimeSecond, r.fileIdentity.mtimeNano).UTC()
 }
 
 // Validate proves the exported record fields still describe the descriptor-

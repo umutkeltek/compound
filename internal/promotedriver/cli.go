@@ -169,7 +169,16 @@ func renderReport(report Report) {
 	if lb.Error != "" {
 		fmt.Printf("  (error: %s)\n", lb.Error)
 	}
-	fmt.Printf("sweep:      scanned %d, adjudicated %d, skipped %d, walked_all=%t\n", report.Sweep.Scanned, report.Sweep.Adjudicated, report.Sweep.Skipped, report.Sweep.WalkedAll)
+	fmt.Printf("sweep:      walked %d, decoded %d, corrupt %d, adjudicated %d, skipped %d, deferred %d, failed %d, walked_all=%t\n",
+		report.Sweep.Walked,
+		report.Sweep.Decoded,
+		report.Sweep.Corrupt,
+		report.Sweep.Adjudicated,
+		report.Sweep.Skipped,
+		report.Sweep.Deferred,
+		report.Sweep.Failed,
+		report.Sweep.WalkedAll,
+	)
 	var verdicts []string
 	for v, n := range report.Sweep.VerdictCounts {
 		verdicts = append(verdicts, fmt.Sprintf("%s=%d", v, n))
@@ -179,7 +188,7 @@ func renderReport(report Report) {
 		fmt.Printf("  verdicts: %s\n", strings.Join(verdicts, " "))
 	}
 	if report.Sweep.NextCursor != "" {
-		fmt.Printf("  next cursor: %s (re-run to continue)\n", report.Sweep.NextCursor)
+		fmt.Printf("  next cursor: %s (re-run to continue)\n", cursorDisplay(report.Sweep.NextCursor))
 	}
 	if report.PendingAfter != nil {
 		fmt.Printf("pending:    %d (reconciled this pass)\n", *report.PendingAfter)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -2174,10 +2175,11 @@ func TestAdjudicatePendingLimitCapsAdjudicatedNotSkipped(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Dry-run honors the cap: plans exactly one adjudication, then stops.
+	// Dry-run honors the cap: plans exactly one adjudication, then stops,
+	// without claiming that any candidate changed.
 	rd := s.AdjudicatePending(AdjudicatePendingOptions{DryRun: true, Limit: 1}, t0.Add(time.Minute))
-	if rd.Adjudicated != 1 || !rd.LimitReached {
-		t.Fatalf("limited dry-run adjudicated=%d limitReached=%v, want 1/true", rd.Adjudicated, rd.LimitReached)
+	if rd.Adjudicated != 0 || len(rd.ChangedIDs) != 0 || len(rd.Actions) != 1 || !rd.LimitReached {
+		t.Fatalf("limited dry-run adjudicated=%d changed=%v actions=%v limitReached=%v, want 0/empty/1/true", rd.Adjudicated, rd.ChangedIDs, rd.Actions, rd.LimitReached)
 	}
 	// Real capped pass: exactly one candidate is closed, cap flagged.
 	r := s.AdjudicatePending(AdjudicatePendingOptions{Limit: 1}, t0.Add(2*time.Minute))
@@ -2272,21 +2274,260 @@ func TestAdjudicatePendingScanLimitBoundsReadsNotJustWrites(t *testing.T) {
 	if !r.ScanCapHit {
 		t.Fatal("scan cap must be reported hit when entries remain unread")
 	}
-	if r.NextCursor == "" || r.NextCursor != r.LastID {
-		t.Fatalf("next cursor = %q, want the last scanned id %q", r.NextCursor, r.LastID)
+	wantCursor := candidates.EntryCursor(r.LastID + ".json")
+	if r.NextCursor == "" || r.NextCursor != wantCursor {
+		t.Fatalf("next cursor = %q, want the last scanned filename %q", r.NextCursor, wantCursor)
 	}
 	// Resume from the cursor: the drain continues where it stopped and
 	// never reprocesses prior entries.
-	r2 := s.AdjudicatePending(AdjudicatePendingOptions{ScanLimit: 2, AfterID: r.NextCursor}, t0.Add(2*time.Minute))
+	r2 := s.AdjudicatePending(AdjudicatePendingOptions{ScanLimit: 2, AfterCursor: r.NextCursor}, t0.Add(2*time.Minute))
 	if r2.Scanned != 2 {
 		t.Fatalf("resumed scan = %d, want 2 (entries after the cursor)", r2.Scanned)
 	}
-	if r2.FirstID <= r.NextCursor {
+	if candidates.EntryCursor(r2.FirstID+".json") <= r.NextCursor {
 		t.Fatalf("resumed first id = %q must be after the cursor %q (cursor excludes covered entries)", r2.FirstID, r.NextCursor)
 	}
-	r3 := s.AdjudicatePending(AdjudicatePendingOptions{AfterID: r2.NextCursor}, t0.Add(3*time.Minute))
+	r3 := s.AdjudicatePending(AdjudicatePendingOptions{AfterCursor: r2.NextCursor}, t0.Add(3*time.Minute))
 	if r3.Scanned != 1 || r3.LimitReached || r3.ScanCapHit || r3.NextCursor != "" {
 		t.Fatalf("final pass scanned=%d limit_reached=%v scan_cap_hit=%v cursor=%q, want 1/false/false/empty", r3.Scanned, r3.LimitReached, r3.ScanCapHit, r3.NextCursor)
+	}
+}
+
+func TestAdjudicatePendingWriteCapPinsResumeBeforeUnreadPageRemainder(t *testing.T) {
+	s := newStore(t)
+	wantIDs := make([]string, 0, 5)
+	for i := 0; i < 5; i++ {
+		c := cand("e", "p", fmt.Sprintf("combined-cap-%d", i), "")
+		captured, err := s.Capture([]Candidate{c}, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantIDs = append(wantIDs, captured[0].ID)
+	}
+
+	changedCounts := map[string]int{}
+	var afterCursor candidates.EntryCursor
+	for pass := 0; pass < 10; pass++ {
+		report := s.AdjudicatePending(AdjudicatePendingOptions{
+			ScanLimit:   3,
+			Limit:       1,
+			AfterCursor: afterCursor,
+		}, t0.Add(time.Duration(pass+1)*time.Minute))
+		for _, id := range report.ChangedIDs {
+			changedCounts[id]++
+		}
+		if report.NextCursor == "" {
+			break
+		}
+		afterCursor = report.NextCursor
+	}
+
+	for _, id := range wantIDs {
+		if got := changedCounts[id]; got != 1 {
+			t.Errorf("candidate %s changed %d times, want exactly once", id, got)
+		}
+	}
+	if len(changedCounts) != len(wantIDs) {
+		t.Fatalf("changed candidates = %v, want all %v; scan-page tail must not jump over unprocessed entries", changedCounts, wantIDs)
+	}
+}
+
+func TestAdjudicatePendingConcurrentTerminalizationPreservesLockWinner(t *testing.T) {
+	s := newStore(t)
+	captured, err := s.Capture([]Candidate{cand("e", "p", "terminalization-race", "")}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	competitor, err := Open(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		once          sync.Once
+		competitorErr error
+	)
+	s.beforeLockObserver = func() {
+		once.Do(func() {
+			_, competitorErr = competitor.Adjudicate(captured[0].ID, "no_promote", "work_competitor", t0.Add(time.Minute))
+		})
+	}
+
+	report := s.AdjudicatePending(AdjudicatePendingOptions{Verdict: "park"}, t0.Add(2*time.Minute))
+	if competitorErr != nil {
+		t.Fatalf("competing terminalization: %v", competitorErr)
+	}
+	if report.Adjudicated != 0 || len(report.ChangedIDs) != 0 {
+		t.Fatalf("pending pass overwrote the lock winner: adjudicated=%d changed=%v", report.Adjudicated, report.ChangedIDs)
+	}
+	if report.Skipped != 1 || report.Failed != 0 {
+		t.Fatalf("pending report skipped=%d failed=%d, want 1/0; errors=%+v", report.Skipped, report.Failed, report.Errors)
+	}
+	live, err := s.getCandidate(captured[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.State != "no_promote" {
+		t.Fatalf("candidate state = %q, want competing no_promote verdict preserved", live.State)
+	}
+}
+
+func TestAdjudicatePendingConcurrentProposedRewritePinsCursorForRetry(t *testing.T) {
+	s := newStore(t)
+	for _, id := range []string{"cand_01", "cand_02"} {
+		candidate := Candidate{ID: id, Entity: id, Predicate: "p", Object: "o", State: "proposed", Visibility: "operational", Derivation: "extracted", CreatedAt: rfc3339(t0)}
+		if err := candidates.WriteCandidate(s.home, candidates.Memory, id, &candidate); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var once sync.Once
+	s.beforeLockObserver = func() {
+		once.Do(func() {
+			rewritten := Candidate{ID: "cand_01", Entity: "cand_01", Predicate: "p", Object: "new generation", State: "proposed", Visibility: "operational", Derivation: "extracted", CreatedAt: rfc3339(t0.Add(time.Second))}
+			if err := candidates.WriteCandidate(s.home, candidates.Memory, rewritten.ID, &rewritten); err != nil {
+				t.Fatalf("concurrent proposed rewrite: %v", err)
+			}
+		})
+	}
+
+	first := s.AdjudicatePending(AdjudicatePendingOptions{}, t0.Add(time.Minute))
+	if first.Adjudicated != 0 || first.Skipped != 0 || first.Deferred != 1 || first.NextCursor != "" {
+		t.Fatalf("stale CAS pass = adjudicated:%d skipped:%d deferred:%d cursor:%q, want 0/0/1/empty", first.Adjudicated, first.Skipped, first.Deferred, first.NextCursor)
+	}
+	for _, id := range []string{"cand_01", "cand_02"} {
+		got, err := s.getCandidate(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.State != "proposed" {
+			t.Fatalf("%s state = %q, want proposed until retry", id, got.State)
+		}
+	}
+
+	s.beforeLockObserver = nil
+	retry := s.AdjudicatePending(AdjudicatePendingOptions{AfterCursor: first.NextCursor}, t0.Add(2*time.Minute))
+	if retry.Adjudicated != 2 || retry.Failed != 0 || retry.NextCursor != "" || !slices.Equal(retry.ChangedIDs, []string{"cand_01", "cand_02"}) {
+		t.Fatalf("retry = adjudicated:%d failed:%d cursor:%q changed:%v", retry.Adjudicated, retry.Failed, retry.NextCursor, retry.ChangedIDs)
+	}
+}
+
+func TestAdjudicatePendingSmallCapMatrixHasNoGapsOrDuplicateMutations(t *testing.T) {
+	for scanCap := 1; scanCap <= 3; scanCap++ {
+		for writeCap := 1; writeCap <= 2; writeCap++ {
+			t.Run(fmt.Sprintf("scan_%d/write_%d", scanCap, writeCap), func(t *testing.T) {
+				s := newStore(t)
+				fixtures := []Candidate{
+					{ID: "a-action", Entity: "a", Predicate: "value", Object: "a", State: "proposed"},
+					{ID: "c-closed", Entity: "c", Predicate: "value", Object: "c", State: "parked"},
+					{ID: "d-basis", Entity: "d", Predicate: "value", Object: "d", State: "proposed", PromotionBasis: candidates.BasisRuntimeProof},
+					{ID: "e-action", Entity: "e", Predicate: "value", Object: "e", State: "proposed", Qualifiers: map[string]string{"source": "knowledge_import"}},
+					{ID: "f-action", Entity: "f", Predicate: "value", Object: "f", State: "proposed"},
+				}
+				for _, fixture := range fixtures {
+					if err := candidates.WriteCandidate(s.home, candidates.Memory, fixture.ID, &fixture); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.WriteFile(filepath.Join(s.candDir(), "b-corrupt.json"), []byte("{not json"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+
+				changedCounts := map[string]int{}
+				var after candidates.EntryCursor
+				for pass := 0; pass < 30; pass++ {
+					report := s.AdjudicatePending(AdjudicatePendingOptions{
+						ScanLimit:   scanCap,
+						Limit:       writeCap,
+						AfterCursor: after,
+					}, t0.Add(time.Duration(pass+1)*time.Minute))
+					if report.Walked != report.Decoded+report.Corrupt {
+						t.Fatalf("pass %d counters: walked=%d decoded=%d corrupt=%d", pass, report.Walked, report.Decoded, report.Corrupt)
+					}
+					if report.Failed != 0 {
+						t.Fatalf("pass %d failed: %+v", pass, report.Errors)
+					}
+					for _, id := range report.ChangedIDs {
+						changedCounts[id]++
+					}
+					if report.NextCursor == "" {
+						if !report.AtEnd || report.LimitReached {
+							t.Fatalf("pass %d stopped without resumable cursor: at_end=%v limit=%v report=%+v", pass, report.AtEnd, report.LimitReached, report)
+						}
+						break
+					}
+					if after != "" && report.NextCursor < after {
+						t.Fatalf("cursor regressed from %q to %q", after, report.NextCursor)
+					}
+					after = report.NextCursor
+					if pass == 29 {
+						t.Fatal("bounded drain did not complete")
+					}
+				}
+
+				for _, id := range []string{"a-action", "e-action", "f-action"} {
+					if got := changedCounts[id]; got != 1 {
+						t.Errorf("%s changed %d times, want exactly once", id, got)
+					}
+				}
+				if got := changedCounts["c-closed"]; got != 0 {
+					t.Errorf("closed candidate changed %d times", got)
+				}
+				if got := changedCounts["d-basis"]; got != 0 {
+					t.Errorf("basis-deferred candidate changed %d times", got)
+				}
+				wantStates := map[string]string{"a-action": "parked", "c-closed": "parked", "d-basis": "proposed", "e-action": "no_promote", "f-action": "parked"}
+				for id, want := range wantStates {
+					candidate, err := s.getCandidate(id)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if candidate.State != want {
+						t.Errorf("%s state = %q, want %q", id, candidate.State, want)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestAdjudicatePendingMutationFailurePinsBeforeFailedCandidateAndRetryFinishes(t *testing.T) {
+	s := newStore(t)
+	for _, id := range []string{"cand_01", "cand_02", "cand_03"} {
+		fixture := Candidate{ID: id, Entity: id, Predicate: "value", Object: id, State: "proposed"}
+		if err := candidates.WriteCandidate(s.home, candidates.Memory, id, &fixture); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s.pendingCandidateReplacer = func(home string, expected candidates.Record, payload any) (candidates.ReplaceCandidateResult, error) {
+		if expected.ID == "cand_02" {
+			return candidates.ReplaceCandidateResult{}, os.ErrPermission
+		}
+		return candidates.ReplaceCandidateIfCurrent(home, expected, payload)
+	}
+
+	first := s.AdjudicatePending(AdjudicatePendingOptions{ScanLimit: 3}, t0.Add(time.Minute))
+	if first.Failed != 1 || first.NextCursor != "cand_01.json" {
+		t.Fatalf("failed pass = failed:%d cursor:%q errors:%+v, want 1/cand_01.json", first.Failed, first.NextCursor, first.Errors)
+	}
+	if !slices.Equal(first.ChangedIDs, []string{"cand_01"}) {
+		t.Fatalf("failed pass changed = %v, want only cand_01", first.ChangedIDs)
+	}
+
+	s.pendingCandidateReplacer = nil
+	second := s.AdjudicatePending(AdjudicatePendingOptions{AfterCursor: first.NextCursor}, t0.Add(2*time.Minute))
+	if second.Failed != 0 || !slices.Equal(second.ChangedIDs, []string{"cand_02", "cand_03"}) {
+		t.Fatalf("retry = failed:%d changed:%v errors:%+v", second.Failed, second.ChangedIDs, second.Errors)
+	}
+	for _, id := range []string{"cand_01", "cand_02", "cand_03"} {
+		candidate, err := s.getCandidate(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if candidate.State != "parked" {
+			t.Fatalf("%s state = %q, want parked", id, candidate.State)
+		}
 	}
 }
 
@@ -2353,8 +2594,8 @@ func TestAdjudicatePendingNamesCorruptAndChangedIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := s.AdjudicatePending(AdjudicatePendingOptions{}, t0.Add(time.Minute))
-	if len(r.CorruptIDs) != 1 || r.CorruptIDs[0] != "cand-corrupt" {
-		t.Fatalf("corrupt ids = %v, want [cand-corrupt]", r.CorruptIDs)
+	if len(r.CorruptIDs) != 1 || r.CorruptIDs[0] != "cand-corrupt.json" {
+		t.Fatalf("corrupt ids = %v, want [cand-corrupt.json]", r.CorruptIDs)
 	}
 	if r.Adjudicated != 2 {
 		t.Fatalf("adjudicated = %d, want 2 (one corrupt file must not strand the batch)", r.Adjudicated)
@@ -2364,11 +2605,88 @@ func TestAdjudicatePendingNamesCorruptAndChangedIDs(t *testing.T) {
 	}
 	foundCorruptErr := false
 	for _, e := range r.Errors {
-		if e.CandidateID == "cand-corrupt" {
+		if e.EntryCursor == "cand-corrupt.json" {
 			foundCorruptErr = true
 		}
 	}
 	if !foundCorruptErr {
-		t.Fatalf("errors must name the corrupt candidate per-id: %+v", r.Errors)
+		t.Fatalf("errors must name the corrupt entry cursor: %+v", r.Errors)
+	}
+}
+
+func TestMemoryCandidatePointReadRejectsNoncanonicalCustody(t *testing.T) {
+	s := newStore(t)
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	if err := os.WriteFile(outside, []byte(`{"id":"symlink","state":"proposed"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixtures := map[string]string{
+		"blank.json":    `{"id":"","state":"proposed"}`,
+		"mismatch.json": `{"id":"other","state":"proposed"}`,
+		"alias.json":    `{"ID":"alias","state":"proposed"}`,
+	}
+	for name, body := range fixtures {
+		if err := os.WriteFile(filepath.Join(s.candDir(), name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(s.candDir(), "symlink.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{"blank", "mismatch", "alias", "symlink"} {
+		t.Run(id, func(t *testing.T) {
+			if got, err := s.getCandidate(id); err == nil {
+				t.Fatalf("getCandidate(%q) accepted noncanonical custody: %+v", id, got)
+			}
+		})
+	}
+}
+
+func TestAdjudicatePendingNamesEveryCustodyCorruptionAndNeverActsOnIt(t *testing.T) {
+	s := newStore(t)
+	fixtures := map[string]string{
+		"valid.json":    `{"id":"valid","state":"proposed"}`,
+		"blank.json":    `{"id":"","state":"proposed"}`,
+		"mismatch.json": `{"id":"other","state":"proposed"}`,
+		"alias.json":    `{"ID":"alias","state":"proposed"}`,
+		"residue":       `not a candidate`,
+	}
+	for name, body := range fixtures {
+		if err := os.WriteFile(filepath.Join(s.candDir(), name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	if err := os.WriteFile(outside, []byte(`{"id":"symlink","state":"proposed"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(s.candDir(), "symlink.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(s.candDir(), "directory.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	report := s.AdjudicatePending(AdjudicatePendingOptions{DryRun: true, Verdict: "park"}, t0.Add(time.Minute))
+	if report.Adjudicated != 0 || len(report.ChangedIDs) != 0 || len(report.Actions) != 1 || report.Actions[0].CandidateID != "valid" {
+		t.Fatalf("dry-run results = adjudicated:%d changed:%v actions:%v, want 0/empty/valid plan", report.Adjudicated, report.ChangedIDs, report.Actions)
+	}
+	wantCorrupt := []string{"alias.json", "blank.json", "directory.json", "mismatch.json", "residue", "symlink.json"}
+	gotCorrupt := make([]string, 0, len(report.CorruptIDs))
+	for _, id := range report.CorruptIDs {
+		gotCorrupt = append(gotCorrupt, fmt.Sprint(id))
+	}
+	sort.Strings(gotCorrupt)
+	if !slices.Equal(gotCorrupt, wantCorrupt) {
+		t.Fatalf("named corrupt entries = %v, want %v", gotCorrupt, wantCorrupt)
+	}
+	if len(report.Errors) != len(wantCorrupt) {
+		t.Fatalf("corruption errors = %d, want %d: %+v", len(report.Errors), len(wantCorrupt), report.Errors)
+	}
+	for _, action := range report.Actions {
+		if action.CandidateID != "valid" {
+			t.Fatalf("noncanonical candidate became actionable: %+v", action)
+		}
 	}
 }

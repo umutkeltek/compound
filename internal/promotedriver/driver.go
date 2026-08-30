@@ -51,7 +51,8 @@ import (
 )
 
 const (
-	ReportSchemaVersion = "compound.promotedriver.report.v0.2"
+	ReportSchemaVersion       = "compound.promotedriver.report.v0.3"
+	legacyReportSchemaVersion = "compound.promotedriver.report.v0.2"
 
 	// DefaultPromoteLimit is the per-pass promotion ceiling: one lane at a
 	// time, literally. Raising it is an explicit operator choice (--promote-limit).
@@ -210,8 +211,8 @@ func buildPassIntent(store *mem.Store, opts Options) (PassIntent, error) {
 		return PassIntent{}, err
 	}
 	intent := PassIntent{
-		PromoteCursorBefore: promoteCursor.AfterID,
-		SweepCursorBefore:   sweepCursor.AfterID,
+		PromoteCursorBefore: promoteCursor.AfterCursor,
+		SweepCursorBefore:   sweepCursor.AfterCursor,
 	}
 	if pending, pendingErr := store.ReadPendingState(); pendingErr == nil {
 		intent.PendingGeneration = pending.Generation
@@ -221,6 +222,13 @@ func buildPassIntent(store *mem.Store, opts Options) (PassIntent, error) {
 		if id != "" && !seenCandidate[id] {
 			seenCandidate[id] = true
 			intent.CandidateIDs = append(intent.CandidateIDs, id)
+		}
+	}
+	seenCorrupt := map[candidates.EntryCursor]bool{}
+	addCorrupt := func(cursor candidates.EntryCursor) {
+		if cursor != "" && !seenCorrupt[cursor] {
+			seenCorrupt[cursor] = true
+			intent.CorruptEntries = append(intent.CorruptEntries, cursor)
 		}
 	}
 	candidateOperation := map[string]bool{}
@@ -236,31 +244,39 @@ func buildPassIntent(store *mem.Store, opts Options) (PassIntent, error) {
 		})
 	}
 
-	entries, corrupt, _, reachedEnd, err := store.ListCandidatesLite(promoteCursor.AfterID, opts.WalkScanLimit)
+	page, err := store.ListCandidatesLite(promoteCursor.AfterCursor, opts.WalkScanLimit)
 	if err != nil {
 		return PassIntent{}, err
 	}
-	for _, id := range corrupt {
-		addCandidate(id)
-	}
 	groups := map[string][]mem.CandidateLite{}
 	promotions := 0
-	for _, entry := range entries {
+	blocked := false
+	for _, outcome := range page.Entries {
+		if outcome.Corruption != nil {
+			addCorrupt(outcome.Cursor)
+			continue
+		}
+		entry := *outcome.Candidate
 		addCandidate(entry.ID)
+		if blocked {
+			continue
+		}
 		if entry.State != "proposed" {
 			continue
 		}
 		basis := strings.TrimSpace(entry.PromotionBasis)
 		if candidates.ValidBasis(basis) && basis != candidates.BasisExplicitConfirmation {
-			if promotions < opts.PromoteLimit {
-				addOperation(entry.ID, "promote", candidates.Promote)
-				promotions++
+			if promotions >= opts.PromoteLimit {
+				blocked = true
+				continue
 			}
+			addOperation(entry.ID, "promote", candidates.Promote)
+			promotions++
 			continue
 		}
 		groups[dedupeKey(entry)] = append(groups[dedupeKey(entry)], entry)
 	}
-	if promoteCursor.AfterID == "" && reachedEnd {
+	if promoteCursor.AfterCursor == "" && page.AtEnd && !blocked {
 		for _, group := range groups {
 			if len(group) < 2 {
 				continue
@@ -277,11 +293,11 @@ func buildPassIntent(store *mem.Store, opts Options) (PassIntent, error) {
 		}
 	}
 	sweepPlan := store.AdjudicatePending(mem.AdjudicatePendingOptions{
-		WorkID: opts.WorkID, DryRun: true, ScanLimit: opts.SweepScanLimit, AfterID: sweepCursor.AfterID,
+		WorkID: opts.WorkID, DryRun: true, ScanLimit: opts.SweepScanLimit, AfterCursor: sweepCursor.AfterCursor,
 		ReservedIDs: candidateOperation,
 	}, time.Time{})
-	for _, id := range sweepPlan.CorruptIDs {
-		addCandidate(id)
+	for _, cursor := range sweepPlan.CorruptIDs {
+		addCorrupt(cursor)
 	}
 	for _, action := range sweepPlan.Actions {
 		addOperation(action.CandidateID, "sweep", action.Verdict)
@@ -306,8 +322,8 @@ func reconcilePlannedPasses(homePath string, now time.Time) ([]string, error) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		var receipt Report
-		if err := json.Unmarshal([]byte(line), &receipt); err != nil {
+		receipt, err := decodeReceiptLine([]byte(line))
+		if err != nil {
 			return nil, fmt.Errorf("receipt line %d is corrupt: %w", lineNo+1, err)
 		}
 		if receipt.Stage == stagePlanned {
@@ -327,6 +343,7 @@ func reconcilePlannedPasses(homePath string, now time.Time) ([]string, error) {
 	sort.Strings(passIDs)
 	for _, passID := range passIDs {
 		recovery := planned[passID]
+		recovery.SchemaVersion = ReportSchemaVersion
 		recovery.Stage = stageRecoveryRequired
 		recovery.FinishedAt = rfc3339(now)
 		recovery.Error = "planned pass had no terminal receipt; successor re-runs the bounded idempotent phases from the durable intent and current cursors"
@@ -335,6 +352,135 @@ func reconcilePlannedPasses(homePath string, now time.Time) ([]string, error) {
 		}
 	}
 	return passIDs, nil
+}
+
+func decodeReceiptLine(line []byte) (Report, error) {
+	var receipt Report
+	primaryErr := json.Unmarshal(line, &receipt)
+	if primaryErr == nil {
+		return receipt, nil
+	}
+	var header struct {
+		SchemaVersion string `json:"schema_version"`
+	}
+	if err := json.Unmarshal(line, &header); err != nil || header.SchemaVersion != legacyReportSchemaVersion {
+		return Report{}, primaryErr
+	}
+
+	migrated, changed, migrationErr := migrateLegacyReceiptCursors(line)
+	if migrationErr != nil || !changed {
+		return Report{}, primaryErr
+	}
+	if err := json.Unmarshal(migrated, &receipt); err != nil {
+		return Report{}, errors.Join(primaryErr, fmt.Errorf("decode legacy receipt cursors: %w", err))
+	}
+	return receipt, nil
+}
+
+func migrateLegacyReceiptCursors(line []byte) ([]byte, bool, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(line, &root); err != nil {
+		return nil, false, err
+	}
+	type cursorField struct {
+		section string
+		name    string
+		list    bool
+	}
+	fields := []cursorField{
+		{section: "intent", name: "promote_cursor_before"},
+		{section: "intent", name: "sweep_cursor_before"},
+		{section: "intent", name: "corrupt_entries", list: true},
+		{section: "promote", name: "resumed_from"},
+		{section: "promote", name: "next_cursor"},
+		{section: "promote", name: "corrupt_ids", list: true},
+		{section: "sweep", name: "next_cursor"},
+		{section: "sweep", name: "corrupt_ids", list: true},
+	}
+
+	changed := false
+	for _, field := range fields {
+		sectionRaw, ok := root[field.section]
+		if !ok {
+			continue
+		}
+		var section map[string]json.RawMessage
+		if err := json.Unmarshal(sectionRaw, &section); err != nil {
+			return nil, false, fmt.Errorf("decode legacy receipt %s section: %w", field.section, err)
+		}
+		value, ok := section[field.name]
+		if !ok {
+			continue
+		}
+		var (
+			normalized   json.RawMessage
+			fieldChanged bool
+			err          error
+		)
+		if field.list {
+			normalized, fieldChanged, err = normalizeLegacyReceiptCursorList(value)
+		} else {
+			normalized, fieldChanged, err = normalizeLegacyReceiptCursor(value)
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("decode legacy receipt %s.%s: %w", field.section, field.name, err)
+		}
+		if !fieldChanged {
+			continue
+		}
+		section[field.name] = normalized
+		encodedSection, err := json.Marshal(section)
+		if err != nil {
+			return nil, false, err
+		}
+		root[field.section] = encodedSection
+		changed = true
+	}
+	if !changed {
+		return line, false, nil
+	}
+	encoded, err := json.Marshal(root)
+	return encoded, true, err
+}
+
+func normalizeLegacyReceiptCursor(raw json.RawMessage) (json.RawMessage, bool, error) {
+	var current candidates.EntryCursor
+	if err := json.Unmarshal(raw, &current); err == nil {
+		return raw, false, nil
+	}
+	var legacyID string
+	if err := json.Unmarshal(raw, &legacyID); err != nil {
+		return nil, false, err
+	}
+	cursor, err := candidates.EntryCursorFromFilename(legacyID + ".json")
+	if err != nil {
+		return nil, false, err
+	}
+	encoded, err := json.Marshal(cursor)
+	return encoded, true, err
+}
+
+func normalizeLegacyReceiptCursorList(raw json.RawMessage) (json.RawMessage, bool, error) {
+	var values []json.RawMessage
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, false, err
+	}
+	changed := false
+	for index, value := range values {
+		normalized, itemChanged, err := normalizeLegacyReceiptCursor(value)
+		if err != nil {
+			return nil, false, fmt.Errorf("item %d: %w", index, err)
+		}
+		if itemChanged {
+			values[index] = normalized
+			changed = true
+		}
+	}
+	if !changed {
+		return raw, false, nil
+	}
+	encoded, err := json.Marshal(values)
+	return encoded, true, err
 }
 
 // runPass executes every independent bounded phase. Phase/integrity failures
@@ -475,81 +621,89 @@ func runBasisAndDedupe(store *mem.Store, opts Options, now time.Time) (PromotePh
 	if err != nil {
 		return promote, dedupe, err
 	}
-	promote.ResumedFrom = cursor.AfterID
+	promote.ResumedFrom = cursor.AfterCursor
 
-	entries, corrupt, lastWalked, reachedEnd, err := store.ListCandidatesLite(cursor.AfterID, opts.WalkScanLimit)
+	page, err := store.ListCandidatesLite(cursor.AfterCursor, opts.WalkScanLimit)
 	if err != nil {
 		return promote, dedupe, err
 	}
-	promote.Scanned = len(entries)
-	promote.CorruptIDs = corrupt
-	walkedAll := cursor.AfterID == "" && reachedEnd
-	if reachedEnd && opts.Apply {
-		if err := clearPromoteCursor(homePath); err != nil {
-			return promote, dedupe, fmt.Errorf("clear promote cursor: %w", err)
-		}
-	}
+	promote.Walked = page.Walked
 
 	groups := map[string][]mem.CandidateLite{}
-	for _, entry := range entries {
+	safeCursor := cursor.AfterCursor
+	blocked := false
+	for _, outcome := range page.Entries {
+		if outcome.Corruption != nil {
+			promote.Corrupt++
+			promote.CorruptIDs = append(promote.CorruptIDs, outcome.Cursor)
+			if !blocked {
+				safeCursor = outcome.Cursor
+			}
+			continue
+		}
+
+		promote.Decoded++
+		promote.Scanned++ // compatibility: scanned historically meant decoded candidates.
+		entry := *outcome.Candidate
 		if entry.State != "proposed" {
+			if !blocked {
+				safeCursor = outcome.Cursor
+			}
 			continue
 		}
 		promote.Considered++
 		basis := strings.TrimSpace(entry.PromotionBasis)
 		if candidates.ValidBasis(basis) && basis != candidates.BasisExplicitConfirmation {
-			if promote.Promoted < opts.PromoteLimit {
-				receipt := PromotionReceipt{CandidateID: entry.ID, Basis: basis}
-				if dryRun {
-					receipt.Action = "would_promote"
-					promote.Promotions = append(promote.Promotions, receipt)
-					promote.Promoted++
-					continue
-				}
+			if blocked || promote.Promoted >= opts.PromoteLimit {
+				promote.Deferred = append(promote.Deferred, entry.ID)
+				blocked = true
+				continue
+			}
+			receipt := PromotionReceipt{CandidateID: entry.ID, Basis: basis}
+			if dryRun {
+				receipt.Action = "would_promote"
+			} else {
 				res, err := store.Adjudicate(entry.ID, candidates.Promote, opts.WorkID, now)
 				if err != nil {
 					promote.Errors = append(promote.Errors, fmt.Sprintf("%s: %v", entry.ID, err))
+					blocked = true
 					continue
 				}
 				receipt.Action = "promoted"
 				if res.Claim != nil {
 					receipt.ClaimID = res.Claim.ID
 				}
-				promote.Promotions = append(promote.Promotions, receipt)
-				promote.Promoted++
-			} else {
-				promote.Deferred = append(promote.Deferred, entry.ID)
 			}
+			promote.Promotions = append(promote.Promotions, receipt)
+			promote.Promoted++
+			safeCursor = outcome.Cursor
+			continue
+		}
+		if blocked {
 			continue
 		}
 		key := dedupeKey(entry)
 		groups[key] = append(groups[key], entry)
+		safeCursor = outcome.Cursor
 	}
 
-	if !reachedEnd {
-		// The walk stopped early: name the continuation point. Progress is
-		// the last DIRECTORY ENTRY walked — valid or corrupt — so a page
-		// ending on an unreadable file is never re-read on resume. The
-		// cursor persists only in apply mode; a plan pass reports the point
-		// without writing it.
-		if lastWalked != "" {
-			promote.NextCursor = lastWalked
-			if opts.Apply {
-				if err := promoteCursorPersist(homePath, promoteCursor{AfterID: lastWalked, UpdatedAt: rfc3339(now)}); err != nil {
-					// The cursor is forward progress across a huge inbox: a
-					// pass that cannot persist it may have promoted THIS page
-					// but leaves the next pass re-walking the same prefix,
-					// starving later candidates — while still stamping
-					// stage=committed. Same posture as the sweep cursor
-					// below: state-persistence failures fail the pass and
-					// journal stage=failed.
-					return promote, dedupe, fmt.Errorf("write promote cursor: %w", err)
-				}
+	walkedAll := cursor.AfterCursor == "" && page.AtEnd && !blocked
+	if blocked || !page.AtEnd {
+		promote.NextCursor = safeCursor
+		if opts.Apply && safeCursor != "" {
+			if err := promoteCursorPersist(homePath, promoteCursor{AfterCursor: safeCursor, UpdatedAt: rfc3339(now)}); err != nil {
+				return promote, dedupe, fmt.Errorf("write promote cursor: %w", err)
 			}
+		}
+	} else if opts.Apply {
+		if err := clearPromoteCursor(homePath); err != nil {
+			return promote, dedupe, fmt.Errorf("clear promote cursor: %w", err)
 		}
 	}
 	if !walkedAll {
-		if cursor.AfterID != "" {
+		if blocked {
+			dedupe.Skipped = "promotion write cap or failure left an actionable candidate before the safe cursor frontier"
+		} else if cursor.AfterCursor != "" {
 			dedupe.Skipped = "resume walk: duplicate groups may split across passes; collapse runs on a full walk from the start"
 		} else {
 			dedupe.Skipped = "walk budget exhausted before the inbox end; collapse runs on a full walk (raise --walk-scan-limit)"
@@ -738,12 +892,17 @@ func runSweep(store *mem.Store, opts Options, now time.Time) (SweepPhaseReport, 
 		WorkID:      opts.WorkID,
 		DryRun:      !opts.Apply,
 		ScanLimit:   opts.SweepScanLimit,
-		AfterID:     cursor.AfterID,
+		AfterCursor: cursor.AfterCursor,
 		ReservedIDs: opts.reservedCandidateIDs,
 	}, now)
+	report.Walked = pendingReport.Walked
+	report.Decoded = pendingReport.Decoded
+	report.Corrupt = pendingReport.Corrupt
 	report.Scanned = pendingReport.Scanned
 	report.Adjudicated = pendingReport.Adjudicated
 	report.Skipped = pendingReport.Skipped
+	report.Deferred = pendingReport.Deferred
+	report.Failed = pendingReport.Failed
 
 	report.BasisDeferred = pendingReport.BasisDeferred
 	report.VerdictCounts = pendingReport.VerdictCounts
@@ -753,10 +912,23 @@ func runSweep(store *mem.Store, opts Options, now time.Time) (SweepPhaseReport, 
 		report.Actions = append(report.Actions, SweepAction{CandidateID: action.CandidateID, Verdict: action.Verdict})
 	}
 	for _, e := range pendingReport.Errors {
-		report.Errors = append(report.Errors, fmt.Sprintf("%s: %s", e.CandidateID, e.Err))
+		identity := e.CandidateID
+		if identity == "" {
+			identity = cursorDisplay(e.EntryCursor)
+		}
+		report.Errors = append(report.Errors, fmt.Sprintf("%s: %s", identity, e.Err))
 	}
-	if pendingReport.AtEnd {
-		report.WalkedAll = true
+	report.NextCursor = pendingReport.NextCursor
+	if report.NextCursor != "" && opts.Apply {
+		if err := writeSweepCursor(homePath, sweepCursor{AfterCursor: report.NextCursor, UpdatedAt: rfc3339(now)}); err != nil {
+			return report, fmt.Errorf("write sweep cursor: %w", err)
+		}
+	}
+	if pendingReport.Failed > 0 {
+		return report, fmt.Errorf("pending sweep stopped at %d failed actionable candidate(s)", pendingReport.Failed)
+	}
+	report.WalkedAll = pendingReport.AtEnd && !pendingReport.LimitReached && pendingReport.NextCursor == ""
+	if report.WalkedAll {
 		if opts.Apply {
 			if err := clearSweepCursor(homePath); err != nil {
 				return report, fmt.Errorf("clear sweep cursor: %w", err)
@@ -769,19 +941,18 @@ func runSweep(store *mem.Store, opts Options, now time.Time) (SweepPhaseReport, 
 		}
 		return report, nil
 	}
-	if pendingReport.NextCursor != "" {
-		report.NextCursor = pendingReport.NextCursor
-		if opts.Apply {
-			if err := writeSweepCursor(homePath, sweepCursor{AfterID: pendingReport.NextCursor, UpdatedAt: rfc3339(now)}); err != nil {
-				// The sweep may already have adjudicated candidates this
-				// page: losing the continuation point silently would repeat
-				// or strand them. Name it — in apply mode this fails the
-				// pass so the journal records stage=failed.
-				return report, fmt.Errorf("write sweep cursor: %w", err)
-			}
-		}
-	}
 	return report, nil
+}
+
+func cursorDisplay(cursor candidates.EntryCursor) string {
+	if cursor == "" {
+		return "*"
+	}
+	token, err := cursor.Token()
+	if err != nil {
+		return fmt.Sprintf("entry[%x]", []byte(cursor))
+	}
+	return token
 }
 
 // --- single flight ---
@@ -815,13 +986,15 @@ func acquireSingleFlight(homePath string) (release func(), locked bool, err erro
 // --- state + receipts ---
 
 type sweepCursor struct {
-	AfterID   string `json:"after_id"`
-	UpdatedAt string `json:"updated_at"`
+	AfterCursor candidates.EntryCursor `json:"after_cursor,omitempty"`
+	AfterID     string                 `json:"after_id,omitempty"` // legacy read-only field
+	UpdatedAt   string                 `json:"updated_at"`
 }
 
 type promoteCursor struct {
-	AfterID   string `json:"after_id"`
-	UpdatedAt string `json:"updated_at"`
+	AfterCursor candidates.EntryCursor `json:"after_cursor,omitempty"`
+	AfterID     string                 `json:"after_id,omitempty"` // legacy read-only field
+	UpdatedAt   string                 `json:"updated_at"`
 }
 
 func readPromoteCursor(homePath string) (promoteCursor, error) {
@@ -837,10 +1010,22 @@ func readPromoteCursor(homePath string) (promoteCursor, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return promoteCursor{}, fmt.Errorf("promote cursor %s is corrupt: %w", path, err)
 	}
+	resolved, err := resolveStoredCursor(c.AfterCursor, c.AfterID)
+	if err != nil {
+		return promoteCursor{}, fmt.Errorf("promote cursor %s is corrupt: %w", path, err)
+	}
+	c.AfterCursor = resolved
+	c.AfterID = ""
 	return c, nil
 }
 
 func writePromoteCursor(homePath string, c promoteCursor) error {
+	resolved, err := resolveStoredCursor(c.AfterCursor, c.AfterID)
+	if err != nil {
+		return err
+	}
+	c.AfterCursor = resolved
+	c.AfterID = ""
 	return writeStateFile(homePath, promoteCursorFileName, c)
 }
 
@@ -866,7 +1051,42 @@ func readSweepCursor(homePath string) (sweepCursor, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return sweepCursor{}, fmt.Errorf("sweep cursor %s is corrupt: %w", path, err)
 	}
+	resolved, err := resolveStoredCursor(c.AfterCursor, c.AfterID)
+	if err != nil {
+		return sweepCursor{}, fmt.Errorf("sweep cursor %s is corrupt: %w", path, err)
+	}
+	c.AfterCursor = resolved
+	c.AfterID = ""
 	return c, nil
+}
+
+func resolveStoredCursor(afterCursor candidates.EntryCursor, legacyAfterID string) (candidates.EntryCursor, error) {
+	if afterCursor != "" {
+		if _, err := afterCursor.Token(); err != nil {
+			return "", err
+		}
+		if legacyAfterID != "" {
+			legacy, err := candidates.EntryCursorFromFilename(legacyAfterID + ".json")
+			if err != nil {
+				return "", fmt.Errorf("legacy after_id %q: %w", legacyAfterID, err)
+			}
+			if legacy != afterCursor {
+				return "", fmt.Errorf("after_cursor %q conflicts with legacy after_id %q", afterCursor, legacyAfterID)
+			}
+		}
+		return afterCursor, nil
+	}
+	if legacyAfterID == "" {
+		return "", nil
+	}
+	if strings.TrimSpace(legacyAfterID) != legacyAfterID {
+		return "", fmt.Errorf("legacy after_id %q has surrounding whitespace", legacyAfterID)
+	}
+	resolved, err := candidates.EntryCursorFromFilename(legacyAfterID + ".json")
+	if err != nil {
+		return "", fmt.Errorf("legacy after_id %q: %w", legacyAfterID, err)
+	}
+	return resolved, nil
 }
 
 // promoteCursorWriter is a test seam for deterministic promote-cursor
@@ -889,6 +1109,12 @@ func writeSweepCursor(homePath string, c sweepCursor) error {
 	if sweepCursorWriter != nil {
 		return sweepCursorWriter(homePath, c)
 	}
+	resolved, err := resolveStoredCursor(c.AfterCursor, c.AfterID)
+	if err != nil {
+		return err
+	}
+	c.AfterCursor = resolved
+	c.AfterID = ""
 	return writeStateFile(homePath, cursorFileName, c)
 }
 

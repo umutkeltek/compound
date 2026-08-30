@@ -198,6 +198,22 @@ func TestReadPageCursorJSONRoundTripPreservesInvalidUTF8FilenameBytes(t *testing
 	}
 }
 
+func TestEntryCursorDurableJSONRejectsAmbiguousRawFilename(t *testing.T) {
+	var wrapper struct {
+		Cursor EntryCursor `json:"cursor"`
+	}
+	if err := json.Unmarshal([]byte(`{"cursor":"cand_01.json"}`), &wrapper); err == nil {
+		t.Fatalf("durable JSON accepted raw cursor %q; versioned token required", wrapper.Cursor)
+	}
+	parsed, err := ParseEntryCursor("cand_01.json")
+	if err != nil {
+		t.Fatalf("interactive raw filename cursor rejected: %v", err)
+	}
+	if parsed != "cand_01.json" {
+		t.Fatalf("interactive cursor = %q, want cand_01.json", parsed)
+	}
+}
+
 func TestCandidateIdentityRequiresUniqueExactJSONIDKey(t *testing.T) {
 	for _, tc := range []struct {
 		name string
