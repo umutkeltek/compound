@@ -2,7 +2,7 @@
   "schema_version": "compound.release_issues.v0.1",
   "base_sha": "8b2b4815e1b65e2d60f5a330128e620b8ef16104",
   "branch": "release/harden-20260829",
-  "updated_at": "2026-08-30T03:57:31Z",
+  "updated_at": "2026-08-30T05:43:25Z",
   "issues": [
     {
       "id": "REL-P0-001",
@@ -211,25 +211,39 @@
       "severity": "P0",
       "subsystem": "proof-runtime",
       "title": "Canonical internal/work suite exceeds the proof deadline",
-      "status": "reproduced",
+      "status": "focused_green",
       "reproducer": "GOTOOLCHAIN=go1.26.4 go test ./internal/work -json -timeout=20m",
-      "root_cause": "The package has 763 serial top-level tests and zero t.Parallel calls while many isolated fixtures execute real file fsync, rename, directory fsync, and event-sync chains; concurrent broad batteries amplify the elapsed time but do not explain away the missing isolated margin.",
+      "root_cause": "The package grew to 801 top-level tests while every test remained serial and many table cases rebuilt identical persisted homes. Real fsync, rename, directory-sync, Git, and recovery paths therefore consumed more than 23 minutes even without competing packages.",
       "invariant": "The unchanged durability assertions and real persistence paths complete within the canonical proof budget with enough isolated and contended margin; proof scheduling single-flights broad batteries.",
       "red_test": "The 20-minute diagnostic timed out after 581 of 763 top-level tests; the active stack was in os.File.Sync, not deadlocked.",
-      "fix_commits": [],
-      "focused_tests": [],
+      "fix_commits": [
+        "80135cd9b70d49ff9bb3bc8fc6307e857b2c9ced",
+        "a58d4bd812bda74c71836a582cedf82fb3f3439c",
+        "156c3ce245aaad0c60570d44bea53872ef4a575c",
+        "8687f3b915ba9504f5ca3716d0ff9ff1fc5ab552",
+        "e0ab3e66b8cf5251450f09ab9d4a3951e98e28f0",
+        "ad8883c47613fc4b7d0dddbe343218939a21d10c"
+      ],
+      "focused_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/work (pass, 396.254s)",
+        "helper-transitively audited parallel cohorts passed repeated and race matrices",
+        "GOTOOLCHAIN=go1.26.4 go vet ./internal/work (pass)"
+      ],
       "broad_tests": [
         "GOTOOLCHAIN=go1.26.4 go test ./internal/work -count=1 (failed: default 10m timeout)",
         "GOTOOLCHAIN=go1.26.4 go test ./internal/work -json -timeout=20m (failed: 1201.554s package timeout)",
-        "GOTOOLCHAIN=go1.26.4 go test -count=1 -timeout=40m ./internal/work ./cmd/compound (uncontended internal/work completed red after 1388.628s; cmd/compound manually interrupted after 1686.563s once the candidate was already red)"
+        "GOTOOLCHAIN=go1.26.4 go test -count=1 -timeout=40m ./internal/work ./cmd/compound (uncontended internal/work completed red after 1388.628s; cmd/compound manually interrupted after 1686.563s once the candidate was already red)",
+        "GOTOOLCHAIN=go1.26.4 go test ./... (failed: internal/work 605.424s under broad I/O contention; REL-P0-010)"
       ],
       "evidence_paths": [
         "release-evidence/runs/20260829-p0-008-internal-work-timeout.json",
-        "release-evidence/runs/20260830-p0-008-uncontended-sample.json"
+        "release-evidence/runs/20260830-p0-008-uncontended-sample.json",
+        "release-evidence/runs/20260830-p0-008-runtime-remediation.json",
+        "release-evidence/runs/20260830-release-broad-runtime-red.json"
       ],
-      "residual_risk": "Canonical go test ./... and proof-check cannot certify the candidate. Raising timeouts or stubbing durability would weaken proof and is forbidden.",
+      "residual_risk": "The package now passes alone with 203.746s of default-timeout margin, but broad cross-package contention still pushes it to 605.424s. Canonical broad proof is tracked in REL-P0-010, so this issue remains focused_green rather than closed.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-30T00:11:20Z"
+      "updated_at": "2026-08-30T05:43:25Z"
     },
     {
       "id": "REL-P0-009",
@@ -261,6 +275,73 @@
       "residual_risk": "Focused, race, actuator, stage-failure, and governed clean-HEAD proof are green. Canonical broad proof remains unavailable until REL-P0-008 is remediated, so this issue is not closed.",
       "owner": "orchestrator:codex:release-harden-20260829",
       "updated_at": "2026-08-30T04:21:59Z"
+    },
+    {
+      "id": "REL-P0-010",
+      "severity": "P0",
+      "subsystem": "release-proof-runtime",
+      "title": "Plain full suite exhausts default package timeouts",
+      "status": "reproduced",
+      "reproducer": "GOTOOLCHAIN=go1.26.4 go test ./...",
+      "root_cause": "cmd/compound has 1381 top-level tests but only 18 parallel calls; its serial phase consumes the full ten-minute package budget before the parallel wave resumes. Concurrent durable packages also amplify fsync latency enough to push internal/work from 396.254s isolated to 605.424s.",
+      "invariant": "The literal release-certifier command go test ./... passes with the repository-required toolchain and meaningful default-timeout margin, without hidden GOFLAGS, package exclusions, weakened durability, or raised timeouts.",
+      "red_test": "cmd/compound timed out at 602.390s in the broad run and 600.750s in isolation; internal/work timed out at 605.424s only in the broad run.",
+      "fix_commits": [],
+      "focused_tests": [],
+      "broad_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./... (failed)",
+        "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound (failed: 600.750s timeout)"
+      ],
+      "evidence_paths": [
+        "release-evidence/runs/20260830-release-broad-runtime-red.json"
+      ],
+      "residual_risk": "The isolated release certifier cannot exist truthfully until this exact command passes; the current tag workflow would discover correctness after a tag and is not sufficient.",
+      "owner": "orchestrator:codex:release-harden-20260829",
+      "updated_at": "2026-08-30T05:43:25Z"
+    },
+    {
+      "id": "REL-P0-011",
+      "severity": "P0",
+      "subsystem": "candidate-custody-fixtures",
+      "title": "Fresh-home candidate writers omit canonical custody directories",
+      "status": "reproduced",
+      "reproducer": "GOTOOLCHAIN=go1.26.4 go test ./...",
+      "root_cause": "Distiller, executorlens, and product test paths open strict canonical candidate custody against partially initialized fresh homes whose required inbox kind directories are absent.",
+      "invariant": "Every supported fresh-home producer initializes and validates complete canonical candidate custody before writing; missing, aliased, or mismatched custody fails at the owning boundary without relying on another test or package to create directories.",
+      "red_test": "TestImprovementPlanRecordsReviewArtifactsWithoutMutatingTarget; TestImprovementReviewRequiresEditedDecisionAndProofWithoutMutatingTruth; TestAnnotateImprovementQueueClosesReviewedPlan; TestCounterMetricFalsifier_UnpairedClaimMintsOneFailurePattern; TestCounterMetricFailureCandidateDedupIgnoresClassifierDetailDrift; TestApplyCanonicalMetricsCreatesReviewReadyHypothesis; TestApplyCanonicalMetricsReplayDoesNotOverwriteExistingHypothesis.",
+      "fix_commits": [],
+      "focused_tests": [],
+      "broad_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./... (failed in internal/distiller, internal/executorlens, internal/product)"
+      ],
+      "evidence_paths": [
+        "release-evidence/runs/20260830-release-broad-runtime-red.json"
+      ],
+      "residual_risk": "A supported producer can fail on an actually fresh home after canonical candidate identity hardening; focused ownership diagnosis is pending.",
+      "owner": "orchestrator:codex:release-harden-20260829",
+      "updated_at": "2026-08-30T05:43:25Z"
+    },
+    {
+      "id": "REL-P0-012",
+      "severity": "P0",
+      "subsystem": "architecture-budget",
+      "title": "cmd/compound exceeds ratcheted production LOC budget",
+      "status": "reproduced",
+      "reproducer": "GOTOOLCHAIN=go1.26.4 go test ./internal/arch -run 'TestCheckCmdCompoundBudgetPassesOnRealRepo|TestDoctorEmitsCmdCompoundBudgetFindings'",
+      "root_cause": "The candidate contains 52849 non-test Go LOC in cmd/compound, 58 above the ratcheted 52791 ceiling.",
+      "invariant": "The CLI leaf remains at or below its ratcheted production budget; new behavior moves behind an existing deep internal owner rather than raising the ceiling.",
+      "red_test": "TestCheckCmdCompoundBudgetPassesOnRealRepo; TestDoctorEmitsCmdCompoundBudgetFindings.",
+      "fix_commits": [],
+      "focused_tests": [],
+      "broad_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./... (internal/arch failed after 562.259s)"
+      ],
+      "evidence_paths": [
+        "release-evidence/runs/20260830-release-broad-runtime-red.json"
+      ],
+      "residual_risk": "The architecture doctor is red; raising the ratchet is forbidden. At least 58 lines must move to an existing internal owner with behavior unchanged.",
+      "owner": "orchestrator:codex:release-harden-20260829",
+      "updated_at": "2026-08-30T05:43:25Z"
     },
     {
       "id": "REL-P1-001",
