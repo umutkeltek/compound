@@ -204,6 +204,7 @@ func runDelegateCLIWithoutExperimentalGateForTest(t *testing.T, sub string, stor
 }
 
 func TestWorkDelegateMutationCLIGateDefaultsOffWithoutSideEffects(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		sub  string
@@ -580,6 +581,7 @@ func TestRunAttemptSweepProbeUsesExactDelegateBinding(t *testing.T) {
 }
 
 func TestWorkDelegateCLIUsageErrors(t *testing.T) {
+	t.Parallel()
 	store, workID := claimedDelegateCLIWork(t, "orchestrator:test")
 	runner := newDelegateCLIFakeRunner()
 	cases := []struct {
@@ -603,6 +605,7 @@ func TestWorkDelegateCLIUsageErrors(t *testing.T) {
 }
 
 func TestWorkDelegateHelpInventory(t *testing.T) {
+	t.Parallel()
 	for _, verb := range []string{"delegate", "steer", "attach"} {
 		if !strings.Contains(workUsage(""), verb) || !strings.Contains(workUsage(verb), "usage: compound work "+verb) {
 			t.Fatalf("work help does not expose %s: root=%q sub=%q", verb, workUsage(""), workUsage(verb))
@@ -617,6 +620,7 @@ func TestWorkDelegateHelpInventory(t *testing.T) {
 }
 
 func TestWorkDelegateWritableStoreClassificationUsesExactParsers(t *testing.T) {
+	t.Parallel()
 	const workID = "work_delegate_parser_classification"
 	tests := []struct {
 		name string
@@ -649,6 +653,7 @@ func TestWorkDelegateWritableStoreClassificationUsesExactParsers(t *testing.T) {
 }
 
 func TestExperimentalDelegateMutationEnablementHasOneProductionOwner(t *testing.T) {
+	t.Parallel()
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
