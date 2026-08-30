@@ -842,6 +842,11 @@ func TestRecordedLandCheckContentIsTamperEvident(t *testing.T) {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
+	// The cases are serial because they share one fully persisted baseline.
+	// Each case still durably rewrites the proof through the production path,
+	// and cleanup durably restores the exact proof before the next case.
+	fixture := newLandingProofFixture(t, now)
+	baseline := snapshotCloseAuthorityFiles(t, fixture.store.home)
 	tests := []struct {
 		name   string
 		mutate func(*landingProofFixture, *LandCheckReport)
@@ -862,7 +867,15 @@ func TestRecordedLandCheckContentIsTamperEvident(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fixture := newLandingProofFixture(t, now)
+			t.Cleanup(func() {
+				if err := fixture.store.writeJSON(fixture.proof.ProofPath, &fixture.proof); err != nil {
+					t.Errorf("restore exact recorded proof: %v", err)
+					return
+				}
+				if after := snapshotCloseAuthorityFiles(t, fixture.store.home); !reflect.DeepEqual(after, baseline) {
+					t.Error("tamper refusal changed persisted baseline authority")
+				}
+			})
 			tampered := fixture.proof
 			tc.mutate(&fixture, &tampered)
 			if err := fixture.store.writeJSON(fixture.proof.ProofPath, &tampered); err != nil {

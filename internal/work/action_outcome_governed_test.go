@@ -920,6 +920,7 @@ func TestCompletedReceiptedActionRejectsLegacyAndMissingExactOutputDigests(t *te
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
+	baselineStore, w, in, authorizedAt, _ := completedGovernedAction(t)
 	for _, tc := range []struct {
 		name   string
 		mutate func(map[string]any)
@@ -940,7 +941,14 @@ func TestCompletedReceiptedActionRejectsLegacyAndMissingExactOutputDigests(t *te
 		{name: "missing event digest", mutate: func(completion map[string]any) { delete(completion, "event_sha256") }, want: "event_sha256"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, w, in, authorizedAt, _ := completedGovernedAction(t)
+			homePath := filepath.Join(t.TempDir(), "home")
+			if err := os.CopyFS(homePath, os.DirFS(baselineStore.home)); err != nil {
+				t.Fatal(err)
+			}
+			s, err := Open(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
 			path := filepath.Join(s.home, "work", "receipted-action-completions", w.ID, in.Action.ID+".json")
 			body, err := os.ReadFile(path)
 			if err != nil {
@@ -964,12 +972,16 @@ func TestCompletedReceiptedActionRejectsLegacyAndMissingExactOutputDigests(t *te
 			}
 		})
 	}
+	if replay, err := baselineStore.RecordReservedReceiptedAction(w.ID, in, authorizedAt); err != nil || !replay.Replayed {
+		t.Fatalf("completion tamper cases changed shared baseline: result=%+v err=%v", replay, err)
+	}
 }
 
 func TestCompletedReceiptedActionRejectsSchemaValidExactOutputTamper(t *testing.T) {
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
+	baselineStore, w, in, authorizedAt, result := completedGovernedAction(t)
 	for _, tc := range []struct {
 		name   string
 		mutate func(*testing.T, *Store, ReceiptedActionResult)
@@ -1026,12 +1038,25 @@ func TestCompletedReceiptedActionRejectsSchemaValidExactOutputTamper(t *testing.
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, w, in, authorizedAt, result := completedGovernedAction(t)
+			// Each case gets an independent byte copy of one fully persisted
+			// governed completion. The real tamper/replay paths still run for
+			// every case without repeating unrelated setup transactions.
+			homePath := filepath.Join(t.TempDir(), "home")
+			if err := os.CopyFS(homePath, os.DirFS(baselineStore.home)); err != nil {
+				t.Fatal(err)
+			}
+			s, err := Open(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
 			tc.mutate(t, s, result)
 			if replay, err := s.RecordReservedReceiptedAction(w.ID, in, authorizedAt); err == nil || replay.Replayed || !strings.Contains(err.Error(), "digest") {
 				t.Fatalf("schema-valid tamper replayed: result=%+v err=%v", replay, err)
 			}
 		})
+	}
+	if replay, err := baselineStore.RecordReservedReceiptedAction(w.ID, in, authorizedAt); err != nil || !replay.Replayed {
+		t.Fatalf("tamper cases changed shared baseline: result=%+v err=%v", replay, err)
 	}
 }
 
