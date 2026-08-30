@@ -34,6 +34,8 @@ func TestProofCheckFailedStepFactsUseFullOutputBeforeTailTruncation(t *testing.T
 }
 
 func TestProofCheckFailedStepSurfacesProcessStartError(t *testing.T) {
+	t.Parallel()
+
 	result := runProofCheckStep(t.TempDir(), proofCheckStep{
 		Name:     "synthetic-start-failure",
 		Command:  []string{"compound-proofcheck-definitely-missing-executable"},
@@ -48,6 +50,8 @@ func TestProofCheckFailedStepSurfacesProcessStartError(t *testing.T) {
 }
 
 func TestProofCheckFailureFactsNormalizeObservedEnvironmentalNondeterminism(t *testing.T) {
+	t.Parallel()
+
 	goBaseline := `panic: test timed out after 40m0s
 	running tests:
 		TestGatewayCallerContextTimeout (39m12s)
@@ -116,6 +120,8 @@ Bun v1.3.9 (macOS arm64)`
 }
 
 func TestProofCheckFailureFactsNormalizationDoesNotHideAdditionalFailures(t *testing.T) {
+	t.Parallel()
+
 	bunCacheFailure := `error: Cannot find package 'react-dom' from '/tmp/.bun/install/cache/@radix-ui/react-portal@1.1.17@@@1/dist/index.mjs'`
 	baseline := work.ProofFailureFacts("console-coordination-smoke", []byte(bunCacheFailure), errors.New("exit status 1"))
 	candidate := work.ProofFailureFacts("console-coordination-smoke", []byte(bunCacheFailure+"\nerror: candidate-only assertion failed"), errors.New("exit status 1"))
@@ -197,6 +203,8 @@ func TestProofCheckFailureFactsNormalizationDoesNotHideAdditionalFailures(t *tes
 }
 
 func TestProofCheckFailureFactsAreDeterministicUniqueAndEmptyOnSuccess(t *testing.T) {
+	t.Parallel()
+
 	got := work.ProofFailureFacts("generic", []byte(" beta  failure \nalpha failure\nbeta failure\n\n"), errors.New("failed"))
 	want := []string{failureFactForTest("alpha failure"), failureFactForTest("beta failure")}
 	if len(got) != len(want) {

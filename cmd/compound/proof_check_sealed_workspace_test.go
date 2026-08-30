@@ -147,6 +147,8 @@ exit 0
 }
 
 func TestPrepareProofCheckSealedWorkspaceCopiesOnlyCeremonyInputsAndCleansUp(t *testing.T) {
+	t.Parallel()
+
 	repo := initCompoundCommandGitRepo(t)
 	ignoreBody := strings.Join([]string{
 		"docs_private/",
@@ -245,6 +247,8 @@ func TestPrepareProofCheckSealedWorkspaceCopiesOnlyCeremonyInputsAndCleansUp(t *
 }
 
 func TestPrepareProofCheckSealedWorkspacePreservesSourceLeakOverlayForDoctor(t *testing.T) {
+	t.Parallel()
+
 	repo := initCompoundCommandGitRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("docs_private/\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -300,6 +304,8 @@ func TestPrepareProofCheckSealedWorkspacePreservesSourceLeakOverlayForDoctor(t *
 }
 
 func TestPrepareProofCheckSealedWorkspaceRejectsEscapingSymlinks(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name   string
 		target func(t *testing.T, linkDir string) string

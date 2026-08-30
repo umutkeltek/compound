@@ -97,6 +97,8 @@ func proofCheckMemoryGateHome(t *testing.T, bare bool) string {
 // so it must be green without any live COMPOUND_HOME — and green here means the five seeded
 // hops each reported "ok", not merely that nothing failed.
 func TestProofCheckMemoryDoctorGateProvesRealHops(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("builds the compound binary")
 	}
@@ -117,6 +119,8 @@ func TestProofCheckMemoryDoctorGateProvesRealHops(t *testing.T) {
 // alone would have traded a slow real check for a fast one that asserts nothing. The gate
 // must refuse that report.
 func TestProofCheckMemoryDoctorGateRefusesVacuousHome(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("builds the compound binary")
 	}
@@ -142,6 +146,8 @@ func TestProofCheckMemoryDoctorGateRefusesVacuousHome(t *testing.T) {
 // always fills Derivation + EvidenceRefs), so a control that respected the door could not
 // prove the gate is able to go red at all.
 func TestProofCheckMemoryDoctorGateFailsOnUnreadableLedger(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("builds the compound binary")
 	}
@@ -161,6 +167,8 @@ func TestProofCheckMemoryDoctorGateFailsOnUnreadableLedger(t *testing.T) {
 }
 
 func TestProofCheckMemoryDoctorGateFailsOnZeroProvenanceClaim(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("builds the compound binary")
 	}
