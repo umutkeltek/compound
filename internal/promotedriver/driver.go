@@ -51,8 +51,9 @@ import (
 )
 
 const (
-	ReportSchemaVersion       = "compound.promotedriver.report.v0.3"
-	legacyReportSchemaVersion = "compound.promotedriver.report.v0.2"
+	ReportSchemaVersion         = "compound.promotedriver.report.v0.4"
+	previousReportSchemaVersion = "compound.promotedriver.report.v0.3"
+	legacyReportSchemaVersion   = "compound.promotedriver.report.v0.2"
 
 	// DefaultPromoteLimit is the per-pass promotion ceiling: one lane at a
 	// time, literally. Raising it is an explicit operator choice (--promote-limit).
@@ -72,11 +73,12 @@ const (
 	promoteCursorFileName = "promote-cursor.json"
 	hashFileName          = "import-hashes.json"
 
-	stagePlanned          = "planned"
-	stageCommitted        = "committed"
-	stagePartial          = "partial"
-	stageFailed           = "failed"
-	stageRecoveryRequired = "recovery_required"
+	stagePlanned           = "planned"
+	stageOperationRecorded = "operation_recorded"
+	stageCommitted         = "committed"
+	stagePartial           = "partial"
+	stageFailed            = "failed"
+	stageRecoveryRequired  = "recovery_required"
 )
 
 // Options configures one driver pass. The zero value is a bounded PLAN pass
@@ -134,6 +136,9 @@ func Run(homePath string, opts Options, now time.Time) (Report, error) {
 	if !opts.Apply {
 		return runPlan(homePath, opts, now, report)
 	}
+	if len(opts.RegistryPaths) != 0 {
+		return report, fmt.Errorf("registry import mutation is experimental and excluded from supported promote-driver apply; run a read-only plan or use the separately governed importer")
+	}
 
 	release, locked, err := acquireSingleFlight(homePath)
 	if err != nil {
@@ -150,34 +155,53 @@ func Run(homePath string, opts Options, now time.Time) (Report, error) {
 	if err != nil {
 		return report, fmt.Errorf("open memory store: %w", err)
 	}
-	reconciled, err := reconcilePlannedPasses(homePath, now)
+	journal, reconciled, err := loadFrozenJournal(homePath, now)
 	if err != nil {
-		return report, fmt.Errorf("reconcile incomplete passes: %w", err)
+		return report, fmt.Errorf("load frozen pass journal: %w", err)
 	}
-	report.ReconciledPassIDs = reconciled
-	intent, err := buildPassIntent(store, opts)
-	if err != nil {
-		return report, fmt.Errorf("build pass intent: %w", err)
-	}
-	report.Intent = &intent
-	opts.reservedCandidateIDs = map[string]bool{}
-	for _, operation := range intent.Operations {
-		if operation.Phase != "sweep" {
-			opts.reservedCandidateIDs[operation.CandidateID] = true
+	recordedResults := map[string]PassOperationResult{}
+	if journal != nil {
+		report = journal.Plan
+		report.Stage = ""
+		report.Error = ""
+		report.FinishedAt = ""
+		report.ReceiptPath = ""
+		report.OperationResults = orderedOperationResults(*report.Intent, journal.Results)
+		for key, result := range journal.Results {
+			recordedResults[key] = result
 		}
+		report.ReconciledPassIDs = append(reconciled, report.PassID)
+		opts.passID = report.PassID
+		opts.WorkID = report.Intent.WorkID
+	} else {
+		report.ReconciledPassIDs = reconciled
+		intent, err := buildPassIntent(store, opts, now)
+		if err != nil {
+			return report, fmt.Errorf("build pass intent: %w", err)
+		}
+		report.Intent = &intent
+		opts.reservedCandidateIDs = map[string]bool{}
+		for _, operation := range intent.Operations {
+			if operation.Phase != "sweep" {
+				opts.reservedCandidateIDs[operation.Target.ID] = true
+			}
+		}
+		report.Stage = stagePlanned
+		if err := receiptAppender(homePath, report); err != nil {
+			return report, fmt.Errorf("journal planned pass: %w", err)
+		}
+		report.Stage = ""
 	}
 
-	report.Stage = stagePlanned
-	if err := receiptAppender(homePath, report); err != nil {
-		return report, fmt.Errorf("journal planned pass: %w", err)
-	}
-
-	runErr := runPass(homePath, store, opts, now, &report)
-	report.FinishedAt = rfc3339(time.Now().UTC())
+	runErr := runFrozenPass(homePath, store, recordedResults, now, &report)
+	report.FinishedAt = rfc3339(now)
 	report.Stage = stageCommitted
 	if runErr != nil {
+		var recovery passRecoveryError
 		var partial partialPassError
-		if errors.As(runErr, &partial) {
+		if errors.As(runErr, &recovery) {
+			report.Stage = stageRecoveryRequired
+		} else if errors.As(runErr, &partial) {
 			report.Stage = stagePartial
 		} else {
 			report.Stage = stageFailed
@@ -200,7 +224,7 @@ func Run(homePath string, opts Options, now time.Time) (Report, error) {
 	return report, nil
 }
 
-func buildPassIntent(store *mem.Store, opts Options) (PassIntent, error) {
+func buildPassIntent(store *mem.Store, opts Options, now time.Time) (PassIntent, error) {
 	homePath := store.HomePath()
 	promoteCursor, err := readPromoteCursor(homePath)
 	if err != nil {
@@ -211,12 +235,20 @@ func buildPassIntent(store *mem.Store, opts Options) (PassIntent, error) {
 		return PassIntent{}, err
 	}
 	intent := PassIntent{
+		WorkID:              opts.WorkID,
+		ExecutionAt:         rfc3339(now),
 		PromoteCursorBefore: promoteCursor.AfterCursor,
 		SweepCursorBefore:   sweepCursor.AfterCursor,
+		PromotePlan: PromotePhaseReport{
+			Limit:       opts.PromoteLimit,
+			ResumedFrom: promoteCursor.AfterCursor,
+		},
+		SweepPlan: SweepPhaseReport{ScanLimit: opts.SweepScanLimit},
 	}
 	if pending, pendingErr := store.ReadPendingState(); pendingErr == nil {
 		intent.PendingGeneration = pending.Generation
 	}
+
 	seenCandidate := map[string]bool{}
 	addCandidate := func(id string) {
 		if id != "" && !seenCandidate[id] {
@@ -231,16 +263,30 @@ func buildPassIntent(store *mem.Store, opts Options) (PassIntent, error) {
 			intent.CorruptEntries = append(intent.CorruptEntries, cursor)
 		}
 	}
+	corpus := map[candidates.EntryCursor]string{}
+	type plannedCandidate struct {
+		lite   mem.CandidateLite
+		cursor candidates.EntryCursor
+		digest string
+	}
+	precondition := func(candidate plannedCandidate) CandidatePrecondition {
+		return CandidatePrecondition{
+			ID:             candidate.lite.ID,
+			EntryCursor:    candidate.cursor,
+			State:          candidate.lite.State,
+			BodyDigest:     candidate.digest,
+			PromotionBasis: candidate.lite.PromotionBasis,
+		}
+	}
 	candidateOperation := map[string]bool{}
-	addOperation := func(candidateID, phase, operation string) {
-		addCandidate(candidateID)
-		if candidateOperation[candidateID] {
+	addOperation := func(phase, operation string, target CandidatePrecondition, keeper *CandidatePrecondition, currentClaim *ClaimPrecondition, key string) {
+		addCandidate(target.ID)
+		if candidateOperation[target.ID] {
 			return
 		}
-		candidateOperation[candidateID] = true
-		key := opts.passID + ":" + candidateID + ":" + operation
+		candidateOperation[target.ID] = true
 		intent.Operations = append(intent.Operations, PassIntentOperation{
-			Key: key, CandidateID: candidateID, Phase: phase, Operation: operation,
+			Phase: phase, Operation: operation, Target: target, Keeper: keeper, CurrentClaim: currentClaim, DedupeKey: key,
 		})
 	}
 
@@ -248,110 +294,479 @@ func buildPassIntent(store *mem.Store, opts Options) (PassIntent, error) {
 	if err != nil {
 		return PassIntent{}, err
 	}
-	groups := map[string][]mem.CandidateLite{}
-	promotions := 0
+	intent.PromotePlan.Walked = page.Walked
+	groups := map[string][]plannedCandidate{}
+	safeCursor := promoteCursor.AfterCursor
 	blocked := false
 	for _, outcome := range page.Entries {
 		if outcome.Corruption != nil {
+			intent.PromotePlan.Corrupt++
+			intent.PromotePlan.CorruptIDs = append(intent.PromotePlan.CorruptIDs, outcome.Cursor)
 			addCorrupt(outcome.Cursor)
+			corpus[outcome.Cursor] = "corrupt:" + string(outcome.Corruption.Code)
+			if !blocked {
+				safeCursor = outcome.Cursor
+			}
 			continue
 		}
-		entry := *outcome.Candidate
-		addCandidate(entry.ID)
-		if blocked {
+		entry := plannedCandidate{lite: *outcome.Candidate, cursor: outcome.Cursor, digest: outcome.Record.Digest}
+		corpus[outcome.Cursor] = outcome.Record.Digest
+		addCandidate(entry.lite.ID)
+		intent.PromotePlan.Decoded++
+		intent.PromotePlan.Scanned++
+		if entry.lite.State != "proposed" {
+			if !blocked {
+				safeCursor = outcome.Cursor
+			}
 			continue
 		}
-		if entry.State != "proposed" {
-			continue
-		}
-		basis := strings.TrimSpace(entry.PromotionBasis)
+		intent.PromotePlan.Considered++
+		basis := strings.TrimSpace(entry.lite.PromotionBasis)
 		if candidates.ValidBasis(basis) && basis != candidates.BasisExplicitConfirmation {
-			if promotions >= opts.PromoteLimit {
+			if blocked || intent.PromotePlan.Promoted >= opts.PromoteLimit {
+				intent.PromotePlan.Deferred = append(intent.PromotePlan.Deferred, entry.lite.ID)
 				blocked = true
 				continue
 			}
-			addOperation(entry.ID, "promote", candidates.Promote)
-			promotions++
+			var fullCandidate mem.Candidate
+			if err := json.Unmarshal(outcome.Record.Body, &fullCandidate); err != nil {
+				return PassIntent{}, fmt.Errorf("decode promotion candidate %s: %w", entry.lite.ID, err)
+			}
+			claimPrecondition, err := store.FrozenPromotionClaimPrecondition(fullCandidate)
+			if err != nil {
+				return PassIntent{}, fmt.Errorf("freeze promotion claim precondition for %s: %w", entry.lite.ID, err)
+			}
+			addOperation("promote", candidates.Promote, precondition(entry), nil, &ClaimPrecondition{
+				ID: claimPrecondition.ID, Absent: claimPrecondition.Absent,
+			}, "")
+			intent.PromotePlan.Promoted++
+			intent.PromotePlan.Promotions = append(intent.PromotePlan.Promotions, PromotionReceipt{
+				CandidateID: entry.lite.ID,
+				Basis:       basis,
+				Action:      "would_promote",
+			})
+			safeCursor = outcome.Cursor
 			continue
 		}
-		groups[dedupeKey(entry)] = append(groups[dedupeKey(entry)], entry)
+		if blocked {
+			continue
+		}
+		groups[dedupeKey(entry.lite)] = append(groups[dedupeKey(entry.lite)], entry)
+		safeCursor = outcome.Cursor
 	}
-	if promoteCursor.AfterCursor == "" && page.AtEnd && !blocked {
-		for _, group := range groups {
-			if len(group) < 2 {
-				continue
-			}
-			sort.Slice(group, func(i, j int) bool {
-				if group[i].CreatedAt != group[j].CreatedAt {
-					return group[i].CreatedAt < group[j].CreatedAt
-				}
-				return group[i].ID < group[j].ID
-			})
-			for _, duplicate := range group[1:] {
-				addOperation(duplicate.ID, "dedupe", candidates.NoPromote)
+
+	walkedAll := promoteCursor.AfterCursor == "" && page.AtEnd && !blocked
+	if blocked || !page.AtEnd {
+		intent.PromotePlan.NextCursor = safeCursor
+	}
+	if !walkedAll {
+		switch {
+		case blocked:
+			intent.DedupePlan.Skipped = "promotion write cap or failure left an actionable candidate before the safe cursor frontier"
+		case promoteCursor.AfterCursor != "":
+			intent.DedupePlan.Skipped = "resume walk: duplicate groups may split across passes; collapse runs on a full walk from the start"
+		default:
+			intent.DedupePlan.Skipped = "walk budget exhausted before the inbox end; collapse runs on a full walk (raise --walk-scan-limit)"
+		}
+	} else {
+		var keys []string
+		for key, group := range groups {
+			if len(group) > 1 {
+				keys = append(keys, key)
 			}
 		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			group := groups[key]
+			sort.Slice(group, func(i, j int) bool {
+				if group[i].lite.CreatedAt != group[j].lite.CreatedAt {
+					return group[i].lite.CreatedAt < group[j].lite.CreatedAt
+				}
+				return group[i].lite.ID < group[j].lite.ID
+			})
+			keeper := precondition(group[0])
+			action := DedupeAction{Key: key, Kept: keeper.ID, Action: "would_collapse"}
+			for _, duplicate := range group[1:] {
+				target := precondition(duplicate)
+				addOperation("dedupe", candidates.NoPromote, target, &keeper, nil, key)
+				action.NoPromoted = append(action.NoPromoted, target.ID)
+			}
+			intent.DedupePlan.Groups++
+			intent.DedupePlan.Collapsed += len(action.NoPromoted)
+			intent.DedupePlan.Actions = append(intent.DedupePlan.Actions, action)
+		}
 	}
+
 	sweepPlan := store.AdjudicatePending(mem.AdjudicatePendingOptions{
-		WorkID: opts.WorkID, DryRun: true, ScanLimit: opts.SweepScanLimit, AfterCursor: sweepCursor.AfterCursor,
+		WorkID:      opts.WorkID,
+		DryRun:      true,
+		ScanLimit:   opts.SweepScanLimit,
+		AfterCursor: sweepCursor.AfterCursor,
 		ReservedIDs: candidateOperation,
 	}, time.Time{})
+	intent.SweepPlan.Walked = sweepPlan.Walked
+	intent.SweepPlan.Decoded = sweepPlan.Decoded
+	intent.SweepPlan.Corrupt = sweepPlan.Corrupt
+	intent.SweepPlan.Scanned = sweepPlan.Scanned
+	intent.SweepPlan.Skipped = sweepPlan.Skipped
+	intent.SweepPlan.Deferred = sweepPlan.Deferred
+	intent.SweepPlan.Failed = sweepPlan.Failed
+	intent.SweepPlan.BasisDeferred = sweepPlan.BasisDeferred
+	intent.SweepPlan.CorruptIDs = append([]candidates.EntryCursor(nil), sweepPlan.CorruptIDs...)
+	intent.SweepPlan.NextCursor = sweepPlan.NextCursor
+	intent.SweepPlan.WalkedAll = sweepPlan.AtEnd && !sweepPlan.LimitReached && sweepPlan.NextCursor == ""
 	for _, cursor := range sweepPlan.CorruptIDs {
 		addCorrupt(cursor)
+		if _, ok := corpus[cursor]; !ok {
+			corpus[cursor] = "corrupt"
+		}
+	}
+	for _, pendingErr := range sweepPlan.Errors {
+		identity := pendingErr.CandidateID
+		if identity == "" {
+			identity = cursorDisplay(pendingErr.EntryCursor)
+		}
+		intent.SweepPlan.Errors = append(intent.SweepPlan.Errors, fmt.Sprintf("%s: %s", identity, pendingErr.Err))
 	}
 	for _, action := range sweepPlan.Actions {
-		addOperation(action.CandidateID, "sweep", action.Verdict)
+		target := CandidatePrecondition{
+			ID:          action.CandidateID,
+			EntryCursor: action.EntryCursor,
+			State:       action.ExpectedState,
+			BodyDigest:  action.ExpectedDigest,
+		}
+		corpus[target.EntryCursor] = target.BodyDigest
+		addOperation("sweep", action.Verdict, target, nil, nil, "")
+		intent.SweepPlan.Actions = append(intent.SweepPlan.Actions, SweepAction{CandidateID: action.CandidateID, Verdict: action.Verdict})
 	}
+
 	sort.Strings(intent.CandidateIDs)
-	sort.Slice(intent.Operations, func(i, j int) bool { return intent.Operations[i].Key < intent.Operations[j].Key })
+	sort.Slice(intent.CorruptEntries, func(i, j int) bool { return intent.CorruptEntries[i] < intent.CorruptEntries[j] })
+	var corpusLines []string
+	for cursor, digest := range corpus {
+		corpusLines = append(corpusLines, string(cursor)+"\x00"+digest)
+	}
+	sort.Strings(corpusLines)
+	corpusSum := sha256.Sum256([]byte(strings.Join(corpusLines, "\x00")))
+	intent.CandidateCorpusGeneration = "sha256:" + hex.EncodeToString(corpusSum[:])
+	if err := sealPassIntent(opts.passID, &intent); err != nil {
+		return PassIntent{}, err
+	}
 	return intent, nil
 }
 
-func reconcilePlannedPasses(homePath string, now time.Time) ([]string, error) {
+func sealPassIntent(passID string, intent *PassIntent) error {
+	for index := range intent.Operations {
+		intent.Operations[index].Ordinal = index
+		intent.Operations[index].Key = ""
+		body, err := json.Marshal(intent.Operations[index])
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256([]byte(passID + "\x00" + string(body)))
+		intent.Operations[index].Key = "op_" + hex.EncodeToString(sum[:16])
+	}
+	intent.PlanDigest = ""
+	body, err := json.Marshal(intent)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(body)
+	intent.PlanDigest = "sha256:" + hex.EncodeToString(sum[:])
+	return nil
+}
+
+func validatePassIntent(passID string, intent PassIntent) error {
+	if strings.TrimSpace(intent.WorkID) == "" {
+		return fmt.Errorf("plan work id required")
+	}
+	if strings.TrimSpace(intent.CandidateCorpusGeneration) == "" {
+		return fmt.Errorf("candidate corpus generation required")
+	}
+	if _, err := time.Parse(time.RFC3339, intent.ExecutionAt); err != nil {
+		return fmt.Errorf("plan execution_at invalid: %w", err)
+	}
+	want := intent.PlanDigest
+	if strings.TrimSpace(want) == "" {
+		return fmt.Errorf("plan digest required")
+	}
+	copyOfIntent := intent
+	copyOfIntent.Operations = append([]PassIntentOperation(nil), intent.Operations...)
+	if err := sealPassIntent(passID, &copyOfIntent); err != nil {
+		return err
+	}
+	if copyOfIntent.PlanDigest != want {
+		return fmt.Errorf("plan digest mismatch: got %s want %s", copyOfIntent.PlanDigest, want)
+	}
+	if len(copyOfIntent.Operations) != len(intent.Operations) {
+		return fmt.Errorf("plan operation count changed")
+	}
+	for index := range intent.Operations {
+		operation := intent.Operations[index]
+		if copyOfIntent.Operations[index].Key != operation.Key || operation.Ordinal != index {
+			return fmt.Errorf("plan operation %d key/ordinal mismatch", index)
+		}
+		if strings.TrimSpace(operation.Target.ID) == "" || operation.Target.EntryCursor == "" || strings.TrimSpace(operation.Target.BodyDigest) == "" || strings.TrimSpace(operation.Target.State) == "" {
+			return fmt.Errorf("plan operation %d target id, cursor, digest, and state required", index)
+		}
+		switch operation.Phase {
+		case "promote":
+			if operation.CurrentClaim == nil || operation.CurrentClaim.Absent == (strings.TrimSpace(operation.CurrentClaim.ID) != "") {
+				return fmt.Errorf("plan operation %d promotion current-claim precondition invalid", index)
+			}
+		case "dedupe":
+			if operation.Keeper == nil ||
+				strings.TrimSpace(operation.Keeper.ID) == "" ||
+				operation.Keeper.EntryCursor == "" ||
+				strings.TrimSpace(operation.Keeper.BodyDigest) == "" ||
+				strings.TrimSpace(operation.Keeper.State) == "" {
+				return fmt.Errorf("plan operation %d dedupe keeper id, cursor, digest, and state required", index)
+			}
+			if operation.CurrentClaim != nil {
+				return fmt.Errorf("plan operation %d dedupe cannot carry a current-claim precondition", index)
+			}
+		default:
+			if operation.CurrentClaim != nil {
+				return fmt.Errorf("plan operation %d non-promotion cannot carry a current-claim precondition", index)
+			}
+		}
+	}
+	return nil
+}
+
+type frozenJournal struct {
+	Plan    Report
+	Results map[string]PassOperationResult
+}
+
+type frozenJournalPass struct {
+	plan       *Report
+	results    map[string]PassOperationResult
+	terminal   bool
+	replayable bool
+}
+
+func loadFrozenJournal(homePath string, now time.Time) (*frozenJournal, []string, error) {
 	path := filepath.Join(stateDir(homePath), receiptFileName)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
-	planned := map[string]Report{}
-	terminal := map[string]bool{}
+	passes := map[string]*frozenJournalPass{}
 	for lineNo, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		receipt, err := decodeReceiptLine([]byte(line))
 		if err != nil {
-			return nil, fmt.Errorf("receipt line %d is corrupt: %w", lineNo+1, err)
+			return nil, nil, fmt.Errorf("receipt line %d is corrupt: %w", lineNo+1, err)
 		}
-		if receipt.Stage == stagePlanned {
-			planned[receipt.PassID] = receipt
+		if strings.TrimSpace(receipt.PassID) == "" {
+			return nil, nil, fmt.Errorf("receipt line %d has blank pass id", lineNo+1)
+		}
+		pass := passes[receipt.PassID]
+		if pass == nil {
+			pass = &frozenJournalPass{results: map[string]PassOperationResult{}}
+			passes[receipt.PassID] = pass
+		}
+		if pass.terminal {
+			return nil, nil, fmt.Errorf("pass %s receipt stage %q follows a terminal frame", receipt.PassID, receipt.Stage)
+		}
+		switch receipt.Stage {
+		case stagePlanned:
+			if pass.plan != nil {
+				return nil, nil, fmt.Errorf("pass %s has duplicate planned receipts", receipt.PassID)
+			}
+			plan := receipt
+			pass.plan = &plan
+			if receipt.SchemaVersion == ReportSchemaVersion && receipt.Intent != nil && strings.TrimSpace(receipt.Intent.PlanDigest) != "" {
+				if err := validatePassIntent(receipt.PassID, *receipt.Intent); err != nil {
+					return nil, nil, fmt.Errorf("pass %s planned intent invalid: %w", receipt.PassID, err)
+				}
+				pass.replayable = true
+			}
+		case stageOperationRecorded:
+			if pass.plan == nil || !pass.replayable {
+				return nil, nil, fmt.Errorf("pass %s operation result precedes a replayable plan", receipt.PassID)
+			}
+			if receipt.SchemaVersion != ReportSchemaVersion || receipt.Intent == nil {
+				return nil, nil, fmt.Errorf("pass %s operation frame intent is missing or has schema %q", receipt.PassID, receipt.SchemaVersion)
+			}
+			if err := validatePassIntent(receipt.PassID, *receipt.Intent); err != nil {
+				return nil, nil, fmt.Errorf("pass %s operation frame intent invalid: %w", receipt.PassID, err)
+			}
+			if !samePassIntent(*pass.plan.Intent, *receipt.Intent) {
+				return nil, nil, fmt.Errorf("pass %s operation frame intent does not match the planned intent", receipt.PassID)
+			}
+			if len(receipt.OperationResults) != 1 {
+				return nil, nil, fmt.Errorf("pass %s operation frame carries %d results, want 1", receipt.PassID, len(receipt.OperationResults))
+			}
+			result := receipt.OperationResults[0]
+			if err := validateOperationResult(*pass.plan.Intent, result); err != nil {
+				return nil, nil, fmt.Errorf("pass %s operation result invalid: %w", receipt.PassID, err)
+			}
+			if prior, ok := pass.results[result.Key]; ok {
+				if !sameOperationResult(prior, result) {
+					return nil, nil, fmt.Errorf("pass %s operation %s has conflicting results", receipt.PassID, result.Key)
+				}
+				continue
+			}
+			pass.results[result.Key] = result
+		case stageRecoveryRequired:
+			if !pass.replayable || strings.Contains(receipt.Error, "legacy_unreplayable") {
+				pass.terminal = true
+			}
+		case stageCommitted, stagePartial, stageFailed:
+			if receipt.SchemaVersion == ReportSchemaVersion || pass.replayable {
+				if err := validateTerminalReceipt(receipt.PassID, pass, receipt); err != nil {
+					return nil, nil, fmt.Errorf("pass %s terminal receipt invalid: %w", receipt.PassID, err)
+				}
+			}
+			pass.terminal = true
+		default:
+			return nil, nil, fmt.Errorf("pass %s has unknown receipt stage %q", receipt.PassID, receipt.Stage)
+		}
+	}
+
+	var active []*frozenJournalPass
+	var legacy []string
+	for passID, pass := range passes {
+		if pass.plan == nil || pass.terminal {
 			continue
 		}
-		if receipt.Stage != "" {
-			terminal[receipt.PassID] = true
+		if pass.replayable {
+			active = append(active, pass)
+		} else {
+			legacy = append(legacy, passID)
 		}
 	}
-	var passIDs []string
-	for passID := range planned {
-		if !terminal[passID] {
-			passIDs = append(passIDs, passID)
-		}
-	}
-	sort.Strings(passIDs)
-	for _, passID := range passIDs {
-		recovery := planned[passID]
+	sort.Strings(legacy)
+	for _, passID := range legacy {
+		recovery := *passes[passID].plan
 		recovery.SchemaVersion = ReportSchemaVersion
 		recovery.Stage = stageRecoveryRequired
 		recovery.FinishedAt = rfc3339(now)
-		recovery.Error = "planned pass had no terminal receipt; successor re-runs the bounded idempotent phases from the durable intent and current cursors"
+		recovery.Error = "legacy_unreplayable: planned receipt lacks a validated v0.4 frozen plan; no mutation was replayed"
 		if err := receiptAppender(homePath, recovery); err != nil {
-			return nil, fmt.Errorf("terminalize planned-only pass %s: %w", passID, err)
+			return nil, nil, fmt.Errorf("terminalize legacy planned-only pass %s: %w", passID, err)
 		}
 	}
-	return passIDs, nil
+	if len(active) > 1 {
+		var ids []string
+		for _, pass := range active {
+			ids = append(ids, pass.plan.PassID)
+		}
+		sort.Strings(ids)
+		return nil, nil, fmt.Errorf("multiple replayable passes require recovery: %s", strings.Join(ids, ", "))
+	}
+	if len(active) == 0 {
+		return nil, legacy, nil
+	}
+	return &frozenJournal{Plan: *active[0].plan, Results: active[0].results}, legacy, nil
+}
+
+func validateTerminalReceipt(passID string, pass *frozenJournalPass, terminal Report) error {
+	if pass.plan == nil || !pass.replayable || pass.plan.Intent == nil {
+		return fmt.Errorf("current terminal frame requires a replayable planned intent")
+	}
+	if terminal.SchemaVersion != ReportSchemaVersion {
+		return fmt.Errorf("terminal schema %q does not match %q", terminal.SchemaVersion, ReportSchemaVersion)
+	}
+	if terminal.Intent == nil {
+		return fmt.Errorf("terminal frame has no frozen intent")
+	}
+	if err := validatePassIntent(passID, *terminal.Intent); err != nil {
+		return fmt.Errorf("terminal intent invalid: %w", err)
+	}
+	if !samePassIntent(*pass.plan.Intent, *terminal.Intent) {
+		return fmt.Errorf("terminal intent does not match the planned intent")
+	}
+	if len(pass.results) != len(pass.plan.Intent.Operations) {
+		return fmt.Errorf("terminal follows %d recorded operation results, want %d", len(pass.results), len(pass.plan.Intent.Operations))
+	}
+	expected := orderedOperationResults(*pass.plan.Intent, pass.results)
+	if len(terminal.OperationResults) != len(expected) {
+		return fmt.Errorf("terminal carries %d operation results, want %d", len(terminal.OperationResults), len(expected))
+	}
+	for index := range expected {
+		if err := validateOperationResult(*pass.plan.Intent, terminal.OperationResults[index]); err != nil {
+			return fmt.Errorf("terminal operation result %d invalid: %w", index, err)
+		}
+		if !sameOperationResult(expected[index], terminal.OperationResults[index]) {
+			return fmt.Errorf("terminal operation result %d does not match its recorded frame", index)
+		}
+	}
+	return nil
+}
+
+func samePassIntent(left, right PassIntent) bool {
+	leftBody, _ := json.Marshal(left)
+	rightBody, _ := json.Marshal(right)
+	return string(leftBody) == string(rightBody)
+}
+
+func clonePassIntent(intent PassIntent) (PassIntent, error) {
+	body, err := json.Marshal(intent)
+	if err != nil {
+		return PassIntent{}, err
+	}
+	var cloned PassIntent
+	if err := json.Unmarshal(body, &cloned); err != nil {
+		return PassIntent{}, err
+	}
+	return cloned, nil
+}
+
+func validateOperationResult(intent PassIntent, result PassOperationResult) error {
+	if result.Ordinal < 0 || result.Ordinal >= len(intent.Operations) {
+		return fmt.Errorf("operation ordinal %d outside plan", result.Ordinal)
+	}
+	operation := intent.Operations[result.Ordinal]
+	if result.Key != operation.Key || result.Phase != operation.Phase || result.Operation != operation.Operation || result.CandidateID != operation.Target.ID {
+		return fmt.Errorf("operation %d identity does not match frozen plan", result.Ordinal)
+	}
+	if result.BeforeDigest != operation.Target.BodyDigest {
+		return fmt.Errorf("operation %s before digest %q does not match %q", result.Key, result.BeforeDigest, operation.Target.BodyDigest)
+	}
+	switch result.Outcome {
+	case mem.FrozenAdjudicationApplied, mem.FrozenAdjudicationAlreadyApplied:
+		if strings.TrimSpace(result.AfterDigest) == "" {
+			return fmt.Errorf("operation %s successful outcome lacks after digest", result.Key)
+		}
+	case mem.FrozenAdjudicationStalePrecondition:
+		if strings.TrimSpace(operationMismatch(result)) == "" {
+			return fmt.Errorf("operation %s stale outcome lacks precondition mismatch", result.Key)
+		}
+	default:
+		return fmt.Errorf("operation %s has unknown outcome %q", result.Key, result.Outcome)
+	}
+	return nil
+}
+
+func operationMismatch(result PassOperationResult) string {
+	if strings.TrimSpace(result.PreconditionMismatch) != "" {
+		return result.PreconditionMismatch
+	}
+	return result.MismatchCandidateID
+}
+
+func sameOperationResult(left, right PassOperationResult) bool {
+	leftBody, _ := json.Marshal(left)
+	rightBody, _ := json.Marshal(right)
+	return string(leftBody) == string(rightBody)
+}
+
+func orderedOperationResults(intent PassIntent, results map[string]PassOperationResult) []PassOperationResult {
+	ordered := make([]PassOperationResult, 0, len(intent.Operations))
+	for _, operation := range intent.Operations {
+		if result, ok := results[operation.Key]; ok {
+			ordered = append(ordered, result)
+		}
+	}
+	return ordered
 }
 
 func decodeReceiptLine(line []byte) (Report, error) {
@@ -515,6 +930,256 @@ func runPass(homePath string, store *mem.Store, opts Options, now time.Time, rep
 	return nil
 }
 
+type passRecoveryError struct{ err error }
+
+func (e passRecoveryError) Error() string { return "recovery_required: " + e.err.Error() }
+func (e passRecoveryError) Unwrap() error { return e.err }
+
+func runFrozenPass(homePath string, store *mem.Store, recorded map[string]PassOperationResult, now time.Time, report *Report) error {
+	if report.Intent == nil {
+		return fmt.Errorf("frozen pass intent required")
+	}
+	intent, err := clonePassIntent(*report.Intent)
+	if err != nil {
+		return fmt.Errorf("clone frozen pass intent: %w", err)
+	}
+	if err := validatePassIntent(report.PassID, intent); err != nil {
+		return fmt.Errorf("validate frozen pass: %w", err)
+	}
+	executionAt, err := time.Parse(time.RFC3339, intent.ExecutionAt)
+	if err != nil {
+		return fmt.Errorf("parse frozen execution time: %w", err)
+	}
+	results := make(map[string]PassOperationResult, len(recorded))
+	for key, result := range recorded {
+		if err := validateOperationResult(intent, result); err != nil {
+			return fmt.Errorf("validate recorded operation %s: %w", key, err)
+		}
+		results[key] = result
+	}
+	for _, operation := range intent.Operations {
+		if _, ok := results[operation.Key]; ok {
+			continue
+		}
+		frozen := mem.FrozenAdjudication{
+			OperationKey: operation.Key,
+			Target: mem.FrozenCandidatePrecondition{
+				CandidateID: operation.Target.ID,
+				BodyDigest:  operation.Target.BodyDigest,
+				State:       operation.Target.State,
+			},
+		}
+		if operation.CurrentClaim != nil {
+			frozen.CurrentClaim = &mem.FrozenClaimPrecondition{
+				ID: operation.CurrentClaim.ID, Absent: operation.CurrentClaim.Absent,
+			}
+		}
+		if operation.Keeper != nil {
+			frozen.Companion = &mem.FrozenCandidatePrecondition{
+				CandidateID: operation.Keeper.ID,
+				BodyDigest:  operation.Keeper.BodyDigest,
+				State:       operation.Keeper.State,
+			}
+		}
+		applied, applyErr := store.AdjudicateFrozen(frozen, operation.Operation, intent.WorkID, executionAt)
+		if applyErr != nil {
+			return passRecoveryError{err: fmt.Errorf("operation %s: %w", operation.Key, applyErr)}
+		}
+		result := PassOperationResult{
+			Key:                  operation.Key,
+			Ordinal:              operation.Ordinal,
+			Phase:                operation.Phase,
+			Operation:            operation.Operation,
+			CandidateID:          operation.Target.ID,
+			Outcome:              applied.Outcome,
+			Verdict:              applied.Adjudication.Verdict,
+			CandidateState:       applied.Adjudication.Candidate.State,
+			BeforeDigest:         applied.BeforeDigest,
+			AfterDigest:          applied.AfterDigest,
+			MismatchCandidateID:  applied.MismatchCandidateID,
+			PreconditionMismatch: applied.PreconditionMismatch,
+			SupersededClaimID:    applied.Adjudication.Superseded,
+			Note:                 applied.Adjudication.Note,
+		}
+		if applied.Adjudication.Claim != nil {
+			result.ClaimID = applied.Adjudication.Claim.ID
+		}
+		if applied.Adjudication.Transition != nil {
+			result.TransitionID = applied.Adjudication.Transition.ID
+		}
+		if err := validateOperationResult(intent, result); err != nil {
+			return passRecoveryError{err: fmt.Errorf("operation %s returned invalid result: %w", operation.Key, err)}
+		}
+		frame := Report{
+			SchemaVersion:    ReportSchemaVersion,
+			PassID:           report.PassID,
+			Home:             homePath,
+			Stage:            stageOperationRecorded,
+			StartedAt:        report.StartedAt,
+			FinishedAt:       rfc3339(now),
+			Intent:           report.Intent,
+			OperationResults: []PassOperationResult{result},
+		}
+		if err := receiptAppender(homePath, frame); err != nil {
+			return passRecoveryError{err: fmt.Errorf("journal operation %s result: %w", operation.Key, err)}
+		}
+		results[operation.Key] = result
+	}
+
+	report.OperationResults = orderedOperationResults(intent, results)
+	summarizeFrozenResults(intent, report.OperationResults, report)
+	for _, result := range report.OperationResults {
+		if result.Outcome == mem.FrozenAdjudicationStalePrecondition {
+			return fmt.Errorf("stale_precondition: operation %s candidate %s drifted at %s", result.Key, result.CandidateID, operationMismatch(result))
+		}
+	}
+	if err := finalizeFrozenPass(homePath, store, intent, executionAt, report); err != nil {
+		return passRecoveryError{err: err}
+	}
+	if failures := partialFailures(*report); len(failures) > 0 {
+		return partialPassError{failures: failures}
+	}
+	return nil
+}
+
+func summarizeFrozenResults(intent PassIntent, results []PassOperationResult, report *Report) {
+	report.Promote = intent.PromotePlan
+	report.Promote.Promoted = 0
+	for index := range report.Promote.Promotions {
+		report.Promote.Promotions[index].Action = "planned"
+		report.Promote.Promotions[index].ClaimID = ""
+	}
+	report.Dedupe = intent.DedupePlan
+	report.Dedupe.Collapsed = 0
+	for index := range report.Dedupe.Actions {
+		report.Dedupe.Actions[index].Action = "planned"
+	}
+	report.Sweep = intent.SweepPlan
+	report.Sweep.Adjudicated = 0
+	report.Sweep.Failed = 0
+	report.Sweep.ChangedIDs = nil
+	report.Sweep.VerdictCounts = map[string]int{}
+	report.Sweep.ReconciledPending = nil
+	report.PendingAfter = nil
+	report.Imports = ImportsPhaseReport{Skipped: "registry import mutation is experimental and excluded from supported candidate-only apply"}
+	report.LaneBeliefs = LaneBeliefsPhaseReport{Skipped: "lane-belief mutation is experimental and excluded from supported candidate-only apply"}
+
+	byKey := make(map[string]PassOperationResult, len(results))
+	for _, result := range results {
+		byKey[result.Key] = result
+		if result.Outcome != mem.FrozenAdjudicationStalePrecondition {
+			continue
+		}
+		message := fmt.Sprintf("%s: stale_precondition at %s", result.CandidateID, operationMismatch(result))
+		switch result.Phase {
+		case "promote":
+			report.Promote.Errors = append(report.Promote.Errors, message)
+		case "dedupe":
+			report.Dedupe.Errors = append(report.Dedupe.Errors, message)
+		case "sweep":
+			report.Sweep.Errors = append(report.Sweep.Errors, message)
+			report.Sweep.Failed++
+		}
+	}
+	for _, operation := range intent.Operations {
+		result, ok := byKey[operation.Key]
+		if !ok || (result.Outcome != mem.FrozenAdjudicationApplied && result.Outcome != mem.FrozenAdjudicationAlreadyApplied) {
+			continue
+		}
+		switch operation.Phase {
+		case "promote":
+			for index := range report.Promote.Promotions {
+				if report.Promote.Promotions[index].CandidateID != operation.Target.ID {
+					continue
+				}
+				report.Promote.Promotions[index].ClaimID = result.ClaimID
+				if result.CandidateState == "promoted" {
+					report.Promote.Promotions[index].Action = "promoted"
+					report.Promote.Promoted++
+				} else {
+					report.Promote.Promotions[index].Action = "rejected_duplicate"
+				}
+			}
+		case "dedupe":
+			report.Dedupe.Collapsed++
+		case "sweep":
+			report.Sweep.Adjudicated++
+			report.Sweep.VerdictCounts[operation.Operation]++
+			report.Sweep.ChangedIDs = append(report.Sweep.ChangedIDs, operation.Target.ID)
+		}
+	}
+	for index := range report.Dedupe.Actions {
+		action := &report.Dedupe.Actions[index]
+		complete := true
+		for _, candidateID := range action.NoPromoted {
+			found := false
+			for _, operation := range intent.Operations {
+				if operation.Phase != "dedupe" || operation.Target.ID != candidateID {
+					continue
+				}
+				result, ok := byKey[operation.Key]
+				found = ok && (result.Outcome == mem.FrozenAdjudicationApplied || result.Outcome == mem.FrozenAdjudicationAlreadyApplied)
+			}
+			complete = complete && found
+		}
+		if complete {
+			action.Action = "collapsed"
+		}
+	}
+}
+
+func finalizeFrozenPass(homePath string, store *mem.Store, intent PassIntent, executionAt time.Time, report *Report) error {
+	if err := finalizePromoteCursor(homePath, intent.PromoteCursorBefore, intent.PromotePlan.NextCursor, executionAt); err != nil {
+		return fmt.Errorf("finalize promote cursor: %w", err)
+	}
+	if err := finalizeSweepCursor(homePath, intent.SweepCursorBefore, intent.SweepPlan.NextCursor, executionAt); err != nil {
+		return fmt.Errorf("finalize sweep cursor: %w", err)
+	}
+	if intent.SweepPlan.WalkedAll {
+		state, err := store.ReconcilePendingState("promote-driver frozen sweep", executionAt)
+		if err != nil {
+			return fmt.Errorf("reconcile pending state: %w", err)
+		}
+		report.Sweep.ReconciledPending = &state.Pending
+		report.PendingAfter = &state.Pending
+	}
+	return nil
+}
+
+func finalizePromoteCursor(homePath string, before, after candidates.EntryCursor, now time.Time) error {
+	current, err := readPromoteCursor(homePath)
+	if err != nil {
+		return err
+	}
+	if current.AfterCursor == after {
+		return nil
+	}
+	if current.AfterCursor != before {
+		return fmt.Errorf("cursor precondition changed from %q to %q (planned %q)", before, current.AfterCursor, after)
+	}
+	if after == "" {
+		return clearPromoteCursor(homePath)
+	}
+	return promoteCursorPersist(homePath, promoteCursor{AfterCursor: after, UpdatedAt: rfc3339(now)})
+}
+
+func finalizeSweepCursor(homePath string, before, after candidates.EntryCursor, now time.Time) error {
+	current, err := readSweepCursor(homePath)
+	if err != nil {
+		return err
+	}
+	if current.AfterCursor == after {
+		return nil
+	}
+	if current.AfterCursor != before {
+		return fmt.Errorf("cursor precondition changed from %q to %q (planned %q)", before, current.AfterCursor, after)
+	}
+	if after == "" {
+		return clearSweepCursor(homePath)
+	}
+	return writeSweepCursor(homePath, sweepCursor{AfterCursor: after, UpdatedAt: rfc3339(now)})
+}
+
 type partialPassError struct{ failures []string }
 
 func (e partialPassError) Error() string {
@@ -562,7 +1227,7 @@ func runPlan(homePath string, opts Options, now time.Time, report Report) (Repor
 	if err != nil {
 		return report, fmt.Errorf("open memory store for scan: %w", err)
 	}
-	intent, err := buildPassIntent(store, opts)
+	intent, err := buildPassIntent(store, opts, now)
 	if err != nil {
 		return report, fmt.Errorf("build pass intent: %w", err)
 	}

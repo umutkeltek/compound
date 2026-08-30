@@ -1,9 +1,9 @@
 #!/bin/sh
 set -u
 
-# Compound-owned autonomy heartbeat. Every mutating promotion pass gets its own
-# WorkEnvelope with explicit scheduler/harness/model provenance, then closes with
-# the driver's exact terminal receipt. No static fake work id and no silent pass.
+# Experimental Compound-owned autonomy heartbeat. Its promotion stage is the
+# supported frozen candidate-only driver path; registry and lane-belief
+# mutation are intentionally absent.
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 LOG="$HOME/.compound/autonomy-heartbeat.log"
 BIN="$HOME/.local/bin/compound"
@@ -74,10 +74,9 @@ elif ! "$BIN" work advance "$PD_WORK_ID" --to running --by "$PD_ACTOR" --note "s
   PD_SUM="ERR: work advance $(printf '%.120s' "$(cat "$PD_TMP/run.err")")"
   terminalize_failed_work "Scheduled memory maintenance running advance failed" "failure:promote-driver:advance" || PD_SUM="$PD_SUM; terminalization failed"
 else
-  "$TIMEOUT_BIN" 600 "$BIN" memory promote-driver \
-    --confirm --work "$PD_WORK_ID" \
-    --registry "$HOME/Projects/products/*/project.yaml" \
-    --promote-limit 1 --scan-limit 100 --walk-scan-limit 500 \
+	"$TIMEOUT_BIN" 600 "$BIN" memory promote-driver \
+		--confirm --work "$PD_WORK_ID" \
+		--promote-limit 1 --scan-limit 100 --walk-scan-limit 500 \
     --json >"$PD_TMP/driver.json" 2>"$PD_TMP/driver.err"
   PD_RC=$?
   PD_FIELDS=$(python3 - "$PD_TMP/driver.json" <<'PY'

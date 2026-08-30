@@ -17,14 +17,14 @@ import (
 // in this organ: the cmd layer stays a thin dispatch, and the cmd/compound LOC
 // budget ratchet (internal/arch.checkCmdCompoundBudget) only lets cmd/compound
 // shrink.
-const Usage = "usage: compound memory promote-driver [--confirm --work W] [--dry-run] [--json] [--promote-limit N] [--scan-limit N] [--walk-scan-limit N] [--registry GLOB[,GLOB]...]  (governed auto-promote pass: dry-run by default; apply requires --confirm plus a real maintenance WorkEnvelope id; promotion stays per-id and basis-gated; receipts append to state/promote-driver/receipts.jsonl)"
+const Usage = "usage: compound memory promote-driver [--confirm --work W] [--dry-run] [--json] [--promote-limit N] [--scan-limit N] [--walk-scan-limit N] [--registry GLOB[,GLOB]... (plan-only)]  (supported apply is a frozen candidate-only pass; dry-run may preview experimental registry and lane-belief phases; apply requires --confirm plus a real maintenance WorkEnvelope id; receipts append to state/promote-driver/receipts.jsonl)"
 
 // RunCLI runs the `compound memory promote-driver` subcommand over rest (the
 // arguments after the subcommand name) and returns the process exit code: 2 on
 // flag-validation failure, 1 on runtime error, 0 otherwise. The pass itself is
-// one single-flight run of Run — per-id basis promotions, exact duplicate
-// collapse, deterministic registry imports, lanebeliefs, and the resumable
-// disposition sweep, receipted to state/promote-driver. Dry-run is the
+// one single-flight run of Run. Supported apply freezes exact candidate,
+// claim, cursor, and operation preconditions; registry import and lane-belief
+// mutation remain experimental and are preview-only here. Dry-run is the
 // DEFAULT: a pass only mutates with --confirm, and the admission registry
 // grades that flag Governed.
 func RunCLI(rest []string) int {
@@ -53,11 +53,6 @@ func RunCLI(rest []string) int {
 		}
 		return 2
 	}
-	homePath, err := home.Resolve("")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
-		return 1
-	}
 	has := func(name string) bool {
 		for _, a := range rest {
 			if a == name {
@@ -77,6 +72,10 @@ func RunCLI(rest []string) int {
 		fmt.Fprintf(os.Stderr, "error: --confirm and --dry-run are contradictory; a pass is dry-run by default and --confirm applies it\n%s\n", Usage)
 		return 2
 	}
+	if has("--confirm") && has("--registry") {
+		fmt.Fprintf(os.Stderr, "error: --registry is plan-only; registry import mutation is experimental and excluded from supported promote-driver apply\n%s\n", Usage)
+		return 2
+	}
 	if has("--confirm") && strings.TrimSpace(stringFlagValue(rest, "--work")) == "" {
 		fmt.Fprintf(os.Stderr, "error: --confirm requires --work with the current maintenance WorkEnvelope id; autonomous schedulers must mint/claim that work before applying\n%s\n", Usage)
 		return 2
@@ -89,6 +88,11 @@ func RunCLI(rest []string) int {
 			return 2
 		}
 		intVals[name] = v
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		return 1
 	}
 	opts := Options{
 		// The safe zero value is a plan: only --confirm (and not --dry-run)

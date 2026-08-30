@@ -112,10 +112,15 @@ type Candidate struct {
 	// "Keep aside"), both are set so the candidates-list projection (and the
 	// console standing-law queue) can tell "seen and kept aside" from "never
 	// looked at" and stop re-asking about the same candidate.
-	AdjudicatedBy string                `json:"adjudicated_by,omitempty"`
-	AdjudicatedAt string                `json:"adjudicated_at,omitempty"`
-	Annotations   []CandidateAnnotation `json:"annotations,omitempty"`
-	CreatedAt     string                `json:"created_at"`
+	AdjudicatedBy string `json:"adjudicated_by,omitempty"`
+	AdjudicatedAt string `json:"adjudicated_at,omitempty"`
+	// AdjudicationOperationKey binds a terminal candidate projection to the
+	// exact frozen operation that produced it. Generic/operator adjudication
+	// clears it; governed promotion-driver replay uses it only to distinguish
+	// its own committed write from a concurrent terminal writer.
+	AdjudicationOperationKey string                `json:"adjudication_operation_key,omitempty"`
+	Annotations              []CandidateAnnotation `json:"annotations,omitempty"`
+	CreatedAt                string                `json:"created_at"`
 }
 
 // Claim is a durable, IMMUTABLE assertion in the ledger. It is never mutated or deleted;
@@ -382,12 +387,51 @@ func (s *Store) Capture(cands []Candidate, now time.Time) ([]Candidate, error) {
 		c.CreatedAt = rfc3339(now)
 		// Decisions-down write seam: knowledge tiers + disposition (decay_park / auto_file / operator).
 		c, _ = AdmitCandidateAt(c, now)
-		if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
+		created, err := s.publishCapturedCandidate(c)
+		if err != nil {
 			return out, err
+		}
+		if !created {
+			continue
 		}
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+func (s *Store) publishCapturedCandidate(candidate Candidate) (bool, error) {
+	created, err := candidates.CreateCandidateIfAbsent(s.home, candidates.Memory, candidate.ID, &candidate)
+	if err != nil || created {
+		return created, err
+	}
+	for attempt := 0; attempt < 32; attempt++ {
+		current, err := candidates.ReadRecord(s.home, candidates.Memory, candidate.ID)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				created, createErr := candidates.CreateCandidateIfAbsent(s.home, candidates.Memory, candidate.ID, &candidate)
+				if createErr != nil || created {
+					return created, createErr
+				}
+				continue
+			}
+			return false, err
+		}
+		var existing Candidate
+		if err := json.Unmarshal(current.Body, &existing); err != nil {
+			return false, fmt.Errorf("decode existing capture candidate %s: %w", candidate.ID, err)
+		}
+		if strings.TrimSpace(existing.AdjudicationOperationKey) != "" {
+			return false, nil
+		}
+		replaced, err := candidates.ReplaceCandidateIfCurrent(s.home, current, &candidate)
+		if err != nil {
+			return false, err
+		}
+		if replaced.Replaced {
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("capture candidate %s publication did not converge after concurrent replacements", candidate.ID)
 }
 
 // captureCandidateID distinguishes separate observations of the same fact when
@@ -399,6 +443,7 @@ func captureCandidateID(c Candidate, now time.Time) (string, error) {
 	c.Reason = ""
 	c.AdjudicatedBy = ""
 	c.AdjudicatedAt = ""
+	c.AdjudicationOperationKey = ""
 	c.Annotations = nil
 	c.CreatedAt = ""
 	payload, err := json.Marshal(c)
@@ -593,6 +638,123 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 	return s.adjudicate(candID, verdict, workID, now, false, "", "")
 }
 
+const (
+	FrozenAdjudicationApplied           = "applied"
+	FrozenAdjudicationAlreadyApplied    = "already_applied"
+	FrozenAdjudicationStalePrecondition = "stale_precondition"
+)
+
+// FrozenCandidatePrecondition is the exact persisted candidate generation a
+// planned adjudication was made from. State is echoed for receipt clarity and
+// verified against the digest-pinned body before mutation.
+type FrozenCandidatePrecondition struct {
+	CandidateID string
+	BodyDigest  string
+	State       string
+}
+
+// FrozenAdjudication binds one target and an optional dedupe keeper to an
+// idempotency key. The keeper is a companion precondition only; it is never
+// mutated by this operation.
+type FrozenAdjudication struct {
+	OperationKey string
+	Target       FrozenCandidatePrecondition
+	Companion    *FrozenCandidatePrecondition
+	CurrentClaim *FrozenClaimPrecondition
+
+	outcome              string
+	mismatchCandidateID  string
+	preconditionMismatch string
+	afterDigest          string
+}
+
+type FrozenClaimPrecondition struct {
+	ID     string
+	Absent bool
+}
+
+type FrozenAdjudicationResult struct {
+	Outcome              string
+	MismatchCandidateID  string
+	PreconditionMismatch string
+	BeforeDigest         string
+	AfterDigest          string
+	Adjudication         AdjudicateResult
+}
+
+// FrozenPromotionClaimPrecondition captures the exact current claim whose
+// presence or absence makes a planned promotion deterministic.
+func (s *Store) FrozenPromotionClaimPrecondition(candidate Candidate) (FrozenClaimPrecondition, error) {
+	claim, found, err := s.currentClusterClaim(candidate, 0)
+	if err != nil {
+		return FrozenClaimPrecondition{}, err
+	}
+	if !found {
+		return FrozenClaimPrecondition{Absent: true}, nil
+	}
+	return FrozenClaimPrecondition{ID: claim.ID}, nil
+}
+
+// AdjudicateFrozen executes one already-decided verdict without re-reading or
+// re-deciding it. The memory lock is acquired before candidate custody; both
+// target and companion digests remain pinned through every claim/transition
+// write and the final candidate replacement.
+func (s *Store) AdjudicateFrozen(plan FrozenAdjudication, verdict, workID string, now time.Time) (FrozenAdjudicationResult, error) {
+	if strings.TrimSpace(plan.OperationKey) == "" {
+		return FrozenAdjudicationResult{}, fmt.Errorf("frozen adjudication operation key required")
+	}
+	if strings.TrimSpace(plan.Target.CandidateID) == "" || strings.TrimSpace(plan.Target.BodyDigest) == "" {
+		return FrozenAdjudicationResult{}, fmt.Errorf("frozen adjudication target id and digest required")
+	}
+	if verdict == candidates.Promote {
+		if plan.CurrentClaim == nil || plan.CurrentClaim.Absent == (strings.TrimSpace(plan.CurrentClaim.ID) != "") {
+			return FrozenAdjudicationResult{}, fmt.Errorf("frozen promotion current-claim precondition must name one claim or exact absence")
+		}
+	} else if plan.CurrentClaim != nil {
+		return FrozenAdjudicationResult{}, fmt.Errorf("non-promotion frozen adjudication cannot carry a current-claim precondition")
+	}
+	adjudication, err := s.adjudicateWithFrozen(
+		plan.Target.CandidateID,
+		verdict,
+		workID,
+		now,
+		false,
+		"",
+		"",
+		&plan,
+	)
+	return FrozenAdjudicationResult{
+		Outcome:              plan.outcome,
+		MismatchCandidateID:  plan.mismatchCandidateID,
+		PreconditionMismatch: plan.preconditionMismatch,
+		BeforeDigest:         plan.Target.BodyDigest,
+		AfterDigest:          plan.afterDigest,
+		Adjudication:         adjudication,
+	}, err
+}
+
+type frozenClaimPreconditionMismatch struct {
+	observed string
+}
+
+func (e *frozenClaimPreconditionMismatch) Error() string {
+	return "frozen current-claim precondition changed to " + e.observed
+}
+
+func frozenClaimReference(claim Claim, found bool) string {
+	if !found {
+		return "claim:absent"
+	}
+	return "claim:" + claim.ID
+}
+
+func frozenClaimMatches(expected FrozenClaimPrecondition, claim Claim, found bool) bool {
+	if expected.Absent {
+		return !found
+	}
+	return found && expected.ID == claim.ID
+}
+
 // adjudicatePendingProposed applies a non-promote batch verdict only when the
 // candidate is still proposed under the memory mutation lock. A concurrent
 // terminal writer wins; the pending sweep observes that as an idempotent skip
@@ -741,8 +903,11 @@ type AdjudicatePendingError struct {
 // planned or an apply pass attempted. It lets higher-level drivers freeze a
 // reconstructible intent before mutation instead of journaling only counts.
 type AdjudicatePendingAction struct {
-	CandidateID string `json:"candidate_id"`
-	Verdict     string `json:"verdict"`
+	CandidateID    string                 `json:"candidate_id"`
+	Verdict        string                 `json:"verdict"`
+	EntryCursor    candidates.EntryCursor `json:"entry_cursor,omitempty"`
+	ExpectedDigest string                 `json:"expected_digest,omitempty"`
+	ExpectedState  string                 `json:"expected_state,omitempty"`
 }
 
 // AdjudicatePending walks the inbox in stable id order and applies a verdict
@@ -854,7 +1019,13 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 				blocked = true
 				continue
 			}
-			action := AdjudicatePendingAction{CandidateID: decision.candidateID, Verdict: decision.verdict}
+			action := AdjudicatePendingAction{
+				CandidateID:    decision.candidateID,
+				Verdict:        decision.verdict,
+				EntryCursor:    decision.cursor,
+				ExpectedDigest: decision.record.Digest,
+				ExpectedState:  "proposed",
+			}
 			if opts.DryRun {
 				r.Actions = append(r.Actions, action)
 				plannedOrApplied++
@@ -980,33 +1151,108 @@ func (s *Store) AdjudicateOperationalDecision(candID, verdict, workID string, no
 }
 
 func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operationalDecision bool, explicitConfirmationRef string, actor string) (AdjudicateResult, error) {
-	var res AdjudicateResult
-	c, err := s.getCandidate(candID)
-	if err != nil {
-		return res, err
-	}
-	res.Candidate = c
-	res.Verdict = verdict
-	// Pre-lock rule set is now in a pure function (see adjudicate_intent.go).
-	// The in-lock re-check below stays as defense-in-depth per the legacy
-	// function's own comment (mem.go:594-596); it carries a side effect
-	// (stamping the operational-decision qualifier) that keeps it non-pure.
-	if err := validateAdjudicationIntent(c, AdjudicationIntent{
+	return s.adjudicateWithFrozen(candID, verdict, workID, now, operationalDecision, explicitConfirmationRef, actor, nil)
+}
+
+func (s *Store) adjudicateWithFrozen(candID, verdict, workID string, now time.Time, operationalDecision bool, explicitConfirmationRef string, actor string, frozen *FrozenAdjudication) (AdjudicateResult, error) {
+	res := AdjudicateResult{Verdict: verdict}
+	intent := AdjudicationIntent{
 		Verdict:                 verdict,
 		WorkID:                  workID,
 		OperationalDecision:     operationalDecision,
 		ExplicitConfirmationRef: explicitConfirmationRef,
 		Actor:                   actor,
-	}); err != nil {
-		return res, err
+	}
+	var c Candidate
+	if frozen == nil {
+		var err error
+		c, err = s.getCandidate(candID)
+		if err != nil {
+			return res, err
+		}
+		res.Candidate = c
+		if err := validateAdjudicationIntent(c, intent); err != nil {
+			return res, err
+		}
 	}
 
-	if verdict != "promote" {
+	preconditions := func() []candidates.DigestPrecondition {
+		values := []candidates.DigestPrecondition{{ID: frozen.Target.CandidateID, Digest: frozen.Target.BodyDigest}}
+		if frozen.Companion != nil {
+			values = append(values, candidates.DigestPrecondition{ID: frozen.Companion.CandidateID, Digest: frozen.Companion.BodyDigest})
+		}
+		return values
+	}
+	handleMiss := func(result candidates.ConditionalMutationResult) error {
+		frozen.mismatchCandidateID = result.MismatchID
+		frozen.outcome = FrozenAdjudicationStalePrecondition
+		frozen.afterDigest = result.Target.Digest
+		if result.MismatchID != frozen.Target.CandidateID || len(result.Target.Body) == 0 {
+			return nil
+		}
+		var current Candidate
+		if err := json.Unmarshal(result.Target.Body, &current); err != nil {
+			return fmt.Errorf("decode current frozen candidate %s: %w", candID, err)
+		}
+		res.Candidate = current
+		if current.AdjudicationOperationKey != frozen.OperationKey {
+			return nil
+		}
+		frozen.outcome = FrozenAdjudicationAlreadyApplied
+		if verdict == candidates.Promote {
+			recovered, err := s.frozenAppliedPromotionResult(current, workID, now)
+			if err != nil {
+				return err
+			}
+			res = recovered
+		}
+		return nil
+	}
+
+	if verdict != candidates.Promote {
+		if frozen != nil {
+			err := s.withLock(func() error {
+				result, err := candidates.MutateCandidateIfDigests(s.home, candidates.Memory, candID, preconditions(), func(record candidates.Record) (any, error) {
+					var latest Candidate
+					if err := json.Unmarshal(record.Body, &latest); err != nil {
+						return nil, fmt.Errorf("decode frozen candidate %s: %w", candID, err)
+					}
+					if latest.State != frozen.Target.State {
+						return nil, fmt.Errorf("frozen candidate %s state %q does not match planned %q", candID, latest.State, frozen.Target.State)
+					}
+					if err := validateAdjudicationIntent(latest, intent); err != nil {
+						return nil, err
+					}
+					if latest.State == "promoted" {
+						return nil, fmt.Errorf("candidate %s already promoted", candID)
+					}
+					latest.State = nonPromoteState(verdict)
+					latest.AdjudicationOperationKey = frozen.OperationKey
+					res.Candidate = latest
+					return &latest, nil
+				})
+				if err != nil {
+					return err
+				}
+				if !result.Applied {
+					if err := handleMiss(result); err != nil {
+						return err
+					}
+					return nil
+				}
+				frozen.outcome = FrozenAdjudicationApplied
+				frozen.afterDigest = result.Target.Digest
+				return nil
+			})
+			return res, err
+		}
+
 		latest, _, lockErr := s.mutateCandidate(candID, func(latest *Candidate) (bool, error) {
 			if latest.State == "promoted" {
 				return false, fmt.Errorf("candidate %s already promoted", candID)
 			}
 			latest.State = nonPromoteState(verdict)
+			latest.AdjudicationOperationKey = ""
 			if actor != "" {
 				latest.AdjudicatedBy = actor
 				latest.AdjudicatedAt = rfc3339(now)
@@ -1016,14 +1262,13 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 		if lockErr != nil {
 			return res, lockErr
 		}
-		c = latest
 		res.Candidate = latest
 		return res, nil
 	}
 
-	// promote: the prior-lookup + seq allocation + claim/edge append run under one lock so
-	// seq stays monotonic-unique and supersession is consistent even across concurrent writers
-	// (single-writer is the norm; the lock makes MVCC-by-fold mechanically true, not just a phrase).
+	// Promotion holds the memory lock across claim/edge/transition writes.
+	// Frozen execution additionally nests candidate custody inside it, pinning
+	// producer-visible bytes until the terminal projection is published.
 	var (
 		claim      Claim
 		prior      Claim
@@ -1031,15 +1276,14 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 		hasPrior   bool
 		dup        bool
 	)
-	lockErr := s.withLock(func() error {
-		latest, err := s.getCandidate(candID)
-		if err != nil {
+	applyPromotion := func(latest Candidate, writeCandidate func(Candidate) error) error {
+		c = latest
+		if err := validateAdjudicationIntent(c, intent); err != nil {
 			return err
 		}
-		if latest.State == "promoted" {
+		if c.State == "promoted" {
 			return fmt.Errorf("candidate %s already promoted", candID)
 		}
-		c = latest
 		if c.Qualifiers != nil && strings.TrimSpace(c.Qualifiers[OperationalDecisionAuthorityQualifier]) != "" && !operationalDecision {
 			return fmt.Errorf("candidate %s uses reserved operational decision authority qualifier; import it through the policy decisions authority", candID)
 		}
@@ -1169,7 +1413,7 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 				c.AdjudicatedBy = actor
 				c.AdjudicatedAt = rfc3339(now)
 			}
-			if err := s.writeAdjudicatedCandidate(c.ID, &c); err != nil {
+			if err := writeCandidate(c); err != nil {
 				return err
 			}
 			prior = transitionPrior
@@ -1189,7 +1433,7 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 				c.AdjudicatedBy = actor
 				c.AdjudicatedAt = rfc3339(now)
 			}
-			return s.writeAdjudicatedCandidate(c.ID, &c)
+			return writeCandidate(c)
 		}
 		seq, err := s.nextSeq()
 		if err != nil {
@@ -1217,10 +1461,71 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 			c.AdjudicatedBy = actor
 			c.AdjudicatedAt = rfc3339(now)
 		}
-		return s.writeAdjudicatedCandidate(c.ID, &c)
+		return writeCandidate(c)
+	}
+
+	lockErr := s.withLock(func() error {
+		if frozen == nil {
+			latest, err := s.getCandidate(candID)
+			if err != nil {
+				return err
+			}
+			return applyPromotion(latest, func(updated Candidate) error {
+				updated.AdjudicationOperationKey = ""
+				c = updated
+				return s.writeAdjudicatedCandidate(updated.ID, &updated)
+			})
+		}
+		result, err := candidates.MutateCandidateIfDigests(s.home, candidates.Memory, candID, preconditions(), func(record candidates.Record) (any, error) {
+			var latest Candidate
+			if err := json.Unmarshal(record.Body, &latest); err != nil {
+				return nil, fmt.Errorf("decode frozen candidate %s: %w", candID, err)
+			}
+			if latest.State != frozen.Target.State {
+				return nil, fmt.Errorf("frozen candidate %s state %q does not match planned %q", candID, latest.State, frozen.Target.State)
+			}
+			currentClaim, found, err := s.currentClusterClaim(latest, 0)
+			if err != nil {
+				return nil, err
+			}
+			if !frozenClaimMatches(*frozen.CurrentClaim, currentClaim, found) {
+				res.Candidate = latest
+				return nil, &frozenClaimPreconditionMismatch{observed: frozenClaimReference(currentClaim, found)}
+			}
+			var payload Candidate
+			applyErr := applyPromotion(latest, func(updated Candidate) error {
+				updated.AdjudicationOperationKey = frozen.OperationKey
+				payload = updated
+				c = updated
+				return nil
+			})
+			return &payload, applyErr
+		})
+		if err != nil {
+			var mismatch *frozenClaimPreconditionMismatch
+			if errors.As(err, &mismatch) {
+				frozen.outcome = FrozenAdjudicationStalePrecondition
+				frozen.preconditionMismatch = mismatch.observed
+				frozen.afterDigest = frozen.Target.BodyDigest
+				return nil
+			}
+			return err
+		}
+		if !result.Applied {
+			if err := handleMiss(result); err != nil {
+				return err
+			}
+			return nil
+		}
+		frozen.outcome = FrozenAdjudicationApplied
+		frozen.afterDigest = result.Target.Digest
+		return nil
 	})
 	if lockErr != nil {
 		return res, lockErr
+	}
+	if frozen != nil && frozen.outcome != FrozenAdjudicationApplied {
+		return res, nil
 	}
 	if dup {
 		res.Verdict, res.Candidate, res.Note = "reject", c, "already current: "+prior.ID
@@ -1231,6 +1536,69 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 	}
 	res.Candidate, res.Claim, res.Transition = c, &claim, &transition
 	return res, nil
+}
+
+func (s *Store) frozenAppliedPromotionResult(candidate Candidate, workID string, now time.Time) (AdjudicateResult, error) {
+	result := AdjudicateResult{Verdict: candidates.Promote, Candidate: candidate}
+	if candidate.State == "rejected" {
+		const duplicatePrefix = "duplicate of current claim "
+		claimID := strings.TrimSpace(strings.TrimPrefix(candidate.Reason, duplicatePrefix))
+		if !strings.HasPrefix(candidate.Reason, duplicatePrefix) || claimID == "" {
+			return result, fmt.Errorf("frozen operation key marks rejected candidate %s without duplicate provenance", candidate.ID)
+		}
+		result.Verdict = candidates.Reject
+		result.Note = "already current: " + claimID
+		return result, nil
+	}
+	if candidate.State != "promoted" {
+		return result, fmt.Errorf("frozen promotion operation key marks candidate %s in state %q", candidate.ID, candidate.State)
+	}
+
+	claims, err := s.loadClaimsRaw()
+	if err != nil {
+		return result, err
+	}
+	var promoted Claim
+	for _, existing := range claims {
+		if !oneOf(candidate.ID, existing.EvidenceRefs) || !isDuplicatePromotion(candidate, existing, true) {
+			continue
+		}
+		if promoted.ID != "" && promoted.ID != existing.ID {
+			return result, fmt.Errorf("candidate %s has multiple promotion claims (%s, %s)", candidate.ID, promoted.ID, existing.ID)
+		}
+		promoted = existing
+	}
+	if promoted.ID == "" {
+		return result, fmt.Errorf("candidate %s frozen promotion projection has no durable claim", candidate.ID)
+	}
+
+	var prior Claim
+	hasPrior := promoted.Supersedes != ""
+	if hasPrior {
+		for _, existing := range claims {
+			if existing.ID == promoted.Supersedes {
+				prior = existing
+				break
+			}
+		}
+		if prior.ID == "" {
+			return result, fmt.Errorf("candidate %s frozen promotion missing superseded claim %s", candidate.ID, promoted.Supersedes)
+		}
+	}
+	expectedTransition := s.memoryTransition(promoted, prior, hasPrior, workID, now)
+	transition, exists, err := s.persistedPromotionTransition(expectedTransition)
+	if err != nil {
+		return result, err
+	}
+	if !exists {
+		return result, fmt.Errorf("candidate %s frozen promotion has no durable transition %s", candidate.ID, expectedTransition.ID)
+	}
+	if hasPrior {
+		result.Superseded = prior.ID
+	}
+	result.Claim = &promoted
+	result.Transition = &transition
+	return result, nil
 }
 
 // HasOperationalDecisionAuthority reports whether qualifiers carry the exact

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/eventstore"
 	"compound/internal/mem"
 )
 
@@ -102,6 +103,43 @@ func readReceipts(t *testing.T, home string) []Report {
 		out = append(out, r)
 	}
 	return out
+}
+
+func passReceipts(t *testing.T, receipts []Report, passID string) []Report {
+	t.Helper()
+	var out []Report
+	for _, receipt := range receipts {
+		if receipt.PassID == passID {
+			out = append(out, receipt)
+		}
+	}
+	return out
+}
+
+func assertFrozenJournal(t *testing.T, receipts []Report, passID, terminalStage string) (Report, Report) {
+	t.Helper()
+	frames := passReceipts(t, receipts, passID)
+	if len(frames) < 2 || frames[0].Stage != stagePlanned || frames[len(frames)-1].Stage != terminalStage {
+		t.Fatalf("pass %s journal stages = %+v, want planned ... %s", passID, frames, terminalStage)
+	}
+	planned := frames[0]
+	terminal := frames[len(frames)-1]
+	if planned.Intent == nil {
+		t.Fatalf("pass %s planned frame has no intent", passID)
+	}
+	if len(frames) != len(planned.Intent.Operations)+2 {
+		t.Fatalf("pass %s frame count = %d, want plan + %d operations + terminal", passID, len(frames), len(planned.Intent.Operations))
+	}
+	for index, operation := range planned.Intent.Operations {
+		frame := frames[index+1]
+		if frame.Stage != stageOperationRecorded || len(frame.OperationResults) != 1 || frame.OperationResults[0].Key != operation.Key {
+			t.Fatalf("pass %s operation frame %d = %+v, want key %s", passID, index, frame, operation.Key)
+		}
+	}
+	if len(terminal.OperationResults) != len(planned.Intent.Operations) {
+		t.Fatalf("pass %s terminal result count = %d, want %d", passID, len(terminal.OperationResults), len(planned.Intent.Operations))
+	}
+	return planned, terminal
 }
 
 // listHomeTree returns every path under home, relative, for footprint
@@ -258,19 +296,11 @@ func TestApplyPromotesBasisAndCollapsesDuplicates(t *testing.T) {
 		t.Fatalf("claims.jsonl lines = %d, want 1", got)
 	}
 
-	// The intent journal: every apply pass writes planned BEFORE mutating
-	// and exactly one terminal entry after. One pass -> planned+committed.
+	// The intent journal writes the frozen plan before mutation, one exact
+	// result frame per operation, then the terminal bijection.
 	receipts := readReceipts(t, home)
-	if len(receipts) != 2 {
-		t.Fatalf("receipt count = %d, want 2 (planned+committed)", len(receipts))
-	}
-	if receipts[0].Stage != stagePlanned || receipts[1].Stage != stageCommitted {
-		t.Fatalf("journal stages = %q/%q, want planned then committed", receipts[0].Stage, receipts[1].Stage)
-	}
-	if receipts[1].PassID != receipts[0].PassID {
-		t.Fatal("planned and committed receipts must share the pass id")
-	}
-	firstPassID := receipts[0].PassID
+	planned, _ := assertFrozenJournal(t, receipts, report.PassID, stageCommitted)
+	firstPassID := planned.PassID
 
 	// A second pass is a no-op drain: nothing proposed remains, and it
 	// journals its own planned+committed pair with a distinct pass id.
@@ -282,13 +312,8 @@ func TestApplyPromotesBasisAndCollapsesDuplicates(t *testing.T) {
 		t.Fatalf("second pass not idempotent: considered=%d adjudicated=%d", second.Promote.Considered, second.Sweep.Adjudicated)
 	}
 	receipts = readReceipts(t, home)
-	if len(receipts) != 4 {
-		t.Fatalf("receipt count = %d, want 4 (append-only across passes)", len(receipts))
-	}
-	if receipts[2].Stage != stagePlanned || receipts[3].Stage != stageCommitted {
-		t.Fatalf("second journal stages = %q/%q, want planned then committed", receipts[2].Stage, receipts[3].Stage)
-	}
-	if receipts[2].PassID == firstPassID {
+	assertFrozenJournal(t, receipts, second.PassID, stageCommitted)
+	if second.PassID == firstPassID {
 		t.Fatal("sequential passes must mint distinct pass ids")
 	}
 }
@@ -629,14 +654,21 @@ func TestSweepCursorAdvancesPastCorruptPageTail(t *testing.T) {
 	// the full reconciliation must still fail closed on the retained corrupt
 	// entry rather than certifying a clean completed pass.
 	second, err := Run(home, Options{Apply: true, SweepScanLimit: 3}, testNow.Add(time.Minute))
-	if err == nil || second.Stage != stageFailed || !strings.Contains(err.Error(), "cand_90.json") {
-		t.Fatalf("pass 2 must fail closed on retained corruption: stage=%q err=%v", second.Stage, err)
+	if err == nil || second.Stage != stageRecoveryRequired || !strings.Contains(err.Error(), "cand_90.json") {
+		t.Fatalf("pass 2 must remain recoverable on retained corruption: stage=%q err=%v", second.Stage, err)
 	}
 	if !second.Sweep.WalkedAll || second.Sweep.Scanned != 1 {
 		t.Fatalf("pass 2 scanned=%d walkedAll=%v, want 1/true (no re-read of the corrupt tail)", second.Sweep.Scanned, second.Sweep.WalkedAll)
 	}
 	if len(second.Sweep.CorruptIDs) != 0 {
 		t.Fatalf("pass 2 must not re-report the corrupt entry: %v", second.Sweep.CorruptIDs)
+	}
+	if err := os.Remove(filepath.Join(home, candidates.InboxDir(candidates.Memory), "cand_90.json")); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := Run(home, Options{Apply: true, SweepScanLimit: 3}, testNow.Add(2*time.Minute))
+	if err != nil || recovered.Stage != stageCommitted || recovered.PassID != second.PassID {
+		t.Fatalf("repaired corruption must finalize the same pass: id=%s/%s stage=%q err=%v", recovered.PassID, second.PassID, recovered.Stage, err)
 	}
 }
 
@@ -659,17 +691,13 @@ func TestCursorPersistenceFailureFailsTheApplyPass(t *testing.T) {
 	if err == nil {
 		t.Fatalf("pass must fail when the sweep cursor cannot persist; report=%+v", report)
 	}
-	if !strings.Contains(err.Error(), "write sweep cursor") {
+	if report.Stage != stageRecoveryRequired || !strings.Contains(err.Error(), "finalize sweep cursor") {
 		t.Fatalf("error = %v, want the cursor persistence failure named", err)
 	}
-	// The journal records the failed pass: planned BEFORE mutation, then a
-	// stage=failed terminal entry naming the same error.
 	receipts := readReceipts(t, home)
-	if len(receipts) != 2 || receipts[0].Stage != stagePlanned || receipts[1].Stage != stageFailed {
-		t.Fatalf("journal stages = %+v, want planned then failed", receipts)
-	}
-	if !strings.Contains(receipts[1].Error, "write sweep cursor") {
-		t.Fatalf("failed receipt must carry the cursor error, got %q", receipts[1].Error)
+	_, recovery := assertFrozenJournal(t, receipts, report.PassID, stageRecoveryRequired)
+	if !strings.Contains(recovery.Error, "finalize sweep cursor") {
+		t.Fatalf("recovery receipt must carry the cursor error, got %q", recovery.Error)
 	}
 }
 
@@ -691,15 +719,13 @@ func TestPromoteCursorPersistenceFailureFailsTheApplyPass(t *testing.T) {
 	if err == nil {
 		t.Fatalf("pass must fail when the promote cursor cannot persist; report=%+v", report)
 	}
-	if !strings.Contains(err.Error(), "write promote cursor") {
+	if report.Stage != stageRecoveryRequired || !strings.Contains(err.Error(), "finalize promote cursor") {
 		t.Fatalf("error = %v, want the cursor persistence failure named", err)
 	}
 	receipts := readReceipts(t, home)
-	if len(receipts) != 2 || receipts[0].Stage != stagePlanned || receipts[1].Stage != stageFailed {
-		t.Fatalf("journal stages = %+v, want planned then failed", receipts)
-	}
-	if !strings.Contains(receipts[1].Error, "write promote cursor") {
-		t.Fatalf("failed receipt must carry the cursor error, got %q", receipts[1].Error)
+	_, recovery := assertFrozenJournal(t, receipts, report.PassID, stageRecoveryRequired)
+	if !strings.Contains(recovery.Error, "finalize promote cursor") {
+		t.Fatalf("recovery receipt must carry the cursor error, got %q", recovery.Error)
 	}
 }
 
@@ -736,42 +762,19 @@ func TestCorruptImportHashesFailThePass(t *testing.T) {
 	}
 }
 
-// TestImportHashWriteFailureFailsTheApplyPass: the hash ledger is what makes
-// re-import idempotent; losing the write after applying imports must fail
-// the pass instead of stamping committed.
-func TestImportHashWriteFailureFailsTheApplyPass(t *testing.T) {
+func TestRegistryApplyRefusesExperimentalMutationBeforeJournaling(t *testing.T) {
 	home := t.TempDir()
 	registry := filepath.Join(home, "registry.yaml")
 	if err := os.WriteFile(registry, []byte("kind: product\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Seed a VALID hash ledger and an existing receipts journal, then make
-	// the state directory read-only: the planned receipt can still APPEND to
-	// the existing journal file (no directory write needed to open an
-	// existing file), but writeStateFile's CreateTemp+rename in that
-	// directory fails deterministically. The driver lock lives at the home
-	// root, so single-flight is unaffected.
-	dir := stateDir(home)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, hashFileName), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, receiptFileName), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(dir, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 
 	report, err := Run(home, Options{Apply: true, RegistryPaths: []string{registry}}, testNow)
-	if err == nil {
-		t.Fatalf("pass must fail when import hashes cannot persist; report=%+v", report)
+	if err == nil || report.Stage != "" || !strings.Contains(err.Error(), "experimental") {
+		t.Fatalf("registry apply must refuse before pass admission: stage=%q err=%v", report.Stage, err)
 	}
-	if !strings.Contains(err.Error(), "write import hashes") {
-		t.Fatalf("error = %v, want the hash persistence failure named", err)
+	if _, statErr := os.Stat(stateDir(home)); !os.IsNotExist(statErr) {
+		t.Fatalf("registry refusal created driver state: %v", statErr)
 	}
 }
 
@@ -787,36 +790,40 @@ func TestPlannedReceiptCarriesExactCandidateIntent(t *testing.T) {
 		t.Fatalf("pass: %v", err)
 	}
 	receipts := readReceipts(t, home)
-	if len(receipts) != 2 || receipts[0].Stage != stagePlanned || receipts[0].Intent == nil {
-		t.Fatalf("planned intent missing: %+v", receipts)
+	planned, _ := assertFrozenJournal(t, receipts, report.PassID, stageCommitted)
+	if strings.Join(planned.Intent.CandidateIDs, ",") != "cand_basis,cand_plain" {
+		t.Fatalf("intent candidate window = %v", planned.Intent.CandidateIDs)
 	}
-	if strings.Join(receipts[0].Intent.CandidateIDs, ",") != "cand_basis,cand_plain" {
-		t.Fatalf("intent candidate window = %v", receipts[0].Intent.CandidateIDs)
-	}
-	if len(receipts[0].Intent.Operations) != 2 {
-		t.Fatalf("intent operations = %+v, want promote + disposition", receipts[0].Intent.Operations)
+	if len(planned.Intent.Operations) != 2 {
+		t.Fatalf("intent operations = %+v, want promote + disposition", planned.Intent.Operations)
 	}
 	if report.Intent == nil || report.Intent.Operations[0].Key == "" {
 		t.Fatalf("terminal report lost planned intent: %+v", report.Intent)
 	}
 }
 
-func TestLaneBeliefFailureCannotCommitPass(t *testing.T) {
+func TestSupportedApplySkipsExperimentalLaneBeliefMutation(t *testing.T) {
 	home := t.TempDir()
 	previous := runLaneBeliefs
+	called := false
 	runLaneBeliefs = func(string, Options, time.Time) LaneBeliefsPhaseReport {
+		called = true
 		return LaneBeliefsPhaseReport{Error: "fold: injected failure"}
 	}
 	t.Cleanup(func() { runLaneBeliefs = previous })
 
 	report, err := Run(home, Options{Apply: true}, testNow)
-	if err == nil || report.Stage != stageFailed || !strings.Contains(report.Error, "lane-beliefs phase") {
-		t.Fatalf("lane failure must be failed: stage=%q err=%v report=%+v", report.Stage, err, report)
+	if err != nil || report.Stage != stageCommitted {
+		t.Fatalf("candidate-only apply must commit: stage=%q err=%v report=%+v", report.Stage, err, report)
+	}
+	if called {
+		t.Fatal("supported apply called the experimental lane-belief mutator")
+	}
+	if !strings.Contains(report.LaneBeliefs.Skipped, "experimental") {
+		t.Fatalf("lane-belief exclusion not reported: %+v", report.LaneBeliefs)
 	}
 	receipts := readReceipts(t, home)
-	if len(receipts) != 2 || receipts[1].Stage != stageFailed {
-		t.Fatalf("journal = %+v, want planned/failed", receipts)
-	}
+	assertFrozenJournal(t, receipts, report.PassID, stageCommitted)
 }
 
 func TestTerminalReceiptFailureWritesRecoveryMarker(t *testing.T) {
@@ -913,6 +920,350 @@ func TestCurrentReceiptSchemaRejectsRawCursorJSON(t *testing.T) {
 	raw := []byte(`{"schema_version":"compound.promotedriver.report.v0.3","pass_id":"pass_raw","stage":"planned","intent":{"promote_cursor_before":"cand_01","candidate_ids":[],"operations":[]}}`)
 	if _, err := decodeReceiptLine(raw); err == nil {
 		t.Fatal("current receipt schema accepted an unversioned raw cursor")
+	}
+}
+
+func TestFrozenCandidatePlanRefusesChangedTargetDigest(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_basis", mem.Candidate{
+		Entity: "basis", Predicate: "value", Object: "before", PromotionBasis: candidates.BasisRuntimeProof,
+	})
+
+	previous := receiptAppender
+	mutated := false
+	receiptAppender = func(homePath string, report Report) error {
+		if err := appendReceipt(homePath, report); err != nil {
+			return err
+		}
+		if report.Stage == stagePlanned && !mutated {
+			mutated = true
+			seedCandidate(t, home, "cand_basis", mem.Candidate{
+				Entity: "basis", Predicate: "value", Object: "after", PromotionBasis: candidates.BasisRuntimeProof,
+			})
+		}
+		return nil
+	}
+	t.Cleanup(func() { receiptAppender = previous })
+
+	report, err := Run(home, Options{Apply: true}, testNow)
+	if err == nil || !strings.Contains(err.Error(), "stale_precondition") {
+		t.Fatalf("changed planned target must fail stale without mutation: stage=%q err=%v", report.Stage, err)
+	}
+	var current mem.Candidate
+	if err := candidates.ReadCandidate(home, candidates.Memory, "cand_basis", &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Object != "after" || current.State != "proposed" {
+		t.Fatalf("changed target was overwritten: object=%q state=%q", current.Object, current.State)
+	}
+	if claims, readErr := os.ReadFile(filepath.Join(home, "ledger", "claims.jsonl")); readErr == nil && len(strings.TrimSpace(string(claims))) != 0 {
+		t.Fatalf("stale target appended a claim: %s", claims)
+	} else if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatal(readErr)
+	}
+}
+
+func TestFrozenDedupePlanBindsKeeperAndDuplicate(t *testing.T) {
+	for _, changed := range []string{"keeper", "duplicate"} {
+		t.Run(changed, func(t *testing.T) {
+			home := t.TempDir()
+			seedCandidate(t, home, "cand_keep", mem.Candidate{Entity: "dup", Predicate: "value", Object: "same", CreatedAt: "2026-08-25T00:00:00Z"})
+			seedCandidate(t, home, "cand_dup", mem.Candidate{Entity: "dup", Predicate: "value", Object: "same", CreatedAt: "2026-08-25T00:01:00Z"})
+
+			previous := receiptAppender
+			mutated := false
+			receiptAppender = func(homePath string, report Report) error {
+				if err := appendReceipt(homePath, report); err != nil {
+					return err
+				}
+				if report.Stage != stagePlanned || mutated {
+					return nil
+				}
+				mutated = true
+				if changed == "keeper" {
+					seedCandidate(t, home, "cand_keep", mem.Candidate{Entity: "dup", Predicate: "value", Object: "changed", CreatedAt: "2026-08-25T00:00:00Z"})
+				} else {
+					seedCandidate(t, home, "cand_dup", mem.Candidate{Entity: "dup", Predicate: "value", Object: "same", Tags: []string{"changed"}, CreatedAt: "2026-08-25T00:01:00Z"})
+				}
+				return nil
+			}
+			t.Cleanup(func() { receiptAppender = previous })
+
+			_, _ = Run(home, Options{Apply: true}, testNow)
+			var duplicate mem.Candidate
+			if err := candidates.ReadCandidate(home, candidates.Memory, "cand_dup", &duplicate); err != nil {
+				t.Fatal(err)
+			}
+			if duplicate.State != "proposed" {
+				t.Fatalf("changed %s let frozen dedupe mutate duplicate to %q", changed, duplicate.State)
+			}
+		})
+	}
+}
+
+func TestFrozenPassDoesNotActOnCandidateAddedAfterPlanning(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_original", mem.Candidate{Entity: "original", Predicate: "value", Object: "x"})
+
+	previous := receiptAppender
+	added := false
+	receiptAppender = func(homePath string, report Report) error {
+		if err := appendReceipt(homePath, report); err != nil {
+			return err
+		}
+		if report.Stage == stagePlanned && !added {
+			added = true
+			seedCandidate(t, home, "cand_late", mem.Candidate{
+				Entity: "late", Predicate: "value", Object: "y", PromotionBasis: candidates.BasisRuntimeProof,
+			})
+		}
+		return nil
+	}
+	t.Cleanup(func() { receiptAppender = previous })
+
+	if _, err := Run(home, Options{Apply: true}, testNow); err != nil {
+		t.Fatalf("frozen original plan: %v", err)
+	}
+	var late mem.Candidate
+	if err := candidates.ReadCandidate(home, candidates.Memory, "cand_late", &late); err != nil {
+		t.Fatal(err)
+	}
+	if late.State != "proposed" {
+		t.Fatalf("post-plan candidate was executed: state=%q", late.State)
+	}
+}
+
+func TestFrozenPassRecoveryReusesPassIDAndOperationList(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_basis", mem.Candidate{
+		Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+	})
+
+	previous := receiptAppender
+	receiptAppender = func(homePath string, report Report) error {
+		if report.Stage != stagePlanned {
+			return os.ErrPermission
+		}
+		return appendReceipt(homePath, report)
+	}
+	first, err := Run(home, Options{Apply: true}, testNow)
+	receiptAppender = previous
+	if err == nil || first.Stage != stageRecoveryRequired {
+		t.Fatalf("first pass must require recovery after result-journal failure: stage=%q err=%v", first.Stage, err)
+	}
+
+	second, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("resume exact pass: %v", err)
+	}
+	if second.PassID != first.PassID {
+		t.Fatalf("recovery minted new pass %q; want same %q", second.PassID, first.PassID)
+	}
+	if second.Intent == nil || first.Intent == nil || len(second.Intent.Operations) != len(first.Intent.Operations) {
+		t.Fatalf("recovery changed operation vector: first=%+v second=%+v", first.Intent, second.Intent)
+	}
+	if len(second.OperationResults) != 1 ||
+		second.OperationResults[0].Outcome != mem.FrozenAdjudicationAlreadyApplied ||
+		second.OperationResults[0].ClaimID == "" ||
+		second.OperationResults[0].TransitionID == "" {
+		t.Fatalf("recovery did not receipt the exact already-applied promotion: %+v", second.OperationResults)
+	}
+	claims, err := os.ReadFile(filepath.Join(home, "ledger", "claims.jsonl"))
+	if err != nil || len(strings.Split(strings.TrimSpace(string(claims)), "\n")) != 1 {
+		t.Fatalf("recovery claim rows = %q, err=%v; want exactly one", claims, err)
+	}
+	events, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := events.Scan(eventstore.ScanOptions{Prefixes: []string{"tr_"}})
+	if err != nil || len(entries) != 1 || entries[0].ID != second.OperationResults[0].TransitionID {
+		t.Fatalf("recovery transition entries = %+v, err=%v; want exact terminal result transition", entries, err)
+	}
+}
+
+func TestFrozenPromotionRefusesCurrentClaimDriftAfterPlanning(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_target", mem.Candidate{
+		Entity: "subject", Predicate: "value", Object: "same", PromotionBasis: candidates.BasisRuntimeProof,
+	})
+
+	previous := receiptAppender
+	inserted := false
+	receiptAppender = func(homePath string, report Report) error {
+		if err := appendReceipt(homePath, report); err != nil {
+			return err
+		}
+		if report.Stage != stagePlanned || inserted {
+			return nil
+		}
+		inserted = true
+		seedCandidate(t, home, "cand_racer", mem.Candidate{
+			Entity: "subject", Predicate: "value", Object: "same", PromotionBasis: candidates.BasisRuntimeProof,
+		})
+		store, err := mem.Open(home)
+		if err != nil {
+			return err
+		}
+		_, err = store.Adjudicate("cand_racer", candidates.Promote, "work_concurrent_claim", testNow.Add(time.Second))
+		return err
+	}
+	t.Cleanup(func() { receiptAppender = previous })
+
+	report, err := Run(home, Options{Apply: true}, testNow)
+	if err == nil || report.Stage != stageFailed || !strings.Contains(err.Error(), "stale_precondition") {
+		t.Fatalf("claim-corpus drift must fail stale: stage=%q err=%v report=%+v", report.Stage, err, report)
+	}
+	var target mem.Candidate
+	if err := candidates.ReadCandidate(home, candidates.Memory, "cand_target", &target); err != nil {
+		t.Fatal(err)
+	}
+	if target.State != "proposed" {
+		t.Fatalf("claim-corpus drift mutated the frozen target to %q", target.State)
+	}
+}
+
+func TestTerminalOperationResultsBijectFrozenOperations(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_plain", mem.Candidate{Entity: "plain", Predicate: "value", Object: "x"})
+	if _, err := Run(home, Options{Apply: true}, testNow); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(stateDir(home), receiptFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var planned, terminal map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var frame map[string]any
+		if err := json.Unmarshal([]byte(line), &frame); err != nil {
+			t.Fatal(err)
+		}
+		switch frame["stage"] {
+		case stagePlanned:
+			planned = frame
+		case stageCommitted:
+			terminal = frame
+		}
+	}
+	if planned == nil || terminal == nil {
+		t.Fatalf("missing planned/terminal frames: %s", data)
+	}
+	intent := planned["intent"].(map[string]any)
+	operations := intent["operations"].([]any)
+	results, ok := terminal["operation_results"].([]any)
+	if !ok || len(results) != len(operations) {
+		t.Fatalf("terminal result count = %d/%t, want %d frozen operations; terminal=%v", len(results), ok, len(operations), terminal)
+	}
+	wantKeys := map[string]bool{}
+	for _, raw := range operations {
+		wantKeys[raw.(map[string]any)["key"].(string)] = true
+	}
+	for _, raw := range results {
+		key := raw.(map[string]any)["key"].(string)
+		if !wantKeys[key] {
+			t.Fatalf("terminal result key %q is outside frozen plan", key)
+		}
+		delete(wantKeys, key)
+	}
+	if len(wantKeys) != 0 {
+		t.Fatalf("frozen operations missing terminal results: %v", wantKeys)
+	}
+}
+
+func TestLoadFrozenJournalRejectsTerminalResultDrift(t *testing.T) {
+	tests := map[string]func(*Report){
+		"missing result": func(terminal *Report) {
+			terminal.OperationResults = nil
+		},
+		"conflicting result": func(terminal *Report) {
+			terminal.OperationResults[0].AfterDigest = "sha256:" + strings.Repeat("0", 64)
+		},
+		"intent drift": func(terminal *Report) {
+			copyOfIntent := *terminal.Intent
+			copyOfIntent.CandidateIDs = append(copyOfIntent.CandidateIDs, "cand_unplanned")
+			terminal.Intent = &copyOfIntent
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			seedCandidate(t, home, "cand_basis", mem.Candidate{
+				Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+			})
+			if _, err := Run(home, Options{Apply: true}, testNow); err != nil {
+				t.Fatal(err)
+			}
+			receipts := readReceipts(t, home)
+			mutate(&receipts[len(receipts)-1])
+			lines := make([]string, 0, len(receipts))
+			for _, receipt := range receipts {
+				body, err := json.Marshal(receipt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				lines = append(lines, string(body))
+			}
+			path := filepath.Join(stateDir(home), receiptFileName)
+			if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			report, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+			if err == nil || report.Stage != "" || !strings.Contains(err.Error(), "terminal") {
+				t.Fatalf("drifted terminal must refuse before a new pass: stage=%q err=%v", report.Stage, err)
+			}
+		})
+	}
+}
+
+func TestLoadFrozenJournalRejectsOperationFrameAfterTerminal(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_plain", mem.Candidate{Entity: "plain", Predicate: "value", Object: "x"})
+	if _, err := Run(home, Options{Apply: true}, testNow); err != nil {
+		t.Fatal(err)
+	}
+	receipts := readReceipts(t, home)
+	if len(receipts) < 3 || receipts[1].Stage != stageOperationRecorded {
+		t.Fatalf("journal lacks reusable operation frame: %+v", receipts)
+	}
+	if err := appendReceipt(home, receipts[1]); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+	if err == nil || report.Stage != "" || !strings.Contains(err.Error(), "follows a terminal frame") {
+		t.Fatalf("post-terminal operation frame must refuse before a new pass: stage=%q err=%v", report.Stage, err)
+	}
+}
+
+func TestLoadFrozenJournalRejectsOperationFrameIntentDrift(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_plain", mem.Candidate{Entity: "plain", Predicate: "value", Object: "x"})
+	if _, err := Run(home, Options{Apply: true}, testNow); err != nil {
+		t.Fatal(err)
+	}
+	receipts := readReceipts(t, home)
+	copyOfIntent := *receipts[1].Intent
+	copyOfIntent.CandidateIDs = append(copyOfIntent.CandidateIDs, "cand_unplanned")
+	receipts[1].Intent = &copyOfIntent
+	lines := make([]string, 0, len(receipts))
+	for _, receipt := range receipts {
+		body, err := json.Marshal(receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, string(body))
+	}
+	path := filepath.Join(stateDir(home), receiptFileName)
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+	if err == nil || report.Stage != "" || !strings.Contains(err.Error(), "operation frame intent") {
+		t.Fatalf("drifted operation-frame intent must refuse before a new pass: stage=%q err=%v", report.Stage, err)
 	}
 }
 

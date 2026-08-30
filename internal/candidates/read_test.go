@@ -156,6 +156,52 @@ func TestReplaceCandidateIfCurrentUsesTargetGenerationNotDirectoryTimestamp(t *t
 	}
 }
 
+func TestMutateCandidateIfDigestsBindsTargetAndCompanionUnderOneLock(t *testing.T) {
+	type rec struct {
+		ID     string `json:"id"`
+		Marker string `json:"marker"`
+	}
+	home := t.TempDir()
+	for _, value := range []rec{{ID: "target", Marker: "before"}, {ID: "keeper", Marker: "before"}} {
+		if err := WriteCandidate(home, Memory, value.ID, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	target, err := ReadRecord(home, Memory, "target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keeper, err := ReadRecord(home, Memory, "keeper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCandidate(home, Memory, "keeper", rec{ID: "keeper", Marker: "changed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	result, err := MutateCandidateIfDigests(home, Memory, "target", []DigestPrecondition{
+		{ID: "target", Digest: target.Digest},
+		{ID: "keeper", Digest: keeper.Digest},
+	}, func(Record) (any, error) {
+		called = true
+		return rec{ID: "target", Marker: "after"}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Applied || result.MismatchID != "keeper" || called {
+		t.Fatalf("companion drift crossed mutation boundary: result=%+v called=%v", result, called)
+	}
+	var got rec
+	if err := ReadCandidate(home, Memory, "target", &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Marker != "before" {
+		t.Fatalf("target changed after companion drift: %+v", got)
+	}
+}
+
 func TestPageCASDoesNotRescanDirectoryPerCandidate(t *testing.T) {
 	type rec struct {
 		ID     string `json:"id"`

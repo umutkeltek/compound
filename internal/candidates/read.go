@@ -98,6 +98,25 @@ type ReplaceCandidateResult struct {
 	Current  Record
 }
 
+// DigestPrecondition is the durable part of a descriptor-pinned candidate
+// record that a persisted plan may carry across processes. The mutation door
+// reacquires rooted custody and compares this digest while holding the
+// candidate publication lock; callers never reconstruct Record identities.
+type DigestPrecondition struct {
+	ID     string
+	Digest string
+}
+
+// ConditionalMutationResult reports the exact lock winner when any target or
+// companion precondition drifted. Target is always the current target record
+// when it was readable; Current is the record named by MismatchID.
+type ConditionalMutationResult struct {
+	Applied    bool
+	Target     Record
+	Current    Record
+	MismatchID string
+}
+
 // ReplaceCandidateIfCurrent atomically replaces a candidate only when the
 // descriptor-pinned record read by an earlier page walk is still the exact
 // live generation. The comparison and replacement share the candidate
@@ -135,6 +154,98 @@ func ReplaceCandidateIfCurrent(homePath string, expected Record, payload any) (r
 		return nil
 	})
 	return result, err
+}
+
+// MutateCandidateIfDigests validates one target and any companion records
+// under the candidate publication lock, then lets the owner prepare the
+// target's replacement while that exact generation remains pinned. This is
+// the cross-process CAS seam for durable plans: a producer replacement either
+// wins before validation (the mutation callback never runs) or after the
+// committed replacement, never between validation and an authority write.
+func MutateCandidateIfDigests(
+	homePath string,
+	kind Kind,
+	targetID string,
+	preconditions []DigestPrecondition,
+	mutate func(Record) (any, error),
+) (result ConditionalMutationResult, resultErr error) {
+	if !Known(kind) {
+		return result, fmt.Errorf("unknown candidate kind %q", kind)
+	}
+	if err := candidateID(targetID); err != nil {
+		return result, err
+	}
+	if mutate == nil {
+		return result, fmt.Errorf("candidate mutation callback required")
+	}
+	if len(preconditions) == 0 {
+		return result, fmt.Errorf("candidate digest preconditions required")
+	}
+	seen := make(map[string]bool, len(preconditions))
+	targetDeclared := false
+	for _, precondition := range preconditions {
+		if err := candidateID(precondition.ID); err != nil {
+			return result, err
+		}
+		if strings.TrimSpace(precondition.Digest) == "" {
+			return result, fmt.Errorf("candidate %s digest required", precondition.ID)
+		}
+		if seen[precondition.ID] {
+			return result, fmt.Errorf("duplicate candidate digest precondition %s", precondition.ID)
+		}
+		seen[precondition.ID] = true
+		targetDeclared = targetDeclared || precondition.ID == targetID
+	}
+	if !targetDeclared {
+		return result, fmt.Errorf("target candidate %s has no digest precondition", targetID)
+	}
+
+	dir := InboxDir(kind)
+	return result, withCandidatePublicationLock(homePath, dir, func(inbox *candidateInbox) error {
+		var target Record
+		for _, precondition := range preconditions {
+			current, err := readRootedRecord(inbox, kind, precondition.ID+".json", precondition.ID)
+			if err != nil {
+				if os.IsNotExist(err) {
+					result.MismatchID = precondition.ID
+					return nil
+				}
+				return err
+			}
+			if precondition.ID == targetID {
+				target = current
+				result.Target = current
+			}
+			if current.Digest != precondition.Digest {
+				result.MismatchID = precondition.ID
+				result.Current = current
+				return nil
+			}
+		}
+
+		payload, err := mutate(target)
+		if err != nil {
+			return err
+		}
+		payloadDir, data, err := candidatePayload(kind, targetID, payload)
+		if err != nil {
+			return err
+		}
+		if payloadDir != dir {
+			return fmt.Errorf("candidate payload directory %q does not match %q", payloadDir, dir)
+		}
+		if err := replaceCandidateFromRecord(inbox, kind, targetID, data, target); err != nil {
+			return err
+		}
+		current, err := readRootedRecord(inbox, kind, targetID+".json", targetID)
+		if err != nil {
+			return fmt.Errorf("read committed candidate %s: %w", targetID, err)
+		}
+		result.Applied = true
+		result.Target = current
+		result.Current = current
+		return nil
+	})
 }
 
 // CreateCandidateIfAbsent persists a candidate only when its canonical inbox

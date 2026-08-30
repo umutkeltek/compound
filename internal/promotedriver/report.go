@@ -30,8 +30,9 @@ type Report struct {
 	// Intent is frozen on the planned receipt before mutation. It binds the
 	// candidate window, proposed per-candidate operations, cursors, and pending
 	// generation so a planned-only pass is reconstructible.
-	Intent            *PassIntent `json:"intent,omitempty"`
-	ReconciledPassIDs []string    `json:"reconciled_pass_ids,omitempty"`
+	Intent            *PassIntent           `json:"intent,omitempty"`
+	OperationResults  []PassOperationResult `json:"operation_results,omitempty"`
+	ReconciledPassIDs []string              `json:"reconciled_pass_ids,omitempty"`
 
 	Promote     PromotePhaseReport     `json:"promote"`
 	Dedupe      DedupePhaseReport      `json:"dedupe"`
@@ -46,19 +47,63 @@ type Report struct {
 }
 
 type PassIntent struct {
-	PromoteCursorBefore candidates.EntryCursor   `json:"promote_cursor_before,omitempty"`
-	SweepCursorBefore   candidates.EntryCursor   `json:"sweep_cursor_before,omitempty"`
-	PendingGeneration   string                   `json:"pending_generation,omitempty"`
-	CandidateIDs        []string                 `json:"candidate_ids"`
-	CorruptEntries      []candidates.EntryCursor `json:"corrupt_entries,omitempty"`
-	Operations          []PassIntentOperation    `json:"operations"`
+	PlanDigest                string                   `json:"plan_digest,omitempty"`
+	WorkID                    string                   `json:"work_id,omitempty"`
+	ExecutionAt               string                   `json:"execution_at,omitempty"`
+	CandidateCorpusGeneration string                   `json:"candidate_corpus_generation,omitempty"`
+	PromoteCursorBefore       candidates.EntryCursor   `json:"promote_cursor_before,omitempty"`
+	SweepCursorBefore         candidates.EntryCursor   `json:"sweep_cursor_before,omitempty"`
+	PendingGeneration         string                   `json:"pending_generation,omitempty"`
+	CandidateIDs              []string                 `json:"candidate_ids"`
+	CorruptEntries            []candidates.EntryCursor `json:"corrupt_entries,omitempty"`
+	Operations                []PassIntentOperation    `json:"operations"`
+	PromotePlan               PromotePhaseReport       `json:"promote_plan"`
+	DedupePlan                DedupePhaseReport        `json:"dedupe_plan"`
+	SweepPlan                 SweepPhaseReport         `json:"sweep_plan"`
 }
 
 type PassIntentOperation struct {
-	Key         string `json:"key"`
-	CandidateID string `json:"candidate_id"`
-	Phase       string `json:"phase"`
-	Operation   string `json:"operation"`
+	Key          string                 `json:"key"`
+	Ordinal      int                    `json:"ordinal"`
+	Phase        string                 `json:"phase"`
+	Operation    string                 `json:"operation"`
+	Target       CandidatePrecondition  `json:"target"`
+	Keeper       *CandidatePrecondition `json:"keeper,omitempty"`
+	CurrentClaim *ClaimPrecondition     `json:"current_claim,omitempty"`
+	DedupeKey    string                 `json:"dedupe_key,omitempty"`
+}
+
+type ClaimPrecondition struct {
+	ID     string `json:"id,omitempty"`
+	Absent bool   `json:"absent,omitempty"`
+}
+
+type CandidatePrecondition struct {
+	ID             string                 `json:"id"`
+	EntryCursor    candidates.EntryCursor `json:"entry_cursor"`
+	State          string                 `json:"state"`
+	BodyDigest     string                 `json:"body_digest"`
+	PromotionBasis string                 `json:"promotion_basis,omitempty"`
+}
+
+type PassOperationResult struct {
+	Key                  string `json:"key"`
+	Ordinal              int    `json:"ordinal"`
+	Phase                string `json:"phase"`
+	Operation            string `json:"operation"`
+	CandidateID          string `json:"candidate_id"`
+	Outcome              string `json:"outcome"`
+	Verdict              string `json:"verdict,omitempty"`
+	CandidateState       string `json:"candidate_state,omitempty"`
+	BeforeDigest         string `json:"before_digest,omitempty"`
+	AfterDigest          string `json:"after_digest,omitempty"`
+	MismatchCandidateID  string `json:"mismatch_candidate_id,omitempty"`
+	PreconditionMismatch string `json:"precondition_mismatch,omitempty"`
+	ClaimID              string `json:"claim_id,omitempty"`
+	SupersededClaimID    string `json:"superseded_claim_id,omitempty"`
+	TransitionID         string `json:"transition_id,omitempty"`
+	Note                 string `json:"note,omitempty"`
+	Error                string `json:"error,omitempty"`
 }
 
 // PromotePhaseReport receipts the basis-gated promotion phase. The walk
@@ -138,6 +183,7 @@ type LaneBeliefsPhaseReport struct {
 	Promote lanebeliefs.PromoteReport `json:"promote"`
 	Cool    lanebeliefs.CoolReport    `json:"cool"`
 	Error   string                    `json:"error,omitempty"` // the phase that failed; earlier phases completed
+	Skipped string                    `json:"skipped,omitempty"`
 }
 
 // SweepPhaseReport receipts the disposition pass. VerdictCounts keys are

@@ -216,6 +216,70 @@ func TestCandidateFirstNoCanonWithoutPromote(t *testing.T) {
 	}
 }
 
+func TestCaptureRaceCannotOverwriteFrozenTerminalCandidate(t *testing.T) {
+	s := newStore(t)
+	input := cand("race", "status", "stable", "")
+	captured, err := s.Capture([]Candidate{input}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("seed capture: candidates=%d err=%v", len(captured), err)
+	}
+	record, err := candidates.ReadRecord(s.home, candidates.Memory, captured[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 65)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 64; i++ {
+			if _, err := s.Capture([]Candidate{input}, t0); err != nil {
+				errs <- err
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		result, err := s.AdjudicateFrozen(FrozenAdjudication{
+			OperationKey: "op_capture_race",
+			Target: FrozenCandidatePrecondition{
+				CandidateID: captured[0].ID,
+				BodyDigest:  record.Digest,
+				State:       "proposed",
+			},
+		}, candidates.Park, "work_capture_race", t0)
+		if err != nil {
+			errs <- err
+			return
+		}
+		if result.Outcome != FrozenAdjudicationApplied && result.Outcome != FrozenAdjudicationAlreadyApplied {
+			errs <- fmt.Errorf("frozen outcome = %q", result.Outcome)
+		}
+	}()
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	var current Candidate
+	if err := candidates.ReadCandidate(s.home, candidates.Memory, captured[0].ID, &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.State != "parked" || current.AdjudicationOperationKey != "op_capture_race" {
+		t.Fatalf("producer overwrote frozen terminal candidate: state=%q operation=%q", current.State, current.AdjudicationOperationKey)
+	}
+	if duplicate, err := s.Capture([]Candidate{input}, t0); err != nil || len(duplicate) != 0 {
+		t.Fatalf("terminal candidate recapture = %d err=%v, want protected no-op", len(duplicate), err)
+	}
+}
+
 func TestAdjudicatePromoteRequiresPromotionBasis(t *testing.T) {
 	s := newStore(t)
 	noBasis := cand("e", "p", "v", "")
