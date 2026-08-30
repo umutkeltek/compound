@@ -236,22 +236,31 @@
       "severity": "P0",
       "subsystem": "governed-execution",
       "title": "Close freeze and RunAttempt sweep race wedges failure finalization",
-      "status": "reproduced",
+      "status": "focused_green",
       "reproducer": "Deterministically invoke RunAttempt SweepStale from prepareRunAttemptTerminalization after close-pending freezes a pending claim reservation but before terminalization preparation; FinalizeGovernedHarnessRun returns recovery_required and exact retries never converge.",
       "root_cause": "Close freezes a pending RunAttempt snapshot in its durable close-pending frame, but sweep owns a separate per-attempt terminalization path outside the lifecycle mutation boundary. If sweep wins before prepare, recovery insists on preparing the stale pending snapshot against an already-terminal abandoned record, while the terminal-work reconciler is unavailable because the WorkEnvelope never became terminal.",
       "invariant": "Once close freezes a generation, a concurrent side-effect-free sweep cannot strand governed failure finalization; the same frozen close must either commit or expose an idempotent reconciler that converges.",
-      "red_test": "TestGovernedFailureFinalizationConvergesWhenSweepWinsBeforePrepare",
-      "fix_commits": [],
+      "red_test": "TestCloseConvergesWhenSweepWinsBeforePrepare",
+      "fix_commits": [
+        "64756a5f4417bdd6202cf5cefada5bfc5fe1a5af"
+      ],
       "focused_tests": [
-        "Disposable reproducer and -race variant deterministically assert the non-converging wedge at d7f77a3e."
+        "GOTOOLCHAIN=go1.26.4 go test -count=1 -v ./internal/work -run '^(TestCloseConvergesWhenSweepWinsBeforePrepare|TestCloseDoesNotRebuildSweptPlanAfterEarlierPrepare)$'",
+        "GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/work ./internal/runattempt -run 'ClosePending|Close.*RunAttempt|Sweep.*Close|Close.*Sweep|Terminalization'",
+        "GOTOOLCHAIN=go1.26.4 go test -race -count=1 ./internal/work -run 'ClosePending|Close.*RunAttempt|Sweep.*Close|Close.*Sweep|Terminalization'",
+        "GOTOOLCHAIN=go1.26.4 go test -race -count=1 ./internal/runattempt -run 'Sweep|Terminalization'",
+        "GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/actuator",
+        "GOTOOLCHAIN=go1.26.4 go vet ./internal/work ./internal/runattempt ./internal/actuator",
+        "governed verification work_0964cebaa990 / ratt_20260830T040042Z_3bacc0f3 succeeded against 64756a5f4417bdd6202cf5cefada5bfc5fe1a5af"
       ],
       "broad_tests": [],
       "evidence_paths": [
-        "release-evidence/runs/20260830-p0-009-sweep-close-freeze-repro.json"
+        "release-evidence/runs/20260830-p0-009-sweep-close-freeze-repro.json",
+        "release-evidence/runs/20260830-p0-009-close-sweep-recovery-focused-green.json"
       ],
-      "residual_risk": "A supported governed failure can remain running with durable close-pending and a reverse-linked actual execution even though every exact retry is refused. Manual acknowledgement is not an acceptable release path.",
+      "residual_risk": "Focused, race, actuator, stage-failure, and governed clean-HEAD proof are green. Canonical broad proof remains unavailable until REL-P0-008 is remediated, so this issue is not closed.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-30T03:57:31Z"
+      "updated_at": "2026-08-30T04:21:59Z"
     },
     {
       "id": "REL-P1-001",
