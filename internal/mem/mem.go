@@ -507,29 +507,66 @@ func candidateHasAnnotation(annotations []CandidateAnnotation, id string) bool {
 	return false
 }
 
-// AllCandidates returns inbox candidates in deterministic id order.
-func (s *Store) AllCandidates() ([]Candidate, error) {
-	entries, err := os.ReadDir(s.candDir())
+type candidateInboxEntry struct {
+	Candidate Candidate
+	RawKind   string
+	Modified  time.Time
+}
+
+// candidateInboxSnapshot reads every canonical memory candidate from one
+// descriptor-rooted page. Corrupt .json entries stay named and never become a
+// candidate through filename fallback.
+func (s *Store) candidateInboxSnapshot() ([]candidateInboxEntry, []*candidates.Corruption, error) {
+	page, err := candidates.ReadPage(s.home, candidates.Memory, "", 0)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			// An absent inbox (read-only open on a home that never captured)
-			// is an empty inbox, not a failure.
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
-	out := make([]Candidate, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	out := make([]candidateInboxEntry, 0, len(page.Entries))
+	var corruptions []*candidates.Corruption
+	for _, entry := range page.Entries {
+		if entry.Corruption != nil {
+			corruptions = append(corruptions, entry.Corruption)
 			continue
 		}
 		var c Candidate
-		if err := readJSON(filepath.Join(s.candDir(), entry.Name()), &c); err != nil {
-			return out, err
+		if err := json.Unmarshal(entry.Record.Body, &c); err != nil {
+			corruptions = append(corruptions, &candidates.Corruption{EntryCursor: entry.EntryCursor, Code: candidates.CorruptionInvalidJSON, Detail: "decode memory candidate: " + err.Error()})
+			continue
 		}
-		out = append(out, c)
+		var meta struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(entry.Record.Body, &meta); err != nil {
+			corruptions = append(corruptions, &candidates.Corruption{EntryCursor: entry.EntryCursor, Code: candidates.CorruptionInvalidJSON, Detail: "decode memory candidate kind: " + err.Error()})
+			continue
+		}
+		out = append(out, candidateInboxEntry{Candidate: c, RawKind: strings.TrimSpace(meta.Kind), Modified: entry.Record.ModifiedAt()})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, corruptions, nil
+}
+
+// AllCandidates returns inbox candidates in deterministic id order. This is a
+// decision/mutation seam, so named custody corruption fails the snapshot
+// closed rather than returning a partial set as if it were complete.
+func (s *Store) AllCandidates() ([]Candidate, error) {
+	snapshot, corruptions, err := s.candidateInboxSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	if len(corruptions) > 0 {
+		errs := make([]error, 0, len(corruptions))
+		for _, corruption := range corruptions {
+			errs = append(errs, corruption)
+		}
+		return nil, fmt.Errorf("candidate inbox custody: %w", errors.Join(errs...))
+	}
+	out := make([]Candidate, 0, len(snapshot))
+	for _, entry := range snapshot {
+		out = append(out, entry.Candidate)
+	}
 	return out, nil
 }
 

@@ -1,10 +1,7 @@
 package mem
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +32,7 @@ type CandidateListReport struct {
 // read as a complete one.
 type CandidateListCounts struct {
 	Total   int `json:"total"`
+	Corrupt int `json:"corrupt,omitempty"`
 	Matched int `json:"matched"`
 	// Returned is len(Items). Truncated is Matched > Returned.
 	Returned  int            `json:"returned"`
@@ -83,6 +81,7 @@ type CandidateListItem struct {
 	AdjudicatedBy  string                 `json:"adjudicated_by,omitempty"`
 	AdjudicatedAt  string                 `json:"adjudicated_at,omitempty"`
 	CreatedAt      string                 `json:"created_at,omitempty"`
+	ModifiedAt     string                 `json:"modified_at,omitempty"`
 	SourceTraceRef string                 `json:"source_trace_ref,omitempty"`
 	SnippetHash    string                 `json:"snippet_hash,omitempty"`
 	EvidenceRefs   []string               `json:"evidence_refs,omitempty"`
@@ -123,22 +122,34 @@ func (s *Store) ListCandidates(now time.Time, opts CandidateListOptions) (Candid
 		return CandidateListReport{}, fmt.Errorf("limit must be non-negative")
 	}
 
-	cands, err := s.AllCandidates()
+	snapshot, corruptions, err := s.candidateInboxSnapshot()
 	if err != nil {
 		return CandidateListReport{}, err
 	}
-	for i := range cands {
-		cands[i], _ = AdmitCandidate(cands[i])
+	cands := make([]Candidate, 0, len(snapshot))
+	rawKinds := make(map[string]string, len(snapshot))
+	modifiedByCandidate := make(map[string]string, len(snapshot))
+	for _, entry := range snapshot {
+		candidate, _ := AdmitCandidate(entry.Candidate)
+		cands = append(cands, candidate)
+		if entry.RawKind != "" {
+			rawKinds[candidate.ID] = entry.RawKind
+		}
+		if !entry.Modified.IsZero() {
+			modifiedByCandidate[candidate.ID] = entry.Modified.UTC().Format(time.RFC3339Nano)
+		}
 	}
 	reviewByCandidate, warnings := s.reviewStateByCandidate()
-	rawKinds, kindWarnings := s.rawCandidateKinds()
-	warnings = append(warnings, kindWarnings...)
+	for _, corruption := range corruptions {
+		warnings = append(warnings, corruption.Error())
+	}
 	report := CandidateListReport{
 		SchemaVersion: CandidateListSchemaVersion,
 		AuthorityRef:  "compound://memory/candidates",
 		GeneratedAt:   now.UTC().Format(time.RFC3339),
 		Counts: CandidateListCounts{
 			Total:   len(cands),
+			Corrupt: len(corruptions),
 			ByState: map[string]int{},
 		},
 		Items:    []CandidateListItem{},
@@ -195,7 +206,7 @@ func (s *Store) ListCandidates(now time.Time, opts CandidateListOptions) (Candid
 		if opts.Limit > 0 && len(report.Items) >= opts.Limit {
 			continue
 		}
-		item, err := s.candidateListItem(c, reviewState, rawKind, opts.IncludeEvidence)
+		item, err := s.candidateListItem(c, reviewState, rawKind, modifiedByCandidate[c.ID], opts.IncludeEvidence)
 		if err != nil {
 			return report, err
 		}
@@ -220,7 +231,7 @@ func validCandidateListState(state string) bool {
 	}
 }
 
-func (s *Store) candidateListItem(c Candidate, reviewState, rawKind string, includeEvidence bool) (CandidateListItem, error) {
+func (s *Store) candidateListItem(c Candidate, reviewState, rawKind, modifiedAt string, includeEvidence bool) (CandidateListItem, error) {
 	item := CandidateListItem{
 		ID:              c.ID,
 		State:           c.State,
@@ -240,6 +251,7 @@ func (s *Store) candidateListItem(c Candidate, reviewState, rawKind string, incl
 		AdjudicatedBy:   c.AdjudicatedBy,
 		AdjudicatedAt:   c.AdjudicatedAt,
 		CreatedAt:       c.CreatedAt,
+		ModifiedAt:      modifiedAt,
 	}
 	if includeEvidence {
 		item.SourceTraceRef = c.SourceTraceRef
@@ -281,38 +293,6 @@ func (s *Store) candidateListItem(c Candidate, reviewState, rawKind string, incl
 		}
 	}
 	return item, nil
-}
-
-func (s *Store) rawCandidateKinds() (map[string]string, []string) {
-	out := map[string]string{}
-	entries, err := os.ReadDir(s.candDir())
-	if err != nil {
-		return out, []string{"candidate kind scan unavailable: " + err.Error()}
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		var meta struct {
-			ID   string `json:"id"`
-			Kind string `json:"kind"`
-		}
-		data, err := os.ReadFile(filepath.Join(s.candDir(), entry.Name()))
-		if err != nil {
-			return out, []string{entry.Name() + ": candidate kind unreadable: " + err.Error()}
-		}
-		if err := json.Unmarshal(data, &meta); err != nil {
-			return out, []string{entry.Name() + ": candidate kind invalid: " + err.Error()}
-		}
-		id := strings.TrimSpace(meta.ID)
-		if id == "" {
-			id = strings.TrimSuffix(entry.Name(), ".json")
-		}
-		if meta.Kind != "" {
-			out[id] = meta.Kind
-		}
-	}
-	return out, nil
 }
 
 func (s *Store) reviewStateByCandidate() (map[string]string, []string) {

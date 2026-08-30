@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -860,19 +861,25 @@ func (s *Store) workbenchItemWithCaches(w envelope.WorkEnvelope, events []Event,
 	if artifacts, warnings := s.workbenchRunArtifacts(w.ID); len(artifacts) > 0 || len(warnings) > 0 {
 		item.RunArtifacts = artifacts
 		report.Counts.RunArtifacts += len(artifacts)
-		for _, artifact := range artifacts {
-			item.MemoryCandidateIDs = mergeUnique(item.MemoryCandidateIDs, artifact.CandidateIDs)
-			for _, ref := range artifact.TargetRefs {
-				if strings.HasPrefix(ref, "cand_") {
-					item.MemoryCandidateIDs = mergeUnique(item.MemoryCandidateIDs, []string{ref})
-				}
-			}
-		}
 		for _, warning := range warnings {
 			report.Integrity = append(report.Integrity, w.ID+": "+warning)
 		}
 	}
-	item.ReviewCards = s.workbenchReviewCards(w.ID, item.RunArtifacts)
+	artifactCandidateIDs, warnings := s.workbenchArtifactMemoryCandidateIDs(item.RunArtifacts)
+	item.MemoryCandidateIDs = mergeUnique(item.MemoryCandidateIDs, artifactCandidateIDs)
+	for _, warning := range warnings {
+		report.Integrity = append(report.Integrity, w.ID+": "+warning)
+	}
+	memoryCandidates, warnings := s.workbenchMemoryCandidates(item.RunArtifacts)
+	for _, candidate := range memoryCandidates {
+		item.MemoryCandidateIDs = mergeUnique(item.MemoryCandidateIDs, []string{candidate.ID})
+	}
+	for _, warning := range warnings {
+		report.Integrity = append(report.Integrity, w.ID+": "+warning)
+	}
+	if reviewCards := s.workbenchReviewCards(w.ID, item.RunArtifacts, memoryCandidates); len(reviewCards) > 0 {
+		item.ReviewCards = reviewCards
+	}
 	item.ReviewCards = append(item.ReviewCards, s.workbenchOperatorGateCardsWithCache(w, item, caches.ASCSignals)...)
 	item.ReviewCards = markStaleHoldReviewCards(w, item, item.ReviewCards, holdEvidence)
 	if len(item.ReviewCards) > 0 && (w.State == "held" || w.State == "blocked") {
@@ -1369,12 +1376,9 @@ func enrichWorkbenchRunArtifact(artifact WorkbenchRunArtifact, data []byte) Work
 	artifact.Status = strings.TrimSpace(payload.Status)
 	artifact.TargetKind = strings.TrimSpace(payload.TargetKind)
 	for _, target := range payload.Targets {
-		ref := strings.TrimSpace(target.Ref)
-		if ref != "" {
-			artifact.TargetRefs = append(artifact.TargetRefs, ref)
-		}
+		artifact.TargetRefs = appendUniqueExact(artifact.TargetRefs, target.Ref)
 	}
-	artifact.CandidateIDs = mergeUnique(artifact.CandidateIDs, payload.CandidateIDs)
+	artifact.CandidateIDs = appendUniqueExact(artifact.CandidateIDs, payload.CandidateIDs...)
 	if artifact.Kind == "knowledge_extract_summary" && payload.TotalCreated > 0 {
 		count := payload.TotalCreated
 		artifact.Count = &count
@@ -1384,93 +1388,136 @@ func enrichWorkbenchRunArtifact(artifact WorkbenchRunArtifact, data []byte) Work
 		artifact.Count = &count
 	}
 	if len(payload.Refs) > 0 {
-		artifact.TargetRefs = mergeUnique(artifact.TargetRefs, payload.Refs)
+		artifact.TargetRefs = appendUniqueExact(artifact.TargetRefs, payload.Refs...)
 	}
 	return artifact
 }
 
-func (s *Store) workbenchReviewCards(workID string, artifacts []WorkbenchRunArtifact) []WorkbenchReviewCard {
-	var panel WorkbenchRunArtifact
-	var promotion WorkbenchRunArtifact
+func appendUniqueExact(dst []string, values ...string) []string {
+	for _, value := range values {
+		if value == "" || slices.Contains(dst, value) {
+			continue
+		}
+		dst = append(dst, value)
+	}
+	return dst
+}
+
+type workbenchMemoryCandidate struct {
+	ID      string
+	Panel   WorkbenchRunArtifact
+	Summary memoryCandidateReviewSummary
+}
+
+func (s *Store) workbenchArtifactMemoryCandidateIDs(artifacts []WorkbenchRunArtifact) ([]string, []string) {
+	var ids []string
+	var warnings []string
 	for _, artifact := range artifacts {
-		switch artifact.Kind {
-		case "panel_run":
-			if panel.Ref == "" && artifact.Status == "applied" && artifact.TargetKind == "memory_candidate" && firstCandidateRef(artifact.TargetRefs) != "" {
-				panel = artifact
+		for _, id := range artifact.CandidateIDs {
+			if _, err := candidates.ReadRecord(s.home, candidates.Memory, id); err != nil {
+				warnings = append(warnings, "memory candidate artifact corrupt: "+err.Error())
+				continue
 			}
-		case "promotion_summary":
-			if promotion.Ref == "" && artifact.Count != nil {
-				promotion = artifact
-			}
+			ids = mergeUnique(ids, []string{id})
 		}
 	}
-	if panel.Ref == "" || promotion.Ref == "" || promotion.Count == nil || *promotion.Count != 0 {
+	return ids, warnings
+}
+
+func (s *Store) workbenchMemoryCandidates(artifacts []WorkbenchRunArtifact) ([]workbenchMemoryCandidate, []string) {
+	var out []workbenchMemoryCandidate
+	var warnings []string
+	for _, artifact := range artifacts {
+		if artifact.Kind != "panel_run" || artifact.Status != "applied" || artifact.TargetKind != "memory_candidate" {
+			continue
+		}
+		candidateID, err := workbenchMemoryCandidateRef(artifact.TargetRefs)
+		if err != nil {
+			warnings = append(warnings, "memory candidate artifact corrupt: "+err.Error())
+			continue
+		}
+		summary, err := s.memoryCandidateReviewSummary(candidateID)
+		if err != nil {
+			warnings = append(warnings, "memory candidate artifact corrupt: "+err.Error())
+			continue
+		}
+		out = append(out, workbenchMemoryCandidate{ID: candidateID, Panel: artifact, Summary: summary})
+	}
+	return out, warnings
+}
+
+func (s *Store) workbenchReviewCards(workID string, artifacts []WorkbenchRunArtifact, memoryCandidates []workbenchMemoryCandidate) []WorkbenchReviewCard {
+	var promotion WorkbenchRunArtifact
+	for _, artifact := range artifacts {
+		if artifact.Kind == "promotion_summary" && promotion.Ref == "" && artifact.Count != nil && *artifact.Count == 0 {
+			promotion = artifact
+		}
+	}
+	if promotion.Ref == "" {
 		return nil
 	}
-	candidateID := firstCandidateRef(panel.TargetRefs)
-	if candidateID == "" {
-		return nil
+	for _, candidate := range memoryCandidates {
+		if candidate.Summary.State == "promoted" || candidate.Summary.State == "rejected" || candidate.Summary.State == "no_promote" {
+			continue
+		}
+		panelSummary := s.panelRunReviewSummary(candidate.Panel.Ref)
+		sourceSummary := s.memoryCandidateSourceSummary(workID, candidate.Summary.ItemRef, candidate.Summary.Object)
+		command := []string{"compound", "workbench", "--json"}
+		if candidate.Panel.ID != "" {
+			command = []string{"compound", "panel", "show", candidate.Panel.ID, "--json"}
+		}
+		title := "operator adjudication needed for " + candidate.ID + "; inspect applied panel run and keep promotion explicit"
+		card := WorkbenchReviewCard{
+			ID:                     "memory-review-" + workID + "-" + candidate.ID,
+			Kind:                   "memory_candidate_adjudication",
+			Title:                  title,
+			WorkID:                 workID,
+			CandidateID:            candidate.ID,
+			CandidateState:         candidate.Summary.State,
+			CandidateEntity:        candidate.Summary.Entity,
+			CandidatePredicate:     candidate.Summary.Predicate,
+			CandidateObject:        candidate.Summary.Object,
+			CandidateConfidence:    candidate.Summary.Confidence,
+			CandidateVisibility:    candidate.Summary.Visibility,
+			CandidateSourceRef:     candidate.Summary.SourceRef,
+			CandidateItemRef:       candidate.Summary.ItemRef,
+			CandidateExtraction:    candidate.Summary.ExtractionID,
+			CandidateExtractedBy:   candidate.Summary.ExtractedBy,
+			CandidateSourceKind:    candidate.Summary.SourceKind,
+			CandidateSourceTitle:   sourceSummary.Title,
+			CandidateSourceExcerpt: sourceSummary.Excerpt,
+			PanelRunID:             candidate.Panel.ID,
+			PanelRunRef:            candidate.Panel.Ref,
+			PanelDecision:          panelSummary.Decision,
+			PanelConfidence:        panelSummary.Confidence,
+			PanelRationale:         panelSummary.Rationale,
+			PanelFindingCount:      panelSummary.FindingCount,
+			PanelRiskCount:         panelSummary.RiskCount,
+			PanelFailedCount:       panelSummary.FailedCount,
+			PromotionSummaryRef:    promotion.Ref,
+			PromotionCount:         promotion.Count,
+			Command:                command,
+			RequiredInputs: []string{
+				"operator verdict for exactly one conversation-derived memory candidate",
+				"candidate " + candidate.ID + " reviewed against panel run " + reviewartifactOrDash(candidate.Panel.ID),
+			},
+			ExpectedValidation: []string{
+				"candidate " + candidate.ID + " remains parked/proposed until an operator adjudication act",
+				"promotion summary remains zero before explicit promotion",
+				"panel run " + reviewartifactOrDash(candidate.Panel.ID) + " is inspected as evidence, not treated as promotion",
+			},
+			StopConditions: []string{
+				"candidate already promoted, rejected, or no_promote",
+				"operator verdict absent or selects more than one candidate",
+				"requested action would run import, extraction, panel run, mass import, or automatic promotion",
+			},
+			Boundary:         "operator review/adjudication card only; no automatic memory promotion, recall proof, import, extraction, or held-valve clearing",
+			Proof:            "Workbench shows candidate id, parked/proposed state, applied panel-run ref, promotion_summary count=0, and explicit stop conditions",
+			RequiresOperator: true,
+		}
+		return []WorkbenchReviewCard{card}
 	}
-	candidate := s.memoryCandidateReviewSummary(candidateID)
-	if candidate.State == "promoted" || candidate.State == "rejected" || candidate.State == "no_promote" {
-		return nil
-	}
-	panelSummary := s.panelRunReviewSummary(panel.Ref)
-	sourceSummary := s.memoryCandidateSourceSummary(workID, candidate.ItemRef, candidate.Object)
-	command := []string{"compound", "workbench", "--json"}
-	if panel.ID != "" {
-		command = []string{"compound", "panel", "show", panel.ID, "--json"}
-	}
-	title := "operator adjudication needed for " + candidateID + "; inspect applied panel run and keep promotion explicit"
-	card := WorkbenchReviewCard{
-		ID:                     "memory-review-" + workID + "-" + candidateID,
-		Kind:                   "memory_candidate_adjudication",
-		Title:                  title,
-		WorkID:                 workID,
-		CandidateID:            candidateID,
-		CandidateState:         candidate.State,
-		CandidateEntity:        candidate.Entity,
-		CandidatePredicate:     candidate.Predicate,
-		CandidateObject:        candidate.Object,
-		CandidateConfidence:    candidate.Confidence,
-		CandidateVisibility:    candidate.Visibility,
-		CandidateSourceRef:     candidate.SourceRef,
-		CandidateItemRef:       candidate.ItemRef,
-		CandidateExtraction:    candidate.ExtractionID,
-		CandidateExtractedBy:   candidate.ExtractedBy,
-		CandidateSourceKind:    candidate.SourceKind,
-		CandidateSourceTitle:   sourceSummary.Title,
-		CandidateSourceExcerpt: sourceSummary.Excerpt,
-		PanelRunID:             panel.ID,
-		PanelRunRef:            panel.Ref,
-		PanelDecision:          panelSummary.Decision,
-		PanelConfidence:        panelSummary.Confidence,
-		PanelRationale:         panelSummary.Rationale,
-		PanelFindingCount:      panelSummary.FindingCount,
-		PanelRiskCount:         panelSummary.RiskCount,
-		PanelFailedCount:       panelSummary.FailedCount,
-		PromotionSummaryRef:    promotion.Ref,
-		PromotionCount:         promotion.Count,
-		Command:                command,
-		RequiredInputs: []string{
-			"operator verdict for exactly one conversation-derived memory candidate",
-			"candidate " + candidateID + " reviewed against panel run " + reviewartifactOrDash(panel.ID),
-		},
-		ExpectedValidation: []string{
-			"candidate " + candidateID + " remains parked/proposed until an operator adjudication act",
-			"promotion summary remains zero before explicit promotion",
-			"panel run " + reviewartifactOrDash(panel.ID) + " is inspected as evidence, not treated as promotion",
-		},
-		StopConditions: []string{
-			"candidate already promoted, rejected, or no_promote",
-			"operator verdict absent or selects more than one candidate",
-			"requested action would run import, extraction, panel run, mass import, or automatic promotion",
-		},
-		Boundary:         "operator review/adjudication card only; no automatic memory promotion, recall proof, import, extraction, or held-valve clearing",
-		Proof:            "Workbench shows candidate id, parked/proposed state, applied panel-run ref, promotion_summary count=0, and explicit stop conditions",
-		RequiresOperator: true,
-	}
-	return []WorkbenchReviewCard{card}
+	return nil
 }
 
 func (s *Store) workbenchOperatorGateCards(w envelope.WorkEnvelope, item WorkbenchItem) []WorkbenchReviewCard {
@@ -1605,14 +1652,14 @@ func workbenchProductSignalIsASC(row workbenchProductSignalRow) bool {
 	return false
 }
 
-func firstCandidateRef(refs []string) string {
-	for _, ref := range refs {
-		ref = strings.TrimSpace(ref)
-		if strings.HasPrefix(ref, "cand_") {
-			return ref
-		}
+func workbenchMemoryCandidateRef(refs []string) (string, error) {
+	if len(refs) != 1 {
+		return "", fmt.Errorf("expected exactly one memory candidate reference, got %d", len(refs))
 	}
-	return ""
+	if refs[0] == "" {
+		return "", errors.New("memory candidate reference is blank")
+	}
+	return refs[0], nil
 }
 
 type memoryCandidateReviewSummary struct {
@@ -1638,12 +1685,11 @@ type panelRunReviewSummary struct {
 	FailedCount  int
 }
 
-func (s *Store) memoryCandidateReviewSummary(id string) memoryCandidateReviewSummary {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return memoryCandidateReviewSummary{}
+func (s *Store) memoryCandidateReviewSummary(id string) (memoryCandidateReviewSummary, error) {
+	record, err := candidates.ReadRecord(s.home, candidates.Memory, id)
+	if err != nil {
+		return memoryCandidateReviewSummary{}, err
 	}
-	path := filepath.Join(s.home, candidates.InboxDir(candidates.Memory), id+".json")
 	var payload struct {
 		ID             string   `json:"id"`
 		State          string   `json:"state"`
@@ -1660,8 +1706,8 @@ func (s *Store) memoryCandidateReviewSummary(id string) memoryCandidateReviewSum
 			Source       string `json:"source"`
 		} `json:"qualifiers"`
 	}
-	if err := s.readJSON(path, &payload); err != nil {
-		return memoryCandidateReviewSummary{}
+	if err := json.Unmarshal(record.Body, &payload); err != nil {
+		return memoryCandidateReviewSummary{}, err
 	}
 	return memoryCandidateReviewSummary{
 		State:        strings.TrimSpace(payload.State),
@@ -1675,7 +1721,7 @@ func (s *Store) memoryCandidateReviewSummary(id string) memoryCandidateReviewSum
 		ExtractionID: strings.TrimSpace(payload.Qualifiers.ExtractionID),
 		ExtractedBy:  strings.TrimSpace(payload.Qualifiers.ExtractedBy),
 		SourceKind:   strings.TrimSpace(payload.Qualifiers.Source),
-	}
+	}, nil
 }
 
 type memoryCandidateSourceSummary struct {

@@ -897,6 +897,10 @@ func TestWorkbenchSurfacesRunArtifactsForHeldWork(t *testing.T) {
 			"source":        "knowledge_extraction",
 		},
 	})
+	writeJSONFile(t, filepath.Join(candidateDir, "cand_other_conversation.json"), map[string]any{
+		"id":    "cand_other_conversation",
+		"state": "parked",
+	})
 	writeJSONFile(t, filepath.Join(runDir, "chatgpt-knowledge-export.json"), map[string]any{
 		"schema_version": "compound.knowledge_export.v0.1",
 		"source":         "conversation-export:fixture",

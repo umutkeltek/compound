@@ -127,8 +127,10 @@ type orientCandidateInbox struct {
 	Kind            string         `json:"kind"`
 	Dir             string         `json:"dir"`
 	Count           int            `json:"count"`
+	CorruptCount    int            `json:"corrupt_count,omitempty"`
 	ActionableCount int            `json:"actionable_count"`
 	StateCounts     map[string]int `json:"state_counts,omitempty"`
+	Warnings        []string       `json:"warnings,omitempty"`
 }
 
 type orientSourceIntake struct {
@@ -466,7 +468,14 @@ func buildOrientOperatorReportWithCursorWriter(homePath string, recent int, now 
 			{Label: "reviews", Command: []string{"compound", "reviews"}},
 			{Label: "memory doctor", Command: []string{"compound", "memory", "doctor"}},
 		},
+		Warnings: append([]string(nil), workbench.Integrity...),
 	}
+	for _, inbox := range report.NeedsMe.CandidateInboxes {
+		for _, warning := range inbox.Warnings {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("candidate_inbox %s: %s", inbox.Kind, warning))
+		}
+	}
+	report.Warnings = reviewartifact.Unique(report.Warnings)
 	if report.NeedsMe.ObservationReviews != nil {
 		report.DrillDown = append(report.DrillDown, report.NeedsMe.ObservationReviews.Commands...)
 	}
@@ -705,8 +714,10 @@ func buildOrientNeedsMeWithPendingStranger(homePath string, reviews reviewartifa
 			Kind:            string(kind),
 			Dir:             dir,
 			Count:           summary.Count,
+			CorruptCount:    summary.CorruptCount,
 			ActionableCount: summary.ActionableCount,
 			StateCounts:     summary.StateCounts,
+			Warnings:        summary.Warnings,
 		})
 		oldest = olderAgedItem(oldest, summary.Oldest)
 		oldestActionable = olderAgedItem(oldestActionable, summary.OldestActionable)
@@ -1491,8 +1502,10 @@ func buildOrientChanged(homePath string, report work.WorkbenchReport, currentSeq
 
 type orientCandidateInboxSummary struct {
 	Count            int
+	CorruptCount     int
 	ActionableCount  int
 	StateCounts      map[string]int
+	Warnings         []string
 	Oldest           *orientAgedItem
 	OldestActionable *orientAgedItem
 }
@@ -1516,31 +1529,40 @@ type candidateReadinessPayload struct {
 
 func candidateInboxSummary(homePath, dir, kind string, now time.Time) orientCandidateInboxSummary {
 	out := orientCandidateInboxSummary{StateCounts: map[string]int{}}
-	entries, err := os.ReadDir(filepath.Join(homePath, dir))
+	page, err := candidates.ReadPage(homePath, candidates.Kind(kind), "", 0)
 	if err != nil {
+		out.Warnings = append(out.Warnings, err.Error())
 		return out
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+	for _, entry := range page.Entries {
+		filename := string(entry.EntryCursor)
+		if entry.Corruption != nil {
+			out.CorruptCount++
+			out.Warnings = append(out.Warnings, entry.Corruption.Error())
+			continue
+		}
+		var payload candidateReadinessPayload
+		if err := json.Unmarshal(entry.Record.Body, &payload); err != nil {
+			out.CorruptCount++
+			out.Warnings = append(out.Warnings, fmt.Sprintf("candidate entry %q is corrupt: invalid_json (%v)", entry.EntryCursor, err))
 			continue
 		}
 		out.Count++
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
+		path := filepath.Join(dir, filename)
 		fullPath := filepath.Join(homePath, path)
-		state := candidateReadinessState(homePath, fullPath)
+		state := candidateReadinessStateFromRecord(homePath, fullPath, entry.Record.Body, payload, page, entry.EntryCursor)
 		out.StateCounts[state]++
 		actionable := candidateStateActionable(state)
 		if actionable {
 			out.ActionableCount++
 		}
-		at := info.ModTime()
+		at := entry.Record.ModifiedAt()
+		if at.IsZero() {
+			at = now
+		}
 		aged := &orientAgedItem{
 			Kind:       "candidate:" + kind,
-			ID:         strings.TrimSuffix(entry.Name(), ".json"),
+			ID:         entry.Record.ID,
 			Path:       filepath.ToSlash(path),
 			At:         at.UTC().Format(time.RFC3339),
 			AgeSeconds: ageSeconds(now, at),
@@ -1558,13 +1580,17 @@ func memoryCandidateInboxSummary(homePath string, now time.Time) orientCandidate
 	out := orientCandidateInboxSummary{StateCounts: map[string]int{}}
 	store, err := mem.Open(homePath)
 	if err != nil {
-		return candidateInboxSummary(homePath, candidates.InboxDir(candidates.Memory), string(candidates.Memory), now)
+		out.Warnings = append(out.Warnings, "memory candidate projection unavailable: "+err.Error())
+		return out
 	}
 	report, err := store.ListCandidates(now, mem.CandidateListOptions{})
 	if err != nil {
-		return candidateInboxSummary(homePath, candidates.InboxDir(candidates.Memory), string(candidates.Memory), now)
+		out.Warnings = append(out.Warnings, "memory candidate projection unavailable: "+err.Error())
+		return out
 	}
 	out.Count = report.Counts.Total
+	out.CorruptCount = report.Counts.Corrupt
+	out.Warnings = append(out.Warnings, report.Warnings...)
 	for state, count := range report.Counts.ByState {
 		out.StateCounts[state] = count
 		if candidateStateActionable(state) {
@@ -1572,7 +1598,7 @@ func memoryCandidateInboxSummary(homePath string, now time.Time) orientCandidate
 		}
 	}
 	for _, item := range report.Items {
-		aged := memoryCandidateAgedItem(homePath, item, now)
+		aged := memoryCandidateAgedItem(item, now)
 		out.Oldest = olderAgedItem(out.Oldest, aged)
 		if candidateStateActionable(item.State) {
 			out.OldestActionable = olderAgedItem(out.OldestActionable, aged)
@@ -1581,7 +1607,7 @@ func memoryCandidateInboxSummary(homePath string, now time.Time) orientCandidate
 	return out
 }
 
-func memoryCandidateAgedItem(homePath string, item mem.CandidateListItem, now time.Time) *orientAgedItem {
+func memoryCandidateAgedItem(item mem.CandidateListItem, now time.Time) *orientAgedItem {
 	path := filepath.Join(candidates.InboxDir(candidates.Memory), item.ID+".json")
 	var at time.Time
 	for _, raw := range []string{item.CreatedAt, item.ObservationDate} {
@@ -1591,8 +1617,8 @@ func memoryCandidateAgedItem(homePath string, item mem.CandidateListItem, now ti
 		}
 	}
 	if at.IsZero() {
-		if info, err := os.Stat(filepath.Join(homePath, path)); err == nil {
-			at = info.ModTime()
+		if parsed, ok := parseCompoundTime(item.ModifiedAt); ok {
+			at = parsed
 		}
 	}
 	if at.IsZero() {
@@ -1609,15 +1635,7 @@ func memoryCandidateAgedItem(homePath string, item mem.CandidateListItem, now ti
 	}
 }
 
-func candidateReadinessState(homePath, path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "unreadable"
-	}
-	var payload candidateReadinessPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return "unreadable"
-	}
+func candidateReadinessStateFromRecord(homePath, path string, data []byte, payload candidateReadinessPayload, page candidates.Page, current candidates.EntryCursor) string {
 	if verdict, ok := terminalCandidateVerdict(payload.Verdict); ok {
 		return verdict
 	}
@@ -1631,7 +1649,7 @@ func candidateReadinessState(homePath, path string) string {
 	if state == "" && payload.PromoteAllowed != nil && !*payload.PromoteAllowed {
 		state = candidates.NoPromote
 	}
-	if state == "" && consumedSkillSurfacingFeedback(path, data, payload) {
+	if state == "" && consumedSkillSurfacingFeedback(path, data, payload, page, current) {
 		state = candidates.NoPromote
 	}
 	if state == "" {
@@ -1691,7 +1709,7 @@ func candidateDetailValue(detail, key string) string {
 	return ""
 }
 
-func consumedSkillSurfacingFeedback(path string, data []byte, payload candidateReadinessPayload) bool {
+func consumedSkillSurfacingFeedback(path string, data []byte, payload candidateReadinessPayload, page candidates.Page, current candidates.EntryCursor) bool {
 	if strings.TrimSpace(payload.Generated) == "" || payload.Remaining == nil || *payload.Remaining != 0 {
 		return false
 	}
@@ -1701,25 +1719,17 @@ func consumedSkillSurfacingFeedback(path string, data []byte, payload candidateR
 	if len(payload.FalseTriggers) == 0 && len(payload.PerReceipt) == 0 {
 		return false
 	}
-	return hasSourceNoPromoteForSkillSurfacingReport(path, data)
+	return hasSourceNoPromoteForSkillSurfacingReport(path, data, page, current)
 }
 
-func hasSourceNoPromoteForSkillSurfacingReport(path string, data []byte) bool {
+func hasSourceNoPromoteForSkillSurfacingReport(path string, data []byte, page candidates.Page, current candidates.EntryCursor) bool {
 	sum := sha256.Sum256(data)
 	hash := hex.EncodeToString(sum[:])
 	hashRef := "skill_surfacing_misses:" + hash
 	shortSubject := "skill_surfacing_misses:" + hash[:12]
 	sourceRef := "source:" + path + "#sha256:" + hash
-	entries, err := os.ReadDir(filepath.Dir(path))
-	if err != nil {
-		return false
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" || entry.Name() == filepath.Base(path) {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(filepath.Dir(path), entry.Name()))
-		if err != nil {
+	for _, entry := range page.Entries {
+		if entry.EntryCursor == current || entry.Corruption != nil || entry.Record == nil {
 			continue
 		}
 		var candidate struct {
@@ -1729,7 +1739,7 @@ func hasSourceNoPromoteForSkillSurfacingReport(path string, data []byte) bool {
 			PromoteAllowed *bool    `json:"promote_allowed"`
 			EvidenceRefs   []string `json:"evidence_refs"`
 		}
-		if err := json.Unmarshal(data, &candidate); err != nil {
+		if err := json.Unmarshal(entry.Record.Body, &candidate); err != nil {
 			continue
 		}
 		if !candidateNoPromote(candidate.Verdict, candidate.PromoteAllowed) {
@@ -2158,6 +2168,13 @@ func printOrientOperatorReport(report orientOperatorReport) {
 		}
 	}
 	fmt.Println()
+	if len(report.Warnings) > 0 {
+		fmt.Println("WARNINGS")
+		for _, warning := range report.Warnings {
+			fmt.Println("- " + warning)
+		}
+		fmt.Println()
+	}
 	fmt.Println("DRILL-DOWN")
 	for _, drill := range report.DrillDown {
 		fmt.Printf("- %s: %s\n", drill.Label, strings.Join(drill.Command, " "))

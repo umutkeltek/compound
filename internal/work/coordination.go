@@ -112,6 +112,7 @@ func (s *Store) Coordination(now time.Time, opts CoordinationOptions) (Coordinat
 	if err != nil {
 		return CoordinationReport{}, err
 	}
+	report.Integrity = mergeUnique(report.Integrity, workbench.Integrity)
 	projection, err := s.ExecutorsProjection(now, ExecutorsProjectionOptions{Workbench: &workbench})
 	if err != nil {
 		return CoordinationReport{}, err

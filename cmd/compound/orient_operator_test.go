@@ -199,7 +199,15 @@ func TestOrientOperatorUsesMemoryCandidateAuthorityForNeedsMe(t *testing.T) {
 		t.Fatalf("write raw candidate: %v", err)
 	}
 	rawPath := filepath.Join(homePath, candidates.InboxDir(candidates.Memory), candID+".json")
-	if got := candidateReadinessState(homePath, rawPath); got != "proposed" {
+	rawData, err := os.ReadFile(rawPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rawPayload candidateReadinessPayload
+	if err := json.Unmarshal(rawData, &rawPayload); err != nil {
+		t.Fatal(err)
+	}
+	if got := rawPayload.State; got != "proposed" {
 		t.Fatalf("raw candidate state = %q, want proposed fixture proving raw file alone is misleading", got)
 	}
 
@@ -505,6 +513,7 @@ func TestOrientOperatorTreatsConsumedSurfacingFeedbackReportTerminal(t *testing.
 	}
 	reportID := "skill-surfacing-feedback-instruction-design"
 	reportPayload := map[string]any{
+		"id":             reportID,
 		"generated":      now.Add(-45 * time.Minute).Format(time.RFC3339),
 		"scanned":        1,
 		"skipped":        0,
@@ -560,6 +569,40 @@ func TestOrientOperatorTreatsConsumedSurfacingFeedbackReportTerminal(t *testing.
 	summary = candidateInboxSummary(homePath, candidates.InboxDir(candidates.CapabilityObs), string(candidates.CapabilityObs), now)
 	if summary.Count != 2 || summary.ActionableCount != 0 || summary.StateCounts[candidates.NoPromote] != 2 {
 		t.Fatalf("consumed feedback summary = %+v, want both report and source candidate terminal no_promote", summary)
+	}
+}
+
+func TestCandidateInboxSummaryNeverCountsCustodyCorruptionAsActionable(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 3, 9, 0, 0, 0, time.UTC)
+	valid := map[string]any{"id": "zz-valid", "state": "proposed", "created_at": now.Add(-time.Minute).Format(time.RFC3339)}
+	if err := candidates.WriteCandidate(homePath, candidates.Skill, "zz-valid", valid); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(homePath, candidates.InboxDir(candidates.Skill))
+	if err := os.WriteFile(filepath.Join(dir, "mismatch.json"), []byte(`{"id":"other","state":"proposed"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "linked.json")
+	if err := os.WriteFile(outside, []byte(`{"id":"linked","state":"proposed"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "linked.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scratch.tmp"), []byte("not a canonical candidate"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	summary := candidateInboxSummary(homePath, candidates.InboxDir(candidates.Skill), string(candidates.Skill), now)
+	if summary.Count != 1 || summary.CorruptCount != 3 || summary.ActionableCount != 1 || summary.OldestActionable == nil || summary.OldestActionable.ID != "zz-valid" {
+		t.Fatalf("corrupt custody became operator action: %+v", summary)
+	}
+	warnings := strings.Join(summary.Warnings, "\n")
+	for _, name := range []string{"linked.json", "mismatch.json", "scratch.tmp"} {
+		if !strings.Contains(warnings, name) {
+			t.Fatalf("summary warnings %q do not name corrupt entry %s", warnings, name)
+		}
 	}
 }
 
@@ -1362,6 +1405,49 @@ func TestOrientOperatorSurfacesMemoryReviewCardsFromHeldRunArtifacts(t *testing.
 		!strings.Contains(text, "candidate=cand_orient_conversation_review") ||
 		!strings.Contains(text, "promoted=0") {
 		t.Fatalf("orient text missing memory review card:\n%s", text)
+	}
+}
+
+func TestOrientOperatorSurfacesWorkbenchCandidateIntegrity(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 5, 2, 10, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := store.Create(work.CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "operator orient names corrupt candidate evidence",
+		State:            "held",
+	}, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(homePath, "runs", held.ID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeOrientJSONFixture(t, filepath.Join(runDir, "panel-run-corrupt.json"), map[string]any{
+		"id":          "prun_corrupt",
+		"status":      "applied",
+		"target_kind": "memory_candidate",
+		"targets":     []map[string]any{{"ref": "cand_bad/../escape"}},
+	})
+
+	report, err := buildOrientOperatorReport(homePath, 5, now, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnings := strings.Join(report.Warnings, "\n")
+	if !strings.Contains(warnings, held.ID+": memory candidate artifact corrupt") {
+		t.Fatalf("operator orient warnings dropped Workbench integrity: %v", report.Warnings)
+	}
+	text := captureStdout(t, func() { printOrientOperatorReport(report) })
+	if !strings.Contains(text, "WARNINGS") || !strings.Contains(text, "memory candidate artifact corrupt") {
+		t.Fatalf("operator orient text dropped candidate integrity:\n%s", text)
 	}
 }
 

@@ -110,7 +110,7 @@ func (s *Store) ReconcilePendingState(reconciledBy string, now time.Time) (Pendi
 
 // pendingInboxCensus counts the inbox in one bounded-memory walk: per file it
 // decodes only {"state"}, counting proposed entries. An absent inbox is an
-// empty census, not an error. files counts candidate JSON entries only;
+// empty census, not an error. files counts every candidate-root entry;
 // corrupt counts entries that would not decode; generation identifies the
 // sorted candidate name set so remove-one/add-one cannot masquerade as the
 // same corpus merely because the count stayed constant.
@@ -127,9 +127,6 @@ func (s *Store) pendingInboxCensus() (pending, files, corrupt int, generation st
 	var custodyErrors []error
 	for _, entry := range page.Entries {
 		name := string(entry.EntryCursor)
-		if !strings.HasSuffix(name, ".json") {
-			continue
-		}
 		names = append(names, name)
 		files++
 		if entry.Corruption != nil {
@@ -169,9 +166,6 @@ func (s *Store) candidateInboxMetadata() (names []string, generation string, new
 	var custodyErrors []error
 	for _, entry := range page.Entries {
 		name := string(entry.EntryCursor)
-		if !strings.HasSuffix(name, ".json") {
-			continue
-		}
 		names = append(names, name)
 		if entry.Corruption != nil {
 			custodyErrors = append(custodyErrors, entry.Corruption)

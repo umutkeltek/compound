@@ -1,10 +1,14 @@
 package contract
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/negatives"
 )
 
@@ -59,6 +63,43 @@ func TestPackWithCapabilitiesNegativesScopeMatchNotDump(t *testing.T) {
 	}
 	if len(packDisjoint.Negatives) != 0 {
 		t.Fatalf("expected ZERO negatives for disjoint task scope, got %+v", packDisjoint.Negatives)
+	}
+}
+
+func TestPackWithCapabilitiesNegativesExcludeCorruptionWithoutHidingValidSibling(t *testing.T) {
+	home := t.TempDir()
+	const validID = "fp_valid_sibling"
+	if err := candidates.WriteCandidate(home, candidates.FailurePattern, validID, map[string]any{
+		"id":         validID,
+		"subject":    "later-valid-negative",
+		"statement":  "the valid sibling remains visible after canonical custody excludes corruption",
+		"detail":     "later-valid-negative",
+		"confidence": 0.9,
+		"verdict":    candidates.Park,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inbox := filepath.Join(home, candidates.InboxDir(candidates.FailurePattern))
+	const corruptName = "operator-controlled-name.json"
+	if err := os.WriteFile(filepath.Join(inbox, corruptName), []byte(`{"id":"different-id"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	in := Input{Harness: "codex", Cwd: "/repo/x", Task: "review a later valid negative signal", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pack.Negatives) != 1 || pack.Negatives[0].Ref != "candidate://failure_pattern/"+validID {
+		t.Fatalf("valid sibling negative = %+v", pack.Negatives)
+	}
+	wantRef := negatives.ProjectionRef + "/source/" + negatives.SourceFailurePattern + "/" + string(candidates.CorruptionIDMismatch)
+	reason := exclusionReason(pack.Excluded, wantRef)
+	if !strings.Contains(reason, "excluded by canonical custody") {
+		t.Fatalf("negative corruption exclusion = %q in %+v", reason, pack.Excluded)
+	}
+	if strings.Contains(reason, corruptName) {
+		t.Fatalf("negative exclusion leaked operator-controlled filename: %q", reason)
 	}
 }
 
