@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"time"
@@ -898,6 +899,246 @@ func (s *Store) closePendingAuthorityStarted(pending closePending) (bool, error)
 	return false, nil
 }
 
+// refreshClosePendingAfterSweptClaim repairs one narrow pre-authority race:
+// a stale sweep may terminalize the frozen claim reservation after the close
+// frame is durable but before work.close prepares that reservation for
+// supersession. The swept record is already authoritative evidence and is
+// never rewritten. Instead, an exact retry may remove only that obsolete plan
+// and its digest from the still-unpublished close frame.
+//
+// This recovery is intentionally limited to the supported governed failure
+// path. Any close-owned terminalization intent, proof object, lifecycle event,
+// lease/work drift, second changed plan, or noncanonical sweep remains
+// recovery_required under the ordinary close path.
+func (s *Store) refreshClosePendingAfterSweptClaim(pending closePending) (closePending, error) {
+	if pending.Authority.Outcome != "failed" || pending.Authority.MoveType != "audit_only" || len(pending.RunAttempts) == 0 {
+		return pending, nil
+	}
+	if err := s.verifyClosePendingLease(pending, false); err != nil {
+		return pending, err
+	}
+
+	currentWork, err := s.Get(pending.WorkID)
+	if err != nil {
+		return pending, err
+	}
+	currentWorkSHA, err := workEnvelopeSHA256(currentWork)
+	if err != nil {
+		return pending, err
+	}
+	if currentWorkSHA != pending.SourceWorkSHA256 {
+		return pending, nil
+	}
+
+	events, err := s.eventsFor(pending.WorkID)
+	if err != nil {
+		return pending, err
+	}
+	for _, event := range events {
+		if sameCanonicalCloseJSON(event, pending.Event) || event.WorkSHA256 == pending.FinalWorkSHA256 ||
+			(event.PreviousWorkSHA256 == pending.SourceWorkSHA256 && terminalStates[event.To]) {
+			return pending, nil
+		}
+	}
+	for _, id := range []string{pending.Action.ID, pending.Decision.ID, pending.Receipt.ID, pending.Transition.ID} {
+		var record json.RawMessage
+		if err := s.readEventJSON(id, &record); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return pending, err
+		}
+		return pending, nil
+	}
+
+	store := s.runAttempts()
+	currentAttempts := make(map[string]runattempt.RunAttempt, len(pending.FinalWork.RunAttemptIDs))
+	for _, id := range dedupeStrings(pending.FinalWork.RunAttemptIDs) {
+		attempt, err := store.Get(id)
+		if err != nil {
+			return pending, err
+		}
+		if err := validateRunAttemptRecord(id, pending.FinalWork, attempt); err != nil {
+			return pending, err
+		}
+		currentAttempts[id] = attempt
+	}
+	history, err := buildAttachedRunAttemptHistory(pending.FinalWork.RunAttemptIDs, currentAttempts)
+	if err != nil {
+		return pending, err
+	}
+
+	changedIndex := -1
+	changedID := ""
+	for index, frozen := range pending.RunAttempts {
+		current, ok := currentAttempts[frozen.Attempt.ID]
+		if !ok {
+			return pending, nil
+		}
+		if frozen.Attempt.TerminalizationIntent != nil ||
+			frozen.Attempt.TerminalizationOwner != "" ||
+			frozen.Attempt.TerminalizationReceiptID != "" ||
+			frozen.Attempt.TerminalizationTransitionID != "" ||
+			frozen.Attempt.TerminalizationReason != "" ||
+			current.TerminalizationIntent != nil ||
+			current.TerminalizationOwner != "" ||
+			current.TerminalizationReceiptID != "" ||
+			current.TerminalizationTransitionID != "" ||
+			current.TerminalizationReason != "" {
+			return pending, nil
+		}
+		if reflect.DeepEqual(current, frozen.Attempt) {
+			continue
+		}
+		if changedIndex != -1 || !exactSweptClaimDelta(frozen, current) {
+			return pending, nil
+		}
+		changedIndex = index
+		changedID = frozen.Attempt.ID
+	}
+	if changedIndex == -1 {
+		return pending, nil
+	}
+
+	replacementOwnsFailure := false
+	for _, replacementID := range history.ReplacedClaimReservations[changedID] {
+		replacement := currentAttempts[replacementID]
+		if replacement.Origin != runattempt.OriginHarnessExecution ||
+			replacement.Status != runattempt.StatusFailed ||
+			!runAttemptOwnsHarnessOutcome(replacement) {
+			continue
+		}
+		if _, err := s.resolveRunAttemptAuthorityFromEvents(pending.SourceWork, replacement, events); err != nil {
+			continue
+		}
+		replacementOwnsFailure = true
+		break
+	}
+	if !replacementOwnsFailure {
+		return pending, nil
+	}
+
+	rebuilt := pending
+	rebuilt.RunAttempts = append([]closePendingRunAttempt(nil), pending.RunAttempts[:changedIndex]...)
+	rebuilt.RunAttempts = append(rebuilt.RunAttempts, pending.RunAttempts[changedIndex+1:]...)
+	rebuilt.Event.RunAttemptTerminalizationDigests = nil
+	removedDigests := 0
+	for _, digest := range pending.Event.RunAttemptTerminalizationDigests {
+		if digest.RunAttemptID == changedID {
+			removedDigests++
+			continue
+		}
+		rebuilt.Event.RunAttemptTerminalizationDigests = append(rebuilt.Event.RunAttemptTerminalizationDigests, digest)
+	}
+	if removedDigests != 1 {
+		return pending, nil
+	}
+	if err := sealClosePending(&rebuilt); err != nil {
+		return pending, err
+	}
+	if err := s.validateClosePending(rebuilt); err != nil {
+		return pending, err
+	}
+	if err := s.replaceClosePendingExact(pending, rebuilt); err != nil {
+		return pending, closeRecoveryRequired("refresh swept claim in work %s close frame: %v", pending.WorkID, err)
+	}
+	return rebuilt, nil
+}
+
+func exactSweptClaimDelta(frozen closePendingRunAttempt, current runattempt.RunAttempt) bool {
+	if frozen.Attempt.Origin != runattempt.OriginClaimReservation ||
+		runattempt.IsTerminal(frozen.Attempt.Status) ||
+		frozen.ExpectedStatus != frozen.Attempt.Status ||
+		!runAttemptSweptSideEffectFreeReservation(current) {
+		return false
+	}
+	normalized := current
+	normalized.Status = frozen.Attempt.Status
+	normalized.CompletedAt = frozen.Attempt.CompletedAt
+	normalized.SweepReason = frozen.Attempt.SweepReason
+	normalized.SweepClassification = frozen.Attempt.SweepClassification
+	return reflect.DeepEqual(normalized, frozen.Attempt)
+}
+
+// replaceClosePendingExact publishes a re-sealed frame only when the rooted
+// canonical entry still matches the exact frozen preimage. RootedFileCAS keeps
+// both complete versions when publication durability becomes ambiguous.
+func (s *Store) replaceClosePendingExact(before, after closePending) error {
+	path := s.closePendingPath(before.WorkID)
+	expectedBody, err := canonicalCloseJSON(&before)
+	if err != nil {
+		return err
+	}
+	actualBody, err := home.ReadRootedRegularFile(s.home, path, "work close pending")
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(actualBody, expectedBody) {
+		return errors.New("close frame changed before swept-claim refresh")
+	}
+	expectedInfo, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if expectedInfo.Mode()&os.ModeSymlink != 0 || !expectedInfo.Mode().IsRegular() {
+		return errors.New("close frame is not a regular file")
+	}
+
+	stagedPath, err := s.stageJSON(path, &after)
+	if err != nil {
+		return err
+	}
+	cleanupStaged := func(cause error) error {
+		if _, statErr := os.Lstat(stagedPath); statErr == nil {
+			return errors.Join(cause, removeFileAndSyncDir(stagedPath))
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return errors.Join(cause, statErr)
+		}
+		return cause
+	}
+	replacementBody, err := canonicalCloseJSON(&after)
+	if err != nil {
+		return cleanupStaged(err)
+	}
+	replacementInfo, err := os.Lstat(stagedPath)
+	if err != nil {
+		return cleanupStaged(err)
+	}
+
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return cleanupStaged(err)
+	}
+	defer root.Close()
+	publication, err := home.BeginRootedFileCAS(
+		root,
+		filepath.Base(path),
+		filepath.Base(stagedPath),
+		expectedBody,
+		expectedInfo,
+		replacementBody,
+		replacementInfo,
+	)
+	if err != nil {
+		if publication == nil || publication.State() == home.RootedFileCASNotPublished {
+			return cleanupStaged(err)
+		}
+		return err
+	}
+	if err := publication.Commit(); err != nil {
+		return err
+	}
+
+	stored, present, err := s.loadClosePending(before.WorkID)
+	if err != nil {
+		return err
+	}
+	if !present || !reflect.DeepEqual(stored, after) {
+		return errors.New("refreshed close frame does not match sealed replacement")
+	}
+	return nil
+}
+
 func (s *Store) failClosePendingBeforeAuthority(pending closePending, cause error) error {
 	started, err := s.closePendingAuthorityStarted(pending)
 	if err != nil {
@@ -952,6 +1193,12 @@ func (s *Store) completeClosePending(pending closePending, in CloseInput, now ti
 	}
 	if err := s.verifyClosePendingLease(pending, currentIsFinal); err != nil {
 		return res, err
+	}
+	if !currentIsFinal {
+		pending, err = s.refreshClosePendingAfterSweptClaim(pending)
+		if err != nil {
+			return res, err
+		}
 	}
 
 	var referenceTransaction gitReferenceTransaction
