@@ -797,3 +797,51 @@ func TestRunnerTimeoutKillsProcessGroup(t *testing.T) {
 		t.Fatalf("process group was not killed: elapsed = %v (an orphaned grandchild held the pipes open)", elapsed)
 	}
 }
+
+// TestRunnerTimeoutSurvivesEarlyPipeClose pins the liveness half of timeout
+// ownership: draining capture must NOT disarm the kill timer.
+//
+// The child closes stdout and stderr immediately and then lingers. Both
+// capture goroutines EOF and return within milliseconds, so a runner that
+// closes stopCh (cancelling the timeout) before cmd.Wait has handed the
+// child unbounded life -- Wait blocks until the process exits on its own,
+// with no remaining authority to kill it. A governed executor that can be
+// made to outlive its timeout by closing two file descriptors is not
+// governed, so the timer must stay armed until the process is actually
+// reaped.
+func TestRunnerTimeoutSurvivesEarlyPipeClose(t *testing.T) {
+	home := t.TempDir()
+	store := runattempt.Open(home)
+	// Deliberately build without a context, same as the sibling timeout
+	// tests: the runner owns the kill, not exec.CommandContext.
+	naiveBuild := func(_ context.Context, in RunInput) *exec.Cmd {
+		return exec.Command(in.Command, in.Args...)
+	}
+	start := time.Now()
+	out, err := runWithSubprocess(context.Background(), store, "pipeclose",
+		RunInput{
+			WorkID:    "work_timeout_pipe_close",
+			Harness:   "pipeclose",
+			Workspace: home,
+			Command:   "sh",
+			// Close fd 1 and fd 2, then linger far past the timeout.
+			Args:    []string{"-c", "exec 1>&- 2>&-; sleep 45"},
+			Timeout: 300 * time.Millisecond,
+			Now:     time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC),
+		}, naiveBuild, defaultHeartbeatInterval)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("timeout must NOT surface as a Run-level error: %v", err)
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("runner outlived its timeout: elapsed = %v, want < 10s "+
+			"(child closed stdout/stderr, so capture drained early and the "+
+			"kill timer was disarmed before cmd.Wait)", elapsed)
+	}
+	if !out.TimedOut {
+		t.Fatalf("out.TimedOut = false, want true (child lingered past Timeout)")
+	}
+	if out.RunAttempt.Status != runattempt.StatusFailed {
+		t.Fatalf("status = %q, want failed", out.RunAttempt.Status)
+	}
+}

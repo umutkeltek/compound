@@ -263,6 +263,13 @@ func runWithSubprocess(
 	// re-hangs capWG.Wait with fresh heartbeats that hide the stall from
 	// SweepStale. The timer also selects on stopCh so a process that exits
 	// on its own never gets a spurious kill.
+	// reapMu/reaped make "kill the tree" and "reap the child" mutually
+	// exclusive. Timeout authority now outlives capture (see cmd.Wait below),
+	// so without this guard the timer could fire after cmd.Wait released the
+	// pid and SIGKILL a recycled pgid -- killing an unrelated process is a
+	// worse failure than the hang this ordering fixes.
+	var reapMu sync.Mutex
+	reaped := false
 	var timedOut atomic.Bool
 	if in.Timeout > 0 {
 		go func() {
@@ -270,6 +277,11 @@ func runWithSubprocess(
 			defer t.Stop()
 			select {
 			case <-t.C:
+				reapMu.Lock()
+				defer reapMu.Unlock()
+				if reaped {
+					return // already exited and reaped; the pid is not ours
+				}
 				timedOut.Store(true)
 				killProcessTree(cmd)
 			case <-stopCh:
@@ -283,9 +295,23 @@ func runWithSubprocess(
 	// BEFORE cmd.Wait honors the exec package's "all reads complete before
 	// Wait" contract for StdoutPipe/StderrPipe.
 	capWG.Wait()
+	// cmd.Wait BEFORE close(stopCh): draining capture must not disarm the
+	// kill timer. Capture returning only proves the pipes EOF'd, which a
+	// child can cause at will with `exec 1>&- 2>&-` while it keeps running.
+	// Closing stopCh here would cancel the timer and leave cmd.Wait blocking
+	// with no remaining authority to kill anything -- two closed file
+	// descriptors would buy a subprocess unbounded life inside a governed
+	// run. Timeout authority therefore lives until the process is actually
+	// reaped; the timer's stopCh select still prevents a spurious kill on a
+	// process that exited on its own.
+	waitErr := cmd.Wait()
+	// Mark the pid reaped before cancelling the timer, so a timer that fires
+	// in this window observes reaped and declines to signal a freed pgid.
+	reapMu.Lock()
+	reaped = true
+	reapMu.Unlock()
 	close(stopCh) // stops BOTH the heartbeat loop and the timeout timer
 	hbWG.Wait()
-	waitErr := cmd.Wait()
 	if err := tw.Flush(); err != nil {
 		// A failed flush loses buffered transcript lines but is not fatal --
 		// the run still produced a result. Surface it on the transcript ref
