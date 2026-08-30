@@ -1,8 +1,8 @@
 {
   "schema_version": "compound.release_issues.v0.1",
-  "base_sha": "e5ecfd350e07286c8022b2efe5f86b8b9a7b2d3f",
+  "base_sha": "8b2b4815e1b65e2d60f5a330128e620b8ef16104",
   "branch": "release/harden-20260829",
-  "updated_at": "2026-08-30T02:30:16Z",
+  "updated_at": "2026-08-30T03:57:31Z",
   "issues": [
     {
       "id": "REL-P0-001",
@@ -178,20 +178,33 @@
       "severity": "P0",
       "subsystem": "governed-execution",
       "title": "Swept claim reservation strands governed execution failure finalization",
-      "status": "reproduced",
+      "status": "focused_green",
       "reproducer": "Claim a work, allow its side-effect-free claim-reservation RunAttempt to be swept, then run a failing work advance --execute; automatic failed close rejects the abandoned claim attempt and leaves the work running.",
-      "root_cause": "Provisional: the claim-reservation RunAttempt is independently sweepable, but failure finalization later treats that abandoned reservation as outcome evidence while the actual harness RunAttempt remains reverse-linked.",
+      "root_cause": "A swept claim reservation is already terminal abandoned, so attach-time supersession cannot rewrite it. Close and ProofChainDoctor treated replacement history as outcome-neutral only for completed work; a later failed harness result therefore hit abandoned-versus-failed rejection before terminal publication. The replacement relation also needed exact result-ownership evidence: committed launch or rooted prepared+start_error, never origin alone.",
       "invariant": "Every governed execution failure forward-links its actual RunAttempt and closes failed/audit_only even when an earlier side-effect-free claim reservation was swept.",
-      "red_test": "TestWorkAdvanceExecuteFailureAfterSweptClaimReservationClosesFailed",
-      "fix_commits": [],
-      "focused_tests": [],
+      "red_test": "At production base c73ac31ee3bf24954942b3732b803bc2d5028854, TestWorkAdvanceExecuteFailureAfterSweptClaimReservationClosesFailed failed with terminal swept claim status abandoned contradicts close outcome failed; the start_error variant failed under the former executed-only replacement rule; the origin-only negative caught and rejected an over-broad intermediate fix at 871e7441.",
+      "fix_commits": [
+        "871e7441eb757a9b778c81fdc61de8550e17cf25",
+        "c7af2fb028dd052b5b09b2ead57c820325d1f234"
+      ],
+      "focused_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test -count=1 ./cmd/compound -run '^(TestWorkAdvanceExecuteFailureAfterSweptClaimReservationClosesFailed|TestWorkAdvanceExecuteStartErrorAfterSweptClaimReservationClosesFailed)$' (pass, 3.544s)",
+        "GOTOOLCHAIN=go1.26.4 go test -race -count=1 ./cmd/compound -run '^(TestWorkAdvanceExecuteFailureAfterSweptClaimReservationClosesFailed|TestWorkAdvanceExecuteStartErrorAfterSweptClaimReservationClosesFailed)$' (pass, 5.884s)",
+        "GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/work -run '^(TestClose|TestRunAttempt|TestSupersededReservation)' (pass, 66.549s)",
+        "GOTOOLCHAIN=go1.26.4 go test -race -count=1 ./internal/work -run '^(TestRunAttemptOwnsHarnessOutcomeRequiresExecutedOrExactStartError|TestCloseCompletedRejectsOriginOnlyHarnessAsClaimReplacement|TestCloseFailedRejectsSweptSideEffectFreeReservation)$' (pass, 2.973s)",
+        "GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/work -run '^TestProofChain(Doctor|ForWork)' (pass, 22.112s)",
+        "GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/actuator (pass, 5.624s)",
+        "GOTOOLCHAIN=go1.26.4 go vet ./internal/work ./internal/actuator ./cmd/compound (pass)",
+        "git diff --check (pass)"
+      ],
       "broad_tests": [],
       "evidence_paths": [
-        "release-evidence/runs/20260829-claim-reservation-sweep-repro.json"
+        "release-evidence/runs/20260829-claim-reservation-sweep-repro.json",
+        "release-evidence/runs/20260830-p0-007-governed-finalization-green.json"
       ],
-      "residual_risk": "A supported failing execution can remain running until an actor discovers the reverse-linked attempt and manually acknowledges the abandoned reservation.",
+      "residual_risk": "Pre-swept committed-failure, exact start_error, origin-only negative, proof projection, retry idempotency, race, and governed campaign execution are green. The distinct post-freeze sweep interleaving is reproduced and tracked as REL-P0-009; canonical broad proof remains blocked by REL-P0-008.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-29T13:15:00Z"
+      "updated_at": "2026-08-30T03:48:09Z"
     },
     {
       "id": "REL-P0-008",
@@ -217,6 +230,28 @@
       "residual_risk": "Canonical go test ./... and proof-check cannot certify the candidate. Raising timeouts or stubbing durability would weaken proof and is forbidden.",
       "owner": "orchestrator:codex:release-harden-20260829",
       "updated_at": "2026-08-30T00:11:20Z"
+    },
+    {
+      "id": "REL-P0-009",
+      "severity": "P0",
+      "subsystem": "governed-execution",
+      "title": "Close freeze and RunAttempt sweep race wedges failure finalization",
+      "status": "reproduced",
+      "reproducer": "Deterministically invoke RunAttempt SweepStale from prepareRunAttemptTerminalization after close-pending freezes a pending claim reservation but before terminalization preparation; FinalizeGovernedHarnessRun returns recovery_required and exact retries never converge.",
+      "root_cause": "Close freezes a pending RunAttempt snapshot in its durable close-pending frame, but sweep owns a separate per-attempt terminalization path outside the lifecycle mutation boundary. If sweep wins before prepare, recovery insists on preparing the stale pending snapshot against an already-terminal abandoned record, while the terminal-work reconciler is unavailable because the WorkEnvelope never became terminal.",
+      "invariant": "Once close freezes a generation, a concurrent side-effect-free sweep cannot strand governed failure finalization; the same frozen close must either commit or expose an idempotent reconciler that converges.",
+      "red_test": "TestGovernedFailureFinalizationConvergesWhenSweepWinsBeforePrepare",
+      "fix_commits": [],
+      "focused_tests": [
+        "Disposable reproducer and -race variant deterministically assert the non-converging wedge at d7f77a3e."
+      ],
+      "broad_tests": [],
+      "evidence_paths": [
+        "release-evidence/runs/20260830-p0-009-sweep-close-freeze-repro.json"
+      ],
+      "residual_risk": "A supported governed failure can remain running with durable close-pending and a reverse-linked actual execution even though every exact retry is refused. Manual acknowledgement is not an acceptable release path.",
+      "owner": "orchestrator:codex:release-harden-20260829",
+      "updated_at": "2026-08-30T03:57:31Z"
     },
     {
       "id": "REL-P1-001",
@@ -462,6 +497,26 @@
       "residual_risk": "Explicitly outside the supported v0.1 contract behind --experimental-delegate-mutations. Consequence is limited to operators who opt into the experimental path; post-release milestone is v0.2 delegated-execution recovery hardening.",
       "owner": "orchestrator:codex:release-harden-20260829",
       "updated_at": "2026-08-30T00:11:20Z"
+    },
+    {
+      "id": "REL-P1-014",
+      "severity": "P1",
+      "subsystem": "work-proof-chain",
+      "title": "Target-scoped proof chain omits RunAttempt validation",
+      "status": "reproduced",
+      "reproducer": "GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/work -run '^TestProofChainForWorkRejectsMissingRunAttempt$' -v",
+      "root_cause": "ProofChainForWork calls proofChainItem and marks a problem-free item complete without calling checkRunAttemptProof. Commit a329dad7 added the RunAttempt proof dimension only to the whole-ledger ProofChainDoctor, so target-scoped consumers retain the pre-v0.2 behavior.",
+      "invariant": "Every target-scoped terminal proof applies the same canonical RunAttempt identity, work/action linkage, terminal status/outcome, retry-lineage, and exact terminalization checks as the whole-ledger doctor while reading only the requested work and its referenced evidence.",
+      "red_test": "TestProofChainForWorkRejectsMissingRunAttempt",
+      "fix_commits": [],
+      "focused_tests": [],
+      "broad_tests": [],
+      "evidence_paths": [
+        "release-evidence/runs/20260830-p1-014-target-proof-runattempt-repro.json"
+      ],
+      "residual_risk": "Until fixed, authority worktree-retire can plan and revalidate an operator-reviewed Git mutation from a false-green source proof whose referenced RunAttempt is missing, unreadable, invalid, cross-work/action, nonterminal, outcome-inconsistent, or terminalization-mismatched. Legacy OS-absorption work-packet auto-proof can likewise false-green, but that consumer is explicitly experimental/private. The supported v0.1 core work journey and whole-ledger proof-chain doctor are not affected.",
+      "owner": "orchestrator:codex:release-harden-20260829",
+      "updated_at": "2026-08-30T03:55:24Z"
     },
     {
       "id": "REL-P2-001",
