@@ -158,6 +158,38 @@ func TestFirstPartyCommandAdmissionDistinguishesMutatingSubcommands(t *testing.T
 			command:       "compound contract import-hooks --codex-hooks-json hooks.json",
 			wantOperation: "governed_command",
 		},
+		{
+			command:       "compound lanebeliefs fold",
+			wantOperation: "local_command",
+		},
+		{
+			command:       "compound lanebeliefs fold --dry-run",
+			wantOperation: "local_command",
+		},
+		{
+			command:       "compound lanebeliefs fold --experimental",
+			wantOperation: "governed_command",
+		},
+		{
+			command:       "compound lanebeliefs promote",
+			wantOperation: "local_command",
+		},
+		{
+			command:       "compound lanebeliefs promote --experimental",
+			wantOperation: "governed_command",
+		},
+		{
+			command:       "compound lanebeliefs cool",
+			wantOperation: "local_command",
+		},
+		{
+			command:       "compound lanebeliefs cool --experimental",
+			wantOperation: "governed_command",
+		},
+		{
+			command:       "compound lanebeliefs list",
+			wantOperation: "local_command",
+		},
 	}
 
 	for _, tc := range tests {

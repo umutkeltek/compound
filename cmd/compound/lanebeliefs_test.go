@@ -18,21 +18,17 @@ import (
 )
 
 func TestCmdLaneBeliefsMutationRequiresExperimentalBeforeHomeAdmission(t *testing.T) {
-	const childKey = "COMPOUND_LANE_BELIEF_GATE_CHILD"
-	const homeKey = "COMPOUND_LANE_BELIEF_GATE_HOME"
-	if os.Getenv(childKey) == "1" {
-		cmdLaneBeliefs([]string{"fold", "--home", os.Getenv(homeKey)})
-		return
-	}
-
+	t.Parallel()
+	binary := compoundTestBinary(t)
 	root := t.TempDir()
 	homePath := filepath.Join(root, "absent-home")
-	cmd := exec.Command(os.Args[0], "-test.run=^TestCmdLaneBeliefsMutationRequiresExperimentalBeforeHomeAdmission$")
-	cmd.Env = append(os.Environ(), childKey+"=1", homeKey+"="+homePath)
+	cmd := exec.Command(binary, "lanebeliefs", "fold")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
 	output, err := cmd.CombinedOutput()
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 || !strings.Contains(string(output), "--experimental") {
-		t.Fatalf("lane-belief mutation refusal = err=%v output=%q, want exit 2 naming --experimental", err, output)
+		t.Fatalf("lane-belief mutation refusal = err=%v output=%q, want binary exit 2 naming --experimental", err, output)
 	}
 	if _, statErr := os.Stat(homePath); !os.IsNotExist(statErr) {
 		t.Fatalf("lane-belief refusal created runtime home: %v", statErr)
