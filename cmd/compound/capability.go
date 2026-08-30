@@ -1250,30 +1250,7 @@ func cmdCapability(args []string) {
 			printJSON(proj)
 			return
 		}
-		fmt.Println("# capability usage")
-		fmt.Printf("- projection: %s\n", path)
-		if proj.Since != "" {
-			fmt.Printf("- since: %s\n", proj.Since)
-		}
-		fmt.Printf("- receipts_scanned: %d (in_window %d)\n", proj.ReceiptsScanned, proj.ReceiptsInWindow)
-		fmt.Printf("- context_packs_scanned: %d\n", proj.ContextPacksScanned)
-		fmt.Printf("- capabilities: %d  injected_refs: %d\n", len(proj.Capabilities), len(proj.InjectedRefs))
-		fmt.Println()
-		fmt.Println("## top ignored (injected, never used)")
-		if len(proj.Summary.TopIgnored) == 0 {
-			fmt.Println("- (none)")
-		}
-		for _, e := range proj.Summary.TopIgnored {
-			fmt.Printf("- %s  ignored=%d\n", e.Ref, e.Count)
-		}
-		fmt.Println()
-		fmt.Println("## never fired (offered, never used)")
-		if len(proj.Summary.NeverFired) == 0 {
-			fmt.Println("- (none)")
-		}
-		for _, e := range proj.Summary.NeverFired {
-			fmt.Printf("- %s  offered=%d\n", e.Ref, e.Count)
-		}
+		die(capgraph.WriteCapabilityUsageReport(os.Stdout, path, proj, top))
 	case "list":
 		// "What exists" was already answered here. "What can I actually use,
 		// from THIS harness, right now" was not -- and that second question is

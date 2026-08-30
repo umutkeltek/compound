@@ -653,7 +653,7 @@ func TestHeader_HostBindingsOptionalAndWellFormed(t *testing.T) {
 	withHost := hdr(SVWork, "work_with_host")
 	withHost.Host = &HostBindings{
 		HostID:   "2e6424e0-e1d8-40b9-abf5-af5454502fb0",
-		Hostname: "macstudio.local",
+		Hostname: "fixture-host.example",
 		DeviceID: "aw-watcher-window",
 	}
 	if err := validateHeader(withHost); err != nil {
@@ -792,5 +792,53 @@ func TestContextPackValidateChecksPresentSections(t *testing.T) {
 				t.Fatalf("Validate() = %v, want an error naming %s", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestHookEventCapabilityUseValidation(t *testing.T) {
+	valid := HookEvent{
+		Header:      hdr(SVHookEvent, "hook_skill_use"),
+		Harness:     "claude_code",
+		HookName:    "PostToolUse",
+		SideEffects: []string{"Skill"},
+		Status:      "ok",
+		CapabilityUse: &CapabilityUse{
+			Ref:     "capability://skill:diagnosing-bugs",
+			Skill:   "diagnosing-bugs",
+			Trigger: "fix flaky regression",
+			Lane:    "claude_code",
+			Outcome: "used",
+		},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid capability use rejected: %v", err)
+	}
+
+	wrongHook := valid
+	wrongHook.HookName = "SessionStart"
+	if err := wrongHook.Validate(); err == nil || !strings.Contains(err.Error(), "PostToolUse") {
+		t.Fatalf("capability use on non-PostToolUse hook must reject, got %v", err)
+	}
+	mismatched := valid
+	mismatchUse := *valid.CapabilityUse
+	mismatchUse.Ref = "capability://skill:tdd"
+	mismatched.CapabilityUse = &mismatchUse
+	if err := mismatched.Validate(); err == nil || !strings.Contains(err.Error(), "capability_use.ref") {
+		t.Fatalf("mismatched skill ref must reject, got %v", err)
+	}
+	malformed := valid
+	malformedUse := *valid.CapabilityUse
+	malformedUse.Skill = "../private"
+	malformedUse.Ref = "capability://skill:../private"
+	malformed.CapabilityUse = &malformedUse
+	if err := malformed.Validate(); err == nil || !strings.Contains(err.Error(), "skill identifier") {
+		t.Fatalf("path-like skill identity must reject, got %v", err)
+	}
+	oversized := valid
+	oversizedUse := *valid.CapabilityUse
+	oversizedUse.Trigger = strings.Repeat("x", 513)
+	oversized.CapabilityUse = &oversizedUse
+	if err := oversized.Validate(); err == nil || !strings.Contains(err.Error(), "512 bytes") {
+		t.Fatalf("oversized trigger must reject, got %v", err)
 	}
 }

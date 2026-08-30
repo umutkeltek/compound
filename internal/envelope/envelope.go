@@ -146,6 +146,10 @@ var nextConsumerRe = regexp.MustCompile(`^[a-z][a-z0-9_.:/-]{0,63}$`)
 // grammar mirrors the runtime trace sanitizer.
 var retrievalEngineIdentityRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
+// capabilitySkillRe is the native Skill tool's bounded identity grammar.
+// It excludes paths, URIs, whitespace, and provider payloads.
+var capabilitySkillRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
+
 // branchSlugRe: an opens_branches branch is a single machine slug (no path
 // separators, no prose) — it names a future-branch handle other transitions
 // cover by exact slug match.
@@ -1278,6 +1282,16 @@ func (e *PolicyDecision) Validate() error {
 	return v.result(e.Kind())
 }
 
+// CapabilityUse is the bounded, normalized fact emitted when a native Skill
+// tool completes. Raw tool input and output never enter the envelope.
+type CapabilityUse struct {
+	Ref     string `json:"ref"`
+	Skill   string `json:"skill"`
+	Trigger string `json:"trigger,omitempty"`
+	Lane    string `json:"lane,omitempty"`
+	Outcome string `json:"outcome"`
+}
+
 type HookEvent struct {
 	Header
 	Harness        string   `json:"harness"`
@@ -1303,10 +1317,11 @@ type HookEvent struct {
 	// Budget watchdog responses state policy intent separately from what the
 	// harness actually observes. These are optional because ordinary events
 	// and pre-budget envelopes predate the distinction.
-	PolicyPosture       string `json:"policy_posture,omitempty"`
-	EffectiveOutcome    string `json:"effective_outcome,omitempty"`
-	HarnessExitBehavior string `json:"harness_exit_behavior,omitempty"`
-	EvidencePersistence string `json:"evidence_persistence,omitempty"`
+	PolicyPosture       string         `json:"policy_posture,omitempty"`
+	EffectiveOutcome    string         `json:"effective_outcome,omitempty"`
+	HarnessExitBehavior string         `json:"harness_exit_behavior,omitempty"`
+	EvidencePersistence string         `json:"evidence_persistence,omitempty"`
+	CapabilityUse       *CapabilityUse `json:"capability_use,omitempty"`
 }
 
 // The meanings of Status=="fail_open". See HookEvent.FailOpenReason.
@@ -1346,6 +1361,23 @@ func (e *HookEvent) Validate() error {
 	v.enum("effective_outcome", e.EffectiveOutcome, []string{"allow", "block"}, false)
 	v.enum("harness_exit_behavior", e.HarnessExitBehavior, []string{"exit_0", "exit_4"}, false)
 	v.enum("evidence_persistence", e.EvidencePersistence, []string{"not_persisted_watchdog_response", "persisted"}, false)
+	if e.CapabilityUse != nil {
+		v.req("capability_use.ref", e.CapabilityUse.Ref)
+		v.req("capability_use.skill", e.CapabilityUse.Skill)
+		if !capabilitySkillRe.MatchString(e.CapabilityUse.Skill) {
+			v.addf("capability_use.skill must be a 1-128 character lowercase skill identifier")
+		}
+		v.enum("capability_use.outcome", e.CapabilityUse.Outcome, []string{"used"}, true)
+		if e.HookName != "PostToolUse" {
+			v.addf("capability_use requires hook_name=PostToolUse")
+		}
+		if e.CapabilityUse.Ref != "capability://skill:"+e.CapabilityUse.Skill {
+			v.addf("capability_use.ref must equal capability://skill:<skill>")
+		}
+		if len(e.CapabilityUse.Trigger) > 512 {
+			v.addf("capability_use.trigger exceeds 512 bytes")
+		}
+	}
 	return v.result(e.Kind())
 }
 

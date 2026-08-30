@@ -112,6 +112,26 @@ func refreshDerivedCaches(homePath string, live bool, now time.Time) []string {
 	return refs
 }
 
+// refreshPostToolCaches runs only after the HookEvent is durable, so a Skill use
+// can reach capability-usage before the same hook invocation returns. Ordinary
+// tool calls keep the six-hour maintenance cadence.
+func refreshPostToolCaches(homePath string, live, forceUsage bool, now time.Time) {
+	refs := refreshDerivedCaches(homePath, live, now)
+	if !live || !forceUsage || strings.TrimSpace(homePath) == "" {
+		return
+	}
+	for _, ref := range refs {
+		if ref == capgraph.CapabilityUsageProjectionRef {
+			return
+		}
+	}
+	usage, err := capgraph.BuildCapabilityUsage(homePath, capgraph.UsageBuildOptions{GeneratedAt: now})
+	if err != nil {
+		return
+	}
+	_, _ = capgraph.WriteCapabilityUsage(homePath, usage)
+}
+
 // derivedCachesNeedRefresh reports whether either stage is older than the window, OR
 // predates the binary now running.
 //

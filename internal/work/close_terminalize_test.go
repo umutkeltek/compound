@@ -873,12 +873,168 @@ func TestRunAttemptPolicyRefusedBeforeExecutionExactShape(t *testing.T) {
 	}
 }
 
-// TestCloseBindsPolicyRefusedBeforeExecutionAuthority is the store-level
-// falsifier for the lived close wedge: a close must bind a refusing pair
-// whose attempt was abandoned before execution, not wedge on it.
-func TestCloseBindsPolicyRefusedBeforeExecutionAuthority(t *testing.T) {
+func sweptClaimReservationForClose(t *testing.T, s *Store, at time.Time) (string, runattempt.RunAttempt) {
+	t.Helper()
+	workID, rattIDs := closeTerminalizeWork(t, s, "close-swept-reservation", at)
+	if len(rattIDs) != 1 {
+		t.Fatalf("claim RunAttempt count = %d, want 1", len(rattIDs))
+	}
+	attempts := runattempt.Open(s.home)
+	report, err := attempts.SweepStale(30*time.Minute, at.Add(12*time.Hour))
+	if err != nil {
+		t.Fatalf("sweep claim reservation: %v", err)
+	}
+	if report.AutoClosed != 1 || len(report.AutoClosedIDs) != 1 || report.AutoClosedIDs[0] != rattIDs[0] {
+		t.Fatalf("sweep report = %+v, want one auto-closed claim reservation", report)
+	}
+	ra, err := attempts.Get(rattIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return workID, ra
+}
+
+func TestRunAttemptSweptSideEffectFreeReservationExactShape(t *testing.T) {
+	prepared := fixedNow.Add(time.Minute)
+	exact := func(mutate func(*runattempt.RunAttempt)) runattempt.RunAttempt {
+		ra := runattempt.RunAttempt{
+			ID:                  "ratt_swept_reservation",
+			Status:              runattempt.StatusAbandoned,
+			Origin:              runattempt.OriginClaimReservation,
+			CreatedAt:           fixedNow,
+			CompletedAt:         fixedNow.Add(12 * time.Hour),
+			SweepReason:         "stale: side_effect_free — no activity for 12h0m0s (threshold 30m0s)",
+			SweepClassification: runattempt.SweepClassificationSideEffectFree,
+		}
+		if mutate != nil {
+			mutate(&ra)
+		}
+		return ra
+	}
+	tests := []struct {
+		name string
+		ra   runattempt.RunAttempt
+		want bool
+	}{
+		{name: "exact swept reservation", ra: exact(nil), want: true},
+		{name: "ambiguous classification", ra: exact(func(ra *runattempt.RunAttempt) { ra.SweepClassification = runattempt.SweepClassificationAmbiguous })},
+		{name: "forged reason", ra: exact(func(ra *runattempt.RunAttempt) { ra.SweepReason = "manual side_effect_free" })},
+		{name: "harness origin", ra: exact(func(ra *runattempt.RunAttempt) { ra.Origin = runattempt.OriginHarnessExecution })},
+		{name: "nonterminal", ra: exact(func(ra *runattempt.RunAttempt) { ra.Status = runattempt.StatusRunning })},
+		{name: "zero completion", ra: exact(func(ra *runattempt.RunAttempt) { ra.CompletedAt = time.Time{} })},
+		{name: "completion at mint", ra: exact(func(ra *runattempt.RunAttempt) { ra.CompletedAt = ra.CreatedAt })},
+		{name: "launch evidence", ra: exact(func(ra *runattempt.RunAttempt) { ra.Launch = &runattempt.LaunchLifecycle{PreparedAt: &prepared} })},
+		{name: "artifact evidence", ra: exact(func(ra *runattempt.RunAttempt) { ra.TranscriptRef = "artifact:transcript" })},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := runAttemptSweptSideEffectFreeReservation(tt.ra); got != tt.want {
+				t.Fatalf("runAttemptSweptSideEffectFreeReservation() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCloseCompletedAcceptsSweptSideEffectFreeReservation(t *testing.T) {
 	s := newStore(t)
-	workID, _ := closeTerminalizeWorkClaimed(t, s, "close-refused-before-exec", fixedNow)
+	workID, swept := sweptClaimReservationForClose(t, s, fixedNow)
+
+	res, err := s.Close(workID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "outward_delta",
+		Summary:   "completed close accepts a sweep-proven non-executed reservation",
+		Changed:   true,
+		ProofRefs: []string{"check:completed-accepts-swept-reservation"},
+	}, fixedNow.Add(13*time.Hour))
+	if err != nil {
+		t.Fatalf("completed close refused swept side-effect-free reservation: %v", err)
+	}
+	if res.Work.State != "completed" {
+		t.Fatalf("close state = %q, want completed", res.Work.State)
+	}
+	after, err := runattempt.Open(s.home).Get(swept.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != runattempt.StatusAbandoned ||
+		after.SweepClassification != runattempt.SweepClassificationSideEffectFree ||
+		!after.CompletedAt.Equal(swept.CompletedAt) {
+		t.Fatalf("close rewrote swept reservation: before=%+v after=%+v", swept, after)
+	}
+}
+
+func TestCloseRejectsSweptReservationNearMisses(t *testing.T) {
+	tests := []struct {
+		name           string
+		reason         string
+		classification string
+	}{
+		{
+			name:           "ambiguous sweep",
+			reason:         "stale: ambiguous — no activity for 12h0m0s (threshold 30m0s)",
+			classification: runattempt.SweepClassificationAmbiguous,
+		},
+		{
+			name:           "forged side-effect-free reason",
+			reason:         "manual side_effect_free",
+			classification: runattempt.SweepClassificationSideEffectFree,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newStore(t)
+			workID, rattIDs := closeTerminalizeWork(t, s, "close-swept-near-miss", fixedNow)
+			attempts := runattempt.Open(s.home)
+			if _, err := attempts.CompleteWithReasonAndClassification(
+				rattIDs[0],
+				runattempt.StatusAbandoned,
+				tt.reason,
+				tt.classification,
+				fixedNow.Add(12*time.Hour),
+			); err != nil {
+				t.Fatalf("stamp near-miss sweep: %v", err)
+			}
+			before := snapshotCloseAuthorityFiles(t, s.home)
+			_, err := s.Close(workID, CloseInput{
+				Outcome:   "completed",
+				MoveType:  "outward_delta",
+				Summary:   "near-miss sweep must not bypass outcome consistency",
+				Changed:   true,
+				ProofRefs: []string{"check:reject-swept-reservation-near-miss"},
+			}, fixedNow.Add(13*time.Hour))
+			if err == nil || !strings.Contains(err.Error(), "status abandoned contradicts close outcome completed") {
+				t.Fatalf("Close error = %v, want abandoned/completed outcome contradiction", err)
+			}
+			if after := snapshotCloseAuthorityFiles(t, s.home); !reflect.DeepEqual(after, before) {
+				t.Fatal("near-miss sweep rejection mutated durable authority")
+			}
+		})
+	}
+}
+
+func TestCloseFailedRejectsSweptSideEffectFreeReservation(t *testing.T) {
+	s := newStore(t)
+	workID, _ := sweptClaimReservationForClose(t, s, fixedNow)
+	before := snapshotCloseAuthorityFiles(t, s.home)
+
+	_, err := s.Close(workID, CloseInput{
+		Outcome:  "failed",
+		MoveType: "audit_only",
+		Summary:  "failed close must not inherit the completed-close exception",
+	}, fixedNow.Add(13*time.Hour))
+	if err == nil || !strings.Contains(err.Error(), "status abandoned contradicts close outcome failed") {
+		t.Fatalf("Close error = %v, want abandoned/failed outcome contradiction", err)
+	}
+	if after := snapshotCloseAuthorityFiles(t, s.home); !reflect.DeepEqual(after, before) {
+		t.Fatal("failed-outcome rejection mutated durable authority")
+	}
+}
+
+// TestCloseCompletedAcceptsPolicyRefusedBeforeExecution exercises both the
+// authority and outcome-consistency gates for the lived close wedge.
+func TestCloseCompletedAcceptsPolicyRefusedBeforeExecution(t *testing.T) {
+	s := newStore(t)
+	workID, _ := closeTerminalizeWork(t, s, "close-completed-accepts-pre-exec-refusal", fixedNow)
 	attempts, ra := mintPreExecutionRefusalAttempt(t, s, workID, fixedNow.Add(2*time.Minute))
 	refused, err := attempts.CompleteWithReason(ra.ID, runattempt.StatusAbandoned, proofResourcePolicyRefusedBeforeExecution, fixedNow.Add(2*time.Minute))
 	if err != nil {
@@ -886,26 +1042,52 @@ func TestCloseBindsPolicyRefusedBeforeExecutionAuthority(t *testing.T) {
 	}
 
 	res, err := s.Close(workID, CloseInput{
-		Outcome:       "cancelled",
-		MoveType:      "audit_only",
-		Summary:       "close lands with pre-execution policy refusal as run attempt authority",
+		Outcome:       "completed",
+		MoveType:      "outward_delta",
+		Summary:       "completed close accepts the exact pre-execution refusal shape",
+		Changed:       true,
+		ProofRefs:     []string{"check:completed-accepts-pre-exec-refusal"},
 		RunAttemptIDs: []string{refused.ID},
 	}, fixedNow.Add(5*time.Minute))
 	if err != nil {
-		t.Fatalf("close refused to bind pre-execution refusal authority: %v", err)
+		t.Fatalf("completed close refused the exact pre-execution refusal shape: %v", err)
 	}
-	if res.Work.State != "cancelled" {
-		t.Fatalf("close state = %q, want cancelled", res.Work.State)
+	if res.Work.State != "completed" {
+		t.Fatalf("close state = %q, want completed", res.Work.State)
 	}
 	after, err := runattempt.Open(s.home).Get(refused.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if after.Status != runattempt.StatusAbandoned || after.SweepReason != proofResourcePolicyRefusedBeforeExecution {
-		t.Fatalf("refused attempt rewritten by close: status=%q sweep_reason=%q", after.Status, after.SweepReason)
+		t.Fatalf("refused attempt rewritten by completed close: status=%q sweep_reason=%q", after.Status, after.SweepReason)
 	}
-	if after.Launch != nil || after.LastHeartbeatAt != nil {
-		t.Fatalf("refused attempt acquired execution evidence during close: launch=%v heartbeat=%v", after.Launch, after.LastHeartbeatAt)
+	if after.Launch != nil || after.LastHeartbeatAt != nil || !after.CompletedAt.Equal(refused.CompletedAt) {
+		t.Fatalf("refused attempt acquired execution evidence during completed close: launch=%v heartbeat=%v completed_at=%v", after.Launch, after.LastHeartbeatAt, after.CompletedAt)
+	}
+}
+
+func TestCloseFailedRejectsPolicyRefusedBeforeExecutionOutcome(t *testing.T) {
+	s := newStore(t)
+	workID, _ := closeTerminalizeWork(t, s, "close-failed-rejects-pre-exec-refusal", fixedNow)
+	attempts, ra := mintPreExecutionRefusalAttempt(t, s, workID, fixedNow.Add(2*time.Minute))
+	refused, err := attempts.CompleteWithReason(ra.ID, runattempt.StatusAbandoned, proofResourcePolicyRefusedBeforeExecution, fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("abandon refusal RunAttempt: %v", err)
+	}
+	before := snapshotCloseAuthorityFiles(t, s.home)
+
+	_, err = s.Close(workID, CloseInput{
+		Outcome:       "failed",
+		MoveType:      "audit_only",
+		Summary:       "failed close must not inherit the completed-close exception",
+		RunAttemptIDs: []string{refused.ID},
+	}, fixedNow.Add(5*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "status abandoned contradicts close outcome failed") {
+		t.Fatalf("Close error = %v, want abandoned/failed outcome contradiction", err)
+	}
+	if after := snapshotCloseAuthorityFiles(t, s.home); !reflect.DeepEqual(after, before) {
+		t.Fatal("failed-outcome rejection mutated durable authority")
 	}
 }
 

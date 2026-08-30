@@ -53,6 +53,7 @@ func proveablePairPairAudit(records map[string][]byte) (orphans []string, scanEr
 	for id, body := range records {
 		var workID string
 		var kind string
+		var sessionID string
 		switch {
 		case strings.HasPrefix(id, "rec_"):
 			var receipt envelope.Receipt
@@ -64,6 +65,7 @@ func proveablePairPairAudit(records map[string][]byte) (orphans []string, scanEr
 				continue
 			}
 			workID = strings.TrimSpace(receipt.IDs.WorkID)
+			sessionID = strings.TrimSpace(receipt.IDs.SessionID)
 			kind = "receipt"
 		case strings.HasPrefix(id, "tr_"):
 			var transition envelope.Transition
@@ -80,7 +82,16 @@ func proveablePairPairAudit(records map[string][]byte) (orphans []string, scanEr
 			continue
 		}
 		if workID == "" {
-			scanErrors++
+			// ids.work_id is the pair-law join key. A RECEIPT with a
+			// session_id but no work_id is a session receipt (internal/hook's
+			// buildWorklessSessionReceipt mints valid ones): it closes a
+			// session, not a work, so the pair law does not bind it — skip it
+			// without a scan error. Anything else with no work_id (a receipt
+			// with NEITHER id, or any transition — Transition.Validate requires
+			// work_id) is malformed and stays a scan error.
+			if kind != "receipt" || sessionID == "" {
+				scanErrors++
+			}
 			continue
 		}
 		if pairs[workID] == nil {

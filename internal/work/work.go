@@ -2558,6 +2558,25 @@ func runAttemptPolicyRefusedBeforeExecution(ra runattempt.RunAttempt) bool {
 	return !runAttemptHasExecuted(ra)
 }
 
+const staleSideEffectFreeSweepPrefix = "stale: " + runattempt.SweepClassificationSideEffectFree + " — no activity for "
+
+// runAttemptSweptSideEffectFreeReservation recognizes a stale claim
+// reservation that the sweep proved never crossed an execution boundary.
+func runAttemptSweptSideEffectFreeReservation(ra runattempt.RunAttempt) bool {
+	if ra.Status != runattempt.StatusAbandoned || ra.Origin != runattempt.OriginClaimReservation {
+		return false
+	}
+	if ra.SweepClassification != runattempt.SweepClassificationSideEffectFree ||
+		!strings.HasPrefix(ra.SweepReason, staleSideEffectFreeSweepPrefix) {
+		return false
+	}
+	if ra.CompletedAt.IsZero() || !ra.CompletedAt.After(ra.CreatedAt) || ra.TerminalizationIntent != nil {
+		return false
+	}
+	return runattempt.ClassifyStaleRunAttempt(ra) == runattempt.SweepClassificationSideEffectFree &&
+		!runAttemptHasExecuted(ra)
+}
+
 func buildAttachedRunAttemptHistory(ids []string, attempts map[string]runattempt.RunAttempt) (attachedRunAttemptHistory, error) {
 	history := attachedRunAttemptHistory{
 		SuccessfulRetryPredecessors: map[string]bool{},
@@ -2746,8 +2765,13 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 			}
 			historicalCompletedAttempt := in.Outcome == "completed" &&
 				(history.SuccessfulRetryPredecessors[id] || len(history.ReplacedClaimReservations[id]) > 0)
+			// Non-executed attempts have no task outcome. Completed close may
+			// bind only an exact pre-execution refusal or a sweep-proven,
+			// side-effect-free claim reservation.
+			nonExecutedAttempt := in.Outcome == "completed" &&
+				(runAttemptPolicyRefusedBeforeExecution(ra) || runAttemptSweptSideEffectFreeReservation(ra))
 			if ra.Status != runattempt.StatusSuperseded && ra.Status != workTarget &&
-				!historicalCompletedAttempt {
+				!historicalCompletedAttempt && !nonExecutedAttempt {
 				verifiedProof, err := s.committedVerifiedProofRunAttempt(closing, ra)
 				if err != nil {
 					return nil, fmt.Errorf("terminal runattempt %s proof-resource exception invalid: %w", id, err)
