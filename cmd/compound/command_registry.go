@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	actuatorcli "compound/internal/actuator"
 	archcli "compound/internal/arch"
 	browsercli "compound/internal/browser"
 	executorlenscli "compound/internal/executorlens"
@@ -186,7 +187,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"executor-lens":   heldCommand(executorlenscli.RunCLI),
 		"lens-modulate":   heldCommand(cmdLensModulate),
 		"act":             heldCommand(cmdAct),
-		"actuator":        heldCommand(cmdActuator),
+		"actuator":        heldCommand(actuatorcli.RunCLI),
 		"capture":         heldCommand(cmdCapture),
 		"intent":          heldCommand(cmdIntent),
 		"land-lease":      governedCommand(cmdLandLease),

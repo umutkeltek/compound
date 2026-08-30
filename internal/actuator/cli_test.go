@@ -1,4 +1,4 @@
-package main
+package actuator
 
 import (
 	"bytes"
@@ -10,10 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"compound/internal/actuator"
 	"compound/internal/policy"
 	"compound/internal/work"
 )
+
+// cliTestNow mirrors the fixed clock in cmd/compound/main_test.go so the
+// moved CLI tests keep their original deterministic timestamps.
+var cliTestNow = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 
 func seedActuatorCLIWork(t *testing.T, homePath, workID string) {
 	t.Helper()
@@ -34,9 +37,10 @@ func seedActuatorCLIWork(t *testing.T, homePath, workID string) {
 // must error naming the flag and the bad value, and must NOT write the budget file.
 // At base, actuatorInt silently returned the default (0 == unlimited) on parse failure.
 func TestActuatorBudgetSetRejectsUnparseableMaxActions(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	code := runActuator([]string{
+	code := runCLI([]string{
 		"budget-set", "--channel", "test-channel", "--window-hours", "24",
 		"--max-actions", "ten", "--home", homePath,
 	}, &stdout, &stderr)
@@ -57,9 +61,10 @@ func TestActuatorBudgetSetRejectsUnparseableMaxActions(t *testing.T) {
 // actuatorFloat gets the same falsifier as actuatorInt (T1's sibling): a
 // non-empty, non-parseable --max-spend-usd must error, not silently default.
 func TestActuatorBudgetSetRejectsUnparseableMaxSpendUSD(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	code := runActuator([]string{
+	code := runCLI([]string{
 		"budget-set", "--channel", "test-channel", "--window-hours", "24",
 		"--max-spend-usd", "lots", "--home", homePath,
 	}, &stdout, &stderr)
@@ -81,8 +86,9 @@ func TestActuatorBudgetSetRejectsUnparseableMaxSpendUSD(t *testing.T) {
 // exactly as work_cli.go's validateKnownFlags pattern already does for work
 // subcommands. At base, actuator subcommands called validateKnownFlags zero times.
 func TestActuatorRunRejectsUnknownFlag(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := runActuator([]string{
+	code := runCLI([]string{
 		"run", "--work", "w1", "--harness", "noop", "--max-actons", "3",
 	}, &stdout, &stderr)
 
@@ -97,6 +103,7 @@ func TestActuatorRunRejectsUnknownFlag(t *testing.T) {
 // Decision 2 applies to every actuator subcommand, not just `run` — enumerate the
 // full dispatch table and prove each one rejects an unrecognized flag by name.
 func TestActuatorSubcommandsRejectUnknownFlag(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	cases := []struct {
 		name string
@@ -114,7 +121,7 @@ func TestActuatorSubcommandsRejectUnknownFlag(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := runActuator(tc.args, &stdout, &stderr)
+			code := runCLI(tc.args, &stdout, &stderr)
 			if code != 2 {
 				t.Fatalf("%s: want exit 2 for unknown flag, got %d; stderr=%q", tc.name, code, stderr.String())
 			}
@@ -129,10 +136,11 @@ func TestActuatorSubcommandsRejectUnknownFlag(t *testing.T) {
 // changed subcommand, proving decisions 1+2 add zero behavior change for valid
 // input (existing green paths stay green).
 func TestActuatorSubcommandsAcceptKnownFlagsEndToEnd(t *testing.T) {
+	t.Parallel()
 	t.Run("plan", func(t *testing.T) {
 		homePath := t.TempDir()
 		var stdout, stderr bytes.Buffer
-		code := runActuator([]string{
+		code := runCLI([]string{
 			"plan", "--work", "w1", "--class", "local_reversible", "--reversibility", "easy",
 			"--channel", "test", "--product", "p1", "--home", homePath, "--json",
 		}, &stdout, &stderr)
@@ -144,7 +152,7 @@ func TestActuatorSubcommandsAcceptKnownFlagsEndToEnd(t *testing.T) {
 	t.Run("budget", func(t *testing.T) {
 		homePath := t.TempDir()
 		var stdout, stderr bytes.Buffer
-		code := runActuator([]string{"budget", "--product", "p1", "--home", homePath, "--json"}, &stdout, &stderr)
+		code := runCLI([]string{"budget", "--product", "p1", "--home", homePath, "--json"}, &stdout, &stderr)
 		if code != 0 {
 			t.Fatalf("budget: want exit 0, got %d; stderr=%q", code, stderr.String())
 		}
@@ -153,7 +161,7 @@ func TestActuatorSubcommandsAcceptKnownFlagsEndToEnd(t *testing.T) {
 	t.Run("budget-set", func(t *testing.T) {
 		homePath := t.TempDir()
 		var stdout, stderr bytes.Buffer
-		code := runActuator([]string{
+		code := runCLI([]string{
 			"budget-set", "--channel", "test-channel", "--window-hours", "24",
 			"--max-actions", "5", "--max-spend-usd", "1.5", "--max-tokens", "100",
 			"--product", "p1", "--home", homePath,
@@ -174,7 +182,7 @@ func TestActuatorSubcommandsAcceptKnownFlagsEndToEnd(t *testing.T) {
 	t.Run("observe", func(t *testing.T) {
 		homePath := t.TempDir()
 		var stdout, stderr bytes.Buffer
-		code := runActuator([]string{"observe", "--product", "p1", "--home", homePath}, &stdout, &stderr)
+		code := runCLI([]string{"observe", "--product", "p1", "--home", homePath}, &stdout, &stderr)
 		if code != 0 {
 			t.Fatalf("observe: want exit 0, got %d; stderr=%q", code, stderr.String())
 		}
@@ -183,7 +191,7 @@ func TestActuatorSubcommandsAcceptKnownFlagsEndToEnd(t *testing.T) {
 	t.Run("held", func(t *testing.T) {
 		homePath := t.TempDir()
 		var stdout, stderr bytes.Buffer
-		code := runActuator([]string{"held", "--product", "p1", "--home", homePath}, &stdout, &stderr)
+		code := runCLI([]string{"held", "--product", "p1", "--home", homePath}, &stdout, &stderr)
 		if code != 0 {
 			t.Fatalf("held: want exit 0, got %d; stderr=%q", code, stderr.String())
 		}
@@ -196,7 +204,7 @@ func TestActuatorSubcommandsAcceptKnownFlagsEndToEnd(t *testing.T) {
 	t.Run("run_passthrough_args_not_validated", func(t *testing.T) {
 		homePath := t.TempDir()
 		var stdout, stderr bytes.Buffer
-		runActuator([]string{
+		runCLI([]string{
 			"run", "--work", "w1", "--harness", "noop-does-not-exist",
 			"--home", homePath, "--", "echo", "--not-a-real-flag",
 		}, &stdout, &stderr)
@@ -208,7 +216,7 @@ func TestActuatorSubcommandsAcceptKnownFlagsEndToEnd(t *testing.T) {
 	t.Run("post_known_flags_not_rejected", func(t *testing.T) {
 		homePath := t.TempDir()
 		var stdout, stderr bytes.Buffer
-		runActuator([]string{
+		runCLI([]string{
 			"post", "--work", "w1", "--content", "hello", "--product", "p1",
 			"--channel", "distribution", "--surface", "generic", "--metric", "m1",
 			"--expected-effect", "up", "--window", "7d", "--home", homePath,
@@ -225,7 +233,7 @@ func TestActuatorSubcommandsAcceptKnownFlagsEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 		var stdout, stderr bytes.Buffer
-		runActuator([]string{
+		runCLI([]string{
 			"switchback", "--profile", profilePath, "--work", "w1", "--home", homePath,
 		}, &stdout, &stderr)
 		if strings.Contains(stderr.String(), "unknown flag") {
@@ -253,7 +261,7 @@ func postRecordFailureHome(t *testing.T) string {
 	return home
 }
 
-// Since 7c66eec7, actuator.Post can return a POPULATED PostResult (Executed=true,
+// Since 7c66eec7, Post can return a POPULATED PostResult (Executed=true,
 // receipt/transition refs) together with a non-nil error — "the post landed but
 // budget accounting failed" (F9.1). runActuatorPost must mirror runActuatorRun and
 // surface that result, not drop it. These three falsifiers pin the CLI contract.
@@ -263,9 +271,10 @@ func postRecordFailureHome(t *testing.T) string {
 // consumption failure on stderr with exit 1. RED before the fix (result dropped:
 // stdout empty of the result, only stderr).
 func TestActuatorPostJSONSurfacesResultWithRecordError(t *testing.T) {
+	t.Parallel()
 	home := postRecordFailureHome(t)
 	var stdout, stderr bytes.Buffer
-	code := runActuator([]string{
+	code := runCLI([]string{
 		"post", "--work", "work_rec", "--product", "product-demo",
 		"--content", "Ship agent work that compounds.", "--home", home, "--json",
 	}, &stdout, &stderr)
@@ -295,9 +304,10 @@ func TestActuatorPostJSONSurfacesResultWithRecordError(t *testing.T) {
 // EXECUTED block (the receipt: line) AND name the failure on stderr with exit 1.
 // RED before the fix (block skipped: no receipt: line on stdout).
 func TestActuatorPostHumanSurfacesReceiptWithRecordError(t *testing.T) {
+	t.Parallel()
 	home := postRecordFailureHome(t)
 	var stdout, stderr bytes.Buffer
-	code := runActuator([]string{
+	code := runCLI([]string{
 		"post", "--work", "work_rec", "--product", "product-demo",
 		"--content", "Ship agent work that compounds.", "--home", home,
 	}, &stdout, &stderr)
@@ -318,6 +328,7 @@ func TestActuatorPostHumanSurfacesReceiptWithRecordError(t *testing.T) {
 // file), human mode must stay error-only: exit 1, NO EXECUTED block on stdout.
 // This guards the mirror against over-printing an EXECUTED block for a zero result.
 func TestActuatorPostPreStagingFailureStaysErrorOnly(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	seedActuatorCLIWork(t, home, "work_pre")
 	// Make the artifact-store path a FILE so act.NewArtifactStore's MkdirAll
@@ -326,7 +337,7 @@ func TestActuatorPostPreStagingFailureStaysErrorOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	code := runActuator([]string{
+	code := runCLI([]string{
 		"post", "--work", "work_pre", "--product", "product-demo",
 		"--content", "Ship agent work that compounds.", "--home", home,
 	}, &stdout, &stderr)
@@ -349,12 +360,12 @@ func TestActuatorSwitchbackJSONPreservesAccountingFailureAndExitsNonzero(t *test
 		t.Fatal(err)
 	}
 	original := actuatorSwitchbackFn
-	actuatorSwitchbackFn = func(string, actuator.ProjectProfile, string, policy.Config, time.Time) (actuator.SwitchbackResult, error) {
-		return actuator.SwitchbackResult{
+	actuatorSwitchbackFn = func(string, ProjectProfile, string, policy.Config, time.Time) (SwitchbackResult, error) {
+		return SwitchbackResult{
 			ProfileID: "accounting_test",
 			WorkID:    "work_switchback_accounting",
-			Steps: []actuator.StepResult{{
-				Kind:             actuator.StepInstructions,
+			Steps: []StepResult{{
+				Kind:             StepInstructions,
 				Applied:          true,
 				ReceiptRef:       "rec_accounting_test",
 				TransitionRef:    "tr_accounting_test",
@@ -366,7 +377,7 @@ func TestActuatorSwitchbackJSONPreservesAccountingFailureAndExitsNonzero(t *test
 	t.Cleanup(func() { actuatorSwitchbackFn = original })
 
 	var stdout, stderr bytes.Buffer
-	code := runActuator([]string{
+	code := runCLI([]string{
 		"switchback",
 		"--profile", profilePath,
 		"--work", "work_switchback_accounting",
@@ -377,7 +388,7 @@ func TestActuatorSwitchbackJSONPreservesAccountingFailureAndExitsNonzero(t *test
 	if code != 1 {
 		t.Fatalf("accounting failure must exit 1, got %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	var result actuator.SwitchbackResult
+	var result SwitchbackResult
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatalf("stdout must preserve the structured partial result: %v; stdout=%q", err, stdout.String())
 	}
@@ -391,10 +402,11 @@ func TestActuatorSwitchbackJSONPreservesAccountingFailureAndExitsNonzero(t *test
 }
 
 func TestActuatorRunJSONNamesMissingWorkError(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	var stdout, stderr bytes.Buffer
 
-	code := runActuator([]string{
+	code := runCLI([]string{
 		"run",
 		"--work", "work_missing",
 		"--harness", "claude",
@@ -413,6 +425,7 @@ func TestActuatorRunJSONNamesMissingWorkError(t *testing.T) {
 }
 
 func TestActuatorRunHeldCardPersistenceFailureStaysErrorOnly(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	seedActuatorCLIWork(t, homePath, "work_hold")
 	actuatorDir := filepath.Join(homePath, "actuator")
@@ -424,7 +437,7 @@ func TestActuatorRunHeldCardPersistenceFailureStaysErrorOnly(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := runActuator([]string{
+	code := runCLI([]string{
 		"run",
 		"--work", "work_hold",
 		"--harness", "os-harness-entrypoints",

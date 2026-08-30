@@ -1,4 +1,4 @@
-package main
+package actuator
 
 import (
 	"fmt"
@@ -10,20 +10,13 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"compound/internal/actuator"
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/policy"
 	"compound/internal/product"
 )
 
-var actuatorSwitchbackFn = actuator.Switchback
-
-func cmdActuator(args []string) {
-	if code := runActuator(args, os.Stdout, os.Stderr); code != 0 {
-		os.Exit(code)
-	}
-}
+var actuatorSwitchbackFn = Switchback
 
 func actuatorUsage() string {
 	return "usage:\n" +
@@ -48,7 +41,16 @@ func actuatorUsage() string {
 		"      missing-signal groups, action cards)."
 }
 
-func runActuator(args []string, stdout, stderr io.Writer) int {
+// RunCLI is the organ's CLI face, called from cmd/compound's command
+// registry. Mirrors internal/executorlens: the organ owns the exit code so
+// cmd/compound stays a thin dispatch shell.
+func RunCLI(args []string) {
+	if code := runCLI(args, os.Stdout, os.Stderr); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func runCLI(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || hasUsageFlag(args) {
 		fmt.Fprintln(stderr, actuatorUsage())
 		return 2
@@ -134,9 +136,9 @@ func runActuatorPlan(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	now := time.Now()
-	channel := firstNonEmptyStr(flagValue(args, "--channel"), actuator.WildcardChannel)
+	channel := firstNonEmptyStr(flagValue(args, "--channel"), WildcardChannel)
 	product := flagValue(args, "--product")
-	plan, err := actuator.EvaluatePlan(homePath, planIntent(args, now), channel, product, cfg, now)
+	plan, err := EvaluatePlan(homePath, planIntent(args, now), channel, product, cfg, now)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
@@ -162,8 +164,8 @@ func runActuatorPlan(args []string, stdout, stderr io.Writer) int {
 	// A non-auto plan is not a dead end: show the human-gated action card inline so
 	// the operator sees exactly what releases the move. `plan` stays pure (dry-run),
 	// so the card is shown here but only persisted by the real execution paths.
-	if plan.Decision.Mode != actuator.ModeAuto {
-		card := actuator.ReleaseGateFor(plan, now)
+	if plan.Decision.Mode != ModeAuto {
+		card := ReleaseGateFor(plan, now)
 		printHeldMoveCard(stdout, card)
 	}
 	return 0
@@ -171,7 +173,7 @@ func runActuatorPlan(args []string, stdout, stderr io.Writer) int {
 
 // printHeldMoveCard renders a held-move action card: the release gate, the inputs
 // required to proceed, and the conditions that must hold to stop.
-func printHeldMoveCard(stdout io.Writer, card actuator.HeldMoveCard) {
+func printHeldMoveCard(stdout io.Writer, card HeldMoveCard) {
 	fmt.Fprintf(stdout, "\n## held-move action card (%s)\n", card.ID)
 	fmt.Fprintf(stdout, "- release gate: %s\n", card.ReleaseGate)
 	if len(card.RequiredInputs) > 0 {
@@ -202,7 +204,7 @@ func runActuatorBudget(args []string, stdout, stderr io.Writer) int {
 	}
 	now := time.Now()
 	product := flagValue(args, "--product")
-	ledger := actuator.OpenLedger(homePath)
+	ledger := OpenLedger(homePath)
 	budget, err := ledger.LoadBudget(product, now)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -271,18 +273,18 @@ func runActuatorBudgetSet(args []string, stdout, stderr io.Writer) int {
 	}
 	now := time.Now()
 	product := flagValue(args, "--product")
-	ledger := actuator.OpenLedger(homePath)
+	ledger := OpenLedger(homePath)
 	budget, err := ledger.LoadBudget(product, now)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	if budget.ID == actuator.DefaultBudgetID {
+	if budget.ID == DefaultBudgetID {
 		budget.ID = "budget_" + firstNonEmptyStr(product, "default")
 		budget.ProductID = product
 		budget.CreatedAt = now.UTC().Format(time.RFC3339)
 	}
-	lim := actuator.ChannelLimits{
+	lim := ChannelLimits{
 		Channel:     channel,
 		WindowHours: window,
 		MaxActions:  maxActions,
@@ -334,7 +336,7 @@ func runActuatorSwitchback(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	var profile actuator.ProjectProfile
+	var profile ProjectProfile
 	data, err := os.ReadFile(profilePath)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -423,7 +425,7 @@ func runActuatorRun(args []string, stdout, stderr io.Writer) int {
 		command = args[idx+1]
 		cmdArgs = args[idx+2:]
 	}
-	in := actuator.RunInput{
+	in := RunInput{
 		WorkID:         work,
 		ProductID:      flagValue(args, "--product"),
 		Channel:        firstNonEmptyStr(flagValue(args, "--channel"), "execution"),
@@ -434,7 +436,7 @@ func runActuatorRun(args []string, stdout, stderr io.Writer) int {
 		Prompt:         flagValue(args, "--prompt"),
 		PermissionMode: flagValue(args, "--permission-mode"),
 	}
-	result, runErr := actuator.Run(homePath, in, cfg, time.Now())
+	result, runErr := Run(homePath, in, cfg, time.Now())
 	if hasFlag(args, "--json") {
 		if err := encodeJSON(stdout, result); err != nil {
 			fmt.Fprintln(stderr, "error:", err)
@@ -459,7 +461,7 @@ func runActuatorRun(args []string, stdout, stderr io.Writer) int {
 		}
 		if result.HeldMoveID != "" {
 			fmt.Fprintf(stdout, "- held-move card: %s\n", result.HeldMovePath)
-			printHeldMoveCard(stdout, actuator.ReleaseGateFor(result.Plan, time.Now()))
+			printHeldMoveCard(stdout, ReleaseGateFor(result.Plan, time.Now()))
 		}
 		return 0
 	}
@@ -577,7 +579,7 @@ func runActuatorPost(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	in := actuator.PostInput{
+	in := PostInput{
 		WorkID:         work,
 		ProductID:      flagValue(args, "--product"),
 		Channel:        firstNonEmptyStr(flagValue(args, "--channel"), "distribution"),
@@ -591,7 +593,7 @@ func runActuatorPost(args []string, stdout, stderr io.Writer) int {
 	// TOGETHER with a non-nil error — F9.1: "the post landed but budget accounting
 	// failed". Mirror runActuatorRun: surface the result, then fail loudly. Dropping
 	// the result on error would lose the receipt refs the operator needs.
-	result, postErr := actuator.Post(homePath, in, cfg, time.Now())
+	result, postErr := Post(homePath, in, cfg, time.Now())
 	if hasFlag(args, "--json") {
 		if err := encodeJSON(stdout, result); err != nil {
 			fmt.Fprintln(stderr, "error:", err)
@@ -610,7 +612,7 @@ func runActuatorPost(args []string, stdout, stderr io.Writer) int {
 		}
 		if result.HeldMoveID != "" {
 			fmt.Fprintf(stdout, "- held-move card: %s\n", result.HeldMovePath)
-			printHeldMoveCard(stdout, actuator.ReleaseGateFor(result.Plan, time.Now()))
+			printHeldMoveCard(stdout, ReleaseGateFor(result.Plan, time.Now()))
 		}
 		return 0
 	}
@@ -678,12 +680,12 @@ func runActuatorObserve(args []string, stdout, stderr io.Writer) int {
 		}
 		model = m
 	}
-	checks, err := actuator.ListPendingSignalChecks(homePath, productID)
+	checks, err := ListPendingSignalChecks(homePath, productID)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	closure, err := actuator.ObserveClosure(homePath, productID, now)
+	closure, err := ObserveClosure(homePath, productID, now)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
@@ -741,7 +743,7 @@ func runActuatorObserve(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "\npending signal checks: %d\n", len(checks))
 	for _, c := range checks {
 		state := "watching"
-		if actuator.SignalCheckExpired(c, now) {
+		if SignalCheckExpired(c, now) {
 			state = "OVERDUE — no signal arrived in time"
 		}
 		fmt.Fprintf(stdout, "- %s: %s %s by %s (hypothesis %s)\n", c.Channel, state, c.Metric, c.ObservationUntil, c.HypothesisID)
@@ -769,7 +771,7 @@ func runActuatorHeld(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 1
 	}
-	cards, err := actuator.ListHeldMoves(homePath, productID)
+	cards, err := ListHeldMoves(homePath, productID)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
