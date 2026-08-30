@@ -168,7 +168,10 @@ func TestReleaseWorkflowRunsCanonicalPublicGatesBeforeBuilding(t *testing.T) {
 	}
 	for _, command := range []string{
 		`git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"`,
-		`git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main`,
+		// The tag must be bound to main's exact TIP. Ancestry is not enough:
+		// see the negative assertion below.
+		`main_sha=$(git rev-parse refs/remotes/origin/main)`,
+		`if [ "$main_sha" != "$GITHUB_SHA" ]; then`,
 		`proof-check --ci`,
 		`release export-public`,
 		`gitleaks/v8@v8.30.1`,
@@ -179,6 +182,14 @@ func TestReleaseWorkflowRunsCanonicalPublicGatesBeforeBuilding(t *testing.T) {
 		} else if at > buildAt {
 			t.Errorf("release workflow runs gate %q after building release artifacts", command)
 		}
+	}
+	// Ancestry must never come back as the binding. `merge-base --is-ancestor`
+	// is satisfied by ANY commit already in main's history, so it green-lights
+	// tagging a months-old commit and publishing that stale tree under a fresh
+	// version -- the proof run then describes code the release does not carry.
+	if strings.Contains(text, "git merge-base --is-ancestor") {
+		t.Error("release workflow binds the tag with `git merge-base --is-ancestor`, " +
+			"which accepts any ancestor of main; require equality with main's exact tip instead")
 	}
 }
 

@@ -37,7 +37,14 @@ jobs:
           [[ "$version" =~ $version_re ]]
           git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
           test "$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")" = "$GITHUB_SHA"
-          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          # Exact tip, not ancestry: --is-ancestor accepts ANY commit already
+          # in main's history, so a tag placed on a months-old commit passes
+          # and publishes a stale tree under a fresh version.
+          main_sha=$(git rev-parse refs/remotes/origin/main)
+          if [ "$main_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::tagged commit $GITHUB_SHA is not the tip of origin/main ($main_sha); an ancestor of main is not a release candidate -- re-tag the exact tip" >&2
+            exit 1
+          fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
       - name: Run canonical public release gates
@@ -172,7 +179,14 @@ jobs:
           [[ "$version" =~ $version_re ]]
           git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
           test "$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")" = "$GITHUB_SHA"
-          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          # Exact tip, not ancestry: --is-ancestor accepts ANY commit already
+          # in main's history, so a tag placed on a months-old commit passes
+          # and publishes a stale tree under a fresh version.
+          main_sha=$(git rev-parse refs/remotes/origin/main)
+          if [ "$main_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::tagged commit $GITHUB_SHA is not the tip of origin/main ($main_sha); an ancestor of main is not a release candidate -- re-tag the exact tip" >&2
+            exit 1
+          fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
       - name: Download exact sealed release candidate
