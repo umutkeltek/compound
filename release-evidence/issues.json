@@ -133,24 +133,27 @@
       "title": "Promotion intent must bind exact execution and recovery",
       "status": "focused_green",
       "reproducer": "Mutate candidate or registry state after planning and interrupt each operation; require replay or finalization of the same planned pass.",
-      "root_cause": "The planned receipt recorded coarse candidate operations while apply rescanned and redecided; an interrupted pass could only be replaced by a newly planned pass.",
-      "invariant": "The supported candidate-only apply freezes and seals exact target/companion pre-state and digests, promotion current-claim preconditions, cursor preconditions, ordered idempotency keys, and operation results; interruption replays or finalizes that same PassID without rescanning or redeciding.",
-      "red_test": "TestFrozenCandidatePlanRefusesChangedTargetDigest, TestFrozenDedupePlanBindsKeeperAndDuplicate, TestFrozenPromotionRefusesCurrentClaimDriftAfterPlanning, TestFrozenPassRecoveryReusesPassIDAndOperationList, TestLoadFrozenJournalRejectsTerminalResultDrift, and TestLoadFrozenJournalRejectsOperationFrameAfterTerminal.",
+      "root_cause": "The original apply rescanned and redecided after a coarse plan. The first frozen-pass repair still trusted mutable terminal summaries, did not frame cursor/pending finalization, allowed recapture to overwrite ordinary adjudicated candidates, and accepted semantically false operation results or a forged legacy recovery classification.",
+      "invariant": "The supported candidate-only apply seals exact target/companion pre-state and digests, promotion current-claim preconditions, cursor preconditions, ordered idempotency keys, semantic operation results, and one exact finalization frame; interruption replays or finalizes the same PassID, and the terminal receipt is a canonical projection of those prior frames.",
+      "red_test": "TestRecapturePreservesOrdinaryAdjudicatedCandidate; TestFrozenPassRecoveryRecordsMissingFinalizationOnSamePass; TestFrozenPassRecoveryReusesRecordedFinalization; TestLoadFrozenJournalRejectsTerminalSummaryDrift; TestLoadFrozenJournalRejectsFinalizationAndTerminalDrift; TestLoadFrozenJournalRejectsSemanticallyFalseOperationResult; TestLoadFrozenJournalRejectsWrongNonPromotionState; TestLoadFrozenJournalRejectsTerminalProvenanceDrift; TestValidateTerminalReceiptDoesNotMutatePlannedIntent; TestReplayableRecoveryFrameCannotSelfDeclareLegacyTerminal; plus the original target, keeper, current-claim, result, recovery, and post-terminal falsifiers.",
       "fix_commits": [
-        "d5253234b98bc758c12268d8d947e634e50ffadd"
+        "d5253234b98bc758c12268d8d947e634e50ffadd",
+        "3b26cf7bdbc6f608468b8e082ea14c428357c4f3"
       ],
       "focused_tests": [
         "GOTOOLCHAIN=go1.26.4 go test ./internal/candidates ./internal/mem ./internal/promotedriver -count=1 (pass; candidates 5.304s, mem 28.203s, promotedriver 6.063s)",
         "GOTOOLCHAIN=go1.26.4 go vet ./internal/candidates ./internal/mem ./internal/promotedriver ./cmd/compound (pass)",
-        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/candidates ./internal/mem ./internal/promotedriver -count=1 (pass; candidates 24.544s, mem 28.522s, promotedriver 7.263s)"
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/candidates ./internal/mem ./internal/promotedriver -count=1 (pass; candidates 24.544s, mem 28.522s, promotedriver 7.263s)",
+        "work_9635dd754046 / ratt_20260830T211028Z_cf370c2c: Go 1.26.4 mem+promotedriver package and race suites, promote-driver CLI read-only seam, vet, diff checks, and narrow commit all succeeded in 135308ms"
       ],
       "broad_tests": [],
       "evidence_paths": [
-        "release-evidence/runs/20260830-p0-005-frozen-replay-focused-green.json"
+        "release-evidence/runs/20260830-p0-005-frozen-replay-focused-green.json",
+        "release-evidence/runs/20260831-p0-005-finalization-replay-focused-green.json"
       ],
       "residual_risk": "Registry import and lane-belief mutation remain explicitly experimental and rejected from supported apply. Candidate-only focused/race/vet proofs are green; canonical broad proof-check and an isolated governed memory-loop certifier are still required before closure.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-30T19:49:09Z"
+      "updated_at": "2026-08-30T21:13:28Z"
     },
     {
       "id": "REL-P0-006",
