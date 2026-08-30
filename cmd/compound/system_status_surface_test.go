@@ -14,6 +14,7 @@ import (
 )
 
 func TestSystemStatusSurfaceClaudeSnapshotAndRender(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 17, 2, 0, 0, 0, time.UTC)
 	fixture := `{
@@ -72,6 +73,7 @@ func TestSystemStatusSurfaceClaudeSnapshotAndRender(t *testing.T) {
 }
 
 func TestSystemStatusSurfaceCodexTheme(t *testing.T) {
+	t.Parallel()
 	out, err := runSystemStatusSurface(
 		[]string{"theme", "--harness", "codex", "--theme", "pai-nexus"},
 		strings.NewReader(""), t.TempDir(), time.Now(),
@@ -85,6 +87,7 @@ func TestSystemStatusSurfaceCodexTheme(t *testing.T) {
 }
 
 func TestBuildLiveClaudeStatusSnapshotSupplementsMissingWeeklyCapacity(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 17, 2, 0, 0, 0, time.UTC)
 	fixture := `{
@@ -129,6 +132,7 @@ func TestBuildLiveClaudeStatusSnapshotSupplementsMissingWeeklyCapacity(t *testin
 }
 
 func TestSupplementLiveClaudeCapacityProbesOnlyWhenOwnedSourcesAreEmpty(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 17, 2, 0, 0, 0, time.UTC)
 	snapshot, err := statussurface.BuildClaudeSnapshot([]byte(`{"context_window":{"used_percentage":20}}`), now, statussurface.Snapshot{})
 	if err != nil {
@@ -190,6 +194,7 @@ func TestSupplementLiveClaudeCapacityProbesOnlyWhenOwnedSourcesAreEmpty(t *testi
 }
 
 func TestParseCodexBarClaudeCapacitySelectsFreshConstrainingWeeklyWindow(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC)
 	body := []byte(`[
 	  {
@@ -230,6 +235,7 @@ func TestParseCodexBarClaudeCapacitySelectsFreshConstrainingWeeklyWindow(t *test
 }
 
 func TestProbeCodexBarClaudeCapacityUsesBoundedDirectArgv(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC)
 	called := false
 	evidence, err := probeCodexBarClaudeCapacityWithRunner(now, func(ctx context.Context, command string, args ...string) ([]byte, error) {
@@ -258,6 +264,7 @@ func TestProbeCodexBarClaudeCapacityUsesBoundedDirectArgv(t *testing.T) {
 }
 
 func TestParseCodexBarCapacityReducesCodexWeeklyWithoutIdentity(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 17, 21, 20, 30, 0, time.UTC)
 	body := []byte(`[{
 	  "provider":"codex",
@@ -285,6 +292,7 @@ func TestParseCodexBarCapacityReducesCodexWeeklyWithoutIdentity(t *testing.T) {
 }
 
 func TestBuildLiveCodexStatusSnapshotFallsBackToFreshCodexBarWeeklyCapacity(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 17, 21, 20, 30, 0, time.UTC)
 	probeCalls := 0
 	snapshot, err := buildLiveCodexStatusSnapshot(
@@ -320,6 +328,7 @@ func TestBuildLiveCodexStatusSnapshotFallsBackToFreshCodexBarWeeklyCapacity(t *t
 }
 
 func TestBuildLiveCodexStatusSnapshotPrefersFreshRouteEvidence(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 17, 21, 20, 30, 0, time.UTC)
 	probeCalls := 0
 	snapshot, err := buildLiveCodexStatusSnapshot(
@@ -372,6 +381,7 @@ func TestStatusCapacityOversizeHelperProcess(t *testing.T) {
 }
 
 func TestProbeCodexBarCapacityRejectsOversizeInjectedRunner(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 17, 21, 20, 30, 0, time.UTC)
 	_, err := probeCodexBarCapacityWithRunner("codex", now, func(context.Context, string, ...string) ([]byte, error) {
 		return make([]byte, maxCodexBarProbeBytes+1), nil
