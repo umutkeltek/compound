@@ -113,7 +113,7 @@
       "severity": "P0",
       "subsystem": "work-sweep",
       "title": "Stale-work reclaim transaction",
-      "status": "open",
+      "status": "focused_green",
       "reproducer": "Race liveness and same-state generation drift with sweep-stale and inject failure at every envelope, event, recovery-marker, and lease boundary.",
       "root_cause": "Reclaim rereads state but mutates a stale snapshot, probes liveness outside the mutation boundary, and publishes envelope, event, and lease as split persistence steps without a complete reconciler.",
       "invariant": "Reclaim is per-work serialized, generation-bound, liveness-rechecked, recoverable at every persistence boundary, and releases the lease last.",
@@ -133,16 +133,24 @@
       "title": "Promotion intent must bind exact execution and recovery",
       "status": "open",
       "reproducer": "Mutate candidate or registry state after planning and interrupt each operation; require replay or finalization of the same planned pass.",
-      "root_cause": "The planned receipt records coarse candidate operations, while execution rescans and redecides and recovery starts a new plan.",
-      "invariant": "A frozen promotion plan binds exact pre-state, digests, generations, operations, idempotency keys, results, and same-pass recovery.",
-      "red_test": "Frozen-plan compare-and-swap and interruption replay suite not yet established.",
-      "fix_commits": [],
-      "focused_tests": [],
+      "root_cause": "The planned receipt recorded coarse candidate operations while apply rescanned and redecided; an interrupted pass could only be replaced by a newly planned pass.",
+      "invariant": "The supported candidate-only apply freezes and seals exact target/companion pre-state and digests, promotion current-claim preconditions, cursor preconditions, ordered idempotency keys, and operation results; interruption replays or finalizes that same PassID without rescanning or redeciding.",
+      "red_test": "TestFrozenCandidatePlanRefusesChangedTargetDigest, TestFrozenDedupePlanBindsKeeperAndDuplicate, TestFrozenPromotionRefusesCurrentClaimDriftAfterPlanning, TestFrozenPassRecoveryReusesPassIDAndOperationList, TestLoadFrozenJournalRejectsTerminalResultDrift, and TestLoadFrozenJournalRejectsOperationFrameAfterTerminal.",
+      "fix_commits": [
+        "d5253234b98bc758c12268d8d947e634e50ffadd"
+      ],
+      "focused_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/candidates ./internal/mem ./internal/promotedriver -count=1 (pass; candidates 5.304s, mem 28.203s, promotedriver 6.063s)",
+        "GOTOOLCHAIN=go1.26.4 go vet ./internal/candidates ./internal/mem ./internal/promotedriver ./cmd/compound (pass)",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/candidates ./internal/mem ./internal/promotedriver -count=1 (pass; candidates 24.544s, mem 28.522s, promotedriver 7.263s)"
+      ],
       "broad_tests": [],
-      "evidence_paths": [],
-      "residual_risk": "A terminal receipt can describe a different decision window than the operations actually executed.",
+      "evidence_paths": [
+        "release-evidence/runs/20260830-p0-005-frozen-replay-focused-green.json"
+      ],
+      "residual_risk": "Registry import and lane-belief mutation remain explicitly experimental and rejected from supported apply. Candidate-only focused/race/vet proofs are green; canonical broad proof-check and an isolated governed memory-loop certifier are still required before closure.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-29T13:04:00Z"
+      "updated_at": "2026-08-30T19:49:09Z"
     },
     {
       "id": "REL-P0-006",
