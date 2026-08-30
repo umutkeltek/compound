@@ -20,6 +20,7 @@ import (
 const consoleTestFormatValidCapability = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestConsoleLifecycleDryRunsExposeDistinctDevBuildAndServePlans(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	consoleDir := filepath.Join(root, "console")
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
@@ -138,6 +139,7 @@ func TestConsoleLifecycleLockRejectsConcurrentWorktreesForTheSameEndpoint(t *tes
 }
 
 func TestConsoleServeRefusesMissingProductionBuildBeforeBun(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	consoleDir := filepath.Join(root, "console")
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
@@ -177,6 +179,7 @@ func TestConsoleServeRefusesMissingProductionBuildBeforeBun(t *testing.T) {
 }
 
 func TestConsoleLifecycleCanRequireAnExplicitHome(t *testing.T) {
+	t.Parallel()
 	consoleDir := filepath.Join(t.TempDir(), "console")
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -198,6 +201,7 @@ func TestConsoleLifecycleCanRequireAnExplicitHome(t *testing.T) {
 }
 
 func TestConsoleRuntimeStatusDistinguishesHealthyUnhealthyAndForeign(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
@@ -294,6 +298,7 @@ func TestConsoleRuntimeStatusDistinguishesHealthyUnhealthyAndForeign(t *testing.
 }
 
 func TestConsoleStaticAssetsReadsOnlyHTMLAttributes(t *testing.T) {
+	t.Parallel()
 	html := `<link href="/_next/static/css/app.css"><script src="/_next/static/chunks/app.js"></script>` +
 		`<script>self.__next_f.push(["/_next/static/chunks/ghost.js\\\""])</script>`
 	got := consoleStaticAssets(html)
@@ -304,6 +309,7 @@ func TestConsoleStaticAssetsReadsOnlyHTMLAttributes(t *testing.T) {
 }
 
 func TestConsoleSupervisorForwardsTerminationToChildGroup(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	marker := filepath.Join(root, "terminated")
 	started := filepath.Join(root, "started")
@@ -350,6 +356,7 @@ func TestConsoleSupervisorForwardsTerminationToChildGroup(t *testing.T) {
 }
 
 func TestConsoleSupervisorKillsChildGroupAfterTerminationGrace(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	pidPath := filepath.Join(root, "child.pid")
 	heartbeatPath := filepath.Join(root, "heartbeat")
@@ -393,6 +400,7 @@ func TestConsoleSupervisorKillsChildGroupAfterTerminationGrace(t *testing.T) {
 }
 
 func TestConsoleSupervisorKillsResidualGroupWhenLeaderExitsOnTermination(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	leaderPIDPath := filepath.Join(root, "leader.pid")
 	childPIDPath := filepath.Join(root, "child.pid")
@@ -561,6 +569,7 @@ func TestConsoleStatusReportsCanonicalHealth(t *testing.T) {
 }
 
 func TestConsoleNextBuildDirectoriesAreLifecycleIsolated(t *testing.T) {
+	t.Parallel()
 	consoleDir, err := filepath.Abs(filepath.Join("..", "..", "console"))
 	if err != nil {
 		t.Fatal(err)
@@ -588,6 +597,7 @@ func TestConsoleNextBuildDirectoriesAreLifecycleIsolated(t *testing.T) {
 }
 
 func TestConsolePackageScriptsExposeOnlyOwnedLifecycles(t *testing.T) {
+	t.Parallel()
 	packagePath, err := filepath.Abs(filepath.Join("..", "..", "console", "package.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -667,6 +677,7 @@ func invokeConsoleCommand(t *testing.T, extraEnv []string, args ...string) (stri
 }
 
 func TestConsoleCommandHelper(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("COMPOUND_CONSOLE_TEST_HELPER") != "1" {
 		return
 	}
@@ -680,6 +691,7 @@ func TestConsoleCommandHelper(t *testing.T) {
 }
 
 func TestConsoleCompoundBinPrefersStablePathForTemporaryExecutable(t *testing.T) {
+	t.Parallel()
 	stable := filepath.Join(t.TempDir(), "bin", "compound")
 	got := resolveConsoleCompoundBin(filepath.Join(string(filepath.Separator), "tmp", "compound-dashboard"), func(name string) (string, error) {
 		if name != "compound" {
@@ -693,6 +705,7 @@ func TestConsoleCompoundBinPrefersStablePathForTemporaryExecutable(t *testing.T)
 }
 
 func TestConsoleCompoundBinKeepsStableExecutable(t *testing.T) {
+	t.Parallel()
 	current := filepath.Join(string(filepath.Separator), "usr", "local", "bin", "compound")
 	got := resolveConsoleCompoundBin(current, func(name string) (string, error) {
 		t.Fatalf("stable executable should not need PATH lookup")
@@ -832,6 +845,7 @@ func TestConsoleOperatorDryRunRequiresExplicitMutationOptIn(t *testing.T) {
 }
 
 func TestConsoleMutationModeRequiresExplicitHomeAndFormatValidCapabilityBeforePlan(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	consoleDir := filepath.Join(root, "console")
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
