@@ -4546,10 +4546,7 @@ func TestWorkCreateCommandsRejectUndocumentedInitialStates(t *testing.T) {
 
 	for _, child := range []string{"create-admitted", "create-plan-running", "create-plan-admitted", "import-packet-running", "import-packet-admitted"} {
 		t.Run(child, func(t *testing.T) {
-			homePath := t.TempDir()
-			if err := home.Init(homePath, "test", cliTestNow); err != nil {
-				t.Fatalf("init home: %v", err)
-			}
+			homePath := initializedTestHome(t)
 			cmd := exec.Command(os.Args[0], "-test.run=^TestWorkCreateCommandsRejectUndocumentedInitialStates$")
 			cmd.Env = append(os.Environ(), workCLIBoundarySubEnv+"="+child, "COMPOUND_HOME="+homePath)
 			output, err := cmd.CombinedOutput()

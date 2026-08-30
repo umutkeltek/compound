@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"compound/internal/home"
 	"compound/internal/work"
 )
 
@@ -16,10 +15,7 @@ import (
 // returns the work id. Nothing here touches a real home.
 func workRefusalHome(t *testing.T, holder, predicate string) (string, string) {
 	t.Helper()
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedTestHome(t)
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)

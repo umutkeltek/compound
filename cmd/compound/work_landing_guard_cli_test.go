@@ -165,10 +165,7 @@ func TestWorkLandCheckCLIStealOnlyOverridesProofAttachment(t *testing.T) {
 		return
 	}
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedTestHome(t)
 	repo, base, tip := initLandingCLIRepo(t)
 	store, err := work.Open(homePath)
 	if err != nil {
@@ -403,10 +400,7 @@ func TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags(t *testing.T) {
 		return
 	}
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedTestHome(t)
 	for _, mode := range []string{
 		"create-unknown", "create-partial-contract", "land-unknown", "land-missing-value",
 		"land-steal-without-reason", "land-reason-without-steal", "land-empty-steal-reason",

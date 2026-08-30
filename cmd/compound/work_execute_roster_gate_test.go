@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"compound/internal/home"
 	"compound/internal/routeevidence"
 	"compound/internal/work"
 )
@@ -52,10 +51,7 @@ func laneSettingsHooks(events ...string) string {
 // is unit-tested in internal/hookplan/governed_roster_test.go.
 func TestWorkAdvanceExecuteGovernedFullRosterRefusalNoStateChange(t *testing.T) {
 	t.Parallel()
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedTestHome(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	source := filepath.Join(t.TempDir(), "minimax.yaml")
 	manifest := `version: 1

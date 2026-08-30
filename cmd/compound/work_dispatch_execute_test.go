@@ -284,10 +284,7 @@ func TestWorkDispatchExecuteRefusesRouterRevisionDriftBeforeClaim(t *testing.T) 
 
 func TestWorkDispatchExecuteFailedSubprocessTerminalizesWorkAndAttempts(t *testing.T) {
 	t.Parallel()
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedTestHome(t)
 	now := time.Now().UTC()
 	userHome := writeDispatchExecuteCapacityFixture(t, "codex", now)
 	addCapabilityGraphFixture(t, homePath)
@@ -376,10 +373,7 @@ func assertDispatchExecuteReadyAndUnchanged(t *testing.T, store *work.Store, wor
 
 func TestWorkDispatchExecuteCLIUnconfirmedPreviewsWithoutMutation(t *testing.T) {
 	t.Parallel()
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedTestHome(t)
 	userHome := writeDispatchExecuteCapacityFixture(t, "codex", time.Now().UTC())
 	addCapabilityGraphFixture(t, homePath)
 	writeDispatchExecuteModelRouterFixture(t, homePath)

@@ -432,10 +432,7 @@ func TestLoadWorktreeRetirementSourceProofRefusesTerminalReceiptOutcomeMismatch(
 		{name: "completed work with failed receipt", receiptOutcome: "failed", workState: "completed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			homePath := t.TempDir()
-			if err := home.Init(homePath, "test", cliTestNow); err != nil {
-				t.Fatal(err)
-			}
+			homePath := initializedTestHome(t)
 			fixture := newWorktreeRetirementCLIFixtureWithSourceOutcome(t, homePath, tc.receiptOutcome)
 			store, err := work.Open(homePath)
 			if err != nil {
