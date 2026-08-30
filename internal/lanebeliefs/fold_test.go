@@ -401,6 +401,24 @@ func TestFoldProposesValidBeliefsVisibleViaList(t *testing.T) {
 	}
 }
 
+func TestListEmptyHomeDoesNotScaffoldState(t *testing.T) {
+	homePath := t.TempDir()
+	report, err := List(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CandidateCount != 0 {
+		t.Fatalf("empty list = %+v", report)
+	}
+	entries, err := os.ReadDir(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("read-only list scaffolded runtime state: %+v", entries)
+	}
+}
+
 func TestFoldConstantsMatchBinding(t *testing.T) {
 	if MIN_LANE_RECEIPTS != 5 || MIN_CORROBORATION_WORKS != 2 || BETA_PRIOR_ALPHA != 2 || BETA_PRIOR_BETA != 2 || PROMOTE_POSTERIOR_FLOOR != 0.66 || COOL_AFTER_FOLDS != 3 || PER_CYCLE_CANDIDATE_CAP <= 0 {
 		t.Fatalf("fold constants drifted")

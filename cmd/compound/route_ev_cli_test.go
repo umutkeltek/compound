@@ -171,7 +171,7 @@ func TestRouteEvClassBucketEscapeHatchPricesFromUnknownBucket(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		writeCLILaneBeliefReceiptEvent(t, homePath, fmt.Sprintf("rec_scout_%02d", i), fmt.Sprintf("work_scout_%02d", i), "scout/chat")
 	}
-	captureStdout(t, func() { cmdLaneBeliefs([]string{"fold"}) })
+	captureStdout(t, func() { cmdLaneBeliefs([]string{"fold", "--experimental"}) })
 
 	// Cost per attempt: policy line $0.02/attempt, deviation $0.01/attempt (cheaper).
 	ledger := filepath.Join(t.TempDir(), "provider-calls.ndjson")

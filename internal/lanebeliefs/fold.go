@@ -505,7 +505,7 @@ func laneBeliefTerminalState(state string) bool {
 // valve refuses tags, so List cannot filter by tag; it filters by the fold's own provenance tag
 // (rule 4) intersected with the belief predicates — the fold is the only writer of that tag.
 func List(homePath string) (ListReport, error) {
-	store, err := mem.Open(homePath)
+	store, err := mem.OpenScan(homePath)
 	if err != nil {
 		return ListReport{}, err
 	}

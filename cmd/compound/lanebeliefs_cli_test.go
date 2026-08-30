@@ -39,7 +39,7 @@ func TestCmdLaneBeliefsFoldDryRunAndListJSON(t *testing.T) {
 		t.Fatalf("dry-run wrote candidates: %+v", listEmpty)
 	}
 
-	foldOut := captureStdout(t, func() { cmdLaneBeliefs([]string{"fold", "--json"}) })
+	foldOut := captureStdout(t, func() { cmdLaneBeliefs([]string{"fold", "--experimental", "--json"}) })
 	var folded lanebeliefs.FoldReport
 	if err := json.Unmarshal([]byte(foldOut), &folded); err != nil {
 		t.Fatalf("parse fold: %v\n%s", err, foldOut)
