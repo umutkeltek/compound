@@ -14,7 +14,7 @@
       "compound/cmd/compound selected tests passed in 2.774s",
       "TestCheckCmdCompoundBudgetPassesOnRealRepo passed"
     ],
-    "transcript": "/Users/example/.compound/run_attempts/ratt_20260830T105101Z_1652a614.transcript"
+    "transcript": "run-attempt:ratt_20260830T105101Z_1652a614"
   },
   "before": {
     "source_sha": "29b3d4355167f58d5710f53a79dc4537f0696cf5",
