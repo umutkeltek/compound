@@ -743,3 +743,66 @@ func TestSweepStaleApplyReprobesLivenessInsideMutationBoundary(t *testing.T) {
 		t.Fatalf("work state = %q, want claimed after liveness wins the race", current.State)
 	}
 }
+
+func TestSweepStaleEventFailureLeavesRecoverableTransaction(t *testing.T) {
+	s := newStore(t)
+	w := staleEnvelope(t, s, "claimed", 30*24*time.Hour, fixedNow)
+	pendingPath := s.workPath(w.ID) + ".sweep-pending"
+
+	previousWriter := writeWorkEvent
+	t.Cleanup(func() { writeWorkEvent = previousWriter })
+	writeWorkEvent = func(_ *os.File, _ []byte) (int, error) {
+		return 0, errors.New("injected sweep event write failure")
+	}
+	failed, err := s.SweepStaleApply(72*time.Hour, newFakeProbe(), fixedNow)
+	writeWorkEvent = previousWriter
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Reclaimed != 0 || failed.Skipped != 1 || len(failed.Candidates) != 1 {
+		t.Fatalf("failed report = %+v, want one skipped recovery candidate", failed)
+	}
+	if !strings.Contains(failed.Candidates[0].ReclaimError, "sweep-stale recovery_required") {
+		t.Fatalf("failed candidate = %+v, want native recovery_required", failed.Candidates[0])
+	}
+	if _, err := os.Stat(pendingPath); err != nil {
+		t.Fatalf("durable sweep pending frame missing after event failure: %v", err)
+	}
+	if _, err := s.readLease(w.ID); err != nil {
+		t.Fatalf("claim lease must remain until event/work publication succeeds: %v", err)
+	}
+
+	recovered, err := s.SweepStaleApply(72*time.Hour, newFakeProbe(), fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Reclaimed != 1 || len(recovered.Candidates) != 1 || !recovered.Candidates[0].Reclaimed {
+		t.Fatalf("recovery report = %+v, want the exact frozen reclaim completed", recovered)
+	}
+	current, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.State != "cancelled" {
+		t.Fatalf("recovered state = %q, want cancelled", current.State)
+	}
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact := 0
+	for _, event := range events {
+		if event.By == "sweep-stale" && event.From == "claimed" && event.To == "cancelled" {
+			exact++
+		}
+	}
+	if exact != 1 {
+		t.Fatalf("exact sweep events = %d, want 1: %+v", exact, events)
+	}
+	if _, err := s.readLease(w.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("claim lease after recovered terminal publication: %v", err)
+	}
+	if _, err := os.Stat(pendingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sweep pending frame after exact recovery: %v", err)
+	}
+}
