@@ -2,7 +2,7 @@
   "schema_version": "compound.release_issues.v0.1",
   "base_sha": "e5ecfd350e07286c8022b2efe5f86b8b9a7b2d3f",
   "branch": "release/harden-20260829",
-  "updated_at": "2026-08-30T00:11:20Z",
+  "updated_at": "2026-08-30T02:30:16Z",
   "issues": [
     {
       "id": "REL-P0-001",
@@ -54,36 +54,52 @@
       "severity": "P0",
       "subsystem": "memory-pagination",
       "title": "Memory cursor skips scanned-but-unprocessed candidates",
-      "status": "open",
-      "reproducer": "Exercise AdjudicatePending with both ScanLimit and Limit active; exhaustive red property test not yet committed.",
-      "root_cause": "The scan-page tail can win cursor selection even when the write cap stopped at an earlier actionable candidate, and failed entries can be walked past.",
+      "status": "focused_green",
+      "reproducer": "TestAdjudicatePendingWriteCapPinsResumeBeforeUnreadPageRemainder failed at bdd19c86: the scan-page tail jumped over two of five actionable candidates; the proposed-generation race additionally completed past a newer still-proposed row.",
+      "root_cause": "Walk progress, decision progress, and committed mutation progress shared one cursor; CAS misses were also classified as terminal skips without observing whether the winning generation remained actionable.",
       "invariant": "Cursor resume never jumps over unfinished actionable work and never duplicates an actionable transition.",
-      "red_test": "Exhaustive small-cap pagination property suite not yet established.",
-      "fix_commits": [],
-      "focused_tests": [],
+      "red_test": "TestAdjudicatePendingWriteCapPinsResumeBeforeUnreadPageRemainder; TestAdjudicatePendingSmallCapMatrixHasNoGapsOrDuplicateMutations; TestAdjudicatePendingConcurrentProposedRewritePinsCursorForRetry; TestAdjudicatePendingMutationFailurePinsBeforeFailedCandidateAndRetryFinishes.",
+      "fix_commits": [
+        "1fe0fcdca88669d7670b823b7bb5129f9878abac"
+      ],
+      "focused_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/candidates ./internal/mem ./internal/promotedriver -count=1",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/candidates ./internal/mem ./internal/promotedriver -count=1",
+        "GOTOOLCHAIN=go1.26.4 go vet ./internal/candidates ./internal/mem ./internal/promotedriver ./cmd/compound"
+      ],
       "broad_tests": [],
-      "evidence_paths": [],
-      "residual_risk": "Current separate scan-cap and write-cap tests do not cover their interaction.",
+      "evidence_paths": [
+        "release-evidence/runs/20260830-p0-002-p0-003-focused-green.json"
+      ],
+      "residual_risk": "Focused and race proofs are green. Canonical broad proof-check is still required before closure; post-rename durability ambiguity is tracked separately in REL-P1-007.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-29T13:04:00Z"
+      "updated_at": "2026-08-30T02:30:16Z"
     },
     {
       "id": "REL-P0-003",
       "severity": "P0",
       "subsystem": "candidate-custody",
       "title": "Canonical candidate identity and path custody",
-      "status": "open",
-      "reproducer": "Read blank-ID, filename-mismatch, alias, symlink, traversal, absolute-path, and nonregular candidate fixtures through the shared codec and both memory walkers.",
-      "root_cause": "Candidate reads and memory walkers do not uniformly enforce canonical nonblank identity, filename equality, regular non-symlink custody, and root containment.",
+      "status": "focused_green",
+      "reproducer": "At bdd19c86, point reads and the pending walker accepted blank-ID, filename/JSON mismatch, alias, and symlink candidates; the post-sweep census also followed raw paths.",
+      "root_cause": "Candidate readers independently reopened joined pathnames and derived identity from caller strings instead of a descriptor-rooted record that binds root, entry filename, body ID, file generation, and digest.",
       "invariant": "Only a regular non-symlink file with canonical filename and matching nonblank JSON ID resolved inside the candidate root is actionable.",
-      "red_test": "Shared candidate-custody corruption table and walker no-action tests not yet established.",
-      "fix_commits": [],
-      "focused_tests": [],
+      "red_test": "TestMemoryCandidatePointReadRejectsNoncanonicalCustody; TestAdjudicatePendingNamesEveryCustodyCorruptionAndNeverActsOnIt; TestReconcilePendingStateRefusesCandidateCustodyCorruption; candidate ReadPage/ReadRecord corruption tables.",
+      "fix_commits": [
+        "1fe0fcdca88669d7670b823b7bb5129f9878abac"
+      ],
+      "focused_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/candidates ./internal/mem ./internal/promotedriver -count=1",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/candidates ./internal/mem ./internal/promotedriver -count=1",
+        "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound -run 'Test(ParseMemoryAfterCursorAcceptsTokenOrFilenameAndRejectsPaths|MemoryAdjudicateNoArgExitsTwoWithUsage|MemoryAdjudicateUnknownIDNamesSearchedLocationAndDoor)$' -count=1"
+      ],
       "broad_tests": [],
-      "evidence_paths": [],
-      "residual_risk": "Identity aliases and symlink reads can reach action paths until the shared boundary owns the invariant.",
+      "evidence_paths": [
+        "release-evidence/runs/20260830-p0-002-p0-003-focused-green.json"
+      ],
+      "residual_risk": "The shared custody seam and core memory/promote-driver paths are green. Base orient negatives, Workbench, operator orient, lineage, standing-law, and source-observation consumers still bypass it and must be migrated or gated before closure; canonical broad proof is also pending.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-29T13:04:00Z"
+      "updated_at": "2026-08-30T02:30:16Z"
     },
     {
       "id": "REL-P0-004",
@@ -218,18 +234,25 @@
       "severity": "P1",
       "subsystem": "memory-reporting",
       "title": "Truthful memory counters",
-      "status": "open",
-      "reproducer": "Count corrupt, decoded, skipped, deferred, failed, adjudicated, and changed candidates over mixed fixtures.",
-      "root_cause": "The current report vocabulary and accounting identity are not yet proven against mixed outcomes.",
+      "status": "focused_green",
+      "reproducer": "Mixed candidate fixtures showed dry-run incrementing adjudicated, verdict counts, and changed_ids despite performing no mutation.",
+      "root_cause": "One counter served both planned operations and committed mutations, so dry-run plans were reported as state changes.",
       "invariant": "walked equals decoded plus corrupt and every disposition has one truthful counter.",
-      "red_test": "Counter conservation table not yet established.",
-      "fix_commits": [],
-      "focused_tests": [],
+      "red_test": "TestAdjudicatePendingSmallCapMatrixHasNoGapsOrDuplicateMutations; TestAdjudicatePendingLimitCapsAdjudicatedNotSkipped; TestAdjudicatePendingNamesCorruptAndChangedIDs.",
+      "fix_commits": [
+        "1fe0fcdca88669d7670b823b7bb5129f9878abac"
+      ],
+      "focused_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/candidates ./internal/mem ./internal/promotedriver -count=1",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/candidates ./internal/mem ./internal/promotedriver -count=1"
+      ],
       "broad_tests": [],
-      "evidence_paths": [],
-      "residual_risk": "Operational dashboards can understate or double-count work.",
+      "evidence_paths": [
+        "release-evidence/runs/20260830-p0-002-p0-003-focused-green.json"
+      ],
+      "residual_risk": "Focused counter conservation and dry-run truthfulness are green; broad consumers and the canonical proof battery remain pending before closure.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-29T13:04:00Z"
+      "updated_at": "2026-08-30T02:30:16Z"
     },
     {
       "id": "REL-P1-003",
@@ -317,9 +340,9 @@
       "focused_tests": [],
       "broad_tests": [],
       "evidence_paths": [],
-      "residual_risk": "A receipt log can silently lose or misparse a terminal operation.",
+      "residual_risk": "A receipt log can silently lose or misparse a terminal operation. Read-only review also reproduced two exact publication gaps to cover here: candidate replacement rename followed by directory-fsync failure can report an ordinary failure after bytes changed, and pending-state rename is not parent-directory fsynced.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-29T13:04:00Z"
+      "updated_at": "2026-08-30T02:30:16Z"
     },
     {
       "id": "REL-P1-008",
