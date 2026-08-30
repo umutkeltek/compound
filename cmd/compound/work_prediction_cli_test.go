@@ -33,6 +33,7 @@ func firstJSONObject(t *testing.T, out string) map[string]json.RawMessage {
 // TestWorkCreateCLIPredictionRequiresOutcome covers F3 (CLI layer): staking any prediction flag
 // without --predicted-outcome is a usage error (exit 2), grouped-optional like parseGitDelivery.
 func TestWorkCreateCLIPredictionRequiresOutcome(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(workPredictionCLIBoundarySubEnv) == "missing-outcome" {
 		cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "p", "--predicted-move-type", "rule_delta"})
 		return
@@ -59,6 +60,7 @@ func TestWorkCreateCLIPredictionRequiresOutcome(t *testing.T) {
 // TestWorkCreateCLIPredictionRejectsReceiptOutcome covers F3: a staked prediction outcome of
 // "no_op" (a Receipt.Outcome value, never a close outcome) is rejected.
 func TestWorkCreateCLIPredictionRejectsReceiptOutcome(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(workPredictionCLIBoundarySubEnv) == "receipt-outcome" {
 		cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "p", "--predicted-outcome", "no_op"})
 		return
@@ -85,6 +87,7 @@ func TestWorkCreateCLIPredictionRejectsReceiptOutcome(t *testing.T) {
 // TestWorkCreateCLIPredictionRejectsBadMoveType covers F3: an unrecognized predicted move_type is
 // rejected.
 func TestWorkCreateCLIPredictionRejectsBadMoveType(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(workPredictionCLIBoundarySubEnv) == "bad-move-type" {
 		cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "p", "--predicted-outcome", "completed", "--predicted-move-type", "banana"})
 		return

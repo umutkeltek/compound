@@ -150,6 +150,7 @@ func TestWorkLandCheckCLIUsesExplicitRepoAndRecordsProof(t *testing.T) {
 const workLandCheckStealCLISubEnv = "COMPOUND_WORK_LAND_CHECK_STEAL_CLI_SUB"
 
 func TestWorkLandCheckCLIStealOnlyOverridesProofAttachment(t *testing.T) {
+	t.Parallel()
 	if mode := os.Getenv(workLandCheckStealCLISubEnv); mode != "" {
 		args := []string{
 			"land-check", os.Getenv("COMPOUND_WORK_LAND_CHECK_STEAL_WORK_ID"),
@@ -379,6 +380,7 @@ func TestWorkAdvanceHelpServesLegacyDeliveryBindingFlags(t *testing.T) {
 const workLandingGuardCLISubEnv = "COMPOUND_WORK_LANDING_GUARD_CLI_SUB"
 
 func TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags(t *testing.T) {
+	t.Parallel()
 	if mode := os.Getenv(workLandingGuardCLISubEnv); mode != "" {
 		switch mode {
 		case "create-unknown":

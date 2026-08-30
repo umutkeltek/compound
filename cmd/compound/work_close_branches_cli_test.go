@@ -58,6 +58,7 @@ func TestWorkCloseOpensBranchFlagLandsOnTransition(t *testing.T) {
 // the parser before any close runs — wrong segment count, empty slug, empty
 // owner, empty kind.
 func TestParseOpensBranchFlagRejectsMalformed(t *testing.T) {
+	t.Parallel()
 	for _, bad := range []string{
 		"",
 		"branch-lifecycle",                      // missing owner+kind
@@ -81,6 +82,7 @@ func TestParseOpensBranchFlagRejectsMalformed(t *testing.T) {
 }
 
 func TestParseAcknowledgeAbandonedHappy(t *testing.T) {
+	t.Parallel()
 	got, err := parseAcknowledgeAbandoned(
 		[]string{
 			"work_abc123",
@@ -111,6 +113,7 @@ func TestParseAcknowledgeAbandonedHappy(t *testing.T) {
 }
 
 func TestParseAcknowledgeAbandonedRequiresReason(t *testing.T) {
+	t.Parallel()
 	_, err := parseAcknowledgeAbandoned(
 		[]string{"work_abc123", "--acknowledge-abandoned", "ratt_aaaa", "--reason", ""},
 		"",
@@ -121,6 +124,7 @@ func TestParseAcknowledgeAbandonedRequiresReason(t *testing.T) {
 }
 
 func TestParseAcknowledgeAbandonedRequiresRattID(t *testing.T) {
+	t.Parallel()
 	_, err := parseAcknowledgeAbandoned(
 		[]string{"work_abc123", "--acknowledge-abandoned"},
 		"",
