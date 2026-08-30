@@ -1201,11 +1201,8 @@ func TestSessionsMineDryRunCLIReportsProofRequirements(t *testing.T) {
 }
 
 func TestSourceIntakeCLIAndOrientExposeActionCards(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := mem.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -1301,11 +1298,8 @@ func TestSourceIntakeCLIAndOrientExposeActionCards(t *testing.T) {
 }
 
 func TestSourceIntakeWorkPlanCLIAdmitsActionCardThroughWorkbenchPreview(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := mem.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -1390,11 +1384,8 @@ func TestSourceIntakeWorkPlanCLIAdmitsActionCardThroughWorkbenchPreview(t *testi
 }
 
 func TestWorkReviewCardPlanCLIAdmitsCardThroughWorkbenchPreview(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	workStore, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -1493,11 +1484,8 @@ func TestWorkReviewCardPlanCLIAdmitsCardThroughWorkbenchPreview(t *testing.T) {
 }
 
 func TestSourceIntakeWorkPlanCLICarriesActionCardThroughActionAndClosePlan(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := mem.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -1797,11 +1785,8 @@ func TestSourceObserveBatchCLIAppliesEventsToTraceEnvelope(t *testing.T) {
 }
 
 func TestSourceObserveBatchCLIRecordsCandidateReviewMaterial(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	captureStdout(t, func() {
 		cmdRoute([]string{"import-model-capabilities", filepath.Join("..", "..", "fixtures", "panel", "model-capabilities.yaml")})
 	})
@@ -2391,11 +2376,8 @@ func TestKnowledgeExtractPendingPrintsReportEvenWhenItemsFail(t *testing.T) {
 }
 
 func TestHomeOperationalHistoryArchiveCommandsHideAndRestoreHotHistory(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -13030,11 +13012,8 @@ func writeCLIJobTokenUsageFixture(t *testing.T, path string) {
 }
 
 func TestRouteImportModelCapabilitiesFeedsCapabilityPlan(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	source := filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")
 
 	importOut := captureStdout(t, func() {
@@ -14169,11 +14148,8 @@ func compoundCommandGitStatus(t *testing.T, dir string) string {
 }
 
 func TestProductActionPlanAndReviewCLIExposeActionCardsThroughReviewQueue(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := mem.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -14846,11 +14822,8 @@ func TestDistillerRequestFromFindingCLIDerivesTraceRef(t *testing.T) {
 // TestDistillerRequestFromFindingCLIIdempotentReplay proves same finding + unchanged prior
 // state records the same request artifact id (packet's idempotence invariant).
 func TestDistillerRequestFromFindingCLIIdempotentReplay(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	var rec finding.Finding
 	out := captureStdout(t, func() {
 		cmdFinding([]string{"record", "--topic", "bridge-cli-idem", "--body", "idem-body", "--work-id", "work_bridge_cli_idem", "--produced-by", "agent:codex", "--json"})
