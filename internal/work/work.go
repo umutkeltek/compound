@@ -2631,13 +2631,26 @@ func buildAttachedRunAttemptHistory(ids []string, attempts map[string]runattempt
 		for executionIndex := claimIndex + 1; executionIndex < len(orderedIDs); executionIndex++ {
 			executionID := orderedIDs[executionIndex]
 			execution, ok := attempts[executionID]
-			if !ok || !execution.CreatedAt.After(claim.CreatedAt) || !runAttemptHasExecuted(execution) {
+			if !ok || execution.Origin != runattempt.OriginHarnessExecution || !execution.CreatedAt.After(claim.CreatedAt) {
 				continue
 			}
 			history.ReplacedClaimReservations[claimID] = append(history.ReplacedClaimReservations[claimID], executionID)
 		}
 	}
 	return history, nil
+}
+
+// historicalRunAttemptOutcomeCompatible classifies terminal attempts whose
+// status does not represent the terminal work outcome. A failed predecessor is
+// compatible only when a successful retry completed the work. A claim
+// reservation replaced by any later harness execution attempt is always
+// outcome-neutral: the reservation did not execute the task, including when a
+// stale sweep made it terminal before the harness could supersede it.
+func historicalRunAttemptOutcomeCompatible(outcome, id string, history attachedRunAttemptHistory) bool {
+	if len(history.ReplacedClaimReservations[id]) > 0 {
+		return true
+	}
+	return outcome == "completed" && history.SuccessfulRetryPredecessors[id]
 }
 
 func (s *Store) buildRunAttemptTerminalizationPlans(
@@ -2763,15 +2776,14 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 					fmt.Sprintf("abandon_ack:%s:%s", id, strings.TrimSpace(request.Reason)))
 				continue
 			}
-			historicalCompletedAttempt := in.Outcome == "completed" &&
-				(history.SuccessfulRetryPredecessors[id] || len(history.ReplacedClaimReservations[id]) > 0)
+			historicalOutcomeCompatibleAttempt := historicalRunAttemptOutcomeCompatible(in.Outcome, id, history)
 			// Non-executed attempts have no task outcome. Completed close may
 			// bind only an exact pre-execution refusal or a sweep-proven,
 			// side-effect-free claim reservation.
 			nonExecutedAttempt := in.Outcome == "completed" &&
 				(runAttemptPolicyRefusedBeforeExecution(ra) || runAttemptSweptSideEffectFreeReservation(ra))
 			if ra.Status != runattempt.StatusSuperseded && ra.Status != workTarget &&
-				!historicalCompletedAttempt && !nonExecutedAttempt {
+				!historicalOutcomeCompatibleAttempt && !nonExecutedAttempt {
 				verifiedProof, err := s.committedVerifiedProofRunAttempt(closing, ra)
 				if err != nil {
 					return nil, fmt.Errorf("terminal runattempt %s proof-resource exception invalid: %w", id, err)

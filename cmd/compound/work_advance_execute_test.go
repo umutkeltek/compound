@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"compound/internal/actuator"
+	"compound/internal/envelope"
 	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/policy"
@@ -344,6 +345,196 @@ func TestWorkAdvanceExecuteFailedExit(t *testing.T) {
 	ra, _ := store.Get(id)
 	if ra.Status != runattempt.StatusFailed {
 		t.Fatalf("expected the executed RunAttempt to be failed, got: %s", ra.Status)
+	}
+}
+
+// A claim reservation can be swept after the claim but before the governed
+// adapter launches. That sweep is evidence that the reservation itself never
+// executed; a later real harness attempt owns the task outcome. Failure
+// finalization must therefore bind the real attempt and close the work instead
+// of treating the abandoned reservation as a contradictory failed outcome.
+func TestWorkAdvanceExecuteFailureAfterSweptClaimReservationClosesFailed(t *testing.T) {
+	fixture := newClaimedExecutionFixture(t, "executor", "failed execution survives a swept claim reservation")
+	claimed, err := fixture.store.Get(fixture.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed.RunAttemptIDs) != 1 {
+		t.Fatalf("claim run attempts = %v, want one reservation", claimed.RunAttemptIDs)
+	}
+	claimAttemptID := claimed.RunAttemptIDs[0]
+	attempts := runattempt.Open(fixture.homePath)
+	sweep, err := attempts.SweepStale(30*time.Minute, cliTestNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sweep.AutoClosed != 1 || len(sweep.AutoClosedIDs) != 1 || sweep.AutoClosedIDs[0] != claimAttemptID {
+		t.Fatalf("sweep report = %+v, want exact claim reservation auto-closed", sweep)
+	}
+	sweptBefore, err := attempts.Get(claimAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sweptBefore.Status != runattempt.StatusAbandoned || sweptBefore.SweepClassification != runattempt.SweepClassificationSideEffectFree {
+		t.Fatalf("swept claim reservation = %+v, want abandoned/side_effect_free", sweptBefore)
+	}
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	command := func() *exec.Cmd {
+		cmd := exec.Command(compoundTestBinary(t), "work", "advance", fixture.workID,
+			"--to", "running", "--execute", "--harness", "os-harness-entrypoints",
+			"--workspace", repoRoot, "--by", "executor", "--", "false")
+		cmd.Dir = repoRoot
+		cmd.Env = append(os.Environ(), "COMPOUND_HOME="+fixture.homePath)
+		return cmd
+	}
+	out, runErr := command().CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("failing governed command exited zero:\n%s", out)
+	}
+	if !strings.Contains(string(out), fixture.workID+" -> failed (audit_only)") {
+		t.Fatalf("governed failure did not truthfully report failed/audit_only:\n%s", out)
+	}
+
+	final, err := fixture.store.Get(fixture.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "failed" {
+		t.Fatalf("work state = %q, want failed; output:\n%s", final.State, out)
+	}
+	if len(final.RunAttemptIDs) != 2 || final.RunAttemptIDs[0] != claimAttemptID {
+		t.Fatalf("work run attempts = %v, want swept reservation followed by actual execution", final.RunAttemptIDs)
+	}
+	executionAttemptID := final.RunAttemptIDs[1]
+	execution, err := attempts.Get(executionAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.Status != runattempt.StatusFailed || execution.Origin != runattempt.OriginHarnessExecution ||
+		execution.Launch == nil || execution.Launch.CommittedAt == nil {
+		t.Fatalf("actual execution = %+v, want committed failed harness execution", execution)
+	}
+
+	sweptAfter, err := attempts.Get(claimAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(sweptAfter, sweptBefore) {
+		t.Fatalf("failed close rewrote sweep evidence:\nbefore=%+v\nafter=%+v", sweptBefore, sweptAfter)
+	}
+	if final.IDs.TransitionID == "" || !testEventExists(t, fixture.homePath, final.IDs.TransitionID) {
+		t.Fatalf("failed close transition %q is not durable", final.IDs.TransitionID)
+	}
+	var transition envelope.Transition
+	readTestEventJSON(t, fixture.homePath, final.IDs.TransitionID, &transition)
+	if transition.IDs.WorkID != fixture.workID {
+		t.Fatalf("transition work_id = %q, want %q", transition.IDs.WorkID, fixture.workID)
+	}
+	receiptID := ""
+	for _, ref := range transition.AfterRefs {
+		if strings.HasPrefix(ref, "rec_") {
+			receiptID = ref
+			break
+		}
+	}
+	if receiptID == "" || !testEventExists(t, fixture.homePath, receiptID) {
+		t.Fatalf("transition after_refs = %v, want durable terminal receipt", transition.AfterRefs)
+	}
+	var receipt envelope.Receipt
+	readTestEventJSON(t, fixture.homePath, receiptID, &receipt)
+	if receipt.IDs.WorkID != fixture.workID || receipt.Outcome != "failed" || receipt.MoveType != "audit_only" {
+		t.Fatalf("terminal receipt = %+v, want failed/audit_only for %s", receipt, fixture.workID)
+	}
+	proofReport, err := fixture.store.ProofChainDoctor(time.Now(), work.ProofChainDoctorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proofReport.Status != "ok" || len(proofReport.Items) != 1 || !proofReport.Items[0].ProofComplete || len(proofReport.Items[0].Problems) != 0 {
+		t.Fatalf("terminal proof chain = %+v, want one complete item", proofReport)
+	}
+
+	// A retry cannot launch another harness or rewrite the terminal proof.
+	// The exact terminal envelope and two-attempt chain remain authoritative.
+	retryOut, retryErr := command().CombinedOutput()
+	if retryErr == nil {
+		t.Fatalf("retry against failed work exited zero:\n%s", retryOut)
+	}
+	afterRetry, err := fixture.store.Get(fixture.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterRetry, final) {
+		t.Fatalf("retry mutated terminal work:\nbefore=%+v\nafter=%+v", final, afterRetry)
+	}
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(fixture.homePath, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 2 {
+		t.Fatalf("retry minted another RunAttempt; files=%v", runAttemptFiles)
+	}
+}
+
+// A start error is still the real harness attempt's outcome. It carries no
+// committed launch evidence, but it must replace the claim placeholder for
+// failed-close consistency and leave the same complete terminal proof chain.
+func TestWorkAdvanceExecuteStartErrorAfterSweptClaimReservationClosesFailed(t *testing.T) {
+	fixture := newClaimedExecutionFixture(t, "executor", "start error survives a swept claim reservation")
+	claimed, err := fixture.store.Get(fixture.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimAttemptID := claimed.RunAttemptIDs[0]
+	attempts := runattempt.Open(fixture.homePath)
+	if _, err := attempts.SweepStale(30*time.Minute, cliTestNow.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	sweptBefore, err := attempts.Get(claimAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	missingCommand := filepath.Join(t.TempDir(), "missing-governed-command")
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", fixture.workID,
+		"--to", "running", "--execute", "--harness", "os-harness-entrypoints",
+		"--workspace", repoRoot, "--by", "executor", "--", missingCommand)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+fixture.homePath)
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("start-error governed command exited zero:\n%s", out)
+	}
+	if !strings.Contains(string(out), fixture.workID+" -> failed (audit_only)") {
+		t.Fatalf("start error did not truthfully report failed/audit_only:\n%s", out)
+	}
+
+	final, err := fixture.store.Get(fixture.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "failed" || len(final.RunAttemptIDs) != 2 || final.RunAttemptIDs[0] != claimAttemptID {
+		t.Fatalf("terminal work = %+v, want failed with swept reservation + start-error attempt", final)
+	}
+	execution, err := attempts.Get(final.RunAttemptIDs[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.Status != runattempt.StatusFailed || execution.Origin != runattempt.OriginHarnessExecution ||
+		execution.Launch == nil || execution.Launch.StartErrorAt == nil || execution.Launch.CommittedAt != nil {
+		t.Fatalf("actual execution = %+v, want failed harness start_error without committed launch", execution)
+	}
+	sweptAfter, err := attempts.Get(claimAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(sweptAfter, sweptBefore) {
+		t.Fatalf("start-error close rewrote sweep evidence:\nbefore=%+v\nafter=%+v", sweptBefore, sweptAfter)
+	}
+	proofReport, err := fixture.store.ProofChainDoctor(time.Now(), work.ProofChainDoctorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proofReport.Status != "ok" || len(proofReport.Items) != 1 || !proofReport.Items[0].ProofComplete || len(proofReport.Items[0].Problems) != 0 {
+		t.Fatalf("start-error proof chain = %+v, want one complete item", proofReport)
 	}
 }
 
