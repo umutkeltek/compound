@@ -2,7 +2,7 @@
   "schema_version": "compound.release_issues.v0.1",
   "base_sha": "e5ecfd350e07286c8022b2efe5f86b8b9a7b2d3f",
   "branch": "release/harden-20260829",
-  "updated_at": "2026-08-29T14:52:13Z",
+  "updated_at": "2026-08-30T00:11:20Z",
   "issues": [
     {
       "id": "REL-P0-001",
@@ -10,28 +10,44 @@
       "subsystem": "work-close",
       "title": "Duplicate close lease-transfer gate",
       "status": "fixing",
-      "reproducer": "Inject close failures before terminal publication and after WorkEnvelope publication but before lifecycle-event append; replace an existing lease with {} or a mismatched work_id; compare close ActionIntent IDs for delimiter-ambiguous holder/reason tuples.",
-      "root_cause": "The duplicate pre-terminal lease gate was removed, but close still publishes terminal work before its sole event without a resumable frame, lease reads do not validate exact work identity plus nonblank holder, and idFor lengthlessly joins authority fields with |.",
-      "invariant": "A failed close cannot transfer the lease or publish a successful steal trail; the only lease-transfer decision occurs at the final recoverable boundary and an exact retry succeeds.",
-      "red_test": "Existing red/green: TestCloseStealPrepareFailureLeavesLeaseAndWorkUnchangedThenRetries and deterministic post-gate crash coverage. Missing red coverage: work-before-event append failure recovery, parseable lease corruption, delimiter-safe authority identity, and Git-commit failure lease cleanup.",
+      "reproducer": "Inject close failures at every publication boundary, then race delegated refusal/cleanup against a frozen close. Invoke delegate/status/dry-run without experimental admission and use a non-whole-second close timestamp.",
+      "root_cause": "Close originally transferred lease authority before its final recoverable boundary. Later hardening exposed coupled authority leaks: delegated mutation could cross a frozen close, delegate CLI entry eagerly opened a writable store and implicitly swept attempts before parse/admission, and ClosePlan rebuilt an evaluated decision without restoring the exact context-pack binding.",
+      "invariant": "A failed close cannot transfer the lease or publish a successful steal trail; frozen close authority fences every competing mutation; read-only or unadmitted CLI paths have zero side effects; the validated Receipt, WorkEnvelope, and closing event persist one exact timestamp; exact retry succeeds.",
+      "red_test": "Fresh red at e0d197f809f914e8e943ae56dd8295d987ac0b37: TestDelegateFrozenCloseFencesPreMintRefusalPublications, TestDelegateFrozenCloseFencesPreMintSessionCleanup, and TestDelegateRefusalPublicationRechecksConcurrentFrozenClose fail on authority_changed/runner-state invariants. Governed recovery also reproduced the non-whole-second close timestamp mismatch before state mutation.",
       "fix_commits": [
-        "ec080dbe12c72029d2b0cfa51c30ba9b5212fe7b",
-        "3eb9ea6bb0dde318db42a26e65c663ea8960c87e"
+        "ec080dbef6865ba2e0b3db8798e86fe5a90c2a88",
+        "3eb9ea6bb0dde318db42a26e65c663ea8960c87e",
+        "1e3de7237bc1ca19d6a57649eaa9ddc9ea7daffc",
+        "cba74e4dc08bf7a1da8c33ac2323ffced252ee74",
+        "354275cccd200fe15fe24d1bb7cf7a3493ebe6e2",
+        "bc7c1494945e15e4146355aad0bd1621f6750ce4",
+        "5dfec9f7bb566b3181a7d94b5cb0d0ecdc4266e0",
+        "49b54682dbbb852f309182ce441796501f24e715",
+        "225d69697fff127a54d6c937dbe5895a26bbc045"
       ],
       "focused_tests": [
         "GOTOOLCHAIN=go1.26.4 go test ./internal/work -run <close-focused-regressions> -count=1 (pass, 10.879s)",
-        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/work -run <close-focused-regressions> -count=1 (pass, 10.999s)"
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/work -run <close-focused-regressions> -count=1 (pass, 10.999s)",
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/work -run '^(TestCloseNonWholeSecondPersistsOneExactTimestamp|TestCloseCrashAfterFirstEnvelopeWithNoPreparedAttemptsUsesOneGeneration|TestCloseResumesLegacyPreparedActionIdentityAfterUpgrade|TestCrashGapReconcileMapsEveryWorkCloseOutcome)$' -count=1 (pass at 49b54682, 2.493s)",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/work -run '^(TestCloseNonWholeSecondPersistsOneExactTimestamp|TestCloseCrashAfterFirstEnvelopeWithNoPreparedAttemptsUsesOneGeneration|TestCloseResumesLegacyPreparedActionIdentityAfterUpgrade|TestCrashGapReconcileMapsEveryWorkCloseOutcome)$' -count=1 (pass at 49b54682, 3.853s)",
+        "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound -run '^(TestWorkDelegate.*|TestExperimentalDelegateMutationEnablementHasOneProductionOwner)$' -count=1 (pass at 225d6969, 13.483s)",
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/work -run '^(TestDelegateMutationPackageGateDefaultsOff|TestDelegateFrozenClose.*|TestDelegateRefusalPublicationRechecksConcurrentFrozenClose|TestDelegateDryRunNeverSpawnsOrPersists|TestDelegateRefusesFrozenCloseBeforeMint|TestOpenReadOnlyRefusesLifecycleMutationOnPreparedHome)$' -count=1 (pass at 225d6969, 5.916s)",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./cmd/compound -run '^(TestWorkDelegate.*|TestExperimentalDelegateMutationEnablementHasOneProductionOwner)$' -count=1 (pass at 225d6969, 17.971s)",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/work -run '^(TestDelegateMutationPackageGateDefaultsOff|TestDelegateFrozenClose.*|TestDelegateRefusalPublicationRechecksConcurrentFrozenClose|TestDelegateDryRunNeverSpawnsOrPersists|TestDelegateRefusesFrozenCloseBeforeMint|TestOpenReadOnlyRefusesLifecycleMutationOnPreparedHome)$' -count=1 (pass at 225d6969, 6.556s)"
       ],
       "broad_tests": [
         "GOTOOLCHAIN=go1.26.4 go test ./internal/work -count=1 (failed: default 10m timeout)"
       ],
       "evidence_paths": [
         "release-evidence/runs/20260829-initial-inventory.json",
-        "release-evidence/runs/20260829-p0-001-close-review.json"
+        "release-evidence/runs/20260829-p0-001-close-review.json",
+        "release-evidence/runs/20260830-p0-001-delegate-red.json",
+        "release-evidence/runs/20260830-p0-001-governed-recovery.json",
+        "release-evidence/runs/20260830-p0-001-containment-green.json"
       ],
-      "residual_risk": "A close can durably publish terminal work without its event and become unretryable, parseable lease corruption can bypass close authority, authority IDs can collide, and Git transaction commit failure can retain a terminal lease.",
+      "residual_risk": "Focused and race matrices are green through 225d6969. Integration with current main, full affected-package tests, and the canonical broad battery remain pending. Opted-in delegate TOCTOU and crash-atomicity are outside v0.1 and tracked as REL-P1-013.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-29T14:52:13Z"
+      "updated_at": "2026-08-30T00:11:20Z"
     },
     {
       "id": "REL-P0-002",
@@ -168,14 +184,16 @@
       "focused_tests": [],
       "broad_tests": [
         "GOTOOLCHAIN=go1.26.4 go test ./internal/work -count=1 (failed: default 10m timeout)",
-        "GOTOOLCHAIN=go1.26.4 go test ./internal/work -json -timeout=20m (failed: 1201.554s package timeout)"
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/work -json -timeout=20m (failed: 1201.554s package timeout)",
+        "GOTOOLCHAIN=go1.26.4 go test -count=1 -timeout=40m ./internal/work ./cmd/compound (uncontended internal/work completed red after 1388.628s; cmd/compound manually interrupted after 1686.563s once the candidate was already red)"
       ],
       "evidence_paths": [
-        "release-evidence/runs/20260829-p0-008-internal-work-timeout.json"
+        "release-evidence/runs/20260829-p0-008-internal-work-timeout.json",
+        "release-evidence/runs/20260830-p0-008-uncontended-sample.json"
       ],
       "residual_risk": "Canonical go test ./... and proof-check cannot certify the candidate. Raising timeouts or stubbing durability would weaken proof and is forbidden.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-29T14:52:13Z"
+      "updated_at": "2026-08-30T00:11:20Z"
     },
     {
       "id": "REL-P1-001",
@@ -392,6 +410,28 @@
       "residual_risk": "Correctness is currently discovered across disconnected gates, some only after a tag trigger.",
       "owner": "orchestrator:codex:release-harden-20260829",
       "updated_at": "2026-08-29T13:04:00Z"
+    },
+    {
+      "id": "REL-P1-013",
+      "severity": "P1",
+      "subsystem": "delegated-execution",
+      "title": "Opted-in delegate mutation TOCTOU and crash atomicity",
+      "status": "deferred",
+      "reproducer": "With --experimental-delegate-mutations enabled, race authority drift around external session create/send and inject failure between refusal event, binding, lifecycle, and RunAttempt publication.",
+      "root_cause": "The experimental delegate path spans an external session side effect plus several durable authorities without one recoverable transaction covering every post-create and post-send boundary.",
+      "invariant": "Before delegated mutation becomes supported, every external side effect is generation-bound, exactly reported, and either committed with matching authority or left with durable idempotent recovery evidence.",
+      "red_test": "Opted-in cross-process TOCTOU and every-boundary failure-injection suite not yet established.",
+      "fix_commits": [],
+      "focused_tests": [
+        "Default-off and malformed/unadmitted containment is green at 225d6969; this does not certify opted-in mutation."
+      ],
+      "broad_tests": [],
+      "evidence_paths": [
+        "release-evidence/runs/20260830-p0-001-containment-green.json"
+      ],
+      "residual_risk": "Explicitly outside the supported v0.1 contract behind --experimental-delegate-mutations. Consequence is limited to operators who opt into the experimental path; post-release milestone is v0.2 delegated-execution recovery hardening.",
+      "owner": "orchestrator:codex:release-harden-20260829",
+      "updated_at": "2026-08-30T00:11:20Z"
     },
     {
       "id": "REL-P2-001",
