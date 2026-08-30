@@ -129,7 +129,16 @@ EOF
   fi
 fi
 
-STALE_OUT=$("$TIMEOUT_BIN" 300 "$BIN" work sweep-stale --threshold 168h --yes --json 2>&1)
+# Diagnosis only -- deliberately NOT --yes. The apply path terminalizes an
+# envelope read before the liveness probe, so a concurrent actor that changes
+# owner/metadata/attachments without changing state has those writes silently
+# overwritten, and a process that becomes live after the probe can be
+# terminalized under it. Unattended hourly mutation is the wrong place to carry
+# that risk: the default dry-run still reports safe/reclaimed/skipped, so the
+# backlog stays observable while nothing is rewritten. Restore --yes only once
+# the reclaim is bound to the exact envelope generation it diagnosed and the
+# envelope write + lifecycle event + lease release are one recoverable unit.
+STALE_OUT=$("$TIMEOUT_BIN" 300 "$BIN" work sweep-stale --threshold 168h --json 2>&1)
 STALE_RC=$?
 STALE_SUM=$(printf '%s' "$STALE_OUT" | python3 -c 'import json,sys
 try:
