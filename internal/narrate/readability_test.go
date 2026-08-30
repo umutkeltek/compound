@@ -23,7 +23,7 @@ func fullInputs() narrate.Inputs {
 			Groups: []attention.Group{
 				attnGroup("gate|one", attention.BandNeedsYou, attention.KindGateAdmit, "A gate decision waits on you.", "executors resume when you clear it", oneClick("gate.clear"), 2, fresh),
 				attnGroup("job|one", attention.BandNeedsYou, attention.KindJobHealth, "A scheduled job is failing right now.", "the schedule stops skipping it", nil, 1, fresh),
-				attnGroup("malformed|one", attention.BandNeedsYou, attention.KindVerdict, "== raw machine summary with paths /Users/x.json ==", "", nil, 1, fresh),
+				attnGroup("malformed|one", attention.BandNeedsYou, attention.KindVerdict, "== raw machine summary with paths /Users/tester/x.json ==", "", nil, 1, fresh),
 				attnGroup("offer|one", attention.BandWatching, attention.KindProductMove, "A product move is ready to advance.", "the release inches forward", oneClick("offer.advance"), 1, fresh),
 			},
 		},
@@ -74,7 +74,7 @@ func TestBeatFallbackIsSpecificAndReadable(t *testing.T) {
 	for _, c := range cases {
 		in := fullInputs()
 		in.Attention.Groups = []attention.Group{
-			attnGroup("malformed|one", attention.BandNeedsYou, attention.KindVerdict, "== raw summary /Users/x.json ==", "", oneClick("review.record"), 1, fresh),
+			attnGroup("malformed|one", attention.BandNeedsYou, attention.KindVerdict, "== raw summary /Users/tester/x.json ==", "", oneClick("review.record"), 1, fresh),
 		}
 		in.Attention.Groups[0].Area = c.area
 		res := buildOrDie(t, in, narrate.Options{Mood: narrate.MoodDecide})

@@ -68,10 +68,10 @@ func TestDerivedOperatorCardBlockedAndReadyVariants(t *testing.T) {
 // return a validating, eighth-grade card that never echoes the syntax.
 func TestDerivedOperatorCardDegradesPastMachineSyntax(t *testing.T) {
 	hostile := map[string]any{
-		"title":          "fix --force=1 by editing /Users/op/secret.json and _a1b2c3d4e5f6 now",
+		"title":          "fix --force=1 by editing /Users/tester/secret.json and _a1b2c3d4e5f6 now",
 		"status":         "review_required",
-		"blocked_reason": "path /Users/op/x.md blocked id _deadbeefcafe",
-		"next_action":    "run compound --config=/Users/op/x.json --yes?",
+		"blocked_reason": "path /Users/tester/x.md blocked id _deadbeefcafe",
+		"next_action":    "run compound --config=/Users/tester/x.json --yes?",
 	}
 	card := DerivedOperatorCard(hostile, "capability-evaluation-intake")
 	if err := ValidateOperatorCard(card); err != nil {
