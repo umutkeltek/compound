@@ -195,6 +195,8 @@ func TestEventShowUnknownPrefixErrorsBeforeShowTrace(t *testing.T) {
 // dual-prefix family, the historical/logical trace reference forms, and the
 // non-collision between "trace_" and "tr_" (transition).
 func TestClassifyEventShowID(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name          string
 		id            string

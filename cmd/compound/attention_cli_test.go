@@ -115,6 +115,8 @@ func TestPrintAttentionTextDefaultRemainsByteEquivalent(t *testing.T) {
 }
 
 func TestAttentionCLIReceiptOnlyTidyJSONKeepsEveryGroup(t *testing.T) {
+	t.Parallel()
+
 	if homePath := os.Getenv(attentionReceiptOnlyJSONChildHome); homePath != "" {
 		cmdAttention([]string{"--json", "--receipt-only-grade", attention.RiskGradeTidy, "--home", homePath})
 		os.Exit(0)
@@ -182,6 +184,8 @@ func TestAttentionCLIReceiptOnlyTidyFoldsLiveTextOnly(t *testing.T) {
 }
 
 func TestAttentionCLIRejectsUnsupportedReceiptOnlyGrades(t *testing.T) {
+	t.Parallel()
+
 	if value := os.Getenv(attentionReceiptOnlyInvalidChildValue); value != "" {
 		cmdAttention([]string{"--receipt-only-grade", value})
 		return
