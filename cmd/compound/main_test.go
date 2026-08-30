@@ -977,11 +977,8 @@ func TestSourceObserveBatchCLIAppliesGeneratedSourceObservation(t *testing.T) {
 }
 
 func TestSourceIntakeCLIAndOrientConsumeRecordedObservationBatches(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := mem.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -1091,11 +1088,8 @@ func freshGSCBatchFixture(t *testing.T) string {
 }
 
 func TestSourceConnectionsCLIShowsKnownAndObservedSources(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := mem.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -1969,11 +1963,8 @@ func TestSourceObserveBatchCLIRecordsCandidateReviewMaterial(t *testing.T) {
 }
 
 func TestSourceObservationVerdictCLIRecordsNoPromoteEvidence(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	obs := sourceobs.SourceObservation{
 		SchemaVersion: sourceobs.SchemaVersion,
 		ID:            "srcobs_cli_generated_view",
@@ -2217,11 +2208,8 @@ func writeCLIJSONFixture(t *testing.T, path string, value any) {
 }
 
 func TestKnowledgeExtractCLIUsesFixtureAndWritesCandidate(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	var importReport knowledge.ImportReport
 	importOut := captureStdout(t, func() {
 		cmdKnowledge([]string{"import", filepath.Join("..", "..", "fixtures", "knowledge", "arxiv-export.json"), "--json"})
@@ -3483,11 +3471,8 @@ func TestCapabilityOutboundDistributionPlanJSON(t *testing.T) {
 }
 
 func TestCapabilityOutboundDistributionVerdictPlanAndReviewCLI(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	writeExternalRepoIntakeContextFixture(t, homePath)
 	targetPath := filepath.Join(t.TempDir(), "product-loop.md")
 	original := "# Product Loop\n\nExisting notes.\n"
@@ -3581,11 +3566,8 @@ func TestCapabilityOutboundDistributionVerdictPlanAndReviewCLI(t *testing.T) {
 }
 
 func TestCapabilityOutboundDistributionDryRunReceiptCLI(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	writeExternalRepoIntakeContextFixture(t, homePath)
 	targetPath := filepath.Join(t.TempDir(), "product-loop.md")
 	if err := os.WriteFile(targetPath, []byte("# Product Loop\n\nExisting notes.\n"), 0o644); err != nil {
@@ -4143,11 +4125,8 @@ func TestWorkbenchCommandDispatchNextUsesActor(t *testing.T) {
 }
 
 func TestWorkActivePacketProofCommand(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4229,11 +4208,8 @@ func TestWorkActivePacketProofCommand(t *testing.T) {
 }
 
 func TestWorkActivePacketProofDetectsChangedSourcePacket(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -5080,11 +5056,8 @@ func TestWorkAdvancePlanAndAdvanceCommandRecordPolicy(t *testing.T) {
 }
 
 func TestWorkObserveRunCommandAttachesTrace(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -5282,11 +5255,8 @@ func TestWorkClosePlanCommandReportsLeaseHolderDenial(t *testing.T) {
 // Steal-success path: `work close --steal --reason` on a held work succeeds via the CLI
 // and the emitted close command from close-plan carries --steal --reason.
 func TestWorkCloseCommandStealOverridesLeaseHolder(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -5645,11 +5615,8 @@ func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 }
 
 func TestReviewsBriefPlanCommandEmitsBoundedInstructionPacket(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	const area = "decision-brief-fixtures"
 	if _, err := reviewartifact.Write(homePath, area, "brief_member_a", map[string]any{
 		"id":               "brief_member_a",
@@ -5831,11 +5798,8 @@ func TestReviewsCommandAnnotatesRoutePromotionRecordedHold(t *testing.T) {
 }
 
 func TestReviewsCommandAnnotatesPanelVerdictReview(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	if _, err := reviewartifact.Write(homePath, "panel-verdicts", "panel_verdict_cli", map[string]any{
 		"schema_version": "compound.panel_verdict.v0.1",
 		"id":             "panel_verdict_cli",
@@ -5913,11 +5877,8 @@ func TestReviewsCommandAnnotatesPanelVerdictReview(t *testing.T) {
 }
 
 func TestReviewsCommandAnnotatesAppliedPanelVerdictNoAction(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	paths, err := reviewartifact.Write(homePath, "panel-verdicts", "panel_verdict_applied_cli", map[string]any{
 		"schema_version": "compound.panel_verdict.v0.1",
 		"id":             "panel_verdict_applied_cli",
@@ -6117,11 +6078,8 @@ func TestReviewsCommandAnnotatesCapabilityEvaluationRecorded(t *testing.T) {
 }
 
 func TestReviewsRecordFindingConsumesStandingGrantAndRecordsWorkAction(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	grantSource := filepath.Join(t.TempDir(), "standing-grants.yaml")
 	if err := os.WriteFile(grantSource, []byte(`generated_at: "2026-07-01T12:00:00Z"
 authority:
@@ -6254,11 +6212,8 @@ grants:
 }
 
 func TestReviewsRecordFindingAutoWorkClosesWorkEnvelope(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	grantSource := filepath.Join(t.TempDir(), "standing-grants.yaml")
 	if err := os.WriteFile(grantSource, []byte(`
 generated_at: "2026-07-01T12:00:00Z"
@@ -6662,11 +6617,8 @@ func TestAuthorityPathRegistryImportsOSRegistryAndResolvesMovedPaths(t *testing.
 }
 
 func TestAuthorityJobRosterImportsAndReportsAuthority(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	source := filepath.Join(t.TempDir(), "cron-jobs.json")
 	writeCLIJobRosterFixture(t, source)
 
@@ -8043,11 +7995,8 @@ func TestDistillerRunDoesNotCreateCapabilityGraph(t *testing.T) {
 }
 
 func TestDistillerEvalPlanUsesOperationalizedEvalCandidateWithoutMutatingCorpus(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	tracePath := writeJSONFile(t, `{
  "trace_ref": "trace_eval_plan_candidate",
  "candidates": [{
@@ -8118,11 +8067,8 @@ func TestDistillerEvalPlanUsesOperationalizedEvalCandidateWithoutMutatingCorpus(
 }
 
 func TestDistillerImprovementPlanUsesMethodAndPolicyCandidatesWithoutMutatingTarget(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	tracePath := writeJSONFile(t, `{
  "trace_ref": "trace_improvement_plan_candidates",
  "candidates": [
@@ -8436,11 +8382,8 @@ func TestRoutePlanUsesRouteObservationWithoutMutatingTarget(t *testing.T) {
 }
 
 func TestRouteOutcomeReviewUsesLedgerEvidenceAndReceiptWithoutMutatingTarget(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	fixture := filepath.Join("..", "..", "fixtures", "route", "provider-calls.ndjson")
 	importOut := captureStdout(t, func() {
 		cmdRoute([]string{"import-provider-ledger", fixture, "--tail", "1"})
@@ -8609,11 +8552,8 @@ func TestRouteCostDoctorRecordsReviewableObservation(t *testing.T) {
 }
 
 func TestCapabilitySkillPlanUsesSkillCandidateWithoutMutatingGraphOrTarget(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	tracePath := writeJSONFile(t, `{
  "trace_ref": "trace_skill_candidate",
  "candidates": [{
@@ -8685,11 +8625,8 @@ func TestCapabilitySkillPlanUsesSkillCandidateWithoutMutatingGraphOrTarget(t *te
 }
 
 func TestCapabilitySkillCandidateReviewWritesReviewOnly(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "skill-manifest.yaml")})
 	nodesPath := filepath.Join(homePath, "registries", "capability-nodes.jsonl")
 	beforeNodes, err := os.ReadFile(nodesPath)
@@ -8772,11 +8709,8 @@ func TestCapabilitySkillCandidateReviewWritesReviewOnly(t *testing.T) {
 }
 
 func TestCapabilitySkillCandidateDecisionJSON(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	candidatePath := writeJSONFile(t, `{
 		"id": "example/skills/web-design",
 		"name": "Web Design",
@@ -8847,11 +8781,8 @@ func TestCapabilitySkillCandidateDecisionJSON(t *testing.T) {
 }
 
 func TestCapabilitySkillCandidateDecisionFeedsSkillPlan(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "skill-manifest.yaml")})
 	nodesPath := filepath.Join(homePath, "registries", "capability-nodes.jsonl")
 	beforeNodes, err := os.ReadFile(nodesPath)
@@ -8925,11 +8856,8 @@ func TestCapabilitySkillCandidateDecisionFeedsSkillPlan(t *testing.T) {
 }
 
 func TestRuntimeFeedbackReachesDistillerRequestAndGraph(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 
 	cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "skill-manifest.yaml")})
 	cmdHook([]string{"user-prompt-submit", writeHookFixture(t, hook.Fixture{
@@ -9186,11 +9114,8 @@ func TestProductChangeStreamImportsSourceIssues(t *testing.T) {
 }
 
 func TestProductSourceIssuePlanUsesOpenSourceIssueWithoutClosingIt(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	fixture := filepath.Join("..", "..", "fixtures", "product", "change-stream-candidates.md")
 	importOut := captureStdout(t, func() {
 		cmdProduct([]string{"change-stream", fixture})
@@ -9388,11 +9313,8 @@ func TestProductCanonicalMetricsCLI(t *testing.T) {
 }
 
 func TestProductHypothesisPlanUsesDistillerCandidateWithoutMutatingTarget(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	tracePath := filepath.Join(t.TempDir(), "trace.json")
 	if err := os.WriteFile(tracePath, []byte(`{
   "trace_ref": "trace_product_hypothesis",
@@ -9490,11 +9412,8 @@ func TestProductHypothesisPlanUsesDistillerCandidateWithoutMutatingTarget(t *tes
 }
 
 func TestProductReviewPlanUsesSignalEvidenceWithoutResolvingHypothesis(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	candidateID := "hyp_cli_review_plan"
 	candidateDir := filepath.Join(homePath, candidates.InboxDir(candidates.ProductHypothesis))
 	if err := os.MkdirAll(candidateDir, 0o755); err != nil {
@@ -10207,11 +10126,8 @@ func TestCapabilityImportSurfacingMissesRecordsFeedbackAndSourceNoPromote(t *tes
 // projection), running the verb on that card's own path applies edges AND
 // clears the card, and a second run is a clean idempotent no-op.
 func TestCapabilityImportSurfacingMissesResolvesReviewQueueItemAndStaysIdempotent(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	cmdCapability([]string{"add", "skill:web-design-guidelines", "skill", "Web Design Guidelines", "--triggers", "css"})
 
 	reviewDir := filepath.Join(homePath, "reviews", "skill-surfacing")
@@ -10569,11 +10485,8 @@ func TestEventShowAndListServeFromCompoundHome(t *testing.T) {
 }
 
 func TestEventImportOSCanProduceTraceBackedReviewFinding(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	grantSource := filepath.Join(t.TempDir(), "standing-grants.yaml")
 	if err := os.WriteFile(grantSource, []byte(`generated_at: "2026-07-01T12:00:00Z"
 authority:
@@ -10699,11 +10612,8 @@ func TestDistillerRequestLoadsImportedEventTraces(t *testing.T) {
 }
 
 func TestDistillerImportConversationMiningRecordsSourceNoPromote(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	dir := t.TempDir()
 	reportPath := filepath.Join(dir, "agent-conversation-mining-report-latest.json")
 	tagsPath := filepath.Join(dir, "agent-conversation-mined-tags-latest.jsonl")
@@ -10871,11 +10781,8 @@ func TestDistillerImportSessionLensesRecordsSourceNoPromote(t *testing.T) {
 }
 
 func TestDistillerImportConversationCoverageRecordsSourceNoPromote(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	dir := t.TempDir()
 	reportPath := filepath.Join(dir, "agent-conversation-coverage-latest.json")
 	if err := os.WriteFile(reportPath, []byte(`{
@@ -10957,11 +10864,8 @@ func TestDistillerImportConversationCoverageRecordsSourceNoPromote(t *testing.T)
 }
 
 func TestDistillerRunLLMEventResponseParksMemoryWithoutPromotion(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	fixture := filepath.Join("..", "..", "fixtures", "events", "os-events.ndjson")
 	captureStdout(t, func() {
 		cmdEvent([]string{"import-os", fixture, "--stream", "control-events"})
@@ -11047,11 +10951,8 @@ func TestDistillerRunLLMEventResponseParksMemoryWithoutPromotion(t *testing.T) {
 }
 
 func TestDistillerEventRequestSummaryCanDriveParkedMemoryCandidate(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	fixture := filepath.Join("..", "..", "fixtures", "events", "os-events.ndjson")
 	captureStdout(t, func() {
 		cmdEvent([]string{"import-os", fixture, "--stream", "control-events"})
@@ -11130,11 +11031,8 @@ func TestDistillerEventRequestSummaryCanDriveParkedMemoryCandidate(t *testing.T)
 }
 
 func TestDecisionCandidatePlanUsesDistillerCandidateWithoutMutatingTarget(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	confidence := 0.88
 	response := distiller.LLMExtractionResponse{
 		SchemaVersion: distiller.LLMExtractionSchemaVersion,
@@ -11220,11 +11118,8 @@ func TestDecisionCandidatePlanUsesDistillerCandidateWithoutMutatingTarget(t *tes
 }
 
 func TestMemoryWritePlanUsesParkedDistillerCandidateWithoutMutatingBrain(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	confidence := 0.86
 	response := distiller.LLMExtractionResponse{
 		SchemaVersion: distiller.LLMExtractionSchemaVersion,
@@ -11308,11 +11203,8 @@ func TestMemoryWritePlanUsesParkedDistillerCandidateWithoutMutatingBrain(t *test
 }
 
 func TestDistillerRunGroundsLLMResponseWithRequest(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 
 	request := distiller.LLMExtractionRequest{
 		SchemaVersion: distiller.LLMExtractionSchemaVersion,
@@ -11386,11 +11278,8 @@ func TestDistillerRunGroundsLLMResponseWithRequest(t *testing.T) {
 }
 
 func TestDistillerRequestRecordPersistsReplayablePacket(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	rawPath := filepath.Join(t.TempDir(), "trace.txt")
 	if err := os.WriteFile(rawPath, []byte("hook output refs must remain replayable evidence\n"), 0o644); err != nil {
 		t.Fatalf("write raw trace: %v", err)
@@ -12014,11 +11903,8 @@ func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T)
 }
 
 func TestProjectionRepairReviewCLIRecordsReviewedSidecar(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 
 	planOut := captureStdout(t, func() {
 		cmdProjection([]string{"repair-plan", filepath.Join("..", "..", "fixtures", "projections", "stale-freshness.yaml")})
@@ -12280,11 +12166,8 @@ func TestProjectionRepairPlanCreatesGateSourceObservationAndReview(t *testing.T)
 }
 
 func TestRuntimeRepairPlanCreatesGateAndReview(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	out := captureStdout(t, func() {
 		cmdRuntime([]string{"repair-plan", filepath.Join("..", "..", "fixtures", "runtime", "broken-service.yaml")})
 	})
@@ -12500,11 +12383,8 @@ func TestProjectionDashboardReadModelSourceObserve(t *testing.T) {
 }
 
 func TestProjectionContextRecordFlowsIntoOrient(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	out := captureStdout(t, func() {
 		cmdProjection([]string{"doctor", filepath.Join("..", "..", "fixtures", "projections", "stale-freshness.yaml"), "--record-context", "--repo-kind", "control-plane"})
 	})
@@ -13572,11 +13452,8 @@ Success: packet is listed.
 }
 
 func TestWorkbenchJSONSurfacesAdjacentProgressWhenHeldValvesBlockDispatch(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -13649,11 +13526,8 @@ Success: operator-only work should not be a Codex adjacent packet.
 }
 
 func TestWorkbenchJSONSurfacesAdjacentNonPacketActionsWhenPacketsFilteredOut(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
