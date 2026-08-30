@@ -42,6 +42,7 @@ const proofCheckLegacyRecoveryRealSubEnv = "COMPOUND_PROOF_LEGACY_RECOVERY_REAL_
 const proofCheckLegacyRecoveryReportlessSubEnv = "COMPOUND_PROOF_LEGACY_RECOVERY_REPORTLESS_SUB"
 
 func TestProofCheckCommandMissingBaseFailsBeforeReportOrRunner(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckMissingBaseSubEnv) == "1" {
 		proofCheckCanonicalRunner = func(
 			context.Context,
@@ -101,6 +102,7 @@ func TestProofCheckCommandMissingBaseFailsBeforeReportOrRunner(t *testing.T) {
 }
 
 func TestProofCheckCommandLegacyRecoveryBypassesBaseWithoutRunningBattery(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckLegacyRecoverySubEnv) == "1" {
 		proofCheckLegacyRecoverer = func(
 			_ string,
@@ -212,6 +214,7 @@ func TestProofCheckCommandLegacyRecoveryBypassesBaseWithoutRunningBattery(t *tes
 }
 
 func TestProofCheckLegacyRecoveryRejectsAllRunnerModes(t *testing.T) {
+	t.Parallel()
 	for _, flag := range []string{"--dev", "--timings", "--dry-run", "--ci", "--ci-console"} {
 		t.Run(flag, func(t *testing.T) {
 			err := proofCheckLegacyRecoveryModeError([]string{
@@ -229,6 +232,7 @@ func TestProofCheckLegacyRecoveryRejectsAllRunnerModes(t *testing.T) {
 }
 
 func TestProofCheckCommandLegacyRecoveryReleasesRealRetainedHolderWithoutVerification(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckLegacyRecoveryRealSubEnv) == "1" {
 		proofCheckCanonicalRunner = func(
 			context.Context,
@@ -399,6 +403,7 @@ func TestProofCheckCommandLegacyRecoveryReleasesRealRetainedHolderWithoutVerific
 }
 
 func TestProofCheckCommandLegacyRecoveryReleasesReportlessFailureWithoutRunningBattery(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckLegacyRecoveryReportlessSubEnv) == "1" {
 		proofCheckCanonicalRunner = func(
 			context.Context,
@@ -555,6 +560,7 @@ func TestProofCheckCommandLegacyRecoveryReleasesReportlessFailureWithoutRunningB
 }
 
 func TestProofCheckCommandSignalCancelsAndWaitsForWholeGateGroup(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckSignalForwardSubEnv) == "1" {
 		proofCheckCanonicalRunner = func(
 			ctx context.Context,
@@ -636,6 +642,7 @@ func TestProofCheckCommandSignalCancelsAndWaitsForWholeGateGroup(t *testing.T) {
 }
 
 func TestWaitForProofCheckGatePIDWaitsForCompletePublication(t *testing.T) {
+	t.Parallel()
 	pidPath := filepath.Join(t.TempDir(), "gate-child.pid")
 	if err := os.WriteFile(pidPath, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -682,6 +689,7 @@ func waitForProofCheckGatePID(t *testing.T, path string, timeout time.Duration) 
 }
 
 func TestProofCheckCommandInstalledRuntimePublicationFailureIsNonGreen(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckArtifactPublishFailureSubEnv) == "1" {
 		proofCheckCanonicalRunner = func(
 			ctx context.Context,
@@ -750,6 +758,7 @@ func TestProofCheckCommandInstalledRuntimePublicationFailureIsNonGreen(t *testin
 }
 
 func TestProofCheckAdmissionSweepAndExpiryCannotBypassLiveProcessTree(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckBarrierChildSubEnv) == "1" {
 		time.Sleep(30 * time.Second)
 		os.Exit(0)
@@ -846,6 +855,7 @@ func TestProofCheckAdmissionSweepAndExpiryCannotBypassLiveProcessTree(t *testing
 }
 
 func TestProofCheckGateProcessInheritsExecutionBarrier(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckBarrierChildSubEnv) == "1" {
 		time.Sleep(250 * time.Millisecond)
 		os.Exit(0)
@@ -964,6 +974,7 @@ func TestProofCheckAdmissionCancelsLateAsyncCommandBeforeBarrierRelease(t *testi
 }
 
 func TestProofCheckAdmissionRejectsSecondBeforeRunnerStarts(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "proof-admission-test", now); err != nil {
@@ -1027,6 +1038,7 @@ func TestProofCheckAdmissionRejectsSecondBeforeRunnerStarts(t *testing.T) {
 }
 
 func TestProofCheckAdmissionStealCancelsPredecessorProcessBeforeSuccessorStarts(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Now().UTC()
 	if err := home.Init(homePath, "proof-steal-cancellation-test", now); err != nil {
@@ -1139,6 +1151,7 @@ func TestProofCheckAdmissionStealCancelsPredecessorProcessBeforeSuccessorStarts(
 }
 
 func TestProofCheckAdmissionExpiryRequiresGovernedTerminationEvidenceBeforeRunner(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "proof-expiry-termination-test", now); err != nil {
@@ -1216,6 +1229,7 @@ func TestProofCheckAdmissionExpiryRequiresGovernedTerminationEvidenceBeforeRunne
 }
 
 func TestProofCheckConflictPreflightPreservesOutTarget(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "proof-conflict-out-test", now); err != nil {
@@ -1289,6 +1303,7 @@ func TestProofCheckConflictPreflightPreservesOutTarget(t *testing.T) {
 }
 
 func TestProofCheckAdmissionCompletionErrorLeavesNoRunningAttempt(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "proof-terminal-return-test", now); err != nil {
@@ -1338,6 +1353,7 @@ func TestProofCheckAdmissionCompletionErrorLeavesNoRunningAttempt(t *testing.T) 
 }
 
 func TestProofCheckAdmissionSurfacesCommittedButRetainedLease(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "proof-retained-release-test", now); err != nil {
@@ -1487,6 +1503,7 @@ func TestProofCheckAdmissionSurfacesCommittedButRetainedLease(t *testing.T) {
 }
 
 func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckReleasePendingCLISubEnv) == "1" {
 		if os.Getenv(proofCheckReleasePendingTamperEnv) == "1" {
 			proofCheckBeforeRetainedOutMatch = func(path string) {
@@ -1747,6 +1764,7 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 }
 
 func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name               string
 		mutate             func(t *testing.T, path string)
@@ -1958,6 +1976,7 @@ func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
 }
 
 func TestProofCheckCommandCanonicalFailedBatteryReleasesAdmission(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckFailedCanonicalCLISubEnv) == "1" {
 		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, source gitrepository.Snapshot, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
 			report, err := injectedCanonicalProofCheckReport(repoPath, source.BaseSHA, now)
@@ -2106,6 +2125,7 @@ func TestProofCheckCommandCanonicalFailedBatteryReleasesAdmission(t *testing.T) 
 }
 
 func TestProofCheckCommandFailedBatteryReleasePendingAndExactRecovery(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckFailedReleaseCLISubEnv) == "1" {
 		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, source gitrepository.Snapshot, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
 			marker, err := os.OpenFile(os.Getenv("COMPOUND_PROOF_FAILED_RELEASE_RUNS"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
@@ -2266,6 +2286,7 @@ func TestProofCheckCommandFailedBatteryReleasePendingAndExactRecovery(t *testing
 }
 
 func TestProofCheckCommandPostReportFailuresAlwaysPrintFailedVerdict(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckPostReportErrorCLISubEnv) == "1" {
 		proofCheckCanonicalRunner = func(ctx context.Context, repoPath string, _ bool, source gitrepository.Snapshot, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
 			report, err := injectedCanonicalProofCheckReport(repoPath, source.BaseSHA, now)
@@ -2359,6 +2380,7 @@ func TestProofCheckCommandPostReportFailuresAlwaysPrintFailedVerdict(t *testing.
 }
 
 func TestProofCheckCommandRejectsUnsafeTTLBeforeAdmission(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckUnsafeTTLCLISubEnv) == "1" {
 		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, source gitrepository.Snapshot, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
 			if err := os.WriteFile(os.Getenv("COMPOUND_PROOF_UNSAFE_TTL_RUNNER"), []byte("runner-started\n"), 0o644); err != nil {
@@ -2430,6 +2452,7 @@ func TestProofCheckCommandRejectsUnsafeTTLBeforeAdmission(t *testing.T) {
 }
 
 func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckMinimumTTLCLISubEnv) == "1" {
 		role := os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_ROLE")
 		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, source gitrepository.Snapshot, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
@@ -2547,6 +2570,7 @@ func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing
 }
 
 func TestProofCheckAdmissionLeavesLightweightModesUnreserved(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		dryRun    bool
@@ -2844,6 +2868,7 @@ func TestProofCheckTimingWarningOwnedBeforeGovernedRedCompletion(t *testing.T) {
 }
 
 func TestProofCheckCompletionRetainsHolderUntilBackgroundDescendantExits(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	outPath := filepath.Join(t.TempDir(), "proof-report.json")
 	now := time.Date(2026, 7, 24, 14, 0, 0, 0, time.UTC)
@@ -2935,6 +2960,7 @@ func TestProofCheckCompletionRetainsHolderUntilBackgroundDescendantExits(t *test
 }
 
 func TestProofCheckGoCacheIsPerWorktree(t *testing.T) {
+	t.Parallel()
 	first, firstOK := work.ProofGoCache(t.TempDir())
 	second, secondOK := work.ProofGoCache(t.TempDir())
 	t.Cleanup(func() {
@@ -2950,6 +2976,7 @@ func TestProofCheckGoCacheIsPerWorktree(t *testing.T) {
 }
 
 func TestProofCheckGoCacheIsStableForOneWorktree(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	first, firstOK := work.ProofGoCache(worktree)
 	second, secondOK := work.ProofGoCache(worktree)
@@ -2963,6 +2990,7 @@ func TestProofCheckGoCacheIsStableForOneWorktree(t *testing.T) {
 }
 
 func TestProofCheckGoCacheLivesOutsideWorktree(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	cache, ok := work.ProofGoCache(worktree)
 	t.Cleanup(func() { _ = os.RemoveAll(cache) })
