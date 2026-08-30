@@ -209,6 +209,9 @@ func (s *Store) holdEvidenceFileReadCount() int64 {
 // event lock, then let the mutation append under that same order. No caller may
 // enter this helper while already holding the work-event lock.
 func (s *Store) withLifecycleMutation(fn func() error) error {
+	if s.readOnly {
+		return errors.New("work lifecycle mutation requires a writable store")
+	}
 	return home.WithAutonomyAdmissionLock(s.home, func() error {
 		if _, err := s.eventsFor(""); err != nil {
 			return fmt.Errorf("work lifecycle event log preflight: %w", err)

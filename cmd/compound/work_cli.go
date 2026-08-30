@@ -262,6 +262,15 @@ func previewDispatchClaim(store *work.Store, now time.Time, opts work.DispatchPl
 	return store.DispatchPlan(now, opts)
 }
 
+// workCommandNeedsWritableStore keeps the supported read-only delegate faces
+// from materializing the work habitat before their own parser can classify the
+// request. An explicit experimental mutation opt-in is the only delegate/steer
+// posture allowed to open the writable store; status, attach, dry-run, and a
+// missing opt-in stay footprint-free even when they later return an error.
+func workCommandNeedsWritableStore(sub string, args []string) bool {
+	return delegateCommandNeedsWritableStore(sub, args)
+}
+
 func cmdWork(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, workUsage(""))
@@ -276,12 +285,16 @@ func cmdWork(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	store, err := work.Open(homePath)
+	sub, rest := args[0], args[1:]
+	openStore := work.OpenReadOnly
+	if workCommandNeedsWritableStore(sub, rest) {
+		openStore = work.Open
+	}
+	store, err := openStore(homePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	sub, rest := args[0], args[1:]
 	flag := func(name string) string {
 		for i := 0; i < len(rest); i++ {
 			if rest[i] == name && i+1 < len(rest) {

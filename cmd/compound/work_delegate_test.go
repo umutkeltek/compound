@@ -616,6 +616,77 @@ func TestWorkDelegateHelpInventory(t *testing.T) {
 	}
 }
 
+func TestWorkDelegateWritableStoreClassificationUsesExactParsers(t *testing.T) {
+	const workID = "work_delegate_parser_classification"
+	tests := []struct {
+		name string
+		sub  string
+		args []string
+		want bool
+	}{
+		{name: "status", sub: "delegate", args: []string{"status", workID}},
+		{name: "attach", sub: "attach", args: []string{workID}},
+		{name: "default off", sub: "delegate", args: []string{workID, "--harness", "claude-zai"}},
+		{name: "dry run", sub: "delegate", args: []string{workID, "--harness", "claude-zai", "--dry-run"}},
+		{name: "gate is harness value", sub: "delegate", args: []string{workID, "--harness", work.ExperimentalDelegateMutationsFlag}},
+		{name: "gate is raw command", sub: "delegate", args: []string{workID, "--harness", "claude-zai", "--", work.ExperimentalDelegateMutationsFlag}},
+		{name: "gate is steer text", sub: "steer", args: []string{workID, "--text", work.ExperimentalDelegateMutationsFlag}},
+		{name: "gate is progress count", sub: "delegate", args: []string{"progress", workID, "--done", work.ExperimentalDelegateMutationsFlag, "--empty", "0", "--failed", "0", "--remaining", "0"}},
+		{name: "invalid sweep", sub: "delegate", args: []string{"sweep", workID, work.ExperimentalDelegateMutationsFlag, "--unknown"}},
+		{name: "delegate mutation", sub: "delegate", args: []string{workID, "--harness", "claude-zai", work.ExperimentalDelegateMutationsFlag}, want: true},
+		{name: "raw dry run token is command data", sub: "delegate", args: []string{workID, "--harness", "claude-zai", work.ExperimentalDelegateMutationsFlag, "--", "worker", "--dry-run"}, want: true},
+		{name: "steer mutation", sub: "steer", args: []string{workID, "--text", "send", work.ExperimentalDelegateMutationsFlag}, want: true},
+		{name: "sweep mutation", sub: "delegate", args: []string{"sweep", workID, work.ExperimentalDelegateMutationsFlag}, want: true},
+		{name: "progress mutation", sub: "delegate", args: []string{"progress", workID, "--done", "0", "--empty", "0", "--failed", "0", "--remaining", "0", work.ExperimentalDelegateMutationsFlag}, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := workCommandNeedsWritableStore(tc.sub, tc.args); got != tc.want {
+				t.Fatalf("workCommandNeedsWritableStore(%q, %q) = %v, want %v", tc.sub, tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExperimentalDelegateMutationEnablementHasOneProductionOwner(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := map[string]int{}
+	for _, top := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(repoRoot, top), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			count := strings.Count(string(body), ".EnableExperimentalDelegateMutations()")
+			if count == 0 {
+				return nil
+			}
+			rel, err := filepath.Rel(repoRoot, path)
+			if err != nil {
+				return err
+			}
+			calls[filepath.ToSlash(rel)] = count
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := map[string]int{"cmd/compound/work_delegate.go": 4}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("experimental delegate mutation production call sites = %v, want %v", calls, want)
+	}
+}
+
 func snapshotFiles(t *testing.T, root string) map[string]string {
 	t.Helper()
 	out := map[string]string{}

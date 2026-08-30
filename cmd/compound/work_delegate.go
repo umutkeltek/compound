@@ -38,6 +38,92 @@ type steerCLIOptions struct {
 	enter, jsonOut, experimentalMutation bool
 }
 
+type delegateSweepCLIOptions struct {
+	workID                                string
+	dryRun, jsonOut, experimentalMutation bool
+}
+
+type delegateProgressCLIOptions struct {
+	workID                         string
+	done, empty, failed, remaining int
+	jsonOut, experimentalMutation  bool
+}
+
+func parseDelegateSweepCLI(args []string) (delegateSweepCLIOptions, error) {
+	var out delegateSweepCLIOptions
+	var positional []string
+	for _, arg := range args {
+		switch arg {
+		case "--dry-run":
+			out.dryRun = true
+		case "--json":
+			out.jsonOut = true
+		case work.ExperimentalDelegateMutationsFlag:
+			out.experimentalMutation = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return out, fmt.Errorf("unknown flag %s", arg)
+			}
+			positional = append(positional, arg)
+		}
+	}
+	if len(positional) != 1 || strings.TrimSpace(positional[0]) == "" {
+		return out, errors.New("sweep requires exactly one work_id")
+	}
+	out.workID = positional[0]
+	return out, nil
+}
+
+func parseDelegateProgressCLI(args []string) (delegateProgressCLIOptions, error) {
+	var out delegateProgressCLIOptions
+	var positional []string
+	seen := map[string]bool{}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "--json":
+			out.jsonOut = true
+		case work.ExperimentalDelegateMutationsFlag:
+			out.experimentalMutation = true
+		case "--done", "--empty", "--failed", "--remaining":
+			if i+1 >= len(args) {
+				return out, fmt.Errorf("%s requires a value", arg)
+			}
+			i++
+			value, err := strconv.Atoi(args[i])
+			if err != nil || value < 0 {
+				return out, fmt.Errorf("%s must be a non-negative integer", arg)
+			}
+			switch arg {
+			case "--done":
+				out.done = value
+			case "--empty":
+				out.empty = value
+			case "--failed":
+				out.failed = value
+			case "--remaining":
+				out.remaining = value
+			}
+			seen[arg] = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return out, fmt.Errorf("unknown flag %s", arg)
+			}
+			positional = append(positional, arg)
+		}
+	}
+	if len(positional) != 1 || strings.TrimSpace(positional[0]) == "" {
+		return out, errors.New("progress requires exactly one work_id")
+	}
+	for _, required := range []string{"--done", "--empty", "--failed", "--remaining"} {
+		if !seen[required] {
+			return out, fmt.Errorf("progress requires %s", required)
+		}
+	}
+	out.workID = positional[0]
+	return out, nil
+}
+
 // runDelegateStatusCLI is the testable command edge for
 // `compound work delegate status <work_id>`. Read-only; writes nothing.
 func runDelegateStatusCLI(args []string, store *work.Store, runner work.SessionRunner, now time.Time, stdout, stderr io.Writer) int {
@@ -87,38 +173,18 @@ func runDelegateSweepCLI(args []string, store *work.Store, runner work.SessionRu
 		fmt.Fprintln(stderr, "error: delegate runtime is unavailable")
 		return 1
 	}
-	var positional []string
-	dryRun := false
-	jsonOut := false
-	experimentalMutation := false
-	for _, a := range args {
-		switch a {
-		case "--dry-run":
-			dryRun = true
-		case "--json":
-			jsonOut = true
-		case work.ExperimentalDelegateMutationsFlag:
-			experimentalMutation = true
-		default:
-			if strings.HasPrefix(a, "-") {
-				fmt.Fprintln(stderr, "error: unknown flag", a)
-				return 2
-			}
-			positional = append(positional, a)
-		}
-	}
-	if len(positional) != 1 || strings.TrimSpace(positional[0]) == "" {
-		fmt.Fprintln(stderr, "error: sweep requires exactly one work_id")
+	opts, err := parseDelegateSweepCLI(args)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
 		return 2
 	}
-	workID := positional[0]
-	if dryRun {
-		obs, err := store.DelegateStatus(workID, runner)
+	if opts.dryRun {
+		obs, err := store.DelegateStatus(opts.workID, runner)
 		if err != nil {
 			fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
-		if jsonOut {
+		if opts.jsonOut {
 			enc := json.NewEncoder(stdout)
 			enc.SetIndent("", "  ")
 			if err := enc.Encode(obs); err != nil {
@@ -132,18 +198,18 @@ func runDelegateSweepCLI(args []string, store *work.Store, runner work.SessionRu
 		_ = now
 		return 0
 	}
-	if !experimentalMutation {
+	if !opts.experimentalMutation {
 		return delegateCLIUsageError(stderr, "delegate", fmt.Errorf("mutating delegate sweep requires %s and is unsupported in v0.1", work.ExperimentalDelegateMutationsFlag))
 	}
 	store.EnableExperimentalDelegateMutations()
 	// Resolve the binding, probe the pane, and call DelegateSweep.
-	binding, err := store.DelegateSweepResolve(workID)
+	binding, err := store.DelegateSweepResolve(opts.workID)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
 	if binding == nil {
-		fmt.Fprintln(stderr, "error: no binding for work", workID)
+		fmt.Fprintln(stderr, "error: no binding for work", opts.workID)
 		return 1
 	}
 	st, sErr := runner.SessionStatus(binding.Session)
@@ -156,7 +222,7 @@ func runDelegateSweepCLI(args []string, store *work.Store, runner work.SessionRu
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	if jsonOut {
+	if opts.jsonOut {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(out); err != nil {
@@ -177,61 +243,23 @@ func runDelegateSweepCLI(args []string, store *work.Store, runner work.SessionRu
 }
 
 func runDelegateProgressCLI(args []string, store *work.Store, now time.Time, stdout, stderr io.Writer) int {
-	var positional []string
-	values := map[string]int{}
-	seen := map[string]bool{}
-	jsonOut := false
-	experimentalMutation := false
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch arg {
-		case "--json":
-			jsonOut = true
-		case work.ExperimentalDelegateMutationsFlag:
-			experimentalMutation = true
-		case "--done", "--empty", "--failed", "--remaining":
-			if i+1 >= len(args) {
-				fmt.Fprintln(stderr, "error:", arg, "requires a value")
-				return 2
-			}
-			i++
-			value, err := strconv.Atoi(args[i])
-			if err != nil || value < 0 {
-				fmt.Fprintln(stderr, "error:", arg, "must be a non-negative integer")
-				return 2
-			}
-			values[arg] = value
-			seen[arg] = true
-		default:
-			if strings.HasPrefix(arg, "-") {
-				fmt.Fprintln(stderr, "error: unknown flag", arg)
-				return 2
-			}
-			positional = append(positional, arg)
-		}
-	}
-	if len(positional) != 1 || strings.TrimSpace(positional[0]) == "" {
-		fmt.Fprintln(stderr, "error: progress requires exactly one work_id")
+	opts, err := parseDelegateProgressCLI(args)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
 		return 2
 	}
-	for _, required := range []string{"--done", "--empty", "--failed", "--remaining"} {
-		if !seen[required] {
-			fmt.Fprintln(stderr, "error: progress requires", required)
-			return 2
-		}
-	}
-	if !experimentalMutation {
+	if !opts.experimentalMutation {
 		return delegateCLIUsageError(stderr, "delegate", fmt.Errorf("delegate progress requires %s and is unsupported in v0.1", work.ExperimentalDelegateMutationsFlag))
 	}
 	store.EnableExperimentalDelegateMutations()
-	result, err := store.DelegateProgress(positional[0], runattempt.RunProgress{
-		Done: values["--done"], Empty: values["--empty"], Failed: values["--failed"], Remaining: values["--remaining"],
+	result, err := store.DelegateProgress(opts.workID, runattempt.RunProgress{
+		Done: opts.done, Empty: opts.empty, Failed: opts.failed, Remaining: opts.remaining,
 	}, now)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	if jsonOut {
+	if opts.jsonOut {
 		if err := encodeDelegateCLIJSON(stdout, result); err != nil {
 			fmt.Fprintln(stderr, "error: encode progress:", err)
 			return 1
@@ -551,6 +579,37 @@ func parseAttachCLI(args []string) (string, error) {
 		return "", errors.New("attach requires exactly one work_id and no flags")
 	}
 	return args[0], nil
+}
+
+// delegateCommandNeedsWritableStore classifies the request from the same
+// parsers the command will execute. This prevents an experimental flag-shaped
+// value or raw command token from opening the writable work habitat before the
+// request has actually opted into mutation.
+func delegateCommandNeedsWritableStore(sub string, args []string) bool {
+	switch sub {
+	case "attach":
+		return false
+	case "steer":
+		opts, err := parseSteerCLI(args)
+		return err == nil && opts.experimentalMutation
+	case "delegate":
+		if len(args) > 0 {
+			switch args[0] {
+			case "status":
+				return false
+			case "sweep":
+				opts, err := parseDelegateSweepCLI(args[1:])
+				return err == nil && !opts.dryRun && opts.experimentalMutation
+			case "progress":
+				opts, err := parseDelegateProgressCLI(args[1:])
+				return err == nil && opts.experimentalMutation
+			}
+		}
+		opts, err := parseDelegateCLI(args)
+		return err == nil && !opts.dryRun && opts.experimentalMutation
+	default:
+		return true
+	}
 }
 
 func delegateCLIUsageError(stderr io.Writer, sub string, err error) int {
