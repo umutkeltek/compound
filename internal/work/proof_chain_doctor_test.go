@@ -986,6 +986,47 @@ func TestProofChainDoctorRejectsMalformedRetryChildBeforeHistoryExemption(t *tes
 }
 
 func TestProofChainDoctorRejectsEveryExactTerminalizationBindingTamper(t *testing.T) {
+	baselineStore := newStore(t)
+	workID, runAttemptIDs := closeTerminalizeWork(t, baselineStore, "doctor-intent-tamper", fixedNow)
+	if _, err := baselineStore.Close(workID, CloseInput{
+		Outcome:                       "completed",
+		MoveType:                      "control_plane_repair",
+		Summary:                       "doctor exact intent tamper",
+		SkipRunAttemptTerminalization: true,
+		RunAttemptTerminalizations: []RunAttemptTerminalizationRequest{{
+			RunAttemptID: runAttemptIDs[0], Owner: runattempt.TerminalizationOwnerPanelApply,
+			TargetStatus: runattempt.StatusFailed, Reason: "original reason",
+		}},
+	}, fixedNow.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	baselineAttempt, err := runattempt.Open(baselineStore.home).Get(runAttemptIDs[0])
+	if err != nil || baselineAttempt.TerminalizationIntent == nil {
+		t.Fatalf("get prepared attempt: ra=%+v err=%v", baselineAttempt, err)
+	}
+	if _, err := runattempt.Open(baselineStore.home).CompletePreparedTerminalization(
+		baselineAttempt.ID,
+		*baselineAttempt.TerminalizationIntent,
+		fixedNow.Add(6*time.Minute),
+	); err != nil {
+		t.Fatal(err)
+	}
+	baselineAttempt, err = runattempt.Open(baselineStore.home).Get(baselineAttempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCleanBaseline := func(t *testing.T) {
+		t.Helper()
+		report, err := baselineStore.ProofChainDoctor(fixedNow.Add(7*time.Minute), ProofChainDoctorOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Counts.RunAttemptTerminalizationMismatch != 0 {
+			t.Fatalf("shared baseline is not clean: counts=%+v findings=%+v", report.Counts, report.Findings)
+		}
+	}
+	assertCleanBaseline(t)
+
 	tests := []struct {
 		name   string
 		mutate func(*runattempt.TerminalizationIntent)
@@ -1008,31 +1049,15 @@ func TestProofChainDoctorRejectsEveryExactTerminalizationBindingTamper(t *testin
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := newStore(t)
-			workID, runAttemptIDs := closeTerminalizeWork(t, s, "doctor-intent-tamper-"+tt.name, fixedNow)
-			if _, err := s.Close(workID, CloseInput{
-				Outcome:                       "completed",
-				MoveType:                      "control_plane_repair",
-				Summary:                       "doctor exact intent tamper",
-				SkipRunAttemptTerminalization: true,
-				RunAttemptTerminalizations: []RunAttemptTerminalizationRequest{{
-					RunAttemptID: runAttemptIDs[0], Owner: runattempt.TerminalizationOwnerPanelApply,
-					TargetStatus: runattempt.StatusFailed, Reason: "original reason",
-				}},
-			}, fixedNow.Add(5*time.Minute)); err != nil {
+			homePath := filepath.Join(t.TempDir(), "home")
+			if err := os.CopyFS(homePath, os.DirFS(baselineStore.home)); err != nil {
 				t.Fatal(err)
 			}
-			ra, err := runattempt.Open(s.home).Get(runAttemptIDs[0])
-			if err != nil || ra.TerminalizationIntent == nil {
-				t.Fatalf("get prepared attempt: ra=%+v err=%v", ra, err)
-			}
-			if _, err := runattempt.Open(s.home).CompletePreparedTerminalization(ra.ID, *ra.TerminalizationIntent, fixedNow.Add(6*time.Minute)); err != nil {
-				t.Fatal(err)
-			}
-			ra, err = runattempt.Open(s.home).Get(ra.ID)
+			s, err := Open(homePath)
 			if err != nil {
 				t.Fatal(err)
 			}
+			ra := baselineAttempt
 			tampered := *ra.TerminalizationIntent
 			tt.mutate(&tampered)
 			if err := tampered.Validate(); err != nil {
@@ -1049,4 +1074,5 @@ func TestProofChainDoctorRejectsEveryExactTerminalizationBindingTamper(t *testin
 			}
 		})
 	}
+	assertCleanBaseline(t)
 }

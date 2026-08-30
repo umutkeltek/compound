@@ -24,10 +24,7 @@ type setAsideFixture struct {
 // it. feature.txt is therefore an owned (base..candidate) file that starts clean.
 func newSetAsideFixture(t *testing.T) setAsideFixture {
 	t.Helper()
-	repo, base := initLandingRepo(t)
-	candidate := landingFeatureCommit(t, repo)
-	landingGit(t, repo, "switch", "main")
-	landingGit(t, repo, "merge", "--ff-only", candidate)
+	repo, base, candidate := sharedLandingLandedRepo(t)
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

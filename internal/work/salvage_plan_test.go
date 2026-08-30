@@ -19,7 +19,7 @@ import (
 // as fabricated.
 func TestSalvagePlanTrueDeltaExcludesPostForkFilesAndLabelsFabricatedDeletions(t *testing.T) {
 	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 
 	// Branch forks at base, then makes its own true change: it deletes
 	// README.md (a real deletion the branch is responsible for) and adds
@@ -99,7 +99,7 @@ func TestSalvagePlanTrueDeltaExcludesPostForkFilesAndLabelsFabricatedDeletions(t
 // advance since the fork) must NOT be labeled stale/fabricated.
 func TestSalvagePlanFreshBaseCarriesNoFabricatedLabel(t *testing.T) {
 	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	landingGit(t, repo, "switch", "-c", "fresh-branch")
 	writeLandingFile(t, filepath.Join(repo, "fresh.txt"), "fresh\n")
 	landingGit(t, repo, "add", "fresh.txt")
@@ -136,7 +136,7 @@ func TestSalvagePlanFreshBaseCarriesNoFabricatedLabel(t *testing.T) {
 // F2: a missing or malformed --branch refuses closed, with no plan produced.
 func TestSalvagePlanRefusesMissingOrMalformedBranch(t *testing.T) {
 	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +195,7 @@ func TestSalvagePlanRefusesEnvelopeWithoutGitDelivery(t *testing.T) {
 // F4: a terminal envelope refuses.
 func TestSalvagePlanRefusesTerminalEnvelope(t *testing.T) {
 	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -237,7 +237,7 @@ func TestSalvagePlanRefusesTerminalEnvelope(t *testing.T) {
 // byte anywhere under the store home.
 func TestSalvagePlanIsZeroMutation(t *testing.T) {
 	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	landingGit(t, repo, "switch", "-c", "stale-branch")
 	writeLandingFile(t, filepath.Join(repo, "branch-work.txt"), "branch work\n")
 	landingGit(t, repo, "add", "branch-work.txt")
@@ -273,7 +273,7 @@ func TestSalvagePlanIsZeroMutation(t *testing.T) {
 // and are non-empty strings a human-output renderer can print directly.
 func TestSalvagePlanAlwaysCarriesTeethNoteAndSuccessorSequence(t *testing.T) {
 	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	landingGit(t, repo, "switch", "-c", "stale-branch")
 	writeLandingFile(t, filepath.Join(repo, "branch-work.txt"), "branch work\n")
 	landingGit(t, repo, "add", "branch-work.txt")
@@ -345,7 +345,7 @@ func TestSalvagePlanAlwaysCarriesTeethNoteAndSuccessorSequence(t *testing.T) {
 // with no explanation of why there is nothing to pick.
 func TestSalvagePlanEmptyTrueDeltaStillNamesSuccessorStep(t *testing.T) {
 	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	landingGit(t, repo, "branch", "empty-branch")
 
 	store, err := Open(t.TempDir())
