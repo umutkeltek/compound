@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"compound/internal/home"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
@@ -14,11 +13,8 @@ import (
 // parses the repeatable flag (owner may itself contain colons) and lands the
 // branch on the emitted transition.
 func TestWorkCloseOpensBranchFlagLandsOnTransition(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)

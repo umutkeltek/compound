@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"compound/internal/capgraph"
-	"compound/internal/home"
 	"compound/internal/work"
 )
 
@@ -58,11 +57,8 @@ func writeWorkLaneFixture(t *testing.T, shortID string) {
 // The CLI claim --lane path stamps the canonical agent-lane node id onto the close-minted
 // receipt AND transition, byte-identical to the exported AgentLaneNodeIDFromShortLaneID mapper.
 func TestWorkClaimLaneStampsCanonicalLaneIDThroughCLI(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	const shortID = "h1/fast"
 	writeWorkLaneFixture(t, shortID)
 	wantLane, ok := capgraph.AgentLaneNodeIDFromShortLaneID(shortID)
@@ -125,11 +121,8 @@ func TestWorkClaimLaneRefusesBareHarnessThroughCLI(t *testing.T) {
 		return
 	}
 
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	writeWorkLaneFixture(t, "h1/fast") // a real lane exists; codex still must not resolve
 
 	store, err := work.Open(homePath)

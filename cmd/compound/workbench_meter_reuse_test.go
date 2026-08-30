@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"compound/internal/home"
 	"compound/internal/work"
 )
 
@@ -16,11 +15,8 @@ import (
 // LastSuccess/LastFailure, so reusing a RecentLimit<8 board must not move them.
 // If reuse ever fed the meter a different executor set, these counts diverge.
 func TestApplyAttentionMeterReuseMatchesFreshExecutors(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)

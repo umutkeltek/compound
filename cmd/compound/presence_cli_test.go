@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"compound/internal/home"
 )
 
 const presenceCLIBoundarySubEnv = "COMPOUND_PRESENCE_CLI_BOUNDARY_SUB"
@@ -25,10 +23,7 @@ func TestPresenceCLIReadOnlyDoesNotMaterializeDirs(t *testing.T) {
 		cmdPresence([]string{"--json"})
 		return
 	}
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	// A fresh init scaffolds the habitat; strip work/ and events/ to stand in
 	// for a minimal or migrated home where the read path must not materialize.
 	for _, d := range []string{"work", "events"} {
@@ -63,10 +58,7 @@ func TestPresenceCLIDoesNotAddLandChecksOnFreshHome(t *testing.T) {
 		cmdPresence([]string{"--json"})
 		return
 	}
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	if _, err := os.Stat(filepath.Join(homePath, "work", "land-checks")); !os.IsNotExist(err) {
 		t.Fatalf("precondition: fresh home must not have work/land-checks (err=%v)", err)
 	}

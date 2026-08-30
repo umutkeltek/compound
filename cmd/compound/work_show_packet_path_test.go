@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"compound/internal/home"
 	"compound/internal/work"
 )
 
@@ -38,12 +37,9 @@ Prove packet path resolution without COMPOUND_PACKET_DIR.
 		t.Fatalf("write imported packet: %v", err)
 	}
 
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
 	t.Setenv("COMPOUND_PACKET_DIR", "")
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -108,11 +104,8 @@ Prove packet path resolution without COMPOUND_PACKET_DIR.
 }
 
 func TestWorkShowOmitsPacketPathForNonPacketWork(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -157,10 +150,7 @@ func TestWorkShowSurvivesDanglingPacketPointer(t *testing.T) {
 		return
 	}
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)

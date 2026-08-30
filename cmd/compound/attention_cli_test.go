@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"compound/internal/attention"
-	"compound/internal/home"
 	"compound/internal/hookplan"
 	"compound/internal/work"
 )
@@ -212,10 +211,7 @@ func TestAttentionCLIRejectsUnsupportedReceiptOnlyGrades(t *testing.T) {
 
 func initAttentionReceiptOnlyCLIHome(t *testing.T) (string, string, string) {
 	t.Helper()
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work store: %v", err)
@@ -238,11 +234,8 @@ func initAttentionReceiptOnlyCLIHome(t *testing.T) (string, string, string) {
 }
 
 func TestAttentionCLILiveProjectionSeparatesCanMoveFromNeedsOperator(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work store: %v", err)

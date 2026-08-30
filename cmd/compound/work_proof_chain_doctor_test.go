@@ -11,17 +11,13 @@ import (
 	"testing"
 
 	"compound/internal/envelope"
-	"compound/internal/home"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
 
 func TestWorkProofChainDoctorCLIJSON(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work store: %v", err)
@@ -75,10 +71,7 @@ func TestWorkProofChainDoctorCLIJSON(t *testing.T) {
 // run_attempts/<id>.json would leave the doctor reporting status:"ok"
 // complete:1 even though the chain was provably broken.
 func TestWorkAdvanceExecuteThenClose(t *testing.T) {
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 
 	// Seed only ready state through the public CLI.
 	createOut, err := runCompound(t, homePath,

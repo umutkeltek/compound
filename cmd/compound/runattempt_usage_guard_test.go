@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"compound/internal/home"
 	"compound/internal/runattempt"
 )
 
@@ -26,10 +25,7 @@ func TestRunAttemptListReportsReadablePartialBeforeNonzeroExit(t *testing.T) {
 		return
 	}
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	store := runattempt.Open(homePath)
 	unreadable, err := store.Mint("work_unreadable_list_cli", "actor:test", "claude-code", cliTestNow.Add(-2*time.Hour))
 	if err != nil {
@@ -82,10 +78,7 @@ func TestRunAttemptSweepReportsUnreadableAttemptsBeforeNonzeroExit(t *testing.T)
 		return
 	}
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	store := runattempt.Open(homePath)
 	attempt, err := store.Mint("work_unreadable_cli", "actor:test", "claude-code", cliTestNow.Add(-2*time.Hour))
 	if err != nil {
@@ -169,10 +162,7 @@ func TestRunAttemptSweepValidatesArgumentsBeforeMutation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			homePath := t.TempDir()
-			if err := home.Init(homePath, "test", cliTestNow); err != nil {
-				t.Fatalf("init home: %v", err)
-			}
+			homePath := initializedTestHome(t)
 			store := runattempt.Open(homePath)
 			attempt, err := store.Mint("work_guard", "actor:test", "claude-code", cliTestNow.Add(-24*time.Hour))
 			if err != nil {

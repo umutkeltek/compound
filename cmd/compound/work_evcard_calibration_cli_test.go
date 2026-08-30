@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"compound/internal/candidates"
-	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/routeev"
 )
@@ -86,11 +85,8 @@ func runEVCardDeviationLifecycle(t *testing.T, predicate, cardRef, outcome strin
 // observed/evcard-calibration/, and the ledger digest is byte-identical before and after (same
 // EngineDoctor-green-by-construction guarantee as work-surprise).
 func TestWorkCloseCLIMintsEVCardCalibrationCandidateOnDivergedOutcome(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 
 	cardRef, _, err := routeev.Store(homePath, routeev.Card{
 		SchemaVersion:   routeev.SchemaVersion,
@@ -157,11 +153,8 @@ func TestWorkCloseCLIMintsEVCardCalibrationCandidateOnDivergedOutcome(t *testing
 // staked (priced_right + completed -> card_vindicated, never a divergence). Zero calibration
 // candidates, no blob dir at all.
 func TestWorkCloseCLIVindicatedEVCardMintsNoCalibrationCandidate(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 
 	cardRef, _, err := routeev.Store(homePath, routeev.Card{
 		SchemaVersion:   routeev.SchemaVersion,
@@ -189,11 +182,8 @@ func TestWorkCloseCLIVindicatedEVCardMintsNoCalibrationCandidate(t *testing.T) {
 // close -- the close proceeds (exit 0, envelope lands completed) and calibration is silently
 // skipped: zero candidates, no blob dir. Calibration is exhaust, never a gate.
 func TestWorkCloseCLIMissingEVCardBlobSkipsCalibrationWithoutFailingClose(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 
 	// A well-formed content-id that was never written through routeev.Store -- the blob is
 	// simply absent from observed/route-evcards/.
@@ -222,11 +212,8 @@ func TestWorkCloseCLIMissingEVCardBlobSkipsCalibrationWithoutFailingClose(t *tes
 // mints zero calibration output -- there is no card to read, so observeEVCardCalibrationOnClose
 // no-ops before ever touching the routeev store.
 func TestWorkCloseCLINoCardRefSkipsCalibration(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 
 	runEVCardDeviationLifecycle(t, "deviation with no card ref at all", "", "completed")
 

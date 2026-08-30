@@ -6,8 +6,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-
-	"compound/internal/home"
 )
 
 const workRouteDeviationCLIBoundarySubEnv = "COMPOUND_WORK_ROUTE_DEVIATION_CLI_BOUNDARY_SUB"
@@ -22,10 +20,7 @@ func TestWorkCreateCLIJudgeDeviationRefusedWithoutPrediction(t *testing.T) {
 			"--deviation-lane", "scout/chat", "--deviation-risk", "judge"})
 		return
 	}
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkCreateCLIJudgeDeviationRefusedWithoutPrediction$")
 	cmd.Env = append(os.Environ(), workRouteDeviationCLIBoundarySubEnv+"=judge-no-prediction", "COMPOUND_HOME="+homePath)
 	output, err := cmd.CombinedOutput()
@@ -53,10 +48,7 @@ func TestWorkCreateCLIJudgeDeviationWithCardStillRefused(t *testing.T) {
 			"--deviation-lane", "scout/chat", "--deviation-risk", "judge", "--deviation-card", "evcard_abc123"})
 		return
 	}
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkCreateCLIJudgeDeviationWithCardStillRefused$")
 	cmd.Env = append(os.Environ(), workRouteDeviationCLIBoundarySubEnv+"=judge-card-no-prediction", "COMPOUND_HOME="+homePath)
 	output, err := cmd.CombinedOutput()
@@ -77,11 +69,8 @@ func TestWorkCreateCLIJudgeDeviationWithCardStillRefused(t *testing.T) {
 // route_deviation marker through to disk (round-trip via `work show`). Runs in-process because the
 // success path does not call os.Exit.
 func TestWorkCreateCLIJudgeDeviationAdmittedWithPrediction(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 
 	out := captureStdout(t, func() {
 		cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "judge deviation admits with a stake",

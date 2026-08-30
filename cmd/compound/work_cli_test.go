@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"compound/internal/envelope"
-	"compound/internal/home"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
@@ -18,11 +17,8 @@ func TestWorkLandCheckDefaultTextReportsForeignDirtPreservation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	repo, base, tip := initLandingCLIRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	runLandingCLIGit(t, filepath.Dir(remote), "init", "--bare", remote)
@@ -138,11 +134,8 @@ func writeObserveRunJobFile(t *testing.T, jobID string) string {
 // the home path, work id, trace id, and job-file path.
 func observeRunSetup(t *testing.T, predicate string) (homePath, workID, traceID, jobPath string) {
 	t.Helper()
-	homePath = t.TempDir()
+	homePath = initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
