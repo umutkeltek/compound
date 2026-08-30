@@ -1,0 +1,84 @@
+{
+  "schema_version": "compound.release_issue_evidence.v0.1",
+  "issue_id": "REL-P0-010",
+  "status": "fixing",
+  "recorded_at": "2026-08-30T08:25:38Z",
+  "candidate_sha": "15b8ec63da9a6b551600a09e86e99a3e7df734de",
+  "toolchain": "go1.26.4",
+  "inventory": {
+    "top_level_tests": 1381,
+    "top_level_parallel_tests": 427,
+    "estimated_serial_tests": 954,
+    "audit_method": "Count top-level Test functions and verify t.Parallel is the first executable statement; do not count subtest markers."
+  },
+  "fix_commits": [
+    {"sha": "5b669f1ce671457b12af17e276c17d4112c4d78d", "subject": "test(cli): parallelize isolated command suites"},
+    {"sha": "a4a45d37331c25896939181345429854057c8f51", "subject": "test(cli): parallelize isolated proof suites"},
+    {"sha": "ca66d0d25f93af2ccf0ee457803523e84a88f36e", "subject": "test(cli): parallelize proof admission cases"},
+    {"sha": "2b3b58fa2cc94940d2b71e61a4a11da2536be05f", "subject": "test(cli): parallelize Rust proof cases"},
+    {"sha": "93e4988e899928a8d62190f0e9d55bbe9cc3f3ef", "subject": "test(cli): parallelize home manifest compatibility cases"},
+    {"sha": "bef8438085feb0c8f358aea02e13d1c7185dc75a", "subject": "test(cli): keep home manifest cohort minimal"},
+    {"sha": "23a52ae22a9266b61ba7c445f2f2f72fe2e046d8", "subject": "test(cli): parallelize isolated doctor cases"},
+    {"sha": "6b0d9f46b2f2f10af19120c2ab24b544a0ff0dc5", "subject": "test(cli): parallelize isolated status cases"},
+    {"sha": "ee58e0d00fd0e53df61fc209fc3a460e175cc780", "subject": "test(cli): parallelize isolated console cases"},
+    {"sha": "7ff9794a3acebbf8f065fe534b4239f693348aff", "subject": "test(cli): parallelize isolated orient session cases"},
+    {"sha": "e07c5878709c71be125e98da0bdadd19651507b1", "subject": "test(cli): parallelize isolated rebaseline cases"},
+    {"sha": "15b8ec63da9a6b551600a09e86e99a3e7df734de", "subject": "test(cli): parallelize isolated delegate cases"}
+  ],
+  "net_parallel_additions": {
+    "first_four_cohorts": 82,
+    "home_manifest": 21,
+    "doctor": 13,
+    "status": 10,
+    "console": 14,
+    "orient_and_sessions": 5,
+    "eventstore_rebaseline": 4,
+    "delegate": 5,
+    "total": 154
+  },
+  "exact_literal_runs": [
+    {
+      "run_attempt_id": "ratt_20260830T072016Z_47f7e909",
+      "command": "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound",
+      "status": "failed",
+      "classification": "package timeout",
+      "governed_elapsed_seconds": 602.884,
+      "package_elapsed_seconds": 600.605
+    },
+    {
+      "run_attempt_id": "ratt_20260830T073525Z_9157afc8",
+      "command": "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound",
+      "status": "failed",
+      "classification": "package timeout",
+      "governed_elapsed_seconds": 602.727,
+      "package_elapsed_seconds": 600.616
+    },
+    {
+      "run_attempt_id": "ratt_20260830T074816Z_797748c1",
+      "command": "GOTOOLCHAIN=go1.26.4 go test -p=5 ./cmd/compound",
+      "status": "failed",
+      "classification": "package timeout; global package cap falsifier",
+      "governed_elapsed_seconds": 603.167,
+      "package_elapsed_seconds": 600.489
+    }
+  ],
+  "focused_diagnostic": {
+    "run_attempt_id": "ratt_20260830T074608Z_36796d0a",
+    "single_git_test_seconds": 1.493,
+    "five_git_tests_serial_seconds": 6.758,
+    "same_five_git_tests_parallel_seconds": 4.399,
+    "meaning": "The selected Git tests are not intrinsically hung. At timeout, active parallel tests had only 1 to 19 seconds of runtime, so the long serial admission phase dominates."
+  },
+  "safety_boundary": {
+    "allowed": "Only tests audited to use isolated temp roots, explicit child environments, read-only shared fixtures, and synchronization-safe helpers receive t.Parallel.",
+    "forbidden": [
+      "tests using t.Setenv",
+      "tests replacing os.Stdout or os.Stderr",
+      "tests mutating package globals",
+      "global parallelism caps",
+      "timeout increases or hidden GOFLAGS",
+      "package exclusions or weakened assertions"
+    ]
+  },
+  "canonical_broad_status": "red; continue audited cohorts and rerun the exact literal package command"
+}
