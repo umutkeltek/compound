@@ -54,3 +54,56 @@ func TestCeremonyOverlaySyncReplacesStaleCopiesWithIdempotentRelativeSymlinks(t 
 		}
 	}
 }
+
+func TestCeremonyOverlaySyncIsSafeUnderConcurrentInstallers(t *testing.T) {
+	tempRoot := t.TempDir()
+	ceremonies := []string{"compound-execute", "compound-land", "compound-verify", "extract-approach"}
+	for _, ceremony := range ceremonies {
+		mustWriteTestFile(t, filepath.Join(tempRoot, "skills", ceremony, "SKILL.md"), fmt.Sprintf("tracked owner: %s\n", ceremony))
+	}
+
+	const workers = 24
+	type result struct {
+		worker int
+		out    []byte
+		err    error
+	}
+	start := make(chan struct{})
+	results := make(chan result, workers)
+	script := filepath.Join(repoRoot, "scripts", "sync-ceremony-overlays.sh")
+	for worker := 0; worker < workers; worker++ {
+		go func(worker int) {
+			<-start
+			cmd := exec.Command("sh", script, tempRoot)
+			out, err := cmd.CombinedOutput()
+			results <- result{worker: worker, out: out, err: err}
+		}(worker)
+	}
+	close(start)
+	for worker := 0; worker < workers; worker++ {
+		got := <-results
+		if got.err != nil {
+			t.Fatalf("sync worker %d failed: %v\n%s", got.worker, got.err, got.out)
+		}
+	}
+
+	for _, ceremony := range ceremonies {
+		for _, overlay := range []string{".agents", ".claude"} {
+			path := filepath.Join(tempRoot, overlay, "skills", ceremony, "SKILL.md")
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("concurrent sync left %s as %s, want symlink", path, info.Mode())
+			}
+			pending, err := filepath.Glob(path + ".pending.*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pending) != 0 {
+				t.Fatalf("concurrent sync left pending links for %s: %v", path, pending)
+			}
+		}
+	}
+}
