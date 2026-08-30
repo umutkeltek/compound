@@ -545,6 +545,8 @@ func TestWorkAdvanceExecuteStartErrorAfterSweptClaimReservationClosesFailed(t *t
 // and no recovery. Spawned as a subprocess because the CLI os.Exit on the
 // unknown-harness path.
 func TestWorkAdvanceExecuteUnknownHarnessNoStateChange(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -606,6 +608,8 @@ func TestWorkAdvanceExecuteUnknownHarnessNoStateChange(t *testing.T) {
 // not availability: if Compound has no tuple for the requested lane, the work
 // stays claimed and no execution RunAttempt is minted.
 func TestWorkAdvanceExecuteMissingLaneTupleNoStateChange(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -657,6 +661,8 @@ func TestWorkAdvanceExecuteMissingLaneTupleNoStateChange(t *testing.T) {
 // CodexBar row leaves work claimed and produces no attempt beyond the claim
 // reservation even though the tuple and executable both resolve.
 func TestWorkAdvanceExecuteWalledDeclaredCapacityNoStateChange(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	userHome := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -744,6 +750,8 @@ routing_defaults:
 // (exit 2) before the execute branch ever runs — the live defect this pins
 // was found by an end-to-end rail verification on 2026-07-21.
 func TestWorkAdvanceExecuteAcceptsWorkspaceAndPermissionMode(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -1125,6 +1133,8 @@ func governedClaudeReadyEvidenceFor(harnessName string) []work.DelegateHarnessRe
 }
 
 func TestGovernedClaudeEvidenceRefRequiresCanonicalMutationBlockingHook(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		ref  string
@@ -1414,6 +1424,8 @@ func TestGovernedClaudeStartGuardRejectsRevokedExecutionReservationBeforeLaunch(
 }
 
 func TestGovernedExecutionReservationGuardAppliesToEveryHarness(t *testing.T) {
+	t.Parallel()
+
 	homePath := initializedExecutionHome(t)
 	workID, policyID, actionIntentID := governedClaudeGuardReservation(t, homePath)
 	store, err := work.Open(homePath)
@@ -1752,6 +1764,8 @@ func TestWorkAdvanceExecuteBindsActionIntentID(t *testing.T) {
 // Falsifier: prior behavior accepted any --to value and drove the adapter
 // against a state the exec flow never expects (zip27 audit round F6).
 func TestWorkAdvanceExecuteRejectsNonRunningTo(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -1864,6 +1878,8 @@ func TestWorkAdvanceExecuteStampsLaneIDOnExecAttempt(t *testing.T) {
 // That burns the work item: the launch fails instantly and a failed run
 // terminalizes it (failed is terminal — no recovery path).
 func TestWorkAdvanceExecuteNoSeparatorLeaksNoFlagTail(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -1925,6 +1941,8 @@ func TestWorkAdvanceExecuteNoSeparatorLeaksNoFlagTail(t *testing.T) {
 // The teeth are the post-conditions, not the exit code: an exit-2 refusal that
 // still advanced the envelope would be the same bug wearing a better message.
 func TestWorkAdvanceExecuteMissingWorkspaceDirNoStateChange(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -1993,6 +2011,8 @@ func TestWorkAdvanceExecuteMissingWorkspaceDirNoStateChange(t *testing.T) {
 // must stay GREEN: the existence gate must reject only what is absent. If this
 // goes red, the guard has stopped being a guard and become a wall.
 func TestWorkAdvanceExecuteExistingWorkspaceStillRuns(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -2031,6 +2051,8 @@ func TestWorkAdvanceExecuteExistingWorkspaceStillRuns(t *testing.T) {
 // is a regular file is equally unusable as a working directory (chdir fails the
 // same way), so it must take the same fail-closed path rather than reaching Run.
 func TestWorkAdvanceExecuteWorkspaceFileNotDirNoStateChange(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)

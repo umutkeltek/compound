@@ -8,6 +8,7 @@ import (
 )
 
 func TestProofCheckArtifactScopeTruthTable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		dryRun    bool
@@ -49,6 +50,7 @@ func TestProofCheckArtifactScopeTruthTable(t *testing.T) {
 // conditional on the steps present, they are forced to revisit the guard rather than silently
 // making it redundant.
 func TestProofCheckArtifactBodyClaimsGatesTheCIReportNeverRan(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 
 	// A report shaped exactly like a green `--ci` run: only portable gates, no workbench and no
@@ -103,6 +105,7 @@ func TestProofCheckArtifactBodyClaimsGatesTheCIReportNeverRan(t *testing.T) {
 // The development lane has its own, independent refusal inside the writer (proof_check.go:282).
 // Both layers should hold: the guard never authorizes it, and the writer refuses even if called.
 func TestProofCheckDevelopmentProfileCannotRecordCanonicalArtifact(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	devReport := proofCheckReport{
 		Status:      "ok",

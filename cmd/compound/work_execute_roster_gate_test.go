@@ -51,6 +51,7 @@ func laneSettingsHooks(events ...string) string {
 // stays claimed and no execution RunAttempt is minted. The refusal logic itself
 // is unit-tested in internal/hookplan/governed_roster_test.go.
 func TestWorkAdvanceExecuteGovernedFullRosterRefusalNoStateChange(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)

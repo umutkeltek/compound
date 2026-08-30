@@ -9,6 +9,7 @@ import (
 )
 
 func TestBuildHomeDoctorReportIncludesParseableGeneratedAt(t *testing.T) {
+	t.Parallel()
 	report := buildHomeDoctorReport(home.Report{Home: t.TempDir()})
 	if strings.TrimSpace(report.GeneratedAt) == "" {
 		t.Fatal("generated_at must be non-empty")

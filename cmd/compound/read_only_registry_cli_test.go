@@ -135,6 +135,7 @@ func readRegistryGuardCases() []readRegistryCase {
 // points os.Exit on their own error paths; running them in-process would
 // kill the test.
 func TestReadOnlyRegistryCommandsDoNotMaterializeState(t *testing.T) {
+	t.Parallel()
 	if raw := os.Getenv(readRegistryGuardSubEnv); raw != "" {
 		parts := strings.Split(raw, "\x1f")
 		fn, ok := readRegistryDispatch[parts[0]]

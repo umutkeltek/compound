@@ -20,6 +20,7 @@ const presenceCLIBoundarySubEnv = "COMPOUND_PRESENCE_CLI_BOUNDARY_SUB"
 // with work.Open, which MkdirAll'd work/* and events/ on every inspection, so
 // "who is here?" left footprints in COMPOUND_HOME.
 func TestPresenceCLIReadOnlyDoesNotMaterializeDirs(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(presenceCLIBoundarySubEnv) == "read-json" {
 		cmdPresence([]string{"--json"})
 		return
@@ -57,6 +58,7 @@ func TestPresenceCLIReadOnlyDoesNotMaterializeDirs(t *testing.T) {
 // command must not grow it. work.Open used to MkdirAll work/land-checks on
 // every presence inspection; OpenReadOnly must not.
 func TestPresenceCLIDoesNotAddLandChecksOnFreshHome(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(presenceCLIBoundarySubEnv) == "read-fresh" {
 		cmdPresence([]string{"--json"})
 		return

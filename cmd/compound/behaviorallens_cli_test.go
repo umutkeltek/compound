@@ -32,6 +32,7 @@ func runCLI(t *testing.T, args ...string) (string, string, int) {
 }
 
 func TestBehavioralLensCLIRunRecordAndSignals(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	obs := writeObs(t, t.TempDir(), "obs.json", sycophantObs)
 
@@ -64,6 +65,7 @@ func TestBehavioralLensCLIRunRecordAndSignals(t *testing.T) {
 }
 
 func TestBehavioralLensCLIComposeAndPublicProjection(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	obs := writeObs(t, t.TempDir(), "obs.json", sycophantObs)
 
@@ -87,6 +89,7 @@ func TestBehavioralLensCLIComposeAndPublicProjection(t *testing.T) {
 }
 
 func TestBehavioralLensCLIRejectsUnknownLens(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	obs := writeObs(t, t.TempDir(), "obs.json", sycophantObs)
 	_, errStr, code := runCLI(t, "run", "--lens", "does-not-exist", "--observation", obs, "--home", home)
@@ -99,6 +102,7 @@ func TestBehavioralLensCLIRejectsUnknownLens(t *testing.T) {
 }
 
 func TestBehavioralLensCLIUsage(t *testing.T) {
+	t.Parallel()
 	_, _, code := runCLI(t)
 	if code != 2 {
 		t.Fatalf("no args should print usage and exit 2, got %d", code)

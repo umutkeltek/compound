@@ -14,6 +14,7 @@ import (
 )
 
 func TestWorkCollaborateCLIRecordsIdempotentObservation(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("COMPOUND_TEST_WORK_COLLABORATE_HELPER") == "1" {
 		separator := -1
 		for i, arg := range os.Args {
@@ -124,6 +125,7 @@ func runWorkCollaborateHelper(t *testing.T, homePath string, args []string) work
 }
 
 func TestWorkCollaborateBodyCLIUsesExactActiveAttemptWithoutAcknowledgement(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 24, 13, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "test", now); err != nil {

@@ -10,6 +10,7 @@ import (
 )
 
 func TestRouteExperimentPlanCLI(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, row := range []struct{ id, route, alias string }{{"claude-gpt", "codex/gpt-5.6-sol", "codex/gpt-5.6-sol"}, {"claude-minimax", "minimax/MiniMax-M3", "MiniMax-M3[1m]"}} {
 		v := map[string]any{"schema": "switchback/profile-conformance@1", "conformance_revision": "sha256:" + row.id, "profile": map[string]any{"id": row.id, "harness": "claude-code", "route": row.route, "requested_model": row.route, "requested_effort": "xhigh", "model_aliases": map[string]string{"opus": row.alias}}}
@@ -49,6 +50,7 @@ func TestRouteExperimentPlanCLI(t *testing.T) {
 }
 
 func TestRouteExperimentPlanRequiresProfilesRoot(t *testing.T) {
+	t.Parallel()
 	var out, errOut bytes.Buffer
 	code := runRouteExperimentPlanCommand(
 		[]string{"--profile", "claude-gpt", "--profile", "claude-minimax"},
@@ -64,6 +66,7 @@ func TestRouteExperimentPlanRequiresProfilesRoot(t *testing.T) {
 }
 
 func TestRouteExperimentPlanOneProfileMultipleModelRoles(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	v := map[string]any{
 		"schema":               "switchback/profile-conformance@1",
@@ -110,6 +113,7 @@ func TestRouteExperimentPlanOneProfileMultipleModelRoles(t *testing.T) {
 }
 
 func TestRouteExperimentPlanRefusesUnpublishedEffortVariant(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	v := map[string]any{
 		"schema":               "switchback/profile-conformance@1",

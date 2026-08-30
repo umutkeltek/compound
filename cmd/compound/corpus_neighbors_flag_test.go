@@ -17,6 +17,7 @@ import (
 // contract for each surface so a future refactor that drops one of
 // them is loud.
 func TestCorpusNeighborsParsingEdgeCases(t *testing.T) {
+	t.Parallel()
 	// strconv.Atoi accepts anything that's a base-10 integer, including
 	// negatives. The CLI's "must be non-negative" and the library's
 	// "must be in [0, MaxNeighborRadius]" rules live OUTSIDE of strconv.
@@ -33,6 +34,7 @@ func TestCorpusNeighborsParsingEdgeCases(t *testing.T) {
 // `"neighbors":[]`. The default field value MUST be a nil slice so
 // pre-existing callers see byte-identical output.
 func TestCorpusNeighborsJSONOmitempty(t *testing.T) {
+	t.Parallel()
 	hit := corpus.QueryHit{ItemID: "i", ChunkID: "i#0", TextStatus: "ok"}
 	body, err := json.Marshal(hit)
 	if err != nil {
@@ -49,6 +51,7 @@ func TestCorpusNeighborsJSONOmitempty(t *testing.T) {
 // ranked. The hit itself may carry a score; the pin here is that the
 // neighbor sub-object does not.
 func TestCorpusNeighborsJSONWhenPopulated(t *testing.T) {
+	t.Parallel()
 	hit := corpus.QueryHit{
 		ItemID:  "i",
 		ChunkID: "i#0",

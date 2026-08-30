@@ -65,6 +65,7 @@ func TestHarnessPosturePlanCompilesAdapterNativeConfigurationWithoutVendorFlags(
 }
 
 func TestHarnessPosturePlanRejectsUnknownFlags(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	code := runHarnessPosturePlan(
 		[]string{"--harness", "codex", "--jsno"},

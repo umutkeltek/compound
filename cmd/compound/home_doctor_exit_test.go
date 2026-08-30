@@ -14,6 +14,7 @@ import (
 const homeDoctorExitChildEnv = "COMPOUND_TEST_HOME_DOCTOR_EXIT_CHILD"
 
 func TestHomeDoctorJSONFailureExitsNonZero(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homeDoctorExitChildEnv) == "1" {
 		cmdHome([]string{"doctor", "--json"})
 		return

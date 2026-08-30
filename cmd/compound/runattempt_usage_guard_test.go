@@ -20,6 +20,7 @@ const runAttemptUnreadableSweepChildEnv = "COMPOUND_TEST_RUN_ATTEMPT_UNREADABLE_
 const runAttemptUnreadableListChildEnv = "COMPOUND_TEST_RUN_ATTEMPT_UNREADABLE_LIST"
 
 func TestRunAttemptListReportsReadablePartialBeforeNonzeroExit(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(runAttemptUnreadableListChildEnv) != "" {
 		cmdRunAttempt([]string{"list", "--non-terminal", "--json"})
 		return
@@ -75,6 +76,7 @@ func TestRunAttemptListReportsReadablePartialBeforeNonzeroExit(t *testing.T) {
 }
 
 func TestRunAttemptSweepReportsUnreadableAttemptsBeforeNonzeroExit(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(runAttemptUnreadableSweepChildEnv) != "" {
 		cmdRunAttempt([]string{"sweep", "--json", "--threshold", "1m"})
 		return
@@ -130,6 +132,7 @@ func TestRunAttemptSweepReportsUnreadableAttemptsBeforeNonzeroExit(t *testing.T)
 // happens after the sweep, the stored status exposes the mutation even when the
 // command printed a plausible banner or error.
 func TestRunAttemptSweepValidatesArgumentsBeforeMutation(t *testing.T) {
+	t.Parallel()
 	if encoded := os.Getenv(runAttemptUsageChildArgsEnv); encoded != "" {
 		raw, err := base64.RawStdEncoding.DecodeString(encoded)
 		if err != nil {

@@ -18,6 +18,7 @@ const reviewsBindingSubprocessEnv = "COMPOUND_REVIEWS_BINDING_SUBPROCESS"
 const reviewsBindingArgsEnv = "COMPOUND_REVIEWS_BINDING_ARGS"
 
 func TestReviewsBindingSubprocess(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(reviewsBindingSubprocessEnv) == "" {
 		return
 	}
@@ -29,6 +30,7 @@ func TestReviewsBindingSubprocess(t *testing.T) {
 }
 
 func TestReviewsBindingPlanThenGovernedRecordPreservesCoreReview(t *testing.T) {
+	t.Parallel()
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -114,6 +116,7 @@ func TestReviewsBindingPlanThenGovernedRecordPreservesCoreReview(t *testing.T) {
 }
 
 func TestReviewsBindingPlanAndRecordRepairDigestDrift(t *testing.T) {
+	t.Parallel()
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -244,6 +247,7 @@ func TestReviewsBindingPlanAndRecordRepairDigestDrift(t *testing.T) {
 }
 
 func TestReviewBindingAuthorizationPersistsDistinctAttemptsAcrossTime(t *testing.T) {
+	t.Parallel()
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)

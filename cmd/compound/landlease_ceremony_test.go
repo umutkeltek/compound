@@ -43,6 +43,7 @@ func runLandLeaseCeremonyCLI(t *testing.T, args ...string) (stdout, stderr strin
 // it, and finally lane B's release succeeds and frees the lease. Holder strings are generic
 // (harnessA/harnessB) — no real harness/session names, per repo privacy law.
 func TestLandLeaseCeremonyTwoLaneScenario(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	const (
 		holderA = "harnessA:sessA:work_aaa"
@@ -198,6 +199,7 @@ func missingCeremonyLeaseMarkers(content string) []string {
 // cmd/compound is two directories below the repo root, so "../.." from the test's working directory
 // (cmd/compound, where `go test` runs) lands on the repo root.
 func TestLandLeaseCeremonySkillConsumesLease(t *testing.T) {
+	t.Parallel()
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatalf("resolve repo root: %v", err)
@@ -220,6 +222,7 @@ func TestLandLeaseCeremonySkillConsumesLease(t *testing.T) {
 // ceremonyLeaseMarkers, or a helper that never actually checks) would let
 // TestLandLeaseCeremonySkillConsumesLease pass green forever regardless of what SKILL.md says.
 func TestMissingCeremonyLeaseMarkersCatchesDrift(t *testing.T) {
+	t.Parallel()
 	doctored := `# doctored copy — not the real SKILL.md
 Scope claim: compound land-lease status --json
 Then: compound land-lease acquire --holder "<h>" --wait --timeout 120

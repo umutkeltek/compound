@@ -28,6 +28,7 @@ type runtimePulseCLICheck struct {
 }
 
 func TestRuntimeDoctorSwitchbackPulse(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(runtimePulseDoctorChildEnv) == "1" {
 		cmdRuntime([]string{"doctor", "--switchback-pulse", os.Getenv(runtimePulsePathEnv)})
 		return
@@ -60,6 +61,7 @@ func TestRuntimeDoctorSwitchbackPulse(t *testing.T) {
 }
 
 func TestRuntimeRepairPlanSwitchbackPulseFailedHop(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(runtimePulseRepairChildEnv) == "1" {
 		cmdRuntime([]string{"repair-plan", "--switchback-pulse", os.Getenv(runtimePulsePathEnv)})
 		return
@@ -129,6 +131,7 @@ func TestRuntimeRepairPlanSwitchbackPulseFailedHop(t *testing.T) {
 }
 
 func TestRuntimeDoctorSwitchbackPulseRejectsLiveFlag(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(runtimePulseLiveChildEnv) == "1" {
 		cmdRuntime([]string{"doctor", "--switchback-pulse", os.Getenv(runtimePulsePathEnv), "--live"})
 		return

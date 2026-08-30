@@ -20,6 +20,7 @@ const orientIdentityChildEnv = "COMPOUND_TEST_ORIENT_IDENTITY_CHILD"
 const orientIdentityArgsEnv = "COMPOUND_TEST_ORIENT_IDENTITY_ARGS"
 
 func TestOrientCLIRejectsFictitiousIdentityBeforeWriting(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(orientIdentityChildEnv) == "1" {
 		var args []string
 		if err := json.Unmarshal([]byte(os.Getenv(orientIdentityArgsEnv)), &args); err != nil {
@@ -94,6 +95,7 @@ func TestOrientCLIRejectsFictitiousIdentityBeforeWriting(t *testing.T) {
 }
 
 func TestOrientCLIWritesCanonicalRegisteredIdentity(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(orientIdentityChildEnv) == "1" {
 		var args []string
 		if err := json.Unmarshal([]byte(os.Getenv(orientIdentityArgsEnv)), &args); err != nil {

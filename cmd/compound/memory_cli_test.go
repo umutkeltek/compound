@@ -29,6 +29,7 @@ const (
 )
 
 func TestParseMemoryAfterCursorAcceptsTokenOrFilenameAndRejectsPaths(t *testing.T) {
+	t.Parallel()
 	want := candidates.EntryCursor("cand_01.json")
 	token, err := want.Token()
 	if err != nil {
@@ -96,6 +97,7 @@ func runMemoryCLIAsChild(t *testing.T, homePath, sub string, args ...string) ([]
 // os.Exit on the verb handlers (by design); the parent captures the code
 // via *exec.ExitError.
 func TestMemoryCLIRunsSubcommandChild(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(memoryCliChildEnv) == "" {
 		return
 	}
@@ -112,6 +114,7 @@ func TestMemoryCLIRunsSubcommandChild(t *testing.T) {
 //
 // Pre-change behavior: err = "not found: .json", exit 1 — nonsensical.
 func TestMemoryAdjudicateNoArgExitsTwoWithUsage(t *testing.T) {
+	t.Parallel()
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("home init: %v", err)
@@ -140,6 +143,7 @@ func TestMemoryAdjudicateNoArgExitsTwoWithUsage(t *testing.T) {
 // / `compound capability consume` (the high-leverage case the packet opens
 // with).
 func TestMemoryAdjudicateUnknownIDNamesSearchedLocationAndDoor(t *testing.T) {
+	t.Parallel()
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("home init: %v", err)
@@ -198,6 +202,7 @@ func TestMemoryAdjudicateUnknownIDNamesSearchedLocationAndDoor(t *testing.T) {
 // addition to the normal 0/N summary. The listing still runs; we just
 // don't leave the operator thinking the kind doesn't exist anywhere.
 func TestMemoryCandidatesKindPointerNamesForeignDoor(t *testing.T) {
+	t.Parallel()
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("home init: %v", err)
@@ -235,6 +240,7 @@ func TestMemoryCandidatesKindPointerNamesForeignDoor(t *testing.T) {
 }
 
 func TestMemoryAdjudicatePendingPromoteRefused(t *testing.T) {
+	t.Parallel()
 	// Settled design decision 3 (memory-batch-adjudicate packet): promotion
 	// stays per-id only. Refuse --verdict promote in --pending mode at the
 	// CLI door so a stale batch cannot promote without the operator.

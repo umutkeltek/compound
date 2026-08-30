@@ -7,6 +7,7 @@ import (
 )
 
 func TestParseDelegateCLIRejectsExecutionSelectorsWithoutProfile(t *testing.T) {
+	t.Parallel()
 	selectors := []string{
 		"--role", "executor",
 		"--capability-class", "build-implement",
@@ -32,6 +33,7 @@ func TestParseDelegateCLIRejectsExecutionSelectorsWithoutProfile(t *testing.T) {
 }
 
 func TestParseDelegateCLIMapsExecutionProfileSelectors(t *testing.T) {
+	t.Parallel()
 	options, err := parseDelegateCLI([]string{
 		"work_abc",
 		"--harness", "claude_code",

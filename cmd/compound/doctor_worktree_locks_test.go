@@ -20,6 +20,7 @@ func doctorLockFixedNow() time.Time { return time.Date(2026, 6, 28, 12, 0, 0, 0,
 // A synthetic lock marker would prove nothing about whether doctor can see a
 // lock git actually took.
 func TestDoctorFlagsWorktreeLockWhoseDelegateIsTerminal(t *testing.T) {
+	t.Parallel()
 	repo, _, _ := initLandingCLIRepo(t)
 	runLandingCLIGit(t, repo, "switch", "main")
 
@@ -70,6 +71,7 @@ func TestDoctorFlagsWorktreeLockWhoseDelegateIsTerminal(t *testing.T) {
 }
 
 func TestDoctorWorktreeLockSectionIsQuietWithoutLocks(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	printWorktreeLocks(&out, doctorReport{})
 	if !strings.Contains(out.String(), "no locked delegate workspaces") {

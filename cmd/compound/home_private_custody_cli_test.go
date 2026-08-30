@@ -16,6 +16,7 @@ import (
 const homePrivateCustodyChildEnv = "COMPOUND_TEST_HOME_PRIVATE_CUSTODY_CHILD"
 
 func TestHomePrivateCustodyCLIJSONTextAndExitCodes(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homePrivateCustodyChildEnv) == "doctor-json" {
 		cmdHome([]string{"doctor", "--json"})
 		os.Exit(0)
@@ -87,6 +88,7 @@ func TestHomePrivateCustodyCLIJSONTextAndExitCodes(t *testing.T) {
 }
 
 func TestHomePrivateCustodyCLIParserErrorsAndHelp(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homePrivateCustodyChildEnv) == "repair-bogus" {
 		cmdHome([]string{"private-custody", "repair", "--bogus"})
 		os.Exit(0)
@@ -148,6 +150,7 @@ func TestHomePrivateCustodyCLIParserErrorsAndHelp(t *testing.T) {
 }
 
 func TestHomePrivateCustodyRepairTokenAsBackupArgumentIsNotDispatched(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homePrivateCustodyChildEnv) == "backup-target-repair" {
 		cmdHome([]string{"backup", "--target", "repair"})
 		os.Exit(0)

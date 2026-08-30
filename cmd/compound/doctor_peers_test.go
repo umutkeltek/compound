@@ -48,6 +48,7 @@ func writeRecordedPack(t *testing.T, home, packID, contractID string, ts time.Ti
 // pack has no peers renders `absent`, and the static `absent (S2)` placeholder is GONE from the
 // code path (both the cell and the note line).
 func TestPeersDoctor_F4_CellReadsRecordedPeersEvidence(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	base := t.TempDir()
 	binary := "/opt/compound/compound"
@@ -118,6 +119,7 @@ func surfacingDataRows(text string) []string {
 // DISTINCT rows (the beyond-truncation difference survives via a disambiguating suffix), while two
 // byte-identical rows collapse to a single rendered row. Table stays within its column budget.
 func TestPeersMatrix_F5_TruncationDistinctAndByteIdenticalCollapse(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	binary := "/opt/compound/compound"
 

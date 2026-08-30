@@ -42,6 +42,7 @@ func requireConsoleSmokeRuntime(t *testing.T, repo string) {
 // seeded home and the repo's own binary, the smoke proves Attention and Decide agree on a
 // membership the fixture determines — no live COMPOUND_HOME, no installed binary.
 func TestProofCheckConsoleAttentionGateProvesFixtureIdentity(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds the compound binary")
 	}
@@ -61,6 +62,7 @@ func TestProofCheckConsoleAttentionGateProvesFixtureIdentity(t *testing.T) {
 // it passes having compared two empty lists — the gate must refuse the home before the smoke
 // ever sees it.
 func TestProofCheckConsoleAttentionGateRefusesVacuousFixture(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds the compound binary")
 	}
@@ -80,6 +82,7 @@ func TestProofCheckConsoleAttentionGateRefusesVacuousFixture(t *testing.T) {
 // itself is green. If this ever fails, the smoke grew its own emptiness check and the guard
 // can be reconsidered — it must not be deleted on the assumption that it already did.
 func TestProofCheckConsoleAttentionSmokePassesOnAVacuousHome(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("runs the console smoke")
 	}

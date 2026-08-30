@@ -54,6 +54,7 @@ func writeSourceView(t *testing.T, body string) (path, revision string) {
 }
 
 func TestPlacementSourceFreshnessCurrentWhenRevisionMatches(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	sourcePath, revision := writeSourceView(t, `{"owners":[{"id":"storage-taxonomy"}]}`)
 	writePlacementSourceAuthority(t, home, placementRecord(sourcePath, "2026-07-10T00:29:24Z", revision))
@@ -98,6 +99,7 @@ func TestPlacementImportKeepsFreshnessStableAcrossWorkingDirectories(t *testing.
 // Selecting the first entry compares today's file against the OLDEST import and reports
 // drift on a correctly-enforced source.
 func TestPlacementSourceFreshnessUsesNewestImportNotFirst(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	sourcePath, revision := writeSourceView(t, `{"owners":[{"id":"storage-taxonomy"}]}`)
 	writePlacementSourceAuthority(t, home,
@@ -119,6 +121,7 @@ func TestPlacementSourceFreshnessUsesNewestImportNotFirst(t *testing.T) {
 }
 
 func TestPlacementSourceFreshnessStaleWhenSourceMovedOn(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	sourcePath, _ := writeSourceView(t, `{"owners":[{"id":"storage-taxonomy"}]}`)
 	writePlacementSourceAuthority(t, home,
@@ -142,6 +145,7 @@ func TestPlacementSourceFreshnessStaleWhenSourceMovedOn(t *testing.T) {
 }
 
 func TestPlacementSourceFreshnessFlagsMissingSource(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	missing := filepath.Join(t.TempDir(), "deleted-placement-rules.json")
 	writePlacementSourceAuthority(t, home,
@@ -163,6 +167,7 @@ func TestPlacementSourceFreshnessFlagsMissingSource(t *testing.T) {
 // A health surface that prints a wall of green trains the operator to skip it, so the
 // all-current case collapses to one line and never enumerates.
 func TestPlacementSourceFreshnessStaysQuietWhenAllCurrent(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	sourcePath, revision := writeSourceView(t, `{"owners":[]}`)
 	writePlacementSourceAuthority(t, home, placementRecord(sourcePath, "2026-07-10T00:29:24Z", revision))
@@ -179,6 +184,7 @@ func TestPlacementSourceFreshnessStaysQuietWhenAllCurrent(t *testing.T) {
 }
 
 func TestPlacementSourceFreshnessAbsentWhenNothingImported(t *testing.T) {
+	t.Parallel()
 	if rows := buildPlacementSourceFreshness(t.TempDir()); rows != nil {
 		t.Fatalf("no import history must yield no rows, got %+v", rows)
 	}

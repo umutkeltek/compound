@@ -43,6 +43,8 @@ func seedLooseCLIRecord(t *testing.T, homePath, id, body string) {
 // modes on one seeded home: dry-run must not mutate, apply must close the gate
 // and archive originals, verify must confirm and exit 0.
 func TestEventStoreMigrateVerbEndToEnd(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	for _, id := range []string{"rec_cli_a", "rec_cli_b"} {
 		seedLooseCLIRecord(t, homePath, id, "body-"+id)
@@ -85,6 +87,8 @@ func TestEventStoreMigrateVerbEndToEnd(t *testing.T) {
 // TestEventStoreMigrateVerifyFlagsLegacyWriter proves the post-completion status
 // check exits non-zero and names the degraded state when a loose file reappears.
 func TestEventStoreMigrateVerifyFlagsLegacyWriter(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	seedLooseCLIRecord(t, homePath, "rec_cli_x", "x")
 	if _, _, code := runEventStoreCLI(t, "migrate", "--apply", "--home", homePath); code != 0 {
@@ -102,6 +106,8 @@ func TestEventStoreMigrateVerifyFlagsLegacyWriter(t *testing.T) {
 }
 
 func TestEventStoreMigrateRequiresExactlyOneMode(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if _, _, code := runEventStoreCLI(t, "migrate", "--home", homePath); code != 2 {
 		t.Fatalf("missing mode exit=%d, want 2", code)
@@ -117,6 +123,8 @@ func TestEventStoreMigrateRequiresExactlyOneMode(t *testing.T) {
 // TestEventStoreMigrateUsageLineIsRegisteredAtTopLevel mirrors the capture/act
 // verbs: a new top-level verb must be discoverable in the top-level help text.
 func TestEventStoreMigrateUsageLineIsRegisteredAtTopLevel(t *testing.T) {
+	t.Parallel()
+
 	repoRoot, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatalf("resolve repo root: %v", err)
@@ -282,6 +290,8 @@ func TestEventStoreRepairStatusNextCommandFlagsMatchVerbParsers(t *testing.T) {
 }
 
 func TestEventStoreRepairStatusRejectsBadPlanID(t *testing.T) {
+	t.Parallel()
+
 	homePath := setupEventStoreRepairHealthyCLI(t)
 	for _, planID := range []string{"not-a-plan", "esrp_aaaaaaaaaaaa"} {
 		if out, stderr, code := runEventStoreCLI(t, "repair", "status", "--home", homePath, "--plan", planID, "--json"); code == 0 {
@@ -522,6 +532,8 @@ func mustEventStoreRepairTime(t *testing.T, value string) time.Time {
 }
 
 func TestEventStoreRepairActionTimeFollowsLatestCausalPredecessor(t *testing.T) {
+	t.Parallel()
+
 	base := time.Date(2026, time.July, 18, 8, 0, 0, 0, time.UTC)
 	reviewAt := base.Add(4*time.Minute + 250*time.Millisecond)
 
@@ -542,6 +554,8 @@ func TestEventStoreRepairActionTimeFollowsLatestCausalPredecessor(t *testing.T) 
 }
 
 func TestEvaluateEventStoreRepairCurrentAuthorityRejectsBackwardClock(t *testing.T) {
+	t.Parallel()
+
 	evaluatedAt := time.Date(2026, time.July, 18, 8, 0, 0, 123, time.UTC)
 	_, err := evaluateEventStoreRepairCurrentAuthority(
 		filepath.Join(t.TempDir(), "missing-home"),
@@ -2175,6 +2189,8 @@ func createRunningEventStoreRepairWorkAt(t *testing.T, homePath, actor string, c
 // --confirm — when the home never completed migration; there is nothing to
 // re-baseline yet, and no sidecar is written.
 func TestEventStoreRebaselineRefusesWhenMigrationIncomplete(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 
 	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--home", homePath)
@@ -2200,6 +2216,8 @@ func TestEventStoreRebaselineRefusesWhenMigrationIncomplete(t *testing.T) {
 // FALSIFIER F6 (preview render): the dry-run default writes nothing and
 // projects current -> proposed sizes for each frozen stream.
 func TestEventStoreRebaselineDryRunWritesNothing(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	seedLooseCLIRecord(t, homePath, "rec_rb_dry", "x")
 	streamPath := filepath.Join(homePath, "events", "hook-events.ndjson")
@@ -2240,6 +2258,8 @@ func TestEventStoreRebaselineDryRunWritesNothing(t *testing.T) {
 // FALSIFIER F4 (governance floor): --confirm WITHOUT an allowing PolicyDecision
 // refuses and leaves the sidecar byte-identical.
 func TestEventStoreRebaselineRefusesWithoutGrant(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	seedLooseCLIRecord(t, homePath, "rec_rb_nogrant", "x")
 	if _, _, code := runEventStoreCLI(t, "migrate", "--apply", "--home", homePath); code != 0 {
@@ -2314,6 +2334,8 @@ func snapshotHomeFiles(t *testing.T, root string) map[string]string {
 
 // --confirm requires --work (a governed act belongs to a work), mirroring `compound act`.
 func TestEventStoreRebaselineConfirmRequiresWork(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	seedLooseCLIRecord(t, homePath, "rec_rb_nowork", "x")
 	if _, _, code := runEventStoreCLI(t, "migrate", "--apply", "--home", homePath); code != 0 {
@@ -2329,6 +2351,8 @@ func TestEventStoreRebaselineConfirmRequiresWork(t *testing.T) {
 // --confirm performs the governed write, records a resolvable receipt +
 // transition, and `migrate --verify` reports ok again afterward.
 func TestEventStoreRebaselineWritesWithGrantAndClosesTheGateAgain(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	seedLooseCLIRecord(t, homePath, "rec_rb_grant", "x")
 	streamPath := filepath.Join(homePath, "events", "hook-events.ndjson")

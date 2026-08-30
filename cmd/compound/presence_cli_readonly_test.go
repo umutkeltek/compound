@@ -13,6 +13,7 @@ import (
 const presenceReadOnlySubprocessEnv = "COMPOUND_PRESENCE_READ_ONLY_SUBPROCESS"
 
 func TestPresenceCLIReadOnlyDoesNotMaterializeRuntimeDirs(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(presenceReadOnlySubprocessEnv) == "1" {
 		cmdPresence([]string{"--json"})
 		return
@@ -45,6 +46,7 @@ func TestPresenceCLIReadOnlyDoesNotMaterializeRuntimeDirs(t *testing.T) {
 }
 
 func TestPresenceCLIDoesNotAddLandChecks(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(presenceReadOnlySubprocessEnv) == "2" {
 		cmdPresence([]string{"--json"})
 		return

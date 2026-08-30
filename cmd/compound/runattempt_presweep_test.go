@@ -20,6 +20,7 @@ const delegateNoImplicitSweepModeEnv = "COMPOUND_TEST_DELEGATE_NO_IMPLICIT_SWEEP
 const delegateNoFootprintChildEnv = "COMPOUND_TEST_DELEGATE_NO_FOOTPRINT"
 
 func TestWorkDelegateReadOnlyAndUnadmittedCommandsDoNotMaterializeHome(t *testing.T) {
+	t.Parallel()
 	if mode := os.Getenv(delegateNoFootprintChildEnv); mode != "" {
 		const missingWorkID = "work_delegate_no_footprint"
 		var args []string
@@ -144,6 +145,7 @@ func snapshotDelegateCommandTree(t *testing.T, root string) map[string]string {
 // an explicitly opted-in invocation that parses but fails semantic preflight.
 // This subprocess exercises the real cmdWork wiring above the parser seam.
 func TestWorkDelegateCommandsNeverImplicitlySweepRunAttempts(t *testing.T) {
+	t.Parallel()
 	if workID := os.Getenv(delegateNoImplicitSweepChildEnv); workID != "" {
 		var args []string
 		switch os.Getenv(delegateNoImplicitSweepModeEnv) {

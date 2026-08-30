@@ -16,6 +16,7 @@ import (
 )
 
 func TestProofCheckAdmissionProfileUsesOneImmutableSourceRange(t *testing.T) {
+	t.Parallel()
 	repo := initCompoundCommandGitRepo(t)
 	baseSHA := proofSourceGitOutput(t, repo, "rev-parse", "HEAD")
 	if err := os.WriteFile(repo+"/candidate.go", []byte("package candidate\n"), 0o644); err != nil {
@@ -97,6 +98,7 @@ func proofSourceGitOutput(t *testing.T, repo string, args ...string) string {
 }
 
 func TestProofCheckSnapshotReportCarriesSealedIdentity(t *testing.T) {
+	t.Parallel()
 	repo := initCompoundCommandGitRepo(t)
 	source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
 	if err != nil {
@@ -123,6 +125,7 @@ func TestProofCheckSnapshotReportCarriesSealedIdentity(t *testing.T) {
 }
 
 func TestProofCheckAdmissionRejectsSourceMutationAfterGates(t *testing.T) {
+	t.Parallel()
 	repo := initCompoundCommandGitRepo(t)
 	source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
 	if err != nil {

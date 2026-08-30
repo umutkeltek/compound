@@ -31,6 +31,7 @@ func actScratch(t *testing.T, home, body string) string {
 // FALSIFIER (governance floor): --confirm WITHOUT an allowing PolicyDecision refuses and leaves
 // the target byte-identical. A mutation without a matching allowing decision must not happen.
 func TestActRepointRefusesWithoutGrant(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	path := actScratch(t, home, "egress:\n  auto/judge: providerA\n")
 	before, _ := os.ReadFile(path)
@@ -61,6 +62,7 @@ func TestActRepointRefusesWithoutGrant(t *testing.T) {
 // which carries no gate name, no tried-trace, and no command, so assertTeachingRefusal fails
 // on the first assertion.
 func TestActRepointRefusalTeachesTheGrantPath(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	path := actScratch(t, home, "egress:\n  auto/judge: providerA\n")
 
@@ -91,6 +93,7 @@ func TestActRepointRefusalTeachesTheGrantPath(t *testing.T) {
 
 // The dry-run default (no --confirm) writes nothing and reports the policy outcome.
 func TestActRepointDryRunWritesNothing(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	path := actScratch(t, home, "egress:\n  auto/judge: providerA\n")
 	before, _ := os.ReadFile(path)
@@ -113,6 +116,7 @@ func TestActRepointDryRunWritesNothing(t *testing.T) {
 
 // --confirm requires --work (a governed act belongs to a work).
 func TestActRepointConfirmRequiresWork(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	path := actScratch(t, home, "egress:\n  auto/judge: providerA\n")
 	var out, errOut bytes.Buffer
@@ -128,6 +132,7 @@ func TestActRepointConfirmRequiresWork(t *testing.T) {
 // class, reversibility, and target, --confirm performs the governed write, flips the value, and
 // records a resolvable receipt to the canonical event store.
 func TestActRepointWritesWithGrantAndRecordsReceipt(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	path := actScratch(t, home, "egress:\n  auto/judge: providerA\n")
 

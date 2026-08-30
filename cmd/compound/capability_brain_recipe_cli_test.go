@@ -9,6 +9,7 @@ import (
 )
 
 func TestCapabilityImportBrainRecipeDryRunDoesNotCreateHome(t *testing.T) {
+	t.Parallel()
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)

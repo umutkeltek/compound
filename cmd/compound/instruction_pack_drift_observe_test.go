@@ -105,6 +105,7 @@ func driftInstructionPackFixture(t *testing.T, homePath, targetPath string, _ ha
 // bridge must mint exactly one observation batch and persist it under
 // $COMPOUND_HOME/state/instruction-pack-drift-observations/.
 func TestEmitInstructionPackDivergence_F1_EmitOnDrift(t *testing.T) {
+	t.Parallel()
 	homePath, targetPath, render := writeInstructionPackDriftObserveFixture(t)
 	report := driftInstructionPackFixture(t, homePath, targetPath, render)
 
@@ -134,6 +135,7 @@ func TestEmitInstructionPackDivergence_F1_EmitOnDrift(t *testing.T) {
 // permission-posture F2: the divergence_declared card surfaces in the
 // source-intake projection so the operator sees the drift.
 func TestEmitInstructionPackDivergence_F2_CardEndToEnd(t *testing.T) {
+	t.Parallel()
 	homePath, targetPath, render := writeInstructionPackDriftObserveFixture(t)
 	report := driftInstructionPackFixture(t, homePath, targetPath, render)
 	if _, err := emitInstructionPackDivergence(homePath, report, cliTestNow); err != nil {
@@ -159,6 +161,7 @@ func TestEmitInstructionPackDivergence_F2_CardEndToEnd(t *testing.T) {
 // permission-posture F3: a non-drifted report must apply ZERO
 // observations and write NOTHING.
 func TestEmitInstructionPackDivergence_F3_SilenceOnMatch(t *testing.T) {
+	t.Parallel()
 	homePath, _, _ := writeInstructionPackDriftObserveFixture(t)
 	report, err := harness.InstructionPackDrift(homePath, "claude_code", "", cliTestNow)
 	if err != nil {
@@ -194,6 +197,7 @@ func TestEmitInstructionPackDivergence_F3_SilenceOnMatch(t *testing.T) {
 // SAME observation id (intake dedupes to one card); a genuinely different
 // drift state mints a DIFFERENT id (so a second card is added).
 func TestEmitInstructionPackDivergence_F4_StableIdentity(t *testing.T) {
+	t.Parallel()
 	homePath, targetPath, render := writeInstructionPackDriftObserveFixture(t)
 	report := driftInstructionPackFixture(t, homePath, targetPath, render)
 
@@ -266,6 +270,7 @@ func TestEmitInstructionPackDivergence_F4_StableIdentity(t *testing.T) {
 // still report MATCH — the comparator must never trip on timestamp
 // variance.
 func TestInstructionPackDrift_F5_GeneratedAtIgnored(t *testing.T) {
+	t.Parallel()
 	homePath, _, _ := writeInstructionPackDriftObserveFixture(t)
 	first, err := harness.InstructionPackDrift(homePath, "claude_code", "", cliTestNow)
 	if err != nil {

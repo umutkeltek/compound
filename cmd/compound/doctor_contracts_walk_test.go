@@ -154,6 +154,7 @@ const wantContractsWalkGolden = `[
 // (pre-merge, two-WalkDir) implementation. The P3 merge into one WalkDir must
 // reproduce this exact JSON.
 func TestDoctorContractsEffectiveWalkGoldenRichFixture(t *testing.T) {
+	t.Parallel()
 	home, now := buildContractsWalkFixture(t)
 	rows, _, _ := buildSurfacingCoverage(home, fixtureHooks(), now)
 	if got := pinRows(rows); got != wantContractsWalkGolden {
@@ -188,6 +189,7 @@ const wantContractsWalkGoldenMissingDirs = `[
 // swallowed exactly as it is today -- no crash, everything reads as
 // never/absent -- and the merge must not change that.
 func TestDoctorContractsEffectiveWalkGoldenMissingDirs(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir() // no contracts/, no context/ at all
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	rows, _, _ := buildSurfacingCoverage(home, fixtureHooks(), now)

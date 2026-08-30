@@ -18,6 +18,7 @@ import (
 // SYNTHETIC input: it writes a byte-stable suite that bench.LoadSuite accepts, prints the
 // drop-accounting to stdout, and produces byte-identical output on a rerun.
 func TestRunBenchConvertWritesDeterministicLoadableSuite(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	inPath := filepath.Join(dir, "acceptance.json")
 	syn := `{"schema_version":1,"class_cases":[{"prompt":"c","expected_class":"x"}],` +
@@ -65,6 +66,7 @@ func TestRunBenchConvertWritesDeterministicLoadableSuite(t *testing.T) {
 // (no --id-map flag) applies v2, an explicit --id-map v1 applies only the original three shapes
 // (no v2 literal overrides), and both print their applied version in the convert summary.
 func TestRunBenchConvertIDMapDefaultsToV2(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	inPath := filepath.Join(dir, "acceptance.json")
 	syn := `{"schema_version":1,"class_cases":[],` +
@@ -148,6 +150,7 @@ func writeSuite(t *testing.T, path string, s bench.Suite) {
 // TestRunBenchHappyPathExitsZeroAndWritesArtifact: the committed public fixture over a matching
 // graph exits 0, emits parseable --json, and persists a report under COMPOUND_HOME/reviews/bench.
 func TestRunBenchHappyPathExitsZeroAndWritesArtifact(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	seedBenchGraph(t, home)
 	var out, errBuf bytes.Buffer
@@ -172,6 +175,7 @@ func TestRunBenchHappyPathExitsZeroAndWritesArtifact(t *testing.T) {
 // director will not mine a synthetic/diagnostic run, and --suite-kind propagates to the report
 // label. Without either flag the field stays absent (nil => actionable back-compat).
 func TestRunBenchNoActionableStampsReport(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	seedBenchGraph(t, home)
 	suite := filepath.Join("..", "..", "fixtures", "bench", "capability-suite.json")
@@ -210,6 +214,7 @@ func TestRunBenchNoActionableStampsReport(t *testing.T) {
 // stdout). A real `bench run --no-actionable` must persist actionable=false into that artifact so
 // loadLatestBenchReports skips it; a default run must leave it absent (nil => actionable).
 func TestRunBenchNoActionableArtifactRoundTrips(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	seedBenchGraph(t, home)
 	suite := filepath.Join("..", "..", "fixtures", "bench", "capability-suite.json")
@@ -263,6 +268,7 @@ func readSingleBenchArtifact(t *testing.T, home string) bench.Report {
 // no token, so its close cannot harden. This is the handoff that wires the bench gate to the
 // harness-edit hardening rule, end to end through the real CLI and the real work store.
 func TestBenchCompareProofTokenFlowsToHarnessEditClose(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	base := bench.Report{
 		Suite:   "capability-suite",
@@ -371,6 +377,7 @@ func TestBenchCompareProofTokenFlowsToHarnessEditClose(t *testing.T) {
 // TestRunBenchAbsentGate is the fail-loud falsifier: an expected id absent from the graph makes
 // `bench run` exit nonzero UNLESS --allow-absent is passed.
 func TestRunBenchAbsentGate(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	seedBenchGraph(t, home)
 	suitePath := filepath.Join(t.TempDir(), "absent-suite.json")
@@ -397,6 +404,7 @@ func TestRunBenchAbsentGate(t *testing.T) {
 // TestRunBenchCompareRegressionGate is the compare falsifier: a fabricated held_out-only
 // regression makes `bench compare` exit nonzero; an improvement exits zero.
 func TestRunBenchCompareRegressionGate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	before := bench.Report{
 		Suite:   "capability-suite",
@@ -440,6 +448,7 @@ func TestRunBenchCompareRegressionGate(t *testing.T) {
 // accept a mismatched comparison is not trustworthy. --allow-suite-mismatch records the delta past
 // the gate (exit 0) but Accept still reports the semantic truth (false).
 func TestRunBenchCompareSuiteMismatchGate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	before := bench.Report{
 		Suite:   "capability-suite",

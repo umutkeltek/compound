@@ -11,6 +11,7 @@ import (
 )
 
 func TestResolveReclaimTargetRequiresExplicitConsumerAndThreshold(t *testing.T) {
+	t.Parallel()
 	if _, err := policy.ResolveReclaimTargetForTest([]string{"--required-bytes", "100"}); err == nil {
 		t.Fatal("missing --consumer must fail closed")
 	}
@@ -20,6 +21,7 @@ func TestResolveReclaimTargetRequiresExplicitConsumerAndThreshold(t *testing.T) 
 }
 
 func TestResolveReclaimTargetUsesCallerPublishedValues(t *testing.T) {
+	t.Parallel()
 	got, err := policy.ResolveReclaimTargetForTest([]string{
 		"--consumer", "fixture",
 		"--free-bytes", "50",
@@ -40,6 +42,7 @@ func TestResolveReclaimTargetUsesCallerPublishedValues(t *testing.T) {
 }
 
 func TestChangedCommandsAreDiscoverable(t *testing.T) {
+	t.Parallel()
 	if got := routeUsage(""); !containsAll(got, "lane-projection", "--harness H") {
 		t.Fatalf("route usage does not expose lane projection: %s", got)
 	}
@@ -49,6 +52,7 @@ func TestChangedCommandsAreDiscoverable(t *testing.T) {
 }
 
 func TestRetentionPlanJSONInsufficiencyExitsNonZero(t *testing.T) {
+	t.Parallel()
 	out, err := runCLIFlagSeam(
 		t,
 		t.TempDir(),
@@ -70,6 +74,7 @@ func TestRetentionPlanJSONInsufficiencyExitsNonZero(t *testing.T) {
 }
 
 func TestRetentionRejectsUnknownFlagsAsUsage(t *testing.T) {
+	t.Parallel()
 	out, err := runCLIFlagSeam(t, t.TempDir(), "retention", "plan", "--required-byte", "123")
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
@@ -90,6 +95,7 @@ func containsAll(s string, wants ...string) bool {
 }
 
 func TestRetentionApplyDryRunChangesZeroBytes(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
@@ -117,6 +123,7 @@ func TestRetentionApplyDryRunChangesZeroBytes(t *testing.T) {
 // --yes must be explicit. With no --yes the verb exits 0 and moves nothing,
 // even when a valid home + classes are supplied.
 func TestRetentionApplyYesIsRequiredToReclaim(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
@@ -141,6 +148,7 @@ func TestRetentionApplyYesIsRequiredToReclaim(t *testing.T) {
 // TestRetentionApplyRejectsUnknownClass confirms the unknown-class refusal
 // surfaces with a truthful error rather than a usage page.
 func TestRetentionApplyRejectsUnknownClass(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
@@ -161,6 +169,7 @@ func TestRetentionApplyRejectsUnknownClass(t *testing.T) {
 // TestRetentionApplyOlderThanBelowAgeFloorRefused confirms the per-class
 // floor guard at the CLI layer.
 func TestRetentionApplyOlderThanBelowAgeFloorRefused(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
@@ -181,6 +190,7 @@ func TestRetentionApplyOlderThanBelowAgeFloorRefused(t *testing.T) {
 // TestRetentionUsageMentionsApplyAndEmptyTrash guards the usage line so a
 // future flag-rename cannot silently strand the verbs.
 func TestRetentionUsageMentionsApplyAndEmptyTrash(t *testing.T) {
+	t.Parallel()
 	usage := policy.RetentionUsageForTest()
 	for _, want := range []string{"apply", "empty-trash", "--yes", "--older-than", "dry-run"} {
 		if !strings.Contains(usage, want) {
@@ -193,6 +203,7 @@ func TestRetentionUsageMentionsApplyAndEmptyTrash(t *testing.T) {
 // shape as plan" requirement: dry-run JSON must include the planned steps
 // and the dry-run marker.
 func TestRetentionApplyJSONShapeMatchesPlan(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)

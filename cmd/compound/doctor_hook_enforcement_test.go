@@ -78,6 +78,7 @@ func buildRealCompound(t *testing.T) string {
 }
 
 func TestHookEnforcementBindsEachConfiguredPostureForSharedBinary(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds the compound binary: skipped in -short mode")
 	}
@@ -135,6 +136,7 @@ func assertHookPostureRow(
 // TestHookEnforcementFailsAnExitZeroStubBinary is the regression: the config is perfectly wired,
 // the file exists and runs, and the gate enforces nothing.
 func TestHookEnforcementFailsAnExitZeroStubBinary(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stub := writeExecutable(t, filepath.Join(dir, "bin", "compound"), exitZeroStubScript)
 	configPath := filepath.Join(dir, "settings.json")
@@ -163,6 +165,7 @@ func TestHookEnforcementFailsAnExitZeroStubBinary(t *testing.T) {
 // a real PolicyDecision that really holds — captured from the genuine binary. It fails only
 // because that response answers a different run's nonce.
 func TestHookEnforcementFailsABinaryThatReplaysAGenuineResponse(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds the compound binary: skipped in -short mode")
 	}
@@ -203,6 +206,7 @@ func TestHookEnforcementFailsABinaryThatReplaysAGenuineResponse(t *testing.T) {
 
 // TestHookEnforcementPassesTheRealBinary: a check that fails everything is not a check.
 func TestHookEnforcementPassesTheRealBinary(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds the compound binary: skipped in -short mode")
 	}
@@ -223,6 +227,7 @@ func TestHookEnforcementPassesTheRealBinary(t *testing.T) {
 // wrappers evaluate the genuine PolicyDecision; they differ only in whether they honor the
 // configured process-exit posture.
 func TestHookEnforcementRejectsMixedPostureMismatches(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds the compound binary: skipped in -short mode")
 	}
@@ -281,6 +286,7 @@ func TestHookEnforcementRejectsMixedPostureMismatches(t *testing.T) {
 // TestHookEnforcementProbesEachBinaryOnceAcrossHarnesses keeps the check cheap enough to stay in
 // routine `compound doctor`: three configs pointing at one file cost one subprocess, not three.
 func TestHookEnforcementProbesEachBinaryOnceAcrossHarnesses(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stub := writeExecutable(t, filepath.Join(dir, "bin", "compound"), exitZeroStubScript)
 	var hooks []doctorHook
@@ -302,6 +308,7 @@ func TestHookEnforcementProbesEachBinaryOnceAcrossHarnesses(t *testing.T) {
 // TestHookEnforcementSkipsConfigsWithoutACompoundBinding: doctor must not invent a failure where
 // Compound was never installed.
 func TestHookEnforcementSkipsConfigsWithoutACompoundBinding(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	foreign := filepath.Join(dir, "settings.json")
 	writeExecutable(t, foreign, `{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"/usr/bin/true"}]}]}}`)
@@ -320,6 +327,7 @@ func TestHookEnforcementSkipsConfigsWithoutACompoundBinding(t *testing.T) {
 // naive split on the first space would probe a truncated filename and turn every install under a
 // spaced directory into a false FAIL.
 func TestHookCommandBinaryUnquotesTheInstalledCommand(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{
 		"/opt/bin/compound",
 		"/opt/Compound Apps/compound",
@@ -335,6 +343,7 @@ func TestHookCommandBinaryUnquotesTheInstalledCommand(t *testing.T) {
 }
 
 func TestInstalledHookPosturesRequiresExactEnforceWord(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	binary := "/opt/Compound Apps/it's compound"
 	command := hookplan.HookCommand(binary, "codex") + " --enforce-sometimes"
@@ -354,6 +363,7 @@ func TestInstalledHookPosturesRequiresExactEnforceWord(t *testing.T) {
 }
 
 func TestHookPostureExpectedExitPinsGateSemantics(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		posture string
 		outcome string
@@ -375,6 +385,7 @@ func TestHookPostureExpectedExitPinsGateSemantics(t *testing.T) {
 // TestHookEnforcementResponseRejectsPartialAnswers pins the individual reasons a response can be
 // insufficient, so a later refactor cannot quietly accept one of them.
 func TestHookEnforcementResponseRejectsPartialAnswers(t *testing.T) {
+	t.Parallel()
 	nonce := "act_probenonce0001"
 	digest := hookProbeDigest(nonce)
 	cases := []struct {
@@ -414,6 +425,7 @@ func TestHookEnforcementResponseRejectsPartialAnswers(t *testing.T) {
 // TestPrintHookEnforcementShowsFailureAndRemedy: the whole point is that a fail-open becomes
 // legible, so the rendered line has to say FAIL and say what to do.
 func TestPrintHookEnforcementShowsFailureAndRemedy(t *testing.T) {
+	t.Parallel()
 	var buf strings.Builder
 	printHookEnforcement(&buf, doctorReport{
 		HookEnforcement: []doctorHookEnforcement{{

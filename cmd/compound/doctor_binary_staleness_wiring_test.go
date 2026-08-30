@@ -23,6 +23,7 @@ import (
 // Deliberately unasserted: which relation comes back. Equal/ancestor/descendant/unknown all
 // depend on the checkout and the installed binary under test; the wiring does not.
 func TestDoctorComputesBinaryStalenessOnHealthyRun(t *testing.T) {
+	t.Parallel()
 	// The premise this test rests on: under `go test` the running executable resolves, so
 	// doctor takes the HEALTHY projections branch. Asserted rather than assumed — if it ever
 	// stopped holding, the test below would exercise the failure path and pass while proving

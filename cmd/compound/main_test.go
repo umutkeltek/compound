@@ -160,6 +160,7 @@ func TestPrepareGlobalArgs(t *testing.T) {
 }
 
 func TestPrepareCompoundEntrypointArgsRewritesOnlyOSAlias(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		argv0   string
@@ -651,6 +652,7 @@ func TestProofCheckCIConsoleFlagRunsOnlyConsoleGates(t *testing.T) {
 }
 
 func TestProofCheckMissingConsoleSmokeDependencyEmitsSkipReason(t *testing.T) {
+	t.Parallel()
 	step := proofCheckStep{Name: "console-work-trace-smoke", Command: []string{"bun", "scripts/work-trace-smoke.mjs"}, SkipIfMissing: "definitely-missing-proof-tool"}
 	got := runProofCheckStep(t.TempDir(), step, "")
 	if got.Status != "skipped" || got.SkipReason != "required executable definitely-missing-proof-tool not found" {
@@ -691,6 +693,7 @@ func TestProofCheckHumanOutputIncludesOnlyFailedStepTail(t *testing.T) {
 }
 
 func TestProofCheckChangedFilesIncludesCleanCommittedRange(t *testing.T) {
+	t.Parallel()
 	repo := initCompoundCommandGitRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "console.ts"), []byte("console.log('ok')\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -716,6 +719,7 @@ func TestProofCheckChangedFilesIncludesCleanCommittedRange(t *testing.T) {
 }
 
 func TestProofCheckArtifactConsumesVerificationAdjacentActions(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -804,6 +808,7 @@ func TestProofCheckGoStepsUseLocalToolchain(t *testing.T) {
 }
 
 func TestProofCheckGofmtFailsOnUnformattedTrackedGo(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	runCommandGit(t, repo, "init")
 	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\nfunc main(){\n}\n"), 0o644); err != nil {
@@ -836,6 +841,7 @@ func TestProofCheckGofmtFailsOnUnformattedTrackedGo(t *testing.T) {
 // in no typed habitat dir is denied (not silently allowed) and told where to go. Builds the
 // binary, so it is skipped under -short.
 func TestProofCheckNativeGateDeniesUnownedWrite(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds the compound binary")
 	}
@@ -3164,6 +3170,7 @@ func TestWorkCreatePlanCLIRecordsPolicyWithoutCreating(t *testing.T) {
 }
 
 func TestWorkCreatePlanCLIPreservesPlanClassAndReworkLineage(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
@@ -4460,6 +4467,7 @@ func TestWorkDispatchClaimCommandClaimsExplicitWork(t *testing.T) {
 }
 
 func TestWorkDispatchClaimCommandArglessPreviewsWithoutClaiming(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(workCLIBoundarySubEnv) == "dispatch-claim-preview" {
 		work.LaneCapacityGuard = nil
 		cmdWork([]string{"dispatch-claim", "--actor", "codex", "--json"})
@@ -4504,6 +4512,7 @@ func TestWorkDispatchClaimCommandArglessPreviewsWithoutClaiming(t *testing.T) {
 }
 
 func TestWorkCreateRejectsRunningStateAsUsage(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(workCLIBoundarySubEnv) == "create-running" {
 		cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "direct running create", "--state", "running"})
 		return
@@ -4558,6 +4567,7 @@ func TestWorkCreateAllowsRunningStateInTestHomeThroughLifecycle(t *testing.T) {
 }
 
 func TestWorkCreateCommandsRejectUndocumentedInitialStates(t *testing.T) {
+	t.Parallel()
 	switch os.Getenv(workCLIBoundarySubEnv) {
 	case "create-admitted":
 		cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "direct admitted create", "--state", "admitted"})
@@ -5416,6 +5426,7 @@ func TestWorkAdvanceCommandStealOverridesLeaseHolder(t *testing.T) {
 }
 
 func TestValidateKnownFlagsRejectsUnknownFlag(t *testing.T) {
+	t.Parallel()
 	err := validateKnownFlags(
 		[]string{"work_123", "--outcome", "completed", "--proof-ref", "proof:ok", "--proof-rfe", "proof:typo"},
 		map[string]bool{"--outcome": true, "--proof-ref": true},
@@ -5471,6 +5482,7 @@ func TestWorkDispatchPlanCommandPreviewsSourcePacketReadOnly(t *testing.T) {
 }
 
 func TestInstallScriptBuildsInitializesAndDoctorsTempHome(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
@@ -5547,6 +5559,7 @@ func TestInstallScriptBuildsInitializesAndDoctorsTempHome(t *testing.T) {
 }
 
 func TestInstallScriptRefusesForeignOSAliasBeforeBuild(t *testing.T) {
+	t.Parallel()
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -11776,6 +11789,7 @@ func TestMemoryDoctorReportsSemanticConfiguredWithoutSidecar(t *testing.T) {
 }
 
 func TestMemoryVectorCacheReadinessReportsManifestState(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	identity := "openai:text-embedding-3-small:1536:f32"
 	manifestPath := filepath.Join(homePath, "indexes", "breadth", memoryStampSlug(identity), "manifest.json")

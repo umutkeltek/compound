@@ -32,6 +32,7 @@ func autonomyLiveNow() time.Time {
 // the object the grant matcher sees -- an assertion on the classifier would
 // have stayed green through the entire defect.
 func TestLiveShellIntentCarriesTheHookCwd(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	in := claudeLiveHookInput{
 		HookEventName: "PreToolUse",
@@ -73,6 +74,7 @@ func TestLiveShellIntentCarriesTheHookCwd(t *testing.T) {
 // TestLiveHoldProjectsToDenyOnALaneAndAskInTheOperatorSession is the falsifier
 // for the freeze, asserted on the JSON the harness actually reads.
 func TestLiveHoldProjectsToDenyOnALaneAndAskInTheOperatorSession(t *testing.T) {
+	t.Parallel()
 	hold := &envelope.PolicyDecision{
 		Header:         envelope.Header{SchemaVersion: envelope.SVPolicyDecision, ID: "pol_autonomy_hold"},
 		ActionIntentID: "act_autonomy_hold",

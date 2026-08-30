@@ -20,6 +20,7 @@ import (
 // Falsifier: reverting the exclusion in cmd/compound/memory_cli.go (dropping
 // `&& sub != "promote-driver"`) turns this RED with "created ledger/".
 func TestMemoryPromoteDriverDryRunDoesNotMutateCompoundHome(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("reexec: skipped in -short mode")
 	}
