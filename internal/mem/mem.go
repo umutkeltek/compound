@@ -400,38 +400,7 @@ func (s *Store) Capture(cands []Candidate, now time.Time) ([]Candidate, error) {
 }
 
 func (s *Store) publishCapturedCandidate(candidate Candidate) (bool, error) {
-	created, err := candidates.CreateCandidateIfAbsent(s.home, candidates.Memory, candidate.ID, &candidate)
-	if err != nil || created {
-		return created, err
-	}
-	for attempt := 0; attempt < 32; attempt++ {
-		current, err := candidates.ReadRecord(s.home, candidates.Memory, candidate.ID)
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				created, createErr := candidates.CreateCandidateIfAbsent(s.home, candidates.Memory, candidate.ID, &candidate)
-				if createErr != nil || created {
-					return created, createErr
-				}
-				continue
-			}
-			return false, err
-		}
-		var existing Candidate
-		if err := json.Unmarshal(current.Body, &existing); err != nil {
-			return false, fmt.Errorf("decode existing capture candidate %s: %w", candidate.ID, err)
-		}
-		if strings.TrimSpace(existing.AdjudicationOperationKey) != "" {
-			return false, nil
-		}
-		replaced, err := candidates.ReplaceCandidateIfCurrent(s.home, current, &candidate)
-		if err != nil {
-			return false, err
-		}
-		if replaced.Replaced {
-			return true, nil
-		}
-	}
-	return false, fmt.Errorf("capture candidate %s publication did not converge after concurrent replacements", candidate.ID)
+	return candidates.CreateCandidateIfAbsent(s.home, candidates.Memory, candidate.ID, &candidate)
 }
 
 // captureCandidateID distinguishes separate observations of the same fact when
@@ -1199,6 +1168,8 @@ func (s *Store) adjudicateWithFrozen(candID, verdict, workID string, now time.Ti
 			return nil
 		}
 		frozen.outcome = FrozenAdjudicationAlreadyApplied
+		frozen.mismatchCandidateID = ""
+		frozen.preconditionMismatch = ""
 		if verdict == candidates.Promote {
 			recovered, err := s.frozenAppliedPromotionResult(current, workID, now)
 			if err != nil {

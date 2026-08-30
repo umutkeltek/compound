@@ -189,6 +189,10 @@ func TestPositionsFoldTopicAndChain(t *testing.T) {
 
 func TestCandidateFirstNoCanonWithoutPromote(t *testing.T) {
 	s := newStore(t)
+	// Each verdict owns distinct evidence. Recapturing the same identity after
+	// adjudication is deliberately a byte-preserving no-op; it must not
+	// resurrect the terminal candidate as proposed merely to exercise another
+	// verdict.
 	c, _ := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0)
 	if _, err := s.Adjudicate(c[0].ID, "park", "", t0); err != nil {
 		t.Fatal(err)
@@ -196,14 +200,14 @@ func TestCandidateFirstNoCanonWithoutPromote(t *testing.T) {
 	if claims, _ := s.loadClaims(); len(claims) != 0 {
 		t.Errorf("park must not write a claim; got %d", len(claims))
 	}
-	c2, _ := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0)
+	c2, _ := s.Capture([]Candidate{cand("e", "p", "v-reject", "")}, t0)
 	if _, err := s.Adjudicate(c2[0].ID, "reject", "", t0); err != nil {
 		t.Fatal(err)
 	}
 	if claims, _ := s.loadClaims(); len(claims) != 0 {
 		t.Errorf("reject must not write a claim; got %d", len(claims))
 	}
-	c3, _ := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0)
+	c3, _ := s.Capture([]Candidate{cand("e", "p", "v-no-promote", "")}, t0)
 	res, err := s.Adjudicate(c3[0].ID, "no_promote", "", t0)
 	if err != nil {
 		t.Fatal(err)
@@ -277,6 +281,37 @@ func TestCaptureRaceCannotOverwriteFrozenTerminalCandidate(t *testing.T) {
 	}
 	if duplicate, err := s.Capture([]Candidate{input}, t0); err != nil || len(duplicate) != 0 {
 		t.Fatalf("terminal candidate recapture = %d err=%v, want protected no-op", len(duplicate), err)
+	}
+}
+
+func TestRecapturePreservesOrdinaryAdjudicatedCandidate(t *testing.T) {
+	s := newStore(t)
+	input := cand("ordinary-recapture", "status", "stable", "")
+	captured, err := s.Capture([]Candidate{input}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("seed capture: candidates=%d err=%v", len(captured), err)
+	}
+	if _, err := s.Adjudicate(captured[0].ID, "park", "work_ordinary_recap", t0); err != nil {
+		t.Fatal(err)
+	}
+	before, err := candidates.ReadRecord(s.home, candidates.Memory, captured[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	duplicate, err := s.Capture([]Candidate{input}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(duplicate) != 0 {
+		t.Fatalf("ordinary terminal recapture returned %d candidates, want protected no-op", len(duplicate))
+	}
+	after, err := candidates.ReadRecord(s.home, candidates.Memory, captured[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after.Body, before.Body) {
+		t.Fatalf("ordinary terminal recapture replaced adjudicated body:\nbefore=%s\nafter=%s", before.Body, after.Body)
 	}
 }
 

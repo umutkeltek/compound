@@ -51,7 +51,8 @@ import (
 )
 
 const (
-	ReportSchemaVersion         = "compound.promotedriver.report.v0.4"
+	ReportSchemaVersion         = "compound.promotedriver.report.v0.5"
+	frozenReportSchemaVersion   = "compound.promotedriver.report.v0.4"
 	previousReportSchemaVersion = "compound.promotedriver.report.v0.3"
 	legacyReportSchemaVersion   = "compound.promotedriver.report.v0.2"
 
@@ -73,12 +74,13 @@ const (
 	promoteCursorFileName = "promote-cursor.json"
 	hashFileName          = "import-hashes.json"
 
-	stagePlanned           = "planned"
-	stageOperationRecorded = "operation_recorded"
-	stageCommitted         = "committed"
-	stagePartial           = "partial"
-	stageFailed            = "failed"
-	stageRecoveryRequired  = "recovery_required"
+	stagePlanned              = "planned"
+	stageOperationRecorded    = "operation_recorded"
+	stageFinalizationRecorded = "finalization_recorded"
+	stageCommitted            = "committed"
+	stagePartial              = "partial"
+	stageFailed               = "failed"
+	stageRecoveryRequired     = "recovery_required"
 )
 
 // Options configures one driver pass. The zero value is a bounded PLAN pass
@@ -167,6 +169,7 @@ func Run(homePath string, opts Options, now time.Time) (Report, error) {
 		report.FinishedAt = ""
 		report.ReceiptPath = ""
 		report.OperationResults = orderedOperationResults(*report.Intent, journal.Results)
+		report.Finalization = journal.Finalization
 		for key, result := range journal.Results {
 			recordedResults[key] = result
 		}
@@ -483,6 +486,12 @@ func validatePassIntent(passID string, intent PassIntent) error {
 	if strings.TrimSpace(intent.CandidateCorpusGeneration) == "" {
 		return fmt.Errorf("candidate corpus generation required")
 	}
+	if !validSHA256Digest(intent.CandidateCorpusGeneration) {
+		return fmt.Errorf("candidate corpus generation %q is not a sha256 digest", intent.CandidateCorpusGeneration)
+	}
+	if intent.PendingGeneration != "" && !validSHA256Digest(intent.PendingGeneration) {
+		return fmt.Errorf("pending generation %q is not a sha256 digest", intent.PendingGeneration)
+	}
 	if _, err := time.Parse(time.RFC3339, intent.ExecutionAt); err != nil {
 		return fmt.Errorf("plan execution_at invalid: %w", err)
 	}
@@ -509,13 +518,19 @@ func validatePassIntent(passID string, intent PassIntent) error {
 		if strings.TrimSpace(operation.Target.ID) == "" || operation.Target.EntryCursor == "" || strings.TrimSpace(operation.Target.BodyDigest) == "" || strings.TrimSpace(operation.Target.State) == "" {
 			return fmt.Errorf("plan operation %d target id, cursor, digest, and state required", index)
 		}
+		if !validSHA256Digest(operation.Target.BodyDigest) {
+			return fmt.Errorf("plan operation %d target digest %q is invalid", index, operation.Target.BodyDigest)
+		}
 		switch operation.Phase {
 		case "promote":
+			if operation.Operation != candidates.Promote || operation.Keeper != nil {
+				return fmt.Errorf("plan operation %d promotion shape invalid", index)
+			}
 			if operation.CurrentClaim == nil || operation.CurrentClaim.Absent == (strings.TrimSpace(operation.CurrentClaim.ID) != "") {
 				return fmt.Errorf("plan operation %d promotion current-claim precondition invalid", index)
 			}
 		case "dedupe":
-			if operation.Keeper == nil ||
+			if operation.Operation != candidates.NoPromote || operation.Keeper == nil ||
 				strings.TrimSpace(operation.Keeper.ID) == "" ||
 				operation.Keeper.EntryCursor == "" ||
 				strings.TrimSpace(operation.Keeper.BodyDigest) == "" ||
@@ -525,25 +540,35 @@ func validatePassIntent(passID string, intent PassIntent) error {
 			if operation.CurrentClaim != nil {
 				return fmt.Errorf("plan operation %d dedupe cannot carry a current-claim precondition", index)
 			}
-		default:
-			if operation.CurrentClaim != nil {
-				return fmt.Errorf("plan operation %d non-promotion cannot carry a current-claim precondition", index)
+			if !validSHA256Digest(operation.Keeper.BodyDigest) {
+				return fmt.Errorf("plan operation %d keeper digest %q is invalid", index, operation.Keeper.BodyDigest)
 			}
+		case "sweep":
+			if operation.Operation != candidates.Park && operation.Operation != candidates.Reject && operation.Operation != candidates.NoPromote {
+				return fmt.Errorf("plan operation %d sweep verdict %q is invalid", index, operation.Operation)
+			}
+			if operation.CurrentClaim != nil || operation.Keeper != nil {
+				return fmt.Errorf("plan operation %d sweep cannot carry claim or keeper preconditions", index)
+			}
+		default:
+			return fmt.Errorf("plan operation %d phase %q is invalid", index, operation.Phase)
 		}
 	}
 	return nil
 }
 
 type frozenJournal struct {
-	Plan    Report
-	Results map[string]PassOperationResult
+	Plan         Report
+	Results      map[string]PassOperationResult
+	Finalization *PassFinalizationResult
 }
 
 type frozenJournalPass struct {
-	plan       *Report
-	results    map[string]PassOperationResult
-	terminal   bool
-	replayable bool
+	plan         *Report
+	results      map[string]PassOperationResult
+	finalization *PassFinalizationResult
+	terminal     bool
+	replayable   bool
 }
 
 func loadFrozenJournal(homePath string, now time.Time) (*frozenJournal, []string, error) {
@@ -582,9 +607,12 @@ func loadFrozenJournal(homePath string, now time.Time) (*frozenJournal, []string
 			}
 			plan := receipt
 			pass.plan = &plan
-			if receipt.SchemaVersion == ReportSchemaVersion && receipt.Intent != nil && strings.TrimSpace(receipt.Intent.PlanDigest) != "" {
+			if replayableFrozenSchema(receipt.SchemaVersion) && receipt.Intent != nil && strings.TrimSpace(receipt.Intent.PlanDigest) != "" {
 				if err := validatePassIntent(receipt.PassID, *receipt.Intent); err != nil {
 					return nil, nil, fmt.Errorf("pass %s planned intent invalid: %w", receipt.PassID, err)
+				}
+				if err := validatePlannedFrame(receipt); err != nil {
+					return nil, nil, fmt.Errorf("pass %s planned frame invalid: %w", receipt.PassID, err)
 				}
 				pass.replayable = true
 			}
@@ -592,8 +620,14 @@ func loadFrozenJournal(homePath string, now time.Time) (*frozenJournal, []string
 			if pass.plan == nil || !pass.replayable {
 				return nil, nil, fmt.Errorf("pass %s operation result precedes a replayable plan", receipt.PassID)
 			}
-			if receipt.SchemaVersion != ReportSchemaVersion || receipt.Intent == nil {
+			if pass.finalization != nil {
+				return nil, nil, fmt.Errorf("pass %s operation result follows finalization", receipt.PassID)
+			}
+			if receipt.SchemaVersion != pass.plan.SchemaVersion || receipt.Intent == nil {
 				return nil, nil, fmt.Errorf("pass %s operation frame intent is missing or has schema %q", receipt.PassID, receipt.SchemaVersion)
+			}
+			if err := validateFrozenFrameProvenance(*pass.plan, receipt); err != nil {
+				return nil, nil, fmt.Errorf("pass %s operation frame provenance invalid: %w", receipt.PassID, err)
 			}
 			if err := validatePassIntent(receipt.PassID, *receipt.Intent); err != nil {
 				return nil, nil, fmt.Errorf("pass %s operation frame intent invalid: %w", receipt.PassID, err)
@@ -615,9 +649,50 @@ func loadFrozenJournal(homePath string, now time.Time) (*frozenJournal, []string
 				continue
 			}
 			pass.results[result.Key] = result
+		case stageFinalizationRecorded:
+			if pass.plan == nil || !pass.replayable || pass.plan.Intent == nil {
+				return nil, nil, fmt.Errorf("pass %s finalization precedes a replayable plan", receipt.PassID)
+			}
+			if pass.plan.SchemaVersion != ReportSchemaVersion || receipt.SchemaVersion != pass.plan.SchemaVersion {
+				return nil, nil, fmt.Errorf("pass %s finalization is unsupported for schema %q", receipt.PassID, pass.plan.SchemaVersion)
+			}
+			if pass.finalization != nil {
+				return nil, nil, fmt.Errorf("pass %s has duplicate finalization frames", receipt.PassID)
+			}
+			if receipt.Intent == nil || !samePassIntent(*pass.plan.Intent, *receipt.Intent) {
+				return nil, nil, fmt.Errorf("pass %s finalization intent does not match the planned intent", receipt.PassID)
+			}
+			if err := validateFrozenFrameProvenance(*pass.plan, receipt); err != nil {
+				return nil, nil, fmt.Errorf("pass %s finalization frame provenance invalid: %w", receipt.PassID, err)
+			}
+			if len(pass.results) != len(pass.plan.Intent.Operations) {
+				return nil, nil, fmt.Errorf("pass %s finalization follows %d operation results, want %d", receipt.PassID, len(pass.results), len(pass.plan.Intent.Operations))
+			}
+			if receipt.Finalization == nil {
+				return nil, nil, fmt.Errorf("pass %s finalization frame has no result", receipt.PassID)
+			}
+			if err := validateFinalizationResult(*pass.plan.Intent, *receipt.Finalization); err != nil {
+				return nil, nil, fmt.Errorf("pass %s finalization result invalid: %w", receipt.PassID, err)
+			}
+			finalization := *receipt.Finalization
+			if receipt.Finalization.Pending != nil {
+				pending := *receipt.Finalization.Pending
+				finalization.Pending = &pending
+			}
+			pass.finalization = &finalization
 		case stageRecoveryRequired:
-			if !pass.replayable || strings.Contains(receipt.Error, "legacy_unreplayable") {
+			if pass.plan == nil {
+				return nil, nil, fmt.Errorf("pass %s recovery frame precedes a plan", receipt.PassID)
+			}
+			if !pass.replayable {
 				pass.terminal = true
+				continue
+			}
+			if receipt.SchemaVersion != pass.plan.SchemaVersion || receipt.Intent == nil || !samePassIntent(*pass.plan.Intent, *receipt.Intent) {
+				return nil, nil, fmt.Errorf("pass %s recovery frame does not match the replayable plan", receipt.PassID)
+			}
+			if err := validateFrozenFrameProvenance(*pass.plan, receipt); err != nil {
+				return nil, nil, fmt.Errorf("pass %s recovery frame provenance invalid: %w", receipt.PassID, err)
 			}
 		case stageCommitted, stagePartial, stageFailed:
 			if receipt.SchemaVersion == ReportSchemaVersion || pass.replayable {
@@ -665,18 +740,89 @@ func loadFrozenJournal(homePath string, now time.Time) (*frozenJournal, []string
 	if len(active) == 0 {
 		return nil, legacy, nil
 	}
-	return &frozenJournal{Plan: *active[0].plan, Results: active[0].results}, legacy, nil
+	return &frozenJournal{Plan: *active[0].plan, Results: active[0].results, Finalization: active[0].finalization}, legacy, nil
+}
+
+func replayableFrozenSchema(schema string) bool {
+	return schema == ReportSchemaVersion || schema == frozenReportSchemaVersion
+}
+
+func validateFinalizationResult(intent PassIntent, result PassFinalizationResult) error {
+	if result.PromoteCursorAfter != intent.PromotePlan.NextCursor {
+		return fmt.Errorf("promote cursor %q does not match frozen result %q", result.PromoteCursorAfter, intent.PromotePlan.NextCursor)
+	}
+	if result.SweepCursorAfter != intent.SweepPlan.NextCursor {
+		return fmt.Errorf("sweep cursor %q does not match frozen result %q", result.SweepCursorAfter, intent.SweepPlan.NextCursor)
+	}
+	if intent.SweepPlan.WalkedAll != (result.Pending != nil) {
+		return fmt.Errorf("pending result presence %v does not match walked-all %v", result.Pending != nil, intent.SweepPlan.WalkedAll)
+	}
+	if result.Pending == nil {
+		return nil
+	}
+	pending := result.Pending
+	if pending.Pending < 0 || pending.Files < 0 || pending.Corrupt < 0 || pending.Pending > pending.Files || pending.Corrupt > pending.Files || pending.Pending+pending.Corrupt > pending.Files {
+		return fmt.Errorf("pending census is invalid: pending=%d files=%d corrupt=%d", pending.Pending, pending.Files, pending.Corrupt)
+	}
+	if !validSHA256Digest(pending.Generation) {
+		return fmt.Errorf("pending generation %q is not a sha256 digest", pending.Generation)
+	}
+	return nil
+}
+
+func validatePlannedFrame(plan Report) error {
+	if plan.DryRun {
+		return fmt.Errorf("frozen apply plan cannot be dry-run")
+	}
+	if strings.TrimSpace(plan.Home) == "" {
+		return fmt.Errorf("home required")
+	}
+	started, err := time.Parse(time.RFC3339, plan.StartedAt)
+	if err != nil {
+		return fmt.Errorf("started_at invalid: %w", err)
+	}
+	if plan.Intent == nil || plan.Intent.ExecutionAt != rfc3339(started) {
+		return fmt.Errorf("started_at %q does not match frozen execution_at", plan.StartedAt)
+	}
+	return nil
+}
+
+func validateFrozenFrameProvenance(plan, frame Report) error {
+	if frame.DryRun != plan.DryRun {
+		return fmt.Errorf("dry_run=%v does not match planned %v", frame.DryRun, plan.DryRun)
+	}
+	if frame.Home != plan.Home {
+		return fmt.Errorf("home %q does not match planned %q", frame.Home, plan.Home)
+	}
+	if frame.StartedAt != plan.StartedAt {
+		return fmt.Errorf("started_at %q does not match planned %q", frame.StartedAt, plan.StartedAt)
+	}
+	started, err := time.Parse(time.RFC3339, plan.StartedAt)
+	if err != nil {
+		return fmt.Errorf("planned started_at invalid: %w", err)
+	}
+	finished, err := time.Parse(time.RFC3339, frame.FinishedAt)
+	if err != nil {
+		return fmt.Errorf("finished_at invalid: %w", err)
+	}
+	if finished.Before(started) {
+		return fmt.Errorf("finished_at %q precedes started_at %q", frame.FinishedAt, frame.StartedAt)
+	}
+	return nil
 }
 
 func validateTerminalReceipt(passID string, pass *frozenJournalPass, terminal Report) error {
 	if pass.plan == nil || !pass.replayable || pass.plan.Intent == nil {
 		return fmt.Errorf("current terminal frame requires a replayable planned intent")
 	}
-	if terminal.SchemaVersion != ReportSchemaVersion {
-		return fmt.Errorf("terminal schema %q does not match %q", terminal.SchemaVersion, ReportSchemaVersion)
+	if terminal.SchemaVersion != pass.plan.SchemaVersion {
+		return fmt.Errorf("terminal schema %q does not match planned schema %q", terminal.SchemaVersion, pass.plan.SchemaVersion)
 	}
 	if terminal.Intent == nil {
 		return fmt.Errorf("terminal frame has no frozen intent")
+	}
+	if err := validateFrozenFrameProvenance(*pass.plan, terminal); err != nil {
+		return fmt.Errorf("terminal provenance invalid: %w", err)
 	}
 	if err := validatePassIntent(passID, *terminal.Intent); err != nil {
 		return fmt.Errorf("terminal intent invalid: %w", err)
@@ -699,7 +845,102 @@ func validateTerminalReceipt(passID string, pass *frozenJournalPass, terminal Re
 			return fmt.Errorf("terminal operation result %d does not match its recorded frame", index)
 		}
 	}
+	if terminal.SchemaVersion == ReportSchemaVersion {
+		finalizationRequired := terminal.Stage == stageCommitted || terminal.Stage == stagePartial
+		if finalizationRequired && pass.finalization == nil {
+			return fmt.Errorf("terminal stage %q has no prior finalization frame", terminal.Stage)
+		}
+		if pass.finalization == nil {
+			if terminal.Finalization != nil {
+				return fmt.Errorf("terminal carries finalization without a prior frame")
+			}
+		} else {
+			if terminal.Finalization == nil || !sameFinalizationResult(*pass.finalization, *terminal.Finalization) {
+				return fmt.Errorf("terminal finalization does not match its recorded frame")
+			}
+		}
+	} else if terminal.Finalization != nil || pass.finalization != nil {
+		return fmt.Errorf("terminal schema %q cannot carry finalization", terminal.SchemaVersion)
+	}
+
+	projectionIntent, err := clonePassIntent(*pass.plan.Intent)
+	if err != nil {
+		return fmt.Errorf("clone planned intent for terminal projection: %w", err)
+	}
+	derived := Report{}
+	summarizeFrozenResults(projectionIntent, expected, &derived)
+	if pass.finalization != nil {
+		applyFinalizationResult(*pass.finalization, &derived)
+	}
+	terminalSweep := terminal.Sweep
+	derivedSweep := derived.Sweep
+	if terminal.SchemaVersion == frozenReportSchemaVersion {
+		if pass.plan.Intent.SweepPlan.WalkedAll {
+			if terminalSweep.ReconciledPending == nil || terminal.PendingAfter == nil || *terminalSweep.ReconciledPending != *terminal.PendingAfter || *terminal.PendingAfter < 0 {
+				return fmt.Errorf("historical terminal pending summary is inconsistent")
+			}
+		} else if terminalSweep.ReconciledPending != nil || terminal.PendingAfter != nil {
+			return fmt.Errorf("historical terminal carries pending summary without a full sweep")
+		}
+		terminalSweep.ReconciledPending = nil
+	}
+	summaries := []struct {
+		name        string
+		got, wanted any
+	}{
+		{name: "promote", got: terminal.Promote, wanted: derived.Promote},
+		{name: "dedupe", got: terminal.Dedupe, wanted: derived.Dedupe},
+		{name: "sweep", got: terminalSweep, wanted: derivedSweep},
+		{name: "imports", got: terminal.Imports, wanted: derived.Imports},
+		{name: "lane_beliefs", got: terminal.LaneBeliefs, wanted: derived.LaneBeliefs},
+	}
+	if terminal.SchemaVersion == ReportSchemaVersion {
+		summaries = append(summaries, struct {
+			name        string
+			got, wanted any
+		}{name: "pending_after", got: terminal.PendingAfter, wanted: derived.PendingAfter})
+	}
+	for _, summary := range summaries {
+		if !sameJSONValue(summary.got, summary.wanted) {
+			return fmt.Errorf("terminal %s summary does not match frozen results", summary.name)
+		}
+	}
+	wantStage, wantError := frozenTerminalOutcome(derived, expected)
+	if terminal.Stage != wantStage || terminal.Error != wantError {
+		return fmt.Errorf("terminal outcome stage=%q error=%q, want stage=%q error=%q", terminal.Stage, terminal.Error, wantStage, wantError)
+	}
 	return nil
+}
+
+func validSHA256Digest(value string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	decoded, err := hex.DecodeString(strings.TrimPrefix(value, prefix))
+	return err == nil && len(decoded) == sha256.Size
+}
+
+func sameFinalizationResult(left, right PassFinalizationResult) bool {
+	return sameJSONValue(left, right)
+}
+
+func sameJSONValue(left, right any) bool {
+	leftBody, leftErr := json.Marshal(left)
+	rightBody, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && string(leftBody) == string(rightBody)
+}
+
+func frozenTerminalOutcome(report Report, results []PassOperationResult) (string, string) {
+	for _, result := range results {
+		if result.Outcome == mem.FrozenAdjudicationStalePrecondition {
+			return stageFailed, fmt.Sprintf("stale_precondition: operation %s candidate %s drifted at %s", result.Key, result.CandidateID, operationMismatch(result))
+		}
+	}
+	if failures := partialFailures(report); len(failures) > 0 {
+		return stagePartial, partialPassError{failures: failures}.Error()
+	}
+	return stageCommitted, ""
 }
 
 func samePassIntent(left, right PassIntent) bool {
@@ -731,17 +972,81 @@ func validateOperationResult(intent PassIntent, result PassOperationResult) erro
 	if result.BeforeDigest != operation.Target.BodyDigest {
 		return fmt.Errorf("operation %s before digest %q does not match %q", result.Key, result.BeforeDigest, operation.Target.BodyDigest)
 	}
+	if result.Error != "" {
+		return fmt.Errorf("operation %s result carries an unexpected error", result.Key)
+	}
 	switch result.Outcome {
 	case mem.FrozenAdjudicationApplied, mem.FrozenAdjudicationAlreadyApplied:
-		if strings.TrimSpace(result.AfterDigest) == "" {
-			return fmt.Errorf("operation %s successful outcome lacks after digest", result.Key)
+		if !validSHA256Digest(result.AfterDigest) {
+			return fmt.Errorf("operation %s after digest %q is invalid", result.Key, result.AfterDigest)
+		}
+		if result.MismatchCandidateID != "" || result.PreconditionMismatch != "" {
+			return fmt.Errorf("operation %s successful outcome carries a precondition mismatch", result.Key)
+		}
+		if err := validateSuccessfulOperationResult(operation, result); err != nil {
+			return err
 		}
 	case mem.FrozenAdjudicationStalePrecondition:
-		if strings.TrimSpace(operationMismatch(result)) == "" {
+		hasCandidateMismatch := strings.TrimSpace(result.MismatchCandidateID) != ""
+		hasClaimMismatch := strings.TrimSpace(result.PreconditionMismatch) != ""
+		if hasCandidateMismatch == hasClaimMismatch {
 			return fmt.Errorf("operation %s stale outcome lacks precondition mismatch", result.Key)
+		}
+		if hasCandidateMismatch && result.MismatchCandidateID != operation.Target.ID && (operation.Keeper == nil || result.MismatchCandidateID != operation.Keeper.ID) {
+			return fmt.Errorf("operation %s stale mismatch candidate %q is outside the frozen plan", result.Key, result.MismatchCandidateID)
+		}
+		if result.AfterDigest != "" && !validSHA256Digest(result.AfterDigest) {
+			return fmt.Errorf("operation %s stale after digest %q is invalid", result.Key, result.AfterDigest)
+		}
+		if result.Verdict != operation.Operation || result.ClaimID != "" || result.TransitionID != "" || result.SupersededClaimID != "" || result.Note != "" {
+			return fmt.Errorf("operation %s stale outcome carries successful mutation fields", result.Key)
 		}
 	default:
 		return fmt.Errorf("operation %s has unknown outcome %q", result.Key, result.Outcome)
+	}
+	return nil
+}
+
+func validateSuccessfulOperationResult(operation PassIntentOperation, result PassOperationResult) error {
+	if operation.Phase != "promote" {
+		wantState := map[string]string{
+			candidates.Park:      "parked",
+			candidates.Reject:    "rejected",
+			candidates.NoPromote: "no_promote",
+		}[operation.Operation]
+		if wantState == "" || result.Verdict != operation.Operation || result.CandidateState != wantState {
+			return fmt.Errorf("operation %s result verdict/state %q/%q does not match frozen %q/%q", result.Key, result.Verdict, result.CandidateState, operation.Operation, wantState)
+		}
+		if result.ClaimID != "" || result.TransitionID != "" || result.SupersededClaimID != "" || result.Note != "" {
+			return fmt.Errorf("operation %s non-promotion result carries promotion fields", result.Key)
+		}
+		return nil
+	}
+
+	if operation.CurrentClaim == nil {
+		return fmt.Errorf("operation %s promotion lacks current-claim precondition", result.Key)
+	}
+	switch result.CandidateState {
+	case "promoted":
+		if result.Verdict != candidates.Promote || !strings.HasPrefix(result.ClaimID, "claim_") || !strings.HasPrefix(result.TransitionID, "tr_") || result.Note != "" {
+			return fmt.Errorf("operation %s promoted result lacks exact claim/transition linkage", result.Key)
+		}
+		if operation.CurrentClaim.Absent {
+			if result.SupersededClaimID != "" {
+				return fmt.Errorf("operation %s promoted absent-claim result names superseded claim %q", result.Key, result.SupersededClaimID)
+			}
+		} else if result.SupersededClaimID != operation.CurrentClaim.ID {
+			return fmt.Errorf("operation %s superseded claim %q does not match frozen current claim %q", result.Key, result.SupersededClaimID, operation.CurrentClaim.ID)
+		}
+		if result.ClaimID == operation.CurrentClaim.ID {
+			return fmt.Errorf("operation %s reused the superseded claim id", result.Key)
+		}
+	case "rejected":
+		if operation.CurrentClaim.Absent || result.Verdict != candidates.Reject || result.ClaimID != "" || result.TransitionID != "" || result.SupersededClaimID != "" || result.Note != "already current: "+operation.CurrentClaim.ID {
+			return fmt.Errorf("operation %s duplicate-rejection result does not match frozen current claim", result.Key)
+		}
+	default:
+		return fmt.Errorf("operation %s promotion result has state %q", result.Key, result.CandidateState)
 	}
 	return nil
 }
@@ -1011,7 +1316,7 @@ func runFrozenPass(homePath string, store *mem.Store, recorded map[string]PassOp
 			return passRecoveryError{err: fmt.Errorf("operation %s returned invalid result: %w", operation.Key, err)}
 		}
 		frame := Report{
-			SchemaVersion:    ReportSchemaVersion,
+			SchemaVersion:    report.SchemaVersion,
 			PassID:           report.PassID,
 			Home:             homePath,
 			Stage:            stageOperationRecorded,
@@ -1033,9 +1338,40 @@ func runFrozenPass(homePath string, store *mem.Store, recorded map[string]PassOp
 			return fmt.Errorf("stale_precondition: operation %s candidate %s drifted at %s", result.Key, result.CandidateID, operationMismatch(result))
 		}
 	}
-	if err := finalizeFrozenPass(homePath, store, intent, executionAt, report); err != nil {
-		return passRecoveryError{err: err}
+	var finalization PassFinalizationResult
+	if report.Finalization != nil {
+		finalization = *report.Finalization
+		if report.Finalization.Pending != nil {
+			pending := *report.Finalization.Pending
+			finalization.Pending = &pending
+		}
+		if err := validateFinalizationResult(intent, finalization); err != nil {
+			return fmt.Errorf("validate recorded finalization: %w", err)
+		}
+	} else {
+		finalization, err = finalizeFrozenPass(homePath, store, intent, executionAt)
+		if err != nil {
+			return passRecoveryError{err: err}
+		}
+		if report.SchemaVersion == ReportSchemaVersion {
+			frameFinalization := finalization
+			frame := Report{
+				SchemaVersion: report.SchemaVersion,
+				PassID:        report.PassID,
+				Home:          homePath,
+				Stage:         stageFinalizationRecorded,
+				StartedAt:     report.StartedAt,
+				FinishedAt:    rfc3339(now),
+				Intent:        report.Intent,
+				Finalization:  &frameFinalization,
+			}
+			if err := receiptAppender(homePath, frame); err != nil {
+				return passRecoveryError{err: fmt.Errorf("journal finalization result: %w", err)}
+			}
+			report.Finalization = &frameFinalization
+		}
 	}
+	applyFinalizationResult(finalization, report)
 	if failures := partialFailures(*report); len(failures) > 0 {
 		return partialPassError{failures: failures}
 	}
@@ -1128,22 +1464,39 @@ func summarizeFrozenResults(intent PassIntent, results []PassOperationResult, re
 	}
 }
 
-func finalizeFrozenPass(homePath string, store *mem.Store, intent PassIntent, executionAt time.Time, report *Report) error {
+func finalizeFrozenPass(homePath string, store *mem.Store, intent PassIntent, executionAt time.Time) (PassFinalizationResult, error) {
+	result := PassFinalizationResult{
+		PromoteCursorAfter: intent.PromotePlan.NextCursor,
+		SweepCursorAfter:   intent.SweepPlan.NextCursor,
+	}
 	if err := finalizePromoteCursor(homePath, intent.PromoteCursorBefore, intent.PromotePlan.NextCursor, executionAt); err != nil {
-		return fmt.Errorf("finalize promote cursor: %w", err)
+		return PassFinalizationResult{}, fmt.Errorf("finalize promote cursor: %w", err)
 	}
 	if err := finalizeSweepCursor(homePath, intent.SweepCursorBefore, intent.SweepPlan.NextCursor, executionAt); err != nil {
-		return fmt.Errorf("finalize sweep cursor: %w", err)
+		return PassFinalizationResult{}, fmt.Errorf("finalize sweep cursor: %w", err)
 	}
 	if intent.SweepPlan.WalkedAll {
 		state, err := store.ReconcilePendingState("promote-driver frozen sweep", executionAt)
 		if err != nil {
-			return fmt.Errorf("reconcile pending state: %w", err)
+			return PassFinalizationResult{}, fmt.Errorf("reconcile pending state: %w", err)
 		}
-		report.Sweep.ReconciledPending = &state.Pending
-		report.PendingAfter = &state.Pending
+		result.Pending = &PendingFinalizationResult{
+			Pending: state.Pending, Files: state.Files, Corrupt: state.Corrupt, Generation: state.Generation,
+		}
 	}
-	return nil
+	if err := validateFinalizationResult(intent, result); err != nil {
+		return PassFinalizationResult{}, err
+	}
+	return result, nil
+}
+
+func applyFinalizationResult(result PassFinalizationResult, report *Report) {
+	if result.Pending == nil {
+		return
+	}
+	pending := result.Pending.Pending
+	report.Sweep.ReconciledPending = &pending
+	report.PendingAfter = &pending
 }
 
 func finalizePromoteCursor(homePath string, before, after candidates.EntryCursor, now time.Time) error {

@@ -1,9 +1,11 @@
 package promotedriver
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"syscall"
@@ -127,8 +129,13 @@ func assertFrozenJournal(t *testing.T, receipts []Report, passID, terminalStage 
 	if planned.Intent == nil {
 		t.Fatalf("pass %s planned frame has no intent", passID)
 	}
-	if len(frames) != len(planned.Intent.Operations)+2 {
-		t.Fatalf("pass %s frame count = %d, want plan + %d operations + terminal", passID, len(frames), len(planned.Intent.Operations))
+	wantFinalization := terminalStage == stageCommitted || terminalStage == stagePartial
+	wantFrames := len(planned.Intent.Operations) + 2
+	if wantFinalization {
+		wantFrames++
+	}
+	if len(frames) != wantFrames {
+		t.Fatalf("pass %s frame count = %d, want plan + %d operations + finalization=%v + terminal", passID, len(frames), len(planned.Intent.Operations), wantFinalization)
 	}
 	for index, operation := range planned.Intent.Operations {
 		frame := frames[index+1]
@@ -136,10 +143,35 @@ func assertFrozenJournal(t *testing.T, receipts []Report, passID, terminalStage 
 			t.Fatalf("pass %s operation frame %d = %+v, want key %s", passID, index, frame, operation.Key)
 		}
 	}
+	if wantFinalization {
+		frame := frames[len(frames)-2]
+		if frame.Stage != stageFinalizationRecorded || frame.Finalization == nil {
+			t.Fatalf("pass %s finalization frame = %+v, want recorded result", passID, frame)
+		}
+		if terminal.Finalization == nil || !reflect.DeepEqual(*terminal.Finalization, *frame.Finalization) {
+			t.Fatalf("pass %s terminal finalization = %+v, want exact frame %+v", passID, terminal.Finalization, frame.Finalization)
+		}
+	}
 	if len(terminal.OperationResults) != len(planned.Intent.Operations) {
 		t.Fatalf("pass %s terminal result count = %d, want %d", passID, len(terminal.OperationResults), len(planned.Intent.Operations))
 	}
 	return planned, terminal
+}
+
+func writeReceipts(t *testing.T, home string, receipts []Report) {
+	t.Helper()
+	lines := make([]string, 0, len(receipts))
+	for _, receipt := range receipts {
+		body, err := json.Marshal(receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, string(body))
+	}
+	path := filepath.Join(stateDir(home), receiptFileName)
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // listHomeTree returns every path under home, relative, for footprint
@@ -868,7 +900,7 @@ func TestSuccessorTerminalizesPlannedOnlyPassBeforeMutation(t *testing.T) {
 		t.Fatalf("reconciled passes = %v, want %s", report.ReconciledPassIDs, orphan.PassID)
 	}
 	receipts := readReceipts(t, home)
-	if len(receipts) != 4 || receipts[1].PassID != orphan.PassID || receipts[1].Stage != stageRecoveryRequired {
+	if len(receipts) != 5 || receipts[1].PassID != orphan.PassID || receipts[1].Stage != stageRecoveryRequired {
 		t.Fatalf("orphan was not terminalized before successor: %+v", receipts)
 	}
 }
@@ -1064,6 +1096,8 @@ func TestFrozenPassRecoveryReusesPassIDAndOperationList(t *testing.T) {
 	}
 	if len(second.OperationResults) != 1 ||
 		second.OperationResults[0].Outcome != mem.FrozenAdjudicationAlreadyApplied ||
+		second.OperationResults[0].MismatchCandidateID != "" ||
+		second.OperationResults[0].PreconditionMismatch != "" ||
 		second.OperationResults[0].ClaimID == "" ||
 		second.OperationResults[0].TransitionID == "" {
 		t.Fatalf("recovery did not receipt the exact already-applied promotion: %+v", second.OperationResults)
@@ -1079,6 +1113,182 @@ func TestFrozenPassRecoveryReusesPassIDAndOperationList(t *testing.T) {
 	entries, err := events.Scan(eventstore.ScanOptions{Prefixes: []string{"tr_"}})
 	if err != nil || len(entries) != 1 || entries[0].ID != second.OperationResults[0].TransitionID {
 		t.Fatalf("recovery transition entries = %+v, err=%v; want exact terminal result transition", entries, err)
+	}
+}
+
+func TestFrozenPassRecoveryRecordsMissingFinalizationOnSamePass(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_basis", mem.Candidate{
+		Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+	})
+
+	previous := receiptAppender
+	failed := false
+	receiptAppender = func(homePath string, report Report) error {
+		if report.Stage == stageFinalizationRecorded && !failed {
+			failed = true
+			return os.ErrPermission
+		}
+		return appendReceipt(homePath, report)
+	}
+	first, err := Run(home, Options{Apply: true}, testNow)
+	receiptAppender = previous
+	if err == nil || first.Stage != stageRecoveryRequired {
+		t.Fatalf("first pass must require recovery after finalization journal failure: stage=%q err=%v", first.Stage, err)
+	}
+
+	second, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+	if err != nil || second.Stage != stageCommitted || second.PassID != first.PassID {
+		t.Fatalf("recovery must finalize the same pass: first=%s second=%s stage=%q err=%v", first.PassID, second.PassID, second.Stage, err)
+	}
+	frames := passReceipts(t, readReceipts(t, home), first.PassID)
+	var operations, finalizations int
+	for _, frame := range frames {
+		switch frame.Stage {
+		case stageOperationRecorded:
+			operations++
+		case stageFinalizationRecorded:
+			finalizations++
+		}
+	}
+	if operations != len(first.Intent.Operations) || finalizations != 1 {
+		t.Fatalf("recovered journal operations=%d finalizations=%d, want %d/1: %+v", operations, finalizations, len(first.Intent.Operations), frames)
+	}
+}
+
+func TestFrozenPassRecoveryReusesRecordedFinalization(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_basis", mem.Candidate{
+		Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+	})
+
+	previous := receiptAppender
+	failed := false
+	receiptAppender = func(homePath string, report Report) error {
+		if report.Stage == stageCommitted && !failed {
+			failed = true
+			return os.ErrPermission
+		}
+		return appendReceipt(homePath, report)
+	}
+	first, err := Run(home, Options{Apply: true}, testNow)
+	receiptAppender = previous
+	if err == nil || first.Stage != stageRecoveryRequired {
+		t.Fatalf("first pass must require recovery after terminal journal failure: stage=%q err=%v", first.Stage, err)
+	}
+	before := passReceipts(t, readReceipts(t, home), first.PassID)
+	var priorFinalization *PassFinalizationResult
+	for index := range before {
+		if before[index].Stage == stageFinalizationRecorded {
+			priorFinalization = before[index].Finalization
+		}
+	}
+	if priorFinalization == nil {
+		t.Fatalf("terminal failure did not preserve finalization frame: %+v", before)
+	}
+
+	second, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+	if err != nil || second.Stage != stageCommitted || second.PassID != first.PassID {
+		t.Fatalf("recorded-finalization recovery must commit same pass: first=%s second=%s stage=%q err=%v", first.PassID, second.PassID, second.Stage, err)
+	}
+	after := passReceipts(t, readReceipts(t, home), first.PassID)
+	var finalizations int
+	for _, frame := range after {
+		if frame.Stage == stageFinalizationRecorded {
+			finalizations++
+			if !reflect.DeepEqual(frame.Finalization, priorFinalization) {
+				t.Fatalf("recovery changed finalization: before=%+v after=%+v", priorFinalization, frame.Finalization)
+			}
+		}
+	}
+	if finalizations != 1 {
+		t.Fatalf("recorded finalization was duplicated: frames=%+v", after)
+	}
+}
+
+func TestCompletedV04FrozenJournalRemainsReadable(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_basis", mem.Candidate{
+		Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+	})
+	first, err := Run(home, Options{Apply: true}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy []Report
+	for _, receipt := range readReceipts(t, home) {
+		if receipt.Stage == stageFinalizationRecorded {
+			continue
+		}
+		receipt.SchemaVersion = frozenReportSchemaVersion
+		receipt.Finalization = nil
+		legacy = append(legacy, receipt)
+	}
+	writeReceipts(t, home, legacy)
+
+	second, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+	if err != nil || second.Stage != stageCommitted || second.PassID == first.PassID || second.SchemaVersion != ReportSchemaVersion {
+		t.Fatalf("completed v0.4 journal must permit a new v0.5 pass: first=%s second=%s schema=%q stage=%q err=%v", first.PassID, second.PassID, second.SchemaVersion, second.Stage, err)
+	}
+}
+
+func TestInterruptedV04FrozenJournalReplaysWithV04Frames(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_basis", mem.Candidate{
+		Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+	})
+	first, err := Run(home, Options{Apply: true}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var interrupted []Report
+	for _, receipt := range readReceipts(t, home) {
+		if receipt.Stage != stagePlanned && receipt.Stage != stageOperationRecorded {
+			continue
+		}
+		receipt.SchemaVersion = frozenReportSchemaVersion
+		receipt.Finalization = nil
+		interrupted = append(interrupted, receipt)
+	}
+	writeReceipts(t, home, interrupted)
+
+	recovered, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+	if err != nil || recovered.Stage != stageCommitted || recovered.PassID != first.PassID || recovered.SchemaVersion != frozenReportSchemaVersion {
+		t.Fatalf("interrupted v0.4 journal must replay same pass: first=%s recovered=%s schema=%q stage=%q err=%v", first.PassID, recovered.PassID, recovered.SchemaVersion, recovered.Stage, err)
+	}
+	for _, receipt := range passReceipts(t, readReceipts(t, home), first.PassID) {
+		if receipt.SchemaVersion != frozenReportSchemaVersion {
+			t.Fatalf("v0.4 replay wrote schema %q frame: %+v", receipt.SchemaVersion, receipt)
+		}
+		if receipt.Stage == stageFinalizationRecorded {
+			t.Fatalf("v0.4 replay wrote unsupported finalization frame: %+v", receipt)
+		}
+	}
+}
+
+func TestReplayableRecoveryFrameCannotSelfDeclareLegacyTerminal(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_basis", mem.Candidate{
+		Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+	})
+	first, err := Run(home, Options{Apply: true}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipts := readReceipts(t, home)
+	interrupted := append([]Report(nil), receipts[:len(receipts)-2]...)
+	recovery := receipts[0]
+	recovery.Stage = stageRecoveryRequired
+	recovery.FinishedAt = rfc3339(testNow)
+	recovery.Error = "legacy_unreplayable: forged classification"
+	recovery.OperationResults = nil
+	recovery.Finalization = nil
+	interrupted = append(interrupted, recovery)
+	writeReceipts(t, home, interrupted)
+
+	recovered, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+	if err != nil || recovered.Stage != stageCommitted || recovered.PassID != first.PassID {
+		t.Fatalf("replayable recovery must ignore forged legacy classification and resume same pass: first=%s recovered=%s stage=%q err=%v", first.PassID, recovered.PassID, recovered.Stage, err)
 	}
 }
 
@@ -1215,6 +1425,348 @@ func TestLoadFrozenJournalRejectsTerminalResultDrift(t *testing.T) {
 				t.Fatalf("drifted terminal must refuse before a new pass: stage=%q err=%v", report.Stage, err)
 			}
 		})
+	}
+}
+
+func TestLoadFrozenJournalRejectsSemanticallyFalseOperationResult(t *testing.T) {
+	tests := []struct {
+		name          string
+		mutateResult  func(*PassOperationResult)
+		mutateSummary func(*Report)
+	}{
+		{
+			name: "invalid after digest",
+			mutateResult: func(result *PassOperationResult) {
+				result.AfterDigest = "not-a-digest"
+			},
+		},
+		{
+			name: "promoted without claim",
+			mutateResult: func(result *PassOperationResult) {
+				result.ClaimID = ""
+			},
+			mutateSummary: func(terminal *Report) {
+				terminal.Promote.Promotions[0].ClaimID = ""
+			},
+		},
+		{
+			name: "promoted without transition",
+			mutateResult: func(result *PassOperationResult) {
+				result.TransitionID = ""
+			},
+		},
+		{
+			name: "false duplicate",
+			mutateResult: func(result *PassOperationResult) {
+				result.Verdict = candidates.Reject
+				result.CandidateState = "rejected"
+				result.ClaimID = ""
+				result.TransitionID = ""
+				result.Note = "already current: claim_fake"
+			},
+			mutateSummary: func(terminal *Report) {
+				terminal.Promote.Promoted = 0
+				terminal.Promote.Promotions[0].Action = "rejected_duplicate"
+				terminal.Promote.Promotions[0].ClaimID = ""
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			seedCandidate(t, home, "cand_basis", mem.Candidate{
+				Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+			})
+			if _, err := Run(home, Options{Apply: true}, testNow); err != nil {
+				t.Fatal(err)
+			}
+			receipts := readReceipts(t, home)
+			for receiptIndex := range receipts {
+				for resultIndex := range receipts[receiptIndex].OperationResults {
+					tt.mutateResult(&receipts[receiptIndex].OperationResults[resultIndex])
+				}
+			}
+			if tt.mutateSummary != nil {
+				tt.mutateSummary(&receipts[len(receipts)-1])
+			}
+			writeReceipts(t, home, receipts)
+
+			report, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+			if err == nil || report.Stage != "" || !strings.Contains(err.Error(), "operation") {
+				t.Fatalf("semantically false operation result must refuse before a new pass: stage=%q err=%v", report.Stage, err)
+			}
+		})
+	}
+}
+
+func TestLoadFrozenJournalRejectsWrongNonPromotionState(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_plain", mem.Candidate{Entity: "plain", Predicate: "value", Object: "x"})
+	if _, err := Run(home, Options{Apply: true}, testNow); err != nil {
+		t.Fatal(err)
+	}
+	receipts := readReceipts(t, home)
+	for receiptIndex := range receipts {
+		for resultIndex := range receipts[receiptIndex].OperationResults {
+			receipts[receiptIndex].OperationResults[resultIndex].CandidateState = "promoted"
+		}
+	}
+	writeReceipts(t, home, receipts)
+
+	report, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+	if err == nil || report.Stage != "" || !strings.Contains(err.Error(), "operation") {
+		t.Fatalf("wrong non-promotion state must refuse before a new pass: stage=%q err=%v", report.Stage, err)
+	}
+}
+
+func TestLoadFrozenJournalRejectsTerminalProvenanceDrift(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Report)
+	}{
+		{name: "dry run", mutate: func(r *Report) { r.DryRun = true }},
+		{name: "home", mutate: func(r *Report) { r.Home += "-other" }},
+		{name: "started at", mutate: func(r *Report) { r.StartedAt = rfc3339(testNow.Add(-time.Hour)) }},
+		{name: "finished at", mutate: func(r *Report) { r.FinishedAt = "not-a-time" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			seedCandidate(t, home, "cand_basis", mem.Candidate{
+				Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+			})
+			if _, err := Run(home, Options{Apply: true}, testNow); err != nil {
+				t.Fatal(err)
+			}
+			receipts := readReceipts(t, home)
+			tt.mutate(&receipts[len(receipts)-1])
+			writeReceipts(t, home, receipts)
+
+			report, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+			if err == nil || report.Stage != "" || !strings.Contains(err.Error(), "terminal") {
+				t.Fatalf("terminal provenance drift must refuse before a new pass: stage=%q err=%v", report.Stage, err)
+			}
+		})
+	}
+}
+
+func TestValidateTerminalReceiptDoesNotMutatePlannedIntent(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_basis", mem.Candidate{
+		Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+	})
+	if _, err := Run(home, Options{Apply: true}, testNow); err != nil {
+		t.Fatal(err)
+	}
+	receipts := readReceipts(t, home)
+	pass := &frozenJournalPass{plan: &receipts[0], results: map[string]PassOperationResult{}, replayable: true}
+	for index := 1; index < len(receipts)-1; index++ {
+		frame := receipts[index]
+		switch frame.Stage {
+		case stageOperationRecorded:
+			pass.results[frame.OperationResults[0].Key] = frame.OperationResults[0]
+		case stageFinalizationRecorded:
+			pass.finalization = frame.Finalization
+		}
+	}
+	before, err := json.Marshal(pass.plan.Intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateTerminalReceipt(pass.plan.PassID, pass, receipts[len(receipts)-1]); err != nil {
+		t.Fatal(err)
+	}
+	after, err := json.Marshal(pass.plan.Intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("terminal validation mutated planned intent:\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
+func TestLoadFrozenJournalRejectsTerminalSummaryDrift(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Report)
+	}{
+		{name: "promote", mutate: func(r *Report) { r.Promote.Promoted = 0 }},
+		{name: "dedupe", mutate: func(r *Report) { r.Dedupe.Collapsed++ }},
+		{name: "sweep", mutate: func(r *Report) { r.Sweep.Adjudicated++ }},
+		{name: "imports", mutate: func(r *Report) { r.Imports.Skipped = "false green" }},
+		{name: "lane beliefs", mutate: func(r *Report) { r.LaneBeliefs.Skipped = "false green" }},
+		{name: "pending", mutate: func(r *Report) { (*r.PendingAfter)++ }},
+		{name: "stage and error", mutate: func(r *Report) { r.Stage, r.Error = stagePartial, "false green" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			seedCandidate(t, home, "cand_basis", mem.Candidate{
+				Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+			})
+			if _, err := Run(home, Options{Apply: true}, testNow); err != nil {
+				t.Fatal(err)
+			}
+			receipts := readReceipts(t, home)
+			terminal := &receipts[len(receipts)-1]
+			if terminal.Stage != stageCommitted || terminal.Promote.Promoted != 1 || terminal.PendingAfter == nil {
+				t.Fatalf("fixture terminal = %+v", *terminal)
+			}
+			tt.mutate(terminal)
+			writeReceipts(t, home, receipts)
+
+			report, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+			if err == nil || report.Stage != "" || !strings.Contains(err.Error(), "terminal") {
+				t.Fatalf("drifted terminal summary must refuse before a new pass: stage=%q err=%v", report.Stage, err)
+			}
+		})
+	}
+}
+
+func TestLoadFrozenJournalRejectsFinalizationAndTerminalDrift(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func([]Report) []Report
+	}{
+		{
+			name: "missing finalization frame",
+			mutate: func(receipts []Report) []Report {
+				out := receipts[:0]
+				for _, receipt := range receipts {
+					if receipt.Stage != stageFinalizationRecorded {
+						out = append(out, receipt)
+					}
+				}
+				return out
+			},
+		},
+		{
+			name: "finalization cursor drift",
+			mutate: func(receipts []Report) []Report {
+				for index := range receipts {
+					if receipts[index].Stage == stageFinalizationRecorded {
+						receipts[index].Finalization.PromoteCursorAfter = "cand_unplanned.json"
+					}
+				}
+				return receipts
+			},
+		},
+		{
+			name: "finalization pending drift",
+			mutate: func(receipts []Report) []Report {
+				for index := range receipts {
+					if receipts[index].Stage == stageFinalizationRecorded {
+						receipts[index].Finalization.Pending.Files++
+					}
+				}
+				return receipts
+			},
+		},
+		{
+			name: "terminal missing finalization",
+			mutate: func(receipts []Report) []Report {
+				receipts[len(receipts)-1].Finalization = nil
+				return receipts
+			},
+		},
+		{
+			name: "terminal finalization drift",
+			mutate: func(receipts []Report) []Report {
+				terminal := &receipts[len(receipts)-1]
+				if terminal.Finalization == nil {
+					terminal.Finalization = &PassFinalizationResult{
+						Pending: &PendingFinalizationResult{Pending: 1, Files: 1, Generation: "sha256:" + strings.Repeat("0", 64)},
+					}
+				} else {
+					terminal.Finalization.Pending.Pending++
+				}
+				return receipts
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			seedCandidate(t, home, "cand_basis", mem.Candidate{
+				Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+			})
+			if _, err := Run(home, Options{Apply: true}, testNow); err != nil {
+				t.Fatal(err)
+			}
+			receipts := tt.mutate(readReceipts(t, home))
+			writeReceipts(t, home, receipts)
+
+			report, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+			if err == nil || report.Stage != "" || (!strings.Contains(err.Error(), "finalization") && !strings.Contains(err.Error(), "terminal")) {
+				t.Fatalf("drifted finalization must refuse before a new pass: stage=%q err=%v", report.Stage, err)
+			}
+		})
+	}
+}
+
+func TestValidateFinalizationResultRejectsImpossibleState(t *testing.T) {
+	intent := PassIntent{
+		PromotePlan: PromotePhaseReport{NextCursor: "cand_promote.json"},
+		SweepPlan:   SweepPhaseReport{NextCursor: "cand_sweep.json", WalkedAll: true},
+	}
+	valid := PassFinalizationResult{
+		PromoteCursorAfter: "cand_promote.json",
+		SweepCursorAfter:   "cand_sweep.json",
+		Pending: &PendingFinalizationResult{
+			Pending: 1, Files: 2, Generation: "sha256:" + strings.Repeat("0", 64),
+		},
+	}
+	tests := []struct {
+		name   string
+		mutate func(*PassFinalizationResult)
+	}{
+		{name: "promote cursor", mutate: func(r *PassFinalizationResult) { r.PromoteCursorAfter = "cand_other.json" }},
+		{name: "sweep cursor", mutate: func(r *PassFinalizationResult) { r.SweepCursorAfter = "cand_other.json" }},
+		{name: "missing pending", mutate: func(r *PassFinalizationResult) { r.Pending = nil }},
+		{name: "negative pending", mutate: func(r *PassFinalizationResult) { r.Pending.Pending = -1 }},
+		{name: "pending exceeds files", mutate: func(r *PassFinalizationResult) { r.Pending.Pending = 3 }},
+		{name: "corrupt exceeds files", mutate: func(r *PassFinalizationResult) { r.Pending.Corrupt = 3 }},
+		{name: "invalid generation", mutate: func(r *PassFinalizationResult) { r.Pending.Generation = "sha256:not-hex" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := valid
+			pending := *valid.Pending
+			result.Pending = &pending
+			tt.mutate(&result)
+			if err := validateFinalizationResult(intent, result); err == nil {
+				t.Fatalf("invalid finalization accepted: %+v", result)
+			}
+		})
+	}
+
+	withoutFullSweep := intent
+	withoutFullSweep.SweepPlan.WalkedAll = false
+	withoutFullSweep.SweepPlan.NextCursor = "cand_sweep.json"
+	if err := validateFinalizationResult(withoutFullSweep, valid); err == nil {
+		t.Fatal("non-exhaustive sweep accepted a pending census")
+	}
+}
+
+func TestLoadFrozenJournalRejectsOperationFrameAfterFinalization(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_basis", mem.Candidate{
+		Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof,
+	})
+	if _, err := Run(home, Options{Apply: true}, testNow); err != nil {
+		t.Fatal(err)
+	}
+	receipts := readReceipts(t, home)
+	operation := receipts[1]
+	terminal := receipts[len(receipts)-1]
+	receipts = append(receipts[:len(receipts)-1], operation, terminal)
+	writeReceipts(t, home, receipts)
+
+	report, err := Run(home, Options{Apply: true}, testNow.Add(time.Minute))
+	if err == nil || report.Stage != "" || !strings.Contains(err.Error(), "operation result follows finalization") {
+		t.Fatalf("operation after finalization must refuse before a new pass: stage=%q err=%v", report.Stage, err)
 	}
 }
 

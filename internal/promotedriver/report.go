@@ -30,9 +30,10 @@ type Report struct {
 	// Intent is frozen on the planned receipt before mutation. It binds the
 	// candidate window, proposed per-candidate operations, cursors, and pending
 	// generation so a planned-only pass is reconstructible.
-	Intent            *PassIntent           `json:"intent,omitempty"`
-	OperationResults  []PassOperationResult `json:"operation_results,omitempty"`
-	ReconciledPassIDs []string              `json:"reconciled_pass_ids,omitempty"`
+	Intent            *PassIntent             `json:"intent,omitempty"`
+	OperationResults  []PassOperationResult   `json:"operation_results,omitempty"`
+	Finalization      *PassFinalizationResult `json:"finalization,omitempty"`
+	ReconciledPassIDs []string                `json:"reconciled_pass_ids,omitempty"`
 
 	Promote     PromotePhaseReport     `json:"promote"`
 	Dedupe      DedupePhaseReport      `json:"dedupe"`
@@ -104,6 +105,24 @@ type PassOperationResult struct {
 	TransitionID         string `json:"transition_id,omitempty"`
 	Note                 string `json:"note,omitempty"`
 	Error                string `json:"error,omitempty"`
+}
+
+// PassFinalizationResult is the durable result of publishing the frozen
+// cursors and, for a full sweep, reconciling the candidate backlog. It is
+// journaled before the terminal receipt so recovery validates the terminal
+// projection against a prior exact result frame rather than trusting a
+// mutable summary.
+type PassFinalizationResult struct {
+	PromoteCursorAfter candidates.EntryCursor     `json:"promote_cursor_after,omitempty"`
+	SweepCursorAfter   candidates.EntryCursor     `json:"sweep_cursor_after,omitempty"`
+	Pending            *PendingFinalizationResult `json:"pending,omitempty"`
+}
+
+type PendingFinalizationResult struct {
+	Pending    int    `json:"pending"`
+	Files      int    `json:"files"`
+	Corrupt    int    `json:"corrupt,omitempty"`
+	Generation string `json:"generation"`
 }
 
 // PromotePhaseReport receipts the basis-gated promotion phase. The walk
