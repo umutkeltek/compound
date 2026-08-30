@@ -334,23 +334,34 @@
       "id": "REL-P0-011",
       "severity": "P0",
       "subsystem": "candidate-custody-fixtures",
-      "title": "Fresh-home candidate writers omit canonical custody directories",
-      "status": "reproduced",
-      "reproducer": "GOTOOLCHAIN=go1.26.4 go test ./...",
-      "root_cause": "Distiller, executorlens, and product test paths open strict canonical candidate custody against partially initialized fresh homes whose required inbox kind directories are absent.",
-      "invariant": "Every supported fresh-home producer initializes and validates complete canonical candidate custody before writing; missing, aliased, or mismatched custody fails at the owning boundary without relying on another test or package to create directories.",
-      "red_test": "TestImprovementPlanRecordsReviewArtifactsWithoutMutatingTarget; TestImprovementReviewRequiresEditedDecisionAndProofWithoutMutatingTruth; TestAnnotateImprovementQueueClosesReviewedPlan; TestCounterMetricFalsifier_UnpairedClaimMintsOneFailurePattern; TestCounterMetricFailureCandidateDedupIgnoresClassifierDetailDrift; TestApplyCanonicalMetricsCreatesReviewReadyHypothesis; TestApplyCanonicalMetricsReplayDoesNotOverwriteExistingHypothesis.",
-      "fix_commits": [],
-      "focused_tests": [],
+      "title": "Missing candidate inbox is misclassified as custody failure",
+      "status": "focused_green",
+      "reproducer": "GOTOOLCHAIN=go1.26.4 go test ./internal/candidates -count=1 -run '^TestReadCandidateMissingInboxPreservesNotExistWithoutScaffolding$'",
+      "root_cause": "The descriptor-rooted candidate reader wrapped an absent inbox directory in fmt.Errorf. errors.Is still recognized ENOENT, but os.IsNotExist did not unwrap that generic wrapper, so optional multi-inbox probes aborted before the existing create-capable writer could run.",
+      "invariant": "A missing optional candidate inbox remains os.IsNotExist without read-time scaffolding; symlink, non-directory, unsafe-path, and other custody failures remain hard errors; writers alone create canonical custody.",
+      "red_test": "Governed TDD run ratt_20260830T113451Z_39e2003e: TestReadCandidateMissingInboxPreservesNotExistWithoutScaffolding failed before the production fix because the wrapped absent inbox was not os.IsNotExist. The original broad run also failed seven producer tests across distiller, executorlens, and product.",
+      "fix_commits": [
+        "d59a5d94619704507af74268c240ad68fe5de808"
+      ],
+      "focused_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/candidates -count=1 -run '^TestReadCandidateMissingInboxPreservesNotExistWithoutScaffolding$' (red before fix, green after fix)",
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/candidates (passed independent review)",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/candidates (passed independent review)",
+        "GOOS=linux GOTOOLCHAIN=go1.26.4 go test -exec true ./internal/candidates (passed cross-build)",
+        "Sequential independent spec and quality reviews approved with no critical or important findings."
+      ],
       "broad_tests": [
-        "GOTOOLCHAIN=go1.26.4 go test ./... (failed in internal/distiller, internal/executorlens, internal/product)"
+        "GOTOOLCHAIN=go1.26.4 go test ./... (pre-fix failed in internal/distiller, internal/executorlens, internal/product)",
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/candidates ./internal/distiller ./internal/executorlens ./internal/product -count=1 (passed)",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/candidates ./internal/distiller ./internal/executorlens ./internal/product -count=1 (passed)"
       ],
       "evidence_paths": [
-        "release-evidence/runs/20260830-release-broad-runtime-red.json"
+        "release-evidence/runs/20260830-release-broad-runtime-red.json",
+        "release-evidence/runs/20260830-p0-011-missing-inbox-read.json"
       ],
-      "residual_risk": "A supported producer can fail on an actually fresh home after canonical candidate identity hardening; focused ownership diagnosis is pending.",
+      "residual_risk": "Focused, affected-package, race, cross-build, and independent-review proof are green. Canonical go test ./..., proof-check, and isolated release certification remain required before closure.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-30T05:43:25Z"
+      "updated_at": "2026-08-30T11:41:30Z"
     },
     {
       "id": "REL-P0-012",
