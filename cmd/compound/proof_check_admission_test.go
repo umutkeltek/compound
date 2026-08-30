@@ -33,6 +33,7 @@ const proofCheckFailedReleaseCLISubEnv = "COMPOUND_PROOF_FAILED_RELEASE_CLI_SUB"
 const proofCheckPostReportErrorCLISubEnv = "COMPOUND_PROOF_POST_REPORT_ERROR_CLI_SUB"
 const proofCheckUnsafeTTLCLISubEnv = "COMPOUND_PROOF_UNSAFE_TTL_CLI_SUB"
 const proofCheckMinimumTTLCLISubEnv = "COMPOUND_PROOF_MINIMUM_TTL_CLI_SUB"
+const proofCheckMinimumTTLControllerSubEnv = "COMPOUND_PROOF_MINIMUM_TTL_CONTROLLER_SUB"
 const proofCheckBarrierChildSubEnv = "COMPOUND_PROOF_BARRIER_CHILD_SUB"
 const proofCheckArtifactPublishFailureSubEnv = "COMPOUND_PROOF_ARTIFACT_PUBLISH_FAILURE_SUB"
 const proofCheckSignalForwardSubEnv = "COMPOUND_PROOF_SIGNAL_FORWARD_SUB"
@@ -2455,6 +2456,10 @@ func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing
 	t.Parallel()
 	if os.Getenv(proofCheckMinimumTTLCLISubEnv) == "1" {
 		role := os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_ROLE")
+		parentLifetime, err := newTestSubprocessParentLifetime(2 * minimumProofCheckReservationTTL)
+		if err != nil {
+			t.Fatal(err)
+		}
 		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, source gitrepository.Snapshot, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
 			if role == "first" {
 				if err := os.WriteFile(os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_FIRST_RUNNER"), []byte("runner-started\n"), 0o644); err != nil {
@@ -2462,6 +2467,9 @@ func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing
 				}
 				releasePath := os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_RELEASE")
 				for {
+					if err := parentLifetime.check(); err != nil {
+						return proofCheckReport{}, err
+					}
 					if _, err := os.Stat(releasePath); err == nil {
 						break
 					} else if !errors.Is(err, os.ErrNotExist) {
@@ -2521,6 +2529,7 @@ func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing
 			"COMPOUND_PROOF_MINIMUM_TTL_FIRST_RUNNER="+firstMarker,
 			"COMPOUND_PROOF_MINIMUM_TTL_SECOND_RUNNER="+secondMarker,
 			"COMPOUND_PROOF_MINIMUM_TTL_RELEASE="+releasePath,
+			testSubprocessParentPIDEnv+"="+fmt.Sprint(os.Getpid()),
 		)
 		return command
 	}
@@ -2567,6 +2576,93 @@ func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing
 	if err := firstCommand.Wait(); err != nil {
 		t.Fatalf("minimum TTL first proof failed: %v; output:\n%s", err, firstOutput.String())
 	}
+}
+
+func TestProofCheckMinimumTTLChildExitsWhenControllerDies(t *testing.T) {
+	if os.Getenv(proofCheckMinimumTTLControllerSubEnv) == "1" {
+		command := exec.Command(os.Args[0], "-test.run=^TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner$")
+		command.Env = append(
+			os.Environ(),
+			proofCheckMinimumTTLCLISubEnv+"=1",
+			"COMPOUND_PROOF_MINIMUM_TTL_ROLE=first",
+			testSubprocessParentPIDEnv+"="+fmt.Sprint(os.Getpid()),
+		)
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if err := publishTestPIDFile(os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_CHILD_PID"), command.Process.Pid); err != nil {
+			_ = command.Process.Kill()
+			_, _ = command.Process.Wait()
+			t.Fatal(err)
+		}
+		if err := command.Wait(); err != nil {
+			t.Fatalf("minimum TTL child failed: %v", err)
+		}
+		return
+	}
+
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "proof-minimum-ttl-parent-lifetime-test", now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := createClaimedProofWork(t, store, "minimum TTL child follows controller lifetime", "codex:min-ttl-parent-lifetime", now)
+	repo := initCompoundCommandGitRepo(t)
+	root := t.TempDir()
+	outPath := filepath.Join(root, "proof.json")
+	firstMarker := filepath.Join(root, "runner-started")
+	secondMarker := filepath.Join(root, "second-runner-started")
+	releasePath := filepath.Join(root, "release")
+	childPIDPath := filepath.Join(root, "child.pid")
+
+	controller := exec.Command(os.Args[0], "-test.run=^TestProofCheckMinimumTTLChildExitsWhenControllerDies$")
+	controller.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	controller.Env = append(
+		os.Environ(),
+		proofCheckMinimumTTLControllerSubEnv+"=1",
+		"COMPOUND_HOME="+homePath,
+		"COMPOUND_PROOF_MINIMUM_TTL_REPO="+repo,
+		"COMPOUND_PROOF_MINIMUM_TTL_WORK="+w.ID,
+		"COMPOUND_PROOF_MINIMUM_TTL_ACTOR=codex:min-ttl-parent-lifetime",
+		"COMPOUND_PROOF_MINIMUM_TTL_OUT="+outPath,
+		"COMPOUND_PROOF_MINIMUM_TTL_FIRST_RUNNER="+firstMarker,
+		"COMPOUND_PROOF_MINIMUM_TTL_SECOND_RUNNER="+secondMarker,
+		"COMPOUND_PROOF_MINIMUM_TTL_RELEASE="+releasePath,
+		"COMPOUND_PROOF_MINIMUM_TTL_CHILD_PID="+childPIDPath,
+	)
+	if err := controller.Start(); err != nil {
+		t.Fatal(err)
+	}
+	controllerPGID := controller.Process.Pid
+	controllerWaited := false
+	t.Cleanup(func() {
+		_ = syscall.Kill(-controllerPGID, syscall.SIGKILL)
+		if !controllerWaited {
+			_, _ = controller.Process.Wait()
+		}
+		_ = syscall.Kill(-controllerPGID, syscall.SIGKILL)
+	})
+
+	childPID := waitForProofCheckGatePID(t, childPIDPath, 5*time.Second)
+	waitForTestPath(t, firstMarker, 5*time.Second)
+	childPGID, err := syscall.Getpgid(childPID)
+	if err != nil {
+		t.Fatalf("get minimum TTL child process group: %v", err)
+	}
+	if childPGID != controllerPGID {
+		t.Fatalf("minimum TTL child process group = %d, want controller group %d", childPGID, controllerPGID)
+	}
+
+	if err := controller.Process.Kill(); err != nil {
+		t.Fatalf("kill minimum TTL controller: %v", err)
+	}
+	_, _ = controller.Process.Wait()
+	controllerWaited = true
+	waitForTestProcessGroupExit(t, controllerPGID, 2*time.Second)
 }
 
 func TestProofCheckAdmissionLeavesLightweightModesUnreserved(t *testing.T) {
