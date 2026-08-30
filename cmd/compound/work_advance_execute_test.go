@@ -16,7 +16,6 @@ import (
 	"compound/internal/actuator"
 	"compound/internal/envelope"
 	"compound/internal/harness"
-	"compound/internal/home"
 	"compound/internal/policy"
 	"compound/internal/routeevidence"
 	"compound/internal/runattempt"
@@ -31,11 +30,7 @@ type claimedExecutionFixture struct {
 
 func initializedExecutionHome(t *testing.T) string {
 	t.Helper()
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
-	return homePath
+	return initializedTestHome(t)
 }
 
 func newClaimedExecutionFixture(t *testing.T, owner, successPredicate string) claimedExecutionFixture {
@@ -96,11 +91,8 @@ func reportRevokedExecutionAttempt(store *work.Store, workID, executionAttemptID
 // completing). Removing the second Advance call (verifying) turns
 // the state check RED the same way.
 func TestWorkAdvanceExecute(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedExecutionHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	ws, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -277,11 +269,8 @@ func TestWorkAdvanceExecuteConcurrentProcessesLaunchOnce(t *testing.T) {
 // subprocess failure as a work-lifecycle failure, not as a silently
 // passed advance.
 func TestWorkAdvanceExecuteFailedExit(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedExecutionHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	ws, _ := work.Open(homePath)
 	w, _ := ws.Create(work.CreateInput{
 		Owner:            "codex",
@@ -547,10 +536,7 @@ func TestWorkAdvanceExecuteStartErrorAfterSweptClaimReservationClosesFailed(t *t
 func TestWorkAdvanceExecuteUnknownHarnessNoStateChange(t *testing.T) {
 	t.Parallel()
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedExecutionHome(t)
 	ws, _ := work.Open(homePath)
 	w, _ := ws.Create(work.CreateInput{
 		Owner:            "codex",
@@ -610,10 +596,7 @@ func TestWorkAdvanceExecuteUnknownHarnessNoStateChange(t *testing.T) {
 func TestWorkAdvanceExecuteMissingLaneTupleNoStateChange(t *testing.T) {
 	t.Parallel()
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedExecutionHome(t)
 	ws, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -663,11 +646,8 @@ func TestWorkAdvanceExecuteMissingLaneTupleNoStateChange(t *testing.T) {
 func TestWorkAdvanceExecuteWalledDeclaredCapacityNoStateChange(t *testing.T) {
 	t.Parallel()
 
-	homePath := t.TempDir()
+	homePath := initializedExecutionHome(t)
 	userHome := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	now := time.Now().UTC().Truncate(time.Second)
 	source := filepath.Join(t.TempDir(), "minimax.yaml")
 	manifest := `version: 1
@@ -752,10 +732,7 @@ routing_defaults:
 func TestWorkAdvanceExecuteAcceptsWorkspaceAndPermissionMode(t *testing.T) {
 	t.Parallel()
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedExecutionHome(t)
 	ws, _ := work.Open(homePath)
 	w, _ := ws.Create(work.CreateInput{
 		Owner:            "codex",
@@ -1706,11 +1683,8 @@ func TestWorkAdvanceExecuteHeldPolicyDoesNotLaunchClaude(t *testing.T) {
 // act_-prefixed id AND that id is present in the work envelope's
 // action_intent_ids (zip27 audit round F3).
 func TestWorkAdvanceExecuteBindsActionIntentID(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedExecutionHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	ws, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -1766,10 +1740,7 @@ func TestWorkAdvanceExecuteBindsActionIntentID(t *testing.T) {
 func TestWorkAdvanceExecuteRejectsNonRunningTo(t *testing.T) {
 	t.Parallel()
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedExecutionHome(t)
 	ws, _ := work.Open(homePath)
 	w, _ := ws.Create(work.CreateInput{
 		Owner:            "codex",
@@ -1822,11 +1793,8 @@ func TestWorkAdvanceExecuteRejectsNonRunningTo(t *testing.T) {
 // GREEN. The claim-mint (work.Claim) is not lane-stamped on this path; the
 // execute-mint is the LAST id, so the assertion targets it.
 func TestWorkAdvanceExecuteStampsLaneIDOnExecAttempt(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedExecutionHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	ws, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -1880,10 +1848,7 @@ func TestWorkAdvanceExecuteStampsLaneIDOnExecAttempt(t *testing.T) {
 func TestWorkAdvanceExecuteNoSeparatorLeaksNoFlagTail(t *testing.T) {
 	t.Parallel()
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedExecutionHome(t)
 	ws, _ := work.Open(homePath)
 	w, err := ws.Create(work.CreateInput{
 		Owner:            "codex",
@@ -1943,10 +1908,7 @@ func TestWorkAdvanceExecuteNoSeparatorLeaksNoFlagTail(t *testing.T) {
 func TestWorkAdvanceExecuteMissingWorkspaceDirNoStateChange(t *testing.T) {
 	t.Parallel()
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedExecutionHome(t)
 	ws, _ := work.Open(homePath)
 	w, err := ws.Create(work.CreateInput{
 		Owner:            "codex",
@@ -2013,10 +1975,7 @@ func TestWorkAdvanceExecuteMissingWorkspaceDirNoStateChange(t *testing.T) {
 func TestWorkAdvanceExecuteExistingWorkspaceStillRuns(t *testing.T) {
 	t.Parallel()
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedExecutionHome(t)
 	ws, _ := work.Open(homePath)
 	w, err := ws.Create(work.CreateInput{
 		Owner:            "codex",
@@ -2053,10 +2012,7 @@ func TestWorkAdvanceExecuteExistingWorkspaceStillRuns(t *testing.T) {
 func TestWorkAdvanceExecuteWorkspaceFileNotDirNoStateChange(t *testing.T) {
 	t.Parallel()
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedExecutionHome(t)
 	ws, _ := work.Open(homePath)
 	w, err := ws.Create(work.CreateInput{
 		Owner:            "codex",
