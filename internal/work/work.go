@@ -2531,8 +2531,8 @@ func runAttemptHasExecuted(ra runattempt.RunAttempt) bool {
 
 // runAttemptOwnsHarnessOutcome recognizes either a proved process launch or
 // the one exact pre-launch failure that still belongs to the harness attempt.
-// Origin alone is never enough: the start-error case must carry the rooted
-// prepared+start_error lifecycle that runattempt classifies side-effect-free.
+// Origin alone is never enough: the start-error case must carry the exact
+// rooted prepared+start_error lifecycle with no conflicting commit.
 func runAttemptOwnsHarnessOutcome(ra runattempt.RunAttempt) bool {
 	launch := ra.Launch
 	if launch != nil && launch.CommittedAt != nil && launch.StartErrorAt != nil {
