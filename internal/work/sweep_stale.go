@@ -293,6 +293,39 @@ func sweepStaleEvaluate(s *Store, threshold time.Duration, probe SweepStaleProbe
 	sort.Slice(envelopes, func(i, j int) bool { return envelopes[i].ID < envelopes[j].ID })
 
 	for _, w := range envelopes {
+		pending, pendingPresent, pendingErr := s.loadSweepStalePending(w.ID)
+		if pendingErr != nil {
+			rep.Unreadable++
+			rep.UnreadableIDs = append(rep.UnreadableIDs, w.ID)
+			continue
+		}
+		if pendingPresent {
+			candidate := pending.Candidate
+			if !apply {
+				candidate.ReclaimError = sweepStaleRecoveryRequired(w.ID, errors.New("frozen reclaim awaits replay")).Error()
+				rep.Skipped++
+				rep.SkippedIDs = append(rep.SkippedIDs, w.ID)
+				rep.Candidates = append(rep.Candidates, candidate)
+				continue
+			}
+			reconcileErr := s.withLifecycleMutation(func() error {
+				return s.withCreatePlanAdmissionLock(w.ID, func() error {
+					var err error
+					candidate, err = s.reconcileSweepStalePendingLocked(w.ID)
+					return err
+				})
+			})
+			if reconcileErr != nil {
+				candidate.ReclaimError = reconcileErr.Error()
+				rep.Skipped++
+				rep.SkippedIDs = append(rep.SkippedIDs, w.ID)
+				rep.Candidates = append(rep.Candidates, candidate)
+				continue
+			}
+			rep.Reclaimed++
+			rep.Candidates = append(rep.Candidates, candidate)
+			continue
+		}
 		if !sweepStaleEnvelopeStates[w.State] {
 			continue
 		}
@@ -496,17 +529,13 @@ func (s *Store) reclaimEnvelopeLocked(w envelope.WorkEnvelope, candidate SweepSt
 	if err := s.fenceClosePendingMutation(w.ID); err != nil {
 		return err
 	}
+	if err := s.fenceSweepStalePendingMutation(w.ID); err != nil {
+		return err
+	}
 	if !sweepStaleEnvelopeStates[w.State] {
 		return fmt.Errorf("work %s: state %q is not reclaimable", w.ID, w.State)
 	}
 	target := sweepStaleTargetState(w.State)
-
-	// The lease is a per-work artifact, not an event. Release it only AFTER
-	// the envelope is durably terminalized and its lifecycle event appended:
-	// releasing first meant a failed envelope write left the work claimed
-	// with no lease — unprotectable by the next sweep's lease check while
-	// still looking claimed to every operator surface.
-	leaseHeld := w.State == "claimed"
 
 	// CAS-style precondition: the candidate was diagnosed against a
 	// snapshot taken at pass start, and a live agent can advance the work
@@ -572,31 +601,27 @@ func (s *Store) reclaimEnvelopeLocked(w envelope.WorkEnvelope, candidate SweepSt
 		return fmt.Errorf("seal swept envelope %s: %w", w.ID, err)
 	}
 
-	if err := s.writeJSON(s.workPath(w.ID), &updated); err != nil {
-		return fmt.Errorf("write envelope %s: %w", w.ID, err)
+	if err := s.injectSweepStaleFault(sweepStaleFaultBeforePendingPersist); err != nil {
+		return err
 	}
-
-	// Append the lifecycle event carrying sweep_reason. The From/To
-	// pair is the authoritative state transition; Note carries the
-	// evidence. Append is the same path Close and Advance use
-	// (envelope write first, event second; reconciliation reads both).
-	event := Event{
-		TS:                 ts(now),
-		WorkID:             w.ID,
-		From:               w.State,
-		To:                 target,
-		By:                 "sweep-stale",
-		Note:               candidate.SweepReason,
-		PreviousWorkSHA256: previousWorkSHA256,
-		WorkSHA256:         sweptWorkSHA256,
+	pending, err := s.newSweepStalePending(current, updated, candidate, threshold, now)
+	if err != nil {
+		return fmt.Errorf("freeze sweep-stale reclaim for %s: %w", w.ID, err)
 	}
-	if err := s.appendEvent(event); err != nil {
-		return fmt.Errorf("append reclaim event for %s: %w", w.ID, err)
+	if pending.SourceWorkSHA256 != previousWorkSHA256 || pending.FinalWorkSHA256 != sweptWorkSHA256 {
+		return fmt.Errorf("frozen sweep-stale digests drifted for %s", w.ID)
 	}
-
-	if leaseHeld {
-		s.releaseLease(w.ID)
+	if err := s.persistSweepStalePending(pending); err != nil {
+		if _, present, loadErr := s.loadSweepStalePending(w.ID); loadErr == nil && present {
+			return sweepStaleRecoveryRequired(w.ID, err)
+		}
+		return fmt.Errorf("persist sweep-stale intent for %s: %w", w.ID, err)
 	}
-
+	if err := s.injectSweepStaleFault(sweepStaleFaultAfterPendingPersist); err != nil {
+		return sweepStaleRecoveryRequired(w.ID, err)
+	}
+	if err := s.completeSweepStalePending(pending); err != nil {
+		return sweepStaleRecoveryRequired(w.ID, err)
+	}
 	return nil
 }

@@ -126,6 +126,7 @@ type Store struct {
 	eventLogReads                 atomic.Int64
 	holdEvidenceFileReads         atomic.Int64
 	experimentalDelegateMutations atomic.Bool
+	sweepStaleFault               func(stage string) error
 }
 
 func (s *Store) eventLogReadCount() int64 {
@@ -811,6 +812,9 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 	if err := s.fenceClosePendingMutation(workID); err != nil {
 		return envelope.WorkEnvelope{}, err
 	}
+	if err := s.fenceSweepStalePendingMutation(workID); err != nil {
+		return envelope.WorkEnvelope{}, err
+	}
 	w, err := s.Get(workID)
 	if err != nil {
 		return w, err
@@ -1055,6 +1059,9 @@ func (s *Store) recoverPendingClaimBeforeClose(workID string) (envelope.WorkEnve
 }
 
 func (s *Store) recoverPendingClaimBeforeLifecycleMutation(workID string, allowPreparedClose bool) (envelope.WorkEnvelope, error) {
+	if err := s.fenceSweepStalePendingMutation(workID); err != nil {
+		return envelope.WorkEnvelope{}, err
+	}
 	if !allowPreparedClose {
 		if err := s.fenceClosePendingMutation(workID); err != nil {
 			return envelope.WorkEnvelope{}, err
