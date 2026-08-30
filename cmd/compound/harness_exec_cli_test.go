@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"compound/internal/home"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
@@ -19,11 +18,8 @@ import (
 // the CLI surface always reflects the registry; if a built-in is
 // accidentally removed, the test fails and the operator sees the gap.
 func TestHarnessExecutorsList(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	out := captureStdout(t, func() {
 		cmdHarness([]string{"executors"})
 	})
@@ -38,11 +34,8 @@ func TestHarnessExecutorsList(t *testing.T) {
 // with the executors array. Pinned so the operator can pipe the list
 // into jq / other tooling.
 func TestHarnessExecutorsListJSON(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	var buf strings.Builder
 	old := os.Stdout
 	r, w, _ := os.Pipe()
@@ -80,11 +73,8 @@ func TestHarnessExecutorsListJSON(t *testing.T) {
 // full Mint->SetWorkspace->SetCommand->spawn->capture->Complete chain
 // end-to-end through the CLI surface.
 func TestHarnessRunOSEntrypoints(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	ws, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -144,11 +134,8 @@ func TestHarnessRunOSEntrypoints(t *testing.T) {
 // which is the natural operator contract (CI / make / orchestration
 // can react to a non-zero status).
 func TestHarnessRunFailedExit(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	ws, _ := work.Open(homePath)
 	w, _ := ws.Create(work.CreateInput{
 		Owner:            "codex",
@@ -171,11 +158,8 @@ func TestHarnessRunFailedExit(t *testing.T) {
 // TestHarnessRunJSON: --json flag produces machine-readable output.
 // Pinned so the operator can pipe into jq / other tooling.
 func TestHarnessRunJSON(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	ws, _ := work.Open(homePath)
 	w, _ := ws.Create(work.CreateInput{
 		Owner:            "codex",
@@ -242,11 +226,8 @@ func readSingleRunAttemptJSON(t *testing.T, homePath string) []byte {
 // Asserting on the raw persisted bytes (not just the struct) pins that the
 // lane identity actually round-trips to disk.
 func TestHarnessRunByStampsLaneID(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	ws, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -278,11 +259,8 @@ func TestHarnessRunByStampsLaneID(t *testing.T) {
 // to a different lane resolution (or unwired), lane_id would be absent or
 // disagree with the --by path.
 func TestHarnessRunActorAliasIdenticalToBy(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	ws, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -315,11 +293,8 @@ func TestHarnessRunActorAliasIdenticalToBy(t *testing.T) {
 // level). Mirrors TestRunnerEmptyLaneIDOmitsStamp. Byte-level assert: an
 // unattributed `harness run` is byte-identical to today's behavior.
 func TestHarnessRunNoActorOmitsLaneID(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	ws, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -354,11 +329,8 @@ func TestHarnessRunNoActorOmitsLaneID(t *testing.T) {
 // Falsifier (RED at base): cmdHarnessRun's text branch has no such line, so
 // the output does not contain the exact warning text.
 func TestHarnessRunTextWarnsUngoverned(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	ws, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -394,11 +366,8 @@ func TestHarnessRunTextWarnsUngoverned(t *testing.T) {
 // at the zero value regardless of presence -- assert on the raw bytes so
 // presence itself is pinned, not just the (indistinguishable) false value.
 func TestHarnessRunJSONGovernedFalse(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	ws, _ := work.Open(homePath)
 	w, _ := ws.Create(work.CreateInput{
 		Owner:            "codex",
@@ -440,11 +409,8 @@ func TestHarnessRunJSONGovernedFalse(t *testing.T) {
 // path (e.g. a retired git_delivery.target_worktree_root) minted an attempt
 // that was guaranteed to terminalize failed at cmd.Start (chdir).
 func TestHarnessRunMissingWorkspaceRefusedBeforeMint(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	ws, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)

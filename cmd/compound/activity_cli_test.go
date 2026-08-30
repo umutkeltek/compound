@@ -12,18 +12,14 @@ import (
 
 	"compound/internal/activity"
 	"compound/internal/activity/tier1"
-	"compound/internal/home"
 	"compound/internal/policy"
 )
 
 // F2 at the CLI door: a fresh home (sensor disabled, no grant) must refuse `activity drain` with a
 // non-zero exit, an honest reason, and ZERO rows under observed/activity/.
 func TestActivityCLIDrainFailsClosedOnFreshHome(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	spool := t.TempDir()
 	if err := os.WriteFile(filepath.Join(spool, "2026-07-15.ndjson"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatalf("seed spool: %v", err)
@@ -45,11 +41,8 @@ func TestActivityCLIDrainFailsClosedOnFreshHome(t *testing.T) {
 // The status verb is ungated read-only truth: it must report enabled=false on a fresh home and
 // exit zero.
 func TestActivityCLIStatusReportsDisabled(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	var stdout, stderr bytes.Buffer
 	if code := runActivity([]string{"status", "--home", homePath}, &stdout, &stderr); code != 0 {
 		t.Fatalf("status must exit zero, got %d (stderr=%q)", code, stderr.String())
@@ -74,11 +67,8 @@ func TestActivityCLIUnknownVerbPrintsUsage(t *testing.T) {
 // aw materialize accepts --start/--end, so a malformed value must NOT be
 // silently swallowed (the bug being fixed): it must exit 2 with a clear reason.
 func TestActivityCLIAWMaterializeInvalidStartExits2(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	var stdout, stderr bytes.Buffer
 	code := runActivity([]string{"aw", "materialize", "--start", "not-a-time", "--home", homePath}, &stdout, &stderr)
 	if code != 2 {
@@ -91,11 +81,8 @@ func TestActivityCLIAWMaterializeInvalidStartExits2(t *testing.T) {
 
 // A window where --start is not before --end is a usage error, exit 2.
 func TestActivityCLIAWMaterializeInvertedWindowExits2(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	var stdout, stderr bytes.Buffer
 	code := runActivity([]string{"aw", "materialize",
 		"--start", "2026-07-31T00:00:00Z",
@@ -203,11 +190,8 @@ func enableTier1CollectHome(t *testing.T, homePath string, now time.Time) {
 // nonzero and name the failure — it must NOT print a success-looking line. This
 // is the exact regression the audit flagged (AW outage rendered as exit 0).
 func TestActivityCLIAWMaterializeAWDownExitsNonZero(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	enableAWMaterializeHome(t, homePath, cliTestNow)
 
 	// AW server that errors on every request.
@@ -244,11 +228,8 @@ func TestActivityCLIAWMaterializeAWDownExitsNonZero(t *testing.T) {
 }
 
 func TestActivityCLITier1CollectAWDownExitsNonZero(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	enableTier1CollectHome(t, homePath, cliTestNow)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -269,11 +250,8 @@ func TestActivityCLITier1CollectAWDownExitsNonZero(t *testing.T) {
 }
 
 func TestActivityCLITier1CollectAWDownHumanOutputIsFailure(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	enableTier1CollectHome(t, homePath, cliTestNow)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -297,11 +275,8 @@ func TestActivityCLITier1CollectAWDownHumanOutputIsFailure(t *testing.T) {
 }
 
 func TestActivityCLITier1CollectPartialBucketFailureStaysSuccessfulAndVisible(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	enableTier1CollectHome(t, homePath, cliTestNow)
 
 	const buckets = `{
