@@ -9,6 +9,7 @@ import (
 // The events dir on a real home holds ~50x more tr_/act_/pol_/hook_ files than
 // receipts; hold-evidence must open only receipt-named files, not the whole dir.
 func TestHoldEvidenceReadsOnlyReceiptNamedFiles(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	dir := filepath.Join(home, "events")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

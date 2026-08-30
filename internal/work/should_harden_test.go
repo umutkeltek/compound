@@ -36,6 +36,7 @@ func runToCloseable(t *testing.T, s *Store, targetSurface, predicate string) str
 // a rejected/failed close of the same envelope stamps false but STILL emits Receipt
 // + Transition; and an ordinary work with no TargetSurface never hardens on close.
 func TestShouldHardenStampedOnlyOnAcceptedHarnessEditClose(t *testing.T) {
+	t.Parallel()
 	t.Run("accepted harness-edit close hardens", func(t *testing.T) {
 		s := newStore(t)
 		id := runToCloseable(t, s, "capability_edges", "apply the accepted harness edit")

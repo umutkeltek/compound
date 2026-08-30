@@ -11,6 +11,7 @@ import (
 )
 
 func TestActivePacketProofReportsClosedPacketChain(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
 	writeContextPack(t, s, "ctx_packet")
@@ -60,6 +61,7 @@ func TestActivePacketProofReportsClosedPacketChain(t *testing.T) {
 }
 
 func TestActivePacketProofReportsArchivedClosedPacketChain(t *testing.T) {
+	t.Parallel()
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(homePath, "test", fixedNow); err != nil {
 		t.Fatalf("init home: %v", err)
@@ -117,6 +119,7 @@ func TestActivePacketProofReportsArchivedClosedPacketChain(t *testing.T) {
 }
 
 func TestActivePacketProofRisksIncompleteChain(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
 	imported, err := s.ImportPacket(packetPath, PacketImportOptions{Owner: "compound-core", State: "proposed"}, fixedNow)

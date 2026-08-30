@@ -8,6 +8,7 @@ import (
 )
 
 func TestAdmittedActionContextUsesImmutableSnapshot(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ctx := &WorkActionContext{
 		Kind:          "promoted_action_directive",
@@ -105,6 +106,7 @@ func TestAdmittedActionContextUsesImmutableSnapshot(t *testing.T) {
 }
 
 func TestAdmittedNilActionContextUsesImmutableSnapshot(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	plan, err := s.CreatePlan(CreateInput{
 		WorkID:           "work_nil_action_context_snapshot",
@@ -167,6 +169,7 @@ func TestAdmittedNilActionContextUsesImmutableSnapshot(t *testing.T) {
 }
 
 func TestCreatePlanRejectsPreAdmissionContentTamper(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	plan, err := s.CreatePlan(CreateInput{
 		WorkID:           "work_pre_admission_plan_tamper",

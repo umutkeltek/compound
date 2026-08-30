@@ -9,6 +9,7 @@ import "testing"
 // main", "a state delta exists"). A false-positive here would mint a spurious graduation offer, so
 // the prose cases are the ones that must fail if the depth were wrong.
 func TestCommandShapedPredicateClassifies(t *testing.T) {
+	t.Parallel()
 	qualifies := []struct{ pred, want string }{
 		{"go test ./internal/work/...", "go test ./internal/work/..."},
 		{"  go vet ./...  ", "go vet ./..."}, // trimmed

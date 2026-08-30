@@ -10,6 +10,7 @@ import (
 )
 
 func TestWorkbenchReadsEventLogOnce(t *testing.T) {
+	t.Parallel()
 	const (
 		workCount     = 200
 		eventsPerWork = 5

@@ -22,6 +22,7 @@ import (
 // fan-out terminalized nothing -- while the CLI's own refusal text kept teaching
 // `--move-type audit_only` as the remedy.
 func TestBoundEnvelopeClosesAuditOnlyWithoutLandedProof(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
@@ -66,6 +67,7 @@ func TestBoundEnvelopeClosesAuditOnlyWithoutLandedProof(t *testing.T) {
 // short-circuit, so an "audit" that actually produced a commit still yields a
 // non-empty signal and must fall through to the landed-proof gate.
 func TestBoundEnvelopeAuditOnlyWithCommitArtifactStillRequiresLandedProof(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
@@ -107,6 +109,7 @@ func TestBoundEnvelopeAuditOnlyWithCommitArtifactStillRequiresLandedProof(t *tes
 // itself would have succeeded: the dispatch loop stalled on a verdict the gate
 // did not share. A loop that cannot be told an item is closeable never closes it.
 func TestWorkbenchItemNeedsGitDeliveryProofHonorsAuditOnly(t *testing.T) {
+	t.Parallel()
 	bound := WorkbenchItem{GitDeliveryBound: true}
 
 	if workbenchItemNeedsGitDeliveryProof(bound, "audit_only") {
@@ -136,6 +139,7 @@ func TestWorkbenchItemNeedsGitDeliveryProofHonorsAuditOnly(t *testing.T) {
 // keys its teaching output off these marker substrings, so rewording the gate
 // here silently blinds the refusal renderer.
 func TestAuditCloseGateRefusalStaysGreppable(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}

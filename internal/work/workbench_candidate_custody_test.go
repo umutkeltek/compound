@@ -10,6 +10,7 @@ import (
 )
 
 func TestWorkbenchRejectsCorruptMemoryCandidateArtifactReferences(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		ref   string
@@ -130,6 +131,7 @@ func integrityContains(integrity []string, want string) bool {
 }
 
 func TestWorkbenchKeepsLaterValidMemoryCandidateCardAfterCorruptPanel(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	held, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -181,6 +183,7 @@ func TestWorkbenchKeepsLaterValidMemoryCandidateCardAfterCorruptPanel(t *testing
 }
 
 func TestWorkbenchReportsCorruptMemoryCandidateWithoutReviewEligibility(t *testing.T) {
+	t.Parallel()
 	positive := 1
 	for _, tc := range []struct {
 		name      string
@@ -229,6 +232,7 @@ func TestWorkbenchReportsCorruptMemoryCandidateWithoutReviewEligibility(t *testi
 }
 
 func TestWorkbenchRejectsCorruptMemoryCandidateIDsFromRunArtifacts(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	held, err := s.Create(CreateInput{
 		Owner:            "compound-core",

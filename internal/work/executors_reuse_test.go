@@ -14,6 +14,7 @@ import "testing"
 // envelope/lease files, not the work log, so the projection's only work-log read
 // is the internal Workbench build.
 func TestExecutorsProjectionWorkbenchReuseEliminatesEventLogRead(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "reuse falsifier"}, fixedNow)
 	if err != nil {

@@ -13,6 +13,7 @@ import "testing"
 // Red at base: with 3 works (2 terminal, 1 open) the base delta is 5
 // (2 terminal proofChainItem reads + 3 orphan-scan reads). Green after: 1.
 func TestProofChainDoctorLoadsWorkLogExactlyOnce(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 
 	// Two terminal works (each drives a proofChainItem read at base) and one

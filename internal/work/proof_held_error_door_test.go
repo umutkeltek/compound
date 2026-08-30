@@ -14,6 +14,7 @@ import (
 // pair. Omitting the door leaves the keeper blocked; the test refuses to
 // tolerate that omission.
 func TestProofResourceHeldErrorNamesHolderExpiryAndReleaseDoor(t *testing.T) {
+	t.Parallel()
 	holder := "ratt-keep-alpha"
 	reservationID := "pfr_test-keep-001"
 	workID := "work-keep-001"

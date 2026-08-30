@@ -54,6 +54,7 @@ func snapshotRevisionFor(t *testing.T, decision LaneCapacityGuardResult) string 
 // authority change. This is the regression: before the fix, every field below
 // was hashed, so a few tokens of drift refused the spawn.
 func TestDelegateReadinessSnapshotIgnoresLiveCapacityMeasurements(t *testing.T) {
+	t.Parallel()
 	admission := baseCapacityDecision()
 
 	for _, tc := range []struct {
@@ -94,6 +95,7 @@ func TestDelegateReadinessSnapshotIgnoresLiveCapacityMeasurements(t *testing.T) 
 // admission. If this test ever passes trivially, the snapshot has stopped
 // carrying capacity at all and the fix has gone too far.
 func TestDelegateReadinessSnapshotTracksCapacityVerdict(t *testing.T) {
+	t.Parallel()
 	admission := baseCapacityDecision()
 
 	for _, tc := range []struct {
@@ -118,6 +120,7 @@ func TestDelegateReadinessSnapshotTracksCapacityVerdict(t *testing.T) {
 // The lane is part of the identity: the same verdict on a different lane is a
 // different snapshot.
 func TestDelegateReadinessSnapshotSeparatesLanes(t *testing.T) {
+	t.Parallel()
 	decision := baseCapacityDecision()
 	a, err := completeDelegateReadinessSnapshot(DelegateHarnessReadinessResult{Ready: true}, "claude-minimax", decision)
 	if err != nil {

@@ -3,6 +3,7 @@ package work
 import "testing"
 
 func TestProofChainForWorkScopesCanonicalChecksToRequestedWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	valid, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "target proof chain"}, fixedNow)
 	if err != nil {

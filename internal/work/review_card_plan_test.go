@@ -8,6 +8,7 @@ import (
 )
 
 func TestReviewCardWorkPlanRecordsASCOperatorGateProposalOnly(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	source, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -101,6 +102,7 @@ func TestReviewCardWorkPlanRecordsASCOperatorGateProposalOnly(t *testing.T) {
 }
 
 func TestReviewCardWorkPlanRecordsMemoryCandidateCardWithoutPromotion(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	source, err := s.Create(CreateInput{
 		Owner:            "compound-core",

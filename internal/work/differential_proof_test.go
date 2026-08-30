@@ -14,6 +14,7 @@ import (
 )
 
 func TestRecordedLandCheckVerificationRefAcceptsOnlyCanonicalShapes(t *testing.T) {
+	t.Parallel()
 	for _, ref := range []string{
 		"proof-check:pfrs_candidate",
 		"proof-diff:pfrs_candidate:pfrs_baseline",
@@ -37,6 +38,7 @@ func TestRecordedLandCheckVerificationRefAcceptsOnlyCanonicalShapes(t *testing.T
 }
 
 func TestDifferentialProofComparisonAcceptsOnlyBaselineKnownFailures(t *testing.T) {
+	t.Parallel()
 	candidate, candidateReport, baseline, baselineReport := differentialComparisonFixture(t)
 	if err := validateDifferentialProofComparison(candidate, candidateReport, baseline, baselineReport); err != nil {
 		t.Fatalf("valid differential proof comparison rejected: %v", err)
@@ -44,6 +46,7 @@ func TestDifferentialProofComparisonAcceptsOnlyBaselineKnownFailures(t *testing.
 }
 
 func TestDifferentialProofComparisonFailsClosed(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		mutate func(*ProofResourceResult, *ownedProofReport, *ProofResourceResult, *ownedProofReport)
@@ -98,6 +101,7 @@ func TestDifferentialProofComparisonFailsClosed(t *testing.T) {
 }
 
 func TestLandCheckConsumesGovernedDifferentialProofAfterReloadingChains(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	store := newStore(t)
 	repo := initProofSourceRepo(t, "https://example.invalid/compound/differential.git")

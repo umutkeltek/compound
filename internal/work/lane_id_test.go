@@ -15,6 +15,7 @@ import (
 // scope, and still stamps its actor-derived lane unchanged (see handoff deviations).
 
 func TestActionExecutionReceiptDraftStampsProducerLaneID(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	_, workID := runningActionContextWork(t, s)
 	plan, err := s.ActionExecutionPlan(workID, fixedNow.Add(20*time.Minute), ActionExecutionPlanOptions{Actor: "fixture/lane", Record: true})
