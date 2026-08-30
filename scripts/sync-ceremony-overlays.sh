@@ -21,7 +21,7 @@ cleanup_pending() {
   fi
 }
 
-trap cleanup_pending EXIT
+trap cleanup_pending 0
 trap 'exit 1' HUP INT TERM
 
 for ceremony in $ceremonies; do
