@@ -86,20 +86,27 @@
       "invariant": "Only a regular non-symlink file with canonical filename and matching nonblank JSON ID resolved inside the candidate root is actionable.",
       "red_test": "TestMemoryCandidatePointReadRejectsNoncanonicalCustody; TestAdjudicatePendingNamesEveryCustodyCorruptionAndNeverActsOnIt; TestReconcilePendingStateRefusesCandidateCustodyCorruption; candidate ReadPage/ReadRecord corruption tables.",
       "fix_commits": [
-        "1fe0fcdca88669d7670b823b7bb5129f9878abac"
+        "1fe0fcdca88669d7670b823b7bb5129f9878abac",
+        "02ef09767c66726053dab530f8e73b4a3e932a4a"
       ],
       "focused_tests": [
         "GOTOOLCHAIN=go1.26.4 go test ./internal/candidates ./internal/mem ./internal/promotedriver -count=1",
         "GOTOOLCHAIN=go1.26.4 go test -race ./internal/candidates ./internal/mem ./internal/promotedriver -count=1",
-        "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound -run 'Test(ParseMemoryAfterCursorAcceptsTokenOrFilenameAndRejectsPaths|MemoryAdjudicateNoArgExitsTwoWithUsage|MemoryAdjudicateUnknownIDNamesSearchedLocationAndDoor)$' -count=1"
+        "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound -run 'Test(ParseMemoryAfterCursorAcceptsTokenOrFilenameAndRejectsPaths|MemoryAdjudicateNoArgExitsTwoWithUsage|MemoryAdjudicateUnknownIDNamesSearchedLocationAndDoor)$' -count=1",
+        "GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/candidates ./internal/mem ./internal/negatives ./internal/projection ./internal/sourceobs ./internal/decisions ./internal/contract",
+        "GOTOOLCHAIN=go1.26.4 go test -race -count=1 ./internal/candidates ./internal/mem ./internal/negatives ./internal/projection ./internal/sourceobs ./internal/decisions ./internal/contract",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/work -run '^(TestWorkbenchRejectsCorruptMemoryCandidateArtifactReferences|TestWorkbenchKeepsLaterValidMemoryCandidateCardAfterCorruptPanel|TestWorkbenchReportsCorruptMemoryCandidateWithoutReviewEligibility|TestWorkbenchRejectsCorruptMemoryCandidateIDsFromRunArtifacts|TestWorkbenchSurfacesRunArtifactsForHeldWork)$' -count=1",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./cmd/compound -run '^(TestOrientOperatorReportMatchesRawHomeState|TestOrientOperatorUsesMemoryCandidateAuthorityForNeedsMe|TestOrientOperatorCarriesReviewedCapabilityFeedbackImpact|TestOrientOperatorTreatsConsumedSurfacingFeedbackReportTerminal|TestCandidateInboxSummaryNeverCountsCustodyCorruptionAsActionable|TestOrientOperatorSurfacesMemoryReviewCardsFromHeldRunArtifacts|TestOrientOperatorSurfacesWorkbenchCandidateIntegrity)$' -count=1",
+        "GOTOOLCHAIN=go1.26.4 go vet ./internal/candidates ./internal/mem ./internal/negatives ./internal/projection ./internal/sourceobs ./internal/decisions ./internal/contract ./internal/work ./cmd/compound"
       ],
       "broad_tests": [],
       "evidence_paths": [
-        "release-evidence/runs/20260830-p0-002-p0-003-focused-green.json"
+        "release-evidence/runs/20260830-p0-002-p0-003-focused-green.json",
+        "release-evidence/runs/20260830-p0-003-supported-consumers-focused-green.json"
       ],
-      "residual_risk": "The shared custody seam and core memory/promote-driver paths are green. Base orient negatives, Workbench, operator orient, lineage, standing-law, and source-observation consumers still bypass it and must be migrated or gated before closure; canonical broad proof is also pending.",
+      "residual_risk": "The shared seam and supported v0.1 memory import/list/mutation, base-orient negatives, Workbench/coordination/operator orient, lineage, standing-law, and source-observation consumers are focused and race green. Panel, product, capability-graph, route-observation, archive, and migration readers still contain raw enumeration/read paths; those surfaces are outside the initial supported v0.1 journey and must remain experimental/private or be migrated before their support claim expands. Canonical broad proof and the REL-P1-007 durability ambiguities remain pending before closure.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-30T02:30:16Z"
+      "updated_at": "2026-08-30T03:16:22Z"
     },
     {
       "id": "REL-P0-004",
