@@ -24,6 +24,7 @@ var proofCheckHomeOwningGateNames = []string{
 // apart. A renamed or retired gate would otherwise leave a dangling runner that never fires —
 // the gate would quietly fall through to the generic path and read the operator's home again.
 func TestHomeOwningGatesAreAllRealGates(t *testing.T) {
+	t.Parallel()
 	steps, err := proofCheckSteps("")
 	if err != nil {
 		t.Fatal(err)
@@ -129,6 +130,7 @@ func TestAgentsHomeOwningGateDoesNotRequirePATHCompound(t *testing.T) {
 // inheritable execution-barrier descriptor, and contextless runners can silently evade a
 // revoked certifying run.
 func TestHomeOwningGateProductionPathsAreContextOnly(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{
 		"proof_check_memory_gate.go",
 		"proof_check_workbench_gate.go",

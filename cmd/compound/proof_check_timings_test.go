@@ -92,6 +92,7 @@ func readStoreForTest(t *testing.T, homePath string) proofCheckTimingsStore {
 }
 
 func TestProofCheckTimingHistoryRoundTripsRecordedDurations(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 
@@ -130,6 +131,7 @@ func TestProofCheckTimingHistoryRoundTripsRecordedDurations(t *testing.T) {
 // would collapse toward the cached lane's seconds and every budget derived from it would be wrong
 // in the dangerous direction (too tight), producing exactly the false reds this work exists to end.
 func TestProofCheckTimingStatsKeepCertifyingAndDevelopmentLanesApart(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 
@@ -171,6 +173,7 @@ func TestProofCheckTimingStatsKeepCertifyingAndDevelopmentLanesApart(t *testing.
 // leaves later gates unexecuted. Neither carries a timing signal, and admitting them as 0ms
 // samples would drag every percentile toward zero.
 func TestProofCheckTimingHistoryIgnoresUnexecutedGates(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 
@@ -220,6 +223,7 @@ func TestProofCheckTimingHistoryIgnoresUnexecutedGates(t *testing.T) {
 }
 
 func TestProofCheckTimingHistoryTrimsToRollingWindow(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 
@@ -250,6 +254,7 @@ func TestProofCheckTimingHistoryTrimsToRollingWindow(t *testing.T) {
 // unlike a corrupt lease it resets and reports rather than failing hard — otherwise every
 // subsequent run would fail to write and the history could never recover.
 func TestProofCheckTimingHistoryResetsUnreadableBodyAndKeepsRecording(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	statePath := filepath.Join(homePath, proofCheckTimingsStateRelPath)
@@ -279,6 +284,7 @@ func TestProofCheckTimingHistoryResetsUnreadableBodyAndKeepsRecording(t *testing
 // This machine runs several agent harnesses at once by design, so two batteries finishing together
 // is a normal event. Without the flock the read-modify-write loses runs or writes a torn body.
 func TestProofCheckTimingHistorySurvivesConcurrentWriters(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 
@@ -318,6 +324,7 @@ func TestProofCheckTimingHistorySurvivesConcurrentWriters(t *testing.T) {
 }
 
 func TestProofCheckTimingsFileIsValidJSONWithStableSchema(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	report := timingFixtureReport("", map[string]int64{"go-test": 1})
@@ -338,6 +345,7 @@ func TestProofCheckTimingsFileIsValidJSONWithStableSchema(t *testing.T) {
 }
 
 func TestPercentileMSUsesNearestRank(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		values []int64
 		p      int
@@ -363,6 +371,7 @@ func TestPercentileMSUsesNearestRank(t *testing.T) {
 // rehearsal worktree, so grouping runs by worktree PATH excluded exactly the runs that matter.
 // Live symptom on the day it landed: `--timings` in the main tree reported runs=2, gates=[].
 func TestProofCheckTimingStatsFoldWorktreesOfOneRepoButSplitDifferentRepos(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 
@@ -427,6 +436,7 @@ func TestProofCheckTimingStatsFoldWorktreesOfOneRepoButSplitDifferentRepos(t *te
 
 // Records written before RepoIdentity existed carry only a path; they must not vanish silently.
 func TestProofCheckTimingStatsFallBackToPathForPreIdentityRecords(t *testing.T) {
+	t.Parallel()
 	store := proofCheckTimingsStore{
 		SchemaVersion: proofCheckTimingsSchemaVersion,
 		Runs: []proofCheckTimingRun{{
@@ -449,6 +459,7 @@ func TestProofCheckTimingStatsFallBackToPathForPreIdentityRecords(t *testing.T) 
 // proofCheckRepoIdentity must return the SAME key for two real worktrees of one repository, and a
 // different key for an unrelated repository. Uses real git because that is the behaviour relied on.
 func TestProofCheckRepoIdentityIsSharedAcrossWorktreesOfOneRepo(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -488,6 +499,7 @@ func TestProofCheckRepoIdentityIsSharedAcrossWorktreesOfOneRepo(t *testing.T) {
 
 // percentileMS must not reorder its input: the caller's slice order carries the run sequence.
 func TestPercentileMSDoesNotMutateCallerSlice(t *testing.T) {
+	t.Parallel()
 	values := []int64{9, 3, 7}
 	_ = percentileMS(values, 90)
 	if values[0] != 9 || values[1] != 3 || values[2] != 7 {
