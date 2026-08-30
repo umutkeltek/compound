@@ -2637,14 +2637,20 @@ func TestProofCheckMinimumTTLChildExitsWhenControllerDies(t *testing.T) {
 	if err := controller.Start(); err != nil {
 		t.Fatal(err)
 	}
+	controllerReapStarted := false
+	var controllerGroup *testProcessGroup
 	controllerPGID := controller.Process.Pid
-	controllerWaited := false
+	controllerGroup, err = captureLiveTestProcessGroup(controllerPGID, controller.Process.Pid)
+	if err != nil {
+		killPinnedTestProcessGroupAndReap(t, controller, controllerPGID, time.Second)
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
-		_ = syscall.Kill(-controllerPGID, syscall.SIGKILL)
-		if !controllerWaited {
-			_, _ = controller.Process.Wait()
+		cleanupTestProcessGroup(t, controllerGroup, time.Second)
+		if !controllerReapStarted {
+			killAndReapTestCommand(t, controller, time.Second)
+			controllerReapStarted = true
 		}
-		_ = syscall.Kill(-controllerPGID, syscall.SIGKILL)
 	})
 
 	childPID := waitForProofCheckGatePID(t, childPIDPath, 5*time.Second)
@@ -2656,13 +2662,13 @@ func TestProofCheckMinimumTTLChildExitsWhenControllerDies(t *testing.T) {
 	if childPGID != controllerPGID {
 		t.Fatalf("minimum TTL child process group = %d, want controller group %d", childPGID, controllerPGID)
 	}
-
-	if err := controller.Process.Kill(); err != nil {
-		t.Fatalf("kill minimum TTL controller: %v", err)
+	if _, _, err := controllerGroup.status(); err != nil {
+		t.Fatalf("capture minimum TTL child group membership: %v", err)
 	}
-	_, _ = controller.Process.Wait()
-	controllerWaited = true
-	waitForTestProcessGroupExit(t, controllerPGID, 2*time.Second)
+
+	killAndReapTestCommand(t, controller, time.Second)
+	controllerReapStarted = true
+	waitForTestProcessGroupQuiescence(t, controllerGroup, 2*time.Second)
 }
 
 func TestProofCheckAdmissionLeavesLightweightModesUnreserved(t *testing.T) {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -357,23 +358,26 @@ func TestConsoleSupervisorForwardsTerminationToChildGroup(t *testing.T) {
 	addTestSubprocessParentEnv(plan.Env, os.Getpid())
 	signals := make(chan os.Signal, 1)
 	done := make(chan error, 1)
+	returned := false
+	var group *testProcessGroup
+	var err error
 	go func() {
 		done <- runConsoleSupervisedCommand(plan, []string{script}, signals)
 	}()
-
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if _, err := os.Stat(started); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("supervised child did not start")
-		}
-		time.Sleep(10 * time.Millisecond)
+	defer func() {
+		cleanupConsoleSupervisorTest(t, signals, done, group, pidPath, script, returned)
+	}()
+	leaderPID := waitForTestPIDFile(t, pidPath, 3*time.Second)
+	group, err = captureLiveTestProcessGroupWithCommandToken(leaderPID, leaderPID, script)
+	if err != nil {
+		t.Fatal(err)
 	}
+
+	waitForTestPath(t, started, 3*time.Second)
 	signals <- syscall.SIGTERM
 	select {
 	case err := <-done:
+		returned = true
 		if err != nil {
 			t.Fatalf("supervisor returned after forwarded TERM: %v", err)
 		}
@@ -383,6 +387,7 @@ func TestConsoleSupervisorForwardsTerminationToChildGroup(t *testing.T) {
 	if body, err := os.ReadFile(marker); err != nil || string(body) != "terminated" {
 		t.Fatalf("child did not receive forwarded termination: body=%q err=%v", body, err)
 	}
+	waitForTestProcessGroupQuiescence(t, group, time.Second)
 }
 
 func TestConsoleSupervisorKillsChildGroupAfterTerminationGrace(t *testing.T) {
@@ -405,14 +410,20 @@ func TestConsoleSupervisorKillsChildGroupAfterTerminationGrace(t *testing.T) {
 	signals := make(chan os.Signal, 1)
 	done := make(chan error, 1)
 	returned := false
+	var group *testProcessGroup
+	var err error
 	go func() {
 		done <- runConsoleSupervisedCommand(plan, []string{script}, signals)
 	}()
 	defer func() {
-		cleanupConsoleSupervisorTest(signals, done, pidPath, returned)
+		cleanupConsoleSupervisorTest(t, signals, done, group, pidPath, script, returned)
 	}()
 
 	leaderPID := waitForTestPIDFile(t, pidPath, 3*time.Second)
+	group, err = captureLiveTestProcessGroupWithCommandToken(leaderPID, leaderPID, script)
+	if err != nil {
+		t.Fatal(err)
+	}
 	waitForTestPath(t, heartbeatPath, 3*time.Second)
 
 	shutdownTimeout := 2*consoleShutdownGrace + time.Second
@@ -426,7 +437,7 @@ func TestConsoleSupervisorKillsChildGroupAfterTerminationGrace(t *testing.T) {
 	case <-time.After(shutdownTimeout):
 		t.Fatal("supervisor waited forever for a child that ignored termination")
 	}
-	waitForTestProcessGroupExit(t, leaderPID, time.Second)
+	waitForTestProcessGroupQuiescence(t, group, time.Second)
 }
 
 func TestConsoleSupervisorKillsResidualGroupWhenLeaderExitsOnTermination(t *testing.T) {
@@ -451,13 +462,22 @@ func TestConsoleSupervisorKillsResidualGroupWhenLeaderExitsOnTermination(t *test
 	signals := make(chan os.Signal, 1)
 	done := make(chan error, 1)
 	returned := false
+	var group *testProcessGroup
+	var err error
 	go func() { done <- runConsoleSupervisedCommand(plan, []string{script}, signals) }()
 	defer func() {
-		cleanupConsoleSupervisorTest(signals, done, leaderPIDPath, returned)
+		cleanupConsoleSupervisorTest(t, signals, done, group, leaderPIDPath, script, returned)
 	}()
 
 	leaderPID := waitForTestPIDFile(t, leaderPIDPath, 3*time.Second)
 	_ = waitForTestPIDFile(t, childPIDPath, 3*time.Second)
+	group, err = captureLiveTestProcessGroupWithCommandToken(leaderPID, leaderPID, script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := group.status(); err != nil {
+		t.Fatal(err)
+	}
 	waitForTestPath(t, heartbeatPath, 3*time.Second)
 	shutdownTimeout := 2*consoleShutdownGrace + time.Second
 	signals <- syscall.SIGTERM
@@ -470,7 +490,7 @@ func TestConsoleSupervisorKillsResidualGroupWhenLeaderExitsOnTermination(t *test
 	case <-time.After(shutdownTimeout):
 		t.Fatal("supervisor did not return after the leader exited")
 	}
-	waitForTestProcessGroupExit(t, leaderPID, time.Second)
+	waitForTestProcessGroupQuiescence(t, group, time.Second)
 }
 
 func TestConsoleSupervisorFixtureChildrenExitWhenControllerDies(t *testing.T) {
@@ -495,6 +515,7 @@ func TestConsoleSupervisorFixtureChildrenExitWhenControllerDies(t *testing.T) {
 			root := t.TempDir()
 			pidPath := filepath.Join(root, "leader.pid")
 			readyPath := filepath.Join(root, "ready")
+			childCommandToken := filepath.Join(root, tc.role+".sh")
 			controller := exec.Command(os.Args[0], "-test.run=^TestConsoleSupervisorFixtureChildrenExitWhenControllerDies$")
 			controller.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 			controller.Env = append(
@@ -506,16 +527,32 @@ func TestConsoleSupervisorFixtureChildrenExitWhenControllerDies(t *testing.T) {
 			if err := controller.Start(); err != nil {
 				t.Fatal(err)
 			}
+			controllerReapStarted := false
+			var controllerGroup *testProcessGroup
+			var childGroup *testProcessGroup
 			controllerPGID := controller.Process.Pid
-			controllerWaited := false
+			var err error
+			controllerGroup, err = captureLiveTestProcessGroup(controllerPGID, controller.Process.Pid)
+			if err != nil {
+				killPinnedTestProcessGroupAndReap(t, controller, controllerPGID, time.Second)
+				childGroup = captureTestProcessGroupFromPIDFileForCleanup(t, pidPath, childCommandToken)
+				cleanupTestProcessGroup(t, childGroup, time.Second)
+				t.Fatal(err)
+			}
 			t.Cleanup(func() {
-				killTestProcessGroupFromPIDFile(pidPath)
-				_ = syscall.Kill(-controllerPGID, syscall.SIGKILL)
-				if !controllerWaited {
-					_, _ = controller.Process.Wait()
+				if childGroup == nil {
+					childGroup = captureTestProcessGroupFromPIDFileForCleanup(t, pidPath, childCommandToken)
 				}
-				killTestProcessGroupFromPIDFile(pidPath)
-				_ = syscall.Kill(-controllerPGID, syscall.SIGKILL)
+				cleanupTestProcessGroup(t, childGroup, time.Second)
+				cleanupTestProcessGroup(t, controllerGroup, time.Second)
+				if !controllerReapStarted {
+					killAndReapTestCommand(t, controller, time.Second)
+					controllerReapStarted = true
+				}
+				if childGroup == nil {
+					childGroup = captureTestProcessGroupFromPIDFileForCleanup(t, pidPath, childCommandToken)
+					cleanupTestProcessGroup(t, childGroup, time.Second)
+				}
 			})
 
 			waitForTestPath(t, readyPath, 5*time.Second)
@@ -527,13 +564,18 @@ func TestConsoleSupervisorFixtureChildrenExitWhenControllerDies(t *testing.T) {
 			if actualPGID != childPGID {
 				t.Fatalf("supervised child process group = %d, want leader %d", actualPGID, childPGID)
 			}
-
-			if err := controller.Process.Kill(); err != nil {
-				t.Fatalf("kill console fixture controller: %v", err)
+			childGroup, err = captureLiveTestProcessGroupWithCommandToken(childPGID, childPGID, childCommandToken)
+			if err != nil {
+				t.Fatal(err)
 			}
-			_, _ = controller.Process.Wait()
-			controllerWaited = true
-			waitForTestProcessGroupExit(t, childPGID, 2*time.Second)
+
+			killAndReapTestCommand(t, controller, time.Second)
+			controllerReapStarted = true
+			waitForTestProcessGroupQuiescence(t, childGroup, 2*time.Second)
+			waitForTestProcessGroupQuiescence(t, controllerGroup, 2*time.Second)
+			if tc.role != "forward" {
+				assertTestFileSizeStable(t, filepath.Join(root, "heartbeat"), 150*time.Millisecond)
+			}
 		})
 	}
 }
@@ -585,34 +627,54 @@ func runConsoleParentDeathFixtureController(t *testing.T, role, root string) {
 	}
 }
 
-func cleanupConsoleSupervisorTest(signals chan os.Signal, done <-chan error, pidPath string, returned bool) {
-	select {
-	case signals <- syscall.SIGKILL:
-	default:
+func cleanupConsoleSupervisorTest(
+	t *testing.T,
+	signals chan os.Signal,
+	done <-chan error,
+	group *testProcessGroup,
+	pidPath string,
+	commandToken string,
+	returned bool,
+) {
+	t.Helper()
+	if group == nil {
+		group = captureTestProcessGroupFromPIDFileForCleanup(t, pidPath, commandToken)
 	}
-	killTestProcessGroupFromPIDFile(pidPath)
 	if !returned {
+		select {
+		case signals <- syscall.SIGKILL:
+		default:
+		}
 		select {
 		case <-done:
 		case <-time.After(time.Second):
 		}
 	}
-	killTestProcessGroupFromPIDFile(pidPath)
+	if group == nil {
+		group = captureTestProcessGroupFromPIDFileForCleanup(t, pidPath, commandToken)
+	}
+	cleanupTestProcessGroup(t, group, time.Second)
 }
 
-func killTestProcessGroupFromPIDFile(path string) {
-	pid, err := readTestPIDFile(path)
+func captureTestProcessGroupFromPIDFileForCleanup(t *testing.T, pidPath, commandToken string) *testProcessGroup {
+	t.Helper()
+	pid, err := readTestPIDFile(pidPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
-		return
+		t.Errorf("read test process group owner %s during cleanup: %v", pidPath, err)
+		return nil
 	}
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if err := syscall.Kill(-pid, 0); err == syscall.ESRCH {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	group, err := captureLiveTestProcessGroupWithCommandToken(pid, pid, commandToken)
+	if errors.Is(err, errTestProcessGroupNotOwned) {
+		return nil
 	}
+	if err != nil {
+		t.Errorf("capture test process group %d during cleanup: %v", pid, err)
+		return nil
+	}
+	return group
 }
 
 func waitForTestPIDFile(t *testing.T, path string, timeout time.Duration) int {
@@ -664,21 +726,19 @@ func waitForTestPath(t *testing.T, path string, timeout time.Duration) {
 	}
 }
 
-func waitForTestProcessGroupExit(t *testing.T, pgid int, timeout time.Duration) {
+func assertTestFileSizeStable(t *testing.T, path string, duration time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		err := syscall.Kill(-pgid, 0)
-		if err == syscall.ESRCH {
-			return
-		}
-		if err != nil && err != syscall.EPERM {
-			t.Fatalf("probe supervised process group %d: %v", pgid, err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("supervised process group %d still exists after bounded shutdown poll", pgid)
-		}
-		time.Sleep(10 * time.Millisecond)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(duration)
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() {
+		t.Fatalf("test fixture heartbeat %s advanced after process-group quiescence: %d -> %d bytes", path, before.Size(), after.Size())
 	}
 }
 
