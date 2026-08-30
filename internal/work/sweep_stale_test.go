@@ -656,3 +656,90 @@ func TestSweepStaleApplyRefusesFrozenCloseAuthority(t *testing.T) {
 		t.Fatalf("sweep over frozen close changed RunAttempts\nbefore=%+v\nafter=%+v", beforeAttempts, afterAttempts)
 	}
 }
+
+func TestReclaimEnvelopeRefusesWhenGenerationChangedUnderneath(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "sweep-generation-cas", SuccessPredicate: "reclaim refuses same-state generation drift"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = "artifact_same_state_generation"
+	advanced, err := s.Advance(w.ID, AdvanceInput{
+		To:         "claimed",
+		Actor:      "codex",
+		ArtifactID: marker,
+		Note:       "same-state generation advanced after sweep diagnosis",
+	}, fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	candidate := SweepStaleCandidate{
+		WorkID:      w.ID,
+		State:       stale.State,
+		TargetState: sweepStaleTargetState(stale.State),
+		SweepReason: "same-state generation falsifier",
+	}
+	reclaimErr := reclaimEnvelope(s, stale, candidate, fixedNow.Add(2*time.Minute))
+	if reclaimErr == nil {
+		t.Fatal("reclaim must refuse when the exact WorkEnvelope generation changed underneath the diagnosis")
+	}
+	if !strings.Contains(reclaimErr.Error(), "generation changed") {
+		t.Fatalf("error should name generation drift, got: %v", reclaimErr)
+	}
+	live, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(live, advanced) {
+		t.Fatalf("refused reclaim changed the current generation\nwant=%+v\ngot=%+v", advanced, live)
+	}
+	if !contains(live.ArtifactIDs, marker) {
+		t.Fatalf("same-state generation marker %q was clobbered: %+v", marker, live.ArtifactIDs)
+	}
+}
+
+type liveOnRecheckProbe struct {
+	attemptCalls int
+}
+
+func (p *liveOnRecheckProbe) LiveRunAttempt(string) (bool, error) {
+	p.attemptCalls++
+	return p.attemptCalls > 1, nil
+}
+
+func (*liveOnRecheckProbe) LiveDelegate(string) (bool, error) { return false, nil }
+func (*liveOnRecheckProbe) LeaseHeld(string) (bool, error)    { return false, nil }
+
+func TestSweepStaleApplyReprobesLivenessInsideMutationBoundary(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	w := staleEnvelope(t, s, "claimed", 30*24*time.Hour, fixedNow)
+	probe := &liveOnRecheckProbe{}
+
+	report, err := s.SweepStaleApply(72*time.Hour, probe, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.attemptCalls < 2 {
+		t.Fatalf("run-attempt liveness probes = %d, want diagnosis plus in-boundary recheck", probe.attemptCalls)
+	}
+	if report.Reclaimed != 0 || report.Skipped != 1 {
+		t.Fatalf("report = %+v, want the newly-live work skipped", report)
+	}
+	current, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.State != "claimed" {
+		t.Fatalf("work state = %q, want claimed after liveness wins the race", current.State)
+	}
+}
