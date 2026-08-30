@@ -57,6 +57,7 @@ func writeSyntheticOrient(t *testing.T, home, harness string, ts time.Time) {
 }
 
 func TestPrintRetentionDisclosesFixedPathCacheScope(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	printRetention(&out, doctorReport{Retention: &policy.RetentionScanReport{
 		Scanned: []string{"/synthetic/repo"},
@@ -70,6 +71,7 @@ func TestPrintRetentionDisclosesFixedPathCacheScope(t *testing.T) {
 // flagged below expectation. Built synthetically: install both harness hooks with one binary,
 // delete the claude config (=> absent), then check with a different binary (=> codex drifts).
 func TestDoctorSurfacing_F1_GuardAbsentAndDrift(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	base := t.TempDir()
 	binaryA := "/opt/compound-a/compound"
@@ -109,6 +111,7 @@ func TestDoctorSurfacing_F1_GuardAbsentAndDrift(t *testing.T) {
 // written for it, the same harness flips to orient:wired and drops "orient" from below-expectation.
 // A foreign-schema file in the same tree must NOT count (depth probe on the schema filter).
 func TestDoctorSurfacing_F2_OrientNeverThenWired(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	base := t.TempDir()
 	binary := "/opt/compound/compound"
@@ -153,6 +156,7 @@ func TestDoctorSurfacing_F2_OrientNeverThenWired(t *testing.T) {
 // F3 — a fresh, empty home (no capgraph, no hooks) still renders a non-empty matrix: fallback
 // harness rows plus the explicit no-lanes note, exit 0, no crash.
 func TestDoctorSurfacing_F3_FreshHomeFallbackRows(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	base := t.TempDir() // empty base => both guards absent
 
@@ -185,6 +189,7 @@ func TestDoctorSurfacing_F3_FreshHomeFallbackRows(t *testing.T) {
 // F4 — --json exposes the surfacing array with stable field names, and the text render agrees with
 // the JSON (same guard tokens, same global injection numbers, same S2 peers caveat).
 func TestDoctorSurfacing_F4_JSONAndTextAgree(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	base := t.TempDir()
 	binary := "/opt/compound/compound"
@@ -248,6 +253,7 @@ func TestDoctorSurfacing_F4_JSONAndTextAgree(t *testing.T) {
 // fallback bare harnesses) and the no-lanes note is absent — while the guard/orient columns still
 // join by the lane's aliased harness. Covers the imported-lanes branch of buildSurfacingCoverage.
 func TestDoctorSurfacing_LaneRowsFromCapgraph(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	base := t.TempDir()
 	binary := "/opt/compound/compound"
@@ -286,6 +292,7 @@ func TestDoctorSurfacing_LaneRowsFromCapgraph(t *testing.T) {
 }
 
 func TestDoctorSurfacingClaudeZaiLaneJoinsItsOwnGuardAndOrient(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	base := t.TempDir()
 	binary := "/opt/compound/compound"
@@ -422,6 +429,7 @@ func TestDoctorComposesOrganState(t *testing.T) {
 // and proves the recorded finding carries -- and finding show reads back -- every
 // ref that was passed.
 func TestFindingRecordPersistsEveryEvidenceFlag(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	now := time.Date(2026, 7, 16, 20, 0, 0, 0, time.UTC)
 
@@ -460,6 +468,7 @@ func TestFindingRecordPersistsEveryEvidenceFlag(t *testing.T) {
 // TestFindingEvidenceRefsCommaAndRepeatBackCompat proves the comma-joined form
 // still works, mixes with repeated flags, and drops empty/whitespace refs.
 func TestFindingEvidenceRefsCommaAndRepeatBackCompat(t *testing.T) {
+	t.Parallel()
 	got := findingEvidenceRefs([]string{
 		"--evidence", "a,b",
 		"--evidence", " c ",
@@ -488,6 +497,7 @@ func TestFindingEvidenceRefsCommaAndRepeatBackCompat(t *testing.T) {
 // the doctor field shape drifted, mirror the change here.
 
 func TestDoctorReportsSweepTeethCounters(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	base := t.TempDir()
 
@@ -594,6 +604,7 @@ func TestDoctorReportsSweepTeethCounters(t *testing.T) {
 // continues to render the existing stuck-count zero, and the new fields
 // must join it cleanly.
 func TestDoctorReportsSweepTeethCountersOnFreshHome(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	base := t.TempDir()
 
@@ -617,6 +628,7 @@ func TestDoctorReportsSweepTeethCountersOnFreshHome(t *testing.T) {
 }
 
 func TestDoctorReportsUnreadableRunAttemptLaunchEvidence(t *testing.T) {
+	t.Parallel()
 	for _, corruption := range []string{"malformed-json", "unsafe-mode"} {
 		t.Run(corruption, func(t *testing.T) {
 			homePath := t.TempDir()
@@ -784,6 +796,7 @@ func seedInjectionSession(t *testing.T, homePath, recID, packID string, createdA
 // future change reintroduces a "measured" denominator, those two will inflate it again and this
 // test fails.
 func TestDoctorInjectionReportsNoRateBecauseConsumptionProvenanceIsUnrecoverable(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	base := t.TempDir()
 	binary := "/opt/compound/compound"
