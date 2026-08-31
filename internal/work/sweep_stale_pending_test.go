@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/envelope"
 )
 
 func TestSweepStalePersistenceFaultsRecoverExactly(t *testing.T) {
@@ -168,5 +170,232 @@ func TestSweepStalePendingFencesLifecycleMutation(t *testing.T) {
 	}
 	if recovered.Reclaimed != 1 {
 		t.Fatalf("recovery report = %+v, want one completed reclaim", recovered)
+	}
+}
+
+// TestSweepStalePendingRejectsChecksumValidSemanticCorruption keeps the frame
+// checksum honest while changing fields whose meaning the checksum alone cannot
+// protect. A pending frame is a recovery authority, so every one of these
+// mutations must be rejected before replay or fencing can trust it.
+func TestSweepStalePendingRejectsChecksumValidSemanticCorruption(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(*sweepStalePending) error
+	}{
+		{
+			name: "source and final WorkEnvelope validation",
+			mutate: func(p *sweepStalePending) error {
+				p.SourceWork.Owner = ""
+				p.FinalWork.Owner = ""
+				return resealSweepStaleSemanticMutation(p)
+			},
+		},
+		{
+			name: "source state is reclaimable",
+			mutate: func(p *sweepStalePending) error {
+				p.SourceWork.State = "ready"
+				p.FinalWork = p.SourceWork
+				p.FinalWork.State = sweepStaleTargetState(p.SourceWork.State)
+				return resealSweepStaleSemanticMutation(p)
+			},
+		},
+		{
+			name: "threshold is positive",
+			mutate: func(p *sweepStalePending) error {
+				p.ThresholdNanos = 0
+				return nil
+			},
+		},
+		{
+			name: "frozen timestamp is parseable and nonzero",
+			mutate: func(p *sweepStalePending) error {
+				p.FrozenAt = time.Time{}.Format(time.RFC3339Nano)
+				p.Event.TS = p.FrozenAt
+				return nil
+			},
+		},
+		{
+			name: "event timestamp equals frozen timestamp",
+			mutate: func(p *sweepStalePending) error {
+				p.Event.TS = ts(fixedNow.Add(time.Second))
+				return nil
+			},
+		},
+		{
+			name: "sweep reason is canonical and nonblank",
+			mutate: func(p *sweepStalePending) error {
+				p.Candidate.SweepReason = "manual reclaim"
+				p.Event.Note = p.Candidate.SweepReason
+				return nil
+			},
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStore(t)
+			w := staleEnvelope(t, s, "claimed", 30*24*time.Hour, fixedNow)
+			fired := false
+			s.sweepStaleFault = func(stage string) error {
+				if stage == sweepStaleFaultAfterPendingPersist && !fired {
+					fired = true
+					return errors.New("freeze for semantic corruption test")
+				}
+				return nil
+			}
+			report, err := s.SweepStaleApply(72*time.Hour, newFakeProbe(), fixedNow)
+			s.sweepStaleFault = nil
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !fired || report.Reclaimed != 0 || report.Skipped != 1 {
+				t.Fatalf("setup report = %+v, want one frozen pending frame", report)
+			}
+			pending, present, err := s.loadSweepStalePending(w.ID)
+			if err != nil || !present {
+				t.Fatalf("load frozen pending: present=%v err=%v", present, err)
+			}
+			if err := test.mutate(&pending); err != nil {
+				t.Fatalf("mutate pending: %v", err)
+			}
+			pending.FrameSHA256, err = sweepStalePendingDigest(pending)
+			if err != nil {
+				t.Fatalf("reseal frame: %v", err)
+			}
+			if err := s.writeJSON(s.sweepStalePendingPath(w.ID), &pending); err != nil {
+				t.Fatalf("persist checksum-valid corruption: %v", err)
+			}
+			if _, _, err := s.loadSweepStalePending(w.ID); err == nil {
+				t.Fatal("checksum-valid semantic corruption was accepted")
+			}
+		})
+	}
+}
+
+func resealSweepStaleSemanticMutation(p *sweepStalePending) error {
+	var err error
+	p.SourceWorkSHA256, err = workEnvelopeSHA256(p.SourceWork)
+	if err != nil {
+		return err
+	}
+	p.FinalWorkSHA256, err = workEnvelopeSHA256(p.FinalWork)
+	if err != nil {
+		return err
+	}
+	p.Candidate.SourceWorkSHA256 = p.SourceWorkSHA256
+	p.Candidate.State = p.SourceWork.State
+	p.Candidate.TargetState = p.FinalWork.State
+	p.Event.From = p.SourceWork.State
+	p.Event.To = p.FinalWork.State
+	p.Event.PreviousWorkSHA256 = p.SourceWorkSHA256
+	p.Event.WorkSHA256 = p.FinalWorkSHA256
+	return nil
+}
+
+func freezeSweepStalePendingForTest(t *testing.T, s *Store, actor string) (envelope.WorkEnvelope, sweepStalePending) {
+	t.Helper()
+	w := staleEnvelope(t, s, "claimed", 30*24*time.Hour, fixedNow)
+	if actor != "test-fixture" {
+		lease, err := s.readLease(w.ID)
+		if err != nil {
+			t.Fatalf("read fixture lease: %v", err)
+		}
+		lease.By = actor
+		if err := s.writeJSON(s.leasePath(w.ID), &lease); err != nil {
+			t.Fatalf("rewrite fixture lease: %v", err)
+		}
+	}
+	fired := false
+	s.sweepStaleFault = func(stage string) error {
+		if stage == sweepStaleFaultAfterPendingPersist && !fired {
+			fired = true
+			return errors.New("freeze before semantic authority mutation")
+		}
+		return nil
+	}
+	report, err := s.SweepStaleApply(72*time.Hour, newFakeProbe(), fixedNow)
+	s.sweepStaleFault = nil
+	if err != nil {
+		t.Fatalf("freeze sweep-stale pending: %v", err)
+	}
+	if !fired || report.Reclaimed != 0 || report.Skipped != 1 {
+		t.Fatalf("freeze report = %+v, want one frozen pending frame", report)
+	}
+	pending, present, err := s.loadSweepStalePending(w.ID)
+	if err != nil || !present {
+		t.Fatalf("load frozen pending: present=%v err=%v", present, err)
+	}
+	return w, pending
+}
+
+func TestDelegateRefusesFrozenSweepStaleBeforeMint(t *testing.T) {
+	originalReadiness := DelegateHarnessReadiness
+	originalGuard := LaneCapacityGuard
+	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+		return DelegateHarnessReadinessResult{Ready: true}, nil
+	}
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	t.Cleanup(func() {
+		DelegateHarnessReadiness = originalReadiness
+		LaneCapacityGuard = originalGuard
+	})
+
+	s := newExperimentalDelegateStore(t)
+	const holder = "test-fixture"
+	w, frozen := freezeSweepStalePendingForTest(t, s, holder)
+	beforeAuthority := snapshotLifecycleAuthority(t, s)
+	beforeAttempts := runAttemptsByID(t, s)
+	runner := newFakeRunner()
+	result, err := s.Delegate(DelegateOptions{
+		WorkID:    w.ID,
+		Harness:   "claude-zai",
+		Actor:     holder,
+		Command:   "claude-zai",
+		Workspace: t.TempDir(),
+		Now:       fixedNow.Add(2 * time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatalf("delegate over frozen sweep-stale error = %v, want refused authority_changed before mint", err)
+	}
+	if result.Status != "refused" || result.Refusal == nil || result.Refusal.Reason != "authority_changed" {
+		t.Fatalf("delegate over frozen sweep-stale result = %+v, want refused authority_changed", result)
+	}
+	if !strings.Contains(result.Refusal.Message, "sweep-stale recovery_required") ||
+		!strings.Contains(result.Refusal.Message, frozen.FrameSHA256) {
+		t.Fatalf("delegate refusal %q does not bind frozen sweep-stale frame %s", result.Refusal.Message, frozen.FrameSHA256)
+	}
+	if len(runner.creates) != 0 {
+		t.Fatalf("delegate over frozen sweep-stale created a session: %+v", runner.creates)
+	}
+	assertLifecycleAuthorityUnchanged(t, beforeAuthority, snapshotLifecycleAuthority(t, s))
+	if afterAttempts := runAttemptsByID(t, s); !reflect.DeepEqual(beforeAttempts, afterAttempts) {
+		t.Fatalf("delegate over frozen sweep-stale changed RunAttempts\nbefore=%+v\nafter=%+v", beforeAttempts, afterAttempts)
+	}
+}
+
+func TestLeaseRepairRefusesFrozenSweepStaleAuthorityWithoutMutation(t *testing.T) {
+	s := newStore(t)
+	const holder = "test-fixture"
+	w, frozen := freezeSweepStalePendingForTest(t, s, holder)
+	beforeAuthority := snapshotLifecycleAuthority(t, s)
+	beforeAttempts := runAttemptsByID(t, s)
+
+	_, err := s.RepairLease(w.ID, LeaseRepairInput{
+		Actor:                 "repair-operator",
+		ExpectedHolder:        "actor-b",
+		ExpectedCurrentHolder: holder,
+		Reason:                "must not overtake the frozen sweep-stale generation",
+	}, fixedNow.Add(2*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "sweep-stale recovery_required") {
+		t.Fatalf("repair over frozen sweep-stale %s error = %v, want sweep-stale recovery_required", frozen.FrameSHA256, err)
+	}
+	if !strings.Contains(err.Error(), frozen.FrameSHA256) {
+		t.Fatalf("repair fence error %q does not bind frozen sweep-stale frame %s", err, frozen.FrameSHA256)
+	}
+	assertLifecycleAuthorityUnchanged(t, beforeAuthority, snapshotLifecycleAuthority(t, s))
+	if afterAttempts := runAttemptsByID(t, s); !reflect.DeepEqual(beforeAttempts, afterAttempts) {
+		t.Fatalf("repair over frozen sweep-stale changed RunAttempts\nbefore=%+v\nafter=%+v", beforeAttempts, afterAttempts)
 	}
 }
