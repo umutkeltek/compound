@@ -20,7 +20,7 @@
     {
       "command": "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound -run '^TestWorkDelegateCommandsNeverImplicitlySweepRunAttempts$' -count=1",
       "exit_code": 1,
-      "duration_seconds": 22.347105875,
+      "duration_seconds": 22.347,
       "violation": "a parse-valid but semantically refused opted-in delegate changed an unrelated stale RunAttempt from pending to abandoned",
       "incidental_fixture_correction": "dry-run exits 1 on an unready harness; the table initially expected 0 and was corrected without changing the invariant"
     }
