@@ -38,7 +38,21 @@ const (
 	ContentDraftStateParked          = "parked"
 	ContentDraftStateOperationalized = "operationalized"
 	ContentDraftStateRejected        = "rejected"
+	// ContentDraftStatePosted is terminal and means a remote platform ACCEPTED
+	// this draft and returned an id for it. It is deliberately not reachable by
+	// adjudication: "approved for use" (operationalized) and "a human outside
+	// this machine can see it" (posted) are different facts, and a distribution
+	// measure built on the first can report success forever while nothing ships.
+	ContentDraftStatePosted = "posted"
 )
+
+// contentDraftMediaKinds is the closed allowlist of attachable asset kinds, for
+// the same reason contentDraftPlatforms is closed: a junk kind a transport cannot
+// route must be refused at the door, not discovered at post time.
+var contentDraftMediaKinds = map[string]bool{
+	"image": true,
+	"video": true,
+}
 
 // contentDraftPlatforms is the closed allowlist of distribution targets. The spec
 // names them by example ("e.g. x|bluesky|threads"); an observed candidate must not
@@ -59,22 +73,70 @@ type ContentDraftInput struct {
 	VoicePackRef string
 	EvidenceRefs []string
 	ExpiresAt    time.Time
+	// Media are generated assets to attach. Raw bytes in, content-addressed refs
+	// out — the same custody path the body already takes.
+	Media []ContentDraftMediaInput
+}
+
+// ContentDraftMediaInput is one generated asset offered to a draft, with the
+// provenance of the generator that produced it. Provenance is not decoration: an
+// asset whose adapter/model/prompt is unknown cannot be reproduced, compared, or
+// attributed when a variant outperforms another.
+type ContentDraftMediaInput struct {
+	Kind     string // image | video
+	Bytes    []byte // raw asset bytes; custodied content-addressed
+	MIMEType string
+	AltText  string
+	Adapter  string // which generator produced it, e.g. "adapter:local-sdxl"
+	Model    string // model / LoRA identity, e.g. "sdxl-1.0+lora:product-style-v3"
+	Prompt   string // the prompt itself; custodied content-addressed as PromptRef
+}
+
+// ContentDraftMedia is one attached asset as persisted on the draft.
+type ContentDraftMedia struct {
+	Kind      string `json:"kind"`
+	Ref       string `json:"ref"`
+	MIMEType  string `json:"mime_type,omitempty"`
+	AltText   string `json:"alt_text,omitempty"`
+	Adapter   string `json:"adapter,omitempty"`
+	Model     string `json:"model,omitempty"`
+	PromptRef string `json:"prompt_ref,omitempty"`
+}
+
+// ContentDraftPostInput is the platform's own answer after a successful post.
+type ContentDraftPostInput struct {
+	RemoteID   string
+	URL        string
+	ReceiptRef string
+}
+
+// ContentDraftPost is the evidence that a draft actually reached a platform.
+// RemoteID is required by MarkContentDraftPosted precisely because a "posted"
+// flag that can be set without it is a claim, not a fact.
+type ContentDraftPost struct {
+	Platform   string `json:"platform"`
+	RemoteID   string `json:"remote_id"`
+	URL        string `json:"url,omitempty"`
+	PostedAt   string `json:"posted_at"`
+	ReceiptRef string `json:"receipt_ref,omitempty"`
 }
 
 // ContentDraft is the persisted candidate record under inbox/content-drafts/<id>.json.
 type ContentDraft struct {
-	SchemaVersion string   `json:"schema_version"`
-	ID            string   `json:"id"`
-	Kind          string   `json:"kind"`
-	ProductID     string   `json:"product_id"`
-	Platform      string   `json:"platform"`
-	BodyRef       string   `json:"body_ref"`
-	VoicePackRef  string   `json:"voice_pack_ref,omitempty"`
-	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
-	State         string   `json:"state"`
-	CreatedAt     string   `json:"created_at"`
-	ExpiresAt     string   `json:"expires_at"`
-	AdjudicatedAt string   `json:"adjudicated_at,omitempty"`
+	SchemaVersion string              `json:"schema_version"`
+	ID            string              `json:"id"`
+	Kind          string              `json:"kind"`
+	ProductID     string              `json:"product_id"`
+	Platform      string              `json:"platform"`
+	BodyRef       string              `json:"body_ref"`
+	VoicePackRef  string              `json:"voice_pack_ref,omitempty"`
+	EvidenceRefs  []string            `json:"evidence_refs,omitempty"`
+	Media         []ContentDraftMedia `json:"media,omitempty"`
+	Post          *ContentDraftPost   `json:"post,omitempty"`
+	State         string              `json:"state"`
+	CreatedAt     string              `json:"created_at"`
+	ExpiresAt     string              `json:"expires_at"`
+	AdjudicatedAt string              `json:"adjudicated_at,omitempty"`
 	// Warnings is the additive set of content-staleness flags. Slice 2 of
 	// the model-catalog envelope adds a check: a body naming a model the
 	// installed catalog marks superseded gets a visible flag here. The
@@ -115,6 +177,10 @@ func RecordContentDraft(homePath string, in ContentDraftInput, now time.Time) (C
 	if err != nil {
 		return ContentDraft{}, err
 	}
+	media, err := custodyContentDraftMedia(store, in.Media)
+	if err != nil {
+		return ContentDraft{}, err
+	}
 	createdAt := now.UTC()
 	// Fold the create-nanosecond into the id so two records of the SAME body are
 	// distinct drafts (distinct ids) that share one content-addressed body ref.
@@ -126,6 +192,7 @@ func RecordContentDraft(homePath string, in ContentDraftInput, now time.Time) (C
 		ProductID:     productID,
 		Platform:      platform,
 		BodyRef:       bodyRef,
+		Media:         media,
 		VoicePackRef:  strings.TrimSpace(in.VoicePackRef),
 		EvidenceRefs:  compact(in.EvidenceRefs),
 		State:         ContentDraftStateProposed,
@@ -208,6 +275,91 @@ func OperationalizeContentDraft(homePath, id string, now time.Time) (ContentDraf
 	return adjudicateContentDraft(homePath, id, ContentDraftStateOperationalized, now, true)
 }
 
+// custodyContentDraftMedia validates each offered asset and stores its bytes (and
+// its prompt) content-addressed, so identical assets dedup to one artifact exactly
+// as identical bodies already do.
+func custodyContentDraftMedia(store *home.ArtifactStore, in []ContentDraftMediaInput) ([]ContentDraftMedia, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]ContentDraftMedia, 0, len(in))
+	for _, m := range in {
+		kind := strings.ToLower(strings.TrimSpace(m.Kind))
+		if !contentDraftMediaKinds[kind] {
+			return nil, fmt.Errorf("media kind %q not in allowlist (image|video)", m.Kind)
+		}
+		if len(m.Bytes) == 0 {
+			return nil, fmt.Errorf("media kind %q carries no bytes: a draft must not claim an asset it does not hold", kind)
+		}
+		ref, err := store.Put(m.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		entry := ContentDraftMedia{
+			Kind:     kind,
+			Ref:      ref,
+			MIMEType: strings.TrimSpace(m.MIMEType),
+			AltText:  strings.TrimSpace(m.AltText),
+			Adapter:  strings.TrimSpace(m.Adapter),
+			Model:    strings.TrimSpace(m.Model),
+		}
+		if prompt := strings.TrimSpace(m.Prompt); prompt != "" {
+			promptRef, err := store.Put([]byte(prompt))
+			if err != nil {
+				return nil, err
+			}
+			entry.PromptRef = promptRef
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
+// MarkContentDraftPosted records that a platform accepted this draft and returned
+// an id for it. This is the ONLY door to the terminal "posted" state, and it is
+// separate from adjudication on purpose:
+//
+//   - it refuses any draft that is not "operationalized", so unreviewed generated
+//     content cannot reach the public through this path;
+//   - it refuses an empty RemoteID, because a posted record without the platform's
+//     own answer is indistinguishable from a draft that never went out — the exact
+//     false-green that let the weekly driver report success while nothing shipped;
+//   - it refuses an already-posted draft, because overwriting the first remote id
+//     would hide a post that is already public.
+func MarkContentDraftPosted(homePath, id string, in ContentDraftPostInput, now time.Time) (ContentDraft, error) {
+	homePath = strings.TrimSpace(homePath)
+	if homePath == "" {
+		return ContentDraft{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	remoteID := strings.TrimSpace(in.RemoteID)
+	if remoteID == "" {
+		return ContentDraft{}, fmt.Errorf("platform remote id required: posted without it is a claim, not a fact")
+	}
+	draft, err := ReadContentDraft(homePath, id)
+	if err != nil {
+		return ContentDraft{}, err
+	}
+	if draft.State == ContentDraftStatePosted {
+		return ContentDraft{}, fmt.Errorf("draft %s is already posted as %q: a public post is terminal", draft.ID, draft.Post.RemoteID)
+	}
+	if draft.State != ContentDraftStateOperationalized {
+		return ContentDraft{}, fmt.Errorf("draft %s is %q: only an operationalized draft may be posted", draft.ID, draft.State)
+	}
+	draft.State = ContentDraftStatePosted
+	draft.AdjudicatedAt = now.UTC().Format(time.RFC3339)
+	draft.Post = &ContentDraftPost{
+		Platform:   draft.Platform,
+		RemoteID:   remoteID,
+		URL:        strings.TrimSpace(in.URL),
+		PostedAt:   now.UTC().Format(time.RFC3339),
+		ReceiptRef: strings.TrimSpace(in.ReceiptRef),
+	}
+	if err := candidates.WriteCandidate(homePath, candidates.ContentDraft, draft.ID, &draft); err != nil {
+		return ContentDraft{}, err
+	}
+	return draft, nil
+}
+
 // RejectContentDraft records the "rejected" verdict in place. The file is NEVER
 // deleted (keep-all-data law): rejection exhaust trains voice later.
 func RejectContentDraft(homePath, id string, now time.Time) (ContentDraft, error) {
@@ -225,6 +377,12 @@ func adjudicateContentDraft(homePath, id, newState string, now time.Time, requir
 	draft, err := ReadContentDraft(homePath, id)
 	if err != nil {
 		return ContentDraft{}, err
+	}
+	// A posted draft is public. Re-adjudicating it (park/reject/re-approve) would
+	// make the ledger disagree with the world, and the world is the one we cannot
+	// edit. Posted is terminal to every verb, including this one.
+	if draft.State == ContentDraftStatePosted {
+		return ContentDraft{}, fmt.Errorf("draft %s is already posted: a public post cannot be re-adjudicated to %q", draft.ID, newState)
 	}
 	if requireFresh {
 		expiresAt, perr := time.Parse(time.RFC3339, draft.ExpiresAt)
