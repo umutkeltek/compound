@@ -184,9 +184,15 @@ func TestSweepStalePendingRejectsChecksumValidSemanticCorruption(t *testing.T) {
 		mutate func(*sweepStalePending) error
 	}{
 		{
-			name: "source and final WorkEnvelope validation",
+			name: "invalid source WorkEnvelope",
 			mutate: func(p *sweepStalePending) error {
 				p.SourceWork.Owner = ""
+				return resealSweepStaleSemanticMutation(p)
+			},
+		},
+		{
+			name: "invalid final WorkEnvelope",
+			mutate: func(p *sweepStalePending) error {
 				p.FinalWork.Owner = ""
 				return resealSweepStaleSemanticMutation(p)
 			},
@@ -201,6 +207,15 @@ func TestSweepStalePendingRejectsChecksumValidSemanticCorruption(t *testing.T) {
 			},
 		},
 		{
+			name: "held source state is not reclaimable",
+			mutate: func(p *sweepStalePending) error {
+				p.SourceWork.State = "held"
+				p.FinalWork = p.SourceWork
+				p.FinalWork.State = sweepStaleTargetState(p.SourceWork.State)
+				return resealSweepStaleSemanticMutation(p)
+			},
+		},
+		{
 			name: "threshold is positive",
 			mutate: func(p *sweepStalePending) error {
 				p.ThresholdNanos = 0
@@ -208,9 +223,24 @@ func TestSweepStalePendingRejectsChecksumValidSemanticCorruption(t *testing.T) {
 			},
 		},
 		{
+			name: "negative threshold is rejected",
+			mutate: func(p *sweepStalePending) error {
+				p.ThresholdNanos = -1
+				return nil
+			},
+		},
+		{
 			name: "frozen timestamp is parseable and nonzero",
 			mutate: func(p *sweepStalePending) error {
 				p.FrozenAt = time.Time{}.Format(time.RFC3339Nano)
+				p.Event.TS = p.FrozenAt
+				return nil
+			},
+		},
+		{
+			name: "malformed frozen timestamp is rejected",
+			mutate: func(p *sweepStalePending) error {
+				p.FrozenAt = "not-a-timestamp"
 				p.Event.TS = p.FrozenAt
 				return nil
 			},
@@ -226,6 +256,22 @@ func TestSweepStalePendingRejectsChecksumValidSemanticCorruption(t *testing.T) {
 			name: "sweep reason is canonical and nonblank",
 			mutate: func(p *sweepStalePending) error {
 				p.Candidate.SweepReason = "manual reclaim"
+				p.Event.Note = p.Candidate.SweepReason
+				return nil
+			},
+		},
+		{
+			name: "sweep reason is not blank",
+			mutate: func(p *sweepStalePending) error {
+				p.Candidate.SweepReason = ""
+				p.Event.Note = p.Candidate.SweepReason
+				return nil
+			},
+		},
+		{
+			name: "sweep reason has no padding",
+			mutate: func(p *sweepStalePending) error {
+				p.Candidate.SweepReason = "  " + p.Candidate.SweepReason + "  "
 				p.Event.Note = p.Candidate.SweepReason
 				return nil
 			},
