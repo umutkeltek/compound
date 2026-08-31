@@ -1008,7 +1008,11 @@ var docLeakScanRootPrefixes = []string{"docs", "skills"}
 
 // sourceLeakScanRootPrefixes are the repo-relative surfaces the optional
 // docs_private/source-leak-tokens.txt overlay token pass scans. Scoping unchanged.
-var sourceLeakScanRootPrefixes = []string{"fixtures", "internal", "cmd", "tools", "console"}
+// scripts/ is in the list because operator automation is where private tool and
+// local-project names actually enter the tree: a budget manifest or a launchd
+// template enumerates the operator's real home layout, and nothing else scanned
+// it. Adding it was free — the tracked scripts/ tree is already clean.
+var sourceLeakScanRootPrefixes = []string{"fixtures", "internal", "cmd", "tools", "console", "scripts"}
 
 // relUnderAnyPrefix reports whether repo-relative path rel is exactly one of prefixes or
 // descends into one of them (rel == p or rel starts with p + "/").
