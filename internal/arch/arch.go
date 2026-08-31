@@ -326,7 +326,12 @@ const ConvergePendingBudget = 0
 // Ratcheted 114 -> 113 when executorlens_cli.go graduated into internal/executorlens as
 // that organ's RunCLI face. Lowering on an extraction is the ratchet doing its job: the
 // gain is locked in so the freed slot cannot be spent by the next append.
-const MaxNonTestCompoundFiles = 113
+//
+// Ratcheted 113 -> 112 when actuator_cli.go graduated into internal/actuator by the same
+// RunCLI-face pattern. cmd/compound holds 111 after the move, so the one free slot it had
+// before is preserved and the extracted slot is locked in rather than handed to the next
+// append.
+const MaxNonTestCompoundFiles = 112
 
 // MaxNonTestCompoundLOC is the RATCHET on total non-test .go physical lines under
 // cmd/compound/. Same exclusion rules as MaxNonTestCompoundFiles (no `*_test.go`, no
@@ -334,7 +339,13 @@ const MaxNonTestCompoundFiles = 113
 // checkCmdCompoundBudget — a gate that only watched files would let a single file bloat
 // unchecked, and a gate that only watched LOC would let file count fragment unchecked.
 // `--strict` fails when either is exceeded; the budget only ratchets DOWN.
-const MaxNonTestCompoundLOC = 52791
+// Ratcheted 52791 -> 52300 when actuator_cli.go graduated into internal/actuator (800
+// non-test lines left cmd/compound, which sits at 51956 after the move). The ratchet does
+// NOT take all 800: the in-flight release-hardening branch is over the old ceiling and its
+// fixes are real, so ~300 lines are deliberately left as landing room for it and 491 are
+// locked in. This is the ratchet accepting a smaller step, never a raise. Ratchet the rest
+// once that branch lands -- extraction headroom is a loan to a named branch, not a budget.
+const MaxNonTestCompoundLOC = 52300
 
 // MaxStatusHotPathNarrationLines is the RATCHET on status.md's PROSE, and it deliberately does not
 // count the package-table rows that checkPackageTableSingleSource MANDATES (one row per

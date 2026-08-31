@@ -3161,7 +3161,7 @@ func cmdCompoundBudgetCount(fs []Finding, contains string) (Severity, string, bo
 // headroom reported in the Info message. A future commit that blows either budget will trip this
 // test (see TestCheckCmdCompoundBudgetFailsOn...).
 func TestCheckCmdCompoundBudgetPassesOnRealRepo(t *testing.T) {
-	const pinnedFileBudget = 113
+	const pinnedFileBudget = 112
 	if MaxNonTestCompoundFiles != pinnedFileBudget {
 		t.Fatalf("cmd/compound file budget changed: got %d, want pinned ceiling %d", MaxNonTestCompoundFiles, pinnedFileBudget)
 	}
