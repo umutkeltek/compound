@@ -940,7 +940,10 @@ func cmdProduct(args []string) {
 	}
 }
 
-const contentDraftUsage = "usage: compound product content-draft record --product <id> --platform <x|bluesky|threads> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id>"
+// contentDraftUsage derives its platform list from product.ContentDraftPlatforms()
+// rather than restating it: the names had three copies and this is the one that
+// would have gone stale the moment the allowlist widened.
+var contentDraftUsage = "usage: compound product content-draft record --product <id> --platform <" + strings.Join(product.ContentDraftPlatforms(), "|") + "> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id>"
 
 // cmdProductContentDraft is the distribution-loop draft door: record / list /
 // park / operationalize / reject. Error and refusal paths exit non-zero; the

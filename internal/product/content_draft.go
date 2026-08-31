@@ -54,15 +54,55 @@ var contentDraftMediaKinds = map[string]bool{
 	"video": true,
 }
 
-// contentDraftPlatforms is the closed allowlist of distribution targets. The spec
-// names them by example ("e.g. x|bluesky|threads"); an observed candidate must not
-// carry a junk platform string a downstream transport cannot route, so the set is
-// validated, not free-form. Extending distribution to a new platform is one edit
-// here — deliberately a decision, not an accident.
+// contentDraftPlatforms is the closed allowlist of distribution targets and the
+// ONE owner of these names. An observed candidate must not carry a junk platform
+// string a downstream transport cannot route, so the set is validated, not
+// free-form. Extending distribution to a new platform is one edit here —
+// deliberately a decision, not an accident.
+//
+// tiktok is present even though its developer terms refuse a third-party upload
+// tool for accounts you manage: such a draft is written, approved, posted BY HAND,
+// and then marked posted with the real post id. Only the transport differs;
+// excluding the platform would lose the record of a post that actually happened.
 var contentDraftPlatforms = map[string]bool{
-	"x":       true,
-	"bluesky": true,
-	"threads": true,
+	"x":         true,
+	"bluesky":   true,
+	"threads":   true,
+	"instagram": true,
+	"tiktok":    true,
+	"facebook":  true,
+}
+
+// contentDraftPlatformAliases maps other names for a platform onto its canonical
+// one. "twitter" and "x" are one destination; storing both would split every
+// per-platform count, account lookup, and transport route in half. Callers may say
+// either — the stored value is always canonical.
+var contentDraftPlatformAliases = map[string]string{
+	"twitter": "x",
+}
+
+// ContentDraftPlatforms returns the canonical platform names, sorted. The refusal
+// message and the CLI usage string derive from this rather than restating it: the
+// names used to live in three places, two of them literals, so widening the set
+// would have shipped six platforms while still telling the operator there were
+// three.
+func ContentDraftPlatforms() []string {
+	out := make([]string, 0, len(contentDraftPlatforms))
+	for name := range contentDraftPlatforms {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// canonicalContentDraftPlatform lowercases, trims, and resolves an alias. It
+// returns false when the result is not an allowed destination.
+func canonicalContentDraftPlatform(platform string) (string, bool) {
+	name := strings.ToLower(strings.TrimSpace(platform))
+	if canonical, ok := contentDraftPlatformAliases[name]; ok {
+		name = canonical
+	}
+	return name, contentDraftPlatforms[name]
 }
 
 // ContentDraftInput is the raw material for a record intake.
@@ -159,9 +199,9 @@ func RecordContentDraft(homePath string, in ContentDraftInput, now time.Time) (C
 	if productID == "" {
 		return ContentDraft{}, fmt.Errorf("product_id required")
 	}
-	platform := strings.ToLower(strings.TrimSpace(in.Platform))
-	if !contentDraftPlatforms[platform] {
-		return ContentDraft{}, fmt.Errorf("platform %q not in allowlist (x|bluesky|threads)", in.Platform)
+	platform, ok := canonicalContentDraftPlatform(in.Platform)
+	if !ok {
+		return ContentDraft{}, fmt.Errorf("platform %q not in allowlist (%s)", in.Platform, strings.Join(ContentDraftPlatforms(), "|"))
 	}
 	if strings.TrimSpace(in.Body) == "" {
 		return ContentDraft{}, fmt.Errorf("draft body required")
