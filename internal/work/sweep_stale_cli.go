@@ -53,6 +53,9 @@ func parseSweepStaleCLIArgs(args []string) (sweepStaleCLIOptions, error) {
 		case "--json":
 			parsed.jsonOut = true
 		case "--threshold":
+			if thresholdProvided {
+				return sweepStaleCLIOptions{}, fmt.Errorf("--threshold may only be provided once")
+			}
 			if i+1 >= len(args) {
 				return sweepStaleCLIOptions{}, fmt.Errorf("--threshold requires a value")
 			}

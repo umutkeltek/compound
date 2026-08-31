@@ -72,6 +72,18 @@ func TestRunWorkSweepStaleCLIParsesExperimentalMutationGate(t *testing.T) {
 			wantOutput: "not a valid duration",
 		},
 		{
+			name:       "invalid then valid duplicate threshold is rejected",
+			args:       []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "invalid", "--threshold", "1h"},
+			wantCode:   2,
+			wantOutput: "may only be provided once",
+		},
+		{
+			name:       "valid duplicate threshold is rejected",
+			args:       []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "1h", "--threshold", "2h"},
+			wantCode:   2,
+			wantOutput: "may only be provided once",
+		},
+		{
 			name:       "zero threshold cannot admit mutation",
 			args:       []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "0s"},
 			wantCode:   2,
