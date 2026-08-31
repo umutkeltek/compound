@@ -59,7 +59,7 @@ import (
 )
 
 func productUsage() string {
-	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-funnel-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-acquisition <tsv> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric first_time_downloads|paid_first_time_downloads|organic_first_time_downloads|paid_download_share]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | content-draft record --product <id> --platform <x|bluesky|threads> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id> | content-queue plan [--json]|content-queue apply --review <review.yaml> [--json] | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | release-plan --product <id> --change <summary> --candidate <ref> --rollback <text> --metric <post-release-metric> [--action-card <id>] [--evidence <ref>] | release-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | release-observe --reviewed <reviewed.json> --execution <receipt_id> --signal <signal_id> [--json] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | release-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-funnel-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-acquisition <tsv> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric first_time_downloads|paid_first_time_downloads|organic_first_time_downloads|paid_download_share]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | content-draft record --product <id> --platform <x|bluesky|threads> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] [--generate <generator> --generate-prompt <text> [--generate-param k=v]... [--generate-alt <text>]] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id> | content-queue plan [--json]|content-queue apply --review <review.yaml> [--json] | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | release-plan --product <id> --change <summary> --candidate <ref> --rollback <text> --metric <post-release-metric> [--action-card <id>] [--evidence <ref>] | release-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | release-observe --reviewed <reviewed.json> --execution <receipt_id> --signal <signal_id> [--json] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | release-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -977,6 +977,11 @@ func cmdProductContentDraft(homePath string, args []string) {
 			fmt.Fprintln(os.Stderr, "product content-draft record:", err)
 			os.Exit(2)
 		}
+		media, err := generateDraftMedia(homePath, rest, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product content-draft record:", err)
+			os.Exit(1)
+		}
 		draft, err := product.RecordContentDraft(homePath, product.ContentDraftInput{
 			ProductID:    productID,
 			Platform:     platform,
@@ -984,6 +989,7 @@ func cmdProductContentDraft(homePath string, args []string) {
 			VoicePackRef: valueFlag(rest, "--voice-pack"),
 			EvidenceRefs: splitContentDraftEvidence(valueFlag(rest, "--evidence")),
 			ExpiresAt:    expiresAt,
+			Media:        media,
 		}, now)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "product content-draft record:", err)
@@ -1176,4 +1182,36 @@ func cmdProductContentQueue(homePath string, args []string) {
 		fmt.Fprintln(os.Stderr, contentQueueUsage)
 		os.Exit(2)
 	}
+}
+
+// generateDraftMedia runs an enrolled generator when --generate names one, so a
+// draft can be born with its asset already attached. Drafts are immutable once
+// recorded, so generating here (rather than attaching later) keeps one write path.
+// No --generate flag means no media and no generator run.
+func generateDraftMedia(homePath string, rest []string, now time.Time) ([]product.ContentDraftMediaInput, error) {
+	adapter := strings.TrimSpace(valueFlag(rest, "--generate"))
+	if adapter == "" {
+		return nil, nil
+	}
+	params := map[string]string{}
+	for i := 0; i < len(rest)-1; i++ {
+		if rest[i] != "--generate-param" {
+			continue
+		}
+		key, value, ok := strings.Cut(rest[i+1], "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			return nil, fmt.Errorf("--generate-param must be key=value, got %q", rest[i+1])
+		}
+		params[strings.TrimSpace(key)] = value
+	}
+	media, err := product.GenerateContentDraftMedia(homePath, product.MediaGenerateRequest{
+		Adapter: adapter,
+		Prompt:  valueFlag(rest, "--generate-prompt"),
+		AltText: valueFlag(rest, "--generate-alt"),
+		Params:  params,
+	}, nil, now)
+	if err != nil {
+		return nil, err
+	}
+	return []product.ContentDraftMediaInput{media}, nil
 }

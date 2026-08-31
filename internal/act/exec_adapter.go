@@ -161,25 +161,47 @@ func (a ExecTransportAdapter) loadConfig() (execTransportConfig, error) {
 // executable, or one of the allowed basenames. Every argument must be free of shell
 // metacharacters.
 func validateExecArgv(transportName string, argv []string) error {
+	return ValidateEnrolledArgv("transport", transportName, argv, execTransportAllowedNames)
+}
+
+// ValidateEnrolledArgv is the ONE owner of "may this operator-enrolled config
+// invoke this program?". It is exported because a second enrolled-executable
+// surface exists (product media generators) and a security rule with two copies
+// is a rule that drifts — the same failure class as a platform list that lived in
+// three places while claiming to be one.
+//
+// kind and name only shape the error text. allowedBareNames is the caller's
+// allowlist for non-absolute argv[0]; pass nil to require an absolute path.
+//
+// The rules, unchanged: an absolute argv[0] must be clean and must not be a shell
+// or interpreter (which would turn an enrolled program into arbitrary command
+// execution); a bare argv[0] must be a plain basename on the caller's allowlist;
+// and no argument may carry shell control characters, because the config is
+// operator-edited and may be read by a downstream shell even though this adapter
+// never uses one.
+func ValidateEnrolledArgv(kind, name string, argv []string, allowedBareNames map[string]bool) error {
+	if len(argv) == 0 {
+		return fmt.Errorf("%s %q config: argv is empty", kind, name)
+	}
 	exe := argv[0]
 	if strings.TrimSpace(exe) == "" {
-		return fmt.Errorf("transport %q config: argv[0] executable is empty", transportName)
+		return fmt.Errorf("%s %q config: argv[0] executable is empty", kind, name)
 	}
 	if filepath.IsAbs(exe) {
 		if clean := filepath.Clean(exe); clean != exe || clean == "/" || strings.Contains(exe, "..") {
-			return fmt.Errorf("transport %q config: argv[0] must be a clean absolute path", transportName)
+			return fmt.Errorf("%s %q config: argv[0] must be a clean absolute path", kind, name)
 		}
 		if isShellExecutable(exe) {
-			return fmt.Errorf("transport %q config: argv[0] is a shell/interpreter and cannot be used as a transport", transportName)
+			return fmt.Errorf("%s %q config: argv[0] is a shell/interpreter and cannot be used as a %s", kind, name, kind)
 		}
 	} else {
-		if filepath.Base(exe) != exe || filepath.Dir(exe) != "." || !execTransportAllowedNames[exe] {
-			return fmt.Errorf("transport %q config: argv[0] %q is not an allowed transport executable", transportName, exe)
+		if filepath.Base(exe) != exe || filepath.Dir(exe) != "." || !allowedBareNames[exe] {
+			return fmt.Errorf("%s %q config: argv[0] %q is not an allowed %s executable", kind, name, exe, kind)
 		}
 	}
 	for i, arg := range argv {
 		if shellUnsafeRe.MatchString(arg) {
-			return fmt.Errorf("transport %q config: argv[%d] contains unsafe characters", transportName, i)
+			return fmt.Errorf("%s %q config: argv[%d] contains unsafe characters", kind, name, i)
 		}
 	}
 	return nil
