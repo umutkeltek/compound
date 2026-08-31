@@ -82,6 +82,7 @@ func TestExperimentalSweepStaleMutationHelpCarriesTheGate(t *testing.T) {
 		"--yes --experimental-sweep-stale-mutations",
 		"experimental",
 		"unsupported in v0.1",
+		"example: compound work sweep-stale --dry-run --threshold 48h",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("sweep-stale help missing %q:\n%s", want, out)

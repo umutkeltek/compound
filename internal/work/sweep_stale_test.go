@@ -860,6 +860,17 @@ func TestDefaultSweepStaleProbeLiveRunAttemptIsReportOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := attemptStore.MarkRunning(attempt.ID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	heartbeatAt := now.Add(2 * time.Second)
+	heartbeated, err := attemptStore.Heartbeat(attempt.ID, heartbeatAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if heartbeated.Status != runattempt.StatusRunning || heartbeated.LastHeartbeatAt == nil || !heartbeated.LastHeartbeatAt.Equal(heartbeatAt) {
+		t.Fatalf("running heartbeat fixture = %+v", heartbeated)
+	}
 	attemptPath := filepath.Join(homePath, "run_attempts", attempt.ID+".json")
 	before, err := os.ReadFile(attemptPath)
 	if err != nil {

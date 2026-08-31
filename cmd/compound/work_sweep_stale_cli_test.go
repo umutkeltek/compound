@@ -33,7 +33,10 @@ func TestWorkSweepStaleAdmissionUsesValidatedParser(t *testing.T) {
 		{name: "conflicting modes", args: []string{"--dry-run", "--yes", experimentalSweepStaleMutationsFlagForTest}},
 		{name: "invalid threshold", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "invalid"}},
 		{name: "missing threshold value", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold"}},
+		{name: "zero threshold", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "0s"}},
+		{name: "negative threshold", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "-1s"}},
 		{name: "unknown flag", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--unknown"}},
+		{name: "stray positional", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "work_not_a_sweep_target"}},
 		{name: "gate token is a threshold value", args: []string{"--yes", "--threshold", experimentalSweepStaleMutationsFlagForTest}},
 	}
 
@@ -73,9 +76,13 @@ func TestWorkSweepStaleCLIOnlyValidExperimentalApplyMaterializesHome(t *testing.
 		{name: "conflicting modes", args: []string{"--dry-run", "--yes", experimentalSweepStaleMutationsFlagForTest}, wantExit: 2, wantOutput: "mutually exclusive"},
 		{name: "gate without yes", args: []string{experimentalSweepStaleMutationsFlagForTest}, wantExit: 2, wantOutput: "requires --yes"},
 		{name: "invalid threshold", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "invalid"}, wantExit: 2, wantOutput: "not a valid duration"},
+		{name: "missing threshold value", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold"}, wantExit: 2, wantOutput: "--threshold requires a value"},
+		{name: "zero threshold", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "0s"}, wantExit: 2, wantOutput: "greater than zero"},
+		{name: "negative threshold", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "-1s"}, wantExit: 2, wantOutput: "greater than zero"},
 		{name: "unknown flag", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--unknown"}, wantExit: 2, wantOutput: "unexpected argument"},
+		{name: "stray positional", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "work_not_a_sweep_target"}, wantExit: 2, wantOutput: "unexpected argument"},
 		{name: "gate token as value", args: []string{"--yes", "--threshold", experimentalSweepStaleMutationsFlagForTest}, wantExit: 2, wantOutput: "not a valid duration"},
-		{name: "valid gated apply", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--json"}, wantExit: 0, wantOutput: `"mode": "applied"`, wantMutation: true},
+		{name: "valid gated apply", args: []string{"--yes", experimentalSweepStaleMutationsFlagForTest}, wantExit: 0, wantOutput: "sweep-stale applied", wantMutation: true},
 	}
 
 	for _, test := range tests {

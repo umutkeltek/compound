@@ -141,7 +141,7 @@ type SweepStaleProbe interface {
 // DefaultSweepStaleProbe is the production probe. It consults run_attempts/
 // via the runattempt store, delegate bindings via the work-owned recovery
 // path (RecoverBoundSession + tmux SessionStatus), and the land-lease state
-// via landlease.Status. Probe errors FAIL CLOSED — the envelope is excluded
+// via landlease.StatusReadOnly. Probe errors FAIL CLOSED — the envelope is excluded
 // from reclaim on doubt, never swept.
 //
 // Mirrors the safety contract the run-attempt sweep relies on (see
@@ -214,7 +214,7 @@ func (p *DefaultSweepStaleProbe) LiveRunAttempt(workID string) (bool, error) {
 // sweep's buildDelegateLivenessProbe: a candidate with no binding is
 // ordinary-stale (live=false); a probe error is propagated.
 func (p *DefaultSweepStaleProbe) LiveDelegate(workID string) (bool, error) {
-	wstore, err := Open(p.Home)
+	wstore, err := OpenReadOnly(p.Home)
 	if err != nil {
 		return false, fmt.Errorf("sweep-stale probe: open work store: %w", err)
 	}
@@ -240,7 +240,7 @@ func (p *DefaultSweepStaleProbe) LiveDelegate(workID string) (bool, error) {
 // fifth colon-delimited component is the work_id. (Same parsing the
 // run-attempt sweep uses in buildDelegateLivenessProbe.)
 func (p *DefaultSweepStaleProbe) LeaseHeld(workID string) (bool, error) {
-	status, err := landlease.Status(p.Home, p.Now())
+	status, err := landlease.StatusReadOnly(p.Home, p.Now())
 	if err != nil {
 		return false, fmt.Errorf("sweep-stale probe: land-lease status: %w", err)
 	}

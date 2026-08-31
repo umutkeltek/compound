@@ -66,8 +66,26 @@ func TestRunWorkSweepStaleCLIParsesExperimentalMutationGate(t *testing.T) {
 			wantOutput: "--threshold requires a value",
 		},
 		{
+			name:       "zero threshold cannot admit mutation",
+			args:       []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "0s"},
+			wantCode:   2,
+			wantOutput: "greater than zero",
+		},
+		{
+			name:       "negative threshold cannot admit mutation",
+			args:       []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "-1s"},
+			wantCode:   2,
+			wantOutput: "greater than zero",
+		},
+		{
 			name:       "unknown flag cannot admit mutation",
 			args:       []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--unknown"},
+			wantCode:   2,
+			wantOutput: "unexpected argument",
+		},
+		{
+			name:       "stray positional cannot admit mutation",
+			args:       []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "work_not_a_sweep_target"},
 			wantCode:   2,
 			wantOutput: "unexpected argument",
 		},
@@ -79,9 +97,9 @@ func TestRunWorkSweepStaleCLIParsesExperimentalMutationGate(t *testing.T) {
 		},
 		{
 			name:       "valid gated yes selects apply",
-			args:       []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "1h", "--json"},
+			args:       []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "1h"},
 			wantCode:   0,
-			wantOutput: `"mode": "applied"`,
+			wantOutput: "sweep-stale applied",
 		},
 	}
 

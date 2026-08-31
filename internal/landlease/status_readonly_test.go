@@ -58,3 +58,35 @@ func TestStatusReadOnlyUsesExistingLockWithoutMutatingLease(t *testing.T) {
 		t.Fatalf("StatusReadOnly mutated lease state:\nbefore=%s\nafter=%s", before, after)
 	}
 }
+
+func TestStatusReadOnlyMatchesStatusForExpiredFullRecord(t *testing.T) {
+	t.Parallel()
+
+	homePath := t.TempDir()
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	if _, err := Acquire(homePath, "prior-holder", time.Minute, now); err != nil {
+		t.Fatal(err)
+	}
+	stolen, err := Steal(homePath, "current-holder", "test governed transfer", now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RequestExecutionTermination(homePath, stolen.Holder, "test-requester", "test stop request", now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	at := now.Add(2 * time.Minute)
+	want, err := Status(homePath, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := StatusReadOnly(homePath, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("StatusReadOnly full-field parity:\ngot  =%+v\nwant =%+v", got, want)
+	}
+	if !got.IsExpired || got.Held || got.PriorHolder == "" || got.StealReason == "" || got.StolenAt == "" || got.TerminationRequestedBy == "" || got.TerminationRequestReason == "" || got.TerminationRequestedAt == "" {
+		t.Fatalf("expired full-field fixture was incomplete: %+v", got)
+	}
+}
