@@ -246,6 +246,14 @@ func TestSweepStalePendingRejectsChecksumValidSemanticCorruption(t *testing.T) {
 			},
 		},
 		{
+			name: "frozen timestamp has no padding",
+			mutate: func(p *sweepStalePending) error {
+				p.FrozenAt = " " + p.FrozenAt + " "
+				p.Event.TS = p.FrozenAt
+				return nil
+			},
+		},
+		{
 			name: "event timestamp equals frozen timestamp",
 			mutate: func(p *sweepStalePending) error {
 				p.Event.TS = ts(fixedNow.Add(time.Second))
@@ -256,6 +264,49 @@ func TestSweepStalePendingRejectsChecksumValidSemanticCorruption(t *testing.T) {
 			name: "sweep reason is canonical and nonblank",
 			mutate: func(p *sweepStalePending) error {
 				p.Candidate.SweepReason = "manual reclaim"
+				p.Event.Note = p.Candidate.SweepReason
+				return nil
+			},
+		},
+		{
+			name: "candidate last event timestamp is parseable",
+			mutate: func(p *sweepStalePending) error {
+				p.Candidate.LastEventTS = "not-a-timestamp"
+				return nil
+			},
+		},
+		{
+			name: "candidate last event age is exact",
+			mutate: func(p *sweepStalePending) error {
+				p.Candidate.LastEventAge = "1s"
+				return nil
+			},
+		},
+		{
+			name: "candidate live attempts is zero",
+			mutate: func(p *sweepStalePending) error {
+				p.Candidate.LiveAttempts = 1
+				return nil
+			},
+		},
+		{
+			name: "candidate delegate is not live",
+			mutate: func(p *sweepStalePending) error {
+				p.Candidate.DelegateLive = true
+				return nil
+			},
+		},
+		{
+			name: "candidate land lease is not held",
+			mutate: func(p *sweepStalePending) error {
+				p.Candidate.LeaseHeld = true
+				return nil
+			},
+		},
+		{
+			name: "canonical prefix reason still matches frozen facts",
+			mutate: func(p *sweepStalePending) error {
+				p.Candidate.SweepReason = "sweep-stale: fabricated"
 				p.Event.Note = p.Candidate.SweepReason
 				return nil
 			},
@@ -318,6 +369,52 @@ func TestSweepStalePendingRejectsChecksumValidSemanticCorruption(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSweepStalePendingCorruptionPreservesRecoveryClassification(t *testing.T) {
+	s := newStore(t)
+	w, pending := freezeSweepStalePendingForTest(t, s, "test-fixture")
+	pending.Candidate.WorkID = "work_forged"
+	pending.Candidate.SweepReason = "manual reclaim"
+	pending.Event.Note = pending.Candidate.SweepReason
+	var err error
+	pending.FrameSHA256, err = sweepStalePendingDigest(pending)
+	if err != nil {
+		t.Fatalf("reseal corrupt pending: %v", err)
+	}
+	if err := s.writeJSON(s.sweepStalePendingPath(w.ID), &pending); err != nil {
+		t.Fatalf("persist corrupt pending: %v", err)
+	}
+
+	before := snapshotLifecycleAuthority(t, s)
+	for _, apply := range []bool{false, true} {
+		var report SweepStaleReport
+		if apply {
+			report, err = s.SweepStaleApply(72*time.Hour, newFakeProbe(), fixedNow)
+		} else {
+			report, err = s.SweepStalePlan(72*time.Hour, newFakeProbe(), fixedNow)
+		}
+		if err != nil {
+			t.Fatalf("sweep apply=%v over corrupt pending: %v", apply, err)
+		}
+		if report.Unreadable != 0 || report.Skipped != 1 || report.Reclaimed != 0 || len(report.Candidates) != 1 {
+			t.Fatalf("sweep apply=%v report = %+v, want one recovery-required candidate", apply, report)
+		}
+		candidate := report.Candidates[0]
+		if candidate.WorkID != w.ID {
+			t.Fatalf("sweep apply=%v candidate work_id = %q, want live work %q", apply, candidate.WorkID, w.ID)
+		}
+		if !strings.Contains(candidate.ReclaimError, "sweep-stale recovery_required") {
+			t.Fatalf("sweep apply=%v candidate error = %q, want recovery_required", apply, candidate.ReclaimError)
+		}
+	}
+	if _, err := s.Claim(w.ID, "other-actor", fixedNow.Add(time.Minute)); err == nil || !strings.Contains(err.Error(), "sweep-stale recovery_required") {
+		t.Fatalf("Claim over corrupt pending error = %v, want sweep-stale recovery_required", err)
+	}
+	if _, err := s.Close(w.ID, CloseInput{}, fixedNow.Add(time.Minute)); err == nil || !strings.Contains(err.Error(), "sweep-stale recovery_required") {
+		t.Fatalf("Close over corrupt pending error = %v, want sweep-stale recovery_required", err)
+	}
+	assertLifecycleAuthorityUnchanged(t, before, snapshotLifecycleAuthority(t, s))
 }
 
 func resealSweepStaleSemanticMutation(p *sweepStalePending) error {

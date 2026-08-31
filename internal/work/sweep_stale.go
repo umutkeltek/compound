@@ -60,6 +60,19 @@ func sweepStaleTargetState(from string) string {
 	return "failed"
 }
 
+func sweepStaleReason(candidate SweepStaleCandidate, threshold time.Duration) string {
+	return fmt.Sprintf(
+		"sweep-stale: state=%s target=%s last_event_age=%s threshold=%s live_attempts=%d delegate_live=%t lease_held=%t",
+		candidate.State,
+		candidate.TargetState,
+		candidate.LastEventAge,
+		threshold,
+		candidate.LiveAttempts,
+		candidate.DelegateLive,
+		candidate.LeaseHeld,
+	)
+}
+
 // DefaultSweepStaleThreshold is the envelope staleness cutoff when the operator
 // does not supply --threshold. 72h matches the packet's acceptance threshold
 // (claimed 30d-old envelopes and verifying 36d-old envelopes both qualify; a
@@ -295,6 +308,16 @@ func sweepStaleEvaluate(s *Store, threshold time.Duration, probe SweepStaleProbe
 	for _, w := range envelopes {
 		pending, pendingPresent, pendingErr := s.loadSweepStalePending(w.ID)
 		if pendingErr != nil {
+			if pendingPresent {
+				candidate := SweepStaleCandidate{
+					WorkID:       w.ID,
+					ReclaimError: sweepStaleRecoveryRequired(w.ID, pendingErr).Error(),
+				}
+				rep.Skipped++
+				rep.SkippedIDs = append(rep.SkippedIDs, w.ID)
+				rep.Candidates = append(rep.Candidates, candidate)
+				continue
+			}
 			rep.Unreadable++
 			rep.UnreadableIDs = append(rep.UnreadableIDs, w.ID)
 			continue
@@ -422,12 +445,7 @@ func evaluateEnvelopeCandidate(s *Store, w envelope.WorkEnvelope, threshold time
 		return SweepStaleCandidate{}, false, fmt.Errorf("work %s: seal sweep candidate: %w", w.ID, err)
 	}
 
-	reason := fmt.Sprintf(
-		"sweep-stale: state=%s target=%s last_event_age=%s threshold=%s live_attempts=0 delegate_live=false lease_held=false",
-		w.State, target, ageSeconds.Round(time.Second), threshold,
-	)
-
-	return SweepStaleCandidate{
+	candidate := SweepStaleCandidate{
 		WorkID:           w.ID,
 		SourceWorkSHA256: sourceWorkSHA256,
 		State:            w.State,
@@ -437,8 +455,9 @@ func evaluateEnvelopeCandidate(s *Store, w envelope.WorkEnvelope, threshold time
 		LiveAttempts:     0,
 		DelegateLive:     false,
 		LeaseHeld:        false,
-		SweepReason:      reason,
-	}, true, nil
+	}
+	candidate.SweepReason = sweepStaleReason(candidate, threshold)
+	return candidate, true, nil
 }
 
 // lastLifecycleEventTime returns the timestamp of the most recent lifecycle

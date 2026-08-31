@@ -156,8 +156,8 @@ func validateSweepStalePending(pending sweepStalePending) error {
 		return errors.New("threshold_nanos must be positive")
 	}
 	frozenAt, err := parseLifecycleTS(pending.FrozenAt)
-	if err != nil || frozenAt.IsZero() {
-		return fmt.Errorf("frozen_at must be a nonzero lifecycle timestamp: %q", pending.FrozenAt)
+	if err != nil || frozenAt.IsZero() || pending.FrozenAt != ts(frozenAt) {
+		return fmt.Errorf("frozen_at must be the exact nonzero UnixNano timestamp: %q", pending.FrozenAt)
 	}
 	if pending.SourceWork.ID != pending.WorkID || pending.FinalWork.ID != pending.WorkID {
 		return errors.New("source/final WorkEnvelope IDs must equal work_id")
@@ -170,11 +170,6 @@ func validateSweepStalePending(pending sweepStalePending) error {
 	}
 	if !sweepStaleEnvelopeStates[pending.SourceWork.State] {
 		return fmt.Errorf("source WorkEnvelope state %q is not reclaimable", pending.SourceWork.State)
-	}
-	if strings.TrimSpace(pending.Candidate.SweepReason) == "" ||
-		pending.Candidate.SweepReason != strings.TrimSpace(pending.Candidate.SweepReason) ||
-		!strings.HasPrefix(pending.Candidate.SweepReason, "sweep-stale: ") {
-		return errors.New("sweep_reason must be a canonical nonblank sweep-stale reason")
 	}
 	if pending.SourceEventCount < 0 || strings.TrimSpace(pending.SourceEventPrefixSHA256) == "" {
 		return errors.New("source event prefix binding is required")
@@ -205,6 +200,28 @@ func validateSweepStalePending(pending sweepStalePending) error {
 		pending.Candidate.Reclaimed ||
 		strings.TrimSpace(pending.Candidate.ReclaimError) != "" {
 		return errors.New("candidate does not bind the frozen source/final WorkEnvelope generation")
+	}
+	lastEventAt, err := parseLifecycleTS(pending.Candidate.LastEventTS)
+	if err != nil || lastEventAt.IsZero() {
+		return errors.New("candidate last_event_ts must be parseable and nonzero")
+	}
+	lastEventAge, err := time.ParseDuration(pending.Candidate.LastEventAge)
+	if err != nil || lastEventAge < 0 {
+		return errors.New("candidate last_event_age must be a nonnegative duration")
+	}
+	expectedAge := frozenAt.Sub(lastEventAt)
+	if expectedAge < 0 || lastEventAge != expectedAge.Round(time.Second) ||
+		pending.Candidate.LastEventAge != expectedAge.Round(time.Second).String() {
+		return errors.New("candidate last_event_age does not match frozen timestamp")
+	}
+	if expectedAge < time.Duration(pending.ThresholdNanos) {
+		return errors.New("candidate last_event_age is below the frozen threshold")
+	}
+	if pending.Candidate.LiveAttempts != 0 || pending.Candidate.DelegateLive || pending.Candidate.LeaseHeld {
+		return errors.New("candidate liveness and lease facts must be inactive")
+	}
+	if pending.Candidate.SweepReason != sweepStaleReason(pending.Candidate, time.Duration(pending.ThresholdNanos)) {
+		return errors.New("candidate sweep_reason does not match frozen facts")
 	}
 	wantEvent := Event{
 		TS:                 pending.FrozenAt,
@@ -283,13 +300,13 @@ func (s *Store) loadSweepStalePending(workID string) (sweepStalePending, bool, e
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&pending); err != nil {
-		return sweepStalePending{}, false, err
+		return pending, true, err
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return sweepStalePending{}, false, errors.New("sweep-stale pending contains trailing JSON")
+		return pending, true, errors.New("sweep-stale pending contains trailing JSON")
 	}
 	if err := validateSweepStalePending(pending); err != nil {
-		return sweepStalePending{}, false, err
+		return pending, true, err
 	}
 	return pending, true, nil
 }
@@ -547,7 +564,7 @@ func (s *Store) reconcileSweepStalePendingLocked(workID string) (SweepStaleCandi
 func (s *Store) fenceSweepStalePendingMutation(workID string) error {
 	pending, present, err := s.loadSweepStalePending(workID)
 	if err != nil {
-		return fmt.Errorf("read sweep-stale pending for %s: %w", workID, err)
+		return sweepStaleRecoveryRequired(workID, fmt.Errorf("read sweep-stale pending for %s: %w", workID, err))
 	}
 	if !present {
 		return nil
