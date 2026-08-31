@@ -817,31 +817,44 @@ func operationalArchiveKinds(values []string) (map[string]bool, error) {
 // terminal for landfill compaction: no_promote, rejected, promoted.
 // Parked/proposed stay hot (corroboration / operator gate). Claims ledger is
 // never touched — provenance stays in ledger/claims.jsonl.
+//
+// Selection walks the descriptor-rooted candidate page: an archive MOVE is a
+// mutation, so a corrupt canonical .json entry (filename↔body alias, symlink,
+// non-regular, unreadable) fails the derive closed with its typed
+// candidates.Corruption instead of archiving an aliased or followed body.
+// Non-candidate residue (temp files, other names) stays skipped as before.
 func terminalMemoryCandidateCandidates(homePath string) ([]operationalCandidate, error) {
 	dirName := candidates.InboxDir(candidates.Memory)
 	if dirName == "" {
 		return nil, nil
 	}
-	dir := filepath.Join(homePath, dirName)
-	entries, err := os.ReadDir(dir)
+	page, err := candidates.ReadPage(homePath, candidates.Memory, "", 0)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
 	var out []operationalCandidate
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, entry := range page.Entries {
+		if entry.Corruption != nil {
+			if !strings.HasSuffix(string(entry.EntryCursor), ".json") {
+				continue
+			}
+			return nil, entry.Corruption
+		}
+		if entry.Record == nil {
 			continue
 		}
-		rel := filepath.ToSlash(filepath.Join(dirName, entry.Name()))
-		status, err := jsonStringField(filepath.Join(homePath, filepath.FromSlash(rel)), "state")
-		if err != nil {
-			return nil, err
+		var body struct {
+			State string `json:"state"`
 		}
-		if landfillMemoryCandidateStatus(status) {
-			out = append(out, operationalCandidate{Kind: "memory-candidate", Status: status, OriginalPath: rel})
+		if err := json.Unmarshal(entry.Record.Body, &body); err != nil {
+			return nil, fmt.Errorf("decode memory candidate %s state: %w", entry.Record.ID, err)
+		}
+		if landfillMemoryCandidateStatus(body.State) {
+			rel := filepath.ToSlash(filepath.Join(dirName, string(entry.EntryCursor)))
+			out = append(out, operationalCandidate{Kind: "memory-candidate", Status: body.State, OriginalPath: rel})
 		}
 	}
 	return out, nil
