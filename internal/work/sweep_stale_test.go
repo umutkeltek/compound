@@ -806,3 +806,81 @@ func TestSweepStaleEventFailureLeavesRecoverableTransaction(t *testing.T) {
 		t.Fatalf("sweep pending frame after exact recovery: %v", err)
 	}
 }
+
+func TestDefaultSweepStaleProbeReadPathsDoNotMaterializeState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		call func(*DefaultSweepStaleProbe) (bool, error)
+	}{
+		{name: "run-attempt", call: func(probe *DefaultSweepStaleProbe) (bool, error) {
+			return probe.LiveRunAttempt("work_missing")
+		}},
+		{name: "delegate", call: func(probe *DefaultSweepStaleProbe) (bool, error) {
+			return probe.LiveDelegate("work_missing")
+		}},
+		{name: "land-lease", call: func(probe *DefaultSweepStaleProbe) (bool, error) {
+			return probe.LeaseHeld("work_missing")
+		}},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			homePath := t.TempDir()
+			probe := NewDefaultSweepStaleProbe(homePath)
+			live, err := test.call(probe)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if live {
+				t.Fatalf("missing %s state reported live", test.name)
+			}
+			entries, err := os.ReadDir(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("%s read probe materialized state: %v", test.name, entries)
+			}
+		})
+	}
+}
+
+func TestDefaultSweepStaleProbeLiveRunAttemptIsReportOnly(t *testing.T) {
+	t.Parallel()
+
+	homePath := t.TempDir()
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	attemptStore := runattempt.Open(homePath)
+	attempt, err := attemptStore.Mint("work_probe_report_only", "test-actor", "test-harness", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptPath := filepath.Join(homePath, "run_attempts", attempt.ID+".json")
+	before, err := os.ReadFile(attemptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	probe := NewDefaultSweepStaleProbe(homePath)
+	probe.Now = func() time.Time { return now.Add(time.Minute) }
+	probe.AttemptLivenessThreshold = time.Hour
+	live, err := probe.LiveRunAttempt("work_probe_report_only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !live {
+		t.Fatal("fresh pending RunAttempt was not reported live")
+	}
+	after, err := os.ReadFile(attemptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("LiveRunAttempt mutated RunAttempt:\nbefore=%s\nafter=%s", before, after)
+	}
+}
