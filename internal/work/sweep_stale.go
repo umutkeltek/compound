@@ -306,7 +306,7 @@ func sweepStaleEvaluate(s *Store, threshold time.Duration, probe SweepStaleProbe
 	sort.Slice(envelopes, func(i, j int) bool { return envelopes[i].ID < envelopes[j].ID })
 
 	for _, w := range envelopes {
-		pending, pendingPresent, pendingErr := s.loadSweepStalePending(w.ID)
+		_, pendingPresent, pendingErr := s.loadSweepStalePending(w.ID)
 		if pendingErr != nil {
 			if pendingPresent {
 				candidate := SweepStaleCandidate{
@@ -323,7 +323,7 @@ func sweepStaleEvaluate(s *Store, threshold time.Duration, probe SweepStaleProbe
 			continue
 		}
 		if pendingPresent {
-			candidate := pending.Candidate
+			candidate := SweepStaleCandidate{WorkID: w.ID}
 			if !apply {
 				candidate.ReclaimError = sweepStaleRecoveryRequired(w.ID, errors.New("frozen reclaim awaits replay")).Error()
 				rep.Skipped++
@@ -331,10 +331,11 @@ func sweepStaleEvaluate(s *Store, threshold time.Duration, probe SweepStaleProbe
 				rep.Candidates = append(rep.Candidates, candidate)
 				continue
 			}
+			var recoveredCandidate SweepStaleCandidate
 			reconcileErr := s.withLifecycleMutation(func() error {
 				return s.withCreatePlanAdmissionLock(w.ID, func() error {
 					var err error
-					candidate, err = s.reconcileSweepStalePendingLocked(w.ID)
+					recoveredCandidate, err = s.reconcileSweepStalePendingLocked(w.ID)
 					return err
 				})
 			})
@@ -345,6 +346,7 @@ func sweepStaleEvaluate(s *Store, threshold time.Duration, probe SweepStaleProbe
 				rep.Candidates = append(rep.Candidates, candidate)
 				continue
 			}
+			candidate = recoveredCandidate
 			rep.Reclaimed++
 			rep.Candidates = append(rep.Candidates, candidate)
 			continue

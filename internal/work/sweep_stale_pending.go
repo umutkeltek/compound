@@ -171,7 +171,7 @@ func validateSweepStalePending(pending sweepStalePending) error {
 	if !sweepStaleEnvelopeStates[pending.SourceWork.State] {
 		return fmt.Errorf("source WorkEnvelope state %q is not reclaimable", pending.SourceWork.State)
 	}
-	if pending.SourceEventCount < 0 || strings.TrimSpace(pending.SourceEventPrefixSHA256) == "" {
+	if pending.SourceEventCount <= 0 || strings.TrimSpace(pending.SourceEventPrefixSHA256) == "" {
 		return errors.New("source event prefix binding is required")
 	}
 	sourceSHA256, err := workEnvelopeSHA256(pending.SourceWork)
@@ -219,6 +219,9 @@ func validateSweepStalePending(pending sweepStalePending) error {
 	}
 	if pending.Candidate.LiveAttempts != 0 || pending.Candidate.DelegateLive || pending.Candidate.LeaseHeld {
 		return errors.New("candidate liveness and lease facts must be inactive")
+	}
+	if pending.Candidate.LastHeartbeatAt != "" {
+		return errors.New("candidate last_heartbeat_at must be blank")
 	}
 	if pending.Candidate.SweepReason != sweepStaleReason(pending.Candidate, time.Duration(pending.ThresholdNanos)) {
 		return errors.New("candidate sweep_reason does not match frozen facts")
@@ -439,6 +442,9 @@ func (s *Store) validateSweepStaleEventPrefixUnlocked(pending sweepStalePending)
 	if err != nil {
 		return nil, nil, err
 	}
+	if pending.SourceEventCount <= 0 {
+		return nil, nil, errors.New("frozen sweep event prefix must contain a last lifecycle event")
+	}
 	if len(events) < pending.SourceEventCount {
 		return nil, nil, errors.New("work lifecycle event prefix was truncated")
 	}
@@ -448,6 +454,9 @@ func (s *Store) validateSweepStaleEventPrefixUnlocked(pending sweepStalePending)
 	}
 	if prefixSHA256 != pending.SourceEventPrefixSHA256 {
 		return nil, nil, errors.New("work lifecycle event prefix changed after sweep intent")
+	}
+	if events[pending.SourceEventCount-1].TS != pending.Candidate.LastEventTS {
+		return nil, nil, errors.New("candidate last_event_ts does not match the frozen event prefix")
 	}
 	suffix := events[pending.SourceEventCount:]
 	if len(suffix) > 1 {

@@ -283,6 +283,20 @@ func TestSweepStalePendingRejectsChecksumValidSemanticCorruption(t *testing.T) {
 			},
 		},
 		{
+			name: "source event prefix is nonempty",
+			mutate: func(p *sweepStalePending) error {
+				p.SourceEventCount = 0
+				return nil
+			},
+		},
+		{
+			name: "candidate heartbeat is blank",
+			mutate: func(p *sweepStalePending) error {
+				p.Candidate.LastHeartbeatAt = "heartbeat-forgery"
+				return nil
+			},
+		},
+		{
 			name: "candidate live attempts is zero",
 			mutate: func(p *sweepStalePending) error {
 				p.Candidate.LiveAttempts = 1
@@ -413,6 +427,51 @@ func TestSweepStalePendingCorruptionPreservesRecoveryClassification(t *testing.T
 	}
 	if _, err := s.Close(w.ID, CloseInput{}, fixedNow.Add(time.Minute)); err == nil || !strings.Contains(err.Error(), "sweep-stale recovery_required") {
 		t.Fatalf("Close over corrupt pending error = %v, want sweep-stale recovery_required", err)
+	}
+	assertLifecycleAuthorityUnchanged(t, before, snapshotLifecycleAuthority(t, s))
+}
+
+func TestSweepStalePendingRejectsForgedLastEventCandidateWithoutMutation(t *testing.T) {
+	s := newStore(t)
+	w, pending := freezeSweepStalePendingForTest(t, s, "test-fixture")
+	frozenAt, err := parseLifecycleTS(pending.FrozenAt)
+	if err != nil {
+		t.Fatalf("parse frozen timestamp: %v", err)
+	}
+	forgedAt := frozenAt.Add(-31 * 24 * time.Hour)
+	pending.Candidate.LastEventTS = ts(forgedAt)
+	pending.Candidate.LastEventAge = frozenAt.Sub(forgedAt).Round(time.Second).String()
+	pending.Candidate.SweepReason = sweepStaleReason(pending.Candidate, time.Duration(pending.ThresholdNanos))
+	pending.Event.Note = pending.Candidate.SweepReason
+	pending.FrameSHA256, err = sweepStalePendingDigest(pending)
+	if err != nil {
+		t.Fatalf("reseal forged candidate: %v", err)
+	}
+	if err := s.writeJSON(s.sweepStalePendingPath(w.ID), &pending); err != nil {
+		t.Fatalf("persist forged candidate: %v", err)
+	}
+
+	before := snapshotLifecycleAuthority(t, s)
+	for _, apply := range []bool{false, true} {
+		var report SweepStaleReport
+		if apply {
+			report, err = s.SweepStaleApply(72*time.Hour, newFakeProbe(), fixedNow)
+		} else {
+			report, err = s.SweepStalePlan(72*time.Hour, newFakeProbe(), fixedNow)
+		}
+		if err != nil {
+			t.Fatalf("sweep apply=%v over forged candidate: %v", apply, err)
+		}
+		if report.Reclaimed != 0 || report.Skipped != 1 || report.Unreadable != 0 || len(report.Candidates) != 1 {
+			t.Fatalf("sweep apply=%v report = %+v, want one recovery-required candidate", apply, report)
+		}
+		candidate := report.Candidates[0]
+		if candidate.WorkID != w.ID || candidate.LastEventTS != "" || candidate.LastEventAge != "" {
+			t.Fatalf("sweep apply=%v surfaced forged candidate facts: %+v", apply, candidate)
+		}
+		if !strings.Contains(candidate.ReclaimError, "sweep-stale recovery_required") {
+			t.Fatalf("sweep apply=%v candidate error = %q, want recovery_required", apply, candidate.ReclaimError)
+		}
 	}
 	assertLifecycleAuthorityUnchanged(t, before, snapshotLifecycleAuthority(t, s))
 }
