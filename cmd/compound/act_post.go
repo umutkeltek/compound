@@ -129,6 +129,18 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	// Close the loop: a governed post that never marks its draft posted leaves the
+	// distribution measure blind, which is how the weekly driver reported success
+	// while nothing had ever shipped. A failure here does NOT undo the post — it is
+	// reported loudly and non-zero so it cannot read as a clean success.
+	if draftReq != nil {
+		if _, postErr := product.RecordContentPostResult(homePath, draftAuth.DraftID, result.PostImage, result.Receipt.ID, now); postErr != nil {
+			printActPostResult(stdout, transport, result, hasFlag(args, "--json"))
+			fmt.Fprintln(stderr, "error: the post was executed but could not be recorded as posted:", postErr)
+			fmt.Fprintln(stderr, "the draft is still operationalized; reconcile it against the platform before reposting")
+			return 1
+		}
+	}
 	return printActPostResult(stdout, transport, result, hasFlag(args, "--json"))
 }
 
