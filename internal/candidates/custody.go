@@ -329,7 +329,25 @@ func candidateEntryCursor(cursor EntryCursor) error {
 }
 
 func readRootedRecord(inbox *candidateInbox, kind Kind, entryCursor, expectedID string) (Record, error) {
-	directory := inbox.directory
+	record, err := readCustodiedCandidateRecord(inbox.directory, kind, entryCursor, expectedID)
+	if err != nil {
+		return Record{}, err
+	}
+	record.homeIdentity = inbox.home.identity
+	record.directoryIdentity = inbox.directory.identity
+	record.CustodyToken = candidateCustodyToken(kind, record.EntryCursor, record.Digest, record.homeIdentity, record.directoryIdentity, record.fileIdentity)
+	if err := record.Validate(); err != nil {
+		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionRaced, Detail: err.Error(), cause: err}
+	}
+	return record, nil
+}
+
+// readCustodiedCandidateRecord is the directory-scoped core of readRootedRecord:
+// the same lstat/open/read race ceremony without the home identity, custody
+// token, or canonical-cursor seal. Writers use it to re-validate staged temp
+// files and published targets whose entry cursor is not yet (or no longer) the
+// canonical <id>.json name.
+func readCustodiedCandidateRecord(directory *candidateDirectory, kind Kind, entryCursor, expectedID string) (Record, error) {
 	before, err := directory.lstat(entryCursor)
 	if err != nil {
 		return Record{}, corruptionForReadError(entryCursor, err)
@@ -388,21 +406,14 @@ func readRootedRecord(inbox *candidateInbox, kind Kind, entryCursor, expectedID 
 		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionIDMismatch, Detail: fmt.Sprintf("body id %q does not match filename id %q", meta.ID, expectedID)}
 	}
 	digest := candidateBodyDigest(data)
-	record := Record{
-		Kind:              kind,
-		ID:                meta.ID,
-		Body:              append([]byte(nil), data...),
-		Digest:            digest,
-		EntryCursor:       EntryCursor(entryCursor),
-		homeIdentity:      inbox.home.identity,
-		directoryIdentity: directory.identity,
-		fileIdentity:      opened,
-	}
-	record.CustodyToken = candidateCustodyToken(kind, EntryCursor(entryCursor), digest, record.homeIdentity, record.directoryIdentity, record.fileIdentity)
-	if err := record.Validate(); err != nil {
-		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionRaced, Detail: err.Error(), cause: err}
-	}
-	return record, nil
+	return Record{
+		Kind:         kind,
+		ID:           meta.ID,
+		Body:         append([]byte(nil), data...),
+		Digest:       digest,
+		EntryCursor:  EntryCursor(entryCursor),
+		fileIdentity: opened,
+	}, nil
 }
 
 func corruptionForReadError(entryCursor string, err error) *Corruption {

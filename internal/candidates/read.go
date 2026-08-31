@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,12 @@ var (
 	syncCandidateDirectoryFn = func(directory *candidateDirectory) error {
 		return directory.sync()
 	}
+	// publishCandidateReplacement / publishCandidateCreation are the exact
+	// publish steps, isolated behind vars so tests can inject drift between the
+	// writer's snapshot, staging, and publication and prove the writer fails
+	// closed with a typed CorruptionRaced instead of publishing over it.
+	publishCandidateReplacement = publishCandidateReplacementExact
+	publishCandidateCreation    = publishCandidateCreationExact
 )
 
 // candidateID rejects an id that is empty or path-shaped (a directory component,
@@ -259,7 +266,16 @@ func CreateCandidateIfAbsent(homePath string, kind Kind, id string, payload any)
 	created := false
 	err = withCandidatePublicationLock(homePath, dir, func(inbox *candidateInbox) error {
 		directory := inbox.directory
-		target := id + ".json"
+		targetName := id + ".json"
+		existing, err := readCandidateRecordFromDirectory(inbox, kind, id)
+		switch {
+		case err == nil:
+			return classifyCandidateRecord(existing, kind, id)
+		case os.IsNotExist(err):
+			// Absent target: the publish step re-proves absence before linking.
+		default:
+			return fmt.Errorf("inspect existing candidate: %w", err)
+		}
 		tempName, err := stageCandidate(directory, data)
 		if err != nil {
 			return err
@@ -270,15 +286,16 @@ func CreateCandidateIfAbsent(homePath string, kind Kind, id string, payload any)
 				_ = directory.remove(tempName)
 			}
 		}()
-		if err := linkCandidateFile(directory, tempName, target); err != nil {
+		staged, err := readCustodiedCandidateRecord(directory, kind, tempName, id)
+		if err != nil {
+			return fmt.Errorf("read staged candidate: %w", err)
+		}
+		if err := publishCandidateCreation(directory, targetName, tempName, staged); err != nil {
 			if removeErr := removeCandidateFile(directory, tempName); removeErr != nil {
-				return errors.Join(fmt.Errorf("publish candidate: %w", err), fmt.Errorf("remove candidate temp: %w", removeErr))
+				return errors.Join(err, fmt.Errorf("remove candidate temp: %w", removeErr))
 			}
 			keepTemp = false
-			if os.IsExist(err) {
-				return classifyExistingCandidate(inbox, kind, id)
-			}
-			return fmt.Errorf("publish candidate: %w", err)
+			return err
 		}
 		created = true
 		var cleanupErr error
@@ -343,20 +360,26 @@ func withCandidatePublicationLock(homePath, inboxPath string, fn func(*candidate
 }
 
 func replaceCandidate(inbox *candidateInbox, kind Kind, id string, data []byte) error {
-	if err := candidateReplacementPreflight(inbox, kind, id); err != nil {
+	expected, err := candidateReplacementPreflight(inbox, kind, id)
+	if err != nil {
 		return err
 	}
-	return publishCandidateReplacement(inbox.directory, id+".json", data)
+	return stageAndReplaceCandidate(inbox, kind, id, data, expected)
 }
 
 func replaceCandidateFromRecord(inbox *candidateInbox, kind Kind, id string, data []byte, current Record) error {
 	if err := authorizeCandidateReplacement(inbox, kind, id, current); err != nil {
 		return err
 	}
-	return publishCandidateReplacement(inbox.directory, id+".json", data)
+	return stageAndReplaceCandidate(inbox, kind, id, data, &current)
 }
 
-func publishCandidateReplacement(directory *candidateDirectory, target string, data []byte) error {
+// stageAndReplaceCandidate stages the replacement body, proves the staged
+// bytes still match at publish time, and atomically renames over the target —
+// failing closed with CorruptionRaced when the target or the staged temp
+// drifted from the exact records this writer validated.
+func stageAndReplaceCandidate(inbox *candidateInbox, kind Kind, id string, data []byte, expected *Record) error {
+	directory := inbox.directory
 	tempName, err := stageCandidate(directory, data)
 	if err != nil {
 		return err
@@ -367,8 +390,12 @@ func publishCandidateReplacement(directory *candidateDirectory, target string, d
 			_ = directory.remove(tempName)
 		}
 	}()
-	if err := renameCandidateFile(directory, tempName, target); err != nil {
-		return fmt.Errorf("replace candidate: %w", err)
+	staged, err := readCustodiedCandidateRecord(directory, kind, tempName, id)
+	if err != nil {
+		return fmt.Errorf("read staged candidate: %w", err)
+	}
+	if err := publishCandidateReplacement(directory, id+".json", tempName, expected, staged); err != nil {
+		return err
 	}
 	keepTemp = false
 	if err := syncCandidateDirectoryFn(directory); err != nil {
@@ -377,18 +404,108 @@ func publishCandidateReplacement(directory *candidateDirectory, target string, d
 	return nil
 }
 
+// publishCandidateReplacementExact revalidates the exact pre-publish records
+// it was handed — target still at the writer's snapshot (or still absent) and
+// staged temp unchanged — then renames and proves the published target is the
+// staged record. Any drift is a typed CorruptionRaced, never a silent
+// overwrite or a torn publication.
+func publishCandidateReplacementExact(directory *candidateDirectory, targetName, tempName string, expected *Record, staged Record) error {
+	if expected == nil {
+		if err := requireCandidateAbsent(directory, targetName); err != nil {
+			return err
+		}
+	} else if err := requireExactCandidateRecord(directory, targetName, *expected, "candidate changed after writer snapshot"); err != nil {
+		return err
+	}
+	if err := requireExactCandidateRecord(directory, tempName, staged, "staged candidate changed before replacement"); err != nil {
+		return err
+	}
+	if err := renameCandidateFile(directory, tempName, targetName); err != nil {
+		return fmt.Errorf("replace candidate: %w", err)
+	}
+	return requireExactCandidateRecord(directory, targetName, staged, "published candidate does not match staged record")
+}
+
+// publishCandidateCreationExact proves the target is still absent and the
+// staged temp unchanged, hard-links the temp into the authoritative name, and
+// proves the published target is the staged record. A target that appears
+// mid-publication is a typed race, never an overwrite.
+func publishCandidateCreationExact(directory *candidateDirectory, targetName, tempName string, staged Record) error {
+	if err := requireCandidateAbsent(directory, targetName); err != nil {
+		return err
+	}
+	if err := requireExactCandidateRecord(directory, tempName, staged, "staged candidate changed before creation"); err != nil {
+		return err
+	}
+	if err := linkCandidateFile(directory, tempName, targetName); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return candidatePublicationRace(targetName, "candidate appeared before creation", err)
+		}
+		return fmt.Errorf("publish candidate: %w", err)
+	}
+	return requireExactCandidateRecord(directory, targetName, staged, "published candidate does not match staged record")
+}
+
+func requireCandidateAbsent(directory *candidateDirectory, targetName string) error {
+	_, err := directory.lstat(targetName)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return candidatePublicationRace(targetName, "inspect absent candidate precondition", err)
+	}
+	return candidatePublicationRace(targetName, "candidate appeared after writer snapshot", nil)
+}
+
+// requireExactCandidateRecord re-reads one directory entry under the
+// publication lock and demands the exact record the writer validated earlier:
+// same inode (rename/link update ctime, so object identity is compared, not
+// timestamps), same digest, same bytes.
+func requireExactCandidateRecord(directory *candidateDirectory, entryName string, expected Record, detail string) error {
+	current, err := readCustodiedCandidateRecord(directory, expected.Kind, entryName, expected.ID)
+	if err != nil {
+		return candidatePublicationRace(entryName, detail, err)
+	}
+	if !sameCandidateRecord(current, expected) {
+		return candidatePublicationRace(entryName, detail, nil)
+	}
+	return nil
+}
+
+func sameCandidateRecord(left, right Record) bool {
+	return left.Kind == right.Kind &&
+		left.ID == right.ID &&
+		left.Digest == right.Digest &&
+		bytes.Equal(left.Body, right.Body) &&
+		left.fileIdentity.sameObject(right.fileIdentity)
+}
+
+func candidatePublicationRace(entryName, detail string, cause error) error {
+	return &Corruption{
+		EntryCursor: EntryCursor(entryName),
+		Code:        CorruptionRaced,
+		Detail:      detail,
+		cause:       cause,
+	}
+}
+
 // candidateReplacementPreflight preserves WriteCandidate's existing
 // authorization boundary: atomic rename must not make a read-only regular
-// target replaceable when the former in-place writer could not open it.
-func candidateReplacementPreflight(inbox *candidateInbox, kind Kind, id string) error {
+// target replaceable when the former in-place writer could not open it. It
+// returns the exact pre-write record (nil when the target is absent) so the
+// publish step can prove the target never drifted from this snapshot.
+func candidateReplacementPreflight(inbox *candidateInbox, kind Kind, id string) (*Record, error) {
 	record, err := readCandidateRecordFromDirectory(inbox, kind, id)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("inspect candidate replacement target: %w", err)
+		return nil, fmt.Errorf("inspect candidate replacement target: %w", err)
 	}
-	return authorizeCandidateReplacement(inbox, kind, id, record)
+	if err := authorizeCandidateReplacement(inbox, kind, id, record); err != nil {
+		return nil, err
+	}
+	return &record, nil
 }
 
 func authorizeCandidateReplacement(inbox *candidateInbox, kind Kind, id string, record Record) error {
@@ -473,14 +590,6 @@ func candidatePayload(kind Kind, id string, payload any) (string, []byte, error)
 		return "", nil, fmt.Errorf("candidate payload kind %q does not match requested kind %q", meta.Kind, kind)
 	}
 	return dir, append(data, '\n'), nil
-}
-
-func classifyExistingCandidate(inbox *candidateInbox, kind Kind, id string) error {
-	record, err := readCandidateRecordFromDirectory(inbox, kind, id)
-	if err != nil {
-		return fmt.Errorf("inspect existing candidate: %w", err)
-	}
-	return classifyCandidateRecord(record, kind, id)
 }
 
 func classifyCandidateRecord(record Record, kind Kind, id string) error {
