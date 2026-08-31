@@ -113,18 +113,30 @@
       "severity": "P0",
       "subsystem": "work-sweep",
       "title": "Stale-work reclaim transaction",
-      "status": "open",
-      "reproducer": "Race liveness and same-state generation drift with sweep-stale and inject failure at every envelope, event, recovery-marker, and lease boundary.",
-      "root_cause": "Reclaim rereads state but mutates a stale snapshot, probes liveness outside the mutation boundary, and publishes envelope, event, and lease as split persistence steps without a complete reconciler.",
-      "invariant": "Reclaim is per-work serialized, generation-bound, liveness-rechecked, recoverable at every persistence boundary, and releases the lease last.",
-      "red_test": "Generation-drift, heartbeat-race, and every-boundary failure-injection suite not yet established.",
-      "fix_commits": [],
-      "focused_tests": [],
+      "status": "fixing",
+      "reproducer": "Race liveness and same-state generation drift; freeze and semantically corrupt a checksum-valid pending frame; inject failure at every persistence and removal boundary.",
+      "root_cause": "The original reclaim mutated a stale snapshot, probed liveness outside the mutation boundary, and split envelope/event/lease persistence. The first recovery frame trusted checksum-valid but semantically forged facts and let delegate minting and lease repair cross a frozen reclaim.",
+      "invariant": "Reclaim is per-work serialized, generation-bound, liveness-rechecked, and recoverable; durable intent binds exact envelopes, event prefix, canonical time, liveness, lease, and reason; corrupt partial state stays visibly recovery_required; lease release is last.",
+      "red_test": "TestReclaimEnvelopeRefusesWhenGenerationChangedUnderneath; TestSweepStalePersistenceFaultsRecoverExactly; TestSweepStalePendingRejectsChecksumValidSemanticCorruption; TestSweepStalePendingCorruptionPreservesRecoveryClassification; TestSweepStalePendingRejectsForgedLastEventCandidateWithoutMutation; TestDelegateRefusesFrozenSweepStaleBeforeMint; TestLeaseRepairRefusesFrozenSweepStaleAuthorityWithoutMutation.",
+      "fix_commits": [
+        "53c9dc0540ddca986f0f63ea1a3af9ee7157cd16",
+        "5ae2c2784e71c30af92d1058f8052b9e9affccb5",
+        "d5526a19a83273cc181fa821f1e55323a97ef944",
+        "25bc7de47bf78394ceecb396ace94d52a0e2db38",
+        "92ac0f8181593ebc70cd086fc5b44874450ca904"
+      ],
+      "focused_tests": [
+        "GOTOOLCHAIN=go1.26.4 go test ./internal/work -run semantic-and-frozen-sweep-matrix -count=1",
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/work -run semantic-and-frozen-sweep-matrix -count=1",
+        "GOTOOLCHAIN=go1.26.4 go vet ./internal/work"
+      ],
       "broad_tests": [],
-      "evidence_paths": [],
-      "residual_risk": "work sweep-stale --yes remains outside the supported contract until this issue closes.",
+      "evidence_paths": [
+        "release-evidence/runs/20260831-p0-004-semantic-fencing-focused-green.json"
+      ],
+      "residual_risk": "The public --yes experimental admission/zero-footprint gate, cross-process RunAttempt liveness lock, resumable physical removal/quarantine recovery, every-boundary fault matrix, full internal/work run, and canonical proof-check remain open. work sweep-stale --yes remains outside the supported contract.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-29T13:04:00Z"
+      "updated_at": "2026-08-31T16:30:00Z"
     },
     {
       "id": "REL-P0-005",
