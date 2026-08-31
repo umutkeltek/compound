@@ -152,8 +152,29 @@ func validateSweepStalePending(pending sweepStalePending) error {
 	if strings.TrimSpace(pending.WorkID) == "" {
 		return errors.New("work_id is required")
 	}
+	if pending.ThresholdNanos <= 0 {
+		return errors.New("threshold_nanos must be positive")
+	}
+	frozenAt, err := parseLifecycleTS(pending.FrozenAt)
+	if err != nil || frozenAt.IsZero() {
+		return fmt.Errorf("frozen_at must be a nonzero lifecycle timestamp: %q", pending.FrozenAt)
+	}
 	if pending.SourceWork.ID != pending.WorkID || pending.FinalWork.ID != pending.WorkID {
 		return errors.New("source/final WorkEnvelope IDs must equal work_id")
+	}
+	if err := pending.SourceWork.Validate(); err != nil {
+		return fmt.Errorf("source WorkEnvelope is invalid: %w", err)
+	}
+	if err := pending.FinalWork.Validate(); err != nil {
+		return fmt.Errorf("final WorkEnvelope is invalid: %w", err)
+	}
+	if !sweepStaleEnvelopeStates[pending.SourceWork.State] {
+		return fmt.Errorf("source WorkEnvelope state %q is not reclaimable", pending.SourceWork.State)
+	}
+	if strings.TrimSpace(pending.Candidate.SweepReason) == "" ||
+		pending.Candidate.SweepReason != strings.TrimSpace(pending.Candidate.SweepReason) ||
+		!strings.HasPrefix(pending.Candidate.SweepReason, "sweep-stale: ") {
+		return errors.New("sweep_reason must be a canonical nonblank sweep-stale reason")
 	}
 	if pending.SourceEventCount < 0 || strings.TrimSpace(pending.SourceEventPrefixSHA256) == "" {
 		return errors.New("source event prefix binding is required")
@@ -197,6 +218,10 @@ func validateSweepStalePending(pending sweepStalePending) error {
 	}
 	if !sameSweepStaleEvent(pending.Event, wantEvent) {
 		return errors.New("event does not match the frozen reclaim")
+	}
+	eventAt, err := parseLifecycleTS(pending.Event.TS)
+	if err != nil || eventAt.IsZero() || !eventAt.Equal(frozenAt) || pending.Event.TS != pending.FrozenAt {
+		return errors.New("event timestamp must be the exact frozen lifecycle timestamp")
 	}
 	if pending.Lease.Present {
 		if len(pending.Lease.Body) == 0 || pending.Lease.SHA256 != sweepStaleBytesSHA256(pending.Lease.Body) {
