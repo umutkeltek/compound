@@ -46,12 +46,12 @@ func TestAdjudicatePendingReusesPageRecordsWithoutPointReads(t *testing.T) {
 		return candidate, err
 	}
 
-	cursor := ""
+	var cursor candidates.EntryCursor
 	changed := map[string]bool{}
 	for pass := 0; pass < 16; pass++ {
 		report := store.AdjudicatePending(AdjudicatePendingOptions{
-			AfterID:   cursor,
-			ScanLimit: scanLimit,
+			AfterCursor: cursor,
+			ScanLimit:   scanLimit,
 		}, time.Date(2026, 8, 29, 12, pass, 0, 0, time.UTC))
 		if len(report.Errors) != 0 {
 			t.Fatalf("pass %d errors = %+v", pass, report.Errors)

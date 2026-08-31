@@ -253,6 +253,11 @@ type Store struct {
 	// pendingCandidateReplacer is the exact candidate compare-and-swap used by
 	// bounded pending sweeps. Production stores leave it nil.
 	pendingCandidateReplacer func(string, candidates.Record, any) (candidates.ReplaceCandidateResult, error)
+
+	// candidatePointReader is a test seam for proving batch walks never fall
+	// back to per-candidate point reads. Production stores leave it nil and
+	// read through the candidates package's single rooted read door.
+	candidatePointReader func(id string) (Candidate, error)
 }
 
 func Open(homePath string) (*Store, error) {
@@ -423,6 +428,9 @@ func captureCandidateID(c Candidate, now time.Time) (string, error) {
 }
 
 func (s *Store) getCandidate(id string) (Candidate, error) {
+	if s.candidatePointReader != nil {
+		return s.candidatePointReader(id)
+	}
 	var c Candidate
 	err := candidates.ReadCandidate(s.home, candidates.Memory, id, &c)
 	if errors.Is(err, fs.ErrNotExist) {

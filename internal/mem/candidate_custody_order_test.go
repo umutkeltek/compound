@@ -22,52 +22,60 @@ func candidateCustodyOrderStore(t *testing.T) *Store {
 	return store
 }
 
-func TestListCandidatesLiteResumesAfterPrefixIDWithoutGap(t *testing.T) {
+// The canonical candidate order is exact filename-byte order (the custody
+// contract: cursors are opaque directory-entry names, not decoded ids), so the
+// prefix-adjacent pair "a"/"a-" walks "a-.json" first. Resuming after that
+// entry must return "a" — never skip it for "z".
+func TestListCandidatesLiteResumesAfterPrefixEntryWithoutGap(t *testing.T) {
 	store := candidateCustodyOrderStore(t)
-	entries, corrupt, lastWalked, atEnd, err := store.ListCandidatesLite("a", 1)
+	page, err := store.ListCandidatesLite(candidates.EntryCursor("a-.json"), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(corrupt) != 0 {
-		t.Fatalf("corrupt = %v", corrupt)
+	if page.Walked != 1 || len(page.Entries) != 1 {
+		t.Fatalf("resume after a-.json walked %+v, want exactly one entry", page)
 	}
-	if len(entries) != 1 || entries[0].ID != "a-" {
-		t.Fatalf("resume after a returned %+v, want a- before z", entries)
+	entry := page.Entries[0]
+	if entry.Corruption != nil {
+		t.Fatalf("resume after a-.json returned corruption: %+v", entry.Corruption)
 	}
-	if lastWalked != "a-" || atEnd {
-		t.Fatalf("progress = last %q atEnd=%v, want a- with work remaining", lastWalked, atEnd)
+	if entry.Candidate == nil || entry.Candidate.ID != "a" {
+		t.Fatalf("resume after a-.json returned %+v, want a before z", entry)
+	}
+	if page.LastCursor != "a.json" || page.AtEnd {
+		t.Fatalf("progress = last %q atEnd=%v, want a.json with work remaining", page.LastCursor, page.AtEnd)
 	}
 }
 
-func TestListCandidatesLiteBoundedWalkPreservesCanonicalIDOrder(t *testing.T) {
+func TestListCandidatesLiteBoundedWalkPreservesCanonicalFilenameOrder(t *testing.T) {
 	store := candidateCustodyOrderStore(t)
 	var got []string
-	cursor := ""
+	var cursor candidates.EntryCursor
 	for step := 0; step < 4; step++ {
-		entries, corrupt, lastWalked, atEnd, err := store.ListCandidatesLite(cursor, 1)
+		page, err := store.ListCandidatesLite(cursor, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(corrupt) != 0 {
-			t.Fatalf("corrupt = %v", corrupt)
+		for _, entry := range page.Entries {
+			if entry.Corruption != nil {
+				t.Fatalf("corrupt = %+v", entry.Corruption)
+			}
+			got = append(got, entry.Candidate.ID)
 		}
-		for _, entry := range entries {
-			got = append(got, entry.ID)
-		}
-		if atEnd {
+		if page.AtEnd {
 			break
 		}
-		if lastWalked == "" || lastWalked == cursor {
-			t.Fatalf("cursor did not advance: before=%q after=%q", cursor, lastWalked)
+		if page.LastCursor == "" || page.LastCursor == cursor {
+			t.Fatalf("cursor did not advance: before=%q after=%q", cursor, page.LastCursor)
 		}
-		cursor = lastWalked
+		cursor = page.LastCursor
 	}
-	if want := []string{"a", "a-", "z"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("bounded walk IDs = %v, want %v", got, want)
+	if want := []string{"a-", "a", "z"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("bounded walk IDs = %v, want canonical filename order %v", got, want)
 	}
 }
 
-func TestAllCandidatesReturnsDecodedCanonicalIDOrder(t *testing.T) {
+func TestAllCandidatesReturnsCanonicalFilenameOrder(t *testing.T) {
 	store := candidateCustodyOrderStore(t)
 	all, err := store.AllCandidates()
 	if err != nil {
@@ -77,7 +85,7 @@ func TestAllCandidatesReturnsDecodedCanonicalIDOrder(t *testing.T) {
 	for _, candidate := range all {
 		got = append(got, candidate.ID)
 	}
-	if want := []string{"a", "a-", "z"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("AllCandidates IDs = %v, want %v", got, want)
+	if want := []string{"a-", "a", "z"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("AllCandidates IDs = %v, want canonical filename order %v", got, want)
 	}
 }
