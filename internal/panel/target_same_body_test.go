@@ -177,7 +177,7 @@ func installPanelCandidatePageSwap(t *testing.T, home string, kind candidates.Ki
 	t.Helper()
 	previous := readPanelCandidatePage
 	swaps := 0
-	readPanelCandidatePage = func(gotHome string, gotKind candidates.Kind, after string, scanLimit int) (candidates.Page, error) {
+	readPanelCandidatePage = func(gotHome string, gotKind candidates.Kind, after candidates.EntryCursor, scanLimit int) (candidates.Page, error) {
 		page, err := previous(gotHome, gotKind, after, scanLimit)
 		if err == nil && gotHome == home && gotKind == kind && swaps == 0 {
 			replacePanelCandidateAfterCustody(t, home, kind, id, attackerBody)

@@ -21,6 +21,16 @@ type TargetInput struct {
 	Payload    json.RawMessage `json:"payload"`
 }
 
+// Panel candidate loads derive a target from exactly one custodied body: the
+// descriptor-rooted page/record read IS the payload source, so a candidate
+// replaced on disk after custody validation cannot smuggle a new body into a
+// derived target. The vars are test seams that inject that swap and prove the
+// loaded target still carries the frozen body.
+var (
+	readPanelCandidatePage   = candidates.ReadPage
+	readPanelCandidateRecord = candidates.ReadRecord
+)
+
 func LoadMemoryCandidateTargets(homePath string, states []string, limit int) ([]TargetInput, error) {
 	store, err := mem.Open(homePath)
 	if err != nil {
@@ -100,38 +110,34 @@ func LoadSkillCandidateTargets(homePath string, limit int) ([]TargetInput, error
 }
 
 func LoadCapabilityObservationTargets(homePath string, limit int) ([]TargetInput, error) {
-	dir := filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs))
-	entries, err := os.ReadDir(dir)
+	page, err := readPanelCandidatePage(homePath, candidates.CapabilityObs, "", 0)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	out := []TargetInput{}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, entry := range page.Entries {
+		if entry.Corruption != nil {
+			if !strings.HasSuffix(string(entry.EntryCursor), ".json") {
+				continue
+			}
+			return nil, entry.Corruption
+		}
+		if entry.Record == nil {
 			continue
 		}
-		id := strings.TrimSuffix(entry.Name(), ".json")
 		var obs capabilityObservationTarget
-		if err := candidates.ReadCandidate(homePath, candidates.CapabilityObs, id, &obs); err != nil {
-			return nil, err
+		if err := json.Unmarshal(entry.Record.Body, &obs); err != nil {
+			return nil, fmt.Errorf("decode capability observation %s: %w", entry.Record.ID, err)
 		}
 		if !capabilityObservationAwaitingVerdict(obs) {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			return nil, err
-		}
 		out = append(out, TargetInput{
 			Kind:       "capability_observation",
-			Ref:        id,
+			Ref:        entry.Record.ID,
 			Visibility: "internal",
 			Summary:    capabilityObservationSummary(obs),
-			Payload:    json.RawMessage(append([]byte(nil), raw...)),
+			Payload:    json.RawMessage(append([]byte(nil), entry.Record.Body...)),
 		})
 		if limit > 0 && len(out) >= limit {
 			break
@@ -141,38 +147,34 @@ func LoadCapabilityObservationTargets(homePath string, limit int) ([]TargetInput
 }
 
 func LoadDecisionCandidateTargets(homePath string, limit int) ([]TargetInput, error) {
-	dir := filepath.Join(homePath, candidates.InboxDir(candidates.Decision))
-	entries, err := os.ReadDir(dir)
+	page, err := readPanelCandidatePage(homePath, candidates.Decision, "", 0)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	out := []TargetInput{}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, entry := range page.Entries {
+		if entry.Corruption != nil {
+			if !strings.HasSuffix(string(entry.EntryCursor), ".json") {
+				continue
+			}
+			return nil, entry.Corruption
+		}
+		if entry.Record == nil {
 			continue
 		}
-		id := strings.TrimSuffix(entry.Name(), ".json")
 		var target decisionCandidateTarget
-		if err := candidates.ReadCandidate(homePath, candidates.Decision, id, &target); err != nil {
-			return nil, err
+		if err := json.Unmarshal(entry.Record.Body, &target); err != nil {
+			return nil, fmt.Errorf("decode decision candidate %s: %w", entry.Record.ID, err)
 		}
 		if !decisionCandidateAwaitingPlan(target) {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			return nil, err
-		}
 		out = append(out, TargetInput{
 			Kind:       "decision_candidate",
-			Ref:        id,
+			Ref:        entry.Record.ID,
 			Visibility: "internal",
 			Summary:    decisionCandidateSummary(target),
-			Payload:    json.RawMessage(append([]byte(nil), raw...)),
+			Payload:    json.RawMessage(append([]byte(nil), entry.Record.Body...)),
 		})
 		if limit > 0 && len(out) >= limit {
 			break
@@ -184,15 +186,15 @@ func LoadDecisionCandidateTargets(homePath string, limit int) ([]TargetInput, er
 func LoadTargetInput(homePath, targetKind, ref string) (TargetInput, error) {
 	switch targetKind {
 	case "memory_candidate":
-		raw, err := os.ReadFile(filepath.Join(homePath, candidates.InboxDir(candidates.Memory), ref+".json"))
+		record, err := readPanelCandidateRecord(homePath, candidates.Memory, ref)
 		if err != nil {
 			return TargetInput{}, err
 		}
 		var cand mem.Candidate
-		if err := json.Unmarshal(raw, &cand); err != nil {
+		if err := json.Unmarshal(record.Body, &cand); err != nil {
 			return TargetInput{}, err
 		}
-		return TargetInput{Kind: "memory_candidate", Ref: cand.ID, Visibility: cand.Visibility, Summary: memoryCandidateSummary(cand), Payload: memoryCandidatePanelPayload(homePath, cand, raw)}, nil
+		return TargetInput{Kind: "memory_candidate", Ref: cand.ID, Visibility: cand.Visibility, Summary: memoryCandidateSummary(cand), Payload: memoryCandidatePanelPayload(homePath, cand, record.Body)}, nil
 	case "skill_candidate":
 		path := filepath.Join(homePath, "reviews", "skill-candidates", ref+".json")
 		raw, err := os.ReadFile(path)
@@ -209,25 +211,25 @@ func LoadTargetInput(homePath, targetKind, ref string) (TargetInput, error) {
 		}
 		return TargetInput{Kind: "skill_candidate", Ref: targetRef, Visibility: "internal", Summary: skillCandidateSummary(review), Payload: json.RawMessage(append([]byte(nil), raw...))}, nil
 	case "capability_observation":
+		record, err := readPanelCandidateRecord(homePath, candidates.CapabilityObs, ref)
+		if err != nil {
+			return TargetInput{}, err
+		}
 		var obs capabilityObservationTarget
-		if err := candidates.ReadCandidate(homePath, candidates.CapabilityObs, ref, &obs); err != nil {
-			return TargetInput{}, err
+		if err := json.Unmarshal(record.Body, &obs); err != nil {
+			return TargetInput{}, fmt.Errorf("decode capability observation %s: %w", ref, err)
 		}
-		raw, err := os.ReadFile(filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs), ref+".json"))
-		if err != nil {
-			return TargetInput{}, err
-		}
-		return TargetInput{Kind: "capability_observation", Ref: ref, Visibility: "internal", Summary: capabilityObservationSummary(obs), Payload: json.RawMessage(append([]byte(nil), raw...))}, nil
+		return TargetInput{Kind: "capability_observation", Ref: ref, Visibility: "internal", Summary: capabilityObservationSummary(obs), Payload: json.RawMessage(append([]byte(nil), record.Body...))}, nil
 	case "decision_candidate":
-		var target decisionCandidateTarget
-		if err := candidates.ReadCandidate(homePath, candidates.Decision, ref, &target); err != nil {
-			return TargetInput{}, err
-		}
-		raw, err := os.ReadFile(filepath.Join(homePath, candidates.InboxDir(candidates.Decision), ref+".json"))
+		record, err := readPanelCandidateRecord(homePath, candidates.Decision, ref)
 		if err != nil {
 			return TargetInput{}, err
 		}
-		return TargetInput{Kind: "decision_candidate", Ref: ref, Visibility: "internal", Summary: decisionCandidateSummary(target), Payload: json.RawMessage(append([]byte(nil), raw...))}, nil
+		var target decisionCandidateTarget
+		if err := json.Unmarshal(record.Body, &target); err != nil {
+			return TargetInput{}, fmt.Errorf("decode decision candidate %s: %w", ref, err)
+		}
+		return TargetInput{Kind: "decision_candidate", Ref: ref, Visibility: "internal", Summary: decisionCandidateSummary(target), Payload: json.RawMessage(append([]byte(nil), record.Body...))}, nil
 	case "comparison":
 		return loadComparisonTarget(homePath, ref)
 	default:
