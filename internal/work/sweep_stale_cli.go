@@ -39,6 +39,7 @@ func SweepStaleCLIRequiresWritableStore(args []string) bool {
 func parseSweepStaleCLIArgs(args []string) (sweepStaleCLIOptions, error) {
 	parsed := sweepStaleCLIOptions{threshold: DefaultSweepStaleThreshold, dryRun: true}
 	var thresholdText string
+	var thresholdProvided bool
 	var dryRunRequested, applyRequested, experimental bool
 
 	for i := 0; i < len(args); i++ {
@@ -56,13 +57,14 @@ func parseSweepStaleCLIArgs(args []string) (sweepStaleCLIOptions, error) {
 				return sweepStaleCLIOptions{}, fmt.Errorf("--threshold requires a value")
 			}
 			i++
+			thresholdProvided = true
 			thresholdText = args[i]
 		default:
 			return sweepStaleCLIOptions{}, fmt.Errorf("unexpected argument %q", args[i])
 		}
 	}
 
-	if thresholdText != "" {
+	if thresholdProvided {
 		threshold, err := time.ParseDuration(thresholdText)
 		if err != nil {
 			return sweepStaleCLIOptions{}, fmt.Errorf("--threshold %q is not a valid duration: %w", thresholdText, err)

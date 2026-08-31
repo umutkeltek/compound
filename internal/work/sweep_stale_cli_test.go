@@ -66,6 +66,12 @@ func TestRunWorkSweepStaleCLIParsesExperimentalMutationGate(t *testing.T) {
 			wantOutput: "--threshold requires a value",
 		},
 		{
+			name:       "empty threshold value remains a parser error",
+			args:       []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", ""},
+			wantCode:   2,
+			wantOutput: "not a valid duration",
+		},
+		{
 			name:       "zero threshold cannot admit mutation",
 			args:       []string{"--yes", experimentalSweepStaleMutationsFlagForTest, "--threshold", "0s"},
 			wantCode:   2,
