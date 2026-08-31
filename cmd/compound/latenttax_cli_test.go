@@ -41,6 +41,7 @@ func writeTmp(t *testing.T, dir, name, body string) string {
 }
 
 func TestLatentTaxValidateAcceptsMatchedFixture(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ts := writeTmp(t, dir, "ts.json", ltxTaskSet)
 	arms := writeTmp(t, dir, "arms.json", ltxValidArms)
@@ -57,6 +58,7 @@ func TestLatentTaxValidateAcceptsMatchedFixture(t *testing.T) {
 // TestLatentTaxValidateRejectsDoseMismatch is the CLI-level dose-matching gate: a
 // filler arm that diverges from the instruction dose fails with a nonzero exit.
 func TestLatentTaxValidateRejectsDoseMismatch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	badArms := strings.Replace(ltxValidArms,
 		`"context_block": "lorem ipsum dolor sit amet consectetur", "token_length": 6`,
@@ -74,6 +76,7 @@ func TestLatentTaxValidateRejectsDoseMismatch(t *testing.T) {
 }
 
 func TestLatentTaxPlanMintsMatrix(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ts := writeTmp(t, dir, "ts.json", ltxTaskSet)
 	arms := writeTmp(t, dir, "arms.json", ltxValidArms)
@@ -97,6 +100,7 @@ func TestLatentTaxPlanMintsMatrix(t *testing.T) {
 // seeds a home with fabricated PolicyDecision denials + a receipt, binds a run index
 // to those works, and asserts the derived binary_placement criterion renders KILLED.
 func TestLatentTaxReportDerivesFromSeededLedger(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	events := filepath.Join(home, "events")
 	if err := os.MkdirAll(events, 0o755); err != nil {

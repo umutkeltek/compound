@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/policy"
 	"compound/internal/runattempt"
 )
 
@@ -179,13 +180,13 @@ func TestCloseResumesExactPreparedGenerationAfterCrash(t *testing.T) {
 	}
 	firstIntent := *prepared.TerminalizationIntent
 
-	if _, err := s.Advance(workID, AdvanceInput{To: "running", Actor: "codex"}, fixedNow.Add(6*time.Minute)); err == nil || !strings.Contains(err.Error(), "prepared close") {
-		t.Fatalf("competing lifecycle mutation error = %v, want prepared-close fence", err)
+	if _, err := s.Advance(workID, AdvanceInput{To: "running", Actor: "codex"}, fixedNow.Add(6*time.Minute)); err == nil || !strings.Contains(err.Error(), "frozen close") {
+		t.Fatalf("competing lifecycle mutation error = %v, want frozen-close fence", err)
 	}
 	changed := input
 	changed.Summary = "different retry input"
-	if _, err := s.Close(workID, changed, fixedNow.Add(7*time.Minute)); err == nil || !strings.Contains(err.Error(), "close input") {
-		t.Fatalf("changed close retry error = %v, want close-input mismatch", err)
+	if _, err := s.Close(workID, changed, fixedNow.Add(7*time.Minute)); err == nil || !strings.Contains(err.Error(), "retry input") {
+		t.Fatalf("changed close retry error = %v, want retry-input mismatch", err)
 	}
 
 	closed, err := s.Close(workID, input, fixedNow.Add(8*time.Minute))
@@ -204,6 +205,109 @@ func TestCloseResumesExactPreparedGenerationAfterCrash(t *testing.T) {
 	}
 	if closed.Receipt.ID != firstIntent.ReceiptID || closed.Transition.ID != firstIntent.TransitionID {
 		t.Fatalf("resumed close proof ids changed: close=%+v intent=%+v", closed, firstIntent)
+	}
+}
+
+func TestCloseResumesLegacyPreparedActionIdentityAfterUpgrade(t *testing.T) {
+	s := newStore(t)
+	workID, runAttemptIDs := closeTerminalizeWork(t, s, "close-resumes-legacy-prepared-identity", fixedNow)
+	input := CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "resume legacy prepared close identity",
+		Changed:   true,
+		ProofRefs: []string{"check:legacy-prepared-close-identity"},
+	}
+	closeAt := fixedNow.Add(5 * time.Minute)
+
+	previous := closeAfterTerminalizationPrepare
+	t.Cleanup(func() { closeAfterTerminalizationPrepare = previous })
+	closeAfterTerminalizationPrepare = func() { panic("injected pre-upgrade crash after terminalization prepare") }
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("close did not reach post-prepare crash seam")
+			}
+		}()
+		_, _ = s.Close(workID, input, closeAt)
+	}()
+	closeAfterTerminalizationPrepare = previous
+
+	prepared, err := runattempt.Open(s.home).Get(runAttemptIDs[0])
+	if err != nil || prepared.TerminalizationIntent == nil {
+		t.Fatalf("post-crash terminalization reservation missing: ra=%+v err=%v", prepared, err)
+	}
+	intent := *prepared.TerminalizationIntent
+	plan, err := s.ClosePlan(workID, intent.PreparedAt, ClosePlanOptions{
+		Actor:     input.Actor,
+		Outcome:   input.Outcome,
+		MoveType:  input.MoveType,
+		ProofRefs: input.ProofRefs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := plan.ActionIntent
+	legacyActionID := idFor(
+		"act_",
+		action.Capability,
+		action.Action,
+		action.Target.Kind,
+		action.Target.ID,
+		action.Target.Path,
+		action.MutationClass,
+		action.Reversibility,
+		action.BlastRadius,
+		action.Actor,
+		input.Outcome,
+		input.MoveType,
+		"false",
+		"",
+		"",
+		ts(intent.PreparedAt),
+	)
+	if legacyActionID == action.ID {
+		t.Fatal("test did not construct distinct legacy and framed close identities")
+	}
+	// A real home prepared by the legacy binary could not also carry the modern
+	// close-pending frame. Remove the injected modern crash residue before
+	// installing the legacy intent; otherwise the fixture combines two mutually
+	// exclusive generations and correctly trips the exact-intent fence.
+	pendingClose, present, err := s.loadClosePending(workID)
+	if err != nil || !present {
+		t.Fatalf("load modern close frame before simulating legacy home: present=%v err=%v", present, err)
+	}
+	if err := s.clearClosePending(pendingClose); err != nil {
+		t.Fatalf("clear modern close frame before simulating legacy home: %v", err)
+	}
+	legacyAction := action
+	legacyAction.ID = legacyActionID
+	cfg, _, err := policy.LoadConfig(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyDecision := policy.Evaluate(legacyAction, cfg, intent.PreparedAt)
+	if !policy.Allowed(legacyDecision) {
+		t.Fatalf("legacy close decision unexpectedly refused: %+v", legacyDecision)
+	}
+	intent.CloseActionIntentID = legacyAction.ID
+	intent.ClosePolicyDecisionID = legacyDecision.ID
+	prepared.TerminalizationIntent = &intent
+	writeRunAttemptForReconcileTest(t, s, prepared)
+
+	closed, err := s.Close(workID, input, closeAt.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("resume pre-upgrade prepared close: %v", err)
+	}
+	if closed.Receipt.ID != intent.ReceiptID || closed.Transition.ID != intent.TransitionID {
+		t.Fatalf("legacy retry changed frozen proof identity: close=%+v intent=%+v", closed, intent)
+	}
+	after, err := runattempt.Open(s.home).Get(runAttemptIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.TerminalizationIntent == nil || !reflect.DeepEqual(*after.TerminalizationIntent, intent) {
+		t.Fatalf("legacy retry rewrote prepared authority: before=%+v after=%+v", intent, after.TerminalizationIntent)
 	}
 }
 
@@ -279,17 +383,45 @@ func TestCrashGapReconcileMapsEveryWorkCloseOutcome(t *testing.T) {
 			}()
 			closeBeforeLeaseRelease = previous
 
+			attemptPath := filepath.Join(s.home, "run_attempts", runAttemptIDs[0]+".json")
+			attemptBodyBeforeReconcile, err := os.ReadFile(attemptPath)
+			if err != nil {
+				t.Fatalf("read post-crash RunAttempt for %s: %v", tt.outcome, err)
+			}
 			pending, err := runattempt.Open(s.home).Get(runAttemptIDs[0])
-			if err != nil || runattempt.IsTerminal(pending.Status) || pending.TerminalizationIntent == nil || pending.TerminalizationIntent.TargetStatus != tt.want {
-				t.Fatalf("post-crash preparation for %s is wrong: ra=%+v err=%v", tt.outcome, pending, err)
+			if err != nil || !runattempt.IsTerminal(pending.Status) || pending.Status != tt.want || pending.TerminalizationIntent == nil || pending.TerminalizationIntent.TargetStatus != tt.want || pending.TerminalizationOwner != runattempt.TerminalizationOwnerWorkClose || pending.TerminalizationReceiptID == "" || pending.TerminalizationTransitionID == "" {
+				t.Fatalf("post-crash terminalization for %s is wrong: ra=%+v err=%v", tt.outcome, pending, err)
+			}
+			if _, present, err := s.loadClosePending(workID); err != nil || !present {
+				t.Fatalf("post-crash close frame for %s: present=%v err=%v", tt.outcome, present, err)
+			}
+			if _, err := os.Stat(s.leasePath(workID)); err != nil {
+				t.Fatalf("post-crash lease for %s was not retained: %v", tt.outcome, err)
 			}
 			report, err := s.ReconcileRunAttemptsForTerminalWork(workID, fixedNow.Add(6*time.Minute))
-			if err != nil || report.Status != "ok" || len(report.Issues) != 0 {
+			if err != nil || report.Status != "ok" || len(report.Issues) != 0 || !reflect.DeepEqual(report.AlreadyConsistentIDs, runAttemptIDs) || len(report.ReconciledIDs) != 0 {
 				t.Fatalf("reconcile %s: report=%+v err=%v", tt.outcome, report, err)
 			}
 			after, err := runattempt.Open(s.home).Get(runAttemptIDs[0])
-			if err != nil || after.Status != tt.want || after.TerminalizationOwner != runattempt.TerminalizationOwnerWorkClose {
+			if err != nil || after.Status != tt.want || after.TerminalizationOwner != runattempt.TerminalizationOwnerWorkClose || after.TerminalizationReceiptID != pending.TerminalizationReceiptID || after.TerminalizationTransitionID != pending.TerminalizationTransitionID {
 				t.Fatalf("reconciled %s attempt=%+v err=%v", tt.outcome, after, err)
+			}
+			attemptBodyAfterReconcile, err := os.ReadFile(attemptPath)
+			if err != nil {
+				t.Fatalf("read reconciled RunAttempt for %s: %v", tt.outcome, err)
+			}
+			if !reflect.DeepEqual(attemptBodyBeforeReconcile, attemptBodyAfterReconcile) {
+				t.Fatalf("already-consistent RunAttempt for %s changed during cleanup reconciliation", tt.outcome)
+			}
+			if _, present, err := s.loadClosePending(workID); err != nil || present {
+				t.Fatalf("reconcile left close frame for %s: present=%v err=%v", tt.outcome, present, err)
+			}
+			if _, err := os.Stat(s.leasePath(workID)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("reconcile left lease for %s: %v", tt.outcome, err)
+			}
+			again, err := s.ReconcileRunAttemptsForTerminalWork(workID, fixedNow.Add(7*time.Minute))
+			if err != nil || again.Status != "ok" || len(again.Issues) != 0 || !reflect.DeepEqual(again.AlreadyConsistentIDs, runAttemptIDs) {
+				t.Fatalf("idempotent reconcile %s: report=%+v err=%v", tt.outcome, again, err)
 			}
 		})
 	}
@@ -375,12 +507,13 @@ func TestCloseReportsWorkOwnedRunAttemptTerminalizationFailure(t *testing.T) {
 		return previous(store, id, intent, at)
 	}
 
-	closed, err := s.Close(workID, CloseInput{
+	input := CloseInput{
 		Outcome: "completed", MoveType: "control_plane_repair",
-		Summary: "close stays committed while exposing the incomplete RunAttempt",
-	}, fixedNow.Add(5*time.Minute))
-	if err != nil {
-		t.Fatalf("committed close must not be reported failed: %v", err)
+		Summary: "close reports incomplete RunAttempt as recovery required",
+	}
+	closed, err := s.Close(workID, input, fixedNow.Add(5*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "close recovery_required") {
+		t.Fatalf("incomplete RunAttempt close error = %v, want recovery_required", err)
 	}
 	if !reflect.DeepEqual(closed.UnterminalizedRunAttemptIDs, []string{wantID}) {
 		t.Fatalf("unterminalized attempts = %v, want [%s]", closed.UnterminalizedRunAttemptIDs, wantID)
@@ -389,11 +522,66 @@ func TestCloseReportsWorkOwnedRunAttemptTerminalizationFailure(t *testing.T) {
 	if err != nil || runattempt.IsTerminal(prepared.Status) || prepared.TerminalizationIntent == nil {
 		t.Fatalf("failed completion did not preserve exact repair intent: attempt=%+v err=%v", prepared, err)
 	}
+	if _, present, err := s.loadClosePending(workID); err != nil || !present {
+		t.Fatalf("failed completion did not retain exact close frame: present=%v err=%v", present, err)
+	}
+	if _, err := os.Stat(s.leasePath(workID)); err != nil {
+		t.Fatalf("failed completion did not retain lease: %v", err)
+	}
 
 	completePreparedTerminalization = previous
-	report, err := s.ReconcileRunAttemptsForTerminalWork(workID, fixedNow.Add(6*time.Minute))
+	retryAt := fixedNow.Add(6 * time.Minute)
+	closed, err = s.Close(workID, input, retryAt)
+	if err != nil || len(closed.UnterminalizedRunAttemptIDs) != 0 {
+		t.Fatalf("exact retry did not finish terminal close: result=%+v err=%v", closed, err)
+	}
+	after, err := runattempt.Open(s.home).Get(wantID)
+	if err != nil || after.Status != runattempt.StatusSucceeded || !after.CompletedAt.Equal(retryAt) {
+		t.Fatalf("exact retry did not terminalize at actual retry time %s: attempt=%+v err=%v", retryAt, after, err)
+	}
+	if _, present, err := s.loadClosePending(workID); err != nil || present {
+		t.Fatalf("exact retry left close frame: present=%v err=%v", present, err)
+	}
+	if _, err := os.Stat(s.leasePath(workID)); !os.IsNotExist(err) {
+		t.Fatalf("exact retry left lease: %v", err)
+	}
+}
+
+func TestReconcileFinishesClosePendingFrameAndLeaseCleanup(t *testing.T) {
+	s := newStore(t)
+	workID, runAttemptIDs := closeTerminalizeWork(t, s, "reconcile-finishes-close-cleanup", fixedNow)
+	wantID := runAttemptIDs[0]
+	previous := completePreparedTerminalization
+	t.Cleanup(func() { completePreparedTerminalization = previous })
+	completePreparedTerminalization = func(store *runattempt.Store, id string, intent runattempt.TerminalizationIntent, at time.Time) (runattempt.RunAttempt, error) {
+		if id == wantID {
+			return runattempt.RunAttempt{}, errors.New("injected terminalization failure before reconcile")
+		}
+		return previous(store, id, intent, at)
+	}
+	input := CloseInput{
+		Outcome: "completed", MoveType: "control_plane_repair",
+		Summary: "reconciler owns terminal close cleanup",
+	}
+	if _, err := s.Close(workID, input, fixedNow.Add(5*time.Minute)); err == nil || !strings.Contains(err.Error(), "close recovery_required") {
+		t.Fatalf("incomplete close error = %v, want recovery_required", err)
+	}
+
+	completePreparedTerminalization = previous
+	reconcileAt := fixedNow.Add(7 * time.Minute)
+	report, err := s.ReconcileRunAttemptsForTerminalWork(workID, reconcileAt)
 	if err != nil || report.Status != "ok" || !reflect.DeepEqual(report.ReconciledIDs, []string{wantID}) {
-		t.Fatalf("reconcile exposed incomplete attempt: report=%+v err=%v", report, err)
+		t.Fatalf("reconcile incomplete close: report=%+v err=%v", report, err)
+	}
+	after, err := runattempt.Open(s.home).Get(wantID)
+	if err != nil || after.Status != runattempt.StatusSucceeded || !after.CompletedAt.Equal(reconcileAt) {
+		t.Fatalf("reconcile did not terminalize at actual recovery time %s: attempt=%+v err=%v", reconcileAt, after, err)
+	}
+	if _, present, err := s.loadClosePending(workID); err != nil || present {
+		t.Fatalf("reconcile left close frame: present=%v err=%v", present, err)
+	}
+	if _, err := os.Stat(s.leasePath(workID)); !os.IsNotExist(err) {
+		t.Fatalf("reconcile left lease: %v", err)
 	}
 }
 

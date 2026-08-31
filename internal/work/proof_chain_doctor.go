@@ -525,10 +525,9 @@ func (s *Store) checkRunAttemptProof(w envelope.WorkEnvelope, events []Event, ra
 			continue
 		}
 		want := runAttemptStatusForCloseOutcome(w.State)
-		historicalCompletedAttempt := w.State == "completed" &&
-			(history.SuccessfulRetryPredecessors[rattID] || len(history.ReplacedClaimReservations[rattID]) > 0)
+		historicalOutcomeCompatibleAttempt := historicalRunAttemptOutcomeCompatible(w.State, rattID, history)
 		if ra.Status != runattempt.StatusSuperseded && ra.Status != want &&
-			!historicalCompletedAttempt {
+			!historicalOutcomeCompatibleAttempt {
 			verifiedProof, proofErr := s.committedVerifiedProofRunAttempt(w, ra)
 			if !verifiedProof {
 				report.Counts.RunAttemptOutcomeMismatch++

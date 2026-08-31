@@ -32,6 +32,7 @@ func seedLane(t *testing.T, s *Store, shortID string) (string, string) {
 // Receipt and Transition as the canonical agent-lane node id — byte-identical to the exported
 // AgentLaneNodeID(tuple), proving hard rule 1 (same function, never a re-slug or a literal).
 func TestF1DeclaredLaneStampsCanonicalNodeIDOnClose(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	shortID, wantNode := seedLane(t, s, "fixture/judge")
 
@@ -67,6 +68,7 @@ func TestF1DeclaredLaneStampsCanonicalNodeIDOnClose(t *testing.T) {
 // actor string, the owner, and a harness-ish token are all present. Nothing may be derived
 // from actor/owner/harness (no-guessing, falsifier l).
 func TestF2NoLaneEmptyLaneIDDespiteActorOwnerHarness(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "operator-owner", SuccessPredicate: "fixture proof exists"}, fixedNow)
 	if err != nil {
@@ -101,6 +103,7 @@ func TestF2NoLaneEmptyLaneIDDespiteActorOwnerHarness(t *testing.T) {
 // F3: a bogus ref and a bare harness are REFUSED at the claim gate (fail-closed) with an error
 // naming valid ref forms, and the envelope is left exactly as it was — never claimed, no lease.
 func TestF3BogusAndBareHarnessLaneRefusedAtClaim(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	seedLane(t, s, "fixture/judge") // a real lane exists, so refusal is not "empty store"
 
@@ -139,6 +142,7 @@ func TestF3BogusAndBareHarnessLaneRefusedAtClaim(t *testing.T) {
 // F5: advance --lane declares (when claim had none) or corrects (when claim had one) the lane
 // mid-lifecycle, under the SAME holder-scoped lease rules as any other advance mutation.
 func TestF5AdvanceLaneDeclaresAndCorrectsHolderScoped(t *testing.T) {
+	t.Parallel()
 	laneA := "fixture/judge"
 	laneB := "fixture/extract"
 

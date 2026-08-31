@@ -30,6 +30,7 @@ func proofCheckConsoleAgentsStep(t *testing.T) (repo string, step proofCheckStep
 // populations the smoke reconciles come from a fixture, so the gate no longer depends on the
 // operator happening to have leases, nor on the installed binary.
 func TestProofCheckConsoleAgentsGateProvesFixtureLeaseIdentity(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds the compound binary")
 	}
@@ -48,6 +49,7 @@ func TestProofCheckConsoleAgentsGateProvesFixtureLeaseIdentity(t *testing.T) {
 // smoke's cross-door reconciliation compares empty sets and passes, so the gate must refuse
 // the home first.
 func TestProofCheckConsoleAgentsGateRefusesLeaselessHome(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds the compound binary")
 	}
@@ -67,6 +69,7 @@ func TestProofCheckConsoleAgentsGateRefusesLeaselessHome(t *testing.T) {
 // ever fails, the smoke grew its own emptiness check; do not delete the guard on the
 // assumption that it already had one.
 func TestProofCheckConsoleAgentsSmokePassesOnALeaselessHome(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("runs the console smoke")
 	}

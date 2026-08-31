@@ -150,6 +150,7 @@ func TestWorkLandCheckCLIUsesExplicitRepoAndRecordsProof(t *testing.T) {
 const workLandCheckStealCLISubEnv = "COMPOUND_WORK_LAND_CHECK_STEAL_CLI_SUB"
 
 func TestWorkLandCheckCLIStealOnlyOverridesProofAttachment(t *testing.T) {
+	t.Parallel()
 	if mode := os.Getenv(workLandCheckStealCLISubEnv); mode != "" {
 		args := []string{
 			"land-check", os.Getenv("COMPOUND_WORK_LAND_CHECK_STEAL_WORK_ID"),
@@ -164,10 +165,7 @@ func TestWorkLandCheckCLIStealOnlyOverridesProofAttachment(t *testing.T) {
 		return
 	}
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedTestHome(t)
 	repo, base, tip := initLandingCLIRepo(t)
 	store, err := work.Open(homePath)
 	if err != nil {
@@ -379,6 +377,7 @@ func TestWorkAdvanceHelpServesLegacyDeliveryBindingFlags(t *testing.T) {
 const workLandingGuardCLISubEnv = "COMPOUND_WORK_LANDING_GUARD_CLI_SUB"
 
 func TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags(t *testing.T) {
+	t.Parallel()
 	if mode := os.Getenv(workLandingGuardCLISubEnv); mode != "" {
 		switch mode {
 		case "create-unknown":
@@ -401,10 +400,7 @@ func TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags(t *testing.T) {
 		return
 	}
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedTestHome(t)
 	for _, mode := range []string{
 		"create-unknown", "create-partial-contract", "land-unknown", "land-missing-value",
 		"land-steal-without-reason", "land-reason-without-steal", "land-empty-steal-reason",

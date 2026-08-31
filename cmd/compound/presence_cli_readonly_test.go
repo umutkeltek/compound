@@ -6,22 +6,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"compound/internal/home"
 )
 
 const presenceReadOnlySubprocessEnv = "COMPOUND_PRESENCE_READ_ONLY_SUBPROCESS"
 
 func TestPresenceCLIReadOnlyDoesNotMaterializeRuntimeDirs(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(presenceReadOnlySubprocessEnv) == "1" {
 		cmdPresence([]string{"--json"})
 		return
 	}
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	for _, dir := range []string{"work", "events"} {
 		if err := os.RemoveAll(filepath.Join(homePath, dir)); err != nil {
 			t.Fatalf("strip %s: %v", dir, err)
@@ -45,15 +41,13 @@ func TestPresenceCLIReadOnlyDoesNotMaterializeRuntimeDirs(t *testing.T) {
 }
 
 func TestPresenceCLIDoesNotAddLandChecks(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(presenceReadOnlySubprocessEnv) == "2" {
 		cmdPresence([]string{"--json"})
 		return
 	}
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	landChecks := filepath.Join(homePath, "work", "land-checks")
 	if _, err := os.Stat(landChecks); !os.IsNotExist(err) {
 		t.Fatalf("precondition: fresh home has work/land-checks (err=%v)", err)

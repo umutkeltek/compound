@@ -42,6 +42,7 @@ func assertDirStaysEmpty(t *testing.T, dir string) {
 // and no adapter was resolved. An implicit vendor default would instead
 // proceed to a preview (exit 0) — that is the red state this test refuses.
 func TestActPostMissingTransportIsUsageErrorBeforePolicyEval(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	code := runActWithInput([]string{
@@ -61,6 +62,7 @@ func TestActPostMissingTransportIsUsageErrorBeforePolicyEval(t *testing.T) {
 // launder policy through a different capability's standing grants. Passing the
 // flag at all is a refusal (exit 2) before policy evaluation.
 func TestActPostCapabilityFlagIsRejected(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	code := runActWithInput([]string{
@@ -83,6 +85,7 @@ func TestActPostCapabilityFlagIsRejected(t *testing.T) {
 // rollback plan says so honestly instead of naming a delete verb that does
 // not exist.
 func TestGovernedPostIntentDeclaresIrreversibleWithHonestRollback(t *testing.T) {
+	t.Parallel()
 	target := envelope.ActionTarget{
 		Kind: "transport",
 		ID:   "fixture",
@@ -104,6 +107,7 @@ func TestGovernedPostIntentDeclaresIrreversibleWithHonestRollback(t *testing.T) 
 // AND the resolved adapter config path, so the operator sees precisely which
 // authority would fire before confirming.
 func TestActPostPreviewPrintsTransportNameAndConfigPath(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	code := runActWithInput([]string{
@@ -125,6 +129,7 @@ func TestActPostPreviewPrintsTransportNameAndConfigPath(t *testing.T) {
 // Falsifier (d, JSON shape): the JSON preview carries the same authority
 // pointer machine-readably.
 func TestActPostJSONPreviewCarriesTransportConfigPath(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	code := runActWithInput([]string{
@@ -155,6 +160,7 @@ func TestActPostJSONPreviewCarriesTransportConfigPath(t *testing.T) {
 // by its own concrete grant. Test files may carry the literal as a fixture;
 // production .go files under cmd/ and internal/act/ may not.
 func TestNoVendorTransportLiteralInProductionSource(t *testing.T) {
+	t.Parallel()
 	for _, root := range []string{"../../cmd", "../../internal/act"} {
 		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {

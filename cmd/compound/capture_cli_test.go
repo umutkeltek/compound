@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"compound/internal/home"
 )
 
 const captureCLIBoundarySubEnv = "COMPOUND_CAPTURE_CLI_BOUNDARY_SUB"
@@ -15,11 +13,8 @@ const captureCLIBoundarySubEnv = "COMPOUND_CAPTURE_CLI_BOUNDARY_SUB"
 // TestCaptureCLITextFlagCapturesAndShowRoundTrips proves F6's --text path: a capture through
 // --text mints a proposed candidate and `compound capture show <cid>` returns the exact bytes.
 func TestCaptureCLITextFlagCapturesAndShowRoundTrips(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 
 	out := captureStdout(t, func() {
 		cmdCapture([]string{"--source", "phone-voice", "--text", "call the vet about the appointment", "--work", "work_50662769fd78"})
@@ -60,11 +55,8 @@ func TestCaptureCLITextFlagCapturesAndShowRoundTrips(t *testing.T) {
 // TestCaptureCLIStdinPathCaptures proves F6's stdin path: omitting --text reads the body from
 // stdin.
 func TestCaptureCLIStdinPathCaptures(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 
 	var out string
 	withStdin(t, "a stdin-fed capture body", func() {
@@ -83,11 +75,8 @@ func TestCaptureCLIStdinPathCaptures(t *testing.T) {
 // TestCaptureCLISameDayRecaptureReportsSkippedExisting proves the CLI success line distinguishes
 // a fresh mint from a same-day skip-if-exists.
 func TestCaptureCLISameDayRecaptureReportsSkippedExisting(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 
 	first := captureStdout(t, func() {
 		cmdCapture([]string{"--source", "phone-voice", "--text", "repeated reminder"})
@@ -107,14 +96,13 @@ func TestCaptureCLISameDayRecaptureReportsSkippedExisting(t *testing.T) {
 // usage error, exit 2 — never a silent empty capture. Runs in a subprocess because the CLI path
 // calls os.Exit.
 func TestCaptureCLIEmptyBodyExitsUsage(t *testing.T) {
+	t.Parallel()
+
 	if os.Getenv(captureCLIBoundarySubEnv) == "empty-body" {
 		cmdCapture([]string{"--source", "phone-voice", "--text", "   "})
 		return
 	}
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCaptureCLIEmptyBodyExitsUsage$")
 	cmd.Env = append(os.Environ(), captureCLIBoundarySubEnv+"=empty-body", "COMPOUND_HOME="+homePath)
 	output, err := cmd.CombinedOutput()
@@ -130,14 +118,13 @@ func TestCaptureCLIEmptyBodyExitsUsage(t *testing.T) {
 // TestCaptureCLIMissingSourceExitsUsage proves --source is required: omitting it is a usage
 // error, exit 2.
 func TestCaptureCLIMissingSourceExitsUsage(t *testing.T) {
+	t.Parallel()
+
 	if os.Getenv(captureCLIBoundarySubEnv) == "missing-source" {
 		cmdCapture([]string{"--text", "a body with no source"})
 		return
 	}
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCaptureCLIMissingSourceExitsUsage$")
 	cmd.Env = append(os.Environ(), captureCLIBoundarySubEnv+"=missing-source", "COMPOUND_HOME="+homePath)
 	output, err := cmd.CombinedOutput()
@@ -153,14 +140,13 @@ func TestCaptureCLIMissingSourceExitsUsage(t *testing.T) {
 // TestCaptureCLIShowMissingCIDExitsError proves `show` on a missing/invalid cid is an explicit
 // error, never a silent empty stdout.
 func TestCaptureCLIShowMissingCIDExitsError(t *testing.T) {
+	t.Parallel()
+
 	if os.Getenv(captureCLIBoundarySubEnv) == "show-missing" {
 		cmdCapture([]string{"show", "sha256:" + strings.Repeat("0", 64)})
 		return
 	}
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCaptureCLIShowMissingCIDExitsError$")
 	cmd.Env = append(os.Environ(), captureCLIBoundarySubEnv+"=show-missing", "COMPOUND_HOME="+homePath)
 	output, err := cmd.CombinedOutput()
@@ -179,6 +165,8 @@ func TestCaptureCLIShowMissingCIDExitsError(t *testing.T) {
 // TestCaptureUsageLineIsRegisteredAtTopLevel proves `compound capture` is a top-level verb whose
 // usage string is discoverable from the top-level help text (mirrors the finding/act verbs).
 func TestCaptureUsageLineIsRegisteredAtTopLevel(t *testing.T) {
+	t.Parallel()
+
 	repoRoot, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatalf("resolve repo root: %v", err)

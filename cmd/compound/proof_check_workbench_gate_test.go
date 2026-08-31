@@ -89,6 +89,8 @@ func proofCheckWorkbenchGateHome(t *testing.T, bare bool) string {
 // home, so it must be green with no live COMPOUND_HOME — and green means the projection
 // reproduced the seeded ledger, which is more than this gate ever asserted before.
 func TestProofCheckWorkbenchGateProvesSeededCounts(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("builds the compound binary")
 	}
@@ -103,6 +105,8 @@ func TestProofCheckWorkbenchGateProvesSeededCounts(t *testing.T) {
 // An unseeded home projects every count as 0 and exits 0 — exactly the shape the gate used
 // to accept — so the assertion must refuse it.
 func TestProofCheckWorkbenchGateRefusesEmptyHome(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("builds the compound binary")
 	}
@@ -122,6 +126,8 @@ func TestProofCheckWorkbenchGateRefusesEmptyHome(t *testing.T) {
 // disappears from it, and every count silently shrinks. The old exit-code check could not see
 // that; these assertions can.
 func TestProofCheckWorkbenchGateCatchesSilentlyDroppedEnvelope(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("builds the compound binary")
 	}

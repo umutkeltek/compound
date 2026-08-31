@@ -26,8 +26,8 @@ package decisions
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
+	"errors"
+	"io/fs"
 	"sort"
 	"strings"
 	"time"
@@ -106,6 +106,7 @@ type StandingLawView struct {
 	GeneratedAt   string                `json:"generated_at"`
 	Records       []StandingLawRecord   `json:"records"`
 	Conflicts     []StandingLawConflict `json:"conflicts"`
+	Warnings      []string              `json:"warnings,omitempty"`
 	Counts        StandingLawCounts     `json:"counts"`
 }
 
@@ -190,7 +191,7 @@ func StandingLaw(store *mem.Store, homePath string, now time.Time) (StandingLawV
 		return view.Records[i].ClaimID > view.Records[j].ClaimID
 	})
 
-	view.Conflicts = loadConflictCandidates(homePath, titleByClaimID)
+	view.Conflicts, view.Warnings = loadConflictCandidates(homePath, titleByClaimID)
 	view.Counts = countStandingLaw(view)
 	return view, nil
 }
@@ -257,35 +258,32 @@ type conflictCandidate struct {
 	Qualifiers map[string]string `json:"qualifiers"`
 }
 
-func loadConflictCandidates(homePath string, titleByClaimID map[string]string) []StandingLawConflict {
+func loadConflictCandidates(homePath string, titleByClaimID map[string]string) ([]StandingLawConflict, []string) {
 	out := []StandingLawConflict{}
 	if strings.TrimSpace(homePath) == "" {
-		return out
+		return out, nil
 	}
-	dir := filepath.Join(homePath, candidates.InboxDir(candidates.Decision))
-	entries, err := os.ReadDir(dir)
+	page, err := candidates.ReadPage(homePath, candidates.Decision, "", 0)
 	if err != nil {
-		return out
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
+		if errors.Is(err, fs.ErrNotExist) {
+			return out, nil
 		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
+		return out, []string{"decision candidate projection unavailable: " + err.Error()}
+	}
+	var warnings []string
+	for _, entry := range page.Entries {
+		if entry.Corruption != nil {
+			warnings = append(warnings, entry.Corruption.Error())
 			continue
 		}
 		var cand conflictCandidate
-		if json.Unmarshal(data, &cand) != nil {
+		if err := json.Unmarshal(entry.Record.Body, &cand); err != nil {
+			warnings = append(warnings, "candidate entry "+string(entry.EntryCursor)+" is corrupt: invalid_json ("+err.Error()+")")
 			continue
 		}
 		q := cand.Qualifiers
 		if q == nil || q["harvest_outcome"] != HarvestConflictOutcome {
 			continue
-		}
-		id := cand.ID
-		if id == "" {
-			id = strings.TrimSuffix(entry.Name(), ".json")
 		}
 		conflictClaim := q["conflicts_with_claim"]
 		restatement := strings.TrimSpace(cand.Subject)
@@ -293,7 +291,7 @@ func loadConflictCandidates(homePath string, titleByClaimID map[string]string) [
 			restatement = strings.TrimSpace(cand.Statement)
 		}
 		out = append(out, StandingLawConflict{
-			CandidateID:           id,
+			CandidateID:           entry.Record.ID,
 			Kind:                  q["kind"],
 			Restatement:           restatement,
 			Verbatim:              strings.TrimSpace(q["verbatim"]),
@@ -306,7 +304,7 @@ func loadConflictCandidates(homePath string, titleByClaimID map[string]string) [
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].CandidateID < out[j].CandidateID })
-	return out
+	return out, warnings
 }
 
 func countStandingLaw(view StandingLawView) StandingLawCounts {

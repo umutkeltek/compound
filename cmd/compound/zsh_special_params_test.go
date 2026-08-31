@@ -76,6 +76,7 @@ func isZshScript(name string, firstLine string) bool {
 // file:line; remove it and this goes GREEN. Runtime/private/untracked scripts are deliberately
 // outside this source invariant.
 func TestZshScriptsDoNotAssignSpecialParameters(t *testing.T) {
+	t.Parallel()
 	repoRoot := filepath.Join("..", "..")
 
 	hits, err := zshSpecialAssignmentHits(repoRoot)
@@ -139,6 +140,7 @@ func zshSpecialAssignmentHits(repoRoot string) ([]zshAssignmentHit, error) {
 // over-reports is a guard that gets switched off. The negative cases are the ones that
 // matter: every one of them appeared in real scripts in this repo.
 func TestZshSpecialAssignmentDetector(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		line string
@@ -172,6 +174,7 @@ func TestZshSpecialAssignmentDetector(t *testing.T) {
 }
 
 func TestZshSpecialAssignmentGuardScansTrackedScriptsOnly(t *testing.T) {
+	t.Parallel()
 	repoRoot := t.TempDir()
 	runZshGuardGit(t, repoRoot, "init", "--quiet")
 

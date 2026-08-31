@@ -13,29 +13,32 @@ package work
 //   - A different actor with no --steal, or --steal with an empty reason, is REFUSED: the
 //     refusal is recorded (ActionIntent + deny PolicyDecision + lifecycle event) so liveness
 //     probes can see the contention, and the work is left exactly as it was.
-//   - A different actor with --steal and a non-empty reason SUCCEEDS: the lease file itself is
-//     rewritten so By becomes the stealing actor (transferLeaseOnSteal, atomic stage+rename,
-//     same publish path Claim uses), and the steal is recorded (ActionIntent + PolicyDecision +
-//     lifecycle event carrying prior holder, reason, and the stealing actor) and the caller
-//     proceeds. Coordination is advisory-with-teeth, not a deadlock machine — a dead lane must
-//     never brick an envelope.
+//   - A different actor with --steal and a non-empty reason SUCCEEDS. A real Advance transition
+//     transfers the live lease before continuing. A terminal Close instead binds the prior
+//     holder and reason into its exact ActionIntent, retains the original lease until terminal
+//     publication, publishes the successful override in that same lifecycle event, and releases
+//     the original lease last. Coordination is advisory-with-teeth without creating a transient
+//     close-only holder that can strand nonterminal work.
 //
 // P0 (2026-07-23): recordLeaseSteal used to record only the ActionIntent/PolicyDecision/Event
 // trail and never touched work/leases/<id>.json — the file kept naming the original holder, so
 // that holder's NEXT advance/close without --steal passed leaseHolderStatusFor's holder==actor
 // short-circuit as if the steal had never happened (the exact twin-collision class this file
 // exists to close, now against the stealer instead of a stranger). transferLeaseOnSteal closes
-// that gap; see lease_advance_test.go/lease_close_test.go for the falsifiers.
+// that gap for continuing Advance transitions. Terminal Close has no next live mutation and
+// therefore publishes the override atomically with terminal state instead of transferring.
 //
-// Follow-up (same day): a close-gate steal always transfers (this file), but an advance-gate
-// steal only transfers for a real state transition — a same-state advance steal is the
+// Follow-up: an advance-gate steal transfers only for a real state transition — a same-state
+// advance steal is the
 // land-check/proof-attachment class (LandCheck's same-state Advance in land_check.go), where
 // --steal authorizes one evidence write and must NOT move the lease. See
 // leaseHolderAdvanceGate's transitions computation in lease_advance.go and
 // TestWorkLandCheckCLIStealOnlyOverridesProofAttachment (cmd/compound).
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -50,6 +53,7 @@ type leaseHolderStatus struct {
 	Blocked bool   // actor is not Holder and no valid steal is presented
 	Stolen  bool   // actor is not Holder but a valid --steal --reason is presented
 	Message string // holder-named refusal / requirement message, set when Blocked
+	Err     error  // non-missing lease authority could not be read; callers fail closed
 }
 
 // leaseHolderStatusFor reads workID's lease (if any) live and reports how an attempt by
@@ -60,8 +64,31 @@ type leaseHolderStatus struct {
 // verb == "close").
 func (s *Store) leaseHolderStatusFor(workID, actor string, steal bool, stealReason, verb string) leaseHolderStatus {
 	lease, err := s.readLease(workID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return leaseHolderStatus{}
+		}
+		authorityErr := fmt.Errorf("read work %s lease authority: %w", workID, err)
+		return leaseHolderStatus{
+			Blocked: true,
+			Message: authorityErr.Error(),
+			Err:     authorityErr,
+		}
+	}
 	holder := strings.TrimSpace(lease.By)
-	if err != nil || holder == "" || holder == actor {
+	if lease.WorkID != workID || holder == "" {
+		authorityErr := fmt.Errorf(
+			"work %s lease authority invalid: expected work_id %q and nonblank holder",
+			workID,
+			workID,
+		)
+		return leaseHolderStatus{
+			Blocked: true,
+			Message: authorityErr.Error(),
+			Err:     authorityErr,
+		}
+	}
+	if holder == actor {
 		return leaseHolderStatus{}
 	}
 	reason := strings.TrimSpace(stealReason)
@@ -82,24 +109,25 @@ func (s *Store) leaseHolderStatusFor(workID, actor string, steal bool, stealReas
 	}
 }
 
-// leaseHolderCloseGate is the enforcement seam Close calls immediately after
-// heldReleaseOperatorError. It refuses (recording a deny) a non-holder close, records an
-// explicit steal, and is a no-op for an unclaimed work or a same-actor close.
-func (s *Store) leaseHolderCloseGate(w envelope.WorkEnvelope, actor string, in CloseInput, now time.Time) error {
+// leaseHolderCloseGate is the final authorization seam for a terminal close
+// override. It re-reads the live holder after RunAttempt preparation and
+// requires the exact holder retained by the read-only preflight. It deliberately
+// does not rewrite the lease: the close ActionIntent binds holder/reason and the
+// terminal lifecycle event publishes the only successful steal trail. The
+// original lease remains in place until terminal close releases it last.
+func (s *Store) leaseHolderCloseGate(w envelope.WorkEnvelope, actor string, in CloseInput, expected leaseHolderStatus) error {
 	status := s.leaseHolderStatusFor(w.ID, actor, in.Steal, in.StealReason, "close")
-	switch {
-	case status.Blocked:
-		if err := s.recordLeaseHolderDeny(w, actor, status.Holder, status.Message, "work.close", "close_denied_not_lease_holder", now); err != nil {
-			return err
-		}
-		return fmt.Errorf("cannot close %s: %s", w.ID, status.Message)
-	case status.Stolen:
-		// Close is terminal: there is no further mutation a stale lease could mis-authorize
-		// after this, so a close-gate steal always transfers.
-		return s.recordLeaseSteal(w, actor, status.Holder, strings.TrimSpace(in.StealReason), "work.close", "close_lease_stolen", true, now)
-	default:
-		return nil
+	if status.Err != nil {
+		return status.Err
 	}
+	if !status.Stolen || !expected.Stolen || status.Holder != expected.Holder {
+		return fmt.Errorf(
+			"close lease authority changed before terminal override: expected holder %q, got holder %q",
+			expected.Holder,
+			status.Holder,
+		)
+	}
+	return nil
 }
 
 // recordLeaseHolderDeny writes the ActionIntent and a deny PolicyDecision for a mutation
@@ -137,19 +165,20 @@ func (s *Store) recordLeaseHolderDeny(w envelope.WorkEnvelope, actor, holder, me
 	})
 }
 
-// recordLeaseSteal, when transfersLease is true, transfers workID's live lease to actor
+// recordLeaseSteal is the advance-path override recorder. When transfersLease is true, it
+// transfers workID's live lease to actor
 // (transferLeaseOnSteal) FIRST and fails closed before writing anything else: if the
 // transfer errors, this returns immediately and writes none of the trail below, so the
 // ledger never claims a steal that did not actually take the lease (and the caller's gate
-// returns the error, blocking the underlying advance/close mutation too — see
-// leaseHolderAdvanceGate/leaseHolderCloseGate). When transfersLease is false (a same-state
+// returns the error, blocking the underlying advance mutation too — see
+// leaseHolderAdvanceGate). When transfersLease is false (a same-state
 // advance steal — the land-check/proof-attachment class, see leaseHolderAdvanceGate), the
 // lease file is left untouched: --steal there authorizes exactly one evidence-attachment
 // write, not a hand-off, and the original holder must still be the recorded holder for every
 // subsequent lifecycle command.
 //
 // Either way, this writes the ActionIntent and a recorded PolicyDecision for the explicit
-// lease steal (--steal --reason) on the mutation named by capability/action, plus a lifecycle
+// lease steal (--steal --reason) on the advance mutation, plus a lifecycle
 // event carrying the prior holder, the reason, and the stealing actor — the same auditable
 // trail a refusal leaves, so a steal is a loud, recorded override, not a silent bypass,
 // whether or not it also transfers the lease.

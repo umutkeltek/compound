@@ -14,6 +14,7 @@ import (
 )
 
 func TestPromotedMeaningRequiresExactCurrentContextRevision(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	s, err := work.Open(homePath)
 	if err != nil {
@@ -67,6 +68,7 @@ func TestPromotedMeaningRequiresExactCurrentContextRevision(t *testing.T) {
 }
 
 func TestPromotedMeaningFailsClosedWhenContextAuthorityUnreadable(t *testing.T) {
+	t.Parallel()
 	s, err := work.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +87,7 @@ func TestPromotedMeaningFailsClosedWhenContextAuthorityUnreadable(t *testing.T) 
 }
 
 func TestPromotedMeaningIgnoresNonAcceptedAndAmbiguousDirectives(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	s, err := work.Open(homePath)
 	if err != nil {

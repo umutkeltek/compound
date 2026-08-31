@@ -56,8 +56,8 @@ func TestWorkVerbHelpShowsOwnFlags(t *testing.T) {
 	tests := map[string][]string{
 		"dispatch-claim":   {"--confirm", "without --confirm previews"},
 		"dispatch-execute": {"--workspace", "--permission-mode", "--confirm", "without --confirm previews"},
-		"delegate":         {"--harness", "--prompt", "--dry-run"},
-		"steer":            {"--text", "--enter"},
+		"delegate":         {"--harness", "--prompt", "--dry-run", "--experimental-delegate-mutations", "unsupported in v0.1"},
+		"steer":            {"--text", "--enter", "--experimental-delegate-mutations", "unsupported in v0.1"},
 		"show":             {"--json"},
 		"close":            {"--outcome", "--move-type"},
 	}
@@ -69,6 +69,21 @@ func TestWorkVerbHelpShowsOwnFlags(t *testing.T) {
 			if !strings.Contains(out, fragment) {
 				t.Fatalf("%s help lacks %q:\n%s", verb, fragment, out)
 			}
+		}
+	}
+}
+
+func TestExperimentalDelegateMutationHelpExamplesCarryTheGate(t *testing.T) {
+	tests := map[string]string{
+		"delegate": "example: compound work delegate work_abc123 --harness claude-zai --experimental-delegate-mutations",
+		"steer":    "example: compound work steer work_abc123 --experimental-delegate-mutations",
+	}
+	for verb, want := range tests {
+		out := captureStdout(t, func() {
+			cmdWork([]string{verb, "--help"})
+		})
+		if !strings.Contains(out, want) {
+			t.Fatalf("%s help advertises an ungated mutation example; want %q:\n%s", verb, want, out)
 		}
 	}
 }

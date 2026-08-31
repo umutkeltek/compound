@@ -19,7 +19,7 @@ func sortedReasonKeys(m map[string]int) []string {
 }
 
 func laneBeliefsUsage() string {
-	return "usage: compound lanebeliefs <fold [--dry-run] [--json] [--home P]|promote [--dry-run] [--json] [--home P]|cool [--dry-run] [--json] [--home P]|list [--json] [--home P]>"
+	return "usage: compound lanebeliefs <fold [--dry-run|--experimental] [--json] [--home P]|promote [--dry-run|--experimental] [--json] [--home P]|cool [--dry-run|--experimental] [--json] [--home P]|list [--json] [--home P]>"
 }
 
 func cmdLaneBeliefs(args []string) {
@@ -30,6 +30,7 @@ func cmdLaneBeliefs(args []string) {
 	sub := args[0]
 	jsonOut := false
 	dryRun := false
+	experimental := false
 	homeFlag := ""
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
@@ -37,6 +38,8 @@ func cmdLaneBeliefs(args []string) {
 			jsonOut = true
 		case "--dry-run":
 			dryRun = true
+		case "--experimental":
+			experimental = true
 		case "--home":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "lanebeliefs: --home requires a path")
@@ -48,6 +51,10 @@ func cmdLaneBeliefs(args []string) {
 			fmt.Fprintln(os.Stderr, laneBeliefsUsage())
 			os.Exit(2)
 		}
+	}
+	if !dryRun && !experimental && (sub == "fold" || sub == "promote" || sub == "cool") {
+		fmt.Fprintf(os.Stderr, "lanebeliefs %s: mutation is experimental; pass --experimental\n", sub)
+		os.Exit(2)
 	}
 	homePath, err := home.Resolve(homeFlag)
 	if err != nil {

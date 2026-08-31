@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"compound/internal/home"
 	"compound/internal/runattempt"
 )
 
@@ -20,15 +19,13 @@ const runAttemptUnreadableSweepChildEnv = "COMPOUND_TEST_RUN_ATTEMPT_UNREADABLE_
 const runAttemptUnreadableListChildEnv = "COMPOUND_TEST_RUN_ATTEMPT_UNREADABLE_LIST"
 
 func TestRunAttemptListReportsReadablePartialBeforeNonzeroExit(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(runAttemptUnreadableListChildEnv) != "" {
 		cmdRunAttempt([]string{"list", "--non-terminal", "--json"})
 		return
 	}
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	store := runattempt.Open(homePath)
 	unreadable, err := store.Mint("work_unreadable_list_cli", "actor:test", "claude-code", cliTestNow.Add(-2*time.Hour))
 	if err != nil {
@@ -75,15 +72,13 @@ func TestRunAttemptListReportsReadablePartialBeforeNonzeroExit(t *testing.T) {
 }
 
 func TestRunAttemptSweepReportsUnreadableAttemptsBeforeNonzeroExit(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(runAttemptUnreadableSweepChildEnv) != "" {
 		cmdRunAttempt([]string{"sweep", "--json", "--threshold", "1m"})
 		return
 	}
 
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	store := runattempt.Open(homePath)
 	attempt, err := store.Mint("work_unreadable_cli", "actor:test", "claude-code", cliTestNow.Add(-2*time.Hour))
 	if err != nil {
@@ -130,6 +125,7 @@ func TestRunAttemptSweepReportsUnreadableAttemptsBeforeNonzeroExit(t *testing.T)
 // happens after the sweep, the stored status exposes the mutation even when the
 // command printed a plausible banner or error.
 func TestRunAttemptSweepValidatesArgumentsBeforeMutation(t *testing.T) {
+	t.Parallel()
 	if encoded := os.Getenv(runAttemptUsageChildArgsEnv); encoded != "" {
 		raw, err := base64.RawStdEncoding.DecodeString(encoded)
 		if err != nil {
@@ -166,10 +162,7 @@ func TestRunAttemptSweepValidatesArgumentsBeforeMutation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			homePath := t.TempDir()
-			if err := home.Init(homePath, "test", cliTestNow); err != nil {
-				t.Fatalf("init home: %v", err)
-			}
+			homePath := initializedTestHome(t)
 			store := runattempt.Open(homePath)
 			attempt, err := store.Mint("work_guard", "actor:test", "claude-code", cliTestNow.Add(-24*time.Hour))
 			if err != nil {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +37,10 @@ type ClosePlanOptions struct {
 	// never mutates or records anything for this preview — only Close (work.go) does.
 	Steal       bool
 	StealReason string
+	// FrozenActionIntentID is internal recovery input. An exact prepared
+	// RunAttempt may carry the legacy delimiter-joined close identity minted
+	// before length framing shipped; ordinary callers leave this empty.
+	FrozenActionIntentID string
 }
 
 type ClosePolicySummary struct {
@@ -145,15 +150,25 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 	if actor == "" {
 		actor = "codex"
 	}
-	ai := s.closeActionIntent(w, actor, outcome, moveType, now, opts)
+	leaseStatus := s.leaseHolderStatusFor(w.ID, actor, opts.Steal, opts.StealReason, "close")
+	ai := s.closeActionIntent(w, actor, outcome, moveType, now, opts, leaseStatus)
 	if err := ai.Validate(); err != nil {
 		return ClosePlan{}, err
+	}
+	if frozen := strings.TrimSpace(opts.FrozenActionIntentID); frozen != "" && ai.ID != frozen {
+		return ClosePlan{}, fmt.Errorf("prepared close action identity %s is incompatible with current close input", frozen)
 	}
 	cfg, source, err := policy.LoadConfig(s.home)
 	if err != nil {
 		return ClosePlan{}, err
 	}
 	pd := policy.Evaluate(ai, cfg, now)
+	// Close recovery seals every authority object and the lifecycle event to one
+	// exact instant. Policy's generic header is second-resolution, so finalize
+	// this close-specific decision from the already validated ActionIntent clock
+	// before its final validation and persistence.
+	pd.CreatedAt = ai.CreatedAt
+	pd.IDs.ContextPackID = ai.IDs.ContextPackID
 	if err := pd.Validate(); err != nil {
 		return ClosePlan{}, err
 	}
@@ -173,10 +188,9 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 	// leaseHolderStatusFor is read-only, so computing it before the plan literal lets every
 	// returned plan (including the action-plan early return below) carry the full
 	// precondition enumeration, not just the first refusal NoAction names.
-	leaseStatus := s.leaseHolderStatusFor(w.ID, actor, opts.Steal, opts.StealReason, "close")
 	plan := ClosePlan{
 		SchemaVersion:      ClosePlanSchemaVersion,
-		ID:                 idFor("wclp_", workID, actor, outcome, moveType, ts(now)),
+		ID:                 idFor("wclp_", workID, actor, outcome, moveType, ai.ID, ts(now)),
 		GeneratedAt:        now.UTC().Format(time.RFC3339),
 		Status:             "not_closeable",
 		Mode:               "proposal_only",
@@ -300,7 +314,7 @@ func (s *Store) RecordClosePlan(plan ClosePlan) (string, error) {
 	return path, nil
 }
 
-func (s *Store) closeActionIntent(w envelope.WorkEnvelope, actor, outcome, moveType string, now time.Time, opts ClosePlanOptions) envelope.ActionIntent {
+func (s *Store) closeActionIntent(w envelope.WorkEnvelope, actor, outcome, moveType string, now time.Time, opts ClosePlanOptions, leaseStatus leaseHolderStatus) envelope.ActionIntent {
 	targetID := strings.TrimSpace(opts.TargetID)
 	if targetID == "" {
 		targetID = w.ID
@@ -315,10 +329,39 @@ func (s *Store) closeActionIntent(w envelope.WorkEnvelope, actor, outcome, moveT
 	mutationClass := orDefault(opts.MutationClass, "local_reversible")
 	reversibility := orDefault(opts.Reversibility, "manual")
 	blastRadius := orDefault(opts.BlastRadius, "local")
+	stealReason := strings.TrimSpace(opts.StealReason)
+	preview := fmt.Sprintf("close work %s from %s to %s move_type %s actor %s", w.ID, w.State, outcome, moveType, actor)
+	if opts.Steal {
+		preview += fmt.Sprintf(" lease_override_from %q reason %q", leaseStatus.Holder, stealReason)
+	}
+	identityParts := []string{
+		capability,
+		action,
+		targetKind,
+		targetID,
+		targetPath,
+		mutationClass,
+		reversibility,
+		blastRadius,
+		actor,
+		outcome,
+		moveType,
+		fmt.Sprintf("%t", opts.Steal),
+		leaseStatus.Holder,
+		stealReason,
+		ts(now),
+	}
+	actionID := closeActionIntentIDFor(identityParts...)
+	if frozen := strings.TrimSpace(opts.FrozenActionIntentID); frozen != "" {
+		legacyID := idFor("act_", identityParts...)
+		if frozen == actionID || frozen == legacyID {
+			actionID = frozen
+		}
+	}
 	return envelope.ActionIntent{
-		Header: newHeader(
+		Header: newCloseHeader(
 			envelope.SVActionIntent,
-			idFor("act_", capability, action, targetKind, targetID, targetPath, mutationClass, reversibility, blastRadius, actor, outcome, moveType, ts(now)),
+			actionID,
 			now,
 			w.ID,
 			w.IDs.ContextPackID,
@@ -332,9 +375,21 @@ func (s *Store) closeActionIntent(w envelope.WorkEnvelope, actor, outcome, moveT
 		MutationClass: mutationClass,
 		Reversibility: reversibility,
 		BlastRadius:   blastRadius,
-		Preview:       fmt.Sprintf("close work %s from %s to %s move_type %s actor %s", w.ID, w.State, outcome, moveType, actor),
+		Preview:       preview,
 		RollbackPlan:  fmt.Sprintf("reopen work from %s if receipt/transition proof is invalid", outcome),
 	}
+}
+
+// closeActionIntentIDFor frames every field before using the package's stable
+// digest helper. Close authority contains operator-provided holder and reason
+// strings, so a bare "|" join can map two different authority tuples to the
+// same ActionIntent identity.
+func closeActionIntentIDFor(parts ...string) string {
+	framed := make([]string, len(parts))
+	for i, part := range parts {
+		framed[i] = strconv.Itoa(len(part)) + ":" + part
+	}
+	return idFor("act_", framed...)
 }
 
 func summarizeClosePolicy(pd envelope.PolicyDecision, source string) ClosePolicySummary {

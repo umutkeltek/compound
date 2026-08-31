@@ -1,6 +1,9 @@
 package decisions
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +105,47 @@ func TestStandingLawSupersededNeverLive(t *testing.T) {
 	}
 	if view.Counts.Superseded != 1 || view.Counts.Conflicts != 1 {
 		t.Fatalf("superseded/conflict counts drift: %+v", view.Counts)
+	}
+}
+
+func TestStandingLawConflictCandidatesRejectCustodyCorruption(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeConflictCandidate(t, home, "claim_live")
+	dir := filepath.Join(home, candidates.InboxDir(candidates.Decision))
+	conflictBody := `{"id":"other","subject":"forged","qualifiers":{"harvest_outcome":"conflict","conflicts_with_claim":"claim_live"}}`
+	if err := os.WriteFile(filepath.Join(dir, "mismatch.json"), []byte(conflictBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "blank.json"), []byte(`{"id":"","subject":"forged","qualifiers":{"harvest_outcome":"conflict"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "linked.json")
+	if err := os.WriteFile(outside, []byte(`{"id":"linked","subject":"forged","qualifiers":{"harvest_outcome":"conflict"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "linked.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scratch.tmp"), []byte("not a canonical candidate"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := StandingLaw(store, home, time.Unix(1_700_000_000, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Conflicts) != 1 || view.Conflicts[0].CandidateID != "harvest-ruling-deadbeef1234" {
+		t.Fatalf("corrupt candidates became standing-law conflicts: %+v", view.Conflicts)
+	}
+	warnings := strings.Join(view.Warnings, "\n")
+	for _, name := range []string{"blank.json", "linked.json", "mismatch.json", "scratch.tmp"} {
+		if !strings.Contains(warnings, name) {
+			t.Fatalf("warnings %q do not name corrupt entry %s", warnings, name)
+		}
 	}
 }
 

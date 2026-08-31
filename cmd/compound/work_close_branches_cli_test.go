@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"compound/internal/home"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
@@ -14,11 +13,8 @@ import (
 // parses the repeatable flag (owner may itself contain colons) and lands the
 // branch on the emitted transition.
 func TestWorkCloseOpensBranchFlagLandsOnTransition(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +54,7 @@ func TestWorkCloseOpensBranchFlagLandsOnTransition(t *testing.T) {
 // the parser before any close runs — wrong segment count, empty slug, empty
 // owner, empty kind.
 func TestParseOpensBranchFlagRejectsMalformed(t *testing.T) {
+	t.Parallel()
 	for _, bad := range []string{
 		"",
 		"branch-lifecycle",                      // missing owner+kind
@@ -81,6 +78,7 @@ func TestParseOpensBranchFlagRejectsMalformed(t *testing.T) {
 }
 
 func TestParseAcknowledgeAbandonedHappy(t *testing.T) {
+	t.Parallel()
 	got, err := parseAcknowledgeAbandoned(
 		[]string{
 			"work_abc123",
@@ -111,6 +109,7 @@ func TestParseAcknowledgeAbandonedHappy(t *testing.T) {
 }
 
 func TestParseAcknowledgeAbandonedRequiresReason(t *testing.T) {
+	t.Parallel()
 	_, err := parseAcknowledgeAbandoned(
 		[]string{"work_abc123", "--acknowledge-abandoned", "ratt_aaaa", "--reason", ""},
 		"",
@@ -121,6 +120,7 @@ func TestParseAcknowledgeAbandonedRequiresReason(t *testing.T) {
 }
 
 func TestParseAcknowledgeAbandonedRequiresRattID(t *testing.T) {
+	t.Parallel()
 	_, err := parseAcknowledgeAbandoned(
 		[]string{"work_abc123", "--acknowledge-abandoned"},
 		"",

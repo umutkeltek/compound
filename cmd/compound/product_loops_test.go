@@ -6,17 +6,13 @@ import (
 	"strings"
 	"testing"
 
-	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/product"
 )
 
 func TestProductLoopsJSONDecodesModel(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	captureStdout(t, func() {
 		cmdProduct([]string{
 			"signal",
@@ -46,11 +42,8 @@ func TestProductLoopsJSONDecodesModel(t *testing.T) {
 }
 
 func TestProductLoopsTextPrintsOpenHypothesisContract(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := mem.Open(homePath)
 	if err != nil {
 		t.Fatal(err)

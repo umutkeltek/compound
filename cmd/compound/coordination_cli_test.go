@@ -210,6 +210,8 @@ func TestCoordinationCLIUsage(t *testing.T) {
 }
 
 func TestCoordinationCLIUsesExplicitHome(t *testing.T) {
+	t.Parallel()
+
 	if os.Getenv("COMPOUND_TEST_COORDINATION_EXPLICIT_HOME") == "1" {
 		cmdCoordination([]string{"--home", os.Getenv("COMPOUND_TEST_HOME"), "--json"})
 		return
@@ -235,6 +237,8 @@ func TestCoordinationCLIUsesExplicitHome(t *testing.T) {
 }
 
 func TestCoordinationMeasureCLIReportsObservedOutcome(t *testing.T) {
+	t.Parallel()
+
 	if os.Getenv("COMPOUND_TEST_COORDINATION_MEASURE") == "1" {
 		cmdCoordination([]string{
 			"measure",

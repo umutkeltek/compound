@@ -62,28 +62,22 @@ func ListSourceObservations(homePath string, now time.Time) (SourceObservationLi
 	}
 	report.Counts.NoPromoteDecisions = len(noPromote)
 	for _, kind := range candidates.AllKinds() {
-		dir := filepath.Join(homePath, candidates.InboxDir(kind))
-		entries, err := os.ReadDir(dir)
+		page, err := candidates.ReadPage(homePath, kind, "", 0)
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
 			return report, err
 		}
-		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		for _, entry := range page.Entries {
+			if entry.Corruption != nil {
+				report.Warnings = append(report.Warnings, fmt.Sprintf("%s corrupt: %s", entry.EntryCursor, entry.Corruption.Code))
 				continue
 			}
-			path := filepath.Join(dir, entry.Name())
+			if entry.Record == nil {
+				report.Warnings = append(report.Warnings, fmt.Sprintf("%s corrupt: missing_record", entry.EntryCursor))
+				continue
+			}
 			var rec CandidateRecord
-			data, err := os.ReadFile(path)
-			if err != nil {
-				report.Warnings = append(report.Warnings, fmt.Sprintf("%s unreadable: %v", entry.Name(), err))
-				continue
-			}
-			if err := json.Unmarshal(data, &rec); err != nil {
-				report.Warnings = append(report.Warnings, fmt.Sprintf("%s malformed: %v", entry.Name(), err))
+			if err := json.Unmarshal(entry.Record.Body, &rec); err != nil {
+				report.Warnings = append(report.Warnings, fmt.Sprintf("%s malformed: %v", entry.EntryCursor, err))
 				continue
 			}
 			if strings.TrimSpace(rec.SourceObservationID) == "" {
@@ -91,8 +85,8 @@ func ListSourceObservations(homePath string, now time.Time) (SourceObservationLi
 			}
 			report.Counts.TotalCandidates++
 			item := SourceObservationListItem{
-				CandidateID:         firstNonEmpty(rec.ID, strings.TrimSuffix(entry.Name(), ".json")),
-				Kind:                firstNonEmpty(rec.Kind, string(kind)),
+				CandidateID:         entry.Record.ID,
+				Kind:                string(entry.Record.Kind),
 				Subject:             rec.Subject,
 				Statement:           rec.Statement,
 				SourceObservationID: rec.SourceObservationID,
@@ -101,7 +95,7 @@ func ListSourceObservations(homePath string, now time.Time) (SourceObservationLi
 				PromoteAllowed:      rec.PromoteAllowed,
 				CreatedAt:           rec.CreatedAt,
 				EvidenceRefs:        append([]string(nil), rec.EvidenceRefs...),
-				NoPromoteID:         noPromote[firstNonEmpty(rec.ID, strings.TrimSuffix(entry.Name(), ".json"))],
+				NoPromoteID:         noPromote[entry.Record.ID],
 			}
 			if item.PromoteAllowed {
 				report.Counts.PromoteAllowed++

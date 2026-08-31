@@ -171,9 +171,9 @@ func PlanRouteExperimentMatrix(profilesRoot string, roles, effortFilters, profil
 	if len(roles) > 1 {
 		roleAliases = append(roleAliases, roles...)
 	}
-	execution := "execute each owner-published profile×role lane through governed compound work delegate; import Switchback trace evidence before comparison"
+	execution := "experimental only (unsupported in v0.1): execute each owner-published profile×role lane through compound work delegate with --experimental-delegate-mutations; import Switchback trace evidence before comparison"
 	if legacyInvocation {
-		execution = "execute each lane through governed compound work delegate; import Switchback trace evidence before comparison"
+		execution = "experimental only (unsupported in v0.1): execute each lane through compound work delegate with --experimental-delegate-mutations; import Switchback trace evidence before comparison"
 	}
 	return ExperimentPlan{SchemaVersion: ExperimentPlanSchema, ID: "rexp_" + hex.EncodeToString(sum[:6]), RoleAlias: roles[0], RoleAliases: roleAliases, EffortFilters: effortFilters, ProfilesRoot: profilesRoot, Lanes: lanes, Independence: "terminal comparison requires distinct observed provider/model or account identities; profile and role labels do not prove independence", Execution: execution, Verdict: "plan_only_not_execution_evidence"}, nil
 }

@@ -11,6 +11,7 @@ import (
 )
 
 func TestDispatchClaimPreservesTaskContractAndContractIdentity(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	task := envelope.TaskContract{
 		Intent:           "route the task through scoped capabilities",

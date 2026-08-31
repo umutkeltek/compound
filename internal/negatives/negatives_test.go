@@ -2,6 +2,8 @@ package negatives
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -65,6 +67,152 @@ func findRecord(records []Record, refID string) (Record, bool) {
 		}
 	}
 	return Record{}, false
+}
+
+func TestBuild_MissingFailurePatternInboxIsEmpty(t *testing.T) {
+	proj, err := Build(t.TempDir(), BuildOptions{Now: t0})
+	if err != nil {
+		t.Fatalf("Build on fresh home: %v", err)
+	}
+	if len(proj.Records) != 0 || len(proj.Warnings) != 0 {
+		t.Fatalf("fresh-home projection = %+v", proj)
+	}
+}
+
+// Falsifier: negatives is a base-orient consumer, so it must take failure
+// patterns through candidates' descriptor-rooted read path. A corrupt entry is
+// excluded and surfaced by its stable, named custody finding; it must never
+// mint a NegativeCard, and it must not hide a later valid candidate.
+func TestBuild_FailurePatternCustodyCorruptionIsExcludedAndSurfaced(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		filename string
+		write    func(t *testing.T, dir string)
+		wantCode candidates.CorruptionCode
+	}{
+		{
+			name:     "invalid filename",
+			filename: "scratch.tmp",
+			write: func(t *testing.T, dir string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, "scratch.tmp"), []byte("not a canonical candidate"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantCode: candidates.CorruptionInvalidFilename,
+		},
+		{
+			name:     "symlink",
+			filename: "bad-symlink.json",
+			write: func(t *testing.T, dir string) {
+				t.Helper()
+				if err := os.Symlink("zz-valid.json", filepath.Join(dir, "bad-symlink.json")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantCode: candidates.CorruptionSymlink,
+		},
+		{
+			name:     "filename JSON id mismatch",
+			filename: "bad-mismatch.json",
+			write: func(t *testing.T, dir string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, "bad-mismatch.json"), []byte(`{"id":"different-id"}`), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantCode: candidates.CorruptionIDMismatch,
+		},
+		{
+			name:     "blank id",
+			filename: "bad-blank.json",
+			write: func(t *testing.T, dir string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, "bad-blank.json"), []byte(`{"id":""}`), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantCode: candidates.CorruptionBlankID,
+		},
+		{
+			name:     "malformed body",
+			filename: "bad-malformed.json",
+			write: func(t *testing.T, dir string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, "bad-malformed.json"), []byte(`{`), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantCode: candidates.CorruptionInvalidJSON,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			dir := filepath.Join(home, candidates.InboxDir(candidates.FailurePattern))
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFailurePattern(t, home, "zz-valid", map[string]any{
+				"subject":   "later-valid-negative",
+				"statement": "the valid candidate is still projected after corruption",
+				"detail":    "later-valid-negative",
+				"verdict":   candidates.Park,
+			})
+			tc.write(t, dir)
+
+			proj, err := Build(home, BuildOptions{Now: t0})
+			if err == nil {
+				t.Fatal("Build accepted corrupt failure-pattern entry")
+			}
+			var corruption *candidates.Corruption
+			if !errors.As(err, &corruption) {
+				t.Fatalf("Build error = %v, want named candidate corruption", err)
+			}
+			if corruption.EntryCursor != candidates.EntryCursor(tc.filename) || corruption.Code != tc.wantCode {
+				t.Fatalf("corruption = %+v, want cursor=%q code=%q", corruption, tc.filename, tc.wantCode)
+			}
+			if _, found := findRecord(proj.Records, strings.TrimSuffix(tc.filename, ".json")); found {
+				t.Fatalf("corrupt candidate created a negative card: %+v", proj.Records)
+			}
+			if _, found := findRecord(proj.Records, "zz-valid"); !found {
+				t.Fatalf("later valid candidate was hidden by corrupt entry: %+v", proj.Records)
+			}
+			if len(proj.Warnings) != 1 || proj.Warnings[0].Source != SourceFailurePattern || proj.Warnings[0].Code != tc.wantCode || proj.Warnings[0].Count != 1 {
+				t.Fatalf("provider-safe warnings = %+v, want source=%q code=%q count=1", proj.Warnings, SourceFailurePattern, tc.wantCode)
+			}
+			if strings.Contains(fmt.Sprint(proj.Warnings), tc.filename) {
+				t.Fatalf("projection warning leaked operator-controlled filename %q: %+v", tc.filename, proj.Warnings)
+			}
+		})
+	}
+}
+
+func TestReadFresh_CorruptFailurePatternStillUsesValidRecords(t *testing.T) {
+	home := t.TempDir()
+	writeFailurePattern(t, home, "zz-valid", map[string]any{
+		"subject":   "later-valid-negative",
+		"statement": "the valid candidate remains available after sibling corruption",
+		"detail":    "later-valid-negative",
+		"verdict":   candidates.Park,
+	})
+	dir := filepath.Join(home, candidates.InboxDir(candidates.FailurePattern))
+	if err := os.WriteFile(filepath.Join(dir, "bad-mismatch.json"), []byte(`{"id":"different-id"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	proj, ok, err := ReadFresh(home, t0)
+	if err != nil || !ok {
+		t.Fatalf("ReadFresh: ok=%t err=%v", ok, err)
+	}
+	if _, found := findRecord(proj.Records, "zz-valid"); !found {
+		t.Fatalf("valid sibling was discarded: %+v", proj.Records)
+	}
+	if len(proj.Warnings) != 1 || proj.Warnings[0].Code != candidates.CorruptionIDMismatch {
+		t.Fatalf("ReadFresh warnings = %+v", proj.Warnings)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, filepath.FromSlash(RelPath))); !os.IsNotExist(statErr) {
+		t.Fatalf("ReadFresh mutated projection path: %v", statErr)
+	}
 }
 
 // Falsifier (a): scope match, not dump. An intent whose owner/task-class matches a

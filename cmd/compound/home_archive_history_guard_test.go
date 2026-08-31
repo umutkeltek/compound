@@ -16,6 +16,7 @@ import (
 // os.Exit(2), and an exit code is exactly the part an in-process call cannot
 // observe. A caller that reads the exit code is the caller this guard protects.
 func TestHomeArchiveHistoryBareInvocationRefusesWithoutArchiving(t *testing.T) {
+	t.Parallel()
 	bin := compoundTestBinary(t)
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {

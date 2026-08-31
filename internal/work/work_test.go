@@ -25,6 +25,38 @@ func newStore(t *testing.T) *Store {
 	return s
 }
 
+func newExperimentalDelegateStore(t *testing.T) *Store {
+	t.Helper()
+	s := newStore(t)
+	s.EnableExperimentalDelegateMutations()
+	return s
+}
+
+func TestOpenReadOnlyRefusesLifecycleMutationOnPreparedHome(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.Create(CreateInput{
+		Owner:            "read-only-lifecycle-guard",
+		SuccessPredicate: "read-only stores cannot enter a lifecycle mutation",
+	}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := OpenReadOnly(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	err = readOnly.withLifecycleMutation(func() error {
+		called = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires a writable store") {
+		t.Fatalf("read-only lifecycle mutation error = %v", err)
+	}
+	if called {
+		t.Fatal("read-only lifecycle mutation entered its callback")
+	}
+}
+
 // The headline proof for P3: one work_id threads create -> claim -> advance -> close,
 // and close emits a Receipt and the apex Transition that BOTH carry that work_id and
 // reference the chain (context pack -> runs -> artifacts).

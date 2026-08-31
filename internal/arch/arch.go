@@ -99,7 +99,7 @@ var Classification = map[string]Class{
 	"operatornotice":  Leaf, // single missing edge between the attention hold frontier (internal/attention) and the existing act post buzz transport (internal/act); one function (Notify) scans BandNeedsYou groups, emits exactly one governed buzz notification per new hold (idempotent on re-scan), and counts unnotifiable/refused holds in a doctor figure; reuses attention.Build, act.Execute, and the existing standing-grant registry, owns no authority object
 	"persist":         Leaf, // storage abstraction layer: interfaces (LedgerStore, EventStore, WorkStore, VectorStore) + Postgres/pgvector backend; file backend stays default, owns no authority object (ADR-0005)
 	"store":           Leaf, // `compound store` operator surface organ (ADR-0005 pg experiment): doctor/init/status/migrate/sync/embed/recall; governed exports mint Receipt+Transition, owns no authority object
-	"promotedriver":   Leaf, // governed auto-promote actuator: single-flight, exact pre-mutation intent, per-id basis promotion, deterministic imports/lanebeliefs/sweep, honest committed|partial|failed|recovery_required receipts, strict cursor/hash/pending persistence, dry-run default, apply bound to a maintenance work id; enforcement leaf, owns no authority object
+	"promotedriver":   Leaf, // governed candidate-only promote actuator: single-flight frozen candidate/current-claim intent, per-operation CAS/idempotency/results, same-pass recovery, terminal-plan bijection, and strict cursor/pending finalization; registry and lane-belief mutation remain experimental preview-only; dry-run default, apply bound to a maintenance work id; enforcement leaf, owns no authority object
 	"release":         Leaf,
 	"routeev":         Leaf, // deterministic EV-card composer + calibration comparator + content-addressed card store under COMPOUND_HOME/observed/route-evcards; pure pricing evidence for route deviations (refuses to price missing inputs), owns no authority object and never gates/promotes (the deviation-staking gate lives in envelope.Validate, the calibration minting door in mem)
 	"runattempt":      Leaf, // concrete harness-execution-attempt store under COMPOUND_HOME/run_attempts; persistence primitive consumed by work's RunAttemptIDs slot, not meaning authority or envelope spine
@@ -2096,8 +2096,8 @@ func checkASCDailySignalsPublicBoundaryContract(repoRoot string) []Finding {
 // discovery is not an authority target); interactive hooks may observe
 // while enforcement claims require behavioral proof; the console target is
 // projection-only with mutations/private reads off; and Postgres, shared
-// homes, server/multi-tenant use, remote/proxied console, and arbitrary
-// private embedding endpoints are unsupported. It also pins the honesty
+// homes, server/multi-tenant use, remote/proxied console, delegated mutation,
+// and arbitrary private embedding endpoints are unsupported. It also pins the honesty
 // phrases: the contract must name any remaining current blockers, while the
 // projection-only console default is pinned as current behavior rather than a
 // future promise. The earlier ancestor-authority and console-default blockers
@@ -2117,6 +2117,7 @@ func checkPublicAlphaSupportedScopeContract(repoRoot string) []Finding {
 			"shared homes",
 			"multi-tenant",
 			"proxied console",
+			"delegated launch, steer, progress",
 			"private embedding endpoints",
 			"Current blockers",
 			"projection-only by default",

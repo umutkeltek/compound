@@ -514,15 +514,21 @@ launch lock and is not supported in a rolling old/new mix. Every Claude-family
 execution RunAttempt persists the resolved mode, actual running PolicyDecision
 id, and exact authority revisions.
 
-Run a supervised task in tmux so an operator or agent can inspect and steer it:
+Delegated tmux mutation is experimental and unsupported in the v0.1 product
+contract. The supported governed execution path is `compound work advance
+--execute`. For private experiments, every process must opt into delegate
+mutation explicitly; status and attach remain read-only:
 
 ```sh
 compound work delegate <work_id> --harness claude_qwen \
+	--experimental-delegate-mutations \
   --workspace /path/to/project --prompt "process the remaining batch"
 compound work delegate status <work_id>
 compound work delegate progress <work_id> \
+	--experimental-delegate-mutations \
   --done 12 --empty 2 --failed 1 --remaining 5
-compound work steer <work_id> --text "finish the current item, then stop" --enter
+compound work steer <work_id> --experimental-delegate-mutations \
+	--text "finish the current item, then stop" --enter
 compound work attach <work_id>
 ```
 
@@ -533,12 +539,13 @@ observed fields remain empty until route evidence attests what actually ran.
 The console reads the same binding and RunAttempt, including cumulative
 done/empty/failed/remaining progress.
 
-Idle schedulers are clients of this path, not parallel execution owners. They
-may decide *when* a machine is unattended, but select lanes from Compound's
-capability route plan and invoke `work delegate`; provider thresholds, wrapper
-tables, STOP files, local attempt logs, and task receipts do not belong in the
-scheduler. A terminal delegated run closes through the same WorkEnvelope
-Receipt + Transition chain as an interactive run.
+Idle schedulers are not supported clients of delegated mutation in v0.1. A
+supported scheduler must enter through `work advance --execute`; private
+experiments may select lanes from Compound's capability route plan and invoke
+the explicitly gated delegate surface. Provider thresholds, wrapper tables,
+STOP files, local attempt logs, and task receipts do not belong in the
+scheduler. A terminal delegated experiment still closes through the same
+WorkEnvelope Receipt + Transition chain as an interactive run.
 
 ## Agent-agnosticism proof
 

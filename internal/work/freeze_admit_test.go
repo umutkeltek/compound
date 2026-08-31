@@ -75,6 +75,7 @@ func seedDecisionClaim(t *testing.T, s *Store, kind, id string, extra map[string
 }
 
 func TestGenericMemoryCannotRevokeRecordedFreeze(t *testing.T) {
+	t.Parallel()
 	legacyFreeze := mem.Claim{
 		ID:        "claim_legacy_freeze",
 		ClaimType: "decision",
@@ -107,6 +108,7 @@ func TestGenericMemoryCannotRevokeRecordedFreeze(t *testing.T) {
 }
 
 func TestActiveFreezeRecordsRejectsPersistedNonOperatorAuthority(t *testing.T) {
+	t.Parallel()
 	claim := mem.Claim{
 		ID:        "claim_non_operator_freeze",
 		ClaimType: "decision",
@@ -130,6 +132,7 @@ func TestActiveFreezeRecordsRejectsPersistedNonOperatorAuthority(t *testing.T) {
 // proposed, naming the freeze record; a smoothness/wiring proposal that
 // matches nothing passes untouched.
 func TestFreezeGatesAutoAdmitByKeyword(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	seedActiveFreeze(t, s, "direction-freeze-2026-07-10", nil, []string{"absorption_debt"}, fixedNow)
@@ -160,6 +163,7 @@ func TestFreezeGatesAutoAdmitByKeyword(t *testing.T) {
 
 // TestFreezeGatesAutoAdmitByOwnerGlob proves owner-glob matching also gates.
 func TestFreezeGatesAutoAdmitByOwnerGlob(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	seedActiveFreeze(t, s, "direction-freeze-2026-07-10", []string{"compound-authority"}, nil, fixedNow)
@@ -186,6 +190,7 @@ func TestFreezeGatesAutoAdmitByOwnerGlob(t *testing.T) {
 // passes even while a matching freeze is active — the freeze binds the
 // SYSTEM, not the operator.
 func TestFreezeDoesNotBlockOperatorAdmit(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	seedActiveFreeze(t, s, "direction-freeze-2026-07-10", nil, []string{"absorption_debt"}, fixedNow)
 	id := makeProposedDirectorWork(t, s, "absorption_debt", "work_freeze_op", fixedNow)
@@ -205,6 +210,7 @@ func TestFreezeDoesNotBlockOperatorAdmit(t *testing.T) {
 // admission is stopped by the freeze through the generic seam too, not only
 // AdmitAuto.
 func TestFreezeHaltsAdvanceSeamDefenseInDepth(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	seedActiveFreeze(t, s, "direction-freeze-2026-07-10", nil, []string{"absorption_debt"}, fixedNow)
 	id := makeProposedDirectorWork(t, s, "absorption_debt", "work_freeze_seam", fixedNow)
@@ -222,6 +228,7 @@ func TestFreezeHaltsAdvanceSeamDefenseInDepth(t *testing.T) {
 // with zero freeze records in the store, every autonomous admission passes
 // untouched (an absent freeze must not accidentally block work).
 func TestFreezeAbsentMeansNothingFrozen(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	id := makeProposedDirectorWork(t, s, "job_health", "work_freeze_none", fixedNow)
@@ -236,6 +243,7 @@ func TestFreezeAbsentMeansNothingFrozen(t *testing.T) {
 // admission guard: once the operator records a superseding undo, the same
 // scope that used to freeze admission no longer does.
 func TestFreezeUndoneRecordNoLongerBlocks(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	seedActiveFreeze(t, s, "direction-freeze-2026-07-10", nil, []string{"job_health"}, fixedNow)

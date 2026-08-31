@@ -1631,6 +1631,17 @@ func appendNegatives(pack envelope.ContextPack, homePath string, in Input, now t
 	if err != nil {
 		return pack, err
 	}
+	for _, warning := range proj.Warnings {
+		pack.Excluded = append(pack.Excluded, envelope.ExcludedRef{
+			Ref: fmt.Sprintf("%s/source/%s/%s", negatives.ProjectionRef, warning.Source, warning.Code),
+			Reason: fmt.Sprintf(
+				"%d %s source candidate(s) excluded by canonical custody: %s",
+				warning.Count,
+				warning.Source,
+				warning.Code,
+			),
+		})
+	}
 	if !ok || len(proj.Records) == 0 {
 		return pack, nil
 	}

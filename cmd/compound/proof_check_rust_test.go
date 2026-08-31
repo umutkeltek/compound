@@ -23,6 +23,7 @@ const rustCanonicalProofCLISubEnv = "COMPOUND_RUST_CANONICAL_PROOF_CLI_SUB"
 const unsupportedCanonicalProofCLISubEnv = "COMPOUND_UNSUPPORTED_CANONICAL_PROOF_CLI_SUB"
 
 func TestResolveCanonicalProofPlanKeepsCompoundInventoryUnchanged(t *testing.T) {
+	t.Parallel()
 	repo := initCanonicalProofRepo(t, map[string]string{
 		"go.mod":    "module compound\n\ngo 1.26.4\n",
 		"README.md": "compound fixture\n",
@@ -74,6 +75,7 @@ func TestResolveCanonicalProofPlanKeepsCompoundInventoryUnchanged(t *testing.T) 
 }
 
 func TestCanonicalProofInventoryDependencyIsCompoundOnlyAndNonEmpty(t *testing.T) {
+	t.Parallel()
 	compoundRepo := initCanonicalProofRepo(t, map[string]string{
 		"go.mod": "module compound\n\ngo 1.26.4\n",
 	})
@@ -116,6 +118,7 @@ func TestCanonicalProofInventoryDependencyIsCompoundOnlyAndNonEmpty(t *testing.T
 }
 
 func TestResolveCanonicalProofPlanBuildsSourceBoundRustWorkspaceFloor(t *testing.T) {
+	t.Parallel()
 	repo := initCanonicalProofRepo(t, map[string]string{
 		"Cargo.toml": "[workspace]\nmembers = []\nresolver = \"2\"\n",
 		"Cargo.lock": "# synthetic lock\nversion = 4\n",
@@ -198,6 +201,7 @@ func TestResolveCanonicalProofPlanBuildsSourceBoundRustWorkspaceFloor(t *testing
 }
 
 func TestResolveCanonicalProofPlanFailsClosedBeforeRustExecution(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		files   map[string]string
@@ -250,6 +254,7 @@ func TestResolveCanonicalProofPlanFailsClosedBeforeRustExecution(t *testing.T) {
 }
 
 func TestResolveCanonicalProofPlanRejectsNonBlobRootMarkers(t *testing.T) {
+	t.Parallel()
 	t.Run("symlink", func(t *testing.T) {
 		repo := initCanonicalProofRepo(t, map[string]string{
 			"Cargo.lock": "version = 4\n",
@@ -285,6 +290,7 @@ func TestResolveCanonicalProofPlanRejectsNonBlobRootMarkers(t *testing.T) {
 }
 
 func TestRustNonCertifyingModesRefuseCompoundGoInventory(t *testing.T) {
+	t.Parallel()
 	repo := initCanonicalProofRepo(t, map[string]string{
 		"Cargo.toml": "[workspace]\nmembers = []\n",
 		"Cargo.lock": "version = 4\n",
@@ -298,6 +304,7 @@ func TestRustNonCertifyingModesRefuseCompoundGoInventory(t *testing.T) {
 }
 
 func TestRustNonCertifyingModesRefusePhysicalMarkersWithoutGitHead(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	writeCanonicalProofFile(t, repo, "Cargo.toml", "[workspace]\nmembers = []\n")
 	writeCanonicalProofFile(t, repo, "Cargo.lock", "version = 4\n")
@@ -339,6 +346,7 @@ func TestRustNonCertifyingModesRefusePhysicalMarkersWithoutGitHead(t *testing.T)
 }
 
 func TestRustNonCertifyingModesRefuseCommittedMarkersMissingFromWorkingTree(t *testing.T) {
+	t.Parallel()
 	repo := initCanonicalProofRepo(t, map[string]string{
 		"Cargo.toml": "[workspace]\nmembers = []\n",
 		"Cargo.lock": "version = 4\n",
@@ -378,6 +386,7 @@ func TestRustNonCertifyingModesRefuseCommittedMarkersMissingFromWorkingTree(t *t
 }
 
 func TestRustfmtFailureFactsCompareAcrossSealedRepositoryRoots(t *testing.T) {
+	t.Parallel()
 	makeStep := func(extraBaselineFailure bool) proofCheckStep {
 		script := `printf 'Diff in %s/crates/sb-bodylog/src/lib.rs:3043:\n context\n-old line\n+new line\n' "$PWD"`
 		if extraBaselineFailure {
@@ -464,6 +473,7 @@ func TestRustfmtFailureFactsCompareAcrossSealedRepositoryRoots(t *testing.T) {
 }
 
 func TestRustfmtFailureFactsPreserveExactDiffBlocks(t *testing.T) {
+	t.Parallel()
 	run := func(t *testing.T, script string) proofCheckStep {
 		t.Helper()
 		return runProofCheckStep(t.TempDir(), proofCheckStep{
@@ -530,6 +540,7 @@ func proofFailureFactsSubset(candidate, baseline []string) bool {
 }
 
 func TestResolveCanonicalProofPlanReadsCommittedMarkersOnly(t *testing.T) {
+	t.Parallel()
 	repo := initCanonicalProofRepo(t, map[string]string{
 		"Cargo.toml": "[workspace]\nmembers = []\n",
 		"Cargo.lock": "version = 4\n",
@@ -553,6 +564,7 @@ func TestResolveCanonicalProofPlanReadsCommittedMarkersOnly(t *testing.T) {
 }
 
 func TestRustCanonicalProofPublishesOwnedVerificationWithoutCompoundRuntimeArtifact(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(rustCanonicalProofCLISubEnv) == "1" {
 		proofCheckRuntimeExecutable = func(logical string) (string, error) {
 			if logical == "cargo" {
@@ -714,6 +726,7 @@ func TestRustCanonicalProofPublishesOwnedVerificationWithoutCompoundRuntimeArtif
 }
 
 func TestUnsupportedCanonicalProofFailsBeforeReservationOrRunner(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(unsupportedCanonicalProofCLISubEnv) == "1" {
 		proofCheckCanonicalRunner = func(
 			context.Context,

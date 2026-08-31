@@ -26,6 +26,7 @@ package negatives
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,10 +93,21 @@ type Record struct {
 
 // Projection is the full derived surface written under projections/.
 type Projection struct {
-	SchemaVersion string   `json:"schema_version"`
-	ProjectionRef string   `json:"projection_ref"`
-	ComputedAt    string   `json:"computed_at"`
-	Records       []Record `json:"records"`
+	SchemaVersion string              `json:"schema_version"`
+	ProjectionRef string              `json:"projection_ref"`
+	ComputedAt    string              `json:"computed_at"`
+	Records       []Record            `json:"records"`
+	Warnings      []ProjectionWarning `json:"warnings,omitempty"`
+}
+
+// ProjectionWarning is a provider-safe aggregate for source rows that a
+// rebuild excluded. The exact filename remains available from Build's returned
+// candidates.Corruption error, while the read-side ContextPack can account for
+// the exclusion without injecting operator-controlled filenames or paths.
+type ProjectionWarning struct {
+	Source string                    `json:"source"`
+	Code   candidates.CorruptionCode `json:"code"`
+	Count  int                       `json:"count"`
 }
 
 // BuildOptions parameterizes the build. Now is the ComputedAt stamp; inject it for
@@ -119,15 +131,11 @@ func Build(homePath string, opts BuildOptions) (Projection, error) {
 		ProjectionRef: ProjectionRef,
 		ComputedAt:    now.UTC().Format(time.RFC3339),
 		Records:       []Record{},
+		Warnings:      []ProjectionWarning{},
 	}
-	fp, err := readFailurePatternRecords(homePath)
-	if err != nil {
-		return proj, err
-	}
-	rr, err := readRouteRemorseRecords(homePath)
-	if err != nil {
-		return proj, err
-	}
+	fp, fpErr := readFailurePatternRecords(homePath)
+	rr, rrErr := readRouteRemorseRecords(homePath)
+	proj.Warnings = candidateCorruptionWarnings(fpErr)
 	proj.Records = append(proj.Records, fp...)
 	proj.Records = append(proj.Records, rr...)
 	sort.Slice(proj.Records, func(i, j int) bool {
@@ -136,7 +144,7 @@ func Build(homePath string, opts BuildOptions) (Projection, error) {
 		}
 		return proj.Records[i].RefID < proj.Records[j].RefID
 	})
-	return proj, nil
+	return proj, errors.Join(fpErr, rrErr)
 }
 
 // WriteProjection persists the projection under projections/, returning the absolute
@@ -206,6 +214,13 @@ func ReadFresh(homePath string, now time.Time) (Projection, bool, error) {
 	}
 	built, buildErr := Build(homePath, BuildOptions{Now: now})
 	if buildErr != nil {
+		// Canonical candidate corruption is an accounted source exclusion, not
+		// a reason to hide valid sibling records. Build keeps the exact named
+		// corruption in its error for operators and records a provider-safe
+		// aggregate in the projection for ContextPack readers.
+		if onlyCandidateCorruptions(buildErr) {
+			return built, true, nil
+		}
 		// Fail open to whatever was persisted rather than failing orient: a stale
 		// view still beats no view, and a build error must not break the pack.
 		if ok {
@@ -214,6 +229,63 @@ func ReadFresh(homePath string, now time.Time) (Projection, bool, error) {
 		return Projection{}, false, nil
 	}
 	return built, true, nil
+}
+
+func candidateCorruptionWarnings(err error) []ProjectionWarning {
+	counts := map[candidates.CorruptionCode]int{}
+	visitCandidateCorruptions(err, func(corruption *candidates.Corruption) {
+		counts[corruption.Code]++
+	})
+	codes := make([]string, 0, len(counts))
+	for code := range counts {
+		codes = append(codes, string(code))
+	}
+	sort.Strings(codes)
+	warnings := make([]ProjectionWarning, 0, len(codes))
+	for _, code := range codes {
+		warnings = append(warnings, ProjectionWarning{
+			Source: SourceFailurePattern,
+			Code:   candidates.CorruptionCode(code),
+			Count:  counts[candidates.CorruptionCode(code)],
+		})
+	}
+	return warnings
+}
+
+func onlyCandidateCorruptions(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !onlyCandidateCorruptions(child) {
+				return false
+			}
+		}
+		return true
+	}
+	var corruption *candidates.Corruption
+	return errors.As(err, &corruption)
+}
+
+func visitCandidateCorruptions(err error, visit func(*candidates.Corruption)) {
+	if err == nil {
+		return
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			visitCandidateCorruptions(child, visit)
+		}
+		return
+	}
+	var corruption *candidates.Corruption
+	if errors.As(err, &corruption) {
+		visit(corruption)
+	}
 }
 
 // projectionStale reports whether a persisted projection's ComputedAt is older than
@@ -379,32 +451,46 @@ type failurePatternRaw struct {
 	Verdict      string   `json:"verdict"`
 }
 
-// readFailurePatternRecords reads every inbox/failure-patterns/*.json candidate and
-// turns Park/Operationalize verdicts into Records; Reject (dismissed — "not a real
+// readFailurePatternRecords reads failure patterns through candidates' descriptor-
+// rooted custody walk. Each corrupt entry is excluded and returned as its named
+// custody finding, while valid later entries remain eligible for the projection.
+// Park/Operationalize verdicts become Records; Reject (dismissed — "not a real
 // failure") is dropped, so a rejected candidate never becomes a stale tombstone.
 func readFailurePatternRecords(homePath string) ([]Record, error) {
-	dir := filepath.Join(homePath, candidates.InboxDir(candidates.FailurePattern))
-	entries, err := os.ReadDir(dir)
+	page, err := candidates.ReadPage(homePath, candidates.FailurePattern, "", 0)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	var out []Record
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+	var corruptions []error
+	for _, entry := range page.Entries {
+		if entry.Corruption != nil {
+			corruptions = append(corruptions, entry.Corruption)
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			return nil, err
+		if entry.Record == nil {
+			corruptions = append(corruptions, &candidates.Corruption{
+				EntryCursor: entry.EntryCursor,
+				Code:        candidates.CorruptionRaced,
+				Detail:      "candidate page entry has no custody outcome",
+			})
+			continue
 		}
 		var raw failurePatternRaw
-		if json.Unmarshal(data, &raw) != nil {
-			continue // skip torn/foreign json rather than brick the build
+		if err := json.Unmarshal(entry.Record.Body, &raw); err != nil {
+			corruptions = append(corruptions, &candidates.Corruption{
+				EntryCursor: entry.EntryCursor,
+				Code:        candidates.CorruptionInvalidJSON,
+				Detail:      fmt.Sprintf("decode failure-pattern candidate body: %v", err),
+			})
+			continue
 		}
-		if strings.TrimSpace(raw.ID) == "" {
+		if raw.ID != entry.Record.ID {
+			corruptions = append(corruptions, &candidates.Corruption{
+				EntryCursor: entry.EntryCursor,
+				Code:        candidates.CorruptionIDMismatch,
+				Detail:      fmt.Sprintf("decoded id %q, want %q", raw.ID, entry.Record.ID),
+			})
 			continue
 		}
 		if raw.Verdict == string(candidates.Reject) {
@@ -451,7 +537,7 @@ func readFailurePatternRecords(homePath string) ([]Record, error) {
 			Confidence:   raw.Confidence,
 		})
 	}
-	return out, nil
+	return out, errors.Join(corruptions...)
 }
 
 // routeOutcomeReviewRaw is the minimal decode shape of a

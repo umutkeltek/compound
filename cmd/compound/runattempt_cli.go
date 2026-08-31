@@ -20,7 +20,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
@@ -251,51 +250,6 @@ func cmdRunAttemptSweep(args []string) {
 		fmt.Fprintf(os.Stderr, "run-attempt sweep: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-// sweepStaleRunAttemptsBestEffort terminalizes RunAttempts whose bound
-// pane is provably gone. It runs immediately before a new delegate
-// spawn, so an operator who keeps delegating never accumulates ghosts.
-//
-// Why this call site exists at all: the sweep below was already correct
-// and already protected live panes, but NOTHING invoked it unattended --
-// no ticker, no goroutine, no launchd. Every delegate that died left its
-// attempt reporting `running` forever, and `compound executors` /
-// `compound attention` faithfully reported that lie. On 2026-07-26 that
-// produced 55 phantom `running` sessions that had been dead for ten
-// hours. Spawning is the natural moment to collect the previous
-// generation's corpses: it is already a mutating command, the sweep is
-// ~50ms against 1600+ attempts, and the liveness probe means a healthy
-// in-flight session is never touched.
-//
-// Best-effort by design, and deliberately NOT fail-closed like pane
-// capture: refusing to start new work because cleanup of unrelated old
-// attempts failed would trade a small bookkeeping problem for a total
-// outage. Failures are reported to stderr rather than swallowed, so a
-// persistently broken sweep is visible instead of silent.
-//
-// This does not remove the need for a scheduled sweep -- an idle machine
-// spawns nothing and so sweeps nothing. See
-// tools/templates/com.example.compound-runattempt-sweep.plist.
-func sweepStaleRunAttemptsBestEffort(homePath string, now time.Time, stderr io.Writer) int {
-	return sweepStaleRunAttemptsBestEffortWithRunner(homePath, work.NewTmuxRunner(), now, stderr)
-}
-
-// sweepStaleRunAttemptsBestEffortWithRunner is the injectable seam, matching
-// buildDelegateLivenessProbeWithRunner: tests drive a fake session runner so
-// the live-pane protection path is exercised rather than asserted.
-func sweepStaleRunAttemptsBestEffortWithRunner(homePath string, runner work.SessionRunner, now time.Time, stderr io.Writer) int {
-	store := runattempt.Open(homePath)
-	probe := buildDelegateLivenessProbeWithRunner(homePath, runner)
-	rep, err := store.SweepStaleWithProbe(runattempt.DefaultSweepThreshold, now.UTC(), probe)
-	if err != nil {
-		fmt.Fprintf(stderr, "warning: pre-spawn run-attempt sweep failed: %v\n", err)
-		return 0
-	}
-	if rep.Swept > 0 {
-		fmt.Fprintf(stderr, "pre-spawn sweep: terminalized %d abandoned run attempt(s)\n", rep.Swept)
-	}
-	return rep.Swept
 }
 
 // buildDelegateLivenessProbe builds the work-owned liveness probe that

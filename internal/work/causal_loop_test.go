@@ -18,6 +18,7 @@ const causalLoopMetric = "checkout_recovery_rate"
 var causalLoopNow = time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 
 func TestPromotedMeaningChangesNextWorkActionAndKeepsOldWorkReplayable(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	s, err := work.Open(homePath)
 	if err != nil {

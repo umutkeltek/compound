@@ -37,6 +37,7 @@ func TestCLIFlagSeamChild(t *testing.T) {
 }
 
 func TestFindingShowGlobalHomeAndRejectsUnknownFlag(t *testing.T) {
+	t.Parallel()
 	targetHome, fallbackHome := initializedCLIFlagHomes(t)
 	recorded, err := finding.Record(targetHome, finding.Finding{
 		Topic: "cli-flag-seam",
@@ -57,6 +58,7 @@ func TestFindingShowGlobalHomeAndRejectsUnknownFlag(t *testing.T) {
 }
 
 func TestCaptureShowGlobalHomeAndRejectsUnknownFlag(t *testing.T) {
+	t.Parallel()
 	targetHome, fallbackHome := initializedCLIFlagHomes(t)
 	store, err := mem.Open(targetHome)
 	if err != nil {
@@ -79,6 +81,7 @@ func TestCaptureShowGlobalHomeAndRejectsUnknownFlag(t *testing.T) {
 }
 
 func TestPlacementResolveGlobalHomeAndRejectsUnknownFlag(t *testing.T) {
+	t.Parallel()
 	targetHome, fallbackHome := initializedCLIFlagHomes(t)
 	path := filepath.Join(targetHome, "private", "stray.md")
 
@@ -93,6 +96,7 @@ func TestPlacementResolveGlobalHomeAndRejectsUnknownFlag(t *testing.T) {
 }
 
 func TestKnowledgeImportGlobalHomeAndRejectsUnknownFlag(t *testing.T) {
+	t.Parallel()
 	targetHome, fallbackHome := initializedCLIFlagHomes(t)
 	fixture, err := filepath.Abs(filepath.Join("..", "..", "fixtures", "knowledge", "arxiv-export.json"))
 	if err != nil {
@@ -113,6 +117,7 @@ func TestKnowledgeImportGlobalHomeAndRejectsUnknownFlag(t *testing.T) {
 }
 
 func TestMemoryTimelineGlobalHomeAndRejectsUnknownFlag(t *testing.T) {
+	t.Parallel()
 	targetHome, fallbackHome := initializedCLIFlagHomes(t)
 	store, err := mem.Open(targetHome)
 	if err != nil {
@@ -149,6 +154,7 @@ func TestMemoryTimelineGlobalHomeAndRejectsUnknownFlag(t *testing.T) {
 }
 
 func TestRouteEvidenceAuthorityUsesGlobalHome(t *testing.T) {
+	t.Parallel()
 	targetHome, fallbackHome := initializedCLIFlagHomes(t)
 	out, err := runCLIFlagSeam(t, fallbackHome, "route", "evidence-authority", "--home", targetHome, "--recent", "0", "--json")
 	if err != nil {
@@ -175,6 +181,7 @@ func TestGlobalHomeOverridesEnvironment(t *testing.T) {
 }
 
 func TestValueFlagSurvivorPreservesBehavior(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args []string

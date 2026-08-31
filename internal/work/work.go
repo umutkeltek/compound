@@ -120,11 +120,13 @@ func claimEventFromIsLegal(from string, repairOwnerless bool) bool {
 
 // Store is the work lifecycle store rooted at a COMPOUND_HOME.
 type Store struct {
-	home                  string
-	events                *eventstore.Store
-	readOnly              bool
-	eventLogReads         atomic.Int64
-	holdEvidenceFileReads atomic.Int64
+	home                          string
+	events                        *eventstore.Store
+	readOnly                      bool
+	eventLogReads                 atomic.Int64
+	holdEvidenceFileReads         atomic.Int64
+	experimentalDelegateMutations atomic.Bool
+	sweepStaleFault               func(stage string) error
 }
 
 func (s *Store) eventLogReadCount() int64 {
@@ -167,6 +169,14 @@ var runAttemptsFactory = func(home string) runAttemptStore {
 	return runattempt.Open(home)
 }
 
+// prepareRunAttemptTerminalization is the deterministic failure-injection seam
+// for the recoverable close boundary. Production delegates byte-for-byte to the
+// RunAttempt store; tests can refuse one preparation without relying on host
+// filesystem permissions.
+var prepareRunAttemptTerminalization = func(store *runattempt.Store, id string, intent runattempt.TerminalizationIntent) (runattempt.RunAttempt, error) {
+	return store.PrepareTerminalization(id, intent)
+}
+
 // runAttempts returns the RunAttempt evidence store rooted at the same
 // COMPOUND_HOME. C1 mints a RunAttempt on every claim so the execution
 // organ fires in production, not just in panel.Apply tests. The store is
@@ -200,6 +210,9 @@ func (s *Store) holdEvidenceFileReadCount() int64 {
 // event lock, then let the mutation append under that same order. No caller may
 // enter this helper while already holding the work-event lock.
 func (s *Store) withLifecycleMutation(fn func() error) error {
+	if s.readOnly {
+		return errors.New("work lifecycle mutation requires a writable store")
+	}
 	return home.WithAutonomyAdmissionLock(s.home, func() error {
 		if _, err := s.eventsFor(""); err != nil {
 			return fmt.Errorf("work lifecycle event log preflight: %w", err)
@@ -796,6 +809,12 @@ func (s *Store) recordDeclaredLaneOnLease(workID, laneID string) error {
 }
 
 func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.WorkEnvelope, error) {
+	if err := s.fenceClosePendingMutation(workID); err != nil {
+		return envelope.WorkEnvelope{}, err
+	}
+	if err := s.fenceSweepStalePendingMutation(workID); err != nil {
+		return envelope.WorkEnvelope{}, err
+	}
 	w, err := s.Get(workID)
 	if err != nil {
 		return w, err
@@ -1040,6 +1059,14 @@ func (s *Store) recoverPendingClaimBeforeClose(workID string) (envelope.WorkEnve
 }
 
 func (s *Store) recoverPendingClaimBeforeLifecycleMutation(workID string, allowPreparedClose bool) (envelope.WorkEnvelope, error) {
+	if err := s.fenceSweepStalePendingMutation(workID); err != nil {
+		return envelope.WorkEnvelope{}, err
+	}
+	if !allowPreparedClose {
+		if err := s.fenceClosePendingMutation(workID); err != nil {
+			return envelope.WorkEnvelope{}, err
+		}
+	}
 	current, err := s.Get(workID)
 	if err != nil {
 		return current, err
@@ -1638,6 +1665,10 @@ var closeBeforeLeaseRelease = func() {}
 // Production leaves it as a no-op.
 var closeAfterTerminalizationPrepare = func() {}
 
+// closeAfterLeaseStealDecision models process death after the final close
+// lease-override decision and before the first close envelope is written.
+var closeAfterLeaseStealDecision = func() {}
+
 // closeAfterFirstEnvelopeWrite models a crash after the closing ActionIntent
 // is published. Exact retry must reuse that generation rather than minting a
 // new action/policy/proof chain.
@@ -2146,7 +2177,7 @@ func samePreparedCloseGeneration(a, b runattempt.TerminalizationIntent) bool {
 		a.PreparedAt.Equal(b.PreparedAt)
 }
 
-func (s *Store) closeGenerationTime(reserved envelope.WorkEnvelope, reservedSHA, inputSHA string, runAttemptIDs []string, requested time.Time) (time.Time, error) {
+func (s *Store) closeGenerationTime(reserved envelope.WorkEnvelope, reservedSHA, inputSHA string, runAttemptIDs []string, requested time.Time) (time.Time, *runattempt.TerminalizationIntent, error) {
 	var found *runattempt.TerminalizationIntent
 	store := s.runAttempts()
 	for _, id := range dedupeStrings(runAttemptIDs) {
@@ -2159,14 +2190,14 @@ func (s *Store) closeGenerationTime(reserved envelope.WorkEnvelope, reservedSHA,
 		}
 		intent := *ra.TerminalizationIntent
 		if err := intent.Validate(); err != nil {
-			return time.Time{}, fmt.Errorf("runattempt %s prepared close invalid: %w", id, err)
+			return time.Time{}, nil, fmt.Errorf("runattempt %s prepared close invalid: %w", id, err)
 		}
 		if intent.WorkID != reserved.ID || intent.ExpectedWorkState != reserved.State || intent.ExpectedWorkSHA256 != reservedSHA ||
 			intent.ExpectedActionIntentID != latestActionIntentID(reserved) || intent.ExpectedPolicyDecisionID != reserved.PolicyDecisionID {
-			return time.Time{}, fmt.Errorf("runattempt %s prepared close no longer matches current work generation", id)
+			return time.Time{}, nil, fmt.Errorf("runattempt %s prepared close no longer matches current work generation", id)
 		}
 		if intent.CloseInputSHA256 != inputSHA {
-			return time.Time{}, fmt.Errorf("runattempt %s prepared close input %s differs from retry close input %s", id, intent.CloseInputSHA256, inputSHA)
+			return time.Time{}, nil, fmt.Errorf("runattempt %s prepared close input %s differs from retry close input %s", id, intent.CloseInputSHA256, inputSHA)
 		}
 		if found == nil {
 			copyIntent := intent
@@ -2174,13 +2205,13 @@ func (s *Store) closeGenerationTime(reserved envelope.WorkEnvelope, reservedSHA,
 			continue
 		}
 		if !samePreparedCloseGeneration(*found, intent) {
-			return time.Time{}, fmt.Errorf("work %s has conflicting prepared close generations", reserved.ID)
+			return time.Time{}, nil, fmt.Errorf("work %s has conflicting prepared close generations", reserved.ID)
 		}
 	}
 	if found != nil {
-		return found.PreparedAt.UTC(), nil
+		return found.PreparedAt.UTC(), found, nil
 	}
-	return requested.UTC(), nil
+	return requested.UTC(), nil, nil
 }
 
 func validateRunAttemptRecord(id string, w envelope.WorkEnvelope, ra runattempt.RunAttempt) error {
@@ -2505,6 +2536,23 @@ func runAttemptHasExecuted(ra runattempt.RunAttempt) bool {
 	return ra.CompletedAt.IsZero() || !ra.LastHeartbeatAt.After(ra.CompletedAt)
 }
 
+// runAttemptOwnsHarnessOutcome recognizes either a proved process launch or
+// the one exact pre-launch failure that still belongs to the harness attempt.
+// Origin alone is never enough: the start-error case must carry the exact
+// rooted prepared+start_error lifecycle with no conflicting commit.
+func runAttemptOwnsHarnessOutcome(ra runattempt.RunAttempt) bool {
+	launch := ra.Launch
+	if launch != nil && launch.CommittedAt != nil && launch.StartErrorAt != nil {
+		return false
+	}
+	if runAttemptHasExecuted(ra) {
+		return true
+	}
+	return ra.Origin == runattempt.OriginHarnessExecution &&
+		launch != nil && launch.PreparedAt != nil && launch.StartErrorAt != nil &&
+		launch.CommittedAt == nil && launch.PreparedAt.Equal(*launch.StartErrorAt)
+}
+
 // proofResourcePolicyRefusedBeforeExecution is the exact refusal reason the
 // proof-resource reservation stamps when its policy denies before any
 // execution (proof_reservation.go). It must stay byte-identical to that
@@ -2607,13 +2655,26 @@ func buildAttachedRunAttemptHistory(ids []string, attempts map[string]runattempt
 		for executionIndex := claimIndex + 1; executionIndex < len(orderedIDs); executionIndex++ {
 			executionID := orderedIDs[executionIndex]
 			execution, ok := attempts[executionID]
-			if !ok || !execution.CreatedAt.After(claim.CreatedAt) || !runAttemptHasExecuted(execution) {
+			if !ok || !execution.CreatedAt.After(claim.CreatedAt) || !runAttemptOwnsHarnessOutcome(execution) {
 				continue
 			}
 			history.ReplacedClaimReservations[claimID] = append(history.ReplacedClaimReservations[claimID], executionID)
 		}
 	}
 	return history, nil
+}
+
+// historicalRunAttemptOutcomeCompatible classifies terminal attempts whose
+// status does not represent the terminal work outcome. A failed predecessor is
+// compatible only when a successful retry completed the work. A claim
+// reservation replaced by any later harness execution attempt is always
+// outcome-neutral: the reservation did not execute the task, including when a
+// stale sweep made it terminal before the harness could supersede it.
+func historicalRunAttemptOutcomeCompatible(outcome, id string, history attachedRunAttemptHistory) bool {
+	if len(history.ReplacedClaimReservations[id]) > 0 {
+		return true
+	}
+	return outcome == "completed" && history.SuccessfulRetryPredecessors[id]
 }
 
 func (s *Store) buildRunAttemptTerminalizationPlans(
@@ -2739,15 +2800,14 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 					fmt.Sprintf("abandon_ack:%s:%s", id, strings.TrimSpace(request.Reason)))
 				continue
 			}
-			historicalCompletedAttempt := in.Outcome == "completed" &&
-				(history.SuccessfulRetryPredecessors[id] || len(history.ReplacedClaimReservations[id]) > 0)
+			historicalOutcomeCompatibleAttempt := historicalRunAttemptOutcomeCompatible(in.Outcome, id, history)
 			// Non-executed attempts have no task outcome. Completed close may
 			// bind only an exact pre-execution refusal or a sweep-proven,
 			// side-effect-free claim reservation.
 			nonExecutedAttempt := in.Outcome == "completed" &&
 				(runAttemptPolicyRefusedBeforeExecution(ra) || runAttemptSweptSideEffectFreeReservation(ra))
 			if ra.Status != runattempt.StatusSuperseded && ra.Status != workTarget &&
-				!historicalCompletedAttempt && !nonExecutedAttempt {
+				!historicalOutcomeCompatibleAttempt && !nonExecutedAttempt {
 				verifiedProof, err := s.committedVerifiedProofRunAttempt(closing, ra)
 				if err != nil {
 					return nil, fmt.Errorf("terminal runattempt %s proof-resource exception invalid: %w", id, err)
@@ -2830,7 +2890,7 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 func (s *Store) prepareRunAttemptTerminalizations(plans []runAttemptTerminalizationPlan) error {
 	store := s.runAttempts()
 	for _, plan := range plans {
-		if _, err := store.PrepareTerminalization(plan.Attempt.ID, plan.Intent); err != nil {
+		if _, err := prepareRunAttemptTerminalization(store, plan.Attempt.ID, plan.Intent); err != nil {
 			return err
 		}
 	}
@@ -2870,6 +2930,11 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 
 func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseResult, error) {
 	var res CloseResult
+	if pending, present, err := s.loadClosePending(workID); err != nil {
+		return res, err
+	} else if present {
+		return s.completeClosePending(pending, in, now)
+	}
 	w, err := s.recoverPendingClaimBeforeClose(workID)
 	if err != nil {
 		return res, err
@@ -2982,11 +3047,23 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		}
 		w.RunAttemptIDs = mergeUnique(w.RunAttemptIDs, []string{rid})
 	}
-	closeNow, err := s.closeGenerationTime(reservedWork, reservedWorkSHA256, inputSHA256, w.RunAttemptIDs, now)
+	closeNow, preparedGeneration, err := s.closeGenerationTime(reservedWork, reservedWorkSHA256, inputSHA256, w.RunAttemptIDs, now)
 	if err != nil {
 		return res, err
 	}
-	plan, err := s.ClosePlan(workID, closeNow, ClosePlanOptions{Actor: in.Actor, Outcome: in.Outcome, MoveType: in.MoveType, ProofRefs: in.ProofRefs})
+	frozenCloseActionID := ""
+	if preparedGeneration != nil {
+		frozenCloseActionID = preparedGeneration.CloseActionIntentID
+	}
+	plan, err := s.ClosePlan(workID, closeNow, ClosePlanOptions{
+		Actor:                in.Actor,
+		Outcome:              in.Outcome,
+		MoveType:             in.MoveType,
+		ProofRefs:            in.ProofRefs,
+		Steal:                in.Steal,
+		StealReason:          in.StealReason,
+		FrozenActionIntentID: frozenCloseActionID,
+	})
 	if err != nil {
 		return res, err
 	}
@@ -3017,7 +3094,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	// Receipt — how the run is learned from.
 	rOut := receiptOutcome[in.Outcome]
 	rec := envelope.Receipt{
-		Header:   newHeaderWithLane(envelope.SVReceipt, idFor("rec_", workID, ts(closeNow)), closeNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
+		Header:   newCloseHeaderWithLane(envelope.SVReceipt, idFor("rec_", workID, ts(closeNow)), closeNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
 		Outcome:  rOut,
 		MoveType: in.MoveType,
 		Surprise: surprise,
@@ -3078,7 +3155,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		}
 	}
 	tr := envelope.Transition{
-		Header:     newHeaderWithLane(envelope.SVTransition, idFor("tr_", workID, ts(closeNow)), closeNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
+		Header:     newCloseHeaderWithLane(envelope.SVTransition, idFor("tr_", workID, ts(closeNow)), closeNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
 		BeforeRefs: before,
 		ActionRefs: orEmpty(actionRefs),
 		AfterRefs:  after,
@@ -3111,159 +3188,117 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if err != nil {
 		return res, err
 	}
-	var referenceTransaction gitReferenceTransaction
+	var frozenLandingProof *LandCheckReport
+	var referenceRepositoryPath string
+	var referenceExpectations []gitReferenceExpectation
 	if landingProof != nil {
 		currentProof, err := s.revalidateLandedProof(w, *landingProof, now)
 		if err != nil {
 			return res, err
 		}
-		expectations := []gitReferenceExpectation{{
+		proofCopy := *landingProof
+		frozenLandingProof = &proofCopy
+		referenceRepositoryPath = currentProof.RepoPath
+		referenceExpectations = []gitReferenceExpectation{{
 			Ref: currentProof.TargetBranchRef,
 			SHA: currentProof.TargetSHA,
 		}}
 		if currentProof.PublicationMode == "required" {
-			expectations = append(expectations, gitReferenceExpectation{
+			referenceExpectations = append(referenceExpectations, gitReferenceExpectation{
 				Ref: currentProof.PublicationRef,
 				SHA: currentProof.PublicationSHA,
 			})
 		}
-		referenceTransaction, err = startGitReferenceTransaction(currentProof.RepoPath, expectations)
-		if err != nil {
-			return res, fmt.Errorf("prepare Git reference transaction: %w", err)
-		}
-		// Git's transaction makes only the target/publication ref values atomic.
-		// Revalidate repository identity once more while those locks are held and
-		// before the first terminal byte; Git does not lock config or object roots.
+		// Freeze repository identity before the pending frame. Recovery repeats
+		// this validation and re-prepares the exact ref expectations.
 		if err := s.validateBoundGitDelivery(w); err != nil {
-			identityErr := fmt.Errorf("final repository identity revalidation: %w", err)
-			if abortErr := referenceTransaction.Abort(); abortErr != nil {
-				return res, errors.Join(identityErr, fmt.Errorf("abort Git reference transaction: %w", abortErr))
-			}
-			return res, identityErr
+			return res, fmt.Errorf("final repository identity revalidation: %w", err)
 		}
 	}
-	// Atomic steal (2026-07-31 regression — work_close_steal_lease_corruption_20260731):
-	// the lease gate runs as the LAST pre-persistence gate, AFTER plan/policy
-	// evaluation, AFTER receipt/transition composition, AFTER the Git reference
-	// transaction is staged and identity-revalidated. Re-pointing the lease before
-	// every other check passed was the brick pattern from 2026-07-31 — a close
-	// --steal transferred the lease to actor-b, then a downstream validation refused
-	// the closure, leaving the work in actor-a's pre-close state with a lease naming
-	// actor-b. Now: any pre-persistence check failing causes the gate to never run,
-	// the Git ref transaction to abort, and the lease stays byte-identical. The
-	// gate's blocked path remains append-only audit (ActionIntent + PolicyDecision
-	// + lifecycle event) and writes no lease byte; the gate's stolen path is the
-	// only one that re-points the lease, and it is now the final gate before any
-	// terminal byte lands on disk.
-	if err := s.leaseHolderCloseGate(w, actor, in, now); err != nil {
-		if referenceTransaction != nil {
-			if abortErr := referenceTransaction.Abort(); abortErr != nil {
-				return res, errors.Join(err, fmt.Errorf("abort Git reference transaction: %w", abortErr))
-			}
-		}
-		return res, err
+	// Decide lease authority read-only before preparing terminalization intents.
+	// A denied close must keep its existing early audit trail and must never wedge
+	// a RunAttempt behind a prepared intent. A valid steal is retained but does
+	// not transfer: terminal override authorization belongs after the durable
+	// recovery boundary and success is published with the terminal close event.
+	closeLeaseStatus := s.leaseHolderStatusFor(w.ID, actor, in.Steal, in.StealReason, "close")
+	if closeLeaseStatus.Err != nil {
+		return res, closeLeaseStatus.Err
 	}
-	referenceTransactionFinished := false
-	defer func() {
-		// An unexpected panic must not strand Git ref locks. Ordinary persistence
-		// failures abort explicitly below so an abort failure can be reported.
-		if referenceTransaction != nil && !referenceTransactionFinished {
-			_ = referenceTransaction.Abort()
+	if closeLeaseStatus.Blocked {
+		gateErr := s.recordLeaseHolderDeny(
+			w,
+			actor,
+			closeLeaseStatus.Holder,
+			closeLeaseStatus.Message,
+			"work.close",
+			"close_denied_not_lease_holder",
+			now,
+		)
+		if gateErr == nil {
+			gateErr = fmt.Errorf("cannot close %s: %s", w.ID, closeLeaseStatus.Message)
 		}
-	}()
-	abortReferenceTransaction := func(cause error) error {
-		if referenceTransaction == nil {
-			return cause
-		}
-		abortErr := referenceTransaction.Abort()
-		referenceTransactionFinished = true
-		if abortErr != nil {
-			return errors.Join(cause, fmt.Errorf("abort Git reference transaction: %w", abortErr))
-		}
-		return cause
+		return res, gateErr
 	}
-	// The complete attempt union and every full prepared-intent retry have
-	// already been validated. Only now may the lease gate leave its auditable
-	// denial/steal trail or transfer the lease.
-	if err := s.leaseHolderCloseGate(w, actor, in, now); err != nil {
-		return res, abortReferenceTransaction(err)
-	}
-	// Preparing every non-terminal attempt is the durable recovery boundary;
-	// it precedes the close action, policy, receipt, transition, and work bytes.
-	if err := s.prepareRunAttemptTerminalizations(terminalizationPlans); err != nil {
-		return res, abortReferenceTransaction(err)
-	}
-	closeAfterTerminalizationPrepare()
 
-	// Persist the emitted envelopes, then land the work terminal and link the transition.
-	if err := s.writeEventJSON(plan.ActionIntent.ID, &plan.ActionIntent); err != nil {
-		return res, abortReferenceTransaction(err)
-	}
-	closeAfterFirstEnvelopeWrite()
-	if err := s.writeEventJSON(plan.Decision.ID, &plan.Decision); err != nil {
-		return res, abortReferenceTransaction(err)
-	}
-	if err := s.writeEventJSON(rec.ID, &rec); err != nil {
-		return res, abortReferenceTransaction(err)
-	}
-	if err := s.writeEventJSON(tr.ID, &tr); err != nil {
-		return res, abortReferenceTransaction(err)
-	}
 	from := w.State
 	w.State = in.Outcome
 	w.IDs.TransitionID = tr.ID
 	// Never persist an envelope that fails the current schema: the lifecycle
 	// must not mint valid receipts/transitions citing an invalid spine object.
 	if err := w.Validate(); err != nil {
-		return res, abortReferenceTransaction(fmt.Errorf("refusing to persist invalid terminal envelope: %w", err))
-	}
-	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
-		return res, abortReferenceTransaction(err)
+		return res, fmt.Errorf("refusing to persist invalid terminal envelope: %w", err)
 	}
 	workSHA256, err := workEnvelopeSHA256(w)
 	if err != nil {
-		return res, abortReferenceTransaction(err)
+		return res, err
 	}
 	receiptSHA256, err := receiptEnvelopeSHA256(rec)
 	if err != nil {
-		return res, abortReferenceTransaction(err)
+		return res, err
 	}
-	if err := s.appendEvent(Event{TS: ts(closeNow), WorkID: workID, From: from, To: in.Outcome, Note: "closed: " + in.MoveType + " (policy " + plan.Policy.Outcome + ")", Attached: []string{plan.ActionIntent.ID, plan.Decision.ID, rec.ID, tr.ID}, PreviousWorkSHA256: reservedWorkSHA256, WorkSHA256: workSHA256, ReceiptSHA256: receiptSHA256, RunAttemptTerminalizationDigests: terminalizationDigests}); err != nil {
-		return res, abortReferenceTransaction(err)
+	closeEvent := Event{
+		TS:                               ts(closeNow),
+		WorkID:                           workID,
+		From:                             from,
+		To:                               in.Outcome,
+		Note:                             "closed: " + in.MoveType + " (policy " + plan.Policy.Outcome + ")",
+		Attached:                         []string{plan.ActionIntent.ID, plan.Decision.ID, rec.ID, tr.ID},
+		PreviousWorkSHA256:               reservedWorkSHA256,
+		WorkSHA256:                       workSHA256,
+		ReceiptSHA256:                    receiptSHA256,
+		RunAttemptTerminalizationDigests: terminalizationDigests,
 	}
-	if referenceTransaction != nil {
-		if err := referenceTransaction.Commit(); err != nil {
-			referenceTransactionFinished = true
-			return res, fmt.Errorf("commit Git reference transaction: %w", err)
-		}
-		referenceTransactionFinished = true
+	if closeLeaseStatus.Stolen {
+		closeEvent.By = actor
+		closeEvent.Note = fmt.Sprintf(
+			"lease stolen from %q: %s; %s",
+			closeLeaseStatus.Holder,
+			strings.TrimSpace(in.StealReason),
+			closeEvent.Note,
+		)
 	}
-	// I1: a lease must not outlive its work's terminal state. Close is the ONLY
-	// path into a terminal state (Advance refuses one — terminalStateRequiresClose),
-	// so releasing here retires the whole lease lifetime rather than deferring it
-	// to a sweep that may not run for weeks.
-	//
-	// Ordering is the invariant, not an implementation detail. The release runs
-	// only AFTER the terminal WorkEnvelope, receipt, transition, lifecycle event
-	// and Git reference transaction are durable, mirroring abandonRunAttempts'
-	// posture below: at this point the close cannot be rolled back, so cleanup
-	// is best-effort and a failure is a doctor-visible gap, not a lost close.
-	// The reverse order would be a real regression — a crash after an early
-	// release would leave a still-live claimed work with no lease, silently
-	// disarming leaseHolderCloseGate/leaseHolderAdvanceGate for whoever runs
-	// next. The residue this ordering can leave (terminal work + lease) is
-	// exactly the pair internal/home's sweep already backstops.
-	closeBeforeLeaseRelease()
-	s.releaseLease(workID)
-	// Only work-owned exact prepared intents complete here. Caller-owned plans
-	// remain non-terminal until their owner attaches post-close proof and
-	// completes the same immutable reservation. Any missed write is recoverable
-	// from the prepared intent plus the exact close chain.
-	unterminalizedRunAttemptIDs := s.terminalizePreparedRunAttempts(terminalizationPlans, now)
-	return CloseResult{
-		Work: w, Receipt: rec, Transition: tr,
-		UnterminalizedRunAttemptIDs: unterminalizedRunAttemptIDs,
-	}, nil
+	leaseSnapshot, capturedLease, err := s.captureClosePendingLease(workID)
+	if err != nil {
+		return res, err
+	}
+	frozenLeaseHolder := strings.TrimSpace(capturedLease.By)
+	if closeLeaseStatus.Holder != "" && closeLeaseStatus.Holder != frozenLeaseHolder {
+		return res, fmt.Errorf("close lease authority changed before recovery frame: expected holder %q, got holder %q", closeLeaseStatus.Holder, capturedLease.By)
+	}
+	pending, err := s.newClosePending(
+		reservedWork, w, inputSHA256, in,
+		plan.ActionIntent, plan.Decision, rec, tr, closeEvent,
+		leaseSnapshot, frozenLeaseHolder, closeLeaseStatus.Stolen,
+		terminalizationPlans, frozenLandingProof,
+		referenceRepositoryPath, referenceExpectations,
+	)
+	if err != nil {
+		return res, fmt.Errorf("build close recovery frame: %w", err)
+	}
+	if err := s.persistClosePending(pending); err != nil {
+		return res, fmt.Errorf("persist close recovery frame: %w", err)
+	}
+	return s.completeClosePending(pending, in, now)
 }
 
 // terminalizePreparedRunAttempts writes only work-owned exact intents.
@@ -3589,6 +3624,11 @@ func (s *Store) ReconcileRunAttemptsForTerminalWork(workID string, now time.Time
 	}
 	if len(report.ReconciledIDs) > 0 && len(report.Issues) > 0 {
 		report.Status = "partially_reconciled"
+	}
+	if report.Status == "ok" {
+		if err := s.finishReconciledClosePending(workID); err != nil {
+			return report, err
+		}
 	}
 	return report, nil
 }
@@ -4233,6 +4273,16 @@ func (s *Store) readAllEventsStrictUnlocked() ([]Event, error) {
 
 func newHeader(sv, id string, now time.Time, workID, contextPackID, privacy, risk string) envelope.Header {
 	return newHeaderWithLane(sv, id, now, workID, contextPackID, privacy, risk, "")
+}
+
+func newCloseHeader(sv, id string, now time.Time, workID, contextPackID, privacy, risk string) envelope.Header {
+	return newCloseHeaderWithLane(sv, id, now, workID, contextPackID, privacy, risk, "")
+}
+
+func newCloseHeaderWithLane(sv, id string, now time.Time, workID, contextPackID, privacy, risk, laneID string) envelope.Header {
+	header := newHeaderWithLane(sv, id, now, workID, contextPackID, privacy, risk, laneID)
+	header.CreatedAt = now.UTC().Format(time.RFC3339Nano)
+	return header
 }
 
 // newHeaderWithLane is newHeader plus a declared lane id stamped into Producer.LaneID. laneID

@@ -9,6 +9,7 @@ import (
 )
 
 func TestParsePacketMarkdownExtractsWorkFields(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "work", "goal-packet.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +39,7 @@ func TestParsePacketMarkdownExtractsWorkFields(t *testing.T) {
 }
 
 func TestParsePacketMarkdownExtractsProofMedium(t *testing.T) {
+	t.Parallel()
 	packet, err := ParsePacketMarkdown([]byte(`# Visual packet
 Date: 2026-07-02
 Status: ready
@@ -58,6 +60,7 @@ Build a visual surface.
 }
 
 func TestImportPacketCreatesIdempotentProposedWork(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	store, err := Open(home)
 	if err != nil {
@@ -122,6 +125,7 @@ func TestImportPacketCreatesIdempotentProposedWork(t *testing.T) {
 }
 
 func TestImportPacketBlockedByPolicyDoesNotCreateWork(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	store, err := Open(home)
 	if err != nil {
@@ -151,6 +155,7 @@ func TestImportPacketBlockedByPolicyDoesNotCreateWork(t *testing.T) {
 }
 
 func TestImportedPacketCanDriveReceiptTransition(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	store, err := Open(home)
 	if err != nil {

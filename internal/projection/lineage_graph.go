@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"compound/internal/candidates"
 	"compound/internal/work"
 )
 
@@ -406,16 +407,15 @@ func readProjectionJSONL(path string) ([]jsonRow, error) {
 }
 
 func readCandidateProjection(homePath, id string) (jsonRow, error) {
-	path := filepath.Join(homePath, "inbox", "memory-candidates", id+".json")
-	data, err := os.ReadFile(path)
+	record, err := candidates.ReadRecord(homePath, candidates.Memory, id)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("read memory candidate %q: %w", id, err)
 	}
 	var row jsonRow
-	if err := json.Unmarshal(data, &row); err != nil {
+	if err := json.Unmarshal(record.Body, &row); err != nil {
 		return nil, err
 	}
 	return row, nil

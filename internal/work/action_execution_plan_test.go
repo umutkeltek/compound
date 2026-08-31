@@ -8,6 +8,7 @@ import (
 )
 
 func TestActionExecutionPlanConsumesActionContextWithoutExecuting(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ctx, workID := runningActionContextWork(t, s)
 	before, err := s.Get(workID)
@@ -96,6 +97,7 @@ func TestActionExecutionPlanConsumesActionContextWithoutExecuting(t *testing.T) 
 }
 
 func TestActionExecutionPlanRequiresClaimedOrRunningWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ctx, workID := admittedActionContextWork(t, s)
 	plan, err := s.ActionExecutionPlan(workID, fixedNow.Add(20*time.Minute), ActionExecutionPlanOptions{Actor: "codex", Record: true})
@@ -119,6 +121,7 @@ func TestActionExecutionPlanRequiresClaimedOrRunningWork(t *testing.T) {
 }
 
 func TestReviewCardActionExecutionPlanPreservesGateLifecycleWithoutExecuting(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	source, err := s.Create(CreateInput{
 		Owner:            "compound-core",

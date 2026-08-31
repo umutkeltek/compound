@@ -28,6 +28,29 @@ const (
 	memoryCliArgsEnv  = "COMPOUND_TEST_MEMORY_CLI_ARGS"
 )
 
+func TestParseMemoryAfterCursorAcceptsTokenOrFilenameAndRejectsPaths(t *testing.T) {
+	t.Parallel()
+	want := candidates.EntryCursor("cand_01.json")
+	token, err := want.Token()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"cand_01.json", token} {
+		got, err := parseMemoryAfterCursor(value)
+		if err != nil || got != want {
+			t.Fatalf("parse %q = %q, %v; want %q", value, got, err, want)
+		}
+	}
+	if got, err := parseMemoryAfterCursor(""); err != nil || got != "" {
+		t.Fatalf("empty cursor = %q, %v", got, err)
+	}
+	for _, value := range []string{"../escape.json", "/absolute.json", "filename-v1:not-base64***"} {
+		if got, err := parseMemoryAfterCursor(value); err == nil {
+			t.Fatalf("invalid cursor %q accepted as %q", value, got)
+		}
+	}
+}
+
 // memoryCliChildArgsEnv is set by the parent in addition to the
 // memoryCliChildEnv; it carries the full argv the child passes into
 // cmdMemory([]string{...}). Newlines are the separator (no real CLI arg
@@ -74,6 +97,7 @@ func runMemoryCLIAsChild(t *testing.T, homePath, sub string, args ...string) ([]
 // os.Exit on the verb handlers (by design); the parent captures the code
 // via *exec.ExitError.
 func TestMemoryCLIRunsSubcommandChild(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(memoryCliChildEnv) == "" {
 		return
 	}
@@ -90,6 +114,7 @@ func TestMemoryCLIRunsSubcommandChild(t *testing.T) {
 //
 // Pre-change behavior: err = "not found: .json", exit 1 — nonsensical.
 func TestMemoryAdjudicateNoArgExitsTwoWithUsage(t *testing.T) {
+	t.Parallel()
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("home init: %v", err)
@@ -118,6 +143,7 @@ func TestMemoryAdjudicateNoArgExitsTwoWithUsage(t *testing.T) {
 // / `compound capability consume` (the high-leverage case the packet opens
 // with).
 func TestMemoryAdjudicateUnknownIDNamesSearchedLocationAndDoor(t *testing.T) {
+	t.Parallel()
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("home init: %v", err)
@@ -176,6 +202,7 @@ func TestMemoryAdjudicateUnknownIDNamesSearchedLocationAndDoor(t *testing.T) {
 // addition to the normal 0/N summary. The listing still runs; we just
 // don't leave the operator thinking the kind doesn't exist anywhere.
 func TestMemoryCandidatesKindPointerNamesForeignDoor(t *testing.T) {
+	t.Parallel()
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("home init: %v", err)
@@ -213,6 +240,7 @@ func TestMemoryCandidatesKindPointerNamesForeignDoor(t *testing.T) {
 }
 
 func TestMemoryAdjudicatePendingPromoteRefused(t *testing.T) {
+	t.Parallel()
 	// Settled design decision 3 (memory-batch-adjudicate packet): promotion
 	// stays per-id only. Refuse --verdict promote in --pending mode at the
 	// CLI door so a stale batch cannot promote without the operator.

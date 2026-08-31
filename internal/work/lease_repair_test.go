@@ -12,6 +12,7 @@ package work
 // the corrupt holder has changed since operator review).
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -328,4 +329,36 @@ func mustOnlyWorkID(t *testing.T, s *Store) string {
 		t.Fatalf("expected exactly one lease on disk, got %d", len(leases))
 	}
 	return leases[0].WorkID
+}
+
+func TestLeaseRepairRefusesFrozenCloseAuthorityWithoutMutation(t *testing.T) {
+	s := newStore(t)
+	const holder = "actor-a"
+	workID := prepareClaimedWork(t, s, holder, "", "a frozen close fences lease repair")
+	frozen := freezeClosePendingAfterPrepare(t, s, workID, CloseInput{
+		Outcome:  "cancelled",
+		MoveType: "audit_only",
+		Actor:    holder,
+		Summary:  "freeze close before lease repair",
+	}, fixedNow.Add(time.Minute))
+	beforeAuthority := snapshotLifecycleAuthority(t, s)
+	beforeAttempts := runAttemptsByID(t, s)
+
+	_, err := s.RepairLease(workID, LeaseRepairInput{
+		Actor:                 "repair-operator",
+		ExpectedHolder:        "actor-b",
+		ExpectedCurrentHolder: holder,
+		Reason:                "must not overtake the frozen close generation",
+	}, fixedNow.Add(2*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "close recovery_required") {
+		t.Fatalf("repair over frozen close %s/%s error = %v, want close recovery_required", frozen.Action.ID, frozen.Decision.ID, err)
+	}
+	if !strings.Contains(err.Error(), frozen.Action.ID) {
+		t.Fatalf("repair fence error %q does not bind frozen close action %s", err, frozen.Action.ID)
+	}
+	assertLifecycleAuthorityUnchanged(t, beforeAuthority, snapshotLifecycleAuthority(t, s))
+	afterAttempts := runAttemptsByID(t, s)
+	if !reflect.DeepEqual(beforeAttempts, afterAttempts) {
+		t.Fatalf("repair over frozen close changed RunAttempts\nbefore=%+v\nafter=%+v", beforeAttempts, afterAttempts)
+	}
 }

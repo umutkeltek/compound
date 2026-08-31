@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"compound/internal/candidates"
-	"compound/internal/home"
 	"compound/internal/mem"
 )
 
@@ -33,14 +32,12 @@ func firstJSONObject(t *testing.T, out string) map[string]json.RawMessage {
 // TestWorkCreateCLIPredictionRequiresOutcome covers F3 (CLI layer): staking any prediction flag
 // without --predicted-outcome is a usage error (exit 2), grouped-optional like parseGitDelivery.
 func TestWorkCreateCLIPredictionRequiresOutcome(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(workPredictionCLIBoundarySubEnv) == "missing-outcome" {
 		cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "p", "--predicted-move-type", "rule_delta"})
 		return
 	}
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkCreateCLIPredictionRequiresOutcome$")
 	cmd.Env = append(os.Environ(), workPredictionCLIBoundarySubEnv+"=missing-outcome", "COMPOUND_HOME="+homePath)
 	output, err := cmd.CombinedOutput()
@@ -59,14 +56,12 @@ func TestWorkCreateCLIPredictionRequiresOutcome(t *testing.T) {
 // TestWorkCreateCLIPredictionRejectsReceiptOutcome covers F3: a staked prediction outcome of
 // "no_op" (a Receipt.Outcome value, never a close outcome) is rejected.
 func TestWorkCreateCLIPredictionRejectsReceiptOutcome(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(workPredictionCLIBoundarySubEnv) == "receipt-outcome" {
 		cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "p", "--predicted-outcome", "no_op"})
 		return
 	}
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkCreateCLIPredictionRejectsReceiptOutcome$")
 	cmd.Env = append(os.Environ(), workPredictionCLIBoundarySubEnv+"=receipt-outcome", "COMPOUND_HOME="+homePath)
 	output, err := cmd.CombinedOutput()
@@ -85,14 +80,12 @@ func TestWorkCreateCLIPredictionRejectsReceiptOutcome(t *testing.T) {
 // TestWorkCreateCLIPredictionRejectsBadMoveType covers F3: an unrecognized predicted move_type is
 // rejected.
 func TestWorkCreateCLIPredictionRejectsBadMoveType(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(workPredictionCLIBoundarySubEnv) == "bad-move-type" {
 		cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "p", "--predicted-outcome", "completed", "--predicted-move-type", "banana"})
 		return
 	}
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkCreateCLIPredictionRejectsBadMoveType$")
 	cmd.Env = append(os.Environ(), workPredictionCLIBoundarySubEnv+"=bad-move-type", "COMPOUND_HOME="+homePath)
 	output, err := cmd.CombinedOutput()
@@ -111,11 +104,8 @@ func TestWorkCreateCLIPredictionRejectsBadMoveType(t *testing.T) {
 // TestWorkCreateCLIPredictionRoundTrips covers F4: `work create` with the three prediction flags
 // prints an envelope JSON carrying the prediction, and `work show` round-trips it.
 func TestWorkCreateCLIPredictionRoundTrips(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 
 	out := captureStdout(t, func() {
 		cmdWork([]string{
@@ -167,11 +157,8 @@ func TestWorkCreateCLIPredictionRoundTrips(t *testing.T) {
 // observed/work-surprise/, never touches the ledger, and a second work with an identical
 // diverged close the SAME day mints a DIFFERENT candidate (never dedupes across works).
 func TestWorkCloseCLIMintsSurpriseCandidateOnDivergence(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	memStore, err := mem.Open(homePath)
 	if err != nil {
 		t.Fatalf("open mem store: %v", err)
@@ -275,11 +262,8 @@ func TestWorkCloseCLIMintsSurpriseCandidateOnDivergence(t *testing.T) {
 // TestWorkCloseCLIMatchingPredictionMintsNothing covers F6: a close that CONFIRMS its staked
 // prediction mints ZERO candidates and writes no blob.
 func TestWorkCloseCLIMatchingPredictionMintsNothing(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 
 	out := captureStdout(t, func() {
 		cmdWork([]string{

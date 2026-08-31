@@ -12,6 +12,7 @@ import (
 // emitted Transition AND into the persisted tr_*.json record — the model's
 // declared branch survives the whole mint path.
 func TestCloseAttachesOpensBranchesToTransition(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "branch-lifecycle", SuccessPredicate: "baseline close stays branchless"}, fixedNow)
 	if err != nil {
@@ -66,6 +67,7 @@ func TestCloseAttachesOpensBranchesToTransition(t *testing.T) {
 // Falsifier (fail-closed door): an invalid branch ref (bogus kind) makes Close
 // refuse — the mint validates before anything is persisted.
 func TestCloseRefusesInvalidBranchRef(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "branch-lifecycle", SuccessPredicate: "invalid branch refused"}, fixedNow)
 	if err != nil {

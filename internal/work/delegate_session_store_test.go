@@ -142,6 +142,7 @@ func TestEnrolledLaneSessionStoreResolutionIsTotalOrActionablyReported(t *testin
 			if err != nil {
 				t.Fatalf("open store: %v", err)
 			}
+			s.EnableExperimentalDelegateMutations()
 			wID := claimReadyWork(t, s, "operator")
 			runner := &minimalDelegateRunner{}
 			result, err := s.Delegate(work.DelegateOptions{

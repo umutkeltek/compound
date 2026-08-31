@@ -193,9 +193,19 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"land-lease":      governedCommand(cmdLandLease),
 		"panel":           heldCommand(cmdPanel),
 		"local-models":    heldCommand(cmdLocalModels),
-		"lanebeliefs":     heldCommand(cmdLaneBeliefs),
-		"mcp-transport":   heldCommand(cmdMCPTransport),
-		"negatives":       heldCommand(cmdNegatives),
+		"lanebeliefs": heldCommand(cmdLaneBeliefs).
+			withSubcommandAdmission("fold", policy.FirstPartyCommandRead).
+			withSubcommandFlagAdmission("fold", "--dry-run", policy.FirstPartyCommandRead).
+			withSubcommandFlagAdmission("fold", "--experimental", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("promote", policy.FirstPartyCommandRead).
+			withSubcommandFlagAdmission("promote", "--dry-run", policy.FirstPartyCommandRead).
+			withSubcommandFlagAdmission("promote", "--experimental", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("cool", policy.FirstPartyCommandRead).
+			withSubcommandFlagAdmission("cool", "--dry-run", policy.FirstPartyCommandRead).
+			withSubcommandFlagAdmission("cool", "--experimental", policy.FirstPartyCommandGoverned).
+			withSubcommandAdmission("list", policy.FirstPartyCommandRead),
+		"mcp-transport": heldCommand(cmdMCPTransport),
+		"negatives":     heldCommand(cmdNegatives),
 		"architecture": heldCommand(archcli.Run).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),
 		"notice": heldCommand(func(args []string) { noticecli.RunWith(args, noticeReviewQueue) }).

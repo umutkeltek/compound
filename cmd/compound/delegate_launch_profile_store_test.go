@@ -81,6 +81,7 @@ func testLaunchProfileResolveRequest() work.DelegateLaunchProfileResolveRequest 
 }
 
 func TestNormalizeDelegateLaunchProfilePlanConsumesSafeOwnerProjection(t *testing.T) {
+	t.Parallel()
 	raw := testLaneLaunchProfilePlan()
 	resolution, err := normalizeDelegateLaunchProfilePlan(raw, testLaunchProfileResolveRequest())
 	if err != nil {
@@ -177,6 +178,7 @@ func testLaneLaunchProfilePlanFor(
 }
 
 func TestNormalizeDelegateLaunchProfilePlanAcceptsRegisteredClaudeTokenProviderClasses(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		profileID       string
@@ -260,6 +262,7 @@ func TestNormalizeDelegateLaunchProfilePlanAcceptsRegisteredClaudeTokenProviderC
 }
 
 func TestNormalizeDelegateLaunchProfilePlanUsesOnlyDeclaredProviderRouteAxis(t *testing.T) {
+	t.Parallel()
 	raw := testLaneLaunchProfilePlanFor(
 		t,
 		"claude-fixture-direct",
@@ -329,6 +332,7 @@ func TestNormalizeDelegateLaunchProfilePlanUsesOnlyDeclaredProviderRouteAxis(t *
 }
 
 func TestNormalizeDelegateLaunchProfilePlanRefusesOwnerAliasMismatch(t *testing.T) {
+	t.Parallel()
 	req := testLaunchProfileResolveRequest()
 	req.ProfileID = "claude-fixture-stale"
 	req.SelectedHarness = "claude_code"
@@ -357,6 +361,7 @@ func TestNormalizeDelegateLaunchProfilePlanRefusesOwnerAliasMismatch(t *testing.
 }
 
 func TestNormalizeDelegateLaunchProfilePlanRefusesAbsentDedicatedProfile(t *testing.T) {
+	t.Parallel()
 	req := testLaunchProfileResolveRequest()
 	req.ProfileID = "claude-fixture-missing"
 	req.SelectedHarness = "claude_code"
@@ -373,6 +378,7 @@ func TestNormalizeDelegateLaunchProfilePlanRefusesAbsentDedicatedProfile(t *test
 }
 
 func TestNormalizeDelegateLaunchProfilePlanRefusesUntrustedOrDriftedOwnerOutput(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		replace func(map[string]any)
@@ -477,6 +483,7 @@ func TestNormalizeDelegateLaunchProfilePlanRefusesUntrustedOrDriftedOwnerOutput(
 }
 
 func TestNormalizeDelegateLaunchProfilePlanMarksTupleMismatchIncompatible(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		mutate func(*work.DelegateLaunchProfileResolveRequest)

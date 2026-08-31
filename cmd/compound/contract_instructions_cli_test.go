@@ -18,6 +18,7 @@ const contractInstructionsChildEnv = "COMPOUND_TEST_CONTRACT_INSTRUCTIONS_CHILD"
 const contractInstructionsMaterializeChildEnv = "COMPOUND_TEST_CONTRACT_INSTRUCTIONS_MATERIALIZE_CHILD"
 
 func TestContractCompileInstructionsCheckFailsOnDriftAndPassesOnExactBlock(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(contractInstructionsChildEnv) == "1" {
 		cmdContract([]string{
 			"compile",
@@ -91,6 +92,7 @@ func TestContractCompileInstructionsCheckFailsOnDriftAndPassesOnExactBlock(t *te
 // `--check-instructions --preset <name>` is rejected (preset renders are
 // not drift-checked).
 func TestContractCompileInstructionsPresetVariant(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(contractInstructionsChildEnv) == "1" {
 		preset := os.Getenv("COMPOUND_TEST_INSTRUCTION_PRESET")
 		negative := os.Getenv("COMPOUND_TEST_INSTRUCTION_NEGATIVE") == "1"
@@ -200,6 +202,7 @@ func TestContractCompileInstructionsPresetVariant(t *testing.T) {
 }
 
 func TestContractCompileMaterializesRecognizedBootstrapAndThenChecksClean(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(contractInstructionsMaterializeChildEnv) == "1" {
 		args := []string{
 			"compile",

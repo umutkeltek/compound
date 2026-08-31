@@ -7,6 +7,7 @@ import (
 )
 
 func TestDispatchSurfacesExpectedBaseAndWorkerLandingContract(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 13, 21, 0, 0, 0, time.UTC)
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -60,6 +61,7 @@ func TestDispatchSurfacesExpectedBaseAndWorkerLandingContract(t *testing.T) {
 }
 
 func TestPreFingerprintGitDeliveryIsVisibleButNotDispatchableBeforeBackfill(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 14, 5, 0, 0, 0, time.UTC)
 	store, legacy, _, _ := preFingerprintGitDeliveryFixture(t, now, "ready", "")
 	report, err := store.Workbench(now.Add(time.Minute), WorkbenchOptions{})
@@ -90,6 +92,7 @@ func TestPreFingerprintGitDeliveryIsVisibleButNotDispatchableBeforeBackfill(t *t
 }
 
 func TestWorkbenchMakesCodeWithoutSourceBoundProofAwaitingProof(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 13, 21, 0, 0, 0, time.UTC)
 	store, err := Open(t.TempDir())
 	if err != nil {

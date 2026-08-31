@@ -118,7 +118,7 @@ func TestParityFakeBreadthSidecar(t *testing.T) {
 func TestParityReplayNegativeControlMasksData(t *testing.T) {
 	now := time.Now().UTC()
 	query := "synthetic retrieval answer baseline anchor"
-	unmaskedHome := newParityTestHome(t, now)
+	unmaskedHome := newParityTestHome(t)
 	wantRef := seedParityClaim(t, unmaskedHome, "synthetic retrieval answer", now)
 	fixturePath := writeParityFixture(t, unmaskedHome, retrievalparity.Fixture{
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
@@ -164,7 +164,7 @@ func TestParityReplayNegativeControlMasksData(t *testing.T) {
 
 func TestParityReplayOrientMatchesProductionContextPack(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	wantRef := seedParityClaim(t, homePath, "token-disjoint expected marker", now)
 	query := "unrelated semantic probe"
 	t.Setenv(parityFakeSidecarEnv, "1")
@@ -223,7 +223,7 @@ func TestParityReplayOrientMatchesProductionContextPack(t *testing.T) {
 
 func TestParityReplayEngineAvailabilityFollowsConsumerFallback(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	query := "synthetic available engine marker"
 	wantRef := seedParityClaim(t, homePath, query, now)
 	store, err := mem.Open(homePath)
@@ -278,7 +278,7 @@ func TestParityReplayEngineAvailabilityFollowsConsumerFallback(t *testing.T) {
 
 func TestParityReplayCmdMemoryEngineProfileBindsConfiguredEngine(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	wantRef := seedParityClaim(t, homePath, "synthetic configured profile hit", now)
 	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
@@ -310,7 +310,7 @@ func TestParityReplayRefusedEngineErrorsUseRefusedRuntimeGap(t *testing.T) {
 	now := time.Now().UTC()
 	for _, mode := range []string{parityFakeModeAhead, parityFakeModeUnowned} {
 		t.Run(mode, func(t *testing.T) {
-			homePath := newParityTestHome(t, now)
+			homePath := newParityTestHome(t)
 			fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
 				SchemaVersion:     retrievalparity.FixtureSchemaVersion,
 				ClassifierVersion: retrievalparity.ClassifierVersion,
@@ -346,7 +346,7 @@ func TestParityReplayRefusedEngineErrorsUseRefusedRuntimeGap(t *testing.T) {
 
 func TestParityReplayExpectedEngineFailsWhenLexicalMatchesRefs(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	query := "synthetic expected replacement engine marker"
 	wantRef := seedParityClaim(t, homePath, query, now)
 	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
@@ -384,7 +384,7 @@ func TestParityReplayExpectedEngineFailsWhenLexicalMatchesRefs(t *testing.T) {
 
 func TestParityReplayForbidsRequestedGBrainWhenOrientRefsMatch(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	wantRef := seedParityClaim(t, homePath, "synthetic forbidden gbrain result", now)
 	query := "token disjoint forbidden dependency probe"
 	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
@@ -439,7 +439,7 @@ func TestParityReplayForbidsRequestedGBrainWhenOrientRefsMatch(t *testing.T) {
 
 func TestParityReplayForbidsGBrainWhenCapabilitiesProbeFails(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	query := "synthetic broken gbrain fallback marker"
 	wantRef := seedParityClaim(t, homePath, query, now)
 	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
@@ -477,7 +477,7 @@ func TestParityReplayForbidsGBrainWhenCapabilitiesProbeFails(t *testing.T) {
 
 func TestParityReplayRejectsMissingEngineExpectationValue(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
 		ClassifierVersion: retrievalparity.ClassifierVersion,
@@ -522,7 +522,7 @@ func TestParityReplayRejectsInvalidArgvBeforeWritingArtifacts(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			homePath := newParityTestHome(t, now)
+			homePath := newParityTestHome(t)
 			fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
 				SchemaVersion:     retrievalparity.FixtureSchemaVersion,
 				ClassifierVersion: retrievalparity.ClassifierVersion,
@@ -555,7 +555,7 @@ func TestParityReplayRejectsInvalidArgvBeforeWritingArtifacts(t *testing.T) {
 
 func TestParityReplayRejectsMalformedOrContradictoryEngineContract(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
 		ClassifierVersion: retrievalparity.ClassifierVersion,
@@ -590,7 +590,7 @@ func TestParityReplayRejectsMalformedOrContradictoryEngineContract(t *testing.T)
 
 func TestParityReplayWithoutEngineFlagsPreservesSuccessSemantics(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	query := "synthetic compatibility engine marker"
 	wantRef := seedParityClaim(t, homePath, query, now)
 	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
@@ -621,7 +621,7 @@ func TestParityReplayWithoutEngineFlagsPreservesSuccessSemantics(t *testing.T) {
 
 func TestRetrievalJournalCLIAndBestEffortFailure(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	query := "synthetic journal retrieval marker"
 	seedParityClaim(t, homePath, query, now)
 
@@ -681,7 +681,7 @@ func TestRetrievalJournalCLIAndBestEffortFailure(t *testing.T) {
 }
 
 func TestRecallFailureJournalsUnavailableObservationBeforeExit(t *testing.T) {
-	homePath := newParityTestHome(t, time.Now().UTC())
+	homePath := newParityTestHome(t)
 	query := "synthetic recall failure marker"
 	// A torn FINAL line is a crash-truncated append the ledger law tolerates as
 	// never-written; genuine corruption must be mid-file to fail loud. Two
@@ -699,7 +699,7 @@ func TestRecallFailureJournalsUnavailableObservationBeforeExit(t *testing.T) {
 }
 
 func TestSearchFailureJournalsUnavailableObservationBeforeExit(t *testing.T) {
-	homePath := newParityTestHome(t, time.Now().UTC())
+	homePath := newParityTestHome(t)
 	query := "synthetic corpus failure marker"
 	configPath := memoryEngineConfigPath(homePath)
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
@@ -734,7 +734,7 @@ corpus_lanes:
 
 func TestParityReportPrivacy(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	query := "synthetic journal-only privacy sentinel"
 	wantRef := seedParityClaim(t, homePath, query, now)
 	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
@@ -783,7 +783,7 @@ func TestParityReportPrivacy(t *testing.T) {
 
 func TestParityReportHashesSemanticOrientRefs(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	query := "fixture:retrieval-parity"
 	semanticRef := "position://" + query + "::baseline_anchor::slot-aaaaaaaaaaaa"
 	fixtureRow := retrievalparity.FixtureRow{
@@ -819,7 +819,7 @@ func TestParityReportHashesSemanticOrientRefs(t *testing.T) {
 
 func TestParityReportHashesSemanticSearchRefs(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	query := "item_a"
 	chunkRef := query + "#0"
 	fixtureRow := retrievalparity.FixtureRow{
@@ -867,7 +867,7 @@ func TestParityReportHashesNonCanonicalOpaqueRefs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			homePath := newParityTestHome(t, now)
+			homePath := newParityTestHome(t)
 			fixtureRow := retrievalparity.FixtureRow{
 				Consumer:     tt.consumer,
 				Query:        query,
@@ -901,7 +901,7 @@ func TestParityReportHashesNonCanonicalOpaqueRefs(t *testing.T) {
 }
 
 func TestParityFixtureRejectsUnknownFields(t *testing.T) {
-	homePath := newParityTestHome(t, time.Now().UTC())
+	homePath := newParityTestHome(t)
 	fixturePath := filepath.Join(homePath, "unknown-field-fixture.json")
 	raw := `{"schema_version":"` + retrievalparity.FixtureSchemaVersion + `","classifier_version":"` + retrievalparity.ClassifierVersion + `","coverage":{"known_gaps":[]},"rows":[{"consumer":"query","query":"synthetic strict fixture","expected_ref":"claim://claim_aaaaaaaaaaaa"}]}`
 	if err := os.WriteFile(fixturePath, []byte(raw), 0o600); err != nil {
@@ -914,7 +914,7 @@ func TestParityFixtureRejectsUnknownFields(t *testing.T) {
 
 func TestParityReportRejectsWrongClassifierVersion(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	fixtureRow := retrievalparity.FixtureRow{
 		Consumer:     retrievalparity.ConsumerQuery,
 		Query:        "synthetic classifier report",
@@ -937,7 +937,7 @@ func TestParityReportRejectsWrongClassifierVersion(t *testing.T) {
 
 func TestParitySchemaSeparatesHomeRefsFromReportRefs(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	positionRef := "position://fixture:parity::baseline_anchor::slot-aaaaaaaaaaaa"
 	searchRef := "item_a#0"
 	fixture := retrievalparity.Fixture{
@@ -1015,7 +1015,7 @@ func TestParityReplayRejectsUntypedReportFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			homePath := newParityTestHome(t, now)
+			homePath := newParityTestHome(t)
 			fixturePath := filepath.Join(homePath, "adversarial-fixture.json")
 			data, err := json.Marshal(tt.fixture)
 			if err != nil {
@@ -1051,7 +1051,7 @@ func TestParityReplayRejectsUntypedReportFields(t *testing.T) {
 
 func TestParityFreezeBuildsFixtureFromJournal(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	query := "synthetic repeated freeze query"
 	claimA := "claim://claim_aaaaaaaaaaaa"
 	claimB := "claim://claim_bbbbbbbbbbbb"
@@ -1094,7 +1094,7 @@ func TestParityFreezeBuildsFixtureFromJournal(t *testing.T) {
 
 func TestParityFreezePreservesZeroTokenTraffic(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	retrievalparity.Record(homePath, retrievalparity.NewOrientRow(
 		"",
 		*parityTestOrientInput(t, homePath),
@@ -1138,7 +1138,7 @@ func TestParityFreezePreservesZeroTokenTraffic(t *testing.T) {
 
 func TestParityReplayRejectsOrientK(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
 		ClassifierVersion: retrievalparity.ClassifierVersion,
@@ -1164,7 +1164,7 @@ func TestParityReplayRejectsOrientK(t *testing.T) {
 
 func TestParityReplayRejectsOrientFixtureWithoutExactInput(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	fixturePath := filepath.Join(homePath, "missing-orient-input.json")
 	fixture := retrievalparity.Fixture{
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
@@ -1196,7 +1196,7 @@ func TestParityReplayRejectsOrientFixtureWithoutExactInput(t *testing.T) {
 
 func TestParityReplayPreservesExactOrientTuple(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	query := "synthetic exact orient tuple"
 	tuple := retrievalparity.OrientInput{
 		Harness:     "claude_code",
@@ -1257,7 +1257,7 @@ func TestParityReplayPreservesExactOrientTuple(t *testing.T) {
 
 func TestParityFixtureAcceptsSafeLegacyClaimRefsAndHashesReports(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	legacyRef := "claim://brain-D1"
 	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
@@ -1303,7 +1303,7 @@ func TestParityFixtureAcceptsSafeLegacyClaimRefsAndHashesReports(t *testing.T) {
 
 func TestParityFreezeRejectsInvalidWindowEndpointsBeforeArtifact(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	retrievalparity.Record(homePath, retrievalparity.NewRow(
 		retrievalparity.ConsumerQuery,
 		"synthetic endpoint validation",
@@ -1340,7 +1340,7 @@ func TestParityFreezeRejectsInvalidWindowEndpointsBeforeArtifact(t *testing.T) {
 
 func TestParityReportSeparatesControlValidityAndFreezeRequiresControlReport(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	maskedRef := "claim://claim_aaaaaaaaaaaa"
 	row := retrievalparity.NewReplayRow(retrievalparity.FixtureRow{
 		Consumer:     retrievalparity.ConsumerQuery,
@@ -1394,7 +1394,7 @@ func TestParityReportSeparatesControlValidityAndFreezeRequiresControlReport(t *t
 
 func TestParityReplayFailsUnavailableEngineWithNoExpectedRefs(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
 		ClassifierVersion: retrievalparity.ClassifierVersion,
@@ -1419,7 +1419,7 @@ func TestParityReplayFailsUnavailableEngineWithNoExpectedRefs(t *testing.T) {
 
 func TestParityReplayCheckpointResumeRejectsTamperAndWrongIdentity(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
 		ClassifierVersion: retrievalparity.ClassifierVersion,
@@ -1512,7 +1512,7 @@ func TestParityReplayCheckpointResumeRejectsTamperAndWrongIdentity(t *testing.T)
 
 func TestParityReplayCheckpointResumesAfterRecordedRuntimeGap(t *testing.T) {
 	now := time.Now().UTC()
-	homePath := newParityTestHome(t, now)
+	homePath := newParityTestHome(t)
 	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
 		ClassifierVersion: retrievalparity.ClassifierVersion,
@@ -1621,7 +1621,7 @@ func TestParityReplayCheckpointBindsExactFixturePrefix(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			homePath := newParityTestHome(t, now)
+			homePath := newParityTestHome(t)
 			fixtureRow := retrievalparity.FixtureRow{
 				Consumer:        tt.consumer,
 				Query:           "synthetic checkpoint exact prefix",
@@ -1679,12 +1679,9 @@ func TestParityReplayCheckpointBindsExactFixturePrefix(t *testing.T) {
 	}
 }
 
-func newParityTestHome(t *testing.T, now time.Time) string {
+func newParityTestHome(t *testing.T) string {
 	t.Helper()
-	homePath := filepath.Join(t.TempDir(), "home")
-	if err := home.Init(homePath, "test", now); err != nil {
-		t.Fatalf("init scratch home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
 	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
 	return homePath

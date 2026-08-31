@@ -17,6 +17,7 @@ import (
 // with no steal on ungated code. On the gated code this must refuse, naming the holder and
 // both remedies (--by <holder> or --steal --reason), and leave the work state untouched.
 func TestAdvanceRefusesNonLeaseHolder(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "lane-ag", SuccessPredicate: "advance lease enforced"}, fixedNow)
 	if err != nil {
@@ -63,6 +64,7 @@ func TestAdvanceRefusesNonLeaseHolder(t *testing.T) {
 // Falsifier 2: --steal with an empty reason refuses exactly like a plain non-holder advance
 // (no mutation).
 func TestAdvanceStealWithoutReasonRefused(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "lane-ag", SuccessPredicate: "steal without reason"}, fixedNow)
 	if err != nil {
@@ -83,6 +85,7 @@ func TestAdvanceStealWithoutReasonRefused(t *testing.T) {
 // Falsifier 3: a valid steal (--steal --reason "<non-empty>") proceeds; the trail carries
 // the prior holder, the reason string, and the stealing actor.
 func TestAdvanceStealOverridesLeaseHolder(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "lane-ag", SuccessPredicate: "steal path"}, fixedNow)
 	if err != nil {
@@ -147,6 +150,7 @@ func TestAdvanceStealOverridesLeaseHolder(t *testing.T) {
 // gated-but-unfixed code this test fails: actor-a's second advance succeeds when it must be
 // blocked.
 func TestAdvanceStealTransfersLeaseBlockingOriginalHolder(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "lane-ag", SuccessPredicate: "steal transfers lease"}, fixedNow)
 	if err != nil {
@@ -193,6 +197,7 @@ func TestAdvanceStealTransfersLeaseBlockingOriginalHolder(t *testing.T) {
 // this test goes red: lease.By flips to the stealing actor and actor-a's follow-up advance
 // gets blocked instead of passing.
 func TestAdvanceSameStateStealNarratesWithoutTransferringLease(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "lane-ag", SuccessPredicate: "same-state steal does not transfer"}, fixedNow)
 	if err != nil {
@@ -259,6 +264,7 @@ func TestAdvanceSameStateStealNarratesWithoutTransferringLease(t *testing.T) {
 // file. On the unfixed code this test fails outright: there is no lease-transfer write at all,
 // so the chmod has no effect and the steal succeeds.
 func TestAdvanceStealFailsClosedWhenLeaseTransferWriteFails(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "lane-ag", SuccessPredicate: "fail-closed transfer"}, fixedNow)
 	if err != nil {
@@ -311,6 +317,7 @@ func TestAdvanceStealFailsClosedWhenLeaseTransferWriteFails(t *testing.T) {
 // Falsifier 4 (part 1): claimed by A, advanced by A — byte-identical to pre-gate behavior,
 // no extra refusal/steal events land on the trail.
 func TestAdvanceSameActorPassesUnchanged(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "lane-ag", SuccessPredicate: "same actor"}, fixedNow)
 	if err != nil {
@@ -344,6 +351,7 @@ func TestAdvanceSameActorPassesUnchanged(t *testing.T) {
 // before — no lease means no gate interference, and no new envelopes are written for the
 // no-op gate path.
 func TestAdvanceUnclaimedWorkUnaffected(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "lane-ag", SuccessPredicate: "never claimed"}, fixedNow)
 	if err != nil {
@@ -373,6 +381,7 @@ func TestAdvanceUnclaimedWorkUnaffected(t *testing.T) {
 // Steal/StealReason set at all, proposed->admitted, exactly as the pre-existing
 // auto_admit_test.go suite (left unmodified by this change) already proves.
 func TestAdvanceAutoAdmitBypassesLeaseGateByDesign(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	id := makeProposedDirectorWork(t, s, "job_health", "work_lease_gate_bypass", fixedNow)

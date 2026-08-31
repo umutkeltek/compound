@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"compound/internal/harness"
 )
 
 // The shim is the whole point of the install path — a registry row that claims
@@ -24,6 +26,19 @@ func TestOmpShimSourceCarriesOwnershipAndContract(t *testing.T) {
 	} {
 		if !strings.Contains(ompHookShimSource, needle) {
 			t.Errorf("embedded shim lost %s — the installed hook surface would silently shrink", needle)
+		}
+	}
+}
+
+func TestOmpShimBudgetsAnswerBeforeOuterKill(t *testing.T) {
+	const outerShimBudgetMS = 8000
+	if !strings.Contains(ompHookShimSource, "const CALL_TIMEOUT_MS = 8_000;") {
+		t.Fatal("embedded OMP shim outer timeout changed; re-prove the registry safety margin")
+	}
+	for _, alias := range []string{"oh_my_pi", "oh-my-pi"} {
+		budgetMS := harness.DefaultRegistry().HookBudgetMS(alias)
+		if budgetMS <= 0 || budgetMS >= outerShimBudgetMS {
+			t.Fatalf("%s hook budget = %dms, want positive and below outer %dms kill", alias, budgetMS, outerShimBudgetMS)
 		}
 	}
 }

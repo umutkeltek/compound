@@ -18,6 +18,7 @@ import (
 )
 
 func TestEvaluateDelegateHarnessReadinessRejectsCleanDegradedInstructionPack(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	const harnessName = "claude_minimax"
@@ -269,6 +270,7 @@ func TestEvaluateDelegateHarnessReadinessRequiresExactDeclaredMutationCoveringHo
 }
 
 func TestDelegateDeclaredMutationBlockingBindingRequiresCanonicalAllToolMatcher(t *testing.T) {
+	t.Parallel()
 	const harnessName = "claude_zai"
 	binding := hookplan.Binding{
 		ID:       "hook_fixture",

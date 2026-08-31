@@ -13,6 +13,7 @@ import (
 )
 
 func TestCapabilityLifecycleOpenWorkUsesCreatePlanAndCarriesImmutableSourceContext(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	store, err := Open(homePath)
 	if err != nil {
@@ -78,6 +79,7 @@ func TestCapabilityLifecycleOpenWorkUsesCreatePlanAndCarriesImmutableSourceConte
 }
 
 func TestCapabilityLifecycleCreatePlanPreparationReusesRecordedPlan(t *testing.T) {
+	t.Parallel()
 	homePath, store, snapshot, now := capabilityLifecyclePlanFixture(t)
 	first, err := store.BuildCapabilityLifecycleCreatePlan(snapshot, now, CapabilityLifecycleCreatePlanOptions{
 		Actor:  "operator-test",
@@ -106,6 +108,7 @@ func TestCapabilityLifecycleCreatePlanPreparationReusesRecordedPlan(t *testing.T
 }
 
 func TestCapabilityLifecycleCreatePlanAdmissionRepairsTornLifecycleEvent(t *testing.T) {
+	t.Parallel()
 	_, store, snapshot, now := capabilityLifecyclePlanFixture(t)
 	plan, err := store.BuildCapabilityLifecycleCreatePlan(snapshot, now, CapabilityLifecycleCreatePlanOptions{
 		Actor:  "operator-test",
@@ -154,6 +157,7 @@ func TestCapabilityLifecycleCreatePlanAdmissionRepairsTornLifecycleEvent(t *test
 }
 
 func TestCapabilityLifecycleCreatePlanAdmissionRefusesMalformedEventTail(t *testing.T) {
+	t.Parallel()
 	_, store, snapshot, now := capabilityLifecyclePlanFixture(t)
 	plan, err := store.BuildCapabilityLifecycleCreatePlan(snapshot, now, CapabilityLifecycleCreatePlanOptions{
 		Actor:  "operator-test",
@@ -186,6 +190,7 @@ func TestCapabilityLifecycleCreatePlanAdmissionRefusesMalformedEventTail(t *test
 }
 
 func TestCapabilityLifecycleCreatePlanAdmissionSerializesGenericAndRecoveryPaths(t *testing.T) {
+	t.Parallel()
 	_, store, snapshot, now := capabilityLifecyclePlanFixture(t)
 	plan, err := store.BuildCapabilityLifecycleCreatePlan(snapshot, now, CapabilityLifecycleCreatePlanOptions{
 		Actor:  "operator-test",
@@ -231,6 +236,7 @@ func TestCapabilityLifecycleCreatePlanAdmissionSerializesGenericAndRecoveryPaths
 }
 
 func TestCapabilityLifecycleCreatePlanPreparationRefusesReplacementForExistingWork(t *testing.T) {
+	t.Parallel()
 	_, store, snapshot, now := capabilityLifecyclePlanFixture(t)
 	plan, err := store.BuildCapabilityLifecycleCreatePlan(snapshot, now, CapabilityLifecycleCreatePlanOptions{
 		Actor:  "operator-test",
@@ -262,6 +268,7 @@ func TestCapabilityLifecycleCreatePlanPreparationRefusesReplacementForExistingWo
 }
 
 func TestCapabilityLifecycleCreatePlanPreparationRejectsAlteredRecordedSemantics(t *testing.T) {
+	t.Parallel()
 	_, store, snapshot, now := capabilityLifecyclePlanFixture(t)
 	altered, err := store.BuildCapabilityLifecycleCreatePlan(snapshot, now, CapabilityLifecycleCreatePlanOptions{Actor: "operator-test"})
 	if err != nil {

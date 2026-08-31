@@ -13,6 +13,17 @@ else
 fi
 
 ceremonies="compound-execute compound-land compound-verify extract-approach"
+pending=
+
+cleanup_pending() {
+  if [ -n "${pending:-}" ]; then
+    rm -f "$pending"
+  fi
+}
+
+trap cleanup_pending 0
+trap 'exit 1' HUP INT TERM
+
 for ceremony in $ceremonies; do
   owner="$repo_root/skills/$ceremony/SKILL.md"
   if [ ! -f "$owner" ]; then
@@ -27,7 +38,10 @@ for overlay in .agents .claude; do
     adapter="$adapter_dir/SKILL.md"
     target="../../../skills/$ceremony/SKILL.md"
     mkdir -p "$adapter_dir"
-    rm -f "$adapter"
-    ln -s "$target" "$adapter"
+    pending="$adapter.pending.$$"
+    rm -f "$pending"
+    ln -s "$target" "$pending"
+    mv -f "$pending" "$adapter"
+    pending=
   done
 done

@@ -187,7 +187,7 @@ func TestDelegateLegacyTupleWithoutLaunchProfileDoesNotRequireProviderRouteKind(
 	}
 	LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	runner := newFakeRunner()
 	result, err := store.Delegate(DelegateOptions{
@@ -256,7 +256,7 @@ func TestDelegateRefusesMissingOrUnknownProviderRouteKindBeforeProfilesReadiness
 				return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
 			}
 
-			store := newStore(t)
+			store := newExperimentalDelegateStore(t)
 			workID := prepareClaimedWork(t, store, "codex", "", "")
 			before, err := runattempt.Open(store.home).List()
 			if err != nil {
@@ -302,6 +302,7 @@ func TestDelegateRefusesMissingOrUnknownProviderRouteKindBeforeProfilesReadiness
 }
 
 func TestDelegateLaunchProfilePlanFromSnapshotRejectsMissingOrUnknownProviderRouteKind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		kind    string
@@ -357,7 +358,7 @@ func TestDelegateExecutionProfileRefusesUnknownBeforeReadinessCapacityMintOrCrea
 		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
 	}
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	before, err := runattempt.Open(store.home).List()
 	if err != nil {
@@ -431,7 +432,7 @@ func TestDelegateExecutionProfileRejectsNonCanonicalSnapshotBeforeReadinessOrMut
 				return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
 			}
 
-			store := newStore(t)
+			store := newExperimentalDelegateStore(t)
 			workID := prepareClaimedWork(t, store, "codex", "", "")
 			before, err := runattempt.Open(store.home).List()
 			if err != nil {
@@ -542,7 +543,7 @@ func TestDelegateExecutionProfileRejectsIncompatibleSelectedTupleBeforeMutation(
 				return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "available"}}, nil
 			}
 
-			store := newStore(t)
+			store := newExperimentalDelegateStore(t)
 			workID := prepareClaimedWork(t, store, "codex", "", "")
 			before, err := runattempt.Open(store.home).List()
 			if err != nil {
@@ -614,7 +615,7 @@ func TestDelegateExecutionProfileRejectsHarnessFamilyMismatchBeforeMutation(t *t
 		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
 	}
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	before, err := runattempt.Open(store.home).List()
 	if err != nil {
@@ -676,7 +677,7 @@ func TestDelegateExecutionProfileRejectsUnknownCodexLookalikeBeforeMutation(t *t
 		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
 	}
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	before, err := runattempt.Open(store.home).List()
 	if err != nil {
@@ -743,7 +744,7 @@ func TestDelegateExecutionProfileAuthorityDriftRefusesBeforeMintCreateOrPersiste
 		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
 	}
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	before, err := runattempt.Open(store.home).List()
 	if err != nil {
@@ -839,7 +840,7 @@ func TestDelegateExecutionProfileUnchangedSnapshotWithDTOIdentityDriftRefusesBef
 			}
 			LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
 
-			store := newStore(t)
+			store := newExperimentalDelegateStore(t)
 			workID := prepareClaimedWork(t, store, "codex", "", "")
 			before, err := runattempt.Open(store.home).List()
 			if err != nil {
@@ -912,7 +913,7 @@ func TestDelegateExecutionProfileRoundTripsBindingReadinessAndRunAttempt(t *test
 	}
 	LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	runner := newFakeRunner()
 	result, err := store.Delegate(DelegateOptions{
@@ -1004,7 +1005,7 @@ func TestDelegateExecutionProfilePassesExactWorkAndAttemptIdentityToSupervisedLa
 	}
 	LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	runner := newFakeRunner()
 	result, err := store.Delegate(DelegateOptions{
@@ -1063,7 +1064,7 @@ func TestDelegateLaunchProfileWithoutOwnerResolverRefusesBeforeReadinessCapacity
 		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
 	}
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	before, err := runattempt.Open(store.home).List()
 	if err != nil {
@@ -1154,7 +1155,7 @@ func TestDelegateLaunchProfileRejectsOwnerDriftOrMissingClientBeforeReadinessCap
 				return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
 			}
 
-			store := newStore(t)
+			store := newExperimentalDelegateStore(t)
 			workID := prepareClaimedWork(t, store, "codex", "", "")
 			before, err := runattempt.Open(store.home).List()
 			if err != nil {
@@ -1247,7 +1248,7 @@ func TestDelegateLaunchProfileRejectsForgedCompatibleClientBeforeReadinessCapaci
 		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
 	}
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	before, err := runattempt.Open(store.home).List()
 	if err != nil {
@@ -1342,7 +1343,7 @@ func TestDelegateLaunchProfileRevalidationRejectsForgedCompatibleClientBeforeRea
 		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
 	}
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	before, err := runattempt.Open(store.home).List()
 	if err != nil {
@@ -1441,7 +1442,7 @@ func TestDelegateLaunchProfileRevalidationRejectsProviderRouteKindFlipBeforeMint
 		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
 	}
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	before, err := runattempt.Open(store.home).List()
 	if err != nil {
@@ -1553,7 +1554,7 @@ func TestDelegateRevalidatesModelTupleProviderRouteKindOriginBeforeMint(t *testi
 		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
 	}
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	before, err := runattempt.Open(store.home).List()
 	if err != nil {
@@ -1650,7 +1651,7 @@ func TestDelegateRefusesModelTupleResolverErrorBeforeMint(t *testing.T) {
 		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ready"}}, nil
 	}
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	before, err := runattempt.Open(store.home).List()
 	if err != nil {
@@ -1700,6 +1701,7 @@ func TestDelegateRefusesModelTupleResolverErrorBeforeMint(t *testing.T) {
 }
 
 func TestValidateDelegateLaunchProfileResolutionUsesOnlyDeclaredProviderRouteAxis(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		profileID       string
@@ -1894,7 +1896,7 @@ func TestDelegateLaunchProfileBindsOwnerPlanToEnvironmentAndRunAttempt(t *testin
 	}
 	LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	runner := newFakeRunner()
 	result, err := store.Delegate(DelegateOptions{
@@ -2009,7 +2011,7 @@ func TestDelegateLaunchProfileSuppliesExecutorOwnedTransportAfterHarnessResoluti
 	}
 	LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	result, err := store.Delegate(DelegateOptions{
 		WorkID:    workID,
@@ -2057,7 +2059,7 @@ func TestRecoverBoundSessionReadsLegacyV01LaunchProfileRecord(t *testing.T) {
 	}
 	LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	result, err := store.Delegate(DelegateOptions{
 		WorkID:    workID,
@@ -2224,7 +2226,7 @@ func TestRecoverBoundSessionRejectsTamperedLaunchProfileProof(t *testing.T) {
 			}
 			LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
 
-			store := newStore(t)
+			store := newExperimentalDelegateStore(t)
 			workID := prepareClaimedWork(t, store, "codex", "", "")
 			result, err := store.Delegate(DelegateOptions{
 				WorkID:    workID,
@@ -2292,7 +2294,7 @@ func TestRecoverBoundSessionRejectsCoherentlyResealedCrossClientProfiles(t *test
 	}
 	LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	result, err := store.Delegate(DelegateOptions{
 		WorkID:    workID,
@@ -2379,7 +2381,7 @@ func TestRecoverBoundSessionRejectsCoherentlyResealedProviderRouteKind(t *testin
 			}
 			LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
 
-			store := newStore(t)
+			store := newExperimentalDelegateStore(t)
 			workID := prepareClaimedWork(t, store, "codex", "", "")
 			result, err := store.Delegate(DelegateOptions{
 				WorkID:    workID,
@@ -2509,7 +2511,7 @@ func TestRecoverBoundSessionRejectsTamperedExecutionProfileProof(t *testing.T) {
 			}
 			LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
 
-			store := newStore(t)
+			store := newExperimentalDelegateStore(t)
 			workID := prepareClaimedWork(t, store, "codex", "", "")
 			result, err := store.Delegate(DelegateOptions{
 				WorkID:           workID,
@@ -2561,7 +2563,7 @@ func TestDelegateWithoutExecutionProfilePreservesLegacyBehavior(t *testing.T) {
 	}
 	LaneCapacityGuard = fakeGuard(false, false, "ready", "ok")
 
-	store := newStore(t)
+	store := newExperimentalDelegateStore(t)
 	workID := prepareClaimedWork(t, store, "codex", "", "")
 	result, err := store.Delegate(DelegateOptions{
 		WorkID:    workID,

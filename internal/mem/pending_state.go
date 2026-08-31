@@ -8,9 +8,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/candidates"
 )
 
 // PendingState is the reconciled pending-inbox count — the honest backlog
@@ -85,12 +86,9 @@ func (s *Store) WritePendingState(st PendingState) error {
 }
 
 // ReconcilePendingState walks the full inbox exactly once and records the
-// true pending count. The census decodes ONLY each candidate's state field —
-// a full Candidate decode of a 133k inbox just to count proposed entries was
-// the cost this reconciliation exists to avoid — and one unreadable file is
-// counted as corrupt, never fatal: the reconciliation must not abort where
-// the bounded sweep isolates. Callers are the promote-driver sweep (already
-// walking) and explicit maintenance, never the doctor.
+// true pending count. The census decodes ONLY each descriptor-pinned
+// candidate's state field. Any custody corruption fails the reconciliation so
+// a symlink, alias, or ID mismatch cannot become a trusted backlog state.
 func (s *Store) ReconcilePendingState(reconciledBy string, now time.Time) (PendingState, error) {
 	pending, files, corrupt, generation, err := s.pendingInboxCensus()
 	if err != nil {
@@ -112,33 +110,52 @@ func (s *Store) ReconcilePendingState(reconciledBy string, now time.Time) (Pendi
 
 // pendingInboxCensus counts the inbox in one bounded-memory walk: per file it
 // decodes only {"state"}, counting proposed entries. An absent inbox is an
-// empty census, not an error. files counts candidate JSON entries only;
+// empty census, not an error. files counts every candidate-root entry;
 // corrupt counts entries that would not decode; generation identifies the
 // sorted candidate name set so remove-one/add-one cannot masquerade as the
 // same corpus merely because the count stayed constant.
 func (s *Store) pendingInboxCensus() (pending, files, corrupt int, generation string, err error) {
-	names, generation, _, err := s.candidateInboxMetadata()
+	page, err := candidates.ReadPage(s.home, candidates.Memory, "", 0)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			sum := sha256.Sum256(nil)
+			return 0, 0, 0, "sha256:" + hex.EncodeToString(sum[:]), nil
+		}
 		return 0, 0, 0, "", err
 	}
-	for _, name := range names {
+	var names []string
+	var custodyErrors []error
+	for _, entry := range page.Entries {
+		name := string(entry.EntryCursor)
+		names = append(names, name)
 		files++
+		if entry.Corruption != nil {
+			corrupt++
+			custodyErrors = append(custodyErrors, entry.Corruption)
+			continue
+		}
 		var state struct {
 			State string `json:"state"`
 		}
-		if err := readJSON(filepath.Join(s.candDir(), name), &state); err != nil {
+		if err := json.Unmarshal(entry.Record.Body, &state); err != nil {
 			corrupt++
+			custodyErrors = append(custodyErrors, err)
 			continue
 		}
 		if state.State == "proposed" {
 			pending++
 		}
 	}
+	sum := sha256.Sum256([]byte(strings.Join(names, "\x00")))
+	generation = "sha256:" + hex.EncodeToString(sum[:])
+	if len(custodyErrors) > 0 {
+		return pending, files, corrupt, generation, errors.Join(custodyErrors...)
+	}
 	return pending, files, corrupt, generation, nil
 }
 
 func (s *Store) candidateInboxMetadata() (names []string, generation string, newest time.Time, err error) {
-	dirEntries, err := os.ReadDir(s.candDir())
+	page, err := candidates.ReadPage(s.home, candidates.Memory, "", 0)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			sum := sha256.Sum256(nil)
@@ -146,18 +163,24 @@ func (s *Store) candidateInboxMetadata() (names []string, generation string, new
 		}
 		return nil, "", time.Time{}, err
 	}
-	for _, entry := range dirEntries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	var custodyErrors []error
+	for _, entry := range page.Entries {
+		name := string(entry.EntryCursor)
+		names = append(names, name)
+		if entry.Corruption != nil {
+			custodyErrors = append(custodyErrors, entry.Corruption)
 			continue
 		}
-		names = append(names, entry.Name())
-		if info, infoErr := entry.Info(); infoErr == nil && info.ModTime().After(newest) {
-			newest = info.ModTime()
+		if modifiedAt := entry.Record.ModifiedAt(); modifiedAt.After(newest) {
+			newest = modifiedAt
 		}
 	}
-	sort.Strings(names)
 	sum := sha256.Sum256([]byte(strings.Join(names, "\x00")))
-	return names, "sha256:" + hex.EncodeToString(sum[:]), newest, nil
+	generation = "sha256:" + hex.EncodeToString(sum[:])
+	if len(custodyErrors) > 0 {
+		return names, generation, newest, errors.Join(custodyErrors...)
+	}
+	return names, generation, newest, nil
 }
 
 // pendingStateFresh reports whether a reconciled pending count is still

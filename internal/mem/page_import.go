@@ -3,10 +3,8 @@ package mem
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -185,23 +183,7 @@ func candidateFromKnowledgeClaim(pageID, evidenceID string, fm knowledgePageFron
 }
 
 func (s *Store) writeStableCandidate(c Candidate) (bool, error) {
-	path := filepath.Join(s.candDir(), c.ID+".json")
-	if data, err := os.ReadFile(path); err == nil {
-		var existing Candidate
-		if err := json.Unmarshal(data, &existing); err != nil {
-			return false, fmt.Errorf("parse existing candidate %s: %w", c.ID, err)
-		}
-		if existing.ID == c.ID {
-			return false, nil
-		}
-		return false, fmt.Errorf("existing candidate file %s has id %q", c.ID, existing.ID)
-	} else if !os.IsNotExist(err) {
-		return false, err
-	}
-	if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
-		return false, err
-	}
-	return true, nil
+	return candidates.CreateCandidateIfAbsent(s.home, candidates.Memory, c.ID, &c)
 }
 
 func splitMarkdownFrontmatter(s string) (fm, body string) {

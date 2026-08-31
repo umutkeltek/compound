@@ -13,6 +13,7 @@ import (
 // with no status field on disk (writer debt, pre-dates the recorded default)
 // must render the §4 sentence and keep its needs_you band.
 func TestAnnotateSynthesisContradictionQueueFillsFallback(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	artifact := synthesisContradictionArtifact{
 		SchemaVersion: "compound.synthesis_contradiction_review.v0.1",
@@ -61,6 +62,7 @@ func TestAnnotateSynthesisContradictionQueueFillsFallback(t *testing.T) {
 // TestAnnotateSynthesisSweepQueueFillsFallback covers gap #1's
 // synthesis-sweeps area (4 live fallback items).
 func TestAnnotateSynthesisSweepQueueFillsFallback(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	artifact := synthesisSweepArtifact{
 		SchemaVersion: "compound.synthesis_sweep_artifact.v0.1",
@@ -97,6 +99,7 @@ func TestAnnotateSynthesisSweepQueueFillsFallback(t *testing.T) {
 // group line and the honest "no safe batch verb" reason for
 // synthesis-contradictions.
 func TestSynthesisContradictionGroupSummaryUsesDedicatedTemplate(t *testing.T) {
+	t.Parallel()
 	// The registry is populated by this package's init(); exercise it
 	// through the same seam Recount/buildQueueGroups uses by round-tripping
 	// a minimal report.

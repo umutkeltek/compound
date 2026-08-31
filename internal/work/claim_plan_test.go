@@ -9,6 +9,7 @@ import (
 )
 
 func TestClaimPlanEvaluatesPolicyWithoutClaiming(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -53,6 +54,7 @@ func TestClaimPlanEvaluatesPolicyWithoutClaiming(t *testing.T) {
 }
 
 func TestClaimPlanReportsStandingGrantCoverage(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	grantPath := filepath.Join(t.TempDir(), "standing-grants.yaml")
 	raw := []byte(`authority:
@@ -86,6 +88,7 @@ grants:
 }
 
 func TestDispatchPlanIncludesClaimPolicySummary(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "dispatch policy visible"}, fixedNow)
 	if err != nil {

@@ -347,6 +347,7 @@ func TestEventStoreRebaselineRecoveryFindingWhenRestoreFails(t *testing.T) {
 // and whose receipt Verification is non-empty. RED at base (refs are empty []string{}); GREEN with
 // the enrichment.
 func TestEventStoreRebaselineHappyPathCarriesBaselineRefs(t *testing.T) {
+	t.Parallel()
 	homePath, sidecarPath := seedGrantedRebaselineHome(t)
 
 	priorBytes, err := os.ReadFile(sidecarPath)
@@ -769,6 +770,7 @@ func TestEventStoreRebaselineSidecarConflictKeepsJournalAndArtifactsActualState(
 }
 
 func TestEventStoreRebaselineMalformedPendingIsPreservedAsRecoveryEvidence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		raw  []byte
@@ -823,6 +825,7 @@ func TestEventStoreRebaselineMalformedPendingIsPreservedAsRecoveryEvidence(t *te
 }
 
 func TestEventstoreProofPresenceTreatsUnknownStoredFieldsAsConflict(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	store, err := eventstore.Open(homePath)
 	if err != nil {
@@ -1070,6 +1073,7 @@ func TestEventStoreRebaselineValidatesBothEnvelopesBeforeJournalOrMutation(t *te
 }
 
 func TestEventStoreRebaselineAuthorityFaceIsLiveAndConfirmReevaluatesPolicy(t *testing.T) {
+	t.Parallel()
 	homePath, sidecarPath := seedGrantedRebaselineHome(t)
 	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--home", homePath, "--json")
 	if code != 0 {

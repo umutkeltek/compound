@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"compound/internal/home"
 	"compound/internal/work"
 )
 
@@ -16,10 +15,7 @@ import (
 // returns the work id. Nothing here touches a real home.
 func workRefusalHome(t *testing.T, holder, predicate string) (string, string) {
 	t.Helper()
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	homePath := initializedTestHome(t)
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +54,7 @@ func runCompound(t *testing.T, homePath string, args ...string) (string, error) 
 // `error: work work_x already claimed by "lane-alpha"` — no gate name, no live-lease line,
 // and no command, so assertTeachingRefusal fails on its first assertion.
 func TestWorkClaimLeaseConflictRefusalTeaches(t *testing.T) {
+	t.Parallel()
 	homePath, workID := workRefusalHome(t, "lane-alpha", "lease conflict must teach the contending lane")
 
 	out, err := runCompound(t, homePath, "work", "claim", workID, "--by", "lane-beta")
@@ -93,6 +90,7 @@ func TestWorkClaimLeaseConflictRefusalTeaches(t *testing.T) {
 // that keeps the marker match in work_lease_refusal.go honest. Reword the gate inside
 // internal/work and this goes red at the seam instead of silently degrading the refusal.
 func TestWorkCloseGitDeliveryProofRefusalTeaches(t *testing.T) {
+	t.Parallel()
 	homePath, workID := workRefusalHome(t, "lane-alpha", "a commit: proof pulls in the git_delivery contract")
 	store, err := work.Open(homePath)
 	if err != nil {
@@ -138,6 +136,7 @@ func TestWorkCloseGitDeliveryProofRefusalTeaches(t *testing.T) {
 // enforcer's error text. These are the cases that must NOT be reported as a conflict, because
 // each has a different remedy than "someone else holds it".
 func TestWorkLeaseConflictOnlyReportsARealHolder(t *testing.T) {
+	t.Parallel()
 	homePath, workID := workRefusalHome(t, "lane-alpha", "conflict detection must be structural")
 	store, err := work.Open(homePath)
 	if err != nil {
@@ -162,6 +161,7 @@ func TestWorkLeaseConflictOnlyReportsARealHolder(t *testing.T) {
 // unheld work, while a closer usually needs the holder to close or an explicit steal. Pinning
 // this stops the two from being collapsed into one generic message later.
 func TestWorkLeaseRefusalLaddersDifferByVerb(t *testing.T) {
+	t.Parallel()
 	observed := errors.New("work work_x already claimed by \"lane-alpha\"")
 
 	claim := workLeaseHolderRefusal("claim", "work_x", "lane-beta", "lane-alpha", observed).String()

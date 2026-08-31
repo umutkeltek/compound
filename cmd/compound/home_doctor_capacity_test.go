@@ -19,6 +19,7 @@ const homeDoctorCapacityChildEnv = "COMPOUND_TEST_HOME_DOCTOR_CAPACITY_CHILD"
 // exercises the REAL CLI path (cmdHome -> buildHomeDoctorReport), not just the helper in
 // isolation — "landed != working" requires watching the actual consumer's output.
 func TestHomeDoctorCapacityFeedWarnings(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homeDoctorCapacityChildEnv) == "1" {
 		cmdHome([]string{"doctor", "--json"})
 		// A verdict:"ok" doctor run falls through to a plain return inside cmdHome (only a

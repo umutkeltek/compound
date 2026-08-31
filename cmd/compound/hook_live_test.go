@@ -288,6 +288,8 @@ func TestHookLiveSkillUseRefreshesCrossHarnessUsageWithinOneCycle(t *testing.T) 
 }
 
 func TestLiveCapabilityUseRejectsUnboundedOrMalformedMetadata(t *testing.T) {
+	t.Parallel()
+
 	use := hook.NormalizeCapabilityUse("claude-code", "Skill", map[string]any{
 		"skill": "Diagnosing-Bugs",
 		"args":  strings.Repeat("bounded ", 200),
@@ -504,6 +506,8 @@ func TestHookLiveContextRetrievalJournalsAfterSuccessfulBreakers(t *testing.T) {
 }
 
 func TestLiveHookParityJournalUsesCapturedRetrievalLatency(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
@@ -654,6 +658,8 @@ func TestHookLiveCodexPreToolUseEmitsNativeAllowForApplyPatch(t *testing.T) {
 }
 
 func TestLiveActionIntentsUsesUniversalMonitorForNonFileTools(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		tool           string
@@ -716,6 +722,8 @@ func TestLiveActionIntentsUsesUniversalMonitorForNonFileTools(t *testing.T) {
 }
 
 func TestLiveActionIntentsResolveConnectorSchemaFromCapabilityAuthority(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -766,6 +774,8 @@ func TestLiveActionIntentsResolveConnectorSchemaFromCapabilityAuthority(t *testi
 }
 
 func TestLiveActionIntentsResolvePluginConnectorFamiliesFromCapabilityAuthority(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		node       capgraph.Node
@@ -848,6 +858,8 @@ func TestLiveActionIntentsResolvePluginConnectorFamiliesFromCapabilityAuthority(
 }
 
 func TestLiveActionIntentsDoNotTrustUnregisteredPluginWrappers(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -910,6 +922,8 @@ func TestLiveActionIntentsDoNotTrustUnregisteredPluginWrappers(t *testing.T) {
 }
 
 func TestLiveInternalSourcesPermitSchemaBoundConnectorReadsButSecretsDoNot(t *testing.T) {
+	t.Parallel()
+
 	internalSource := envelope.NewSourceEnvelope(
 		envelope.Header{
 			SchemaVersion: envelope.SVSourceEnvelope,
@@ -1175,6 +1189,8 @@ func TestLiveUserPromptHookEventReceiptsMintedSourceEnvelope(t *testing.T) {
 }
 
 func TestLiveCompactionCollapsesButDoesNotLaunderSessionLineage(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -1237,6 +1253,8 @@ func TestLiveCompactionCollapsesButDoesNotLaunderSessionLineage(t *testing.T) {
 }
 
 func TestLiveSubagentOutputIsExplicitDerivedBoundary(t *testing.T) {
+	t.Parallel()
+
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -1486,6 +1504,8 @@ func readActionForWork(t *testing.T, homePath, workID string) envelope.ActionInt
 }
 
 func TestLiveActionIntentBindsCanonicalInputToSessionAndFullTargetSet(t *testing.T) {
+	t.Parallel()
+
 	patch := "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** Add File: SECOND.md\n+second\n*** End Patch"
 	in := claudeLiveHookInput{
 		SessionID: "sess_reviewed_dirty_a",
@@ -2267,6 +2287,8 @@ func capturePromptHookStderr(t *testing.T, fn func()) string {
 }
 
 func TestLiveHookResponseCarriesInterruptContextForCodexAndClaude(t *testing.T) {
+	t.Parallel()
+
 	const card = "coordination-card: interrupt policy:review-needed artifact:sha256:0123456789abcdef"
 	result := hook.Result{ContextOutput: card}
 
@@ -2284,6 +2306,8 @@ func TestLiveHookResponseCarriesInterruptContextForCodexAndClaude(t *testing.T) 
 }
 
 func TestLivePreToolResponseDoesNotDropCoordinationContext(t *testing.T) {
+	t.Parallel()
+
 	const card = "coordination-card: interrupt resource:reservation-lost"
 	result := hook.Result{ContextOutput: card}
 	for _, harnessName := range []string{"codex", "claude-code"} {
@@ -2330,6 +2354,8 @@ func TestLivePromptResponseWarnsWhenCompoundContextIsUnavailable(t *testing.T) {
 }
 
 func TestLiveCoordinationBoundaryMappingCarriesPromptResumeCompactAndPreToolUse(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		hook        string
@@ -2388,6 +2414,8 @@ func TestLiveCoordinationBoundaryMappingCarriesPromptResumeCompactAndPreToolUse(
 }
 
 func TestNativePreToolAdaptersDenyOrHoldEligibleCoordinationInterruptBeforeMutation(t *testing.T) {
+	t.Parallel()
+
 	const card = "coordination-card: interrupt ratt_exact"
 	const planID = "approval_plan_deadbeef1234"
 	const planReason = "Exact approval plan " + planID + " is ready for operator review."
@@ -2441,6 +2469,8 @@ func TestNativePreToolAdaptersDenyOrHoldEligibleCoordinationInterruptBeforeMutat
 }
 
 func TestNativeApprovalPlanReasonRequiresCanonicalEvidenceRef(t *testing.T) {
+	t.Parallel()
+
 	const planID = "approval_plan_cafefeed1234"
 	const planReason = "Exact approval plan " + planID + " is ready for operator review."
 	const ordinaryReason = "baseline consequential action hold"
@@ -2518,6 +2548,8 @@ func TestNativeApprovalPlanReasonRequiresCanonicalEvidenceRef(t *testing.T) {
 }
 
 func TestLiveHookFixtureBuildsStableCoordinationDeliveryRecipient(t *testing.T) {
+	t.Parallel()
+
 	testCase := newNativeCoordinationCase(t, "codex")
 	input := []byte(fmt.Sprintf(
 		`{"session_id":"native-session","cwd":%q,"prompt":"continue"}`,
@@ -2561,6 +2593,8 @@ func TestLiveHookFixtureBuildsStableCoordinationDeliveryRecipient(t *testing.T) 
 }
 
 func TestLiveHookResponsePreservesSessionSummaryWithCoordinationContext(t *testing.T) {
+	t.Parallel()
+
 	result := hook.Result{Summary: "normal orientation summary", ContextOutput: "coordination state delta"}
 	for _, harnessName := range []string{"codex", "claude-code"} {
 		var context string
@@ -2585,6 +2619,8 @@ func TestLiveHookResponsePreservesSessionSummaryWithCoordinationContext(t *testi
 // operator to accept blindly. An UNKNOWN tool with a path must still take the mutation
 // path, so the allow-list can never become a hole.
 func TestLiveToolPathsClassifiesReadOnlyBuiltinsAsNonMutating(t *testing.T) {
+	t.Parallel()
+
 	withPath := map[string]any{"file_path": "/repo/pkg/file.go"}
 	for _, name := range []string{"Read", "Glob", "Grep"} {
 		if got := liveToolPaths(name, withPath); len(got) != 0 {
@@ -2602,6 +2638,8 @@ func TestLiveToolPathsClassifiesReadOnlyBuiltinsAsNonMutating(t *testing.T) {
 // on the emitted ActionIntent rather than on liveToolPaths alone is the point — the
 // prompt comes from the action/policy pair, not from the path extraction.
 func TestLiveReadIntentIsMonitoredNotHeldMutation(t *testing.T) {
+	t.Parallel()
+
 	in := claudeLiveHookInput{
 		ToolName:  "Read",
 		ToolInput: map[string]any{"file_path": "/repo/pkg/file.go"},

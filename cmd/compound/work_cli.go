@@ -182,12 +182,12 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"delegate": {
-		Usage:   "usage: compound work delegate <work_id> --harness <claude-zai|claude-qwen|claude-minimax|claude|codex> [--execution-profile ID [--launch-profile ID] [--role ROLE] [--capability-class CLASS] [--client-harness ID] [--transport ID] [--route-alias ALIAS] [--model MODEL] [--semantic-effort LEVEL] [--effort LEVEL] [--orchestration POLICY] [--privacy-ceiling LEVEL]] [--actor A] [--prompt <text> | -- <command> [args...]] [--workspace DIR] [--session NAME] [--expected-minutes N] [--confirm] [--dry-run] [--json]\n  OR:  compound work delegate status <work_id> [--json]\n  OR:  compound work delegate progress <work_id> --done N --empty N --failed N --remaining N [--json]\n  OR:  compound work delegate sweep <work_id> [--dry-run] [--json]",
-		Example: "compound work delegate work_abc123 --harness claude-zai --prompt \"follow the surprising thread\"",
+		Usage:   "usage: compound work delegate <work_id> --harness <claude-zai|claude-qwen|claude-minimax|claude|codex> [--execution-profile ID [--launch-profile ID] [--role ROLE] [--capability-class CLASS] [--client-harness ID] [--transport ID] [--route-alias ALIAS] [--model MODEL] [--semantic-effort LEVEL] [--effort LEVEL] [--orchestration POLICY] [--privacy-ceiling LEVEL]] [--actor A] [--prompt <text> | -- <command> [args...]] [--workspace DIR] [--session NAME] [--expected-minutes N] [--confirm] [--experimental-delegate-mutations] [--dry-run] [--json]\n  mutation is experimental and unsupported in v0.1; dry-run/status/attach remain read-only\n  OR:  compound work delegate status <work_id> [--json]\n  OR:  compound work delegate progress <work_id> --done N --empty N --failed N --remaining N --experimental-delegate-mutations [--json]\n  OR:  compound work delegate sweep <work_id> [--experimental-delegate-mutations | --dry-run] [--json]",
+		Example: "compound work delegate work_abc123 --harness claude-zai --experimental-delegate-mutations --prompt \"follow the surprising thread\"",
 	},
 	"steer": {
-		Usage:   "usage: compound work steer <work_id> --text <instruction> [--actor A] [--enter] [--json]",
-		Example: "compound work steer work_abc123 --text \"look again at the boundary\" --enter",
+		Usage:   "usage: compound work steer <work_id> --text <instruction> --experimental-delegate-mutations [--actor A] [--enter] [--json] (experimental; unsupported in v0.1)",
+		Example: "compound work steer work_abc123 --experimental-delegate-mutations --text \"look again at the boundary\" --enter",
 	},
 	"attach": {
 		Usage:   "usage: compound work attach <work_id>",
@@ -262,6 +262,15 @@ func previewDispatchClaim(store *work.Store, now time.Time, opts work.DispatchPl
 	return store.DispatchPlan(now, opts)
 }
 
+// workCommandNeedsWritableStore keeps the supported read-only delegate faces
+// from materializing the work habitat before their own parser can classify the
+// request. An explicit experimental mutation opt-in is the only delegate/steer
+// posture allowed to open the writable store; status, attach, dry-run, and a
+// missing opt-in stay footprint-free even when they later return an error.
+func workCommandNeedsWritableStore(sub string, args []string) bool {
+	return delegateCommandNeedsWritableStore(sub, args)
+}
+
 func cmdWork(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, workUsage(""))
@@ -276,12 +285,16 @@ func cmdWork(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	store, err := work.Open(homePath)
+	sub, rest := args[0], args[1:]
+	openStore := work.OpenReadOnly
+	if workCommandNeedsWritableStore(sub, rest) {
+		openStore = work.Open
+	}
+	store, err := openStore(homePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	sub, rest := args[0], args[1:]
 	flag := func(name string) string {
 		for i := 0; i < len(rest); i++ {
 			if rest[i] == name && i+1 < len(rest) {
@@ -510,11 +523,6 @@ func cmdWork(args []string) {
 
 	switch sub {
 	case "delegate", "steer", "attach":
-		if sub == "delegate" {
-			// Collect the previous generation's dead attempts before
-			// starting a new one, so ghosts cannot accumulate silently.
-			sweepStaleRunAttemptsBestEffort(homePath, time.Now(), os.Stderr)
-		}
 		// Capture pane output. Without it a delegate's entire record dies
 		// with its tmux pane, which is how a 55-session burst on
 		// 2026-07-26 left zero artifacts and zero diagnosable cause.

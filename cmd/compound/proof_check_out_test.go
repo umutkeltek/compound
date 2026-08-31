@@ -52,6 +52,7 @@ func (publication *injectedProofCheckCAS) Rollback() error {
 }
 
 func TestProofCheckGoRunInvocationsUseStableGateIdentity(t *testing.T) {
+	t.Parallel()
 	repoPath, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
@@ -95,6 +96,7 @@ func TestProofCheckGoRunInvocationsUseStableGateIdentity(t *testing.T) {
 }
 
 func TestProofCheckInvocationIdentityIsLossless(t *testing.T) {
+	t.Parallel()
 	withSpace, err := proofCheckInvocationIdentity([]string{"--repo", "/synthetic/repo with space", "--out", "/synthetic/report.json"})
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +111,7 @@ func TestProofCheckInvocationIdentityIsLossless(t *testing.T) {
 }
 
 func TestProofCheckInvocationIdentityBindsResolvedReportPath(t *testing.T) {
+	t.Parallel()
 	args := []string{"--repo", "/synthetic/repo", "--out", "proof.json"}
 	first, err := proofCheckInvocationIdentity(proofCheckArgsWithResolvedOut(args, "/synthetic/one/proof.json"))
 	if err != nil {
@@ -126,6 +129,7 @@ func TestProofCheckInvocationIdentityBindsResolvedReportPath(t *testing.T) {
 // F1: a failed-report verdict line names the FIRST failed gate and says FAILED with
 // honest passed, skipped, failed, and total counts.
 func TestProofCheckVerdictLineFailedNamesFirstFailedGate(t *testing.T) {
+	t.Parallel()
 	report := proofCheckReport{
 		Status: "failed",
 		Steps: []proofCheckStep{
@@ -144,6 +148,7 @@ func TestProofCheckVerdictLineFailedNamesFirstFailedGate(t *testing.T) {
 
 // F2: an ok-report verdict line reports the ok status with correct counts and path.
 func TestProofCheckVerdictLineOkReportsCorrectCounts(t *testing.T) {
+	t.Parallel()
 	report := proofCheckReport{
 		Status: "ok",
 		Steps: []proofCheckStep{
@@ -160,6 +165,7 @@ func TestProofCheckVerdictLineOkReportsCorrectCounts(t *testing.T) {
 }
 
 func TestProofCheckVerdictLineFailedCountsSkippedSeparately(t *testing.T) {
+	t.Parallel()
 	report := proofCheckReport{
 		Status: "failed",
 		Steps: []proofCheckStep{
@@ -179,6 +185,7 @@ func TestProofCheckVerdictLineFailedCountsSkippedSeparately(t *testing.T) {
 // F3: the --out file contains parseable JSON equal in content to the report (a
 // marshal round-trip), matching the same shape --json prints to stdout.
 func TestProofCheckWriteReportFileRoundTrips(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "report.json")
 	report := proofCheckReport{
 		SchemaVersion: proofCheckSchemaVersion,
@@ -215,6 +222,7 @@ func TestProofCheckWriteReportFileRoundTrips(t *testing.T) {
 }
 
 func TestProofCheckWriteReportFilePreservesExistingMode(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []os.FileMode{0o600, 0o640, 0o660, 0o400} {
 		t.Run(mode.String(), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "report.json")
@@ -248,6 +256,7 @@ func TestProofCheckWriteReportFilePreservesExistingMode(t *testing.T) {
 }
 
 func TestProofCheckWriteReportFileCreatesPrivateReport(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "report.json")
 	if err := proofCheckWriteReportFile(path, proofCheckReport{
 		SchemaVersion: proofCheckSchemaVersion,
@@ -270,6 +279,7 @@ func TestProofCheckWriteReportFileCreatesPrivateReport(t *testing.T) {
 }
 
 func TestProofCheckOutRefusesLeafSymlinkWithoutTouchingDestination(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	destination := filepath.Join(dir, "destination.json")
 	link := filepath.Join(dir, "report.json")
@@ -322,6 +332,7 @@ func TestProofCheckOutRefusesLeafSymlinkWithoutTouchingDestination(t *testing.T)
 }
 
 func TestProofCheckOutRefusesExistingNonRegularTargets(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	targets := map[string]string{
 		"directory": filepath.Join(dir, "directory"),
@@ -621,6 +632,7 @@ func TestProofCheckOutParentSubstitutionCannotRedirectPublication(t *testing.T) 
 }
 
 func TestProofCheckOutRejectsSpecialPermissionBitsWithoutMutation(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "report.json")
 	prior := []byte("special-mode report\n")
 	if err := os.WriteFile(path, prior, 0o700); err != nil {
@@ -715,6 +727,7 @@ func TestProofCheckOutRejectsSpecialPermissionBitsAddedBeforePublishWithoutMutat
 }
 
 func TestProofCheckWriteReportFilePreservesExistingOnPublicationFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "report.json")
 	previous := []byte("previous complete proof report\n")
@@ -764,6 +777,7 @@ func TestProofCheckWriteReportFilePreservesExistingOnPublicationFailure(t *testi
 // self-exec-recursion risk (see TestProofCheckOutTruthfulExitOneOnRedBattery for why the
 // heavy (built-binary) form is required once real gates execute).
 func TestProofCheckOutUnwritablePathFailsClosedBeforeGates(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckOutCLISubEnv) == "unwritable-path" {
 		cmdProofCheck([]string{"--dry-run", "--out", os.Getenv("COMPOUND_PROOFCHECK_OUT_PATH")})
 		return // if cmdProofCheck returns, exit 0 fails the parent's exit-2 assertion below
@@ -794,6 +808,7 @@ func TestProofCheckOutUnwritablePathFailsClosedBeforeGates(t *testing.T) {
 // "ok" verdict line. Light re-exec (dry-run never executes a gate subprocess, so no
 // self-exec-recursion risk).
 func TestProofCheckOutDryRunExitsZeroWithOkVerdict(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(proofCheckOutCLISubEnv) == "dry-run" {
 		proofCheckTimingHistoryRecorder = func(string, proofCheckReport, time.Duration, time.Time) (string, error) {
 			err := os.WriteFile(
@@ -868,6 +883,7 @@ func TestProofCheckOutDryRunExitsZeroWithOkVerdict(t *testing.T) {
 // fixture module (not the compound module itself) so the falsifier proves the --out/exit
 // wiring in seconds, not the ~10-minute real compound test suite.
 func TestProofCheckOutTruthfulExitOneOnRedBattery(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}

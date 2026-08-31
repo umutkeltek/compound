@@ -21,6 +21,7 @@ import (
 const dirtyReviewDigestDriftSubEnv = "COMPOUND_DIRTY_REVIEW_DIGEST_DRIFT_SUB"
 
 func TestBuildReviewQueueReportStampsCurrentOwnerAuthority(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -65,10 +66,8 @@ func TestBuildReviewQueueReportStampsCurrentOwnerAuthority(t *testing.T) {
 }
 
 func TestBuildReviewQueueReportChangesAuthorityWithReviewMeaning(t *testing.T) {
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	t.Parallel()
+	homePath := initializedTestHome(t)
 	workID := "work_review_authority_meaning"
 	store := openWorkbenchAuthorityWorkStore(t, homePath)
 	if _, err := store.Create(work.CreateInput{WorkID: workID, Owner: "source-control-cleanup", SuccessPredicate: "authority follows exact reviewed meaning"}, cliTestNow); err != nil {
@@ -97,6 +96,7 @@ func TestBuildReviewQueueReportChangesAuthorityWithReviewMeaning(t *testing.T) {
 }
 
 func TestBuildReviewQueueReportLeavesMissingAndTerminalOwnersUnstamped(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		workID   string
@@ -107,10 +107,7 @@ func TestBuildReviewQueueReportLeavesMissingAndTerminalOwnersUnstamped(t *testin
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			homePath := t.TempDir()
-			if err := home.Init(homePath, "test", cliTestNow); err != nil {
-				t.Fatal(err)
-			}
+			homePath := initializedTestHome(t)
 			if tc.terminal {
 				store := openWorkbenchAuthorityWorkStore(t, homePath)
 				if _, err := store.Create(work.CreateInput{WorkID: tc.workID, Owner: "source-control-cleanup", SuccessPredicate: "terminal owner stays non-runnable"}, cliTestNow); err != nil {
@@ -150,6 +147,7 @@ func TestBuildReviewQueueReportLeavesMissingAndTerminalOwnersUnstamped(t *testin
 }
 
 func TestStampReviewActionAuthorityFailsClosedForIncompleteSeeds(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -195,6 +193,7 @@ func TestStampReviewActionAuthorityFailsClosedForIncompleteSeeds(t *testing.T) {
 }
 
 func TestStampReviewActionAuthorityRejectsSyntheticOwnerRecord(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -245,6 +244,7 @@ func TestStampReviewActionAuthorityRejectsSyntheticOwnerRecord(t *testing.T) {
 }
 
 func TestAuthorityDirtyReviewRejectsExpectedSourceDigestDrift(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(dirtyReviewDigestDriftSubEnv) == "1" {
 		cmdAuthority([]string{
 			"dirty-review",
@@ -312,6 +312,7 @@ func TestAuthorityDirtyReviewRejectsExpectedSourceDigestDrift(t *testing.T) {
 }
 
 func TestBuildReviewQueueReportCarriesCurrentPolicyHold(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -342,6 +343,7 @@ func TestBuildReviewQueueReportCarriesCurrentPolicyHold(t *testing.T) {
 }
 
 func TestBuildReviewQueueReportFailsWhenPolicyCannotLoad(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)

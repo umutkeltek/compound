@@ -112,10 +112,15 @@ type Candidate struct {
 	// "Keep aside"), both are set so the candidates-list projection (and the
 	// console standing-law queue) can tell "seen and kept aside" from "never
 	// looked at" and stop re-asking about the same candidate.
-	AdjudicatedBy string                `json:"adjudicated_by,omitempty"`
-	AdjudicatedAt string                `json:"adjudicated_at,omitempty"`
-	Annotations   []CandidateAnnotation `json:"annotations,omitempty"`
-	CreatedAt     string                `json:"created_at"`
+	AdjudicatedBy string `json:"adjudicated_by,omitempty"`
+	AdjudicatedAt string `json:"adjudicated_at,omitempty"`
+	// AdjudicationOperationKey binds a terminal candidate projection to the
+	// exact frozen operation that produced it. Generic/operator adjudication
+	// clears it; governed promotion-driver replay uses it only to distinguish
+	// its own committed write from a concurrent terminal writer.
+	AdjudicationOperationKey string                `json:"adjudication_operation_key,omitempty"`
+	Annotations              []CandidateAnnotation `json:"annotations,omitempty"`
+	CreatedAt                string                `json:"created_at"`
 }
 
 // Claim is a durable, IMMUTABLE assertion in the ledger. It is never mutated or deleted;
@@ -244,6 +249,10 @@ type Store struct {
 	// the final candidate-projection write. Production stores leave it nil and
 	// persist through the candidates package's single owned write door.
 	adjudicationCandidateWriter func(id string, payload any) error
+
+	// pendingCandidateReplacer is the exact candidate compare-and-swap used by
+	// bounded pending sweeps. Production stores leave it nil.
+	pendingCandidateReplacer func(string, candidates.Record, any) (candidates.ReplaceCandidateResult, error)
 }
 
 func Open(homePath string) (*Store, error) {
@@ -378,12 +387,20 @@ func (s *Store) Capture(cands []Candidate, now time.Time) ([]Candidate, error) {
 		c.CreatedAt = rfc3339(now)
 		// Decisions-down write seam: knowledge tiers + disposition (decay_park / auto_file / operator).
 		c, _ = AdmitCandidateAt(c, now)
-		if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
+		created, err := s.publishCapturedCandidate(c)
+		if err != nil {
 			return out, err
+		}
+		if !created {
+			continue
 		}
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+func (s *Store) publishCapturedCandidate(candidate Candidate) (bool, error) {
+	return candidates.CreateCandidateIfAbsent(s.home, candidates.Memory, candidate.ID, &candidate)
 }
 
 // captureCandidateID distinguishes separate observations of the same fact when
@@ -395,6 +412,7 @@ func captureCandidateID(c Candidate, now time.Time) (string, error) {
 	c.Reason = ""
 	c.AdjudicatedBy = ""
 	c.AdjudicatedAt = ""
+	c.AdjudicationOperationKey = ""
 	c.Annotations = nil
 	c.CreatedAt = ""
 	payload, err := json.Marshal(c)
@@ -406,7 +424,10 @@ func captureCandidateID(c Candidate, now time.Time) (string, error) {
 
 func (s *Store) getCandidate(id string) (Candidate, error) {
 	var c Candidate
-	err := readJSON(filepath.Join(s.candDir(), id+".json"), &c)
+	err := candidates.ReadCandidate(s.home, candidates.Memory, id, &c)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Candidate{}, fmt.Errorf("not found: %s.json: %w", id, fs.ErrNotExist)
+	}
 	return c, err
 }
 
@@ -500,29 +521,66 @@ func candidateHasAnnotation(annotations []CandidateAnnotation, id string) bool {
 	return false
 }
 
-// AllCandidates returns inbox candidates in deterministic id order.
-func (s *Store) AllCandidates() ([]Candidate, error) {
-	entries, err := os.ReadDir(s.candDir())
+type candidateInboxEntry struct {
+	Candidate Candidate
+	RawKind   string
+	Modified  time.Time
+}
+
+// candidateInboxSnapshot reads every canonical memory candidate from one
+// descriptor-rooted page. Corrupt .json entries stay named and never become a
+// candidate through filename fallback.
+func (s *Store) candidateInboxSnapshot() ([]candidateInboxEntry, []*candidates.Corruption, error) {
+	page, err := candidates.ReadPage(s.home, candidates.Memory, "", 0)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			// An absent inbox (read-only open on a home that never captured)
-			// is an empty inbox, not a failure.
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
-	out := make([]Candidate, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	out := make([]candidateInboxEntry, 0, len(page.Entries))
+	var corruptions []*candidates.Corruption
+	for _, entry := range page.Entries {
+		if entry.Corruption != nil {
+			corruptions = append(corruptions, entry.Corruption)
 			continue
 		}
 		var c Candidate
-		if err := readJSON(filepath.Join(s.candDir(), entry.Name()), &c); err != nil {
-			return out, err
+		if err := json.Unmarshal(entry.Record.Body, &c); err != nil {
+			corruptions = append(corruptions, &candidates.Corruption{EntryCursor: entry.EntryCursor, Code: candidates.CorruptionInvalidJSON, Detail: "decode memory candidate: " + err.Error()})
+			continue
 		}
-		out = append(out, c)
+		var meta struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(entry.Record.Body, &meta); err != nil {
+			corruptions = append(corruptions, &candidates.Corruption{EntryCursor: entry.EntryCursor, Code: candidates.CorruptionInvalidJSON, Detail: "decode memory candidate kind: " + err.Error()})
+			continue
+		}
+		out = append(out, candidateInboxEntry{Candidate: c, RawKind: strings.TrimSpace(meta.Kind), Modified: entry.Record.ModifiedAt()})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, corruptions, nil
+}
+
+// AllCandidates returns inbox candidates in deterministic id order. This is a
+// decision/mutation seam, so named custody corruption fails the snapshot
+// closed rather than returning a partial set as if it were complete.
+func (s *Store) AllCandidates() ([]Candidate, error) {
+	snapshot, corruptions, err := s.candidateInboxSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	if len(corruptions) > 0 {
+		errs := make([]error, 0, len(corruptions))
+		for _, corruption := range corruptions {
+			errs = append(errs, corruption)
+		}
+		return nil, fmt.Errorf("candidate inbox custody: %w", errors.Join(errs...))
+	}
+	out := make([]Candidate, 0, len(snapshot))
+	for _, entry := range snapshot {
+		out = append(out, entry.Candidate)
+	}
 	return out, nil
 }
 
@@ -547,6 +605,181 @@ type AdjudicateResult struct {
 // The CLI's `compound memory adjudicate` verb uses AdjudicateAsOperator instead.
 func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (AdjudicateResult, error) {
 	return s.adjudicate(candID, verdict, workID, now, false, "", "")
+}
+
+const (
+	FrozenAdjudicationApplied           = "applied"
+	FrozenAdjudicationAlreadyApplied    = "already_applied"
+	FrozenAdjudicationStalePrecondition = "stale_precondition"
+)
+
+// FrozenCandidatePrecondition is the exact persisted candidate generation a
+// planned adjudication was made from. State is echoed for receipt clarity and
+// verified against the digest-pinned body before mutation.
+type FrozenCandidatePrecondition struct {
+	CandidateID string
+	BodyDigest  string
+	State       string
+}
+
+// FrozenAdjudication binds one target and an optional dedupe keeper to an
+// idempotency key. The keeper is a companion precondition only; it is never
+// mutated by this operation.
+type FrozenAdjudication struct {
+	OperationKey string
+	Target       FrozenCandidatePrecondition
+	Companion    *FrozenCandidatePrecondition
+	CurrentClaim *FrozenClaimPrecondition
+
+	outcome              string
+	mismatchCandidateID  string
+	preconditionMismatch string
+	afterDigest          string
+}
+
+type FrozenClaimPrecondition struct {
+	ID     string
+	Absent bool
+}
+
+type FrozenAdjudicationResult struct {
+	Outcome              string
+	MismatchCandidateID  string
+	PreconditionMismatch string
+	BeforeDigest         string
+	AfterDigest          string
+	Adjudication         AdjudicateResult
+}
+
+// FrozenPromotionClaimPrecondition captures the exact current claim whose
+// presence or absence makes a planned promotion deterministic.
+func (s *Store) FrozenPromotionClaimPrecondition(candidate Candidate) (FrozenClaimPrecondition, error) {
+	claim, found, err := s.currentClusterClaim(candidate, 0)
+	if err != nil {
+		return FrozenClaimPrecondition{}, err
+	}
+	if !found {
+		return FrozenClaimPrecondition{Absent: true}, nil
+	}
+	return FrozenClaimPrecondition{ID: claim.ID}, nil
+}
+
+// AdjudicateFrozen executes one already-decided verdict without re-reading or
+// re-deciding it. The memory lock is acquired before candidate custody; both
+// target and companion digests remain pinned through every claim/transition
+// write and the final candidate replacement.
+func (s *Store) AdjudicateFrozen(plan FrozenAdjudication, verdict, workID string, now time.Time) (FrozenAdjudicationResult, error) {
+	if strings.TrimSpace(plan.OperationKey) == "" {
+		return FrozenAdjudicationResult{}, fmt.Errorf("frozen adjudication operation key required")
+	}
+	if strings.TrimSpace(plan.Target.CandidateID) == "" || strings.TrimSpace(plan.Target.BodyDigest) == "" {
+		return FrozenAdjudicationResult{}, fmt.Errorf("frozen adjudication target id and digest required")
+	}
+	if verdict == candidates.Promote {
+		if plan.CurrentClaim == nil || plan.CurrentClaim.Absent == (strings.TrimSpace(plan.CurrentClaim.ID) != "") {
+			return FrozenAdjudicationResult{}, fmt.Errorf("frozen promotion current-claim precondition must name one claim or exact absence")
+		}
+	} else if plan.CurrentClaim != nil {
+		return FrozenAdjudicationResult{}, fmt.Errorf("non-promotion frozen adjudication cannot carry a current-claim precondition")
+	}
+	adjudication, err := s.adjudicateWithFrozen(
+		plan.Target.CandidateID,
+		verdict,
+		workID,
+		now,
+		false,
+		"",
+		"",
+		&plan,
+	)
+	return FrozenAdjudicationResult{
+		Outcome:              plan.outcome,
+		MismatchCandidateID:  plan.mismatchCandidateID,
+		PreconditionMismatch: plan.preconditionMismatch,
+		BeforeDigest:         plan.Target.BodyDigest,
+		AfterDigest:          plan.afterDigest,
+		Adjudication:         adjudication,
+	}, err
+}
+
+type frozenClaimPreconditionMismatch struct {
+	observed string
+}
+
+func (e *frozenClaimPreconditionMismatch) Error() string {
+	return "frozen current-claim precondition changed to " + e.observed
+}
+
+func frozenClaimReference(claim Claim, found bool) string {
+	if !found {
+		return "claim:absent"
+	}
+	return "claim:" + claim.ID
+}
+
+func frozenClaimMatches(expected FrozenClaimPrecondition, claim Claim, found bool) bool {
+	if expected.Absent {
+		return !found
+	}
+	return found && expected.ID == claim.ID
+}
+
+// adjudicatePendingProposed applies a non-promote batch verdict only when the
+// candidate is still proposed under the memory mutation lock. A concurrent
+// terminal writer wins; the pending sweep observes that as an idempotent skip
+// instead of overwriting a newer verdict selected after the page walk.
+type pendingMutationOutcome uint8
+
+const (
+	pendingMutationRetry pendingMutationOutcome = iota
+	pendingMutationApplied
+	pendingMutationSkipped
+)
+
+func (s *Store) adjudicatePendingProposed(expected candidates.Record, verdict, workID string, now time.Time) (AdjudicateResult, pendingMutationOutcome, error) {
+	candID := expected.ID
+	res := AdjudicateResult{Verdict: verdict}
+	if verdict == candidates.Promote {
+		return res, pendingMutationRetry, fmt.Errorf("pending adjudication cannot promote candidate %s", candID)
+	}
+	outcome := pendingMutationRetry
+	err := s.withLock(func() error {
+		var latest Candidate
+		if err := json.Unmarshal(expected.Body, &latest); err != nil {
+			return fmt.Errorf("decode expected candidate %s: %w", candID, err)
+		}
+		res.Candidate = latest
+		if latest.State != "" && latest.State != "proposed" {
+			return nil
+		}
+		if err := validateAdjudicationIntent(latest, AdjudicationIntent{Verdict: verdict, WorkID: workID}); err != nil {
+			return err
+		}
+		latest.State = nonPromoteState(verdict)
+		replacer := s.pendingCandidateReplacer
+		if replacer == nil {
+			replacer = candidates.ReplaceCandidateIfCurrent
+		}
+		replaceResult, err := replacer(s.home, expected, &latest)
+		if err != nil {
+			return err
+		}
+		if !replaceResult.Replaced {
+			var current Candidate
+			if err := json.Unmarshal(replaceResult.Current.Body, &current); err != nil {
+				return fmt.Errorf("decode current candidate %s after stale generation: %w", candID, err)
+			}
+			res.Candidate = current
+			if current.State != "" && current.State != "proposed" {
+				outcome = pendingMutationSkipped
+			}
+			return nil
+		}
+		res.Candidate = latest
+		outcome = pendingMutationApplied
+		return nil
+	})
+	return res, outcome, err
 }
 
 // AdjudicateAsOperator is the operator ratification door — the CLI's
@@ -576,18 +809,23 @@ func (s *Store) AdjudicateAsOperator(candID, verdict, workID, actor string, now 
 // hard failure but tolerates per-candidate errors so a single corrupt file
 // does not strand the whole batch).
 type AdjudicatePendingReport struct {
+	Walked        int            `json:"walked"`
+	Decoded       int            `json:"decoded"`
+	Corrupt       int            `json:"corrupt"`
 	Scanned       int            `json:"scanned"`
 	Adjudicated   int            `json:"adjudicated"`
 	Skipped       int            `json:"skipped"`
+	Deferred      int            `json:"deferred"`
+	Failed        int            `json:"failed"`
 	VerdictCounts map[string]int `json:"verdict_counts"`
 	FirstID       string         `json:"first_id,omitempty"`
 	LastID        string         `json:"last_id,omitempty"`
-	// LastWalkedID is the LAST DIRECTORY ENTRY the pass walked, valid or
+	// LastWalkedCursor is the LAST DIRECTORY ENTRY the pass walked, valid or
 	// corrupt — the true continuation point. NextCursor derives from it (or
-	// from LastID on a write-cap stop): a cursor that only advanced on
+	// from the last completed decision on a write-cap stop): a cursor that only advanced on
 	// successfully decoded candidates trapped a pass on a page ending in an
 	// unreadable file, re-reading it forever.
-	LastWalkedID string `json:"last_walked_id,omitempty"`
+	LastWalkedCursor candidates.EntryCursor `json:"last_walked_cursor,omitempty"`
 	// AtEnd reports whether the walk reached the directory's final entry —
 	// answered by the walker from the directory itself, never derived from
 	// a pre-cursor total.
@@ -600,16 +838,17 @@ type AdjudicatePendingReport struct {
 	// enumerate, decode, and sort the whole 132k inbox to perform one write.
 	ScanLimit  int  `json:"scan_limit,omitempty"`
 	ScanCapHit bool `json:"scan_cap_hit,omitempty"`
-	// NextCursor is the candidate id to resume after (pass --after <id>).
+	// NextCursor is the exact directory-entry cursor to resume after. The CLI
+	// renders it as a versioned token for copy-safe --after continuation.
 	// Set only when the pass stopped early (apply limit or scan cap), so an
 	// absent cursor means "the inbox was walked to the end".
-	NextCursor string `json:"next_cursor,omitempty"`
+	NextCursor candidates.EntryCursor `json:"next_cursor,omitempty"`
 	// ChangedIDs names every candidate this pass actually adjudicated, so a
 	// pass that reports `adjudicated: N` can be reconciled file by file.
 	ChangedIDs []string `json:"changed_ids,omitempty"`
 	// CorruptIDs names inbox files that could not be decoded. A walker that
 	// silently skipped unreadable JSON made the scan count a fiction.
-	CorruptIDs []string                  `json:"corrupt_ids,omitempty"`
+	CorruptIDs []candidates.EntryCursor  `json:"corrupt_ids,omitempty"`
 	Errors     []AdjudicatePendingError  `json:"errors,omitempty"`
 	Actions    []AdjudicatePendingAction `json:"actions,omitempty"`
 	// BasisDeferred counts proposed candidates the disposition pass LEFT
@@ -624,16 +863,20 @@ type AdjudicatePendingReport struct {
 // Reported inline so the operator can re-drive the failure without re-walking
 // the whole inbox.
 type AdjudicatePendingError struct {
-	CandidateID string `json:"candidate_id"`
-	Err         string `json:"error"`
+	CandidateID string                 `json:"candidate_id,omitempty"`
+	EntryCursor candidates.EntryCursor `json:"entry_cursor,omitempty"`
+	Err         string                 `json:"error"`
 }
 
 // AdjudicatePendingAction is the exact per-candidate operation a dry-run
 // planned or an apply pass attempted. It lets higher-level drivers freeze a
 // reconstructible intent before mutation instead of journaling only counts.
 type AdjudicatePendingAction struct {
-	CandidateID string `json:"candidate_id"`
-	Verdict     string `json:"verdict"`
+	CandidateID    string                 `json:"candidate_id"`
+	Verdict        string                 `json:"verdict"`
+	EntryCursor    candidates.EntryCursor `json:"entry_cursor,omitempty"`
+	ExpectedDigest string                 `json:"expected_digest,omitempty"`
+	ExpectedState  string                 `json:"expected_state,omitempty"`
 }
 
 // AdjudicatePending walks the inbox in stable id order and applies a verdict
@@ -650,133 +893,156 @@ type AdjudicatePendingAction struct {
 // modulo the Errors slice.
 func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) AdjudicatePendingReport {
 	r := AdjudicatePendingReport{VerdictCounts: map[string]int{}, Limit: opts.Limit, ScanLimit: opts.ScanLimit}
-	// Both paths use the lightweight, cursor-aware, budget-bounded walker.
-	// The mutation path does not need the full Candidate struct either:
-	// Adjudicate re-reads the live candidate by id before writing, and the
-	// old full-decode walk aborted the WHOLE batch on the first unreadable
-	// candidate instead of isolating it as a per-candidate finding.
-	cands, corrupt, lastWalked, atEnd, err := s.pendingInboxSnapshot(opts.AfterID, opts.ScanLimit)
+	page, err := s.ListCandidatesLite(opts.AfterCursor, opts.ScanLimit)
 	if err != nil {
+		r.Failed++
 		r.Errors = append(r.Errors, AdjudicatePendingError{CandidateID: "*", Err: err.Error()})
 		return r
 	}
-	r.CorruptIDs = corrupt
-	for _, id := range corrupt {
-		r.Errors = append(r.Errors, AdjudicatePendingError{CandidateID: id, Err: "candidate file unreadable"})
+	r.Walked = page.Walked
+	r.LastWalkedCursor = page.LastCursor
+
+	type pendingDecision struct {
+		cursor      candidates.EntryCursor
+		record      candidates.Record
+		candidateID string
+		verdict     string
+		outcome     string
+		err         error
 	}
-	for _, c := range cands {
-		r.Scanned++
+	decisions := make([]pendingDecision, 0, len(page.Entries))
+	for _, entry := range page.Entries {
+		decision := pendingDecision{cursor: entry.Cursor}
+		if entry.Corruption != nil {
+			r.Corrupt++
+			r.CorruptIDs = append(r.CorruptIDs, entry.Cursor)
+			r.Errors = append(r.Errors, AdjudicatePendingError{EntryCursor: entry.Cursor, Err: entry.Corruption.Error()})
+			decision.outcome = "corrupt"
+			decisions = append(decisions, decision)
+			continue
+		}
+
+		r.Decoded++
+		r.Scanned++ // compatibility: scanned historically meant decoded candidates.
+		lite := *entry.Candidate
+		decision.record = *entry.Record
+		decision.candidateID = lite.ID
 		if r.FirstID == "" {
-			r.FirstID = c.ID
+			r.FirstID = lite.ID
 		}
-		r.LastID = c.ID
-		// Idempotency: a candidate the inbox write already closed (parked
-		// or promoted) stays untouched. The disposal state is durable on
-		// disk — re-running this verb must not re-classify it.
-		// Re-read live state at the top of every iteration. The snapshot
-		// captured the inbox once at the top of the verb, but a concurrent
-		// writer (admission auto-park on knowledge_import / decay_park,
-		// another --yes invocation, a side-door Adjudicate) can close a
-		// candidate between that snapshot and this iteration. The local
-		// var `c` is a value copy of the stale snapshot; consulting it
-		// would mis-classify a candidate the live file already closed as
-		// either a false skip (underreporting Adjudicated) or a no-op
-		// double-write. Re-reading makes the counter reflect what
-		// actually closed and keeps idempotency against any writer.
-		state := c.State
-		if live, liveErr := s.getCandidate(c.ID); liveErr == nil {
-			state = live.State
-		}
-		if state != "" && state != "proposed" {
-			r.Skipped++
+		r.LastID = lite.ID
+		if lite.State != "" && lite.State != "proposed" {
+			decision.outcome = "skipped"
+			decisions = append(decisions, decision)
 			continue
 		}
-		if opts.ReservedIDs[c.ID] {
-			r.Skipped++
+		if opts.ReservedIDs[lite.ID] {
+			decision.outcome = "skipped"
+			decisions = append(decisions, decision)
 			continue
 		}
-		// Basis deferral: in disposition mode (no explicit --verdict), a
-		// candidate carrying a promotable basis stays proposed so the per-id
-		// promotion door — the operator or the governed promote-driver — can
-		// rule on it. Parking it here would foreclose the promotion chance
-		// (design decision 3's corollary: the batch neither promotes nor
-		// forecloses promotion).
-		if opts.Verdict == "" && basisDefers(c) {
-			r.BasisDeferred++
+		projected := Candidate{PromotionBasis: lite.PromotionBasis, Qualifiers: lite.Qualifiers}
+		if opts.Verdict == "" && basisDefers(projected) {
+			decision.outcome = "basis_deferred"
+			decisions = append(decisions, decision)
 			continue
 		}
-		verdict := opts.Verdict
-		if opts.Verdict == "" {
-			verdict = dispositionVerdict(c)
+		decision.verdict = opts.Verdict
+		if decision.verdict == "" {
+			decision.verdict = dispositionVerdict(projected)
 		}
-		// Refuse closed-form "promote" in batch mode — the packet's settled
-		// design decision 3: promotion requires a per-candidate basis and
-		// stays per-id so a stale batch cannot promote without the operator.
-		if verdict == "promote" {
-			r.Errors = append(r.Errors, AdjudicatePendingError{
-				CandidateID: c.ID,
-				Err:         "batch mode refuses --verdict promote; promote per-id with `compound memory adjudicate <id> --verdict promote`",
-			})
-			continue
+		if decision.verdict == "promote" {
+			decision.outcome = "failed"
+			decision.err = fmt.Errorf("batch mode refuses --verdict promote; promote per-id with `compound memory adjudicate <id> --verdict promote`")
+		} else {
+			decision.outcome = "mutate"
 		}
-		r.Actions = append(r.Actions, AdjudicatePendingAction{CandidateID: c.ID, Verdict: verdict})
-		if opts.DryRun {
-			r.VerdictCounts[verdict]++
-			r.Adjudicated++
-			r.ChangedIDs = append(r.ChangedIDs, c.ID)
-			if opts.Limit > 0 && r.Adjudicated >= opts.Limit {
-				r.LimitReached = true
-				break
-			}
-			continue
-		}
-		if _, err := s.Adjudicate(c.ID, verdict, opts.WorkID, now); err != nil {
-			r.Errors = append(r.Errors, AdjudicatePendingError{CandidateID: c.ID, Err: err.Error()})
-			continue
-		}
-		r.VerdictCounts[verdict]++
-		r.Adjudicated++
-		r.ChangedIDs = append(r.ChangedIDs, c.ID)
-		if opts.Limit > 0 && r.Adjudicated >= opts.Limit {
-			r.LimitReached = true
+		decisions = append(decisions, decision)
+	}
+
+	safeCursor := opts.AfterCursor
+	blocked := false
+	plannedOrApplied := 0
+	for _, decision := range decisions {
+		if blocked {
 			break
 		}
+		switch decision.outcome {
+		case "corrupt":
+			safeCursor = decision.cursor
+		case "skipped":
+			r.Skipped++
+			safeCursor = decision.cursor
+		case "basis_deferred":
+			r.Deferred++
+			r.BasisDeferred++
+			safeCursor = decision.cursor
+		case "failed":
+			r.Failed++
+			r.Errors = append(r.Errors, AdjudicatePendingError{CandidateID: decision.candidateID, EntryCursor: decision.cursor, Err: decision.err.Error()})
+			blocked = true
+		case "mutate":
+			if opts.Limit > 0 && plannedOrApplied >= opts.Limit {
+				r.Deferred++
+				r.LimitReached = true
+				blocked = true
+				continue
+			}
+			action := AdjudicatePendingAction{
+				CandidateID:    decision.candidateID,
+				Verdict:        decision.verdict,
+				EntryCursor:    decision.cursor,
+				ExpectedDigest: decision.record.Digest,
+				ExpectedState:  "proposed",
+			}
+			if opts.DryRun {
+				r.Actions = append(r.Actions, action)
+				plannedOrApplied++
+				safeCursor = decision.cursor
+				continue
+			} else {
+				_, outcome, err := s.adjudicatePendingProposed(decision.record, decision.verdict, opts.WorkID, now)
+				if err != nil {
+					r.Failed++
+					r.Errors = append(r.Errors, AdjudicatePendingError{CandidateID: decision.candidateID, EntryCursor: decision.cursor, Err: err.Error()})
+					blocked = true
+					continue
+				}
+				switch outcome {
+				case pendingMutationSkipped:
+					r.Skipped++
+					safeCursor = decision.cursor
+					continue
+				case pendingMutationRetry:
+					r.Deferred++
+					blocked = true
+					continue
+				case pendingMutationApplied:
+					// Continue below and receipt the committed mutation.
+				default:
+					r.Failed++
+					r.Errors = append(r.Errors, AdjudicatePendingError{CandidateID: decision.candidateID, EntryCursor: decision.cursor, Err: "candidate mutation returned an unknown outcome"})
+					blocked = true
+					continue
+				}
+				r.Actions = append(r.Actions, action)
+			}
+			r.VerdictCounts[decision.verdict]++
+			r.Adjudicated++
+			plannedOrApplied++
+			r.ChangedIDs = append(r.ChangedIDs, decision.candidateID)
+			safeCursor = decision.cursor
+		}
 	}
-	r.LastWalkedID = lastWalked
-	r.AtEnd = atEnd
-	// The READ side is complete when the walker reached the directory's
-	// final entry — answered by the walker itself, never derived from the
-	// pre-cursor directory total (that denominator arithmetic was false on
-	// every resumed walk: scanned-after-cursor could never reach the whole-
-	// directory total, so a completed resume never reported completion).
-	// The WRITE cap is a separate dimension: a pass may read the whole
-	// directory yet close only Limit candidates, leaving the remainder
-	// resumable — so atEnd must never clear LimitReached, only decide
-	// whether the scan budget fired (it cannot have, once the walk
-	// finished) and whether an exact-limit pass still has work left.
-	loopFinished := len(cands) == 0 || r.LastID == cands[len(cands)-1].ID
-	if r.LimitReached && loopFinished {
-		// The cap fired on the final candidate: nothing remains to resume
-		// into, so "limit reached" would claim resumable work that does
-		// not exist.
-		r.LimitReached = false
-	}
-	if !atEnd {
-		// The walk stopped early; with an uncapped scan that cannot happen,
-		// so the budget fired. Progress is the last DIRECTORY ENTRY walked —
-		// valid or corrupt — so a page ending on an unreadable file never
-		// re-reads it on resume (a cursor keyed on decoded candidates alone
-		// trapped the pass re-reporting the same corrupt tail forever).
-		r.ScanCapHit = opts.ScanLimit > 0
-		r.NextCursor = r.LastWalkedID
+
+	r.AtEnd = page.AtEnd
+	r.ScanCapHit = !page.AtEnd && opts.ScanLimit > 0
+	if blocked {
+		r.NextCursor = safeCursor
 		return r
 	}
-	if r.LimitReached && r.LastID != "" {
-		// The write cap stopped the pass before the directory's end: resume
-		// from the last adjudicated candidate so the page's unadjudicated
-		// remainder is re-read (already-closed candidates skip
-		// idempotently).
-		r.NextCursor = r.LastID
+	if !page.AtEnd {
+		r.NextCursor = page.LastCursor
 	}
 	return r
 }
@@ -795,11 +1061,11 @@ type AdjudicatePendingOptions struct {
 	// It is the operational budget: without it, `--limit 1` enumerates,
 	// decodes, and sorts the entire inbox to perform one write.
 	ScanLimit int
-	// AfterID resumes the walk after this candidate id (the previous pass's
-	// NextCursor). Entries at or before it are not read, so a multi-pass
+	// AfterCursor resumes the walk after this exact directory entry (the
+	// previous pass's NextCursor). Entries at or before it are not read, so a multi-pass
 	// drain over a saturated inbox costs O(total) across all passes, not
 	// O(total) per pass.
-	AfterID string
+	AfterCursor candidates.EntryCursor
 	// ReservedIDs excludes candidates already owned by an earlier phase in
 	// the same planned driver pass. It prevents a failed promote/dedupe
 	// operation from silently falling through to a different sweep verdict.
@@ -810,90 +1076,6 @@ type AdjudicatePendingOptions struct {
 // --verdict flag would receive. source_metadata / annotated_evidence are
 // not memory; they auto-reject (no_promote). A bare proposed candidate
 // without a definite disposition parks itself so the operator can rule.
-// pendingInboxSnapshot walks the inbox and returns the lightweight fields
-// the batch adjudicator needs: ID, State, PromotionBasis, and
-// Qualifiers.source. The State alone decides proposed-vs-closed;
-// Qualifiers.source alone decides admission-class disposition. Decoding the
-// rest of the Candidate struct is pure cost — and the mutation path does not
-// need it either, because Adjudicate re-reads the live candidate by id
-// before writing.
-//
-// The walker NEVER aborts on one unreadable candidate and NEVER skips one
-// silently: undecodable files are returned in corrupt so the report can
-// name them. lastWalked is the last directory entry walked (valid or
-// corrupt) and atEnd reports whether the walk reached the directory's final
-// entry — the two dimensions pagination correctness needs. Progress and
-// candidate validity are separate: a cursor that advances only on
-// successfully decoded candidates traps a pass on a page that ends in an
-// unreadable file.
-func (s *Store) pendingInboxSnapshot(afterID string, scanLimit int) (cands []Candidate, corrupt []string, lastWalked string, atEnd bool, err error) {
-	entries, err := os.ReadDir(s.candDir())
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			// An absent inbox (read-only open on a home that never captured)
-			// is an empty walk, not a failure.
-			return nil, nil, "", true, nil
-		}
-		return nil, nil, "", false, err
-	}
-	var names []string
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		names = append(names, entry.Name())
-	}
-	sort.Strings(names)
-	lastID := ""
-	if len(names) == 0 {
-		// Nothing in the inbox: the walk is complete by definition.
-		return nil, nil, "", true, nil
-	}
-	lastID = strings.TrimSuffix(names[len(names)-1], ".json")
-	if afterID != "" && (lastID == "" || lastID <= afterID) {
-		// The cursor already sits at or past the directory's final entry:
-		// the walk is complete by definition, even though it reads nothing.
-		return nil, nil, "", true, nil
-	}
-	budget := scanLimit
-	for _, name := range names {
-		if budget == 0 && scanLimit > 0 {
-			break
-		}
-		// Cursor resume happens on the FILE NAME (files are <id>.json, the
-		// same identity getCandidate reads by), so entries covered by an
-		// earlier pass cost nothing — not even a decode.
-		fileID := strings.TrimSuffix(name, ".json")
-		if afterID != "" && fileID <= afterID {
-			continue
-		}
-		// Decode only the fields we need. JSON unmarshal into the
-		// lightweight struct ignores the rest; this avoids the
-		// per-candidate full-Candidate decode cost.
-		var lite struct {
-			ID             string            `json:"id"`
-			State          string            `json:"state"`
-			PromotionBasis string            `json:"promotion_basis,omitempty"`
-			Qualifiers     map[string]string `json:"qualifiers,omitempty"`
-		}
-		path := filepath.Join(s.candDir(), name)
-		if err := readJSON(path, &lite); err != nil {
-			// A corrupt candidate is a per-file finding, not a reason to
-			// abort or undercount the batch. Name it; the caller decides
-			// whether it is an error (apply) or a report row (dry-run).
-			corrupt = append(corrupt, fileID)
-		} else {
-			cands = append(cands, Candidate{ID: lite.ID, State: lite.State, PromotionBasis: lite.PromotionBasis, Qualifiers: lite.Qualifiers})
-		}
-		lastWalked = fileID
-		atEnd = fileID == lastID
-		if scanLimit > 0 {
-			budget--
-		}
-	}
-	return cands, corrupt, lastWalked, atEnd, nil
-}
-
 // basisDefers reports whether a candidate carries a promotable promotion
 // basis that disposition must leave alone. explicit_confirmation is the
 // exception: it is self-attested and only the governed confirmation door
@@ -938,33 +1120,110 @@ func (s *Store) AdjudicateOperationalDecision(candID, verdict, workID string, no
 }
 
 func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operationalDecision bool, explicitConfirmationRef string, actor string) (AdjudicateResult, error) {
-	var res AdjudicateResult
-	c, err := s.getCandidate(candID)
-	if err != nil {
-		return res, err
-	}
-	res.Candidate = c
-	res.Verdict = verdict
-	// Pre-lock rule set is now in a pure function (see adjudicate_intent.go).
-	// The in-lock re-check below stays as defense-in-depth per the legacy
-	// function's own comment (mem.go:594-596); it carries a side effect
-	// (stamping the operational-decision qualifier) that keeps it non-pure.
-	if err := validateAdjudicationIntent(c, AdjudicationIntent{
+	return s.adjudicateWithFrozen(candID, verdict, workID, now, operationalDecision, explicitConfirmationRef, actor, nil)
+}
+
+func (s *Store) adjudicateWithFrozen(candID, verdict, workID string, now time.Time, operationalDecision bool, explicitConfirmationRef string, actor string, frozen *FrozenAdjudication) (AdjudicateResult, error) {
+	res := AdjudicateResult{Verdict: verdict}
+	intent := AdjudicationIntent{
 		Verdict:                 verdict,
 		WorkID:                  workID,
 		OperationalDecision:     operationalDecision,
 		ExplicitConfirmationRef: explicitConfirmationRef,
 		Actor:                   actor,
-	}); err != nil {
-		return res, err
+	}
+	var c Candidate
+	if frozen == nil {
+		var err error
+		c, err = s.getCandidate(candID)
+		if err != nil {
+			return res, err
+		}
+		res.Candidate = c
+		if err := validateAdjudicationIntent(c, intent); err != nil {
+			return res, err
+		}
 	}
 
-	if verdict != "promote" {
+	preconditions := func() []candidates.DigestPrecondition {
+		values := []candidates.DigestPrecondition{{ID: frozen.Target.CandidateID, Digest: frozen.Target.BodyDigest}}
+		if frozen.Companion != nil {
+			values = append(values, candidates.DigestPrecondition{ID: frozen.Companion.CandidateID, Digest: frozen.Companion.BodyDigest})
+		}
+		return values
+	}
+	handleMiss := func(result candidates.ConditionalMutationResult) error {
+		frozen.mismatchCandidateID = result.MismatchID
+		frozen.outcome = FrozenAdjudicationStalePrecondition
+		frozen.afterDigest = result.Target.Digest
+		if result.MismatchID != frozen.Target.CandidateID || len(result.Target.Body) == 0 {
+			return nil
+		}
+		var current Candidate
+		if err := json.Unmarshal(result.Target.Body, &current); err != nil {
+			return fmt.Errorf("decode current frozen candidate %s: %w", candID, err)
+		}
+		res.Candidate = current
+		if current.AdjudicationOperationKey != frozen.OperationKey {
+			return nil
+		}
+		frozen.outcome = FrozenAdjudicationAlreadyApplied
+		frozen.mismatchCandidateID = ""
+		frozen.preconditionMismatch = ""
+		if verdict == candidates.Promote {
+			recovered, err := s.frozenAppliedPromotionResult(current, workID, now)
+			if err != nil {
+				return err
+			}
+			res = recovered
+		}
+		return nil
+	}
+
+	if verdict != candidates.Promote {
+		if frozen != nil {
+			err := s.withLock(func() error {
+				result, err := candidates.MutateCandidateIfDigests(s.home, candidates.Memory, candID, preconditions(), func(record candidates.Record) (any, error) {
+					var latest Candidate
+					if err := json.Unmarshal(record.Body, &latest); err != nil {
+						return nil, fmt.Errorf("decode frozen candidate %s: %w", candID, err)
+					}
+					if latest.State != frozen.Target.State {
+						return nil, fmt.Errorf("frozen candidate %s state %q does not match planned %q", candID, latest.State, frozen.Target.State)
+					}
+					if err := validateAdjudicationIntent(latest, intent); err != nil {
+						return nil, err
+					}
+					if latest.State == "promoted" {
+						return nil, fmt.Errorf("candidate %s already promoted", candID)
+					}
+					latest.State = nonPromoteState(verdict)
+					latest.AdjudicationOperationKey = frozen.OperationKey
+					res.Candidate = latest
+					return &latest, nil
+				})
+				if err != nil {
+					return err
+				}
+				if !result.Applied {
+					if err := handleMiss(result); err != nil {
+						return err
+					}
+					return nil
+				}
+				frozen.outcome = FrozenAdjudicationApplied
+				frozen.afterDigest = result.Target.Digest
+				return nil
+			})
+			return res, err
+		}
+
 		latest, _, lockErr := s.mutateCandidate(candID, func(latest *Candidate) (bool, error) {
 			if latest.State == "promoted" {
 				return false, fmt.Errorf("candidate %s already promoted", candID)
 			}
 			latest.State = nonPromoteState(verdict)
+			latest.AdjudicationOperationKey = ""
 			if actor != "" {
 				latest.AdjudicatedBy = actor
 				latest.AdjudicatedAt = rfc3339(now)
@@ -974,14 +1233,13 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 		if lockErr != nil {
 			return res, lockErr
 		}
-		c = latest
 		res.Candidate = latest
 		return res, nil
 	}
 
-	// promote: the prior-lookup + seq allocation + claim/edge append run under one lock so
-	// seq stays monotonic-unique and supersession is consistent even across concurrent writers
-	// (single-writer is the norm; the lock makes MVCC-by-fold mechanically true, not just a phrase).
+	// Promotion holds the memory lock across claim/edge/transition writes.
+	// Frozen execution additionally nests candidate custody inside it, pinning
+	// producer-visible bytes until the terminal projection is published.
 	var (
 		claim      Claim
 		prior      Claim
@@ -989,15 +1247,14 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 		hasPrior   bool
 		dup        bool
 	)
-	lockErr := s.withLock(func() error {
-		latest, err := s.getCandidate(candID)
-		if err != nil {
+	applyPromotion := func(latest Candidate, writeCandidate func(Candidate) error) error {
+		c = latest
+		if err := validateAdjudicationIntent(c, intent); err != nil {
 			return err
 		}
-		if latest.State == "promoted" {
+		if c.State == "promoted" {
 			return fmt.Errorf("candidate %s already promoted", candID)
 		}
-		c = latest
 		if c.Qualifiers != nil && strings.TrimSpace(c.Qualifiers[OperationalDecisionAuthorityQualifier]) != "" && !operationalDecision {
 			return fmt.Errorf("candidate %s uses reserved operational decision authority qualifier; import it through the policy decisions authority", candID)
 		}
@@ -1127,7 +1384,7 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 				c.AdjudicatedBy = actor
 				c.AdjudicatedAt = rfc3339(now)
 			}
-			if err := s.writeAdjudicatedCandidate(c.ID, &c); err != nil {
+			if err := writeCandidate(c); err != nil {
 				return err
 			}
 			prior = transitionPrior
@@ -1147,7 +1404,7 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 				c.AdjudicatedBy = actor
 				c.AdjudicatedAt = rfc3339(now)
 			}
-			return s.writeAdjudicatedCandidate(c.ID, &c)
+			return writeCandidate(c)
 		}
 		seq, err := s.nextSeq()
 		if err != nil {
@@ -1175,10 +1432,71 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 			c.AdjudicatedBy = actor
 			c.AdjudicatedAt = rfc3339(now)
 		}
-		return s.writeAdjudicatedCandidate(c.ID, &c)
+		return writeCandidate(c)
+	}
+
+	lockErr := s.withLock(func() error {
+		if frozen == nil {
+			latest, err := s.getCandidate(candID)
+			if err != nil {
+				return err
+			}
+			return applyPromotion(latest, func(updated Candidate) error {
+				updated.AdjudicationOperationKey = ""
+				c = updated
+				return s.writeAdjudicatedCandidate(updated.ID, &updated)
+			})
+		}
+		result, err := candidates.MutateCandidateIfDigests(s.home, candidates.Memory, candID, preconditions(), func(record candidates.Record) (any, error) {
+			var latest Candidate
+			if err := json.Unmarshal(record.Body, &latest); err != nil {
+				return nil, fmt.Errorf("decode frozen candidate %s: %w", candID, err)
+			}
+			if latest.State != frozen.Target.State {
+				return nil, fmt.Errorf("frozen candidate %s state %q does not match planned %q", candID, latest.State, frozen.Target.State)
+			}
+			currentClaim, found, err := s.currentClusterClaim(latest, 0)
+			if err != nil {
+				return nil, err
+			}
+			if !frozenClaimMatches(*frozen.CurrentClaim, currentClaim, found) {
+				res.Candidate = latest
+				return nil, &frozenClaimPreconditionMismatch{observed: frozenClaimReference(currentClaim, found)}
+			}
+			var payload Candidate
+			applyErr := applyPromotion(latest, func(updated Candidate) error {
+				updated.AdjudicationOperationKey = frozen.OperationKey
+				payload = updated
+				c = updated
+				return nil
+			})
+			return &payload, applyErr
+		})
+		if err != nil {
+			var mismatch *frozenClaimPreconditionMismatch
+			if errors.As(err, &mismatch) {
+				frozen.outcome = FrozenAdjudicationStalePrecondition
+				frozen.preconditionMismatch = mismatch.observed
+				frozen.afterDigest = frozen.Target.BodyDigest
+				return nil
+			}
+			return err
+		}
+		if !result.Applied {
+			if err := handleMiss(result); err != nil {
+				return err
+			}
+			return nil
+		}
+		frozen.outcome = FrozenAdjudicationApplied
+		frozen.afterDigest = result.Target.Digest
+		return nil
 	})
 	if lockErr != nil {
 		return res, lockErr
+	}
+	if frozen != nil && frozen.outcome != FrozenAdjudicationApplied {
+		return res, nil
 	}
 	if dup {
 		res.Verdict, res.Candidate, res.Note = "reject", c, "already current: "+prior.ID
@@ -1189,6 +1507,69 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 	}
 	res.Candidate, res.Claim, res.Transition = c, &claim, &transition
 	return res, nil
+}
+
+func (s *Store) frozenAppliedPromotionResult(candidate Candidate, workID string, now time.Time) (AdjudicateResult, error) {
+	result := AdjudicateResult{Verdict: candidates.Promote, Candidate: candidate}
+	if candidate.State == "rejected" {
+		const duplicatePrefix = "duplicate of current claim "
+		claimID := strings.TrimSpace(strings.TrimPrefix(candidate.Reason, duplicatePrefix))
+		if !strings.HasPrefix(candidate.Reason, duplicatePrefix) || claimID == "" {
+			return result, fmt.Errorf("frozen operation key marks rejected candidate %s without duplicate provenance", candidate.ID)
+		}
+		result.Verdict = candidates.Reject
+		result.Note = "already current: " + claimID
+		return result, nil
+	}
+	if candidate.State != "promoted" {
+		return result, fmt.Errorf("frozen promotion operation key marks candidate %s in state %q", candidate.ID, candidate.State)
+	}
+
+	claims, err := s.loadClaimsRaw()
+	if err != nil {
+		return result, err
+	}
+	var promoted Claim
+	for _, existing := range claims {
+		if !oneOf(candidate.ID, existing.EvidenceRefs) || !isDuplicatePromotion(candidate, existing, true) {
+			continue
+		}
+		if promoted.ID != "" && promoted.ID != existing.ID {
+			return result, fmt.Errorf("candidate %s has multiple promotion claims (%s, %s)", candidate.ID, promoted.ID, existing.ID)
+		}
+		promoted = existing
+	}
+	if promoted.ID == "" {
+		return result, fmt.Errorf("candidate %s frozen promotion projection has no durable claim", candidate.ID)
+	}
+
+	var prior Claim
+	hasPrior := promoted.Supersedes != ""
+	if hasPrior {
+		for _, existing := range claims {
+			if existing.ID == promoted.Supersedes {
+				prior = existing
+				break
+			}
+		}
+		if prior.ID == "" {
+			return result, fmt.Errorf("candidate %s frozen promotion missing superseded claim %s", candidate.ID, promoted.Supersedes)
+		}
+	}
+	expectedTransition := s.memoryTransition(promoted, prior, hasPrior, workID, now)
+	transition, exists, err := s.persistedPromotionTransition(expectedTransition)
+	if err != nil {
+		return result, err
+	}
+	if !exists {
+		return result, fmt.Errorf("candidate %s frozen promotion has no durable transition %s", candidate.ID, expectedTransition.ID)
+	}
+	if hasPrior {
+		result.Superseded = prior.ID
+	}
+	result.Claim = &promoted
+	result.Transition = &transition
+	return result, nil
 }
 
 // HasOperationalDecisionAuthority reports whether qualifiers carry the exact

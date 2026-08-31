@@ -13,7 +13,6 @@ import (
 	"unicode/utf8"
 
 	"compound/internal/attention"
-	"compound/internal/home"
 	"compound/internal/reviewartifact"
 	"compound/internal/work"
 )
@@ -22,11 +21,8 @@ import (
 // Store.Workbench feeds console/orient/attention/session JSON consumers. Keep
 // this slice CLI-renderer-only so the existing JSON schema remains unchanged.
 func TestWorkbenchOperatorModeTranslatesEnvelopeIntoOperatorLanguage(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work store: %v", err)
@@ -276,11 +272,8 @@ func TestWorkbenchOperatorDefaultScannablePrivateProofsAndDecisionPriority(t *te
 
 func newPrivateProofOperatorWorkbenchFixture(t *testing.T) string {
 	t.Helper()
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work store: %v", err)
@@ -326,11 +319,8 @@ func newPrivateProofOperatorWorkbenchFixture(t *testing.T) string {
 
 func newVerboseOperatorWorkbenchFixture(t *testing.T, duplicateHolds int) string {
 	t.Helper()
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work store: %v", err)
@@ -474,11 +464,8 @@ func TestWorkbenchHeadlineUsesAttentionProjection(t *testing.T) {
 
 func newWorkbenchAttentionFixture(t *testing.T) string {
 	t.Helper()
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	if _, err := reviewartifact.Write(homePath, "product-reviews", "prp_attention_meter", map[string]any{
 		"id":            "prp_attention_meter",
 		"status":        "review_required",
@@ -510,11 +497,8 @@ func newWorkbenchAttentionFixture(t *testing.T) string {
 // independent review_required total. It must flag attention_unavailable and
 // keep the last-known review-artifact-derived count instead.
 func TestWorkbenchAttentionUnavailableKeepsLastKnownCountAndFlags(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	if _, err := reviewartifact.Write(homePath, "product-reviews", "prp_meter_unavailable", map[string]any{
 		"id":            "prp_meter_unavailable",
 		"status":        "review_required",

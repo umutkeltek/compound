@@ -151,9 +151,94 @@ func allowDelegateCLIGuard(t *testing.T, confirmationRequired bool) {
 
 func runDelegateCLIForTest(t *testing.T, sub string, store *work.Store, runner work.SessionRunner, attach func([]string) error, args ...string) (string, string, int) {
 	t.Helper()
+	args = explicitExperimentalDelegateArgsForTest(sub, args)
 	var stdout, stderr bytes.Buffer
 	code := runWorkDelegateCLI(sub, args, store, runner, attach, delegateCLITestNow, &stdout, &stderr)
 	return stdout.String(), stderr.String(), code
+}
+
+// Most historical delegate fixtures exercise the now-unsupported mutation
+// engine deliberately. Keep that opt-in visible at their shared composition
+// seam while dedicated boundary tests below call runWorkDelegateCLI directly
+// to prove production remains default-off.
+func explicitExperimentalDelegateArgsForTest(sub string, args []string) []string {
+	out := append([]string(nil), args...)
+	mutation := sub == "steer"
+	if sub == "delegate" {
+		if len(out) > 0 && out[0] == "status" {
+			return out
+		}
+		for _, arg := range out {
+			if arg == "--dry-run" {
+				return out
+			}
+		}
+		mutation = true
+	}
+	if !mutation {
+		return out
+	}
+	for _, arg := range out {
+		if arg == work.ExperimentalDelegateMutationsFlag {
+			return out
+		}
+	}
+	insertAt := len(out)
+	for i, arg := range out {
+		if arg == "--" {
+			insertAt = i
+			break
+		}
+	}
+	out = append(out, "")
+	copy(out[insertAt+1:], out[insertAt:])
+	out[insertAt] = work.ExperimentalDelegateMutationsFlag
+	return out
+}
+
+func runDelegateCLIWithoutExperimentalGateForTest(t *testing.T, sub string, store *work.Store, runner work.SessionRunner, args ...string) (string, string, int) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	code := runWorkDelegateCLI(sub, args, store, runner, nil, delegateCLITestNow, &stdout, &stderr)
+	return stdout.String(), stderr.String(), code
+}
+
+func TestWorkDelegateMutationCLIGateDefaultsOffWithoutSideEffects(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		sub  string
+		args func(string) []string
+	}{
+		{name: "spawn", sub: "delegate", args: func(workID string) []string {
+			return []string{workID, "--harness", "claude-zai"}
+		}},
+		{name: "steer", sub: "steer", args: func(workID string) []string {
+			return []string{workID, "--text", "do not send"}
+		}},
+		{name: "progress", sub: "delegate", args: func(workID string) []string {
+			return []string{"progress", workID, "--done", "0", "--empty", "0", "--failed", "0", "--remaining", "1"}
+		}},
+		{name: "sweep", sub: "delegate", args: func(workID string) []string {
+			return []string{"sweep", workID}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, workID, homePath := claimedDelegateCLIWorkAt(t, "orchestrator:test")
+			runner := newDelegateCLIFakeRunner()
+			before := snapshotFiles(t, homePath)
+
+			_, errOut, code := runDelegateCLIWithoutExperimentalGateForTest(t, tc.sub, store, runner, tc.args(workID)...)
+			if code != 2 || !strings.Contains(errOut, work.ExperimentalDelegateMutationsFlag) || !strings.Contains(errOut, "unsupported in v0.1") {
+				t.Fatalf("code=%d stderr=%q", code, errOut)
+			}
+			after := snapshotFiles(t, homePath)
+			if !reflect.DeepEqual(before, after) || len(runner.creates) != 0 || len(runner.keys) != 0 || len(runner.kills) != 0 {
+				t.Fatalf("default-off %s mutated state: files_equal=%v creates=%v keys=%v kills=%v", tc.name, reflect.DeepEqual(before, after), runner.creates, runner.keys, runner.kills)
+			}
+		})
+	}
 }
 
 func TestWorkDelegateCLIPromptUsesNamedWrapperWithoutPersistingSpeech(t *testing.T) {
@@ -496,6 +581,7 @@ func TestRunAttemptSweepProbeUsesExactDelegateBinding(t *testing.T) {
 }
 
 func TestWorkDelegateCLIUsageErrors(t *testing.T) {
+	t.Parallel()
 	store, workID := claimedDelegateCLIWork(t, "orchestrator:test")
 	runner := newDelegateCLIFakeRunner()
 	cases := []struct {
@@ -519,10 +605,90 @@ func TestWorkDelegateCLIUsageErrors(t *testing.T) {
 }
 
 func TestWorkDelegateHelpInventory(t *testing.T) {
+	t.Parallel()
 	for _, verb := range []string{"delegate", "steer", "attach"} {
 		if !strings.Contains(workUsage(""), verb) || !strings.Contains(workUsage(verb), "usage: compound work "+verb) {
 			t.Fatalf("work help does not expose %s: root=%q sub=%q", verb, workUsage(""), workUsage(verb))
 		}
+	}
+	for _, verb := range []string{"delegate", "steer"} {
+		help := workUsage(verb)
+		if !strings.Contains(help, work.ExperimentalDelegateMutationsFlag) || !strings.Contains(help, "unsupported in v0.1") {
+			t.Fatalf("experimental mutation boundary missing from %s help: %q", verb, help)
+		}
+	}
+}
+
+func TestWorkDelegateWritableStoreClassificationUsesExactParsers(t *testing.T) {
+	t.Parallel()
+	const workID = "work_delegate_parser_classification"
+	tests := []struct {
+		name string
+		sub  string
+		args []string
+		want bool
+	}{
+		{name: "status", sub: "delegate", args: []string{"status", workID}},
+		{name: "attach", sub: "attach", args: []string{workID}},
+		{name: "default off", sub: "delegate", args: []string{workID, "--harness", "claude-zai"}},
+		{name: "dry run", sub: "delegate", args: []string{workID, "--harness", "claude-zai", "--dry-run"}},
+		{name: "gate is harness value", sub: "delegate", args: []string{workID, "--harness", work.ExperimentalDelegateMutationsFlag}},
+		{name: "gate is raw command", sub: "delegate", args: []string{workID, "--harness", "claude-zai", "--", work.ExperimentalDelegateMutationsFlag}},
+		{name: "gate is steer text", sub: "steer", args: []string{workID, "--text", work.ExperimentalDelegateMutationsFlag}},
+		{name: "gate is progress count", sub: "delegate", args: []string{"progress", workID, "--done", work.ExperimentalDelegateMutationsFlag, "--empty", "0", "--failed", "0", "--remaining", "0"}},
+		{name: "invalid sweep", sub: "delegate", args: []string{"sweep", workID, work.ExperimentalDelegateMutationsFlag, "--unknown"}},
+		{name: "delegate mutation", sub: "delegate", args: []string{workID, "--harness", "claude-zai", work.ExperimentalDelegateMutationsFlag}, want: true},
+		{name: "raw dry run token is command data", sub: "delegate", args: []string{workID, "--harness", "claude-zai", work.ExperimentalDelegateMutationsFlag, "--", "worker", "--dry-run"}, want: true},
+		{name: "steer mutation", sub: "steer", args: []string{workID, "--text", "send", work.ExperimentalDelegateMutationsFlag}, want: true},
+		{name: "sweep mutation", sub: "delegate", args: []string{"sweep", workID, work.ExperimentalDelegateMutationsFlag}, want: true},
+		{name: "progress mutation", sub: "delegate", args: []string{"progress", workID, "--done", "0", "--empty", "0", "--failed", "0", "--remaining", "0", work.ExperimentalDelegateMutationsFlag}, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := workCommandNeedsWritableStore(tc.sub, tc.args); got != tc.want {
+				t.Fatalf("workCommandNeedsWritableStore(%q, %q) = %v, want %v", tc.sub, tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExperimentalDelegateMutationEnablementHasOneProductionOwner(t *testing.T) {
+	t.Parallel()
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := map[string]int{}
+	for _, top := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(repoRoot, top), func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			count := strings.Count(string(body), ".EnableExperimentalDelegateMutations()")
+			if count == 0 {
+				return nil
+			}
+			rel, err := filepath.Rel(repoRoot, path)
+			if err != nil {
+				return err
+			}
+			calls[filepath.ToSlash(rel)] = count
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := map[string]int{"cmd/compound/work_delegate.go": 4}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("experimental delegate mutation production call sites = %v, want %v", calls, want)
 	}
 }
 

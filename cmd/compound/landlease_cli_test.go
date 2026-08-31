@@ -19,6 +19,7 @@ func runLandLeaseCLI(t *testing.T, args ...string) (string, string, int) {
 // A different holder cannot acquire over a live lease via the CLI: the second acquire exits non-zero
 // with the current holder surfaced, and status reflects the original holder.
 func TestLandLeaseCLIAcquireRefusesCompetingHolder(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 
 	_, errStr, code := runLandLeaseCLI(t, "acquire", "--holder", "lane-alpha", "--ttl", "300", "--home", home)
@@ -51,6 +52,7 @@ func TestLandLeaseCLIAcquireRefusesCompetingHolder(t *testing.T) {
 
 // Steal via the CLI requires a reason and records the audit trail; a reasonless steal is refused.
 func TestLandLeaseCLIStealRequiresReasonAndRecords(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, errStr, code := runLandLeaseCLI(t, "acquire", "--holder", "lane-alpha", "--home", home); code != 0 {
 		t.Fatalf("A acquire exit=%d stderr=%s", code, errStr)
@@ -80,6 +82,7 @@ func TestLandLeaseCLIStealRequiresReasonAndRecords(t *testing.T) {
 
 // Release via the CLI is holder-scoped: a non-holder release is refused; the holder frees it.
 func TestLandLeaseCLIReleaseHolderScoped(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, errStr, code := runLandLeaseCLI(t, "acquire", "--holder", "lane-alpha", "--home", home); code != 0 {
 		t.Fatalf("A acquire exit=%d stderr=%s", code, errStr)
@@ -113,6 +116,7 @@ func TestLandLeaseCLIReleaseHolderScoped(t *testing.T) {
 // (or `… steal requires a reason …`), so assertTeachingRefusal fails immediately on the gate
 // name; nothing in the old text named status, --wait, or the steal's --reason as commands.
 func TestLandLeaseCLIRefusalsTeachTheRecoveryLadder(t *testing.T) {
+	t.Parallel()
 	t.Run("contention names wait and steal without preferring the steal", func(t *testing.T) {
 		home := t.TempDir()
 		if _, errStr, code := runLandLeaseCLI(t, "acquire", "--holder", "lane-alpha", "--home", home); code != 0 {
@@ -175,6 +179,7 @@ func TestLandLeaseCLIRefusalsTeachTheRecoveryLadder(t *testing.T) {
 }
 
 func TestLandLeaseCLIUsage(t *testing.T) {
+	t.Parallel()
 	_, _, code := runLandLeaseCLI(t)
 	if code != 2 {
 		t.Fatalf("no args should print usage and exit 2, got %d", code)

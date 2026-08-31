@@ -58,6 +58,7 @@ func (f *fakeRunner) Multiplexer() work.MultiplexerSource                   { re
 // Without the multiplexer source, the report would be empty; the
 // presence of multiplexer-only rows is the new surface.
 func TestMergeMultiplexerIntoEmptyCompound(t *testing.T) {
+	t.Parallel()
 	homeDir := initEmptyCompoundHome(t)
 	now := time.Now()
 	mux := &fakeMultiplexerSource{
@@ -107,6 +108,7 @@ func TestMergeMultiplexerIntoEmptyCompound(t *testing.T) {
 // truncating the report. The dangerous failure is 'nothing reported,
 // must be fine' — this test guards against that exact regression.
 func TestMergeMultiplexerFailureProducesLoudRow(t *testing.T) {
+	t.Parallel()
 	homeDir := initEmptyCompoundHome(t)
 	now := time.Now()
 	mux := &fakeMultiplexerSource{
@@ -150,6 +152,7 @@ func (e *multiplexerSynthErr) Error() string { return "synth-failure: tmux list-
 // when the test seam has a *work.TmuxRunner; a fake runner cannot get
 // a default multiplexer source, and the report MUST reflect that.
 func TestNoMultiplexerSourceLeavesReportUnchanged(t *testing.T) {
+	t.Parallel()
 	homeDir := initEmptyCompoundHome(t)
 	now := time.Now()
 	var stdout, stderr strings.Builder
@@ -179,6 +182,7 @@ func TestNoMultiplexerSourceLeavesReportUnchanged(t *testing.T) {
 // always present; 'provenance' is per-row) are checked by seeding at
 // least one compound row.
 func TestJsonSchemaBackwardCompatForExistingFields(t *testing.T) {
+	t.Parallel()
 	homeDir := initEmptyCompoundHome(t)
 	now := time.Now()
 	raStore := runattempt.Open(homeDir)
@@ -215,6 +219,7 @@ func TestJsonSchemaBackwardCompatForExistingFields(t *testing.T) {
 // multiplexer counter must reflect the second observation source
 // only, never compound-recorded rows.
 func TestRunattemptOriginReservationDoesNotInflateMultiplexerCount(t *testing.T) {
+	t.Parallel()
 	homeDir := initEmptyCompoundHome(t)
 	now := time.Now()
 	raStore := runattempt.Open(homeDir)

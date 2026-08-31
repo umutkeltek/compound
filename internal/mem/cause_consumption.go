@@ -16,7 +16,7 @@
 // Write boundary: this file NEVER writes to the ledger, candidates/, or claims/. The only
 // artifact it can produce is a plain timestamped JSON dump under
 // $COMPOUND_HOME/state/runs/cause-consumption/ (WriteCauseConsumptionRun), and only when the
-// CLI caller passes --record (cmd/compound/memory_consumption.go). Mirrors the read-only sweep
+// CLI caller passes --record (internal/mem/cause_consumption_cli.go). Mirrors the read-only sweep
 // shape of internal/capgraph/injection_observation.go (comment at :10-13 there) without
 // depending on capgraph — internal/mem already imports eventstore in non-test code (mem.go,
 // reconcile.go) and must not gain an upward edge to capgraph.

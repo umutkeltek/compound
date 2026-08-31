@@ -9,6 +9,7 @@ import (
 // workbench projection reports it resolved/terminal_work — mirroring dispatch
 // step-run resolution — without mutating the recorded run file.
 func TestWorkbenchResolvesContinueRunBlockedByTerminalWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "continue run stale wait resolves"}, fixedNow)
 	if err != nil {
@@ -56,6 +57,7 @@ func TestWorkbenchResolvesContinueRunBlockedByTerminalWork(t *testing.T) {
 // T2b: a continue-run with a non-terminal referenced work stays waiting. The
 // projection must not resolve while any referenced work is still live.
 func TestWorkbenchKeepsContinueRunWaitingWhileWorkNonTerminal(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "continue run stays waiting"}, fixedNow)
 	if err != nil {

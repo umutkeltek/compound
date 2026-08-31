@@ -95,6 +95,13 @@ Unsupported in the public alpha:
 - server, daemon, or multi-tenant deployments;
 - remote or proxied console access — exposing the console beyond the local
   machine is out of scope;
+- delegated launch, steer, progress, and mutating delegate sweep — these are
+  experimental, disabled by default, and outside the v0.1 supported execution
+  contract; `work advance --execute` is the supported governed path;
+- unattended memory promotion, registry import through `memory
+  promote-driver`, and lane-belief mutation are experimental and outside the
+  v0.1 supported contract; the supported promote-driver apply is frozen
+  candidate-only and registry flags are plan-only;
 - arbitrary private embedding endpoints — memory engines are local sidecars,
   and private corpora require a private, local/loopback lane posture.
 

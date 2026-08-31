@@ -9,6 +9,7 @@ import (
 )
 
 func TestObserveRunAttachesTraceAndMovesToVerifying(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := runningWork(t, s, "observe run attaches trace")
 	trace := writeTrace(t, s, "trace_observe_good", w.ID)
@@ -42,6 +43,7 @@ func TestObserveRunAttachesTraceAndMovesToVerifying(t *testing.T) {
 }
 
 func TestObserveRunRejectsMismatchedTraceWithoutMutation(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := runningWork(t, s, "observe run rejects mismatched trace")
 	trace := writeTrace(t, s, "trace_observe_wrong", "work_other")
@@ -58,6 +60,7 @@ func TestObserveRunRejectsMismatchedTraceWithoutMutation(t *testing.T) {
 }
 
 func TestObserveRunBlockedByPolicyDoesNotMutate(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := runningWork(t, s, "policy hold blocks observe run")
 	trace := writeTrace(t, s, "trace_observe_blocked", w.ID)

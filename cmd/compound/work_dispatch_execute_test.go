@@ -17,6 +17,7 @@ import (
 )
 
 func TestWorkDispatchExecuteConfirmSelectsClaimsAndRunsGovernedAdapter(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -113,6 +114,7 @@ func TestWorkDispatchExecuteConfirmSelectsClaimsAndRunsGovernedAdapter(t *testin
 }
 
 func TestWorkDispatchExecuteRefusesMissingAdapterBeforeClaim(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -281,10 +283,8 @@ func TestWorkDispatchExecuteRefusesRouterRevisionDriftBeforeClaim(t *testing.T) 
 }
 
 func TestWorkDispatchExecuteFailedSubprocessTerminalizesWorkAndAttempts(t *testing.T) {
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	t.Parallel()
+	homePath := initializedTestHome(t)
 	now := time.Now().UTC()
 	userHome := writeDispatchExecuteCapacityFixture(t, "codex", now)
 	addCapabilityGraphFixture(t, homePath)
@@ -372,10 +372,8 @@ func assertDispatchExecuteReadyAndUnchanged(t *testing.T, store *work.Store, wor
 }
 
 func TestWorkDispatchExecuteCLIUnconfirmedPreviewsWithoutMutation(t *testing.T) {
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	t.Parallel()
+	homePath := initializedTestHome(t)
 	userHome := writeDispatchExecuteCapacityFixture(t, "codex", time.Now().UTC())
 	addCapabilityGraphFixture(t, homePath)
 	writeDispatchExecuteModelRouterFixture(t, homePath)

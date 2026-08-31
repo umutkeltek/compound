@@ -63,6 +63,7 @@ func renderAndPublishPermissionFixture(t *testing.T, homePath, harnessName, targ
 // under the test $COMPOUND_HOME -- the "writes nothing" contract holds even
 // with this new section.
 func TestDoctorPermissionPosture_F5_RowPresentAndReadOnly(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	targetPath := writeDoctorPermissionPostureFixture(t, home)
 
@@ -139,6 +140,7 @@ func TestDoctorPermissionPosture_F5_RowPresentAndReadOnly(t *testing.T) {
 // TestDoctorPermissionPosture_CleanFixtureReportsClean is the companion
 // negative case: a clean fixture reports status "clean", not "drift".
 func TestDoctorPermissionPosture_CleanFixtureReportsClean(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	targetPath := writeDoctorPermissionPostureFixture(t, home)
 	renderAndPublishPermissionFixture(t, home, "claude_code", targetPath)
@@ -161,6 +163,7 @@ func TestDoctorPermissionPosture_CleanFixtureReportsClean(t *testing.T) {
 // fresh home with no harness-permission authorities yields an empty (not
 // crashing, not fabricated) permission_posture list.
 func TestDoctorPermissionPosture_NoAuthoritiesConfiguredIsEmpty(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	var out, errOut bytes.Buffer
 	args := []string{"--home", home, "--base", t.TempDir(), "--binary", "/usr/local/bin/compound", "--json"}

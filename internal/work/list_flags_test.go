@@ -12,6 +12,7 @@ import (
 // accept the canonical set and reject every other value with an error that
 // names the canonical flags so the operator can recover.
 func TestValidateWorkListFlagsCoversSilentIgnoreBug(t *testing.T) {
+	t.Parallel()
 	for _, ok := range workListFlags {
 		if err := ValidateWorkListFlags([]string{ok}); err != nil {
 			t.Errorf("ValidateWorkListFlags(%q) = %v, want nil", ok, err)

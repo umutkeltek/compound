@@ -13,6 +13,7 @@ import (
 )
 
 func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready work gets claimed"}, fixedNow)
 	if err != nil {
@@ -91,6 +92,7 @@ func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
 // parse must be counted and surfaced through report.Integrity, not just
 // vanish from Counts.Total with no trace anywhere in the report.
 func TestWorkbenchReportsCorruptWorkFileInIntegrity(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	healthy, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "healthy work item stays visible"}, fixedNow)
 	if err != nil {
@@ -115,6 +117,7 @@ func TestWorkbenchReportsCorruptWorkFileInIntegrity(t *testing.T) {
 }
 
 func TestWorkbenchOfferedPacketsSkipsMalformedHeaders(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	packetDir := filepath.Join(t.TempDir(), "packets")
 	if err := os.MkdirAll(packetDir, 0o755); err != nil {
@@ -181,6 +184,7 @@ func packetWarningContains(warnings []string, needle string) bool {
 }
 
 func TestWorkbenchSurfacesRouteOutcomeReviews(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "route outcome reaches workbench"}, fixedNow)
 	if err != nil {
@@ -249,6 +253,7 @@ func TestWorkbenchSurfacesRouteOutcomeReviews(t *testing.T) {
 }
 
 func TestWorkbenchResolvesDispatchStepRunBlockedByTerminalWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "dispatch run stale wait resolves"}, fixedNow)
 	if err != nil {
@@ -293,6 +298,7 @@ func TestWorkbenchResolvesDispatchStepRunBlockedByTerminalWork(t *testing.T) {
 }
 
 func TestWorkbenchRecentOrdersByCompletionTimeNotWorkID(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	olderAt := fixedNow
 	newerAt := fixedNow.Add(2 * time.Hour)
@@ -334,6 +340,7 @@ func TestWorkbenchRecentOrdersByCompletionTimeNotWorkID(t *testing.T) {
 }
 
 func TestWorkbenchExcludesArchivedWorkByDefaultAndResolvesByID(t *testing.T) {
+	t.Parallel()
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(homePath, "test", fixedNow); err != nil {
 		t.Fatal(err)
@@ -398,6 +405,7 @@ func TestWorkbenchExcludesArchivedWorkByDefaultAndResolvesByID(t *testing.T) {
 }
 
 func TestWorkbenchSurfacesRunObservationEvidence(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := runningWork(t, s, "observed run gets verified")
 	trace := writeTrace(t, s, "trace_workbench_observed", w.ID)
@@ -436,6 +444,7 @@ func TestWorkbenchSurfacesRunObservationEvidence(t *testing.T) {
 }
 
 func TestWorkbenchSurfacesDispatchStepRunSummaries(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "workbench sees dispatch run"}, fixedNow)
 	if err != nil {
@@ -471,6 +480,7 @@ func TestWorkbenchSurfacesDispatchStepRunSummaries(t *testing.T) {
 }
 
 func TestWorkbenchSurfacesContinueRunSummaries(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "workbench sees continue run"}, fixedNow)
 	if err != nil {
@@ -506,6 +516,7 @@ func TestWorkbenchSurfacesContinueRunSummaries(t *testing.T) {
 }
 
 func TestWorkbenchResolvesNoOpenWorkDispatchStepRun(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	run, err := s.DispatchStepRun(fixedNow, DispatchStepRunOptions{
 		DispatchStepOptions: DispatchStepOptions{Actor: "codex"},
@@ -537,6 +548,7 @@ func TestWorkbenchResolvesNoOpenWorkDispatchStepRun(t *testing.T) {
 }
 
 func TestWorkbenchDispatchNextSuggestsSafeCommand(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready work can dispatch"}, fixedNow)
 	if err != nil {
@@ -562,6 +574,7 @@ func TestWorkbenchDispatchNextSuggestsSafeCommand(t *testing.T) {
 }
 
 func TestWorkbenchDispatchNextSurfacesAdjacentProgressForHeldValves(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	held, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "held operator valve remains visible", State: "held"}, fixedNow)
 	if err != nil {
@@ -646,6 +659,7 @@ Success: should not be offered as immediate adjacent progress.
 }
 
 func TestWorkbenchDispatchNextOffersNonPacketActionsWhenPacketsFilteredOut(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	asc, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -803,6 +817,7 @@ Success: should not count as Codex adjacent work.
 }
 
 func TestWorkbenchAdjacentProgressConsumesVerifiedProofActions(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	asc, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -864,6 +879,7 @@ func TestWorkbenchAdjacentProgressConsumesVerifiedProofActions(t *testing.T) {
 }
 
 func TestWorkbenchSurfacesRunArtifactsForHeldWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	held, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -896,6 +912,10 @@ func TestWorkbenchSurfacesRunArtifactsForHeldWork(t *testing.T) {
 			"item_ref":      "chatgpt:fixture-conversation",
 			"source":        "knowledge_extraction",
 		},
+	})
+	writeJSONFile(t, filepath.Join(candidateDir, "cand_other_conversation.json"), map[string]any{
+		"id":    "cand_other_conversation",
+		"state": "parked",
 	})
 	writeJSONFile(t, filepath.Join(runDir, "chatgpt-knowledge-export.json"), map[string]any{
 		"schema_version": "compound.knowledge_export.v0.1",
@@ -1039,6 +1059,7 @@ func TestWorkbenchSurfacesRunArtifactsForHeldWork(t *testing.T) {
 }
 
 func TestWorkbenchSurfacesASCOperatorGateCardForHeldWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	held, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -1084,6 +1105,7 @@ func TestWorkbenchSurfacesASCOperatorGateCardForHeldWork(t *testing.T) {
 }
 
 func TestWorkbenchMarksHeldCardConditionStaleWhenReceiptNamesGate(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	held, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -1121,6 +1143,7 @@ func TestWorkbenchMarksHeldCardConditionStaleWhenReceiptNamesGate(t *testing.T) 
 }
 
 func TestWorkbenchASCOperatorGateUsesObservedSignalDecision(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	held, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -1168,6 +1191,7 @@ func TestWorkbenchASCOperatorGateUsesObservedSignalDecision(t *testing.T) {
 }
 
 func TestHeldConditionStaleEvidenceDoesNotAutoReleaseWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	held, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -1208,6 +1232,7 @@ func TestHeldConditionStaleEvidenceDoesNotAutoReleaseWork(t *testing.T) {
 }
 
 func TestWorkbenchOldFormatHeldRecordProjectsCleanly(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	legacy := BuildWork(CreateInput{
 		WorkID:           "work_legacyheld",
@@ -1248,6 +1273,7 @@ func TestWorkbenchOldFormatHeldRecordProjectsCleanly(t *testing.T) {
 }
 
 func TestWorkbenchSurfacesTerminalActivePacketProof(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
 	writeContextPack(t, s, "ctx_packet")
@@ -1310,6 +1336,7 @@ func TestWorkbenchSurfacesTerminalActivePacketProof(t *testing.T) {
 }
 
 func TestWorkbenchDispatchNextWaitsForOtherActorClaim(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	created, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "claimed by other actor"}, fixedNow)
 	if err != nil {
@@ -1338,6 +1365,7 @@ func TestWorkbenchDispatchNextWaitsForOtherActorClaim(t *testing.T) {
 }
 
 func TestWorkbenchDispatchNextPrefersProofReadyClose(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready waits behind proof close"}, fixedNow)
 	if err != nil {
@@ -1359,6 +1387,7 @@ func TestWorkbenchDispatchNextPrefersProofReadyClose(t *testing.T) {
 }
 
 func TestWorkbenchDispatchNextSkipsProofReadyCloseHeldByOtherActor(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready work remains available to the requesting actor"}, fixedNow)
 	if err != nil {
@@ -1403,6 +1432,7 @@ func TestWorkbenchDispatchNextSkipsProofReadyCloseHeldByOtherActor(t *testing.T)
 }
 
 func TestWorkbenchDoesNotCountCancelledWorkAsMissingProof(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "cancelled work is terminal without completion proof"}, fixedNow)
 	if err != nil {
@@ -1428,6 +1458,7 @@ func TestWorkbenchDoesNotCountCancelledWorkAsMissingProof(t *testing.T) {
 }
 
 func TestWorkbenchDoesNotProjectCrossWorkTerminalProofComplete(t *testing.T) {
+	t.Parallel()
 	for _, artifact := range []string{"transition", "receipt"} {
 		t.Run(artifact, func(t *testing.T) {
 			s := newStore(t)
@@ -1467,6 +1498,7 @@ func TestWorkbenchDoesNotProjectCrossWorkTerminalProofComplete(t *testing.T) {
 }
 
 func TestWorkbenchDerivesObservatoryTags(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -1518,6 +1550,7 @@ func TestWorkbenchDerivesObservatoryTags(t *testing.T) {
 }
 
 func TestWorkbenchUsesEffectiveChangedForLegacyProofBearingReceipt(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	done, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "legacy receipt projects changed"}, fixedNow)
 	if err != nil {
@@ -1609,6 +1642,7 @@ func closeWorkbenchTestWork(t *testing.T, s *Store, workID string, at time.Time,
 }
 
 func TestWorkbenchSurfacesAdmissionPreviewsWithoutAdmittingWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	plan, err := s.CreatePlan(CreateInput{
 		WorkID:           "work_product_action_preview",
@@ -1707,6 +1741,7 @@ func TestWorkbenchSurfacesAdmissionPreviewsWithoutAdmittingWork(t *testing.T) {
 }
 
 func TestWorkbenchMarksOldAdmissionPreviewsStale(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	plan, err := s.CreatePlan(CreateInput{
 		WorkID:           "work_stale_admission_preview",
@@ -1748,6 +1783,7 @@ func TestWorkbenchMarksOldAdmissionPreviewsStale(t *testing.T) {
 }
 
 func TestWorkbenchBlocksLegacyAdmissionPreviewUntilReplanned(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	plan, err := s.CreatePlan(CreateInput{
 		WorkID:           "work_legacy_admission_preview",

@@ -134,6 +134,7 @@ func mintExecutionRunAttempt(t *testing.T, s *Store, workID string, at time.Time
 // resolve (no running event, no matching pair) — see
 // TestCloseWedgeLoudErrorWhenNoRunningPolicy.
 func TestCloseWedgeNamesBothPairsAndRemediation(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "wedge-test", SuccessPredicate: "wedge resolves with the running-state policy"}, fixedNow)
 	if err != nil {
@@ -206,6 +207,7 @@ func TestCloseWedgeNamesBothPairsAndRemediation(t *testing.T) {
 // an error that NAMES both pairs + both events + remediation. This
 // protects histories where the wedge shape has no recoverable signal.
 func TestCloseWedgeLoudErrorWhenNoRunningPolicy(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "wedge-loud", SuccessPredicate: "wedge without running event stays loud"}, fixedNow)
 	if err != nil {
@@ -264,6 +266,7 @@ func TestCloseWedgeLoudErrorWhenNoRunningPolicy(t *testing.T) {
 // broke the legitimate idempotent observe-run re-link (lived red: battery
 // go-test, TestObserveRunAfterRunningTerminalizesNormally).
 func TestAdvanceRefusesReattachWithDifferentPair(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "wedge-prevention", SuccessPredicate: "advance drops duplicate ratt attach idempotently"}, fixedNow)
 	if err != nil {
@@ -338,6 +341,7 @@ func TestAdvanceRefusesReattachWithDifferentPair(t *testing.T) {
 // same-pair reattaches to a single pair because the pairs map dedupes on
 // (act_, pol_) equality.
 func TestAdvanceAllowsReattachWithSamePair(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "wedge-prevention", SuccessPredicate: "advance allows same-pair re-attach"}, fixedNow)
 	if err != nil {
@@ -391,6 +395,7 @@ func TestAdvanceAllowsReattachWithSamePair(t *testing.T) {
 // --- findRunningAuthorityForAttempt: unit falsifiers on plain event slices ---
 
 func TestFindRunningAuthorityForAttemptBindsToExactAttempt(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
 		name       string
@@ -479,6 +484,7 @@ func TestFindRunningAuthorityForAttemptBindsToExactAttempt(t *testing.T) {
 // under it is confidently wrong. The tiebreak must resolve the LATEST running
 // generation for the exact attempt.
 func TestWedgeTiebreakUsesLatestRunningGenerationForSameAttempt(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "wedge-gen", SuccessPredicate: "retry closes under its own generation"}, fixedNow)
 	if err != nil {
@@ -532,6 +538,7 @@ func TestWedgeTiebreakUsesLatestRunningGenerationForSameAttempt(t *testing.T) {
 // running event anywhere in the work history; with two attempts that is the
 // other attempt's policy, and the close would bind the wrong pair.
 func TestWedgeTiebreakIgnoresOtherAttemptsRunningEvents(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "wedge-foreign", SuccessPredicate: "foreign running events do not govern"}, fixedNow)
 	if err != nil {

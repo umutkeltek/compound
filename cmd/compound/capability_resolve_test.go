@@ -13,16 +13,12 @@ import (
 	"testing"
 
 	"compound/internal/capgraph"
-	"compound/internal/home"
 	"compound/internal/routeevidence"
 )
 
 func TestCapabilityResolveComposesOwnedSurfaceAndRouteWithoutMutation(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
 	addCapabilityGraphFixture(t, homePath)
 	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
 		t.Fatal(err)
@@ -84,10 +80,8 @@ func TestCapabilityResolveComposesOwnedSurfaceAndRouteWithoutMutation(t *testing
 }
 
 func TestCapabilityResolveAppliesPrivacyAtCompoundRouteOwner(t *testing.T) {
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	t.Parallel()
+	homePath := initializedTestHome(t)
 	store := addCapabilityGraphFixture(t, homePath)
 	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
 		t.Fatal(err)
@@ -106,10 +100,8 @@ func TestCapabilityResolveAppliesPrivacyAtCompoundRouteOwner(t *testing.T) {
 }
 
 func TestCapabilityResolveRejectsMissingCapabilityGraphAuthority(t *testing.T) {
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	t.Parallel()
+	homePath := initializedTestHome(t)
 	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
 		t.Fatal(err)
 	}
@@ -123,10 +115,8 @@ func TestCapabilityResolveRejectsMissingCapabilityGraphAuthority(t *testing.T) {
 }
 
 func TestCapabilityResolveAcceptsNativeGraphWithoutSourceHandoff(t *testing.T) {
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	t.Parallel()
+	homePath := initializedTestHome(t)
 	store, err := capgraph.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -147,10 +137,8 @@ func TestCapabilityResolveAcceptsNativeGraphWithoutSourceHandoff(t *testing.T) {
 }
 
 func TestCapabilityResolveRejectsMissingModelRouterProvenance(t *testing.T) {
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	t.Parallel()
+	homePath := initializedTestHome(t)
 	store := addCapabilityGraphFixture(t, homePath)
 	source := filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")
 	data, err := os.ReadFile(source)
@@ -166,10 +154,8 @@ func TestCapabilityResolveRejectsMissingModelRouterProvenance(t *testing.T) {
 }
 
 func TestCapabilityResolveRejectsStaleModelRouterProvenance(t *testing.T) {
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	t.Parallel()
+	homePath := initializedTestHome(t)
 	store := addCapabilityGraphFixture(t, homePath)
 	source := filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")
 	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, source, cliTestNow); err != nil {
@@ -189,10 +175,8 @@ func TestCapabilityResolveRejectsStaleModelRouterProvenance(t *testing.T) {
 }
 
 func TestCapabilityResolveRejectsPrivacyPlanWithoutEligibleLane(t *testing.T) {
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatal(err)
-	}
+	t.Parallel()
+	homePath := initializedTestHome(t)
 	store := addCapabilityGraphFixture(t, homePath)
 	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
 		t.Fatal(err)
@@ -203,6 +187,7 @@ func TestCapabilityResolveRejectsPrivacyPlanWithoutEligibleLane(t *testing.T) {
 }
 
 func TestCapabilityResolutionBoundsRouteAndEncodedBytes(t *testing.T) {
+	t.Parallel()
 	plan := routeevidence.CapabilityRoutePlan{
 		Chain:             make([]routeevidence.CapabilityRouteLane, capabilityResolutionRouteLaneLimit+4),
 		Omitted:           make([]routeevidence.CapabilityRouteLane, capabilityResolutionPolicyOmitLimit+3),
@@ -248,6 +233,7 @@ func TestCapabilityResolutionBoundsRouteAndEncodedBytes(t *testing.T) {
 const capabilityResolveMissingHomeHelper = "COMPOUND_CAPABILITY_RESOLVE_MISSING_HOME_HELPER"
 
 func TestCapabilityResolveMissingHomeFailsWithoutMutation(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(capabilityResolveMissingHomeHelper) == "1" {
 		cmdCapability([]string{"resolve", "--json", "extract metrics"})
 		return

@@ -98,6 +98,44 @@ func TestListCandidatesFiltersCountsAndEvidenceGate(t *testing.T) {
 	}
 }
 
+func TestCandidateSnapshotFailsMutatorsClosedAndListsNamedCorruption(t *testing.T) {
+	s := newStore(t)
+	valid := Candidate{ID: "valid", Entity: "valid", Predicate: "p", Object: "o", State: "proposed", Visibility: "operational", Derivation: "extracted", CreatedAt: rfc3339(t0)}
+	if err := candidates.WriteCandidate(s.home, candidates.Memory, valid.ID, &valid); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.candDir(), "mismatch.json"), []byte(`{"id":"other","state":"proposed"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "linked.json")
+	if err := os.WriteFile(outside, []byte(`{"id":"linked","state":"proposed"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(s.candDir(), "linked.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.candDir(), "scratch.tmp"), []byte("not a canonical candidate"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.AllCandidates(); err == nil {
+		t.Fatal("AllCandidates accepted corrupt custody on a decision/mutation seam")
+	}
+	report, err := s.ListCandidates(t0, CandidateListOptions{})
+	if err != nil {
+		t.Fatalf("projection must retain valid rows while naming corruption: %v", err)
+	}
+	if report.Counts.Total != 1 || len(report.Items) != 1 || report.Items[0].ID != valid.ID {
+		t.Fatalf("candidate list included corrupt rows: counts=%+v items=%+v", report.Counts, report.Items)
+	}
+	warnings := strings.Join(report.Warnings, "\n")
+	for _, entry := range []string{"linked.json", "mismatch.json", "scratch.tmp"} {
+		if !strings.Contains(warnings, entry) {
+			t.Fatalf("warnings %q do not name corrupt entry %s", warnings, entry)
+		}
+	}
+}
+
 func TestListCandidatesAppliesAdmissionToLegacySourceRows(t *testing.T) {
 	s := newStore(t)
 	legacy := Candidate{

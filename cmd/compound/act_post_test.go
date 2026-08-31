@@ -170,6 +170,7 @@ func writeVerifiedPostTransport(t *testing.T, homePath, name string) string {
 
 // F5: a closed envelope composes deterministically; a non-terminal envelope is refused.
 func TestComposeReceiptCardClosedAndNonTerminal(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	workID := "work_receipt_card"
 	seedReceiptCardWork(t, homePath, workID)
@@ -209,6 +210,7 @@ func TestComposeReceiptCardClosedAndNonTerminal(t *testing.T) {
 
 // F2: without --confirm, act post prints the card and policy outcome but never execs.
 func TestActPostDryRunPreviewsWithoutExecuting(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	workID := "work_post_dry_run"
 	seedReceiptCardWork(t, homePath, workID)
@@ -235,6 +237,7 @@ func TestActPostDryRunPreviewsWithoutExecuting(t *testing.T) {
 
 // F7: a confirmed governed post belongs to an explicit work envelope.
 func TestActPostConfirmRequiresWork(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	code := runActWithInput([]string{
@@ -250,6 +253,7 @@ func TestActPostConfirmRequiresWork(t *testing.T) {
 
 // F3: an imported exact grant lets --confirm execute once and records the governed result.
 func TestActPostConfirmWithGrantExecutesOnceAndRecordsReceipt(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	workID := "work_post_granted"
 	seedReceiptCardWork(t, homePath, workID)
@@ -327,6 +331,7 @@ func TestActPostConfirmWithGrantExecutesOnceAndRecordsReceipt(t *testing.T) {
 }
 
 func TestActPostConfirmWithoutGrantHoldsWithoutExecuting(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	workID := "work_post_held"
 	seedReceiptCardWork(t, homePath, workID)
@@ -348,6 +353,7 @@ func TestActPostConfirmWithoutGrantHoldsWithoutExecuting(t *testing.T) {
 }
 
 func TestActPostDraftRefusesPendingEnrollmentBeforeTransport(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	draft := seedAuthorizedPostDraft(t, homePath, "pending_enrollment", "")
 	marker := writeVerifiedPostTransport(t, homePath, "fixture")
@@ -367,6 +373,7 @@ func TestActPostDraftRefusesPendingEnrollmentBeforeTransport(t *testing.T) {
 }
 
 func TestActPostDraftWithGrantSendsCompleteRequestAndCapturesRemoteProof(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	draft := seedAuthorizedPostDraft(t, homePath, "active", "integration-synth")
 	marker := writeVerifiedPostTransport(t, homePath, "fixture")

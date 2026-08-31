@@ -14,6 +14,7 @@ import (
 // deliberately supplies invalid arguments: reaching the verb-specific usage
 // and exit 2 proves the dispatcher selected that handler.
 func TestRouteAuthorityVerbsAreWiredAndDiscoverable(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("COMPOUND_ROUTE_AUTHORITY_CLI_CHILD") == "1" {
 		verb := os.Getenv("COMPOUND_ROUTE_AUTHORITY_CLI_VERB")
 		args := []string{verb}
@@ -67,6 +68,7 @@ func TestRouteAuthorityVerbsAreWiredAndDiscoverable(t *testing.T) {
 // command admission must preserve that distinction so inspecting a plan is a
 // read while the actual authority write stays governed.
 func TestRouteAuthorityPreviewIsReadAndConfirmIsGoverned(t *testing.T) {
+	t.Parallel()
 	catalog := firstPartyCommandCatalog()
 	for _, verb := range []string{"promotion-apply", "promotion-revert"} {
 		preview, ok := catalog.LookupSubcommandWithFlags("route", verb, []string{verb})

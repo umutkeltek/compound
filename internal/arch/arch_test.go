@@ -1638,6 +1638,7 @@ func TestPublicAlphaSupportedScopeContractFailsWhenBoundaryStatementsDrift(t *te
 		"the only supported public-alpha backend",
 		"Current blockers",
 		"projection-only by default",
+		"delegated launch, steer, progress",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("failure should name missing %q: %+v", want, findings)

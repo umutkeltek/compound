@@ -148,6 +148,7 @@ func TestExecutorsWorktreesF1DirtyMainIsLiveAndCounted(t *testing.T) {
 }
 
 func TestExecutorsWorktreesCLIRejectsUnknownFlag(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	code := runExecutorsWorktrees(context.Background(), []string{"--bogus"}, &stdout, &stderr, time.Now())
 	if code != 2 || !strings.Contains(stderr.String(), "usage:") {

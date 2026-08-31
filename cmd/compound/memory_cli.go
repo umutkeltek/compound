@@ -22,6 +22,13 @@ import (
 	"compound/internal/retrievalparity"
 )
 
+func parseMemoryAfterCursor(value string) (candidates.EntryCursor, error) {
+	if value == "" {
+		return "", nil
+	}
+	return candidates.ParseEntryCursor(value)
+}
+
 func memoryUsage(sub string) string {
 	switch sub {
 	case "candidate":
@@ -29,7 +36,7 @@ func memoryUsage(sub string) string {
 	case "candidates":
 		return "usage: compound memory candidates --json [--state proposed|parked|promoted|rejected|no_promote|needs_review] [--limit N] [--kind K] [--include-evidence]"
 	case "adjudicate":
-		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W] [--by ACTOR] [--confirmation-ref ev_ID]|adjudicate --pending [--limit N] [--scan-limit N] [--after <candidate-id>] [--verdict reject|park|no_promote] [--work W] [--yes] [--dry-run] (batch drain; --yes required to mutate; --limit caps adjudications, --scan-limit caps entries read, --after resumes from a prior pass's next cursor)"
+		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W] [--by ACTOR] [--confirmation-ref ev_ID]|adjudicate --pending [--limit N] [--scan-limit N] [--after <cursor-token-or-filename>] [--verdict reject|park|no_promote] [--work W] [--yes] [--dry-run] (batch drain; --yes required to mutate; --limit caps adjudications, --scan-limit caps entries read, --after resumes from a prior pass's next cursor)"
 	case "confirmation":
 		return "usage: compound memory confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>"
 	case "graph":
@@ -197,7 +204,8 @@ func cmdMemory(args []string) {
 	case "observation":
 		cmdMemoryObservation(homePath, rest)
 	case "consumption":
-		cmdMemoryConsumption(homePath, rest)
+		err = mem.RunCauseConsumptionCLI(homePath, rest, os.Stdout, os.Stderr, time.Now)
+		die(err)
 	case "canon":
 		cmdMemoryCanon(store, rest)
 	case "volatile-restore":
@@ -339,7 +347,12 @@ func cmdMemory(args []string) {
 			} else {
 				scanLimit = v
 			}
-			afterID := strings.TrimSpace(flag("--after"))
+			afterCursor, err := parseMemoryAfterCursor(flag("--after"))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error: invalid --after cursor:", err)
+				fmt.Fprintln(os.Stderr, pendingUsage)
+				os.Exit(2)
+			}
 			yes := has("--yes")
 			verdict := flag("--verdict")
 			if verdict != "" && verdict != "reject" && verdict != "park" && verdict != "no_promote" {
@@ -352,7 +365,7 @@ func cmdMemory(args []string) {
 			// --dry-run is the DEFAULT for the verb: --yes is the only way to
 			// mutate, so a stray script cannot drain the inbox by accident.
 			dryRun := has("--dry-run") || !yes
-			opts := mem.AdjudicatePendingOptions{Verdict: verdict, WorkID: flag("--work"), DryRun: dryRun, Limit: limit, ScanLimit: scanLimit, AfterID: afterID}
+			opts := mem.AdjudicatePendingOptions{Verdict: verdict, WorkID: flag("--work"), DryRun: dryRun, Limit: limit, ScanLimit: scanLimit, AfterCursor: afterCursor}
 			report := store.AdjudicatePending(opts, time.Now())
 			if report.LimitReached || report.ScanCapHit {
 				// The caps are budgets, not completion claims: tell the
@@ -361,10 +374,15 @@ func cmdMemory(args []string) {
 					fmt.Fprintf(os.Stderr, "note: --limit %d reached (adjudicated=%d, skipped=%d already closed) — re-run to continue the drain\n", limit, report.Adjudicated, report.Skipped)
 				}
 				if report.ScanCapHit {
-					fmt.Fprintf(os.Stderr, "note: --scan-limit %d reached (scanned=%d) — re-run to continue the scan\n", scanLimit, report.Scanned)
+					fmt.Fprintf(os.Stderr, "note: --scan-limit %d reached (walked=%d decoded=%d corrupt=%d) — re-run to continue the scan\n", scanLimit, report.Walked, report.Decoded, report.Corrupt)
 				}
 				if report.NextCursor != "" {
-					fmt.Fprintf(os.Stderr, "next cursor: --after %s\n", report.NextCursor)
+					token, err := report.NextCursor.Token()
+					if err != nil {
+						fmt.Fprintln(os.Stderr, "error: render next cursor:", err)
+					} else {
+						fmt.Fprintf(os.Stderr, "next cursor: --after %s\n", token)
+					}
 				}
 			}
 			if !yes {
@@ -385,7 +403,13 @@ func cmdMemory(args []string) {
 				if len(report.Errors) > 0 {
 					fmt.Println("errors:")
 					for _, e := range report.Errors {
-						fmt.Printf("  %s: %s\n", e.CandidateID, e.Err)
+						identity := e.CandidateID
+						if identity == "" && e.EntryCursor != "" {
+							if token, err := e.EntryCursor.Token(); err == nil {
+								identity = token
+							}
+						}
+						fmt.Printf("  %s: %s\n", identity, e.Err)
 					}
 				}
 				return
@@ -401,7 +425,13 @@ func cmdMemory(args []string) {
 			if len(report.Errors) > 0 {
 				fmt.Println("errors:")
 				for _, e := range report.Errors {
-					fmt.Printf("  %s: %s\n", e.CandidateID, e.Err)
+					identity := e.CandidateID
+					if identity == "" && e.EntryCursor != "" {
+						if token, err := e.EntryCursor.Token(); err == nil {
+							identity = token
+						}
+					}
+					fmt.Printf("  %s: %s\n", identity, e.Err)
 				}
 			}
 			if has("--json") {

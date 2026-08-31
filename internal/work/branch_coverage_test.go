@@ -76,6 +76,7 @@ func writeCoverageTransitionWithCause(t *testing.T, s *Store, id, workID string,
 // Falsifier 1: an opened branch that a later transition validates is COVERED —
 // it leaves the open/debt set entirely (coverage, not presence).
 func TestBranchCoverageOpenThenCoveredLeavesNoDebt(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	writeCoverageTransition(t, s, "tr_cov_open", "work_cov_a", t0, true,
@@ -98,6 +99,7 @@ func TestBranchCoverageOpenThenCoveredLeavesNoDebt(t *testing.T) {
 // Falsifier 2: an open branch older than the window surfaces as STALE debt; a
 // younger open branch stays quiet. Nothing auto-closes — debt is advisory.
 func TestBranchCoverageStaleBranchSurfacesAsDebt(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	now := t0.Add(8 * 24 * time.Hour)
@@ -133,6 +135,7 @@ func TestBranchCoverageStaleBranchSurfacesAsDebt(t *testing.T) {
 // Falsifier 3: covering a branch that was never opened is a DANGLING cover —
 // an integrity finding, not silent coverage.
 func TestBranchCoverageDanglingCoverFlagged(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	writeCoverageTransition(t, s, "tr_dangle", "work_dangle", t0, true,
@@ -157,6 +160,7 @@ func TestBranchCoverageDanglingCoverFlagged(t *testing.T) {
 // future_behavior_changed with no branch and no next_consumer is counted as an
 // UNVERIFIABLE claim; branches or a named consumer make it verifiable.
 func TestBranchCoverageUnverifiableChangedClaimsCounted(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	writeCoverageTransition(t, s, "tr_unv_bare", "work_unv_a", t0, true, nil)
@@ -181,6 +185,7 @@ func TestBranchCoverageUnverifiableChangedClaimsCounted(t *testing.T) {
 // Falsifier 5: re-`opens` on a live slug is an EXPANSION — it keeps the
 // original opened_at (age is honest) and never duplicates the branch.
 func TestBranchCoverageExpansionKeepsOriginalAge(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	writeCoverageTransition(t, s, "tr_exp_open", "work_exp_a", t0, true,
@@ -204,6 +209,7 @@ func TestBranchCoverageExpansionKeepsOriginalAge(t *testing.T) {
 // byte-identical report twice even under the parallel decode (a read model
 // other surfaces can trust).
 func TestBranchCoverageIsDeterministic(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	writeCoverageTransition(t, s, "tr_det_b", "work_det_b", t0.Add(time.Hour), true,
@@ -241,6 +247,7 @@ func TestBranchCoverageIsDeterministic(t *testing.T) {
 // fail-closed signal, not a test bug. A red here means the engine
 // tolerates corrupted frames that downstream readers cannot see.
 func TestBranchCoverageCorruptFrameFailsClosed(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	writeCoverageTransition(t, s, "tr_intact", "work_intact", t0, true,
@@ -268,6 +275,7 @@ func TestBranchCoverageCorruptFrameFailsClosed(t *testing.T) {
 // Falsifier 8 (consumer): the workbench carries the bounded branch_debt
 // section computed from the real event stream.
 func TestWorkbenchSurfacesBranchDebt(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	writeCoverageTransition(t, s, "tr_wb_debt", "work_wb_debt", t0, true,
@@ -295,6 +303,7 @@ func TestWorkbenchSurfacesBranchDebt(t *testing.T) {
 // it. The covered branch leaves the debt set; the cover acts as the
 // records-of-record for "the future moved."
 func TestBranchCoverageCoveredByDifferentTransition(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	writeCoverageTransition(t, s, "tr_open_a", "work_a", t0, true,
@@ -321,6 +330,7 @@ func TestBranchCoverageCoveredByDifferentTransition(t *testing.T) {
 // transitions than the JSON cap, the reported list holds the most-recent
 // IDs (the operators' actionable surface), while the count is the full fold.
 func TestBranchCoverageUnverifiableListIsMostRecent(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	// Write branchDebtListCap+5 unverifiable transitions, then 5 verifiable

@@ -13,6 +13,7 @@ import (
 )
 
 func TestProofCheckDevelopmentPinsCanonicalFreshnessAndUsesGoCache(t *testing.T) {
+	t.Parallel()
 	canonical, err := proofCheckSteps("")
 	if err != nil {
 		t.Fatalf("canonical steps: %v", err)
@@ -39,6 +40,7 @@ func TestProofCheckDevelopmentPinsCanonicalFreshnessAndUsesGoCache(t *testing.T)
 }
 
 func TestProofCheckCanonicalReportOmitsDevelopmentProfileKind(t *testing.T) {
+	t.Parallel()
 	repo, _ := newProofCheckDevelopmentRepo(t)
 	report, err := runProofCheck(repo, true, "", false, false, time.Now())
 	if err != nil {
@@ -156,6 +158,7 @@ func TestProofCheckDevelopmentTextOutputEndsWithDevVerdict(t *testing.T) {
 }
 
 func TestProofCheckDevelopmentRejectsCanonicalAndGovernanceFlags(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args []string
@@ -199,6 +202,7 @@ func TestProofCheckDevelopmentRejectsCanonicalAndGovernanceFlags(t *testing.T) {
 }
 
 func TestProofCheckDevelopmentRuntimeArtifactIsRejected(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	report := proofCheckReport{
 		SchemaVersion: proofCheckDevelopmentSchemaVersion,
@@ -221,6 +225,7 @@ func TestProofCheckDevelopmentRuntimeArtifactIsRejected(t *testing.T) {
 }
 
 func TestProofCheckDevelopmentOutCannotOverwriteCompoundHomeArtifact(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	proofCheckDevelopmentWriteFile(
 		t,
@@ -243,6 +248,7 @@ func TestProofCheckDevelopmentOutCannotOverwriteCompoundHomeArtifact(t *testing.
 }
 
 func TestProofCheckDevelopmentOutRejectsSymlinkEscapes(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	proofCheckDevelopmentWriteFile(
 		t,
@@ -278,6 +284,7 @@ func TestProofCheckDevelopmentOutRejectsSymlinkEscapes(t *testing.T) {
 }
 
 func TestProofCheckDevelopmentOutAtomicallyReplacesHardlinkWithoutMutatingSource(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.json")
 	proofCheckDevelopmentWriteFile(t, source, "source sentinel\n")
@@ -319,6 +326,7 @@ func TestProofCheckDevelopmentOutAtomicallyReplacesHardlinkWithoutMutatingSource
 }
 
 func TestProofCheckDevelopmentOutUsesPrivateModeCustody(t *testing.T) {
+	t.Parallel()
 	report := proofCheckReport{
 		SchemaVersion: proofCheckDevelopmentSchemaVersion,
 		ProfileKind:   proofCheckProfileDevelopment,
@@ -362,6 +370,7 @@ func TestProofCheckDevelopmentOutUsesPrivateModeCustody(t *testing.T) {
 }
 
 func TestProofCheckDevelopmentConsoleTSCRunsWhenFileRenamedOut(t *testing.T) {
+	t.Parallel()
 	repo, _ := newProofCheckDevelopmentRepo(t)
 	steps, err := proofCheckDevelopmentSteps(repo, "")
 	if err != nil {
@@ -397,6 +406,7 @@ func TestProofCheckDevelopmentConsoleTSCRunsWhenFileRenamedOut(t *testing.T) {
 }
 
 func TestProofCheckChangedFilesScansRenamedTargetNotDeletedSource(t *testing.T) {
+	t.Parallel()
 	repo, baseRef := newProofCheckDevelopmentRepo(t)
 	if err := os.MkdirAll(filepath.Join(repo, "moved"), 0o755); err != nil {
 		t.Fatal(err)
@@ -421,6 +431,7 @@ func TestProofCheckChangedFilesScansRenamedTargetNotDeletedSource(t *testing.T) 
 }
 
 func TestProofCheckChangedFilesDropsBaseRangePathDeletedLocally(t *testing.T) {
+	t.Parallel()
 	repo, baseRef := newProofCheckDevelopmentRepo(t)
 	proofCheckDevelopmentWriteFile(
 		t,

@@ -7,6 +7,7 @@ import (
 )
 
 func TestWorkbenchRejectsPartialInstalledRuntimePublication(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	refsDir := filepath.Join(s.home, "artifacts", "refs")
 	if err := os.MkdirAll(refsDir, 0o755); err != nil {

@@ -17,6 +17,7 @@ import (
 // `--include-text` name described the wrong thing. The accurate name is primary and
 // the old spelling stays a working alias.
 func TestCorpusIncludePrivateTextFlagSpellings(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args []string
@@ -40,6 +41,7 @@ func TestCorpusIncludePrivateTextFlagSpellings(t *testing.T) {
 // resolver the CLI actually calls, so the flag name and the behavior it selects are
 // proven together rather than separately.
 func TestCorpusFlagRevealsPrivateTextButIsNotNeededForPublic(t *testing.T) {
+	t.Parallel()
 	privateManifest, privateBody := corpusFlagManifest(t, "item_private", "private")
 	publicManifest, publicBody := corpusFlagManifest(t, "item_public", "public")
 
@@ -73,6 +75,7 @@ func TestCorpusFlagRevealsPrivateTextButIsNotNeededForPublic(t *testing.T) {
 // TestCorpusHitTextLineNamesTheAccurateFlag keeps the operator-facing line honest: it
 // must point at the flag that exists and say public snippets are already shown.
 func TestCorpusHitTextLineNamesTheAccurateFlag(t *testing.T) {
+	t.Parallel()
 	line := corpusHitTextLine(corpus.QueryHit{TextStatus: string(corpus.ChunkTextSuppressedPrivate)})
 	if !strings.Contains(line, "--include-private-text") {
 		t.Fatalf("suppression line does not name --include-private-text: %q", line)

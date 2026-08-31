@@ -26,6 +26,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -213,6 +214,7 @@ func seedRunAttemptBoundToWork(t *testing.T, home string, workID, attemptID stri
 // pane -> reclaimed to cancelled with the sweep_reason recorded on the
 // event.
 func TestSweepStaleReclaimsClaimedEnvelopeWithAbandonedAttempt(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("init home: %v", err)
@@ -290,6 +292,7 @@ func TestSweepStaleReclaimsClaimedEnvelopeWithAbandonedAttempt(t *testing.T) {
 
 // Falsifier 2: claimed+stale envelope WITH a live heartbeat -> excluded.
 func TestSweepStaleExcludesEnvelopeWithLiveRunAttempt(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -334,6 +337,7 @@ func TestSweepStaleExcludesEnvelopeWithLiveRunAttempt(t *testing.T) {
 
 // Falsifier 3: running+fresh envelope -> excluded (last event age < threshold).
 func TestSweepStaleExcludesFreshRunningEnvelope(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -377,6 +381,7 @@ func TestSweepStaleExcludesFreshRunningEnvelope(t *testing.T) {
 
 // Falsifier 4: probe error -> envelope is unreadable, sweep fails closed.
 func TestSweepStaleFailClosedOnProbeError(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -428,6 +433,7 @@ func TestSweepStaleFailClosedOnProbeError(t *testing.T) {
 // — operators reading the dry-run output must see that these envelopes were
 // alive, not that they were uncertain.
 func TestSweepStaleExcludesOnLiveDelegateAndLease(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -461,6 +467,7 @@ func TestSweepStaleExcludesOnLiveDelegateAndLease(t *testing.T) {
 // so the audit can tell apart a never-started work from one whose
 // execution went silent.
 func TestSweepStaleVerifyingReclaimsToFailedNotCancelled(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -494,6 +501,7 @@ func TestSweepStaleVerifyingReclaimsToFailedNotCancelled(t *testing.T) {
 // RunAttempt bound to a reclaimed work, then apply a sweep, then assert the
 // attempt is byte-identical to its pre-sweep state.
 func TestSweepStaleNeverTouchesRunAttempts(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -537,6 +545,7 @@ func TestSweepStaleNeverTouchesRunAttempts(t *testing.T) {
 // Falsifier 8: terminal-state envelopes are never candidates (sweep is a
 // no-op for {completed, failed, cancelled}).
 func TestSweepStaleIgnoresTerminalEnvelopes(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("bootstrap home: %v", err)
@@ -577,6 +586,7 @@ func TestSweepStaleIgnoresTerminalEnvelopes(t *testing.T) {
 // moved — reclaiming a work that is no longer in the diagnosed state is a
 // mutation without a diagnosis (the CAS-shaped guard the apply path owes).
 func TestReclaimEnvelopeRefusesWhenStateChangedUnderneath(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "sweep-cas", SuccessPredicate: "reclaim refuses moved state"}, fixedNow)
 	if err != nil {
@@ -609,5 +619,190 @@ func TestReclaimEnvelopeRefusesWhenStateChangedUnderneath(t *testing.T) {
 	}
 	if live.State != "running" {
 		t.Fatalf("live state = %q, want running (refused reclaim must not mutate)", live.State)
+	}
+}
+
+func TestSweepStaleApplyRefusesFrozenCloseAuthority(t *testing.T) {
+	s := newStore(t)
+	workID := prepareClaimedWork(t, s, "test-fixture", "", "a frozen close fences stale reclaim")
+	frozen := freezeClosePendingAfterPrepare(t, s, workID, CloseInput{
+		Outcome:  "cancelled",
+		MoveType: "audit_only",
+		Actor:    "test-fixture",
+		Summary:  "freeze close before stale reclaim",
+	}, fixedNow.Add(time.Minute))
+	if err := backdateAllLifecycleEvents(s, fixedNow.Add(-30*24*time.Hour)); err != nil {
+		t.Fatalf("backdate frozen close fixture: %v", err)
+	}
+	beforeAuthority := snapshotLifecycleAuthority(t, s)
+	beforeAttempts := runAttemptsByID(t, s)
+
+	report, err := s.SweepStaleApply(72*time.Hour, newFakeProbe(), fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("sweep over frozen close: %v", err)
+	}
+	if report.Reclaimed != 0 || report.Skipped != 1 || len(report.Candidates) != 1 {
+		t.Fatalf("frozen close sweep report = %+v, want one skipped recovery_required candidate", report)
+	}
+	candidate := report.Candidates[0]
+	if candidate.Reclaimed ||
+		!strings.Contains(candidate.ReclaimError, "close recovery_required") ||
+		!strings.Contains(candidate.ReclaimError, frozen.Action.ID) {
+		t.Fatalf("frozen close candidate = %+v, want non-reclaimed error bound to %s", candidate, frozen.Action.ID)
+	}
+	assertLifecycleAuthorityUnchanged(t, beforeAuthority, snapshotLifecycleAuthority(t, s))
+	afterAttempts := runAttemptsByID(t, s)
+	if !reflect.DeepEqual(beforeAttempts, afterAttempts) {
+		t.Fatalf("sweep over frozen close changed RunAttempts\nbefore=%+v\nafter=%+v", beforeAttempts, afterAttempts)
+	}
+}
+
+func TestReclaimEnvelopeRefusesWhenGenerationChangedUnderneath(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "sweep-generation-cas", SuccessPredicate: "reclaim refuses same-state generation drift"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = "artifact_same_state_generation"
+	advanced, err := s.Advance(w.ID, AdvanceInput{
+		To:         "claimed",
+		Actor:      "codex",
+		ArtifactID: marker,
+		Note:       "same-state generation advanced after sweep diagnosis",
+	}, fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	candidate := SweepStaleCandidate{
+		WorkID:      w.ID,
+		State:       stale.State,
+		TargetState: sweepStaleTargetState(stale.State),
+		SweepReason: "same-state generation falsifier",
+	}
+	reclaimErr := reclaimEnvelope(s, stale, candidate, fixedNow.Add(2*time.Minute))
+	if reclaimErr == nil {
+		t.Fatal("reclaim must refuse when the exact WorkEnvelope generation changed underneath the diagnosis")
+	}
+	if !strings.Contains(reclaimErr.Error(), "generation changed") {
+		t.Fatalf("error should name generation drift, got: %v", reclaimErr)
+	}
+	live, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(live, advanced) {
+		t.Fatalf("refused reclaim changed the current generation\nwant=%+v\ngot=%+v", advanced, live)
+	}
+	if !contains(live.ArtifactIDs, marker) {
+		t.Fatalf("same-state generation marker %q was clobbered: %+v", marker, live.ArtifactIDs)
+	}
+}
+
+type liveOnRecheckProbe struct {
+	attemptCalls int
+}
+
+func (p *liveOnRecheckProbe) LiveRunAttempt(string) (bool, error) {
+	p.attemptCalls++
+	return p.attemptCalls > 1, nil
+}
+
+func (*liveOnRecheckProbe) LiveDelegate(string) (bool, error) { return false, nil }
+func (*liveOnRecheckProbe) LeaseHeld(string) (bool, error)    { return false, nil }
+
+func TestSweepStaleApplyReprobesLivenessInsideMutationBoundary(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	w := staleEnvelope(t, s, "claimed", 30*24*time.Hour, fixedNow)
+	probe := &liveOnRecheckProbe{}
+
+	report, err := s.SweepStaleApply(72*time.Hour, probe, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.attemptCalls < 2 {
+		t.Fatalf("run-attempt liveness probes = %d, want diagnosis plus in-boundary recheck", probe.attemptCalls)
+	}
+	if report.Reclaimed != 0 || report.Skipped != 1 {
+		t.Fatalf("report = %+v, want the newly-live work skipped", report)
+	}
+	current, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.State != "claimed" {
+		t.Fatalf("work state = %q, want claimed after liveness wins the race", current.State)
+	}
+}
+
+func TestSweepStaleEventFailureLeavesRecoverableTransaction(t *testing.T) {
+	s := newStore(t)
+	w := staleEnvelope(t, s, "claimed", 30*24*time.Hour, fixedNow)
+	pendingPath := s.workPath(w.ID) + ".sweep-pending"
+
+	previousWriter := writeWorkEvent
+	t.Cleanup(func() { writeWorkEvent = previousWriter })
+	writeWorkEvent = func(_ *os.File, _ []byte) (int, error) {
+		return 0, errors.New("injected sweep event write failure")
+	}
+	failed, err := s.SweepStaleApply(72*time.Hour, newFakeProbe(), fixedNow)
+	writeWorkEvent = previousWriter
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Reclaimed != 0 || failed.Skipped != 1 || len(failed.Candidates) != 1 {
+		t.Fatalf("failed report = %+v, want one skipped recovery candidate", failed)
+	}
+	if !strings.Contains(failed.Candidates[0].ReclaimError, "sweep-stale recovery_required") {
+		t.Fatalf("failed candidate = %+v, want native recovery_required", failed.Candidates[0])
+	}
+	if _, err := os.Stat(pendingPath); err != nil {
+		t.Fatalf("durable sweep pending frame missing after event failure: %v", err)
+	}
+	if _, err := s.readLease(w.ID); err != nil {
+		t.Fatalf("claim lease must remain until event/work publication succeeds: %v", err)
+	}
+
+	recovered, err := s.SweepStaleApply(72*time.Hour, newFakeProbe(), fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Reclaimed != 1 || len(recovered.Candidates) != 1 || !recovered.Candidates[0].Reclaimed {
+		t.Fatalf("recovery report = %+v, want the exact frozen reclaim completed", recovered)
+	}
+	current, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.State != "cancelled" {
+		t.Fatalf("recovered state = %q, want cancelled", current.State)
+	}
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact := 0
+	for _, event := range events {
+		if event.By == "sweep-stale" && event.From == "claimed" && event.To == "cancelled" {
+			exact++
+		}
+	}
+	if exact != 1 {
+		t.Fatalf("exact sweep events = %d, want 1: %+v", exact, events)
+	}
+	if _, err := s.readLease(w.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("claim lease after recovered terminal publication: %v", err)
+	}
+	if _, err := os.Stat(pendingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sweep pending frame after exact recovery: %v", err)
 	}
 }

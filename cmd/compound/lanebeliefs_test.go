@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +16,24 @@ import (
 	"compound/internal/home"
 	"compound/internal/lanebeliefs"
 )
+
+func TestCmdLaneBeliefsMutationRequiresExperimentalBeforeHomeAdmission(t *testing.T) {
+	t.Parallel()
+	binary := compoundTestBinary(t)
+	root := t.TempDir()
+	homePath := filepath.Join(root, "absent-home")
+	cmd := exec.Command(binary, "lanebeliefs", "fold")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 || !strings.Contains(string(output), "--experimental") {
+		t.Fatalf("lane-belief mutation refusal = err=%v output=%q, want binary exit 2 naming --experimental", err, output)
+	}
+	if _, statErr := os.Stat(homePath); !os.IsNotExist(statErr) {
+		t.Fatalf("lane-belief refusal created runtime home: %v", statErr)
+	}
+}
 
 func laneBeliefWriteReceipt(t *testing.T, homePath, id, workID, laneID, moveType, outcome string, proof bool) {
 	t.Helper()
@@ -72,7 +92,7 @@ func TestCmdLaneBeliefsPromoteEmptyHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := captureStdout(t, func() {
-		cmdLaneBeliefs([]string{"promote", "--json", "--home", homePath})
+		cmdLaneBeliefs([]string{"promote", "--experimental", "--json", "--home", homePath})
 	})
 	var rep lanebeliefs.PromoteReport
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
@@ -115,7 +135,7 @@ func TestCmdLaneBeliefsPromoteEndToEnd(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		cmdLaneBeliefs([]string{"promote", "--json", "--home", homePath})
+		cmdLaneBeliefs([]string{"promote", "--experimental", "--json", "--home", homePath})
 	})
 	var rep lanebeliefs.PromoteReport
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {

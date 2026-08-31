@@ -48,7 +48,69 @@ func TestPendingStateGenerationDetectsSameCountCorpusReplacement(t *testing.T) {
 	}
 }
 
-func TestPendingMetadataIgnoresNonCandidateEntries(t *testing.T) {
+func TestReconcilePendingStateRefusesCandidateCustodyCorruption(t *testing.T) {
+	tests := map[string]func(t *testing.T, candidateDir string){
+		"invalid filename": func(t *testing.T, candidateDir string) {
+			if err := os.WriteFile(filepath.Join(candidateDir, "scratch.tmp"), []byte("not a canonical candidate"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"blank id": func(t *testing.T, candidateDir string) {
+			if err := os.WriteFile(filepath.Join(candidateDir, "blank.json"), []byte(`{"id":"","state":"proposed"}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"id mismatch": func(t *testing.T, candidateDir string) {
+			if err := os.WriteFile(filepath.Join(candidateDir, "named.json"), []byte(`{"id":"other","state":"proposed"}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"symlink": func(t *testing.T, candidateDir string) {
+			outside := filepath.Join(t.TempDir(), "outside.json")
+			if err := os.WriteFile(outside, []byte(`{"id":"linked","state":"proposed"}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(candidateDir, "linked.json")); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+
+	for name, corrupt := range tests {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			store, err := Open(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			valid := Candidate{ID: "valid", Entity: "valid", Predicate: "p", Object: "o", State: "proposed", Visibility: "operational", Derivation: "extracted", CreatedAt: rfc3339(t0)}
+			if err := candidates.WriteCandidate(home, candidates.Memory, valid.ID, &valid); err != nil {
+				t.Fatal(err)
+			}
+			baseline, err := store.ReconcilePendingState("baseline", t0)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			corrupt(t, store.candDir())
+			if _, err := store.ReconcilePendingState("custody-check", t0.Add(time.Minute)); err == nil {
+				t.Fatal("reconcile accepted a noncanonical candidate entry")
+			}
+			if _, _, _, err := store.candidateInboxMetadata(); err == nil {
+				t.Fatal("candidate inbox metadata accepted a noncanonical candidate entry")
+			}
+			after, err := store.ReadPendingState()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Generation != baseline.Generation || after.Pending != baseline.Pending || after.Files != baseline.Files {
+				t.Fatalf("failed reconcile changed durable state: after=%+v baseline=%+v", after, baseline)
+			}
+		})
+	}
+}
+
+func TestPendingMetadataRejectsNonCanonicalEntries(t *testing.T) {
 	home := t.TempDir()
 	store, err := Open(home)
 	if err != nil {
@@ -64,11 +126,10 @@ func TestPendingMetadataIgnoresNonCandidateEntries(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(store.candDir(), "nested"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	names, _, _, err := store.candidateInboxMetadata()
-	if err != nil {
-		t.Fatal(err)
+	if _, _, _, err := store.candidateInboxMetadata(); err == nil {
+		t.Fatal("candidate metadata silently ignored noncanonical candidate-root entries")
 	}
-	if len(names) != 1 || names[0] != "cand_a.json" {
-		t.Fatalf("candidate names = %v, want only cand_a.json", names)
+	if _, err := store.ReconcilePendingState("custody-check", t0); err == nil {
+		t.Fatal("pending reconciliation silently ignored noncanonical candidate-root entries")
 	}
 }

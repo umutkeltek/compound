@@ -13,6 +13,7 @@ import (
 )
 
 func TestCreatePlanRecordsPolicyWithoutCreatingWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	plan, err := s.CreatePlan(CreateInput{
 		Owner:            "compound-core",
@@ -49,6 +50,7 @@ func TestCreatePlanRecordsPolicyWithoutCreatingWork(t *testing.T) {
 }
 
 func TestCreatePlanRejectsRunningState(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	_, err := s.CreatePlan(CreateInput{
 		Owner:            "compound-core",
@@ -70,6 +72,7 @@ func TestCreatePlanRejectsRunningState(t *testing.T) {
 }
 
 func TestCreatePlanRejectsTerminalInitialStatesWithoutRecording(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"completed", "failed", "cancelled"} {
 		t.Run(state, func(t *testing.T) {
 			s := newStore(t)
@@ -99,6 +102,7 @@ func TestCreatePlanRejectsTerminalInitialStatesWithoutRecording(t *testing.T) {
 }
 
 func TestCreateRejectsTerminalInitialStatesWithoutLifecycleArtifacts(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"completed", "failed", "cancelled"} {
 		t.Run(state, func(t *testing.T) {
 			s := newStore(t)
@@ -128,6 +132,7 @@ func TestCreateRejectsTerminalInitialStatesWithoutLifecycleArtifacts(t *testing.
 }
 
 func TestAdmitCreatePlanRejectsResealedTerminalState(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"completed", "failed", "cancelled"} {
 		t.Run(state, func(t *testing.T) {
 			s := newStore(t)
@@ -166,6 +171,7 @@ func TestAdmitCreatePlanRejectsResealedTerminalState(t *testing.T) {
 }
 
 func TestCreateRequiresDirectorProposalToStartProposed(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	for _, state := range []string{"", "ready", "admitted"} {
 		name := state
@@ -203,6 +209,7 @@ func TestCreateRequiresDirectorProposalToStartProposed(t *testing.T) {
 }
 
 func TestAdmitCreatePlanRejectsDirectorOriginOutsideProposed(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	plan, err := s.CreatePlan(CreateInput{
 		WorkID:           "work_legacy_director_ready_plan",
@@ -231,6 +238,7 @@ func TestAdmitCreatePlanRejectsDirectorOriginOutsideProposed(t *testing.T) {
 }
 
 func TestAdmitCreatePlanCreatesWorkAndRetiresPreview(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	plan, err := s.CreatePlan(CreateInput{
 		WorkID:           "work_admit_create_plan",
@@ -327,6 +335,7 @@ func TestAdmitCreatePlanCreatesWorkAndRetiresPreview(t *testing.T) {
 // destination, then verifies that (a) the error surfaces, (b) the work file
 // does not exist, and (c) the evidence files DO exist.
 func TestAdmitCreatePlanEvidenceDurabilityOrdering(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	plan, err := s.CreatePlan(CreateInput{
 		WorkID:           "work_evidence_ordering",
@@ -391,6 +400,7 @@ func TestAdmitCreatePlanEvidenceDurabilityOrdering(t *testing.T) {
 }
 
 func TestCreatePlanCommandCarriesPlannedWorkID(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	writeContextPack(t, s, "ctx_planned")
 	plan, err := s.CreatePlan(CreateInput{
@@ -416,6 +426,7 @@ func TestCreatePlanCommandCarriesPlannedWorkID(t *testing.T) {
 }
 
 func TestCreatePreservesExplicitWorkID(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	plannedID := "work_planned_identity"
 	w, err := s.Create(CreateInput{
@@ -443,6 +454,7 @@ func TestCreatePreservesExplicitWorkID(t *testing.T) {
 }
 
 func TestCreateRejectsInvalidExplicitWorkID(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	_, err := s.Create(CreateInput{
 		WorkID:           "planned_identity",
@@ -456,6 +468,7 @@ func TestCreateRejectsInvalidExplicitWorkID(t *testing.T) {
 }
 
 func TestCreateRecordsAdmissionPolicyBeforeWork(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	writeContextPack(t, s, "ctx_create")
 	w, err := s.Create(CreateInput{
@@ -490,6 +503,7 @@ func TestCreateRecordsAdmissionPolicyBeforeWork(t *testing.T) {
 }
 
 func TestCreateRejectsMissingContextPack(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	_, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -510,6 +524,7 @@ func TestCreateRejectsMissingContextPack(t *testing.T) {
 }
 
 func TestCreateRejectsContextPackMissingEffectiveContract(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	writeContextPackWithContractID(t, s, "ctx_with_missing_contract", "contract_missing")
 	_, err := s.Create(CreateInput{
@@ -531,6 +546,7 @@ func TestCreateRejectsContextPackMissingEffectiveContract(t *testing.T) {
 }
 
 func TestCreateAcceptsContextPackWithEffectiveContract(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	writeEffectiveContract(t, s, "contract_present")
 	writeContextPackWithContractID(t, s, "ctx_with_contract", "contract_present")
@@ -549,6 +565,7 @@ func TestCreateAcceptsContextPackWithEffectiveContract(t *testing.T) {
 }
 
 func TestCreateBlockedByPolicyDoesNotMutate(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -587,6 +604,7 @@ func TestCreateBlockedByPolicyDoesNotMutate(t *testing.T) {
 }
 
 func TestCreatePlanActionContextReachesWorkbenchAndDispatch(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ctx := &WorkActionContext{
 		Kind:               "product_action_review",
@@ -768,6 +786,7 @@ func requireWorkActionContext(t *testing.T, label string, got, want *WorkActionC
 // Falsifier: removing the validateReworkOfRef call from admitWorkLocked turns this RED -- the
 // create succeeds and List() returns one work.
 func TestCreateRejectsMissingReworkOf(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	_, err := s.Create(CreateInput{
 		Owner:            "compound-core",
@@ -795,6 +814,7 @@ func TestCreateRejectsMissingReworkOf(t *testing.T) {
 //
 // Falsifier: dropping the ReworkOfWorkID copy in BuildWork turns this RED on the reloaded value.
 func TestCreateAcceptsExistingReworkOfAndPersistsIt(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	earlier, err := s.Create(CreateInput{
 		WorkID:           "work_earlier000",
@@ -849,6 +869,7 @@ func TestCreateAcceptsExistingReworkOfAndPersistsIt(t *testing.T) {
 // Falsifier: removing the self comparison from validateReworkOfWorkID turns this RED with a
 // missing-target error instead of a self-reference error.
 func TestCreateRejectsSelfReworkOf(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	_, err := s.Create(CreateInput{
 		WorkID:           "work_selfref000",

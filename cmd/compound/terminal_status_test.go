@@ -22,6 +22,7 @@ import (
 //	TestReviewItemRecordedAdmitsEveryTerminalWord/candidate_recorded: ... = false, want true
 //	TestReviewItemRecordedAdmitsEveryTerminalWord/completed: ... = false, want true
 func TestReviewItemRecordedAdmitsEveryTerminalWord(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{"ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded", "completed"} {
 		t.Run(status, func(t *testing.T) {
 			item := reviewartifact.QueueItem{Status: status}

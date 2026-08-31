@@ -407,6 +407,7 @@ func TestSessionsMineApplyRejectsFindingsWithoutEvidenceRefs(t *testing.T) {
 }
 
 func TestSessionsMineDailyDryRunDigestJobRosterFixture(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	source := "../../fixtures/authority/job-roster-sessions-mine-digest.json"
 	now := time.Date(2026, 7, 6, 8, 0, 0, 0, time.UTC)

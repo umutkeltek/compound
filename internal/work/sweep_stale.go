@@ -71,18 +71,19 @@ const DefaultSweepStaleThreshold = 72 * time.Hour
 // AND the per-envelope entry of SweepStaleReport — same shape, one source
 // of truth, so JSON consumers do not need to reconcile two projections.
 type SweepStaleCandidate struct {
-	WorkID          string `json:"work_id"`
-	State           string `json:"state"`
-	TargetState     string `json:"target_state"`
-	LastEventTS     string `json:"last_event_ts,omitempty"`
-	LastEventAge    string `json:"last_event_age"`
-	LastHeartbeatAt string `json:"last_heartbeat_at,omitempty"`
-	LiveAttempts    int    `json:"live_attempts"` // non-terminal attempts bound to this work
-	DelegateLive    bool   `json:"delegate_live"` // true iff a live delegate pane is bound
-	LeaseHeld       bool   `json:"lease_held"`    // true iff a land-lease names this work
-	SweepReason     string `json:"sweep_reason"`  // evidence recorded on the reclaim event
-	Reclaimed       bool   `json:"reclaimed"`     // true when Apply actually terminalized the envelope
-	ReclaimError    string `json:"reclaim_error,omitempty"`
+	WorkID           string `json:"work_id"`
+	SourceWorkSHA256 string `json:"source_work_sha256,omitempty"`
+	State            string `json:"state"`
+	TargetState      string `json:"target_state"`
+	LastEventTS      string `json:"last_event_ts,omitempty"`
+	LastEventAge     string `json:"last_event_age"`
+	LastHeartbeatAt  string `json:"last_heartbeat_at,omitempty"`
+	LiveAttempts     int    `json:"live_attempts"` // non-terminal attempts bound to this work
+	DelegateLive     bool   `json:"delegate_live"` // true iff a live delegate pane is bound
+	LeaseHeld        bool   `json:"lease_held"`    // true iff a land-lease names this work
+	SweepReason      string `json:"sweep_reason"`  // evidence recorded on the reclaim event
+	Reclaimed        bool   `json:"reclaimed"`     // true when Apply actually terminalized the envelope
+	ReclaimError     string `json:"reclaim_error,omitempty"`
 }
 
 // SweepStaleReport is the operator-visible outcome of one sweep-stale pass.
@@ -292,6 +293,39 @@ func sweepStaleEvaluate(s *Store, threshold time.Duration, probe SweepStaleProbe
 	sort.Slice(envelopes, func(i, j int) bool { return envelopes[i].ID < envelopes[j].ID })
 
 	for _, w := range envelopes {
+		pending, pendingPresent, pendingErr := s.loadSweepStalePending(w.ID)
+		if pendingErr != nil {
+			rep.Unreadable++
+			rep.UnreadableIDs = append(rep.UnreadableIDs, w.ID)
+			continue
+		}
+		if pendingPresent {
+			candidate := pending.Candidate
+			if !apply {
+				candidate.ReclaimError = sweepStaleRecoveryRequired(w.ID, errors.New("frozen reclaim awaits replay")).Error()
+				rep.Skipped++
+				rep.SkippedIDs = append(rep.SkippedIDs, w.ID)
+				rep.Candidates = append(rep.Candidates, candidate)
+				continue
+			}
+			reconcileErr := s.withLifecycleMutation(func() error {
+				return s.withCreatePlanAdmissionLock(w.ID, func() error {
+					var err error
+					candidate, err = s.reconcileSweepStalePendingLocked(w.ID)
+					return err
+				})
+			})
+			if reconcileErr != nil {
+				candidate.ReclaimError = reconcileErr.Error()
+				rep.Skipped++
+				rep.SkippedIDs = append(rep.SkippedIDs, w.ID)
+				rep.Candidates = append(rep.Candidates, candidate)
+				continue
+			}
+			rep.Reclaimed++
+			rep.Candidates = append(rep.Candidates, candidate)
+			continue
+		}
 		if !sweepStaleEnvelopeStates[w.State] {
 			continue
 		}
@@ -310,7 +344,7 @@ func sweepStaleEvaluate(s *Store, threshold time.Duration, probe SweepStaleProbe
 			continue
 		}
 		if apply {
-			if reclaimErr := reclaimEnvelope(s, w, candidate, now); reclaimErr != nil {
+			if reclaimErr := reclaimEnvelopeWithProbe(s, w, candidate, threshold, probe, now); reclaimErr != nil {
 				candidate.ReclaimError = reclaimErr.Error()
 				rep.Skipped++
 				rep.SkippedIDs = append(rep.SkippedIDs, w.ID)
@@ -383,21 +417,27 @@ func evaluateEnvelopeCandidate(s *Store, w envelope.WorkEnvelope, threshold time
 		return SweepStaleCandidate{}, false, nil
 	}
 
+	sourceWorkSHA256, err := workEnvelopeSHA256(w)
+	if err != nil {
+		return SweepStaleCandidate{}, false, fmt.Errorf("work %s: seal sweep candidate: %w", w.ID, err)
+	}
+
 	reason := fmt.Sprintf(
 		"sweep-stale: state=%s target=%s last_event_age=%s threshold=%s live_attempts=0 delegate_live=false lease_held=false",
 		w.State, target, ageSeconds.Round(time.Second), threshold,
 	)
 
 	return SweepStaleCandidate{
-		WorkID:       w.ID,
-		State:        w.State,
-		TargetState:  target,
-		LastEventTS:  lastEventTS,
-		LastEventAge: ageSeconds.Round(time.Second).String(),
-		LiveAttempts: 0,
-		DelegateLive: false,
-		LeaseHeld:    false,
-		SweepReason:  reason,
+		WorkID:           w.ID,
+		SourceWorkSHA256: sourceWorkSHA256,
+		State:            w.State,
+		TargetState:      target,
+		LastEventTS:      lastEventTS,
+		LastEventAge:     ageSeconds.Round(time.Second).String(),
+		LiveAttempts:     0,
+		DelegateLive:     false,
+		LeaseHeld:        false,
+		SweepReason:      reason,
 	}, true, nil
 }
 
@@ -471,17 +511,31 @@ func parseLifecycleTS(value string) (time.Time, error) {
 // audit hook a downstream reconciliation can match on. The audit reclaimer
 // itself is the operator running this command, not a third-party tool.
 func reclaimEnvelope(s *Store, w envelope.WorkEnvelope, candidate SweepStaleCandidate, now time.Time) error {
+	return reclaimEnvelopeWithProbe(s, w, candidate, 0, nil, now)
+}
+
+func reclaimEnvelopeWithProbe(s *Store, w envelope.WorkEnvelope, candidate SweepStaleCandidate, threshold time.Duration, probe SweepStaleProbe, now time.Time) error {
+	return s.withLifecycleMutation(func() error {
+		// This existing work-keyed flock is the cross-process critical
+		// section for one reclaim generation. The outer lifecycle lock still
+		// serializes against Claim, Advance, and Close in this binary.
+		return s.withCreatePlanAdmissionLock(w.ID, func() error {
+			return s.reclaimEnvelopeLocked(w, candidate, threshold, probe, now)
+		})
+	})
+}
+
+func (s *Store) reclaimEnvelopeLocked(w envelope.WorkEnvelope, candidate SweepStaleCandidate, threshold time.Duration, probe SweepStaleProbe, now time.Time) error {
+	if err := s.fenceClosePendingMutation(w.ID); err != nil {
+		return err
+	}
+	if err := s.fenceSweepStalePendingMutation(w.ID); err != nil {
+		return err
+	}
 	if !sweepStaleEnvelopeStates[w.State] {
 		return fmt.Errorf("work %s: state %q is not reclaimable", w.ID, w.State)
 	}
 	target := sweepStaleTargetState(w.State)
-
-	// The lease is a per-work artifact, not an event. Release it only AFTER
-	// the envelope is durably terminalized and its lifecycle event appended:
-	// releasing first meant a failed envelope write left the work claimed
-	// with no lease — unprotectable by the next sweep's lease check while
-	// still looking claimed to every operator surface.
-	leaseHeld := w.State == "claimed"
 
 	// CAS-style precondition: the candidate was diagnosed against a
 	// snapshot taken at pass start, and a live agent can advance the work
@@ -495,10 +549,36 @@ func reclaimEnvelope(s *Store, w envelope.WorkEnvelope, candidate SweepStaleCand
 	if current.State != w.State {
 		return fmt.Errorf("work %s state changed from %q to %q between sweep diagnosis and reclaim; refusing (next pass re-diagnoses)", w.ID, w.State, current.State)
 	}
+	currentWorkSHA256, err := workEnvelopeSHA256(current)
+	if err != nil {
+		return fmt.Errorf("seal current envelope %s before reclaim: %w", w.ID, err)
+	}
+	expectedWorkSHA256 := strings.TrimSpace(candidate.SourceWorkSHA256)
+	if expectedWorkSHA256 == "" {
+		expectedWorkSHA256, err = workEnvelopeSHA256(w)
+		if err != nil {
+			return fmt.Errorf("seal diagnosed envelope %s before reclaim: %w", w.ID, err)
+		}
+	}
+	if currentWorkSHA256 != expectedWorkSHA256 {
+		return fmt.Errorf("work %s generation changed from %s to %s between sweep diagnosis and reclaim; refusing (next pass re-diagnoses)", w.ID, expectedWorkSHA256, currentWorkSHA256)
+	}
+	if probe != nil {
+		rechecked, ok, recheckErr := evaluateEnvelopeCandidate(s, current, threshold, probe, now)
+		if recheckErr != nil {
+			return fmt.Errorf("work %s liveness recheck inside reclaim boundary: %w", w.ID, recheckErr)
+		}
+		if !ok {
+			return fmt.Errorf("work %s liveness changed inside reclaim boundary; refusing (next pass re-diagnoses)", w.ID)
+		}
+		if rechecked.SourceWorkSHA256 != currentWorkSHA256 {
+			return fmt.Errorf("work %s generation changed during in-boundary liveness recheck", w.ID)
+		}
+	}
 
 	// Mutate the on-disk envelope state. Reuse writeJSON's atomic
 	// temp+rename seam so a partial write cannot corrupt work.json.
-	updated := w
+	updated := current
 	updated.State = target
 
 	// CUSTODY: a writer that MUTATES a work envelope must RE-SEAL it.
@@ -515,40 +595,33 @@ func reclaimEnvelope(s *Store, w envelope.WorkEnvelope, candidate SweepStaleCand
 	//
 	// Hash BEFORE the write so a hashing failure cannot leave a mutated envelope on
 	// disk with no matching seal.
-	previousWorkSHA256, err := workEnvelopeSHA256(w)
-	if err != nil {
-		return fmt.Errorf("seal pre-sweep envelope %s: %w", w.ID, err)
-	}
+	previousWorkSHA256 := currentWorkSHA256
 	sweptWorkSHA256, err := workEnvelopeSHA256(updated)
 	if err != nil {
 		return fmt.Errorf("seal swept envelope %s: %w", w.ID, err)
 	}
 
-	if err := s.writeJSON(s.workPath(w.ID), &updated); err != nil {
-		return fmt.Errorf("write envelope %s: %w", w.ID, err)
+	if err := s.injectSweepStaleFault(sweepStaleFaultBeforePendingPersist); err != nil {
+		return err
 	}
-
-	// Append the lifecycle event carrying sweep_reason. The From/To
-	// pair is the authoritative state transition; Note carries the
-	// evidence. Append is the same path Close and Advance use
-	// (envelope write first, event second; reconciliation reads both).
-	event := Event{
-		TS:                 ts(now),
-		WorkID:             w.ID,
-		From:               w.State,
-		To:                 target,
-		By:                 "sweep-stale",
-		Note:               candidate.SweepReason,
-		PreviousWorkSHA256: previousWorkSHA256,
-		WorkSHA256:         sweptWorkSHA256,
+	pending, err := s.newSweepStalePending(current, updated, candidate, threshold, now)
+	if err != nil {
+		return fmt.Errorf("freeze sweep-stale reclaim for %s: %w", w.ID, err)
 	}
-	if err := s.appendEvent(event); err != nil {
-		return fmt.Errorf("append reclaim event for %s: %w", w.ID, err)
+	if pending.SourceWorkSHA256 != previousWorkSHA256 || pending.FinalWorkSHA256 != sweptWorkSHA256 {
+		return fmt.Errorf("frozen sweep-stale digests drifted for %s", w.ID)
 	}
-
-	if leaseHeld {
-		s.releaseLease(w.ID)
+	if err := s.persistSweepStalePending(pending); err != nil {
+		if _, present, loadErr := s.loadSweepStalePending(w.ID); loadErr == nil && present {
+			return sweepStaleRecoveryRequired(w.ID, err)
+		}
+		return fmt.Errorf("persist sweep-stale intent for %s: %w", w.ID, err)
 	}
-
+	if err := s.injectSweepStaleFault(sweepStaleFaultAfterPendingPersist); err != nil {
+		return sweepStaleRecoveryRequired(w.ID, err)
+	}
+	if err := s.completeSweepStalePending(pending); err != nil {
+		return sweepStaleRecoveryRequired(w.ID, err)
+	}
 	return nil
 }

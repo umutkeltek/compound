@@ -160,12 +160,12 @@ var mintHomes = map[string]MintHome{
 	// act.Execute seams). It blocks and passes, so it is enforcement, not evidence — the consumption
 	// ledger it records is the audit of that enforcement, the same posture as act's receipts.
 	"organ:actuator": {Class: MintEnforcement},
-	// promotedriver is the governed auto-promote actuator behind `compound memory
-	// promote-driver` and the autonomy heartbeat. Its teeth are the single-flight
-	// lock, exact planned intent, per-id basis/limit gate, strict state writes, and
-	// terminal committed|partial|failed|recovery_required receipt. Dry-run is the
-	// default; apply requires --confirm plus a current maintenance work identity.
-	// The receipt ledger audits enforcement; it is not separate meaning authority.
+	// promotedriver is the governed candidate-only actuator behind `compound
+	// memory promote-driver`. Its teeth are the single-flight lock, exact
+	// candidate/current-claim plan, per-operation CAS and idempotency key, exact
+	// result frames, same-pass recovery, and terminal-plan bijection. Registry
+	// imports and lane-belief mutation remain experimental previews. Dry-run is
+	// the default; apply requires --confirm plus a maintenance work identity.
 	"organ:promotedriver": {Class: MintEnforcement},
 	// verdictflow is the shared plan->record->render->load->annotate scaffolding the three
 	// panel-verdict review bridges had copy-pasted. It writes review artifacts through reviewartifact

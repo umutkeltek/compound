@@ -48,13 +48,13 @@ export function DelegatedSessions({
           running {counts.running} · exited {counts.exited} · refused {counts.refused} · unknown {counts.unknown}
         </span>
       </div>
+      <p className="text-2xs text-faint">
+        Experimental only: <span className="mono">compound work delegate --experimental-delegate-mutations</span> is unsupported in v0.1.
+      </p>
 
       {views.length === 0 ? (
         <div className="rounded-lg border border-dashed border-hair bg-page px-6 py-10 text-center">
           <p className="text-sm text-muted">No delegated sessions yet.</p>
-          <p className="mt-1 text-2xs text-faint">
-            Supervised sessions appear here after <span className="mono">compound work delegate</span>.
-          </p>
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-hair bg-panel">

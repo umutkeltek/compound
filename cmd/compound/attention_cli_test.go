@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"compound/internal/attention"
-	"compound/internal/home"
 	"compound/internal/hookplan"
 	"compound/internal/work"
 )
@@ -115,6 +114,8 @@ func TestPrintAttentionTextDefaultRemainsByteEquivalent(t *testing.T) {
 }
 
 func TestAttentionCLIReceiptOnlyTidyJSONKeepsEveryGroup(t *testing.T) {
+	t.Parallel()
+
 	if homePath := os.Getenv(attentionReceiptOnlyJSONChildHome); homePath != "" {
 		cmdAttention([]string{"--json", "--receipt-only-grade", attention.RiskGradeTidy, "--home", homePath})
 		os.Exit(0)
@@ -182,6 +183,8 @@ func TestAttentionCLIReceiptOnlyTidyFoldsLiveTextOnly(t *testing.T) {
 }
 
 func TestAttentionCLIRejectsUnsupportedReceiptOnlyGrades(t *testing.T) {
+	t.Parallel()
+
 	if value := os.Getenv(attentionReceiptOnlyInvalidChildValue); value != "" {
 		cmdAttention([]string{"--receipt-only-grade", value})
 		return
@@ -208,10 +211,7 @@ func TestAttentionCLIRejectsUnsupportedReceiptOnlyGrades(t *testing.T) {
 
 func initAttentionReceiptOnlyCLIHome(t *testing.T) (string, string, string) {
 	t.Helper()
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
+	homePath := initializedTestHome(t)
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work store: %v", err)
@@ -234,11 +234,8 @@ func initAttentionReceiptOnlyCLIHome(t *testing.T) (string, string, string) {
 }
 
 func TestAttentionCLILiveProjectionSeparatesCanMoveFromNeedsOperator(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work store: %v", err)

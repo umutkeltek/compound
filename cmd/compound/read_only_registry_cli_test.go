@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"compound/internal/home"
 )
 
 const readRegistryGuardSubEnv = "COMPOUND_READ_REGISTRY_GUARD_SUB"
@@ -135,6 +133,7 @@ func readRegistryGuardCases() []readRegistryCase {
 // points os.Exit on their own error paths; running them in-process would
 // kill the test.
 func TestReadOnlyRegistryCommandsDoNotMaterializeState(t *testing.T) {
+	t.Parallel()
 	if raw := os.Getenv(readRegistryGuardSubEnv); raw != "" {
 		parts := strings.Split(raw, "\x1f")
 		fn, ok := readRegistryDispatch[parts[0]]
@@ -148,10 +147,7 @@ func TestReadOnlyRegistryCommandsDoNotMaterializeState(t *testing.T) {
 
 	for _, tc := range readRegistryGuardCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			homePath := t.TempDir()
-			if err := home.Init(homePath, "test", cliTestNow); err != nil {
-				t.Fatalf("init home: %v", err)
-			}
+			homePath := initializedTestHome(t)
 			// fresh init scaffolds the habitat; strip the runtime state a read
 			// must not re-materialize.
 			for _, d := range []string{"work", "events", "registries"} {

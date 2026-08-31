@@ -1397,6 +1397,8 @@ func TestMCPTransportRejectsStructuredAndBooleanIDsExactly(t *testing.T) {
 }
 
 func TestMCPTransportPrivacyFilterEmbeddedLocalPaths(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		input string

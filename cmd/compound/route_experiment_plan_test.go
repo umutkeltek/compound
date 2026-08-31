@@ -10,6 +10,7 @@ import (
 )
 
 func TestRouteExperimentPlanCLI(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, row := range []struct{ id, route, alias string }{{"claude-gpt", "codex/gpt-5.6-sol", "codex/gpt-5.6-sol"}, {"claude-minimax", "minimax/MiniMax-M3", "MiniMax-M3[1m]"}} {
 		v := map[string]any{"schema": "switchback/profile-conformance@1", "conformance_revision": "sha256:" + row.id, "profile": map[string]any{"id": row.id, "harness": "claude-code", "route": row.route, "requested_model": row.route, "requested_effort": "xhigh", "model_aliases": map[string]string{"opus": row.alias}}}
@@ -43,12 +44,13 @@ func TestRouteExperimentPlanCLI(t *testing.T) {
 		t.Fatalf("text code=%d err=%s", code, errOut.String())
 	}
 	if !strings.Contains(out.String(), "- role_alias: opus\n") || strings.Contains(out.String(), "- role_aliases:") ||
-		!strings.Contains(out.String(), "- execution: execute each lane through governed compound work delegate; import Switchback trace evidence before comparison\n") {
+		!strings.Contains(out.String(), "- execution: experimental only (unsupported in v0.1): execute each lane through compound work delegate with --experimental-delegate-mutations; import Switchback trace evidence before comparison\n") {
 		t.Fatalf("legacy text output changed:\n%s", out.String())
 	}
 }
 
 func TestRouteExperimentPlanRequiresProfilesRoot(t *testing.T) {
+	t.Parallel()
 	var out, errOut bytes.Buffer
 	code := runRouteExperimentPlanCommand(
 		[]string{"--profile", "claude-gpt", "--profile", "claude-minimax"},
@@ -64,6 +66,7 @@ func TestRouteExperimentPlanRequiresProfilesRoot(t *testing.T) {
 }
 
 func TestRouteExperimentPlanOneProfileMultipleModelRoles(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	v := map[string]any{
 		"schema":               "switchback/profile-conformance@1",
@@ -110,6 +113,7 @@ func TestRouteExperimentPlanOneProfileMultipleModelRoles(t *testing.T) {
 }
 
 func TestRouteExperimentPlanRefusesUnpublishedEffortVariant(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	v := map[string]any{
 		"schema":               "switchback/profile-conformance@1",

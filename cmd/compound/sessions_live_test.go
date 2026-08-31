@@ -12,6 +12,7 @@ import (
 // ghosts, a reaper acting on it takes work away from healthy sessions. Every
 // case below is a way that has already nearly happened.
 func TestClassifySessionLivenessNeverInventsAGhost(t *testing.T) {
+	t.Parallel()
 	live := work.SessionStatus{Exists: true, PaneDead: false, ExitCode: -1}
 	gone := work.SessionStatus{Exists: false}
 	deadPane := work.SessionStatus{Exists: true, PaneDead: true, ExitCode: 0}
@@ -85,6 +86,7 @@ func TestClassifySessionLivenessNeverInventsAGhost(t *testing.T) {
 // substring in common, and reported four healthy lanes as ghosts. Real actor
 // and session names from that incident are used verbatim here.
 func TestClassifyIgnoresActorNameResemblance(t *testing.T) {
+	t.Parallel()
 	obs := work.DelegateStatusObservation{
 		Bound:      true,
 		Session:    "mmx-w10-contract", // recorded at spawn

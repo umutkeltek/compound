@@ -29,6 +29,7 @@ const (
 )
 
 func TestHomeDoctorSurfacesManifestFailureAndBackupFirstRecovery(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homeManifestCompatibilityChildEnv) == "1" {
 		cmdHome([]string{"doctor"})
 		return
@@ -68,6 +69,7 @@ func TestHomeDoctorSurfacesManifestFailureAndBackupFirstRecovery(t *testing.T) {
 }
 
 func TestDispatchCompatibilityGateBlocksFindingRecordBeforeAnyWrite(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homeManifestCompatibilityChildEnv) == "finding-record" {
 		os.Args = []string{"compound", "finding", "record", "--topic", "compatibility-gate", "--body", "must not be written"}
 		main()
@@ -87,6 +89,7 @@ func TestDispatchCompatibilityGateBlocksFindingRecordBeforeAnyWrite(t *testing.T
 }
 
 func TestDispatchCompatibilityGateDoesNotTreatHelpLookingValueAsUsage(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homeManifestCompatibilityChildEnv) == "help-looking-value" {
 		os.Args = []string{"compound", "finding", "record", "--topic", "compatibility-gate", "--body", "--help"}
 		main()
@@ -115,6 +118,7 @@ func TestDispatchCompatibilityGateDoesNotTreatHelpLookingValueAsUsage(t *testing
 }
 
 func TestDispatchCompatibilityGateDoesNotTreatGenericHelpAsAdmission(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds and executes the compound binary: skipped in -short mode")
 	}
@@ -134,6 +138,7 @@ func TestDispatchCompatibilityGateDoesNotTreatGenericHelpAsAdmission(t *testing.
 }
 
 func TestDispatchCompatibilityGateAdmitsParserProvenHomeHelpOnly(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds and executes the compound binary: skipped in -short mode")
 	}
@@ -159,6 +164,7 @@ func TestDispatchCompatibilityGateAdmitsParserProvenHomeHelpOnly(t *testing.T) {
 }
 
 func TestDispatchCompatibilityGateAdmitsParserProvenHookInstallHelpOnly(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds and executes the compound binary: skipped in -short mode")
 	}
@@ -184,6 +190,7 @@ func TestDispatchCompatibilityGateAdmitsParserProvenHookInstallHelpOnly(t *testi
 }
 
 func TestDispatchCompatibilityGateMatchesReadFlagsExactly(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds and executes the compound binary: skipped in -short mode")
 	}
@@ -210,6 +217,7 @@ func TestDispatchCompatibilityGateMatchesReadFlagsExactly(t *testing.T) {
 }
 
 func TestDispatchCompatibilityGateConsumesHomeOptionValuesBeforeClassifyingSubcommand(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds and executes the compound binary: skipped in -short mode")
 	}
@@ -267,6 +275,7 @@ func TestDispatchCompatibilityGateConsumesHomeOptionValuesBeforeClassifyingSubco
 }
 
 func TestHookCompatibilityFailureStaysProtocolShapedAndWriteFree(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds and executes the compound binary: skipped in -short mode")
 	}
@@ -337,6 +346,7 @@ func TestHookCompatibilityFailureStaysProtocolShapedAndWriteFree(t *testing.T) {
 }
 
 func TestLivePreToolUseCompatibilityFailureHoldsRoutineWrite(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds and executes the compound binary: skipped in -short mode")
 	}
@@ -448,6 +458,7 @@ func TestLivePreToolUseCompatibilityFailureHoldsRoutineWrite(t *testing.T) {
 }
 
 func TestSessionEndAdapterCompatibilityFailureStaysProtocolShapedAndWriteFree(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds and executes the compound binary: skipped in -short mode")
 	}
@@ -498,6 +509,7 @@ func TestSessionEndAdapterCompatibilityFailureStaysProtocolShapedAndWriteFree(t 
 }
 
 func TestLiveContextHookCompatibilityFailureNeverFallsThroughToHomeAwareWriters(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds and executes the compound binary: skipped in -short mode")
 	}
@@ -552,6 +564,7 @@ func TestLiveContextHookCompatibilityFailureNeverFallsThroughToHomeAwareWriters(
 }
 
 func TestDispatchCompatibilityGateBlocksPrivateCustodyRepairBeforeChmod(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homeManifestCompatibilityChildEnv) == "private-custody-repair" {
 		os.Args = []string{"compound", "home", "private-custody", "repair"}
 		main()
@@ -575,6 +588,7 @@ func TestDispatchCompatibilityGateBlocksPrivateCustodyRepairBeforeChmod(t *testi
 }
 
 func TestDispatchCompatibilityGateBlocksMutationWhenManifestIsMissing(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homeManifestCompatibilityChildEnv) == "missing-manifest" {
 		os.Args = []string{"compound", "finding", "record", "--topic", "compatibility-gate", "--body", "must not be written"}
 		main()
@@ -604,6 +618,7 @@ func TestDispatchCompatibilityGateBlocksMutationWhenManifestIsMissing(t *testing
 }
 
 func TestDispatchCompatibilityGatePreservesReadOnlyHomeWhere(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homeManifestCompatibilityChildEnv) == "home-where" {
 		os.Args = []string{"compound", "home", "where"}
 		main()
@@ -622,6 +637,7 @@ func TestDispatchCompatibilityGatePreservesReadOnlyHomeWhere(t *testing.T) {
 }
 
 func TestDispatchCompatibilityGateUsesLocalHomeForLocalMutation(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homeManifestCompatibilityChildEnv) == "local-private-custody" {
 		os.Args = []string{"compound", "home", "--local", "private-custody", "repair"}
 		main()
@@ -655,6 +671,7 @@ func TestDispatchCompatibilityGateUsesLocalHomeForLocalMutation(t *testing.T) {
 }
 
 func TestDispatchCompatibilityGateUsesExplicitHomeAroundCommand(t *testing.T) {
+	t.Parallel()
 	childMode := os.Getenv(homeManifestCompatibilityChildEnv)
 	selectedHome := os.Getenv(homeManifestCompatibilityHomeEnv)
 	if childMode == "explicit-home-after-command" {
@@ -697,6 +714,7 @@ func TestDispatchCompatibilityGateUsesExplicitHomeAroundCommand(t *testing.T) {
 }
 
 func TestDispatchCompatibilityGateDoesNotNormalizeHomeFlagTokens(t *testing.T) {
+	t.Parallel()
 	childMode := os.Getenv(homeManifestCompatibilityChildEnv)
 	selectedHome := os.Getenv(homeManifestCompatibilityHomeEnv)
 	if childMode == "padded-home-flag" {
@@ -748,6 +766,7 @@ func incompatibleCanonicalHome(t *testing.T) string {
 }
 
 func TestHomeInitCLIManifestIncompatibility(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homeManifestCompatibilityChildEnv) == "init" {
 		cmdHome([]string{"init", "--home", os.Getenv(homeManifestCompatibilityHomeEnv), "--local"})
 		return
@@ -783,6 +802,7 @@ func TestHomeInitCLIManifestIncompatibility(t *testing.T) {
 }
 
 func TestHomeRestoreCLIManifestIncompatibility(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homeManifestCompatibilityChildEnv) == "restore" {
 		cmdHome([]string{
 			"restore",
@@ -810,6 +830,7 @@ func TestHomeRestoreCLIManifestIncompatibility(t *testing.T) {
 }
 
 func TestHomeRestoreCLIArchiveSchemaIncompatibility(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(homeManifestCompatibilityChildEnv) == "restore-archive-schema" {
 		cmdHome([]string{
 			"restore",

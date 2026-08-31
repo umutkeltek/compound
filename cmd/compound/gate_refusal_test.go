@@ -14,6 +14,7 @@ import (
 // TestGateRefusalRendersAllFourParts pins the shape: a refusal that drops a part
 // degrades back into the one-line "error: ...; pass --flag" it replaced.
 func TestGateRefusalRendersAllFourParts(t *testing.T) {
+	t.Parallel()
 	text := gateRefusal{
 		Command:  "work advance --execute",
 		Gate:     "workspace_resolution",
@@ -49,6 +50,7 @@ func TestGateRefusalRendersAllFourParts(t *testing.T) {
 // value becomes a visible placeholder rather than a gap. "compound work show  #
 // confirm..." reads as a complete command and silently is not one.
 func TestGateRefusalKeepsSuggestedCommandsRunnable(t *testing.T) {
+	t.Parallel()
 	if got := firstNonEmptyRefusalValue("", "<work-id>"); got != "<work-id>" {
 		t.Errorf("empty value must render a placeholder, got %q", got)
 	}
@@ -70,6 +72,7 @@ func TestGateRefusalKeepsSuggestedCommandsRunnable(t *testing.T) {
 // instead of a list of examples restated here — a hand-maintained list would pass
 // while the actual refusal sites drifted.
 func TestGateRefusalSuggestedCommandsAreInvocable(t *testing.T) {
+	t.Parallel()
 	sources, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -225,6 +228,7 @@ func assertTeachingRefusal(t *testing.T, text, gate string, wantFragments ...str
 // CONVERSION, not of the behaviour — the behaviour is pinned by the per-site tests named in
 // each row's reason. A row here with no matching per-site test would be ceremony.
 func TestConvertedGateSitesStayConverted(t *testing.T) {
+	t.Parallel()
 	converted := []struct {
 		file string
 		gate string
@@ -257,6 +261,7 @@ func TestConvertedGateSitesStayConverted(t *testing.T) {
 // quotes. A ladder that reports only its final verdict cannot be distinguished from
 // one that never ran, so each rung must name itself AND its observed result.
 func TestResolveExecuteWorkspaceReportsWhichRungResolved(t *testing.T) {
+	t.Parallel()
 	t.Run("explicit flag wins and is traced", func(t *testing.T) {
 		ws, tried := resolveExecuteWorkspace([]string{"--workspace", "/repo/project"}, nil)
 		if ws != "/repo/project" {

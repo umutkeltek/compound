@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -18,8 +19,37 @@ import (
 )
 
 const consoleTestFormatValidCapability = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+const consoleParentDeathControllerSubEnv = "COMPOUND_CONSOLE_PARENT_DEATH_CONTROLLER_SUB"
+
+const consoleForwardTerminationFixtureScript = "#!/bin/sh\n" + testSubprocessShellParentGuard + `pid_tmp="${CONSOLE_PID_PATH}.tmp.$$"
+printf '%s' "$$" > "$pid_tmp"
+mv "$pid_tmp" "$CONSOLE_PID_PATH"
+trap 'printf terminated > "$CONSOLE_TERM_MARKER"; exit 0' TERM INT
+printf started > "$CONSOLE_STARTED_MARKER"
+while test_fixture_parent_alive; do sleep 1; done
+`
+
+const consoleIgnoreTerminationFixtureScript = "#!/bin/sh\n" + testSubprocessShellParentGuard + `trap '' TERM INT HUP
+tmp="${CONSOLE_PID_PATH}.tmp.$$"
+printf '%s' "$$" > "$tmp"
+mv "$tmp" "$CONSOLE_PID_PATH"
+while test_fixture_parent_alive; do printf . >> "$CONSOLE_HEARTBEAT_PATH"; sleep 0.05; done
+`
+
+const consoleResidualChildFixtureScript = "#!/bin/sh\n" + testSubprocessShellParentGuard + `leader_tmp="${CONSOLE_LEADER_PID}.tmp.$$"
+printf '%s' "$$" > "$leader_tmp"
+mv "$leader_tmp" "$CONSOLE_LEADER_PID"
+( trap '' TERM INT HUP; while test_fixture_parent_alive; do printf . >> "$CONSOLE_CHILD_HEARTBEAT"; sleep 0.05; done ) &
+child=$!
+child_tmp="${CONSOLE_CHILD_PID}.tmp.$$"
+printf '%s' "$child" > "$child_tmp"
+mv "$child_tmp" "$CONSOLE_CHILD_PID"
+trap 'exit 0' TERM INT HUP
+wait "$child"
+`
 
 func TestConsoleLifecycleDryRunsExposeDistinctDevBuildAndServePlans(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	consoleDir := filepath.Join(root, "console")
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
@@ -138,6 +168,7 @@ func TestConsoleLifecycleLockRejectsConcurrentWorktreesForTheSameEndpoint(t *tes
 }
 
 func TestConsoleServeRefusesMissingProductionBuildBeforeBun(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	consoleDir := filepath.Join(root, "console")
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
@@ -177,6 +208,7 @@ func TestConsoleServeRefusesMissingProductionBuildBeforeBun(t *testing.T) {
 }
 
 func TestConsoleLifecycleCanRequireAnExplicitHome(t *testing.T) {
+	t.Parallel()
 	consoleDir := filepath.Join(t.TempDir(), "console")
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -198,6 +230,7 @@ func TestConsoleLifecycleCanRequireAnExplicitHome(t *testing.T) {
 }
 
 func TestConsoleRuntimeStatusDistinguishesHealthyUnhealthyAndForeign(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
@@ -294,6 +327,7 @@ func TestConsoleRuntimeStatusDistinguishesHealthyUnhealthyAndForeign(t *testing.
 }
 
 func TestConsoleStaticAssetsReadsOnlyHTMLAttributes(t *testing.T) {
+	t.Parallel()
 	html := `<link href="/_next/static/css/app.css"><script src="/_next/static/chunks/app.js"></script>` +
 		`<script>self.__next_f.push(["/_next/static/chunks/ghost.js\\\""])</script>`
 	got := consoleStaticAssets(html)
@@ -304,40 +338,46 @@ func TestConsoleStaticAssetsReadsOnlyHTMLAttributes(t *testing.T) {
 }
 
 func TestConsoleSupervisorForwardsTerminationToChildGroup(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
+	pidPath := filepath.Join(root, "child.pid")
 	marker := filepath.Join(root, "terminated")
 	started := filepath.Join(root, "started")
 	script := filepath.Join(root, "child.sh")
-	body := "#!/bin/sh\ntrap 'printf terminated > \"$CONSOLE_TERM_MARKER\"; exit 0' TERM INT\nprintf started > \"$CONSOLE_STARTED_MARKER\"\nwhile :; do sleep 1; done\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(consoleForwardTerminationFixtureScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	plan := consoleLaunchPlan{
 		ConsoleDir: root,
 		Env: map[string]string{
+			"CONSOLE_PID_PATH":       pidPath,
 			"CONSOLE_TERM_MARKER":    marker,
 			"CONSOLE_STARTED_MARKER": started,
 		},
 	}
+	addTestSubprocessParentEnv(plan.Env, os.Getpid())
 	signals := make(chan os.Signal, 1)
 	done := make(chan error, 1)
+	returned := false
+	var group *testProcessGroup
+	var err error
 	go func() {
 		done <- runConsoleSupervisedCommand(plan, []string{script}, signals)
 	}()
-
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if _, err := os.Stat(started); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("supervised child did not start")
-		}
-		time.Sleep(10 * time.Millisecond)
+	defer func() {
+		cleanupConsoleSupervisorTest(t, signals, done, group, pidPath, script, returned)
+	}()
+	leaderPID := waitForTestPIDFile(t, pidPath, 3*time.Second)
+	group, err = captureLiveTestProcessGroupWithCommandToken(leaderPID, leaderPID, script)
+	if err != nil {
+		t.Fatal(err)
 	}
+
+	waitForTestPath(t, started, 3*time.Second)
 	signals <- syscall.SIGTERM
 	select {
 	case err := <-done:
+		returned = true
 		if err != nil {
 			t.Fatalf("supervisor returned after forwarded TERM: %v", err)
 		}
@@ -347,15 +387,16 @@ func TestConsoleSupervisorForwardsTerminationToChildGroup(t *testing.T) {
 	if body, err := os.ReadFile(marker); err != nil || string(body) != "terminated" {
 		t.Fatalf("child did not receive forwarded termination: body=%q err=%v", body, err)
 	}
+	waitForTestProcessGroupQuiescence(t, group, time.Second)
 }
 
 func TestConsoleSupervisorKillsChildGroupAfterTerminationGrace(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	pidPath := filepath.Join(root, "child.pid")
 	heartbeatPath := filepath.Join(root, "heartbeat")
 	script := filepath.Join(root, "ignores-term.sh")
-	body := "#!/bin/sh\ntrap '' TERM INT HUP\ntmp=\"${CONSOLE_PID_PATH}.tmp.$$\"\nprintf '%s' \"$$\" > \"$tmp\"\nmv \"$tmp\" \"$CONSOLE_PID_PATH\"\nwhile :; do printf . >> \"$CONSOLE_HEARTBEAT_PATH\"; sleep 0.05; done\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(consoleIgnoreTerminationFixtureScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	plan := consoleLaunchPlan{
@@ -365,17 +406,24 @@ func TestConsoleSupervisorKillsChildGroupAfterTerminationGrace(t *testing.T) {
 			"CONSOLE_HEARTBEAT_PATH": heartbeatPath,
 		},
 	}
+	addTestSubprocessParentEnv(plan.Env, os.Getpid())
 	signals := make(chan os.Signal, 1)
 	done := make(chan error, 1)
 	returned := false
+	var group *testProcessGroup
+	var err error
 	go func() {
 		done <- runConsoleSupervisedCommand(plan, []string{script}, signals)
 	}()
 	defer func() {
-		cleanupConsoleSupervisorTest(signals, done, pidPath, returned)
+		cleanupConsoleSupervisorTest(t, signals, done, group, pidPath, script, returned)
 	}()
 
 	leaderPID := waitForTestPIDFile(t, pidPath, 3*time.Second)
+	group, err = captureLiveTestProcessGroupWithCommandToken(leaderPID, leaderPID, script)
+	if err != nil {
+		t.Fatal(err)
+	}
 	waitForTestPath(t, heartbeatPath, 3*time.Second)
 
 	shutdownTimeout := 2*consoleShutdownGrace + time.Second
@@ -389,17 +437,17 @@ func TestConsoleSupervisorKillsChildGroupAfterTerminationGrace(t *testing.T) {
 	case <-time.After(shutdownTimeout):
 		t.Fatal("supervisor waited forever for a child that ignored termination")
 	}
-	waitForTestProcessGroupExit(t, leaderPID, time.Second)
+	waitForTestProcessGroupQuiescence(t, group, time.Second)
 }
 
 func TestConsoleSupervisorKillsResidualGroupWhenLeaderExitsOnTermination(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	leaderPIDPath := filepath.Join(root, "leader.pid")
 	childPIDPath := filepath.Join(root, "child.pid")
 	heartbeatPath := filepath.Join(root, "child-heartbeat")
 	script := filepath.Join(root, "leader-exits.sh")
-	body := "#!/bin/sh\nleader_tmp=\"${CONSOLE_LEADER_PID}.tmp.$$\"\nprintf '%s' \"$$\" > \"$leader_tmp\"\nmv \"$leader_tmp\" \"$CONSOLE_LEADER_PID\"\n( trap '' TERM INT HUP; while :; do printf . >> \"$CONSOLE_CHILD_HEARTBEAT\"; sleep 0.05; done ) &\nchild=$!\nchild_tmp=\"${CONSOLE_CHILD_PID}.tmp.$$\"\nprintf '%s' \"$child\" > \"$child_tmp\"\nmv \"$child_tmp\" \"$CONSOLE_CHILD_PID\"\ntrap 'exit 0' TERM INT HUP\nwait \"$child\"\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(consoleResidualChildFixtureScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	plan := consoleLaunchPlan{
@@ -410,16 +458,26 @@ func TestConsoleSupervisorKillsResidualGroupWhenLeaderExitsOnTermination(t *test
 			"CONSOLE_CHILD_HEARTBEAT": heartbeatPath,
 		},
 	}
+	addTestSubprocessParentEnv(plan.Env, os.Getpid())
 	signals := make(chan os.Signal, 1)
 	done := make(chan error, 1)
 	returned := false
+	var group *testProcessGroup
+	var err error
 	go func() { done <- runConsoleSupervisedCommand(plan, []string{script}, signals) }()
 	defer func() {
-		cleanupConsoleSupervisorTest(signals, done, leaderPIDPath, returned)
+		cleanupConsoleSupervisorTest(t, signals, done, group, leaderPIDPath, script, returned)
 	}()
 
 	leaderPID := waitForTestPIDFile(t, leaderPIDPath, 3*time.Second)
 	_ = waitForTestPIDFile(t, childPIDPath, 3*time.Second)
+	group, err = captureLiveTestProcessGroupWithCommandToken(leaderPID, leaderPID, script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := group.status(); err != nil {
+		t.Fatal(err)
+	}
 	waitForTestPath(t, heartbeatPath, 3*time.Second)
 	shutdownTimeout := 2*consoleShutdownGrace + time.Second
 	signals <- syscall.SIGTERM
@@ -432,37 +490,191 @@ func TestConsoleSupervisorKillsResidualGroupWhenLeaderExitsOnTermination(t *test
 	case <-time.After(shutdownTimeout):
 		t.Fatal("supervisor did not return after the leader exited")
 	}
-	waitForTestProcessGroupExit(t, leaderPID, time.Second)
+	waitForTestProcessGroupQuiescence(t, group, time.Second)
 }
 
-func cleanupConsoleSupervisorTest(signals chan os.Signal, done <-chan error, pidPath string, returned bool) {
-	select {
-	case signals <- syscall.SIGKILL:
-	default:
+func TestConsoleSupervisorFixtureChildrenExitWhenControllerDies(t *testing.T) {
+	if os.Getenv(consoleParentDeathControllerSubEnv) == "1" {
+		runConsoleParentDeathFixtureController(
+			t,
+			os.Getenv("COMPOUND_CONSOLE_PARENT_DEATH_ROLE"),
+			os.Getenv("COMPOUND_CONSOLE_PARENT_DEATH_ROOT"),
+		)
+		return
 	}
-	killTestProcessGroupFromPIDFile(pidPath)
+
+	for _, tc := range []struct {
+		name string
+		role string
+	}{
+		{name: "forwarded termination fixture", role: "forward"},
+		{name: "forced shutdown fixture", role: "ignore"},
+		{name: "residual child fixture", role: "residual"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			pidPath := filepath.Join(root, "leader.pid")
+			readyPath := filepath.Join(root, "ready")
+			childCommandToken := filepath.Join(root, tc.role+".sh")
+			controller := exec.Command(os.Args[0], "-test.run=^TestConsoleSupervisorFixtureChildrenExitWhenControllerDies$")
+			controller.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			controller.Env = append(
+				os.Environ(),
+				consoleParentDeathControllerSubEnv+"=1",
+				"COMPOUND_CONSOLE_PARENT_DEATH_ROLE="+tc.role,
+				"COMPOUND_CONSOLE_PARENT_DEATH_ROOT="+root,
+			)
+			if err := controller.Start(); err != nil {
+				t.Fatal(err)
+			}
+			controllerReapStarted := false
+			var controllerGroup *testProcessGroup
+			var childGroup *testProcessGroup
+			controllerPGID := controller.Process.Pid
+			var err error
+			controllerGroup, err = captureLiveTestProcessGroup(controllerPGID, controller.Process.Pid)
+			if err != nil {
+				killPinnedTestProcessGroupAndReap(t, controller, controllerPGID, time.Second)
+				childGroup = captureTestProcessGroupFromPIDFileForCleanup(t, pidPath, childCommandToken)
+				cleanupTestProcessGroup(t, childGroup, time.Second)
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if childGroup == nil {
+					childGroup = captureTestProcessGroupFromPIDFileForCleanup(t, pidPath, childCommandToken)
+				}
+				cleanupTestProcessGroup(t, childGroup, time.Second)
+				cleanupTestProcessGroup(t, controllerGroup, time.Second)
+				if !controllerReapStarted {
+					killAndReapTestCommand(t, controller, time.Second)
+					controllerReapStarted = true
+				}
+				if childGroup == nil {
+					childGroup = captureTestProcessGroupFromPIDFileForCleanup(t, pidPath, childCommandToken)
+					cleanupTestProcessGroup(t, childGroup, time.Second)
+				}
+			})
+
+			waitForTestPath(t, readyPath, 5*time.Second)
+			childPGID := waitForTestPIDFile(t, pidPath, time.Second)
+			actualPGID, err := syscall.Getpgid(childPGID)
+			if err != nil {
+				t.Fatalf("get supervised child process group: %v", err)
+			}
+			if actualPGID != childPGID {
+				t.Fatalf("supervised child process group = %d, want leader %d", actualPGID, childPGID)
+			}
+			childGroup, err = captureLiveTestProcessGroupWithCommandToken(childPGID, childPGID, childCommandToken)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			killAndReapTestCommand(t, controller, time.Second)
+			controllerReapStarted = true
+			waitForTestProcessGroupQuiescence(t, childGroup, 2*time.Second)
+			waitForTestProcessGroupQuiescence(t, controllerGroup, 2*time.Second)
+			if tc.role != "forward" {
+				assertTestFileSizeStable(t, filepath.Join(root, "heartbeat"), 150*time.Millisecond)
+			}
+		})
+	}
+}
+
+func runConsoleParentDeathFixtureController(t *testing.T, role, root string) {
+	t.Helper()
+	pidPath := filepath.Join(root, "leader.pid")
+	readyPath := filepath.Join(root, "ready")
+	scriptPath := filepath.Join(root, role+".sh")
+	plan := consoleLaunchPlan{ConsoleDir: root, Env: map[string]string{}}
+	var body string
+	var startedPath string
+	switch role {
+	case "forward":
+		body = consoleForwardTerminationFixtureScript
+		startedPath = filepath.Join(root, "started")
+		plan.Env["CONSOLE_PID_PATH"] = pidPath
+		plan.Env["CONSOLE_TERM_MARKER"] = filepath.Join(root, "terminated")
+		plan.Env["CONSOLE_STARTED_MARKER"] = startedPath
+	case "ignore":
+		body = consoleIgnoreTerminationFixtureScript
+		startedPath = filepath.Join(root, "heartbeat")
+		plan.Env["CONSOLE_PID_PATH"] = pidPath
+		plan.Env["CONSOLE_HEARTBEAT_PATH"] = startedPath
+	case "residual":
+		body = consoleResidualChildFixtureScript
+		startedPath = filepath.Join(root, "heartbeat")
+		plan.Env["CONSOLE_LEADER_PID"] = pidPath
+		plan.Env["CONSOLE_CHILD_PID"] = filepath.Join(root, "child.pid")
+		plan.Env["CONSOLE_CHILD_HEARTBEAT"] = startedPath
+	default:
+		t.Fatalf("unknown console parent-death fixture role %q", role)
+	}
+	addTestSubprocessParentEnv(plan.Env, os.Getpid())
+	if err := os.WriteFile(scriptPath, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- runConsoleSupervisedCommand(plan, []string{scriptPath}, make(chan os.Signal, 1))
+	}()
+	waitForTestPIDFile(t, pidPath, 3*time.Second)
+	waitForTestPath(t, startedPath, 3*time.Second)
+	if err := os.WriteFile(readyPath, []byte("ready\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("console parent-death fixture returned: %v", err)
+	}
+}
+
+func cleanupConsoleSupervisorTest(
+	t *testing.T,
+	signals chan os.Signal,
+	done <-chan error,
+	group *testProcessGroup,
+	pidPath string,
+	commandToken string,
+	returned bool,
+) {
+	t.Helper()
+	if group == nil {
+		group = captureTestProcessGroupFromPIDFileForCleanup(t, pidPath, commandToken)
+	}
 	if !returned {
+		select {
+		case signals <- syscall.SIGKILL:
+		default:
+		}
 		select {
 		case <-done:
 		case <-time.After(time.Second):
 		}
 	}
-	killTestProcessGroupFromPIDFile(pidPath)
+	if group == nil {
+		group = captureTestProcessGroupFromPIDFileForCleanup(t, pidPath, commandToken)
+	}
+	cleanupTestProcessGroup(t, group, time.Second)
 }
 
-func killTestProcessGroupFromPIDFile(path string) {
-	pid, err := readTestPIDFile(path)
+func captureTestProcessGroupFromPIDFileForCleanup(t *testing.T, pidPath, commandToken string) *testProcessGroup {
+	t.Helper()
+	pid, err := readTestPIDFile(pidPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
-		return
+		t.Errorf("read test process group owner %s during cleanup: %v", pidPath, err)
+		return nil
 	}
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if err := syscall.Kill(-pid, 0); err == syscall.ESRCH {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	group, err := captureLiveTestProcessGroupWithCommandToken(pid, pid, commandToken)
+	if errors.Is(err, errTestProcessGroupNotOwned) {
+		return nil
 	}
+	if err != nil {
+		t.Errorf("capture test process group %d during cleanup: %v", pid, err)
+		return nil
+	}
+	return group
 }
 
 func waitForTestPIDFile(t *testing.T, path string, timeout time.Duration) int {
@@ -514,21 +726,19 @@ func waitForTestPath(t *testing.T, path string, timeout time.Duration) {
 	}
 }
 
-func waitForTestProcessGroupExit(t *testing.T, pgid int, timeout time.Duration) {
+func assertTestFileSizeStable(t *testing.T, path string, duration time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		err := syscall.Kill(-pgid, 0)
-		if err == syscall.ESRCH {
-			return
-		}
-		if err != nil && err != syscall.EPERM {
-			t.Fatalf("probe supervised process group %d: %v", pgid, err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("supervised process group %d still exists after bounded shutdown poll", pgid)
-		}
-		time.Sleep(10 * time.Millisecond)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(duration)
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() {
+		t.Fatalf("test fixture heartbeat %s advanced after process-group quiescence: %d -> %d bytes", path, before.Size(), after.Size())
 	}
 }
 
@@ -561,6 +771,7 @@ func TestConsoleStatusReportsCanonicalHealth(t *testing.T) {
 }
 
 func TestConsoleNextBuildDirectoriesAreLifecycleIsolated(t *testing.T) {
+	t.Parallel()
 	consoleDir, err := filepath.Abs(filepath.Join("..", "..", "console"))
 	if err != nil {
 		t.Fatal(err)
@@ -588,6 +799,7 @@ func TestConsoleNextBuildDirectoriesAreLifecycleIsolated(t *testing.T) {
 }
 
 func TestConsolePackageScriptsExposeOnlyOwnedLifecycles(t *testing.T) {
+	t.Parallel()
 	packagePath, err := filepath.Abs(filepath.Join("..", "..", "console", "package.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -667,6 +879,7 @@ func invokeConsoleCommand(t *testing.T, extraEnv []string, args ...string) (stri
 }
 
 func TestConsoleCommandHelper(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("COMPOUND_CONSOLE_TEST_HELPER") != "1" {
 		return
 	}
@@ -680,6 +893,7 @@ func TestConsoleCommandHelper(t *testing.T) {
 }
 
 func TestConsoleCompoundBinPrefersStablePathForTemporaryExecutable(t *testing.T) {
+	t.Parallel()
 	stable := filepath.Join(t.TempDir(), "bin", "compound")
 	got := resolveConsoleCompoundBin(filepath.Join(string(filepath.Separator), "tmp", "compound-dashboard"), func(name string) (string, error) {
 		if name != "compound" {
@@ -693,6 +907,7 @@ func TestConsoleCompoundBinPrefersStablePathForTemporaryExecutable(t *testing.T)
 }
 
 func TestConsoleCompoundBinKeepsStableExecutable(t *testing.T) {
+	t.Parallel()
 	current := filepath.Join(string(filepath.Separator), "usr", "local", "bin", "compound")
 	got := resolveConsoleCompoundBin(current, func(name string) (string, error) {
 		t.Fatalf("stable executable should not need PATH lookup")
@@ -832,6 +1047,7 @@ func TestConsoleOperatorDryRunRequiresExplicitMutationOptIn(t *testing.T) {
 }
 
 func TestConsoleMutationModeRequiresExplicitHomeAndFormatValidCapabilityBeforePlan(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	consoleDir := filepath.Join(root, "console")
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {

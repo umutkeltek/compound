@@ -60,6 +60,7 @@ func attachDesignSketch(t *testing.T, s *Store, id, actor, ref string, now time.
 // unchanged), name the machine-readable reason, and leave durable deny evidence -- an error
 // that vanishes with the process is not governance.
 func TestPhasedWorkWithoutDesignSketchIsRefusedIntoRunning(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id := makePlanClassWork(t, s, "phased", "work_plan_phased_gate", "codex", fixedNow)
 
@@ -119,6 +120,7 @@ func TestPhasedWorkWithoutDesignSketchIsRefusedIntoRunning(t *testing.T) {
 // satisfiable by exactly the move the message teaches, and the gate does not re-fire once the
 // work is already running (a same-state attach on running work must still work).
 func TestPhasedWorkWithDesignSketchAdvances(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id := makePlanClassWork(t, s, "phased", "work_plan_phased_ok", "codex", fixedNow)
 	attachDesignSketch(t, s, id, "codex", designSketchFixtureRef, fixedNow.Add(time.Minute))
@@ -141,6 +143,7 @@ func TestPhasedWorkWithDesignSketchAdvances(t *testing.T) {
 // EXACTLY as before -- the freeze-style "absent means nothing gated" rule. This is the test
 // that fails if the guard is written as "anything but oneshot".
 func TestUngatedPlanClassesReachRunningUnchanged(t *testing.T) {
+	t.Parallel()
 	for _, planClass := range []string{"", "oneshot", "plan_doc"} {
 		name := planClass
 		if name == "" {
@@ -166,6 +169,7 @@ func TestUngatedPlanClassesReachRunningUnchanged(t *testing.T) {
 // starts work without a human typing `work advance` -- exactly the bypass a CLI-level check
 // would leave open.
 func TestDesignSketchGuardsGenericAdvanceSeam(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id := makePlanClassWork(t, s, "phased", "work_plan_phased_dispatch", "codex", fixedNow)
 
@@ -196,6 +200,7 @@ func TestDesignSketchGuardsGenericAdvanceSeam(t *testing.T) {
 // are free strings; the gate is only as good as the prefix match, so a neighbouring kind
 // (`commit:`) and a ref that merely CONTAINS the token must not satisfy it.
 func TestDesignSketchArtifactRefScansOnlyItsOwnPrefix(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		artifacts []string
@@ -223,6 +228,7 @@ func TestDesignSketchArtifactRefScansOnlyItsOwnPrefix(t *testing.T) {
 // bogus plan_class never reaches disk, so no envelope can carry an unrecognized (and therefore
 // ungated) class that a later reader would have to interpret.
 func TestCreateRejectsUnknownPlanClass(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	_, err := s.Create(CreateInput{
 		Owner:            "compound-core",

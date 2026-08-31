@@ -12,6 +12,7 @@ import (
 )
 
 func TestHomeDoctorSurfacesUnknownRootsAndBridgeDebt(t *testing.T) {
+	t.Parallel()
 	h := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(h, "local", time.Unix(0, 0)); err != nil {
 		t.Fatal(err)

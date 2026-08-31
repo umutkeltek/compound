@@ -10,6 +10,7 @@ import (
 )
 
 func TestAdvancePlanEvaluatesPolicyWithoutAdvancing(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "advance plan previews running"}, fixedNow)
 	if err != nil {
@@ -44,6 +45,7 @@ func TestAdvancePlanEvaluatesPolicyWithoutAdvancing(t *testing.T) {
 }
 
 func TestAdvanceRecordsPolicyAction(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "advance records policy"}, fixedNow)
 	if err != nil {
@@ -106,6 +108,7 @@ func TestAdvanceRecordsPolicyAction(t *testing.T) {
 }
 
 func TestAdvancePlanAndAdvanceRejectTerminalTargetsWithoutProoflessTerminal(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		from     string
@@ -189,6 +192,7 @@ func TestAdvancePlanAndAdvanceRejectTerminalTargetsWithoutProoflessTerminal(t *t
 // allowed-preview-then-refused-act divergence. With a valid steal, the preview reports
 // steal-readiness and the emitted advance command carries --steal --reason.
 func TestAdvancePlanReportsLeaseHolderDenialWithoutMutating(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "advance plan lease preview"}, fixedNow)
 	if err != nil {
@@ -244,6 +248,7 @@ func TestAdvancePlanReportsLeaseHolderDenialWithoutMutating(t *testing.T) {
 }
 
 func TestAdvanceBlockedByPolicyDoesNotMutate(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "advance hold"}, fixedNow)
 	if err != nil {

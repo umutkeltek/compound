@@ -5,6 +5,7 @@ import (
 )
 
 func TestBuildWorkRecordsExplicitCreatorIdentity(t *testing.T) {
+	t.Parallel()
 	w := BuildWork(CreateInput{
 		Owner:            "compound:memory-maintenance",
 		Actor:            "codex:release-lane",
@@ -29,6 +30,7 @@ func TestBuildWorkRecordsExplicitCreatorIdentity(t *testing.T) {
 }
 
 func TestBuildWorkDerivesSpecificOriginWithoutPrompting(t *testing.T) {
+	t.Parallel()
 	w := BuildWork(CreateInput{
 		Owner:            "cmd/compound",
 		Actor:            "orchestrator:claude_code",
@@ -50,6 +52,7 @@ func TestBuildWorkDerivesSpecificOriginWithoutPrompting(t *testing.T) {
 }
 
 func TestWorkbenchProjectsSpecificOriginBesideLegacyOwner(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	created, err := store.Create(CreateInput{
 		Owner:            "claude",
@@ -81,6 +84,7 @@ func TestWorkbenchProjectsSpecificOriginBesideLegacyOwner(t *testing.T) {
 }
 
 func TestCreatePlanEqualityBindsOrigin(t *testing.T) {
+	t.Parallel()
 	first := BuildWork(CreateInput{
 		Owner: "compound:memory", Actor: "codex:lane", CreatorHarness: "codex",
 		CreatorModel: "model-a", CreatorLaneID: "lane", SuccessPredicate: "origin is bound",

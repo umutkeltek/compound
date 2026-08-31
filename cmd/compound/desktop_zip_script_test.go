@@ -10,6 +10,7 @@ import (
 )
 
 func TestDesktopZipExcludesRuntimeTreesAndDocumentsTheSnapshotBoundary(t *testing.T) {
+	t.Parallel()
 	for _, command := range []string{"bash", "git", "rsync", "zip"} {
 		if _, err := exec.LookPath(command); err != nil {
 			t.Skipf("%s is required for desktop zip integration test", command)
@@ -102,6 +103,7 @@ func TestDesktopZipExcludesRuntimeTreesAndDocumentsTheSnapshotBoundary(t *testin
 }
 
 func TestDesktopZipOversizeDiagnosticUsesPortableFind(t *testing.T) {
+	t.Parallel()
 	for _, command := range []string{"bash", "git", "rsync", "zip"} {
 		if _, err := exec.LookPath(command); err != nil {
 			t.Skipf("%s is required for desktop zip integration test", command)

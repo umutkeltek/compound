@@ -47,7 +47,7 @@ func spawnBindingWithTranscripts(t *testing.T, age time.Duration, leaveTranscrip
 		return DelegateHarnessReadinessResult{Ready: true}, nil
 	}
 
-	s = newStore(t)
+	s = newExperimentalDelegateStore(t)
 	wID := prepareClaimedWork(t, s, "codex", "", "")
 
 	runner := newFakeRunner()

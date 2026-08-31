@@ -44,7 +44,7 @@ func TestPlanRouteExperimentSeparatesRoleAliasFromObservation(t *testing.T) {
 	if want := "rexp_" + hex.EncodeToString(legacySum[:6]); p.ID != want {
 		t.Fatalf("legacy plan id = %q, want %q", p.ID, want)
 	}
-	if p.Execution != "execute each lane through governed compound work delegate; import Switchback trace evidence before comparison" {
+	if p.Execution != "experimental only (unsupported in v0.1): execute each lane through compound work delegate with --experimental-delegate-mutations; import Switchback trace evidence before comparison" {
 		t.Fatalf("legacy execution changed: %q", p.Execution)
 	}
 	body, err := json.Marshal(p)

@@ -272,6 +272,7 @@ func runRefusedClaim(t *testing.T, s *Store, seed repairSeed, pending claimPendi
 
 // Falsifier 1 -- predecessor mismatch refuses.
 func TestRepairFalsifier_PredecessorMismatchRefuses(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	seed := seedRepairTransaction(t, s)
 	snap := snapshotStores(t, s, seed)
@@ -288,6 +289,7 @@ func TestRepairFalsifier_PredecessorMismatchRefuses(t *testing.T) {
 
 // Falsifier 2 -- attachment missing refuses.
 func TestRepairFalsifier_AttachmentMissingRefuses(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	seed := seedRepairTransaction(t, s)
 	snap := snapshotStores(t, s, seed)
@@ -303,6 +305,7 @@ func TestRepairFalsifier_AttachmentMissingRefuses(t *testing.T) {
 
 // Falsifier 3 -- action tampered refuses.
 func TestRepairFalsifier_ActionTamperedRefuses(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	seed := seedRepairTransaction(t, s)
 
@@ -324,6 +327,7 @@ func TestRepairFalsifier_ActionTamperedRefuses(t *testing.T) {
 
 // Falsifier 4 -- policy tampered refuses.
 func TestRepairFalsifier_PolicyTamperedRefuses(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	seed := seedRepairTransaction(t, s)
 
@@ -345,6 +349,7 @@ func TestRepairFalsifier_PolicyTamperedRefuses(t *testing.T) {
 
 // Falsifier 5 -- current-ref mismatch refuses.
 func TestRepairFalsifier_CurrentRefMismatchRefuses(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	seed := seedRepairTransaction(t, s)
 	snap := snapshotStores(t, s, seed)
@@ -367,6 +372,7 @@ func TestRepairFalsifier_CurrentRefMismatchRefuses(t *testing.T) {
 // pending.RunAttemptID against the envelope's RunAttemptIDs. After the
 // fix this refusal fires.
 func TestRepairFalsifier_RunIDMismatchRefuses(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	seed := seedRepairTransaction(t, s)
 	snap := snapshotStores(t, s, seed)
@@ -385,6 +391,7 @@ func TestRepairFalsifier_RunIDMismatchRefuses(t *testing.T) {
 
 // Falsifier 7 -- PolicyDecisionID mismatch refuses.
 func TestRepairFalsifier_PolicyDecisionIDMismatchRefuses(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	seed := seedRepairTransaction(t, s)
 	snap := snapshotStores(t, s, seed)
@@ -406,6 +413,7 @@ func TestRepairFalsifier_PolicyDecisionIDMismatchRefuses(t *testing.T) {
 // From/To fields must agree (a same-state binding), not borrow the
 // wedge's source state.
 func TestRepairEventFromIsClaimedToClaimed(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := writeOwnerlessClaimWedge(t, s, fixedNow.Add(time.Minute))
 

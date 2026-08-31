@@ -12,6 +12,7 @@ import (
 // having no transcript because the harvester searched the wrong homes. Given the
 // lane's profile home, the workspace alone locates every one of them.
 func TestTranscriptDirReproducesTheHarnessSlugExactly(t *testing.T) {
+	t.Parallel()
 	root := "/profiles/_providers/example-lane"
 	// Shaped like a real workspace from that wave: a scratch root holding a
 	// directory whose own name is an encoded absolute path, so it already starts
@@ -41,6 +42,7 @@ func TestTranscriptDirReproducesTheHarnessSlugExactly(t *testing.T) {
 // while the real one sat next to it. This test pins the rule the harness
 // actually applies, so reproducing it becomes a contract instead of a guess.
 func TestTranscriptSlugTurnsDotsIntoDashesToo(t *testing.T) {
+	t.Parallel()
 	root := "/profiles/_providers/example-lane"
 	ws := "/home/example/.compound/delegate-workspaces/foo"
 	want := filepath.Join(
@@ -60,6 +62,7 @@ func TestTranscriptSlugTurnsDotsIntoDashesToo(t *testing.T) {
 // scanning candidate homes, a miss reads as "the run produced nothing" and a
 // completed run gets closed as cancelled -- which is precisely what happened.
 func TestTranscriptDirRefusesToGuessAnUnknownRoot(t *testing.T) {
+	t.Parallel()
 	if _, err := TranscriptDirFor("", "/abs/workspace"); !errors.Is(err, ErrSessionStoreRootUnknown) {
 		t.Fatalf("empty root must return ErrSessionStoreRootUnknown, got %v", err)
 	}
@@ -76,6 +79,7 @@ func TestTranscriptDirRefusesToGuessAnUnknownRoot(t *testing.T) {
 // "directory absent" and "directory present but empty" are different findings.
 // Conflating them is what turns a lookup bug into a false claim about the run.
 func TestTranscriptsDistinguishesMissingDirFromEmptyDir(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	ws := "/work/space"
 	dir, files, exists, err := TranscriptsFor(root, ws)

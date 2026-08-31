@@ -37,6 +37,7 @@ func makeSurfaceDirectorWork(t *testing.T, s *Store, surface, id string, now tim
 // when the registry is absent, ALLOWED once the surface is actively whitelisted, and DENIED
 // AGAIN once the surface is retired. It fails if the admission seam ignores the registry.
 func TestEditableSurfaceGatesSystemProposal(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	eligible := typedJobHealthEligibility(t, s, fixedNow)
 
@@ -88,6 +89,7 @@ func TestEditableSurfaceGatesSystemProposal(t *testing.T) {
 // autonomy kill-switch engaged, even an ACTIVELY whitelisted surface proposal is denied —
 // the halt runs first and wins. It fails if the surface gate could route around the halt.
 func TestEditableSurfaceHaltWins(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	eligible := typedJobHealthEligibility(t, s, fixedNow)
 
@@ -120,6 +122,7 @@ func TestEditableSurfaceHaltWins(t *testing.T) {
 // registry installed, so the EVOLVE-BLOCK gate constrains ONLY explicit harness-edit
 // proposals.
 func TestEditableSurfaceIgnoresProposalsWithoutTargetSurface(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	id := makeProposedDirectorWork(t, s, "job_health", "work_no_surface", fixedNow)
@@ -136,6 +139,7 @@ func TestEditableSurfaceIgnoresProposalsWithoutTargetSurface(t *testing.T) {
 // generic Advance seam: a system-originated advance that targets an unwhitelisted surface is
 // stopped BY THE REGISTRY, not merely by the operator-provenance guard.
 func TestEditableSurfaceGuardsGenericAdvanceSeam(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id := makeSurfaceDirectorWork(t, s, "steering_config", "work_surf_adv", fixedNow)
 	_, err := s.Advance(id, AdvanceInput{Actor: "auto-admit:director", To: "admitted"}, fixedNow.Add(1*time.Minute))

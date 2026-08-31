@@ -9,6 +9,7 @@ import (
 )
 
 func TestClosePlanEvaluatesPolicyWithoutClosing(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID := readyRunningWork(t, s)
 	plan, err := s.ClosePlan(workID, fixedNow, ClosePlanOptions{
@@ -38,7 +39,59 @@ func TestClosePlanEvaluatesPolicyWithoutClosing(t *testing.T) {
 	}
 }
 
+func TestCloseActionIntentIDSeparatesDelimiterAmbiguousLeaseAuthority(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "close identity frames authority fields"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstLease := Lease{
+		WorkID:  w.ID,
+		By:      "holder|reason",
+		ClaimAt: "2026-08-29T00:00:00Z",
+	}
+	if err := s.writeJSON(s.leasePath(w.ID), &firstLease); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.ClosePlan(w.ID, fixedNow, ClosePlanOptions{
+		Actor:       "closer",
+		Outcome:     "cancelled",
+		MoveType:    "audit_only",
+		Steal:       true,
+		StealReason: "tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondLease := Lease{
+		WorkID:  w.ID,
+		By:      "holder",
+		ClaimAt: "2026-08-29T00:00:00Z",
+	}
+	if err := s.writeJSON(s.leasePath(w.ID), &secondLease); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.ClosePlan(w.ID, fixedNow, ClosePlanOptions{
+		Actor:       "closer",
+		Outcome:     "cancelled",
+		MoveType:    "audit_only",
+		Steal:       true,
+		StealReason: "reason|tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.ActionIntent.ID == second.ActionIntent.ID {
+		t.Fatalf("delimiter-ambiguous authority tuples collided at %s", first.ActionIntent.ID)
+	}
+}
+
 func TestClosePlanSurfacesObservedRunEvidenceWithoutClosing(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w := runningWork(t, s, "close plan uses observed evidence")
 	trace := writeTrace(t, s, "trace_close_plan_observed", w.ID)
@@ -84,6 +137,7 @@ func TestClosePlanSurfacesObservedRunEvidenceWithoutClosing(t *testing.T) {
 }
 
 func TestClosePlanConsumesRecordedActionExecutionPlanReceiptDraft(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	ctx, workID := runningActionContextWork(t, s)
 	actionPlan, err := s.ActionExecutionPlan(workID, fixedNow, ActionExecutionPlanOptions{Actor: "codex", Record: true})
@@ -131,6 +185,7 @@ func TestClosePlanConsumesRecordedActionExecutionPlanReceiptDraft(t *testing.T) 
 }
 
 func TestClosePlanRequiresDeliveryContractForCommitProofFromActionPlan(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	_, workID := runningActionContextWork(t, s)
 	actionPlan, err := s.ActionExecutionPlan(workID, fixedNow, ActionExecutionPlanOptions{Actor: "codex", Record: true})
@@ -167,6 +222,7 @@ func TestClosePlanRequiresDeliveryContractForCommitProofFromActionPlan(t *testin
 // serialized JSON (the recorded artifact and --json surface operators read) so the checks
 // must survive on the wire, not just in memory.
 func TestClosePlanEnumeratesEveryUnmetPreconditionAsNamedChecks(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "close preconditions enumerated in one read"}, fixedNow)
 	if err != nil {
@@ -231,6 +287,7 @@ func TestClosePlanEnumeratesEveryUnmetPreconditionAsNamedChecks(t *testing.T) {
 }
 
 func TestCloseRecordsPolicyAction(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID := readyRunningWork(t, s)
 	before, err := s.Get(workID)
@@ -269,6 +326,7 @@ func TestCloseRecordsPolicyAction(t *testing.T) {
 }
 
 func TestCloseBlockedByPolicyDoesNotMutate(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	workID := readyRunningWork(t, s)
 	before, err := s.Get(workID)

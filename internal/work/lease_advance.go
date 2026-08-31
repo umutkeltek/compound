@@ -18,8 +18,9 @@ package work
 //     stealing actor) and the caller proceeds.
 //
 // Lease TRANSFER on steal is conditional on the verb, unlike the trail above (see
-// recordLeaseSteal/transferLeaseOnSteal in lease_close.go). A close-gate steal always
-// transfers: Close is terminal, so there is no "next mutation" for a stale lease to
+// recordLeaseSteal/transferLeaseOnSteal in lease_close.go). A terminal Close does not
+// transfer: it binds the override into terminal publication, retains the original lease
+// through the recoverable boundary, and releases it last, so it cannot
 // mis-authorize. An advance-gate steal transfers only when in.To != w.State — a real
 // lifecycle transition (the E1 twin-collision class: running->verifying and friends). A
 // SAME-STATE advance steal (in.To == w.State) is the land-check/proof-attachment class
@@ -45,6 +46,9 @@ import (
 // directly, bypassing this gate on purpose (its own kill-switch/eligibility gates apply).
 func (s *Store) leaseHolderAdvanceGate(w envelope.WorkEnvelope, actor string, in AdvanceInput, now time.Time) error {
 	status := s.leaseHolderStatusFor(w.ID, actor, in.Steal, in.StealReason, "advance")
+	if status.Err != nil {
+		return status.Err
+	}
 	switch {
 	case status.Blocked:
 		if err := s.recordLeaseHolderDeny(w, actor, status.Holder, status.Message, "work.advance", "advance_denied_not_lease_holder", now); err != nil {

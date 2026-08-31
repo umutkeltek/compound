@@ -17,6 +17,7 @@ import (
 // this is the test that goes red -- no delegate binding is created anywhere in
 // this fixture.
 func TestPresenceIncludesLeaseHolderWithNoDelegateBinding(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "operator", SuccessPredicate: "unspawned agent is still here"}, fixedNow)
 	if err != nil {
@@ -51,6 +52,7 @@ func TestPresenceIncludesLeaseHolderWithNoDelegateBinding(t *testing.T) {
 // long-dead agent as present forever. The live home carries leases weeks old;
 // without a TTL this projection would confidently name absent actors.
 func TestPresenceMarksActorStaleBeyondTTL(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "operator", SuccessPredicate: "stale holder"}, fixedNow)
 	if err != nil {
@@ -95,6 +97,7 @@ func TestPresenceMarksActorStaleBeyondTTL(t *testing.T) {
 // separate rows, the fleet looks twice its real size and last-seen becomes
 // whichever source happened to be read last.
 func TestPresenceMergesLeaseAndEventSightingsIntoOneActor(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "operator", SuccessPredicate: "merge sightings"}, fixedNow)
 	if err != nil {
@@ -132,6 +135,7 @@ func TestPresenceMergesLeaseAndEventSightingsIntoOneActor(t *testing.T) {
 // bound must not become a blind spot: a lease holder whose events fall outside
 // the window is still present, because the lease is independent evidence.
 func TestPresenceTailBoundDoesNotHideLeaseHolders(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "operator", SuccessPredicate: "bounded read"}, fixedNow)
 	if err != nil {
@@ -166,6 +170,7 @@ func TestPresenceTailBoundDoesNotHideLeaseHolders(t *testing.T) {
 // mutating. If it ever writes -- a cache, an index, a candidate -- it becomes
 // a contention source on exactly the surface it is meant to observe safely.
 func TestPresenceWritesNothing(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "operator", SuccessPredicate: "read only"}, fixedNow)
 	if err != nil {
@@ -195,6 +200,7 @@ func TestPresenceWritesNothing(t *testing.T) {
 // directory itself) must yield an empty, well-formed projection AND remain
 // byte-identical on disk — inspecting presence leaves no footprints.
 func TestOpenReadOnlyCreatesNoDirsAndProjectsEmpty(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 
 	s, err := OpenReadOnly(homePath)
@@ -221,6 +227,7 @@ func TestOpenReadOnlyCreatesNoDirsAndProjectsEmpty(t *testing.T) {
 // OpenReadOnly against a populated home must see exactly what Open sees — the
 // read-only opener may not observe a different ledger.
 func TestOpenReadOnlySeesExistingLeases(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "operator", SuccessPredicate: "ro opener sees leases"}, fixedNow)
 	if err != nil {

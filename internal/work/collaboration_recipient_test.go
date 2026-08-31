@@ -9,6 +9,7 @@ import (
 )
 
 func TestResolveCollaborationRecipientRequiresExactOwnedSessionBinding(t *testing.T) {
+	t.Parallel()
 	t.Run("sole workspace candidate does not authorize unknown session", func(t *testing.T) {
 		store := newStore(t)
 		workspace := t.TempDir()

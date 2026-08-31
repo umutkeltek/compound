@@ -9,7 +9,6 @@ import (
 
 	"compound/internal/activity"
 	"compound/internal/attention"
-	"compound/internal/home"
 	"compound/internal/work"
 )
 
@@ -56,11 +55,8 @@ func activityGroupsOf(report attention.Report) []attention.Group {
 // Decision 13 end-to-end: a fresh home with one >=20-min complete-coverage span and NO work
 // timestamps inside it surfaces exactly ONE watching-band activity group on the attention CLI.
 func TestAttentionCLISurfacesUnaccountedActivityGroup(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	day := time.Now().UTC().Format("2006-01-02")
 	writeActivitySpanDay(t, homePath, day, []activity.ActivitySpan{{
 		Start: day + "T09:00:00Z", End: day + "T09:47:00Z", ActiveSec: 45 * 60,
@@ -84,11 +80,8 @@ func TestAttentionCLISurfacesUnaccountedActivityGroup(t *testing.T) {
 // A real claim timestamp inside the block accounts for it: same day, but the envelope is claimed at
 // 09:20Z — the CLI read reconciles against the workbench and yields zero activity groups.
 func TestAttentionCLIAccountedBlockYieldsNoActivityGroup(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	day := time.Now().UTC().Format("2006-01-02")
 	writeActivitySpanDay(t, homePath, day, []activity.ActivitySpan{{
 		Start: day + "T09:00:00Z", End: day + "T09:47:00Z", ActiveSec: 45 * 60,
@@ -121,11 +114,8 @@ func TestAttentionCLIAccountedBlockYieldsNoActivityGroup(t *testing.T) {
 // A span day older than the staleness window never squats on the board: a sensor that stopped
 // draining days ago yields zero activity groups even though its last day had unaccounted blocks.
 func TestAttentionCLIStaleSpanDayYieldsNoActivityGroup(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	staleDay := time.Now().UTC().AddDate(0, 0, -(activityAttentionMaxAgeDays + 2)).Format("2006-01-02")
 	writeActivitySpanDay(t, homePath, staleDay, []activity.ActivitySpan{{
 		Start: staleDay + "T09:00:00Z", End: staleDay + "T09:47:00Z", ActiveSec: 45 * 60,

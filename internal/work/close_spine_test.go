@@ -53,6 +53,7 @@ func closeSpineWorkNoVerify(t *testing.T, s *Store, owner string, at time.Time) 
 // A same-outcome re-close must return the EXISTING terminal proof pair — the
 // closing receipt is not last-writer-wins.
 func TestCloseIsIdempotentOnSameOutcome(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id := closeSpineWork(t, s, "spine-idempotent", fixedNow)
 	in := CloseInput{Outcome: "completed", MoveType: "outward_delta", Summary: "close once", Changed: true, ProofRefs: []string{"check:once"}}
@@ -95,6 +96,7 @@ func TestCloseIsIdempotentOnSameOutcome(t *testing.T) {
 // future_behavior_changed is derived from the effective change, never from the
 // move class alone: a no-op close must not stake a claim it cannot evidence.
 func TestCloseDerivesFutureBehaviorChangedFromEffectiveChange(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	changedID := closeSpineWork(t, s, "spine-changed", fixedNow)
 	changed, err := s.Close(changedID, CloseInput{
@@ -127,6 +129,7 @@ func TestCloseDerivesFutureBehaviorChangedFromEffectiveChange(t *testing.T) {
 // The apex action_refs carry only ActionIntent ids — legacy prun_* run refs
 // are run history, not actions.
 func TestCloseFiltersLegacyRunRefsFromActionRefs(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id := closeSpineWork(t, s, "spine-actionrefs", fixedNow)
 	var w envelope.WorkEnvelope
@@ -156,6 +159,7 @@ func TestCloseFiltersLegacyRunRefsFromActionRefs(t *testing.T) {
 
 // The lifecycle never persists an envelope that fails the current schema.
 func TestCloseRefusesToPersistInvalidEnvelope(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	id := closeSpineWork(t, s, "spine-invalid-persist", fixedNow)
 	var w envelope.WorkEnvelope

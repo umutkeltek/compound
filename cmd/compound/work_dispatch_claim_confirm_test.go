@@ -71,6 +71,7 @@ func TestWorkDispatchClaimCLIChild(t *testing.T) {
 }
 
 func TestWorkDispatchClaimUnconfirmedPreviewsWithoutMutating(t *testing.T) {
+	t.Parallel()
 	for _, target := range []string{"argless", "next", "explicit", "help-example"} {
 		t.Run(target, func(t *testing.T) {
 			homePath := t.TempDir()
@@ -121,6 +122,7 @@ func TestWorkDispatchClaimUnconfirmedPreviewsWithoutMutating(t *testing.T) {
 }
 
 func TestWorkDispatchClaimConfirmPerformsMutation(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
@@ -158,6 +160,7 @@ func TestWorkDispatchClaimConfirmPerformsMutation(t *testing.T) {
 }
 
 func TestWorkDispatchClaimRejectsNextAndExplicitIDTogether(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
@@ -181,6 +184,7 @@ func TestWorkDispatchClaimRejectsNextAndExplicitIDTogether(t *testing.T) {
 }
 
 func TestWorkDispatchClaimRejectsConfirmAsMissingActorValue(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
@@ -269,6 +273,7 @@ func TestDispatchCLIIsolationIgnoresAndRestoresAmbientCapacityGuard(t *testing.T
 }
 
 func TestWorkDispatchClaimWalledPreviewPreservesStatusWithoutEvidenceWrite(t *testing.T) {
+	t.Parallel()
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)

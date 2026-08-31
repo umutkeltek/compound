@@ -3,6 +3,7 @@ package promotedriver
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -42,6 +43,7 @@ func TestRunCLIRejectsContradictoryConfirmAndDryRun(t *testing.T) {
 // not either flag individually. --dry-run alone must plan (no mutation), so
 // the exit must not be the usage error.
 func TestRunCLIAcceptsDryRunAlone(t *testing.T) {
+	t.Setenv("COMPOUND_HOME", t.TempDir())
 	stderr, code := captureCLI(func() int { return RunCLI([]string{"--dry-run"}) })
 	if code == 2 {
 		t.Fatalf("--dry-run alone must not be usage-rejected: %s", stderr)
@@ -52,5 +54,23 @@ func TestRunCLIRequiresRealWorkIdentityForApply(t *testing.T) {
 	stderr, code := captureCLI(func() int { return RunCLI([]string{"--confirm"}) })
 	if code != 2 || !strings.Contains(stderr, "--work") {
 		t.Fatalf("confirm without work identity = exit %d stderr %q, want usage refusal", code, stderr)
+	}
+}
+
+func TestRunCLIRejectsRegistryApplyAsPlanOnlyBeforeRuntimeAdmission(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("COMPOUND_HOME", filepath.Join(root, "absent-home"))
+	stderr, code := captureCLI(func() int {
+		return RunCLI([]string{"--confirm", "--work", "work_example", "--registry", "products.example/*.yaml"})
+	})
+	if code != 2 || !strings.Contains(stderr, "plan-only") {
+		t.Fatalf("registry apply = exit %d stderr %q, want plan-only usage refusal", code, stderr)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("registry apply refusal created runtime state: %+v", entries)
 	}
 }

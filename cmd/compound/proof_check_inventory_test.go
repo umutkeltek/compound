@@ -15,6 +15,7 @@ import (
 // anywhere) — this guard turns that into a loud, named test failure instead of quiet
 // proof drift.
 func TestProofCheckSmokeInventoryGuard(t *testing.T) {
+	t.Parallel()
 	// manualOnlySmokes lists every *smoke*.mjs that is intentionally NOT wired into
 	// proofCheckSteps, with the reason it cannot run in the portable proof-check path.
 	// Every entry here must still exist on disk and must NOT also be wired as a step —
@@ -147,6 +148,7 @@ func inventoryGuardRepoRoot(t *testing.T) string {
 // Removing the flag, or changing the budget without editing this test, must be loud:
 // the budget is a recorded decision, never an implicit default.
 func TestGoTestGateCarriesExplicitDeliberateTimeout(t *testing.T) {
+	t.Parallel()
 	steps, err := proofCheckSteps("")
 	if err != nil {
 		t.Fatalf("proofCheckSteps: %v", err)

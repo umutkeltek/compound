@@ -35,6 +35,7 @@ func leaseResidueReadyWork(t *testing.T, s *Store, holder string) string {
 // actor from claim eligibility, keeps it visible (no silent shrinkage), and reports the
 // skipped count.
 func TestDispatchPlanExcludesReadyItemHeldByOtherActor(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	held := leaseResidueReadyWork(t, s, "actor-a")
 
@@ -89,6 +90,7 @@ func TestDispatchPlanExcludesReadyItemHeldByOtherActor(t *testing.T) {
 // Falsifier 5: dispatch-claim with a ready item held by another actor does NOT claim it
 // and reports the skip.
 func TestDispatchClaimSkipsReadyItemHeldByOtherActor(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	held := leaseResidueReadyWork(t, s, "actor-a")
 
@@ -121,6 +123,7 @@ func TestDispatchClaimSkipsReadyItemHeldByOtherActor(t *testing.T) {
 // verifying work — this is the exact "closes ANY actor's verifying work" live incident
 // mechanism the packet names (DispatchClose, dispatch_plan.go).
 func TestDispatchCloseNeverAutoClosesVerifyingWorkHeldByOtherActor(t *testing.T) {
+	t.Parallel()
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "lane-w", SuccessPredicate: "verifying held by other"}, fixedNow)
 	if err != nil {
