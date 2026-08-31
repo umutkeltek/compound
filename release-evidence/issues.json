@@ -114,29 +114,36 @@
       "subsystem": "work-sweep",
       "title": "Stale-work reclaim transaction",
       "status": "fixing",
-      "reproducer": "Race liveness and same-state generation drift; freeze and semantically corrupt a checksum-valid pending frame; inject failure at every persistence and removal boundary.",
-      "root_cause": "The original reclaim mutated a stale snapshot, probed liveness outside the mutation boundary, and split envelope/event/lease persistence. The first recovery frame trusted checksum-valid but semantically forged facts and let delegate minting and lease repair cross a frozen reclaim.",
-      "invariant": "Reclaim is per-work serialized, generation-bound, liveness-rechecked, and recoverable; durable intent binds exact envelopes, event prefix, canonical time, liveness, lease, and reason; corrupt partial state stays visibly recovery_required; lease release is last.",
-      "red_test": "TestReclaimEnvelopeRefusesWhenGenerationChangedUnderneath; TestSweepStalePersistenceFaultsRecoverExactly; TestSweepStalePendingRejectsChecksumValidSemanticCorruption; TestSweepStalePendingCorruptionPreservesRecoveryClassification; TestSweepStalePendingRejectsForgedLastEventCandidateWithoutMutation; TestDelegateRefusesFrozenSweepStaleBeforeMint; TestLeaseRepairRefusesFrozenSweepStaleAuthorityWithoutMutation.",
+      "reproducer": "Race liveness and same-state generation drift; freeze and semantically corrupt a checksum-valid pending frame; inject failure at every persistence and removal boundary; attempt ungated, malformed, conflicting, and repeated-threshold CLI mutation requests while snapshotting the whole temporary home.",
+      "root_cause": "The original reclaim mutated a stale snapshot, probed liveness outside the mutation boundary, and split envelope/event/lease persistence. The first recovery frame trusted checksum-valid but semantically forged facts and let delegate minting and lease repair cross a frozen reclaim. The CLI opened writable state before one shared parser had validated experimental admission, and repeated thresholds used last-value-wins semantics.",
+      "invariant": "Reclaim is per-work serialized, generation-bound, liveness-rechecked, and recoverable; durable intent binds exact envelopes, event prefix, canonical time, liveness, lease, and reason; corrupt partial state stays visibly recovery_required; lease release is last. Unsupported v0.1 mutation requires the exact experimental gate, and every read-only or rejected CLI shape is footprint-free.",
+      "red_test": "TestReclaimEnvelopeRefusesWhenGenerationChangedUnderneath; TestSweepStalePersistenceFaultsRecoverExactly; TestSweepStalePendingRejectsChecksumValidSemanticCorruption; TestSweepStalePendingCorruptionPreservesRecoveryClassification; TestSweepStalePendingRejectsForgedLastEventCandidateWithoutMutation; TestDelegateRefusesFrozenSweepStaleBeforeMint; TestLeaseRepairRefusesFrozenSweepStaleAuthorityWithoutMutation; TestRunWorkSweepStaleCLIParsesExperimentalMutationGate; TestWorkSweepStaleAdmissionUsesValidatedParser; TestWorkSweepStaleCLIOnlyValidExperimentalApplyMaterializesHome; TestDefaultSweepStaleProbeReadPathsDoNotMaterializeState.",
       "fix_commits": [
         "53c9dc0540ddca986f0f63ea1a3af9ee7157cd16",
         "5ae2c2784e71c30af92d1058f8052b9e9affccb5",
         "d5526a19a83273cc181fa821f1e55323a97ef944",
         "25bc7de47bf78394ceecb396ace94d52a0e2db38",
-        "92ac0f8181593ebc70cd086fc5b44874450ca904"
+        "92ac0f8181593ebc70cd086fc5b44874450ca904",
+        "e26f496f3ae907ecb8135db4c4b3a53dab4ebacb",
+        "27984af79ddcf751b013f5e5fcef1e7dd9e5dd8a",
+        "8e60a073cf3baff0f0b3c48555521a022bca50f3"
       ],
       "focused_tests": [
         "GOTOOLCHAIN=go1.26.4 go test ./internal/work -run semantic-and-frozen-sweep-matrix -count=1",
         "GOTOOLCHAIN=go1.26.4 go test -race ./internal/work -run semantic-and-frozen-sweep-matrix -count=1",
-        "GOTOOLCHAIN=go1.26.4 go vet ./internal/work"
+        "GOTOOLCHAIN=go1.26.4 go vet ./internal/work",
+        "GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/work ./internal/landlease ./cmd/compound -run 'SweepStale|StatusReadOnly'",
+        "GOTOOLCHAIN=go1.26.4 go test -race -count=1 ./internal/work ./internal/landlease ./cmd/compound -run 'SweepStale|StatusReadOnly'",
+        "GOTOOLCHAIN=go1.26.4 go vet ./internal/work ./internal/landlease ./cmd/compound"
       ],
       "broad_tests": [],
       "evidence_paths": [
-        "release-evidence/runs/20260831-p0-004-semantic-fencing-focused-green.json"
+        "release-evidence/runs/20260831-p0-004-semantic-fencing-focused-green.json",
+        "release-evidence/runs/20260831-p0-004-cli-admission-focused-green.json"
       ],
-      "residual_risk": "The public --yes experimental admission/zero-footprint gate, cross-process RunAttempt liveness lock, resumable physical removal/quarantine recovery, every-boundary fault matrix, full internal/work run, and canonical proof-check remain open. work sweep-stale --yes remains outside the supported contract.",
+      "residual_risk": "The cross-process RunAttempt liveness lock, retained land-lease mutation boundary, resumable physical removal/quarantine recovery, every-boundary fault matrix, full internal/work run, and canonical proof-check remain open. work sweep-stale --yes remains outside the supported contract.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-31T16:30:00Z"
+      "updated_at": "2026-08-31T18:16:00Z"
     },
     {
       "id": "REL-P0-005",
