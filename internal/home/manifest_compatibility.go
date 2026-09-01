@@ -316,6 +316,7 @@ func recoverOwnedInitManifestStaging(root *os.Root, homePath string) error {
 					}
 					return nil
 				},
+				false,
 			); err != nil {
 				return fmt.Errorf("recover interrupted home init manifest staging: %w", err)
 			}
@@ -479,6 +480,7 @@ func removeOwnedInitManifestStaging(root *os.Root, name string, expected os.File
 			}
 			return nil
 		},
+		false,
 	)
 }
 
