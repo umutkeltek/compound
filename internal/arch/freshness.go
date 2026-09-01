@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -147,4 +148,126 @@ func runInstalledVersion(binaryPath string) (string, error) {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, binaryPath, "version").Output()
 	return string(out), err
+}
+
+// SidecarFreshnessStatus classifies an INSTALLED sidecar script against the repo copy
+// install.sh would place. The installed binary carries an embedded build SHA, so
+// build-freshness can compare it to HEAD; a shell script carries no such stamp, and
+// nothing else compares the two. That gap is not theoretical: on 2026-08-30 a commit
+// removed `--registry` from the heartbeat's promote-driver call AND added a CLI refusal
+// for that exact flag combination, but the installed copy kept the flag, so every hourly
+// autonomy pass exited rc=2 for 28h while build-freshness still reported "fresh".
+type SidecarFreshnessStatus string
+
+const (
+	SidecarFresh   SidecarFreshnessStatus = "fresh"   // installed bytes match the repo copy
+	SidecarStale   SidecarFreshnessStatus = "stale"   // installed bytes differ from the repo copy
+	SidecarMissing SidecarFreshnessStatus = "missing" // not installed (autonomy lab is opt-in)
+	SidecarUnknown SidecarFreshnessStatus = "unknown" // repo copy unreadable — nothing to compare against
+)
+
+// sidecarScript is one file install.sh COPIES out of the repo (and can therefore drift).
+// Scripts install.sh merely executes from the repo — sync-ceremony-overlays.sh — cannot
+// drift and are deliberately absent here. The two destinations differ: the heartbeat lands
+// next to the binary, the attention renderer lands under COMPOUND_HOME.
+type sidecarScript struct {
+	RepoRel string // repo-relative source install.sh copies from
+	DestDir func() string
+}
+
+// installedSidecarScripts mirrors the copies install.sh makes when
+// COMPOUND_INSTALL_AUTONOMY_LAB=1. Keyed by installed file name.
+var installedSidecarScripts = map[string]sidecarScript{
+	"compound-autonomy-heartbeat.sh": {
+		RepoRel: "scripts/compound-autonomy-heartbeat.sh",
+		DestDir: installedBinDir,
+	},
+	"attention-letter.py": {
+		RepoRel: "scripts/attention-letter.py",
+		DestDir: installedHomeScriptsDir,
+	},
+}
+
+// classifySidecarFreshness is the PURE decision: given the installed bytes (nil if the file
+// is absent) and the repo bytes (nil if unreadable), decide fresh/stale/missing/unknown.
+// Compared byte-for-byte because install.sh copies verbatim — any difference at all means
+// the scheduler is running something the repo does not describe.
+func classifySidecarFreshness(installed, repo []byte) SidecarFreshnessStatus {
+	if installed == nil {
+		return SidecarMissing
+	}
+	if repo == nil {
+		return SidecarUnknown
+	}
+	if string(installed) == string(repo) {
+		return SidecarFresh
+	}
+	return SidecarStale
+}
+
+// checkSidecarFreshnessAt is the testable seam: both sides are injected so tests need
+// neither a real install nor a real repo. Returns exactly one Finding per script and NEVER
+// Fail — a CI clone has no installed sidecar at all, and this gate is CI-portable.
+func checkSidecarFreshnessAt(names []string, installedFn, repoFn func(string) ([]byte, error)) []Finding {
+	out := make([]Finding, 0, len(names))
+	for _, name := range names {
+		installed, err := installedFn(name)
+		if err != nil {
+			installed = nil
+		}
+		repo, err := repoFn(name)
+		if err != nil {
+			repo = nil
+		}
+		status := classifySidecarFreshness(installed, repo)
+		finding := Finding{Check: "sidecar-freshness", Severity: Info}
+		switch status {
+		case SidecarFresh:
+			finding.Message = fmt.Sprintf("installed %s matches the repo copy — status=%s", name, status)
+		case SidecarStale:
+			finding.Severity = Warn
+			finding.Message = fmt.Sprintf("installed %s differs from the repo copy — the scheduler is running unversioned bytes; reinstall with COMPOUND_INSTALL_AUTONOMY_LAB=1 ./install.sh — status=%s", name, status)
+		case SidecarMissing:
+			finding.Message = fmt.Sprintf("%s is not installed (autonomy lab is opt-in) — status=%s", name, status)
+		default:
+			finding.Message = fmt.Sprintf("repo copy for %s is unreadable — status=%s", name, status)
+		}
+		out = append(out, finding)
+	}
+	return out
+}
+
+// checkSidecarFreshnessContract is the real wiring Doctor() calls: installed path resolved
+// the same way install.sh resolves it, repo path relative to repoRoot.
+func checkSidecarFreshnessContract(repoRoot string) []Finding {
+	names := make([]string, 0, len(installedSidecarScripts))
+	for name := range installedSidecarScripts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return checkSidecarFreshnessAt(names,
+		func(name string) ([]byte, error) {
+			return os.ReadFile(filepath.Join(installedSidecarScripts[name].DestDir(), name))
+		},
+		func(name string) ([]byte, error) {
+			return os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(installedSidecarScripts[name].RepoRel)))
+		},
+	)
+}
+
+// installedBinDir mirrors install.sh's install_dir: $GOBIN if set, else $HOME/.local/bin.
+func installedBinDir() string {
+	return filepath.Dir(installedBinaryPath())
+}
+
+// installedHomeScriptsDir mirrors install.sh's $compound_home/scripts: $COMPOUND_HOME if
+// set, else $HOME/.compound.
+func installedHomeScriptsDir() string {
+	if h := strings.TrimSpace(os.Getenv("COMPOUND_HOME")); h != "" {
+		return filepath.Join(h, "scripts")
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".compound", "scripts")
+	}
+	return filepath.Join(os.Getenv("HOME"), ".compound", "scripts")
 }

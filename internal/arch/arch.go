@@ -422,6 +422,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkASCDailySignalsPublicBoundaryContract(repoRoot)...)
 		f = append(f, checkPublicAlphaSupportedScopeContract(repoRoot)...)
 		f = append(f, checkBuildFreshnessContract(repoRoot)...)
+		f = append(f, checkSidecarFreshnessContract(repoRoot)...)
 		f = append(f, checkMintTwoClassHome(repoRoot)...)
 		f = append(f, checkCmdCompoundBudget(repoRoot, strict)...)
 	}

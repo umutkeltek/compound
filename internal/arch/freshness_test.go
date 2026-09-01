@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -160,5 +161,127 @@ func TestCheckBuildFreshnessContractNeverFails(t *testing.T) {
 	}
 	if f.Check != "build-freshness" {
 		t.Fatalf("finding.Check = %q, want build-freshness", f.Check)
+	}
+}
+
+func TestClassifySidecarFreshness(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		installed []byte
+		repo      []byte
+		want      SidecarFreshnessStatus
+	}{
+		{"identical bytes are fresh", []byte("#!/bin/sh\nexit 0\n"), []byte("#!/bin/sh\nexit 0\n"), SidecarFresh},
+		{"not installed is missing", nil, []byte("#!/bin/sh\n"), SidecarMissing},
+		{"unreadable repo copy is unknown", []byte("#!/bin/sh\n"), nil, SidecarUnknown},
+		{"absent on both sides is missing", nil, nil, SidecarMissing},
+		// The exact 2026-08-30 drift: one extra flag line in the installed copy.
+		{"one added flag line is stale",
+			[]byte("promote-driver \\\n  --confirm \\\n  --registry x \\\n"),
+			[]byte("promote-driver \\\n  --confirm \\\n"),
+			SidecarStale},
+		{"whitespace-only difference is stale", []byte("a\tb\n"), []byte("a b\n"), SidecarStale},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifySidecarFreshness(tc.installed, tc.repo); got != tc.want {
+				t.Fatalf("classifySidecarFreshness = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckSidecarFreshnessAtWarnsOnlyWhenStale(t *testing.T) {
+	repo := []byte("#!/bin/sh\nexit 0\n")
+	for _, tc := range []struct {
+		name         string
+		installed    []byte
+		wantSeverity Severity
+		wantSubstr   string
+	}{
+		{"fresh", repo, Info, "matches the repo copy"},
+		{"stale", []byte("#!/bin/sh\nexit 1\n"), Warn, "unversioned bytes"},
+		{"missing", nil, Info, "not installed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := checkSidecarFreshnessAt([]string{"x.sh"},
+				func(string) ([]byte, error) {
+					if tc.installed == nil {
+						return nil, os.ErrNotExist
+					}
+					return tc.installed, nil
+				},
+				func(string) ([]byte, error) { return repo, nil },
+			)
+			if len(findings) != 1 {
+				t.Fatalf("want exactly 1 finding, got %d", len(findings))
+			}
+			if findings[0].Severity != tc.wantSeverity {
+				t.Fatalf("severity = %v, want %v (%s)", findings[0].Severity, tc.wantSeverity, findings[0].Message)
+			}
+			if !strings.Contains(findings[0].Message, tc.wantSubstr) {
+				t.Fatalf("message %q missing %q", findings[0].Message, tc.wantSubstr)
+			}
+			if findings[0].Check != "sidecar-freshness" {
+				t.Fatalf("check = %q", findings[0].Check)
+			}
+		})
+	}
+}
+
+// A CI clone has no installed sidecar, and architecture doctor --strict is a CI-portable
+// proof gate: this check must never be able to red it.
+func TestCheckSidecarFreshnessNeverFails(t *testing.T) {
+	for _, installed := range [][]byte{nil, []byte("drifted")} {
+		findings := checkSidecarFreshnessAt([]string{"x.sh"},
+			func(string) ([]byte, error) {
+				if installed == nil {
+					return nil, os.ErrNotExist
+				}
+				return installed, nil
+			},
+			func(string) ([]byte, error) { return []byte("repo"), nil },
+		)
+		for _, f := range findings {
+			if f.Severity == Fail {
+				t.Fatalf("sidecar-freshness produced a Fail finding: %s", f.Message)
+			}
+		}
+	}
+}
+
+// The map is the contract: every sidecar install.sh copies must be covered, and every
+// entry must name a file that actually exists in the repo. A script added to install.sh
+// without an entry here is invisible to the drift check.
+func TestInstalledSidecarScriptsCoverInstallScript(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, script := range installedSidecarScripts {
+		if _, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(script.RepoRel))); err != nil {
+			t.Fatalf("installedSidecarScripts[%q] points at missing repo file %s: %v", name, script.RepoRel, err)
+		}
+	}
+	installSH, err := os.ReadFile(filepath.Join(repoRoot, "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only `cp` out of the repo can drift; a script install.sh EXECUTES from the repo
+	// (sync-ceremony-overlays.sh) always runs the committed bytes.
+	copied := regexp.MustCompile(`cp "\$repo_root/(scripts/[A-Za-z0-9._-]+)"`).FindAllStringSubmatch(string(installSH), -1)
+	if len(copied) == 0 {
+		t.Fatal("no `cp \"$repo_root/scripts/...\"` found in install.sh — this test's premise broke, not the map")
+	}
+	for _, match := range copied {
+		covered := false
+		for _, known := range installedSidecarScripts {
+			if known.RepoRel == match[1] {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			t.Fatalf("install.sh copies %s but installedSidecarScripts does not cover it — its drift would go unnoticed", match[1])
+		}
 	}
 }
