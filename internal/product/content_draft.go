@@ -130,17 +130,23 @@ type ContentDraftMediaInput struct {
 	Adapter  string // which generator produced it, e.g. "adapter:local-sdxl"
 	Model    string // model / LoRA identity, e.g. "sdxl-1.0+lora:product-style-v3"
 	Prompt   string // the prompt itself; custodied content-addressed as PromptRef
+	// Params are the generation parameters (seed, steps, size). They are persisted
+	// because an asset whose seed was sent to the generator but never recorded
+	// cannot be reproduced from its own record — the reproducibility claim outran
+	// the data until this was added.
+	Params map[string]string
 }
 
 // ContentDraftMedia is one attached asset as persisted on the draft.
 type ContentDraftMedia struct {
-	Kind      string `json:"kind"`
-	Ref       string `json:"ref"`
-	MIMEType  string `json:"mime_type,omitempty"`
-	AltText   string `json:"alt_text,omitempty"`
-	Adapter   string `json:"adapter,omitempty"`
-	Model     string `json:"model,omitempty"`
-	PromptRef string `json:"prompt_ref,omitempty"`
+	Kind      string            `json:"kind"`
+	Ref       string            `json:"ref"`
+	MIMEType  string            `json:"mime_type,omitempty"`
+	AltText   string            `json:"alt_text,omitempty"`
+	Adapter   string            `json:"adapter,omitempty"`
+	Model     string            `json:"model,omitempty"`
+	PromptRef string            `json:"prompt_ref,omitempty"`
+	Params    map[string]string `json:"params,omitempty"`
 }
 
 // ContentDraftPostInput is the platform's own answer after a successful post.
@@ -342,6 +348,7 @@ func custodyContentDraftMedia(store *home.ArtifactStore, in []ContentDraftMediaI
 			AltText:  strings.TrimSpace(m.AltText),
 			Adapter:  strings.TrimSpace(m.Adapter),
 			Model:    strings.TrimSpace(m.Model),
+			Params:   m.Params,
 		}
 		if prompt := strings.TrimSpace(m.Prompt); prompt != "" {
 			promptRef, err := store.Put([]byte(prompt))

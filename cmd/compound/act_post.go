@@ -58,6 +58,10 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	)
 	switch {
 	case draftID != "":
+		if gateErr := product.RequireDistributionExperiment("act post --draft"); gateErr != nil {
+			fmt.Fprintln(stderr, "error:", gateErr)
+			return 2
+		}
 		scheduleAt, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(flagValue(args, "--at")))
 		if parseErr != nil {
 			fmt.Fprintln(stderr, "error: --at must be a future RFC3339 timestamp")

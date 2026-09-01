@@ -353,7 +353,12 @@ func TestActPostConfirmWithoutGrantHoldsWithoutExecuting(t *testing.T) {
 }
 
 func TestActPostDraftRefusesPendingEnrollmentBeforeTransport(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: Go forbids it alongside t.Setenv, and the explicit
+	// experimental opt-in below is what this test needs more than parallelism.
+	// This test exercises the EXPERIMENTAL distribution loop deliberately, so it
+	// opts in explicitly. The gate exists to stop the surface being reached by
+	// accident, not to stop it being tested.
+	t.Setenv(product.DistributionExperimentEnv, "1")
 	homePath := t.TempDir()
 	draft := seedAuthorizedPostDraft(t, homePath, "pending_enrollment", "")
 	marker := writeVerifiedPostTransport(t, homePath, "fixture")
@@ -373,7 +378,12 @@ func TestActPostDraftRefusesPendingEnrollmentBeforeTransport(t *testing.T) {
 }
 
 func TestActPostDraftWithGrantSendsCompleteRequestAndCapturesRemoteProof(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: Go forbids it alongside t.Setenv, and the explicit
+	// experimental opt-in below is what this test needs more than parallelism.
+	// This test exercises the EXPERIMENTAL distribution loop deliberately, so it
+	// opts in explicitly. The gate exists to stop the surface being reached by
+	// accident, not to stop it being tested.
+	t.Setenv(product.DistributionExperimentEnv, "1")
 	homePath := t.TempDir()
 	draft := seedAuthorizedPostDraft(t, homePath, "active", "integration-synth")
 	marker := writeVerifiedPostTransport(t, homePath, "fixture")

@@ -23,6 +23,9 @@ type stubRunner struct {
 	assetDir string
 	// asset, when non-empty, is written to a file the stdout JSON points at.
 	asset []byte
+	// stdoutTemplate lets a test shape the answer while still pointing inside the
+	// run's output root; {{ROOT}} is substituted at run time.
+	stdoutTemplate string
 }
 
 func (r *stubRunner) Run(cfg MediaGeneratorConfig, stdin []byte) ([]byte, error) {
@@ -31,12 +34,21 @@ func (r *stubRunner) Run(cfg MediaGeneratorConfig, stdin []byte) ([]byte, error)
 	if r.err != nil {
 		return nil, r.err
 	}
+	// Write inside the output root Compound created for this run — a generator may
+	// only return a file it wrote there.
+	var req map[string]any
+	_ = json.Unmarshal(stdin, &req)
+	root, _ := req["output_dir"].(string)
+	r.assetDir = root
 	if len(r.asset) > 0 {
-		path := filepath.Join(r.assetDir, "asset.png")
+		path := filepath.Join(root, "asset.png")
 		if err := os.WriteFile(path, r.asset, 0o644); err != nil {
 			return nil, err
 		}
 		r.stdout = `{"path":` + strconv.Quote(path) + `,"mime_type":"image/png"}`
+	}
+	if r.stdoutTemplate != "" {
+		r.stdout = strings.ReplaceAll(r.stdoutTemplate, "{{ROOT}}", root)
 	}
 	return []byte(r.stdout), nil
 }
@@ -139,12 +151,10 @@ func TestGenerateMediaProducesAttachableProvenancedAsset(t *testing.T) {
 func TestGeneratorCannotForgeItsOwnIdentity(t *testing.T) {
 	homePath := t.TempDir()
 	enrollGenerator(t, homePath, "local-sdxl", imageGeneratorConfig())
-	assetDir := t.TempDir()
-	path := filepath.Join(assetDir, "asset.png")
-	if err := os.WriteFile(path, []byte("\x89PNG\r\n\x1a\nx"), 0o644); err != nil {
-		t.Fatal(err)
+	runner := &stubRunner{
+		asset:          []byte("\x89PNG\r\n\x1a\nx"),
+		stdoutTemplate: `{"path":"{{ROOT}}/asset.png","mime_type":"image/png","adapter":"adapter:midjourney","model":"a-model-i-made-up","kind":"video"}`,
 	}
-	runner := &stubRunner{stdout: `{"path":` + strconv.Quote(path) + `,"mime_type":"image/png","adapter":"adapter:midjourney","model":"a-model-i-made-up","kind":"video"}`}
 
 	media, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{
 		Adapter: "local-sdxl",
@@ -203,10 +213,6 @@ func TestGenerateMediaRefusesShellInterpreterGenerator(t *testing.T) {
 // produces nothing usable fails loudly rather than minting an empty asset. An
 // empty asset would attach to a post and publish a blank image.
 func TestGenerateMediaRefusesUnusableGeneratorOutput(t *testing.T) {
-	emptyPath := filepath.Join(t.TempDir(), "empty.png")
-	if err := os.WriteFile(emptyPath, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
 	for _, tc := range []struct {
 		name   string
 		stdout string
@@ -214,13 +220,13 @@ func TestGenerateMediaRefusesUnusableGeneratorOutput(t *testing.T) {
 		{"no output", ""},
 		{"not json", "done!"},
 		{"no path", `{"mime_type":"image/png"}`},
-		{"missing file", `{"path":"/nonexistent/asset.png"}`},
-		{"empty file", `{"path":` + strconv.Quote(emptyPath) + `}`},
+		{"missing file", `{"path":"{{ROOT}}/asset.png"}`},
+		{"outside the output root", `{"path":"/etc/hosts"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			homePath := t.TempDir()
 			enrollGenerator(t, homePath, "local-sdxl", imageGeneratorConfig())
-			_, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{Adapter: "local-sdxl", Prompt: "p"}, &stubRunner{stdout: tc.stdout}, mediaGenNow)
+			_, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{Adapter: "local-sdxl", Prompt: "p"}, &stubRunner{stdoutTemplate: tc.stdout, stdout: tc.stdout}, mediaGenNow)
 			if err == nil {
 				t.Fatal("unusable generator output must be refused, not turned into an empty asset")
 			}
@@ -234,12 +240,19 @@ func TestGenerateMediaRefusesUnusableGeneratorOutput(t *testing.T) {
 func TestGenerateMediaRefusesOversizedAsset(t *testing.T) {
 	homePath := t.TempDir()
 	enrollGenerator(t, homePath, "local-sdxl", imageGeneratorConfig())
-	assetDir := t.TempDir()
-	path := filepath.Join(assetDir, "huge.png")
-	if err := os.WriteFile(path, make([]byte, MaxGeneratedAssetBytes+1), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{Adapter: "local-sdxl", Prompt: "p"}, &stubRunner{stdout: `{"path":` + strconv.Quote(path) + `}`}, mediaGenNow)
+	runner := runnerFunc(func(cfg MediaGeneratorConfig, stdin []byte) ([]byte, error) {
+		var req map[string]any
+		if err := json.Unmarshal(stdin, &req); err != nil {
+			return nil, err
+		}
+		root, _ := req["output_dir"].(string)
+		path := filepath.Join(root, "huge.png")
+		if err := os.WriteFile(path, make([]byte, MaxGeneratedAssetBytes+1), 0o644); err != nil {
+			return nil, err
+		}
+		return []byte(`{"path":` + strconv.Quote(path) + `}`), nil
+	})
+	_, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{Adapter: "local-sdxl", Prompt: "p"}, runner, mediaGenNow)
 	if err == nil {
 		t.Fatal("an oversized asset must be refused")
 	}

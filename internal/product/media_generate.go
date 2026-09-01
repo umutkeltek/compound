@@ -3,10 +3,12 @@ package product
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"compound/internal/act"
@@ -60,6 +62,10 @@ type MediaGenerateRequest struct {
 	Params  map[string]string
 }
 
+// generatorOutputRootPerm keeps a render-in-progress unreadable by other local
+// users. The root is Compound's, not the generator's, and it is removed per run.
+const generatorOutputRootPerm = 0o700
+
 // MediaGeneratorRunner executes an enrolled generator. It is an interface so every
 // rule in this file is provable without a GPU, a network, or model weights.
 type MediaGeneratorRunner interface {
@@ -90,12 +96,28 @@ func GenerateContentDraftMedia(homePath string, req MediaGenerateRequest, runner
 	if runner == nil {
 		runner = ExecMediaGeneratorRunner{}
 	}
+	// Compound owns the output root. A generator that could name any readable path
+	// could have Compound custody a private key or credential file — this is not
+	// hypothetical, it was live in 8059782a and confirmed by probe.
+	outputRoot, err := os.MkdirTemp("", "compound-generator-")
+	if err != nil {
+		return ContentDraftMediaInput{}, err
+	}
+	defer os.RemoveAll(outputRoot)
+	if err := os.Chmod(outputRoot, generatorOutputRootPerm); err != nil {
+		return ContentDraftMediaInput{}, err
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(outputRoot)
+	if err != nil {
+		return ContentDraftMediaInput{}, err
+	}
 	payload, err := json.Marshal(map[string]any{
-		"kind":      cfg.Kind,
-		"model":     cfg.Model,
-		"prompt":    prompt,
-		"params":    req.Params,
-		"issued_at": now.UTC().Format(time.RFC3339),
+		"kind":       cfg.Kind,
+		"model":      cfg.Model,
+		"prompt":     prompt,
+		"params":     req.Params,
+		"output_dir": resolvedRoot,
+		"issued_at":  now.UTC().Format(time.RFC3339),
 	})
 	if err != nil {
 		return ContentDraftMediaInput{}, err
@@ -104,7 +126,7 @@ func GenerateContentDraftMedia(homePath string, req MediaGenerateRequest, runner
 	if err != nil {
 		return ContentDraftMediaInput{}, fmt.Errorf("generator %q failed: %w", name, err)
 	}
-	bytesOut, mime, err := readGeneratorAsset(name, stdout)
+	bytesOut, mime, err := readGeneratorAsset(name, resolvedRoot, stdout)
 	if err != nil {
 		return ContentDraftMediaInput{}, err
 	}
@@ -117,6 +139,7 @@ func GenerateContentDraftMedia(homePath string, req MediaGenerateRequest, runner
 		Adapter: "adapter:" + name,
 		Model:   cfg.Model,
 		Prompt:  prompt,
+		Params:  req.Params,
 	}, nil
 }
 
@@ -165,7 +188,7 @@ func LoadMediaGeneratorConfig(homePath, name string) (MediaGeneratorConfig, erro
 // readGeneratorAsset parses the control-channel answer and loads the asset the
 // generator wrote. Every failure here is loud: a generator that produced nothing
 // usable must not become an empty asset that later publishes as a blank image.
-func readGeneratorAsset(name string, stdout []byte) ([]byte, string, error) {
+func readGeneratorAsset(name, outputRoot string, stdout []byte) ([]byte, string, error) {
 	trimmed := strings.TrimSpace(string(stdout))
 	if trimmed == "" {
 		return nil, "", fmt.Errorf("generator %q produced no output", name)
@@ -181,9 +204,24 @@ func readGeneratorAsset(name string, stdout []byte) ([]byte, string, error) {
 	if !filepath.IsAbs(assetPath) || filepath.Clean(assetPath) != assetPath {
 		return nil, "", fmt.Errorf("generator %q asset path must be a clean absolute path, got %q", name, answer.Path)
 	}
-	info, err := os.Stat(assetPath)
+	// Containment, checked on the PATH first: the asset must live under the output
+	// root Compound created for this run.
+	rel, err := filepath.Rel(outputRoot, assetPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, "", fmt.Errorf("generator %q asset %q is outside its output root %s: a generator may only return a file it wrote there", name, assetPath, outputRoot)
+	}
+	// Containment, enforced on the DESCRIPTOR: a path inside the root can still be a
+	// symlink pointing out of it. O_NOFOLLOW refuses the link itself, and every
+	// subsequent check reads the same descriptor, so the file cannot be swapped
+	// between the check and the read.
+	f, err := os.OpenFile(assetPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return nil, "", fmt.Errorf("generator %q asset is not readable: %w", name, err)
+		return nil, "", fmt.Errorf("generator %q asset is not readable as a regular file inside its output root: %w", name, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, "", fmt.Errorf("generator %q asset stat: %w", name, err)
 	}
 	if !info.Mode().IsRegular() {
 		return nil, "", fmt.Errorf("generator %q asset %q is not a regular file", name, assetPath)
@@ -194,9 +232,12 @@ func readGeneratorAsset(name string, stdout []byte) ([]byte, string, error) {
 	if info.Size() > MaxGeneratedAssetBytes {
 		return nil, "", fmt.Errorf("generator %q asset is %d bytes, which exceeds the %d byte bound", name, info.Size(), MaxGeneratedAssetBytes)
 	}
-	data, err := os.ReadFile(assetPath)
+	data, err := io.ReadAll(io.LimitReader(f, MaxGeneratedAssetBytes+1))
 	if err != nil {
 		return nil, "", fmt.Errorf("generator %q asset read: %w", name, err)
+	}
+	if int64(len(data)) > MaxGeneratedAssetBytes {
+		return nil, "", fmt.Errorf("generator %q asset exceeds the %d byte bound", name, MaxGeneratedAssetBytes)
 	}
 	return data, strings.TrimSpace(answer.MIMEType), nil
 }
@@ -212,9 +253,13 @@ func (ExecMediaGeneratorRunner) Run(cfg MediaGeneratorConfig, stdin []byte) ([]b
 	cmd.Stdin = strings.NewReader(string(stdin))
 	// The generator's own environment is inherited deliberately: a local renderer
 	// legitimately needs CUDA/model-path variables the operator has configured.
-	var out strings.Builder
-	cmd.Stdout = &boundedWriter{w: &out, max: maxGeneratorStdout}
-	cmd.Stderr = &boundedWriter{w: &out, max: maxGeneratorStdout}
+	// Separate buffers, not one shared builder: os/exec writes stdout and stderr
+	// from different goroutines, so a single unsynchronized strings.Builder is a
+	// data race AND lets a chatty generator's stderr logs corrupt the JSON contract
+	// on stdout.
+	var stdoutBuf, stderrBuf strings.Builder
+	cmd.Stdout = &boundedWriter{w: &stdoutBuf, max: maxGeneratorStdout}
+	cmd.Stderr = &boundedWriter{w: &stderrBuf, max: maxGeneratorStdout}
 	timer := time.AfterFunc(time.Duration(cfg.TimeoutS)*time.Second, func() {
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
@@ -222,9 +267,9 @@ func (ExecMediaGeneratorRunner) Run(cfg MediaGeneratorConfig, stdin []byte) ([]b
 	})
 	defer timer.Stop()
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(out.String()))
+		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderrBuf.String()))
 	}
-	return []byte(out.String()), nil
+	return []byte(stdoutBuf.String()), nil
 }
 
 // boundedWriter caps what a generator can push through the control channel.
