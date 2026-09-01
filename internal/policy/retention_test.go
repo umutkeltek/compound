@@ -250,3 +250,89 @@ func TestRetentionClassByIDIsExactAndFailsClosed(t *testing.T) {
 		t.Fatal("unknown class must not resolve")
 	}
 }
+
+// Every harness that parks worktrees in this repo must be scannable, not just the two the
+// original list happened to know. This is the regression that hid 2.3 GB: the scan knew
+// ".claude/worktrees" and ".codex/worktrees" (the latter did not even exist) while
+// ".agents/worktrees" held 1.9 GB and ".hermes/worktrees" held 443 MB, so `compound doctor`
+// reported a clean retention picture over caches it had never looked at.
+func TestScanFindsCachesInsideEveryKnownWorktreeContainer(t *testing.T) {
+	for _, container := range []string{".claude", ".codex", ".agents", ".hermes"} {
+		t.Run(container, func(t *testing.T) {
+			root := newScanRepo(t, "")
+			writeDirOfSize(t, filepath.Join(root, container, "worktrees", "task-a", "target"), 8192)
+
+			report := ScanRetention([]string{root})
+			var cache *RetentionInstance
+			for i := range report.Declared {
+				if report.Declared[i].ClassID == "worktree-build-cache" {
+					cache = &report.Declared[i]
+				}
+			}
+			if cache == nil {
+				t.Fatalf("%s/worktrees cache was never scanned; declared=%+v", container, report.Declared)
+			}
+			if cache.Bytes == 0 {
+				t.Fatalf("%s cache sized zero: %+v", container, *cache)
+			}
+		})
+	}
+}
+
+// The falsifier that a name list cannot pass. A harness that invents a container after this
+// code was written is invisible to any hand-maintained list of names -- which is precisely how
+// the previous list went stale. Git is the authority on where its own worktrees are, so a real
+// linked worktree in an unheard-of location must still be scanned. If this test regresses, the
+// scan has gone back to trusting a list instead of asking git.
+func TestScanFindsCachesInsideGitWorktreeUnderUnknownContainer(t *testing.T) {
+	root := newScanRepo(t, "")
+	// A real commit is required before `git worktree add` will work.
+	if err := os.WriteFile(filepath.Join(root, "seed.txt"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	for _, args := range [][]string{{"add", "seed.txt"}, {"commit", "-qm", "seed"}} {
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Skipf("git unavailable (%v): %s", err, out)
+		}
+	}
+	// A container name deliberately absent from every list in this package.
+	linked := filepath.Join(root, ".unheard-of-harness", "worktrees", "task-z")
+	if out, err := exec.Command("git", "-C", root, "worktree", "add", "-q", "--detach", linked).CombinedOutput(); err != nil {
+		t.Skipf("git worktree add unavailable (%v): %s", err, out)
+	}
+	writeDirOfSize(t, filepath.Join(linked, "node_modules"), 8192)
+
+	report := ScanRetention([]string{root})
+	for _, item := range report.Declared {
+		if item.ClassID == "worktree-build-cache" && item.Bytes > 0 {
+			return
+		}
+	}
+	t.Fatalf("a git-registered worktree outside the known containers was not scanned; declared=%+v", report.Declared)
+}
+
+// A container the scan does not recognize falls through to the ignored-accumulator heuristic
+// and gets reported as "undeclared" -- an operator-facing finding for something that is
+// ordinary structure. Both real containers must be claimed by the class that owns their
+// contents, exactly as .claude already is.
+func TestScanClaimsEveryWorktreeContainerRatherThanCallingItUndeclared(t *testing.T) {
+	for _, container := range []string{".agents", ".hermes"} {
+		t.Run(container, func(t *testing.T) {
+			root := newScanRepo(t, "")
+			writeDirOfSize(t, filepath.Join(root, container, "worktrees", "task-a", "blob"), undeclaredAccumulatorBytes+1)
+
+			report := ScanRetention([]string{root})
+			for _, item := range report.Undeclared {
+				if filepath.Base(item.Path) == container {
+					t.Fatalf("%s must be claimed as a worktree container, not reported undeclared: %+v", container, item)
+				}
+			}
+			for _, item := range report.Declared {
+				if item.ClassID == "agent-worktree" && filepath.Base(item.Path) == container {
+					return
+				}
+			}
+			t.Fatalf("%s was never claimed under agent-worktree; declared=%+v", container, report.Declared)
+		})
+	}
+}

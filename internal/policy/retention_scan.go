@@ -241,14 +241,39 @@ func scanWellKnown(report *RetentionScanReport, seen map[string]bool) {
 	}
 }
 
-// worktreeContainers are the directories that hold agent worktrees. They are structure, not
-// accumulators: what grows inside them is worktrees, which the `agent-worktree` class already
-// owns and which have their own governed retirement path.
-var worktreeContainers = map[string]bool{
-	".claude":    true,
-	".codex":     true,
-	".worktrees": true,
+// worktreeContainerPaths are the repo-relative directories that hold agent worktrees. They are
+// structure, not accumulators: what grows inside them is worktrees, which the `agent-worktree`
+// class already owns and which have their own governed retirement path.
+//
+// This list is the FALLBACK half of container discovery; git itself (gitLinkedWorktrees) is the
+// authoritative half. Both are needed, and the gap between them is the point:
+//
+//   - A name list cannot see a container invented after it was written. That is not
+//     hypothetical here — this list knew only .claude and .codex, of which .codex/worktrees did
+//     not exist, while .agents/worktrees (1.9 GB) and .hermes/worktrees (443 MB) went unscanned
+//     and `compound doctor` reported a clean retention picture over caches it never looked at.
+//   - Git forgets a worktree the instant its admin dir is removed, but the directory keeps its
+//     bytes. A leftover git no longer tracks is pure waste, and exactly what an operator is
+//     owed by a retention scan.
+var worktreeContainerPaths = []string{
+	".claude/worktrees",
+	".codex/worktrees",
+	".agents/worktrees",
+	".hermes/worktrees",
+	".worktrees",
 }
+
+// worktreeContainerRoots is the depth-1 view of worktreeContainerPaths: the directory an
+// operator sees at the top of the repo. DERIVED, never retyped — this file already carried the
+// same fact in two hand-maintained lists that drifted apart, so the scan skipped a container
+// while the classifier simultaneously reported it as an unclaimed accumulator.
+var worktreeContainerRoots = func() map[string]bool {
+	roots := map[string]bool{}
+	for _, path := range worktreeContainerPaths {
+		roots[strings.Split(path, "/")[0]] = true
+	}
+	return roots
+}()
 
 // classifyDir decides which class claims a directory, and whether the ignore heuristic may be
 // applied to it when no class does.
@@ -271,7 +296,7 @@ func classifyDir(root, dir string) (classID string, useIgnoreHeuristic bool) {
 	depth := len(strings.Split(rel, string(filepath.Separator)))
 
 	if depth == 1 {
-		if worktreeContainers[base] {
+		if worktreeContainerRoots[base] {
 			// Report the container under the class that actually owns its contents, so its
 			// size is visible without pretending nobody owns it.
 			return "agent-worktree", false
@@ -317,18 +342,92 @@ func looksLikeAccumulator(root, dir string) bool {
 }
 
 // candidateDirs returns the directories worth examining under one root: the root's own
-// children, plus the children of any worktree container it holds.
+// children, plus the children of every agent worktree it holds.
 func candidateDirs(root string) []string {
+	out := childDirs(root)
+	// Agent worktrees hold their caches one level deeper.
+	for _, worktree := range worktreeDirs(root) {
+		out = append(out, childDirs(worktree)...)
+	}
+	return out
+}
+
+// worktreeDirs returns every agent worktree under root, from BOTH authorities that know about
+// one: git's own registry and the on-disk container convention. See worktreeContainerPaths for
+// why neither alone is sufficient.
+func worktreeDirs(root string) []string {
+	seen := map[string]bool{}
 	var out []string
-	out = append(out, childDirs(root)...)
-	// Agent worktrees live under a container dir; their caches are one level deeper.
-	for _, container := range []string{".claude/worktrees", ".codex/worktrees", ".worktrees"} {
-		containerPath := filepath.Join(root, container)
-		for _, worktree := range childDirs(containerPath) {
-			out = append(out, childDirs(worktree)...)
+	add := func(dir string) {
+		if dir == "" || seen[dir] {
+			return
+		}
+		seen[dir] = true
+		out = append(out, dir)
+	}
+	for _, worktree := range gitLinkedWorktrees(root) {
+		add(worktree)
+	}
+	for _, container := range worktreeContainerPaths {
+		for _, worktree := range childDirs(filepath.Join(root, container)) {
+			add(worktree)
 		}
 	}
 	return out
+}
+
+// gitLinkedWorktrees asks git where root's linked worktrees actually are.
+//
+// Root's own checkout is excluded (it is the thing being scanned, not debt inside it), and so
+// is any worktree outside root: a lane's scratch tree under /private/tmp belongs to whoever
+// owns that path, and billing this root for those bytes would report space that reclaiming
+// here cannot deliver.
+func gitLinkedWorktrees(root string) []string {
+	// Symlinks must be resolved on BOTH sides before the containment test. Git reports the
+	// real path, so on macOS -- where /var, /tmp and every t.TempDir() are symlinks into
+	// /private -- an unresolved comparison makes every worktree look like it lives outside
+	// the root and silently scans nothing.
+	rootAbs, err := resolvedDir(root)
+	if err != nil {
+		return nil
+	}
+	// Same instinct as looksLikeAccumulator: ask git rather than reimplement its bookkeeping.
+	out, err := exec.Command("git", "-C", root, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return nil
+	}
+	var worktrees []string
+	for _, line := range strings.Split(string(out), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "worktree ")
+		if !ok {
+			continue
+		}
+		abs, err := resolvedDir(strings.TrimSpace(rest))
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(rootAbs, abs)
+		if err != nil || rel == "." || rel == "" || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		worktrees = append(worktrees, abs)
+	}
+	return worktrees
+}
+
+// resolvedDir returns dir as an absolute, symlink-free path so two spellings of the same
+// directory compare equal.
+func resolvedDir(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	// A path that cannot be resolved (it may not exist yet) is still usable as an absolute
+	// path; only the symlink normalization is lost.
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real, nil
+	}
+	return abs, nil
 }
 
 func childDirs(dir string) []string {
