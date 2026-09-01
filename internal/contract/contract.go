@@ -981,6 +981,29 @@ func projectRuntimeContract(ec envelope.EffectiveContract, snapshot runtimeSnaps
 	return ec
 }
 
+// servedPositionStatus renders a folded position's contested-ness into the wire vocabulary the
+// ContextPack schema already carries (envelope.AuthorityStatuses).
+//
+// The fold decides this, not the projection: mem.Position.Status is "contested" when any claim
+// in the slot's chain is marked needs_review, and activePositionFromFold carries that through as
+// ActivePosition.Contested. This function only chooses the word.
+//
+// Every IncludedRef used to be minted "current" unconditionally, which made a served pack
+// disagree with itself -- the summary line rendered "[contested]" while the machine-readable ref
+// asserted "current". The consumer that exists to act on this (internal/hook
+// includedRefTrustTier, which demotes a non-current ref to trust=evidence-only) could not fire
+// on status grounds at all, so a reader was told to trust a claim the same pack described as
+// disputed. "disputed" is the honest word here: two claims in one slot disagree and neither has
+// won, which is not the same as "stale" (superseded by something newer) or "superseded" (a
+// successor exists). Reporting the contradiction is the whole move -- the ref stays served,
+// demoted, rather than being silently dropped.
+func servedPositionStatus(position envelope.ActivePosition) string {
+	if position.Contested {
+		return "disputed"
+	}
+	return "current"
+}
+
 func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSnapshot) envelope.ContextPack {
 	pack.ActiveHooks = snapshot.hooks
 	pack.HookRoster = snapshot.hookRoster
@@ -1028,7 +1051,7 @@ func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSna
 		pack.ActivePositions = append(pack.ActivePositions, ref.Position)
 		pack.Included = append(pack.Included, envelope.IncludedRef{
 			Ref: ref.Ref, SourceClass: "runtime", Reason: ref.Reason,
-			Confidence: ref.Confidence, Status: "current",
+			Confidence: ref.Confidence, Status: servedPositionStatus(ref.Position),
 		})
 	}
 	if snapshot.memoryRevision != "" {
@@ -2797,6 +2820,49 @@ func BenchMemoryRank(homePath string, in Input, pol OrientationPolicy) (ranked [
 	return ranked, present, true, nil
 }
 
+// contestedPositionExclusionReason names the one condition this branch is willing to explain.
+const contestedPositionExclusionReason = "position is contested (its active claim is under review) and is withheld from ambient recall; resolve it with compound memory position <entity>"
+
+// unservedPositionExclusionReason explains why a folded position could not be served, for the
+// positions the incoming task was actually asking about.
+//
+// Two deliberate narrowings. It reports ONLY contested positions: a position can also be
+// unservable because its active claim was retired, and claiming that as a dispute would be a
+// wrong reason, which is worse than a documented gap. And it reports only task-relevant ones,
+// because every ledger holds positions nobody asked about -- listing them all would bury the
+// signal in the surface built to carry it, which is how a reader learns to stop reading
+// exclusions at all.
+func unservedPositionExclusionReason(position mem.Position, entities, taskTokens map[string]bool) string {
+	if !strings.EqualFold(strings.TrimSpace(position.Status), "contested") {
+		return ""
+	}
+	if !positionMatchesTaskScope(position, entities, taskTokens) {
+		return ""
+	}
+	return contestedPositionExclusionReason
+}
+
+// positionMatchesTaskScope reports whether a position's own identity overlaps the task, using
+// only the position row. The usual relevance rank needs the active claim, which is exactly what
+// is missing whenever this is called.
+func positionMatchesTaskScope(position mem.Position, entities, taskTokens map[string]bool) bool {
+	for _, field := range []string{position.Entity, position.Topic, position.Predicate} {
+		key := memoryKey(field)
+		if len(key) < 3 {
+			continue
+		}
+		if entities[key] || taskTokens[key] {
+			return true
+		}
+		for token := range memoryTextTokens(field) {
+			if entities[token] || taskTokens[token] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]float64, view *mem.CurrentView, topicSet map[string]bool, selfEntities map[string]bool, productFence productRecallFence) ([]contextPositionRef, []envelope.ExcludedRef, error) {
 	if len(rule.Ambient) == 0 {
 		return nil, nil, nil
@@ -2824,6 +2890,24 @@ func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[strin
 	for _, position := range positions {
 		activeClaim, ok := claimByID[position.ActiveClaimID]
 		if !ok {
+			// The active claim is absent from the current view -- overwhelmingly because it
+			// carries an open needs_review mark, which mem.visibleCurrentViewClaims drops so an
+			// unadjudicated stance is never served as truth. That part is correct and stays.
+			//
+			// Dropping the POSITION in silence too was not: the pack then said nothing at all,
+			// and a reader could not tell a fact that was adjudicated away from one nobody had
+			// ever looked at. Measured on the live ledger when this was written, 25 of 26
+			// contested positions reached exactly this branch, which is why the disputed status
+			// on the served side was almost entirely dormant. The claim still does not enter
+			// ambient recall; only the omission becomes visible, which is the rule every other
+			// skip in this loop already follows.
+			if reason := unservedPositionExclusionReason(position, entities, taskTokens); reason != "" {
+				excluded = append(excluded, contextPositionRef{
+					Ref:    "position://" + position.ID,
+					Reason: reason,
+					Seq:    position.AsOfSeq,
+				})
+			}
 			continue
 		}
 		activePosition := activePositionFromFold(position, activeClaim)
