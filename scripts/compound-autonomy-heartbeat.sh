@@ -34,6 +34,33 @@ except Exception:
 [ "$DIR_RC" -ne 0 ] && DIR_SUM="ERR: $(printf '%.160s' "$DIR_OUT")"
 [ "$DIR_SUM" = "unparseable" ] && DIR_RC=65 && DIR_SUM="ERR: unparseable JSON"
 
+# Landfill compaction, BEFORE the promote pass so the pass walks live work only.
+# Terminal candidates (no_promote/rejected/promoted) never leave the inbox on
+# their own, and the promote cursor re-walks all of them forever: measured
+# 2026-09-01, 154,127 inbox entries of which 11 were `proposed`, so a 500-entry
+# walk considered 0 candidates and still cost 78s. archive-history is the
+# supported eviction door for exactly those three states (`parked` and
+# `proposed` are never touched), and it is reversible via
+# `compound home restore-history`. Without this stage the walk stays
+# proportional to everything ever adjudicated instead of to what is live.
+# The timeout is DELIBERATELY generous, and larger than it looks like it needs to be.
+# archive-history moves every eligible file and only THEN commits the archive index
+# (internal/home/archive.go, commitOperationalArchiveTransaction after the loop), so a
+# timeout that fires mid-loop leaves files moved but unindexed — invisible to
+# `restore-history` and silently unrecoverable. Interrupting is strictly worse than
+# running long. Steady-state passes take seconds (only the terminal candidates minted
+# since the last tick); the one-time 154k drain on 2026-09-01 took ~20 minutes, which a
+# 900s budget would have killed at the worst possible moment. Concurrent ticks are safe:
+# the whole operation is inside the flock-based autonomy admission lock, so a second tick
+# blocks and then finds nothing to do.
+ARCH_OUT=$("$TIMEOUT_BIN" 3600 "$BIN" home archive-history --kind memory-candidate 2>&1)
+ARCH_RC=$?
+ARCH_SUM=$(printf '%s' "$ARCH_OUT" | awk -F': ' '
+  /^- archived:/ { archived = $2; found = 1 }
+  END { if (found) print "archived=" archived; else print "unparseable" }' 2>/dev/null)
+[ "$ARCH_RC" -ne 0 ] && ARCH_SUM="ERR: $(printf '%.160s' "$ARCH_OUT")"
+[ "$ARCH_SUM" = "unparseable" ] && ARCH_RC=65 && ARCH_SUM="ERR: unparseable output"
+
 PD_WORK_ID="work_promote_$(date -u +%Y%m%dT%H%M%SZ)_$$"
 PD_ACTOR="scheduler:autonomy-heartbeat"
 PD_RC=0
@@ -74,9 +101,16 @@ elif ! "$BIN" work advance "$PD_WORK_ID" --to running --by "$PD_ACTOR" --note "s
   PD_SUM="ERR: work advance $(printf '%.120s' "$(cat "$PD_TMP/run.err")")"
   terminalize_failed_work "Scheduled memory maintenance running advance failed" "failure:promote-driver:advance" || PD_SUM="$PD_SUM; terminalization failed"
 else
+	# --walk-scan-limit must EXCEED the whole live corpus or the dedupe phase can never
+	# run: driver.go computes `walkedAll := cursor == "" && page.AtEnd && !blocked`, so
+	# collapse happens only on a single pass that starts at the beginning AND reaches the
+	# end. At the old 500 that was arithmetically unreachable — 104 consecutive passes
+	# skipped dedupe with "resume walk". Post-compaction the corpus is ~51k (parked, which
+	# is never evicted), and a full 19k walk measured 29s, so 60000 buys full coverage with
+	# headroom and degrades gracefully (back to a resume walk) if parked ever outgrows it.
 	"$TIMEOUT_BIN" 600 "$BIN" memory promote-driver \
 		--confirm --work "$PD_WORK_ID" \
-		--promote-limit 1 --scan-limit 100 --walk-scan-limit 500 \
+		--promote-limit 1 --scan-limit 100 --walk-scan-limit 60000 \
     --json >"$PD_TMP/driver.json" 2>"$PD_TMP/driver.err"
   PD_RC=$?
   PD_FIELDS=$(python3 - "$PD_TMP/driver.json" <<'PY'
@@ -160,8 +194,8 @@ except Exception:
 [ "$CONT_SUM" = "unparseable" ] && CONT_RC=65 && CONT_SUM="ERR: unparseable JSON"
 
 FINAL_RC=0
-if [ "$DIR_RC" -ne 0 ] || [ "$PD_RC" -ne 0 ] || [ "$STALE_RC" -ne 0 ] || [ "$CONT_RC" -ne 0 ]; then
+if [ "$DIR_RC" -ne 0 ] || [ "$ARCH_RC" -ne 0 ] || [ "$PD_RC" -ne 0 ] || [ "$STALE_RC" -ne 0 ] || [ "$CONT_RC" -ne 0 ]; then
   FINAL_RC=1
 fi
-echo "$TS final rc=$FINAL_RC | director rc=$DIR_RC $DIR_SUM | promote-driver rc=$PD_RC $PD_SUM | stale-work rc=$STALE_RC $STALE_SUM | continue rc=$CONT_RC $CONT_SUM" >> "$LOG"
+echo "$TS final rc=$FINAL_RC | director rc=$DIR_RC $DIR_SUM | compaction rc=$ARCH_RC $ARCH_SUM | promote-driver rc=$PD_RC $PD_SUM | stale-work rc=$STALE_RC $STALE_SUM | continue rc=$CONT_RC $CONT_SUM" >> "$LOG"
 exit "$FINAL_RC"
