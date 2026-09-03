@@ -78,6 +78,46 @@ type policyActionIntentShim = policyActionIntent
 type policyConfigShim = policyConfig
 type policyDecisionShim = policyDecision
 
+// Exported aliases of the shim types so the composition root (cmd/compound)
+// and its tests can construct hook values without importing the unexported
+// names. Aliases, not copies: the seam and the wiring share one shape.
+type PolicyActionIntentShim = policyActionIntent
+type PolicyConfigShim = policyConfig
+type PolicyDecisionShim = policyDecision
+
+// SwapExecuteStageRoutePlan installs fn as the seam's route-plan resolver and
+// returns a restore function. cmd/compound binds the real resolver at init;
+// tests swap in stubs and restore to keep package state isolated.
+func SwapExecuteStageRoutePlan(fn executeRoutePlanFn) func() {
+	prev := executeStageRoutePlanFn
+	executeStageRoutePlanFn = fn
+	return func() { executeStageRoutePlanFn = prev }
+}
+
+// SwapExecuteStageCapacity installs fn as the seam's capacity reader and
+// returns a restore function (see SwapExecuteStageRoutePlan).
+func SwapExecuteStageCapacity(fn executeCapacityFn) func() {
+	prev := executeStageCapacityFn
+	executeStageCapacityFn = fn
+	return func() { executeStageCapacityFn = prev }
+}
+
+// SwapExecuteStagePolicyEval installs fn as the seam's policy evaluator and
+// returns a restore function (see SwapExecuteStageRoutePlan).
+func SwapExecuteStagePolicyEval(fn executePolicyEvalFn) func() {
+	prev := executeStagePolicyEvalFn
+	executeStagePolicyEvalFn = fn
+	return func() { executeStagePolicyEvalFn = prev }
+}
+
+// SwapExecuteStageLaunch installs fn as the seam's harness launcher and
+// returns a restore function (see SwapExecuteStageRoutePlan).
+func SwapExecuteStageLaunch(fn executeLaunchFn) func() {
+	prev := launchStub
+	launchStub = fn
+	return func() { launchStub = prev }
+}
+
 type policyActionIntent struct {
 	ID         string
 	Capability string
