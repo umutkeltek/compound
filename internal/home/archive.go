@@ -1947,10 +1947,10 @@ func prepareOperationalArchiveTransaction(homePath string, entries []Operational
 			// or not moved, never lost" — is satisfied because the file is
 			// already where the entry says it is.
 			tx.moves = append(tx.moves, operationalArchiveMove{
-				entry:        entry,
-				sourceRel:    sourceRel,
+				entry:          entry,
+				sourceRel:      sourceRel,
 				destinationRel: destinationRel,
-				moveRequired: false,
+				moveRequired:   false,
 			})
 			continue
 		}
