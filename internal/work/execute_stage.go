@@ -102,7 +102,7 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 	}
 	if !fresh {
 		result.Skipped = "capacity_unknown"
-		result.Human = fmt.Sprintf("did nothing: capacity snapshot for lane %s is older than %s; refuse to execute blind", lane, executeStageCapacityFreshnessWindow)
+		result.Human = fmt.Sprintf("did nothing: capacity snapshot for lane %s is missing or older than %s; refuse to execute blind", lane, executeStageCapacityFreshnessWindow)
 		return result, nil
 	}
 	if usedPercent >= executeStageCapacityCeilingPercent {
@@ -295,6 +295,18 @@ func (s *Store) executeStageHasGrant(homePath string) (bool, error) {
 	}
 	_ = sort.Slice // keep sort import used; registry reads are unordered but sort keeps the file stable.
 	return false, nil
+}
+
+// ExecuteStageCapacityFreshness reports whether a capacity observation
+// stamped at lastProven is fresh enough for unattended execution at now.
+// Fail-closed: a zero observation time is never fresh, and neither is a
+// stamp from the future.
+func ExecuteStageCapacityFreshness(lastProven, now time.Time) bool {
+	if lastProven.IsZero() {
+		return false
+	}
+	age := now.Sub(lastProven)
+	return age >= 0 && age <= executeStageCapacityFreshnessWindow
 }
 
 // defaultExecuteStageRoutePlanFn, defaultExecuteStageCapacityFn, and

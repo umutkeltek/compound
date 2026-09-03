@@ -8,12 +8,14 @@ package main
 // the wiring shows up as the wrong `skipped=` refusal reason.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/routeevidence"
 	"compound/internal/work"
 )
 
@@ -152,5 +154,186 @@ func TestContinueRouteHookReturnsNoRouteOnAvoidGateRole(t *testing.T) {
 	}
 	if strings.TrimSpace(res.Lane) != "" {
 		t.Fatalf("lane = %q, want empty on no_route", res.Lane)
+	}
+}
+
+// executeStageCapacityTestConfig isolates the capacity row sources to the
+// fixture home so the reader never touches the operator's real CodexBar feed
+// (DefaultLaneCapacityConfig points UsageHistoryPath at the user's home).
+func executeStageCapacityTestConfig(t *testing.T, homePath string) {
+	t.Helper()
+	previous := executeStageCapacityConfig
+	t.Cleanup(func() { executeStageCapacityConfig = previous })
+	executeStageCapacityConfig = func(home string) routeevidence.LaneCapacityConfig {
+		cfg := routeevidence.DefaultLaneCapacityConfig(home)
+		cfg.Paths.UsageHistoryPath = filepath.Join(homePath, "usage-history.jsonl")
+		cfg.Paths.QuotaCachePath = ""
+		return cfg
+	}
+}
+
+// seedExecuteStageCapacityRow appends one CodexBar-shaped usage row for the
+// minimax family (what claude_minimax resolves to) sampled ageAgo at used%.
+func seedExecuteStageCapacityRow(t *testing.T, homePath string, usedPercent int, ageAgo time.Duration, now time.Time) {
+	t.Helper()
+	row := fmt.Sprintf(`{"provider":"minimax","windowKind":"rolling","windowMinutes":60,"usedPercent":%d,"resetsAt":%q,"sampledAt":%q}`+"\n",
+		usedPercent,
+		now.Add(time.Hour).UTC().Format(time.RFC3339),
+		now.Add(-ageAgo).UTC().Format(time.RFC3339))
+	if err := os.WriteFile(filepath.Join(homePath, "usage-history.jsonl"), []byte(row), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// wiredCapacityHooks installs the real capacity resolver with everything else
+// stubbed green (route from the seeded manifest, policy allow, recording
+// launch) so a test can observe exactly where the capacity gate lands.
+func wiredCapacityHooks(t *testing.T, homePath string) *bool {
+	t.Helper()
+	restoreExecuteStageHooks(t)
+	restoreCapacity := work.SwapExecuteStageCapacity(executeStageCapacityFromSnapshot)
+	t.Cleanup(restoreCapacity)
+	launched := new(bool)
+	restoreLaunch := work.SwapExecuteStageLaunch(func(_ *work.Store, _, lane, _harness, _ string, _ time.Time) (string, error) {
+		*launched = true
+		if lane != "claude_minimax" {
+			t.Errorf("launch lane = %q, want claude_minimax", lane)
+		}
+		return "ratt_capacity_wire", nil
+	})
+	t.Cleanup(restoreLaunch)
+	return launched
+}
+
+// TestContinueCapacityHookPassesFreshSnapshotAt30: a snapshot 2 minutes old
+// at 30% passes the capacity gate and the stage reaches the launch.
+func TestContinueCapacityHookPassesFreshSnapshotAt30(t *testing.T) {
+	homePath := initializedTestHome(t)
+	now := time.Now().UTC()
+	seedExecuteStageManifest(t, homePath, "capable")
+	seedExecuteStageGrant(t, homePath)
+	seedExecuteStageCapacityRow(t, homePath, 30, 2*time.Minute, now)
+	executeStageCapacityTestConfig(t, homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedExecuteStageReadyWork(t, store, "work_cap_fresh")
+	launched := wiredCapacityHooks(t, homePath)
+
+	used, fresh, err := executeStageCapacityFromSnapshot(homePath, "claude_minimax", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used != 30 || !fresh {
+		t.Fatalf("capacity = (%v, %v, nil), want (30, true)", used, fresh)
+	}
+
+	res, err := store.Continue(now, work.ContinueOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !*launched {
+		t.Fatalf("fresh 30%% capacity must reach the launch; result=%+v", res)
+	}
+	if res.Action != "execute" {
+		t.Fatalf("action = %q, want execute", res.Action)
+	}
+}
+
+// TestContinueCapacityHookRefusesStaleSnapshot: a snapshot 11 minutes old is
+// outside the 10-minute window — refuse, never skip the check.
+func TestContinueCapacityHookRefusesStaleSnapshot(t *testing.T) {
+	homePath := initializedTestHome(t)
+	now := time.Now().UTC()
+	seedExecuteStageManifest(t, homePath, "capable")
+	seedExecuteStageGrant(t, homePath)
+	seedExecuteStageCapacityRow(t, homePath, 30, 11*time.Minute, now)
+	executeStageCapacityTestConfig(t, homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedExecuteStageReadyWork(t, store, "work_cap_stale")
+	launched := wiredCapacityHooks(t, homePath)
+
+	_, fresh, err := executeStageCapacityFromSnapshot(homePath, "claude_minimax", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh {
+		t.Fatal("11-minute-old snapshot must not be fresh (window is 10m)")
+	}
+	res, err := store.Continue(now, work.ContinueOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Skipped != "capacity_unknown" {
+		t.Fatalf("skipped = %q, want capacity_unknown (stale); result=%+v", res.Skipped, res)
+	}
+	if *launched {
+		t.Fatal("stale capacity must not reach the launch")
+	}
+}
+
+// TestContinueCapacityHookRefusesCeiling: a fresh snapshot at 90% refuses —
+// the ceiling is strict less-than.
+func TestContinueCapacityHookRefusesCeiling(t *testing.T) {
+	homePath := initializedTestHome(t)
+	now := time.Now().UTC()
+	seedExecuteStageManifest(t, homePath, "capable")
+	seedExecuteStageGrant(t, homePath)
+	seedExecuteStageCapacityRow(t, homePath, 90, 2*time.Minute, now)
+	executeStageCapacityTestConfig(t, homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedExecuteStageReadyWork(t, store, "work_cap_ceiling")
+	launched := wiredCapacityHooks(t, homePath)
+
+	res, err := store.Continue(now, work.ContinueOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Skipped != "capacity_unknown" {
+		t.Fatalf("skipped = %q, want capacity_unknown (90%% meets the ceiling); result=%+v", res.Skipped, res)
+	}
+	if *launched {
+		t.Fatal("capacity at the ceiling must not reach the launch")
+	}
+}
+
+// TestContinueCapacityHookRefusesMissingSnapshot: no snapshot at all refuses
+// (fail closed, never skip the check).
+func TestContinueCapacityHookRefusesMissingSnapshot(t *testing.T) {
+	homePath := initializedTestHome(t)
+	now := time.Now().UTC()
+	seedExecuteStageManifest(t, homePath, "capable")
+	seedExecuteStageGrant(t, homePath)
+	executeStageCapacityTestConfig(t, homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedExecuteStageReadyWork(t, store, "work_cap_missing")
+	launched := wiredCapacityHooks(t, homePath)
+
+	_, fresh, err := executeStageCapacityFromSnapshot(homePath, "claude_minimax", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh {
+		t.Fatal("missing snapshot must not read as fresh")
+	}
+	res, err := store.Continue(now, work.ContinueOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Skipped != "capacity_unknown" {
+		t.Fatalf("skipped = %q, want capacity_unknown (missing); result=%+v", res.Skipped, res)
+	}
+	if *launched {
+		t.Fatal("missing capacity must not reach the launch")
 	}
 }
