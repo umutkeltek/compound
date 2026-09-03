@@ -82,7 +82,7 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside|sweep-stale> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside|sweep-stale|reseal> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
@@ -237,6 +237,14 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		// candidate set, not to silently reap it.
 		Usage:   "usage: compound work sweep-stale [--threshold 72h] [--dry-run|--yes] [--json]\n  default is dry-run (prints candidate set + reasons, exits 0).\n  --yes applies: advances reclaimed envelopes to failed/cancelled,\n  releases the claim lease, appends one lifecycle event with sweep_reason.\n  Never touches run_attempts (compound run-attempt sweep owns that).",
 		Example: "compound work sweep-stale --threshold 48h",
+	},
+	"reseal": {
+		// Same dry-run-default law as sweep-stale: the verb exists to audit
+		// the custody-mismatch set, and --yes is the only mutation gate. The
+		// repair itself is append-only (one sealed same-state lifecycle
+		// event); envelope bytes and history are never rewritten.
+		Usage:   "usage: compound work reseal [--dry-run|--yes] [--by <actor>] [--json]\n  default is dry-run (lists work id, stored seal, computed seal; exits 0).\n  --yes appends one sealed same-state lifecycle event per mismatching\n  terminal envelope so the autonomy director's custody check verifies again.\n  Never rewrites envelope bytes or history; non-terminal envelopes are skipped.",
+		Example: "compound work reseal --yes --by orchestrator:claude_zai",
 	},
 }
 
@@ -1957,6 +1965,12 @@ func cmdWork(args []string) {
 		// failed/cancelled and explicitly does NOT touch RunAttempts. The
 		// two never run on the same byte; each owns its organ.
 		os.Exit(work.RunWorkSweepStaleCLI(rest, store, homePath, time.Now(), os.Stdout, os.Stderr))
+	case "reseal":
+		// reseal is the governed repair door for terminal envelopes whose
+		// recorded custody seal no longer matches their bytes (the 71
+		// envelopes the 2026-08-28 sweep reclaimed before it learned to
+		// re-seal). Dry-run by default; the repair is append-only.
+		os.Exit(work.RunWorkResealCLI(rest, store, time.Now(), os.Stdout, os.Stderr))
 	case "set-aside":
 		usage := workUsage("set-aside")
 		if len(rest) == 0 {

@@ -116,18 +116,28 @@ type Artifact struct {
 	// ExcludedUnverifiableCount counts records excluded from eligibility history
 	// because they can never be samples for this class: terminal records in the
 	// ephemeral work_live_ namespace, and OFF-class recent-terminal records whose
-	// custody trail is unverifiable (multiple terminal events, missing or
-	// mismatched snapshot hashes, unparseable timestamps). Class-relevant custody
-	// violations still fail the compilation closed.
-	ExcludedUnverifiableCount int      `json:"excluded_unverifiable_count"`
-	TerminalSampleCount       int      `json:"terminal_sample_count"`
-	FailureCount              int      `json:"failure_count"`
-	WindowStart               string   `json:"window_start,omitempty"`
-	WindowEnd                 string   `json:"window_end,omitempty"`
-	WindowSeconds             int64    `json:"window_seconds"`
-	Samples                   []Sample `json:"samples"`
-	Reasons                   []string `json:"reasons,omitempty"`
-	EvidenceRefs              []string `json:"evidence_refs"`
+	// custody trail is unverifiable (multiple terminal events, unparseable
+	// timestamps). Class-relevant custody violations still fail the compilation
+	// closed — with ONE settled exception below.
+	ExcludedUnverifiableCount int `json:"excluded_unverifiable_count"`
+	// ExcludedSealMismatchIDs lists recent-terminal work ids whose recorded
+	// custody seal disagrees with the envelope snapshot hash (the legacy
+	// unsealed-sweep-mutation shape). One such envelope is EXCLUDED with the
+	// id reported here — never allowed as a sample — instead of failing the
+	// whole compilation: one stale envelope must not veto every other
+	// cohort's pass (the 2026-08-28 sweep reclaimed 71 envelopes without
+	// re-sealing, and each hourly director run since failed globally on a
+	// different one). The governed repair is `compound work reseal`; while a
+	// mismatch remains unrepaired its id stays visible on the artifact.
+	ExcludedSealMismatchIDs []string `json:"excluded_seal_mismatch_ids,omitempty"`
+	TerminalSampleCount     int      `json:"terminal_sample_count"`
+	FailureCount            int      `json:"failure_count"`
+	WindowStart             string   `json:"window_start,omitempty"`
+	WindowEnd               string   `json:"window_end,omitempty"`
+	WindowSeconds           int64    `json:"window_seconds"`
+	Samples                 []Sample `json:"samples"`
+	Reasons                 []string `json:"reasons,omitempty"`
+	EvidenceRefs            []string `json:"evidence_refs"`
 }
 
 type workSnapshot struct {
@@ -281,11 +291,15 @@ func Compile(homePath string, grant GrantSnapshot, plan RoutePlanSnapshot, now t
 	if err != nil {
 		return Artifact{}, err
 	}
-	excludedDirty, err := reconcileRecentTerminalSnapshots(homePath, works, receipts, excludedLegacy, artifact.Class, lookbackStart, evaluatedAt)
+	excludedDirty, sealSkipped, err := reconcileRecentTerminalSnapshots(homePath, works, receipts, excludedLegacy, artifact.Class, lookbackStart, evaluatedAt)
 	if err != nil {
 		return Artifact{}, err
 	}
 	artifact.ExcludedUnverifiableCount += excludedDirty
+	for workID := range sealSkipped {
+		artifact.ExcludedSealMismatchIDs = append(artifact.ExcludedSealMismatchIDs, workID)
+	}
+	artifact.ExcludedSealMismatchIDs = uniqueSorted(artifact.ExcludedSealMismatchIDs)
 	routes, err := loadRouteRows(homePath)
 	if err != nil {
 		return Artifact{}, err
@@ -293,6 +307,11 @@ func Compile(homePath string, grant GrantSnapshot, plan RoutePlanSnapshot, now t
 
 	var candidates []Sample
 	for _, ws := range works {
+		if _, skipped := sealSkipped[ws.Work.ID]; skipped {
+			// Custody-seal mismatch: reported on ExcludedSealMismatchIDs, and
+			// never a sample. The pass continues with the remaining cohort.
+			continue
+		}
 		class, classErr := autonomyClassOf(ws.Work)
 		if classErr != nil {
 			if terminalWorkState(ws.Work.State) && autonomyTriggerMentionsClass(ws.Work, artifact.Class) {
@@ -467,6 +486,16 @@ func Validate(artifact Artifact) error {
 	}
 	if artifact.ExcludedUnverifiableCount < 0 {
 		problems = append(problems, "excluded_unverifiable_count must not be negative")
+	}
+	for i, id := range artifact.ExcludedSealMismatchIDs {
+		if strings.TrimSpace(id) == "" {
+			problems = append(problems, "excluded_seal_mismatch_ids must not contain blank ids")
+			break
+		}
+		if i > 0 && id == artifact.ExcludedSealMismatchIDs[i-1] {
+			problems = append(problems, "excluded_seal_mismatch_ids must be sorted and unique")
+			break
+		}
 	}
 	if generatedAt, err := time.Parse(time.RFC3339, artifact.GeneratedAt); err != nil {
 		problems = append(problems, "generated_at must be RFC3339")
@@ -866,7 +895,14 @@ func loadWorks(homePath string) ([]workSnapshot, map[string]bool, error) {
 	return out, excludedLegacy, nil
 }
 
-func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, receipts map[string]receiptEvidence, excludedLegacy map[string]bool, cohortClass string, lookbackStart, lookbackEnd time.Time) (int, error) {
+// reconcileRecentTerminalSnapshots walks the recent-terminal cohort and
+// verifies custody. It returns the excluded-records count, the set of work ids
+// skipped for a custody-seal mismatch (work id -> reason; the mismatch is
+// reported per-envelope on the artifact and the envelope can never become a
+// sample), and a fatal error for every other custody violation, which still
+// fails the compilation closed.
+func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, receipts map[string]receiptEvidence, excludedLegacy map[string]bool, cohortClass string, lookbackStart, lookbackEnd time.Time) (int, map[string]string, error) {
+	sealSkipped := map[string]string{}
 	byID := map[string][]workSnapshot{}
 	for _, work := range works {
 		byID[work.Work.ID] = append(byID[work.Work.ID], work)
@@ -875,7 +911,7 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 		class, classErr := autonomyClassOf(work.Work)
 		if classErr != nil {
 			if terminalWorkState(work.Work.State) && autonomyTriggerMentionsClass(work.Work, cohortClass) {
-				return 0, classErr
+				return 0, sealSkipped, classErr
 			}
 			continue
 		}
@@ -883,7 +919,7 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 			continue
 		}
 		if len(receipts[work.Work.ID].Terminals) == 0 {
-			return 0, fmt.Errorf("terminal work %s has 0 terminal events; exactly one required", work.Work.ID)
+			return 0, sealSkipped, fmt.Errorf("terminal work %s has 0 terminal events; exactly one required", work.Work.ID)
 		}
 	}
 	excluded := 0
@@ -899,7 +935,7 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 		for _, terminal := range evidence.Terminals {
 			parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(terminal.At))
 			if err != nil {
-				return excluded, fmt.Errorf("terminal work %s has invalid terminal timestamp %q", workID, terminal.At)
+				return excluded, sealSkipped, fmt.Errorf("terminal work %s has invalid terminal timestamp %q", workID, terminal.At)
 			}
 			terminalTimes = append(terminalTimes, parsed)
 			if !parsed.Before(lookbackStart) {
@@ -913,21 +949,26 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 		// Custody strictness is class-scoped, but exclusion is only safe when the
 		// work's class attribution is trustworthy: exactly one snapshot whose
 		// recorded hash (when any terminal event carries one) verifies. A missing
-		// snapshot, an ambiguous snapshot set, or a hash mismatch leaves the class
-		// unknowable or untrustworthy and always fails closed. OFF-class debris
-		// with close-retry duplicates or pre-hash-era events can never be a sample
-		// for this cohort and is excluded visibly (counted on the artifact)
-		// instead of vetoing the class.
+		// snapshot or an ambiguous snapshot set leaves the class unknowable and
+		// fails closed. A recorded-hash MISMATCH is the one settled exception:
+		// the envelope was mutated after its terminal seal (the legacy
+		// unsealed-sweep shape), the id is reported and the envelope skipped —
+		// one stale envelope must not veto every other cohort's pass. OFF-class
+		// debris with close-retry duplicates or pre-hash-era events can never be
+		// a sample for this cohort and is excluded visibly (counted on the
+		// artifact) instead of vetoing the class.
 		verifiedOffClass := false
 		if len(snapshots) == 1 {
 			data, err := json.Marshal(snapshots[0].Work)
 			if err != nil {
-				return excluded, err
+				return excluded, sealSkipped, err
 			}
 			snapHash := "sha256:" + shaHex(data)
 			sealed := strings.TrimSpace(evidence.LatestWorkSHA256)
 			if sealed != "" && sealed != snapHash {
-				return excluded, fmt.Errorf("recent terminal work %s snapshot hash does not match terminal event", workID)
+				excluded++
+				sealSkipped[workID] = fmt.Sprintf("snapshot hash does not match terminal event (sealed %s, envelope %s)", sealed, snapHash)
+				continue
 			}
 			class, classErr := autonomyClassOf(snapshots[0].Work)
 			if classErr != nil {
@@ -941,36 +982,42 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 				excluded++
 				continue
 			}
-			return excluded, fmt.Errorf("recent terminal work %s has multiple terminal events (%d)", workID, len(evidence.Terminals))
+			return excluded, sealSkipped, fmt.Errorf("recent terminal work %s has multiple terminal events (%d)", workID, len(evidence.Terminals))
 		}
 		if len(snapshots) != 1 {
-			return excluded, fmt.Errorf("recent terminal work %s has %d snapshots; exactly one required", workID, len(snapshots))
+			return excluded, sealSkipped, fmt.Errorf("recent terminal work %s has %d snapshots; exactly one required", workID, len(snapshots))
 		}
 		if !terminalWorkState(snapshots[0].Work.State) {
 			if verifiedOffClass {
 				excluded++
 				continue
 			}
-			return excluded, fmt.Errorf("recent terminal work %s snapshot state %q is not terminal", workID, snapshots[0].Work.State)
+			return excluded, sealSkipped, fmt.Errorf("recent terminal work %s snapshot state %q is not terminal", workID, snapshots[0].Work.State)
 		}
 		if strings.TrimSpace(evidence.LatestWorkSHA256) == "" {
 			if verifiedOffClass {
 				excluded++
 				continue
 			}
-			return excluded, fmt.Errorf("recent terminal work %s terminal event snapshot hash is required", workID)
+			return excluded, sealSkipped, fmt.Errorf("recent terminal work %s terminal event snapshot hash is required", workID)
 		}
 		data, err := json.Marshal(snapshots[0].Work)
 		if err != nil {
-			return excluded, err
+			return excluded, sealSkipped, err
 		}
 		if strings.TrimSpace(evidence.LatestWorkSHA256) != "sha256:"+shaHex(data) {
-			return excluded, fmt.Errorf("recent terminal work %s snapshot hash does not match terminal event", workID)
+			// Defense in depth: the early single-snapshot branch already
+			// skipped this shape, so this arm is unreachable while that
+			// branch stands. If it ever fires (branch drift), the same
+			// per-envelope skip applies rather than failing the cohort.
+			excluded++
+			sealSkipped[workID] = fmt.Sprintf("snapshot hash does not match terminal event (sealed %s, envelope %s)", strings.TrimSpace(evidence.LatestWorkSHA256), "sha256:"+shaHex(data))
+			continue
 		}
 		class, classErr := autonomyClassOf(snapshots[0].Work)
 		if classErr != nil {
 			if autonomyTriggerMentionsClass(snapshots[0].Work, cohortClass) {
-				return excluded, classErr
+				return excluded, sealSkipped, classErr
 			}
 			continue
 		}
@@ -978,27 +1025,27 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 			continue
 		}
 		if strings.TrimSpace(evidence.Terminals[0].ReceiptSHA256) == "" {
-			return excluded, fmt.Errorf("terminal work %s receipt snapshot hash is required", workID)
+			return excluded, sealSkipped, fmt.Errorf("terminal work %s receipt snapshot hash is required", workID)
 		}
 		if len(evidence.Refs) != 1 {
-			return excluded, fmt.Errorf("terminal work %s has %d receipt refs; exactly one required", workID, len(evidence.Refs))
+			return excluded, sealSkipped, fmt.Errorf("terminal work %s has %d receipt refs; exactly one required", workID, len(evidence.Refs))
 		}
 		_, receipt, _, err := loadBoundReceipt(homePath, evidence.Refs[0])
 		if err != nil {
-			return excluded, fmt.Errorf("terminal work %s %w", workID, err)
+			return excluded, sealSkipped, fmt.Errorf("terminal work %s %w", workID, err)
 		}
 		receiptCanonical, err := json.Marshal(receipt)
 		if err != nil {
-			return excluded, err
+			return excluded, sealSkipped, err
 		}
 		if evidence.Terminals[0].ReceiptSHA256 != "sha256:"+shaHex(receiptCanonical) {
-			return excluded, fmt.Errorf("terminal work %s receipt snapshot hash does not match terminal event", workID)
+			return excluded, sealSkipped, fmt.Errorf("terminal work %s receipt snapshot hash does not match terminal event", workID)
 		}
 		if terminalTimes[0].After(lookbackEnd) {
-			return excluded, fmt.Errorf("terminal work %s has terminal timestamp after eligibility evaluation: %q is after lookback end %q", workID, evidence.Terminals[0].At, lookbackEnd.UTC().Format(time.RFC3339))
+			return excluded, sealSkipped, fmt.Errorf("terminal work %s has terminal timestamp after eligibility evaluation: %q is after lookback end %q", workID, evidence.Terminals[0].At, lookbackEnd.UTC().Format(time.RFC3339))
 		}
 	}
-	return excluded, nil
+	return excluded, sealSkipped, nil
 }
 func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) {
 	out := map[string]receiptEvidence{}

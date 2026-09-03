@@ -23,6 +23,12 @@ if ! "$BIN" memory promote-driver --help 2>&1 | grep -q "promote-driver"; then
   exit 69
 fi
 
+# raw_head prints the first 300 bytes of a stage's raw output with line breaks
+# collapsed, so an `ERR: unparseable` verdict in the one-line heartbeat log
+# carries enough of the offending bytes to diagnose later. 300 bytes is enough
+# to see a tool banner or an error envelope's head without bloating the log.
+raw_head() { printf '%.300s' "$1" | tr -d '\n\r'; }
+
 DIR_OUT=$("$TIMEOUT_BIN" 300 "$BIN" director propose --apply --json 2>&1)
 DIR_RC=$?
 DIR_SUM=$(printf '%s' "$DIR_OUT" | python3 -c 'import json,sys
@@ -32,7 +38,7 @@ try:
 except Exception:
     print("unparseable")' 2>/dev/null)
 [ "$DIR_RC" -ne 0 ] && DIR_SUM="ERR: $(printf '%.160s' "$DIR_OUT")"
-[ "$DIR_SUM" = "unparseable" ] && DIR_RC=65 && DIR_SUM="ERR: unparseable JSON"
+[ "$DIR_SUM" = "unparseable" ] && DIR_RC=65 && DIR_SUM="ERR: unparseable JSON raw=$(raw_head "$DIR_OUT")"
 
 # Landfill compaction, BEFORE the promote pass so the pass walks live work only.
 # Terminal candidates (no_promote/rejected/promoted) never leave the inbox on
@@ -55,11 +61,21 @@ except Exception:
 # blocks and then finds nothing to do.
 ARCH_OUT=$("$TIMEOUT_BIN" 3600 "$BIN" home archive-history --kind memory-candidate 2>&1)
 ARCH_RC=$?
+# A well-formed archive-history report ALWAYS prints its `- dry_run:` line
+# (cmd/compound printHomeOperationalArchiveReport) but only prints
+# `- archived: N` when N > 0 — so the empty steady state (nothing left to
+# evict, tool exit 0) is a VALID `archived=0`, never `unparseable`. Only an
+# output with neither the counts line nor a report shape is unparseable.
 ARCH_SUM=$(printf '%s' "$ARCH_OUT" | awk -F': ' '
   /^- archived:/ { archived = $2; found = 1 }
-  END { if (found) print "archived=" archived; else print "unparseable" }' 2>/dev/null)
+  /^- dry_run:/ { report = 1 }
+  END {
+    if (found) print "archived=" archived;
+    else if (report) print "archived=0";
+    else print "unparseable"
+  }' 2>/dev/null)
 [ "$ARCH_RC" -ne 0 ] && ARCH_SUM="ERR: $(printf '%.160s' "$ARCH_OUT")"
-[ "$ARCH_SUM" = "unparseable" ] && ARCH_RC=65 && ARCH_SUM="ERR: unparseable output"
+[ "$ARCH_SUM" = "unparseable" ] && ARCH_RC=65 && ARCH_SUM="ERR: unparseable output raw=$(raw_head "$ARCH_OUT")"
 
 PD_WORK_ID="work_promote_$(date -u +%Y%m%dT%H%M%SZ)_$$"
 PD_ACTOR="scheduler:autonomy-heartbeat"
@@ -157,6 +173,8 @@ EOF
   fi
   if [ "$PD_RC" -eq 0 ]; then
     PD_SUM="stage=$PD_STAGE pass=$PD_PASS promoted=$PD_PROMOTED_N swept=$PD_SWEPT_N pending=$PD_PENDING work=$PD_WORK_ID"
+  elif [ "$PD_STAGE" = "unparseable" ]; then
+    PD_SUM="ERR: unparseable JSON stage=$PD_STAGE pass=$PD_PASS raw=$(raw_head "$(cat "$PD_TMP/driver.json" 2>/dev/null)")"
   else
     PD_SUM="ERR stage=$PD_STAGE pass=$PD_PASS $(printf '%.120s' "$(cat "$PD_TMP/driver.err" "$PD_TMP/close.err" 2>/dev/null)")"
   fi
@@ -180,7 +198,7 @@ try:
 except Exception:
     print("unparseable")' 2>/dev/null)
 [ "$STALE_RC" -ne 0 ] && STALE_SUM="ERR: $(printf '%.160s' "$STALE_OUT")"
-[ "$STALE_SUM" = "unparseable" ] && STALE_RC=65 && STALE_SUM="ERR: unparseable JSON"
+[ "$STALE_SUM" = "unparseable" ] && STALE_RC=65 && STALE_SUM="ERR: unparseable JSON raw=$(raw_head "$STALE_OUT")"
 
 CONT_OUT=$("$TIMEOUT_BIN" 600 "$BIN" work continue --actor claude-minimax --until-wait --max-steps 3 --json 2>&1)
 CONT_RC=$?
@@ -191,7 +209,7 @@ try:
 except Exception:
     print("unparseable")' 2>/dev/null)
 [ "$CONT_RC" -ne 0 ] && CONT_SUM="ERR: $(printf '%.160s' "$CONT_OUT")"
-[ "$CONT_SUM" = "unparseable" ] && CONT_RC=65 && CONT_SUM="ERR: unparseable JSON"
+[ "$CONT_SUM" = "unparseable" ] && CONT_RC=65 && CONT_SUM="ERR: unparseable JSON raw=$(raw_head "$CONT_OUT")"
 
 FINAL_RC=0
 if [ "$DIR_RC" -ne 0 ] || [ "$ARCH_RC" -ne 0 ] || [ "$PD_RC" -ne 0 ] || [ "$STALE_RC" -ne 0 ] || [ "$CONT_RC" -ne 0 ]; then

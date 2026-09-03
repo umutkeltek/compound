@@ -720,7 +720,15 @@ func TestCompileFailsClosedWhenRecentTerminalReceiptIsBackdated(t *testing.T) {
 	}
 }
 
-func TestCompileFailsClosedWhenRecentWorkClassIsMutated(t *testing.T) {
+// A post-close class mutation breaks the envelope's custody seal, so under
+// the settled per-envelope skip law it is EXCLUDED (reported on
+// excluded_seal_mismatch_ids, never a sample) instead of vetoing the whole
+// compilation. The falsifier stays load-bearing: the mutated envelope must
+// not be able to influence the cohort's eligibility, and it must not be able
+// to hide — its id is on the artifact. The pre-skip law failed the entire
+// pass on this shape (see TestCompileSkipsSealMismatchEnvelopeInsteadOfFailingCohort
+// for the incident that reformed it).
+func TestCompileExcludesSealBrokenRecentWorkClassMutation(t *testing.T) {
 	for _, mode := range []string{"hot", "restored"} {
 		t.Run(mode, func(t *testing.T) {
 			home := t.TempDir()
@@ -743,8 +751,23 @@ func TestCompileFailsClosedWhenRecentWorkClassIsMutated(t *testing.T) {
 			}
 			mutateWorkClassRef(t, filepath.Join(home, "work", "work", victim.WorkID+".json"))
 
-			if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "snapshot hash") {
-				t.Fatalf("%s work class mutation did not fail closed: %v", mode, err)
+			artifact := compile(t, home, plan, 2)
+			reported := false
+			for _, id := range artifact.ExcludedSealMismatchIDs {
+				if id == victim.WorkID {
+					reported = true
+				}
+			}
+			if !reported {
+				t.Fatalf("%s mutated work %s is not reported on excluded_seal_mismatch_ids: %+v", mode, victim.WorkID, artifact.ExcludedSealMismatchIDs)
+			}
+			for _, sample := range artifact.Samples {
+				if sample.WorkID == victim.WorkID {
+					t.Fatalf("%s mutated work %s influenced the cohort as a sample", mode, victim.WorkID)
+				}
+			}
+			if err := autonomy.Validate(artifact); err != nil {
+				t.Fatalf("%s artifact with seal skip must validate: %v", mode, err)
 			}
 		})
 	}
