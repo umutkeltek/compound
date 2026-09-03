@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	homepkg "compound/internal/home"
 )
 
 // Status enumerates the lifecycle of a RunAttempt. S1 only ever produces "pending" /
@@ -479,24 +481,29 @@ func (s *Store) MintWithActionIntent(workID, actor, harness, actionIntentID stri
 	if actionIntentID != "" && !strings.HasPrefix(actionIntentID, "act_") {
 		return RunAttempt{}, fmt.Errorf("runattempt mint: action_intent_id %q must start with act_", actionIntentID)
 	}
-	id, err := Mint(now)
-	if err != nil {
-		return RunAttempt{}, err
-	}
-	ra := RunAttempt{
-		SchemaVersion:  SchemaVersion,
-		ID:             id,
-		WorkID:         workID,
-		Actor:          actor,
-		Harness:        harness,
-		Status:         StatusPending,
-		CreatedAt:      now.UTC(),
-		ActionIntentID: actionIntentID,
-	}
-	if err := s.write(ra); err != nil {
-		return RunAttempt{}, err
-	}
-	return ra, nil
+	var out RunAttempt
+	err := s.withWorkAdmissionLock(workID, func() error {
+		id, err := Mint(now)
+		if err != nil {
+			return err
+		}
+		ra := RunAttempt{
+			SchemaVersion:  SchemaVersion,
+			ID:             id,
+			WorkID:         workID,
+			Actor:          actor,
+			Harness:        harness,
+			Status:         StatusPending,
+			CreatedAt:      now.UTC(),
+			ActionIntentID: actionIntentID,
+		}
+		if err := s.write(ra); err != nil {
+			return err
+		}
+		out = ra
+		return nil
+	})
+	return out, err
 }
 
 // MintWithID creates a RunAttempt with a caller-supplied id (must pass
@@ -527,32 +534,34 @@ func (s *Store) MintWithID(id, workID, actor, harness string, now time.Time) (Ru
 		CreatedAt:     now.UTC(),
 	}
 	var out RunAttempt
-	err := s.withAttemptLock(id, func() error {
-		// Create-or-retrieve is one filesystem transaction. An independent
-		// Store cannot create and mutate this deterministic attempt between an
-		// optimistic miss and a stale whole-record write.
-		existing, err := s.getFresh(id)
-		if err == nil {
-			if existing.WorkID != workID {
-				return fmt.Errorf("run attempt %s already belongs to work %s (caller: %s)", id, existing.WorkID, workID)
+	err := s.withWorkAdmissionLock(workID, func() error {
+		return s.withAttemptLock(id, func() error {
+			// Create-or-retrieve is one filesystem transaction. An independent
+			// Store cannot create and mutate this deterministic attempt between an
+			// optimistic miss and a stale whole-record write.
+			existing, err := s.getFresh(id)
+			if err == nil {
+				if existing.WorkID != workID {
+					return fmt.Errorf("run attempt %s already belongs to work %s (caller: %s)", id, existing.WorkID, workID)
+				}
+				if existing.Actor != actor {
+					return fmt.Errorf("run attempt %s already belongs to actor %s (caller: %s)", id, existing.Actor, actor)
+				}
+				if existing.Harness != harness {
+					return fmt.Errorf("run attempt %s already belongs to harness %s (caller: %s)", id, existing.Harness, harness)
+				}
+				out = existing
+				return nil
 			}
-			if existing.Actor != actor {
-				return fmt.Errorf("run attempt %s already belongs to actor %s (caller: %s)", id, existing.Actor, actor)
+			if !errors.Is(err, ErrNotFound) {
+				return err
 			}
-			if existing.Harness != harness {
-				return fmt.Errorf("run attempt %s already belongs to harness %s (caller: %s)", id, existing.Harness, harness)
+			if err := s.writeLocked(ra); err != nil {
+				return err
 			}
-			out = existing
+			out = ra
 			return nil
-		}
-		if !errors.Is(err, ErrNotFound) {
-			return err
-		}
-		if err := s.writeLocked(ra); err != nil {
-			return err
-		}
-		out = ra
-		return nil
+		})
 	})
 	if err != nil {
 		return RunAttempt{}, err
@@ -1041,22 +1050,60 @@ var classifyStaleRunAttemptForTest = ClassifyStaleRunAttempt
 // other setter (refuses if already succeeded/failed/abandoned); idempotent
 // no-op if already running -- repeated "still running" observations of the
 // same job must not error or reset CreatedAt/heartbeat state.
+//
+// The transition is a liveness pivot: the supplied `now` is bound exactly
+// to LastHeartbeatAt so a sweeper or downstream consumer that observes the
+// running generation can read the transition time without re-deriving it
+// from terminal-state sidecars. A fresh-pending attempt gets the binding;
+// an already-running attempt (idempotent re-mark) leaves the prior
+// heartbeat intact.
 func (s *Store) MarkRunning(id string, now time.Time) (RunAttempt, error) {
-	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
-		if ra.Status == StatusRunning {
-			return false, nil
-		}
-		ra.Status = StatusRunning
-		return true, nil
+	// Peek the workID outside the work admission lock so the lock payload
+	// can name it; the in-lock mutateMutable re-reads+revalidates, so a
+	// concurrent rename (which WorkID itself forbids) would still surface
+	// as a refusal.
+	workID, err := s.workIDForAttempt(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	var out RunAttempt
+	err = s.withWorkAdmissionLock(workID, func() error {
+		var mErr error
+		out, mErr = s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+			if ra.Status == StatusRunning {
+				return false, nil
+			}
+			heartbeat := now.UTC()
+			ra.Status = StatusRunning
+			ra.LastHeartbeatAt = &heartbeat
+			return true, nil
+		})
+		return mErr
 	})
+	return out, err
+}
+
+// workIDForAttempt returns the immutable WorkID stamped at mint. Read-only;
+// gets the cached or disk-recorded attempt and returns its WorkID.
+func (s *Store) workIDForAttempt(id string) (string, error) {
+	ra, err := s.Get(id)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(ra.WorkID) == "" {
+		return "", fmt.Errorf("runattempt %s: work_id is empty", id)
+	}
+	return ra.WorkID, nil
 }
 
 // CommitLaunch is the one-shot pending -> running boundary for a real
 // subprocess. Content-free launch evidence lives in immutable per-attempt
 // sidecars, so a v0.1 writer that does not know the additive Launch field
-// cannot erase it while rewriting the main RunAttempt JSON. The per-attempt
-// lock spans the external start callback; the legacy global lock is held only
-// for the short main-JSON read-modify-write, so unrelated attempts continue.
+// cannot erase it while rewriting the main RunAttempt JSON. The work
+// admission lock and the per-attempt lock both span the external start
+// callback; the legacy global lock is held only for the short main-JSON
+// read-modify-write. Cross-work non-convoy during a parked callback is
+// outside the v0.1 admission support contract.
 func (s *Store) CommitLaunch(id string, now time.Time, start func() error) (RunAttempt, error) {
 	if !Valid(id) {
 		return RunAttempt{}, fmt.Errorf("runattempt launch %s: id does not match %s pattern", id, Prefix)
@@ -1064,95 +1111,109 @@ func (s *Store) CommitLaunch(id string, now time.Time, start func() error) (RunA
 	if start == nil {
 		return RunAttempt{}, fmt.Errorf("runattempt launch %s: start callback required", id)
 	}
+	workID, err := s.workIDForAttempt(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
 	var out RunAttempt
-	err := s.withPerAttemptLock(id, func() error {
-		var prepared RunAttempt
-		legacyAcquired, prepareErr := s.withLegacyRunAttemptLockMode(false, func() error {
-			ra, err := s.getFresh(id)
-			if err != nil {
-				return err
-			}
-			if IsTerminal(ra.Status) {
-				out = ra
-				return fmt.Errorf("runattempt launch %s: %w (status=%s)", id, terminalRefusal, ra.Status)
-			}
-			if ra.Status != StatusPending {
-				out = ra
-				return fmt.Errorf("runattempt launch %s: status %s is not pending", id, ra.Status)
-			}
-			if ra.Launch != nil {
-				out = ra
-				return fmt.Errorf("runattempt launch %s: prepared launch evidence already exists", id)
-			}
-			launchAt := now.UTC()
-			if launchAt.IsZero() || launchAt.Before(ra.CreatedAt) {
-				launchAt = ra.CreatedAt
-			}
-			if ra.LastHeartbeatAt != nil && launchAt.Before(*ra.LastHeartbeatAt) {
-				launchAt = *ra.LastHeartbeatAt
-			}
-			preparedAt := launchAt
-			if err := runattemptWriteLaunchEvidence(s.home, launchEvidence{
-				SchemaVersion: launchEvidenceSchemaVersion,
-				AttemptID:     id,
-				Kind:          launchEvidencePrepared,
-				At:            preparedAt,
-			}); err != nil {
-				return fmt.Errorf("runattempt launch %s: publish prepared boundary: %w", id, err)
-			}
-			ra.Launch = &LaunchLifecycle{PreparedAt: timePointer(preparedAt)}
-			out = cloneExecutionPosture(ra)
-			ra.Status = StatusRunning
-			ra.LastHeartbeatAt = timePointer(launchAt)
-			if err := s.writeLocked(ra); err != nil {
-				return fmt.Errorf("runattempt launch %s: publish running generation: %w", id, err)
-			}
-			prepared = cloneExecutionPosture(ra)
-			out = prepared
-			return nil
+	err = s.withWorkAdmissionLock(workID, func() error {
+		return s.withPerAttemptLock(id, func() error {
+			return s.commitLaunchUnderPerAttemptLock(id, now, start, &out)
 		})
-		if prepareErr != nil {
-			return prepareErr
-		}
-		if !legacyAcquired {
-			return fmt.Errorf("runattempt launch %s: blocking legacy acquisition returned without lock", id)
-		}
+	})
+	return cloneExecutionPosture(out), err
+}
 
-		launchAt := *prepared.Launch.PreparedAt
-		startErr := start()
-		if startErr != nil {
-			writeErr := runattemptWriteLaunchEvidence(s.home, launchEvidence{
-				SchemaVersion: launchEvidenceSchemaVersion,
-				AttemptID:     id,
-				Kind:          launchEvidenceStartError,
-				At:            launchAt,
-			})
-			if writeErr != nil {
-				out = prepared
-				return errors.Join(
-					startErr,
-					fmt.Errorf("runattempt launch %s: publish start_error disposition: %w", id, writeErr),
-				)
-			}
-			prepared.Launch.StartErrorAt = timePointer(launchAt)
-			out = prepared
-			return startErr
+// commitLaunchUnderPerAttemptLock holds the per-attempt lock while CommitLaunch
+// drives the pending -> running transition plus the external start callback.
+// It is split out of CommitLaunch so the outer admission lock wraps the whole
+// sequence without ambiguity around ownership of `out`.
+func (s *Store) commitLaunchUnderPerAttemptLock(id string, now time.Time, start func() error, out *RunAttempt) error {
+	var prepared RunAttempt
+	legacyAcquired, prepareErr := s.withLegacyRunAttemptLockMode(false, func() error {
+		ra, err := s.getFresh(id)
+		if err != nil {
+			return err
 		}
-
+		if IsTerminal(ra.Status) {
+			*out = ra
+			return fmt.Errorf("runattempt launch %s: %w (status=%s)", id, terminalRefusal, ra.Status)
+		}
+		if ra.Status != StatusPending {
+			*out = ra
+			return fmt.Errorf("runattempt launch %s: status %s is not pending", id, ra.Status)
+		}
+		if ra.Launch != nil {
+			*out = ra
+			return fmt.Errorf("runattempt launch %s: prepared launch evidence already exists", id)
+		}
+		launchAt := now.UTC()
+		if launchAt.IsZero() || launchAt.Before(ra.CreatedAt) {
+			launchAt = ra.CreatedAt
+		}
+		if ra.LastHeartbeatAt != nil && launchAt.Before(*ra.LastHeartbeatAt) {
+			launchAt = *ra.LastHeartbeatAt
+		}
+		preparedAt := launchAt
 		if err := runattemptWriteLaunchEvidence(s.home, launchEvidence{
 			SchemaVersion: launchEvidenceSchemaVersion,
 			AttemptID:     id,
-			Kind:          launchEvidenceCommitted,
-			At:            launchAt,
+			Kind:          launchEvidencePrepared,
+			At:            preparedAt,
 		}); err != nil {
-			out = prepared
-			return fmt.Errorf("runattempt launch %s: publish committed start: %w", id, err)
+			return fmt.Errorf("runattempt launch %s: publish prepared boundary: %w", id, err)
 		}
-		prepared.Launch.CommittedAt = timePointer(launchAt)
-		out = prepared
+		ra.Launch = &LaunchLifecycle{PreparedAt: timePointer(preparedAt)}
+		*out = cloneExecutionPosture(ra)
+		ra.Status = StatusRunning
+		ra.LastHeartbeatAt = timePointer(launchAt)
+		if err := s.writeLocked(ra); err != nil {
+			return fmt.Errorf("runattempt launch %s: publish running generation: %w", id, err)
+		}
+		prepared = cloneExecutionPosture(ra)
+		*out = prepared
 		return nil
 	})
-	return cloneExecutionPosture(out), err
+	if prepareErr != nil {
+		return prepareErr
+	}
+	if !legacyAcquired {
+		return fmt.Errorf("runattempt launch %s: blocking legacy acquisition returned without lock", id)
+	}
+
+	launchAt := *prepared.Launch.PreparedAt
+	startErr := start()
+	if startErr != nil {
+		writeErr := runattemptWriteLaunchEvidence(s.home, launchEvidence{
+			SchemaVersion: launchEvidenceSchemaVersion,
+			AttemptID:     id,
+			Kind:          launchEvidenceStartError,
+			At:            launchAt,
+		})
+		if writeErr != nil {
+			*out = prepared
+			return errors.Join(
+				startErr,
+				fmt.Errorf("runattempt launch %s: publish start_error disposition: %w", id, writeErr),
+			)
+		}
+		prepared.Launch.StartErrorAt = timePointer(launchAt)
+		*out = prepared
+		return startErr
+	}
+
+	if err := runattemptWriteLaunchEvidence(s.home, launchEvidence{
+		SchemaVersion: launchEvidenceSchemaVersion,
+		AttemptID:     id,
+		Kind:          launchEvidenceCommitted,
+		At:            launchAt,
+	}); err != nil {
+		*out = prepared
+		return fmt.Errorf("runattempt launch %s: publish committed start: %w", id, err)
+	}
+	prepared.Launch.CommittedAt = timePointer(launchAt)
+	*out = prepared
+	return nil
 }
 
 // AttachActionIntent binds a RunAttempt to the ActionIntent that authorized it, closing the
@@ -1439,7 +1500,17 @@ func cloneExecutionPosture(ra RunAttempt) RunAttempt {
 // also refuses on terminal attempts -- a heartbeat on a "succeeded" run
 // would imply the attempt is still running, contradicting the terminal status.
 func (s *Store) Heartbeat(id string, now time.Time) (RunAttempt, error) {
-	return s.mutateMutable(id, heartbeatMutation(now))
+	workID, err := s.workIDForAttempt(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	var out RunAttempt
+	err = s.withWorkAdmissionLock(workID, func() error {
+		var mErr error
+		out, mErr = s.mutateMutable(id, heartbeatMutation(now))
+		return mErr
+	})
+	return out, err
 }
 
 func heartbeatMutation(now time.Time) func(*RunAttempt) (bool, error) {
@@ -1453,13 +1524,31 @@ func heartbeatMutation(now time.Time) func(*RunAttempt) (bool, error) {
 	}
 }
 
+// tryHeartbeat is the sweep's non-blocking renew: when either the work
+// admission lock or the per-attempt launch boundary is busy, the candidate is
+// skipped this pass (the caller treats !acquired exactly like a busy launch),
+// so a sweep never convoys behind a parked launch callback.
 func (s *Store) tryHeartbeat(id string, now time.Time) (RunAttempt, bool, error) {
-	return s.tryMutate(id, func(ra *RunAttempt) (bool, error) {
-		if IsTerminal(ra.Status) {
-			return false, fmt.Errorf("runattempt %s: %w (status=%s)", id, terminalRefusal, ra.Status)
-		}
-		return heartbeatMutation(now)(ra)
+	workID, err := s.workIDForAttempt(id)
+	if err != nil {
+		return RunAttempt{}, false, err
+	}
+	var out RunAttempt
+	attemptAcquired := false
+	admissionAcquired, err := s.tryWithWorkAdmissionLock(workID, func() error {
+		var mErr error
+		out, attemptAcquired, mErr = s.tryMutate(id, func(ra *RunAttempt) (bool, error) {
+			if IsTerminal(ra.Status) {
+				return false, fmt.Errorf("runattempt %s: %w (status=%s)", id, terminalRefusal, ra.Status)
+			}
+			return heartbeatMutation(now)(ra)
+		})
+		return mErr
 	})
+	if err != nil || !admissionAcquired || !attemptAcquired {
+		return RunAttempt{}, false, err
+	}
+	return out, true, nil
 }
 
 // HeartbeatProgress advances liveness and cumulative progress atomically.
@@ -1468,21 +1557,31 @@ func (s *Store) HeartbeatProgress(id string, now time.Time, progress RunProgress
 	if progress.Done < 0 || progress.Empty < 0 || progress.Failed < 0 || progress.Remaining < 0 {
 		return RunAttempt{}, errors.New("runattempt progress counts must be non-negative")
 	}
-	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
-		if previous := ra.Progress; previous != nil {
-			if progress.Done < previous.Done || progress.Empty < previous.Empty || progress.Failed < previous.Failed || progress.Remaining > previous.Remaining {
-				return false, fmt.Errorf("runattempt progress must be monotonic: previous=%+v next=%+v", *previous, progress)
+	workID, err := s.workIDForAttempt(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	var out RunAttempt
+	err = s.withWorkAdmissionLock(workID, func() error {
+		var mErr error
+		out, mErr = s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+			if previous := ra.Progress; previous != nil {
+				if progress.Done < previous.Done || progress.Empty < previous.Empty || progress.Failed < previous.Failed || progress.Remaining > previous.Remaining {
+					return false, fmt.Errorf("runattempt progress must be monotonic: previous=%+v next=%+v", *previous, progress)
+				}
 			}
-		}
-		t := now.UTC()
-		if ra.LastHeartbeatAt != nil && t.Before(*ra.LastHeartbeatAt) {
-			return false, fmt.Errorf("runattempt progress heartbeat is stale: previous=%s next=%s", ra.LastHeartbeatAt.UTC().Format(time.RFC3339Nano), t.Format(time.RFC3339Nano))
-		}
-		ra.LastHeartbeatAt = &t
-		copy := progress
-		ra.Progress = &copy
-		return true, nil
+			t := now.UTC()
+			if ra.LastHeartbeatAt != nil && t.Before(*ra.LastHeartbeatAt) {
+				return false, fmt.Errorf("runattempt progress heartbeat is stale: previous=%s next=%s", ra.LastHeartbeatAt.UTC().Format(time.RFC3339Nano), t.Format(time.RFC3339Nano))
+			}
+			ra.LastHeartbeatAt = &t
+			copy := progress
+			ra.Progress = &copy
+			return true, nil
+		})
+		return mErr
 	})
+	return out, err
 }
 
 // SetTranscript records the run transcript path. Single string by design --
@@ -2330,6 +2429,45 @@ func (s *Store) writeLocked(ra RunAttempt) error {
 	s.cache[ra.ID] = cloneExecutionPosture(ra)
 	s.mu.Unlock()
 	return nil
+}
+
+// withWorkAdmissionLock wraps fn in the home work admission lock for workID so
+// every liveness-increasing RunAttempt write for that work is serialized both
+// within the process and across processes. It materializes the authority root
+// (<home>/work) through the home package's door on a fresh home before
+// acquiring the lock — the lock core deliberately never materializes authority,
+// and pinning inside an uncreated directory would deadlock on id-check failure.
+//
+// One helper, one place to change admission policy. Liveness-increasing paths
+// (Mint, MintWithID, MarkRunning, Heartbeat, HeartbeatProgress, CommitLaunch)
+// MUST call this helper; reads stay lock-free.
+func (s *Store) withWorkAdmissionLock(workID string, fn func() error) error {
+	if strings.TrimSpace(workID) == "" {
+		return fmt.Errorf("runattempt write: work_id required for admission lock")
+	}
+	if fn == nil {
+		return fmt.Errorf("runattempt write: callback required for admission lock")
+	}
+	if err := homepkg.EnsureWorkAdmissionAuthorityRoot(s.home); err != nil {
+		return err
+	}
+	return homepkg.WithWorkAdmissionLock(s.home, workID, fn)
+}
+
+// tryWithWorkAdmissionLock is the non-blocking admission variant for sweep
+// renews: a busy admission lock returns (false, nil) so the sweep can skip the
+// candidate this pass instead of convoying behind a parked launch callback.
+func (s *Store) tryWithWorkAdmissionLock(workID string, fn func() error) (bool, error) {
+	if strings.TrimSpace(workID) == "" {
+		return false, fmt.Errorf("runattempt write: work_id required for admission lock")
+	}
+	if fn == nil {
+		return false, fmt.Errorf("runattempt write: callback required for admission lock")
+	}
+	if err := homepkg.EnsureWorkAdmissionAuthorityRoot(s.home); err != nil {
+		return false, err
+	}
+	return homepkg.TryWithWorkAdmissionLock(s.home, workID, fn)
 }
 
 // runattemptWriteFile is the production atomic write implementation for a

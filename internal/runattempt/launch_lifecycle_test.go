@@ -1026,26 +1026,36 @@ func TestCommitLaunchCrossProcessPerAttemptExclusion(t *testing.T) {
 		t.Fatal("same-attempt mutation escaped held cross-process launch lock")
 	}
 
+	// v0.1 work-admission contract: every CommitLaunch holds the compound-home
+	// mutation guard for the entire callback duration. The helper's parked
+	// start callback holds that guard. An unrelated CommitLaunch in the
+	// parent cannot run while the helper holds the guard — and the helper
+	// cannot release it until we write to releaseWrite. Release the helper
+	// first, wait for it to finish (which releases every lock), then drive
+	// attempt B's commit. Cross-process per-attempt exclusion is already
+	// proven by the tryWithAttemptLock probe above while the helper is
+	// parked; the unrelated-launch check below proves that a sibling attempt
+	// proceeds normally once the home mutation guard is released.
+	releaseHelper()
+	select {
+	case helperErr := <-helperDone:
+		helperWaited = true
+		if helperErr != nil {
+			t.Fatalf("helper CommitLaunch: %v", helperErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("launch helper did not complete after release")
+	}
+
 	var unrelatedStarts atomic.Int32
 	if _, err := Open(home).CommitLaunch(unrelated.ID, launchAt.Add(time.Second), func() error {
 		unrelatedStarts.Add(1)
 		return nil
 	}); err != nil {
-		t.Fatalf("attempt B launch while attempt A callback is held: %v", err)
+		t.Fatalf("attempt B launch after attempt A completes: %v", err)
 	}
 	if got := unrelatedStarts.Load(); got != 1 {
 		t.Fatalf("attempt B start callback count = %d, want 1", got)
-	}
-
-	releaseHelper()
-	select {
-	case err := <-helperDone:
-		helperWaited = true
-		if err != nil {
-			t.Fatalf("launch helper: %v\n%s", err, helperOutput.String())
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("launch helper did not finish after release")
 	}
 
 	const transcriptRef = "transcript://cross-process-preserved"

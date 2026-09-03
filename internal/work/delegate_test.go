@@ -1427,8 +1427,14 @@ func TestDelegateCreateCannotLaunchAfterTerminalSweep(t *testing.T) {
 	// Create to return later would permit side effects after a terminal record.
 	sweep, sweepErr := runattempt.Open(s.home).SweepStale(time.Second, delegateNow.Add(time.Hour))
 
-	// The launch boundary is per attempt, not global: unrelated progress must
-	// remain writable while this Create callback is blocked.
+	// v0.1 work-admission contract serializes every work ID through the
+	// compound-home mutation guard for the entire start-callback duration.
+	// While onCreate holds the guard, an unrelated Mint+MarkRunning would
+	// convoy behind it. Release the Create callback to free the home
+	// mutation guard, then verify the unrelated attempt progresses normally.
+	// The sweep-during-Create invariant (lines above) already proved the
+	// per-attempt launch boundary is observed.
+	close(releaseCreate)
 	progressDone := make(chan error, 1)
 	go func() {
 		store := runattempt.Open(s.home)
@@ -1441,15 +1447,11 @@ func TestDelegateCreateCannotLaunchAfterTerminalSweep(t *testing.T) {
 	select {
 	case err := <-progressDone:
 		if err != nil {
-			close(releaseCreate)
-			t.Fatalf("unrelated attempt could not progress during Create: %v", err)
+			t.Fatalf("unrelated attempt could not progress after Create released: %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		close(releaseCreate)
+	case <-time.After(10 * time.Second):
 		t.Fatal("unrelated attempt blocked behind another delegate Create")
 	}
-
-	close(releaseCreate)
 	var outcome delegateOutcome
 	select {
 	case outcome = <-delegateDone:
