@@ -87,5 +87,72 @@
     "(c) resumable physical removal/quarantine recovery": "open; not attempted in this session",
     "(d) cross-process RunAttempt liveness lock": "open; TestLivenessIncreasingWritesHoldWorkAdmission in internal/runattempt is RED reproducer (1.14s); requires runattempt.Write to acquire home.TryWithWorkAdmissionLock before each write -- not implemented in this session per packet carve-out (only if a-c green and time remains)"
   },
-  "canonical_broad_status": "pending; the adopted tree has 14 hardened commits; the cross-process RunAttempt liveness lock, full internal/work broad run, every-boundary fault matrix augmentations, and the canonical broad proof-check remain open until a follow-up session closes them."
+  "canonical_broad_status": "pending; the adopted tree has 14 hardened commits; the cross-process RunAttempt liveness lock, full internal/work broad run, every-boundary fault matrix augmentations, and the canonical broad proof-check remain open until a follow-up session closes them.",
+  "v3": {
+    "slice": "make the adopted harden branch landable: residual (d) admission lock on every RunAttempt liveness write + residual (c) resumable removal recovery",
+    "recorded_at": "2026-09-04T00:00:00Z",
+    "fix_commits": [
+      "4a25078a",
+      "7bb4880f",
+      "5bcfbe01"
+    ],
+    "red_first": [
+      {
+        "command": "go test ./internal/runattempt -run TestLivenessIncreasingWritesHoldWorkAdmission -count=1 -v (on 15b12d8b)",
+        "exit_code": 1,
+        "output": "--- FAIL: TestLivenessIncreasingWritesHoldWorkAdmission (1.49s) 6/6 subtests FAIL: work admission lock: authority root /private/var/folders/.../001/work must be materialized and safe: statat work: no such file or directory"
+      },
+      {
+        "command": "go test ./internal/work -run TestSweepStalePendingClearResumesAfterQuarantinedRemoval -count=1 -v (pre-fix)",
+        "exit_code": 1,
+        "output": "sweep_stale_removal_recovery_test.go:64: recovery report = {Threshold:72h0m0s Scanned:0 Safe:0 Reclaimed:0 Skipped:0 ...}, want one exact completed reclaim"
+      }
+    ],
+    "green_verification": [
+      {
+        "command": "go test ./internal/runattempt -run TestLivenessIncreasingWritesHoldWorkAdmission -count=1 -v",
+        "exit_code": 0,
+        "duration_seconds": 0.661,
+        "detail": "6/6 subtests PASS; reproducer file untouched"
+      },
+      {
+        "command": "go test ./internal/runattempt -count=1",
+        "exit_code": 0,
+        "duration_seconds": 41.947
+      },
+      {
+        "command": "go test ./internal/home -run 'Admission|Work' -count=1",
+        "exit_code": 0,
+        "duration_seconds": 4.127
+      },
+      {
+        "command": "go test ./internal/work -run 'RunAttempt|SweepStale|Reclaim|Delegate' -count=1 (detached, alone)",
+        "exit_code": 0,
+        "duration_seconds": 64.751
+      },
+      {
+        "command": "go test ./internal/work -run TestSweepStalePendingClearResumesAfterQuarantinedRemoval -count=1 -v (post 5bcfbe01)",
+        "exit_code": 0,
+        "duration_seconds": 5.544
+      },
+      {
+        "command": "go test ./internal/work -run 'TestSweepStale|TestReclaim' -count=1",
+        "exit_code": 0,
+        "duration_seconds": 24.85
+      },
+      {
+        "command": "go test ./cmd/compound -run TestProofCheckAdmissionSweepAndExpiryCannotBypassLiveProcessTree -count=1",
+        "exit_code": 0,
+        "duration_seconds": 2.04,
+        "detail": "focused spot-check: admission-locked sweeps still protect live proof-check process trees (Protected=1)"
+      },
+      {
+        "command": "go build ./... ; go vet ./internal/runattempt/ ./internal/home/ ./internal/work/ ; gofmt -l <changed .go files>",
+        "exit_code": 0,
+        "detail": "all clean"
+      }
+    ],
+    "residual_delta": "(d) CLOSED (4a25078a home materialization door + 7bb4880f admission on every liveness-increasing write incl. CommitLaunch start callback and sweep tryHeartbeat renew). (c) CLOSED (5bcfbe01: quarantined frozen frame read through home removal chain, rerun reconciles residue). Still open: retained land-lease mutation boundary, (a) fault-matrix augmentation, (b) liveness-recheck augmentation, full internal/work broad run, canonical proof-check.",
+    "notes": "MarkRunning now binds the exact injected now to LastHeartbeatAt (liveness pivot; demanded by the mark_running subtest). Two existing tests encoded the retired cross-work non-convoy expectation during a parked start callback (TestCommitLaunchCrossProcessPerAttemptExclusion, TestDelegateCreateCannotLaunchAfterTerminalSweep); both updated to release the parked callback first while keeping their per-attempt exclusion and post-release progress invariants. Cross-work non-convoy is documented as outside the v0.1 admission support contract."
+  }
 }

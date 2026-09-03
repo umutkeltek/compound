@@ -127,22 +127,31 @@
         "e26f496f3ae907ecb8135db4c4b3a53dab4ebacb",
         "27984af79ddcf751b013f5e5fcef1e7dd9e5dd8a",
         "8e60a073cf3baff0f0b3c48555521a022bca50f3",
-        "f5ca50c3"
+        "f5ca50c3",
+        "4a25078a",
+        "7bb4880f",
+        "5bcfbe01"
       ],
       "focused_tests": [
-        "GOTOOLCHAIN=go1.27.0 go test ./internal/work -run TestReclaim -count=1 -v (pass, 10.539s)",
-        "GOTOOLCHAIN=go1.27.0 go test ./internal/work -run TestSweepStale -count=1 -v (pass, 38.429s; 7 boundaries + 19 semantic corruptions green)",
-        "GOTOOLCHAIN=go1.27.0 go vet ./internal/work ./internal/home ./internal/landlease ./internal/runattempt (pass)"
+        "go test ./internal/runattempt -run TestLivenessIncreasingWritesHoldWorkAdmission -count=1 -v (RED on 15b12d8b: 6/6 subtests FAIL, 'work admission lock: authority root <home>/work must be materialized and safe: statat work: no such file or directory', 1.817s)",
+        "go test ./internal/runattempt -run TestLivenessIncreasingWritesHoldWorkAdmission -count=1 -v (GREEN after 4a25078a+7bb4880f: 6/6 subtests PASS, 0.661s)",
+        "go test ./internal/runattempt -count=1 (pass, 41.947s)",
+        "go test ./internal/home -run 'Admission|Work' -count=1 (pass, 4.127s)",
+        "go test ./internal/work -run 'RunAttempt|SweepStale|Reclaim|Delegate' -count=1 (pass, 64.751s, run alone/detached per contention guidance)",
+        "go test ./internal/work -run TestSweepStalePendingClearResumesAfterQuarantinedRemoval -count=1 -v (RED pre-5bcfbe01: 'recovery report ... want one exact completed reclaim'; GREEN post-fix, 5.544s)",
+        "go test ./internal/work -run 'TestSweepStale|TestReclaim' -count=1 (pass, 24.850s)",
+        "go test ./cmd/compound -run TestProofCheckAdmissionSweepAndExpiryCannotBypassLiveProcessTree -count=1 (pass, 2.040s; focused spot-check that admission-locked sweeps still protect live proof checks)",
+        "go vet ./internal/runattempt/ ./internal/home/ ./internal/work/ (pass); gofmt gate on all changed .go files clean"
       ],
       "broad_tests": [
-        "GOTOOLCHAIN=go1.27.0 go test ./internal/work ./internal/home ./internal/landlease ./internal/runattempt -count=1 (timeout: internal/work hit 606s on parallel-scheduler contention; home 420.007s OK; landlease 9.759s OK; runattempt FAIL on TestLivenessIncreasingWritesHoldWorkAdmission -- residual d red reproducer)"
+        "GOTOOLCHAIN=go1.27.0 go test ./internal/work ./internal/home ./internal/landlease ./internal/runattempt -count=1 (v2 attempt: internal/work timed out at 606s on parallel-scheduler contention; v3 did not repeat the 4-package parallel run per packet guidance -- focused suites above are green, full broad run still open)"
       ],
       "evidence_paths": [
         "release-evidence/runs/20260831-p0-004-semantic-fencing-focused-green.json",
         "release-evidence/runs/20260831-p0-004-cli-admission-focused-green.json",
         "release-evidence/runs/20260904-p0-004-adopt-harden.json"
       ],
-      "residual_risk": "Adopted onto today's main (61442538) via merge f5ca50c3. The cross-process RunAttempt liveness lock (residual d — TestLivenessIncreasingWritesHoldWorkAdmission in internal/runattempt/work_admission_test.go is RED), retained land-lease mutation boundary, resumable physical removal/quarantine recovery, every-boundary fault matrix augmentation (current TestSweepStalePersistenceFaultsRecoverExactly already covers 7 boundaries: before/after pending persist, before pending clear, before event publish, before work publish, after publication, before lease release), full internal/work broad run (parallel-scheduler contention; 606s timeout), and canonical proof-check remain OPEN per the packet's step 4 carve-out. work sweep-stale --yes remains outside the supported contract.",
+      "residual_risk": "Residual (d) cross-process RunAttempt liveness lock CLOSED by 4a25078a (home authority-root materialization door) + 7bb4880f (every liveness-increasing runattempt write -- Mint/MintWithID/MarkRunning/Heartbeat/HeartbeatProgress/CommitLaunch incl. the start callback, and the sweep tryHeartbeat renew -- now holds home.WithWorkAdmissionLock; TestLivenessIncreasingWritesHoldWorkAdmission green unmodified). Residual (c) resumable physical removal/quarantine recovery CLOSED by 5bcfbe01 (quarantined frozen sweep frame is read through the home removal chain and reconciled by the rerun). STILL OPEN: retained land-lease mutation boundary, residual (a) every-boundary fault-matrix augmentation (TestSweepStalePersistenceFaultsRecoverExactly already covers 7 boundaries; only augmentation is open), residual (b) liveness-recheck-inside-boundary (TestSweepStaleApplyReprobesLivenessInsideMutationBoundary exists; augmentation open), full internal/work broad run (parallel-scheduler contention, 606s timeout in v2), and canonical proof-check (cmd spot-check green only). Cross-work non-convoy during a parked launch callback remains intentionally outside the v0.1 admission support contract. work sweep-stale --yes remains outside the supported contract.",
       "owner": "orchestrator:claude_minimax",
       "updated_at": "2026-09-04T00:00:00Z"
     },
