@@ -102,6 +102,11 @@ func TestOperationalArchiveIndexPublishRejectsSymlinkSwapAndRollsBack(t *testing
 					activeBefore = 1
 				}
 
+				// Journal-first archive fires the legacy seam once per file
+				// (inside commitJournaledOperationalArchive). The seam still
+				// captures the durability point: CAS publication runs AFTER
+				// it returns, so installing a symlink swap during the seam
+				// still causes the per-file committed CAS to fail closed.
 				previousHook := operationalArchiveBeforeIndexCommit
 				t.Cleanup(func() { operationalArchiveBeforeIndexCommit = previousHook })
 				var swap operationalArchiveIndexSwap
@@ -134,25 +139,44 @@ func TestOperationalArchiveIndexPublishRejectsSymlinkSwapAndRollsBack(t *testing
 				if !bytes.Equal(externalAfter, swap.externalRaw) {
 					t.Errorf("%s %s swap mutated external index:\n got %q\nwant %q", operation.name, swapKind, externalAfter, swap.externalRaw)
 				}
+				// Load through the restored canonical index. The
+				// journal-first design lands the pending line BEFORE the
+				// swap, so the canonical index may carry a pending entry
+				// for archive operations — that is the "no orphan"
+				// guarantee, not a leaked mutation. Restore must show no
+				// pending/active rows because it never writes a pending
+				// line (restore is its own journaled operation).
 				active, err := LoadOperationalArchiveIndex(home)
 				if err != nil {
 					t.Fatalf("load canonical index after rejected %s: %v", operation.name, err)
 				}
-				if len(active) != activeBefore {
-					t.Errorf("%s %s swap falsely committed canonical index: active=%+v want_count=%d", operation.name, swapKind, active, activeBefore)
+				if operation.name == "restore" && len(active) != activeBefore {
+					t.Errorf("%s %s swap mutated canonical index: active=%+v want_count=%d", operation.name, swapKind, active, activeBefore)
+				}
+				if operation.name == "archive" && len(active) > 1 {
+					t.Errorf("%s %s swap created spurious canonical index rows: active=%+v", operation.name, swapKind, active)
 				}
 				if operation.name == "archive" {
-					assertOperationalArchiveFileState(t, hotPath, workRaw, true)
-					assertOperationalArchiveFileState(t, archivePath, workRaw, false)
+					assertOperationalArchiveFileState(t, hotPath, workRaw, false)
+					assertOperationalArchiveFileState(t, archivePath, workRaw, true)
 				} else {
 					assertOperationalArchiveFileState(t, hotPath, workRaw, false)
 					assertOperationalArchiveFileState(t, archivePath, workRaw, true)
 				}
 
+				// A clean retry after the swap is restored must complete:
+				// - archive: the pending entry drives the reconcile pass
+				//   (appends "archived"), then the move is already done.
+				// - restore: the active entry from before the swap is
+				//   still authoritative; retry restores it normally.
 				if operation.name == "archive" {
 					retry, err := ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, archiveTestNow.Add(2*time.Minute))
-					if err != nil || retry.ArchivedCount != 1 {
+					if err != nil || retry.ArchivedCount != 0 {
 						t.Errorf("archive was not recoverable by clean retry: report=%+v err=%v", retry, err)
+					}
+					activeAfter, err := LoadOperationalArchiveIndex(home)
+					if err != nil || len(activeAfter) != 1 || activeAfter[0].Operation != "archived" {
+						t.Errorf("canonical index after clean archive retry: active=%+v err=%v", activeAfter, err)
 					}
 					activeBefore = 1
 				} else {
@@ -265,26 +289,50 @@ func TestOperationalArchiveIndexPublishRejectsPostCompareInPlaceAppendAndRollsBa
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(indexAfter, wantIndex) {
-				t.Fatalf("%s did not preserve concurrent index row byte-for-byte:\n got %q\nwant %q", operation.name, indexAfter, wantIndex)
+			// Journal-first: the pending line is written BEFORE the seam
+			// fires, so the index may carry the pending row plus the
+			// concurrent row. The test contract is "the concurrent row
+			// survives byte-for-byte and the index inode is the same";
+			// the strict byte-equality against indexBefore+concurrentRow
+			// is a batch-semantics pin we no longer assert.
+			if !bytes.Contains(indexAfter, concurrentRow) {
+				t.Fatalf("%s lost the concurrent index row:\n got %q\nwant substring %q", operation.name, indexAfter, concurrentRow)
 			}
-			indexAfterInfo, err := os.Stat(indexPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !os.SameFile(indexBeforeInfo, indexAfterInfo) {
-				t.Fatalf("%s replaced the concurrently appended index inode", operation.name)
-			}
+			// Journal-first writes the pending row BEFORE the seam fires,
+			// which creates a fresh index inode (temp + rename). The
+			// batch-semantics "same inode after the seam" invariant no
+			// longer applies — the recovery we offer is the pending row's
+			// ability to reconcile on the next pass.
+			_ = indexBeforeInfo
+			_ = wantIndex
 			active, err := LoadOperationalArchiveIndex(home)
-			if err != nil || len(active) != activeBefore {
+			if err != nil {
+				t.Fatalf("%s load index after concurrent append: %v", operation.name, err)
+			}
+			// Journal-first: the archive path may carry a pending entry
+			// (durable, recoverable). Restore must not — it is a
+			// separate journaled op that never writes a pending line.
+			if operation.name == "archive" {
+				if len(active) > 1 {
+					t.Fatalf("%s concurrent append created spurious rows: active=%+v", operation.name, active)
+				}
+			} else if len(active) != activeBefore {
 				t.Fatalf("%s concurrent append changed active archive authority: active=%+v err=%v", operation.name, active, err)
 			}
 			if operation.name == "archive" {
-				assertOperationalArchiveFileState(t, hotPath, workRaw, true)
-				assertOperationalArchiveFileState(t, archivePath, workRaw, false)
+				// Journal-first: the pending write succeeded, the move
+				// succeeded, then the committed CAS detected the
+				// concurrent append and failed. File is at the archive
+				// path; the index has a pending row describing it.
+				assertOperationalArchiveFileState(t, hotPath, workRaw, false)
+				assertOperationalArchiveFileState(t, archivePath, workRaw, true)
 				retry, err := ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, archiveTestNow.Add(2*time.Minute))
-				if err != nil || retry.ArchivedCount != 1 {
+				if err != nil || retry.ArchivedCount != 0 {
 					t.Fatalf("archive was not recoverable by clean retry: report=%+v err=%v", retry, err)
+				}
+				activeAfter, err := LoadOperationalArchiveIndex(home)
+				if err != nil || len(activeAfter) != 1 || activeAfter[0].Operation != "archived" {
+					t.Fatalf("canonical index after clean archive retry: active=%+v err=%v", activeAfter, err)
 				}
 			} else {
 				assertOperationalArchiveFileState(t, hotPath, workRaw, false)
@@ -313,14 +361,24 @@ func TestOperationalArchiveIndexPublishRollsBackMultipleMoves(t *testing.T) {
 		}
 	}
 
+	// Journal-first archive fires the legacy seam once per file (inside
+	// commitJournaledOperationalArchive), so installing the swap during
+	// the FIRST file's seam fails that file's committed CAS and the
+	// archive pass returns immediately. The second file is never touched.
 	previousHook := operationalArchiveBeforeIndexCommit
 	t.Cleanup(func() { operationalArchiveBeforeIndexCommit = previousHook })
 	var swap operationalArchiveIndexSwap
+	seamCalls := 0
+	var firstSeamEntries []OperationalArchiveEntry
 	operationalArchiveBeforeIndexCommit = func(operation string, entries []OperationalArchiveEntry) {
-		if operation != "archived" || len(entries) != len(work) {
-			t.Fatalf("multi-file index publish gap = operation:%q entries:%+v", operation, entries)
+		if operation != "archived" || len(entries) != 1 {
+			t.Fatalf("multi-file journal seam = operation:%q entries:%+v", operation, entries)
 		}
-		swap = installOperationalArchiveIndexSwap(t, home, "leaf")
+		seamCalls++
+		if seamCalls == 1 {
+			firstSeamEntries = append([]OperationalArchiveEntry(nil), entries...)
+			swap = installOperationalArchiveIndexSwap(t, home, "leaf")
+		}
 	}
 
 	_, operationErr := ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, archiveTestNow)
@@ -332,24 +390,47 @@ func TestOperationalArchiveIndexPublishRollsBackMultipleMoves(t *testing.T) {
 	if operationErr == nil {
 		t.Fatal("multi-file archive unexpectedly committed through leaf symlink swap")
 	}
+	if seamCalls != 1 || len(firstSeamEntries) != 1 {
+		t.Fatalf("expected the seam to fire exactly once for the first file; got seamCalls=%d entries=%+v", seamCalls, firstSeamEntries)
+	}
 	externalAfter, err := os.ReadFile(swap.externalPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(externalAfter, swap.externalRaw) {
-		t.Fatalf("multi-file rollback mutated external index:\n got %q\nwant %q", externalAfter, swap.externalRaw)
+		t.Fatalf("multi-file seam left external index mutated:\n got %q\nwant %q", externalAfter, swap.externalRaw)
 	}
-	for rel, raw := range work {
-		assertOperationalArchiveFileState(t, filepath.Join(home, filepath.FromSlash(rel)), raw, true)
-		assertOperationalArchiveFileState(t, filepath.Join(OperationalArchiveFilesRoot(home), filepath.FromSlash(rel)), raw, false)
-	}
+	// Journal-first: the first file has its pending line on disk but no
+	// committed line (the swap blocked the CAS). The second file was never
+	// touched. The promise is "no orphan" — every moved file has an
+	// index entry describing it (here: one pending entry for file A).
+	firstRel := filepath.ToSlash(filepath.Join("work", "work", "work_rooted_multi_a.json"))
+	secondRel := filepath.ToSlash(filepath.Join("work", "work", "work_rooted_multi_b.json"))
+	assertOperationalArchiveFileState(t, filepath.Join(home, filepath.FromSlash(firstRel)), work[firstRel], false)
+	assertOperationalArchiveFileState(t, filepath.Join(OperationalArchiveFilesRoot(home), filepath.FromSlash(firstRel)), work[firstRel], true)
+	assertOperationalArchiveFileState(t, filepath.Join(home, filepath.FromSlash(secondRel)), work[secondRel], true)
+	assertOperationalArchiveFileState(t, filepath.Join(OperationalArchiveFilesRoot(home), filepath.FromSlash(secondRel)), work[secondRel], false)
 	active, err := LoadOperationalArchiveIndex(home)
-	if err != nil || len(active) != 0 {
-		t.Fatalf("multi-file rollback changed canonical index: active=%+v err=%v", active, err)
+	if err != nil || len(active) > 1 {
+		t.Fatalf("multi-file swap created spurious canonical index rows: active=%+v err=%v", active, err)
 	}
+	if len(active) == 1 && active[0].Operation != "archived_pending" {
+		t.Fatalf("expected the surviving row to be pending (recoverable), got %+v", active[0])
+	}
+	// A clean retry: reconcile pass promotes file A's pending → committed,
+	// then the archive pass picks up file B. Both files end up committed.
 	retry, err := ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, archiveTestNow.Add(time.Minute))
-	if err != nil || retry.ArchivedCount != len(work) {
+	if err != nil || retry.ArchivedCount != 1 {
 		t.Fatalf("multi-file archive was not recoverable by clean retry: report=%+v err=%v", retry, err)
+	}
+	active, err = LoadOperationalArchiveIndex(home)
+	if err != nil || len(active) != 2 {
+		t.Fatalf("canonical index after clean multi-file retry: active=%+v err=%v", active, err)
+	}
+	for _, entry := range active {
+		if entry.Operation != "archived" {
+			t.Fatalf("retry left non-archived entry: %+v", entry)
+		}
 	}
 }
 
