@@ -565,11 +565,21 @@ func LoadOperationalArchiveIndex(homePath string) ([]OperationalArchiveEntry, er
 		}
 		switch entry.Operation {
 		case "archived":
-			if prior, ok := active[entry.ID]; ok {
+			if prior, ok := active[entry.ID]; ok && prior.Operation == "archived" {
 				return nil, fmt.Errorf("operational archive index line %d has repeated active archived operation %s (prior path %s)", i+1, entry.ID, prior.OriginalPath)
 			}
 			active[entry.ID] = entry
-		case "restored":
+		case "archived_pending":
+			// A pending entry is the journal marker written BEFORE the
+			// per-file move; a later "archived" or "archived_rolled_back"
+			// line for the same ID replaces it. Two pending entries for the
+			// same ID without an intervening terminal line indicate a
+			// double-write the journal cannot reconcile — fail closed.
+			if prior, ok := active[entry.ID]; ok && (prior.Operation == "archived_pending" || prior.Operation == "archived") {
+				return nil, fmt.Errorf("operational archive index line %d has repeated pending operation %s (prior line was %s)", i+1, entry.ID, prior.Operation)
+			}
+			active[entry.ID] = entry
+		case "archived_rolled_back", "restored":
 			delete(active, entry.ID)
 		default:
 			return nil, fmt.Errorf("operational archive index line %d has unknown operation %q", i+1, entry.Operation)
@@ -613,6 +623,15 @@ func archiveOperationalHistoryLocked(homePath string, opts OperationalArchiveOpt
 		ArchivedAt:    now.UTC().Format(time.RFC3339),
 		Counts:        map[string]int{},
 	}
+	// Reconcile any pending journal lines from a prior interrupted run BEFORE
+	// processing new candidates. The reconcile pass appends either an
+	// "archived" or an "archived_rolled_back" terminal line for each pending
+	// entry, so the index converges to a state with no in-flight transitions.
+	if !opts.DryRun {
+		if _, err := reconcileOperationalArchiveJournal(homePath, now); err != nil {
+			return OperationalArchiveReport{}, err
+		}
+	}
 	active, err := LoadOperationalArchiveIndex(homePath)
 	if err != nil {
 		return OperationalArchiveReport{}, err
@@ -642,15 +661,21 @@ func archiveOperationalHistoryLocked(homePath string, opts OperationalArchiveOpt
 		if err != nil {
 			return OperationalArchiveReport{}, err
 		}
-		report.Entries = append(report.Entries, entry)
-		report.Counts[entry.Kind]++
-	}
-	report.ArchivedCount = len(report.Entries)
-	if !opts.DryRun && len(report.Entries) > 0 {
-		if err := commitOperationalArchiveTransaction(homePath, report.Entries); err != nil {
+		if opts.DryRun {
+			// Dry-run is a preview: log what would be archived but never
+			// touch the index or the filesystem. --dry-run MUST write nothing.
+			report.Entries = append(report.Entries, entry)
+			report.Counts[entry.Kind]++
+			continue
+		}
+		committed, err := commitJournaledOperationalArchive(homePath, entry)
+		if err != nil {
 			return OperationalArchiveReport{}, err
 		}
+		report.Entries = append(report.Entries, committed)
+		report.Counts[committed.Kind]++
 	}
+	report.ArchivedCount = len(report.Entries)
 	return report, nil
 }
 
@@ -672,6 +697,10 @@ func restoreOperationalArchiveLocked(homePath string, opts OperationalRestoreOpt
 	if err := requireHealthyHome(homePath); err != nil {
 		return OperationalArchiveReport{}, err
 	}
+	// Pending entries are tolerated by restore (the journal's "either fully
+	// moved or not moved, never lost" promise): the active set may include
+	// pending entries whose file is still at the original path because an
+	// earlier archive pass was interrupted before the move ran.
 	active, err := LoadOperationalArchiveIndex(homePath)
 	if err != nil {
 		return OperationalArchiveReport{}, err
@@ -687,27 +716,126 @@ func restoreOperationalArchiveLocked(homePath string, opts OperationalRestoreOpt
 		RestoredAt:    now.UTC().Format(time.RFC3339),
 		Counts:        map[string]int{},
 	}
-	for _, entry := range selected {
-		restored, err := restoreOperationalFile(homePath, entry, now, opts.DryRun)
-		if err != nil {
-			return OperationalArchiveReport{}, err
-		}
-		report.Entries = append(report.Entries, restored)
-		report.Counts[restored.Kind]++
+	plan, err := planOperationalRestoreMoves(homePath, selected, now)
+	if err != nil {
+		return OperationalArchiveReport{}, err
+	}
+	for _, step := range plan {
+		report.Entries = append(report.Entries, step.entry)
+		report.Counts[step.entry.Kind]++
 	}
 	report.RestoredCount = len(report.Entries)
-	if !opts.DryRun && len(report.Entries) > 0 {
-		if err := commitOperationalArchiveTransaction(homePath, report.Entries); err != nil {
-			return OperationalArchiveReport{}, err
-		}
+	if opts.DryRun || len(report.Entries) == 0 {
+		return report, nil
+	}
+	if err := commitOperationalArchiveTransaction(homePath, planEntries(plan)); err != nil {
+		return OperationalArchiveReport{}, err
 	}
 	return report, nil
+}
+
+// operationalRestorePlanStep is one entry's restoration. moveRequired=false
+// marks a pending entry whose file is still at the original path: nothing to
+// rename; the journal just records the "restored" terminal line so the entry
+// stops counting as active.
+type operationalRestorePlanStep struct {
+	entry        OperationalArchiveEntry
+	moveRequired bool
+	sourceRel    string
+	destRel      string
+}
+
+func planEntries(plan []operationalRestorePlanStep) []OperationalArchiveEntry {
+	out := make([]OperationalArchiveEntry, 0, len(plan))
+	for _, step := range plan {
+		out = append(out, step.entry)
+	}
+	return out
+}
+
+// planOperationalRestoreMoves derives a per-entry restore plan from the
+// journal: a committed entry must move archive → original; a pending entry may
+// find the file at the archive path (move completed) or the original path
+// (move never ran — no rename, just record restored). Either branch must
+// leave the file at the original location with the matching SHA.
+func planOperationalRestoreMoves(homePath string, entries []OperationalArchiveEntry, now time.Time) ([]operationalRestorePlanStep, error) {
+	absHome, err := filepath.Abs(filepath.Clean(homePath))
+	if err != nil {
+		return nil, err
+	}
+	homeRoot, err := os.OpenRoot(absHome)
+	if err != nil {
+		return nil, err
+	}
+	defer homeRoot.Close()
+	out := make([]operationalRestorePlanStep, 0, len(entries))
+	for _, entry := range entries {
+		originalRel := filepath.FromSlash(filepath.ToSlash(entry.OriginalPath))
+		archiveRel := filepath.FromSlash(filepath.ToSlash(entry.ArchivePath))
+		originalAbs := filepath.Join(absHome, originalRel)
+		archiveAbs := filepath.Join(absHome, archiveRel)
+
+		var step operationalRestorePlanStep
+		step.entry = entry
+		step.entry.Operation = "restored"
+		step.entry.CreatedAt = now.UTC().Format(time.RFC3339)
+
+		switch entry.Operation {
+		case "archived_pending":
+			// Locate the file by trying the archive path first, then the
+			// original path. The pending marker only commits us to two
+			// safe outcomes: file at archive (full move) or file at
+			// original (rolled back). Anything else is a manual repair.
+			if data, err := os.ReadFile(archiveAbs); err == nil {
+				if int64(len(data)) != entry.Size || operationalArchiveBytesSHA256(data) != strings.TrimSpace(entry.SHA256) {
+					return nil, fmt.Errorf("operational archive restore: pending entry %s has mismatched archive file %s", entry.ID, archiveRel)
+				}
+				step.moveRequired = true
+				step.sourceRel = archiveRel
+				step.destRel = originalRel
+			} else if os.IsNotExist(err) {
+				data, origErr := os.ReadFile(originalAbs)
+				if origErr != nil {
+					return nil, fmt.Errorf("operational archive restore: pending entry %s has no file at archive %s or original %s: %w", entry.ID, archiveRel, originalRel, origErr)
+				}
+				if int64(len(data)) != entry.Size || operationalArchiveBytesSHA256(data) != strings.TrimSpace(entry.SHA256) {
+					return nil, fmt.Errorf("operational archive restore: pending entry %s has mismatched original file %s", entry.ID, originalRel)
+				}
+				step.moveRequired = false
+				step.sourceRel = originalRel
+				step.destRel = originalRel
+			} else {
+				return nil, fmt.Errorf("operational archive restore: pending entry %s: %w", entry.ID, err)
+			}
+		case "archived":
+			step.moveRequired = true
+			step.sourceRel = archiveRel
+			step.destRel = originalRel
+		default:
+			return nil, fmt.Errorf("operational archive restore: entry %s has unsupported operation %q", entry.ID, entry.Operation)
+		}
+		out = append(out, step)
+	}
+	return out, nil
 }
 
 // operationalArchiveBeforeIndexCommit is a deterministic test seam at the
 // exact state the admission lock protects: files have moved, while the
 // archive index still describes the prior location. Production is a no-op.
+//
+// Used by tests that simulate a kill signal between the move and the index
+// commit. With journal-first enabled, that gap is short (one pending entry,
+// then the move, then the committed entry — every step on durable storage)
+// and any panic fired here leaves no orphan: the index has the pending line
+// and the file is at the archive path, so a rerun reconciles cleanly.
 var operationalArchiveBeforeIndexCommit = func(_ string, _ []OperationalArchiveEntry) {}
+
+// operationalArchiveBeforeJournalCommit is the journal-first test seam: it
+// fires AFTER the per-file rename has succeeded but BEFORE the committed
+// index line is appended. A panic here simulates a kill signal in the only
+// window the journal-first design still has between the move and durable
+// index state. Production is a no-op.
+var operationalArchiveBeforeJournalCommit = func(_ OperationalArchiveEntry) {}
 
 // operationalArchiveBeforeIndexReplace is a deterministic test seam after the
 // canonical preimage has been validated but before publication.
@@ -1453,6 +1581,10 @@ type operationalArchiveMove struct {
 	sourceMode      os.FileMode
 	sourceSHA256    string
 	moved           bool
+	// moveRequired=false marks a step that exists only to record a journal
+	// "restored" line for a pending entry whose file is still at the original
+	// path: no rename, no rollback plumbing, just the index write.
+	moveRequired bool
 }
 
 type operationalArchiveTransaction struct {
@@ -1474,12 +1606,12 @@ type operationalArchiveTransaction struct {
 	indexPublication   *RootedFileCAS
 }
 
-// commitOperationalArchiveTransaction is the single mutation seam for an
-// archive/restore batch. It guarantees same-process rollback, including when
-// the canonical archive ancestor is replaced after the moves. It deliberately
-// has no durable journal: a process or power loss before the index commit may
-// leave moved/unindexed state, which existing readers must reject fail-closed
-// and an operator must repair.
+// commitOperationalArchiveTransaction is the single mutation seam for a
+// restore batch. It guarantees same-process rollback, including when the
+// canonical archive ancestor is replaced after the moves. The archive path
+// itself has its own journal (see commitJournaledOperationalArchive and
+// reconcileOperationalArchiveJournal) so an interrupted archive pass can
+// never leave moved files with no index entry.
 func commitOperationalArchiveTransaction(homePath string, entries []OperationalArchiveEntry) error {
 	tx, err := prepareOperationalArchiveTransaction(homePath, entries)
 	if err != nil {
@@ -1487,6 +1619,287 @@ func commitOperationalArchiveTransaction(homePath string, entries []OperationalA
 	}
 	defer tx.close()
 	return tx.commit(entries)
+}
+
+// operationalArchiveJournalAppend appends entry lines to the operational
+// archive index with crash-safe fsync, then publishes via the canonical
+// CAS primitive so concurrent in-place appends and root swaps are detected
+// and roll back. Used by the journal-first archive pass: the pending line
+// lands on durable storage BEFORE the move, so a crash between the append
+// and the rename leaves the entry to be reconciled on the next pass instead
+// of becoming an orphan.
+//
+// purpose distinguishes the two journal steps so test seams that watch for
+// the canonical commit (purpose="commit") do not fire for the transient
+// pending line (purpose="journal-pending").
+func operationalArchiveJournalAppend(homePath string, entries []OperationalArchiveEntry, purpose string) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	if purpose == "" {
+		purpose = "commit"
+	}
+	if purpose == "commit" {
+		// Existing seam semantics assume "commit" is the canonical publish.
+	}
+	absHome, err := filepath.Abs(filepath.Clean(homePath))
+	if err != nil {
+		return err
+	}
+	homeRoot, err := os.OpenRoot(absHome)
+	if err != nil {
+		return err
+	}
+	defer homeRoot.Close()
+	indexParentRel := filepath.Dir(filepath.FromSlash(OperationalArchiveIndexRel))
+	indexDisplay := filepath.Join(absHome, OperationalArchiveIndexRel)
+	if _, err := ensureRootedDirectories(homeRoot, indexParentRel, indexDisplay, "operational archive journal", 0o755); err != nil {
+		return err
+	}
+	if err := syncRootedDirectory(homeRoot, indexParentRel, indexDisplay, "operational archive journal"); err != nil {
+		return err
+	}
+	indexRoot, err := homeRoot.OpenRoot(indexParentRel)
+	if err != nil {
+		return err
+	}
+	defer indexRoot.Close()
+
+	var existing []byte
+	mode := os.FileMode(0o644)
+	var existingInfo os.FileInfo
+	existingPresent := false
+	if data, _, info, err := readOperationalArchiveRootFile(indexRoot, operationalArchiveIndexName, "operational archive journal"); err == nil {
+		existing = data
+		if info != nil {
+			mode = info.Mode().Perm()
+			if mode == 0 {
+				mode = 0o644
+			}
+			existingInfo = info
+			existingPresent = true
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	var buf bytes.Buffer
+	buf.Write(existing)
+	for _, entry := range entries {
+		if entry.SchemaVersion != OperationalArchiveSchemaVersion {
+			return fmt.Errorf("operational archive journal append entry %s has unsupported schema %q", entry.ID, entry.SchemaVersion)
+		}
+		row, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		buf.Write(row)
+		if buf.Len() == 0 || buf.Bytes()[buf.Len()-1] != '\n' {
+			buf.WriteByte('\n')
+		}
+	}
+
+	// Use the canonical CAS primitive so concurrent in-place appends (the
+	// test seam `operationalArchiveBeforeIndexReplace`) and root swaps
+	// fail closed instead of being silently overwritten.
+	var expectedInfo os.FileInfo
+	if existingPresent {
+		expectedInfo = existingInfo
+	}
+	_, publication, err := atomicRewriteOperationalArchiveRootFile(
+		indexRoot,
+		operationalArchiveIndexName,
+		buf.Bytes(),
+		mode,
+		purpose,
+		existing,
+		expectedInfo,
+	)
+	if err != nil {
+		if publication != nil && publication.State() == RootedFileCASAmbiguous {
+			return fmt.Errorf("operational archive journal publication requires manual repair: %w", err)
+		}
+		return err
+	}
+	if err := publication.Commit(); err != nil {
+		return fmt.Errorf("operational archive journal publication commit failed: %w", err)
+	}
+	return nil
+}
+
+// commitJournaledOperationalArchive is the journal-first archive step for a
+// single file: append a pending line (fsync), rename source → destination,
+// append the committed line (fsync). A crash at any point leaves the index in
+// a state the next reconcile pass can resolve; restore handles the pending
+// state directly if it is reached first.
+func commitJournaledOperationalArchive(homePath string, entry OperationalArchiveEntry) (OperationalArchiveEntry, error) {
+	if entry.SchemaVersion != OperationalArchiveSchemaVersion {
+		return OperationalArchiveEntry{}, fmt.Errorf("operational archive journal entry %s has unsupported schema %q", entry.ID, entry.SchemaVersion)
+	}
+	originalRel := filepath.FromSlash(entry.OriginalPath)
+	archiveRel := filepath.FromSlash(entry.ArchivePath)
+
+	homeRoot, err := os.OpenRoot(filepath.Clean(homePath))
+	if err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	defer homeRoot.Close()
+
+	// Source must exist for archive. Capture the bytes (size + SHA) so we
+	// can validate against the entry the caller already built.
+	parentRel := filepath.Dir(originalRel)
+	parentRoot, err := homeRoot.OpenRoot(parentRel)
+	if err != nil {
+		return OperationalArchiveEntry{}, fmt.Errorf("operational archive journal: open source parent %s: %w", parentRel, err)
+	}
+	defer parentRoot.Close()
+	sourceName := filepath.Base(originalRel)
+	data, _, _, err := readOperationalArchiveRootFile(parentRoot, sourceName, "operational archive journal source")
+	if err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	sha := operationalArchiveBytesSHA256(data)
+	if int64(len(data)) != entry.Size || sha != strings.TrimSpace(entry.SHA256) {
+		return OperationalArchiveEntry{}, fmt.Errorf("operational archive journal source snapshot does not match entry %s", entry.ID)
+	}
+
+	// 1. Append the pending line first (fsync). After this point, even a
+	// sudden power loss cannot lose the move intent.
+	pending := entry
+	pending.Operation = "archived_pending"
+	if err := operationalArchiveJournalAppend(homePath, []OperationalArchiveEntry{pending}, "journal-pending"); err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+
+	// 2. Move the file. A crash here leaves pending on disk and the file at
+	// its archive path; the next archive pass reconciles by appending the
+	// committed line.
+	archiveParentRel := filepath.Dir(archiveRel)
+	archiveParentDisplay := filepath.Join(filepath.Clean(homePath), archiveParentRel)
+	if _, err := ensureRootedDirectories(homeRoot, archiveParentRel, archiveParentDisplay, "operational archive journal archive parent", 0o755); err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	if err := syncRootedDirectory(homeRoot, archiveParentRel, archiveParentDisplay, "operational archive journal archive parent"); err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	archiveParentRoot, err := homeRoot.OpenRoot(archiveParentRel)
+	if err != nil {
+		return OperationalArchiveEntry{}, fmt.Errorf("operational archive journal: open archive parent %s: %w", archiveParentRel, err)
+	}
+	defer archiveParentRoot.Close()
+	if _, err := archiveParentRoot.Lstat(filepath.Base(archiveRel)); err == nil {
+		return OperationalArchiveEntry{}, fmt.Errorf("operational archive journal destination already exists: %s", archiveRel)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return OperationalArchiveEntry{}, err
+	}
+	if err := homeRoot.Rename(originalRel, archiveRel); err != nil {
+		return OperationalArchiveEntry{}, fmt.Errorf("operational archive journal rename %s -> %s: %w", originalRel, archiveRel, err)
+	}
+	moved, _, _, err := readOperationalArchiveRootFile(archiveParentRoot, filepath.Base(archiveRel), "operational archive journal moved")
+	if err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	if int64(len(moved)) != entry.Size || operationalArchiveBytesSHA256(moved) != sha {
+		return OperationalArchiveEntry{}, fmt.Errorf("operational archive journal moved file does not match source snapshot: %s", archiveRel)
+	}
+	if err := syncOperationalArchiveRoot(parentRoot); err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	if err := syncOperationalArchiveRoot(archiveParentRoot); err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+
+	// 3. Append the committed line. If this write fails, the file is in
+	// place but only the pending line exists — the next reconcile pass
+	// (or restore) closes the gap. Either way, no orphan.
+	operationalArchiveBeforeJournalCommit(entry)
+	// Fire the legacy batch seam so existing tests that probe for the
+	// archive-move / index-publish race (symlink swap, concurrent in-place
+	// append) at the same boundary still see the gap. The CAS publication
+	// below is the actual durability point — anything that swaps the index
+	// root or appends a stale row during the seam window is detected.
+	operationalArchiveBeforeIndexCommit("archived", []OperationalArchiveEntry{entry})
+	committed := entry
+	committed.Operation = "archived"
+	if err := operationalArchiveJournalAppend(homePath, []OperationalArchiveEntry{committed}, "commit"); err != nil {
+		// The pending line is durable on disk and the file IS at the
+		// archive path. The error means only the "archived" terminal line
+		// failed to land — the journal-first promise (no orphan, no lost
+		// index entry) is satisfied. The next reconcile pass (or a fresh
+		// archive pass on the same path) will close the gap by writing
+		// the terminal "archived" line.
+		return OperationalArchiveEntry{}, err
+	}
+	return committed, nil
+}
+
+// reconcileOperationalArchiveJournal resolves any "archived_pending" entries
+// left over from an interrupted archive pass. For each pending entry we
+// inspect the file at the archive path:
+//   - present with matching SHA → append "archived" (move completed)
+//   - absent but the original path still holds the file → append
+//     "archived_rolled_back" (move never ran; nothing to lose)
+//   - absent at both, or present-but-mismatched → manual repair; fail closed.
+//
+// Returns the new active entry list after reconciliation. The index remains
+// self-describing at every step, so a crash during reconciliation is also
+// recoverable.
+func reconcileOperationalArchiveJournal(homePath string, now time.Time) ([]OperationalArchiveEntry, error) {
+	active, err := LoadOperationalArchiveIndex(homePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(active) == 0 {
+		return active, nil
+	}
+	var updates []OperationalArchiveEntry
+	for _, entry := range active {
+		if entry.Operation != "archived_pending" {
+			continue
+		}
+		archiveRel := filepath.FromSlash(entry.ArchivePath)
+		originalRel := filepath.FromSlash(entry.OriginalPath)
+		archiveAbs := filepath.Join(homePath, archiveRel)
+		originalAbs := filepath.Join(homePath, originalRel)
+
+		var archiveData []byte
+		var archiveErr error
+		archiveData, archiveErr = os.ReadFile(archiveAbs)
+		if archiveErr == nil {
+			if int64(len(archiveData)) != entry.Size || operationalArchiveBytesSHA256(archiveData) != strings.TrimSpace(entry.SHA256) {
+				return nil, fmt.Errorf("operational archive journal reconcile: pending entry %s has mismatched archive file %s", entry.ID, archiveRel)
+			}
+			committed := entry
+			committed.Operation = "archived"
+			updates = append(updates, committed)
+			continue
+		}
+		if !errors.Is(archiveErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("operational archive journal reconcile: pending entry %s: %w", entry.ID, archiveErr)
+		}
+
+		originalData, originalErr := os.ReadFile(originalAbs)
+		if errors.Is(originalErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("operational archive journal reconcile: pending entry %s has neither archive %s nor original %s; manual repair required", entry.ID, archiveRel, originalRel)
+		}
+		if originalErr != nil {
+			return nil, fmt.Errorf("operational archive journal reconcile: pending entry %s original %s: %w", entry.ID, originalRel, originalErr)
+		}
+		if int64(len(originalData)) != entry.Size || operationalArchiveBytesSHA256(originalData) != strings.TrimSpace(entry.SHA256) {
+			return nil, fmt.Errorf("operational archive journal reconcile: pending entry %s has mismatched original file %s", entry.ID, originalRel)
+		}
+		rollback := entry
+		rollback.Operation = "archived_rolled_back"
+		rollback.CreatedAt = now.UTC().Format(time.RFC3339)
+		updates = append(updates, rollback)
+	}
+	if len(updates) == 0 {
+		return active, nil
+	}
+	if err := operationalArchiveJournalAppend(homePath, updates, "commit"); err != nil {
+		return nil, err
+	}
+	return LoadOperationalArchiveIndex(homePath)
 }
 
 func prepareOperationalArchiveTransaction(homePath string, entries []OperationalArchiveEntry) (*operationalArchiveTransaction, error) {
@@ -1518,7 +1931,7 @@ func prepareOperationalArchiveTransaction(homePath string, entries []Operational
 	seenSource := map[string]bool{}
 	seenDestination := map[string]bool{}
 	for _, entry := range entries {
-		sourceRel, destinationRel, err := operationalArchiveEntryMovePaths(entry, tx.operation)
+		sourceRel, destinationRel, moveRequired, err := operationalArchiveEntryMovePaths(entry, tx.operation)
 		if err != nil {
 			return fail(err)
 		}
@@ -1527,6 +1940,20 @@ func prepareOperationalArchiveTransaction(homePath string, entries []Operational
 		}
 		seenSource[sourceRel] = true
 		seenDestination[destinationRel] = true
+		if !moveRequired {
+			// No-move step: a pending entry whose file never moved off the
+			// original path. Only the index line changes; no rename, no
+			// rollback plumbing. The journal promise — "either fully moved
+			// or not moved, never lost" — is satisfied because the file is
+			// already where the entry says it is.
+			tx.moves = append(tx.moves, operationalArchiveMove{
+				entry:        entry,
+				sourceRel:    sourceRel,
+				destinationRel: destinationRel,
+				moveRequired: false,
+			})
+			continue
+		}
 		sourceParentRel := filepath.Dir(sourceRel)
 		sourceRoot, err := tx.pinParent(sourceParentRel, false)
 		if err != nil {
@@ -1550,11 +1977,15 @@ func prepareOperationalArchiveTransaction(homePath string, entries []Operational
 			sourceData:      data,
 			sourceMode:      mode,
 			sourceSHA256:    sha,
+			moveRequired:    true,
 		})
 	}
 
 	for i := range tx.moves {
 		move := &tx.moves[i]
+		if !move.moveRequired {
+			continue
+		}
 		destinationRoot, err := tx.pinParent(filepath.Dir(move.destinationRel), true)
 		if err != nil {
 			return fail(err)
@@ -1579,37 +2010,42 @@ func prepareOperationalArchiveTransaction(homePath string, entries []Operational
 	return tx, nil
 }
 
-func operationalArchiveEntryMovePaths(entry OperationalArchiveEntry, operation string) (string, string, error) {
+func operationalArchiveEntryMovePaths(entry OperationalArchiveEntry, operation string) (string, string, bool, error) {
 	if entry.SchemaVersion != OperationalArchiveSchemaVersion {
-		return "", "", fmt.Errorf("operational archive entry %s has unsupported schema %q", entry.ID, entry.SchemaVersion)
+		return "", "", false, fmt.Errorf("operational archive entry %s has unsupported schema %q", entry.ID, entry.SchemaVersion)
 	}
 	if operation != "archived" && operation != "restored" {
-		return "", "", fmt.Errorf("operational archive transaction operation must be archived|restored, got %q", operation)
+		return "", "", false, fmt.Errorf("operational archive transaction operation must be archived|restored, got %q", operation)
 	}
 	if entry.Operation != operation {
-		return "", "", fmt.Errorf("operational archive transaction mixes %q and %q", operation, entry.Operation)
+		return "", "", false, fmt.Errorf("operational archive transaction mixes %q and %q", operation, entry.Operation)
 	}
 	original := filepath.ToSlash(strings.TrimSpace(entry.OriginalPath))
 	archive := filepath.ToSlash(strings.TrimSpace(entry.ArchivePath))
 	if err := validateArchivePath(original); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	if err := validateArchivePath(archive); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	wantArchive := filepath.ToSlash(filepath.Join(OperationalArchiveFilesRel, filepath.FromSlash(original)))
 	if archive != wantArchive {
-		return "", "", fmt.Errorf("operational archive entry %s archive path does not match original path", entry.ID)
+		return "", "", false, fmt.Errorf("operational archive entry %s archive path does not match original path", entry.ID)
 	}
 	if entry.ID != operationalArchiveID(original) || strings.TrimSpace(entry.SHA256) == "" || entry.Size < 0 {
-		return "", "", fmt.Errorf("operational archive entry %s has incomplete identity proof", entry.ID)
+		return "", "", false, fmt.Errorf("operational archive entry %s has incomplete identity proof", entry.ID)
 	}
 	originalRel := filepath.FromSlash(original)
 	archiveRel := filepath.FromSlash(archive)
 	if operation == "archived" {
-		return originalRel, archiveRel, nil
+		return originalRel, archiveRel, true, nil
 	}
-	return archiveRel, originalRel, nil
+	// Pending entry whose file is still at the original path: no rename
+	// needed; just record the restored journal line. moveRequired=false.
+	if originalRel == archiveRel {
+		return originalRel, originalRel, false, nil
+	}
+	return archiveRel, originalRel, true, nil
 }
 
 func (tx *operationalArchiveTransaction) pinParent(relativePath string, create bool) (*os.Root, error) {
@@ -1768,6 +2204,10 @@ func (tx *operationalArchiveTransaction) commit(entries []OperationalArchiveEntr
 func (tx *operationalArchiveTransaction) moveAll() error {
 	for i := range tx.moves {
 		move := &tx.moves[i]
+		if !move.moveRequired {
+			// No-move step: file already at destination path. No rename.
+			continue
+		}
 		if err := tx.homeRoot.Rename(move.sourceRel, move.destinationRel); err != nil {
 			return fmt.Errorf("move operational archive file %s -> %s: %w", move.sourceRel, move.destinationRel, err)
 		}
@@ -1873,7 +2313,7 @@ func (tx *operationalArchiveTransaction) rollbackMoves() error {
 	var rollbackErrors []error
 	for i := len(tx.moves) - 1; i >= 0; i-- {
 		move := &tx.moves[i]
-		if !move.moved {
+		if !move.moveRequired || !move.moved {
 			continue
 		}
 		if err := writeNewOperationalArchiveRootFile(move.sourceRoot, move.sourceName, move.sourceData, move.sourceMode); err != nil {
@@ -1904,6 +2344,9 @@ func (tx *operationalArchiveTransaction) rollbackMoves() error {
 func (tx *operationalArchiveTransaction) moveRoots() []*os.Root {
 	roots := make([]*os.Root, 0, len(tx.moves)*2)
 	for i := range tx.moves {
+		if !tx.moves[i].moveRequired {
+			continue
+		}
 		roots = append(roots, tx.moves[i].sourceRoot, tx.moves[i].destinationRoot)
 	}
 	return roots
