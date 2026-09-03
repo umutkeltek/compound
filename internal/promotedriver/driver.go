@@ -55,6 +55,7 @@ const (
 	frozenReportSchemaVersion   = "compound.promotedriver.report.v0.4"
 	previousReportSchemaVersion = "compound.promotedriver.report.v0.3"
 	legacyReportSchemaVersion   = "compound.promotedriver.report.v0.2"
+	archivedReportSchemaVersion = "compound.promotedriver.report.v0.1"
 
 	// DefaultPromoteLimit is the per-pass promotion ceiling: one lane at a
 	// time, literally. Raising it is an explicit operator choice (--promote-limit).
@@ -600,6 +601,19 @@ func loadFrozenJournal(homePath string, now time.Time) (*frozenJournal, []string
 		if pass.terminal {
 			return nil, nil, fmt.Errorf("pass %s receipt stage %q follows a terminal frame", receipt.PassID, receipt.Stage)
 		}
+		// Pre-frozen-journal eras appended one COMPLETE Report JSON per pass
+		// with no stage field (schema v0.1-v0.3). Such a report is terminal
+		// history: any mutations it describes went through the per-id
+		// adjudicate doors at the time, never through this journal, so there
+		// is nothing to replay. Fail closed only when the legacy report is
+		// truncated (no finished_at) — that is genuine corruption, not history.
+		if strings.TrimSpace(receipt.Stage) == "" && !replayableFrozenSchema(receipt.SchemaVersion) {
+			if strings.TrimSpace(receipt.FinishedAt) == "" {
+				return nil, nil, fmt.Errorf("receipt line %d: legacy %s report for pass %s has no finished_at (truncated)", lineNo+1, receipt.SchemaVersion, receipt.PassID)
+			}
+			pass.terminal = true
+			continue
+		}
 		switch receipt.Stage {
 		case stagePlanned:
 			if pass.plan != nil {
@@ -1083,18 +1097,54 @@ func decodeReceiptLine(line []byte) (Report, error) {
 	var header struct {
 		SchemaVersion string `json:"schema_version"`
 	}
-	if err := json.Unmarshal(line, &header); err != nil || header.SchemaVersion != legacyReportSchemaVersion {
+	if err := json.Unmarshal(line, &header); err != nil {
 		return Report{}, primaryErr
 	}
+	if isLegacyCursorMigrationSchema(header.SchemaVersion) {
+		migrated, changed, migrationErr := migrateLegacyReceiptCursors(line)
+		if migrationErr == nil && changed {
+			if err := json.Unmarshal(migrated, &receipt); err == nil {
+				return receipt, nil
+			}
+		}
+	}
+	// A stageless legacy report (pre-frozen eras appended one complete Report
+	// per pass, no stage key) decodes minimally: identity + finished_at only.
+	// The journal classifies it as terminal history (loadFrozenJournal) — the
+	// nested cursors it may carry are historical facts, never replay inputs.
+	// Any receipt that DECLARES a stage keeps failing closed; staged frames
+	// must decode fully or the journal is corrupt.
+	var probe struct {
+		SchemaVersion string  `json:"schema_version"`
+		PassID        string  `json:"pass_id"`
+		Stage         *string `json:"stage"`
+		FinishedAt    string  `json:"finished_at"`
+	}
+	if err := json.Unmarshal(line, &probe); err == nil && probe.Stage == nil &&
+		strings.TrimSpace(probe.PassID) != "" && isLegacyReceiptSchema(probe.SchemaVersion) {
+		return Report{SchemaVersion: probe.SchemaVersion, PassID: probe.PassID, FinishedAt: probe.FinishedAt}, nil
+	}
+	return Report{}, primaryErr
+}
 
-	migrated, changed, migrationErr := migrateLegacyReceiptCursors(line)
-	if migrationErr != nil || !changed {
-		return Report{}, primaryErr
+// isLegacyCursorMigrationSchema reports whether s predates the unversioned
+// raw-cursor prohibition (v0.3). v0.1/v0.2 receipts legitimately carry raw
+// pre-token cursors and are migrated; a v0.3+ receipt carrying them is
+// corruption and must fail closed (falsified by
+// TestCurrentReceiptSchemaRejectsRawCursorJSON).
+func isLegacyCursorMigrationSchema(s string) bool {
+	return s == legacyReportSchemaVersion || s == archivedReportSchemaVersion
+}
+
+// isLegacyReceiptSchema reports whether s predates the frozen journal eras
+// (v0.4+). Legacy receipts never replay; the journal treats stageless ones as
+// terminal history and refuses staged ones that fail full decode.
+func isLegacyReceiptSchema(s string) bool {
+	switch s {
+	case legacyReportSchemaVersion, previousReportSchemaVersion, archivedReportSchemaVersion:
+		return true
 	}
-	if err := json.Unmarshal(migrated, &receipt); err != nil {
-		return Report{}, errors.Join(primaryErr, fmt.Errorf("decode legacy receipt cursors: %w", err))
-	}
-	return receipt, nil
+	return false
 }
 
 func migrateLegacyReceiptCursors(line []byte) ([]byte, bool, error) {

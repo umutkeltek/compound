@@ -1839,3 +1839,101 @@ func TestCorruptCursorFailsBeforePlannedReceipt(t *testing.T) {
 		})
 	}
 }
+
+// Pre-frozen-journal eras appended one complete Report JSON per pass with no
+// stage field (v0.1-v0.3). A finished legacy report is terminal history — its
+// mutations (if any) went through the per-id adjudicate doors at the time —
+// so it must be skipped, never replayed, never deleted, and never allowed to
+// fail-closed block every future pass. A TRUNCATED legacy report (no
+// finished_at) is genuine corruption and must still fail closed.
+func TestLegacyStagelessReportReceiptIsTerminalHistory(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_pending", mem.Candidate{
+		Entity: "pending", Predicate: "value", Object: "v",
+	})
+	// The promote.next_cursor below is a RAW pre-token cursor — the exact
+	// shape that made full-struct decode fail on the live home and hid this
+	// report behind a decode error instead of the journal's legacy guard.
+	legacyReport := `{"schema_version":"compound.promotedriver.report.v0.1","pass_id":"pass_20260824T222838Z_legacy","home":"` + home + `","dry_run":false,"started_at":"2026-08-24T23:24:23Z","finished_at":"2026-08-24T23:25:23Z","promote":{"limit":1,"scanned":20000,"considered":5,"promoted":0,"next_cursor":"cand_26262b073e8f"},"sweep":{"scan_limit":20000,"scanned":20000,"adjudicated":5,"skipped":19995}}`
+	if err := os.MkdirAll(stateDir(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir(home), receiptFileName), []byte(legacyReport+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Run(home, Options{Apply: true}, testNow)
+	if err != nil {
+		t.Fatalf("finished legacy stageless report must not block a new pass: %v", err)
+	}
+	if report.PassID == "pass_20260824T222838Z_legacy" || report.Stage == "" {
+		t.Fatalf("new pass did not run cleanly: pass=%s stage=%q", report.PassID, report.Stage)
+	}
+
+	// Custody: the legacy line is preserved, never rewritten.
+	data, err := os.ReadFile(filepath.Join(stateDir(home), receiptFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(string(data)), `{"schema_version":"compound.promotedriver.report.v0.1"`) {
+		t.Fatalf("legacy receipt line was not preserved: %.120s", data)
+	}
+}
+
+func TestTruncatedLegacyStagelessReportStillFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	legacy := `{"schema_version":"compound.promotedriver.report.v0.1","pass_id":"pass_truncated","home":"` + home + `","dry_run":true,"started_at":"2026-08-24T22:28:38Z"}`
+	if err := os.MkdirAll(stateDir(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir(home), receiptFileName), []byte(legacy+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(home, Options{Apply: true}, testNow); err == nil {
+		t.Fatal("truncated legacy report (no finished_at) must fail closed")
+	}
+}
+
+// The live home's journal carries v0.1-era STAGED receipts (planned/committed/
+// recovery_required) whose cursors are raw pre-token ids — raw cursors were
+// the norm through v0.2 and the migration path must cover them, while v0.3+
+// receipts carrying raw cursors stay fail-closed (falsifier above).
+func TestLegacyV01StagedReceiptsDecodeWithRawCursors(t *testing.T) {
+	committed := []byte(`{"schema_version":"compound.promotedriver.report.v0.1","pass_id":"pass_v01_committed","dry_run":false,"started_at":"2026-08-24T23:24:23Z","finished_at":"2026-08-24T23:25:23Z","stage":"committed","promote":{"limit":1,"scanned":20000,"considered":5,"promoted":0,"next_cursor":"cand_26262b073e8f"},"sweep":{"scan_limit":20000,"scanned":20000,"adjudicated":5,"skipped":19995,"next_cursor":"cand_81d64dcb2a1f"}}`)
+	receipt, err := decodeReceiptLine(committed)
+	if err != nil {
+		t.Fatalf("v0.1 committed receipt with raw cursors must decode: %v", err)
+	}
+	if receipt.Stage != "committed" || receipt.PassID != "pass_v01_committed" {
+		t.Fatalf("decoded = %+v", receipt)
+	}
+}
+
+// End-to-end: a journal composed of every historical v0.1/v0.2 shape must load
+// and let a new apply pass run.
+func TestJournalOfAllLegacyShapesLoadsAndRuns(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_pending", mem.Candidate{
+		Entity: "pending", Predicate: "value", Object: "v",
+	})
+	if err := os.MkdirAll(stateDir(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{
+		`{"schema_version":"compound.promotedriver.report.v0.1","pass_id":"pass_v01_stageless","dry_run":true,"started_at":"2026-08-24T22:28:38Z","finished_at":"2026-08-24T22:29:05Z","promote":{"limit":1,"scanned":20000,"considered":5,"promoted":0,"next_cursor":"cand_26262b073e8f"}}`,
+		`{"schema_version":"compound.promotedriver.report.v0.1","pass_id":"pass_v01_committed","dry_run":false,"started_at":"2026-08-24T23:24:23Z","finished_at":"2026-08-24T23:25:23Z","stage":"committed","promote":{"limit":1,"scanned":20000,"considered":5,"promoted":0,"next_cursor":"cand_26262b073e8f"},"sweep":{"scan_limit":20000,"scanned":20000,"adjudicated":5,"skipped":19995,"next_cursor":"cand_81d64dcb2a1f"}}`,
+		`{"schema_version":"compound.promotedriver.report.v0.2","pass_id":"pass_v02_committed","stage":"committed","intent":{"promote_cursor_before":"cand_01","sweep_cursor_before":"cand_02","candidate_ids":[],"operations":[]},"promote":{"resumed_from":"cand_01","next_cursor":"cand_02"},"sweep":{"next_cursor":"cand_02"},"finished_at":"2026-08-25T00:00:00Z"}`,
+	}
+	if err := os.WriteFile(filepath.Join(stateDir(home), receiptFileName), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Run(home, Options{Apply: true}, testNow)
+	if err != nil {
+		t.Fatalf("journal of all legacy shapes must load: %v", err)
+	}
+	if report.Stage == "" || report.PassID == "" {
+		t.Fatalf("new pass did not run: %+v", report)
+	}
+}
