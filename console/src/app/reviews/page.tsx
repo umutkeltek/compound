@@ -1,7 +1,7 @@
 import { DecideQueue } from "@/components/decide/DecideQueue";
 import { CheckIcon, ClockIcon, FeedDegraded, feedRenderModel, GavelIcon, PageHeader, SectionHeader } from "@/components/kit";
 import { attentionNeedsYouGroups, getAttentionProjection } from "@/lib/attention";
-import { arr, getReviews, num, str, type Json } from "@/lib/compound";
+import { arr, getReviews, HEAVY_PROJECTION_TIMEOUT_MS, num, str, type Json } from "@/lib/compound";
 import { ago } from "@/lib/time";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
@@ -106,8 +106,8 @@ export default async function Decide({
   searchParams: Promise<{ decision?: string | string[] }>;
 }) {
   const [reviews, attentionProjection, params] = await Promise.all([
-    getReviews({ timeoutMs: 45_000 }),
-    getAttentionProjection({ timeoutMs: 45_000 }),
+    getReviews({ timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
+    getAttentionProjection({ timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
     searchParams,
   ]);
   const { read: attentionRead, report: attention } = attentionProjection;

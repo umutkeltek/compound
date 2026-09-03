@@ -35,7 +35,7 @@ func memoryUsage(sub string) string {
 	case "candidate":
 		return "usage: compound memory candidate <trace.json>"
 	case "candidates":
-		return "usage: compound memory candidates --json [--state proposed|parked|promoted|rejected|no_promote|needs_review] [--limit N] [--kind K] [--include-evidence]"
+		return "usage: compound memory candidates --json [--state proposed|parked|promoted|rejected|no_promote|needs_review] [--limit N] [--kind K] [--created-after <RFC3339>] [--include-evidence]"
 	case "adjudicate":
 		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W] [--by ACTOR] [--confirmation-ref ev_ID]|adjudicate --pending [--limit N] [--scan-limit N] [--after <cursor-token-or-filename>] [--verdict reject|park|no_promote] [--work W] [--yes] [--dry-run] (batch drain; --yes required to mutate; --limit caps adjudications, --scan-limit caps entries read, --after resumes from a prior pass's next cursor)"
 	case "confirmation":
@@ -229,11 +229,21 @@ func cmdMemory(args []string) {
 			}
 			limit = n
 		}
+		var createdAfter time.Time
+		if v := flag("--created-after"); v != "" {
+			ts, err := time.Parse(time.RFC3339, strings.TrimSpace(v))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error: --created-after must be an RFC3339 timestamp:", err)
+				os.Exit(2)
+			}
+			createdAfter = ts
+		}
 		kindFilter := flag("--kind")
 		report, err := store.ListCandidates(time.Now(), mem.CandidateListOptions{
 			State:           flag("--state"),
 			Kind:            kindFilter,
 			Limit:           limit,
+			CreatedAfter:    createdAfter,
 			IncludeEvidence: has("--include-evidence"),
 		})
 		die(err)

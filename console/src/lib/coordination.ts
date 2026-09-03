@@ -1,4 +1,4 @@
-import { arr, num, runProjection, str, type Json, type ProjectionStatus } from "@/lib/compound";
+import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, runProjection, str, type Json, type ProjectionStatus } from "@/lib/compound";
 import {
   normalizeOperatorCoordination,
   type CoordinationActor,
@@ -154,7 +154,7 @@ export async function getCoordination(actor?: string): Promise<CoordinationRead>
   const args = ["coordination", "--json"];
   const trimmed = (actor ?? "").trim();
   if (trimmed) args.push("--actor", trimmed);
-  const read = await runProjection(args, { timeoutMs: 45_000 });
+  const read = await runProjection(args, { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
   return {
     view: buildCoordinationView(read.value),
     status: read.status,

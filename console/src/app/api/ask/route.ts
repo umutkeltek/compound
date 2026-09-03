@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import type { ViewProposal } from "@/ai-console";
 import { getAttentionProjection } from "@/lib/attention";
-import { arr, runProjection, str, type Json } from "@/lib/compound";
+import { arr, HEAVY_PROJECTION_TIMEOUT_MS, runProjection, str, type Json } from "@/lib/compound";
 
 type AskRequest = { query?: unknown; route?: unknown };
 
@@ -30,9 +30,9 @@ export async function POST(request: Request) {
   const asksWork = /work|blocked|moving|running|owner|harness/.test(lower) || route.startsWith("/work") || route.startsWith("/live");
   const asksBlocked = /block|needs me|waiting/.test(lower);
   const [attentionProjection, workbenchRead] = await Promise.all([
-    getAttentionProjection({ timeoutMs: 45_000 }),
+    getAttentionProjection({ timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
     asksWork || asksFresh
-      ? runProjection(["workbench", "--json", "--recent", "100"], { timeoutMs: 45_000 })
+      ? runProjection(["workbench", "--json", "--recent", "100"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS })
       : Promise.resolve(null),
   ]);
   const attention = attentionProjection.report;

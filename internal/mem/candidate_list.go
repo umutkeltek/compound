@@ -10,9 +10,16 @@ import (
 const CandidateListSchemaVersion = "compound.memory_candidate_list.v0.1"
 
 type CandidateListOptions struct {
-	State           string
-	Kind            string
-	Limit           int
+	State string
+	Kind  string
+	Limit int
+	// CreatedAfter bounds the returned ITEMS to candidates created at or after
+	// this instant (RFC3339; zero = unbounded). It never affects Counts:
+	// ByState/Total/Matched are computed over the FULL snapshot so a bounded
+	// caller still sees exact global state counts (the console briefing reads
+	// its Mind Δ headline numbers from counts and its 14d weekly window from
+	// the bounded items).
+	CreatedAfter    time.Time
 	IncludeEvidence bool
 }
 
@@ -155,7 +162,7 @@ func (s *Store) ListCandidates(now time.Time, opts CandidateListOptions) (Candid
 		Items:    []CandidateListItem{},
 		Warnings: warnings,
 	}
-	if state != "" || kind != "" || opts.Limit > 0 || opts.IncludeEvidence {
+	if state != "" || kind != "" || opts.Limit > 0 || !opts.CreatedAfter.IsZero() || opts.IncludeEvidence {
 		report.Filters = map[string]interface{}{}
 		if state != "" {
 			report.Filters["state"] = state
@@ -165,6 +172,9 @@ func (s *Store) ListCandidates(now time.Time, opts CandidateListOptions) (Candid
 		}
 		if opts.Limit > 0 {
 			report.Filters["limit"] = opts.Limit
+		}
+		if !opts.CreatedAfter.IsZero() {
+			report.Filters["created_after"] = opts.CreatedAfter.UTC().Format(time.RFC3339)
 		}
 		if opts.IncludeEvidence {
 			report.Filters["include_evidence"] = true
@@ -195,6 +205,12 @@ func (s *Store) ListCandidates(now time.Time, opts CandidateListOptions) (Candid
 		}
 		if kind != "" && rawKind != kind && c.ClaimType != kind {
 			continue
+		}
+		if !opts.CreatedAfter.IsZero() {
+			created, err := time.Parse(time.RFC3339, strings.TrimSpace(c.CreatedAt))
+			if err != nil || created.Before(opts.CreatedAfter) {
+				continue
+			}
 		}
 		// Count the match BEFORE the limit gate. Stopping the scan at Limit made
 		// Counts.Matched describe the page instead of the set, so a bounded listing

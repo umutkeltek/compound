@@ -24,7 +24,7 @@ import {
   selfHealing,
   weeklyChange,
 } from "@/lib/briefing";
-import { arr, getExecutors, num, runJson, runProjection, str } from "@/lib/compound";
+import { arr, getExecutors, HEAVY_PROJECTION_TIMEOUT_MS, num, runJson, runProjection, str } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { moveTypeGroup, summarizeMoveTypeMix } from "@/lib/move-mix";
@@ -34,22 +34,36 @@ import { latestCompoundingMoment } from "@/representation";
 export const dynamic = "force-dynamic";
 
 export default async function Briefing() {
-  // The plain memory projection is instant; `--include-evidence` joins ~1100
-  // candidates and blows the exec timeout. home-doctor/operator-authority are
-  // cheap reads through the shared runJson TTL memo. attention + workbench are
-  // NOT cheap (a real `compound attention --json` / `workbench --json
-  // --recent 500` run ~20s today) — they read through `runProjection` with an
-  // extended 45s per-door timeout so the door can genuinely SUCCEED, and the
-  // briefing renders the honest degradation model (live/stale/unreachable)
-  // instead of ever caching a swallowed timeout as null (packet:
-  // console-honest-degradation).
+  // Heavy whole-home projections (attention/workbench/home-doctor) read through
+  // `runProjection` with HEAVY_PROJECTION_TIMEOUT_MS so each door can genuinely
+  // SUCCEED cold (30-70s on the live home) and the briefing renders the honest
+  // degradation model (live/stale/unreachable) instead of ever caching a
+  // swallowed timeout as null (packet: console-honest-degradation).
+  //
+  // The memory candidates call is window-bounded on purpose: the unbounded
+  // projection returns the FULL inbox (150k+ candidates, >100MB — past the
+  // exec maxBuffer, so it can never land at any timeout). `--state promoted
+  // --created-after` bounds the returned items to exactly the promoted rows
+  // the 14d weekly delta consumes (custody order cannot truncate the window's
+  // promoted set), while `counts.by_state` stays global over the full snapshot
+  // (the Mind Δ headline numbers read from counts, not items). The 15d window
+  // gives weeklyChange's covered check real prior-week rows.
+  // The 15d window is QUANTIZED to 6h buckets so the argv (and therefore the
+  // projection cache key) is stable within a bucket — a per-render timestamp
+  // would key a fresh cold exec on every request and defeat the cache tier.
+  const sixHours = 6 * 3_600_000;
+  const windowBucket = Math.floor(Date.now() / sixHours) * sixHours;
+  const memoryWindowStart = new Date(windowBucket - 15 * 24 * 3_600_000).toISOString();
   const [attentionProjection, executors, workbenchRead, memory, policyAuthority, homeDoctor] = await Promise.all([
-    getAttentionProjection({ timeoutMs: 45_000 }),
+    getAttentionProjection({ timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
     getExecutors(),
-    runProjection(["workbench", "--json", "--recent", "500"], { timeoutMs: 45_000 }),
-    runJson(["memory", "candidates", "--json"]),
+    runProjection(["workbench", "--json", "--recent", "500"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
+    runProjection(
+      ["memory", "candidates", "--json", "--state", "promoted", "--created-after", memoryWindowStart, "--limit", "4000"],
+      { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS },
+    ).then((r) => r.value),
     runJson(["policy", "operator-authority", "--json"]),
-    runJson(["home", "doctor", "--json"]),
+    runProjection(["home", "doctor", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }).then((r) => r.value),
   ]);
   const { read: attentionRead, report: attention } = attentionProjection;
   const workbench = workbenchRead.value;
@@ -94,8 +108,11 @@ export default async function Briefing() {
     const date = toDate(candidate.created_at);
     return date != null && date.getTime() >= weekAgo;
   }).length;
-  const reopened = memoryItems.filter(
-    (candidate) => str(candidate.state) === "needs_review" || str(candidate.review_state) === "needs_review",
+  // Global needs_review count (counts stay full-set under the window filter);
+  // the per-item review_state join is bounded to the fetched window, so the
+  // global count — not a scan of the bounded items — is the honest number.
+  const reopened = num(memoryCounts.needs_review) + memoryItems.filter(
+    (candidate) => str(candidate.state) !== "needs_review" && str(candidate.review_state) === "needs_review",
   ).length;
   const mindChange = weeklyChange(memoryItems, rowTsMs, (candidate) => str(candidate.state) === "promoted");
 

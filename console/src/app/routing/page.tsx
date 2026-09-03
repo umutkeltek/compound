@@ -6,7 +6,7 @@ import { RouteTraffic } from "@/components/routing/RouteTraffic";
 import { RoutingTabs } from "@/components/routing/RoutingTabs";
 import { FreshnessChip, PageHeader, RouteIcon, SectionHeader } from "@/components/kit";
 import { getAttentionProjection } from "@/lib/attention";
-import { getReviews, str } from "@/lib/compound";
+import { getReviews, HEAVY_PROJECTION_TIMEOUT_MS, str } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildRoutePromotionModel, getModelLanes, getRouteTraffic } from "@/lib/routing";
@@ -64,8 +64,8 @@ function RoutePlanCard({ classes }: { classes: string[] }) {
 
 export default async function RoutingPage() {
   const [attentionProjection, reviews, lanes, traffic] = await Promise.all([
-    getAttentionProjection({ timeoutMs: 45_000 }),
-    getReviews(),
+    getAttentionProjection({ timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
+    getReviews({ timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
     getModelLanes(),
     getRouteTraffic(),
   ]);

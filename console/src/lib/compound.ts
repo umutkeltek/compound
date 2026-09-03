@@ -1,7 +1,10 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { consoleChildEnv } from "./console-child-env.ts";
@@ -162,6 +165,17 @@ async function execRunJson(args: string[], timeoutMs: number): Promise<Json | nu
 const RUN_JSON_TTL_MS = 25_000;
 const RUN_JSON_MAX_ENTRIES = 50;
 const DEFAULT_RUN_JSON_TIMEOUT_MS = 15_000;
+/**
+ * Budget for the heavy whole-home projections (attention, workbench, reviews,
+ * coordination, memory candidates, home doctor). On the operator's live home
+ * each costs 30-75s COLD SERIALLY, but the briefing fires several in parallel
+ * and they thrash on home I/O together (measured: four doors concurrently =
+ * ~117s wall on 16 cores), so any budget below the concurrent worst case never
+ * lands a first success and the surface renders the unreachable seam forever.
+ * The first landing populates the shared TTL cache; every later load serves
+ * warm data (25s TTL) or last-good (stale-while-revalidate) without re-exec.
+ */
+export const HEAVY_PROJECTION_TIMEOUT_MS = 180_000;
 
 type RunJsonCacheEntry = {
   /** last SUCCESSFUL payload; null only if a success has never landed. */
@@ -180,16 +194,38 @@ type RunJsonInflightEntry = {
   promise: Promise<RunJsonCacheEntry>;
 };
 
-const runJsonCache = new Map<string, RunJsonCacheEntry>();
-const runJsonInflight = new Map<string, RunJsonInflightEntry>();
-let runJsonCacheGeneration = 0;
+/**
+ * Cache storage lives on globalThis, NOT module scope. This console's runtime
+ * materializes a fresh module instance per server render (measured 2026-08-31:
+ * every request saw an empty cache and re-executed every projection, and the
+ * page+layout pair executed the same argv twice per render), so any
+ * module-level memo is dead weight. globalThis is shared by every module
+ * instance in the process, which both persists last-good data across requests
+ * and collapses same-argv fan-outs (page+layout) through the in-flight map.
+ */
+type RunJsonCacheGlobals = {
+  cache: Map<string, RunJsonCacheEntry>;
+  inflight: Map<string, RunJsonInflightEntry>;
+  generation: number;
+  binaryFreshness:
+    | {
+        storedAt: number;
+        value: InstalledBinaryFreshness;
+      }
+    | null;
+};
 
-let binaryFreshnessCache:
-  | {
-      storedAt: number;
-      value: InstalledBinaryFreshness;
-    }
-  | null = null;
+const runJsonGlobals = ((globalThis as typeof globalThis & {
+  __compoundConsoleRunJson?: RunJsonCacheGlobals;
+}).__compoundConsoleRunJson ??= {
+  cache: new Map<string, RunJsonCacheEntry>(),
+  inflight: new Map<string, RunJsonInflightEntry>(),
+  generation: 0,
+  binaryFreshness: null,
+});
+
+const runJsonCache = runJsonGlobals.cache;
+const runJsonInflight = runJsonGlobals.inflight;
 
 function pruneRunJsonCache() {
   while (runJsonCache.size > RUN_JSON_MAX_ENTRIES) {
@@ -217,7 +253,7 @@ function commitRunJsonSuccess(
   value: Json | null,
   startedGeneration: number,
 ): RunJsonCacheEntry {
-  if (startedGeneration !== runJsonCacheGeneration) return runJsonEntryAfterDiscard(key);
+  if (startedGeneration !== runJsonGlobals.generation) return runJsonEntryAfterDiscard(key);
   // Exit 0 but no parseable JSON object in stdout is not a confirmed empty
   // result - bookkeep it as a failure so never-cache-null holds even when the
   // exec itself didn't reject.
@@ -227,9 +263,14 @@ function commitRunJsonSuccess(
   // delete-then-set moves the key to the end of Map's iteration order, so the
   // eviction above naturally drops the least-recently-refreshed entry first.
   runJsonCache.delete(key);
-  const entry: RunJsonCacheEntry = { value, storedAt: Date.now(), revalidating: false, lastError: null, lastErrorAt: null };
+  const storedAt = Date.now();
+  const entry: RunJsonCacheEntry = { value, storedAt, revalidating: false, lastError: null, lastErrorAt: null };
   runJsonCache.set(key, entry);
   pruneRunJsonCache();
+  // Write-through to the disk tier so other render processes (and the next
+  // server restart) inherit this last-good fact. Fire-and-forget: disk is an
+  // optimization tier, never a correctness gate.
+  void writeRunJsonDiskEntry(key, value, storedAt);
   return entry;
 }
 
@@ -240,7 +281,7 @@ function commitRunJsonFailure(
   message: string,
   startedGeneration: number,
 ): RunJsonCacheEntry {
-  if (startedGeneration !== runJsonCacheGeneration) return runJsonEntryAfterDiscard(key);
+  if (startedGeneration !== runJsonGlobals.generation) return runJsonEntryAfterDiscard(key);
   const prev = runJsonCache.get(key);
   runJsonCache.delete(key);
   const entry: RunJsonCacheEntry = {
@@ -255,6 +296,84 @@ function commitRunJsonFailure(
   return entry;
 }
 
+/* ---------- process-surviving disk tier ----------
+ * This console's runtime renders each dynamic request in a FRESH child process
+ * (measured 2026-08-31: consecutive requests logged different pids), so no
+ * in-process store — module scope or globalThis — can persist last-good data
+ * between requests. The disk tier gives every process the same view:
+ *  - write-through on every real success (atomic tmp+rename, 0600),
+ *  - read on a memory miss, feeding the SAME TTL/stale machinery, so after the
+ *    first-ever landing every request serves warm data instantly while one
+ *    background exec revalidates,
+ *  - a server restart degrades honestly to `stale` (last-good on disk) instead
+ *    of `unreachable` — the value on disk IS the last-good fact.
+ * Files live under the user's tmpdir (private to the uid), keyed by
+ * sha256(argv); invalidateRunJsonCache() clears the dir on mutations.
+ */
+const RUN_JSON_DISK_DIR = join(tmpdir(), "compound-console-run-json");
+const RUN_JSON_DISK_MAX_FILES = 64;
+
+function runJsonDiskPath(key: string): string {
+  return join(RUN_JSON_DISK_DIR, createHash("sha256").update(key).digest("hex") + ".json");
+}
+
+async function readRunJsonDiskEntry(key: string): Promise<RunJsonCacheEntry | null> {
+  try {
+    const raw = await readFile(runJsonDiskPath(key), "utf8");
+    const parsed = JSON.parse(raw) as { storedAt?: unknown; value?: unknown };
+    if (typeof parsed.storedAt !== "number" || parsed.value == null || typeof parsed.value !== "object") {
+      return null;
+    }
+    return {
+      value: parsed.value as Json,
+      storedAt: parsed.storedAt,
+      revalidating: false,
+      lastError: null,
+      lastErrorAt: null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeRunJsonDiskEntry(key: string, value: Json, storedAt: number): Promise<void> {
+  try {
+    await mkdir(RUN_JSON_DISK_DIR, { recursive: true });
+    const final = runJsonDiskPath(key);
+    const tmp = `${final}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    await writeFile(tmp, JSON.stringify({ storedAt, value }), { mode: 0o600 });
+    await rename(tmp, final);
+    // Bound the dir: once past the cap, unlink the oldest files. Cheap readdir,
+    // best-effort — a failed prune only costs disk, never correctness.
+    const names = await readdir(RUN_JSON_DISK_DIR);
+    if (names.length <= RUN_JSON_DISK_MAX_FILES) return;
+    const stats = await Promise.all(
+      names.filter((n) => n.endsWith(".json")).map(async (n) => {
+        const full = join(RUN_JSON_DISK_DIR, n);
+        try {
+          return { full, mtime: (await stat(full)).mtimeMs };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    const ordered = stats.filter((s): s is { full: string; mtime: number } => s !== null).sort((a, b) => a.mtime - b.mtime);
+    for (const victim of ordered.slice(0, ordered.length - RUN_JSON_DISK_MAX_FILES)) {
+      await rm(victim.full, { force: true }).catch(() => undefined);
+    }
+  } catch {
+    // Disk is an optimization tier; a failed write only costs warmth.
+  }
+}
+
+function clearRunJsonDiskEntries(): void {
+  readdir(RUN_JSON_DISK_DIR)
+    .then((names) =>
+      Promise.all(names.map((n) => rm(join(RUN_JSON_DISK_DIR, n), { force: true }).catch(() => undefined))),
+    )
+    .catch(() => undefined);
+}
+
 function startRunJsonInflight(
   key: string,
   args: string[],
@@ -264,7 +383,7 @@ function startRunJsonInflight(
   if (inflight && inflight.timeoutMs >= timeoutMs) return inflight.promise;
 
   const token = Symbol(key);
-  const startedGeneration = runJsonCacheGeneration;
+  const startedGeneration = runJsonGlobals.generation;
   const promise = execRunJson(args, timeoutMs)
     .then((value) => commitRunJsonSuccess(key, value, startedGeneration))
     .catch((error) => commitRunJsonFailure(key, compoundFailure(error).message, startedGeneration))
@@ -283,19 +402,30 @@ function startRunJsonInflight(
  */
 async function readRunJsonEntry(args: string[], timeoutMs: number): Promise<RunJsonCacheEntry> {
   const key = JSON.stringify(args);
-  const cached = runJsonCache.get(key);
+  let entry = runJsonCache.get(key) ?? null;
 
-  if (cached) {
-    const fresh = cached.storedAt !== null && Date.now() - cached.storedAt < RUN_JSON_TTL_MS;
-    if (fresh) return cached;
+  if (!entry) {
+    // Memory miss: this process has never seen the argv. The disk tier may
+    // still carry a last-good fact from another process or a prior run.
+    const disk = await readRunJsonDiskEntry(key);
+    if (disk) {
+      runJsonCache.delete(key);
+      runJsonCache.set(key, disk);
+      entry = disk;
+    }
+  }
+
+  if (entry) {
+    const fresh = entry.storedAt !== null && Date.now() - entry.storedAt < RUN_JSON_TTL_MS;
+    if (fresh) return entry;
 
     // Stale values return immediately while they revalidate. A cached cold
     // failure still awaits its retry, because it has no truthful value to
     // serve. Track both paths in the shared in-flight map so a longer caller
     // can replace a shorter refresh instead of inheriting its timeout.
-    cached.revalidating = true;
+    entry.revalidating = true;
     const refresh = startRunJsonInflight(key, args, timeoutMs);
-    return cached.storedAt === null ? refresh : cached;
+    return entry.storedAt === null ? refresh : entry;
   }
 
   return startRunJsonInflight(key, args, timeoutMs);
@@ -367,10 +497,13 @@ export async function runProjection(args: string[], opts?: { timeoutMs?: number 
 /** Mutations advance the generation before clearing state so an exec already
  * running for the old snapshot cannot repopulate this cache after refresh. */
 export function invalidateRunJsonCache(): void {
-  runJsonCacheGeneration += 1;
+  runJsonGlobals.generation += 1;
   runJsonCache.clear();
   runJsonInflight.clear();
-  binaryFreshnessCache = null;
+  runJsonGlobals.binaryFreshness = null;
+  // A mutation wants the next render to read post-mutation truth: the disk
+  // tier must not resurrect pre-mutation last-good values.
+  clearRunJsonDiskEntries();
 }
 
 function repoRootFromConsole(): string {
@@ -397,8 +530,8 @@ function classifyBuild(installedBuild: string, head: string): InstalledBinaryFre
 }
 
 export async function getInstalledBinaryFreshness(): Promise<InstalledBinaryFreshness> {
-  if (binaryFreshnessCache && Date.now() - binaryFreshnessCache.storedAt < RUN_JSON_TTL_MS) {
-    return binaryFreshnessCache.value;
+  if (runJsonGlobals.binaryFreshness && Date.now() - runJsonGlobals.binaryFreshness.storedAt < RUN_JSON_TTL_MS) {
+    return runJsonGlobals.binaryFreshness.value;
   }
 
   const binary = COMPOUND_BIN;
@@ -411,7 +544,7 @@ export async function getInstalledBinaryFreshness(): Promise<InstalledBinaryFres
       head: "",
       message: `Installed compound binary is missing at ${binary}.`,
     };
-    binaryFreshnessCache = { storedAt: Date.now(), value };
+    runJsonGlobals.binaryFreshness = { storedAt: Date.now(), value };
     return value;
   }
 
@@ -438,7 +571,7 @@ export async function getInstalledBinaryFreshness(): Promise<InstalledBinaryFres
             ? `Installed compound matches source HEAD ${head}.`
             : "Installed compound build freshness is unknown.",
     };
-    binaryFreshnessCache = { storedAt: Date.now(), value };
+    runJsonGlobals.binaryFreshness = { storedAt: Date.now(), value };
     return value;
   } catch {
     const value: InstalledBinaryFreshness = {
@@ -448,7 +581,7 @@ export async function getInstalledBinaryFreshness(): Promise<InstalledBinaryFres
       head: "",
       message: "Installed compound build freshness is unknown.",
     };
-    binaryFreshnessCache = { storedAt: Date.now(), value };
+    runJsonGlobals.binaryFreshness = { storedAt: Date.now(), value };
     return value;
   }
 }
@@ -469,13 +602,13 @@ export const str = (value: any): string =>
 /* ---------- fetchers ---------- */
 
 export async function getWorkbench(): Promise<Json | null> {
-  return runJson(["workbench", "--json"]);
+  return (await runProjection(["workbench", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS })).value;
 }
 
 export async function getReviews(opts?: { timeoutMs?: number }): Promise<Json | null> {
   const entry = await readRunJsonEntry(
     ["reviews", "--json"],
-    opts?.timeoutMs ?? DEFAULT_RUN_JSON_TIMEOUT_MS,
+    opts?.timeoutMs ?? HEAVY_PROJECTION_TIMEOUT_MS,
   );
   return entry.value;
 }

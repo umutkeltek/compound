@@ -1,4 +1,4 @@
-import { arr, num, runJson, runProjection, str, type Json, type ProjectionRead } from "@/lib/compound";
+import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, runProjection, str, type Json, type ProjectionRead } from "@/lib/compound";
 import {
   normalizeOperatorCoordination,
   type OperatorCoordinationProjection,
@@ -158,7 +158,7 @@ export function toAttentionReport(raw: Json | null): AttentionReport | null {
  * (see its doc comment), so no command needs registering there.
  */
 export async function getAttention(): Promise<AttentionReport | null> {
-  return toAttentionReport(await runJson(["attention", "--json"]));
+  return toAttentionReport(await runProjection(["attention", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }).then((r) => r.value));
 }
 
 /**
@@ -173,7 +173,7 @@ export async function getAttentionProjection(opts?: { timeoutMs?: number }): Pro
   read: ProjectionRead;
   report: AttentionReport | null;
 }> {
-  const read = await runProjection(["attention", "--json"], opts);
+  const read = await runProjection(["attention", "--json"], { timeoutMs: opts?.timeoutMs ?? HEAVY_PROJECTION_TIMEOUT_MS });
   return { read, report: toAttentionReport(read.value) };
 }
 

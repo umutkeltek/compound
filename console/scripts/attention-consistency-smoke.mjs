@@ -71,7 +71,7 @@ function decideQueuesFromPage(root) {
 // child process here would make the smoke pay for the same expensive
 // projection twice and turn unrelated machine contention into a false
 // identity failure.
-const attentionProjection = await getAttentionProjection({ timeoutMs: 45_000 });
+const attentionProjection = await getAttentionProjection({ timeoutMs: 180_000 });
 assert.notEqual(
   attentionProjection.read.status,
   "unreachable",

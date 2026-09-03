@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/candidates"
 )
@@ -637,5 +638,54 @@ func TestListCandidatesLimitReportsTrueMatchCount(t *testing.T) {
 	}
 	if !limited.Counts.Truncated {
 		t.Fatalf("Truncated must be set when Matched > Returned: %+v", limited.Counts)
+	}
+}
+
+// The created_after window gates ONLY the returned items; Counts stay global.
+// The console briefing reads its Mind Δ headline numbers from counts.by_state
+// and its 14d weekly window from the bounded items, so a window that excludes
+// every candidate must still report the full-set state counts — otherwise a
+// bounded caller would read a confident zero as the whole truth.
+func TestListCandidatesCreatedAfterGatesItemsNotCounts(t *testing.T) {
+	s := newStore(t)
+
+	one := cand("entity:week-a", "status", "proposed", "")
+	two := cand("entity:week-b", "status", "promoted", "")
+	got, err := s.Capture([]Candidate{one, two}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := promoteForTest(t, s, got[1].ID, "", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Boundary-inclusive: candidates created exactly at the window start match.
+	atBoundary, err := s.ListCandidates(t0, CandidateListOptions{CreatedAfter: t0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atBoundary.Items) != 2 || atBoundary.Counts.Matched != 2 {
+		t.Fatalf("created_after=t0 should match both candidates, got matched=%d items=%d", atBoundary.Counts.Matched, len(atBoundary.Items))
+	}
+
+	// A window after every candidate excludes all items but must NOT move the
+	// global counts. Matched counts the FILTERED set, so a window matching
+	// nothing truthfully reports matched=0 (not truncation — the limit never
+	// engaged).
+	after, err := s.ListCandidates(t0, CandidateListOptions{CreatedAfter: t0.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Items) != 0 || after.Counts.Matched != 0 || after.Counts.Returned != 0 {
+		t.Fatalf("created_after past every candidate should return no items, got matched=%d items=%d returned=%d", after.Counts.Matched, len(after.Items), after.Counts.Returned)
+	}
+	if after.Counts.ByState["proposed"] != 1 || after.Counts.ByState["promoted"] != 1 {
+		t.Fatalf("counts must stay global under created_after, got %+v", after.Counts.ByState)
+	}
+	if after.Counts.Total != 2 {
+		t.Fatalf("total must stay 2 under created_after, got %d", after.Counts.Total)
+	}
+	if after.Filters["created_after"] != t0.Add(time.Hour).UTC().Format(time.RFC3339) {
+		t.Fatalf("filters must echo created_after, got %+v", after.Filters)
 	}
 }
