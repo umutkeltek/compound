@@ -1,8 +1,8 @@
 {
   "schema_version": "compound.release_issues.v0.1",
-  "base_sha": "8b2b4815e1b65e2d60f5a330128e620b8ef16104",
-  "branch": "release/harden-20260829",
-  "updated_at": "2026-08-30T08:25:38Z",
+  "base_sha": "61442538",
+  "branch": "fix/sweep-stale-reclaim-txn-20260903",
+  "updated_at": "2026-09-04T00:00:00Z",
   "issues": [
     {
       "id": "REL-P0-001",
@@ -126,24 +126,25 @@
         "92ac0f8181593ebc70cd086fc5b44874450ca904",
         "e26f496f3ae907ecb8135db4c4b3a53dab4ebacb",
         "27984af79ddcf751b013f5e5fcef1e7dd9e5dd8a",
-        "8e60a073cf3baff0f0b3c48555521a022bca50f3"
+        "8e60a073cf3baff0f0b3c48555521a022bca50f3",
+        "f5ca50c3"
       ],
       "focused_tests": [
-        "GOTOOLCHAIN=go1.26.4 go test ./internal/work -run semantic-and-frozen-sweep-matrix -count=1",
-        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/work -run semantic-and-frozen-sweep-matrix -count=1",
-        "GOTOOLCHAIN=go1.26.4 go vet ./internal/work",
-        "GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/work ./internal/landlease ./cmd/compound -run 'SweepStale|StatusReadOnly'",
-        "GOTOOLCHAIN=go1.26.4 go test -race -count=1 ./internal/work ./internal/landlease ./cmd/compound -run 'SweepStale|StatusReadOnly'",
-        "GOTOOLCHAIN=go1.26.4 go vet ./internal/work ./internal/landlease ./cmd/compound"
+        "GOTOOLCHAIN=go1.27.0 go test ./internal/work -run TestReclaim -count=1 -v (pass, 10.539s)",
+        "GOTOOLCHAIN=go1.27.0 go test ./internal/work -run TestSweepStale -count=1 -v (pass, 38.429s; 7 boundaries + 19 semantic corruptions green)",
+        "GOTOOLCHAIN=go1.27.0 go vet ./internal/work ./internal/home ./internal/landlease ./internal/runattempt (pass)"
       ],
-      "broad_tests": [],
+      "broad_tests": [
+        "GOTOOLCHAIN=go1.27.0 go test ./internal/work ./internal/home ./internal/landlease ./internal/runattempt -count=1 (timeout: internal/work hit 606s on parallel-scheduler contention; home 420.007s OK; landlease 9.759s OK; runattempt FAIL on TestLivenessIncreasingWritesHoldWorkAdmission -- residual d red reproducer)"
+      ],
       "evidence_paths": [
         "release-evidence/runs/20260831-p0-004-semantic-fencing-focused-green.json",
-        "release-evidence/runs/20260831-p0-004-cli-admission-focused-green.json"
+        "release-evidence/runs/20260831-p0-004-cli-admission-focused-green.json",
+        "release-evidence/runs/20260904-p0-004-adopt-harden.json"
       ],
-      "residual_risk": "The cross-process RunAttempt liveness lock, retained land-lease mutation boundary, resumable physical removal/quarantine recovery, every-boundary fault matrix, full internal/work run, and canonical proof-check remain open. work sweep-stale --yes remains outside the supported contract.",
-      "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-31T18:16:00Z"
+      "residual_risk": "Adopted onto today's main (61442538) via merge f5ca50c3. The cross-process RunAttempt liveness lock (residual d — TestLivenessIncreasingWritesHoldWorkAdmission in internal/runattempt/work_admission_test.go is RED), retained land-lease mutation boundary, resumable physical removal/quarantine recovery, every-boundary fault matrix augmentation (current TestSweepStalePersistenceFaultsRecoverExactly already covers 7 boundaries: before/after pending persist, before pending clear, before event publish, before work publish, after publication, before lease release), full internal/work broad run (parallel-scheduler contention; 606s timeout), and canonical proof-check remain OPEN per the packet's step 4 carve-out. work sweep-stale --yes remains outside the supported contract.",
+      "owner": "orchestrator:claude_minimax",
+      "updated_at": "2026-09-04T00:00:00Z"
     },
     {
       "id": "REL-P0-005",
