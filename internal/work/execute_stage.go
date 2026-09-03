@@ -319,7 +319,7 @@ func defaultExecuteStageCapacityFn(homePath, lane string, now time.Time) (float6
 	return 0, false, nil
 }
 
-// defaultExecuteStagePolicyEvalFn returns allow — production must wire this
+// defaultExecuteStagePolicyEvalFn returns hold — production must wire this
 // to policy.Evaluate. The default is intentionally NOT fail-open: a real
 // caller that forgets to wire the evaluator sees every execute attempt as
 // `skipped=policy_hold`. Operators MUST install the wired resolver before
