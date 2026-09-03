@@ -61,7 +61,7 @@ func installExecuteGrant(t *testing.T, home string, withGrant bool) {
 			MutationClass:        "local_reversible",
 			ReversibilityCeiling: "reversible",
 			BlastRadius:          "local",
-			TargetPath:           "/Users/example/.compound/**",
+			TargetPath:           "/Users/tester/.compound/**",
 			ExpiresAt:            "2099-01-01T00:00:00Z",
 		}},
 	}
