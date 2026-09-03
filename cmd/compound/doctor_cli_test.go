@@ -162,12 +162,15 @@ func TestDoctorSurfacing_F3_FreshHomeFallbackRows(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	args := []string{"--home", home, "--base", base, "--binary", "/opt/compound/compound", "--json"}
-	if code := runDoctor(args, &out, &errOut); code != 0 {
-		t.Fatalf("fresh-home doctor must exit 0, code=%d stderr=%q", code, errOut.String())
-	}
+	code := runDoctor(args, &out, &errOut)
 	var rep doctorReport
 	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
 		t.Fatalf("parse json: %v (%q)", err, out.String())
+	}
+	// Doctor exit-code contract: see runDoctorReport's header. Accept
+	// either exit code; the structural assertions below are the test.
+	if code != 0 && len(rep.Problems) == 0 {
+		t.Fatalf("fresh-home doctor returned exit %d with no problems, stderr=%q", code, errOut.String())
 	}
 	if len(rep.Surfacing) < 2 {
 		t.Fatalf("fresh home must show fallback rows, got %d", len(rep.Surfacing))
@@ -196,18 +199,20 @@ func TestDoctorSurfacing_F4_JSONAndTextAgree(t *testing.T) {
 
 	var jsonOut, errOut bytes.Buffer
 	jsonArgs := []string{"--home", home, "--base", base, "--binary", binary, "--json"}
-	if code := runDoctor(jsonArgs, &jsonOut, &errOut); code != 0 {
-		t.Fatalf("json doctor failed: %s", errOut.String())
+	code := runDoctor(jsonArgs, &jsonOut, &errOut)
+	var rep doctorReport
+	if err := json.Unmarshal(jsonOut.Bytes(), &rep); err != nil {
+		t.Fatalf("parse json: %v", err)
+	}
+	// Doctor exit-code contract: see runDoctorReport's header.
+	if code != 0 && len(rep.Problems) == 0 {
+		t.Fatalf("json doctor returned exit %d with no problems: %s", code, errOut.String())
 	}
 	raw := jsonOut.String()
 	for _, field := range []string{`"surfacing"`, `"surfacing_injection"`, `"guard"`, `"orient"`, `"peers"`} {
 		if !strings.Contains(raw, field) {
 			t.Fatalf("json missing stable field %s:\n%s", field, raw)
 		}
-	}
-	var rep doctorReport
-	if err := json.Unmarshal(jsonOut.Bytes(), &rep); err != nil {
-		t.Fatalf("parse json: %v", err)
 	}
 
 	text := runDoctorText(t, home, base, binary)
@@ -325,28 +330,37 @@ func TestDoctorSurfacingClaudeZaiLaneJoinsItsOwnGuardAndOrient(t *testing.T) {
 }
 
 // runDoctorReport runs doctor with --json and returns the parsed report.
+// Doctor exit-code contract (packet work_3da5d3c76707): exit 0 means no
+// problems; exit 1 means at least one. Existing in-process tests
+// exercise doctor on fixtures that may legitimately contain problems
+// the doctor correctly surfaces (e.g. harness version drift on the
+// developer's machine). This helper accepts either exit code so those
+// tests' structural assertions remain the thing under test; the
+// dedicated exit-code contract tests live in doctor_exit_truth_test.go.
 func runDoctorReport(t *testing.T, home, base, binary string) doctorReport {
 	t.Helper()
 	var out, errOut bytes.Buffer
 	args := []string{"--home", home, "--base", base, "--binary", binary, "--json"}
-	if code := runDoctor(args, &out, &errOut); code != 0 {
-		t.Fatalf("doctor --json failed: code=%d stderr=%q", code, errOut.String())
-	}
+	code := runDoctor(args, &out, &errOut)
 	var rep doctorReport
 	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
 		t.Fatalf("parse doctor json: %v (%q)", err, out.String())
 	}
+	if code != 0 && len(rep.Problems) == 0 {
+		t.Fatalf("doctor --json returned exit %d with no problems reported, stderr=%q", code, errOut.String())
+	}
 	return rep
 }
 
-// runDoctorText runs doctor in text mode and returns stdout.
+// runDoctorText runs doctor in text mode and returns stdout. Text mode
+// has no JSON to inspect, so we cannot check Problems; the dedicated
+// exit-code contract tests live in doctor_exit_truth_test.go and run
+// the doctor as a subprocess where the real exit code is observable.
 func runDoctorText(t *testing.T, home, base, binary string) string {
 	t.Helper()
 	var out, errOut bytes.Buffer
 	args := []string{"--home", home, "--base", base, "--binary", binary}
-	if code := runDoctor(args, &out, &errOut); code != 0 {
-		t.Fatalf("doctor text failed: code=%d stderr=%q", code, errOut.String())
-	}
+	_ = runDoctor(args, &out, &errOut)
 	return out.String()
 }
 
@@ -367,12 +381,14 @@ func TestDoctorComposesOrganState(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	args := []string{"--home", home, "--base", base, "--binary", "/usr/local/bin/compound", "--json"}
-	if code := runDoctor(args, &out, &errOut); code != 0 {
-		t.Fatalf("doctor should succeed, code=%d stderr=%q", code, errOut.String())
-	}
+	code := runDoctor(args, &out, &errOut)
 	var rep doctorReport
 	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
 		t.Fatalf("parse doctor json: %v (%q)", err, out.String())
+	}
+	// Doctor exit-code contract: see runDoctorReport's header.
+	if code != 0 && len(rep.Problems) == 0 {
+		t.Fatalf("doctor returned exit %d with no problems, stderr=%q", code, errOut.String())
 	}
 	if len(rep.Hooks) == 0 {
 		t.Fatal("doctor should report per-harness hook status")
@@ -412,11 +428,13 @@ func TestDoctorComposesOrganState(t *testing.T) {
 
 	out.Reset()
 	errOut.Reset()
-	if code := runDoctor(args, &out, &errOut); code != 0 {
-		t.Fatalf("doctor rerun failed: %s", errOut.String())
-	}
+	code = runDoctor(args, &out, &errOut)
 	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
 		t.Fatalf("parse doctor json (rerun): %v", err)
+	}
+	// Doctor exit-code contract: see runDoctorReport's header.
+	if code != 0 && len(rep.Problems) == 0 {
+		t.Fatalf("doctor rerun returned exit %d with no problems, stderr=%q", code, errOut.String())
 	}
 	if rep.FindingsTotal != 2 || rep.FindingsLive != 1 || rep.FindingsSuperseded != 1 {
 		t.Fatalf("findings counts wrong: total=%d live=%d superseded=%d", rep.FindingsTotal, rep.FindingsLive, rep.FindingsSuperseded)
@@ -570,13 +588,14 @@ func TestDoctorReportsSweepTeethCounters(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	args := []string{"--home", home, "--base", base, "--binary", "/opt/compound/compound", "--json"}
-	if code := runDoctor(args, &out, &errOut); code != 0 {
-		t.Fatalf("doctor exit=%d stderr=%q", code, errOut.String())
-	}
-
+	code := runDoctor(args, &out, &errOut)
 	var rep doctorReport
 	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
 		t.Fatalf("parse json: %v (%q)", err, out.String())
+	}
+	// Doctor exit-code contract: see runDoctorReport's header.
+	if code != 0 && len(rep.Problems) == 0 {
+		t.Fatalf("doctor exit=%d with no problems reported, stderr=%q", code, errOut.String())
 	}
 
 	// Stuck = 2 (fresh + stale; clean and amb are terminal).
@@ -610,13 +629,13 @@ func TestDoctorReportsSweepTeethCountersOnFreshHome(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	args := []string{"--home", home, "--base", base, "--binary", "/opt/compound/compound", "--json"}
-	if code := runDoctor(args, &out, &errOut); code != 0 {
-		t.Fatalf("doctor exit=%d stderr=%q", code, errOut.String())
-	}
-
+	code := runDoctor(args, &out, &errOut)
 	var rep doctorReport
 	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
 		t.Fatalf("parse json: %v", err)
+	}
+	if code != 0 && len(rep.Problems) == 0 {
+		t.Fatalf("fresh-home doctor exit=%d with no problems reported, stderr=%q", code, errOut.String())
 	}
 	if rep.RunAttemptsStuck != 0 || rep.RunAttemptsStuckPastTTL != 0 || rep.RunAttemptsSweptAmbiguous != 0 {
 		t.Fatalf("fresh home: stuck=%d past_ttl=%d swept_ambiguous=%d, want all 0",
@@ -662,9 +681,10 @@ func TestDoctorReportsUnreadableRunAttemptLaunchEvidence(t *testing.T) {
 
 			var out, errOut bytes.Buffer
 			args := []string{"--home", homePath, "--base", base, "--binary", "/opt/compound/compound", "--json"}
-			if code := runDoctor(args, &out, &errOut); code != 0 {
-				t.Fatalf("doctor exit=%d stderr=%q", code, errOut.String())
-			}
+			// The unreadable launch evidence we seeded IS a real problem;
+			// the doctor's exit-1 is correct on this fixture. We still
+			// assert the structural shape (count + ids) below.
+			code := runDoctor(args, &out, &errOut)
 			var rep struct {
 				RunAttemptsUnreadable    int      `json:"run_attempts_unreadable"`
 				RunAttemptsUnreadableIDs []string `json:"run_attempts_unreadable_ids"`
@@ -672,6 +692,7 @@ func TestDoctorReportsUnreadableRunAttemptLaunchEvidence(t *testing.T) {
 			if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
 				t.Fatalf("parse json: %v (%q)", err, out.String())
 			}
+			_ = code
 			if rep.RunAttemptsUnreadable != 1 || len(rep.RunAttemptsUnreadableIDs) != 1 || rep.RunAttemptsUnreadableIDs[0] != attempt.ID {
 				t.Fatalf("doctor unreadable evidence = %+v, want count=1 id=%s", rep, attempt.ID)
 			}
@@ -820,8 +841,12 @@ func TestDoctorInjectionReportsNoRateBecauseConsumptionProvenanceIsUnrecoverable
 		[]string{"claim://claim_s1", "claim://claim_s2"}, nil, false)
 
 	var jsonOut, errOut bytes.Buffer
-	if code := runDoctor([]string{"--home", homePath, "--base", base, "--binary", binary, "--json"}, &jsonOut, &errOut); code != 0 {
-		t.Fatalf("json doctor failed: %s", errOut.String())
+	// Doctor exit-code contract: see runDoctorReport's header.
+	code := runDoctor([]string{"--home", homePath, "--base", base, "--binary", binary, "--json"}, &jsonOut, &errOut)
+	var repAny doctorReport
+	_ = json.Unmarshal(jsonOut.Bytes(), &repAny)
+	if code != 0 && len(repAny.Problems) == 0 {
+		t.Fatalf("json doctor returned exit %d with no problems: %s", code, errOut.String())
 	}
 	raw := jsonOut.String()
 
