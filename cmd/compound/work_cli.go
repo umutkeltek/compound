@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/doctor/exitcode"
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/hook"
@@ -878,23 +879,46 @@ func cmdWork(args []string) {
 			}
 		}
 		report, err := store.ProofChainDoctor(time.Now(), work.ProofChainDoctorOptions{IncludeArchived: has("--include-archived")})
-		die(err)
+		if err != nil {
+			// Exit-code contract: a store failure means the doctor itself
+			// could not run (2), not "ran and found problems" (1). die()
+			// exits 1 and is shared across verbs, so this branch decides
+			// for itself.
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(exitcode.CouldNotRun)
+		}
+		// Doctor exit-code contract (internal/doctor/exitcode): findings
+		// are problems, exit 1 when any exist. This doctor's documented
+		// policy divergence: the count line prints even on a clean run —
+		// it printed NOTHING before, and a doctor whose clean output is
+		// silence cannot be distinguished from one that never ran.
+		doc := exitcode.Doctor{Verb: "proof-chain-doctor", Note: "all terminal chains are intact"}
+		for _, finding := range report.Findings {
+			doc.Problems = append(doc.Problems, fmt.Sprintf("%s %s: %s", finding.WorkID, finding.Code, finding.Message))
+		}
+		if len(doc.Problems) > 0 {
+			doc.Note = "run `compound work show <work_id>` for each finding above"
+		}
 		if has("--json") {
 			printJSON(report)
-		} else {
-			fmt.Printf("# work proof-chain-doctor %s\n\n", report.Status)
-			fmt.Printf("- works_checked: %d\n", report.Counts.WorksChecked)
-			fmt.Printf("- terminal_checked: %d\n", report.Counts.TerminalChecked)
-			fmt.Printf("- complete: %d\n", report.Counts.Complete)
-			if len(report.Findings) > 0 {
-				fmt.Printf("- findings: %d\n", len(report.Findings))
-				for _, finding := range report.Findings {
-					fmt.Printf("- %s %s: %s\n", finding.WorkID, finding.Code, finding.Message)
-				}
+			if doc.Exit() != exitcode.OK {
+				os.Exit(exitcode.ProblemFound)
+			}
+			return
+		}
+		fmt.Printf("# work proof-chain-doctor %s\n\n", report.Status)
+		fmt.Printf("- works_checked: %d\n", report.Counts.WorksChecked)
+		fmt.Printf("- terminal_checked: %d\n", report.Counts.TerminalChecked)
+		fmt.Printf("- complete: %d\n", report.Counts.Complete)
+		if len(report.Findings) > 0 {
+			fmt.Printf("- findings: %d\n", len(report.Findings))
+			for _, finding := range report.Findings {
+				fmt.Printf("- %s %s: %s\n", finding.WorkID, finding.Code, finding.Message)
 			}
 		}
-		if report.Status != "ok" {
-			os.Exit(1)
+		fmt.Println(doc.FinalLine())
+		if doc.Exit() != exitcode.OK {
+			os.Exit(doc.Exit())
 		}
 	case "reconcile-run-attempts":
 		usage := workUsage("reconcile-run-attempts")
