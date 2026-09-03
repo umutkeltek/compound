@@ -763,22 +763,7 @@ func Status(home string, now time.Time) (StatusResult, error) {
 		if rErr != nil {
 			return rErr
 		}
-		if !exists {
-			return nil
-		}
-		result.Holder = current.Holder
-		result.AcquiredAt = current.AcquiredAt
-		result.ExpiresAt = current.ExpiresAt
-		result.TTLSeconds = current.TTLSeconds
-		result.PriorHolder = current.PriorHolder
-		result.StealReason = current.StealReason
-		result.StolenAt = current.StolenAt
-		result.TerminationRequestedBy = current.TerminationRequestedBy
-		result.TerminationRequestReason = current.TerminationRequestReason
-		result.TerminationRequestedAt = current.TerminationRequestedAt
-		result.RemainingSeconds = current.remainingSeconds(now)
-		result.Held = current.live(now)
-		result.IsExpired = exists && !current.live(now)
+		result = leaseStatusResult(current, exists, now)
 		return nil
 	})
 	if err != nil {

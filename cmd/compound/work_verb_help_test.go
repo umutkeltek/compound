@@ -31,7 +31,7 @@ func TestEveryWorkVerbHelpIncludesUsageAndExecutableExample(t *testing.T) {
 		"dispatch-close", "dispatch-step", "claim-plan", "claim", "advance-plan", "advance",
 		"delegate", "steer", "attach", "observe-run", "land-check", "salvage-plan",
 		"action-plan", "act", "close-plan", "close",
-		"set-aside",
+		"set-aside", "sweep-stale",
 	}
 	for _, verb := range verbs {
 		t.Run(verb, func(t *testing.T) {
@@ -60,6 +60,7 @@ func TestWorkVerbHelpShowsOwnFlags(t *testing.T) {
 		"steer":            {"--text", "--enter", "--experimental-delegate-mutations", "unsupported in v0.1"},
 		"show":             {"--json"},
 		"close":            {"--outcome", "--move-type"},
+		"sweep-stale":      {"--dry-run", "--yes", "--experimental-sweep-stale-mutations", "experimental", "unsupported in v0.1"},
 	}
 	for verb, fragments := range tests {
 		out := captureStdout(t, func() {
@@ -69,6 +70,22 @@ func TestWorkVerbHelpShowsOwnFlags(t *testing.T) {
 			if !strings.Contains(out, fragment) {
 				t.Fatalf("%s help lacks %q:\n%s", verb, fragment, out)
 			}
+		}
+	}
+}
+
+func TestExperimentalSweepStaleMutationHelpCarriesTheGate(t *testing.T) {
+	out := captureStdout(t, func() {
+		cmdWork([]string{"sweep-stale", "--help"})
+	})
+	for _, want := range []string{
+		"--yes --experimental-sweep-stale-mutations",
+		"experimental",
+		"unsupported in v0.1",
+		"example: compound work sweep-stale --dry-run --threshold 48h",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("sweep-stale help missing %q:\n%s", want, out)
 		}
 	}
 }

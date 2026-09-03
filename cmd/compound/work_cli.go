@@ -230,13 +230,8 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work set-aside begin work_abc123 --candidate 0123456789012345678901234567890123456789 --file internal/foo.go --by codex --reason \"neighbor lane WIP\"",
 	},
 	"sweep-stale": {
-		// DRY-RUN IS THE DEFAULT. --yes is the only mutation gate. The packet
-		// is explicit on this: a sweep-stale that accidentally abandoned a
-		// live envelope is exactly the fossilization we are trying to
-		// prevent — the verb exists to audit and operator-review the
-		// candidate set, not to silently reap it.
-		Usage:   "usage: compound work sweep-stale [--threshold 72h] [--dry-run|--yes] [--json]\n  default is dry-run (prints candidate set + reasons, exits 0).\n  --yes applies: advances reclaimed envelopes to failed/cancelled,\n  releases the claim lease, appends one lifecycle event with sweep_reason.\n  Never touches run_attempts (compound run-attempt sweep owns that).",
-		Example: "compound work sweep-stale --threshold 48h",
+		Usage:   "usage: compound work sweep-stale [--threshold 72h] [--dry-run | --yes --experimental-sweep-stale-mutations] [--json]\n  default is dry-run (prints candidate set + reasons, exits 0).\n  --yes mutation is experimental, unsupported in v0.1, and requires --experimental-sweep-stale-mutations.\n  Never touches run_attempts (compound run-attempt sweep owns that).",
+		Example: "compound work sweep-stale --dry-run --threshold 48h",
 	},
 	"reseal": {
 		// Same dry-run-default law as sweep-stale: the verb exists to audit
@@ -270,12 +265,13 @@ func previewDispatchClaim(store *work.Store, now time.Time, opts work.DispatchPl
 	return store.DispatchPlan(now, opts)
 }
 
-// workCommandNeedsWritableStore keeps the supported read-only delegate faces
-// from materializing the work habitat before their own parser can classify the
-// request. An explicit experimental mutation opt-in is the only delegate/steer
-// posture allowed to open the writable store; status, attach, dry-run, and a
-// missing opt-in stay footprint-free even when they later return an error.
+// workCommandNeedsWritableStore classifies commands before Store construction.
+// The command owner parses any mixed read/write surface so invalid and read-only
+// requests cannot materialize the work habitat.
 func workCommandNeedsWritableStore(sub string, args []string) bool {
+	if sub == "sweep-stale" {
+		return work.SweepStaleCLIRequiresWritableStore(args)
+	}
 	return delegateCommandNeedsWritableStore(sub, args)
 }
 

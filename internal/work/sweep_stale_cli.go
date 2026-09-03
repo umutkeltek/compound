@@ -7,10 +7,8 @@
 //
 // Spec: docs_private/plan/packets/2026-08-24-work-sweep-stale.md
 //
-// DRY-RUN IS THE DEFAULT. `--yes` is the only mutation gate. The packet is
-// explicit on this: a sweep-stale that accidentally abandoned a live envelope
-// is exactly the fossilization we are trying to prevent — the verb exists to
-// audit and operator-review the candidate set, not to silently reap it.
+// DRY-RUN IS THE DEFAULT. Mutation is experimental and unsupported in v0.1;
+// both --yes and the explicit experimental flag are required to apply.
 package work
 
 import (
@@ -20,135 +18,146 @@ import (
 	"time"
 )
 
-// runWorkSweepStaleCLI is the testable command edge for
-// `compound work sweep-stale [--threshold D] [--dry-run|--yes] [--json]`.
-// --dry-run is the default; --yes applies. --threshold defaults to
-// work.DefaultSweepStaleThreshold (72h). The CLI always supplies the
-// production probe (run_attempts + delegate bindings + land-lease); tests
-// drive the store method directly with their own probe.
-//
-// Positional arguments are rejected: sweep-stale is a global operation, not a
-// per-work command, and a stray work_id would invite silent misuse.
+// ExperimentalSweepStaleMutationsFlag is the explicit unsupported-v0.1
+// admission token for stale-work mutation. Read-only planning does not need it.
+const ExperimentalSweepStaleMutationsFlag = "--experimental-sweep-stale-mutations"
+
+type sweepStaleCLIOptions struct {
+	threshold time.Duration
+	dryRun    bool
+	jsonOut   bool
+}
+
+// SweepStaleCLIRequiresWritableStore classifies the already-tokenized command
+// using the same parser as RunWorkSweepStaleCLI. Invalid and read-only requests
+// always return false so cmdWork can reject them without materializing state.
+func SweepStaleCLIRequiresWritableStore(args []string) bool {
+	parsed, err := parseSweepStaleCLIArgs(args)
+	return err == nil && !parsed.dryRun
+}
+
+func parseSweepStaleCLIArgs(args []string) (sweepStaleCLIOptions, error) {
+	parsed := sweepStaleCLIOptions{threshold: DefaultSweepStaleThreshold, dryRun: true}
+	var thresholdText string
+	var thresholdProvided bool
+	var dryRunRequested, applyRequested, experimental bool
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dry-run":
+			dryRunRequested = true
+		case "--yes":
+			applyRequested = true
+		case ExperimentalSweepStaleMutationsFlag:
+			experimental = true
+		case "--json":
+			parsed.jsonOut = true
+		case "--threshold":
+			if thresholdProvided {
+				return sweepStaleCLIOptions{}, fmt.Errorf("--threshold may only be provided once")
+			}
+			if i+1 >= len(args) {
+				return sweepStaleCLIOptions{}, fmt.Errorf("--threshold requires a value")
+			}
+			i++
+			thresholdProvided = true
+			thresholdText = args[i]
+		default:
+			return sweepStaleCLIOptions{}, fmt.Errorf("unexpected argument %q", args[i])
+		}
+	}
+
+	if thresholdProvided {
+		threshold, err := time.ParseDuration(thresholdText)
+		if err != nil {
+			return sweepStaleCLIOptions{}, fmt.Errorf("--threshold %q is not a valid duration: %w", thresholdText, err)
+		}
+		if threshold <= 0 {
+			return sweepStaleCLIOptions{}, fmt.Errorf("--threshold must be greater than zero, got %q", thresholdText)
+		}
+		parsed.threshold = threshold
+	}
+	if dryRunRequested && applyRequested {
+		return sweepStaleCLIOptions{}, fmt.Errorf("--dry-run and --yes are mutually exclusive")
+	}
+	if applyRequested && !experimental {
+		return sweepStaleCLIOptions{}, fmt.Errorf("--yes requires %s; stale reclaim mutation is experimental and unsupported in v0.1", ExperimentalSweepStaleMutationsFlag)
+	}
+	if experimental && !applyRequested {
+		return sweepStaleCLIOptions{}, fmt.Errorf("%s requires --yes", ExperimentalSweepStaleMutationsFlag)
+	}
+	parsed.dryRun = !applyRequested
+	return parsed, nil
+}
+
+// RunWorkSweepStaleCLI is the testable command edge for
+// `compound work sweep-stale [--threshold D] [--dry-run | --yes
+// --experimental-sweep-stale-mutations] [--json]`.
 func RunWorkSweepStaleCLI(args []string, store *Store, homePath string, now time.Time, stdout, stderr io.Writer) int {
 	if sweepStaleHasUsageFlag(args) {
 		fmt.Fprintln(stdout, sweepStaleUsageText())
 		return 0
 	}
-	// Argument validation. sweep-stale accepts no positional; --dry-run
-	// and --yes are mutually exclusive; only --threshold and --json may
-	// appear alongside them.
-	for _, a := range args {
-		switch a {
-		case "--dry-run", "--yes", "--json":
-		case "--threshold":
-			// handled below (value flag follows)
-		default:
-			if !looksLikeValueOf(args, a, "--threshold") {
-				fmt.Fprintf(stderr, "error: unexpected argument %q\n", a)
-				fmt.Fprintln(stderr, sweepStaleUsageText())
-				return 2
-			}
-		}
-	}
-	thresholdStr := ""
-	dryRun := true
-	jsonOut := false
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--dry-run":
-			dryRun = true
-		case "--yes":
-			dryRun = false
-		case "--json":
-			jsonOut = true
-		case "--threshold":
-			if i+1 >= len(args) {
-				fmt.Fprintln(stderr, "error: --threshold requires a value")
-				fmt.Fprintln(stderr, sweepStaleUsageText())
-				return 2
-			}
-			i++
-			thresholdStr = args[i]
-		}
-	}
-	threshold := DefaultSweepStaleThreshold
-	if thresholdStr != "" {
-		parsed, err := time.ParseDuration(thresholdStr)
-		if err != nil {
-			fmt.Fprintf(stderr, "error: --threshold %q is not a valid duration: %v\n", thresholdStr, err)
-			fmt.Fprintln(stderr, sweepStaleUsageText())
-			return 2
-		}
-		if parsed <= 0 {
-			fmt.Fprintf(stderr, "error: --threshold must be greater than zero, got %q\n", thresholdStr)
-			fmt.Fprintln(stderr, sweepStaleUsageText())
-			return 2
-		}
-		threshold = parsed
+	parsed, err := parseSweepStaleCLIArgs(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		fmt.Fprintln(stderr, sweepStaleUsageText())
+		return 2
 	}
 
 	probe := NewDefaultSweepStaleProbe(homePath)
 	// One coherent staleness definition per pass: the run-attempt liveness
-	// probe uses the same window as the envelope threshold instead of the
-	// fixed 30m default (a 72h sweep must not count a 31m-old heartbeat as
-	// live protection).
-	probe.AttemptLivenessThreshold = threshold
-	var (
-		rep SweepStaleReport
-		err error
-	)
-	if dryRun {
-		rep, err = store.SweepStalePlan(threshold, probe, time.Time{})
+	// probe uses the same window as the envelope threshold.
+	probe.AttemptLivenessThreshold = parsed.threshold
+	var report SweepStaleReport
+	if parsed.dryRun {
+		report, err = store.SweepStalePlan(parsed.threshold, probe, time.Time{})
 	} else {
-		rep, err = store.SweepStaleApply(threshold, probe, now)
+		report, err = store.SweepStaleApply(parsed.threshold, probe, now)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "error: work sweep-stale: %v\n", err)
 		return 1
 	}
 
-	if jsonOut {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		if encodeErr := enc.Encode(rep); encodeErr != nil {
-			fmt.Fprintf(stderr, "error: encode sweep-stale: %v\n", encodeErr)
+	if parsed.jsonOut {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(report); err != nil {
+			fmt.Fprintf(stderr, "error: encode sweep-stale: %v\n", err)
 			return 1
 		}
 		return 0
 	}
 
 	mode := "dry-run"
-	if !dryRun {
+	if !parsed.dryRun {
 		mode = "applied"
 	}
 	fmt.Fprintf(stdout, "sweep-stale %s threshold=%s scanned=%d safe=%d reclaimed=%d skipped=%d unreadable=%d\n",
-		mode, threshold, rep.Scanned, rep.Safe, rep.Reclaimed, rep.Skipped, rep.Unreadable)
-	if len(rep.Candidates) > 0 {
+		mode, parsed.threshold, report.Scanned, report.Safe, report.Reclaimed, report.Skipped, report.Unreadable)
+	if len(report.Candidates) > 0 {
 		fmt.Fprintln(stdout, "candidates:")
-		for _, c := range rep.Candidates {
+		for _, candidate := range report.Candidates {
 			status := "would-reclaim"
-			if c.Reclaimed {
+			if candidate.Reclaimed {
 				status = "reclaimed"
-			} else if c.ReclaimError != "" {
-				status = "error:" + c.ReclaimError
+			} else if candidate.ReclaimError != "" {
+				status = "error:" + candidate.ReclaimError
 			}
 			fmt.Fprintf(stdout, "  %s state=%s -> %s age=%s %s\n",
-				c.WorkID, c.State, c.TargetState, c.LastEventAge, status)
+				candidate.WorkID, candidate.State, candidate.TargetState, candidate.LastEventAge, status)
 		}
 	}
-	if len(rep.UnreadableIDs) > 0 {
+	if len(report.UnreadableIDs) > 0 {
 		fmt.Fprintln(stdout, "unreadable (probe failure, fail-closed):")
-		for _, id := range rep.UnreadableIDs {
+		for _, id := range report.UnreadableIDs {
 			fmt.Fprintf(stdout, "  %s\n", id)
 		}
 	}
-	if !dryRun {
-		// Distinguish the two outcomes the operator cares about: this is
-		// either a clean apply (no candidates, or all candidates reclaimed)
-		// or there is work to reconcile. Exiting 0 keeps the verb safe to
-		// schedule; the operator reads stdout for the verdict.
-		for _, c := range rep.Candidates {
-			if c.ReclaimError != "" {
+	if !parsed.dryRun {
+		for _, candidate := range report.Candidates {
+			if candidate.ReclaimError != "" {
 				return 1
 			}
 		}
@@ -156,21 +165,9 @@ func RunWorkSweepStaleCLI(args []string, store *Store, homePath string, now time
 	return 0
 }
 
-// looksLikeValueOf reports whether `token` is the value immediately following
-// `flagName` in args. Used to allow `--threshold 72h` to flow through the
-// positional-arg gate without being mistaken for a stray value.
-func looksLikeValueOf(args []string, token, flagName string) bool {
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] == flagName && args[i+1] == token {
-			return true
-		}
-	}
-	return false
-}
-
 func sweepStaleHasUsageFlag(args []string) bool {
-	for _, a := range args {
-		if a == "--help" || a == "-h" {
+	for _, argument := range args {
+		if argument == "--help" || argument == "-h" {
 			return true
 		}
 	}
@@ -178,5 +175,5 @@ func sweepStaleHasUsageFlag(args []string) bool {
 }
 
 func sweepStaleUsageText() string {
-	return "usage: compound work sweep-stale [--threshold 72h] [--dry-run|--yes] [--json]\n  default is dry-run (prints candidate set + reasons, exits 0).\n  --yes applies: advances reclaimed envelopes to failed/cancelled with sweep_reason.\n  Never touches run_attempts (compound run-attempt sweep owns that)."
+	return "usage: compound work sweep-stale [--threshold 72h] [--dry-run | --yes --experimental-sweep-stale-mutations] [--json]\n  default is dry-run (prints candidate set + reasons, exits 0).\n  --yes mutation is experimental, unsupported in v0.1, and requires --experimental-sweep-stale-mutations.\n  Never touches run_attempts (compound run-attempt sweep owns that)."
 }

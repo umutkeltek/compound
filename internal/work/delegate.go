@@ -97,6 +97,9 @@ func (s *Store) withDelegateLifecycleMutation(workID string, fn func() error) er
 		if err := s.fenceClosePendingMutation(workID); err != nil {
 			return &delegateAuthorityChangedError{detail: err.Error()}
 		}
+		if err := s.fenceSweepStalePendingMutation(workID); err != nil {
+			return &delegateAuthorityChangedError{detail: err.Error()}
+		}
 		return fn()
 	})
 }

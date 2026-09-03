@@ -98,6 +98,9 @@ Unsupported in the public alpha:
 - delegated launch, steer, progress, and mutating delegate sweep — these are
   experimental, disabled by default, and outside the v0.1 supported execution
   contract; `work advance --execute` is the supported governed path;
+- `work sweep-stale --yes` mutation — it is experimental, disabled by default,
+  requires `--experimental-sweep-stale-mutations`, and remains outside the v0.1
+  supported contract; the default and `--dry-run` faces are read-only reports;
 - unattended memory promotion, registry import through `memory
   promote-driver`, and lane-belief mutation are experimental and outside the
   v0.1 supported contract; the supported promote-driver apply is frozen

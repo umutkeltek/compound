@@ -152,10 +152,26 @@ func validateSweepStalePending(pending sweepStalePending) error {
 	if strings.TrimSpace(pending.WorkID) == "" {
 		return errors.New("work_id is required")
 	}
+	if pending.ThresholdNanos <= 0 {
+		return errors.New("threshold_nanos must be positive")
+	}
+	frozenAt, err := parseLifecycleTS(pending.FrozenAt)
+	if err != nil || frozenAt.IsZero() || pending.FrozenAt != ts(frozenAt) {
+		return fmt.Errorf("frozen_at must be the exact nonzero UnixNano timestamp: %q", pending.FrozenAt)
+	}
 	if pending.SourceWork.ID != pending.WorkID || pending.FinalWork.ID != pending.WorkID {
 		return errors.New("source/final WorkEnvelope IDs must equal work_id")
 	}
-	if pending.SourceEventCount < 0 || strings.TrimSpace(pending.SourceEventPrefixSHA256) == "" {
+	if err := pending.SourceWork.Validate(); err != nil {
+		return fmt.Errorf("source WorkEnvelope is invalid: %w", err)
+	}
+	if err := pending.FinalWork.Validate(); err != nil {
+		return fmt.Errorf("final WorkEnvelope is invalid: %w", err)
+	}
+	if !sweepStaleEnvelopeStates[pending.SourceWork.State] {
+		return fmt.Errorf("source WorkEnvelope state %q is not reclaimable", pending.SourceWork.State)
+	}
+	if pending.SourceEventCount <= 0 || strings.TrimSpace(pending.SourceEventPrefixSHA256) == "" {
 		return errors.New("source event prefix binding is required")
 	}
 	sourceSHA256, err := workEnvelopeSHA256(pending.SourceWork)
@@ -185,6 +201,31 @@ func validateSweepStalePending(pending sweepStalePending) error {
 		strings.TrimSpace(pending.Candidate.ReclaimError) != "" {
 		return errors.New("candidate does not bind the frozen source/final WorkEnvelope generation")
 	}
+	lastEventAt, err := parseLifecycleTS(pending.Candidate.LastEventTS)
+	if err != nil || lastEventAt.IsZero() {
+		return errors.New("candidate last_event_ts must be parseable and nonzero")
+	}
+	lastEventAge, err := time.ParseDuration(pending.Candidate.LastEventAge)
+	if err != nil || lastEventAge < 0 {
+		return errors.New("candidate last_event_age must be a nonnegative duration")
+	}
+	expectedAge := frozenAt.Sub(lastEventAt)
+	if expectedAge < 0 || lastEventAge != expectedAge.Round(time.Second) ||
+		pending.Candidate.LastEventAge != expectedAge.Round(time.Second).String() {
+		return errors.New("candidate last_event_age does not match frozen timestamp")
+	}
+	if expectedAge < time.Duration(pending.ThresholdNanos) {
+		return errors.New("candidate last_event_age is below the frozen threshold")
+	}
+	if pending.Candidate.LiveAttempts != 0 || pending.Candidate.DelegateLive || pending.Candidate.LeaseHeld {
+		return errors.New("candidate liveness and lease facts must be inactive")
+	}
+	if pending.Candidate.LastHeartbeatAt != "" {
+		return errors.New("candidate last_heartbeat_at must be blank")
+	}
+	if pending.Candidate.SweepReason != sweepStaleReason(pending.Candidate, time.Duration(pending.ThresholdNanos)) {
+		return errors.New("candidate sweep_reason does not match frozen facts")
+	}
 	wantEvent := Event{
 		TS:                 pending.FrozenAt,
 		WorkID:             pending.WorkID,
@@ -197,6 +238,10 @@ func validateSweepStalePending(pending sweepStalePending) error {
 	}
 	if !sameSweepStaleEvent(pending.Event, wantEvent) {
 		return errors.New("event does not match the frozen reclaim")
+	}
+	eventAt, err := parseLifecycleTS(pending.Event.TS)
+	if err != nil || eventAt.IsZero() || !eventAt.Equal(frozenAt) || pending.Event.TS != pending.FrozenAt {
+		return errors.New("event timestamp must be the exact frozen lifecycle timestamp")
 	}
 	if pending.Lease.Present {
 		if len(pending.Lease.Body) == 0 || pending.Lease.SHA256 != sweepStaleBytesSHA256(pending.Lease.Body) {
@@ -258,13 +303,13 @@ func (s *Store) loadSweepStalePending(workID string) (sweepStalePending, bool, e
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&pending); err != nil {
-		return sweepStalePending{}, false, err
+		return pending, true, err
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return sweepStalePending{}, false, errors.New("sweep-stale pending contains trailing JSON")
+		return pending, true, errors.New("sweep-stale pending contains trailing JSON")
 	}
 	if err := validateSweepStalePending(pending); err != nil {
-		return sweepStalePending{}, false, err
+		return pending, true, err
 	}
 	return pending, true, nil
 }
@@ -397,6 +442,9 @@ func (s *Store) validateSweepStaleEventPrefixUnlocked(pending sweepStalePending)
 	if err != nil {
 		return nil, nil, err
 	}
+	if pending.SourceEventCount <= 0 {
+		return nil, nil, errors.New("frozen sweep event prefix must contain a last lifecycle event")
+	}
 	if len(events) < pending.SourceEventCount {
 		return nil, nil, errors.New("work lifecycle event prefix was truncated")
 	}
@@ -406,6 +454,9 @@ func (s *Store) validateSweepStaleEventPrefixUnlocked(pending sweepStalePending)
 	}
 	if prefixSHA256 != pending.SourceEventPrefixSHA256 {
 		return nil, nil, errors.New("work lifecycle event prefix changed after sweep intent")
+	}
+	if events[pending.SourceEventCount-1].TS != pending.Candidate.LastEventTS {
+		return nil, nil, errors.New("candidate last_event_ts does not match the frozen event prefix")
 	}
 	suffix := events[pending.SourceEventCount:]
 	if len(suffix) > 1 {
@@ -522,7 +573,7 @@ func (s *Store) reconcileSweepStalePendingLocked(workID string) (SweepStaleCandi
 func (s *Store) fenceSweepStalePendingMutation(workID string) error {
 	pending, present, err := s.loadSweepStalePending(workID)
 	if err != nil {
-		return fmt.Errorf("read sweep-stale pending for %s: %w", workID, err)
+		return sweepStaleRecoveryRequired(workID, fmt.Errorf("read sweep-stale pending for %s: %w", workID, err))
 	}
 	if !present {
 		return nil

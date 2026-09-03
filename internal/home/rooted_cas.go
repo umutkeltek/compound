@@ -38,6 +38,11 @@ type RootedFileCAS struct {
 	resolved        bool
 }
 
+// syncRootedCASDirectoryFile is the exact directory-sync seam used by rooted
+// CAS publication and validated removal. Production calls File.Sync; tests
+// inject a final-unlink sync failure to prove retry durability.
+var syncRootedCASDirectoryFile = func(file *os.File) error { return file.Sync() }
+
 func (publication *RootedFileCAS) State() RootedFileCASState {
 	if publication == nil {
 		return RootedFileCASNotPublished
@@ -427,7 +432,7 @@ func syncRootedCASDirectory(root *os.Root) error {
 	if err != nil {
 		return err
 	}
-	syncErr := dir.Sync()
+	syncErr := syncRootedCASDirectoryFile(dir)
 	closeErr := dir.Close()
 	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) {
 		return syncErr
