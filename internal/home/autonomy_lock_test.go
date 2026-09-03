@@ -289,18 +289,38 @@ func TestOperationalArchiveAndRestoreKeepMovePlusIndexAtomicToAdmission(t *testi
 		t.Fatal(err)
 	}
 
-	type gapState struct {
-		operation string
-		entries   []OperationalArchiveEntry
+	// Journal-first design: the only durable-gap window is per-file, between
+	// the rename and the committed line. The legacy batch seam
+	// (operationalArchiveBeforeIndexCommit) no longer fires for the archive
+	// path; the journal-first seam (operationalArchiveBeforeJournalCommit)
+	// captures the per-file state instead.
+	type archiveGap struct {
+		entry OperationalArchiveEntry
 	}
-	gap := make(chan gapState)
-	releaseGap := make(chan struct{})
-	previousHook := operationalArchiveBeforeIndexCommit
+	type restoreGap struct {
+		entries []OperationalArchiveEntry
+	}
+	archiveGapCh := make(chan archiveGap, 1)
+	releaseArchiveGap := make(chan struct{})
+	restoreGapCh := make(chan restoreGap, 1)
+	releaseRestoreGap := make(chan struct{})
+
+	previousArchiveHook := operationalArchiveBeforeJournalCommit
+	operationalArchiveBeforeJournalCommit = func(entry OperationalArchiveEntry) {
+		archiveGapCh <- archiveGap{entry: entry}
+		<-releaseArchiveGap
+	}
+	defer func() { operationalArchiveBeforeJournalCommit = previousArchiveHook }()
+
+	previousRestoreHook := operationalArchiveBeforeIndexCommit
 	operationalArchiveBeforeIndexCommit = func(operation string, entries []OperationalArchiveEntry) {
-		gap <- gapState{operation: operation, entries: append([]OperationalArchiveEntry(nil), entries...)}
-		<-releaseGap
+		if operation != "restored" {
+			return
+		}
+		restoreGapCh <- restoreGap{entries: append([]OperationalArchiveEntry(nil), entries...)}
+		<-releaseRestoreGap
 	}
-	defer func() { operationalArchiveBeforeIndexCommit = previousHook }()
+	defer func() { operationalArchiveBeforeIndexCommit = previousRestoreHook }()
 
 	assertAdmissionReaderWaits := func() <-chan error {
 		t.Helper()
@@ -324,18 +344,18 @@ func TestOperationalArchiveAndRestoreKeepMovePlusIndexAtomicToAdmission(t *testi
 		_, err := ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, now)
 		archiveDone <- err
 	}()
-	archivedGap := <-gap
-	if archivedGap.operation != "archived" || len(archivedGap.entries) != 1 {
-		t.Fatalf("archive gap = %+v", archivedGap)
+	archivedGap := <-archiveGapCh
+	if archivedGap.entry.Operation != "archived" || archivedGap.entry.OriginalPath != "work/work/work_archive_lock.json" {
+		t.Fatalf("archive gap entry = %+v", archivedGap.entry)
 	}
 	if _, err := os.Stat(hotPath); !os.IsNotExist(err) {
 		t.Fatalf("hot work should already be moved in archive gap: %v", err)
 	}
-	if active, err := LoadOperationalArchiveIndex(home); err != nil || len(active) != 0 {
-		t.Fatalf("archive index should still describe the old state in gap: active=%+v err=%v", active, err)
+	if active, err := LoadOperationalArchiveIndex(home); err != nil || len(active) != 1 || active[0].Operation != "archived_pending" {
+		t.Fatalf("archive index in gap should hold only the pending line: active=%+v err=%v", active, err)
 	}
 	readerDone := assertAdmissionReaderWaits()
-	releaseGap <- struct{}{}
+	releaseArchiveGap <- struct{}{}
 	if err := <-archiveDone; err != nil {
 		t.Fatal(err)
 	}
@@ -348,18 +368,15 @@ func TestOperationalArchiveAndRestoreKeepMovePlusIndexAtomicToAdmission(t *testi
 		_, err := RestoreOperationalArchive(home, OperationalRestoreOptions{All: true}, now.Add(time.Minute))
 		restoreDone <- err
 	}()
-	restoredGap := <-gap
-	if restoredGap.operation != "restored" || len(restoredGap.entries) != 1 {
-		t.Fatalf("restore gap = %+v", restoredGap)
-	}
+	_ = <-restoreGapCh
 	if _, err := os.Stat(hotPath); err != nil {
 		t.Fatalf("hot work should already be restored in restore gap: %v", err)
 	}
-	if active, err := LoadOperationalArchiveIndex(home); err != nil || len(active) != 1 {
-		t.Fatalf("restore index should still describe the archived state in gap: active=%+v err=%v", active, err)
+	if active, err := LoadOperationalArchiveIndex(home); err != nil || len(active) != 1 || active[0].Operation != "archived" {
+		t.Fatalf("restore index in gap should still describe the archived state: active=%+v err=%v", active, err)
 	}
 	readerDone = assertAdmissionReaderWaits()
-	releaseGap <- struct{}{}
+	releaseRestoreGap <- struct{}{}
 	if err := <-restoreDone; err != nil {
 		t.Fatal(err)
 	}
