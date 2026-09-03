@@ -62,8 +62,8 @@ Gen-1 memory stack migrated into the spine memory family and retired.
 - No `internal/` packages are classified `converge-pending`.
 - Top-level Gen-1 verbs are tombstones only; do not import or route through retired packages.
 - Canonical surfaces are `compound memory ...` plus `compound distiller ...`.
-- `memory recall` and `memory timeline` resolve entity tokens exact-claim first, then a unique case-folded claim entity, then the entity registry; ambiguous case-folded entities stay unresolved rather than guessed.
-- `memory doctor` includes a `recall-quality` hop over a current visible claim, so embedding/sync green cannot hide broken canonical entity recall.
+- `memory recall` and `memory timeline` resolve entity tokens exact-claim first, then a unique case-folded claim entity, then the entity registry; ambiguous case-folded entities stay unresolved rather than guessed; `memory doctor` includes a `recall-quality` hop over a current visible claim so embedding/sync green cannot hide broken canonical entity recall.
+- The three lifecycle doctors (`compound doctor`, `compound memory doctor`, `compound work proof-chain-doctor`) share one exit-code contract from `internal/doctor/exitcode`: 0 = no problems, 1 = at least one problem found plus a final `<verb>: N problem(s) found — <what to do first>` line, 2 = the doctor itself could not run; info-only warnings never change the exit but must surface under a `warnings:` heading (text) or `warnings` array (JSON), never silently inside `"ok": true`.
 
 Capability status note: `capgraph` owns `compound capability skill-plan`; skill candidates now produce reviewed node drafts under `COMPOUND_HOME/reviews/capability-skills/` before any graph import or skill-file write.
 ## Packages (`internal/`)
