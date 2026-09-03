@@ -505,7 +505,9 @@ const standingGrantsRegistrySchemaFixture = "compound.standing_grants.v0.1"
 
 type executeStageBadWorkIDErr struct{ got string }
 
-func (e *executeStageBadWorkIDErr) Error() string { return "execute stage stub got unexpected work id: " + e.got }
+func (e *executeStageBadWorkIDErr) Error() string {
+	return "execute stage stub got unexpected work id: " + e.got
+}
 
 type executeStageLaunchErr struct{ msg string }
 

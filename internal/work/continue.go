@@ -61,10 +61,10 @@ type executeLaunchFn func(store *Store, workID, lane, harness, prompt string, no
 // between cases. The defaults below are wired to "no-op stub" so production
 // callers must explicitly bind the real ones.
 var (
-	executeStageRoutePlanFn executeRoutePlanFn = defaultExecuteStageRoutePlanFn
-	executeStageCapacityFn  executeCapacityFn  = defaultExecuteStageCapacityFn
+	executeStageRoutePlanFn  executeRoutePlanFn  = defaultExecuteStageRoutePlanFn
+	executeStageCapacityFn   executeCapacityFn   = defaultExecuteStageCapacityFn
 	executeStagePolicyEvalFn executePolicyEvalFn = defaultExecuteStagePolicyEvalFn
-	launchStub              executeLaunchFn     = defaultExecuteStageLaunch
+	launchStub               executeLaunchFn     = defaultExecuteStageLaunch
 )
 
 // Shim types for the policy-eval hook. The real policy package exposes

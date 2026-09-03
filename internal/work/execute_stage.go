@@ -25,6 +25,7 @@ import (
 // envelope.
 //
 // The five gates in order:
+//
 //	a. standing grant grant_unattended_work_continue_v1 present in registry
 //	b. envelope risk ∈ {tier0, tier1} AND privacy == private
 //	c. route plan names an eligible harness lane for the capability
