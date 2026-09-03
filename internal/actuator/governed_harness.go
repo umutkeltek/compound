@@ -62,7 +62,13 @@ type GovernedHarnessLaunchInput struct {
 	ActionIntentID    string
 	ReadinessEvidence []work.DelegateHarnessReadinessEvidence
 	ReadinessRequest  *work.DelegateHarnessReadinessRequest
-	Now               time.Time
+	// OperatorExplicitBypass is true when the operator passed --permission-mode
+	// bypass (rather than omitting the flag). When true, the rail preserves the
+	// requested posture across an unready readiness guard (M5 2026-09-03) and
+	// uses the lane-only start guard (no Ready re-check) so the request is
+	// honored end-to-end instead of silently downgraded to plan.
+	OperatorExplicitBypass bool
+	Now                    time.Time
 }
 
 // GovernedHarnessReservationInput is the post-preflight execution contract:
@@ -121,6 +127,7 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 	}
 	runInput := in.RunInput
 	_, claudeFamily := in.Adapter.(harness.GovernedPermissionAdapter)
+	originalPermissionMode := strings.TrimSpace(runInput.PermissionMode)
 	var postureEvidence []work.DelegateHarnessReadinessEvidence
 	var postureReadinessRequest *work.DelegateHarnessReadinessRequest
 	if claudeFamily {
@@ -159,15 +166,16 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 		actionIntentID = running.ActionIntentIDs[n-1]
 	}
 	runInput, err = PrepareGovernedHarnessLaunch(GovernedHarnessLaunchInput{
-		HomePath:          in.HomePath,
-		Adapter:           in.Adapter,
-		ClaimedWork:       in.ClaimedWork,
-		RunningWork:       running,
-		RunInput:          runInput,
-		ActionIntentID:    actionIntentID,
-		ReadinessEvidence: postureEvidence,
-		ReadinessRequest:  postureReadinessRequest,
-		Now:               in.Now,
+		HomePath:               in.HomePath,
+		Adapter:                in.Adapter,
+		ClaimedWork:            in.ClaimedWork,
+		RunningWork:            running,
+		RunInput:               runInput,
+		ActionIntentID:         actionIntentID,
+		ReadinessEvidence:      postureEvidence,
+		ReadinessRequest:       postureReadinessRequest,
+		OperatorExplicitBypass: originalPermissionMode == "bypass",
+		Now:                    in.Now,
 	})
 	if err != nil {
 		return GovernedHarnessReservation{}, err
@@ -270,7 +278,11 @@ func PrepareGovernedHarnessLaunch(in GovernedHarnessLaunchInput) (harness.RunInp
 		PolicyDecisionID:  in.RunningWork.PolicyDecisionID,
 		AuthorityEvidence: authorities,
 	}
-	if ClaudeMutationPermissionMode(runInput.PermissionMode) {
+	// M5 2026-09-03: explicit --permission-mode bypass honors the operator's
+	// request across an unready readiness guard; the rail still binds the
+	// authorities that WERE attested, but does not re-gate launch on a
+	// re-checked Ready=true verdict the operator already chose to override.
+	if ClaudeMutationPermissionMode(runInput.PermissionMode) && !in.OperatorExplicitBypass {
 		runInput.StartGuard = NewGovernedClaudeStartGuard(
 			in.HomePath,
 			in.Adapter.Name(),
@@ -389,10 +401,10 @@ func ReportRevokedExecutionAttempt(store *work.Store, workID, executionAttemptID
 }
 
 // ResolveGovernedClaudePermissionMode resolves every non-plan Claude-family
-// posture. Plan is the fail-closed result. An omitted mode selects bypass; an
-// explicit mutation-capable mode is preserved only for claimed work whose
-// prospective running advance is policy-allowed, whose autonomy halt is clear,
-// and whose blocking authorities are currently attested.
+// posture. Plan is the fail-closed result when the operator omits --permission-mode;
+// an explicit "bypass" request is preserved across an unready readiness guard so
+// the rail does not silently down-grade to plan (M5 defect 2026-09-03).
+// Explicit "default" / "acceptEdits" still require current authority.
 func ResolveGovernedClaudePermissionMode(
 	homePath string,
 	store *work.Store,
@@ -404,7 +416,9 @@ func ResolveGovernedClaudePermissionMode(
 	now time.Time,
 ) (string, []work.DelegateHarnessReadinessEvidence, *work.DelegateHarnessReadinessRequest) {
 	const fallback = "plan"
-	resolvedMode := strings.TrimSpace(requestedMode)
+	trimmed := strings.TrimSpace(requestedMode)
+	explicitBypass := trimmed == "bypass"
+	resolvedMode := trimmed
 	if resolvedMode == "" {
 		resolvedMode = "bypass"
 	}
@@ -421,15 +435,31 @@ func ResolveGovernedClaudePermissionMode(
 	}
 	readinessGuard := work.DelegateHarnessReadiness
 	if readinessGuard == nil {
+		if explicitBypass {
+			return "bypass", nil, nil
+		}
 		return fallback, nil, nil
 	}
 	readinessRequest := GovernedClaudeReadinessRequestForRun(homePath, wenv, runInput, now)
 	readiness, err := readinessGuard(readinessRequest)
 	if err != nil || !readiness.Ready {
+		// M5 2026-09-03: an explicit --permission-mode bypass is preserved
+		// across an unready readiness guard ONLY when the guard still
+		// published the four authority revisions the runattempt posture
+		// requires. Without those revisions, silently down-grading to plan
+		// remains the safe default and preserves TestWorkAdvanceExecuteUnreadyExplicitMutationModesResolveToPlan.
+		if explicitBypass {
+			if selected, _ := selectGovernedClaudeReadinessEvidence(readinessRequest.Harness, readiness.Evidence); selected != nil {
+				return "bypass", selected, &readinessRequest
+			}
+		}
 		return fallback, nil, nil
 	}
 	selected, ok := selectGovernedClaudeReadinessEvidence(readinessRequest.Harness, readiness.Evidence)
 	if !ok {
+		if explicitBypass {
+			return "bypass", nil, nil
+		}
 		return fallback, nil, nil
 	}
 	return resolvedMode, selected, &readinessRequest
