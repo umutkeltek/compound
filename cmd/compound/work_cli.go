@@ -134,8 +134,8 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work run-attempt-link --attempt ratt_20260823T120500Z_real --predecessor ratt_20260823T120000Z_abandoned",
 	},
 	"continue": {
-		Usage:   "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--json]",
-		Example: "compound work continue --actor codex --until-wait --json",
+		Usage:   "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--max-execute-steps N] [--json]",
+		Example: "compound work continue --actor codex --until-wait --max-execute-steps 1 --json",
 	},
 	"dispatch-plan": {
 		Usage:   "usage: compound work dispatch-plan [--actor A] [--capability-class classify-extract|draft-prose] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json] [--dry-run]",
@@ -944,11 +944,11 @@ func cmdWork(args []string) {
 			fmt.Printf("linked %s -> %s (work=%s, status=%s)\n", ra.ID, ra.PredecessorID, ra.WorkID, ra.Status)
 		}
 	case "continue":
-		usage := "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--json]"
+		usage := "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--max-execute-steps N] [--json]"
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
 			case "--json", "--until-wait":
-			case "--actor", "--expect-work", "--outcome", "--move-type", "--summary", "--max-steps":
+			case "--actor", "--expect-work", "--outcome", "--move-type", "--summary", "--max-steps", "--max-execute-steps":
 				if i+1 >= len(rest) {
 					fmt.Fprintln(os.Stderr, usage)
 					os.Exit(2)
@@ -978,6 +978,14 @@ func cmdWork(args []string) {
 		if maxSteps > 0 && !has("--until-wait") {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
+		}
+		if raw := strings.TrimSpace(flag("--max-execute-steps")); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n <= 0 {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			continueOpts.MaxExecuteSteps = n
 		}
 		if has("--until-wait") {
 			result, err := store.ContinueRun(time.Now(), work.ContinueRunOptions{ContinueOptions: continueOpts, MaxSteps: maxSteps})
