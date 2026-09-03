@@ -84,7 +84,7 @@
     "verified_source_sha": "8e60a073cf3baff0f0b3c48555521a022bca50f3",
     "exit_code": 0,
     "duration_ms": 33320,
-    "transcript_ref": "/Users/example/.compound/run_attempts/ratt_20260831T181022Z_b79242bd.transcript",
+    "transcript_ref": "<home>/run_attempts/ratt_20260831T181022Z_b79242bd.transcript",
     "transcript_sha256": "390b219275a1b9bc7c1f717a3723fb341be94274adba4f6b5bba1b8c2aa502c4"
   },
   "review": {
