@@ -206,6 +206,45 @@ func TryWithWorkAdmissionLock(homePath, workID string, fn func() error) (bool, e
 	return withWorkAdmissionLockMode(homePath, workID, true, fn)
 }
 
+// EnsureWorkAdmissionAuthorityRoot materializes the home's work authority
+// directory (<home>/work) when absent so a fresh home can still acquire the
+// work admission lock. The lock itself never materializes authority
+// (deliberate design: the authority inode must already exist for the
+// identity check the lock relies on). Idempotent and safe to call
+// concurrently with an existing home; an already-materialized authority
+// directory that fails safety validation produces an error so a planted
+// insecure path cannot silently escape materialization.
+//
+// Mode 0700 mirrors the durable home invariant that the admission core
+// revalidates (validateWorkAdmissionHomeInfo); materialization here only
+// creates the leaf, the lock still pins and validates it before holding it.
+func EnsureWorkAdmissionAuthorityRoot(homePath string) error {
+	if strings.TrimSpace(homePath) == "" {
+		return errors.New("work admission: home path required for authority root")
+	}
+	canonicalHome, err := canonicalWorkAdmissionHome(homePath)
+	if err != nil {
+		return err
+	}
+	target := filepath.Join(canonicalHome, workAdmissionAuthorityRootRelative)
+	info, err := os.Lstat(target)
+	if err == nil {
+		if err := validateWorkAdmissionHomeInfo(info); err != nil {
+			return fmt.Errorf("work admission: authority root %s unsafe: %w", target, err)
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("work admission: stat authority root %s: %w", target, err)
+	}
+	if err := os.Mkdir(target, 0o700); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("work admission: create authority root %s: %w", target, err)
+		}
+	}
+	return nil
+}
+
 // WithWorkAdmissionGuard serializes one work ID and supplies an unforgeable
 // guard that is valid only for the duration of fn.
 func WithWorkAdmissionGuard(homePath, workID string, fn func(*WorkAdmissionGuard) error) error {
