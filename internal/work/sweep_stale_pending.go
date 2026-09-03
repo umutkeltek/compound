@@ -292,12 +292,18 @@ func (s *Store) captureSweepStalePendingLease(workID string) (sweepStalePendingL
 }
 
 func (s *Store) loadSweepStalePending(workID string) (sweepStalePending, bool, error) {
-	body, err := home.ReadRootedRegularFile(s.home, s.sweepStalePendingPath(workID), "sweep-stale pending")
-	if errors.Is(err, os.ErrNotExist) {
-		return sweepStalePending{}, false, nil
-	}
+	// Read through the physical removal chain, not just the canonical name:
+	// an interrupted clear leaves the frozen frame quarantined under a
+	// .remove-pending residue with the canonical name gone. That residue is
+	// still the live transaction authority for a rerun (and for the mutation
+	// fence below); a plain canonical read would mistake the quarantined
+	// frame for a completed transaction and orphan the residue.
+	body, present, err := home.ReadRootedRegularFileRemovalChain(s.home, s.sweepStalePendingPath(workID), "sweep-stale pending")
 	if err != nil {
 		return sweepStalePending{}, false, err
+	}
+	if !present {
+		return sweepStalePending{}, false, nil
 	}
 	var pending sweepStalePending
 	decoder := json.NewDecoder(bytes.NewReader(body))
