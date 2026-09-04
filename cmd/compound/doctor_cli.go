@@ -74,6 +74,13 @@ type doctorReport struct {
 	PlacementMode      string       `json:"placement_guard_mode"`
 	PlacementNote      string       `json:"placement_note,omitempty"`
 
+	// UnattendedExecute — one row per lane the route plan names for
+	// work.continue.unattended (R3A slice 2 deliverable 6). Each row
+	// carries the route gate role, capacity reading + age, and grant
+	// presence; the matching plain-text section is rendered by
+	// printUnattendedExecute.
+	UnattendedExecute []doctorUnattendedExecuteLane `json:"unattended_execute,omitempty"`
+
 	// Placement source freshness — for each imported source view, whether the bytes
 	// Compound ENFORCES still match the bytes that view renders today.
 	PlacementSources []doctorPlacementSource `json:"placement_sources,omitempty"`
@@ -257,6 +264,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	rep := doctorReport{Home: homePath}
+	rep.UnattendedExecute = buildDoctorUnattendedExecuteRows(homePath, time.Now().UTC())
 
 	// 1) Hooks — per-harness installed/ok/drift/absent via the install CHECK path (writes nothing).
 	base := strings.TrimSpace(flagValue(args, "--base"))
@@ -628,6 +636,7 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	contract.RenderBindingFreshness(stdout, rep.BindingFreshness, rep.BindingFreshnessNote)
 	printPermissionPosture(stdout, rep)
 	printSurfacing(stdout, rep)
+	printUnattendedExecute(stdout, rep.UnattendedExecute)
 }
 
 // doctorPlacementSource is one imported placement source view and whether the bytes
