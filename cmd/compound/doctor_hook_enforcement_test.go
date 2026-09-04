@@ -68,13 +68,19 @@ func writeHookConfigForPosture(t *testing.T, configPath, harness, binaryPath str
 
 func buildRealCompound(t *testing.T) string {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), "compound")
-	cmd := exec.Command("go", "build", "-o", out, ".")
-	cmd.Dir = "."
-	if combined, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build compound: %v\n%s", err, combined)
+	// Only the executable is shared. Every probe still owns its mutable
+	// config, nonce, captured response and runtime home.
+	return compoundTestBinary(t)
+}
+
+func TestHookEnforcementBinaryReuse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the compound binary: skipped in -short mode")
 	}
-	return out
+	first := buildRealCompound(t)
+	if first != compoundTestBinary(t) || first != buildRealCompound(t) {
+		t.Fatal("hook probes must reuse the suite-owned immutable executable")
+	}
 }
 
 func TestHookEnforcementBindsEachConfiguredPostureForSharedBinary(t *testing.T) {
