@@ -83,6 +83,14 @@ var (
 	// classes are declarative. EMPTY is legal and means oneshot, so every envelope written
 	// before this field keeps validating and nothing retroactively becomes gated.
 	PlanClasses = []string{"oneshot", "plan_doc", "phased"}
+	// ProposalKinds classifies what KIND of system-originated proposal a WorkEnvelope carries.
+	// It closes the EVOLVE-BLOCK omission seam: empty is NO LONGER "ordinary" — it means
+	// "classification unknown", and a system-originated admission with an unknown
+	// classification is denied (recorded), not silently exempted. ordinary work is the
+	// explicit declaration; harness_edit is the explicit declaration of a proposed edit at
+	// a named editable surface. The discrimination is stamped by the trusted producer
+	// (internal/director.director.go), not derived from TargetSurface being empty.
+	ProposalKinds = []string{ProposalKindOrdinary, ProposalKindHarnessEdit}
 )
 
 // Route-deviation admission grades mirror attention.RiskGrade{Gate,Judge,Tidy}. envelope carries a
@@ -92,6 +100,10 @@ const (
 	RouteDeviationGate  = "gate"
 	RouteDeviationJudge = "judge"
 	RouteDeviationTidy  = "tidy"
+	// ProposalKind values. EMPTY means "classification unknown" and is refused at the
+	// EVOLVE-BLOCK guard for autonomous admissions — see WorkEnvelope.ProposalKind.
+	ProposalKindOrdinary    = "ordinary"
+	ProposalKindHarnessEdit = "harness_edit"
 )
 
 // ContextPack retrieval posture uses the same bounded outcome and error
@@ -829,6 +841,12 @@ type WorkEnvelope struct {
 	// TargetSurface is admitted only while that surface is actively whitelisted in the
 	// policy-owned editable-surfaces registry (see internal/policy/editable_surfaces.go).
 	TargetSurface string `json:"target_surface,omitempty"`
+	// ProposalKind classifies what KIND of system-originated proposal this work carries.
+	// EMPTY is reserved for unknown and is REFUSED at the EVOLVE-BLOCK guard for autonomous
+	// admissions; ordinary work and harness_edit work are explicit declarations the trusted
+	// producer stamps (internal/director). The discrimination closes the omission seam:
+	// autonomous proposal without a ProposalKind is denied as unclassified, not bypassed.
+	ProposalKind string `json:"proposal_kind,omitempty"`
 	// ExpectedBaseSHA is the legacy, incomplete pre-contract field. It remains
 	// readable so existing envelopes do not become corrupt, but new admissions
 	// must use GitDelivery and completed commit-bearing work fails closed without it.
@@ -844,9 +862,6 @@ type WorkEnvelope struct {
 	// ActionIntentIDs holds ActionIntent ids (act_*), NOT run identifiers. The wire name
 	// `run_ids` is a LEGACY MISNOMER retained deliberately: the canonical work hash is
 	// sha256(json.Marshal(WorkEnvelope)) (see internal/work.workEnvelopeSHA256), and that hash is
-	// persisted in lifecycle events, leases, and terminal proof evidence. Renaming the wire key
-	// changes the marshaled bytes and therefore invalidates every stored work_sha256 -- measured:
-	// 120/121 real envelopes match their stored event hash today, 0/121 under a renamed key, and
 	// internal/routeevidence/autonomy/proof.go hard-fails on the mismatch. The key moves to
 	// `action_intent_ids` only at the compound.work.v0.2 schema bump, where new envelopes carry the
 	// new shape and v0.1 envelopes keep theirs, so continuity is preserved per-version rather than
@@ -990,6 +1005,11 @@ func (e *WorkEnvelope) Validate() error {
 	v.enum("proof_medium", e.ProofMedium, ProofMedia, false)
 	// Optional: empty is legal and means oneshot (see PlanClasses / PlanClass).
 	v.enum("plan_class", e.PlanClass, PlanClasses, false)
+	// Optional: empty is reserved for "unknown" and is REFUSED at the EVOLVE-BLOCK guard
+	// for autonomous admissions (see internal/work.editableSurfaceGuard). An unrecognized
+	// non-empty value is a malformed envelope and is refused here so producers cannot
+	// smuggle arbitrary strings into the discriminated field.
+	v.enum("proposal_kind", e.ProposalKind, ProposalKinds, false)
 	v.req("owner", e.Owner)
 	v.req("success_predicate", e.SuccessPredicate)
 	if base := strings.TrimSpace(e.ExpectedBaseSHA); base != "" && !validFullGitObjectID(base) {

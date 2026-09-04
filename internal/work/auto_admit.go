@@ -385,33 +385,75 @@ func (s *Store) recordAutonomyHalt(w envelope.WorkEnvelope, actor, to, reason st
 		Attached: []string{ai.ID, pd.ID},
 	})
 }
-
 // editableSurfaceGuard is the editable-surfaces (EVOLVE-BLOCK) check at the admission seam.
-// It denies a system-originated (director-proposed, non-operator) admission that declares a
-// target_surface when that surface is not ACTIVELY whitelisted in the policy-owned
-// editable-surfaces registry, and records a deny PolicyDecision. It is a no-op for operator
-// admits, non-proposed work, and — critically — for any work WITHOUT a target_surface, so
-// ordinary proposals are unaffected. This registry only constrains explicit harness-edit
-// proposals.
+// It denies a system-originated (director-proposed, non-operator) admission whose
+// ProposalKind classification makes it a harness-edit proposal, or whose classification
+// is empty/unknown (no longer silently exempt as ordinary). The discrimination is
+// stamped by the trusted producer (internal/director.proposalKindFor) onto WorkEnvelope.
+// ProposalKind; missing/unknown classification cannot grant the ordinary-work exemption.
+// The registry check still applies for ordinary proposals that declare a TargetSurface
+// for any other reason. Operator admits and non-proposed work remain no-ops.
+//
+// Decision table (after the non-autonomous early return):
+//
+//	ProposalKind        TargetSurface   Result
+//	empty/unknown       any             recorded deny ("unclassified autonomous proposal")
+//	harness_edit        empty/whitespace recorded deny ("harness_edit missing target")
+//	harness_edit        whitelisted     pass
+//	harness_edit        not whitelisted recorded deny (existing whitelist check)
+//	ordinary            empty           pass (the legitimate ordinary-work path)
+//	ordinary            nonempty        existing whitelist check (pass or deny)
 func (s *Store) editableSurfaceGuard(w envelope.WorkEnvelope, to, actor string, now time.Time) error {
 	if !isAutonomousAdmission(w, to, actor) {
 		return nil
 	}
+	kind := strings.TrimSpace(w.ProposalKind)
 	surface := strings.TrimSpace(w.TargetSurface)
-	if surface == "" {
-		return nil
+	switch kind {
+	case "":
+		if err := s.recordEditableSurfaceDeny(w, actor, to, "unclassified autonomous proposal: ProposalKind required (ordinary|harness_edit)", now); err != nil {
+			return err
+		}
+		return fmt.Errorf("editable surface denied: unclassified autonomous proposal (ProposalKind empty)")
+	case envelope.ProposalKindHarnessEdit:
+		if surface == "" {
+			if err := s.recordEditableSurfaceDeny(w, actor, to, "harness_edit proposal missing target_surface", now); err != nil {
+				return err
+			}
+			return fmt.Errorf("editable surface denied: harness_edit missing target_surface")
+		}
+		allowed, reason, err := policy.EditableSurfaceAllowed(s.home, surface)
+		if err != nil {
+			return err
+		}
+		if allowed {
+			return nil
+		}
+		if err := s.recordEditableSurfaceDeny(w, actor, to, reason, now); err != nil {
+			return err
+		}
+		return fmt.Errorf("editable surface denied (%s): %s", surface, reason)
+	case envelope.ProposalKindOrdinary:
+		if surface == "" {
+			return nil
+		}
+		allowed, reason, err := policy.EditableSurfaceAllowed(s.home, surface)
+		if err != nil {
+			return err
+		}
+		if allowed {
+			return nil
+		}
+		if err := s.recordEditableSurfaceDeny(w, actor, to, reason, now); err != nil {
+			return err
+		}
+		return fmt.Errorf("editable surface denied (%s): %s", surface, reason)
+	default:
+		// envelope.WorkEnvelope.Validate already refuses unrecognized ProposalKind values
+		// before persistence, so reaching this branch requires a producer that bypassed
+		// Validate. Fail closed.
+		return fmt.Errorf("editable surface denied: unknown ProposalKind %q", kind)
 	}
-	allowed, reason, err := policy.EditableSurfaceAllowed(s.home, surface)
-	if err != nil {
-		return err
-	}
-	if allowed {
-		return nil
-	}
-	if err := s.recordEditableSurfaceDeny(w, actor, to, reason, now); err != nil {
-		return err
-	}
-	return fmt.Errorf("editable surface denied (%s): %s", surface, reason)
 }
 
 // recordEditableSurfaceDeny writes the ActionIntent and a deny PolicyDecision for a

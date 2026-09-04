@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/policy"
 )
 
@@ -18,6 +19,7 @@ func makeSurfaceDirectorWork(t *testing.T, s *Store, surface, id string, now tim
 		Owner:            "compound-authority",
 		Actor:            "director",
 		TargetSurface:    surface,
+		ProposalKind:     envelope.ProposalKindHarnessEdit,
 		SuccessPredicate: "edit " + surface + " via " + id,
 		State:            "proposed",
 		EvidenceRefs:     []string{"proposed_by:director", "director_trigger:job_health:" + id, "route_plan:" + plan.ID},
@@ -33,8 +35,6 @@ func makeSurfaceDirectorWork(t *testing.T, s *Store, surface, id string, now tim
 }
 
 // TestEditableSurfaceGatesSystemProposal is the headline EVOLVE-BLOCK falsifier: a
-// system-originated (director-proposed) proposal that targets skill_descriptions is DENIED
-// when the registry is absent, ALLOWED once the surface is actively whitelisted, and DENIED
 // AGAIN once the surface is retired. It fails if the admission seam ignores the registry.
 func TestEditableSurfaceGatesSystemProposal(t *testing.T) {
 	t.Parallel()
@@ -148,5 +148,100 @@ func TestEditableSurfaceGuardsGenericAdvanceSeam(t *testing.T) {
 	}
 	if got, _ := s.Get(id); got.State != "proposed" {
 		t.Fatalf("denied advance must leave work proposed, got %q", got.State)
+	}
+}
+// makeUnclassifiedDirectorWork is a test seam: it bypasses BuildWork's natural
+// ProposalKind stamp by writing the envelope through Create with no ProposalKind
+// set, simulating a system producer that omits the classification. Used only by
+// the EVOLVE-BLOCK omission-seam falsifiers below; production code paths
+// (BuildWork, internal/director.proposalKindFor) always stamp ProposalKind.
+func makeUnclassifiedDirectorWork(t *testing.T, s *Store, targetSurface, id string, now time.Time) string {
+	t.Helper()
+	plan := ensureJobHealthAutonomyPlan(t, s)
+	w, err := s.Create(CreateInput{
+		WorkID:           id,
+		Owner:            "compound-authority",
+		Actor:            "director",
+		TargetSurface:    targetSurface,
+		SuccessPredicate: "bypass-classification via " + id,
+		State:            "proposed",
+		EvidenceRefs:     []string{"proposed_by:director", "director_trigger:job_health:" + id, "route_plan:" + plan.ID},
+		RouteDecisionID:  plan.ID,
+	}, now)
+	if err != nil {
+		t.Fatalf("create unclassified proposed work: %v", err)
+	}
+	return w.ID
+}
+
+// TestEVOLVEOmissionClosesUnknownClassification is the round-2 oracle falsifier
+// for the EVOLVE-BLOCK omission seam (oracle-prompt-scope-omission-02): a
+// system-originated director-proposed work WITHOUT a ProposalKind must be
+// denied at AdmitAuto AND at Advance — the empty classification cannot grant
+// the ordinary-work exemption. It is the seam's headline proof.
+func TestEVOLVEOmissionClosesUnknownClassification(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
+	id := makeUnclassifiedDirectorWork(t, s, "skill_descriptions", "work_omit_auto", fixedNow)
+
+	// AdmitAuto path.
+	res, err := s.AdmitAuto(id, eligible, fixedNow)
+	if err == nil || res.Admitted {
+		t.Fatalf("AdmitAuto must deny an unclassified autonomous proposal: err=%v res=%+v", err, res)
+	}
+	if !strings.Contains(err.Error(), "unclassified autonomous proposal") {
+		t.Fatalf("AdmitAuto denial must name the missing-classification cause, got %q", err.Error())
+	}
+	if got, _ := s.Get(id); got.State != "proposed" {
+		t.Fatalf("denied AdmitAuto must leave work proposed, got %q", got.State)
+	}
+
+	// Generic Advance path (defense in depth).
+	_, err = s.Advance(id, AdvanceInput{Actor: "auto-admit:director", To: "admitted"}, fixedNow.Add(1*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "unclassified autonomous proposal") {
+		t.Fatalf("Advance must deny an unclassified autonomous proposal with the same reason: %v", err)
+	}
+	if got, _ := s.Get(id); got.State != "proposed" {
+		t.Fatalf("denied Advance must leave work proposed, got %q", got.State)
+	}
+}
+
+// TestEVOLVEOmissionClosesHarnessEditMissingTarget is the second oracle
+// falsifier: a harness_edit-classified proposal that omits TargetSurface is
+// denied — the classification cannot paper over the missing target. The
+// decision table at editableSurfaceGuard is enforced.
+func TestEVOLVEOmissionClosesHarnessEditMissingTarget(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
+	// Surface ACTIVELY whitelisted so the harness_edit path would otherwise admit.
+	if err := policy.WriteEditableSurfaces(s.home, policy.EditableSurfaces{Entries: []policy.EditableSurface{
+		{Surface: "skill_descriptions", ProposalClass: "local_reversible", Status: policy.EditableSurfaceStatusActive},
+	}}); err != nil {
+		t.Fatalf("seed whitelist: %v", err)
+	}
+	// Producer stamps ProposalKind=harness_edit but the target is empty.
+	plan := ensureJobHealthAutonomyPlan(t, s)
+	id := "work_he_no_target"
+	_, err := s.Create(CreateInput{
+		WorkID:           id,
+		Owner:            "compound-authority",
+		Actor:            "director",
+		ProposalKind:     envelope.ProposalKindHarnessEdit,
+		SuccessPredicate: "edit via " + id,
+		State:            "proposed",
+		EvidenceRefs:     []string{"proposed_by:director", "director_trigger:job_health:" + id, "route_plan:" + plan.ID},
+		RouteDecisionID:  plan.ID,
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("create harness_edit-without-target work: %v", err)
+	}
+	res, err := s.AdmitAuto(id, eligible, fixedNow)
+	if err == nil || res.Admitted {
+		t.Fatalf("AdmitAuto must deny a harness_edit with missing target: err=%v res=%+v", err, res)
+	}
+	if !strings.Contains(err.Error(), "harness_edit missing target_surface") {
+		t.Fatalf("denial must name the missing-target cause, got %q", err.Error())
 	}
 }

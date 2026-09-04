@@ -305,13 +305,12 @@ func Propose(homePath string, opts Options) (Report, error) {
 			plan, err := store.CreatePlan(work.CreateInput{
 				WorkID:           proposal.WorkID,
 				Owner:            proposalOwner(cand),
-				Actor:            DirectorActor,
 				CanonicalSurface: cand.CanonicalSurface,
 				TargetSurface:    cand.TargetSurface,
+				ProposalKind:     proposalKindFor(cand.Kind),
 				SuccessPredicate: cand.SuccessPredicate,
 				DesiredOutcome:   cand.DesiredOutcome,
 				NonGoals:         nonGoalsFor(cand),
-				EvidenceRefs:     proposal.EvidenceRefs,
 				RouteDecisionID:  proposal.RoutePlan.ID,
 				State:            "proposed",
 				Risk:             "tier1",
@@ -415,6 +414,7 @@ func sameDirectorProposalWork(existing, expected envelope.WorkEnvelope) bool {
 		existing.Owner == expected.Owner &&
 		existing.CanonicalSurface == expected.CanonicalSurface &&
 		existing.TargetSurface == expected.TargetSurface &&
+		existing.ProposalKind == expected.ProposalKind &&
 		existing.State == expected.State &&
 		existing.DesiredOutcome == expected.DesiredOutcome &&
 		existing.SuccessPredicate == expected.SuccessPredicate &&
@@ -693,6 +693,7 @@ func buildProposal(homePath string, store *work.Store, cand candidate, now time.
 		Actor:            DirectorActor,
 		CanonicalSurface: cand.CanonicalSurface,
 		TargetSurface:    cand.TargetSurface,
+		ProposalKind:     proposalKindFor(cand.Kind),
 		SuccessPredicate: cand.SuccessPredicate,
 		DesiredOutcome:   cand.DesiredOutcome,
 		NonGoals:         nonGoalsFor(cand),
@@ -706,7 +707,7 @@ func buildProposal(homePath string, store *work.Store, cand candidate, now time.
 		return Proposal{}, &SkippedCandidate{Kind: cand.Kind, Title: cand.Title, Reason: "work_invalid: " + err.Error(), EvidenceRefs: refs}
 	}
 	if store == nil {
-		return Proposal{}, &SkippedCandidate{Kind: cand.Kind, Title: cand.Title, Reason: "work_store_unavailable", EvidenceRefs: refs}
+		return Proposal{}, &SkippedCandidate{Kind: cand.Kind, Title: cand.Title, Reason: "work_store_unavailable"}
 	}
 	proposal := Proposal{
 		ID:              idFor("dirprop_", triggerRef),
@@ -1575,6 +1576,19 @@ func triggerRefFor(cand candidate) string {
 	return "director_trigger:" + cand.Kind + ":" + digest12(key)
 }
 
+// proposalKindFor maps a candidate kind to the envelope ProposalKind the
+// EVOLVE-BLOCK guard uses. Harness-edit candidates are explicitly classified
+// as harness_edit; every other candidate kind is ordinary. This is the
+// trusted-producer stamp: a missing TargetSurface no longer silently grants
+// the ordinary exemption because the classification lives on a separate
+// field, not on the presence/absence of TargetSurface.
+func proposalKindFor(candKind string) string {
+	if candKind == "harness_edit" {
+		return envelope.ProposalKindHarnessEdit
+	}
+	return envelope.ProposalKindOrdinary
+}
+
 func compactRefs(refs []string) []string {
 	var out []string
 	for _, ref := range refs {
@@ -1594,7 +1608,6 @@ func containsRef(refs []string, want string) bool {
 	}
 	return false
 }
-
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {

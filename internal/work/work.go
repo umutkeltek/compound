@@ -371,6 +371,13 @@ type CreateInput struct {
 	NonGoals         []string
 	EvidenceRefs     []string
 	ContextPackID    string
+	// ProposalKind classifies what kind of system-originated proposal this work carries
+	// (see envelope.ProposalKinds). EMPTY is reserved for "unknown" and triggers an
+	// EVOLVE-BLOCK guard denial at admission for autonomous proposals; ordinary work
+	// and harness_edit work are explicit declarations the producer stamps. Plumbed
+	// verbatim onto the envelope; unrecognized non-empty values are refused at
+	// envelope.WorkEnvelope.Validate, BEFORE persistence.
+	ProposalKind     string
 	RouteDecisionID  string
 	GitDelivery      *envelope.GitDeliveryContract
 	// ExpectedBaseSHA is retained only so legacy callers fail with an explicit
@@ -434,6 +441,7 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		Owner:              in.Owner,
 		CanonicalSurface:   strings.TrimSpace(in.CanonicalSurface),
 		TargetSurface:      strings.TrimSpace(in.TargetSurface),
+		ProposalKind:       strings.TrimSpace(in.ProposalKind),
 		State:              orDefault(in.State, "ready"),
 		DesiredOutcome:     in.DesiredOutcome,
 		SuccessPredicate:   in.SuccessPredicate,

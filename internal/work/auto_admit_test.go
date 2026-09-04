@@ -27,6 +27,7 @@ func makeProposedDirectorWork(t *testing.T, s *Store, class, id string, now time
 		State:            "proposed",
 		EvidenceRefs:     []string{"proposed_by:director", "director_trigger:" + class + ":" + id, "route_plan:" + plan.ID},
 		RouteDecisionID:  plan.ID,
+		ProposalKind:     envelope.ProposalKindOrdinary,
 	}, now)
 	if err != nil {
 		t.Fatalf("create proposed %s work: %v", class, err)
@@ -703,6 +704,7 @@ func TestStaleCreatePlanCannotOverwriteAdmittedWork(t *testing.T) {
 		Actor:            "director",
 		SuccessPredicate: "stale create plan cannot overwrite admitted state",
 		State:            "proposed",
+		ProposalKind:     envelope.ProposalKindOrdinary,
 		RouteDecisionID:  routePlan.ID,
 		EvidenceRefs: []string{
 			"proposed_by:director",
@@ -714,7 +716,7 @@ func TestStaleCreatePlanCannotOverwriteAdmittedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.admitWork(stale, fixedNow, "created", nil); err != nil {
-		t.Fatal(err)
+		t.Fatalf("setup admission failed: err=%v", err)
 	}
 	if result, err := s.AdmitAuto(workID, eligible, fixedNow); err != nil || !result.Admitted {
 		t.Fatalf("setup admission failed: err=%v result=%+v", err, result)
@@ -742,6 +744,7 @@ func TestAutoAdmitSerializesConcurrentTerminalCreation(t *testing.T) {
 		Actor:            "operator-test",
 		SuccessPredicate: "terminal sample created during admission",
 		State:            "proposed",
+		ProposalKind:     envelope.ProposalKindOrdinary,
 		RouteDecisionID:  plan.ID,
 		EvidenceRefs: []string{
 			"proposed_by:director",
