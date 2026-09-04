@@ -25,11 +25,17 @@ import (
 	"compound/internal/work"
 )
 
-// Install binds the production route / capacity / launch hooks on the
-// internal/work seam. Call exactly once from cmd/compound's startup init().
+// Install binds the production route / capacity / preflight / launch hooks
+// on the internal/work seam. Call exactly once from cmd/compound's startup
+// init(). DEFECT 1 fix (AUT-P0-001 2026-09-04): the preflight hook MUST be
+// installed before any production caller invokes the seam so a recognized
+// refusal (adapter_missing / workspace_unresolvable / lane_unready) leaves
+// the envelope byte-identical to before, instead of stranding it in
+// `running` with a lease.
 func Install() {
 	work.SwapExecuteStageRoutePlan(RouteFromManifest)
 	work.SwapExecuteStageCapacity(CapacityFromSnapshot)
+	work.SwapExecuteStagePreflight(PreflightViaActuator)
 	work.SwapExecuteStageLaunch(LaunchViaActuator)
 }
 
@@ -116,6 +122,77 @@ var LaunchReadiness = func(req work.DelegateHarnessReadinessRequest) (work.Deleg
 		return work.DelegateHarnessReadinessResult{Ready: false, Details: []string{"delegate readiness guard not installed"}}, nil
 	}
 	return work.DelegateHarnessReadiness(req)
+}
+
+// PreflightViaActuator is the production preflight hook the seam calls
+// BEFORE Claim/Advance (DEFECT 1 fix, AUT-P0-001 2026-09-04). It resolves
+// every prerequisite that can fail before governed work enters running:
+// adapter enrollment, workspace resolvability, and lane readiness. The
+// returned error MUST carry a recognized skip prefix (adapter_missing:,
+// workspace_unresolvable:, lane_unready:) so the seam can surface the
+// refusal as a preflight refusal without any state mutation. The launch
+// wire (LaunchViaActuator) re-resolves the same values when it runs; the
+// preflight is read-only and runs against the envelope's pre-claim state.
+//
+// Wire contract: this function never mints a RunAttempt, never mutates the
+// envelope, never grants a lease, and never advances any state. A bare
+// error (infra failure inside the preflight itself) is also reported
+// without mutation — the seam fails closed.
+func PreflightViaActuator(store *work.Store, workID, lane string, now time.Time) error {
+	if store == nil {
+		return errors.New("execute stage preflight: nil work store")
+	}
+	workID = strings.TrimSpace(workID)
+	lane = strings.TrimSpace(lane)
+	if workID == "" || lane == "" {
+		return fmt.Errorf("execute stage preflight: workID=%q lane=%q; both required", workID, lane)
+	}
+	homePath := store.HomePath()
+
+	// 1. Resolve adapter enrollment. A missing adapter means the route
+	// plan names a lane the harness registry cannot drive — refuse with
+	// adapter_missing:<lane>.
+	_, ok := AdapterFor(homePath, lane)
+	if !ok {
+		return errors.New("adapter_missing:" + lane)
+	}
+
+	// 2. Resolve workspace from the envelope's git_delivery. The
+	// production launch wire reads the same field; doing the check here
+	// lets a missing-git_delivery envelope surface as a refusal BEFORE
+	// the seam advances the envelope to running.
+	wenv, err := store.Get(workID)
+	if err != nil {
+		return fmt.Errorf("workspace_unresolvable:load envelope %s: %w", workID, err)
+	}
+	workspace := ""
+	if wenv.GitDelivery != nil {
+		workspace = strings.TrimSpace(wenv.GitDelivery.TargetWorktreeRoot)
+	}
+	if workspace == "" {
+		return errors.New("workspace_unresolvable:envelope " + workID + " has no git_delivery.target_worktree_root")
+	}
+
+	// 3. Run the lane readiness check. The launch wire runs the same
+	// guard, but doing it here lets the seam refuse without ever
+	// claiming the envelope.
+	readinessReq := work.DelegateHarnessReadinessRequest{
+		HomePath: homePath, HarnessHome: homePath, WorkID: workID,
+		Workspace: workspace, Harness: lane, LaneID: lane,
+		Args: []string{}, RequestedModelID: lane, RequestedProviderRoute: lane, Now: now,
+	}
+	readiness, readinessErr := LaunchReadiness(readinessReq)
+	if readinessErr != nil {
+		return fmt.Errorf("execute stage preflight: readiness check errored: %w", readinessErr)
+	}
+	if !readiness.Ready {
+		detail := strings.Join(readiness.Details, "; ")
+		if detail == "" {
+			detail = "delegate readiness reported not-ready without details"
+		}
+		return errors.New("lane_unready:" + detail)
+	}
+	return nil
 }
 
 // LaunchViaActuator is the production launch hook. It runs the SAME machinery

@@ -212,11 +212,20 @@ func seedExecuteStageCapacityRow(t *testing.T, homePath string, usedPercent int,
 // wiredCapacityHooks installs the real capacity resolver with everything else
 // stubbed green (route from the seeded manifest, policy allow, recording
 // launch) so a test can observe exactly where the capacity gate lands.
+// AUT-P0-001 2026-09-04: the preflight added by DEFECT 1 calls the readiness
+// guard. Capacity tests only exercise the capacity gate, so the readiness
+// guard is installed permissive here to keep the preflight from refusing
+// on a missing delegation guard.
 func wiredCapacityHooks(t *testing.T, homePath string) *bool {
 	t.Helper()
 	restoreExecuteStageHooks(t)
 	restoreCapacity := work.SwapExecuteStageCapacity(CapacityFromSnapshot)
 	t.Cleanup(restoreCapacity)
+	prevReadiness := LaunchReadiness
+	LaunchReadiness = func(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		return work.DelegateHarnessReadinessResult{Ready: true}, nil
+	}
+	t.Cleanup(func() { LaunchReadiness = prevReadiness })
 	launched := new(bool)
 	restoreLaunch := work.SwapExecuteStageLaunch(func(_ *work.Store, _, lane, _harness, _ string, _ time.Time) (string, error) {
 		*launched = true
@@ -242,7 +251,10 @@ func TestContinueCapacityHookPassesFreshSnapshotAt30(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedExecuteStageReadyWork(t, store, "work_cap_fresh")
+	// AUT-P0-001 2026-09-04: preflight (DEFECT 1 fix) requires
+	// git_delivery on the envelope; capacity tests exercise the capacity
+	// gate only, so they seed an envelope with delivery attached.
+	seedExecuteStageReadyWorkWithDelivery(t, store, "work_cap_fresh", homePath)
 	launched := wiredCapacityHooks(t, homePath)
 
 	used, fresh, err := CapacityFromSnapshot(homePath, "claude_minimax", now)

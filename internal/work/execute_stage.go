@@ -150,6 +150,33 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 		return result, nil
 	}
 
+	// DEFECT 1 fix (AUT-P0-001 2026-09-04): preflight MUST run BEFORE the
+	// envelope is claimed or advanced. Production wires this hook to
+	// executewire.PreflightViaActuator, which resolves adapter enrollment,
+	// workspace resolvability, and lane readiness — every prerequisite that
+	// can fail before any state mutation. A recognized refusal leaves the
+	// envelope, its lease, the event log and the RunAttempt set byte-
+	// identical to before, so the next Continue tick can retry safely.
+	if preflightErr := executeStagePreflightFn(s, ready, lane, now); preflightErr != nil {
+		skipReason, refuseDetail := parseLaunchRefusal(preflightErr)
+		if skipReason != "" {
+			result.Skipped = skipReason
+			result.Human = fmt.Sprintf("did nothing: %s", refuseDetail)
+			result.Action = "none"
+			result.RunAttemptIDs = nil
+			return result, nil
+		}
+		// Bare preflight error (infra failure inside the preflight itself):
+		// also fail closed without mutation. The seam never claims or
+		// advances the envelope under an unrecognized preflight error —
+		// that would be exactly the bug the fix prevents.
+		result.Skipped = "preflight_failed"
+		result.Human = fmt.Sprintf("did nothing: preflight failed: %v", preflightErr)
+		result.Action = "none"
+		result.RunAttemptIDs = nil
+		return result, nil
+	}
+
 	// All gates pass — claim + advance to running + launch + advance to
 	// verifying, reusing the existing lifecycle seams (`Claim`, `Advance`,
 	// `Close`) rather than forking them. The launch stops at verifying;
@@ -425,6 +452,17 @@ func defaultExecuteStagePolicyEvalFn(ai policyActionIntentShim, cfg policyConfig
 // sees every execute attempt as `skipped=launch_failed`.
 func defaultExecuteStageLaunch(_ *Store, workID, lane, harness, prompt string, now time.Time) (string, error) {
 	return "", errors.New("execute stage launch not wired; production must bind launchStub to the actuator seam")
+}
+
+// defaultExecuteStagePreflight is the no-op preflight default. Production
+// must wire this to executewire.PreflightViaActuator (which resolves adapter,
+// workspace and lane readiness) so a recognized refusal can leave the
+// envelope untouched. The default returns nil so test fixtures that only
+// override the launchStub keep flowing through Claim → Advance → Launch
+// the way they always did; the explicit preflight override (DEFECT 1 test)
+// drives the recognized-refusal paths.
+func defaultExecuteStagePreflight(_ *Store, _ string, _ string, _ time.Time) error {
+	return nil
 }
 
 // parseLaunchRefusal inspects the error returned by launchStub and reports

@@ -57,6 +57,18 @@ type executePolicyEvalFn func(ai policyActionIntentShim, cfg policyConfigShim, n
 // failure paths. The returned RunAttemptID lands on ContinueResult.RunAttemptIDs.
 type executeLaunchFn func(store *Store, workID, lane, harness, prompt string, now time.Time) (string, error)
 
+// executePreflightFn runs BEFORE the seam claims or advances the envelope
+// (DEFECT 1 fix, AUT-P0-001 2026-09-04). It resolves every prerequisite
+// that can fail before any state mutation: adapter enrollment, workspace
+// resolvability, and lane readiness. The hook returns nil on success or
+// an error with a recognized skip prefix (lane_unready:, workspace_unresolvable:,
+// adapter_missing:) on refusal — the seam treats the refusal like a launch-stub
+// refusal but leaves the envelope, its lease, the event log and the RunAttempt
+// set byte-identical to before. Production wires executewire.PreflightViaActuator
+// via executewire.Install(); tests stub it (or rely on the default no-op) to
+// control refusal paths without going through the real adapter / readiness stack.
+type executePreflightFn func(store *Store, workID, lane string, now time.Time) error
+
 // Package-level hooks. Tests MUST save and restore via restoreAllExecuteHooks
 // (or the test helpers in continue_execute_test.go) to keep state isolated
 // between cases. The defaults below are wired to "no-op stub" so production
@@ -66,6 +78,7 @@ var (
 	executeStageCapacityFn   executeCapacityFn   = defaultExecuteStageCapacityFn
 	executeStagePolicyEvalFn executePolicyEvalFn = defaultExecuteStagePolicyEvalFn
 	launchStub               executeLaunchFn     = defaultExecuteStageLaunch
+	executeStagePreflightFn  executePreflightFn  = defaultExecuteStagePreflight
 )
 
 // Shim types for the policy-eval hook. The real policy package exposes
@@ -117,6 +130,16 @@ func SwapExecuteStageLaunch(fn executeLaunchFn) func() {
 	prev := launchStub
 	launchStub = fn
 	return func() { launchStub = prev }
+}
+
+// SwapExecuteStagePreflight installs fn as the seam's preflight resolver and
+// returns a restore function. cmd/compound/executewire binds the real
+// preflight (adapter / workspace / readiness) at init; tests stub the hook
+// to drive recognized refusal paths without spinning up a real adapter stack.
+func SwapExecuteStagePreflight(fn executePreflightFn) func() {
+	prev := executeStagePreflightFn
+	executeStagePreflightFn = fn
+	return func() { executeStagePreflightFn = prev }
 }
 
 type policyActionIntent struct {
@@ -379,6 +402,19 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			// Clear result.Action / result.Status so DispatchStep
 			// below owns the recorded outcome (its Action/Status
 			// overwrite result.Action / result.Status when it claims).
+			//
+			// AUT-P0-001 2026-09-04: preflight refusals are different.
+			// On a recognized preflight refusal (adapter_missing /
+			// workspace_unresolvable / lane_unready) the envelope MUST
+			// stay byte-identical — letting DispatchStep fall through
+			// would claim it via the existing claim path, violating
+			// the invariant. Short-circuit with a refused verdict so
+			// the envelope, lease, events and RunAttempt set are
+			// untouched; the next Continue tick re-runs preflight.
+			if isPreflightRefusalReason(stage.Skipped) {
+				result.Status = "refused"
+				return s.recordContinue(now, result)
+			}
 		}
 		if opts.DryRun && stage.Human != "" {
 			// Dry-run probe: every gate opened, the seam populated Human
@@ -486,6 +522,21 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 
 	result.NoAction = continueNoAction(report, expectWorkID)
 	return s.recordContinue(now, result)
+}
+
+// isPreflightRefusalReason reports whether a skip reason comes from the
+// execute-stage preflight (adapter_missing / workspace_unresolvable /
+// lane_unready) so Continue can short-circuit without falling through to
+// DispatchStep. AUT-P0-001 2026-09-04: on these refusals the envelope,
+// lease, events and RunAttempt set must stay byte-identical — a fall-
+// through would claim the envelope via the existing claim path.
+func isPreflightRefusalReason(reason string) bool {
+	switch strings.TrimSpace(reason) {
+	case "adapter_missing", "workspace_unresolvable", "lane_unready":
+		return true
+	default:
+		return false
+	}
 }
 
 // continueExecuteStageThreshold is the readiness predicate for invoking
