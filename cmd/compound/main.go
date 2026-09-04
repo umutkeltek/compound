@@ -1315,6 +1315,15 @@ func cmdHarness(args []string) {
 		}
 		return
 	}
+	if target == "readiness" {
+		// R3B 2026-09-04: read-only readiness face. Same evaluation as
+		// `work delegate --dry-run` (internal/readiness.EvaluateForHarness);
+		// the cmd face is arg parsing + stdout rendering only.
+		if code := runHarnessReadiness(args[1:], os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
+		}
+		return
+	}
 	if target == "run" {
 		cmdHarnessRun(args[1:])
 		return
