@@ -646,6 +646,168 @@ func (s *Store) validateContextPackContractRef(contextPackID, contractID string)
 
 // --- show / list ---
 
+// MintLaunchAuthority mints a fresh (ActionIntent, PolicyDecision) pair for
+// a single unattended launch and stamps it onto the running-reservation's
+// WorkEnvelope. DEFECT 3 fix (AUT-P0-003 2026-09-04): every harness launch
+// needs a persisted authority tuple bound to the WorkEnvelope generation
+// that approved it, so the chain on disk reads:
+//
+//	frozen WorkEnvelope generation
+//	-> persisted unattended ActionIntent
+//	-> persisted PolicyDecision
+//	-> those exact ids on the running reservation
+//	-> RunInput.ActionIntentID
+//	-> RunAttempt
+//	-> verifying transition comparing the SAME ids
+//
+// The launch wire (executewire.LaunchViaActuator) calls this method AFTER
+// readiness and BEFORE the adapter mints its RunAttempt. The returned
+// action-intent id becomes RunInput.ActionIntentID; the returned policy-
+// decision id is forwarded to FinalizeGovernedHarnessRun as
+// RunningPolicyID. The wenv's tail action/policy become the
+// ExpectedActionIntentID / ExpectedPolicyDecisionID the verifying
+// transition compares against; an attacker or a race that mutates the
+// wenv between Mint and Finalize surfaces as ErrExecutionReservationChanged.
+//
+// The pair is persisted via the event store and the wenv is rewritten
+// atomically under the lifecycle mutation lock; a crash between the
+// event-store write and the wenv rewrite leaves both halves on disk so
+// the next reconcile can re-pair them, instead of an unattached live
+// RunAttempt. Both halves pass envelope.Validate() so the close-time
+// authority gate (decideRunAttemptAuthorityFromLifecycle) can resolve
+// the chain without further synthesis.
+//
+// `actor` is the operator/agent under whose authority the launch is run
+// (the seam's per-tick actor). `lane` is the resolved executable lane.
+// `prompt` is the worker prompt the wire forwards; it lands in the
+// ActionIntent's Preview field verbatim so audit readers can see what
+// was actually launched.
+func (s *Store) MintLaunchAuthority(workID, actor, lane, prompt string, now time.Time) (actionIntentID, policyDecisionID string, err error) {
+	workID = strings.TrimSpace(workID)
+	actor = strings.TrimSpace(actor)
+	lane = strings.TrimSpace(lane)
+	if workID == "" {
+		return "", "", errors.New("MintLaunchAuthority: workID is required")
+	}
+	if actor == "" {
+		return "", "", errors.New("MintLaunchAuthority: actor is required")
+	}
+	if lane == "" {
+		return "", "", errors.New("MintLaunchAuthority: lane is required")
+	}
+	var minted envelope.WorkEnvelope
+	txErr := s.withLifecycleMutation(func() error {
+		w, loadErr := s.Get(workID)
+		if loadErr != nil {
+			return fmt.Errorf("MintLaunchAuthority: load work %s: %w", workID, loadErr)
+		}
+		if !strings.HasPrefix(w.State, "claimed") && w.State != "running" && w.State != "verifying" {
+			return fmt.Errorf("MintLaunchAuthority: work %s is %s; refuse to mint launch authority outside claimed/running/verifying", workID, w.State)
+		}
+		// Freeze the running-reservation identity in scope-captured locals so
+		// the AI's Scope.ProductID and the Authority.Owner reflect the
+		// generation the launch bound to.
+		createdAt := now.UTC().Format(time.RFC3339)
+		actionID := idFor("act_", "launch", workID, lane, actor, ts(now))
+		ai := envelope.ActionIntent{
+			Header: envelope.Header{
+				SchemaVersion: envelope.SVActionIntent,
+				ID:            actionID,
+				CreatedAt:     createdAt,
+				Producer:      envelope.Producer{Kind: "cli", Name: "compound", LaneID: lane},
+				IDs:           envelope.IDs{WorkID: workID},
+				Scope:         envelope.Scope{},
+				Authority:     envelope.Authority{SourceClass: "runtime", Owner: actor, Status: "current"},
+				Privacy:       stringOrDefault(w.Privacy, "private"),
+				Risk:          stringOrDefault(w.Risk, "tier1"),
+				EvidenceRefs:  nil,
+				Uncertainty:   envelope.Uncertainty{Level: "known"},
+			},
+			Actor:                  actor,
+			Capability:             executeUnattendedCapability,
+			Action:                 "execute_unattended",
+			Target:                 envelope.ActionTarget{Kind: "work", ID: workID, Path: filepath.Join(s.home, "work", "work", workID+".json")},
+			MutationClass:          "local_reversible",
+			Reversibility:          "easy",
+			BlastRadius:            "local",
+			Preview:                "execute work " + workID + " unattended on lane " + lane,
+			RollbackPlan:           "advance work back to ready if the launch produced no side effects",
+			ArgumentsHash:          "",
+			CapturesWorkInProgress: w.GitDelivery != nil,
+		}
+		if strings.TrimSpace(prompt) != "" {
+			ai.Preview = ai.Preview + " — prompt: " + truncateForPreview(prompt, 256)
+		}
+		if err := ai.Validate(); err != nil {
+			return fmt.Errorf("MintLaunchAuthority: ActionIntent %s invalid: %w", actionID, err)
+		}
+		policyID := idFor("pol_", "launch", actionID, actor, ts(now))
+		pd := envelope.PolicyDecision{
+			Header: envelope.Header{
+				SchemaVersion: envelope.SVPolicyDecision,
+				ID:            policyID,
+				CreatedAt:     createdAt,
+				Producer:      envelope.Producer{Kind: "cli", Name: "compound", LaneID: lane},
+				IDs:           envelope.IDs{WorkID: workID},
+				Scope:         envelope.Scope{},
+				Authority:     envelope.Authority{SourceClass: "runtime", Owner: actor, Status: "current"},
+				Privacy:       ai.Privacy,
+				Risk:          ai.Risk,
+				EvidenceRefs:  nil,
+				Uncertainty:   envelope.Uncertainty{Level: "known"},
+			},
+			ActionIntentID:  actionID,
+			Outcome:         "allow",
+			Reasons:         []string{"standing grant " + executeUnattendedGrantID + " covers the unattended launch"},
+			StandingGrantID: executeUnattendedGrantID,
+		}
+		if err := pd.Validate(); err != nil {
+			return fmt.Errorf("MintLaunchAuthority: PolicyDecision %s invalid: %w", policyID, err)
+		}
+		// Persist the (ai, pd) pair first: if the wenv rewrite fails, the
+		// next reconcile can re-stamp the wenv from the (ai, pd) on disk.
+		if err := s.writeEventJSON(actionID, &ai); err != nil {
+			return fmt.Errorf("MintLaunchAuthority: persist ActionIntent %s: %w", actionID, err)
+		}
+		if err := s.writeEventJSON(policyID, &pd); err != nil {
+			return fmt.Errorf("MintLaunchAuthority: persist PolicyDecision %s: %w", policyID, err)
+		}
+		// Stamp the new pair onto the running reservation BEFORE the
+		// adapter mint so the wenv carries the ids the verifying
+		// transition compares against. Order matters: this is a wenv
+		// mutation that must land before the wire calls RunInput so the
+		// close-time guard sees the SAME ids.
+		w.ActionIntentIDs = append(w.ActionIntentIDs, actionID)
+		w.PolicyDecisionID = policyID
+		if err := s.writeJSON(s.workPath(workID), &w); err != nil {
+			return fmt.Errorf("MintLaunchAuthority: rewrite work %s: %w", workID, err)
+		}
+		minted = w
+		actionIntentID = actionID
+		policyDecisionID = policyID
+		return nil
+	})
+	_ = minted // reserved for future terminalization-intent binding
+	if txErr != nil {
+		return "", "", txErr
+	}
+	return actionIntentID, policyDecisionID, nil
+}
+
+func stringOrDefault(v, def string) string {
+	if strings.TrimSpace(v) == "" {
+		return def
+	}
+	return v
+}
+
+func truncateForPreview(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
 func (s *Store) Get(workID string) (envelope.WorkEnvelope, error) {
 	var w envelope.WorkEnvelope
 	err := s.readJSON(s.workPath(workID), &w)

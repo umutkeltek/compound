@@ -271,6 +271,8 @@ func runWithSubprocess(
 	var reapMu sync.Mutex
 	reaped := false
 	var timedOut atomic.Bool
+	var cancelReason atomic.Value // empty, "timeout:exceeded", or "cancel:context_cancelled"
+	cancelReason.Store("")
 	if in.Timeout > 0 {
 		go func() {
 			t := time.NewTimer(in.Timeout)
@@ -283,6 +285,38 @@ func runWithSubprocess(
 					return // already exited and reaped; the pid is not ours
 				}
 				timedOut.Store(true)
+				cancelReason.Store("timeout:exceeded:" + in.Timeout.String())
+				killProcessTree(cmd)
+			case <-stopCh:
+			}
+		}()
+	}
+	// Honor caller-context cancellation the same way: a cancelled
+	// downstream ctx MUST kill the tree (process group), not just the
+	// direct child, so an orphaned grandchild holding the pipes open
+	// does not survive. Preflight deadline (the heartbeat's `timeout
+	// 600`) propagates as ctx cancellation from the seam; the runner
+	// translates that into the same tree-kill the timeout would have
+	// issued, and stamps `cancel:context_cancelled` as evidence on the
+	// RunAttempt so the audit answers "why did this die early?". This
+	// is what the unattended launch wire (DEFECT 4, AUT-P0-004)
+	// relies on — the wire no longer discards cancellation by passing
+	// context.Background() to adapter.Run.
+	if ctx != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				reapMu.Lock()
+				defer reapMu.Unlock()
+				if reaped {
+					return
+				}
+				timedOut.Store(true)
+				reason := "cancel:context_cancelled"
+				if cerr := ctx.Err(); cerr != nil {
+					reason = "cancel:context_cancelled:" + cerr.Error()
+				}
+				cancelReason.Store(reason)
 				killProcessTree(cmd)
 			case <-stopCh:
 			}
@@ -328,6 +362,20 @@ func runWithSubprocess(
 	status := runattempt.StatusSucceeded
 	if timedOut.Load() || exitCode != 0 || waitErr != nil {
 		status = runattempt.StatusFailed
+	}
+	// Persist timeout / cancellation evidence as proof_refs so the
+	// audit can distinguish a deadline kill from a context cancel from
+	// an ordinary non-zero exit. Best-effort: a SetProofRefs failure
+	// does not stop terminalization — the audit logs the reason in
+	// the catch below via the failure record path.
+	if reason, ok := cancelReason.Load().(string); ok && strings.TrimSpace(reason) != "" {
+		refs := append([]string(nil), in.ProofRefs...)
+		refs = append(refs, reason)
+		if _, err := store.SetProofRefs(ra.ID, refs); err != nil {
+			refs = append([]string(nil), in.ProofRefs...)
+			refs = append(refs, "set_proof_refs_error:"+err.Error())
+			_, _ = store.SetProofRefs(ra.ID, refs)
+		}
 	}
 	if _, err := store.SetTranscript(ra.ID, transcriptPath); err != nil {
 		// The run produced a transcript on disk but we could not pin it on

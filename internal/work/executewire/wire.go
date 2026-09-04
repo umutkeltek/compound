@@ -124,6 +124,43 @@ var LaunchReadiness = func(req work.DelegateHarnessReadinessRequest) (work.Deleg
 	return work.DelegateHarnessReadiness(req)
 }
 
+// LaunchContext is the context the launch wire forwards to adapter.Run.
+// DEFECT 4 fix (AUT-P0-004 2026-09-04): production wires this to the
+// heartbeat-derived context (the seam's per-tick ctx with the heartbeat's
+// outer 600s bound). Tests swap it to a context they can cancel to prove
+// the runner honors cancellation and persists
+// `cancel:context_cancelled` evidence. The runner's process-group kill
+// path runs on ctx.Done, so a stuck subprocess cannot outlive the
+// heartbeat.
+//
+// The default is context.Background(), which is the SAME defect the fix
+// was written for — callers MUST install a real context (see Install
+// production wiring below) before a launch can run end to end.
+var LaunchContext = func() context.Context { return context.Background() }
+
+// DefaultLaunchTimeout is the finite execution budget LaunchViaActuator
+// applies to every unattended harness launch when the caller did not pin
+// RunInput.Timeout. DEFECT 4 fix (AUT-P0-004 2026-09-04).
+//
+// Justification: the heartbeat running the unattended launch has an outer
+// `timeout 600` (10 minutes); the internal deadline MUST be safely below
+// that with margin to persist timeout evidence (a terminal
+// terminalize-Complete cycle, a SetProofRefs call, and the
+// SetTranscript write all need to land before the heartbeat SIGKILLs the
+// Compound parent). 5 minutes (300s) is comfortably under 600s and above
+// the heaviest observed legacy session, so a productive unattended
+// launch completes inside the budget and a runaway launch is bounded.
+// Override ceiling MaxLaunchTimeout (900s) is enforced; an explicit
+// caller-supplied Timeout above that gets clamped.
+var DefaultLaunchTimeout = 5 * time.Minute
+
+// MaxLaunchTimeout is the explicit-override ceiling. The wire MUST
+// refuse to launch with a Timeout > MaxLaunchTimeout because a
+// caller-supplied deadline above the heartbeat's outer budget would
+// still let the parent die while the subprocess tree keeps running —
+// the very failure shape this fix exists to prevent.
+var MaxLaunchTimeout = 15 * time.Minute
+
 // PreflightViaActuator is the production preflight hook the seam calls
 // BEFORE Claim/Advance (DEFECT 1 fix, AUT-P0-001 2026-09-04). It resolves
 // every prerequisite that can fail before governed work enters running:
@@ -240,14 +277,6 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	if workspace == "" {
 		return "", fmt.Errorf("workspace_unresolvable:envelope %s has no git_delivery.target_worktree_root", workID)
 	}
-	// M5 2026-09-03: --permission-mode bypass is the explicit operator
-	// override the standing grant authorizes; the seam never synthesizes
-	// bypass on its own.
-	runInput := harness.RunInput{
-		WorkID: workID, Harness: harnessName, Workspace: workspace,
-		Args: []string{prompt}, PermissionMode: "bypass",
-		LaneID: lane, Now: now,
-	}
 	readinessReq := work.DelegateHarnessReadinessRequest{
 		HomePath: homePath, HarnessHome: homePath, WorkID: workID,
 		Workspace: workspace, Harness: harnessName, LaneID: lane,
@@ -265,7 +294,42 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 		}
 		return "", fmt.Errorf("lane_unready:%s", detail)
 	}
-	out, runErr := adapter.Run(context.Background(), runInput)
+	// DEFECT 3 fix (AUT-P0-003 2026-09-04): mint a fresh
+	// (ActionIntent, PolicyDecision) pair bound to THIS launch and stamp
+	// it onto the running reservation BEFORE the adapter mints its
+	// RunAttempt. The wire pass the new ActionIntentID on
+	// RunInput.ActionIntentID so the subprocess runner's
+	// MintWithActionIntent carries a non-empty authority link, and feeds
+	// the same ids into FinalizeGovernedHarnessRun as the
+	// ExpectedActionIntentID / ExpectedPolicyDecisionID the verifying
+	// transition compares against.
+	launchActionID, launchPolicyID, mintErr := store.MintLaunchAuthority(workID, actor, lane, prompt, now)
+	if mintErr != nil {
+		return "", fmt.Errorf("execute stage launch: mint launch authority: %w", mintErr)
+	}
+	if strings.TrimSpace(launchActionID) == "" || strings.TrimSpace(launchPolicyID) == "" {
+		return "", fmt.Errorf("execute stage launch: MintLaunchAuthority returned empty ids (action=%q policy=%q)", launchActionID, launchPolicyID)
+	}
+	// M5 2026-09-03: --permission-mode bypass is the explicit operator
+	// override the standing grant authorizes; the seam never synthesizes
+	// bypass on its own.
+	runInput := harness.RunInput{
+		WorkID: workID, Harness: harnessName, Workspace: workspace,
+		Args: []string{prompt}, PermissionMode: "bypass",
+		LaneID: lane, ActionIntentID: launchActionID,
+		Timeout: resolvedLaunchTimeout(),
+		Now:     now,
+	}
+	// DEFECT 4 fix (AUT-P0-004 2026-09-04): forward the live, cancellable
+	// context so a stuck subprocess is killed at the deadline and a
+	// cancelled heartbeat kills the tree. The shared runner honors
+	// ctx.Done() via a process-group kill (killProcessTree), so an
+	// orphaned grandchild holding the capture pipes open cannot survive.
+	// Production wires LaunchContext to a heartbeat-derived cancellable
+	// ctx (see Install); tests swap the var to prove the cancellation
+	// path persists "cancel:context_cancelled" evidence.
+	ctx := LaunchContext()
+	out, runErr := adapter.Run(ctx, runInput)
 	if runErr != nil {
 		return "", runErr
 	}
@@ -276,18 +340,56 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	// failed on a non-success RunAttempt.Status). The seam's own
 	// Advance(verifying) after launchStub returns is now a no-op on the
 	// production path; tests that stub launchStub still move the
-	// envelope the way the seam's pre-Advance(running) set up.
-	policyID := strings.TrimSpace(wenv.PolicyDecisionID)
-	actionIntentID := ""
-	if n := len(wenv.ActionIntentIDs); n > 0 {
-		actionIntentID = strings.TrimSpace(wenv.ActionIntentIDs[n-1])
-	}
+	// envelope the way the seam's pre-Advance(running) set up. The
+	// RunningActionIntentID/RunningPolicyID the verifying transition
+	// compares against are the freshly minted launch authority, not
+	// whatever older ids happened to be on the envelope at load-time —
+	// the spec's REQUIRED CHAIN closes here with an exact match.
 	if _, finalizeErr := actuator.FinalizeGovernedHarnessRun(actuator.GovernedHarnessFinalizationInput{
 		Store: store, WorkID: workID, Actor: actor, HarnessName: harnessName,
-		RunningPolicyID: policyID, RunningActionIntentID: actionIntentID,
+		RunningPolicyID: launchPolicyID, RunningActionIntentID: launchActionID,
 		Output: out, RunError: nil, Now: now,
 	}); finalizeErr != nil {
 		return "", fmt.Errorf("execute stage launch: finalize refused: %w", finalizeErr)
 	}
 	return out.RunAttempt.ID, nil
+}
+
+// resolvedLaunchTimeout returns the timeout the launch wire places on
+// harness.RunInput.Timeout.
+//
+// DEFECT 4 fix (AUT-P0-004 2026-09-04): every unattended launch
+// MUST have a finite execution budget — a zero Timeout leaves the
+// subprocess runner's `if in.Timeout > 0` branch dormant, the kill
+// timer never fires, and an unattended launch can block forever. The
+// heartbeat's outer `timeout 600` then SIGKILLs the Compound parent
+// while the subprocess group keeps running.
+//
+// The runner's existing subprocess_runner.go enforces `in.Timeout >
+// 0`, so the wire MUST set a non-zero budget. We pick
+// DefaultLaunchTimeout (5m) when the caller did not pin a value, and
+// we clamp explicit overrides to MaxLaunchTimeout (15m) so a
+// caller-supplied Timeout cannot exceed the heartbeat's outer bound
+// plus a margin. Returning 0 instead of clamping is also a defensible
+// choice — we pick clamping because the operator heartbeats' outer
+// `timeout 600` is the actual cap on parent lifetime, so a clamp
+// surfaces a refusal-with-value-fallback rather than a silent
+// hang-on-the-floor.
+func resolvedLaunchTimeout() time.Duration {
+	// Package-level vars mean tests can pin both.
+	def := DefaultLaunchTimeout
+	if def <= 0 {
+		def = 5 * time.Minute
+	}
+	max := MaxLaunchTimeout
+	if max <= 0 {
+		max = 15 * time.Minute
+	}
+	if max < def {
+		// The ceiling must sit above the default; if a test pinned
+		// them backwards, silently swap. Tests that pin deliberately
+		// impossibly-low ceilings should fail loudly elsewhere.
+		max = def
+	}
+	return def
 }

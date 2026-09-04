@@ -845,3 +845,134 @@ func TestRunnerTimeoutSurvivesEarlyPipeClose(t *testing.T) {
 		t.Fatalf("status = %q, want failed", out.RunAttempt.Status)
 	}
 }
+
+// TestRunnerContextCancelKillsProcessGroup (DEFECT 4 RED -> GREEN):
+//
+// The shared subprocess runner's ctx-cancel goroutine watches ctx.Done()
+// and triggers a process-group kill — pinning the contract that the
+// unattended launch wire relies on when it forwards the heartbeat's
+// cancellable ctx (pre-fix the wire passed context.Background, so this
+// goroutine never had a deadline to honor; the heartbeat's outer
+// `timeout 600` would SIGKILL the parent with the subprocess tree
+// still alive, the very failure this fix prevents).
+//
+// The fixture is the canonical "descendant holds the pipes open" shape
+// from TestRunnerTimeoutKillsProcessGroup: a shell background sleep that
+// inherits the capture pipes, plus a foreground sleep. Cancelling
+// ctx while both are alive MUST kill the whole group, not just the
+// foreground child — the orphaned grandchild closing its pipes is what
+// capWG.Wait waits on.
+//
+// RED before fix: the runner ignored ctx for kill authority; cancel()
+// does nothing; the fixture lingers past 15s and trips the elapsed
+// bound.
+func TestRunnerContextCancelKillsProcessGroup(t *testing.T) {
+	home := t.TempDir()
+	store := runattempt.Open(home)
+	// Deliberately build without a context (the runner owns the
+	// process-group kill via its ctx goroutine, not via
+	// exec.CommandContext).
+	naiveBuild := func(_ context.Context, in RunInput) *exec.Cmd {
+		return exec.Command(in.Command, in.Args...)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	// Schedule the cancel BEFORE runWithSubprocess so the cancel goroutine
+	// can run concurrently with the runner — main blocks inside
+	// runWithSubprocess (cmd.Wait) and would otherwise never reach
+	// time.Sleep or cancel.
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	out, err := runWithSubprocess(ctx, store, "defect4-cancel", RunInput{
+		WorkID:    "work_defect4_ctx_cancel",
+		Harness:   "defect4-cancel",
+		Workspace: home,
+		// Background sleep inherits capture pipes; foreground sleep keeps
+		// the direct child alive. A process-group kill reaps BOTH; a
+		// direct-child-only kill leaves the grandchild holding the
+		// pipes open for the full sleep.
+		Command: "sh",
+		Args:    []string{"-c", "sleep 5 & sleep 5"},
+		// No Timeout: the ctx goroutine is the only authority.
+		Now: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC),
+	}, naiveBuild, defaultHeartbeatInterval)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("cancel must NOT surface as a Run-level error: %v", err)
+	}
+	if out.RunAttempt.Status != runattempt.StatusFailed {
+		t.Fatalf("status = %q, want failed (ctx cancel must terminalize the attempt)", out.RunAttempt.Status)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("ctx cancellation did not kill the tree: elapsed = %v (the orphaned grandchild held the pipes open)", elapsed)
+	}
+	// Cancellation evidence MUST be persisted on the RunAttempt's
+	// proof_refs — the audit answers "why did this die early?" with
+	// the real reason rather than a generic non-zero exit.
+	got, gerr := runattempt.Open(home).Get(out.RunAttempt.ID)
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	var hit bool
+	for _, ref := range got.ProofRefs {
+		if strings.HasPrefix(ref, "cancel:context_cancelled") {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		t.Fatalf("RunAttempt.ProofRefs %v must include cancel:context_cancelled evidence", got.ProofRefs)
+	}
+}
+
+// TestRunnerTimeoutPersistsEvidence (DEFECT 4 RED -> GREEN):
+//
+// The shared subprocess runner persists `timeout:exceeded:<duration>`
+// as a proof_ref on the RunAttempt when the deadline kills the tree,
+// so the audit answers "why did this die early?" with the real
+// reason rather than a generic non-zero exit.
+//
+// Pinned alongside TestRunnerTimeoutOwnedByRunner (which verifies the
+// kill happens): the proof_ref is the durable half of the same
+// contract.
+func TestRunnerTimeoutPersistsEvidence(t *testing.T) {
+	home := t.TempDir()
+	store := runattempt.Open(home)
+	naiveBuild := func(_ context.Context, in RunInput) *exec.Cmd {
+		return exec.Command(in.Command, in.Args...)
+	}
+	out, err := runWithSubprocess(context.Background(), store, "defect4-evidence", RunInput{
+		WorkID:    "work_defect4_timeout_evidence",
+		Harness:   "defect4-evidence",
+		Workspace: home,
+		Command:   "sleep",
+		Args:      []string{"30"},
+		Timeout:   200 * time.Millisecond,
+		Now:       time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC),
+	}, naiveBuild, defaultHeartbeatInterval)
+	if err != nil {
+		t.Fatalf("timeout must NOT surface as a Run-level error: %v", err)
+	}
+	if !out.TimedOut {
+		t.Fatal("out.TimedOut = false, want true")
+	}
+	if out.RunAttempt.Status != runattempt.StatusFailed {
+		t.Fatalf("status = %q, want failed", out.RunAttempt.Status)
+	}
+	got, gerr := runattempt.Open(home).Get(out.RunAttempt.ID)
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	var hit bool
+	for _, ref := range got.ProofRefs {
+		if strings.HasPrefix(ref, "timeout:exceeded:") {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		t.Fatalf("RunAttempt.ProofRefs %v must include timeout:exceeded evidence", got.ProofRefs)
+	}
+}
