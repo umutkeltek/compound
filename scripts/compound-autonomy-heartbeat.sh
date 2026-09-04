@@ -211,7 +211,7 @@ try:
     # `run_attempt_ids` only when it actually triggers, so absence
     # means DispatchStep handled the tick as before.
     steps = d.get("step_count")
-    # The run result mirrors the last step's execute verdict at the top level
+    # The run result mirrors the last execute verdict at the top level
     # (ContinueRunResult.Execute); older binaries only had it inside steps[].
     verdict = d.get("execute") or {}
     if not verdict:

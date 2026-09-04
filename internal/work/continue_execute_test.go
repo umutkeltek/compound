@@ -795,7 +795,7 @@ func TestContinueRunSurfacesLastExecuteVerdictAtTopLevel(t *testing.T) {
 	// The heartbeat reads the RUN result (--until-wait), not one step: the
 	// stage's verdict must be mirrored at the top level or the hourly log can
 	// never say why nothing executed.
-	res, err := s.ContinueRun(fixedNow.Add(time.Minute), ContinueRunOptions{ContinueOptions: ContinueOptions{Actor: "codex", UntilWait: true, MaxExecuteSteps: 1}, MaxSteps: 1})
+	res, err := s.ContinueRun(fixedNow.Add(time.Minute), ContinueRunOptions{ContinueOptions: ContinueOptions{Actor: "codex", MaxExecuteSteps: 1}, MaxSteps: 1})
 	if err != nil {
 		t.Fatalf("ContinueRun: %v", err)
 	}

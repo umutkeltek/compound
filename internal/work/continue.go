@@ -281,10 +281,10 @@ type ContinueRunResult struct {
 	// Execute mirrors the last step that ran the unattended execute stage so a
 	// reader of the run JSON (the heartbeat parser, a tired human) sees the
 	// stage's verdict at the top level instead of digging through steps[].
-	Execute *ExecuteVerdict `json:"execute,omitempty"`
-	NextAction      string           `json:"next_action,omitempty"`
-	Warnings        []string         `json:"warnings,omitempty"`
-	Integrity       []string         `json:"integrity,omitempty"`
+	Execute    *ExecuteVerdict `json:"execute,omitempty"`
+	NextAction string          `json:"next_action,omitempty"`
+	Warnings   []string        `json:"warnings,omitempty"`
+	Integrity  []string        `json:"integrity,omitempty"`
 }
 
 func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, error) {
