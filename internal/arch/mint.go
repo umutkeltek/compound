@@ -376,6 +376,11 @@ var mintHomes = map[string]MintHome{
 	// against one work_id, persisted under COMPOUND_HOME/run_attempts. It records who/what ran and
 	// when, but performs no gating, no promotion, and no terminal effect — the work package consumes
 	// RunAttemptIDs to build proof chains. It is evidence, not enforcement.
+	"organ:readiness": {
+		Class:    MintEvidence,
+		Purpose:  "one read-only evaluation of whether a Claude lane is ready to execute (hook binding fresh, instruction pack clean, context pack attached, permission posture attested), with the repair command per unmet item",
+		Consumer: "internal/actuator governed execute door (refuses an explicit mutation-capable launch on an unready lane), work delegate --dry-run, and the harness readiness operator face",
+	},
 	"organ:runattempt": {
 		Class:    MintEvidence,
 		Purpose:  "concrete record of one harness execution attempt against a work_id (who/what/when), persisted under COMPOUND_HOME/run_attempts for proof-chain linkage",

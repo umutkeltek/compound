@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"compound/internal/capgraph"
+	"compound/internal/contract"
 	"compound/internal/doctor"
 	"compound/internal/doctor/exitcode"
 	"compound/internal/envelope"
@@ -164,8 +165,10 @@ type doctorReport struct {
 	// the existing named counters — nothing the doctor checks changes,
 	// only how truthfully it reports and exits. JSON consumers can
 	// branch on len(Problems) or len(Warnings) without parsing prose.
-	Problems []string `json:"problems"`
-	Warnings []string `json:"warnings"`
+	Problems             []string                        `json:"problems"`
+	Warnings             []string                        `json:"warnings"`
+	BindingFreshness     contract.BindingFreshnessReport `json:"binding_freshness"` // R3B 2026-09-04: hook-manifest vs installed binary (compute+render in contract).
+	BindingFreshnessNote string                          `json:"binding_freshness_note,omitempty"`
 }
 
 // surfacingRow is one lane/harness × the communication surfaces it should see. Cell vocabulary
@@ -464,6 +467,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	// also counted as a problem (exit 1), because a harness running a
 	// different binary than the registry pinned is actionable, not advisory.
 	rep.HarnessVersionDrift = doctor.ComputeHarnessVersionDrift(harness.DefaultRegistry())
+	rep.BindingFreshness, rep.BindingFreshnessNote = contract.BuildBindingFreshnessReport(homePath, binary) // R3B 2026-09-04: hook-binding freshness (compute+render in contract).
 
 	// Doctor exit-code contract (packet work_3da5d3c76707): a doctor that
 	// finds a real, actionable problem exits 1, prints a final
@@ -621,6 +625,7 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	printProjectionFreshness(stdout, rep)
 	doctor.RenderBinaryStaleness(stdout, rep.BinaryStaleness)
 	doctor.RenderHarnessVersionDrift(stdout, rep.HarnessVersionDrift)
+	contract.RenderBindingFreshness(stdout, rep.BindingFreshness, rep.BindingFreshnessNote)
 	printPermissionPosture(stdout, rep)
 	printSurfacing(stdout, rep)
 }

@@ -1606,31 +1606,75 @@ func TestWorkAdvanceExecuteMissingOrStaleAuthorityKeepsClaudeInPlan(t *testing.T
 	}
 }
 
-// Explicit Claude modes do not bypass the governed rail. `default` can
-// restore an unattended permission prompt and `acceptEdits` can mutate files,
-// so both require the same current permission + blocking-hook authority as
-// bypass. When that authority is stale, the rail keeps the execution useful
-// but read-only by resolving the mode to plan.
-func TestWorkAdvanceExecuteUnreadyExplicitMutationModesResolveToPlan(t *testing.T) {
-	for _, requestedMode := range []string{"default", "acceptEdits", "bypass"} {
-		t.Run(requestedMode, func(t *testing.T) {
-			fixture := newGovernedClaudeExecutionFixture(t, "stale authority cannot launch an explicit mutation mode")
-			stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
-				return work.DelegateHarnessReadinessResult{
-					Ready:   false,
-					Details: []string{"permission_posture: managed settings differ from authority"},
-				}, nil
-			})
+// Omitted-flag Claude mode preserves the silent-plan fallback when readiness
+// is unmet. The rail keeps the execution useful but read-only by resolving
+// the implicit bypass to plan; this is the only case where silent
+// down-grading is allowed. Explicit mutation modes (`default`, `acceptEdits`,
+// `bypass`) are covered by TestWorkAdvanceExecuteExplicitBypassOnUnreadyLaneRefusesBeforeMint,
+// which pins the loud-refusal contract introduced for R3B 2026-09-04: an
+// operator who explicitly asks for a mutation-capable mode on an unready
+// lane must see the refusal in plain words, not a silent down-grade.
+//
+// (Previous name: TestWorkAdvanceExecuteUnreadyExplicitMutationModesResolveToPlan.
+// That name pinned the silent-plan fallback for EXPLICIT modes too; the
+// R3B packet called that the defect — silence hides the very failure the
+// operator asked us to prevent. Renamed and narrowed to the omitted-flag case.)
+func TestWorkAdvanceExecuteUnreadyOmittedFlagFallsBackToPlan(t *testing.T) {
+	fixture := newGovernedClaudeExecutionFixture(t, "stale authority keeps omitted-flag Claude read-only")
+	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		return work.DelegateHarnessReadinessResult{
+			Ready:   false,
+			Details: []string{"permission_posture: managed settings differ from authority"},
+		}, nil
+	})
 
-			fixture.run(t, requestedMode, "stay read-only while authority is stale")
-			argv := fixture.argv(t)
-			if !strings.Contains(argv, "--permission-mode plan") {
-				t.Fatalf("unready explicit %s argv = %q, want read-only plan", requestedMode, argv)
-			}
-			if strings.Contains(argv, "--dangerously-skip-permissions") || strings.Contains(argv, "--permission-mode "+requestedMode) {
-				t.Fatalf("unready explicit %s retained mutation/prompt posture: %q", requestedMode, argv)
-			}
-		})
+	fixture.run(t, "", "stay read-only while authority is stale")
+	argv := fixture.argv(t)
+	if !strings.Contains(argv, "--permission-mode plan") {
+		t.Fatalf("omitted-flag unready argv = %q, want read-only plan", argv)
+	}
+	if strings.Contains(argv, "--dangerously-skip-permissions") {
+		t.Fatalf("omitted-flag unready retained bypass posture: %q", argv)
+	}
+}
+
+// TestWorkAdvanceExecuteExplicitBypassOnUnreadyLaneRefusesBeforeMint pins
+// the R3B 2026-09-04 contract: when the operator explicitly passes
+// --permission-mode bypass and the lane is unready (readiness Ready=false
+// with NO authority evidence), the door must REFUSE BEFORE minting a
+// RunAttempt or advancing the envelope. The envelope stays "claimed", no
+// ratt file is written, stderr names `readiness_unmet` and at least one
+// `do this:` repair line. The silent-plan fallback is no longer permitted
+// for an explicit mutation request.
+func TestWorkAdvanceExecuteExplicitBypassOnUnreadyLaneRefusesBeforeMint(t *testing.T) {
+	fixture := newGovernedClaudeExecutionFixture(t, "explicit bypass on unready lane must refuse, not silently down-grade")
+	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		return work.DelegateHarnessReadinessResult{
+			Ready:   false,
+			Details: []string{"permission_posture: managed settings differ from authority"},
+		}, nil
+	})
+
+	cmd := fixture.command(t, "bypass", "explicit bypass on an unready lane must refuse")
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("explicit bypass on unready lane unexpectedly succeeded:\n%s", out)
+	}
+	if _, statErr := os.Stat(fixture.argvLog); !os.IsNotExist(statErr) {
+		t.Fatalf("explicit bypass on unready lane minted a RunAttempt (argv log exists at %s); refused before mint", fixture.argvLog)
+	}
+	final, err := fixture.store.Get(fixture.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "claimed" {
+		t.Fatalf("explicit bypass on unready lane advanced the envelope: state=%s want=claimed (attempts=%v)", final.State, final.RunAttemptIDs)
+	}
+	if !strings.Contains(string(out), "readiness_unmet") {
+		t.Fatalf("explicit bypass on unready lane did not name `readiness_unmet` in stderr:\n%s", out)
+	}
+	if !strings.Contains(string(out), "do this:") {
+		t.Fatalf("explicit bypass on unready lane did not render at least one `do this:` line:\n%s", out)
 	}
 }
 

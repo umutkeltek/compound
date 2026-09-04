@@ -102,6 +102,7 @@ var Classification = map[string]Class{
 	"promotedriver":   Leaf, // governed candidate-only promote actuator: single-flight frozen candidate/current-claim intent, per-operation CAS/idempotency/results, same-pass recovery, terminal-plan bijection, and strict cursor/pending finalization; registry and lane-belief mutation remain experimental preview-only; dry-run default, apply bound to a maintenance work id; enforcement leaf, owns no authority object
 	"release":         Leaf,
 	"routeev":         Leaf, // deterministic EV-card composer + calibration comparator + content-addressed card store under COMPOUND_HOME/observed/route-evcards; pure pricing evidence for route deviations (refuses to price missing inputs), owns no authority object and never gates/promotes (the deviation-staking gate lives in envelope.Validate, the calibration minting door in mem)
+	"readiness":       Leaf, // read-only harness readiness evaluation (hook binding, instruction pack, context pack, permission posture) shared by `work delegate --dry-run`, `harness readiness`, and the governed execute door; produces evidence, owns no authority object
 	"runattempt":      Leaf, // concrete harness-execution-attempt store under COMPOUND_HOME/run_attempts; persistence primitive consumed by work's RunAttemptIDs slot, not meaning authority or envelope spine
 	"reviewartifact":  Leaf,
 	"retrievalparity": Leaf, // evaluator organ: read-only traffic recorder/replayer over real retrieval paths; produces evidence reports, owns no object family

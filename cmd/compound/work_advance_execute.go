@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -213,6 +214,11 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		note = "harness execute: " + harnessName
 	}
 	executed, err := actuator.ExecuteGovernedHarnessAdvance(homePath, store, wenv, adapter, runInput, actor, target, note, existingRunAttempts, now)
+	var laneRefusal *actuator.LaneRefusal
+	if errors.As(err, &laneRefusal) && laneRefusal != nil { // R3B 2026-09-04: explicit --permission-mode on unready lane refused BEFORE mint.
+		laneRefusal.RenderTo(os.Stderr)
+		workAdvanceExecuteExit(1)
+	}
 	die(err)
 	w := executed.RunningWork
 	fmt.Printf("%s -> %s policy=%s\n", w.ID, w.State, w.PolicyDecisionID)

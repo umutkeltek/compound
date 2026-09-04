@@ -1315,6 +1315,12 @@ func cmdHarness(args []string) {
 		}
 		return
 	}
+	if target == "readiness" {
+		if code := runHarnessReadiness(args[1:], os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
+		}
+		return
+	}
 	if target == "run" {
 		cmdHarnessRun(args[1:])
 		return
