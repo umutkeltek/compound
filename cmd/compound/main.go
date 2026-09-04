@@ -324,7 +324,7 @@ func usage() {
 
 usage:
   compound version
-compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore; private-custody repair is explicit permission repair; archive-history requires --kind work|lease|review|comparison|create-plan|memory-candidate to archive (or --dry-run to preview) and accepts --path <rel>
+compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore; private-custody repair is explicit permission repair; archive-history requires --kind work|lease|review|comparison|create-plan|memory-candidate to archive (or --dry-run to preview) and accepts --path <rel> and --max-files <N>
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
@@ -514,13 +514,10 @@ func cmdEvent(args []string) {
 			return
 		}
 		fmt.Printf("# event trace authority\n\n")
-		fmt.Printf("- status: %s\n", report.Status)
-		fmt.Printf("- authority: %s\n", report.AuthorityRef)
-		fmt.Printf("- traces: %d\n", report.TraceCount)
+		fmt.Printf("- status: %s\n- authority: %s\n- traces: %d\n", report.Status, report.AuthorityRef, report.TraceCount)
 		if len(report.SourceAuthority) > 0 {
 			latest := report.SourceAuthority[len(report.SourceAuthority)-1]
-			fmt.Printf("- source_authority: %s\n", latest.ID)
-			fmt.Printf("- source: %s\n", latest.SourcePath)
+			fmt.Printf("- source_authority: %s\n- source: %s\n", latest.ID, latest.SourcePath)
 		}
 		for _, trace := range report.RecentTraces {
 			fmt.Printf("- trace: %s %s %s\n", trace.ID, trace.SourceKind, trace.Summary)
@@ -668,8 +665,7 @@ func cmdEvent(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println("# event import")
-	fmt.Printf("- status: %s\n", report.Status)
-	fmt.Printf("- stream: %s\n", report.Stream)
+	fmt.Printf("- status: %s\n- stream: %s\n", report.Status, report.Stream)
 	if report.AuthorityRef != "" {
 		fmt.Printf("- authority: %s\n", report.AuthorityRef)
 	}
@@ -784,10 +780,7 @@ func cmdKnowledge(args []string) {
 			return
 		}
 		fmt.Printf("# knowledge import %s\n", path)
-		fmt.Printf("- items: %d\n", report.Items)
-		fmt.Printf("- imported: %d\n", report.Imported)
-		fmt.Printf("- echoes: %d\n", report.Echoes)
-		fmt.Printf("- reused: %d\n", report.Reused)
+		fmt.Printf("- items: %d\n- imported: %d\n- echoes: %d\n- reused: %d\n", report.Items, report.Imported, report.Echoes, report.Reused)
 		for _, id := range report.EvidenceIDs {
 			fmt.Printf(" - evidence %s\n", id)
 		}
@@ -938,9 +931,7 @@ func cmdRoute(args []string) {
 			return
 		}
 		fmt.Println("# route evidence-authority")
-		fmt.Printf("- status: %s\n", report.Status)
-		fmt.Printf("- authority: %s\n", report.AuthorityRef)
-		fmt.Printf("- authority_path: %s\n", report.AuthorityPath)
+		fmt.Printf("- status: %s\n- authority: %s\n- authority_path: %s\n", report.Status, report.AuthorityRef, report.AuthorityPath)
 		fmt.Printf("- route_evidence_count: %d\n", report.RouteEvidenceCount)
 		fmt.Printf("- provider_ledger_evidence_count: %d\n", report.ProviderLedgerEvidenceCount)
 		fmt.Printf("- token_usage_rows: %d\n", report.TokenUsageRows)
@@ -975,9 +966,7 @@ func cmdRoute(args []string) {
 				return
 			}
 			fmt.Printf("# route capability-plan %s\n", plan.ID)
-			fmt.Printf("- status: %s\n", plan.Status)
-			fmt.Printf("- authority: %s\n", plan.AuthorityRef)
-			fmt.Printf("- authority_path: %s\n", plan.AuthorityPath)
+			fmt.Printf("- status: %s\n- authority: %s\n- authority_path: %s\n", plan.Status, plan.AuthorityRef, plan.AuthorityPath)
 			if plan.SourceAuthorityID != "" {
 				fmt.Printf("- source_authority: %s\n", plan.SourceAuthorityID)
 			}
@@ -1035,8 +1024,7 @@ func cmdRoute(args []string) {
 			os.Exit(1)
 		}
 		fmt.Printf("# route plan %s\n", plan.ID)
-		fmt.Printf("- status: %s\n", plan.Status)
-		fmt.Printf("- candidate: %s\n", plan.CandidateID)
+		fmt.Printf("- status: %s\n- candidate: %s\n", plan.Status, plan.CandidateID)
 		fmt.Printf("- route_key: %s\n", plan.RouteKey)
 		fmt.Printf("- policy_id: %s\n", plan.PolicyDraft.PolicyID)
 		if plan.TargetPath != "" {
@@ -1048,8 +1036,7 @@ func cmdRoute(args []string) {
 		}
 		fmt.Printf("- required_evidence: %d\n", len(plan.PolicyDraft.RequiredEvidence))
 		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
-		fmt.Printf("- plan: %s\n", paths.PlanPath)
-		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- plan: %s\n- review: %s\n", paths.PlanPath, paths.ReviewPath)
 		return
 	}
 	if args[0] == "lane-projection" {
@@ -1165,8 +1152,7 @@ func cmdRoute(args []string) {
 		}
 		fmt.Printf("- required_evidence: %d\n", len(review.ReviewDraft.RequiredEvidence))
 		fmt.Printf("- evidence_refs: %d\n", len(review.EvidenceRefs))
-		fmt.Printf("- plan: %s\n", paths.PlanPath)
-		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- plan: %s\n- review: %s\n", paths.PlanPath, paths.ReviewPath)
 		fmt.Println("- verdict: route_outcome_review_not_policy")
 		return
 	}
@@ -4113,7 +4099,7 @@ func cmdHome(args []string) {
 	if hasUsageFlag(args) {
 		switch sub {
 		case "archive-history":
-			fmt.Println("usage: compound home archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--dry-run]; --kind is required to archive; --dry-run previews every kind without moving anything")
+			fmt.Println("usage: compound home archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--max-files N] [--dry-run]; --kind is required to archive; --max-files bounds the batch (durable cursor resumes the next pass); --dry-run previews every kind without moving anything")
 		case "restore-history":
 			fmt.Println("usage: compound home restore-history (--all|--id id[,id...]) [--dry-run]")
 		case "private-custody":
@@ -4197,6 +4183,11 @@ func cmdHome(args []string) {
 	case "archive-history":
 		dryRun := hasFlag(args, "--dry-run")
 		kinds := valuesFlag(args, "--kind")
+		maxFiles, err := intFlag(args, "--max-files")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "home archive-history:", err)
+			os.Exit(2)
+		}
 		// A mutation with no selection is a footgun, not a default. Invoked
 		// bare -- as an agent probing for usage does -- this swept EVERY kind
 		// and relocated 329 terminal entries nobody asked to move. Selection
@@ -4204,14 +4195,15 @@ func cmdHome(args []string) {
 		// keeps its full-preview semantics, because a preview that writes
 		// nothing is exactly how you find out what a sweep would take.
 		if len(kinds) == 0 && !dryRun {
-			fmt.Fprintln(os.Stderr, "usage: compound home archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--dry-run]")
+			fmt.Fprintln(os.Stderr, "usage: compound home archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--max-files N] [--dry-run]")
 			fmt.Fprintln(os.Stderr, "archive-history mutates: it needs an explicit --kind. To see what a full sweep would move, add --dry-run.")
 			os.Exit(2)
 		}
 		report, err := home.ArchiveOperationalHistory(resolve(), home.OperationalArchiveOptions{
-			DryRun: dryRun,
-			Kinds:  kinds,
-			Paths:  valuesFlag(args, "--path"),
+			DryRun:   dryRun,
+			Kinds:    kinds,
+			Paths:    valuesFlag(args, "--path"),
+			MaxFiles: maxFiles,
 		}, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "home archive-history:", err)
@@ -4246,7 +4238,7 @@ func cmdHome(args []string) {
 	case "route-swap-repair":
 		os.Exit(mem.RouteEvidenceSwapRepairCLI(resolve(), args, os.Stdout, os.Stderr))
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody|route-swap-repair> [--home <path>] [--local|--global]; archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--dry-run]")
+		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody|route-swap-repair> [--home <path>] [--local|--global]; archive-history --kind work|lease|review|comparison|create-plan|memory-candidate [--path rel] [--max-files N] [--dry-run]")
 		os.Exit(2)
 	}
 }
@@ -4631,6 +4623,12 @@ func printHomeOperationalArchiveReport(action string, r home.OperationalArchiveR
 	}
 	if r.RestoredCount > 0 {
 		fmt.Printf("- restored: %d\n", r.RestoredCount)
+	}
+	if r.MaxFiles > 0 {
+		fmt.Printf("- max_files: %d\n", r.MaxFiles)
+	}
+	for _, kind := range sortedStringKeys(r.ResumedFrom) {
+		fmt.Printf("- resumed_from: %s %s\n", kind, r.ResumedFrom[kind])
 	}
 	for _, kind := range sortedMapKeys(r.Counts) {
 		fmt.Printf("- %s: %d\n", kind, r.Counts[kind])
