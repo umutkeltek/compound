@@ -165,15 +165,9 @@ type doctorReport struct {
 	// the existing named counters — nothing the doctor checks changes,
 	// only how truthfully it reports and exits. JSON consumers can
 	// branch on len(Problems) or len(Warnings) without parsing prose.
-	Problems []string `json:"problems"`
-	Warnings []string `json:"warnings"`
-	// BindingFreshness — R3B 2026-09-04 — surfaces whether the installed
-	// hook manifest's recorded revision per harness still matches the
-	// binary install.sh just wrote. After every successful ./install.sh
-	// the lanes drift until `compound hook install --harness <lane>`
-	// refreshes the entry; this section names the exact lanes and the
-	// exact repair command. Doctor never invokes the installer.
-	BindingFreshness     contract.BindingFreshnessReport `json:"binding_freshness"`
+	Problems             []string                        `json:"problems"`
+	Warnings             []string                        `json:"warnings"`
+	BindingFreshness     contract.BindingFreshnessReport `json:"binding_freshness"` // R3B 2026-09-04: hook-manifest vs installed binary (compute+render in contract).
 	BindingFreshnessNote string                          `json:"binding_freshness_note,omitempty"`
 }
 
@@ -473,20 +467,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	// also counted as a problem (exit 1), because a harness running a
 	// different binary than the registry pinned is actionable, not advisory.
 	rep.HarnessVersionDrift = doctor.ComputeHarnessVersionDrift(harness.DefaultRegistry())
-
-	// 10) R3B 2026-09-04: hook-binding freshness. install.sh rebuilds
-	// `compound` and overwrites the binary, but every Claude lane's
-	// manifest entry still records `binary:<previous-path>` until
-	// `compound hook install --harness <lane>` refreshes it. Until then
-	// the readiness guard resolves the lane to `plan` for any operator
-	// who asks for a mutation-capable mode — exactly the silent-downgrade
-	// failure the loud-refusal seam now catches. Doctor reports per-lane
-	// drift plus the exact repair command; it never invokes the installer.
-	if bindingReport, berr := contract.ComputeBindingFreshness(homePath, binary); berr == nil {
-		rep.BindingFreshness = bindingReport
-	} else {
-		rep.BindingFreshnessNote = "binding freshness unavailable: " + berr.Error()
-	}
+	rep.BindingFreshness, rep.BindingFreshnessNote = contract.BuildBindingFreshnessReport(homePath, binary) // R3B 2026-09-04: hook-binding freshness (compute+render in contract).
 
 	// Doctor exit-code contract (packet work_3da5d3c76707): a doctor that
 	// finds a real, actionable problem exits 1, prints a final
@@ -644,33 +625,9 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	printProjectionFreshness(stdout, rep)
 	doctor.RenderBinaryStaleness(stdout, rep.BinaryStaleness)
 	doctor.RenderHarnessVersionDrift(stdout, rep.HarnessVersionDrift)
-	printBindingFreshness(stdout, rep)
+	contract.RenderBindingFreshness(stdout, rep.BindingFreshness, rep.BindingFreshnessNote)
 	printPermissionPosture(stdout, rep)
 	printSurfacing(stdout, rep)
-}
-
-// printBindingFreshness renders the R3B 2026-09-04 hook-binding freshness
-// section. One line per harness. Drifted rows carry the exact repair
-// command so the operator does not have to remember it. Kept tiny on
-// purpose: the doctor-exit-truth branch (fix/doctor-exit-truth-20260903)
-// is rewriting problem/warning reporting through internal/doctor/exitcode;
-// this section stays the only diff here so it rebases cleanly.
-func printBindingFreshness(stdout io.Writer, rep doctorReport) {
-	fmt.Fprintln(stdout, "\n## binding freshness (hook manifest vs installed binary)")
-	if rep.BindingFreshnessNote != "" {
-		fmt.Fprintf(stdout, "- (unavailable: %s)\n", rep.BindingFreshnessNote)
-		return
-	}
-	if len(rep.BindingFreshness.Rows) == 0 {
-		fmt.Fprintln(stdout, "- (no installed hooks manifest)")
-		return
-	}
-	for _, row := range rep.BindingFreshness.Rows {
-		fmt.Fprintf(stdout, "- %-16s %-7s recorded=%q current=%q\n", row.Harness, row.Status, row.RecordedAt, row.CurrentBinary)
-		if row.RepairCommand != "" {
-			fmt.Fprintf(stdout, "    -> %s\n", row.RepairCommand)
-		}
-	}
 }
 
 // doctorPlacementSource is one imported placement source view and whether the bytes

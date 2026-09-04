@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -60,6 +61,37 @@ func (l *LaneRefusal) Error() string {
 		return "lane refused: nil"
 	}
 	return fmt.Sprintf("%s refused at gate %s: %s", l.Command, l.Gate, l.Refused)
+}
+
+// RenderTo writes the refusal to w in the same four-section shape the cmd
+// layer's gateRefusal printer uses, so an operator reading the refusal sees
+// a refusal that reads like every other refusal in `compound` (the Tried /
+// DoThis / Prevents vocabulary is the discipline; the specific Gate name is
+// the only thing that changes). The cmd layer still owns the exit-code
+// policy — RenderTo only writes.
+func (l *LaneRefusal) RenderTo(w io.Writer) {
+	if l == nil {
+		return
+	}
+	fmt.Fprintf(w, "error: %s refused at gate %s\n", l.Command, l.Gate)
+	if refused := strings.TrimSpace(l.Refused); refused != "" {
+		fmt.Fprintf(w, "  refused: %s\n", refused)
+	}
+	if len(l.Tried) > 0 {
+		fmt.Fprintln(w, "  tried in order:")
+		for i, step := range l.Tried {
+			fmt.Fprintf(w, "    %d. %s\n", i+1, step)
+		}
+	}
+	if len(l.DoThis) > 0 {
+		fmt.Fprintln(w, "  do this:")
+		for _, cmd := range l.DoThis {
+			fmt.Fprintf(w, "    %s\n", cmd)
+		}
+	}
+	if prevents := strings.TrimSpace(l.Prevents); prevents != "" {
+		fmt.Fprintf(w, "  prevents: %s\n", prevents)
+	}
 }
 
 // GovernedHarnessFinalizationInput binds adapter completion to the exact

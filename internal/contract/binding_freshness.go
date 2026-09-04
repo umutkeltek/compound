@@ -2,6 +2,7 @@ package contract
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -35,6 +36,21 @@ type BindingFreshnessRow struct {
 type BindingFreshnessReport struct {
 	BinaryPath string                `json:"binary_path"`
 	Rows       []BindingFreshnessRow `json:"rows"`
+}
+
+// BuildBindingFreshnessReport wraps ComputeBindingFreshness with the
+// doctor-specific note-on-error mapping: a non-nil error becomes the
+// "(unavailable: …)" string the doctor text renderer prints in place of
+// rows, and a nil error collapses to (report, ""). This keeps the
+// doctor's runDoctor body a single line per R3B 2026-09-04 section, the
+// same pattern BinaryStaleness and HarnessVersionDrift use (one compute
+// call + one render call per section).
+func BuildBindingFreshnessReport(homePath, binaryPath string) (BindingFreshnessReport, string) {
+	report, err := ComputeBindingFreshness(homePath, binaryPath)
+	if err != nil {
+		return report, "binding freshness unavailable: " + err.Error()
+	}
+	return report, ""
 }
 
 // ComputeBindingFreshness reads the installed-hooks manifest and compares
@@ -110,4 +126,31 @@ func classifyBindingFreshness(recorded, want string) string {
 		return "fresh"
 	}
 	return "drifted"
+}
+
+// RenderBindingFreshness writes the R3B 2026-09-04 hook-binding freshness
+// section to stdout in the doctor's plain-text shape. One line per harness:
+// "<harness> <status> recorded=<revision> current=<binary>". Drifted rows
+// carry the exact repair command on a second line so the operator does not
+// have to remember it. When note is non-empty (the compute call failed)
+// the section prints a single unavailable line instead of rows, keeping
+// the section self-describing on a torn home. Mirrors printBindingFreshness
+// from cmd/compound/doctor_cli.go so the existing doctor tests that pin
+// the text shape continue to pass byte-for-byte.
+func RenderBindingFreshness(stdout io.Writer, report BindingFreshnessReport, note string) {
+	fmt.Fprintln(stdout, "\n## binding freshness (hook manifest vs installed binary)")
+	if note != "" {
+		fmt.Fprintf(stdout, "- (unavailable: %s)\n", note)
+		return
+	}
+	if len(report.Rows) == 0 {
+		fmt.Fprintln(stdout, "- (no installed hooks manifest)")
+		return
+	}
+	for _, row := range report.Rows {
+		fmt.Fprintf(stdout, "- %-16s %-7s recorded=%q current=%q\n", row.Harness, row.Status, row.RecordedAt, row.CurrentBinary)
+		if row.RepairCommand != "" {
+			fmt.Fprintf(stdout, "    -> %s\n", row.RepairCommand)
+		}
+	}
 }

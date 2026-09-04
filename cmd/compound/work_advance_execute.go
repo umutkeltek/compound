@@ -214,20 +214,9 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		note = "harness execute: " + harnessName
 	}
 	executed, err := actuator.ExecuteGovernedHarnessAdvance(homePath, store, wenv, adapter, runInput, actor, target, note, existingRunAttempts, now)
-	// R3B 2026-09-04: explicit mutation-capable --permission-mode on an
-	// unready lane refused BEFORE mint. Render the actuator's refusal
-	// through the same gateRefusal printer every other fail-closed gate
-	// uses, exit non-zero, and leave the envelope claimed.
 	var laneRefusal *actuator.LaneRefusal
-	if errors.As(err, &laneRefusal) && laneRefusal != nil {
-		gateRefusal{
-			Command:  laneRefusal.Command,
-			Gate:     laneRefusal.Gate,
-			Refused:  laneRefusal.Refused,
-			Tried:    laneRefusal.Tried,
-			DoThis:   laneRefusal.DoThis,
-			Prevents: laneRefusal.Prevents,
-		}.writeTo(os.Stderr)
+	if errors.As(err, &laneRefusal) && laneRefusal != nil { // R3B 2026-09-04: explicit --permission-mode on unready lane refused BEFORE mint.
+		laneRefusal.RenderTo(os.Stderr)
 		workAdvanceExecuteExit(1)
 	}
 	die(err)
