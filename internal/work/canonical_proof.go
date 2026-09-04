@@ -35,7 +35,18 @@ type ProofCheckStep struct {
 	ExitCode      int      `json:"exit_code,omitempty"`
 	DurationMS    int64    `json:"duration_ms,omitempty"`
 	OutputTail    string   `json:"output_tail,omitempty"`
-	FailureFacts  []string `json:"failure_facts,omitempty"`
+	// OutputPath is the absolute path to the FULL (untruncated) gate output when a failed gate
+	// was persisted next to the --out report (<out>.gates/<gate>.log). Empty for ok/skipped gates
+	// or when no --out report is in flight. Recorded alongside OutputTail so a triage reader can
+	// recover the real failure context, not only its 4000-char tail.
+	OutputPath string `json:"output_path,omitempty"`
+	// FailureLines is the bounded set of canonical failure markers extracted from the gate's
+	// full output (--- FAIL:, FAIL\t, panic:, timed out). Populated for go-test gates today;
+	// other gates leave it nil because their failure markers are gate-specific and out of scope
+	// for a generic on-the-wire field. Capped to keep report size predictable under a red
+	// battery that fans out dozens of FAIL lines per package.
+	FailureLines []string `json:"failure_lines,omitempty"`
+	FailureFacts []string `json:"failure_facts,omitempty"`
 	// CIPortable marks a fresh-clone CI gate: no external non-Go binary, installed binary,
 	// or COMPOUND_HOME body. It is runtime inventory metadata, not serialized proof output.
 	CIPortable bool `json:"-"`
