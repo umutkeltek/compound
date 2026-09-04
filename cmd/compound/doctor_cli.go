@@ -23,6 +23,7 @@ import (
 	"compound/internal/home"
 	"compound/internal/hookplan"
 	"compound/internal/landlease"
+	"compound/internal/lanes"
 	"compound/internal/policy"
 	"compound/internal/runattempt"
 	"compound/internal/work"
@@ -635,6 +636,7 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	doctor.RenderBinaryStaleness(stdout, rep.BinaryStaleness)
 	doctor.RenderHarnessVersionDrift(stdout, rep.HarnessVersionDrift)
 	contract.RenderBindingFreshness(stdout, rep.BindingFreshness, rep.BindingFreshnessNote)
+	lanes.RenderInstalledLaneDriftVerdicts(stdout, rep.Home, doctor.InstalledBinaryPath(), time.Now().UTC()) // R3B 2026-09-04.
 	printPermissionPosture(stdout, rep)
 	printSurfacing(stdout, rep)
 	doctor.PrintUnattendedExecute(stdout, rep.UnattendedExecute)

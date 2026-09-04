@@ -38,6 +38,7 @@ import (
 	"compound/internal/hook"
 	"compound/internal/hookplan"
 	"compound/internal/knowledge"
+	"compound/internal/lanes"
 	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/product"
@@ -1515,6 +1516,10 @@ func cmdHarness(args []string) {
 		fmt.Printf("- generated_at: %s\n", pack.GeneratedAt.Format(time.RFC3339))
 		fmt.Printf("- content_sha256: %s\n", pack.ContentSHA256)
 		fmt.Printf("- written_to: %s\n", harness.InstructionPackPath(homePath, harnessName, pack.Preset))
+		return
+	}
+	if target == "refresh-lane" {
+		die(lanes.RunCLIFromArgs(args[1:], time.Now().UTC()))
 		return
 	}
 	if target == "observe" {
