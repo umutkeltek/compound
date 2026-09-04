@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/readiness"
 	"compound/internal/work"
@@ -19,6 +22,7 @@ import (
 // operator can ask "can this lane run anything right now?" without
 // claiming work first.
 func TestRunHarnessReadinessUnreadyPrintsRepair(t *testing.T) {
+	stubHarnessReadinessResolver(t)
 	homePath := initializedExecutionHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
 	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
@@ -67,6 +71,7 @@ func TestRunHarnessReadinessUnreadyPrintsRepair(t *testing.T) {
 // harness section and dashboards consume. Every repair command line is
 // a copy of the cmd-line, not a description.
 func TestRunHarnessReadinessJSONShape(t *testing.T) {
+	stubHarnessReadinessResolver(t)
 	homePath := initializedExecutionHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
 	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
@@ -104,6 +109,7 @@ func TestRunHarnessReadinessJSONShape(t *testing.T) {
 // TestRunHarnessReadinessReadyExitsZero pins that a Ready=true evaluation
 // exits 0; the unready cases above exit 1 (with details + repair).
 func TestRunHarnessReadinessReadyExitsZero(t *testing.T) {
+	stubHarnessReadinessResolver(t)
 	homePath := initializedExecutionHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
 	stubDelegateHarnessReadiness(t, func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
@@ -137,6 +143,7 @@ func TestRunHarnessReadinessUsageMissingHarness(t *testing.T) {
 // so the cmd/compound face and the harness readiness face evaluate the
 // SAME logic (and a missing guard fails closed).
 func TestEvaluateForHarnessCallsRegisteredGuard(t *testing.T) {
+	stubHarnessReadinessResolver(t)
 	homePath := initializedExecutionHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
 	stubDelegateHarnessReadiness(t, func(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
@@ -163,6 +170,91 @@ func TestEvaluateForHarnessMissingGuard(t *testing.T) {
 	t.Cleanup(func() { work.DelegateHarnessReadiness = original })
 	if _, err := readiness.EvaluateForHarness(t.TempDir(), "claude", "", "", cliTestNow); err == nil {
 		t.Fatalf("missing readiness guard returned no error; want fail-closed")
+	}
+}
+
+func stubHarnessReadinessResolver(t *testing.T) {
+	t.Helper()
+	original := work.DelegateHarnessResolver
+	work.DelegateHarnessResolver = func(req work.DelegateHarnessResolveRequest) (work.DelegateHarnessResolution, error) {
+		return work.DelegateHarnessResolution{Harness: req.Harness, Command: "/bin/echo", LaneID: "fixture", RequestedModelID: "fixture", RequestedProviderRoute: "fixture"}, nil
+	}
+	t.Cleanup(func() { work.DelegateHarnessResolver = original })
+}
+
+func TestHarnessReadinessBindsRealTupleAndWorkContext(t *testing.T) {
+	fixture := buildReadyDelegateHarnessFixtureAt(t, "work_readiness_cli", time.Now().UTC())
+	t.Setenv("COMPOUND_HOME", fixture.compoundHome)
+	store, err := work.Open(fixture.compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(work.CreateInput{
+		WorkID: fixture.workID, Owner: "fixture", Actor: "fixture", State: "ready",
+		SuccessPredicate: "readiness binds the exact work context", ContextPackID: fixture.contextPackID,
+	}, fixture.now); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotFiles(t, fixture.compoundHome)
+	var out, errOut bytes.Buffer
+	code := runHarnessReadiness([]string{"--harness", fixture.harness, "--workspace", fixture.workspace, "--work", fixture.workID, "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("bound readiness exited %d: stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	var report struct {
+		Ready bool `json:"ready"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.Ready {
+		t.Fatalf("real tuple and work context not ready: %s", out.String())
+	}
+	if after := snapshotFiles(t, fixture.compoundHome); !reflect.DeepEqual(before, after) {
+		t.Fatal("readiness mutated home")
+	}
+
+	withoutWork, err := readiness.EvaluateForHarness(fixture.compoundHome, fixture.harness, fixture.workspace, "", fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutWork.Ready || !strings.Contains(strings.Join(withoutWork.Details, "\n"), "work has no context_pack_id") {
+		t.Fatalf("unbound readiness bypassed context guard: %+v", withoutWork)
+	}
+	if _, err := readiness.EvaluateForHarness(fixture.compoundHome, fixture.harness, fixture.workspace, "work_missing", fixture.now); err == nil {
+		t.Fatal("nonexistent work did not fail closed")
+	}
+	if _, err := store.Create(work.CreateInput{WorkID: "work_wrong_context", Owner: "fixture", Actor: "fixture", State: "ready", SuccessPredicate: "wrong work is refused", ContextPackID: fixture.contextPackID}, fixture.now); err != nil {
+		t.Fatal(err)
+	}
+	mismatch, err := readiness.EvaluateForHarness(fixture.compoundHome, fixture.harness, fixture.workspace, "work_wrong_context", fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mismatch.Ready || !strings.Contains(strings.Join(mismatch.Details, "\n"), "work identity does not match") {
+		t.Fatalf("wrong work accepted: %+v", mismatch)
+	}
+	if err := os.Remove(filepath.Join(fixture.compoundHome, "registries", "model-capabilities.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	missingTuple, err := readiness.EvaluateForHarness(fixture.compoundHome, fixture.harness, fixture.workspace, fixture.workID, fixture.now)
+	if err == nil && missingTuple.Ready {
+		t.Fatal("missing tuple reported ready")
+	}
+	before = snapshotFiles(t, fixture.compoundHome)
+	_, _ = readiness.EvaluateForHarness(fixture.compoundHome, fixture.harness, fixture.workspace, fixture.workID, fixture.now)
+	if after := snapshotFiles(t, fixture.compoundHome); !reflect.DeepEqual(before, after) {
+		t.Fatal("failed readiness mutated home")
+	}
+}
+
+func TestHarnessReadinessMissingResolverFailsClosed(t *testing.T) {
+	original := work.DelegateHarnessResolver
+	work.DelegateHarnessResolver = nil
+	t.Cleanup(func() { work.DelegateHarnessResolver = original })
+	result, err := readiness.EvaluateForHarness(t.TempDir(), "claude", "", "", cliTestNow)
+	if err == nil && result.Ready {
+		t.Fatal("missing resolver reported ready")
 	}
 }
 

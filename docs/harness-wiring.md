@@ -457,6 +457,12 @@ capacity cannot report ready when inline execution would refuse it. The preview
 records no refusal evidence or RunAttempt and grants no permission to launch;
 execution still revalidates the live authorities immediately before starting.
 
+Check a particular work item's configuration and immutable context with
+`compound harness readiness --harness claude_minimax --workspace /path/to/project --work <work_id> --json`.
+The command resolves the canonical executor tuple and reads the selected work;
+it neither claims nor launches it. Without `--work`, context readiness remains
+unproven; missing or mismatched work context never becomes ready by inference.
+
 ```sh
 compound work advance <work_id> --to running --execute \
   --harness claude_minimax --workspace /path/to/project \

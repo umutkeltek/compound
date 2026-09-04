@@ -11,6 +11,7 @@ package readiness
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -35,12 +36,34 @@ func EvaluateForHarness(homePath, harnessName, workspace, workID string, now tim
 	if work.DelegateHarnessReadiness == nil {
 		return work.DelegateHarnessReadinessResult{}, errors.New("readiness: guard is not installed (set in cmd/compound composition root)")
 	}
+	if work.DelegateHarnessResolver == nil {
+		return work.DelegateHarnessReadinessResult{}, errors.New("readiness: harness resolver is not installed")
+	}
+	resolved, err := work.DelegateHarnessResolver(work.DelegateHarnessResolveRequest{HomePath: homePath, Harness: strings.TrimSpace(harnessName), Now: now})
+	if err != nil {
+		return work.DelegateHarnessReadinessResult{Details: []string{"adapter_preflight: " + err.Error()}}, nil
+	}
 	req := work.DelegateHarnessReadinessRequest{
-		HomePath:  homePath,
-		WorkID:    strings.TrimSpace(workID),
-		Workspace: workspace,
-		Harness:   strings.TrimSpace(harnessName),
-		Now:       now,
+		HomePath:               homePath,
+		WorkID:                 strings.TrimSpace(workID),
+		Workspace:              workspace,
+		Harness:                resolved.Harness,
+		Command:                resolved.Command,
+		LaneID:                 resolved.LaneID,
+		RequestedModelID:       resolved.RequestedModelID,
+		RequestedProviderRoute: resolved.RequestedProviderRoute,
+		Now:                    now,
+	}
+	if req.WorkID != "" {
+		store, err := work.OpenReadOnly(homePath)
+		if err != nil {
+			return work.DelegateHarnessReadinessResult{}, fmt.Errorf("readiness: open work: %w", err)
+		}
+		envelope, err := store.Get(req.WorkID)
+		if err != nil {
+			return work.DelegateHarnessReadinessResult{}, fmt.Errorf("readiness: read work: %w", err)
+		}
+		req.ContextPackID = envelope.IDs.ContextPackID
 	}
 	return work.DelegateHarnessReadiness(req)
 }
