@@ -205,7 +205,14 @@ func PreflightViaActuator(store *work.Store, workID, lane string, now time.Time)
 // already moved the envelope from ready → claimed → running; this function
 // takes the running envelope, runs the adapter, and returns the RunAttempt
 // id the adapter minted.
-func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt string, now time.Time) (string, error) {
+//
+// DEFECT 2 fix (AUT-P0-002 2026-09-04): the actor parameter is the claimant
+// and authority holder for this launch. FinalizeGovernedHarnessRun MUST use
+// the actor (NOT the lane) as the Finalization Actor — leases compare exact
+// strings, and the heartbeat's --actor (e.g. "claude-minimax" with a hyphen)
+// is distinct from the canonical lane (e.g. "claude_minimax" with an
+// underscore). Lane and harness are execution attribution only.
+func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, actor string, now time.Time) (string, error) {
 	if store == nil {
 		return "", errors.New("execute stage launch: nil work store")
 	}
@@ -276,7 +283,7 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt stri
 		actionIntentID = strings.TrimSpace(wenv.ActionIntentIDs[n-1])
 	}
 	if _, finalizeErr := actuator.FinalizeGovernedHarnessRun(actuator.GovernedHarnessFinalizationInput{
-		Store: store, WorkID: workID, Actor: lane, HarnessName: harnessName,
+		Store: store, WorkID: workID, Actor: actor, HarnessName: harnessName,
 		RunningPolicyID: policyID, RunningActionIntentID: actionIntentID,
 		Output: out, RunError: nil, Now: now,
 	}); finalizeErr != nil {

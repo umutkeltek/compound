@@ -123,7 +123,7 @@ func TestContinueExecutesOneReadyEnvelopeUnderGrant(t *testing.T) {
 	executeStagePolicyEvalFn = func(ai policyActionIntentShim, cfg policyConfigShim, now time.Time) policyDecisionShim {
 		return policyDecisionShim{Outcome: "allow", ID: "pol_test_allow"}
 	}
-	launchStub = func(_ *Store, workID, _, _, _ string, _ time.Time) (string, error) {
+	launchStub = func(_ *Store, workID, _, _, _, _ string, _ time.Time) (string, error) {
 		if workID != "work_exec_ok" {
 			return "", &executeStageBadWorkIDErr{got: workID}
 		}
@@ -177,7 +177,7 @@ func TestContinueRefusesExecuteWithoutGrant(t *testing.T) {
 		return 30, true, nil
 	}
 	called := false
-	launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+	launchStub = func(*Store, string, string, string, string, string, time.Time) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -213,7 +213,7 @@ func TestContinueRefusesExecuteOnStaleCapacity(t *testing.T) {
 	executeStageCapacityFn = func(home, lane string, now time.Time) (usedPercent float64, fresh bool, err error) {
 		return 30, false, nil // fresh=false signals stale snapshot
 	}
-	launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+	launchStub = func(*Store, string, string, string, string, string, time.Time) (string, error) {
 		return "ratt_should_not_run", nil
 	}
 
@@ -242,7 +242,7 @@ func TestContinueRefusesExecuteAtCapacityCeiling(t *testing.T) {
 	executeStageCapacityFn = func(home, lane string, now time.Time) (usedPercent float64, fresh bool, err error) {
 		return 90, true, nil
 	}
-	launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+	launchStub = func(*Store, string, string, string, string, string, time.Time) (string, error) {
 		return "ratt_should_not_run", nil
 	}
 
@@ -272,7 +272,7 @@ func TestContinueRefusesExecuteOnPolicyHold(t *testing.T) {
 	executeStagePolicyEvalFn = func(ai policyActionIntentShim, cfg policyConfigShim, now time.Time) policyDecisionShim {
 		return policyDecisionShim{Outcome: "hold", ID: "pol_hold_test"}
 	}
-	launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+	launchStub = func(*Store, string, string, string, string, string, time.Time) (string, error) {
 		return "ratt_should_not_run", nil
 	}
 
@@ -318,7 +318,7 @@ func TestContinueRefusesExecuteOnRisk(t *testing.T) {
 	executeStageCapacityFn = func(home, lane string, now time.Time) (usedPercent float64, fresh bool, err error) {
 		return 30, true, nil
 	}
-	launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+	launchStub = func(*Store, string, string, string, string, string, time.Time) (string, error) {
 		return "ratt_should_not_run", nil
 	}
 
@@ -345,7 +345,7 @@ func TestContinueRefusesExecuteOnNoRoute(t *testing.T) {
 	executeStageCapacityFn = func(home, lane string, now time.Time) (usedPercent float64, fresh bool, err error) {
 		return 30, true, nil
 	}
-	launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+	launchStub = func(*Store, string, string, string, string, string, time.Time) (string, error) {
 		return "ratt_should_not_run", nil
 	}
 
@@ -380,7 +380,7 @@ func TestContinueExecuteFailureFailsOnlyThatEnvelope(t *testing.T) {
 		return policyDecisionShim{Outcome: "allow", ID: "pol_test_allow"}
 	}
 	launched := 0
-	launchStub = func(store *Store, workID, _, _, _ string, _ time.Time) (string, error) {
+	launchStub = func(store *Store, workID, _, _, _, _ string, _ time.Time) (string, error) {
 		launched++
 		if workID == failedID {
 			return "", &executeStageLaunchErr{msg: "synthetic harness exit 1"}
@@ -448,7 +448,7 @@ func TestContinueExecuteNeverLandsOrCloses(t *testing.T) {
 	executeStagePolicyEvalFn = func(ai policyActionIntentShim, cfg policyConfigShim, now time.Time) policyDecisionShim {
 		return policyDecisionShim{Outcome: "allow", ID: "pol_test_allow"}
 	}
-	launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+	launchStub = func(*Store, string, string, string, string, string, time.Time) (string, error) {
 		return "ratt_no_close", nil
 	}
 
@@ -640,7 +640,7 @@ func TestContinueAlwaysReportsExecuteVerdictWhenRequested(t *testing.T) {
 		executeStagePolicyEvalFn = func(ai policyActionIntentShim, cfg policyConfigShim, now time.Time) policyDecisionShim {
 			return policyDecisionShim{Outcome: "allow", ID: "pol_verdict_allow"}
 		}
-		launchStub = func(_ *Store, _, _, _, _ string, _ time.Time) (string, error) {
+		launchStub = func(_ *Store, _, _, _, _, _ string, _ time.Time) (string, error) {
 			return "ratt_verdict_green", nil
 		}
 
@@ -734,7 +734,7 @@ func TestContinueDryRunLeavesNoRunAttemptAndEnvelopeReady(t *testing.T) {
 		return policyDecisionShim{Outcome: "allow", ID: "pol_dry_run_allow"}
 	}
 	launched := false
-	launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+	launchStub = func(*Store, string, string, string, string, string, time.Time) (string, error) {
 		launched = true
 		return "ratt_dry_run_should_not_mint", nil
 	}
@@ -788,7 +788,7 @@ func TestContinueRunSurfacesLastExecuteVerdictAtTopLevel(t *testing.T) {
 	executeStageCapacityFn = func(home, lane string, now time.Time) (usedPercent float64, fresh bool, err error) {
 		return 30, true, nil
 	}
-	launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+	launchStub = func(*Store, string, string, string, string, string, time.Time) (string, error) {
 		return "", nil
 	}
 

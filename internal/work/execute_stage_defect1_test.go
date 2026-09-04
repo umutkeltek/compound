@@ -50,7 +50,7 @@ func TestExecuteStagePreflightRefusalLeavesEnvelopeByteIdentical(t *testing.T) {
 			return errors.New("lane_unready: synthetic claude tuple not installed")
 		})
 		t.Cleanup(restorePreflight)
-		launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+		launchStub = func(*Store, string, string, string, string, string, time.Time) (string, error) {
 			t.Error("launchStub must NOT be called when preflight refuses")
 			return "", nil
 		}
@@ -115,7 +115,7 @@ func TestExecuteStagePreflightRefusalLeavesEnvelopeByteIdentical(t *testing.T) {
 			return errors.New("workspace_unresolvable: synthetic git_delivery missing")
 		})
 		t.Cleanup(restorePreflight)
-		launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+		launchStub = func(*Store, string, string, string, string, string, time.Time) (string, error) {
 			t.Error("launchStub must NOT be called when preflight refuses")
 			return "", nil
 		}
@@ -157,7 +157,7 @@ func TestExecuteStagePreflightRefusalLeavesEnvelopeByteIdentical(t *testing.T) {
 			return errors.New("adapter_missing:synthetic_harness")
 		})
 		t.Cleanup(restorePreflight)
-		launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+		launchStub = func(*Store, string, string, string, string, string, time.Time) (string, error) {
 			t.Error("launchStub must NOT be called when preflight refuses")
 			return "", nil
 		}

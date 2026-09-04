@@ -201,7 +201,7 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 		return result, nil
 	}
 
-	rattID, launchErr := launchStub(s, ready, lane, lane, workerPrompt, now)
+	rattID, launchErr := launchStub(s, ready, lane, lane, workerPrompt, actor, now)
 	if launchErr != nil {
 		// The launch wire can return a refused execution WITHOUT an
 		// adapter having been invoked: e.g. the readiness guard reports
@@ -450,7 +450,7 @@ func defaultExecuteStagePolicyEvalFn(ai policyActionIntentShim, cfg policyConfig
 // this to the actuator's ExecuteGovernedHarnessAdvance seam. The default is
 // fail-closed; any production caller that forgets to wire the real launcher
 // sees every execute attempt as `skipped=launch_failed`.
-func defaultExecuteStageLaunch(_ *Store, workID, lane, harness, prompt string, now time.Time) (string, error) {
+func defaultExecuteStageLaunch(_ *Store, _ string, _ string, _ string, _ string, _ string, _ time.Time) (string, error) {
 	return "", errors.New("execute stage launch not wired; production must bind launchStub to the actuator seam")
 }
 

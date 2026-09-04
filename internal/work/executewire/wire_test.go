@@ -116,7 +116,7 @@ func restoreExecuteStageHooks(t *testing.T) {
 	restorePolicy := work.SwapExecuteStagePolicyEval(func(ai work.PolicyActionIntentShim, _ work.PolicyConfigShim, _ time.Time) work.PolicyDecisionShim {
 		return work.PolicyDecisionShim{Outcome: "allow", ID: "pol_wire_test_allow"}
 	})
-	restoreLaunch := work.SwapExecuteStageLaunch(func(*work.Store, string, string, string, string, time.Time) (string, error) {
+	restoreLaunch := work.SwapExecuteStageLaunch(func(*work.Store, string, string, string, string, string, time.Time) (string, error) {
 		t.Error("execute stage must not launch while upstream gates refuse")
 		return "ratt_should_not_run", nil
 	})
@@ -227,7 +227,7 @@ func wiredCapacityHooks(t *testing.T, homePath string) *bool {
 	}
 	t.Cleanup(func() { LaunchReadiness = prevReadiness })
 	launched := new(bool)
-	restoreLaunch := work.SwapExecuteStageLaunch(func(_ *work.Store, _, lane, _harness, _ string, _ time.Time) (string, error) {
+	restoreLaunch := work.SwapExecuteStageLaunch(func(_ *work.Store, _, lane, _harness, _, _ string, _ time.Time) (string, error) {
 		*launched = true
 		if lane != "claude_minimax" {
 			t.Errorf("launch lane = %q, want claude_minimax", lane)
@@ -608,6 +608,65 @@ func TestContinueLaunchHookRefusesLaneUnready(t *testing.T) {
 	}
 	if after.State == "completed" || after.State == "failed" {
 		t.Fatalf("readiness refusal must not terminalize the envelope; state = %q", after.State)
+	}
+}
+
+// TestLaunchViaActuatorPreservesActor — DEFECT 2 production-wire test. The
+// launch wire MUST finalize the envelope under the actor (not the lane) —
+// leases compare exact strings, and the heartbeat's --actor
+// (e.g. "claude-minimax" with a hyphen) is distinct from the canonical lane
+// (e.g. "claude_minimax" with an underscore). The seam calls
+// LaunchViaActuator with actor=actor, lane=lane; the wire's
+// FinalizeGovernedHarnessRun must use actor as the Actor.
+//
+// Today the wire receives only lane and uses it as both lane and Actor in
+// the finalization (DEFECT 2). This test calls LaunchViaActuator directly
+// with deliberately different actor and lane strings, asserts no lease
+// denial, and verifies the envelope reaches verifying under the actor's
+// authority.
+func TestLaunchViaActuatorPreservesActor(t *testing.T) {
+	homePath := initTestHome(t)
+	now := time.Now().UTC()
+	seedExecuteStageManifest(t, homePath, "capable")
+	seedExecuteStageGrant(t, homePath)
+	seedExecuteStageCapacityRow(t, homePath, 30, 2*time.Minute, now)
+	capacityTestConfig(t, homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedExecuteStageReadyWorkWithDelivery(t, store, "work_defect2_wire", homePath)
+	installRecordingLaunchAdapter(t, "claude_minimax")
+	restoreExecuteStageHooksExcept(t, "capacity")
+	prevReadiness := LaunchReadiness
+	LaunchReadiness = func(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		return work.DelegateHarnessReadinessResult{Ready: true}, nil
+	}
+	t.Cleanup(func() { LaunchReadiness = prevReadiness })
+
+	// Claim and advance to running under the actor.
+	const actor = "actor:test/claude-minimax" // hyphen + slash — NOT a lane
+	const lane = "claude_minimax"
+	if _, err := store.Claim("work_defect2_wire", actor, now); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := store.Advance("work_defect2_wire", work.AdvanceInput{To: "running", Actor: actor, Note: "defect2 wire setup"}, now); err != nil {
+		t.Fatalf("advance to running: %v", err)
+	}
+
+	rattID, err := LaunchViaActuator(store, "work_defect2_wire", lane, "claude_minimax", "defect2 prompt", actor, now)
+	if err != nil {
+		t.Fatalf("LaunchViaActuator: %v", err)
+	}
+	if rattID == "" {
+		t.Fatal("expected non-empty RunAttempt id")
+	}
+	after, err := store.Get("work_defect2_wire")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "verifying" {
+		t.Fatalf("envelope state = %q, want verifying (finalization must terminalize under the actor, not the lane)", after.State)
 	}
 }
 

@@ -55,7 +55,14 @@ type executePolicyEvalFn func(ai policyActionIntentShim, cfg policyConfigShim, n
 // Production default is wired in execute_stage.go to the actuator's
 // ExecuteGovernedHarnessAdvance seam; tests stub it to control success and
 // failure paths. The returned RunAttemptID lands on ContinueResult.RunAttemptIDs.
-type executeLaunchFn func(store *Store, workID, lane, harness, prompt string, now time.Time) (string, error)
+//
+// The actor parameter (DEFECT 2 fix, AUT-P0-002 2026-09-04) is the claimant
+// and authority holder for this launch. The wire MUST finalize under the
+// actor — leases compare exact strings, and the heartbeat's --actor
+// (e.g. "claude-minimax" with a hyphen) is distinct from the canonical
+// lane (e.g. "claude_minimax" with an underscore). Lane and harness are
+// attribution only; actor is authority.
+type executeLaunchFn func(store *Store, workID, lane, harness, prompt, actor string, now time.Time) (string, error)
 
 // executePreflightFn runs BEFORE the seam claims or advances the envelope
 // (DEFECT 1 fix, AUT-P0-001 2026-09-04). It resolves every prerequisite
