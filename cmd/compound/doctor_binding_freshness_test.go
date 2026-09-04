@@ -79,8 +79,8 @@ func TestDoctorReportsDriftedBindingAfterStaleInstall(t *testing.T) {
 	// pin its shape.
 	out.Reset()
 	errOut.Reset()
-	if code := runDoctor([]string{"--home", home, "--base", base, "--binary", binary}, &out, &errOut); code != 0 {
-		t.Fatalf("doctor text mode failed: %s", errOut.String())
+	if code := runDoctor([]string{"--home", home, "--base", base, "--binary", binary}, &out, &errOut); code != 0 && code != 1 { // exit contract: only 2 = could not run
+		t.Fatalf("doctor text mode could not run: %s", errOut.String())
 	}
 	body := out.String()
 	if !strings.Contains(body, "binding freshness (hook manifest vs installed binary)") {
