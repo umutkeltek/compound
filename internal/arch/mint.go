@@ -376,6 +376,10 @@ var mintHomes = map[string]MintHome{
 	// against one work_id, persisted under COMPOUND_HOME/run_attempts. It records who/what ran and
 	// when, but performs no gating, no promotion, and no terminal effect — the work package consumes
 	// RunAttemptIDs to build proof chains. It is evidence, not enforcement.
+	// lanes is the installer's readiness ladder: it refuses to report a lane
+	// "fresh" unless the pack's own --drift check is clean, so the gate is the
+	// organ itself (enforcement), not a report someone else must act on.
+	"organ:lanes": {Class: MintEnforcement},
 	"organ:readiness": {
 		Class:    MintEvidence,
 		Purpose:  "one read-only evaluation of whether a Claude lane is ready to execute (hook binding fresh, instruction pack clean, context pack attached, permission posture attested), with the repair command per unmet item",
