@@ -327,6 +327,21 @@ func IngestLaneSpeedProbe(homePath string, data []byte, now time.Time) (LaneSpee
 	return RecordLaneSpeedProbe(homePath, probe, now)
 }
 
+// InvalidatePlanCapabilityRouteCache evicts every cached route plan rooted at homePath.
+// Mutating operations that change route-evidence inputs (a freshly appended speed
+// probe, a re-imported model-capabilities manifest, a refreshed account projection)
+// must call this so the next PlanCapabilityRoute call recomputes rather than
+// serving a cached plan that contradicts the just-written state.
+func InvalidatePlanCapabilityRouteCache(homePath string) {
+	planCapabilityRouteCacheMu.Lock()
+	defer planCapabilityRouteCacheMu.Unlock()
+	for key := range planCapabilityRouteCache {
+		if strings.HasPrefix(key, homePath+"\x00") {
+			delete(planCapabilityRouteCache, key)
+		}
+	}
+}
+
 // RecordLaneSpeedProbe normalizes and appends a probe result to the lane-speed evidence
 // ledger. Re-recording an identical probe is a no-op (dedup by derived id).
 func RecordLaneSpeedProbe(homePath string, probe LaneSpeedProbe, now time.Time) (LaneSpeedProbe, bool, error) {
@@ -364,6 +379,11 @@ func RecordLaneSpeedProbe(homePath string, probe LaneSpeedProbe, now time.Time) 
 	if err := appendLaneSpeedProbe(homePath, probe); err != nil {
 		return LaneSpeedProbe{}, false, err
 	}
+	// A newly written probe changes route-evidence truth for THIS home: any
+	// cached plan rooted here was computed without it and would now serve
+	// stale lane state to a second PlanCapabilityRoute caller in this
+	// process. Evict this home's entries only — other homes are unaffected.
+	InvalidatePlanCapabilityRouteCache(homePath)
 	return probe, true, nil
 }
 

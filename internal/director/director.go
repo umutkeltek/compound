@@ -306,6 +306,9 @@ func Propose(homePath string, opts Options) (Report, error) {
 	report.ProposalCount = len(report.Proposals)
 	report.SuppressedDuplicateCount = len(report.SuppressedDuplicates)
 	report.SkippedCount = len(report.Skipped)
+	if hits, misses := routeevidence.PlanCapabilityRouteCacheStats(); hits+misses > 0 {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("route_plan_cache: hits=%d misses=%d (one cold call per (home, capability_class, latency_class, bucket) per process)", hits, misses))
+	}
 	if opts.Apply {
 		path, err := recordReport(homePath, report)
 		if err != nil {

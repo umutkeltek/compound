@@ -831,3 +831,128 @@ func TestModelCapabilitiesLegacyFixtureOmitsLaneTupleFields(t *testing.T) {
 		}
 	}
 }
+
+// TestPlanCapabilityRouteInProcessCacheReusesPlan asserts the director's per-run
+// re-evaluation does not re-shell out to codexbar on every candidate. Two calls
+// within TTL share one execution: miss count == 1 and hit count == 1. Without
+// the in-process cache (the pre-fix director run), both calls miss and the
+// counters stay at 0/0/0 — the dominant phase of director propose.
+//
+// Falsifier (red): comment out the cache hit / miss wiring in PlanCapabilityRoute
+// and re-run; hits==0 and the second call still re-probes every model in the
+// routing-default chain.
+func TestPlanCapabilityRouteInProcessCacheReusesPlan(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join(home, "model-capabilities.yaml")
+	body := `version: 1
+purpose: cache fixture
+capability_classes: [judge-critique]
+models:
+  fixture-free:
+    lane: fixture free
+    harness: switchback
+    provider_route: free
+    tier: free
+    packet_ceiling: single-shot
+    capabilities: {judge-critique: {level: primary, evidence: fixture}}
+routing_defaults:
+  judge-critique: [fixture-free]
+`
+	if err := os.WriteFile(source, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportModelCapabilitiesYAML(home, source, t0); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	ResetPlanCapabilityRouteCache()
+	first, err := PlanCapabilityRoute(home, "judge-critique", CapabilityRoutePlanOptions{}, t0)
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if len(first.Chain) != 1 || first.Chain[0].ModelID != "fixture-free" {
+		t.Fatalf("first plan chain unexpected: %+v", first.Chain)
+	}
+	second, err := PlanCapabilityRoute(home, "judge-critique", CapabilityRoutePlanOptions{}, t0)
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	hits, misses := PlanCapabilityRouteCacheStats()
+	if misses != 1 || hits != 1 {
+		t.Fatalf("cache stats: hits=%d misses=%d (want hits=1 misses=1 — the dominant phase of director propose is one cold call + N warm hits)", hits, misses)
+	}
+	if second.ID != first.ID || second.CapabilityClass != first.CapabilityClass {
+		t.Fatalf("cached plan drifted from cold plan: cold=%+v warm=%+v", first, second)
+	}
+
+	// A different capability class must NOT share the cache entry: routing
+	// defaults can differ per class and a stolen plan would route to the wrong
+	// lane silently.
+	ResetPlanCapabilityRouteCache()
+	if _, err := PlanCapabilityRoute(home, "judge-critique", CapabilityRoutePlanOptions{}, t0); err != nil {
+		t.Fatalf("warm call: %v", err)
+	}
+	if _, err := PlanCapabilityRoute(home, "missing-class", CapabilityRoutePlanOptions{}, t0); err == nil {
+		t.Fatalf("expected missing-class to error, got nil")
+	}
+	// The negative cache stores the missing-class error too: a second probe
+	// must hit the cache instead of re-parsing the manifest to rediscover the
+	// same gap.
+	if _, err := PlanCapabilityRoute(home, "missing-class", CapabilityRoutePlanOptions{}, t0); err == nil {
+		t.Fatalf("expected missing-class to error on cached retry, got nil")
+	}
+	hits, misses = PlanCapabilityRouteCacheStats()
+	if hits != 1 || misses != 2 {
+		t.Fatalf("after negative-cache call: hits=%d misses=%d (want hits=1 misses=2)", hits, misses)
+	}
+
+	// LatencyClass participates in the worth-the-wait filter: a cached plan
+	// computed for one LatencyClass must NOT be returned for another — the
+	// vetoed chain differs. Without this in the key the measured-slow auto/
+	// extract lane was wrong-class-served.
+	ResetPlanCapabilityRouteCache()
+	interactive, err := PlanCapabilityRoute(home, "judge-critique", CapabilityRoutePlanOptions{LatencyClass: "interactive"}, t0)
+	if err != nil {
+		t.Fatalf("interactive plan: %v", err)
+	}
+	batch, err := PlanCapabilityRoute(home, "judge-critique", CapabilityRoutePlanOptions{LatencyClass: "batch"}, t0)
+	if err != nil {
+		t.Fatalf("batch plan: %v", err)
+	}
+	if interactive.RequiredLatencyClass == batch.RequiredLatencyClass {
+		t.Fatalf("different LatencyClass returned identical plan: interactive=%+v batch=%+v", interactive, batch)
+	}
+
+	// InvalidatePlanCapabilityRouteCache is the door for mutating operations
+	// (an IngestLaneSpeedProbe write, a re-imported manifest) to clear stale
+	// entries. The cache must drop every entry rooted at homePath and nothing
+	// from a different home.
+	ResetPlanCapabilityRouteCache()
+	other := t.TempDir()
+	if _, err := ImportModelCapabilitiesYAML(other, source, t0); err != nil {
+		t.Fatalf("import other: %v", err)
+	}
+	if _, err := PlanCapabilityRoute(home, "judge-critique", CapabilityRoutePlanOptions{}, t0); err != nil {
+		t.Fatalf("home warm: %v", err)
+	}
+	if _, err := PlanCapabilityRoute(other, "judge-critique", CapabilityRoutePlanOptions{}, t0); err != nil {
+		t.Fatalf("other warm: %v", err)
+	}
+	hits, misses = PlanCapabilityRouteCacheStats()
+	if hits != 0 || misses != 2 {
+		t.Fatalf("after seed calls: hits=%d misses=%d (want 0/2)", hits, misses)
+	}
+	InvalidatePlanCapabilityRouteCache(home)
+	if _, err := PlanCapabilityRoute(home, "judge-critique", CapabilityRoutePlanOptions{}, t0); err != nil {
+		t.Fatalf("home post-invalidate: %v", err)
+	}
+	if _, err := PlanCapabilityRoute(other, "judge-critique", CapabilityRoutePlanOptions{}, t0); err != nil {
+		t.Fatalf("other post-invalidate: %v", err)
+	}
+	hits, misses = PlanCapabilityRouteCacheStats()
+	// First home call post-invalidate: 1 miss. Other home call: 1 hit (its
+	// entry was NOT touched by Invalidate).
+	if hits != 1 || misses != 3 {
+		t.Fatalf("after invalidate-home + recompute: hits=%d misses=%d (want hits=1 misses=3)", hits, misses)
+	}
+}
