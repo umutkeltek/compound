@@ -17,15 +17,16 @@ import (
 // more ProductSignal rows the tests can cite by id (MintHypothesisDraftCandidate
 // looks the observed_at range up in loadSignals). The signal rows are the
 // bare minimum schema LoadSignal accepts; richer fields do not change
-// observationWindowForDraft.
+// observationWindowForDraft. The log lands at ledger/product-signals.jsonl,
+// the path signalsLog resolves to (not the package root).
 func harnessDraftHome(t *testing.T, signals ...Signal) string {
 	t.Helper()
 	home := t.TempDir()
-	tlDir := filepath.Join(home, "products")
-	if err := os.MkdirAll(tlDir, 0o755); err != nil {
+	ledgerDir := filepath.Join(home, "ledger")
+	if err := os.MkdirAll(ledgerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	logPath := filepath.Join(home, "signals.jsonl")
+	logPath := filepath.Join(home, "ledger", "product-signals.jsonl")
 	lines := []string{}
 	for _, s := range signals {
 		s.ProductID = "product:exampleapp"
