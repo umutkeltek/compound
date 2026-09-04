@@ -1,0 +1,313 @@
+package product
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"compound/internal/candidates"
+	"compound/internal/mem"
+)
+
+// harnessDraftHome seeds a COMPOUND_HOME with a signals log carrying one or
+// more ProductSignal rows the tests can cite by id (MintHypothesisDraftCandidate
+// looks the observed_at range up in loadSignals). The signal rows are the
+// bare minimum schema LoadSignal accepts; richer fields do not change
+// observationWindowForDraft.
+func harnessDraftHome(t *testing.T, signals ...Signal) string {
+	t.Helper()
+	home := t.TempDir()
+	tlDir := filepath.Join(home, "products")
+	if err := os.MkdirAll(tlDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(home, "signals.jsonl")
+	lines := []string{}
+	for _, s := range signals {
+		s.ProductID = "product:exampleapp"
+		if strings.TrimSpace(s.ID) == "" {
+			s.ID = "sig_" + filepath.Base(home)
+		}
+		if strings.TrimSpace(s.ObservedAt) == "" {
+			s.ObservedAt = "2026-08-01T00:00:00Z"
+		}
+		if strings.TrimSpace(s.MetricName) == "" {
+			s.MetricName = "app_store_connect_iap_units"
+		}
+		body, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, string(body))
+	}
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+// TestHypothesisDraftProducesCandidateAcceptedByBuildHypothesisPlan pins the
+// packet's "the existing hypothesis-plan door accepts the drafted candidate"
+// invariant. Before the writer the door fails; after, it passes.
+func TestHypothesisDraftProducesCandidateAcceptedByBuildHypothesisPlan(t *testing.T) {
+	home := harnessDraftHome(t,
+		Signal{ID: "sig_a", ObservedAt: "2026-08-01T00:00:00Z", MetricName: "app_store_connect_iap_units", ChangeEvent: "Pro IAP price step"},
+		Signal{ID: "sig_b", ObservedAt: "2026-08-08T00:00:00Z", MetricName: "app_store_connect_iap_units", ChangeEvent: "Pro IAP price step"},
+	)
+	id, err := MintHypothesisDraftCandidate(home,
+		"product:exampleapp",
+		"Pro IAP price step",
+		[]string{"app_store_connect_iap_units"},
+		[]string{"sig_a", "sig_b"},
+		[]string{"product_loop:exampleapp"},
+		tProduct,
+	)
+	if err != nil {
+		t.Fatalf("MintHypothesisDraftCandidate: %v", err)
+	}
+	if !strings.HasPrefix(id, "hyp_draft_") {
+		t.Fatalf("candidate id must use the hyp_draft_ prefix, got %q", id)
+	}
+	plan, err := BuildHypothesisPlan(home, id, "", tProduct)
+	if err != nil {
+		t.Fatalf("BuildHypothesisPlan must accept a fresh draft: %v", err)
+	}
+	if plan.ProductID != "product:exampleapp" || plan.ChangeEvent != "Pro IAP price step" {
+		t.Fatalf("plan must carry the draft inputs: %+v", plan)
+	}
+	if !strings.HasPrefix(plan.ObservationWindow, "2026-08-01") || !strings.Contains(plan.ObservationWindow, "2026-08-08") {
+		t.Fatalf("observation_window must span the signal dates, got %q", plan.ObservationWindow)
+	}
+}
+
+// TestHypothesisDraftNeverInventsExpectedEffect pins the packet's
+// "never invented number or effect" guarantee. The placeholder contains the
+// literal "OPERATOR MUST WRITE" string, never a parsed metric number, never a
+// falsifiable claim.
+func TestHypothesisDraftNeverInventsExpectedEffect(t *testing.T) {
+	home := harnessDraftHome(t,
+		Signal{ID: "sig_x", ObservedAt: "2026-08-01T00:00:00Z", MetricName: "app_store_connect_iap_units", ChangeEvent: "Pro IAP price step"},
+	)
+	id, err := MintHypothesisDraftCandidate(home,
+		"product:exampleapp",
+		"Pro IAP price step",
+		[]string{"app_store_connect_iap_units"},
+		[]string{"sig_x"},
+		nil,
+		tProduct,
+	)
+	if err != nil {
+		t.Fatalf("MintHypothesisDraftCandidate: %v", err)
+	}
+	got, err := ReadHypothesisDraftCandidate(home, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got.ExpectedEffect, "OPERATOR MUST WRITE") {
+		t.Fatalf("draft must carry the placeholder, got %q", got.ExpectedEffect)
+	}
+	if got.ExpectedEffect != fmtPlace("OPERATOR MUST WRITE: what should %s do after %s?", "app_store_connect_iap_units", "Pro IAP price step") {
+		t.Fatalf("unexpected placeholder shape: %q", got.ExpectedEffect)
+	}
+	numbers := regexp.MustCompile(`\b\d+(\.\d+)?%?\b`)
+	if numbers.MatchString(got.ExpectedEffect) {
+		t.Fatalf("draft must not invent a number, got %q", got.ExpectedEffect)
+	}
+}
+
+// TestHypothesisDraftIsIdempotent: the second call with the same (productID,
+// changeEvent) returns the SAME id and does NOT mint a duplicate. The on-disk
+// record stays byte-identical.
+func TestHypothesisDraftIsIdempotent(t *testing.T) {
+	home := harnessDraftHome(t,
+		Signal{ID: "sig_idem", ObservedAt: "2026-08-01T00:00:00Z", MetricName: "iap_units", ChangeEvent: "Pro IAP price step"},
+	)
+	first, err := MintHypothesisDraftCandidate(home,
+		"product:exampleapp", "Pro IAP price step",
+		[]string{"iap_units"}, []string{"sig_idem"},
+		[]string{"product_loop:idem"}, tProduct,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstBytes := readCandidate(t, home, first)
+	second, err := MintHypothesisDraftCandidate(home,
+		"product:exampleapp", "Pro IAP price step",
+		[]string{"iap_units"}, []string{"sig_idem"},
+		[]string{"product_loop:idem"}, tProduct.AddDate(0, 0, 1),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("idempotent id required, got %q vs %q", first, second)
+	}
+	secondBytes := readCandidate(t, home, second)
+	if string(firstBytes) != string(secondBytes) {
+		t.Fatalf("idempotent record required, first=%s second=%s", firstBytes, secondBytes)
+	}
+}
+
+// TestHypothesisDraftSkipsProductWithOpenOrParkedHypothesis: a parked
+// hypothesis already exists for the same (product, change_event) — the writer
+// must NOT add a second one. The function returns the same id without
+// re-minting.
+func TestHypothesisDraftSkipsProductWithOpenOrParkedHypothesis(t *testing.T) {
+	home := harnessDraftHome(t,
+		Signal{ID: "sig_y", ObservedAt: "2026-08-01T00:00:00Z", MetricName: "iap_units", ChangeEvent: "Pro IAP price step"},
+	)
+	first, err := MintHypothesisDraftCandidate(home,
+		"product:exampleapp", "Pro IAP price step",
+		[]string{"iap_units"}, []string{"sig_y"},
+		nil, tProduct,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Mutate the first candidate so a second mint would be detectable even
+	// if the deterministic id collided silently.
+	pokeHypothesisCandidate(t, home, first, func(c *HypothesisCandidate) {
+		c.ExpectedEffect = "OPERATOR-ALREADY-FILLED-XYZ"
+	})
+	second, err := MintHypothesisDraftCandidate(home,
+		"product:exampleapp", "Pro IAP price step",
+		[]string{"iap_units"}, []string{"sig_y"},
+		nil, tProduct,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("must reuse the parked hypothesis id, got %q vs %q", first, second)
+	}
+	got := readCandidate(t, home, first)
+	if !strings.Contains(string(got), "OPERATOR-ALREADY-FILLED-XYZ") {
+		t.Fatalf("the existing hypothesis must NOT be overwritten by the draft: %s", got)
+	}
+}
+
+// TestHypothesisDraftProducesOnePerSignalEvidenceRef: the writer attaches one
+// product_signal:<id> per signal, plus any extras the caller passed in, then
+// unique-sorts. Stops "the director forgot a signal" regressions.
+func TestHypothesisDraftProducesOnePerSignalEvidenceRef(t *testing.T) {
+	home := harnessDraftHome(t,
+		Signal{ID: "sig_one", ObservedAt: "2026-08-01T00:00:00Z", MetricName: "iap_units", ChangeEvent: "Pro IAP price step"},
+		Signal{ID: "sig_two", ObservedAt: "2026-08-02T00:00:00Z", MetricName: "iap_units", ChangeEvent: "Pro IAP price step"},
+	)
+	id, err := MintHypothesisDraftCandidate(home,
+		"product:exampleapp", "Pro IAP price step",
+		[]string{"iap_units"}, []string{"sig_one", "sig_two"},
+		[]string{"product_loop:exampleapp"}, tProduct,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadHypothesisDraftCandidate(home, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"product_signal:sig_one":  false,
+		"product_signal:sig_two":  false,
+		"product_loop:exampleapp": false,
+	}
+	for _, ref := range got.EvidenceRefs {
+		if _, ok := want[ref]; ok {
+			want[ref] = true
+		}
+	}
+	for ref, seen := range want {
+		if !seen {
+			t.Fatalf("evidence_refs missing %q in %v", ref, got.EvidenceRefs)
+		}
+	}
+}
+
+// TestHypothesisDraftFallsBackWhenSignalsMissingObservedAt pins the safe
+// "review window required" fallback when no signal id resolves to a parseable
+// observed_at — the draft still has the two required fields BuildHypothesisPlan
+// reads (product_id, expected_effect), and BuildHypothesisPlan supplies its
+// own observation_window default downstream.
+func TestHypothesisDraftFallsBackWhenSignalsMissingObservedAt(t *testing.T) {
+	home := harnessDraftHome(t) // no signals on disk
+	id, err := MintHypothesisDraftCandidate(home,
+		"product:exampleapp", "Pro IAP price step",
+		[]string{"iap_units"}, []string{"sig_missing"}, nil, tProduct,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadHypothesisDraftCandidate(home, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ObservationWindow != HypothesisDraftScopePlaceholder {
+		t.Fatalf("expected fallback observation_window %q, got %q", HypothesisDraftScopePlaceholder, got.ObservationWindow)
+	}
+	if _, err := BuildHypothesisPlan(home, id, "", tProduct); err != nil {
+		t.Fatalf("BuildHypothesisPlan must still accept a windowless draft: %v", err)
+	}
+}
+
+func readCandidate(t *testing.T, home, id string) []byte {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(home, candidates.InboxDir(candidates.ProductHypothesis), id+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func pokeHypothesisCandidate(t *testing.T, home, id string, mutate func(*HypothesisCandidate)) {
+	t.Helper()
+	body := readCandidate(t, home, id)
+	var c HypothesisCandidate
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&c)
+	out, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, candidates.InboxDir(candidates.ProductHypothesis), id+".json"), append(out, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func fmtPlace(format, metric, event string) string {
+	// tiny formatter so this test does NOT depend on fmt.Printf's argument
+	// validation order
+	b := []byte{}
+	i := 0
+	for k := 0; k < len(format); k++ {
+		c := format[k]
+		if c == '%' && i < 2 && k+1 < len(format) {
+			next := format[k+1]
+			switch next {
+			case 's':
+				if i == 0 {
+					b = append(b, metric...)
+				} else {
+					b = append(b, event...)
+				}
+				i++
+				k++
+				continue
+			}
+		}
+		b = append(b, c)
+	}
+	return string(b)
+}
+
+// keep mem import live so the package still compiles under integration that
+// loads the home store (the writer does not, but other tests in this directory do).
+var _ = mem.Open
+
+// keep time import referenced so go vet does not chase a phantom
+var _ time.Time = tProduct
