@@ -434,7 +434,7 @@ func queueGroupAction(group QueueGroup, items []QueueItem) (*Action, string) {
 			continue
 		}
 		if len(item.Actions) == 0 {
-			return nil, "owner has not exposed a safe action for this decision group"
+			return nil, emptyGroupActionReason(group)
 		}
 		if len(item.Actions) != 1 {
 			return nil, "group has multiple item actions; review item details before acting"
@@ -455,9 +455,23 @@ func queueGroupAction(group QueueGroup, items []QueueItem) (*Action, string) {
 		}
 	}
 	if action == nil {
-		return nil, "owner has not exposed a safe action for this decision group"
+		return nil, emptyGroupActionReason(group)
 	}
 	return action, ""
+}
+
+// emptyGroupActionReason is the W5 J9-R3G plain-language fallback the queue
+// surfaces when a group has no owner-side safe action. Most areas keep the
+// exact legacy wording; the product-hypotheses area — the one a tired operator
+// sees when a starved product's draft is waiting on their review — gets a
+// sentence that says what the operator is being asked to review and what
+// concrete move gets the loop evidence-shaped. The replacement stays below the
+// shared eighth-grade readability ceiling (see internal/reviewartifact/readability_test.go).
+func emptyGroupActionReason(group QueueGroup) string {
+	if strings.TrimSpace(group.Area) == "product-hypotheses" {
+		return "This product has a hypothesis ready for your review. Approve it to give the loop real evidence."
+	}
+	return "owner has not exposed a safe action for this decision group"
 }
 
 // groupConsoleBlockedReason returns the reason an authority-aware surface (the
