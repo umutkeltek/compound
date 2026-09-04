@@ -3889,10 +3889,11 @@ func decodeOwnedProofReport(body []byte) (ownedProofReport, error) {
 	}
 	if report.SchemaVersion != "compound.proof_check_report.v0.1" &&
 		report.SchemaVersion != "compound.proof_check_report.v0.2" &&
-		report.SchemaVersion != "compound.proof_check_report.v0.3" {
+		report.SchemaVersion != "compound.proof_check_report.v0.3" &&
+		report.SchemaVersion != "compound.proof_check_report.v0.4" {
 		return ownedProofReport{}, fmt.Errorf("unsupported schema_version %q", report.SchemaVersion)
 	}
-	if report.SchemaVersion == "compound.proof_check_report.v0.3" {
+	if report.SchemaVersion == "compound.proof_check_report.v0.3" || report.SchemaVersion == "compound.proof_check_report.v0.4" {
 		if report.SourceSnapshot != nil {
 			if err := gitrepository.ValidateSnapshotShape(*report.SourceSnapshot); err != nil {
 				return ownedProofReport{}, fmt.Errorf("source_snapshot: %w", err)
@@ -4028,8 +4029,8 @@ func validateOwnedProofReportAgainstReservation(report ownedProofReport, reserva
 	if !reflect.DeepEqual(report.SourceSnapshot, profile.SourceSnapshot) {
 		return fmt.Errorf("source_snapshot mismatch between report and reservation profile")
 	}
-	if profile.SourceSnapshot != nil && report.SchemaVersion != "compound.proof_check_report.v0.3" {
-		return fmt.Errorf("source-bound proof requires compound.proof_check_report.v0.3")
+	if profile.SourceSnapshot != nil && report.SchemaVersion != "compound.proof_check_report.v0.3" && report.SchemaVersion != "compound.proof_check_report.v0.4" {
+		return fmt.Errorf("source-bound proof requires compound.proof_check_report.v0.3 or v0.4")
 	}
 	if len(report.Steps) != len(profile.Gates) {
 		return fmt.Errorf("gate inventory mismatch: report=%d profile=%d", len(report.Steps), len(profile.Gates))
