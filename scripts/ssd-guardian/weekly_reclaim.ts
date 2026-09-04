@@ -8,10 +8,9 @@
  *   2. fix_work_symlink_drift.ts --apply (re-stitch Work-back symlinks)
  *   3. sweep_build_caches.ts --apply (age-gated build artifact sweep)
  *   4. tmutil thinlocalsnapshots (free > 250 GB purgeable)
- *   5. Write a Markdown report under the umut-os state runs dir (resolved from
+ *   5. Write a Markdown report under the COMPOUND_HOME estate (resolved from
  *      homedir() at runtime — see REPORT_ROOT), in ssd-weekly-<date>/
- *      (NOTE: we record into umut-os state, since that's where the contract lives
- *       — this script writes there because the rest of the OS expects it. The
+ *      (Reports live under COMPOUND_HOME, the only durable root; the
  *       ssd-guardian itself lives under compound.)
  *   6. Record a `compound finding record` so the next orient sees it.
  *

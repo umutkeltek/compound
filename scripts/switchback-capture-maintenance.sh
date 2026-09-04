@@ -146,8 +146,8 @@ if [ -z "${SWITCHBACK_BACKUP_REMOTE:-}" ] || [ -z "${SWITCHBACK_BACKUP_REMOTE_RO
   die "no backup destination: set SWITCHBACK_BACKUP_REMOTE and SWITCHBACK_BACKUP_REMOTE_ROOT (no prior receipt to inherit)"
 fi
 
-# --- lock: shared with the umut-os LaunchAgent wrapper so the two front doors
-# --- to the same transfer tool never run concurrently --------------------------
+# --- lock: serialized so the switchback backup front door never runs
+# --- concurrently with itself or a sibling backup caller ------------------
 
 LOCK_DIR="${LOCK_DIR:-/tmp/switchback-capture-backup.${UID}.lock}"
 LOCK_OWNER_FILE="$LOCK_DIR/owner"

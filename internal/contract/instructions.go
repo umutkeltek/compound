@@ -62,8 +62,9 @@ func defaultInstructionMaterializeFS() instructionMaterializeFS {
 // MaterializeInstructionBlock atomically makes the compiled default render the
 // installed static instruction surface. Normal operation replaces only the
 // unique Compound-managed block. BootstrapTakeover is a one-time cutover for a
-// recognized Umut OS-generated whole file; it refuses every other unmanaged
-// file rather than claiming foreign instructions.
+// recognized legacy OS-generated whole file (the umut-os marker block); it
+// refuses every other unmanaged file rather than claiming foreign
+// instructions.
 func MaterializeInstructionBlock(
 	render InstructionBlockRender,
 	options InstructionMaterializationOptions,
