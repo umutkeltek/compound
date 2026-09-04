@@ -13,6 +13,88 @@ const WorkContinueRunSchemaVersion = "compound.work_continue_run.v0.1"
 
 const defaultWorkContinueMaxSteps = 10
 
+// executeUnattendedCapability is the capability the execute stage advertises
+// to the policy evaluator and the route planner. Standing grants, lane
+// routing, and capacity gating all key off this string; renaming it is a
+// breaking change to the unattended envelope.
+const executeUnattendedCapability = "work.continue.unattended"
+
+// executeUnattendedGrantID is the operator-signed grant the seam requires.
+// It is intentionally versioned in the suffix so a future policy revision
+// does not silently inherit an old envelope — operators explicitly import a
+// fresh v1 grant file.
+const executeUnattendedGrantID = "grant_unattended_work_continue_v1"
+
+// Capacity freshness + ceiling knobs the seam reads. Defaults match the
+// packet (10-minute freshness, 90% ceiling, strict less-than). Tests override
+// these so they don't need a real capacity fixture; production wiring picks
+// them up at package init.
+var (
+	executeStageCapacityFreshnessWindow = 10 * time.Minute
+	executeStageCapacityCeilingPercent  = 90.0
+)
+
+// executeRoutePlanFn resolves an eligible lane for the given capability from
+// a home's route plan. Production default reads routeevidence; tests override
+// it to return a stub without importing the sibling package.
+type executeRoutePlanFn func(homePath, capability string) (lane string, ok bool)
+
+// executeCapacityFn reports the latest capacity snapshot for `lane` as
+// (usedPercent, fresh, err). `fresh=false` means the snapshot is older than
+// the freshness window — the seam must refuse on that signal regardless of
+// the usedPercent value.
+type executeCapacityFn func(homePath, lane string, now time.Time) (usedPercent float64, fresh bool, err error)
+
+// executePolicyEvalFn evaluates the work.continue.unattended intent under
+// the home's policy config. Production default calls policy.Evaluate;
+// tests short-circuit it to simulate hold/deny.
+type executePolicyEvalFn func(ai policyActionIntentShim, cfg policyConfigShim, now time.Time) policyDecisionShim
+
+// executeLaunchFn actually launches the harness against the ready envelope.
+// Production default is wired in execute_stage.go to the actuator's
+// ExecuteGovernedHarnessAdvance seam; tests stub it to control success and
+// failure paths. The returned RunAttemptID lands on ContinueResult.RunAttemptIDs.
+type executeLaunchFn func(store *Store, workID, lane, harness, prompt string, now time.Time) (string, error)
+
+// Package-level hooks. Tests MUST save and restore via restoreAllExecuteHooks
+// (or the test helpers in continue_execute_test.go) to keep state isolated
+// between cases. The defaults below are wired to "no-op stub" so production
+// callers must explicitly bind the real ones.
+var (
+	executeStageRoutePlanFn  executeRoutePlanFn  = defaultExecuteStageRoutePlanFn
+	executeStageCapacityFn   executeCapacityFn   = defaultExecuteStageCapacityFn
+	executeStagePolicyEvalFn executePolicyEvalFn = defaultExecuteStagePolicyEvalFn
+	launchStub               executeLaunchFn     = defaultExecuteStageLaunch
+)
+
+// Shim types for the policy-eval hook. The real policy package exposes
+// envelope.ActionIntent and envelope.PolicyDecision; we keep the seam-level
+// types narrow (an opaque struct) so the seam is not coupled to the envelope
+// package, which would create an import cycle with internal/policy.
+
+// PolicyEvalFn realises the seam by translating envelope types on the way
+// in/out — see execute_stage.go for the production binding.
+type policyActionIntentShim = policyActionIntent
+type policyConfigShim = policyConfig
+type policyDecisionShim = policyDecision
+
+type policyActionIntent struct {
+	ID         string
+	Capability string
+	WorkID     string
+	Risk       string
+	Privacy    string
+}
+
+type policyConfig struct {
+	HasGrant bool
+}
+
+type policyDecision struct {
+	ID      string
+	Outcome string
+}
+
 type ContinueOptions struct {
 	Actor        string
 	RecentLimit  int
@@ -20,6 +102,11 @@ type ContinueOptions struct {
 	Outcome      string
 	MoveType     string
 	Summary      string
+	// MaxExecuteSteps bounds how many execute-stage launches Continue will
+	// perform in a single call. Default 1 keeps the heartbeat inside its
+	// 10-minute budget. Zero means "use the default" (1). Operators can
+	// raise this on a dry-run probe only.
+	MaxExecuteSteps int
 }
 
 type ContinueResult struct {
@@ -50,6 +137,21 @@ type ContinueResult struct {
 	NoAction            string                    `json:"no_action,omitempty"`
 	Warnings            []string                  `json:"warnings,omitempty"`
 	Integrity           []string                  `json:"integrity,omitempty"`
+
+	// R3A execute-stage fields. Set ONLY when the new execute seam runs;
+	// existing lifecycle branches leave them zero so callers can detect a
+	// "did nothing because gates refused" vs. "did nothing because there
+	// was no work" with one field.
+	//
+	// Skipped carries one named refusal reason when Action=="none"; empty
+	// on every other code path (including Action=="execute" success).
+	// RunAttemptIDs carries the ratt id the launch minted on
+	// Action=="execute". Human is the plain-language line a tired operator
+	// can read without context.
+	Skipped       string   `json:"skipped,omitempty"`
+	RunAttemptIDs []string `json:"run_attempt_ids,omitempty"`
+	Lane          string   `json:"lane,omitempty"`
+	Human         string   `json:"human,omitempty"`
 }
 
 type ContinueRunOptions struct {
@@ -103,6 +205,60 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			"does not promote memory",
 		},
 		Integrity: append([]string{}, report.Integrity...),
+	}
+
+	// R3A execute-stage seam: runs BEFORE the existing claim branch when
+	// a ready envelope is on the bench. The seam is grant-gated and
+	// fail-closed:
+	//
+	//   - all gates pass        -> envelope is driven through running/verifying
+	//   - any gate refuses      -> refusal is logged, fall through to DispatchStep
+	//   - no ready envelope     -> falls through to DispatchStep (existing path)
+	//
+	// The "any gate refuses -> fall through to DispatchStep" branch is
+	// deliberate: unattended execution is opt-in via the grant, and the
+	// existing Continue path already handles ready envelopes via
+	// DispatchStep when no operator has enabled the unattended envelope OR
+	// when the seam has nothing good to do with the envelope (e.g. risk
+	// tier2, stale capacity). Heartbeat progress on ready envelopes is
+	// preserved; the refusal is observable in the Continue JSON (skipped +
+	// human) so the operator can still see why unattended execution
+	// declined. Once the grant is installed AND a downstream gate fails,
+	// the JSON carries skipped=<reason> while DispatchStep claims the
+	// envelope via the existing path.
+	if continueExecuteStageThreshold(report) {
+		stage, stageErr := s.executeStage(now, opts, actor)
+		if stageErr != nil {
+			return result, stageErr
+		}
+		if stage.Action == "execute" {
+			result.Action = "execute"
+			result.Status = "verifying"
+			if stage.Status != "" {
+				result.Status = stage.Status
+			}
+			result.WorkID = stage.WorkID
+			result.RunAttemptIDs = stage.RunAttemptIDs
+			result.Skipped = stage.Skipped
+			result.Lane = stage.Lane
+			result.Human = stage.Human
+			result.PolicyDecisionID = stage.PolicyDecisionID
+			return s.recordContinue(now, result)
+		}
+		if stage.Skipped != "" {
+			// Seam refused — stamp Skipped + Human onto the result so
+			// the heartbeat log shows why unattended execution declined,
+			// and fall through to DispatchStep. The next Continue tick
+			// re-evaluates with whatever has changed (fresh capacity
+			// row, re-imported grant, lifted policy hold, etc).
+			result.Skipped = stage.Skipped
+			result.Lane = stage.Lane
+			result.Human = stage.Human
+			result.PolicyDecisionID = stage.PolicyDecisionID
+			// Clear result.Action / result.Status so DispatchStep
+			// below owns the recorded outcome (its Action/Status
+			// overwrite result.Action / result.Status when it claims).
+		}
 	}
 
 	if report.DispatchNext.CanRun && continueMatchesExpected(expectWorkID, report.DispatchNext.WorkID) {
@@ -176,6 +332,27 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 
 	result.NoAction = continueNoAction(report, expectWorkID)
 	return s.recordContinue(now, result)
+}
+
+// continueExecuteStageThreshold is the readiness predicate for invoking
+// the R3A execute-stage seam: at least one ready envelope AND every prior
+// branch returned the "no safe lifecycle step" shape. The check happens
+// only here, never on admit/prepare/claim/advance paths.
+func continueExecuteStageThreshold(report WorkbenchReport) bool {
+	if report.Counts.Open == 0 && report.Counts.NeedsClaim == 0 {
+		return false
+	}
+	if stateCount(report, "ready") == 0 {
+		return false
+	}
+	return true
+}
+
+func stateCount(report WorkbenchReport, state string) int {
+	if report.Counts.ByState == nil {
+		return 0
+	}
+	return report.Counts.ByState[state]
 }
 
 func (s *Store) ContinueRun(now time.Time, opts ContinueRunOptions) (ContinueRunResult, error) {

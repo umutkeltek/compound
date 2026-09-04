@@ -200,12 +200,25 @@ except Exception:
 [ "$STALE_RC" -ne 0 ] && STALE_SUM="ERR: $(printf '%.160s' "$STALE_OUT")"
 [ "$STALE_SUM" = "unparseable" ] && STALE_RC=65 && STALE_SUM="ERR: unparseable JSON raw=$(raw_head "$STALE_OUT")"
 
-CONT_OUT=$("$TIMEOUT_BIN" 600 "$BIN" work continue --actor claude-minimax --until-wait --max-steps 3 --json 2>&1)
+CONT_OUT=$("$TIMEOUT_BIN" 600 "$BIN" work continue --actor claude-minimax --until-wait --max-steps 3 --max-execute-steps 1 --json 2>&1)
 CONT_RC=$?
 CONT_SUM=$(printf '%s' "$CONT_OUT" | python3 -c 'import json,sys
 try:
     d=json.load(sys.stdin)
-    print("status=%s steps=%s" % (d.get("status"), d.get("step_count")))
+    # R3A execute-stage: surface "execute=skipped:<reason>" when the
+    # unattended seam ran but refused, and "execute=ok ratt=<id>" when
+    # it drove a ready envelope. The seam logs `skipped` and
+    # `run_attempt_ids` only when it actually triggers, so absence
+    # means DispatchStep handled the tick as before.
+    steps = d.get("step_count")
+    skipped = d.get("skipped")
+    ratts = d.get("run_attempt_ids") or []
+    summary = "status=%s steps=%s" % (d.get("status"), steps)
+    if skipped:
+        summary += " execute=skipped:%s" % skipped
+    elif ratts:
+        summary += " execute=ok ratt=%s" % ratts[0]
+    print(summary)
 except Exception:
     print("unparseable")' 2>/dev/null)
 [ "$CONT_RC" -ne 0 ] && CONT_SUM="ERR: $(printf '%.160s' "$CONT_OUT")"
