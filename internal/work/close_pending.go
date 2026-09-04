@@ -1237,48 +1237,74 @@ func (s *Store) completeClosePending(pending closePending, in CloseInput, now ti
 	}
 
 	plans := plansFromClosePending(pending)
-	if err := s.prepareRunAttemptTerminalizations(plans); err != nil {
-		return res, s.failClosePendingBeforeAuthority(pending, abortReference(err))
-	}
-	closeAfterTerminalizationPrepare()
-	if pending.LeaseStolen && !currentIsFinal {
-		expected := leaseHolderStatus{Holder: pending.LeaseHolder, Stolen: true}
-		if err := s.leaseHolderCloseGate(pending.SourceWork, pending.Action.Actor, in, expected); err != nil {
-			return res, abortReference(err)
+	// Hold the shared work-admission lock for workID for the entire
+	// terminalization window: terminalization prepare -> terminal write ->
+	// RunAttempt terminalize -> lease release. Close already runs under the
+	// outer withLifecycleMutation (autonomy-admission + work-event); the
+	// per-work admission lock added here is the seam every RunAttempt
+	// liveness write (v3) and create-plan admission (withCreatePlanAdmissionLock,
+	// legacy inode) already share, so terminalization cannot run while a
+	// RunAttempt liveness write or a parallel create/sweep path holds the
+	// same authority for the same workID.
+	//
+	// The closure captures `res` by reference and assigns the locked-section
+	// return value into it; the outer return then propagates it. Close does
+	// NOT call back into any RunAttempt path that takes the work-admission
+	// lock — PrepareTerminalization and CompletePreparedTerminalization take
+	// only the per-attempt inode — so this outer holder does not recurse.
+	if err := s.withCloseAdmissionLock(pending.WorkID, func() error {
+		if prepErr := s.prepareRunAttemptTerminalizations(plans); prepErr != nil {
+			res = CloseResult{Work: pending.SourceWork, Receipt: pending.Receipt, Transition: pending.Transition}
+			return s.failClosePendingBeforeAuthority(pending, abortReference(prepErr))
 		}
-		closeAfterLeaseStealDecision()
-	}
-	if err := s.persistClosePendingEnvelopes(pending); err != nil {
-		return res, abortReference(err)
-	}
-	if err := s.verifyClosePendingLease(pending, currentIsFinal); err != nil {
-		return res, abortReference(err)
-	}
-	if err := s.publishClosePendingEventAndWork(pending); err != nil {
-		return res, abortReference(err)
-	}
-	if referenceTransaction != nil {
-		if err := referenceTransaction.Commit(); err != nil {
+		closeAfterTerminalizationPrepare()
+		if pending.LeaseStolen && !currentIsFinal {
+			expected := leaseHolderStatus{Holder: pending.LeaseHolder, Stolen: true}
+			if gateErr := s.leaseHolderCloseGate(pending.SourceWork, pending.Action.Actor, in, expected); gateErr != nil {
+				res = CloseResult{Work: pending.SourceWork, Receipt: pending.Receipt, Transition: pending.Transition}
+				return abortReference(gateErr)
+			}
+			closeAfterLeaseStealDecision()
+		}
+		if pubErr := s.persistClosePendingEnvelopes(pending); pubErr != nil {
+			res = CloseResult{Work: pending.SourceWork, Receipt: pending.Receipt, Transition: pending.Transition}
+			return abortReference(pubErr)
+		}
+		if verErr := s.verifyClosePendingLease(pending, currentIsFinal); verErr != nil {
+			res = CloseResult{Work: pending.SourceWork, Receipt: pending.Receipt, Transition: pending.Transition}
+			return abortReference(verErr)
+		}
+		if evErr := s.publishClosePendingEventAndWork(pending); evErr != nil {
+			res = CloseResult{Work: pending.SourceWork, Receipt: pending.Receipt, Transition: pending.Transition}
+			return abortReference(evErr)
+		}
+		if referenceTransaction != nil {
+			if refErr := referenceTransaction.Commit(); refErr != nil {
+				referenceFinished = true
+				res = CloseResult{Work: pending.SourceWork, Receipt: pending.Receipt, Transition: pending.Transition}
+				return closeRecoveryRequired("commit Git reference transaction: %w", refErr)
+			}
 			referenceFinished = true
-			return res, closeRecoveryRequired("commit Git reference transaction: %w", err)
 		}
-		referenceFinished = true
-	}
-	unterminalized := s.terminalizePreparedRunAttempts(plans, now)
-	res = CloseResult{Work: pending.FinalWork, Receipt: pending.Receipt, Transition: pending.Transition, UnterminalizedRunAttemptIDs: unterminalized}
-	if len(unterminalized) > 0 {
-		return res, closeRecoveryRequired(
-			"work %s RunAttempt terminalization incomplete for %s; retry the exact close or reconcile the terminal work",
-			pending.WorkID,
-			strings.Join(unterminalized, ","),
-		)
-	}
-	closeBeforeLeaseRelease()
-	if err := s.removeClosePendingLease(pending); err != nil {
-		return res, closeRecoveryRequired("release work %s lease: %w", pending.WorkID, err)
-	}
-	if err := s.clearClosePending(pending); err != nil {
-		return res, closeRecoveryRequired("clear work %s frame: %w", pending.WorkID, err)
+		unterminalized := s.terminalizePreparedRunAttempts(plans, now)
+		res = CloseResult{Work: pending.FinalWork, Receipt: pending.Receipt, Transition: pending.Transition, UnterminalizedRunAttemptIDs: unterminalized}
+		if len(unterminalized) > 0 {
+			return closeRecoveryRequired(
+				"work %s RunAttempt terminalization incomplete for %s; retry the exact close or reconcile the terminal work",
+				pending.WorkID,
+				strings.Join(unterminalized, ","),
+			)
+		}
+		closeBeforeLeaseRelease()
+		if relErr := s.removeClosePendingLease(pending); relErr != nil {
+			return closeRecoveryRequired("release work %s lease: %w", pending.WorkID, relErr)
+		}
+		if clearErr := s.clearClosePending(pending); clearErr != nil {
+			return closeRecoveryRequired("clear work %s frame: %w", pending.WorkID, clearErr)
+		}
+		return nil
+	}); err != nil {
+		return res, err
 	}
 	return res, nil
 }

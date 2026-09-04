@@ -221,6 +221,27 @@ func (s *Store) withLifecycleMutation(fn func() error) error {
 	})
 }
 
+// withCloseAdmissionLock serializes close terminalization through the same
+// shared work-admission inode every RunAttempt liveness write already holds
+// (v3). Close is non-reentrant: the runattempt writes it triggers
+// (PrepareTerminalization / CompletePreparedTerminalization) take only the
+// per-attempt inode, never the work-admission lock, so the outer holder here
+// cannot recurse into itself. ONE helper, never a second lock implementation:
+// every site that needs the shared work-admission lock for workID goes through
+// home.WithWorkAdmissionLock. The legacy capability-lifecycle path
+// (withCreatePlanAdmissionLock) targets the same inode and is preserved for
+// the installed-runtime cutover; close uses this helper so the close seam
+// `closeAfterTerminalizationPrepare` runs strictly under the same authority.
+func (s *Store) withCloseAdmissionLock(workID string, fn func() error) error {
+	if strings.TrimSpace(workID) == "" || filepath.Base(workID) != workID {
+		return fmt.Errorf("invalid close-admission work id %q", workID)
+	}
+	if err := home.EnsureWorkAdmissionAuthorityRoot(s.home); err != nil {
+		return err
+	}
+	return home.WithWorkAdmissionLock(s.home, workID, fn)
+}
+
 // Open roots a store at homePath and ensures the work/event habitat dirs exist.
 func Open(homePath string) (*Store, error) {
 	if strings.TrimSpace(homePath) == "" {
