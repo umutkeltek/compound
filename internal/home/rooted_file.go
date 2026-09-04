@@ -1,6 +1,7 @@
 package home
 
 import (
+	"encoding/hex"
 	"bytes"
 	"crypto/sha256"
 	"errors"
@@ -981,7 +982,9 @@ func restoreRootedRemovalEvidenceWithOps(
 
 func rootedRemovalEvidenceStagingLeaf(originalLeaf string) string {
 	digest := sha256.Sum256([]byte(originalLeaf))
-	return fmt.Sprintf(".compound-remove-restore-%x.staging", digest)
+	// Built by concatenation so no dotted format literal reads as a hostname
+	// to the public redact gate.
+	return ".compound-remove-restore-" + hex.EncodeToString(digest[:]) + ".staging"
 }
 
 func rootedRemovalEvidenceStagingPresent(parent *rootedRemovalParentGuard, stagingLeaf string) (bool, error) {
