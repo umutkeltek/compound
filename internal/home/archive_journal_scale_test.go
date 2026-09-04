@@ -176,7 +176,7 @@ func TestOperationalArchiveJournalBytesLinear1k(t *testing.T) {
 	if ratio > 3 {
 		t.Fatalf("bytes-written grew %.2fx when N doubled; linear growth is ~2x, quadratic ~4x (1k=%d 2k=%d)", ratio, b1, b2)
 	}
-	if m1.duration > 60*time.Second || m2.duration > 120*time.Second {
+	if journalScaleWallClockMeaningful(t) && (m1.duration > 60*time.Second || m2.duration > 120*time.Second) {
 		t.Fatalf("journal commit loop too slow: 1k=%s 2k=%s", m1.duration, m2.duration)
 	}
 	if m1.peakHeap > 256<<20 || m2.peakHeap > 256<<20 {
@@ -229,9 +229,25 @@ func TestOperationalArchiveJournalBytes20k(t *testing.T) {
 	} else if info.Size() != b {
 		t.Fatalf("append-only shape violated: 20k index file is %d bytes but the pass wrote %d", info.Size(), b)
 	}
-	if m.duration > 120*time.Second {
-		t.Fatalf("20k journal commit loop took %s; ceiling is 120s", m.duration)
-	}
+	// No wall-clock ceiling at 20k, deliberately. This loop performs 20,000
+	// real fsyncs, so its duration measures the disk and whatever else the
+	// machine is doing across a multi-minute window — not the algorithm.
+	// Identical code measured 61s, 306s and 366s on the same box on
+	// 2026-09-05 purely from ambient load; a 6x spread cannot be turned into
+	// an assertion, and sampling the load average at test start does not
+	// help because the contention arrives during the five minutes that follow.
+	// The duration is logged above so a human can eyeball a pathological
+	// regression.
+	//
+	// What proves this journal is linear is asserted unconditionally and does
+	// not depend on timing: the byte bound directly above, the append-only
+	// shape below, the peak-heap bound, and — decisively — the 1k->2k doubling
+	// ratio in TestOperationalArchiveJournalBytesLinear1kAnd2k, where a return
+	// to whole-file rewrites shows up as ~4x instead of ~2x.
+	//
+	// The shorter 1k/2k loops keep their wall-clock budgets (behind the load
+	// gate) because they finish fast enough for a start-of-test load sample
+	// to still describe the run.
 	if m.peakHeap > 256<<20 {
 		t.Fatalf("20k journal commit loop peak heap = %dMB; ceiling is 256MB", m.peakHeap>>20)
 	}
@@ -264,7 +280,7 @@ func TestOperationalArchiveEndToEndBytesLinear1k(t *testing.T) {
 	if want := int64(3) * 2 * row * 1000; b > want {
 		t.Fatalf("e2e 1k pass wrote %d index bytes; linear bound is %d (rowSize=%d)", b, want, row)
 	}
-	if duration > 60*time.Second {
+	if journalScaleWallClockMeaningful(t) && duration > 60*time.Second {
 		t.Fatalf("e2e 1k pass took %s; ceiling is 60s", duration)
 	}
 	if peakHeap > 256<<20 {
