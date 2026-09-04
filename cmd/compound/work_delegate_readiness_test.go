@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"compound/internal/eventstore"
 	"compound/internal/harness"
 	"compound/internal/hookplan"
+	"compound/internal/runattempt"
 	"compound/internal/work"
 )
 
@@ -762,7 +764,7 @@ func buildReadyDelegateHarnessFixture(t *testing.T, workID string) readyDelegate
 	}
 	effective = runtime.EffectiveContract
 	contextPackID = runtime.ContextPack.ID
-	return readyDelegateHarnessFixture{
+	fixture := readyDelegateHarnessFixture{
 		compoundHome:  compoundHome,
 		harnessHome:   harnessHome,
 		workspace:     workspace,
@@ -773,6 +775,103 @@ func buildReadyDelegateHarnessFixture(t *testing.T, workID string) readyDelegate
 		profilePath:   profilePath,
 		now:           now,
 		effective:     effective,
+	}
+	writeDelegateCapacityManifest(t, fixture, false)
+	return fixture
+}
+
+func writeDelegateCapacityManifest(t *testing.T, fixture readyDelegateHarnessFixture, capacity bool) {
+	t.Helper()
+	model := map[string]any{
+		"lane": "fixture lane", "harness": fixture.harness, "provider_route": "zai",
+		"tier": "cheap", "packet_ceiling": "multi-file", "aliases": []string{"/bin/echo"},
+		"capabilities": map[string]any{"build-implement": map[string]any{"level": "capable", "evidence": "fixture"}},
+	}
+	if capacity {
+		model["capacity_source"] = map[string]any{"kind": "codexbar", "freshness_minutes": 15, "ref": "codexbar://provider/zai"}
+	}
+	writeDelegateReadinessJSON(t, filepath.Join(fixture.compoundHome, "registries", "model-capabilities.yaml"), map[string]any{
+		"version": 1, "purpose": "fixture", "capability_classes": []string{"build-implement"},
+		"models":           map[string]any{"fixture-zai": model},
+		"routing_defaults": map[string]any{"build-implement": []string{"fixture-zai"}},
+	})
+}
+
+func TestDelegateReadinessPredictsAdapterCapacityWithoutWriting(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		used       int
+		resetAfter time.Duration
+		age        time.Duration
+		missing    bool
+		wantState  string
+	}{
+		{name: "alive", used: 10, resetAfter: 2 * time.Hour},
+		{name: "expiring", used: 10, resetAfter: 10 * time.Minute, wantState: "expiring"},
+		{name: "exhausted", used: 100, resetAfter: 2 * time.Hour, wantState: "walled"},
+		{name: "missing", missing: true, wantState: "unknown"},
+		{name: "stale", used: 10, resetAfter: 2 * time.Hour, age: time.Hour, wantState: "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := buildReadyDelegateHarnessFixture(t, "work_capacity_"+tc.name)
+			writeDelegateCapacityManifest(t, fixture, true)
+			// Missing/stale evidence must not contact a real capacity provider.
+			binDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(binDir, "codexbar"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			now := fixture.now.Add(time.Minute)
+			if !tc.missing {
+				usage := filepath.Join(fixture.harnessHome, "Library", "Application Support", "CodexBar", "usage-history.jsonl")
+				body, err := json.Marshal(map[string]any{
+					"provider": "zai", "windowKind": "5h", "windowMinutes": 300, "usedPercent": tc.used,
+					"resetsAt": now.Add(tc.resetAfter).Format(time.RFC3339), "sampledAt": now.Add(-tc.age).Format(time.RFC3339),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Dir(usage), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(usage, append(body, '\n'), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			req := work.DelegateHarnessReadinessRequest{
+				HomePath: fixture.compoundHome, HarnessHome: fixture.harnessHome,
+				WorkID: fixture.workID, ContextPackID: fixture.contextPackID, Workspace: fixture.workspace,
+				Harness: fixture.harness, LaneID: fixture.harness, RequestedModelID: "fixture-zai",
+				RequestedProviderRoute: "zai", Command: fixture.binary, Now: now,
+			}
+			before := snapshotFiles(t, fixture.compoundHome)
+			harnessBefore := snapshotFiles(t, fixture.harnessHome)
+			got, err := evaluateDelegateHarnessReadiness(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after := snapshotFiles(t, fixture.compoundHome); !reflect.DeepEqual(before, after) {
+				t.Fatal("readiness mutated the Compound home")
+			}
+			if after := snapshotFiles(t, fixture.harnessHome); !reflect.DeepEqual(harnessBefore, after) {
+				t.Fatal("readiness mutated the harness home")
+			}
+			wantReady := tc.wantState == ""
+			if got.Ready != wantReady {
+				t.Fatalf("readiness=%v want=%v for capacity %s: %v", got.Ready, wantReady, tc.name, got.Details)
+			}
+			if !wantReady && !strings.Contains(strings.Join(got.Details, "\n"), "capacity "+tc.wantState) {
+				t.Fatalf("missing exact capacity refusal %q: %v", tc.wantState, got.Details)
+			}
+			adapter, ok := harness.NewAdapterRegistry(runattempt.Open(fixture.compoundHome)).AdapterByName(fixture.harness)
+			if !ok {
+				t.Fatal("fixture adapter missing")
+			}
+			_, executeErr := adapter.(harness.PreflightAdapter).Preflight(context.Background(), harness.RunInput{Now: now})
+			if (executeErr == nil) != got.Ready {
+				t.Fatalf("preview/execute mismatch: ready=%v execute=%v", got.Ready, executeErr)
+			}
+		})
 	}
 }
 

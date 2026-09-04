@@ -24,16 +24,16 @@ var (
 )
 
 // evaluateDelegateHarnessReadiness is the read-only activation check for the
-// governed delegated-session path. Tuple resolution and capacity answer where
-// work could run; this check proves that Compound's current permission, hook,
-// and instruction authorities are actually ready for that harness.
+// governed delegated-session path. It shares adapter-owned launch prerequisites
+// with execution and checks current permission, hook, and instruction authority.
+// A ready snapshot is not launch authority; execution revalidates independently.
 func evaluateDelegateHarnessReadiness(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
 	harnessName := normalizeDelegateReadinessHarness(req.Harness)
 	if harnessName == "" {
 		return work.DelegateHarnessReadinessResult{}, fmt.Errorf("harness is required")
 	}
 
-	var details []string
+	details := harness.ReadOnlyLaunchReadiness(req.HomePath, harnessName, req.Now)
 	var evidence []work.DelegateHarnessReadinessEvidence
 	if req.CommandOverridden {
 		details = append(details, "executable: raw command override is not attested by the resolved lane tuple")

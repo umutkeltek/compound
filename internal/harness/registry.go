@@ -1,8 +1,10 @@
 package harness
 
 import (
+	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"compound/internal/runattempt"
 )
@@ -63,6 +65,23 @@ func NewAdapterRegistry(store *runattempt.Store) *AdapterRegistry {
 	r.RegisterAdapter(NewPrimeAgentAdapter(store))
 	r.RegisterAdapter(NewOhMyPiAdapter(store))
 	return r
+}
+
+// ReadOnlyLaunchReadiness reports adapter-owned launch prerequisites without
+// minting attempts or recording refusals. Projections use the same read-only
+// revalidation as the final governed process-start guard, not mutating Preflight.
+// This snapshot is evidence, not a reservation: execution must still revalidate.
+func ReadOnlyLaunchReadiness(home, name string, now time.Time) []string {
+	adapter, ok := NewAdapterRegistry(runattempt.Open(home)).AdapterByName(name)
+	if !ok {
+		return []string{"adapter_preflight: no adapter for " + name}
+	}
+	if guard, ok := adapter.(GovernedPermissionAdapter); ok {
+		if _, err := guard.RevalidateGovernedRun(context.Background(), RunInput{Now: now}); err != nil {
+			return []string{"adapter_preflight: " + err.Error()}
+		}
+	}
+	return nil
 }
 
 // RegisterAdapter adds (or replaces) an adapter under its Name(). Returns
