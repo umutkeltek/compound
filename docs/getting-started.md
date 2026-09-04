@@ -2,13 +2,13 @@
 
 > Goal: install Compound, point it at **your** repo, wire it into **your** agent
 > (Claude Code, Codex, or any harness), and see the spine work end to end — one
-> work envelope from creation through a receipt, with the next session starting
-> smarter. Zero personal data required; everything runs locally.
+> work envelope from its briefing through a receipt, with evidence a later
+> session can inspect. Zero personal data required; everything runs locally.
 
 Compound is local-first and makes agent work **accumulate**: it records the
-work as it actually happens — every session leaves claims, receipts, and
-lenses behind, and the next session starts smarter because of them. This
-guide proves that loop on your machine.
+work as it actually happens. This guide proves linked context and durable
+execution history on your machine. Learning and ambient recall require
+separate adjudication; they are not automatic consequences of every session.
 
 Hold the whole system as five places; each step below visits one:
 
@@ -261,7 +261,7 @@ excluded** and why.
 
 ```sh
 cd /path/to/your/project
-compound orient --harness claude-code --cwd . --task "describe what this project does"
+compound orient --harness claude-code --cwd . --task "describe what this project does" --json
 ```
 
 Orientation is bound to real identities before it writes anything. Compound
@@ -271,12 +271,14 @@ directory, and refuses unknown harnesses, missing paths, or files used as a
 workspace. A successful ContextPack therefore describes a registered harness
 and a real project directory rather than a caller-supplied fiction.
 
-You'll see a JSON ContextPack. Key fields:
+You'll see a JSON ContextPack. Copy its `id` (`ctx_...`) into
+`<context_pack_id>` in the next step. Replace all angle-bracket placeholders in
+this guide before running their commands. Key fields:
 
 - `summary_md` — plain-language orientation summary
 - `included[]` — what context was served (and why)
 - `excluded[]` — what was deliberately left out (and why)
-- `task_contract` — the intent you gave
+- `id` — the briefing identity to attach to your work
 
 This is the spine's first move: **discover reality before acting.** The agent
 gets task-scoped context, not a wall of everything.
@@ -290,6 +292,7 @@ links intent → context → action → receipt → transition.
 compound work create \
   --owner "getting-started" \
   --predicate "the harness prints hello and records proof" \
+  --context-pack <context_pack_id> \
   --state ready \
   --by "operator:you"
 ```
@@ -328,19 +331,26 @@ A successful command prints a `run_attempt_id`, captures a transcript, and
 moves the work to `verifying`. The WorkEnvelope forward-links that `ratt_...`
 record, so the run remains reachable from the work on both success and failure.
 
+You can stop after claiming and return in a later terminal. Use
+`compound workbench` and `compound work show <work_id> --json` to recover the
+claimed work and its `ids.context_pack_id`, then run the execution command
+with the same `--by` identity. This is resumption before launch, not automatic
+recovery of an interrupted subprocess; inspect the RunAttempt before retrying
+a command that may already have produced side effects.
+
 ## 5. Close with proof
 
 The successful RunAttempt is already attached to the work. Close the verifying
-work to mint a **Receipt** (what was learned) and a **Transition** (what changed
-and how future behavior should differ).
+work to mint a **Receipt** and a **Transition** recording the demonstration's
+outcome. This is an audit of a local command, so use `audit_only`; printing hello
+does not establish a product improvement or learned memory.
 
 ```sh
 compound work close <work_id> \
   --by "agent:claude-code:session-1" \
   --outcome completed \
-  --move-type outward_delta \
-  --summary "the bounded harness execution produced inspectable proof" \
-  --changed
+  --move-type audit_only \
+  --summary "the local demonstration produced inspectable execution evidence"
 ```
 
 The close output includes both `receipt` and `transition` IDs.
@@ -353,9 +363,9 @@ compound work show <work_id> --json
 compound transition show <transition_id>
 ```
 
-The Transition is the ledger entry: the system moved from state A to B because
-of this work — what changed, which evidence supports it, and how future
-behavior should differ. This is what makes the next session start smarter.
+The Transition records the work's state change and supporting evidence. The
+receipt is available for later inspection; it does not by itself promote memory
+or guarantee inclusion in a later orientation.
 
 ## 6. Wire your agent (hooks)
 
@@ -364,17 +374,19 @@ Compound integrates with agent harnesses through **lifecycle hooks**. See
 version for Claude Code:
 
 ```sh
-# In your project's .claude/settings.json, add hook commands that call:
-compound hook session-start --live --harness claude_code
-compound hook pre-tool-use --live --harness claude_code
-compound hook session-end-adapter --live --harness claude_code
+compound hook install --harness claude-code --scope global
+compound hook install --harness claude-code --scope global --check --json
 ```
+
+The first command installs the managed interactive posture; the second checks
+it without changing settings. This posture observes actions. See the wiring
+guide for the separately guarded executor profiles.
 
 When hooks are wired:
 - **Session start** → agent receives a ContextPack (task-scoped orientation)
-- **Pre-tool-use** → records ActionIntent + PolicyDecision; `--enforce` also
-  publishes the native allow/hold/deny gate
-- **Session end** → work produces a Receipt + Transition (learning persists)
+- **Pre-tool-use** → records ActionIntent + PolicyDecision evidence; the
+  interactive default does not block tool calls
+- **Session end** → the bounded adapter records session outcome evidence
 
 ## 7. Verify the loop
 
@@ -382,11 +394,11 @@ When hooks are wired:
 # The workbench shows your closed work with its receipt:
 compound workbench
 
-# Memory doctor confirms the system is healthy:
-compound memory doctor
+# Check the local runtime home:
+compound home doctor
 
-# Architecture doctor confirms structural integrity:
-compound architecture doctor --strict
+# Check that the recorded work's proof references resolve:
+compound work proof-chain-doctor
 ```
 
 ## What just happened
@@ -395,13 +407,19 @@ compound architecture doctor --strict
 orient           → the briefing (ContextPack: task-scoped context, not a preamble)
 work create      → the job at the door (WorkEnvelope: one stable identity)
 claim/--execute  → the edge at work (RunAttempt + transcript, linked to the work)
-close            → the receipt (Receipt + Transition: proof behavior changed)
+close            → the receipt (Receipt + Transition: recorded execution outcome)
 hooks            → policy evidence; enforced postures can gate before mutation
 ```
 
-**The loop compounds.** The next `compound orient` on this repo includes the
-transition evidence. The next agent session starts smarter because of what the
-last one proved.
+Open a new terminal or agent session and run `compound workbench`, then
+`compound work show <work_id> --json`. The completed work still links to the
+original briefing and execution evidence, so the next session can inspect what
+happened without reconstructing this demonstration.
+
+Automatic recall is a separate step: Compound selects relevant adjudicated
+memory for an orientation. This walkthrough proves durable execution history,
+not automatic learning from every receipt. Continue with the
+[Memory Quickstart](memory-quickstart.md) to set up memory deliberately.
 
 ## Next steps
 

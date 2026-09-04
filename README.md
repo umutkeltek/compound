@@ -64,8 +64,9 @@ Compound + your repo + your agent in 15 minutes.
 
 ```bash
 make install
-compound orient --harness claude-code --cwd /path/to/your/project --task "describe this project"
-compound work create --owner "my-first-task" --predicate "the thing works" --state ready --by "operator:me"
+compound orient --harness claude-code --cwd /path/to/your/project --task "describe this project" --json
+# Replace <context_pack_id> with the returned JSON id (ctx_...).
+compound work create --owner "my-first-task" --predicate "the thing works" --context-pack <context_pack_id> --state ready --by "operator:me"
 compound workbench
 ```
 
@@ -73,16 +74,20 @@ Wire your agent harness: see [Harness Wiring](docs/harness-wiring.md).
 
 ### Inspect one governed execution
 
-This local loop creates work, claims it, runs a bounded harness command, and
-leaves the proof chain inspectable:
+This local demonstration links a briefing to work, runs a bounded command, and
+leaves the execution evidence inspectable. It does not promote memory or prove
+that an agent has learned from the result:
 
 ```bash
 compound home init
 compound doctor
 
+compound orient --harness claude-code --cwd "$PWD" --task "record a local execution demonstration" --json
+# Replace <context_pack_id> with the returned JSON id (ctx_...).
 compound work create \
   --owner "quickstart" \
   --predicate "the harness prints hello and records proof" \
+  --context-pack <context_pack_id> \
   --state ready \
   --by "operator:me"
 
@@ -101,9 +106,8 @@ compound workbench
 compound work close <work_id> \
   --by "operator:me" \
   --outcome completed \
-  --move-type outward_delta \
-  --summary "the bounded harness execution produced inspectable proof" \
-  --changed
+  --move-type audit_only \
+  --summary "the local demonstration produced inspectable execution evidence"
 
 # Copy the transition id from the close output or closed work JSON.
 compound work show <work_id> --json
@@ -112,9 +116,11 @@ compound transition show <transition_id>
 
 A successful command prints a `run_attempt_id`, captures a transcript, and
 moves the work to `verifying`. Closing it then mints the Receipt and Transition.
-The WorkEnvelope keeps the RunAttempt and terminal proof linked, so the next
-state is based on inspectable evidence rather than the harness's claim that it
-succeeded.
+The WorkEnvelope keeps its ContextPack, RunAttempt, and terminal proof linked.
+A later session can inspect them with `compound work show <work_id> --json` and
+check their integrity with `compound work proof-chain-doctor`. Automatic memory
+recall requires relevant adjudicated memory; a completed receipt alone does not
+promote its contents.
 
 Optional local console on port 3777:
 
