@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"compound/internal/candidates"
@@ -32,6 +33,149 @@ const (
 	ProviderRouteKindProviderClass = "provider_class"
 	ProviderRouteKindDirectModel   = "direct_model"
 )
+
+// planCapabilityRouteCacheTTL bounds how long one PlanCapabilityRoute result
+// is reused inside a single process. The director runs the planner once per
+// heartbeat; cache entries older than TTL are evicted so a long-lived process
+// (interactive CLI, daemon) eventually re-probes codexbar and re-reads
+// manifests instead of serving stale lane state forever.
+const planCapabilityRouteCacheTTL = 60 * time.Second
+
+// planCapabilityRouteCacheBuckets rounds now down to planCapabilityRouteCacheTTL
+// so two calls a few seconds apart share a bucket. A finer bucket would defeat
+// the cache; a coarser one risks serving decisions past an upstream freshness
+// window.
+func planCapabilityRouteCacheBuckets(now time.Time) int64 {
+	return now.UTC().Truncate(planCapabilityRouteCacheTTL).UnixNano()
+}
+
+type planCapabilityRouteCacheEntry struct {
+	plan  CapabilityRoutePlan
+	err   error
+	stamp time.Time
+}
+
+var (
+	planCapabilityRouteCacheMu sync.Mutex
+	planCapabilityRouteCache   = map[string]planCapabilityRouteCacheEntry{}
+	planCapabilityRouteStats   struct {
+		hits   int64
+		misses int64
+	}
+)
+
+// ResetPlanCapabilityRouteCache clears the in-process cache and counter state.
+// Tests call this in setup so a previous test's plans do not leak across cases.
+func ResetPlanCapabilityRouteCache() {
+	planCapabilityRouteCacheMu.Lock()
+	defer planCapabilityRouteCacheMu.Unlock()
+	planCapabilityRouteCache = map[string]planCapabilityRouteCacheEntry{}
+	planCapabilityRouteStats.hits = 0
+	planCapabilityRouteStats.misses = 0
+}
+
+// PlanCapabilityRouteCacheStats returns the (hits, misses) counter pair for
+// the in-process planner cache. The director uses these to log cache
+// effectiveness; tests assert the second call hits the cache.
+func PlanCapabilityRouteCacheStats() (hits, misses int64) {
+	planCapabilityRouteCacheMu.Lock()
+	defer planCapabilityRouteCacheMu.Unlock()
+	return planCapabilityRouteStats.hits, planCapabilityRouteStats.misses
+}
+
+// planCapabilityRouteInputSignature folds the identity (mtime + size) of every
+// on-disk input PlanCapabilityRoute reads into the cache key, so a manifest
+// import, a recorded route observation, a lane-speed probe, or a capacity
+// usage write inside one TTL bucket recomputes the plan instead of serving
+// the previous one (TestRouteImportModelCapabilitiesFeedsCapabilityPlan
+// records a cost-doctor observation between two plan calls and expects the
+// second plan to carry the debt). A stat costs microseconds; the ~8s the
+// cache saves is the codexbar probe, not these reads.
+func planCapabilityRouteInputSignature(homePath, usageHistoryPath string) string {
+	paths := []string{
+		ModelCapabilitiesPath(homePath),
+		ModelCapabilitiesSourceAuthorityPath(homePath),
+		LaneSpeedLedgerPath(homePath),
+		filepath.Join(homePath, candidates.InboxDir(candidates.RouteObservation)),
+	}
+	if strings.TrimSpace(usageHistoryPath) != "" {
+		paths = append(paths, usageHistoryPath)
+	}
+	var b strings.Builder
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			b.WriteString("absent;")
+			continue
+		}
+		fmt.Fprintf(&b, "%d:%d;", info.ModTime().UnixNano(), info.Size())
+	}
+	return b.String()
+}
+
+func planCapabilityRouteCacheKey(homePath, capabilityClass string, opts CapabilityRoutePlanOptions, bucket int64) string {
+	var capPtr, latencyBudgetFingerprint string
+	if opts.CapacityConfig != nil {
+		capPtr = opts.CapacityConfig.Paths.UsageHistoryPath
+	}
+	if opts.LatencyBudget != nil {
+		latencyBudgetFingerprint = fmt.Sprintf("%g/%d/%g/%d",
+			opts.LatencyBudget.Interactive.MinTokensPerSec,
+			opts.LatencyBudget.Interactive.MaxTTFTms,
+			opts.LatencyBudget.Batch.MinTokensPerSec,
+			opts.LatencyBudget.Batch.MaxTTFTms,
+		)
+	}
+	// LatencyClass participates in the plan filter (worth-the-wait veto) and
+	// must invalidate the cache even when no LatencyBudget override is passed;
+	// otherwise the second call with a different LatencyClass returns the
+	// previously filtered chain instead of recomputing.
+	return fmt.Sprintf("%s\x00%s\x00%t\x00%t\x00%d\x06%t\x06%s\x00%s\x00%s\x00%d\x00%s",
+		homePath,
+		capabilityClass,
+		opts.PrivacySensitive,
+		opts.SuppressPendingObservations,
+		opts.ExpectedMinutes,
+		opts.Confirm,
+		capPtr,
+		opts.LatencyClass,
+		latencyBudgetFingerprint,
+		bucket,
+		planCapabilityRouteInputSignature(homePath, capPtr),
+	)
+}
+
+func planCapabilityRouteCacheLookup(key string) (CapabilityRoutePlan, error, bool) {
+	planCapabilityRouteCacheMu.Lock()
+	defer planCapabilityRouteCacheMu.Unlock()
+	entry, ok := planCapabilityRouteCache[key]
+	if !ok {
+		return CapabilityRoutePlan{}, nil, false
+	}
+	if time.Since(entry.stamp) > planCapabilityRouteCacheTTL {
+		delete(planCapabilityRouteCache, key)
+		return CapabilityRoutePlan{}, nil, false
+	}
+	return entry.plan, entry.err, true
+}
+
+func planCapabilityRouteCacheStore(key string, plan CapabilityRoutePlan, err error) {
+	planCapabilityRouteCacheMu.Lock()
+	defer planCapabilityRouteCacheMu.Unlock()
+	planCapabilityRouteCache[key] = planCapabilityRouteCacheEntry{plan: plan, err: err, stamp: time.Now()}
+}
+
+func planCapabilityRouteCacheRecordHit() {
+	planCapabilityRouteCacheMu.Lock()
+	defer planCapabilityRouteCacheMu.Unlock()
+	planCapabilityRouteStats.hits++
+}
+
+func planCapabilityRouteCacheRecordMiss() {
+	planCapabilityRouteCacheMu.Lock()
+	defer planCapabilityRouteCacheMu.Unlock()
+	planCapabilityRouteStats.misses++
+}
 
 type CapabilityClaim struct {
 	Level    string `json:"level" yaml:"level"`
@@ -594,13 +738,24 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 	if capabilityClass == "" {
 		return CapabilityRoutePlan{}, fmt.Errorf("capability class required")
 	}
+	cacheKey := planCapabilityRouteCacheKey(homePath, capabilityClass, opts, planCapabilityRouteCacheBuckets(now))
+	if cachedPlan, cachedErr, ok := planCapabilityRouteCacheLookup(cacheKey); ok {
+		planCapabilityRouteCacheRecordHit()
+		return cachedPlan, cachedErr
+	}
+	planCapabilityRouteCacheRecordMiss()
 	manifest, authorityPath, authorityRevision, err := loadModelCapabilitiesSnapshot(homePath)
 	if err != nil {
 		return CapabilityRoutePlan{}, fmt.Errorf("load model capabilities authority: %w", err)
 	}
 	defaults, ok := manifest.RoutingDefaults[capabilityClass]
 	if !ok || len(defaults) == 0 {
-		return CapabilityRoutePlan{}, fmt.Errorf("capability class %q has no routing_defaults entry", capabilityClass)
+		// Cache the negative answer too so a class with no routing_defaults is
+		// reported in constant time on every retry; otherwise the second scan
+		// re-parses YAML and re-validates the manifest for nothing.
+		missingErr := fmt.Errorf("capability class %q has no routing_defaults entry", capabilityClass)
+		planCapabilityRouteCacheStore(cacheKey, CapabilityRoutePlan{}, missingErr)
+		return CapabilityRoutePlan{}, missingErr
 	}
 	sourceAuthorityID, sourceRevision, err := latestModelCapabilitiesSource(homePath, authorityRevision)
 	if err != nil {
@@ -788,6 +943,7 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 			plan.Warnings = append(plan.Warnings, "no lane remains after policy filters")
 		}
 	}
+	planCapabilityRouteCacheStore(cacheKey, plan, nil)
 	return plan, nil
 }
 
