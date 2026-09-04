@@ -26,6 +26,7 @@ import (
 	"compound/internal/policy"
 	"compound/internal/runattempt"
 	"compound/internal/work"
+	"compound/internal/work/executewire"
 )
 
 // cmdDoctor is the single legible operator health surface. The newest organs each expose real state,
@@ -264,7 +265,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	rep := doctorReport{Home: homePath}
-	rep.UnattendedExecute = doctor.BuildUnattendedExecuteRows(homePath, time.Now().UTC(), executeStageCapacityFromSnapshot)
+	rep.UnattendedExecute = doctor.BuildUnattendedExecuteRows(homePath, time.Now().UTC(), executewire.CapacityFromSnapshot)
 
 	// 1) Hooks — per-harness installed/ok/drift/absent via the install CHECK path (writes nothing).
 	base := strings.TrimSpace(flagValue(args, "--base"))

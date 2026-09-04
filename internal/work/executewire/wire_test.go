@@ -1,11 +1,4 @@
-package main
-
-// R3A slice 2 — production wiring tests for the unattended execute stage's
-// hooks. The hooks default fail-closed inside internal/work; cmd/compound is
-// the composition root that binds them to the real routeevidence / policy /
-// actuator resolvers. Each test here pins one wired resolver by driving the
-// seam end to end (store.Continue) against a temp home, so a regression in
-// the wiring shows up as the wrong `skipped=` refusal reason.
+package executewire
 
 import (
 	"context"
@@ -19,10 +12,23 @@ import (
 
 	"compound/internal/envelope"
 	"compound/internal/harness"
+	"compound/internal/home"
 	"compound/internal/routeevidence"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
+
+// R3A slice 2 — production wiring tests for the unattended execute stage's
+// hooks. The hooks default fail-closed inside internal/work; executewire is
+// the composition root that binds them to the real routeevidence / policy /
+// actuator resolvers. Each test here pins one wired resolver by driving the
+// seam end to end (store.Continue) against a temp home, so a regression in
+// the wiring shows up as the wrong `skipped=` refusal reason.
+
+// init installs the production wiring so the seam under test sees the real
+// resolvers (cmd/compound's init() does the same in production; tests in this
+// package run without cmd/compound in the binary).
+func init() { Install() }
 
 // seedExecuteStageManifest writes a minimal model-capabilities authority whose
 // routing_defaults name one lane for work.continue.unattended with the given
@@ -85,12 +91,25 @@ func seedExecuteStageReadyWork(t *testing.T, store *work.Store, id string) {
 	}
 }
 
+// initTestHome creates a fresh compound home for the test using home.Init.
+// Mirrors the cmd/compound initializedTestHome helper (a tiny equivalent that
+// stays inside the executewire test surface so this package has no cmd/
+// dependency).
+func initTestHome(t *testing.T) string {
+	t.Helper()
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("home.Init: %v", err)
+	}
+	return homePath
+}
+
 // restoreExecuteStageHooks snapshots every seam hook the wiring installs and
 // restores them at test end, so a wiring test never leaks its stubs into the
 // package's other tests.
 func restoreExecuteStageHooks(t *testing.T) {
 	t.Helper()
-	restoreRoute := work.SwapExecuteStageRoutePlan(executeStageRouteFromManifest)
+	restoreRoute := work.SwapExecuteStageRoutePlan(RouteFromManifest)
 	restoreCapacity := work.SwapExecuteStageCapacity(func(string, string, time.Time) (float64, bool, error) {
 		return 0, false, nil
 	})
@@ -115,7 +134,7 @@ func restoreExecuteStageHooks(t *testing.T) {
 // gate (the stubbed capacity reader reports stale). If the route hook were
 // still the fail-closed default, this would come back no_route.
 func TestContinueRouteHookReachesCapacityGateWithEligibleLane(t *testing.T) {
-	homePath := initializedTestHome(t)
+	homePath := initTestHome(t)
 	seedExecuteStageManifest(t, homePath, "capable")
 	seedExecuteStageGrant(t, homePath)
 	store, err := work.Open(homePath)
@@ -140,7 +159,7 @@ func TestContinueRouteHookReachesCapacityGateWithEligibleLane(t *testing.T) {
 // TestContinueRouteHookReturnsNoRouteOnAvoidGateRole: a route plan whose only
 // lane claims level avoid (gate_role avoid) must fail closed at the route gate.
 func TestContinueRouteHookReturnsNoRouteOnAvoidGateRole(t *testing.T) {
-	homePath := initializedTestHome(t)
+	homePath := initTestHome(t)
 	seedExecuteStageManifest(t, homePath, "avoid")
 	seedExecuteStageGrant(t, homePath)
 	store, err := work.Open(homePath)
@@ -162,14 +181,14 @@ func TestContinueRouteHookReturnsNoRouteOnAvoidGateRole(t *testing.T) {
 	}
 }
 
-// executeStageCapacityTestConfig isolates the capacity row sources to the
-// fixture home so the reader never touches the operator's real CodexBar feed
+// capacityTestConfig isolates the capacity row sources to the fixture home so
+// the reader never touches the operator's real CodexBar feed
 // (DefaultLaneCapacityConfig points UsageHistoryPath at the user's home).
-func executeStageCapacityTestConfig(t *testing.T, homePath string) {
+func capacityTestConfig(t *testing.T, homePath string) {
 	t.Helper()
-	previous := executeStageCapacityConfig
-	t.Cleanup(func() { executeStageCapacityConfig = previous })
-	executeStageCapacityConfig = func(home string) routeevidence.LaneCapacityConfig {
+	previous := CapacityConfig
+	t.Cleanup(func() { CapacityConfig = previous })
+	CapacityConfig = func(home string) routeevidence.LaneCapacityConfig {
 		cfg := routeevidence.DefaultLaneCapacityConfig(home)
 		cfg.Paths.UsageHistoryPath = filepath.Join(homePath, "usage-history.jsonl")
 		cfg.Paths.QuotaCachePath = ""
@@ -196,7 +215,7 @@ func seedExecuteStageCapacityRow(t *testing.T, homePath string, usedPercent int,
 func wiredCapacityHooks(t *testing.T, homePath string) *bool {
 	t.Helper()
 	restoreExecuteStageHooks(t)
-	restoreCapacity := work.SwapExecuteStageCapacity(executeStageCapacityFromSnapshot)
+	restoreCapacity := work.SwapExecuteStageCapacity(CapacityFromSnapshot)
 	t.Cleanup(restoreCapacity)
 	launched := new(bool)
 	restoreLaunch := work.SwapExecuteStageLaunch(func(_ *work.Store, _, lane, _harness, _ string, _ time.Time) (string, error) {
@@ -213,12 +232,12 @@ func wiredCapacityHooks(t *testing.T, homePath string) *bool {
 // TestContinueCapacityHookPassesFreshSnapshotAt30: a snapshot 2 minutes old
 // at 30% passes the capacity gate and the stage reaches the launch.
 func TestContinueCapacityHookPassesFreshSnapshotAt30(t *testing.T) {
-	homePath := initializedTestHome(t)
+	homePath := initTestHome(t)
 	now := time.Now().UTC()
 	seedExecuteStageManifest(t, homePath, "capable")
 	seedExecuteStageGrant(t, homePath)
 	seedExecuteStageCapacityRow(t, homePath, 30, 2*time.Minute, now)
-	executeStageCapacityTestConfig(t, homePath)
+	capacityTestConfig(t, homePath)
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +245,7 @@ func TestContinueCapacityHookPassesFreshSnapshotAt30(t *testing.T) {
 	seedExecuteStageReadyWork(t, store, "work_cap_fresh")
 	launched := wiredCapacityHooks(t, homePath)
 
-	used, fresh, err := executeStageCapacityFromSnapshot(homePath, "claude_minimax", now)
+	used, fresh, err := CapacityFromSnapshot(homePath, "claude_minimax", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,12 +268,12 @@ func TestContinueCapacityHookPassesFreshSnapshotAt30(t *testing.T) {
 // TestContinueCapacityHookRefusesStaleSnapshot: a snapshot 11 minutes old is
 // outside the 10-minute window — refuse, never skip the check.
 func TestContinueCapacityHookRefusesStaleSnapshot(t *testing.T) {
-	homePath := initializedTestHome(t)
+	homePath := initTestHome(t)
 	now := time.Now().UTC()
 	seedExecuteStageManifest(t, homePath, "capable")
 	seedExecuteStageGrant(t, homePath)
 	seedExecuteStageCapacityRow(t, homePath, 30, 11*time.Minute, now)
-	executeStageCapacityTestConfig(t, homePath)
+	capacityTestConfig(t, homePath)
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +281,7 @@ func TestContinueCapacityHookRefusesStaleSnapshot(t *testing.T) {
 	seedExecuteStageReadyWork(t, store, "work_cap_stale")
 	launched := wiredCapacityHooks(t, homePath)
 
-	_, fresh, err := executeStageCapacityFromSnapshot(homePath, "claude_minimax", now)
+	_, fresh, err := CapacityFromSnapshot(homePath, "claude_minimax", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,12 +303,12 @@ func TestContinueCapacityHookRefusesStaleSnapshot(t *testing.T) {
 // TestContinueCapacityHookRefusesCeiling: a fresh snapshot at 90% refuses —
 // the ceiling is strict less-than.
 func TestContinueCapacityHookRefusesCeiling(t *testing.T) {
-	homePath := initializedTestHome(t)
+	homePath := initTestHome(t)
 	now := time.Now().UTC()
 	seedExecuteStageManifest(t, homePath, "capable")
 	seedExecuteStageGrant(t, homePath)
 	seedExecuteStageCapacityRow(t, homePath, 90, 2*time.Minute, now)
-	executeStageCapacityTestConfig(t, homePath)
+	capacityTestConfig(t, homePath)
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -312,11 +331,11 @@ func TestContinueCapacityHookRefusesCeiling(t *testing.T) {
 // TestContinueCapacityHookRefusesMissingSnapshot: no snapshot at all refuses
 // (fail closed, never skip the check).
 func TestContinueCapacityHookRefusesMissingSnapshot(t *testing.T) {
-	homePath := initializedTestHome(t)
+	homePath := initTestHome(t)
 	now := time.Now().UTC()
 	seedExecuteStageManifest(t, homePath, "capable")
 	seedExecuteStageGrant(t, homePath)
-	executeStageCapacityTestConfig(t, homePath)
+	capacityTestConfig(t, homePath)
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -324,7 +343,7 @@ func TestContinueCapacityHookRefusesMissingSnapshot(t *testing.T) {
 	seedExecuteStageReadyWork(t, store, "work_cap_missing")
 	launched := wiredCapacityHooks(t, homePath)
 
-	_, fresh, err := executeStageCapacityFromSnapshot(homePath, "claude_minimax", now)
+	_, fresh, err := CapacityFromSnapshot(homePath, "claude_minimax", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,26 +391,26 @@ func (a *argvRecordingAdapter) Run(_ context.Context, in harness.RunInput) (harn
 	}, nil
 }
 
-// installRecordingLaunchAdapter swaps executeStageAdapterFor to return a
+// installRecordingLaunchAdapter swaps AdapterFor to return a
 // argvRecordingAdapter and the readiness guard to a one-line allow. The test
 // owns both via closures so the production wire's argv-assembly path can be
 // driven end-to-end without spawning a real subprocess.
 func installRecordingLaunchAdapter(t *testing.T, harnessName string) *argvRecordingAdapter {
 	t.Helper()
 	rec := &argvRecordingAdapter{name: harnessName}
-	prevAdapter := executeStageAdapterFor
-	executeStageAdapterFor = func(home, name string) (harness.Adapter, bool) {
+	prevAdapter := AdapterFor
+	AdapterFor = func(home, name string) (harness.Adapter, bool) {
 		if name == harnessName {
 			return rec, true
 		}
 		return nil, false
 	}
-	t.Cleanup(func() { executeStageAdapterFor = prevAdapter })
-	prevReadiness := executeStageLaunchReadiness
-	executeStageLaunchReadiness = func(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+	t.Cleanup(func() { AdapterFor = prevAdapter })
+	prevReadiness := LaunchReadiness
+	LaunchReadiness = func(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
 		return work.DelegateHarnessReadinessResult{Ready: true}, nil
 	}
-	t.Cleanup(func() { executeStageLaunchReadiness = prevReadiness })
+	t.Cleanup(func() { LaunchReadiness = prevReadiness })
 	return rec
 }
 
@@ -472,12 +491,12 @@ func gitHeadSHA(t *testing.T, targetRoot string) string {
 // `--dangerously-skip-permissions` on argv), the workspace must come from
 // the envelope's git_delivery, and the prompt must be carried through.
 func TestContinueLaunchHookBuildsBypassArgv(t *testing.T) {
-	homePath := initializedTestHome(t)
+	homePath := initTestHome(t)
 	now := time.Now().UTC()
 	seedExecuteStageManifest(t, homePath, "capable")
 	seedExecuteStageGrant(t, homePath)
 	seedExecuteStageCapacityRow(t, homePath, 30, 2*time.Minute, now)
-	executeStageCapacityTestConfig(t, homePath)
+	capacityTestConfig(t, homePath)
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -487,7 +506,7 @@ func TestContinueLaunchHookBuildsBypassArgv(t *testing.T) {
 	// restoreExecuteStageHooks stubs capacity to (0, false); swap in the real
 	// capacity resolver so the gate chain reaches the launch (this test
 	// proves argv-assembly on the green path).
-	restoreCapacity := work.SwapExecuteStageCapacity(executeStageCapacityFromSnapshot)
+	restoreCapacity := work.SwapExecuteStageCapacity(CapacityFromSnapshot)
 	t.Cleanup(restoreCapacity)
 	restoreExecuteStageHooksExcept(t, "capacity")
 
@@ -531,12 +550,12 @@ func TestContinueLaunchHookBuildsBypassArgv(t *testing.T) {
 // not-ready, the wire refuses with lane_unready:<detail>. The envelope must
 // not be advanced past running and no RunAttempt may be minted.
 func TestContinueLaunchHookRefusesLaneUnready(t *testing.T) {
-	homePath := initializedTestHome(t)
+	homePath := initTestHome(t)
 	now := time.Now().UTC()
 	seedExecuteStageManifest(t, homePath, "capable")
 	seedExecuteStageGrant(t, homePath)
 	seedExecuteStageCapacityRow(t, homePath, 30, 2*time.Minute, now)
-	executeStageCapacityTestConfig(t, homePath)
+	capacityTestConfig(t, homePath)
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -549,13 +568,13 @@ func TestContinueLaunchHookRefusesLaneUnready(t *testing.T) {
 	// readiness guard to fire FIRST — capacity is the seam's gate (d)
 	// AFTER the route gate (c); readiness is a launch-side check inside the
 	// wire itself, so we still need to satisfy the seam's capacity gate.
-	restoreCapacity := work.SwapExecuteStageCapacity(executeStageCapacityFromSnapshot)
+	restoreCapacity := work.SwapExecuteStageCapacity(CapacityFromSnapshot)
 	t.Cleanup(restoreCapacity)
-	prevReadiness := executeStageLaunchReadiness
-	executeStageLaunchReadiness = func(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+	prevReadiness := LaunchReadiness
+	LaunchReadiness = func(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
 		return work.DelegateHarnessReadinessResult{Ready: false, Details: []string{"claude tuple not installed", "permission posture unproved"}}, nil
 	}
-	t.Cleanup(func() { executeStageLaunchReadiness = prevReadiness })
+	t.Cleanup(func() { LaunchReadiness = prevReadiness })
 	restoreExecuteStageHooksExcept(t, "capacity")
 
 	res, err := store.Continue(now, work.ContinueOptions{Actor: "codex"})
@@ -586,7 +605,7 @@ func TestContinueLaunchHookRefusesLaneUnready(t *testing.T) {
 // policy + launch resolvers but pin capacity to whatever the caller wants.
 func restoreExecuteStageHooksExcept(t *testing.T, skip string) {
 	t.Helper()
-	restoreRoute := work.SwapExecuteStageRoutePlan(executeStageRouteFromManifest)
+	restoreRoute := work.SwapExecuteStageRoutePlan(RouteFromManifest)
 	restorePolicy := work.SwapExecuteStagePolicyEval(func(ai work.PolicyActionIntentShim, _ work.PolicyConfigShim, _ time.Time) work.PolicyDecisionShim {
 		return work.PolicyDecisionShim{Outcome: "allow", ID: "pol_wire_test_allow"}
 	})
