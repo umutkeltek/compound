@@ -19,6 +19,7 @@ import { genericReviewResolutionActs } from "@/lib/decide-resolution-acts";
 import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
 import type { DecisionEffectKind } from "@/lib/decision-registry";
 import { buildEnumerableActionRequest, decideActIdentity, RATIONALE_REQUIRED_MESSAGE } from "@/lib/governed-action-client";
+import { OPERATOR_INPUTS } from "@/lib/generic-actions";
 import { blockedReasonPlain, ownerUnavailableMessage } from "@/lib/glossary";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
 import { PanelProofContinuity } from "./PanelProofContinuity";
@@ -248,6 +249,10 @@ function EnumerableApply({
   const [completed, setCompleted] = useState<Set<string>>(() => new Set());
 
   const included = remainingDecideMembers(members, excluded, completed);
+  // Operator-input areas label the confirm textarea from the shared spec
+  // (Rationale for review-record areas; Expected effect for hypothesis
+  // approval) instead of hardcoding the rationale wording.
+  const operatorInput = OPERATOR_INPUTS[area];
   const actionCopy = ENUMERABLE_ACTION_COPY[effectKind];
   const isSingleton = representedCount === 1 && members.length === 1;
   const singletonMember = isSingleton ? members[0] : null;
@@ -418,12 +423,12 @@ function EnumerableApply({
             ) : null}
             {requiresRationale ? (
               <label className="mt-3 flex flex-col gap-1">
-                <span className="text-2xs font-bold uppercase text-faint">Rationale <span className="text-crit">*</span></span>
+                <span className="text-2xs font-bold uppercase text-faint">{operatorInput?.label ?? "Rationale"} <span className="text-crit">*</span></span>
                 <textarea
                   value={rationale}
                   onChange={(event) => { setRationale(event.target.value); setError(null); }}
                   required
-                  placeholder="Why is this the right reviewed action? This becomes decision provenance."
+                  placeholder={operatorInput?.placeholder ?? "Why is this the right reviewed action? This becomes decision provenance."}
                   className="min-h-24 resize-y rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
                 />
               </label>

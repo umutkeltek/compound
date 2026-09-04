@@ -104,6 +104,16 @@ func BuildHypothesisPlan(homePath, candidateID, targetPath string, now time.Time
 	if expectedEffect == "" {
 		return HypothesisPlan{}, fmt.Errorf("expected_effect required")
 	}
+	// Fail-closed twin gate (work_6ede073fe356 falsifier 1): a director-drafted
+	// candidate parks with the literal operator placeholder as its
+	// expected_effect. Planning it anyway mints a review_required plan whose
+	// hypothesis literally IS "OPERATOR MUST WRITE: ...", making an unfilled
+	// draft indistinguishable from an approved one. The governed door around
+	// this gate is `compound product hypothesis-approve`, the only verb that
+	// writes the operator's real sentence.
+	if strings.HasPrefix(strings.TrimSpace(expectedEffect), HypothesisDraftExpectedEffectPlaceholderPrefix) {
+		return HypothesisPlan{}, fmt.Errorf("candidate %s expected_effect is still the unfilled operator placeholder (%q): run `compound product hypothesis-approve %s --expected-effect \"<what should the metric do after the change?>\"` first", candidateID, HypothesisDraftExpectedEffectPlaceholderPrefix, candidateID)
+	}
 	changeEvent := firstNonEmpty(c.ChangeEvent, c.Detail)
 	if changeEvent == "" {
 		changeEvent = "candidate product change requires review"

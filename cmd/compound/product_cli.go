@@ -59,7 +59,7 @@ import (
 )
 
 func productUsage() string {
-	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-funnel-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-acquisition <tsv> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric first_time_downloads|paid_first_time_downloads|organic_first_time_downloads|paid_download_share]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | content-draft record --product <id> --platform <" + strings.Join(product.ContentDraftPlatforms(), "|") + "> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] [--generate <generator> --generate-prompt <text> [--generate-param k=v]... [--generate-alt <text>]] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id> | content-queue plan [--json]|content-queue apply --review <review.yaml> [--json] | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | release-plan --product <id> --change <summary> --candidate <ref> --rollback <text> --metric <post-release-metric> [--action-card <id>] [--evidence <ref>] | release-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | release-observe --reviewed <reviewed.json> --execution <receipt_id> --signal <signal_id> [--json] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | release-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-funnel-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-acquisition <tsv> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric first_time_downloads|paid_first_time_downloads|organic_first_time_downloads|paid_download_share]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | content-draft record --product <id> --platform <" + strings.Join(product.ContentDraftPlatforms(), "|") + "> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] [--generate <generator> --generate-prompt <text> [--generate-param k=v]... [--generate-alt <text>]] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id> | content-queue plan [--json]|content-queue apply --review <review.yaml> [--json] | hypothesis-plan --candidate <candidate_id> [--target <file>] | hypothesis-approve <candidate_id> --expected-effect <sentence> [--metrics <m1,m2>] [--window <span>] [--reviewed-by <actor>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | release-plan --product <id> --change <summary> --candidate <ref> --rollback <text> --metric <post-release-metric> [--action-card <id>] [--evidence <ref>] | release-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | release-observe --reviewed <reviewed.json> --execution <receipt_id> --signal <signal_id> [--json] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | release-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -415,11 +415,22 @@ func cmdProduct(args []string) {
 		if plan.TargetHash != "" {
 			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
 		}
-		fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
-		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
-		fmt.Printf("- plan: %s\n", paths.PlanPath)
-		fmt.Printf("- review: %s\n", paths.ReviewPath)
-		fmt.Printf("- signal_draft: %s\n", paths.SignalDraftPath)
+		fmt.Printf("- required_evidence: %d\n- evidence_refs: %d\n", len(plan.ReviewDraft.RequiredEvidence), len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n- review: %s\n- signal_draft: %s\n", paths.PlanPath, paths.ReviewPath, paths.SignalDraftPath)
+	case "hypothesis-approve":
+		rest := args[1:]
+		effect := strings.TrimSpace(valueFlag(rest, "--expected-effect"))
+		if len(rest) == 0 || strings.TrimSpace(rest[0]) == "" || effect == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound product hypothesis-approve <candidate_id> --expected-effect <sentence> [--metrics m1,m2] [--window <span>] [--reviewed-by <actor>]")
+			os.Exit(2)
+		}
+		res, err := product.HypothesisApprove(homePath, product.HypothesisApproveInput{CandidateID: rest[0], ExpectedEffect: effect, Metrics: splitContentDraftEvidence(valueFlag(rest, "--metrics")), ObservationWindow: valueFlag(rest, "--window"), ReviewedBy: valueFlag(rest, "--reviewed-by")}, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product hypothesis-approve:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product hypothesis-approve %s\n\n", res.Candidate.ID)
+		fmt.Printf("- status: approved\n- expected_effect: %s\n- verdict: %s (stays park: pending review keeps the measurement path)\n- next_action: %s\n- transition: %s\n", res.Candidate.ExpectedEffect, res.Candidate.Verdict, res.Candidate.NextAction, res.TransitionID)
 	case "observation-verdict-plan":
 		verdictPath := valueFlag(args[1:], "--verdict")
 		targetPath := valueFlag(args[1:], "--target")
@@ -448,11 +459,8 @@ func cmdProduct(args []string) {
 		if plan.TargetHash != "" {
 			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
 		}
-		fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
-		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
-		fmt.Printf("- plan: %s\n", paths.PlanPath)
-		fmt.Printf("- review: %s\n", paths.ReviewPath)
-		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+		fmt.Printf("- required_evidence: %d\n- evidence_refs: %d\n", len(plan.ReviewDraft.RequiredEvidence), len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n- review: %s\n- review_yaml: %s\n", paths.PlanPath, paths.ReviewPath, paths.ReviewYAMLPath)
 	case "review-plan":
 		hypothesisID := valueFlag(args[1:], "--hypothesis")
 		signalID := valueFlag(args[1:], "--signal")
@@ -483,11 +491,8 @@ func cmdProduct(args []string) {
 		if plan.TargetHash != "" {
 			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
 		}
-		fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
-		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
-		fmt.Printf("- plan: %s\n", paths.PlanPath)
-		fmt.Printf("- review: %s\n", paths.ReviewPath)
-		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+		fmt.Printf("- required_evidence: %d\n- evidence_refs: %d\n", len(plan.ReviewDraft.RequiredEvidence), len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n- review: %s\n- review_yaml: %s\n", paths.PlanPath, paths.ReviewPath, paths.ReviewYAMLPath)
 	case "action-plan":
 		productID := valueFlag(args[1:], "--product")
 		cardID := valueFlag(args[1:], "--card")
@@ -518,11 +523,8 @@ func cmdProduct(args []string) {
 		if plan.TargetHash != "" {
 			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
 		}
-		fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
-		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
-		fmt.Printf("- plan: %s\n", paths.PlanPath)
-		fmt.Printf("- review: %s\n", paths.ReviewPath)
-		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+		fmt.Printf("- required_evidence: %d\n- evidence_refs: %d\n", len(plan.ReviewDraft.RequiredEvidence), len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n- review: %s\n- review_yaml: %s\n", paths.PlanPath, paths.ReviewPath, paths.ReviewYAMLPath)
 	case "source-issue-plan":
 		productID := valueFlag(args[1:], "--product")
 		issueID := valueFlag(args[1:], "--issue")
@@ -553,11 +555,8 @@ func cmdProduct(args []string) {
 		if plan.TargetHash != "" {
 			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
 		}
-		fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
-		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
-		fmt.Printf("- plan: %s\n", paths.PlanPath)
-		fmt.Printf("- review: %s\n", paths.ReviewPath)
-		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+		fmt.Printf("- required_evidence: %d\n- evidence_refs: %d\n", len(plan.ReviewDraft.RequiredEvidence), len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n- review: %s\n- review_yaml: %s\n", paths.PlanPath, paths.ReviewPath, paths.ReviewYAMLPath)
 	case "outbound-dry-run-plan":
 		reviewedReceiptPath := valueFlag(args[1:], "--reviewed-receipt")
 		targetPath := valueFlag(args[1:], "--target")
@@ -586,11 +585,8 @@ func cmdProduct(args []string) {
 		if plan.TargetHash != "" {
 			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
 		}
-		fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
-		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
-		fmt.Printf("- plan: %s\n", paths.PlanPath)
-		fmt.Printf("- review: %s\n", paths.ReviewPath)
-		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+		fmt.Printf("- required_evidence: %d\n- evidence_refs: %d\n", len(plan.ReviewDraft.RequiredEvidence), len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n- review: %s\n- review_yaml: %s\n", paths.PlanPath, paths.ReviewPath, paths.ReviewYAMLPath)
 	case "release-plan":
 		cmdProductReleasePlan(args[1:], homePath, store)
 	case "release-work-plan":

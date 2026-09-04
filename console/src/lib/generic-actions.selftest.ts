@@ -429,6 +429,71 @@ export function runGenericActionsSelfTest(): SelfTestResult {
     }
   }
 
+  // product-hypotheses (work_6ede073fe356): the hypothesis approve verb. The
+  // Go projection (internal/product/review_queue.go) emits argv WITHOUT
+  // --expected-effect; the operator's sentence is required input appended as
+  // ["--expected-effect", text] exactly like the rationale areas.
+  {
+    const argv = ["compound", "product", "hypothesis-approve", "hyp_draft_synth01"];
+    const projection = {
+      items: [
+        {
+          id: "php_synth01",
+          candidate_id: "hyp_draft_synth01",
+          actions: [authorityAction({ id: "product_hypothesis_approve", argv })],
+        },
+      ],
+    };
+    if (!genericActionProjectionEligible("product-hypotheses", argv)) {
+      fail("product-hypotheses approve argv must be projection-eligible after allowlist certification");
+    } else {
+      pass("product-hypotheses approve argv certified by both allowlists");
+    }
+    const none = resolveGenericActionFromProjection(projection, "product-hypotheses", "php_synth01", "product_hypothesis_approve");
+    if (none.ok || none.rejection.gate !== "operator-input-required") {
+      fail(`missing expected effect should reject at operator-input-required, got ${JSON.stringify(none)}`);
+    } else {
+      pass("product-hypotheses without operator input rejected at operator-input-required");
+    }
+    const sentence = "synthetic first-time downloads per 1000 impressions should rise at least 10%; '; $(echo injected) is just text";
+    const withText = resolveGenericActionFromProjection(projection, "product-hypotheses", "php_synth01", "product_hypothesis_approve", sentence);
+    if (!withText.ok) {
+      fail(`expected-effect-supplied resolution should pass, got ${JSON.stringify(withText)}`);
+    } else {
+      const got = withText.action.argv;
+      const idx = got.indexOf("--expected-effect");
+      if (idx === -1 || got[idx + 1] !== sentence) {
+        fail(`expected effect must be appended verbatim as one argv element, got ${JSON.stringify(got)}`);
+      } else {
+        pass("operator expected effect appended verbatim as a single argv element (no shell)");
+      }
+    }
+    const prebaked = resolveGenericActionFromProjection(
+      {
+        items: [
+          {
+            id: "php_prebaked",
+            actions: [
+              authorityAction({
+                id: "product_hypothesis_approve",
+                argv: [...argv, "--expected-effect", "OPERATOR MUST WRITE: what should X do after Y?"],
+              }),
+            ],
+          },
+        ],
+      },
+      "product-hypotheses",
+      "php_prebaked",
+      "product_hypothesis_approve",
+      "real sentence",
+    );
+    if (prebaked.ok) {
+      fail("projected argv already carrying --expected-effect must be refused (placeholder risk)");
+    } else {
+      pass("projected argv with a pre-baked --expected-effect refused (placeholder risk)");
+    }
+  }
+
   if (
     genericActionEffectKind("job-health") === "record" &&
     genericActionEffectKind("panel-verdicts") === "record" &&

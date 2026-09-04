@@ -59,6 +59,7 @@ export type GenericActionGate =
   | "authority-not-allowed"
   | "stale-action-revision"
   | "rationale-required"
+  | "operator-input-required"
   | "projection-unavailable"
   | "not-found";
 
@@ -155,6 +156,7 @@ export const GENERIC_ACTION_ALLOWLIST: Record<string, string[][]> = {
   "lease-hygiene": [["home", "archive-history"]],
   "skill-surfacing": [["capability", "import-surfacing-misses"]],
   "harness-edit-proposals": [["authority", "harness-edit-review"]],
+  "product-hypotheses": [["product", "hypothesis-approve"]],
 };
 
 function hasOwnKey<T extends object>(value: T, key: PropertyKey): boolean {
@@ -173,6 +175,7 @@ const GENERIC_ACTION_EFFECT_KIND: Record<string, GenericActionEffectKind> = {
   "lease-hygiene": "apply",
   "skill-surfacing": "apply",
   "harness-edit-proposals": "record",
+  "product-hypotheses": "record",
 };
 
 export function genericActionEffectKind(area: string): GenericActionEffectKind | null {
@@ -252,11 +255,38 @@ export function reviewResolutionRevision(area: string, rawItem: unknown): string
  * shell string, so arbitrary rationale text is safe by construction.
  * Resolution REJECTS ("rationale-required") when the operator supplied none.
  */
-export const RATIONALE_REQUIRED_AREAS: ReadonlySet<string> = new Set([
-  "route-promotions",
-  "panel-verdicts",
-  "harness-edit-proposals",
-]);
+export type OperatorInputSpec = {
+  /** The CLI flag the operator's text is appended as, e.g. "--rationale". */
+  flag: string;
+  label: string;
+  placeholder: string;
+};
+
+/**
+ * Areas whose CLI REQUIRES an operator-written input the projected argv must
+ * never carry (a pre-baked placeholder must not be runnable). The operator
+ * supplies the text in the confirmation UI; it is appended as its own argv
+ * element ([flag, text]) — an exec argv array, never a shell string, so
+ * arbitrary operator text is safe by construction. Resolution REJECTS when
+ * the operator supplied none.
+ */
+export const OPERATOR_INPUTS: Record<string, OperatorInputSpec> = {
+  "route-promotions": { flag: "--rationale", label: "Rationale", placeholder: "Why is this the right reviewed action? This becomes decision provenance." },
+  "panel-verdicts": { flag: "--rationale", label: "Rationale", placeholder: "Why is this the right reviewed action? This becomes decision provenance." },
+  "harness-edit-proposals": { flag: "--rationale", label: "Rationale", placeholder: "Why is this the right reviewed action? This becomes decision provenance." },
+  // The hypothesis approve verb refuses the "OPERATOR MUST WRITE" placeholder
+  // and requires the operator's own expected-effect sentence; the projected
+  // argv (internal/product/review_queue.go productHypothesisApproveAction)
+  // never carries it.
+  "product-hypotheses": { flag: "--expected-effect", label: "Expected effect", placeholder: "What should the metric do after the change? Your sentence becomes the hypothesis." },
+};
+
+/** Legacy view of OPERATOR_INPUTS: the areas whose operator input is --rationale. */
+export const RATIONALE_REQUIRED_AREAS: ReadonlySet<string> = new Set(
+  Object.entries(OPERATOR_INPUTS)
+    .filter(([, spec]) => spec.flag === "--rationale")
+    .map(([area]) => area),
+);
 
 /**
  * Gate 3 — flat, area-agnostic defense in depth. Reuses the exported
@@ -274,6 +304,7 @@ const GENERIC_GLOBAL_ARGV_ALLOWLIST: string[][] = [
   ["home", "archive-history"],
   ["capability", "import-surfacing-misses"],
   ["authority", "harness-edit-review"],
+  ["product", "hypothesis-approve"],
 ];
 
 /** Client-side honesty probe using the same two allowlists as execution. */
@@ -400,13 +431,14 @@ export function resolveGenericActionFromProjection(
   // --rationale; the projected argv never carries one (asserted below so a
   // future backend placeholder can't sneak past).
   let finalArgv = bareArgv;
-  if (RATIONALE_REQUIRED_AREAS.has(area)) {
-    if (bareArgv.includes("--rationale")) {
+  const operatorInput = OPERATOR_INPUTS[area];
+  if (operatorInput) {
+    if (bareArgv.includes(operatorInput.flag)) {
       return {
         ok: false,
         rejection: {
           gate: "gate-2-allowlist",
-          message: `projected argv for "${actionId}" unexpectedly carries --rationale; refusing to run a placeholder rationale`,
+          message: `projected argv for "${actionId}" unexpectedly carries ${operatorInput.flag}; refusing to run a placeholder`,
         },
       };
     }
@@ -414,13 +446,18 @@ export function resolveGenericActionFromProjection(
     if (!text) {
       return {
         ok: false,
-        rejection: {
-          gate: "rationale-required",
-          message: `action "${actionId}" requires an operator rationale; it becomes provenance on the recorded review`,
-        },
+        rejection: operatorInput.flag === "--rationale"
+          ? {
+              gate: "rationale-required",
+              message: `action "${actionId}" requires an operator rationale; it becomes provenance on the recorded review`,
+            }
+          : {
+              gate: "operator-input-required",
+              message: `action "${actionId}" requires the operator's ${operatorInput.label.toLowerCase()}; it is appended as ${operatorInput.flag} and the verb refuses the placeholder`,
+            },
       };
     }
-    finalArgv = [...bareArgv, "--rationale", text];
+    finalArgv = [...finalArgv, operatorInput.flag, text];
   }
 
   const authority = parseActionAuthorityBundle(action);

@@ -684,6 +684,7 @@ const GENERIC_GATE_STATUS: Record<GenericActionGate, number> = {
   "authority-not-allowed": 409,
   "stale-action-revision": 409,
   "rationale-required": 422,
+  "operator-input-required": 422,
   // A projection that did not answer is a slow door, not a missing item —
   // 503 tells the client "retry", where the old collapse into 404 told the
   // operator their real button pointed at nothing (the cold-cache act 404).

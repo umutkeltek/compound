@@ -7,10 +7,16 @@ import (
 	"path/filepath"
 	"strings"
 
+	"compound/internal/envelope"
 	"compound/internal/reviewartifact"
 )
 
 const productReviewArea = "product-reviews"
+
+// productHypothesisReviewArea is the reviews area the product package files
+// hypothesis plans under (reviewartifact.Dir "product-hypotheses"; see
+// RecordHypothesisPlan).
+const productHypothesisReviewArea = "product-hypotheses"
 
 // AnnotateReviewQueue attaches product-review hints to generic review artifacts.
 // It does not load product ledgers, mutate artifacts, apply reviews, or change
@@ -24,6 +30,8 @@ func AnnotateReviewQueue(report *reviewartifact.QueueReport) {
 		switch item.Area {
 		case productReviewArea:
 			annotateProductReviewItem(item)
+		case productHypothesisReviewArea:
+			annotateProductHypothesisItem(item)
 		case ProductActionReviewArea:
 			annotateProductActionReviewItem(item)
 		case ObservationVerdictReviewArea:
@@ -32,6 +40,96 @@ func AnnotateReviewQueue(report *reviewartifact.QueueReport) {
 			annotateProductReleaseItem(item)
 		}
 	}
+}
+
+// annotateProductHypothesisItem replaces the product-hypotheses area's
+// words-only group fallback ("approve it" with no command) with the governed
+// approve verb as the item's queue Action, so `compound reviews` and the
+// console can fire it. The action's argv deliberately omits
+// --expected-effect — the operator sentence is required input a renderer
+// collects (the route-promotions --rationale precedent); running the bare
+// argv fails closed with "expected_effect required".
+func annotateProductHypothesisItem(item *reviewartifact.QueueItem) {
+	if reviewartifact.TerminalStatus(item.Status) {
+		item.Readiness = "no_action"
+		item.NextAction = "product hypothesis artifact terminal"
+		item.Actions = nil
+		return
+	}
+	candidateID := strings.TrimSpace(item.CandidateID)
+	if candidateID == "" {
+		item.Readiness = "blocked"
+		item.BlockedReason = "hypothesis plan artifact carries no candidate id"
+		item.NextAction = "regenerate product hypothesis-plan so the candidate id is recorded"
+		item.Actions = nil
+		return
+	}
+	item.Readiness = "needs_review"
+	item.BlockedReason = ""
+	action := productHypothesisApproveAction(candidateID)
+	seedProductHypothesisApproveAuthority(&action, *item)
+	item.Actions = []reviewartifact.Action{action}
+	item.NextAction = "write your expected effect and approve the hypothesis"
+	if plan, err := hypothesisPlanFromQueueItem(*item); err == nil && strings.HasPrefix(strings.TrimSpace(plan.ExpectedEffect), HypothesisDraftExpectedEffectPlaceholderPrefix) {
+		// A plan minted before the placeholder gate landed (legacy row): the
+		// hypothesis literally is the blank. Approval is the repair path —
+		// re-plan after it succeeds.
+		item.BlockedReason = "plan was minted from an unfilled draft: its expected_effect is the operator placeholder"
+		item.NextAction = "approve the candidate with your expected effect, then re-run product hypothesis-plan"
+	}
+}
+
+// productHypothesisApproveAction emits the one clean-argv (argv[0]=="compound",
+// no shell) action for a parked hypothesis awaiting the operator's sentence.
+// The CLI requires --expected-effect; it is deliberately omitted from Argv —
+// a governed renderer appends ["--expected-effect", <operator text>] at
+// execution time (the route-promotions --rationale precedent), and the verb
+// itself refuses the "OPERATOR MUST WRITE" placeholder, so no placeholder
+// sentence can ever run through this action.
+func productHypothesisApproveAction(candidateID string) reviewartifact.Action {
+	argv := []string{"compound", "product", "hypothesis-approve", candidateID}
+	return reviewartifact.Action{
+		ID:             "product_hypothesis_approve",
+		Label:          "Approve product hypothesis",
+		Command:        shellJoin([]string{"compound", "product", "hypothesis-approve", candidateID, "--expected-effect", "<what should the metric do after the change?>"}),
+		Argv:           argv,
+		RequiresReview: true,
+		PolicyNote:     "writes the operator expected_effect and one approval receipt; verdict stays park so the hypothesis stays in pending review; refuses the OPERATOR MUST WRITE placeholder",
+	}
+}
+
+func seedProductHypothesisApproveAuthority(action *reviewartifact.Action, item reviewartifact.QueueItem) {
+	workID := reviewartifact.AuthoritySeedWorkID(item, "")
+	if workID == "" {
+		return
+	}
+	spec := reviewartifact.ActionAuthoritySeedSpec{
+		WorkID: workID, CreatedAt: item.CreatedAt, ProducerName: "compound/internal/product",
+		Capability: "review.product_hypothesis", Action: "product_hypothesis_approve",
+		Target:        envelope.ActionTarget{Kind: "product_hypothesis_candidate", ID: strings.TrimSpace(item.CandidateID), Path: item.JSONPath},
+		MutationClass: "local_reversible", Reversibility: "easy", BlastRadius: "local",
+		Preview:      "Write the reviewed expected_effect onto the parked hypothesis candidate and record one approval receipt; the verdict stays park and no product surface changes.",
+		RollbackPlan: "Approve again with a corrected sentence; the approval transition log is append-only.",
+		Privacy:      "private", Risk: "tier1", TargetScope: "private",
+		ExpectedReceipt: "One product_hypothesis_approve loop transition for the candidate.",
+		ExpectedProof:   []string{"product_hypothesis:" + strings.TrimSpace(item.CandidateID)},
+	}
+	_ = reviewartifact.SeedActionAuthority(action, spec)
+}
+
+func hypothesisPlanFromQueueItem(item reviewartifact.QueueItem) (HypothesisPlan, error) {
+	var plan HypothesisPlan
+	if strings.TrimSpace(item.JSONPath) == "" {
+		return plan, fmt.Errorf("product hypothesis plan path missing")
+	}
+	data, err := os.ReadFile(item.JSONPath)
+	if err != nil {
+		return plan, err
+	}
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return plan, err
+	}
+	return plan, nil
 }
 
 func annotateProductReviewItem(item *reviewartifact.QueueItem) {

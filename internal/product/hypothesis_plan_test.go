@@ -2,10 +2,12 @@ package product
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/candidates"
 	"compound/internal/mem"
@@ -167,6 +169,71 @@ func TestHypothesisPlanAcceptsDistillerShapedProductCandidate(t *testing.T) {
 		plan.ObservationWindow != "review window required" {
 		t.Fatalf("distiller-shaped plan = %+v", plan)
 	}
+}
+
+// TestHypothesisPlanRefusesOperatorPlaceholderExpectedEffect is falsifier 1 of
+// the hypothesis-approve packet (work_6ede073fe356): BuildHypothesisPlan must
+// REFUSE a director-drafted candidate whose expected_effect still starts with
+// the "OPERATOR MUST WRITE" placeholder, and the error must name the
+// placeholder. Before the gate, the placeholder sailed straight through and
+// minted a review_required plan whose hypothesis_key literally contained
+// "operator_must_write_what_should..." — an unfilled draft was from that
+// point indistinguishable from an approved one.
+func TestHypothesisPlanRefusesOperatorPlaceholderExpectedEffect(t *testing.T) {
+	home := t.TempDir()
+	productID := "product:synth-notes"
+	changeEvent := "v2.4 ships the new onboarding screen"
+	candidateID := mintHypothesisDraftFixture(t, home, productID, changeEvent, []string{"synthetic_first_time_downloads"})
+
+	plan, err := BuildHypothesisPlan(home, candidateID, "", tProduct)
+	if err == nil {
+		t.Fatalf("BuildHypothesisPlan accepted the unfilled draft placeholder as the hypothesis (plan %s, key %q)", plan.ID, plan.HypothesisKey)
+	}
+	if !strings.Contains(err.Error(), HypothesisDraftExpectedEffectPlaceholderPrefix) {
+		t.Fatalf("refusal must name the placeholder %q, got: %v", HypothesisDraftExpectedEffectPlaceholderPrefix, err)
+	}
+	if _, err := BuildHypothesisPlan(home, candidateID, "", tProduct); err == nil {
+		t.Fatal("second call must also refuse: the gate cannot depend on call order")
+	}
+}
+
+// mintHypothesisDraftFixture plants the exact candidate shape the unlanded
+// feat/director-hypothesis-draft-20260904 branch's MintHypothesisDraftCandidate
+// writes (verdict park, result unknown, placeholder expected_effect formatted
+// from the shared constant), without depending on that branch. Synthetic
+// product ids only.
+func mintHypothesisDraftFixture(t *testing.T, home, productID, changeEvent string, metrics []string) string {
+	t.Helper()
+	candidateID := "hyp_draft_" + stableID("", productID, changeEvent)
+	candidate := HypothesisCandidate{
+		SchemaVersion:     ProductHypothesisCandidate,
+		ID:                candidateID,
+		Kind:              string(candidates.ProductHypothesis),
+		ProductID:         productID,
+		ChangeEvent:       changeEvent,
+		ExpectedEffect:    fmt.Sprintf(HypothesisDraftExpectedEffectPlaceholder, firstNonEmptyOf(metrics, "the metric"), changeEvent),
+		Metrics:           metrics,
+		ObservationWindow: "review window required",
+		Result:            "unknown",
+		NextAction:        "operator reviews the draft and replaces the placeholder expected_effect before hypothesis-plan",
+		Verdict:           candidates.Park,
+		EvidenceRefs:      []string{"product_signal:sig_synth_window"},
+		CreatedAt:         tProduct.Format(time.RFC3339),
+	}
+	if err := writeHypothesisCandidate(home, candidate); err != nil {
+		t.Fatal(err)
+	}
+	return candidateID
+}
+
+// firstNonEmptyOf is the test-side fallback for an optional primary metric.
+func firstNonEmptyOf(values []string, fallback string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return fallback
 }
 
 // TestReadHypothesisPlanCandidateRejectsPathTraversalID is the S3 red

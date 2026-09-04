@@ -3,7 +3,7 @@ import { parseActionAuthorityBundle } from "@/lib/action-authority";
 import { ago, toDate } from "@/lib/time";
 import type { AttentionReport } from "@/lib/attention";
 import { type DecisionEffectKind, type DecisionOption, type FieldSpec, specFor } from "@/lib/decision-registry";
-import { genericActionEffectKind, genericActionProjectionEligible, genericActionRevision, reviewResolutionRevision, RATIONALE_REQUIRED_AREAS } from "@/lib/generic-actions";
+import { genericActionEffectKind, genericActionProjectionEligible, genericActionRevision, reviewResolutionRevision, OPERATOR_INPUTS } from "@/lib/generic-actions";
 import { areaPlain } from "@/lib/glossary";
 import { areaOf } from "@/lib/review-data";
 import type { AuthorityFace, ObjectFace } from "@/representation";
@@ -855,7 +855,7 @@ function strictAllowedAct(
         representedCount,
         unavailableCount: Math.max(0, representedCount - enumerable.length),
         requiresConfirmation: enumerable.some((member) => member.requiresReview),
-        requiresRationale: RATIONALE_REQUIRED_AREAS.has(area),
+        requiresRationale: Boolean(OPERATOR_INPUTS[area]),
         effectKind,
         policyNote: "",
       };
@@ -933,7 +933,7 @@ function resolveAct(
         representedCount,
         unavailableCount: Math.max(0, representedCount - enumerable.length),
         requiresConfirmation: sba.requires_review !== false,
-        requiresRationale: RATIONALE_REQUIRED_AREAS.has(area),
+        requiresRationale: Boolean(OPERATOR_INPUTS[area]),
         effectKind: genericEffect,
         policyNote: operatorPolicyNote(area, str(sba.policy_note)),
       };
@@ -965,7 +965,7 @@ function resolveAct(
         representedCount,
         unavailableCount: Math.max(0, representedCount - enumerable.length),
         requiresConfirmation: enumerable.some((member) => member.requiresReview),
-        requiresRationale: RATIONALE_REQUIRED_AREAS.has(area),
+        requiresRationale: Boolean(OPERATOR_INPUTS[area]),
         effectKind: genericEffect,
         policyNote: operatorPolicyNote(area, sharedPolicy),
       };

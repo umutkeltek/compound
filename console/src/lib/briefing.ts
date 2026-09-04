@@ -15,7 +15,7 @@ import { arr, num, str, type Json, type ProjectionStatus } from "@/lib/compound"
 import { parseActionAuthorityBundle } from "@/lib/action-authority";
 import type { AuthorityFace } from "@/representation";
 import { toDate } from "@/lib/time";
-import { genericActionProjectionEligible, genericActionRevision, RATIONALE_REQUIRED_AREAS } from "@/lib/generic-actions";
+import { genericActionProjectionEligible, genericActionRevision, OPERATOR_INPUTS } from "@/lib/generic-actions";
 import { specFor } from "@/lib/decision-registry";
 import { LEASE_HISTORY_LABEL } from "@/components/agents/executor-model";
 import type { ContinueRequest } from "@/components/ContinueButton";
@@ -159,7 +159,7 @@ export function headlineAct(
       label,
       argv,
       requiresConfirmation,
-      rationaleRequired: RATIONALE_REQUIRED_AREAS.has(area),
+      rationaleRequired: Boolean(OPERATOR_INPUTS[area]),
     };
   }
 
