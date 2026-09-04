@@ -134,12 +134,26 @@ const (
 	OperationalArchiveSchemaVersion = "compound.operational_archive.v0.1"
 	OperationalArchiveIndexRel      = "archives/operational/index.jsonl"
 	OperationalArchiveFilesRel      = "archives/operational/files"
+	// OperationalArchiveCursorRel is the durable scan cursor for bounded
+	// archive-history passes (see OperationalArchiveCursor).
+	OperationalArchiveCursorRel = "archives/operational/scan-cursor.json"
+	// operationalArchiveScanWindowFloor bounds the memory-candidate inbox
+	// body-read window from below: even a tiny --max-files gets a sane scan
+	// batch, and a full window keeps the heartbeat's per-tick listing cost
+	// proportional to the batch instead of to everything ever adjudicated.
+	operationalArchiveScanWindowFloor = 2048
 )
 
 type OperationalArchiveOptions struct {
 	DryRun bool
 	Kinds  []string
 	Paths  []string
+	// MaxFiles bounds how many files one pass may archive (move). 0 (the
+	// default) is unbounded — identical sweep semantics to before the flag
+	// existed. A bounded pass that stops early persists the scan cursor so
+	// the next pass with the same --kind selection resumes after the last
+	// examined candidate instead of rescanning.
+	MaxFiles int
 }
 
 type OperationalRestoreOptions struct {
@@ -176,10 +190,34 @@ type OperationalArchiveReport struct {
 	RestoredAt    string                        `json:"restored_at,omitempty"`
 	ArchivedCount int                           `json:"archived_count,omitempty"`
 	RestoredCount int                           `json:"restored_count,omitempty"`
+	MaxFiles      int                           `json:"max_files,omitempty"`
+	ResumedFrom   map[string]string             `json:"resumed_from,omitempty"`
 	Counts        map[string]int                `json:"counts,omitempty"`
 	Entries       []OperationalArchiveEntry     `json:"entries"`
 	Kept          []OperationalArchiveKeptEntry `json:"kept,omitempty"`
 }
+
+// OperationalArchiveCursor is the durable resume position of a bounded
+// archive-history pass. Kinds is the scan signature (sorted): the cursor only
+// applies to a later pass that selects exactly the same kinds, so a cursor
+// left by a memory-candidate drain never hides work candidates from a mixed
+// sweep. After maps kind -> OriginalPath of the last candidate that pass
+// EXAMINED (listed and considered, whether archived, kept, or skipped); the
+// next pass skips candidates of that kind at or before that path. Entries
+// skipped under a cursor are not lost: any pass that completes without
+// stopping early (no bound, or the bound was never reached) clears the
+// cursor, and the following pass re-examines everything from the start —
+// so kept entries whose state later changes are picked up again.
+type OperationalArchiveCursor struct {
+	SchemaVersion string            `json:"schema_version"`
+	Kinds         []string          `json:"kinds"`
+	After         map[string]string `json:"after,omitempty"`
+	UpdatedAt     string            `json:"updated_at,omitempty"`
+}
+
+const OperationalArchiveCursorSchemaVersion = "compound.operational_archive_scan_cursor.v0.1"
+
+const operationalArchiveCursorName = "scan-cursor.json"
 
 type operationalCandidate struct {
 	Kind         string
@@ -616,11 +654,15 @@ func archiveOperationalHistoryLocked(homePath string, opts OperationalArchiveOpt
 	if err := requireHealthyHome(homePath); err != nil {
 		return OperationalArchiveReport{}, err
 	}
+	if opts.MaxFiles < 0 {
+		return OperationalArchiveReport{}, fmt.Errorf("--max-files must be non-negative, got %d", opts.MaxFiles)
+	}
 	report := OperationalArchiveReport{
 		SchemaVersion: OperationalArchiveSchemaVersion,
 		Home:          homePath,
 		DryRun:        opts.DryRun,
 		ArchivedAt:    now.UTC().Format(time.RFC3339),
+		MaxFiles:      opts.MaxFiles,
 		Counts:        map[string]int{},
 	}
 	// Reconcile any pending journal lines from a prior interrupted run BEFORE
@@ -640,11 +682,38 @@ func archiveOperationalHistoryLocked(homePath string, opts OperationalArchiveOpt
 	for _, entry := range active {
 		alreadyArchived[entry.OriginalPath] = true
 	}
-	candidates, err := operationalArchiveCandidates(homePath, opts, now)
+	// The scan cursor only applies to a real bounded pass with the same kind
+	// selection; --dry-run previews the full sweep (no cursor read or write,
+	// unbounded memory window — a preview must match what an unbounded pass
+	// would do).
+	scan := operationalArchiveScan{memoryLimit: operationalArchiveScanWindowFloor}
+	if opts.DryRun {
+		scan.memoryLimit = 0
+	} else {
+		if cursor := loadOperationalArchiveCursor(homePath); cursor != nil && operationalArchiveCursorApplies(cursor, opts.Kinds) {
+			scan.afterByKind = cursor.After
+			report.ResumedFrom = cursor.After
+		}
+		if opts.MaxFiles > scan.memoryLimit {
+			scan.memoryLimit = opts.MaxFiles
+		}
+	}
+	candidates, memoryLastExamined, memoryWindowClipped, err := operationalArchiveCandidates(homePath, opts, now, scan)
 	if err != nil {
 		return OperationalArchiveReport{}, err
 	}
+	lastExamined := map[string]string{}
+	hitBound := false
 	for _, cand := range candidates {
+		if opts.MaxFiles > 0 && len(report.Entries) >= opts.MaxFiles {
+			// The bound stopped the pass with candidates still ahead of the
+			// cursor-to-be. Everything examined so far is recorded below.
+			hitBound = true
+			break
+		}
+		if after, ok := lastExamined[cand.Kind]; !ok || cand.OriginalPath > after {
+			lastExamined[cand.Kind] = cand.OriginalPath
+		}
 		if cand.KeptReason != "" {
 			report.Kept = append(report.Kept, OperationalArchiveKeptEntry{
 				Kind:         cand.Kind,
@@ -676,7 +745,209 @@ func archiveOperationalHistoryLocked(homePath string, opts OperationalArchiveOpt
 		report.Counts[committed.Kind]++
 	}
 	report.ArchivedCount = len(report.Entries)
+	if !opts.DryRun {
+		if hitBound || memoryWindowClipped {
+			// Persist where the scan stopped so the next bounded pass with
+			// the same kind selection resumes instead of rescanning. When the
+			// loop ran to the end of the listing, the memory cursor advances
+			// to the window's last examined entry — including windows that
+			// yielded nothing archivable, so parked runs cannot stall the
+			// drain. When the bound cut the loop mid-list, the loop-derived
+			// position is the conservative one (listed-but-unexamined
+			// candidates stay eligible next pass).
+			if !hitBound && memoryLastExamined != "" {
+				lastExamined["memory-candidate"] = memoryLastExamined
+			}
+			merged := map[string]string{}
+			for kind, after := range scan.afterByKind {
+				merged[kind] = after
+			}
+			for kind, after := range lastExamined {
+				merged[kind] = after
+			}
+			if err := saveOperationalArchiveCursor(homePath, opts, merged, now); err != nil {
+				return OperationalArchiveReport{}, err
+			}
+		} else if err := clearOperationalArchiveCursor(homePath); err != nil {
+			return OperationalArchiveReport{}, err
+		}
+	}
 	return report, nil
+}
+
+// operationalArchiveScan carries the resume hints into candidate listing.
+// afterByKind maps kind -> last examined OriginalPath; memoryLimit bounds the
+// memory-candidate inbox body-read window (the one listing whose cost grows
+// with everything ever adjudicated).
+type operationalArchiveScan struct {
+	afterByKind map[string]string
+	memoryLimit int
+}
+
+func (scan operationalArchiveScan) after(kind string) string {
+	if scan.afterByKind == nil {
+		return ""
+	}
+	return scan.afterByKind[kind]
+}
+
+// operationalArchiveCursorApplies reports whether a loaded cursor was written
+// by a pass with the same kind selection. A cursor from a different selection
+// is ignored (and will be overwritten or cleared by this pass).
+func operationalArchiveCursorApplies(cursor *OperationalArchiveCursor, kinds []string) bool {
+	selected, err := operationalArchiveKinds(kinds)
+	if err != nil {
+		return false
+	}
+	return operationalArchiveCursorSignature(cursor.Kinds) == operationalArchiveCursorSignature(sortedStringKeys(selected))
+}
+
+// operationalArchiveCursorSignature is the sorted comma-joined kind list a
+// cursor applies to. Duplicates are collapsed so "--kind work,work" and
+// "--kind work" share a signature.
+func operationalArchiveCursorSignature(kinds []string) string {
+	seen := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		if kind != "" {
+			seen = append(seen, kind)
+		}
+	}
+	sort.Strings(seen)
+	return strings.Join(seen, ",")
+}
+
+func OperationalArchiveCursorPath(homePath string) string {
+	return filepath.Join(homePath, OperationalArchiveCursorRel)
+}
+
+func loadOperationalArchiveCursor(homePath string) *OperationalArchiveCursor {
+	absHome, err := filepath.Abs(expandUser(homePath))
+	if err != nil {
+		return nil
+	}
+	data, err := ReadRootedRegularFile(absHome, OperationalArchiveCursorPath(absHome), "operational archive scan cursor")
+	if err != nil {
+		return nil
+	}
+	var cursor OperationalArchiveCursor
+	if err := json.Unmarshal(data, &cursor); err != nil {
+		return nil
+	}
+	if cursor.SchemaVersion != OperationalArchiveCursorSchemaVersion {
+		return nil
+	}
+	return &cursor
+}
+
+// saveOperationalArchiveCursor durably persists the scan cursor through the
+// same temp-file + CAS publication used for the index, so a concurrent cursor
+// writer fails closed instead of being silently overwritten. The cursor is a
+// small constant-size file: rewriting it costs the cursor, not the index.
+func saveOperationalArchiveCursor(homePath string, opts OperationalArchiveOptions, after map[string]string, now time.Time) error {
+	if len(after) == 0 {
+		return clearOperationalArchiveCursor(homePath)
+	}
+	kinds, err := operationalArchiveKinds(opts.Kinds)
+	if err != nil {
+		return err
+	}
+	cursor := OperationalArchiveCursor{
+		SchemaVersion: OperationalArchiveCursorSchemaVersion,
+		Kinds:         sortedStringKeys(kinds),
+		After:         after,
+		UpdatedAt:     now.UTC().Format(time.RFC3339),
+	}
+	data, err := json.MarshalIndent(cursor, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	indexRoot, closeRoots, err := openOperationalArchiveIndexRoot(homePath, "operational archive scan cursor")
+	if err != nil {
+		return err
+	}
+	defer closeRoots()
+	var expected []byte
+	var expectedInfo os.FileInfo
+	if prior, _, info, err := readOperationalArchiveRootFile(indexRoot, operationalArchiveCursorName, "operational archive scan cursor"); err == nil {
+		expected, expectedInfo = prior, info
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	mode := os.FileMode(0o644)
+	if expectedInfo != nil {
+		mode = expectedInfo.Mode().Perm()
+	}
+	_, publication, err := atomicRewriteOperationalArchiveRootFile(indexRoot, operationalArchiveCursorName, data, mode, "cursor", expected, expectedInfo)
+	if err != nil {
+		if publication != nil && publication.State() == RootedFileCASAmbiguous {
+			return fmt.Errorf("operational archive scan cursor publication requires manual repair: %w", err)
+		}
+		return err
+	}
+	if err := publication.Commit(); err != nil {
+		return fmt.Errorf("operational archive scan cursor publication commit failed: %w", err)
+	}
+	return nil
+}
+
+func clearOperationalArchiveCursor(homePath string) error {
+	absHome, err := filepath.Abs(expandUser(homePath))
+	if err != nil {
+		return err
+	}
+	if _, err := ReadRootedRegularFile(absHome, OperationalArchiveCursorPath(absHome), "operational archive scan cursor"); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	indexRoot, closeRoots, err := openOperationalArchiveIndexRoot(homePath, "operational archive scan cursor")
+	if err != nil {
+		return err
+	}
+	defer closeRoots()
+	if err := indexRoot.Remove(operationalArchiveCursorName); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return syncOperationalArchiveRoot(indexRoot)
+}
+
+// openOperationalArchiveIndexRoot opens the pinned archives/operational root
+// used by both the index journal and the scan cursor.
+func openOperationalArchiveIndexRoot(homePath, kind string) (*os.Root, func(), error) {
+	absHome, err := filepath.Abs(filepath.Clean(homePath))
+	if err != nil {
+		return nil, nil, err
+	}
+	homeRoot, err := os.OpenRoot(absHome)
+	if err != nil {
+		return nil, nil, err
+	}
+	indexParentRel := filepath.Dir(filepath.FromSlash(OperationalArchiveIndexRel))
+	indexDisplay := filepath.Join(absHome, OperationalArchiveIndexRel)
+	if _, err := ensureRootedDirectories(homeRoot, indexParentRel, indexDisplay, kind, 0o755); err != nil {
+		_ = homeRoot.Close()
+		return nil, nil, err
+	}
+	indexRoot, err := homeRoot.OpenRoot(indexParentRel)
+	if err != nil {
+		_ = homeRoot.Close()
+		return nil, nil, err
+	}
+	return indexRoot, func() {
+		_ = indexRoot.Close()
+		_ = homeRoot.Close()
+	}, nil
+}
+
+func sortedStringKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for key := range m {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func RestoreOperationalArchive(homePath string, opts OperationalRestoreOptions, now time.Time) (OperationalArchiveReport, error) {
@@ -841,63 +1112,74 @@ var operationalArchiveBeforeJournalCommit = func(_ OperationalArchiveEntry) {}
 // canonical preimage has been validated but before publication.
 var operationalArchiveBeforeIndexReplace = func(_ string) {}
 
-func operationalArchiveCandidates(homePath string, opts OperationalArchiveOptions, now time.Time) ([]operationalCandidate, error) {
+// operationalArchiveCandidates lists this pass's candidates. scan carries the
+// durable-cursor resume hints (afterByKind) and the memory-candidate body-read
+// window. The second return is the OriginalPath of the last memory inbox
+// entry the window examined (empty when the memory kind was not selected);
+// the third reports that the window was cut before the end of the directory —
+// the caller persists the cursor so the next bounded pass resumes instead of
+// rescanning the whole inbox.
+func operationalArchiveCandidates(homePath string, opts OperationalArchiveOptions, now time.Time, scan operationalArchiveScan) ([]operationalCandidate, string, bool, error) {
 	kinds, err := operationalArchiveKinds(opts.Kinds)
 	if err != nil {
-		return nil, err
+		return nil, "", false, err
 	}
 	paths, err := operationalArchivePathFilter(opts.Paths)
 	if err != nil {
-		return nil, err
+		return nil, "", false, err
 	}
 	var out []operationalCandidate
 	if kinds["work"] {
-		candidates, err := terminalWorkCandidates(homePath)
+		candidates, err := terminalWorkCandidates(homePath, scan)
 		if err != nil {
-			return nil, err
+			return nil, "", false, err
 		}
 		out = append(out, candidates...)
 	}
 	if kinds["lease"] {
-		candidates, err := staleLeaseCandidates(homePath)
+		candidates, err := staleLeaseCandidates(homePath, scan)
 		if err != nil {
-			return nil, err
+			return nil, "", false, err
 		}
 		out = append(out, candidates...)
 	}
 	if kinds["review"] {
-		candidates, err := terminalReviewCandidates(homePath)
+		candidates, err := terminalReviewCandidates(homePath, scan)
 		if err != nil {
-			return nil, err
+			return nil, "", false, err
 		}
 		out = append(out, candidates...)
 	}
 	if kinds["comparison"] {
-		candidates, err := terminalComparisonCandidates(homePath)
+		candidates, err := terminalComparisonCandidates(homePath, scan)
 		if err != nil {
-			return nil, err
+			return nil, "", false, err
 		}
 		out = append(out, candidates...)
 	}
 	if kinds["create-plan"] {
-		candidates, err := staleCreatePlanCandidates(homePath, now)
+		candidates, err := staleCreatePlanCandidates(homePath, now, scan)
 		if err != nil {
-			return nil, err
+			return nil, "", false, err
 		}
 		out = append(out, candidates...)
 		if len(paths) > 0 {
 			candidates, err := explicitCreatePlanCandidates(homePath, paths, now)
 			if err != nil {
-				return nil, err
+				return nil, "", false, err
 			}
 			out = append(out, candidates...)
 		}
 	}
+	memoryWindowClipped := false
+	memoryLastExamined := ""
 	if kinds["memory-candidate"] {
-		candidates, err := terminalMemoryCandidateCandidates(homePath)
+		candidates, lastExamined, clipped, err := terminalMemoryCandidateCandidates(homePath, scan)
 		if err != nil {
-			return nil, err
+			return nil, "", false, err
 		}
+		memoryWindowClipped = clipped
+		memoryLastExamined = lastExamined
 		out = append(out, candidates...)
 	}
 	if len(paths) > 0 {
@@ -912,7 +1194,7 @@ func operationalArchiveCandidates(homePath string, opts OperationalArchiveOption
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].OriginalPath < out[j].OriginalPath
 	})
-	return out, nil
+	return out, memoryLastExamined, memoryWindowClipped, nil
 }
 
 func operationalArchiveKinds(values []string) (map[string]bool, error) {
@@ -951,17 +1233,40 @@ func operationalArchiveKinds(values []string) (map[string]bool, error) {
 // non-regular, unreadable) fails the derive closed with its typed
 // candidates.Corruption instead of archiving an aliased or followed body.
 // Non-candidate residue (temp files, other names) stays skipped as before.
-func terminalMemoryCandidateCandidates(homePath string) ([]operationalCandidate, error) {
+//
+// scan bounds the walk: afterByKind["memory-candidate"] resumes strictly
+// after the last examined entry (durable-cursor hint), and memoryLimit bounds
+// how many entry BODIES one pass reads. Returns the candidates, the
+// OriginalPath of the last entry the WINDOW examined (terminal or not — the
+// cursor must advance even over windows with nothing archivable, or a run of
+// parked entries would stall the drain forever), and whether the window was
+// cut before the end of the inbox.
+func terminalMemoryCandidateCandidates(homePath string, scan operationalArchiveScan) ([]operationalCandidate, string, bool, error) {
 	dirName := candidates.InboxDir(candidates.Memory)
 	if dirName == "" {
-		return nil, nil
+		return nil, "", false, nil
 	}
-	page, err := candidates.ReadPage(homePath, candidates.Memory, "", 0)
+	afterCursor := ""
+	if after := scan.after("memory-candidate"); after != "" {
+		name := strings.TrimPrefix(filepath.ToSlash(after), dirName+"/")
+		if name != after {
+			afterCursor = name
+		}
+	}
+	limit := scan.memoryLimit
+	if limit < 0 {
+		limit = 0
+	}
+	page, err := candidates.ReadPage(homePath, candidates.Memory, candidates.EntryCursor(afterCursor), limit)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
+			return nil, "", false, nil
 		}
-		return nil, err
+		return nil, "", false, err
+	}
+	lastExamined := ""
+	if page.LastCursor != "" {
+		lastExamined = filepath.ToSlash(filepath.Join(dirName, string(page.LastCursor)))
 	}
 	var out []operationalCandidate
 	for _, entry := range page.Entries {
@@ -969,7 +1274,7 @@ func terminalMemoryCandidateCandidates(homePath string) ([]operationalCandidate,
 			if !strings.HasSuffix(string(entry.EntryCursor), ".json") {
 				continue
 			}
-			return nil, entry.Corruption
+			return nil, "", false, entry.Corruption
 		}
 		if entry.Record == nil {
 			continue
@@ -978,14 +1283,14 @@ func terminalMemoryCandidateCandidates(homePath string) ([]operationalCandidate,
 			State string `json:"state"`
 		}
 		if err := json.Unmarshal(entry.Record.Body, &body); err != nil {
-			return nil, fmt.Errorf("decode memory candidate %s state: %w", entry.Record.ID, err)
+			return nil, "", false, fmt.Errorf("decode memory candidate %s state: %w", entry.Record.ID, err)
 		}
 		if landfillMemoryCandidateStatus(body.State) {
 			rel := filepath.ToSlash(filepath.Join(dirName, string(entry.EntryCursor)))
 			out = append(out, operationalCandidate{Kind: "memory-candidate", Status: body.State, OriginalPath: rel})
 		}
 	}
-	return out, nil
+	return out, lastExamined, !page.AtEnd, nil
 }
 
 func landfillMemoryCandidateStatus(status string) bool {
@@ -1015,7 +1320,7 @@ func operationalArchivePathFilter(values []string) (map[string]bool, error) {
 	return out, nil
 }
 
-func terminalWorkCandidates(homePath string) ([]operationalCandidate, error) {
+func terminalWorkCandidates(homePath string, scan operationalArchiveScan) ([]operationalCandidate, error) {
 	dir := filepath.Join(homePath, "work", "work")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1024,12 +1329,16 @@ func terminalWorkCandidates(homePath string) ([]operationalCandidate, error) {
 		}
 		return nil, err
 	}
+	after := scan.after("work")
 	var out []operationalCandidate
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 		rel := filepath.ToSlash(filepath.Join("work", "work", entry.Name()))
+		if after != "" && rel <= after {
+			continue // examined by the pass that wrote the cursor
+		}
 		status, err := jsonStringField(filepath.Join(homePath, filepath.FromSlash(rel)), "state")
 		if err != nil {
 			return nil, err
@@ -1062,7 +1371,7 @@ func terminalWorkCandidates(homePath string) ([]operationalCandidate, error) {
 // it would silently kill the pane's claim. The check is read-only and
 // best-effort; a probe failure reads as "no live pane" so the orphan backstop
 // still fires on homes that never had a run_attempts/ directory.
-func staleLeaseCandidates(homePath string) ([]operationalCandidate, error) {
+func staleLeaseCandidates(homePath string, scan operationalArchiveScan) ([]operationalCandidate, error) {
 	dir := filepath.Join(homePath, "work", "leases")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1071,6 +1380,7 @@ func staleLeaseCandidates(homePath string) ([]operationalCandidate, error) {
 		}
 		return nil, err
 	}
+	after := scan.after("lease")
 	var archivedWork map[string]bool
 	var out []operationalCandidate
 	for _, entry := range entries {
@@ -1079,6 +1389,9 @@ func staleLeaseCandidates(homePath string) ([]operationalCandidate, error) {
 		}
 		workID := strings.TrimSuffix(entry.Name(), ".json")
 		rel := filepath.ToSlash(filepath.Join("work", "leases", entry.Name()))
+		if after != "" && rel <= after {
+			continue // examined by the pass that wrote the cursor
+		}
 		if liveRunAttemptForWork(homePath, workID, time.Now()) {
 			// live delegate pane for this work item; lease survives.
 			continue
@@ -1179,7 +1492,7 @@ func explicitCreatePlanCandidate(homePath, rel string, now time.Time) (operation
 	return operationalCandidate{Kind: "create-plan", Status: "explicit_unadmitted", OriginalPath: rel}, true, nil
 }
 
-func staleCreatePlanCandidates(homePath string, now time.Time) ([]operationalCandidate, error) {
+func staleCreatePlanCandidates(homePath string, now time.Time, scan operationalArchiveScan) ([]operationalCandidate, error) {
 	dir := filepath.Join(homePath, "create-plans")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1191,12 +1504,20 @@ func staleCreatePlanCandidates(homePath string, now time.Time) ([]operationalCan
 	if now.IsZero() {
 		now = time.Now()
 	}
+	after := scan.after("create-plan")
 	var out []operationalCandidate
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
+		rel, err := filepath.Rel(homePath, path)
+		if err != nil {
+			return nil, err
+		}
+		if after != "" && filepath.ToSlash(rel) <= after {
+			continue // examined by the pass that wrote the cursor
+		}
 		var plan struct {
 			SchemaVersion string `json:"schema_version"`
 			ID            string `json:"id"`
@@ -1233,7 +1554,6 @@ func staleCreatePlanCandidates(homePath string, now time.Time) ([]operationalCan
 		if now.UTC().Sub(generatedAt.UTC()) < staleCreatePlanAfter {
 			continue
 		}
-		rel := filepath.ToSlash(filepath.Join("create-plans", entry.Name()))
 		out = append(out, operationalCandidate{Kind: "create-plan", Status: "stale_unadmitted", OriginalPath: rel})
 	}
 	return out, nil
@@ -1269,21 +1589,23 @@ type OperationalHygieneReport struct {
 
 // OperationalHygiene inspects the hot work surfaces without mutating anything.
 // It deliberately does not require a healthy home: it feeds Doctor, and the
-// archive sweep that remedies a dirty home must still be allowed to run.
+// archive sweep that remedies a dirty home must still be allowed to run. The
+// scan is always full (nil resume hints): doctor must see every dirty
+// surface, never the bounded-pass view.
 func OperationalHygiene(homePath string) (OperationalHygieneReport, error) {
 	homePath, err := filepath.Abs(expandUser(homePath))
 	if err != nil {
 		return OperationalHygieneReport{}, err
 	}
 	report := OperationalHygieneReport{Home: homePath}
-	workCandidates, err := terminalWorkCandidates(homePath)
+	workCandidates, err := terminalWorkCandidates(homePath, operationalArchiveScan{})
 	if err != nil {
 		return report, err
 	}
 	for _, cand := range workCandidates {
 		report.TerminalHotWork = append(report.TerminalHotWork, cand.OriginalPath)
 	}
-	leaseCandidates, err := staleLeaseCandidates(homePath)
+	leaseCandidates, err := staleLeaseCandidates(homePath, operationalArchiveScan{})
 	if err != nil {
 		return report, err
 	}
@@ -1310,8 +1632,9 @@ func hygieneChecks(homePath string) ([]CheckItem, bool) {
 	}, hygiene.OK
 }
 
-func terminalReviewCandidates(homePath string) ([]operationalCandidate, error) {
+func terminalReviewCandidates(homePath string, scan operationalArchiveScan) ([]operationalCandidate, error) {
 	root := filepath.Join(homePath, "reviews")
+	after := scan.after("review")
 	var out []operationalCandidate
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -1325,6 +1648,9 @@ func terminalReviewCandidates(homePath string) ([]operationalCandidate, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if after != "" && rel <= after {
+			return nil // examined by the pass that wrote the cursor
+		}
 		status, err := jsonFirstStringField(path, "status", "verdict", "result")
 		if err != nil {
 			return err
@@ -1368,7 +1694,7 @@ func terminalReviewCandidates(homePath string) ([]operationalCandidate, error) {
 	return out, err
 }
 
-func terminalComparisonCandidates(homePath string) ([]operationalCandidate, error) {
+func terminalComparisonCandidates(homePath string, scan operationalArchiveScan) ([]operationalCandidate, error) {
 	dir := filepath.Join(homePath, "inbox", "comparisons")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1377,22 +1703,26 @@ func terminalComparisonCandidates(homePath string) ([]operationalCandidate, erro
 		}
 		return nil, err
 	}
+	after := scan.after("comparison")
 	var out []operationalCandidate
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
+		rel, err := filepath.Rel(homePath, path)
+		if err != nil {
+			return nil, err
+		}
+		if after != "" && filepath.ToSlash(rel) <= after {
+			continue // examined by the pass that wrote the cursor
+		}
 		state, err := jsonStringField(path, "state")
 		if err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(state) != "judged" {
 			continue
-		}
-		rel, err := filepath.Rel(homePath, path)
-		if err != nil {
-			return nil, err
 		}
 		out = append(out, operationalCandidate{
 			Kind:         "comparison",
@@ -1621,26 +1951,62 @@ func commitOperationalArchiveTransaction(homePath string, entries []OperationalA
 	return tx.commit(entries)
 }
 
+// operationalArchiveIndexWriteObserver, when non-nil, receives the byte count
+// of every durable write to the operational archive index (the journal append
+// path and the canonical whole-file rewrite the restore batch path still
+// uses). Production leaves it nil; the scale tests use it to pin that
+// appending N journal rows costs O(N) index bytes, not O(N^2).
+var operationalArchiveIndexWriteObserver func(n int)
+
+// operationalArchiveJournalFileSync is the durability seam for journal rows:
+// production fsyncs (F_FULLFSYNC on darwin); the scale tests swap it for a
+// no-op so a 20,000-entry pin runs in seconds instead of minutes. The
+// crash-recovery tests keep the real fsync — durability itself is never
+// mocked where it is the property under test.
+var operationalArchiveJournalFileSync = func(file *os.File) error { return file.Sync() }
+
+// operationalArchiveDirSync is the directory-fsync seam for the journal's
+// per-file move durability (source parent, archive parent). Production
+// fsyncs; the scale tests swap it for a no-op for the same reason as
+// operationalArchiveJournalFileSync above.
+var operationalArchiveDirSync = func(dir *os.File) error { return dir.Sync() }
+
 // operationalArchiveJournalAppend appends entry lines to the operational
-// archive index with crash-safe fsync, then publishes via the canonical
-// CAS primitive so concurrent in-place appends and root swaps are detected
-// and roll back. Used by the journal-first archive pass: the pending line
-// lands on durable storage BEFORE the move, so a crash between the append
-// and the rename leaves the entry to be reconciled on the next pass instead
-// of becoming an orphan.
+// archive index as a bounded O(rows) write: the row is appended in place to
+// the JSONL file and fsynced, instead of reading and rewriting the whole
+// index per row (the 2026-09-04 defect: two whole-index rewrites per archived
+// file made an N-file pass cost ~(2N^2+N)·rowsize bytes — measured 196 MB of
+// index I/O per archived file against the live 49 MB / 119,566-row index).
+//
+// Fail-closed concurrency semantics are preserved without the whole-file
+// CAS exchange by validating the index identity around the append:
+//   - a leaf or ancestor symlink swap is rejected by the rooted navigation
+//     and the regular-file Lstat (same failure as the old preimage read);
+//   - a concurrent in-place append (the `operationalArchiveBeforeIndexReplace`
+//     seam window) changes the file size and mtime, so the post-seam identity
+//     re-check fails closed before anything is written;
+//   - a writer that interleaves between the re-check and the O_APPEND write
+//     is caught by the post-write size/tail verification. Our own row is a
+//     valid journal line either way, so the error aborts the batch and the
+//     next reconcile pass resolves the state — no orphan, no lost line.
+//
+// The pending/commit crash ordering is unchanged: the pending line is fsynced
+// BEFORE the per-file move, the committed line AFTER (see
+// commitJournaledOperationalArchive).
 //
 // purpose distinguishes the two journal steps so test seams that watch for
 // the canonical commit (purpose="commit") do not fire for the transient
 // pending line (purpose="journal-pending").
 func operationalArchiveJournalAppend(homePath string, entries []OperationalArchiveEntry, purpose string) error {
-	if len(entries) == 0 {
+	rows, err := operationalArchiveJournalRows(entries)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
 		return nil
 	}
 	if purpose == "" {
 		purpose = "commit"
-	}
-	if purpose == "commit" {
-		// Existing seam semantics assume "commit" is the canonical publish.
 	}
 	absHome, err := filepath.Abs(filepath.Clean(homePath))
 	if err != nil {
@@ -1653,78 +2019,207 @@ func operationalArchiveJournalAppend(homePath string, entries []OperationalArchi
 	defer homeRoot.Close()
 	indexParentRel := filepath.Dir(filepath.FromSlash(OperationalArchiveIndexRel))
 	indexDisplay := filepath.Join(absHome, OperationalArchiveIndexRel)
-	if _, err := ensureRootedDirectories(homeRoot, indexParentRel, indexDisplay, "operational archive journal", 0o755); err != nil {
-		return err
-	}
-	if err := syncRootedDirectory(homeRoot, indexParentRel, indexDisplay, "operational archive journal"); err != nil {
-		return err
-	}
 	indexRoot, err := homeRoot.OpenRoot(indexParentRel)
 	if err != nil {
-		return err
-	}
-	defer indexRoot.Close()
-
-	var existing []byte
-	mode := os.FileMode(0o644)
-	var existingInfo os.FileInfo
-	existingPresent := false
-	if data, _, info, err := readOperationalArchiveRootFile(indexRoot, operationalArchiveIndexName, "operational archive journal"); err == nil {
-		existing = data
-		if info != nil {
-			mode = info.Mode().Perm()
-			if mode == 0 {
-				mode = 0o644
-			}
-			existingInfo = info
-			existingPresent = true
+		// Missing (or hostile) archive index parent: create it through the
+		// rooted ensure so the first-ever append has a durable home. An
+		// existing-but-symlinked parent fails closed here either way —
+		// os.Root never traverses symlinks.
+		if _, ensureErr := ensureRootedDirectories(homeRoot, indexParentRel, indexDisplay, "operational archive journal", 0o755); ensureErr != nil {
+			return ensureErr
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	var buf bytes.Buffer
-	buf.Write(existing)
-	for _, entry := range entries {
-		if entry.SchemaVersion != OperationalArchiveSchemaVersion {
-			return fmt.Errorf("operational archive journal append entry %s has unsupported schema %q", entry.ID, entry.SchemaVersion)
-		}
-		row, err := json.Marshal(entry)
+		indexRoot, err = homeRoot.OpenRoot(indexParentRel)
 		if err != nil {
 			return err
 		}
-		buf.Write(row)
-		if buf.Len() == 0 || buf.Bytes()[buf.Len()-1] != '\n' {
-			buf.WriteByte('\n')
-		}
 	}
+	defer indexRoot.Close()
+	return appendOperationalArchiveJournalRows(indexRoot, rows, purpose)
+}
 
-	// Use the canonical CAS primitive so concurrent in-place appends (the
-	// test seam `operationalArchiveBeforeIndexReplace`) and root swaps
-	// fail closed instead of being silently overwritten.
-	var expectedInfo os.FileInfo
-	if existingPresent {
-		expectedInfo = existingInfo
-	}
-	_, publication, err := atomicRewriteOperationalArchiveRootFile(
-		indexRoot,
-		operationalArchiveIndexName,
-		buf.Bytes(),
-		mode,
-		purpose,
-		existing,
-		expectedInfo,
-	)
-	if err != nil {
-		if publication != nil && publication.State() == RootedFileCASAmbiguous {
-			return fmt.Errorf("operational archive journal publication requires manual repair: %w", err)
+// operationalArchiveJournalRows marshals entries to newline-terminated JSONL.
+func operationalArchiveJournalRows(entries []OperationalArchiveEntry) ([]byte, error) {
+	var buf bytes.Buffer
+	for _, entry := range entries {
+		if entry.SchemaVersion != OperationalArchiveSchemaVersion {
+			return nil, fmt.Errorf("operational archive journal append entry %s has unsupported schema %q", entry.ID, entry.SchemaVersion)
 		}
+		row, err := json.Marshal(entry)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(row)
+		buf.WriteByte('\n')
+	}
+	return buf.Bytes(), nil
+}
+
+// appendOperationalArchiveJournalRows performs the bounded append against the
+// pinned index root. Expected identity = (same inode, same size, same mtime,
+// still a regular file); see the operationalArchiveJournalAppend contract.
+// One read-only probe descriptor serves both the pre-write trailing-newline
+// check and the post-write tail verification, keeping the append's syscall
+// count constant instead of proportional to the index.
+func appendOperationalArchiveJournalRows(indexRoot *os.Root, rows []byte, purpose string) error {
+	before, beforeErr := indexRoot.Lstat(operationalArchiveIndexName)
+	existing := beforeErr == nil
+	if !existing && !errors.Is(beforeErr, os.ErrNotExist) {
+		return beforeErr
+	}
+	var expectedSize int64
+	var probe *os.File
+	var probeInfo os.FileInfo
+	if existing {
+		if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+			return fmt.Errorf("operational archive journal file must be a regular file: %s", operationalArchiveIndexName)
+		}
+		expectedSize = before.Size()
+		var err error
+		// os.Root.Open refuses a symlinked leaf, so the probe also pins the
+		// exact inode the append must land in.
+		probe, err = indexRoot.Open(operationalArchiveIndexName)
+		if err != nil {
+			return err
+		}
+		defer probe.Close()
+		if probeInfo, err = probe.Stat(); err != nil {
+			return err
+		}
+		if probeInfo.Mode()&os.ModeSymlink != 0 || !probeInfo.Mode().IsRegular() || !os.SameFile(before, probeInfo) {
+			return fmt.Errorf("operational archive journal file must be a stable regular file: %s", operationalArchiveIndexName)
+		}
+		if expectedSize > 0 {
+			last := make([]byte, 1)
+			if _, err := probe.ReadAt(last, expectedSize-1); err != nil {
+				return err
+			}
+			if last[0] != '\n' {
+				return fmt.Errorf("operational archive index must end with newline")
+			}
+		}
+	}
+	// Same seam, same point as the old whole-file rewrite: after the preimage
+	// snapshot, before the durable mutation. A concurrent in-place append or
+	// symlink/root swap installed here must fail the identity re-check below.
+	operationalArchiveBeforeIndexReplace(purpose)
+	after, afterErr := indexRoot.Lstat(operationalArchiveIndexName)
+	if existing {
+		if afterErr != nil {
+			return fmt.Errorf("operational archive journal index vanished before append: %w", afterErr)
+		}
+		if after.Mode()&os.ModeSymlink != 0 || !after.Mode().IsRegular() || !os.SameFile(before, after) ||
+			after.Size() != expectedSize || !after.ModTime().Equal(before.ModTime()) {
+			return fmt.Errorf("operational archive journal index changed before append (concurrent writer or root swap)")
+		}
+	} else if afterErr == nil {
+		return fmt.Errorf("operational archive journal index appeared before append")
+	} else if !errors.Is(afterErr, os.ErrNotExist) {
+		return afterErr
+	}
+	flags := os.O_APPEND | os.O_WRONLY
+	if !existing {
+		flags |= os.O_CREATE | os.O_EXCL
+	}
+	file, err := indexRoot.OpenFile(operationalArchiveIndexName, flags, 0o644)
+	if err != nil {
 		return err
 	}
-	if err := publication.Commit(); err != nil {
-		return fmt.Errorf("operational archive journal publication commit failed: %w", err)
+	writeErr := func() error {
+		if n, err := file.Write(rows); err != nil {
+			return err
+		} else if n != len(rows) {
+			return io.ErrShortWrite
+		}
+		return operationalArchiveJournalFileSync(file)
+	}()
+	opened, statErr := file.Stat()
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if statErr != nil {
+		return statErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	final, finalErr := indexRoot.Lstat(operationalArchiveIndexName)
+	if finalErr != nil {
+		return finalErr
+	}
+	wantSize := expectedSize + int64(len(rows))
+	if opened.Mode()&os.ModeSymlink != 0 || !opened.Mode().IsRegular() || !os.SameFile(opened, final) ||
+		final.Mode()&os.ModeSymlink != 0 || !final.Mode().IsRegular() || final.Size() != wantSize {
+		return fmt.Errorf("operational archive journal append did not land as exactly %d appended bytes (concurrent writer)", len(rows))
+	}
+	if probe != nil {
+		// The probe still names the pre-seam inode; it must now show exactly
+		// the appended bytes at [expectedSize, wantSize). A concurrent writer
+		// that interleaved between the re-check and our write shifts the
+		// window and fails this compare.
+		grown, err := probe.Stat()
+		if err != nil {
+			return err
+		}
+		if !os.SameFile(probeInfo, grown) || grown.Size() != wantSize {
+			return fmt.Errorf("operational archive journal append did not land as exactly %d appended bytes (concurrent writer)", len(rows))
+		}
+		written := make([]byte, len(rows))
+		if _, err := probe.ReadAt(written, expectedSize); err != nil {
+			return err
+		}
+		if !bytes.Equal(written, rows) {
+			return fmt.Errorf("operational archive journal append tail does not match the appended rows")
+		}
+	} else {
+		written, err := readOperationalArchiveIndexRange(indexRoot, 0, len(rows))
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(written, rows) {
+			return fmt.Errorf("operational archive journal append tail does not match the appended rows")
+		}
+	}
+	if !existing {
+		// The append created the index dirent; make the entry itself durable
+		// before the caller relies on the row surviving a crash.
+		if err := syncOperationalArchiveRoot(indexRoot); err != nil {
+			return err
+		}
+	}
+	if operationalArchiveIndexWriteObserver != nil {
+		operationalArchiveIndexWriteObserver(len(rows))
 	}
 	return nil
+}
+
+// readOperationalArchiveIndexRange reads exactly n bytes at offset through the
+// pinned index root, verifying the leaf stays a stable regular file.
+func readOperationalArchiveIndexRange(indexRoot *os.Root, offset int64, n int) ([]byte, error) {
+	file, err := indexRoot.Open(operationalArchiveIndexName)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if opened.Mode()&os.ModeSymlink != 0 || !opened.Mode().IsRegular() {
+		return nil, fmt.Errorf("operational archive journal file must be a regular file: %s", operationalArchiveIndexName)
+	}
+	buf := make([]byte, n)
+	if _, err := file.ReadAt(buf, offset); err != nil {
+		return nil, err
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(opened, after) || after.Size() < offset+int64(n) {
+		return nil, fmt.Errorf("operational archive journal file changed while its tail was read")
+	}
+	return buf, nil
 }
 
 // commitJournaledOperationalArchive is the journal-first archive step for a
@@ -1776,15 +2271,21 @@ func commitJournaledOperationalArchive(homePath string, entry OperationalArchive
 	// committed line.
 	archiveParentRel := filepath.Dir(archiveRel)
 	archiveParentDisplay := filepath.Join(filepath.Clean(homePath), archiveParentRel)
-	if _, err := ensureRootedDirectories(homeRoot, archiveParentRel, archiveParentDisplay, "operational archive journal archive parent", 0o755); err != nil {
-		return OperationalArchiveEntry{}, err
-	}
-	if err := syncRootedDirectory(homeRoot, archiveParentRel, archiveParentDisplay, "operational archive journal archive parent"); err != nil {
-		return OperationalArchiveEntry{}, err
-	}
-	archiveParentRoot, err := homeRoot.OpenRoot(archiveParentRel)
-	if err != nil {
-		return OperationalArchiveEntry{}, fmt.Errorf("operational archive journal: open archive parent %s: %w", archiveParentRel, err)
+	archiveParentRoot, archiveErr := homeRoot.OpenRoot(archiveParentRel)
+	if archiveErr != nil {
+		// Missing (or hostile) archive parent: create it durably once, then
+		// pin it. An existing-but-symlinked parent fails closed either way —
+		// os.Root never traverses symlinks.
+		if _, ensureErr := ensureRootedDirectories(homeRoot, archiveParentRel, archiveParentDisplay, "operational archive journal archive parent", 0o755); ensureErr != nil {
+			return OperationalArchiveEntry{}, ensureErr
+		}
+		if err := syncRootedDirectory(homeRoot, archiveParentRel, archiveParentDisplay, "operational archive journal archive parent"); err != nil {
+			return OperationalArchiveEntry{}, err
+		}
+		archiveParentRoot, archiveErr = homeRoot.OpenRoot(archiveParentRel)
+		if archiveErr != nil {
+			return OperationalArchiveEntry{}, fmt.Errorf("operational archive journal: open archive parent %s: %w", archiveParentRel, archiveErr)
+		}
 	}
 	defer archiveParentRoot.Close()
 	if _, err := archiveParentRoot.Lstat(filepath.Base(archiveRel)); err == nil {
@@ -2387,6 +2888,11 @@ func atomicRewriteOperationalArchiveRootFile(root *os.Root, name string, data []
 		_ = root.Remove(tempName)
 		return nil, nil, err
 	}
+	if name == operationalArchiveIndexName && operationalArchiveIndexWriteObserver != nil {
+		// Only the index itself counts toward the pinned write-amplification
+		// budget; cursor rewrites are a different (constant-size) file.
+		operationalArchiveIndexWriteObserver(len(data))
+	}
 	tempData, _, tempInfo, err := readOperationalArchiveRootFile(root, tempName, "operational archive index replacement")
 	if err != nil {
 		return cleanup(err)
@@ -2466,7 +2972,7 @@ func syncOperationalArchiveRoot(root *os.Root) error {
 		_ = dir.Close()
 		return fmt.Errorf("operational archive transaction sync target is not a directory")
 	}
-	syncErr := dir.Sync()
+	syncErr := operationalArchiveDirSync(dir)
 	closeErr := dir.Close()
 	// Some supported Darwin filesystems report EINVAL for directory fsync.
 	// Matching the existing home durability seam keeps that platform usable;
