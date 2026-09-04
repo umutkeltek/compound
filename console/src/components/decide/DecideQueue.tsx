@@ -19,7 +19,7 @@ import { genericReviewResolutionActs } from "@/lib/decide-resolution-acts";
 import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
 import type { DecisionEffectKind } from "@/lib/decision-registry";
 import { buildEnumerableActionRequest, decideActIdentity, RATIONALE_REQUIRED_MESSAGE } from "@/lib/governed-action-client";
-import { OPERATOR_INPUTS } from "@/lib/generic-actions";
+import { OPERATOR_INPUTS } from "@/lib/operator-inputs";
 import { blockedReasonPlain, ownerUnavailableMessage } from "@/lib/glossary";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
 import { PanelProofContinuity } from "./PanelProofContinuity";
