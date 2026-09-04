@@ -181,6 +181,137 @@ func TestGeneratedMediaCarriesItsParameters(t *testing.T) {
 	}
 }
 
+// TestGeneratorCannotEscapeOutputRootByIntermediateSymlink is the MEDIA-P0-001
+// falsifier. Containment was checked lexically (filepath.Rel) plus O_NOFOLLOW on
+// the FINAL component only — and O_NOFOLLOW does not travel. A generator that
+// creates an INTERMEDIATE directory entry under the root pointing at an outside
+// directory, then returns a path through it, hands Compound a path that is
+// lexically inside the root and ends in a real regular file. Both checks pass,
+// the kernel follows the intermediate link, and Compound custodies the outside
+// file. Confirmed independently by the external release auditor.
+func TestGeneratorCannotEscapeOutputRootByIntermediateSymlink(t *testing.T) {
+	homePath := t.TempDir()
+	enrollGenerator(t, homePath, "local-sdxl", imageGeneratorConfig())
+
+	// A real directory OUTSIDE the output root with a real regular file in it.
+	outsideDir := t.TempDir()
+	secret := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(secret, []byte("SYNTHETIC-NOT-A-REAL-SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := runnerFunc(func(cfg MediaGeneratorConfig, stdin []byte) ([]byte, error) {
+		var req map[string]any
+		if err := json.Unmarshal(stdin, &req); err != nil {
+			return nil, err
+		}
+		root, _ := req["output_dir"].(string)
+		if err := os.Symlink(outsideDir, filepath.Join(root, "escape")); err != nil {
+			return nil, err
+		}
+		return []byte(`{"path":` + strconv.Quote(filepath.Join(root, "escape", "secret.txt")) + `,"mime_type":"image/png"}`), nil
+	})
+
+	media, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{
+		Adapter: "local-sdxl",
+		Prompt:  "p",
+	}, runner, mediaGenNow)
+	if err == nil {
+		t.Fatalf("custody must refuse an asset reached through an intermediate symlink out of the output root; instead it ingested %q", media.Bytes)
+	}
+}
+
+// TestGeneratorCannotIngestHardlinkedOutsideFile closes the alias channel: a
+// hard link inside the root IS the outside file's inode — a regular file by
+// every stat, with a second name somewhere Compound does not control. Custody
+// must require the asset to be exclusively named inside the root.
+//
+// (This cannot and does not stop a generator from COPYING a readable host
+// file's bytes into a fresh file it writes — that is the trusted-executable
+// line, not a path rule. This test pins the link-count refusal only.)
+func TestGeneratorCannotIngestHardlinkedOutsideFile(t *testing.T) {
+	homePath := t.TempDir()
+	enrollGenerator(t, homePath, "local-sdxl", imageGeneratorConfig())
+
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("SYNTHETIC-NOT-A-REAL-SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := runnerFunc(func(cfg MediaGeneratorConfig, stdin []byte) ([]byte, error) {
+		var req map[string]any
+		if err := json.Unmarshal(stdin, &req); err != nil {
+			return nil, err
+		}
+		root, _ := req["output_dir"].(string)
+		linked := filepath.Join(root, "out.png")
+		if err := os.Link(outside, linked); err != nil {
+			return nil, err
+		}
+		return []byte(`{"path":` + strconv.Quote(linked) + `,"mime_type":"image/png"}`), nil
+	})
+
+	if _, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{
+		Adapter: "local-sdxl",
+		Prompt:  "p",
+	}, runner, mediaGenNow); err == nil {
+		t.Fatal("a hard link to a file outside the output root must not be custodied: the same inode has a name Compound does not control")
+	}
+}
+
+// TestGeneratorCustodySurvivesOutputRootSwap pins identity retention: custody
+// must resolve the asset beneath the root descriptor Compound opened, so a
+// generator that renames the real root away and plants a decoy root (same path,
+// same asset name, different bytes) mid-run cannot redirect what gets ingested.
+func TestGeneratorCustodySurvivesOutputRootSwap(t *testing.T) {
+	homePath := t.TempDir()
+	enrollGenerator(t, homePath, "local-sdxl", imageGeneratorConfig())
+
+	const original = "\x89PNG\r\n\x1a\nORIGINAL-RENDER"
+	var moved string
+	t.Cleanup(func() {
+		if moved != "" {
+			_ = os.RemoveAll(moved)
+		}
+	})
+
+	runner := runnerFunc(func(cfg MediaGeneratorConfig, stdin []byte) ([]byte, error) {
+		var req map[string]any
+		if err := json.Unmarshal(stdin, &req); err != nil {
+			return nil, err
+		}
+		root, _ := req["output_dir"].(string)
+		if err := os.WriteFile(filepath.Join(root, "out.png"), []byte(original), 0o644); err != nil {
+			return nil, err
+		}
+		// Swap the root: the real render moves away, a decoy root with the
+		// same asset name appears at the original path.
+		moved = root + "-swapped-out"
+		if err := os.Rename(root, moved); err != nil {
+			return nil, err
+		}
+		if err := os.Mkdir(root, 0o700); err != nil {
+			return nil, err
+		}
+		decoy := filepath.Join(root, "out.png")
+		if err := os.WriteFile(decoy, []byte("DECOY-RENDER"), 0o644); err != nil {
+			return nil, err
+		}
+		return []byte(`{"path":` + strconv.Quote(decoy) + `,"mime_type":"image/png"}`), nil
+	})
+
+	media, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{
+		Adapter: "local-sdxl",
+		Prompt:  "p",
+	}, runner, mediaGenNow)
+	if err != nil {
+		t.Fatalf("a legitimate asset whose root path was swapped after the render must still be custodied through the original root descriptor: %v", err)
+	}
+	if string(media.Bytes) != original {
+		t.Fatalf("custody read the swapped decoy %q instead of the rendered asset: root identity was not retained", media.Bytes)
+	}
+}
+
 type runnerFunc func(cfg MediaGeneratorConfig, stdin []byte) ([]byte, error)
 
 func (f runnerFunc) Run(cfg MediaGeneratorConfig, stdin []byte) ([]byte, error) { return f(cfg, stdin) }
