@@ -512,3 +512,267 @@ func (e *executeStageBadWorkIDErr) Error() string {
 type executeStageLaunchErr struct{ msg string }
 
 func (e *executeStageLaunchErr) Error() string { return e.msg }
+
+// installProposedUnattendedGrant writes the OPERATOR-PROPOSED grant shape
+// (docs_private/operator-grants/PROPOSED-standing-grants-2026-09-04-unattended-execute.json)
+// into a temp home's standing-grants registry, with target_path scoped to the
+// temp home the way the operator file scopes it to their real home. Extra
+// proposal fields (predicate, lanes, capacity ceiling) stay verbatim: the
+// registry must import the proposed shape as-is.
+func installProposedUnattendedGrant(t *testing.T, home string) {
+	t.Helper()
+	dir := filepath.Join(home, "registries")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir registries: %v", err)
+	}
+	body := `{"schema_version":"compound.standing_grants.v0.1","grants":[{` +
+		`"id":"grant_unattended_work_continue_v1",` +
+		`"capability":"work.continue.unattended",` +
+		`"mutation_class":"local_reversible",` +
+		`"reversibility_ceiling":"reversible",` +
+		`"blast_radius":"local",` +
+		`"target_path":"` + home + `/**",` +
+		`"predicate":"risk in {tier0, tier1} && privacy == 'private' && route_plan.gate_role == 'eligible' && capacity_snapshot.freshness_minutes < 10 && capacity_snapshot.used_percent < 90 && policy_decision.outcome in {allow, allow_with_obligations}",` +
+		`"max_per_tick":1,` +
+		`"lanes":["claude-minimax","claude-zai"],` +
+		`"capacity_ceiling_percent":90,` +
+		`"operator_review":false,` +
+		`"expires_at":"2099-01-01T00:00:00Z"}]}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "standing-grants.json"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write grant registry: %v", err)
+	}
+}
+
+// TestExecuteStagePolicyEvalHoldsWhenNoGrantCoversIntent — the wired policy
+// default must fail closed when no standing grant covers the intent. The
+// local_reversible class baseline alone would allow_with_obligations; an
+// allow that is not backed by grant_unattended_work_continue_v1 is a hold.
+func TestExecuteStagePolicyEvalHoldsWhenNoGrantCoversIntent(t *testing.T) {
+	s := newStore(t)
+	restoreAllExecuteHooks(t)
+
+	got := executeStagePolicyEvalFn(
+		policyActionIntentShim{ID: "ai_pol_test", Capability: executeUnattendedCapability, WorkID: "work_pol_test", Risk: "tier1", Privacy: "private"},
+		policyConfigShim{HasGrant: true, Home: s.home},
+		fixedNow,
+	)
+	if got.Outcome != "hold" {
+		t.Fatalf("outcome = %q, want hold (no grant covers the intent); decision=%+v", got.Outcome, got)
+	}
+}
+
+// TestExecuteStagePolicyEvalAllowsUnderProposedGrantShape — with the proposed
+// operator grant imported into the home, the same evaluation returns
+// allow_with_obligations, so the seam's policy gate opens only through the
+// operator's signed grant.
+func TestExecuteStagePolicyEvalAllowsUnderProposedGrantShape(t *testing.T) {
+	s := newStore(t)
+	installProposedUnattendedGrant(t, s.home)
+	restoreAllExecuteHooks(t)
+
+	got := executeStagePolicyEvalFn(
+		policyActionIntentShim{ID: "ai_pol_test", Capability: executeUnattendedCapability, WorkID: "work_pol_test", Risk: "tier1", Privacy: "private"},
+		policyConfigShim{HasGrant: true, Home: s.home},
+		fixedNow,
+	)
+	if got.Outcome != "allow_with_obligations" {
+		t.Fatalf("outcome = %q, want allow_with_obligations under the proposed grant; decision=%+v", got.Outcome, got)
+	}
+	if got.ID == "" {
+		t.Fatal("decision id must be surfaced so refusals are auditable")
+	}
+}
+
+// TestContinueAlwaysReportsExecuteVerdictWhenRequested — deliverable 0 of
+// R3A slice 2 (orchestrator addendum, 2026-09-04). The previous behavior
+// printed `{"status":"waiting","step_count":1}` on a no-grant real home and
+// left a tired human unable to tell whether the execute stage ran. The
+// Continue JSON must now carry an `execute` verdict whenever the caller
+// asked for the execute stage (MaxExecuteSteps > 0): a refusal verdict on
+// gate failures, a launch verdict on green, or a not_invoked verdict when
+// the seam had nothing to act on this tick. Red test first: would have
+// failed before the ExecuteVerdict field existed.
+func TestContinueAlwaysReportsExecuteVerdictWhenRequested(t *testing.T) {
+	t.Run("no_grant_stamps_refused_verdict", func(t *testing.T) {
+		s := newStore(t)
+		seedReadyExecuteWork(t, s, "work_verdict_no_grant")
+		installExecuteGrant(t, s.home, false)
+		restoreAllExecuteHooks(t)
+		executeStageRoutePlanFn = func(home, capability string) (string, bool) {
+			return "claude-minimax", true
+		}
+		executeStageCapacityFn = func(home, lane string, now time.Time) (float64, bool, error) {
+			return 30, true, nil
+		}
+
+		res, err := s.Continue(fixedNow.Add(time.Minute), ContinueOptions{Actor: "codex", MaxExecuteSteps: 1})
+		if err != nil {
+			t.Fatalf("continue: %v", err)
+		}
+		if res.Execute == nil {
+			t.Fatalf("Execute verdict missing on no_grant; result=%+v", res)
+		}
+		if res.Execute.Stage != "execute" {
+			t.Fatalf("verdict stage = %q, want execute", res.Execute.Stage)
+		}
+		if res.Execute.Skipped != "no_grant" {
+			t.Fatalf("verdict skipped = %q, want no_grant", res.Execute.Skipped)
+		}
+		if res.Execute.RunAttemptIDs != nil {
+			t.Fatalf("refusal verdict must not carry RunAttemptIDs; got %v", res.Execute.RunAttemptIDs)
+		}
+		if strings.TrimSpace(res.Execute.Human) == "" {
+			t.Fatal("refusal verdict must carry a human-readable sentence")
+		}
+	})
+
+	t.Run("green_path_stamps_launch_verdict", func(t *testing.T) {
+		s := newStore(t)
+		seedReadyExecuteWork(t, s, "work_verdict_green")
+		installExecuteGrant(t, s.home, true)
+		restoreAllExecuteHooks(t)
+		executeStageRoutePlanFn = func(home, capability string) (string, bool) {
+			return "claude-minimax", true
+		}
+		executeStageCapacityFn = func(home, lane string, now time.Time) (float64, bool, error) {
+			return 30, true, nil
+		}
+		executeStagePolicyEvalFn = func(ai policyActionIntentShim, cfg policyConfigShim, now time.Time) policyDecisionShim {
+			return policyDecisionShim{Outcome: "allow", ID: "pol_verdict_allow"}
+		}
+		launchStub = func(_ *Store, _, _, _, _ string, _ time.Time) (string, error) {
+			return "ratt_verdict_green", nil
+		}
+
+		res, err := s.Continue(fixedNow.Add(time.Minute), ContinueOptions{Actor: "codex", MaxExecuteSteps: 1})
+		if err != nil {
+			t.Fatalf("continue: %v", err)
+		}
+		if res.Execute == nil {
+			t.Fatalf("Execute verdict missing on green path; result=%+v", res)
+		}
+		if len(res.Execute.RunAttemptIDs) != 1 || res.Execute.RunAttemptIDs[0] != "ratt_verdict_green" {
+			t.Fatalf("verdict run_attempt_ids = %v, want [ratt_verdict_green]", res.Execute.RunAttemptIDs)
+		}
+		if res.Execute.Skipped != "" {
+			t.Fatalf("launch verdict must not carry Skipped; got %q", res.Execute.Skipped)
+		}
+		if res.Execute.Status != "verifying" {
+			t.Fatalf("verdict status = %q, want verifying", res.Execute.Status)
+		}
+	})
+
+	t.Run("no_ready_envelope_stamps_not_invoked_verdict", func(t *testing.T) {
+		s := newStore(t)
+		restoreAllExecuteHooks(t)
+		// Empty bench: no ready envelopes, so continueExecuteStageThreshold
+		// is false. The seam is not invoked; without deliverable 0 the
+		// result would carry no Execute verdict, and the heartbeat log
+		// would print only `execute=ok step_count=1` (no signal at all).
+		res, err := s.Continue(fixedNow.Add(time.Minute), ContinueOptions{Actor: "codex", MaxExecuteSteps: 1})
+		if err != nil {
+			t.Fatalf("continue: %v", err)
+		}
+		if res.Execute == nil {
+			t.Fatalf("Execute verdict missing when no ready envelope; result=%+v", res)
+		}
+		if res.Execute.Skipped != "no_ready_envelope" {
+			t.Fatalf("verdict skipped = %q, want no_ready_envelope", res.Execute.Skipped)
+		}
+		if strings.TrimSpace(res.Execute.Human) == "" {
+			t.Fatal("not_invoked verdict must carry a human-readable sentence")
+		}
+	})
+
+	t.Run("default_max_execute_steps_stamps_verdict", func(t *testing.T) {
+		// The CLI default for `--max-execute-steps` is 1; the seam should
+		// run on the default Continue() call and stamp a verdict. This
+		// pins the orchestrator's complaint that an unconfigured call
+		// left the heartbeat silent.
+		s := newStore(t)
+		seedReadyExecuteWork(t, s, "work_verdict_default")
+		installExecuteGrant(t, s.home, false) // no grant -> refusal verdict
+		restoreAllExecuteHooks(t)
+		executeStageRoutePlanFn = func(home, capability string) (string, bool) {
+			return "claude-minimax", true
+		}
+		executeStageCapacityFn = func(home, lane string, now time.Time) (float64, bool, error) {
+			return 30, true, nil
+		}
+
+		res, err := s.Continue(fixedNow.Add(time.Minute), ContinueOptions{Actor: "codex"}) // MaxExecuteSteps == 0 -> default 1
+		if err != nil {
+			t.Fatalf("continue: %v", err)
+		}
+		if res.Execute == nil {
+			t.Fatalf("Execute verdict missing on default Continue; result=%+v", res)
+		}
+		if res.Execute.Skipped != "no_grant" {
+			t.Fatalf("verdict skipped = %q, want no_grant", res.Execute.Skipped)
+		}
+	})
+}
+
+// TestContinueDryRunLeavesNoRunAttemptAndEnvelopeReady — deliverable 5 of
+// R3A slice 2. With DryRun=true the seam runs every gate end to end but
+// does NOT claim, advance, launch, or finalize. The envelope must stay in
+// `ready` (no side effects), no RunAttempt may be minted, and the verdict
+// carries the planning line "would execute <work_id> on <lane> (capacity
+// N%, policy <id>)".
+func TestContinueDryRunLeavesNoRunAttemptAndEnvelopeReady(t *testing.T) {
+	s := newStore(t)
+	seedReadyExecuteWork(t, s, "work_dry_run")
+	installExecuteGrant(t, s.home, true)
+	restoreAllExecuteHooks(t)
+	executeStageRoutePlanFn = func(home, capability string) (string, bool) {
+		return "claude-minimax", true
+	}
+	executeStageCapacityFn = func(home, lane string, now time.Time) (float64, bool, error) {
+		return 30, true, nil
+	}
+	executeStagePolicyEvalFn = func(ai policyActionIntentShim, cfg policyConfigShim, now time.Time) policyDecisionShim {
+		return policyDecisionShim{Outcome: "allow", ID: "pol_dry_run_allow"}
+	}
+	launched := false
+	launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+		launched = true
+		return "ratt_dry_run_should_not_mint", nil
+	}
+
+	res, err := s.Continue(fixedNow.Add(time.Minute), ContinueOptions{Actor: "codex", MaxExecuteSteps: 1, DryRun: true})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if launched {
+		t.Fatal("dry-run must not call the launch hook")
+	}
+	if res.Action != "execute" {
+		// Action flips to "execute" only when a launch succeeded; a dry-run
+		// is a no-launch planning pass and stays at the default "none".
+		// (The ContinueResult seeding uses Action: "none" as the base.)
+		// Allow either "none" or "execute" here; the contract is on the
+		// verdict and the envelope state, not on Action.
+		if res.Action != "none" {
+			t.Fatalf("dry-run action = %q, want none or execute; result=%+v", res.Action, res)
+		}
+	}
+	if res.Execute == nil {
+		t.Fatalf("dry-run must stamp an Execute verdict; result=%+v", res)
+	}
+	if res.Execute.Skipped != "would_execute" {
+		t.Fatalf("dry-run verdict skipped = %q, want would_execute; verdict=%+v", res.Execute.Skipped, res.Execute)
+	}
+	if !strings.HasPrefix(res.Execute.WouldExecute, "would execute work_dry_run on claude-minimax (") {
+		t.Fatalf("dry-run planning line %q must start with the documented shape", res.Execute.WouldExecute)
+	}
+	if len(res.RunAttemptIDs) != 0 {
+		t.Fatalf("dry-run must not surface a RunAttempt; got %v", res.RunAttemptIDs)
+	}
+	after, err := s.Get("work_dry_run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "ready" {
+		t.Fatalf("dry-run must leave envelope in ready; got state=%q", after.State)
+	}
+}

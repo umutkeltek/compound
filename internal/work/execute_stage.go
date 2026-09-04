@@ -9,6 +9,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/envelope"
+	"compound/internal/policy"
 )
 
 // executeStage is the grant-gated, fail-closed seam that drives ONE ready
@@ -102,7 +105,7 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 	}
 	if !fresh {
 		result.Skipped = "capacity_unknown"
-		result.Human = fmt.Sprintf("did nothing: capacity snapshot for lane %s is older than %s; refuse to execute blind", lane, executeStageCapacityFreshnessWindow)
+		result.Human = fmt.Sprintf("did nothing: capacity snapshot for lane %s is missing or older than %s; refuse to execute blind", lane, executeStageCapacityFreshnessWindow)
 		return result, nil
 	}
 	if usedPercent >= executeStageCapacityCeilingPercent {
@@ -120,7 +123,7 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 			Risk:       w.Risk,
 			Privacy:    w.Privacy,
 		},
-		policyConfigShim{HasGrant: true},
+		policyConfigShim{HasGrant: true, Home: s.home},
 		now,
 	)
 	result.PolicyDecisionID = pd.ID
@@ -130,6 +133,20 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 	default:
 		result.Skipped = "policy_hold"
 		result.Human = fmt.Sprintf("did nothing: policy decision %s for %s is %s", pd.ID, executeUnattendedCapability, pd.Outcome)
+		return result, nil
+	}
+
+	// Dry-run probe: every gate opened, but the operator asked us NOT to
+	// claim, advance, launch, or finalize. Return a verdict that names
+	// the work, the lane, the capacity reading, and the policy decision
+	// id so the operator can verify the unattended envelope end-to-end
+	// without minting a RunAttempt. The envelope stays in its current
+	// state (ready) for the next live tick to act on.
+	if opts.DryRun {
+		result.Human = fmt.Sprintf("would execute %s on %s (capacity %.0f%%, policy %s)", ready, lane, usedPercent, pd.ID)
+		result.PolicyDecisionID = pd.ID
+		result.Lane = lane
+		result.WorkID = ready
 		return result, nil
 	}
 
@@ -159,6 +176,22 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 
 	rattID, launchErr := launchStub(s, ready, lane, lane, workerPrompt, now)
 	if launchErr != nil {
+		// The launch wire can return a refused execution WITHOUT an
+		// adapter having been invoked: e.g. the readiness guard reports
+		// not-ready, or the workspace is unresolvable. Those refusals
+		// must NOT close the envelope "failed" — the launch never
+		// happened, the envelope is still safe to retry next tick. The
+		// wire signals refusal-by-skip-reason with a known prefix; bare
+		// errors (subprocess crash, adapter panic) get the standard
+		// "failed" close.
+		skipReason, refuseDetail := parseLaunchRefusal(launchErr)
+		if skipReason != "" {
+			result.Skipped = skipReason
+			result.Human = fmt.Sprintf("did nothing: %s", refuseDetail)
+			result.Action = "none"
+			result.RunAttemptIDs = nil
+			return result, nil
+		}
 		// One bad launch fails THAT envelope only. Mark the work as
 		// failed via Close (the only seam that emits a Receipt + state
 		// transition with a failed outcome). The stage still returns
@@ -184,7 +217,21 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 
 	// Successful launch — advance to verifying and stamp the ratt id. The
 	// execute stage NEVER lands, closes, pushes or retires anything; verifying
-	// is the hand-off point for human/orchestrator review.
+	// is the hand-off point for human/orchestrator review. The production
+	// launch wire calls FinalizeGovernedHarnessRun inside launchStub which
+	// already moves the envelope from running to verifying — re-running the
+	// advance here would refuse (wrong state). Skip it when launchStub has
+	// already taken the envelope past running.
+	if after, afterErr := s.Get(ready); afterErr == nil {
+		switch after.State {
+		case "verifying", "completed", "failed":
+			result.Action = "execute"
+			result.Status = after.State
+			result.RunAttemptIDs = []string{rattID}
+			result.Human = fmt.Sprintf("executed envelope %s on lane %s (ratt=%s); stopped at %s for human/orchestrator review", ready, lane, rattID, after.State)
+			return result, nil
+		}
+	}
 	if _, verifyErr := s.Advance(ready, AdvanceInput{To: "verifying", Actor: actor, Note: "execute stage: verifying"}, now); verifyErr != nil {
 		// The launch succeeded but the verifying advance failed — surface
 		// the launch + the verify error so the operator can intervene.
@@ -297,6 +344,18 @@ func (s *Store) executeStageHasGrant(homePath string) (bool, error) {
 	return false, nil
 }
 
+// ExecuteStageCapacityFreshness reports whether a capacity observation
+// stamped at lastProven is fresh enough for unattended execution at now.
+// Fail-closed: a zero observation time is never fresh, and neither is a
+// stamp from the future.
+func ExecuteStageCapacityFreshness(lastProven, now time.Time) bool {
+	if lastProven.IsZero() {
+		return false
+	}
+	age := now.Sub(lastProven)
+	return age >= 0 && age <= executeStageCapacityFreshnessWindow
+}
+
 // defaultExecuteStageRoutePlanFn, defaultExecuteStageCapacityFn, and
 // defaultExecuteStagePolicyEvalFn are the production defaults for the
 // execute-stage hooks. They are intentionally minimal: read the home's
@@ -320,13 +379,44 @@ func defaultExecuteStageCapacityFn(homePath, lane string, now time.Time) (float6
 	return 0, false, nil
 }
 
-// defaultExecuteStagePolicyEvalFn returns hold — production must wire this
-// to policy.Evaluate. The default is intentionally NOT fail-open: a real
-// caller that forgets to wire the evaluator sees every execute attempt as
-// `skipped=policy_hold`. Operators MUST install the wired resolver before
-// unattended execution is safe; this default is the fail-closed floor.
+// defaultExecuteStagePolicyEvalFn is the REAL evaluator: the same door
+// `work advance --execute` consumes (policy.LoadConfig + policy.Evaluate on
+// an envelope.ActionIntent for capability work.continue.unattended). It fails
+// closed twice: an unreadable config is a hold, and an allow that is not
+// backed by the unattended standing grant (StandingGrantID mismatch — e.g.
+// the local_reversible class baseline allowing on its own) is downgraded to
+// hold. The operator's named grant is the only authority that opens this
+// gate; the class baseline alone never does.
 func defaultExecuteStagePolicyEvalFn(ai policyActionIntentShim, cfg policyConfigShim, now time.Time) policyDecisionShim {
-	return policyDecisionShim{Outcome: "hold", ID: "pol_default_hold"}
+	intent := envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent,
+			ID:            ai.ID,
+			Privacy:       ai.Privacy,
+			Risk:          ai.Risk,
+		},
+		Actor:         "compound-unattended-execute",
+		Capability:    ai.Capability,
+		Action:        "execute_unattended",
+		Target:        envelope.ActionTarget{Kind: "work", ID: ai.WorkID, Path: filepath.Join(cfg.Home, "work", "work", ai.WorkID+".json")},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		Preview:       "execute ready work " + ai.WorkID + " unattended via work continue",
+		RollbackPlan:  "advance work back to ready if the launch produced no side effects",
+	}
+	config, _, err := policy.LoadConfig(cfg.Home)
+	if err != nil {
+		return policyDecisionShim{ID: "pol_unattended_config_unreadable", Outcome: "hold"}
+	}
+	pd := policy.Evaluate(intent, config, now)
+	switch pd.Outcome {
+	case "allow", "allow_with_obligations":
+		if pd.StandingGrantID != executeUnattendedGrantID {
+			return policyDecisionShim{ID: pd.ID, Outcome: "hold"}
+		}
+	}
+	return policyDecisionShim{ID: pd.ID, Outcome: pd.Outcome}
 }
 
 // defaultExecuteStageLaunch returns an explicit error — production must wire
@@ -335,4 +425,43 @@ func defaultExecuteStagePolicyEvalFn(ai policyActionIntentShim, cfg policyConfig
 // sees every execute attempt as `skipped=launch_failed`.
 func defaultExecuteStageLaunch(_ *Store, workID, lane, harness, prompt string, now time.Time) (string, error) {
 	return "", errors.New("execute stage launch not wired; production must bind launchStub to the actuator seam")
+}
+
+// parseLaunchRefusal inspects the error returned by launchStub and reports
+// whether it carries a refusal-prefix the seam should surface as a stage
+// skip reason rather than a hard launch failure. Returns ("", "") for bare
+// errors, which the seam treats as an adapter-level failure and closes the
+// envelope as failed.
+//
+// Wire contract: the launch function can prefix its error with
+// "<skip_reason>:<detail>" when it refuses the launch without invoking the
+// adapter. Today that is "lane_unready:<details>" (the readiness guard
+// reported not-ready), "workspace_unresolvable:<reason>", and
+// "adapter_missing:<harness>". Bare errors are infrastructure failures that
+// the envelope "failed" close should record. Adding a new refusal kind is
+// safe: it must be listed in executeStageLaunchRefusalReasons.
+func parseLaunchRefusal(err error) (string, string) {
+	if err == nil {
+		return "", ""
+	}
+	msg := err.Error()
+	for _, prefix := range executeStageLaunchRefusalReasons {
+		if strings.HasPrefix(msg, prefix+":") {
+			detail := strings.TrimSpace(strings.TrimPrefix(msg, prefix+":"))
+			return prefix, detail
+		}
+	}
+	return "", ""
+}
+
+// executeStageLaunchRefusalReasons lists every skip reason the launch wire
+// can emit on its own (without invoking the adapter). The seam reads this
+// list to distinguish a refused launch (envelope stays in its current
+// state, no Close) from a launched-and-failed launch (envelope is
+// terminalized "failed"). Order matters only for prefix matching — none of
+// the listed prefixes is a prefix of another.
+var executeStageLaunchRefusalReasons = []string{
+	"lane_unready",
+	"workspace_unresolvable",
+	"adapter_missing",
 }

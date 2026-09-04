@@ -1,6 +1,7 @@
 package work
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -78,6 +79,46 @@ type policyActionIntentShim = policyActionIntent
 type policyConfigShim = policyConfig
 type policyDecisionShim = policyDecision
 
+// Exported aliases of the shim types so the composition root (cmd/compound)
+// and its tests can construct hook values without importing the unexported
+// names. Aliases, not copies: the seam and the wiring share one shape.
+type PolicyActionIntentShim = policyActionIntent
+type PolicyConfigShim = policyConfig
+type PolicyDecisionShim = policyDecision
+
+// SwapExecuteStageRoutePlan installs fn as the seam's route-plan resolver and
+// returns a restore function. cmd/compound binds the real resolver at init;
+// tests swap in stubs and restore to keep package state isolated.
+func SwapExecuteStageRoutePlan(fn executeRoutePlanFn) func() {
+	prev := executeStageRoutePlanFn
+	executeStageRoutePlanFn = fn
+	return func() { executeStageRoutePlanFn = prev }
+}
+
+// SwapExecuteStageCapacity installs fn as the seam's capacity reader and
+// returns a restore function (see SwapExecuteStageRoutePlan).
+func SwapExecuteStageCapacity(fn executeCapacityFn) func() {
+	prev := executeStageCapacityFn
+	executeStageCapacityFn = fn
+	return func() { executeStageCapacityFn = prev }
+}
+
+// SwapExecuteStagePolicyEval installs fn as the seam's policy evaluator and
+// returns a restore function (see SwapExecuteStageRoutePlan).
+func SwapExecuteStagePolicyEval(fn executePolicyEvalFn) func() {
+	prev := executeStagePolicyEvalFn
+	executeStagePolicyEvalFn = fn
+	return func() { executeStagePolicyEvalFn = prev }
+}
+
+// SwapExecuteStageLaunch installs fn as the seam's harness launcher and
+// returns a restore function (see SwapExecuteStageRoutePlan).
+func SwapExecuteStageLaunch(fn executeLaunchFn) func() {
+	prev := launchStub
+	launchStub = fn
+	return func() { launchStub = prev }
+}
+
 type policyActionIntent struct {
 	ID         string
 	Capability string
@@ -88,6 +129,9 @@ type policyActionIntent struct {
 
 type policyConfig struct {
 	HasGrant bool
+	// Home is the Compound home root the evaluator loads policy config (and
+	// imported standing grants) from. The seam always passes the store's home.
+	Home string
 }
 
 type policyDecision struct {
@@ -107,6 +151,14 @@ type ContinueOptions struct {
 	// 10-minute budget. Zero means "use the default" (1). Operators can
 	// raise this on a dry-run probe only.
 	MaxExecuteSteps int
+	// DryRun makes the execute stage a planning probe: it runs every gate
+	// (route, capacity, policy) and produces a verdict, but it does NOT
+	// claim, advance, launch, or finalize any envelope. The returned
+	// verdict carries `would_execute: <work_id> on <lane> (capacity N%,
+	// policy <id>)` so operators can observe the unattended envelope end
+	// to end without minting RunAttempts. Heartbeats must keep DryRun
+	// false; this flag is for first-touch operator probes only.
+	DryRun bool
 }
 
 type ContinueResult struct {
@@ -152,6 +204,58 @@ type ContinueResult struct {
 	RunAttemptIDs []string `json:"run_attempt_ids,omitempty"`
 	Lane          string   `json:"lane,omitempty"`
 	Human         string   `json:"human,omitempty"`
+
+	// Execute is the structured verdict the execute stage stamps whenever
+	// the caller asked for one (ContinueOptions.MaxExecuteSteps > 0).
+	// The field is the single source of truth for "what did the execute
+	// stage do this tick?" and is set EVEN WHEN the stage falls through
+	// to DispatchStep -- deliverable 0 of R3A slice 2, after the
+	// orchestrator noticed a tired human cannot tell from
+	// `{"status":"waiting","step_count":1}` whether the execute stage ran
+	// at all. Either Skipped+Human is set (refused / no-op) or
+	// RunAttemptIDs+Status is set (a launch happened); both is a bug.
+	Execute *ExecuteVerdict `json:"execute,omitempty"`
+}
+
+// ExecuteVerdict is the structured per-tick record of what the unattended
+// execute stage did. It is the answer to the orchestrator's deliverable 0:
+// "did the execute stage refuse, succeed, or not run at all this tick?".
+// Skipped+Human are set on a refusal or no-op (no grant, no ready envelope,
+// lane unready, etc.). RunAttemptIDs+Status are set on a successful launch.
+// Lane is set whenever the route gate ran, regardless of outcome. Only one
+// of {refusal, launch, would_execute} may be non-empty; the helper
+// EnsureConsistent enforces this before the result is written to disk.
+type ExecuteVerdict struct {
+	// Stage is "execute" so callers reading the JSON can grep for the
+	// stage this verdict came from without parsing context. Today the
+	// seam only emits one verdict per Continue call, but the field is
+	// forward-compatible with a future stage that wraps more than one.
+	Stage string `json:"stage"`
+	// Skipped is one of the named refusal reasons (no_grant, risk,
+	// no_route, capacity_unknown, policy_hold, lane_unready,
+	// workspace_unresolvable, claim_failed, launch_failed) or empty on a
+	// launch.
+	Skipped string `json:"skipped,omitempty"`
+	// Human is the plain-language line. Set on every verdict so a tired
+	// operator can read what the stage did without parsing the
+	// structured fields.
+	Human string `json:"human"`
+	// Lane is the route-plan lane the stage picked (today: equal to the
+	// harness name). Set whenever the route gate ran; empty on a
+	// pre-route refusal (no_grant, no ready envelope).
+	Lane string `json:"lane,omitempty"`
+	// Status is the post-launch envelope state the seam observed, or the
+	// current state if the verdict is a refusal. Always set.
+	Status string `json:"status"`
+	// RunAttemptIDs carries every ratt id the launch minted.
+	RunAttemptIDs []string `json:"run_attempt_ids,omitempty"`
+	// WouldExecute is the dry-run planning line: "<work_id> on <lane>
+	// (capacity N%, policy <id>)". Set ONLY on a dry-run pass where the
+	// gates all opened but the seam deliberately did not launch.
+	WouldExecute string `json:"would_execute,omitempty"`
+	// CapacityPercent mirrors the gate-(d) reading the seam observed, so
+	// dry-run probes can be cross-checked against the live CodexBar feed.
+	CapacityPercent float64 `json:"capacity_percent,omitempty"`
 }
 
 type ContinueRunOptions struct {
@@ -226,6 +330,17 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 	// declined. Once the grant is installed AND a downstream gate fails,
 	// the JSON carries skipped=<reason> while DispatchStep claims the
 	// envelope via the existing path.
+	//
+	// Deliverable 0 (R3A slice 2 orchestrator addendum, 2026-09-04): when
+	// the caller asked for the execute stage (`MaxExecuteSteps > 0`), the
+	// result MUST carry an `execute` verdict so a tired human can tell
+	// "did nothing because no grant" from "did nothing because no work"
+	// from `{"status":"waiting","step_count":1}`. The verdict is stamped
+	// regardless of whether the seam ran end-to-end (a launch), refused
+	// at a gate (skipped), or fell through to DispatchStep because there
+	// was no ready envelope to begin with (no_grant or no-op). The
+	// heartbeat summary line reads `execute=skipped:<reason>` or
+	// `execute=ok ratt=<id>` off the verdict.
 	if continueExecuteStageThreshold(report) {
 		stage, stageErr := s.executeStage(now, opts, actor)
 		if stageErr != nil {
@@ -243,6 +358,7 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			result.Lane = stage.Lane
 			result.Human = stage.Human
 			result.PolicyDecisionID = stage.PolicyDecisionID
+			result.Execute = buildExecuteVerdict(stage, result.Status)
 			return s.recordContinue(now, result)
 		}
 		if stage.Skipped != "" {
@@ -255,9 +371,43 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			result.Lane = stage.Lane
 			result.Human = stage.Human
 			result.PolicyDecisionID = stage.PolicyDecisionID
+			result.Execute = buildExecuteVerdict(stage, "refused")
 			// Clear result.Action / result.Status so DispatchStep
 			// below owns the recorded outcome (its Action/Status
 			// overwrite result.Action / result.Status when it claims).
+		}
+		if opts.DryRun && stage.Human != "" {
+			// Dry-run probe: every gate opened, the seam populated Human
+			// with the "would execute ..." line, and there is no launch
+			// to record. Stamp the verdict with would_execute and the
+			// capacity reading the seam observed, then record and
+			// return WITHOUT claiming the envelope. DispatchStep below
+			// is skipped on purpose: the dry-run operator is the only
+			// caller of this branch and they want a clean verdict, not
+			// a follow-on lifecycle move.
+			result.Skipped = "would_execute"
+			result.Lane = stage.Lane
+			result.Human = stage.Human
+			result.PolicyDecisionID = stage.PolicyDecisionID
+			result.WorkID = stage.WorkID
+			result.Execute = buildDryRunVerdict(stage)
+			return s.recordContinue(now, result)
+		}
+	} else if opts.MaxExecuteSteps > 0 {
+		// The seam did not run because there was no ready envelope on
+		// the bench (the threshold predicate requires `ready` count >=
+		// 1). Stamp a verdict so the heartbeat log shows the operator
+		// WHY the unattended stage declined this tick: there was no
+		// eligible work. Without this stamp the JSON carries only
+		// `{"status":"waiting"}` and a tired human cannot distinguish
+		// "execute stage ran and refused" from "execute stage had
+		// nothing to do" from "execute stage was never invoked" — that
+		// ambiguity is exactly the orchestrator's deliverable 0.
+		result.Execute = &ExecuteVerdict{
+			Stage:   "execute",
+			Skipped: "no_ready_envelope",
+			Human:   "did nothing: no ready envelope on the bench; the unattended execute stage had nothing to act on this tick",
+			Status:  "not_invoked",
 		}
 	}
 
@@ -346,6 +496,58 @@ func continueExecuteStageThreshold(report WorkbenchReport) bool {
 		return false
 	}
 	return true
+}
+
+// buildExecuteVerdict translates a stage result into the structured verdict
+// that lands on ContinueResult.Execute. It is the seam's single source of
+// truth for "what did the execute stage do this tick?": either the launch
+// minted one or more ratt ids (RunAttemptIDs non-empty, Skipped empty,
+// Status the post-launch envelope state), or the stage refused / fell
+// through (Skipped non-empty, RunAttemptIDs empty, Status "refused" or the
+// current envelope state).
+//
+// Human defaults to a plain-language fallback ("execute stage ran with no
+// recorded outcome") when the stage result did not bring one — defence in
+// depth against a future stage refactor that forgets to stamp Human, so a
+// tired operator always sees something they can read.
+func buildExecuteVerdict(stage ContinueResult, finalStatus string) *ExecuteVerdict {
+	status := strings.TrimSpace(finalStatus)
+	if status == "" {
+		status = stage.Status
+	}
+	if status == "" {
+		status = "unknown"
+	}
+	human := strings.TrimSpace(stage.Human)
+	if human == "" {
+		human = "execute stage ran with no recorded outcome"
+	}
+	return &ExecuteVerdict{
+		Stage:         "execute",
+		Skipped:       strings.TrimSpace(stage.Skipped),
+		Human:         human,
+		Lane:          strings.TrimSpace(stage.Lane),
+		Status:        status,
+		RunAttemptIDs: append([]string(nil), stage.RunAttemptIDs...),
+	}
+}
+
+// buildDryRunVerdict formats the dry-run planning line into the same
+// ExecuteVerdict shape the live launch path uses. The seam stamps Human with
+// "would execute <work_id> on <lane> (capacity N%, policy <id>)" before this
+// helper runs, so the verdict's Human field carries that line verbatim. The
+// envelope stays in its current state (ready) — the helper does NOT mint a
+// RunAttempt or call Advance(verifying).
+func buildDryRunVerdict(stage ContinueResult) *ExecuteVerdict {
+	human := strings.TrimSpace(stage.Human)
+	if human == "" {
+		human = fmt.Sprintf("would execute %s on %s (dry-run)", stage.WorkID, stage.Lane)
+	}
+	verdict := buildExecuteVerdict(stage, "dry_run")
+	verdict.WouldExecute = human
+	verdict.Human = human
+	verdict.Skipped = "would_execute"
+	return verdict
 }
 
 func stateCount(report WorkbenchReport, state string) int {

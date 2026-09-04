@@ -26,6 +26,7 @@ import (
 	"compound/internal/policy"
 	"compound/internal/runattempt"
 	"compound/internal/work"
+	"compound/internal/work/executewire"
 )
 
 // cmdDoctor is the single legible operator health surface. The newest organs each expose real state,
@@ -73,6 +74,13 @@ type doctorReport struct {
 	FindingsSuperseded int          `json:"findings_superseded"`
 	PlacementMode      string       `json:"placement_guard_mode"`
 	PlacementNote      string       `json:"placement_note,omitempty"`
+
+	// UnattendedExecute — one row per lane the route plan names for
+	// work.continue.unattended (R3A slice 2 deliverable 6). Each row
+	// carries the route gate role, capacity reading + age, and grant
+	// presence; the matching plain-text section is rendered by
+	// doctor.PrintUnattendedExecute (under internal/doctor/).
+	UnattendedExecute []doctor.UnattendedExecuteLane `json:"unattended_execute,omitempty"`
 
 	// Placement source freshness — for each imported source view, whether the bytes
 	// Compound ENFORCES still match the bytes that view renders today.
@@ -257,6 +265,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	rep := doctorReport{Home: homePath}
+	rep.UnattendedExecute = doctor.BuildUnattendedExecuteRows(homePath, time.Now().UTC(), executewire.CapacityFromSnapshot)
 
 	// 1) Hooks — per-harness installed/ok/drift/absent via the install CHECK path (writes nothing).
 	base := strings.TrimSpace(flagValue(args, "--base"))
@@ -628,6 +637,7 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	contract.RenderBindingFreshness(stdout, rep.BindingFreshness, rep.BindingFreshnessNote)
 	printPermissionPosture(stdout, rep)
 	printSurfacing(stdout, rep)
+	doctor.PrintUnattendedExecute(stdout, rep.UnattendedExecute)
 }
 
 // doctorPlacementSource is one imported placement source view and whether the bytes
