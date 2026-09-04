@@ -6,9 +6,23 @@ set -u
 # mutation are intentionally absent.
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 LOG="$HOME/.compound/autonomy-heartbeat.log"
+COMPOUND_HOME="$HOME/.compound"
 BIN="$HOME/.local/bin/compound"
 TIMEOUT_BIN=$(command -v gtimeout || command -v timeout || true)
 TS=$(date -u +%FT%TZ)
+
+# Stage-truth validation lives in a sourced lib so the heartbeat (sh) and the
+# shell test (sh) share one surface. The lib parses the driver JSON strictly,
+# verifies the terminal receipt, checks skipped_locked freshness, and decides
+# GREEN vs RED — never trusting the binary's process exit code alone.
+HEARTBEAT_LIB_DIR=$(CDPATH= dirname -- "$0")
+case "$HEARTBEAT_LIB_DIR" in
+  /*) ;;
+  *)  HEARTBEAT_LIB_DIR="$(pwd)/$HEARTBEAT_LIB_DIR"
+      [ -d "$HEARTBEAT_LIB_DIR" ] || HEARTBEAT_LIB_DIR="$(pwd)"
+      ;;
+esac
+. "$HEARTBEAT_LIB_DIR/_lib/heartbeat-promote-stage.sh"
 
 if [ ! -x "$BIN" ]; then
   echo "$TS preflight rc=69 ERR: installed compound unavailable at $BIN" >> "$LOG"
@@ -130,30 +144,16 @@ else
 		--promote-limit 1 --scan-limit 100 --walk-scan-limit 60000 \
     --json >"$PD_TMP/driver.json" 2>"$PD_TMP/driver.err"
   PD_RC=$?
-  PD_FIELDS=$(python3 - "$PD_TMP/driver.json" <<'PY'
-import json,sys
-try:
-    d=json.load(open(sys.argv[1]))
-    promote=d.get("promote",{})
-    sweep=d.get("sweep",{})
-    promoted=[x.get("claim_id","") for x in promote.get("promotions",[]) if x.get("claim_id")]
-    for src in d.get("imports",{}).get("sources",[]): promoted += [x for x in src.get("claim_ids",[]) if x]
-    parked=[x.get("candidate_id","") for x in sweep.get("actions",[]) if x.get("verdict")=="park" and x.get("candidate_id") in set(sweep.get("changed_ids",[]))]
-    rejected=[x.get("candidate_id","") for x in sweep.get("actions",[]) if x.get("verdict") in ("reject","no_promote") and x.get("candidate_id") in set(sweep.get("changed_ids",[]))]
-    for group in d.get("dedupe",{}).get("actions",[]): rejected += group.get("no_promoted",[])
-    print("|".join([d.get("pass_id", "unknown"), d.get("stage", "unknown"), ",".join(promoted), ",".join(parked), ",".join(rejected), str(promote.get("promoted",0)), str(sweep.get("adjudicated",0)), str(d.get("pending_after"))]))
-except Exception:
-    print("unknown|unparseable||||0|0|None")
-PY
-)
-  OLD_IFS=$IFS
-  IFS='|'
-  read -r PD_PASS PD_STAGE PD_PROMOTED PD_PARKED PD_REJECTED PD_PROMOTED_N PD_SWEPT_N PD_PENDING <<EOF
-$PD_FIELDS
-EOF
-  IFS=$OLD_IFS
-  PD_PROOF="evidence:promote-driver-pass:$PD_PASS:$PD_STAGE"
-  if [ "$PD_RC" -eq 0 ] && [ "$PD_STAGE" = "committed" ]; then
+  # Strict semantic stage decision: the lib parses the driver JSON, verifies
+  # the terminal receipt path+digest for committed, checks skipped_locked
+  # freshness (lock owner + recent receipts.jsonl), and decides GREEN vs RED.
+  # PD_RC is now the SEMANTIC rc, not the binary's process exit code.
+  set +e
+  promote_driver_stage_decide "$PD_TMP/driver.json" "$COMPOUND_HOME" "$PD_RC" \
+    <"$PD_TMP/driver.json"
+  PD_RC=$?
+  set -e
+  if [ "$PD_STAGE" = "committed" ] && [ "$PD_RC" -eq 0 ]; then
     "$BIN" work advance "$PD_WORK_ID" --to verifying --by "$PD_ACTOR" --verification "$PD_PROOF" --note "driver terminal receipt committed" >/dev/null 2>"$PD_TMP/verify.err" || PD_RC=1
     if [ "$PD_RC" -eq 0 ]; then
       if [ -n "$PD_PROMOTED$PD_PARKED$PD_REJECTED" ]; then
@@ -165,6 +165,15 @@ EOF
         set -- "$BIN" work close "$PD_WORK_ID" --outcome completed --move-type audit_only --by "$PD_ACTOR" --summary "Scheduled memory maintenance found no state delta" --proof "$PD_PROOF"
       fi
       "$@" >"$PD_TMP/close.out" 2>"$PD_TMP/close.err" || PD_RC=1
+    fi
+  elif [ "$PD_STAGE" = "skipped_locked" ] && [ "$PD_RC" -eq 0 ]; then
+    # Another pass holds the single-flight lock and its heartbeat is fresh —
+    # doctrine says keep waiting, never contend. We DO NOT close this envelope
+    # as completed (no work was done by us); we advance to verifying with the
+    # freshness proof so the next tick can pick it up.
+    "$BIN" work advance "$PD_WORK_ID" --to verifying --by "$PD_ACTOR" --verification "$PD_PROOF" --note "driver skipped_locked; another pass holds the single-flight lock and is fresh" >/dev/null 2>"$PD_TMP/verify.err" || PD_RC=1
+    if [ "$PD_RC" -eq 0 ]; then
+      "$BIN" work close "$PD_WORK_ID" --outcome completed --move-type audit_only --by "$PD_ACTOR" --summary "Scheduled memory maintenance skipped (another pass holds lock; heartbeat fresh)" --proof "$PD_PROOF" >"$PD_TMP/close.out" 2>"$PD_TMP/close.err" || PD_RC=1
     fi
   else
     terminalize_failed_work "Scheduled memory maintenance did not commit ($PD_STAGE)" "failure:promote-driver:$PD_PASS:$PD_STAGE" || PD_SUM="ERR: driver failed and work terminalization failed"
