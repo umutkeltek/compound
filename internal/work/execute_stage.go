@@ -136,6 +136,20 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 		return result, nil
 	}
 
+	// Dry-run probe: every gate opened, but the operator asked us NOT to
+	// claim, advance, launch, or finalize. Return a verdict that names
+	// the work, the lane, the capacity reading, and the policy decision
+	// id so the operator can verify the unattended envelope end-to-end
+	// without minting a RunAttempt. The envelope stays in its current
+	// state (ready) for the next live tick to act on.
+	if opts.DryRun {
+		result.Human = fmt.Sprintf("would execute %s on %s (capacity %.0f%%, policy %s)", ready, lane, usedPercent, pd.ID)
+		result.PolicyDecisionID = pd.ID
+		result.Lane = lane
+		result.WorkID = ready
+		return result, nil
+	}
+
 	// All gates pass — claim + advance to running + launch + advance to
 	// verifying, reusing the existing lifecycle seams (`Claim`, `Advance`,
 	// `Close`) rather than forking them. The launch stops at verifying;

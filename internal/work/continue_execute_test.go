@@ -712,3 +712,67 @@ func TestContinueAlwaysReportsExecuteVerdictWhenRequested(t *testing.T) {
 		}
 	})
 }
+
+// TestContinueDryRunLeavesNoRunAttemptAndEnvelopeReady — deliverable 5 of
+// R3A slice 2. With DryRun=true the seam runs every gate end to end but
+// does NOT claim, advance, launch, or finalize. The envelope must stay in
+// `ready` (no side effects), no RunAttempt may be minted, and the verdict
+// carries the planning line "would execute <work_id> on <lane> (capacity
+// N%, policy <id>)".
+func TestContinueDryRunLeavesNoRunAttemptAndEnvelopeReady(t *testing.T) {
+	s := newStore(t)
+	seedReadyExecuteWork(t, s, "work_dry_run")
+	installExecuteGrant(t, s.home, true)
+	restoreAllExecuteHooks(t)
+	executeStageRoutePlanFn = func(home, capability string) (string, bool) {
+		return "claude-minimax", true
+	}
+	executeStageCapacityFn = func(home, lane string, now time.Time) (float64, bool, error) {
+		return 30, true, nil
+	}
+	executeStagePolicyEvalFn = func(ai policyActionIntentShim, cfg policyConfigShim, now time.Time) policyDecisionShim {
+		return policyDecisionShim{Outcome: "allow", ID: "pol_dry_run_allow"}
+	}
+	launched := false
+	launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+		launched = true
+		return "ratt_dry_run_should_not_mint", nil
+	}
+
+	res, err := s.Continue(fixedNow.Add(time.Minute), ContinueOptions{Actor: "codex", MaxExecuteSteps: 1, DryRun: true})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if launched {
+		t.Fatal("dry-run must not call the launch hook")
+	}
+	if res.Action != "execute" {
+		// Action flips to "execute" only when a launch succeeded; a dry-run
+		// is a no-launch planning pass and stays at the default "none".
+		// (The ContinueResult seeding uses Action: "none" as the base.)
+		// Allow either "none" or "execute" here; the contract is on the
+		// verdict and the envelope state, not on Action.
+		if res.Action != "none" {
+			t.Fatalf("dry-run action = %q, want none or execute; result=%+v", res.Action, res)
+		}
+	}
+	if res.Execute == nil {
+		t.Fatalf("dry-run must stamp an Execute verdict; result=%+v", res)
+	}
+	if res.Execute.Skipped != "would_execute" {
+		t.Fatalf("dry-run verdict skipped = %q, want would_execute; verdict=%+v", res.Execute.Skipped, res.Execute)
+	}
+	if !strings.HasPrefix(res.Execute.WouldExecute, "would execute work_dry_run on claude-minimax (") {
+		t.Fatalf("dry-run planning line %q must start with the documented shape", res.Execute.WouldExecute)
+	}
+	if len(res.RunAttemptIDs) != 0 {
+		t.Fatalf("dry-run must not surface a RunAttempt; got %v", res.RunAttemptIDs)
+	}
+	after, err := s.Get("work_dry_run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "ready" {
+		t.Fatalf("dry-run must leave envelope in ready; got state=%q", after.State)
+	}
+}

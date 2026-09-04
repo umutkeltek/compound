@@ -1,6 +1,7 @@
 package work
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -150,6 +151,14 @@ type ContinueOptions struct {
 	// 10-minute budget. Zero means "use the default" (1). Operators can
 	// raise this on a dry-run probe only.
 	MaxExecuteSteps int
+	// DryRun makes the execute stage a planning probe: it runs every gate
+	// (route, capacity, policy) and produces a verdict, but it does NOT
+	// claim, advance, launch, or finalize any envelope. The returned
+	// verdict carries `would_execute: <work_id> on <lane> (capacity N%,
+	// policy <id>)` so operators can observe the unattended envelope end
+	// to end without minting RunAttempts. Heartbeats must keep DryRun
+	// false; this flag is for first-touch operator probes only.
+	DryRun bool
 }
 
 type ContinueResult struct {
@@ -214,8 +223,8 @@ type ContinueResult struct {
 // Skipped+Human are set on a refusal or no-op (no grant, no ready envelope,
 // lane unready, etc.). RunAttemptIDs+Status are set on a successful launch.
 // Lane is set whenever the route gate ran, regardless of outcome. Only one
-// of {refusal, launch} may be non-empty; the helper EnsureConsistent enforces
-// this before the result is written to disk.
+// of {refusal, launch, would_execute} may be non-empty; the helper
+// EnsureConsistent enforces this before the result is written to disk.
 type ExecuteVerdict struct {
 	// Stage is "execute" so callers reading the JSON can grep for the
 	// stage this verdict came from without parsing context. Today the
@@ -240,6 +249,13 @@ type ExecuteVerdict struct {
 	Status string `json:"status"`
 	// RunAttemptIDs carries every ratt id the launch minted.
 	RunAttemptIDs []string `json:"run_attempt_ids,omitempty"`
+	// WouldExecute is the dry-run planning line: "<work_id> on <lane>
+	// (capacity N%, policy <id>)". Set ONLY on a dry-run pass where the
+	// gates all opened but the seam deliberately did not launch.
+	WouldExecute string `json:"would_execute,omitempty"`
+	// CapacityPercent mirrors the gate-(d) reading the seam observed, so
+	// dry-run probes can be cross-checked against the live CodexBar feed.
+	CapacityPercent float64 `json:"capacity_percent,omitempty"`
 }
 
 type ContinueRunOptions struct {
@@ -359,6 +375,23 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			// Clear result.Action / result.Status so DispatchStep
 			// below owns the recorded outcome (its Action/Status
 			// overwrite result.Action / result.Status when it claims).
+		}
+		if opts.DryRun && stage.Human != "" {
+			// Dry-run probe: every gate opened, the seam populated Human
+			// with the "would execute ..." line, and there is no launch
+			// to record. Stamp the verdict with would_execute and the
+			// capacity reading the seam observed, then record and
+			// return WITHOUT claiming the envelope. DispatchStep below
+			// is skipped on purpose: the dry-run operator is the only
+			// caller of this branch and they want a clean verdict, not
+			// a follow-on lifecycle move.
+			result.Skipped = "would_execute"
+			result.Lane = stage.Lane
+			result.Human = stage.Human
+			result.PolicyDecisionID = stage.PolicyDecisionID
+			result.WorkID = stage.WorkID
+			result.Execute = buildDryRunVerdict(stage)
+			return s.recordContinue(now, result)
 		}
 	} else if opts.MaxExecuteSteps > 0 {
 		// The seam did not run because there was no ready envelope on
@@ -497,6 +530,24 @@ func buildExecuteVerdict(stage ContinueResult, finalStatus string) *ExecuteVerdi
 		Status:        status,
 		RunAttemptIDs: append([]string(nil), stage.RunAttemptIDs...),
 	}
+}
+
+// buildDryRunVerdict formats the dry-run planning line into the same
+// ExecuteVerdict shape the live launch path uses. The seam stamps Human with
+// "would execute <work_id> on <lane> (capacity N%, policy <id>)" before this
+// helper runs, so the verdict's Human field carries that line verbatim. The
+// envelope stays in its current state (ready) — the helper does NOT mint a
+// RunAttempt or call Advance(verifying).
+func buildDryRunVerdict(stage ContinueResult) *ExecuteVerdict {
+	human := strings.TrimSpace(stage.Human)
+	if human == "" {
+		human = fmt.Sprintf("would execute %s on %s (dry-run)", stage.WorkID, stage.Lane)
+	}
+	verdict := buildExecuteVerdict(stage, "dry_run")
+	verdict.WouldExecute = human
+	verdict.Human = human
+	verdict.Skipped = "would_execute"
+	return verdict
 }
 
 func stateCount(report WorkbenchReport, state string) int {
