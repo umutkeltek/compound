@@ -3005,11 +3005,8 @@ func sliceContainsSubstring(values []string, needle string) bool {
 }
 
 func TestWorkImportPacketCreatesWorkEnvelopeWithoutClaims(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
 	out := captureStdout(t, func() {
 		cmdWork([]string{"import-packet", packetPath})
@@ -3043,11 +3040,8 @@ func TestWorkImportPacketCreatesWorkEnvelopeWithoutClaims(t *testing.T) {
 }
 
 func TestWorkCreateCLIWiresEnvelopeFields(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	writeCLIContextPackArtifact(t, homePath, "ctx_cli_create")
 
 	out := captureStdout(t, func() {
@@ -3095,11 +3089,8 @@ func TestWorkCreateCLIWiresEnvelopeFields(t *testing.T) {
 }
 
 func TestWorkCreatePlanCLIRecordsPolicyWithoutCreating(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	writeCLIContextPackArtifact(t, homePath, "ctx_cli_create_plan")
 
 	out := captureStdout(t, func() {
@@ -3192,11 +3183,8 @@ func TestWorkCreatePlanCLIPreservesPlanClassAndReworkLineage(t *testing.T) {
 }
 
 func TestWorkImportPacketReadyClosesThroughReceiptTransition(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	writeCLIContextPackArtifact(t, homePath, "ctx_packet_cli")
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
 	out := captureStdout(t, func() {
@@ -3260,11 +3248,8 @@ func TestWorkImportPacketReadyClosesThroughReceiptTransition(t *testing.T) {
 }
 
 func TestWorkbenchCommandShowsOpenAndTerminalProof(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work store: %v", err)
@@ -3323,11 +3308,8 @@ func TestWorkbenchCommandShowsOpenAndTerminalProof(t *testing.T) {
 }
 
 func TestWorkbenchCommandCanAttachCapabilitySurface(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	captureStdout(t, func() {
 		cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "harness-split.yaml")})
 	})
@@ -3749,11 +3731,8 @@ func TestCapabilityOutboundDistributionDryRunReceiptCLI(t *testing.T) {
 }
 
 func TestWorkbenchCommandCanAttachRoutePlan(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	captureStdout(t, func() {
 		cmdRoute([]string{"import-model-capabilities", filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")})
 	})
@@ -3801,11 +3780,8 @@ func TestWorkbenchCommandCanAttachRoutePlan(t *testing.T) {
 }
 
 func TestWorkbenchCapabilitySurfaceIsBounded(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := capgraph.Open(homePath)
 	if err != nil {
 		t.Fatalf("open capgraph: %v", err)
@@ -3977,11 +3953,8 @@ func TestCommandHelpShortCircuitsBeforeRuntimeValidation(t *testing.T) {
 }
 
 func TestWorkbenchCommandIncludesReviewQueueSummary(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	if _, err := reviewartifact.Write(homePath, "product-reviews", "prp_workbench", map[string]any{
 		"id":            "prp_workbench",
 		"status":        "review_required",
@@ -4030,11 +4003,8 @@ func TestWorkbenchCommandIncludesReviewQueueSummary(t *testing.T) {
 }
 
 func TestWorkbenchCommandShowsDispatchStepRuns(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4060,11 +4030,8 @@ func TestWorkbenchCommandShowsDispatchStepRuns(t *testing.T) {
 }
 
 func TestWorkbenchCommandShowsContinueRuns(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4091,11 +4058,8 @@ func TestWorkbenchCommandShowsContinueRuns(t *testing.T) {
 }
 
 func TestWorkbenchCommandDispatchNextUsesActor(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4287,11 +4251,8 @@ func TestWorkActivePacketProofDetectsChangedSourcePacket(t *testing.T) {
 
 func TestWorkDispatchPlanCommandRecordsProposalWithoutClaiming(t *testing.T) {
 	isolateDispatchCapacityGuard(t)
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4337,11 +4298,8 @@ func TestWorkDispatchPlanCommandRecordsProposalWithoutClaiming(t *testing.T) {
 
 func TestWorkDispatchClaimCommandClaimsSelectedWork(t *testing.T) {
 	isolateDispatchCapacityGuard(t)
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4384,11 +4342,8 @@ func TestWorkDispatchClaimCommandClaimsSelectedWork(t *testing.T) {
 
 func TestWorkDispatchClaimCommandClaimsExplicitWork(t *testing.T) {
 	isolateDispatchCapacityGuard(t)
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4495,11 +4450,8 @@ func TestWorkCreateRejectsRunningStateAsUsage(t *testing.T) {
 }
 
 func TestWorkCreateAllowsRunningStateInTestHomeThroughLifecycle(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "test fixture starts running", "--state", "running"})
 	store, err := work.Open(homePath)
 	if err != nil {
@@ -4565,11 +4517,8 @@ func TestWorkCreateCommandsRejectUndocumentedInitialStates(t *testing.T) {
 }
 
 func TestWorkDispatchAdvanceCommandStartsClaimedWork(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4611,11 +4560,8 @@ func TestWorkDispatchAdvanceCommandStartsClaimedWork(t *testing.T) {
 }
 
 func TestWorkDispatchClosePlanCommandRecordsClosePlanWithoutClosing(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4662,11 +4608,8 @@ func TestWorkDispatchClosePlanCommandRecordsClosePlanWithoutClosing(t *testing.T
 }
 
 func TestWorkDispatchCloseCommandClosesProofReadyWork(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4711,11 +4654,8 @@ func TestWorkDispatchCloseCommandClosesProofReadyWork(t *testing.T) {
 
 func TestWorkDispatchStepCommandClaimsReadyWork(t *testing.T) {
 	isolateDispatchCapacityGuard(t)
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4755,11 +4695,8 @@ func TestWorkDispatchStepCommandClaimsReadyWork(t *testing.T) {
 
 func TestWorkDispatchStepCommandImportsSourcePacket(t *testing.T) {
 	isolateDispatchCapacityGuard(t)
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4794,11 +4731,8 @@ func TestWorkDispatchStepCommandImportsSourcePacket(t *testing.T) {
 
 func TestWorkDispatchStepCommandReportsTerminalSourcePacket(t *testing.T) {
 	isolateDispatchCapacityGuard(t)
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4857,11 +4791,8 @@ func TestWorkDispatchStepCommandReportsTerminalSourcePacket(t *testing.T) {
 
 func TestWorkDispatchStepCommandRunsUntilWait(t *testing.T) {
 	isolateDispatchCapacityGuard(t)
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4901,11 +4832,8 @@ func TestWorkDispatchStepCommandRunsUntilWait(t *testing.T) {
 
 func TestWorkContinueCommandRunsSuggestedWorkUntilWait(t *testing.T) {
 	isolateDispatchCapacityGuard(t)
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4958,11 +4886,8 @@ func TestWorkContinueCommandRunsSuggestedWorkUntilWait(t *testing.T) {
 }
 
 func TestWorkClaimPlanCommandRecordsPolicyWithoutClaiming(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -4994,11 +4919,8 @@ func TestWorkClaimPlanCommandRecordsPolicyWithoutClaiming(t *testing.T) {
 }
 
 func TestWorkAdvancePlanAndAdvanceCommandRecordPolicy(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -5127,11 +5049,8 @@ func TestWorkObserveRunCommandAttachesTrace(t *testing.T) {
 }
 
 func TestWorkClosePlanAndCloseCommandRecordPolicy(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -5200,11 +5119,8 @@ func TestWorkClosePlanAndCloseCommandRecordPolicy(t *testing.T) {
 // internal/work/lease_close_test.go) — die() would os.Exit the test process, so per the
 // packet CLI tests cover success + steal-success + flag validation only.
 func TestWorkClosePlanCommandReportsLeaseHolderDenial(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -5326,11 +5242,8 @@ func TestWorkCloseCommandStealOverridesLeaseHolder(t *testing.T) {
 // mutating `work advance` calls die()/os.Exit on refusal, same as `work close`, so per the
 // close-gate lane's own precedent CLI tests here cover only the success + steal-success path.
 func TestWorkAdvanceCommandStealOverridesLeaseHolder(t *testing.T) {
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work: %v", err)
@@ -5391,11 +5304,8 @@ func TestValidateKnownFlagsRejectsUnknownFlag(t *testing.T) {
 
 func TestWorkDispatchPlanCommandPreviewsSourcePacketReadOnly(t *testing.T) {
 	isolateDispatchCapacityGuard(t)
-	homePath := t.TempDir()
+	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
 	out := captureStdout(t, func() {
 		cmdWork([]string{"dispatch-plan", "--actor", "codex", "--source-packet", packetPath, "--dry-run", "--json"})

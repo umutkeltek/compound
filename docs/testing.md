@@ -9,9 +9,10 @@ the producer succeeded:
 
 ```bash
 evidence_dir=$(mktemp -d)
+go build -o "$evidence_dir/testprofile" ./scripts/testprofile || exit "$?"
 go test -json -count=1 -timeout=40m ./... > "$evidence_dir/events.jsonl"
 test_status=$?
-go run ./scripts/testprofile "$evidence_dir/events.jsonl"
+"$evidence_dir/testprofile" "$evidence_dir/events.jsonl"
 profile_status=$?
 printf 'go-test exit=%s; profiler exit=%s; evidence=%s\n' "$test_status" "$profile_status" "$evidence_dir"
 test "$test_status" -eq 0 && test "$profile_status" -eq 0
@@ -31,6 +32,8 @@ short. Skips are counted; running/paused tests at EOF remain incomplete.
 Malformed input still emits partial measurements and a parse error. Exit
 codes are 0 for a complete passing input, 1 for failed/incomplete input, and
 2 for input/output errors. These are diagnostic results, not certification.
+The example builds the profiler because `go run` maps nonzero program exits
+to shell status 1; use the executable when distinguishing status 1 from 2.
 
 The profiler's own behavior is covered by `go test ./scripts/testprofile`
 and therefore by the unchanged canonical `go test ./...` gate.
@@ -46,6 +49,11 @@ behavior under test. Preserve failure-path assertions, not just happy paths.
 The hook-enforcement tests use the existing suite-wide `compoundTestBinary`;
 they do not share hook configs, captured responses, nonces or runtime homes.
 Build reuse must not remove the genuine-response replay falsifier.
+
+Work CLI tests that only require preinitialized synthetic state reuse
+`initializedTestHome(t)`. Each consumer still gets independent mutable files;
+initialization, distinct identity, missing-home and clock-sensitive tests keep
+their explicit setup. Run the clone-isolation tests with any such migration.
 
 Future scheduling or exact-input proof reuse needs a separately reviewed
 verification contract. A diagnostic profile cannot authorize either.
