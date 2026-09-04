@@ -49,9 +49,9 @@ func TestDirectorEmitsHypothesisDraftForStarvedProduct(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	signalsPerProduct := map[string]int{
-		"product:gamma-app":  4,
+		"product:gamma-app": 4,
 		"product:alpha-app": 3,
-		"product:beta-app":    3,
+		"product:beta-app":  3,
 	}
 	for _, d := range drafts {
 		productID, changeEvent := stripDraftMetadata(d)

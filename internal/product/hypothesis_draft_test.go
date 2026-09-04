@@ -212,8 +212,8 @@ func TestHypothesisDraftProducesOnePerSignalEvidenceRef(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]bool{
-		"product_signal:sig_one":  false,
-		"product_signal:sig_two":  false,
+		"product_signal:sig_one": false,
+		"product_signal:sig_two": false,
 		"product_loop:alpha-app": false,
 	}
 	for _, ref := range got.EvidenceRefs {
