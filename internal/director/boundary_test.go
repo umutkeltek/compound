@@ -76,6 +76,11 @@ func TestProposeApplyWritesConfinedToProposalSurfaces(t *testing.T) {
 		// and layer valid per-attempt flock companions beneath it.
 		"lock/runattempts.lock",
 		"lock/runattempts/",
+		// DELIBERATE allowlist extension (REL-P0-004 adoption, 2026-09-04): the shared
+		// work-admission lock (internal/home/work_admission_lock.go) pins one flocked
+		// file per work id under this directory; like lock/runattempts/ it is a lock,
+		// not a proposal surface.
+		"lock/capability-lifecycle-work-admission/",
 	}
 
 	var escaped []string

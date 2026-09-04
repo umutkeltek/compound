@@ -318,6 +318,11 @@ func TestHarnessEditProposeApplyWritesCardConfined(t *testing.T) {
 		"run_attempts/",                   // C1: every claim mints a RunAttempt; harness-edit --apply claims, so a run-attempt write is legitimate, not an escape
 		"lock/runattempts.lock",           // v0.1 compatibility fence for old and new RunAttempt writers
 		"lock/runattempts/",               // validated per-attempt companions beneath the compatibility fence
+		// DELIBERATE allowlist extension (REL-P0-004 adoption, 2026-09-04): the shared
+		// work-admission lock (internal/home/work_admission_lock.go) pins one flocked
+		// file per work id under this directory; like lock/runattempts/ it is a lock,
+		// not a proposal surface.
+		"lock/capability-lifecycle-work-admission/",
 	}
 	var escaped, sawCard []string
 	for _, rel := range writeSet {
