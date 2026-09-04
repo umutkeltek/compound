@@ -195,6 +195,51 @@ type ContinueResult struct {
 	RunAttemptIDs []string `json:"run_attempt_ids,omitempty"`
 	Lane          string   `json:"lane,omitempty"`
 	Human         string   `json:"human,omitempty"`
+
+	// Execute is the structured verdict the execute stage stamps whenever
+	// the caller asked for one (ContinueOptions.MaxExecuteSteps > 0).
+	// The field is the single source of truth for "what did the execute
+	// stage do this tick?" and is set EVEN WHEN the stage falls through
+	// to DispatchStep -- deliverable 0 of R3A slice 2, after the
+	// orchestrator noticed a tired human cannot tell from
+	// `{"status":"waiting","step_count":1}` whether the execute stage ran
+	// at all. Either Skipped+Human is set (refused / no-op) or
+	// RunAttemptIDs+Status is set (a launch happened); both is a bug.
+	Execute *ExecuteVerdict `json:"execute,omitempty"`
+}
+
+// ExecuteVerdict is the structured per-tick record of what the unattended
+// execute stage did. It is the answer to the orchestrator's deliverable 0:
+// "did the execute stage refuse, succeed, or not run at all this tick?".
+// Skipped+Human are set on a refusal or no-op (no grant, no ready envelope,
+// lane unready, etc.). RunAttemptIDs+Status are set on a successful launch.
+// Lane is set whenever the route gate ran, regardless of outcome. Only one
+// of {refusal, launch} may be non-empty; the helper EnsureConsistent enforces
+// this before the result is written to disk.
+type ExecuteVerdict struct {
+	// Stage is "execute" so callers reading the JSON can grep for the
+	// stage this verdict came from without parsing context. Today the
+	// seam only emits one verdict per Continue call, but the field is
+	// forward-compatible with a future stage that wraps more than one.
+	Stage string `json:"stage"`
+	// Skipped is one of the named refusal reasons (no_grant, risk,
+	// no_route, capacity_unknown, policy_hold, lane_unready,
+	// workspace_unresolvable, claim_failed, launch_failed) or empty on a
+	// launch.
+	Skipped string `json:"skipped,omitempty"`
+	// Human is the plain-language line. Set on every verdict so a tired
+	// operator can read what the stage did without parsing the
+	// structured fields.
+	Human string `json:"human"`
+	// Lane is the route-plan lane the stage picked (today: equal to the
+	// harness name). Set whenever the route gate ran; empty on a
+	// pre-route refusal (no_grant, no ready envelope).
+	Lane string `json:"lane,omitempty"`
+	// Status is the post-launch envelope state the seam observed, or the
+	// current state if the verdict is a refusal. Always set.
+	Status string `json:"status"`
+	// RunAttemptIDs carries every ratt id the launch minted.
+	RunAttemptIDs []string `json:"run_attempt_ids,omitempty"`
 }
 
 type ContinueRunOptions struct {
@@ -269,6 +314,17 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 	// declined. Once the grant is installed AND a downstream gate fails,
 	// the JSON carries skipped=<reason> while DispatchStep claims the
 	// envelope via the existing path.
+	//
+	// Deliverable 0 (R3A slice 2 orchestrator addendum, 2026-09-04): when
+	// the caller asked for the execute stage (`MaxExecuteSteps > 0`), the
+	// result MUST carry an `execute` verdict so a tired human can tell
+	// "did nothing because no grant" from "did nothing because no work"
+	// from `{"status":"waiting","step_count":1}`. The verdict is stamped
+	// regardless of whether the seam ran end-to-end (a launch), refused
+	// at a gate (skipped), or fell through to DispatchStep because there
+	// was no ready envelope to begin with (no_grant or no-op). The
+	// heartbeat summary line reads `execute=skipped:<reason>` or
+	// `execute=ok ratt=<id>` off the verdict.
 	if continueExecuteStageThreshold(report) {
 		stage, stageErr := s.executeStage(now, opts, actor)
 		if stageErr != nil {
@@ -286,6 +342,7 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			result.Lane = stage.Lane
 			result.Human = stage.Human
 			result.PolicyDecisionID = stage.PolicyDecisionID
+			result.Execute = buildExecuteVerdict(stage, result.Status)
 			return s.recordContinue(now, result)
 		}
 		if stage.Skipped != "" {
@@ -298,9 +355,26 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			result.Lane = stage.Lane
 			result.Human = stage.Human
 			result.PolicyDecisionID = stage.PolicyDecisionID
+			result.Execute = buildExecuteVerdict(stage, "refused")
 			// Clear result.Action / result.Status so DispatchStep
 			// below owns the recorded outcome (its Action/Status
 			// overwrite result.Action / result.Status when it claims).
+		}
+	} else if opts.MaxExecuteSteps > 0 {
+		// The seam did not run because there was no ready envelope on
+		// the bench (the threshold predicate requires `ready` count >=
+		// 1). Stamp a verdict so the heartbeat log shows the operator
+		// WHY the unattended stage declined this tick: there was no
+		// eligible work. Without this stamp the JSON carries only
+		// `{"status":"waiting"}` and a tired human cannot distinguish
+		// "execute stage ran and refused" from "execute stage had
+		// nothing to do" from "execute stage was never invoked" — that
+		// ambiguity is exactly the orchestrator's deliverable 0.
+		result.Execute = &ExecuteVerdict{
+			Stage:   "execute",
+			Skipped: "no_ready_envelope",
+			Human:   "did nothing: no ready envelope on the bench; the unattended execute stage had nothing to act on this tick",
+			Status:  "not_invoked",
 		}
 	}
 
@@ -389,6 +463,40 @@ func continueExecuteStageThreshold(report WorkbenchReport) bool {
 		return false
 	}
 	return true
+}
+
+// buildExecuteVerdict translates a stage result into the structured verdict
+// that lands on ContinueResult.Execute. It is the seam's single source of
+// truth for "what did the execute stage do this tick?": either the launch
+// minted one or more ratt ids (RunAttemptIDs non-empty, Skipped empty,
+// Status the post-launch envelope state), or the stage refused / fell
+// through (Skipped non-empty, RunAttemptIDs empty, Status "refused" or the
+// current envelope state).
+//
+// Human defaults to a plain-language fallback ("execute stage ran with no
+// recorded outcome") when the stage result did not bring one — defence in
+// depth against a future stage refactor that forgets to stamp Human, so a
+// tired operator always sees something they can read.
+func buildExecuteVerdict(stage ContinueResult, finalStatus string) *ExecuteVerdict {
+	status := strings.TrimSpace(finalStatus)
+	if status == "" {
+		status = stage.Status
+	}
+	if status == "" {
+		status = "unknown"
+	}
+	human := strings.TrimSpace(stage.Human)
+	if human == "" {
+		human = "execute stage ran with no recorded outcome"
+	}
+	return &ExecuteVerdict{
+		Stage:         "execute",
+		Skipped:       strings.TrimSpace(stage.Skipped),
+		Human:         human,
+		Lane:          strings.TrimSpace(stage.Lane),
+		Status:        status,
+		RunAttemptIDs: append([]string(nil), stage.RunAttemptIDs...),
+	}
 }
 
 func stateCount(report WorkbenchReport, state string) int {
