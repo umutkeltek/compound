@@ -776,3 +776,33 @@ func TestContinueDryRunLeavesNoRunAttemptAndEnvelopeReady(t *testing.T) {
 		t.Fatalf("dry-run must leave envelope in ready; got state=%q", after.State)
 	}
 }
+
+func TestContinueRunSurfacesLastExecuteVerdictAtTopLevel(t *testing.T) {
+	s := newStore(t)
+	seedReadyExecuteWork(t, s, "work_exec_run_verdict")
+	installExecuteGrant(t, s.home, false)
+	restoreAllExecuteHooks(t)
+	executeStageRoutePlanFn = func(home, capability string) (lane string, ok bool) {
+		return "claude-minimax", true
+	}
+	executeStageCapacityFn = func(home, lane string, now time.Time) (usedPercent float64, fresh bool, err error) {
+		return 30, true, nil
+	}
+	launchStub = func(*Store, string, string, string, string, time.Time) (string, error) {
+		return "", nil
+	}
+
+	// The heartbeat reads the RUN result (--until-wait), not one step: the
+	// stage's verdict must be mirrored at the top level or the hourly log can
+	// never say why nothing executed.
+	res, err := s.ContinueRun(fixedNow.Add(time.Minute), ContinueRunOptions{ContinueOptions: ContinueOptions{Actor: "codex", UntilWait: true, MaxExecuteSteps: 1}, MaxSteps: 1})
+	if err != nil {
+		t.Fatalf("ContinueRun: %v", err)
+	}
+	if len(res.Steps) == 0 || res.Steps[0].Execute == nil {
+		t.Fatalf("step carried no execute verdict: %+v", res.Steps)
+	}
+	if res.Execute == nil || res.Execute.Skipped != "no_grant" {
+		t.Fatalf("run result must mirror the step's execute verdict (want skipped=no_grant): run=%+v", res.Execute)
+	}
+}

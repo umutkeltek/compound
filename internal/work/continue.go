@@ -278,6 +278,10 @@ type ContinueRunResult struct {
 	ContinueCommand []string         `json:"continue_command,omitempty"`
 	WaitReason      string           `json:"wait_reason,omitempty"`
 	BlockedOn       []string         `json:"blocked_on,omitempty"`
+	// Execute mirrors the last step that ran the unattended execute stage so a
+	// reader of the run JSON (the heartbeat parser, a tired human) sees the
+	// stage's verdict at the top level instead of digging through steps[].
+	Execute *ExecuteVerdict `json:"execute,omitempty"`
 	NextAction      string           `json:"next_action,omitempty"`
 	Warnings        []string         `json:"warnings,omitempty"`
 	Integrity       []string         `json:"integrity,omitempty"`
@@ -589,6 +593,9 @@ func (s *Store) ContinueRun(now time.Time, opts ContinueRunOptions) (ContinueRun
 		}
 		result.Steps = append(result.Steps, step)
 		result.StepCount = len(result.Steps)
+		if step.Execute != nil {
+			result.Execute = step.Execute
+		}
 		result.NextAction = step.NextAction
 		result.WaitReason = step.WaitReason
 		result.BlockedOn = append([]string{}, step.BlockedOn...)

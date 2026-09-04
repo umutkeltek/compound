@@ -211,8 +211,15 @@ try:
     # `run_attempt_ids` only when it actually triggers, so absence
     # means DispatchStep handled the tick as before.
     steps = d.get("step_count")
-    skipped = d.get("skipped")
-    ratts = d.get("run_attempt_ids") or []
+    # The run result mirrors the last step's execute verdict at the top level
+    # (ContinueRunResult.Execute); older binaries only had it inside steps[].
+    verdict = d.get("execute") or {}
+    if not verdict:
+        for step in d.get("steps") or []:
+            if step.get("execute"):
+                verdict = step["execute"]
+    skipped = verdict.get("skipped") or d.get("skipped")
+    ratts = verdict.get("run_attempt_ids") or d.get("run_attempt_ids") or []
     summary = "status=%s steps=%s" % (d.get("status"), steps)
     if skipped:
         summary += " execute=skipped:%s" % skipped
