@@ -81,6 +81,13 @@ func TestProposeApplyWritesConfinedToProposalSurfaces(t *testing.T) {
 		// file per work id under this directory; like lock/runattempts/ it is a lock,
 		// not a proposal surface.
 		"lock/capability-lifecycle-work-admission/",
+		// DELIBERATE allowlist extension (W5 J9-R3G, 2026-09-04): a starved-product
+		// draft candidate is a parked product_hypothesis with a placeholder
+		// expected_effect. The director mints exactly ONE per starved product in
+		// apply mode; the draft is review-gated by construction (verdict=park,
+		// BuildHypothesisPlan refuses to invent causality), never touches a
+		// ProductSignal, and never invents a metric value.
+		"inbox/product-hypotheses/",
 	}
 
 	var escaped []string

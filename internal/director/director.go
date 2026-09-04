@@ -213,6 +213,17 @@ func Propose(homePath string, opts Options) (Report, error) {
 	report.Warnings = append(report.Warnings, warnings...)
 	candidates, warnings := scanCandidates(homePath, now)
 	report.Warnings = append(report.Warnings, warnings...)
+	// W5 J9-R3G apply-mode side: every product_hypothesis_draft candidate we
+	// just discovered is a parked draft with a placeholder expected_effect.
+	// Minting the file is review-gated by construction (verdict=park,
+	// BuildHypothesisPlan refuses to lock causality). Non-placeholder
+	// candidates, the only-write branch below, and the signal/jsonl ledger
+	// are all off-limits here.
+	if opts.Apply {
+		if warnings := mintDraftCandidatesForApply(homePath, candidates, now); len(warnings) > 0 {
+			report.Warnings = append(report.Warnings, warnings...)
+		}
+	}
 	for _, cand := range fairCandidateOrder(candidates) {
 		if len(report.Proposals) >= maxProposalsPerRun {
 			addSkipped(&report, SkippedCandidate{
@@ -486,6 +497,48 @@ func scanCandidates(homePath string, now time.Time) ([]candidate, []string) {
 	return out, warnings
 }
 
+// mintDraftCandidatesForApply mints one inbox/product-hypotheses/<id>.json
+// per product_hypothesis_draft candidate the scanner found. It is the ONLY
+// apply-side write outside the suggestion-only allowlist; the candidate is
+// verdict=park with a placeholder expected_effect, so it never promotes
+// memory, never touches a ProductSignal, and never invents a metric value.
+func mintDraftCandidatesForApply(homePath string, candidates []candidate, now time.Time) []string {
+	var warnings []string
+	for _, cand := range candidates {
+		if cand.Kind != "product_hypothesis_draft" {
+			continue
+		}
+		productID, changeEvent, metrics, signalIDs := candidateDraftInputs(cand)
+		if productID == "" || changeEvent == "" {
+			continue
+		}
+		if _, err := product.MintHypothesisDraftCandidate(homePath, productID, changeEvent, metrics, signalIDs, cand.EvidenceRefs, now); err != nil {
+			warnings = append(warnings, "product_hypothesis_draft mint skipped: "+err.Error())
+		}
+	}
+	return warnings
+}
+
+// candidateDraftInputs recovers (productID, changeEvent, metrics, signalIDs)
+// from the RequiredInputs lines productHypothesisDraftCandidate authored. The
+// apply-side mints need the SAME inputs a dry-run proposal surfaces so the
+// deterministic candidate id matches regardless of mode.
+func candidateDraftInputs(cand candidate) (productID, changeEvent string, metrics, signalIDs []string) {
+	for _, line := range cand.RequiredInputs {
+		switch {
+		case strings.HasPrefix(line, "product_id: "):
+			productID = strings.TrimSpace(strings.TrimPrefix(line, "product_id: "))
+		case strings.HasPrefix(line, "change_event: "):
+			changeEvent = strings.TrimSpace(strings.TrimPrefix(line, "change_event: "))
+		case strings.HasPrefix(line, "metrics: "):
+			metrics = strings.Split(strings.TrimPrefix(line, "metrics: "), ",")
+		case strings.HasPrefix(line, "signal ids: "):
+			signalIDs = strings.Split(strings.TrimPrefix(line, "signal ids: "), ",")
+		}
+	}
+	return
+}
+
 func fairCandidateOrder(candidates []candidate) []candidate {
 	buckets := map[string][]candidate{}
 	unknownClasses := map[string]bool{}
@@ -529,7 +582,7 @@ func fairCandidateOrder(candidates []candidate) []candidate {
 
 func candidateClass(cand candidate) string {
 	switch cand.Kind {
-	case "product_signal_without_hypothesis", "product_action_card":
+	case "product_signal_without_hypothesis", "product_action_card", "product_hypothesis_draft":
 		return "product_loop"
 	default:
 		return cand.Kind
@@ -658,8 +711,121 @@ func productLoopCandidates(homePath string, now time.Time) ([]candidate, error) 
 			}
 			out = append(out, productCardCandidate(loop, card, "product_action_card", productActionCardEvidence(loop, card)))
 		}
+		// W5 J9-R3G: emit one proposal per starved product that says
+		// "draft a hypothesis candidate from this signal group" instead of
+		// only "review the signals". The existing product_signal_without_hypothesis
+		// candidates above keep telling the operator to run action-plan; the new
+		// kind closes the unattended loop by minting a product_hypothesis
+		// candidate with verdict=park and a placeholder expected_effect the
+		// human must replace before review.
+		if draft := largestStarvedSignalGroup(loop); draft != nil {
+			out = append(out, productHypothesisDraftCandidate(loop, *draft))
+		}
 	}
 	return out, nil
+}
+
+// largestStarvedSignalGroup returns the unconsumed signals_without_hypothesis
+// group with the most signals (>= 3) for this product, or nil when none
+// qualifies. The director emits AT MOST one product_hypothesis_draft per
+// starved product — the most-signal-rich group — so the loop gap shrinks
+// without flooding the operator with N parallel drafts on the same change.
+func largestStarvedSignalGroup(loop product.ProductLoop) *product.LoopSignalHypothesisGap {
+	var best *product.LoopSignalHypothesisGap
+	for i := range loop.SignalsWithoutHypothesis {
+		group := &loop.SignalsWithoutHypothesis[i]
+		if group.Consumed {
+			continue
+		}
+		if len(group.SignalIDs) < 3 {
+			continue
+		}
+		if best == nil || len(group.SignalIDs) > len(best.SignalIDs) {
+			best = group
+		}
+	}
+	return best
+}
+
+// productHypothesisDraftCandidate builds the candidate a starved-product draft
+// promotes. The candidate id is the SAME deterministic digest the writer
+// (`product.MintHypothesisDraftCandidate`) uses, so dry-run proposals and
+// apply-mode mints always agree on `compound product hypothesis-plan
+// --candidate <id>` and the proposal itself is the proof surface.
+func productHypothesisDraftCandidate(loop product.ProductLoop, group product.LoopSignalHypothesisGap) candidate {
+	id := hypothesisDraftIDFor(loop.ProductID, group.ChangeEvent)
+	consequence := "Drafting a parked hypothesis from these signals closes the unattended signal→candidate gap; operator must replace the placeholder expected_effect before review."
+	title := "Draft hypothesis for " + group.ChangeEvent + " on " + loop.ProductID
+	metricLine := ""
+	if len(group.Metrics) > 0 {
+		metricLine = "metrics: " + strings.Join(group.Metrics, ",")
+	}
+	signalLine := ""
+	if len(group.SignalIDs) > 0 {
+		signalLine = "signal ids: " + strings.Join(group.SignalIDs, ",")
+	}
+	changeLine := "change_event: " + group.ChangeEvent
+	// RequiredInputs double as the round-trip surface the apply-mode mints
+	// read back (productID, changeEvent, metrics, signalIDs) — see
+	// candidateFromSourceProductID / candidateMetrics / candidateSignalIDs.
+	required := []string{
+		"product_id: " + loop.ProductID,
+		changeLine,
+	}
+	if metricLine != "" {
+		required = append(required, metricLine)
+	}
+	if signalLine != "" {
+		required = append(required, signalLine)
+	}
+	required = append(required, "operator-supplied expected_effect (the draft's placeholder must be replaced before review)")
+	refs := []string{
+		"product_loop:" + loop.ProductID,
+		"product_signal_change_event:" + slug(group.ChangeEvent),
+	}
+	for _, id := range group.SignalIDs {
+		refs = append(refs, "product_signal:"+id)
+	}
+	for _, card := range group.ActionCards {
+		refs = append(refs, "product_action_card:"+card.ID)
+	}
+	refs = compactRefs(refs)
+	return candidate{
+		Kind:             "product_hypothesis_draft",
+		SourceID:         loop.ProductID,
+		Title:            title,
+		Consequence:      consequence,
+		CapabilityClass:  productCardCapabilityClass(product.LoopActionCard{Kind: "product_hypothesis_draft"}),
+		Owner:            loop.ProductID,
+		CanonicalSurface: "director:product-hypothesis-draft:" + loop.ProductID + ":" + id,
+		SuccessPredicate: "Draft appears at inbox/product-hypotheses/" + id + ".json with verdict=park and the operator-supplied expected_effect; loop model no longer lists the group's change_event under signals_without_hypothesis.",
+		DesiredOutcome:   consequence,
+		Command:          []string{"compound", "product", "hypothesis-plan", "--candidate", id},
+		RequiredInputs:   required,
+		ExpectedValidation: []string{
+			"`compound product hypothesis-plan --candidate " + id + "` produces a HypothesisPlan under reviews/product-hypotheses/",
+			"future `compound product loops --product " + loop.ProductID + " --json` no longer lists this change_event under signals_without_hypothesis",
+		},
+		StopConditions: []string{
+			"no metric evidence can be attached without inventing numbers",
+			"expected_effect would have to be invented (operator must supply it)",
+		},
+		Boundary:     "drafts a hypothesis candidate only; never mutates ProductSignal, never publishes, never infers causality",
+		Proof:        "inbox/product-hypotheses/" + id + ".json exists AND " + "compound product loops --product " + loop.ProductID + " --json no longer lists this change_event under signals_without_hypothesis",
+		EvidenceRefs: refs,
+	}
+}
+
+// hypothesisDraftIDFor mirrors product.hypothesisDraftCandidateID so dry-run
+// proposals and apply-mode mints always reference the SAME canonical id. The
+// digest is a pure function of (productID, changeEvent); both sides must use
+// it for the operator's subsequent `compound product hypothesis-plan
+// --candidate <id>` to land on the just-minted draft.
+func hypothesisDraftIDFor(productID, changeEvent string) string {
+	productID = strings.TrimSpace(productID)
+	changeEvent = strings.TrimSpace(changeEvent)
+	sum := sha256.Sum256([]byte("hypdraft|" + productID + "|" + changeEvent))
+	return "hyp_draft_" + hex.EncodeToString(sum[:])[:12]
 }
 
 func productCardCandidate(loop product.ProductLoop, card product.LoopActionCard, kind string, refs []string) candidate {
