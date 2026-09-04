@@ -162,6 +162,22 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 
 	rattID, launchErr := launchStub(s, ready, lane, lane, workerPrompt, now)
 	if launchErr != nil {
+		// The launch wire can return a refused execution WITHOUT an
+		// adapter having been invoked: e.g. the readiness guard reports
+		// not-ready, or the workspace is unresolvable. Those refusals
+		// must NOT close the envelope "failed" — the launch never
+		// happened, the envelope is still safe to retry next tick. The
+		// wire signals refusal-by-skip-reason with a known prefix; bare
+		// errors (subprocess crash, adapter panic) get the standard
+		// "failed" close.
+		skipReason, refuseDetail := parseLaunchRefusal(launchErr)
+		if skipReason != "" {
+			result.Skipped = skipReason
+			result.Human = fmt.Sprintf("did nothing: %s", refuseDetail)
+			result.Action = "none"
+			result.RunAttemptIDs = nil
+			return result, nil
+		}
 		// One bad launch fails THAT envelope only. Mark the work as
 		// failed via Close (the only seam that emits a Receipt + state
 		// transition with a failed outcome). The stage still returns
@@ -187,7 +203,21 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 
 	// Successful launch — advance to verifying and stamp the ratt id. The
 	// execute stage NEVER lands, closes, pushes or retires anything; verifying
-	// is the hand-off point for human/orchestrator review.
+	// is the hand-off point for human/orchestrator review. The production
+	// launch wire calls FinalizeGovernedHarnessRun inside launchStub which
+	// already moves the envelope from running to verifying — re-running the
+	// advance here would refuse (wrong state). Skip it when launchStub has
+	// already taken the envelope past running.
+	if after, afterErr := s.Get(ready); afterErr == nil {
+		switch after.State {
+		case "verifying", "completed", "failed":
+			result.Action = "execute"
+			result.Status = after.State
+			result.RunAttemptIDs = []string{rattID}
+			result.Human = fmt.Sprintf("executed envelope %s on lane %s (ratt=%s); stopped at %s for human/orchestrator review", ready, lane, rattID, after.State)
+			return result, nil
+		}
+	}
 	if _, verifyErr := s.Advance(ready, AdvanceInput{To: "verifying", Actor: actor, Note: "execute stage: verifying"}, now); verifyErr != nil {
 		// The launch succeeded but the verifying advance failed — surface
 		// the launch + the verify error so the operator can intervene.
@@ -381,4 +411,43 @@ func defaultExecuteStagePolicyEvalFn(ai policyActionIntentShim, cfg policyConfig
 // sees every execute attempt as `skipped=launch_failed`.
 func defaultExecuteStageLaunch(_ *Store, workID, lane, harness, prompt string, now time.Time) (string, error) {
 	return "", errors.New("execute stage launch not wired; production must bind launchStub to the actuator seam")
+}
+
+// parseLaunchRefusal inspects the error returned by launchStub and reports
+// whether it carries a refusal-prefix the seam should surface as a stage
+// skip reason rather than a hard launch failure. Returns ("", "") for bare
+// errors, which the seam treats as an adapter-level failure and closes the
+// envelope as failed.
+//
+// Wire contract: the launch function can prefix its error with
+// "<skip_reason>:<detail>" when it refuses the launch without invoking the
+// adapter. Today that is "lane_unready:<details>" (the readiness guard
+// reported not-ready), "workspace_unresolvable:<reason>", and
+// "adapter_missing:<harness>". Bare errors are infrastructure failures that
+// the envelope "failed" close should record. Adding a new refusal kind is
+// safe: it must be listed in executeStageLaunchRefusalReasons.
+func parseLaunchRefusal(err error) (string, string) {
+	if err == nil {
+		return "", ""
+	}
+	msg := err.Error()
+	for _, prefix := range executeStageLaunchRefusalReasons {
+		if strings.HasPrefix(msg, prefix+":") {
+			detail := strings.TrimSpace(strings.TrimPrefix(msg, prefix+":"))
+			return prefix, detail
+		}
+	}
+	return "", ""
+}
+
+// executeStageLaunchRefusalReasons lists every skip reason the launch wire
+// can emit on its own (without invoking the adapter). The seam reads this
+// list to distinguish a refused launch (envelope stays in its current
+// state, no Close) from a launched-and-failed launch (envelope is
+// terminalized "failed"). Order matters only for prefix matching — none of
+// the listed prefixes is a prefix of another.
+var executeStageLaunchRefusalReasons = []string{
+	"lane_unready",
+	"workspace_unresolvable",
+	"adapter_missing",
 }

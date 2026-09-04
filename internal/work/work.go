@@ -129,6 +129,14 @@ type Store struct {
 	sweepStaleFault               func(stage string) error
 }
 
+// HomePath returns the COMPOUND_HOME root the store reads from and writes
+// to. Composition roots (cmd/compound) need it once per CLI invocation to
+// bind resolvers that take a homePath string (adapter registry, runattempt
+// store, routeevidence reader). The accessor is the only sanctioned way to
+// obtain the home; reading the unexported field would create a second,
+// untyped access path that bypasses the rest of the seam's contracts.
+func (s *Store) HomePath() string { return s.home }
+
 func (s *Store) eventLogReadCount() int64 {
 	return s.eventLogReads.Load()
 }
