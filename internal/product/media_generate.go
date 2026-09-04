@@ -28,6 +28,22 @@ import (
 // output. A generator that could name its own adapter or model could attribute its
 // work to another, and every later comparison ("which model actually wins?") would
 // be measuring a claim the generator made about itself.
+//
+// The seam's second rule is PATH CUSTODY. Compound owns a per-run output root,
+// opens a descriptor for it BEFORE the generator runs, and only ever ingests a
+// file resolved beneath that descriptor. The generator answers with a path
+// RELATIVE to the root; an absolute answer, a path whose final component is a
+// symlink, a path that traverses a symlink out of the root at ANY component, a
+// hard link, and a root whose path was swapped mid-run are each refused.
+//
+// Honesty about what custody buys, because a reader must not over-trust it: an
+// enrolled generator is a trusted local executable running as the user. It can
+// read any host file it has permission to read and COPY the bytes into its own
+// permitted output directory, and custody will correctly ingest that copy.
+// Nothing here is a sandbox, and no path rule can make it one. What custody
+// prevents is confused-path INGESTION: the generator naming, linking, or
+// swapping its way to a file outside the root Compound handed it, so Compound
+// stores and republishes bytes the operator never asked it to render.
 
 // MaxGeneratedAssetBytes bounds what one generator may hand back. An unbounded read
 // is how a single bad render exhausts memory on the machine that runs every lane.
@@ -111,6 +127,16 @@ func GenerateContentDraftMedia(homePath string, req MediaGenerateRequest, runner
 	if err != nil {
 		return ContentDraftMediaInput{}, err
 	}
+	// Hold a descriptor for the root from BEFORE the generator runs until
+	// custody completes. Every asset open below resolves beneath THIS
+	// descriptor, so the generator cannot redirect custody by renaming the
+	// root away and planting a decoy at its path, or by symlinking the path
+	// elsewhere: the traversal never re-resolves the root's path.
+	genRoot, err := os.OpenRoot(resolvedRoot)
+	if err != nil {
+		return ContentDraftMediaInput{}, err
+	}
+	defer genRoot.Close()
 	payload, err := json.Marshal(map[string]any{
 		"kind":       cfg.Kind,
 		"model":      cfg.Model,
@@ -126,7 +152,7 @@ func GenerateContentDraftMedia(homePath string, req MediaGenerateRequest, runner
 	if err != nil {
 		return ContentDraftMediaInput{}, fmt.Errorf("generator %q failed: %w", name, err)
 	}
-	bytesOut, mime, err := readGeneratorAsset(name, resolvedRoot, stdout)
+	bytesOut, mime, err := readGeneratorAsset(name, genRoot, stdout)
 	if err != nil {
 		return ContentDraftMediaInput{}, err
 	}
@@ -188,7 +214,30 @@ func LoadMediaGeneratorConfig(homePath, name string) (MediaGeneratorConfig, erro
 // readGeneratorAsset parses the control-channel answer and loads the asset the
 // generator wrote. Every failure here is loud: a generator that produced nothing
 // usable must not become an empty asset that later publishes as a blank image.
-func readGeneratorAsset(name, outputRoot string, stdout []byte) ([]byte, string, error) {
+//
+// Custody is enforced against the root DESCRIPTOR, never against a path string.
+// The answer must name the asset RELATIVE to the root handed out in the request,
+// and every component of it is resolved beneath the descriptor Compound opened
+// before the generator ran. That is what closes MEDIA-P0-001: lexical
+// containment plus O_NOFOLLOW on the final component let
+// <root>/escape/secret.txt through whenever "escape" was itself a symlink to an
+// outside directory, because the intermediate link was followed by the kernel
+// and the final component was an innocent regular file. os.Root refuses any
+// symlink — intermediate or final — that would leave the root, keeps following
+// the ones that stay inside it, and pins the root's identity across renames of
+// its path.
+//
+// The final file is stat'ed AND read through the same descriptor that passed
+// containment, and its name must still resolve to the same inode after the
+// read, so the asset cannot be swapped between the check and the read.
+//
+// Threat model, restated where it is enforced: an enrolled generator is a
+// trusted local executable running as the user. It can copy any file it can
+// read into the output root and custody will ingest the copy — this is path
+// custody, NOT a sandbox. What is refused here is the confused-path channel:
+// naming an outside path (absolute answers, ..), reaching one through a link at
+// any component, aliasing one by hard link, or swapping the root's path.
+func readGeneratorAsset(name string, root *os.Root, stdout []byte) ([]byte, string, error) {
 	trimmed := strings.TrimSpace(string(stdout))
 	if trimmed == "" {
 		return nil, "", fmt.Errorf("generator %q produced no output", name)
@@ -201,30 +250,56 @@ func readGeneratorAsset(name, outputRoot string, stdout []byte) ([]byte, string,
 	if assetPath == "" {
 		return nil, "", fmt.Errorf("generator %q output names no asset path", name)
 	}
-	if !filepath.IsAbs(assetPath) || filepath.Clean(assetPath) != assetPath {
-		return nil, "", fmt.Errorf("generator %q asset path must be a clean absolute path, got %q", name, answer.Path)
+	// The contract is a RELATIVE path under the output root. Absolute paths are
+	// refused outright: an absolute answer is a claim about the host filesystem,
+	// not about the directory Compound owns for this run, and accepting one
+	// reopens every lexical-containment question this function exists to close.
+	if filepath.IsAbs(assetPath) {
+		return nil, "", fmt.Errorf("generator %q asset path %q must be relative to its output root: absolute paths are refused", name, answer.Path)
 	}
-	// Containment, checked on the PATH first: the asset must live under the output
-	// root Compound created for this run.
-	rel, err := filepath.Rel(outputRoot, assetPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return nil, "", fmt.Errorf("generator %q asset %q is outside its output root %s: a generator may only return a file it wrote there", name, assetPath, outputRoot)
+	if assetPath != filepath.Clean(assetPath) || assetPath == "." || assetPath == ".." || strings.HasPrefix(assetPath, ".."+string(filepath.Separator)) {
+		return nil, "", fmt.Errorf("generator %q asset path %q must be a clean relative path inside its output root", name, answer.Path)
 	}
-	// Containment, enforced on the DESCRIPTOR: a path inside the root can still be a
-	// symlink pointing out of it. O_NOFOLLOW refuses the link itself, and every
-	// subsequent check reads the same descriptor, so the file cannot be swapped
-	// between the check and the read.
-	f, err := os.OpenFile(assetPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	// Containment, enforced by the traversal itself: resolving beneath the root
+	// descriptor refuses a symlink at ANY component that leaves the root, so
+	// "escape/secret.txt" with "escape" linked outside fails here even though
+	// "secret.txt" is a real regular file.
+	before, err := root.Lstat(assetPath)
 	if err != nil {
-		return nil, "", fmt.Errorf("generator %q asset is not readable as a regular file inside its output root: %w", name, err)
+		return nil, "", fmt.Errorf("generator %q asset %q is not reachable inside its output root: %w", name, assetPath, err)
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, "", fmt.Errorf("generator %q asset %q must be a regular file inside its output root, got %v", name, assetPath, before.Mode().Type())
+	}
+	f, err := root.Open(assetPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("generator %q asset %q is not readable inside its output root: %w", name, assetPath, err)
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
 		return nil, "", fmt.Errorf("generator %q asset stat: %w", name, err)
 	}
-	if !info.Mode().IsRegular() {
-		return nil, "", fmt.Errorf("generator %q asset %q is not a regular file", name, assetPath)
+	after, err := root.Lstat(assetPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("generator %q asset %q vanished from its output root before custody completed: %w", name, assetPath, err)
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(before, after) || !os.SameFile(after, info) {
+		return nil, "", fmt.Errorf("generator %q asset %q did not remain a stable regular file inside its output root", name, assetPath)
+	}
+	// Exclusive custody of the name is exclusive custody of the bytes: a link
+	// count above one means this inode has at least one other name somewhere
+	// Compound does not control — the classic case is a generator hard-linking
+	// a host file into the root instead of rendering one. (This closes the
+	// alias channel only. It cannot detect a generator that COPIES a readable
+	// host file into a fresh one; see the threat model above — that line is
+	// trust in the enrolled executable, not path custody.)
+	nlink, ok := fileLinkCount(info)
+	if !ok {
+		return nil, "", fmt.Errorf("generator %q asset %q cannot be verified as exclusively named inside its output root: link count unavailable", name, assetPath)
+	}
+	if nlink != 1 {
+		return nil, "", fmt.Errorf("generator %q asset %q is a hard link (its inode carries %d names): an asset must be exclusively named inside its output root", name, assetPath, nlink)
 	}
 	if info.Size() == 0 {
 		return nil, "", fmt.Errorf("generator %q produced an empty asset", name)
@@ -236,10 +311,29 @@ func readGeneratorAsset(name, outputRoot string, stdout []byte) ([]byte, string,
 	if err != nil {
 		return nil, "", fmt.Errorf("generator %q asset read: %w", name, err)
 	}
+	final, err := root.Lstat(assetPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("generator %q asset %q disappeared while it was being read: %w", name, assetPath, err)
+	}
+	if !os.SameFile(info, final) {
+		return nil, "", fmt.Errorf("generator %q asset %q changed while it was being read", name, assetPath)
+	}
 	if int64(len(data)) > MaxGeneratedAssetBytes {
 		return nil, "", fmt.Errorf("generator %q asset exceeds the %d byte bound", name, MaxGeneratedAssetBytes)
 	}
 	return data, strings.TrimSpace(answer.MIMEType), nil
+}
+
+// fileLinkCount reports how many directory names reference the opened file's
+// inode. A count above one means another name — one Compound does not control,
+// typically outside the output root — refers to the same bytes. The second
+// return is false on platforms whose stat cannot answer; callers treat that as
+// a refusal, because custody that cannot be verified is not custody.
+func fileLinkCount(info os.FileInfo) (uint64, bool) {
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return uint64(st.Nlink), true
+	}
+	return 0, false
 }
 
 // ExecMediaGeneratorRunner runs the enrolled program directly, handing it the

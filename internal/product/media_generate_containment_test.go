@@ -83,11 +83,10 @@ func TestGeneratorOutputRootIsPrivateAndCleanedUp(t *testing.T) {
 			return nil, err
 		}
 		modeDuringRun = info.Mode().Perm()
-		asset := filepath.Join(root, "out.png")
-		if err := os.WriteFile(asset, []byte("\x89PNG\r\n\x1a\nok"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "out.png"), []byte("\x89PNG\r\n\x1a\nok"), 0o644); err != nil {
 			return nil, err
 		}
-		return []byte(`{"path":` + strconv.Quote(asset) + `,"mime_type":"image/png"}`), nil
+		return []byte(`{"path":"out.png","mime_type":"image/png"}`), nil
 	})
 
 	media, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{Adapter: "local-sdxl", Prompt: "p"}, runner, mediaGenNow)
@@ -105,9 +104,10 @@ func TestGeneratorOutputRootIsPrivateAndCleanedUp(t *testing.T) {
 	}
 }
 
-// TestGeneratorCannotEscapeOutputRootBySymlink closes the same hole one level down:
-// a path INSIDE the root that is a symlink pointing OUT of it. Checking the path
-// string is not enough; the file must be opened without following links.
+// TestGeneratorCannotEscapeOutputRootBySymlink keeps the FINAL-component case
+// refused, unchanged from when O_NOFOLLOW handled it: the asset name itself is a
+// symlink pointing OUT of the root. The rooted Lstat check refuses it before any
+// open happens, so this must never regress while the traversal changes shape.
 func TestGeneratorCannotEscapeOutputRootBySymlink(t *testing.T) {
 	homePath := t.TempDir()
 	enrollGenerator(t, homePath, "local-sdxl", imageGeneratorConfig())
@@ -123,11 +123,10 @@ func TestGeneratorCannotEscapeOutputRootBySymlink(t *testing.T) {
 			return nil, err
 		}
 		root, _ := req["output_dir"].(string)
-		link := filepath.Join(root, "out.png")
-		if err := os.Symlink(outside, link); err != nil {
+		if err := os.Symlink(outside, filepath.Join(root, "out.png")); err != nil {
 			return nil, err
 		}
-		return []byte(`{"path":` + strconv.Quote(link) + `,"mime_type":"image/png"}`), nil
+		return []byte(`{"path":"out.png","mime_type":"image/png"}`), nil
 	})
 
 	if _, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{Adapter: "local-sdxl", Prompt: "p"}, runner, mediaGenNow); err == nil {
@@ -147,11 +146,10 @@ func TestGeneratedMediaCarriesItsParameters(t *testing.T) {
 			return nil, err
 		}
 		root, _ := req["output_dir"].(string)
-		asset := filepath.Join(root, "out.png")
-		if err := os.WriteFile(asset, []byte("\x89PNG\r\n\x1a\nok"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "out.png"), []byte("\x89PNG\r\n\x1a\nok"), 0o644); err != nil {
 			return nil, err
 		}
-		return []byte(`{"path":` + strconv.Quote(asset) + `}`), nil
+		return []byte(`{"path":"out.png"}`), nil
 	})
 
 	media, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{
@@ -209,7 +207,7 @@ func TestGeneratorCannotEscapeOutputRootByIntermediateSymlink(t *testing.T) {
 		if err := os.Symlink(outsideDir, filepath.Join(root, "escape")); err != nil {
 			return nil, err
 		}
-		return []byte(`{"path":` + strconv.Quote(filepath.Join(root, "escape", "secret.txt")) + `,"mime_type":"image/png"}`), nil
+		return []byte(`{"path":"escape/secret.txt","mime_type":"image/png"}`), nil
 	})
 
 	media, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{
@@ -244,11 +242,10 @@ func TestGeneratorCannotIngestHardlinkedOutsideFile(t *testing.T) {
 			return nil, err
 		}
 		root, _ := req["output_dir"].(string)
-		linked := filepath.Join(root, "out.png")
-		if err := os.Link(outside, linked); err != nil {
+		if err := os.Link(outside, filepath.Join(root, "out.png")); err != nil {
 			return nil, err
 		}
-		return []byte(`{"path":` + strconv.Quote(linked) + `,"mime_type":"image/png"}`), nil
+		return []byte(`{"path":"out.png","mime_type":"image/png"}`), nil
 	})
 
 	if _, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{
@@ -297,7 +294,7 @@ func TestGeneratorCustodySurvivesOutputRootSwap(t *testing.T) {
 		if err := os.WriteFile(decoy, []byte("DECOY-RENDER"), 0o644); err != nil {
 			return nil, err
 		}
-		return []byte(`{"path":` + strconv.Quote(decoy) + `,"mime_type":"image/png"}`), nil
+		return []byte(`{"path":"out.png","mime_type":"image/png"}`), nil
 	})
 
 	media, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{
@@ -309,6 +306,72 @@ func TestGeneratorCustodySurvivesOutputRootSwap(t *testing.T) {
 	}
 	if string(media.Bytes) != original {
 		t.Fatalf("custody read the swapped decoy %q instead of the rendered asset: root identity was not retained", media.Bytes)
+	}
+}
+
+// TestGeneratorAbsolutePathAnswerIsRefused pins the control-channel contract on
+// its own: the answer must be RELATIVE. Even a perfectly legitimate asset the
+// generator really wrote inside the root is refused when named by absolute path —
+// an absolute answer is a claim about the host filesystem, and custody never
+// re-opens the lexical-containment question the old contract depended on.
+// (Pre-fix, the absolute form was the ONLY accepted form — that contract is what
+// let the MEDIA-P0-001 intermediate-symlink path through.)
+func TestGeneratorAbsolutePathAnswerIsRefused(t *testing.T) {
+	homePath := t.TempDir()
+	enrollGenerator(t, homePath, "local-sdxl", imageGeneratorConfig())
+
+	runner := runnerFunc(func(cfg MediaGeneratorConfig, stdin []byte) ([]byte, error) {
+		var req map[string]any
+		if err := json.Unmarshal(stdin, &req); err != nil {
+			return nil, err
+		}
+		root, _ := req["output_dir"].(string)
+		if err := os.WriteFile(filepath.Join(root, "out.png"), []byte("\x89PNG\r\n\x1a\nlegit"), 0o644); err != nil {
+			return nil, err
+		}
+		return []byte(`{"path":` + strconv.Quote(filepath.Join(root, "out.png")) + `,"mime_type":"image/png"}`), nil
+	})
+
+	_, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{Adapter: "local-sdxl", Prompt: "p"}, runner, mediaGenNow)
+	if err == nil {
+		t.Fatal("an absolute asset path must be refused outright, even when the file is real and inside the root")
+	}
+	if !strings.Contains(err.Error(), "relative") {
+		t.Fatalf("refusal must name the relative-path contract, got: %v", err)
+	}
+}
+
+// TestGeneratorNestedSubdirectoryAssetWorks guards against over-tightening: a
+// real renderer often writes into subdirectories it creates under the root
+// (render-chunks, intermediates, versioned output folders). A legitimately
+// nested asset with a clean relative answer must still be ingested.
+func TestGeneratorNestedSubdirectoryAssetWorks(t *testing.T) {
+	homePath := t.TempDir()
+	enrollGenerator(t, homePath, "local-sdxl", imageGeneratorConfig())
+
+	const bytes = "\x89PNG\r\n\x1a\nnested-but-legitimate"
+	runner := runnerFunc(func(cfg MediaGeneratorConfig, stdin []byte) ([]byte, error) {
+		var req map[string]any
+		if err := json.Unmarshal(stdin, &req); err != nil {
+			return nil, err
+		}
+		root, _ := req["output_dir"].(string)
+		dir := filepath.Join(root, "renders", "v3")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "out.png"), []byte(bytes), 0o644); err != nil {
+			return nil, err
+		}
+		return []byte(`{"path":"renders/v3/out.png","mime_type":"image/png"}`), nil
+	})
+
+	media, err := GenerateContentDraftMedia(homePath, MediaGenerateRequest{Adapter: "local-sdxl", Prompt: "p"}, runner, mediaGenNow)
+	if err != nil {
+		t.Fatalf("a nested asset inside the output root must be accepted: %v", err)
+	}
+	if string(media.Bytes) != bytes {
+		t.Fatalf("nested asset bytes = %q, want %q", media.Bytes, bytes)
 	}
 }
 
