@@ -45,8 +45,12 @@ func TestDoctorReportsDriftedBindingAfterStaleInstall(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	args := []string{"--home", home, "--base", base, "--binary", binary, "--json"}
-	if code := runDoctor(args, &out, &errOut); code != 0 {
-		t.Fatalf("doctor should succeed on a drifted binding (drift is reported, not failed), code=%d stderr=%q", code, errOut.String())
+	// Exit contract (landed with the doctor exit-truth change): 0 = no problems,
+	// 1 = problems found, 2 = the doctor could not run. Host-coupled checks can
+	// legitimately report problems on a dev box, so only exit 2 is a failure here;
+	// the binding_freshness section below is the assertion that matters.
+	if code := runDoctor(args, &out, &errOut); code != 0 && code != 1 {
+		t.Fatalf("doctor could not run on a drifted binding: code=%d stderr=%q", code, errOut.String())
 	}
 	var rep doctorReport
 	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
@@ -119,8 +123,8 @@ func TestDoctorReportsFreshBindingWhenRecordedRevisionMatchesCurrentBinary(t *te
 
 	var out, errOut bytes.Buffer
 	args := []string{"--home", home, "--base", base, "--binary", binary, "--json"}
-	if code := runDoctor(args, &out, &errOut); code != 0 {
-		t.Fatalf("doctor on fresh binding failed: %s", errOut.String())
+	if code := runDoctor(args, &out, &errOut); code != 0 && code != 1 { // see the exit-contract note above
+		t.Fatalf("doctor could not run on a fresh binding: code=%d stderr=%s", code, errOut.String())
 	}
 	var rep doctorReport
 	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
