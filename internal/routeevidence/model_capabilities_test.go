@@ -956,3 +956,46 @@ routing_defaults:
 		t.Fatalf("after invalidate-home + recompute: hits=%d misses=%d (want hits=1 misses=3)", hits, misses)
 	}
 }
+
+func TestPlanCapabilityRouteCacheRecomputesWhenAnInputChangesInsideTheBucket(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join(home, "model-capabilities.yaml")
+	body := `version: 1
+purpose: cache input fixture
+capability_classes: [judge-critique]
+models:
+  fixture-free:
+    lane: fixture free
+    harness: switchback
+    provider_route: free
+    tier: free
+    packet_ceiling: single-shot
+    capabilities: {judge-critique: {level: primary, evidence: fixture}}
+routing_defaults:
+  judge-critique: [fixture-free]
+`
+	if err := os.WriteFile(source, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportModelCapabilitiesYAML(home, source, t0); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	ResetPlanCapabilityRouteCache()
+	if _, err := PlanCapabilityRoute(home, "judge-critique", CapabilityRoutePlanOptions{}, t0); err != nil {
+		t.Fatalf("first plan: %v", err)
+	}
+	// Move the authority file's identity inside the same TTL bucket (a route
+	// import or a recorded observation between two plan calls does this); the
+	// bytes stay identical, only mtime changes. The plan must be recomputed.
+	path := ModelCapabilitiesPath(home)
+	future := t0.Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PlanCapabilityRoute(home, "judge-critique", CapabilityRoutePlanOptions{}, t0.Add(time.Second)); err != nil {
+		t.Fatalf("second plan: %v", err)
+	}
+	if hits, misses := PlanCapabilityRouteCacheStats(); hits != 0 || misses != 2 {
+		t.Fatalf("a changed input must recompute inside the bucket: hits=%d misses=%d", hits, misses)
+	}
+}

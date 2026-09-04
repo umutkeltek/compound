@@ -83,6 +83,36 @@ func PlanCapabilityRouteCacheStats() (hits, misses int64) {
 	return planCapabilityRouteStats.hits, planCapabilityRouteStats.misses
 }
 
+// planCapabilityRouteInputSignature folds the identity (mtime + size) of every
+// on-disk input PlanCapabilityRoute reads into the cache key, so a manifest
+// import, a recorded route observation, a lane-speed probe, or a capacity
+// usage write inside one TTL bucket recomputes the plan instead of serving
+// the previous one (TestRouteImportModelCapabilitiesFeedsCapabilityPlan
+// records a cost-doctor observation between two plan calls and expects the
+// second plan to carry the debt). A stat costs microseconds; the ~8s the
+// cache saves is the codexbar probe, not these reads.
+func planCapabilityRouteInputSignature(homePath, usageHistoryPath string) string {
+	paths := []string{
+		ModelCapabilitiesPath(homePath),
+		ModelCapabilitiesSourceAuthorityPath(homePath),
+		LaneSpeedLedgerPath(homePath),
+		filepath.Join(homePath, candidates.InboxDir(candidates.RouteObservation)),
+	}
+	if strings.TrimSpace(usageHistoryPath) != "" {
+		paths = append(paths, usageHistoryPath)
+	}
+	var b strings.Builder
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			b.WriteString("absent;")
+			continue
+		}
+		fmt.Fprintf(&b, "%d:%d;", info.ModTime().UnixNano(), info.Size())
+	}
+	return b.String()
+}
+
 func planCapabilityRouteCacheKey(homePath, capabilityClass string, opts CapabilityRoutePlanOptions, bucket int64) string {
 	var capPtr, latencyBudgetFingerprint string
 	if opts.CapacityConfig != nil {
@@ -100,7 +130,7 @@ func planCapabilityRouteCacheKey(homePath, capabilityClass string, opts Capabili
 	// must invalidate the cache even when no LatencyBudget override is passed;
 	// otherwise the second call with a different LatencyClass returns the
 	// previously filtered chain instead of recomputing.
-	return fmt.Sprintf("%s\x00%s\x00%t\x00%t\x00%d\x06%t\x06%s\x00%s\x00%s\x00%d",
+	return fmt.Sprintf("%s\x00%s\x00%t\x00%t\x00%d\x06%t\x06%s\x00%s\x00%s\x00%d\x00%s",
 		homePath,
 		capabilityClass,
 		opts.PrivacySensitive,
@@ -111,6 +141,7 @@ func planCapabilityRouteCacheKey(homePath, capabilityClass string, opts Capabili
 		opts.LatencyClass,
 		latencyBudgetFingerprint,
 		bucket,
+		planCapabilityRouteInputSignature(homePath, capPtr),
 	)
 }
 
