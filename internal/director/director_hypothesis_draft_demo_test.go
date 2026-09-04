@@ -25,7 +25,7 @@ func TestDirectorHypothesisDraftDemo(t *testing.T) {
 		t.Fatalf("import route fixture: %v", err)
 	}
 	now := directorTestNow
-	seedStarvedProduct(t, home, "product:exampleapp",
+	seedStarvedProduct(t, home, "product:alpha-app",
 		"After public release, the angler-intent subtitle",
 		"gsc_clicks",
 		[]string{"sig_hs_1", "sig_hs_2", "sig_hs_3"}, now)

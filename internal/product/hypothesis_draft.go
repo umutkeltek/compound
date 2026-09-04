@@ -38,7 +38,7 @@ const HypothesisDraftScopePlaceholder = "review window required"
 //
 // Inputs:
 //   - homePath: COMPOUND_HOME.
-//   - productID: the starved product (e.g. "product:exampleapp").
+//   - productID: the starved product (e.g. "product:alpha-app").
 //   - changeEvent: the human sentence grouping the signals.
 //   - metrics: signal metric names; the first is the placeholder metric.
 //   - signalIDs: the signal ids the draft hangs from (one product_signal:<id>

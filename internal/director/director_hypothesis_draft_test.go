@@ -23,9 +23,9 @@ func TestDirectorEmitsHypothesisDraftForStarvedProduct(t *testing.T) {
 		t.Fatalf("import route fixture: %v", err)
 	}
 	now := directorTestNow
-	seedStarvedProduct(t, home, "product:sampletimer", "Pro IAP price step", "app_store_connect_iap_units", []string{"sig_ct_1", "sig_ct_2", "sig_ct_3", "sig_ct_4"}, now)
-	seedStarvedProduct(t, home, "product:exampleapp", "After public release, the angler-intent subtitle", "gsc_clicks", []string{"sig_hs_1", "sig_hs_2", "sig_hs_3"}, now)
-	seedStarvedProduct(t, home, "product:sampleink", "Google Search Console report snapshot observed", "gsc_clicks", []string{"sig_ic_1", "sig_ic_2", "sig_ic_3"}, now)
+	seedStarvedProduct(t, home, "product:gamma-app", "Pro IAP price step", "app_store_connect_iap_units", []string{"sig_ct_1", "sig_ct_2", "sig_ct_3", "sig_ct_4"}, now)
+	seedStarvedProduct(t, home, "product:alpha-app", "After public release, the angler-intent subtitle", "gsc_clicks", []string{"sig_hs_1", "sig_hs_2", "sig_hs_3"}, now)
+	seedStarvedProduct(t, home, "product:beta-app", "Google Search Console report snapshot observed", "gsc_clicks", []string{"sig_ic_1", "sig_ic_2", "sig_ic_3"}, now)
 	// Starved products have < 3 signals — must be filtered out.
 	seedStarvedProduct(t, home, "product:quiet", "tiny change", "iap_units", []string{"sig_q_1", "sig_q_2"}, now)
 
@@ -49,9 +49,9 @@ func TestDirectorEmitsHypothesisDraftForStarvedProduct(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	signalsPerProduct := map[string]int{
-		"product:sampletimer":  4,
-		"product:exampleapp": 3,
-		"product:sampleink":    3,
+		"product:gamma-app":  4,
+		"product:alpha-app": 3,
+		"product:beta-app":    3,
 	}
 	for _, d := range drafts {
 		productID, changeEvent := stripDraftMetadata(d)
@@ -91,7 +91,7 @@ func TestDirectorEmitsHypothesisDraftForStarvedProduct(t *testing.T) {
 			t.Fatalf("product %s: missing product_action_card:<id>, got %v", productID, d.EvidenceRefs)
 		}
 	}
-	for _, want := range []string{"product:sampletimer", "product:exampleapp", "product:sampleink"} {
+	for _, want := range []string{"product:gamma-app", "product:alpha-app", "product:beta-app"} {
 		if !seen[want] {
 			t.Fatalf("missing draft for starved product %s; saw: %v", want, seen)
 		}
@@ -110,8 +110,8 @@ func TestDirectorDryRunIsByteFree(t *testing.T) {
 		t.Fatalf("import route fixture: %v", err)
 	}
 	now := directorTestNow
-	seedStarvedProduct(t, home, "product:sampletimer", "Pro IAP price step", "iap_units", []string{"sig_a", "sig_b", "sig_c"}, now)
-	seedStarvedProduct(t, home, "product:exampleapp", "angler subtitle", "gsc_clicks", []string{"sig_d", "sig_e", "sig_f"}, now)
+	seedStarvedProduct(t, home, "product:gamma-app", "Pro IAP price step", "iap_units", []string{"sig_a", "sig_b", "sig_c"}, now)
+	seedStarvedProduct(t, home, "product:alpha-app", "angler subtitle", "gsc_clicks", []string{"sig_d", "sig_e", "sig_f"}, now)
 	report, err := Propose(home, Options{Apply: false, Now: directorTestNow})
 	if err != nil {
 		t.Fatal(err)
@@ -134,11 +134,11 @@ func TestDirectorDryRunIsByteFree(t *testing.T) {
 
 func expectedChangeForProduct(productID string) string {
 	switch productID {
-	case "product:sampletimer":
+	case "product:gamma-app":
 		return "Pro IAP price step"
-	case "product:exampleapp":
+	case "product:alpha-app":
 		return "After public release, the angler-intent subtitle"
-	case "product:sampleink":
+	case "product:beta-app":
 		return "Google Search Console report snapshot observed"
 	}
 	return ""

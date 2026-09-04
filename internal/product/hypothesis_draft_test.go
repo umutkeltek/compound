@@ -29,7 +29,7 @@ func harnessDraftHome(t *testing.T, signals ...Signal) string {
 	logPath := filepath.Join(home, "ledger", "product-signals.jsonl")
 	lines := []string{}
 	for _, s := range signals {
-		s.ProductID = "product:exampleapp"
+		s.ProductID = "product:alpha-app"
 		if strings.TrimSpace(s.ID) == "" {
 			s.ID = "sig_" + filepath.Base(home)
 		}
@@ -60,11 +60,11 @@ func TestHypothesisDraftProducesCandidateAcceptedByBuildHypothesisPlan(t *testin
 		Signal{ID: "sig_b", ObservedAt: "2026-08-08T00:00:00Z", MetricName: "app_store_connect_iap_units", ChangeEvent: "Pro IAP price step"},
 	)
 	id, err := MintHypothesisDraftCandidate(home,
-		"product:exampleapp",
+		"product:alpha-app",
 		"Pro IAP price step",
 		[]string{"app_store_connect_iap_units"},
 		[]string{"sig_a", "sig_b"},
-		[]string{"product_loop:exampleapp"},
+		[]string{"product_loop:alpha-app"},
 		tProduct,
 	)
 	if err != nil {
@@ -77,7 +77,7 @@ func TestHypothesisDraftProducesCandidateAcceptedByBuildHypothesisPlan(t *testin
 	if err != nil {
 		t.Fatalf("BuildHypothesisPlan must accept a fresh draft: %v", err)
 	}
-	if plan.ProductID != "product:exampleapp" || plan.ChangeEvent != "Pro IAP price step" {
+	if plan.ProductID != "product:alpha-app" || plan.ChangeEvent != "Pro IAP price step" {
 		t.Fatalf("plan must carry the draft inputs: %+v", plan)
 	}
 	if !strings.HasPrefix(plan.ObservationWindow, "2026-08-01") || !strings.Contains(plan.ObservationWindow, "2026-08-08") {
@@ -94,7 +94,7 @@ func TestHypothesisDraftNeverInventsExpectedEffect(t *testing.T) {
 		Signal{ID: "sig_x", ObservedAt: "2026-08-01T00:00:00Z", MetricName: "app_store_connect_iap_units", ChangeEvent: "Pro IAP price step"},
 	)
 	id, err := MintHypothesisDraftCandidate(home,
-		"product:exampleapp",
+		"product:alpha-app",
 		"Pro IAP price step",
 		[]string{"app_store_connect_iap_units"},
 		[]string{"sig_x"},
@@ -128,7 +128,7 @@ func TestHypothesisDraftIsIdempotent(t *testing.T) {
 		Signal{ID: "sig_idem", ObservedAt: "2026-08-01T00:00:00Z", MetricName: "iap_units", ChangeEvent: "Pro IAP price step"},
 	)
 	first, err := MintHypothesisDraftCandidate(home,
-		"product:exampleapp", "Pro IAP price step",
+		"product:alpha-app", "Pro IAP price step",
 		[]string{"iap_units"}, []string{"sig_idem"},
 		[]string{"product_loop:idem"}, tProduct,
 	)
@@ -137,7 +137,7 @@ func TestHypothesisDraftIsIdempotent(t *testing.T) {
 	}
 	firstBytes := readCandidate(t, home, first)
 	second, err := MintHypothesisDraftCandidate(home,
-		"product:exampleapp", "Pro IAP price step",
+		"product:alpha-app", "Pro IAP price step",
 		[]string{"iap_units"}, []string{"sig_idem"},
 		[]string{"product_loop:idem"}, tProduct.AddDate(0, 0, 1),
 	)
@@ -162,7 +162,7 @@ func TestHypothesisDraftSkipsProductWithOpenOrParkedHypothesis(t *testing.T) {
 		Signal{ID: "sig_y", ObservedAt: "2026-08-01T00:00:00Z", MetricName: "iap_units", ChangeEvent: "Pro IAP price step"},
 	)
 	first, err := MintHypothesisDraftCandidate(home,
-		"product:exampleapp", "Pro IAP price step",
+		"product:alpha-app", "Pro IAP price step",
 		[]string{"iap_units"}, []string{"sig_y"},
 		nil, tProduct,
 	)
@@ -175,7 +175,7 @@ func TestHypothesisDraftSkipsProductWithOpenOrParkedHypothesis(t *testing.T) {
 		c.ExpectedEffect = "OPERATOR-ALREADY-FILLED-XYZ"
 	})
 	second, err := MintHypothesisDraftCandidate(home,
-		"product:exampleapp", "Pro IAP price step",
+		"product:alpha-app", "Pro IAP price step",
 		[]string{"iap_units"}, []string{"sig_y"},
 		nil, tProduct,
 	)
@@ -200,9 +200,9 @@ func TestHypothesisDraftProducesOnePerSignalEvidenceRef(t *testing.T) {
 		Signal{ID: "sig_two", ObservedAt: "2026-08-02T00:00:00Z", MetricName: "iap_units", ChangeEvent: "Pro IAP price step"},
 	)
 	id, err := MintHypothesisDraftCandidate(home,
-		"product:exampleapp", "Pro IAP price step",
+		"product:alpha-app", "Pro IAP price step",
 		[]string{"iap_units"}, []string{"sig_one", "sig_two"},
-		[]string{"product_loop:exampleapp"}, tProduct,
+		[]string{"product_loop:alpha-app"}, tProduct,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -214,7 +214,7 @@ func TestHypothesisDraftProducesOnePerSignalEvidenceRef(t *testing.T) {
 	want := map[string]bool{
 		"product_signal:sig_one":  false,
 		"product_signal:sig_two":  false,
-		"product_loop:exampleapp": false,
+		"product_loop:alpha-app": false,
 	}
 	for _, ref := range got.EvidenceRefs {
 		if _, ok := want[ref]; ok {
@@ -236,7 +236,7 @@ func TestHypothesisDraftProducesOnePerSignalEvidenceRef(t *testing.T) {
 func TestHypothesisDraftFallsBackWhenSignalsMissingObservedAt(t *testing.T) {
 	home := harnessDraftHome(t) // no signals on disk
 	id, err := MintHypothesisDraftCandidate(home,
-		"product:exampleapp", "Pro IAP price step",
+		"product:alpha-app", "Pro IAP price step",
 		[]string{"iap_units"}, []string{"sig_missing"}, nil, tProduct,
 	)
 	if err != nil {
