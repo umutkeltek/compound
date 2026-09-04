@@ -108,6 +108,32 @@ fi
 PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home doctor --home "$compound_home"
 PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" runtime doctor "$repo_root/fixtures/runtime/synthetic-service.yaml"
 
+# R3B 2026-09-04: install.sh overwrites `compound`, which invalidates every
+# Claude lane's installed-hooks manifest entry (its recorded revision is
+# `binary:<path>` and the path just changed / the binary hash did). Without
+# this pass, every lane silently down-grades to plan for any operator who
+# asks for a mutation-capable mode. Refresh the binding per installed
+# Claude lane, then re-render its instruction pack. Failures here are
+# reported per-lane but never fail the install: the next operator-visible
+# signal is `compound doctor` (which now names the drifted lane and the
+# exact repair command).
+installed_compound="$install_dir/compound"
+hook_install_out=$(PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$installed_compound" hook install --harness all --scope global --base "$HOME" --binary "$installed_compound" 2>&1) || true
+hook_install_status=$?
+echo "$hook_install_out" | sed 's/^/  install: /'
+if [ "$hook_install_status" -ne 0 ]; then
+  echo "install: hook install --harness all failed (status=$hook_install_status); run \`compound hook install --harness <lane>\` to refresh drifted bindings" >&2
+fi
+for lane in claude-minimax claude-zai claude-qwen claude-code; do
+  pack_out=$(PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$installed_compound" harness instruction-pack --harness "$lane" 2>&1) || true
+  pack_status=$?
+  if [ "$pack_status" -eq 0 ]; then
+    echo "  instruction-pack: $lane fresh"
+  else
+    echo "  instruction-pack: $lane drifted (run: compound harness instruction-pack --harness $lane)" >&2
+  fi
+done
+
 cat <<EOF
 
 compound installed
