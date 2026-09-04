@@ -19,15 +19,15 @@ import (
 // Status vocabulary:
 //   - "fresh"     — manifest revision equals "binary:" + binaryPath (no drift)
 //   - "drifted"   — manifest revision differs from "binary:" + binaryPath
-//                   (reinstall refreshed the binary but not the binding)
+//     (reinstall refreshed the binary but not the binding)
 //   - "absent"    — manifest has no entries for this harness
 //   - "unknown"   — the comparison could not be made (no binaryPath, etc.)
 type BindingFreshnessRow struct {
-	Harness        string `json:"harness"`
-	Status         string `json:"status"`
-	RecordedAt     string `json:"recorded_revision,omitempty"`
-	CurrentBinary  string `json:"current_binary,omitempty"`
-	RepairCommand  string `json:"repair_command,omitempty"`
+	Harness       string `json:"harness"`
+	Status        string `json:"status"`
+	RecordedAt    string `json:"recorded_revision,omitempty"`
+	CurrentBinary string `json:"current_binary,omitempty"`
+	RepairCommand string `json:"repair_command,omitempty"`
 }
 
 // BindingFreshnessReport aggregates one BindingFreshnessRow per harness
