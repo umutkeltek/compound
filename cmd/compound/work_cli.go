@@ -135,8 +135,8 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work run-attempt-link --attempt ratt_20260823T120500Z_real --predecessor ratt_20260823T120000Z_abandoned",
 	},
 	"continue": {
-		Usage:   "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--max-execute-steps N] [--json]",
-		Example: "compound work continue --actor codex --until-wait --max-execute-steps 1 --json",
+		Usage:   "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--max-execute-steps N] [--dry-run] [--json]",
+		Example: "compound work continue --actor codex --until-wait --max-execute-steps 1 --dry-run --json",
 	},
 	"dispatch-plan": {
 		Usage:   "usage: compound work dispatch-plan [--actor A] [--capability-class classify-extract|draft-prose] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json] [--dry-run]",
@@ -964,10 +964,10 @@ func cmdWork(args []string) {
 			fmt.Printf("linked %s -> %s (work=%s, status=%s)\n", ra.ID, ra.PredecessorID, ra.WorkID, ra.Status)
 		}
 	case "continue":
-		usage := "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--max-execute-steps N] [--json]"
+		usage := "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--max-execute-steps N] [--dry-run] [--json]"
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
-			case "--json", "--until-wait":
+			case "--json", "--until-wait", "--dry-run":
 			case "--actor", "--expect-work", "--outcome", "--move-type", "--summary", "--max-steps", "--max-execute-steps":
 				if i+1 >= len(rest) {
 					fmt.Fprintln(os.Stderr, usage)
@@ -985,6 +985,7 @@ func cmdWork(args []string) {
 			Outcome:      flag("--outcome"),
 			MoveType:     flag("--move-type"),
 			Summary:      flag("--summary"),
+			DryRun:       has("--dry-run"),
 		}
 		maxSteps := 0
 		if raw := strings.TrimSpace(flag("--max-steps")); raw != "" {
