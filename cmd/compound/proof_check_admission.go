@@ -386,14 +386,11 @@ func decodeOwnedProofCheckReport(body []byte) (proofCheckReport, error) {
 	if err := json.Unmarshal(body, &report); err != nil {
 		return proofCheckReport{}, fmt.Errorf("decode retained proof report: %w", err)
 	}
-	if report.SchemaVersion != "compound.proof_check_report.v0.1" &&
-		report.SchemaVersion != "compound.proof_check_report.v0.2" &&
-		report.SchemaVersion != "compound.proof_check_report.v0.3" &&
-		report.SchemaVersion != proofCheckSchemaVersion {
+	if !work.IsAcceptedProofCheckSchemaVersion(report.SchemaVersion, work.ProofCheckSchemaVersion) {
 		return proofCheckReport{}, fmt.Errorf(
 			"retained proof report schema_version %q is unsupported (current %q)",
 			report.SchemaVersion,
-			proofCheckSchemaVersion,
+			work.ProofCheckSchemaVersion,
 		)
 	}
 	return report, nil

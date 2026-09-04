@@ -51,7 +51,7 @@ func TestProofCheckFailedGoTestGatePersistsFullOutputToSiblingFile(t *testing.T)
 	}
 
 	outPath := filepath.Join(t.TempDir(), "report.json")
-	ctx := proofCheckContextWithReportPath(context.Background(), outPath)
+	ctx := work.ContextWithGateOutputReportPath(context.Background(), outPath)
 
 	result := runProofCheckStepContext(ctx, t.TempDir(), proofCheckStep{
 		Name:     "go-test",
@@ -171,7 +171,7 @@ func TestProofCheckGoTestGateFailureLinesBoundedToCap(t *testing.T) {
 	}
 
 	outPath := filepath.Join(t.TempDir(), "report.json")
-	ctx := proofCheckContextWithReportPath(context.Background(), outPath)
+	ctx := work.ContextWithGateOutputReportPath(context.Background(), outPath)
 	result := runProofCheckStepContext(ctx, t.TempDir(), proofCheckStep{
 		Name:     "go-test",
 		Command:  []string{scriptPath},
@@ -198,7 +198,7 @@ func TestProofCheckNonGoTestGateSkipsFailureLines(t *testing.T) {
 	t.Cleanup(func() { proofCheckRuntimeExecutable = originalResolver })
 
 	outPath := filepath.Join(t.TempDir(), "report.json")
-	ctx := proofCheckContextWithReportPath(context.Background(), outPath)
+	ctx := work.ContextWithGateOutputReportPath(context.Background(), outPath)
 	result := runProofCheckStepContext(ctx, t.TempDir(), proofCheckStep{
 		Name:     "go-vet",
 		Command:  []string{"sh", "-c", "echo 'vet error: argh'; exit 1"},

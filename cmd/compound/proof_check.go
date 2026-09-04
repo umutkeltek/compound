@@ -24,7 +24,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const proofCheckSchemaVersion = "compound.proof_check_report.v0.4"
+const proofCheckSchemaVersion = work.ProofCheckSchemaVersion
 
 type proofCheckReport struct {
 	SchemaVersion  string                  `json:"schema_version"`
@@ -238,10 +238,7 @@ func cmdProofCheck(args []string) {
 		var completed work.ProofResourceCompleteResult
 		signalContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stopSignals()
-		// Wrap the cancellation context with the resolved --out path so the per-step runner
-		// can persist each failed gate's full output to <out>.gates/<gate>.log. Empty outPath
-		// is a no-op (no in-flight report means no sibling directory to own).
-		signalContext = proofCheckContextWithReportPath(signalContext, outPath)
+		signalContext = work.ContextWithGateOutputReportPath(signalContext, outPath)
 		report, completed, err = runProofCheckWithAdmissionContext(proofCheckAdmissionInput{
 			Context:                signalContext,
 			HomePath:               homePath,
@@ -299,9 +296,7 @@ func cmdProofCheck(args []string) {
 		}
 	} else {
 		var err error
-		// runProofCheck uses context.Background(); wrap the report path in via the same key
-		// the governed path uses so a failed gate here too can persist its full output.
-		runCtx := proofCheckContextWithReportPath(context.Background(), outPath)
+		runCtx := work.ContextWithGateOutputReportPath(context.Background(), outPath)
 		report, err = runProofCheckContext(runCtx, repoPath, dryRun, baseRef, ciOnly, ciConsole, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
@@ -1063,7 +1058,7 @@ func runProofCheckWithRangeContext(
 		defer cleanupRuntimeExecutable()
 	}
 	report := proofCheckReport{
-		SchemaVersion:  proofCheckSchemaVersion,
+		SchemaVersion:  work.ProofCheckSchemaVersion,
 		ProfileKind:    work.ProofResourceProfileCanonicalFull,
 		Status:         "ok",
 		GeneratedAt:    now.UTC().Format(time.RFC3339),
@@ -1351,13 +1346,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 		result.OutputTail = proofCheckTail([]byte(failOutput), 4000)
 		result.FailureFacts = work.CanonicalProofFailureFacts(repo, step.Name, []byte(failOutput), errors.New(reason))
 		result.ExitCode = 1
-		// Mirror the same persistence + failure_lines behavior as the main failure branch
-		// below so a fast-fail gates also has its full output archived next to --out.
-		if reportPath := proofCheckReportPathFromContext(ctx); reportPath != "" {
-			if persisted, persistErr := work.PersistGateOutput(reportPath, step.Name, []byte(failOutput)); persistErr == nil && persisted != "" {
-				result.OutputPath = persisted
-			}
-		}
+		work.AttachFailedGateOutput(&result, ctx, step.Name, []byte(failOutput), false)
 		result.DurationMS = time.Since(start).Milliseconds()
 		return result
 	}
@@ -1400,22 +1389,8 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 			result.OutputTail = err.Error()
 		}
 		result.FailureFacts = work.CanonicalProofFailureFacts(repo, step.Name, output, err)
-		result.ExitCode = proofCheckExitCode(err)
-		// Persist the FULL gate output next to the --out report so a triager can recover the
-		// real failure context, not only the 4000-char tail. PersistGateOutput is a no-op when
-		// no report path is in flight (e.g. --dry-run or a test invoking the runner directly);
-		// any write error here MUST NOT mask the underlying gate failure — the gate is already
-		// failed, so we record the path error into OutputTail and keep going.
-		if reportPath := proofCheckReportPathFromContext(ctx); reportPath != "" {
-			if persisted, persistErr := work.PersistGateOutput(reportPath, step.Name, output); persistErr != nil {
-				result.OutputTail = proofCheckTail([]byte(fmt.Sprintf("%s\npersisted-gate-output error: %v", result.OutputTail, persistErr)), 4000)
-			} else if persisted != "" {
-				result.OutputPath = persisted
-			}
-		}
-		if step.Name == "go-test" {
-			result.FailureLines = work.ExtractGoTestFailureLines(output)
-		}
+		result.ExitCode = work.ExitCodeFromRunErr(err)
+		work.AttachFailedGateOutput(&result, ctx, step.Name, output, true)
 	}
 	return result
 }
@@ -1605,14 +1580,6 @@ func proofCheckUsesGo(step proofCheckStep) bool {
 }
 
 var proofCheckRuntimeExecutable = work.ResolveProofRuntimeCommand
-
-func proofCheckExitCode(err error) int {
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode()
-	}
-	return 1
-}
 
 func runProofCheckRedact(repo, baseRef string) ([]byte, error) {
 	return runProofCheckRedactContext(context.Background(), repo, baseRef)
@@ -1836,32 +1803,6 @@ func proofCheckContextWithExecutionBarrier(ctx context.Context, barrier *landlea
 		return ctx
 	}
 	return context.WithValue(ctx, proofCheckExecutionBarrierContextKey{}, barrier)
-}
-
-// proofCheckReportPathContextKey carries the resolved --out report path into the per-step
-// runner so a failed gate can persist its full output to <out>.gates/<gate>.log alongside the
-// truncated OutputTail. Empty/absent means no report is in flight (a gate runner invoked from
-// --dry-run or from tests) — PersistGateOutput treats empty as a no-op.
-type proofCheckReportPathContextKey struct{}
-
-func proofCheckContextWithReportPath(ctx context.Context, path string) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if strings.TrimSpace(path) == "" {
-		return ctx
-	}
-	return context.WithValue(ctx, proofCheckReportPathContextKey{}, path)
-}
-
-func proofCheckReportPathFromContext(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	if path, ok := ctx.Value(proofCheckReportPathContextKey{}).(string); ok {
-		return path
-	}
-	return ""
 }
 
 func proofCheckTail(output []byte, max int) string {
