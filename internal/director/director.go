@@ -224,7 +224,45 @@ func Propose(homePath string, opts Options) (Report, error) {
 			report.Warnings = append(report.Warnings, warnings...)
 		}
 	}
+	// Supersession: a product_hypothesis_draft for a given
+	// (productID, changeEvent) pair is the SAME group information as the
+	// matching product_signal_without_hypothesis card, one step further
+	// along ("review these signals" vs "here is a parked hypothesis, fill
+	// in the placeholder"). Proposing both is redundant AND the older review
+	// card starves the newer draft under the round-robin cap (review SourceIDs
+	// sort alphabetically before draft SourceIDs, and round-robin walks in
+	// CreatedAt order). Compute the structural supersession set ONCE before
+	// the proposal loop: for every draft candidate, every action_card id in its
+	// EvidenceRefs becomes a "this review is already handled by a draft" key.
+	// The matching product_signal_without_hypothesis candidate has the SAME
+	// action_card id in its own EvidenceRefs and as its SourceID, so the lookup
+	// is by SourceID alone — no title heuristics.
+	supersededReviewIDs := map[string]bool{}
+	for _, cand := range candidates {
+		if cand.Kind != "product_hypothesis_draft" {
+			continue
+		}
+		for _, ref := range cand.EvidenceRefs {
+			if id, ok := strings.CutPrefix(ref, "product_action_card:"); ok && strings.TrimSpace(id) != "" {
+				supersededReviewIDs[strings.TrimSpace(id)] = true
+			}
+		}
+	}
 	for _, cand := range fairCandidateOrder(candidates) {
+		// Supersession is checked BEFORE the cap so a deterministic starvation
+		// never masquerades as cap_reached: a review that matches a draft
+		// must record the truthful reason (superseded_by_draft), not "we ran
+		// out of slots before reaching the draft".
+		if cand.Kind == "product_signal_without_hypothesis" && supersededReviewIDs[strings.TrimSpace(cand.SourceID)] {
+			addSkipped(&report, SkippedCandidate{
+				Class:        candidateClass(cand),
+				Kind:         cand.Kind,
+				Title:        cand.Title,
+				Reason:       "superseded_by_draft",
+				EvidenceRefs: compactRefs(cand.EvidenceRefs),
+			})
+			continue
+		}
 		if len(report.Proposals) >= maxProposalsPerRun {
 			addSkipped(&report, SkippedCandidate{
 				Class:        candidateClass(cand),
