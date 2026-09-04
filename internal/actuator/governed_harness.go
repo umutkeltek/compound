@@ -25,6 +25,43 @@ var governedClaudeReadinessEvidenceKinds = []string{
 	"blocking_hook_installation",
 }
 
+// LaneRefusal is the loud-refusal seam R3B (2026-09-04) introduced for an
+// unready Claude lane. The operator asked for a mutation-capable mode
+// (bypass / default / acceptEdits); readiness came back unmet; instead of
+// silently down-grading the lane to plan — which left the caller with a
+// "succeeded" run_attempt and no edit — the door must REFUSE BEFORE
+// minting a RunAttempt or advancing the envelope. The cmd layer renders
+// this struct through the gateRefusal printer and exits non-zero.
+//
+// The omitted-flag path keeps the prior silent-plan fallback: an operator
+// who did not specify --permission-mode is implicitly asking the rail to
+// pick a safe posture, and plan is the safe answer. Refusal is reserved
+// for the explicit-mutation case, where silently down-grading would hide
+// the very failure the operator was asking us to prevent.
+type LaneRefusal struct {
+	// Command is the user-facing verb that was refused.
+	Command string
+	// Gate names the unready item in stable, greppable form.
+	Gate string
+	// Refused states what did not happen (no mint, no advance).
+	Refused string
+	// Tried lists each resolution step that did NOT keep the lane ready.
+	Tried []string
+	// DoThis lists exact commands to repair the unready state.
+	DoThis []string
+	// Prevents names the failure this refusal stops.
+	Prevents string
+}
+
+// Error renders a single-line summary for `die(err)`-style callers; the
+// cmd layer's gateRefusal printer renders the full four-section text.
+func (l *LaneRefusal) Error() string {
+	if l == nil {
+		return "lane refused: nil"
+	}
+	return fmt.Sprintf("%s refused at gate %s: %s", l.Command, l.Gate, l.Refused)
+}
+
 // GovernedHarnessFinalizationInput binds adapter completion to the exact
 // running work generation that authorized it.
 type GovernedHarnessFinalizationInput struct {
@@ -133,7 +170,8 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 	if claudeFamily {
 		requestedMode := strings.TrimSpace(runInput.PermissionMode)
 		if requestedMode != "plan" {
-			runInput.PermissionMode, postureEvidence, postureReadinessRequest = ResolveGovernedClaudePermissionMode(
+			var refusal *LaneRefusal
+			runInput.PermissionMode, postureEvidence, postureReadinessRequest, refusal = ResolveGovernedClaudePermissionMode(
 				in.HomePath,
 				in.Store,
 				in.ClaimedWork,
@@ -143,6 +181,14 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 				in.Target,
 				in.Now,
 			)
+			// R3B 2026-09-04: explicit mutation request on an unready lane
+			// refuses BEFORE any state change. The caller in
+			// cmd/compound/work_advance_execute.go renders this through
+			// gateRefusal and exits non-zero; the envelope stays "claimed"
+			// and no RunAttempt is minted.
+			if refusal != nil {
+				return GovernedHarnessReservation{}, refusal
+			}
 		}
 	}
 	autonomyClass := ""
@@ -405,6 +451,16 @@ func ReportRevokedExecutionAttempt(store *work.Store, workID, executionAttemptID
 // an explicit "bypass" request is preserved across an unready readiness guard so
 // the rail does not silently down-grade to plan (M5 defect 2026-09-03).
 // Explicit "default" / "acceptEdits" still require current authority.
+//
+// R3B (2026-09-04) tightens the explicit-mutation path: when the operator
+// asked for `bypass` / `default` / `acceptEdits` and the lane resolves to
+// plan for ANY reason (store nil, advance plan refused, autonomy halted,
+// readiness unmet without evidence, no context pack), the function
+// captures the unready detail and returns it via the refusal out-param.
+// The caller (ExecuteGovernedHarnessAdvance) refuses BEFORE minting a
+// RunAttempt or advancing the envelope. The omitted-flag case still
+// falls back to plan silently — the operator didn't pick a posture, so
+// the rail does.
 func ResolveGovernedClaudePermissionMode(
 	homePath string,
 	store *work.Store,
@@ -414,31 +470,63 @@ func ResolveGovernedClaudePermissionMode(
 	actor string,
 	target string,
 	now time.Time,
-) (string, []work.DelegateHarnessReadinessEvidence, *work.DelegateHarnessReadinessRequest) {
+) (string, []work.DelegateHarnessReadinessEvidence, *work.DelegateHarnessReadinessRequest, *LaneRefusal) {
 	const fallback = "plan"
 	trimmed := strings.TrimSpace(requestedMode)
 	explicitBypass := trimmed == "bypass"
+	// explicitMutationRequested is true when the operator picked a
+	// mutation-capable posture themselves. "plan" is read-only and never
+	// mutation-capable; "" (omitted) preserves the silent-plan fallback.
+	explicitMutationRequested := trimmed != "" && trimmed != "plan"
 	resolvedMode := trimmed
 	if resolvedMode == "" {
 		resolvedMode = "bypass"
 	}
 	if store == nil || wenv.State != "claimed" {
-		return fallback, nil, nil
+		if explicitMutationRequested {
+			return fallback, nil, nil, unreadyLaneRefusal(runInput.Harness, "store_unavailable_or_state_not_claimed")
+		}
+		return fallback, nil, nil, nil
 	}
 	plan, err := store.AdvancePlan(wenv.ID, now, work.AdvancePlanOptions{Actor: actor, To: target})
 	if err != nil || plan.Status != "advance_policy_allowed" || !plan.Policy.Allowed || plan.NoAction != "" {
-		return fallback, nil, nil
+		if explicitMutationRequested {
+			reason := "advance_plan_refused"
+			if err != nil {
+				reason = "advance_plan_refused:" + err.Error()
+			} else if plan.NoAction != "" {
+				reason = "advance_plan_no_action:" + plan.NoAction
+			}
+			return fallback, nil, nil, unreadyLaneRefusal(runInput.Harness, reason)
+		}
+		return fallback, nil, nil, nil
 	}
-	halted, _, err := policy.AutonomyHalted(homePath, "build-implement")
+	halted, haltReason, err := policy.AutonomyHalted(homePath, "build-implement")
 	if err != nil || halted {
-		return fallback, nil, nil
+		if explicitMutationRequested {
+			reason := "autonomy_halted"
+			if err != nil {
+				reason = "autonomy_halted:" + err.Error()
+			} else if strings.TrimSpace(haltReason) != "" {
+				reason = "autonomy_halted:" + haltReason
+			}
+			return fallback, nil, nil, unreadyLaneRefusal(runInput.Harness, reason)
+		}
+		return fallback, nil, nil, nil
 	}
 	readinessGuard := work.DelegateHarnessReadiness
 	if readinessGuard == nil {
-		if explicitBypass {
-			return "bypass", nil, nil
+		// No readiness check available: explicit bypass still preserves
+		// through M5 2026-09-03 only when the operator asked for bypass.
+		// explicit default/acceptEdits without a readiness guard is not
+		// safe to honor — refuse.
+		if explicitMutationRequested && !explicitBypass {
+			return fallback, nil, nil, unreadyLaneRefusal(runInput.Harness, "readiness_guard_unavailable")
 		}
-		return fallback, nil, nil
+		if explicitBypass {
+			return "bypass", nil, nil, nil
+		}
+		return fallback, nil, nil, nil
 	}
 	readinessRequest := GovernedClaudeReadinessRequestForRun(homePath, wenv, runInput, now)
 	readiness, err := readinessGuard(readinessRequest)
@@ -447,22 +535,119 @@ func ResolveGovernedClaudePermissionMode(
 		// across an unready readiness guard ONLY when the guard still
 		// published the four authority revisions the runattempt posture
 		// requires. Without those revisions, silently down-grading to plan
-		// remains the safe default and preserves TestWorkAdvanceExecuteUnreadyExplicitMutationModesResolveToPlan.
+		// remains the safe default.
+		//
+		// R3B 2026-09-04: when the operator asked for an EXPLICIT mutation
+		// mode and we cannot keep the requested posture across an unready
+		// readiness guard, the door must REFUSE instead of silently
+		// down-grading. Build the refusal with the exact readiness
+		// details so the operator sees the precise unmet item and the
+		// matching repair command.
 		if explicitBypass {
 			if selected, _ := selectGovernedClaudeReadinessEvidence(readinessRequest.Harness, readiness.Evidence); selected != nil {
-				return "bypass", selected, &readinessRequest
+				return "bypass", selected, &readinessRequest, nil
 			}
 		}
-		return fallback, nil, nil
+		if explicitMutationRequested {
+			return fallback, nil, nil, unreadyReadinessRefusal(runInput.Harness, readinessRequest, readiness, err)
+		}
+		return fallback, nil, nil, nil
 	}
 	selected, ok := selectGovernedClaudeReadinessEvidence(readinessRequest.Harness, readiness.Evidence)
 	if !ok {
 		if explicitBypass {
-			return "bypass", nil, nil
+			return "bypass", nil, nil, nil
 		}
-		return fallback, nil, nil
+		if explicitMutationRequested {
+			return fallback, nil, nil, unreadyReadinessRefusal(runInput.Harness, readinessRequest, readiness, nil)
+		}
+		return fallback, nil, nil, nil
 	}
-	return resolvedMode, selected, &readinessRequest
+	return resolvedMode, selected, &readinessRequest, nil
+}
+
+// unreadyLaneRefusal builds a refusal for non-readiness unready conditions
+// (store nil, state not claimed, advance plan refused, autonomy halted,
+// readiness guard unavailable). The readiness_unmet:<reason> namespace is
+// what the red test asserts in stderr at gate lane_readiness.
+func unreadyLaneRefusal(harnessName, ready string) *LaneRefusal {
+	if strings.TrimSpace(harnessName) == "" {
+		harnessName = "claude"
+	}
+	return &LaneRefusal{
+		Command: "compound work advance --execute",
+		Gate:    "lane_readiness",
+		Refused: fmt.Sprintf("work cannot run with an explicit mutation-capable mode on harness %q: the lane is not ready (readiness_unmet: %s)", harnessName, ready),
+		Tried: []string{
+			fmt.Sprintf("readiness_unmet: %s", ready),
+		},
+		DoThis: []string{
+			"compound harness readiness --harness " + harnessName,
+			"compound work delegate --dry-run",
+		},
+		Prevents: "silently down-grading an explicit --permission-mode request to plan on an unready lane: the caller would see status: succeeded and a no-edit RunAttempt, with no signal that the lane could not actually run.",
+	}
+}
+
+// unreadyReadinessRefusal builds a refusal for the readiness-met failure
+// path. It copies the readiness details verbatim (each "kind: detail" line)
+// so the operator sees the precise unmet items, and lists the matching
+// repair verbs so the refusal is actionable.
+func unreadyReadinessRefusal(harnessName string, req work.DelegateHarnessReadinessRequest, readiness work.DelegateHarnessReadinessResult, readinessErr error) *LaneRefusal {
+	if strings.TrimSpace(harnessName) == "" {
+		harnessName = strings.TrimSpace(req.Harness)
+	}
+	if strings.TrimSpace(harnessName) == "" {
+		harnessName = "claude"
+	}
+	tried := append([]string(nil), readiness.Details...)
+	if readinessErr != nil {
+		tried = append(tried, "readiness_guard:"+readinessErr.Error())
+	}
+	return &LaneRefusal{
+		Command: "compound work advance --execute",
+		Gate:    "lane_readiness",
+		Refused: fmt.Sprintf("work cannot run with an explicit mutation-capable mode on harness %q: the lane is not ready", harnessName),
+		Tried: append([]string{
+			"readiness_unmet: harness readiness returned Ready=false (no authority evidence attached)",
+		}, tried...),
+		DoThis:   laneUnreadyRepairs(harnessName, req, readiness.Details),
+		Prevents: "silently down-grading an explicit --permission-mode request to plan on an unready lane: the caller would see status: succeeded and a no-edit RunAttempt, with no signal that the lane could not actually run.",
+	}
+}
+
+// laneUnreadyRepairs returns one DoThis line per unique unmet readiness
+// detail category. It uses simple substring matching against the readiness
+// detail prefix so the refusal stays accurate without coupling to
+// internal package symbols beyond what is already imported by the readiness
+// evaluator.
+func laneUnreadyRepairs(harnessName string, req work.DelegateHarnessReadinessRequest, details []string) []string {
+	out := []string{
+		"compound harness readiness --harness " + harnessName,
+		"compound work delegate --dry-run",
+	}
+	seen := map[string]bool{}
+	for _, d := range details {
+		var line string
+		switch {
+		case strings.HasPrefix(d, "permission_authority") || strings.HasPrefix(d, "permission_posture"):
+			line = "compound harness permission-mode --harness " + harnessName + "    # permission authority / posture"
+		case strings.HasPrefix(d, "blocking_hook") || strings.HasPrefix(d, "mutation-covering"):
+			line = "compound hook install --harness " + harnessName + "             # blocking-hook binding"
+		case strings.HasPrefix(d, "instruction_pack"):
+			line = "compound harness instruction-pack --harness " + harnessName + " # instruction pack / context"
+		case strings.HasPrefix(d, "activation_argv"):
+			line = "compound harness readiness --harness " + harnessName + " --workspace \"" + strings.TrimSpace(req.Workspace) + "\"  # argv-policy"
+		default:
+			continue
+		}
+		if seen[line] {
+			continue
+		}
+		seen[line] = true
+		out = append(out, line)
+	}
+	return out
 }
 
 // GovernedClaudeReadinessRequestForRun binds readiness to the exact resolved
