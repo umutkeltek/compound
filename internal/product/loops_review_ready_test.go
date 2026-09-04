@@ -126,8 +126,11 @@ func TestLoopReviewReadyActionCardsSingleSignalUnchanged(t *testing.T) {
 		t.Fatalf("single-signal hypothesis should still emit ONE review-plan card; got %d", len(cards))
 	}
 	card := cards[0]
-	if card.ID != "product-review-plan-"+normalizeIDPart("product:single "+hypID+" "+signal) {
-		t.Fatalf("single-signal card id should preserve the existing shape; got %q", card.ID)
+	// The new contract collapses the id to (product, hypothesis); even with
+	// one signal the id is the same shape — that's intentional and proves the
+	// dedupe does not change for the single-signal corner case.
+	if card.ID != "product-review-plan-"+normalizeIDPart("product:single "+hypID) {
+		t.Fatalf("single-signal card id should be stable per (product, hypothesis); got %q", card.ID)
 	}
 	if !strings.HasPrefix(card.Title, "Create product review plan") {
 		t.Fatalf("single-signal card title should remain Create product review plan…; got %q", card.Title)

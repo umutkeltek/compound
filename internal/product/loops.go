@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -839,21 +840,67 @@ func closedReviewNextActionCard(productID string, group LoopReviewNextAction) Lo
 	}
 }
 
+// loopReviewReadyActionCards collapses the (hypothesis, signal)-per-pair
+// ReviewReady list into ONE action card per (product, hypothesis). The
+// matcher that produces ReviewReady is unchanged — a single hypothesis can
+// legitimately match many signals (same metric, different observation),
+// but the operator only needs to start one review plan per hypothesis; which
+// signal it pairs with is a choice inside that plan, not a reason to mint
+// another card. Without this dedupe the hourly director mints N identical
+// "Create product review plan" candidates for one starved product and crowds
+// every other product-loop candidate out of the 5-proposal budget.
+//
+// Deterministic representative signal rule: we group ready by HypothesisID,
+// then within each group sort by SignalID ascending and take the FIRST.
+// Signal IDs are stable identifiers assigned when the signal lands, so the
+// smallest one is a reproducible pick regardless of input order. The
+// representative signal is the one passed to the runnable review-plan
+// command; the matched-signal count and the full sorted list are surfaced
+// in RequiredInputs so the operator can see the fan-out without being
+// buried by N copies of the same card.
 func loopReviewReadyActionCards(productID string, ready []ReviewReady) []LoopActionCard {
-	out := make([]LoopActionCard, 0, len(ready))
+	byHypothesis := map[string][]ReviewReady{}
 	for _, item := range ready {
-		command := strings.Fields(strings.TrimSpace(item.ReviewPlanCommand))
-		if len(command) == 0 {
-			command = []string{"compound", "product", "review-plan", "--hypothesis", item.HypothesisID, "--signal", item.SignalID}
+		hyp := strings.TrimSpace(item.HypothesisID)
+		if hyp == "" {
+			continue
 		}
+		byHypothesis[hyp] = append(byHypothesis[hyp], item)
+	}
+	hypothesisIDs := make([]string, 0, len(byHypothesis))
+	for id := range byHypothesis {
+		hypothesisIDs = append(hypothesisIDs, id)
+	}
+	sort.Strings(hypothesisIDs)
+
+	out := make([]LoopActionCard, 0, len(hypothesisIDs))
+	for _, hypID := range hypothesisIDs {
+		items := byHypothesis[hypID]
+		sort.Slice(items, func(i, j int) bool { return items[i].SignalID < items[j].SignalID })
+		repSignalID := strings.TrimSpace(items[0].SignalID)
+		if repSignalID == "" {
+			continue
+		}
+		signalIDs := make([]string, 0, len(items))
+		for _, item := range items {
+			signalIDs = append(signalIDs, strings.TrimSpace(item.SignalID))
+		}
+		sort.Strings(signalIDs)
+		matched := strconv.Itoa(len(items))
+		title := "Create product review plan"
+		if len(items) > 1 {
+			title = "Create product review plan (" + matched + " signals matched)"
+		}
+		command := []string{"compound", "product", "review-plan", "--hypothesis", hypID, "--signal", repSignalID}
 		out = append(out, LoopActionCard{
-			ID:      "product-review-plan-" + normalizeIDPart(productID+" "+item.HypothesisID+" "+item.SignalID),
+			ID:      "product-review-plan-" + normalizeIDPart(productID+" "+hypID),
 			Kind:    "product_review_plan",
-			Title:   "Create product review plan",
+			Title:   title,
 			Command: command,
 			RequiredInputs: []string{
-				"hypothesis: " + item.HypothesisID,
-				"product signal: " + item.SignalID,
+				"hypothesis: " + hypID,
+				"representative signal: " + repSignalID,
+				"matched signals: " + matched + " (" + strings.Join(signalIDs, ",") + ")",
 				"optional target file only if the review needs a concrete artifact",
 			},
 			ExpectedValidation: []string{
