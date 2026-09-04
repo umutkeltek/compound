@@ -9,16 +9,17 @@ you want embedding-based recall), and one local runtime directory
 (`COMPOUND_HOME`, default `~/.compound`). No cloud, no account. The
 interactive core requires no daemon: your agent harnesses — Claude Code,
 Codex, OpenCode, or any CLI — call it at session start for oriented context
-and through hooks for governed execution, and everything learned lands in
-local, typed, inspectable records. Optional unattended maintenance (scheduled
+and through hooks for execution evidence. Enforced profiles can gate mutations;
+learning enters local, typed records through explicit adjudication. Optional unattended maintenance (scheduled
 memory drains, disk reclamation) additionally requires an explicitly
 installed scheduler; nothing self-installs one.
 
 Agent sessions are amnesiac by default: whatever an agent learned, decided, or
 broke evaporates when the context window closes. Compound records the work as
-it actually happens — every session leaves claims, receipts, and lenses
-behind, and the next session starts smarter because of them. Across any
-harness, any model, any vendor.
+it actually happens through its wired execution paths. Receipts preserve what
+ran; relevant adjudicated memory can inform a later session. Recording a session
+alone does not establish learning. The meaning stays owned across harnesses,
+models, and vendors.
 
 The thesis: meta-thinking must be engineered — compounding is not a feeling
 that emerges on its own. Probabilistic intelligence needs an owned, structured
