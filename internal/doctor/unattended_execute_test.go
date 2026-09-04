@@ -1,4 +1,4 @@
-package main
+package doctor
 
 // R3A slice 2 deliverable 6: `compound doctor` prints one plain line per
 // lane named by the route plan for work.continue.unattended. Tests pin:
@@ -23,10 +23,10 @@ import (
 	"compound/internal/routeevidence"
 )
 
-// seedRoutePlanForDoctor writes a minimal model-capabilities manifest to
-// the test home's registries dir. claimLevel is "capable" (gate_role
+// seedRoutePlanForDoctorTest writes a minimal model-capabilities manifest
+// to the test home's registries dir. claimLevel is "capable" (gate_role
 // eligible) or "avoid" (gate_role avoid).
-func seedRoutePlanForDoctor(t *testing.T, homePath, claimLevel string) {
+func seedRoutePlanForDoctorTest(t *testing.T, homePath, claimLevel string) {
 	t.Helper()
 	body := "version: 1\n" +
 		"purpose: doctor unattended-execute fixture\n" +
@@ -52,10 +52,11 @@ func seedRoutePlanForDoctor(t *testing.T, homePath, claimLevel string) {
 	}
 }
 
-// seedUnattendedGrantForDoctor writes the operator's standing-grants file
-// with grant_unattended_work_continue_v1 present. Caller passes present=true
-// to install the grant; false leaves the file absent (fail-closed default).
-func seedUnattendedGrantForDoctor(t *testing.T, homePath string, present bool) {
+// seedUnattendedGrantForDoctorTest writes the operator's standing-grants
+// file with grant_unattended_work_continue_v1 present. Caller passes
+// present=true to install the grant; false leaves the file absent
+// (fail-closed default).
+func seedUnattendedGrantForDoctorTest(t *testing.T, homePath string, present bool) {
 	t.Helper()
 	if !present {
 		return
@@ -73,34 +74,24 @@ func seedUnattendedGrantForDoctor(t *testing.T, homePath string, present bool) {
 	}
 }
 
+// fakeCapacityReader returns a stub reader that reports 30% used and fresh
+// for the named lane. Tests inject this through CapacityReader so the doctor
+// reads deterministic values without a real CodexBar feed.
+func fakeCapacityReader(used float64, fresh bool) CapacityReader {
+	return func(homePath, lane string, now time.Time) (float64, bool, error) {
+		return used, fresh, nil
+	}
+}
+
 // TestDoctorUnattendedExecutePrintsEligibleLaneLine: a route plan with an
 // eligible lane and the grant installed prints the canonical line shape.
 func TestDoctorUnattendedExecutePrintsEligibleLaneLine(t *testing.T) {
-	homePath := initializedTestHome(t)
+	homePath := t.TempDir()
 	now := time.Now().UTC()
-	seedRoutePlanForDoctor(t, homePath, "capable")
-	seedUnattendedGrantForDoctor(t, homePath, true)
-	// Seed a fresh capacity row so the printed age is finite and the
-	// percent is observable (the row only needs to be readable; the
-	// doctor falls back to the default reader config).
-	if err := os.WriteFile(filepath.Join(homePath, "usage-history.jsonl"),
-		[]byte(fmt.Sprintf(`{"provider":"minimax","windowKind":"rolling","windowMinutes":60,"usedPercent":30,"resetsAt":%q,"sampledAt":%q}`+"\n",
-			now.Add(time.Hour).UTC().Format(time.RFC3339),
-			now.Add(-2*time.Minute).UTC().Format(time.RFC3339))), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Pin the capacity config var to the test home so the default reader
-	// does not reach into the operator's real CodexBar feed.
-	prevConfig := executeStageCapacityConfig
-	executeStageCapacityConfig = func(home string) routeevidence.LaneCapacityConfig {
-		cfg := routeevidence.DefaultLaneCapacityConfig(home)
-		cfg.Paths.UsageHistoryPath = filepath.Join(homePath, "usage-history.jsonl")
-		cfg.Paths.QuotaCachePath = ""
-		return cfg
-	}
-	t.Cleanup(func() { executeStageCapacityConfig = prevConfig })
+	seedRoutePlanForDoctorTest(t, homePath, "capable")
+	seedUnattendedGrantForDoctorTest(t, homePath, true)
 
-	rows := buildDoctorUnattendedExecuteRows(homePath, now)
+	rows := BuildUnattendedExecuteRows(homePath, now, fakeCapacityReader(30, true))
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1; rows=%+v", len(rows), rows)
 	}
@@ -114,11 +105,11 @@ func TestDoctorUnattendedExecutePrintsEligibleLaneLine(t *testing.T) {
 		t.Fatal("grant must read present when the operator's file is installed")
 	}
 	if !rows[0].CapacityFresh {
-		t.Fatalf("capacity must read fresh (2m old, used 30%%); row=%+v", rows[0])
+		t.Fatalf("capacity must read fresh (fake reader); row=%+v", rows[0])
 	}
 
 	var buf bytes.Buffer
-	printUnattendedExecute(&buf, rows)
+	PrintUnattendedExecute(&buf, rows)
 	out := buf.String()
 	if !strings.Contains(out, "unattended execute: claude_minimax capacity 30% (") {
 		t.Fatalf("doctor line must match the canonical shape; got %q", out)
@@ -129,17 +120,19 @@ func TestDoctorUnattendedExecutePrintsEligibleLaneLine(t *testing.T) {
 	if !strings.Contains(out, "grant present") {
 		t.Fatalf("doctor line must report grant present; got %q", out)
 	}
+	_ = routeevidence.DefaultLaneCapacityConfig // satisfy the routeevidence import if a future row needs it
+	_ = fmt.Sprint
 }
 
 // TestDoctorUnattendedExecuteMarksAvoidAndAbsentGrant: an avoid-gate-role
 // lane plus no grant both surface explicit states; the row is not dropped.
 func TestDoctorUnattendedExecuteMarksAvoidAndAbsentGrant(t *testing.T) {
-	homePath := initializedTestHome(t)
+	homePath := t.TempDir()
 	now := time.Now().UTC()
-	seedRoutePlanForDoctor(t, homePath, "avoid")
-	seedUnattendedGrantForDoctor(t, homePath, false)
+	seedRoutePlanForDoctorTest(t, homePath, "avoid")
+	seedUnattendedGrantForDoctorTest(t, homePath, false)
 
-	rows := buildDoctorUnattendedExecuteRows(homePath, now)
+	rows := BuildUnattendedExecuteRows(homePath, now, fakeCapacityReader(30, true))
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
@@ -159,13 +152,13 @@ func TestDoctorUnattendedExecuteMarksAvoidAndAbsentGrant(t *testing.T) {
 // explicit line — silence would let an operator think the seam was
 // simply unconfigured.
 func TestDoctorUnattendedExecuteEmptyStateIsExplicit(t *testing.T) {
-	homePath := initializedTestHome(t)
-	rows := buildDoctorUnattendedExecuteRows(homePath, time.Now().UTC())
+	homePath := t.TempDir()
+	rows := BuildUnattendedExecuteRows(homePath, time.Now().UTC(), fakeCapacityReader(0, false))
 	if len(rows) != 0 {
 		t.Fatalf("rows = %d, want 0 on an empty manifest", len(rows))
 	}
 	var buf bytes.Buffer
-	printUnattendedExecute(&buf, rows)
+	PrintUnattendedExecute(&buf, rows)
 	if !strings.Contains(buf.String(), "no route plan names a lane") {
 		t.Fatalf("empty doctor section must be explicit; got %q", buf.String())
 	}
@@ -176,12 +169,12 @@ func TestDoctorUnattendedExecuteEmptyStateIsExplicit(t *testing.T) {
 // schema) — pin the keys so a future rename of the route_gate field
 // shows up here rather than as a silent dashboard regression.
 func TestDoctorUnattendedExecuteJSONShapeMatchesText(t *testing.T) {
-	homePath := initializedTestHome(t)
+	homePath := t.TempDir()
 	now := time.Now().UTC()
-	seedRoutePlanForDoctor(t, homePath, "capable")
-	seedUnattendedGrantForDoctor(t, homePath, true)
+	seedRoutePlanForDoctorTest(t, homePath, "capable")
+	seedUnattendedGrantForDoctorTest(t, homePath, true)
 
-	rows := buildDoctorUnattendedExecuteRows(homePath, now)
+	rows := BuildUnattendedExecuteRows(homePath, now, fakeCapacityReader(30, true))
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}

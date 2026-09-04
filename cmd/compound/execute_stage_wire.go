@@ -93,10 +93,8 @@ func executeStageCapacityFromSnapshot(homePath, lane string, now time.Time) (flo
 	return used, fresh, nil
 }
 
-// executeStageAdapterFor returns the registered adapter for harnessName, the
-// same registry `work_advance_execute.go` uses. A var so tests can pin the
-// lookup without building a real one — the test in
-// execute_stage_wire_test.go installs a recording stub here.
+// executeStageAdapterFor returns the registered adapter for harnessName,
+// same registry `work_advance_execute.go` uses; tests pin via this var.
 var executeStageAdapterFor = func(homePath, harnessName string) (harness.Adapter, bool) {
 	registry := harness.NewAdapterRegistry(runattempt.Open(homePath))
 	adapter, ok := registry.AdapterByName(harnessName)
@@ -104,16 +102,12 @@ var executeStageAdapterFor = func(homePath, harnessName string) (harness.Adapter
 }
 
 // executeStageLaunchReadiness is the readiness guard the launch wire calls
-// before handing the envelope to the adapter. Production delegates to
-// work.DelegateHarnessReadiness (the seam cmd/compound/work_advance_execute.go
-// also relies on); tests override the var to inject a controlled verdict so
-// the lane_unready refusal path can be pinned.
+// before handing the envelope to the adapter. Tests override the var to
+// inject a controlled verdict. Packet deliverable 4: the launch MUST
+// refuse (not silently plan) when the lane's readiness is unmet; an
+// unconfigured guard is the most unmet a guard can be.
 var executeStageLaunchReadiness = func(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
 	if work.DelegateHarnessReadiness == nil {
-		// No composition-root install: refuse. The packet's deliverable 4
-		// says the launch MUST refuse (not silently plan) when the lane's
-		// readiness is unmet; an unconfigured guard is the most unmet a
-		// guard can be.
 		return work.DelegateHarnessReadinessResult{Ready: false, Details: []string{"delegate readiness guard not installed"}}, nil
 	}
 	return work.DelegateHarnessReadiness(req)
@@ -124,11 +118,11 @@ var executeStageLaunchReadiness = func(req work.DelegateHarnessReadinessRequest)
 // registered adapter, then FinalizeGovernedHarnessRun to advance the
 // envelope from running to verifying), passing --permission-mode bypass so
 // the unattended envelope drives code-editing lanes rather than the safe
-// plan default. A lane without a context pack or with a failing readiness
-// guard is refused with skipped=lane_unready:<detail> rather than silently
-// planned. The seam has already moved the envelope from ready → claimed →
-// running; this function takes the running envelope, runs the adapter, and
-// returns the RunAttempt id the adapter minted.
+// plan default. A lane whose readiness guard reports not-ready is refused
+// with skipped=lane_unready:<detail> rather than silently planned. The
+// seam has already moved the envelope from ready → claimed → running; this
+// function takes the running envelope, runs the adapter, and returns the
+// RunAttempt id the adapter minted.
 func executeStageLaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt string, now time.Time) (string, error) {
 	if store == nil {
 		return "", errors.New("execute stage launch: nil work store")
@@ -141,7 +135,7 @@ func executeStageLaunchViaActuator(store *work.Store, workID, lane, harnessName,
 	homePath := store.HomePath()
 	adapter, ok := executeStageAdapterFor(homePath, harnessName)
 	if !ok {
-		return "", fmt.Errorf("execute stage launch: no adapter registered for harness %q", harnessName)
+		return "", errors.New("adapter_missing:" + harnessName)
 	}
 	wenv, err := store.Get(workID)
 	if err != nil {
@@ -155,32 +149,21 @@ func executeStageLaunchViaActuator(store *work.Store, workID, lane, harnessName,
 		workspace = strings.TrimSpace(wenv.GitDelivery.TargetWorktreeRoot)
 	}
 	if workspace == "" {
-		return "", fmt.Errorf("execute stage launch: workspace unresolvable for envelope %s (no git_delivery.target_worktree_root)", workID)
-	}
-	runInput := harness.RunInput{
-		WorkID:         workID,
-		Harness:        harnessName,
-		Workspace:      workspace,
-		Args:           []string{prompt},
-		PermissionMode: "bypass",
-		LaneID:         lane,
-		Now:            now,
+		return "", fmt.Errorf("workspace_unresolvable:envelope %s has no git_delivery.target_worktree_root", workID)
 	}
 	// M5 2026-09-03: --permission-mode bypass is the explicit operator
-	// override. The seam never synthesizes bypass on its own; the standing
-	// grant's predicate already gates this hook, so by the time we reach
-	// here the operator's grant has authorized the override.
+	// override the standing grant authorizes; the seam never synthesizes
+	// bypass on its own.
+	runInput := harness.RunInput{
+		WorkID: workID, Harness: harnessName, Workspace: workspace,
+		Args: []string{prompt}, PermissionMode: "bypass",
+		LaneID: lane, Now: now,
+	}
 	readinessReq := work.DelegateHarnessReadinessRequest{
-		HomePath:               homePath,
-		HarnessHome:            homePath,
-		WorkID:                 workID,
-		Workspace:              workspace,
-		Harness:                harnessName,
-		LaneID:                 lane,
-		Args:                   []string{prompt},
-		RequestedModelID:       lane,
-		RequestedProviderRoute: lane,
-		Now:                    now,
+		HomePath: homePath, HarnessHome: homePath, WorkID: workID,
+		Workspace: workspace, Harness: harnessName, LaneID: lane,
+		Args: []string{prompt}, RequestedModelID: lane,
+		RequestedProviderRoute: lane, Now: now,
 	}
 	readiness, readinessErr := executeStageLaunchReadiness(readinessReq)
 	if readinessErr != nil {
@@ -195,41 +178,26 @@ func executeStageLaunchViaActuator(store *work.Store, workID, lane, harnessName,
 	}
 	out, runErr := adapter.Run(context.Background(), runInput)
 	if runErr != nil {
-		// Infrastructure failure (couldn't mint, couldn't spawn). The seam's
-		// failure path will Close the envelope "failed".
 		return "", runErr
 	}
 	if strings.TrimSpace(out.RunAttempt.ID) == "" {
 		return "", errors.New("execute stage launch: adapter returned empty RunAttempt.ID")
 	}
-	// Run succeeded. Mirror what `compound work advance --execute` does at
-	// its tail: FinalizeGovernedHarnessRun advances running → verifying
-	// (or Close failed on a non-success RunAttempt.Status, which the
-	// adapter should never produce here). The seam's own Advance(verifying)
-	// after launchStub returns is now a no-op on the production path
-	// (state is already verifying); tests that stub launchStub still move
-	// the envelope the way the seam's pre-Advance(running) set up, and
-	// their Advance(verifying) succeeds against running.
+	// FinalizeGovernedHarnessRun advances running → verifying (or Close
+	// failed on a non-success RunAttempt.Status). The seam's own
+	// Advance(verifying) after launchStub returns is now a no-op on the
+	// production path; tests that stub launchStub still move the
+	// envelope the way the seam's pre-Advance(running) set up.
 	policyID := strings.TrimSpace(wenv.PolicyDecisionID)
 	actionIntentID := ""
 	if n := len(wenv.ActionIntentIDs); n > 0 {
 		actionIntentID = strings.TrimSpace(wenv.ActionIntentIDs[n-1])
 	}
 	if _, finalizeErr := actuator.FinalizeGovernedHarnessRun(actuator.GovernedHarnessFinalizationInput{
-		Store:                 store,
-		WorkID:                workID,
-		Actor:                 lane,
-		HarnessName:           harnessName,
-		RunningPolicyID:       policyID,
-		RunningActionIntentID: actionIntentID,
-		Output:                out,
-		RunError:              nil,
-		Now:                   now,
+		Store: store, WorkID: workID, Actor: lane, HarnessName: harnessName,
+		RunningPolicyID: policyID, RunningActionIntentID: actionIntentID,
+		Output: out, RunError: nil, Now: now,
 	}); finalizeErr != nil {
-		// Finalize refused (race, missing authority evidence, etc). The
-		// envelope is still in running — surface the error so the seam's
-		// failure path can Close it and the operator sees the finalize
-		// reason in the heartbeat log.
 		return "", fmt.Errorf("execute stage launch: finalize refused: %w", finalizeErr)
 	}
 	return out.RunAttempt.ID, nil
