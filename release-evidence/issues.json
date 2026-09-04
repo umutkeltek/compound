@@ -13,7 +13,7 @@
       "reproducer": "Inject close failures at every publication boundary, then race delegated refusal/cleanup against a frozen close. Invoke delegate/status/dry-run without experimental admission and use a non-whole-second close timestamp.",
       "root_cause": "Close originally transferred lease authority before its final recoverable boundary. Later hardening exposed coupled authority leaks: delegated mutation could cross a frozen close, delegate CLI entry eagerly opened a writable store and implicitly swept attempts before parse/admission, and ClosePlan rebuilt an evaluated decision without restoring the exact context-pack binding.",
       "invariant": "A failed close cannot transfer the lease or publish a successful steal trail; frozen close authority fences every competing mutation; read-only or unadmitted CLI paths have zero side effects; the validated Receipt, WorkEnvelope, and closing event persist one exact timestamp; exact retry succeeds.",
-      "red_test": "Fresh red at e0d197f809f914e8e943ae56dd8295d987ac0b37: TestDelegateFrozenCloseFencesPreMintRefusalPublications, TestDelegateFrozenCloseFencesPreMintSessionCleanup, and TestDelegateRefusalPublicationRechecksConcurrentFrozenClose fail on authority_changed/runner-state invariants. Governed recovery also reproduced the non-whole-second close timestamp mismatch before state mutation.",
+      "red_test": "Fresh red at e0d197f809f914e8e943ae56dd8295d987ac0b37: TestDelegateFrozenCloseFencesPreMintRefusalPublications, TestDelegateFrozenCloseFencesPreMintSessionCleanup, and TestDelegateRefusalPublicationRechecksConcurrentFrozenClose fail on authority_changed/runner-state invariants. Governed recovery also reproduced the non-whole-second close timestamp mismatch before state mutation. v4 red at 0da0f321: TestCloseHoldsSharedWorkAdmissionThroughTerminalization fails with 'close terminalization ran outside shared work admission' — close terminalization prepare -> terminal write -> RunAttempt terminalize -> lease release ran without holding the shared work-admission inode every RunAttempt liveness write already holds.",
       "fix_commits": [
         "ec080dbef6865ba2e0b3db8798e86fe5a90c2a88",
         "3eb9ea6bb0dde318db42a26e65c663ea8960c87e",
@@ -23,7 +23,8 @@
         "bc7c1494945e15e4146355aad0bd1621f6750ce4",
         "5dfec9f7bb566b3181a7d94b5cb0d0ecdc4266e0",
         "49b54682dbbb852f309182ce441796501f24e715",
-        "225d69697fff127a54d6c937dbe5895a26bbc045"
+        "225d69697fff127a54d6c937dbe5895a26bbc045",
+        "a9fa0286"
       ],
       "focused_tests": [
         "GOTOOLCHAIN=go1.26.4 go test ./internal/work -run <close-focused-regressions> -count=1 (pass, 10.879s)",
@@ -33,7 +34,13 @@
         "GOTOOLCHAIN=go1.26.4 go test ./cmd/compound -run '^(TestWorkDelegate.*|TestExperimentalDelegateMutationEnablementHasOneProductionOwner)$' -count=1 (pass at 225d6969, 13.483s)",
         "GOTOOLCHAIN=go1.26.4 go test ./internal/work -run '^(TestDelegateMutationPackageGateDefaultsOff|TestDelegateFrozenClose.*|TestDelegateRefusalPublicationRechecksConcurrentFrozenClose|TestDelegateDryRunNeverSpawnsOrPersists|TestDelegateRefusesFrozenCloseBeforeMint|TestOpenReadOnlyRefusesLifecycleMutationOnPreparedHome)$' -count=1 (pass at 225d6969, 5.916s)",
         "GOTOOLCHAIN=go1.26.4 go test -race ./cmd/compound -run '^(TestWorkDelegate.*|TestExperimentalDelegateMutationEnablementHasOneProductionOwner)$' -count=1 (pass at 225d6969, 17.971s)",
-        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/work -run '^(TestDelegateMutationPackageGateDefaultsOff|TestDelegateFrozenClose.*|TestDelegateRefusalPublicationRechecksConcurrentFrozenClose|TestDelegateDryRunNeverSpawnsOrPersists|TestDelegateRefusesFrozenCloseBeforeMint|TestOpenReadOnlyRefusesLifecycleMutationOnPreparedHome)$' -count=1 (pass at 225d6969, 6.556s)"
+        "GOTOOLCHAIN=go1.26.4 go test -race ./internal/work -run '^(TestDelegateMutationPackageGateDefaultsOff|TestDelegateFrozenClose.*|TestDelegateRefusalPublicationRechecksConcurrentFrozenClose|TestDelegateDryRunNeverSpawnsOrPersists|TestDelegateRefusesFrozenCloseBeforeMint|TestOpenReadOnlyRefusesLifecycleMutationOnPreparedHome)$' -count=1 (pass at 225d6969, 6.556s)",
+        "go test ./internal/work -run TestCloseHoldsSharedWorkAdmissionThroughTerminalization -count=1 -v (RED on 0da0f321: 'close terminalization ran outside shared work admission', 9.047s)",
+        "go test ./internal/work -run TestCloseHoldsSharedWorkAdmissionThroughTerminalization -count=1 -v (GREEN post a9fa0286, 3.019s)",
+        "go test ./internal/work -run 'Close|Terminal|Delegate|SweepStale|Reclaim|RunAttempt' -count=1 (pass, 565.520s, run alone/detached per contention guidance)",
+        "go test ./internal/work -count=1 -timeout=20m (pass, 479.301s, run alone/detached)",
+        "go test ./internal/runattempt ./internal/home -count=1 (runattempt 102.677s, home 238.012s; both pass)",
+        "go vet ./internal/work/ (pass); gofmt -l over changed .go files clean"
       ],
       "broad_tests": [
         "GOTOOLCHAIN=go1.26.4 go test ./internal/work -count=1 (failed: default 10m timeout)"
@@ -45,9 +52,9 @@
         "release-evidence/runs/20260830-p0-001-governed-recovery.json",
         "release-evidence/runs/20260830-p0-001-containment-green.json"
       ],
-      "residual_risk": "Focused and race matrices are green through 225d6969. Integration with current main, full affected-package tests, and the canonical broad battery remain pending. Opted-in delegate TOCTOU and crash-atomicity are outside v0.1 and tracked as REL-P1-013.",
+      "residual_risk": "Focused and race matrices are green through 225d6969; close terminalization admission lock CLOSED by a9fa0286 (one Store helper withCloseAdmissionLock wraps homepkg.WithWorkAdmissionLock; completeClosePending's terminalization section runs strictly under the same authority every RunAttempt liveness write holds; TestCloseHoldsSharedWorkAdmissionThroughTerminalization green, focused close suite 565.520s green, full internal/work broad run 479.301s green). Integration with current main, full affected-package broad battery, and the canonical proof-check battery remain pending. Opted-in delegate TOCTOU and crash-atomicity are outside v0.1 and tracked as REL-P1-013.",
       "owner": "orchestrator:codex:release-harden-20260829",
-      "updated_at": "2026-08-30T00:11:20Z"
+      "updated_at": "2026-09-04T03:00:00Z"
     },
     {
       "id": "REL-P0-002",
@@ -130,7 +137,8 @@
         "f5ca50c3",
         "4a25078a",
         "7bb4880f",
-        "5bcfbe01"
+        "5bcfbe01",
+        "a9fa0286"
       ],
       "focused_tests": [
         "go test ./internal/runattempt -run TestLivenessIncreasingWritesHoldWorkAdmission -count=1 -v (RED on 15b12d8b: 6/6 subtests FAIL, 'work admission lock: authority root <home>/work must be materialized and safe: statat work: no such file or directory', 1.817s)",
@@ -141,19 +149,25 @@
         "go test ./internal/work -run TestSweepStalePendingClearResumesAfterQuarantinedRemoval -count=1 -v (RED pre-5bcfbe01: 'recovery report ... want one exact completed reclaim'; GREEN post-fix, 5.544s)",
         "go test ./internal/work -run 'TestSweepStale|TestReclaim' -count=1 (pass, 24.850s)",
         "go test ./cmd/compound -run TestProofCheckAdmissionSweepAndExpiryCannotBypassLiveProcessTree -count=1 (pass, 2.040s; focused spot-check that admission-locked sweeps still protect live proof checks)",
-        "go vet ./internal/runattempt/ ./internal/home/ ./internal/work/ (pass); gofmt gate on all changed .go files clean"
+        "go test ./internal/work -run TestCloseHoldsSharedWorkAdmissionThroughTerminalization -count=1 -v (RED on 0da0f321: 'close terminalization ran outside shared work admission', 9.047s)",
+        "go test ./internal/work -run TestCloseHoldsSharedWorkAdmissionThroughTerminalization -count=1 -v (GREEN post a9fa0286, 3.019s)",
+        "go test ./internal/work -run 'Close|Terminal|Delegate|SweepStale|Reclaim|RunAttempt' -count=1 (pass, 565.520s, run alone/detached per contention guidance)",
+        "go test ./internal/work -count=1 -timeout=20m (pass, 479.301s, run alone/detached)",
+        "go test ./internal/runattempt ./internal/home -count=1 (runattempt 102.677s, home 238.012s; both pass)",
+        "go vet ./internal/runattempt/ ./internal/home/ ./internal/work/ (pass); gofmt -l over changed .go files clean"
       ],
       "broad_tests": [
-        "GOTOOLCHAIN=go1.27.0 go test ./internal/work ./internal/home ./internal/landlease ./internal/runattempt -count=1 (v2 attempt: internal/work timed out at 606s on parallel-scheduler contention; v3 did not repeat the 4-package parallel run per packet guidance -- focused suites above are green, full broad run still open)"
+        "go test ./internal/work -count=1 -timeout=20m (v4 alone: pass, 479.301s — closed the full internal/work broad run that v2 timed out at 606s on parallel-scheduler contention; the 4-package parallel run remains open per packet's focused-only guidance)"
       ],
       "evidence_paths": [
         "release-evidence/runs/20260831-p0-004-semantic-fencing-focused-green.json",
         "release-evidence/runs/20260831-p0-004-cli-admission-focused-green.json",
-        "release-evidence/runs/20260904-p0-004-adopt-harden.json"
+        "release-evidence/runs/20260904-p0-004-adopt-harden.json",
+        "release-evidence/runs/20260904-p0-004-close-admission-lock.json"
       ],
-      "residual_risk": "Residual (d) cross-process RunAttempt liveness lock CLOSED by 4a25078a (home authority-root materialization door) + 7bb4880f (every liveness-increasing runattempt write -- Mint/MintWithID/MarkRunning/Heartbeat/HeartbeatProgress/CommitLaunch incl. the start callback, and the sweep tryHeartbeat renew -- now holds home.WithWorkAdmissionLock; TestLivenessIncreasingWritesHoldWorkAdmission green unmodified). Residual (c) resumable physical removal/quarantine recovery CLOSED by 5bcfbe01 (quarantined frozen sweep frame is read through the home removal chain and reconciled by the rerun). STILL OPEN: retained land-lease mutation boundary, residual (a) every-boundary fault-matrix augmentation (TestSweepStalePersistenceFaultsRecoverExactly already covers 7 boundaries; only augmentation is open), residual (b) liveness-recheck-inside-boundary (TestSweepStaleApplyReprobesLivenessInsideMutationBoundary exists; augmentation open), full internal/work broad run (parallel-scheduler contention, 606s timeout in v2), and canonical proof-check (cmd spot-check green only). Cross-work non-convoy during a parked launch callback remains intentionally outside the v0.1 admission support contract. work sweep-stale --yes remains outside the supported contract.",
+      "residual_risk": "Residual (d) cross-process RunAttempt liveness lock CLOSED by 4a25078a (home authority-root materialization door) + 7bb4880f (every liveness-increasing runattempt write -- Mint/MintWithID/MarkRunning/Heartbeat/HeartbeatProgress/CommitLaunch incl. the start callback, and the sweep tryHeartbeat renew -- now holds home.WithWorkAdmissionLock; TestLivenessIncreasingWritesHoldWorkAdmission green unmodified). Residual (c) resumable physical removal/quarantine recovery CLOSED by 5bcfbe01 (quarantined frozen sweep frame is read through the home removal chain and reconciled by the rerun). Residual (e) close terminalization admission lock CLOSED by a9fa0286 (one Store helper withCloseAdmissionLock wraps home.WithWorkAdmissionLock with the v3 home authority-root materialization door; completeClosePending's terminalization section -- terminalization prepare -> terminal write -> RunAttempt terminalize -> lease release -- now runs strictly under the same authority every RunAttempt liveness write holds; TestCloseHoldsSharedWorkAdmissionThroughTerminalization green; focused close suite 565.520s green; full internal/work broad run 479.301s green, closes the v2 606s timeout). STILL OPEN: retained land-lease mutation boundary, residual (a) every-boundary fault-matrix augmentation (TestSweepStalePersistenceFaultsRecoverExactly already covers 7 boundaries; only augmentation is open), residual (b) liveness-recheck-inside-boundary (TestSweepStaleApplyReprobesLivenessInsideMutationBoundary exists; augmentation open), canonical proof-check (cmd spot-check green only), and the 4-package parallel broad run (focused-only per packet guidance). Cross-work non-convoy during a parked launch callback remains intentionally outside the v0.1 admission support contract. work sweep-stale --yes remains outside the supported contract.",
       "owner": "orchestrator:claude_minimax",
-      "updated_at": "2026-09-04T00:00:00Z"
+      "updated_at": "2026-09-04T03:00:00Z"
     },
     {
       "id": "REL-P0-005",
