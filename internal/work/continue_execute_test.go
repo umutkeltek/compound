@@ -512,3 +512,73 @@ func (e *executeStageBadWorkIDErr) Error() string {
 type executeStageLaunchErr struct{ msg string }
 
 func (e *executeStageLaunchErr) Error() string { return e.msg }
+
+// installProposedUnattendedGrant writes the OPERATOR-PROPOSED grant shape
+// (docs_private/operator-grants/PROPOSED-standing-grants-2026-09-04-unattended-execute.json)
+// into a temp home's standing-grants registry, with target_path scoped to the
+// temp home the way the operator file scopes it to their real home. Extra
+// proposal fields (predicate, lanes, capacity ceiling) stay verbatim: the
+// registry must import the proposed shape as-is.
+func installProposedUnattendedGrant(t *testing.T, home string) {
+	t.Helper()
+	dir := filepath.Join(home, "registries")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir registries: %v", err)
+	}
+	body := `{"schema_version":"compound.standing_grants.v0.1","grants":[{` +
+		`"id":"grant_unattended_work_continue_v1",` +
+		`"capability":"work.continue.unattended",` +
+		`"mutation_class":"local_reversible",` +
+		`"reversibility_ceiling":"reversible",` +
+		`"blast_radius":"local",` +
+		`"target_path":"` + home + `/**",` +
+		`"predicate":"risk in {tier0, tier1} && privacy == 'private' && route_plan.gate_role == 'eligible' && capacity_snapshot.freshness_minutes < 10 && capacity_snapshot.used_percent < 90 && policy_decision.outcome in {allow, allow_with_obligations}",` +
+		`"max_per_tick":1,` +
+		`"lanes":["claude-minimax","claude-zai"],` +
+		`"capacity_ceiling_percent":90,` +
+		`"operator_review":false,` +
+		`"expires_at":"2099-01-01T00:00:00Z"}]}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "standing-grants.json"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write grant registry: %v", err)
+	}
+}
+
+// TestExecuteStagePolicyEvalHoldsWhenNoGrantCoversIntent — the wired policy
+// default must fail closed when no standing grant covers the intent. The
+// local_reversible class baseline alone would allow_with_obligations; an
+// allow that is not backed by grant_unattended_work_continue_v1 is a hold.
+func TestExecuteStagePolicyEvalHoldsWhenNoGrantCoversIntent(t *testing.T) {
+	s := newStore(t)
+	restoreAllExecuteHooks(t)
+
+	got := executeStagePolicyEvalFn(
+		policyActionIntentShim{ID: "ai_pol_test", Capability: executeUnattendedCapability, WorkID: "work_pol_test", Risk: "tier1", Privacy: "private"},
+		policyConfigShim{HasGrant: true, Home: s.home},
+		fixedNow,
+	)
+	if got.Outcome != "hold" {
+		t.Fatalf("outcome = %q, want hold (no grant covers the intent); decision=%+v", got.Outcome, got)
+	}
+}
+
+// TestExecuteStagePolicyEvalAllowsUnderProposedGrantShape — with the proposed
+// operator grant imported into the home, the same evaluation returns
+// allow_with_obligations, so the seam's policy gate opens only through the
+// operator's signed grant.
+func TestExecuteStagePolicyEvalAllowsUnderProposedGrantShape(t *testing.T) {
+	s := newStore(t)
+	installProposedUnattendedGrant(t, s.home)
+	restoreAllExecuteHooks(t)
+
+	got := executeStagePolicyEvalFn(
+		policyActionIntentShim{ID: "ai_pol_test", Capability: executeUnattendedCapability, WorkID: "work_pol_test", Risk: "tier1", Privacy: "private"},
+		policyConfigShim{HasGrant: true, Home: s.home},
+		fixedNow,
+	)
+	if got.Outcome != "allow_with_obligations" {
+		t.Fatalf("outcome = %q, want allow_with_obligations under the proposed grant; decision=%+v", got.Outcome, got)
+	}
+	if got.ID == "" {
+		t.Fatal("decision id must be surfaced so refusals are auditable")
+	}
+}

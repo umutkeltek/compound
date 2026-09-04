@@ -128,6 +128,9 @@ type policyActionIntent struct {
 
 type policyConfig struct {
 	HasGrant bool
+	// Home is the Compound home root the evaluator loads policy config (and
+	// imported standing grants) from. The seam always passes the store's home.
+	Home string
 }
 
 type policyDecision struct {

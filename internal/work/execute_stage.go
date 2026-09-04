@@ -9,6 +9,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/envelope"
+	"compound/internal/policy"
 )
 
 // executeStage is the grant-gated, fail-closed seam that drives ONE ready
@@ -120,7 +123,7 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 			Risk:       w.Risk,
 			Privacy:    w.Privacy,
 		},
-		policyConfigShim{HasGrant: true},
+		policyConfigShim{HasGrant: true, Home: s.home},
 		now,
 	)
 	result.PolicyDecisionID = pd.ID
@@ -332,13 +335,44 @@ func defaultExecuteStageCapacityFn(homePath, lane string, now time.Time) (float6
 	return 0, false, nil
 }
 
-// defaultExecuteStagePolicyEvalFn returns hold — production must wire this
-// to policy.Evaluate. The default is intentionally NOT fail-open: a real
-// caller that forgets to wire the evaluator sees every execute attempt as
-// `skipped=policy_hold`. Operators MUST install the wired resolver before
-// unattended execution is safe; this default is the fail-closed floor.
+// defaultExecuteStagePolicyEvalFn is the REAL evaluator: the same door
+// `work advance --execute` consumes (policy.LoadConfig + policy.Evaluate on
+// an envelope.ActionIntent for capability work.continue.unattended). It fails
+// closed twice: an unreadable config is a hold, and an allow that is not
+// backed by the unattended standing grant (StandingGrantID mismatch — e.g.
+// the local_reversible class baseline allowing on its own) is downgraded to
+// hold. The operator's named grant is the only authority that opens this
+// gate; the class baseline alone never does.
 func defaultExecuteStagePolicyEvalFn(ai policyActionIntentShim, cfg policyConfigShim, now time.Time) policyDecisionShim {
-	return policyDecisionShim{Outcome: "hold", ID: "pol_default_hold"}
+	intent := envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent,
+			ID:            ai.ID,
+			Privacy:       ai.Privacy,
+			Risk:          ai.Risk,
+		},
+		Actor:         "compound-unattended-execute",
+		Capability:    ai.Capability,
+		Action:        "execute_unattended",
+		Target:        envelope.ActionTarget{Kind: "work", ID: ai.WorkID, Path: filepath.Join(cfg.Home, "work", "work", ai.WorkID+".json")},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		Preview:       "execute ready work " + ai.WorkID + " unattended via work continue",
+		RollbackPlan:  "advance work back to ready if the launch produced no side effects",
+	}
+	config, _, err := policy.LoadConfig(cfg.Home)
+	if err != nil {
+		return policyDecisionShim{ID: "pol_unattended_config_unreadable", Outcome: "hold"}
+	}
+	pd := policy.Evaluate(intent, config, now)
+	switch pd.Outcome {
+	case "allow", "allow_with_obligations":
+		if pd.StandingGrantID != executeUnattendedGrantID {
+			return policyDecisionShim{ID: pd.ID, Outcome: "hold"}
+		}
+	}
+	return policyDecisionShim{ID: pd.ID, Outcome: pd.Outcome}
 }
 
 // defaultExecuteStageLaunch returns an explicit error — production must wire
