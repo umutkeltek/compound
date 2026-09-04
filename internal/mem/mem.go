@@ -2247,6 +2247,16 @@ type Report struct {
 	OK                bool               `json:"ok"`
 	Note              string             `json:"note"`
 	SemanticReadiness *SemanticReadiness `json:"semantic_readiness,omitempty"`
+	// Warnings is the list of hops with status="warn" rolled into a
+	// single field so a downstream consumer can grep warnings without
+	// walking the hops array. Each entry is "<hop-name>: <status-detail>"
+	// — short enough to fit a one-line warn row, and parallel to the
+	// OK field's binary shape: false means at least one hop failed;
+	// len(Warnings) > 0 means at least one hop warned. The memory
+	// doctor in cmd/compound surfaces this array in JSON and under a
+	// `warnings:` heading in text mode; per the exit-code contract it
+	// NEVER causes a non-zero exit on its own.
+	Warnings []string `json:"warnings"`
 }
 
 type SemanticReadiness struct {
@@ -2432,7 +2442,15 @@ func (s *Store) DoctorAt(eng Engine, now time.Time) Report {
 	} else {
 		add("authority", statusOf(len(claims) > 0), "all claims carry derivation + evidence")
 	}
-
+	// Roll warnings up AFTER every hop is added so no warn hop can be
+	// missed by ordering (the exit-code contract in internal/doctor/
+	// exitcode: warnings never flip OK, but they must never be silently
+	// buried inside "ok": true either).
+	for _, h := range r.Hops {
+		if h.Status == "warn" {
+			r.Warnings = append(r.Warnings, h.Name+": "+h.Detail)
+		}
+	}
 	if r.OK {
 		r.Note = "memory hops healthy (or empty/skipped); no failed hop"
 	} else {

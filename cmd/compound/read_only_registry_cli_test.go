@@ -97,7 +97,7 @@ func readRegistryGuardCases() []readRegistryCase {
 		{
 			name:   "doctor",
 			mkArgs: func(string) []string { return []string{"--json"} },
-			exits:  []int{0},
+			exits:  []int{0, 1}, // 0 = no problems; 1 = problems found (R2B exit contract). Host hook/harness drift is a real finding on a dev box; this test only proves the read-only face materializes nothing,
 		},
 		{
 			name: "placement",

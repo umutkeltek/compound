@@ -15,6 +15,7 @@ import (
 
 	"compound/internal/capgraph"
 	"compound/internal/doctor"
+	"compound/internal/doctor/exitcode"
 	"compound/internal/envelope"
 	"compound/internal/finding"
 	"compound/internal/harness"
@@ -153,6 +154,18 @@ type doctorReport struct {
 	// installed binary version vs the harness row's ExpectedVersion. One row
 	// per registered harness, status vocabulary match|drift|unpinned|unobserved.
 	HarnessVersionDrift doctor.HarnessVersionDriftReport `json:"harness_version_drift"`
+
+	// Doctor exit-code contract (packet work_3da5d3c76707): Problems
+	// is the plain-language list of actionable problems the doctor
+	// found, and Warnings is the list of info-only conditions the
+	// doctor refuses to fail on (a hook config drift whose binary
+	// still enforces, a harness version that's only "drift" because
+	// the operator hasn't pinned one, etc.). Both are computed from
+	// the existing named counters — nothing the doctor checks changes,
+	// only how truthfully it reports and exits. JSON consumers can
+	// branch on len(Problems) or len(Warnings) without parsing prose.
+	Problems []string `json:"problems"`
+	Warnings []string `json:"warnings"`
 }
 
 // surfacingRow is one lane/harness × the communication surfaces it should see. Cell vocabulary
@@ -446,20 +459,101 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	// 9) Harness version drift — installed binary version vs ExpectedVersion
-	// per registered harness. Non-failing named signal: even when DriftCount
-	// is non-zero the doctor reports rows + count and exits 0 (the operator
-	// decides whether to upgrade). Pattern matches BinaryStaleness above.
+	// per registered harness. Rows + count stay non-failing named SIGNALS in
+	// the report body; under the exit-code contract a non-zero DriftCount is
+	// also counted as a problem (exit 1), because a harness running a
+	// different binary than the registry pinned is actionable, not advisory.
 	rep.HarnessVersionDrift = doctor.ComputeHarnessVersionDrift(harness.DefaultRegistry())
 
+	// Doctor exit-code contract (packet work_3da5d3c76707): a doctor that
+	// finds a real, actionable problem exits 1, prints a final
+	// plain-language count line, and exposes warnings under a
+	// `warnings:` heading. The shared helper lives at
+	// compound/internal/doctor/exitcode; here we just count the named
+	// problem counters the doctor already produces. JSON mode adds a
+	// problems[] array and warnings[] array so a CI consumer can grep
+	// them without parsing prose.
+	rep.Problems = rep.problemStrings()
+	rep.Warnings = rep.warningStrings()
 	if hasFlag(args, "--json") {
 		if err := encodeJSON(stdout, rep); err != nil {
 			fmt.Fprintln(stderr, "error:", err)
-			return 1
+			return exitcode.CouldNotRun
 		}
-		return 0
+		if len(rep.Problems) > 0 {
+			return exitcode.ProblemFound
+		}
+		return exitcode.OK
 	}
 	printDoctor(stdout, rep)
-	return 0
+	return exitcode.Doctor{Verb: "doctor", Problems: rep.Problems, Warnings: rep.Warnings, Note: "start with the first problem above"}.ExitWith(stdout)
+}
+
+// problemStrings reduces the doctor's existing named counters to the
+// plain-language problem list the contract demands. Each sentence names
+// the count and the highest-leverage remediation so the canonical
+// "doctor: N problem(s) found — <hint>" count line never needs
+// internal jargon. Ordering is deterministic so a shell caller grepping
+// for "doctor:" sees the same problems in the same order on every run.
+func (r doctorReport) problemStrings() []string {
+	var p []string
+	if r.WorktreeLocksStale > 0 {
+		p = append(p, fmt.Sprintf("%d stale worktree lock(s) protect nobody — run `compound work delegate sweep <work_id>` on the affected work id(s)", r.WorktreeLocksStale))
+	}
+	if r.RunAttemptsStuckPastTTL > 0 {
+		p = append(p, fmt.Sprintf("%d run attempt(s) past the sweep TTL — run `compound run-attempt sweep`", r.RunAttemptsStuckPastTTL))
+	}
+	if r.RunAttemptsUnreadable > 0 {
+		p = append(p, fmt.Sprintf("%d run attempt record(s) failed validation — inspect before sweeping", r.RunAttemptsUnreadable))
+	}
+	if r.RunAttemptsSweptAmbiguous > 0 {
+		p = append(p, fmt.Sprintf("%d swept run attempt(s) carry ambiguous classification — reconcile the named id(s)", r.RunAttemptsSweptAmbiguous))
+	}
+	if r.BinaryStaleness.Relation == doctor.RelationAncestor {
+		p = append(p, "installed binary is behind main — reinstall it (`make install`) and re-run doctor")
+	}
+	if r.HookEnforcementFailing > 0 {
+		p = append(p, fmt.Sprintf("%d hook enforcement check(s) failed — the binary at the configured path cannot enforce", r.HookEnforcementFailing))
+	}
+	if r.HarnessVersionDrift.DriftCount > 0 {
+		p = append(p, fmt.Sprintf("%d harness(es) drifted from the expected version — see the harness_version_drift section above", r.HarnessVersionDrift.DriftCount))
+	}
+	sort.Strings(p)
+	return p
+}
+
+// warningStrings surfaces info-only conditions the doctor refuses to
+// fail on: a hook whose config is drifted or absent but whose
+// underlying binary is still enforcing, binary staleness that is
+// merely unknown (cwd is not a checkout), and projections that predate
+// the running binary (normal after any rebuild; see
+// printProjectionFreshness for why alarm there trains operators to
+// skip the section). Harness version drift is deliberately NOT here —
+// it is a problem (see problemStrings); listing it twice would let a
+// reader dismiss the failure as advisory. The JSON shape carries the
+// array under `warnings`; the text shape prints them under a
+// `warnings:` heading per the shared contract.
+func (r doctorReport) warningStrings() []string {
+	var w []string
+	for _, h := range r.Hooks {
+		if h.Status == "drift" || h.Status == "absent" {
+			w = append(w, fmt.Sprintf("harness %s %s — install guard via `compound hook install`", h.Harness, h.Status))
+		}
+	}
+	if r.BinaryStaleness.Relation == doctor.RelationUnknown {
+		w = append(w, "binary staleness unknown — cwd is not a git checkout; doctor could not compare installed SHA to main")
+	}
+	if r.ProjectionsStale > 0 {
+		// Deliberately a warning, not a problem: rebuilding the binary
+		// makes nearly every projection older than it, so a stale row is
+		// normal and only matters when the change being trusted touched
+		// that projection's producer (see printProjectionFreshness).
+		// Counting it toward exit 1 would make every rebuild red and
+		// train the operator to ignore the doctor.
+		w = append(w, fmt.Sprintf("%d persisted projection(s) predate the running binary — matters only if your change touched their producer", r.ProjectionsStale))
+	}
+	sort.Strings(w)
+	return w
 }
 
 func printDoctor(stdout io.Writer, rep doctorReport) {

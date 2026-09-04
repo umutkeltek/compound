@@ -16,6 +16,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
+	"compound/internal/doctor/exitcode"
 	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/promotedriver"
@@ -847,7 +848,11 @@ func cmdMemory(args []string) {
 			} else {
 				fmt.Fprintln(os.Stderr, "memory doctor:", externalStoreErr)
 			}
-			os.Exit(1)
+			// Doctor exit-code contract (internal/doctor/exitcode): the
+			// doctor itself could not run, which is exit 2 — distinct from
+			// "ran and found problems" (1) so callers tell a broken doctor
+			// apart from a broken estate.
+			os.Exit(exitcode.CouldNotRun)
 		}
 		if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) != "" {
 			var closeEng func()
@@ -858,10 +863,25 @@ func cmdMemory(args []string) {
 			r = store.Doctor()
 		}
 		r.SemanticReadiness = memorySemanticReadiness(homePath, eng)
+		// Doctor exit-code contract (internal/doctor/exitcode): a failed
+		// hop is a problem (exit 1 + final count line); a warned hop is
+		// info-only (exit 0) but MUST be visible — text prints it under a
+		// `warnings:` heading, JSON carries the `warnings` array — never
+		// silently buried inside "ok": true.
+		doc := exitcode.Doctor{
+			Verb:     "memory doctor",
+			Warnings: r.Warnings,
+			Note:     "fix the failed hop(s) listed above",
+		}
+		for _, h := range r.Hops {
+			if h.Status == "fail" {
+				doc.Problems = append(doc.Problems, h.Name+" hop failed — "+h.Detail)
+			}
+		}
 		if has("--json") {
 			printJSON(r)
-			if !r.OK {
-				os.Exit(1)
+			if doc.Exit() != exitcode.OK {
+				os.Exit(exitcode.ProblemFound)
 			}
 			return
 		}
@@ -872,8 +892,11 @@ func cmdMemory(args []string) {
 			fmt.Printf("%-15s %-8s %s\n", "semantic", r.SemanticReadiness.Status, r.SemanticReadiness.Detail)
 		}
 		fmt.Printf("verdict: %s — %s\n", okStr(r.OK), r.Note)
-		if !r.OK {
-			os.Exit(1)
+		// Exit 0 is the absence of an exit call (cmdMemory's callers rely
+		// on a clean return; in-process tests would panic on os.Exit(0)).
+		// Only a found problem or a broken doctor exits explicitly.
+		if code := doc.ExitWith(os.Stdout); code != exitcode.OK {
+			os.Exit(code)
 		}
 	case "promote-driver":
 		os.Exit(promotedriver.RunCLI(rest))
