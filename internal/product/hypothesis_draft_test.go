@@ -53,7 +53,14 @@ func harnessDraftHome(t *testing.T, signals ...Signal) string {
 
 // TestHypothesisDraftProducesCandidateAcceptedByBuildHypothesisPlan pins the
 // packet's "the existing hypothesis-plan door accepts the drafted candidate"
-// invariant. Before the writer the door fails; after, it passes.
+// invariant: the minted draft carries every field the plan door reads, and the
+// window it derives spans the signals.
+//
+// The draft is approved first on purpose. The placeholder gate
+// (BuildHypothesisPlan refusing an unfilled expected_effect) is the whole point
+// of hypothesis_approve.go, so "accepted" now means "accepted once the operator
+// has written the sentence" — proving the SHAPE is plan-valid without also
+// asserting that an unfilled draft may be planned, which must stay refused.
 func TestHypothesisDraftProducesCandidateAcceptedByBuildHypothesisPlan(t *testing.T) {
 	home := harnessDraftHome(t,
 		Signal{ID: "sig_a", ObservedAt: "2026-08-01T00:00:00Z", MetricName: "app_store_connect_iap_units", ChangeEvent: "Pro IAP price step"},
@@ -73,9 +80,16 @@ func TestHypothesisDraftProducesCandidateAcceptedByBuildHypothesisPlan(t *testin
 	if !strings.HasPrefix(id, "hyp_draft_") {
 		t.Fatalf("candidate id must use the hyp_draft_ prefix, got %q", id)
 	}
+	if _, err := HypothesisApprove(home, HypothesisApproveInput{
+		CandidateID:    id,
+		ExpectedEffect: "IAP units should rise after the Pro price step",
+		ReviewedBy:     "test-operator",
+	}, tProduct); err != nil {
+		t.Fatalf("HypothesisApprove on a fresh draft: %v", err)
+	}
 	plan, err := BuildHypothesisPlan(home, id, "", tProduct)
 	if err != nil {
-		t.Fatalf("BuildHypothesisPlan must accept a fresh draft: %v", err)
+		t.Fatalf("BuildHypothesisPlan must accept an approved draft: %v", err)
 	}
 	if plan.ProductID != "product:alpha-app" || plan.ChangeEvent != "Pro IAP price step" {
 		t.Fatalf("plan must carry the draft inputs: %+v", plan)
@@ -249,8 +263,15 @@ func TestHypothesisDraftFallsBackWhenSignalsMissingObservedAt(t *testing.T) {
 	if got.ObservationWindow != HypothesisDraftScopePlaceholder {
 		t.Fatalf("expected fallback observation_window %q, got %q", HypothesisDraftScopePlaceholder, got.ObservationWindow)
 	}
+	if _, err := HypothesisApprove(home, HypothesisApproveInput{
+		CandidateID:    id,
+		ExpectedEffect: "IAP units should rise after the Pro price step",
+		ReviewedBy:     "test-operator",
+	}, tProduct); err != nil {
+		t.Fatalf("HypothesisApprove on a windowless draft: %v", err)
+	}
 	if _, err := BuildHypothesisPlan(home, id, "", tProduct); err != nil {
-		t.Fatalf("BuildHypothesisPlan must still accept a windowless draft: %v", err)
+		t.Fatalf("BuildHypothesisPlan must still accept a windowless draft once approved: %v", err)
 	}
 }
 

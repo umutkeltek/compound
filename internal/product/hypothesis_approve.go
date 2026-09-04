@@ -8,18 +8,9 @@ import (
 	"compound/internal/candidates"
 )
 
-// HypothesisDraftExpectedEffectPlaceholder is the literal, non-invented
-// expected_effect a director-drafted hypothesis candidate carries until the
-// operator writes the real sentence (see MintHypothesisDraftCandidate on
-// feat/director-hypothesis-draft-20260904). The literal text is the package
-// guarantee: a draft never invents a number or a causal claim, so a plan whose
-// hypothesis IS this string is a plan for an experiment nobody stated.
-//
-// MERGE NOTE: feat/director-hypothesis-draft-20260904 declares the identical
-// constant in hypothesis_draft.go. When that branch lands, keep exactly one
-// declaration (the values are byte-identical); the duplicate declaration is a
-// compile error by design, so the shared string can never silently fork.
-const HypothesisDraftExpectedEffectPlaceholder = "OPERATOR MUST WRITE: what should %s do after %s?"
+// HypothesisDraftExpectedEffectPlaceholder is declared by the producer, in
+// hypothesis_draft.go — one owner for the shared string. The gates below match
+// on the prefix constant instead of restating that template.
 
 // HypothesisDraftExpectedEffectPlaceholderPrefix is the fixed head every
 // placeholder-formatted expected_effect starts with. Gates match on this
