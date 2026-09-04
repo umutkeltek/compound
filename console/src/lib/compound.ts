@@ -401,7 +401,11 @@ function startRunJsonInflight(
  * degradation model below) read through this shared memo.
  */
 async function readRunJsonEntry(args: string[], timeoutMs: number): Promise<RunJsonCacheEntry> {
-  const key = JSON.stringify(args);
+  // Key includes COMPOUND_BIN so the disk tier cannot resurrect a last-good
+  // payload written by a different executable into a process whose binary is
+  // broken or pointed somewhere else (e.g. a smoke probing with
+  // COMPOUND_BIN=bun must see a cold cache, not the operator's real success).
+  const key = `${COMPOUND_BIN}\0${JSON.stringify(args)}`;
   let entry = runJsonCache.get(key) ?? null;
 
   if (!entry) {
