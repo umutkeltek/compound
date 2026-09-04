@@ -18,7 +18,7 @@ import (
 // the tmux subcommand + flags, no socket prefix.
 func runTmuxPrivate(t *testing.T, sock string, argv ...string) error {
 	t.Helper()
-	full := append([]string{"-S", sock}, argv...)
+	full := append([]string{"-f", os.DevNull, "-S", sock}, argv...)
 	cmd := exec.Command("tmux", full...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -44,12 +44,12 @@ func newPrivateTmuxServerForLive(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "t.sock")
-	_ = exec.Command("tmux", "-S", sock, "kill-server").Run()
+	_ = exec.Command("tmux", "-f", os.DevNull, "-S", sock, "kill-server").Run()
 	if err := runTmuxPrivate(t, sock, "start-server"); err != nil {
 		t.Fatalf("start tmux server on %s: %v", sock, err)
 	}
 	t.Cleanup(func() {
-		_ = exec.Command("tmux", "-S", sock, "kill-server").Run()
+		_ = exec.Command("tmux", "-f", os.DevNull, "-S", sock, "kill-server").Run()
 	})
 	return sock
 }
@@ -107,7 +107,9 @@ func TestSessionsLiveReportsMultiplexerOnlyPanes(t *testing.T) {
 	// it is what an operator would type to resume the pane.
 	sessName := "operator-lane-probe"
 	cwd := t.TempDir()
-	if err := runTmuxPrivate(t, sock, "new-session", "-d", "-s", sessName, "-c", cwd); err != nil {
+	// Multiple command arguments make tmux exec directly. A private socket
+	// alone does not stop the user's shell startup from changing the pane CWD.
+	if err := runTmuxPrivate(t, sock, "new-session", "-d", "-s", sessName, "-c", cwd, "/bin/cat", "-"); err != nil {
 		t.Fatalf("new-session: %v", err)
 	}
 	// Force an activity tick so session_activity is strictly newer than
@@ -194,7 +196,7 @@ func TestSessionsLiveMergesCompoundAndMultiplexerOnSameSession(t *testing.T) {
 	sock := newPrivateTmuxServerForLive(t)
 	sessName := "compound-bound-probe"
 	cwd := t.TempDir()
-	if err := runTmuxPrivate(t, sock, "new-session", "-d", "-s", sessName, "-c", cwd); err != nil {
+	if err := runTmuxPrivate(t, sock, "new-session", "-d", "-s", sessName, "-c", cwd, "/bin/cat", "-"); err != nil {
 		t.Fatalf("new-session: %v", err)
 	}
 	if err := runTmuxPrivate(t, sock, "send-keys", "-t", sessName, "-l", "ping"); err != nil {
