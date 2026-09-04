@@ -49,17 +49,18 @@ except Exception:
 # `proposed` are never touched), and it is reversible via
 # `compound home restore-history`. Without this stage the walk stays
 # proportional to everything ever adjudicated instead of to what is live.
-# The timeout is DELIBERATELY generous, and larger than it looks like it needs to be.
-# archive-history moves every eligible file and only THEN commits the archive index
-# (internal/home/archive.go, commitOperationalArchiveTransaction after the loop), so a
-# timeout that fires mid-loop leaves files moved but unindexed — invisible to
-# `restore-history` and silently unrecoverable. Interrupting is strictly worse than
-# running long. Steady-state passes take seconds (only the terminal candidates minted
-# since the last tick); the one-time 154k drain on 2026-09-01 took ~20 minutes, which a
-# 900s budget would have killed at the worst possible moment. Concurrent ticks are safe:
-# the whole operation is inside the flock-based autonomy admission lock, so a second tick
-# blocks and then finds nothing to do.
-ARCH_OUT=$("$TIMEOUT_BIN" 3600 "$BIN" home archive-history --kind memory-candidate 2>&1)
+# The pass is BOUNDED: --max-files caps this tick's batch, and a durable scan
+# cursor (archives/operational/scan-cursor.json) makes the next tick resume
+# after the last examined entry instead of rescanning the inbox. Each file is
+# journaled per-file (pending row -> move -> committed row, each fsynced), so
+# even a hard kill mid-batch leaves a state the next pass reconciles — the
+# historic reason for the generous timeout (move-all-then-commit-index) no
+# longer exists, but the budget stays generous because the batch cost is
+# dominated by per-file fsyncs, not by index rewrites. Steady state (backlog
+# drained, cursor cleared) is seconds. Concurrent ticks are safe: the whole
+# operation is inside the flock-based autonomy admission lock, so a second
+# tick blocks and then finds nothing to do.
+ARCH_OUT=$("$TIMEOUT_BIN" 3600 "$BIN" home archive-history --kind memory-candidate --max-files 2000 2>&1)
 ARCH_RC=$?
 # A well-formed archive-history report ALWAYS prints its `- dry_run:` line
 # (cmd/compound printHomeOperationalArchiveReport) but only prints
