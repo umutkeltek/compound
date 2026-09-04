@@ -864,8 +864,16 @@ func TestRunnerTimeoutSurvivesEarlyPipeClose(t *testing.T) {
 // capWG.Wait waits on.
 //
 // RED before fix: the runner ignored ctx for kill authority; cancel()
-// does nothing; the fixture lingers past 15s and trips the elapsed
-// bound.
+// does nothing; the fixture lingers for its full 30s sleep and trips the
+// elapsed bound.
+//
+// The fixture sleeps 30s, matching TestRunnerTimeoutKillsProcessGroup, so
+// that "kill worked" (~0.2s) and "kill failed" (30s) are 25s apart. An
+// earlier 5s fixture put the two outcomes on either side of the same 5s
+// bound with no margin, and a working kill read as broken whenever the
+// package ran under load — it failed inside the certifying battery, where
+// this package takes 89s instead of 18s, while passing 20/20 standalone.
+// The assertion bound is deliberately unchanged; only the separation grew.
 func TestRunnerContextCancelKillsProcessGroup(t *testing.T) {
 	home := t.TempDir()
 	store := runattempt.Open(home)
@@ -878,10 +886,24 @@ func TestRunnerContextCancelKillsProcessGroup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	// Schedule the cancel BEFORE runWithSubprocess so the cancel goroutine
 	// can run concurrently with the runner — main blocks inside
-	// runWithSubprocess (cmd.Wait) and would otherwise never reach
-	// time.Sleep or cancel.
+	// runWithSubprocess (cmd.Wait) and would otherwise never reach cancel.
+	//
+	// The cancel waits for the child to PROVE it is running (it touches
+	// readyPath) instead of firing on a blind timer. A fixed 200ms delay
+	// races process start: when the package runs together rather than under
+	// -run isolation, start can lose that race, ctx is already cancelled at
+	// Start(), and the runner surfaces "start: context canceled" — which is
+	// not the behaviour under test. That race made this test fail in a full
+	// package run and inside the certifying battery while passing 20/20 alone.
+	readyPath := filepath.Join(home, "child-ready")
 	go func() {
-		time.Sleep(200 * time.Millisecond)
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(readyPath); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		cancel()
 	}()
 	start := time.Now()
@@ -892,9 +914,10 @@ func TestRunnerContextCancelKillsProcessGroup(t *testing.T) {
 		// Background sleep inherits capture pipes; foreground sleep keeps
 		// the direct child alive. A process-group kill reaps BOTH; a
 		// direct-child-only kill leaves the grandchild holding the
-		// pipes open for the full sleep.
+		// pipes open for the full sleep. The touch between them is the
+		// readiness marker the cancel goroutine waits on.
 		Command: "sh",
-		Args:    []string{"-c", "sleep 5 & sleep 5"},
+		Args:    []string{"-c", "sleep 30 & touch " + readyPath + "; sleep 30"},
 		// No Timeout: the ctx goroutine is the only authority.
 		Now: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC),
 	}, naiveBuild, defaultHeartbeatInterval)
