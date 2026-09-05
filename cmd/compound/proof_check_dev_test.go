@@ -19,8 +19,11 @@ func TestProofCheckDevelopmentPinsCanonicalFreshnessAndUsesGoCache(t *testing.T)
 		t.Fatalf("canonical steps: %v", err)
 	}
 	canonicalGo := proofCheckDevelopmentFindStep(t, canonical, "go-test")
-	if want := []string{"go", "test", "-count=1", "-timeout=40m", "./..."}; !reflect.DeepEqual(canonicalGo.Command, want) {
+	if want := []string{"go", "run", "./scripts/testbattery"}; !reflect.DeepEqual(canonicalGo.Command, want) {
 		t.Fatalf("canonical go-test command = %v, want %v", canonicalGo.Command, want)
+	}
+	if !proofCheckUsesGo(canonicalGo) {
+		t.Fatal("canonical driver lost GOTOOLCHAIN and proof Go-cache injection")
 	}
 
 	repo, _ := newProofCheckDevelopmentRepo(t)

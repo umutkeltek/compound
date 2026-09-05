@@ -54,7 +54,30 @@ The example builds the profiler because `go run` maps nonzero program exits
 to shell status 1; use the executable when distinguishing status 1 from 2.
 
 The profiler's own behavior is covered by `go test ./scripts/testprofile`
-and therefore by the unchanged canonical `go test ./...` gate.
+and therefore by the complete package inventory in the canonical Go-test gate.
+
+## Canonical package scheduling
+
+The `go-test` gate runs `go run ./scripts/testbattery`. The driver inventories
+`go list ./...`, runs every package except `compound/internal/home` with ordinary
+Go package parallelism, then runs the entire home package alone. Both phases use
+`go test -count=1 -timeout=40m`. Every package runs once, including new packages;
+there are no test-name filters, short-mode exclusions or blanket `-p 1`.
+
+This isolates archive scale deadlines from contention with other packages without
+changing any archive limit or production durability check. An ordinary first-phase
+test failure still runs home and remains a failure. Invalid, duplicate, incomplete
+or empty inventory, cancellation, child signals and start errors stop later
+launches and fail closed. Inventory stderr is forwarded separately from package
+names. Both test phases forward stdout and stderr.
+
+Children inherit the proof runner's process group, execution barrier, Go cache
+and toolchain environment. The driver adds no timeout or child-killing mechanism;
+the canonical proof runner owns group cancellation and joining. Standalone
+interruption likewise relies on process-group signals. The development profile
+is unchanged and remains non-certifying. The canonical gate retains its name,
+`go-test-count-1-all` proof ref and all 48 gates; certification still requires
+fresh committed-source pre-land and post-land batteries.
 
 ## Turn measurements into cheaper execution
 
@@ -85,5 +108,5 @@ Work CLI tests that only require preinitialized synthetic state reuse
 initialization, distinct identity, missing-home and clock-sensitive tests keep
 their explicit setup. Run the clone-isolation tests with any such migration.
 
-Future scheduling or exact-input proof reuse needs a separately reviewed
+Further scheduling changes or exact-input proof reuse need a separately reviewed
 verification contract. A diagnostic profile cannot authorize either.

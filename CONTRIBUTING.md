@@ -32,7 +32,7 @@ go build ./cmd/compound
 go run ./cmd/compound proof-check --dev --base main
 
 # Standalone fresh Go suite (non-certifying; canonical bundle below):
-go test -count=1 -timeout=40m ./...
+go run ./scripts/testbattery
 
 # Single package:
 go test ./internal/work/ -count=1 -timeout 5m

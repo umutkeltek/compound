@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -138,15 +139,9 @@ func inventoryGuardRepoRoot(t *testing.T) string {
 	return filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
 }
 
-// TestGoTestGateCarriesExplicitDeliberateTimeout pins the go-test gate's per-package
-// -timeout to an EXPLICIT, deliberately chosen budget. The heaviest suites run
-// ~578-602s on a quiet tree — flush against Go's implicit 10m default — and the
-// operator machine is multi-tenant by design: concurrent AI harnesses legitimately
-// contend for cores, which pushed a fully-green suite past the previous 20m budget
-// (observed 2026-07-22: 1200.453s kill, zero test failures, green in isolation).
-// The budget absorbs contention rather than demanding a quiet machine.
-// Removing the flag, or changing the budget without editing this test, must be loud:
-// the budget is a recorded decision, never an implicit default.
+// The driver owns the unchanged, explicit per-package -timeout=40m budget.
+// TestBatteryPartitionsEntireInventoryExactlyOnce pins both child commands;
+// this guard proves the canonical and portable gate actually uses that driver.
 func TestGoTestGateCarriesExplicitDeliberateTimeout(t *testing.T) {
 	t.Parallel()
 	steps, err := proofCheckSteps("")
@@ -160,15 +155,76 @@ func TestGoTestGateCarriesExplicitDeliberateTimeout(t *testing.T) {
 		if !s.CIPortable {
 			t.Fatalf("go-test gate must stay CIPortable so the explicit timeout budget governs CI runs too; got CIPortable=false")
 		}
-		for _, arg := range s.Command {
-			if arg == "-timeout=40m" {
-				return
-			}
-			if strings.HasPrefix(arg, "-timeout") {
-				t.Fatalf("go-test gate carries %q — the deliberate budget is -timeout=40m; change it here and in proofCheckSteps together, never silently", arg)
-			}
+		if want := []string{"go", "run", "./scripts/testbattery"}; !reflect.DeepEqual(s.Command, want) {
+			t.Fatalf("go-test command = %v; want budget-owning driver %v", s.Command, want)
 		}
-		t.Fatalf("go-test gate command %v carries no explicit -timeout; the implicit 10m default is a coin flip at current suite weight (592-602s heavy packages)", s.Command)
+		return
 	}
 	t.Fatalf("no go-test step found in proofCheckSteps inventory")
+}
+
+// Pin the pre-isolation inventory, not a second call to the same generator.
+func TestProofCheckPackageIsolationPreservesCanonicalGateInventory(t *testing.T) {
+	t.Parallel()
+	steps, err := proofCheckSteps("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [][2]string{
+		{"go-test", "go-test-count-1-all"},
+		{"go-vet", "go-vet-all"},
+		{"go-build", "go-build-all"},
+		{"gofmt", "gofmt-check"},
+		{"diff-check", "diff-check"},
+		{"console-tsc", "console-tsc-noemit"},
+		{"console-smoke", "console-smoke"},
+		{"console-projection-timeout-smoke", "console-projection-timeout-smoke"},
+		{"console-mutation-gate-smoke", "console-mutation-gate-smoke"},
+		{"console-instance-pin-smoke", "console-instance-pin-smoke"},
+		{"console-continue-button-smoke", "console-continue-button-smoke"},
+		{"console-work-action-row-smoke", "console-work-action-row-smoke"},
+		{"console-mutation-readiness-consumers-smoke", "console-mutation-readiness-consumers-smoke"},
+		{"console-private-fallback-smoke", "console-private-fallback-smoke"},
+		{"console-private-runtime-guard-smoke", "console-private-runtime-guard-smoke"},
+		{"console-move-type-drift-smoke", "console-move-type-drift-smoke"},
+		{"console-ai-boundary-smoke", "console-ai-boundary-smoke"},
+		{"console-client-bundle-guard-smoke", "console-client-bundle-guard-smoke"},
+		{"console-work-trace-smoke", "console-work-trace-smoke"},
+		{"console-lineage-smoke", "console-lineage-smoke"},
+		{"console-generic-actions-smoke", "console-generic-actions-smoke"},
+		{"console-view-registry-smoke", "console-view-registry-smoke"},
+		{"console-decide-brief-smoke", "console-decide-brief-smoke"},
+		{"console-decision-execute-smoke", "console-decision-execute-smoke"},
+		{"console-standing-law-smoke", "console-standing-law-smoke"},
+		{"console-memory-data-smoke", "console-memory-data-smoke"},
+		{"console-attention-consistency-smoke", "console-attention-consistency-smoke"},
+		{"console-work-language-smoke", "console-work-language-smoke"},
+		{"console-work-legibility-smoke", "console-work-legibility-smoke"},
+		{"console-ask-triage-smoke", "console-ask-triage-smoke"},
+		{"console-representation-falsifiers-smoke", "console-representation-falsifiers-smoke"},
+		{"console-representation-cluster-guard-smoke", "console-representation-cluster-guard-smoke"},
+		{"console-agents-consistency-smoke", "console-agents-consistency-smoke"},
+		{"console-projection-doors-smoke", "console-projection-doors-smoke"},
+		{"console-stream-tail-smoke", "console-stream-tail-smoke"},
+		{"console-decide-decision-feedback-smoke", "console-decide-decision-feedback-smoke"},
+		{"console-projection-degradation-smoke", "console-projection-degradation-smoke"},
+		{"console-stream-door-smoke", "console-stream-door-smoke"},
+		{"console-traffic-board-smoke", "console-traffic-board-smoke"},
+		{"console-delegated-sessions-smoke", "console-delegated-sessions-smoke"},
+		{"console-coordination-smoke", "console-coordination-smoke"},
+		{"bun-tools-test", "bun-tools-test"},
+		{"architecture-doctor", "architecture-doctor-strict"},
+		{"profiles-check", "profiles-check-installed-only"},
+		{"workbench-projection", "workbench-projection-refresh"},
+		{"codex-pretooluse-native-gate", "codex-pretooluse-native-gate-proof"},
+		{"memory-doctor", "memory-doctor"},
+		{"redact-public", "redact-public-clean"},
+	}
+	var got [][2]string
+	for _, step := range steps {
+		got = append(got, [2]string{step.Name, step.ProofRef})
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("canonical gate inventory changed\n got: %v\nwant: %v", got, want)
+	}
 }
