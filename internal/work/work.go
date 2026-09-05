@@ -377,9 +377,9 @@ type CreateInput struct {
 	// and harness_edit work are explicit declarations the producer stamps. Plumbed
 	// verbatim onto the envelope; unrecognized non-empty values are refused at
 	// envelope.WorkEnvelope.Validate, BEFORE persistence.
-	ProposalKind     string
-	RouteDecisionID  string
-	GitDelivery      *envelope.GitDeliveryContract
+	ProposalKind    string
+	RouteDecisionID string
+	GitDelivery     *envelope.GitDeliveryContract
 	// ExpectedBaseSHA is retained only so legacy callers fail with an explicit
 	// incomplete-contract error instead of silently losing their old field.
 	ExpectedBaseSHA string

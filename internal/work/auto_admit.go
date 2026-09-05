@@ -385,6 +385,7 @@ func (s *Store) recordAutonomyHalt(w envelope.WorkEnvelope, actor, to, reason st
 		Attached: []string{ai.ID, pd.ID},
 	})
 }
+
 // editableSurfaceGuard is the editable-surfaces (EVOLVE-BLOCK) check at the admission seam.
 // It denies a system-originated (director-proposed, non-operator) admission whose
 // ProposalKind classification makes it a harness-edit proposal, or whose classification

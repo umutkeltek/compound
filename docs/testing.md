@@ -3,6 +3,24 @@
 The release gate remains `compound proof-check`. This profiler is diagnostic
 only: it neither changes that gate nor mints a verification reference.
 
+Before a costly run, and again after replaying onto a changed base, reject
+cheap formatting failures from the candidate root (including inherited files):
+
+```bash
+bash -euo pipefail <<'CHECK'
+git diff --check
+unformatted=$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)
+if [ -n "$unformatted" ]; then
+  printf '%s\n' "$unformatted"
+  exit 1
+fi
+CHECK
+```
+
+A listed file means stop and format it before spending time on the full suite.
+This preflight is diagnostic only: it preserves the canonical gate inventory
+and never substitutes for fresh certification of the exact committed candidate.
+
 Capture fresh, per-test events outside the source tree. Preserve Go's exit
 status before reading the profile; a successful summarizer is not proof that
 the producer succeeded:

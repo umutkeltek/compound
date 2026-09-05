@@ -150,6 +150,7 @@ func TestEditableSurfaceGuardsGenericAdvanceSeam(t *testing.T) {
 		t.Fatalf("denied advance must leave work proposed, got %q", got.State)
 	}
 }
+
 // makeUnclassifiedDirectorWork is a test seam: it bypasses BuildWork's natural
 // ProposalKind stamp by writing the envelope through Create with no ProposalKind
 // set, simulating a system producer that omits the classification. Used only by
