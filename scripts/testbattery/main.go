@@ -1,4 +1,4 @@
-// Command testbattery runs the complete Go inventory with home isolated.
+// Command testbattery runs the complete Go inventory with release and home isolated.
 package main
 
 import (
@@ -31,12 +31,16 @@ func runBattery(ctx context.Context, run commandRunner, stdout, stderr io.Writer
 	if err != nil {
 		return err
 	}
+	phases := [][]string{parallel}
+	for _, pkg := range isolated {
+		phases = append(phases, []string{pkg})
+	}
 	var failures []error
-	for i, packages := range [][]string{parallel, isolated} {
+	for i, packages := range phases {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
 		}
-		fmt.Fprintf(stdout, "testbattery: phase %d/2 packages=%d\n", i+1, len(packages))
+		fmt.Fprintf(stdout, "testbattery: phase %d/%d packages=%d\n", i+1, len(phases), len(packages))
 		args := append([]string{"test", "-count=1", "-timeout=40m"}, packages...)
 		err := run(ctx, args, stdout, stderr)
 		if err != nil {
@@ -62,6 +66,7 @@ var packagePath = regexp.MustCompile(`^compound(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$
 
 func partitionPackages(inventory string) ([]string, []string, error) {
 	const homePackage = "compound/internal/home"
+	const releasePackage = "compound/internal/release"
 	var parallel, isolated []string
 	seen := make(map[string]bool)
 	for _, line := range strings.Split(strings.TrimSuffix(inventory, "\n"), "\n") {
@@ -70,14 +75,18 @@ func partitionPackages(inventory string) ([]string, []string, error) {
 			return nil, nil, fmt.Errorf("invalid or duplicate package inventory entry %q", pkg)
 		}
 		seen[pkg] = true
-		if pkg == homePackage {
-			isolated = append(isolated, pkg)
-		} else {
+		if pkg != homePackage && pkg != releasePackage {
 			parallel = append(parallel, pkg)
 		}
 	}
-	if len(isolated) != 1 || len(parallel) == 0 {
-		return nil, nil, errors.New("inventory requires home and at least one other package")
+	if !seen[homePackage] || !seen[releasePackage] || len(parallel) == 0 {
+		return nil, nil, errors.New("inventory requires release, home, and at least one general package")
+	}
+	// Release exercises real machine-wide sync barriers. Concurrent package writes
+	// can exhaust its checkpoint deadlines before the assertion is reached.
+	// Keep those durability checks intact and run each shared-resource owner alone.
+	for _, pkg := range []string{releasePackage, homePackage} {
+		isolated = append(isolated, pkg)
 	}
 	sort.Strings(parallel)
 	return parallel, isolated, nil

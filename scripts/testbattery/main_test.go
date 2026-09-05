@@ -20,7 +20,7 @@ func TestBatteryPartitionsEntireInventoryExactlyOnce(t *testing.T) {
 	for i := 99; i >= 0; i-- {
 		inventory = append(inventory, fmt.Sprintf("compound/internal/pkg%02d", i))
 	}
-	inventory = append(inventory, "compound/internal/home", "compound/scripts/testbattery")
+	inventory = append(inventory, "compound/internal/home", "compound/internal/release", "compound/scripts/testbattery")
 	var calls [][]string
 	var stdout, stderr bytes.Buffer
 	err := runBattery(t.Context(), func(_ context.Context, args []string, out, errOut io.Writer) error {
@@ -37,8 +37,8 @@ func TestBatteryPartitionsEntireInventoryExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 3 || !reflect.DeepEqual(calls[0], []string{"list", "./..."}) {
-		t.Fatalf("inventory and two phases = %v", calls)
+	if len(calls) != 4 || !reflect.DeepEqual(calls[0], []string{"list", "./..."}) {
+		t.Fatalf("inventory and three phases = %v", calls)
 	}
 	wantParallel := []string{"test", "-count=1", "-timeout=40m"}
 	for i := 0; i < 100; i++ {
@@ -48,15 +48,18 @@ func TestBatteryPartitionsEntireInventoryExactlyOnce(t *testing.T) {
 	if !reflect.DeepEqual(calls[1], wantParallel) {
 		t.Fatalf("parallel phase lost, repeated, reordered, or filtered packages: %v", calls[1])
 	}
-	if want := []string{"test", "-count=1", "-timeout=40m", "compound/internal/home"}; !reflect.DeepEqual(calls[2], want) {
-		t.Fatalf("isolated phase = %v; want %v", calls[2], want)
+	if want := []string{"test", "-count=1", "-timeout=40m", "compound/internal/release"}; !reflect.DeepEqual(calls[2], want) {
+		t.Fatalf("release phase = %v; want %v", calls[2], want)
 	}
-	for _, marker := range []string{"phase 1 stdout", "phase 2 stdout"} {
+	if want := []string{"test", "-count=1", "-timeout=40m", "compound/internal/home"}; !reflect.DeepEqual(calls[3], want) {
+		t.Fatalf("home phase = %v; want %v", calls[3], want)
+	}
+	for _, marker := range []string{"phase 1 stdout", "phase 2 stdout", "phase 3 stdout"} {
 		if !strings.Contains(stdout.String(), marker) {
 			t.Errorf("stdout lost %q: %s", marker, &stdout)
 		}
 	}
-	for _, marker := range []string{"go: downloading synthetic dependency", "phase 1 stderr", "phase 2 stderr"} {
+	for _, marker := range []string{"go: downloading synthetic dependency", "phase 1 stderr", "phase 2 stderr", "phase 3 stderr"} {
 		if !strings.Contains(stderr.String(), marker) {
 			t.Errorf("stderr lost %q: %s", marker, &stderr)
 		}
@@ -83,6 +86,9 @@ func TestBatteryRefusesInvalidInventoryBeforeTests(t *testing.T) {
 		"option":               "compound/internal/home\n-short\n",
 	} {
 		t.Run(name, func(t *testing.T) {
+			if inventory != "" {
+				inventory = "compound/internal/release\n" + inventory
+			}
 			calls := 0
 			err := runBattery(t.Context(), func(_ context.Context, _ []string, out, _ io.Writer) error {
 				calls++
@@ -102,24 +108,24 @@ func TestBatteryAggregatesOrdinaryFailuresAndStopsOnInfraOrCancellation(t *testi
 	startFailure := errors.New("synthetic child start error")
 	for _, tt := range []struct {
 		name        string
-		failures    [3]error
+		failures    [4]error
 		cancelAfter int
 		wantCalls   int
 		wantErr     bool
 	}{
-		{name: "success", wantCalls: 3},
-		{name: "first fails home still runs", failures: [3]error{nil, testFailure, nil}, wantCalls: 3, wantErr: true},
-		{name: "home fails", failures: [3]error{nil, nil, testFailure}, wantCalls: 3, wantErr: true},
-		{name: "both fail", failures: [3]error{nil, testFailure, testFailure}, wantCalls: 3, wantErr: true},
-		{name: "list fails despite valid stdout", failures: [3]error{testFailure}, wantCalls: 1, wantErr: true},
-		{name: "list start fails", failures: [3]error{startFailure}, wantCalls: 1, wantErr: true},
-		{name: "first start fails", failures: [3]error{nil, startFailure}, wantCalls: 2, wantErr: true},
-		{name: "home start fails", failures: [3]error{nil, nil, startFailure}, wantCalls: 3, wantErr: true},
+		{name: "success", wantCalls: 4},
+		{name: "first fails release and home still run", failures: [4]error{nil, testFailure}, wantCalls: 4, wantErr: true},
+		{name: "home fails", failures: [4]error{nil, nil, nil, testFailure}, wantCalls: 4, wantErr: true},
+		{name: "first and home fail", failures: [4]error{nil, testFailure, nil, testFailure}, wantCalls: 4, wantErr: true},
+		{name: "list fails despite valid stdout", failures: [4]error{testFailure}, wantCalls: 1, wantErr: true},
+		{name: "list start fails", failures: [4]error{startFailure}, wantCalls: 1, wantErr: true},
+		{name: "first start fails", failures: [4]error{nil, startFailure}, wantCalls: 2, wantErr: true},
+		{name: "home start fails", failures: [4]error{nil, nil, nil, startFailure}, wantCalls: 4, wantErr: true},
 		{name: "cancel before list", cancelAfter: -1, wantCalls: 0, wantErr: true},
 		{name: "cancel after list", cancelAfter: 1, wantCalls: 1, wantErr: true},
-		{name: "cancel before home", cancelAfter: 2, wantCalls: 2, wantErr: true},
-		{name: "ordinary failure while cancelled", failures: [3]error{nil, testFailure}, cancelAfter: 2, wantCalls: 2, wantErr: true},
-		{name: "cancel after home", cancelAfter: 3, wantCalls: 3, wantErr: true},
+		{name: "cancel before home", cancelAfter: 3, wantCalls: 3, wantErr: true},
+		{name: "ordinary failure while cancelled", failures: [4]error{nil, testFailure}, cancelAfter: 2, wantCalls: 2, wantErr: true},
+		{name: "cancel after home", cancelAfter: 4, wantCalls: 4, wantErr: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
@@ -131,7 +137,7 @@ func TestBatteryAggregatesOrdinaryFailuresAndStopsOnInfraOrCancellation(t *testi
 			err := runBattery(ctx, func(_ context.Context, _ []string, out, _ io.Writer) error {
 				calls++
 				if calls == 1 {
-					fmt.Fprintln(out, "compound/internal/home\ncompound/internal/work")
+					fmt.Fprintln(out, "compound/internal/home\ncompound/internal/work\ncompound/internal/release")
 				}
 				if calls == tt.cancelAfter {
 					cancel()

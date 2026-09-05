@@ -104,7 +104,7 @@ Two corollaries worth their own line:
    `battery: FAILED release_pending=true`, and exits nonzero. The installed-runtime Workbench
    artifact is published only after green governed completion and release; candidate,
    release-pending, failed, invalid, dry-run, and CI reports cannot consume that action.
-   Green means: `go run ./scripts/testbattery` (every listed package once with `-count=1 -timeout=40m`, all home tests isolated after the rest), `go vet ./...`, `go build ./...`, `git diff --check`,
+   Green means: `go run ./scripts/testbattery` (every listed package once with `-count=1 -timeout=40m`; general packages first, release durability tests alone next, home tests alone last), `go vet ./...`, `go build ./...`, `git diff --check`,
    `architecture doctor --strict`, workbench projection, `memory doctor`, and the public redact
    scan of changed files all passed. Any red stops the close — fix or escalate, never weaken the
    check.

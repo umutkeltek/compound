@@ -15,7 +15,7 @@ import (
 
 // Real children test signals, streams, environment and process-group ownership.
 func TestBatteryRealChildrenInheritProofGroupAndEnvironment(t *testing.T) {
-	for _, mode := range []string{"success", "first-failure", "home-failure", "signal", "list-failure"} {
+	for _, mode := range []string{"success", "first-failure", "release-failure", "home-failure", "signal", "release-signal", "list-failure"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			logPath := filepath.Join(dir, "calls")
@@ -23,7 +23,7 @@ func TestBatteryRealChildrenInheritProofGroupAndEnvironment(t *testing.T) {
 printf '%s\n' "$*" >> "$COMPOUND_TEST_BATTERY_CALLS"
 case "$1" in
 list)
-  printf 'compound/internal/work\ncompound/internal/home\n'
+    printf 'compound/internal/work\ncompound/internal/home\ncompound/internal/release\n'
   printf 'inventory stderr\n' >&2
   if [ "$COMPOUND_TEST_BATTERY_MODE" = list-failure ]; then exit 1; fi
   ;;
@@ -37,7 +37,11 @@ test)
     if [ "$COMPOUND_TEST_BATTERY_MODE" = first-failure ]; then exit 1; fi
     if [ "$COMPOUND_TEST_BATTERY_MODE" = signal ]; then kill -TERM "$$"; fi
     ;;
-  *compound/internal/home)
+      *compound/internal/release)
+        if [ "$COMPOUND_TEST_BATTERY_MODE" = release-failure ]; then exit 1; fi
+        if [ "$COMPOUND_TEST_BATTERY_MODE" = release-signal ]; then kill -TERM "$$"; fi
+        ;;
+      *compound/internal/home)
     if [ "$COMPOUND_TEST_BATTERY_MODE" = home-failure ]; then exit 1; fi
     ;;
   esac
@@ -67,7 +71,10 @@ esac
 				want = append(want, "test -count=1 -timeout=40m compound/internal/work")
 			}
 			if mode != "list-failure" && mode != "signal" {
-				want = append(want, "test -count=1 -timeout=40m compound/internal/home")
+				want = append(want, "test -count=1 -timeout=40m compound/internal/release")
+				if mode != "release-signal" {
+					want = append(want, "test -count=1 -timeout=40m compound/internal/home")
+				}
 			}
 			if string(data) != strings.Join(want, "\n")+"\n" {
 				t.Fatalf("child launches = %s; want %v", data, want)
