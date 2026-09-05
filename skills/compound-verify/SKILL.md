@@ -131,8 +131,9 @@ Two corollaries worth their own line:
 3. **Temp-home end-to-end** (proves the slice works outside your polluted dev home):
    ```bash
    export COMPOUND_HOME="$(mktemp -d)"
-   go run ./cmd/compound home init --local   # then walk the slice's real command path
+   go run ./cmd/compound home init   # COMPOUND_HOME selects the temporary home
    ```
+   Do not add `--local`: it overrides `COMPOUND_HOME` and selects `<cwd>/.compound`.
    Use synthetic fixtures only. The slice must produce its envelopes/artifacts under the temp
    home; `home doctor` must stay clean; repo tree must stay unchanged (`git status --short`).
    Unset `COMPOUND_HOME` afterwards.
