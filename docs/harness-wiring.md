@@ -455,7 +455,11 @@ Delegation readiness also checks the Claude-family adapter's declared capacity
 using its read-only process-start revalidation. Expiring, exhausted, or unknown
 capacity cannot report ready when inline execution would refuse it. The preview
 records no refusal evidence or RunAttempt and grants no permission to launch;
-execution still revalidates the live authorities immediately before starting.
+execution still revalidates the live authorities immediately before starting. For
+tuple-backed lanes, readiness compares the adapter's revalidated executable,
+model, provider route, harness, and lane with the selected request: rotation
+between reads cannot report capacity for a different tuple as ready. Raw Claude's
+non-tuple command normalization remains unchanged.
 
 Check a particular work item's configuration and immutable context with
 `compound harness readiness --harness claude_minimax --workspace /path/to/project --work <work_id> --json`.

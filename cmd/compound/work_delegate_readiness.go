@@ -33,7 +33,12 @@ func evaluateDelegateHarnessReadiness(req work.DelegateHarnessReadinessRequest) 
 		return work.DelegateHarnessReadinessResult{}, fmt.Errorf("harness is required")
 	}
 
-	details := harness.ReadOnlyLaunchReadiness(req.HomePath, harnessName, req.Now)
+	details := harness.ReadOnlyLaunchReadiness(req.HomePath, harness.RunInput{
+		WorkID: req.WorkID, Harness: harnessName, Workspace: req.Workspace,
+		Command: req.Command, Args: append([]string(nil), req.Args...), PermissionMode: "plan",
+		LaneID: req.LaneID, RequestedModelID: req.RequestedModelID,
+		RequestedProviderRoute: req.RequestedProviderRoute, Now: req.Now,
+	})
 	var evidence []work.DelegateHarnessReadinessEvidence
 	if req.CommandOverridden {
 		details = append(details, "executable: raw command override is not attested by the resolved lane tuple")

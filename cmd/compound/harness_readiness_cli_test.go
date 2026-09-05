@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/harness"
 	"compound/internal/readiness"
 	"compound/internal/work"
 )
@@ -245,6 +246,129 @@ func TestHarnessReadinessBindsRealTupleAndWorkContext(t *testing.T) {
 	_, _ = readiness.EvaluateForHarness(fixture.compoundHome, fixture.harness, fixture.workspace, fixture.workID, fixture.now)
 	if after := snapshotFiles(t, fixture.compoundHome); !reflect.DeepEqual(before, after) {
 		t.Fatal("failed readiness mutated home")
+	}
+}
+
+func TestHarnessReadinessRejectsTupleRotationWithoutWriting(t *testing.T) {
+	for _, change := range []string{"unchanged", "model", "provider", "command", "harness", "exhausted_to_available"} {
+		t.Run(change, func(t *testing.T) {
+			fixture := buildReadyDelegateHarnessFixture(t, "work_tuple_rotation")
+			store, err := work.Open(fixture.compoundHome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Create(work.CreateInput{
+				WorkID: fixture.workID, Owner: "fixture", Actor: "fixture", State: "ready",
+				SuccessPredicate: "readiness rejects tuple drift", ContextPackID: fixture.contextPackID,
+			}, fixture.now); err != nil {
+				t.Fatal(err)
+			}
+			if change == "exhausted_to_available" {
+				writeDelegateCapacityManifest(t, fixture, true)
+				usage := filepath.Join(fixture.harnessHome, "Library", "Application Support", "CodexBar", "usage-history.jsonl")
+				body, err := json.Marshal(map[string]any{
+					"provider": "zai", "windowKind": "5h", "windowMinutes": 300, "usedPercent": 100,
+					"resetsAt": fixture.now.Add(2 * time.Hour).Format(time.RFC3339), "sampledAt": fixture.now.Format(time.RFC3339),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Dir(usage), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(usage, append(body, '\n'), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				unready, err := readiness.EvaluateForHarness(fixture.compoundHome, fixture.harness, fixture.workspace, fixture.workID, fixture.now)
+				if err != nil || unready.Ready || !strings.Contains(strings.Join(unready.Details, " "), "capacity walled") {
+					t.Fatalf("fixture A must be exhausted before rotation: result=%+v err=%v", unready, err)
+				}
+			}
+			original := work.DelegateHarnessResolver
+			t.Cleanup(func() { work.DelegateHarnessResolver = original })
+			var before, harnessBefore map[string]string
+			calls := 0
+			work.DelegateHarnessResolver = func(req work.DelegateHarnessResolveRequest) (work.DelegateHarnessResolution, error) {
+				resolved, err := original(req)
+				if err != nil {
+					return resolved, err
+				}
+				calls++
+				// Rotate after the real resolver selected A, before the real adapter reads B.
+				// This fixture mutation is not part of the read-only preview being measured.
+				path := filepath.Join(fixture.compoundHome, "registries", "model-capabilities.yaml")
+				var manifest map[string]any
+				body, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(body, &manifest); err != nil {
+					t.Fatal(err)
+				}
+				models := manifest["models"].(map[string]any)
+				model := models[resolved.RequestedModelID].(map[string]any)
+				switch change {
+				case "model", "exhausted_to_available":
+					delete(models, resolved.RequestedModelID)
+					models["fixture-next"] = model
+					manifest["routing_defaults"] = map[string]any{"build-implement": []string{"fixture-next"}}
+					if change == "exhausted_to_available" {
+						model["provider_route"] = "fixture-route"
+						delete(model, "capacity_source")
+					}
+				case "provider":
+					model["provider_route"] = "fixture-route"
+				case "command":
+					model["aliases"] = []string{"/bin/sh"}
+				case "harness":
+					model["harness"] = "claude_minimax"
+				}
+				if change != "unchanged" {
+					writeDelegateReadinessJSON(t, path, manifest)
+				}
+				before = snapshotFiles(t, fixture.compoundHome)
+				harnessBefore = snapshotFiles(t, fixture.harnessHome)
+				return resolved, nil
+			}
+			got, err := readiness.EvaluateForHarness(fixture.compoundHome, fixture.harness, fixture.workspace, fixture.workID, fixture.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("resolver calls=%d; want exactly one selected tuple", calls)
+			}
+			if after := snapshotFiles(t, fixture.compoundHome); !reflect.DeepEqual(before, after) {
+				t.Fatal("readiness wrote home state, attempts, or refusal evidence")
+			}
+			if after := snapshotFiles(t, fixture.harnessHome); !reflect.DeepEqual(harnessBefore, after) {
+				t.Fatal("readiness mutated harness authority")
+			}
+			if change == "unchanged" {
+				if !got.Ready {
+					t.Fatalf("unchanged tuple must be ready: %+v", got)
+				}
+			} else if change == "harness" {
+				// An absent formerly selected harness already fails closed at resolution.
+				if got.Ready || !strings.Contains(strings.Join(got.Details, " "), "adapter_preflight:") {
+					t.Fatalf("rotated harness must be unready: %+v", got)
+				}
+			} else if got.Ready || !strings.Contains(strings.Join(got.Details, " "), "lane tuple changed") {
+				t.Fatalf("rotated %s tuple must be unready with tuple-drift detail: %+v", change, got)
+			}
+		})
+	}
+}
+
+func TestReadOnlyLaunchReadinessPreservesRawClaudeNormalization(t *testing.T) {
+	home := t.TempDir()
+	before := snapshotFiles(t, home)
+	if details := harness.ReadOnlyLaunchReadiness(home, harness.RunInput{
+		Harness: "claude", Command: "/bin/echo", PermissionMode: "plan", Now: cliTestNow,
+	}); len(details) != 0 {
+		t.Fatalf("raw Claude command normalization is not tuple drift: %v", details)
+	}
+	if after := snapshotFiles(t, home); !reflect.DeepEqual(before, after) {
+		t.Fatal("raw Claude readiness mutated home")
 	}
 }
 

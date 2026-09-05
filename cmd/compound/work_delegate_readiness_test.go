@@ -73,7 +73,7 @@ func TestEvaluateDelegateHarnessReadinessBindsExecutableLiveHookAndWorkContext(t
 		LaneID:                 fixture.harness,
 		RequestedModelID:       "fixture-zai",
 		RequestedProviderRoute: "zai",
-		Command:                fixture.binary,
+		Command:                "/bin/echo",
 		Now:                    fixture.now.Add(time.Minute),
 	}
 
@@ -137,7 +137,7 @@ func TestEvaluateDelegateHarnessReadinessRejectsActivationAffectingArgv(t *testi
 		LaneID:                 fixture.harness,
 		RequestedModelID:       "fixture-zai",
 		RequestedProviderRoute: "zai",
-		Command:                fixture.binary,
+		Command:                "/bin/echo",
 		Now:                    fixture.now.Add(time.Minute),
 	}
 
@@ -193,7 +193,7 @@ func TestEvaluateDelegateHarnessReadinessRejectsUnrelatedEffectiveContract(t *te
 		LaneID:                 fixture.harness,
 		RequestedModelID:       "fixture-zai",
 		RequestedProviderRoute: "zai",
-		Command:                fixture.binary,
+		Command:                "/bin/echo",
 		Now:                    fixture.now.Add(2 * time.Minute),
 	})
 	if err != nil {
@@ -224,7 +224,7 @@ func TestEvaluateDelegateHarnessReadinessUsesWorkBoundImmutableContract(t *testi
 		LaneID:                 fixture.harness,
 		RequestedModelID:       "fixture-zai",
 		RequestedProviderRoute: "zai",
-		Command:                fixture.binary,
+		Command:                "/bin/echo",
 		Now:                    fixture.now.Add(2 * time.Minute),
 	})
 	if err != nil {
@@ -260,7 +260,7 @@ func TestEvaluateDelegateHarnessReadinessRequiresExactDeclaredMutationCoveringHo
 		LaneID:                 fixture.harness,
 		RequestedModelID:       "fixture-zai",
 		RequestedProviderRoute: "zai",
-		Command:                fixture.binary,
+		Command:                "/bin/echo",
 		Now:                    fixture.now.Add(2 * time.Minute),
 	})
 	if err != nil {
@@ -387,7 +387,7 @@ func TestEvaluateDelegateHarnessReadinessRejectsPermissionAuthorityRevisionChang
 		LaneID:                 fixture.harness,
 		RequestedModelID:       "fixture-zai",
 		RequestedProviderRoute: "zai",
-		Command:                fixture.binary,
+		Command:                "/bin/echo",
 		Now:                    fixture.now.Add(time.Minute),
 	})
 	if err != nil {
@@ -431,7 +431,7 @@ func TestEvaluateDelegateHarnessReadinessAttestsExactPermissionBytesValidatedByO
 		LaneID:                 fixture.harness,
 		RequestedModelID:       "fixture-zai",
 		RequestedProviderRoute: "zai",
-		Command:                fixture.binary,
+		Command:                "/bin/echo",
 		Now:                    fixture.now.Add(time.Minute),
 	})
 	if err != nil {
@@ -481,7 +481,7 @@ func TestWorkDelegatePersistsSuccessfulReadinessAttestation(t *testing.T) {
 	work.DelegateHarnessResolver = func(work.DelegateHarnessResolveRequest) (work.DelegateHarnessResolution, error) {
 		return work.DelegateHarnessResolution{
 			Harness:                    fixture.harness,
-			Command:                    fixture.binary,
+			Command:                    "/bin/echo",
 			LaneID:                     fixture.harness,
 			RequestedModelID:           "fixture-zai",
 			RequestedProviderRoute:     "zai",
@@ -846,7 +846,7 @@ func TestDelegateReadinessPredictsAdapterCapacityWithoutWriting(t *testing.T) {
 				HomePath: fixture.compoundHome, HarnessHome: fixture.harnessHome,
 				WorkID: fixture.workID, ContextPackID: fixture.contextPackID, Workspace: fixture.workspace,
 				Harness: fixture.harness, LaneID: fixture.harness, RequestedModelID: "fixture-zai",
-				RequestedProviderRoute: "zai", Command: fixture.binary, Now: now,
+				RequestedProviderRoute: "zai", Command: "/bin/echo", Now: now,
 			}
 			before := snapshotFiles(t, fixture.compoundHome)
 			harnessBefore := snapshotFiles(t, fixture.harnessHome)

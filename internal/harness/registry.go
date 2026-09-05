@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"compound/internal/runattempt"
 )
@@ -71,14 +70,25 @@ func NewAdapterRegistry(store *runattempt.Store) *AdapterRegistry {
 // minting attempts or recording refusals. Projections use the same read-only
 // revalidation as the final governed process-start guard, not mutating Preflight.
 // This snapshot is evidence, not a reservation: execution must still revalidate.
-func ReadOnlyLaunchReadiness(home, name string, now time.Time) []string {
-	adapter, ok := NewAdapterRegistry(runattempt.Open(home)).AdapterByName(name)
+func ReadOnlyLaunchReadiness(home string, expected RunInput) []string {
+	adapter, ok := NewAdapterRegistry(runattempt.Open(home)).AdapterByName(expected.Harness)
 	if !ok {
-		return []string{"adapter_preflight: no adapter for " + name}
+		return []string{"adapter_preflight: no adapter for " + expected.Harness}
 	}
 	if guard, ok := adapter.(GovernedPermissionAdapter); ok {
-		if _, err := guard.RevalidateGovernedRun(context.Background(), RunInput{Now: now}); err != nil {
+		resolved, err := guard.RevalidateGovernedRun(context.Background(), expected)
+		if err != nil {
 			return []string{"adapter_preflight: " + err.Error()}
+		}
+		// A capacity check on tuple B cannot attest the request selected from A.
+		// Raw Claude has no tuple and deliberately normalizes its command instead.
+		if lane, ok := adapter.(*ClaudeAdapter); ok && lane.tupleBacked {
+			if canonicalHarnessName(resolved.Harness) != canonicalHarnessName(expected.Harness) ||
+				resolved.Command != expected.Command || resolved.LaneID != expected.LaneID ||
+				resolved.RequestedModelID != expected.RequestedModelID ||
+				resolved.RequestedProviderRoute != expected.RequestedProviderRoute {
+				return []string{"adapter_preflight: lane tuple changed during readiness evaluation"}
+			}
 		}
 	}
 	return nil
