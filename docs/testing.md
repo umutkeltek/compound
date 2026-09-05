@@ -58,6 +58,18 @@ and therefore by the unchanged canonical `go test ./...` gate.
 
 ## Turn measurements into cheaper execution
 
+The operational archive scale tests retain unconditional elapsed-time, byte,
+append-only, and heap bounds. Their `scaleSeamsOff` helper disables the three
+durability seams only for scale measurements; the crash-recovery tests retain
+real syncs. Profile an unexpectedly slow run before attributing it to fsync or
+host load. Load-based assertion skipping is not a repair. Cross-compile test
+code as well as production code when touching platform-sensitive helpers:
+
+```bash
+probe_dir=$(mktemp -d)
+GOOS=linux GOARCH=amd64 go test -c -o "$probe_dir/home.test" ./internal/home
+```
+
 Choose the next change from observed cost: repeated build/setup, process
 startup, storage work, polling, or contention. Reuse immutable binaries;
 clone initialized homes into isolated mutable homes. Keep real-process tests
