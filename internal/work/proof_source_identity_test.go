@@ -866,52 +866,42 @@ func newSourceBoundTakeoverProofFixture(
 	if variant == "termination-evidenced steal" {
 		reserveInput.TerminatedRunAttemptID = predecessorReservation.Reservation.RunAttemptID
 	}
-	var ordinaryPredecessorDone chan error
+	reserve := func() (ProofResourceReserveResult, error) {
+		return store.ReserveProofResource(item.ID, reserveInput, now.Add(5*time.Second))
+	}
 	if variant == "ordinary steal" {
-		ordinaryPredecessorDone = make(chan error, 1)
-		go func() {
-			deadline := time.Now().Add(2 * time.Second)
-			for time.Now().Before(deadline) {
+		reserveWithoutObserver := reserve
+		reserve = func() (ProofResourceReserveResult, error) {
+			return reserveProofWithTakeoverObserver(reserveWithoutObserver, func() (bool, error) {
 				status, statusErr := landlease.Status(store.home, now.Add(5*time.Second))
 				if statusErr != nil {
-					ordinaryPredecessorDone <- statusErr
-					return
+					return false, statusErr
 				}
-				if status.Holder != predecessorReservation.Reservation.Holder {
-					_, predecessorErr := store.CompleteProofResource(predecessor.ID, ProofResourceCompleteInput{
-						Actor:         proofActorAlpha,
-						ReservationID: predecessorReservation.Reservation.ID,
-						FailureReason: "predecessor observed governed lease transfer",
-					}, now.Add(6*time.Second))
-					if predecessorErr == nil {
-						ordinaryPredecessorDone <- errors.New("stolen predecessor completion unexpectedly succeeded")
-						return
-					}
-					attempt, attemptErr := store.runAttempts().Get(predecessorReservation.Reservation.RunAttemptID)
-					if attemptErr != nil {
-						ordinaryPredecessorDone <- attemptErr
-						return
-					}
-					if !runattempt.IsTerminal(attempt.Status) {
-						ordinaryPredecessorDone <- errors.New("stolen predecessor remained nonterminal")
-						return
-					}
-					ordinaryPredecessorDone <- nil
-					return
+				if status.Holder == predecessorReservation.Reservation.Holder {
+					return false, nil
 				}
-				time.Sleep(10 * time.Millisecond)
-			}
-			ordinaryPredecessorDone <- errors.New("timed out waiting for ordinary proof takeover")
-		}()
+				_, predecessorErr := store.CompleteProofResource(predecessor.ID, ProofResourceCompleteInput{
+					Actor:         proofActorAlpha,
+					ReservationID: predecessorReservation.Reservation.ID,
+					FailureReason: "predecessor observed governed lease transfer",
+				}, now.Add(6*time.Second))
+				if predecessorErr == nil {
+					return false, errors.New("stolen predecessor completion unexpectedly succeeded")
+				}
+				attempt, attemptErr := store.runAttempts().Get(predecessorReservation.Reservation.RunAttemptID)
+				if attemptErr != nil {
+					return false, attemptErr
+				}
+				if !runattempt.IsTerminal(attempt.Status) {
+					return false, errors.New("stolen predecessor remained nonterminal")
+				}
+				return true, nil
+			})
+		}
 	}
-	reserved, err := store.ReserveProofResource(item.ID, reserveInput, now.Add(5*time.Second))
+	reserved, err := reserve()
 	if err != nil {
 		t.Fatalf("reserve %s proof: %v", variant, err)
-	}
-	if ordinaryPredecessorDone != nil {
-		if err := <-ordinaryPredecessorDone; err != nil {
-			t.Fatal(err)
-		}
 	}
 	if err := reserved.ExecutionBarrier.Close(); err != nil {
 		t.Fatal(err)

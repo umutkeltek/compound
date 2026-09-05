@@ -1192,54 +1192,42 @@ func TestProofResourceReservationExceptionalStealIsExplicitAndAudited(t *testing
 	if err := acquired.ExecutionBarrier.Close(); err != nil {
 		t.Fatal(err)
 	}
-	predecessorStopped := make(chan error, 1)
-	go func() {
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			status, statusErr := landlease.Status(s.home, fixedNow.Add(5*time.Second))
-			if statusErr != nil {
-				predecessorStopped <- statusErr
-				return
-			}
-			if status.Holder != acquired.Reservation.Holder {
-				_, completeErr := s.CompleteProofResource(first.ID, ProofResourceCompleteInput{
-					Actor:         proofActorAlpha,
-					ReservationID: acquired.Reservation.ID,
-					FailureReason: "predecessor observed exceptional lease loss and stopped",
-				}, fixedNow.Add(5*time.Second))
-				if completeErr == nil {
-					predecessorStopped <- errors.New("stolen predecessor completion unexpectedly succeeded")
-					return
-				}
-				ra, readErr := s.runAttempts().Get(acquired.Reservation.RunAttemptID)
-				if readErr != nil {
-					predecessorStopped <- readErr
-					return
-				}
-				if !runattempt.IsTerminal(ra.Status) {
-					predecessorStopped <- errors.New("stolen predecessor remained nonterminal")
-					return
-				}
-				predecessorStopped <- nil
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
+	stolen, err := reserveProofWithTakeoverObserver(func() (ProofResourceReserveResult, error) {
+		return reserveProofResource(t, s, second.ID, ProofResourceReserveInput{
+			Actor:       proofActorBeta,
+			TTL:         5 * time.Minute,
+			Workspace:   "/synthetic/repo-beta",
+			Command:     "compound proof-check --out /synthetic/report-beta.json",
+			Steal:       true,
+			StealReason: reason,
+		}, fixedNow.Add(5*time.Second))
+	}, func() (bool, error) {
+		status, statusErr := landlease.Status(s.home, fixedNow.Add(5*time.Second))
+		if statusErr != nil {
+			return false, statusErr
 		}
-		predecessorStopped <- errors.New("timed out waiting for exceptional holder transfer")
-	}()
-	stolen, err := reserveProofResource(t, s, second.ID, ProofResourceReserveInput{
-		Actor:       proofActorBeta,
-		TTL:         5 * time.Minute,
-		Workspace:   "/synthetic/repo-beta",
-		Command:     "compound proof-check --out /synthetic/report-beta.json",
-		Steal:       true,
-		StealReason: reason,
-	}, fixedNow.Add(5*time.Second))
+		if status.Holder == acquired.Reservation.Holder {
+			return false, nil
+		}
+		_, completeErr := s.CompleteProofResource(first.ID, ProofResourceCompleteInput{
+			Actor:         proofActorAlpha,
+			ReservationID: acquired.Reservation.ID,
+			FailureReason: "predecessor observed exceptional lease loss and stopped",
+		}, fixedNow.Add(5*time.Second))
+		if completeErr == nil {
+			return false, errors.New("stolen predecessor completion unexpectedly succeeded")
+		}
+		ra, readErr := s.runAttempts().Get(acquired.Reservation.RunAttemptID)
+		if readErr != nil {
+			return false, readErr
+		}
+		if !runattempt.IsTerminal(ra.Status) {
+			return false, errors.New("stolen predecessor remained nonterminal")
+		}
+		return true, nil
+	})
 	if err != nil {
 		t.Fatalf("explicitly granted audited steal: %v", err)
-	}
-	if err := <-predecessorStopped; err != nil {
-		t.Fatal(err)
 	}
 	if stolen.Reservation.PriorHolder != acquired.Reservation.Holder ||
 		stolen.Reservation.PriorRunAttemptID != acquired.Reservation.RunAttemptID ||

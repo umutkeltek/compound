@@ -110,3 +110,16 @@ their explicit setup. Run the clone-isolation tests with any such migration.
 
 Further scheduling changes or exact-input proof reuse need a separately reviewed
 verification contract. A diagnostic profile cannot authorize either.
+
+## Own cooperative fixture lifetimes
+
+A fixture that acknowledges a concurrent operation must stay alive through
+that operation's preparation, not expire on an earlier independent deadline.
+The proof-takeover fixtures start their observer before reservation, cancel it
+when reservation returns, and join it on every exit path. They still exercise
+real holder transfer, rejected predecessor completion, terminal RunAttempts,
+and source-bound governance; production termination grace is unchanged.
+
+Keep the controlled preparation-delay and cancellation/join falsifiers in
+`TestProofTakeoverObserver*`. A passing retry alone does not explain an earlier
+suite failure. Record the failing mechanism and retain the original red evidence.
