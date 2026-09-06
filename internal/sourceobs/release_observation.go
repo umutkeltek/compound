@@ -262,11 +262,14 @@ func decodeReleaseObservationFromItem(item SourceObservationListItem) (ReleaseOb
 			obs.ObservedBuild = strings.TrimPrefix(ref, "release_observation:build:")
 		case strings.HasPrefix(ref, "release_observation:"):
 			// anchor: "release_observation:<productID>:<channel>:<platform>"
-			parts := strings.SplitN(strings.TrimPrefix(ref, "release_observation:"), ":", 3)
-			if len(parts) == 3 {
-				obs.ProductID = strings.TrimSpace(parts[0])
-				obs.Channel = strings.TrimSpace(parts[1])
-				obs.Platform = strings.TrimSpace(parts[2])
+			// productID itself may contain ":" (e.g. "product:alpha"),
+			// so the LAST two colon-separated segments are channel+platform.
+			rest := strings.TrimPrefix(ref, "release_observation:")
+			parts := strings.Split(rest, ":")
+			if len(parts) >= 3 {
+				obs.Platform = strings.TrimSpace(parts[len(parts)-1])
+				obs.Channel = strings.TrimSpace(parts[len(parts)-2])
+				obs.ProductID = strings.TrimSpace(strings.Join(parts[:len(parts)-2], ":"))
 			}
 		}
 	}
@@ -314,4 +317,37 @@ func oneOfReleaseState(value string) bool {
 		}
 	}
 	return false
+}
+
+// validateReleaseObservationShape is the structural-only validation used
+// inside SourceObservation.Validate(). It mirrors ValidateReleaseObservation
+// minus the time-based checks (which require a `now` argument the public
+// Validate() does not receive). Full validation with time + state runs
+// in the loader's strict re-validation pass.
+func validateReleaseObservationShape(obs ReleaseObservation) bool {
+	if strings.TrimSpace(obs.ProductID) == "" {
+		return false
+	}
+	if strings.TrimSpace(obs.Channel) == "" {
+		return false
+	}
+	if strings.TrimSpace(obs.Platform) == "" {
+		return false
+	}
+	if strings.TrimSpace(obs.ObservedVersion) == "" {
+		return false
+	}
+	if !oneOfReleaseState(obs.ObservedState) {
+		return false
+	}
+	if _, err := time.Parse(time.RFC3339, strings.TrimSpace(obs.ObservedAt)); err != nil {
+		return false
+	}
+	if strings.TrimSpace(obs.SourceRevision) == "" {
+		return false
+	}
+	if strings.TrimSpace(obs.EvidenceRef) == "" {
+		return false
+	}
+	return true
 }

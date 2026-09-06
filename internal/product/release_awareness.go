@@ -18,12 +18,12 @@ const ReleaseAwarenessSchemaVersion = "compound.product_release_awareness.v0.1"
 // release-awareness summary. Anything outside this list is a programming
 // error; callers should treat unknown statuses as "unknown".
 var ReleaseAwarenessStatus = []string{
-	"unobserved",   // no external release observation has been admitted for this product
-	"invalid",      // admitted observations failed strict re-validation (gap in intake)
-	"stale",        // observations exist but every channel is older than StaleAfter
-	"partial",      // some channels observed, others not, no same-channel+platform conflict
-	"conflicting",  // same channel+platform has multiple equally-current incompatible observations
-	"current",      // at least one observation reports a live version with valid provenance
+	"unobserved",  // no external release observation has been admitted for this product
+	"invalid",     // admitted observations failed strict re-validation (gap in intake)
+	"stale",       // observations exist but every channel is older than StaleAfter
+	"partial",     // some channels observed, others not, no same-channel+platform conflict
+	"conflicting", // same channel+platform has multiple equally-current incompatible observations
+	"current",     // at least one observation reports a live version with valid provenance
 }
 
 // ReleaseChannelPlatformView is the per (channel, platform) slice of
@@ -31,14 +31,14 @@ var ReleaseAwarenessStatus = []string{
 // not contradictions: e.g. an App Store Connect candidate entry for iOS
 // and a direct-mac live dmg are two independent views, never a conflict.
 type ReleaseChannelPlatformView struct {
-	Channel        string                `json:"channel"`
-	Platform       string                `json:"platform"`
+	Channel        string                       `json:"channel"`
+	Platform       string                       `json:"platform"`
 	Latest         sourceobs.ReleaseObservation `json:"latest"`
-	StateSet       []string              `json:"state_set,omitempty"`
-	VersionSet     []string              `json:"version_set,omitempty"`
-	CurrentVersion string                `json:"current_version,omitempty"`
-	EvidenceRefs   []string              `json:"evidence_refs,omitempty"`
-	ObservationIDs []string              `json:"observation_ids,omitempty"`
+	StateSet       []string                     `json:"state_set,omitempty"`
+	VersionSet     []string                     `json:"version_set,omitempty"`
+	CurrentVersion string                       `json:"current_version,omitempty"`
+	EvidenceRefs   []string                     `json:"evidence_refs,omitempty"`
+	ObservationIDs []string                     `json:"observation_ids,omitempty"`
 }
 
 // ReleaseAwareness is the additive evidence-only per-product release
@@ -53,24 +53,24 @@ type ReleaseChannelPlatformView struct {
 // a conflict through operator review, or wait — never "ship" or
 // "promote to live".
 type ReleaseAwareness struct {
-	SchemaVersion     string                       `json:"schema_version"`
-	ProductID         string                       `json:"product_id"`
-	Status            string                       `json:"status"`
-	ContractVersion   string                       `json:"contract_version,omitempty"`
-	ContractBuild     string                       `json:"contract_build,omitempty"`
-	OutdatedContract  bool                         `json:"outdated_contract,omitempty"`
-	LatestObservedAt  string                       `json:"latest_observed_at,omitempty"`
-	LatestVersion     string                       `json:"latest_version,omitempty"`
-	LatestChannel     string                       `json:"latest_channel,omitempty"`
-	LatestPlatform    string                       `json:"latest_platform,omitempty"`
-	LatestState       string                       `json:"latest_state,omitempty"`
-	ChannelPlatforms  []ReleaseChannelPlatformView `json:"channel_platforms,omitempty"`
-	ObservationCount  int                          `json:"observation_count"`
-	Conflict          []string                     `json:"conflict,omitempty"`
-	MissingEvidence   []string                     `json:"missing_evidence,omitempty"`
-	Boundary          string                       `json:"boundary"`
-	NextAction        string                       `json:"next_action"`
-	EvidenceRefs      []string                     `json:"evidence_refs,omitempty"`
+	SchemaVersion    string                       `json:"schema_version"`
+	ProductID        string                       `json:"product_id"`
+	Status           string                       `json:"status"`
+	ContractVersion  string                       `json:"contract_version,omitempty"`
+	ContractBuild    string                       `json:"contract_build,omitempty"`
+	OutdatedContract bool                         `json:"outdated_contract,omitempty"`
+	LatestObservedAt string                       `json:"latest_observed_at,omitempty"`
+	LatestVersion    string                       `json:"latest_version,omitempty"`
+	LatestChannel    string                       `json:"latest_channel,omitempty"`
+	LatestPlatform   string                       `json:"latest_platform,omitempty"`
+	LatestState      string                       `json:"latest_state,omitempty"`
+	ChannelPlatforms []ReleaseChannelPlatformView `json:"channel_platforms,omitempty"`
+	ObservationCount int                          `json:"observation_count"`
+	Conflict         []string                     `json:"conflict,omitempty"`
+	MissingEvidence  []string                     `json:"missing_evidence,omitempty"`
+	Boundary         string                       `json:"boundary"`
+	NextAction       string                       `json:"next_action"`
+	EvidenceRefs     []string                     `json:"evidence_refs,omitempty"`
 }
 
 // ReleaseAwarenessOptions controls the per-product aggregation. Now is
@@ -165,7 +165,6 @@ func BuildReleaseAwareness(homePath, productID string, identity ReleaseIdentity,
 	sort.Strings(groupOrder)
 	allRefs := map[string]bool{}
 	hasLive := false
-	hasCandidateOrSubmitted := false
 	for _, key := range groupOrder {
 		obsList := groups[key]
 		parts := strings.SplitN(key, "|", 2)
@@ -244,9 +243,6 @@ func BuildReleaseAwareness(homePath, productID string, identity ReleaseIdentity,
 		if latest.ObservedState == "live" {
 			hasLive = true
 		}
-		if latest.ObservedState == "candidate" || latest.ObservedState == "submitted" {
-			hasCandidateOrSubmitted = true
-		}
 		// track the newest observation across all (channel, platform) views
 		latestT, _ := time.Parse(time.RFC3339, strings.TrimSpace(latest.ObservedAt))
 		if out.LatestObservedAt == "" || latestT.After(parseTimeOrZero(out.LatestObservedAt)) {
@@ -264,13 +260,15 @@ func BuildReleaseAwareness(homePath, productID string, identity ReleaseIdentity,
 			out.OutdatedContract = true
 		}
 	}
-	// status precedence: conflicting > invalid (future, missing evidence)
-	// > stale > partial > current > unobserved
+	// status precedence: conflicting > stale > current > partial > unobserved
+	// Stale is checked before current so a fresh-metric world never inflates
+	// a stale release observation to "current". The release-awareness
+	// freshness contract is independent of any signal freshness contract.
 	switch {
 	case len(out.Conflict) > 0:
 		out.Status = "conflicting"
 		out.NextAction = "operator-reviewed reconcile required: same channel+platform reports multiple equally-current versions/states; do not auto-claim live"
-	case !hasLive && !hasCandidateOrSubmitted && isStale(out.LatestObservedAt, now, staleAfter):
+	case isStale(out.LatestObservedAt, now, staleAfter):
 		out.Status = "stale"
 		out.NextAction = "latest observation is older than the freshness window; re-import current release observations before claiming release awareness"
 	case hasLive:

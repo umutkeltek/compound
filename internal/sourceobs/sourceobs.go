@@ -190,7 +190,15 @@ func Validate(obs SourceObservation) Report {
 		add("generated_view", strings.TrimSpace(obs.GeneratedView.ViewKind) != "" && strings.TrimSpace(obs.GeneratedView.Consumer) != "" && strings.TrimSpace(obs.GeneratedView.Generator) != "" && strings.TrimSpace(obs.GeneratedView.Marker) != "" && strings.TrimSpace(obs.GeneratedView.Freshness) != "", obs.GeneratedView.ViewKind)
 	}
 	if obs.Release != nil {
-		add("release_payload", ValidateReleaseObservation(*obs.Release, time.Time{}) == nil, obs.Release.ProductID+":"+obs.Release.Channel+":"+obs.Release.Platform)
+		// Structural validation only here: the carrier's
+		// FromReleaseObservation already passed the full
+		// ValidateReleaseObservation (time, state, identity), and the
+		// loader's strict re-validation is the second line of defense.
+		// We deliberately skip the time-based check inside Validate()
+		// because Validate() does not receive a `now` argument — passing
+		// time.Time{} would force a fallback to real wall-clock, which
+		// fails for fixtures aged past the staleness window.
+		add("release_payload", validateReleaseObservationShape(*obs.Release), obs.Release.ProductID+":"+obs.Release.Channel+":"+obs.Release.Platform)
 	}
 	return r
 }
