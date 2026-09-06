@@ -211,7 +211,7 @@ export default function compoundHook(pi: CompoundHookApi): void {
 			tool_input: event.input ?? {},
 		});
 		if ((doc?.permissionDecision ?? doc?.hookSpecificOutput?.permissionDecision) === "deny") {
-			return { block: true, reason: doc.permissionDecisionReason ?? "compound policy denied this tool call" };
+			return { block: true, reason: doc.permissionDecisionReason ?? doc.hookSpecificOutput?.permissionDecisionReason ?? "compound policy denied this tool call" };
 		}
 		return undefined;
 	});
