@@ -48,6 +48,8 @@ interface BeforeAgentStartPayload {
 
 interface HookSpecificOutput {
 	additionalContext?: string;
+	permissionDecision?: string;
+	permissionDecisionReason?: string;
 }
 
 interface CompoundHookDocument {
@@ -208,7 +210,7 @@ export default function compoundHook(pi: CompoundHookApi): void {
 			tool_use_id: event.toolCallId ?? "",
 			tool_input: event.input ?? {},
 		});
-		if (doc?.permissionDecision === "deny") {
+		if ((doc?.permissionDecision ?? doc?.hookSpecificOutput?.permissionDecision) === "deny") {
 			return { block: true, reason: doc.permissionDecisionReason ?? "compound policy denied this tool call" };
 		}
 		return undefined;
