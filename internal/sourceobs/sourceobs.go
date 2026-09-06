@@ -38,6 +38,11 @@ type SourceObservation struct {
 	GeneratedView GeneratedView `json:"generated_view,omitempty" yaml:"generated_view,omitempty"`
 	MapsTo        []MapTarget   `json:"maps_to" yaml:"maps_to"`
 	EvidenceRefs  []string      `json:"evidence_refs" yaml:"evidence_refs"`
+	// Release is the optional typed external release-state payload. It is
+	// additive: a SourceObservation without it preserves prior behavior, and
+	// a SourceObservation with it is still admitted through the same intake
+	// door. See release_observation.go for the carrier semantics.
+	Release *ReleaseObservation `json:"release,omitempty" yaml:"release,omitempty"`
 }
 
 type SourceRef struct {
@@ -183,6 +188,9 @@ func Validate(obs SourceObservation) Report {
 	}
 	if obs.SourceRef.Kind == "generated_view" || obs.GeneratedView.ViewKind != "" {
 		add("generated_view", strings.TrimSpace(obs.GeneratedView.ViewKind) != "" && strings.TrimSpace(obs.GeneratedView.Consumer) != "" && strings.TrimSpace(obs.GeneratedView.Generator) != "" && strings.TrimSpace(obs.GeneratedView.Marker) != "" && strings.TrimSpace(obs.GeneratedView.Freshness) != "", obs.GeneratedView.ViewKind)
+	}
+	if obs.Release != nil {
+		add("release_payload", ValidateReleaseObservation(*obs.Release, time.Time{}) == nil, obs.Release.ProductID+":"+obs.Release.Channel+":"+obs.Release.Platform)
 	}
 	return r
 }
