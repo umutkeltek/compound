@@ -19,7 +19,7 @@
  * Discipline: fail-open, bounded latency. A slow or absent compound binary
  * must never hang the operator's omp session — every call is spawnSync with a
  * hard timeout, and every failure path degrades to "no injection, no block".
- * Governed headless profiles (omp-qwen etc.) run with --no-extensions and
+ * Governed headless profiles disable ambient extension discovery; Switchback may load this exact owned shim explicitly.
  * never load this shim; it serves interactive omp only.
  */
 import { spawnSync } from "node:child_process";
@@ -47,6 +47,7 @@ interface BeforeAgentStartPayload {
 }
 
 interface HookSpecificOutput {
+	hookEventName?: string;
 	additionalContext?: string;
 	permissionDecision?: string;
 	permissionDecisionReason?: string;
@@ -156,6 +157,7 @@ function callCompound(verb: string, fixture: Record<string, unknown>): CompoundH
 			timeout: CALL_TIMEOUT_MS,
 			maxBuffer: 8 * 1024 * 1024,
 		});
+		if (res.error || res.signal || res.status !== 0) return null;
 		const out = (res.stdout ?? "").trim();
 		// Verbs print a JSON document first; some append a human status line.
 		// Parse the leading top-level object leniently.
@@ -210,12 +212,18 @@ export default function compoundHook(pi: CompoundHookApi): void {
 			tool_use_id: event.toolCallId ?? "",
 			tool_input: event.input ?? {},
 		});
-		if ((doc?.permissionDecision ?? doc?.hookSpecificOutput?.permissionDecision) === "deny") {
-			return { block: true, reason: doc.permissionDecisionReason ?? doc.hookSpecificOutput?.permissionDecisionReason ?? "compound policy denied this tool call" };
+		if (!doc?.hookSpecificOutput || doc.hookSpecificOutput.hookEventName !== "PreToolUse") {
+			return { block: true, reason: "compound policy gate unavailable" };
+		}
+		const decision = doc.permissionDecision ?? doc.hookSpecificOutput.permissionDecision;
+		if (decision === "deny") {
+			return { block: true, reason: doc.permissionDecisionReason ?? doc.hookSpecificOutput.permissionDecisionReason ?? "compound policy denied this tool call" };
+		}
+		if (decision && decision !== "allow") {
+			return { block: true, reason: `compound policy returned unsupported decision: ${decision}` };
 		}
 		return undefined;
 	});
-
 	pi.on("tool_result", (payload) => {
 		const event = (payload ?? {}) as ToolResultPayload;
 		callCompound("post-tool-use", {

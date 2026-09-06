@@ -47,11 +47,16 @@ func TestOmpShimEnforcesOnlyPreToolUse(t *testing.T) {
 	if !strings.Contains(ompHookShimSource, `if (verb === "pre-tool-use") args.push("--enforce")`) {
 		t.Fatal("OMP shim must request enforced permission projection at tool boundary")
 	}
-	if !strings.Contains(ompHookShimSource, "doc?.hookSpecificOutput?.permissionDecision") {
+	if !strings.Contains(ompHookShimSource, "doc.hookSpecificOutput.permissionDecision") {
 		t.Fatal("OMP shim must consume Compound canonical nested permission projection")
 	}
 	if strings.Contains(ompHookShimSource, `["hook", verb, "--live", "--harness", HARNESS, "--enforce"]`) {
 		t.Fatal("OMP lifecycle calls must remain observational")
+	}
+	for _, needle := range []string{"res.status !== 0", "compound policy gate unavailable", "hookEventName", "unsupported decision"} {
+		if !strings.Contains(ompHookShimSource, needle) {
+			t.Fatalf("OMP pre-tool fail-closed contract missing %q", needle)
+		}
 	}
 }
 
