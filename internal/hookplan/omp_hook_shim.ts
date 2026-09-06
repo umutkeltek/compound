@@ -157,7 +157,7 @@ function callCompound(verb: string, fixture: Record<string, unknown>): CompoundH
 			timeout: CALL_TIMEOUT_MS,
 			maxBuffer: 8 * 1024 * 1024,
 		});
-		if (res.error || res.signal || res.status !== 0) return null;
+    if (res.error || res.signal) return null;
 		const out = (res.stdout ?? "").trim();
 		// Verbs print a JSON document first; some append a human status line.
 		// Parse the leading top-level object leniently.
@@ -178,7 +178,19 @@ function callCompound(verb: string, fixture: Record<string, unknown>): CompoundH
 				depth--;
 				if (depth === 0) {
 					try {
-						return JSON.parse(out.slice(start, i + 1)) as CompoundHookDocument;
+          const doc = JSON.parse(out.slice(start, i + 1)) as CompoundHookDocument;
+          if (res.status !== 0) {
+            const decision =
+              doc.permissionDecision ?? doc.hookSpecificOutput?.permissionDecision;
+            if (
+              verb !== "pre-tool-use" ||
+              doc.hookSpecificOutput?.hookEventName !== "PreToolUse" ||
+              decision !== "deny"
+            ) {
+              return null;
+            }
+          }
+          return doc;
 					} catch {
 						return null;
 					}

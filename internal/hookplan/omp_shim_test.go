@@ -53,7 +53,14 @@ func TestOmpShimEnforcesOnlyPreToolUse(t *testing.T) {
 	if strings.Contains(ompHookShimSource, `["hook", verb, "--live", "--harness", HARNESS, "--enforce"]`) {
 		t.Fatal("OMP lifecycle calls must remain observational")
 	}
-	for _, needle := range []string{"res.status !== 0", "compound policy gate unavailable", "hookEventName", "unsupported decision"} {
+	for _, needle := range []string{
+		"res.status !== 0",
+		"verb !== \"pre-tool-use\"",
+		"hookEventName !== \"PreToolUse\"",
+		"decision !== \"deny\"",
+		"compound policy gate unavailable",
+		"unsupported decision",
+	} {
 		if !strings.Contains(ompHookShimSource, needle) {
 			t.Fatalf("OMP pre-tool fail-closed contract missing %q", needle)
 		}
