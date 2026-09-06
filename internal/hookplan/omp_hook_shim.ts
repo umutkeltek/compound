@@ -146,7 +146,9 @@ if (discovered.transcriptPath) {
 
 function callCompound(verb: string, fixture: Record<string, unknown>): CompoundHookDocument | null {
 	try {
-		const res = spawnSync(COMPOUND, ["hook", verb, "--live", "--harness", HARNESS], {
+		const args = ["hook", verb, "--live", "--harness", HARNESS];
+		if (verb === "pre-tool-use") args.push("--enforce");
+		const res = spawnSync(COMPOUND, args, {
 			input: JSON.stringify(fixture),
 			encoding: "utf-8",
 			timeout: CALL_TIMEOUT_MS,

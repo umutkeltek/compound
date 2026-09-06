@@ -43,6 +43,15 @@ func TestOmpShimBudgetsAnswerBeforeOuterKill(t *testing.T) {
 	}
 }
 
+func TestOmpShimEnforcesOnlyPreToolUse(t *testing.T) {
+	if !strings.Contains(ompHookShimSource, `if (verb === "pre-tool-use") args.push("--enforce")`) {
+		t.Fatal("OMP shim must request enforced permission projection at tool boundary")
+	}
+	if strings.Contains(ompHookShimSource, `["hook", verb, "--live", "--harness", HARNESS, "--enforce"]`) {
+		t.Fatal("OMP lifecycle calls must remain observational")
+	}
+}
+
 func TestInstallOhMyPiShimWritesOwnedFile(t *testing.T) {
 	base := t.TempDir()
 	rep, err := InstallOhMyPiShim(base, false)
