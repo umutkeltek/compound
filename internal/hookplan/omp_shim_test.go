@@ -2,12 +2,39 @@ package hookplan
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"compound/internal/harness"
 )
+
+func TestOmpShimRuntimeValidatesPresentPermissionDecisions(t *testing.T) {
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Fatal("bun is required to execute the shipped OMP shim")
+	}
+	home := t.TempDir()
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(binDir, "compound")
+	body := "#!/bin/sh\ncat \"$HOME/response.json\"\nexit \"$(cat \"$HOME/exit-status\")\"\n"
+	if err := os.WriteFile(stub, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	driver, err := filepath.Abs(filepath.Join("testdata", "omp_shim_runtime_test.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bun, driver)
+	cmd.Env = append(os.Environ(), "HOME="+home)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("OMP shim runtime regression: %v\n%s", err, out)
+	}
+}
 
 // The shim is the whole point of the install path — a registry row that claims
 // hook coverage while the embedded source lost its contract fails here, not in
@@ -59,7 +86,7 @@ func TestOmpShimEnforcesOnlyPreToolUse(t *testing.T) {
 		"hookEventName !== \"PreToolUse\"",
 		"decision !== \"deny\"",
 		"compound policy gate unavailable",
-		"unsupported decision",
+		"invalid permission decision",
 	} {
 		if !strings.Contains(ompHookShimSource, needle) {
 			t.Fatalf("OMP pre-tool fail-closed contract missing %q", needle)

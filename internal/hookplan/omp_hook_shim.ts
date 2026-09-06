@@ -16,11 +16,11 @@
  *   - session_shutdown → `compound hook session-end --live` so the session
  *     receipt lands in compound instead of being derived from exit.
  *
- * Discipline: fail-open, bounded latency. A slow or absent compound binary
- * must never hang the operator's omp session — every call is spawnSync with a
- * hard timeout, and every failure path degrades to "no injection, no block".
- * Governed headless profiles disable ambient extension discovery; Switchback may load this exact owned shim explicitly.
- * never load this shim; it serves interactive omp only.
+ * Lifecycle and context calls are observational and fail open. The tool
+ * boundary is fail closed: a slow, absent, or malformed Compound response
+ * blocks the tool without hanging the session because spawnSync has a hard
+ * timeout. Governed headless profiles disable ambient extension discovery;
+ * Switchback may load this exact owned shim explicitly.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -181,7 +181,10 @@ function callCompound(verb: string, fixture: Record<string, unknown>): CompoundH
           const doc = JSON.parse(out.slice(start, i + 1)) as CompoundHookDocument;
           if (res.status !== 0) {
             const decision =
-              doc.permissionDecision ?? doc.hookSpecificOutput?.permissionDecision;
+              doc.permissionDecision === "deny" ||
+              doc.hookSpecificOutput?.permissionDecision === "deny"
+                ? "deny"
+                : null;
             if (
               verb !== "pre-tool-use" ||
               doc.hookSpecificOutput?.hookEventName !== "PreToolUse" ||
@@ -227,12 +230,23 @@ export default function compoundHook(pi: CompoundHookApi): void {
 		if (!doc?.hookSpecificOutput || doc.hookSpecificOutput.hookEventName !== "PreToolUse") {
 			return { block: true, reason: "compound policy gate unavailable" };
 		}
-		const decision = doc.permissionDecision ?? doc.hookSpecificOutput.permissionDecision;
-		if (decision === "deny") {
-			return { block: true, reason: doc.permissionDecisionReason ?? doc.hookSpecificOutput.permissionDecisionReason ?? "compound policy denied this tool call" };
+		const topHasDecision = Object.prototype.hasOwnProperty.call(doc, "permissionDecision");
+		const nestedHasDecision = Object.prototype.hasOwnProperty.call(doc.hookSpecificOutput, "permissionDecision");
+		const topDecision: unknown = doc.permissionDecision;
+		const nestedDecision: unknown = doc.hookSpecificOutput.permissionDecision;
+		if (topDecision === "deny" || nestedDecision === "deny") {
+			const reason = nestedDecision === "deny"
+				? doc.hookSpecificOutput.permissionDecisionReason
+				: doc.permissionDecisionReason;
+			return { block: true, reason: reason ?? "compound policy denied this tool call" };
 		}
-		if (decision && decision !== "allow") {
-			return { block: true, reason: `compound policy returned unsupported decision: ${decision}` };
+		for (const [present, decision] of [
+			[topHasDecision, topDecision],
+			[nestedHasDecision, nestedDecision],
+		] as const) {
+			if (present && decision !== "allow") {
+				return { block: true, reason: "compound policy returned an invalid permission decision" };
+			}
 		}
 		return undefined;
 	});
