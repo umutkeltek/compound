@@ -41,6 +41,11 @@ type ProductLoop struct {
 	OpenSourceIssues                    LoopSourceIssues          `json:"open_source_issues"`
 	Freshness                           LoopFreshness             `json:"freshness"`
 	LoopGaps                            []string                  `json:"loop_gaps"`
+	// ReleaseAwareness is the additive evidence-only release-reconciliation
+	// surface. It distinguishes candidate/submitted/live observations per
+	// channel+platform with provenance and never auto-claims current-live.
+	// Absent when no sourceobs release observation has been imported yet.
+	ReleaseAwareness *ReleaseAwareness `json:"release_awareness,omitempty"`
 }
 
 type LoopSignal struct {
@@ -314,6 +319,18 @@ func buildProductLoop(homePath, productID, name string, reviews []Review, consum
 	reviewsByNextAction := loopReviewNextActions(productID, productReviews, consumedActions)
 	actionCards := loopActionCards(missingSignalSources, signalHypothesisGaps, reviewsByNextAction, loopReviewReadyActionCards(productID, doctor.ReviewReady))
 	sourceIssues := loopSourceIssues(doctor.SourceIssues)
+	// Release awareness is the additive evidence-only release-reconciliation
+	// surface. It is read-only; failures here must NOT abort the product
+	// loop projection (orient consumer still surfaces the rest of the loop).
+	var releaseAwareness *ReleaseAwareness
+	if rawIdentity, idErr := loadProductReleaseIdentityForLoop(homePath, productID); idErr == nil {
+		if awareness, raErr := BuildReleaseAwareness(homePath, productID, rawIdentity, ReleaseAwarenessOptions{
+			Now:        opts.Now,
+			StaleAfter: opts.StaleAfter,
+		}); raErr == nil && (awareness.ObservationCount > 0 || awareness.Status != "unobserved") {
+			releaseAwareness = &awareness
+		}
+	}
 	return ProductLoop{
 		ProductID:                           productID,
 		Name:                                name,
@@ -327,7 +344,62 @@ func buildProductLoop(homePath, productID, name string, reviews []Review, consum
 		OpenSourceIssues:                    sourceIssues,
 		Freshness:                           loopFreshness(tl.Signals, productReviews, opts.Now, opts.StaleAfter),
 		LoopGaps:                            loopGaps(tl.Hypotheses, tl.Signals, includedSignals, doctor),
+		ReleaseAwareness:                    releaseAwareness,
 	}, nil
+}
+
+// loadProductReleaseIdentityForLoop reads the recalled ReleaseIdentity
+// (contract/candidate identity) for a product without authoring a new
+// candidate. It pulls the recalled claims the product-import wrote:
+// predicates release_version / release_build live in the product domain.
+// A missing or unreadable identity is reported as the empty identity
+// rather than aborting the loop projection. It does NOT try to
+// reconstruct identity from a legacy registry or product repo — that
+// would invert recall and is forbidden by the seam contract.
+func loadProductReleaseIdentityForLoop(homePath, productID string) (ReleaseIdentity, error) {
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return ReleaseIdentity{}, err
+	}
+	claims, err := store.AllCurrent()
+	if err != nil {
+		return ReleaseIdentity{}, err
+	}
+	var identity ReleaseIdentity
+	for _, claim := range claims {
+		if claim.Qualifiers["domain"] != "product" {
+			continue
+		}
+		if claim.Entity != productID {
+			continue
+		}
+		switch claim.Predicate {
+		case "release_version":
+			identity.Version = claim.Object
+		case "release_build":
+			identity.Build = claim.Object
+		case "release_bundle_id":
+			identity.BundleID = claim.Object
+		case "release_app_store_connect_app_id":
+			identity.AppStoreConnectAppID = claim.Object
+		case "release_subscription_ids":
+			if claim.Object != "" {
+				identity.SubscriptionIDs = splitNonEmpty(claim.Object, ",")
+			}
+		}
+	}
+	return identity, nil
+}
+
+func splitNonEmpty(s, sep string) []string {
+	var out []string
+	for _, p := range strings.Split(s, sep) {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func productLoopNames(store *mem.Store) (map[string]string, error) {
