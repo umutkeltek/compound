@@ -893,13 +893,30 @@ func TestProofCheckOutTruthfulExitOneOnRedBattery(t *testing.T) {
 	exe := compoundTestBinary(t)
 
 	fixture := t.TempDir()
-	if err := os.WriteFile(filepath.Join(fixture, "go.mod"), []byte("module proofcheck-red-fixture\n\ngo 1.23\n"), 0o644); err != nil {
+	// Copy the production driver, not a surrogate command. Its inventory needs
+	// the compound module and both isolated packages; these are inventory-only
+	// stubs, not proof of home/release behavior. Missing runner/setup failures
+	// must never stand in for the deliberate Go assertion below.
+	driver, err := os.ReadFile(filepath.Join(inventoryGuardRepoRoot(t), "scripts", "testbattery", "main.go"))
+	if err != nil {
 		t.Fatal(err)
 	}
 	redTest := "package fixture\n\nimport \"testing\"\n\n" +
 		"func TestAlwaysFails(t *testing.T) {\n\tt.Fatal(\"deliberate red for proof-check --out falsifier\")\n}\n"
-	if err := os.WriteFile(filepath.Join(fixture, "red_test.go"), []byte(redTest), 0o644); err != nil {
-		t.Fatal(err)
+	for name, body := range map[string][]byte{
+		"go.mod":                      []byte("module compound\n\ngo 1.23\n"),
+		"red_test.go":                 []byte(redTest),
+		"scripts/testbattery/main.go": driver,
+		"internal/home/home.go":       []byte("package home\n"),
+		"internal/release/release.go": []byte("package release\n"),
+	} {
+		path := filepath.Join(fixture, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	runCommandGit(t, fixture, "init")
 	runCommandGit(t, fixture, "add", "-A")
@@ -943,6 +960,12 @@ func TestProofCheckOutTruthfulExitOneOnRedBattery(t *testing.T) {
 	}
 	if firstFailed != "go-test" {
 		t.Fatalf("expected go-test to be the first failed gate, got %q; steps=%+v", firstFailed, report.Steps)
+	}
+	for _, step := range report.Steps {
+		if step.Name == "go-test" && (!strings.Contains(step.OutputTail, "--- FAIL: TestAlwaysFails") ||
+			!strings.Contains(step.OutputTail, "deliberate red for proof-check --out falsifier")) {
+			t.Fatalf("go-test did not execute the deliberate failing assertion: %s", step.OutputTail)
+		}
 	}
 
 	lines := strings.Split(strings.TrimRight(string(output), "\n"), "\n")
