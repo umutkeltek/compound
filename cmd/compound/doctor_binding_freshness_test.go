@@ -2,21 +2,18 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// TestDoctorReportsDriftedBindingAfterStaleInstall pins the R3B 2026-09-04
-// contract for the doctor harness section: when the installed-hooks
-// manifest records `binary:/path/to/old/compound` and the binary at
-// `/path/to/new/compound` is the one install.sh just wrote, doctor must
-// surface one row per drifted harness with status=drifted, the exact
-// recorded revision, the current-binary revision, and the repair command
-// `compound hook install --harness <lane>`. Doctor itself never invokes
-// the installer.
+// TestDoctorReportsDriftedBindingAfterStaleInstall proves that replacing binary
+// bytes without refreshing recorded attestation is visible through the real
+// doctor JSON/text consumer. A path locator is not a byte revision.
 func TestDoctorReportsDriftedBindingAfterStaleInstall(t *testing.T) {
 	t.Setenv("COMPOUND_PLACEMENT_GUARD_MODE", "")
 	t.Setenv("PLACEMENT_GUARD_MODE", "")
@@ -24,10 +21,10 @@ func TestDoctorReportsDriftedBindingAfterStaleInstall(t *testing.T) {
 	home := t.TempDir()
 	base := t.TempDir()
 	binary := filepath.Join(t.TempDir(), "compound-new")
+	currentRevision := writeDoctorBindingBinary(t, binary)
+	recordedRevision := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("previous synthetic binary")))
 
-	// Stale manifest entry: recorded revision points at a path the
-	// install path no longer matches. install.sh just overwrote
-	// `binary` (the new install path), so the binding is drifted.
+	// The recorded bytes precede the installed file; the path is unchanged.
 	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -36,8 +33,8 @@ func TestDoctorReportsDriftedBindingAfterStaleInstall(t *testing.T) {
 		" - harness: claude\n" +
 		"   name: PreToolUse\n" +
 		"   event: PreToolUse\n" +
-		"   ref: compound\n" +
-		"   revision: binary:/path/to/old/compound\n" +
+		"   ref: " + binary + "\n" +
+		"   revision: " + recordedRevision + "\n" +
 		"   status: current\n"
 	if err := os.WriteFile(filepath.Join(home, "config", "installed-hooks.yaml"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
@@ -63,11 +60,11 @@ func TestDoctorReportsDriftedBindingAfterStaleInstall(t *testing.T) {
 	if row.Harness != "claude" || row.Status != "drifted" {
 		t.Fatalf("binding_freshness row = %+v, want harness=claude status=drifted", row)
 	}
-	if row.RecordedAt != "binary:/path/to/old/compound" {
+	if row.RecordedAt != recordedRevision {
 		t.Fatalf("binding_freshness recorded = %q", row.RecordedAt)
 	}
-	if row.CurrentBinary != "binary:"+binary {
-		t.Fatalf("binding_freshness current = %q, want binary:%s", row.CurrentBinary, binary)
+	if row.CurrentBinary != currentRevision {
+		t.Fatalf("binding_freshness current = %q, want %s", row.CurrentBinary, currentRevision)
 	}
 	if row.RepairCommand != "compound hook install --harness claude" {
 		t.Fatalf("binding_freshness repair = %q", row.RepairCommand)
@@ -94,11 +91,8 @@ func TestDoctorReportsDriftedBindingAfterStaleInstall(t *testing.T) {
 	}
 }
 
-// TestDoctorReportsFreshBindingWhenRecordedRevisionMatchesCurrentBinary
-// pins the inverse: a manifest whose recorded revision already names the
-// current binary path is reported as fresh, with no repair command. This
-// is the post-install happy path after the installer runs
-// `compound hook install --harness all`.
+// TestDoctorReportsFreshBindingWhenRecordedRevisionMatchesCurrentBinary proves
+// that actual byte-backed bindings do not generate false repair advice.
 func TestDoctorReportsFreshBindingWhenRecordedRevisionMatchesCurrentBinary(t *testing.T) {
 	t.Setenv("COMPOUND_PLACEMENT_GUARD_MODE", "")
 	t.Setenv("PLACEMENT_GUARD_MODE", "")
@@ -106,6 +100,7 @@ func TestDoctorReportsFreshBindingWhenRecordedRevisionMatchesCurrentBinary(t *te
 	home := t.TempDir()
 	base := t.TempDir()
 	binary := filepath.Join(t.TempDir(), "compound-current")
+	currentRevision := writeDoctorBindingBinary(t, binary)
 	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -114,8 +109,8 @@ func TestDoctorReportsFreshBindingWhenRecordedRevisionMatchesCurrentBinary(t *te
 		" - harness: claude\n" +
 		"   name: PreToolUse\n" +
 		"   event: PreToolUse\n" +
-		"   ref: compound\n" +
-		"   revision: binary:" + binary + "\n" +
+		"   ref: " + binary + "\n" +
+		"   revision: " + currentRevision + "\n" +
 		"   status: current\n"
 	if err := os.WriteFile(filepath.Join(home, "config", "installed-hooks.yaml"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
@@ -139,4 +134,13 @@ func TestDoctorReportsFreshBindingWhenRecordedRevisionMatchesCurrentBinary(t *te
 	if rep.BindingFreshness.Rows[0].RepairCommand != "" {
 		t.Fatalf("fresh binding reported a repair command: %q", rep.BindingFreshness.Rows[0].RepairCommand)
 	}
+}
+
+func writeDoctorBindingBinary(t *testing.T, path string) string {
+	t.Helper()
+	body := []byte("synthetic installed binary")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("sha256:%x", sha256.Sum256(body))
 }

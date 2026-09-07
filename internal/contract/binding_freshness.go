@@ -1,28 +1,19 @@
 package contract
 
 import (
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 )
 
-// BindingFreshnessRow is one harness's binding-freshness verdict, surfaced
-// in `compound doctor` (R3B 2026-09-04). It answers the question "did the
-// last `./install.sh` leave my hook binding pointing at the new binary, or
-// is it still pointing at the previous binary?". The latter is the failure
-// that silently re-drifts every Claude lane on every install: install.sh
-// rebuilt `compound` and overwrote the binary, but the manifest entry that
-// the readiness guard consults still records `binary:<old-path>`. Until
-// `compound hook install --harness <lane>` refreshes the entry, the lane
-// resolves to `plan` for any operator who asks for a mutation-capable mode.
-//
-// Status vocabulary:
-//   - "fresh"     — manifest revision equals "binary:" + binaryPath (no drift)
-//   - "drifted"   — manifest revision differs from "binary:" + binaryPath
-//     (reinstall refreshed the binary but not the binding)
-//   - "absent"    — manifest has no entries for this harness
-//   - "unknown"   — the comparison could not be made (no binaryPath, etc.)
+// BindingFreshnessRow is a read-only byte-attestation diagnostic, never permission
+// authority. Fresh requires all events to match concrete installed binary bytes;
+// drifted means at least one comparable event differs. Legacy locators, opaque
+// handlers and unavailable bytes are unknown. Drifted > unknown > fresh.
 type BindingFreshnessRow struct {
 	Harness       string `json:"harness"`
 	Status        string `json:"status"`
@@ -31,8 +22,8 @@ type BindingFreshnessRow struct {
 	RepairCommand string `json:"repair_command,omitempty"`
 }
 
-// BindingFreshnessReport aggregates one BindingFreshnessRow per harness
-// found in the manifest. Installers and dashboards consume this in JSON.
+// BindingFreshnessReport keeps the supplied binary path separate from each
+// row's content revisions. Installers and dashboards consume this in JSON.
 type BindingFreshnessReport struct {
 	BinaryPath string                `json:"binary_path"`
 	Rows       []BindingFreshnessRow `json:"rows"`
@@ -53,13 +44,10 @@ func BuildBindingFreshnessReport(homePath, binaryPath string) (BindingFreshnessR
 	return report, ""
 }
 
-// ComputeBindingFreshness reads the installed-hooks manifest and compares
-// every entry's recorded revision to the binary that would be invoked today
-// (`"binary:" + binaryPath`). Per-harness statuses collapse to fresh /
-// drifted / absent / unknown. The function is read-only: it never writes
-// to the manifest and never calls the installer. Doctor uses it to surface
-// the exact lanes that need `compound hook install --harness <lane>` to
-// recover from a `./install.sh` that did not refresh them.
+// ComputeBindingFreshness compares every concrete binding to the supplied
+// binary's independently attested SHA-256 bytes. Other handlers, legacy locators
+// and unavailable bytes remain unknown; an absent manifest yields no rows.
+// This diagnostic never writes the manifest or calls an installer.
 func ComputeBindingFreshness(homePath, binaryPath string) (BindingFreshnessReport, error) {
 	report := BindingFreshnessReport{BinaryPath: strings.TrimSpace(binaryPath)}
 	if strings.TrimSpace(homePath) == "" {
@@ -79,50 +67,61 @@ func ComputeBindingFreshness(homePath, binaryPath string) (BindingFreshnessRepor
 		}
 		return report, fmt.Errorf("compute binding freshness: %w", err)
 	}
-	wantRevision := "binary:" + binaryPath
-	byHarness := map[string]InstalledHook{}
+
+	binaryRef := filepath.Clean(expandHomeRef(report.BinaryPath))
+	currentRevision := ""
+	if filepath.IsAbs(binaryRef) {
+		currentRevision = installedHookHandlerRevision(binaryRef, "")
+	}
+	rank := map[string]int{"fresh": 0, "unknown": 1, "drifted": 2}
+	byHarness := map[string]BindingFreshnessRow{}
 	for _, hook := range manifest.Hooks {
 		h := strings.TrimSpace(hook.Harness)
 		if h == "" {
 			continue
 		}
-		// Multiple entries per harness can exist (one per event). The
-		// mutation-covering binding (PreToolUse) is the one that drifts
-		// readiness; if any entry per harness is drifted we report the
-		// harness as drifted.
-		if _, ok := byHarness[h]; !ok {
-			byHarness[h] = hook
-		} else if hook.Event == "PreToolUse" {
-			byHarness[h] = hook
+		comparableRevision := ""
+		ref := filepath.Clean(expandHomeRef(hook.Ref))
+		if filepath.IsAbs(ref) && ref == binaryRef {
+			comparableRevision = currentRevision
+		}
+		row := BindingFreshnessRow{
+			Harness:       h,
+			RecordedAt:    strings.TrimSpace(hook.Revision),
+			CurrentBinary: comparableRevision,
+			Status:        classifyBindingFreshness(hook.Revision, comparableRevision),
+		}
+		if row.Status == "drifted" {
+			row.RepairCommand = "compound hook install --harness " + h
+		}
+		previous, exists := byHarness[h]
+		// Every event contributes: fresh PreToolUse cannot hide stale SessionStart.
+		// Select equal-rank evidence deterministically, independent of input order.
+		key := row.RecordedAt + "\x00" + row.CurrentBinary
+		previousKey := previous.RecordedAt + "\x00" + previous.CurrentBinary
+		if !exists || rank[row.Status] > rank[previous.Status] ||
+			(rank[row.Status] == rank[previous.Status] && key < previousKey) {
+			byHarness[h] = row
 		}
 	}
-	for harnessName, hook := range byHarness {
-		status := classifyBindingFreshness(hook.Revision, wantRevision)
-		row := BindingFreshnessRow{
-			Harness:       harnessName,
-			Status:        status,
-			RecordedAt:    strings.TrimSpace(hook.Revision),
-			CurrentBinary: wantRevision,
-		}
-		if status == "drifted" {
-			row.RepairCommand = "compound hook install --harness " + harnessName
-		}
+	for _, row := range byHarness {
 		report.Rows = append(report.Rows, row)
 	}
+	sort.Slice(report.Rows, func(i, j int) bool { return report.Rows[i].Harness < report.Rows[j].Harness })
 	return report, nil
 }
 
-// classifyBindingFreshness collapses the recorded revision and the
-// current-binary revision into the status vocabulary. Empty recorded
-// revisions report as unknown (the manifest entry is malformed, not a
-// drift); mismatch reports as drifted.
 func classifyBindingFreshness(recorded, want string) string {
-	recorded = strings.TrimSpace(recorded)
-	want = strings.TrimSpace(want)
-	if recorded == "" {
-		return "unknown"
+	recorded, want = strings.TrimSpace(recorded), strings.TrimSpace(want)
+	for _, revision := range []string{recorded, want} {
+		if !strings.HasPrefix(revision, "sha256:") || len(revision) != len("sha256:")+64 {
+			return "unknown"
+		}
+		if _, err := hex.DecodeString(strings.TrimPrefix(revision, "sha256:")); err != nil {
+			return "unknown"
+		}
 	}
-	if recorded == want {
+	if strings.EqualFold(recorded, want) {
 		return "fresh"
 	}
 	return "drifted"
