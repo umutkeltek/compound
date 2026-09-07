@@ -1165,23 +1165,17 @@ func proofCheckSteps(baseRef string, headRefs ...string) ([]proofCheckStep, erro
 	if diffRange != "" {
 		redactCommand = []string{"redact", "--repo-visibility", "public", "<committed blobs changed in " + diffRange + ">"}
 	}
-	goSourceCommand := func(mode string) []string {
-		command := []string{"go", "run", "./scripts/testbattery"}
-		if mode != "test" {
-			command = append(command, mode)
-		}
-		if len(headRefs) > 0 && strings.TrimSpace(headRefs[0]) != "" {
-			command = append(command, "--source-head", strings.TrimSpace(headRefs[0]))
-		}
-		return command
+	var goSourceArgs []string
+	if len(headRefs) > 0 && strings.TrimSpace(headRefs[0]) != "" {
+		goSourceArgs = []string{"--source-head", strings.TrimSpace(headRefs[0])}
 	}
 	return []proofCheckStep{
 		// Run every package once with the unchanged -count=1 and -timeout=40m
 		// budget. The driver isolates all home tests after other packages finish;
 		// it never filters tests or hides an earlier failure behind a later pass.
-		{Name: "go-test", Command: goSourceCommand("test"), ProofRef: "go-test-count-1-all", CIPortable: true},
-		{Name: "go-vet", Command: goSourceCommand("vet"), ProofRef: "go-vet-all", CIPortable: true},
-		{Name: "go-build", Command: goSourceCommand("build"), ProofRef: "go-build-all", CIPortable: true},
+		{Name: "go-test", Command: append([]string{"go", "run", "./scripts/testbattery"}, goSourceArgs...), ProofRef: "go-test-count-1-all", CIPortable: true},
+		{Name: "go-vet", Command: append([]string{"go", "run", "./scripts/testbattery", "vet"}, goSourceArgs...), ProofRef: "go-vet-all", CIPortable: true},
+		{Name: "go-build", Command: append([]string{"go", "run", "./scripts/testbattery", "build"}, goSourceArgs...), ProofRef: "go-build-all", CIPortable: true},
 		{Name: "gofmt", Command: []string{"gofmt", "-l", "<tracked *.go>"}, ProofRef: "gofmt-check", CIPortable: true},
 		{Name: "diff-check", Command: append([]string{"git", "diff", "--check"}, diffRangeArgs(diffRange)...), ProofRef: "diff-check", CIPortable: true},
 		{Name: "console-tsc", Command: []string{"./node_modules/.bin/tsc", "--noEmit"}, Dir: "console", ProofRef: "console-tsc-noemit"},
