@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -41,6 +42,12 @@ func Install() {
 	work.SwapExecuteStageCapacity(CapacityFromSnapshot)
 	work.SwapExecuteStagePreflight(PreflightViaActuator)
 	work.SwapExecuteStageLaunch(LaunchViaActuator)
+	// Slice 2 (aut-launch-canonical 2026-09-07): mark the LaunchContext
+	// wiring live so the launch wire enforces it as a precondition. A
+	// production caller that forgets Install() sees every launch refused
+	// with "LaunchContext not installed" before adapter.Run mints a
+	// RunAttempt, instead of silently running with context.Background().
+	launchContextInstalled.Store(true)
 }
 
 // RouteFromManifest resolves the first eligible lane for the capability from
@@ -137,12 +144,22 @@ var LaunchReadiness = func(req work.DelegateHarnessReadinessRequest) (work.Deleg
 // path runs on ctx.Done, so a stuck subprocess cannot outlive the
 // heartbeat.
 //
-// The default WAS context.Background(), which is the SAME defect the fix was
-// written for: nothing assigned this var in production, so the comment
-// promising "production wires LaunchContext" described an intention rather
-// than a call and every unattended launch was uncancellable. The default is
-// now signalLaunchContext, so the wiring cannot be forgotten by a caller.
-// Tests swap the var (see InstallLaunchContext) to drive cancellation.
+// Slice 2 (aut-launch-canonical 2026-09-07) layered onto the base
+// (R6A 2026-09-10): the LaunchContext var now has a companion install
+// (R6A 2026-09-10): the LaunchContext var now has a companion install
+// flag (launchContextInstalled) keyed off executewire.Install so the
+// launch wire refuses with an explicit error when the seam was never
+// installed. What the flag proves is exactly that Install ran
+// (cmd/compound's init) — it does NOT prove a cancellable context was
+// wired: no production entry point threads a per-tick context yet, so
+// production launches still run under context.Background() and are bounded
+// by the runner's own deadline (DefaultLaunchTimeout via RunInput.Timeout),
+// not by caller cancellation. SIGTERM propagation from a killed heartbeat
+// to the child remains the open half of audit section 4. The base
+// (R6A 2026-09-10) keeps the signal-derived default so SIGINT/SIGTERM at
+// runtime cancels the launch even when no caller installed a context.
+// Tests that swap LaunchContext directly MUST also set the install flag
+// (or call Install themselves).
 var LaunchContext = signalLaunchContext
 
 // launchSignal lazily holds the process-wide launch context. It is built on
@@ -192,6 +209,35 @@ func InstallLaunchContext(ctx context.Context) func() {
 	prev := LaunchContext
 	LaunchContext = func() context.Context { return ctx }
 	return func() { LaunchContext = prev }
+}
+
+// launchContextInstalled is flipped to true by Install when the
+// production LaunchContext wiring is in place. The launch wire
+// enforces it as a fail-closed precondition (see LaunchContext for what
+// it does and does not prove). Tests can pin it via
+// SetLaunchContextInstalled to exercise the wire without re-running
+// Install.
+var launchContextInstalled atomic.Bool
+
+// SetLaunchContextInstalled lets tests install (or uninstall) the
+// LaunchContext gate without re-running Install(). Production code
+// MUST NOT call this.
+func SetLaunchContextInstalled(installed bool) {
+	launchContextInstalled.Store(installed)
+}
+
+// AssertLaunchContextInstalled is the precondition check LaunchViaActuator
+// calls before any adapter.Run. It returns nil exactly when the
+// LaunchContext wiring is live (Install was called, or a test pinned
+// the var AND set the flag). A production caller that forgets Install
+// sees every launch refused with an explicit error before adapter.Run
+// mints a RunAttempt, instead of silently running with
+// context.Background().
+func AssertLaunchContextInstalled() error {
+	if !launchContextInstalled.Load() {
+		return errors.New("execute stage launch: LaunchContext not installed (run executewire.Install before launch)")
+	}
+	return nil
 }
 
 // DefaultLaunchTimeout is the finite execution budget LaunchViaActuator
@@ -366,6 +412,15 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	if strings.TrimSpace(launchActionID) == "" || strings.TrimSpace(launchPolicyID) == "" {
 		return "", fmt.Errorf("execute stage launch: MintLaunchAuthority returned empty ids (action=%q policy=%q)", launchActionID, launchPolicyID)
 	}
+	// Slice 2 (aut-launch-canonical 2026-09-07): precondition gate.
+	// LaunchContext MUST be installed before adapter.Run is permitted to
+	// mint a RunAttempt. Production calls Install() at startup; tests
+	// pin the var directly and SetLaunchContextInstalled(true). A
+	// production caller that forgets Install() now sees every launch
+	// refuse with an explicit error before any subprocess is started.
+	if err := AssertLaunchContextInstalled(); err != nil {
+		return "", err
+	}
 	// M5 2026-09-03: --permission-mode bypass is the explicit operator
 	// override the standing grant authorizes; the seam never synthesizes
 	// bypass on its own.
@@ -376,6 +431,18 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 		Timeout: resolvedLaunchTimeout(),
 		Now:     now,
 	}
+	// Slice 2 (aut-launch-canonical 2026-09-07): bind the canonical
+	// execution-reservation StartGuard so adapter.Run's subprocess
+	// start is gated by the live running-reservation identity. A
+	// caller that bypasses the guard (by mutating the wenv between
+	// MintLaunchAuthority and FinalizeGovernedHarnessRun) surfaces
+	// as a StartGuard refusal; the subprocess never starts. The
+	// production wire has always had this on the cmd/compound seam
+	// (PrepareGovernedHarnessLaunch sets it); the unattended execute
+	// seam previously built RunInput without it.
+	runInput.StartGuard = actuator.NewGovernedExecutionReservationStartGuard(
+		homePath, workID, launchPolicyID, launchActionID,
+	)
 	// DEFECT 4 fix (AUT-P0-004 2026-09-04): forward the live, cancellable
 	// context so a stuck subprocess is killed at the deadline and a
 	// cancelled heartbeat kills the tree. The shared runner honors
@@ -386,33 +453,29 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	// cancellation path persists "cancel:context_cancelled" evidence.
 	ctx := LaunchContext()
 	out, runErr := adapter.Run(ctx, runInput)
-	if runErr != nil {
-		// An adapter can fail AFTER minting a RunAttempt, recording a
-		// workspace and command, and writing a transcript — a crashed
-		// subprocess returns real partial output alongside its error. The
-		// wire used to return a bare error and discard `out` entirely, so
-		// the minted attempt was anonymous: the seam closed the envelope
-		// "failed" with a synthetic proof ref and nothing named the record
-		// that proves the launch happened.
-		//
-		// Surfacing the id is as far as the wire can honestly go today.
-		// BINDING the attempt to the envelope is blocked in the work core,
-		// not here: Close resolves each attached attempt's (act_, pol_)
-		// authority from PRIOR events (resolveRunAttemptAuthorityFromEvents),
-		// and only Advance attaches attempts. A run attempt minted DURING
-		// this launch therefore has no attaching event, so finalizing the
-		// failure through FinalizeGovernedHarnessRun refuses with
-		// "authority generation is missing (pairs=0)". The success path is
-		// unaffected because its Advance(running -> verifying) is what does
-		// the attaching. Closing that gap means letting a close bind an
-		// attempt from the attempt's OWN immutable authority
-		// (ra.ActionIntentID + ra.ExecutionPosture.PolicyDecisionID), which
-		// loosens a forged-authority gate and is an operator decision.
-		return strings.TrimSpace(out.RunAttempt.ID), runErr
-	}
+	// Slice 2 (aut-launch-canonical 2026-09-07) layered onto the base
+	// (R6A 2026-09-10): the canonical finalize path now runs UNCONDITIONALLY.
+	// Out + runErr are both forwarded to FinalizeGovernedHarnessRun, which
+	// decides whether to advance the envelope to verifying or close it as
+	// failed based on the actual RunAttempt status. The base's wire returned
+	// strings.TrimSpace(out.RunAttempt.ID) alongside runErr so callers
+	// (notably execute_stage.launchStub) could record the partial-evidence
+	// ratt id in result.RunAttemptIDs; the packet pins that contract, so on
+	// a finalize-failed or runErr-nonzero path the wire still returns
+	// (strings.TrimSpace(out.RunAttempt.ID), runErr) instead of ("", err).
+	// A missing RunAttempt.ID (adapter short-circuited before minting) is
+	// still an explicit refuse, since there is no id to name and no
+	// canonical finalize to route through.
+
 	if strings.TrimSpace(out.RunAttempt.ID) == "" {
 		return "", errors.New("execute stage launch: adapter returned empty RunAttempt.ID")
 	}
+	// R6A 2026-09-10: capture the minted ratt id once so every return path
+	// below (finalize-refused, adapter-errored, success) names the same
+	// record. Callers (notably execute_stage.launchStub) record this in
+	// result.RunAttemptIDs even on failure so the partial-evidence id is
+	// never anonymous.
+	mintedRattID := strings.TrimSpace(out.RunAttempt.ID)
 	// FinalizeGovernedHarnessRun advances running → verifying (or Close
 	// failed on a non-success RunAttempt.Status). The seam's own
 	// Advance(verifying) after launchStub returns is now a no-op on the
@@ -422,14 +485,40 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	// compares against are the freshly minted launch authority, not
 	// whatever older ids happened to be on the envelope at load-time —
 	// the spec's REQUIRED CHAIN closes here with an exact match.
+	// ExistingRunAttemptIDs carries the prior reservation's RunAttempt
+	// ids so the verifying transition sees the chain (the new RunAttempt
+	// id joins that chain via FinalizeGovernedHarnessRun, not via a
+	// separate write path).
 	if _, finalizeErr := actuator.FinalizeGovernedHarnessRun(actuator.GovernedHarnessFinalizationInput{
-		Store: store, WorkID: workID, Actor: actor, HarnessName: harnessName,
-		RunningPolicyID: launchPolicyID, RunningActionIntentID: launchActionID,
-		Output: out, RunError: nil, Now: now,
+		Store:                 store,
+		WorkID:                workID,
+		Actor:                 actor,
+		HarnessName:           harnessName,
+		RunningPolicyID:       launchPolicyID,
+		RunningActionIntentID: launchActionID,
+		ExistingRunAttemptIDs: wenv.RunAttemptIDs,
+		Output:                out,
+		RunError:              runErr,
+		Now:                   now,
 	}); finalizeErr != nil {
-		return "", fmt.Errorf("execute stage launch: finalize refused: %w", finalizeErr)
+		// R6A 2026-09-10: the packet pins that LaunchViaActuator must keep
+		// returning the minted ratt id alongside the error so callers
+		// (notably execute_stage.launchStub) can record the partial-evidence
+		// id in result.RunAttemptIDs. The canonical finalize path refused
+		// here so the envelope is still in its pre-finalize state; surface
+		// the finalize error so the operator still sees what refused.
+		return mintedRattID, fmt.Errorf("execute stage launch: finalize refused: %w", finalizeErr)
 	}
-	return out.RunAttempt.ID, nil
+	if runErr != nil {
+		// R6A 2026-09-10: slice 2's canonical finalize persisted partial
+		// output and closed the envelope as failed; surface the adapter
+		// error verbatim AND return the minted ratt id so the seam can
+		// record the partial-evidence id in result.RunAttemptIDs and a
+		// future operator query can find the workspace/command/transcript
+		// the crashed attempt left behind.
+		return mintedRattID, runErr
+	}
+	return mintedRattID, nil
 }
 
 // resolvedLaunchTimeout returns the timeout the launch wire places on

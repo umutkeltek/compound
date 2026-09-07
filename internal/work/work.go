@@ -742,6 +742,20 @@ func (s *Store) MintLaunchAuthority(workID, actor, lane, prompt string, now time
 			return fmt.Errorf("MintLaunchAuthority: ActionIntent %s invalid: %w", actionID, err)
 		}
 		policyID := idFor("pol_", "launch", actionID, actor, ts(now))
+		// Slice 2 (aut-launch-canonical 2026-09-07): evaluate the freshly
+		// minted ActionIntent through the canonical policy evaluator so
+		// the PolicyDecision records the OBLIGATIONS and reasons the
+		// evaluator actually derived for THIS action — not a fabricated
+		// "standing grant covers it" string. The standing-grant id, when
+		// matched, becomes evidence on the decision; when no grant is
+		// matched, the baseline outcome / obligations / reasons stand on
+		// their own. The exact (ActionIntentID, PolicyDecisionID) pair
+		// rides the verifying transition regardless of which path chose it.
+		cfg, _, cfgErr := policy.LoadConfig(s.home)
+		if cfgErr != nil {
+			return fmt.Errorf("MintLaunchAuthority: load policy config: %w", cfgErr)
+		}
+		evaluated := policy.Evaluate(ai, cfg, now)
 		pd := envelope.PolicyDecision{
 			Header: envelope.Header{
 				SchemaVersion: envelope.SVPolicyDecision,
@@ -757,9 +771,21 @@ func (s *Store) MintLaunchAuthority(workID, actor, lane, prompt string, now time
 				Uncertainty:   envelope.Uncertainty{Level: "known"},
 			},
 			ActionIntentID:  actionID,
-			Outcome:         "allow",
-			Reasons:         []string{"standing grant " + executeUnattendedGrantID + " covers the unattended launch"},
-			StandingGrantID: executeUnattendedGrantID,
+			Outcome:         evaluated.Outcome,
+			Reasons:         append([]string(nil), evaluated.Reasons...),
+			Obligations:     append([]string(nil), evaluated.Obligations...),
+			StandingGrantID: evaluated.StandingGrantID,
+			ExpiresAt:       evaluated.ExpiresAt,
+		}
+		// Allow-with-obligations MUST carry at least one obligation; if
+		// the evaluator produced an empty obligations slice under that
+		// outcome, the launch has no recorded duty and we MUST refuse
+		// rather than mint a hollow allow.
+		if pd.Outcome == "allow_with_obligations" && len(pd.Obligations) == 0 {
+			return fmt.Errorf("MintLaunchAuthority: policy.Evaluate returned %s with no obligations for action %s", pd.Outcome, actionID)
+		}
+		if pd.Outcome == "deny" || pd.Outcome == "hold" {
+			return fmt.Errorf("MintLaunchAuthority: policy.Evaluate refused action %s (%s): %v", actionID, pd.Outcome, pd.Reasons)
 		}
 		if err := pd.Validate(); err != nil {
 			return fmt.Errorf("MintLaunchAuthority: PolicyDecision %s invalid: %w", policyID, err)

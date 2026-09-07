@@ -130,6 +130,12 @@ func installTimeoutRecordingAdapter(t *testing.T, homePath, harnessName string, 
 	prevCtx := LaunchContext
 	LaunchContext = func() context.Context { return rec }
 	t.Cleanup(func() { LaunchContext = prevCtx })
+	// Slice 2 (aut-launch-canonical 2026-09-07): the LaunchContext
+	// precondition gate requires the install flag too. The test owns
+	// the wire it installs.
+	prevInstalled := launchContextInstalled.Load()
+	SetLaunchContextInstalled(true)
+	t.Cleanup(func() { SetLaunchContextInstalled(prevInstalled) })
 	return adapter
 }
 
