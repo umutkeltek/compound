@@ -443,6 +443,29 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	runInput.StartGuard = actuator.NewGovernedExecutionReservationStartGuard(
 		homePath, workID, launchPolicyID, launchActionID,
 	)
+	// Slice 2 (aut-launch-canonical 2026-09-07): mirror
+	// PrepareGovernedHarnessLaunch. Claude-family adapters carry the launch
+	// generation on the attempt itself: the shared runner persists
+	// RunInput.ExecutionPosture onto the RunAttempt, and the close-time
+	// authority gate reads the (ActionIntent, PolicyDecision) pair off the
+	// attempt. The posture carries the readiness evidence the lane attested;
+	// the runner refuses a mutation-capable posture that lacks the required
+	// evidence kinds, so an unattested bypass fails closed at mint and the
+	// envelope closes as failed instead of launching. Every other adapter
+	// carries only the ActionIntent and binds to the generation through the
+	// sealed same-state event MintLaunchAuthority records.
+	if _, claudeFamily := adapter.(harness.GovernedPermissionAdapter); claudeFamily {
+		posture := &runattempt.ExecutionPosture{
+			PermissionMode:   runInput.PermissionMode,
+			PolicyDecisionID: launchPolicyID,
+		}
+		for _, item := range readiness.Evidence {
+			posture.AuthorityEvidence = append(posture.AuthorityEvidence, runattempt.ExecutionPostureEvidence{
+				Kind: item.Kind, Ref: item.Ref, Revision: item.Revision,
+			})
+		}
+		runInput.ExecutionPosture = posture
+	}
 	// DEFECT 4 fix (AUT-P0-004 2026-09-04): forward the live, cancellable
 	// context so a stuck subprocess is killed at the deadline and a
 	// cancelled heartbeat kills the tree. The shared runner honors

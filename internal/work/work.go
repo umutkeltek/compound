@@ -803,10 +803,45 @@ func (s *Store) MintLaunchAuthority(workID, actor, lane, prompt string, now time
 		// transition compares against. Order matters: this is a wenv
 		// mutation that must land before the wire calls RunInput so the
 		// close-time guard sees the SAME ids.
+		previousWorkSHA256, shaErr := workEnvelopeSHA256(w)
+		if shaErr != nil {
+			return fmt.Errorf("MintLaunchAuthority: seal work %s before mint: %w", workID, shaErr)
+		}
 		w.ActionIntentIDs = append(w.ActionIntentIDs, actionID)
 		w.PolicyDecisionID = policyID
+		if err := w.Validate(); err != nil {
+			return fmt.Errorf("MintLaunchAuthority: refusing to persist invalid work %s: %w", workID, err)
+		}
+		workSHA256, shaErr := workEnvelopeSHA256(w)
+		if shaErr != nil {
+			return fmt.Errorf("MintLaunchAuthority: seal work %s after mint: %w", workID, shaErr)
+		}
 		if err := s.writeJSON(s.workPath(workID), &w); err != nil {
 			return fmt.Errorf("MintLaunchAuthority: rewrite work %s: %w", workID, err)
+		}
+		// Slice 2 (aut-launch-canonical 2026-09-07): the mint IS a lifecycle
+		// mutation, so it is recorded as a sealed same-state event attaching
+		// the exact (ActionIntent, PolicyDecision) pair. Two consumers depend
+		// on it: the custody chain (every envelope writer re-seals, or the
+		// newest seal describes stale bytes) and the close-time authority
+		// gate, which binds an attempt that carries only its ActionIntent —
+		// every non-Claude adapter, whose RunInput gets no execution posture
+		// — to this generation by scanning the events that attached the
+		// pair. Without the event a failed unattended launch could not be
+		// closed ("authority generation is missing") and the envelope stayed
+		// running with an unrecorded attempt.
+		if err := s.appendEvent(Event{
+			TS:                 ts(now),
+			WorkID:             workID,
+			From:               w.State,
+			To:                 w.State,
+			By:                 actor,
+			Note:               "launch authority minted for lane " + lane + " (policy " + pd.Outcome + ")",
+			Attached:           []string{actionID, policyID},
+			PreviousWorkSHA256: previousWorkSHA256,
+			WorkSHA256:         workSHA256,
+		}); err != nil {
+			return fmt.Errorf("MintLaunchAuthority: record launch authority event for %s: %w", workID, err)
 		}
 		minted = w
 		actionIntentID = actionID
