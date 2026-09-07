@@ -2,6 +2,7 @@ package main
 
 import (
 	"compound/internal/work"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -11,6 +12,10 @@ import (
 	"testing"
 	"time"
 )
+
+func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, ciConsole bool, now time.Time) (proofCheckReport, error) {
+	return runProofCheckContext(context.Background(), repoPath, dryRun, baseRef, ciOnly, ciConsole, now)
+}
 
 func TestProofCheckDevelopmentPinsCanonicalFreshnessAndUsesGoCache(t *testing.T) {
 	t.Parallel()

@@ -35,6 +35,7 @@ func runProofCheckSealedSnapshotContext(
 	if err != nil {
 		return proofCheckReport{}, err
 	}
+	ctx = context.WithValue(ctx, proofCheckCacheOriginKey{}, originalRepo)
 	sealedRepo, cleanup, err := prepareProofCheckSealedWorkspace(ctx, originalRepo, source)
 	if err != nil {
 		return proofCheckReport{}, err
@@ -50,12 +51,7 @@ func runProofCheckSealedSnapshotContext(
 		now,
 	)
 	if cleanupErr := cleanup(); cleanupErr != nil {
-		cleanupErr = fmt.Errorf("remove sealed proof workspace: %w", cleanupErr)
-		if runErr == nil {
-			runErr = cleanupErr
-		} else {
-			runErr = errors.Join(runErr, cleanupErr)
-		}
+		runErr = errors.Join(runErr, fmt.Errorf("remove sealed proof workspace: %w", cleanupErr))
 	}
 	report.Repo = originalRepo
 	return report, runErr

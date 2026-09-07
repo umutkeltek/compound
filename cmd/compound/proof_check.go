@@ -982,10 +982,6 @@ func proofCheckPostReportErrorVerdict(report proofCheckReport, path string, caus
 	), true
 }
 
-func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, ciConsole bool, now time.Time) (proofCheckReport, error) {
-	return runProofCheckContext(context.Background(), repoPath, dryRun, baseRef, ciOnly, ciConsole, now)
-}
-
 func runProofCheckContext(ctx context.Context, repoPath string, dryRun bool, baseRef string, ciOnly bool, ciConsole bool, now time.Time) (proofCheckReport, error) {
 	return runProofCheckWithRangeContext(ctx, repoPath, dryRun, strings.TrimSpace(baseRef), "", nil, ciOnly, ciConsole, now)
 }
@@ -1374,10 +1370,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 		}
 		cmd.Env = os.Environ()
 		if proofCheckUsesGo(step) {
-			cmd.Env = append(cmd.Env, "GOTOOLCHAIN=local")
-			if cache, ok := work.ProofGoCache(repo); ok {
-				cmd.Env = append(cmd.Env, "GOCACHE="+cache)
-			}
+			cmd.Env = proofCheckCommandEnv(ctx, repo)
 		}
 		output, err = cmd.CombinedOutput()
 	}
@@ -1525,6 +1518,20 @@ func runProofCheckCodexPreToolUseNativeGateContext(ctx context.Context, repo str
 	return combined, nil
 }
 
+type proofCheckCacheOriginKey struct{}
+
+// Cache identity follows the caller; source execution stays in the sealed checkout.
+func proofCheckCommandEnv(ctx context.Context, repo string) []string {
+	if origin, ok := ctx.Value(proofCheckCacheOriginKey{}).(string); ok {
+		repo = origin
+	}
+	env := append(os.Environ(), "GOTOOLCHAIN=local")
+	if cache, ok := work.ProofGoCache(repo); ok {
+		env = append(env, "GOCACHE="+cache)
+	}
+	return env
+}
+
 func runProofCheckBunTools(ctx context.Context, repo string) ([]byte, error) {
 	matches, err := filepath.Glob(filepath.Join(repo, "tools", "*.test.ts"))
 	if err != nil {
@@ -1543,10 +1550,7 @@ func runProofCheckBunTools(ctx context.Context, repo string) ([]byte, error) {
 	}
 	cmd := proofCheckCommandContext(ctx, "bun", args...)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
-	if cache, ok := work.ProofGoCache(repo); ok {
-		cmd.Env = append(cmd.Env, "GOCACHE="+cache)
-	}
+	cmd.Env = proofCheckCommandEnv(ctx, repo)
 	return cmd.CombinedOutput()
 }
 

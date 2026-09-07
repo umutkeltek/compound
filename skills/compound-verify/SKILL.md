@@ -132,6 +132,12 @@ Two corollaries worth their own line:
    Canonical gates execute from a detached temporary checkout of the sealed HEAD,
    with only the five ceremony-owned ignored inputs copied as snapshots; the
    mutable caller worktree is never the gate execution surface.
+   Go build-cache identity belongs to the original caller worktree, not the
+   temporary sealed checkout: repeated batteries reuse that caller's cache while
+   sibling worktrees stay isolated. Ordinary gates and Bun tool children inherit
+   the same cache selection; `COMPOUND_PROOF_SHARED_GOCACHE=1` still preserves the
+   inherited `GOCACHE`. Cache reuse does not replace the canonical `-count=1` tests
+   or prove a speedup; measure complete comparable runs before claiming one.
 
    Since `fc4cd8e3` the home-reading gates (`memory doctor`, workbench projection, the attention
    and agents console smokes) each seed and own a temp `COMPOUND_HOME` and assert its content, so

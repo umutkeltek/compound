@@ -17,6 +17,7 @@ import (
 )
 
 func TestCanonicalProofGatesReadSealedHeadDuringTransientCallerMutation(t *testing.T) {
+	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	repo := initCompoundCommandGitRepo(t)
 	sentinelPath := filepath.Join(repo, "sealed-sentinel.txt")
 	const sealedBody = "sealed candidate bytes\n"
@@ -41,6 +42,7 @@ func TestCanonicalProofGatesReadSealedHeadDuringTransientCallerMutation(t *testi
 	allowPath := filepath.Join(controlDir, "allow")
 	observedPath := filepath.Join(controlDir, "observed")
 	observedDirPath := filepath.Join(controlDir, "observed-dir")
+	observedCachePath := filepath.Join(controlDir, "observed-cache")
 	observedCompletePath := filepath.Join(controlDir, "observed-complete")
 	oncePath := filepath.Join(controlDir, "once")
 	gatePath := filepath.Join(controlDir, "proof-gate")
@@ -51,6 +53,7 @@ if mkdir "$PROOF_GATE_ONCE" 2>/dev/null; then
     sleep 0.01
   done
   pwd > "$PROOF_GATE_OBSERVED_DIR"
+  printf '%s\n' "$GOCACHE" > "$PROOF_GATE_OBSERVED_CACHE"
   cat sealed-sentinel.txt > "$PROOF_GATE_OBSERVED"
   : > "$PROOF_GATE_OBSERVED_COMPLETE"
 fi
@@ -64,6 +67,7 @@ exit 0
 	t.Setenv("PROOF_GATE_ALLOW", allowPath)
 	t.Setenv("PROOF_GATE_OBSERVED", observedPath)
 	t.Setenv("PROOF_GATE_OBSERVED_DIR", observedDirPath)
+	t.Setenv("PROOF_GATE_OBSERVED_CACHE", observedCachePath)
 	t.Setenv("PROOF_GATE_OBSERVED_COMPLETE", observedCompletePath)
 
 	originalResolver := proofCheckRuntimeExecutable
@@ -143,6 +147,18 @@ exit 0
 	}
 	if status := proofSourceGitOutput(t, repo, "status", "--porcelain"); status != "" {
 		t.Fatalf("caller worktree left dirty after proof: %q", status)
+	}
+	observedCache, err := os.ReadFile(observedCachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, ok := work.ProofGoCache(repo)
+	if !ok {
+		t.Fatal("no cache chosen for original caller")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(want) })
+	if got := strings.TrimSpace(string(observedCache)); got != want {
+		t.Fatalf("canonical gate cache = %q, want original caller cache %q (sealed cwd %q)", got, want, sealedGateDir)
 	}
 }
 
