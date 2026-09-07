@@ -163,6 +163,59 @@ func TestGoTestGateCarriesExplicitDeliberateTimeout(t *testing.T) {
 	t.Fatalf("no go-test step found in proofCheckSteps inventory")
 }
 
+func TestCanonicalGoGatesShareSourceInventoryDriver(t *testing.T) {
+	t.Parallel()
+	steps, err := proofCheckSteps("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{
+		"go-test":  {"go", "run", "./scripts/testbattery"},
+		"go-vet":   {"go", "run", "./scripts/testbattery", "vet"},
+		"go-build": {"go", "run", "./scripts/testbattery", "build"},
+	}
+	for _, step := range steps {
+		command, ok := want[step.Name]
+		if !ok {
+			continue
+		}
+		if !step.CIPortable || !proofCheckUsesGo(step) || !reflect.DeepEqual(step.Command, command) {
+			t.Errorf("gate %s: command=%v portable=%t; want shared source driver %v", step.Name, step.Command, step.CIPortable, command)
+		}
+		delete(want, step.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing source gates: %v", want)
+	}
+}
+
+func TestCanonicalGoGatesBindEveryInventoryToSealedHead(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("a", 40)
+	steps, err := proofCheckSteps("", head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, step := range steps {
+		if step.Name != "go-test" && step.Name != "go-vet" && step.Name != "go-build" {
+			continue
+		}
+		count++
+		want := []string{"go", "run", "./scripts/testbattery"}
+		if step.Name != "go-test" {
+			want = append(want, strings.TrimPrefix(step.Name, "go-"))
+		}
+		want = append(want, "--source-head", head)
+		if !reflect.DeepEqual(step.Command, want) {
+			t.Errorf("%s lost sealed source authority: %v; want %v", step.Name, step.Command, want)
+		}
+	}
+	if count != 3 {
+		t.Fatalf("sealed source gates = %d; want 3", count)
+	}
+}
+
 // Pin the pre-isolation inventory, not a second call to the same generator.
 func TestProofCheckPackageIsolationPreservesCanonicalGateInventory(t *testing.T) {
 	t.Parallel()

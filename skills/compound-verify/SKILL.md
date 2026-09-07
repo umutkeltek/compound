@@ -104,10 +104,21 @@ Two corollaries worth their own line:
    `battery: FAILED release_pending=true`, and exits nonzero. The installed-runtime Workbench
    artifact is published only after green governed completion and release; candidate,
    release-pending, failed, invalid, dry-run, and CI reports cannot consume that action.
-   Green means: `go run ./scripts/testbattery` (every listed package once with `-count=1 -timeout=40m`; general packages first, release durability tests alone next, home tests alone last), `go vet ./...`, `go build ./...`, `git diff --check`,
+   Green means: `go run ./scripts/testbattery` (every source package once with `-count=1 -timeout=40m`; general packages first, release durability tests alone next, home tests alone last), `go run ./scripts/testbattery vet`, `go run ./scripts/testbattery build`, `git diff --check`,
    `architecture doctor --strict`, workbench projection, `memory doctor`, and the public redact
    scan of changed files all passed. Any red stops the close — fix or escalate, never weaken the
    check.
+
+   All three Go gates derive package directories from Git tracked/staged files plus nonignored
+   new source, then ask Go to resolve them. Copied ignored evidence remains present but cannot
+   add packages. No private directory-name allowlist is used. Go still consumes generated files
+   inside owned packages; a new generated-only package needs a tracked or nonignored Go source
+   anchor. Test-only packages are tested and vetted, but are not standalone build targets.
+   Normal platform/build-tag, testdata, hidden-directory and vendor semantics remain Go's;
+   unsupported nested source modules, missing/symlinked source and discovery errors refuse.
+   Canonical commands also bind the existing sealed HEAD with --source-head SHA and require
+   clean tracked/index/nonignored-untracked state before and after each Go gate. Source left
+   behind by a test fails that gate and prevents a later gate accepting a different inventory.
 
    The certifying base is a caller-captured immutable full SHA, not
    `git_delivery.expected_base_sha`; Compound resolves it once. A dirty or uncommitted candidate

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -105,14 +106,23 @@ func runGo(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 }
 
 func main() {
-	if len(os.Args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: testbattery (runs every Go package; no selectors)")
+	mode := "test"
+	args := os.Args[1:]
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		mode, args = args[0], args[1:]
+	}
+	flags := flag.NewFlagSet("testbattery", flag.ContinueOnError)
+	sourceHead := flags.String("source-head", "", "require this sealed commit and clean source before and after the gate")
+	if flags.Parse(args) != nil || flags.NArg() != 0 ||
+		(mode != "test" && mode != "vet" && mode != "build") ||
+		(*sourceHead != "" && !sourceCommit.MatchString(*sourceHead)) {
+		fmt.Fprintln(os.Stderr, "usage: testbattery [test|vet|build] [--source-head SHA] (all source packages; no selectors)")
 		os.Exit(2)
 	}
 	// Only prevent subsequent launches after the owner's signal; children
 	// remain in its group. Standalone interruption likewise uses group signals.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	err := runBattery(ctx, runGo, os.Stdout, os.Stderr)
+	err := runBoundSourceGate(ctx, mode, *sourceHead, os.Stdout, os.Stderr)
 	stop()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "testbattery:", err)
