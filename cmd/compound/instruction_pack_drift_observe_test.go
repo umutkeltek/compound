@@ -46,6 +46,7 @@ func writeInstructionPackDriftObserveFixture(t *testing.T) (homePath, targetPath
 	}
 	// Initial render populates latest.json so a clean baseline exists for
 	// the drift comparator to compare against.
+	seedCLIInstructionPackContext(t, homePath, "claude_code", "")
 	if _, err := harness.RenderInstructionPack(homePath, "claude_code", "", cliTestNow); err != nil {
 		t.Fatal(err)
 	}

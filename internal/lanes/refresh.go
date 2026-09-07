@@ -91,8 +91,13 @@ func refreshLaneContractCompile(opts RefreshLaneOptions, harnessName string, def
 		Cwd:     defaultLane.Cwd,
 		Task:    defaultLane.Task,
 	}
-	if _, err := contract.ResolveOrientationIdentity(in, harness.DefaultRegistry()); err != nil {
+	in, err = contract.ResolveOrientationIdentity(in, harness.DefaultRegistry())
+	if err != nil {
 		return fmt.Errorf("resolve orientation identity: %w", err)
+	}
+	in.RepoKind, in.RepoKindVia, err = contract.ResolveRepoKindWithHome(opts.HomePath, "", in.Cwd)
+	if err != nil {
+		return fmt.Errorf("resolve repository kind: %w", err)
 	}
 	runtime, err := contract.MaterializeRuntime(in, pol, opts.HomePath, opts.Now)
 	if err != nil {
@@ -104,6 +109,9 @@ func refreshLaneContractCompile(opts RefreshLaneOptions, harnessName string, def
 	}
 	if _, err := contract.RecordRuntimeMaterialization(opts.HomePath, sealed); err != nil {
 		return fmt.Errorf("record runtime materialization: %w", err)
+	}
+	if _, err := contract.RenderInstructionPackForContext(opts.HomePath, harnessName, "", sealed.ContextPack.ID, opts.Now); err != nil {
+		return fmt.Errorf("bind instruction-pack context: %w", err)
 	}
 	return nil
 }
@@ -312,17 +320,8 @@ func RefreshLane(opts RefreshLaneOptions, harnessName string) (LaneVerdict, erro
 	// is recorded; the operator must seed config/lane-defaults.yaml or
 	// run contract compile by hand. This is the R3B "loud skip" branch.
 	//
-	// CRITICAL: contract compile writes a SINGLE
-	// contracts/effective/latest.json that all lanes reference. Running
-	// it inside a per-lane loop overwrites earlier lanes' compile with
-	// later lanes', so the earlier lanes' freshly-rendered packs end up
-	// referencing a no-longer-on-disk compile and self-report drift.
-	// The fix is to compile AT MOST ONCE per RefreshLane call, and
-	// only when the operator explicitly seeded lane defaults — which
-	// signals they want the installer to keep their compile current.
-	// When no lane defaults are recorded the operator owns the
-	// compile lifecycle and RefreshLane just renders against whatever
-	// compile they last ran (skipping the ladder's compile step).
+	// The named canonical context is selected explicitly. Other orientations may
+	// advance their own projections without rebinding this installed consumer.
 	defaultLane, err := LoadLaneDefault(opts.HomePath, harnessName)
 	if err != nil {
 		v.Status = StatusError
@@ -471,48 +470,39 @@ func RenderVerdict(w io.Writer, v LaneVerdict) {
 // the per-lane loop never has to live in cmd/compound (which is
 // line-budgeted).
 //
-// Why this is NOT a plain loop over RefreshLane: both hook install
-// and contract compile write SHARED state (the installed-hooks
-// manifest and $COMPOUND_HOME/contracts/effective/latest.json
-// respectively). Running them inside the per-lane loop would have
-// later lanes overwrite earlier lanes' revisions/compiles, causing
-// the earlier lanes' freshly-rendered packs to reference
-// no-longer-on-disk state and self-report drift on the next operator
-// `--drift` invocation. The fix is to run BOTH steps ONCE up front
-// — hook install for every lane at once, contract compile against
-// the first lane with a recorded (cwd, task) — and then render +
-// drift check each lane's pack against the now-stable shared state.
+// Hook installation changes a shared manifest, so it completes for all lanes
+// before any pack renders. Compile and bind every recorded canonical context;
+// never render all lanes against the first lane's contract.
 func RefreshAllInstalledHarnesses(opts RefreshLaneOptions) ([]LaneVerdict, error) {
+	if opts.Now.IsZero() {
+		opts.Now = time.Now().UTC()
+	}
 	names, err := InstalledHarnesses(opts.HomePath)
 	if err != nil {
 		return nil, err
 	}
-	// Hook install for every lane at once — installs once,
-	// publishes one manifest revision that every lane's pack then
-	// references. Without this, lane N+1's hook install bumps the
-	// manifest sha after lane N's pack was already rendered, and
-	// lane N's pack self-reports drift on the next `--drift`.
+	// Stabilize the shared hook manifest before rendering any pack.
+	hookErrors := make(map[string]error)
 	for _, name := range names {
 		if err := refreshLaneHookInstall(opts, name); err != nil {
-			// Per-lane hook install failure must not skip the other
-			// lanes' verdicts. Continue and let the lane's verdict
-			// reflect the failure.
+			hookErrors[name] = err
 		}
-	}
-	// Compile ONCE up front if any lane has a recorded default; the
-	// compile's (cwd, task) is taken from whichever lane is first in
-	// sorted order, since contract compile's effective contract is
-	// home-global, not per-lane.
-	for _, name := range names {
-		defaultLane, lerr := LoadLaneDefault(opts.HomePath, name)
-		if lerr != nil || defaultLane.Cwd == "" || defaultLane.Task == "" {
-			continue
-		}
-		_ = refreshLaneContractCompile(opts, name, defaultLane)
-		break
 	}
 	out := make([]LaneVerdict, 0, len(names))
 	for _, name := range names {
+		if err := hookErrors[name]; err != nil {
+			out = append(out, LaneVerdict{Harness: name, Status: StatusError, Detail: "hook install: " + err.Error(),
+				RepairCommand: fmt.Sprintf("compound hook install --harness %s", name)})
+			continue
+		}
+		laneDefault, err := LoadLaneDefault(opts.HomePath, name)
+		if err == nil && laneDefault.Cwd != "" && laneDefault.Task != "" {
+			err = refreshLaneContractCompile(opts, name, laneDefault)
+		}
+		if err != nil {
+			out = append(out, LaneVerdict{Harness: name, Status: StatusError, Detail: "canonical context: " + err.Error()})
+			continue
+		}
 		v, _ := RefreshLaneNoCompile(opts, name)
 		out = append(out, v)
 	}
@@ -545,14 +535,14 @@ func RefreshLaneNoCompile(opts RefreshLaneOptions, harnessName string) (LaneVerd
 	if _, err := harness.RenderInstructionPack(opts.HomePath, harnessName, "", opts.Now); err != nil {
 		v.Status = StatusError
 		v.Detail = "instruction-pack render: " + err.Error()
-		v.RepairCommand = fmt.Sprintf("compound harness instruction-pack --harness %s", harnessName)
+		v.RepairCommand = fmt.Sprintf("compound harness instruction-pack --harness %s --context-pack <ctx_id>", harnessName)
 		return v, nil
 	}
 	report, err := harness.InstructionPackDrift(opts.HomePath, harnessName, "", opts.Now)
 	if err != nil {
 		v.Status = StatusError
 		v.Detail = "drift check: " + err.Error()
-		v.RepairCommand = fmt.Sprintf("compound harness instruction-pack --harness %s --drift", harnessName)
+		v.RepairCommand = fmt.Sprintf("compound harness instruction-pack --harness %s --context-pack <ctx_id>", harnessName)
 		return v, nil
 	}
 	if report.Drifted {

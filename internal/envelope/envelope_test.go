@@ -88,6 +88,7 @@ func TestReceiptEffectiveChanged(t *testing.T) {
 
 func TestAllKindsValidateAndRoundTrip(t *testing.T) {
 	envs := []Envelope{
+		&EffectiveContract{Header: hdr(SVEffectiveContractV01, "contract_legacy"), Harness: "claude_code"},
 		&EffectiveContract{Header: hdr(SVEffectiveContract, "contract_1"), Harness: "claude_code"},
 		&ContextRequest{Header: hdr(SVContextRequest, "ctxreq_1"), Harness: "claude_code", RequestedMode: "execute"},
 		&ContextPack{

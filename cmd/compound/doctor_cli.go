@@ -1188,7 +1188,7 @@ func scanEffectiveContracts(homePath string) (orientByHarness map[string]time.Ti
 			Harness       string `json:"harness"`
 			CreatedAt     string `json:"created_at"`
 		}
-		if json.Unmarshal(data, &head) != nil || head.SchemaVersion != envelope.SVEffectiveContract {
+		if json.Unmarshal(data, &head) != nil || (head.SchemaVersion != envelope.SVEffectiveContract && head.SchemaVersion != envelope.SVEffectiveContractV01) {
 			return nil
 		}
 		alias := surfacingHarnessAlias(head.Harness)

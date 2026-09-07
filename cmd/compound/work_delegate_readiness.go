@@ -226,29 +226,9 @@ func evaluateDelegateHarnessReadiness(req work.DelegateHarnessReadinessRequest) 
 }
 
 func delegateBlockingInstructionPackDrift(driftDetails []string) []string {
-	var blocking []string
-	contractRotated := false
-	bodyChanged := false
-	for _, detail := range driftDetails {
-		switch {
-		case strings.HasPrefix(detail, "effective_contract layer drifted"):
-			contractRotated = true
-		case detail == "managed pack body content_sha256 differs":
-			bodyChanged = true
-		default:
-			blocking = append(blocking, detail)
-		}
-	}
-	if len(blocking) > 0 {
-		if bodyChanged {
-			blocking = append(blocking, "managed pack body content_sha256 differs")
-		}
-		return blocking
-	}
-	if bodyChanged && !contractRotated {
-		return []string{"managed pack body content_sha256 differs"}
-	}
-	return nil
+	// Scoped contracts no longer rotate because unrelated contexts materialize.
+	// Every remaining difference is real drift of this installed consumer.
+	return driftDetails
 }
 
 func delegateActivationArgvReadiness(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessEvidence, string) {
@@ -415,9 +395,9 @@ func validateDelegateInstructionContext(req work.DelegateHarnessReadinessRequest
 		details = append(details, "instruction_pack: context pack work identity does not match")
 	}
 
-	const latestContractRef = "contracts/effective/latest.json"
-	if filepath.ToSlash(filepath.Clean(pack.Roster.EffectiveContract.Ref)) != latestContractRef {
-		details = append(details, "instruction_pack: effective_contract ref is not the owned latest projection")
+	bound, err := harness.ReadInstructionPackContract(req.HomePath, normalizeDelegateReadinessHarness(req.Harness), pack.Roster.EffectiveContract.Ref)
+	if err != nil || bound.Revision != pack.Roster.EffectiveContract.Revision {
+		details = append(details, "instruction_pack: effective_contract scoped binding is unresolved or changed")
 		return evidence, details
 	}
 	if normalizeDelegateReadinessHarness(effective.Harness) != normalizeDelegateReadinessHarness(req.Harness) {

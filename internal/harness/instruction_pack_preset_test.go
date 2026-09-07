@@ -125,11 +125,11 @@ func TestRenderInstructionPack_P2_PresetForksPathAndIdentity(t *testing.T) {
 func TestRenderInstructionPack_P3_TwoPresetsDistinctAndEachDriftClean(t *testing.T) {
 	homePath, _, _ := buildInstructionPackFullFixture(t)
 
-	presetA, err := RenderInstructionPack(homePath, "claude_code", "preset-a", instructionPackTestNow)
+	presetA, err := RenderInstructionPackWithContractRef(homePath, "claude_code", "preset-a", instructionPackFixtureContractRef(), instructionPackTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	presetB, err := RenderInstructionPack(homePath, "claude_code", "preset-b", instructionPackTestNow)
+	presetB, err := RenderInstructionPackWithContractRef(homePath, "claude_code", "preset-b", instructionPackFixtureContractRef(), instructionPackTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}

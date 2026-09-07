@@ -19,7 +19,7 @@ import (
 	"compound/internal/work"
 )
 
-func TestEvaluateDelegateHarnessReadinessRejectsCleanDegradedInstructionPack(t *testing.T) {
+func TestEvaluateDelegateHarnessReadinessRejectsUnboundInstructionPack(t *testing.T) {
 	t.Parallel()
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
@@ -29,11 +29,8 @@ func TestEvaluateDelegateHarnessReadinessRejectsCleanDegradedInstructionPack(t *
 		t.Fatal(err)
 	}
 	drift, err := harness.InstructionPackDrift(homePath, harnessName, "", now.Add(time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if drift.Drifted {
-		t.Fatalf("fixture premise: freshly rendered degraded pack must be drift-clean: %+v", drift)
+	if err == nil {
+		t.Fatalf("unbound instruction pack must not verify clean: %+v", drift)
 	}
 
 	result, err := evaluateDelegateHarnessReadiness(work.DelegateHarnessReadinessRequest{
@@ -49,11 +46,34 @@ func TestEvaluateDelegateHarnessReadinessRejectsCleanDegradedInstructionPack(t *
 		t.Fatalf("clean-but-degraded instruction pack admitted: %+v", result)
 	}
 	details := strings.Join(result.Details, "\n")
+	if !strings.Contains(details, "instruction_pack: instruction-pack effective contract is unbound") {
+		t.Fatalf("unbound authority refusal missing: %s", details)
+	}
+}
+
+func TestEvaluateDelegateHarnessReadinessRejectsBoundButMissingLayers(t *testing.T) {
+	t.Parallel()
+	homePath := t.TempDir()
+	const harnessName = "claude_minimax"
+	seedCLIInstructionPackContext(t, homePath, harnessName, "")
+	drift, err := harness.InstructionPackDrift(homePath, harnessName, "", cliTestNow)
+	if err != nil || drift.Drifted {
+		t.Fatalf("bound fixture must be drift-clean: %+v, %v", drift, err)
+	}
+	result, err := evaluateDelegateHarnessReadiness(work.DelegateHarnessReadinessRequest{
+		HomePath: homePath, HarnessHome: t.TempDir(), Harness: harnessName, Now: cliTestNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Ready {
+		t.Fatalf("bound but incomplete pack admitted: %+v", result)
+	}
+	details := strings.Join(result.Details, "\n")
 	for _, want := range []string{
 		"instruction_pack: policy_core is absent",
 		"instruction_pack: posture is absent",
 		"instruction_pack: installed_hooks roster is absent",
-		"instruction_pack: effective_contract roster is absent",
 	} {
 		if !strings.Contains(details, want) {
 			t.Fatalf("details = %q, want %q", details, want)
@@ -737,6 +757,7 @@ func buildReadyDelegateHarnessFixtureAt(t *testing.T, workID string, now time.Ti
 	effective := envelope.EffectiveContract{
 		Header:             delegateReadinessHeader(envelope.SVEffectiveContract, "contract_"+workID, workID, workspace, now),
 		Harness:            harnessName,
+		ContextKey:         contract.Compile(contract.Input{Harness: harnessName, Cwd: workspace, TaskContract: taskContract}, contract.DefaultPolicy(), now).ContextKey,
 		TaskContract:       taskContract,
 		ActiveInstructions: []string{},
 		ActiveHooks:        []string{"hook://" + harnessName + "/PreToolUse"},
@@ -763,7 +784,7 @@ func buildReadyDelegateHarnessFixtureAt(t *testing.T, workID string, now time.Ti
 	if _, err := contract.RecordRuntimeMaterialization(compoundHome, runtime); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := harness.RenderInstructionPack(compoundHome, harnessName, "", now); err != nil {
+	if _, err := contract.RenderInstructionPackForContext(compoundHome, harnessName, "", runtime.ContextPack.ID, now); err != nil {
 		t.Fatal(err)
 	}
 	effective = runtime.EffectiveContract
@@ -888,6 +909,7 @@ func recordDelegateRuntimeForTest(
 	now time.Time,
 ) contract.RuntimeMaterialization {
 	t.Helper()
+	effective.ContextKey = contract.Compile(contract.Input{Harness: effective.Harness, Cwd: workspace, TaskContract: effective.TaskContract}, contract.DefaultPolicy(), now).ContextKey
 	contextPack := validCLIContextPack()
 	contextPack.ID = "ctx_" + strings.TrimPrefix(workID, "work_") + "_latest"
 	contextPack.IDs = envelope.IDs{WorkID: workID, ContractID: effective.ID}

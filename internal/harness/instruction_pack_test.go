@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/envelope"
 	"gopkg.in/yaml.v3"
 )
 
@@ -50,17 +51,53 @@ func writeInstalledHooksManifest(t *testing.T, homePath string, hooks []installe
 	}
 }
 
-// writeContractLatest writes contracts/effective/latest.json so the
-// EffectiveContractRef layer has a real source to hash (we don't need the
-// full schema validation here — the layer just needs a body to sha).
+// The fixture writes a content-sealed immutable contract and its scoped
+// projection, matching the materialization owner's production byte contract.
+func instructionPackFixtureContractRef() string {
+	return filepath.ToSlash(filepath.Join("contracts", "effective", "scopes", digest([]byte("synthetic-instruction-context")), "latest.json"))
+}
+
 func writeContractLatest(t *testing.T, homePath string, body []byte) {
 	t.Helper()
-	path := filepath.Join(homePath, "contracts", "effective", "latest.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	var ec envelope.EffectiveContract
+	if err := json.Unmarshal(body, &ec); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, body, 0o644); err != nil {
+	ec.Header = envelope.Header{
+		SchemaVersion: envelope.SVEffectiveContract,
+		CreatedAt:     instructionPackTestNow.Format(time.RFC3339), Privacy: "private", Risk: "tier0",
+		Authority: envelope.Authority{SourceClass: "runtime", Status: "current"},
+	}
+	ec.Harness = "claude_code"
+	ec.ContextKey = digest([]byte("synthetic-instruction-context"))
+	body, err := json.Marshal(ec)
+	if err != nil {
 		t.Fatal(err)
+	}
+	ec.ID = "contract_" + digest(body)[:16]
+	body, err = json.Marshal(ec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	immutablePath := filepath.Join(homePath, "contracts", "effective", instructionPackTestNow.Format("2006-01-02"), ec.ID+".json")
+	if err := os.MkdirAll(filepath.Dir(immutablePath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(immutablePath, body, 0644); err != nil {
+		t.Fatal(err)
+	}
+	ref := instructionPackFixtureContractRef()
+	path := filepath.Join(homePath, filepath.FromSlash(ref))
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(InstructionPackPath(homePath, "claude_code", "")); os.IsNotExist(err) {
+		if _, err := RenderInstructionPackWithContractRef(homePath, "claude_code", "", ref, instructionPackTestNow); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -316,8 +353,8 @@ func TestRenderInstructionPack_F6_EffectiveContractLayer(t *testing.T) {
 	if first.Roster.EffectiveContract.Absent {
 		t.Fatalf("EffectiveContract must populate when latest.json exists: %+v", first.Roster.EffectiveContract)
 	}
-	if first.Roster.EffectiveContract.Ref != filepath.Join("contracts", "effective", "latest.json") {
-		t.Fatalf("EffectiveContract.Ref = %q, want contracts/effective/latest.json", first.Roster.EffectiveContract.Ref)
+	if first.Roster.EffectiveContract.Ref != instructionPackFixtureContractRef() {
+		t.Fatalf("EffectiveContract.Ref = %q, want scoped effective contract", first.Roster.EffectiveContract.Ref)
 	}
 
 	bodyB := []byte(`{"schema_version":"compound.effective_contract.v0.1","header":{"id":"contract_seed"},"harness":"claude_code","active_instructions":["Bump"],"active_decisions":[]}` + "\n")
@@ -455,6 +492,10 @@ func TestInstructionPackDrift_F10_DoesNotMutateOnDisk(t *testing.T) {
 // so the intake seam sees a card.
 func TestInstructionPackDrift_F11_MissingOnDiskIsDrift(t *testing.T) {
 	homePath, _, _ := buildInstructionPackFullFixture(t)
+	// Remove the synthetic installed pack to model an absent consumer.
+	if err := os.Remove(InstructionPackPath(homePath, "claude_code", "")); err != nil {
+		t.Fatal(err)
+	}
 	// Deliberately DO NOT call RenderInstructionPack — no latest.json on
 	// disk; the comparator should still report drifted with the missing
 	// detail and an empty ObservedDigest.
@@ -508,5 +549,6 @@ func buildInstructionPackFullFixture(t *testing.T) (homePath, targetPath string,
 	if err := WriteHarnessArtifactManifest(homePath, []HarnessArtifact{render.Artifact}); err != nil {
 		t.Fatal(err)
 	}
+	writeContractLatest(t, homePath, []byte(`{"harness":"claude_code"}`))
 	return homePath, targetPath, render
 }

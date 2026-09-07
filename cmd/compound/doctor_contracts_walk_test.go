@@ -188,6 +188,20 @@ const wantContractsWalkGoldenMissingDirs = `[
 // context/packs exists at all. filepath.WalkDir's own root-stat error must be
 // swallowed exactly as it is today -- no crash, everything reads as
 // never/absent -- and the merge must not change that.
+func TestDoctorEffectiveContractWalkRecognizesBothSchemaVersions(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Now().UTC()
+	for i, version := range []string{"compound.effective_contract.v0.1", "compound.effective_contract.v0.2"} {
+		id, name := fmt.Sprintf("contract_historical_%d", i), fmt.Sprintf("synthetic-harness-%d", i)
+		writeJSONFileAt(t, filepath.Join(homePath, "contracts", "effective", "2026-06-28", id+".json"),
+			fmt.Sprintf(`{"schema_version":%q,"id":%q,"harness":%q,"created_at":%q}`, version, id, name, now.Format(time.RFC3339)))
+	}
+	orient, byContract := scanEffectiveContracts(homePath)
+	if len(orient) != 2 || len(byContract) != 2 {
+		t.Fatalf("historical/current versions lost: orient=%v contracts=%v", orient, byContract)
+	}
+}
+
 func TestDoctorContractsEffectiveWalkGoldenMissingDirs(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir() // no contracts/, no context/ at all

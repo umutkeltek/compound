@@ -18,17 +18,18 @@ import (
 
 // Schema versions (compound.<kind>.v0.1) and their id prefixes.
 const (
-	SVEffectiveContract = "compound.effective_contract.v0.1"
-	SVContextRequest    = "compound.context_request.v0.1"
-	SVContextPack       = "compound.context_pack.v0.1"
-	SVWork              = "compound.work.v0.1"
-	SVSourceEnvelope    = "compound.source_envelope.v0.1"
-	SVActionIntent      = "compound.action_intent.v0.1"
-	SVPolicyDecision    = "compound.policy_decision.v0.1"
-	SVHookEvent         = "compound.hook_event.v0.1"
-	SVTraceEnvelope     = "compound.trace_envelope.v0.1"
-	SVReceipt           = "compound.receipt.v0.1"
-	SVTransition        = "compound.transition.v0.1"
+	SVEffectiveContractV01 = "compound.effective_contract.v0.1"
+	SVEffectiveContract    = "compound.effective_contract.v0.2"
+	SVContextRequest       = "compound.context_request.v0.1"
+	SVContextPack          = "compound.context_pack.v0.1"
+	SVWork                 = "compound.work.v0.1"
+	SVSourceEnvelope       = "compound.source_envelope.v0.1"
+	SVActionIntent         = "compound.action_intent.v0.1"
+	SVPolicyDecision       = "compound.policy_decision.v0.1"
+	SVHookEvent            = "compound.hook_event.v0.1"
+	SVTraceEnvelope        = "compound.trace_envelope.v0.1"
+	SVReceipt              = "compound.receipt.v0.1"
+	SVTransition           = "compound.transition.v0.1"
 )
 
 // Enum sets — the canonical vocabularies referenced across the docs.
@@ -416,6 +417,8 @@ type SourceRev struct {
 }
 type EffectiveContract struct {
 	Header
+	// ContextKey identifies the canonical orientation request, not its mutable contents.
+	ContextKey         string            `json:"context_key,omitempty"`
 	Harness            string            `json:"harness"`
 	TaskMode           string            `json:"task_mode,omitempty"`
 	TaskContract       TaskContract      `json:"task_contract,omitzero"`
@@ -438,7 +441,14 @@ type EffectiveContract struct {
 func (e *EffectiveContract) Kind() string { return "effective_contract" }
 func (e *EffectiveContract) Validate() error {
 	v := &verr{}
-	e.Header.validate(v, SVEffectiveContract, "contract_")
+	version := SVEffectiveContract
+	if e.SchemaVersion == SVEffectiveContractV01 {
+		version = SVEffectiveContractV01
+	}
+	e.Header.validate(v, version, "contract_")
+	if err := e.ValidateSchemaVersion(); err != nil {
+		v.addf("%v", err)
+	}
 	v.req("harness", e.Harness)
 	validateTaskContract(v, "task_contract", e.TaskContract)
 	if taskMode, contractMode := strings.TrimSpace(e.TaskMode), strings.TrimSpace(e.TaskContract.Mode); taskMode != "" && contractMode != "" && taskMode != contractMode {
@@ -1707,17 +1717,18 @@ func (e *Transition) Validate() error {
 // --- Registry / dispatch ---
 
 var registry = map[string]func() Envelope{
-	SVEffectiveContract: func() Envelope { return &EffectiveContract{} },
-	SVContextRequest:    func() Envelope { return &ContextRequest{} },
-	SVContextPack:       func() Envelope { return &ContextPack{} },
-	SVWork:              func() Envelope { return &WorkEnvelope{} },
-	SVSourceEnvelope:    func() Envelope { return &SourceEnvelope{} },
-	SVActionIntent:      func() Envelope { return &ActionIntent{} },
-	SVPolicyDecision:    func() Envelope { return &PolicyDecision{} },
-	SVHookEvent:         func() Envelope { return &HookEvent{} },
-	SVTraceEnvelope:     func() Envelope { return &TraceEnvelope{} },
-	SVReceipt:           func() Envelope { return &Receipt{} },
-	SVTransition:        func() Envelope { return &Transition{} },
+	SVEffectiveContractV01: func() Envelope { return &EffectiveContract{} },
+	SVEffectiveContract:    func() Envelope { return &EffectiveContract{} },
+	SVContextRequest:       func() Envelope { return &ContextRequest{} },
+	SVContextPack:          func() Envelope { return &ContextPack{} },
+	SVWork:                 func() Envelope { return &WorkEnvelope{} },
+	SVSourceEnvelope:       func() Envelope { return &SourceEnvelope{} },
+	SVActionIntent:         func() Envelope { return &ActionIntent{} },
+	SVPolicyDecision:       func() Envelope { return &PolicyDecision{} },
+	SVHookEvent:            func() Envelope { return &HookEvent{} },
+	SVTraceEnvelope:        func() Envelope { return &TraceEnvelope{} },
+	SVReceipt:              func() Envelope { return &Receipt{} },
+	SVTransition:           func() Envelope { return &Transition{} },
 }
 
 // New returns a zero envelope for a schema_version, or nil if unknown.

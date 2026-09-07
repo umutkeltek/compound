@@ -80,13 +80,6 @@ func installedHooksManifestPath(homePath string) string {
 	return filepath.Join(homePath, "config", "installed-hooks.yaml")
 }
 
-// effectiveContractLatestPath mirrors the paired runtime materializer's
-// `contracts/effective/latest.json` projection. Same rationale as
-// installedHooksManifestPath.
-func effectiveContractLatestPath(homePath string) string {
-	return filepath.Join(homePath, "contracts", "effective", "latest.json")
-}
-
 // validateInstructionPackPreset trims and validates a preset name. The preset
 // becomes a filesystem path segment, so a value carrying a separator or a
 // parent-dir hop would let a caller write outside the instruction-packs tree.
@@ -159,7 +152,7 @@ func RenderInstructionPack(homePath, harness, preset string, now time.Time) (Ins
 // the result to the on-disk latest.json. Splitting render from write keeps
 // the drift comparator read-only (F10) — without the split, every drift
 // invocation would self-cancel by writing its own fresh pack first.
-func renderInstructionPack(homePath, harness, preset string, now time.Time) (InstructionPack, error) {
+func renderInstructionPack(homePath, harness, preset string, now time.Time, selectedContract ...string) (InstructionPack, error) {
 	harness = strings.TrimSpace(harness)
 	if harness == "" {
 		return InstructionPack{}, fmt.Errorf("harness required")
@@ -206,12 +199,30 @@ func renderInstructionPack(homePath, harness, preset string, now time.Time) (Ins
 		}
 	}
 
-	contractRef := effectiveContractLatestPath(homePath)
+	contractRef := ""
+	if len(selectedContract) > 0 {
+		contractRef = selectedContract[0]
+	} else {
+		body, readErr := os.ReadFile(InstructionPackPath(homePath, harness, preset))
+		if readErr == nil {
+			var installed InstructionPack
+			if err := json.Unmarshal(body, &installed); err != nil {
+				return InstructionPack{}, fmt.Errorf("decode installed instruction pack: %w", err)
+			}
+			if installed.Harness != harness || installed.Preset != preset {
+				return InstructionPack{}, fmt.Errorf("installed instruction-pack identity mismatch")
+			}
+			contractRef = installed.Roster.EffectiveContract.Ref
+		} else if !os.IsNotExist(readErr) {
+			return InstructionPack{}, readErr
+		}
+	}
 	effectiveContract := InstructionPackRosterRef{Absent: true}
-	if body, err := os.ReadFile(contractRef); err == nil {
-		effectiveContract = InstructionPackRosterRef{
-			Ref:      effectiveContractLatestRel(homePath),
-			Revision: "sha256:" + digest(body),
+	if contractRef != "" {
+		var err error
+		effectiveContract, err = ReadInstructionPackContract(homePath, harness, contractRef)
+		if err != nil {
+			return InstructionPack{}, err
 		}
 	}
 
@@ -293,6 +304,9 @@ func InstructionPackDrift(homePath, harness, preset string, now time.Time) (Inst
 	var observed InstructionPack
 	if err := json.Unmarshal(body, &observed); err != nil {
 		return InstructionPackDriftReport{}, fmt.Errorf("decode latest.json: %w", err)
+	}
+	if fresh.Roster.EffectiveContract.Absent {
+		return InstructionPackDriftReport{}, fmt.Errorf("instruction-pack effective contract is unbound; render with --context-pack")
 	}
 	observedDigest := instructionPackDriftDigest(observed)
 	report.ObservedDigest = observedDigest
@@ -527,12 +541,6 @@ func writeInstructionPackAtomic(path string, pack InstructionPack) error {
 // home-scoped.
 func installedHooksManifestRel(homePath string) string {
 	return filepath.ToSlash(filepath.Join("config", "installed-hooks.yaml"))
-}
-
-// effectiveContractLatestRel is the mirror for the effective contract
-// latest.json.
-func effectiveContractLatestRel(homePath string) string {
-	return filepath.ToSlash(filepath.Join("contracts", "effective", "latest.json"))
 }
 
 // installedHooksManifestSchemaVersion is referenced only by an explicit

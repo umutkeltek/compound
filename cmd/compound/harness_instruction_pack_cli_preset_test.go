@@ -55,7 +55,7 @@ func TestHarnessInstructionPackCLI_P6_PresetRenderAndDrift(t *testing.T) {
 		args := []string{"instruction-pack", "--harness", "claude_code"}
 		switch action {
 		case "render":
-			args = append(args, "--preset", preset, "--json")
+			args = append(args, "--preset", preset, "--context-pack", os.Getenv("COMPOUND_TEST_INSTRUCTION_PACK_CONTEXT_ID"), "--json")
 		case "drift":
 			args = append(args, "--preset", preset, "--drift", "--json")
 		case "driftmiss":
@@ -110,11 +110,13 @@ func TestHarnessInstructionPackCLI_P6_PresetRenderAndDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	contextID := recordCLIInstructionPackContext(t, homePath, "claude_code")
 	run := func(name, preset, action string) ([]byte, error) {
 		t.Helper()
 		cmd := exec.Command(os.Args[0], "-test.run=^TestHarnessInstructionPackCLI_P6_PresetRenderAndDrift$", "-test.v=false")
 		cmd.Env = append(os.Environ(),
 			"COMPOUND_TEST_INSTRUCTION_PACK_CLI_PRESET_CHILD=1",
+			"COMPOUND_TEST_INSTRUCTION_PACK_CONTEXT_ID="+contextID,
 			"COMPOUND_TEST_INSTRUCTION_PACK_CLI_PRESET_NAME="+preset,
 			"COMPOUND_TEST_INSTRUCTION_PACK_CLI_PRESET_ACTION="+action,
 			"COMPOUND_HOME="+homePath,

@@ -272,8 +272,11 @@ func TestMaterializeOrientContextPackBindsClaudeFamilyAliasesCanonically(t *test
 			if err := json.Unmarshal(body, &effective); err != nil {
 				t.Fatal(err)
 			}
-			if effective.Harness != harness {
-				t.Fatalf("artifact harness = %q, want preserved alias %q", effective.Harness, harness)
+			// Registered aliases share the canonical v0.2 context identity. An
+			// unregistered observational label remains unbindable and unchanged.
+			wantHarness := map[string]string{"claude-code": "claude_code", "claude_lane_opus": "claude_lane_opus"}[harness]
+			if effective.Harness != wantHarness {
+				t.Fatalf("artifact harness = %q, want canonical identity %q", effective.Harness, wantHarness)
 			}
 		})
 	}

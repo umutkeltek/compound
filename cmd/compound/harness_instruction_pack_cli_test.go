@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"compound/internal/contract"
 	"compound/internal/harness"
 )
 
@@ -83,8 +84,9 @@ func TestHarnessInstructionPackCLI_F1_JSONShape(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	contextID := recordCLIInstructionPackContext(t, homePath, "claude_code")
 	out := captureStdout(t, func() {
-		cmdHarness([]string{"instruction-pack", "--harness", "claude_code", "--json"})
+		cmdHarness([]string{"instruction-pack", "--harness", "claude_code", "--context-pack", contextID, "--json"})
 	})
 	var got harness.InstructionPack
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
@@ -191,7 +193,8 @@ func TestHarnessInstructionPackCLI_F4_DriftClean(t *testing.T) {
 	if err := os.WriteFile(authPath, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := harness.RenderInstructionPack(homePath, "claude_code", "", cliTestNow); err != nil {
+	contextID := recordCLIInstructionPackContext(t, homePath, "claude_code")
+	if _, err := contract.RenderInstructionPackForContext(homePath, "claude_code", "", contextID, cliTestNow); err != nil {
 		t.Fatal(err)
 	}
 	filesBefore := countFiles(t, homePath)
@@ -299,5 +302,29 @@ func TestHarnessInstructionPackCLI_F6_DriftEmitWritesObservation(t *testing.T) {
 	}
 	if len(entries) == 0 {
 		t.Fatalf("emission directory must contain at least one batch file")
+	}
+}
+
+func recordCLIInstructionPackContext(t *testing.T, homePath, harnessName string) string {
+	t.Helper()
+	in := contract.Input{Harness: harnessName, Cwd: t.TempDir(), Task: "review synthetic fixtures", RepoKind: "product", RepoKindVia: "flag"}
+	sealed, err := contract.SealRuntimeMaterialization(contract.RuntimeMaterialization{
+		EffectiveContract: contract.Compile(in, contract.DefaultPolicy(), cliTestNow),
+		ContextPack:       contract.Pack(in, contract.DefaultPolicy(), cliTestNow),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := contract.RecordRuntimeMaterialization(homePath, sealed); err != nil {
+		t.Fatal(err)
+	}
+	return sealed.ContextPack.ID
+}
+
+func seedCLIInstructionPackContext(t *testing.T, homePath, harnessName, preset string) {
+	t.Helper()
+	contextID := recordCLIInstructionPackContext(t, homePath, harnessName)
+	if _, err := contract.RenderInstructionPackForContext(homePath, harnessName, preset, contextID, cliTestNow); err != nil {
+		t.Fatal(err)
 	}
 }

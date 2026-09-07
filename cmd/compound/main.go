@@ -1427,13 +1427,22 @@ func cmdHarness(args []string) {
 	if target == "instruction-pack" {
 		harnessName := valueFlag(args[1:], "--harness")
 		if harnessName == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound harness instruction-pack --harness <name> [--preset <name>] [--json] [--drift [--emit-divergence]]")
+			fmt.Fprintln(os.Stderr, "usage: compound harness instruction-pack --harness <name> [--preset <name>] [--context-pack <id>] [--json] [--drift [--emit-divergence]]")
 			os.Exit(2)
 		}
 		// --preset is the optional second identity axis: two switchback
 		// presets over one harness render to distinct preset-scoped packs.
 		// Omitted → today's harness-only path and pack identity, unchanged.
 		presetName := valueFlag(args[1:], "--preset")
+		registered, ok := harness.DefaultRegistry().Get(harnessName)
+		if !ok {
+			die(fmt.Errorf("unknown instruction-pack harness %q", harnessName))
+		}
+		harnessName = registered.Name
+		if hasFlag(args[1:], "--drift") && valueFlag(args[1:], "--context-pack") != "" {
+			fmt.Fprintln(os.Stderr, "--drift verifies the installed binding; --context-pack is render-only")
+			os.Exit(2)
+		}
 		homePath, err := home.Resolve("")
 		die(err)
 		// --drift compares on-disk latest.json against a fresh render
@@ -1482,7 +1491,12 @@ func cmdHarness(args []string) {
 			}
 			return
 		}
-		pack, err := harness.RenderInstructionPack(homePath, harnessName, presetName, time.Now().UTC())
+		var pack harness.InstructionPack
+		if contextID := valueFlag(args[1:], "--context-pack"); contextID != "" {
+			pack, err = contract.RenderInstructionPackForContext(homePath, harnessName, presetName, contextID, time.Now().UTC())
+		} else {
+			pack, err = harness.RenderInstructionPack(homePath, harnessName, presetName, time.Now().UTC())
+		}
 		die(err)
 		if hasFlag(args[1:], "--json") {
 			die(json.NewEncoder(os.Stdout).Encode(pack))

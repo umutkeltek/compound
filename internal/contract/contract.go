@@ -512,6 +512,7 @@ func Compile(in Input, pol OrientationPolicy, now time.Time) envelope.EffectiveC
 	}
 	return envelope.EffectiveContract{
 		Header:             header(envelope.SVEffectiveContract, contractIDForInput(in), now, in),
+		ContextKey:         runtimeContextKey(in),
 		Harness:            in.Harness,
 		TaskMode:           resolvedTaskContract(in).Mode,
 		TaskContract:       resolvedTaskContract(in),
@@ -552,6 +553,9 @@ type RuntimeMaterialization struct {
 // are immutable materialization refs.
 func SealRuntimeMaterialization(runtime RuntimeMaterialization) (RuntimeMaterialization, error) {
 	ec, pack := runtime.EffectiveContract, runtime.ContextPack
+	if err := ec.ValidateSchemaVersion(); err != nil {
+		return RuntimeMaterialization{}, err
+	}
 	if pack.IDs.ContractID != ec.ID {
 		return RuntimeMaterialization{}, fmt.Errorf(
 			"context pack contract_id %q does not match effective contract %q",
@@ -623,6 +627,7 @@ type runtimeSnapshot struct {
 // remain on the ContextPack projection; the descriptor-backed installed
 // entrypoint revision is then bound once into both artifacts.
 func MaterializeRuntime(in Input, pol OrientationPolicy, homePath string, now time.Time) (RuntimeMaterialization, error) {
+	in = canonicalRuntimeInput(in)
 	result := RuntimeMaterialization{
 		EffectiveContract:     Compile(in, pol, now),
 		ContextPack:           Pack(in, pol, now),
@@ -1141,9 +1146,10 @@ func appendSnapshotOfferToPack(pack envelope.ContextPack, runtime runtimeOffer, 
 }
 
 type RuntimeMaterializationArtifactPaths struct {
-	ContractPath string `json:"contract_path"`
-	LatestPath   string `json:"latest_path"`
-	PackPath     string `json:"pack_path"`
+	ScopedLatestPath string `json:"scoped_latest_path,omitempty"`
+	ContractPath     string `json:"contract_path"`
+	LatestPath       string `json:"latest_path"`
+	PackPath         string `json:"pack_path"`
 }
 
 type runtimeMaterializationFS struct {
@@ -1206,6 +1212,12 @@ func recordRuntimeMaterializationWithFS(homePath string, runtime RuntimeMaterial
 		LatestPath:   filepath.Join(homePath, "contracts", "effective", "latest.json"),
 		PackPath:     filepath.Join(homePath, "context", "packs", pack.ID+".json"),
 	}
+	if ec.ContextKey != "" {
+		paths.ScopedLatestPath, err = ScopedEffectiveContractPath(homePath, ec.ContextKey)
+		if err != nil {
+			return RuntimeMaterializationArtifactPaths{}, err
+		}
+	}
 	ecBytes, err := json.MarshalIndent(ec, "", "  ")
 	if err != nil {
 		return RuntimeMaterializationArtifactPaths{}, err
@@ -1235,8 +1247,11 @@ func recordRuntimeMaterializationWithFS(homePath string, runtime RuntimeMaterial
 	items := []staged{
 		{path: paths.ContractPath, body: ecBytes, immutable: true},
 		{path: paths.PackPath, body: packBytes, immutable: true},
-		{path: paths.LatestPath, body: ecBytes},
 	}
+	if paths.ScopedLatestPath != "" {
+		items = append(items, staged{path: paths.ScopedLatestPath, body: ecBytes})
+	}
+	items = append(items, staged{path: paths.LatestPath, body: ecBytes})
 	defer func() {
 		for _, item := range items {
 			if item.temp != "" {
@@ -1379,6 +1394,13 @@ func ReadContextPackContract(homePath, contextPackID string) (ContextPackContrac
 		return ContextPackContractArtifacts{}, fmt.Errorf("EffectiveContract %s invalid: %w", contractID, err)
 	}
 
+	sealed, err := SealRuntimeMaterialization(RuntimeMaterialization{EffectiveContract: effective, ContextPack: pack})
+	if err != nil {
+		return ContextPackContractArtifacts{}, fmt.Errorf("validate immutable runtime pair: %w", err)
+	}
+	if sealed.EffectiveContract.ID != effective.ID || sealed.ContextPack.ID != pack.ID {
+		return ContextPackContractArtifacts{}, fmt.Errorf("immutable runtime pair is unsealed or its content identity changed; materialize a fresh context")
+	}
 	return ContextPackContractArtifacts{
 		ContextPack:               pack,
 		EffectiveContract:         effective,
