@@ -282,10 +282,8 @@ func TestReleaseObservation_ExistingRecordsUnchanged(t *testing.T) {
 	}
 }
 
-//  8. Bounded reading: LoadReleaseObservations reads the sourceobs list
-//     projection ONCE per call. Two consecutive calls (one for each
-//     product) cost ~2 scans total. The list projection is memoized at
-//     the same fingerprint, so a portfolio projection is bounded.
+// Product filtering of the compatibility reader. Every call reads a new
+// snapshot; the portfolio shares one report across its product views.
 func TestReleaseObservation_BoundedReadingByProduct(t *testing.T) {
 	homePath := t.TempDir()
 	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)

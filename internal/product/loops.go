@@ -9,6 +9,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/mem"
+	"compound/internal/sourceobs"
 	"compound/internal/work"
 )
 
@@ -135,6 +136,10 @@ type LoopFreshness struct {
 }
 
 func BuildLoopModel(homePath string, opts LoopOptions) (LoopModel, error) {
+	return buildLoopModel(homePath, opts, sourceobs.LoadReleaseObservationsReport)
+}
+
+func buildLoopModel(homePath string, opts LoopOptions, readRelease func(string, []string, time.Time) (sourceobs.ReleaseObservationsReport, error)) (LoopModel, error) {
 	opts = normalizeLoopOptions(opts)
 	store, err := mem.Open(homePath)
 	if err != nil {
@@ -152,7 +157,7 @@ func BuildLoopModel(homePath string, opts LoopOptions) (LoopModel, error) {
 	if err != nil {
 		return LoopModel{}, err
 	}
-	names, err := productLoopNames(store)
+	metadata, err := productLoopMetadata(store)
 	if err != nil {
 		return LoopModel{}, err
 	}
@@ -161,11 +166,25 @@ func BuildLoopModel(homePath string, opts LoopOptions) (LoopModel, error) {
 		GeneratedAt:   opts.Now.UTC().Format(time.RFC3339),
 		Products:      []ProductLoop{},
 	}
+	var productIDs []string
+	for _, item := range authority.Products {
+		if opts.ProductID == "" || item.ProductID == opts.ProductID {
+			productIDs = append(productIDs, item.ProductID)
+		}
+	}
+	releases := sourceobs.ReleaseObservationsReport{}
+	if len(productIDs) > 0 {
+		releases, err = readRelease(homePath, productIDs, opts.Now)
+		if err != nil {
+			return LoopModel{}, fmt.Errorf("release evidence: %w", err)
+		}
+	}
+	releasesByProduct := releaseReportsByProduct(releases, productIDs)
 	for _, item := range authority.Products {
 		if opts.ProductID != "" && item.ProductID != opts.ProductID {
 			continue
 		}
-		loop, err := buildProductLoop(homePath, item.ProductID, names[item.ProductID], reviews, consumedActions, opts)
+		loop, err := buildProductLoop(homePath, item.ProductID, metadata[item.ProductID], reviews, consumedActions, releasesByProduct[item.ProductID], opts)
 		if err != nil {
 			return LoopModel{}, err
 		}
@@ -299,7 +318,7 @@ func normalizeLoopOptions(opts LoopOptions) LoopOptions {
 	return opts
 }
 
-func buildProductLoop(homePath, productID, name string, reviews []Review, consumedActions loopActionConsumptionIndex, opts LoopOptions) (ProductLoop, error) {
+func buildProductLoop(homePath, productID string, metadata loopProductMetadata, reviews []Review, consumedActions loopActionConsumptionIndex, releases sourceobs.ReleaseObservationsReport, opts LoopOptions) (ProductLoop, error) {
 	tl, err := LoadTimeline(homePath, productID)
 	if err != nil {
 		return ProductLoop{}, err
@@ -308,8 +327,8 @@ func buildProductLoop(homePath, productID, name string, reviews []Review, consum
 	if err != nil {
 		return ProductLoop{}, err
 	}
-	if name == "" {
-		name = productID
+	if metadata.Name == "" {
+		metadata.Name = productID
 	}
 	openHypotheses := openLoopHypotheses(tl.Hypotheses)
 	signalsByMetric, includedSignals := loopSignalsByMetric(tl.Signals, tl.Transitions, opts.Recent)
@@ -319,21 +338,18 @@ func buildProductLoop(homePath, productID, name string, reviews []Review, consum
 	reviewsByNextAction := loopReviewNextActions(productID, productReviews, consumedActions)
 	actionCards := loopActionCards(missingSignalSources, signalHypothesisGaps, reviewsByNextAction, loopReviewReadyActionCards(productID, doctor.ReviewReady))
 	sourceIssues := loopSourceIssues(doctor.SourceIssues)
-	// Release awareness is the additive evidence-only release-reconciliation
-	// surface. It is read-only; failures here must NOT abort the product
-	// loop projection (orient consumer still surfaces the rest of the loop).
+	// Reduce the shared read-only release snapshot. Invalid evidence remains
+	// visible in the view; an unreadable inventory already failed the portfolio
+	// load rather than masquerading as an unobserved release.
 	var releaseAwareness *ReleaseAwareness
-	if rawIdentity, idErr := loadProductReleaseIdentityForLoop(homePath, productID); idErr == nil {
-		if awareness, raErr := BuildReleaseAwareness(homePath, productID, rawIdentity, ReleaseAwarenessOptions{
-			Now:        opts.Now,
-			StaleAfter: opts.StaleAfter,
-		}); raErr == nil && (awareness.ObservationCount > 0 || awareness.Status != "unobserved") {
-			releaseAwareness = &awareness
-		}
+	awareness := buildReleaseAwareness(productID, metadata.ReleaseIdentity, ReleaseAwarenessOptions{Now: opts.Now, StaleAfter: opts.StaleAfter}, releases)
+	if awareness.ObservationCount > 0 || awareness.Status != "unobserved" {
+		releaseAwareness = &awareness
 	}
+
 	return ProductLoop{
 		ProductID:                           productID,
-		Name:                                name,
+		Name:                                metadata.Name,
 		SignalsByMetric:                     signalsByMetric,
 		OpenHypotheses:                      openHypotheses,
 		OpenHypothesesByMissingSignalSource: missingSignalSources,
@@ -348,65 +364,16 @@ func buildProductLoop(homePath, productID, name string, reviews []Review, consum
 	}, nil
 }
 
-// loadProductReleaseIdentityForLoop reads the recalled ReleaseIdentity
-// (contract/candidate identity) for a product without authoring a new
-// candidate. It pulls the recalled claims the product-import wrote:
-// predicates release_version / release_build live in the product domain.
-// A missing or unreadable identity is reported as the empty identity
-// rather than aborting the loop projection. It does NOT try to
-// reconstruct identity from a legacy registry or product repo — that
-// would invert recall and is forbidden by the seam contract.
-func loadProductReleaseIdentityForLoop(homePath, productID string) (ReleaseIdentity, error) {
-	store, err := mem.Open(homePath)
-	if err != nil {
-		return ReleaseIdentity{}, err
-	}
-	claims, err := store.AllCurrent()
-	if err != nil {
-		return ReleaseIdentity{}, err
-	}
-	var identity ReleaseIdentity
-	for _, claim := range claims {
-		if claim.Qualifiers["domain"] != "product" {
-			continue
-		}
-		if claim.Entity != productID {
-			continue
-		}
-		switch claim.Predicate {
-		case "release_version":
-			identity.Version = claim.Object
-		case "release_build":
-			identity.Build = claim.Object
-		case "release_bundle_id":
-			identity.BundleID = claim.Object
-		case "release_app_store_connect_app_id":
-			identity.AppStoreConnectAppID = claim.Object
-		case "release_subscription_ids":
-			if claim.Object != "" {
-				identity.SubscriptionIDs = splitNonEmpty(claim.Object, ",")
-			}
-		}
-	}
-	return identity, nil
+// loopProductMetadata is the recalled name and release contract, loaded in
+// one claims pass for the portfolio. Missing claims mean an empty identity;
+// unreadable claims are an error, never silently ignored.
+type loopProductMetadata struct {
+	Name            string
+	ReleaseIdentity ReleaseIdentity
 }
 
-func splitNonEmpty(s, sep string) []string {
-	var out []string
-	for _, p := range strings.Split(s, sep) {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-func productLoopNames(store *mem.Store) (map[string]string, error) {
-	names := map[string]string{}
-	if store == nil {
-		return names, nil
-	}
+func productLoopMetadata(store *mem.Store) (map[string]loopProductMetadata, error) {
+	out := map[string]loopProductMetadata{}
 	claims, err := store.AllCurrent()
 	if err != nil {
 		return nil, err
@@ -415,11 +382,42 @@ func productLoopNames(store *mem.Store) (map[string]string, error) {
 		if claim.Qualifiers["domain"] != "product" {
 			continue
 		}
-		if claim.Predicate == "name" || claim.Predicate == "display_name" {
-			names[claim.Entity] = claim.Object
+		item := out[claim.Entity]
+		switch claim.Predicate {
+		case "name", "display_name":
+			item.Name = claim.Object
+		case "release_version":
+			item.ReleaseIdentity.Version = claim.Object
+		case "release_build":
+			item.ReleaseIdentity.Build = claim.Object
+		}
+		out[claim.Entity] = item
+	}
+	return out, nil
+}
+
+// Partition the snapshot once; product reducers never scan the home or the
+// other products' evidence. Unattributable malformed evidence remains visible.
+func releaseReportsByProduct(report sourceobs.ReleaseObservationsReport, productIDs []string) map[string]sourceobs.ReleaseObservationsReport {
+	out := map[string]sourceobs.ReleaseObservationsReport{}
+	for _, record := range report.Records {
+		id := record.Observation.ProductID
+		item := out[id]
+		item.Records = append(item.Records, record)
+		out[id] = item
+	}
+	for _, issue := range report.Issues {
+		for _, id := range productIDs {
+			if !issue.AppliesTo(id) {
+				continue
+			}
+			item := out[id]
+			item.Issues = append(item.Issues, issue)
+			out[id] = item
 		}
 	}
-	return names, nil
+
+	return out
 }
 
 func loopSignalsByMetric(signals []Signal, transitions []TimelineTransition, recent int) (map[string][]LoopSignal, []Signal) {

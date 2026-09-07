@@ -103,9 +103,9 @@ func TestReleaseAwareness_Falsifier2_ChannelSeparation(t *testing.T) {
 func TestReleaseAwareness_Falsifier3_SameChannelEqualCurrentConflict(t *testing.T) {
 	homePath := t.TempDir()
 	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
-	// 5 min and 4 min old — both within stale window (co-current).
+	// Same observation instant: incompatible live versions must remain unresolved.
 	importReleaseObs(t, homePath, now, "product:alpha", "app_store_connect", "ios", "1.2.0", "live", 5, "rev-a-1.2.0")
-	importReleaseObs(t, homePath, now, "product:alpha", "app_store_connect", "ios", "1.1.5", "live", 4, "rev-b-1.1.5")
+	importReleaseObs(t, homePath, now, "product:alpha", "app_store_connect", "ios", "1.1.5", "live", 5, "rev-b-1.1.5")
 	aw, err := BuildReleaseAwareness(homePath, "product:alpha", ReleaseIdentity{}, ReleaseAwarenessOptions{Now: now, StaleAfter: 7 * 24 * time.Hour})
 	if err != nil {
 		t.Fatalf("BuildReleaseAwareness: %v", err)
@@ -268,10 +268,8 @@ func TestReleaseAwareness_Falsifier7_UnobservedProduct(t *testing.T) {
 	}
 }
 
-// Falsifier 8: bounded reading — repeated calls on the same home stay
-// bounded to one sourceobs list scan. We exercise it by importing
-// observations for several products and confirming each per-product
-// BuildReleaseAwareness only sees its own (filter is enforced).
+// Direct-call product filtering. The counted real-reader proof is
+// TestReleaseTruthPortfolioReadsOneFreshSnapshot; no cross-call cache exists.
 func TestReleaseAwareness_Falsifier8_BoundedReading(t *testing.T) {
 	homePath := t.TempDir()
 	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)

@@ -228,6 +228,8 @@ type orientReleaseAwareness struct {
 }
 
 type orientReleaseChannelPlatform struct {
+	Status         string   `json:"status,omitempty"`
+	CurrentVersion string   `json:"current_version,omitempty"`
 	Channel        string   `json:"channel"`
 	Platform       string   `json:"platform"`
 	LatestVersion  string   `json:"latest_version,omitempty"`
@@ -731,6 +733,8 @@ func orientReleaseAwarenessFrom(aw *product.ReleaseAwareness) *orientReleaseAwar
 	channels := make([]orientReleaseChannelPlatform, 0, len(aw.ChannelPlatforms))
 	for _, view := range aw.ChannelPlatforms {
 		channels = append(channels, orientReleaseChannelPlatform{
+			Status:         view.Status,
+			CurrentVersion: view.CurrentVersion,
 			Channel:        view.Channel,
 			Platform:       view.Platform,
 			LatestVersion:  view.Latest.ObservedVersion,

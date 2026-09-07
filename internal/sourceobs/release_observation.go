@@ -1,6 +1,7 @@
 package sourceobs
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -112,16 +113,20 @@ func ValidateReleaseObservation(obs ReleaseObservation, now time.Time) error {
 // and list projection directly; evidence refs remain provenance, not a
 // second encoding of the release fields.
 func FromReleaseObservation(obs ReleaseObservation, now time.Time) (SourceObservation, error) {
+	if now.IsZero() {
+		now = time.Now()
+	}
 	if err := ValidateReleaseObservation(obs, now); err != nil {
 		return SourceObservation{}, err
 	}
-	if now.IsZero() {
-		now = time.Now()
+	identityBytes, err := json.Marshal(obs)
+	if err != nil {
+		return SourceObservation{}, fmt.Errorf("release identity: %w", err)
 	}
 	path := releaseObservationPath(obs)
 	return SourceObservation{
 		SchemaVersion: SchemaVersion,
-		ID:            idFor("srcobs_", "release_observation", obs.ProductID, obs.Channel, obs.Platform, obs.ObservedVersion, obs.ObservedState, obs.ObservedAt, obs.SourceRevision),
+		ID:            idFor("srcobs_", "release_observation", string(identityBytes)),
 		AdapterID:     "compound.release-observation",
 		SourceSystem:  "external",
 		ObservedAt:    obs.ObservedAt,
@@ -153,70 +158,157 @@ func FromReleaseObservation(obs ReleaseObservation, now time.Time) (SourceObserv
 	}, nil
 }
 
-// LoadReleaseObservations reads the source-observation list projection
-// ONCE and returns the typed release observations, bounded to the given
-// product IDs (empty list = all). It is the bounded-reading path the
-// per-product projection reuses for N products so a portfolio
-// projection is ~1 scan, not N. The home is read-only: no records,
-// claims, or receipts are written by this projection.
-//
-// Records without a typed Release payload are filtered out (existing
-// non-release sourceobs records keep their prior shape and never reach
-// release aggregation).
-func LoadReleaseObservations(homePath string, productIDs []string, now time.Time) ([]ReleaseObservation, error) {
+// ReleaseObservationRecord preserves the native intake identities alongside
+// the typed payload. These are evidence references, never promoted authority.
+type ReleaseObservationRecord struct {
+	Observation         ReleaseObservation
+	CandidateID         string
+	SourceObservationID string
+	SourceRef           string
+	EvidenceRefs        []string
+}
+
+type ReleaseObservationIssue struct {
+	ProductHints []string
+
+	ProductID           string
+	Channel             string
+	Platform            string
+	CandidateID         string
+	SourceObservationID string
+	Reason              string
+}
+
+// AppliesTo scopes uncertainty without resolving an ambiguous identity.
+// Truly unattributable evidence remains relevant to every requested product.
+func (i ReleaseObservationIssue) AppliesTo(productID string) bool {
+	if i.ProductID != "" {
+		return i.ProductID == productID
+	}
+	if len(i.ProductHints) == 0 {
+		return true
+	}
+	for _, hint := range i.ProductHints {
+		if hint == productID {
+			return true
+		}
+	}
+	return false
+}
+
+// ReleaseObservationsReport is one read snapshot. Invalid records remain
+// attributable; an unreadable inventory is an error, not an empty snapshot.
+type ReleaseObservationsReport struct {
+	Records []ReleaseObservationRecord
+	Issues  []ReleaseObservationIssue
+}
+
+// LoadReleaseObservationsReport scans the source projection once per call.
+// It does not memoize across calls or hide invalid evidence. A product filter
+// bounds the returned scope, not the number of candidate files scanned.
+func LoadReleaseObservationsReport(homePath string, productIDs []string, now time.Time) (ReleaseObservationsReport, error) {
+	report := ReleaseObservationsReport{}
 	if now.IsZero() {
 		now = time.Now()
 	}
 	list, err := ListSourceObservations(homePath, now)
 	if err != nil {
-		return nil, err
+		return report, err
+	}
+	if len(list.Warnings) > 0 {
+		return report, fmt.Errorf("source-observation inventory incomplete: %s", strings.Join(list.Warnings, "; "))
 	}
 	filter := stringSet(productIDs)
-	want := filter == nil
-	var out []ReleaseObservation
-	seen := map[string]bool{}
 	for _, item := range list.Items {
 		if !item.IsReleaseObservation() {
 			continue
 		}
-		obs, ok := decodeReleaseObservationFromItem(item)
-		if !ok {
+		obs, decoded := decodeReleaseObservationFromItem(item)
+		// Subject is used only to attribute a malformed record, never to
+		// repair its typed payload or turn it into valid release evidence.
+		productID := firstNonEmpty(obs.ProductID, item.Subject)
+		issue := ReleaseObservationIssue{
+			ProductID: productID, Channel: obs.Channel, Platform: obs.Platform,
+			CandidateID: item.CandidateID, SourceObservationID: item.SourceObservationID,
+		}
+		var invalid error
+		switch {
+		case strings.TrimSpace(obs.ProductID) != "" && strings.TrimSpace(item.Subject) != "" && strings.TrimSpace(obs.ProductID) != strings.TrimSpace(item.Subject):
+			// Neither identity wins. Hints bound which product views need
+			// review; they cannot repair or admit the ambiguous observation.
+			issue.ProductID = ""
+			issue.ProductHints = []string{strings.TrimSpace(obs.ProductID), strings.TrimSpace(item.Subject)}
+			sort.Strings(issue.ProductHints)
+			invalid = fmt.Errorf("release product identity %q disagrees with source target %q", obs.ProductID, item.Subject)
+		case !decoded:
+			invalid = fmt.Errorf("incomplete release payload")
+		default:
+			invalid = ValidateReleaseObservation(obs, now)
+		}
+		if filter != nil {
+			relevant := false
+			for id := range filter {
+				relevant = relevant || issue.AppliesTo(id)
+			}
+			if !relevant {
+				continue
+			}
+		}
+		if invalid != nil {
+			issue.Reason = invalid.Error()
+			report.Issues = append(report.Issues, issue)
 			continue
 		}
-		if !want && !filter[obs.ProductID] {
-			continue
-		}
-		if err := ValidateReleaseObservation(obs, now); err != nil {
-			// strict re-validation: a record admitted before stricter rules
-			// cannot leak into release aggregation. Skip rather than claim.
-			continue
-		}
-		key := obs.ProductID + "|" + obs.Channel + "|" + obs.Platform + "|" + obs.ObservedVersion + "|" + obs.ObservedState + "|" + obs.ObservedAt + "|" + obs.SourceRevision
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, obs)
+		report.Records = append(report.Records, ReleaseObservationRecord{
+			Observation: obs, CandidateID: item.CandidateID,
+			SourceObservationID: item.SourceObservationID, SourceRef: item.SourceRef,
+			EvidenceRefs: append([]string(nil), item.EvidenceRefs...),
+		})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].ProductID != out[j].ProductID {
-			return out[i].ProductID < out[j].ProductID
+	sort.Slice(report.Records, func(i, j int) bool {
+		a, b := report.Records[i], report.Records[j]
+		if a.Observation.ProductID != b.Observation.ProductID {
+			return a.Observation.ProductID < b.Observation.ProductID
 		}
-		if out[i].Channel != out[j].Channel {
-			return out[i].Channel < out[j].Channel
+		if a.Observation.Channel != b.Observation.Channel {
+			return a.Observation.Channel < b.Observation.Channel
 		}
-		if out[i].Platform != out[j].Platform {
-			return out[i].Platform < out[j].Platform
+		if a.Observation.Platform != b.Observation.Platform {
+			return a.Observation.Platform < b.Observation.Platform
 		}
-		return out[i].ObservedAt < out[j].ObservedAt
+		at, _ := time.Parse(time.RFC3339, strings.TrimSpace(a.Observation.ObservedAt))
+		bt, _ := time.Parse(time.RFC3339, strings.TrimSpace(b.Observation.ObservedAt))
+		if !at.Equal(bt) {
+			return at.Before(bt)
+		}
+		return a.CandidateID < b.CandidateID
 	})
+	sort.Slice(report.Issues, func(i, j int) bool { return report.Issues[i].CandidateID < report.Issues[j].CandidateID })
+	return report, nil
+}
+
+// LoadReleaseObservations retains the legacy valid-payload-only interface.
+// Consumers making readiness claims must use the report so invalid evidence
+// and native provenance remain visible. Only fully identical payloads dedupe.
+func LoadReleaseObservations(homePath string, productIDs []string, now time.Time) ([]ReleaseObservation, error) {
+	report, err := LoadReleaseObservationsReport(homePath, productIDs, now)
+	if err != nil {
+		return nil, err
+	}
+	var out []ReleaseObservation
+	seen := map[ReleaseObservation]bool{}
+	for _, record := range report.Records {
+		if !seen[record.Observation] {
+			seen[record.Observation] = true
+			out = append(out, record.Observation)
+		}
+	}
 	return out, nil
 }
 
-// releaseObservationPath is the deterministic synthetic key the carrier
-// uses as the SourceRef path. It survives re-import without false
-// revision drift; two observations that disagree on any identity field
-// produce different paths.
+// releaseObservationPath is a deterministic source label. Candidate identity
+// hashes the full typed payload, including build and evidence, so observations
+// sharing this label cannot overwrite distinct evidence.
 func releaseObservationPath(obs ReleaseObservation) string {
 	return "compound://release_observation/" + strings.TrimSpace(obs.ProductID) +
 		"/" + strings.TrimSpace(obs.Channel) +

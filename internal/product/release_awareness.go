@@ -1,6 +1,7 @@
 package product
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -31,6 +32,8 @@ var ReleaseAwarenessStatus = []string{
 // not contradictions: e.g. an App Store Connect candidate entry for iOS
 // and a direct-mac live dmg are two independent views, never a conflict.
 type ReleaseChannelPlatformView struct {
+	Status string `json:"status"`
+
 	Channel        string                       `json:"channel"`
 	Platform       string                       `json:"platform"`
 	Latest         sourceobs.ReleaseObservation `json:"latest"`
@@ -82,42 +85,25 @@ type ReleaseAwarenessOptions struct {
 	StaleAfter time.Duration
 }
 
-// BuildReleaseAwareness aggregates typed release observations for one
-// product. It is additive and read-only: no records, claims, or
-// receipts are written. It returns an empty (Status="unobserved")
-// ReleaseAwareness when the product has no observations, and an
-// "invalid" status when admitted observations fail strict
-// re-validation. Stale observations that pass strict re-validation
-// surface as "stale" with a bounded next action.
-//
-// Falsifier contract (one bullet per acceptance scenario):
-//
-//  1. outdated contract: any observation reporting a version newer than
-//     the recalled ReleaseIdentity sets OutdatedContract=true and the
-//     status remains current; both provenance refs are returned.
-//  2. different channels/platforms: never merged into one bucket;
-//     each (channel, platform) is its own view, no Conflict raised.
-//  3. same channel+platform equal-current conflict: Status="conflicting"
-//     and Conflict[] names the (channel, platform, version, state) tuples
-//     in deterministic order; NextAction asks for a reviewed reconcile.
-//  4. missing/invalid/future timestamps or wrong identity fields: the
-//     carrier's Validate rejects at intake; if a record slipped past
-//     earlier rules, strict re-validation rejects it here (Status="invalid").
-//  5. fresh metric, stale release: status reflects release observations
-//     independently of signal freshness — a stale release cannot ride a
-//     fresh metric to "current".
-//  6. intake → persisted evidence → product loop JSON path: callers
-//     go through sourceobs.Apply + LoadReleaseObservations once per
-//     portfolio projection; this function adds the per-product slice
-//     and never reads the home twice for one product.
-//  7. backward compatibility: observations that pre-date the carrier
-//     have no Release payload and never reach this function; existing
-//     sourceobs records keep their prior shape.
-//  8. bounded reading: this function calls LoadReleaseObservations
-//     once per product; the underlying sourceobs list projection is
-//     memoized once per (home, fingerprint), so a portfolio projection
-//     stays bounded to ~1 home scan.
+// BuildReleaseAwareness reads one evidence snapshot for a direct caller.
+// Portfolio projections load once and call the same pure reducer below.
+// Observation time orders a channel's history; only disagreeing observations
+// at the same newest instant conflict. Freshness is checked per channel,
+// never borrowed from a newer observation on another channel.
 func BuildReleaseAwareness(homePath, productID string, identity ReleaseIdentity, opts ReleaseAwarenessOptions) (ReleaseAwareness, error) {
+	if opts.Now.IsZero() {
+		opts.Now = time.Now()
+	}
+	report, err := sourceobs.LoadReleaseObservationsReport(homePath, []string{productID}, opts.Now)
+	if err != nil {
+		return ReleaseAwareness{}, err
+	}
+	return buildReleaseAwareness(productID, identity, opts, report), nil
+}
+
+type releaseChannelKey struct{ channel, platform string }
+
+func buildReleaseAwareness(productID string, identity ReleaseIdentity, opts ReleaseAwarenessOptions, report sourceobs.ReleaseObservationsReport) ReleaseAwareness {
 	now := opts.Now
 	if now.IsZero() {
 		now = time.Now()
@@ -127,167 +113,136 @@ func BuildReleaseAwareness(homePath, productID string, identity ReleaseIdentity,
 		staleAfter = 7 * 24 * time.Hour
 	}
 	out := ReleaseAwareness{
-		SchemaVersion:    ReleaseAwarenessSchemaVersion,
-		ProductID:        productID,
-		Status:           "unobserved",
-		ContractVersion:  strings.TrimSpace(identity.Version),
-		ContractBuild:    strings.TrimSpace(identity.Build),
+		SchemaVersion: ReleaseAwarenessSchemaVersion, ProductID: productID, Status: "unobserved",
+		ContractVersion: strings.TrimSpace(identity.Version), ContractBuild: strings.TrimSpace(identity.Build),
 		Boundary:         "evidence-only; never auto-claims current-live, never schedules release execution, never promotes memory",
-		NextAction:       "import typed release observations through compound sourceobs Apply or wait for next governed intake",
-		ChannelPlatforms: []ReleaseChannelPlatformView{},
-		Conflict:         []string{},
-		MissingEvidence:  []string{},
-		EvidenceRefs:     []string{},
+		NextAction:       "import typed release observations through compound source observe or wait for governed intake",
+		ChannelPlatforms: []ReleaseChannelPlatformView{}, Conflict: []string{},
+		MissingEvidence: []string{}, EvidenceRefs: []string{},
 	}
 	if strings.TrimSpace(productID) == "" {
 		out.Status = "invalid"
-		out.Conflict = append(out.Conflict, "product_id required")
-		return out, nil
+		out.MissingEvidence = append(out.MissingEvidence, "product_id required")
+		return out
 	}
-	observations, err := sourceobs.LoadReleaseObservations(homePath, []string{productID}, now)
-	if err != nil {
-		return ReleaseAwareness{}, err
-	}
-	if len(observations) == 0 {
-		return out, nil
-	}
-	out.ObservationCount = len(observations)
-	// Group by (channel, platform), preserve determinism.
-	groups := map[string][]sourceobs.ReleaseObservation{}
-	groupOrder := []string{}
-	for _, obs := range observations {
-		key := obs.Channel + "|" + obs.Platform
-		if _, ok := groups[key]; !ok {
-			groupOrder = append(groupOrder, key)
-		}
-		groups[key] = append(groups[key], obs)
-	}
-	sort.Strings(groupOrder)
-	allRefs := map[string]bool{}
-	hasLive := false
-	for _, key := range groupOrder {
-		obsList := groups[key]
-		parts := strings.SplitN(key, "|", 2)
-		channel, platform := parts[0], parts[1]
-		// pick the latest observed_at per (channel, platform) deterministically
-		latestIdx := -1
-		latestTime := time.Time{}
-		for i, o := range obsList {
-			t, err := time.Parse(time.RFC3339, strings.TrimSpace(o.ObservedAt))
-			if err != nil {
-				continue
-			}
-			if latestIdx == -1 || t.After(latestTime) {
-				latestTime = t
-				latestIdx = i
-			}
-		}
-		if latestIdx == -1 {
+	invalidChannels := map[releaseChannelKey]bool{}
+	unknownInvalid := false
+	for _, issue := range report.Issues {
+		if !issue.AppliesTo(productID) {
 			continue
 		}
-		latest := obsList[latestIdx]
-		// detect same-channel+platform equally-current conflict
-		equalCurrent := map[string][]sourceobs.ReleaseObservation{}
-		for _, o := range obsList {
-			t, err := time.Parse(time.RFC3339, strings.TrimSpace(o.ObservedAt))
-			if err != nil {
-				continue
-			}
-			// two observations are "equally current" when their observed_at
-			// is within the staleness window of the latest (i.e. they are
-			// co-current evidence, not strictly stale relative to the
-			// newest). This is the packet's "incompatible equally-current
-			// observations" definition.
-			if latestTime.Sub(t) <= staleAfter {
-				sig := o.ObservedVersion + "|" + o.ObservedState
-				equalCurrent[sig] = append(equalCurrent[sig], o)
+		out.MissingEvidence = append(out.MissingEvidence, issue.CandidateID+": "+issue.Reason)
+		out.EvidenceRefs = append(out.EvidenceRefs, "candidate:"+issue.CandidateID, "source-observation:"+issue.SourceObservationID)
+		if issue.Channel == "" || issue.Platform == "" {
+			unknownInvalid = true
+		} else {
+			invalidChannels[releaseChannelKey{issue.Channel, issue.Platform}] = true
+		}
+	}
+	groups := map[releaseChannelKey][]sourceobs.ReleaseObservationRecord{}
+	var keys []releaseChannelKey
+	for _, record := range report.Records {
+		if record.Observation.ProductID != productID {
+			continue
+		}
+		key := releaseChannelKey{record.Observation.Channel, record.Observation.Platform}
+		if _, ok := groups[key]; !ok {
+			keys = append(keys, key)
+		}
+		groups[key] = append(groups[key], record)
+		out.ObservationCount++
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].channel != keys[j].channel {
+			return keys[i].channel < keys[j].channel
+		}
+		return keys[i].platform < keys[j].platform
+	})
+	hasFresh, hasCurrent := false, false
+	for _, key := range keys {
+		records := groups[key]
+		latest := records[0]
+		for _, record := range records[1:] {
+			at, bt := parseTimeOrZero(record.Observation.ObservedAt), parseTimeOrZero(latest.Observation.ObservedAt)
+			if at.After(bt) || (at.Equal(bt) && record.CandidateID < latest.CandidateID) {
+				latest = record
 			}
 		}
-		var states, versions []string
-		refs := map[string]bool{}
-		obsIDs := []string{}
-		for _, o := range obsList {
-			states = append(states, o.ObservedState)
-			versions = append(versions, o.ObservedVersion)
-			refs[o.EvidenceRef] = true
-			refs[o.SourceRevision] = true
-			refs["release_observation:"+o.ProductID+":"+o.Channel+":"+o.Platform] = true
-			obsIDs = append(obsIDs, stableID("relobs_", o.ProductID, o.Channel, o.Platform, o.ObservedVersion, o.ObservedState, o.ObservedAt, o.SourceRevision))
+		latestTime := parseTimeOrZero(latest.Observation.ObservedAt)
+		equalCurrent := map[[3]string]bool{}
+		view := ReleaseChannelPlatformView{Channel: key.channel, Platform: key.platform, Latest: latest.Observation}
+		for _, record := range records {
+			obs := record.Observation
+			if parseTimeOrZero(obs.ObservedAt).Equal(latestTime) {
+				equalCurrent[[3]string{obs.ObservedVersion, obs.ObservedBuild, obs.ObservedState}] = true
+			}
+			view.StateSet = append(view.StateSet, obs.ObservedState)
+			view.VersionSet = append(view.VersionSet, obs.ObservedVersion)
+			view.ObservationIDs = append(view.ObservationIDs, record.SourceObservationID)
+			view.EvidenceRefs = append(view.EvidenceRefs, record.EvidenceRefs...)
+			view.EvidenceRefs = append(view.EvidenceRefs, obs.EvidenceRef, obs.SourceRevision, record.SourceRef, "candidate:"+record.CandidateID, "source-observation:"+record.SourceObservationID)
 		}
-		if len(equalCurrent) > 1 {
-			// conflicting: same channel+platform, equally current, disagree on version or state
-			var sigs []string
+		fresh := !isStale(latest.Observation.ObservedAt, now, staleAfter)
+		hasFresh = hasFresh || fresh
+		switch {
+		case unknownInvalid || invalidChannels[key]:
+			view.Status = "invalid"
+		case len(equalCurrent) > 1:
+			view.Status = "conflicting"
 			for sig := range equalCurrent {
-				sigs = append(sigs, sig)
+				out.Conflict = append(out.Conflict, fmt.Sprintf("%s/%s:version=%q build=%q state=%q", key.channel, key.platform, sig[0], sig[1], sig[2]))
 			}
-			sort.Strings(sigs)
-			for _, sig := range sigs {
-				out.Conflict = append(out.Conflict, channel+"/"+platform+":"+sig)
+		case !fresh:
+			view.Status = "stale"
+		case latest.Observation.ObservedState == "live":
+			view.Status = "current"
+			view.CurrentVersion = latest.Observation.ObservedVersion
+			hasCurrent = true
+			versionDiffers := out.ContractVersion != "" && !sameReleaseVersion(out.ContractVersion, view.CurrentVersion)
+			buildDiffers := out.ContractBuild != "" && strings.TrimSpace(latest.Observation.ObservedBuild) != "" && out.ContractBuild != strings.TrimSpace(latest.Observation.ObservedBuild)
+			if versionDiffers || buildDiffers {
+				out.OutdatedContract = true
 			}
+		default:
+			view.Status = "partial"
 		}
-		view := ReleaseChannelPlatformView{
-			Channel:        channel,
-			Platform:       platform,
-			Latest:         latest,
-			StateSet:       sortedUnique(states),
-			VersionSet:     sortedUnique(versions),
-			CurrentVersion: latest.ObservedVersion,
-			ObservationIDs: sortedUnique(obsIDs),
-		}
-		for r := range refs {
-			view.EvidenceRefs = append(view.EvidenceRefs, r)
-			allRefs[r] = true
-		}
-		sort.Strings(view.EvidenceRefs)
+		view.StateSet = sortedUnique(view.StateSet)
+		view.VersionSet = sortedUnique(view.VersionSet)
+		view.ObservationIDs = sortedUnique(view.ObservationIDs)
+		view.EvidenceRefs = sortedUnique(view.EvidenceRefs)
+		out.EvidenceRefs = append(out.EvidenceRefs, view.EvidenceRefs...)
 		out.ChannelPlatforms = append(out.ChannelPlatforms, view)
-		if latest.ObservedState == "live" {
-			hasLive = true
-		}
-		// track the newest observation across all (channel, platform) views
-		latestT, _ := time.Parse(time.RFC3339, strings.TrimSpace(latest.ObservedAt))
-		if out.LatestObservedAt == "" || latestT.After(parseTimeOrZero(out.LatestObservedAt)) {
-			out.LatestObservedAt = latest.ObservedAt
-			out.LatestVersion = latest.ObservedVersion
-			out.LatestChannel = latest.Channel
-			out.LatestPlatform = latest.Platform
-			out.LatestState = latest.ObservedState
+		if out.LatestObservedAt == "" || latestTime.After(parseTimeOrZero(out.LatestObservedAt)) {
+			out.LatestObservedAt, out.LatestVersion = latest.Observation.ObservedAt, latest.Observation.ObservedVersion
+			out.LatestChannel, out.LatestPlatform, out.LatestState = key.channel, key.platform, latest.Observation.ObservedState
 		}
 	}
-	// detect outdated contract: at least one observation reports a live
-	// version that differs from the recalled ReleaseIdentity.Version.
-	if strings.TrimSpace(out.ContractVersion) != "" && strings.TrimSpace(out.LatestVersion) != "" {
-		if out.LatestState == "live" && !sameReleaseVersion(out.ContractVersion, out.LatestVersion) {
-			out.OutdatedContract = true
-		}
-	}
-	// status precedence: conflicting > stale > current > partial > unobserved
-	// Stale is checked before current so a fresh-metric world never inflates
-	// a stale release observation to "current". The release-awareness
-	// freshness contract is independent of any signal freshness contract.
 	switch {
+	case len(out.MissingEvidence) > 0:
+		out.Status = "invalid"
+		out.NextAction = "review the identified invalid release evidence and re-import corrected observations; do not infer current-live from missing data"
 	case len(out.Conflict) > 0:
 		out.Status = "conflicting"
-		out.NextAction = "operator-reviewed reconcile required: same channel+platform reports multiple equally-current versions/states; do not auto-claim live"
-	case isStale(out.LatestObservedAt, now, staleAfter):
+		out.NextAction = "operator-reviewed reconcile required: same channel/platform and observation time disagree; do not auto-claim live"
+	case out.ObservationCount == 0:
+	case !hasFresh:
 		out.Status = "stale"
-		out.NextAction = "latest observation is older than the freshness window; re-import current release observations before claiming release awareness"
-	case hasLive:
+		out.NextAction = "re-import current release observations before claiming release awareness"
+	case hasCurrent:
 		out.Status = "current"
 		if out.OutdatedContract {
-			out.NextAction = "recalled contract identity lags observed live version; do not promote contract identity — import a fresh release observation through the same intake door"
+			out.NextAction = "fresh live evidence differs from recalled contract identity; review the mismatch without automatically changing memory"
 		} else {
-			out.NextAction = "evidence-only; current live version matches recalled contract identity; do not infer causality or schedule release execution"
+			out.NextAction = "evidence-only; retain provenance and do not infer causality or schedule release execution"
 		}
 	default:
 		out.Status = "partial"
-		out.NextAction = "evidence-only; some channels observed, others not; do not promote any channel to current-live without operator review"
+		out.NextAction = "no channel has fresh unambiguous live evidence; observe the live surface through governed intake"
 	}
-	for r := range allRefs {
-		out.EvidenceRefs = append(out.EvidenceRefs, r)
-	}
-	sort.Strings(out.EvidenceRefs)
+	out.EvidenceRefs = sortedUnique(out.EvidenceRefs)
 	out.Conflict = sortedUnique(out.Conflict)
-	return out, nil
+	out.MissingEvidence = sortedUnique(out.MissingEvidence)
+	return out
 }
 
 func isStale(observedAt string, now time.Time, staleAfter time.Duration) bool {
