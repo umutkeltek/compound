@@ -68,10 +68,10 @@ func TestReleaseObservation_SameProductDistinctChannelsNoConflict(t *testing.T) 
 	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
 
 	// direct mac dmg live
-	macObs := sampleReleaseObservation(t, now, "product:samplerecorder", "direct_mac_dmg", "macos", "1.0.2", "live")
+	macObs := sampleReleaseObservation(t, now, "product:dual-channel", "direct_mac_dmg", "macos", "1.0.2", "live")
 	// App Store iOS candidate
 	iosObs := ReleaseObservation{
-		ProductID:       "product:samplerecorder",
+		ProductID:       "product:dual-channel",
 		Channel:         "app_store_connect",
 		Platform:        "ios",
 		ObservedVersion: "1.0.0",
@@ -79,7 +79,7 @@ func TestReleaseObservation_SameProductDistinctChannelsNoConflict(t *testing.T) 
 		ObservedState:   "candidate",
 		ObservedAt:      now.Add(-30 * time.Minute).UTC().Format(time.RFC3339),
 		SourceRevision:  "rev-ios-candidate",
-		EvidenceRef:     "appstore:6700000118:version:1.0.0",
+		EvidenceRef:     "https://releases.invalid/dual-channel/ios/1.0.0",
 	}
 
 	for _, o := range []ReleaseObservation{macObs, iosObs} {
@@ -92,7 +92,7 @@ func TestReleaseObservation_SameProductDistinctChannelsNoConflict(t *testing.T) 
 		}
 	}
 
-	got, err := LoadReleaseObservations(homePath, []string{"product:samplerecorder"}, now)
+	got, err := LoadReleaseObservations(homePath, []string{"product:dual-channel"}, now)
 	if err != nil {
 		t.Fatalf("LoadReleaseObservations: %v", err)
 	}
