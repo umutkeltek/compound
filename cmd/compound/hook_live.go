@@ -186,6 +186,7 @@ func buildLiveHookFixture(parsed hookCommandArgs, data []byte, now time.Time, ho
 	if err := json.Unmarshal(data, &in); err != nil {
 		return hook.Fixture{}, fmt.Errorf("parse live hook stdin: %w", err)
 	}
+	in.ToolName = hook.NormalizeNativeTool(parsed.Harness, in.ToolName)
 	var activeSources []envelope.SourceEnvelope
 	var sourceEffects []string
 	if homeAware {

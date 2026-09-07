@@ -310,6 +310,12 @@ returns the same gate exit code for wrapper adapters.
 as `compound://registries/placement-rules` under `COMPOUND_HOME`; the source view is evidence/rollback
 input after import, while PreToolUse reads the Compound-owned registry.
 
+Live OMP ingress normalizes only native `read/write/edit/glob/grep` to canonical
+`Read/Write/Edit/Glob/Grep` before policy and provenance construction. Unknown tools,
+other harnesses, tool parameters, and explicit schema revisions remain unchanged.
+New mutation-input identities use the canonical name on both PreToolUse and
+PostToolUse when the native payload supplies target input.
+
 The `PLACEMENT_OVERRIDE` fail-open stays fail-open by design, but it does not stay silent: whenever it
 actually fires, `work.RecordAction` persists one additional observation Event alongside the PolicyDecision
 it already writes, so a fired override is an audit observation on the work event log, not only an
