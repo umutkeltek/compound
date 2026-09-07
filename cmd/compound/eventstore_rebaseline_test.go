@@ -877,7 +877,10 @@ func TestEventStoreRebaselineSameWorkSameSecondProducesDistinctProofIDs(t *testi
 		ReceiptID    string `json:"receipt_id"`
 		TransitionID string `json:"transition_id"`
 	} {
-		out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_same_second", "--home", homePath, "--json")
+		// Same-second second invokes would otherwise hit the serial-guard
+		// cooldown — the test's intent is to exercise ID-distinctness across
+		// back-to-back rebaselines, not to test the cooldown.
+		out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--force-serial", "--work", "work_same_second", "--home", homePath, "--json")
 		if code != 0 {
 			t.Fatalf("confirm code=%d err=%q out=%q", code, errStr, out)
 		}
@@ -1136,5 +1139,127 @@ func TestEventStoreRebaselineFreshInLockAuthorityCanRefuseAllowedPreflight(t *te
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "events", "migration", "rebaseline-pending.json")); !os.IsNotExist(err) {
 		t.Fatalf("fresh refusal wrote pending marker: %v", err)
+	}
+}
+
+// FALSIFIER (R5B predicate): receipt and transition envelopes are Validate()d
+// before they reach the event store. RED at base (envelopes built directly
+// without Validate), GREEN when rebaselineReceiptAndTransition is run through
+// the in-transaction rebaselineReceiptAndTransitionFn seam (and Validate()
+// fires before either recording call). The packet explicitly approves a
+// green-at-birth finding here: "Some of the predicate may ALREADY hold on
+// main (e.g. Validate() is called inside rebaselinePending.Validate)".
+func TestRebaselineValidatesReceiptAndTransitionBeforeRecording(t *testing.T) {
+	for _, kind := range []string{"receipt", "transition"} {
+		t.Run(kind, func(t *testing.T) {
+			homePath, sidecarPath := seedGrantedRebaselineHome(t)
+			before, err := os.ReadFile(sidecarPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := buildRebaselineEnvelopesFn
+			buildRebaselineEnvelopesFn = func(ai envelope.ActionIntent, before, after map[string]int64, beforeRef, afterRef, preRef, postRef string, now time.Time) (envelope.Receipt, envelope.Transition) {
+				rcv, tr := original(ai, before, after, beforeRef, afterRef, preRef, postRef, now)
+				if kind == "receipt" {
+					rcv.SchemaVersion = ""
+				} else {
+					tr.SchemaVersion = ""
+				}
+				return rcv, tr
+			}
+			t.Cleanup(func() { buildRebaselineEnvelopesFn = original })
+			_, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_validate_"+kind, "--home", homePath)
+			if code == 0 || !strings.Contains(errStr, "validate rebaseline "+kind) {
+				t.Fatalf("%s not validated: code=%d err=%q", kind, code, errStr)
+			}
+			after, err := os.ReadFile(sidecarPath)
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("%s mutated sidecar before its validate gate fired", kind)
+			}
+		})
+	}
+}
+
+// FALSIFIER (R5B predicate): when the sidecar is mutated by THIS rebaseline
+// transaction AND the Receipt physical proof never reached the durable event
+// store AND the compensating rollback failed, the verb exits with code 3
+// (mutated-but-unreceipted) — distinct from exit 1 (cleanly rolled back) and
+// from exit 2 (misuse). The existing recovery finding is still written. RED
+// at base (exit code is 1), GREEN with the new ErrRebaselineMutatedUnreceipted
+// path in recordRebaselineRecoveryFinding + the runEventStoreRebaseline exit
+// code map.
+func TestRebaselineMutatedButUnreceiptedExitsDistinctCode(t *testing.T) {
+	homePath, sidecarPath := seedGrantedRebaselineHome(t)
+	prior, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failReceiptRecordsBeforePut(t)
+	orig := rollbackRebaselineFn
+	rollbackRebaselineFn = func(*eventstore.RebaselineTransaction, []byte, []byte, bool) error {
+		return errFakeRestore
+	}
+	t.Cleanup(func() { rollbackRebaselineFn = orig })
+	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_exit3", "--home", homePath)
+	if code != 3 {
+		t.Fatalf("expected exit code 3 (mutated-but-unreceipted), got code=%d out=%q err=%q", code, out, errStr)
+	}
+	if !strings.Contains(errStr, "recovery finding") || !strings.Contains(errStr, "MANUAL RECOVERY REQUIRED") {
+		t.Fatalf("exit-3 path must still surface the recovery-finding narrative: %q", errStr)
+	}
+	matches, err := filepath.Glob(filepath.Join(homePath, "observed", "findings", "*.json"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("recovery finding must remain on disk: matches=%v err=%v", matches, err)
+	}
+	after, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) == string(prior) {
+		t.Fatalf("exit-3 path rolled the sidecar back; mutated state should remain on disk")
+	}
+	artifacts, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = artifacts
+}
+
+// FALSIFIER (R5B predicate): the serial-rebaseline ratchet guard refuses a
+// second confirmed rebaseline inside the 24h cooldown. The seed-sidecar
+// completion-time stamp is NEVER a rebaseline, so the first --confirm passes;
+// the sidecar now carries Reason=rebaseline with RecordedAt=now, so the
+// second --confirm (within 24h) is refused with exit code 2 unless the
+// operator passes --force-serial. RED at base (no cooldown, second passes),
+// GREEN with EnforceRebaselineSerialGuard.
+func TestRebaselineSerialGuardRefusesWithinCooldown(t *testing.T) {
+	homePath, _ := seedGrantedRebaselineHome(t)
+	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_first_rebaseline", "--home", homePath, "--json")
+	if code != 0 {
+		t.Fatalf("first rebaseline must succeed: code=%d out=%q err=%q", code, out, errStr)
+	}
+	_, errStr, code = runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_second_within_cooldown", "--home", homePath)
+	if code == 0 {
+		t.Fatalf("second rebaseline within cooldown must refuse; it should not reach the lock")
+	}
+	if code != 2 {
+		t.Fatalf("cooldown refusal must be exit code 2, got %d err=%q", code, errStr)
+	}
+	if !strings.Contains(errStr, "cooldown") {
+		t.Fatalf("cooldown refusal message must name the cooldown: %q", errStr)
+	}
+	out, errStr, code = runEventStoreCLI(t, "rebaseline", "--confirm", "--force-serial", "--work", "work_force_serial", "--home", homePath, "--json")
+	if code != 0 {
+		t.Fatalf("--force-serial must bypass cooldown: code=%d out=%q err=%q", code, out, errStr)
+	}
+	previewOut, _, _ := runEventStoreCLI(t, "rebaseline", "--home", homePath, "--json")
+	var preview struct {
+		LastRebaseline   string `json:"last_rebaseline"`
+		MovesInLast7Days int    `json:"moves_in_last_7_days"`
+	}
+	if err := json.Unmarshal([]byte(previewOut), &preview); err == nil {
+		if preview.LastRebaseline == "" || preview.MovesInLast7Days < 2 {
+			t.Fatalf("preview must surface last_rebaseline and moves_in_last_7_days: %+v", preview)
+		}
 	}
 }

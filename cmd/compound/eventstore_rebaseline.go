@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -156,17 +155,26 @@ func hasRebaselineRef(values []string, want string) bool {
 }
 
 const eventStoreRebaselineUsage = "usage:\n" +
-	"  compound event-store rebaseline [--home P] [--work W] [--confirm] [--json]\n" +
+	"  compound event-store rebaseline [--home P] [--work W] [--confirm] [--force-serial] [--json]\n" +
 	"    Governed re-baseline of the frozen-stream doctor: record hook-events.ndjson\n" +
 	"    and traces.ndjson's CURRENT byte sizes as the new trusted baseline, so a home\n" +
 	"    whose streams legitimately grew between migration completion and this call is\n" +
 	"    accepted going forward (`migrate --verify` reports ok until a genuine\n" +
 	"    post-rebaseline append). DRY-RUN by default (shows current -> proposed sizes +\n" +
-	"    the PolicyDecision, writes nothing). --confirm performs the governed write —\n" +
-	"    it REQUIRES an allowing PolicyDecision (a standing grant for the capability,\n" +
-	"    external_side_effect class, scoped to the sidecar path). Without one it\n" +
-	"    refuses and the sidecar is byte-identical. Refuses outright when the home's\n" +
-	"    migration is not complete — there is nothing to re-baseline yet."
+	"    the PolicyDecision, a 'last rebaseline' / 'moves in last 7d' ratchet line, and\n" +
+	"    writes nothing). --confirm performs the governed write — it REQUIRES an allowing\n" +
+	"    PolicyDecision (a standing grant for the capability, external_side_effect class,\n" +
+	"    scoped to the sidecar path). Without one it refuses and the sidecar is\n" +
+	"    byte-identical. --force-serial bypasses the serial-rebaseline cooldown when\n" +
+	"    the ratchet would otherwise refuse a second --confirm in <24h of the last\n" +
+	"    successful rebaseline. Refuses outright when the home's migration is not\n" +
+	"    complete — there is nothing to re-baseline yet.\n" +
+	"    Exit codes: 0 success, 1 refused/recovery-finding, 2 misuse (e.g. --confirm\n" +
+	"    without --work, or cooldown refused without --force-serial), 3 mutated but\n" +
+	"    unreceipted (sidecar holds the post-image, the journaled Receipt/Transition\n" +
+	"    has NO durable record, AND the compensating rollback could not run — the\n" +
+	"    manual-recovery finding is written but the verb distinguishes this terminal\n" +
+	"    state from a clean recovery)."
 
 // runEventStoreRebaseline is the operator door onto StreamBaseline re-baselining
 // (see internal/eventstore's stream-baseline.json sidecar). It mirrors the
@@ -217,13 +225,26 @@ func runEventStoreRebaseline(args []string, stdout, stderr io.Writer) int {
 		now := rebaselineNowFn()
 		ai := rebaselineIntent(work, target, now)
 		evaluation := policy.EvaluateAuthority(ai, cfg, rebaselineAuthorityContext(target), policySource, now)
-		return printRebaselinePreview(stdout, preview, evaluation, policySource, jsonOut)
+		return printRebaselinePreview(stdout, store, preview, evaluation, policySource, jsonOut)
 	}
 
 	work := strings.TrimSpace(flagValue(args, "--work"))
 	if work == "" {
 		fmt.Fprintln(stderr, "error: --work W is required for --confirm (a governed act belongs to a work)")
 		return 2
+	}
+	forceSerial := hasFlag(args, "--force-serial")
+	if _, pendingExists, _ := store.ReadRebaselinePending(); pendingExists {
+		// Recovery of an existing rebaseline is not a fresh rebaseline attempt
+		// and must never be blocked by the serial-guard cooldown.
+	} else {
+		if err := store.EnforceRebaselineSerialGuard(rebaselineNowFn(), forceSerial, false); err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			if errors.Is(err, eventstore.ErrRebaselineCooldownActive) {
+				return 2
+			}
+			return 1
+		}
 	}
 	if _, pendingExists, pendingErr := store.ReadRebaselinePending(); pendingErr != nil {
 		fmt.Fprintln(stderr, "error: read rebaseline pending journal:", pendingErr)
@@ -346,19 +367,19 @@ func runEventStoreRebaseline(args []string, stdout, stderr io.Writer) int {
 				}
 				return err
 			}
-			return recordRebaselineRecoveryFinding(homePath, artifactStore, tx, pending, pendingRaw, now, fmt.Errorf("sidecar write conflict: %w", err))
+			return rebaselineRecordRecoveryFinding(homePath, artifactStore, tx, pending, pendingRaw, now, fmt.Errorf("sidecar write conflict: %w", err))
 		}
 		if err := tx.VerifySidecarCAS(post); err != nil {
-			return recordRebaselineRecoveryFinding(homePath, artifactStore, tx, pending, pendingRaw, now, fmt.Errorf("verify post-image before receipt: %w", err))
+			return rebaselineRecordRecoveryFinding(homePath, artifactStore, tx, pending, pendingRaw, now, fmt.Errorf("verify post-image before receipt: %w", err))
 		}
 		if err := recordEventstoreEnvelopeFn(store, &receipt); err != nil {
 			presence, proveErr := eventstoreProofPresence(store, &receipt)
 			if proveErr != nil || presence == proofConflict {
-				return recordRebaselineRecoveryFinding(homePath, artifactStore, tx, pending, pendingRaw, now, fmt.Errorf("record receipt returned %v and durable presence is unprovable: %v", err, proveErr))
+				return rebaselineRecordRecoveryFinding(homePath, artifactStore, tx, pending, pendingRaw, now, fmt.Errorf("record receipt returned %v and durable presence is unprovable: %v", err, proveErr))
 			}
 			if presence == proofAbsent {
 				if rbErr := rollbackRebaselineFn(tx, post, prior, priorExisted); rbErr != nil {
-					return recordRebaselineRecoveryFinding(homePath, artifactStore, tx, pending, pendingRaw, now, fmt.Errorf("record receipt: %w; rollback: %v", err, rbErr))
+					return rebaselineRecordRecoveryFinding(homePath, artifactStore, tx, pending, pendingRaw, now, fmt.Errorf("record receipt: %w; rollback: %v", err, rbErr))
 				}
 				if clearErr := clearRebaselinePendingFn(tx); clearErr != nil {
 					return fmt.Errorf("record receipt: %w; sidecar rolled back but pending journal clear failed: %v", err, clearErr)
@@ -369,13 +390,13 @@ func runEventStoreRebaseline(args []string, stdout, stderr io.Writer) int {
 			// truthful post-state and continue exact Transition finalization.
 		}
 		if err := tx.VerifySidecarCAS(post); err != nil {
-			return recordRebaselineRecoveryFinding(homePath, artifactStore, tx, pending, pendingRaw, now, fmt.Errorf("verify post-image before transition: %w", err))
+			return rebaselineRecordRecoveryFinding(homePath, artifactStore, tx, pending, pendingRaw, now, fmt.Errorf("verify post-image before transition: %w", err))
 		}
 		if err := recordEventstoreEnvelopeFn(store, &transition); err != nil {
 			return fmt.Errorf("record transition %s: %w; rebaseline finalization pending (receipt and post-state remain truthful)", transition.ID, err)
 		}
 		if err := tx.VerifySidecarCAS(post); err != nil {
-			return recordRebaselineRecoveryFinding(homePath, artifactStore, tx, pending, pendingRaw, now, fmt.Errorf("verify post-image before clearing journal: %w", err))
+			return rebaselineRecordRecoveryFinding(homePath, artifactStore, tx, pending, pendingRaw, now, fmt.Errorf("verify post-image before clearing journal: %w", err))
 		}
 		if err := clearRebaselinePendingFn(tx); err != nil {
 			return fmt.Errorf("proof recorded but rebaseline finalization pending: %w", err)
@@ -385,6 +406,9 @@ func runEventStoreRebaseline(args []string, stdout, stderr io.Writer) int {
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
+		if errors.Is(err, eventstore.ErrRebaselineMutatedUnreceipted) {
+			return 3
+		}
 		return 1
 	}
 	return printRebaselineResult(stdout, result, jsonOut)
@@ -567,18 +591,18 @@ const (
 func recoverPendingRebaseline(homePath string, store *eventstore.Store, artifacts *home.ArtifactStore, tx *eventstore.RebaselineTransaction, cfg policy.Config, policySource string, now time.Time) (*rebaselineResult, error) {
 	pending, pendingRaw, exists, err := readRebaselinePendingWithPolicy(tx, cfg, policySource)
 	if err != nil {
-		return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, err)
+		return nil, rebaselineRecordRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, err)
 	}
 	if !exists {
 		return nil, nil
 	}
 	pre, err := artifacts.Get(pending.PreImageRef)
 	if err != nil {
-		return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("read pre-image: %w", err))
+		return nil, rebaselineRecordRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("read pre-image: %w", err))
 	}
 	post, err := artifacts.Get(pending.PostImageRef)
 	if err != nil {
-		return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("read post-image: %w", err))
+		return nil, rebaselineRecordRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("read post-image: %w", err))
 	}
 	current, currentExists, err := tx.ReadSidecar()
 	if err != nil {
@@ -595,7 +619,7 @@ func recoverPendingRebaseline(homePath string, store *eventstore.Store, artifact
 		return nil, err
 	}
 	if receiptState == proofConflict || transitionState == proofConflict || (transitionState == proofExact && receiptState != proofExact) {
-		return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("conflicting or causally incomplete canonical proof"))
+		return nil, rebaselineRecordRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("conflicting or causally incomplete canonical proof"))
 	}
 	if receiptState == proofAbsent && transitionState == proofAbsent {
 		switch {
@@ -606,29 +630,29 @@ func recoverPendingRebaseline(homePath string, store *eventstore.Store, artifact
 			return nil, nil
 		case currentIsPost:
 			if err := rollbackRebaselineFn(tx, post, pre, pending.PriorExisted); err != nil {
-				return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, err)
+				return nil, rebaselineRecordRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, err)
 			}
 			if err := clearRebaselinePendingFn(tx); err != nil {
 				return nil, err
 			}
 			return nil, nil
 		default:
-			return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("current sidecar matches neither journaled pre-image nor post-image"))
+			return nil, rebaselineRecordRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("current sidecar matches neither journaled pre-image nor post-image"))
 		}
 	}
 	if !currentIsPost {
-		return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("durable receipt exists but sidecar is not the journaled post-image"))
+		return nil, rebaselineRecordRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("durable receipt exists but sidecar is not the journaled post-image"))
 	}
 	if transitionState == proofAbsent {
 		if err := tx.VerifySidecarCAS(post); err != nil {
-			return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("verify post-image before recovered transition: %w", err))
+			return nil, rebaselineRecordRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("verify post-image before recovered transition: %w", err))
 		}
 		if err := recordEventstoreEnvelopeFn(store, &pending.Transition); err != nil {
 			return nil, fmt.Errorf("rebaseline finalization pending: persist exact transition %s: %w", pending.Transition.ID, err)
 		}
 	}
 	if err := tx.VerifySidecarCAS(post); err != nil {
-		return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("verify post-image before recovered journal clear: %w", err))
+		return nil, rebaselineRecordRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, fmt.Errorf("verify post-image before recovered journal clear: %w", err))
 	}
 	if err := clearRebaselinePendingFn(tx); err != nil {
 		return nil, fmt.Errorf("rebaseline proof complete but journal clear pending: %w", err)
@@ -641,14 +665,6 @@ func recoverPendingRebaseline(homePath string, store *eventstore.Store, artifact
 }
 
 func eventstoreProofPresence(store *eventstore.Store, expected envelope.Envelope) (proofPresence, error) {
-	id := envelopeID(expected)
-	record, err := store.Read(id)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return proofAbsent, nil
-		}
-		return proofAbsent, err
-	}
 	switch expected.(type) {
 	case *envelope.Receipt, *envelope.Transition:
 	default:
@@ -658,70 +674,39 @@ func eventstoreProofPresence(store *eventstore.Store, expected envelope.Envelope
 	if err != nil {
 		return proofConflict, err
 	}
-	wantJSON, err := canonicalRebaselineJSON(wantRaw)
+	wantJSON, err := eventstore.RebaselineCanonicalJSON(wantRaw)
 	if err != nil {
 		return proofConflict, err
 	}
-	gotJSON, err := canonicalRebaselineJSON(record.Bytes)
+	got, err := store.PhysicalProofPresenceOf(envelopeID(expected), wantJSON)
 	if err != nil {
-		return proofConflict, err
+		return proofAbsent, err
 	}
-	if bytes.Equal(wantJSON, gotJSON) {
+	switch got {
+	case eventstore.PhysicalProofAbsent:
+		return proofAbsent, nil
+	case eventstore.PhysicalProofExact:
 		return proofExact, nil
+	default:
+		return proofConflict, nil
 	}
-	return proofConflict, nil
 }
 
-func canonicalRebaselineJSON(data []byte) ([]byte, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var value any
-	if err := decoder.Decode(&value); err != nil {
-		return nil, err
+func rebaselineRecordRecoveryFinding(homePath string, artifacts *home.ArtifactStore, tx *eventstore.RebaselineTransaction, pending rebaselinePending, pendingRaw []byte, now time.Time, cause error) error {
+	rec := eventstore.RebaselineRecoveryRecord{
+		PreImageRef: pending.PreImageRef, PostImageRef: pending.PostImageRef,
+		ReceiptID: pending.Receipt.ID, TransitionID: pending.Transition.ID,
+		ActionIntentID: pending.ActionIntent.ID, WorkID: pending.Receipt.IDs.WorkID,
+		PriorExisted: pending.PriorExisted, PendingRaw: pendingRaw,
 	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, fmt.Errorf("multiple JSON values")
-		}
-		return nil, err
-	}
-	return json.Marshal(value)
-}
-
-func recordRebaselineRecoveryFinding(homePath string, artifacts *home.ArtifactStore, tx *eventstore.RebaselineTransaction, pending rebaselinePending, pendingRaw []byte, now time.Time, cause error) error {
-	current, currentExisted, readErr := tx.ReadSidecar()
-	if readErr != nil {
-		return fmt.Errorf("rebaseline recovery required (%v); read actual state: %w", cause, readErr)
-	}
-	currentRef, artifactErr := artifacts.Put(current)
-	if artifactErr != nil {
-		return fmt.Errorf("rebaseline recovery required (%v); artifact actual state: %w", cause, artifactErr)
-	}
-	markerRef := ""
-	if len(pendingRaw) > 0 {
-		markerRef, artifactErr = artifacts.Put(pendingRaw)
-		if artifactErr != nil {
-			return fmt.Errorf("rebaseline recovery required (%v); artifact raw pending marker: %w", cause, artifactErr)
-		}
-	}
-	body := fmt.Sprintf("event-store rebaseline manual recovery required.\nsidecar_path: %s\nprior_existed: %t\ncurrent_existed: %t\npre_image_ref: %s\nexpected_post_ref: %s\ncurrent_state_ref: %s\npending_marker_ref: %s\naction_intent_id: %s\nreceipt_id: %s\ntransition_id: %s\ncause: %v\n", tx.SidecarPath(), pending.PriorExisted, currentExisted, pending.PreImageRef, pending.PostImageRef, currentRef, markerRef, pending.ActionIntent.ID, pending.Receipt.ID, pending.Transition.ID, cause)
-	evidenceRefs := nonEmptyRebaselineRefs(pending.PreImageRef, currentRef, markerRef)
-	rec, err := finding.Record(homePath, finding.Finding{Topic: "eventstore-rebaseline-recovery/stream-baseline", Body: body, ProducedBy: "cmd/compound eventstore rebaseline", WorkID: pending.Receipt.IDs.WorkID, EvidenceRefs: evidenceRefs}, now)
-	if err != nil {
-		return fmt.Errorf("rebaseline recovery required (%v); recovery finding failed: %w", cause, err)
-	}
-	return fmt.Errorf("rebaseline recovery finding %s recorded; journal retained; MANUAL RECOVERY REQUIRED: %v", rec.ID, cause)
-}
-
-func nonEmptyRebaselineRefs(refs ...string) []string {
-	out := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		if strings.TrimSpace(ref) != "" {
-			out = append(out, ref)
-		}
-	}
-	return out
+	return eventstore.RecordRebaselineRecoveryFinding(homePath, artifacts, tx, rec, now, cause,
+		func(home string, f eventstore.RebaselineFinding, t time.Time) (string, error) {
+			written, err := finding.Record(home, finding.Finding{Topic: f.Topic, Body: f.Body, ProducedBy: "cmd/compound eventstore rebaseline", WorkID: f.WorkID, EvidenceRefs: f.EvidenceRefs}, t)
+			if err != nil {
+				return "", err
+			}
+			return written.ID, nil
+		})
 }
 
 // rebaselineIntent builds the external_side_effect / easy / local ActionIntent
@@ -858,15 +843,21 @@ func envelopeID(value envelope.Envelope) string {
 	}
 }
 
-func printRebaselinePreview(stdout io.Writer, preview eventstore.StreamBaselinePreview, evaluation policy.AuthorityEvaluation, policySource string, asJSON bool) int {
+func printRebaselinePreview(stdout io.Writer, store *eventstore.Store, preview eventstore.StreamBaselinePreview, evaluation policy.AuthorityEvaluation, policySource string, asJSON bool) int {
 	pd := evaluation.Decision
 	allowed := evaluation.Authority.Current && evaluation.Authority.Allowed
+	guard, _ := store.ReadRebaselineGuardStatus(rebaselineNowFn())
+	lastRebaseline := ""
+	if guard.LastRebaseline != nil {
+		lastRebaseline = guard.LastRebaseline.UTC().Format(time.RFC3339Nano)
+	}
 	if asJSON {
 		out := map[string]any{
 			"mode": "dry-run", "sidecar_path": preview.SidecarPath, "has_sidecar": preview.HasSidecar,
 			"current": preview.Current, "proposed": preview.Proposed,
 			"policy_outcome": pd.Outcome, "allowed": allowed, "policy_source": policySource,
 			"policy_authority": evaluation.Authority,
+			"last_rebaseline": lastRebaseline, "moves_in_last_7_days": guard.MovesInLast7Days,
 		}
 		if err := encodeJSON(stdout, out); err != nil {
 			fmt.Fprintln(stdout, "error:", err)
@@ -880,6 +871,11 @@ func printRebaselinePreview(stdout io.Writer, preview eventstore.StreamBaselineP
 	fmt.Fprintf(stdout, "- sidecar: %s\n", preview.SidecarPath)
 	for _, name := range sortedStreamNames(preview.Proposed) {
 		fmt.Fprintf(stdout, "- %s: current=%s -> proposed=%d\n", name, streamSizeString(preview.Current, name), preview.Proposed[name])
+	}
+	if lastRebaseline != "" {
+		fmt.Fprintf(stdout, "- last rebaseline: %s (moves in last 7d: %d)\n", lastRebaseline, guard.MovesInLast7Days)
+	} else {
+		fmt.Fprintf(stdout, "- last rebaseline: never (moves in last 7d: %d)\n", guard.MovesInLast7Days)
 	}
 	if allowed {
 		fmt.Fprintf(stdout, "- policy: %s (ALLOWED) — run again with --confirm --work W to perform the governed re-baseline\n", pd.Outcome)

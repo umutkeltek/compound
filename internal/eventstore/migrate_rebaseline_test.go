@@ -911,6 +911,105 @@ func putTestPhysicalProof(t *testing.T, store *Store, id string, raw []byte) {
 
 func bytesEqual(a, b []byte) bool { return reflect.DeepEqual(a, b) }
 
+// FALSIFIER (R5B predicate): the rebaseline pending journal must persist
+// (a) whether the prior sidecar existed, and (b) an artifact ref whose body
+// is the EXACT prior sidecar bytes (so a next-invocation "resume rollback"
+// can execute tx.RollbackSidecarCAS against the restored prior without any
+// in-memory prior bytes from the original caller). The predicate is RED if
+// either PriorExisted is wrong or rebaselineArtifactRef(prior) != journal
+// PreImageRef. The migrated store below provides the completion gate Plan
+// requires; openTestStore alone fails this gate.
+func TestRebaselineJournalCapturesPreImageForExecutableRollback(t *testing.T) {
+	store := openMigrateStore(t)
+	seedLoose(t, store, "rec_prerebase", "body")
+	if r, err := store.Migrate(MigrateOptions{Mode: ModeApply}); err != nil || !r.Completion.Complete {
+		t.Fatalf("apply: %v %v", err, r.Completion.Reasons)
+	}
+	prior := []byte(`{"prior":"bytes","timestamp":"2026-07-16T00:00:00Z"}` + "\n")
+	path := store.engine.streamBaselinePath()
+	if err := os.WriteFile(path, prior, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		_, post, err := tx.Plan(migrateNow)
+		if err != nil {
+			return err
+		}
+		journal := newTestPhysicalRebaselineJournal(t, tx, prior, true, post)
+		return tx.WritePending(journal.Raw)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw, exists, err := store.ReadRebaselinePending()
+	if err != nil || !exists {
+		t.Fatalf("journal missing: exists=%v err=%v", exists, err)
+	}
+	var wire rebaselinePhysicalJournalWire
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if !wire.PriorExisted {
+		t.Fatalf("journal PriorExisted=false, want true (a prior sidecar was written)")
+	}
+	if wire.PreImageRef == "" || wire.PreImageRef == rebaselineArtifactRef(nil) {
+		t.Fatalf("journal PreImageRef is empty/nil: %q", wire.PreImageRef)
+	}
+	if wire.PreImageRef != rebaselineArtifactRef(prior) {
+		t.Fatalf("journal PreImageRef=%q does not match rebaselineArtifactRef(prior)=%q\nthe pre-image must round-trip via the journal alone", wire.PreImageRef, rebaselineArtifactRef(prior))
+	}
+}
+
+// FALSIFIER (R5B predicate): rollback from the journal alone — given only the
+// pending journal + tx, executing tx.RollbackSidecarCAS(post, prior, true)
+// against a sidecar that holds the post-image must restore the prior bytes
+// (or, if priorExisted=false, remove the sidecar). The test verifies the
+// existing primitive already powers this — green-at-birth. The predicate
+// marker the packet names is "RollbackPlan is executable from the journal
+// alone": the rebaselinePhysicalJournal binds the prior and post refs so
+// requireImageBinding enforces (post, prior, priorExisted) exactness.
+func TestRebaselineRollsBackSidecarWhenReceiptRecordingFails(t *testing.T) {
+	store := openMigrateStore(t)
+	seedLoose(t, store, "rec_prerebase_rollback", "body")
+	if r, err := store.Migrate(MigrateOptions{Mode: ModeApply}); err != nil || !r.Completion.Complete {
+		t.Fatalf("apply: %v %v", err, r.Completion.Reasons)
+	}
+	prior := []byte(`{"prior":"rollback-baseline"}` + "\n")
+	path := store.engine.streamBaselinePath()
+	if err := os.WriteFile(path, prior, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		_, post, err := tx.Plan(migrateNow)
+		if err != nil {
+			return err
+		}
+		journal := newTestPhysicalRebaselineJournal(t, tx, prior, true, post)
+		if err := tx.WritePending(journal.Raw); err != nil {
+			return err
+		}
+		if err := tx.WriteSidecarCAS(prior, true, post); err != nil {
+			return err
+		}
+		// The post-write receipt-recording failure is injected at the verb
+		// boundary (cmd/compound/failReceiptRecordsBeforePut). The physical
+		// rollback from the journal-only inputs is the eventstore-side path
+		// exercised here.
+		if err := tx.RollbackSidecarCAS(post, prior, true); err != nil {
+			return err
+		}
+		return tx.ClearPending()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != string(prior) {
+		t.Fatalf("journal-only rollback did not restore prior bytes: got=%q want=%q", body, prior)
+	}
+}
+
 func openForAppend(t *testing.T, path string) *os.File {
 	t.Helper()
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
