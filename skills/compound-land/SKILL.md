@@ -177,13 +177,13 @@ go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
   battery fails on a leak that is already landed and pushed. Landing new files therefore has an
   ordering hazard the standard battery does not cover. Before committing any NEW text file, run the
   leak gate against the staged-as-tracked state — `git add` the files FIRST, then run
-  `go test ./internal/arch/ -run '^(TestDoctorGreenAgainstRealRepo|TestCheckCmdCompoundBudgetPassesOnRealRepo)$' -count=1` (seconds, not the full battery) —
+  `go test ./internal/arch/ -run '^(TestDoctorGreenAgainstRealRepo|TestCheckCmdCompoundBudgetPassesOnRealRepo|TestDoctorEmitsCmdCompoundBudgetFindings)$' -count=1` (seconds, not the full battery) —
   or grep the new files against `docs_private/leak-tokens.txt` directly. Test FIXTURES are the
   usual offender: a realistic-looking fixture is exactly where a real private product name gets
   typed. Use synthetic names in fixtures always.
 - When changing CLI source, run that same staged preflight even with no new files. The generic
-  doctor regression is non-strict and tolerates size warnings; the dedicated CLI ratchet test
-  catches them before banking and the full battery. Simplify or move responsibility to its
+  doctor regression is non-strict and tolerates size warnings; the dedicated CLI ratchet and
+  strict doctor wiring tests catch them before banking and the full battery. Simplify or move responsibility to its
   existing owner; never raise the limit or remove checks to clear the ratchet.
 - **Worktree caveat (real failure):** fresh worktrees do not contain the gitignored
   `docs_private/leak-tokens.txt` or `docs_private/source-leak-tokens.txt` overlays. The embedded
