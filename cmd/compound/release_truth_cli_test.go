@@ -33,7 +33,7 @@ func TestReleaseTruthMixedStateActualCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := compoundTestBinary(t)
-	run := func() ([]byte, error) {
+	run := func(t *testing.T) ([]byte, error) {
 		t.Helper()
 		before := releaseCLIHomeSnapshot(t, homePath)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -62,9 +62,9 @@ func TestReleaseTruthMixedStateActualCLI(t *testing.T) {
 		}
 		return report.CandidateIDs[0]
 	}
-	assertState := func(status string) product.ReleaseAwareness {
+	assertState := func(t *testing.T, status string) product.ReleaseAwareness {
 		t.Helper()
-		out, err := run()
+		out, err := run(t)
 		if err != nil {
 			t.Fatalf("CLI: %v\n%s", err, out)
 		}
@@ -106,19 +106,19 @@ func TestReleaseTruthMixedStateActualCLI(t *testing.T) {
 	}
 	add("direct", "live", "2.0", 8*24*time.Hour, false)
 	add("store", "candidate", "3.0", time.Hour, false)
-	partial := assertState("partial")
+	partial := assertState(t, "partial")
 	for _, view := range partial.ChannelPlatforms {
 		if view.CurrentVersion != "" {
 			t.Fatalf("CLI made stale/candidate live: %+v", view)
 		}
 	}
 	add("direct", "live", "2.1", 30*time.Minute, false)
-	current := assertState("current")
+	current := assertState(t, "current")
 	if !current.OutdatedContract {
 		t.Fatal("live contract mismatch hidden")
 	}
 	invalidID := add("direct", "live", "9.0", time.Minute, true)
-	invalid := assertState("invalid")
+	invalid := assertState(t, "invalid")
 	if !strings.Contains(strings.Join(invalid.MissingEvidence, "\n"), invalidID) {
 		t.Fatal("invalid candidate provenance hidden")
 	}
@@ -127,12 +127,42 @@ func TestReleaseTruthMixedStateActualCLI(t *testing.T) {
 			t.Fatal("invalid channel claimed current")
 		}
 	}
-	spec, _ := candidates.SpecFor(candidates.RouteObservation)
-	if err := os.WriteFile(filepath.Join(homePath, spec.InboxDir, invalidID+".json"), []byte("{broken"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	out, err := run()
-	if err == nil || !strings.Contains(string(out), "release evidence") {
-		t.Fatalf("corrupt inventory hidden by CLI: %v\n%s", err, out)
+	for _, kind := range []candidates.Kind{candidates.CapabilityObs, candidates.RouteObservation} {
+		t.Run(string(kind)+" inventory corruption", func(t *testing.T) {
+			spec, ok := candidates.SpecFor(kind)
+			if !ok {
+				t.Fatal("missing candidate owner")
+			}
+			path := filepath.Join(homePath, spec.InboxDir, "legacy-feedback.json")
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			// Corruption is unreachable through intake; simulate legacy bytes.
+			if err := os.WriteFile(path, []byte(`{"generated":"legacy feedback","id":""}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := os.Remove(path); err != nil {
+					t.Error(err)
+				}
+			})
+			before := releaseCLIHomeSnapshot(t, homePath)
+			if _, err := sourceobs.LoadReleaseObservationsReport(homePath, []string{bundle.Product.ID}, now); err == nil {
+				t.Fatal("strict inventory reader hid corruption")
+			}
+			if _, err := product.BuildReleaseAwareness(homePath, bundle.Product.ID, product.ReleaseIdentity{}, product.ReleaseAwarenessOptions{Now: now}); err == nil {
+				t.Fatal("direct release reader hid corruption")
+			}
+			invalid := assertState(t, "invalid")
+			if !strings.Contains(strings.Join(invalid.MissingEvidence, "\n"), "source-observation inventory incomplete") || !strings.Contains(strings.Join(invalid.MissingEvidence, "\n"), filepath.Base(path)) {
+				t.Fatalf("CLI hid actionable inventory failure: %+v", invalid)
+			}
+			if invalid.ObservationCount != 0 || len(invalid.ChannelPlatforms) != 0 || invalid.LatestVersion != "" || invalid.OutdatedContract || len(invalid.EvidenceRefs) != 0 {
+				t.Fatalf("CLI admitted partial inventory or fabricated provenance: %+v", invalid)
+			}
+			if !reflect.DeepEqual(before, releaseCLIHomeSnapshot(t, homePath)) {
+				t.Fatal("release readers modified corrupt inventory")
+			}
+		})
 	}
 }

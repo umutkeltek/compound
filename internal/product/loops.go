@@ -176,7 +176,12 @@ func buildLoopModel(homePath string, opts LoopOptions, readRelease func(string, 
 	if len(productIDs) > 0 {
 		releases, err = readRelease(homePath, productIDs, opts.Now)
 		if err != nil {
-			return LoopModel{}, fmt.Errorf("release evidence: %w", err)
+			// Incomplete release custody cannot certify any partial observations,
+			// but must not hide unrelated product signals, hypotheses, or reviews.
+			// Replace the whole report with visible, portfolio-wide invalidity.
+			releases = sourceobs.ReleaseObservationsReport{Issues: []sourceobs.ReleaseObservationIssue{
+				{Reason: fmt.Sprintf("release evidence: %v", err)},
+			}}
 		}
 	}
 	releasesByProduct := releaseReportsByProduct(releases, productIDs)
@@ -339,8 +344,8 @@ func buildProductLoop(homePath, productID string, metadata loopProductMetadata, 
 	actionCards := loopActionCards(missingSignalSources, signalHypothesisGaps, reviewsByNextAction, loopReviewReadyActionCards(productID, doctor.ReviewReady))
 	sourceIssues := loopSourceIssues(doctor.SourceIssues)
 	// Reduce the shared read-only release snapshot. Invalid evidence remains
-	// visible in the view; an unreadable inventory already failed the portfolio
-	// load rather than masquerading as an unobserved release.
+	// visible in the view; an unreadable inventory invalidates release awareness
+	// for the portfolio without suppressing unrelated product-loop content.
 	var releaseAwareness *ReleaseAwareness
 	awareness := buildReleaseAwareness(productID, metadata.ReleaseIdentity, ReleaseAwarenessOptions{Now: opts.Now, StaleAfter: opts.StaleAfter}, releases)
 	if awareness.ObservationCount > 0 || awareness.Status != "unobserved" {

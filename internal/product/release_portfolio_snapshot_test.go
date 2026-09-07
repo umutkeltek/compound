@@ -1,7 +1,9 @@
 package product
 
 import (
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,5 +99,60 @@ func TestReleaseTruthEmptyPortfolioDoesNotReadInventory(t *testing.T) {
 	}
 	if calls != 0 || len(got.Products) != 0 {
 		t.Fatalf("empty projection read unrelated inventory: calls=%d products=%d", calls, len(got.Products))
+	}
+}
+
+func TestReleaseTruthInventoryErrorPreservesPortfolioWithoutPartialClaims(t *testing.T) {
+	homePath := seedLoopModelHome(t)
+	opts := LoopOptions{Now: loopTestNow, Recent: 1, StaleAfter: 48 * time.Hour}
+	for _, id := range []string{"product:loop-demo", "product:other-loop"} {
+		obs := truthRelease(opts.Now, "direct", "2.0", "20", "live", time.Hour)
+		obs.ProductID = id
+		storeTruthRelease(t, homePath, opts.Now, obs)
+	}
+	want, err := BuildLoopModel(homePath, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded := findProductLoop(want.Products, "product:loop-demo")
+	if len(want.Products) != 2 || len(seeded.SignalsByMetric) == 0 || len(seeded.OpenHypotheses) == 0 || len(seeded.Reviews) == 0 || len(seeded.ActionCards) == 0 {
+		t.Fatalf("fixture must contain the non-release loop: %+v", want)
+	}
+	const inventoryError = "source-observation inventory incomplete: legacy-feedback.json: corrupt: blank_id"
+	reads := 0
+	got, err := buildLoopModel(homePath, opts, func(home string, ids []string, at time.Time) (sourceobs.ReleaseObservationsReport, error) {
+		reads++
+		partial, err := sourceobs.LoadReleaseObservationsReport(home, ids, at)
+		if err != nil || len(partial.Records) != 2 {
+			t.Fatalf("real partial inventory: %+v, %v", partial, err)
+		}
+		// The seam must discard even valid records returned with a read error.
+		return partial, errors.New(inventoryError)
+	})
+	if err != nil {
+		t.Fatalf("release inventory error suppressed unrelated product data: %v", err)
+	}
+	if reads != 1 || len(got.Products) != len(want.Products) {
+		t.Fatalf("portfolio scope changed: reads=%d products=%d", reads, len(got.Products))
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for i := range got.Products {
+		release := got.Products[i].ReleaseAwareness
+		if release == nil || release.Status != "invalid" || !strings.Contains(strings.Join(release.MissingEvidence, "\n"), inventoryError) {
+			t.Fatalf("inventory failure hidden for %s: %+v", got.Products[i].ProductID, release)
+		}
+		if release.ObservationCount != 0 || len(release.ChannelPlatforms) != 0 || release.LatestVersion != "" || release.LatestObservedAt != "" || release.OutdatedContract {
+			t.Fatalf("partial release snapshot admitted: %+v", release)
+		}
+		if len(release.EvidenceRefs) != 0 {
+			t.Fatalf("inventory error fabricated record provenance: %v", release.EvidenceRefs)
+		}
+		got.Products[i].ReleaseAwareness = nil
+		want.Products[i].ReleaseAwareness = nil
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("inventory failure changed non-release loops:\ngot %+v\nwant %+v", got, want)
 	}
 }

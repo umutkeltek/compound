@@ -20,7 +20,7 @@ const ReleaseAwarenessSchemaVersion = "compound.product_release_awareness.v0.1"
 // error; callers should treat unknown statuses as "unknown".
 var ReleaseAwarenessStatus = []string{
 	"unobserved",  // no external release observation has been admitted for this product
-	"invalid",     // admitted observations failed strict re-validation (gap in intake)
+	"invalid",     // incomplete inventory or observations that failed strict re-validation
 	"stale",       // observations exist but every channel is older than StaleAfter
 	"partial",     // some channels observed, others not, no same-channel+platform conflict
 	"conflicting", // same channel+platform has multiple equally-current incompatible observations
@@ -131,8 +131,15 @@ func buildReleaseAwareness(productID string, identity ReleaseIdentity, opts Rele
 		if !issue.AppliesTo(productID) {
 			continue
 		}
-		out.MissingEvidence = append(out.MissingEvidence, issue.CandidateID+": "+issue.Reason)
-		out.EvidenceRefs = append(out.EvidenceRefs, "candidate:"+issue.CandidateID, "source-observation:"+issue.SourceObservationID)
+		reason := issue.Reason
+		if issue.CandidateID != "" {
+			reason = issue.CandidateID + ": " + reason
+			out.EvidenceRefs = append(out.EvidenceRefs, "candidate:"+issue.CandidateID)
+		}
+		if issue.SourceObservationID != "" {
+			out.EvidenceRefs = append(out.EvidenceRefs, "source-observation:"+issue.SourceObservationID)
+		}
+		out.MissingEvidence = append(out.MissingEvidence, reason)
 		if issue.Channel == "" || issue.Platform == "" {
 			unknownInvalid = true
 		} else {
@@ -220,7 +227,7 @@ func buildReleaseAwareness(productID string, identity ReleaseIdentity, opts Rele
 	switch {
 	case len(out.MissingEvidence) > 0:
 		out.Status = "invalid"
-		out.NextAction = "review the identified invalid release evidence and re-import corrected observations; do not infer current-live from missing data"
+		out.NextAction = "review incomplete inventory or invalid release evidence through governed repair or intake; do not infer current-live from missing data"
 	case len(out.Conflict) > 0:
 		out.Status = "conflicting"
 		out.NextAction = "operator-reviewed reconcile required: same channel/platform and observation time disagree; do not auto-claim live"
