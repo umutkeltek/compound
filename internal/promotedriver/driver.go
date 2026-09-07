@@ -212,6 +212,14 @@ func Run(homePath string, opts Options, now time.Time) (Report, error) {
 		}
 		report.Error = runErr.Error()
 	}
+	// Canonical terminal record: receipt_path identifies the receipt file the
+	// appended line lives in, so we set it BEFORE the append. The heartbeat
+	// helper reads the receipt line and the producer-rendered stdout, then
+	// compares them by pass/home/work/stage identity (the stored line's
+	// SHA-256 is recorded as evidence). CLI presentation whitespace is
+	// allowed to differ; what must match is the canonical record itself.
+	receiptPath := filepath.Join(homePath, stateDirName, receiptFileName)
+	report.ReceiptPath = receiptPath
 	if err := receiptAppender(homePath, report); err != nil {
 		report.Stage = stageRecoveryRequired
 		report.Error = fmt.Sprintf("terminal receipt unavailable after stage %s: %v", terminalStageForError(runErr), err)
@@ -221,7 +229,6 @@ func Run(homePath string, opts Options, now time.Time) (Report, error) {
 		}
 		return report, fmt.Errorf("terminal receipt unavailable; recovery marker persisted: %w", err)
 	}
-	report.ReceiptPath = filepath.Join(homePath, stateDirName, receiptFileName)
 	if runErr != nil {
 		return report, runErr
 	}
@@ -736,6 +743,7 @@ func loadFrozenJournal(homePath string, now time.Time) (*frozenJournal, []string
 	for _, passID := range legacy {
 		recovery := *passes[passID].plan
 		recovery.SchemaVersion = ReportSchemaVersion
+		recovery.ReceiptPath = filepath.Join(homePath, stateDirName, receiptFileName)
 		recovery.Stage = stageRecoveryRequired
 		recovery.FinishedAt = rfc3339(now)
 		recovery.Error = "legacy_unreplayable: planned receipt lacks a validated v0.4 frozen plan; no mutation was replayed"

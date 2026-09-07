@@ -350,6 +350,74 @@ func TestApplyPromotesBasisAndCollapsesDuplicates(t *testing.T) {
 	}
 }
 
+// TestTerminalReceiptNamesItselfAndMatchesRenderedIdentity pins the
+// producer/CLI contract the autonomy heartbeat relies on: a successful apply
+// Run appends a terminal receipt that names its own file via receipt_path,
+// and the Report returned for rendering carries the same canonical identity
+// (pass_id, home, intent.work_id, stage, receipt_path) as the stored line.
+// The heartbeat binds the two by identity — the CLI renders indented JSON
+// while the receipt line is compact, so the bytes differ and are never
+// compared. Before the fix ReceiptPath was set on the returned value only
+// AFTER the append, so the stored record had no receipt_path to bind to.
+func TestTerminalReceiptNamesItselfAndMatchesRenderedIdentity(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_basis", mem.Candidate{Entity: "basis", Predicate: "value", Object: "x", PromotionBasis: candidates.BasisRuntimeProof})
+
+	report, err := Run(home, Options{Apply: true, WorkID: "work_heartbeat_identity_test"}, testNow)
+	if err != nil {
+		t.Fatalf("apply run: %v", err)
+	}
+	if report.Stage != stageCommitted {
+		t.Fatalf("apply pass stage = %q, want %s", report.Stage, stageCommitted)
+	}
+	wantPath := filepath.Join(home, stateDirName, receiptFileName)
+	if report.ReceiptPath != wantPath {
+		t.Fatalf("returned ReceiptPath = %q, want %q", report.ReceiptPath, wantPath)
+	}
+
+	var stored *Report
+	for _, r := range readReceipts(t, home) {
+		if r.PassID == report.PassID && r.Stage == stageCommitted {
+			stored = &r
+			break
+		}
+	}
+	if stored == nil {
+		t.Fatalf("no committed receipt for pass %s in %s", report.PassID, wantPath)
+	}
+	if stored.ReceiptPath != wantPath {
+		t.Fatalf("stored receipt_path = %q, want %q (the terminal record must name its own file)", stored.ReceiptPath, wantPath)
+	}
+	if stored.Home == "" || stored.Home != report.Home {
+		t.Fatalf("stored home=%q != rendered home=%q", stored.Home, report.Home)
+	}
+	if stored.Intent == nil || report.Intent == nil || stored.Intent.WorkID == "" || stored.Intent.WorkID != report.Intent.WorkID {
+		t.Fatalf("stored intent=%+v rendered intent=%+v: work_id must be present and equal", stored.Intent, report.Intent)
+	}
+
+	// The CLI renders the report indented (printReportJSON); the stored line
+	// is compact. The rendering must round-trip to the same identity, and
+	// the bytes must differ — a byte digest of stdout could never match.
+	rendered, err := json.MarshalIndent(report, "", " ")
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	var parsed Report
+	if err := json.Unmarshal(rendered, &parsed); err != nil {
+		t.Fatalf("parse rendered report: %v", err)
+	}
+	if parsed.PassID != stored.PassID || parsed.Home != stored.Home || parsed.Stage != stored.Stage || parsed.ReceiptPath != stored.ReceiptPath || parsed.Intent == nil || parsed.Intent.WorkID != stored.Intent.WorkID {
+		t.Fatalf("rendered identity disagrees with stored record:\nrendered=%s\nstored=%+v", rendered, *stored)
+	}
+	compact, err := json.Marshal(*stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(bytes.TrimSpace(rendered), bytes.TrimSpace(compact)) {
+		t.Fatal("rendered and stored bytes are identical; the identity binding must be what is exercised, not a byte match")
+	}
+}
+
 func TestPassIDsNeverCollideWithinOneSecond(t *testing.T) {
 	// Second-resolution time + home hash collided on two sequential passes
 	// inside one second. The journal keys receipts on the pass id, so two

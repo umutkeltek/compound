@@ -27,8 +27,11 @@ TMPDIR=$(mktemp -d 2>/dev/null) || TMPDIR=/tmp/heartbeat-e2e.test.$$
 mkdir -p "$TMPDIR"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-# Stub `compound` — outputs the JSON passed in $FAKE_DRIVER_JSON to stdout
-# for `memory promote-driver`, and exits 0. Other subcommands exit 0 too.
+# Stub `compound` — for `memory promote-driver` it renders the JSON passed in
+# $FAKE_DRIVER_JSON the way the CLI does (indented, intent.work_id stamped
+# from --work) and, when FAKE_DRIVER_RECEIPT=producer|legacy, first appends
+# the compact terminal record the way the producer does. Exits 0. Other
+# subcommands exit 0 too.
 FAKE_BIN="$TMPDIR/fake-bin"
 mkdir -p "$FAKE_BIN"
 cat > "$FAKE_BIN/compound" <<'STUB'
@@ -51,7 +54,34 @@ case "${1:-}" in
           exit 0
         fi
         if [ -n "${FAKE_DRIVER_JSON:-}" ]; then
-          printf '%s\n' "$FAKE_DRIVER_JSON"
+          # Bind the report to the envelope the heartbeat opened: the real
+          # driver stamps intent.work_id from the same --work flag.
+          FAKE_WORK_ID=""
+          while [ $# -gt 0 ]; do
+            if [ "$1" = "--work" ] && [ $# -gt 1 ]; then FAKE_WORK_ID="$2"; fi
+            shift
+          done
+          export FAKE_WORK_ID
+          python3 - <<'PY'
+import json, os
+d = json.loads(os.environ["FAKE_DRIVER_JSON"])
+work = os.environ.get("FAKE_WORK_ID", "")
+if work:
+    d.setdefault("intent", {})["work_id"] = work
+shape = os.environ.get("FAKE_DRIVER_RECEIPT", "")
+if shape in ("producer", "legacy") and d.get("receipt_path"):
+    # Producer contract: append the COMPACT terminal record before rendering
+    # the report. "legacy" mimics an older producer that never stamped
+    # receipt_path on the stored line.
+    rec = dict(d)
+    if shape == "legacy":
+        rec.pop("receipt_path", None)
+    os.makedirs(os.path.dirname(d["receipt_path"]), exist_ok=True)
+    with open(d["receipt_path"], "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
+# CLI contract: stdout is the INDENTED rendering of the same report.
+print(json.dumps(d, indent=1))
+PY
         else
           printf '{"pass_id":"unknown","stage":"unknown"}\n'
         fi
@@ -117,35 +147,32 @@ run_heartbeat() {
   fi
 }
 
-# write_receipt_for: stamps the home's receipts.jsonl with a line whose
-# pass_id+stage match the test's driver JSON. The semantic stage verifier
-# requires the line's sha256 to match the driver's stdout sha256, so the
-# caller must pass the EXACT JSON the driver will emit.
-write_receipt_for() {
-  _home="$1"
-  _json="$2"
-  printf '%s\n' "$_json" > "$_home/.compound/state/promote-driver/receipts.jsonl"
+# committed_driver_json renders the committed report for the home the
+# heartbeat is about to run against ($_home is the per-case home that
+# run_heartbeat mints; this is evaluated inside its _extra_setup).
+committed_driver_json() {
+  printf '{"pass_id":"%s","stage":"committed","home":"%s/.compound","receipt_path":"%s/.compound/state/promote-driver/receipts.jsonl","started_at":"2026-09-05T00:00:00Z","finished_at":"2026-09-05T00:00:01Z","promote":{"promoted":0},"sweep":{"adjudicated":0},"pending_after":0}' \
+    "$1" "$2" "$2"
 }
 
 # ----------------------------------------------------------------------
 
 echo "==> e2e: committed driver (process exit 0) -> FINAL_RC=0"
 
-# For the committed case the script writes its driver JSON to a TMPDIR path
-# inside the home and then calls our stage function which needs the receipt
-# file at the driver-supplied receipt_path to exist with a matching line.
-# We can't know the exact TMPDIR path the script will use, so instead we set
-# receipt_path to the well-known test path AND pre-populate receipts.jsonl
-# there with the exact driver JSON.
-TEST_HOME="$TMPDIR/committed-home-$RANDOM"
-mkdir -p "$TEST_HOME/.compound"
-RECEIPT_PATH="$TEST_HOME/.compound/state/promote-driver/receipts.jsonl"
-DRIVER_JSON='{"pass_id":"pass-committed-001","stage":"committed","home":"'"$TEST_HOME"'/.compound","receipt_path":"'"$RECEIPT_PATH"'","started_at":"2026-09-05T00:00:00Z","finished_at":"2026-09-05T00:00:01Z","promote":{"promoted":0},"sweep":{"adjudicated":0},"pending_after":0}'
-mkdir -p "$(dirname "$RECEIPT_PATH")"
-printf '%s\n' "$DRIVER_JSON" > "$RECEIPT_PATH"
-
+# The stub behaves like the real producer: it appends the compact terminal
+# record (naming receipt_path and the tick's work id) to the home's
+# receipts.jsonl, then prints the INDENTED report on stdout. The heartbeat
+# must bind the two by identity and go green.
 run_heartbeat "committed" "0" \
-  'FAKE_DRIVER_JSON="$DRIVER_JSON"; export FAKE_DRIVER_JSON; HOME="'"$TEST_HOME"'"; export HOME'
+  'FAKE_DRIVER_JSON=$(committed_driver_json pass-committed-001 "$_home"); export FAKE_DRIVER_JSON; FAKE_DRIVER_RECEIPT=producer; export FAKE_DRIVER_RECEIPT'
+
+echo "==> e2e: committed driver whose stored receipt lacks receipt_path -> FINAL_RC=1"
+
+# An older producer appended terminal records without receipt_path. The
+# rendered report still claims committed, but the stored line cannot be
+# bound to it — the heartbeat must refuse (identity_mismatch), never green.
+run_heartbeat "committed-legacy-receipt" "1" \
+  'FAKE_DRIVER_JSON=$(committed_driver_json pass-committed-legacy-001 "$_home"); export FAKE_DRIVER_JSON; FAKE_DRIVER_RECEIPT=legacy; export FAKE_DRIVER_RECEIPT'
 
 echo "==> e2e: partial driver (process exit 0) -> FINAL_RC=1"
 

@@ -7,9 +7,13 @@
 #
 # Stages tested:
 #   GREEN:
-#     - committed (stage=committed, terminal receipt present)
+#     - committed (stage=committed, terminal receipt present; stdout is the
+#       CLI's indented rendering, the receipt line is the producer's compact
+#       record — identity binds, bytes do not)
 #     - skipped_locked with FRESH heartbeat evidence (lock owner + recent receipts.jsonl)
 #   RED:
+#     - identity_mismatch (receipt line lacks receipt_path / names another
+#       work id / report bound to a work id or home the caller did not open)
 #     - unparseable (malformed JSON)
 #     - partial    (stage=partial)
 #     - failed     (stage=failed)
@@ -46,15 +50,47 @@ call_stage() {
   _json_path="$1"
   _home="$2"
   _pd_rc="$3"
-  _stdin_payload="$4"
+  _payload="$4"
+  _expect_work="${5:-}"
+  # The helper reads the rendered report from the path — exactly the file
+  # the heartbeat captured the driver's stdout into — never from stdin.
+  printf '%s\n' "$_payload" > "$_json_path"
   # Disable set -e around the call so the failure can be asserted rather
   # than killing the script.
   set +e
-  promote_driver_stage_decide "$_json_path" "$_home" "$_pd_rc" <<EOF
-$_stdin_payload
-EOF
+  promote_driver_stage_decide "$_json_path" "$_home" "$_pd_rc" "$_expect_work"
   PD_RC=$?
   set -e
+}
+
+assert_stage() {
+  _expect="$1"
+  if [ "$_expect" != "$PD_STAGE" ]; then
+    echo "FAIL: stage"
+    echo "  expected stage=$_expect"
+    echo "  actual   stage=$PD_STAGE (rc=$PD_RC pass=$PD_PASS)"
+    exit 1
+  fi
+}
+
+assert_proof() {
+  _expect="$1"
+  if [ "$_expect" != "$PD_PROOF" ]; then
+    echo "FAIL: proof"
+    echo "  expected proof=$_expect"
+    echo "  actual   proof=$PD_PROOF"
+    exit 1
+  fi
+}
+
+# indent renders a compact JSON document the way the CLI prints a report
+# (indented), so the committed case exercises the real producer/CLI shape.
+indent() {
+  printf '%s' "$1" | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin), indent=1))'
+}
+
+sha256_of() {
+  printf '%s' "$1" | python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.read().encode("utf-8")).hexdigest())'
 }
 
 assert_rc() {
@@ -83,8 +119,8 @@ write_receipts() {
     > "$_home/state/promote-driver/receipts.jsonl"
 }
 
-# write_receipt_line writes the EXACT driver JSON line into receipts.jsonl
-# so the receipt digest matches the driver stdout digest (committed case).
+# write_receipt_line writes one compact terminal record into receipts.jsonl
+# the way the producer appends it (committed cases).
 write_receipt_line() {
   _home="$1"
   _json_line="$2"
@@ -121,15 +157,73 @@ release_lock() {
 
 # ----------------------------------------------------------------------
 
-echo "==> GREEN: committed with terminal receipt"
+echo "==> GREEN: committed with terminal receipt (indented stdout, compact receipt)"
 
 HOME_C=$(setup_home)
 PASS_C="pass-committed-001"
-# Receipt must match the driver stdout byte-for-byte for the digest check.
-RECEIPT_C="{\"pass_id\":\"$PASS_C\",\"stage\":\"committed\",\"home\":\"$HOME_C\",\"receipt_path\":\"$HOME_C/state/promote-driver/receipts.jsonl\",\"started_at\":\"2026-09-05T00:00:00Z\",\"finished_at\":\"2026-09-05T00:00:01Z\",\"promote\":{\"promoted\":0},\"sweep\":{\"adjudicated\":0},\"pending_after\":0}"
+WORK_C="work_promote_committed_001"
+# The producer appends the COMPACT terminal record, naming its own file via
+# receipt_path and the tick's work id via intent.work_id ...
+RECEIPT_C="{\"pass_id\":\"$PASS_C\",\"stage\":\"committed\",\"home\":\"$HOME_C\",\"receipt_path\":\"$HOME_C/state/promote-driver/receipts.jsonl\",\"started_at\":\"2026-09-05T00:00:00Z\",\"finished_at\":\"2026-09-05T00:00:01Z\",\"intent\":{\"work_id\":\"$WORK_C\"},\"promote\":{\"promoted\":0},\"sweep\":{\"adjudicated\":0},\"pending_after\":0}"
 write_receipt_line "$HOME_C" "$RECEIPT_C"
-call_stage "$TMPDIR/driver-committed.json" "$HOME_C" "0" "$RECEIPT_C"
+# ... while the CLI renders the same report INDENTED on stdout. The bytes
+# differ; the identity must still bind, and the proof digest must be the
+# stored line's, not the rendering's.
+call_stage "$TMPDIR/driver-committed.json" "$HOME_C" "0" "$(indent "$RECEIPT_C")" "$WORK_C"
 assert_rc 0 "committed -> rc=0"
+assert_stage "committed"
+assert_proof "evidence:promote-driver-pass:$PASS_C:committed:receipt-sha256=$(sha256_of "$RECEIPT_C")"
+
+# ----------------------------------------------------------------------
+
+echo "==> RED: committed but the stored line lacks receipt_path (older producer)"
+
+HOME_O=$(setup_home)
+PASS_O="pass-committed-legacy-001"
+WORK_O="work_promote_legacy_001"
+RENDERED_O="{\"pass_id\":\"$PASS_O\",\"stage\":\"committed\",\"home\":\"$HOME_O\",\"receipt_path\":\"$HOME_O/state/promote-driver/receipts.jsonl\",\"intent\":{\"work_id\":\"$WORK_O\"}}"
+write_receipt_line "$HOME_O" "{\"pass_id\":\"$PASS_O\",\"stage\":\"committed\",\"home\":\"$HOME_O\",\"intent\":{\"work_id\":\"$WORK_O\"}}"
+call_stage "$TMPDIR/driver-legacy.json" "$HOME_O" "0" "$RENDERED_O" "$WORK_O"
+assert_rc 1 "stored line without receipt_path -> rc=1"
+assert_stage "identity_mismatch:receipt_path"
+
+# ----------------------------------------------------------------------
+
+echo "==> RED: committed but the stored line belongs to another work id"
+
+HOME_W=$(setup_home)
+PASS_W="pass-committed-otherwork-001"
+RENDERED_W="{\"pass_id\":\"$PASS_W\",\"stage\":\"committed\",\"home\":\"$HOME_W\",\"receipt_path\":\"$HOME_W/state/promote-driver/receipts.jsonl\",\"intent\":{\"work_id\":\"work_promote_this_tick\"}}"
+write_receipt_line "$HOME_W" "{\"pass_id\":\"$PASS_W\",\"stage\":\"committed\",\"home\":\"$HOME_W\",\"receipt_path\":\"$HOME_W/state/promote-driver/receipts.jsonl\",\"intent\":{\"work_id\":\"work_promote_earlier_tick\"}}"
+call_stage "$TMPDIR/driver-otherwork.json" "$HOME_W" "0" "$RENDERED_W" "work_promote_this_tick"
+assert_rc 1 "stored line for another work id -> rc=1"
+assert_stage "identity_mismatch:work_id"
+
+# ----------------------------------------------------------------------
+
+echo "==> RED: committed but the report is for a work id this tick did not open"
+
+HOME_B=$(setup_home)
+PASS_B="pass-committed-stalework-001"
+RECEIPT_B="{\"pass_id\":\"$PASS_B\",\"stage\":\"committed\",\"home\":\"$HOME_B\",\"receipt_path\":\"$HOME_B/state/promote-driver/receipts.jsonl\",\"intent\":{\"work_id\":\"work_promote_earlier_tick\"}}"
+write_receipt_line "$HOME_B" "$RECEIPT_B"
+call_stage "$TMPDIR/driver-stalework.json" "$HOME_B" "0" "$(indent "$RECEIPT_B")" "work_promote_this_tick"
+assert_rc 1 "report bound to a different work id than the caller's -> rc=1"
+assert_stage "identity_mismatch:work_binding"
+
+# ----------------------------------------------------------------------
+
+echo "==> RED: committed but the report's home is not the caller's home"
+
+HOME_H=$(setup_home)
+PASS_H="pass-committed-otherhome-001"
+OTHER_HOME="$HOME_H/elsewhere"
+mkdir -p "$OTHER_HOME/state/promote-driver"
+RECEIPT_H="{\"pass_id\":\"$PASS_H\",\"stage\":\"committed\",\"home\":\"$OTHER_HOME\",\"receipt_path\":\"$OTHER_HOME/state/promote-driver/receipts.jsonl\",\"intent\":{\"work_id\":\"work_promote_this_tick\"}}"
+printf '%s\n' "$RECEIPT_H" > "$OTHER_HOME/state/promote-driver/receipts.jsonl"
+call_stage "$TMPDIR/driver-otherhome.json" "$HOME_H" "0" "$RECEIPT_H" "work_promote_this_tick"
+assert_rc 1 "report for another home -> rc=1"
+assert_stage "identity_mismatch:home_binding"
 
 # ----------------------------------------------------------------------
 

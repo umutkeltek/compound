@@ -8,18 +8,24 @@
 #   scripts/_lib/heartbeat-promote-stage.test.sh
 #
 # Public surface:
-#   promote_driver_stage_decide <driver_json_path> <home_path> <pd_rc>
-#       stdin:  the driver's own stdout (raw JSON). Used so we never trust a
-#               synthesized string.
-#       argv1:  path the caller wrote the driver's stdout to (kept for
-#               diagnostics; the function re-reads stdin).
-#       argv2:  home path; the lock file and receipts.jsonl are resolved here.
+#   promote_driver_stage_decide <driver_json_path> <home_path> <pd_rc> [expected_work_id]
+#       argv1:  path the caller captured the driver's stdout (the rendered
+#               report JSON) into. It is read from disk — never from stdin
+#               or argv — so a large report cannot hit E2BIG and a caller
+#               whose stdin is a terminal cannot block.
+#       argv2:  home path; the lock file and receipts.jsonl are resolved here,
+#               and a committed report's `home` must resolve to it.
 #       argv3:  the binary's process exit code (PD_RC); used as a corroborating
 #               signal but never as the only signal.
+#       argv4:  optional work id the caller opened for this pass. When given,
+#               a committed report's intent.work_id must equal it, so a stale
+#               receipt from an earlier pass can never green this tick.
 #       Sets globals (consumed by the heartbeat script):
 #           PD_RC        0 when GREEN, 1 when RED
 #           PD_STAGE     committed | skipped_locked | partial | failed
 #                        | recovery_required | unparseable | unknown
+#                        | missing_receipt | identity_mismatch:<fields>
+#                        | stale_lock
 #           PD_PASS      pass_id ("" if missing)
 #           PD_PROOF     evidence:promote-driver-pass:<pass>:<stage>[:digest|fresh]
 #           PD_PROMOTED  csv of promoted claim_ids
@@ -29,15 +35,21 @@
 #           PD_FRESH_LOCK 1 when skipped_locked was verified FRESH, else 0
 #
 # GREEN only:
-#   - stage == "committed" AND a terminal receipt for pass_id is present in
-#     the receipt_path file AND a digest read off the receipt line matches a
-#     hash computed from the driver's stdout (no synthesized strings).
+#   - stage == "committed" AND the receipt_path file holds a terminal line for
+#     pass_id whose canonical identity (home, intent.work_id, receipt_path)
+#     equals the rendered report's, AND the rendered report is bound to this
+#     caller (home resolves to argv2; intent.work_id equals argv4 when given).
+#     The SHA-256 of the matched receipt LINE is recorded in PD_PROOF as the
+#     evidence anchor. The rendered stdout is deliberately NOT byte-compared
+#     with the stored line: the CLI renders indented JSON while the producer
+#     appends compact JSON, so a byte digest can never match a real pass.
+#     Identity is the contract; presentation is not.
 #   - OR locked=true AND lock file exists AND receipts.jsonl mtime is within
 #     HEARTBEAT_PROMOTE_STAGE_FRESH_MIN minutes (a stale lock is RED).
 #
 # RED for everything else: malformed/unparseable, missing pass id, missing
-# terminal receipt, partial, failed, recovery_required, unknown stage,
-# stale lock, and any failure to finalize.
+# terminal receipt, identity mismatch, partial, failed, recovery_required,
+# unknown stage, stale lock, and any failure to finalize.
 
 # Default freshness window for skipped_locked liveness check. The hourly
 # heartbeat cadence plus a 15-minute budget comfortably catches a stuck
@@ -55,10 +67,7 @@ promote_driver_stage_decide() {
   _drv_json="$1"
   _home="$2"
   _pd_rc="$3"
-  # Driver stdout is read from a path the caller passed via stdin. The
-  # heartbeat writes the driver's stdout to a temp file then passes the
-  # path on stdin; tests pass the raw JSON on stdin.
-  _drv_in=$(cat)
+  _expect_work="${4:-}"
 
   PD_RC=1
   PD_STAGE="unparseable"
@@ -74,15 +83,20 @@ promote_driver_stage_decide() {
 
   # ------------------------------------------------------------------
   # 1. Parse + validate the driver JSON strictly. Malformed/missing
-  #    required fields => RED with stage=unparseable. Pass the driver
-  #    JSON as argv4 (not stdin) because the python heredoc consumes
-  #    stdin and we cannot ALSO pipe JSON into it.
+  #    required fields => RED with stage=unparseable. The python heredoc
+  #    owns stdin, so the report travels by path (argv1), never by pipe.
   # ------------------------------------------------------------------
   _eval=$(HEARTBEAT_PROMOTE_STAGE_FRESH_MIN="$HEARTBEAT_PROMOTE_STAGE_FRESH_MIN" \
-    python3 - "$_drv_json" "$_home" "$_pd_rc" "$_drv_in" <<'PY'
+    python3 - "$_drv_json" "$_home" "$_pd_rc" "$_expect_work" <<'PY'
 import hashlib, json, os, sys, time
 
-drv_path, home, pd_rc, raw = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+drv_path, home, pd_rc, expect_work = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4].strip()
+try:
+    with open(drv_path, "r", encoding="utf-8", errors="replace") as fh:
+        raw = fh.read()
+except OSError as e:
+    print("UNPARSEABLE|cannot read driver json %r: %s" % (drv_path, e))
+    sys.exit(0)
 fresh_min = int(os.environ.get("HEARTBEAT_PROMOTE_STAGE_FRESH_MIN", "15"))
 try:
     d = json.loads(raw)
@@ -95,6 +109,7 @@ stage = (d.get("stage") or "").strip()
 locked = bool(d.get("locked"))
 home_in_report = (d.get("home") or "").strip()
 receipt_path = (d.get("receipt_path") or "").strip()
+rendered_work = ((d.get("intent") or {}).get("work_id") or "").strip()
 
 # Strip the optional fields the parent script used to consume (promoted/
 # parked/rejected csv + counts) so we update them in one place.
@@ -141,6 +156,16 @@ print("FIELDS|" + "|".join([
     pending_after_str,
 ]))
 
+
+def same_path(a, b):
+    if not a or not b:
+        return False
+    try:
+        return os.path.realpath(a) == os.path.realpath(b)
+    except OSError:
+        return False
+
+
 # ------------------------------------------------------------------
 # 2. Semantic stage decision. Anything not in the GREEN list is RED.
 # ------------------------------------------------------------------
@@ -152,12 +177,15 @@ fresh_lock = False
 if not pass_id:
     verdict_stage = "unparseable"
 elif stage == "committed":
-    # Real terminal receipt required at receipt_path, with a line for pass_id
-    # AND a digest read off that line so we never trust a synthesized string.
+    # A real terminal receipt is required at receipt_path: a stored line for
+    # this pass_id whose canonical identity equals the rendered report's,
+    # bound to the home and work id this caller manages. The producer sets
+    # receipt_path on the report BEFORE appending, so the stored line names
+    # its own file; a line without it is an older producer or a forgery.
     if not receipt_path or not os.path.exists(receipt_path):
         verdict_stage = "missing_receipt"
     else:
-        found = False
+        stored = None
         matching_line = None
         try:
             with open(receipt_path, "r", encoding="utf-8", errors="replace") as fh:
@@ -170,26 +198,35 @@ elif stage == "committed":
                     except Exception:
                         continue
                     if rec.get("pass_id") == pass_id and rec.get("stage") == "committed":
-                        found = True
+                        stored = rec
                         matching_line = line
                         break
         except OSError:
-            matching_line = None
-        if not found or matching_line is None:
+            stored = None
+        if stored is None or matching_line is None:
             verdict_stage = "missing_receipt"
         else:
-            digest = hashlib.sha256(matching_line.encode("utf-8")).hexdigest()
-            # Digest must match a digest we can also derive from the driver's
-            # own stdout — never a synthesized string. The driver stdout IS
-            # the report that was appended as the receipt, so we sha256 the
-            # exact bytes the binary emitted and compare to the receipt line.
-            raw_digest = hashlib.sha256(raw.strip().encode("utf-8")).hexdigest()
-            if digest != raw_digest:
-                verdict_stage = "missing_receipt"
+            stored_work = ((stored.get("intent") or {}).get("work_id") or "").strip()
+            mismatch = []
+            if not home_in_report or (stored.get("home") or "").strip() != home_in_report:
+                mismatch.append("home")
+            if not rendered_work or stored_work != rendered_work:
+                mismatch.append("work_id")
+            if (stored.get("receipt_path") or "").strip() != receipt_path:
+                mismatch.append("receipt_path")
+            if not same_path(home_in_report, home):
+                mismatch.append("home_binding")
+            if expect_work and rendered_work != expect_work:
+                mismatch.append("work_binding")
+            if mismatch:
+                verdict_stage = "identity_mismatch:" + ",".join(mismatch)
             else:
+                # The digest is read off the stored line we matched — the
+                # evidence anchor names the exact record, never a synthesized
+                # string and never the presentation bytes on stdout.
+                proof_digest = hashlib.sha256(matching_line.encode("utf-8")).hexdigest()
                 verdict_stage = "committed"
                 GREEN = True
-                proof_digest = digest
 elif stage in ("planned", "operation_recorded", "finalization_recorded"):
     verdict_stage = "unknown"
 elif stage == "partial":

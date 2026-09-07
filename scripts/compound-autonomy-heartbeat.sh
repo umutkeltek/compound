@@ -1,4 +1,9 @@
 #!/bin/sh
+# nounset only, never errexit: this script is an aggregator that collects one
+# rc per stage and MUST reach the final log line whatever a stage returns. An
+# errexit window opened after the promote stage made a failing later stage
+# (a non-zero command substitution) exit before its rc was captured and
+# before the log line was written — the lost-evidence failure mode.
 set -u
 
 # Experimental Compound-owned autonomy heartbeat. Its promotion stage is the
@@ -144,15 +149,13 @@ else
 		--promote-limit 1 --scan-limit 100 --walk-scan-limit 60000 \
     --json >"$PD_TMP/driver.json" 2>"$PD_TMP/driver.err"
   PD_RC=$?
-  # Strict semantic stage decision: the lib parses the driver JSON, verifies
-  # the terminal receipt path+digest for committed, checks skipped_locked
+  # Strict semantic stage decision: the lib reads the driver JSON from the
+  # captured file, binds a committed pass to THIS tick (home + work id) and
+  # to its stored terminal receipt by identity, checks skipped_locked
   # freshness (lock owner + recent receipts.jsonl), and decides GREEN vs RED.
   # PD_RC is now the SEMANTIC rc, not the binary's process exit code.
-  set +e
-  promote_driver_stage_decide "$PD_TMP/driver.json" "$COMPOUND_HOME" "$PD_RC" \
-    <"$PD_TMP/driver.json"
+  promote_driver_stage_decide "$PD_TMP/driver.json" "$COMPOUND_HOME" "$PD_RC" "$PD_WORK_ID"
   PD_RC=$?
-  set -e
   if [ "$PD_STAGE" = "committed" ] && [ "$PD_RC" -eq 0 ]; then
     "$BIN" work advance "$PD_WORK_ID" --to verifying --by "$PD_ACTOR" --verification "$PD_PROOF" --note "driver terminal receipt committed" >/dev/null 2>"$PD_TMP/verify.err" || PD_RC=1
     if [ "$PD_RC" -eq 0 ]; then
