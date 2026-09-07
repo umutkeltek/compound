@@ -42,11 +42,12 @@ func Install() {
 	work.SwapExecuteStageCapacity(CapacityFromSnapshot)
 	work.SwapExecuteStagePreflight(PreflightViaActuator)
 	work.SwapExecuteStageLaunch(LaunchViaActuator)
-	// Slice 2 (aut-launch-canonical 2026-09-07): mark the LaunchContext
-	// wiring live so the launch wire enforces it as a precondition. A
-	// production caller that forgets Install() sees every launch refused
-	// with "LaunchContext not installed" before adapter.Run mints a
-	// RunAttempt, instead of silently running with context.Background().
+	// Slice 2 (aut-launch-canonical 2026-09-07): mark the seam installed so
+	// the launch wire's precondition passes. A process that never ran
+	// Install() sees every launch refused with "LaunchContext not
+	// installed" before adapter.Run mints a RunAttempt. This does not wire
+	// a cancellable context — see the LaunchContext doc for the bound that
+	// applies in production and the open follow-up.
 	launchContextInstalled.Store(true)
 }
 
@@ -145,7 +146,6 @@ var LaunchReadiness = func(req work.DelegateHarnessReadinessRequest) (work.Deleg
 // heartbeat.
 //
 // Slice 2 (aut-launch-canonical 2026-09-07) layered onto the base
-// (R6A 2026-09-10): the LaunchContext var now has a companion install
 // (R6A 2026-09-10): the LaunchContext var now has a companion install
 // flag (launchContextInstalled) keyed off executewire.Install so the
 // launch wire refuses with an explicit error when the seam was never
