@@ -105,13 +105,6 @@ type semanticHarnessAdapter interface {
 	Attest(harness.Capabilities) map[string]bool
 }
 
-// observedVersionFn is the seam CompileDefaultPosture uses to recover the
-// installed binary's version. Tests substitute a fake via package-private
-// assignment; production callers hit harness.ObservedVersion through the
-// default wiring. Kept as a package var so the compile path stays pure and
-// the version probe can be silenced in tests where no real binary is on PATH.
-var observedVersionFn = harness.ObservedVersion
-
 func unsupportedIntention(intention HarnessIntention, reason string) CompiledIntention {
 	return CompiledIntention{
 		Intention:           intention,
@@ -188,6 +181,12 @@ func CompileSemanticPosture(
 }
 
 func CompileDefaultPosture(request DefaultPostureRequest) (CompiledPosture, error) {
+	return compileDefaultPosture(request, harness.ObservedVersion)
+}
+
+// Keep the version probe invocation-local: a package-wide test override races
+// with concurrent posture compilation and can stamp another caller's version.
+func compileDefaultPosture(request DefaultPostureRequest, observeVersion func(string) string) (CompiledPosture, error) {
 	harnessName := strings.TrimSpace(request.Harness)
 	registryName := strings.ReplaceAll(harnessName, "-", "_")
 	if registryName == "claude" {
@@ -219,7 +218,7 @@ func CompileDefaultPosture(request DefaultPostureRequest) (CompiledPosture, erro
 	// the one thing that is always reachable even when the binary is not —
 	// it is the same string the RunAttempt.Harness field carries, so a
 	// doctor that keys off Version can correlate with the audit trail.
-	version := observedVersionFn(registryName)
+	version := observeVersion(registryName)
 	if version == "" {
 		version = "registry:" + registered.Name
 	}

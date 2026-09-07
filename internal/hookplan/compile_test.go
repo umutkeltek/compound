@@ -491,9 +491,6 @@ func testClaudeAttestation() HarnessAttestation {
 func TestCompileDefaultPostureAttestationUsesObservedVersion(t *testing.T) {
 	t.Parallel()
 
-	prev := observedVersionFn
-	defer func() { observedVersionFn = prev }()
-
 	cases := []struct {
 		name        string
 		harnessName string
@@ -523,19 +520,20 @@ func TestCompileDefaultPostureAttestationUsesObservedVersion(t *testing.T) {
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
-			observedVersionFn = func(name string) string {
+			t.Parallel()
+			observedVersionFn := func(name string) string {
 				if name == c.harnessName {
 					return c.observed
 				}
 				return ""
 			}
 
-			compiled, err := CompileDefaultPosture(DefaultPostureRequest{
+			compiled, err := compileDefaultPosture(DefaultPostureRequest{
 				Harness:         c.harnessName,
 				Registry:        harness.DefaultRegistry(),
 				HandlerRef:      "compound",
 				HandlerRevision: "sha256:handler-fixture",
-			})
+			}, observedVersionFn)
 			if err != nil {
 				t.Fatal(err)
 			}
