@@ -74,6 +74,8 @@ type MapTarget struct {
 }
 
 type CandidateRecord struct {
+	Release *ReleaseObservation `json:"release,omitempty"`
+
 	SchemaVersion       string   `json:"schema_version"`
 	ID                  string   `json:"id"`
 	Kind                string   `json:"kind"`
@@ -764,6 +766,7 @@ func CandidateFromMap(obs SourceObservation, m MapTarget, now time.Time) Candida
 		EvidenceRefs:        evidenceRefs(obs),
 		SourceObservationID: obs.ID,
 		SourceRef:           obs.SourceRef.Path,
+		Release:             obs.Release,
 		PromoteAllowed:      m.PromoteAllowed,
 		Verdict:             verdict,
 		CreatedAt:           rfc3339(now),

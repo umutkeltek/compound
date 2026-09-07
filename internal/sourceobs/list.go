@@ -33,6 +33,8 @@ type SourceObservationListCounts struct {
 }
 
 type SourceObservationListItem struct {
+	Release *ReleaseObservation `json:"release,omitempty"`
+
 	CandidateID         string   `json:"candidate_id"`
 	Kind                string   `json:"kind"`
 	Subject             string   `json:"subject,omitempty"`
@@ -91,6 +93,7 @@ func ListSourceObservations(homePath string, now time.Time) (SourceObservationLi
 				Statement:           rec.Statement,
 				SourceObservationID: rec.SourceObservationID,
 				SourceRef:           rec.SourceRef,
+				Release:             rec.Release,
 				Verdict:             rec.Verdict,
 				PromoteAllowed:      rec.PromoteAllowed,
 				CreatedAt:           rec.CreatedAt,

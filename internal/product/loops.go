@@ -682,7 +682,7 @@ type loopActionConsumptionIndex map[string]loopActionConsumption
 
 func loopProductActionConsumptionIndex(homePath string) (loopActionConsumptionIndex, error) {
 	out := loopActionConsumptionIndex{}
-	store, err := work.Open(homePath)
+	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		return out, err
 	}

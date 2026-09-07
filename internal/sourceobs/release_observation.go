@@ -108,9 +108,9 @@ func ValidateReleaseObservation(obs ReleaseObservation, now time.Time) error {
 // generic SourceObservation contract so it can enter through the
 // existing sourceobs evidence door. The SourceRef path is a deterministic
 // synthetic key. PromoteAllowed is false: this is no-promote evidence,
-// never memory authority. All structured fields are re-encoded into
-// EvidenceRefs so ListSourceObservations (which is bounded to a single
-// scan) can reconstruct the typed payload without re-reading JSON files.
+// never memory authority. The typed payload survives candidate persistence
+// and list projection directly; evidence refs remain provenance, not a
+// second encoding of the release fields.
 func FromReleaseObservation(obs ReleaseObservation, now time.Time) (SourceObservation, error) {
 	if err := ValidateReleaseObservation(obs, now); err != nil {
 		return SourceObservation{}, err
@@ -119,17 +119,6 @@ func FromReleaseObservation(obs ReleaseObservation, now time.Time) (SourceObserv
 		now = time.Now()
 	}
 	path := releaseObservationPath(obs)
-	evidenceRefs := []string{
-		"release_observation:" + obs.ProductID + ":" + obs.Channel + ":" + obs.Platform,
-		"release_observation:evidence:" + obs.EvidenceRef,
-		"release_observation:revision:" + obs.SourceRevision,
-		"release_observation:state:" + obs.ObservedState,
-		"release_observation:observed_at:" + obs.ObservedAt,
-		"release_observation:version:" + strings.TrimSpace(obs.ObservedVersion),
-	}
-	if build := strings.TrimSpace(obs.ObservedBuild); build != "" {
-		evidenceRefs = append(evidenceRefs, "release_observation:build:"+build)
-	}
 	return SourceObservation{
 		SchemaVersion: SchemaVersion,
 		ID:            idFor("srcobs_", "release_observation", obs.ProductID, obs.Channel, obs.Platform, obs.ObservedVersion, obs.ObservedState, obs.ObservedAt, obs.SourceRevision),
@@ -159,7 +148,7 @@ func FromReleaseObservation(obs ReleaseObservation, now time.Time) (SourceObserv
 				PromoteAllowed: false,
 			},
 		},
-		EvidenceRefs: evidenceRefs,
+		EvidenceRefs: []string{obs.EvidenceRef},
 		Release:      &obs,
 	}, nil
 }
@@ -238,12 +227,14 @@ func releaseObservationPath(obs ReleaseObservation) string {
 		"#" + strings.TrimSpace(obs.SourceRevision)
 }
 
-// decodeReleaseObservationFromItem reconstructs the typed payload from a
-// SourceObservationListItem. All structured fields are in EvidenceRefs
-// (added in FromReleaseObservation) and the carrier's SourceRef path;
-// malformed entries (missing evidence_ref / source_revision / state /
-// observed_at / version) are skipped, never silently promoted.
+// decodeReleaseObservationFromItem prefers the canonical typed payload.
+// Legacy metadata refs remain readable only when no typed payload exists.
+// The loader validates the selected payload; malformed typed evidence must
+// never fall back to a contradictory legacy encoding.
 func decodeReleaseObservationFromItem(item SourceObservationListItem) (ReleaseObservation, bool) {
+	if item.Release != nil {
+		return *item.Release, true
+	}
 	obs := ReleaseObservation{}
 	for _, ref := range item.EvidenceRefs {
 		ref = strings.TrimSpace(ref)
@@ -286,11 +277,10 @@ func decodeReleaseObservationFromItem(item SourceObservationListItem) (ReleaseOb
 }
 
 // IsReleaseObservation reports whether a SourceObservationListItem came
-// from the release-observation carrier. The carrier always writes its
-// SourceRef path under "compound://release_observation/", so a single
-// prefix check is sufficient.
+// from typed intake or the legacy release-observation carrier. Typed
+// observations may use an ordinary source URL instead of a synthetic key.
 func (i SourceObservationListItem) IsReleaseObservation() bool {
-	return strings.HasPrefix(strings.TrimSpace(i.SourceRef), "compound://release_observation/")
+	return i.Release != nil || strings.HasPrefix(strings.TrimSpace(i.SourceRef), "compound://release_observation/")
 }
 
 func stringSet(values []string) map[string]bool {
