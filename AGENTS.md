@@ -193,6 +193,9 @@ against the live lane backlog and ratified records first — re-doing landed wor
 - Fresh-worktree batteries need gitignored inputs copied in first (`cp -Rc`, never symlink); the exact set is owned by `compound-land` §1.
 
 ## Proof discipline
+- Before the full battery after CLI changes, run `go test ./internal/arch -count=1 -run '^(TestCheckCmdCompoundBudgetPassesOnRealRepo|TestDoctorEmitsCmdCompoundBudgetFindings)$'`.
+  The general `TestDoctorGreenAgainstRealRepo` uses non-strict mode and can remain green on a CLI-budget warning.
+  This cheap structural preflight catches misplaced responsibilities before long tests; it never replaces canonical proof or permits raising the budget.
 - **`proof-check` owns its own output contract.** `--out FILE` writes the FULL report to FILE and prints one
   truthful last line (`battery: ok|FAILED gates=N/M …`) with a truthful process exit (`0` ok / `1` a gate FAILED
   / `2` usage). **Never pipe the battery or `redact` through `| tail`/`| head`** — zsh has no `pipefail`, so the

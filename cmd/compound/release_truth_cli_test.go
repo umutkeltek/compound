@@ -79,7 +79,21 @@ func TestReleaseTruthMixedStateActualCLI(t *testing.T) {
 		if got.Status != status {
 			t.Fatalf("CLI status=%s want %s: %s", got.Status, status, out)
 		}
-		orient := orientReleaseAwarenessFrom(&got)
+		beforeOrient := releaseCLIHomeSnapshot(t, homePath)
+		orientModel, err := buildOrientProductLoops(homePath, 20, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(orientModel.Products) != 1 || orientModel.Products[0].ProductID != bundle.Product.ID || orientModel.Products[0].ReleaseAwareness == nil {
+			t.Fatalf("orient consumer omitted release-only product: %+v", orientModel)
+		}
+		orient := orientModel.Products[0].ReleaseAwareness
+		if orient.Status != got.Status || orient.ContractBuild != got.ContractBuild || orient.Boundary != got.Boundary {
+			t.Fatalf("orient consumer changed release truth: %+v", orient)
+		}
+		if !reflect.DeepEqual(beforeOrient, releaseCLIHomeSnapshot(t, homePath)) {
+			t.Fatal("orient release projection mutated its home")
+		}
 		if len(orient.ChannelPlatforms) != len(got.ChannelPlatforms) {
 			t.Fatal("orient lost channels")
 		}

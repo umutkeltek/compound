@@ -196,48 +196,8 @@ type orientProductLoopItem struct {
 	OpenHypothesesByMissingSignalSource []orientLoopMissingSignalSource `json:"open_hypotheses_by_missing_signal_source,omitempty"`
 	SignalsWithoutHypothesis            []orientLoopSignalHypothesisGap `json:"signals_without_hypothesis,omitempty"`
 	ClosedReviewsByNextAction           []orientLoopReviewNextAction    `json:"closed_reviews_by_next_action,omitempty"`
-	// ReleaseAwareness surfaces the additive evidence-only release
-	// reconciliation view. Distinct channel+platform observations live
-	// side-by-side; same channel+platform equally-current conflicts
-	// surface as status="conflicting". Never auto-promotes to live.
-	ReleaseAwareness *orientReleaseAwareness `json:"release_awareness,omitempty"`
-}
-
-// orientReleaseAwareness is the JSON shape orient surfaces from the
-// product.ReleaseAwareness struct. Status is one of: unobserved,
-// invalid, stale, partial, conflicting, current.
-type orientReleaseAwareness struct {
-	SchemaVersion    string                         `json:"schema_version,omitempty"`
-	ProductID        string                         `json:"product_id"`
-	Status           string                         `json:"status"`
-	ContractVersion  string                         `json:"contract_version,omitempty"`
-	ContractBuild    string                         `json:"contract_build,omitempty"`
-	OutdatedContract bool                           `json:"outdated_contract,omitempty"`
-	LatestObservedAt string                         `json:"latest_observed_at,omitempty"`
-	LatestVersion    string                         `json:"latest_version,omitempty"`
-	LatestChannel    string                         `json:"latest_channel,omitempty"`
-	LatestPlatform   string                         `json:"latest_platform,omitempty"`
-	LatestState      string                         `json:"latest_state,omitempty"`
-	ObservationCount int                            `json:"observation_count"`
-	Conflict         []string                       `json:"conflict,omitempty"`
-	MissingEvidence  []string                       `json:"missing_evidence,omitempty"`
-	Boundary         string                         `json:"boundary,omitempty"`
-	NextAction       string                         `json:"next_action"`
-	ChannelPlatforms []orientReleaseChannelPlatform `json:"channel_platforms,omitempty"`
-	EvidenceRefs     []string                       `json:"evidence_refs,omitempty"`
-}
-
-type orientReleaseChannelPlatform struct {
-	Status         string   `json:"status,omitempty"`
-	CurrentVersion string   `json:"current_version,omitempty"`
-	Channel        string   `json:"channel"`
-	Platform       string   `json:"platform"`
-	LatestVersion  string   `json:"latest_version,omitempty"`
-	LatestState    string   `json:"latest_state,omitempty"`
-	LatestObserved string   `json:"latest_observed_at,omitempty"`
-	StateSet       []string `json:"state_set,omitempty"`
-	VersionSet     []string `json:"version_set,omitempty"`
-	EvidenceRefs   []string `json:"evidence_refs,omitempty"`
+	// ReleaseAwareness is the product-owned evidence-only summary.
+	ReleaseAwareness *product.ReleaseAwarenessSummary `json:"release_awareness,omitempty"`
 }
 
 type orientLoopMissingSignalSource struct {
@@ -641,7 +601,7 @@ func buildOrientProductLoops(homePath string, recent int, now time.Time) (orient
 			OpenHypothesesByMissingSignalSource: orientMissingSignalSources(loop.OpenHypothesesByMissingSignalSource),
 			SignalsWithoutHypothesis:            orientSignalHypothesisGaps(loop.SignalsWithoutHypothesis),
 			ClosedReviewsByNextAction:           orientReviewNextActions(loop.ClosedReviewsByNextAction),
-			ReleaseAwareness:                    orientReleaseAwarenessFrom(loop.ReleaseAwareness),
+			ReleaseAwareness:                    loop.ReleaseAwareness.Summary(),
 		}
 		for _, group := range item.OpenHypothesesByMissingSignalSource {
 			item.OpenHypothesisDebtCount += group.Count
@@ -719,52 +679,6 @@ func orientLoopActionCards(cards []product.LoopActionCard) []orientLoopActionCar
 		})
 	}
 	return out
-}
-
-// orientReleaseAwarenessFrom adapts a product.ReleaseAwareness into the
-// orient-only JSON shape. Returns nil when the product has no release
-// awareness (so the orient output omits the field for unobserved
-// products; unobserved status still appears when observations exist but
-// are all stale).
-func orientReleaseAwarenessFrom(aw *product.ReleaseAwareness) *orientReleaseAwareness {
-	if aw == nil {
-		return nil
-	}
-	channels := make([]orientReleaseChannelPlatform, 0, len(aw.ChannelPlatforms))
-	for _, view := range aw.ChannelPlatforms {
-		channels = append(channels, orientReleaseChannelPlatform{
-			Status:         view.Status,
-			CurrentVersion: view.CurrentVersion,
-			Channel:        view.Channel,
-			Platform:       view.Platform,
-			LatestVersion:  view.Latest.ObservedVersion,
-			LatestState:    view.Latest.ObservedState,
-			LatestObserved: view.Latest.ObservedAt,
-			StateSet:       append([]string{}, view.StateSet...),
-			VersionSet:     append([]string{}, view.VersionSet...),
-			EvidenceRefs:   append([]string{}, view.EvidenceRefs...),
-		})
-	}
-	return &orientReleaseAwareness{
-		SchemaVersion:    aw.SchemaVersion,
-		ProductID:        aw.ProductID,
-		Status:           aw.Status,
-		ContractVersion:  aw.ContractVersion,
-		ContractBuild:    aw.ContractBuild,
-		OutdatedContract: aw.OutdatedContract,
-		LatestObservedAt: aw.LatestObservedAt,
-		LatestVersion:    aw.LatestVersion,
-		LatestChannel:    aw.LatestChannel,
-		LatestPlatform:   aw.LatestPlatform,
-		LatestState:      aw.LatestState,
-		ObservationCount: aw.ObservationCount,
-		Conflict:         append([]string{}, aw.Conflict...),
-		MissingEvidence:  append([]string{}, aw.MissingEvidence...),
-		Boundary:         aw.Boundary,
-		NextAction:       aw.NextAction,
-		ChannelPlatforms: channels,
-		EvidenceRefs:     append([]string{}, aw.EvidenceRefs...),
-	}
 }
 
 func buildOrientNeedsMe(homePath string, reviews reviewartifact.QueueReport, workbench work.WorkbenchReport, now time.Time, strangerExcludeTopic string) orientNeedsMe {

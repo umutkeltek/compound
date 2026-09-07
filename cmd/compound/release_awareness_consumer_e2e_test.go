@@ -105,12 +105,17 @@ func TestReleaseAwareness_LiveConsumerOutput(t *testing.T) {
 		t.Fatalf("loops JSON missing boundary or evidence-only marker: %s", got)
 	}
 
-	// 4. The orient consumer surface: orientReleaseAwarenessFrom adapts
-	//    the model field for orient_product_loop_item.
-	loop := model.Products[0]
-	orientView := orientReleaseAwarenessFrom(loop.ReleaseAwareness)
+	// 4. The operator consumer reads the product-owned compact summary.
+	orientModel, err := buildOrientProductLoops(homePath, 20, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orientModel.Products) != 1 {
+		t.Fatalf("orient consumer omitted release-only product: %+v", orientModel)
+	}
+	orientView := orientModel.Products[0].ReleaseAwareness
 	if orientView == nil {
-		t.Fatalf("orientReleaseAwarenessFrom returned nil for non-empty awareness")
+		t.Fatalf("orient consumer returned nil for non-empty awareness")
 	}
 	orientData, err := json.MarshalIndent(orientView, "", "  ")
 	if err != nil {
