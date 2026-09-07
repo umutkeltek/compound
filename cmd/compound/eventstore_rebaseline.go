@@ -857,7 +857,7 @@ func printRebaselinePreview(stdout io.Writer, store *eventstore.Store, preview e
 			"current": preview.Current, "proposed": preview.Proposed,
 			"policy_outcome": pd.Outcome, "allowed": allowed, "policy_source": policySource,
 			"policy_authority": evaluation.Authority,
-			"last_rebaseline": lastRebaseline, "moves_in_last_7_days": guard.MovesInLast7Days,
+			"last_rebaseline":  lastRebaseline, "moves_in_last_7_days": guard.MovesInLast7Days,
 		}
 		if err := encodeJSON(stdout, out); err != nil {
 			fmt.Fprintln(stdout, "error:", err)
