@@ -568,25 +568,36 @@ func (s *Store) admitWorkLocked(plan CreatePlan, now time.Time, note string, ext
 	if actionContextRef != "" {
 		extraAttached = append(extraAttached, actionContextRef)
 	}
+	// Slice 3 (product-loop-momentum 2026-09-08): persist the
+	// transition event BEFORE the candidate envelope, so a crash
+	// between the two writes leaves either (a) neither — recoverable
+	// by re-running admit, or (b) the event with no envelope —
+	// the work proof-chain doctor flags its action intent and policy
+	// decision as orphans (nothing rebuilds the envelope
+	// automatically). The previous order
+	// persisted the envelope first; a crash there left a fully
+	// formed candidate with no transition record, which recovery
+	// could not detect or repair because there was nothing to mark
+	// the gap.
 	state := w.State
 	w.ActionIntentIDs = append(w.ActionIntentIDs, plan.ActionIntent.ID)
 	w.PolicyDecisionID = plan.Decision.ID
-	if err := s.writeEventJSON(plan.ActionIntent.ID, &plan.ActionIntent); err != nil {
-		return w, err
-	}
-	if err := s.writeEventJSON(plan.Decision.ID, &plan.Decision); err != nil {
-		return w, err
-	}
-	if err := s.writeJSON(s.workPath(w.ID), &w); err != nil {
-		return w, err
-	}
 	attached := []string{plan.ActionIntent.ID, plan.Decision.ID}
 	attached = append(attached, extraAttached...)
 	if strings.TrimSpace(note) == "" {
 		note = "created"
 	}
 	event := Event{TS: ts(now), WorkID: w.ID, From: "", To: state, Note: note, Attached: attached}
+	if err := s.writeEventJSON(plan.ActionIntent.ID, &plan.ActionIntent); err != nil {
+		return w, err
+	}
+	if err := s.writeEventJSON(plan.Decision.ID, &plan.Decision); err != nil {
+		return w, err
+	}
 	if err := s.appendEvent(event); err != nil {
+		return w, err
+	}
+	if err := s.writeJSON(s.workPath(w.ID), &w); err != nil {
 		return w, err
 	}
 	return w, nil

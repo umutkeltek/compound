@@ -115,13 +115,21 @@ type Proposal struct {
 }
 
 type SuppressedDuplicate struct {
-	TriggerRef      string   `json:"trigger_ref"`
-	Kind            string   `json:"kind"`
-	Title           string   `json:"title"`
-	Reason          string   `json:"reason"`
-	EvidenceRefs    []string `json:"evidence_refs"`
-	ExistingWorkIDs []string `json:"existing_work_ids,omitempty"`
-	ExistingPlanIDs []string `json:"existing_plan_ids,omitempty"`
+	TriggerRef string `json:"trigger_ref"`
+	// Slice 3 (product-loop-momentum 2026-09-08): CandidateSourceID is the
+	// actual source id (e.g. loop.ProductID, card.ID, plan.ID, reviewSourceID)
+	// the dedup candidate came from. TriggerRef is a digest derived from
+	// kind+source_id+evidence_refs; consumers that need to correlate the
+	// suppressed duplicate with the actual source use CandidateSourceID
+	// instead of parsing TriggerRef. The trigger digest is still the lookup
+	// key — only the consumer-facing surface changed.
+	CandidateSourceID string   `json:"candidate_source_id,omitempty"`
+	Kind              string   `json:"kind"`
+	Title             string   `json:"title"`
+	Reason            string   `json:"reason"`
+	EvidenceRefs      []string `json:"evidence_refs"`
+	ExistingWorkIDs   []string `json:"existing_work_ids,omitempty"`
+	ExistingPlanIDs   []string `json:"existing_plan_ids,omitempty"`
 }
 
 type SkippedCandidate struct {
@@ -284,6 +292,7 @@ func Propose(homePath string, opts Options) (Report, error) {
 		if dup := dupes.find(proposal.TriggerRef); dup != nil {
 			dup.Kind = proposal.Kind
 			dup.Title = proposal.Title
+			dup.CandidateSourceID = cand.SourceID
 			dup.EvidenceRefs = append([]string{}, proposal.EvidenceRefs...)
 			if opts.Apply && proposal.Kind == "job_health" {
 				reconsidered, err := reconsiderJobHealthEvidenceAutonomy(homePath, store, &proposal, *dup, now)
