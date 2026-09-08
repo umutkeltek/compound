@@ -473,11 +473,11 @@ func Doctor(homePath string) Report {
 	return DoctorWithOptions(homePath, DoctorOptions{})
 }
 
-func DoctorWithOptions(homePath string, opts DoctorOptions) Report {
-	now := opts.Now
-	if now.IsZero() {
-		now = time.Now()
-	}
+// inspectHomeHealth computes the complete structural predicate shared by
+// Doctor and mutation preflights. Diagnostics that do not contribute to OK
+// stay in DoctorWithOptions so lock-held admission does not scan unrelated
+// bodies.
+func inspectHomeHealth(homePath string) Report {
 	r := Report{Home: homePath}
 	if b, err := readManifestNoFollowBounded(filepath.Join(homePath, ManifestName)); err != nil {
 		r.ManifestError = fmt.Sprintf("read home manifest: %v", err)
@@ -504,12 +504,6 @@ func DoctorWithOptions(homePath string, opts DoctorOptions) Report {
 		r.Habitat = habitat
 		r.HabitatOK = habitat.OK
 	}
-	r.InsideGitRepo = underGitRepo(homePath)
-	r.Hygiene, r.HygieneOK = hygieneChecks(homePath)
-	r.BackupWarnings = backupFreshnessWarnings(homePath, now)
-	r.Setup = DoctorSetup(SetupOptions{})
-	r.SetupOK = r.Setup.OK
-	r.PrivateCustody = DiagnosePrivateCustody(homePath)
 	// r.OK is the HOME-health verdict: manifest, scaffold dirs, and a clean habitat inventory.
 	// It deliberately does NOT fold in SetupOK — SetupOK checks the machine's install environment
 	// (setup.compound_on_path, setup.install_dir_on_path), which is orthogonal to whether THIS home
@@ -518,6 +512,21 @@ func DoctorWithOptions(homePath string, opts DoctorOptions) Report {
 	// compound — a CI runner or a fresh clone — even for a perfectly healthy home. SetupOK/Setup stay
 	// reported fields so callers that care about install readiness still see it.
 	r.OK = r.ManifestOK && r.DirsOK == len(dirs) && r.HabitatOK
+	return r
+}
+
+func DoctorWithOptions(homePath string, opts DoctorOptions) Report {
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	r := inspectHomeHealth(homePath)
+	r.InsideGitRepo = underGitRepo(homePath)
+	r.Hygiene, r.HygieneOK = hygieneChecks(homePath)
+	r.BackupWarnings = backupFreshnessWarnings(homePath, now)
+	r.Setup = DoctorSetup(SetupOptions{})
+	r.SetupOK = r.Setup.OK
+	r.PrivateCustody = DiagnosePrivateCustody(homePath)
 	return r
 }
 

@@ -643,7 +643,12 @@ metadata, not private events, ledgers, context packs, or work records.
 `COMPOUND_HOME/archives/operational/` with an append-only index, without deleting
 it. It archives completed/failed/cancelled WorkEnvelopes, stale
 `work/leases/*.json` entries whose work is terminal/archived/missing, terminal
-owner-review artifacts and sidecars, and judged comparison candidates. `home
+owner-review artifacts and sidecars, and judged comparison candidates. Full
+`home doctor` and lock-held archive admission share the same structural health
+predicate: manifest, scaffold directories, and habitat inventory. Archive
+admission does not run informational diagnostics such as private-artifact
+hashing; the full doctor still reports them, and they remain outside its
+existing health verdict. `home
 doctor` reports operational hygiene (`hygiene:no-terminal-work-hot`,
 `hygiene:no-stale-leases`) without making hygiene dirty state fatal, because
 `archive-history` is the repair path. Selection is explicit: an `archive-history`
