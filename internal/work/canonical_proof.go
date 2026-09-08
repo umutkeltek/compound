@@ -353,11 +353,15 @@ func isCanonicalCompoundModule(body []byte) bool {
 		}
 		// The module directive may follow other directives, use a quoted path,
 		// or carry a trailing comment. Spelling must not select a weaker plan.
-		module := fields[1]
+		module := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "module"))
 		if quoted, err := strconv.QuotedPrefix(module); err == nil {
+			if rest := strings.TrimSpace(module[len(quoted):]); rest != "" && !strings.HasPrefix(rest, "//") {
+				continue
+			}
 			module, _ = strconv.Unquote(quoted)
 		} else {
 			module, _, _ = strings.Cut(module, "//")
+			module = strings.TrimSpace(module)
 		}
 		if module == "compound" {
 			return true

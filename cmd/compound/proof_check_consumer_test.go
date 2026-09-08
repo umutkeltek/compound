@@ -140,10 +140,32 @@ func TestCanonicalConsumerNonCertifyingModeRefusesCompoundInventory(t *testing.T
 	}
 }
 
+func TestCanonicalConsumerMalformedModuleCannotSelectCompoundInventory(t *testing.T) {
+	for _, body := range []string{
+		"module \"compound\"junk\n",
+		"module \"compound\" junk\n",
+		"module compound junk\n",
+		"module \"compound\" /junk\n",
+	} {
+		t.Run(body, func(t *testing.T) {
+			repo := initCanonicalProofRepo(t, map[string]string{"go.mod": body})
+			source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := work.ResolveCanonicalProofPlan(repo, source, proofCheckSteps); err == nil {
+				t.Fatal("malformed module declaration selected Compound inventory")
+			}
+		})
+	}
+}
+
 func TestCanonicalConsumerCannotReclassifyCompoundModule(t *testing.T) {
 	for _, body := range []string{
 		"module compound // valid comment\n",
 		"module \"compound\"\n",
+		"module \"compound\" // valid comment\n",
+		"module \"compound\"// valid comment\n",
 		"module \"compo\\u0075nd\"\n",
 		"go 1.26.4\n\nmodule compound\n",
 	} {

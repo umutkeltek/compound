@@ -3,7 +3,9 @@
 External Go and Xcode repositories can declare a tracked root compound-proof.json.
 Canonical admission reads that regular Git blob from the sealed head, never from
 ambient configuration or a caller replacement command. Compound and Rust retain
-their existing inventories; a consumer declaration cannot replace them.
+their existing inventories; a consumer declaration cannot replace them. Module
+identity checks consume the whole declaration: trailing comments are allowed,
+but a quoted prefix followed by extra tokens is not a Compound module identity.
 
 ```json
 {
