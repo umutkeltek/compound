@@ -50,7 +50,7 @@ var EdgeKinds = []string{EdSurfacesWith, EdRequires, EdConflictsWith, EdSpeciali
 // FeedbackEdges are the ones a CapabilityObservation can write (context:<token> → node).
 var FeedbackEdges = map[string]bool{EdMissedWhen: true, EdFalseTriggeredBy: true}
 
-// InstructionRuleWhen describes one trigger dimension for a Tier-1 instruction rule.
+// InstructionRuleWhen describes one trigger dimension for an instruction rule or skill.
 type InstructionRuleWhen struct {
 	Kind   string   `json:"kind" yaml:"kind"`
 	Values []string `json:"values" yaml:"values"`
@@ -106,7 +106,7 @@ type Node struct {
 	// Source means "no disk evidence yet": ComputeReachability treats skill
 	// nodes without a Source the same as the pre-slice-2 era (reachable if
 	// they carry a connection surface). A non-nil Source with
-	// Reachable=false gates the skill out of `reachable` regardless of
+	// Reachable=false gates task offers as well as `reachable`, regardless of
 	// connection-surface facts -- the live falsifier is `skill:web-perf`
 	// (whose source dir is gone) showing Reachable=false even though it
 	// would otherwise look reachable on paper. Reason vocabulary:
@@ -115,7 +115,7 @@ type Node struct {
 }
 
 // NodeSource pins the per-import disk evidence for a skill node. It is the
-// thing ComputeReachability honours for kind:"skill" reachability so a
+// stamp task surfacing and ComputeReachability honour for skills, so a
 // dangling symlink at the skill's source dir reads as unreachable WITHIN ONE
 // IMPORT (no manual cleanup of the register required). The existing Health
 // field stays reserved for "not working right now" (transient); a missing
@@ -711,11 +711,17 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 		if harness != "" && len(harnesses[n.ID]) > 0 && !harnesses[n.ID][harness] {
 			continue
 		}
+		// Eligibility precedes ranking: no bonus can restore a known missing
+		// skill source or bypass a skill's explicit context conditions.
+		if n.Kind == "skill" && ((n.Source != nil && !n.Source.Reachable) ||
+			!skillWhenOK(n.When) || !nodeWhenMatches(n, ctx, tokens, instructionTokens)) {
+			continue
+		}
 		sem := semantic[n.ID]
 		semanticMatched := sem >= semanticFloor
 		matchTokens := tokens
 		if n.Kind == "instruction_rule" {
-			if !instructionRuleMatches(n, ctx, tokens, instructionTokens) && !semanticMatched {
+			if !nodeWhenMatches(n, ctx, tokens, instructionTokens) && !semanticMatched {
 				continue
 			}
 			matchTokens = instructionTokens
@@ -1286,10 +1292,7 @@ func instructionRuleTokenSet(ctx SurfaceContext) map[string]bool {
 	return tokenSet(strings.Join([]string{ctx.Task, ctx.RepoKind, ctx.Harness, ctx.FilePath, ctx.Phase}, " "))
 }
 
-func instructionRuleMatches(n Node, ctx SurfaceContext, taskTokens, contextTokens map[string]bool) bool {
-	if n.Kind != "instruction_rule" {
-		return true
-	}
+func nodeWhenMatches(n Node, ctx SurfaceContext, taskTokens, contextTokens map[string]bool) bool {
 	if len(n.When) == 0 {
 		return true
 	}

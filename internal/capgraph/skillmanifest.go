@@ -117,6 +117,9 @@ func ValidateSkillManifest(manifest SkillManifest) SkillManifestReport {
 		add("skill:"+skill.ID, skillOK(skill, manifest.EvidenceRefs), kind)
 		add("skill_kind:"+skill.ID, contains(NodeKinds, kind), kind)
 		add("skill_status:"+skill.ID, skillStatusOK(skill.Status), skill.Status)
+		if kind == "skill" {
+			add("skill_when:"+skill.ID, skillWhenOK(skill.When), "known dimensions with nonempty values")
+		}
 		if kind == "instruction_rule" {
 			add("instruction_rule:"+skill.ID, instructionRuleEntryOK(skill), "when/read/route/boundary/tier")
 		}
@@ -241,6 +244,17 @@ func skillObservedAtOK(v string) bool {
 	}
 	_, err := time.Parse(time.RFC3339, v)
 	return err == nil
+}
+
+// Validate before normalization: dropping a malformed clause would turn a
+// restricted skill into an unrestricted offer. No conditions remains compatible.
+func skillWhenOK(conditions []InstructionRuleWhen) bool {
+	for _, when := range conditions {
+		if !instructionRuleWhenKindOK(when.Kind) || len(cleanStrings(when.Values)) == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func instructionRuleEntryOK(skill SkillManifestEntry) bool {

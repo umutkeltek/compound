@@ -3,6 +3,7 @@ package capgraph
 import (
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -67,8 +68,15 @@ func TestSkillTokenListUnchangedByFaithfulSlug(t *testing.T) {
 }
 
 func TestLoadOSSkillManifestMigratesStopWordIdentity(t *testing.T) {
+	skillRoot := t.TempDir()
+	writeSkillSource(t, skillRoot, "write-a-skill", `---
+name: write-a-skill
+description: "Synthetic skill identity fixture"
+---
+# Write a skill
+`)
 	path := filepath.Join(t.TempDir(), "skill-manifest.json")
-	writeFile(t, path, `{
+	writeFile(t, path, strings.ReplaceAll(`{
   "_generated": "test",
   "counts": {"skills": 1},
   "entries": [
@@ -80,7 +88,7 @@ func TestLoadOSSkillManifestMigratesStopWordIdentity(t *testing.T) {
       "home": "agents"
     }
   ]
-}`)
+}`, "/private/skills/write-a-skill", filepath.ToSlash(filepath.Join(skillRoot, "write-a-skill"))))
 	manifest, err := LoadOSSkillManifest(path, t0)
 	if err != nil {
 		t.Fatal(err)

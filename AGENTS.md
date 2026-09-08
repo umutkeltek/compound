@@ -37,15 +37,23 @@ This file POINTS at those bodies; it never restates them. A harness may mirror t
 skills (`.claude/skills/`), but that overlay is a convenience, not the source of truth. No hook injection?
 Read `skills/README.md` (or run orient manually) before orchestrating or landing — never improvise a ceremony.
 
-## Read first
-- `docs/ARCHITECTURE.md` + `docs/LAYERS.md` — information kernel (monolith, deep modules); `substrate.md` — target topology, **one meaning owner**, two planes.
-- `docs/architecture/runtime.md` — the `.compound` home, the **envelope spine** (schemas), hooks-as-clients.
-- `docs/architecture/information-custody.md` — physical bodies vs meaning/projections/indexes; edit/restore.
-- `docs/architecture/transition.md` — the `Transition` apex object, the 9-field invariant, acceptance tests.
-- `docs/architecture/execution-plane.md` — model-traffic gateway (route evidence ≠ task success); `epistemics.md` — principles → objects → proof commands.
-- `docs/architecture/contracts/README.md` — contracts (lego seams) + `move_type` + entity precedence.
-- `docs/architecture/status.md` — package/command map; `docs/roadmap/phases.md` — envelope-first construction order.
-- Operator-specific sequencing is in `docs_private/` (gitignored, absent in clones). If absent, use the roadmap.
+## Read first — route by the change
+
+Read `docs/ARCHITECTURE.md` and `docs/LAYERS.md` once when entering this repo. Then load the
+matching row below; expand only when the change crosses another seam. This routes architecture
+reading, not authority: the operating ceremonies and safety/verification gates above still apply.
+
+| Change touches | Read before changing it |
+| --- | --- |
+| Skill triggers, capability offers, instruction routing | `docs/architecture/contracts/README.md` (CapabilityGraph / SkillManifestAdapter), `skills/README.md` |
+| Envelopes, policy, hooks, work lifecycle | `docs/architecture/runtime.md`, `docs/architecture/transition.md` |
+| Memory, source intake, body ownership, restore | `docs/architecture/information-custody.md`, `docs/architecture/substrate.md` |
+| Harness adapters, model traffic, execution lanes | `docs/architecture/execution-plane.md`, `docs/architecture/runtime.md` |
+| Meaning, proof semantics, module boundaries | `docs/architecture/epistemics.md`, `docs/architecture/contracts/README.md`, `docs/architecture/substrate.md` |
+| Package/command inventory or construction sequencing | `docs/architecture/status.md`, `docs/roadmap/phases.md` |
+
+Operator-specific sequencing is in `docs_private/` (gitignored, absent in clones). If absent,
+use `docs/roadmap/phases.md`. Paths are repo-relative; generated runtime guidance comes from orient.
 
 ## Doctrine (non-negotiable)
 1. **One meaning owner.** Many sources, indexes, harnesses, projections — **one** meaning owner: compound. A

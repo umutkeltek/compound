@@ -1033,8 +1033,23 @@ skills:
 }
 
 func TestLoadOSSkillManifestAdaptsGeneratedManifest(t *testing.T) {
+	skillRoot := t.TempDir()
+	for _, name := range []string{
+		"ai-seo",
+		"app-store-screenshots",
+		"pricing",
+		"skill-creator-a",
+		"skill-creator-b",
+	} {
+		writeSkillSource(t, skillRoot, name, `---
+name: synthetic-fixture
+description: "Synthetic skill source fixture"
+---
+# Synthetic fixture
+`)
+	}
 	path := filepath.Join(t.TempDir(), "skill-manifest.json")
-	writeFile(t, path, `{
+	writeFile(t, path, strings.ReplaceAll(`{
   "_generated": "test",
   "counts": {"skills": 4, "recipes": 1},
   "duplicate_names": [{"name": "skill-creator", "count": 2}],
@@ -1082,7 +1097,7 @@ func TestLoadOSSkillManifestAdaptsGeneratedManifest(t *testing.T) {
       "home": "brain-recipes"
     }
   ]
-}`)
+}`, "/private/skills", filepath.ToSlash(skillRoot)))
 	manifest, err := LoadOSSkillManifest(path, t0)
 	if err != nil {
 		t.Fatal(err)

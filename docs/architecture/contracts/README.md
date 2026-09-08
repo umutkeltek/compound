@@ -400,6 +400,17 @@ rows and promotes no memory.
 
 `SkillManifestAdapter` is the skill-import seam for this graph: it imports strict versioned skill/lens/procedure manifests and read-only generated skill-manifest JSON into `CapabilityGraph`, records compatible harnesses as graph edges, treats needs_review/deprecated/retired as non-surfacing, and never runs imported procedures. Generated skill views are normalized into the same manifest contract as evidence-backed offers; they do not become a second skill registry. Panel lens manifests may adapt external instruction patterns into reviewed lens nodes when they preserve trigger, boundary, silence, proof, and retirement semantics; `codebase-seam-deletion-test` is the generic seam/deletion-test lens for capability-adaptation anti-pattern redirects, `skill-trigger-outcome-fit` is the generic skill-creator lens for trigger/surfacing/eval outcome checks, `decision-falsifier-review` is the generic DecisionLifecycle reasoning lens for falsifier/review-trigger/second-order checks, and `anti-pattern-operational-detector` is the opt-in detector lens that checks trigger/redirect/consumer/proof/silence/retirement before findings enter reviewed capability feedback. None are copied skill folders.
 
+Skill eligibility is checked before ranking: a skill with a recorded `Source.Reachable=false`
+is not offered, even with semantic, feedback, or evaluation bonuses. It remains named in the graph;
+a later import with a repaired source stamp restores eligibility. A nil source retains legacy behavior.
+Skill `when` conditions reuse the existing task-class/repo-kind/harness/file-path/phase dimensions:
+clauses are AND, values within a clause are OR, using the existing token/normalization matcher (not
+phrase-exact matching). Unknown dimensions fail closed. Skill imports reject blank/unknown kinds and
+empty or whitespace-only values before normalization or graph mutation. No conditions is compatible.
+These hard gates are skill-only; instruction-rule semantic matching remains unchanged. Conditions
+belong in reviewed manifests: replaying a manifest replaces node metadata, so an older manifest
+without conditions can clear them. Offers remain evidence, not proof of invocation or permission.
+
 The self-improving loop is what makes this *compound*: the distiller's own misses/false-triggers and a
 capability's `missed_when` / `false_triggered_by` edges become evidence that patches the next
 DistillationPolicy and re-weights surfacing — repeated success becomes infrastructure, repeated failure
