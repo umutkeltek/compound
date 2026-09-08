@@ -2455,6 +2455,11 @@ func TestProofCheckCommandRejectsUnsafeTTLBeforeAdmission(t *testing.T) {
 func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing.T) {
 	t.Parallel()
 	if os.Getenv(proofCheckMinimumTTLCLISubEnv) == "1" {
+		if path := os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_ENTERED"); path != "" {
+			if err := os.WriteFile(path, []byte("process-entered\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 		role := os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_ROLE")
 		parentLifetime, err := newTestSubprocessParentLifetime(2 * minimumProofCheckReservationTTL)
 		if err != nil {
@@ -2512,6 +2517,7 @@ func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing
 	firstOut := filepath.Join(t.TempDir(), "first-proof.json")
 	secondOut := filepath.Join(t.TempDir(), "second-proof.json")
 	firstMarker := filepath.Join(t.TempDir(), "first-runner.log")
+	firstEntered := filepath.Join(t.TempDir(), "first-entered")
 	secondMarker := filepath.Join(t.TempDir(), "second-runner.log")
 	releasePath := filepath.Join(t.TempDir(), "release")
 
@@ -2535,28 +2541,47 @@ func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing
 	}
 
 	firstCommand := newCommand("first", firstWork.ID, "codex:min-ttl-first", firstOut)
+	firstCommand.Env = append(firstCommand.Env, "COMPOUND_PROOF_MINIMUM_TTL_ENTERED="+firstEntered)
 	var firstOutput bytes.Buffer
 	firstCommand.Stdout = &firstOutput
 	firstCommand.Stderr = &firstOutput
 	if err := firstCommand.Start(); err != nil {
 		t.Fatal(err)
 	}
+	// One Wait owns process reaping and drains both output streams. Read the
+	// buffer only after firstDone closes, including failure and cleanup paths.
+	firstDone := make(chan struct{})
+	var firstErr error
+	go func() {
+		firstErr = firstCommand.Wait()
+		close(firstDone)
+	}()
 	t.Cleanup(func() {
 		_ = os.WriteFile(releasePath, []byte("release\n"), 0o644)
-		if firstCommand.Process != nil {
+		select {
+		case <-firstDone:
+		default:
 			_ = firstCommand.Process.Kill()
-			_, _ = firstCommand.Process.Wait()
 		}
+		<-firstDone
 	})
 	deadline := time.Now().Add(3 * time.Second)
 	for {
+		select {
+		case <-firstDone:
+			t.Fatalf("minimum TTL first process exited before runner: %v; output:\n%s", firstErr, firstOutput.String())
+		default:
+		}
 		if _, err := os.Stat(firstMarker); err == nil {
 			break
 		} else if !errors.Is(err, os.ErrNotExist) {
 			t.Fatal(err)
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("minimum TTL first runner did not start; output:\n%s", firstOutput.String())
+			_, enteredErr := os.Stat(firstEntered)
+			_ = firstCommand.Process.Kill()
+			<-firstDone
+			t.Fatalf("minimum TTL first runner did not start; process_entered=%t entry_error=%v exit=%v; output:\n%s", enteredErr == nil, enteredErr, firstErr, firstOutput.String())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -2573,8 +2598,9 @@ func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing
 	if err := os.WriteFile(releasePath, []byte("release\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := firstCommand.Wait(); err != nil {
-		t.Fatalf("minimum TTL first proof failed: %v; output:\n%s", err, firstOutput.String())
+	<-firstDone
+	if firstErr != nil {
+		t.Fatalf("minimum TTL first proof failed: %v; output:\n%s", firstErr, firstOutput.String())
 	}
 }
 
