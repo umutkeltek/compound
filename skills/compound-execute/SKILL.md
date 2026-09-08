@@ -120,13 +120,18 @@ worktrees don't contain docs_private).
 ## 4 · Dispatch (worktree discipline)
 
 **`work advance --execute` vs `harness run`.** FIRES: any governed mutation on an enveloped item —
-`compound work advance <id> --to running --execute --harness <name> -- <cmd>`, the only governed
+`compound work advance <id> --to running --execute --harness <name> --workspace <isolated-worktree> -- <cmd>`, the only governed
 execution path. AMBIGUOUS: "let me just reproduce what the executor did, to check it" — still
 governed; observe the run you already have (`compound work observe-run <id> --trace <trace_id>`)
 instead of shadow-executing a second, unrecorded one. DOES-NOT-FIRE: a read-only probe with no side
 effect. `compound harness run` is NOT the fallback: it mints the RunAttempt, prints a warning, and
 reports `governed: false` — a manual record of a run, not an execution. When the governed path is
 blocked, stop and say so.
+
+Supply the isolated execution workspace explicitly for source-bound work. The
+delivery contract names the canonical landing checkout and outranks caller cwd
+in workspace resolution; starting the CLI from a worktree alone does not keep
+the child out of main. Check the RunAttempt's recorded workspace as launch proof.
 
 In the dispatch prompt, always include: the packet ABSOLUTE path · the envelope id · "read
 AGENTS.md first" · commit incrementally, no push, no main, no install · the handoff report format.

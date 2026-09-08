@@ -228,6 +228,10 @@ the sealed HEAD. Only the ceremony-owned ignored inputs are copied as snapshots;
 the original worktree remains the canonical locator and revalidation target, not
 the subprocess execution surface.
 
+External Go/Xcode required tests use the source-sealed
+[native consumer proof contract](contracts/native-consumer-proof.md), including
+native evidence inside the owned report and exact finalizer validation.
+
 ### Universal header (every envelope begins with this)
 ```json
 { "schema_version":"compound.<kind>.v0.1", "id":"kind_...", "created_at":"...",

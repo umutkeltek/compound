@@ -45,8 +45,9 @@ type ProofCheckStep struct {
 	// other gates leave it nil because their failure markers are gate-specific and out of scope
 	// for a generic on-the-wire field. Capped to keep report size predictable under a red
 	// battery that fans out dozens of FAIL lines per package.
-	FailureLines []string `json:"failure_lines,omitempty"`
-	FailureFacts []string `json:"failure_facts,omitempty"`
+	FailureLines     []string                   `json:"failure_lines,omitempty"`
+	FailureFacts     []string                   `json:"failure_facts,omitempty"`
+	ConsumerEvidence *CanonicalConsumerEvidence `json:"consumer_evidence,omitempty"`
 	// CIPortable marks a fresh-clone CI gate: no external non-Go binary, installed binary,
 	// or COMPOUND_HOME body. It is runtime inventory metadata, not serialized proof output.
 	CIPortable bool `json:"-"`
@@ -88,7 +89,7 @@ func ResolveCanonicalProofPlan(
 	markers, err := canonicalProofRootMarkers(
 		resolvedRepo,
 		source.HeadSHA,
-		[]string{"Cargo.lock", "Cargo.toml", "go.mod"},
+		[]string{"Cargo.lock", "Cargo.toml", "go.mod", CanonicalConsumerContractPath},
 	)
 	if err != nil {
 		return CanonicalProofPlan{}, fmt.Errorf("inspect canonical proof root markers at %s: %w", source.HeadSHA, err)
@@ -99,6 +100,39 @@ func ResolveCanonicalProofPlan(
 
 	plan := CanonicalProofPlan{Repo: resolvedRepo, Source: source}
 	switch {
+	case markers[CanonicalConsumerContractPath]:
+		if hasCargoManifest || hasCargoLock {
+			return CanonicalProofPlan{}, fmt.Errorf("external consumer contract cannot replace Rust canonical inventory")
+		}
+		body, blobErr := canonicalProofGitBlob(resolvedRepo, source.HeadSHA, CanonicalConsumerContractPath)
+		if blobErr != nil {
+			return CanonicalProofPlan{}, blobErr
+		}
+		contract, contractErr := parseCanonicalConsumerContract(body)
+		if contractErr != nil {
+			return CanonicalProofPlan{}, contractErr
+		}
+		if (contract.Profile == "go_consumers_v1") != hasGoModule {
+			return CanonicalProofPlan{}, fmt.Errorf("consumer profile does not match tracked root Go module")
+		}
+		if hasGoModule {
+			moduleBody, blobErr := canonicalProofGitBlob(resolvedRepo, source.HeadSHA, "go.mod")
+			if blobErr != nil {
+				return CanonicalProofPlan{}, blobErr
+			}
+			if isCanonicalCompoundModule(moduleBody) {
+				return CanonicalProofPlan{}, fmt.Errorf("external consumer contract cannot replace Compound canonical inventory")
+			}
+		}
+		plan.ID = contract.Profile
+		for _, consumer := range contract.Consumers {
+			plan.Steps = append(plan.Steps, canonicalConsumerStep(consumer, body))
+		}
+		diffRange := source.BaseSHA + "..." + source.HeadSHA
+		plan.Steps = append(plan.Steps,
+			ProofCheckStep{Name: "diff-check", Command: []string{"git", "diff", "--check", diffRange}, ProofRef: "diff-check", CIPortable: true},
+			ProofCheckStep{Name: "redact-public", Command: []string{"redact", "--repo-visibility", "public", "<committed blobs changed in " + diffRange + ">"}, ProofRef: "redact-public-clean"},
+		)
 	case hasCargoManifest && hasGoModule:
 		return CanonicalProofPlan{}, fmt.Errorf("mixed root Cargo.toml and go.mod are not a canonical proof profile")
 	case hasCargoManifest && !hasCargoLock:
@@ -163,6 +197,16 @@ func canonicalProofRootMarkers(repo, headSHA string, paths []string) (map[string
 // RefuseRustInCompoundOnlyProofMode keeps development, CI, and legacy dry-run inventories from
 // silently presenting Compound's Go gates for a Rust repository.
 func RefuseRustInCompoundOnlyProofMode(repo, mode string) error {
+	// Keep the historical function name for callers; external declared consumers must
+	// likewise never borrow Compound's non-certifying development/CI inventory.
+	if _, err := os.Lstat(filepath.Join(repo, CanonicalConsumerContractPath)); err == nil {
+		return fmt.Errorf("%s is Compound-specific; declared consumers require governed canonical proof", mode)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if committed, err := canonicalProofGitNULList(repo, "ls-tree", "-z", "--name-only", "HEAD", "--", CanonicalConsumerContractPath); err == nil && len(committed) > 0 {
+		return fmt.Errorf("%s is Compound-specific; declared consumers require governed canonical proof", mode)
+	}
 	refusal := func() error {
 		return fmt.Errorf("%s is Compound-specific; a Rust workspace requires governed canonical proof with explicit --base, --work, --actor, and --out", mode)
 	}
@@ -412,6 +456,13 @@ func cloneCanonicalProofPlan(in CanonicalProofPlan) CanonicalProofPlan {
 		out.Steps[i] = step
 		out.Steps[i].Command = append([]string(nil), step.Command...)
 		out.Steps[i].FailureFacts = append([]string(nil), step.FailureFacts...)
+		if step.ConsumerEvidence != nil {
+			evidence := *step.ConsumerEvidence
+			evidence.Contract = append([]byte(nil), evidence.Contract...)
+			evidence.Report = append([]byte(nil), evidence.Report...)
+			evidence.Tests = append([]byte(nil), evidence.Tests...)
+			out.Steps[i].ConsumerEvidence = &evidence
+		}
 	}
 	return out
 }

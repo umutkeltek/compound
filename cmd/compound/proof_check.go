@@ -1071,7 +1071,7 @@ func runProofCheckWithRangeContext(
 		if dryRun {
 			result.Status = "planned"
 		} else {
-			result = runProofCheckStepContext(ctx, repo, step, baseRef, headRef)
+			result = work.RetainCanonicalConsumerEvidence(report.Steps, runProofCheckStepContext(ctx, repo, step, baseRef, headRef))
 			if result.Status == "failed" {
 				report.Status = "failed"
 			}
@@ -1346,7 +1346,9 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 		result.DurationMS = time.Since(start).Milliseconds()
 		return result
 	}
-	if step.Name == "redact-public" {
+	if strings.HasPrefix(step.Name, "consumer:") {
+		output, result.ConsumerEvidence, err = work.RunCanonicalConsumer(ctx, repo, step, headRefs, proofCheckCommandContext, proofCheckRuntimeExecutable)
+	} else if step.Name == "redact-public" {
 		output, err = runProofCheckRedactContext(ctx, repo, baseRef, headRefs...)
 	} else if step.Name == "gofmt" {
 		output, err = runProofCheckGofmtContext(ctx, repo)

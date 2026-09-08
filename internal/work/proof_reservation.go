@@ -551,13 +551,14 @@ type ownedProofReport struct {
 	CIConsole      bool                    `json:"ci_console,omitempty"`
 	ProofRefs      []string                `json:"proof_refs"`
 	Steps          []struct {
-		Name          string   `json:"name"`
-		Command       []string `json:"command"`
-		Dir           string   `json:"dir,omitempty"`
-		SkipIfMissing string   `json:"skip_if_missing,omitempty"`
-		ProofRef      string   `json:"proof_ref"`
-		Status        string   `json:"status"`
-		FailureFacts  []string `json:"failure_facts,omitempty"`
+		Name             string                     `json:"name"`
+		Command          []string                   `json:"command"`
+		Dir              string                     `json:"dir,omitempty"`
+		SkipIfMissing    string                     `json:"skip_if_missing,omitempty"`
+		ProofRef         string                     `json:"proof_ref"`
+		Status           string                     `json:"status"`
+		FailureFacts     []string                   `json:"failure_facts,omitempty"`
+		ConsumerEvidence *CanonicalConsumerEvidence `json:"consumer_evidence,omitempty"`
 	} `json:"steps"`
 }
 
@@ -4036,6 +4037,13 @@ func validateOwnedProofReportAgainstReservation(report ownedProofReport, reserva
 		return fmt.Errorf("gate inventory mismatch: report=%d profile=%d", len(report.Steps), len(profile.Gates))
 	}
 	reportProofRefs := make([]string, 0, len(report.Steps))
+	nativeRemaining := CanonicalConsumerEvidenceBudget
+	for _, step := range report.Steps {
+		if step.ConsumerEvidence.size() > nativeRemaining {
+			return fmt.Errorf("aggregate native evidence exceeds report budget")
+		}
+		nativeRemaining -= step.ConsumerEvidence.size()
+	}
 	failedGates := 0
 	for i, gate := range profile.Gates {
 		step := report.Steps[i]
@@ -4050,6 +4058,14 @@ func validateOwnedProofReportAgainstReservation(report ownedProofReport, reserva
 			return fmt.Errorf("gate %q skip_if_missing mismatch: report=%q profile=%q", gate.Name, step.SkipIfMissing, gate.SkipIfMissing)
 		case step.ProofRef != gate.ProofRef:
 			return fmt.Errorf("gate %q proof_ref mismatch: report=%q profile=%q", gate.Name, step.ProofRef, gate.ProofRef)
+		}
+		if strings.HasPrefix(gate.Name, "consumer:") && step.Status == "ok" {
+			if err := ValidateCanonicalConsumerEvidence(ProofCheckStep{
+				Name: step.Name, Command: step.Command, Dir: step.Dir, SkipIfMissing: step.SkipIfMissing,
+				ProofRef: step.ProofRef, ConsumerEvidence: step.ConsumerEvidence,
+			}); err != nil {
+				return fmt.Errorf("gate %q native evidence: %w", gate.Name, err)
+			}
 		}
 		switch step.Status {
 		case "ok":
