@@ -1655,9 +1655,10 @@ func TestOfflineInstallerAcceptsExactVerifiedRelease(t *testing.T) {
 
 func buildInstallerFixture(t *testing.T) (string, string) {
 	t.Helper()
-	repo := newReleaseBuildFixture(t)
 	dist := filepath.Join(t.TempDir(), "dist")
-	runFixtureReleaseBuild(t, repo, dist, "0.1.0")
+	if err := cloneInstallerFixtureDistribution(t, dist); err != nil {
+		t.Fatal(err)
+	}
 	return dist, filepath.Join(dist, installerFixtureTarball())
 }
 
