@@ -349,11 +349,18 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   git leaves the lock behind and `merge --ff-only` then refuses forever. Discriminator: **0 bytes +
   mtime minutes old + `lsof <repo>/.git/index.lock` shows no holder + no `.git/MERGE_HEAD` /
   `rebase-merge` / `rebase-apply` / `CHERRY_PICK_HEAD`** = stale, which is the case git's own error
-  text tells you to clear manually. It remains a destructive op on SHARED state — another lane may
-  have work STAGED in that index — so confirm with the operator, `shasum` their files and
-  `git diff HEAD > /tmp/<lane>-wip-backup.patch` first, and re-verify byte-identical after. Note
-  `git diff` alone misses a staged index; `git diff HEAD` is the backup that covers it. `ps | grep git`
-  is NOT the check (it matches your own command text); `lsof` is.
+  text tells you to clear manually. Recovery is still a mutation on SHARED state: first resolve
+  scoped operator approval or a standing grant covering this repository's stale-lock recovery,
+  the owning WorkEnvelope, and a current allowing PolicyDecision. **Existing authority that
+  covers the recovery fulfills approval — proceed without another prompt.** Missing coverage
+  or a missing, unreadable, or holding policy means stop; this ceremony grants no new authority.
+  Another lane may have STAGED work: back up the index, `git diff HEAD`, and untracked WIP bodies,
+  and record their checksums first. Recheck liveness, size, mtime, path, and lock identity
+  immediately before moving only the verified zero-byte stale lock into the governed backup;
+  never delete it or treat this as generic cleanup authority. Live, fresh, nonempty, symlinked,
+  or changed locks stay untouched. Re-verify the index and every preserved WIP body byte-for-byte
+  afterward. `git diff` alone misses staged work; `git diff HEAD` does not include untracked
+  bodies. `ps | grep git` is NOT the liveness check (it matches your own command text); `lsof` is.
 - **A skill/doc under `.claude/` may be a SYMLINK into the tracked tree — check the target, not the link**
   (lived 2026-07-27). `.claude/` is gitignored wholesale (`.gitignore:12`), so
   `git ls-files .claude/skills/<s>/SKILL.md` reports untracked and `check-ignore` confirms it — but the
