@@ -270,6 +270,100 @@ func TestSurfaceSkillWhenUsesConjunctiveDimensionsAndORAlternatives(t *testing.T
 	}
 }
 
+func TestSurfaceSkillTaskClassPreservesExplicitSkillTerms(t *testing.T) {
+	_, store := newStore(t)
+	node := Node{
+		ID:   "skill:authoring-router",
+		Kind: "skill",
+		Name: "Skill Authoring Router",
+		Triggers: []string{
+			"write", "create", "modify", "update", "improve",
+			"product", "page", "pricing", "onboarding", "screenshots",
+		},
+		Weight: 1,
+		When: []InstructionRuleWhen{{
+			Kind:   "task-class",
+			Values: []string{"skill", "creator", "triggering"},
+		}},
+	}
+	if err := store.Add(node); err != nil {
+		t.Fatal(err)
+	}
+	addRoutingBoostFixture(t, store, node.ID, "improve")
+
+	positive := []string{
+		"write a skill",
+		"create a skill",
+		"modify an existing skill",
+		"update agent skills",
+		"review the skill creator",
+		"debug capability triggering",
+	}
+	negative := []string{
+		"create a product page",
+		"improve the pricing page",
+		"improve onboarding activation",
+		"improve app store screenshots",
+		"improve a product landing page",
+	}
+
+	embedder := newSemanticStub("stub:explicit-skill-task-class:2:f32")
+	embedder.defaultVec = []float32{1, 0}
+	for _, task := range append(append([]string{}, positive...), negative...) {
+		embedder.vectors[task] = []float32{1, 0}
+	}
+	controlTask := "improve skill creator routing"
+	embedder.vectors[controlTask] = []float32{1, 0}
+
+	for _, task := range positive {
+		t.Run("admits "+task, func(t *testing.T) {
+			hits, err := store.SurfaceForContext(SurfaceContext{
+				Task: task, Embedder: embedder,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if surfacedByID(hits, node.ID) == nil {
+				t.Fatalf("explicit skill-authoring task %q was rejected: %+v", task, hits)
+			}
+		})
+	}
+
+	// Prove every scoring lane in the negative cases is genuinely armed.
+	// The only material difference is whether the task-class condition matches.
+	control, err := store.SurfaceForContext(SurfaceContext{
+		Task: controlTask, Embedder: embedder,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlHit := surfacedByID(control, node.ID)
+	if controlHit == nil {
+		t.Fatalf("matching control did not surface: %+v", control)
+	}
+	for _, contribution := range []string{
+		"+semantic=", "+validated_by=", "+missed_when=", "+evidence=",
+	} {
+		if !strings.Contains(controlHit.Why, contribution) {
+			t.Fatalf("fixture did not exercise %s bonus: %+v", contribution, controlHit)
+		}
+	}
+
+	for _, task := range negative {
+		t.Run("rejects "+task, func(t *testing.T) {
+			hits, err := store.SurfaceForContext(SurfaceContext{
+				Task: task, Embedder: embedder,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hit := surfacedByID(hits, node.ID); hit != nil {
+				t.Fatalf("generic product task %q bypassed skill task-class gate: %+v", task, hit)
+			}
+		})
+	}
+}
+
 func TestApplySkillManifestValidatesSkillWhenBeforeMutation(t *testing.T) {
 	invalid := []struct {
 		name string

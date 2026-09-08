@@ -1293,15 +1293,31 @@ func instructionRuleTokenSet(ctx SurfaceContext) map[string]bool {
 }
 
 func nodeWhenMatches(n Node, ctx SurfaceContext, taskTokens, contextTokens map[string]bool) bool {
-	if len(n.When) == 0 {
-		return true
-	}
 	for _, when := range n.When {
-		if !instructionRuleWhenMatches(when, ctx, taskTokens, contextTokens) {
-			return false
+		if instructionRuleWhenMatches(when, ctx, taskTokens, contextTokens) {
+			continue
 		}
+		// Ranking stop-words must not erase an explicit skill condition.
+		// Retain the existing matcher above for aliases and other dimensions.
+		if n.Kind == "skill" && normalizeTriggerValue(when.Kind) == "task-class" &&
+			skillTaskClassLiteralMatches(when, ctx.Task) {
+			continue
+		}
+		return false
 	}
 	return true
+}
+
+func skillTaskClassLiteralMatches(when InstructionRuleWhen, task string) bool {
+	tokens := rawContextTokenSet(task)
+	for _, value := range when.Values {
+		for token := range rawContextTokenSet(value) {
+			if contextTokenMatches(tokens, token) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func instructionRuleWhenMatches(when InstructionRuleWhen, ctx SurfaceContext, taskTokens, contextTokens map[string]bool) bool {

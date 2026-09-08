@@ -405,7 +405,8 @@ is not offered, even with semantic, feedback, or evaluation bonuses. It remains 
 a later import with a repaired source stamp restores eligibility. A nil source retains legacy behavior.
 Skill `when` conditions reuse the existing task-class/repo-kind/harness/file-path/phase dimensions:
 clauses are AND, values within a clause are OR, using the existing token/normalization matcher (not
-phrase-exact matching). Unknown dimensions fail closed. Skill imports reject blank/unknown kinds and
+phrase-exact matching). Skill task-class clauses also match literal task words, including singular/plural
+forms: ranking stop-words cannot erase explicit skill intent. Unknown dimensions fail closed. Skill imports reject blank/unknown kinds and
 empty or whitespace-only values before normalization or graph mutation. No conditions is compatible.
 These hard gates are skill-only; instruction-rule semantic matching remains unchanged. Conditions
 belong in reviewed manifests: replaying a manifest replaces node metadata, so an older manifest
