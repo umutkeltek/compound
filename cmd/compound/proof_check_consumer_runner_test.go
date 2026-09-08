@@ -116,3 +116,22 @@ func TestCanonicalConsumerRunnerRejectsContractDriftBeforeLaunch(t *testing.T) {
 		t.Fatalf("consumer launched before contract validation: %v", err)
 	}
 }
+
+func TestCanonicalConsumerCachedGoReportCannotCertify(t *testing.T) {
+	cached := `{"Action":"output","Package":"example.invalid/product/integration","Output":"ok \texample.invalid/product/integration\t(cached)\n"}`
+	report := strings.Replace(consumerGoReportFixture, "\n", "\n"+cached+"\n", 1)
+	repo, step := consumerRunnerFixture(t, nativeReportScript(report), nil)
+	result := runProofCheckStepContext(t.Context(), repo, step, "HEAD", "HEAD")
+	if result.Status != "failed" {
+		t.Fatalf("cached Go replay certified as native execution: %+v", result)
+	}
+}
+
+func TestCanonicalConsumerCaseVariantKeysCannotOverrideNativeFailure(t *testing.T) {
+	report := strings.Replace(consumerGoReportFixture, `"Action":"run"`, `"Action":"skip","action":"run"`, 1)
+	repo, step := consumerRunnerFixture(t, nativeReportScript(report), nil)
+	result := runProofCheckStepContext(t.Context(), repo, step, "HEAD", "HEAD")
+	if result.Status != "failed" {
+		t.Fatal("case-variant JSON key overrode native failure")
+	}
+}

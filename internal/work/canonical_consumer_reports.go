@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 func validateConsumerGoReport(c CanonicalConsumer, body []byte) error {
@@ -25,7 +26,7 @@ func validateConsumerGoReport(c CanonicalConsumer, body []byte) error {
 		if err := consumerUniqueJSON(line); err != nil {
 			return fmt.Errorf("Go event: %w", err)
 		}
-		var event struct{ Action, Package, Test string }
+		var event struct{ Action, Package, Test, Output string }
 		if err := json.Unmarshal(line, &event); err != nil {
 			return fmt.Errorf("Go event: %w", err)
 		}
@@ -46,6 +47,10 @@ func validateConsumerGoReport(c CanonicalConsumer, body []byte) error {
 			}
 			switch event.Action {
 			case "output":
+				fields := strings.Fields(event.Output)
+				if len(fields) == 3 && fields[0] == "ok" && fields[1] == event.Package && fields[2] == "(cached)" {
+					return fmt.Errorf("cached Go output is not fresh native execution")
+				}
 			case "pass":
 				for _, state := range p.tests {
 					if state != "pass" && state != "skip" {

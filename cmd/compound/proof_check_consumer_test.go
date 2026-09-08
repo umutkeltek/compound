@@ -139,3 +139,23 @@ func TestCanonicalConsumerNonCertifyingModeRefusesCompoundInventory(t *testing.T
 		t.Fatal("external consumer repository received Compound-only development inventory")
 	}
 }
+
+func TestCanonicalConsumerCannotReclassifyCompoundModule(t *testing.T) {
+	for _, body := range []string{
+		"module compound // valid comment\n",
+		"module \"compound\"\n",
+		"module \"compo\\u0075nd\"\n",
+		"go 1.26.4\n\nmodule compound\n",
+	} {
+		t.Run(body, func(t *testing.T) {
+			repo := initCanonicalProofRepo(t, map[string]string{"go.mod": body, "compound-proof.json": consumerContractJSON(t, consumerContractFixture("go_consumers_v1"))})
+			source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := work.ResolveCanonicalProofPlan(repo, source, proofCheckSteps); err == nil {
+				t.Fatal("Compound module spelling replaced full Compound proof with external inventory")
+			}
+		})
+	}
+}

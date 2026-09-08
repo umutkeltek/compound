@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"compound/internal/authority/gitrepository"
@@ -347,10 +348,20 @@ func canonicalProofGitBlob(repo, headSHA, path string) ([]byte, error) {
 func isCanonicalCompoundModule(body []byte) bool {
 	for _, line := range strings.Split(string(body), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 0 || strings.HasPrefix(fields[0], "//") {
+		if len(fields) < 2 || fields[0] != "module" {
 			continue
 		}
-		return len(fields) == 2 && fields[0] == "module" && fields[1] == "compound"
+		// The module directive may follow other directives, use a quoted path,
+		// or carry a trailing comment. Spelling must not select a weaker plan.
+		module := fields[1]
+		if quoted, err := strconv.QuotedPrefix(module); err == nil {
+			module, _ = strconv.Unquote(quoted)
+		} else {
+			module, _, _ = strings.Cut(module, "//")
+		}
+		if module == "compound" {
+			return true
+		}
 	}
 	return false
 }

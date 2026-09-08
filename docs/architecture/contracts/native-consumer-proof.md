@@ -34,8 +34,10 @@ COMPOUND_PROOF_REPORT path. For Go this is the complete go test -json NDJSON
 stream, with package start/pass and run/pass for every required exact package::test
 identifier. Duplicate, out-of-order, failed, omitted, or unfinished tests/packages
 fail. Every skip must be explicitly listed and must not be a required test.
-Commands should disable test caching (for example, -count=1) and select their
+Commands must disable test caching (for example, -count=1) and select their
 actual production integration seam.
+Native cached-package output is refused. JSON keys duplicated by case variation
+are refused too, because the typed decoder would otherwise collapse them.
 
 For xcode_consumers_v1, use report_kind xcresult and write a fresh .xcresult
 directory at the supplied path (pass it to xcodebuild -resultBundlePath in a

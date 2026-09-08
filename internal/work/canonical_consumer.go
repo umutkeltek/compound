@@ -277,10 +277,13 @@ func consumerUniqueJSON(body []byte) error {
 					return err
 				}
 				key, ok := keyToken.(string)
-				if !ok || keys[key] {
+				// encoding/json matches struct fields case-insensitively;
+				// case variants must not smuggle a second deciding value.
+				folded := strings.ToLower(key)
+				if !ok || keys[folded] {
 					return fmt.Errorf("duplicate or invalid JSON key %q", key)
 				}
-				keys[key] = true
+				keys[folded] = true
 				if err := value(depth + 1); err != nil {
 					return err
 				}
