@@ -143,6 +143,16 @@ compound **observes** executions; it does not become one. The rail is proven by 
   same generation through a lock-scoped finalization CAS. Reservation loss preserves the newer lifecycle state.
   Authority evidence is bound to the resolved Claude-family harness. The RunAttempt records the resolved mode,
   actual running PolicyDecision, and exact authority revisions.
+- **Explicit same-work continuation:** `work advance --execute --resume-verifying` reserves
+  `verifying -> running` under fresh policy and the same actor/lease, never a historical grant.
+  Without the flag, execution still requires claimed. Linked attempts must be readable,
+  same-work and terminal; prior success is not required. Resume refuses `--steal`, rechecks the
+  build-implement halt at admission/start, and requires fresh Claude mutation readiness even
+  for explicit bypass. Each run preserves prior attempts and finalizes only its new exact
+  running generation. An unsuccessful resume returns verifying with a failed attempt and
+  nonzero exit, not completed/failed work. Retry lineage is stamped before subprocess start;
+  unchanged terminal close/proof-chain gates validate eventual recovery. This does not change
+  unattended work selection or approval boundaries.
 
 ## Adapter lanes
 - A lane lives under `adapters/<lane>/` and installs into an **isolated Claude-family profile** (its own

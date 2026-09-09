@@ -36,6 +36,7 @@ type buildCmdFn func(context.Context, RunInput) *exec.Cmd
 type runAttemptStore interface {
 	MintWithActionIntent(workID, actor, harness, actionIntentID string, now time.Time) (runattempt.RunAttempt, error)
 	SetOrigin(id, origin string) (runattempt.RunAttempt, error)
+	SetPredecessor(id, predecessorID string) (runattempt.RunAttempt, error)
 	SetWorkspace(id, workspace string) (runattempt.RunAttempt, error)
 	SetCommand(id, command string) (runattempt.RunAttempt, error)
 	SetExecutionPosture(id string, posture runattempt.ExecutionPosture) (runattempt.RunAttempt, error)
@@ -146,6 +147,13 @@ func runWithSubprocess(
 		ra = stamped
 	}
 
+	if in.PredecessorID != "" {
+		linked, err := store.SetPredecessor(ra.ID, in.PredecessorID)
+		if err != nil {
+			return failTerm("link retry predecessor: " + err.Error()), fmt.Errorf("%s: link retry predecessor: %w", harnessName, err)
+		}
+		ra = linked
+	}
 	if _, err := store.SetWorkspace(ra.ID, in.Workspace); err != nil {
 		return failTerm("set workspace"), fmt.Errorf("%s: set workspace: %w", harnessName, err)
 	}

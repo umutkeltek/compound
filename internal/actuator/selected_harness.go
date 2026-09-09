@@ -112,8 +112,7 @@ func ExecuteSelectedHarness(
 		plan.Adapter,
 		"running",
 		"Compound-selected capability route "+plan.RoutePlanID,
-		claimed.RunAttemptIDs,
-		now,
+		claimed.RunAttemptIDs, false, now,
 	)
 	if err != nil {
 		return SelectedHarnessExecutionResult{}, err

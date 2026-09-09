@@ -179,7 +179,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work advance-plan work_abc123 --to running --actor codex --dry-run",
 	},
 	"advance": {
-		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--acknowledge-abandoned ratt_X --reason R] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--execute --harness <name> [--prompt <text> | -- <command> [args...]]]",
+		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--acknowledge-abandoned ratt_X --reason R] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--execute [--resume-verifying] --harness <name> [--prompt <text> | -- <command> [args...]]]",
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"delegate": {
@@ -1502,9 +1502,13 @@ func cmdWork(args []string) {
 		if idx := indexOf(rest, "--"); idx >= 0 {
 			validateSlice = rest[:idx]
 		}
-		if err := validateWorkArguments(validateSlice, advanceValueFlags, map[string]bool{"--steal": true, "--local-only": true, "--execute": true}, 1); err != nil {
+		if err := validateWorkArguments(validateSlice, advanceValueFlags, map[string]bool{"--steal": true, "--local-only": true, "--execute": true, "--resume-verifying": true}, 1); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if hasFlag(validateSlice, "--resume-verifying") && (!hasFlag(validateSlice, "--execute") || hasFlag(validateSlice, "--steal")) {
+			fmt.Fprintln(os.Stderr, "error: --resume-verifying requires --execute and cannot transfer a lease with --steal")
 			os.Exit(2)
 		}
 		if pos(advanceValueFlags) == "" || flag("--to") == "" {

@@ -79,9 +79,12 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	// flag parsing; everything after is the subprocess argv. The first
 	// post-`--` token is the program path; the rest are its args.
 	var restArgs []string
+	flagArgs := rest
 	if idx := indexOf(rest, "--"); idx >= 0 {
 		restArgs = rest[idx+1:]
+		flagArgs = rest[:idx]
 	}
+	resumeVerifying := hasFlag(flagArgs, "--resume-verifying")
 	var command string
 	var commandArgs []string
 	if len(restArgs) > 0 {
@@ -100,15 +103,8 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		fmt.Fprintf(os.Stderr, "work envelope %q: %v\n", workID, err)
 		workAdvanceExecuteExit(1)
 	}
-	if wenv.State != "claimed" {
-		gateRefusal{
-			Command:  "compound work advance --execute",
-			Gate:     "execution_reservation",
-			Refused:  fmt.Sprintf("work %s is %s; governed execution requires a currently claimed envelope", workID, wenv.State),
-			Tried:    []string{fmt.Sprintf("expected state claimed, observed %s", wenv.State)},
-			DoThis:   []string{fmt.Sprintf("compound work show %s", workID), "recover or create an explicit claimed execution envelope before retrying"},
-			Prevents: "replaying an adapter against work that is already running or verifying; a retry is a new audited recovery decision, not a same-state launch.",
-		}.writeTo(os.Stderr)
+	if refusal := actuator.GovernedHarnessSourceRefusal(wenv, resumeVerifying); refusal != nil {
+		refusal.RenderTo(os.Stderr)
 		workAdvanceExecuteExit(1)
 	}
 
@@ -213,7 +209,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	if note == "" {
 		note = "harness execute: " + harnessName
 	}
-	executed, err := actuator.ExecuteGovernedHarnessAdvance(homePath, store, wenv, adapter, runInput, actor, target, note, existingRunAttempts, now)
+	executed, err := actuator.ExecuteGovernedHarnessAdvance(homePath, store, wenv, adapter, runInput, actor, target, note, existingRunAttempts, resumeVerifying, now)
 	var laneRefusal *actuator.LaneRefusal
 	if errors.As(err, &laneRefusal) && laneRefusal != nil { // R3B 2026-09-04: explicit --permission-mode on unready lane refused BEFORE mint.
 		laneRefusal.RenderTo(os.Stderr)

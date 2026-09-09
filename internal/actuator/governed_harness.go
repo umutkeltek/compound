@@ -97,6 +97,7 @@ func (l *LaneRefusal) RenderTo(w io.Writer) {
 // GovernedHarnessFinalizationInput binds adapter completion to the exact
 // running work generation that authorized it.
 type GovernedHarnessFinalizationInput struct {
+	ResumeVerifying       bool
 	Store                 *work.Store
 	WorkID                string
 	Actor                 string
@@ -137,22 +138,25 @@ type GovernedHarnessLaunchInput struct {
 	// uses the lane-only start guard (no Ready re-check) so the request is
 	// honored end-to-end instead of silently downgraded to plan.
 	OperatorExplicitBypass bool
+	ResumeVerifying        bool
 	Now                    time.Time
 }
 
 // GovernedHarnessReservationInput is the post-preflight execution contract:
-// one claimed work generation, one resolved adapter tuple, and one requested
-// permission posture.
+// one exact source work generation, one resolved adapter tuple, and one requested
+// permission posture. ResumeVerifying explicitly selects verifying instead of claimed.
 type GovernedHarnessReservationInput struct {
-	HomePath    string
-	Store       *work.Store
-	ClaimedWork envelope.WorkEnvelope
-	Adapter     harness.Adapter
-	RunInput    harness.RunInput
-	Actor       string
-	Target      string
-	Note        string
-	Now         time.Time
+	// ResumeVerifying admits a fresh execution; history is provenance, not authority.
+	ResumeVerifying bool
+	HomePath        string
+	Store           *work.Store
+	ClaimedWork     envelope.WorkEnvelope
+	Adapter         harness.Adapter
+	RunInput        harness.RunInput
+	Actor           string
+	Target          string
+	Note            string
+	Now             time.Time
 }
 
 // GovernedHarnessReservation is the exact running generation and bound launch
@@ -186,15 +190,31 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 	if strings.TrimSpace(in.Target) != "running" {
 		return GovernedHarnessReservation{}, fmt.Errorf("governed harness reservation target %q must be running", in.Target)
 	}
+	if refusal := GovernedHarnessSourceRefusal(in.ClaimedWork, in.ResumeVerifying); refusal != nil {
+		return GovernedHarnessReservation{}, refusal
+	}
+	var predecessorID string
+	expectedState := "claimed"
+	if in.ResumeVerifying {
+		expectedState = "verifying"
+		var err error
+		predecessorID, err = validateGovernedResumeHistory(in)
+		if err != nil {
+			return GovernedHarnessReservation{}, err
+		}
+	}
 	claimedPolicyDecisionID := strings.TrimSpace(in.ClaimedWork.PolicyDecisionID)
 	var claimedActionIntentID string
 	if n := len(in.ClaimedWork.ActionIntentIDs); n > 0 {
 		claimedActionIntentID = strings.TrimSpace(in.ClaimedWork.ActionIntentIDs[n-1])
 	}
 	if claimedPolicyDecisionID == "" || claimedActionIntentID == "" {
-		return GovernedHarnessReservation{}, fmt.Errorf("governed harness reservation requires an exact claimed policy/action generation")
+		return GovernedHarnessReservation{}, fmt.Errorf("governed harness reservation requires an exact %s policy/action generation", expectedState)
 	}
 	runInput := in.RunInput
+	if in.ResumeVerifying {
+		runInput.PredecessorID = predecessorID
+	}
 	_, claudeFamily := in.Adapter.(harness.GovernedPermissionAdapter)
 	originalPermissionMode := strings.TrimSpace(runInput.PermissionMode)
 	var postureEvidence []work.DelegateHarnessReadinessEvidence
@@ -211,6 +231,7 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 				requestedMode,
 				in.Actor,
 				in.Target,
+				in.ResumeVerifying,
 				in.Now,
 			)
 			// R3B 2026-09-04: explicit mutation request on an unready lane
@@ -224,13 +245,13 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 		}
 	}
 	autonomyClass := ""
-	if claudeFamily && ClaudeMutationPermissionMode(runInput.PermissionMode) {
+	if in.ResumeVerifying || (claudeFamily && ClaudeMutationPermissionMode(runInput.PermissionMode)) {
 		autonomyClass = "build-implement"
 	}
 	running, err := in.Store.Advance(in.ClaimedWork.ID, work.AdvanceInput{
 		To:                       in.Target,
 		Actor:                    in.Actor,
-		ExpectedWorkState:        "claimed",
+		ExpectedWorkState:        expectedState,
 		ExpectedPolicyDecisionID: claimedPolicyDecisionID,
 		ExpectedActionIntentID:   claimedActionIntentID,
 		AutonomyClass:            autonomyClass,
@@ -252,7 +273,8 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 		ActionIntentID:         actionIntentID,
 		ReadinessEvidence:      postureEvidence,
 		ReadinessRequest:       postureReadinessRequest,
-		OperatorExplicitBypass: originalPermissionMode == "bypass",
+		OperatorExplicitBypass: originalPermissionMode == "bypass" && !in.ResumeVerifying,
+		ResumeVerifying:        in.ResumeVerifying,
 		Now:                    in.Now,
 	})
 	if err != nil {
@@ -278,11 +300,12 @@ func ExecuteGovernedHarnessAdvance(
 	target string,
 	note string,
 	existingRunAttempts []string,
+	resumeVerifying bool,
 	now time.Time,
 ) (GovernedHarnessAdvanceExecution, error) {
 	reserved, err := ReserveGovernedHarnessLaunch(GovernedHarnessReservationInput{
 		HomePath: homePath, Store: store, ClaimedWork: claimedWork, Adapter: adapter,
-		RunInput: runInput, Actor: actor, Target: target, Note: note, Now: now,
+		RunInput: runInput, Actor: actor, Target: target, Note: note, ResumeVerifying: resumeVerifying, Now: now,
 	})
 	if err != nil {
 		return GovernedHarnessAdvanceExecution{}, err
@@ -300,6 +323,7 @@ func ExecuteGovernedHarnessAdvance(
 		RunningPolicyID:       reserved.RunningWork.PolicyDecisionID,
 		RunningActionIntentID: reserved.ActionIntentID,
 		ExistingRunAttemptIDs: existingRunAttempts,
+		ResumeVerifying:       resumeVerifying,
 		Output:                out,
 		RunError:              runErr,
 		Now:                   time.Now().UTC(),
@@ -330,6 +354,9 @@ func PrepareGovernedHarnessLaunch(in GovernedHarnessLaunchInput) (harness.RunInp
 		in.RunningWork.PolicyDecisionID,
 		in.ActionIntentID,
 	)
+	if in.ResumeVerifying {
+		runInput.StartGuard = newGovernedResumeStartGuard(in.HomePath, in.RunningWork.ID, in.RunningWork.PolicyDecisionID, in.ActionIntentID, nil)
+	}
 	if _, claudeFamily := in.Adapter.(harness.GovernedPermissionAdapter); !claudeFamily {
 		return runInput, nil
 	}
@@ -345,6 +372,11 @@ func PrepareGovernedHarnessLaunch(in GovernedHarnessLaunchInput) (harness.RunInp
 		in.RunningWork.PolicyDecisionID,
 		in.ActionIntentID,
 	)
+	if in.ResumeVerifying && !ClaudeMutationPermissionMode(runInput.PermissionMode) {
+		request, adapterName := *readinessRequest, in.Adapter.Name()
+		runInput.StartGuard = newGovernedResumeStartGuard(in.HomePath, in.RunningWork.ID, in.RunningWork.PolicyDecisionID, in.ActionIntentID,
+			func(ctx context.Context) error { return revalidateGovernedClaudeLane(ctx, adapterName, request) })
+	}
 	authorities := make([]runattempt.ExecutionPostureEvidence, 0, len(in.ReadinessEvidence))
 	for _, item := range in.ReadinessEvidence {
 		authorities = append(authorities, runattempt.ExecutionPostureEvidence{
@@ -394,7 +426,7 @@ func FinalizeGovernedHarnessRun(in GovernedHarnessFinalizationInput) (GovernedHa
 		Succeeded: in.RunError == nil && in.Output.RunAttempt.Status == runattempt.StatusSucceeded,
 	}
 	var reservationErr error
-	if result.Succeeded {
+	if result.Succeeded || in.ResumeVerifying {
 		advanced, err := in.Store.Advance(in.WorkID, work.AdvanceInput{
 			To:                       "verifying",
 			Actor:                    in.Actor,
@@ -412,6 +444,9 @@ func FinalizeGovernedHarnessRun(in GovernedHarnessFinalizationInput) (GovernedHa
 		} else {
 			result.WorkID = advanced.ID
 			result.FinalState = advanced.State
+			if !result.Succeeded {
+				result.Warnings = append(result.Warnings, "resume attempt failed; work remains verifying for governed retry, not completed")
+			}
 		}
 	} else {
 		closeIn := work.CloseInput{
@@ -501,20 +536,26 @@ func ResolveGovernedClaudePermissionMode(
 	requestedMode string,
 	actor string,
 	target string,
+	resumeVerifying bool,
 	now time.Time,
 ) (string, []work.DelegateHarnessReadinessEvidence, *work.DelegateHarnessReadinessRequest, *LaneRefusal) {
 	const fallback = "plan"
 	trimmed := strings.TrimSpace(requestedMode)
-	explicitBypass := trimmed == "bypass"
+	// The historical explicit-bypass exception is not authority for a new resume.
+	explicitBypass := trimmed == "bypass" && !resumeVerifying
 	// explicitMutationRequested is true when the operator picked a
 	// mutation-capable posture themselves. "plan" is read-only and never
 	// mutation-capable; "" (omitted) preserves the silent-plan fallback.
-	explicitMutationRequested := trimmed != "" && trimmed != "plan"
+	explicitMutationRequested := trimmed != "plan" && (trimmed != "" || resumeVerifying)
 	resolvedMode := trimmed
 	if resolvedMode == "" {
 		resolvedMode = "bypass"
 	}
-	if store == nil || wenv.State != "claimed" {
+	expectedState := "claimed"
+	if resumeVerifying {
+		expectedState = "verifying"
+	}
+	if store == nil || wenv.State != expectedState {
 		if explicitMutationRequested {
 			return fallback, nil, nil, unreadyLaneRefusal(runInput.Harness, "store_unavailable_or_state_not_claimed")
 		}

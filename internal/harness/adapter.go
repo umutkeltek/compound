@@ -127,6 +127,10 @@ type RunInput struct {
 	// ActionIntent (closes the attempt->intent->policy-decision audit
 	// chain). Optional today; future slice requires it.
 	ActionIntentID string
+
+	// PredecessorID is immutable retry provenance, persisted before command
+	// construction/start. It never grants execution authority.
+	PredecessorID string
 	// LaneID is the resolved actor / adapter lane that dispatched this run
 	// (e.g. the --by actor on `work advance --execute`). Pinned onto
 	// RunAttempt.LaneID via SetAttribution, pre-terminalization, inside

@@ -339,6 +339,34 @@ tampered plan, inactive owner work, or legacy count-only review keeps the normal
 
 ---
 
+### Explicit same-work execution resume
+
+`compound work advance <work_id> --to running --execute --resume-verifying --harness <name> --workspace <project> -- <command>`
+continues a verifying WorkEnvelope through a fresh running reservation and back to
+verifying after each attempt. A failed resume retains its failed RunAttempt, reports
+nonzero exit, and leaves work verifying for a governed retry; it never reports work
+completion or closes over contradictory prior successes. Retry provenance is bound
+before subprocess construction, and the unchanged terminal close/proof-chain gates
+must later accept the actual success/failure/recovery history.
+Without the flag, governed execution still requires claimed and failure still closes failed.
+The flag cannot be used without `--execute` or combined with `--steal`; it does not
+transfer a lease, reopen terminal work, or change `work continue` selection.
+
+The existing actor, current policy, halt, workspace, adapter and exact source
+state/policy/last-action CAS remain authoritative. All linked attempts must be
+readable, same-work and terminal before reservation; prior success is not required
+and is never permission. Each launch mints a new ActionIntent, PolicyDecision and
+RunAttempt, retains prior history, and finalizes only its own running generation.
+Early refusal leaves the WorkEnvelope unchanged; audit records may be emitted.
+A newer lifecycle generation wins over a stale launch/finalizer.
+
+Resume uses the build-implement halt at admission and immediately before OS start.
+Claude mutation resumes require fresh permission and blocking-hook readiness even
+for explicit bypass; the historical claimed-execution bypass exception is not
+inherited. Omitted mode on an unready resume refuses instead of reporting a
+successful no-edit fallback. Explicit plan remains read-only. This is an explicit
+execution door, not proof that unattended scheduling or any provider lane is ready.
+
 ### Scarce full-proof admission
 
 Full local proof extends the existing `work` and `landlease` owners. Before the canonical runner
