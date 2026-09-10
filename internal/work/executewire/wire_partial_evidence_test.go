@@ -128,11 +128,17 @@ func TestLaunchViaActuatorNamesPartialEvidenceOnAdapterError(t *testing.T) {
 	}
 }
 
-// TestFinalizeRefusesToBindAnAttemptMintedDuringTheLaunch pins the core gap
-// itself, so the day the authority gate learns to bind an attempt from its
-// own immutable authority, this test fails and tells us to delete the
-// workaround above rather than leaving it in place forever.
-func TestFinalizeRefusesToBindAnAttemptMintedDuringTheLaunch(t *testing.T) {
+// TestFinalizeBindsAnAttemptMintedDuringTheLaunch pins the closed-side
+// outcome the slice-2 replay lands. The pre-replay wire only NAMED the
+// minted ratt id (the naming workaround in execute_stage.go's failure
+// close) because the close-time authority gate had no event to bind the
+// attempt from. After the replay MintLaunchAuthority seals a same-state
+// event attaching the (ActionIntent, PolicyDecision) pair, so the gate
+// can resolve the attempt minted during the launch and FinalizeGovernedHarnessRun
+// closes the envelope as failed with the attempt on the chain. Inverted
+// from TestFinalizeRefusesToBindAnAttemptMintedDuringTheLaunch so a future
+// regression that un-binds the partial evidence surfaces RED here.
+func TestFinalizeBindsAnAttemptMintedDuringTheLaunch(t *testing.T) {
 	homePath := initTestHome(t)
 	now := time.Now().UTC()
 	seedExecuteStageManifest(t, homePath, "capable")
@@ -143,22 +149,30 @@ func TestFinalizeRefusesToBindAnAttemptMintedDuringTheLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const workID = "work_partial_evidence_gap"
+	const workID = "work_partial_evidence_bound"
 	seedExecuteStageReadyWorkWithDelivery(t, store, workID, homePath)
 	adapter := installPartialFailureAdapter(t, homePath, "claude_minimax")
-	defect4LaunchSeed(t, store, workID, "actor:gap", now)
+	defect4LaunchSeed(t, store, workID, "actor:bound", now)
 
-	if _, launchErr := LaunchViaActuator(store, workID, "claude_minimax", "claude_minimax", "gap", "actor:gap", now); launchErr == nil {
+	if _, launchErr := LaunchViaActuator(store, workID, "claude_minimax", "claude_minimax", "bound", "actor:bound", now); launchErr == nil {
 		t.Fatalf("expected the adapter failure to surface")
 	}
 	after, err := store.Get(workID)
 	if err != nil {
 		t.Fatalf("get work: %v", err)
 	}
+	if after.State != "failed" {
+		t.Fatalf("envelope state = %q, want failed (the canonical finalize must terminalize on a non-success RunAttempt after the slice-2 fix)", after.State)
+	}
+	bound := false
 	for _, id := range after.RunAttemptIDs {
 		if id == adapter.mintedID {
-			t.Fatalf("the failed attempt %s IS now bound to the envelope — the close-time authority gate changed. Remove the naming workaround in wire.go/execute_stage.go and bind the evidence properly.", adapter.mintedID)
+			bound = true
+			break
 		}
+	}
+	if !bound {
+		t.Fatalf("envelope RunAttemptIDs = %v does NOT contain the minted failed attempt %s; the slice-2 fix binds the partial-evidence id, not just names it", after.RunAttemptIDs, adapter.mintedID)
 	}
 }
 
