@@ -121,8 +121,8 @@ func seedReadyExecuteWorkWithGitDelivery(t *testing.T, s *Store, id, targetRoot 
 	sha := initDefect2GitRepoOrSkip(t, targetRoot)
 	w, err := s.Create(CreateInput{
 		WorkID:           id,
-		Owner:            "compound-core",
-		Actor:            "codex",
+		Owner:            "orchestrator:claude_zai",
+		Actor:            "claude_code:orchestrator",
 		State:            "ready",
 		Risk:             "tier1",
 		Privacy:          "private",

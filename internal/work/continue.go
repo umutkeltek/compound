@@ -238,6 +238,15 @@ type ContinueResult struct {
 	Lane          string   `json:"lane,omitempty"`
 	Human         string   `json:"human,omitempty"`
 
+	// Refused (R6E) names every ready envelope the execute stage declined
+	// to even try this tick — ineligibility (another executor's work) or a
+	// recognized preflight refusal — in pick (workbench) order. Entries are
+	// recorded WITHOUT mutating the envelope. Skipped keeps carrying only
+	// the HEAD's refusal family so existing readers stay stable; Refused is
+	// the complete list the Human line summarizes. Empty when the stage
+	// never refused anything (launch, or refusal before candidates exist).
+	Refused []ExecuteRefusal `json:"refused,omitempty"`
+
 	// Execute is the structured verdict the execute stage stamps whenever
 	// the caller asked for one (ContinueOptions.MaxExecuteSteps > 0).
 	// The field is the single source of truth for "what did the execute
@@ -266,8 +275,10 @@ type ExecuteVerdict struct {
 	Stage string `json:"stage"`
 	// Skipped is one of the named refusal reasons (no_grant, risk,
 	// no_route, capacity_unknown, policy_hold, lane_unready,
-	// workspace_unresolvable, claim_failed, launch_failed) or empty on a
-	// launch.
+	// workspace_unresolvable, adapter_missing, claim_failed, launch_failed,
+	// preflight_failed, ineligible) or empty on a launch. "ineligible" is the
+	// HEAD's family when the stage skipped it as another executor's work
+	// (R6E); the complete per-id refusal list lives on ContinueResult.Refused.
 	Skipped string `json:"skipped,omitempty"`
 	// Human is the plain-language line. Set on every verdict so a tired
 	// operator can read what the stage did without parsing the
@@ -446,6 +457,7 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			result.Lane = stage.Lane
 			result.Human = stage.Human
 			result.PolicyDecisionID = stage.PolicyDecisionID
+			result.Refused = stage.Refused
 			result.Execute = buildExecuteVerdict(stage, result.Status)
 			return s.recordContinue(now, result)
 		}
@@ -459,6 +471,7 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			result.Lane = stage.Lane
 			result.Human = stage.Human
 			result.PolicyDecisionID = stage.PolicyDecisionID
+			result.Refused = stage.Refused
 			result.Execute = buildExecuteVerdict(stage, "refused")
 			// Clear result.Action / result.Status so DispatchStep
 			// below owns the recorded outcome (its Action/Status
@@ -472,7 +485,16 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			// the invariant. Short-circuit with a refused verdict so
 			// the envelope, lease, events and RunAttempt set are
 			// untouched; the next Continue tick re-runs preflight.
-			if isPreflightRefusalReason(stage.Skipped) {
+			//
+			// R6E 2026-09-10: the same protection covers an INELIGIBLE
+			// head, and any stage ending whose recorded refusals make
+			// the bench head untouchable (skipped as another executor's
+			// work or preflight-refused) even when the terminal Skipped
+			// reason came from a later candidate's gate. The fall-through
+			// claims the FIRST ready item — if that item was refused as
+			// untouchable, falling through would mutate it, which the
+			// refused-list contract forbids.
+			if isPreflightRefusalReason(stage.Skipped) || executeStageRefusedHeadUntouchable(stage) {
 				result.Status = "refused"
 				return s.recordContinue(now, result)
 			}
@@ -491,6 +513,7 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			result.Human = stage.Human
 			result.PolicyDecisionID = stage.PolicyDecisionID
 			result.WorkID = stage.WorkID
+			result.Refused = stage.Refused
 			result.Execute = buildDryRunVerdict(stage)
 			return s.recordContinue(now, result)
 		}

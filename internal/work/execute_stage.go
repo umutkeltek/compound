@@ -14,6 +14,25 @@ import (
 	"compound/internal/policy"
 )
 
+// executeStageMaxPickAttempts bounds how many distinct ready envelopes ONE
+// stage call may examine when earlier picks keep refusing (ineligibility or a
+// recognized preflight refusal). The launch budget is untouched and stays
+// exactly one per call (executeStageMaxLaunchesPerRun in continue.go); this
+// bound only stops a bench of permanently refused heads from burning the
+// whole tick. Unexamined candidates stay ready for the next tick.
+const executeStageMaxPickAttempts = 5
+
+// ExecuteRefusal records one ready envelope the stage declined to even try,
+// in pick (workbench) order. Reason is "<family>:<detail>" — either
+// "ineligible:<why>" (decided before the gates; see unattendedEligible) or a
+// recognized preflight refusal family ("workspace_unresolvable:<detail>",
+// "lane_unready:<detail>", "adapter_missing:<detail>"). The envelope behind
+// a refusal is never mutated by the stage.
+type ExecuteRefusal struct {
+	WorkID string `json:"work_id"`
+	Reason string `json:"reason"`
+}
+
 // executeStage is the grant-gated, fail-closed seam that drives ONE ready
 // envelope through claim -> running -> verifying. It is called from Continue
 // ONLY when the existing lifecycle branches return status="waiting",
@@ -27,6 +46,15 @@ import (
 // marks that envelope failed and returns; the next Continue picks the next
 // envelope.
 //
+// R6E (2026-09-10): the stage no longer strands the tick on ONE refused
+// head. Candidates are taken in workbench order; an INELIGIBLE candidate
+// (another executor's work — see unattendedEligible, decided BEFORE gates
+// (b)-(e)) or a candidate whose preflight refuses with a recognized reason
+// is recorded in the refused list (no envelope mutation) and the NEXT ready
+// item is tried, up to executeStageMaxPickAttempts examinations. The launch
+// budget stays exactly one per call. A non-refusal launch error still closes
+// THAT envelope failed and ends the stage, exactly as before.
+//
 // The five gates in order:
 //
 //	a. standing grant grant_unattended_work_continue_v1 present in registry
@@ -36,8 +64,11 @@ import (
 //	   strictly less than the ceiling
 //	e. policy evaluation of work.continue.unattended returns allow or
 //	   allow_with_obligations; hold/deny -> skipped=policy_hold
-func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) (ContinueResult, error) {
-	result := ContinueResult{
+//
+// (c) and (d) are per-lane, not per-candidate, so they run once before the
+// candidate loop; eligibility needs the resolved lane's harness family.
+func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) (result ContinueResult, err error) {
+	result = ContinueResult{
 		Status:  "waiting",
 		Action:  "none",
 		Actor:   actor,
@@ -45,6 +76,14 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 		Skipped: "",
 		Human:   "",
 	}
+	// Every refusal recorded below is stamped onto the result at exit so
+	// the Human line and the Refused list can never disagree.
+	var refused []ExecuteRefusal
+	defer func() {
+		if len(refused) > 0 {
+			result.Refused = append([]ExecuteRefusal(nil), refused...)
+		}
+	}()
 	// (a) standing grant present?
 	hasGrant, grantErr := s.executeStageHasGrant(s.home)
 	if grantErr != nil {
@@ -58,36 +97,9 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 		return result, nil
 	}
 
-	// Find one ready envelope to execute. We do NOT pre-filter to specific
-	// IDs — the seam picks the first ready item by Workbench rank so the
-	// existing lifecycle ordering is preserved. A pinned ExpectWorkID
-	// still wins because the existing branches above this stage already
-	// short-circuited on expect_work; if Continue reaches us with an
-	// expect_work set the workbench report has been pre-filtered to it.
-	ready := s.findFirstReadyForExecute(now, actor, opts.ExpectWorkID)
-	if ready == "" {
-		// No ready envelope on the bench — this is the existing "no safe
-		// lifecycle step is ready" path, not an execute refusal. Return
-		// without setting Skipped so callers can tell "no work to do"
-		// apart from "gates refused".
-		result.Human = "did nothing: no ready envelope to execute"
-		return result, nil
-	}
-	result.WorkID = ready
-
-	w, err := s.Get(ready)
-	if err != nil {
-		return result, fmt.Errorf("load ready envelope %s: %w", ready, err)
-	}
-
-	// (b) risk/privacy gate.
-	if !executeRiskAllowed(w.Risk) || !executePrivacyAllowed(w.Privacy) {
-		result.Skipped = "risk"
-		result.Human = fmt.Sprintf("did nothing: envelope %s risk=%s privacy=%s is outside the unattended envelope (tier0/tier1, private)", ready, w.Risk, w.Privacy)
-		return result, nil
-	}
-
-	// (c) route plan names an eligible lane.
+	// (c) route plan names an eligible lane. Hoisted before the candidate
+	// loop: eligibility keys off the route lane's harness family, and the
+	// route/capacity gates do not depend on the candidate.
 	lane, ok := executeStageRoutePlanFn(s.home, executeUnattendedCapability)
 	if !ok || strings.TrimSpace(lane) == "" {
 		result.Skipped = "no_route"
@@ -114,224 +126,391 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 		return result, nil
 	}
 
-	// (e) policy evaluation of work.continue.unattended.
-	pd := executeStagePolicyEvalFn(
-		policyActionIntentShim{
-			ID:         "ai_unattended_" + ts(now),
-			Capability: executeUnattendedCapability,
-			WorkID:     ready,
-			Risk:       w.Risk,
-			Privacy:    w.Privacy,
-		},
-		policyConfigShim{HasGrant: true, Home: s.home},
-		now,
-	)
-	result.PolicyDecisionID = pd.ID
-	switch pd.Outcome {
-	case "allow", "allow_with_obligations":
-		// proceed to launch
-	default:
-		result.Skipped = "policy_hold"
-		result.Human = fmt.Sprintf("did nothing: policy decision %s for %s is %s", pd.ID, executeUnattendedCapability, pd.Outcome)
+	// Candidates in workbench order. We do NOT pre-filter to specific
+	// IDs — the seam walks ready items by Workbench rank so the existing
+	// lifecycle ordering is preserved. A pinned ExpectWorkID narrows the
+	// list to that id, preserving the pin the pre-R6E stage had.
+	candidates := s.findReadyForExecuteIDs(now, actor, opts.ExpectWorkID)
+	if len(candidates) == 0 {
+		// No ready envelope on the bench — this is the existing "no safe
+		// lifecycle step is ready" path, not an execute refusal. Return
+		// without setting Skipped so callers can tell "no work to do"
+		// apart from "gates refused".
+		result.Human = "did nothing: no ready envelope to execute"
 		return result, nil
 	}
 
-	// Dry-run probe: every gate opened, but the operator asked us NOT to
-	// claim, advance, launch, or finalize. Return a verdict that names
-	// the work, the lane, the capacity reading, and the policy decision
-	// id so the operator can verify the unattended envelope end-to-end
-	// without minting a RunAttempt. The envelope stays in its current
-	// state (ready) for the next live tick to act on.
-	if opts.DryRun {
-		result.Human = fmt.Sprintf("would execute %s on %s (capacity %.0f%%, policy %s)", ready, lane, usedPercent, pd.ID)
-		result.PolicyDecisionID = pd.ID
-		result.Lane = lane
+	attempts := 0
+	for _, ready := range candidates {
+		if attempts >= executeStageMaxPickAttempts {
+			break
+		}
+		attempts++
 		result.WorkID = ready
-		return result, nil
-	}
 
-	// DEFECT 1 fix (AUT-P0-001 2026-09-04): preflight MUST run BEFORE the
-	// envelope is claimed or advanced. Production wires this hook to
-	// executewire.PreflightViaActuator, which resolves adapter enrollment,
-	// workspace resolvability, and lane readiness — every prerequisite that
-	// can fail before any state mutation. A recognized refusal leaves the
-	// envelope, its lease, the event log and the RunAttempt set byte-
-	// identical to before, so the next Continue tick can retry safely.
-	if preflightErr := executeStagePreflightFn(s, ready, lane, now); preflightErr != nil {
-		skipReason, refuseDetail := parseLaunchRefusal(preflightErr)
-		if skipReason != "" {
-			result.Skipped = skipReason
-			result.Human = fmt.Sprintf("did nothing: %s", refuseDetail)
+		w, loadErr := s.Get(ready)
+		if loadErr != nil {
+			return result, fmt.Errorf("load ready envelope %s: %w", ready, loadErr)
+		}
+
+		// R6E eligibility, decided BEFORE the gates (b)-(e): work that
+		// belongs to another executor (foreign origin harness, foreign
+		// owner) or carries an unresolvable workspace is skipped with
+		// reason ineligible:<why> and never mutated.
+		if eligible, why := unattendedEligible(w, lane); !eligible {
+			refused = append(refused, ExecuteRefusal{WorkID: ready, Reason: "ineligible:" + why})
+			continue
+		}
+
+		// (b) risk/privacy gate.
+		if !executeRiskAllowed(w.Risk) || !executePrivacyAllowed(w.Privacy) {
+			result.Skipped = "risk"
+			result.Human = executeRefusedSummary(refused) + fmt.Sprintf("did nothing: envelope %s risk=%s privacy=%s is outside the unattended envelope (tier0/tier1, private)", ready, w.Risk, w.Privacy)
+			return result, nil
+		}
+
+		// (e) policy evaluation of work.continue.unattended.
+		pd := executeStagePolicyEvalFn(
+			policyActionIntentShim{
+				ID:         "ai_unattended_" + ts(now),
+				Capability: executeUnattendedCapability,
+				WorkID:     ready,
+				Risk:       w.Risk,
+				Privacy:    w.Privacy,
+			},
+			policyConfigShim{HasGrant: true, Home: s.home},
+			now,
+		)
+		result.PolicyDecisionID = pd.ID
+		switch pd.Outcome {
+		case "allow", "allow_with_obligations":
+			// proceed to launch
+		default:
+			result.Skipped = "policy_hold"
+			result.Human = executeRefusedSummary(refused) + fmt.Sprintf("did nothing: policy decision %s for %s is %s", pd.ID, executeUnattendedCapability, pd.Outcome)
+			return result, nil
+		}
+
+		// Dry-run probe: every gate opened, but the operator asked us NOT to
+		// claim, advance, launch, or finalize. Return a verdict that names
+		// the work, the lane, the capacity reading, and the policy decision
+		// id so the operator can verify the unattended envelope end-to-end
+		// without minting a RunAttempt. The envelope stays in its current
+		// state (ready) for the next live tick to act on.
+		if opts.DryRun {
+			result.Human = executeRefusedSummary(refused) + fmt.Sprintf("would execute %s on %s (capacity %.0f%%, policy %s)", ready, lane, usedPercent, pd.ID)
+			result.PolicyDecisionID = pd.ID
+			result.Lane = lane
+			result.WorkID = ready
+			return result, nil
+		}
+
+		// DEFECT 1 fix (AUT-P0-001 2026-09-04): preflight MUST run BEFORE the
+		// envelope is claimed or advanced. Production wires this hook to
+		// executewire.PreflightViaActuator, which resolves adapter enrollment,
+		// workspace resolvability, and lane readiness — every prerequisite that
+		// can fail before any state mutation. A recognized refusal leaves the
+		// envelope, its lease, the event log and the RunAttempt set byte-
+		// identical to before, so the next Continue tick can retry safely.
+		// R6E: a recognized refusal no longer strands the tick — it is
+		// recorded and the NEXT ready item is tried (bounded above).
+		if preflightErr := executeStagePreflightFn(s, ready, lane, now); preflightErr != nil {
+			skipReason, refuseDetail := parseLaunchRefusal(preflightErr)
+			if skipReason != "" {
+				refused = append(refused, ExecuteRefusal{WorkID: ready, Reason: skipReason + ":" + refuseDetail})
+				continue
+			}
+			// Bare preflight error (infra failure inside the preflight itself):
+			// also fail closed without mutation. The seam never claims or
+			// advances the envelope under an unrecognized preflight error —
+			// that would be exactly the bug the fix prevents.
+			result.Skipped = "preflight_failed"
+			result.Human = executeRefusedSummary(refused) + fmt.Sprintf("did nothing: preflight failed: %v", preflightErr)
 			result.Action = "none"
 			result.RunAttemptIDs = nil
 			return result, nil
 		}
-		// Bare preflight error (infra failure inside the preflight itself):
-		// also fail closed without mutation. The seam never claims or
-		// advances the envelope under an unrecognized preflight error —
-		// that would be exactly the bug the fix prevents.
-		result.Skipped = "preflight_failed"
-		result.Human = fmt.Sprintf("did nothing: preflight failed: %v", preflightErr)
-		result.Action = "none"
-		result.RunAttemptIDs = nil
-		return result, nil
-	}
 
-	// All gates pass — claim + advance to running + launch + advance to
-	// verifying, reusing the existing lifecycle seams (`Claim`, `Advance`,
-	// `Close`) rather than forking them. The launch stops at verifying;
-	// the envelope is NEVER closed by the seam on a successful launch.
-	workerPrompt := strings.TrimSpace(opts.Summary)
-	if workerPrompt == "" {
-		workerPrompt = "unattended execute from work continue: " + ready
-	}
-	if _, claimErr := s.Claim(ready, actor, now); claimErr != nil {
-		// Claim can fail (e.g. policy hold). Treat that as a stage-level
-		// refusal; the envelope stays in its current state so the next
-		// Continue can retry.
-		result.Skipped = "claim_failed"
-		result.Human = fmt.Sprintf("did nothing: claim of %s refused: %v", ready, claimErr)
-		result.NoAction = result.Human
-		return result, nil
-	}
-	if _, advErr := s.Advance(ready, AdvanceInput{To: "running", Actor: actor, Note: "execute stage: running"}, now); advErr != nil {
-		result.Skipped = "claim_failed"
-		result.Human = fmt.Sprintf("did nothing: advance to running of %s refused: %v", ready, advErr)
-		result.NoAction = result.Human
-		return result, nil
-	}
-
-	rattID, launchErr := launchStub(s, ready, lane, lane, workerPrompt, actor, now)
-	if launchErr != nil {
-		// The launch wire can return a refused execution WITHOUT an
-		// adapter having been invoked: e.g. the readiness guard reports
-		// not-ready, or the workspace is unresolvable. Those refusals
-		// must NOT close the envelope "failed" — the launch never
-		// happened, the envelope is still safe to retry next tick. The
-		// wire signals refusal-by-skip-reason with a known prefix; bare
-		// errors (subprocess crash, adapter panic) get the standard
-		// "failed" close.
-		skipReason, refuseDetail := parseLaunchRefusal(launchErr)
-		if skipReason != "" {
-			result.Skipped = skipReason
-			result.Human = fmt.Sprintf("did nothing: %s", refuseDetail)
-			result.Action = "none"
-			result.RunAttemptIDs = nil
+		// All gates pass — claim + advance to running + launch + advance to
+		// verifying, reusing the existing lifecycle seams (`Claim`, `Advance`,
+		// `Close`) rather than forking them. The launch stops at verifying;
+		// the envelope is NEVER closed by the seam on a successful launch.
+		workerPrompt := strings.TrimSpace(opts.Summary)
+		if workerPrompt == "" {
+			workerPrompt = "unattended execute from work continue: " + ready
+		}
+		if _, claimErr := s.Claim(ready, actor, now); claimErr != nil {
+			// Claim can fail (e.g. policy hold). Treat that as a stage-level
+			// refusal; the envelope stays in its current state so the next
+			// Continue can retry.
+			result.Skipped = "claim_failed"
+			result.Human = executeRefusedSummary(refused) + fmt.Sprintf("did nothing: claim of %s refused: %v", ready, claimErr)
+			result.NoAction = result.Human
 			return result, nil
 		}
-		// One bad launch fails THAT envelope only. Mark the work as
-		// failed via Close (the only seam that emits a Receipt + state
-		// transition with a failed outcome). The stage still returns
-		// Action=execute so the heartbeat pass can keep going — the next
-		// Continue picks the next envelope.
-		//
-		// A crashed adapter still mints a RunAttempt holding the workspace,
-		// command and transcript of the attempt. The launch wire forwards
-		// out + runErr to FinalizeGovernedHarnessRun which resolves the
-		// attempt via the sealed launch-authority event and binds the id
-		// onto envelope.RunAttemptIDs, so the failure closes the envelope
-		// as failed AND keeps the evidence on the chain. The result summary
-		// here names the id for the operator and result.RunAttemptIDs
-		// records it for any downstream consumer that polls the tick result.
-		closeSummary := "unattended execute launch failed: " + launchErr.Error()
-		if rattID != "" {
-			closeSummary += " (run attempt " + rattID + ")"
+		if _, advErr := s.Advance(ready, AdvanceInput{To: "running", Actor: actor, Note: "execute stage: running"}, now); advErr != nil {
+			result.Skipped = "claim_failed"
+			result.Human = executeRefusedSummary(refused) + fmt.Sprintf("did nothing: advance to running of %s refused: %v", ready, advErr)
+			result.NoAction = result.Human
+			return result, nil
 		}
-		if _, closeErr := s.Close(ready, CloseInput{
-			Outcome:   "failed",
-			MoveType:  "audit_only",
-			Actor:     actor,
-			Summary:   closeSummary,
-			ProofRefs: []string{"execute_stage_launch_failed"},
-		}, now); closeErr != nil {
-			result.Human = fmt.Sprintf("executed but failed to record failure on %s: launch=%v close=%v", ready, launchErr, closeErr)
-		} else {
-			result.Human = fmt.Sprintf("executed envelope %s on lane %s but launch failed: %v; envelope marked failed, heartbeat continues", ready, lane, launchErr)
-		}
-		if rattID != "" {
-			result.Human += fmt.Sprintf(" (partial evidence in run attempt %s; bound to the envelope via the canonical finalize)", rattID)
-		}
-		result.Action = "execute"
-		result.Skipped = "launch_failed"
-		// R6A 2026-09-10: slice 2's canonical finalize now closes the envelope
-		// as failed AND attaches the minted ratt id, so the operator's view
-		// (ContinueResult.RunAttemptIDs) and the envelope's own chain agree.
-		// The pre-replay "named but not bound" gap closed: the launch wire
-		// forwards out + runErr to FinalizeGovernedHarnessRun, which uses the
-		// sealed same-state event MintLaunchAuthority appended to resolve the
-		// attempt's authority and bind the id onto envelope.RunAttemptIDs.
-		result.RunAttemptIDs = nil
-		if rattID != "" {
-			result.RunAttemptIDs = []string{rattID}
-		}
-		return result, nil
-	}
 
-	// Successful launch — advance to verifying and stamp the ratt id. The
-	// execute stage NEVER lands, closes, pushes or retires anything; verifying
-	// is the hand-off point for human/orchestrator review. The production
-	// launch wire calls FinalizeGovernedHarnessRun inside launchStub which
-	// already moves the envelope from running to verifying — re-running the
-	// advance here would refuse (wrong state). Skip it when launchStub has
-	// already taken the envelope past running.
-	if after, afterErr := s.Get(ready); afterErr == nil {
-		switch after.State {
-		case "verifying", "completed", "failed":
+		rattID, launchErr := launchStub(s, ready, lane, lane, workerPrompt, actor, now)
+		if launchErr != nil {
+			// The launch wire can return a refused execution WITHOUT an
+			// adapter having been invoked: e.g. the readiness guard reports
+			// not-ready, or the workspace is unresolvable. Those refusals
+			// must NOT close the envelope "failed" — the launch never
+			// happened, the envelope is still safe to retry next tick. The
+			// wire signals refusal-by-skip-reason with a known prefix; bare
+			// errors (subprocess crash, adapter panic) get the standard
+			// "failed" close.
+			skipReason, refuseDetail := parseLaunchRefusal(launchErr)
+			if skipReason != "" {
+				result.Skipped = skipReason
+				result.Human = executeRefusedSummary(refused) + fmt.Sprintf("did nothing: %s", refuseDetail)
+				result.Action = "none"
+				result.RunAttemptIDs = nil
+				return result, nil
+			}
+			// One bad launch fails THAT envelope only. Mark the work as
+			// failed via Close (the only seam that emits a Receipt + state
+			// transition with a failed outcome). The stage still returns
+			// Action=execute so the heartbeat pass can keep going — the next
+			// Continue picks the next envelope.
+			//
+			// A crashed adapter still mints a RunAttempt holding the workspace,
+			// command and transcript of the attempt. The launch wire forwards
+			// out + runErr to FinalizeGovernedHarnessRun which resolves the
+			// attempt via the sealed launch-authority event and binds the id
+			// onto envelope.RunAttemptIDs, so the failure closes the envelope
+			// as failed AND keeps the evidence on the chain. The result summary
+			// here names the id for the operator and result.RunAttemptIDs
+			// records it for any downstream consumer that polls the tick result.
+			closeSummary := "unattended execute launch failed: " + launchErr.Error()
+			if rattID != "" {
+				closeSummary += " (run attempt " + rattID + ")"
+			}
+			if _, closeErr := s.Close(ready, CloseInput{
+				Outcome:   "failed",
+				MoveType:  "audit_only",
+				Actor:     actor,
+				Summary:   closeSummary,
+				ProofRefs: []string{"execute_stage_launch_failed"},
+			}, now); closeErr != nil {
+				result.Human = executeRefusedSummary(refused) + fmt.Sprintf("executed but failed to record failure on %s: launch=%v close=%v", ready, launchErr, closeErr)
+			} else {
+				result.Human = executeRefusedSummary(refused) + fmt.Sprintf("executed envelope %s on lane %s but launch failed: %v; envelope marked failed, heartbeat continues", ready, lane, launchErr)
+			}
+			if rattID != "" {
+				result.Human += fmt.Sprintf(" (partial evidence in run attempt %s; bound to the envelope via the canonical finalize)", rattID)
+			}
 			result.Action = "execute"
-			result.Status = after.State
-			result.RunAttemptIDs = []string{rattID}
-			result.Human = fmt.Sprintf("executed envelope %s on lane %s (ratt=%s); stopped at %s for human/orchestrator review", ready, lane, rattID, after.State)
+			result.Skipped = "launch_failed"
+			// R6A 2026-09-10: slice 2's canonical finalize now closes the envelope
+			// as failed AND attaches the minted ratt id, so the operator's view
+			// (ContinueResult.RunAttemptIDs) and the envelope's own chain agree.
+			// The pre-replay "named but not bound" gap closed: the launch wire
+			// forwards out + runErr to FinalizeGovernedHarnessRun, which uses the
+			// sealed same-state event MintLaunchAuthority appended to resolve the
+			// attempt's authority and bind the id onto envelope.RunAttemptIDs.
+			result.RunAttemptIDs = nil
+			if rattID != "" {
+				result.RunAttemptIDs = []string{rattID}
+			}
 			return result, nil
 		}
-	}
-	if _, verifyErr := s.Advance(ready, AdvanceInput{To: "verifying", Actor: actor, Note: "execute stage: verifying"}, now); verifyErr != nil {
-		// The launch succeeded but the verifying advance failed — surface
-		// the launch + the verify error so the operator can intervene.
+
+		// Successful launch — advance to verifying and stamp the ratt id. The
+		// execute stage NEVER lands, closes, pushes or retires anything; verifying
+		// is the hand-off point for human/orchestrator review. The production
+		// launch wire calls FinalizeGovernedHarnessRun inside launchStub which
+		// already moves the envelope from running to verifying — re-running the
+		// advance here would refuse (wrong state). Skip it when launchStub has
+		// already taken the envelope past running.
+		if after, afterErr := s.Get(ready); afterErr == nil {
+			switch after.State {
+			case "verifying", "completed", "failed":
+				result.Action = "execute"
+				result.Status = after.State
+				result.RunAttemptIDs = []string{rattID}
+				result.Human = executeRefusedSummary(refused) + fmt.Sprintf("executed envelope %s on lane %s (ratt=%s); stopped at %s for human/orchestrator review", ready, lane, rattID, after.State)
+				return result, nil
+			}
+		}
+		if _, verifyErr := s.Advance(ready, AdvanceInput{To: "verifying", Actor: actor, Note: "execute stage: verifying"}, now); verifyErr != nil {
+			// The launch succeeded but the verifying advance failed — surface
+			// the launch + the verify error so the operator can intervene.
+			result.Action = "execute"
+			result.RunAttemptIDs = []string{rattID}
+			result.Human = executeRefusedSummary(refused) + fmt.Sprintf("executed envelope %s on lane %s (ratt=%s) but verifying advance failed: %v; envelope remains in running for review", ready, lane, rattID, verifyErr)
+			result.NoAction = result.Human
+			return result, nil
+		}
 		result.Action = "execute"
+		result.Status = "verifying"
 		result.RunAttemptIDs = []string{rattID}
-		result.Human = fmt.Sprintf("executed envelope %s on lane %s (ratt=%s) but verifying advance failed: %v; envelope remains in running for review", ready, lane, rattID, verifyErr)
-		result.NoAction = result.Human
+		result.Human = executeRefusedSummary(refused) + fmt.Sprintf("executed envelope %s on lane %s (ratt=%s); stopped at verifying for human/orchestrator review", ready, lane, rattID)
 		return result, nil
 	}
-	result.Action = "execute"
-	result.Status = "verifying"
-	result.RunAttemptIDs = []string{rattID}
-	result.Human = fmt.Sprintf("executed envelope %s on lane %s (ratt=%s); stopped at verifying for human/orchestrator review", ready, lane, rattID)
+
+	// The stage examined every candidate it was allowed to and none of them
+	// launched. Skipped carries the HEAD's refusal family (the head is what
+	// the DispatchStep fall-through would otherwise claim); the Human line
+	// names every skipped id and reason, then states the outcome truthfully
+	// (design decision 3).
+	if len(refused) == 0 {
+		// Defensive: every examined candidate either returns from the loop
+		// or records a refusal, so this is unreachable today. Keep a
+		// truthful line in case a future path forgets to record.
+		result.Human = "did nothing: no eligible ready envelope"
+		return result, nil
+	}
+	result.WorkID = refused[0].WorkID
+	result.Skipped = refusalFamily(refused[0].Reason)
+	result.Human = "did nothing: " + executeRefusedSummary(refused)
+	if len(candidates) > attempts {
+		result.Human += fmt.Sprintf("no launch; stopped after %d pick attempts (bound %d) with ready envelopes unexamined", attempts, executeStageMaxPickAttempts)
+	} else {
+		result.Human += "no eligible ready envelope"
+	}
+	result.Action = "none"
+	result.RunAttemptIDs = nil
 	return result, nil
 }
 
-// findFirstReadyForExecute picks ONE ready envelope from the workbench. When
-// ExpectWorkID is set, it pins to that id (provided it is ready); otherwise
-// it returns the first ready item in workbench order, which already ranks by
-// lifecycle state. The function returns "" when there is no ready envelope.
-func (s *Store) findFirstReadyForExecute(now time.Time, actor, expectWorkID string) string {
+// findReadyForExecuteIDs returns every ready envelope id in workbench order
+// (state priority, then id — the same rank findFirstReadyForExecute used to
+// pick the head from). When ExpectWorkID is set the list is pinned to that
+// id, preserving the pin semantics the pre-R6E stage had. The Recent fallback
+// keeps surfacing ready items the Open count gate excluded.
+func (s *Store) findReadyForExecuteIDs(now time.Time, actor, expectWorkID string) []string {
 	report, err := s.Workbench(now, WorkbenchOptions{RecentLimit: 0, Actor: actor})
 	if err != nil {
-		return ""
+		return nil
 	}
 	expectWorkID = strings.TrimSpace(expectWorkID)
-	for _, item := range report.Open {
-		if item.State != "ready" {
-			continue
+	seen := map[string]bool{}
+	var out []string
+	add := func(items []WorkbenchItem) {
+		for _, item := range items {
+			if item.State != "ready" || seen[item.WorkID] {
+				continue
+			}
+			if expectWorkID != "" && item.WorkID != expectWorkID {
+				continue
+			}
+			seen[item.WorkID] = true
+			out = append(out, item.WorkID)
 		}
-		if expectWorkID != "" && item.WorkID != expectWorkID {
-			continue
-		}
-		return item.WorkID
 	}
-	// Fallback: the workbench ranks items by lifecycle; also surface items
-	// that are present in Recent but not yet Open because the count gate
-	// excluded them. Keep the same ready filter.
-	for _, item := range report.Recent {
-		if item.State != "ready" {
-			continue
-		}
-		if expectWorkID != "" && item.WorkID != expectWorkID {
-			continue
-		}
-		return item.WorkID
+	add(report.Open)
+	add(report.Recent)
+	return out
+}
+
+// unattendedEligible decides, BEFORE the gates (b)-(e) run, whether the
+// envelope may be executed unattended by the lane that would run it. An
+// ineligible envelope is skipped with reason "ineligible:<why>" and never
+// mutated. The rule (R6E settled design):
+//
+//	i.   origin.harness is empty or equals the route lane's harness family
+//	     (claude_code for every claude_* lane) — the loop must never run
+//	     another executor's work on this lane;
+//	ii.  owner is empty, claude_code:orchestrator, or starts with
+//	     "orchestrator:" — the seam's own dispatchers are the only owners
+//	     whose intent unattended execution may consume;
+//	iii. the git_delivery target root exists on disk, or there is no
+//	     git_delivery at all (the launch resolves the workspace then).
+//
+// A nil Origin (legacy envelopes) reads as an empty harness and passes (i).
+func unattendedEligible(w envelope.WorkEnvelope, lane string) (bool, string) {
+	harness := ""
+	if w.Origin != nil {
+		harness = strings.TrimSpace(w.Origin.Harness)
 	}
-	return ""
+	if harness != "" && harness != routeLaneHarness(lane) {
+		return false, fmt.Sprintf("harness=%s is not the route lane harness %s", harness, routeLaneHarness(lane))
+	}
+	owner := strings.TrimSpace(w.Owner)
+	if owner != "" && owner != "claude_code:orchestrator" && !strings.HasPrefix(owner, "orchestrator:") {
+		return false, "owner=" + owner + " is not an unattended dispatcher"
+	}
+	if w.GitDelivery != nil {
+		root := strings.TrimSpace(w.GitDelivery.TargetWorktreeRoot)
+		if root == "" {
+			return false, "git_delivery has no target_worktree_root"
+		}
+		if info, statErr := os.Stat(root); statErr != nil || !info.IsDir() {
+			return false, "workspace_missing=" + root
+		}
+	}
+	return true, ""
+}
+
+// routeLaneHarness maps a route-plan lane to the harness family that owns
+// it. Every claude_* / claude-* profile runs on the claude_code harness;
+// compound spells lanes both ways (claude_minimax canonical, claude-minimax
+// in lane-owner profiles), so both separators normalize. Unknown lanes map
+// to themselves: only an empty origin.harness can then pass gate (i).
+func routeLaneHarness(lane string) string {
+	trimmed := strings.TrimSpace(lane)
+	if trimmed == "" {
+		return ""
+	}
+	normalized := strings.ReplaceAll(trimmed, "-", "_")
+	switch {
+	case normalized == "claude_code", strings.HasPrefix(normalized, "claude_"):
+		return "claude_code"
+	case normalized == "codex":
+		return "codex"
+	default:
+		return trimmed
+	}
+}
+
+// refusalFamily strips a refusal reason to its machine-readable family —
+// the text before the first ":" ("ineligible:harness=codex ..." ->
+// "ineligible"; a bare "risk" stays "risk").
+func refusalFamily(reason string) string {
+	family, _, _ := strings.Cut(reason, ":")
+	return strings.TrimSpace(family)
+}
+
+// executeRefusedSummary renders the refused list as the Human-line prefix
+// "<id> (<reason>), <id> (<reason>); " — empty when nothing was refused, so
+// single-refusal messages read exactly as they did before R6E.
+func executeRefusedSummary(refused []ExecuteRefusal) string {
+	if len(refused) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(refused))
+	for _, r := range refused {
+		parts = append(parts, fmt.Sprintf("%s (%s)", r.WorkID, r.Reason))
+	}
+	return strings.Join(parts, ", ") + "; "
+}
+
+// executeStageRefusedHeadUntouchable reports whether the stage ended without
+// a launch while the bench HEAD (Refused[0] — refusals are recorded in pick
+// order) was refused for a reason that must leave it byte-identical:
+// ineligibility (another executor's work) or a recognized preflight refusal.
+// Continue consults this before the DispatchStep fall-through, which would
+// otherwise CLAIM the first ready item — mutating an envelope the execute
+// stage just declined to touch. Preflight families are normally visible
+// through stage.Skipped already; this closes the gap for stage endings whose
+// terminal Skipped came from a later candidate's gate, and for ineligible
+// heads.
+func executeStageRefusedHeadUntouchable(stage ContinueResult) bool {
+	if len(stage.Refused) == 0 {
+		return false
+	}
+	switch refusalFamily(stage.Refused[0].Reason) {
+	case "ineligible", "adapter_missing", "workspace_unresolvable", "lane_unready":
+		return true
+	default:
+		return false
+	}
 }
 
 // executeRiskAllowed reports whether the envelope risk is inside the

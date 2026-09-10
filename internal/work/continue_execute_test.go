@@ -23,13 +23,17 @@ import (
 
 // seedReadyExecuteWork creates an envelope already in `ready` state. The
 // execute stage picks this up after the existing lifecycle branches return
-// "waiting"/"none".
+// "waiting"/"none". R6E: the fixture uses the seam's own dispatcher identity
+// (owner orchestrator:*, origin.harness claude_code) so the envelope is
+// ELIGIBLE for unattended execution on the claude-family lanes these tests
+// route to — ineligibility has its own falsifiers in
+// execute_stage_pick_test.go.
 func seedReadyExecuteWork(t *testing.T, s *Store, id string) {
 	t.Helper()
 	w, err := s.Create(CreateInput{
 		WorkID:           id,
-		Owner:            "compound-core",
-		Actor:            "codex",
+		Owner:            "orchestrator:claude_zai",
+		Actor:            "claude_code:orchestrator",
 		State:            "ready",
 		Risk:             "tier1",
 		Privacy:          "private",
@@ -297,8 +301,8 @@ func TestContinueRefusesExecuteOnRisk(t *testing.T) {
 	s := newStore(t)
 	w, err := s.Create(CreateInput{
 		WorkID:           "work_exec_tier2",
-		Owner:            "compound-core",
-		Actor:            "codex",
+		Owner:            "orchestrator:claude_zai",
+		Actor:            "claude_code:orchestrator",
 		State:            "ready",
 		Risk:             "tier2",
 		Privacy:          "private",
