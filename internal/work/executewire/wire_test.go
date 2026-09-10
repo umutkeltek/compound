@@ -80,8 +80,8 @@ func seedExecuteStageReadyWork(t *testing.T, store *work.Store, id string) {
 	t.Helper()
 	if _, err := store.Create(work.CreateInput{
 		WorkID:           id,
-		Owner:            "compound-core",
-		Actor:            "codex",
+		Owner:            "orchestrator:claude_zai",
+		Actor:            "claude_code:orchestrator",
 		State:            "ready",
 		Risk:             "tier1",
 		Privacy:          "private",
@@ -436,8 +436,8 @@ func seedExecuteStageReadyWorkWithDelivery(t *testing.T, store *work.Store, id, 
 	sha := initGitRepoOrSkip(t, targetRoot)
 	if _, err := store.Create(work.CreateInput{
 		WorkID:           id,
-		Owner:            "compound-core",
-		Actor:            "codex",
+		Owner:            "orchestrator:claude_zai",
+		Actor:            "claude_code:orchestrator",
 		State:            "ready",
 		Risk:             "tier1",
 		Privacy:          "private",
@@ -608,6 +608,85 @@ func TestContinueLaunchHookRefusesLaneUnready(t *testing.T) {
 	}
 	if after.State == "completed" || after.State == "failed" {
 		t.Fatalf("readiness refusal must not terminalize the envelope; state = %q", after.State)
+	}
+}
+
+// TestExecuteStageRefusesCodexOriginWorkAsIneligible — the wire-level
+// companion to internal/work's eligibility falsifier. R6E settled the rule:
+// ready envelopes from another executor (origin.harness=codex or owner
+// outside the orchestrator:* family) MUST be refused as ineligible before
+// any of the launch-side gates run, and the envelope MUST stay byte-
+// identical (no claim, no lease, no events). Before the eligibility
+// reseed landed here, this test was the only wire-level proof that a
+// codex-owned fixture is refused at the seam — keep it.
+func TestExecuteStageRefusesCodexOriginWorkAsIneligible(t *testing.T) {
+	homePath := initTestHome(t)
+	now := time.Now().UTC()
+	seedExecuteStageManifest(t, homePath, "capable")
+	seedExecuteStageGrant(t, homePath)
+	seedExecuteStageCapacityRow(t, homePath, 30, 2*time.Minute, now)
+	capacityTestConfig(t, homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed the codex-origin shape this test exists to refuse: owner
+	// codex:omp-offline-falsifier, origin.harness=codex, git_delivery
+	// rooted at the test home so the launch wire's workspace check
+	// would otherwise pass.
+	if _, err := store.Create(work.CreateInput{
+		WorkID:           "work_refuse_codex",
+		Owner:            "codex:omp-offline-falsifier",
+		Actor:            "codex",
+		CreatorHarness:   "codex",
+		State:            "ready",
+		Risk:             "tier1",
+		Privacy:          "private",
+		SuccessPredicate: "execute-stage ineligibility fixture predicate",
+		GitDelivery: &envelope.GitDeliveryContract{
+			TargetWorktreeRoot: homePath,
+			TargetLocalRef:     "refs/heads/main",
+			ExpectedBaseSHA:    initGitRepoOrSkip(t, homePath),
+			PublicationMode:    "local_only",
+		},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	restoreExecuteStageHooks(t)
+	rec := installRecordingLaunchAdapter(t, "claude_minimax")
+	restoreCapacity := work.SwapExecuteStageCapacity(CapacityFromSnapshot)
+	t.Cleanup(restoreCapacity)
+	restoreExecuteStageHooksExcept(t, "capacity")
+
+	before, err := os.ReadFile(filepath.Join(homePath, "work", "work", "work_refuse_codex.json"))
+	if err != nil {
+		t.Fatalf("read codex envelope before: %v", err)
+	}
+	res, err := store.Continue(now, work.ContinueOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if res.Status != "refused" {
+		t.Fatalf("status = %q, want refused (codex-origin envelope must not run on a claude lane); result=%+v", res.Status, res)
+	}
+	if res.Skipped != "ineligible" {
+		t.Fatalf("skipped = %q, want ineligible", res.Skipped)
+	}
+	if len(res.Refused) != 1 || res.Refused[0].WorkID != "work_refuse_codex" {
+		t.Fatalf("refused = %+v, want exactly one entry naming work_refuse_codex", res.Refused)
+	}
+	if !strings.HasPrefix(res.Refused[0].Reason, "ineligible:") {
+		t.Fatalf("refused reason = %q, want the ineligible family", res.Refused[0].Reason)
+	}
+	if rec.calls != 0 {
+		t.Fatalf("ineligibility refusal must not reach the adapter; got %d calls", rec.calls)
+	}
+	after, err := os.ReadFile(filepath.Join(homePath, "work", "work", "work_refuse_codex.json"))
+	if err != nil {
+		t.Fatalf("read codex envelope after: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("codex-origin envelope changed bytes; an ineligible item must never be mutated")
 	}
 }
 
