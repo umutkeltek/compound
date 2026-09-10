@@ -226,11 +226,13 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 		// Continue picks the next envelope.
 		//
 		// A crashed adapter still mints a RunAttempt holding the workspace,
-		// command and transcript of the attempt. The launch wire returns
-		// that id alongside its error; the id CANNOT be bound to the
-		// envelope here (see the wire's note on the close-time authority
-		// gate), so name it in the summary and the verdict instead. A
-		// failure whose evidence is anonymous cannot be investigated.
+		// command and transcript of the attempt. The launch wire forwards
+		// out + runErr to FinalizeGovernedHarnessRun which resolves the
+		// attempt via the sealed launch-authority event and binds the id
+		// onto envelope.RunAttemptIDs, so the failure closes the envelope
+		// as failed AND keeps the evidence on the chain. The result summary
+		// here names the id for the operator and result.RunAttemptIDs
+		// records it for any downstream consumer that polls the tick result.
 		closeSummary := "unattended execute launch failed: " + launchErr.Error()
 		if rattID != "" {
 			closeSummary += " (run attempt " + rattID + ")"
@@ -247,13 +249,17 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 			result.Human = fmt.Sprintf("executed envelope %s on lane %s but launch failed: %v; envelope marked failed, heartbeat continues", ready, lane, launchErr)
 		}
 		if rattID != "" {
-			result.Human += fmt.Sprintf(" (partial evidence in run attempt %s; not bound to the envelope)", rattID)
+			result.Human += fmt.Sprintf(" (partial evidence in run attempt %s; bound to the envelope via the canonical finalize)", rattID)
 		}
 		result.Action = "execute"
 		result.Skipped = "launch_failed"
-		// Reported, not bound: ContinueResult.RunAttemptIDs is the operator's
-		// view of the tick. The envelope's own RunAttemptIDs are unchanged,
-		// which is exactly the gap the wire's note describes.
+		// R6A 2026-09-10: slice 2's canonical finalize now closes the envelope
+		// as failed AND attaches the minted ratt id, so the operator's view
+		// (ContinueResult.RunAttemptIDs) and the envelope's own chain agree.
+		// The pre-replay "named but not bound" gap closed: the launch wire
+		// forwards out + runErr to FinalizeGovernedHarnessRun, which uses the
+		// sealed same-state event MintLaunchAuthority appended to resolve the
+		// attempt's authority and bind the id onto envelope.RunAttemptIDs.
 		result.RunAttemptIDs = nil
 		if rattID != "" {
 			result.RunAttemptIDs = []string{rattID}
