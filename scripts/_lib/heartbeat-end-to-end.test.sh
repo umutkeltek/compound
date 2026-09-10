@@ -90,6 +90,13 @@ PY
     esac
     ;;
   director)
+    # FAKE_DIRECTOR_STDERR_LINE: emit a Go-style log line on STDERR before
+    # the JSON, mimicking e.g. internal/eventstore logging "rebuilt index"
+    # mid-run. The heartbeat must parse stdout only and keep this line as
+    # tick-log diagnostics (the 2>&1 capture used to glue it onto the JSON).
+    if [ -n "${FAKE_DIRECTOR_STDERR_LINE:-}" ]; then
+      printf '%s\n' "$FAKE_DIRECTOR_STDERR_LINE" >&2
+    fi
     printf '{"proposal_count":0,"suppressed_duplicate_count":0,"skipped_count":0}\n'
     exit 0
     ;;
@@ -110,6 +117,9 @@ run_heartbeat() {
   _case="$1"
   _expected_rc="$2"
   _extra_setup="$3"
+  # Optional 4th arg: a grep pattern the tick log must match after the run
+  # (used to assert stage stderr was routed into the log as diagnostics).
+  _expected_log="${4:-}"
 
   _home="$TMPDIR/home-$$-$_case-$RANDOM"
   mkdir -p "$_home/.compound/state/promote-driver" "$_home/.compound/lock" \
@@ -133,7 +143,19 @@ run_heartbeat() {
   set -e
 
   if [ "$_rc" = "$_expected_rc" ]; then
-    printf "ok: %s -> FINAL_RC=%s\n" "$_case" "$_rc"
+    if [ -n "$_expected_log" ]; then
+      if grep -q "$_expected_log" "$_home/.compound/autonomy-heartbeat.log" 2>/dev/null; then
+        printf "ok: %s -> FINAL_RC=%s; tick log matched: %s\n" "$_case" "$_rc" "$_expected_log"
+      else
+        echo "FAIL: $_case"
+        echo "  expected tick log to match: $_expected_log"
+        echo "  --- last log line ---"
+        tail -1 "$_home/.compound/autonomy-heartbeat.log" 2>/dev/null
+        exit 1
+      fi
+    else
+      printf "ok: %s -> FINAL_RC=%s\n" "$_case" "$_rc"
+    fi
   else
     # Show the heartbeat log to diagnose.
     echo "FAIL: $_case"
@@ -165,6 +187,16 @@ echo "==> e2e: committed driver (process exit 0) -> FINAL_RC=0"
 # must bind the two by identity and go green.
 run_heartbeat "committed" "0" \
   'FAKE_DRIVER_JSON=$(committed_driver_json pass-committed-001 "$_home"); export FAKE_DRIVER_JSON; FAKE_DRIVER_RECEIPT=producer; export FAKE_DRIVER_RECEIPT'
+
+echo "==> e2e: director stderr noise before valid JSON -> FINAL_RC=0, stderr kept in tick log"
+
+# A Go `log` line on stderr (eventstore index rebuild notice) used to be
+# glued in front of the director JSON by the stage's `2>&1` capture, turning
+# a green tick into rc=65 unparseable. The heartbeat must parse stdout only
+# and route the stderr line into the tick log as diagnostics.
+run_heartbeat "director-stderr-noise" "0" \
+  'FAKE_DRIVER_JSON=$(committed_driver_json pass-committed-stderr-001 "$_home"); export FAKE_DRIVER_JSON; FAKE_DRIVER_RECEIPT=producer; export FAKE_DRIVER_RECEIPT; FAKE_DIRECTOR_STDERR_LINE="2026/09/10 03:03:05 eventstore: rebuilt index x"; export FAKE_DIRECTOR_STDERR_LINE' \
+  'director stderr: .*eventstore: rebuilt index x'
 
 echo "==> e2e: committed driver whose stored receipt lacks receipt_path -> FINAL_RC=1"
 
