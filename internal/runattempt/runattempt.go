@@ -2116,6 +2116,84 @@ func (s *Store) SweepStaleWithProbe(threshold time.Duration, now time.Time, prob
 //
 // The probe receives the full RunAttempt so work-owned binding lookup
 // stays in work/, not runattempt/.
+
+// SweepStaleAttemptWithProbe applies the probe-aware stale recovery law to
+// exactly one RunAttempt. It intentionally resolves the requested record with
+// Get rather than listing candidates: an exact recovery must remain available
+// when an unrelated record is corrupt, and must never inspect or rewrite it.
+func (s *Store) SweepStaleAttemptWithProbe(id string, threshold time.Duration, now time.Time, probe LivenessProbe) (SweepReport, error) {
+	if probe == nil {
+		return SweepReport{}, errors.New("runattempt targeted sweep: liveness probe is required")
+	}
+	if threshold <= 0 {
+		threshold = DefaultSweepThreshold
+	}
+	ra, err := s.Get(id)
+	if err != nil {
+		return SweepReport{}, err
+	}
+	rep := SweepReport{Scanned: 1}
+	if IsTerminal(ra.Status) || ra.TerminalizationIntent != nil {
+		rep.Skipped = 1
+		rep.SkippedIDs = []string{ra.ID}
+		return rep, nil
+	}
+	lastActivity := ra.CreatedAt
+	if ra.LastHeartbeatAt != nil {
+		lastActivity = *ra.LastHeartbeatAt
+	}
+	if now.Sub(lastActivity) < threshold {
+		rep.Skipped = 1
+		rep.SkippedIDs = []string{ra.ID}
+		return rep, nil
+	}
+	live, probeErr := probe(ra)
+	if probeErr != nil {
+		rep.Skipped = 1
+		rep.SkippedIDs = []string{ra.ID}
+		return rep, nil
+	}
+	if live {
+		if _, acquired, heartbeatErr := s.tryHeartbeat(ra.ID, now); heartbeatErr != nil {
+			rep.Skipped = 1
+			rep.SkippedIDs = []string{ra.ID}
+			return rep, heartbeatErr
+		} else if !acquired {
+			rep.Skipped = 1
+			rep.SkippedIDs = []string{ra.ID}
+			return rep, nil
+		}
+		rep.Protected = 1
+		rep.Skipped = 1
+		rep.SkippedIDs = []string{ra.ID}
+		return rep, nil
+	}
+	_, classification, swept, completeErr := s.completeStaleSnapshot(ra, threshold, now)
+	if completeErr != nil {
+		rep.Skipped = 1
+		rep.SkippedIDs = []string{ra.ID}
+		return rep, completeErr
+	}
+	if !swept {
+		rep.Skipped = 1
+		rep.SkippedIDs = []string{ra.ID}
+		return rep, nil
+	}
+	rep.Swept = 1
+	rep.SweptIDs = []string{ra.ID}
+	switch classification {
+	case SweepClassificationSideEffectFree:
+		rep.AutoClosed = 1
+		rep.AutoClosedIDs = []string{ra.ID}
+	case SweepClassificationAmbiguous:
+		rep.Escalated = 1
+		rep.EscalatedIDs = []string{ra.ID}
+	}
+	return rep, nil
+}
+
+// ObservedLivenessProbe is a work-owned per-attempt liveness probe that also
+// reports the latest observed per-attempt activity.
 type ObservedLivenessProbe func(ra RunAttempt) (live bool, observedAt time.Time, err error)
 
 // SweepStaleWithObservedProbe is the per-attempt-activity-aware sweep.

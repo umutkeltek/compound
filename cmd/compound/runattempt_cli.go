@@ -5,7 +5,7 @@
 //
 // Subcommands:
 //   - list [--non-terminal] [--home PATH]               list attempts (all, or just stuck)
-//   - sweep [--threshold D] [--home PATH]               terminalize stale attempts (default 30m).
+//   - sweep [--attempt RATT_ID] [--threshold D] [--home PATH] terminalize stale attempts (default 30m).
 //     The CLI ALWAYS passes the work-owned
 //     liveness probe (buildDelegateLivenessProbe)
 //     so live delegated panes are heartbeated;
@@ -53,15 +53,16 @@ func printRunAttemptUsage() {
 
 subcommands:
   list [--non-terminal] [--home PATH]   list run attempts (all, or just pending/running)
-  sweep [--threshold 30m] [--home PATH] terminalize stale pending/running attempts
+  sweep [--attempt RATT_ID] [--threshold 30m] [--home PATH]
+                                        terminalize stale pending/running attempts
                                         (default threshold: %s). Live delegated
                                         panes are protected via the work-owned
                                         liveness probe; probe faults skip.
 `, runattempt.DefaultSweepThreshold)
 }
 
-func resolveRunAttemptHome(args []string) string {
-	homePath, err := home.Resolve(flagValue(args, "--home"))
+func resolveRunAttemptHome(homeArg string) string {
+	homePath, err := home.Resolve(homeArg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "run-attempt: %v\n", err)
 		os.Exit(1)
@@ -108,7 +109,7 @@ func cmdRunAttemptList(args []string) {
 		map[string]bool{"--home": true},
 		map[string]bool{"--non-terminal": true, "--json": true},
 	)
-	homePath := resolveRunAttemptHome(args)
+	homePath := resolveRunAttemptHome(flagValue(args, "--home"))
 	nonTerminal := hasFlag(args, "--non-terminal")
 	jsonOut := hasFlag(args, "--json")
 	store := runattempt.Open(homePath)
@@ -178,31 +179,15 @@ func cmdRunAttemptSweep(args []string) {
 		printRunAttemptUsage()
 		return
 	}
-	requireValidRunAttemptArgs(args,
-		map[string]bool{"--threshold": true, "--home": true},
-		map[string]bool{"--json": true},
-	)
-	homePath := resolveRunAttemptHome(args)
-	thresholdStr := flagValue(args, "--threshold")
-	jsonOut := hasFlag(args, "--json")
-
-	threshold := runattempt.DefaultSweepThreshold
-	if thresholdStr != "" {
-		parsed, err := time.ParseDuration(thresholdStr)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "run-attempt sweep: invalid threshold %q: %v\n", thresholdStr, err)
-			fmt.Fprintln(os.Stderr)
-			printRunAttemptUsage()
-			os.Exit(2)
-		}
-		if parsed <= 0 {
-			fmt.Fprintf(os.Stderr, "run-attempt sweep: threshold must be greater than zero, got %q\n", thresholdStr)
-			fmt.Fprintln(os.Stderr)
-			printRunAttemptUsage()
-			os.Exit(2)
-		}
-		threshold = parsed
+	options, err := runattempt.ParseSweepArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "run-attempt sweep: %v\n\n", err)
+		printRunAttemptUsage()
+		os.Exit(2)
 	}
+	homePath := resolveRunAttemptHome(options.HomePath)
+	threshold := options.Threshold
+	jsonOut := options.JSON
 	store := runattempt.Open(homePath)
 	// The default sweep ALWAYS protects stale live delegates. The probe
 	// is work-owned (RecoverBoundSession + tmux SessionStatus). Probe
@@ -213,7 +198,12 @@ func cmdRunAttemptSweep(args []string) {
 	// CLI opt-out, because the operator-visible default must never
 	// abandon a healthy in-flight session.
 	probe := buildDelegateLivenessProbe(homePath)
-	rep, err := store.SweepStaleWithProbe(threshold, time.Now().UTC(), probe)
+	var rep runattempt.SweepReport
+	if options.HasAttempt {
+		rep, err = store.SweepStaleAttemptWithProbe(options.AttemptID, threshold, time.Now().UTC(), probe)
+	} else {
+		rep, err = store.SweepStaleWithProbe(threshold, time.Now().UTC(), probe)
+	}
 	unreadableIDs := runattempt.UnreadableRunAttemptIDs(err)
 	if err != nil && len(unreadableIDs) == 0 {
 		fmt.Fprintf(os.Stderr, "run-attempt sweep: %v\n", err)
