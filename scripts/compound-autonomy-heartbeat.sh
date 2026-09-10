@@ -42,14 +42,35 @@ if ! "$BIN" memory promote-driver --help 2>&1 | grep -q "promote-driver"; then
   exit 69
 fi
 
+# Stage stderr is diagnostics, never payload. Until 2026-09-10 the parsed
+# stages captured with `2>&1`, so a Go `log` line on stderr (e.g.
+# "eventstore: rebuilt index ...", internal/eventstore/index.go) was glued
+# in front of the stage JSON and turned a green stage into rc=65
+# unparseable. Every stage now captures stdout only into the variable (or
+# file) that gets parsed, and its stderr is appended to the tick log
+# prefixed with the stage name — visible, never parsed.
+STAGE_STDERR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/compound-heartbeat-stderr.XXXXXX") || {
+  echo "$TS preflight rc=70 ERR: cannot create stage stderr dir; no stages executed" >> "$LOG"
+  exit 70
+}
+trap 'rm -rf "$STAGE_STDERR_DIR"' EXIT HUP INT TERM
+
+log_stage_stderr() {
+  stderr_stage=$1
+  stderr_file=$2
+  [ -s "$stderr_file" ] || return 0
+  awk -v ts="$TS" -v stage="$stderr_stage" '{ print ts " " stage " stderr: " $0 }' "$stderr_file" >> "$LOG"
+}
+
 # raw_head prints the first 300 bytes of a stage's raw output with line breaks
 # collapsed, so an `ERR: unparseable` verdict in the one-line heartbeat log
 # carries enough of the offending bytes to diagnose later. 300 bytes is enough
 # to see a tool banner or an error envelope's head without bloating the log.
 raw_head() { printf '%.300s' "$1" | tr -d '\n\r'; }
 
-DIR_OUT=$("$TIMEOUT_BIN" 300 "$BIN" director propose --apply --json 2>&1)
+DIR_OUT=$("$TIMEOUT_BIN" 300 "$BIN" director propose --apply --json 2>"$STAGE_STDERR_DIR/director.err")
 DIR_RC=$?
+log_stage_stderr director "$STAGE_STDERR_DIR/director.err"
 DIR_SUM=$(printf '%s' "$DIR_OUT" | python3 -c 'import json,sys
 try:
     d=json.load(sys.stdin)
@@ -79,8 +100,9 @@ except Exception:
 # drained, cursor cleared) is seconds. Concurrent ticks are safe: the whole
 # operation is inside the flock-based autonomy admission lock, so a second
 # tick blocks and then finds nothing to do.
-ARCH_OUT=$("$TIMEOUT_BIN" 3600 "$BIN" home archive-history --kind memory-candidate --max-files 2000 2>&1)
+ARCH_OUT=$("$TIMEOUT_BIN" 3600 "$BIN" home archive-history --kind memory-candidate --max-files 2000 2>"$STAGE_STDERR_DIR/compaction.err")
 ARCH_RC=$?
+log_stage_stderr compaction "$STAGE_STDERR_DIR/compaction.err"
 # A well-formed archive-history report ALWAYS prints its `- dry_run:` line
 # (cmd/compound printHomeOperationalArchiveReport) but only prints
 # `- archived: N` when N > 0 — so the empty steady state (nothing left to
@@ -102,7 +124,7 @@ PD_ACTOR="scheduler:autonomy-heartbeat"
 PD_RC=0
 PD_SUM="not-run"
 PD_TMP=$(mktemp -d "${TMPDIR:-/tmp}/compound-promote-heartbeat.XXXXXX") || exit 70
-trap 'rm -rf "$PD_TMP"' EXIT HUP INT TERM
+trap 'rm -rf "$PD_TMP" "$STAGE_STDERR_DIR"' EXIT HUP INT TERM
 
 terminalize_failed_work() {
   failure_summary=$1
@@ -192,6 +214,9 @@ else
     PD_SUM="ERR stage=$PD_STAGE pass=$PD_PASS $(printf '%.120s' "$(cat "$PD_TMP/driver.err" "$PD_TMP/close.err" 2>/dev/null)")"
   fi
 fi
+# The driver's stderr is diagnostics too: route it to the tick log like
+# every other stage's (otherwise it vanished with the PD_TMP cleanup).
+log_stage_stderr promote-driver "$PD_TMP/driver.err"
 
 # Diagnosis only -- deliberately NOT --yes. The apply path terminalizes an
 # envelope read before the liveness probe, so a concurrent actor that changes
@@ -202,8 +227,9 @@ fi
 # backlog stays observable while nothing is rewritten. Restore --yes only once
 # the reclaim is bound to the exact envelope generation it diagnosed and the
 # envelope write + lifecycle event + lease release are one recoverable unit.
-STALE_OUT=$("$TIMEOUT_BIN" 300 "$BIN" work sweep-stale --threshold 168h --json 2>&1)
+STALE_OUT=$("$TIMEOUT_BIN" 300 "$BIN" work sweep-stale --threshold 168h --json 2>"$STAGE_STDERR_DIR/stale-work.err")
 STALE_RC=$?
+log_stage_stderr stale-work "$STAGE_STDERR_DIR/stale-work.err"
 STALE_SUM=$(printf '%s' "$STALE_OUT" | python3 -c 'import json,sys
 try:
     d=json.load(sys.stdin)
@@ -213,8 +239,9 @@ except Exception:
 [ "$STALE_RC" -ne 0 ] && STALE_SUM="ERR: $(printf '%.160s' "$STALE_OUT")"
 [ "$STALE_SUM" = "unparseable" ] && STALE_RC=65 && STALE_SUM="ERR: unparseable JSON raw=$(raw_head "$STALE_OUT")"
 
-CONT_OUT=$("$TIMEOUT_BIN" 600 "$BIN" work continue --actor claude-minimax --until-wait --max-steps 3 --max-execute-steps 1 --json 2>&1)
+CONT_OUT=$("$TIMEOUT_BIN" 600 "$BIN" work continue --actor claude-minimax --until-wait --max-steps 3 --max-execute-steps 1 --json 2>"$STAGE_STDERR_DIR/continue.err")
 CONT_RC=$?
+log_stage_stderr continue "$STAGE_STDERR_DIR/continue.err"
 CONT_SUM=$(printf '%s' "$CONT_OUT" | python3 -c 'import json,sys
 try:
     d=json.load(sys.stdin)
