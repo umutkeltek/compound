@@ -14,7 +14,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"compound/internal/actuator"
@@ -133,10 +137,62 @@ var LaunchReadiness = func(req work.DelegateHarnessReadinessRequest) (work.Deleg
 // path runs on ctx.Done, so a stuck subprocess cannot outlive the
 // heartbeat.
 //
-// The default is context.Background(), which is the SAME defect the fix
-// was written for — callers MUST install a real context (see Install
-// production wiring below) before a launch can run end to end.
-var LaunchContext = func() context.Context { return context.Background() }
+// The default WAS context.Background(), which is the SAME defect the fix was
+// written for: nothing assigned this var in production, so the comment
+// promising "production wires LaunchContext" described an intention rather
+// than a call and every unattended launch was uncancellable. The default is
+// now signalLaunchContext, so the wiring cannot be forgotten by a caller.
+// Tests swap the var (see InstallLaunchContext) to drive cancellation.
+var LaunchContext = signalLaunchContext
+
+// launchSignal lazily holds the process-wide launch context. It is built on
+// the FIRST launch rather than in Install() on purpose: registering a signal
+// handler is a process-wide side effect, and `compound` has many subcommands
+// that never launch anything and must keep Go's default Ctrl-C behaviour.
+var (
+	launchSignalOnce sync.Once
+	launchSignalCtx  context.Context
+)
+
+// signalLaunchContext is the production launch context: cancelled on SIGINT
+// or SIGTERM so the subprocess runner's process-group kill (which hangs off
+// ctx.Done()) actually fires.
+//
+// SIGTERM is the one that matters for autonomy: the heartbeat wraps Compound
+// in `timeout 600`, which SIGTERMs the parent before SIGKILLing it. Before
+// this existed the launch context was context.Background(), so the parent
+// died while the harness subprocess tree kept running and held the capture
+// pipes open — a launch the heartbeat recorded as finished and the machine
+// was still executing.
+//
+// Once the first signal lands, default handling is restored, so a second
+// Ctrl-C hard-kills instead of being swallowed by a handler whose only job
+// was to cancel this launch.
+func signalLaunchContext() context.Context {
+	launchSignalOnce.Do(func() {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		launchSignalCtx = ctx
+		go func() {
+			<-ctx.Done()
+			stop()
+		}()
+	})
+	return launchSignalCtx
+}
+
+// InstallLaunchContext binds ctx as the context every subsequent launch
+// forwards to adapter.Run, and returns a restore func.
+//
+// This is the TEST seam, not the production wiring — production gets a real
+// cancellable context from the default (signalLaunchContext) with no caller
+// cooperation, precisely because the previous design required cooperation
+// and never got it. Tests use this to drive a context they can cancel and
+// observe the runner persisting "cancel:context_cancelled" evidence.
+func InstallLaunchContext(ctx context.Context) func() {
+	prev := LaunchContext
+	LaunchContext = func() context.Context { return ctx }
+	return func() { LaunchContext = prev }
+}
 
 // DefaultLaunchTimeout is the finite execution budget LaunchViaActuator
 // applies to every unattended harness launch when the caller did not pin
@@ -325,13 +381,34 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	// cancelled heartbeat kills the tree. The shared runner honors
 	// ctx.Done() via a process-group kill (killProcessTree), so an
 	// orphaned grandchild holding the capture pipes open cannot survive.
-	// Production wires LaunchContext to a heartbeat-derived cancellable
-	// ctx (see Install); tests swap the var to prove the cancellation
-	// path persists "cancel:context_cancelled" evidence.
+	// Production installs a signal-derived cancellable ctx at the command
+	// boundary (InstallLaunchContext); tests swap the var to prove the
+	// cancellation path persists "cancel:context_cancelled" evidence.
 	ctx := LaunchContext()
 	out, runErr := adapter.Run(ctx, runInput)
 	if runErr != nil {
-		return "", runErr
+		// An adapter can fail AFTER minting a RunAttempt, recording a
+		// workspace and command, and writing a transcript — a crashed
+		// subprocess returns real partial output alongside its error. The
+		// wire used to return a bare error and discard `out` entirely, so
+		// the minted attempt was anonymous: the seam closed the envelope
+		// "failed" with a synthetic proof ref and nothing named the record
+		// that proves the launch happened.
+		//
+		// Surfacing the id is as far as the wire can honestly go today.
+		// BINDING the attempt to the envelope is blocked in the work core,
+		// not here: Close resolves each attached attempt's (act_, pol_)
+		// authority from PRIOR events (resolveRunAttemptAuthorityFromEvents),
+		// and only Advance attaches attempts. A run attempt minted DURING
+		// this launch therefore has no attaching event, so finalizing the
+		// failure through FinalizeGovernedHarnessRun refuses with
+		// "authority generation is missing (pairs=0)". The success path is
+		// unaffected because its Advance(running -> verifying) is what does
+		// the attaching. Closing that gap means letting a close bind an
+		// attempt from the attempt's OWN immutable authority
+		// (ra.ActionIntentID + ra.ExecutionPosture.PolicyDecisionID), which
+		// loosens a forged-authority gate and is an operator decision.
+		return strings.TrimSpace(out.RunAttempt.ID), runErr
 	}
 	if strings.TrimSpace(out.RunAttempt.ID) == "" {
 		return "", errors.New("execute stage launch: adapter returned empty RunAttempt.ID")

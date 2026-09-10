@@ -176,10 +176,13 @@ type ContinueOptions struct {
 	Outcome      string
 	MoveType     string
 	Summary      string
-	// MaxExecuteSteps bounds how many execute-stage launches Continue will
-	// perform in a single call. Default 1 keeps the heartbeat inside its
-	// 10-minute budget. Zero means "use the default" (1). Operators can
-	// raise this on a dry-run probe only.
+	// MaxExecuteSteps requests how many execute-stage launches Continue may
+	// perform. Zero (the flag omitted) means the default of 1, so an
+	// invocation that never mentions the flag can still launch a governed
+	// harness — see executeWarning. The request is clamped to
+	// executeStageMaxLaunchesPerRun, which is 1, so a value above 1 is
+	// accepted but not spendable today. effectiveExecuteBudget is the only
+	// number that describes real behaviour; this field is the request.
 	MaxExecuteSteps int
 	// DryRun makes the execute stage a planning probe: it runs every gate
 	// (route, capacity, policy) and produces a verdict, but it does NOT
@@ -317,6 +320,57 @@ type ContinueRunResult struct {
 	Integrity  []string        `json:"integrity,omitempty"`
 }
 
+// executeStageMaxLaunchesPerRun is the hard ceiling on governed harness
+// launches one `work continue` invocation (including an --until-wait run)
+// can perform.
+//
+// It is 1 by construction rather than by policy: executeStage launches at
+// most one envelope per Continue call, and Action="execute" is not progress
+// for continueStepMadeProgress, so ContinueRun's loop always returns on the
+// step that launched. Raising this is an autonomy expansion — strictly more
+// unattended harness launches per heartbeat tick — and belongs to the
+// operator, not to a refactor. The constant states the ceiling once so the
+// operator-facing warning can quote what the system will actually do.
+const executeStageMaxLaunchesPerRun = 1
+
+// effectiveExecuteBudget is how many governed harness launches this
+// invocation can ACTUALLY perform, as opposed to how many were requested.
+// A dry run performs none. An omitted --max-execute-steps means the
+// documented default of one, and every request is clamped to the structural
+// ceiling above — so the number the operator is shown is the number the
+// system can deliver.
+func effectiveExecuteBudget(opts ContinueOptions) int {
+	if opts.DryRun {
+		return 0
+	}
+	requested := opts.MaxExecuteSteps
+	if requested <= 0 {
+		requested = 1
+	}
+	if requested > executeStageMaxLaunchesPerRun {
+		return executeStageMaxLaunchesPerRun
+	}
+	return requested
+}
+
+// executeWarning states, truthfully, whether this invocation can launch a
+// harness. "does not execute task commands" was unconditionally true before
+// the execute stage existed. It is now false on any live call that finds a
+// ready envelope under the standing grant — INCLUDING one that omitted
+// --max-execute-steps, because omitting the flag still permits the default
+// execute step. A tool that tells the operator it does not execute while it
+// is minting RunAttempts makes the gate unreadable, so the warning is
+// derived from the effective budget rather than frozen as a literal.
+func executeWarning(opts ContinueOptions) string {
+	if opts.DryRun {
+		return "does not execute task commands (dry-run probe: gates are evaluated, nothing is launched)"
+	}
+	if n := effectiveExecuteBudget(opts); n != 1 {
+		return fmt.Sprintf("may launch up to %d governed harness execution steps", n)
+	}
+	return "may launch 1 governed harness execution step"
+}
+
 func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, error) {
 	actor := strings.TrimSpace(opts.Actor)
 	if actor == "" {
@@ -338,7 +392,7 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 		Counts:        report.Counts,
 		Warnings: []string{
 			"moves safe local lifecycle plumbing only",
-			"does not execute task commands",
+			executeWarning(opts),
 			"does not observe or synthesize traces",
 			"does not promote memory",
 		},
@@ -639,7 +693,7 @@ func (s *Store) ContinueRun(now time.Time, opts ContinueRunOptions) (ContinueRun
 		MaxSteps:      maxSteps,
 		Warnings: []string{
 			"continues repeated safe local lifecycle steps until the next real wait",
-			"does not execute task commands",
+			executeWarning(opts.ContinueOptions),
 			"does not observe or synthesize traces",
 			"does not promote memory",
 		},

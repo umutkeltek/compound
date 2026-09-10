@@ -224,7 +224,17 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 		// transition with a failed outcome). The stage still returns
 		// Action=execute so the heartbeat pass can keep going — the next
 		// Continue picks the next envelope.
+		//
+		// A crashed adapter still mints a RunAttempt holding the workspace,
+		// command and transcript of the attempt. The launch wire returns
+		// that id alongside its error; the id CANNOT be bound to the
+		// envelope here (see the wire's note on the close-time authority
+		// gate), so name it in the summary and the verdict instead. A
+		// failure whose evidence is anonymous cannot be investigated.
 		closeSummary := "unattended execute launch failed: " + launchErr.Error()
+		if rattID != "" {
+			closeSummary += " (run attempt " + rattID + ")"
+		}
 		if _, closeErr := s.Close(ready, CloseInput{
 			Outcome:   "failed",
 			MoveType:  "audit_only",
@@ -236,9 +246,18 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 		} else {
 			result.Human = fmt.Sprintf("executed envelope %s on lane %s but launch failed: %v; envelope marked failed, heartbeat continues", ready, lane, launchErr)
 		}
+		if rattID != "" {
+			result.Human += fmt.Sprintf(" (partial evidence in run attempt %s; not bound to the envelope)", rattID)
+		}
 		result.Action = "execute"
 		result.Skipped = "launch_failed"
+		// Reported, not bound: ContinueResult.RunAttemptIDs is the operator's
+		// view of the tick. The envelope's own RunAttemptIDs are unchanged,
+		// which is exactly the gap the wire's note describes.
 		result.RunAttemptIDs = nil
+		if rattID != "" {
+			result.RunAttemptIDs = []string{rattID}
+		}
 		return result, nil
 	}
 
