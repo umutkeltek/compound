@@ -538,6 +538,18 @@ func authorizeCandidateReplacement(inbox *candidateInbox, kind Kind, id string, 
 	// drift cases are intentionally separable. The body is read through
 	// candidateDigestForPath on a fresh RDONLY FD, descriptor-rooted via
 	// the inbox directory to keep canonical-path and no-follow guarantees.
+	// The write-mode open is the writability probe the old identity compare
+	// carried implicitly: a candidate the process may not write (0400, foreign
+	// owner) must refuse HERE with the permission error, before any staging,
+	// so a projection cannot report success it never had
+	// (internal/mem TestRaiseSeedsFailsBeforeEdgeWhenCandidateProjectionWriteFails).
+	probe, probeErr := inbox.directory.openExistingWritable(id + ".json")
+	if probeErr != nil {
+		return fmt.Errorf("authorize candidate replacement: %w", probeErr)
+	}
+	if closeErr := probe.Close(); closeErr != nil {
+		return fmt.Errorf("authorize candidate replacement: %w", closeErr)
+	}
 	liveDigest, readErr := candidateDigestForPath(inbox.directory, id+".json")
 	if readErr != nil {
 		return fmt.Errorf("read live candidate body: %w", readErr)
