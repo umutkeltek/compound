@@ -79,8 +79,9 @@ build_sha=$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo "")
 staged=$install_dir/.compound.incoming.$$
 alias_staged=$install_dir/.os.incoming.$$
 heartbeat_staged=$install_dir/.compound-autonomy-heartbeat.incoming.$$
+heartbeat_lib_staged=$install_dir/_lib/.heartbeat-promote-stage.incoming.$$
 attention_staged=$compound_home/scripts/.attention-letter.incoming.$$
-trap 'rm -f "$staged" "$alias_staged" "$heartbeat_staged" "$attention_staged"' EXIT HUP INT TERM
+trap 'rm -f "$staged" "$alias_staged" "$heartbeat_staged" "$heartbeat_lib_staged" "$attention_staged"' EXIT HUP INT TERM
 go build -ldflags "-X main.buildSHA=$build_sha" -o "$staged" ./cmd/compound
 go run ./cmd/compound-install-verify --binary "$staged" --build-sha "$build_sha"
 mv -f "$staged" "$install_dir/compound"
@@ -89,10 +90,25 @@ if [ "$install_os_alias" = 1 ]; then
   mv -f "$alias_staged" "$os_alias"
 fi
 if [ "$install_autonomy_lab" = 1 ]; then
+  # The heartbeat sources _lib/heartbeat-promote-stage.sh RELATIVE TO ITSELF, so
+  # the helper is part of the installed artifact, not a repo-only file. Installing
+  # the heartbeat alone passed `sh -n` and then died on its first tick with
+  # "_lib/heartbeat-promote-stage.sh: No such file or directory" — a syntax check
+  # cannot see a missing runtime dependency. Install the helper FIRST so the
+  # heartbeat is never on disk without the surface it sources.
+  mkdir -p "$install_dir/_lib"
+  cp "$repo_root/scripts/_lib/heartbeat-promote-stage.sh" "$heartbeat_lib_staged"
+  chmod 0644 "$heartbeat_lib_staged"
+  sh -n "$heartbeat_lib_staged"
+  mv -f "$heartbeat_lib_staged" "$install_dir/_lib/heartbeat-promote-stage.sh"
   cp "$repo_root/scripts/compound-autonomy-heartbeat.sh" "$heartbeat_staged"
   chmod 0755 "$heartbeat_staged"
   sh -n "$heartbeat_staged"
   mv -f "$heartbeat_staged" "$install_dir/compound-autonomy-heartbeat.sh"
+  # Prove the installed pair actually composes: source the installed helper with
+  # the installed heartbeat's own resolution and require the public entrypoint to
+  # exist. This is the check `sh -n` structurally cannot do.
+  sh -c '. "$1/_lib/heartbeat-promote-stage.sh"; command -v promote_driver_stage_decide >/dev/null' _ "$install_dir"
 fi
 
 go build -o "$install_dir/compound-breadth-engine" ./cmd/compound-breadth-engine
