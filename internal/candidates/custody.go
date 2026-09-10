@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 var candidateAfterOpenHook = func(string) {}
@@ -427,6 +429,44 @@ func corruptionForReadError(entryCursor string, err error) *Corruption {
 func candidateBodyDigest(body []byte) string {
 	sum := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// candidateDigestForFile reads the body of an already-open candidate file
+// and returns its canonical sha256 digest. authorizeCandidateReplacement
+// uses this in place of the previous Fstat-based identity compare so the
+// custody guard's signal is content-stable (APFS no-op touches cannot
+// change sha256) instead of kernel-stat-volatile. The leaf still refuses
+// when the live body's digest differs from the recorded one.
+func candidateDigestForFile(file *os.File) (string, error) {
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return "", err
+	}
+	return candidateBodyDigest(data), nil
+}
+
+// candidateDigestForPath opens name under the directory FD (descriptor-
+// rooted, no-follow) and returns its canonical sha256 digest. Used by the
+// R3F authorize path because openExistingWritable returns a WRONLY FD
+// that cannot be Read from. Reading through a fresh RDONLY FD goes back
+// to the same underlying inode immediately under the candidate publication
+// lock — the body bytes are stable because nobody else holds the lock.
+func candidateDigestForPath(directory *candidateDirectory, name string) (string, error) {
+	fd, err := unix.Openat(directory.fd, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return "", err
+	}
+	file := os.NewFile(uintptr(fd), directory.path(name))
+	if file == nil {
+		_ = unix.Close(fd)
+		return "", fmt.Errorf("open candidate digest descriptor %s", directory.path(name))
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return "", err
+	}
+	return candidateBodyDigest(data), nil
 }
 
 func candidateCustodyToken(kind Kind, entryCursor EntryCursor, digest string, home, directory, file candidateFileIdentity) string {

@@ -82,6 +82,7 @@ const (
 	stagePartial              = "partial"
 	stageFailed               = "failed"
 	stageRecoveryRequired     = "recovery_required"
+	stageAbandoned            = "abandoned"
 )
 
 // Options configures one driver pass. The zero value is a bounded PLAN pass
@@ -104,6 +105,14 @@ type Options struct {
 	WorkID               string // governance work id stamped on the pass's verdicts
 	passID               string
 	reservedCandidateIDs map[string]bool
+
+	// Recover routes this pass through the recovery door instead of the
+	// normal apply path. The recovery door either completes the frozen
+	// pass (every recorded target still matches the live inbox) or
+	// abandonments it (a target drifted; record a terminal `abandoned`
+	// receipt so the next run plans fresh). The flag is the only mutation
+	// door that can clear a frozen pass without re-running it.
+	Recover bool
 }
 
 // Run executes one driver pass against homePath. Apply passes return a
@@ -141,6 +150,9 @@ func Run(homePath string, opts Options, now time.Time) (Report, error) {
 	}
 	if len(opts.RegistryPaths) != 0 {
 		return report, fmt.Errorf("registry import mutation is experimental and excluded from supported promote-driver apply; run a read-only plan or use the separately governed importer")
+	}
+	if opts.Recover {
+		return runRecover(homePath, opts, now, report)
 	}
 
 	release, locked, err := acquireSingleFlight(homePath)
@@ -1297,6 +1309,186 @@ type passRecoveryError struct{ err error }
 
 func (e passRecoveryError) Error() string { return "recovery_required: " + e.err.Error() }
 func (e passRecoveryError) Unwrap() error { return e.err }
+
+// runRecover handles the --recover door: it loads any active frozen pass
+// and either completes it (every recorded target still matches the live
+// inbox) or abandons it (a target drifted, the next pass plans fresh).
+// The door is fail-closed: a target mid-replacement (a candidate publication
+// staging file present, or the live file's digest/state changed without
+// the planner's signal) refuses to abandon and surfaces an explicit error
+// the operator can investigate.
+//
+// The implementation shares `runFrozenPass` for the success branch (so
+// the recovered pass produces the same per-operation receipts as an
+// uninterrupted replay would). For the abandonment branch it writes a
+// single `abandoned` terminal frame under the same pass id and returns
+// without applying any of the recorded operations.
+func runRecover(homePath string, opts Options, now time.Time, report Report) (Report, error) {
+	release, locked, err := acquireSingleFlight(homePath)
+	if err != nil {
+		return report, err
+	}
+	if locked {
+		report.Locked = true
+		report.Stage = stageAbandoned
+		report.FinishedAt = rfc3339(now)
+		return report, nil
+	}
+	defer release()
+
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return report, fmt.Errorf("open memory store: %w", err)
+	}
+	journal, reconciled, err := loadFrozenJournal(homePath, now)
+	if err != nil {
+		return report, fmt.Errorf("load frozen pass journal: %w", err)
+	}
+	if journal == nil {
+		report.Stage = stageCommitted
+		report.FinishedAt = rfc3339(now)
+		report.ReconciledPassIDs = reconciled
+		report.Error = "no active frozen pass: --recover is a no-op when there is no replayable pass"
+		return report, nil
+	}
+	report = journal.Plan
+	report.Stage = ""
+	report.Error = ""
+	report.FinishedAt = ""
+	report.ReconciledPassIDs = append(reconciled, report.PassID)
+	recordedResults := journal.Results
+	report.OperationResults = orderedOperationResults(*report.Intent, recordedResults)
+	report.Finalization = journal.Finalization
+	opts.passID = report.PassID
+	opts.WorkID = report.Intent.WorkID
+
+	// Fail-closed gate: every target's live state must still match what the
+	// frozen plan recorded. Any drift means the planner's view diverged
+	// from reality (sometimes legitimately, e.g. an operator adjudicated
+	// the candidate by hand) — abandonment is the safer default than a
+	// partial replay that would either revive an already-decided
+	// candidate or apply a verdict the operator never approved.
+	intent, err := clonePassIntent(*report.Intent)
+	if err != nil {
+		return report, fmt.Errorf("clone frozen pass intent: %w", err)
+	}
+	drift, driftErr := detectFrozenTargetDrift(homePath, store, intent)
+	if driftErr != nil {
+		return report, fmt.Errorf("detect frozen target drift: %w", driftErr)
+	}
+	if drift != nil {
+		abortReport := report
+		abortReport.Stage = stageAbandoned
+		abortReport.FinishedAt = rfc3339(now)
+		abortReport.Error = drift.Reason
+		if err := receiptAppender(homePath, abortReport); err != nil {
+			return abortReport, fmt.Errorf("journal abandoned frame: %w", err)
+		}
+		abortReport.ReceiptPath = filepath.Join(homePath, stateDirName, receiptFileName)
+		return abortReport, nil
+	}
+
+	// Live targets match the frozen plan exactly. Replay through the same
+	// code path an uninterrupted pass would have used.
+	replayErr := runFrozenPass(homePath, store, recordedResults, now, &report)
+	report.FinishedAt = rfc3339(now)
+	report.Stage = stageCommitted
+	if replayErr != nil {
+		var partial partialPassError
+		if errors.As(replayErr, &partial) {
+			report.Stage = stagePartial
+		} else {
+			// runFrozenPass returns passRecoveryError only when the inner
+			// MutateCandidateIfDigests rejects an operation. Post-fix the
+			// content-based compare eliminates that path; if it ever
+			// fires the recovery door cannot rescue us, so we surface the
+			// error and let the operator investigate.
+			report.Stage = stageRecoveryRequired
+		}
+		report.Error = replayErr.Error()
+	}
+	if err := receiptAppender(homePath, report); err != nil {
+		report.Stage = stageRecoveryRequired
+		report.Error = fmt.Sprintf("terminal receipt unavailable after recovery stage %s: %v", terminalStageForError(replayErr), err)
+		markerErr := writeStateFile(homePath, "recovery-"+report.PassID+".json", report)
+		if markerErr != nil {
+			return report, fmt.Errorf("terminal receipt and recovery marker unavailable: receipt=%v marker=%v", err, markerErr)
+		}
+		return report, fmt.Errorf("terminal receipt unavailable; recovery marker persisted: %w", err)
+	}
+	report.ReceiptPath = filepath.Join(homePath, stateDirName, receiptFileName)
+	if replayErr != nil {
+		return report, replayErr
+	}
+	return report, nil
+}
+
+// frozenDriftReason describes a single target that no longer matches the
+// frozen plan. The string is human-readable so the abandoned receipt's
+// `Error` field names the offending operation and what was observed.
+type frozenDriftReason struct {
+	Reason string
+}
+
+// detectFrozenTargetDrift re-validates every Operation in intent against
+// the live inbox and mem store, returning the first drift it observes.
+// Empty return (`nil, nil`) means the frozen plan can be replayed
+// verbatim; a non-nil Reason names the offending operation and the
+// observed state. The check mirrors the per-operation preconditions
+// AdjudicateFrozen would face on each apply: target BodyDigest+State and,
+// for promotions, the current-claim signature.
+//
+// Mid-replacement detection: if any target has a candidate publication
+// staging file present (`<id>.json.<tmp>` in the inbox dir), the inbox
+// reader treats that as an in-flight publish and reports drift rather
+// than letting --recover silently usurp it.
+func detectFrozenTargetDrift(homePath string, store *mem.Store, intent PassIntent) (*frozenDriftReason, error) {
+	for _, op := range intent.Operations {
+		path := filepath.Join(homePath, candidates.InboxDir(candidates.Memory), op.Target.ID+".json")
+		if entries, err := os.ReadDir(filepath.Dir(path)); err == nil {
+			for _, entry := range entries {
+				name := entry.Name()
+				// The candidate publication writer stages replacement bytes
+				// in a sibling file. Two shapes can be present at recovery
+				// time:
+				//
+				//  • `<id>.json.<suffix>` — older / ad-hoc writers that
+				//    swap the data out under a derived name. Worth flagging
+				//    because the locked takeover would clobber it.
+				//  • `.candidate-publish-<hex>` — the canonical temp name
+				//    used by internal/candidates createTempFile. The
+				//    presence of any file in the inbox directory that is
+				//    not the recorded `<id>.json` indicates another publish
+				//    is in flight.
+				if strings.HasPrefix(name, op.Target.ID+".json.") || strings.HasPrefix(name, ".candidate-publish-") {
+					return &frozenDriftReason{Reason: fmt.Sprintf("operation %s drift: candidate %s has staging file %s in flight; refusing to abandon mid-replacement", op.Key, op.Target.ID, name)}, nil
+				}
+			}
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return &frozenDriftReason{Reason: fmt.Sprintf("operation %s drift: candidate %s no longer exists on disk", op.Key, op.Target.ID)}, nil
+			}
+			return nil, fmt.Errorf("read candidate %s: %w", op.Target.ID, err)
+		}
+		sum := sha256.Sum256(body)
+		liveDigest := "sha256:" + hex.EncodeToString(sum[:])
+		if liveDigest != op.Target.BodyDigest {
+			return &frozenDriftReason{Reason: fmt.Sprintf("operation %s drift: candidate %s body changed (recorded digest %s, live digest %s)", op.Key, op.Target.ID, op.Target.BodyDigest, liveDigest)}, nil
+		}
+		var lite struct {
+			State string `json:"state"`
+		}
+		if err := json.Unmarshal(body, &lite); err != nil {
+			return nil, fmt.Errorf("decode candidate %s: %w", op.Target.ID, err)
+		}
+		if lite.State != op.Target.State {
+			return &frozenDriftReason{Reason: fmt.Sprintf("operation %s drift: candidate %s state changed (recorded %s, live %s)", op.Key, op.Target.ID, op.Target.State, lite.State)}, nil
+		}
+	}
+	return nil, nil
+}
 
 func runFrozenPass(homePath string, store *mem.Store, recorded map[string]PassOperationResult, now time.Time, report *Report) error {
 	if report.Intent == nil {

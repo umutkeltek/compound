@@ -33,6 +33,13 @@ var (
 	// closed with a typed CorruptionRaced instead of publishing over it.
 	publishCandidateReplacement = publishCandidateReplacementExact
 	publishCandidateCreation    = publishCandidateCreationExact
+	// captureAuthorizedReplacement is set by tests to capture the Record handed
+	// to authorizeCandidateReplacement. It runs AFTER classifyCandidateRecord
+	// (so callers see a record that was actually accepted for authorization)
+	// and BEFORE the file is re-opened for the live-identity Fstat — that
+	// ordering is what proves the test was checking the same Record the
+	// production path was about to compare against. nil = no capture.
+	captureAuthorizedReplacement func(kind Kind, id string, record Record)
 )
 
 // candidateID rejects an id that is empty or path-shaped (a directory component,
@@ -512,16 +519,31 @@ func authorizeCandidateReplacement(inbox *candidateInbox, kind Kind, id string, 
 	if err := classifyCandidateRecord(record, kind, id); err != nil {
 		return err
 	}
-	file, err := inbox.directory.openExistingWritable(id + ".json")
-	if err != nil {
-		return fmt.Errorf("authorize candidate replacement: %w", err)
+	if captureAuthorizedReplacement != nil {
+		captureAuthorizedReplacement(kind, id, record)
 	}
-	identity, identityErr := candidateIdentityForFile(file)
-	if identityErr == nil && !identity.same(record.fileIdentity) {
-		identityErr = fmt.Errorf("candidate replacement target changed after custody read")
+	// R3F (promote-driver frozen-park recovery, 2026-09-04): the previous
+	// Fstat-vs-identity compare refused when only the file's volatile
+	// metadata (mtime/ctime/atime) drifted between the caller's read and
+	// this leaf's re-open. APFS no-op touches (Spotlight, quarantine,
+	// atime updates that bump ctime) and any kernel cache that returns a
+	// different stat snapshot across FDs trigger `changed after custody
+	// read` even though the candidate's body bytes never moved. The
+	// custody guard this leaf exists to enforce is content generation, not
+	// metadata: an idempotent write that overwrites identical bytes with
+	// identical bytes is safe under the candidate publication lock regardless
+	// of when atime was last bumped. We compare the live file's body to
+	// the recorded digest instead. A file whose body genuinely drifted
+	// (different digest) is still refused; the content-drift and metadata-
+	// drift cases are intentionally separable. The body is read through
+	// candidateDigestForPath on a fresh RDONLY FD, descriptor-rooted via
+	// the inbox directory to keep canonical-path and no-follow guarantees.
+	liveDigest, readErr := candidateDigestForPath(inbox.directory, id+".json")
+	if readErr != nil {
+		return fmt.Errorf("read live candidate body: %w", readErr)
 	}
-	if closeErr := file.Close(); identityErr != nil || closeErr != nil {
-		return errors.Join(identityErr, closeErr)
+	if liveDigest != record.Digest {
+		return fmt.Errorf("candidate replacement target changed after custody read")
 	}
 	return nil
 }

@@ -17,7 +17,7 @@ import (
 // in this organ: the cmd layer stays a thin dispatch, and the cmd/compound LOC
 // budget ratchet (internal/arch.checkCmdCompoundBudget) only lets cmd/compound
 // shrink.
-const Usage = "usage: compound memory promote-driver [--confirm --work W] [--dry-run] [--json] [--promote-limit N] [--scan-limit N] [--walk-scan-limit N] [--registry GLOB[,GLOB]... (plan-only)]  (supported apply is a frozen candidate-only pass; dry-run may preview experimental registry and lane-belief phases; apply requires --confirm plus a real maintenance WorkEnvelope id; receipts append to state/promote-driver/receipts.jsonl)"
+const Usage = "usage: compound memory promote-driver [--confirm --work W] [--recover] [--dry-run] [--json] [--promote-limit N] [--scan-limit N] [--walk-scan-limit N] [--registry GLOB[,GLOB]... (plan-only)]  (supported apply is a frozen candidate-only pass; dry-run may preview experimental registry and lane-belief phases; apply requires --confirm plus a real maintenance WorkEnvelope id; --recover completes or abandons a frozen pass left over from a prior crash/rollback; receipts append to state/promote-driver/receipts.jsonl)"
 
 // RunCLI runs the `compound memory promote-driver` subcommand over rest (the
 // arguments after the subcommand name) and returns the process exit code: 2 on
@@ -31,7 +31,7 @@ func RunCLI(rest []string) int {
 	// Fail-closed flag validation (flag-validation ratchet, internal/flagaudit):
 	// every first-party command path must refuse unknown flags instead of
 	// silently dropping them. Pattern: internal/work.ValidateWorkListFlags.
-	boolFlags := map[string]bool{"--confirm": true, "--dry-run": true, "--json": true, "--help": true, "-h": true}
+	boolFlags := map[string]bool{"--confirm": true, "--recover": true, "--dry-run": true, "--json": true, "--help": true, "-h": true}
 	valueFlags := map[string]bool{"--promote-limit": true, "--scan-limit": true, "--walk-scan-limit": true, "--registry": true, "--work": true}
 	for i := 0; i < len(rest); i++ {
 		a := rest[i]
@@ -72,6 +72,14 @@ func RunCLI(rest []string) int {
 		fmt.Fprintf(os.Stderr, "error: --confirm and --dry-run are contradictory; a pass is dry-run by default and --confirm applies it\n%s\n", Usage)
 		return 2
 	}
+	if has("--recover") && has("--dry-run") {
+		fmt.Fprintf(os.Stderr, "error: --recover mutates the journal (either completes or abandons a frozen pass); combine with --dry-run only after the recovery door is read-only\n%s\n", Usage)
+		return 2
+	}
+	if has("--recover") && (has("--confirm") || has("--registry")) {
+		fmt.Fprintf(os.Stderr, "error: --recover is its own mutation door; do not combine with --confirm or --registry (the recovery path picks its mode from the frozen pass's recorded intents)\n%s\n", Usage)
+		return 2
+	}
 	if has("--confirm") && has("--registry") {
 		fmt.Fprintf(os.Stderr, "error: --registry is plan-only; registry import mutation is experimental and excluded from supported promote-driver apply\n%s\n", Usage)
 		return 2
@@ -104,7 +112,8 @@ func RunCLI(rest []string) int {
 		// automation script believe it applied a pass it did not. A
 		// contradictory mutation request is a usage error (exit 2), the same
 		// posture as the flag-validation ratchet above.
-		Apply:          has("--confirm") && !has("--dry-run"),
+		Apply:          (has("--confirm") || has("--recover")) && !has("--dry-run"),
+		Recover:        has("--recover"),
 		PromoteLimit:   intVals["--promote-limit"],
 		SweepScanLimit: intVals["--scan-limit"],
 		WalkScanLimit:  intVals["--walk-scan-limit"],
