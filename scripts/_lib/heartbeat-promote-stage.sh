@@ -111,50 +111,63 @@ home_in_report = (d.get("home") or "").strip()
 receipt_path = (d.get("receipt_path") or "").strip()
 rendered_work = ((d.get("intent") or {}).get("work_id") or "").strip()
 
-# Strip the optional fields the parent script used to consume (promoted/
-# parked/rejected csv + counts) so we update them in one place.
-promote = d.get("promote") or {}
-sweep = d.get("sweep") or {}
-dedupe = d.get("dedupe") or {}
-imports = d.get("imports") or {}
+# outcome_of derives everything the parent script exports about what the
+# pass DID (promoted/parked/rejected csv + counts). It is deliberately a
+# function of ONE document so the identical derivation runs over the
+# rendered report and over the stored terminal receipt: a divergence
+# between the two is then a comparison, not a second implementation that
+# can drift away from the first.
+def outcome_of(doc):
+    promote = doc.get("promote") or {}
+    sweep = doc.get("sweep") or {}
+    dedupe = doc.get("dedupe") or {}
+    imports = doc.get("imports") or {}
 
-promoted = []
-for x in promote.get("promotions") or []:
-    cid = x.get("claim_id")
-    if cid:
-        promoted.append(cid)
-for src in (imports.get("sources") or []):
-    for cid in (src.get("claim_ids") or []):
+    promoted = []
+    for x in promote.get("promotions") or []:
+        cid = x.get("claim_id")
         if cid:
             promoted.append(cid)
+    for src in (imports.get("sources") or []):
+        for cid in (src.get("claim_ids") or []):
+            if cid:
+                promoted.append(cid)
 
-parked = []
-for x in sweep.get("actions") or []:
-    if x.get("verdict") == "park" and x.get("candidate_id") in set(sweep.get("changed_ids") or []):
-        parked.append(x.get("candidate_id"))
+    changed = set(sweep.get("changed_ids") or [])
+    parked = []
+    for x in sweep.get("actions") or []:
+        if x.get("verdict") == "park" and x.get("candidate_id") in changed:
+            parked.append(x.get("candidate_id"))
 
-rejected = []
-for x in sweep.get("actions") or []:
-    if x.get("verdict") in ("reject", "no_promote") and x.get("candidate_id") in set(sweep.get("changed_ids") or []):
-        rejected.append(x.get("candidate_id"))
-for grp in dedupe.get("actions") or []:
-    for cid in (grp.get("no_promoted") or []):
-        if cid:
-            rejected.append(cid)
+    rejected = []
+    for x in sweep.get("actions") or []:
+        if x.get("verdict") in ("reject", "no_promote") and x.get("candidate_id") in changed:
+            rejected.append(x.get("candidate_id"))
+    for grp in dedupe.get("actions") or []:
+        for cid in (grp.get("no_promoted") or []):
+            if cid:
+                rejected.append(cid)
 
-pending_after = d.get("pending_after")
-pending_after_str = "None" if pending_after is None else str(pending_after)
+    pending_after = doc.get("pending_after")
+    return {
+        "promoted": promoted,
+        "parked": parked,
+        "rejected": rejected,
+        "promoted_n": str(promote.get("promoted", 0)),
+        "swept_n": str(sweep.get("adjudicated", 0)),
+        "pending": "None" if pending_after is None else str(pending_after),
+    }
 
-print("FIELDS|" + "|".join([
-    pass_id,
-    stage,
-    ",".join(promoted),
-    ",".join(parked),
-    ",".join(rejected),
-    str(promote.get("promoted", 0)),
-    str(sweep.get("adjudicated", 0)),
-    pending_after_str,
-]))
+
+# The rendered report is a PRESENTATION of the pass. It is the thing the
+# heartbeat would otherwise close work from, so it is the thing that must
+# be checked -- never the thing that is trusted.
+rendered_outcome = outcome_of(d)
+# For the RED stages there is no stored terminal record to be authoritative,
+# and those stages close nothing, so the rendered values stand as diagnostics.
+# On the single GREEN committed path below this is REPLACED by the outcome
+# read off the stored receipt.
+outcome = rendered_outcome
 
 
 def same_path(a, b):
@@ -218,6 +231,18 @@ elif stage == "committed":
                 mismatch.append("home_binding")
             if expect_work and rendered_work != expect_work:
                 mismatch.append("work_binding")
+            # Identity binding alone still let a report CLAIM an outcome its
+            # own receipt never recorded: the digest anchored the stored line
+            # while promoted/parked/rejected + counts were read off stdout, so
+            # the heartbeat could close work citing a claim id that appears
+            # nowhere in the evidence it cites. Presentation may differ from
+            # the receipt (indented vs compact); the reported OUTCOME may not.
+            # Safe to require equality: the producer marshals ONE report value
+            # into the receipt line and returns that same value for the CLI to
+            # render, so a real pass agrees with itself by construction.
+            stored_outcome = outcome_of(stored)
+            if stored_outcome != rendered_outcome:
+                mismatch.append("outcome")
             if mismatch:
                 verdict_stage = "identity_mismatch:" + ",".join(mismatch)
             else:
@@ -225,6 +250,10 @@ elif stage == "committed":
                 # evidence anchor names the exact record, never a synthesized
                 # string and never the presentation bytes on stdout.
                 proof_digest = hashlib.sha256(matching_line.encode("utf-8")).hexdigest()
+                # The stored terminal record is authoritative for what the
+                # pass did. Everything the heartbeat exports downstream is now
+                # derived from the same bytes proof_digest anchors.
+                outcome = stored_outcome
                 verdict_stage = "committed"
                 GREEN = True
 elif stage in ("planned", "operation_recorded", "finalization_recorded"):
@@ -257,6 +286,16 @@ elif locked:
 else:
     verdict_stage = "unknown"
 
+print("FIELDS|" + "|".join([
+    pass_id,
+    stage,
+    ",".join(outcome["promoted"]),
+    ",".join(outcome["parked"]),
+    ",".join(outcome["rejected"]),
+    outcome["promoted_n"],
+    outcome["swept_n"],
+    outcome["pending"],
+]))
 print("VERDICT|" + verdict_stage + "|" + ("GREEN" if GREEN else "RED") + "|" + proof_digest + "|" + ("1" if fresh_lock else "0"))
 PY
   )

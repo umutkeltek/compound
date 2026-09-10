@@ -83,6 +83,20 @@ assert_proof() {
   fi
 }
 
+# assert_outcome checks the fields the heartbeat actually closes work with.
+# These MUST be derived from the stored terminal receipt, never from the
+# rendered stdout, so a report cannot cite a claim its own evidence lacks.
+assert_outcome() {
+  _e_promoted="$1"
+  _e_n="$2"
+  if [ "$_e_promoted" != "$PD_PROMOTED" ] || [ "$_e_n" != "$PD_PROMOTED_N" ]; then
+    echo "FAIL: outcome"
+    echo "  expected promoted=[$_e_promoted] promoted_n=$_e_n"
+    echo "  actual   promoted=[$PD_PROMOTED] promoted_n=$PD_PROMOTED_N"
+    exit 1
+  fi
+}
+
 # indent renders a compact JSON document the way the CLI prints a report
 # (indented), so the committed case exercises the real producer/CLI shape.
 indent() {
@@ -198,6 +212,60 @@ write_receipt_line "$HOME_W" "{\"pass_id\":\"$PASS_W\",\"stage\":\"committed\",\
 call_stage "$TMPDIR/driver-otherwork.json" "$HOME_W" "0" "$RENDERED_W" "work_promote_this_tick"
 assert_rc 1 "stored line for another work id -> rc=1"
 assert_stage "identity_mismatch:work_id"
+
+# ----------------------------------------------------------------------
+
+echo "==> RED: stdout claims a promotion the stored receipt never recorded"
+
+# The heartbeat closes maintenance work with --memory-promoted <ids> and
+# anchors that close to the stored receipt's SHA-256. Before this case
+# existed, the ids were read off the RENDERED report while the digest was
+# read off the STORED line, so a report could say "I promoted claim X; here
+# is my receipt" while the cited receipt recorded no such promotion. The
+# identity fields all match here — only the outcome diverges.
+HOME_OC=$(setup_home)
+PASS_OC="pass-committed-outcome-001"
+WORK_OC="work_promote_outcome_001"
+RCPT_OC="$HOME_OC/state/promote-driver/receipts.jsonl"
+STORED_OC="{\"pass_id\":\"$PASS_OC\",\"stage\":\"committed\",\"home\":\"$HOME_OC\",\"receipt_path\":\"$RCPT_OC\",\"intent\":{\"work_id\":\"$WORK_OC\"},\"promote\":{\"promoted\":0,\"promotions\":[]},\"sweep\":{\"adjudicated\":0},\"pending_after\":0}"
+RENDERED_OC="{\"pass_id\":\"$PASS_OC\",\"stage\":\"committed\",\"home\":\"$HOME_OC\",\"receipt_path\":\"$RCPT_OC\",\"intent\":{\"work_id\":\"$WORK_OC\"},\"promote\":{\"promoted\":1,\"promotions\":[{\"claim_id\":\"claim_never_stored\"}]},\"sweep\":{\"adjudicated\":0},\"pending_after\":0}"
+write_receipt_line "$HOME_OC" "$STORED_OC"
+call_stage "$TMPDIR/driver-outcome.json" "$HOME_OC" "0" "$(indent "$RENDERED_OC")" "$WORK_OC"
+assert_rc 1 "stdout promotion absent from receipt -> rc=1"
+assert_stage "identity_mismatch:outcome"
+
+# ----------------------------------------------------------------------
+
+echo "==> RED: stdout inflates the swept count the stored receipt recorded"
+
+HOME_SC=$(setup_home)
+PASS_SC="pass-committed-count-001"
+WORK_SC="work_promote_count_001"
+RCPT_SC="$HOME_SC/state/promote-driver/receipts.jsonl"
+STORED_SC="{\"pass_id\":\"$PASS_SC\",\"stage\":\"committed\",\"home\":\"$HOME_SC\",\"receipt_path\":\"$RCPT_SC\",\"intent\":{\"work_id\":\"$WORK_SC\"},\"promote\":{\"promoted\":0},\"sweep\":{\"adjudicated\":2},\"pending_after\":7}"
+RENDERED_SC="{\"pass_id\":\"$PASS_SC\",\"stage\":\"committed\",\"home\":\"$HOME_SC\",\"receipt_path\":\"$RCPT_SC\",\"intent\":{\"work_id\":\"$WORK_SC\"},\"promote\":{\"promoted\":0},\"sweep\":{\"adjudicated\":99},\"pending_after\":7}"
+write_receipt_line "$HOME_SC" "$STORED_SC"
+call_stage "$TMPDIR/driver-count.json" "$HOME_SC" "0" "$(indent "$RENDERED_SC")" "$WORK_SC"
+assert_rc 1 "stdout count disagrees with receipt -> rc=1"
+assert_stage "identity_mismatch:outcome"
+
+# ----------------------------------------------------------------------
+
+echo "==> GREEN: exported promotion ids are read off the stored receipt"
+
+# The honest shape: producer marshals ONE report into the compact receipt
+# line and the CLI renders that same report indented. Presentation differs,
+# outcome agrees, and what the heartbeat exports comes from the receipt.
+HOME_PG=$(setup_home)
+PASS_PG="pass-committed-promoted-001"
+WORK_PG="work_promote_promoted_001"
+RCPT_PG="$HOME_PG/state/promote-driver/receipts.jsonl"
+RECEIPT_PG="{\"pass_id\":\"$PASS_PG\",\"stage\":\"committed\",\"home\":\"$HOME_PG\",\"receipt_path\":\"$RCPT_PG\",\"intent\":{\"work_id\":\"$WORK_PG\"},\"promote\":{\"promoted\":2,\"promotions\":[{\"claim_id\":\"claim_a\"},{\"claim_id\":\"claim_b\"}]},\"sweep\":{\"adjudicated\":0},\"pending_after\":4}"
+write_receipt_line "$HOME_PG" "$RECEIPT_PG"
+call_stage "$TMPDIR/driver-promoted.json" "$HOME_PG" "0" "$(indent "$RECEIPT_PG")" "$WORK_PG"
+assert_rc 0 "agreeing outcome -> rc=0"
+assert_stage "committed"
+assert_outcome "claim_a,claim_b" "2"
 
 # ----------------------------------------------------------------------
 
