@@ -79,7 +79,7 @@ func TestOhMyPiShimRaisesOnlyObservedFlags(t *testing.T) {
 	}{
 		{"SessionStartContext", c.SessionStartContext, false},
 		{"UserPromptContext", c.UserPromptContext, true},
-		{"PreToolUseBlock", c.PreToolUseBlock, false},
+		{"PreToolUseBlock", c.PreToolUseBlock, true},
 		{"PostToolUseEvent", c.PostToolUseEvent, true},
 		{"StopFeedback", c.StopFeedback, false},
 		{"SessionEndReceipt", c.SessionEndReceipt, true},

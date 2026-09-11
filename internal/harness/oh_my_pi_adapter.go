@@ -33,6 +33,24 @@ var ohMyPiSpec = piCodingAgentSpec{
 	binary:         "omp",
 	homeEnv:        "PI_CODING_AGENT_DIR",
 	homeTempPrefix: "oh-my-pi-",
+	// Compound OMP hook shim env var; read at buildCmd time. The launcher
+	// sets it (the omp-minimax-governed.sh script uses --hook= explicitly;
+	// the work dispatcher passes through COMPOUND_OMP_HOOK_PATH or
+	// PI_CODING_AGENT_DIR/hooks/pre/compound.ts).
+	shimEnvVar: "COMPOUND_OMP_HOOK_PATH",
+	// postureFlagFn maps the governed PermissionMode to the OMP
+	// --approval-mode argv fragment. The OMP CLI accepts yolo|write|always-ask;
+	// unknown modes fail closed inside OhMyPiApprovalArgs so buildCmd never
+	// emits a default. Empty / unknown modes map to always-ask, which is
+	// the conservative non-interactive default.
+	postureFlagFn: OhMyPiApprovalArgs,
+	// hookFlagFn maps the resolved shim path to the --hook=<path> argv
+	// fragment that loads the shim into omp. An empty / whitespace path is
+	// refused here so buildCmd never emits --hook= without a loadable file.
+	hookFlagFn: OhMyPiHookArgs,
+	// A bypass (yolo) launch without a loadable shim is the silent fail-open
+	// the entire R7B packet exists to close: refuse before process start.
+	requiresShimForBypass: true,
 }
 
 // NewOhMyPiAdapter returns the production adapter. Heartbeats every 5s.

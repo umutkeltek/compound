@@ -93,6 +93,9 @@ func TestOhMyPiAdapterRunMintsRunAttempt(t *testing.T) {
 // not a prime-agent-ism carried over by the shared adapter.
 func TestOhMyPiAdapterBuildCmdRPC(t *testing.T) {
 	fake := fakeOhMyPiBinary(t)
+	// Empty PermissionMode (default) maps to --approval-mode=always-ask via
+	// the spec posture fn. Set the shim path so buildCmd also emits --hook=.
+	t.Setenv("COMPOUND_OMP_HOOK_PATH", "/tmp/compound.ts")
 	a := NewOhMyPiAdapter(runattempt.Open(t.TempDir()))
 	ws := t.TempDir()
 	cmd := a.buildCmd(context.Background(), RunInput{
@@ -107,8 +110,10 @@ func TestOhMyPiAdapterBuildCmdRPC(t *testing.T) {
 	if got, want := cmd.Dir, ws; got != want {
 		t.Fatalf("cmd.Dir = %q, want %q", got, want)
 	}
-	if !reflect.DeepEqual(cmd.Args[:5], []string{"omp", "--mode", "rpc", "--cwd", ws}) {
-		t.Fatalf("cmd.Args = %v, want [omp --mode rpc --cwd %s ...]", cmd.Args, ws)
+	// argv shape: omp --mode rpc --cwd WS --approval-mode=always-ask --hook=... <prompt>
+	wantHead := []string{"omp", "--mode", "rpc", "--cwd", ws, "--approval-mode=always-ask", "--hook=/tmp/compound.ts"}
+	if !reflect.DeepEqual(cmd.Args[:len(wantHead)], wantHead) {
+		t.Fatalf("cmd.Args[:%d] = %v, want %v", len(wantHead), cmd.Args[:len(wantHead)], wantHead)
 	}
 	if got := cmd.Args[len(cmd.Args)-1]; got != "echo hello" {
 		t.Fatalf("prompt must be last positional, got %q (args=%v)", got, cmd.Args)
@@ -151,6 +156,9 @@ func TestOhMyPiAdapterBuildCmdRPC(t *testing.T) {
 // `--dry-run` proofs, and the one that leaves no session state behind.
 func TestOhMyPiAdapterBuildCmdOneshot(t *testing.T) {
 	fakeOhMyPiBinary(t)
+	// oneshot maps to -p --no-session in buildCmd AND to always-ask in
+	// OhMyPiApprovalArgs (a dry-run never carries interactive yolo).
+	t.Setenv("COMPOUND_OMP_HOOK_PATH", "/tmp/compound.ts")
 	a := NewOhMyPiAdapter(runattempt.Open(t.TempDir()))
 	cmd := a.buildCmd(context.Background(), RunInput{
 		WorkID:         "work_ohmypi_oneshot",
@@ -159,8 +167,9 @@ func TestOhMyPiAdapterBuildCmdOneshot(t *testing.T) {
 		Prompt:         "echo hello",
 		Now:            time.Now(),
 	})
-	if !reflect.DeepEqual(cmd.Args[:3], []string{"omp", "-p", "--no-session"}) {
-		t.Fatalf("cmd.Args = %v, want first three to be [omp -p --no-session]", cmd.Args)
+	wantHead := []string{"omp", "-p", "--no-session", "--cwd", cmd.Args[4], "--approval-mode=always-ask", "--hook=/tmp/compound.ts"}
+	if !reflect.DeepEqual(cmd.Args[:len(wantHead)], wantHead) {
+		t.Fatalf("cmd.Args[:%d] = %v, want %v", len(wantHead), cmd.Args[:len(wantHead)], wantHead)
 	}
 }
 
@@ -171,6 +180,14 @@ func TestOhMyPiAdapterBuildCmdOneshot(t *testing.T) {
 // order, ahead of the prompt.
 func TestOhMyPiAdapterPassesCallerFlagsThrough(t *testing.T) {
 	fakeOhMyPiBinary(t)
+	// The oh_my_pi spec reads COMPOUND_OMP_HOOK_PATH at buildCmd time and
+	// stamps --hook=<path> on every launch. Set it to a sentinel so the
+	// adapter does not refuse with the empty-path error. The sentinel
+	// does not need to exist on disk: --hook= is just an argv fragment
+	// for this assertion (the refusal-on-missing-file lives in
+	// precheckLaunch, not buildCmd, because the bypass launch is the only
+	// mode that mandates a loadable shim).
+	t.Setenv("COMPOUND_OMP_HOOK_PATH", "/tmp/compound.ts")
 	a := NewOhMyPiAdapter(runattempt.Open(t.TempDir()))
 	ws := t.TempDir()
 	cmd := a.buildCmd(context.Background(), RunInput{
@@ -180,7 +197,7 @@ func TestOhMyPiAdapterPassesCallerFlagsThrough(t *testing.T) {
 		Prompt:    "do the thing",
 		Now:       time.Now(),
 	})
-	want := []string{"omp", "--mode", "rpc", "--cwd", ws, "--approval-mode", "write", "--max-time", "30m", "do the thing"}
+	want := []string{"omp", "--mode", "rpc", "--cwd", ws, "--approval-mode=always-ask", "--hook=/tmp/compound.ts", "--approval-mode", "write", "--max-time", "30m", "do the thing"}
 	if !reflect.DeepEqual(cmd.Args, want) {
 		t.Fatalf("cmd.Args = %v, want %v", cmd.Args, want)
 	}

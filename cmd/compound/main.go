@@ -1690,7 +1690,7 @@ func cmdHookInstall(args []string) {
 	install := func() error {
 		var err error
 		if len(req.Harnesses) == 1 && req.Harnesses[0] == "oh-my-pi" {
-			rep, err = hookplan.InstallOhMyPiShim(base, check)
+			rep, err = hookplan.InstallOhMyPiShimWithConfigDir(base, req.ConfigDir, check)
 			return err
 		}
 		rep, err = hookplan.InstallHooksWithRoster(

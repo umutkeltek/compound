@@ -77,39 +77,62 @@ const CALL_TIMEOUT_MS = 8_000;
 // evidence. session_id keeps the synthetic value as a fallback; if omp's
 // embedded id is recoverable we prefer it so SessionStart/SessionEnd share
 // the same correlation key.
+// Same bound as OmpDeriveSession on the Go side (internal/hookplan/omp_derive.go):
+// when a cwd slug holds thousands of stale session files, only header-read
+// the newest OMP_DERIVE_MAX_PROBE by mtime. The contract still returns the
+// single newest matching candidate; the bound just keeps the scan cost
+// proportional to a small constant.
+const OMP_DERIVE_MAX_PROBE = 64;
+
 function deriveOmpSession(homedirValue: string, cwd: string): { sessionId: string; transcriptPath: string | null } {
 	const slug = slugFromCwd(cwd);
 	const dir = `${homedirValue}/.omp/agent/sessions/${slug}`;
 	if (!existsSync(dir)) {
 		return { sessionId: `omp-${process.pid}-${Date.now().toString(36)}`, transcriptPath: null };
 	}
+	// Pass 1: mtime-only pre-filter. Pick the newest OMP_DERIVE_MAX_PROBE
+	// .jsonl files; stat cost is already paid by readdirSync on some
+	// platforms but explicitly here so the bound holds regardless.
+	let top: { path: string; mtime: number }[] = [];
+	try {
+		const entries = readdirSync(dir);
+		for (const entry of entries) {
+			if (!entry.endsWith(".jsonl")) continue;
+			const full = `${dir}/${entry}`;
+			let st: import("node:fs").Stats;
+			try { st = statSync(full); } catch { continue; }
+			if (top.length < OMP_DERIVE_MAX_PROBE) {
+				top.push({ path: full, mtime: st.mtimeMs });
+				continue;
+			}
+			let idx = 0;
+			for (let i = 1; i < top.length; i++) {
+				if (top[i].mtime < top[idx].mtime) idx = i;
+			}
+			if (top[idx].mtime < st.mtimeMs) top[idx] = { path: full, mtime: st.mtimeMs };
+		}
+	} catch {
+		return { sessionId: `omp-${process.pid}-${Date.now().toString(36)}`, transcriptPath: null };
+	}
+	// Pass 2: header read on the bounded set only, picking the newest match.
 	let newestPath: string | null = null;
 	let newestMtime = 0;
 	let newestEmbeddedId = "";
-	try {
-		for (const entry of readdirSync(dir).sort()) {
-			const full = `${dir}/${entry}`;
-			if (!entry.endsWith(".jsonl")) continue;
-			let st: import("node:fs").Stats;
-			try { st = statSync(full); } catch { continue; }
-			if (st.mtimeMs <= newestMtime) continue;
-			// Read first ~1KB to inspect the two header lines without streaming.
-			let head = "";
-			try {
-				const buf = readFileSync(full, { encoding: "utf-8", flag: "r" });
-				head = buf.slice(0, 1024);
-			} catch { continue; }
-			const lines = head.split("\n");
-			const headerLine = lines.find((ln) => ln.trim().length > 0 && ln.includes('"type":"session"')) ?? "";
-			const headerProbe = parseSessionHeader(headerLine);
-			if (!headerProbe) continue;
-			if (headerProbe.cwd !== cwd) continue;
-			newestPath = full;
-			newestMtime = st.mtimeMs;
-			newestEmbeddedId = headerProbe.id;
-		}
-	} catch {
-		// readdir raced or dir vanished mid-loop; treat as miss.
+	for (const c of top) {
+		let head = "";
+		try {
+			const buf = readFileSync(c.path, { encoding: "utf-8", flag: "r" });
+			head = buf.slice(0, 1024);
+		} catch { continue; }
+		const lines = head.split("\n");
+		const headerLine = lines.find((ln) => ln.trim().length > 0 && ln.includes('"type":"session"')) ?? "";
+		const headerProbe = parseSessionHeader(headerLine);
+		if (!headerProbe) continue;
+		if (headerProbe.cwd !== cwd) continue;
+		if (c.mtime <= newestMtime) continue;
+		newestPath = c.path;
+		newestMtime = c.mtime;
+		newestEmbeddedId = headerProbe.id;
 	}
 	if (!newestPath) {
 		return { sessionId: `omp-${process.pid}-${Date.now().toString(36)}`, transcriptPath: null };

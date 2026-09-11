@@ -182,3 +182,63 @@ func TestLiveOMPFileToolBoundaryDeniesMisplacedWritesWithoutAskingOnReads(t *tes
 		})
 	}
 }
+
+// TestOhMyPiHoldEmitsDenyWhenShimPresent is the R7B fail-closed falsifier
+// for oh_my_pi: when the registry's PreToolUseBlock is true (the shim is
+// present), a hold outcome MUST project to permissionDecision=deny on the
+// live PreToolUse answer. The pre-fix failure shape printed
+// "[oh_my_pi/fail_open] ... cannot block natively" to stderr -- a silent
+// pass-through that the OMP shim then read as "no decision" and treated
+// as an invalid permission decision (block=true, reason="compound policy
+// returned an invalid permission decision"). The fix path is two-part:
+// the registry row flips PreToolUseBlock=true (already in this packet),
+// and hook_live.go emits permissionDecision=deny for oh_my_pi holds the
+// same way it does for claude_minimax (the existing livePermissionDecision
+// path through hook.NativePermissionDecisionForHarness covers this when
+// the registry row reports PreToolUseBlock=true). This test exercises
+// the path end-to-end through runHookCommand.
+func TestOhMyPiHoldEmitsDenyWhenShimPresent(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Now().UTC()
+	if err := home.Init(homePath, "omp-hold-deny", now); err != nil {
+		t.Fatal(err)
+	}
+	input, err := json.Marshal(claudeLiveHookInput{
+		SessionID: "omp-hold-deny",
+		Cwd:       "/tmp",
+		ToolName:  "bash",
+		ToolInput: map[string]any{
+			"command": "rm -rf /Users/example/compound-sentinel-r7b",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exit int
+	output := captureStdout(t, func() {
+		withStdin(t, string(input), func() {
+			exit = runHookCommand([]string{"pre-tool-use", "--live", "--harness", "oh-my-pi", "--enforce"})
+		})
+	})
+	var response claudeLiveHookResponse
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		t.Fatalf("response: %v\n%s", err, output)
+	}
+	got := response.HookSpecificOutput
+	if got.HookEventName != "PreToolUse" {
+		t.Fatalf("wrong native event: %+v", got)
+	}
+	// Post-fix expectation: permissionDecision=deny.
+	if got.PermissionDecision != "deny" {
+		t.Fatalf("oh_my_pi PreToolUse hold MUST project to permissionDecision=deny, got %q (response=%+v)", got.PermissionDecision, got)
+	}
+	if got.PermissionDecisionReason == "" {
+		t.Fatalf("oh_my_pi deny MUST carry the policy reason, got empty")
+	}
+	// Exit code 3 = hold (gateExit). The OMP shim reads stdout for
+	// permissionDecision=deny regardless of exit code, so 3 is fine.
+	if exit != 0 && exit != 3 {
+		t.Fatalf("hook exit must be 0 (allow) or 3 (hold); got %d", exit)
+	}
+}

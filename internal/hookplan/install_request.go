@@ -69,8 +69,8 @@ func ResolveInstallRequest(laneFile, harnessFlag, rosterFlag, configDir string) 
 	if err != nil {
 		return InstallRequest{}, err
 	}
-	if strings.TrimSpace(configDir) != "" && (len(harnesses) != 1 || (harnesses[0] != "claude-code" && harnesses[0] != "claude-zai" && harnesses[0] != "claude-minimax" && harnesses[0] != "claude-qwen")) {
-		return InstallRequest{}, fmt.Errorf("--config-dir requires one Claude profile harness: claude-code, claude-zai, claude-minimax, or claude-qwen")
+	if strings.TrimSpace(configDir) != "" && (len(harnesses) != 1 || (harnesses[0] != "claude-code" && harnesses[0] != "claude-zai" && harnesses[0] != "claude-minimax" && harnesses[0] != "claude-qwen" && harnesses[0] != "oh-my-pi")) {
+		return InstallRequest{}, fmt.Errorf("--config-dir requires one isolated-profile harness: claude-code, claude-zai, claude-minimax, claude-qwen, or oh-my-pi")
 	}
 	return InstallRequest{Harnesses: harnesses, ConfigDir: strings.TrimSpace(configDir), AllowedEvents: allowedEvents}, nil
 }

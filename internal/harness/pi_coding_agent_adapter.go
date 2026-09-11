@@ -2,11 +2,14 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"compound/internal/runattempt"
@@ -54,6 +57,29 @@ type piCodingAgentSpec struct {
 	// Kept explicit: setting a var a fork does not read is a claim on disk
 	// that nothing enforces, and the next reader would believe it.
 	extraEnv []string
+
+	// shimEnvVar, if non-empty, names the env var the adapter reads for the
+	// Compound OMP hook shim path. Set on the oh_my_pi spec; prime_agent is
+	// untouched. When empty (prime_agent) the adapter never emits --hook=
+	// and never refuses on missing shim -- that path is oh_my_pi-exclusive.
+	shimEnvVar string
+
+	// postureFlagFn, if non-nil, is called with RunInput.PermissionMode and
+	// returns the harness-native argv fragment that stamps the governed
+	// posture (e.g. --approval-mode=yolo for oh_my_pi bypass). When nil the
+	// adapter never emits a posture flag -- prime_agent has none.
+	postureFlagFn func(permissionMode string) ([]string, error)
+
+	// hookFlagFn, if non-nil, is called with the resolved shim path and
+	// returns the --hook=<path> argv fragment that loads the shim into omp.
+	// When nil the adapter never emits a hook flag.
+	hookFlagFn func(shimPath string) ([]string, error)
+
+	// requiresShimForBypass, when true, makes Run() refuse a PermissionMode
+	// of bypass before process start if the resolved shim path is empty or
+	// the file is missing -- the failure mode this guard exists to stop is a
+	// headless omp process running yolo with no enforcement surface.
+	requiresShimForBypass bool
 }
 
 // PiCodingAgentAdapter drives one member of the pi coding-agent family as a
@@ -108,7 +134,39 @@ func (a *PiCodingAgentAdapter) Run(ctx context.Context, in RunInput) (RunOutput,
 	if in.Command == "" {
 		in.Command = a.spec.binary
 	}
+	if err := a.precheckLaunch(in); err != nil {
+		return RunOutput{}, err
+	}
+	// Attempt-honesty: the snapshot of what this launch was asked to run is
+	// built here (executionSelectionFor) but can only be PERSISTED before the
+	// subprocess starts — the store refuses a stamp on a terminal attempt.
+	// The shared runner gains a pre-start stamp seam
+	// (RunInput.ExecutionSelectionSnapshot, work_r7a) in a sibling slice; until
+	// it lands the OMP attempt carries no snapshot rather than a late one.
 	return runWithSubprocess(ctx, a.store, a.Name(), in, a.buildCmd, a.heartbeatInterval)
+}
+
+func (a *PiCodingAgentAdapter) precheckLaunch(in RunInput) error {
+	if !a.spec.requiresShimForBypass {
+		return nil
+	}
+	if strings.TrimSpace(in.PermissionMode) != "bypass" {
+		return nil
+	}
+	if strings.TrimSpace(a.spec.shimEnvVar) == "" {
+		return fmt.Errorf("oh_my_pi: shim env var unset while requiresShimForBypass=true (spec misconfiguration)")
+	}
+	shimPath := strings.TrimSpace(os.Getenv(a.spec.shimEnvVar))
+	if shimPath == "" {
+		return fmt.Errorf("oh_my_pi: bypass launch refused -- %s is empty", a.spec.shimEnvVar)
+	}
+	if _, err := os.Stat(shimPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("oh_my_pi: bypass launch refused -- shim not found at %s", shimPath)
+		}
+		return fmt.Errorf("oh_my_pi: bypass launch refused -- cannot stat shim %s: %w", shimPath, err)
+	}
+	return nil
 }
 
 // buildCmd assembles the family argv. The shape is:
@@ -166,6 +224,36 @@ func (a *PiCodingAgentAdapter) buildCmd(ctx context.Context, in RunInput) *exec.
 	}
 	args = append(args, "--cwd", workspace)
 
+	// oh_my_pi posture + hook. Specs other than oh_my_pi carry nil fns
+	// and the calls are no-ops; prime_agent untouched. The posture is
+	// stamped BEFORE any caller-supplied Args so a host config default
+	// cannot shadow it (the registry limitation -- tools.approvalMode is
+	// a host config default that can be yolo; governed dispatch MUST pass
+	// --approval-mode explicitly and never inherit).
+	if a.spec.postureFlagFn != nil {
+		flag, err := a.spec.postureFlagFn(in.PermissionMode)
+		if err != nil {
+			return a.refuseWithStderrCommand(ctx, in, "oh_my_pi: "+err.Error())
+		}
+		args = append(args, flag...)
+	}
+	if a.spec.hookFlagFn != nil && strings.TrimSpace(a.spec.shimEnvVar) != "" {
+		shimPath := strings.TrimSpace(os.Getenv(a.spec.shimEnvVar))
+		// A missing shim is the bypass-only failure mode (handled by
+		// precheckLaunch, which refuses BEFORE minting a RunAttempt).
+		// For non-bypass modes we silently skip --hook= so the harness
+		// still runs -- the operator loses enforcement, not the launch.
+		if shimPath == "" && a.spec.requiresShimForBypass && strings.TrimSpace(in.PermissionMode) != "bypass" {
+			// no-op: not a bypass launch
+		} else if shimPath != "" {
+			flag, err := a.spec.hookFlagFn(shimPath)
+			if err != nil {
+				return a.refuseWithStderrCommand(ctx, in, "oh_my_pi: "+err.Error())
+			}
+			args = append(args, flag...)
+		}
+	}
+
 	// Tool policy. in.Args[1:] may carry additional flags; the adapter
 	// appends them verbatim after the prompt-mode flags so the caller
 	// can override anything (e.g. --provider switchback --model ...).
@@ -214,6 +302,30 @@ func (a *PiCodingAgentAdapter) buildCmd(ctx context.Context, in RunInput) *exec.
 	return cmd
 }
 
+// refuseWithStderrCommand builds a non-launched command that prints the
+// refusal reason on stderr and exits 2. buildCmd cannot return an error
+// (the *exec.Cmd signature is shared with prime_agent), so caller-bug
+// refusals surface as a process that exits immediately with the reason
+// text on stderr. The reason is what the harness will see, so it names
+// the exact failure (e.g. an unknown PermissionMode).
+//
+// sh -c is the primitive every POSIX host provides; an interactive
+// shell cannot be assumed on a headless dispatch.
+func (a *PiCodingAgentAdapter) refuseWithStderrCommand(ctx context.Context, in RunInput, reason string) *exec.Cmd {
+	workspace := strings.TrimSpace(in.Workspace)
+	if workspace == "" {
+		workspace = "."
+	}
+	binary := strings.TrimSpace(in.Command)
+	if binary == "" {
+		binary = a.spec.binary
+	}
+	script := "printf '%s\n' " + strconv.Quote(reason) + "; exit 2"
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
+	cmd.Dir = workspace
+	return cmd
+}
+
 // formatPiCodingAgentDryRunPrompt is the canonical argv-printed summary the
 // verifier prints when running a `--dry-run` proof. It lives beside the adapter
 // (not in the dry-run probe) so the same formatting is shared by the unit tests
@@ -221,6 +333,129 @@ func (a *PiCodingAgentAdapter) buildCmd(ctx context.Context, in RunInput) *exec.
 //
 // Intentionally side-effect free — it only formats the argv the adapter would
 // build — and safe to call from tests.
+// executionSelectionFor is the per-attempt honesty record the run rail
+// reads off the RunAttempt. It is a best-effort append-only stamp: a
+// failure here MUST NOT block the launch result (which has already
+// terminalized). The snapshot ONLY carries what argv-visible evidence
+// supports, never a receipt.
+//
+// Per the R7B packet, oh_my_pi launches carry:
+//   - Harness: oh_my_pi
+//   - HarnessVersion: parsed from omp/18.1.17 (a single one-shot
+//     exec; the result is cached per-process to avoid the cost on every
+//     launch). Empty when the version probe fails -- never a fabricated
+//     string.
+//   - RequestedEffort: high when RunInput.RequestedEffort is set, else empty.
+//   - AppliedEffort: high -- the OMP CLI accepts --thinking=high, and the
+//     adapter never downgrades the request.
+//   - EffortEvidence: argv:--thinking=high when the caller passed --thinking=
+//     or --max-thinking-effort=, else unobservable:no effort control passed.
+//   - NativeSessionEvidence: unsupported:--no-session for the default launch
+//     shape (the adapter passes --no-session in oneshot mode; the default
+//     rpc mode also leaves no native session because the adapter sets
+//     PI_CODING_AGENT_DIR to a fresh per-run temp dir).
+//
+// The snapshot is meant for SetExecutionSelectionSnapshot (append-only,
+// refuses on a different second call). A repeated launch with identical
+// fields is a no-op; a different field set is refused so the historical
+// record is preserved.
+func (a *PiCodingAgentAdapter) executionSelectionFor(in RunInput) runattempt.ExecutionSelectionSnapshot {
+	snap := runattempt.ExecutionSelectionSnapshot{
+		Source:                "system_default",
+		Harness:               a.spec.name,
+		HarnessVersion:        ompObservedVersion(),
+		ProviderRoute:         strings.TrimSpace(in.RequestedProviderRoute),
+		RequestedModelID:      strings.TrimSpace(in.RequestedModelID),
+		NativeSessionEvidence: "unsupported:--no-session",
+	}
+	// RunInput carries no semantic effort field today; the only honest
+	// applied value is the one actually on the argv. Anything else is
+	// recorded as unobservable, never invented (orchestrator integration
+	// fix after the lane's session ended mid-edit, 2026-09-11).
+	if value, ok := piArgFlagValue(in.Args, "--thinking"); ok {
+		snap.AppliedEffort = value
+		snap.EffortEvidence = "argv:--thinking=" + value
+	} else if value, ok := piArgFlagValue(in.Args, "--max-thinking-effort"); ok {
+		snap.AppliedEffort = value
+		snap.EffortEvidence = "argv:--max-thinking-effort=" + value
+	} else {
+		snap.EffortEvidence = "unobservable:no effort flag on argv"
+	}
+	return snap
+}
+
+// piArgFlagValue returns the value of `name=<value>` (or `name <value>`)
+// on args, and whether it was present. Used by stampExecutionSelection to
+// record the effort the launch really carried.
+func piArgFlagValue(args []string, name string) (string, bool) {
+	for i, arg := range args {
+		if strings.HasPrefix(arg, name+"=") {
+			return strings.TrimSpace(strings.TrimPrefix(arg, name+"=")), true
+		}
+		if arg == name && i+1 < len(args) {
+			return strings.TrimSpace(args[i+1]), true
+		}
+	}
+	return "", false
+}
+
+// ompObservedVersion runs omp/18.1.17 once per process and caches the
+// parsed HarnessVersion. Empty when the binary is missing or the probe
+// fails -- the snapshot NEVER claims a fabricated version.
+var ompObservedVersionOnce sync.Once
+var ompObservedVersionValue string
+
+func ompObservedVersion() string {
+	ompObservedVersionOnce.Do(func() {
+		cmd := exec.Command("omp", "--version")
+		out, err := cmd.Output()
+		if err != nil {
+			return
+		}
+		ompObservedVersionValue = parseOmpVersionLine(string(out))
+	})
+	return ompObservedVersionValue
+}
+
+// parseOmpVersionLine returns the "NN.NN.NN" portion of a line like
+// "omp/18.1.17". Empty when no semver-shaped token is found.
+func parseOmpVersionLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		idx := strings.LastIndex(line, "/")
+		if idx < 0 {
+			continue
+		}
+		tail := line[idx+1:]
+		// Strip a leading "v" if present.
+		tail = strings.TrimPrefix(tail, "v")
+		parts := strings.Split(tail, ".")
+		if len(parts) != 3 {
+			continue
+		}
+		ok := true
+		for _, p := range parts {
+			if p == "" {
+				ok = false
+				break
+			}
+			for _, r := range p {
+				if r < '0' || r > '9' {
+					ok = false
+					break
+				}
+			}
+			if !ok {
+				break
+			}
+		}
+		if ok {
+			return tail
+		}
+	}
+	return ""
+}
+
 func formatPiCodingAgentDryRunPrompt(binary string, in RunInput) string {
 	mode := "rpc"
 	if strings.EqualFold(strings.TrimSpace(in.PermissionMode), "oneshot") {

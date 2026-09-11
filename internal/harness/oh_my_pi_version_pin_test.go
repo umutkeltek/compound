@@ -18,7 +18,7 @@ import (
 // (stdout, "omp/18.0.10" — no space, slash-separated). The fake runner below
 // feeds it through the REAL parser, so the test fails if the pin stops
 // round-tripping through parseSemverToken even when the raw strings agree.
-const ohMyPiVersionOutput = "omp/18.0.10"
+const ohMyPiVersionOutput = "omp/18.1.17"
 
 // TestOhMyPiVersionPinMatchesObservedRuntime is the match verdict: the pin
 // MUST equal what the installed binary reports, or harness_version_drift
@@ -57,7 +57,8 @@ func TestOhMyPiVersionPinStillReportsDriftForOtherVersions(t *testing.T) {
 	for _, raw := range []string{
 		"omp/18.0.4", // the superseded pin — drift now, and that is the point
 		"omp/17.4.0", // the pin 9873b82a replaced
-		"omp/18.0.11",
+		"omp/18.1.18",
+		"omp/18.0.4",
 	} {
 		observed := ObservedVersionWithRunner("oh_my_pi", func(string) (string, error) {
 			return raw, nil

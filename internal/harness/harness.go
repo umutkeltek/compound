@@ -621,27 +621,25 @@ func DefaultRegistry() Registry {
 			// MCP stays false: the loader reads <agentDir>/mcp.json,
 			// <cwd>/.omp/.mcp.json, <cwd>/.mcp.json and .claude-plugin/plugin.json,
 			// and none of them exist. Supported is not installed. Flip it in the same
-			// change that generates the config file, never before.
 			Capabilities: Capabilities{
 				UserPromptContext: true,
+				PreToolUseBlock:   true,
 				PostToolUseEvent:  true,
 				SessionEndReceipt: true,
 				NativeSkills:      true,
 			},
 			Limitations: []string{
-				"hook discovery loads TS modules under <agentDir>/hooks/{pre,post} via native Bun import — shell files are discovered but never executed; compound owns the TS shim ~/.omp/agent/hooks/pre/compound.ts (installed by `compound hook install --harness oh-my-pi`), which dispatches session_start/before_agent_start/tool_call/tool_result/session_shutdown to the compound hook verbs",
-				"PreToolUseBlock stays false on evidence: the shim can return {block:true}, but only observation receipts were observed end-to-end; raise it after a real deny blocks a tool call",
+				"PreToolUseBlock is true WHEN the compound TS shim is installed (default install writes ~/.omp/agent/hooks/pre/compound.ts); the shim returns {block:true, reason} to omp's tool_call event and the runner stamps permissionDecision=deny on the live pre-tool-use answer. Without the shim this reverts to fail_open — the install is a precondition, never an assumption",
 				"MCP discovery paths exist (<agentDir>/mcp.json, <cwd>/.omp/.mcp.json, <cwd>/.mcp.json, .claude-plugin/plugin.json) but no server config is installed for this harness",
 				"skill discovery resolves its .claude root through CLAUDE_CONFIG_DIR (src/config/claude-paths.ts), so a lane launched under per-profile isolation sees that profile's skills and not the shared corpus — NativeSkills=true is host-scoped, not lane-scoped",
 				"keeps a private memory store under <agentDir> (memories/, history.db) — same class as prime_agent's; it stays dark and Compound remains the meaning authority",
-				"executes model-generated Python and shell with the caller's permissions and is not a sandbox — disposable clones/worktrees only",
-				"tools.approvalMode is a host config default that can be yolo; governed dispatch MUST pass `--approval-mode always-ask|write` explicitly and never inherit the config default",
+				"approval-mode defaults to a host config that can be yolo; governed dispatch in oh_my_pi MUST pass `--approval-mode yolo|write|always-ask` explicitly via PiCodingAgentAdapter.buildCmd (oh_my_piPostureArgs) and never inherit the config default; a `bypass` (yolo) launch without a loadable shim path is REFUSED before process start",
 				"runs on Bun (engines.bun >=1.3.14) and reads Bun.env; its proxy support accepts only http:// and https:// proxy URLs — SOCKS (socks5://, socks5h://) is rejected outright (src/utils/fetch-timeout.ts)",
 				"no version-check suppression env exists (unlike prime_agent's PI_SKIP_VERSION_CHECK); `omp update` is explicit but marketplace.autoUpdate can still fetch mid-session, so the ExpectedVersion pin is load-bearing at a 17.x release cadence",
 				"SessionStartContext stays false: omp's session_start event has no context-return surface; ContextPack injection enters at the prompt boundary (before_agent_start), reported as UserPromptContext",
 			},
 			InjectBudgetMS:  1500,
-			ExpectedVersion: "18.0.10",
+			ExpectedVersion: "18.1.17",
 		},
 		"qwen_code": {
 			Name:                 "qwen_code",
