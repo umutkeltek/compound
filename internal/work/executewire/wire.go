@@ -330,8 +330,8 @@ func PreflightViaActuator(store *work.Store, workID, lane string, now time.Time)
 		tupleProviderRoute = lane
 	}
 	readinessReq := work.DelegateHarnessReadinessRequest{
-		HomePath: homePath, HarnessHome: homePath, WorkID: workID,
-		Workspace: workspace, Harness: lane, LaneID: lane,
+		HomePath: homePath, HarnessHome: "", ContextPackID: wenv.IDs.ContextPackID,
+		WorkID: workID, Workspace: workspace, Harness: lane, LaneID: lane,
 		Command: tupleCommand, Args: []string{},
 		RequestedModelID: tupleModelID, RequestedProviderRoute: tupleProviderRoute, Now: now,
 	}
@@ -407,8 +407,8 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 		tupleProviderRoute = lane
 	}
 	readinessReq := work.DelegateHarnessReadinessRequest{
-		HomePath: homePath, HarnessHome: homePath, WorkID: workID,
-		Workspace: workspace, Harness: harnessName, LaneID: lane,
+		HomePath: homePath, HarnessHome: "", ContextPackID: wenv.IDs.ContextPackID,
+		WorkID: workID, Workspace: workspace, Harness: harnessName, LaneID: lane,
 		Command: tupleCommand, Args: []string{prompt},
 		RequestedModelID: tupleModelID, RequestedProviderRoute: tupleProviderRoute, Now: now,
 	}
