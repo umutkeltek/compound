@@ -34,7 +34,7 @@ const OmpShimRelPath = ".omp/agent/hooks/pre/compound.ts"
 // configDir is non-empty the shim is installed under
 // <baseDir>/<configDir>/.omp/agent/hooks/pre/compound.ts instead of the
 // default operator-home location. This lets  wire each isolated
-// profile (e.g. omp-minimax) to its own shim copy.
+// profile (e.g. an isolated lane profile) to its own shim copy.
 func InstallOhMyPiShimWithConfigDir(baseDir, configDir string, check bool) (HookInstallReport, error) {
 	if strings.TrimSpace(configDir) == "" {
 		return InstallOhMyPiShim(baseDir, check)

@@ -34,7 +34,7 @@ var ohMyPiSpec = piCodingAgentSpec{
 	homeEnv:        "PI_CODING_AGENT_DIR",
 	homeTempPrefix: "oh-my-pi-",
 	// Compound OMP hook shim env var; read at buildCmd time. The launcher
-	// sets it (the omp-minimax-governed.sh script uses --hook= explicitly;
+	// sets it (an operator launcher may pass --hook= explicitly;
 	// the work dispatcher passes through COMPOUND_OMP_HOOK_PATH or
 	// PI_CODING_AGENT_DIR/hooks/pre/compound.ts).
 	shimEnvVar: "COMPOUND_OMP_HOOK_PATH",

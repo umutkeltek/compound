@@ -11,11 +11,11 @@ import (
 // `compound hook install --harness oh-my-pi --config-dir <dir>` writes the
 // shim to <baseDir>/<configDir>/.omp/agent/hooks/pre/compound.ts. The
 // default (empty configDir) path is unchanged. This is the seam that lets
-// each isolated profile (e.g. omp-minimax) own its own shim copy without
+// each isolated profile (e.g. an isolated lane profile) own its own shim copy without
 // clobbering a sibling profile's hook surface.
 func TestOmpShimInstallsIntoProfileAgentDir(t *testing.T) {
 	base := t.TempDir()
-	profileDir := "claude/omp/profiles/omp-minimax/agent"
+	profileDir := "claude/omp/profiles/example-lane/agent"
 	rep, err := InstallOhMyPiShimWithConfigDir(base, profileDir, false)
 	if err != nil {
 		t.Fatalf("install: %v", err)
@@ -63,14 +63,14 @@ func TestOmpShimInstallsIntoProfileAgentDir(t *testing.T) {
 // the Claude-profile harnesses. The gate refuses other harnesses -- the
 // install surface for claude-code etc. does not have a per-profile shape.
 func TestResolveInstallRequestAcceptsOhMyPiWithConfigDir(t *testing.T) {
-	req, err := ResolveInstallRequest("", "oh-my-pi", "", "claude/omp/profiles/omp-minimax/agent")
+	req, err := ResolveInstallRequest("", "oh-my-pi", "", "claude/omp/profiles/example-lane/agent")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	if len(req.Harnesses) != 1 || req.Harnesses[0] != "oh-my-pi" {
 		t.Fatalf("harnesses = %v, want [oh-my-pi]", req.Harnesses)
 	}
-	if req.ConfigDir != "claude/omp/profiles/omp-minimax/agent" {
-		t.Fatalf("configDir=%q, want %q", req.ConfigDir, "claude/omp/profiles/omp-minimax/agent")
+	if req.ConfigDir != "claude/omp/profiles/example-lane/agent" {
+		t.Fatalf("configDir=%q, want %q", req.ConfigDir, "claude/omp/profiles/example-lane/agent")
 	}
 }

@@ -7,7 +7,7 @@ import (
 
 // TestOhMyPiApprovalArgsMapsGovernedPostureExplicitly pins the single source
 // of truth for the oh_my_pi posture translation. The wrapper at
-// ~/.local/bin/omp-minimax currently folds EVERY arg into the prompt — a
+// a generated lane wrapper may fold EVERY arg into the prompt — a
 // regression that already broke headless mutation on this host — so the only
 // way a governed OMP launch can carry its posture is the explicit argv
 // this function adds. Every mode in the table must map; an unknown mode

@@ -209,7 +209,7 @@ func TestOhMyPiHoldEmitsDenyWhenShimPresent(t *testing.T) {
 		Cwd:       "/tmp",
 		ToolName:  "bash",
 		ToolInput: map[string]any{
-			"command": "rm -rf /Users/example/compound-sentinel-r7b",
+			"command": "rm -rf /Users/tester/sentinel-r7b",
 		},
 	})
 	if err != nil {
