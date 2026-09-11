@@ -53,6 +53,42 @@ type bunSuiteCount struct {
 	wantTests, wantFailures, wantErrors, wantSkipped *int
 }
 
+var (
+	bunTestsuitesName = xml.Name{Local: "testsuites"}
+	bunTestsuiteName  = xml.Name{Local: "testsuite"}
+	bunTestcaseName   = xml.Name{Local: "testcase"}
+	bunFailureName    = xml.Name{Local: "failure"}
+	bunErrorName      = xml.Name{Local: "error"}
+	bunSkippedName    = xml.Name{Local: "skipped"}
+)
+
+var bunAttrsByElement = map[xml.Name]map[xml.Name]bool{
+	bunTestsuitesName: {
+		xml.Name{Local: "name"}: true, xml.Name{Local: "tests"}: true, xml.Name{Local: "assertions"}: true,
+		xml.Name{Local: "failures"}: true, xml.Name{Local: "errors"}: true, xml.Name{Local: "skipped"}: true,
+		xml.Name{Local: "time"}: true,
+	},
+	bunTestsuiteName: {
+		xml.Name{Local: "name"}: true, xml.Name{Local: "file"}: true, xml.Name{Local: "line"}: true,
+		xml.Name{Local: "tests"}: true, xml.Name{Local: "assertions"}: true, xml.Name{Local: "failures"}: true,
+		xml.Name{Local: "errors"}: true, xml.Name{Local: "skipped"}: true, xml.Name{Local: "time"}: true,
+		xml.Name{Local: "hostname"}: true,
+	},
+	bunTestcaseName: {
+		xml.Name{Local: "name"}: true, xml.Name{Local: "classname"}: true, xml.Name{Local: "time"}: true,
+		xml.Name{Local: "file"}: true, xml.Name{Local: "line"}: true, xml.Name{Local: "assertions"}: true,
+	},
+	bunFailureName: {xml.Name{Local: "message"}: true, xml.Name{Local: "type"}: true},
+	bunErrorName:   {xml.Name{Local: "message"}: true, xml.Name{Local: "type"}: true},
+	bunSkippedName: {xml.Name{Local: "message"}: true},
+}
+
+var bunOutcomeByName = map[xml.Name]string{
+	bunFailureName: "failure",
+	bunErrorName:   "error",
+	bunSkippedName: "skipped",
+}
+
 func validateConsumerBunReport(c CanonicalConsumer, body []byte) error {
 	d := xml.NewDecoder(bytes.NewReader(body))
 	d.Strict = true
@@ -88,26 +124,26 @@ func validateConsumerBunReport(c CanonicalConsumer, body []byte) error {
 			}
 			if depth == 1 {
 				roots++
-				if roots != 1 || node.Name.Local != "testsuites" {
+				if roots != 1 || node.Name != bunTestsuitesName {
 					return fmt.Errorf("Bun JUnit root must be testsuites")
 				}
-			} else if node.Name.Local == "testsuites" {
+			} else if node.Name == bunTestsuitesName {
 				return fmt.Errorf("nested testsuites is not native Bun JUnit")
 			}
-			if node.Name.Local != "testsuites" && node.Name.Local != "testsuite" && node.Name.Local != "testcase" {
-				return fmt.Errorf("unexpected Bun JUnit element %s", node.Name.Local)
+			if node.Name != bunTestsuitesName && node.Name != bunTestsuiteName && node.Name != bunTestcaseName {
+				return fmt.Errorf("unexpected Bun JUnit element %v", node.Name)
 			}
-			if node.Name.Local == "testsuite" && (len(suites) == 0 || (depth > 2 && suites[len(suites)-1].name == "")) {
+			if node.Name == bunTestsuiteName && (len(suites) == 0 || (depth > 2 && suites[len(suites)-1].name == "")) {
 				return fmt.Errorf("Bun testsuite has invalid parent")
 			}
-			switch node.Name.Local {
-			case "testsuites", "testsuite":
-				s, err := newBunSuiteCount(node.Attr, node.Name.Local == "testsuite")
+			switch node.Name {
+			case bunTestsuitesName, bunTestsuiteName:
+				s, err := newBunSuiteCount(node.Attr, node.Name == bunTestsuiteName)
 				if err != nil {
 					return err
 				}
 				suites = append(suites, s)
-			case "testcase":
+			case bunTestcaseName:
 				if len(suites) < 2 {
 					return fmt.Errorf("Bun JUnit testcase must be directly inside testsuite")
 				}
@@ -154,13 +190,13 @@ func validateConsumerBunReport(c CanonicalConsumer, body []byte) error {
 				}
 			}
 		case xml.EndElement:
-			if node.Name.Local == "testsuite" || node.Name.Local == "testsuites" {
+			if node.Name == bunTestsuiteName || node.Name == bunTestsuitesName {
 				if len(suites) == 0 {
 					return fmt.Errorf("inconsistent Bun JUnit suites")
 				}
 				s := suites[len(suites)-1]
 				suites = suites[:len(suites)-1]
-				if !bunCountsMatch(s) || (node.Name.Local == "testsuite" && s.tests == 0) {
+				if !bunCountsMatch(s) || (node.Name == bunTestsuiteName && s.tests == 0) {
 					return fmt.Errorf("inconsistent Bun JUnit counts in suite %q", s.name)
 				}
 			}
@@ -232,15 +268,16 @@ func consumeBunTestcase(d *xml.Decoder) (string, error) {
 		case xml.Comment, xml.Directive, xml.ProcInst:
 			return "", fmt.Errorf("unexpected Bun testcase metadata")
 		case xml.StartElement:
-			if !bunElementValid(n) || !bunAttrsKnown(n) || (n.Name.Local != "failure" && n.Name.Local != "error" && n.Name.Local != "skipped") || outcome != "passed" {
+			nextOutcome, known := bunOutcomeByName[n.Name]
+			if !bunElementValid(n) || !bunAttrsKnown(n) || !known || outcome != "passed" {
 				return "", fmt.Errorf("invalid Bun testcase outcome")
 			}
-			outcome = n.Name.Local
+			outcome = nextOutcome
 			if err := consumeBunOutcome(d, n); err != nil {
 				return "", err
 			}
 		case xml.EndElement:
-			if n.Name.Local != "testcase" {
+			if n.Name != bunTestcaseName {
 				return "", fmt.Errorf("invalid Bun testcase nesting")
 			}
 			return outcome, nil
@@ -258,7 +295,7 @@ func consumeBunOutcome(d *xml.Decoder, start xml.StartElement) error {
 		case xml.StartElement:
 			return fmt.Errorf("nested Bun testcase outcome is not allowed")
 		case xml.EndElement:
-			if n.Name.Local != start.Name.Local {
+			if n.Name != start.Name {
 				return fmt.Errorf("invalid Bun testcase outcome close")
 			}
 			return nil
@@ -269,31 +306,26 @@ func consumeBunOutcome(d *xml.Decoder, start xml.StartElement) error {
 }
 
 func bunElementValid(e xml.StartElement) bool {
-	if e.Name.Space != "" || len(e.Name.Local) > 256 || len(e.Attr) > 64 {
+	if len(e.Attr) > 64 {
 		return false
 	}
-	seen := map[string]bool{}
+	seen := map[xml.Name]bool{}
 	for _, a := range e.Attr {
-		if a.Name.Space != "" || a.Name.Local == "" || len(a.Name.Local) > 256 || len(a.Value) > 64<<10 || seen[a.Name.Local] {
+		if len(a.Value) > 64<<10 || seen[a.Name] {
 			return false
 		}
-		seen[a.Name.Local] = true
+		seen[a.Name] = true
 	}
 	return true
 }
 
 func bunAttrsKnown(e xml.StartElement) bool {
-	allowed := map[string]map[string]bool{
-		"testsuites": {"name": true, "tests": true, "assertions": true, "failures": true, "errors": true, "skipped": true, "time": true},
-		"testsuite":  {"name": true, "file": true, "line": true, "tests": true, "assertions": true, "failures": true, "errors": true, "skipped": true, "time": true, "hostname": true},
-		"testcase":   {"name": true, "classname": true, "time": true, "file": true, "line": true, "assertions": true},
-		"failure":    {"message": true, "type": true}, "error": {"message": true, "type": true}, "skipped": {"message": true},
-	}[e.Name.Local]
+	allowed := bunAttrsByElement[e.Name]
 	if allowed == nil {
 		return false
 	}
 	for _, attr := range e.Attr {
-		if !allowed[attr.Name.Local] {
+		if !allowed[attr.Name] {
 			return false
 		}
 	}
@@ -301,8 +333,9 @@ func bunAttrsKnown(e xml.StartElement) bool {
 }
 
 func xmlAttrOK(attrs []xml.Attr, name string) (string, bool) {
+	want := xml.Name{Local: name}
 	for _, a := range attrs {
-		if a.Name.Local == name {
+		if a.Name == want {
 			return a.Value, true
 		}
 	}

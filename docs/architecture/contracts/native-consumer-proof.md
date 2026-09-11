@@ -93,6 +93,11 @@ Adding the contract is not release proof. Required product commands must actuall
 consume it through a successful governed canonical run on their sealed candidate,
 and their delivery must consume that same certificate.
 
+Before expensive canonical certification, run `redact --repo-visibility public
+--json --from-file <changed-file>` against every complete changed source body.
+Token-level and architecture-leak checks are complementary preflights, not
+public-redaction evidence.
+
 ## Bun native JUnit profile
 
 bun_consumers_v1 requires tracked root package.json, bun.lock, and

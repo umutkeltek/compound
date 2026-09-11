@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"strings"
 	"testing"
@@ -51,6 +52,12 @@ func TestCanonicalBunJUnitIdentityUsesEveryNativeField(t *testing.T) {
 
 func TestCanonicalBunJUnitRejectsFalseGreenReports(t *testing.T) {
 	valid := `<testsuites tests="1" failures="0" errors="0" skipped="0"><testsuite name="example.test.ts" tests="1" failures="0" errors="0" skipped="0"><testsuite name="feature" tests="1" failures="0" errors="0" skipped="0"><testcase file="tests/example.test.ts" classname="" name="does the thing"/></testsuite></testsuite></testsuites>`
+	prefixedRoot := strings.Replace(valid, `<testsuites `, `<x:testsuites xmlns:x="urn:example.invalid" `, 1)
+	prefixedRoot = strings.Replace(prefixedRoot, `</testsuites>`, `</x:testsuites>`, 1)
+	undeclaredRoot := strings.Replace(valid, `<testsuites `, `<x:testsuites `, 1)
+	undeclaredRoot = strings.Replace(undeclaredRoot, `</testsuites>`, `</x:testsuites>`, 1)
+	longElement := strings.Replace(valid, `<testsuite name="feature"`, `<`+strings.Repeat("x", 257)+`/><testsuite name="feature"`, 1)
+	longAttribute := strings.Replace(valid, `<testcase file=`, `<testcase `+strings.Repeat("x", 257)+`="" file=`, 1)
 	cases := map[string]string{
 		"missing required":    strings.Replace(valid, `name="does the thing"`, `name="other"`, 1),
 		"duplicate identity":  strings.Replace(valid, `</testsuite></testsuite></testsuites>`, `<testcase file="tests/example.test.ts" classname="" name="does the thing"/></testsuite></testsuite></testsuites>`, 1),
@@ -61,6 +68,15 @@ func TestCanonicalBunJUnitRejectsFalseGreenReports(t *testing.T) {
 		"outcome outside":     strings.Replace(valid, `</testsuites>`, `<failure>boom</failure></testsuites>`, 1),
 		"duplicate attr":      strings.Replace(valid, `<testsuites `, `<testsuites tests="1" `, 1),
 		"namespace spoof":     strings.Replace(valid, `<testcase`, `<x:testcase xmlns:x="urn:example.invalid"`, 1),
+		"prefixed root":       prefixedRoot,
+		"undeclared root":     undeclaredRoot,
+		"undeclared element":  strings.Replace(valid, `<testcase`, `<x:testcase`, 1),
+		"undeclared attr":     strings.Replace(valid, ` file=`, ` x:file=`, 1),
+		"default namespace":   strings.Replace(valid, `<testsuites `, `<testsuites xmlns="urn:example.invalid" `, 1),
+		"namespaced attr":     strings.Replace(valid, `<testcase file=`, `<testcase xmlns:x="urn:example.invalid" x:file=`, 1),
+		"long element name":   longElement,
+		"long attribute name": longAttribute,
+		"mismatched close":    strings.Replace(valid, `</testsuite>`, `</testsuites>`, 1),
 		"nested outcome":      strings.Replace(valid, `<testcase file=`, `<testcase><failure><error/></failure></testcase><testcase file=`, 1),
 		"nonspace outside":    "not xml" + valid,
 		"second declaration":  `<?xml version="1.0"?><?xml version="1.0"?>` + valid,
@@ -75,6 +91,27 @@ func TestCanonicalBunJUnitRejectsFalseGreenReports(t *testing.T) {
 				t.Fatal("false-green JUnit report accepted")
 			}
 		})
+	}
+}
+
+func TestBunXMLDecoderPreservesUndeclaredPrefixesInFullNames(t *testing.T) {
+	d := xml.NewDecoder(strings.NewReader(`<x:testcase x:file="tests/example.test.ts"/>`))
+	tok, err := d.Token()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, ok := tok.(xml.StartElement)
+	if !ok {
+		t.Fatalf("token = %T, want xml.StartElement", tok)
+	}
+	if start.Name != (xml.Name{Space: "x", Local: "testcase"}) {
+		t.Fatalf("element name = %v, want unresolved prefix retained", start.Name)
+	}
+	if len(start.Attr) != 1 || start.Attr[0].Name != (xml.Name{Space: "x", Local: "file"}) {
+		t.Fatalf("attribute names = %v, want unresolved prefix retained", start.Attr)
+	}
+	if bunAttrsKnown(start) {
+		t.Fatal("namespaced alias matched namespace-free Bun vocabulary")
 	}
 }
 
