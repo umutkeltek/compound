@@ -678,7 +678,13 @@ it. It archives completed/failed/cancelled WorkEnvelopes, stale
 owner-review artifacts and sidecars, and judged comparison candidates. `home
 doctor` reports operational hygiene (`hygiene:no-terminal-work-hot`,
 `hygiene:no-stale-leases`) without making hygiene dirty state fatal, because
-`archive-history` is the repair path. Selection is explicit: an `archive-history`
+`archive-history` is the repair path. The read-only hygiene scan indexes
+RunAttempt liveness once per pass, then evaluates the same strict heartbeat-or-created-at
+freshness predicate for each lease; cost is linear in RunAttempts plus leases rather
+than their product. The mutating archive selector deliberately retains a fresh
+per-lease liveness probe because RunAttempt heartbeats use separate RunAttempt/work
+locks and may advance while the archive holds autonomy admission. Selection is
+explicit: an `archive-history`
 that would mutate requires `--kind`, and a bare invocation prints usage and exits
 2 instead of sweeping every kind — probing a mutating command for its usage must
 not be the same keystrokes as running it. `--dry-run` still previews the full

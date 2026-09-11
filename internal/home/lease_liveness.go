@@ -9,29 +9,77 @@ import (
 	"time"
 )
 
-// leaseLivenessFreshness is the staleness window used to judge a non-terminal
-// RunAttempt as "live". It matches runattempt.DefaultSweepThreshold (30m) so a
-// pane that the runattempt sweep already considers abandoned cannot masquerade
-// as alive here. Defaulting rather than threading a clock argument keeps the
-// archive call sites — which use time.Now() implicitly via OperationalHygiene
-// — from drifting apart from the runattempt sweep.
+// leaseLivenessFreshness matches runattempt.DefaultSweepThreshold.
 const leaseLivenessFreshness = 30 * time.Minute
 
-// liveRunAttemptForWork reports whether any RunAttempt under homePath for
-// workID is BOTH non-terminal AND has a heartbeat (or, lacking one, a CreatedAt)
-// no older than leaseLivenessFreshness.
-//
-// A lease whose work item carries a live delegate pane must never be classified
-// as stale by `home archive-history --kind lease` — see work_9d627f1cb724 /
-// success_predicate. The terminal/TTL-only heuristic that predates this helper
-// is blind to the pane: it would mark a lease stale purely because the hot
-// work envelope is "completed", even while a long-running delegate session is
-// still pinging. This helper is the liveness override.
-//
-// Read-only and best-effort: a missing run_attempts directory returns false
-// (no live pane), a torn file is skipped, a foreign id is ignored. The
-// archive sweep must never be blocked by a probe failure — silence reads as
-// "no live pane" so the orphan backstop still fires.
+type runAttemptFiles interface {
+	ReadDir(string) ([]os.DirEntry, error)
+	ReadFile(string) ([]byte, error)
+}
+
+type osRunAttemptFiles struct{}
+
+func (osRunAttemptFiles) ReadDir(path string) ([]os.DirEntry, error) { return os.ReadDir(path) }
+func (osRunAttemptFiles) ReadFile(path string) ([]byte, error)       { return os.ReadFile(path) }
+
+// runAttemptLivenessIndex is a per-scan projection of the newest non-terminal
+// heartbeat (or CreatedAt fallback) for each work item. It is never persisted
+// or shared across hygiene passes.
+type runAttemptLivenessIndex map[string]time.Time
+
+// loadRunAttemptLivenessIndex reads every RunAttempt at most once. Missing or
+// unreadable directories and files, malformed records, and blank work ids are
+// skipped exactly as the historical best-effort per-work probe skipped them.
+func loadRunAttemptLivenessIndex(homePath string, files runAttemptFiles) runAttemptLivenessIndex {
+	index := runAttemptLivenessIndex{}
+	dir := filepath.Join(homePath, "run_attempts")
+	entries, err := files.ReadDir(dir)
+	if err != nil {
+		return index
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, err := files.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var attempt struct {
+			WorkID          string     `json:"work_id"`
+			Status          string     `json:"status"`
+			CreatedAt       time.Time  `json:"created_at"`
+			LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
+		}
+		if err := json.Unmarshal(data, &attempt); err != nil || strings.TrimSpace(attempt.WorkID) == "" {
+			continue
+		}
+		switch attempt.Status {
+		case "succeeded", "failed", "abandoned", "superseded":
+			continue
+		}
+		last := attempt.CreatedAt
+		if attempt.LastHeartbeatAt != nil {
+			last = *attempt.LastHeartbeatAt
+		}
+		last = last.UTC()
+		if prior, ok := index[attempt.WorkID]; !ok || last.After(prior) {
+			index[attempt.WorkID] = last
+		}
+	}
+	return index
+}
+
+func (index runAttemptLivenessIndex) live(workID string, now time.Time) bool {
+	if strings.TrimSpace(workID) == "" {
+		return false
+	}
+	last, ok := index[workID]
+	return ok && last.After(now.UTC().Add(-leaseLivenessFreshness))
+}
+
+// liveRunAttemptForWork retains the fresh, early-exit probe used by the
+// mutating archive selector. The read-only hygiene scan uses the bulk index.
 func liveRunAttemptForWork(homePath, workID string, now time.Time) bool {
 	if strings.TrimSpace(workID) == "" {
 		return false

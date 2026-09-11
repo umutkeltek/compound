@@ -1372,6 +1372,25 @@ func terminalWorkCandidates(homePath string, scan operationalArchiveScan) ([]ope
 // best-effort; a probe failure reads as "no live pane" so the orphan backstop
 // still fires on homes that never had a run_attempts/ directory.
 func staleLeaseCandidates(homePath string, scan operationalArchiveScan) ([]operationalCandidate, error) {
+	return staleLeaseCandidatesWithLiveness(homePath, scan, func(workID string) bool {
+		// The mutating archive path deliberately keeps a fresh per-lease probe.
+		// Heartbeats use separate RunAttempt/work locks rather than the archive's
+		// autonomy lock, so a pass-wide snapshot is only safe for the read-only doctor.
+		return liveRunAttemptForWork(homePath, workID, time.Now())
+	})
+}
+
+func staleLeaseCandidatesWithRunAttempts(homePath string, scan operationalArchiveScan, files runAttemptFiles) ([]operationalCandidate, error) {
+	var liveness runAttemptLivenessIndex
+	return staleLeaseCandidatesWithLiveness(homePath, scan, func(workID string) bool {
+		if liveness == nil {
+			liveness = loadRunAttemptLivenessIndex(homePath, files)
+		}
+		return liveness.live(workID, time.Now())
+	})
+}
+
+func staleLeaseCandidatesWithLiveness(homePath string, scan operationalArchiveScan, live func(string) bool) ([]operationalCandidate, error) {
 	dir := filepath.Join(homePath, "work", "leases")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1392,7 +1411,7 @@ func staleLeaseCandidates(homePath string, scan operationalArchiveScan) ([]opera
 		if after != "" && rel <= after {
 			continue // examined by the pass that wrote the cursor
 		}
-		if liveRunAttemptForWork(homePath, workID, time.Now()) {
+		if live(workID) {
 			// live delegate pane for this work item; lease survives.
 			continue
 		}
@@ -1593,6 +1612,10 @@ type OperationalHygieneReport struct {
 // scan is always full (nil resume hints): doctor must see every dirty
 // surface, never the bounded-pass view.
 func OperationalHygiene(homePath string) (OperationalHygieneReport, error) {
+	return operationalHygieneWithRunAttempts(homePath, osRunAttemptFiles{})
+}
+
+func operationalHygieneWithRunAttempts(homePath string, files runAttemptFiles) (OperationalHygieneReport, error) {
 	homePath, err := filepath.Abs(expandUser(homePath))
 	if err != nil {
 		return OperationalHygieneReport{}, err
@@ -1605,7 +1628,7 @@ func OperationalHygiene(homePath string) (OperationalHygieneReport, error) {
 	for _, cand := range workCandidates {
 		report.TerminalHotWork = append(report.TerminalHotWork, cand.OriginalPath)
 	}
-	leaseCandidates, err := staleLeaseCandidates(homePath, operationalArchiveScan{})
+	leaseCandidates, err := staleLeaseCandidatesWithRunAttempts(homePath, operationalArchiveScan{}, files)
 	if err != nil {
 		return report, err
 	}
