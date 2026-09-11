@@ -322,7 +322,7 @@ func PreflightViaActuator(store *work.Store, workID, lane string, now time.Time)
 	// the same Compound model-router authority the adapter reads, so
 	// passing its output here makes the comparison hold. Non-tuple
 	// lanes fall through to the lane id, exactly as before.
-	tupleCommand, tupleModelID, tupleProviderRoute, _ := resolveLaneLaunchTuple(homePath, lane, now)
+	tupleCommand, tupleModelID, tupleProviderRoute, _, _ := resolveLaneLaunchTuple(homePath, lane, now)
 	if tupleModelID == "" {
 		tupleModelID = lane
 	}
@@ -347,6 +347,112 @@ func PreflightViaActuator(store *work.Store, workID, lane string, now time.Time)
 		return errors.New("lane_unready:" + detail)
 	}
 	return nil
+}
+
+// postureEvidenceRevisionFallback is the revision the launch wire stamps
+// onto posture evidence items the readiness guard produced WITHOUT a
+// Revision. Today the only kind that lacks a Revision in production is the
+// `executable` item cmd/compound/work_delegate_readiness.go builds — its
+// Ref is the lane tuple URL but the Revision field is left empty because
+// the readiness evaluator has no canonical sha256 to point at. The wire
+// fills the gap with the lane tuple's profile revision (the model-
+// capabilities manifest snapshot sha256 the tuple resolver just consulted),
+// so runattempt.SetExecutionPosture accepts the item and the launch
+// reaches adapter.Run.
+//
+// work_r6m_seam_posture_20260911.
+type postureEvidenceRevisionFallback string
+
+// fillPostureEvidenceRevisions filters readiness evidence to the kinds
+// runattempt.SetExecutionPosture accepts for a mutation-capable posture
+// (the four required kinds below), stamps a Revision onto every item
+// that lacks one (using profileRevision as the canonical source), and
+// refuses with a recognized `lane_unready:` prefix when a required kind
+// is missing or when no profile revision is available to fill one. The
+// remaining evidence kinds (executable, activation_argv, instruction_pack,
+// context_pack, effective_contract, lane_capacity, …) stay in the
+// readiness snapshot for the DelegateBinding view — they are NOT in the
+// runattempt posture, but they ARE in the readiness record the operator
+// reads.
+//
+// Why filter rather than stamp: runattempt.SetExecutionPosture's validator
+// refuses mutation-capable postures that carry evidence kinds outside
+// the four required kinds. The production readiness guard produces the
+// four required kinds AND several supporting kinds (the `executable` item
+// is the live-run example: Ref set, Revision empty). Stamping every item
+// verbatim would push the validator's failure mode from
+// "evidence requires kind, ref, revision" (live-run shape) to
+// "unexpected authority evidence kind <kind>" (the second validator check).
+// Filtering to the four required kinds BEFORE the validator runs is the
+// only way to satisfy the validator without weakening it (the fence
+// forbids touching internal/runattempt/**).
+//
+// work_r6m_seam_posture_20260911.
+func fillPostureEvidenceRevisions(evidence []work.DelegateHarnessReadinessEvidence, profileRevision string) ([]work.DelegateHarnessReadinessEvidence, error) {
+	if len(evidence) == 0 {
+		// A mutation-capable posture requires ALL four kinds. Empty
+		// readiness evidence means none of them are present — refuse
+		// with the recognized lane_unready prefix so the execute stage
+		// treats this as a skip reason, not a hard launch failure.
+		return nil, errors.New("lane_unready:posture evidence is empty (no readiness evidence was attached)")
+	}
+	out := make([]work.DelegateHarnessReadinessEvidence, 0, len(postureEvidenceAcceptedKinds))
+	seen := make(map[string]bool, len(postureEvidenceAcceptedKinds))
+	for _, item := range evidence {
+		if !postureEvidenceAcceptedKinds[item.Kind] {
+			// Supporting-kind evidence (executable, activation_argv,
+			// instruction_pack, context_pack, effective_contract,
+			// lane_capacity, …) stays in the readiness snapshot for
+			// the DelegateBinding view. It is NOT stamped onto the
+			// runattempt posture because the validator rejects
+			// mutation-capable postures carrying it. NOT a silent
+			// drop — the readiness record carries it.
+			continue
+		}
+		copy := item
+		if strings.TrimSpace(copy.Revision) == "" {
+			// No revision: try to fill from the lane tuple's profile
+			// revision. An empty profileRevision means the resolver
+			// AND the manifest are both unavailable, so the wire
+			// cannot give this item a revision at all. Surface the
+			// refusal rather than stamp a synthetic value — the
+			// runattempt posture validator already proved it refuses
+			// any item lacking kind/ref/revision (live-run evidence:
+			// 2026-09-11T03:41:44Z).
+			if strings.TrimSpace(profileRevision) == "" {
+				return nil, fmt.Errorf("lane_unready:posture evidence %q has no revision and no lane tuple profile revision is available to fill it", copy.Kind)
+			}
+			copy.Revision = profileRevision
+		}
+		out = append(out, copy)
+		seen[copy.Kind] = true
+	}
+	// Mutation-capable postures require ALL four kinds. Missing any one
+	// means the readiness guard did not attest the lane — refuse with
+	// the recognized prefix so the execute stage treats this as a skip.
+	for _, required := range []string{"permission_authority", "permission_posture", "blocking_hook_plan", "blocking_hook_installation"} {
+		if !seen[required] {
+			return nil, fmt.Errorf("lane_unready:posture evidence %q is required (the readiness guard did not attest %s for this lane)", required, required)
+		}
+	}
+	return out, nil
+}
+
+// postureEvidenceAcceptedKinds is the set of evidence kinds the runattempt
+// posture validator accepts for a mutation-capable posture. The four
+// required kinds in internal/runattempt/runattempt.go:SetExecutionPosture
+// are the authoritative allow-list; this constant mirrors that allow-list
+// so the wire filters supporting kinds (executable, activation_argv, …)
+// before the validator runs. Mirrored rather than imported because the
+// runattempt package is internal and exposes no canonical name; a drift
+// here surfaces as the validator refusing a kind this list accepted.
+//
+// work_r6m_seam_posture_20260911.
+var postureEvidenceAcceptedKinds = map[string]bool{
+	"permission_authority":       true,
+	"permission_posture":         true,
+	"blocking_hook_plan":         true,
+	"blocking_hook_installation": true,
 }
 
 // LaunchViaActuator is the production launch hook. It runs the SAME machinery
@@ -399,7 +505,12 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	// carry the adapter-resolved {Command, RequestedModelID,
 	// RequestedProviderRoute}, not the lane id. resolveLaneLaunchTuple
 	// reuses the same Compound model-router authority the adapter reads.
-	tupleCommand, tupleModelID, tupleProviderRoute, _ := resolveLaneLaunchTuple(homePath, lane, now)
+	// work_r6m_seam_posture_20260911: also capture the lane tuple's profile
+	// revision so the wire can stamp a real Revision onto posture evidence
+	// items the readiness guard produced WITHOUT one (the production
+	// `executable` item — Ref set, Revision empty). The profile revision is
+	// the model-capabilities manifest sha256 the resolver consulted.
+	tupleCommand, tupleModelID, tupleProviderRoute, tupleProfileRevision, _ := resolveLaneLaunchTuple(homePath, lane, now)
 	if tupleModelID == "" {
 		tupleModelID = lane
 	}
@@ -482,11 +593,30 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	// carries only the ActionIntent and binds to the generation through the
 	// sealed same-state event MintLaunchAuthority records.
 	if _, claudeFamily := adapter.(harness.GovernedPermissionAdapter); claudeFamily {
+		// work_r6m_seam_posture_20260911: runattempt.SetExecutionPosture refuses
+		// any evidence item lacking kind/ref/revision. The production
+		// readiness guard produces at least one item (the `executable` kind
+		// in cmd/compound/work_delegate_readiness.go) WITHOUT a Revision —
+		// the evaluator has no canonical sha256 to point at. The wire fills
+		// the gap with the lane tuple's profile revision (the model-
+		// capabilities manifest sha256 resolveLaneLaunchTuple just consulted)
+		// so the stamp succeeds and the launch reaches adapter.Run. Items
+		// that still cannot be given a revision (no resolver, no manifest)
+		// surface as `lane_unready:` — the recognized refusal prefix the
+		// execute stage treats as a skip reason, not a hard launch failure.
+		filledEvidence, fillErr := fillPostureEvidenceRevisions(readiness.Evidence, tupleProfileRevision)
+		if fillErr != nil {
+			// Refuse with the recognized `lane_unready:` prefix. The execute
+			// stage's parseLaunchRefusal will surface this as a skip reason
+			// rather than a Close (the pre-fix behavior tried to Close and
+			// reported the refusal as the failure).
+			return "", fillErr
+		}
 		posture := &runattempt.ExecutionPosture{
 			PermissionMode:   runInput.PermissionMode,
 			PolicyDecisionID: launchPolicyID,
 		}
-		for _, item := range readiness.Evidence {
+		for _, item := range filledEvidence {
 			posture.AuthorityEvidence = append(posture.AuthorityEvidence, runattempt.ExecutionPostureEvidence{
 				Kind: item.Kind, Ref: item.Ref, Revision: item.Revision,
 			})

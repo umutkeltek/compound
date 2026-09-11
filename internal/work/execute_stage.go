@@ -287,9 +287,39 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 			// as failed AND keeps the evidence on the chain. The result summary
 			// here names the id for the operator and result.RunAttemptIDs
 			// records it for any downstream consumer that polls the tick result.
+			//
+			// work_r6m_seam_posture_20260911 (defect 2): the R6A canonical
+			// finalize already closes the envelope as failed WITH the attempt
+			// attached. The stage's job is to record the outcome, not to
+			// attempt a second Close — a second Close with different proof
+			// refs would refuse (idempotent re-close rejects new proof refs)
+			// and the stage would report the refusal as if the failure were
+			// unrecorded. Detect that the envelope has moved past `running`
+			// BEFORE attempting Close; if it has, record the outcome as a
+			// launch_failed skip and surface the minted ratt id without
+			// attempting the second Close.
 			closeSummary := "unattended execute launch failed: " + launchErr.Error()
 			if rattID != "" {
 				closeSummary += " (run attempt " + rattID + ")"
+			}
+			if after, afterErr := s.Get(ready); afterErr == nil && after.State != "running" {
+				// The canonical finalize (or some other writer) has
+				// already moved the envelope past `running` — do NOT
+				// attempt a second Close. The stage records the outcome
+				// truthfully: the envelope is already in its terminal
+				// state with the attempt attached, the heartbeat
+				// continues.
+				result.Human = executeRefusedSummary(refused) + fmt.Sprintf("executed envelope %s on lane %s but launch failed: %v; envelope already %s with attempt attached (canonical finalize owns the close), heartbeat continues", ready, lane, launchErr, after.State)
+				if rattID != "" {
+					result.Human += fmt.Sprintf(" (partial evidence in run attempt %s)", rattID)
+				}
+				result.Action = "execute"
+				result.Skipped = "launch_failed"
+				result.RunAttemptIDs = nil
+				if rattID != "" {
+					result.RunAttemptIDs = []string{rattID}
+				}
+				return result, nil
 			}
 			if _, closeErr := s.Close(ready, CloseInput{
 				Outcome:   "failed",

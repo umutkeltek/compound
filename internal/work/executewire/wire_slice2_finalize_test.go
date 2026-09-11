@@ -359,9 +359,14 @@ func TestLaunchViaActuatorClaudeFamilyPostureCarriesLaunchAuthority(t *testing.T
 
 // TestLaunchViaActuatorClaudeFamilyUnattestedBypassFailsClosed: a
 // Claude-family adapter whose lane readiness attested no evidence. The
-// runner refuses the mutation-capable posture at stamp time, the attempt
-// terminalizes failed before any start, and the wire finalizes the
-// envelope as failed — an unattested bypass never launches.
+// wire (work_r6m_seam_posture_20260911) refuses with a recognized
+// `lane_unready:` prefix BEFORE invoking the adapter, so the runner's
+// posture validator is never reached. An unattested bypass never
+// launches — the refusal happens earlier than the pre-fix runner-level
+// refusal, but the safety property holds: no subprocess starts, the
+// recognized skip prefix lets the execute stage treat this as a skip
+// reason (not a hard launch failure), and the envelope stays in
+// `running` for the next Continue to retry.
 func TestLaunchViaActuatorClaudeFamilyUnattestedBypassFailsClosed(t *testing.T) {
 	const workID = "work_slice2_claude_unattested"
 	const actor = "actor:slice2-claude-unattested"
@@ -369,21 +374,21 @@ func TestLaunchViaActuatorClaudeFamilyUnattestedBypassFailsClosed(t *testing.T) 
 	base := &slice2RunnerAdapter{name: "claude_minimax"}
 	installSlice2RunnerAdapter(t, &slice2GovernedRunnerAdapter{slice2RunnerAdapter: base}, base, nil)
 
-	_, err := LaunchViaActuator(store, workID, "claude_minimax", "claude_minimax", "slice2 claude unattested", actor, now)
-	if err == nil || !strings.Contains(err.Error(), "execution posture requires") {
-		t.Fatalf("err = %v; want the runner's posture refusal surfaced", err)
+	rattID, err := LaunchViaActuator(store, workID, "claude_minimax", "claude_minimax", "slice2 claude unattested", actor, now)
+	if err == nil || !strings.HasPrefix(err.Error(), "lane_unready:") {
+		t.Fatalf("err = %v; want the wire's lane_unready: refusal (the wire now refuses BEFORE invoking the adapter, so the runner's posture validator is never reached)", err)
 	}
 	if base.started {
 		t.Fatal("the subprocess started without attested authority evidence")
+	}
+	if rattID != "" {
+		t.Fatalf("rattID = %q, want empty (no RunAttempt was minted when the wire refused before invoking the adapter)", rattID)
 	}
 	after, err := store.Get(workID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "failed" {
-		t.Fatalf("envelope state = %q; an unattested bypass must finalize as failed", after.State)
-	}
-	if base.attemptID == "" || !slices.Contains(after.RunAttemptIDs, base.attemptID) {
-		t.Fatalf("RunAttemptIDs = %v; the refused attempt %q must be recorded through finalize", after.RunAttemptIDs, base.attemptID)
+	if after.State != "running" {
+		t.Fatalf("envelope state = %q; the wire's lane_unready: refusal must NOT close the envelope — the execute stage records the skip and the next Continue retries", after.State)
 	}
 }
