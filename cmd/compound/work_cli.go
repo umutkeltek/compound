@@ -99,8 +99,8 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work review-card-plan --card wrc_abc123 --json",
 	},
 	"create": {
-		Usage:   "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--creator-harness H] [--creator-model M] [--creator-lane L] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--deviation-lane L [--deviation-class C] [--deviation-card REF] [--deviation-risk gate|judge|tidy]] [--plan-class oneshot|plan_doc|phased] [--rework-of work_id]",
-		Example: "compound work create --owner codex --predicate \"tests pass\"",
+		Usage:   "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--creator-harness H] [--creator-model M] [--creator-lane L] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--deviation-lane L [--deviation-class C] [--deviation-card REF] [--deviation-risk gate|judge|tidy]] [--plan-class oneshot|plan_doc|phased] [--rework-of work_id] [--launch-profile ID [--effort LEVEL]]",
+		Example: "compound work create --owner codex --predicate tests --launch-profile claude-minimax",
 	},
 	"import-packet": {
 		Usage:   "usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]",
@@ -179,7 +179,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work advance-plan work_abc123 --to running --actor codex --dry-run",
 	},
 	"advance": {
-		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--acknowledge-abandoned ratt_X --reason R] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--execute [--resume-verifying] --harness <name> [--prompt <text> | -- <command> [args...]]]",
+		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--acknowledge-abandoned ratt_X --reason R] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--launch-profile ID [--effort LEVEL] [--expected-selection-revision N]] [--execute [--resume-verifying] --harness <name> [--prompt <text> | -- <command> [args...]]]",
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"delegate": {
@@ -538,18 +538,8 @@ func cmdWork(args []string) {
 		}
 	case "create-plan":
 		usage := workUsage("create-plan")
-		if err := validateWorkArguments(rest, map[string]bool{
-			"--work-id": true, "--owner": true, "--predicate": true, "--outcome": true, "--by": true, "--actor": true,
-			"--state": true, "--context-pack": true, "--canonical-surface": true, "--route-decision-id": true, "--risk": true, "--privacy": true,
-			"--non-goal": true, "--non-goals": true, "--evidence-ref": true, "--evidence": true,
-			"--capability": true, "--action": true, "--mutation-class": true, "--reversibility": true, "--blast-radius": true,
-			"--target-kind": true, "--target-id": true, "--target-path": true,
-			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
-			"--predicted-outcome": true, "--predicted-move-type": true, "--prediction-note": true,
-			"--deviation-lane": true, "--deviation-card": true, "--deviation-class": true, "--deviation-risk": true,
-			"--plan-class": true, "--rework-of": true,
-			"--creator-harness": true, "--creator-model": true, "--creator-lane": true,
-		}, map[string]bool{"--json": true, "--dry-run": true, "--local-only": true}, 0); err != nil {
+		allowed := map[string]bool{"--work-id": true, "--owner": true, "--predicate": true, "--outcome": true, "--by": true, "--actor": true, "--state": true, "--context-pack": true, "--canonical-surface": true, "--route-decision-id": true, "--risk": true, "--privacy": true, "--non-goal": true, "--non-goals": true, "--evidence-ref": true, "--evidence": true, "--capability": true, "--action": true, "--mutation-class": true, "--reversibility": true, "--blast-radius": true, "--target-kind": true, "--target-id": true, "--target-path": true, "--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true, "--predicted-outcome": true, "--predicted-move-type": true, "--prediction-note": true, "--deviation-lane": true, "--deviation-card": true, "--deviation-class": true, "--deviation-risk": true, "--plan-class": true, "--rework-of": true, "--creator-harness": true, "--creator-model": true, "--creator-lane": true, "--launch-profile": true, "--effort": true}
+		if err := validateWorkArguments(rest, allowed, map[string]bool{"--json": true, "--dry-run": true, "--local-only": true}, 0); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
@@ -558,13 +548,9 @@ func cmdWork(args []string) {
 		gitDelivery := parseGitDelivery(usage)
 		prediction := parsePrediction(usage)
 		routeDeviation := parseRouteDeviation(usage)
-		plan, err := store.CreatePlan(createInputFromFlags(work.CreateInput{
-			Actor:          firstNonEmpty(flag("--by"), flag("--actor")),
-			GitDelivery:    gitDelivery,
-			State:          flag("--state"),
-			Prediction:     prediction,
-			RouteDeviation: routeDeviation,
-		}), time.Now(), work.CreatePlanOptions{
+		selActor := firstNonEmpty(flag("--by"), flag("--actor"))
+		executionSelection := selectionFlagsFromCLI(store, usage, selActor, flag("--launch-profile"), flag("--effort"))
+		plan, err := store.CreatePlan(createInputFromFlags(work.CreateInput{Actor: selActor, GitDelivery: gitDelivery, State: flag("--state"), Prediction: prediction, RouteDeviation: routeDeviation, ExecutionSelection: executionSelection}), time.Now(), work.CreatePlanOptions{
 			Actor:         firstNonEmpty(flag("--by"), flag("--actor")),
 			Capability:    flag("--capability"),
 			Action:        flag("--action"),
@@ -666,6 +652,7 @@ func cmdWork(args []string) {
 			"--deviation-lane": true, "--deviation-card": true, "--deviation-class": true, "--deviation-risk": true,
 			"--plan-class": true, "--rework-of": true,
 			"--creator-harness": true, "--creator-model": true, "--creator-lane": true,
+			"--launch-profile": true, "--effort": true,
 		}, map[string]bool{"--local-only": true}, 0); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
@@ -682,14 +669,9 @@ func cmdWork(args []string) {
 			createState = "ready"
 			actor = firstNonEmpty(actor, "test-fixture")
 		}
+		executionSelection := selectionFlagsFromCLI(store, usage, actor, flag("--launch-profile"), flag("--effort"))
 		now := time.Now()
-		w, err := store.Create(createInputFromFlags(work.CreateInput{
-			Actor:          actor,
-			GitDelivery:    gitDelivery,
-			State:          createState,
-			Prediction:     prediction,
-			RouteDeviation: routeDeviation,
-		}), now)
+		w, err := store.Create(createInputFromFlags(work.CreateInput{Actor: actor, GitDelivery: gitDelivery, State: createState, Prediction: prediction, RouteDeviation: routeDeviation, ExecutionSelection: executionSelection}), now)
 		die(err)
 		if requestedState == "running" {
 			w, err = store.Claim(w.ID, actor, now)
@@ -742,6 +724,8 @@ func cmdWork(args []string) {
 			return
 		}
 		printJSON(w)
+		// work_r7a_execution_selection_20260911.
+		fmt.Print(work.RenderWorkSelection(w, &work.RunAttemptStoreLookup{Store: runattempt.Open(homePath)}))
 		if packetPath != "" {
 			fmt.Printf("packet_path: %s\n", packetPath)
 		}
@@ -1493,6 +1477,7 @@ func cmdWork(args []string) {
 			"--context-pack": true, "--note": true, "--reason": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
 			"--harness": true, "--prompt": true, "--workspace": true, "--permission-mode": true,
+			"--launch-profile": true, "--effort": true, "--expected-selection-revision": true,
 		}
 		// Validate only the pre-`--` portion of the args. The `--` is the
 		// standard POSIX positional separator; everything after is the
@@ -1532,6 +1517,8 @@ func cmdWork(args []string) {
 			runAttempts = append(runAttempts, rid)
 		}
 		gitDelivery := parseGitDelivery(usage)
+		// work_r7a_execution_selection_20260911: explicit save; --expected-selection-revision is the CAS guard.
+		saveSelection := selectionFlagsFromCLI(store, usage, firstNonEmpty(flag("--by"), flag("--actor")), flag("--launch-profile"), flag("--effort"))
 		// Slice D: --execute runs a registered harness adapter inline as
 		// part of the advance. The work advances running -> verifying
 		// (or failed) in a single CLI invocation. The adapter mints a
@@ -1556,6 +1543,14 @@ func cmdWork(args []string) {
 			StealReason:    flag("--reason"),
 		}, time.Now())
 		die(err)
+		if saveSelection != nil {
+			saved, saveErr := work.RunCommandAfterAdvance(store, w, flag("--launch-profile"), flag("--effort"), flag("--expected-selection-revision"), firstNonEmpty(flag("--by"), flag("--actor")), time.Now())
+			if saveErr != nil {
+				fmt.Fprintf(os.Stderr, "error: save execution selection: %v\n", saveErr)
+				os.Exit(1)
+			}
+			w = saved
+		}
 		fmt.Printf("%s -> %s policy=%s\n", w.ID, w.State, w.PolicyDecisionID)
 	case "observe-run":
 		observeRunUsage := "usage: compound work observe-run <work_id> --trace <trace_id> [--job-file <path>] [--actor A] [--note N] [--lane L] [--model M] [--provider-route P] [--tokens-in N] [--tokens-out N] [--json]"
@@ -2326,4 +2321,19 @@ func validateWorkArguments(args []string, valueFlags, boolFlags map[string]bool,
 		return fmt.Errorf("expected %d positional argument(s), got %d", positionalCount, positions)
 	}
 	return nil
+}
+
+// selectionFlagsFromCLI resolves --launch-profile / --effort via the work resolver; nil when missing. (work_r7a_execution_selection_20260911.)
+func selectionFlagsFromCLI(store *work.Store, usage, actor, lp, effort string) (sel *envelope.ExecutionSelection) {
+	lp = strings.TrimSpace(lp)
+	if lp == "" {
+		return nil
+	}
+	sel, err := work.ResolveExecutionSelectionFromFlags(store, lp, effort, actor, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	return
 }

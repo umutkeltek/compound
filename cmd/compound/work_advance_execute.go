@@ -51,11 +51,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		fmt.Fprintln(os.Stderr, "error: --execute requires a work_id")
 		workAdvanceExecuteExit(2)
 	}
-	harnessName := valueFlag(rest, "--harness")
-	if harnessName == "" {
-		fmt.Fprintln(os.Stderr, "error: --execute requires --harness <name>")
-		workAdvanceExecuteExit(2)
-	}
+	harnessName := strings.TrimSpace(valueFlag(rest, "--harness"))
 	prompt := valueFlag(rest, "--prompt")
 	actor := firstNonEmpty(valueFlag(rest, "--by"), valueFlag(rest, "--actor"))
 
@@ -106,6 +102,14 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	if refusal := actuator.GovernedHarnessSourceRefusal(wenv, resumeVerifying); refusal != nil {
 		refusal.RenderTo(os.Stderr)
 		workAdvanceExecuteExit(1)
+	}
+	// work_r7a_execution_selection_20260911: fall back to the saved selection's harness when --harness is omitted; refuse when neither is set.
+	if harnessName == "" {
+		if wenv.ExecutionSelection == nil || strings.TrimSpace(wenv.ExecutionSelection.Harness) == "" {
+			fmt.Fprintln(os.Stderr, "error: --execute requires --harness <name> when the work has no saved execution_selection")
+			workAdvanceExecuteExit(2)
+		}
+		harnessName = strings.TrimSpace(wenv.ExecutionSelection.Harness)
 	}
 
 	// Resolve the adapter BEFORE any state change. An unknown harness name
