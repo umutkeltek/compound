@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -422,7 +423,7 @@ exit 42
 		t.Fatal("fake preparation helper unexpectedly succeeded")
 	}
 	waitForProofCheckTestPath(t, startedPath)
-	waitForProofCheckTestPath(t, pidPath)
+	childPID := waitForProofCheckTestPID(t, pidPath)
 	if err := barrier.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -441,14 +442,6 @@ exit 42
 	}
 
 	if err := os.WriteFile(allowPath, []byte("stop\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	childPIDBody, err := os.ReadFile(pidPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	childPID, err := strconv.Atoi(strings.TrimSpace(string(childPIDBody)))
-	if err != nil {
 		t.Fatal(err)
 	}
 	waitForProofCheckTestProcessExit(t, childPID)
@@ -491,22 +484,9 @@ while :; do
 done
 `)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, _, err := prepareProofCheckSealedWorkspace(ctx, t.TempDir(), gitrepository.Snapshot{})
-		done <- err
-	}()
+	cancel, done, _ := startProofCheckSealedWorkspaceTest(t)
 	waitForProofCheckTestPath(t, childReadyPath)
-	waitForProofCheckTestPath(t, childPIDPath)
-	childPIDBody, err := os.ReadFile(childPIDPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	childPID, err := strconv.Atoi(strings.TrimSpace(string(childPIDBody)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	childPID := waitForProofCheckTestPID(t, childPIDPath)
 	cancel()
 	select {
 	case err := <-done:
@@ -554,15 +534,93 @@ func proofCheckInstallFakeGit(t *testing.T, body string) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+func startProofCheckSealedWorkspaceTest(t *testing.T) (context.CancelFunc, <-chan error, <-chan struct{}) {
+	t.Helper()
+	repo := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	// Registered before launch so readiness failures and early returns cancel
+	// and join the owned process group before temporary paths are removed.
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("cleanup could not join owned sealed preparation")
+		}
+	})
+	go func() {
+		defer close(finished)
+		_, _, err := prepareProofCheckSealedWorkspace(ctx, repo, gitrepository.Snapshot{})
+		done <- err
+	}()
+	return cancel, done, finished
+}
+
+func readProofCheckTestPID(path string) (int, bool, error) {
+	body, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	value := strings.TrimSpace(string(body))
+	if value == "" {
+		// Redirection creates/truncates the path before echo publishes its PID.
+		return 0, false, nil
+	}
+	pid, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, false, err
+	}
+	if pid <= 0 {
+		return 0, false, errors.New("published PID must be positive")
+	}
+	return pid, true, nil
+}
+
+func waitForProofCheckTestPID(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		pid, ready, err := readProofCheckTestPID(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ready {
+			return pid
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for published PID at %s", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func proofCheckTestProcessExited(pid int) (bool, error) {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false, err
+	}
+	defer process.Release()
+	err = process.Signal(syscall.Signal(0))
+	if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+		return true, nil
+	}
+	return false, err
+}
+
 func waitForProofCheckTestProcessExit(t *testing.T, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		process, err := os.FindProcess(pid)
+		exited, err := proofCheckTestProcessExited(pid)
 		if err != nil {
-			return
+			t.Fatal(err)
 		}
-		if err := process.Signal(os.Signal(nil)); err != nil {
+		if exited {
 			return
 		}
 		if time.Now().After(deadline) {
