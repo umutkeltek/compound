@@ -143,6 +143,49 @@ The rollout order is conformance before enforcement: first prove the gateway's t
 receipt; then let Compound profiles authorize one shadow consumer; then enforce one bounded real consumer. A good
 resolver or gateway doctor without that consumer is bench-only.
 
+## Execution selection: what will run, what did run, and why they differ
+
+Every launch is a tuple — launch profile (the lane), harness family, provider route, resolved model id,
+requested effort — and Compound stores that tuple at two levels with two different lifetimes:
+
+| Level | Type | Lifetime | Owner |
+|---|---|---|---|
+| Work-level saved selection | `envelope.ExecutionSelection` on `WorkEnvelope.execution_selection` | mutable by explicit save only; every save bumps `revision` and records a lifecycle event | `internal/work` |
+| Attempt-level snapshot | `runattempt.ExecutionSelectionSnapshot` on `RunAttempt.execution_selection` | stamped once before the subprocess starts; append-only, never rewritten | `internal/runattempt` + the launch wire |
+
+The saved selection is why "open work, pick a combination, exit, reopen" yields the same combination: the
+choice lives on the envelope, not in the launcher, the route plan, or a preset. A renamed model alias or an
+edited preset changes nothing that is already saved — the selection carries the resolved model id and the
+owner profile revision it was made against, and a launch whose observed profile revision differs reports
+`selection_drift` on the attempt instead of silently applying the new meaning.
+
+**Precedence at launch, highest first.** (1) An explicit one-run override on the launch call (`--harness`,
+`--launch-profile`) applies to that run only; the attempt records `source: override` and the saved selection is
+untouched. (2) The work's saved selection (`source: saved`, with the `selection_revision` consumed). (3) The
+project/profile default — for unattended work the route plan for the capability (`source: project_default`).
+(4) The system default (`source: system_default`). Only an explicit save (`ExecutionSelection.Source =
+explicit`) replaces the saved selection; a one-run override never does.
+
+**Requested is not applied.** Effort is recorded three ways on the attempt: `requested_effort` (semantic),
+`applied_effort` (the harness-native value the adapter actually passed, possibly a documented translation), and
+`effort_evidence` (`argv:<flag>`, `env:<VAR>`, `settings:<path>`, `receipt:<ref>`, `unsupported:<why>`,
+`unobservable:<why>`). A harness with no effort control records `unsupported` and an empty applied value; a
+label that merely travelled through a wrapper records `unobservable`. The validator refuses an applied value
+under either. Nothing here claims a provider received the value — that remains route evidence
+(`unknown_until_receipt`).
+
+**Sessions and lineage.** `native_session_id` plus `native_session_evidence` (`pinned:<flag>`, `derived:<path>`,
+`unsupported:<why>`) say which harness session an attempt is, so a resume targets THAT session and never "the
+most recent one". `continuation_of` names the predecessor attempt or `native:<id>` a launch resumed. A
+cross-harness continuation keeps the Compound work lineage (work id, predecessor attempt, context pack) and
+records the new harness on a new attempt; it never pretends one harness's session format was resumed by
+another. Intentional changes of model, effort, or harness are new attempts with a new snapshot and, when saved,
+a new selection revision with its lifecycle event — never an edit of a historical attempt.
+
+**What a reader sees.** `compound work show <id>` prints the saved selection (what will run); each attached
+attempt prints its snapshot (what did run, from which source, with which evidence); a difference between the two
+is visible as `source: override` or `selection_drift` on the attempt. No launcher script has to be read.
+
 ## Route evidence is a projection, not a verdict
 
 > A gateway `RouteDecision` is **execution-route evidence, NOT proof of task success.**

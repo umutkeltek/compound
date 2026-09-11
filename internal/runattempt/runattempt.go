@@ -417,6 +417,11 @@ type RunAttempt struct {
 	// boundary for API consumers. runattemptWriteFile deliberately omits it
 	// from the v0.1 main JSON; immutable sidecars are the durable authority.
 	Launch *LaunchLifecycle `json:"launch,omitempty"`
+	// ExecutionSelection is the immutable per-run selection snapshot (what
+	// this launch was asked to run and what the adapter could apply; see
+	// execution_selection_snapshot.go). Pointer + omitempty preserves byte
+	// identity for records minted before it existed.
+	ExecutionSelection *ExecutionSelectionSnapshot `json:"execution_selection,omitempty"`
 }
 
 // RunProgress is the reduced, content-free progress shape shared by

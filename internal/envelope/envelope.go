@@ -955,6 +955,10 @@ type WorkEnvelope struct {
 	// Origin is populated for newly built work. It is optional so pre-origin
 	// v0.1 envelopes remain valid and re-marshal byte-identically.
 	Origin *WorkOrigin `json:"origin,omitempty"`
+	// ExecutionSelection is the work-level saved harness/route/model/effort
+	// choice (see execution_selection.go). Optional and declared LAST so
+	// pre-selection envelopes re-marshal byte-identically.
+	ExecutionSelection *ExecutionSelection `json:"execution_selection,omitempty"`
 }
 
 // WorkPrediction is staked at create time and predicts the CLOSE outcome enum
@@ -1038,6 +1042,9 @@ func (e *WorkEnvelope) Validate() error {
 	validateReworkOfWorkID(v, e.ReworkOfWorkID, e.ID)
 	if e.Origin != nil {
 		validateWorkOrigin(v, *e.Origin)
+	}
+	if e.ExecutionSelection != nil {
+		validateExecutionSelection(v, *e.ExecutionSelection)
 	}
 	return v.result(e.Kind())
 }
