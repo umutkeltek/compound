@@ -190,6 +190,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		PermissionMode: valueFlag(rest, "--permission-mode"),
 		LaneID:         actor,
 		Now:            time.Now().UTC(),
+		ProofRefs:      append([]string(nil), wenv.ArtifactIDs...),
 	}
 	if preflight, ok := adapter.(harness.PreflightAdapter); ok {
 		resolved, err := preflight.Preflight(context.Background(), runInput)
