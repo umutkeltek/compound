@@ -182,8 +182,8 @@ records the new harness on a new attempt; it never pretends one harness's sessio
 another. Intentional changes of model, effort, or harness are new attempts with a new snapshot and, when saved,
 a new selection revision with its lifecycle event — never an edit of a historical attempt.
 
-**What a reader sees.** `compound work show <id>` prints the saved selection (what will run); each attached
-attempt prints its snapshot (what did run, from which source, with which evidence); a difference between the two
+**What a reader sees.** `compound work show <id>` prints the saved selection under `execution_selection:` (what will run); each attached
+attempt prints its snapshot's `source: saved|override|project_default|system_default`, `selection_rev`, and any `selection_drift` line (what did run, from which source, with which evidence); a difference between the two
 is visible as `source: override` or `selection_drift` on the attempt. No launcher script has to be read.
 
 ## Route evidence is a projection, not a verdict
