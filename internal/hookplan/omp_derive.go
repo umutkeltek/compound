@@ -29,7 +29,7 @@ import (
 // Slug derivation: strip a leading `/`, replace every `/` with `-`, replace
 // any non-[A-Za-z0-9._-] with `-`, and wrap in `--`. Examples:
 //
-//	/private/home/operator/projects/sample -> --private-home-operator-projects-sample--
+//	/srv/projects/sample                   -> --srv-projects-sample--
 //	/tmp/x                                -> --tmp-x--
 //
 // ompDeriveMaxProbe is the upper bound on how many `.jsonl` files
