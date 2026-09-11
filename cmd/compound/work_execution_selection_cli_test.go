@@ -47,10 +47,10 @@ func TestWorkAdvanceExecuteUsesSavedSelectionWithoutHarnessFlag(t *testing.T) {
 	}
 	w, err := store.Create(work.CreateInput{
 		Owner: "codex", Actor: "codex",
-		SuccessPredicate: "advance --execute falls back to saved selection",
-		State:            "ready",
-		Risk:             "tier1",
-		Privacy:          "private",
+		SuccessPredicate:   "advance --execute falls back to saved selection",
+		State:              "ready",
+		Risk:               "tier1",
+		Privacy:            "private",
 		ExecutionSelection: sel,
 	}, now)
 	if err != nil {
@@ -115,8 +115,8 @@ func TestWorkShowPrintsSelectionAndAttemptSource(t *testing.T) {
 	}
 	w, err := store.Create(work.CreateInput{
 		Owner: "codex", Actor: "codex",
-		SuccessPredicate: "show prints saved selection + attempt source",
-		State:            "ready",
+		SuccessPredicate:   "show prints saved selection + attempt source",
+		State:              "ready",
 		ExecutionSelection: sel,
 	}, now)
 	if err != nil {
