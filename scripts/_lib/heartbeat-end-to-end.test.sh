@@ -105,6 +105,14 @@ PY
     exit 0
     ;;
   work)
+    # `work continue` renders a controlled payload when the case provides
+    # one (FAKE_CONTINUE_JSON), so CONT_SUM parsing — e.g. the R6K
+    # execute.human surfacing — is testable end to end. Every other work
+    # verb keeps the minimal shape the script's parsers accept.
+    if [ "${2:-}" = "continue" ] && [ -n "${FAKE_CONTINUE_JSON:-}" ]; then
+      printf '%s\n' "$FAKE_CONTINUE_JSON"
+      exit 0
+    fi
     printf '{"status":"ok","safe":0,"reclaimed":0,"skipped":0,"step_count":0}\n'
     exit 0
     ;;
@@ -197,6 +205,18 @@ echo "==> e2e: director stderr noise before valid JSON -> FINAL_RC=0, stderr kep
 run_heartbeat "director-stderr-noise" "0" \
   'FAKE_DRIVER_JSON=$(committed_driver_json pass-committed-stderr-001 "$_home"); export FAKE_DRIVER_JSON; FAKE_DRIVER_RECEIPT=producer; export FAKE_DRIVER_RECEIPT; FAKE_DIRECTOR_STDERR_LINE="2026/09/10 03:03:05 eventstore: rebuilt index x"; export FAKE_DIRECTOR_STDERR_LINE' \
   'director stderr: .*eventstore: rebuilt index x'
+
+echo "==> e2e: continue execute.human names every refused id -> FINAL_RC=0, both ids in tick log"
+
+# R6K: execute.skipped carries only the FIRST refusal's family
+# ("ineligible"), so a tick where nothing launched could not say WHICH
+# envelopes were refused or why — that lives in execute.human, which the
+# heartbeat did not log. The stub's `work continue` refuses two envelopes
+# by id; the one-line summary must surface execute.human naming BOTH ids.
+CONTINUE_JSON='{"status":"waiting","step_count":1,"execute":{"stage":"execute","skipped":"ineligible","status":"waiting","human":"did nothing: work_r6k_refused_aaa1 (ineligible:harness=codex), work_r6k_refused_bbb2 (ineligible:harness=codex); no eligible ready envelope"}}'
+run_heartbeat "continue-execute-human" "0" \
+  'FAKE_DRIVER_JSON=$(committed_driver_json pass-committed-continue-001 "$_home"); export FAKE_DRIVER_JSON; FAKE_DRIVER_RECEIPT=producer; export FAKE_DRIVER_RECEIPT; FAKE_CONTINUE_JSON="$CONTINUE_JSON"; export FAKE_CONTINUE_JSON' \
+  'execute=skipped:ineligible execute_human=".*work_r6k_refused_aaa1.*work_r6k_refused_bbb2'
 
 echo "==> e2e: committed driver whose stored receipt lacks receipt_path -> FINAL_RC=1"
 

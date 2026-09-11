@@ -265,6 +265,14 @@ try:
         summary += " execute=skipped:%s" % skipped
     elif ratts:
         summary += " execute=ok ratt=%s" % ratts[0]
+    # R6K: execute.skipped is only the FIRST refusal family (the seam cuts
+    # the reason at ":"), so it can never answer "which envelopes were
+    # refused and why?". execute.human names every refused id + reason and
+    # the outcome — carry it on the one-line summary (newlines collapsed,
+    # capped at 400 chars) so a nothing-launched tick is self-explaining.
+    human = verdict.get("human") or ""
+    if human:
+        summary += " execute_human=\"%s\"" % " ".join(human.split())[:400]
     print(summary)
 except Exception:
     print("unparseable")' 2>/dev/null)
