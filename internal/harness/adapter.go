@@ -106,6 +106,16 @@ type RunInput struct {
 	// construction or subprocess start. Nil for harnesses without a permission
 	// posture.
 	ExecutionPosture *runattempt.ExecutionPosture
+	// ExecutionSelectionSnapshot is the per-run selection snapshot (what
+	// this launch was asked to run and what the adapter could apply). The
+	// shared runner persists it on the RunAttempt after Mint and before
+	// subprocess start, so the historical record is honest: the snapshot
+	// reflects what was asked before the subprocess began. Nil for calls
+	// that don't go through the wire (direct harness runs, observe-run,
+	// etc.); the wire ALWAYS sets this field for governed launches.
+	//
+	// work_r7a_execution_selection_20260911.
+	ExecutionSelectionSnapshot *runattempt.ExecutionSelectionSnapshot
 	// StartGuard owns the final governed launch boundary. The shared runner
 	// passes it the one-shot cmd.Start operation after command construction and
 	// pipe setup; the guard must call that operation exactly once only when its

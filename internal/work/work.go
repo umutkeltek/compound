@@ -411,6 +411,20 @@ type CreateInput struct {
 	// value that does not resolve in this store is refused by validateReworkOfRef at admission
 	// -- both BEFORE anything persists.
 	ReworkOfWorkID string
+	// ExecutionSelection is the saved work-level execution selection
+	// (harness + route + model + effort + source + revision + actor +
+	// timestamp), recorded at create time so a follow-up launch uses
+	// THIS combination rather than whatever the route plan / preset
+	// currently says. When set, Source MUST be explicit (project /
+	// system defaults do not need to be persisted — they would only
+	// survive until the next default change), Revision MUST be 1, and
+	// the field is validated by envelope.WorkEnvelope.Validate before
+	// anything persists. A subsequent edit goes through
+	// SaveExecutionSelection (revision +1 + lifecycle event + CAS), never
+	// through Create.
+	//
+	// work_r7a_execution_selection_20260911.
+	ExecutionSelection *envelope.ExecutionSelection
 }
 
 // BuildWork constructs a WorkEnvelope WITHOUT persisting it — used both by Create (which
@@ -435,6 +449,21 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		copy := *in.RouteDeviation
 		routeDeviation = &copy
 	}
+	var executionSelection *envelope.ExecutionSelection
+	if in.ExecutionSelection != nil {
+		copy := *in.ExecutionSelection
+		// Belt-and-suspenders: the contract says a create-time selection is
+		// explicit + revision 1. Force those here so a caller cannot slip a
+		// non-explicit copy through BuildWork (the validator catches it too,
+		// but this short-circuits to a clearer error path).
+		if copy.Source != "explicit" {
+			copy.Source = "explicit"
+		}
+		if copy.Revision < 1 {
+			copy.Revision = 1
+		}
+		executionSelection = &copy
+	}
 	origin := deriveWorkOrigin(in)
 	w := envelope.WorkEnvelope{
 		Header:             newHeader(envelope.SVWork, workID, now, "", in.ContextPackID, orDefault(in.Privacy, "private"), orDefault(in.Risk, "tier1")),
@@ -458,6 +487,7 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		PlanClass:          in.PlanClass,
 		ReworkOfWorkID:     strings.TrimSpace(in.ReworkOfWorkID),
 		Origin:             &origin,
+		ExecutionSelection: executionSelection,
 	}
 	if strings.TrimSpace(in.Uncertainty.Level) != "" || strings.TrimSpace(in.Uncertainty.Reason) != "" {
 		w.Uncertainty = in.Uncertainty

@@ -569,6 +569,27 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 		Timeout: resolvedLaunchTimeout(),
 		Now:     now,
 	}
+	// work_r7a_execution_selection_20260911: stamp the per-run selection
+	// snapshot (what this launch was asked to run, with honest
+	// applied-effort + native-session evidence) BEFORE the subprocess
+	// starts, so the historical record reflects the plan rather than the
+	// outcome. The shared runner persists RunInput.ExecutionSelectionSnapshot
+	// onto the freshly minted RunAttempt, so the wire computes the
+	// snapshot here (with the saved selection or override as the source)
+	// and the runner does the actual stamp.
+	snapshot, snapshotErr := buildSelectionSnapshotFromSaved(
+		wenv,
+		"",                       // overrideHarness (the wire never overrides — the caller did, before this hook)
+		"",                       // overrideLaunchProfile (same — one-run override happens in cmd/compound, not here)
+		tupleProviderRoute,       // resolved route
+		tupleModelID,             // resolved model id
+		tupleProfileRevision,     // observed profile revision (from the resolver)
+		tupleProfileRevision,     // tuple's profile revision (same source — used for drift detection)
+	)
+	if snapshotErr != nil {
+		return "", fmt.Errorf("execute stage launch: build selection snapshot: %w", snapshotErr)
+	}
+	runInput.ExecutionSelectionSnapshot = &snapshot
 	// Slice 2 (aut-launch-canonical 2026-09-07): bind the canonical
 	// execution-reservation StartGuard so adapter.Run's subprocess
 	// start is gated by the live running-reservation identity. A

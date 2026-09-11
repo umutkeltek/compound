@@ -40,6 +40,7 @@ type runAttemptStore interface {
 	SetWorkspace(id, workspace string) (runattempt.RunAttempt, error)
 	SetCommand(id, command string) (runattempt.RunAttempt, error)
 	SetExecutionPosture(id string, posture runattempt.ExecutionPosture) (runattempt.RunAttempt, error)
+	SetExecutionSelectionSnapshot(id string, snap runattempt.ExecutionSelectionSnapshot) (runattempt.RunAttempt, error)
 	SetDispatchIntent(id, laneID, requestedModelID, requestedProviderRoute string) (runattempt.RunAttempt, error)
 	SetProofRefs(id string, refs []string) (runattempt.RunAttempt, error)
 	SetTranscript(id, ref string) (runattempt.RunAttempt, error)
@@ -145,6 +146,23 @@ func runWithSubprocess(
 		return failTerm("stamp origin: " + oErr.Error()), fmt.Errorf("%s: stamp origin: %w", harnessName, oErr)
 	} else {
 		ra = stamped
+	}
+	// work_r7a_execution_selection_20260911: the wire stamps the per-run
+	// selection snapshot (what this launch was asked to run, with honest
+	// applied-effort + native-session evidence) BEFORE the subprocess
+	// starts, so the historical record reflects the plan rather than the
+	// outcome. Stamped right after SetOrigin / before any other side
+	// effect, matching the existing ExecutionPosture pattern. Nil means the
+	// caller did not provide a snapshot (direct harness runs, observe-run,
+	// etc.) and the attempt proceeds without one — the validator will refuse
+	// any backfill on a terminal attempt, so a missing snapshot stays
+	// missing.
+	if in.ExecutionSelectionSnapshot != nil {
+		if stamped, sErr := store.SetExecutionSelectionSnapshot(ra.ID, *in.ExecutionSelectionSnapshot); sErr != nil {
+			return failTerm("stamp execution selection snapshot: " + sErr.Error()), fmt.Errorf("%s: stamp execution selection snapshot: %w", harnessName, sErr)
+		} else {
+			ra = stamped
+		}
 	}
 
 	if in.PredecessorID != "" {

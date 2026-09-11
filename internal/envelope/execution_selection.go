@@ -72,3 +72,16 @@ func validateExecutionSelection(v *verr, sel ExecutionSelection) {
 		v.addf("execution_selection.launch_profile_revision must be sha256:<hex> when set, got %q", sel.LaunchProfileRevision)
 	}
 }
+
+// Validate runs the same field rules envelope.WorkEnvelope.Validate uses,
+// on the selection alone. Callers (e.g. the work SaveExecutionSelection
+// seam) use this to refuse an invalid selection BEFORE persisting; the
+// envelope's own Validate will re-run these rules after the field lands
+// on the envelope, so the two paths share one definition.
+//
+// work_r7a_execution_selection_20260911.
+func (s ExecutionSelection) Validate() error {
+	v := &verr{}
+	validateExecutionSelection(v, s)
+	return v.result("execution_selection")
+}
