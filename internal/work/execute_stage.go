@@ -248,6 +248,31 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 			result.NoAction = result.Human
 			return result, nil
 		}
+		// R6P: detached mode hands the CLAIMED envelope to a separate governed
+		// door process and returns; the door owns running -> verifying/failed
+		// (see execute_detached.go). A spawn failure fails only this envelope.
+		if executeStageDetachedLaunchFn != nil {
+			launch, spawnErr := executeStageDetachedLaunchFn(s, ready, lane, workerPrompt, actor, now)
+			if spawnErr != nil {
+				closeSummary := "unattended detached launch failed to spawn: " + spawnErr.Error()
+				if closeErr := s.failClaimedUnattendedEnvelope(ready, actor, closeSummary, "execute_stage_detached_spawn_failed", now); closeErr != nil {
+					result.Human = executeRefusedSummary(refused) + fmt.Sprintf("claimed %s on lane %s but the detached door failed to spawn: %v; recording the failure was refused too: %v", ready, lane, spawnErr, closeErr)
+				} else {
+					result.Human = executeRefusedSummary(refused) + fmt.Sprintf("claimed %s on lane %s but the detached door failed to spawn: %v; envelope marked failed, heartbeat continues", ready, lane, spawnErr)
+				}
+				result.Action = "execute"
+				result.Skipped = "launch_failed"
+				result.RunAttemptIDs = nil
+				return result, nil
+			}
+			result.Action = "execute"
+			result.Status = "claimed"
+			result.Lane = lane
+			result.Detached = &launch
+			result.RunAttemptIDs = nil
+			result.Human = executeRefusedSummary(refused) + fmt.Sprintf("launched envelope %s on lane %s in a detached governed door (pid %d, budget %ds, log %s); the door owns running -> verifying/failed; later ticks reconcile it", ready, lane, launch.PID, launch.BudgetSeconds, launch.LogPath)
+			return result, nil
+		}
 		if _, advErr := s.Advance(ready, AdvanceInput{To: "running", Actor: actor, Note: "execute stage: running"}, now); advErr != nil {
 			result.Skipped = "claim_failed"
 			result.Human = executeRefusedSummary(refused) + fmt.Sprintf("did nothing: advance to running of %s refused: %v", ready, advErr)

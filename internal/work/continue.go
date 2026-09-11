@@ -257,6 +257,12 @@ type ContinueResult struct {
 	// at all. Either Skipped+Human is set (refused / no-op) or
 	// RunAttemptIDs+Status is set (a launch happened); both is a bug.
 	Execute *ExecuteVerdict `json:"execute,omitempty"`
+
+	// Detached (R6P) is the sidecar identity of a launch this tick handed to a
+	// detached governed door; DetachedReconciled is what became of doors
+	// handed off on earlier ticks (see execute_detached.go).
+	Detached           *DetachedLaunch     `json:"detached,omitempty"`
+	DetachedReconciled []DetachedReconcile `json:"detached_reconciled,omitempty"`
 }
 
 // ExecuteVerdict is the structured per-tick record of what the unattended
@@ -293,6 +299,10 @@ type ExecuteVerdict struct {
 	Status string `json:"status"`
 	// RunAttemptIDs carries every ratt id the launch minted.
 	RunAttemptIDs []string `json:"run_attempt_ids,omitempty"`
+	// Detached (R6P) is set when this tick handed the launch to a detached
+	// governed door; Reconciled lists what became of earlier doors.
+	Detached   *DetachedLaunch     `json:"detached,omitempty"`
+	Reconciled []DetachedReconcile `json:"reconciled,omitempty"`
 	// WouldExecute is the dry-run planning line: "<work_id> on <lane>
 	// (capacity N%, policy <id>)". Set ONLY on a dry-run pass where the
 	// gates all opened but the seam deliberately did not launch.
@@ -410,6 +420,14 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 		Integrity: append([]string{}, report.Integrity...),
 	}
 
+	// R6P: reconcile earlier detached launches on EVERY unattended tick, not
+	// only when a ready envelope is on the bench — a door handed off on tick
+	// N has to be reported on tick N+1 even when the bench is empty. The
+	// verdict and the Human line carry it (see recordContinue).
+	if opts.MaxExecuteSteps > 0 {
+		result.DetachedReconciled = s.ReconcileDetachedLaunches(now)
+	}
+
 	// R3A execute-stage seam: runs BEFORE the existing claim branch when
 	// a ready envelope is on the bench. The seam is grant-gated and
 	// fail-closed:
@@ -458,6 +476,7 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			result.Human = stage.Human
 			result.PolicyDecisionID = stage.PolicyDecisionID
 			result.Refused = stage.Refused
+			result.Detached = stage.Detached
 			result.Execute = buildExecuteVerdict(stage, result.Status)
 			return s.recordContinue(now, result)
 		}
@@ -532,6 +551,18 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			Skipped: "no_ready_envelope",
 			Human:   "did nothing: no ready envelope on the bench; the unattended execute stage had nothing to act on this tick",
 			Status:  "not_invoked",
+		}
+	}
+
+	// R6P: an envelope an alive detached door owns is not the tick's to step.
+	// The door expects the envelope exactly as the seam left it (claimed); a
+	// DispatchStep advance here would make the door refuse and strand the run.
+	if report.DispatchNext.CanRun {
+		if door, owned := DetachedDoorOwns(s.home, report.DispatchNext.WorkID); owned {
+			result.Status = "waiting"
+			result.WaitReason = "detached_door_running"
+			result.NoAction = fmt.Sprintf("envelope %s is owned by a detached governed door (pid %d, log %s); the door advances it, the tick only reconciles", door.WorkID, door.PID, door.LogPath)
+			return s.recordContinue(now, result)
 		}
 	}
 
@@ -668,6 +699,7 @@ func buildExecuteVerdict(stage ContinueResult, finalStatus string) *ExecuteVerdi
 		Lane:          strings.TrimSpace(stage.Lane),
 		Status:        status,
 		RunAttemptIDs: append([]string(nil), stage.RunAttemptIDs...),
+		Detached:      stage.Detached,
 	}
 }
 
@@ -751,6 +783,19 @@ func (s *Store) ContinueRun(now time.Time, opts ContinueRunOptions) (ContinueRun
 }
 
 func (s *Store) recordContinue(now time.Time, result ContinueResult) (ContinueResult, error) {
+	if len(result.DetachedReconciled) > 0 {
+		// R6P: every recorded tick names what became of earlier detached doors.
+		prefix := detachedReconcileSummary(result.DetachedReconciled)
+		if result.Human != "" && !strings.HasPrefix(result.Human, prefix) {
+			result.Human = prefix + result.Human
+		}
+		if result.Execute != nil {
+			result.Execute.Reconciled = append([]DetachedReconcile(nil), result.DetachedReconciled...)
+			if !strings.HasPrefix(result.Execute.Human, prefix) {
+				result.Execute.Human = prefix + result.Execute.Human
+			}
+		}
+	}
 	post, err := s.Workbench(now, WorkbenchOptions{RecentLimit: 0, Actor: result.Actor})
 	if err != nil {
 		return ContinueResult{}, err
@@ -759,6 +804,17 @@ func (s *Store) recordContinue(now time.Time, result ContinueResult) (ContinueRe
 	result.NextAction = continueNextAction(result, post)
 	if continueStepMadeProgress(result) {
 		result.CanContinue, result.ContinueCommand = continueCanContinue(post, result.Actor, result.ExpectWorkID)
+		// R6P: the tick never steps an envelope an alive detached door owns, so
+		// an --until-wait run stops here instead of spinning on it.
+		if result.CanContinue && post.DispatchNext.CanRun {
+			if _, owned := DetachedDoorOwns(s.home, post.DispatchNext.WorkID); owned {
+				result.CanContinue = false
+				result.ContinueCommand = nil
+				if result.WaitReason == "" {
+					result.WaitReason = "detached_door_running"
+				}
+			}
+		}
 	}
 	if !result.CanContinue {
 		result.WaitReason, result.BlockedOn = continueWait(result, post)

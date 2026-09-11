@@ -739,3 +739,17 @@ func resolvedLaunchTimeout() time.Duration {
 	}
 	return def
 }
+
+// InstallDetached (R6P 2026-09-11) makes the unattended seam hand launches to
+// a detached governed door (LaunchDetachedViaDoor) instead of running the lane
+// inside the tick. It is a SEPARATE composition step from Install so the
+// package's own tests, which call Install to exercise the synchronous wire,
+// never spawn real doors. cmd/compound calls both. The operator pins the
+// synchronous seam with COMPOUND_UNATTENDED_SYNCHRONOUS=1 (the kill switch;
+// that path keeps its 5-minute budget).
+func InstallDetached() {
+	if os.Getenv("COMPOUND_UNATTENDED_SYNCHRONOUS") == "1" {
+		return
+	}
+	work.SwapExecuteStageDetachedLaunch(LaunchDetachedViaDoor)
+}

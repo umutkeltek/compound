@@ -289,10 +289,18 @@ try:
     skipped = verdict.get("skipped") or d.get("skipped")
     ratts = verdict.get("run_attempt_ids") or d.get("run_attempt_ids") or []
     summary = "status=%s steps=%s" % (d.get("status"), steps)
+    detached = verdict.get("detached") or d.get("detached") or {}
     if skipped:
         summary += " execute=skipped:%s" % skipped
+    elif detached:
+        # R6P: the launch was handed to a detached governed door; there is
+        # no ratt yet on this tick. Name the door so a human can find it.
+        summary += " execute=detached work=%s pid=%s log=%s" % (detached.get("work_id"), detached.get("pid"), detached.get("log_path"))
     elif ratts:
         summary += " execute=ok ratt=%s" % ratts[0]
+    reconciled = verdict.get("reconciled") or d.get("detached_reconciled") or []
+    if reconciled:
+        summary += " reconciled=" + ",".join("%s:%s" % (r.get("work_id"), r.get("outcome")) for r in reconciled)
     # R6K: execute.skipped is only the FIRST refusal family (the seam cuts
     # the reason at ":"), so it can never answer "which envelopes were
     # refused and why?". execute.human names every refused id + reason and
