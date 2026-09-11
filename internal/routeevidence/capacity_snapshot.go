@@ -352,13 +352,18 @@ func readCodexBarCapacityMatching(sources []capacityRowSource, provider string, 
 			latestByWindow[group] = row
 		}
 	}
-	var constraining codexBarCapacityRow
-	found := false
-	for _, row := range latestByWindow {
-		if !found || row.UsedPercent > constraining.UsedPercent {
-			constraining = row
-			found = true
-		}
+	// A window group whose ResetsAt is not after now is EXPIRED: its UsedPercent describes a
+	// quota window that no longer exists, so it must never constrain a launch decision. Right
+	// after a provider's window resets, the recent cluster holds BOTH the old window's last
+	// row (higher usage, older sample) and the new window's fresh rows — without this
+	// exclusion the dead window wins "highest UsedPercent", pins LastProven to its aging
+	// sample, and the lane reads capacity_unknown for up to the whole cluster span while
+	// fresh rows keep arriving. When EVERY group is expired, fall back to today's behaviour
+	// (report the highest-used row, state unknown below) rather than inventing capacity.
+	constraining, found := constrainingWindowRow(latestByWindow, now)
+	allExpired := !found
+	if allExpired {
+		constraining, found = highestUsedWindowRow(latestByWindow)
 	}
 	if !found {
 		return LaneCapacity{}, false, nil
@@ -394,6 +399,9 @@ func readCodexBarCapacityMatching(sources []capacityRowSource, provider string, 
 	}
 	reset, err := time.Parse(time.RFC3339, strings.TrimSpace(constraining.ResetsAt))
 	if err != nil || !reset.After(now) {
+		if allExpired {
+			out.DataRef += "; all_windows_expired"
+		}
 		return out, true, nil
 	}
 	out.ResetsAt = reset.UTC()
@@ -406,6 +414,48 @@ func readCodexBarCapacityMatching(sources []capacityRowSource, provider string, 
 		out.State = CapacityAlive
 	}
 	return out, true, nil
+}
+
+// windowGroupExpired reports whether a window group's reset deadline has already passed. An
+// unparseable ResetsAt is NOT expired — the row stays eligible, and the parse check in
+// readCodexBarCapacityMatching keeps reporting such a row as unknown exactly as before this
+// helper existed.
+func windowGroupExpired(row codexBarCapacityRow, now time.Time) bool {
+	reset, err := time.Parse(time.RFC3339, strings.TrimSpace(row.ResetsAt))
+	return err == nil && !reset.After(now)
+}
+
+// constrainingWindowRow picks the highest-UsedPercent NON-expired group representative — the
+// live window with the least headroom is what a launch decision actually answers to, so a
+// dead window's usage can never win the slot or supply LastProven.
+func constrainingWindowRow(groups map[string]codexBarCapacityRow, now time.Time) (codexBarCapacityRow, bool) {
+	var constraining codexBarCapacityRow
+	found := false
+	for _, row := range groups {
+		if windowGroupExpired(row, now) {
+			continue
+		}
+		if !found || row.UsedPercent > constraining.UsedPercent {
+			constraining = row
+			found = true
+		}
+	}
+	return constraining, found
+}
+
+// highestUsedWindowRow is the pre-expiry-exclusion selection: highest UsedPercent across every
+// group, expired or not. It backs only the all-groups-expired fallback, where no live window
+// exists to constrain and the caller reports unknown off the expired winner.
+func highestUsedWindowRow(groups map[string]codexBarCapacityRow) (codexBarCapacityRow, bool) {
+	var constraining codexBarCapacityRow
+	found := false
+	for _, row := range groups {
+		if !found || row.UsedPercent > constraining.UsedPercent {
+			constraining = row
+			found = true
+		}
+	}
+	return constraining, found
 }
 
 // capacityWatchedFamilies enumerates every capacity family the blackout watchdog checks — the

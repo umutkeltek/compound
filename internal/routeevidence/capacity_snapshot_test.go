@@ -1060,6 +1060,102 @@ func TestReadLaneCapacityQwenAndMinimaxStaleFreshnessIs15m(t *testing.T) {
 	}
 }
 
+// --- expired usage windows never constrain (work_r6n_capacity_expired_window_20260911) ---
+//
+// Right after a provider's usage window resets, the 30-minute recent cluster holds BOTH the
+// old window's last row (higher usage, older sample) and the new window's fresh rows. The old
+// window's usage is dead — it must never win "highest UsedPercent" and pin LastProven to its
+// aging sample while fresh rows keep arriving (observed live: the minimax primary window reset
+// at 2026-09-11T05:00Z left the lane capacity_unknown for the whole cluster span).
+
+// capacityWindowRow is one usage row with full window control, for tests that need several
+// concurrent window groups (primary + secondary) or windows that already expired — the plain
+// writeCapacityUsage helper only writes a single "5h"/300m row shape.
+type capacityWindowRow struct {
+	windowKind    string
+	windowMinutes int
+	used          float64
+	resetsAt      time.Time
+	sampledAt     time.Time
+}
+
+func writeCapacityWindowRows(t *testing.T, cfg LaneCapacityConfig, provider string, rows ...capacityWindowRow) {
+	t.Helper()
+	var body []byte
+	for _, row := range rows {
+		line, err := json.Marshal(map[string]any{
+			"provider":      provider,
+			"windowKind":    row.windowKind,
+			"windowMinutes": row.windowMinutes,
+			"usedPercent":   row.used,
+			"resetsAt":      row.resetsAt.UTC().Format(time.RFC3339),
+			"sampledAt":     row.sampledAt.UTC().Format(time.RFC3339),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body = append(body, line...)
+		body = append(body, '\n')
+	}
+	if err := os.WriteFile(cfg.Paths.UsageHistoryPath, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The incident shape: old primary row (used 20, reset 10m in the past, sampled 13m ago)
+// coexists in the recent cluster with a fresh primary row (used 0, new window) and a live
+// weekly secondary row (used 11). The dead old window must not constrain: the secondary row
+// does (remaining 89), LastProven is ITS sample (1m ago), and the lane is alive.
+func TestExpiredWindowGroupIsNeverConstraining(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	writeCapacityWindowRows(t, cfg, "minimax",
+		capacityWindowRow{windowKind: "primary", windowMinutes: 300, used: 20, resetsAt: capacityNow.Add(-10 * time.Minute), sampledAt: capacityNow.Add(-13 * time.Minute)},
+		capacityWindowRow{windowKind: "primary", windowMinutes: 300, used: 0, resetsAt: capacityNow.Add(5 * time.Hour), sampledAt: capacityNow.Add(-1 * time.Minute)},
+		capacityWindowRow{windowKind: "secondary", windowMinutes: 10080, used: 11, resetsAt: capacityNow.Add(72 * time.Hour), sampledAt: capacityNow.Add(-1 * time.Minute)},
+	)
+
+	capacity, err := ReadLaneCapacityWithConfig("claude-minimax", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if capacity.State != CapacityAlive {
+		t.Fatalf("lane must read alive from the new window's rows, got state=%s: %+v", capacity.State, capacity)
+	}
+	if capacity.Remaining != 89 {
+		t.Fatalf("remaining = %v, want 89 (constrained by the live secondary row, used 11): %+v", capacity.Remaining, capacity)
+	}
+	if want := capacityNow.Add(-1 * time.Minute); !capacity.LastProven.Equal(want) {
+		t.Fatalf("LastProven = %v, want the constraining row's sample %v", capacity.LastProven, want)
+	}
+	if !strings.Contains(capacity.DataRef, "window=secondary/10080m") {
+		t.Fatalf("DataRef must cite the live secondary window as constraining: %q", capacity.DataRef)
+	}
+}
+
+// Only expired groups: keep the pre-fix posture (unknown, no invented reset), but the DataRef
+// must say that is WHY — every window group in the recent cluster is dead.
+func TestAllWindowsExpiredStaysUnknown(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	writeCapacityWindowRows(t, cfg, "minimax",
+		capacityWindowRow{windowKind: "primary", windowMinutes: 300, used: 20, resetsAt: capacityNow.Add(-10 * time.Minute), sampledAt: capacityNow.Add(-5 * time.Minute)},
+		capacityWindowRow{windowKind: "secondary", windowMinutes: 10080, used: 11, resetsAt: capacityNow.Add(-2 * time.Hour), sampledAt: capacityNow.Add(-5 * time.Minute)},
+	)
+
+	capacity, err := ReadLaneCapacityWithConfig("claude-minimax", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if capacity.State != CapacityUnknown {
+		t.Fatalf("all-expired windows must stay unknown, got state=%s: %+v", capacity.State, capacity)
+	}
+	if !strings.Contains(capacity.DataRef, "all_windows_expired") {
+		t.Fatalf("all-expired DataRef must say so: %q", capacity.DataRef)
+	}
+	if !capacity.ResetsAt.IsZero() {
+		t.Fatalf("an expired window must not report a future reset: %+v", capacity)
+	}
+}
+
 // Refusal evidence recorded for a claude-qwen lane must carry the structural
 // provider identity (qwen) — not the lane alias (claude-qwen). Both Provider
 // and Model on the refusal row follow the resolved family key.
