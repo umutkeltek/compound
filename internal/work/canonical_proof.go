@@ -90,7 +90,7 @@ func ResolveCanonicalProofPlan(
 	markers, err := canonicalProofRootMarkers(
 		resolvedRepo,
 		source.HeadSHA,
-		[]string{"Cargo.lock", "Cargo.toml", "go.mod", CanonicalConsumerContractPath},
+		[]string{"Cargo.lock", "Cargo.toml", "go.mod", "package.json", "bun.lock", CanonicalConsumerContractPath},
 	)
 	if err != nil {
 		return CanonicalProofPlan{}, fmt.Errorf("inspect canonical proof root markers at %s: %w", source.HeadSHA, err)
@@ -98,6 +98,8 @@ func ResolveCanonicalProofPlan(
 	hasCargoManifest := markers["Cargo.toml"]
 	hasCargoLock := markers["Cargo.lock"]
 	hasGoModule := markers["go.mod"]
+	hasPackageJSON := markers["package.json"]
+	hasBunLock := markers["bun.lock"]
 
 	plan := CanonicalProofPlan{Repo: resolvedRepo, Source: source}
 	switch {
@@ -115,6 +117,12 @@ func ResolveCanonicalProofPlan(
 		}
 		if (contract.Profile == "go_consumers_v1") != hasGoModule {
 			return CanonicalProofPlan{}, fmt.Errorf("consumer profile does not match tracked root Go module")
+		}
+		if contract.Profile == "bun_consumers_v1" && (!hasPackageJSON || !hasBunLock) {
+			return CanonicalProofPlan{}, fmt.Errorf("Bun consumer profile requires tracked root package.json and bun.lock")
+		}
+		if contract.Profile != "bun_consumers_v1" && hasBunLock {
+			return CanonicalProofPlan{}, fmt.Errorf("consumer profile does not match tracked root Bun package markers")
 		}
 		if hasGoModule {
 			moduleBody, blobErr := canonicalProofGitBlob(resolvedRepo, source.HeadSHA, "go.mod")

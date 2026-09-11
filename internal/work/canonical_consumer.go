@@ -39,7 +39,7 @@ type canonicalConsumerContract struct {
 
 // CanonicalConsumerEvidence is nested inside the existing content-addressed proof report.
 // Byte slices preserve exact contract bytes (including whitespace) through JSON custody.
-// Report is native Go NDJSON or xcresulttool summary JSON; Tests is the xcresult test tree.
+// Report is native Go NDJSON, Bun JUnit XML, or xcresulttool summary JSON; Tests is the xcresult test tree.
 type CanonicalConsumerEvidence struct {
 	Contract []byte `json:"contract"`
 	Report   []byte `json:"report"`
@@ -94,7 +94,7 @@ func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, err
 	if err := d.Decode(&c); err != nil {
 		return c, fmt.Errorf("consumer contract: %w", err)
 	}
-	if c.SchemaVersion != "compound.proof_consumers.v1" || (c.Profile != "go_consumers_v1" && c.Profile != "xcode_consumers_v1") {
+	if c.SchemaVersion != "compound.proof_consumers.v1" || (c.Profile != "go_consumers_v1" && c.Profile != "xcode_consumers_v1" && c.Profile != "bun_consumers_v1") {
 		return c, fmt.Errorf("unsupported consumer contract schema/profile")
 	}
 	if len(c.Consumers) == 0 || len(c.Consumers) > 32 {
@@ -135,7 +135,7 @@ func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, err
 		}
 		for name := range env {
 			switch name {
-			case "PG_BIN_DIR", "GOCACHE", "GOMODCACHE", "DEVELOPER_DIR":
+			case "PG_BIN_DIR", "GOCACHE", "GOMODCACHE", "DEVELOPER_DIR", "BUN_INSTALL_CACHE_DIR":
 			default:
 				return c, fmt.Errorf("consumer %s environment %q is not a tool/cache directory", s.ID, name)
 			}
@@ -152,10 +152,17 @@ func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, err
 			if required[id] {
 				return c, fmt.Errorf("required test %s cannot be an allowed skip", id)
 			}
+			if c.Profile == "bun_consumers_v1" {
+				if _, err := parseBunTestIdentity(id); err != nil {
+					return c, fmt.Errorf("Bun allowed skip identity: %w", err)
+				}
+			}
 		}
 		wantKind := "go_test_json"
 		if c.Profile == "xcode_consumers_v1" {
 			wantKind = "xcresult"
+		} else if c.Profile == "bun_consumers_v1" {
+			wantKind = "bun_junit"
 		}
 		if s.ReportKind != wantKind {
 			return c, fmt.Errorf("consumer %s report_kind must be %s", s.ID, wantKind)
@@ -163,6 +170,10 @@ func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, err
 		for id := range required {
 			if wantKind == "go_test_json" && (strings.Count(id, "::") != 1 || strings.HasPrefix(id, "::") || strings.HasSuffix(id, "::")) {
 				return c, fmt.Errorf("Go required test must be exact package::test identifier")
+			} else if wantKind == "bun_junit" {
+				if _, err := parseBunTestIdentity(id); err != nil {
+					return c, fmt.Errorf("Bun required test identity: %w", err)
+				}
 			}
 		}
 	}
@@ -246,6 +257,11 @@ func ValidateCanonicalConsumerEvidence(step ProofCheckStep) error {
 		return validateConsumerGoReport(c, e.Report)
 	case "xcresult":
 		return validateConsumerXcodeReport(c, e.Report, e.Tests)
+	case "bun_junit":
+		if len(e.Tests) != 0 {
+			return fmt.Errorf("Bun report cannot carry an Xcode test tree")
+		}
+		return validateConsumerBunReport(c, e.Report)
 	default:
 		return fmt.Errorf("unsupported native report")
 	}

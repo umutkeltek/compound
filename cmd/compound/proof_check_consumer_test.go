@@ -14,6 +14,8 @@ func consumerContractFixture(profile string) map[string]any {
 	kind, id := "go_test_json", "example.invalid/product/integration::TestBuyerPath"
 	if profile == "xcode_consumers_v1" {
 		kind, id = "xcresult", "ActivationTests/testFirstAppearance()"
+	} else if profile == "bun_consumers_v1" {
+		kind, id = "bun_junit", `["tests/example.test.ts","","does the thing",["example.test.ts","feature"]]`
 	}
 	return map[string]any{
 		"schema_version": "compound.proof_consumers.v1", "profile": profile,
@@ -36,11 +38,14 @@ func consumerContractJSON(t *testing.T, contract map[string]any) string {
 
 func TestCanonicalConsumerPlanSelectsSealedContract(t *testing.T) {
 	t.Parallel()
-	for _, profile := range []string{"go_consumers_v1", "xcode_consumers_v1"} {
+	for _, profile := range []string{"go_consumers_v1", "xcode_consumers_v1", "bun_consumers_v1"} {
 		t.Run(profile, func(t *testing.T) {
 			files := map[string]string{"compound-proof.json": consumerContractJSON(t, consumerContractFixture(profile))}
 			if profile == "go_consumers_v1" {
 				files["go.mod"] = "module example.invalid/product\n\ngo 1.26.4\n"
+			} else if profile == "bun_consumers_v1" {
+				files["package.json"] = "{}\n"
+				files["bun.lock"] = "lockfileVersion = 1\n"
 			}
 			repo := initCanonicalProofRepo(t, files)
 			source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
@@ -69,6 +74,69 @@ func TestCanonicalConsumerPlanSelectsSealedContract(t *testing.T) {
 			again, err := work.ResolveCanonicalProofPlan(repo, source, nil)
 			if err != nil || !reflect.DeepEqual(plan, again) {
 				t.Fatalf("working copy replaced sealed contract: %+v, %v", again, err)
+			}
+		})
+	}
+}
+
+func TestCanonicalBunConsumerRequiresBothPackageMarkers(t *testing.T) {
+	for _, missing := range []string{"package.json", "bun.lock"} {
+		t.Run(missing, func(t *testing.T) {
+			files := map[string]string{
+				"package.json": "{}\n", "bun.lock": "lockfileVersion = 1\n",
+				"compound-proof.json": consumerContractJSON(t, consumerContractFixture("bun_consumers_v1")),
+			}
+			delete(files, missing)
+			repo := initCanonicalProofRepo(t, files)
+			source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := work.ResolveCanonicalProofPlan(repo, source, nil); err == nil {
+				t.Fatalf("Bun contract admitted without %s", missing)
+			}
+		})
+	}
+}
+
+func TestCanonicalGoConsumerAllowsRootPackageJSONWithoutBunLock(t *testing.T) {
+	files := map[string]string{
+		"go.mod": "module example.invalid/product\n", "package.json": "{}\n",
+		"compound-proof.json": consumerContractJSON(t, consumerContractFixture("go_consumers_v1")),
+	}
+	repo := initCanonicalProofRepo(t, files)
+	source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := work.ResolveCanonicalProofPlan(repo, source, nil); err != nil {
+		t.Fatalf("root JS tooling broke Go consumer: %v", err)
+	}
+}
+
+func TestCanonicalConsumerRejectsCrossProfileRootMarkers(t *testing.T) {
+	cases := []struct {
+		name, profile string
+		extra         map[string]string
+	}{
+		{"bun-with-go", "bun_consumers_v1", map[string]string{"package.json": "{}\n", "bun.lock": "lockfileVersion = 1\n", "go.mod": "module example.invalid/product\n"}},
+		{"bun-with-cargo", "bun_consumers_v1", map[string]string{"package.json": "{}\n", "bun.lock": "lockfileVersion = 1\n", "Cargo.toml": "[workspace]\n", "Cargo.lock": "version = 4\n"}},
+		{"go-with-bun-lock", "go_consumers_v1", map[string]string{"go.mod": "module example.invalid/product\n", "bun.lock": "lockfile exact\n"}},
+		{"xcode-with-bun-lock", "xcode_consumers_v1", map[string]string{"bun.lock": "lockfile exact\n"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"compound-proof.json": consumerContractJSON(t, consumerContractFixture(tc.profile))}
+			for name, body := range tc.extra {
+				files[name] = body
+			}
+			repo := initCanonicalProofRepo(t, files)
+			source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := work.ResolveCanonicalProofPlan(repo, source, nil); err == nil {
+				t.Fatal("cross-profile root markers admitted")
 			}
 		})
 	}

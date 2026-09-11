@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,8 @@ const consumerGoReportFixture = `{"Action":"start","Package":"example.invalid/pr
 {"Action":"pass","Package":"example.invalid/product/integration","Test":"TestBuyerPath"}
 {"Action":"pass","Package":"example.invalid/product/integration"}
 `
+
+const consumerBunReportFixture = `<testsuites tests="1" failures="0" skipped="0"><testsuite name="example.test.ts" tests="1" failures="0" skipped="0"><testsuite name="feature" tests="1" failures="0" skipped="0"><testcase name="does the thing" classname="" file="tests/example.test.ts"/></testsuite></testsuite></testsuites>`
 
 func consumerRunnerFixture(t *testing.T, script string, change func(map[string]any)) (string, proofCheckStep) {
 	t.Helper()
@@ -29,6 +32,73 @@ func consumerRunnerFixture(t *testing.T, script string, change func(map[string]a
 	repo := initCanonicalProofRepo(t, map[string]string{"go.mod": "module example.invalid/product\n", "compound-proof.json": body, "consumer.sh": script})
 	sum := sha256.Sum256([]byte(body))
 	return repo, proofCheckStep{Name: "consumer:buyer-path", Command: []string{"sh", "consumer.sh"}, Dir: ".", ProofRef: "consumer:buyer-path:sha256:" + hex.EncodeToString(sum[:])}
+}
+
+func consumerBunRunnerFixture(t *testing.T, script string, cache string) (string, proofCheckStep) {
+	t.Helper()
+	contract := consumerContractFixture("bun_consumers_v1")
+	c := contract["consumers"].([]any)[0].(map[string]any)
+	c["command"] = []string{"sh", "consumer.sh"}
+	c["required_tools"] = []string{"sh"}
+	c["required_environment"] = []string{"BUN_INSTALL_CACHE_DIR"}
+	body := consumerContractJSON(t, contract)
+	repo := initCanonicalProofRepo(t, map[string]string{
+		"package.json": "{}\n", "bun.lock": "lockfileVersion = 1\n",
+		"compound-proof.json": body, "consumer.sh": script,
+	})
+	sum := sha256.Sum256([]byte(body))
+	t.Setenv("BUN_INSTALL_CACHE_DIR", cache)
+	return repo, proofCheckStep{Name: "consumer:buyer-path", Command: []string{"sh", "consumer.sh"}, Dir: ".", ProofRef: "consumer:buyer-path:sha256:" + hex.EncodeToString(sum[:])}
+}
+
+func TestCanonicalBunConsumerRunnerRetainsNativeJUnitAndScrubsCredentials(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("NPM_TOKEN", "synthetic-secret")
+	t.Setenv("NPM_CONFIG_USERCONFIG", "/tmp/ambient-npmrc")
+	t.Setenv("HOME", t.TempDir())
+	script := "test -z \"${NPM_TOKEN+x}\" && test -z \"${NPM_CONFIG_USERCONFIG+x}\" && test \"$HOME\" != \"" + os.Getenv("HOME") + "\" || exit 41\n" + nativeReportScript(consumerBunReportFixture)
+	repo, step := consumerBunRunnerFixture(t, script, cache)
+	result := runProofCheckStepContext(t.Context(), repo, step, "HEAD", "HEAD")
+	if result.Status != "ok" || result.ConsumerEvidence == nil || string(result.ConsumerEvidence.Report) != consumerBunReportFixture {
+		t.Fatalf("native Bun JUnit was not retained: %+v", result)
+	}
+}
+
+func TestCanonicalBunConsumerRunnerRequiresCacheBeforeLaunch(t *testing.T) {
+	repo, step := consumerBunRunnerFixture(t, "touch launched\n", "")
+	result := runProofCheckStepContext(t.Context(), repo, step, "HEAD", "HEAD")
+	if result.Status != "failed" {
+		t.Fatalf("missing Bun cache admitted: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "launched")); !os.IsNotExist(err) {
+		t.Fatalf("consumer launched before prerequisite validation: %v", err)
+	}
+}
+
+func TestCanonicalBunConsumerRunnerRequiresBunBeforeLaunch(t *testing.T) {
+	contract := consumerContractFixture("bun_consumers_v1")
+	c := contract["consumers"].([]any)[0].(map[string]any)
+	c["command"] = []string{"sh", "consumer.sh"}
+	c["required_tools"] = []string{"sh", "bun"}
+	body := consumerContractJSON(t, contract)
+	repo := initCanonicalProofRepo(t, map[string]string{"package.json": "{}\n", "bun.lock": "lockfileVersion = 1\n", "compound-proof.json": body, "consumer.sh": "touch launched\n"})
+	sum := sha256.Sum256([]byte(body))
+	step := proofCheckStep{Name: "consumer:buyer-path", Command: []string{"sh", "consumer.sh"}, Dir: ".", ProofRef: "consumer:buyer-path:sha256:" + hex.EncodeToString(sum[:])}
+	original := proofCheckRuntimeExecutable
+	t.Cleanup(func() { proofCheckRuntimeExecutable = original })
+	proofCheckRuntimeExecutable = func(logical string) (string, error) {
+		if logical == "bun" {
+			return "", errors.New("synthetic Bun unavailable")
+		}
+		return original(logical)
+	}
+	result := runProofCheckStepContext(t.Context(), repo, step, "HEAD", "HEAD")
+	if result.Status != "failed" {
+		t.Fatalf("missing Bun admitted: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "launched")); !os.IsNotExist(err) {
+		t.Fatalf("consumer launched before Bun resolution: %v", err)
+	}
 }
 
 func nativeReportScript(report string) string {

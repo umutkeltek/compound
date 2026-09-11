@@ -1,6 +1,6 @@
 # Required native consumer proof
 
-External Go and Xcode repositories can declare a tracked root compound-proof.json.
+External Go, Xcode, and Bun repositories can declare a tracked root compound-proof.json.
 Canonical admission reads that regular Git blob from the sealed head, never from
 ambient configuration or a caller replacement command. Compound and Rust retain
 their existing inventories; a consumer declaration cannot replace them. Module
@@ -92,3 +92,26 @@ trust boundary, just like fabricating a native report in the source-owned script
 Adding the contract is not release proof. Required product commands must actually
 consume it through a successful governed canonical run on their sealed candidate,
 and their delivery must consume that same certificate.
+
+## Bun native JUnit profile
+
+bun_consumers_v1 requires tracked root package.json, bun.lock, and
+compound-proof.json with report_kind bun_junit. source-owned command writes Bun
+1.4 native JUnit XML directly to COMPOUND_PROOF_REPORT; a Go-shaped translation
+does not certify. Required and allowed-skip identities use canonical compact JSON
+[file,classname,name,[suite ancestry...]], for example
+["tests/example.test.ts","","does the thing",["example.test.ts","feature"]].
+empty native classname is valid significant. suite ancestry is ordered outer
+file suite through every nested describe suite. Duplicate identities, missing or
+skipped required tests, undeclared skips, failures/errors, inconsistent or absent
+native summary counts, malformed/trailing XML, namespaces, wrappers, unknown
+attributes, zero-leaf suites, ancestry deeper than 32 suites, and empty reports
+fail closed.
+
+BUN_INSTALL_CACHE_DIR is an allowed required-environment directory. Bun consumers
+receive isolated private HOME plus explicit PATH, TMPDIR, locale, report path, and
+declared cache directory; ambient npm configuration provider credentials are not
+inherited. Bun 1.4 has no bun install --offline contract. When hydration is
+required, reviewed repository-owned command may run bun install --frozen-lockfile
+with explicitly declared cache and ordinary network semantics. Compound validates
+prerequisites custody but does not install dependencies itself.

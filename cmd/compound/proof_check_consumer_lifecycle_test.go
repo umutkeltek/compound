@@ -144,6 +144,99 @@ func TestCanonicalConsumerTimeoutRetainsPartialEvidence(t *testing.T) {
 	}
 }
 
+func TestCanonicalBunConsumerLifecycleOwnsNativeEvidenceAndLandCheck(t *testing.T) {
+	for _, valid := range []bool{true, false} {
+		t.Run(map[bool]string{true: "valid", false: "wrong-native-identity"}[valid], func(t *testing.T) {
+			contract := consumerContractFixture("bun_consumers_v1")
+			consumer := contract["consumers"].([]any)[0].(map[string]any)
+			consumer["command"] = []string{"sh", "consumer.sh"}
+			consumer["required_tools"] = []string{"sh"}
+			report := consumerBunReportFixture
+			if !valid {
+				report = strings.Replace(report, `name="does the thing"`, `name="wrong native test"`, 1)
+			}
+			repo := initCanonicalProofRepo(t, map[string]string{
+				"package.json": "{}\n", "bun.lock": "lockfileVersion = 1\n",
+				"consumer.sh":         nativeReportScript(report),
+				"compound-proof.json": consumerContractJSON(t, contract),
+			})
+			baseBody, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := strings.TrimSpace(string(baseBody))
+			if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("candidate\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runCommandGit(t, repo, "add", "README.md")
+			runCommandGit(t, repo, "commit", "-m", "candidate")
+			source, err := gitrepository.CaptureCleanSnapshot(repo, base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			homePath := t.TempDir()
+			now := time.Now().UTC()
+			if err := home.Init(homePath, "native-bun-fixture", now); err != nil {
+				t.Fatal(err)
+			}
+			store, err := work.Open(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w, err := store.Create(work.CreateInput{Owner: "codex:consumer-fixture", Actor: "codex:consumer-fixture", State: "ready", SuccessPredicate: "required native Bun consumer has an owned canonical certificate", GitDelivery: &envelope.GitDeliveryContract{TargetWorktreeRoot: repo, RepositoryFingerprint: source.RepositoryFingerprint, TargetLocalRef: "refs/heads/main", ExpectedBaseSHA: base, PublicationMode: "local_only"}}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Claim(w.ID, "codex:consumer-fixture", now); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(t.TempDir(), "proof.json")
+			bin := t.TempDir()
+			if err := os.WriteFile(filepath.Join(bin, "redact"), []byte("#!/bin/sh\ncat >/dev/null\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			child := exec.Command(os.Args[0], "-test.run=^TestCanonicalConsumerFullLifecycleOwnsNativeGoEvidence$")
+			child.Env = append(os.Environ(), consumerCanonicalSubEnv+"=1", "COMPOUND_HOME="+homePath, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "COMPOUND_CONSUMER_TEST_REPO="+repo, "COMPOUND_CONSUMER_TEST_BASE="+base, "COMPOUND_CONSUMER_TEST_WORK="+w.ID, "COMPOUND_CONSUMER_TEST_OUT="+out)
+			output, runErr := child.CombinedOutput()
+			if (runErr == nil) != valid {
+				t.Fatalf("Bun canonical exit=%v valid=%v\n%s", runErr, valid, output)
+			}
+			body, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatalf("owned report missing: %v\n%s", err, output)
+			}
+			var proof proofCheckReport
+			if err := json.Unmarshal(body, &proof); err != nil {
+				t.Fatal(err)
+			}
+			if len(proof.Steps) != 3 || proof.Steps[0].ConsumerEvidence == nil || !bytes.Equal(proof.Steps[0].ConsumerEvidence.Report, []byte(report)) {
+				t.Fatalf("native Bun bytes not owned: %+v", proof)
+			}
+			current, err := store.Get(w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if valid {
+				if len(current.VerificationIDs) != 1 {
+					t.Fatalf("Bun certificate absent: %+v", current)
+				}
+				if _, err := store.Advance(w.ID, work.AdvanceInput{To: current.State, Actor: "codex:consumer-fixture", ArtifactID: "commit:" + source.HeadSHA}, time.Now().UTC()); err != nil {
+					t.Fatal(err)
+				}
+				landed, err := store.LandCheck(w.ID, work.LandCheckOptions{Actor: "codex:consumer-fixture", CandidateTipSHA: source.HeadSHA}, time.Now().UTC())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if landed.ProofVerificationRef != current.VerificationIDs[0] {
+					t.Fatal("land-check lost Bun proof certificate")
+				}
+			} else if len(current.VerificationIDs) != 0 {
+				t.Fatalf("wrong native identity certified: %+v", current)
+			}
+		})
+	}
+}
+
 func TestCanonicalConsumerBackgroundWriterCannotReviseCertifiedReport(t *testing.T) {
 	script := nativeReportScript(consumerGoReportFixture) + "(sleep 1; printf 'invalid late report\\n' > \"$COMPOUND_PROOF_REPORT\") >/dev/null 2>&1 &\n"
 	repo, step := consumerRunnerFixture(t, script, func(c map[string]any) { c["timeout_seconds"] = 4 })

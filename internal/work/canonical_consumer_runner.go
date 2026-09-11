@@ -81,13 +81,22 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 		return nil, evidence, err
 	}
 	defer os.RemoveAll(tmp)
+	childHome := os.Getenv("HOME")
+	if consumer.ReportKind == "bun_junit" {
+		childHome = filepath.Join(tmp, "home")
+		if err := os.Mkdir(childHome, 0o700); err != nil {
+			return nil, evidence, err
+		}
+	}
 	reportName := "result.jsonl"
 	if consumer.ReportKind == "xcresult" {
 		reportName = "result.xcresult"
+	} else if consumer.ReportKind == "bun_junit" {
+		reportName = "result.junit.xml"
 	}
 	reportPath := filepath.Join(tmp, reportName)
 	env := []string{
-		"PATH=" + toolPath, "HOME=" + os.Getenv("HOME"), "TMPDIR=" + tmp, "LANG=C", "LC_ALL=C",
+		"PATH=" + toolPath, "HOME=" + childHome, "TMPDIR=" + tmp, "LANG=C", "LC_ALL=C",
 		"GOPROXY=off", "GOSUMDB=off", "GOENV=off", "GOTOOLCHAIN=local", "GOWORK=off",
 		"GOCACHE=" + filepath.Join(tmp, "go-cache"), "GOMODCACHE=" + filepath.Join(tmp, "go-modules"),
 		"GOPATH=" + filepath.Join(tmp, "go-path"), "COMPOUND_PROOF_REPORT=" + reportPath,
@@ -114,7 +123,7 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 	output, runErr := cmd.CombinedOutput()
 	runErr = errors.Join(runErr, writer.Close())
 	runErr = errors.Join(runErr, awaitConsumerWriters(runCtx, cmd, reader))
-	if consumer.ReportKind == "go_test_json" {
+	if consumer.ReportKind == "go_test_json" || consumer.ReportKind == "bun_junit" {
 		evidence.Report, err = readConsumerReport(tmp, reportName)
 	} else {
 		if err = validateConsumerResultBundle(reportPath); err == nil {
