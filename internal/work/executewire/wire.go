@@ -314,11 +314,26 @@ func PreflightViaActuator(store *work.Store, workID, lane string, now time.Time)
 
 	// 3. Run the lane readiness check. The launch wire runs the same
 	// guard, but doing it here lets the seam refuse without ever
-	// claiming the envelope.
+	// claiming the envelope. For tuple-backed Claude lanes the guard's
+	// resolved-vs-expected comparison (internal/harness/registry.go
+	// ReadOnlyLaunchReadiness) requires RequestedModelID /
+	// RequestedProviderRoute / Command to match the values the adapter's
+	// RevalidateGovernedRun will resolve; resolveLaneLaunchTuple reads
+	// the same Compound model-router authority the adapter reads, so
+	// passing its output here makes the comparison hold. Non-tuple
+	// lanes fall through to the lane id, exactly as before.
+	tupleCommand, tupleModelID, tupleProviderRoute, _ := resolveLaneLaunchTuple(homePath, lane, now)
+	if tupleModelID == "" {
+		tupleModelID = lane
+	}
+	if tupleProviderRoute == "" {
+		tupleProviderRoute = lane
+	}
 	readinessReq := work.DelegateHarnessReadinessRequest{
 		HomePath: homePath, HarnessHome: homePath, WorkID: workID,
 		Workspace: workspace, Harness: lane, LaneID: lane,
-		Args: []string{}, RequestedModelID: lane, RequestedProviderRoute: lane, Now: now,
+		Command: tupleCommand, Args: []string{},
+		RequestedModelID: tupleModelID, RequestedProviderRoute: tupleProviderRoute, Now: now,
 	}
 	readiness, readinessErr := LaunchReadiness(readinessReq)
 	if readinessErr != nil {
@@ -379,11 +394,23 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	if workspace == "" {
 		return "", fmt.Errorf("workspace_unresolvable:envelope %s has no git_delivery.target_worktree_root", workID)
 	}
+	// Tuple resolution mirrors the preflight hook's call: the readiness
+	// guard's resolved-vs-expected comparison requires the request to
+	// carry the adapter-resolved {Command, RequestedModelID,
+	// RequestedProviderRoute}, not the lane id. resolveLaneLaunchTuple
+	// reuses the same Compound model-router authority the adapter reads.
+	tupleCommand, tupleModelID, tupleProviderRoute, _ := resolveLaneLaunchTuple(homePath, lane, now)
+	if tupleModelID == "" {
+		tupleModelID = lane
+	}
+	if tupleProviderRoute == "" {
+		tupleProviderRoute = lane
+	}
 	readinessReq := work.DelegateHarnessReadinessRequest{
 		HomePath: homePath, HarnessHome: homePath, WorkID: workID,
 		Workspace: workspace, Harness: harnessName, LaneID: lane,
-		Args: []string{prompt}, RequestedModelID: lane,
-		RequestedProviderRoute: lane, Now: now,
+		Command: tupleCommand, Args: []string{prompt},
+		RequestedModelID: tupleModelID, RequestedProviderRoute: tupleProviderRoute, Now: now,
 	}
 	readiness, readinessErr := LaunchReadiness(readinessReq)
 	if readinessErr != nil {
