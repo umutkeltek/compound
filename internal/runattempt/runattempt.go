@@ -1857,6 +1857,12 @@ func UnreadableRunAttemptIDs(err error) []string {
 // readable record; recovery and health consumers must never mistake corrupt
 // authority evidence for an empty successful walk.
 func (s *Store) List() ([]RunAttempt, error) {
+	return s.list(nil)
+}
+
+// list walks run_attempts/ and loads every valid id through Get, except ids
+// for which skip reports true; those are never read past skip itself.
+func (s *Store) list(skip func(id string) bool) ([]RunAttempt, error) {
 	dir := filepath.Join(s.home, "run_attempts")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1873,6 +1879,9 @@ func (s *Store) List() ([]RunAttempt, error) {
 		}
 		id := strings.TrimSuffix(e.Name(), ".json")
 		if !Valid(id) {
+			continue
+		}
+		if skip != nil && skip(id) {
 			continue
 		}
 		ra, gerr := s.Get(id)
@@ -1898,13 +1907,50 @@ func (s *Store) List() ([]RunAttempt, error) {
 // sweep would examine. Sorted by CreatedAt ascending (List order).
 func (s *Store) ListNonTerminal() ([]RunAttempt, error) {
 	all, err := s.List()
+	return nonTerminal(all), err
+}
+
+// ListNonTerminalByStatus returns the same pending/running set as
+// ListNonTerminal, but decides terminality from each main record's status
+// before paying for launch-sidecar validation. Terminal attempts dominate a
+// long-lived home and each Get re-validates up to three rooted sidecars, so a
+// full walk costs seconds; per-tool-call hook paths cannot afford that inside
+// their wall-clock budget. Live and undecodable records still go through Get,
+// so their corruption is reported exactly as ListNonTerminal reports it. A
+// terminal record's unreadable launch evidence is NOT reported here — sweep
+// and health consumers keep ListNonTerminal, which validates every record.
+func (s *Store) ListNonTerminalByStatus() ([]RunAttempt, error) {
+	live, err := s.list(s.recordedTerminal)
+	// A record terminalized between the status probe and Get arrives here
+	// terminal; filter again so the result matches ListNonTerminal.
+	return nonTerminal(live), err
+}
+
+// recordedTerminal reports whether id's main record decodes with a terminal
+// status. A record that cannot be read or decoded reports false so it falls
+// through to Get and surfaces as a read issue rather than vanishing.
+func (s *Store) recordedTerminal(id string) bool {
+	data, err := os.ReadFile(s.path(id))
+	if err != nil {
+		return false
+	}
+	var probe struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	return IsTerminal(probe.Status)
+}
+
+func nonTerminal(attempts []RunAttempt) []RunAttempt {
 	var out []RunAttempt
-	for _, ra := range all {
+	for _, ra := range attempts {
 		if !IsTerminal(ra.Status) {
 			out = append(out, ra)
 		}
 	}
-	return out, err
+	return out
 }
 
 // SweepStale terminalizes every non-terminal RunAttempt whose last activity

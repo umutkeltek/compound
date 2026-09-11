@@ -41,6 +41,9 @@ func TestListFailsClosedOnMalformedRunAttempt(t *testing.T) {
 	if _, err := Open(home).ListNonTerminal(); err == nil || !strings.Contains(err.Error(), malformedID) {
 		t.Fatalf("ListNonTerminal malformed error = %v, want id-bearing refusal", err)
 	}
+	if _, err := Open(home).ListNonTerminalByStatus(); err == nil || !strings.Contains(err.Error(), malformedID) {
+		t.Fatalf("ListNonTerminalByStatus malformed error = %v, want id-bearing refusal", err)
+	}
 }
 
 func TestListReturnsAllSortedByCreatedAt(t *testing.T) {
@@ -123,20 +126,104 @@ func TestListEmptyDirNoError(t *testing.T) {
 }
 
 func TestListNonTerminalSurfacesUnreadableLaunchEvidence(t *testing.T) {
+	lists := map[string]func(*Store) ([]RunAttempt, error){
+		"ListNonTerminal":         (*Store).ListNonTerminal,
+		"ListNonTerminalByStatus": (*Store).ListNonTerminalByStatus,
+	}
+	for name, list := range lists {
+		for _, corruption := range []string{"malformed-json", "unsafe-mode"} {
+			t.Run(name+"/"+corruption, func(t *testing.T) {
+				home := t.TempDir()
+				attempt, _ := seedUnreadableLaunchAttempt(t, home, corruption)
+
+				got, err := list(Open(home))
+				if err == nil {
+					t.Fatalf("%s silently omitted %s attempt: got %+v", name, corruption, got)
+				}
+				if !strings.Contains(err.Error(), attempt.ID) {
+					t.Fatalf("%s error = %q, want unreadable attempt id %s", name, err, attempt.ID)
+				}
+				if len(got) != 0 {
+					t.Fatalf("%s returned unreadable attempt material: %+v", name, got)
+				}
+			})
+		}
+	}
+}
+
+func TestListNonTerminalByStatusMatchesListNonTerminal(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+	var ids []string
+	for i, status := range []string{StatusSucceeded, "", StatusAbandoned, "", StatusFailed} {
+		ra, err := s.Mint("work_bystatus", "actor", "fake", t0.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, ra.ID)
+		if status != "" {
+			if _, err := s.Complete(ra.ID, status, t0.Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	want, err := Open(home).ListNonTerminal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Open(home).ListNonTerminalByStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || len(want) != 2 {
+		t.Fatalf("live counts: ByStatus=%d ListNonTerminal=%d, want 2 each", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].ID != want[i].ID {
+			t.Fatalf("ByStatus[%d] = %s, want %s (same set, same order)", i, got[i].ID, want[i].ID)
+		}
+	}
+	if got[0].ID != ids[1] || got[1].ID != ids[3] {
+		t.Fatalf("ByStatus = [%s %s], want the two pending attempts [%s %s]", got[0].ID, got[1].ID, ids[1], ids[3])
+	}
+}
+
+// The point of ByStatus is to never touch a terminal record's launch sidecars.
+// A terminal attempt with unreadable evidence proves it: ListNonTerminal still
+// walks it and refuses, ByStatus skips it without reading the sidecar at all.
+func TestListNonTerminalByStatusSkipsTerminalLaunchEvidence(t *testing.T) {
 	for _, corruption := range []string{"malformed-json", "unsafe-mode"} {
 		t.Run(corruption, func(t *testing.T) {
 			home := t.TempDir()
-			attempt, _ := seedUnreadableLaunchAttempt(t, home, corruption)
+			store := Open(home)
+			created := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
+			done, err := store.Mint("work_terminal_launch_"+corruption, "actor:test", "harness:test", created)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.CommitLaunch(done.ID, created.Add(time.Minute), func() error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Complete(done.ID, StatusSucceeded, created.Add(2*time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			corruptPreparedLaunchEvidence(t, home, done.ID, corruption)
+			live, err := store.Mint("work_live_next_to_terminal", "actor:test", "harness:test", created.Add(3*time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-			got, err := Open(home).ListNonTerminal()
-			if err == nil {
-				t.Fatalf("ListNonTerminal silently omitted %s attempt: got %+v", corruption, got)
+			if _, err := Open(home).ListNonTerminal(); err == nil || !strings.Contains(err.Error(), done.ID) {
+				t.Fatalf("fixture not unreadable: ListNonTerminal error = %v, want refusal naming %s", err, done.ID)
 			}
-			if !strings.Contains(err.Error(), attempt.ID) {
-				t.Fatalf("ListNonTerminal error = %q, want unreadable attempt id %s", err, attempt.ID)
+			got, err := Open(home).ListNonTerminalByStatus()
+			if err != nil {
+				t.Fatalf("ListNonTerminalByStatus read terminal %s launch evidence: %v", corruption, err)
 			}
-			if len(got) != 0 {
-				t.Fatalf("ListNonTerminal returned unreadable attempt material: %+v", got)
+			if len(got) != 1 || got[0].ID != live.ID {
+				t.Fatalf("ListNonTerminalByStatus = %+v, want only live attempt %s", got, live.ID)
 			}
 		})
 	}
@@ -236,7 +323,13 @@ func seedUnreadableLaunchAttempt(t *testing.T, home, corruption string) (RunAtte
 	if _, err := store.CommitLaunch(attempt.ID, launchAt, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	preparedPath := launchEvidencePath(home, attempt.ID, launchEvidencePrepared)
+	corruptPreparedLaunchEvidence(t, home, attempt.ID, corruption)
+	return attempt, launchAt
+}
+
+func corruptPreparedLaunchEvidence(t *testing.T, home, id, corruption string) {
+	t.Helper()
+	preparedPath := launchEvidencePath(home, id, launchEvidencePrepared)
 	switch corruption {
 	case "malformed-json":
 		if err := os.WriteFile(preparedPath, []byte("{\n"), 0o600); err != nil {
@@ -252,7 +345,6 @@ func seedUnreadableLaunchAttempt(t *testing.T, home, corruption string) (RunAtte
 	default:
 		t.Fatalf("unknown corruption fixture %q", corruption)
 	}
-	return attempt, launchAt
 }
 
 func TestSweepStaleTerminalizesOldPending(t *testing.T) {

@@ -74,7 +74,9 @@ func (s *Store) ResolveCollaborationRecipient(query CollaborationRecipientQuery)
 		}
 		workByID[item.ID] = item
 	}
-	attempts, err := s.runAttempts().ListNonTerminal()
+	// Runs inside every live PreToolUse hook: only live attempts can be a
+	// recipient, so terminal records are skipped before sidecar validation.
+	attempts, err := s.runAttempts().ListNonTerminalByStatus()
 	if err != nil {
 		return CollaborationRecipientResolution{}, false, err
 	}
