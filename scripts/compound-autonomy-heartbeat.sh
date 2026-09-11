@@ -239,6 +239,34 @@ except Exception:
 [ "$STALE_RC" -ne 0 ] && STALE_SUM="ERR: $(printf '%.160s' "$STALE_OUT")"
 [ "$STALE_SUM" = "unparseable" ] && STALE_RC=65 && STALE_SUM="ERR: unparseable JSON raw=$(raw_head "$STALE_OUT")"
 
+# R6O (2026-09-11): refresh the lane-capacity sampler BEFORE the continue stage.
+# The sampler is a launchd job that only runs while the machine is awake, so the
+# first tick after sleep otherwise reads a window older than the seam's 10-minute
+# freshness gate and refuses with capacity_unknown all morning. The kick goes
+# through launchd (the sampler's owner) and is bounded: we wait at most
+# SAMPLER_WAIT_S for the projection file's mtime to advance, then continue either
+# way — the seam's own freshness gate stays the authority. Skipped entirely when
+# the plist is not installed under this HOME (tests, foreign machines).
+SAMPLER_LABEL=ai.compound.usage-supplement
+SAMPLER_PLIST="$HOME/Library/LaunchAgents/$SAMPLER_LABEL.plist"
+SAMPLER_FILE="$COMPOUND_HOME/projections/usage-supplement.jsonl"
+SAMPLER_WAIT_S=${COMPOUND_HEARTBEAT_SAMPLER_WAIT_S:-120}
+SAMPLER_SUM="skipped:no_plist"
+if [ -f "$SAMPLER_PLIST" ] && command -v launchctl >/dev/null 2>&1; then
+  SAMPLER_BEFORE=$(stat -f %m "$SAMPLER_FILE" 2>/dev/null || echo 0)
+  if launchctl kickstart "gui/$(id -u)/$SAMPLER_LABEL" >/dev/null 2>&1; then
+    SAMPLER_SUM="kicked:stale"
+    SAMPLER_WAITED=0
+    while [ "$SAMPLER_WAITED" -lt "$SAMPLER_WAIT_S" ]; do
+      sleep 5; SAMPLER_WAITED=$((SAMPLER_WAITED + 5))
+      SAMPLER_AFTER=$(stat -f %m "$SAMPLER_FILE" 2>/dev/null || echo 0)
+      if [ "$SAMPLER_AFTER" -gt "$SAMPLER_BEFORE" ]; then SAMPLER_SUM="kicked:fresh_after=${SAMPLER_WAITED}s"; break; fi
+    done
+  else
+    SAMPLER_SUM="kick_refused"
+  fi
+fi
+
 CONT_OUT=$("$TIMEOUT_BIN" 600 "$BIN" work continue --actor claude-minimax --until-wait --max-steps 3 --max-execute-steps 1 --json 2>"$STAGE_STDERR_DIR/continue.err")
 CONT_RC=$?
 log_stage_stderr continue "$STAGE_STDERR_DIR/continue.err"
@@ -283,5 +311,5 @@ FINAL_RC=0
 if [ "$DIR_RC" -ne 0 ] || [ "$ARCH_RC" -ne 0 ] || [ "$PD_RC" -ne 0 ] || [ "$STALE_RC" -ne 0 ] || [ "$CONT_RC" -ne 0 ]; then
   FINAL_RC=1
 fi
-echo "$TS final rc=$FINAL_RC | director rc=$DIR_RC $DIR_SUM | compaction rc=$ARCH_RC $ARCH_SUM | promote-driver rc=$PD_RC $PD_SUM | stale-work rc=$STALE_RC $STALE_SUM | continue rc=$CONT_RC $CONT_SUM" >> "$LOG"
+echo "$TS final rc=$FINAL_RC | director rc=$DIR_RC $DIR_SUM | compaction rc=$ARCH_RC $ARCH_SUM | promote-driver rc=$PD_RC $PD_SUM | stale-work rc=$STALE_RC $STALE_SUM | sampler=$SAMPLER_SUM | continue rc=$CONT_RC $CONT_SUM" >> "$LOG"
 exit "$FINAL_RC"
