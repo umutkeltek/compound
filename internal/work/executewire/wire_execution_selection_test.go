@@ -75,7 +75,7 @@ func seedReadyWorkWithSelection(t *testing.T, store *work.Store, id string, sel 
 	in := work.CreateInput{
 		WorkID: id, Owner: "orchestrator:claude_minimax", Actor: "claude_code:orchestrator",
 		State: "ready", Risk: "tier1", Privacy: "private",
-		SuccessPredicate: "selection snapshot stamped before adapter.Run",
+		SuccessPredicate:   "selection snapshot stamped before adapter.Run",
 		ExecutionSelection: sel,
 	}
 	w, err := store.Create(in, now)
@@ -118,13 +118,13 @@ func attachGitDelivery(t *testing.T, store *work.Store, w envelope.WorkEnvelope)
 		t.Fatal(err)
 	}
 	in := work.CreateInput{
-		WorkID:            w.ID,
-		Owner:             w.Owner,
-		Actor:             "claude_code:orchestrator",
-		State:             "ready",
-		Risk:              w.Risk,
-		Privacy:           w.Privacy,
-		SuccessPredicate:  w.SuccessPredicate,
+		WorkID:             w.ID,
+		Owner:              w.Owner,
+		Actor:              "claude_code:orchestrator",
+		State:              "ready",
+		Risk:               w.Risk,
+		Privacy:            w.Privacy,
+		SuccessPredicate:   w.SuccessPredicate,
 		ExecutionSelection: w.ExecutionSelection,
 		GitDelivery: &envelope.GitDeliveryContract{
 			TargetWorktreeRoot: repo,
@@ -163,12 +163,12 @@ func installDelegateResolver(t *testing.T, harnessName, command, modelID, route 
 	prev := work.DelegateHarnessResolver
 	work.DelegateHarnessResolver = func(work.DelegateHarnessResolveRequest) (work.DelegateHarnessResolution, error) {
 		return work.DelegateHarnessResolution{
-			Harness:               harnessName,
-			LaneID:                harnessName,
-			Command:               command,
-			RequestedModelID:      modelID,
+			Harness:                harnessName,
+			LaneID:                 harnessName,
+			Command:                command,
+			RequestedModelID:       modelID,
 			RequestedProviderRoute: route,
-			TupleBacked:           true,
+			TupleBacked:            true,
 		}, nil
 	}
 	return func() { work.DelegateHarnessResolver = prev }

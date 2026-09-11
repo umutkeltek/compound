@@ -579,12 +579,12 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	// and the runner does the actual stamp.
 	snapshot, snapshotErr := buildSelectionSnapshotFromSaved(
 		wenv,
-		"",                       // overrideHarness (the wire never overrides — the caller did, before this hook)
-		"",                       // overrideLaunchProfile (same — one-run override happens in cmd/compound, not here)
-		tupleProviderRoute,       // resolved route
-		tupleModelID,             // resolved model id
-		tupleProfileRevision,     // observed profile revision (from the resolver)
-		tupleProfileRevision,     // tuple's profile revision (same source — used for drift detection)
+		"",                   // overrideHarness (the wire never overrides — the caller did, before this hook)
+		"",                   // overrideLaunchProfile (same — one-run override happens in cmd/compound, not here)
+		tupleProviderRoute,   // resolved route
+		tupleModelID,         // resolved model id
+		tupleProfileRevision, // observed profile revision (from the resolver)
+		tupleProfileRevision, // tuple's profile revision (same source — used for drift detection)
 	)
 	if snapshotErr != nil {
 		return "", fmt.Errorf("execute stage launch: build selection snapshot: %w", snapshotErr)

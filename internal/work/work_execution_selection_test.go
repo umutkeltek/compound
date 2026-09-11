@@ -119,14 +119,14 @@ func TestExplicitOverrideDoesNotRewriteSavedSelection(t *testing.T) {
 	now := time.Date(2026, 9, 11, 18, 5, 0, 0, time.UTC)
 
 	saved := &envelope.ExecutionSelection{
-		LaunchProfileID: "claude-minimax",
-		Harness:         "claude_code",
-		ProviderRoute:   "minimax/MiniMax-M3",
+		LaunchProfileID:  "claude-minimax",
+		Harness:          "claude_code",
+		ProviderRoute:    "minimax/MiniMax-M3",
 		RequestedModelID: "MiniMax-M3",
-		Source:          "explicit",
-		Revision:        1,
-		SelectedBy:      "claude_code:orchestrator",
-		SelectedAt:      now.UTC().Format(time.RFC3339),
+		Source:           "explicit",
+		Revision:         1,
+		SelectedBy:       "claude_code:orchestrator",
+		SelectedAt:       now.UTC().Format(time.RFC3339),
 	}
 	w, err := store.Create(CreateInput{
 		Owner: "orchestrator:claude_minimax", Actor: "claude_code:orchestrator",
@@ -141,14 +141,14 @@ func TestExplicitOverrideDoesNotRewriteSavedSelection(t *testing.T) {
 	// (per spec: an override applies to ONE run and records source:
 	// override on the attempt, never rewrites the saved selection).
 	override := envelope.ExecutionSelection{
-		LaunchProfileID: "codex",
-		Harness:         "codex",
-		ProviderRoute:   "openai/codex",
+		LaunchProfileID:  "codex",
+		Harness:          "codex",
+		ProviderRoute:    "openai/codex",
 		RequestedModelID: "codex-1",
-		Source:          "override",
-		Revision:        1,
-		SelectedBy:      "operator:test",
-		SelectedAt:      now.UTC().Format(time.RFC3339),
+		Source:           "override",
+		Revision:         1,
+		SelectedBy:       "operator:test",
+		SelectedAt:       now.UTC().Format(time.RFC3339),
 	}
 	_ = override // the override is rendered into the attempt snapshot, not the envelope
 
@@ -172,14 +172,14 @@ func TestSaveBumpsRevisionAndRecordsEvent(t *testing.T) {
 	now := time.Date(2026, 9, 11, 18, 10, 0, 0, time.UTC)
 
 	saved1 := envelope.ExecutionSelection{
-		LaunchProfileID: "claude-minimax",
-		Harness:         "claude_code",
-		ProviderRoute:   "minimax/MiniMax-M3",
+		LaunchProfileID:  "claude-minimax",
+		Harness:          "claude_code",
+		ProviderRoute:    "minimax/MiniMax-M3",
 		RequestedModelID: "MiniMax-M3",
-		Source:          "explicit",
-		Revision:        1,
-		SelectedBy:      "claude_code:orchestrator",
-		SelectedAt:      now.UTC().Format(time.RFC3339),
+		Source:           "explicit",
+		Revision:         1,
+		SelectedBy:       "claude_code:orchestrator",
+		SelectedAt:       now.UTC().Format(time.RFC3339),
 	}
 	w, err := store.Create(CreateInput{
 		Owner: "orchestrator:claude_minimax", Actor: "claude_code:orchestrator",
@@ -241,14 +241,14 @@ func TestSelectionSurvivesUnrelatedDefaultChange(t *testing.T) {
 	now := time.Date(2026, 9, 11, 18, 15, 0, 0, time.UTC)
 
 	saved := envelope.ExecutionSelection{
-		LaunchProfileID: "claude-minimax",
-		Harness:         "claude_code",
-		ProviderRoute:   "minimax/MiniMax-M3",
+		LaunchProfileID:  "claude-minimax",
+		Harness:          "claude_code",
+		ProviderRoute:    "minimax/MiniMax-M3",
 		RequestedModelID: "MiniMax-M3",
-		Source:          "explicit",
-		Revision:        1,
-		SelectedBy:      "claude_code:orchestrator",
-		SelectedAt:      now.UTC().Format(time.RFC3339),
+		Source:           "explicit",
+		Revision:         1,
+		SelectedBy:       "claude_code:orchestrator",
+		SelectedAt:       now.UTC().Format(time.RFC3339),
 	}
 	w, err := store.Create(CreateInput{
 		Owner: "orchestrator:claude_minimax", Actor: "claude_code:orchestrator",
@@ -284,14 +284,14 @@ func TestConcurrentSavesCannotClobber(t *testing.T) {
 	now := time.Date(2026, 9, 11, 18, 20, 0, 0, time.UTC)
 
 	saved := envelope.ExecutionSelection{
-		LaunchProfileID: "claude-minimax",
-		Harness:         "claude_code",
-		ProviderRoute:   "minimax/MiniMax-M3",
+		LaunchProfileID:  "claude-minimax",
+		Harness:          "claude_code",
+		ProviderRoute:    "minimax/MiniMax-M3",
 		RequestedModelID: "MiniMax-M3",
-		Source:          "explicit",
-		Revision:        1,
-		SelectedBy:      "claude_code:orchestrator",
-		SelectedAt:      now.UTC().Format(time.RFC3339),
+		Source:           "explicit",
+		Revision:         1,
+		SelectedBy:       "claude_code:orchestrator",
+		SelectedAt:       now.UTC().Format(time.RFC3339),
 	}
 	w, err := store.Create(CreateInput{
 		Owner: "orchestrator:claude_minimax", Actor: "claude_code:orchestrator",
