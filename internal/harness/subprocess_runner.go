@@ -3,6 +3,7 @@ package harness
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,31 @@ import (
 // flags; the Codex adapter assembles `codex exec --prompt ...`. The
 // shared runner does not know or care which.
 type buildCmdFn func(context.Context, RunInput) *exec.Cmd
+
+// subprocessRunOptions carries adapter-owned evidence collection that must run
+// after the child has exited and its transcript is durable, but before the
+// still-mutable RunAttempt is terminalized. It is deliberately private: a
+// caller must not be able to attach arbitrary proof through RunInput.
+type subprocessRunOptions struct {
+	// PrepareEvidence runs after the attempt is minted but before command
+	// construction, for adapter-private pre-start custody such as inherited FDs.
+	PrepareEvidence  func() error
+	FinalizeEvidence func(subprocessEvidenceContext) ([]string, error)
+	// Failure-only snapshot digest; never certification or status promotion.
+	RetainFailedEvidence func(subprocessEvidenceContext) (string, error)
+	flushTranscript      func(*lockedWriter) error
+	syncTranscript       func(*os.File) error
+	closeTranscript      func(*os.File) error
+	stableStartError     string
+}
+
+type subprocessEvidenceContext struct {
+	RunAttemptID   string
+	Command        string
+	TranscriptPath string
+	ExitCode       int
+	TimedOut       bool
+}
 
 // runAttemptStore is the RunAttempt persistence surface that
 // runWithSubprocess depends on. *runattempt.Store satisfies it in
@@ -85,6 +111,18 @@ func runWithSubprocess(
 	in RunInput,
 	build buildCmdFn,
 	heartbeatInterval time.Duration,
+) (RunOutput, error) {
+	return runWithSubprocessOptions(ctx, store, harnessName, in, build, heartbeatInterval, subprocessRunOptions{})
+}
+
+func runWithSubprocessOptions(
+	ctx context.Context,
+	store runAttemptStore,
+	harnessName string,
+	in RunInput,
+	build buildCmdFn,
+	heartbeatInterval time.Duration,
+	options subprocessRunOptions,
 ) (RunOutput, error) {
 	if err := validateSubprocessInput(harnessName, in); err != nil {
 		return RunOutput{}, err
@@ -213,6 +251,11 @@ func runWithSubprocess(
 	defer tf.Close()
 	tw := &lockedWriter{w: bufio.NewWriter(tf)}
 
+	if options.PrepareEvidence != nil {
+		if err := options.PrepareEvidence(); err != nil {
+			return failTerm("prepare private evidence"), fmt.Errorf("%s: prepare private evidence: %w", harnessName, err)
+		}
+	}
 	cmd := build(ctx, in)
 	// Spawn the subprocess in its own process group (unix only; a no-op
 	// elsewhere) so the timeout kill below reaps the whole tree, not just the
@@ -265,6 +308,9 @@ func runWithSubprocess(
 		if startCalled && cmd.Process != nil {
 			killProcessTree(cmd)
 			_ = cmd.Wait()
+		}
+		if options.stableStartError != "" {
+			return failTerm(options.stableStartError), fmt.Errorf("%s: %s", harnessName, options.stableStartError)
 		}
 		return failTerm("start: " + err.Error()), fmt.Errorf("%s: start: %w", harnessName, err)
 	}
@@ -372,12 +418,34 @@ func runWithSubprocess(
 	reapMu.Unlock()
 	close(stopCh) // stops BOTH the heartbeat loop and the timeout timer
 	hbWG.Wait()
-	if err := tw.Flush(); err != nil {
+	flushTranscript := tw.Flush
+	if options.flushTranscript != nil {
+		flushTranscript = func() error { return options.flushTranscript(tw) }
+	}
+	syncTranscript := tf.Sync
+	if options.syncTranscript != nil {
+		syncTranscript = func() error { return options.syncTranscript(tf) }
+	}
+	closeTranscript := tf.Close
+	if options.closeTranscript != nil {
+		closeTranscript = func() error { return options.closeTranscript(tf) }
+	}
+	var transcriptFlushErr error
+	if err := flushTranscript(); err != nil {
+		transcriptFlushErr = fmt.Errorf("flush transcript: %w", err)
+	}
+	if err := syncTranscript(); err != nil && transcriptFlushErr == nil {
+		transcriptFlushErr = fmt.Errorf("sync transcript: %w", err)
+	}
+	if err := closeTranscript(); err != nil && transcriptFlushErr == nil {
+		transcriptFlushErr = fmt.Errorf("close transcript: %w", err)
+	}
+	if transcriptFlushErr != nil {
 		// A failed flush loses buffered transcript lines but is not fatal --
 		// the run still produced a result. Surface it on the transcript ref
 		// so the audit is honest about the partial capture.
 		refs := append([]string(nil), in.ProofRefs...)
-		refs = append(refs, "transcript_flush_error:"+err.Error())
+		refs = append(refs, "transcript_flush_error:"+transcriptFlushErr.Error())
 		_, _ = store.SetProofRefs(ra.ID, refs)
 	}
 
@@ -388,6 +456,66 @@ func runWithSubprocess(
 	status := runattempt.StatusSucceeded
 	if timedOut.Load() || exitCode != 0 || waitErr != nil {
 		status = runattempt.StatusFailed
+	}
+	retainFailure := func() error {
+		if options.RetainFailedEvidence == nil {
+			return nil
+		}
+		digest, retainErr := options.RetainFailedEvidence(subprocessEvidenceContext{
+			RunAttemptID: ra.ID, Command: cmd.String(), TranscriptPath: transcriptPath,
+			ExitCode: exitCode, TimedOut: timedOut.Load(),
+		})
+		decoded, digestErr := hex.DecodeString(digest)
+		if retainErr != nil || digestErr != nil || len(decoded) != 32 || strings.ToLower(digest) != digest {
+			return fmt.Errorf("failed evidence retention")
+		}
+		refs := append(append([]string(nil), in.ProofRefs...), "failed_private_capture_sha256:"+digest)
+		if _, err := store.SetProofRefs(ra.ID, refs); err != nil {
+			return fmt.Errorf("set failed evidence ref")
+		}
+		in.ProofRefs = refs
+		return nil
+	}
+	if status == runattempt.StatusFailed || transcriptFlushErr != nil {
+		if err := retainFailure(); err != nil {
+			out := failTerm(err.Error())
+			out.ExitCode, out.TimedOut, out.Duration = exitCode, timedOut.Load(), time.Since(started)
+			return out, fmt.Errorf("%s: %w", harnessName, err)
+		}
+	}
+	if options.FinalizeEvidence != nil && transcriptFlushErr != nil {
+		out := failTerm("durable transcript capture: " + transcriptFlushErr.Error())
+		out.ExitCode, out.TimedOut, out.Duration = exitCode, timedOut.Load(), time.Since(started)
+		return out, fmt.Errorf("%s: durable transcript capture: %w", harnessName, transcriptFlushErr)
+	}
+	// A verifier can certify only a completed successful child with a durable
+	// transcript. Failed, cancelled, timed-out, or flush-degraded runs retain
+	// their ordinary audit trail but never invoke certification.
+	if options.FinalizeEvidence != nil && status == runattempt.StatusSucceeded && transcriptFlushErr == nil {
+		refs, finalizeErr := options.FinalizeEvidence(subprocessEvidenceContext{
+			RunAttemptID:   ra.ID,
+			Command:        cmd.String(),
+			TranscriptPath: transcriptPath,
+			ExitCode:       exitCode,
+			TimedOut:       timedOut.Load(),
+		})
+		if finalizeErr != nil {
+			if retainErr := retainFailure(); retainErr != nil {
+				finalizeErr = errors.Join(finalizeErr, retainErr)
+			}
+			out := failTerm("finalize evidence: " + finalizeErr.Error())
+			out.ExitCode, out.TimedOut, out.Duration = exitCode, timedOut.Load(), time.Since(started)
+			return out, fmt.Errorf("%s: finalize evidence: %w", harnessName, finalizeErr)
+		}
+		if len(refs) > 0 {
+			merged := append(append([]string(nil), in.ProofRefs...), refs...)
+			if _, err := store.SetProofRefs(ra.ID, merged); err != nil {
+				out := failTerm("set final evidence refs")
+				out.ExitCode, out.TimedOut, out.Duration = exitCode, timedOut.Load(), time.Since(started)
+				return out, fmt.Errorf("%s: set final evidence refs: %w", harnessName, err)
+			}
+			in.ProofRefs = merged
+		}
 	}
 	// Persist timeout / cancellation evidence as proof_refs so the
 	// audit can distinguish a deadline kill from a context cancel from

@@ -146,6 +146,97 @@ func TestRunnerStartGuardFailureTerminalizesWithoutStarting(t *testing.T) {
 	}
 }
 
+func TestRunnerFinalEvidenceAttachesBeforeTerminalization(t *testing.T) {
+	home := t.TempDir()
+	store := runattempt.Open(home)
+	finalized := false
+	out, err := runWithSubprocessOptions(context.Background(), store, "os-harness-entrypoints", RunInput{
+		WorkID:    "work_final_evidence",
+		Harness:   "os-harness-entrypoints",
+		Workspace: home,
+		Command:   "sh",
+		Now:       time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC),
+	}, func(ctx context.Context, _ RunInput) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "printf native-proof")
+	}, defaultHeartbeatInterval, subprocessRunOptions{
+		FinalizeEvidence: func(got subprocessEvidenceContext) ([]string, error) {
+			if got.RunAttemptID == "" || got.ExitCode != 0 || got.TimedOut {
+				t.Fatalf("finalizer context = %+v", got)
+			}
+			if _, err := os.ReadFile(got.TranscriptPath); err != nil {
+				t.Fatalf("finalizer saw non-durable transcript: %v", err)
+			}
+			if _, err := store.Get(got.RunAttemptID); err != nil {
+				t.Fatalf("finalizer cannot read mutable attempt: %v", err)
+			}
+			finalized = true
+			return []string{"artifact:sha256:finalizer"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runWithSubprocessOptions: %v", err)
+	}
+	if !finalized || out.RunAttempt.Status != runattempt.StatusSucceeded {
+		t.Fatalf("finalizer/status = %v/%q", finalized, out.RunAttempt.Status)
+	}
+	persisted, err := store.Get(out.RunAttempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(persisted.ProofRefs, "\n"), "artifact:sha256:finalizer") {
+		t.Fatalf("final evidence missing from terminal attempt: %v", persisted.ProofRefs)
+	}
+}
+
+func TestRunnerPrepareEvidenceFailureTerminalizesBeforeBuildStartOrFinalize(t *testing.T) {
+	store := runattempt.Open(t.TempDir())
+	built, finalized := false, false
+	out, err := runWithSubprocessOptions(context.Background(), store, "os-harness-entrypoints", RunInput{WorkID: "work_prepare_evidence", Harness: "os-harness-entrypoints", Workspace: t.TempDir(), Command: "sh", Now: time.Now().UTC()}, func(context.Context, RunInput) *exec.Cmd {
+		built = true
+		return exec.Command("sh", "-c", "exit 0")
+	}, defaultHeartbeatInterval, subprocessRunOptions{
+		PrepareEvidence:  func() error { return errors.New("private preparation failed") },
+		FinalizeEvidence: func(subprocessEvidenceContext) ([]string, error) { finalized = true; return nil, nil },
+	})
+	if err == nil || built || finalized || out.RunAttempt.Status != runattempt.StatusFailed {
+		t.Fatalf("err=%v built=%v finalized=%v status=%q", err, built, finalized, out.RunAttempt.Status)
+	}
+}
+
+func TestRunnerDoesNotFinalizeFailedOrTimedOutChild(t *testing.T) {
+	for name, in := range map[string]RunInput{
+		"failed":    {WorkID: "work_finalizer_failed", Harness: "os-harness-entrypoints", Workspace: t.TempDir(), Command: "sh", Args: []string{"-c", "exit 42"}, Now: time.Now().UTC()},
+		"timed out": {WorkID: "work_finalizer_timeout", Harness: "os-harness-entrypoints", Workspace: t.TempDir(), Command: "sh", Args: []string{"-c", "sleep 1"}, Timeout: 20 * time.Millisecond, Now: time.Now().UTC()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			out, err := runWithSubprocessOptions(context.Background(), runattempt.Open(t.TempDir()), "os-harness-entrypoints", in, func(ctx context.Context, in RunInput) *exec.Cmd {
+				return exec.CommandContext(ctx, in.Command, in.Args...)
+			}, defaultHeartbeatInterval, subprocessRunOptions{FinalizeEvidence: func(subprocessEvidenceContext) ([]string, error) {
+				called = true
+				return nil, nil
+			}})
+			if err != nil || called || out.RunAttempt.Status != runattempt.StatusFailed {
+				t.Fatalf("err=%v finalized=%v status=%q", err, called, out.RunAttempt.Status)
+			}
+		})
+	}
+}
+
+func TestRunnerFinalizerFailureTerminalizesAndPreservesOutcome(t *testing.T) {
+	home := t.TempDir()
+	out, err := runWithSubprocessOptions(context.Background(), runattempt.Open(home), "os-harness-entrypoints", RunInput{
+		WorkID: "work_finalizer_error", Harness: "os-harness-entrypoints", Workspace: home, Command: "sh", Args: []string{"-c", "exit 0"}, Now: time.Now().UTC(),
+	}, func(ctx context.Context, in RunInput) *exec.Cmd {
+		return exec.CommandContext(ctx, in.Command, in.Args...)
+	}, defaultHeartbeatInterval, subprocessRunOptions{FinalizeEvidence: func(subprocessEvidenceContext) ([]string, error) {
+		return nil, errors.New("proof rejected")
+	}})
+	if err == nil || out.RunAttempt.Status != runattempt.StatusFailed || out.ExitCode != 0 || out.Duration <= 0 {
+		t.Fatalf("err=%v out=%+v", err, out)
+	}
+}
+
 func TestRunnerSweptWhileStartGuardWaitsDoesNotLaunch(t *testing.T) {
 	home := t.TempDir()
 	store := runattempt.Open(home)

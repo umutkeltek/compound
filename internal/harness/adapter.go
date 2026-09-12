@@ -170,6 +170,11 @@ type RunInput struct {
 	// running. GovernedPermissionAdapter.RevalidateGovernedRun performs the
 	// read-only launch-boundary check instead.
 	preflighted bool
+	// ompNativeVerifier is an adapter-owned resolved proof handoff. External
+	// callers cannot populate it; the verifier revalidates it again at Run.
+	ompNativeVerifier *ompNativeVerifierLaunch
+	// ompPromptOnly is an adapter-owned immutable launch handoff.
+	ompPromptOnly *ompPromptOnlyLaunch
 }
 
 // RunOutput is the per-Run return contract. Always non-nil RunAttempt;

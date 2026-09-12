@@ -1396,10 +1396,23 @@ func (s *Store) SetCommand(id, command string) (RunAttempt, error) {
 // actual running PolicyDecision, and checked authority revisions before a
 // harness subprocess starts. Repeating the exact bind is idempotent; changing
 // it is refused because execution authority is immutable evidence.
+//
+// prompt_only is gated by the registered OMP pair set: each pair binds one
+// harness to exactly one authority marker triple. The OMP-native verifier
+// pair is (omp-native-verifier, omp_native_verifier,
+// harness:omp-native-verifier, v0.1). The OMP-prompt-only pair is
+// (omp-prompt-only, omp_prompt_only, harness:omp-prompt-only, v0.1).
+// The pre-validation stage rejects any prompt_only evidence item that is
+// not one of the registered OMP markers; the inside-callback stage rejects
+// any record whose harness is unregistered, whose marker does not match
+// the harness pair (cross-pair rejection), whose origin is not
+// harness_execution, or whose ActionIntentID is blank. Both stages are
+// reached on every admit attempt, so an existing posture (already bound)
+// cannot be retroactively relabeled.
 func (s *Store) SetExecutionPosture(id string, posture ExecutionPosture) (RunAttempt, error) {
 	posture.PermissionMode = strings.TrimSpace(posture.PermissionMode)
 	switch posture.PermissionMode {
-	case "default", "plan", "acceptEdits", "bypass":
+	case "default", "plan", "acceptEdits", "bypass", "prompt_only":
 	default:
 		return RunAttempt{}, fmt.Errorf("runattempt %s: execution posture permission_mode %q is invalid", id, posture.PermissionMode)
 	}
@@ -1414,6 +1427,7 @@ func (s *Store) SetExecutionPosture(id string, posture ExecutionPosture) (RunAtt
 	}
 	seenKinds := make(map[string]bool, len(posture.AuthorityEvidence))
 	mutationCapable := posture.PermissionMode == "default" || posture.PermissionMode == "acceptEdits" || posture.PermissionMode == "bypass"
+	ompNative := posture.PermissionMode == "prompt_only"
 	requiredKinds := map[string]bool{
 		"permission_authority":       true,
 		"permission_posture":         true,
@@ -1433,6 +1447,11 @@ func (s *Store) SetExecutionPosture(id string, posture ExecutionPosture) (RunAtt
 		if mutationCapable && !requiredKinds[item.Kind] {
 			return RunAttempt{}, fmt.Errorf("runattempt %s: %s execution posture has unexpected authority evidence kind %q", id, posture.PermissionMode, item.Kind)
 		}
+		if ompNative {
+			if _, ok := ompPromptOnlyPosturePairByMarker(item.Kind, item.Ref, item.Revision); !ok {
+				return RunAttempt{}, fmt.Errorf("runattempt %s: prompt_only execution posture authority evidence must be a registered OMP marker (omp_native_verifier@omp-native-verifier@v0.1 or omp_prompt_only@omp-prompt-only@v0.1); got kind=%q ref=%q revision=%q", id, item.Kind, item.Ref, item.Revision)
+			}
+		}
 		seenKinds[item.Kind] = true
 		evidence = append(evidence, item)
 	}
@@ -1442,6 +1461,9 @@ func (s *Store) SetExecutionPosture(id string, posture ExecutionPosture) (RunAtt
 				return RunAttempt{}, fmt.Errorf("runattempt %s: %s execution posture requires %s evidence", id, posture.PermissionMode, kind)
 			}
 		}
+	}
+	if ompNative && len(evidence) != 1 {
+		return RunAttempt{}, fmt.Errorf("runattempt %s: prompt_only execution posture requires exactly one omp_native_verifier or omp_prompt_only marker", id)
 	}
 	sort.Slice(evidence, func(i, j int) bool {
 		if evidence[i].Kind != evidence[j].Kind {
@@ -1457,17 +1479,75 @@ func (s *Store) SetExecutionPosture(id string, posture ExecutionPosture) (RunAtt
 		if ra.TerminalizationIntent != nil {
 			return false, fmt.Errorf("runattempt %s: prepared terminalization freezes execution posture binding", id)
 		}
+		if ompNative {
+			pair, ok := ompPromptOnlyPosturePairByHarness(ra.Harness)
+			if !ok {
+				return false, fmt.Errorf("runattempt %s: prompt_only execution posture requires a registered OMP harness \"omp-native-verifier\" or \"omp-prompt-only\" (got %q)", id, ra.Harness)
+			}
+			if len(evidence) != 1 || evidence[0].Kind != pair.Kind || evidence[0].Ref != pair.Ref || evidence[0].Revision != pair.Revision {
+				return false, fmt.Errorf("runattempt %s: prompt_only execution posture harness/marker cross-pair mismatch: harness %q requires marker %q/%q/%q (got %q/%q/%q)", id, pair.Harness, pair.Kind, pair.Ref, pair.Revision, evidence[0].Kind, evidence[0].Ref, evidence[0].Revision)
+			}
+			if ra.Origin != OriginHarnessExecution {
+				return false, fmt.Errorf("runattempt %s: prompt_only execution posture requires origin %q (got %q)", id, OriginHarnessExecution, ra.Origin)
+			}
+			if strings.TrimSpace(ra.ActionIntentID) == "" {
+				return false, fmt.Errorf("runattempt %s: prompt_only execution posture requires a bound action_intent_id", id)
+			}
+		}
 		if ra.ExecutionPosture != nil {
 			if reflect.DeepEqual(*ra.ExecutionPosture, posture) {
 				return false, nil
 			}
 			return false, fmt.Errorf("runattempt %s: execution posture is already bound", id)
 		}
+		if ompNative && ra.Launch != nil {
+			return false, fmt.Errorf("runattempt %s: prepared launch freezes prompt_only posture binding", id)
+		}
 		bound := posture
 		bound.AuthorityEvidence = append([]ExecutionPostureEvidence(nil), evidence...)
 		ra.ExecutionPosture = &bound
 		return true, nil
 	})
+}
+
+// ompPromptOnlyPosturePair binds one OMP harness to exactly one authority
+// marker triple. The two registered pairs are listed in
+// ompPromptOnlyPosturePairs and form the prompt_only carve-out's
+// extension surface: every gate in SetExecutionPosture's prompt_only
+// branch reads from this table.
+type ompPromptOnlyPosturePair struct {
+	Harness  string
+	Kind     string
+	Ref      string
+	Revision string
+}
+
+// ompPromptOnlyPosturePairs is the canonical harness+marker pair set
+// admitted by prompt_only. Adding a pair here is the only place that
+// extends the carve-out; every other gate (cross-pair match, harness
+// registration, origin, ActionIntentID, marker version, extra marker,
+// post-launch freeze) reads from this table.
+var ompPromptOnlyPosturePairs = []ompPromptOnlyPosturePair{
+	{Harness: "omp-native-verifier", Kind: "omp_native_verifier", Ref: "harness:omp-native-verifier", Revision: "v0.1"},
+	{Harness: "omp-prompt-only", Kind: "omp_prompt_only", Ref: "harness:omp-prompt-only", Revision: "v0.1"},
+}
+
+func ompPromptOnlyPosturePairByHarness(harness string) (ompPromptOnlyPosturePair, bool) {
+	for _, p := range ompPromptOnlyPosturePairs {
+		if p.Harness == harness {
+			return p, true
+		}
+	}
+	return ompPromptOnlyPosturePair{}, false
+}
+
+func ompPromptOnlyPosturePairByMarker(kind, ref, revision string) (ompPromptOnlyPosturePair, bool) {
+	for _, p := range ompPromptOnlyPosturePairs {
+		if p.Kind == kind && p.Ref == ref && p.Revision == revision {
+			return p, true
+		}
+	}
+	return ompPromptOnlyPosturePair{}, false
 }
 
 func cloneExecutionPosture(ra RunAttempt) RunAttempt {

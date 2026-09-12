@@ -143,6 +143,32 @@ The rollout order is conformance before enforcement: first prove the gateway's t
 receipt; then let Compound profiles authorize one shadow consumer; then enforce one bounded real consumer. A good
 resolver or gateway doctor without that consumer is bench-only.
 
+## OMP prompt-only proof and consumption
+
+The dedicated `omp-native-verifier` and `omp-prompt-only` adapters do not change
+ordinary `oh_my_pi` execution. The producer exercises the owner-pinned native
+prompt-only contract with a hostile tool response; `--print --no-tools` alone
+is not that contract. Its successful governed RunAttempt owns a strict public
+proof plus the recipe/report and five private capture/binding bodies.
+Failed post-exit validation or publication retains the exact private capture
+under a failure-only digest; it never attaches certifying public proof.
+
+Consumer admission reads existing custody without creating or repairing paths.
+It binds the selected proof to its own succeeded, committed producer attempt,
+that producer's work/action/policy, and the exact current owner projection
+frozen in the consumer's opaque preflight handoff. A different producer work is
+valid; a proof for another profile or the consumer's own launch action is not.
+Admission runs before the WorkEnvelope advances and again inside its exact
+reservation start guard. The prepared work must match the claimed identity and
+the home state/policy/action generation being reserved.
+Caller command, argv, environment, and permission
+overrides cannot replace the owner wrapper's prompt-only launch.
+
+The two harnesses have distinct, exact `prompt_only` posture markers; neither
+marker authorizes the other harness or a Claude mutation mode. Source delivery
+and route evidence do not establish live consumption: the approved runtime
+cutover and an observed governed consumer still need their own proofs.
+
 ## Execution selection: what will run, what did run, and why they differ
 
 Every launch is a tuple — launch profile (the lane), harness family, provider route, resolved model id,

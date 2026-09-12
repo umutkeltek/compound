@@ -63,6 +63,8 @@ func NewAdapterRegistry(store *runattempt.Store) *AdapterRegistry {
 	// an adapter without a proven contract is a routing hole.
 	r.RegisterAdapter(NewPrimeAgentAdapter(store))
 	r.RegisterAdapter(NewOhMyPiAdapter(store))
+	r.RegisterAdapter(NewOMPNativeVerifierAdapter(store))
+	r.RegisterAdapter(NewOMPPromptOnlyAdapter(store))
 	return r
 }
 

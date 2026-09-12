@@ -244,6 +244,9 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 			}
 		}
 	}
+	if err := validateOMPPromptOnlyBeforeAdvance(in.HomePath, in.ClaimedWork, in.Adapter, runInput); err != nil {
+		return GovernedHarnessReservation{}, err
+	}
 	autonomyClass := ""
 	if in.ResumeVerifying || (claudeFamily && ClaudeMutationPermissionMode(runInput.PermissionMode)) {
 		autonomyClass = "build-implement"
@@ -357,8 +360,13 @@ func PrepareGovernedHarnessLaunch(in GovernedHarnessLaunchInput) (harness.RunInp
 	if in.ResumeVerifying {
 		runInput.StartGuard = newGovernedResumeStartGuard(in.HomePath, in.RunningWork.ID, in.RunningWork.PolicyDecisionID, in.ActionIntentID, nil)
 	}
+	if native, err := prepareOMPNativeVerifierLaunch(in, runInput); err != nil {
+		return harness.RunInput{}, err
+	} else {
+		runInput = native
+	}
 	if _, claudeFamily := in.Adapter.(harness.GovernedPermissionAdapter); !claudeFamily {
-		return runInput, nil
+		return prepareOMPPromptOnlyLaunch(in, runInput)
 	}
 	readinessRequest := in.ReadinessRequest
 	if readinessRequest == nil {

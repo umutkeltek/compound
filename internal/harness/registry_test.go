@@ -36,6 +36,8 @@ func TestAdapterRegistryNewHasBuiltins(t *testing.T) {
 		"claude_zai_full",
 		"codex",
 		"oh_my_pi",
+		"omp-native-verifier",
+		"omp-prompt-only",
 		"os-harness-entrypoints",
 		"prime_agent",
 	}
@@ -56,6 +58,8 @@ func TestAdapterRegistryAdapterByName(t *testing.T) {
 		"claude_zai",
 		"claude_zai_full",
 		"codex",
+		"omp-native-verifier",
+		"omp-prompt-only",
 	} {
 		a, ok := r.AdapterByName(name)
 		if !ok {
