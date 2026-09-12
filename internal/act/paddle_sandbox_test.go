@@ -199,10 +199,16 @@ func TestPaddleSandboxNotificationDriftStopsBeforePatch(t *testing.T) {
 }
 
 func TestPaddleSandboxNotificationRejectsUnsafeInputsBeforeNetwork(t *testing.T) {
+	// Build synthetic userinfo structurally: preserve the invalid URL case without
+	// embedding a credential-shaped URL in a public source fixture.
+	credentialedCallback := &url.URL{
+		Scheme: "https", Host: "sandbox.shop.invalid", Path: "/webhooks/paddle",
+		User: url.UserPassword("synthetic-user", "synthetic-password"),
+	}
 	for _, tc := range []struct{ id, dest, key string }{
 		{"../transactions", "https://sandbox.shop.invalid/webhooks/paddle", sandboxTestKey},
 		{sandboxSettingID, "http://sandbox.shop.invalid/webhooks/paddle", sandboxTestKey},
-		{sandboxSettingID, "https://user:pass@sandbox.shop.invalid/webhooks/paddle", sandboxTestKey},
+		{sandboxSettingID, credentialedCallback.String(), sandboxTestKey},
 		{sandboxSettingID, "https://sandbox.shop.invalid/webhooks/paddle#fragment", sandboxTestKey},
 		{sandboxSettingID, "https://sandbox.shop.invalid/webhooks/paddle", ""},
 	} {
