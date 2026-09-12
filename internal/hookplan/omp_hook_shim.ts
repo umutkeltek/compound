@@ -144,7 +144,7 @@ function deriveOmpSession(homedirValue: string, cwd: string): { sessionId: strin
 function slugFromCwd(cwd: string): string {
 	// omp's on-disk convention: strip the leading "/", replace every "/" with
 	// "-", then wrap in "--". Synthetic example (privacy-law scrub):
-	//   /private/home/operator/projects/sample -> --private-home-operator-projects-sample--
+	//   /srv/projects/sample                   -> --srv-projects-sample--
 	let s = cwd.replace(/^\/+/, "").replace(/\//g, "-");
 	s = s.replace(/[^A-Za-z0-9._-]/g, "-");
 	return `--${s}--`;

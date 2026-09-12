@@ -34,7 +34,7 @@ func TestOmpDeriveSessionBoundedOnLargeStores(t *testing.T) {
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatalf("write session %d: %v", i, err)
 		}
-		ts := time.Unix(int64(1700000000+i), 0)
+		ts := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Second)
 		if err := os.Chtimes(path, ts, ts); err != nil {
 			t.Fatalf("chtimes %d: %v", i, err)
 		}
