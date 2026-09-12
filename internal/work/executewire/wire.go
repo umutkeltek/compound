@@ -42,6 +42,10 @@ func Install() {
 	work.SwapExecuteStageCapacity(CapacityFromSnapshot)
 	work.SwapExecuteStagePreflight(PreflightViaActuator)
 	work.SwapExecuteStageLaunch(LaunchViaActuator)
+	// R7C (2026-09-12): bind the execution-selection resolver. R7A shipped the
+	// seam with a nil default, so the installed CLI refused every
+	// `--launch-profile` while its tests passed against a stub.
+	work.DefaultExecutionSelectionResolver = ResolveExecutionSelectionViaOwner
 	// Slice 2 (aut-launch-canonical 2026-09-07): mark the seam installed so
 	// the launch wire's precondition passes. A process that never ran
 	// Install() sees every launch refused with "LaunchContext not
