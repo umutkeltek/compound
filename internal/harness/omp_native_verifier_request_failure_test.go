@@ -14,14 +14,21 @@ import (
 )
 
 func TestOMPVerifierContainsMalformedHTTPRequest(t *testing.T) {
+	interpreter, err := resolveOMPVerifierInterpreter("")
+	if err != nil {
+		t.Skip(err)
+	}
 	for _, tc := range []struct{ name, payload string }{
-		{"invalid_json", "b'{PRIVATE_REQUEST_CANARY'"},
-		{"null_object", "b'null'"},
-		{"array_object", "b'[]'"},
-		{"oversized_body", "b'PRIVATE_REQUEST_CANARY'+b'x'*(2*1024*1024)"},
+		{"invalid_json", "'{PRIVATE_REQUEST_CANARY'"},
+		{"null_object", "'null'"},
+		{"array_object", "'[]'"},
+		{"oversized_body", "'PRIVATE_REQUEST_CANARY'+'x'.repeat(2*1024*1024)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			native := fmt.Sprintf("#!/usr/bin/python3\nimport os,urllib.request,time\nendpoint=open(os.path.join(os.environ['PI_CODING_AGENT_DIR'],'models.yml')).read().strip().split('=',1)[1]\ntry:\n urllib.request.urlopen(urllib.request.Request(endpoint+'/v1/chat/completions',data=%s,headers={'content-type':'application/json'}),timeout=3).read()\nexcept Exception:\n pass\ntime.sleep(1)\n", tc.payload)
+			// Reuse the verifier interpreter instead of charging Python/urllib startup
+			// to this failure-path deadline. The client stays alive after disconnect:
+			// the handler must kill it; natural exit cannot make this test pass.
+			native := fmt.Sprintf("#!%s\nconst f=require('node:fs'),h=require('node:http'),p=require('node:path');\nconst endpoint=f.readFileSync(p.join(process.env.PI_CODING_AGENT_DIR,'models.yml'),'utf8').trim().split('=',2)[1];\nconst req=h.request(endpoint+'/v1/chat/completions',{method:'POST',headers:{'content-type':'application/json'}},res=>res.resume());\nreq.on('error',()=>{});req.end(%s);setInterval(()=>{},1000);\n", interpreter.Path, tc.payload)
 			f := newOMPVerifierFixture(t, native)
 			f.input.Timeout = 5 * time.Second
 			out, err := f.adapter.Run(context.Background(), f.input)

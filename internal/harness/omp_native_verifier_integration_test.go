@@ -125,7 +125,9 @@ exec omp --cwd="$4" --provider=switchback --model=%s --mode=text --print --no-se
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	a := &OMPNativeVerifierAdapter{store: runattempt.Open(home), heartbeatInterval: time.Millisecond, projectionRoot: projectionRoot, profileID: profileID, interpreterPath: interpreter.Path}
+	// Exercise the production cadence; millisecond durable heartbeats add unrelated
+	// filesystem contention to the native subprocess deadline under parallel load.
+	a := &OMPNativeVerifierAdapter{store: runattempt.Open(home), heartbeatInterval: defaultHeartbeatInterval, projectionRoot: projectionRoot, profileID: profileID, interpreterPath: interpreter.Path}
 	in := RunInput{WorkID: "work_omp_native", Workspace: workspace, Prompt: "prove prompt only", Now: time.Now().UTC(), ActionIntentID: "act_fixture", StartGuard: func(_ context.Context, start func() error) error { return start() }, Timeout: time.Minute}
 
 	return ompVerifierFixture{root, workspace, models, native, wrapper, endpoint, home, interpreter, a, in}
