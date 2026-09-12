@@ -339,6 +339,43 @@ tampered plan, inactive owner work, or legacy count-only review keeps the normal
 
 ---
 
+### Sandbox notification writes
+
+`compound act paddle-sandbox-notification` is the typed Paddle sandbox consumer of
+the existing `act` seam, not a generic HTTP or payment actuator. Preview reads only;
+`--plan` records an exact ten-minute approval plan when current policy holds;
+`policy action-approve` records operator approval; `--confirm` consumes matching
+authority and emits resolvable pre/post-image Receipt + Transition proof. The
+caller supplies a claimed work id, lease actor, exact current-state fingerprint,
+setting id, HTTPS `/webhooks/paddle` callback and environment-only sandbox key.
+No live API origin, arbitrary fields, purchase, or broad standing grant is exposed.
+
+The sealed v0.2 plan includes the prior snapshot, desired URL and exact additive
+event union. Only destination and subscribed events enter PATCH. Every untouched
+provider field (including the secret) contributes to one opaque preservation
+fingerprint; raw keys, secrets and provider error bodies never enter receipts.
+The one-shot adapter checks the exact intent body and decision expiry before
+provider access, then rechecks expiry and the CLI's admission callback immediately
+before PATCH. This is an adapter-specific expiry fence, not a change to the generic
+`policy.Gate` contract. No-op confirmation does not consume approval or claim a delta.
+
+A final GET refuses observed drift. There is no established provider-side atomic
+CAS: a writer in the GET/PATCH interval cannot be excluded by this API. Operators
+must keep this one sandbox setting free of concurrent provider edits during cutover.
+An uncertain PATCH is never retried; readback either proves the requested state,
+proves no change, or enters existing durable recovery. Automatic compensation
+checks the action's expected post-image before restoring; drift or unprovable
+recovery produces a finding instead of a blind overwrite. Compensation may finish
+after forward approval expires; it is recovery of that action, not a new grant.
+Explicit cross-process restore uses `BuildPaddleSandboxNotificationRevertIntent`
+to propose a fresh sealed payload. `AuthorizeRevert` must independently verify
+both images and the original action's canonical Receipt/Transition in the same
+execution home; shaped caller bytes are not provenance. `ExecuteRevert` still
+requires fresh allowing policy. Generic `RevertIntent` alone is refused.
+The production-callback retirement condition is a verified isolated sandbox
+endpoint followed by this exact setting cutover and readback; building the adapter
+does not itself establish payment-flow or deployment success.
+
 ### Explicit same-work execution resume
 
 `compound work advance <work_id> --to running --execute --resume-verifying --harness <name> --workspace <project> -- <command>`

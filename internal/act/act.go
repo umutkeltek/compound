@@ -3,6 +3,7 @@ package act
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -180,6 +181,13 @@ func execute(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, pd
 	if err := gate(ai, pd); err != nil {
 		return Result{}, err
 	}
+	if bound, ok := adapter.(interface {
+		validateIntent(string, envelope.ActionIntent, envelope.PolicyDecision, []byte) error
+	}); ok {
+		if err := bound.validateIntent(store.Home(), ai, pd, newValue); err != nil {
+			return Result{}, fmt.Errorf("act: adapter intent binding: %w", err)
+		}
+	}
 
 	// PREFLIGHT before any mutation: prove the canonical event store is writable, so a persistence
 	// failure that would otherwise strand a mutated-but-unreceipted target becomes a pre-write abort.
@@ -204,6 +212,13 @@ func execute(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, pd
 		writeErr = adapter.write(ai.Target, newValue)
 	}
 	if writeErr != nil {
+		// A transport can lose its response after the target accepted the write.
+		// Only explicitly uncertain errors enter recovery; ordinary pre-write
+		// refusals retain their existing zero-rollback semantics.
+		var uncertain interface{ MutationMayHaveOccurred() bool }
+		if errors.As(writeErr, &uncertain) && uncertain.MutationMayHaveOccurred() {
+			return Result{}, afterWriteFailure(store, adapter, ai, preRef, "", pre, writeErr, now)
+		}
 		return Result{}, fmt.Errorf("act: write: %w", writeErr)
 	}
 

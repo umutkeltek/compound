@@ -11,19 +11,13 @@ import (
 	"time"
 
 	"compound/internal/act"
+	actcli "compound/internal/act/cli"
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/policy"
 )
 
-// cmdAct is the operator door onto compound's ONE generic governed outbound-write seam (internal/act).
-// It performs a single PolicyDecision-gated config-key repoint: read the current value (pre-image),
-// write the new value, capture a post-image, and record an outward_delta Receipt + Transition to the
-// canonical event store. This is the operator-reachable outbound plane — the SAME seam lens-modulate
-// drives internally, now exposed as a first-class verb so "outbound governed writes" is a real
-// capability, not a library-only special case.
-//
 // DRY-RUN by default (shows current -> proposed and the PolicyDecision, writes nothing). --confirm
 // performs the governed write, which REQUIRES an allowing PolicyDecision (a standing grant for the
 // capability/class/target). Without one the act refuses and the target stays byte-identical. It makes
@@ -41,6 +35,7 @@ const actDefaultCapability = "outbound.config_key.write"
 func actUsage() string {
 	return "usage:\n" +
 		"  compound act repoint --target-path P --target-id KEY --value V --work W [--confirm] [--capability CAP] [--home P] [--json]\n" +
+		"  " + actcli.PaddleSandboxUsage() + "\n" +
 		"  compound act post (--from-work W | --draft D --at RFC3339 | --content -) [--work W] --transport NAME [--confirm] [--home P] [--json]\n" +
 		"    Governed outbound write: repoint the dotted KEY inside the YAML/JSON config at P to V.\n" +
 		"    DRY-RUN by default (shows current -> proposed + the PolicyDecision, writes nothing).\n" +
@@ -68,6 +63,8 @@ func runActWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		return 2
 	}
 	switch args[0] {
+	case "paddle-sandbox-notification":
+		return actcli.RunPaddleSandboxNotification(args[1:], stdout, stderr)
 	case "repoint":
 		return runActRepoint(args[1:], stdout, stderr)
 	case "post":
