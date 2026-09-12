@@ -25,7 +25,7 @@ func BenchmarkOmpDeriveSessionLargeStore(b *testing.B) {
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			b.Fatal(err)
 		}
-		ts := time.Unix(int64(1700000000+i), 0)
+		ts := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Second)
 		_ = os.Chtimes(path, ts, ts)
 	}
 	b.ResetTimer()
