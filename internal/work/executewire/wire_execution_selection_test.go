@@ -224,6 +224,10 @@ func TestLaunchStampsSelectionSnapshotBeforeAdapterRun(t *testing.T) {
 	if snap.Source != "saved" {
 		t.Errorf("snapshot source = %q, want \"saved\"", snap.Source)
 	}
+	gotIn := stub.observedInput.Load()
+	if gotIn == nil || gotIn.LaunchProfileID != snap.LaunchProfileID || snap.LaunchProfileID != sel.LaunchProfileID {
+		t.Fatalf("saved launch profile did not drive adapter input: input=%+v snapshot=%+v", gotIn, snap)
+	}
 	if snap.SelectionRevision != 2 {
 		t.Errorf("snapshot selection_rev = %d, want 2", snap.SelectionRevision)
 	}

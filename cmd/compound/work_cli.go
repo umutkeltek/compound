@@ -1526,7 +1526,11 @@ func cmdWork(args []string) {
 		// on WorkEnvelope.RunAttemptIDs. Implementation lives in
 		// work_advance_execute.go to keep this dispatch handler readable.
 		if hasFlag(rest, "--execute") {
-			runWorkAdvanceExecute(homePath, store, pos(advanceValueFlags), rest, runAttempts, time.Now())
+			launchProfileID := ""
+			if saveSelection != nil {
+				launchProfileID = saveSelection.LaunchProfileID
+			}
+			runWorkAdvanceExecute(homePath, store, pos(advanceValueFlags), rest, runAttempts, launchProfileID, time.Now())
 			return
 		}
 		w, err := store.Advance(pos(advanceValueFlags), work.AdvanceInput{

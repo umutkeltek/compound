@@ -594,6 +594,7 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 		return "", fmt.Errorf("execute stage launch: build selection snapshot: %w", snapshotErr)
 	}
 	runInput.ExecutionSelectionSnapshot = &snapshot
+	runInput.LaunchProfileID = snapshot.LaunchProfileID
 	// Slice 2 (aut-launch-canonical 2026-09-07): bind the canonical
 	// execution-reservation StartGuard so adapter.Run's subprocess
 	// start is gated by the live running-reservation identity. A

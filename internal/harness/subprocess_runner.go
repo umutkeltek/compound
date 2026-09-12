@@ -62,6 +62,7 @@ type subprocessEvidenceContext struct {
 type runAttemptStore interface {
 	MintWithActionIntent(workID, actor, harness, actionIntentID string, now time.Time) (runattempt.RunAttempt, error)
 	SetOrigin(id, origin string) (runattempt.RunAttempt, error)
+	SetLaunchProfileIntent(id, profileID, revision, clientProfileID string) (runattempt.RunAttempt, error)
 	SetPredecessor(id, predecessorID string) (runattempt.RunAttempt, error)
 	SetWorkspace(id, workspace string) (runattempt.RunAttempt, error)
 	SetCommand(id, command string) (runattempt.RunAttempt, error)
@@ -195,6 +196,13 @@ func runWithSubprocessOptions(
 	// etc.) and the attempt proceeds without one — the validator will refuse
 	// any backfill on a terminal attempt, so a missing snapshot stays
 	// missing.
+	if in.LaunchProfileID != "" {
+		if stamped, err := store.SetLaunchProfileIntent(ra.ID, in.LaunchProfileID, "", ""); err != nil {
+			return failTerm("stamp launch profile intent: " + err.Error()), fmt.Errorf("%s: stamp launch profile intent: %w", harnessName, err)
+		} else {
+			ra = stamped
+		}
+	}
 	if in.ExecutionSelectionSnapshot != nil {
 		if stamped, sErr := store.SetExecutionSelectionSnapshot(ra.ID, *in.ExecutionSelectionSnapshot); sErr != nil {
 			return failTerm("stamp execution selection snapshot: " + sErr.Error()), fmt.Errorf("%s: stamp execution selection snapshot: %w", harnessName, sErr)
@@ -568,6 +576,9 @@ func runWithSubprocessOptions(
 // subprocess adapters. Harness-specific adapters may add their own
 // checks (e.g. Claude requires a Prompt) on top.
 func validateSubprocessInput(harnessName string, in RunInput) error {
+	if snapshot := in.ExecutionSelectionSnapshot; snapshot != nil && in.LaunchProfileID != "" && snapshot.LaunchProfileID != "" && in.LaunchProfileID != snapshot.LaunchProfileID {
+		return errors.New(harnessName + ": launch profile disagrees with execution selection")
+	}
 	if strings.TrimSpace(in.WorkID) == "" {
 		return errors.New(harnessName + ": WorkID is required")
 	}

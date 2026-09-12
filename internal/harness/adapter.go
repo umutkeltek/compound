@@ -150,6 +150,10 @@ type RunInput struct {
 	// RunInput today -- no adapter config exposes them -- so they are
 	// passed empty and remain out of scope.
 	LaneID string
+
+	// LaunchProfileID is the requested owner profile, not execution authority.
+	// Consuming adapters freeze its resolved identity during preflight.
+	LaunchProfileID string
 	// RequestedModelID and RequestedProviderRoute are resolved from Compound's
 	// model-router LaneTuple before a tuple-backed adapter mints its RunAttempt.
 	// They describe dispatch intent, not observed execution identity; observed

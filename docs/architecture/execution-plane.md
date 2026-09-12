@@ -164,6 +164,15 @@ the home state/policy/action generation being reserved.
 Caller command, argv, environment, and permission
 overrides cannot replace the owner wrapper's prompt-only launch.
 
+The existing launch-profile selector passes the canonical owner profile ID into
+preflight; an explicit missing profile refuses instead of falling back. Prepared
+inputs freeze that ID, and start revalidation reloads the same owner profile.
+Saved selections drive the unattended adapter input and direct launches using
+the saved harness; a different harness override does not inherit its profile.
+The shared runner records requested profile identity before command construction
+and refuses disagreement with a nonempty selection snapshot before minting.
+This is requested identity, not evidence of an observed model or provider.
+
 The two harnesses have distinct, exact `prompt_only` posture markers; neither
 marker authorizes the other harness or a Claude mutation mode. Source delivery
 and route evidence do not establish live consumption: the approved runtime

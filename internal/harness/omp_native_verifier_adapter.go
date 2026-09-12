@@ -80,17 +80,18 @@ func (a *OMPNativeVerifierAdapter) Preflight(_ context.Context, in RunInput) (Ru
 	if err != nil {
 		return RunInput{}, fmt.Errorf("omp native verifier: OMP_WORKSPACE_INVALID")
 	}
-	launch, err := a.resolveLaunch(in.ompNativeVerifier)
+	launch, err := a.resolveLaunch(in.ompNativeVerifier, in.LaunchProfileID)
 	if err != nil {
 		return RunInput{}, fmt.Errorf("omp native verifier: OMP_LAUNCH_BINDING_INVALID")
 	}
 	in.Harness, in.Command, in.Prompt, in.Workspace = a.Name(), launch.Interpreter.Path, prompt, canonicalWorkspace
 	in.Args, in.Env, in.PermissionMode = nil, nil, ""
 	in.ompNativeVerifier = launch
+	in.LaunchProfileID = launch.Projection.Profile.ID
 	return in, nil
 }
 
-func (a *OMPNativeVerifierAdapter) resolveLaunch(existing *ompNativeVerifierLaunch) (*ompNativeVerifierLaunch, error) {
+func (a *OMPNativeVerifierAdapter) resolveLaunch(existing *ompNativeVerifierLaunch, requestedProfileID string) (*ompNativeVerifierLaunch, error) {
 	if existing != nil {
 		if err := validateOMPNativeLaunch(existing); err != nil {
 			return nil, err
@@ -105,7 +106,10 @@ func (a *OMPNativeVerifierAdapter) resolveLaunch(existing *ompNativeVerifierLaun
 			return nil, fmt.Errorf("omp native verifier: OMP_PROJECTION_ROOT_INVALID")
 		}
 	}
-	profileID := a.profileID
+	profileID := requestedProfileID
+	if profileID == "" {
+		profileID = a.profileID
+	}
 	if profileID == "" {
 		profileID = "omp"
 	}
@@ -180,7 +184,7 @@ func validateOMPNativeLaunch(l *ompNativeVerifierLaunch) error {
 // result. It does not admit a producer proof or allow caller-selected launch fields.
 func ValidateOMPNativeVerifierPreparedInput(in RunInput) error {
 	launch := in.ompNativeVerifier
-	if launch == nil || in.Harness != ompNativeVerifierAdapterName ||
+	if launch == nil || in.LaunchProfileID != launch.Projection.Profile.ID || in.Harness != ompNativeVerifierAdapterName ||
 		in.Command == "" || in.Command != launch.Interpreter.Path ||
 		len(in.Args) != 0 || len(in.Env) != 0 || in.PermissionMode != "" {
 		return fmt.Errorf("OMP_NATIVE_PREPARED_INPUT_INVALID")
@@ -197,7 +201,7 @@ func (a *OMPNativeVerifierAdapter) revalidateLaunch(expected *ompNativeVerifierL
 	if expected == nil {
 		return fmt.Errorf("OMP_LAUNCH_BINDING_INVALID")
 	}
-	current, err := a.resolveLaunch(nil)
+	current, err := a.resolveLaunch(nil, expected.Projection.Profile.ID)
 	if err != nil || current.Interpreter != expected.Interpreter ||
 		current.RecipeSHA != expected.RecipeSHA ||
 		!reflect.DeepEqual(current.Projection, expected.Projection) {

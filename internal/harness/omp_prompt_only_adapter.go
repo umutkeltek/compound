@@ -100,12 +100,13 @@ func (a *OMPPromptOnlyAdapter) Preflight(_ context.Context, in RunInput) (RunInp
 	in.Workspace, in.Prompt = workspace, prompt
 	in.Args, in.Env, in.Stdin = nil, nil, nil
 	in.PermissionMode, in.ompPromptOnly = "prompt_only", launch
+	in.LaunchProfileID = launch.Projection.Profile.ID
 	return in, nil
 }
 
 func ValidateOMPPromptOnlyPreparedInput(in RunInput) error {
 	launch := in.ompPromptOnly
-	if launch == nil || in.Harness != ompPromptOnlyAdapterName ||
+	if launch == nil || in.LaunchProfileID != launch.Projection.Profile.ID || in.Harness != ompPromptOnlyAdapterName ||
 		in.Command != launch.Projection.PromptOnly.Wrapper.Path ||
 		in.WorkID != launch.WorkID || in.Workspace != launch.Workspace ||
 		in.Prompt != launch.Prompt || len(in.Args) != 0 || len(in.Env) != 0 ||
@@ -190,7 +191,10 @@ func (a *OMPPromptOnlyAdapter) resolveLaunch(
 	if err != nil {
 		return nil, err
 	}
-	profileID := a.profileID
+	profileID := in.LaunchProfileID
+	if profileID == "" {
+		profileID = a.profileID
+	}
 	if profileID == "" {
 		profileID = "omp"
 	}
@@ -297,7 +301,7 @@ func (a *OMPPromptOnlyAdapter) revalidateLaunch(expected *ompPromptOnlyLaunch) e
 		return fmt.Errorf("OMP_PROMPT_ONLY_LAUNCH_BINDING_INVALID")
 	}
 	current, err := a.resolveLaunch(
-		RunInput{WorkID: expected.WorkID}, expected.Workspace, expected.Prompt,
+		RunInput{WorkID: expected.WorkID, LaunchProfileID: expected.Projection.Profile.ID}, expected.Workspace, expected.Prompt,
 	)
 	if err != nil || !reflect.DeepEqual(current, expected) {
 		return fmt.Errorf("OMP_PROMPT_ONLY_LAUNCH_BINDING_INVALID")

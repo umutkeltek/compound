@@ -297,15 +297,5 @@ func resolveExecuteWorkspace(args []string, gd *envelope.GitDeliveryContract) (s
 // (chdir), after the state change already landed. Returns the observed trace
 // line the refusal ladder quotes verbatim; ok=false means refuse.
 func checkExecuteWorkspaceExists(workspace string) (observed string, ok bool) {
-	observed = "stat " + workspace + ": "
-	info, statErr := os.Stat(workspace)
-	switch {
-	case statErr != nil:
-		observed += statErr.Error()
-	case !info.IsDir():
-		observed += "exists but is not a directory"
-	default:
-		observed += "ok"
-	}
-	return observed, statErr == nil && info.IsDir()
+	return harness.CheckExecutionWorkspaceExists(workspace)
 }

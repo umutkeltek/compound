@@ -46,7 +46,7 @@ var workAdvanceExecuteExit = os.Exit
 //
 // Exit code: 0 on succeeded, non-zero on failed/timeout/infra. Matches the
 // compound harness run contract.
-func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, rest []string, existingRunAttempts []string, now time.Time) {
+func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, rest []string, existingRunAttempts []string, launchProfileID string, now time.Time) {
 	if workID == "" {
 		fmt.Fprintln(os.Stderr, "error: --execute requires a work_id")
 		workAdvanceExecuteExit(2)
@@ -180,21 +180,25 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		workAdvanceExecuteExit(2)
 	}
 
+	if launchProfileID == "" && wenv.ExecutionSelection != nil && harnessName == strings.TrimSpace(wenv.ExecutionSelection.Harness) {
+		launchProfileID = wenv.ExecutionSelection.LaunchProfileID
+	}
 	// Resolve adapter-owned prerequisites before the governed state change.
 	// Tuple-backed lanes use this seam to prove their Compound tuple, wrapper,
 	// permission posture, and declared capacity. A preflight failure leaves the
 	// envelope claimed and mints no execution RunAttempt.
 	runInput := harness.RunInput{
-		WorkID:         workID,
-		Harness:        harnessName,
-		Workspace:      workspace,
-		Command:        command,
-		Args:           commandArgs,
-		Prompt:         prompt,
-		PermissionMode: valueFlag(rest, "--permission-mode"),
-		LaneID:         actor,
-		Now:            time.Now().UTC(),
-		ProofRefs:      append([]string(nil), wenv.ArtifactIDs...),
+		WorkID:          workID,
+		LaunchProfileID: launchProfileID,
+		Harness:         harnessName,
+		Workspace:       workspace,
+		Command:         command,
+		Args:            commandArgs,
+		Prompt:          prompt,
+		PermissionMode:  valueFlag(rest, "--permission-mode"),
+		LaneID:          actor,
+		Now:             time.Now().UTC(),
+		ProofRefs:       append([]string(nil), wenv.ArtifactIDs...),
 	}
 	if preflight, ok := adapter.(harness.PreflightAdapter); ok {
 		resolved, err := preflight.Preflight(context.Background(), runInput)
