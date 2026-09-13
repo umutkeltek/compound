@@ -75,6 +75,9 @@ func cmdProofCheck(args []string) {
 		cmdProofCheckTimings(args)
 		return
 	}
+	if dropped := work.DropInheritedLoopbackProxy(); len(dropped) > 0 {
+		fmt.Fprintf(os.Stderr, "proof-check: gates run without the inherited loopback proxy (%s)\n", strings.Join(dropped, ", "))
+	}
 	if proofCheckDevelopmentRequested(args) {
 		cmdProofCheckDevelopment(args)
 		return

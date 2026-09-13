@@ -91,6 +91,22 @@ func InheritedLoopbackProxyReason() string {
 	return ""
 }
 
+// DropInheritedLoopbackProxy unsets every proxy variable that points at a loopback
+// host, so no gate inherits one, and returns the names it unset. A loopback proxy is
+// the model-gateway signature and no gate needs it; landers used to launch every
+// battery under `env -u HTTPS_PROXY ...` by hand to avoid proxy_env_blocks_bun.
+// Proxies elsewhere are left alone.
+func DropInheritedLoopbackProxy() []string {
+	var dropped []string
+	for _, name := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
+		if classifyLoopbackProxy(strings.TrimSpace(os.Getenv(name))) != "" {
+			_ = os.Unsetenv(name)
+			dropped = append(dropped, name)
+		}
+	}
+	return dropped
+}
+
 // classifyLoopbackProxy returns "proxy_env_blocks_bun" iff raw is a URL whose host is
 // a loopback name (localhost, 127.x.x.x, ::1) and whose port is non-empty. Anything
 // not in that shape returns "": extending the list requires another investigation, not
