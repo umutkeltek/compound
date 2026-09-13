@@ -26,6 +26,7 @@
 package landlease
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -506,12 +507,13 @@ func acquireWait(home, holder string, ttl time.Duration, clk Clock, timeout, pol
 // WaitUntilFree blocks until no live lease is held or timeout elapses, and never takes the lease. It
 // serves callers that write governed state before they acquire: a proof reservation mints its RunAttempt
 // first, so reserving against a busy lease leaves an abandoned attempt behind, while waiting here costs
-// nothing. The returned status is the free one, or the still-held one with the timeout error.
-func WaitUntilFree(home string, clk Clock, timeout, poll time.Duration) (StatusResult, error) {
-	return waitUntilFree(home, clk, timeout, poll, newLeaseWatcher)
+// nothing. The returned status is the free one, or the still-held one with the timeout error. A cancelled
+// ctx ends the wait within one poll interval.
+func WaitUntilFree(ctx context.Context, home string, clk Clock, timeout, poll time.Duration) (StatusResult, error) {
+	return waitUntilFree(ctx, home, clk, timeout, poll, newLeaseWatcher)
 }
 
-func waitUntilFree(home string, clk Clock, timeout, poll time.Duration, factory watcherFactory) (StatusResult, error) {
+func waitUntilFree(ctx context.Context, home string, clk Clock, timeout, poll time.Duration, factory watcherFactory) (StatusResult, error) {
 	if clk == nil {
 		return StatusResult{}, fmt.Errorf("land-lease WaitUntilFree requires a clock")
 	}
@@ -527,6 +529,9 @@ func waitUntilFree(home string, clk Clock, timeout, poll time.Duration, factory 
 		status, err := StatusReadOnly(home, now)
 		if err != nil || !status.Held {
 			return status, err
+		}
+		if err := ctx.Err(); err != nil {
+			return status, fmt.Errorf("land-lease wait for %q stopped: %w", status.Holder, err)
 		}
 		if !now.Before(deadline) {
 			return status, fmt.Errorf("land-lease still held by %q after waiting %s", status.Holder, timeout)

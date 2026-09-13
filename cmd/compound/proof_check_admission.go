@@ -203,7 +203,7 @@ func runProofCheckWithAdmissionContext(
 	}
 	var reserved work.ProofResourceReserveResult
 	if in.Wait > 0 {
-		reserved, err = store.ReserveProofResourceWhenFree(in.WorkID, reserveInput, in.Wait, landlease.RealClock{}, in.WaitProgress)
+		reserved, err = store.ReserveProofResourceWhenFree(in.Context, in.WorkID, reserveInput, in.Wait, landlease.RealClock{}, in.WaitProgress)
 	} else {
 		reserved, err = store.ReserveProofResource(in.WorkID, reserveInput, in.Now())
 	}

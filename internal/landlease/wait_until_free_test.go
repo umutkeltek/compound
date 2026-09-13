@@ -1,6 +1,8 @@
 package landlease
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +22,7 @@ func TestWaitUntilFreeWakesOnReleaseWithoutTakingTheLease(t *testing.T) {
 	}}
 	factory := func(string) (leaseWatcher, error) { return fw, nil }
 
-	status, err := waitUntilFree(home, clk, 30*time.Second, 25*time.Second, factory)
+	status, err := waitUntilFree(context.Background(), home, clk, 30*time.Second, 25*time.Second, factory)
 	if err != nil {
 		t.Fatalf("waiter should return once A releases: %v", err)
 	}
@@ -48,7 +50,7 @@ func TestWaitUntilFreeTimesOutAndLeavesTheHolder(t *testing.T) {
 		t.Fatalf("A acquire: %v", err)
 	}
 	clk := &countingClock{t: baseNow}
-	status, err := waitUntilFree(home, clk, 30*time.Second, 5*time.Second, nil)
+	status, err := waitUntilFree(context.Background(), home, clk, 30*time.Second, 5*time.Second, nil)
 	if err == nil || !strings.Contains(err.Error(), laneAlpha) {
 		t.Fatalf("want a timeout naming the holder, got status=%+v err=%v", status, err)
 	}
@@ -66,11 +68,28 @@ func TestWaitUntilFreeTimesOutAndLeavesTheHolder(t *testing.T) {
 
 func TestWaitUntilFreeReturnsAtOnceWhenNothingIsHeld(t *testing.T) {
 	clk := &countingClock{t: baseNow}
-	status, err := waitUntilFree(t.TempDir(), clk, time.Minute, time.Second, nil)
+	status, err := waitUntilFree(context.Background(), t.TempDir(), clk, time.Minute, time.Second, nil)
 	if err != nil || status.Held {
 		t.Fatalf("free lease: status=%+v err=%v", status, err)
 	}
 	if clk.sleeps != 0 {
 		t.Fatalf("slept %d times on a free lease", clk.sleeps)
+	}
+}
+
+func TestWaitUntilFreeStopsWhenCancelled(t *testing.T) {
+	home := t.TempDir()
+	if _, err := Acquire(home, laneAlpha, time.Hour, baseNow); err != nil {
+		t.Fatalf("A acquire: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	clk := &countingClock{t: baseNow}
+	_, err := waitUntilFree(ctx, home, clk, time.Hour, 5*time.Second, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled wait returned %v, want context.Canceled", err)
+	}
+	if clk.sleeps != 0 {
+		t.Fatalf("cancelled wait slept %d times", clk.sleeps)
 	}
 }

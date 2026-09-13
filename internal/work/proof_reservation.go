@@ -62,6 +62,9 @@ type ProofResourceReserveInput struct {
 	StealReason            string
 	TerminatedRunAttemptID string
 	TerminationEvidenceRef string
+	// busyWhenHeld makes a live lease under another holder a quiet busy result, checked
+	// under the admission lock before anything is minted. Only the queued path sets it.
+	busyWhenHeld bool
 }
 
 // ProofResourceResumeInput identifies the canonical command boundary that may finish an existing
@@ -1362,6 +1365,15 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 	}
 	if claim.By != in.Actor {
 		return ProofResourceReserveResult{}, fmt.Errorf("proof resource work %s lease held by %q, actor is %q", workID, claim.By, in.Actor)
+	}
+	if in.busyWhenHeld && !in.Steal {
+		status, statusErr := landlease.StatusReadOnly(s.home, now)
+		if statusErr != nil {
+			return ProofResourceReserveResult{}, statusErr
+		}
+		if status.Held {
+			return ProofResourceReserveResult{}, &proofResourceBusyError{holder: status.Holder}
+		}
 	}
 
 	reservationID := idFor("pfr_", workID, in.Actor, ts(now))
