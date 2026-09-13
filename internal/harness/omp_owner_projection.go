@@ -98,6 +98,16 @@ func loadOMPOwnerProjectionFrom(root, id string) (OMPOwnerProjection, error) {
 	if e = json.Unmarshal(b, &p); e != nil {
 		return p, e
 	}
+	// Switchback publishes algorithm-qualified hashes; custody and file-byte
+	// checks use bare digests. Normalize only this wire representation here.
+	// Validate still rejects malformed, repeated, uppercase, or unknown prefixes.
+	for _, digest := range []*string{
+		&p.PromptOnly.Wrapper.SHA256, &p.PromptOnly.Wrapper.ExpectedSHA256,
+		&p.PromptOnly.ModelsConfig.SHA256, &p.PromptOnly.ModelsConfig.ExpectedSHA256,
+		&p.PromptOnly.Executable.SHA256,
+	} {
+		*digest = strings.TrimPrefix(*digest, "sha256:")
+	}
 	return p, p.Validate(id)
 }
 func (p OMPOwnerProjection) Validate(id string) error {
@@ -145,9 +155,8 @@ func (p OMPOwnerProjection) Validate(id string) error {
 	if !reflect.DeepEqual(p.PromptOnly.FixedArgv, wantArgv) {
 		return fmt.Errorf("omp projection fixed argv")
 	}
-	if p.Profile.RequestedModel != p.Profile.RequestModel {
-		return fmt.Errorf("omp projection model mismatch")
-	}
+	// RequestedModel is the owner's alias, not the canonical RequestModel bound
+	// by the fixed argv, native request, and custody replay.
 	if p.PromptOnly.Wrapper.SHA256 != p.PromptOnly.Wrapper.ExpectedSHA256 || p.PromptOnly.ModelsConfig.SHA256 != p.PromptOnly.ModelsConfig.ExpectedSHA256 {
 		return fmt.Errorf("omp projection expected hash mismatch")
 	}

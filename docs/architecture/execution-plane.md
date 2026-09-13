@@ -145,6 +145,12 @@ resolver or gateway doctor without that consumer is bench-only.
 
 ## OMP prompt-only proof and consumption
 
+The owner projection's requested model alias and canonical request model are distinct:
+argv, native requests, and custody bind the canonical `request_model`, never the alias.
+Ingress normalizes the five owner binding hashes from `sha256:<hex>` to bare digests;
+legacy bare digests remain accepted, while malformed hashes still refuse. Conformance
+revision, content hashes, file-byte checks, and producer lineage are unchanged.
+
 The dedicated `omp-native-verifier` and `omp-prompt-only` adapters do not change
 ordinary `oh_my_pi` execution. The producer exercises the owner-pinned native
 prompt-only contract with a hostile tool response; `--print --no-tools` alone

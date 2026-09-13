@@ -329,7 +329,6 @@ func decodeOMPNativeCustodyObject(body []byte, expectedKeys []string) (map[strin
 func ompNativeCustodyConfigMatchesProjection(config ompNativeCustodyConfig, projection OMPOwnerProjection) bool {
 	return config.ProfileID == projection.Profile.ID &&
 		config.RequestModel == projection.Profile.RequestModel &&
-		config.RequestModel == projection.Profile.RequestedModel &&
 		config.Route == projection.Profile.Route &&
 		config.CaptureEndpoint == projection.Profile.CaptureEndpoint &&
 		config.CapturePolicy == projection.Profile.CapturePolicy.Mode &&
