@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 # scripts/_lib/heartbeat-promote-stage.test.sh
 #
 # Shell-level tests for the promote-driver stage validation that the

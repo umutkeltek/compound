@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 # scripts/_lib/heartbeat-end-to-end.test.sh
 #
 # End-to-end test of scripts/compound-autonomy-heartbeat.sh driven by a

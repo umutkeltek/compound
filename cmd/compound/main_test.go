@@ -5453,6 +5453,86 @@ func TestInstallScriptRefusesForeignOSAliasBeforeBuild(t *testing.T) {
 	}
 }
 
+// TestInstallScriptAutonomyLabShipsHeartbeatWithItsHelper runs the opt-in
+// autonomy-lab install, which no other test exercises. The heartbeat sources
+// $(dirname "$0")/_lib/heartbeat-promote-stage.sh, so the helper must land beside
+// it or the installed heartbeat dies on its first tick.
+func TestInstallScriptAutonomyLabShipsHeartbeatWithItsHelper(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// This test is about which files ship, not a clean build, so it reuses the
+	// caller's warm caches; the cold build belongs to the default-install test.
+	cacheOut, err := exec.Command("go", "env", "GOMODCACHE", "GOCACHE").Output()
+	if err != nil {
+		t.Fatalf("go env: %v", err)
+	}
+	caches := strings.Split(strings.TrimSpace(string(cacheOut)), "\n")
+	if len(caches) != 2 {
+		t.Fatalf("go env GOMODCACHE GOCACHE = %q", cacheOut)
+	}
+	cmd := exec.Command("sh", filepath.Join(repoRoot, "install.sh"))
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"HOME="+t.TempDir(),
+		"GOBIN="+installDir,
+		"COMPOUND_HOME="+filepath.Join(t.TempDir(), ".compound"),
+		"GOMODCACHE="+caches[0],
+		"GOCACHE="+caches[1],
+		"PATH="+installDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"COMPOUND_INSTALL_AUTONOMY_LAB=1",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("autonomy-lab install.sh failed: %v\n%s", err, out)
+	}
+	for _, rel := range []string{"compound-autonomy-heartbeat.sh", filepath.Join("_lib", "heartbeat-promote-stage.sh")} {
+		if _, err := os.Stat(filepath.Join(installDir, rel)); err != nil {
+			t.Fatalf("autonomy-lab install did not ship %s: %v\n%s", rel, err, out)
+		}
+	}
+}
+
+// TestHeartbeatShellSuitesRunUnderBash puts the heartbeat shell suites in the Go
+// test inventory so every proof battery runs them. They use $RANDOM under set -u,
+// which POSIX sh (dash) aborts on before the first assertion, so each suite must
+// declare bash and runs under it here.
+func TestHeartbeatShellSuitesRunUnderBash(t *testing.T) {
+	t.Parallel()
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, suite := range []struct{ rel, banner string }{
+		{"scripts/_lib/heartbeat-promote-stage.test.sh", "ALL TESTS PASSED"},
+		{"scripts/_lib/heartbeat-end-to-end.test.sh", "ALL E2E TESTS PASSED"},
+	} {
+		path := filepath.Join(repoRoot, filepath.FromSlash(suite.rel))
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first, _, _ := strings.Cut(string(body), "\n"); first != "#!/usr/bin/env bash" {
+			t.Fatalf("%s declares %q but relies on bash-only $RANDOM", suite.rel, first)
+		}
+		cmd := exec.Command("bash", path)
+		cmd.Dir = repoRoot
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(out), suite.banner) {
+			t.Fatalf("%s under bash: err=%v, want %q in output:\n%s", suite.rel, err, suite.banner, out)
+		}
+	}
+}
+
 func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
