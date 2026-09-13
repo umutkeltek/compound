@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,8 @@ type proofCheckAdmissionInput struct {
 	StealReason            string
 	TerminatedRunAttemptID string
 	TerminationEvidenceRef string
+	Wait                   time.Duration
+	WaitProgress           io.Writer
 	Now                    func() time.Time
 }
 
@@ -187,7 +190,7 @@ func runProofCheckWithAdmissionContext(
 			return proofCheckReport{}, work.ProofResourceCompleteResult{}, err
 		}
 	}
-	reserved, err := store.ReserveProofResource(in.WorkID, work.ProofResourceReserveInput{
+	reserveInput := work.ProofResourceReserveInput{
 		Actor:                  in.Actor,
 		TTL:                    in.TTL,
 		Workspace:              in.Workspace,
@@ -197,7 +200,13 @@ func runProofCheckWithAdmissionContext(
 		StealReason:            in.StealReason,
 		TerminatedRunAttemptID: in.TerminatedRunAttemptID,
 		TerminationEvidenceRef: in.TerminationEvidenceRef,
-	}, in.Now())
+	}
+	var reserved work.ProofResourceReserveResult
+	if in.Wait > 0 {
+		reserved, err = store.ReserveProofResourceWhenFree(in.WorkID, reserveInput, in.Wait, landlease.RealClock{}, in.WaitProgress)
+	} else {
+		reserved, err = store.ReserveProofResource(in.WorkID, reserveInput, in.Now())
+	}
 	if err != nil {
 		return proofCheckReport{}, work.ProofResourceCompleteResult{}, err
 	}

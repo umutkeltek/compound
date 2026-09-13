@@ -479,22 +479,11 @@ func acquireWait(home, holder string, ttl time.Duration, clk Clock, timeout, pol
 	if clk == nil {
 		return Lease{}, fmt.Errorf("land-lease AcquireWait requires a clock")
 	}
-	if poll <= 0 {
-		poll = time.Second
-	}
-	statePath, err := statePath(home)
+	sleeper, err := newLeaseSleeper(home, clk, poll, factory)
 	if err != nil {
 		return Lease{}, err
 	}
-	stateDir := filepath.Dir(statePath)
-
-	var w leaseWatcher
-	watcherTried := false
-	defer func() {
-		if w != nil {
-			_ = w.close()
-		}
-	}()
+	defer sleeper.close()
 
 	deadline := clk.Now().Add(timeout)
 	for {
@@ -510,33 +499,94 @@ func acquireWait(home, holder string, ttl time.Duration, clk Clock, timeout, pol
 		if !now.Before(deadline) {
 			return Lease{}, fmt.Errorf("land-lease acquire timed out after %s waiting for holder %q: %w", timeout, held.Holder, err)
 		}
-		// Bound this wait: at most one poll interval, and never past the deadline. This bound is the
-		// SAFETY NET — even with the watch armed, no single wait can exceed it, so a missed/coalesced
-		// event can never hang the waiter.
-		bound := poll
-		if remaining := deadline.Sub(now); remaining < bound {
-			bound = remaining
+		sleeper.sleep(now, deadline)
+	}
+}
+
+// WaitUntilFree blocks until no live lease is held or timeout elapses, and never takes the lease. It
+// serves callers that write governed state before they acquire: a proof reservation mints its RunAttempt
+// first, so reserving against a busy lease leaves an abandoned attempt behind, while waiting here costs
+// nothing. The returned status is the free one, or the still-held one with the timeout error.
+func WaitUntilFree(home string, clk Clock, timeout, poll time.Duration) (StatusResult, error) {
+	return waitUntilFree(home, clk, timeout, poll, newLeaseWatcher)
+}
+
+func waitUntilFree(home string, clk Clock, timeout, poll time.Duration, factory watcherFactory) (StatusResult, error) {
+	if clk == nil {
+		return StatusResult{}, fmt.Errorf("land-lease WaitUntilFree requires a clock")
+	}
+	sleeper, err := newLeaseSleeper(home, clk, poll, factory)
+	if err != nil {
+		return StatusResult{}, err
+	}
+	defer sleeper.close()
+
+	deadline := clk.Now().Add(timeout)
+	for {
+		now := clk.Now()
+		status, err := StatusReadOnly(home, now)
+		if err != nil || !status.Held {
+			return status, err
 		}
-		// Lazily arm the watcher on first contention (fast path); on failure, stay on the clock poll.
-		if factory != nil && !watcherTried {
-			watcherTried = true
-			_ = os.MkdirAll(stateDir, 0o755) // best-effort: the dir must exist to attach the watch
-			if ww, werr := factory(stateDir); werr == nil {
-				w = ww
-			}
+		if !now.Before(deadline) {
+			return status, fmt.Errorf("land-lease still held by %q after waiting %s", status.Holder, timeout)
 		}
-		if w != nil {
-			// FAST PATH: block in the kernel until the state directory changes OR bound elapses. On a
-			// watcher error mid-flight, drop it and fall back to the clock-driven bounded sleep so the
-			// loop can never hang on a broken watch.
-			if werr := w.wait(bound); werr != nil {
-				_ = w.close()
-				w = nil
-				clk.Sleep(bound)
-			}
-		} else {
-			clk.Sleep(bound) // SAFETY NET: deterministic, clock-injected bound (no busy-spin)
+		sleeper.sleep(now, deadline)
+	}
+}
+
+// leaseSleeper paces a lease wait loop. It arms the state-directory watcher LAZILY on the first sleep (no
+// syscall cost when the first check succeeds) and falls back to the clock when no watcher is available.
+type leaseSleeper struct {
+	clk      Clock
+	poll     time.Duration
+	stateDir string
+	factory  watcherFactory
+	watcher  leaseWatcher
+	tried    bool
+}
+
+func newLeaseSleeper(home string, clk Clock, poll time.Duration, factory watcherFactory) (*leaseSleeper, error) {
+	if poll <= 0 {
+		poll = time.Second
+	}
+	statePath, err := statePath(home)
+	if err != nil {
+		return nil, err
+	}
+	return &leaseSleeper{clk: clk, poll: poll, stateDir: filepath.Dir(statePath), factory: factory}, nil
+}
+
+// sleep waits for the next check. The bound is the SAFETY NET: at most one poll interval and never past
+// the deadline, even with the watch armed, so a missed/coalesced event can never hang the waiter.
+func (s *leaseSleeper) sleep(now, deadline time.Time) {
+	bound := s.poll
+	if remaining := deadline.Sub(now); remaining < bound {
+		bound = remaining
+	}
+	if s.factory != nil && !s.tried {
+		s.tried = true
+		_ = os.MkdirAll(s.stateDir, 0o755) // best-effort: the dir must exist to attach the watch
+		if w, err := s.factory(s.stateDir); err == nil {
+			s.watcher = w
 		}
+	}
+	if s.watcher == nil {
+		s.clk.Sleep(bound) // deterministic, clock-injected bound (no busy-spin)
+		return
+	}
+	// FAST PATH: block in the kernel until the state directory changes OR bound elapses. On a watcher
+	// error mid-flight, drop it and fall back to the clock-driven bounded sleep.
+	if err := s.watcher.wait(bound); err != nil {
+		_ = s.watcher.close()
+		s.watcher = nil
+		s.clk.Sleep(bound)
+	}
+}
+
+func (s *leaseSleeper) close() {
+	if s.watcher != nil {
+		_ = s.watcher.close()
 	}
 }
 

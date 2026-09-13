@@ -59,6 +59,7 @@ func cmdProofCheck(args []string) {
 		fmt.Println("                (--dev selects the development lane, --window N the sample depth)")
 		fmt.Println("  --work ID --actor ACTOR  required for a full local battery; reserves the scarce proof resource")
 		fmt.Println("  --ttl DURATION            reservation TTL (minimum 30s, default 45m; renewed by RunAttempt heartbeat)")
+		fmt.Println("  --wait DURATION           queue up to DURATION for a busy proof resource instead of refusing")
 		fmt.Println("  --steal --reason TEXT     exceptional audited transfer of a live proof/land resource")
 		fmt.Println("  --terminated-run RATT_ID --termination-evidence ARTIFACT_REF")
 		fmt.Println("                governed proof that the oldest stopped predecessor was terminated and waited")
@@ -200,6 +201,15 @@ func cmdProofCheck(args []string) {
 			}
 			ttl = parsed
 		}
+		var wait time.Duration
+		if hasFlag(args, "--wait") {
+			parsed, parseErr := time.ParseDuration(strings.TrimSpace(flagValue(args, "--wait")))
+			if parseErr != nil || parsed <= 0 || steal {
+				fmt.Fprintln(os.Stderr, "proof-check: --wait needs a positive duration such as 45m and cannot be combined with --steal")
+				os.Exit(2)
+			}
+			wait = parsed
+		}
 		resolvedRepo, err := resolveProofCheckRepo(repoPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
@@ -254,6 +264,8 @@ func cmdProofCheck(args []string) {
 			StealReason:            stealReason,
 			TerminatedRunAttemptID: terminatedRunAttemptID,
 			TerminationEvidenceRef: terminationEvidenceRef,
+			Wait:                   wait,
+			WaitProgress:           os.Stderr,
 			Now:                    time.Now,
 		}, func(ctx context.Context) (proofCheckReport, error) {
 			planContext := work.ContextWithCanonicalProofPlan(ctx, plan)
