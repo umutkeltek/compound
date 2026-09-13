@@ -185,19 +185,18 @@ go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
   doctor regression is non-strict and tolerates size warnings; the dedicated CLI ratchet and
   strict doctor wiring tests catch them before banking and the full battery. Simplify or move responsibility to its
   existing owner; never raise the limit or remove checks to clear the ratchet.
-- **Worktree caveat (real failure):** fresh worktrees do not contain the gitignored
-  `docs_private/leak-tokens.txt` or `docs_private/source-leak-tokens.txt` overlays. The embedded
-  baseline keeps the generic leak gate armed without them, but omitting either operator overlay
-  silently removes its product/tool-specific scan. Copy both files into the worktree before
-  running the battery there.
-- **Fresh-worktree battery needs FIVE gitignored inputs, and never via symlink** (observed
-  2026-07-07, ESM land; fourth found 2026-07-09, home-backup land; fifth found 2026-07-28,
-  sealed source-token proof): `docs_private/plan/` (arch doctor's adaptation-steering test reds
-  without it), `console/node_modules` (console gates), `docs_private/profiles/` (the
-  `profiles-check` gate compares generated agents against the operator overlay — it reds with an
-  empty detail string without it), `docs_private/leak-tokens.txt`, and
-  `docs_private/source-leak-tokens.txt`.
-  Copy with APFS clones (`cp -Rc`), NOT `ln -s` — a `node_modules/` ignore pattern matches
+- **The battery needs FIVE gitignored inputs** (observed 2026-07-07, ESM land; fourth found
+  2026-07-09, home-backup land; fifth found 2026-07-28, sealed source-token proof):
+  `docs_private/plan/` (arch doctor's adaptation-steering test reds without it),
+  `console/node_modules` (console gates), `docs_private/profiles/` (the `profiles-check` gate
+  compares generated agents against the operator overlay — it reds with an empty detail string
+  without it), `docs_private/leak-tokens.txt`, and `docs_private/source-leak-tokens.txt` (the
+  embedded baseline keeps the generic leak gate armed without them, but each operator overlay
+  carries its own product/tool-specific scan). A linked worktree carries none of them; since
+  2026-09-13 the battery takes any the caller's checkout lacks from the repository's main
+  checkout, and the caller's own copy still wins. Before that, each missing input was silently
+  skipped. Only a separate clone (the Codex-runtime shape below) still needs them copied in by
+  hand: APFS clones (`cp -Rc`), NOT `ln -s` — a `node_modules/` ignore pattern matches
   directories only, so a symlink shows up as an untracked file and the redact gate EISDIRs
   trying to read it.
 - **The Codex sandbox cannot run `git worktree add` against the main checkout** (observed

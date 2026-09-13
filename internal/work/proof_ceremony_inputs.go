@@ -22,21 +22,33 @@ var ProofCeremonyOwnedIgnoredInputs = []string{
 }
 
 // CopyProofCeremonyInputs snapshots each ceremony input from sourceRepo into
-// sealedRepo, skipping inputs sourceRepo does not have. command builds the copy
-// subprocess so the caller's execution barrier and cancellation bind it.
+// sealedRepo. A fresh linked worktree carries no ignored files, so an input it
+// lacks comes from the repository's main checkout; an input neither has is
+// skipped. command builds each subprocess so the caller's execution barrier and
+// cancellation bind it.
 func CopyProofCeremonyInputs(
 	ctx context.Context,
 	sourceRepo string,
 	sealedRepo string,
 	command func(context.Context, string, ...string) *exec.Cmd,
 ) error {
+	mainCheckout := proofMainCheckout(ctx, sourceRepo, command)
 	for _, relativePath := range ProofCeremonyOwnedIgnoredInputs {
-		sourcePath := filepath.Join(sourceRepo, filepath.FromSlash(relativePath))
-		if _, err := os.Lstat(sourcePath); err != nil {
-			if os.IsNotExist(err) {
+		sourcePath := ""
+		for _, root := range []string{sourceRepo, mainCheckout} {
+			if root == "" {
 				continue
 			}
-			return fmt.Errorf("inspect proof ceremony input %s: %w", relativePath, err)
+			candidate := filepath.Join(root, filepath.FromSlash(relativePath))
+			if _, err := os.Lstat(candidate); err == nil {
+				sourcePath = candidate
+				break
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("inspect proof ceremony input %s: %w", relativePath, err)
+			}
+		}
+		if sourcePath == "" {
+			continue
 		}
 		if err := validateProofCeremonyInputSnapshot(sourcePath); err != nil {
 			return fmt.Errorf("validate proof ceremony input %s: %w", relativePath, err)
@@ -63,6 +75,24 @@ func CopyProofCeremonyInputs(
 		}
 	}
 	return nil
+}
+
+// proofMainCheckout returns the main checkout of the repository sourceRepo belongs
+// to, or "" when git cannot say or the repository is bare.
+func proofMainCheckout(
+	ctx context.Context,
+	sourceRepo string,
+	command func(context.Context, string, ...string) *exec.Cmd,
+) string {
+	output, err := command(ctx, "git", "-C", sourceRepo, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	if err != nil {
+		return ""
+	}
+	commonDir := strings.TrimSpace(string(output))
+	if filepath.Base(commonDir) != ".git" {
+		return ""
+	}
+	return filepath.Dir(commonDir)
 }
 
 func validateProofCeremonyInputSnapshot(root string) error {
