@@ -159,6 +159,26 @@ const METRIC_LABEL: Record<string, string> = {
   ga4_conversions: "Conversions",
   revenuecat_mrr: "MRR",
   revenuecat_active_subscriptions: "Active subscriptions",
+  ads_spend: "Ad spend",
+  ads_impressions: "Ad impressions",
+  ads_clicks: "Ad clicks",
+  ads_conversions: "Ad conversions",
+  ads_revenue: "Ad revenue",
+  ads_ctr: "Ad CTR",
+  ads_cpc: "Cost per click",
+  ads_cpa: "Cost per conversion",
+  ads_roas: "ROAS",
+};
+
+const AD_PLATFORM_LABEL: Record<string, string> = {
+  apple_search_ads: "Apple Search Ads",
+  google_ads: "Google Ads",
+  meta_ads: "Meta Ads",
+  tiktok_ads: "TikTok Ads",
+  x_ads: "X Ads",
+  reddit_ads: "Reddit Ads",
+  linkedin_ads: "LinkedIn Ads",
+  other: "Ads",
 };
 
 export function metricLabel(metric: string): string {
@@ -176,11 +196,15 @@ export function metricSurface(metric: string, provider: string): { label: string
     return { label: "RevenueCat", accent: "violet" };
   if (provider === "posthog" || metric.startsWith("posthog"))
     return { label: "PostHog", accent: "pink" };
+  if (AD_PLATFORM_LABEL[provider] || metric.startsWith("ads_"))
+    return { label: AD_PLATFORM_LABEL[provider] ?? "Ads", accent: "red" };
   return { label: "Canonical", accent: "gray" };
 }
 
 export function formatMetricValue(metric: string, value: number | null): string {
   if (value == null) return "—";
+  if (metric === "ads_conversions") return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(1);
+  if (metric === "ads_roas") return `${value.toFixed(2)}×`;
   if (metric.includes("conversion") || metric.includes("ctr"))
     return `${(value * 100).toFixed(2)}%`;
   if (metric.includes("position")) return value.toFixed(1);
@@ -222,7 +246,8 @@ const LENS_ORDER: LoopLens[] = ["monetization", "reach", "quality", "engagement"
 
 export function lensForMetric(metric: string): LoopLens {
   const m = metric.toLowerCase();
-  if (/(conversion|proceeds|revenue|mrr|subscription|earnings|purchase|arpu|ltv|rpm)/.test(m)) return "monetization";
+  if (/^ads_(spend|cpc|cpa|cpm)$/.test(m)) return "reach";
+  if (/(conversion|proceeds|revenue|mrr|subscription|earnings|purchase|arpu|ltv|rpm|roas)/.test(m)) return "monetization";
   if (/(activation|retention|\bdau\b|\bmau\b|active_users|returning|session)/.test(m)) return "engagement";
   if (/(rating|review_count|position|ctr|rank|crash|stars)/.test(m)) return "quality";
   if (/(impression|click|download|install|first_time|page_view|reach|new_users|visits)/.test(m)) return "reach";

@@ -1238,6 +1238,7 @@ func proofCheckSteps(baseRef string, headRefs ...string) ([]proofCheckStep, erro
 		// selftests (traffic / useLiveFleet / run-attempts). It imports extensionless @/ TS, so it
 		// runs under bun like the other selftest-runner smokes.
 		{Name: "console-traffic-board-smoke", Command: consoleBunSmokeCommand("scripts/traffic-board-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-traffic-board-smoke"},
+		{Name: "console-ads-smoke", Command: consoleBunSmokeCommand("scripts/ads-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-ads-smoke"},
 		// delegated-sessions-smoke executes the delegated supervised-session board's
 		// pure-TS normalize (privacy whitelist) + render falsifiers. Extensionless @/
 		// TS imports, so it runs under bun like the other selftest-runner smokes.

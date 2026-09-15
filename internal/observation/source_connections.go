@@ -318,12 +318,11 @@ func loadProductSignalConnectionSummaries(homePath string) (map[string]productSi
 	}
 	path := filepath.Join(homePath, "ledger", "product-signals.jsonl")
 	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return out, nil
-		}
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
+	// A missing signals ledger is not the end of the read: the ads ledger
+	// below can still carry imported rows for a platform with no signal yet.
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -343,12 +342,32 @@ func loadProductSignalConnectionSummaries(homePath string) (map[string]productSi
 		summary.Count++
 		out[sourceKind] = summary
 	}
+	adRows, err := product.LoadAdRows(homePath)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range product.LatestAdRows(adRows) {
+		summary := out[row.Platform]
+		summary.SourceKind = row.Platform
+		summary.SourceRef = firstNonEmpty(summary.SourceRef, "product-ads:"+row.Platform)
+		summary.LastSeen = newestTimestamp(summary.LastSeen, row.ImportedAt)
+		summary.Count++
+		out[row.Platform] = summary
+	}
 	return out, nil
 }
 
 func productSignalSourceKind(signal product.Signal) string {
 	for _, ref := range signal.EvidenceRefs {
 		ref = strings.TrimSpace(ref)
+		if strings.HasPrefix(ref, "ads:") {
+			// ads:<platform>:... — the bridge names the platform in every ref.
+			if parts := strings.SplitN(ref, ":", 3); len(parts) >= 2 {
+				if _, ok := product.LookupAdPlatform(parts[1]); ok {
+					return parts[1]
+				}
+			}
+		}
 		switch {
 		case strings.HasPrefix(ref, "asc:"):
 			return "app_store_connect"
@@ -449,6 +468,62 @@ func sourceConnectionDefs() []sourceConnectionDef {
 			Produces:           []string{"product signal", "product loop evidence"},
 			NextSafeAction:     "Run the read-only ASC preflight with private product mapping config.",
 			PrivateSetupNeeded: true,
+		},
+		{
+			ID:             "apple_search_ads",
+			Label:          "Apple Search Ads",
+			SourceKinds:    []string{"apple_search_ads"},
+			DefaultStatus:  "not_connected",
+			Produces:       []string{"paid acquisition rows", "product signal"},
+			NextSafeAction: "Export a daily campaign report (CSV) from Apple Search Ads and import it with `compound product ads import --platform apple_search_ads`.",
+		},
+		{
+			ID:             "google_ads",
+			Label:          "Google Ads",
+			SourceKinds:    []string{"google_ads"},
+			DefaultStatus:  "not_connected",
+			Produces:       []string{"paid acquisition rows", "product signal"},
+			NextSafeAction: "Export a daily campaign report (CSV) from Google Ads and import it with `compound product ads import --platform google_ads`.",
+		},
+		{
+			ID:             "meta_ads",
+			Label:          "Meta Ads",
+			SourceKinds:    []string{"meta_ads"},
+			DefaultStatus:  "not_connected",
+			Produces:       []string{"paid acquisition rows", "product signal"},
+			NextSafeAction: "Export a daily campaign report (CSV) from Meta Ads and import it with `compound product ads import --platform meta_ads`.",
+		},
+		{
+			ID:             "tiktok_ads",
+			Label:          "TikTok Ads",
+			SourceKinds:    []string{"tiktok_ads"},
+			DefaultStatus:  "not_connected",
+			Produces:       []string{"paid acquisition rows", "product signal"},
+			NextSafeAction: "Export a daily campaign report (CSV) from TikTok Ads and import it with `compound product ads import --platform tiktok_ads`.",
+		},
+		{
+			ID:             "x_ads",
+			Label:          "X Ads",
+			SourceKinds:    []string{"x_ads"},
+			DefaultStatus:  "not_connected",
+			Produces:       []string{"paid acquisition rows", "product signal"},
+			NextSafeAction: "Export a daily campaign report (CSV) from X Ads and import it with `compound product ads import --platform x_ads`.",
+		},
+		{
+			ID:             "reddit_ads",
+			Label:          "Reddit Ads",
+			SourceKinds:    []string{"reddit_ads"},
+			DefaultStatus:  "not_connected",
+			Produces:       []string{"paid acquisition rows", "product signal"},
+			NextSafeAction: "Export a daily campaign report (CSV) from Reddit Ads and import it with `compound product ads import --platform reddit_ads`.",
+		},
+		{
+			ID:             "linkedin_ads",
+			Label:          "LinkedIn Ads",
+			SourceKinds:    []string{"linkedin_ads"},
+			DefaultStatus:  "not_connected",
+			Produces:       []string{"paid acquisition rows", "product signal"},
+			NextSafeAction: "Export a daily campaign report (CSV) from LinkedIn Ads and import it with `compound product ads import --platform linkedin_ads`.",
 		},
 		{
 			ID:             "google_search_console",

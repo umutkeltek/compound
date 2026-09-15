@@ -59,6 +59,8 @@ func Authority(homePath string, store *mem.Store) (AuthorityReport, error) {
 		AuthorityPaths: []string{
 			"ledger/claims.jsonl",
 			"ledger/product-signals.jsonl",
+			"ledger/product-ads.jsonl",
+			"ledger/product-ads-imports.jsonl",
 			"inbox/product-hypothesis-candidates",
 			"compound://events/<id>",
 			"ledger/product-reviews.jsonl",

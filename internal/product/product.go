@@ -44,6 +44,16 @@ var signalExportProviderAllowlist = map[string]struct{}{
 	"google_search_console": {},
 	"google_analytics":      {},
 	"google_adsense":        {},
+	// Paid acquisition platforms (see ads.go); the ads ledger bridges into
+	// ProductSignals through the same door, so a hand-written export with
+	// one of these source kinds validates too.
+	"apple_search_ads": {},
+	"google_ads":       {},
+	"meta_ads":         {},
+	"tiktok_ads":       {},
+	"x_ads":            {},
+	"reddit_ads":       {},
+	"linkedin_ads":     {},
 }
 
 // canonicalSignalMetricNames is the conservative alias table for source-export

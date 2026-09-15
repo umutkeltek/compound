@@ -466,6 +466,19 @@ func loopSignalsByMetric(signals []Signal, transitions []TimelineTransition, rec
 }
 
 func loopSignalProvider(signal Signal) string {
+	// Bridged ads signals share one metric family (ads_*) across every ad
+	// platform, so the platform lives in the evidence refs (ads:<platform>:…),
+	// exactly as the ads bridge writes them.
+	for _, ref := range signal.EvidenceRefs {
+		if !strings.HasPrefix(ref, "ads:") {
+			continue
+		}
+		if parts := strings.SplitN(ref, ":", 3); len(parts) >= 2 {
+			if _, ok := LookupAdPlatform(parts[1]); ok {
+				return parts[1]
+			}
+		}
+	}
 	return loopMetricProvider(signal.MetricName)
 }
 
@@ -489,6 +502,8 @@ func loopMetricProvider(metricName string) string {
 		return "google_adsense"
 	case strings.HasPrefix(metric, "app_store_connect_") || strings.HasPrefix(metric, "app_store_"):
 		return "app_store_connect"
+	case strings.HasPrefix(metric, "ads_"):
+		return "ads"
 	case strings.HasPrefix(metric, "revenuecat_"):
 		return "revenuecat"
 	case strings.HasPrefix(metric, "posthog_"):

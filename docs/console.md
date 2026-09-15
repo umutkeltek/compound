@@ -65,7 +65,7 @@ they do not automatically become new navigation rows.
 | **Decide** | Which consequential calls need my judgment? | Evidence, consequence, reversibility, authority, and safe actions |
 | **Knowledge** | What does Compound know, why, and how current is it? | Claims, candidates, positions, patterns, Sources, and provenance |
 | **System** | What technical and authority configuration is effective? | Capabilities, routing, hooks, health, Settings, and Standing law |
-| **Outcomes** | What external change fed learning back into the system? | Product signals, hypotheses, reviews, and learned next moves |
+| **Outcomes** | What external change fed learning back into the system? | Product signals, hypotheses, reviews, learned next moves, and paid acquisition (Ads: spend, CPA, ROAS per platform, product, campaign — see [`docs/operations/ads-signals.md`](operations/ads-signals.md)) |
 
 Ask Compound is a global read-only overlay rather than another destination. A
 Live row opens the same WorkEnvelope in Work; Today links to the owning Work or

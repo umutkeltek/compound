@@ -81,7 +81,10 @@ export const EXPERIENCE_SURFACES: ExperienceSurface[] = [
     label: "Outcomes",
     href: "/loops",
     description: "What shipped, what changed, and what the system learned.",
-    routes: [{ label: "Feedback loops", href: "/loops" }],
+    routes: [
+      { label: "Feedback loops", href: "/loops" },
+      { label: "Ads", href: "/ads" },
+    ],
   },
 ];
 
