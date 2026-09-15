@@ -263,6 +263,7 @@ func TestProofCheckPackageIsolationPreservesCanonicalGateInventory(t *testing.T)
 		{"console-projection-degradation-smoke", "console-projection-degradation-smoke"},
 		{"console-stream-door-smoke", "console-stream-door-smoke"},
 		{"console-traffic-board-smoke", "console-traffic-board-smoke"},
+		{"console-ads-smoke", "console-ads-smoke"},
 		{"console-delegated-sessions-smoke", "console-delegated-sessions-smoke"},
 		{"console-coordination-smoke", "console-coordination-smoke"},
 		{"bun-tools-test", "bun-tools-test"},
