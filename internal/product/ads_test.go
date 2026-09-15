@@ -149,6 +149,46 @@ func TestAdsImportIsIdempotentAndVersionsChangedRows(t *testing.T) {
 	}
 }
 
+// TestAdsImportEmptyRevenueColumnDoesNotClaimRevenue would FAIL if a
+// conversion-value header with empty cells made ROAS read as 0.00× instead of
+// undefined — the exact shape Apple Search Ads exports produce.
+func TestAdsImportEmptyRevenueColumnDoesNotClaimRevenue(t *testing.T) {
+	home := t.TempDir()
+	p := filepath.Join(t.TempDir(), "empty-revenue.csv")
+	if err := os.WriteFile(p, []byte("date,campaign_id,spend,impressions,clicks,conversions,revenue,currency\n2026-09-01,c1,10,1000,50,2,,USD\n2026-09-02,c1,12,1100,55,3,,USD\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := ImportAdsReport(home, p, AdsImportOptions{Platform: "other", ProductID: "product:demo", Now: time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Import.HasRevenueCol {
+		t.Fatalf("the column exists and the receipt must say so: %+v", report.Import)
+	}
+	rows, _ := LoadAdRows(home)
+	for _, r := range rows {
+		if r.HasRevenue {
+			t.Fatalf("empty revenue cell must not claim revenue: %+v", r)
+		}
+	}
+	proj, err := LoadAdsProjection(home, AdsProjectionOptions{AsOf: time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC), WindowDays: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proj.Totals.HasRevenue || proj.Totals.ROAS != 0 {
+		t.Fatalf("ROAS must be undefined: %+v", proj.Totals)
+	}
+	withValues := filepath.Join(t.TempDir(), "revenue.csv")
+	os.WriteFile(withValues, []byte("date,campaign_id,spend,impressions,clicks,conversions,revenue,currency\n2026-09-01,c2,10,1000,50,2,30,USD\n"), 0o644)
+	if _, err := ImportAdsReport(home, withValues, AdsImportOptions{Platform: "other", ProductID: "product:demo"}); err != nil {
+		t.Fatal(err)
+	}
+	proj, _ = LoadAdsProjection(home, AdsProjectionOptions{AsOf: time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC), WindowDays: 3})
+	if !proj.Totals.HasRevenue || !near(proj.Totals.ROAS, 30.0/32.0) {
+		t.Fatalf("a row with a value defines ROAS over the window: %+v", proj.Totals)
+	}
+}
+
 func TestAdsImportFailsClosedOnBadInput(t *testing.T) {
 	home := t.TempDir()
 	if _, err := ImportAdsReport(home, adsFixture("canonical.csv"), AdsImportOptions{Platform: "bing_ads", ProductID: "product:demo"}); err == nil || !strings.Contains(err.Error(), "unknown platform") {

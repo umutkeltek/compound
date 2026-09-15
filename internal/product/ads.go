@@ -366,7 +366,6 @@ func ImportAdsReport(homePath, path string, opts AdsImportOptions) (AdsImportRep
 				CampaignName:  r.CampaignName,
 				Date:          r.Date,
 				Currency:      currency,
-				HasRevenue:    parsed.hasRevenue,
 				SourceRef:     sourceRef,
 				ImportID:      importID,
 				ImportedAt:    importedAt,
@@ -379,6 +378,9 @@ func ImportAdsReport(homePath, path string, opts AdsImportOptions) (AdsImportRep
 		row.Clicks += r.Clicks
 		row.Conversions += r.Conversions
 		row.Revenue += r.Revenue
+		if r.HasRevenue {
+			row.HasRevenue = true
+		}
 		if row.CampaignName == "" {
 			row.CampaignName = r.CampaignName
 		}
@@ -401,7 +403,7 @@ func ImportAdsReport(homePath, path string, opts AdsImportOptions) (AdsImportRep
 		RowsParsed:     len(parsed.rows),
 		RowsSkipped:    parsed.skipped,
 		HasCampaignCol: parsed.hasCampaign,
-		HasRevenueCol:  parsed.hasRevenue,
+		HasRevenueCol:  parsed.hasRevenueColumn,
 		ImportedAt:     importedAt,
 	}
 	campaigns := map[string]struct{}{}
@@ -575,16 +577,22 @@ type adsParsedRow struct {
 	Clicks       float64
 	Conversions  float64
 	Revenue      float64
+	// HasRevenue is per row: a report can carry a conversion-value column
+	// whose cells are empty, and an empty cell is "not reported", not 0.
+	HasRevenue bool
 }
 
 type adsParsedReport struct {
-	rows           []adsParsedRow
-	skipped        int
-	currency       string
-	hasCampaign    bool
-	hasRevenue     bool
-	hasClicks      bool
-	hasConversions bool
+	rows        []adsParsedRow
+	skipped     int
+	currency    string
+	hasCampaign bool
+	// hasRevenueColumn: the header exists. hasRevenue: at least one row
+	// carried a value. Only the latter makes ROAS defined.
+	hasRevenueColumn bool
+	hasRevenue       bool
+	hasClicks        bool
+	hasConversions   bool
 }
 
 type adsHeaderIndex struct {
@@ -622,11 +630,11 @@ func parseAdsReport(b []byte, platform AdPlatform, source string) (adsParsedRepo
 	}
 
 	out := adsParsedReport{
-		hasCampaign:    index.campaignID >= 0 || index.campaignName >= 0,
-		hasRevenue:     index.revenue >= 0,
-		hasClicks:      index.clicks >= 0,
-		hasConversions: index.conversions >= 0,
-		currency:       index.spendCurrency,
+		hasCampaign:      index.campaignID >= 0 || index.campaignName >= 0,
+		hasRevenueColumn: index.revenue >= 0,
+		hasClicks:        index.clicks >= 0,
+		hasConversions:   index.conversions >= 0,
+		currency:         index.spendCurrency,
 	}
 	cell := func(rec []string, i int) string {
 		if i < 0 || i >= len(rec) {
@@ -672,10 +680,12 @@ func parseAdsReport(b []byte, platform AdPlatform, source string) (adsParsedRepo
 				return adsParsedReport{}, fmt.Errorf("ads report %s row %d: conversions %q: %w", source, n+1, cell(rec, index.conversions), perr)
 			}
 		}
-		if index.revenue >= 0 {
-			if row.Revenue, perr = parseAdNumber(cell(rec, index.revenue)); perr != nil {
-				return adsParsedReport{}, fmt.Errorf("ads report %s row %d: revenue %q: %w", source, n+1, cell(rec, index.revenue), perr)
+		if raw := cell(rec, index.revenue); index.revenue >= 0 && raw != "" {
+			if row.Revenue, perr = parseAdNumber(raw); perr != nil {
+				return adsParsedReport{}, fmt.Errorf("ads report %s row %d: revenue %q: %w", source, n+1, raw, perr)
 			}
+			row.HasRevenue = true
+			out.hasRevenue = true
 		}
 		if index.currency >= 0 {
 			row.Currency = strings.ToUpper(cell(rec, index.currency))

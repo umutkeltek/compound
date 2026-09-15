@@ -71,6 +71,32 @@ compound product ads import \
 Ledger files: `ledger/product-ads.jsonl` (rows) and
 `ledger/product-ads-imports.jsonl` (receipts with the report's sha256).
 
+## Apple Search Ads without hand exports
+
+Apple Ads API access is a rented edge owned by the `asc` CLI (its credentials
+are a local `asc` profile, never Compound's). `tools/apple_ads_daily.ts` takes
+the campaign report `asc` produces, maps each campaign's app (`adamId`) to a
+product through the same private `asc-products.json` the ASC daily signals
+use, writes one canonical CSV per product, and with `--apply` runs the import
+door above. Unmapped apps are reported, never dropped silently.
+
+```bash
+# the last 14 days, all products, into the live home (needs `asc ads auth status` green):
+bun tools/apple_ads_daily.ts \
+  --config "${COMPOUND_HOME:-$HOME/.compound}/private/asc-products.json" \
+  --org <org-id> --days 14 --account <ad-account-id> --apply --json
+# or hand it a report you already produced / a custom asc command:
+#   --report-json report.json      |   --asc-command 'asc ads v5 reports campaigns --file payload.json --org <org> --output json'
+```
+
+With `--org --days` the tool builds the report request itself (`DAILY`, UTC,
+`returnRecordsWithNoMetrics: true`) and runs `asc` with proxy variables
+stripped. Re-running is idempotent; a day that changed appends a newer
+observation, so a daily job over a 14-day window keeps late-attributed
+installs honest.
+Regression proof: `bun test tools/apple_ads_daily.test.ts` (fixture
+`fixtures/product/apple-ads-campaign-report.json`).
+
 ## Read
 
 ```bash
