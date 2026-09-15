@@ -116,12 +116,12 @@ func buildSelectionSnapshotFromSaved(
 // `work advance --execute` CLI path (and any future adapter-driven caller
 // that has no lane tuple). Resolution precedence is the contract's:
 //
-//	1. resolvedOverride (an explicit one-run --launch-profile/--effort
-//	   resolution) — source=override; the envelope's saved selection is
-//	   not touched;
-//	2. the envelope's saved selection — source=saved, stamped with its
-//	   consumed revision;
-//	3. otherwise the project default — source=project_default.
+//  1. resolvedOverride (an explicit one-run --launch-profile/--effort
+//     resolution) — source=override; the envelope's saved selection is
+//     not touched;
+//  2. the envelope's saved selection — source=saved, stamped with its
+//     consumed revision;
+//  3. otherwise the project default — source=project_default.
 //
 // The snapshot records only what this launch was ASKED to run plus the
 // honest effort/session evidence; observed provider identity stays on the

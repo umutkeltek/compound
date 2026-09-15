@@ -47,10 +47,10 @@ const DetachedLaunchSchemaVersion = "compound.detached_launch.v0.1"
 // starts (the durable launch identity); `running` after a successful start;
 // the rest are stamped by ReconcileDetachedLaunches.
 const (
-	DetachedOutcomeReserved       = "reserved"
-	DetachedOutcomeRunning        = "running"
-	DetachedOutcomeDoorFinalized  = "door_finalized"
-	DetachedOutcomeDoorLost       = "door_lost"
+	DetachedOutcomeReserved        = "reserved"
+	DetachedOutcomeRunning         = "running"
+	DetachedOutcomeDoorFinalized   = "door_finalized"
+	DetachedOutcomeDoorLost        = "door_lost"
 	DetachedOutcomeDoorLostRunning = "door_lost_running"
 )
 

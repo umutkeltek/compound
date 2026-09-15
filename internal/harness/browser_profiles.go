@@ -136,11 +136,11 @@ func LoadBrowserProfileRegistry(home string) (BrowserProfileRegistry, error) {
 // interprets an unrecognized shape as zero profiles then auto-seeds OVER
 // real metadata.
 const (
-	BrowserProfileRegistryAbsent        = "absent"
-	BrowserProfileRegistryEmpty         = "empty"
-	BrowserProfileRegistryPopulated     = "populated"
-	BrowserProfileRegistryForeign       = "foreign_version"
-	BrowserProfileRegistryShapeInvalid  = "shape_invalid"
+	BrowserProfileRegistryAbsent       = "absent"
+	BrowserProfileRegistryEmpty        = "empty"
+	BrowserProfileRegistryPopulated    = "populated"
+	BrowserProfileRegistryForeign      = "foreign_version"
+	BrowserProfileRegistryShapeInvalid = "shape_invalid"
 )
 
 // BrowserProfileRegistryRead is what the diagnostic loader reads: the

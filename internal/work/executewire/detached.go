@@ -74,18 +74,18 @@ var writeDetachedLaunch = work.WriteDetachedLaunch
 // LaunchDetachedViaDoor spawns the detached door for an already-claimed
 // envelope and records the sidecar. The record protocol is start/record-safe:
 //
-//	1. a RESERVED sidecar (no pid) is written BEFORE the start — a failure
-//	   there is a true not-started refusal (no child exists, plain error);
-//	2. the guarded start; a start failure removes the reserved sidecar
-//	   best-effort (nothing started);
-//	3. after a successful start the pid line is appended to the door log
-//	   (the log fd predates the start, so it usually survives the same
-//	   filesystem failure that ate the sidecar);
-//	4. the sidecar is updated to running+pid. A failure there (after one
-//	   retry) returns a *work.DetachedLaunchRecordError carrying the started
-//	   identity: the caller must treat the door as owning the envelope, never
-//	   close the work as failed-to-spawn, and let a reconcile tick adopt the
-//	   reserved record from the log.
+//  1. a RESERVED sidecar (no pid) is written BEFORE the start — a failure
+//     there is a true not-started refusal (no child exists, plain error);
+//  2. the guarded start; a start failure removes the reserved sidecar
+//     best-effort (nothing started);
+//  3. after a successful start the pid line is appended to the door log
+//     (the log fd predates the start, so it usually survives the same
+//     filesystem failure that ate the sidecar);
+//  4. the sidecar is updated to running+pid. A failure there (after one
+//     retry) returns a *work.DetachedLaunchRecordError carrying the started
+//     identity: the caller must treat the door as owning the envelope, never
+//     close the work as failed-to-spawn, and let a reconcile tick adopt the
+//     reserved record from the log.
 func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string, now time.Time) (work.DetachedLaunch, error) {
 	var launch work.DetachedLaunch
 	if store == nil {
