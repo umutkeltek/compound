@@ -747,6 +747,14 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 // `timeout 600` is the actual cap on parent lifetime, so a clamp
 // surfaces a refusal-with-value-fallback rather than a silent
 // hang-on-the-floor.
+// LaunchTimeout returns the timeout a governed launch places on one adapter
+// run (the wire's resolvedLaunchTimeout, exported for callers outside the
+// wire — the public CLI execute path bounds its RunInput with the same
+// ceiling instead of leaving the subprocess unbounded).
+func LaunchTimeout() time.Duration {
+	return resolvedLaunchTimeout()
+}
+
 func resolvedLaunchTimeout() time.Duration {
 	// Package-level vars mean tests can pin both.
 	def := DefaultLaunchTimeout

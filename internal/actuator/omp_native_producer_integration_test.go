@@ -176,6 +176,7 @@ exec omp --cwd="$4" --provider=switchback --model=switchback/test/omp-model --mo
 	}
 
 	executed, err := ExecuteGovernedHarnessAdvance(
+		context.Background(),
 		canonicalHome,
 		store,
 		claimed,

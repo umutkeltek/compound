@@ -227,6 +227,47 @@ a new selection revision with its lifecycle event — never an edit of a histori
 attempt prints its snapshot's `source: saved|override|project_default|system_default`, `selection_rev`, and any `selection_drift` line (what did run, from which source, with which evidence); a difference between the two
 is visible as `source: override` or `selection_drift` on the attempt. No launcher script has to be read.
 
+**Every governed path carries the snapshot.** The public `work advance --execute`
+CLI resolves the choice once — explicit override, else the saved selection, else the
+project default — and stamps the full snapshot (harness, profile, requested effort, consumed
+selection revision) onto the RunAttempt through the shared runner, on the same boundary it
+prints `selection: source=… profile=… rev=…`. `--expected-selection-revision N` is the CAS
+guard on that path: a stale revision produces zero execution and lifecycle delta. Unattended
+picking refuses a candidate whose saved selection names a different harness family than the
+route lane (`ineligible:saved execution_selection harness=…`) — the global route never
+silently overrides the work's own saved choice; route and capacity checked on one lane cannot
+attest a candidate saved for another.
+
+## Cancellation and budget are owned by the canonical execution seam
+
+`ExecuteGovernedHarnessAdvance` is the one mutation seam shared by the public CLI, the
+selector-driven execution, and (through the detached door, which invokes the public CLI) the
+unattended worker. It takes the caller's launch context — production: the signal-derived
+`executewire.LaunchContext()` — so SIGINT/SIGTERM cancel the governed run itself. The shared
+subprocess runner translates cancellation and the RunInput's finite `Timeout` into a
+process-group kill with `cancel:context_cancelled` / `timeout:exceeded` evidence on the
+attempt, then finalizes the envelope failed. A caller passing `context.Background()` forfeits
+the guarantee: cancellation never reaches the adapter, and the detached worker inherits only
+its own external budget.
+
+## Detached start/record failures are recoverable, not "failed to spawn"
+
+The detached door protocol is start/record-safe (2026-09-15):
+
+```text
+durable reserved launch identity (sidecar, outcome=reserved, no pid)
+→ guarded process start (a start failure removes the reserved sidecar)
+→ started-identity line in the door log (pid/pgid)
+→ sidecar updated to running+pid
+→ observation (reconcile) → finalization/recovery
+```
+
+A sidecar write failure after `cmd.Start` returns a typed `DetachedLaunchRecordError`
+carrying the started identity — the door owns the envelope, so the stage leaves it claimed
+(`launch_record_recovery`) and never closes it as failed-to-spawn. A reconcile tick adopts
+a `reserved` record by reading the started pid line from the door log. A started pid is
+never a "nothing started" result.
+
 ## Route evidence is a projection, not a verdict
 
 > A gateway `RouteDecision` is **execution-route evidence, NOT proof of task success.**

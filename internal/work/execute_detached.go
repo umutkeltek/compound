@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -42,13 +43,40 @@ import (
 // DetachedLaunchSchemaVersion is the sidecar record schema.
 const DetachedLaunchSchemaVersion = "compound.detached_launch.v0.1"
 
-// Detached-launch outcomes stamped by ReconcileDetachedLaunches.
+// Detached-launch outcomes. `reserved` is written BEFORE the door process
+// starts (the durable launch identity); `running` after a successful start;
+// the rest are stamped by ReconcileDetachedLaunches.
 const (
-	DetachedOutcomeRunning         = "running"
-	DetachedOutcomeDoorFinalized   = "door_finalized"
-	DetachedOutcomeDoorLost        = "door_lost"
+	DetachedOutcomeReserved       = "reserved"
+	DetachedOutcomeRunning        = "running"
+	DetachedOutcomeDoorFinalized  = "door_finalized"
+	DetachedOutcomeDoorLost       = "door_lost"
 	DetachedOutcomeDoorLostRunning = "door_lost_running"
 )
+
+// DetachedDoorStartedLogLine is the log prefix the launcher appends AFTER
+// cmd.Start succeeded, carrying the pid/pgid. It is the recovery evidence a
+// reconcile tick adopts when the sidecar write failed after start: the log
+// file handle was opened before the start, so the pid line usually survives
+// the same filesystem failure that ate the sidecar.
+const DetachedDoorStartedLogLine = "detached door started pid="
+
+// DetachedLaunchRecordError is the typed outcome for a door process that DID
+// start but whose sidecar could not be recorded. A started pid is never a
+// no-side-effect refusal: the caller must treat the door as owning the
+// envelope (it finalizes it) and must not close the work as failed-to-spawn.
+// The launch carries the observed identity so the caller and later ticks can
+// observe it even without a durable sidecar.
+type DetachedLaunchRecordError struct {
+	Launch DetachedLaunch
+	Err    error
+}
+
+func (e *DetachedLaunchRecordError) Error() string {
+	return fmt.Sprintf("detached launch: door pid %d started but the sidecar could not be written: %v", e.Launch.PID, e.Err)
+}
+
+func (e *DetachedLaunchRecordError) Unwrap() error { return e.Err }
 
 // DetachedLaunch is the durable sidecar the seam writes for one detached
 // launch. It is the runtime identity a human needs to observe or cancel the
@@ -181,6 +209,38 @@ var detachedProcessAlive = func(pid int) bool {
 	return errors.Is(err, syscall.EPERM)
 }
 
+// detachedDoorStartedPID recovers the (pid, pgid) a launcher logged after a
+// successful start, from the door log. ok=false when the log carries no
+// started line (the start never happened, or the log write failed too).
+func detachedDoorStartedPID(logPath string) (int, int, bool) {
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		return 0, 0, false
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		idx := strings.Index(line, DetachedDoorStartedLogLine)
+		if idx < 0 {
+			continue
+		}
+		fields := strings.Fields(line[idx+len(DetachedDoorStartedLogLine):])
+		if len(fields) == 0 {
+			continue
+		}
+		pid, perr := strconv.Atoi(fields[0])
+		if perr != nil || pid <= 0 {
+			continue
+		}
+		pgid := pid
+		if len(fields) >= 3 && fields[1] == "pgid" {
+			if g, gerr := strconv.Atoi(fields[2]); gerr == nil && g > 0 {
+				pgid = g
+			}
+		}
+		return pid, pgid, true
+	}
+	return 0, 0, false
+}
+
 // ReconcileDetachedLaunches walks every open sidecar and records what became
 // of its door. It runs at the top of each unattended tick so the lifecycle of
 // a launch handed off on tick N is visible on tick N+1 without a human
@@ -188,6 +248,13 @@ var detachedProcessAlive = func(pid int) bool {
 // before it ever advanced the envelope to running, which leaves a claimed
 // envelope nobody will finish — that envelope is closed failed (audit_only)
 // so the bench stays honest and the next tick moves on.
+//
+// A `reserved` sidecar (written before the start, whose post-start update
+// failed) is adopted here: the reconcile reads the started pid line from the
+// door log, re-stamps the sidecar, and treats the door as running. A
+// reserved record with NO started line and a still-claimed envelope is a
+// start that never happened (or whose log line was lost too) — it closes the
+// envelope failed exactly like a lost door.
 func (s *Store) ReconcileDetachedLaunches(now time.Time) []DetachedReconcile {
 	launches, err := ListDetachedLaunches(s.home)
 	if err != nil || len(launches) == 0 {
@@ -195,10 +262,21 @@ func (s *Store) ReconcileDetachedLaunches(now time.Time) []DetachedReconcile {
 	}
 	var out []DetachedReconcile
 	for _, launch := range launches {
-		if launch.Outcome != "" && launch.Outcome != DetachedOutcomeRunning {
+		if launch.Outcome == DetachedOutcomeDoorFinalized || launch.Outcome == DetachedOutcomeDoorLost || launch.Outcome == DetachedOutcomeDoorLostRunning {
 			continue // already reconciled
 		}
 		verdict := DetachedReconcile{WorkID: launch.WorkID, PID: launch.PID}
+		if launch.Outcome == DetachedOutcomeReserved && launch.PID <= 0 {
+			pid, pgid, ok := detachedDoorStartedPID(launch.LogPath)
+			if ok {
+				launch.PID, launch.PGID = pid, pgid
+				launch.Outcome = DetachedOutcomeRunning
+				verdict.PID = pid
+				if writeErr := WriteDetachedLaunch(s.home, launch); writeErr != nil {
+					verdict.Detail = "adopted started pid from the door log but the sidecar still cannot be written: " + writeErr.Error()
+				}
+			}
+		}
 		w, loadErr := s.Get(launch.WorkID)
 		if loadErr == nil {
 			verdict.State = w.State
@@ -287,10 +365,17 @@ func (s *Store) failClaimedUnattendedEnvelope(workID, actor, summary, proofRef s
 // stepping (DispatchStep) must not touch such an envelope — the door expects
 // to find it exactly as the seam left it (claimed) and refuses otherwise. A
 // dead door is not "owning": ReconcileDetachedLaunches records it first.
+//
+// A `reserved` sidecar (post-start record still missing) reads as OWNED:
+// the pid is unknown but a start was armed, and touching the envelope on the
+// strength of a missing pid is the one wrong side to fail on.
 func DetachedDoorOwns(home, workID string) (DetachedLaunch, bool) {
 	launch, err := ReadDetachedLaunch(home, strings.TrimSpace(workID))
 	if err != nil {
 		return DetachedLaunch{}, false
+	}
+	if launch.Outcome == DetachedOutcomeReserved {
+		return launch, true
 	}
 	if launch.Outcome != "" && launch.Outcome != DetachedOutcomeRunning {
 		return launch, false

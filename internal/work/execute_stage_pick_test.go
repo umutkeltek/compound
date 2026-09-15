@@ -391,6 +391,34 @@ func TestUnattendedEligibleRule(t *testing.T) {
 			lane:     "claude-minimax",
 			eligible: true,
 		},
+		{
+			name: "saved selection matching the lane family passes",
+			work: envelope.WorkEnvelope{
+				Origin: origin("claude_code"), Owner: "orchestrator:claude_zai",
+				ExecutionSelection: &envelope.ExecutionSelection{LaunchProfileID: "claude-minimax", Harness: "claude_code", Source: "explicit", Revision: 1, SelectedBy: "op", SelectedAt: "2026-09-15T00:00:00Z"},
+			},
+			lane:     "claude-minimax",
+			eligible: true,
+		},
+		{
+			name: "a saved selection for another harness is ineligible on this lane",
+			work: envelope.WorkEnvelope{
+				Origin: origin("claude_code"), Owner: "orchestrator:claude_zai",
+				ExecutionSelection: &envelope.ExecutionSelection{LaunchProfileID: "omp-minimax", Harness: "oh_my_pi", Source: "explicit", Revision: 1, SelectedBy: "op", SelectedAt: "2026-09-15T00:00:00Z"},
+			},
+			lane:      "claude-minimax",
+			eligible:  false,
+			whyPrefix: "ineligible:saved execution_selection harness=oh_my_pi is not the route lane harness claude_code",
+		},
+		{
+			name: "a saved codex selection is ineligible on a claude lane",
+			work: envelope.WorkEnvelope{
+				ExecutionSelection: &envelope.ExecutionSelection{LaunchProfileID: "codex-lane", Harness: "codex", Source: "explicit", Revision: 1, SelectedBy: "op", SelectedAt: "2026-09-15T00:00:00Z"},
+			},
+			lane:      "claude_minimax",
+			eligible:  false,
+			whyPrefix: "ineligible:saved execution_selection harness=codex is not the route lane harness claude_code",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

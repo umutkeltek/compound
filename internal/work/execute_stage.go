@@ -254,6 +254,22 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 		if executeStageDetachedLaunchFn != nil {
 			launch, spawnErr := executeStageDetachedLaunchFn(s, ready, lane, workerPrompt, actor, now)
 			if spawnErr != nil {
+				// 2026-09-15 start/record contract: a door that STARTED is
+				// never a failed-to-spawn result. The typed record error
+				// carries the started identity; the door owns the envelope
+				// and finalizes it, so the envelope stays claimed and a
+				// later reconcile tick adopts the record from the door log.
+				var recErr *DetachedLaunchRecordError
+				if errors.As(spawnErr, &recErr) && recErr != nil {
+					result.Action = "execute"
+					result.Status = "claimed"
+					result.Lane = lane
+					result.Detached = &recErr.Launch
+					result.Skipped = "launch_record_recovery"
+					result.RunAttemptIDs = nil
+					result.Human = executeRefusedSummary(refused) + fmt.Sprintf("launched envelope %s on lane %s in a detached governed door (pid %d) but the sidecar could not be recorded: %v; the door owns running -> verifying/failed and the next tick adopts the record from the door log %s", ready, lane, recErr.Launch.PID, recErr.Err, recErr.Launch.LogPath)
+					return result, nil
+				}
 				closeSummary := "unattended detached launch failed to spawn: " + spawnErr.Error()
 				if closeErr := s.failClaimedUnattendedEnvelope(ready, actor, closeSummary, "execute_stage_detached_spawn_failed", now); closeErr != nil {
 					result.Human = executeRefusedSummary(refused) + fmt.Sprintf("claimed %s on lane %s but the detached door failed to spawn: %v; recording the failure was refused too: %v", ready, lane, spawnErr, closeErr)
@@ -472,10 +488,16 @@ func (s *Store) findReadyForExecuteIDs(now time.Time, actor, expectWorkID string
 //	i.   origin.harness is empty or equals the route lane's harness family
 //	     (claude_code for every claude_* lane) — the loop must never run
 //	     another executor's work on this lane;
-//	ii.  owner is empty, claude_code:orchestrator, or starts with
+//	ii.  a saved execution_selection whose harness family differs from the
+//	     route lane's is ineligible too (2026-09-15): the work's own saved
+//	     choice is the plan, and the detached door would otherwise pass the
+//	     global route as --harness and override it. Route/capacity for the
+//	     wrong lane cannot attest this candidate either. An explicit
+//	     policy-visible override is the escape, never a silent launch;
+//	iii. owner is empty, claude_code:orchestrator, or starts with
 //	     "orchestrator:" — the seam's own dispatchers are the only owners
 //	     whose intent unattended execution may consume;
-//	iii. the git_delivery target root exists on disk, or there is no
+//	iv.  the git_delivery target root exists on disk, or there is no
 //	     git_delivery at all (the launch resolves the workspace then).
 //
 // A nil Origin (legacy envelopes) reads as an empty harness and passes (i).
@@ -486,6 +508,11 @@ func unattendedEligible(w envelope.WorkEnvelope, lane string) (bool, string) {
 	}
 	if harness != "" && harness != routeLaneHarness(lane) {
 		return false, fmt.Sprintf("harness=%s is not the route lane harness %s", harness, routeLaneHarness(lane))
+	}
+	if w.ExecutionSelection != nil {
+		if saved := strings.TrimSpace(w.ExecutionSelection.Harness); saved != "" && saved != routeLaneHarness(lane) {
+			return false, fmt.Sprintf("saved execution_selection harness=%s is not the route lane harness %s", saved, routeLaneHarness(lane))
+		}
 	}
 	owner := strings.TrimSpace(w.Owner)
 	if owner != "" && owner != "claude_code:orchestrator" && !strings.HasPrefix(owner, "orchestrator:") {

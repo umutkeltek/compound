@@ -1,18 +1,20 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"compound/internal/actuator"
+	"compound/internal/envelope"
 	"compound/internal/harness"
 	"compound/internal/hookplan"
 	"compound/internal/runattempt"
 	"compound/internal/work"
+	"compound/internal/work/executewire"
 )
 
 var workAdvanceExecuteExit = os.Exit
@@ -46,7 +48,7 @@ var workAdvanceExecuteExit = os.Exit
 //
 // Exit code: 0 on succeeded, non-zero on failed/timeout/infra. Matches the
 // compound harness run contract.
-func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, rest []string, existingRunAttempts []string, launchProfileID string, now time.Time) {
+func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, rest []string, existingRunAttempts []string, explicitSelection *envelope.ExecutionSelection, now time.Time) {
 	if workID == "" {
 		fmt.Fprintln(os.Stderr, "error: --execute requires a work_id")
 		workAdvanceExecuteExit(2)
@@ -54,6 +56,11 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	harnessName := strings.TrimSpace(valueFlag(rest, "--harness"))
 	prompt := valueFlag(rest, "--prompt")
 	actor := firstNonEmpty(valueFlag(rest, "--by"), valueFlag(rest, "--actor"))
+	// The launch context is the production signal-derived one: SIGINT/SIGTERM
+	// cancel the governed run, and the shared runner kills the adapter's
+	// process group and stamps cancellation evidence on the attempt. Tests
+	// swap it via executewire.InstallLaunchContext.
+	launchCtx := executewire.LaunchContext()
 
 	// --execute only ever advances the work through "running" -- the
 	// adapter mint below, and the verifying/failed advance that follows
@@ -110,6 +117,26 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 			workAdvanceExecuteExit(2)
 		}
 		harnessName = strings.TrimSpace(wenv.ExecutionSelection.Harness)
+	}
+	// work_r7a_execution_selection_20260911: --expected-selection-revision is
+	// the CAS guard for the saved selection. On the execute path it is a
+	// pre-side-effect check: a stale guard must produce ZERO execution and
+	// lifecycle delta, so it is validated here — after the read-only
+	// envelope load, before adapter resolution or the governed advance.
+	if expectedSelRev := strings.TrimSpace(valueFlag(rest, "--expected-selection-revision")); expectedSelRev != "" {
+		n, perr := strconv.Atoi(expectedSelRev)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "error: --expected-selection-revision %q must be an integer\n", expectedSelRev)
+			workAdvanceExecuteExit(2)
+		}
+		found := 0
+		if wenv.ExecutionSelection != nil {
+			found = wenv.ExecutionSelection.Revision
+		}
+		if found != n {
+			fmt.Fprintf(os.Stderr, "error: execution_selection revision changed: expected %d, found %d; no RunAttempt was minted and the envelope was not advanced\n", n, found)
+			workAdvanceExecuteExit(1)
+		}
 	}
 
 	// Resolve the adapter BEFORE any state change. An unknown harness name
@@ -180,7 +207,20 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		workAdvanceExecuteExit(2)
 	}
 
-	if launchProfileID == "" && wenv.ExecutionSelection != nil && harnessName == strings.TrimSpace(wenv.ExecutionSelection.Harness) {
+	if explicitSelection != nil && harnessName != strings.TrimSpace(explicitSelection.Harness) {
+		// A one-run override across harness families is not carried by the
+		// registry lane adapters (an explicit profile names a lane of its own
+		// harness); refuse before any state change instead of silently
+		// launching the saved harness under the override's profile.
+		fmt.Fprintf(os.Stderr, "error: --launch-profile %q resolves harness %q, which is not the invoked harness %q; no RunAttempt was minted and the envelope was not advanced\n",
+			explicitSelection.LaunchProfileID, explicitSelection.Harness, harnessName)
+		workAdvanceExecuteExit(1)
+	}
+	launchProfileID := ""
+	if explicitSelection != nil {
+		launchProfileID = strings.TrimSpace(explicitSelection.LaunchProfileID)
+	} else if wenv.ExecutionSelection != nil && harnessName == strings.TrimSpace(wenv.ExecutionSelection.Harness) {
+		// Saved-selection fallback: the work's own choice drives the profile.
 		launchProfileID = wenv.ExecutionSelection.LaunchProfileID
 	}
 	// Resolve adapter-owned prerequisites before the governed state change.
@@ -201,13 +241,34 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		ProofRefs:       append([]string(nil), wenv.ArtifactIDs...),
 	}
 	if preflight, ok := adapter.(harness.PreflightAdapter); ok {
-		resolved, err := preflight.Preflight(context.Background(), runInput)
+		resolved, err := preflight.Preflight(launchCtx, runInput)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "harness %s preflight: %v\n", harnessName, err)
 			workAdvanceExecuteExit(1)
 		}
 		runInput = resolved
 	}
+	// work_r7a_execution_selection_20260911 + public-CLI contract 2026-09-15:
+	// the per-run selection snapshot is stamped on the RunInput AFTER the
+	// preflight resolution (preflight may rebuild the input) and BEFORE the
+	// governed advance, so the shared runner persists what this launch was
+	// ASKED to run — harness, profile, requested effort, consumed selection
+	// revision — onto the freshly minted RunAttempt. The override branch
+	// carries the CLI's own resolution; the saved branch stamps the
+	// envelope's revision. A snapshot that cannot be built honestly refuses
+	// before any state change.
+	snapshot, snapErr := executewire.BuildSelectionSnapshot(wenv, harnessName, explicitSelection)
+	if snapErr != nil {
+		fmt.Fprintf(os.Stderr, "error: build execution selection snapshot: %v\n", snapErr)
+		workAdvanceExecuteExit(1)
+	}
+	runInput.ExecutionSelectionSnapshot = &snapshot
+	// A governed run is bounded: the RunInput carries the same finite launch
+	// budget the launch wire applies, and the run context is the
+	// signal-derived launch context (SIGINT/SIGTERM cancel the adapter run,
+	// which the shared runner translates into a process-group kill with
+	// cancellation evidence). 2026-09-15 public-CLI cancellation contract.
+	runInput.Timeout = executewire.LaunchTimeout()
 	// A hook-governed lane must run the full roster for governed spawn; refuse
 	// (never install) before any state change (hookplan.GovernedFullRosterGate).
 	if gate := hookplan.GovernedFullRosterGate(harnessName); gate != nil {
@@ -218,7 +279,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	if note == "" {
 		note = "harness execute: " + harnessName
 	}
-	executed, err := actuator.ExecuteGovernedHarnessAdvance(homePath, store, wenv, adapter, runInput, actor, target, note, existingRunAttempts, resumeVerifying, now)
+	executed, err := actuator.ExecuteGovernedHarnessAdvance(launchCtx, homePath, store, wenv, adapter, runInput, actor, target, note, existingRunAttempts, resumeVerifying, now)
 	var laneRefusal *actuator.LaneRefusal
 	if errors.As(err, &laneRefusal) && laneRefusal != nil { // R3B 2026-09-04: explicit --permission-mode on unready lane refused BEFORE mint.
 		laneRefusal.RenderTo(os.Stderr)
@@ -249,6 +310,14 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	fmt.Printf("run_attempt_id: %s\n", out.RunAttempt.ID)
 	fmt.Printf("status: %s\n", out.RunAttempt.Status)
 	fmt.Printf("harness: %s\n", out.RunAttempt.Harness)
+	// The per-run selection snapshot, on the same boundary: what this run
+	// was ASKED to run (source, profile, consumed revision, effort).
+	if sel := out.RunAttempt.ExecutionSelection; sel != nil {
+		fmt.Printf("selection: source=%s profile=%s harness=%s rev=%d effort=%q\n",
+			sel.Source, sel.LaunchProfileID, sel.Harness, sel.SelectionRevision, sel.RequestedEffort)
+	} else {
+		fmt.Printf("selection: none\n")
+	}
 	if out.TranscriptPath != "" {
 		fmt.Printf("transcript: %s\n", out.TranscriptPath)
 	}

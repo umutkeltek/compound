@@ -293,7 +293,15 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 // ExecuteGovernedHarnessAdvance runs the one mutation seam shared by explicit
 // work advance --execute and selector-driven execution. Callers must complete
 // all read-only adapter, workspace, roster, and preflight checks first.
+//
+// ctx is the caller's launch context (production: signal-derived via
+// executewire.LaunchContext). The adapter's Run receives it directly — the
+// shared runner translates cancellation into a process-group kill with
+// cancellation evidence on the attempt. Callers that pass context.Background()
+// forfeit that guarantee; a caller may not silently strip cancellation from
+// the canonical execution owner.
 func ExecuteGovernedHarnessAdvance(
+	ctx context.Context,
 	homePath string,
 	store *work.Store,
 	claimedWork envelope.WorkEnvelope,
@@ -313,7 +321,7 @@ func ExecuteGovernedHarnessAdvance(
 	if err != nil {
 		return GovernedHarnessAdvanceExecution{}, err
 	}
-	out, runErr := adapter.Run(context.Background(), reserved.RunInput)
+	out, runErr := adapter.Run(ctx, reserved.RunInput)
 	harnessName := strings.TrimSpace(runInput.Harness)
 	if harnessName == "" {
 		harnessName = adapter.Name()

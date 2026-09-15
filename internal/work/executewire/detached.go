@@ -67,8 +67,25 @@ func DetachedLaunchArgv(timeoutBin, doorBin string, budget time.Duration, workID
 	}
 }
 
+// writeDetachedLaunch is the sidecar write seam (tests inject failures at
+// the exact steps the start/record contract cares about).
+var writeDetachedLaunch = work.WriteDetachedLaunch
+
 // LaunchDetachedViaDoor spawns the detached door for an already-claimed
-// envelope and records the sidecar. See the file comment for the contract.
+// envelope and records the sidecar. The record protocol is start/record-safe:
+//
+//	1. a RESERVED sidecar (no pid) is written BEFORE the start — a failure
+//	   there is a true not-started refusal (no child exists, plain error);
+//	2. the guarded start; a start failure removes the reserved sidecar
+//	   best-effort (nothing started);
+//	3. after a successful start the pid line is appended to the door log
+//	   (the log fd predates the start, so it usually survives the same
+//	   filesystem failure that ate the sidecar);
+//	4. the sidecar is updated to running+pid. A failure there (after one
+//	   retry) returns a *work.DetachedLaunchRecordError carrying the started
+//	   identity: the caller must treat the door as owning the envelope, never
+//	   close the work as failed-to-spawn, and let a reconcile tick adopt the
+//	   reserved record from the log.
 func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string, now time.Time) (work.DetachedLaunch, error) {
 	var launch work.DetachedLaunch
 	if store == nil {
@@ -118,6 +135,22 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 
 	budget := DefaultDetachedLaunchBudget
 	argv := DetachedLaunchArgv(timeoutBin, doorBin, budget, workID, lane, prompt, actor)
+	// 1. Durable reserved launch identity BEFORE the process exists. A
+	// failure here is a clean not-started refusal: no child, no mutation.
+	reserved := work.DetachedLaunch{
+		SchemaVersion: work.DetachedLaunchSchemaVersion,
+		WorkID:        workID,
+		Lane:          lane,
+		Actor:         actor,
+		Command:       argv,
+		LogPath:       logPath,
+		BudgetSeconds: int(budget.Seconds()),
+		StartedAt:     now.UTC().Format(time.RFC3339),
+		Outcome:       work.DetachedOutcomeReserved,
+	}
+	if err := writeDetachedLaunch(home, reserved); err != nil {
+		return launch, fmt.Errorf("detached launch: the reserved sidecar could not be written, so no door was started: %w", err)
+	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = strings.TrimSpace(wenv.GitDelivery.TargetWorktreeRoot)
 	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+home)
@@ -126,26 +159,34 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	cmd.Stderr = logFile
 	setProcessGroup(cmd)
 	fmt.Fprintf(logFile, "%s detached door start work=%s lane=%s actor=%s budget=%s argv=%q\n", now.UTC().Format(time.RFC3339), workID, lane, actor, budget, argv)
+	// 2. Guarded start. Nothing started means the reserved record goes away
+	// best-effort; a stale reserved record would otherwise read as owned.
 	if err := cmd.Start(); err != nil {
+		_ = os.Remove(filepath.Join(dir, workID+".json"))
 		return launch, fmt.Errorf("detached launch: start door: %w", err)
 	}
 	pid := cmd.Process.Pid
-	launch = work.DetachedLaunch{
-		SchemaVersion: work.DetachedLaunchSchemaVersion,
-		WorkID:        workID,
-		Lane:          lane,
-		Actor:         actor,
-		PID:           pid,
-		PGID:          pid, // Setpgid makes the child its own group leader.
-		Command:       argv,
-		LogPath:       logPath,
-		BudgetSeconds: int(budget.Seconds()),
-		StartedAt:     now.UTC().Format(time.RFC3339),
-		Outcome:       work.DetachedOutcomeRunning,
+	launch = reserved
+	launch.PID = pid
+	launch.PGID = pid // Setpgid makes the child its own group leader.
+	launch.Outcome = work.DetachedOutcomeRunning
+	// 3. Started-identity evidence in the log, before any sidecar attempt:
+	// the log fd is already open, so this line is the recovery authority a
+	// reconcile tick adopts when step 4 keeps failing.
+	fmt.Fprintf(logFile, "%s %s%d pgid=%d\n", now.UTC().Format(time.RFC3339), work.DetachedDoorStartedLogLine, pid, pid)
+	// 4. Record the started identity. One retry; a persistent failure is
+	// reported as recovery_required, never as failed-to-spawn.
+	var writeErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		writeErr = writeDetachedLaunch(home, launch)
+		if writeErr == nil {
+			break
+		}
 	}
-	if err := work.WriteDetachedLaunch(home, launch); err != nil {
-		// The door is running; do not lose its identity. Report loudly.
-		return launch, fmt.Errorf("detached launch: door pid %d started but the sidecar could not be written: %w", pid, err)
+	if writeErr != nil {
+		// The door is running; do not lose its identity. Report loudly and
+		// typed so the caller cannot mistake this for a no-start refusal.
+		return launch, &work.DetachedLaunchRecordError{Launch: launch, Err: writeErr}
 	}
 	// Do not wait: the tick returns, the door lives on. Release drops the
 	// parent's handle so the child is reparented and reaped by init.

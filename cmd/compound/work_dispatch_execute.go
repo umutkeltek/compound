@@ -9,6 +9,7 @@ import (
 	"compound/internal/capgraph"
 	"compound/internal/routeevidence"
 	"compound/internal/work"
+	"compound/internal/work/executewire"
 )
 
 type workDispatchExecuteOptions struct {
@@ -84,7 +85,9 @@ func buildWorkDispatchExecutionPlan(homePath string, store *work.Store, workID s
 }
 
 func executeWorkDispatchExecution(homePath string, store *work.Store, plan workDispatchExecutionPlan, opts workDispatchExecuteOptions, now time.Time) (workDispatchExecutionResult, error) {
-	return actuator.ExecuteSelectedHarness(homePath, store, actuator.SelectedHarnessExecutionPlan{
+	// The signal-derived launch context: cancellation reaches the governed
+	// execution owner, not just the CLI process.
+	return actuator.ExecuteSelectedHarness(executewire.LaunchContext(), homePath, store, actuator.SelectedHarnessExecutionPlan{
 		WorkID:              plan.WorkID,
 		Task:                plan.Task,
 		Workspace:           plan.Workspace,

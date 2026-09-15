@@ -111,6 +111,70 @@ func buildSelectionSnapshotFromSaved(
 	return snap, nil
 }
 
+// BuildSelectionSnapshot resolves the per-run ExecutionSelectionSnapshot for
+// a governed launch OUTSIDE the launch wire — today the public
+// `work advance --execute` CLI path (and any future adapter-driven caller
+// that has no lane tuple). Resolution precedence is the contract's:
+//
+//	1. resolvedOverride (an explicit one-run --launch-profile/--effort
+//	   resolution) — source=override; the envelope's saved selection is
+//	   not touched;
+//	2. the envelope's saved selection — source=saved, stamped with its
+//	   consumed revision;
+//	3. otherwise the project default — source=project_default.
+//
+// The snapshot records only what this launch was ASKED to run plus the
+// honest effort/session evidence; observed provider identity stays on the
+// RunAttempt's own fields. The route/model asked for come from the
+// resolution that produced the choice: the override's resolution when the
+// override drives, the saved selection's own values when it drives, and
+// nothing when the project default stands in (this caller has no lane
+// tuple to resolve).
+//
+// work_r7a_execution_selection_20260911; public-CLI contract 2026-09-15.
+func BuildSelectionSnapshot(
+	wenv envelope.WorkEnvelope,
+	overrideHarness string,
+	resolvedOverride *envelope.ExecutionSelection,
+) (runattempt.ExecutionSelectionSnapshot, error) {
+	if resolvedOverride != nil && strings.TrimSpace(resolvedOverride.LaunchProfileID) != "" {
+		snap := runattempt.ExecutionSelectionSnapshot{
+			Source:                "override",
+			LaunchProfileID:       strings.TrimSpace(resolvedOverride.LaunchProfileID),
+			LaunchProfileRevision: strings.TrimSpace(resolvedOverride.LaunchProfileRevision),
+			Harness:               firstNonEmpty(strings.TrimSpace(overrideHarness), strings.TrimSpace(resolvedOverride.Harness)),
+			ProviderRoute:         strings.TrimSpace(resolvedOverride.ProviderRoute),
+			RequestedModelID:      strings.TrimSpace(resolvedOverride.RequestedModelID),
+			RequestedEffort:       strings.TrimSpace(resolvedOverride.RequestedEffort),
+		}
+		if snap.Harness == "" {
+			snap.Harness = firstNonEmpty(envelopePtr(wenv.ExecutionSelection).Harness, "os-harness-entrypoints")
+		}
+		applyEffortEvidence(&snap)
+		applyNativeSessionEvidence(&snap)
+		if err := snap.Validate(); err != nil {
+			return runattempt.ExecutionSelectionSnapshot{}, fmt.Errorf("build override snapshot: %w", err)
+		}
+		return snap, nil
+	}
+	sel := wenv.ExecutionSelection
+	resolvedRoute, resolvedModel := "", ""
+	if sel != nil {
+		// The saved selection's own route/model ARE what the work asks for;
+		// this caller has no lane tuple to resolve them from again.
+		resolvedRoute, resolvedModel = sel.ProviderRoute, sel.RequestedModelID
+	}
+	return buildSelectionSnapshotFromSaved(
+		wenv,
+		overrideHarness,
+		"",
+		resolvedRoute,
+		resolvedModel,
+		"", // no observed profile revision on this path; the saved one stamps through
+		"",
+	)
+}
+
 // applyEffortEvidence stamps the honest evidence about whether the
 // applied effort is known. Today the wire cannot attest applied effort
 // for any production harness (the Claude wrapper carries effort as

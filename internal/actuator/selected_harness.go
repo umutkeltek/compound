@@ -75,14 +75,18 @@ func SelectAdapterBackedRoute(homePath string, chain []routeevidence.CapabilityR
 // ExecuteSelectedHarness consumes a resolved capability route through the
 // existing governed execution rail. Every fallible read-only admission check
 // completes before DispatchClaim mutates the WorkEnvelope.
+//
+// ctx is the caller's launch context; it flows into the canonical
+// ExecuteGovernedHarnessAdvance owner (production: signal-derived).
 func ExecuteSelectedHarness(
+	ctx context.Context,
 	homePath string,
 	store *work.Store,
 	plan SelectedHarnessExecutionPlan,
 	opts SelectedHarnessExecutionOptions,
 	now time.Time,
 ) (SelectedHarnessExecutionResult, error) {
-	prepared, err := prepareSelectedHarnessExecution(homePath, plan, opts, now)
+	prepared, err := prepareSelectedHarnessExecution(ctx, homePath, plan, opts, now)
 	if err != nil {
 		return SelectedHarnessExecutionResult{}, err
 	}
@@ -104,6 +108,7 @@ func ExecuteSelectedHarness(
 	}
 	prepared.runInput.Prompt = claim.WorkerPromptMD
 	executed, err := ExecuteGovernedHarnessAdvance(
+		ctx,
 		homePath,
 		store,
 		claimed,
@@ -145,6 +150,7 @@ func ExecuteSelectedHarness(
 }
 
 func prepareSelectedHarnessExecution(
+	ctx context.Context,
 	homePath string,
 	plan SelectedHarnessExecutionPlan,
 	opts SelectedHarnessExecutionOptions,
@@ -169,7 +175,7 @@ func prepareSelectedHarnessExecution(
 		Now:                         now,
 	}
 	if preflight, ok := adapter.(harness.PreflightAdapter); ok {
-		resolved, err := preflight.Preflight(context.Background(), runInput)
+		resolved, err := preflight.Preflight(ctx, runInput)
 		if err != nil {
 			return preparedSelectedHarnessExecution{}, fmt.Errorf("harness %s preflight: %w", adapter.Name(), err)
 		}

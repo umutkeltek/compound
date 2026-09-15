@@ -198,3 +198,36 @@ func TestDetachedSpawnFailureFailsOnlyThatEnvelope(t *testing.T) {
 		t.Fatalf("the other envelope must be untouched, got %q", other.State)
 	}
 }
+
+// Start/record contract 2026-09-15: a typed record failure is
+// recovery_required — the door started and owns the envelope, so the stage
+// must NOT fail-close it (the pre-2026-09-15 bug closed the work as
+// "failed to spawn" while the child ran on).
+func TestDetachedPostStartRecordFailureKeepsEnvelopeClaimed(t *testing.T) {
+	s := newStore(t)
+	seedReadyExecuteWork(t, s, "work_record_recovery")
+	installDetachedGreenGates(t, s)
+	restore := SwapExecuteStageDetachedLaunch(func(_ *Store, workID, lane, _, actor string, now time.Time) (DetachedLaunch, error) {
+		launch := DetachedLaunch{WorkID: workID, Lane: lane, Actor: actor, PID: 424243, PGID: 424243, LogPath: "/tmp/door.log", BudgetSeconds: 2700, StartedAt: now.UTC().Format(time.RFC3339), Outcome: DetachedOutcomeRunning}
+		return launch, &DetachedLaunchRecordError{Launch: launch, Err: errors.New("disk full: write detached launch")}
+	})
+	t.Cleanup(restore)
+
+	res, err := s.Continue(fixedNow.Add(time.Minute), ContinueOptions{Actor: "claude-minimax", MaxExecuteSteps: 1})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if res.Action != "execute" || res.Skipped != "launch_record_recovery" {
+		t.Fatalf("action=%q skipped=%q, want execute/launch_record_recovery; human=%s", res.Action, res.Skipped, res.Human)
+	}
+	if res.Detached == nil || res.Detached.PID != 424243 {
+		t.Fatalf("recovery result must carry the started identity: %+v", res.Detached)
+	}
+	after, _ := s.Get("work_record_recovery")
+	if !strings.HasPrefix(after.State, "claimed") {
+		t.Fatalf("recovery_required must leave the envelope claimed for the door, got %q", after.State)
+	}
+	if !strings.Contains(res.Human, "pid 424243") || !strings.Contains(res.Human, "sidecar could not be recorded") {
+		t.Fatalf("human line must name the pid and the recovery: %s", res.Human)
+	}
+}

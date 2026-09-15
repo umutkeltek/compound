@@ -1,10 +1,12 @@
 package executewire
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -182,4 +184,133 @@ func itoa(n int) string {
 		b = append([]byte{'-'}, b...)
 	}
 	return string(b)
+}
+
+// Start/record contract 2026-09-15: a sidecar write failure AFTER the door
+// started is a typed recovery-required result carrying the started identity —
+// never a plain failed-to-spawn error, and the reserved record stays behind
+// with the pid line in the door log so a reconcile tick can adopt it.
+func TestLaunchDetachedViaDoorPostStartRecordFailureIsRecoveryRequired(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetRoot := t.TempDir()
+	seedClaimedDetachedWork(t, store, "work_detached_recordfail", targetRoot)
+
+	// The fake door sleeps long enough for the test to observe the started
+	// child after the launcher returned an error.
+	fakeDoor := filepath.Join(t.TempDir(), "fake-compound")
+	script := "#!/bin/sh\necho door-ran\nsleep 3\n"
+	if err := os.WriteFile(fakeDoor, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prevDoor, prevBudget := DetachedDoorBinary, DefaultDetachedLaunchBudget
+	DetachedDoorBinary = func() (string, error) { return fakeDoor, nil }
+	DefaultDetachedLaunchBudget = 30 * time.Second
+	wasInstalled := AssertLaunchContextInstalled() == nil
+	SetLaunchContextInstalled(true)
+	calls := 0
+	prevWrite := writeDetachedLaunch
+	writeDetachedLaunch = func(home string, launch work.DetachedLaunch) error {
+		calls++
+		if calls == 1 {
+			return prevWrite(home, launch) // reserved record succeeds
+		}
+		return os.ErrPermission // every post-start write fails
+	}
+	t.Cleanup(func() {
+		writeDetachedLaunch = prevWrite
+		DetachedDoorBinary = prevDoor
+		DefaultDetachedLaunchBudget = prevBudget
+		SetLaunchContextInstalled(wasInstalled)
+	})
+
+	now := time.Now().UTC()
+	launch, err := LaunchDetachedViaDoor(store, "work_detached_recordfail", "claude_minimax", "p", "claude-minimax", now)
+	var recErr *work.DetachedLaunchRecordError
+	if err == nil || !errorsAs(err, &recErr) {
+		t.Fatalf("a post-start sidecar failure must return a typed recovery error, got %v (launch %+v)", err, launch)
+	}
+	if recErr.Launch.PID <= 0 || recErr.Launch.Outcome != work.DetachedOutcomeRunning {
+		t.Fatalf("recovery error must carry the started identity: %+v", recErr.Launch)
+	}
+	// The started child must be observable (it really runs).
+	if !processAlive(recErr.Launch.PID) {
+		t.Fatalf("door pid %d must be alive after a record failure", recErr.Launch.PID)
+	}
+	// The pid line is in the door log — the adoption authority.
+	logBody, _ := os.ReadFile(recErr.Launch.LogPath)
+	if !strings.Contains(string(logBody), work.DetachedDoorStartedLogLine) {
+		t.Fatalf("door log must carry the started pid line:\n%s", logBody)
+	}
+	// The sidecar on disk is still the reserved record (no pid).
+	stored, readErr := work.ReadDetachedLaunch(homePath, "work_detached_recordfail")
+	if readErr != nil || stored.Outcome != work.DetachedOutcomeReserved || stored.PID != 0 {
+		t.Fatalf("expected reserved sidecar on disk, got %+v err=%v", stored, readErr)
+	}
+	// The caller contract: the envelope stays claimed — the door owns it.
+	w, err := store.Get("work_detached_recordfail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(w.State, "claimed") {
+		t.Fatalf("a recovery_required launch must NOT fail-close the envelope, state=%s", w.State)
+	}
+
+	// A reconcile tick adopts the reserved record from the log.
+	verdicts := store.ReconcileDetachedLaunches(time.Now().UTC())
+	var adopted bool
+	for _, v := range verdicts {
+		if v.WorkID == "work_detached_recordfail" && v.PID == recErr.Launch.PID && v.Outcome == work.DetachedOutcomeRunning {
+			adopted = true
+		}
+	}
+	if !adopted {
+		t.Fatalf("reconcile must adopt the started pid from the door log, got %+v", verdicts)
+	}
+	adoptedRec, err := work.ReadDetachedLaunch(homePath, "work_detached_recordfail")
+	if err != nil || adoptedRec.PID != recErr.Launch.PID || adoptedRec.Outcome != work.DetachedOutcomeRunning {
+		t.Fatalf("adopted record wrong: %+v err=%v", adoptedRec, err)
+	}
+}
+
+// The start itself failing (the door's working directory vanished) must
+// remove the reserved sidecar: nothing started, nothing owns the envelope.
+func TestLaunchDetachedViaDoorStartFailureRemovesReservedSidecar(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetRoot := t.TempDir()
+	seedClaimedDetachedWork(t, store, "work_detached_startfail", targetRoot)
+	prevDoor := DetachedDoorBinary
+	fakeDoor := filepath.Join(t.TempDir(), "fake-compound")
+	script := "#!/bin/sh\necho door-ran\nsleep 3\n"
+	if err := os.WriteFile(fakeDoor, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	DetachedDoorBinary = func() (string, error) { return fakeDoor, nil }
+	wasInstalled := AssertLaunchContextInstalled() == nil
+	SetLaunchContextInstalled(true)
+	t.Cleanup(func() { DetachedDoorBinary = prevDoor; SetLaunchContextInstalled(wasInstalled) })
+	// The door cannot even chdir into its workspace.
+	if err := os.RemoveAll(targetRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LaunchDetachedViaDoor(store, "work_detached_startfail", "claude_minimax", "p", "claude-minimax", time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "start door") {
+		t.Fatalf("an unstartable door must be refused with the start error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(work.DetachedLaunchDir(homePath), "work_detached_startfail.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("a failed start must leave no sidecar: %v", statErr)
+	}
+}
+
+func errorsAs(err error, target any) bool { return errors.As(err, target) }
+func processAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }

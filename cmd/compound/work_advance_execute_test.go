@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -2098,4 +2100,341 @@ func TestWorkAdvanceExecuteWorkspaceFileNotDirNoStateChange(t *testing.T) {
 	if final.State != "claimed" {
 		t.Fatalf("a file-as-workspace must refuse before any state change; state = %q, want claimed", final.State)
 	}
+}
+
+// savedSelectionFixture persists an explicit saved selection on the envelope
+// without consulting a resolver (SaveExecutionSelection validates directly).
+func savedSelectionFixture(t *testing.T, store *work.Store, workID, profileID, harness, route, model, effort string) envelope.ExecutionSelection {
+	t.Helper()
+	sel := envelope.ExecutionSelection{
+		LaunchProfileID:  profileID,
+		Harness:          harness,
+		ProviderRoute:    "minimax/fixture-route",
+		RequestedModelID: "fixture-model",
+		RequestedEffort:  effort,
+		Source:           "explicit",
+		Revision:         1,
+		SelectedBy:       "codex",
+		SelectedAt:       cliTestNow.UTC().Format(time.RFC3339),
+	}
+	if harness != "os-harness-entrypoints" {
+		sel.ProviderRoute = "fixture/route"
+		sel.RequestedModelID = "fixture-model"
+	}
+	if _, err := store.SaveExecutionSelection(workID, 0, sel, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	return sel
+}
+
+// Public-CLI execution-selection contract 2026-09-15: the work's SAVED
+// choice (harness, profile, requested effort, consumed revision) reaches the
+// resulting RunAttempt as its ExecutionSelection snapshot — through the
+// public `work advance --execute` command with no --harness and no
+// --launch-profile flags. Falsifier: dropping the snapshot build from
+// runWorkAdvanceExecute turns this RED (attempt.ExecutionSelection == nil).
+func TestWorkAdvanceExecuteSavedSelectionReachesRunAttemptSnapshot(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	t.Setenv("COMPOUND_HOME", homePath)
+	ws, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "saved selection must reach the attempt snapshot",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	savedSelectionFixture(t, ws, w.ID, "fixture-owner", "os-harness-entrypoints", "minimax/fixture-route", "fixture-model", "high")
+
+	out := captureStdout(t, func() {
+		cmdWork([]string{
+			"advance", w.ID,
+			"--to", "running",
+			"--execute",
+			"--", "echo", "saved-selection-snapshot",
+		})
+	})
+	// The chosen tuple is on the public boundary, not just in a file.
+	for _, want := range []string{
+		"selection: source=saved profile=fixture-owner harness=os-harness-entrypoints rev=1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in execute output, got:\n%s", want, out)
+		}
+	}
+	final, err := ws.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "verifying" {
+		t.Fatalf("expected state=verifying, got %s", final.State)
+	}
+	ra, err := runattempt.Open(homePath).Get(final.RunAttemptIDs[len(final.RunAttemptIDs)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.ExecutionSelection == nil {
+		t.Fatalf("the executed RunAttempt must carry the selection snapshot (the old public-CLI path dropped it)")
+	}
+	snap := *ra.ExecutionSelection
+	if snap.Source != "saved" || snap.SelectionRevision != 1 {
+		t.Fatalf("snapshot source/revision wrong: %+v", snap)
+	}
+	if snap.LaunchProfileID != "fixture-owner" || snap.Harness != "os-harness-entrypoints" {
+		t.Fatalf("snapshot profile/harness wrong: %+v", snap)
+	}
+	// Requested vs applied stay distinct: os-harness-entrypoints has no
+	// effort control, so the snapshot records unsupported honestly and
+	// never claims the requested effort was applied.
+	if !strings.HasPrefix(snap.EffortEvidence, "unsupported:") || snap.AppliedEffort != "" {
+		t.Fatalf("snapshot effort evidence must be unsupported/empty-applied for this harness: %+v", snap)
+	}
+	// The saved selection itself is untouched by the run.
+	after := *final.ExecutionSelection
+	if after.Revision != 1 || after.LaunchProfileID != "fixture-owner" {
+		t.Fatalf("execution must not rewrite the saved selection: %+v", after)
+	}
+}
+
+// A one-run --launch-profile override is honored for THIS run and recorded as
+// source=override, while the saved selection is not rewritten. The override's
+// own resolution (route, model, effort) is what the snapshot asks for.
+func TestWorkAdvanceExecuteOneRunOverrideRecordsOverrideSnapshotWithoutRewritingSaved(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	t.Setenv("COMPOUND_HOME", homePath)
+	ws, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "one-run override must not rewrite the saved choice",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	savedSelectionFixture(t, ws, w.ID, "fixture-owner", "os-harness-entrypoints", "", "", "high")
+
+	restore := work.SwapExecutionSelectionResolver(func(req work.ExecutionSelectionResolveRequest) (work.ExecutionSelectionResolution, error) {
+		if req.LaunchProfileID != "other-owner" {
+			return work.ExecutionSelectionResolution{}, fmt.Errorf("unknown launch profile %q", req.LaunchProfileID)
+		}
+		return work.ExecutionSelectionResolution{
+			LaunchProfileID:       "other-owner",
+			LaunchProfileRevision: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			Harness:               "os-harness-entrypoints",
+			ProviderRoute:         "other/route",
+			RequestedModelID:      "other-model",
+			RequestedEffort:       "xhigh",
+		}, nil
+	})
+	t.Cleanup(restore)
+
+	out := captureStdout(t, func() {
+		cmdWork([]string{
+			"advance", w.ID,
+			"--to", "running", "--by", "codex",
+			"--execute",
+			"--launch-profile", "other-owner",
+			"--", "echo", "one-run-override",
+		})
+	})
+	if !strings.Contains(out, "selection: source=override profile=other-owner") {
+		t.Fatalf("expected override selection line in output, got:\n%s", out)
+	}
+	final, err := ws.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ra, err := runattempt.Open(homePath).Get(final.RunAttemptIDs[len(final.RunAttemptIDs)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.ExecutionSelection == nil {
+		t.Fatal("the override run must stamp a selection snapshot")
+	}
+	snap := *ra.ExecutionSelection
+	if snap.Source != "override" || snap.LaunchProfileID != "other-owner" {
+		t.Fatalf("snapshot override identity wrong: %+v", snap)
+	}
+	if snap.ProviderRoute != "other/route" || snap.RequestedModelID != "other-model" {
+		t.Fatalf("snapshot must carry the override's resolved identity: %+v", snap)
+	}
+	// os-harness-entrypoints has no effort control: the snapshot records the
+	// requested effort as unsupported and never claims an applied value.
+	if !strings.HasPrefix(snap.EffortEvidence, "unsupported:") || snap.RequestedEffort != "" || snap.AppliedEffort != "" {
+		t.Fatalf("snapshot effort must record unsupported honestly for this harness: %+v", snap)
+	}
+	// The saved preference was NOT rewritten.
+	after := *final.ExecutionSelection
+	if after.Revision != 1 || after.LaunchProfileID != "fixture-owner" {
+		t.Fatalf("one-run override rewrote the saved selection: %+v", after)
+	}
+}
+
+// The --expected-selection-revision CAS guard: a stale revision produces ZERO
+// execution and lifecycle delta — no RunAttempt, no advance, exit non-zero.
+func TestWorkAdvanceExecuteStaleSelectionRevisionNoDelta(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	ws, _ := work.Open(homePath)
+	w, _ := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "stale revision must not move the work",
+	}, cliTestNow)
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	savedSelectionFixture(t, ws, w.ID, "fixture-owner", "os-harness-entrypoints", "", "", "")
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", w.ID,
+		"--to", "running", "--execute",
+		"--expected-selection-revision", "2",
+		"--", "echo", "stale")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit on stale revision, got 0. output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "expected 2, found 1") {
+		t.Fatalf("expected the CAS mismatch message in output, got:\n%s", out)
+	}
+	final, getErr := ws.Get(w.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if final.State != "claimed" {
+		t.Fatalf("stale revision must leave the envelope claimed, got %q", final.State)
+	}
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 1 {
+		t.Fatalf("stale revision must mint no RunAttempt beyond the claim's, got %d", len(runAttemptFiles))
+	}
+}
+
+// Public-CLI cancellation contract 2026-09-15: SIGTERM to the executing CLI
+// reaches the canonical execution owner (signal-derived launch context), the
+// shared runner kills the adapter's whole process group (child AND
+// grandchild die, not just the direct child), the attempt terminalizes with
+// cancellation evidence, and the envelope closes failed — all within a
+// bounded grace, long before the synthetic sleepers would have exited.
+//
+// Falsifiers: (a) with the old context.Background() owner the SIGTERM default
+// handler killed the CLI mid-run, stranding the envelope in "running" with a
+// pending attempt; (b) a direct-child-only kill would leave the grandchild
+// holding the pipes until its own sleep expired.
+func TestWorkAdvanceExecuteCancellationKillsTreeAndClosesFailed(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	ws, _ := work.Open(homePath)
+	w, _ := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "cancellation must close the work failed, not strand it",
+	}, cliTestNow)
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	// A child that spawns a grandchild; BOTH hold the stdout pipe open and
+	// would outlive the run for 30s if cancellation were broken. Each records
+	// its pid so the test can prove they died with the group.
+	dir := t.TempDir()
+	childPid := filepath.Join(dir, "child.pid")
+	script := "#!/bin/sh\n" +
+		"sleep 30 & echo $! > " + filepath.Join(dir, "grandchild.pid") + "\n" +
+		"echo $$ > " + childPid + "\n" +
+		"echo started; sleep 30; echo done\n"
+	scriptPath := filepath.Join(dir, "hold-pipes.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", w.ID,
+		"--to", "running", "--execute", "--harness", "os-harness-entrypoints",
+		"--", scriptPath)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// Wait for the script to record its child pid (the run is live).
+	waitFor := func(path string, timeout time.Duration) string {
+		deadline := time.Now().Add(timeout)
+		for time.Now().Before(deadline) {
+			if b, err := os.ReadFile(path); err == nil && len(b) > 0 {
+				return strings.TrimSpace(string(b))
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %s", path)
+		return ""
+	}
+	child := waitFor(childPid, 10*time.Second)
+	// The governed run is live: signal the CLI itself.
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal CLI: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled execution must exit non-zero")
+		}
+	case <-time.After(25 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("the CLI did not terminate within the bounded grace after SIGTERM")
+	}
+
+	// No owned descendant survives the group kill.
+	gc := waitFor(filepath.Join(dir, "grandchild.pid"), 5*time.Second)
+	for _, pidStr := range []string{child, gc} {
+		pid, perr := strconv.Atoi(pidStr)
+		if perr != nil {
+			t.Fatalf("bad pid %q: %v", pidStr, perr)
+		}
+		if alive(pid) {
+			t.Fatalf("process %d survived the cancellation; the tree kill did not reach it", pid)
+		}
+	}
+
+	// The envelope is closed failed, not stranded in running.
+	final, err := ws.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "failed" {
+		t.Fatalf("cancelled execution must close the envelope failed, got %q", final.State)
+	}
+	// The attempt carries cancellation evidence.
+	ra, err := runattempt.Open(homePath).Get(final.RunAttemptIDs[len(final.RunAttemptIDs)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.Status != runattempt.StatusFailed {
+		t.Fatalf("attempt status = %s, want failed", ra.Status)
+	}
+	evidence := strings.Join(append([]string{ra.TranscriptRef}, ra.ProofRefs...), "\n")
+	if !strings.Contains(evidence, "cancel:context_cancelled") {
+		t.Fatalf("attempt must carry cancellation evidence, got transcript=%q proof=%v", ra.TranscriptRef, ra.ProofRefs)
+	}
+}
+
+func alive(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = p.Signal(syscall.Signal(0))
+	return err == nil
 }

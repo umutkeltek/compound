@@ -1526,11 +1526,13 @@ func cmdWork(args []string) {
 		// on WorkEnvelope.RunAttemptIDs. Implementation lives in
 		// work_advance_execute.go to keep this dispatch handler readable.
 		if hasFlag(rest, "--execute") {
-			launchProfileID := ""
-			if saveSelection != nil {
-				launchProfileID = saveSelection.LaunchProfileID
-			}
-			runWorkAdvanceExecute(homePath, store, pos(advanceValueFlags), rest, runAttempts, launchProfileID, time.Now())
+			// work_r7a_execution_selection_20260911 + 2026-09-15 contract:
+			// the FULL resolved selection travels into the execute path —
+			// not only the launch-profile id — so the run's snapshot
+			// records the resolution (route, model, effort, revision) the
+			// invocation asked for. The envelope's saved selection is not
+			// rewritten by a one-run override.
+			runWorkAdvanceExecute(homePath, store, pos(advanceValueFlags), rest, runAttempts, saveSelection, time.Now())
 			return
 		}
 		w, err := store.Advance(pos(advanceValueFlags), work.AdvanceInput{
