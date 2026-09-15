@@ -96,7 +96,10 @@ go run ./cmd/compound-install-verify --binary "$staged" --build-sha "$build_sha"
 # the tree, and the post-publication doctor below still runs. The gate result
 # is the doctor's own verdict; nothing here weakens or reorders its rules.
 if [ -d "$compound_home/config" ]; then
-  precheck_out=$compound_home/.install-precheck.$$.txt
+  # The capture file lives OUTSIDE the managed home: a temp file inside
+  # COMPOUND_HOME becomes an unknown habitat entry the doctor itself would
+  # red on (self-refusal loop, observed and fixed 2026-09-15).
+  precheck_out=$(mktemp "${TMPDIR:-/tmp}/compound-install-precheck.XXXXXX")
   if ! PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$staged" home doctor --home "$compound_home" >"$precheck_out" 2>&1; then
     echo "install: pre-publication home doctor FAILED; nothing was published and the previous binary stays in place" >&2
     sed 's/^/  /' "$precheck_out" >&2
