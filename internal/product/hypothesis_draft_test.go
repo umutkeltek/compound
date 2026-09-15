@@ -333,3 +333,47 @@ var _ = mem.Open
 
 // keep time import referenced so go vet does not chase a phantom
 var _ time.Time = tProduct
+
+// Dedupe contract 2026-09-15: when an equivalent hypothesis candidate
+// already exists under a DIFFERENT id (minted by another source), the draft
+// writer returns that ACTUAL id — never a freshly calculated id that names
+// nothing on disk.
+func TestMintHypothesisDraftCandidateReturnsExistingCandidateID(t *testing.T) {
+	home := t.TempDir()
+	productID := "product:synth-notes"
+	changeEvent := "v2.4 ships the new onboarding screen"
+	existingID := "hyp_from_review_abcdef123456"
+	existing := HypothesisCandidate{
+		SchemaVersion:     ProductHypothesisCandidate,
+		ID:                existingID,
+		Kind:              string(candidates.ProductHypothesis),
+		ProductID:         productID,
+		ChangeEvent:       changeEvent,
+		ExpectedEffect:    "another source minted this equivalent hypothesis first",
+		Metrics:           []string{"synthetic_first_time_downloads"},
+		ObservationWindow: "28d",
+		Result:            "unknown",
+		NextAction:        "awaiting review",
+		Verdict:           candidates.Park,
+		CreatedAt:         tProduct.Format(time.RFC3339),
+	}
+	if err := writeHypothesisCandidate(home, existing); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := MintHypothesisDraftCandidate(home, productID, changeEvent, []string{"synthetic_first_time_downloads"}, nil, nil, tProduct)
+	if err != nil {
+		t.Fatalf("MintHypothesisDraftCandidate: %v", err)
+	}
+	if id != existingID {
+		t.Fatalf("dedupe returned id %q, want the ACTUAL existing candidate id %q", id, existingID)
+	}
+	// And no second candidate was written.
+	hyps, err := loadHypotheses(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hyps) != 1 || hyps[0].ID != existingID {
+		t.Fatalf("dedupe must not write a second candidate, got %d records", len(hyps))
+	}
+}

@@ -68,10 +68,15 @@ func MintHypothesisDraftCandidate(homePath, productID, changeEvent string, metri
 	}
 	stableMetrics := compact(metrics)
 	stableSignals := compact(signalIDs)
-	if exists, err := hypothesisDraftAlreadyExists(homePath, productID, changeEvent); err != nil {
+	if existingID, exists, err := hypothesisDraftAlreadyExists(homePath, productID, changeEvent); err != nil {
 		return "", err
 	} else if exists {
-		return hypothesisDraftCandidateID(productID, changeEvent), nil
+		// Dedupe returns the ACTUAL existing candidate's id (2026-09-15): the
+		// matched candidate may have been minted by another source under a
+		// different id, and the director must compose the plan command against
+		// the record that is really on disk — never a freshly calculated id
+		// that names nothing.
+		return existingID, nil
 	}
 	observationWindow := observationWindowForDraft(homePath, stableSignals)
 	primaryMetric := "the metric"
@@ -109,10 +114,13 @@ func MintHypothesisDraftCandidate(homePath, productID, changeEvent string, metri
 // under the home already targets this (productID, changeEvent) pair AND is in a
 // recognized verdict state. Parked and open candidates are both
 // already-on-the-radar; minting another on top would race the existing one.
-func hypothesisDraftAlreadyExists(homePath, productID, changeEvent string) (bool, error) {
+// It returns the MATCHED candidate's actual id so the caller can point at the
+// real record instead of re-deriving an id the existing candidate may not
+// carry (dedupe contract 2026-09-15).
+func hypothesisDraftAlreadyExists(homePath, productID, changeEvent string) (string, bool, error) {
 	existing, err := loadHypotheses(homePath)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	normalizedChange := normalizeIDPart(changeEvent)
 	for _, h := range existing {
@@ -125,9 +133,13 @@ func hypothesisDraftAlreadyExists(homePath, productID, changeEvent string) (bool
 		if !hypothesisDraftVerdictRecognized(h.Verdict) {
 			continue
 		}
-		return true, nil
+		id := strings.TrimSpace(h.ID)
+		if id == "" {
+			continue
+		}
+		return id, true, nil
 	}
-	return false, nil
+	return "", false, nil
 }
 
 // hypothesisDraftVerdictRecognized reports whether the verdict is one the

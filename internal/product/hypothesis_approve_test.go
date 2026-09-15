@@ -3,12 +3,15 @@ package product
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"compound/internal/candidates"
 	"compound/internal/envelope"
+	"path/filepath"
+
 	"compound/internal/eventstore"
 	"compound/internal/reviewartifact"
 )
@@ -302,4 +305,107 @@ func TestProductHypothesisQueueItemExposesApproveAction(t *testing.T) {
 	if !strings.Contains(legacyItem.BlockedReason, "unfilled draft") || !strings.Contains(legacyItem.NextAction, "re-run product hypothesis-plan") {
 		t.Fatalf("legacy item must name the repair path, blocked=%q next=%q", legacyItem.BlockedReason, legacyItem.NextAction)
 	}
+}
+
+// Approval-integrity contract 2026-09-15: the transition evidence is
+// recorded BEFORE the candidate state changes. A transition-recording
+// failure must leave the candidate byte-identical — no approval sentence, no
+// NextAction rewrite — instead of an approved-looking candidate with no
+// receipt (the pre-2026-09-15 order wrote the candidate first).
+func TestHypothesisApproveTransitionFailureLeavesCandidateUntouched(t *testing.T) {
+	home := t.TempDir()
+	productID := "product:synth-notes"
+	changeEvent := "v2.4 ships the new onboarding screen"
+	candidateID := mintHypothesisDraftFixture(t, home, productID, changeEvent, []string{"synthetic_first_time_downloads"})
+	before, err := loadHypothesisCandidate(home, candidateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeBytes, readErr := os.ReadFile(filepath.Join(home, candidates.InboxDir(candidates.ProductHypothesis), candidateID+".json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+
+	restore := swapRecordLoopTransition(func(_ string, _ envelope.Transition) error {
+		return fmt.Errorf("eventstore closed mid-approval")
+	})
+	defer restore()
+
+	if _, err := HypothesisApprove(home, HypothesisApproveInput{
+		CandidateID:    candidateID,
+		ExpectedEffect: tApproveSentence,
+		ReviewedBy:     "sandbox-operator",
+	}, tProduct); err == nil {
+		t.Fatal("a failing transition record must fail the approval")
+	}
+	afterBytes, readErr := os.ReadFile(filepath.Join(home, candidates.InboxDir(candidates.ProductHypothesis), candidateID+".json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(afterBytes) != string(beforeBytes) {
+		t.Fatalf("a failed transition must leave the candidate untouched; candidate was rewritten:\n%s", afterBytes)
+	}
+	unchanged, err := loadHypothesisCandidate(home, candidateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.ExpectedEffect != before.ExpectedEffect || unchanged.Verdict != candidates.Park {
+		t.Fatalf("failed transition mutated the candidate: %+v", unchanged)
+	}
+}
+
+// The exact-generation guard: a concurrent writer who changes the candidate
+// between the gate read and the write wins, and the approval refuses instead
+// of silently overwriting their state (2026-09-15).
+func TestHypothesisApproveRefusesWhenGenerationChanged(t *testing.T) {
+	home := t.TempDir()
+	productID := "product:synth-notes"
+	changeEvent := "v2.4 ships the new onboarding screen"
+	candidateID := mintHypothesisDraftFixture(t, home, productID, changeEvent, []string{"synthetic_first_time_downloads"})
+	beforeBytes, readErr := os.ReadFile(filepath.Join(home, candidates.InboxDir(candidates.ProductHypothesis), candidateID+".json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+
+	// The concurrent writer records its transition, then flips the candidate
+	// (a review verdict landing in the same window).
+	restore := swapRecordLoopTransition(func(homePath string, tr envelope.Transition) error {
+		if err := RecordTransition(homePath, tr); err != nil {
+			return err
+		}
+		var raced HypothesisCandidate
+		if err := json.Unmarshal(beforeBytes, &raced); err != nil {
+			return err
+		}
+		raced.Verdict = candidates.Reject
+		raced.NextAction = "concurrent review verdict won the window"
+		return writeHypothesisCandidate(homePath, raced)
+	})
+	defer restore()
+
+	res, err := HypothesisApprove(home, HypothesisApproveInput{
+		CandidateID:    candidateID,
+		ExpectedEffect: tApproveSentence,
+		ReviewedBy:     "sandbox-operator",
+	}, tProduct)
+	if err == nil {
+		t.Fatalf("a generation change during the approval window must refuse the write, got %+v", res)
+	}
+	if !strings.Contains(err.Error(), "changed since the gate read") {
+		t.Fatalf("refusal must name the generation change, got: %v", err)
+	}
+	// The concurrent writer's state stands — never overwritten.
+	after, err := loadHypothesisCandidate(home, candidateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Verdict != candidates.Reject || after.NextAction != "concurrent review verdict won the window" {
+		t.Fatalf("the concurrent writer's state must stand, got %+v", after)
+	}
+}
+
+func swapRecordLoopTransition(fn func(string, envelope.Transition) error) func() {
+	prev := recordLoopTransition
+	recordLoopTransition = fn
+	return func() { recordLoopTransition = prev }
 }

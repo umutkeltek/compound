@@ -1,6 +1,7 @@
 package product
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -39,6 +40,11 @@ type HypothesisApproveResult struct {
 	ApprovalID   string // id of the approval act recorded on the loop transition
 	TransitionID string
 }
+
+// recordLoopTransition is the transition-recording seam the approval door
+// uses (tests inject failures and concurrent-writer wins at exactly the
+// step the approval-integrity contract cares about).
+var recordLoopTransition = RecordTransition
 
 // HypothesisApprove is the governed door around the placeholder gate: the one
 // verb that receives the operator's expected_effect sentence and writes it
@@ -81,9 +87,18 @@ func HypothesisApprove(homePath string, in HypothesisApproveInput, now time.Time
 	if actor == "" {
 		actor = "operator"
 	}
-	candidate, err := loadHypothesisCandidate(homePath, candidateID)
+	// Exact-generation guard (2026-09-15): the approval CASes on the exact
+	// candidate record the gates just read, so a concurrent writer cannot win
+	// between the gate checks and the candidate write. ReadRecord is the
+	// descriptor-rooted read; ReplaceCandidateIfCurrent refuses a newer
+	// generation instead of overwriting it.
+	record, err := candidates.ReadRecord(homePath, candidates.ProductHypothesis, candidateID)
 	if err != nil {
 		return HypothesisApproveResult{}, err
+	}
+	var candidate HypothesisCandidate
+	if err := json.Unmarshal(record.Body, &candidate); err != nil {
+		return HypothesisApproveResult{}, fmt.Errorf("parse product hypothesis %q: %w", candidateID, err)
 	}
 	if strings.TrimSpace(candidate.Verdict) != candidates.Park {
 		return HypothesisApproveResult{}, fmt.Errorf("product hypothesis %s verdict is %q: only a parked hypothesis can be approved", candidateID, candidate.Verdict)
@@ -112,9 +127,9 @@ func HypothesisApprove(homePath string, in HypothesisApproveInput, now time.Time
 	// — and must point forward at the loop's own next steps.
 	candidate.NextAction = fmt.Sprintf("approved by %s: import before/after metric evidence and record the product review", actor)
 	approvalID := stableID("pha_", candidateID, expectedEffect, actor, now.UTC().Format(time.RFC3339Nano))
-	if err := writeHypothesisCandidate(homePath, candidate); err != nil {
-		return HypothesisApproveResult{}, err
-	}
+	// The transition evidence is recorded BEFORE the candidate state changes
+	// (2026-09-15 approval-integrity contract): a failed transition leaves the
+	// candidate untouched — approval state never exists without its evidence.
 	tr, err := BuildLoopTransition(LoopTransitionInput{
 		Kind:         "product_hypothesis_approve",
 		ProductID:    candidate.ProductID,
@@ -129,8 +144,18 @@ func HypothesisApprove(homePath string, in HypothesisApproveInput, now time.Time
 	if err != nil {
 		return HypothesisApproveResult{}, err
 	}
-	if err := RecordTransition(homePath, tr); err != nil {
+	if err := recordLoopTransition(homePath, tr); err != nil {
 		return HypothesisApproveResult{}, err
+	}
+	// Candidate write LAST, under the exact-generation CAS: a concurrent
+	// writer who changed the candidate between the gate read and now wins, and
+	// the approval is refused rather than silently overwriting their state.
+	replaced, err := candidates.ReplaceCandidateIfCurrent(homePath, record, candidate)
+	if err != nil {
+		return HypothesisApproveResult{}, err
+	}
+	if !replaced.Replaced {
+		return HypothesisApproveResult{}, fmt.Errorf("product hypothesis %s changed since the gate read (now %q): approval refused, re-run on the current generation", candidateID, replaced.Current.Digest)
 	}
 	return HypothesisApproveResult{Candidate: candidate, ApprovalID: approvalID, TransitionID: tr.ID}, nil
 }
