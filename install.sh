@@ -84,6 +84,33 @@ attention_staged=$compound_home/scripts/.attention-letter.incoming.$$
 trap 'rm -f "$staged" "$alias_staged" "$heartbeat_staged" "$heartbeat_lib_staged" "$attention_staged"' EXIT HUP INT TERM
 go build -ldflags "-X main.buildSHA=$build_sha" -o "$staged" ./cmd/compound
 go run ./cmd/compound-install-verify --binary "$staged" --build-sha "$build_sha"
+
+# 2026-09-15 installer-ordering contract: a replaced binary is NOT a completed
+# installation. The old order published the binary FIRST and ran `home doctor`
+# LAST, so a habitat refusal (e.g. an unknown root under COMPOUND_HOME) left a
+# half-activated runtime: new binary live, runtime validation and lane refresh
+# never ran. The EXISTING, already-initialized home is therefore checked with
+# the NON-mutating doctor BEFORE anything is published — a failed check refuses
+# the whole install with the previous binary untouched (the EXIT trap removes
+# every staged file). A fresh home (no config dir yet) skips this: init creates
+# the tree, and the post-publication doctor below still runs. The gate result
+# is the doctor's own verdict; nothing here weakens or reorders its rules.
+if [ -d "$compound_home/config" ]; then
+  precheck_out=$compound_home/.install-precheck.$$.txt
+  if ! PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$staged" home doctor --home "$compound_home" >"$precheck_out" 2>&1; then
+    echo "install: pre-publication home doctor FAILED; nothing was published and the previous binary stays in place" >&2
+    sed 's/^/  /' "$precheck_out" >&2
+    rm -f "$precheck_out"
+    echo "install: resolve the home findings above (no data is moved or deleted by this script), then rerun" >&2
+    exit 1
+  fi
+  rm -f "$precheck_out"
+fi
+
+# Publication begins HERE: every prerequisite that can fail before a side
+# effect has passed. From this point on, each activation step is recorded and
+# a failure prints an honest partial-activation verdict naming what completed,
+# what blocked, and how to resume — never a silent half state.
 mv -f "$staged" "$install_dir/compound"
 if [ "$install_os_alias" = 1 ]; then
   ln -s compound "$alias_staged"
@@ -111,9 +138,17 @@ if [ "$install_autonomy_lab" = 1 ]; then
   sh -c '. "$1/_lib/heartbeat-promote-stage.sh"; command -v promote_driver_stage_decide >/dev/null' _ "$install_dir"
 fi
 
-go build -o "$install_dir/compound-breadth-engine" ./cmd/compound-breadth-engine
+# Post-publication activation. `set -e` stays on; each step reports through
+# activate_failed with the step it blocked at, so the final verdict names the
+# completed prefix and the exact resume point instead of a silent half state.
+activate_failed() {
+  echo "install: activation PARTIAL — published through binary+opt-ins, blocked at $1" >&2
+  echo "install: the published binary is live and verified; resume with the failing step, then rerun ./install.sh (idempotent)" >&2
+  exit 1
+}
 
-PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home init --home "$compound_home" --global
+go build -o "$install_dir/compound-breadth-engine" ./cmd/compound-breadth-engine || activate_failed "breadth_engine_build"
+PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home init --home "$compound_home" --global || activate_failed "home_init"
 if [ "$install_autonomy_lab" = 1 ]; then
   mkdir -p "$compound_home/scripts"
   cp "$repo_root/scripts/attention-letter.py" "$attention_staged"
@@ -121,8 +156,8 @@ if [ "$install_autonomy_lab" = 1 ]; then
   python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$attention_staged"
   mv -f "$attention_staged" "$compound_home/scripts/attention-letter.py"
 fi
-PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home doctor --home "$compound_home"
-PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" runtime doctor "$repo_root/fixtures/runtime/synthetic-service.yaml"
+PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home doctor --home "$compound_home" || activate_failed "home_doctor"
+PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" runtime doctor "$repo_root/fixtures/runtime/synthetic-service.yaml" || activate_failed "runtime_doctor"
 
 # R3B 2026-09-04: install.sh overwrites `compound`, which invalidates every
 # Claude lane's installed-hooks manifest entry (its recorded revision is
@@ -150,6 +185,7 @@ PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$installed_compound" h
 cat <<EOF
 
 compound installed
+- activation: complete
 - binary: $install_dir/compound
 - breadth_engine: $install_dir/compound-breadth-engine
 - os_alias: opt-in via COMPOUND_INSTALL_OS_ALIAS=1 (existing path left unchanged otherwise)
