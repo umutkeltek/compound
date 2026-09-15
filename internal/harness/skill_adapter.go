@@ -586,8 +586,12 @@ func RunBrowserOwnerSubcommand(target string, args []string) bool {
 		now := time.Now()
 		return runBrowserOwnerErr(RunSkillAdapterCLI(args, hasFlag(args, "--apply"), hasFlag(args, "--json"), now))
 	case "browser-profiles":
-		if len(args) == 0 || args[0] != "doctor" {
+		// 2026-09-15 diagnostic-integrity contract: doctor is READ-ONLY;
+		// `seed` is the explicit join/migration writer (preimage preserved,
+		// sha256 CAS). No auto-seed anywhere.
+		if len(args) == 0 {
 			fmt.Fprintln(os.Stderr, "usage: compound harness browser-profiles doctor [--json] [--home P]")
+			fmt.Fprintln(os.Stderr, "       compound harness browser-profiles seed [--json] [--home P]   # explicit join of social-accounts into the registry")
 			return true
 		}
 		homePath, err := browserOwnerHome(flagValue(args[1:], "--home"))
@@ -595,7 +599,15 @@ func RunBrowserOwnerSubcommand(target string, args []string) bool {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return true
 		}
-		return runBrowserOwnerErr(RunBrowserProfileDoctorCLI(homePath, hasFlag(args[1:], "--json")))
+		switch args[0] {
+		case "doctor":
+			return runBrowserOwnerErr(RunBrowserProfileDoctorCLI(homePath, hasFlag(args[1:], "--json")))
+		case "seed":
+			return runBrowserOwnerErr(RunBrowserProfileSeedCLI(homePath, hasFlag(args[1:], "--json"), time.Now()))
+		default:
+			fmt.Fprintln(os.Stderr, "usage: compound harness browser-profiles doctor [--json] [--home P]")
+			return true
+		}
 	}
 	return false
 }

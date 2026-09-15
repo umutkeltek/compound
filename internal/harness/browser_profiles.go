@@ -14,6 +14,8 @@ package harness
 // — never hand-edit; the CLI seeder is the only writer.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -125,6 +127,83 @@ func LoadBrowserProfileRegistry(home string) (BrowserProfileRegistry, error) {
 	return reg, nil
 }
 
+// Browser-profile registry read states. `absent` means no file on disk;
+// `empty` a current-schema registry with zero profiles; `populated` a
+// current-schema registry with rows; `foreign_version` a recognized
+// schema_version from another schema generation. An existing file whose
+// shape cannot be read is an ERROR, never an empty registry — the
+// 2026-09-15 diagnostic-integrity contract exists because a doctor that
+// interprets an unrecognized shape as zero profiles then auto-seeds OVER
+// real metadata.
+const (
+	BrowserProfileRegistryAbsent        = "absent"
+	BrowserProfileRegistryEmpty         = "empty"
+	BrowserProfileRegistryPopulated     = "populated"
+	BrowserProfileRegistryForeign       = "foreign_version"
+	BrowserProfileRegistryShapeInvalid  = "shape_invalid"
+)
+
+// BrowserProfileRegistryRead is what the diagnostic loader reads: the
+// registry plus the explicit state. Doctor and seed callers MUST branch on
+// State, never on "zero profiles ⇒ absent".
+type BrowserProfileRegistryRead struct {
+	State    string
+	Registry BrowserProfileRegistry
+}
+
+// LoadBrowserProfileRegistryState reads the registry and classifies what it
+// read. It refuses (error) a present file it cannot decode or that carries
+// no schema_version — an unrecognized JSON shape must never silently read
+// as an empty profile list. Rows of a current-schema registry must carry
+// both id and user_data_dir; a current-schema row without them is invalid.
+func LoadBrowserProfileRegistryState(home string) (BrowserProfileRegistryRead, error) {
+	b, err := os.ReadFile(registryPath(home))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return BrowserProfileRegistryRead{State: BrowserProfileRegistryAbsent}, nil
+		}
+		return BrowserProfileRegistryRead{}, fmt.Errorf("read browser-profile registry: %w", err)
+	}
+	var reg BrowserProfileRegistry
+	if err := json.Unmarshal(b, &reg); err != nil {
+		return BrowserProfileRegistryRead{}, fmt.Errorf("decode browser-profile registry: %w", err)
+	}
+	if strings.TrimSpace(reg.SchemaVersion) == "" {
+		// A file that exists but names no schema is an unrecognized shape.
+		// Interpreting it as "no profiles" is how the doctor used to
+		// overwrite real metadata with seed data.
+		return BrowserProfileRegistryRead{}, fmt.Errorf("browser-profile registry %s: unrecognized shape (no schema_version); refusing to interpret it as an empty registry", registryPath(home))
+	}
+	if reg.SchemaVersion != BrowserProfileRegistrySchemaVersion {
+		return BrowserProfileRegistryRead{State: BrowserProfileRegistryForeign, Registry: reg}, nil
+	}
+	for i, p := range reg.Profiles {
+		if strings.TrimSpace(p.ID) == "" || strings.TrimSpace(p.UserDataDir) == "" {
+			return BrowserProfileRegistryRead{}, fmt.Errorf("browser-profile registry %s: profile row %d carries no id or user_data_dir", registryPath(home), i)
+		}
+	}
+	state := BrowserProfileRegistryPopulated
+	if len(reg.Profiles) == 0 {
+		state = BrowserProfileRegistryEmpty
+	}
+	return BrowserProfileRegistryRead{State: state, Registry: reg}, nil
+}
+
+// browserRegistryPreimageSHA256 returns the sha256 of the current registry
+// bytes ("" when the file is absent) — the CAS generation a seed write
+// checks before replacing the file.
+func browserRegistryPreimageSHA256(home string) (string, []byte, error) {
+	b, err := os.ReadFile(registryPath(home))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil, nil
+		}
+		return "", nil, fmt.Errorf("read browser-profile registry for preimage: %w", err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), b, nil
+}
+
 // LoadSocialAccounts reads the peer registry the profile registry joins to.
 func LoadSocialAccounts(home string) ([]SocialAccount, error) {
 	var file socialAccountsFile
@@ -228,11 +307,91 @@ func WriteBrowserProfileRegistry(home string, reg BrowserProfileRegistry) error 
 	return nil
 }
 
+// SeedBrowserProfileRegistryExplicit is the EXPLICIT seed/migration door
+// (2026-09-15 diagnostic-integrity contract): the doctor no longer writes,
+// so this reviewed door is the only writer that joins social-accounts into
+// the profile registry. It captures the current file's sha256 as the CAS
+// generation, runs the seed join, then writes only when the file still
+// matches that generation, preserving the preimage bytes beside the file
+// before replacing it. A missing registry seeds from scratch (no preimage);
+// a foreign-version registry is refused (migration of an unknown schema is
+// a deliberate operator decision, never an automatic join).
+func SeedBrowserProfileRegistryExplicit(home string, now time.Time) (BrowserProfileRegistry, error) {
+	read, err := LoadBrowserProfileRegistryState(home)
+	if err != nil {
+		return BrowserProfileRegistry{}, err
+	}
+	switch read.State {
+	case BrowserProfileRegistryForeign:
+		return BrowserProfileRegistry{}, fmt.Errorf("seed browser-profile registry: registry schema %q is not the supported %q; migration requires an explicit decision, not an automatic join", read.Registry.SchemaVersion, BrowserProfileRegistrySchemaVersion)
+	case BrowserProfileRegistryShapeInvalid:
+		return BrowserProfileRegistry{}, fmt.Errorf("seed browser-profile registry: %s", read.State)
+	}
+	preimageSHA, preimageBytes, err := browserRegistryPreimageSHA256(home)
+	if err != nil {
+		return BrowserProfileRegistry{}, err
+	}
+	seeded, err := SeedBrowserProfileRegistry(home, now)
+	if err != nil {
+		return BrowserProfileRegistry{}, err
+	}
+	if err := writeBrowserProfileRegistryCAS(home, seeded, preimageSHA, preimageBytes); err != nil {
+		return BrowserProfileRegistry{}, err
+	}
+	return seeded, nil
+}
+
+// writeBrowserProfileRegistryCAS replaces the registry only when the file
+// still carries the generation the caller loaded (sha256 CAS). The preimage
+// bytes are preserved beside the file first; a preimage-preservation failure
+// refuses the write so existing metadata is never lost.
+func writeBrowserProfileRegistryCAS(home string, reg BrowserProfileRegistry, preimageSHA string, preimageBytes []byte) error {
+	if strings.TrimSpace(home) == "" {
+		return fmt.Errorf("write browser-profile registry: home is empty")
+	}
+	currentSHA, _, err := browserRegistryPreimageSHA256(home)
+	if err != nil {
+		return err
+	}
+	if currentSHA != preimageSHA {
+		return fmt.Errorf("write browser-profile registry: registry changed since load (expected %q, found %q); refusing to overwrite", orEmpty(preimageSHA), orEmpty(currentSHA))
+	}
+	dir := filepath.Dir(registryPath(home))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	if len(preimageBytes) > 0 {
+		if err := os.WriteFile(registryPath(home)+".preimage", preimageBytes, 0o644); err != nil {
+			return fmt.Errorf("preserve registry preimage: %w", err)
+		}
+	}
+	if reg.SchemaVersion == "" {
+		reg.SchemaVersion = BrowserProfileRegistrySchemaVersion
+	}
+	b, err := json.MarshalIndent(reg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal registry: %w", err)
+	}
+	tmp := registryPath(home) + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return fmt.Errorf("write registry: %w", err)
+	}
+	return os.Rename(tmp, registryPath(home))
+}
+
+func orEmpty(s string) string {
+	if s == "" {
+		return "<absent>"
+	}
+	return s
+}
+
 // BrowserProfileDoctorReport is the doctor's projection of the registry.
 // Counts and lists come from the in-memory join; never a directory listing.
 type BrowserProfileDoctorReport struct {
 	SchemaVersion   string                  `json:"schema_version"`
 	UpdatedAt       string                  `json:"updated_at"`
+	RegistryState   string                  `json:"registry_state"`
 	ProfileCount    int                     `json:"profile_count"`
 	EnrolledCount   int                     `json:"enrolled_count"`
 	PendingCount    int                     `json:"pending_count"`
@@ -249,31 +408,35 @@ type BrowserProfileSummary struct {
 	Backends    []string             `json:"backends"`
 }
 
-// DoctorBrowserProfileRegistry returns a doctor report. The report joins
-// social-accounts to the registry by path; an account whose path does not
-// resolve to a profile is reported in `unresolved_paths` (the operator can
-// run the seed command to bring them in).
+// DoctorBrowserProfileRegistry returns a doctor report. The doctor is
+// READ-ONLY (2026-09-15 diagnostic-integrity contract): it never seeds, never
+// writes, and never interprets an unrecognized shape as an empty registry.
+// A fresh home reports state=absent with zero profiles and the operator
+// brings rows in with the explicit seed command
+// (`compound harness browser-profiles seed`); a foreign-version registry is
+// reported as-is with its state so nothing migrates implicitly.
 //
-// If the registry file does not exist yet (fresh home), the doctor auto-
-// seeds from social-accounts.json so the report is meaningful on first run.
-// The seed write is best-effort: a permission failure leaves the doctor in
-// unresolved-paths mode.
+// The report joins social-accounts to the registry by path; an account whose
+// path does not resolve to a profile is reported in `unresolved_paths`.
 func DoctorBrowserProfileRegistry(home string) (BrowserProfileDoctorReport, error) {
 	rep := BrowserProfileDoctorReport{
 		SchemaVersion: BrowserProfileRegistrySchemaVersion,
 	}
-	reg, err := LoadBrowserProfileRegistry(home)
+	read, err := LoadBrowserProfileRegistryState(home)
 	if err != nil {
 		return rep, err
 	}
-	// First-run auto-seed so doctor is meaningful on a fresh home.
-	if len(reg.Profiles) == 0 {
-		seeded, serr := SeedBrowserProfileRegistry(home, time.Now())
-		if serr == nil && len(seeded.Profiles) > 0 {
-			_ = WriteBrowserProfileRegistry(home, seeded)
-			reg = seeded
+	reg := read.Registry
+	switch read.State {
+	case BrowserProfileRegistryAbsent:
+		reg = BrowserProfileRegistry{SchemaVersion: BrowserProfileRegistrySchemaVersion}
+	case BrowserProfileRegistryForeign:
+		// A different schema generation: load what was read, never seed.
+		if reg.SchemaVersion == "" {
+			reg.SchemaVersion = BrowserProfileRegistrySchemaVersion
 		}
 	}
+	rep.RegistryState = read.State
 	accounts, err := LoadSocialAccounts(home)
 	if err != nil {
 		return rep, err
@@ -380,8 +543,8 @@ func containsString(xs []string, want string) bool {
 // Used by the CLI dispatcher so cmd/compound stays at a tiny delta.
 func FormatBrowserProfileReport(rep BrowserProfileDoctorReport) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# harness browser-profiles doctor profiles=%d enrolled=%d pending=%d\n",
-		rep.ProfileCount, rep.EnrolledCount, rep.PendingCount)
+	fmt.Fprintf(&b, "# harness browser-profiles doctor profiles=%d enrolled=%d pending=%d registry_state=%s\n",
+		rep.ProfileCount, rep.EnrolledCount, rep.PendingCount, rep.RegistryState)
 	for _, p := range rep.Profiles {
 		fmt.Fprintf(&b, "- %s status=%s dir=%s logins=%v backends=%v\n",
 			p.ID, p.Status, p.UserDataDir, p.Logins, p.Backends)
@@ -397,7 +560,8 @@ func FormatBrowserProfileReport(rep BrowserProfileDoctorReport) string {
 
 // RunBrowserProfileDoctorCLI parses flags, runs the doctor, prints. The
 // cmd/compound dispatcher hands off everything to here so the cmd delta
-// stays small.
+// stays small. The doctor is read-only; `RunBrowserProfileSeedCLI` is the
+// explicit writer.
 func RunBrowserProfileDoctorCLI(homePath string, asJSON bool) error {
 	rep, err := DoctorBrowserProfileRegistry(homePath)
 	if err != nil {
@@ -412,5 +576,32 @@ func RunBrowserProfileDoctorCLI(homePath string, asJSON bool) error {
 		return nil
 	}
 	fmt.Print(FormatBrowserProfileReport(rep))
+	return nil
+}
+
+// RunBrowserProfileSeedCLI is the explicit seed/migration command: join
+// social-accounts into the profile registry, CAS-guarded, preimage
+// preserved. Run with an explicit operator action only — never on a timer,
+// never from a doctor.
+func RunBrowserProfileSeedCLI(homePath string, asJSON bool, now time.Time) error {
+	seeded, err := SeedBrowserProfileRegistryExplicit(homePath, now)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		b, err := json.Marshal(map[string]any{
+			"schema_version": seeded.SchemaVersion,
+			"updated_at":     seeded.UpdatedAt,
+			"profile_count":  len(seeded.Profiles),
+			"profiles":       seeded.Profiles,
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+	fmt.Printf("# harness browser-profiles seed profiles=%d (preimage preserved at %s)\n",
+		len(seeded.Profiles), registryPath(homePath)+".preimage")
 	return nil
 }
