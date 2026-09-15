@@ -21,12 +21,19 @@ const DistributionExperimentEnv = "COMPOUND_EXPERIMENTAL_DISTRIBUTION"
 
 // KnownDistributionGaps are the audited defects a caller is opting into. They are
 // listed at the door so nobody enables the flag without seeing what is still wrong.
+//
+// 2026-09-15 audit-reconcile: the first audited gap ("a scheduling
+// acknowledgement is recorded as posted") is CLOSED — a transport scheduler's
+// acceptance now records the distinct non-terminal "scheduled" state with the
+// scheduler's own reservation id (MarkContentDraftScheduled), the classifier
+// refuses an ambiguous post-image outright, and only a platform answer with a
+// real remote id reaches "posted". The remaining gaps are unchanged.
 var KnownDistributionGaps = []string{
-	"a scheduling acknowledgement is recorded as posted (no distinct scheduled state)",
 	"attached media is not carried in the outbound transport request",
 	"operator approval is not bound to the exact media package digest",
 	"a failed local write after a successful remote call can allow a duplicate post",
 	"draft freshness is checked at approval, not immediately before publication",
+	"a scheduling ack without an explicit marker or reservation-id key is still indistinguishable from an unmarked post answer (documented classification limit)",
 }
 
 // RequireDistributionExperiment refuses a distribution door unless the operator has

@@ -140,8 +140,8 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if draftReq != nil {
 		if _, postErr := product.RecordContentPostResult(homePath, draftAuth.DraftID, result.PostImage, result.Receipt.ID, now); postErr != nil {
 			printActPostResult(stdout, transport, result, hasFlag(args, "--json"))
-			fmt.Fprintln(stderr, "error: the post was executed but could not be recorded as posted:", postErr)
-			fmt.Fprintln(stderr, "the draft is still operationalized; reconcile it against the platform before reposting")
+			fmt.Fprintln(stderr, "error: the post was executed but the transport answer could not be recorded:", postErr)
+			fmt.Fprintln(stderr, "the draft is unchanged; reconcile it against the platform before reposting")
 			return 1
 		}
 	}

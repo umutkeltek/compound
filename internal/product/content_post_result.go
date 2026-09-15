@@ -25,37 +25,91 @@ import (
 // a loose search: a transport that returns none of these has not proven a post.
 var contentPostRemoteIDKeys = []string{"remote_id", "post_id", "postId", "id"}
 
+// contentScheduleAckKeys are the field names a transport's scheduler may use
+// for its own RESERVATION id — an identity for the accepted job, never a
+// platform post id (2026-09-15: the scheduling-ack gap closed with a distinct
+// scheduled state).
+var contentScheduleAckKeys = []string{"schedule_id", "scheduled_id", "job_id"}
+
+// contentScheduleAckMarkerKeys and contentScheduleAckMarkerValues are the
+// explicit markers a transport answer may use to say "this is a scheduling
+// acceptance, not a publication".
+var (
+	contentScheduleAckMarkerKeys   = []string{"type", "status"}
+	contentScheduleAckMarkerValues = []string{"schedule", "scheduled", "queued"}
+)
+
 // contentPostURLKeys are the field names a post transport may use for the public
 // permalink. A URL is useful for a human but is NOT accepted as proof of posting —
 // only a remote id is.
 var contentPostURLKeys = []string{"url", "permalink", "releaseURL", "postUrl"}
 
-// RecordContentPostResult reads a transport's post-image and moves the draft to the
-// terminal "posted" state with the platform's own id attached.
-//
-// It deliberately fails LOUDLY when the post-image carries no remote id. The post
-// may well have gone out, and the caller must surface that rather than swallow it:
-// a silent failure here would leave the draft looking unpublished forever, which is
-// the same measurement lie this state was added to end.
+// contentPostImageKind tells RecordContentPostResult which door the transport
+// answer opens. A scheduling acceptance opens the scheduled door; only a
+// platform publication answer opens the terminal posted door.
+type contentPostImageKind string
+
+const (
+	postImageKindPublication contentPostImageKind = "publication"
+	postImageKindScheduleAck contentPostImageKind = "schedule_ack"
+)
+
+// contentPostImage is the classified transport answer.
+type contentPostImage struct {
+	Kind        contentPostImageKind
+	RemoteID    string
+	URL         string
+	ScheduleID  string
+	ScheduledAt string
+}
+
+// RecordContentPostResult reads a transport's post-image and moves the draft to
+// the state the answer PROVES. A platform answer carrying a real remote id
+// records the terminal "posted" state; a scheduler's explicit acceptance
+// records the distinct non-terminal "scheduled" state with the scheduler's own
+// reservation id. Both doors fail LOUDLY when their evidence is missing. The
+// post may well have gone out, and the caller must surface that rather than
+// swallow it: a silent failure here would leave the draft looking unpublished
+// forever, which is the same measurement lie this state was added to end.
 func RecordContentPostResult(homePath, draftID string, postImage []byte, receiptRef string, now time.Time) (ContentDraft, error) {
-	remoteID, url, err := parseContentPostImage(postImage)
+	parsed, err := parseContentPostImage(postImage, now)
 	if err != nil {
 		return ContentDraft{}, err
 	}
+	if parsed.Kind == postImageKindScheduleAck {
+		return MarkContentDraftScheduled(homePath, draftID, ContentDraftScheduleInput{
+			ScheduleID:  parsed.ScheduleID,
+			ScheduledAt: parsed.ScheduledAt,
+			ReceiptRef:  receiptRef,
+		}, now)
+	}
 	return MarkContentDraftPosted(homePath, draftID, ContentDraftPostInput{
-		RemoteID:   remoteID,
-		URL:        url,
+		RemoteID:   parsed.RemoteID,
+		URL:        parsed.URL,
 		ReceiptRef: receiptRef,
 	}, now)
 }
 
-// parseContentPostImage extracts the remote id and permalink from a transport's
+// parseContentPostImage extracts the classified answer from a transport's
 // stdout. The transport contract is a single JSON object; anything else cannot
-// prove a post happened.
-func parseContentPostImage(postImage []byte) (remoteID, url string, err error) {
+// prove a post OR a scheduling acceptance.
+//
+// The schedule/post discrimination is explicit, never a guess:
+//   - an explicit marker (type/status naming schedule/scheduled/queued), or
+//   - a publish `date` strictly in the future (a publication has already
+//     happened; a reservation names a time that has not come yet),
+//
+// makes an id-shaped field a SCHEDULER RESERVATION, and the answer routes to
+// the scheduled door. An id-shaped field with NO such marker routes to the
+// posted door exactly as before. A payload carrying an id-shaped field AND a
+// schedule marker is refused as ambiguous: guessing across a publication
+// boundary is how a scheduling acknowledgement became a "post" in the first
+// place.
+func parseContentPostImage(postImage []byte, now time.Time) (contentPostImage, error) {
+	var out contentPostImage
 	trimmed := strings.TrimSpace(string(postImage))
 	if trimmed == "" {
-		return "", "", fmt.Errorf("transport returned no post-image: a post cannot be recorded without the platform's answer")
+		return out, fmt.Errorf("transport returned no post-image: a post cannot be recorded without the platform's answer")
 	}
 	// UseNumber, not the default float64: a snowflake-style id like
 	// 1730000000000000123 does not survive a float64 round trip, and an id that
@@ -64,13 +118,49 @@ func parseContentPostImage(postImage []byte) (remoteID, url string, err error) {
 	decoder.UseNumber()
 	var payload map[string]any
 	if err := decoder.Decode(&payload); err != nil {
-		return "", "", fmt.Errorf("transport post-image is not a JSON object, so it carries no provable remote id: %w", err)
+		return out, fmt.Errorf("transport post-image is not a JSON object, so it carries no provable remote id: %w", err)
 	}
-	remoteID = firstStringField(payload, contentPostRemoteIDKeys)
-	if remoteID == "" {
-		return "", "", fmt.Errorf("transport post-image carries no remote id (looked for %s): the post may have gone out, but nothing proves it", strings.Join(contentPostRemoteIDKeys, ", "))
+	remoteID := firstStringField(payload, contentPostRemoteIDKeys)
+	url := firstStringField(payload, contentPostURLKeys)
+	markedScheduled := false
+	for _, key := range contentScheduleAckMarkerKeys {
+		if v := strings.ToLower(strings.TrimSpace(firstStringField(payload, []string{key}))); v != "" {
+			for _, marker := range contentScheduleAckMarkerValues {
+				if v == marker {
+					markedScheduled = true
+				}
+			}
+		}
 	}
-	return remoteID, firstStringField(payload, contentPostURLKeys), nil
+	// A future publish date is the scheduler's own claim about when the post
+	// will happen; a publication has already happened, so its date cannot be
+	// in the future. Two minutes of skew tolerance keeps a clock drift from
+	// misreading an immediate post as a reservation.
+	if v := strings.TrimSpace(firstStringField(payload, []string{"date", "scheduled_at"})); v != "" {
+		if at, err := time.Parse(time.RFC3339, v); err == nil && at.After(now.Add(2*time.Minute)) {
+			markedScheduled = true
+			out.ScheduledAt = at.UTC().Format(time.RFC3339)
+		}
+	}
+	switch {
+	case remoteID != "" && markedScheduled:
+		return out, fmt.Errorf("transport post-image is ambiguous: it carries an id-shaped field and a scheduling marker, so the id could name a publication or a reservation; refusing to guess (looked at %s and markers %v)", strings.Join(contentPostRemoteIDKeys, ","), contentScheduleAckMarkerKeys)
+	case remoteID != "":
+		out.Kind = postImageKindPublication
+		out.RemoteID = remoteID
+		out.URL = url
+		return out, nil
+	case markedScheduled:
+		scheduleID := firstStringField(payload, contentScheduleAckKeys)
+		if scheduleID == "" {
+			return out, fmt.Errorf("transport scheduling acknowledgement carries no reservation id (looked for %s): an acceptance without one cannot be observed, cancelled, or de-duplicated", strings.Join(contentScheduleAckKeys, ", "))
+		}
+		out.Kind = postImageKindScheduleAck
+		out.ScheduleID = scheduleID
+		return out, nil
+	default:
+		return out, fmt.Errorf("transport post-image carries no remote id (looked for %s): the post may have gone out, but nothing proves it", strings.Join(contentPostRemoteIDKeys, ", "))
+	}
 }
 
 // firstStringField returns the first non-empty string value among keys. Numeric ids

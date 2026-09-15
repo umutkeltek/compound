@@ -44,6 +44,13 @@ const (
 	// this machine can see it" (posted) are different facts, and a distribution
 	// measure built on the first can report success forever while nothing ships.
 	ContentDraftStatePosted = "posted"
+	// ContentDraftStateScheduled means a transport's scheduler ACCEPTED the
+	// publication request and returned its own reservation id. It is NOT a
+	// publication: "the scheduler holds the job" and "a platform published it"
+	// are different facts, and recording an acceptance as posted was the first
+	// audited distribution gap (2026-09-01). Reached only through
+	// MarkContentDraftScheduled; the posted door is the only way out.
+	ContentDraftStateScheduled = "scheduled"
 )
 
 // contentDraftMediaKinds is the closed allowlist of attachable asset kinds, for
@@ -179,10 +186,15 @@ type ContentDraft struct {
 	EvidenceRefs  []string            `json:"evidence_refs,omitempty"`
 	Media         []ContentDraftMedia `json:"media,omitempty"`
 	Post          *ContentDraftPost   `json:"post,omitempty"`
-	State         string              `json:"state"`
-	CreatedAt     string              `json:"created_at"`
-	ExpiresAt     string              `json:"expires_at"`
-	AdjudicatedAt string              `json:"adjudicated_at,omitempty"`
+	// Schedule is the transport scheduler's own acceptance record, set only
+	// when a scheduler took the publication job. Distinct from Post on
+	// purpose: a scheduled draft has no remote post id yet, and the posted
+	// door is the only writer of Post.
+	Schedule      *ContentDraftSchedule `json:"schedule,omitempty"`
+	State         string                `json:"state"`
+	CreatedAt     string                `json:"created_at"`
+	ExpiresAt     string                `json:"expires_at"`
+	AdjudicatedAt string                `json:"adjudicated_at,omitempty"`
 	// Warnings is the additive set of content-staleness flags. Slice 2 of
 	// the model-catalog envelope adds a check: a body naming a model the
 	// installed catalog marks superseded gets a visible flag here. The
@@ -362,17 +374,99 @@ func custodyContentDraftMedia(store *home.ArtifactStore, in []ContentDraftMediaI
 	return out, nil
 }
 
+// ContentDraftScheduleInput is the operator-transport flow's schedule
+// acceptance: the scheduler's own reservation id, the accepted publish time,
+// and the governed receipt that carried the act.
+type ContentDraftScheduleInput struct {
+	ScheduleID  string
+	ScheduledAt string // RFC3339; empty means the ack named no publish time
+	ReceiptRef  string
+}
+
+// ContentDraftSchedule is a scheduler's own acceptance, persisted on the
+// draft. It is distinct from ContentDraftPost because "the transport's
+// scheduler took the job" and "a platform published the draft" are different
+// facts (2026-09-01 audit gap; state + door landed 2026-09-15).
+type ContentDraftSchedule struct {
+	Platform    string `json:"platform"`
+	ScheduleID  string `json:"schedule_id"`
+	ScheduledAt string `json:"scheduled_at,omitempty"`
+	AckedAt     string `json:"acked_at"`
+	ReceiptRef  string `json:"receipt_ref,omitempty"`
+}
+
+// MarkContentDraftScheduled records that a transport's scheduler accepted the
+// publication request and returned its own reservation id. This is the ONLY
+// door to the "scheduled" state, and it is a different door from posted on
+// purpose:
+//
+//   - it refuses any draft that is not "operationalized", so unreviewed
+//     content cannot reach a transport's queue through this path;
+//   - it refuses an empty ScheduleID — a scheduler acceptance without the
+//     scheduler's own reservation id cannot be observed, cancelled, or
+//     de-duplicated, so it is not a fact this ledger should record;
+//   - it refuses an already-scheduled draft, because overwriting the first
+//     reservation id would hide an accepted job; a reschedule needs an
+//     explicit withdraw (not built in v0.1), not a silent replace;
+//   - it refuses an already-posted draft, because a public post is terminal.
+func MarkContentDraftScheduled(homePath, id string, in ContentDraftScheduleInput, now time.Time) (ContentDraft, error) {
+	homePath = strings.TrimSpace(homePath)
+	if homePath == "" {
+		return ContentDraft{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	scheduleID := strings.TrimSpace(in.ScheduleID)
+	if scheduleID == "" {
+		return ContentDraft{}, fmt.Errorf("schedule reservation id required: a scheduler ack without it is a claim, not an observable fact")
+	}
+	if scheduledAt := strings.TrimSpace(in.ScheduledAt); scheduledAt != "" {
+		if _, err := time.Parse(time.RFC3339, scheduledAt); err != nil {
+			return ContentDraft{}, fmt.Errorf("schedule acceptance publish time %q is not RFC3339: %w", scheduledAt, err)
+		}
+	}
+	draft, err := ReadContentDraft(homePath, id)
+	if err != nil {
+		return ContentDraft{}, err
+	}
+	if draft.State == ContentDraftStatePosted {
+		return ContentDraft{}, fmt.Errorf("draft %s is already posted as %q: a public post is terminal", draft.ID, draft.Post.RemoteID)
+	}
+	if draft.State == ContentDraftStateScheduled {
+		return ContentDraft{}, fmt.Errorf("draft %s is already scheduled as %q: rescheduling requires withdrawing the accepted reservation first (no withdraw door in v0.1)", draft.ID, draft.Schedule.ScheduleID)
+	}
+	if draft.State != ContentDraftStateOperationalized {
+		return ContentDraft{}, fmt.Errorf("draft %s is %q: only an operationalized draft may be scheduled", draft.ID, draft.State)
+	}
+	draft.State = ContentDraftStateScheduled
+	draft.AdjudicatedAt = now.UTC().Format(time.RFC3339)
+	draft.Schedule = &ContentDraftSchedule{
+		Platform:    draft.Platform,
+		ScheduleID:  scheduleID,
+		ScheduledAt: strings.TrimSpace(in.ScheduledAt),
+		AckedAt:     now.UTC().Format(time.RFC3339),
+		ReceiptRef:  strings.TrimSpace(in.ReceiptRef),
+	}
+	if err := candidates.WriteCandidate(homePath, candidates.ContentDraft, draft.ID, &draft); err != nil {
+		return ContentDraft{}, err
+	}
+	return draft, nil
+}
+
 // MarkContentDraftPosted records that a platform accepted this draft and returned
 // an id for it. This is the ONLY door to the terminal "posted" state, and it is
 // separate from adjudication on purpose:
 //
-//   - it refuses any draft that is not "operationalized", so unreviewed generated
-//     content cannot reach the public through this path;
+//   - it refuses any draft that is not "operationalized" or "scheduled", so
+//     unreviewed generated content cannot reach the public through this path;
 //   - it refuses an empty RemoteID, because a posted record without the platform's
 //     own answer is indistinguishable from a draft that never went out — the exact
 //     false-green that let the weekly driver report success while nothing shipped;
 //   - it refuses an already-posted draft, because overwriting the first remote id
 //     would hide a post that is already public.
+//
+// A scheduled draft reaching posted is the normal flow: the scheduler accepted
+// at request time, the platform published at its own time, and the real remote
+// id arrives later. The schedule record is kept (it is the provenance of the
+// reservation) while Post carries the publication.
 func MarkContentDraftPosted(homePath, id string, in ContentDraftPostInput, now time.Time) (ContentDraft, error) {
 	homePath = strings.TrimSpace(homePath)
 	if homePath == "" {
@@ -389,8 +483,8 @@ func MarkContentDraftPosted(homePath, id string, in ContentDraftPostInput, now t
 	if draft.State == ContentDraftStatePosted {
 		return ContentDraft{}, fmt.Errorf("draft %s is already posted as %q: a public post is terminal", draft.ID, draft.Post.RemoteID)
 	}
-	if draft.State != ContentDraftStateOperationalized {
-		return ContentDraft{}, fmt.Errorf("draft %s is %q: only an operationalized draft may be posted", draft.ID, draft.State)
+	if draft.State != ContentDraftStateOperationalized && draft.State != ContentDraftStateScheduled {
+		return ContentDraft{}, fmt.Errorf("draft %s is %q: only an operationalized or scheduled draft may be posted", draft.ID, draft.State)
 	}
 	draft.State = ContentDraftStatePosted
 	draft.AdjudicatedAt = now.UTC().Format(time.RFC3339)
@@ -430,6 +524,13 @@ func adjudicateContentDraft(homePath, id, newState string, now time.Time, requir
 	// edit. Posted is terminal to every verb, including this one.
 	if draft.State == ContentDraftStatePosted {
 		return ContentDraft{}, fmt.Errorf("draft %s is already posted: a public post cannot be re-adjudicated to %q", draft.ID, newState)
+	}
+	// A scheduled draft holds an accepted transport reservation. Re-adjudicating
+	// it here would make the ledger claim a state the transport still intends to
+	// publish; the reservation must be withdrawn (no withdraw door in v0.1)
+	// before the local verdict may move. Fail loud, name the reservation.
+	if draft.State == ContentDraftStateScheduled {
+		return ContentDraft{}, fmt.Errorf("draft %s is scheduled as %q: withdraw the transport reservation before re-adjudicating to %q", draft.ID, draft.Schedule.ScheduleID, newState)
 	}
 	if requireFresh {
 		expiresAt, perr := time.Parse(time.RFC3339, draft.ExpiresAt)

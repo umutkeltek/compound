@@ -106,7 +106,7 @@ func TestRecordContentPostResultAcceptsNumericRemoteID(t *testing.T) {
 // TestParseContentPostImageNamesWhatItLookedFor keeps the refusal actionable: an
 // operator reading it must learn which field a transport is expected to return.
 func TestParseContentPostImageNamesWhatItLookedFor(t *testing.T) {
-	_, _, err := parseContentPostImage([]byte(`{"status":"ok"}`))
+	_, err := parseContentPostImage([]byte(`{"status":"ok"}`), postResultNow)
 	if err == nil {
 		t.Fatal("want refusal")
 	}
