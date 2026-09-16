@@ -50,6 +50,12 @@ Options:
   --keep-memory NAME       Keep top-level memory/NAME. Can be repeated.
                            Default keep list: compound.
   --no-default-memory      Clear the default keep-memory list.
+  --exclude PATTERN        Extra rsync exclude pattern (repeatable). Applied in
+                           addition to the built-in excludes; use it to trim
+                           staged bulk (e.g. release-rehearsal binaries) when the
+                           zip budget trips. Patterns are rsync exclude rules:
+                           a leading / anchors to the transfer root, * does not
+                           cross /, no leading / matches at any depth.
   --max-zip-mb N           Hard budget for the finished zip in MB. Over budget:
                            list largest staged files, delete the zip, exit 1.
                            0 disables the check. Default: 480.
@@ -93,6 +99,8 @@ include_private=1
 include_node_modules=0
 dry_run=0
 max_zip_mb=480
+
+extra_excludes=()
 
 keep_memory=()
 if [[ -n "${COMPOUND_KEEP_MEMORY_PROJECTS:-}" ]]; then
@@ -145,6 +153,11 @@ while [[ $# -gt 0 ]]; do
     --no-default-memory)
       keep_memory=()
       shift
+      ;;
+    --exclude)
+      [[ $# -ge 2 ]] || die "--exclude requires an rsync exclude pattern"
+      extra_excludes+=("$2")
+      shift 2
       ;;
     --max-zip-mb)
       [[ $# -ge 2 ]] || die "--max-zip-mb requires a number"
@@ -286,6 +299,10 @@ for name in "${keep_memory[@]}"; do
 done
 rsync_args+=(--filter "- /memory/***")
 
+for pattern in ${extra_excludes+"${extra_excludes[@]}"}; do
+  rsync_args+=(--exclude "$pattern")
+done
+
 if [[ "$include_node_modules" -eq 0 ]]; then
   rsync_args+=(
     --exclude "node_modules/"
@@ -318,6 +335,12 @@ printf -- '- mode: %s\n' "$([[ "$upload_safe" -eq 1 ]] && printf upload-safe || 
 printf -- '- include_private: %s\n' "$include_private"
 printf -- '- include_node_modules: %s\n' "$include_node_modules"
 printf -- '- keep_memory: %s\n' "${keep_memory[*]:-(none)}"
+if [[ "${#extra_excludes[@]}" -gt 0 ]]; then
+  printf -- '- extra_excludes:\n'
+  for pattern in "${extra_excludes[@]}"; do
+    printf -- '    %s\n' "$pattern"
+  done
+fi
 
 run rm -rf -- "$stage_path" "$zip_path"
 run mkdir -p -- "$stage_path"
