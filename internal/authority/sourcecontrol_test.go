@@ -5,8 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"compound/internal/mem"
 )
@@ -143,6 +146,71 @@ func TestSourceControlFingerprintChangesWithContentPathAndIndexState(t *testing.
 	}
 	if otherPath.EvidenceRef == alpha.EvidenceRef {
 		t.Fatalf("same changed-path count/content on another path reused fingerprint %q", otherPath.EvidenceRef)
+	}
+}
+
+// TestChangedStateFingerprintRejectsSameSizeSameMtimeRewrite encodes the
+// approval contract: ChangedStateFingerprint binds the CURRENT bytes, so a
+// rewrite that preserves the full stat tuple (size, mtime, device, inode) must
+// still change the fingerprint. A stat-keyed content cache on this path would
+// return the stale hash here and match reviewed approval to bytes nobody
+// reviewed — the external delta audit reproduced exactly that on 2026-09-16,
+// which is why the cache was blocked from this path. This test must stay green
+// if the direct byte read is ever replaced by anything.
+func TestChangedStateFingerprintRejectsSameSizeSameMtimeRewrite(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "initial\n")
+	runGit(t, repo, "add", "README.md")
+	target := filepath.Join(repo, "tracked.txt")
+	writeFile(t, target, "before0000\n")
+
+	before, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeStat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skipf("stat tuple unavailable on %s", runtime.GOOS)
+	}
+
+	// Same length, different bytes, restored modification time: the full
+	// stat key is byte-for-byte identical after the rewrite.
+	writeFile(t, target, "after00000\n")
+	afterWrite, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(target, time.Time{}, info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterStat, ok := after.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skipf("stat tuple unavailable on %s", runtime.GOOS)
+	}
+	if after.Size() != beforeStat.Size || after.ModTime() != info.ModTime() ||
+		afterStat.Dev != beforeStat.Dev || afterStat.Ino != beforeStat.Ino {
+		t.Fatalf("rewrite did not preserve the stat key: size %d->%d mtime %v->%v dev %d->%d ino %d->%d",
+			beforeStat.Size, after.Size(), info.ModTime(), after.ModTime(),
+			beforeStat.Dev, afterStat.Dev, beforeStat.Ino, afterStat.Ino)
+	}
+	if afterWrite.ModTime() == info.ModTime() {
+		t.Fatalf("write happened to keep the old mtime; fixture must move it to prove restoration")
+	}
+
+	afterSnap, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterSnap.EvidenceRef == before.EvidenceRef {
+		t.Fatalf("stat-identical rewrite reused the approved fingerprint %q: approval input did not follow the bytes", before.EvidenceRef)
 	}
 }
 

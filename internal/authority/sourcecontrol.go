@@ -295,16 +295,11 @@ func changedPathState(ctx context.Context, root, path string) ([]byte, error) {
 	prefix := []byte(info.Mode().String() + "\x00")
 	switch {
 	case info.Mode().IsRegular():
-		f, openErr := os.Open(abs)
-		if openErr != nil {
-			return nil, openErr
+		digest, digestErr := fileContentSHA256(ctx, abs)
+		if digestErr != nil {
+			return nil, digestErr
 		}
-		defer f.Close()
-		digest := sha256.New()
-		if _, copyErr := io.Copy(digest, f); copyErr != nil {
-			return nil, copyErr
-		}
-		return append(prefix, []byte("sha256:"+hex.EncodeToString(digest.Sum(nil)))...), nil
+		return append(prefix, []byte(digest)...), nil
 	case info.Mode()&os.ModeSymlink != 0:
 		target, linkErr := os.Readlink(abs)
 		if linkErr != nil {
@@ -324,6 +319,41 @@ func changedPathState(ctx context.Context, root, path string) ([]byte, error) {
 	default:
 		return append(prefix, []byte("special")...), nil
 	}
+}
+
+// fileContentSHA256 hashes abs's CURRENT bytes on every call. This digest feeds
+// ChangedStateFingerprint, which is matched against reviewed source-control
+// approval — so content identity must come from the bytes themselves, never
+// from a stat tuple: a same-size, same-mtime rewrite that reused a cached hash
+// would let approval bind to bytes nobody reviewed (external delta audit
+// 2026-09-16). A stat-keyed cache is therefore not permitted on this path; the
+// ctx-aborting read is the only allowed shortcut: it bounds hashing by the
+// snapshot deadline and fails closed.
+func fileContentSHA256(ctx context.Context, abs string) (string, error) {
+	f, err := os.Open(abs)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	digest := sha256.New()
+	if _, err := io.Copy(digest, &ctxAbortingReader{ctx: ctx, r: f}); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+// ctxAbortingReader makes the snapshot's context deadline bound content
+// hashing too, not only the git subprocess calls.
+type ctxAbortingReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c *ctxAbortingReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
 }
 
 func writeFingerprintFrame(h hash.Hash, label string, value []byte) {
