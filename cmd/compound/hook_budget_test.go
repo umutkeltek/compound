@@ -233,3 +233,46 @@ func TestHookBudgetHarnessTierBeatsDefault(t *testing.T) {
 		t.Fatalf("claude_code absent override budget = %v, want %v", got, hook.DefaultBudget)
 	}
 }
+
+// TestEnforcedBudgetAnswerCarriesDenyDecision: an enforced pre-tool-use
+// budget-exceeded answer must serialize permissionDecision "deny" with the
+// budget reason. The omp shim blocks a non-zero exit WITHOUT a deny decision
+// as "compound policy gate unavailable" — an empty doc hid the real cause
+// from every omp session in a slow repo on 2026-09-15.
+func TestEnforcedBudgetAnswerCarriesDenyDecision(t *testing.T) {
+	now := time.Date(2026, 9, 15, 16, 0, 0, 0, time.UTC)
+	for _, harnessName := range []string{"oh_my_pi", "claude_code", "codex"} {
+		enforced := hookCommandArgs{HookName: "pre-tool-use", Live: true, Harness: harnessName, Enforce: true}
+		body, _, exit := budgetResponse(enforced, 6*time.Second, now)
+		if exit != 4 {
+			t.Fatalf("%s enforced exit = %d, want 4", harnessName, exit)
+		}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var resp struct {
+			HookSpecificOutput struct {
+				PermissionDecision       string `json:"permissionDecision"`
+				PermissionDecisionReason string `json:"permissionDecisionReason"`
+			} `json:"hookSpecificOutput"`
+		}
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			t.Fatalf("%s body is not the claude response shape: %v (%s)", harnessName, err, raw)
+		}
+		if resp.HookSpecificOutput.PermissionDecision != "deny" {
+			t.Fatalf("%s budget-exceeded permissionDecision = %q, want deny (%s)", harnessName, resp.HookSpecificOutput.PermissionDecision, raw)
+		}
+		if !strings.Contains(resp.HookSpecificOutput.PermissionDecisionReason, "wall-clock budget") {
+			t.Fatalf("%s budget-exceeded reason must name the budget, got %q", harnessName, resp.HookSpecificOutput.PermissionDecisionReason)
+		}
+	}
+
+	// Observation mode stays decision-less: no enforced block to project.
+	observed := hookCommandArgs{HookName: "pre-tool-use", Live: true, Harness: "oh_my_pi"}
+	body, _, _ := budgetResponse(observed, 6*time.Second, now)
+	raw, _ := json.Marshal(body)
+	if strings.Contains(string(raw), "permissionDecision") {
+		t.Fatalf("observation budget answer grew a decision: %s", raw)
+	}
+}

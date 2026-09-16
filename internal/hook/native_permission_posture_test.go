@@ -162,3 +162,37 @@ func TestPostureNeverTurnsADenyIntoAnAsk(t *testing.T) {
 		}
 	}
 }
+
+// TestWatchdogEnforcedBlockProjectsToDenyWithItsSummary: the budget watchdog
+// answers pre-tool-use with an enforced block and NO typed PolicyDecision.
+// The projection must still be a deny carrying the watchdog summary, or
+// fail-closed harness shims surface their generic "compound policy gate
+// unavailable" instead of the budget reason — the exact failure shape the
+// omp minimax sessions hit on 2026-09-15 (bash policy path >6s in a large
+// repo, every block reported as "gate unavailable").
+func TestWatchdogEnforcedBlockProjectsToDenyWithItsSummary(t *testing.T) {
+	answer := BudgetExpiryAnswer(BudgetCommand{
+		HookName: "pre-tool-use", Harness: "oh_my_pi", Enforce: true, Live: true,
+	}, 6*time.Second, fixedNow)
+	if answer.Result.Event.Status != "blocked" || len(answer.Result.Produced) != 0 {
+		t.Fatalf("fixture must be a decision-less enforced block, got %+v", answer.Result.Event)
+	}
+	for _, posture := range []string{harness.PostureInteractive, harness.PostureUnattended} {
+		decision, reason := NativePermissionDecisionForPosture(answer.Result, posture)
+		if decision != "deny" {
+			t.Fatalf("posture %q projected watchdog block as %q, want deny", posture, decision)
+		}
+		if !strings.Contains(reason, "wall-clock budget") {
+			t.Fatalf("reason must name the budget, got %q", reason)
+		}
+	}
+
+	// Observation (non-enforced) budget answers stay fail-open and must not
+	// grow a decision: there is no enforced block to project.
+	observed := BudgetExpiryAnswer(BudgetCommand{
+		HookName: "pre-tool-use", Harness: "oh_my_pi", Live: true,
+	}, 6*time.Second, fixedNow)
+	if decision, _ := NativePermissionDecisionForPosture(observed.Result, harness.PostureInteractive); decision != "" {
+		t.Fatalf("fail-open watchdog answer projected %q, want no decision", decision)
+	}
+}

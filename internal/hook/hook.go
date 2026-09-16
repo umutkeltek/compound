@@ -235,6 +235,21 @@ func NativePermissionDecisionForPosture(res Result, posture string) (string, str
 		}
 		return "deny", reason
 	}
+	// Watchdog-enforced block without a typed PolicyDecision: the budget
+	// watchdog answered pre-tool-use before the policy engine finished, so
+	// Produced is empty but the event already records an enforced block.
+	// Projecting ("", "") here made fail-closed harness shims (the omp
+	// compound.ts shim treats a decision-less doc on a non-zero exit as
+	// "compound policy gate unavailable") hide the real reason from the
+	// agent. Deny with the watchdog summary is the faithful projection:
+	// the decision itself does not change, only its legibility.
+	if res.Event.Status == "blocked" && res.Event.EffectiveOutcome == "block" && len(res.Produced) == 0 {
+		reason := strings.TrimSpace(res.Summary)
+		if reason == "" {
+			reason = "compound policy evaluation exceeded its wall-clock budget; fail-closed"
+		}
+		return "deny", reason
+	}
 	for _, produced := range res.Produced {
 		pd, ok := produced.(*envelope.PolicyDecision)
 		if !ok || policy.Allowed(*pd) {
