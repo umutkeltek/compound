@@ -14,7 +14,6 @@ import (
 	"compound/internal/home"
 	"compound/internal/hook"
 	"compound/internal/mem"
-	"compound/internal/policy"
 	"compound/internal/routeev"
 	"compound/internal/runattempt"
 	"compound/internal/work"
@@ -1796,7 +1795,6 @@ func cmdWork(args []string) {
 			os.Exit(2)
 		}
 		var ai envelope.ActionIntent
-		var pd envelope.PolicyDecision
 		if planFile != "" {
 			plan, err := work.LoadActionExecutionPlan(planFile)
 			die(err)
@@ -1804,20 +1802,23 @@ func cmdWork(args []string) {
 				die(fmt.Errorf("action plan belongs to work %s, not %s", plan.WorkID, workID))
 			}
 			ai = plan.ActionIntent
-			pd = plan.Decision
 		} else {
 			ai = loadActionIntent(intentFile)
-			ai.IDs.WorkID = workID // bind the action to this work
-			pd = policy.Evaluate(ai, policyConfig(), time.Now())
+			if ai.IDs.WorkID == "" {
+				ai.IDs.WorkID = workID
+			}
 		}
-		printJSON(pd)
-		if !policy.Allowed(pd) {
-			fmt.Fprintf(os.Stderr, "BLOCKED: policy %s — action NOT recorded\n", pd.Outcome)
-			os.Exit(gateExit(pd))
-		}
-		w, err := store.RecordAction(workID, ai, pd, time.Now())
+		result, err := store.EvaluateAndRecordAction(workID, ai, time.Now())
 		die(err)
-		fmt.Printf("%s: action %s recorded (policy %s, decision %s)\n", w.ID, ai.ID, pd.Outcome, pd.ID)
+		printJSON(result.Decision)
+		if !result.Recorded {
+			fmt.Fprintf(os.Stderr, "BLOCKED: policy %s — proposal %s persisted; action NOT recorded\n", result.Decision.Outcome, ai.ID)
+			if result.Decision.Outcome == "hold" && ai.SecurityFloorOutcome == "" {
+				fmt.Fprintf(os.Stderr, "review: compound policy action-plan %s --ttl 15m --json\n", ai.ID)
+			}
+			os.Exit(gateExit(result.Decision))
+		}
+		fmt.Printf("%s: action %s recorded (policy %s, decision %s)\n", result.Work.ID, ai.ID, result.Decision.Outcome, result.Decision.ID)
 	case "close-plan":
 		usage := "usage: compound work close-plan <work_id> (--action-plan <action-execution-plan.json> | --outcome completed|failed|cancelled --move-type <type>) [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--steal --reason R] [--json] [--dry-run]"
 		closePlanValueFlags := map[string]bool{

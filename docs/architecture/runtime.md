@@ -534,6 +534,19 @@ sentence. Authentication and approval remain a separate operator boundary,
 and no retry mutates global harness permissions or configuration. Exact
 approvals cannot override a deny or security floor. Compaction and subagent
 transformations preserve parent lineage and cannot raise trust.
+
+`work act` uses the work-owned approval handoff: validate current active work
+and its lease, persist the immutable ActionIntent as a proposal, and evaluate
+current policy and autonomy halt before considering an exact grant. A held
+proposal is reviewable through `policy action-plan` but never enters performed
+work history. Saved execution-plan decisions are not authority. Same-ID body
+conflicts fail before consumption; matching, one-use consumption, and allowed
+action recording share one autonomy-admission lock. Exact bindings include the
+complete canonical intent, including work, actor, target, risk and input trust;
+only retry ID and creation time are excluded. Insufficient legacy bindings do
+not match. A persistence failure after consumption can burn a grant, never
+authorize a second execution.
+
 The full input/model map and migration plan is
 [`docs/security/prompt-injection.md`](../security/prompt-injection.md).
 `compound contract hooks-authority` reports `hook_readiness[]` from installed-hook authority, checked fixture coverage, and live-adapter support, plus `pre_tool_use_readiness[]` from installed hooks and harness native-block facts. With `--observe-live`, it exposes desired `hook_plan`, read-only `installation_observation`, and deterministic `reconciliation` separately; observed extras remain evidence and never enter desired authority. `compound hook pre-tool-use --enforce <fixture.json>` returns the same gate exit codes as `policy evaluate` for non-blocking adapter fallbacks.

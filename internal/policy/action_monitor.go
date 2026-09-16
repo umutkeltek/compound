@@ -89,6 +89,13 @@ type ActionBinding struct {
 	InputRefs          []string `json:"input_refs"`
 	ToolSchemaRevision string   `json:"tool_schema_revision"`
 	PolicyRevision     string   `json:"policy_revision"`
+	// FullIntentDigest binds the complete canonical intent body (everything
+	// except the retry-volatile id/timestamp). Without it two generated work
+	// intents that differ only in actor, work, target, or security fields
+	// share a digest and one operator approval would authorize both. Bindings
+	// that lack it are therefore insufficient: their grants fail closed
+	// instead of being widened to match.
+	FullIntentDigest string `json:"full_intent_digest,omitempty"`
 }
 
 type MonitoredAction struct {
@@ -350,6 +357,7 @@ func MonitorToolAction(request ToolActionRequest, cfg Config, now time.Time) Mon
 		InputRefs:          inputRefs,
 		ToolSchemaRevision: strings.TrimSpace(request.ToolSchemaRevision),
 		PolicyRevision:     actionPolicyRevision(cfg),
+		FullIntentDigest:   CanonicalFullIntentDigest(intent),
 	}
 	return MonitoredAction{
 		Request:        request,
@@ -454,6 +462,10 @@ func ApplyExactActionApproval(
 	store ApprovalConsumer,
 	now time.Time,
 ) (envelope.PolicyDecision, error) {
+	fullDigest := CanonicalFullIntentDigest(monitored.Intent)
+	if fullDigest == "" || monitored.Binding.FullIntentDigest != fullDigest {
+		return monitored.Decision, fmt.Errorf("exact action approval requires a complete matching intent binding")
+	}
 	if approval.SchemaVersion != ExactActionApprovalSchema || approval.MaxUses != 1 {
 		return monitored.Decision, fmt.Errorf("invalid exact action approval schema or max_uses")
 	}

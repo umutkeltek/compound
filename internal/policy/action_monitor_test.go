@@ -549,12 +549,33 @@ func TestPersistedExactApprovalAuthorizesOneExactRetryButNeverSecurityFloor(t *t
 		t, homePath, store, floorPlanSource, cfg, 5*time.Minute,
 		fixedNow.Add(4*time.Second), fixedNow.Add(5*time.Second), "operator:fixture",
 	)
+	// The security floor is part of the bound intent body, so a floor-carrying
+	// intent can never match any grant, even one planned from a floor-free
+	// variant of the same action.
 	decision, matched, err := store.ApplyMatching(blocked.Intent, cfg, blocked.Decision, fixedNow.Add(6*time.Second))
-	if err == nil || !strings.Contains(err.Error(), "security floor") {
-		t.Fatalf("security-floor approval error = %v, want refusal", err)
+	if err != nil || matched || Allowed(decision) {
+		t.Fatalf("security-floor intent matched a grant: matched=%v err=%v decision=%+v", matched, err, decision)
 	}
-	if !matched || Allowed(decision) {
-		t.Fatalf("security floor was bypassed: matched=%v decision=%+v", matched, decision)
+	// The typed consumption edge still refuses an exactly-bound floor-carrying
+	// action without consuming the grant.
+	floorMonitored := MonitoredAction{
+		Intent:   blocked.Intent,
+		Decision: blocked.Decision,
+		Binding:  ActionBindingForIntent(blocked.Intent, cfg),
+	}
+	floorBoundApproval, err := NewExactActionApproval(
+		"approval_floor_bound_fixture", "operator:fixture", floorMonitored.Binding,
+		fixedNow.Add(5*time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyExactActionApproval(
+		floorMonitored, floorBoundApproval,
+		NewApprovalConsumptionStore(filepath.Join(t.TempDir(), "floor-consumed")),
+		fixedNow.Add(6*time.Second),
+	); err == nil || !strings.Contains(err.Error(), "security floor") {
+		t.Fatalf("security-floor approval error = %v, want refusal", err)
 	}
 	if status, statusErr := store.Check(floorApproval.ID, fixedNow.Add(7*time.Second)); statusErr != nil || status.Status != ExactApprovalStatusReady {
 		t.Fatalf("security-floor grant status=%+v err=%v, want ready and unconsumed", status, statusErr)
@@ -928,10 +949,7 @@ func TestApplyMatchingSkipsConsumedGrantAndConsumesLaterReadyGrant(t *testing.T)
 		t.Fatal(err)
 	}
 	cfg := DefaultConfig()
-	request := monitorRequest("browser.submit", map[string]any{
-		"target": "publish",
-		"form":   "shadow-regression",
-	})
+	request := orderedExactApprovalShadowRequest(t, cfg, "shadow-regression")
 	first := MonitorToolAction(request, cfg, fixedNow)
 	store := NewExactActionApprovalStore(homePath)
 	planA, approvalA := approvePlanBackedIntentForTest(
@@ -969,10 +987,7 @@ func TestApplyMatchingSkipsExpiredGrantAndConsumesLaterReadyGrant(t *testing.T) 
 		t.Fatal(err)
 	}
 	cfg := DefaultConfig()
-	request := monitorRequest("browser.submit", map[string]any{
-		"target": "publish",
-		"form":   "expired-shadow-regression-v3",
-	})
+	request := orderedExactApprovalShadowRequest(t, cfg, "expired-shadow-regression")
 	store := NewExactActionApprovalStore(homePath)
 	expiring := MonitorToolAction(request, cfg, fixedNow)
 	planA, expired := approvePlanBackedIntentForTest(
@@ -996,6 +1011,9 @@ func TestApplyMatchingSkipsExpiredGrantAndConsumesLaterReadyGrant(t *testing.T) 
 	status, err := store.Check(ready.ID, fixedNow.Add(5*time.Second))
 	if err != nil || status.Status != ExactApprovalStatusConsumed {
 		t.Fatalf("ready grant after expired was not consumed: status=%+v err=%v", status, err)
+	}
+	if status, err := store.Check(expired.ID, fixedNow.Add(5*time.Second)); err != nil || status.Status != ExactApprovalStatusExpired {
+		t.Fatalf("expired grant was revived: status=%+v err=%v", status, err)
 	}
 }
 
