@@ -120,6 +120,14 @@ func parseContentPostImage(postImage []byte, now time.Time) (contentPostImage, e
 	if err := decoder.Decode(&payload); err != nil {
 		return out, fmt.Errorf("transport post-image is not a JSON object, so it carries no provable remote id: %w", err)
 	}
+	// The single-object contract is enforced through EOF (audit
+	// 2026-09-16 finding 4). Two JSON objects back-to-back means the
+	// transport wrapper or logging layer corrupted the boundary; the
+	// caller must learn "this transport is broken", not "the post
+	// happened".
+	if decoder.More() {
+		return out, fmt.Errorf("transport post-image carries more than one JSON object: the transport contract is one object per post; refusing rather than silently dropping the trailing bytes")
+	}
 	remoteID := firstStringField(payload, contentPostRemoteIDKeys)
 	url := firstStringField(payload, contentPostURLKeys)
 	markedScheduled := false
@@ -131,6 +139,15 @@ func parseContentPostImage(postImage []byte, now time.Time) (contentPostImage, e
 				}
 			}
 		}
+	}
+	// Negative-evidence gate (audit 2026-09-16 finding 4). A
+	// platform that returns an id-shaped field AND a
+	// status/type naming failure, error, or rejection is NOT a
+	// publication — the remote id names the failed attempt, not a
+	// post. Refuse the post-image outright and surface the platform's
+	// own negative status so the caller can name what happened.
+	if reason, negative := negativeContentPostImageStatus(payload); negative {
+		return out, fmt.Errorf("transport post-image carries an explicit negative status (%s); the remote id names the failed attempt, not a post — refusing: %s", reason, payloadStatusSummary(payload))
 	}
 	// A future publish date is the scheduler's own claim about when the post
 	// will happen; a publication has already happened, so its date cannot be
@@ -161,6 +178,48 @@ func parseContentPostImage(postImage []byte, now time.Time) (contentPostImage, e
 	default:
 		return out, fmt.Errorf("transport post-image carries no remote id (looked for %s): the post may have gone out, but nothing proves it", strings.Join(contentPostRemoteIDKeys, ", "))
 	}
+}
+// contentPostNegativeStatusValues names the values a transport's status
+// or type field uses to say the post DID NOT happen (audit 2026-09-16
+// finding 4). A platform that returns such a value alongside a remote id
+// is naming the failed attempt's reservation id, NOT a publication — the
+// post-image is refused outright.
+var contentPostNegativeStatusValues = []string{"failed", "error", "rejected", "denied", "cancelled"}
+
+// negativeContentPostImageStatus reports whether the transport post-image
+// payload carries an explicit negative status/type and, if so, the
+// first reason value it saw. The check looks at the same `type` and
+// `status` keys the schedule-marker path uses, so a single field does
+// not flip between "scheduled" and "failed" semantics.
+func negativeContentPostImageStatus(payload map[string]any) (string, bool) {
+	for _, key := range contentScheduleAckMarkerKeys {
+		v := strings.ToLower(strings.TrimSpace(firstStringField(payload, []string{key})))
+		if v == "" {
+			continue
+		}
+		for _, neg := range contentPostNegativeStatusValues {
+			if v == neg {
+				return key + "=" + v, true
+			}
+		}
+	}
+	return "", false
+}
+
+// payloadStatusSummary renders the human-readable subset of a post-image
+// payload that names what happened, so the refusal error tells the
+// caller what the platform said rather than only "refused".
+func payloadStatusSummary(payload map[string]any) string {
+	parts := []string{}
+	for _, key := range []string{"type", "status", "error", "message", "reason"} {
+		if v := firstStringField(payload, []string{key}); v != "" {
+			parts = append(parts, key+"="+v)
+		}
+	}
+	if len(parts) == 0 {
+		return "no status fields"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // firstStringField returns the first non-empty string value among keys. Numeric ids

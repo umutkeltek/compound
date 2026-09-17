@@ -184,8 +184,14 @@ func TestAdsImportEmptyRevenueColumnDoesNotClaimRevenue(t *testing.T) {
 		t.Fatal(err)
 	}
 	proj, _ = LoadAdsProjection(home, AdsProjectionOptions{AsOf: time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC), WindowDays: 3})
-	if !proj.Totals.HasRevenue || !near(proj.Totals.ROAS, 30.0/32.0) {
-		t.Fatalf("a row with a value defines ROAS over the window: %+v", proj.Totals)
+	// 1 of 3 rows in the window reports revenue: coverage is partial,
+	// so ROAS is gated to 0 (audit 2026-09-16 finding 3). The
+	// consumer reads RevenueCoverage and HasRevenue together.
+	if !proj.Totals.HasRevenue || proj.Totals.ROAS != 0 {
+		t.Fatalf("partial-coverage window must NOT report a complete ROAS: %+v", proj.Totals)
+	}
+	if proj.Totals.RevenueCoverage == 0 {
+		t.Fatalf("partial-coverage window must surface RevenueCoverage: %+v", proj.Totals)
 	}
 }
 

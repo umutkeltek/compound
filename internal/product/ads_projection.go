@@ -69,23 +69,35 @@ type AdsCounts struct {
 // ratio, before rendering. Currency is the single currency of the rows,
 // "MIXED" when they disagree (spend is then NOT a meaningful sum and
 // SpendByCurrency is the honest figure), or "" when no row carried one.
+//
+// RevenueCoverage is the fraction of rows in the window that actually
+// reported a revenue value (0 when none did, 1 when every row did). The
+// HasRevenue flag is kept for backwards compatibility; a partial
+// coverage MUST NOT be reported as a complete ROAS — RevenueCoverage
+// below 1 means ROAS is "matched-population revenue over total spend",
+// not "platform total revenue over total spend" (audit 2026-09-16).
 type AdsTotals struct {
-	Spend           float64            `json:"spend"`
-	Impressions     float64            `json:"impressions"`
-	Clicks          float64            `json:"clicks"`
-	Conversions     float64            `json:"conversions"`
-	Revenue         float64            `json:"revenue"`
-	HasRevenue      bool               `json:"has_revenue"`
-	CTR             float64            `json:"ctr"`
-	CPC             float64            `json:"cpc"`
-	CPA             float64            `json:"cpa"`
-	CPM             float64            `json:"cpm"`
-	ROAS            float64            `json:"roas"`
-	Currency        string             `json:"currency,omitempty"`
-	MixedCurrency   bool               `json:"mixed_currency"`
-	SpendByCurrency map[string]float64 `json:"spend_by_currency,omitempty"`
-	Days            int                `json:"days"`
-	Rows            int                `json:"rows"`
+	Spend            float64            `json:"spend"`
+	Impressions      float64            `json:"impressions"`
+	Clicks           float64            `json:"clicks"`
+	Conversions      float64            `json:"conversions"`
+	Revenue          float64            `json:"revenue"`
+	HasRevenue       bool               `json:"has_revenue"`
+	// RevenueCoverage: rows-with-revenue / rows-total in the window.
+	// 0 when no rows reported revenue; 1 when every row did; a
+	// fractional value is partial coverage and the projection must NOT
+	// render ROAS as a "complete" ratio in that case.
+	RevenueCoverage  float64            `json:"revenue_coverage"`
+	CTR              float64            `json:"ctr"`
+	CPC              float64            `json:"cpc"`
+	CPA              float64            `json:"cpa"`
+	CPM              float64            `json:"cpm"`
+	ROAS             float64            `json:"roas"`
+	Currency         string             `json:"currency,omitempty"`
+	MixedCurrency    bool               `json:"mixed_currency"`
+	SpendByCurrency  map[string]float64 `json:"spend_by_currency,omitempty"`
+	Days             int                `json:"days"`
+	Rows             int                `json:"rows"`
 }
 
 type AdsDailyPoint struct {
@@ -504,6 +516,7 @@ func adsTotals(rows []AdRow) AdsTotals {
 	}
 	currencies := map[string]float64{}
 	days := map[string]struct{}{}
+	rowsWithRevenue := 0
 	for _, r := range rows {
 		t.Spend += r.Spend
 		t.Impressions += r.Impressions
@@ -512,6 +525,7 @@ func adsTotals(rows []AdRow) AdsTotals {
 		if r.HasRevenue {
 			t.HasRevenue = true
 			t.Revenue += r.Revenue
+			rowsWithRevenue++
 		}
 		if r.Currency != "" {
 			currencies[r.Currency] += r.Spend
@@ -519,6 +533,7 @@ func adsTotals(rows []AdRow) AdsTotals {
 		days[r.Date] = struct{}{}
 	}
 	t.Days = len(days)
+	t.RevenueCoverage = float64(rowsWithRevenue) / float64(len(rows))
 	switch len(currencies) {
 	case 0:
 		t.Currency = ""
@@ -541,7 +556,13 @@ func adsTotals(rows []AdRow) AdsTotals {
 	if t.Conversions > 0 {
 		t.CPA = t.Spend / t.Conversions
 	}
-	if t.HasRevenue && t.Spend > 0 {
+	// ROAS is the platform-total ratio only when EVERY contributing row
+	// in the window reported revenue. Partial coverage (some rows
+	// empty) means we have matched-population revenue over total spend,
+	// which is NOT the same number — leave ROAS at 0 and let the
+	// projection surface RevenueCoverage so the consumer can decide
+	// (audit 2026-09-16 finding 3).
+	if t.HasRevenue && t.Spend > 0 && t.RevenueCoverage >= 1 {
 		t.ROAS = t.Revenue / t.Spend
 	}
 	return t
