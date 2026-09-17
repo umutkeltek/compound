@@ -159,6 +159,15 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	cmd.Stderr = logFile
 	setProcessGroup(cmd)
 	fmt.Fprintf(logFile, "%s detached door start work=%s lane=%s actor=%s budget=%s argv=%q\n", now.UTC().Format(time.RFC3339), workID, lane, actor, budget, argv)
+	// Per-launch boundary marker written BEFORE the started-pid line
+	// (audit 2026-09-16 finding 5). A reconcile that scopes its pid
+	// recovery to lines after the most recent marker for this workID
+	// cannot adopt a prior launch's stale pid when the sidecar write
+	// fails on this launch. The marker carries the workID so a
+	// concurrent launch on a different workID (theoretical; the log
+	// file is per-workID today but the guard costs nothing) does not
+	// bleed across envelopes.
+	fmt.Fprintf(logFile, "%s %s%s started_at=%s\n", now.UTC().Format(time.RFC3339), work.DetachedDoorLaunchMarker, workID, now.UTC().Format(time.RFC3339Nano))
 	// 2. Guarded start. Nothing started means the reserved record goes away
 	// best-effort; a stale reserved record would otherwise read as owned.
 	if err := cmd.Start(); err != nil {
@@ -172,7 +181,9 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	launch.Outcome = work.DetachedOutcomeRunning
 	// 3. Started-identity evidence in the log, before any sidecar attempt:
 	// the log fd is already open, so this line is the recovery authority a
-	// reconcile tick adopts when step 4 keeps failing.
+	// reconcile tick adopts when step 4 keeps failing. The line follows the
+	// per-launch marker above, so a stale pid line from a prior launch is
+	// excluded from recovery.
 	fmt.Fprintf(logFile, "%s %s%d pgid=%d\n", now.UTC().Format(time.RFC3339), work.DetachedDoorStartedLogLine, pid, pid)
 	// 4. Record the started identity. One retry; a persistent failure is
 	// reported as recovery_required, never as failed-to-spawn.
