@@ -674,6 +674,9 @@ func (s *ExactActionApprovalStore) applyMatchingLocked(
 	now time.Time,
 ) (envelope.PolicyDecision, bool, error) {
 	binding := ActionBindingForIntent(intent, cfg)
+	if binding.FullIntentDigest == "" {
+		return base, false, fmt.Errorf("action intent cannot form an exact JSON binding")
+	}
 	digest := ActionBindingDigest(binding)
 	store, err := eventstore.Open(s.homePath)
 	if err != nil {
@@ -749,6 +752,17 @@ func (s *ExactActionApprovalStore) applyMatchingLocked(
 	return base, true, fmt.Errorf("%w: %s", ErrExactApprovalExhausted, strings.Join(uniqueSortedStrings(diagnostics), "; "))
 }
 
+// ApplyMatchingLocked is for work-owned admission transactions that already
+// hold home.WithAutonomyAdmissionLock. Callers must validate current work and
+// persist the immutable intent before invoking it, then record under that same
+// lock. Calling ApplyMatching instead would recursively acquire a flock.
+func (s *ExactActionApprovalStore) ApplyMatchingLocked(intent envelope.ActionIntent, cfg Config, base envelope.PolicyDecision, now time.Time) (envelope.PolicyDecision, bool, error) {
+	if s == nil || s.homePath == "" {
+		return base, false, fmt.Errorf("exact action approval store requires compound home")
+	}
+	return s.applyMatchingLocked(intent, cfg, base, now)
+}
+
 func uniqueSortedStrings(values []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(values))
@@ -785,6 +799,7 @@ func ActionBindingForIntent(intent envelope.ActionIntent, cfg Config) ActionBind
 		InputRefs:          inputRefs,
 		ToolSchemaRevision: intent.SchemaRevision,
 		PolicyRevision:     actionPolicyRevision(cfg),
+		FullIntentDigest:   CanonicalFullIntentDigest(intent),
 	}
 }
 
