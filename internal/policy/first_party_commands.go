@@ -190,6 +190,18 @@ func (c FirstPartyCommandCatalog) RequireHomeCompatibility(command string, args 
 	if command == "hook" && firstPartyRuntimeHook(subcommand, args) {
 		return nil
 	}
+	// proof-check --ci / --ci-console are the fresh-clone-portable gate
+	// subsets: every gate needing home state is either hostBound (excluded
+	// from these subsets) or self-initializes an isolated temp home
+	// (proof_check.go / proof_check_memory_gate.go home.Init(tmpHome, ...)).
+	// Without this exemption a bare machine — CI runner, fresh checkout,
+	// downstream re-runner — cannot even start the portable battery, because
+	// admission demands an existing home manifest before dispatch. The
+	// work-driven canonical proof path (no portable flag) keeps the full
+	// mutation admission.
+	if command == "proof-check" && (firstPartyFlagPresent(args, "--ci") || firstPartyFlagPresent(args, "--ci-console")) {
+		return nil
+	}
 	homePath, err := homepkg.Resolve("")
 	if command == "home" {
 		if explicitHome, ok, selectionErr := firstPartyHomeFlagValue(args); selectionErr != nil {

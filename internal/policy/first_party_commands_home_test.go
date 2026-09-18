@@ -46,3 +46,30 @@ func TestRequireHomeCompatibilityUsesExplicitHomeAroundSubcommand(t *testing.T) 
 		})
 	}
 }
+
+func TestRequireHomeCompatibilityExemptsPortableProofCheckSubsets(t *testing.T) {
+	// Point COMPOUND_HOME at a directory with no manifest so any
+	// non-exempted governed command fails closed.
+	t.Setenv("COMPOUND_HOME", t.TempDir())
+
+	catalog := NewFirstPartyCommandCatalog(map[string]FirstPartyCommandAdmission{
+		"proof-check": FirstPartyCommandGoverned,
+	})
+
+	for _, args := range [][]string{
+		{"--ci"},
+		{"--ci", "--json", "--base", "origin/main"},
+		{"--ci-console"},
+	} {
+		if err := catalog.RequireHomeCompatibility("proof-check", args); err != nil {
+			t.Fatalf("RequireHomeCompatibility(proof-check, %v) = %v, want nil (fresh-clone-portable subset)", args, err)
+		}
+	}
+
+	// The canonical work-driven path keeps the full admission: the same
+	// missing home must fail closed without a portable flag.
+	err := catalog.RequireHomeCompatibility("proof-check", []string{"--work", "work_x", "--actor", "operator:y"})
+	if err == nil || !strings.Contains(err.Error(), "home manifest is missing") {
+		t.Fatalf("RequireHomeCompatibility(proof-check, canonical) = %v, want missing-manifest refusal", err)
+	}
+}
