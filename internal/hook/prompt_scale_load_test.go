@@ -19,12 +19,8 @@ import (
 // where a sibling lane's director suite held the machine at load ~12 (max 1.98s vs the
 // 1.5s ceiling). Skipping there is honest, not lazy.
 func promptScaleLoadAverageOneMinute() (float64, bool) {
-	if value, err := syscall.Sysctl("vm.loadavg"); err == nil && strings.TrimSpace(value) != "" {
-		if fields := strings.Fields(value); len(fields) >= 1 {
-			if f, parseErr := strconv.ParseFloat(fields[0], 64); parseErr == nil {
-				return f, true
-			}
-		}
+	if f, ok := sysctlLoadAverageOneMinute(); ok {
+		return f, true
 	}
 	data, err := os.ReadFile("/proc/loadavg")
 	if err == nil {

@@ -152,7 +152,10 @@ func initDefect2GitRepoOrSkip(t *testing.T, targetRoot string) string {
 		t.Skipf("git not on PATH; cannot init a workspace repo: %v", err)
 	}
 	for _, args := range [][]string{
+		// Pin the fixture branch to refs/heads/main regardless of the
+		// machine's init.defaultBranch (CI runners default to master).
 		{"init", "--quiet"},
+		{"symbolic-ref", "HEAD", "refs/heads/main"},
 		{"config", "user.email", "test@example.invalid"},
 		{"config", "user.name", "test"},
 		{"commit", "--allow-empty", "--quiet", "-m", "init"},

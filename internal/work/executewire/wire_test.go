@@ -471,7 +471,14 @@ func initGitRepoOrSkip(t *testing.T, targetRoot string) string {
 		t.Skipf("git not on PATH; cannot init a workspace repo: %v", err)
 	}
 	for _, args := range [][]string{
+		// Point HEAD at refs/heads/main before the first commit so the
+		// fixture branch name does not depend on the machine's
+		// init.defaultBranch (CI runners default to master; CI run
+		// 35304076022 phase 1 — TargetLocalRef refs/heads/main did not
+		// resolve). symbolic-ref works on every git version, unlike
+		// git init -b.
 		{"init", "--quiet"},
+		{"symbolic-ref", "HEAD", "refs/heads/main"},
 		{"config", "user.email", "test@example.invalid"},
 		{"config", "user.name", "test"},
 		{"commit", "--allow-empty", "--quiet", "-m", "init"},

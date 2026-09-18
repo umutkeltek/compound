@@ -3,6 +3,7 @@ package release
 import (
 	"archive/tar"
 	"compress/gzip"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -261,6 +262,11 @@ esac
 	run := exec.Command("docker", "run", "--rm", "--platform", "linux/amd64",
 		"-v", repo+":/fixture",
 		"-w", "/fixture",
+		// Write as the host user: the release helper creates linux-dist
+		// inside the mounted TempDir, and root-owned output made t.TempDir
+		// cleanup fail with permission denied on CI runners (run
+		// 35304076022 phase 2). The probe script needs no privileges.
+		"-u", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-e", "VERSION=0.1.0",
 		"-e", "DIST=/fixture/linux-dist",
 		"-e", "BUILD_GO=/fixture/tools/fake-go",
