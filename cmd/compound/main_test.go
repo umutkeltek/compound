@@ -1631,10 +1631,16 @@ func TestSourceIntakeWorkPlanCLICarriesActionCardThroughActionAndClosePlan(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Since the exact-approval handoff landing (2026-09-18), act --plan
+	// re-evaluates policy at act time (store.EvaluateAndRecordAction) instead
+	// of trusting the plan file's pre-made decision: the plan intent still
+	// threads verbatim, but the recorded decision is the fresh evaluation —
+	// the same decision the CLI prints on the summary line.
 	if afterAct.State != "running" ||
 		!stringSliceContains(afterAct.ActionIntentIDs, actionPlan.ActionIntent.ID) ||
-		afterAct.PolicyDecisionID != actionPlan.Decision.ID {
-		t.Fatalf("act --plan did not thread source-intake action intent/decision: %+v", afterAct)
+		!strings.HasPrefix(afterAct.PolicyDecisionID, "pol_") ||
+		!strings.Contains(actOut, "decision "+afterAct.PolicyDecisionID) {
+		t.Fatalf("act --plan did not thread source-intake action intent with a fresh act-time decision: %+v", afterAct)
 	}
 	closePlanJSON := captureStdout(t, func() {
 		cmdWork([]string{"close-plan", report.WorkPlan.WorkID, "--action-plan", actionPlan.PlanPath, "--actor", "codex", "--json"})
@@ -14311,10 +14317,15 @@ func TestProductActionPlanAndReviewCLIExposeActionCardsThroughReviewQueue(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Same contract as the source-intake plan test: since the exact-approval
+	// handoff landing (2026-09-18), the plan's pre-made decision is NOT
+	// threaded verbatim — act --plan re-evaluates at act time and records the
+	// fresh decision it printed; the plan intent ID threads verbatim.
 	if afterAct.State != "running" ||
 		!stringSliceContains(afterAct.ActionIntentIDs, actionPlan.ActionIntent.ID) ||
-		afterAct.PolicyDecisionID != actionPlan.Decision.ID {
-		t.Fatalf("act --plan did not thread action intent/decision: %+v", afterAct)
+		!strings.HasPrefix(afterAct.PolicyDecisionID, "pol_") ||
+		!strings.Contains(actOut, "decision "+afterAct.PolicyDecisionID) {
+		t.Fatalf("act --plan did not thread action intent with a fresh act-time decision: %+v", afterAct)
 	}
 	closePlanText := captureStdout(t, func() {
 		cmdWork([]string{"close-plan", workPlanReport.WorkPlan.WorkID, "--action-plan", actionPlan.PlanPath, "--actor", "codex"})
