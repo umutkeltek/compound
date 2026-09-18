@@ -45,6 +45,13 @@ Options:
   --name NAME              Staged folder name. Default: compound.
   --zip NAME               Zip filename. Default: compound.zip.
   --upload-safe            Produce the smaller public-audit bundle.
+  --delta                  Produce the small delta-review bundle: source tree
+                           without .git, .compound-private/, memory/, and
+                           docs_private/plan/packets/ bulk, so external
+                           reviewers with constrained extraction sandboxes can
+                           open it. Pair it with a git bundle of the candidate
+                           branches plus a COMPOUND_DELTA_PACKET.md (documented
+                           in the audit workflow); those carry the actual delta.
   --include-node-modules   Keep dependency/build artifacts in the local snapshot.
   --include-private        With --upload-safe, keep private docs; harness/runtime directories remain excluded.
   --keep-memory NAME       Keep top-level memory/NAME. Can be repeated.
@@ -95,6 +102,7 @@ desktop_path="${COMPOUND_DESKTOP:-$HOME/Desktop}"
 stage_name="${COMPOUND_STAGE_NAME:-compound}"
 zip_name="${COMPOUND_ZIP_NAME:-compound.zip}"
 upload_safe=0
+delta=0
 include_private=1
 include_node_modules=0
 dry_run=0
@@ -135,6 +143,10 @@ while [[ $# -gt 0 ]]; do
     --upload-safe)
       upload_safe=1
       include_private=0
+      shift
+      ;;
+    --delta)
+      delta=1
       shift
       ;;
     --include-node-modules)
@@ -290,14 +302,23 @@ rsync_args=(
   --exclude "/.hermes/"
   --exclude "/body/"
   --exclude "/graphify-out/"
-  --filter "+ /memory/"
 )
 
-for name in "${keep_memory[@]}"; do
-  [[ -n "$name" && "$name" != "." && "$name" != ".." && "$name" != */* ]] || die "invalid keep-memory name: $name"
-  rsync_args+=(--filter "+ /memory/$name/***")
-done
-rsync_args+=(--filter "- /memory/***")
+if [[ "$delta" -eq 0 ]]; then
+  rsync_args+=(--filter "+ /memory/")
+  for name in ${keep_memory+"${keep_memory[@]}"}; do
+    [[ -n "$name" && "$name" != "." && "$name" != ".." && "$name" != */* ]] || die "invalid keep-memory name: $name"
+    rsync_args+=(--filter "+ /memory/$name/***")
+  done
+  rsync_args+=(--filter "- /memory/***")
+else
+  rsync_args+=(
+    --exclude "/.git/"
+    --exclude "/.compound-private/"
+    --exclude "/memory/"
+    --exclude "/docs_private/plan/packets/"
+  )
+fi
 
 for pattern in ${extra_excludes+"${extra_excludes[@]}"}; do
   rsync_args+=(--exclude "$pattern")
@@ -331,7 +352,7 @@ printf '# compound Desktop snapshot zip\n'
 printf -- '- source: %s\n' "$repo_real"
 printf -- '- stage: %s\n' "$stage_path"
 printf -- '- zip: %s\n' "$zip_path"
-printf -- '- mode: %s\n' "$([[ "$upload_safe" -eq 1 ]] && printf upload-safe || printf full-local)"
+printf -- '- mode: %s\n' "$([[ "$delta" -eq 1 ]] && printf delta || { [[ "$upload_safe" -eq 1 ]] && printf upload-safe || printf full-local; })"
 printf -- '- include_private: %s\n' "$include_private"
 printf -- '- include_node_modules: %s\n' "$include_node_modules"
 printf -- '- keep_memory: %s\n' "${keep_memory[*]:-(none)}"
