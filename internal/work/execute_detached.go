@@ -61,6 +61,22 @@ const (
 // the same filesystem failure that ate the sidecar.
 const DetachedDoorStartedLogLine = "detached door started pid="
 
+// DetachedDoorLaunchMarker is the per-launch boundary the launcher writes
+// to the log BEFORE the started-pid line. A new launcher appends one
+// before each start, so the reconciler scopes its pid recovery to lines
+// after the most recent marker for this workID. Without this, a prior
+// launch's "started pid=" line would be adopted as the new launch's pid
+// when the sidecar write fails (audit 2026-09-16 finding 5).
+const DetachedDoorLaunchMarker = "detached door launch marker work="
+
+// DetachedReservationGrace bounds how long a reserved sidecar can sit
+// without a started pid before the reconciler is allowed to classify
+// the envelope as door_lost. The grace window must outlast a normal
+// launcher start (which holds the door log fd open, spawns the door
+// process, and writes the running sidecar), so a launcher mid-flight
+// is not closed by its own reconcile (audit 2026-09-16 finding 5).
+const DetachedReservationGrace = 5 * time.Minute
+
 // DetachedLaunchRecordError is the typed outcome for a door process that DID
 // start but whose sidecar could not be recorded. A started pid is never a
 // no-side-effect refusal: the caller must treat the door as owning the
@@ -212,12 +228,20 @@ var detachedProcessAlive = func(pid int) bool {
 // detachedDoorStartedPID recovers the (pid, pgid) a launcher logged after a
 // successful start, from the door log. ok=false when the log carries no
 // started line (the start never happened, or the log write failed too).
+//
+// The log is opened with O_APPEND, so a stale "started pid=" line from a
+// prior launch can survive. To keep recovery bound to THIS launch
+// (audit 2026-09-16 finding 5), the launcher writes a per-launch
+// boundary marker BEFORE the started-pid line; this function scopes
+// its read to the most recent marker line and ignores any
+// "started pid=" line that precedes it.
 func detachedDoorStartedPID(logPath string) (int, int, bool) {
 	body, err := os.ReadFile(logPath)
 	if err != nil {
 		return 0, 0, false
 	}
-	for _, line := range strings.Split(string(body), "\n") {
+	scoped := scopeToLastLaunchMarker(string(body))
+	for _, line := range strings.Split(scoped, "\n") {
 		idx := strings.Index(line, DetachedDoorStartedLogLine)
 		if idx < 0 {
 			continue
@@ -239,6 +263,37 @@ func detachedDoorStartedPID(logPath string) (int, int, bool) {
 		return pid, pgid, true
 	}
 	return 0, 0, false
+}
+
+// scopeToLastLaunchMarker returns the slice of logBody starting at the
+// last "detached door launch marker work=<id>" line. Older content
+// (including a prior launch's started pid= line) is excluded so a
+// failed-sidecar reconcile cannot adopt a stale identity (audit
+// 2026-09-16 finding 5). Returns body unchanged when no marker is
+// present, so a log without the new marker still recovers a pid when
+// the very first launch ever appended one.
+func scopeToLastLaunchMarker(logBody string) string {
+	idx := strings.LastIndex(logBody, DetachedDoorLaunchMarker)
+	if idx < 0 {
+		return logBody
+	}
+	if nl := strings.LastIndex(logBody[:idx], "\n"); nl >= 0 {
+		idx = nl + 1
+	}
+	return logBody[idx:]
+}
+
+// reservationInGrace reports whether a reserved sidecar's elapsed time
+// since reservation is still inside the launcher grace window. A
+// missing StartedAt is treated as in-grace so a malformed sidecar
+// never races its own launcher; the operator inspects the sidecar
+// before the next reconcile.
+func reservationInGrace(launch DetachedLaunch, now time.Time) bool {
+	started, err := time.Parse(time.RFC3339, strings.TrimSpace(launch.StartedAt))
+	if err != nil {
+		return true
+	}
+	return now.Sub(started) <= DetachedReservationGrace
 }
 
 // ReconcileDetachedLaunches walks every open sidecar and records what became
@@ -281,13 +336,27 @@ func (s *Store) ReconcileDetachedLaunches(now time.Time) []DetachedReconcile {
 		if loadErr == nil {
 			verdict.State = w.State
 		}
-		if detachedProcessAlive(launch.PID) {
-			verdict.Outcome = DetachedOutcomeRunning
-			verdict.Detail = fmt.Sprintf("door pid %d alive; envelope %s", launch.PID, verdict.State)
-			out = append(out, verdict)
-			continue
-		}
-		launch.ExitObservedAt = now.UTC().Format(time.RFC3339)
+	// Reserved launches stay in their reservation grace window. The
+	// launcher writes the reserved sidecar BEFORE the door process
+	// exists, then opens the log fd, then spawns the door. A reconcile
+	// tick that lands inside this window is racing the launcher;
+	// treating the envelope as lost here would close a live launch's
+	// claim. Only a reservation whose grace has expired (or whose
+	// launcher is provably gone) is fair game for door_lost
+	// (audit 2026-09-16 finding 5).
+	if launch.Outcome == DetachedOutcomeReserved && launch.PID <= 0 && reservationInGrace(launch, now) {
+		verdict.Outcome = DetachedOutcomeReserved
+		verdict.Detail = fmt.Sprintf("reserved sidecar within grace (%s); launcher in flight, not yet classified lost", DetachedReservationGrace)
+		out = append(out, verdict)
+		continue
+	}
+	if detachedProcessAlive(launch.PID) {
+		verdict.Outcome = DetachedOutcomeRunning
+		verdict.Detail = fmt.Sprintf("door pid %d alive; envelope %s", launch.PID, verdict.State)
+		out = append(out, verdict)
+		continue
+	}
+	launch.ExitObservedAt = now.UTC().Format(time.RFC3339)
 		switch {
 		case loadErr != nil:
 			launch.Outcome = DetachedOutcomeDoorLost
