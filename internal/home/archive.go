@@ -3822,7 +3822,7 @@ func randomArchiveSuffix() string {
 }
 
 func requireHealthyHome(homePath string) error {
-	r := Doctor(homePath)
+	r := inspectHomeHealth(homePath)
 	if !r.OK {
 		if !r.HabitatOK {
 			parts := append([]string{}, r.Habitat.UnknownRoots...)
