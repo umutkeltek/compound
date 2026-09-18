@@ -179,6 +179,7 @@ func parseContentPostImage(postImage []byte, now time.Time) (contentPostImage, e
 		return out, fmt.Errorf("transport post-image carries no remote id (looked for %s): the post may have gone out, but nothing proves it", strings.Join(contentPostRemoteIDKeys, ", "))
 	}
 }
+
 // contentPostNegativeStatusValues names the values a transport's status
 // or type field uses to say the post DID NOT happen (audit 2026-09-16
 // finding 4). A platform that returns such a value alongside a remote id

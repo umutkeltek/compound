@@ -336,27 +336,27 @@ func (s *Store) ReconcileDetachedLaunches(now time.Time) []DetachedReconcile {
 		if loadErr == nil {
 			verdict.State = w.State
 		}
-	// Reserved launches stay in their reservation grace window. The
-	// launcher writes the reserved sidecar BEFORE the door process
-	// exists, then opens the log fd, then spawns the door. A reconcile
-	// tick that lands inside this window is racing the launcher;
-	// treating the envelope as lost here would close a live launch's
-	// claim. Only a reservation whose grace has expired (or whose
-	// launcher is provably gone) is fair game for door_lost
-	// (audit 2026-09-16 finding 5).
-	if launch.Outcome == DetachedOutcomeReserved && launch.PID <= 0 && reservationInGrace(launch, now) {
-		verdict.Outcome = DetachedOutcomeReserved
-		verdict.Detail = fmt.Sprintf("reserved sidecar within grace (%s); launcher in flight, not yet classified lost", DetachedReservationGrace)
-		out = append(out, verdict)
-		continue
-	}
-	if detachedProcessAlive(launch.PID) {
-		verdict.Outcome = DetachedOutcomeRunning
-		verdict.Detail = fmt.Sprintf("door pid %d alive; envelope %s", launch.PID, verdict.State)
-		out = append(out, verdict)
-		continue
-	}
-	launch.ExitObservedAt = now.UTC().Format(time.RFC3339)
+		// Reserved launches stay in their reservation grace window. The
+		// launcher writes the reserved sidecar BEFORE the door process
+		// exists, then opens the log fd, then spawns the door. A reconcile
+		// tick that lands inside this window is racing the launcher;
+		// treating the envelope as lost here would close a live launch's
+		// claim. Only a reservation whose grace has expired (or whose
+		// launcher is provably gone) is fair game for door_lost
+		// (audit 2026-09-16 finding 5).
+		if launch.Outcome == DetachedOutcomeReserved && launch.PID <= 0 && reservationInGrace(launch, now) {
+			verdict.Outcome = DetachedOutcomeReserved
+			verdict.Detail = fmt.Sprintf("reserved sidecar within grace (%s); launcher in flight, not yet classified lost", DetachedReservationGrace)
+			out = append(out, verdict)
+			continue
+		}
+		if detachedProcessAlive(launch.PID) {
+			verdict.Outcome = DetachedOutcomeRunning
+			verdict.Detail = fmt.Sprintf("door pid %d alive; envelope %s", launch.PID, verdict.State)
+			out = append(out, verdict)
+			continue
+		}
+		launch.ExitObservedAt = now.UTC().Format(time.RFC3339)
 		switch {
 		case loadErr != nil:
 			launch.Outcome = DetachedOutcomeDoorLost

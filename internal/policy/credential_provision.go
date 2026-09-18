@@ -51,18 +51,18 @@ const credentialProvisionSchemaVersion = "compound.credential_provision_intent.v
 // the shape and either accepts it (returning hold, eligible for exact approval)
 // or refuses it.
 type CredentialProvisionRequest struct {
-	WorkID         string // work_xxx, must match the lease holder's actor
-	Actor          string // operator:<id> — required for exact approval provenance
-	Capability     string // must equal CredentialProvisionCapability
-	Action         string // must equal CredentialProvisionAction
-	TargetKind     string // must equal CredentialProvisionTargetKind
-	TargetPath     string // absolute, normalized .env/.env.* path on the REMOTE host
-	RemoteEndpoint string // user@host:port metadata; values are non-secret
+	WorkID         string   // work_xxx, must match the lease holder's actor
+	Actor          string   // operator:<id> — required for exact approval provenance
+	Capability     string   // must equal CredentialProvisionCapability
+	Action         string   // must equal CredentialProvisionAction
+	TargetKind     string   // must equal CredentialProvisionTargetKind
+	TargetPath     string   // absolute, normalized .env/.env.* path on the REMOTE host
+	RemoteEndpoint string   // user@host:port metadata; values are non-secret
 	Keys           []string // sorted unique exact keys to fill (NOT values)
-	ExpectedRev    string // expected whole-file revision (sha256 hex or empty)
-	Mode           string // exact "fill_empty" only — any other string is refused
-	SchemaRevision string // must equal credentialProvisionSchemaVersion
-	PolicyRevision string // current policy revision the operator read at plan time
+	ExpectedRev    string   // expected whole-file revision (sha256 hex or empty)
+	Mode           string   // exact "fill_empty" only — any other string is refused
+	SchemaRevision string   // must equal credentialProvisionSchemaVersion
+	PolicyRevision string   // current policy revision the operator read at plan time
 }
 
 // ValidateCredentialProvisionRequest returns a content-free, operator-readable

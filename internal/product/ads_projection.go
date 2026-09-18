@@ -77,27 +77,27 @@ type AdsCounts struct {
 // below 1 means ROAS is "matched-population revenue over total spend",
 // not "platform total revenue over total spend" (audit 2026-09-16).
 type AdsTotals struct {
-	Spend            float64            `json:"spend"`
-	Impressions      float64            `json:"impressions"`
-	Clicks           float64            `json:"clicks"`
-	Conversions      float64            `json:"conversions"`
-	Revenue          float64            `json:"revenue"`
-	HasRevenue       bool               `json:"has_revenue"`
+	Spend       float64 `json:"spend"`
+	Impressions float64 `json:"impressions"`
+	Clicks      float64 `json:"clicks"`
+	Conversions float64 `json:"conversions"`
+	Revenue     float64 `json:"revenue"`
+	HasRevenue  bool    `json:"has_revenue"`
 	// RevenueCoverage: rows-with-revenue / rows-total in the window.
 	// 0 when no rows reported revenue; 1 when every row did; a
 	// fractional value is partial coverage and the projection must NOT
 	// render ROAS as a "complete" ratio in that case.
-	RevenueCoverage  float64            `json:"revenue_coverage"`
-	CTR              float64            `json:"ctr"`
-	CPC              float64            `json:"cpc"`
-	CPA              float64            `json:"cpa"`
-	CPM              float64            `json:"cpm"`
-	ROAS             float64            `json:"roas"`
-	Currency         string             `json:"currency,omitempty"`
-	MixedCurrency    bool               `json:"mixed_currency"`
-	SpendByCurrency  map[string]float64 `json:"spend_by_currency,omitempty"`
-	Days             int                `json:"days"`
-	Rows             int                `json:"rows"`
+	RevenueCoverage float64            `json:"revenue_coverage"`
+	CTR             float64            `json:"ctr"`
+	CPC             float64            `json:"cpc"`
+	CPA             float64            `json:"cpa"`
+	CPM             float64            `json:"cpm"`
+	ROAS            float64            `json:"roas"`
+	Currency        string             `json:"currency,omitempty"`
+	MixedCurrency   bool               `json:"mixed_currency"`
+	SpendByCurrency map[string]float64 `json:"spend_by_currency,omitempty"`
+	Days            int                `json:"days"`
+	Rows            int                `json:"rows"`
 }
 
 type AdsDailyPoint struct {
