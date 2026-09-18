@@ -83,9 +83,12 @@ with urllib.request.urlopen(urllib.request.Request(endpoint+"/v1/chat/completion
 		t.Fatal(err)
 	}
 	wrapper := filepath.Join(root, "wrapper")
-	wrapperBody := fmt.Sprintf(`#!/bin/zsh -f
+	wrapperBody := fmt.Sprintf(`#!/bin/sh
+# POSIX sh, not zsh: linux runners and servers have no /bin/zsh, and exec of
+# a script whose shebang interpreter is missing fails with ENOENT (CI run
+# 35306043169: spawn <wrapper> ENOENT from the omp native verifier probe).
 export SB_LAUNCH_CREDENTIAL_ENV='OMP_TEST_KEY'
-[[ $# == 6 && "$1" == -p && "$2" == --no-session && "$3" == --cwd && "$5" == --no-tools ]] || exit 64
+[ "$#" -eq 6 ] && [ "$1" = -p ] && [ "$2" = --no-session ] && [ "$3" = --cwd ] && [ "$5" = --no-tools ] || exit 64
 run="$(mktemp -d "$TMPDIR/sb-omp-run.XXXXXXXX")" || exit 73
 trap '/bin/rm -rf "$run"' EXIT
 /bin/cp %q "$run/models.yml" || exit 74
