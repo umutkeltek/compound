@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"compound/internal/home"
 )
 
 func writeLaneManifest(t *testing.T, body string) string {
@@ -178,6 +180,14 @@ func TestCmdHookInstallLaneFileCheckReportsRosterLossWithoutWriting(t *testing.T
 }
 
 func TestCmdHookInstallLaneFileRejectsHarnessConflict(t *testing.T) {
+	// The subprocess runs the real CLI dispatch, whose governed-command
+	// admission requires a compatible home manifest — a bare $HOME fails
+	// before flag validation (fresh checkouts, CI runners, containers).
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOUND_HOME", homePath)
 	manifestPath := writeLaneManifest(t, minimaxLaneManifest)
 	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
 	cmd := exec.Command(compoundTestBinary(t), "hook", "install",
@@ -193,6 +203,11 @@ func TestCmdHookInstallLaneFileRejectsHarnessConflict(t *testing.T) {
 }
 
 func TestCmdHookInstallLaneFileRejectsUnsupportedHarness(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOUND_HOME", homePath)
 	manifestPath := writeLaneManifest(t, "lane: opencode-oss\nharness: opencode\n")
 	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
 	cmd := exec.Command(compoundTestBinary(t), "hook", "install",

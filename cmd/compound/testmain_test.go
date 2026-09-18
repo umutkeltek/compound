@@ -96,7 +96,11 @@ func compoundTestBinary(t *testing.T) string {
 	t.Helper()
 	compoundBinOnce.Do(func() {
 		exe := filepath.Join(testBinDir, "compound")
-		cmd := exec.Command("go", "build", "-o", exe, "./cmd/compound")
+		// -buildvcs=false: default VCS stamping runs `git status` during the
+		// build, which fails with exit 128 in checkouts the test binary's
+		// build does not own (CI runners, mounted containers — CI run
+		// 35306043169). The stamp plays no role in these functional tests.
+		cmd := exec.Command("go", "build", "-buildvcs=false", "-o", exe, "./cmd/compound")
 		cmd.Dir = testRepoRoot
 		cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
 		out, err := cmd.CombinedOutput()
@@ -125,7 +129,7 @@ func compoundMockEngineTestBinary(t *testing.T) string {
 	compoundMockEngineBinOnce.Do(func() {
 		exe := filepath.Join(testBinDir, "compound-mock-engine")
 		pkgPath := compoundModuleRoot(t) + string(filepath.Separator) + "cmd" + string(filepath.Separator) + "compound-mock-engine"
-		cmd := exec.Command("go", "build", "-o", exe, pkgPath)
+		cmd := exec.Command("go", "build", "-buildvcs=false", "-o", exe, pkgPath)
 		cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
