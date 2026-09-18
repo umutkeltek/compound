@@ -353,7 +353,17 @@ func ImportAdsReport(homePath, path string, opts AdsImportOptions) (AdsImportRep
 		if currency == "" {
 			currency = parsed.currency
 		}
-		id := stableID("adrow_", platform.ID, productID, account, r.CampaignID, r.Date)
+		// Row identity INCLUDES currency. Two distinct currencies for the
+		// same (platform, product, account, campaign, date) are NOT
+		// collapsed into one row — folding them numerically and labelling
+		// the row with the first-seen currency made a 100 USD + 100 EUR
+		// spend total look like a single 200 USD figure (audit
+		// 2026-09-16 finding 3). An empty currency falls back to a
+		// shared sentinel so two un-currency-tagged rows still fold
+		// (preserving the existing split-rows contract), but a
+		// currency-tagged row NEVER folds with an un-currency-tagged
+		// row — the distinction is the data.
+		id := stableID("adrow_", platform.ID, productID, account, r.CampaignID, r.Date, currency)
 		row, exists := byID[id]
 		if !exists {
 			row = &AdRow{

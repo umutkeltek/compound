@@ -189,7 +189,7 @@ func adsMetricValue(t AdsTotals, metric string) (float64, bool) {
 	case "cpa":
 		return t.CPA, t.Conversions > 0
 	case "roas":
-		return t.ROAS, t.HasRevenue && t.Spend > 0
+		return t.ROAS, t.HasRevenue && t.Spend > 0 && t.RevenueCoverage >= 1
 	}
 	return 0, false
 }
