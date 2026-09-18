@@ -36,6 +36,7 @@ func CIPortableGateNames() []string {
 // fails the membership test until the author classifies it.
 func CIConsoleGateNames() []string {
 	return []string{
+		"console-ads-smoke",
 		"console-agents-consistency-smoke",
 		"console-ai-boundary-smoke",
 		"console-ask-triage-smoke",
