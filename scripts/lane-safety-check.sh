@@ -28,9 +28,28 @@ echo ""
 WARNINGS=0
 FATAL=0
 
+# Every scan below is scoped to TRACKED files via `git grep`, never `grep -r .`.
+#
+# A recursive grep from a repo root descends into the agent worktree containers
+# (.claude/worktrees, .agents/worktrees, .hermes/worktrees), each holding a near-identical
+# checkout of this same tree. On a machine carrying 36 worktrees that reported every hit ~36
+# times, which made this check slow and its output unreadable. `git grep` searches the tracked
+# set by construction -- the containers are gitignored, so they are excluded without a
+# hand-maintained skip list to go stale. Same instinct as the leak gate and the retention scan:
+# ask git what is actually in the repo.
+#
+# Not being in a git worktree is FATAL rather than an empty result. A scan that silently finds
+# nothing because it could not look is the silent-green failure this check exists to prevent.
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo -e "${RED}[fail]${NC} not inside a git worktree — cannot scope the scan to tracked files"
+  echo "  → run this from a checkout of the repo (or pass its path as \$1)"
+  exit 1
+fi
+GO_SCOPE=("--" "*.go" ":(exclude)vendor/*" ":(exclude)*_test.go")
+
 # 1. Check for consolidation-sensitive imports
 MERGE_PKGS="attention|executorlens|lensmodulator|negatives|reviewqueue|statussurface|stream|verdictflow|laneselect|finding|intent|narrate|schema|knowledge"
-hits=$(grep -rn "\"compound/internal/\(${MERGE_PKGS}\)\"" --include="*.go" . 2>/dev/null | grep -v vendor | grep -v _test || true)
+hits=$(git grep -n "\"compound/internal/\(${MERGE_PKGS}\)\"" "${GO_SCOPE[@]}" 2>/dev/null || true)
 
 if [[ -n "$hits" ]]; then
   echo -e "${YELLOW}[warn]${NC} Your lane imports packages on the consolidation list:"
@@ -42,7 +61,7 @@ else
 fi
 
 # 2. Check for direct COMPOUND_HOME storage writes
-storage_hits=$(grep -rn "filepath.Join.*\"ledger\"\|filepath.Join.*\"events\"\|filepath.Join.*\"inbox\"" --include="*.go" . 2>/dev/null | grep -v vendor | grep -v _test | grep -v "internal/home\|internal/eventstore\|internal/mem" || true)
+storage_hits=$(git grep -n "filepath.Join.*\"ledger\"\|filepath.Join.*\"events\"\|filepath.Join.*\"inbox\"" "${GO_SCOPE[@]}" 2>/dev/null | grep -v "internal/home\|internal/eventstore\|internal/mem" || true)
 
 if [[ -n "$storage_hits" ]]; then
   echo -e "${YELLOW}[warn]${NC} Your lane writes to storage directories that will get a backend switch:"
