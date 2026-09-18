@@ -1,0 +1,121 @@
+name: Proof
+
+# Fresh-clone-portable subset (proof-check --ci) plus the console/TS subset
+# (proof-check --ci-console) for every push and pull_request. The 5 gates
+# that genuinely need operator state (launchd plist, populated COMPOUND_HOME,
+# installed profiles, vendor-only redact CLI, codex harness) are NOT run
+# here; they are explicitly listed in the hostBoundGates allowlist at
+# internal/work/proof_ci_membership.go with a one-line reason each, and the
+# CI subset membership test pins the rule. Run a fresh checkout, no overlays
+# copied, so this is what a downstream re-runner will see.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: proof-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  proof-ci:
+    name: proof-check --ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run canonical CI subset (proof-check --ci)
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset HTTPS_PROXY HTTP_PROXY ALL_PROXY || true
+          tool_root="$RUNNER_TEMP/proof-tools"
+          mkdir -p "$tool_root"
+          go build -o "$tool_root/compound" ./cmd/compound
+          report="$RUNNER_TEMP/ci.json"
+          "$tool_root/compound" proof-check --ci --json --base origin/main --out "$report"
+          # Surface the verdict line in the job log even on green so a fast
+          # triage reader does not have to open the artifact to know whether
+          # the battery ended ok or FAILED.
+          tail -n 1 "$report" || true
+          # Belt-and-braces: refuse to mark the job green on anything other
+          # than the proof-check verdict line. A `--json --out` run exits 1 on
+          # failed gates and 0 on ok, but exit codes from CI runners get
+          # rounded; the FINAL 'battery:' line is the load-bearing signal.
+          if ! tail -n 1 "$report" | grep -q '^battery: ok '; then
+            echo "::error::compound proof-check --ci did not end with 'battery: ok '"
+            tail -n 5 "$report" >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: proof-ci-report
+          path: ${{ runner.temp }}/ci.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  proof-ci-console:
+    name: proof-check --ci-console
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: oven-sh/setup-bun@532d7b940631d7f01c0e8a1158d0ed04d2e5d000
+        with:
+          bun-version: latest
+
+      - name: Run console subset (proof-check --ci-console)
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset HTTPS_PROXY HTTP_PROXY ALL_PROXY || true
+          # Workaround for ciConsoleSteps' uncovered --ci-console: install
+          # console/node_modules BEFORE running, so the smoke scripts can
+          # resolve extensionless @/ imports under bun. We do not run the
+          # full `bun install` because the console gate skips anything whose
+          # required executable is missing; populating node_modules is the
+          # minimum work for a tsc-shaped subset to even compile.
+          (cd console && bun install --frozen-lockfile)
+          tool_root="$RUNNER_TEMP/proof-tools"
+          mkdir -p "$tool_root"
+          go build -o "$tool_root/compound" ./cmd/compound
+          report="$RUNNER_TEMP/ci-console.json"
+          "$tool_root/compound" proof-check --ci-console --json --base origin/main --out "$report"
+          tail -n 1 "$report" || true
+          if ! tail -n 1 "$report" | grep -q '^battery: ok '; then
+            echo "::error::compound proof-check --ci-console did not end with 'battery: ok '"
+            tail -n 5 "$report" >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: proof-ci-console-report
+          path: ${{ runner.temp }}/ci-console.json
+          if-no-files-found: warn
+          retention-days: 14
