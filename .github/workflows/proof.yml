@@ -46,18 +46,21 @@ jobs:
           mkdir -p "$tool_root"
           go build -o "$tool_root/compound" ./cmd/compound
           report="$RUNNER_TEMP/ci.json"
-          "$tool_root/compound" proof-check --ci --json --base origin/main --out "$report"
-          # Surface the verdict line in the job log even on green so a fast
-          # triage reader does not have to open the artifact to know whether
-          # the battery ended ok or FAILED.
-          tail -n 1 "$report" || true
+          stdout_log="$RUNNER_TEMP/ci.stdout"
+          # The battery prints its FINAL verdict line to stdout (the --out
+          # report is pure JSON by design — a background notification tail
+          # carries the stdout verdict), so capture stdout to check it below.
+          set +e
+          "$tool_root/compound" proof-check --ci --json --base origin/main --out "$report" | tee "$stdout_log"
+          rc=${PIPESTATUS[0]}
+          set -e
           # Belt-and-braces: refuse to mark the job green on anything other
           # than the proof-check verdict line. A `--json --out` run exits 1 on
           # failed gates and 0 on ok, but exit codes from CI runners get
           # rounded; the FINAL 'battery:' line is the load-bearing signal.
-          if ! tail -n 1 "$report" | grep -q '^battery: ok '; then
-            echo "::error::compound proof-check --ci did not end with 'battery: ok '"
-            tail -n 5 "$report" >&2
+          if [ "$rc" -ne 0 ] || ! tail -n 1 "$stdout_log" | grep -q '^battery: ok '; then
+            echo "::error::compound proof-check --ci did not end with 'battery: ok ' (exit $rc)"
+            tail -n 5 "$stdout_log" >&2
             exit 1
           fi
 
