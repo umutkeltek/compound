@@ -69,9 +69,15 @@ type AdsCounts struct {
 // ratio, before rendering. Currency is the single currency of the rows,
 // "MIXED" when they disagree (spend is then NOT a meaningful sum and
 // SpendByCurrency is the honest figure), or "" when no row carried one.
+// Spend that named NO currency next to spend that named one also reads as
+// "MIXED": borrowing the named code for the unnamed part would relabel money
+// nobody labelled, so the unnamed part gets its own SpendByCurrency bucket
+// and a gap instead (review 2026-09-19).
 //
 // RevenueCoverage is the fraction of rows in the window that actually
-// reported a revenue value (0 when none did, 1 when every row did). The
+// reported a revenue value (0 when none did, 1 when every row did). A row
+// folded from several report rows counts the fraction of those that carried
+// revenue, so a partially-covered group cannot read as complete. The
 // HasRevenue flag is kept for backwards compatibility; a partial
 // coverage MUST NOT be reported as a complete ROAS — RevenueCoverage
 // below 1 means ROAS is "matched-population revenue over total spend",
@@ -83,8 +89,9 @@ type AdsTotals struct {
 	Conversions float64 `json:"conversions"`
 	Revenue     float64 `json:"revenue"`
 	HasRevenue  bool    `json:"has_revenue"`
-	// RevenueCoverage: rows-with-revenue / rows-total in the window.
-	// 0 when no rows reported revenue; 1 when every row did; a
+	// RevenueCoverage: revenue-reporting contributions / contributions in
+	// the window, expressed per row so a row counts at most 1.
+	// 0 when no rows reported revenue; 1 when every contribution did; a
 	// fractional value is partial coverage and the projection must NOT
 	// render ROAS as a "complete" ratio in that case.
 	RevenueCoverage float64            `json:"revenue_coverage"`
@@ -96,8 +103,14 @@ type AdsTotals struct {
 	Currency        string             `json:"currency,omitempty"`
 	MixedCurrency   bool               `json:"mixed_currency"`
 	SpendByCurrency map[string]float64 `json:"spend_by_currency,omitempty"`
-	Days            int                `json:"days"`
-	Rows            int                `json:"rows"`
+	// SpendUnknownCurrency is how much of Spend came from rows whose report
+	// never named a currency, and RowsUnknownCurrency how many such rows
+	// there were. Additive and omitempty; they are what makes the
+	// unresolved part of a total visible instead of silently absorbed.
+	SpendUnknownCurrency float64 `json:"spend_unknown_currency,omitempty"`
+	RowsUnknownCurrency  int     `json:"rows_unknown_currency,omitempty"`
+	Days                 int     `json:"days"`
+	Rows                 int     `json:"rows"`
 }
 
 type AdsDailyPoint struct {
@@ -487,9 +500,22 @@ func LoadAdsProjection(homePath string, opts AdsProjectionOptions) (AdsProjectio
 		proj.Imports = append(proj.Imports, filteredImports[i])
 	}
 
-	// Cross-cutting gaps.
-	if proj.Totals.MixedCurrency {
+	// Cross-cutting gaps. A window can be un-summable for two different
+	// reasons, and they need two different remedies: more than one named
+	// currency, or money that named none at all. Naming only the first
+	// would send the operator looking for a second currency that is not
+	// there (review 2026-09-19).
+	namedCurrencies := 0
+	for code := range proj.Totals.SpendByCurrency {
+		if code != adsCurrencyUnknown {
+			namedCurrencies++
+		}
+	}
+	if proj.Totals.MixedCurrency && namedCurrencies > 1 {
 		proj.Gaps = append(proj.Gaps, AdsGap{Kind: "mixed_currency", Text: "Rows in this window carry more than one currency; the spend total is not summed across them. Re-import with --currency or read spend_by_currency."})
+	}
+	if proj.Totals.RowsUnknownCurrency > 0 {
+		proj.Gaps = append(proj.Gaps, AdsGap{Kind: "unknown_currency", Text: fmt.Sprintf("%d row(s) worth %.2f of spend name no currency, so the total carries no currency label. Re-import those reports with --currency.", proj.Totals.RowsUnknownCurrency, proj.Totals.SpendUnknownCurrency)})
 	}
 	if len(windowRows) > 0 && !proj.Totals.HasRevenue {
 		proj.Gaps = append(proj.Gaps, AdsGap{Kind: "no_revenue", Text: "No imported report carries a conversion value, so ROAS is undefined. Export with a revenue/conversion-value column when the platform has one."})
@@ -516,35 +542,54 @@ func adsTotals(rows []AdRow) AdsTotals {
 	}
 	currencies := map[string]float64{}
 	days := map[string]struct{}{}
-	rowsWithRevenue := 0
+	covered := 0.0
 	for _, r := range rows {
 		t.Spend += r.Spend
 		t.Impressions += r.Impressions
 		t.Clicks += r.Clicks
 		t.Conversions += r.Conversions
-		if r.HasRevenue {
+		// Coverage is per contribution, not per stored row: a row folded
+		// from "spend 100 revenue 200" and "spend 900 revenue unknown" is
+		// half covered, and counting it as one covered row would make an
+		// unmeasured 900 of spend read as revenue-complete.
+		contributions, withRevenue := adRowContributions(r)
+		if withRevenue > 0 {
 			t.HasRevenue = true
 			t.Revenue += r.Revenue
-			rowsWithRevenue++
 		}
-		if r.Currency != "" {
+		covered += float64(withRevenue) / float64(contributions)
+		switch {
+		case r.Currency != "":
 			currencies[r.Currency] += r.Spend
+		case r.Spend != 0 || r.Revenue != 0:
+			// Money whose report never named a currency. It is real spend,
+			// so it stays in the total, but it cannot join a named bucket.
+			t.SpendUnknownCurrency += r.Spend
+			t.RowsUnknownCurrency++
 		}
 		days[r.Date] = struct{}{}
 	}
 	t.Days = len(days)
-	t.RevenueCoverage = float64(rowsWithRevenue) / float64(len(rows))
-	switch len(currencies) {
-	case 0:
+	t.RevenueCoverage = covered / float64(len(rows))
+	switch {
+	case len(currencies) == 0:
+		// Nothing named a currency: the total stays unlabelled rather than
+		// borrowing a code it was never given.
 		t.Currency = ""
-	case 1:
+	case len(currencies) == 1 && t.RowsUnknownCurrency == 0:
 		for c := range currencies {
 			t.Currency = c
 		}
 	default:
+		// Either several named currencies, or a named currency standing
+		// next to money that named none. Both mean Spend is not one
+		// currency's number, so it is not labelled with one.
 		t.Currency = adsCurrencyMixed
 		t.MixedCurrency = true
 		t.SpendByCurrency = currencies
+		if t.RowsUnknownCurrency > 0 {
+			t.SpendByCurrency[adsCurrencyUnknown] = t.SpendUnknownCurrency
+		}
 	}
 	if t.Impressions > 0 {
 		t.CTR = t.Clicks / t.Impressions
@@ -556,13 +601,15 @@ func adsTotals(rows []AdRow) AdsTotals {
 	if t.Conversions > 0 {
 		t.CPA = t.Spend / t.Conversions
 	}
-	// ROAS is the platform-total ratio only when EVERY contributing row
-	// in the window reported revenue. Partial coverage (some rows
-	// empty) means we have matched-population revenue over total spend,
-	// which is NOT the same number — leave ROAS at 0 and let the
-	// projection surface RevenueCoverage so the consumer can decide
-	// (audit 2026-09-16 finding 3).
-	if t.HasRevenue && t.Spend > 0 && t.RevenueCoverage >= 1 {
+	// ROAS is the platform-total ratio only when EVERY contribution in the
+	// window reported revenue AND the window is one currency. Partial
+	// coverage (some contributions empty) means we have matched-population
+	// revenue over total spend, and a mixed or partly-unlabelled window
+	// means the divisor is not a single currency's number — neither is
+	// the ratio it looks like. Leave ROAS at 0 and let the projection
+	// surface RevenueCoverage and the currency buckets so the consumer can
+	// decide (audit 2026-09-16 finding 3; review 2026-09-19).
+	if t.HasRevenue && t.Spend > 0 && t.RevenueCoverage >= 1 && !t.MixedCurrency {
 		t.ROAS = t.Revenue / t.Spend
 	}
 	return t

@@ -42,6 +42,11 @@ const (
 	// adsCurrencyMixed marks totals that would otherwise sum unlike
 	// currencies. Summing them would be a number that is not evidence.
 	adsCurrencyMixed = "MIXED"
+	// adsCurrencyUnknown is the bucket for spend whose report never named a
+	// currency. It is not an ISO code and cannot collide with one. Without
+	// an explicit bucket, unnamed spend silently borrowed whichever code the
+	// other rows in the window carried (review 2026-09-19).
+	adsCurrencyUnknown = "UNKNOWN"
 )
 
 // AdPlatform is one entry of the platform registry. The registry is the
@@ -239,9 +244,14 @@ func LookupAdPlatform(id string) (AdPlatform, bool) {
 }
 
 // AdRow is one campaign × day observation, as reported by the platform.
-// Identity is (platform, product, account, campaign_id, date); several report
-// rows that share that identity (an export split by device or country) are
-// summed at import so the ledger row is the campaign's day.
+// Identity is (platform, product, account, campaign_id, date, currency);
+// several report rows that share that identity (an export split by device or
+// country) are summed at import so the ledger row is the campaign's day.
+//
+// Summing loses which contributions carried what, so the row also keeps the
+// counts: a row folded from two contributions where only one reported revenue
+// is NOT revenue-complete, and only the counts can still say so once the
+// numbers are summed (review 2026-09-19).
 type AdRow struct {
 	SchemaVersion string  `json:"schema_version"`
 	ID            string  `json:"id"`
@@ -258,9 +268,15 @@ type AdRow struct {
 	Conversions   float64 `json:"conversions"`
 	Revenue       float64 `json:"revenue"`
 	HasRevenue    bool    `json:"has_revenue"`
-	SourceRef     string  `json:"source_ref"`
-	ImportID      string  `json:"import_id"`
-	ImportedAt    string  `json:"imported_at"`
+	// Contributions is how many report rows were summed into this row, and
+	// RevenueContributions how many of those reported revenue. Additive and
+	// omitempty: a row written before the counts existed reads as one
+	// contribution, so an older ledger keeps its current meaning.
+	Contributions        int    `json:"contributions,omitempty"`
+	RevenueContributions int    `json:"revenue_contributions,omitempty"`
+	SourceRef            string `json:"source_ref"`
+	ImportID             string `json:"import_id"`
+	ImportedAt           string `json:"imported_at"`
 }
 
 // AdsImport is the receipt of one report import. It is recorded even when
@@ -388,8 +404,10 @@ func ImportAdsReport(homePath, path string, opts AdsImportOptions) (AdsImportRep
 		row.Clicks += r.Clicks
 		row.Conversions += r.Conversions
 		row.Revenue += r.Revenue
+		row.Contributions++
 		if r.HasRevenue {
 			row.HasRevenue = true
+			row.RevenueContributions++
 		}
 		if row.CampaignName == "" {
 			row.CampaignName = r.CampaignName
@@ -400,7 +418,7 @@ func ImportAdsReport(homePath, path string, opts AdsImportOptions) (AdsImportRep
 	if err != nil {
 		return AdsImportReport{}, err
 	}
-	latest := latestAdRowsByID(existing)
+	latest := latestAdRowsByIdentity(existing)
 
 	imp := AdsImport{
 		SchemaVersion:  AdsImportSchemaVersion,
@@ -418,12 +436,15 @@ func ImportAdsReport(homePath, path string, opts AdsImportOptions) (AdsImportRep
 	}
 	campaigns := map[string]struct{}{}
 	currencies := map[string]struct{}{}
+	unnamedCurrency := false
 	toAppend := make([]AdRow, 0, len(order))
 	for _, id := range order {
 		row := byID[id]
 		campaigns[row.CampaignID] = struct{}{}
 		if row.Currency != "" {
 			currencies[row.Currency] = struct{}{}
+		} else if row.Spend != 0 || row.Revenue != 0 {
+			unnamedCurrency = true
 		}
 		if imp.DateStart == "" || row.Date < imp.DateStart {
 			imp.DateStart = row.Date
@@ -431,7 +452,11 @@ func ImportAdsReport(homePath, path string, opts AdsImportOptions) (AdsImportRep
 		if imp.DateEnd == "" || row.Date > imp.DateEnd {
 			imp.DateEnd = row.Date
 		}
-		prev, seen := latest[id]
+		// Look the previous observation up by its natural identity, not by
+		// the stored id: a ledger written before the currency joined the
+		// identity holds the same observation under an older id, and
+		// keying on the id would file the re-import as a second live row.
+		prev, seen := latest[adRowIdentity(*row)]
 		switch {
 		case !seen:
 			imp.RowsNew++
@@ -445,6 +470,11 @@ func ImportAdsReport(homePath, path string, opts AdsImportOptions) (AdsImportRep
 	}
 	imp.CampaignsSeen = len(campaigns)
 	imp.Currency = singleOrMixedCurrency(currencies)
+	if unnamedCurrency && imp.Currency != "" {
+		// Part of the money named a currency and part named none, so the
+		// receipt cannot claim the named one for the whole report.
+		imp.Currency = adsCurrencyMixed
+	}
 
 	ledger := adsRowsLog(homePath)
 	if err := os.MkdirAll(filepath.Dir(ledger), 0o755); err != nil {
@@ -482,6 +512,11 @@ func ImportAdsReport(homePath, path string, opts AdsImportOptions) (AdsImportRep
 }
 
 func sameAdRowValues(a, b AdRow) bool {
+	// The contribution counts are compared through the same fallback the
+	// readers use, so an older row without them still reads as unchanged
+	// against a re-import of the same single-contribution observation.
+	aTotal, aRevenue := adRowContributions(a)
+	bTotal, bRevenue := adRowContributions(b)
 	return a.CampaignName == b.CampaignName &&
 		a.Currency == b.Currency &&
 		a.Spend == b.Spend &&
@@ -489,7 +524,39 @@ func sameAdRowValues(a, b AdRow) bool {
 		a.Clicks == b.Clicks &&
 		a.Conversions == b.Conversions &&
 		a.Revenue == b.Revenue &&
-		a.HasRevenue == b.HasRevenue
+		a.HasRevenue == b.HasRevenue &&
+		aTotal == bTotal &&
+		aRevenue == bRevenue
+}
+
+// adRowIdentity is the observation a row records: the same tuple the row id
+// hashes. Readers fold on it rather than on the stored id, so a ledger
+// written before the currency became part of the identity upgrades in place
+// — a re-import supersedes the old-id generation instead of standing beside
+// it and doubling the spend (review 2026-09-19).
+func adRowIdentity(r AdRow) string {
+	return strings.Join([]string{r.Platform, r.ProductID, r.Account, r.CampaignID, r.Date, r.Currency}, "\x00")
+}
+
+// adRowContributions reports how many report rows were summed into this row
+// and how many of them carried revenue. A row stored before the counts
+// existed reads as a single contribution whose revenue completeness is its
+// HasRevenue flag — exactly the meaning it had then.
+func adRowContributions(r AdRow) (total, withRevenue int) {
+	if r.Contributions <= 0 {
+		if r.HasRevenue {
+			return 1, 1
+		}
+		return 1, 0
+	}
+	withRevenue = r.RevenueContributions
+	if withRevenue > r.Contributions {
+		withRevenue = r.Contributions
+	}
+	if withRevenue < 0 {
+		withRevenue = 0
+	}
+	return r.Contributions, withRevenue
 }
 
 func singleOrMixedCurrency(set map[string]struct{}) string {
@@ -542,21 +609,24 @@ func LoadAdsImports(homePath string) ([]AdsImport, error) {
 	return out, err
 }
 
-// latestAdRowsByID folds history to the newest observation per row identity.
-// Append order is the tie-break, so a later import always wins.
-func latestAdRowsByID(rows []AdRow) map[string]AdRow {
+// latestAdRowsByIdentity folds history to the newest observation per row
+// identity. Append order is the tie-break, so a later import always wins.
+// Keying on the identity rather than the stored id is what makes the ledger
+// upgradeable: two generations of the same observation, written under
+// different id schemes, collapse to the newer one instead of both counting.
+func latestAdRowsByIdentity(rows []AdRow) map[string]AdRow {
 	out := make(map[string]AdRow, len(rows))
 	for _, r := range rows {
-		out[r.ID] = r
+		out[adRowIdentity(r)] = r
 	}
 	return out
 }
 
 // LatestAdRows returns the folded ledger in a deterministic order.
 func LatestAdRows(rows []AdRow) []AdRow {
-	byID := latestAdRowsByID(rows)
-	out := make([]AdRow, 0, len(byID))
-	for _, r := range byID {
+	byIdentity := latestAdRowsByIdentity(rows)
+	out := make([]AdRow, 0, len(byIdentity))
+	for _, r := range byIdentity {
 		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool {
