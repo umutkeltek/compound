@@ -283,8 +283,9 @@ var PinnedSilentAcceptors = []string{
 	"mcp-transport",
 	// route evidence-authority reports and swallows any unrecognized flag.
 	"route evidence-authority",
-	// schedule doctor reports without validating argv.
-	"schedule doctor",
+	// "schedule doctor" no longer pinned: it validates argv through
+	// validateScheduleFlags on every platform (darwin and the not-darwin
+	// stub), so the dialect cannot split across platforms.
 	// "store migrate" no longer pinned: it validates its own flags before migration.
 }
 

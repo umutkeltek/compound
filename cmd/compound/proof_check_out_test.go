@@ -59,11 +59,23 @@ func TestProofCheckGoRunInvocationsUseStableGateIdentity(t *testing.T) {
 	}
 	run := func() proofCheckReport {
 		t.Helper()
-		cmd := exec.Command(
+		// Isolated home: `go run` executes the real CLI dispatch, whose
+		// governed-command admission requires a compatible home manifest —
+		// bare CI/container $HOME failed before the report was produced.
+		// The 90s budget covers go run's compile on cold 2-core runners
+		// (the previous 15s deadline only held on warm dev machines).
+		homePath := t.TempDir()
+		if err := home.Init(homePath, "test", time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx,
 			"go", "run", "./cmd/compound",
 			"proof-check", "--dry-run", "--json", "--repo", repoPath,
 		)
 		cmd.Dir = repoPath
+		cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
 		body, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("go run proof-check: %v", err)

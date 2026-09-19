@@ -499,18 +499,6 @@ func signalConsoleProcessGroup(pgid int, sig syscall.Signal) error {
 	return err
 }
 
-func consoleProcessGroupAlive(pgid int) (bool, error) {
-	err := syscall.Kill(-pgid, 0)
-	switch err {
-	case nil, syscall.EPERM:
-		return true, nil
-	case syscall.ESRCH:
-		return false, nil
-	default:
-		return false, err
-	}
-}
-
 func acquireConsoleLifecycleLock(consoleDir string) (*os.File, error) {
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {

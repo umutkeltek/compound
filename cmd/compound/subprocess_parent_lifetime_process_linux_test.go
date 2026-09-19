@@ -3,10 +3,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -22,7 +24,11 @@ func readTestProcessSnapshots() ([]testProcessSnapshot, error) {
 			continue
 		}
 		body, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
-		if os.IsNotExist(err) {
+		// A process can exit between the readdir and this read: linux then
+		// yields ENOENT (gone before open) or ESRCH (gone after open, read
+		// fails) — both mean the pid vanished mid-scan and must be skipped
+		// like ps does, not fail the whole snapshot (run 35376991764).
+		if os.IsNotExist(err) || errors.Is(err, syscall.ESRCH) {
 			continue
 		}
 		if err != nil {

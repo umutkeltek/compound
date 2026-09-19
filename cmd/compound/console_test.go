@@ -784,6 +784,9 @@ func TestConsoleNextBuildDirectoriesAreLifecycleIsolated(t *testing.T) {
 		{kind: "production", want: ".next/production"},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
+			if _, err := exec.LookPath("bun"); err != nil {
+				t.Skip("bun is required to load the console next config (ci-console and host-bound runs cover bun-present paths)")
+			}
 			cmd := exec.Command("bun", "-e", `import config from "./next.config.ts"; console.log(config.distDir ?? "")`)
 			cmd.Dir = consoleDir
 			cmd.Env = append(os.Environ(), "COMPOUND_CONSOLE_BUILD_KIND="+tc.kind)
