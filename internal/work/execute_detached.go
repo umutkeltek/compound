@@ -1,6 +1,7 @@
 package work
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,11 +64,34 @@ const DetachedDoorStartedLogLine = "detached door started pid="
 
 // DetachedDoorLaunchMarker is the per-launch boundary the launcher writes
 // to the log BEFORE the started-pid line. A new launcher appends one
-// before each start, so the reconciler scopes its pid recovery to lines
-// after the most recent marker for this workID. Without this, a prior
-// launch's "started pid=" line would be adopted as the new launch's pid
-// when the sidecar write fails (audit 2026-09-16 finding 5).
+// before each start. It was the whole binding in the 2026-09-16 repair —
+// recovery scoped its pid read to lines after the most recent marker — and
+// it is still the binding for a sidecar written before launch ids existed.
+// Marker order alone cannot say WHICH launch a pid belongs to, so a marker
+// now also carries DetachedDoorLaunchIDField.
 const DetachedDoorLaunchMarker = "detached door launch marker work="
+
+// DetachedDoorLaunchIDField is the log field that both the launch marker and
+// the started-pid line carry: the ONE identity minted when the reservation is
+// written. The marker alone only ever said "some launch of this workID
+// started here", which is the wrong launch whenever a reconcile lands between
+// a new reservation and its launcher's first log line — so recovery binds a
+// pid to this id instead (audit 2026-09-19).
+const DetachedDoorLaunchIDField = "launch="
+
+// NewDetachedLaunchID mints the identity one detached launch carries from
+// reservation through start to recovery. It must be unique per launch and a
+// single whitespace-free log field: it is read back out of a log line by
+// position-independent field match.
+func NewDetachedLaunchID(now time.Time) string {
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		// A clock-only id still separates two launches of the same work:
+		// the reservation is written before the start, never concurrently.
+		return fmt.Sprintf("dl_%d", now.UTC().UnixNano())
+	}
+	return fmt.Sprintf("dl_%d_%x", now.UTC().UnixNano(), suffix[:])
+}
 
 // DetachedReservationGrace bounds how long a reserved sidecar can sit
 // without a started pid before the reconciler is allowed to classify
@@ -98,8 +122,13 @@ func (e *DetachedLaunchRecordError) Unwrap() error { return e.Err }
 // launch. It is the runtime identity a human needs to observe or cancel the
 // run without the heartbeat: pid, process group, log path, exact argv.
 type DetachedLaunch struct {
-	SchemaVersion string   `json:"schema_version"`
-	WorkID        string   `json:"work_id"`
+	SchemaVersion string `json:"schema_version"`
+	WorkID        string `json:"work_id"`
+	// LaunchID is the identity minted with the reservation and stamped into
+	// the door log, so a start, a recovery and the launcher's own start guard
+	// all name the same launch. Empty on sidecars written before 2026-09-19:
+	// those keep marker-scoped recovery.
+	LaunchID      string   `json:"launch_id,omitempty"`
 	Lane          string   `json:"lane"`
 	Actor         string   `json:"actor"`
 	PID           int      `json:"pid"`
@@ -230,17 +259,28 @@ var detachedProcessAlive = func(pid int) bool {
 // started line (the start never happened, or the log write failed too).
 //
 // The log is opened with O_APPEND, so a stale "started pid=" line from a
-// prior launch can survive. To keep recovery bound to THIS launch
-// (audit 2026-09-16 finding 5), the launcher writes a per-launch
-// boundary marker BEFORE the started-pid line; this function scopes
-// its read to the most recent marker line and ignores any
-// "started pid=" line that precedes it.
-func detachedDoorStartedPID(logPath string) (int, int, bool) {
+// prior launch can survive. launchID is the reservation's own identity and is
+// the exact binding (audit 2026-09-19): when it is set, only a started-pid
+// line stamped with that same id may be adopted, so a previous launch's pid
+// cannot land in a new reservation no matter how the two interleave — and a
+// reservation whose launcher has not logged anything yet simply recovers
+// nothing and stays inside its grace window.
+//
+// An empty launchID is a sidecar written before the id existed. Those keep the
+// 2026-09-16 behaviour: scope to the most recent per-launch boundary marker
+// and ignore any "started pid=" line that precedes it. The log may by then be
+// written by a newer launcher, so the id on those lines is not required to
+// match anything — the marker is still the only boundary such a sidecar has.
+func detachedDoorStartedPID(logPath, launchID string) (int, int, bool) {
 	body, err := os.ReadFile(logPath)
 	if err != nil {
 		return 0, 0, false
 	}
-	scoped := scopeToLastLaunchMarker(string(body))
+	launchID = strings.TrimSpace(launchID)
+	scoped := string(body)
+	if launchID == "" {
+		scoped = scopeToLastLaunchMarker(scoped)
+	}
 	for _, line := range strings.Split(scoped, "\n") {
 		idx := strings.Index(line, DetachedDoorStartedLogLine)
 		if idx < 0 {
@@ -249,6 +289,9 @@ func detachedDoorStartedPID(logPath string) (int, int, bool) {
 		fields := strings.Fields(line[idx+len(DetachedDoorStartedLogLine):])
 		if len(fields) == 0 {
 			continue
+		}
+		if launchID != "" && detachedLogLaunchID(fields) != launchID {
+			continue // another launch's pid; this reservation does not own it
 		}
 		pid, perr := strconv.Atoi(fields[0])
 		if perr != nil || pid <= 0 {
@@ -263,6 +306,41 @@ func detachedDoorStartedPID(logPath string) (int, int, bool) {
 		return pid, pgid, true
 	}
 	return 0, 0, false
+}
+
+// detachedLogLaunchID reads the launch= field off the tail of a door-log line.
+// The field is position-independent so the line's older fields keep their
+// meaning; it is absent on lines written before 2026-09-19, which read as "no
+// identity" and therefore match no reservation that has one.
+func detachedLogLaunchID(fields []string) string {
+	for _, f := range fields {
+		if strings.HasPrefix(f, DetachedDoorLaunchIDField) {
+			return strings.TrimPrefix(f, DetachedDoorLaunchIDField)
+		}
+	}
+	return ""
+}
+
+// AssertDetachedReservationHeld reports whether launchID still holds workID's
+// reservation on disk. The launcher calls this immediately before it starts
+// the child, because elapsed time cannot prove a delayed launcher stopped: in
+// the gap between the reserved write and the start, a reconcile can classify
+// the reservation lost (and close the envelope) or a newer launcher can take
+// the workID. Starting a child after either is a door nobody owns, so the
+// sidecar — not the clock — decides. A reservation with no id (written before
+// 2026-09-19) is held as long as it still reads reserved.
+func AssertDetachedReservationHeld(home, workID, launchID string) error {
+	held, err := ReadDetachedLaunch(home, workID)
+	if err != nil {
+		return fmt.Errorf("detached launch: the reservation for %s is gone or unreadable: %w", workID, err)
+	}
+	if held.Outcome != DetachedOutcomeReserved {
+		return fmt.Errorf("detached launch: the reservation for %s is now %q — recovery or another launcher owns it", workID, held.Outcome)
+	}
+	if launchID != "" && held.LaunchID != launchID {
+		return fmt.Errorf("detached launch: the reservation for %s now belongs to launch %q, not %q", workID, held.LaunchID, launchID)
+	}
+	return nil
 }
 
 // scopeToLastLaunchMarker returns the slice of logBody starting at the
@@ -322,7 +400,7 @@ func (s *Store) ReconcileDetachedLaunches(now time.Time) []DetachedReconcile {
 		}
 		verdict := DetachedReconcile{WorkID: launch.WorkID, PID: launch.PID}
 		if launch.Outcome == DetachedOutcomeReserved && launch.PID <= 0 {
-			pid, pgid, ok := detachedDoorStartedPID(launch.LogPath)
+			pid, pgid, ok := detachedDoorStartedPID(launch.LogPath, launch.LaunchID)
 			if ok {
 				launch.PID, launch.PGID = pid, pgid
 				launch.Outcome = DetachedOutcomeRunning

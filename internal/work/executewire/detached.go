@@ -74,14 +74,19 @@ var writeDetachedLaunch = work.WriteDetachedLaunch
 // LaunchDetachedViaDoor spawns the detached door for an already-claimed
 // envelope and records the sidecar. The record protocol is start/record-safe:
 //
-//  1. a RESERVED sidecar (no pid) is written BEFORE the start — a failure
-//     there is a true not-started refusal (no child exists, plain error);
-//  2. the guarded start; a start failure removes the reserved sidecar
+//  1. a RESERVED sidecar (no pid) carrying a freshly minted launch id is
+//     written BEFORE the start — a failure there is a true not-started
+//     refusal (no child exists, plain error);
+//  2. the START GUARD re-reads that sidecar; unless it still holds THIS
+//     launch id in `reserved`, nothing is started (the reservation was
+//     recovered or taken while this launcher was delayed);
+//  3. the guarded start; a start failure removes the reserved sidecar
 //     best-effort (nothing started);
-//  3. after a successful start the pid line is appended to the door log
+//  4. after a successful start the pid line is appended to the door log
 //     (the log fd predates the start, so it usually survives the same
-//     filesystem failure that ate the sidecar);
-//  4. the sidecar is updated to running+pid. A failure there (after one
+//     filesystem failure that ate the sidecar); it carries the launch id, so
+//     recovery adopts the pid only into the reservation that started it;
+//  5. the sidecar is updated to running+pid. A failure there (after one
 //     retry) returns a *work.DetachedLaunchRecordError carrying the started
 //     identity: the caller must treat the door as owning the envelope, never
 //     close the work as failed-to-spawn, and let a reconcile tick adopt the
@@ -137,9 +142,13 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	argv := DetachedLaunchArgv(timeoutBin, doorBin, budget, workID, lane, prompt, actor)
 	// 1. Durable reserved launch identity BEFORE the process exists. A
 	// failure here is a clean not-started refusal: no child, no mutation.
+	// The launch id is minted HERE, once: it is what the log marker, the
+	// started-pid line, the start guard below and recovery all agree on.
+	launchID := work.NewDetachedLaunchID(now)
 	reserved := work.DetachedLaunch{
 		SchemaVersion: work.DetachedLaunchSchemaVersion,
 		WorkID:        workID,
+		LaunchID:      launchID,
 		Lane:          lane,
 		Actor:         actor,
 		Command:       argv,
@@ -158,6 +167,18 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	setProcessGroup(cmd)
+	// 2. START GUARD. Every step above can be arbitrarily delayed — a stalled
+	// tick, a slow filesystem — and the reservation grace window only bounds
+	// how long recovery WAITS; it never proves this launcher stopped. So the
+	// last thing checked before the child exists is whether this launch still
+	// holds its own reservation: a reconcile that classified it lost (or a
+	// newer launcher that took the workID) rewrote that sidecar, and refusing
+	// here is what keeps a child from being started against an envelope nobody
+	// owns any more (audit 2026-09-19). The refusal writes nothing — no log
+	// line, and nothing over a record whose owner is now someone else.
+	if err := work.AssertDetachedReservationHeld(home, workID, launchID); err != nil {
+		return launch, err
+	}
 	fmt.Fprintf(logFile, "%s detached door start work=%s lane=%s actor=%s budget=%s argv=%q\n", now.UTC().Format(time.RFC3339), workID, lane, actor, budget, argv)
 	// Per-launch boundary marker written BEFORE the started-pid line
 	// (audit 2026-09-16 finding 5). A reconcile that scopes its pid
@@ -167,8 +188,8 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	// concurrent launch on a different workID (theoretical; the log
 	// file is per-workID today but the guard costs nothing) does not
 	// bleed across envelopes.
-	fmt.Fprintf(logFile, "%s %s%s started_at=%s\n", now.UTC().Format(time.RFC3339), work.DetachedDoorLaunchMarker, workID, now.UTC().Format(time.RFC3339Nano))
-	// 2. Guarded start. Nothing started means the reserved record goes away
+	fmt.Fprintf(logFile, "%s %s%s %s%s started_at=%s\n", now.UTC().Format(time.RFC3339), work.DetachedDoorLaunchMarker, workID, work.DetachedDoorLaunchIDField, launchID, now.UTC().Format(time.RFC3339Nano))
+	// 3. Guarded start. Nothing started means the reserved record goes away
 	// best-effort; a stale reserved record would otherwise read as owned.
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(filepath.Join(dir, workID+".json"))
@@ -179,13 +200,13 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	launch.PID = pid
 	launch.PGID = pid // Setpgid makes the child its own group leader.
 	launch.Outcome = work.DetachedOutcomeRunning
-	// 3. Started-identity evidence in the log, before any sidecar attempt:
+	// 4. Started-identity evidence in the log, before any sidecar attempt:
 	// the log fd is already open, so this line is the recovery authority a
-	// reconcile tick adopts when step 4 keeps failing. The line follows the
-	// per-launch marker above, so a stale pid line from a prior launch is
-	// excluded from recovery.
-	fmt.Fprintf(logFile, "%s %s%d pgid=%d\n", now.UTC().Format(time.RFC3339), work.DetachedDoorStartedLogLine, pid, pid)
-	// 4. Record the started identity. One retry; a persistent failure is
+	// reconcile tick adopts when step 5 keeps failing. It carries the launch
+	// id, which is what binds the pid to THIS reservation — a prior launch's
+	// pid line carries a different id and is never adopted.
+	fmt.Fprintf(logFile, "%s %s%d pgid=%d %s%s\n", now.UTC().Format(time.RFC3339), work.DetachedDoorStartedLogLine, pid, pid, work.DetachedDoorLaunchIDField, launchID)
+	// 5. Record the started identity. One retry; a persistent failure is
 	// reported as recovery_required, never as failed-to-spawn.
 	var writeErr error
 	for attempt := 0; attempt < 2; attempt++ {
