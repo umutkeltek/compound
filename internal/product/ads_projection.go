@@ -591,28 +591,50 @@ func adsTotals(rows []AdRow) AdsTotals {
 			t.SpendByCurrency[adsCurrencyUnknown] = t.SpendUnknownCurrency
 		}
 	}
+	// CTR is clicks over impressions — no money in it, so it survives any
+	// currency state. CPM, CPC and CPA divide Spend, so each of them is a
+	// currency figure only when Spend is one, and they are withheld exactly
+	// the way ROAS is when it is not (review 2026-09-19 follow-up).
+	oneCurrency := adsSpendIsOneCurrency(t)
 	if t.Impressions > 0 {
 		t.CTR = t.Clicks / t.Impressions
-		t.CPM = t.Spend / t.Impressions * 1000
+		if oneCurrency {
+			t.CPM = t.Spend / t.Impressions * 1000
+		}
 	}
-	if t.Clicks > 0 {
+	if t.Clicks > 0 && oneCurrency {
 		t.CPC = t.Spend / t.Clicks
 	}
-	if t.Conversions > 0 {
+	if t.Conversions > 0 && oneCurrency {
 		t.CPA = t.Spend / t.Conversions
 	}
-	// ROAS is the platform-total ratio only when EVERY contribution in the
-	// window reported revenue AND the window is one currency. Partial
-	// coverage (some contributions empty) means we have matched-population
-	// revenue over total spend, and a mixed or partly-unlabelled window
-	// means the divisor is not a single currency's number — neither is
-	// the ratio it looks like. Leave ROAS at 0 and let the projection
-	// surface RevenueCoverage and the currency buckets so the consumer can
-	// decide (audit 2026-09-16 finding 3; review 2026-09-19).
-	if t.HasRevenue && t.Spend > 0 && t.RevenueCoverage >= 1 && !t.MixedCurrency {
+	if adsROASIsComplete(t) {
 		t.ROAS = t.Revenue / t.Spend
 	}
 	return t
+}
+
+// adsSpendIsOneCurrency reports whether Spend is a single resolved currency's
+// number. Every money-derived ratio inherits the spend total, so none of them
+// is a currency figure unless this holds: no disagreement between named
+// currencies, AND no money whose report named no currency at all — two
+// un-tagged reports can be two different currencies and the ledger has no way
+// to tell. One predicate for all four ratios, so they cannot drift apart.
+func adsSpendIsOneCurrency(t AdsTotals) bool {
+	return !t.MixedCurrency && t.RowsUnknownCurrency == 0
+}
+
+// adsROASIsComplete is the whole condition for reporting ROAS as the
+// platform-total ratio: EVERY contribution in the window reported revenue AND
+// the spend it divides is one resolved currency. Partial coverage means we
+// have matched-population revenue over total spend, which is NOT the same
+// number; an unresolved currency means the divisor is not a currency figure,
+// so the quotient is not the ratio it looks like. Either way ROAS stays 0 and
+// the consumer reads RevenueCoverage and the currency buckets instead (audit
+// 2026-09-16 finding 3; review 2026-09-19). Renderers ask this rather than
+// re-deriving it, so "defined" has one owner.
+func adsROASIsComplete(t AdsTotals) bool {
+	return t.HasRevenue && t.Spend > 0 && t.RevenueCoverage >= 1 && adsSpendIsOneCurrency(t)
 }
 
 // adsDaily returns one point per day of the window, zero-filled, so a

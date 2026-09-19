@@ -76,8 +76,8 @@ func BuildAdsSignals(homePath string, opts AdsSignalOptions) ([]SignalDocument, 
 	}
 	bt := adsTotals(beforeRows)
 	at := adsTotals(afterRows)
-	if bt.MixedCurrency || at.MixedCurrency {
-		return nil, fmt.Errorf("ads signal: rows mix currencies inside a window; re-import with --currency before bridging")
+	if !adsSpendIsOneCurrency(bt) || !adsSpendIsOneCurrency(at) {
+		return nil, fmt.Errorf("ads signal: spend inside a window is not one resolved currency (rows disagree, or carry no currency at all); re-import with --currency before bridging")
 	}
 	change := strings.TrimSpace(opts.ChangeEvent)
 	if change == "" {
@@ -185,11 +185,14 @@ func adsMetricValue(t AdsTotals, metric string) (float64, bool) {
 	case "ctr":
 		return t.CTR, t.Impressions > 0
 	case "cpc":
-		return t.CPC, t.Clicks > 0
+		// The money ratios are defined only where the reducer computed
+		// them; reading 0 back out as a value would bridge a number the
+		// projection deliberately withheld.
+		return t.CPC, t.Clicks > 0 && adsSpendIsOneCurrency(t)
 	case "cpa":
-		return t.CPA, t.Conversions > 0
+		return t.CPA, t.Conversions > 0 && adsSpendIsOneCurrency(t)
 	case "roas":
-		return t.ROAS, t.HasRevenue && t.Spend > 0 && t.RevenueCoverage >= 1
+		return t.ROAS, adsROASIsComplete(t)
 	}
 	return 0, false
 }

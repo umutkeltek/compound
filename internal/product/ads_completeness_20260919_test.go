@@ -1,6 +1,7 @@
 package product
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,4 +241,142 @@ func TestAdsLedgerUpgradeLeavesOneActiveGeneration(t *testing.T) {
 	if len(active) != 1 || !near(active[0].Spend, 120) {
 		t.Fatalf("a changed re-import must supersede the legacy generation, not add to it: %+v", active)
 	}
+}
+
+// adsRatioWindow imports one report into a fresh home and projects the days
+// it covers, so each ratio case below is one CSV and one assertion block.
+func adsRatioWindow(t *testing.T, name, body string) AdsProjection {
+	t.Helper()
+	home := t.TempDir()
+	if _, err := ImportAdsReport(home, writeAdsCSV(t, name, body), AdsImportOptions{
+		Platform: "other", ProductID: "product:demo.example",
+		Now: time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proj, err := LoadAdsProjection(home, AdsProjectionOptions{
+		AsOf: time.Date(2026, 9, 2, 23, 0, 0, 0, time.UTC), WindowDays: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return proj
+}
+
+// TestAdsMoneyRatiosNeedOneResolvedCurrency is the follow-up to the currency
+// partition: CPM, CPC and CPA divide spend by a count, so they inherit
+// whatever the spend total is. When the window is not one resolved currency
+// the numerator is not a currency's number, and neither is the quotient —
+// the same reason ROAS is already withheld. CTR has no money in it and must
+// survive, which is what keeps this from becoming over-withholding.
+func TestAdsMoneyRatiosNeedOneResolvedCurrency(t *testing.T) {
+	withheld := func(t *testing.T, label string, got AdsTotals) {
+		t.Helper()
+		if got.CPM != 0 || got.CPC != 0 || got.CPA != 0 {
+			t.Fatalf("%s: spend is not one currency's number, so cost-per-unit is not a cost: %+v", label, got)
+		}
+		if got.ROAS != 0 {
+			t.Fatalf("%s: ROAS must stay withheld too: %+v", label, got)
+		}
+		if !near(got.CTR, 0.05) {
+			t.Fatalf("%s: CTR carries no money and must survive: %+v", label, got)
+		}
+	}
+
+	t.Run("two named currencies", func(t *testing.T) {
+		proj := adsRatioWindow(t, "usd-and-eur.csv",
+			"date,campaign_id,campaign_name,spend,impressions,clicks,conversions,revenue,currency\n"+
+				"2026-09-01,c1,Named USD,100,1000,50,2,200,USD\n"+
+				"2026-09-01,c2,Named EUR,900,9000,450,18,1800,EUR\n")
+		if !proj.Totals.MixedCurrency {
+			t.Fatalf("precondition: window must read mixed, got %+v", proj.Totals)
+		}
+		withheld(t, "usd+eur", proj.Totals)
+	})
+
+	t.Run("named next to unnamed currency", func(t *testing.T) {
+		proj := adsRatioWindow(t, "usd-and-unnamed.csv",
+			"date,campaign_id,campaign_name,spend,impressions,clicks,conversions,revenue,currency\n"+
+				"2026-09-01,c1,Named,100,1000,50,2,200,USD\n"+
+				"2026-09-01,c2,Unnamed,900,9000,450,18,1800,\n")
+		withheld(t, "usd+unknown", proj.Totals)
+	})
+
+	t.Run("no currency named at all", func(t *testing.T) {
+		// Not "mixed" — nothing disagrees — but still unresolved: two
+		// un-currency-tagged reports can be two different currencies and
+		// the ledger cannot tell. This is the half of the condition a
+		// MixedCurrency-only guard would miss.
+		proj := adsRatioWindow(t, "unnamed-only.csv",
+			"date,campaign_id,campaign_name,spend,impressions,clicks,conversions,revenue\n"+
+				"2026-09-01,c1,Unnamed One,100,1000,50,2,200\n"+
+				"2026-09-01,c2,Unnamed Two,900,9000,450,18,1800\n")
+		if proj.Totals.MixedCurrency || proj.Totals.RowsUnknownCurrency != 2 {
+			t.Fatalf("precondition: window must be unresolved but not mixed, got %+v", proj.Totals)
+		}
+		withheld(t, "all-unknown", proj.Totals)
+	})
+
+	t.Run("one resolved currency still reports all three", func(t *testing.T) {
+		proj := adsRatioWindow(t, "usd-only.csv",
+			"date,campaign_id,campaign_name,spend,impressions,clicks,conversions,revenue,currency\n"+
+				"2026-09-01,c1,Named One,100,1000,50,2,200,USD\n"+
+				"2026-09-01,c2,Named Two,900,9000,450,18,1800,USD\n")
+		got := proj.Totals
+		if got.Currency != "USD" || got.MixedCurrency {
+			t.Fatalf("precondition: window must be single-currency, got %+v", got)
+		}
+		if !near(got.CPM, 100) || !near(got.CPC, 2) || !near(got.CPA, 50) {
+			t.Fatalf("a resolved single-currency window must still report CPM/CPC/CPA: %+v", got)
+		}
+		if !near(got.ROAS, 2) || !near(got.CTR, 0.05) {
+			t.Fatalf("a resolved single-currency window must still report ROAS and CTR: %+v", got)
+		}
+	})
+
+	// The campaign view groups by (platform, product, account, campaign) and
+	// NOT by currency, so one campaign reported in two currencies on two days
+	// is one grouped view over unlike money. It reduces through the same
+	// adsTotals, so the guard reaches it — this proves that rather than
+	// assuming it.
+	t.Run("campaign view combining unlike currencies", func(t *testing.T) {
+		proj := adsRatioWindow(t, "campaign-switched-currency.csv",
+			"date,campaign_id,campaign_name,spend,impressions,clicks,conversions,revenue,currency\n"+
+				"2026-09-01,c1,Switched,100,1000,50,2,200,USD\n"+
+				"2026-09-02,c1,Switched,900,9000,450,18,1800,EUR\n")
+		if len(proj.Campaigns) != 1 {
+			t.Fatalf("precondition: campaign grouping is currency-blind, so this is one view: %+v", proj.Campaigns)
+		}
+		view := proj.Campaigns[0]
+		if !near(view.Totals.Spend, 1000) || !view.Totals.MixedCurrency {
+			t.Fatalf("precondition: campaign view must combine both currencies: %+v", view.Totals)
+		}
+		withheld(t, "campaign usd+eur", view.Totals)
+	})
+
+	// The text CLI must not print a withheld ratio as "0.00"; it already has
+	// a dash for undefined, and an unresolved currency is undefined.
+	t.Run("cli prints a dash, never a zero", func(t *testing.T) {
+		home := t.TempDir()
+		now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+		report := writeAdsCSV(t, "cli-mixed.csv",
+			"date,campaign_id,campaign_name,spend,impressions,clicks,conversions,revenue,currency\n"+
+				"2026-09-01,c1,Named USD,100,1000,50,2,200,USD\n"+
+				"2026-09-01,c2,Named EUR,900,9000,450,18,1800,EUR\n")
+		var stdout, stderr bytes.Buffer
+		if code := RunAdsCLI([]string{"import", "--platform", "other", "--product", "product:demo.example", "--report", report}, home, nil, &stdout, &stderr, now); code != 0 {
+			t.Fatalf("import exit %d: %s", code, stderr.String())
+		}
+		stdout.Reset()
+		if code := RunAdsCLI([]string{"--as-of", "2026-09-02", "--window", "2"}, home, nil, &stdout, &stderr, now); code != 0 {
+			t.Fatalf("projection exit %d: %s", code, stderr.String())
+		}
+		out := stdout.String()
+		if !strings.Contains(out, "cpc: — · cpa: — · roas: —") {
+			t.Fatalf("withheld ratios must render as dashes, not zeros:\n%s", out)
+		}
+		if !strings.Contains(out, "ctr: 5.00%") {
+			t.Fatalf("CTR must still render:\n%s", out)
+		}
+	})
 }

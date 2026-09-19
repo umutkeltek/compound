@@ -108,7 +108,11 @@ func runAdsProjection(args []string, homePath string, stdout, stderr io.Writer, 
 	fmt.Fprintf(stdout, "- rows: %d (%d in window)\n", proj.Counts.Rows, proj.Counts.RowsInWindow)
 	fmt.Fprintf(stdout, "- spend: %s\n", adsMoney(proj.Totals))
 	fmt.Fprintf(stdout, "- impressions: %.0f · clicks: %.0f · conversions: %.0f\n", proj.Totals.Impressions, proj.Totals.Clicks, proj.Totals.Conversions)
-	fmt.Fprintf(stdout, "- ctr: %s · cpc: %s · cpa: %s · roas: %s\n", adsRatio(proj.Totals.CTR, proj.Totals.Impressions > 0, true), adsRatio(proj.Totals.CPC, proj.Totals.Clicks > 0, false), adsRatio(proj.Totals.CPA, proj.Totals.Conversions > 0, false), adsRatio(proj.Totals.ROAS, proj.Totals.HasRevenue && proj.Totals.Spend > 0, false))
+	// A withheld ratio must read as "—", never as "0.00": a rendered zero is
+	// a number the reducer refused to state. The "defined" tests mirror the
+	// reducer's own guards rather than restating them.
+	oneCurrency := adsSpendIsOneCurrency(proj.Totals)
+	fmt.Fprintf(stdout, "- ctr: %s · cpc: %s · cpa: %s · roas: %s\n", adsRatio(proj.Totals.CTR, proj.Totals.Impressions > 0, true), adsRatio(proj.Totals.CPC, oneCurrency && proj.Totals.Clicks > 0, false), adsRatio(proj.Totals.CPA, oneCurrency && proj.Totals.Conversions > 0, false), adsRatio(proj.Totals.ROAS, adsROASIsComplete(proj.Totals), false))
 	fmt.Fprintf(stdout, "- platforms: %d connected, %d stale, %d not connected\n", proj.Counts.PlatformsConnected, proj.Counts.PlatformsStale, proj.Counts.PlatformsNotConnected)
 	for _, p := range proj.Platforms {
 		fmt.Fprintf(stdout, "- platform %s: %s", p.Platform, p.Status)
