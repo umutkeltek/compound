@@ -236,12 +236,15 @@ func negativeContentPostImageStatus(payload map[string]any) (string, bool) {
 
 // contentPostPositiveStatusValues names the values a transport's status
 // or type field uses to say the post DID happen. The set is closed and
-// derived from the answers the real transports return (`ok`, `published`,
-// `succeeded` are the proven ones; the rest name the same completed fact):
-// a value outside it is not read as success, because "a word we do not
-// know" must never be rendered as a publication. Teaching the loop about a
-// new platform's vocabulary is one edit here — deliberately a decision.
-var contentPostPositiveStatusValues = []string{"ok", "success", "succeeded", "published", "posted", "complete", "completed", "live", "sent"}
+// holds ONLY words a real transport answer proves — nothing that merely
+// sounds successful. A plausible-looking word rebuilds the exact defect
+// this gate closes: "sent" can mean sent to the scheduler's queue and
+// "complete" can mean the request completed, either of which would record
+// a publication the platform never made. The asymmetry is deliberate: a
+// missing word costs a loud refusal the operator reconciles, while a wrong
+// word costs a false post nobody can see. Adding one means citing the
+// transport answer or contract that uses it — a decision, not a guess.
+var contentPostPositiveStatusValues = []string{"ok", "published", "succeeded"}
 
 // contentPostImageOutcomeClaim reads the same `type` and `status` keys the
 // schedule-marker and negative paths use, and reports (a) whether the

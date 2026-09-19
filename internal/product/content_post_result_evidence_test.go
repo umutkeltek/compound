@@ -47,6 +47,32 @@ func TestParseContentPostImageRefusesUnreadableOutcomeClaim(t *testing.T) {
 	}
 }
 
+// TestParseContentPostImageRefusesUnprovenSuccessVocabulary keeps the positive
+// set honest. Every value in it must be a word a real transport answer or a
+// documented transport contract actually uses for "this is out"; a word that
+// merely sounds successful recreates the very failure the positive gate closes,
+// because "sent" can mean sent-to-the-queue and "complete" can mean the request
+// completed. None of the words below are proven by any fixture or contract in
+// this repo, so each must refuse. Earning one back means citing where a
+// transport documents it AND editing this table — a decision, not an accident.
+func TestParseContentPostImageRefusesUnprovenSuccessVocabulary(t *testing.T) {
+	for _, status := range []string{"sent", "complete", "completed", "live", "posted", "success"} {
+		t.Run(status, func(t *testing.T) {
+			image := `{"id":"r-1","status":"` + status + `"}`
+			parsed, err := parseContentPostImage([]byte(image), postResultNow)
+			if err == nil {
+				t.Fatalf("an unproven success word must be refused, not published; got nil err for %s", image)
+			}
+			if parsed.Kind != "" {
+				t.Fatalf("refusal must not classify the image as %q", parsed.Kind)
+			}
+			if !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), status) {
+				t.Fatalf("refusal must name the ambiguity and quote the platform's word: %v", err)
+			}
+		})
+	}
+}
+
 // TestRecordContentPostResultLeavesAmbiguousImageForReconciliation pins where an
 // ambiguous outcome lands. The post may well have gone out, so the draft must
 // NOT move to posted and must NOT be invented into a scheduler reservation: it
