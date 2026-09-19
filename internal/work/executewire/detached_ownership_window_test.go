@@ -86,10 +86,10 @@ func TestDetachedOwnershipIsExclusiveWhenRecoveryFiresInsideTheStartWindow(t *te
 	// The loser must have observed the WINNER's decision, not its own read.
 	if childStarted {
 		if len(verdicts) != 1 || verdicts[0].Outcome != work.DetachedOutcomeReserved {
-			t.Fatalf("recovery lost the decision and must leave the reservation alone; got %+v", verdicts)
+			t.Fatalf("recovery could not take the lock and must leave the reservation alone; got %+v", verdicts)
 		}
-		if !strings.Contains(verdicts[0].Detail, "won the start decision") {
-			t.Fatalf("the losing verdict must name the winner's decision, got %q", verdicts[0].Detail)
+		if !strings.Contains(verdicts[0].Detail, "holds the ownership lock") {
+			t.Fatalf("the losing verdict must name the held ownership lock, got %q", verdicts[0].Detail)
 		}
 		if w.State != "claimed" {
 			t.Fatalf("envelope state = %q; a started child keeps its envelope claimed for the door", w.State)
@@ -98,5 +98,74 @@ func TestDetachedOwnershipIsExclusiveWhenRecoveryFiresInsideTheStartWindow(t *te
 		if !strings.Contains(string(logBody), work.DetachedDoorStartedLogLine) {
 			t.Fatalf("a started child must leave its pid line in the log:\n%s", logBody)
 		}
+	}
+}
+
+// Falsifier 10 — a launcher that arrives after recovery has decided `revoke`
+// refuses, through the lock path. The sidecar still reads `reserved` here, so
+// the cheap pre-check passes and the refusal can only come from the decision
+// taken under the lock: recovery's record is what the launcher reads.
+func TestLaunchDetachedViaDoorRefusesWhenRecoveryAlreadyDecidedRevoke(t *testing.T) {
+	if _, err := DetachedTimeoutBinary(); err != nil {
+		t.Skip("no GNU timeout on PATH: " + err.Error())
+	}
+	homePath := t.TempDir()
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetRoot := t.TempDir()
+	seedClaimedDetachedWork(t, store, "work_detached_revoked", targetRoot)
+
+	ranMarker := filepath.Join(t.TempDir(), "door-ran.txt")
+	fakeDoor := filepath.Join(t.TempDir(), "fake-compound")
+	if err := os.WriteFile(fakeDoor, []byte("#!/bin/sh\necho ran > "+ranMarker+"\nsleep 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prevDoor, prevBudget := DetachedDoorBinary, DefaultDetachedLaunchBudget
+	DetachedDoorBinary = func() (string, error) { return fakeDoor, nil }
+	DefaultDetachedLaunchBudget = 30 * time.Second
+	wasInstalled := AssertLaunchContextInstalled() == nil
+	SetLaunchContextInstalled(true)
+
+	now := time.Now().UTC()
+	prevWrite := writeDetachedLaunch
+	writeDetachedLaunch = func(home string, reserved work.DetachedLaunch) error {
+		if err := prevWrite(home, reserved); err != nil {
+			return err
+		}
+		if reserved.Outcome == work.DetachedOutcomeReserved {
+			// Recovery reaches the decision first, while this launcher is
+			// still between its reserved write and its own decision. Only
+			// the decision record is written — the sidecar stays `reserved`
+			// so the pre-check cannot be what refuses.
+			decision, decErr := work.TakeDetachedRevokeOwnership(home, reserved.WorkID, reserved.LaunchID, now)
+			if decErr != nil || decision != work.DetachedDecisionRevoke {
+				t.Fatalf("the falsifier needs recovery to win the free lock: %q %v", decision, decErr)
+			}
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		writeDetachedLaunch = prevWrite
+		DetachedDoorBinary = prevDoor
+		DefaultDetachedLaunchBudget = prevBudget
+		SetLaunchContextInstalled(wasInstalled)
+	})
+
+	_, err = LaunchDetachedViaDoor(store, "work_detached_revoked", "claude_minimax", "p", "claude-minimax", now)
+	if err == nil {
+		t.Fatal("a launcher whose launch id was already revoked must refuse to start")
+	}
+	if !strings.Contains(err.Error(), "revoke") {
+		t.Fatalf("the refusal must name the revoked decision, got %v", err)
+	}
+	if _, statErr := os.Stat(ranMarker); !os.IsNotExist(statErr) {
+		t.Fatalf("a child was started for a revoked launch id (marker stat: %v)", statErr)
+	}
+	// The pre-check could not have refused: the sidecar still reads reserved.
+	stored, readErr := work.ReadDetachedLaunch(homePath, "work_detached_revoked")
+	if readErr != nil || stored.Outcome != work.DetachedOutcomeReserved {
+		t.Fatalf("this falsifier only proves the lock path if the sidecar still reads reserved: %+v err=%v", stored, readErr)
 	}
 }

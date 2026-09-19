@@ -83,11 +83,11 @@ var detachedAfterStartDecision func()
 //  1. a RESERVED sidecar (no pid) carrying a freshly minted launch id is
 //     written BEFORE the start — a failure there is a true not-started
 //     refusal (no child exists, plain error);
-//  2. the START GUARD: a sidecar pre-check, then the ATOMIC OWNERSHIP
-//     DECISION for this launch id. Nothing is started unless this launch won
-//     that decision, so a recovery firing anywhere in this launcher's delay —
-//     including between the decision and cmd.Start() — cannot also classify
-//     the reservation lost;
+//  2. the START GUARD: a sidecar pre-check, then the OWNERSHIP DECISION for
+//     this launch id, taken under a kernel lock that is HELD for the rest of
+//     the launch. Nothing is started unless this launch decided `start`, and
+//     no recovery can classify the reservation while the lock is held — which
+//     is true even if this launcher is suspended mid-function;
 //  3. the guarded start; a start failure removes the reserved sidecar
 //     best-effort (nothing started);
 //  4. after a successful start the pid line is appended to the door log
@@ -187,18 +187,23 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	if err := work.AssertDetachedReservationHeld(home, workID, launchID); err != nil {
 		return launch, err
 	}
-	// 2b. THE DECISION. One atomic act settles "a child starts for this launch
-	// id" against "this reservation is classified lost": whichever side gets
-	// there first wins, and the loser reads the winner's decision instead of
-	// its own stale view. Nothing below runs unless this launch won, so a
-	// recovery that fires anywhere between here and cmd.Start() — including
-	// mid-instruction — finds the decision already taken and leaves the
-	// envelope alone (audit 2026-09-19 follow-up). An undurable decision is
-	// also a refusal: a decision both sides could still win is no decision.
-	decision, err := work.DecideDetachedLaunchOwnership(home, workID, launchID, work.DetachedDecisionStart, now)
+	// 2b. THE DECISION, under a kernel lock this launcher KEEPS HOLDING until
+	// the child is started and recorded. It settles "a child starts for this
+	// launch id" against "this reservation is classified lost": recovery must
+	// take the same lock to classify, and cannot, for as long as this launcher
+	// exists — including while it is suspended mid-function, which is the case
+	// no timeout could ever get right. The kernel drops the lock the instant
+	// this process dies, so nothing has to wait a grace period out either.
+	// Nothing below runs unless this launch decided `start`; an undurable
+	// decision is equally a refusal (audit 2026-09-19 follow-up).
+	decision, ownership, err := work.AcquireDetachedStartOwnership(home, workID, launchID, now)
 	if err != nil {
 		return launch, err
 	}
+	// Held to the end of the launch, then released on every path. The lock fd
+	// is O_CLOEXEC and is never placed in cmd.ExtraFiles: it stands for THIS
+	// launcher's critical section, not the child's lifetime.
+	defer func() { _ = ownership.Release() }()
 	if decision != work.DetachedDecisionStart {
 		return launch, fmt.Errorf("detached launch: the reservation for %s was already %sd for launch %s; refusing to start", workID, decision, launchID)
 	}

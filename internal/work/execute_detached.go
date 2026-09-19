@@ -1,10 +1,12 @@
 package work
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -328,7 +330,7 @@ func detachedLogLaunchID(fields []string) string {
 // reservation recovery has already taken. Its job is to catch what the
 // per-launch decision below cannot — a NEWER reservation that took this
 // workID — and to fail fast before the decision is spent. The binding call is
-// DecideDetachedLaunchOwnership. A reservation with no id (written before
+// AcquireDetachedStartOwnership. A reservation with no id (written before
 // 2026-09-19) is held as long as it still reads reserved.
 func AssertDetachedReservationHeld(home, workID, launchID string) error {
 	held, err := ReadDetachedLaunch(home, workID)
@@ -355,15 +357,26 @@ func AssertDetachedReservationHeld(home, workID, launchID string) error {
 // launcher is gone" is a guess, and a guess that starts an orphan child or
 // fails a live envelope.
 //
-// The decision is an exclusive-create token named for the launch id — the same
-// first-writer-wins primitive this package already uses for content-addressed
-// action-context snapshots (recordActionContextSnapshot). O_EXCL create is one
-// filesystem operation with exactly one winner, so no lock, no ordering
-// assumption and no second read is involved.
+// The decision lives in one file per launch id, and it is guarded by a KERNEL
+// LOCK the launcher HOLDS across cmd.Start() (syscall.Flock, this repo's
+// existing advisory-lock idiom — internal/candidates/read.go, internal/home).
+// A held flock is the one fact about another process that needs no clock:
 //
-// LEGACY: a sidecar written before launch ids existed has no id to name a
-// token with, so no ownership guarantee is claimed for it. Those reservations
-// keep exactly their pre-2026-09-19 behaviour, including this race.
+//   - it stays held while the holder is merely suspended — a host sleep/resume,
+//     a SIGSTOP, a wedged disk — which is exactly the case where elapsed time
+//     lies and a timeout would wrongly declare the launcher gone;
+//   - it is released BY THE KERNEL the moment the holder dies, so a dead
+//     launcher frees its launch id immediately, with no grace period to wait
+//     out and nothing to guess.
+//
+// So recovery never asks "has it been long enough". It asks the kernel whether
+// the launcher is still inside its critical section, and reads the decision
+// under the same lock. There is deliberately no time-based override: an
+// override of a held lock is the bug this replaced, not a safety net.
+//
+// LEGACY: a sidecar written before launch ids existed has no id to name a lock
+// with, so no ownership guarantee is claimed for it. Those reservations keep
+// exactly their pre-2026-09-19 behaviour, including this race.
 const (
 	// DetachedDecisionStart is the launcher's claim: this launch will start
 	// a child, so its reservation must never be classified lost.
@@ -373,20 +386,14 @@ const (
 	DetachedDecisionRevoke = "revoke"
 )
 
-// DetachedStartCommitGrace bounds how long a WON start decision may sit
-// without a started-pid line in the door log before recovery is allowed to
-// classify the launch lost anyway. It is the only escape from a launcher that
-// won the decision and then died before cmd.Start() — without it that envelope
-// stays claimed forever, which the audit-reconcile law does not allow. It must
-// outlast DetachedReservationGrace measured from the same reservation instant,
-// because recovery only reaches the decision once that first window has
-// already expired; the launcher's own decision-to-start window is two log
-// writes wide, so a full extra grace is generous by orders of magnitude.
-const DetachedStartCommitGrace = 2 * DetachedReservationGrace
+// ErrDetachedLaunchInProgress is recovery's answer when the launcher still
+// holds its launch id's ownership lock. It is not a failure: it is the kernel
+// stating that the launcher is inside its critical section, which is the one
+// question elapsed time could never answer.
+var ErrDetachedLaunchInProgress = errors.New("detached ownership: the launcher holds the ownership lock")
 
-// detachedOwnershipToken is the durable content of one decision. The loser
-// reads it to learn which side won and when, which is what turns "my read said
-// reserved" into "the decision says start".
+// detachedOwnershipToken is the durable content of one decision, read and
+// written under the lock. An empty file is an undecided launch id.
 type detachedOwnershipToken struct {
 	LaunchID  string `json:"launch_id"`
 	WorkID    string `json:"work_id"`
@@ -394,11 +401,31 @@ type detachedOwnershipToken struct {
 	DecidedAt string `json:"decided_at"`
 }
 
-// detachedDecisionCreateFn publishes a decision by exclusive create. It is a
-// var so a falsifier can prove the undurable-revoke path: a revoke that cannot
-// be made durable must never classify a reservation lost.
-var detachedDecisionCreateFn = func(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+// detachedOwnershipOpenFn opens a launch id's ownership file. Both sides open
+// it the same way — the lock, not the open, decides. It is a var so a
+// falsifier can prove the undurable-revoke path: a revoke that cannot be made
+// durable must never classify a reservation lost.
+//
+// os.OpenFile sets O_CLOEXEC, so the door child never inherits this
+// descriptor: the lock stands for the LAUNCHER's critical section, and the
+// launcher must not keep it alive through the child. It is likewise never
+// passed in cmd.ExtraFiles.
+var detachedOwnershipOpenFn = func(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+}
+
+// DetachedOwnershipLock is a HELD ownership decision. While it is open the
+// kernel says this launcher is still inside its critical section; the launcher
+// releases it only after the child is started and recorded.
+type DetachedOwnershipLock struct{ file *os.File }
+
+// Release drops the kernel lock by closing the descriptor that holds it. Safe
+// on a nil lock, which is what a legacy id-less launch carries.
+func (l *DetachedOwnershipLock) Release() error {
+	if l == nil || l.file == nil {
+		return nil
+	}
+	return l.file.Close()
 }
 
 // reconcileWriteDetachedLaunch is the reconciler's sidecar writer, a var for
@@ -414,101 +441,155 @@ func detachedOwnershipTokenPath(home, launchID string) string {
 	return filepath.Join(DetachedLaunchDir(home), launchID+".owner")
 }
 
-// DecideDetachedLaunchOwnership takes THE decision for launchID and returns
-// the decision now durably in force, which is `want` only if the caller won.
-// Both callers act on the returned decision, never on their own read:
+// AcquireDetachedStartOwnership is the launcher's decision point. It BLOCKS
+// for the launch id's ownership lock, reads the decision under it, and returns
+// the lock still HELD so the caller can keep holding it across cmd.Start().
+// The caller starts nothing unless the returned decision is
+// DetachedDecisionStart, and Releases only after the child is started and
+// recorded — while that lock is held, no recovery can classify this launch.
 //
-//   - the launcher calls it with DetachedDecisionStart immediately before
-//     cmd.Start and starts nothing unless it gets DetachedDecisionStart back;
-//   - recovery calls it with DetachedDecisionRevoke BEFORE it stamps or closes
-//     anything, and classifies nothing unless it gets DetachedDecisionRevoke.
+// An error is a refusal: a decision that could not be taken or recorded is one
+// both sides could still believe they won.
 //
-// An error means the decision could not be made durable. Neither caller may
-// proceed on an error — the launcher refuses to start, recovery leaves the
-// reservation alone and retries on the next tick — because an undurable
-// decision is one both sides could still win.
-//
-// An empty launchID is a legacy reservation: there is no token to take, so the
-// caller's own `want` is returned and the pre-2026-09-19 behaviour stands.
-func DecideDetachedLaunchOwnership(home, workID, launchID, want string, now time.Time) (string, error) {
+// An empty launchID is a legacy reservation: there is no lock to take, so the
+// launcher's own intent is returned with a nil lock and the pre-2026-09-19
+// behaviour stands.
+func AcquireDetachedStartOwnership(home, workID, launchID string, now time.Time) (string, *DetachedOwnershipLock, error) {
 	launchID = strings.TrimSpace(launchID)
 	if launchID == "" {
-		return want, nil
+		return DetachedDecisionStart, nil, nil
 	}
-	if err := os.MkdirAll(DetachedLaunchDir(home), 0o755); err != nil {
-		return "", fmt.Errorf("detached ownership: %s: %w", launchID, err)
-	}
-	path := detachedOwnershipTokenPath(home, launchID)
-	file, err := detachedDecisionCreateFn(path)
+	file, err := openDetachedOwnershipFile(home, launchID)
 	if err != nil {
-		if !os.IsExist(err) {
-			return "", fmt.Errorf("detached ownership: %s could not take the decision: %w", launchID, err)
-		}
-		// Lost. Read the winner's decision. A token that is unreadable or
-		// not yet fully written (the winner is between create and write) is
-		// reported as the OTHER decision, because for both callers the
-		// other decision is the conservative branch: the launcher refuses
-		// to start, recovery declines to classify and retries.
-		decided, readErr := readDetachedOwnershipToken(path)
-		if readErr != nil || decided.Decision == "" {
-			return otherDetachedDecision(want), nil
-		}
-		return decided.Decision, nil
+		return "", nil, err
 	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		_ = file.Close()
+		return "", nil, fmt.Errorf("detached ownership: lock %s: %w", launchID, err)
+	}
+	decision, err := readDetachedOwnershipDecision(file)
+	if err != nil {
+		_ = file.Close()
+		return "", nil, err
+	}
+	if decision != "" {
+		// Recovery already revoked (or, impossibly, this id decided twice).
+		// Either way the launcher does not own the launch: drop the lock.
+		_ = file.Close()
+		return decision, nil, nil
+	}
+	if err := writeDetachedOwnershipDecision(file, workID, launchID, DetachedDecisionStart, now); err != nil {
+		_ = file.Close()
+		return "", nil, err
+	}
+	return DetachedDecisionStart, &DetachedOwnershipLock{file: file}, nil
+}
+
+// TakeDetachedRevokeOwnership is recovery's decision point. It takes the same
+// lock NON-BLOCKINGLY, so a launcher still inside its critical section is
+// reported as ErrDetachedLaunchInProgress rather than overridden — that
+// refusal is the whole point, and it costs no waiting because the kernel frees
+// the lock the instant a dead launcher's process exits.
+//
+// With the lock taken, the file's content is the settled decision:
+//
+//   - empty: nobody has decided, so recovery decides — the revoke is written
+//     and fsynced before the caller stamps or closes anything;
+//   - start: the launcher decided AND has already left its critical section
+//     (the kernel would still be holding the lock otherwise), so it either
+//     started a child whose pid is in the log or it died before cmd.Start().
+//     Recovery classifies immediately, with no further wait;
+//   - revoke: an earlier tick already decided; idempotent.
+//
+// The lock is released before the caller stamps the sidecar and closes the
+// envelope: the decision is durable in the file by then, and the file's
+// content — not the lock — is what a launcher reads.
+func TakeDetachedRevokeOwnership(home, workID, launchID string, now time.Time) (string, error) {
+	launchID = strings.TrimSpace(launchID)
+	if launchID == "" {
+		return DetachedDecisionRevoke, nil
+	}
+	file, err := openDetachedOwnershipFile(home, launchID)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return "", ErrDetachedLaunchInProgress
+		}
+		return "", fmt.Errorf("detached ownership: lock %s: %w", launchID, err)
+	}
+	decision, err := readDetachedOwnershipDecision(file)
+	if err != nil {
+		return "", err
+	}
+	if decision != "" {
+		return decision, nil
+	}
+	if err := writeDetachedOwnershipDecision(file, workID, launchID, DetachedDecisionRevoke, now); err != nil {
+		return "", err
+	}
+	return DetachedDecisionRevoke, nil
+}
+
+func openDetachedOwnershipFile(home, launchID string) (*os.File, error) {
+	if err := os.MkdirAll(DetachedLaunchDir(home), 0o755); err != nil {
+		return nil, fmt.Errorf("detached ownership: %s: %w", launchID, err)
+	}
+	file, err := detachedOwnershipOpenFn(detachedOwnershipTokenPath(home, launchID))
+	if err != nil {
+		return nil, fmt.Errorf("detached ownership: %s could not be opened: %w", launchID, err)
+	}
+	return file, nil
+}
+
+// readDetachedOwnershipDecision reads the decision under a held lock. Empty
+// means undecided; a partial record (a writer that died mid-write) is an
+// error, never "undecided", so neither side decides over a torn one.
+func readDetachedOwnershipDecision(file *os.File) (string, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("detached ownership: rewind: %w", err)
+	}
+	body, err := io.ReadAll(file)
+	if err != nil {
+		return "", fmt.Errorf("detached ownership: read: %w", err)
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return "", nil
+	}
+	var token detachedOwnershipToken
+	if err := json.Unmarshal(body, &token); err != nil {
+		return "", fmt.Errorf("detached ownership: unreadable decision record: %w", err)
+	}
+	if strings.TrimSpace(token.Decision) == "" {
+		return "", errors.New("detached ownership: decision record carries no decision")
+	}
+	return token.Decision, nil
+}
+
+func writeDetachedOwnershipDecision(file *os.File, workID, launchID, decision string, now time.Time) error {
 	body, err := json.MarshalIndent(detachedOwnershipToken{
 		LaunchID:  launchID,
 		WorkID:    workID,
-		Decision:  want,
+		Decision:  decision,
 		DecidedAt: now.UTC().Format(time.RFC3339Nano),
 	}, "", "  ")
 	if err != nil {
-		_ = file.Close()
-		return "", err
+		return err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("detached ownership: %s could not record %s: %w", launchID, decision, err)
 	}
 	if _, err := file.Write(append(body, '\n')); err != nil {
-		_ = file.Close()
-		return "", fmt.Errorf("detached ownership: %s won but could not record the decision: %w", launchID, err)
+		return fmt.Errorf("detached ownership: %s could not record %s: %w", launchID, decision, err)
 	}
-	if err := file.Close(); err != nil {
-		return "", fmt.Errorf("detached ownership: %s won but could not record the decision: %w", launchID, err)
+	// fsync before the lock is dropped: the next holder must find the
+	// decision, not an empty file it would decide over.
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("detached ownership: %s could not record %s durably: %w", launchID, decision, err)
 	}
-	return want, nil
-}
-
-func otherDetachedDecision(want string) string {
-	if want == DetachedDecisionRevoke {
-		return DetachedDecisionStart
-	}
-	return DetachedDecisionRevoke
-}
-
-func readDetachedOwnershipToken(path string) (detachedOwnershipToken, error) {
-	var token detachedOwnershipToken
-	body, err := os.ReadFile(path)
-	if err != nil {
-		return token, err
-	}
-	if err := json.Unmarshal(body, &token); err != nil {
-		return token, err
-	}
-	return token, nil
-}
-
-// detachedStartCommitExpired reports whether a WON start decision is old
-// enough that recovery may classify the launch lost anyway — the launcher
-// committed and then never logged a started pid. An unreadable or undated
-// token is never expired: a stuck envelope an operator can see beats an orphan
-// child nobody owns.
-func detachedStartCommitExpired(home, launchID string, now time.Time) bool {
-	token, err := readDetachedOwnershipToken(detachedOwnershipTokenPath(home, launchID))
-	if err != nil || strings.TrimSpace(token.DecidedAt) == "" {
-		return false
-	}
-	decidedAt, err := time.Parse(time.RFC3339Nano, token.DecidedAt)
-	if err != nil {
-		return false
-	}
-	return now.UTC().Sub(decidedAt.UTC()) > DetachedStartCommitGrace
+	return nil
 }
 
 // scopeToLastLaunchMarker returns the slice of logBody starting at the
@@ -611,22 +692,28 @@ func (s *Store) ReconcileDetachedLaunches(now time.Time) []DetachedReconcile {
 		// retry on the next tick: an unclassified envelope is recoverable, a
 		// child started against a failed envelope is not.
 		if launch.Outcome == DetachedOutcomeReserved && launch.PID <= 0 {
-			decision, decErr := DecideDetachedLaunchOwnership(s.home, launch.WorkID, launch.LaunchID, DetachedDecisionRevoke, now)
+			decision, decErr := TakeDetachedRevokeOwnership(s.home, launch.WorkID, launch.LaunchID, now)
 			switch {
+			case errors.Is(decErr, ErrDetachedLaunchInProgress):
+				// The kernel says the launcher is still inside its critical
+				// section. That is true through a suspend and false the
+				// instant the process dies, so it is the whole answer — there
+				// is no elapsed time that would justify overriding it.
+				verdict.Outcome = DetachedOutcomeReserved
+				verdict.Detail = fmt.Sprintf("launch %s holds the ownership lock; its launcher is inside its critical section", launch.LaunchID)
+				out = append(out, verdict)
+				continue
 			case decErr != nil:
 				verdict.Outcome = DetachedOutcomeReserved
 				verdict.Detail = "not classified: the revoke could not be made durable (" + decErr.Error() + "); retrying next tick"
 				out = append(out, verdict)
 				continue
-			case decision != DetachedDecisionRevoke && !detachedStartCommitExpired(s.home, launch.LaunchID, now):
-				verdict.Outcome = DetachedOutcomeReserved
-				verdict.Detail = fmt.Sprintf("launch %s already won the start decision; waiting for its started pid", launch.LaunchID)
-				out = append(out, verdict)
-				continue
 			case decision != DetachedDecisionRevoke:
-				// The launcher won and then never logged a started pid for a
-				// full DetachedStartCommitGrace: it died before cmd.Start().
-				launch.OutcomeDetail = fmt.Sprintf("launch %s won the start decision but logged no started pid within %s; ", launch.LaunchID, DetachedStartCommitGrace)
+				// The launcher decided `start` and has already dropped the
+				// lock, so it is finished or dead — and the pid adoption
+				// above found no started-pid line for this launch id. It died
+				// before cmd.Start(); classify now, no further wait.
+				launch.OutcomeDetail = fmt.Sprintf("launch %s decided to start, released the ownership lock and logged no started pid; ", launch.LaunchID)
 			}
 		}
 		launch.ExitObservedAt = now.UTC().Format(time.RFC3339)

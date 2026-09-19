@@ -1,23 +1,27 @@
 package work
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
 
 // Review repair 2026-09-19 follow-up (detached): recovery may not classify a
-// reservation lost on evidence it has not made durable.
+// reservation lost on evidence it has not made durable, and it may not decide
+// ownership on elapsed time.
 //
-// The old lost path failed the envelope FIRST and then wrote the sidecar with
-// the error discarded (`_ = WriteDetachedLaunch`). A failed envelope behind a
-// sidecar that still reads `reserved` is the delayed-owner hole read from the
-// other end: the launcher's own pre-check consults that sidecar, sees
-// `reserved`, and starts a child for work that is already closed failed.
+// The lost path used to fail the envelope FIRST and then write the sidecar
+// with the error discarded. A failed envelope behind a sidecar that still
+// reads `reserved` is the delayed-owner hole read from the other end. The
+// order is now revoke-durably, stamp-durably, then close.
 //
-// The order is now revoke-durably, stamp-durably, then close — and neither
-// durable step may be skipped or its error swallowed.
+// And the launcher's ownership is proven by a HELD kernel lock rather than by
+// a window: a flock survives the holder being suspended and is released by the
+// kernel when the holder dies, which is exactly the distinction a timeout
+// cannot draw.
 
 // reserveDetachedLaunchForOwnership claims an envelope and leaves a reserved
 // sidecar with no started pid: the shape a delayed launcher leaves behind.
@@ -40,20 +44,128 @@ func reserveDetachedLaunchForOwnership(t *testing.T, s *Store, workID, launchID 
 	}
 }
 
+// writeDetachedDecisionRecord lays down the decision a lock holder would have
+// written, so these falsifiers read the same bytes production reads.
+func writeDetachedDecisionRecord(t *testing.T, home, workID, launchID, decision string, at time.Time) {
+	t.Helper()
+	if err := os.MkdirAll(DetachedLaunchDir(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.MarshalIndent(detachedOwnershipToken{
+		LaunchID:  launchID,
+		WorkID:    workID,
+		Decision:  decision,
+		DecidedAt: at.UTC().Format(time.RFC3339Nano),
+	}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(detachedOwnershipTokenPath(home, launchID), append(body, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readDetachedDecisionRecord(t *testing.T, home, launchID string) detachedOwnershipToken {
+	t.Helper()
+	body, err := os.ReadFile(detachedOwnershipTokenPath(home, launchID))
+	if err != nil {
+		t.Fatalf("decision record unreadable: %v", err)
+	}
+	var token detachedOwnershipToken
+	if err := json.Unmarshal(body, &token); err != nil {
+		t.Fatalf("decision record unparseable: %v", err)
+	}
+	return token
+}
+
+// holdDetachedOwnershipLock takes the launch id's lock from a SEPARATE open
+// file description — which is what makes flock exclude the reconciler even
+// inside one test process, so these falsifiers need no second process, no
+// sleep and no goroutine. Released when the test ends.
+func holdDetachedOwnershipLock(t *testing.T, home, launchID string) {
+	t.Helper()
+	if err := os.MkdirAll(DetachedLaunchDir(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(detachedOwnershipTokenPath(home, launchID), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		t.Fatalf("the falsifier could not take the ownership lock it needs to hold: %v", err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+}
+
+// Falsifier 8 — a HELD lock is not overridable by any clock. The launcher
+// decided `start` and is suspended inside its critical section (a host
+// sleep/resume, a SIGSTOP, a wedged disk). No amount of elapsed time makes it
+// safe to classify: recovery must report the held lock and touch nothing.
+func TestRecoveryClassifiesNothingWhileTheLauncherHoldsTheOwnershipLock(t *testing.T) {
+	s := newStore(t)
+	reserveDetachedLaunchForOwnership(t, s, "work_lock_held", "dl_lock_held")
+	writeDetachedDecisionRecord(t, s.home, "work_lock_held", "dl_lock_held", DetachedDecisionStart, fixedNow)
+	holdDetachedOwnershipLock(t, s.home, "dl_lock_held")
+	prevAlive := detachedProcessAlive
+	detachedProcessAlive = func(int) bool { return false }
+	t.Cleanup(func() { detachedProcessAlive = prevAlive })
+
+	// A full day past the reservation grace, with no started pid in the log.
+	verdicts := s.ReconcileDetachedLaunches(fixedNow.Add(24 * time.Hour))
+	if len(verdicts) != 1 || verdicts[0].Outcome != DetachedOutcomeReserved {
+		t.Fatalf("a held ownership lock must not be overridden by elapsed time; got %+v", verdicts)
+	}
+	if !strings.Contains(verdicts[0].Detail, "holds the ownership lock") {
+		t.Fatalf("the verdict must name the held lock, got %q", verdicts[0].Detail)
+	}
+	if w, _ := s.Get("work_lock_held"); w.State != "claimed" {
+		t.Fatalf("envelope state = %q; a launcher inside its critical section keeps its envelope", w.State)
+	}
+	sidecar, _ := ReadDetachedLaunch(s.home, "work_lock_held")
+	if sidecar.Outcome != DetachedOutcomeReserved {
+		t.Fatalf("sidecar outcome = %q; nothing may be stamped past a held lock", sidecar.Outcome)
+	}
+}
+
+// Falsifier 9 — a FREE lock needs no waiting. The launcher decided `start` and
+// the kernel has already released its lock, so it is finished or dead; with no
+// started pid in the log it died before cmd.Start(). Recovery classifies on
+// the first tick past the reservation grace, with no further window.
+func TestRecoveryClassifiesImmediatelyWhenTheStartDecisionLockIsFree(t *testing.T) {
+	s := newStore(t)
+	reserveDetachedLaunchForOwnership(t, s, "work_lock_free", "dl_lock_free")
+	writeDetachedDecisionRecord(t, s.home, "work_lock_free", "dl_lock_free", DetachedDecisionStart, fixedNow)
+	prevAlive := detachedProcessAlive
+	detachedProcessAlive = func(int) bool { return false }
+	t.Cleanup(func() { detachedProcessAlive = prevAlive })
+
+	verdicts := s.ReconcileDetachedLaunches(fixedNow.Add(DetachedReservationGrace + time.Minute))
+	if len(verdicts) != 1 || verdicts[0].Outcome != DetachedOutcomeDoorLost {
+		t.Fatalf("a released lock proves the launcher is gone; recovery must classify on this tick, got %+v", verdicts)
+	}
+	if !strings.Contains(verdicts[0].Detail, "released the ownership lock") {
+		t.Fatalf("the verdict must say why it was safe to classify, got %q", verdicts[0].Detail)
+	}
+	if w, _ := s.Get("work_lock_free"); w.State != "failed" {
+		t.Fatalf("envelope state = %q, want failed", w.State)
+	}
+}
+
 // Falsifier 6 — an undurable revoke must classify nothing. Both durable steps
-// are exercised: the atomic decision itself, and the sidecar stamp that makes
-// the decision readable to every other party.
+// are exercised: the decision itself, and the sidecar stamp that makes the
+// decision readable to every other party.
 func TestReconcileClassifiesNothingOnAnUndurableRevoke(t *testing.T) {
 	t.Run("the decision cannot be taken", func(t *testing.T) {
 		s := newStore(t)
 		reserveDetachedLaunchForOwnership(t, s, "work_undurable_decision", "dl_undurable_decision")
 		prevAlive := detachedProcessAlive
 		detachedProcessAlive = func(int) bool { return false }
-		prevCreate := detachedDecisionCreateFn
-		detachedDecisionCreateFn = func(string) (*os.File, error) { return nil, os.ErrPermission }
+		prevOpen := detachedOwnershipOpenFn
+		detachedOwnershipOpenFn = func(string) (*os.File, error) { return nil, os.ErrPermission }
 		t.Cleanup(func() {
 			detachedProcessAlive = prevAlive
-			detachedDecisionCreateFn = prevCreate
+			detachedOwnershipOpenFn = prevOpen
 		})
 
 		verdicts := s.ReconcileDetachedLaunches(fixedNow.Add(24 * time.Hour))
@@ -98,20 +210,16 @@ func TestReconcileClassifiesNothingOnAnUndurableRevoke(t *testing.T) {
 		}
 		// The revoke itself IS durable, and it was taken before any close was
 		// attempted — that ordering is what a later tick resumes from.
-		token, err := readDetachedOwnershipToken(detachedOwnershipTokenPath(s.home, "dl_undurable_stamp"))
-		if err != nil {
-			t.Fatalf("the revoke must be durable before the close is attempted: %v", err)
-		}
-		if token.Decision != DetachedDecisionRevoke {
+		if token := readDetachedDecisionRecord(t, s.home, "dl_undurable_stamp"); token.Decision != DetachedDecisionRevoke {
 			t.Fatalf("token decision = %q, want revoke", token.Decision)
 		}
 	})
 }
 
-// A legacy id-less reservation has no launch id to name a decision with, so no
+// A legacy id-less reservation has no launch id to name a lock with, so no
 // ownership guarantee is claimed for it: it keeps its pre-2026-09-19 path and
-// leaves no token behind. Stated here so the guarantee is not read as covering
-// sidecars it cannot cover.
+// leaves no decision record behind. Stated here so the guarantee is not read
+// as covering sidecars it cannot cover.
 func TestLegacyIdlessReservationTakesNoOwnershipDecision(t *testing.T) {
 	s := newStore(t)
 	seedReadyExecuteWork(t, s, "work_legacy_no_token")
@@ -130,56 +238,18 @@ func TestLegacyIdlessReservationTakesNoOwnershipDecision(t *testing.T) {
 	}
 	prevAlive := detachedProcessAlive
 	detachedProcessAlive = func(int) bool { return false }
-	prevCreate := detachedDecisionCreateFn
-	detachedDecisionCreateFn = func(string) (*os.File, error) {
+	prevOpen := detachedOwnershipOpenFn
+	detachedOwnershipOpenFn = func(string) (*os.File, error) {
 		t.Fatal("a legacy id-less reservation must not take an ownership decision")
 		return nil, nil
 	}
 	t.Cleanup(func() {
 		detachedProcessAlive = prevAlive
-		detachedDecisionCreateFn = prevCreate
+		detachedOwnershipOpenFn = prevOpen
 	})
 
 	verdicts := s.ReconcileDetachedLaunches(fixedNow.Add(24 * time.Hour))
 	if len(verdicts) != 1 || verdicts[0].Outcome != DetachedOutcomeDoorLost {
 		t.Fatalf("a legacy expired reservation must keep classifying door_lost; got %+v", verdicts)
-	}
-}
-
-// A launcher that wins the decision and then dies before cmd.Start() would
-// otherwise hold its envelope claimed forever: recovery can never win that
-// launch id again. DetachedStartCommitGrace is the only escape, and it must
-// NOT fire while a start is still plausible.
-func TestWonStartDecisionBlocksRecoveryUntilTheCommitGraceExpires(t *testing.T) {
-	s := newStore(t)
-	reserveDetachedLaunchForOwnership(t, s, "work_won_start", "dl_won_start")
-	if decision, err := DecideDetachedLaunchOwnership(s.home, "work_won_start", "dl_won_start", DetachedDecisionStart, fixedNow); err != nil || decision != DetachedDecisionStart {
-		t.Fatalf("the launcher must win an untaken decision: %q %v", decision, err)
-	}
-	prevAlive := detachedProcessAlive
-	detachedProcessAlive = func(int) bool { return false }
-	t.Cleanup(func() { detachedProcessAlive = prevAlive })
-
-	// Past the reservation grace, inside the start-commit grace: recovery
-	// observes the launcher's decision and waits.
-	verdicts := s.ReconcileDetachedLaunches(fixedNow.Add(DetachedReservationGrace + time.Minute))
-	if len(verdicts) != 1 || verdicts[0].Outcome != DetachedOutcomeReserved {
-		t.Fatalf("recovery must not classify a launch that won the start decision; got %+v", verdicts)
-	}
-	if !strings.Contains(verdicts[0].Detail, "won the start decision") {
-		t.Fatalf("the verdict must report the winner's decision, got %q", verdicts[0].Detail)
-	}
-	if w, _ := s.Get("work_won_start"); w.State != "claimed" {
-		t.Fatalf("envelope state = %q; a committed launch keeps its envelope", w.State)
-	}
-
-	// Past the start-commit grace with still no started pid in the log: the
-	// launcher died before it started anything, so the envelope is recovered.
-	verdicts = s.ReconcileDetachedLaunches(fixedNow.Add(DetachedStartCommitGrace + time.Minute))
-	if len(verdicts) != 1 || verdicts[0].Outcome != DetachedOutcomeDoorLost {
-		t.Fatalf("a won decision with no started pid past the commit grace must be recoverable; got %+v", verdicts)
-	}
-	if !strings.Contains(verdicts[0].Detail, "logged no started pid") {
-		t.Fatalf("the verdict must say why the committed launch was classified, got %q", verdicts[0].Detail)
 	}
 }
