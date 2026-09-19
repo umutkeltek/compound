@@ -71,15 +71,23 @@ func DetachedLaunchArgv(timeoutBin, doorBin string, budget time.Duration, workID
 // the exact steps the start/record contract cares about).
 var writeDetachedLaunch = work.WriteDetachedLaunch
 
+// detachedAfterStartDecision runs between this launcher WINNING the start
+// decision and cmd.Start(). Production leaves it nil; it exists so a falsifier
+// can drive a real expired-grace reconcile into exactly the window the old
+// check-then-act guard left open, without a sleep or a goroutine race.
+var detachedAfterStartDecision func()
+
 // LaunchDetachedViaDoor spawns the detached door for an already-claimed
 // envelope and records the sidecar. The record protocol is start/record-safe:
 //
 //  1. a RESERVED sidecar (no pid) carrying a freshly minted launch id is
 //     written BEFORE the start — a failure there is a true not-started
 //     refusal (no child exists, plain error);
-//  2. the START GUARD re-reads that sidecar; unless it still holds THIS
-//     launch id in `reserved`, nothing is started (the reservation was
-//     recovered or taken while this launcher was delayed);
+//  2. the START GUARD: a sidecar pre-check, then the ATOMIC OWNERSHIP
+//     DECISION for this launch id. Nothing is started unless this launch won
+//     that decision, so a recovery firing anywhere in this launcher's delay —
+//     including between the decision and cmd.Start() — cannot also classify
+//     the reservation lost;
 //  3. the guarded start; a start failure removes the reserved sidecar
 //     best-effort (nothing started);
 //  4. after a successful start the pid line is appended to the door log
@@ -168,16 +176,34 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	cmd.Stderr = logFile
 	setProcessGroup(cmd)
 	// 2. START GUARD. Every step above can be arbitrarily delayed — a stalled
-	// tick, a slow filesystem — and the reservation grace window only bounds
-	// how long recovery WAITS; it never proves this launcher stopped. So the
-	// last thing checked before the child exists is whether this launch still
-	// holds its own reservation: a reconcile that classified it lost (or a
-	// newer launcher that took the workID) rewrote that sidecar, and refusing
-	// here is what keeps a child from being started against an envelope nobody
-	// owns any more (audit 2026-09-19). The refusal writes nothing — no log
-	// line, and nothing over a record whose owner is now someone else.
+	// tick, a host sleep/resume — and the reservation grace window only bounds
+	// how long recovery WAITS; it never proves this launcher stopped. Two
+	// steps, and only the second one decides:
+	//
+	// 2a. the pre-check reads the sidecar. It is check-then-act, so it proves
+	// nothing on its own; it is here to fail fast, and to catch the one thing
+	// a per-launch decision cannot — a NEWER reservation that took this
+	// workID.
 	if err := work.AssertDetachedReservationHeld(home, workID, launchID); err != nil {
 		return launch, err
+	}
+	// 2b. THE DECISION. One atomic act settles "a child starts for this launch
+	// id" against "this reservation is classified lost": whichever side gets
+	// there first wins, and the loser reads the winner's decision instead of
+	// its own stale view. Nothing below runs unless this launch won, so a
+	// recovery that fires anywhere between here and cmd.Start() — including
+	// mid-instruction — finds the decision already taken and leaves the
+	// envelope alone (audit 2026-09-19 follow-up). An undurable decision is
+	// also a refusal: a decision both sides could still win is no decision.
+	decision, err := work.DecideDetachedLaunchOwnership(home, workID, launchID, work.DetachedDecisionStart, now)
+	if err != nil {
+		return launch, err
+	}
+	if decision != work.DetachedDecisionStart {
+		return launch, fmt.Errorf("detached launch: the reservation for %s was already %sd for launch %s; refusing to start", workID, decision, launchID)
+	}
+	if detachedAfterStartDecision != nil {
+		detachedAfterStartDecision()
 	}
 	fmt.Fprintf(logFile, "%s detached door start work=%s lane=%s actor=%s budget=%s argv=%q\n", now.UTC().Format(time.RFC3339), workID, lane, actor, budget, argv)
 	// Per-launch boundary marker written BEFORE the started-pid line
