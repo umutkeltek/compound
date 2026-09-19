@@ -144,13 +144,34 @@ func TestWriteCandidateAtomicReplacement(t *testing.T) {
 		var decoded rec
 		t.Fatalf("reader observed torn replacement: bytes=%d valid_json=%t decode_err=%v", len(invalid), json.Valid(invalid), json.Unmarshal(invalid, &decoded))
 	}
+	// The helper loop is the torn-read property; proving rename publication
+	// by inode inequality ACROSS those 40 cycles is filesystem-dependent:
+	// ext4 hands just-freed inodes straight back to the next staged temp, so
+	// the final inode can equal the original by reuse (CI runners, run
+	// 35454311917; APFS never reuses, which is why darwin never saw it).
+	// One controlled replacement from this process is the portable proof:
+	// stageAndReplaceCandidate stages the temp while the target still
+	// exists, so the staged inode is distinct from the target's on every
+	// POSIX filesystem, and rename publication cannot preserve the old one.
+	preLoopEnd, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalPayload := rec{ID: id, Kind: string(Memory), Marker: strings.Repeat("C", markerSize)}
+	if err := WriteCandidate(home, Memory, id, finalPayload); err != nil {
+		t.Fatal(err)
+	}
 	after, err := os.Stat(target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if os.SameFile(before, after) {
+	if os.SameFile(preLoopEnd, after) {
 		t.Fatal("replacement retained the authoritative inode; write was in-place rather than atomic rename publication")
 	}
+	if body, rerr := os.ReadFile(target); rerr != nil || !bytes.Equal(body, canonicalCandidateBody(t, finalPayload)) {
+		t.Fatalf("final controlled replacement body mismatch: err=%v bytes=%d", rerr, len(body))
+	}
+	_ = before
 }
 
 func TestCreateCandidateIfAbsentCrossProcessExactlyOne(t *testing.T) {
