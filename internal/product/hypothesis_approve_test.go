@@ -307,11 +307,12 @@ func TestProductHypothesisQueueItemExposesApproveAction(t *testing.T) {
 	}
 }
 
-// Approval-integrity contract 2026-09-15: the transition evidence is
-// recorded BEFORE the candidate state changes. A transition-recording
-// failure must leave the candidate byte-identical — no approval sentence, no
-// NextAction rewrite — instead of an approved-looking candidate with no
-// receipt (the pre-2026-09-15 order wrote the candidate first).
+// Approval-integrity contract 2026-09-15: the transition evidence — since the
+// intent split, the approval INTENT — is recorded BEFORE the candidate state
+// changes. A transition-recording failure must leave the candidate
+// byte-identical — no approval sentence, no NextAction rewrite — instead of an
+// approved-looking candidate with no receipt (the pre-2026-09-15 order wrote
+// the candidate first).
 func TestHypothesisApproveTransitionFailureLeavesCandidateUntouched(t *testing.T) {
 	home := t.TempDir()
 	productID := "product:synth-notes"

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/envelope"
 )
 
 // HypothesisDraftExpectedEffectPlaceholder is declared by the producer, in
@@ -48,8 +49,8 @@ var recordLoopTransition = RecordTransition
 
 // HypothesisApprove is the governed door around the placeholder gate: the one
 // verb that receives the operator's expected_effect sentence and writes it
-// onto a parked hypothesis draft, receipted by one product_hypothesis_approve
-// loop transition instead of a silent hand-edit of the candidate JSON.
+// onto a parked hypothesis draft, receipted by an approval intent and exactly
+// one outcome transition instead of a silent hand-edit of the candidate JSON.
 //
 // Three refusals are load-bearing (falsifiers 3, 4, and the verdict gate):
 //   - an expected_effect that still starts with the operator placeholder is
@@ -127,35 +128,104 @@ func HypothesisApprove(homePath string, in HypothesisApproveInput, now time.Time
 	// — and must point forward at the loop's own next steps.
 	candidate.NextAction = fmt.Sprintf("approved by %s: import before/after metric evidence and record the product review", actor)
 	approvalID := stableID("pha_", candidateID, expectedEffect, actor, now.UTC().Format(time.RFC3339Nano))
-	// The transition evidence is recorded BEFORE the candidate state changes
-	// (2026-09-15 approval-integrity contract): a failed transition leaves the
-	// candidate untouched — approval state never exists without its evidence.
-	tr, err := BuildLoopTransition(LoopTransitionInput{
-		Kind:         "product_hypothesis_approve",
-		ProductID:    candidate.ProductID,
-		ObjectID:     approvalID,
-		Actor:        actor,
-		SourceTrace:  "product_hypothesis_approve:" + candidateID,
-		BeforeRefs:   compact(append([]string{"product_hypothesis:" + candidateID}, candidate.EvidenceRefs...)),
-		AfterRefs:    compact(append([]string{"product_hypothesis:" + candidateID, "product_hypothesis_approve:" + approvalID}, candidate.EvidenceRefs...)),
-		EvidenceRefs: candidate.EvidenceRefs,
-		Summary:      fmt.Sprintf("product hypothesis %s approved by %s: expected_effect written, verdict stays park so the hypothesis remains in pending review; no product surface changed", candidateID, actor),
+	// Recoverable publication, the shape the exact work-action approval repair
+	// already uses (internal/work/action_approval_handoff.go): persist the
+	// immutable INTENT before anything can change, then publish only the settled
+	// outcome. The intent is recorded BEFORE the candidate state changes, so a
+	// failed record still leaves the candidate untouched (2026-09-15
+	// approval-integrity contract), and because it never claims the approval
+	// happened, a crash between the two reads as "intent, no outcome" instead of
+	// as an approval the CAS may well have refused.
+	intent, err := buildApprovalTransition(candidate, approvalTransitionInput{
+		Kind:        "product_hypothesis_approve_intent",
+		CandidateID: candidateID,
+		ApprovalID:  approvalID,
+		Actor:       actor,
+		Summary:     fmt.Sprintf("product hypothesis %s approval intent by %s: an expected_effect sentence is proposed against the gate-read generation; the candidate is unchanged and no outcome exists until the exact-generation CAS settles", candidateID, actor),
+	}, now)
+	if err != nil {
+		return HypothesisApproveResult{}, err
+	}
+	if err := recordLoopTransition(homePath, intent); err != nil {
+		return HypothesisApproveResult{}, err
+	}
+	// Candidate write under the exact-generation CAS: a concurrent writer who
+	// changed the candidate between the gate read and now wins, and the approval
+	// is refused rather than silently overwriting their state.
+	replaced, err := candidates.ReplaceCandidateIfCurrent(homePath, record, candidate)
+	if err != nil {
+		// An ambiguous write publishes no outcome: the intent alone is the honest
+		// record until a reader re-derives the current generation.
+		return HypothesisApproveResult{}, err
+	}
+	if !replaced.Replaced {
+		refusal := fmt.Errorf("product hypothesis %s changed since the gate read (now %q): approval refused, re-run on the current generation", candidateID, replaced.Current.Digest)
+		outcome, err := buildApprovalTransition(candidate, approvalTransitionInput{
+			Kind:        "product_hypothesis_approve_refused",
+			CandidateID: candidateID,
+			ApprovalID:  approvalID,
+			Actor:       actor,
+			Summary:     fmt.Sprintf("product hypothesis %s approval refused for %s: the candidate changed since the gate read (now %q), so no expected_effect reached the candidate and no product surface changed", candidateID, actor, replaced.Current.Digest),
+		}, now)
+		if err == nil {
+			err = recordLoopTransition(homePath, outcome)
+		}
+		if err != nil {
+			return HypothesisApproveResult{}, fmt.Errorf("%w; recording that refusal also failed: %v", refusal, err)
+		}
+		return HypothesisApproveResult{}, refusal
+	}
+	// Committed outcome, published only now that the CAS actually replaced the
+	// candidate. Its id is derived from the approval act, so a failure here is
+	// replayable rather than a lost receipt.
+	tr, err := buildApprovalTransition(candidate, approvalTransitionInput{
+		Kind:        "product_hypothesis_approve",
+		CandidateID: candidateID,
+		ApprovalID:  approvalID,
+		Actor:       actor,
+		Committed:   true,
+		Summary:     fmt.Sprintf("product hypothesis %s approved by %s: expected_effect written, verdict stays park so the hypothesis remains in pending review; no product surface changed", candidateID, actor),
 	}, now)
 	if err != nil {
 		return HypothesisApproveResult{}, err
 	}
 	if err := recordLoopTransition(homePath, tr); err != nil {
-		return HypothesisApproveResult{}, err
-	}
-	// Candidate write LAST, under the exact-generation CAS: a concurrent
-	// writer who changed the candidate between the gate read and now wins, and
-	// the approval is refused rather than silently overwriting their state.
-	replaced, err := candidates.ReplaceCandidateIfCurrent(homePath, record, candidate)
-	if err != nil {
-		return HypothesisApproveResult{}, err
-	}
-	if !replaced.Replaced {
-		return HypothesisApproveResult{}, fmt.Errorf("product hypothesis %s changed since the gate read (now %q): approval refused, re-run on the current generation", candidateID, replaced.Current.Digest)
+		return HypothesisApproveResult{}, fmt.Errorf("product hypothesis %s approval committed but its outcome was not recorded: %w", candidateID, err)
 	}
 	return HypothesisApproveResult{Candidate: candidate, ApprovalID: approvalID, TransitionID: tr.ID}, nil
+}
+
+// approvalTransitionInput names the three approval records one act can produce:
+// the intent, and the committed or refused outcome that settles it.
+type approvalTransitionInput struct {
+	Kind        string
+	CandidateID string
+	ApprovalID  string
+	Actor       string
+	// Committed is the only thing that puts the approval act into after_refs.
+	// An intent and a refusal both leave the hypothesis where they found it, so
+	// neither may name an approval among the refs that describe the state after
+	// the move.
+	Committed bool
+	Summary   string
+}
+
+func buildApprovalTransition(candidate HypothesisCandidate, in approvalTransitionInput, now time.Time) (envelope.Transition, error) {
+	after := []string{"product_hypothesis:" + in.CandidateID}
+	if in.Committed {
+		after = append(after, "product_hypothesis_approve:"+in.ApprovalID)
+	}
+	return BuildLoopTransition(LoopTransitionInput{
+		Kind:      in.Kind,
+		ProductID: candidate.ProductID,
+		ObjectID:  in.ApprovalID,
+		Actor:     in.Actor,
+		// One source trace across all three kinds: intent and outcome are two
+		// records of the same approval act, joinable by any reader.
+		SourceTrace:  "product_hypothesis_approve:" + in.CandidateID,
+		BeforeRefs:   compact(append([]string{"product_hypothesis:" + in.CandidateID}, candidate.EvidenceRefs...)),
+		AfterRefs:    compact(append(after, candidate.EvidenceRefs...)),
+		EvidenceRefs: candidate.EvidenceRefs,
+		Summary:      in.Summary,
+	}, now)
 }
