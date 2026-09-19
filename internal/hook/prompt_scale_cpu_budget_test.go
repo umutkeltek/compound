@@ -74,6 +74,16 @@ func TestLiveUserPromptScaleStaysInsideCPUTimeBudget(t *testing.T) {
 			t.Fatalf("prompt %d (%s): %v", i, harness, runErr)
 		}
 		if res.BreakerTripped || res.Event.Status == "fail_open" {
+			// The breaker exists to fail open when a prompt exceeds its
+			// injection budget — under a saturated parallel battery on a
+			// 2-core runner that can happen with no regression (run
+			// 35456765443: fail_open context_unavailable mid-loop). Under
+			// the same contention signal the budget assertions relax, a
+			// breaker trip skips; on a quiet machine it stays fatal —
+			// that is the wall-clock regression signal this family owns.
+			if load, ok := promptScaleLoadAverageOneMinute(); ok && load > float64(runtime.NumCPU()/2) {
+				t.Skipf("prompt %d (%s) tripped breaker under load %.1f (NumCPU=%d): fail_open=%s", i, harness, load, runtime.NumCPU(), res.Event.FailOpenReason)
+			}
 			t.Fatalf("prompt %d (%s) tripped breaker: %+v", i, harness, res)
 		}
 	}

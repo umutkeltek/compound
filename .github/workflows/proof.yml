@@ -87,7 +87,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - uses: oven-sh/setup-bun@532d7b940631d7f01c0e8a1158d0ed04d2e5d000
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: latest
 
