@@ -547,6 +547,17 @@ only retry ID and creation time are excluded. Insufficient legacy bindings do
 not match. A persistence failure after consumption can burn a grant, never
 authorize a second execution.
 
+Product-hypothesis approval is a different door with its own record.
+`product hypothesis-approve` publishes an immutable
+`product_hypothesis_approve_intent` transition before it touches the candidate,
+then exactly one settled outcome: `product_hypothesis_approve` when the
+exact-generation CAS replaced the candidate, or
+`product_hypothesis_approve_refused` when a concurrent writer won it. Only the
+committed outcome names the approval act in `after_refs`, so a crash between
+intent and outcome reads as "intent, no outcome". This is the same recoverable
+publication shape as the work-action handoff above, not the same mechanism: no
+`ExactActionApproval` grant, lease, or policy decision is involved.
+
 The full input/model map and migration plan is
 [`docs/security/prompt-injection.md`](../security/prompt-injection.md).
 `compound contract hooks-authority` reports `hook_readiness[]` from installed-hook authority, checked fixture coverage, and live-adapter support, plus `pre_tool_use_readiness[]` from installed hooks and harness native-block facts. With `--observe-live`, it exposes desired `hook_plan`, read-only `installation_observation`, and deterministic `reconciliation` separately; observed extras remain evidence and never enter desired authority. `compound hook pre-tool-use --enforce <fixture.json>` returns the same gate exit codes as `policy evaluate` for non-blocking adapter fallbacks.
