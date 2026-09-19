@@ -40,12 +40,19 @@ console.log("standing-law pure ok: mapper hides superseded law, keeps the confli
  * Gated on COMPOUND_BIN being set EXPLICITLY (not just `compound` on PATH): the
  * e2e exercises the NEW `decisions standing-law` subcommand, so a STALE installed
  * binary on PATH would red here for the wrong reason (installed-runtime drift,
- * not a real defect). proof-check therefore runs the pure layer only; the lane
- * (and anyone) runs the e2e with a freshly-built binary:
+ * not a real defect). A host-bound proof-check therefore runs the pure layer
+ * only; the lane (and anyone) runs the e2e with a freshly-built binary:
  *   COMPOUND_BIN=../compound-sl bun scripts/standing-law-smoke.mjs
+ * CI has no stale-binary problem — it builds the binary in the same job — so
+ * .github/workflows/proof.yml sets COMPOUND_BIN plus CONSOLE_SMOKE_REQUIRE_CLI=1,
+ * which turns a skipped e2e there into a red gate instead of a silent pass.
  * The real-seed e2e of the DATA layer is additionally covered, always, by the Go
  * test TestStandingLawSupersededNeverLive under `go test ./...`. */
 const BIN = process.env.COMPOUND_BIN;
+// CI wires COMPOUND_BIN to a binary it just built, so a skip THERE means the
+// wiring regressed and the e2e layer quietly stopped proving anything. The
+// switch is set by the workflow only; a local run keeps the skip above.
+const REQUIRE_CLI = process.env.CONSOLE_SMOKE_REQUIRE_CLI === "1";
 
 function binaryAvailable() {
   if (!BIN) return false;
@@ -58,6 +65,12 @@ function binaryAvailable() {
 }
 
 if (!binaryAvailable()) {
+  if (REQUIRE_CLI) {
+    console.error(
+      `standing-law e2e FAIL: CONSOLE_SMOKE_REQUIRE_CLI=1 but COMPOUND_BIN does not resolve to a runnable binary (COMPOUND_BIN=${BIN ?? "<unset>"})`,
+    );
+    process.exit(1);
+  }
   console.log(
     "standing-law e2e skipped: set COMPOUND_BIN to a freshly-built binary to run the seed→CLI→map e2e (pure layer already green)",
   );

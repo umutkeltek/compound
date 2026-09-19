@@ -12,6 +12,10 @@ const CONSOLE_ROOT = path.resolve(HERE, "..");
 const BIN = process.env.COMPOUND_BIN || "compound";
 const HOME = process.env.COMPOUND_HOME?.trim() || "";
 const ENFORCE_BUDGETS = process.env.PROJECTION_DOORS_ENFORCE_BUDGETS === "1";
+// CI hands this gate a freshly built binary and a disposable initialized home,
+// so a skip THERE is a wiring regression, not a host fact. The switch is set by
+// the workflow only; a local or host-bound run keeps the skip.
+const REQUIRE_CLI = process.env.CONSOLE_SMOKE_REQUIRE_CLI === "1";
 const MAX_BUFFER = 64 * 1024 * 1024;
 
 // The manifest is deliberately scoped to the six briefing doors. These other
@@ -47,6 +51,10 @@ const PREEXISTING_NON_BRIEFING_ARGV = new Set(
 );
 
 function skip(reason) {
+  if (REQUIRE_CLI) {
+    console.error(`projection-doors-smoke FAIL: CONSOLE_SMOKE_REQUIRE_CLI=1 but ${reason}`);
+    process.exit(1);
+  }
   console.log(`projection-doors-smoke SKIP: ${reason}`);
   process.exit(0);
 }
@@ -95,6 +103,23 @@ function literalProjectionCalls(source) {
   return calls;
 }
 
+// A door's argv may be bound to a local before the call (`const args = ["memory",
+// "candidates", "--json"]; ... runJson(args)` in src/lib/memory-data.ts, which
+// predates this guard), and the call-site pattern above cannot see through the
+// binding. These feed the UNUSED half only: the missing half stays scoped to
+// literal call sites, exactly as its contract above states, so widening here
+// cannot turn a pre-existing non-briefing read into a new failure.
+function boundProjectionArgv(source) {
+  const argv = [];
+  const pattern = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+?)?=\s*(\[(?:\s*"(?:\\.|[^"\\])*"\s*,?)*\s*\])/gms;
+  for (const match of source.matchAll(pattern)) {
+    const binding = match[1].replace(/\$/g, "\\$");
+    const passed = new RegExp(`\\b(?:runJson|runProjection)\\s*\\(\\s*${binding}\\s*(?:,[^)]*)?\\)`);
+    if (passed.test(source)) argv.push(JSON.parse(match[2].replace(/,\s*]$/, "]")));
+  }
+  return argv;
+}
+
 function assertDoorManifestCoversLiteralCalls() {
   const declared = new Map();
   for (const door of DOORS) {
@@ -104,12 +129,15 @@ function assertDoorManifestCoversLiteralCalls() {
   }
 
   const found = new Map();
+  const bound = new Set();
   for (const file of sourceFiles()) {
-    for (const argv of literalProjectionCalls(readFileSync(file, "utf8"))) {
+    const source = readFileSync(file, "utf8");
+    for (const argv of literalProjectionCalls(source)) {
       const key = JSON.stringify(argv);
       const relative = path.relative(CONSOLE_ROOT, file);
       found.set(key, [...(found.get(key) ?? []), relative]);
     }
+    for (const argv of boundProjectionArgv(source)) bound.add(JSON.stringify(argv));
   }
 
   const missing = [...found.entries()]
@@ -123,9 +151,9 @@ function assertDoorManifestCoversLiteralCalls() {
   );
 
   const unused = [...declared.entries()]
-    .filter(([key]) => !found.has(key))
+    .filter(([key]) => !found.has(key) && !bound.has(key))
     .map(([key, id]) => `${id}: ${key}`);
-  assert.deepEqual(unused, [], `declared doors have no literal console call site: ${unused.join(", ")}`);
+  assert.deepEqual(unused, [], `declared doors have no console call site: ${unused.join(", ")}`);
 }
 
 function firstJSONObject(output) {
