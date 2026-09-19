@@ -107,11 +107,16 @@ jobs:
           mkdir -p "$tool_root"
           go build -o "$tool_root/compound" ./cmd/compound
           report="$RUNNER_TEMP/ci-console.json"
-          "$tool_root/compound" proof-check --ci-console --json --base origin/main --out "$report"
-          tail -n 1 "$report" || true
-          if ! tail -n 1 "$report" | grep -q '^battery: ok '; then
-            echo "::error::compound proof-check --ci-console did not end with 'battery: ok '"
-            tail -n 5 "$report" >&2
+          stdout_log="$RUNNER_TEMP/ci-console.stdout"
+          # The battery prints its final verdict line to stdout (the --out
+          # report is pure JSON by design), so capture stdout to check it.
+          set +e
+          "$tool_root/compound" proof-check --ci-console --json --base origin/main --out "$report" | tee "$stdout_log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ] || ! tail -n 1 "$stdout_log" | grep -q '^battery: ok '; then
+            echo "::error::compound proof-check --ci-console did not end with 'battery: ok ' (exit $rc)"
+            tail -n 5 "$stdout_log" >&2
             exit 1
           fi
 
