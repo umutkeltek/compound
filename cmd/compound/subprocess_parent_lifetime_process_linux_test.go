@@ -53,8 +53,19 @@ func parseLinuxTestProcessStat(pid int, body string) (testProcessSnapshot, error
 		return testProcessSnapshot{}, fmt.Errorf("read process %d stat: got %d fields after command", pid, len(fields))
 	}
 	pgid, err := strconv.Atoi(fields[2])
-	if err != nil || pgid <= 0 {
+	if err != nil {
+		// A non-numeric group means our field alignment is wrong; that is
+		// a parse defect, not scan noise.
 		return testProcessSnapshot{}, fmt.Errorf("read process %d stat: invalid process group %q", pid, fields[2])
+	}
+	if pgid <= 0 {
+		// Kernel threads (kthreadd, ksoftirqd/...) carry process group 0.
+		// A host VM's /proc lists them; a container's pid namespace does
+		// not — which is why this surfaced only on CI runners (run
+		// 35453308318): one kernel thread failed the whole scan and every
+		// snapshot-dependent supervisor test died instantly. They are not
+		// part of any test group; skip like any other scan noise.
+		return testProcessSnapshot{}, nil
 	}
 	state := testProcessStateRunning
 	if fields[0] == "Z" || fields[0] == "X" || fields[0] == "x" {
@@ -96,5 +107,12 @@ func TestParseLinuxTestProcessStat(t *testing.T) {
 		if _, err := parseLinuxTestProcessStat(73, body); err == nil {
 			t.Fatalf("malformed stat %q was accepted", body)
 		}
+	}
+	// Kernel threads (kthreadd, ksoftirqd/...) carry process group 0. A
+	// host VM's /proc lists them; a container's pid namespace does not.
+	// They must yield an empty snapshot, never a scan-fatal error (run
+	// 35453308318: one kernel thread failed the whole snapshot read).
+	if got, err := parseLinuxTestProcessStat(2, stat("S", "0")); err != nil || got.pid != 0 {
+		t.Fatalf("kernel-thread stat: got (%+v, %v), want zero snapshot, nil error", got, err)
 	}
 }

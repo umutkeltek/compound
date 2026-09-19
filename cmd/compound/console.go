@@ -421,7 +421,7 @@ func runConsoleSupervisedCommand(plan consoleLaunchPlan, command []string, signa
 			waitCh = nil
 		}
 		for {
-			alive, err := consoleProcessGroupAlive(pgid)
+			alive, err := console.ProcessGroupAlive(pgid)
 			if err != nil {
 				return false, err
 			}
@@ -456,7 +456,7 @@ func runConsoleSupervisedCommand(plan consoleLaunchPlan, command []string, signa
 	select {
 	case err := <-waited:
 		leaderDone = true
-		alive, groupErr := consoleProcessGroupAlive(pgid)
+		alive, groupErr := console.ProcessGroupAlive(pgid)
 		if groupErr != nil {
 			return fmt.Errorf("inspect console process group after leader exit: %w", groupErr)
 		}

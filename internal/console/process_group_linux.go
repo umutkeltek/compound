@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package console
 
 import (
 	"fmt"
@@ -16,7 +16,7 @@ import (
 // its grace window and reports forced-shutdown failure for a group that is
 // in fact dead. Zombies are dead; they are not alive. Found by the
 // console-supervisor falsifiers in containers (CI run 35376991764 follow-up).
-func consoleProcessGroupAlive(pgid int) (bool, error) {
+func ProcessGroupAlive(pgid int) (bool, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return false, fmt.Errorf("read /proc: %w", err)

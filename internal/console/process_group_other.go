@@ -1,6 +1,6 @@
 //go:build !linux
 
-package main
+package console
 
 import "syscall"
 
@@ -8,7 +8,7 @@ import "syscall"
 // reaper collects orphaned group members promptly, so a successful probe
 // means a live process; the linux variant (console_process_linux.go) scans
 // /proc instead because zombies there satisfy the probe until reaped.
-func consoleProcessGroupAlive(pgid int) (bool, error) {
+func ProcessGroupAlive(pgid int) (bool, error) {
 	err := syscall.Kill(-pgid, 0)
 	switch err {
 	case nil, syscall.EPERM:
