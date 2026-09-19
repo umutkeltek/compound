@@ -2,7 +2,9 @@ package product
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -121,12 +123,21 @@ func parseContentPostImage(postImage []byte, now time.Time) (contentPostImage, e
 		return out, fmt.Errorf("transport post-image is not a JSON object, so it carries no provable remote id: %w", err)
 	}
 	// The single-object contract is enforced through EOF (audit
-	// 2026-09-16 finding 4). Two JSON objects back-to-back means the
-	// transport wrapper or logging layer corrupted the boundary; the
-	// caller must learn "this transport is broken", not "the post
-	// happened".
-	if decoder.More() {
-		return out, fmt.Errorf("transport post-image carries more than one JSON object: the transport contract is one object per post; refusing rather than silently dropping the trailing bytes")
+	// 2026-09-16 finding 4; review 2026-09-19). Anything after the object
+	// means the transport wrapper or logging layer corrupted the boundary;
+	// the caller must learn "this transport is broken", not "the post
+	// happened". `decoder.More()` answered the WRONG question — "is there
+	// another element in the array or object being parsed" — so a stray `}`
+	// or `]` after the object read as the end of a container and the
+	// trailing input was dropped. Decode again and require io.EOF: only an
+	// ended stream proves there was one object.
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		detail := "a second JSON value"
+		if err != nil {
+			detail = err.Error()
+		}
+		return out, fmt.Errorf("transport post-image does not end after one JSON object (%s): the transport contract is one object per post; refusing rather than silently dropping the trailing input", detail)
 	}
 	remoteID := firstStringField(payload, contentPostRemoteIDKeys)
 	url := firstStringField(payload, contentPostURLKeys)
@@ -159,9 +170,25 @@ func parseContentPostImage(postImage []byte, now time.Time) (contentPostImage, e
 			out.ScheduledAt = at.UTC().Format(time.RFC3339)
 		}
 	}
+	// Positive-evidence gate (review 2026-09-19). An id alone used to reach
+	// the publication branch by DEFAULT — "no scheduling marker and no
+	// negative status" was treated as proof of a post, so an intermediate
+	// answer like status="processing" was recorded as terminal. An outcome
+	// claim the parser cannot read is ambiguous, not positive: refuse it and
+	// leave the draft in its non-terminal state for reconciliation. An answer
+	// that makes NO outcome claim at all (the shape a bare `{"remote_id":…}`
+	// transport line takes) is unchanged — there is nothing to misread.
+	positiveStatus, unreadableStatus := contentPostImageOutcomeClaim(payload)
 	switch {
 	case remoteID != "" && markedScheduled:
 		return out, fmt.Errorf("transport post-image is ambiguous: it carries an id-shaped field and a scheduling marker, so the id could name a publication or a reservation; refusing to guess (looked at %s and markers %v)", strings.Join(contentPostRemoteIDKeys, ","), contentScheduleAckMarkerKeys)
+	case remoteID != "" && unreadableStatus != "" && !positiveStatus:
+		return out, fmt.Errorf("transport post-image is ambiguous: it carries an id-shaped field and an outcome claim (%s) that is neither a publication (%s), a scheduling marker (%s), nor a failure (%s); the post may have gone out, but nothing proves it did — refusing rather than recording a post the platform never confirmed: %s",
+			unreadableStatus,
+			strings.Join(contentPostPositiveStatusValues, ", "),
+			strings.Join(contentScheduleAckMarkerValues, ", "),
+			strings.Join(contentPostNegativeStatusValues, ", "),
+			payloadStatusSummary(payload))
 	case remoteID != "":
 		out.Kind = postImageKindPublication
 		out.RemoteID = remoteID
@@ -205,6 +232,39 @@ func negativeContentPostImageStatus(payload map[string]any) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// contentPostPositiveStatusValues names the values a transport's status
+// or type field uses to say the post DID happen. The set is closed and
+// derived from the answers the real transports return (`ok`, `published`,
+// `succeeded` are the proven ones; the rest name the same completed fact):
+// a value outside it is not read as success, because "a word we do not
+// know" must never be rendered as a publication. Teaching the loop about a
+// new platform's vocabulary is one edit here — deliberately a decision.
+var contentPostPositiveStatusValues = []string{"ok", "success", "succeeded", "published", "posted", "complete", "completed", "live", "sent"}
+
+// contentPostImageOutcomeClaim reads the same `type` and `status` keys the
+// schedule-marker and negative paths use, and reports (a) whether the
+// payload makes an explicit POSITIVE publication claim and (b) the first
+// claim it could not read at all. An unreadable claim only decides the
+// outcome when no sibling field states success, so a descriptive value next
+// to an explicit `status=ok` does not manufacture a refusal.
+func contentPostImageOutcomeClaim(payload map[string]any) (positive bool, unreadable string) {
+	for _, key := range contentScheduleAckMarkerKeys {
+		v := strings.ToLower(strings.TrimSpace(firstStringField(payload, []string{key})))
+		if v == "" {
+			continue
+		}
+		switch {
+		case containsString(contentPostPositiveStatusValues, v):
+			positive = true
+		case containsString(contentScheduleAckMarkerValues, v), containsString(contentPostNegativeStatusValues, v):
+			// Read by the scheduling and negative gates above.
+		case unreadable == "":
+			unreadable = key + "=" + v
+		}
+	}
+	return positive, unreadable
 }
 
 // payloadStatusSummary renders the human-readable subset of a post-image
