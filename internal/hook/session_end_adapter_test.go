@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"compound/internal/eventstore"
@@ -167,62 +168,67 @@ func TestSessionEndAdapterPersistenceStateRequiresDurablePublicationSignal(t *te
 }
 
 func TestSessionEndAdapterCommitAtDeadlineReportsUnknownPersistenceState(t *testing.T) {
-	compoundHome := t.TempDir()
-	input := []byte("{\"hook_event_name\":\"SessionEnd\",\"session_id\":\"sess_commit_at_deadline\"}\n")
-	parsed := sessionEndAdapterArgs{Harness: "claude-code", Timeout: time.Second, Worker: "/unused"}
-	native := sessionEndAdapterInput{HookEventName: "SessionEnd", SessionID: "sess_commit_at_deadline"}
-	prepared := prepareSessionEndAdapterAcceptance(parsed, native, input, time.Unix(1_800_000_000, 123).UTC())
+	// Advance the virtual deadline only after real persistence has reached the
+	// committed boundary and its goroutine is blocked on release. Disk latency
+	// must not change which side of that boundary this test exercises.
+	synctest.Test(t, func(t *testing.T) {
+		compoundHome := t.TempDir()
+		input := []byte("{\"hook_event_name\":\"SessionEnd\",\"session_id\":\"sess_commit_at_deadline\"}\n")
+		parsed := sessionEndAdapterArgs{Harness: "claude-code", Timeout: time.Second, Worker: "/unused"}
+		native := sessionEndAdapterInput{HookEventName: "SessionEnd", SessionID: "sess_commit_at_deadline"}
+		prepared := prepareSessionEndAdapterAcceptance(parsed, native, input, time.Unix(1_800_000_000, 123).UTC())
 
-	committed := make(chan struct{})
-	release := make(chan struct{})
-	result := persistSessionEndAdapterAcceptanceBounded(
-		compoundHome,
-		prepared,
-		input,
-		500*time.Millisecond,
-		func() {
-			close(committed)
-			<-release
-		},
-	)
-	defer close(release)
-	select {
-	case <-committed:
-	default:
-		t.Fatal("deadline fired before the acceptance commit boundary was reached")
-	}
-	if result.Err == nil || result.PersistenceState != sessionEndAdapterPersistenceUnknown {
-		t.Fatalf("commit-at-deadline result=%+v, want truthful timeout/unknown state", result)
-	}
-	if result.Attempt.ID != prepared.ID || result.Attempt.InputRef != prepared.InputRef {
-		t.Fatalf("pending identity was lost: result=%+v prepared=%+v", result.Attempt, prepared)
-	}
-	wantRetry := []string{"compound", "hook", "session-end-adapter", "--replay", prepared.ID}
-	if strings.Join(result.Attempt.RetryArgv, "\x00") != strings.Join(wantRetry, "\x00") {
-		t.Fatalf("pending retry argv=%q want=%q", result.Attempt.RetryArgv, wantRetry)
-	}
+		committed := make(chan struct{})
+		release := make(chan struct{})
+		result := persistSessionEndAdapterAcceptanceBounded(
+			compoundHome,
+			prepared,
+			input,
+			500*time.Millisecond,
+			func() {
+				close(committed)
+				<-release
+			},
+		)
+		defer close(release)
+		select {
+		case <-committed:
+		default:
+			t.Fatal("deadline fired before the acceptance commit boundary was reached")
+		}
+		if result.Err == nil || result.PersistenceState != sessionEndAdapterPersistenceUnknown {
+			t.Fatalf("commit-at-deadline result=%+v, want truthful timeout/unknown state", result)
+		}
+		if result.Attempt.ID != prepared.ID || result.Attempt.InputRef != prepared.InputRef {
+			t.Fatalf("pending identity was lost: result=%+v prepared=%+v", result.Attempt, prepared)
+		}
+		wantRetry := []string{"compound", "hook", "session-end-adapter", "--replay", prepared.ID}
+		if strings.Join(result.Attempt.RetryArgv, "\x00") != strings.Join(wantRetry, "\x00") {
+			t.Fatalf("pending retry argv=%q want=%q", result.Attempt.RetryArgv, wantRetry)
+		}
 
-	events, err := eventstore.Open(compoundHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := events.Read(prepared.ID); err != nil {
-		t.Fatalf("committed acceptance is not exact-ID readable after deadline: %v", err)
-	}
-	artifacts, err := home.NewArtifactStore(compoundHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored, err := artifacts.GetPrivate(prepared.InputRef)
-	if err != nil {
-		t.Fatalf("committed exact input is not privately replayable after deadline: %v", err)
-	}
-	if _, err := artifacts.Get(prepared.InputRef); err == nil {
-		t.Fatalf("new SessionEnd input must not be present in public artifact custody: %s", prepared.InputRef)
-	}
-	if !bytes.Equal(stored, input) {
-		t.Fatalf("pending input changed: want=%q got=%q", input, stored)
-	}
+		events, err := eventstore.Open(compoundHome)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := events.Read(prepared.ID); err != nil {
+			t.Fatalf("committed acceptance is not exact-ID readable after deadline: %v", err)
+		}
+		artifacts, err := home.NewArtifactStore(compoundHome)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored, err := artifacts.GetPrivate(prepared.InputRef)
+		if err != nil {
+			t.Fatalf("committed exact input is not privately replayable after deadline: %v", err)
+		}
+		if _, err := artifacts.Get(prepared.InputRef); err == nil {
+			t.Fatalf("new SessionEnd input must not be present in public artifact custody: %s", prepared.InputRef)
+		}
+		if !bytes.Equal(stored, input) {
+			t.Fatalf("pending input changed: want=%q got=%q", input, stored)
+		}
+	})
 }
 
 func TestSessionEndAdapterAcceptanceDiagnosticDistinguishesDeadlineFromAmbiguousError(t *testing.T) {
@@ -320,9 +326,11 @@ func TestSessionEndAdapterReplayAcceptsDashedEvidenceButExecutesCanonically(t *t
 	if err := os.WriteFile(workerPath, []byte(worker), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// This control checks replay identity and argv, not host scheduling latency.
+	// Use the existing manual replay bound; dedicated tests retain tight deadlines.
 	var stdout, stderr bytes.Buffer
 	if code := RunSessionEndAdapterCommand(
-		[]string{"--replay", parent.ID, "--worker", workerPath},
+		[]string{"--replay", parent.ID, "--timeout", "30s", "--worker", workerPath},
 		strings.NewReader("must-not-be-consumed"),
 		&stdout,
 		&stderr,
@@ -411,7 +419,9 @@ func TestSessionEndAdapterRetryArgvReplaysAcceptedExactInputByID(t *testing.T) {
 		t.Fatal(err)
 	}
 	var replayStdout, replayStderr bytes.Buffer
-	replayArgs := append(append([]string(nil), attempt.RetryArgv[3:]...), "--worker", successWorker)
+	// Keep the live one-second timeout above, but give this successful exact-input
+	// replay the existing manual replay bound under parallel filesystem load.
+	replayArgs := append(append([]string(nil), attempt.RetryArgv[3:]...), "--timeout", "30s", "--worker", successWorker)
 	if code := RunSessionEndAdapterCommand(replayArgs, strings.NewReader("must-not-be-consumed"), &replayStdout, &replayStderr); code != 0 {
 		partial, partialErr := os.ReadFile(workerInput)
 		t.Fatalf("replay exit=%d stdout=%s stderr=%s worker_input_bytes=%d worker_input_err=%v", code, replayStdout.String(), replayStderr.String(), len(partial), partialErr)
@@ -433,6 +443,45 @@ func TestSessionEndAdapterRetryArgvReplaysAcceptedExactInputByID(t *testing.T) {
 	if _, err := events.Read(outcome.ID); err != nil {
 		t.Fatalf("read replay outcome by exact id: %v", err)
 	}
+
+	// A replay without an override must inherit the stored replay timeout, not
+	// fall back to the original live deadline or the parser's default.
+	var inheritedStdout, inheritedStderr bytes.Buffer
+	if code := RunSessionEndAdapterCommand(
+		[]string{"--replay", outcome.AttemptID, "--worker", successWorker},
+		strings.NewReader("must-not-be-consumed"), &inheritedStdout, &inheritedStderr,
+	); code != 0 {
+		t.Fatalf("inherited replay exit=%d stdout=%s stderr=%s", code, inheritedStdout.String(), inheritedStderr.String())
+	}
+	var inheritedOutcome sessionEndAdapterOutcomeEvidence
+	if err := json.Unmarshal(inheritedStdout.Bytes(), &inheritedOutcome); err != nil {
+		t.Fatal(err)
+	}
+	if inheritedOutcome.Status != sessionEndAdapterStatusSucceeded {
+		t.Fatalf("inherited replay outcome=%+v", inheritedOutcome)
+	}
+	inheritedRecord, err := events.Read(inheritedOutcome.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inherited sessionEndAdapterAttempt
+	if err := json.Unmarshal(inheritedRecord.Bytes, &inherited); err != nil {
+		t.Fatal(err)
+	}
+	if inherited.TimeoutMS != 30000 || inherited.PredecessorID != outcome.AttemptID || inherited.Harness != "claude_code" {
+		t.Fatalf("inherited replay timeout=%d predecessor=%q harness=%q", inherited.TimeoutMS, inherited.PredecessorID, inherited.Harness)
+	}
+	if inherited.InputRef != attempt.InputRef || inherited.InputHash != sessionEndAdapterInputHash([]byte(input)) {
+		t.Fatalf("inherited replay changed accepted input identity: %+v", inherited)
+	}
+	inheritedInput, err := os.ReadFile(workerInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(inheritedInput) != input {
+		t.Fatalf("inherited replay changed accepted stdin: want=%q got=%q", input, inheritedInput)
+	}
+
 }
 
 func TestSessionEndAdapterManualReplayCanUseLongerBoundedTimeout(t *testing.T) {
