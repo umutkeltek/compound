@@ -25,6 +25,8 @@ func TestRefreshPreflightThroughMainPreservesHomeAdmission(t *testing.T) {
 	for _, tc := range []struct {
 		name, manifest, external, want string
 		ordinary                       bool
+		native                         bool
+		extraArgs                      []string
 		wantExit                       int
 	}{
 		{name: "absent", want: "[]"},
@@ -33,6 +35,11 @@ func TestRefreshPreflightThroughMainPreservesHomeAdmission(t *testing.T) {
 		{name: "existing-corrupt", manifest: "schema_version: [", wantExit: 1, want: "parse home manifest"},
 		{name: "existing-incompatible", manifest: "schema_version: compound.home.v99\n", wantExit: 1, want: "unsupported home schema"},
 		{name: "existing-valid", manifest: "valid", want: "[]"},
+		{name: "ordinary-unknown", manifest: "valid", ordinary: true, native: true, extraArgs: []string{"--unknown"}, wantExit: 1, want: `unknown refresh-lane argument "--unknown"`},
+		{name: "preflight-unknown", manifest: "valid", native: true, extraArgs: []string{"--unknown"}, wantExit: 1, want: `unknown refresh-lane argument "--unknown"`},
+		{name: "absent-preflight-unknown", extraArgs: []string{"--unknown"}, wantExit: 1, want: `unknown refresh-lane argument "--unknown"`},
+		{name: "help-unknown", manifest: "valid", native: true, extraArgs: []string{"--help", "--unknown"}, wantExit: 1, want: `unknown refresh-lane argument "--unknown"`},
+		{name: "preflight-as-value", manifest: "valid", ordinary: true, native: true, extraArgs: []string{"--binary", "--preflight"}, wantExit: 1, want: "--binary requires a value"},
 		{name: "external-omp", manifest: "valid", external: "oh_my_pi", wantExit: 1, want: "compound hook install --harness oh-my-pi"},
 		{name: "external-opencode", manifest: "valid", external: "opencode", wantExit: 1, want: "adapters/opencode/install.ts"},
 		{name: "external-unknown", manifest: "valid", external: "unrecognized", wantExit: 1, want: "no native hook refresh owner"},
@@ -54,9 +61,13 @@ func TestRefreshPreflightThroughMainPreservesHomeAdmission(t *testing.T) {
 					}
 				}
 			}
-			if tc.external != "" {
+			if tc.native || tc.external != "" {
 				manifest := "schema_version: compound.installed_hooks.v0.1\nhooks:\n"
-				for _, name := range []string{"codex", tc.external} {
+				harnesses := []string{"codex"}
+				if tc.external != "" {
+					harnesses = append(harnesses, tc.external)
+				}
+				for _, name := range harnesses {
 					manifest += "  - harness: " + name + "\n    name: PostToolUse\n    event: PostToolUse\n    ref: compound\n    revision: synthetic\n    status: current\n"
 				}
 				if err := os.WriteFile(filepath.Join(homePath, "config", "installed-hooks.yaml"), []byte(manifest), 0640); err != nil {
@@ -74,6 +85,7 @@ func TestRefreshPreflightThroughMainPreservesHomeAdmission(t *testing.T) {
 			if !tc.ordinary {
 				args = append(args, "--preflight")
 			}
+			args = append(args, tc.extraArgs...)
 			cmd := exec.Command(os.Args[0], "-test.run=^TestRefreshPreflightThroughMainPreservesHomeAdmission$")
 			cmd.Env = append(os.Environ(), childEnv+"="+strings.Join(args, "\x1f"), "COMPOUND_HOME="+homePath)
 			out, err := cmd.CombinedOutput()
@@ -81,7 +93,7 @@ func TestRefreshPreflightThroughMainPreservesHomeAdmission(t *testing.T) {
 				t.Fatalf("exit=%d, want=%d; error=%v; output missing %q:\n%s", got, tc.wantExit, err, tc.want, out)
 			}
 			if after := refreshPreflightFixtureSnapshot(t, root); !reflect.DeepEqual(before, after) {
-				t.Fatalf("read-only preflight changed home/profile preimages: before=%v after=%v", before, after)
+				t.Fatalf("preflight or refused refresh changed home/profile preimages: before=%v after=%v", before, after)
 			}
 		})
 	}

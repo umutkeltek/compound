@@ -643,6 +643,20 @@ func RunCLIRefresh(opts CLIRefreshOpts) ([]LaneVerdict, error) {
 // dispatch can stay under cmd/compound's line budget. The boolean
 // returned is true when the caller should print usage and exit 0.
 func ParseCLIRefreshArgs(args []string, defaultHome, defaultBinary, defaultBase string, now time.Time) (CLIRefreshOpts, bool, error) {
+	// Validate before help/default resolution so malformed input cannot hide
+	// behind a successful no-op or change the raw --preflight admission path.
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--home", "--binary", "--base", "--harness":
+			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" || strings.HasPrefix(strings.TrimSpace(args[i+1]), "-") {
+				return CLIRefreshOpts{}, false, fmt.Errorf("%s requires a value", args[i])
+			}
+			i++
+		case "--json", "--preflight", "--help", "-h":
+		default:
+			return CLIRefreshOpts{}, false, fmt.Errorf("unknown refresh-lane argument %q", args[i])
+		}
+	}
 	if HasUsageFlag(args) {
 		return CLIRefreshOpts{}, true, nil
 	}
