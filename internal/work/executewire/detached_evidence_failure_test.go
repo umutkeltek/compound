@@ -126,6 +126,65 @@ func TestDetachedCrashImmediatelyAfterStartRetainsOwnership(t *testing.T) {
 	assertDetachedEvidenceUncertain(t, homePath, "work_crash_evidence", pid, time.Now().UTC())
 }
 
+func TestDetachedExitBeforeStartRetainsUncertainOwnership(t *testing.T) {
+	homePath, _, fakeDoor, marker := detachedEvidenceFixture(t, "work_prestart_exit")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDetachedBeforeStartExitHelper$")
+	cmd.Env = append(os.Environ(), "COMPOUND_TEST_DETACHED_PRESTART_EXIT=1",
+		"COMPOUND_TEST_DETACHED_HOME="+homePath, "COMPOUND_TEST_DETACHED_DOOR="+fakeDoor)
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 74 {
+		t.Fatalf("launcher did not exit at the pre-start boundary: %v\n%s", err, output)
+	}
+	launch, err := work.ReadDetachedLaunch(homePath, "work_prestart_exit")
+	if err != nil || launch.PID != 0 || launch.LaunchID == "" || launch.Outcome != work.DetachedOutcomeReserved {
+		t.Fatalf("pre-start exit must leave identified reservation without PID: %+v err=%v", launch, err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("launcher exited before Start but its door ran: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		fresh, err := work.Open(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := fresh.Get(launch.WorkID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeBody, _ := json.Marshal(before)
+		got := fresh.ReconcileDetachedLaunches(time.Now().Add(24 * time.Hour))
+		if len(got) != 1 || got[0].Outcome != work.DetachedOutcomeRecoveryRequired || strings.Contains(got[0].Detail, "holds ownership lock") {
+			t.Fatalf("released kernel lock cannot prove whether Start occurred: %+v", got)
+		}
+		after, err := fresh.Get(launch.WorkID)
+		afterBody, _ := json.Marshal(after)
+		if err != nil || !bytes.Equal(beforeBody, afterBody) || after.State != "claimed" {
+			t.Fatalf("recovery changed unresolved launch lifecycle: %+v err=%v", after, err)
+		}
+		if _, owned := work.DetachedDoorOwns(homePath, launch.WorkID); !owned {
+			t.Fatal("pre-start exit lost reservation and could invite duplicate execution")
+		}
+	}
+}
+
+func TestDetachedBeforeStartExitHelper(t *testing.T) {
+	if os.Getenv("COMPOUND_TEST_DETACHED_PRESTART_EXIT") != "1" {
+		return
+	}
+	store, err := work.Open(os.Getenv("COMPOUND_TEST_DETACHED_HOME"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	DetachedDoorBinary = func() (string, error) { return os.Getenv("COMPOUND_TEST_DETACHED_DOOR"), nil }
+	SetLaunchContextInstalled(true)
+	// The real start decision is durable and its flock is held. Exiting here
+	// releases the kernel lock, without ever starting the detached child.
+	detachedAfterStartDecision = func() { os.Exit(74) }
+	_, err = LaunchDetachedViaDoor(store, "work_prestart_exit", "claude_minimax", "synthetic pre-start exit", "claude-minimax", time.Now().UTC())
+	t.Fatalf("pre-start exit hook was not reached: %v", err)
+}
+
 func TestDetachedEvidenceCrashHelper(t *testing.T) {
 	if os.Getenv("COMPOUND_TEST_DETACHED_CRASH") != "1" {
 		return
