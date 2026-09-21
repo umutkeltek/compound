@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 cd "$repo_root"
 
 "$repo_root/scripts/sync-ceremony-overlays.sh" "$repo_root"
@@ -71,123 +71,186 @@ if [ "$install_os_alias" = 1 ]; then
   fi
 fi
 build_sha=$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo "")
+install_dir=$(CDPATH='' cd -- "$install_dir" && pwd -P)
+case "$compound_home" in /*) ;; *) compound_home=$repo_root/$compound_home ;; esac
+# Recompute the alias after resolving a relative GOBIN.
+os_alias=$install_dir/os
+umask 077
 
-# Build to a staging path, prove the artifact, and only then move it into place. Installing
-# first and verifying after would leave a half-installed artifact behind on failure — and the
-# lifecycle hooks shell out to that path, so a bad artifact there fails every policy gate OPEN
-# with no signal. `set -e` plus this trap means a failed verification replaces nothing.
-staged=$install_dir/.compound.incoming.$$
-alias_staged=$install_dir/.os.incoming.$$
-heartbeat_staged=$install_dir/.compound-autonomy-heartbeat.incoming.$$
-heartbeat_lib_staged=$install_dir/_lib/.heartbeat-promote-stage.incoming.$$
-attention_staged=$compound_home/scripts/.attention-letter.incoming.$$
-trap 'rm -f "$staged" "$alias_staged" "$heartbeat_staged" "$heartbeat_lib_staged" "$attention_staged"' EXIT HUP INT TERM
-go build -ldflags "-X main.buildSHA=$build_sha" -o "$staged" ./cmd/compound
-go run ./cmd/compound-install-verify --binary "$staged" --build-sha "$build_sha"
+fail() { echo "install: $*" >&2; exit 1; }
+[ -n "${HOME:-}" ] || fail "HOME is required for installed profile refresh"
 
-# 2026-09-15 installer-ordering contract: a replaced binary is NOT a completed
-# installation. The old order published the binary FIRST and ran `home doctor`
-# LAST, so a habitat refusal (e.g. an unknown root under COMPOUND_HOME) left a
-# half-activated runtime: new binary live, runtime validation and lane refresh
-# never ran. The EXISTING, already-initialized home is therefore checked with
-# the NON-mutating doctor BEFORE anything is published — a failed check refuses
-# the whole install with the previous binary untouched (the EXIT trap removes
-# every staged file). A fresh home (no config dir yet) skips this: init creates
-# the tree, and the post-publication doctor below still runs. The gate result
-# is the doctor's own verdict; nothing here weakens or reorders its rules.
-if [ -d "$compound_home/config" ]; then
-  # The capture file lives OUTSIDE the managed home: a temp file inside
-  # COMPOUND_HOME becomes an unknown habitat entry the doctor itself would
-  # red on (self-refusal loop, observed and fixed 2026-09-15).
-  precheck_out=$(mktemp "${TMPDIR:-/tmp}/compound-install-precheck.XXXXXX")
-  if ! PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$staged" home doctor --home "$compound_home" >"$precheck_out" 2>&1; then
-    echo "install: pre-publication home doctor FAILED; nothing was published and the previous binary stays in place" >&2
-    sed 's/^/  /' "$precheck_out" >&2
-    rm -f "$precheck_out"
-    echo "install: resolve the home findings above (no data is moved or deleted by this script), then rerun" >&2
-    exit 1
-  fi
-  rm -f "$precheck_out"
+# Share the immutable release installer's persistent kernel lock. Source installs
+# never interpret or recover its journal; only that existing owner may do so.
+state_root=$install_dir/.compound-install-state
+case "$(uname -s)" in
+  Darwin) stat_mode() { stat -f '%Lp' "$1"; }; stat_uid() { stat -f '%u' "$1"; }; stat_links() { stat -f '%l' "$1"; } ;;
+  Linux) stat_mode() { stat -c '%a' "$1"; }; stat_uid() { stat -c '%u' "$1"; }; stat_links() { stat -c '%h' "$1"; } ;;
+  *) fail "source installation requires Darwin or Linux install locking" ;;
+esac
+if [ ! -e "$state_root" ] && [ ! -L "$state_root" ]; then mkdir -m 0700 "$state_root"; fi
+[ -d "$state_root" ] && [ ! -L "$state_root" ] &&
+  [ "$(stat_mode "$state_root")" = 700 ] &&
+  [ "$(stat_uid "$state_root")" = "$(id -u)" ] || fail "install state is not a private owned directory"
+lock_file=$state_root/lock
+if [ ! -e "$lock_file" ] && [ ! -L "$lock_file" ]; then
+  for entry in "$state_root"/* "$state_root"/.[!.]* "$state_root"/..?*; do
+    if [ -e "$entry" ] || [ -L "$entry" ]; then fail "release recovery state has no lock; use the release installer"; fi
+  done
+  (set -C; : > "$lock_file") 2>/dev/null || :
 fi
+[ -f "$lock_file" ] && [ ! -L "$lock_file" ] &&
+  [ "$(stat_mode "$lock_file")" = 600 ] &&
+  [ "$(stat_uid "$lock_file")" = "$(id -u)" ] &&
+  [ "$(stat_links "$lock_file")" = 1 ] || fail "install lock is not a private owned regular file"
+exec 9>"$lock_file"
+case "$(uname -s)" in
+  Darwin) lockf -s -t 0 9 || fail "another installer holds the install lock" ;;
+  Linux) flock -n 9 || fail "another installer holds the install lock" ;;
+esac
+for entry in "$state_root"/* "$state_root"/.[!.]* "$state_root"/..?*; do
+  [ "$entry" = "$lock_file" ] && continue
+  if [ -e "$entry" ] || [ -L "$entry" ]; then fail "pending release recovery state; run the immutable release installer first"; fi
+done
+# A killed process cannot run a trap. Preserve its retained bytes and refuse a
+# new install until the operator resolves that interrupted source installation.
+for entry in "$install_dir"/.compound-source-stage.*; do
+  if [ -e "$entry" ] || [ -L "$entry" ]; then fail "interrupted source installation retained at $entry; inspect before retrying"; fi
+done
 
-# Publication begins HERE: every prerequisite that can fail before a side
-# effect has passed. From this point on, each activation step is recorded and
-# a failure prints an honest partial-activation verdict naming what completed,
-# what blocked, and how to resume — never a silent half state.
-mv -f "$staged" "$install_dir/compound"
-if [ "$install_os_alias" = 1 ]; then
-  ln -s compound "$alias_staged"
-  mv -f "$alias_staged" "$os_alias"
-fi
-if [ "$install_autonomy_lab" = 1 ]; then
-  # The heartbeat sources _lib/heartbeat-promote-stage.sh RELATIVE TO ITSELF, so
-  # the helper is part of the installed artifact, not a repo-only file. Installing
-  # the heartbeat alone passed `sh -n` and then died on its first tick with
-  # "_lib/heartbeat-promote-stage.sh: No such file or directory" — a syntax check
-  # cannot see a missing runtime dependency. Install the helper FIRST so the
-  # heartbeat is never on disk without the surface it sources.
-  mkdir -p "$install_dir/_lib"
-  cp "$repo_root/scripts/_lib/heartbeat-promote-stage.sh" "$heartbeat_lib_staged"
-  chmod 0644 "$heartbeat_lib_staged"
-  sh -n "$heartbeat_lib_staged"
-  mv -f "$heartbeat_lib_staged" "$install_dir/_lib/heartbeat-promote-stage.sh"
-  cp "$repo_root/scripts/compound-autonomy-heartbeat.sh" "$heartbeat_staged"
-  chmod 0755 "$heartbeat_staged"
-  sh -n "$heartbeat_staged"
-  mv -f "$heartbeat_staged" "$install_dir/compound-autonomy-heartbeat.sh"
-  # Prove the installed pair actually composes: source the installed helper with
-  # the installed heartbeat's own resolution and require the public entrypoint to
-  # exist. This is the check `sh -n` structurally cannot do.
-  sh -c '. "$1/_lib/heartbeat-promote-stage.sh"; command -v promote_driver_stage_decide >/dev/null' _ "$install_dir"
-fi
-
-# Post-publication activation. `set -e` stays on; each step reports through
-# activate_failed with the step it blocked at, so the final verdict names the
-# completed prefix and the exact resume point instead of a silent half state.
-activate_failed() {
-  echo "install: activation PARTIAL — published through binary+opt-ins, blocked at $1" >&2
-  echo "install: the published binary is live and verified; resume with the failing step, then rerun ./install.sh (idempotent)" >&2
-  exit 1
+artifacts="compound breadth"
+if [ "$install_autonomy_lab" = 1 ]; then artifacts="$artifacts heartbeat_lib heartbeat attention"; fi
+if [ "$install_os_alias" = 1 ]; then artifacts="$artifacts alias"; fi
+artifact_target() {
+  case "$1" in
+    compound) target=$install_dir/compound ;;
+    breadth) target=$install_dir/compound-breadth-engine ;;
+    heartbeat_lib) target=$install_dir/_lib/heartbeat-promote-stage.sh ;;
+    heartbeat) target=$install_dir/compound-autonomy-heartbeat.sh ;;
+    attention) target=$compound_home/scripts/attention-letter.py ;;
+    alias) target=$os_alias ;;
+    *) return 1 ;;
+  esac
+  incoming=$target.incoming.$$
 }
 
-go build -o "$install_dir/compound-breadth-engine" ./cmd/compound-breadth-engine || activate_failed "breadth_engine_build"
-PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home init --home "$compound_home" --global || activate_failed "home_init"
+stage=$(mktemp -d "$install_dir/.compound-source-stage.XXXXXX")
+published=
+prepared=
+activation_started=0
+completed=0
+cleanup() {
+  status=$?
+  trap - 0 HUP INT TERM
+  set +e
+  rollback_failed=0
+  if [ "$completed" != 1 ]; then
+    for key in $published; do
+      artifact_target "$key"
+      if ! rm -f "$incoming"; then rollback_failed=1; continue; fi
+      if [ -e "$stage/previous/$key" ] || [ -L "$stage/previous/$key" ]; then
+        if ! cp -pP "$stage/previous/$key" "$incoming" || ! mv -f "$incoming" "$target"; then rollback_failed=1; fi
+      elif ! rm -f "$target"; then
+        rollback_failed=1
+      fi
+    done
+    if [ -n "$published" ]; then
+      if [ "$rollback_failed" = 0 ]; then
+        echo "install: publication rolled back; previous artifact bytes, modes and absence restored" >&2
+      else
+        echo "install: rollback INCOMPLETE; retained previous/new artifacts at $stage" >&2
+      fi
+    fi
+    if [ "$activation_started" = 1 ]; then
+      echo "install: activation incomplete; home/profile changes may remain. Inspect binding state before retrying." >&2
+    fi
+  fi
+  for key in $prepared; do artifact_target "$key"; rm -f "$incoming"; done
+  if [ "$rollback_failed" = 0 ]; then rm -rf "$stage"; fi
+  if [ "$completed" != 1 ] && [ "$status" = 0 ]; then status=1; fi
+  exit "$status"
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+mkdir "$stage/new" "$stage/previous"
+
+# Build and validate the entire enabled file set before replacing any target.
+go build -ldflags "-X main.buildSHA=$build_sha" -o "$stage/new/compound" ./cmd/compound
+chmod 0755 "$stage/new/compound"
+go run ./cmd/compound-install-verify --binary "$stage/new/compound" --build-sha "$build_sha"
+go build -o "$stage/new/breadth" ./cmd/compound-breadth-engine
+chmod 0755 "$stage/new/breadth"
+breadth_nonce=source-install-$$
+breadth_probe=$(printf '{"schema_version":1,"request_id":"%s","op":"capabilities"}\n' "$breadth_nonce" |
+  COMPOUND_HOME='' COMPOUND_BREADTH_DISABLE_VECTOR=1 "$stage/new/breadth") || fail "breadth engine capabilities probe failed"
+case "$breadth_probe" in
+  '{"ok":true,"schema_version":1,"request_id":"'"$breadth_nonce"'","name":"compound-breadth","breadth":true,'*) ;;
+  *) fail "breadth engine returned invalid capabilities" ;;
+esac
+if [ "$install_os_alias" = 1 ]; then ln -s compound "$stage/new/alias"; fi
 if [ "$install_autonomy_lab" = 1 ]; then
-  mkdir -p "$compound_home/scripts"
-  cp "$repo_root/scripts/attention-letter.py" "$attention_staged"
-  chmod 0755 "$attention_staged"
-  python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$attention_staged"
-  mv -f "$attention_staged" "$compound_home/scripts/attention-letter.py"
+  cp "$repo_root/scripts/_lib/heartbeat-promote-stage.sh" "$stage/new/heartbeat_lib"
+  chmod 0644 "$stage/new/heartbeat_lib"
+  sh -n "$stage/new/heartbeat_lib"
+  sh -c '. "$1"; command -v promote_driver_stage_decide >/dev/null' _ "$stage/new/heartbeat_lib"
+  cp "$repo_root/scripts/compound-autonomy-heartbeat.sh" "$stage/new/heartbeat"
+  chmod 0755 "$stage/new/heartbeat"
+  sh -n "$stage/new/heartbeat"
+  cp "$repo_root/scripts/attention-letter.py" "$stage/new/attention"
+  chmod 0755 "$stage/new/attention"
+  python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$stage/new/attention"
 fi
-PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home doctor --home "$compound_home" || activate_failed "home_doctor"
-PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" runtime doctor "$repo_root/fixtures/runtime/synthetic-service.yaml" || activate_failed "runtime_doctor"
 
-# R3B 2026-09-04: install.sh overwrites `compound`, which invalidates every
-# Claude lane's installed-hooks manifest entry (its recorded revision is
-# `binary:<path>` and the path just changed / the binary hash did). Without
-# this pass, every lane silently down-grades to plan for any operator who
-# asks for a mutation-capable mode. Refresh the binding per installed
-# Claude lane, then re-render its instruction pack. Failures here are
-# reported per-lane but never fail the install: the next operator-visible
-# signal is `compound doctor` (which now names the drifted lane and the
-# exact repair command).
-installed_compound="$install_dir/compound"
-# R3B 2026-09-04: the lane ladder is now owned by ONE verb,
-# `compound harness refresh-lane`, which prints the drift verdict
-# itself for every installed lane. The previous install.sh loop
-# used the alias name `claude-minimax` for the probe and never
-# re-checked --drift; the operator's canonical-id `--drift` then
-# returned `status: drift` on the canonical path. RefreshLane runs
-# hook install → contract compile (if config/lane-defaults.yaml has
-# a recorded cwd/task for the lane) → pack render → drift check and
-# prints one line per lane from the same verdict struct that
-# doctor's binding-freshness section uses — installer and operator
-# cannot disagree.
-PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$installed_compound" harness refresh-lane --base "$HOME" --binary "$installed_compound" 2>&1 | sed 's/^/  /' || true
+# Existing-home health remains a refusal gate, not a cleanup mechanism.
+if [ -d "$compound_home/config" ]; then
+  if ! PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$stage/new/compound" home doctor --home "$compound_home" >"$stage/precheck" 2>&1; then
+    sed 's/^/  /' "$stage/precheck" >&2
+    fail "pre-publication home doctor FAILED; nothing was published"
+  fi
+fi
 
+# Initialize through the verified staged CLI before adding anything to a fresh
+# home: home init correctly refuses a populated path without its manifest.
+# This is an activation effect, reported honestly even if later publication fails.
+activation_started=1
+PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$stage/new/compound" home init --home "$compound_home" --global || fail "activation failed at home_init"
+
+# Retain the complete preimage, then prepare a sibling temporary file at EVERY
+# target. Cross-filesystem helper copies and invalid target types fail here.
+for key in $artifacts; do
+  artifact_target "$key"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    if [ "$key" != alias ] && [ -L "$target" ]; then fail "refusing symlink artifact: $target"; fi
+    [ -f "$target" ] || [ -L "$target" ] || fail "refusing non-file artifact: $target"
+    cp -pP "$target" "$stage/previous/$key"
+  fi
+  mkdir -p "$(dirname "$target")"
+  [ ! -e "$incoming" ] && [ ! -L "$incoming" ] || fail "refusing existing staging path: $incoming"
+  prepared="$key $prepared"
+  cp -pP "$stage/new/$key" "$incoming"
+done
+# The shared lock excludes cooperating source/release installers. Consumers must
+# be quiesced: the file set still uses sequential renames, never an atomic switch.
+for key in $artifacts; do
+  artifact_target "$key"
+  published="$key $published"
+  mv -f "$incoming" "$target"
+done
+echo "install: publication: complete"
+
+PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home doctor --home "$compound_home" || fail "activation failed at home_doctor"
+PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" runtime doctor "$repo_root/fixtures/runtime/synthetic-service.yaml" || fail "activation failed at runtime_doctor"
+# Preserve the refresh command's status; a pipeline ending in sed hid failures.
+if ! PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" harness refresh-lane --base "$HOME" --binary "$install_dir/compound" >"$stage/refresh" 2>&1; then
+  cat "$stage/refresh" >&2
+  fail "activation failed at harness_refresh"
+fi
+cat "$stage/refresh"
+completed=1
 cat <<EOF
 
 compound installed
+- publication: complete
 - activation: complete
 - binary: $install_dir/compound
 - breadth_engine: $install_dir/compound-breadth-engine

@@ -683,8 +683,19 @@ func RunCLIFromArgs(args []string, now time.Time) error {
 		fmt.Fprintln(os.Stderr, "usage: compound harness refresh-lane [--harness <name>] [--json] [--base <dir>] [--binary <path>] [--home <dir>]")
 		return nil
 	}
-	verdicts, _ := RunCLIRefresh(opts)
-	return PrintVerdicts(os.Stdout, verdicts, opts.JSON)
+	verdicts, refreshErr := RunCLIRefresh(opts)
+	if err := PrintVerdicts(os.Stdout, verdicts, opts.JSON); err != nil {
+		return err
+	}
+	if refreshErr != nil {
+		return refreshErr
+	}
+	for _, verdict := range verdicts {
+		if verdict.Status != StatusClean {
+			return fmt.Errorf("refresh incomplete for %s: %s (%s)", verdict.Harness, verdict.Status, verdict.Detail)
+		}
+	}
+	return nil
 }
 
 // osUserHome is a small indirection so RunCLIFromArgs can be unit

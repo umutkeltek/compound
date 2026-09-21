@@ -223,8 +223,24 @@ test "$(git rev-parse HEAD)" = "$COMMIT"
 make install
 ```
 
-This builds the `compound` binary into `~/.local/bin/`, initializes a
-`COMPOUND_HOME` at `~/.compound`, and runs `home doctor` to verify the layout.
+This stages and checks both `compound` and `compound-breadth-engine`, plus any
+explicitly enabled alias and autonomy helpers, before replacing installed files.
+It initializes `COMPOUND_HOME` at `~/.compound` and runs home/runtime doctors and
+the required installed-lane binding refresh. Publication and activation are
+reported separately; a failed refresh fails installation.
+
+Source installation shares the release installer's kernel lock. Stop consumers
+of the installed binaries/helpers during installation: the set is published by
+sequential renames. On ordinary failure or a handled signal, the source installer
+restores previous artifact bytes, modes, symlinks and absent files. Home or profile
+changes made during activation are not undone; inspect binding state before
+retrying. If restoration fails, retained old/new files remain in the named
+`.compound-source-stage.*` directory and another source install refuses to run.
+SIGKILL, power loss and filesystem durability are not covered by this trap-based
+rollback. An interrupted source installation requires inspection of its retained
+files; it has no automatic crash replay. Immutable tagged releases retain the
+journaled recovery protocol described above. Source installation refuses pending
+release recovery state and never repairs or deletes that owner's journal.
 The release workflow proves the tag commit is contained in remote `main` before
 building and publishing. Repository administrators must still activate tag
 immutability, protected-branch rules, and the private vulnerability-reporting
