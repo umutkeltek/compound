@@ -227,7 +227,7 @@ func TestDetachedPostStartRecordFailureKeepsEnvelopeClaimed(t *testing.T) {
 	if !strings.HasPrefix(after.State, "claimed") {
 		t.Fatalf("recovery_required must leave the envelope claimed for the door, got %q", after.State)
 	}
-	if !strings.Contains(res.Human, "pid 424243") || !strings.Contains(res.Human, "sidecar could not be recorded") {
+	if !strings.Contains(res.Human, "pid 424243") || !strings.Contains(res.Human, "start evidence could not be durably recorded") {
 		t.Fatalf("human line must name the pid and the recovery: %s", res.Human)
 	}
 }

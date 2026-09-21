@@ -109,7 +109,7 @@ func TestReconcileBindsRecoveredPidToExactLaunchAttemptNotFirstLogMarker(t *test
 		t.Fatalf("sidecar outcome = %q, want running", sidecar.Outcome)
 	}
 }
-func TestReconcileClassifiesReservedWithExpiredReservationAsLost(t *testing.T) {
+func TestReconcileRevokesUnstartedExpiredReservation(t *testing.T) {
 	s := newStore(t)
 	seedReadyExecuteWork(t, s, "work_reserved_expired")
 	if _, err := s.Claim("work_reserved_expired", "claude-minimax", fixedNow); err != nil {
@@ -117,6 +117,7 @@ func TestReconcileClassifiesReservedWithExpiredReservationAsLost(t *testing.T) {
 	}
 	if err := WriteDetachedLaunch(s.home, DetachedLaunch{
 		WorkID:    "work_reserved_expired",
+		LaunchID:  "dl_reserved_never_started",
 		Lane:      "claude-minimax",
 		Actor:     "claude-minimax",
 		LogPath:   "/tmp/empty-expired-door.log",

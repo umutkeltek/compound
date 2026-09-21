@@ -55,6 +55,9 @@ const (
 	DetachedOutcomeDoorFinalized   = "door_finalized"
 	DetachedOutcomeDoorLost        = "door_lost"
 	DetachedOutcomeDoorLostRunning = "door_lost_running"
+	// RecoveryRequired is a verdict, not a terminal sidecar state. The
+	// reservation remains owned until positive evidence settles it.
+	DetachedOutcomeRecoveryRequired = "recovery_required"
 )
 
 // DetachedDoorStartedLogLine is the log prefix the launcher appends AFTER
@@ -95,27 +98,22 @@ func NewDetachedLaunchID(now time.Time) string {
 	return fmt.Sprintf("dl_%d_%x", now.UTC().UnixNano(), suffix[:])
 }
 
-// DetachedReservationGrace bounds how long a reserved sidecar can sit
-// without a started pid before the reconciler is allowed to classify
-// the envelope as door_lost. The grace window must outlast a normal
-// launcher start (which holds the door log fd open, spawns the door
-// process, and writes the running sidecar), so a launcher mid-flight
-// is not closed by its own reconcile (audit 2026-09-16 finding 5).
+// DetachedReservationGrace bounds how long recovery waits before checking
+// launch ownership. Expiry never proves that no child started; a held kernel
+// lock still excludes recovery and an unrecorded start remains uncertain.
 const DetachedReservationGrace = 5 * time.Minute
 
-// DetachedLaunchRecordError is the typed outcome for a door process that DID
-// start but whose sidecar could not be recorded. A started pid is never a
-// no-side-effect refusal: the caller must treat the door as owning the
-// envelope (it finalizes it) and must not close the work as failed-to-spawn.
-// The launch carries the observed identity so the caller and later ticks can
-// observe it even without a durable sidecar.
+// DetachedLaunchRecordError reports a started door whose log or sidecar
+// recording failed. The caller must never treat it as a no-start refusal.
+// The returned identity is observable now; recovery needs matching durable
+// evidence, otherwise the reservation remains owned and recovery_required.
 type DetachedLaunchRecordError struct {
 	Launch DetachedLaunch
 	Err    error
 }
 
 func (e *DetachedLaunchRecordError) Error() string {
-	return fmt.Sprintf("detached launch: door pid %d started but the sidecar could not be written: %v", e.Launch.PID, e.Err)
+	return fmt.Sprintf("detached launch: door pid %d started but start evidence could not be durably recorded: %v", e.Launch.PID, e.Err)
 }
 
 func (e *DetachedLaunchRecordError) Unwrap() error { return e.Err }
@@ -181,8 +179,9 @@ func detachedLaunchPath(home, workID string) string {
 	return filepath.Join(DetachedLaunchDir(home), workID+".json")
 }
 
-// WriteDetachedLaunch persists the sidecar. The record is written whole and
-// renamed into place so a reader never sees a torn file.
+// WriteDetachedLaunch syncs a complete temporary sidecar before rename, then
+// syncs its directory. A failed durability step is reported to the existing
+// launch/recovery owner, even if rename already made the record visible.
 func WriteDetachedLaunch(home string, launch DetachedLaunch) error {
 	if strings.TrimSpace(launch.WorkID) == "" {
 		return errors.New("detached launch: work_id is required")
@@ -199,11 +198,34 @@ func WriteDetachedLaunch(home string, launch DetachedLaunch) error {
 		return err
 	}
 	tmp := detachedLaunchPath(home, launch.WorkID) + ".tmp"
-	if err := os.WriteFile(tmp, append(body, '\n'), 0o644); err != nil {
+	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, detachedLaunchPath(home, launch.WorkID))
+	defer os.Remove(tmp)
+	data := append(body, '\n')
+	n, writeErr := file.Write(data)
+	if writeErr == nil && n != len(data) {
+		writeErr = io.ErrShortWrite
+	}
+	if writeErr == nil {
+		writeErr = syncDetachedLaunchRecord(file)
+	}
+	if err := errors.Join(writeErr, file.Close()); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, detachedLaunchPath(home, launch.WorkID)); err != nil {
+		return err
+	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	return errors.Join(syncDetachedLaunchRecord(directory), directory.Close())
 }
+
+// The file and directory durability boundaries are independently falsifiable.
+var syncDetachedLaunchRecord = func(file *os.File) error { return file.Sync() }
 
 // ReadDetachedLaunch loads one sidecar.
 func ReadDetachedLaunch(home, workID string) (DetachedLaunch, error) {
@@ -374,9 +396,9 @@ func AssertDetachedReservationHeld(home, workID, launchID string) error {
 // under the same lock. There is deliberately no time-based override: an
 // override of a held lock is the bug this replaced, not a safety net.
 //
-// LEGACY: a sidecar written before launch ids existed has no id to name a lock
-// with, so no ownership guarantee is claimed for it. Those reservations keep
-// exactly their pre-2026-09-19 behaviour, including this race.
+// LEGACY: reservations without launch ids still accept marker-scoped log
+// recovery. Without a pid they remain uncertain: no ownership token exists
+// that can prove a delayed launcher will never start.
 const (
 	// DetachedDecisionStart is the launcher's claim: this launch will start
 	// a child, so its reservation must never be classified lost.
@@ -495,10 +517,9 @@ func AcquireDetachedStartOwnership(home, workID, launchID string, now time.Time)
 //
 //   - empty: nobody has decided, so recovery decides — the revoke is written
 //     and fsynced before the caller stamps or closes anything;
-//   - start: the launcher decided AND has already left its critical section
-//     (the kernel would still be holding the lock otherwise), so it either
-//     started a child whose pid is in the log or it died before cmd.Start().
-//     Recovery classifies immediately, with no further wait;
+//   - start: the launcher has left its critical section, but a crash just
+//     after Start or failed recording may hide a live child. Missing pid
+//     evidence leaves recovery_required, never proof of a side-effect-free run;
 //   - revoke: an earlier tick already decided; idempotent.
 //
 // The lock is released before the caller stamps the sidecar and closes the
@@ -634,9 +655,9 @@ func reservationInGrace(launch DetachedLaunch, now time.Time) bool {
 // A `reserved` sidecar (written before the start, whose post-start update
 // failed) is adopted here: the reconcile reads the started pid line from the
 // door log, re-stamps the sidecar, and treats the door as running. A
-// reserved record with NO started line and a still-claimed envelope is a
-// start that never happened (or whose log line was lost too) — it closes the
-// envelope failed exactly like a lost door.
+// reserved record with NO started line is ambiguous once its launcher decided
+// start. The child may still be alive. Recovery reports recovery_required and
+// retains ownership across restarts rather than closing or redispatching it.
 func (s *Store) ReconcileDetachedLaunches(now time.Time) []DetachedReconcile {
 	launches, err := ListDetachedLaunches(s.home)
 	if err != nil || len(launches) == 0 {
@@ -663,14 +684,9 @@ func (s *Store) ReconcileDetachedLaunches(now time.Time) []DetachedReconcile {
 		if loadErr == nil {
 			verdict.State = w.State
 		}
-		// Reserved launches stay in their reservation grace window. The
-		// launcher writes the reserved sidecar BEFORE the door process
-		// exists, then opens the log fd, then spawns the door. A reconcile
-		// tick that lands inside this window is racing the launcher;
-		// treating the envelope as lost here would close a live launch's
-		// claim. Only a reservation whose grace has expired (or whose
-		// launcher is provably gone) is fair game for door_lost
-		// (audit 2026-09-16 finding 5).
+		// Give an ordinary launcher time to finish recording before checking
+		// its durable decision. Expiry is only a reason to inspect ownership;
+		// it proves neither that the launcher stopped nor that no child exists.
 		if launch.Outcome == DetachedOutcomeReserved && launch.PID <= 0 && reservationInGrace(launch, now) {
 			verdict.Outcome = DetachedOutcomeReserved
 			verdict.Detail = fmt.Sprintf("reserved sidecar within grace (%s); launcher in flight, not yet classified lost", DetachedReservationGrace)
@@ -683,15 +699,16 @@ func (s *Store) ReconcileDetachedLaunches(now time.Time) []DetachedReconcile {
 			out = append(out, verdict)
 			continue
 		}
-		// THE DECISION. Past the grace window a reserved launch with no pid
-		// is a door_lost candidate — but its launcher may be descheduled one
-		// instruction short of cmd.Start(), and no amount of elapsed time can
-		// tell the two apart. So recovery takes the ownership decision for
-		// this launch id FIRST, atomically, and classifies nothing it did not
-		// win. Both losing paths leave the reservation exactly as it is and
-		// retry on the next tick: an unclassified envelope is recoverable, a
-		// child started against a failed envelope is not.
+		// THE DECISION. Recovery may revoke an undecided launch only while
+		// holding its ownership lock. A held lock excludes recovery; a durable
+		// start decision without a pid remains uncertain after the lock is free.
 		if launch.Outcome == DetachedOutcomeReserved && launch.PID <= 0 {
+			if launch.LaunchID == "" {
+				verdict.Outcome = DetachedOutcomeRecoveryRequired
+				verdict.Detail = "legacy reservation has no launch ownership identity or started pid; process start is uncertain, reservation retained"
+				out = append(out, verdict)
+				continue
+			}
 			decision, decErr := TakeDetachedRevokeOwnership(s.home, launch.WorkID, launch.LaunchID, now)
 			switch {
 			case errors.Is(decErr, ErrDetachedLaunchInProgress):
@@ -709,11 +726,13 @@ func (s *Store) ReconcileDetachedLaunches(now time.Time) []DetachedReconcile {
 				out = append(out, verdict)
 				continue
 			case decision != DetachedDecisionRevoke:
-				// The launcher decided `start` and has already dropped the
-				// lock, so it is finished or dead — and the pid adoption
-				// above found no started-pid line for this launch id. It died
-				// before cmd.Start(); classify now, no further wait.
-				launch.OutcomeDetail = fmt.Sprintf("launch %s decided to start, released the ownership lock and logged no started pid; ", launch.LaunchID)
+				// The free lock only ends the launcher's critical section. Death
+				// before Start, death after Start, and failed recording are
+				// indistinguishable without a pid. Retain the owned reservation.
+				verdict.Outcome = DetachedOutcomeRecoveryRequired
+				verdict.Detail = fmt.Sprintf("launch %s has decision %q and no matching started pid after its ownership lock was released; process start is uncertain, reservation retained", launch.LaunchID, decision)
+				out = append(out, verdict)
+				continue
 			}
 		}
 		launch.ExitObservedAt = now.UTC().Format(time.RFC3339)

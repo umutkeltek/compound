@@ -262,11 +262,20 @@ durable reserved launch identity (sidecar, outcome=reserved, no pid)
 → observation (reconcile) → finalization/recovery
 ```
 
-A sidecar write failure after `cmd.Start` returns a typed `DetachedLaunchRecordError`
-carrying the started identity — the door owns the envelope, so the stage leaves it claimed
-(`launch_record_recovery`) and never closes it as failed-to-spawn. A reconcile tick adopts
-a `reserved` record by reading the started pid line from the door log. A started pid is
-never a "nothing started" result.
+A recording failure after `cmd.Start` returns a typed `DetachedLaunchRecordError` carrying the
+started identity. The door owns the envelope, so the stage leaves it claimed (`launch_record_recovery`)
+and never closes it as failed-to-spawn. Log writes and sync errors are checked; sidecar publication
+syncs its temporary file before rename and its directory afterward. Reconciliation adopts a `reserved`
+record when the log contains a pid for that exact launch identity.
+
+If both recording paths fail, or the launcher crashes immediately after `cmd.Start`, a free ownership
+lock proves only that the launcher left its critical section. A durable `start` decision with no pid
+therefore yields `recovery_required`, while the durable sidecar remains `reserved` and blocks duplicate
+dispatch. Legacy reservations without a launch identity are equally uncertain without matching log
+evidence. No elapsed grace period proves that nothing started. A later matching pid can be adopted;
+otherwise exact recovery needs additional process evidence. Only a durable `revoke` decision before
+start, or an observed dead recorded pid, permits the existing lost-door lifecycle path. The kernel
+lock, exact launch-id binding, and revoke-before-close ordering remain the ownership mechanism.
 
 ## Route evidence is a projection, not a verdict
 

@@ -128,27 +128,21 @@ func TestRecoveryClassifiesNothingWhileTheLauncherHoldsTheOwnershipLock(t *testi
 	}
 }
 
-// Falsifier 9 — a FREE lock needs no waiting. The launcher decided `start` and
-// the kernel has already released its lock, so it is finished or dead; with no
-// started pid in the log it died before cmd.Start(). Recovery classifies on
-// the first tick past the reservation grace, with no further window.
-func TestRecoveryClassifiesImmediatelyWhenTheStartDecisionLockIsFree(t *testing.T) {
+// A released launcher lock is not proof of a side-effect-free attempt: the
+// owner can die immediately before OR immediately after Start.
+func TestRecoveryRetainsUnrecordedStartWhenTheOwnershipLockIsFree(t *testing.T) {
 	s := newStore(t)
 	reserveDetachedLaunchForOwnership(t, s, "work_lock_free", "dl_lock_free")
 	writeDetachedDecisionRecord(t, s.home, "work_lock_free", "dl_lock_free", DetachedDecisionStart, fixedNow)
-	prevAlive := detachedProcessAlive
-	detachedProcessAlive = func(int) bool { return false }
-	t.Cleanup(func() { detachedProcessAlive = prevAlive })
-
 	verdicts := s.ReconcileDetachedLaunches(fixedNow.Add(DetachedReservationGrace + time.Minute))
-	if len(verdicts) != 1 || verdicts[0].Outcome != DetachedOutcomeDoorLost {
-		t.Fatalf("a released lock proves the launcher is gone; recovery must classify on this tick, got %+v", verdicts)
+	if len(verdicts) != 1 || verdicts[0].Outcome != DetachedOutcomeRecoveryRequired {
+		t.Fatalf("released lock cannot settle whether a child started: %+v", verdicts)
 	}
-	if !strings.Contains(verdicts[0].Detail, "released the ownership lock") {
-		t.Fatalf("the verdict must say why it was safe to classify, got %q", verdicts[0].Detail)
+	if w, _ := s.Get("work_lock_free"); w.State != "claimed" {
+		t.Fatalf("uncertain start changed envelope to %s", w.State)
 	}
-	if w, _ := s.Get("work_lock_free"); w.State != "failed" {
-		t.Fatalf("envelope state = %q, want failed", w.State)
+	if _, owned := DetachedDoorOwns(s.home, "work_lock_free"); !owned {
+		t.Fatal("uncertain start lost its reservation")
 	}
 }
 
@@ -249,7 +243,10 @@ func TestLegacyIdlessReservationTakesNoOwnershipDecision(t *testing.T) {
 	})
 
 	verdicts := s.ReconcileDetachedLaunches(fixedNow.Add(24 * time.Hour))
-	if len(verdicts) != 1 || verdicts[0].Outcome != DetachedOutcomeDoorLost {
-		t.Fatalf("a legacy expired reservation must keep classifying door_lost; got %+v", verdicts)
+	if len(verdicts) != 1 || verdicts[0].Outcome != DetachedOutcomeRecoveryRequired {
+		t.Fatalf("legacy absence of pid cannot prove no start: %+v", verdicts)
+	}
+	if w, _ := s.Get("work_legacy_no_token"); w.State != "claimed" {
+		t.Fatalf("legacy uncertainty changed envelope to %s", w.State)
 	}
 }

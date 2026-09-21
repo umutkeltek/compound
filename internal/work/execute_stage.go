@@ -257,8 +257,8 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 				// 2026-09-15 start/record contract: a door that STARTED is
 				// never a failed-to-spawn result. The typed record error
 				// carries the started identity; the door owns the envelope
-				// and finalizes it, so the envelope stays claimed and a
-				// later reconcile tick adopts the record from the door log.
+				// and finalizes it, so the envelope stays claimed;
+				// reconciliation adopts matching evidence or retains uncertainty.
 				var recErr *DetachedLaunchRecordError
 				if errors.As(spawnErr, &recErr) && recErr != nil {
 					result.Action = "execute"
@@ -267,7 +267,7 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 					result.Detached = &recErr.Launch
 					result.Skipped = "launch_record_recovery"
 					result.RunAttemptIDs = nil
-					result.Human = executeRefusedSummary(refused) + fmt.Sprintf("launched envelope %s on lane %s in a detached governed door (pid %d) but the sidecar could not be recorded: %v; the door owns running -> verifying/failed and the next tick adopts the record from the door log %s", ready, lane, recErr.Launch.PID, recErr.Err, recErr.Launch.LogPath)
+					result.Human = executeRefusedSummary(refused) + fmt.Sprintf("launched envelope %s on lane %s in a detached governed door (pid %d) but start evidence could not be durably recorded: %v; door retains ownership; reconciliation adopts matching identity when available or reports recovery_required; log %s", ready, lane, recErr.Launch.PID, recErr.Err, recErr.Launch.LogPath)
 					return result, nil
 				}
 				closeSummary := "unattended detached launch failed to spawn: " + spawnErr.Error()

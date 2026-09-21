@@ -3,6 +3,7 @@ package executewire
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,6 +78,21 @@ var writeDetachedLaunch = work.WriteDetachedLaunch
 // check-then-act guard left open, without a sleep or a goroutine race.
 var detachedAfterStartDecision func()
 
+// These seams put recording failures and a launcher crash at the exact
+// post-start boundary. Production keeps the hook nil.
+var detachedAfterStart func(*exec.Cmd)
+var syncDetachedDoorLog = func(file *os.File) error { return file.Sync() }
+var writeDetachedStartedLog = func(file *os.File, line string) error {
+	n, err := file.WriteString(line)
+	if err != nil {
+		return err
+	}
+	if n != len(line) {
+		return io.ErrShortWrite
+	}
+	return syncDetachedDoorLog(file)
+}
+
 // LaunchDetachedViaDoor spawns the detached door for an already-claimed
 // envelope and records the sidecar. The record protocol is start/record-safe:
 //
@@ -94,11 +110,12 @@ var detachedAfterStartDecision func()
 //     (the log fd predates the start, so it usually survives the same
 //     filesystem failure that ate the sidecar); it carries the launch id, so
 //     recovery adopts the pid only into the reservation that started it;
-//  5. the sidecar is updated to running+pid. A failure there (after one
-//     retry) returns a *work.DetachedLaunchRecordError carrying the started
+//  5. the sidecar is updated to running+pid with one retry. A log or
+//     sidecar recording failure returns a *work.DetachedLaunchRecordError carrying the started
 //     identity: the caller must treat the door as owning the envelope, never
-//     close the work as failed-to-spawn, and let a reconcile tick adopt the
-//     reserved record from the log.
+//     close the work as failed-to-spawn. Matching log evidence can recover
+//     the pid; absent evidence leaves the reservation owned and explicitly
+//     recovery_required, including a crash immediately after cmd.Start.
 func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string, now time.Time) (work.DetachedLaunch, error) {
 	var launch work.DetachedLaunch
 	if store == nil {
@@ -210,7 +227,7 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	if detachedAfterStartDecision != nil {
 		detachedAfterStartDecision()
 	}
-	fmt.Fprintf(logFile, "%s detached door start work=%s lane=%s actor=%s budget=%s argv=%q\n", now.UTC().Format(time.RFC3339), workID, lane, actor, budget, argv)
+	_, logErr := fmt.Fprintf(logFile, "%s detached door start work=%s lane=%s actor=%s budget=%s argv=%q\n", now.UTC().Format(time.RFC3339), workID, lane, actor, budget, argv)
 	// Per-launch boundary marker written BEFORE the started-pid line
 	// (audit 2026-09-16 finding 5). A reconcile that scopes its pid
 	// recovery to lines after the most recent marker for this workID
@@ -219,12 +236,17 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	// concurrent launch on a different workID (theoretical; the log
 	// file is per-workID today but the guard costs nothing) does not
 	// bleed across envelopes.
-	fmt.Fprintf(logFile, "%s %s%s %s%s started_at=%s\n", now.UTC().Format(time.RFC3339), work.DetachedDoorLaunchMarker, workID, work.DetachedDoorLaunchIDField, launchID, now.UTC().Format(time.RFC3339Nano))
+	_, markerErr := fmt.Fprintf(logFile, "%s %s%s %s%s started_at=%s\n", now.UTC().Format(time.RFC3339), work.DetachedDoorLaunchMarker, workID, work.DetachedDoorLaunchIDField, launchID, now.UTC().Format(time.RFC3339Nano))
+	logErr = errors.Join(logErr, markerErr)
 	// 3. Guarded start. Nothing started means the reserved record goes away
 	// best-effort; a stale reserved record would otherwise read as owned.
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(filepath.Join(dir, workID+".json"))
 		return launch, fmt.Errorf("detached launch: start door: %w", err)
+	}
+	defer func() { _ = cmd.Process.Release() }()
+	if detachedAfterStart != nil {
+		detachedAfterStart(cmd)
 	}
 	pid := cmd.Process.Pid
 	launch = reserved
@@ -236,7 +258,7 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	// reconcile tick adopts when step 5 keeps failing. It carries the launch
 	// id, which is what binds the pid to THIS reservation — a prior launch's
 	// pid line carries a different id and is never adopted.
-	fmt.Fprintf(logFile, "%s %s%d pgid=%d %s%s\n", now.UTC().Format(time.RFC3339), work.DetachedDoorStartedLogLine, pid, pid, work.DetachedDoorLaunchIDField, launchID)
+	logErr = errors.Join(logErr, writeDetachedStartedLog(logFile, fmt.Sprintf("%s %s%d pgid=%d %s%s\n", now.UTC().Format(time.RFC3339), work.DetachedDoorStartedLogLine, pid, pid, work.DetachedDoorLaunchIDField, launchID)))
 	// 5. Record the started identity. One retry; a persistent failure is
 	// reported as recovery_required, never as failed-to-spawn.
 	var writeErr error
@@ -246,13 +268,12 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 			break
 		}
 	}
-	if writeErr != nil {
+	if logErr != nil || writeErr != nil {
 		// The door is running; do not lose its identity. Report loudly and
 		// typed so the caller cannot mistake this for a no-start refusal.
-		return launch, &work.DetachedLaunchRecordError{Launch: launch, Err: writeErr}
+		return launch, &work.DetachedLaunchRecordError{Launch: launch, Err: errors.Join(logErr, writeErr)}
 	}
-	// Do not wait: the tick returns, the door lives on. Release drops the
-	// parent's handle so the child is reparented and reaped by init.
-	_ = cmd.Process.Release()
+	// Do not wait: the bounded door lives on. Release the parent's handle
+	// on success and on every returned post-start recording error.
 	return launch, nil
 }
