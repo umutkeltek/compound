@@ -233,6 +233,8 @@ Before initializing the home or publishing artifacts, the staged CLI runs
 `compound harness refresh-lane --preflight`. This read-only check validates every
 required native hook writer before any profile is refreshed. `ready` means the
 writer is available; it does not certify activation or provider acceptance.
+An absent home needs no initialization for this check; an existing home must
+have a compatible manifest. Ordinary refresh retains mutation admission.
 OpenCode registration belongs to `adapters/opencode/install.ts`; oh-my-pi shim
 installation belongs to `compound hook install --harness oh-my-pi` and does not
 publish settings-style hook authority. Required entries for either adapter stop

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/contract"
+	"compound/internal/home"
 )
 
 func TestRefreshAllRefusesExternalAdapterBeforeNativeMutation(t *testing.T) {
@@ -84,6 +85,9 @@ func TestRefreshPreflightCLIIsReadOnlyAndDoesNotClaimActivation(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("read-only preflight created %s: %v", path, err)
 		}
+	}
+	if err := home.Init(homePath, home.HomeKindGlobal, time.Now()); err != nil {
+		t.Fatal(err)
 	}
 	writeInstalledHooksManifest(t, homePath, map[string]string{"codex": "binary:synthetic", "opencode": "binary:synthetic"})
 	if err := RunCLIFromArgs(args, time.Now().UTC()); err == nil {

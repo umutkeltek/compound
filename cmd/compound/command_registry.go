@@ -156,7 +156,8 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("install", policy.FirstPartyCommandInstall).
 			withSubcommandFlagAdmission("install", "--check", policy.FirstPartyCommandRead),
 		"harness": governedCommand(cmdHarness).
-			withSubcommandAdmission("posture-plan", policy.FirstPartyCommandRead),
+			withSubcommandAdmission("posture-plan", policy.FirstPartyCommandRead).
+			withSubcommandFlagAdmission("refresh-lane", "--preflight", policy.FirstPartyCommandRead),
 		"transition": readCommand(cmdTransition),
 		"route": governedCommand(cmdRoute).
 			withSubcommandAdmission("evidence-authority", policy.FirstPartyCommandRead).

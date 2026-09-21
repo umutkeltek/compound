@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"compound/internal/home"
 	"compound/internal/hookplan"
 )
 
@@ -58,6 +59,15 @@ func refreshPreflightReady(verdicts []LaneVerdict) bool {
 }
 
 func runCLIRefreshPreflight(opts CLIRefreshOpts) error {
+	// The installer asks before initializing a genuinely absent home. Existing
+	// homes still need the same manifest integrity check as ordinary refresh.
+	if _, err := os.Lstat(opts.HomePath); err == nil {
+		if err := home.RequireMutationCompatible(opts.HomePath); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	refreshOpts := RefreshLaneOptions{HomePath: opts.HomePath, BaseDir: opts.BaseDir, BinaryPath: opts.BinaryPath, Now: opts.Now}
 	var verdicts []LaneVerdict
 	if opts.HarnessName != "" {
