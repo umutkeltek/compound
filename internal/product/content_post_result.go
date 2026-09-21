@@ -190,6 +190,9 @@ func parseContentPostImage(postImage []byte, now time.Time) (contentPostImage, e
 			strings.Join(contentPostNegativeStatusValues, ", "),
 			payloadStatusSummary(payload))
 	case remoteID != "":
+		if !positiveStatus {
+			return out, fmt.Errorf("untyped identity alone cannot prove publication; reconcile through a versioned request-bound transport")
+		}
 		out.Kind = postImageKindPublication
 		out.RemoteID = remoteID
 		out.URL = url

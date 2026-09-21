@@ -100,10 +100,9 @@ func TestRecordContentPostResultLeavesAmbiguousImageForReconciliation(t *testing
 
 // TestParseContentPostImageKeepsProvenAnswersGreen is the other half of the
 // invariant: tightening the publication gate must not refuse the shapes the
-// live path really returns. Each image here is the shape a proven transport
-// answer takes — an explicit positive status, and an answer that makes no
-// outcome claim at all beyond the id the platform minted (the fixture
-// transport's `{"remote_id":...}` line is exactly this).
+// legacy explicit-positive reader accepts. Identity-only legacy answers are
+// refused; the production outbound path additionally requires the request-bound
+// v0.2 observation contract.
 func TestParseContentPostImageKeepsProvenAnswersGreen(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -114,8 +113,8 @@ func TestParseContentPostImageKeepsProvenAnswersGreen(t *testing.T) {
 		{"positive status ok", `{"id":"1899","url":"https://example.invalid/p/1899","status":"ok"}`, postImageKindPublication, "1899"},
 		{"positive status published", `{"id":"r-1","status":"published"}`, postImageKindPublication, "r-1"},
 		{"positive status succeeded", `{"id":"r-1","status":"succeeded"}`, postImageKindPublication, "r-1"},
-		{"no outcome claim, numeric id", `{"post_id":1730000000000000123}`, postImageKindPublication, "1730000000000000123"},
-		{"no outcome claim, fixture transport shape", `{"remote_id":"post-synth","verified":true}`, postImageKindPublication, "post-synth"},
+		{"explicit publication, numeric id", `{"post_id":1730000000000000123,"status":"published"}`, postImageKindPublication, "1730000000000000123"},
+		{"explicit publication, fixture transport shape", `{"remote_id":"post-synth","status":"published","verified":true}`, postImageKindPublication, "post-synth"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parsed, err := parseContentPostImage([]byte(tc.image), postResultNow)

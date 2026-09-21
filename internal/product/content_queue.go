@@ -13,7 +13,6 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/home"
-	"compound/internal/policy"
 	"compound/internal/reviewartifact"
 	"compound/internal/verdictflow"
 )
@@ -44,10 +43,10 @@ import (
 
 const (
 	ContentQueueReviewArea                = "product-content-queue"
-	ContentQueuePlanSchemaVersion         = "compound.product_content_queue_plan.v0.1"
-	ContentQueueReviewSchemaVersion       = "compound.product_content_queue_review.v0.1"
+	ContentQueuePlanSchemaVersion         = "compound.product_content_queue_plan.v0.2"
+	ContentQueueReviewSchemaVersion       = "compound.product_content_queue_review.v0.2"
 	ContentQueueReviewReportSchemaVersion = "compound.product_content_queue_review_report.v0.1"
-	ContentPostAuthorizationSchemaVersion = "compound.content_post_authorization.v0.1"
+	ContentPostAuthorizationSchemaVersion = "compound.content_post_authorization.v0.2"
 
 	// ContentPostCapability scopes the minted post ActionIntent. A standing grant
 	// for this capability + external_side_effect class is what a later S4 post
@@ -80,17 +79,20 @@ type ContentQueuePlan struct {
 
 // ContentQueueRow is one draft as the operator sees it in the batch.
 type ContentQueueRow struct {
-	DraftID       string   `json:"draft_id"`
-	ProductID     string   `json:"product_id"`
-	Platform      string   `json:"platform"`
-	State         string   `json:"state"`
-	BodyRef       string   `json:"body_ref"`
-	BodyText      string   `json:"body_text"`
-	VoicePackRef  string   `json:"voice_pack_ref,omitempty"`
-	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
-	ExpiresAt     string   `json:"expires_at"`
-	Expired       bool     `json:"expired"`
-	ApplyCommands []string `json:"apply_commands"`
+	PackageDigest string              `json:"package_digest"`
+	Media         []ContentDraftMedia `json:"media,omitempty"`
+	NextCommand   string              `json:"next_command,omitempty"`
+	DraftID       string              `json:"draft_id"`
+	ProductID     string              `json:"product_id"`
+	Platform      string              `json:"platform"`
+	State         string              `json:"state"`
+	BodyRef       string              `json:"body_ref"`
+	BodyText      string              `json:"body_text"`
+	VoicePackRef  string              `json:"voice_pack_ref,omitempty"`
+	EvidenceRefs  []string            `json:"evidence_refs,omitempty"`
+	ExpiresAt     string              `json:"expires_at"`
+	Expired       bool                `json:"expired"`
+	ApplyCommands []string            `json:"apply_commands"`
 	// Warnings is the additive content-staleness flag set. Slice 2 of
 	// the model-catalog envelope adds a check: a draft body naming a
 	// model the installed catalog marks superseded surfaces a visible
@@ -127,11 +129,12 @@ type ContentQueueReview struct {
 
 // ContentQueueReviewRow is one draft's operator decision.
 type ContentQueueReviewRow struct {
-	DraftID   string `json:"draft_id" yaml:"draft_id"`
-	ProductID string `json:"product_id,omitempty" yaml:"product_id,omitempty"`
-	Platform  string `json:"platform,omitempty" yaml:"platform,omitempty"`
-	Expired   bool   `json:"expired,omitempty" yaml:"expired,omitempty"`
-	Verdict   string `json:"verdict" yaml:"verdict"`
+	PackageDigest string `json:"package_digest" yaml:"package_digest"`
+	DraftID       string `json:"draft_id" yaml:"draft_id"`
+	ProductID     string `json:"product_id,omitempty" yaml:"product_id,omitempty"`
+	Platform      string `json:"platform,omitempty" yaml:"platform,omitempty"`
+	Expired       bool   `json:"expired,omitempty" yaml:"expired,omitempty"`
+	Verdict       string `json:"verdict" yaml:"verdict"`
 }
 
 // ContentQueueReviewReport is the apply result: per-row outcomes + counts.
@@ -174,6 +177,7 @@ type ContentQueueRowResult struct {
 // the full minted ActionIntent + PolicyDecision plus the body ref, so `act post`
 // can reconstruct and govern the actual publish without re-deriving anything.
 type ContentPostAuthorization struct {
+	PackageDigest    string                  `json:"package_digest"`
 	SchemaVersion    string                  `json:"schema_version"`
 	DraftID          string                  `json:"draft_id"`
 	ProductID        string                  `json:"product_id"`
@@ -205,6 +209,7 @@ func BuildContentQueuePlan(homePath string, now time.Time) (ContentQueuePlan, er
 		return ContentQueuePlan{}, err
 	}
 
+	reviewable := 0
 	var (
 		rows       []ContentQueueRow
 		warnings   []string
@@ -214,8 +219,19 @@ func BuildContentQueuePlan(homePath string, now time.Time) (ContentQueuePlan, er
 		stalenessN int
 	)
 	for _, draft := range drafts {
-		if draft.State != ContentDraftStateProposed && draft.State != ContentDraftStateParked {
+		if draft.State == ContentDraftStatePosted || draft.State == ContentDraftStateRejected || (draft.Outbound != nil && draft.Outbound.Status == "failed") {
+			continue
+		}
+		if draft.Outbound == nil && draft.Approval != nil {
+			if auth, loadErr := LoadContentPostAuthorization(homePath, draft.ID); loadErr == nil && auth.ActionIntentID == draft.Approval.Authorization.ActionIntentID {
+				continue
+			}
+		}
+		if draft.State != ContentDraftStateProposed && draft.State != ContentDraftStateParked && draft.Outbound == nil && draft.Approval == nil {
 			continue // operationalized / rejected drafts are no longer reviewable
+		}
+		if draft.State == ContentDraftStateProposed || draft.State == ContentDraftStateParked {
+			reviewable++
 		}
 		bodyText, resolveWarn := resolveContentDraftBody(store, draft)
 		if resolveWarn != "" {
@@ -226,6 +242,8 @@ func BuildContentQueuePlan(homePath string, now time.Time) (ContentQueuePlan, er
 			expired++
 		}
 		row := ContentQueueRow{
+			Media:         draft.Media,
+			NextCommand:   contentReconcileCommand(draft),
 			DraftID:       draft.ID,
 			ProductID:     draft.ProductID,
 			Platform:      draft.Platform,
@@ -244,8 +262,27 @@ func BuildContentQueuePlan(homePath string, now time.Time) (ContentQueuePlan, er
 			// no refusal, the operator still owns the post.
 			Warnings: draft.Warnings,
 		}
+		row.PackageDigest, err = ContentPackageDigest(homePath, draft)
+		if err != nil {
+			return ContentQueuePlan{}, err
+		}
+		if draft.Outbound != nil {
+			row.State = draft.Outbound.Status
+			row.ApplyCommands = []string{row.NextCommand}
+		} else if draft.Approval != nil {
+			row.State = "approved"
+			if _, loadErr := LoadContentPostAuthorization(homePath, draft.ID); loadErr != nil {
+				row.State = "authorization_recovery_required"
+			}
+			row.NextCommand = "compound product content-queue apply --review <original-reviewed.yaml>"
+			row.ApplyCommands = []string{row.NextCommand + " (resume frozen approval " + draft.Approval.ReviewID + ")"}
+		}
 		rows = append(rows, row)
-		ids = append(ids, draft.ID)
+		identity := draft.ID + ":" + row.PackageDigest + ":" + row.State
+		if draft.Outbound != nil {
+			identity += ":" + draft.Outbound.ID
+		}
+		ids = append(ids, identity)
 		products[draft.ProductID] = true
 		if len(draft.Warnings) > 0 {
 			stalenessN++
@@ -255,6 +292,9 @@ func BuildContentQueuePlan(homePath string, now time.Time) (ContentQueuePlan, er
 	sort.Strings(ids)
 	planID := stableID("cqp_", append([]string{"content-queue"}, ids...)...)
 	status := "review_required"
+	if reviewable == 0 && len(rows) > 0 {
+		status = "reconciliation_required"
+	}
 	if len(rows) == 0 {
 		status = "ok"
 	}
@@ -263,7 +303,7 @@ func BuildContentQueuePlan(homePath string, now time.Time) (ContentQueuePlan, er
 		ID:              planID,
 		CreatedAt:       now.UTC().Format(time.RFC3339),
 		Status:          status,
-		ReviewableCount: len(rows),
+		ReviewableCount: reviewable,
 		ExpiredCount:    expired,
 		Products:        sortedKeys(products),
 		Rows:            rows,
@@ -320,9 +360,13 @@ func RenderContentQueueReviewYAML(plan ContentQueuePlan) string {
 	fmt.Fprintln(&b, "drafts:")
 	for _, row := range plan.Rows {
 		fmt.Fprintf(&b, "  - draft_id: %s\n", row.DraftID)
+		fmt.Fprintf(&b, "    package_digest: %q\n", row.PackageDigest)
 		fmt.Fprintf(&b, "    product_id: %q\n", row.ProductID)
 		fmt.Fprintf(&b, "    platform: %s\n", row.Platform)
-		if row.Expired {
+		if row.NextCommand != "" {
+			fmt.Fprintln(&b, "    verdict: hold # existing approval/attempt; use the command below")
+			fmt.Fprintf(&b, "    # %s\n", row.NextCommand)
+		} else if row.Expired {
 			fmt.Fprintln(&b, "    expired: true")
 			fmt.Fprintln(&b, "    verdict: hold  # EXPIRED: reject or hold only")
 		} else {
@@ -446,19 +490,19 @@ func applyContentQueueRow(homePath string, review ContentQueueReview, row Conten
 		return res
 
 	case contentQueueVerdictApprove:
-		if draft.State != ContentDraftStateProposed && draft.State != ContentDraftStateParked {
+		if draft.State != ContentDraftStateProposed && draft.State != ContentDraftStateParked && draft.Approval == nil {
 			res.Outcome = "skipped_not_reviewable"
 			res.Error = fmt.Sprintf("draft state %q is not reviewable; no re-mint", draft.State)
 			return res
 		}
 		// Fail closed on expiry BEFORE any mint or state move.
-		if contentDraftExpired(draft, now) {
+		if draft.Approval == nil && contentDraftExpired(draft, now) {
 			res.Outcome = "refused_expired"
 			res.Error = fmt.Sprintf("draft %s expired at %s: stale marketing must never post", draft.ID, draft.ExpiresAt)
 			return res
 		}
 		// Move state THROUGH the S1 door (never bypassed); it re-checks expiry.
-		op, err := OperationalizeContentDraft(homePath, draftID, now)
+		op, err := approveContentPackage(homePath, review, row, now)
 		if err != nil {
 			res.Outcome = "refused"
 			res.Error = err.Error()
@@ -489,17 +533,15 @@ func applyContentQueueRow(homePath string, review ContentQueueReview, row Conten
 // event store, writes the S4-facing authorization record, and records the loop
 // transition. Returns the authorization (with the two minted ids).
 func mintAndRecordContentPost(homePath string, review ContentQueueReview, draft ContentDraft, now time.Time) (ContentPostAuthorization, error) {
-	ai := contentPostIntent(draft, now)
-	if err := ai.Validate(); err != nil {
-		return ContentPostAuthorization{}, fmt.Errorf("minted content post action intent invalid: %w", err)
+	if draft.Approval == nil {
+		return ContentPostAuthorization{}, fmt.Errorf("missing frozen package approval")
 	}
-	cfg, _, err := policy.LoadConfig(homePath)
+	auth := draft.Approval.Authorization
+	ai, pd := auth.ActionIntent, auth.PolicyDecision
+	var err error
+	now, err = time.Parse(time.RFC3339, auth.CreatedAt)
 	if err != nil {
 		return ContentPostAuthorization{}, err
-	}
-	pd := policy.Evaluate(ai, cfg, now)
-	if err := pd.Validate(); err != nil {
-		return ContentPostAuthorization{}, fmt.Errorf("minted content post policy decision invalid: %w", err)
 	}
 
 	store, err := eventstore.Open(homePath)
@@ -513,20 +555,6 @@ func mintAndRecordContentPost(homePath string, review ContentQueueReview, draft 
 		return ContentPostAuthorization{}, fmt.Errorf("record content post policy decision: %w", err)
 	}
 
-	auth := ContentPostAuthorization{
-		SchemaVersion:    ContentPostAuthorizationSchemaVersion,
-		DraftID:          draft.ID,
-		ProductID:        draft.ProductID,
-		Platform:         draft.Platform,
-		BodyRef:          draft.BodyRef,
-		ReviewID:         review.ID,
-		CreatedAt:        now.UTC().Format(time.RFC3339),
-		ActionIntentID:   ai.ID,
-		PolicyDecisionID: pd.ID,
-		PolicyOutcome:    pd.Outcome,
-		ActionIntent:     ai,
-		PolicyDecision:   pd,
-	}
 	if err := writeContentPostAuthorization(homePath, auth); err != nil {
 		return ContentPostAuthorization{}, err
 	}
@@ -652,6 +680,28 @@ func AnnotateContentQueue(report *reviewartifact.QueueReport) {
 }
 
 func annotateContentQueueItem(item *reviewartifact.QueueItem) {
+	plan, ok := contentQueuePlanFromQueueItem(*item)
+	if !ok {
+		item.Readiness = "blocked"
+		item.BlockedReason = "content queue plan unreadable"
+		item.NextAction = "regenerate content queue plan"
+		item.Actions = nil
+		return
+	}
+	var pending []string
+	for _, row := range plan.Rows {
+		if row.NextCommand != "" {
+			pending = append(pending, row.NextCommand)
+		}
+	}
+	if len(pending) > 0 {
+		item.Readiness = "needs_review"
+		item.BlockedReason = "existing content approval or outbound attempt requires recovery"
+		item.NextAction = strings.Join(pending, "\n")
+		item.Actions = nil
+		item.DecisionCard = nil
+		return
+	}
 	if record, ok := contentQueueReviewedFromExtras(item.ExtraPaths); ok {
 		item.Status = record.Status
 		item.Readiness = "no_action"
@@ -659,14 +709,6 @@ func annotateContentQueueItem(item *reviewartifact.QueueItem) {
 		item.NextAction = "content queue reviewed"
 		item.Actions = nil
 		item.DecisionCard = nil
-		return
-	}
-	plan, ok := contentQueuePlanFromQueueItem(*item)
-	if !ok {
-		item.Readiness = "blocked"
-		item.BlockedReason = "content queue plan unreadable"
-		item.NextAction = "regenerate content queue plan"
-		item.Actions = nil
 		return
 	}
 	if plan.ReviewableCount == 0 {
@@ -870,6 +912,13 @@ func renderContentQueuePlanMarkdown(plan ContentQueuePlan) string {
 		}
 		fmt.Fprintf(&b, "### %s (%s / %s)%s\n\n", row.DraftID, row.ProductID, row.Platform, marker)
 		fmt.Fprintf(&b, "- expires_at: %s\n", row.ExpiresAt)
+		fmt.Fprintf(&b, "- package_digest: %s\n", row.PackageDigest)
+		for i, media := range row.Media {
+			fmt.Fprintf(&b, "- media %d: %s (%s, %s); alt text: %q\n", i+1, media.Ref, media.Kind, media.MIMEType, media.AltText)
+		}
+		if row.NextCommand != "" {
+			fmt.Fprintf(&b, "- %s: `%s`\n", row.State, row.NextCommand)
+		}
 		if row.VoicePackRef != "" {
 			fmt.Fprintf(&b, "- voice_pack: %s\n", row.VoicePackRef)
 		}

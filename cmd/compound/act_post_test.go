@@ -109,7 +109,7 @@ func writePostSpyTransport(t *testing.T, homePath, name string) string {
 
 func seedAuthorizedPostDraft(t *testing.T, homePath, accountStatus, integrationID string) product.ContentDraft {
 	t.Helper()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+	if err := home.Init(homePath, "test", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	draft, err := product.RecordContentDraft(homePath, product.ContentDraftInput{
@@ -117,17 +117,21 @@ func seedAuthorizedPostDraft(t *testing.T, homePath, accountStatus, integrationI
 		Platform:     "x",
 		Body:         "grounded synthetic post",
 		EvidenceRefs: []string{"finding:prod-synth"},
-		ExpiresAt:    cliTestNow.Add(72 * time.Hour),
-	}, cliTestNow)
+		ExpiresAt:    time.Now().UTC().Add(72 * time.Hour),
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := product.ContentPackageDigest(homePath, draft)
 	if err != nil {
 		t.Fatal(err)
 	}
 	review := product.ContentQueueReview{
 		SchemaVersion: product.ContentQueueReviewSchemaVersion,
 		ID:            "cqr_act_post",
-		Drafts:        []product.ContentQueueReviewRow{{DraftID: draft.ID, Verdict: "approve"}},
+		Drafts:        []product.ContentQueueReviewRow{{DraftID: draft.ID, PackageDigest: digest, Verdict: "approve"}},
 	}
-	if _, err := product.ApplyContentQueueReview(homePath, review, "", cliTestNow); err != nil {
+	if _, err := product.ApplyContentQueueReview(homePath, review, "", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	registry, err := json.Marshal(map[string]any{
@@ -148,24 +152,10 @@ func seedAuthorizedPostDraft(t *testing.T, homePath, accountStatus, integrationI
 
 func writeVerifiedPostTransport(t *testing.T, homePath, name string) string {
 	t.Helper()
-	marker := filepath.Join(homePath, "verified-post-marker")
-	script := filepath.Join(homePath, "verified-post-transport.sh")
-	body := "#!/bin/sh\ncat > \"$1\"\nprintf '{\"remote_id\":\"post-synth\",\"verified\":true}'\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
+	if name != "fixture" {
+		t.Fatal("synthetic transport is fixture")
 	}
-	dir := filepath.Join(homePath, "actuator", "transports")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	config, err := json.Marshal(map[string]any{"argv": []string{script, marker}, "timeout_s": 30})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, name+".json"), config, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return marker
+	return filepath.Join(b2Transport(t, homePath), "request")
 }
 
 // F5: a closed envelope composes deterministically; a non-terminal envelope is refused.
@@ -444,7 +434,15 @@ func TestActPostDraftWithGrantSendsCompleteRequestAndCapturesRemoteProof(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(postImage) != `{"remote_id":"post-synth","verified":true}` {
-		t.Fatalf("remote proof post-image = %q", postImage)
+	var observation product.ContentTransportObservation
+	if err := json.Unmarshal(postImage, &observation); err != nil {
+		t.Fatal(err)
+	}
+	if observation.Status != "scheduled" || observation.ScheduleID != "schedule-synth" || observation.RemoteID != "" || observation.AttemptID != request.AttemptID {
+		t.Fatalf("schedule proof = %+v", observation)
+	}
+	stored, err := product.ReadContentDraft(homePath, draft.ID)
+	if err != nil || stored.State != product.ContentDraftStateScheduled || stored.Post != nil {
+		t.Fatalf("schedule became publication: %+v %v", stored, err)
 	}
 }

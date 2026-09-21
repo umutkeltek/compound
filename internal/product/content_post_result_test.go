@@ -94,7 +94,7 @@ func TestRecordContentPostResultRefusesUnprovablePostImage(t *testing.T) {
 func TestRecordContentPostResultAcceptsNumericRemoteID(t *testing.T) {
 	homePath := t.TempDir()
 	draft := operationalizedDraft(t, homePath)
-	posted, err := RecordContentPostResult(homePath, draft.ID, []byte(`{"post_id":1730000000000000123}`), "", postResultNow)
+	posted, err := RecordContentPostResult(homePath, draft.ID, []byte(`{"post_id":1730000000000000123,"status":"published"}`), "", postResultNow)
 	if err != nil {
 		t.Fatalf("record post result: %v", err)
 	}

@@ -19,9 +19,12 @@ import (
 // executable transport. Its unexported write method keeps execution behind Execute's
 // PolicyDecision gate.
 type ExecTransportAdapter struct {
-	Name       string
-	Home       string
-	lastOutput []byte
+	Name           string
+	Home           string
+	lastOutput     []byte
+	contentBinding *ContentTransportBinding
+	requestDigest  string
+	admissionCheck func() error
 }
 
 var _ Adapter = (*ExecTransportAdapter)(nil)
@@ -53,8 +56,9 @@ func (e *execTransportUncertainError) Unwrap() error               { return e.er
 func (*execTransportUncertainError) MutationMayHaveOccurred() bool { return true }
 
 type execTransportConfig struct {
-	Argv     []string `json:"argv"`
-	TimeoutS int      `json:"timeout_s,omitempty"`
+	Argv            []string `json:"argv"`
+	TimeoutS        int      `json:"timeout_s,omitempty"`
+	ContentContract string   `json:"content_contract,omitempty"`
 }
 
 const (
@@ -247,6 +251,10 @@ func (a *ExecTransportAdapter) write(_ envelope.ActionTarget, newValue []byte) e
 	if err != nil {
 		return err
 	}
+	if a.contentBinding != nil {
+		cfg.Argv = append([]string(nil), a.contentBinding.Argv...)
+		cfg.TimeoutS = a.contentBinding.TimeoutS
+	}
 	timeout := defaultExecTransportTimeout
 	if cfg.TimeoutS > 0 {
 		timeout = time.Duration(cfg.TimeoutS) * time.Second
@@ -259,6 +267,20 @@ func (a *ExecTransportAdapter) write(_ envelope.ActionTarget, newValue []byte) e
 	diagnostics := &cappedTransportOutput{limit: maxExecTransportOutput}
 	cmd.Stdout = output
 	cmd.Stderr = diagnostics
+	if a.contentBinding != nil {
+		if ContentTransportDigest(newValue) != a.requestDigest {
+			return fmt.Errorf("content transport request changed")
+		}
+		if a.admissionCheck != nil {
+			if err := a.admissionCheck(); err != nil {
+				return err
+			}
+		}
+		if err := CheckContentTransport(a.Home, *a.contentBinding); err != nil {
+			return err
+		}
+		cmd.Path = a.contentBinding.Executable
+	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("transport %q start: %w", strings.TrimSpace(a.Name), err)
 	}

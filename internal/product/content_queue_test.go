@@ -30,11 +30,20 @@ func recordQueueDraft(t *testing.T, homePath, body string, expiresAt, now time.T
 	return draft
 }
 
-func approveReview(id, draftID string) ContentQueueReview {
+func approveReview(t *testing.T, homePath, id, draftID string) ContentQueueReview {
+	t.Helper()
+	draft, err := ReadContentDraft(homePath, draftID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := ContentPackageDigest(homePath, draft)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return ContentQueueReview{
 		SchemaVersion: ContentQueueReviewSchemaVersion,
 		ID:            id,
-		Drafts:        []ContentQueueReviewRow{{DraftID: draftID, Verdict: "approve"}},
+		Drafts:        []ContentQueueReviewRow{{DraftID: draftID, PackageDigest: digest, Verdict: "approve"}},
 	}
 }
 
@@ -81,7 +90,7 @@ func TestContentQueueApproveMintsGovernedPostPairAndOperationalizes(t *testing.T
 	}
 	draft := recordQueueDraft(t, homePath, "ship-day post", contentQueueNow.Add(72*time.Hour), contentQueueNow)
 
-	report, err := ApplyContentQueueReview(homePath, approveReview("cqr_approve", draft.ID), "", contentQueueNow)
+	report, err := ApplyContentQueueReview(homePath, approveReview(t, homePath, "cqr_approve", draft.ID), "", contentQueueNow)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -159,7 +168,7 @@ func TestContentQueueApproveOnExpiredRefusesBeforeAnyMint(t *testing.T) {
 		t.Fatalf("read draft file: %v", err)
 	}
 
-	report, err := ApplyContentQueueReview(homePath, approveReview("cqr_expired", draft.ID), "", contentQueueNow.Add(time.Hour))
+	report, err := ApplyContentQueueReview(homePath, approveReview(t, homePath, "cqr_expired", draft.ID), "", contentQueueNow.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}

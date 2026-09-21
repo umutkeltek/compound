@@ -8,32 +8,18 @@ import (
 
 // distribution_gate.go marks the distribution loop as EXPERIMENTAL at its doors.
 //
-// A 2026-09-01 external release audit found that the distribution path, while more
-// capable than before, is not yet truthful end to end: a scheduling acknowledgement
-// is recorded as a publication, attached media never reaches the outbound request,
-// operator approval is not bound to the exact media package, and a failed local
-// write after a successful remote call can lead to a duplicate public post.
-//
-// The response is not to delete the work — it is the operator's revenue path — but
-// to stop it being mistaken for a supported v0.1 surface. A comment saying
-// "experimental" does not gate anything; an explicit opt-in does.
+// The v0.2 path proves one synthetic package-to-measurement vertical. Live
+// transport enrollment and external provider acceptance remain explicit gates.
 const DistributionExperimentEnv = "COMPOUND_EXPERIMENTAL_DISTRIBUTION"
 
-// KnownDistributionGaps are the audited defects a caller is opting into. They are
-// listed at the door so nobody enables the flag without seeing what is still wrong.
-//
-// 2026-09-15 audit-reconcile: the first audited gap ("a scheduling
-// acknowledgement is recorded as posted") is CLOSED — a transport scheduler's
-// acceptance now records the distinct non-terminal "scheduled" state with the
-// scheduler's own reservation id (MarkContentDraftScheduled), the classifier
-// refuses an ambiguous post-image outright, and only a platform answer with a
-// real remote id reaches "posted". The remaining gaps are unchanged.
+// KnownDistributionGaps are the remaining support limits at the opt-in door.
+// The exact package, durable attempt and typed observation contracts are owned
+// by docs/architecture/contracts/content-transport.md.
 var KnownDistributionGaps = []string{
-	"attached media is not carried in the outbound transport request",
-	"operator approval is not bound to the exact media package digest",
-	"a failed local write after a successful remote call can allow a duplicate post",
-	"draft freshness is checked at approval, not immediately before publication",
-	"a scheduling ack without an explicit marker or reservation-id key is still indistinguishable from an unmarked post answer (documented classification limit)",
+	"live adapters require explicit v0.2 enrollment and operator acceptance",
+	"provider idempotency and observation semantics require real contract verification",
+	"automatic cancellation, replacement attempts and transport migration are not supported",
+	"synthetic media acceptance does not prove every provider media limit",
 }
 
 // RequireDistributionExperiment refuses a distribution door unless the operator has

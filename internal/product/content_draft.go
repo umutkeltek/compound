@@ -176,16 +176,18 @@ type ContentDraftPost struct {
 
 // ContentDraft is the persisted candidate record under inbox/content-drafts/<id>.json.
 type ContentDraft struct {
-	SchemaVersion string              `json:"schema_version"`
-	ID            string              `json:"id"`
-	Kind          string              `json:"kind"`
-	ProductID     string              `json:"product_id"`
-	Platform      string              `json:"platform"`
-	BodyRef       string              `json:"body_ref"`
-	VoicePackRef  string              `json:"voice_pack_ref,omitempty"`
-	EvidenceRefs  []string            `json:"evidence_refs,omitempty"`
-	Media         []ContentDraftMedia `json:"media,omitempty"`
-	Post          *ContentDraftPost   `json:"post,omitempty"`
+	SchemaVersion string                  `json:"schema_version"`
+	ID            string                  `json:"id"`
+	Kind          string                  `json:"kind"`
+	ProductID     string                  `json:"product_id"`
+	Platform      string                  `json:"platform"`
+	BodyRef       string                  `json:"body_ref"`
+	VoicePackRef  string                  `json:"voice_pack_ref,omitempty"`
+	EvidenceRefs  []string                `json:"evidence_refs,omitempty"`
+	Media         []ContentDraftMedia     `json:"media,omitempty"`
+	Approval      *ContentApproval        `json:"approval,omitempty"`
+	Outbound      *ContentOutboundAttempt `json:"outbound,omitempty"`
+	Post          *ContentDraftPost       `json:"post,omitempty"`
 	// Schedule is the transport scheduler's own acceptance record, set only
 	// when a scheduler took the publication job. Distinct from Post on
 	// purpose: a scheduled draft has no remote post id yet, and the posted
@@ -423,9 +425,12 @@ func MarkContentDraftScheduled(homePath, id string, in ContentDraftScheduleInput
 			return ContentDraft{}, fmt.Errorf("schedule acceptance publish time %q is not RFC3339: %w", scheduledAt, err)
 		}
 	}
-	draft, err := ReadContentDraft(homePath, id)
+	record, draft, err := readContentOutbound(homePath, id)
 	if err != nil {
 		return ContentDraft{}, err
+	}
+	if draft.Outbound != nil {
+		return ContentDraft{}, fmt.Errorf("draft has an outbound attempt; use typed reconciliation")
 	}
 	if draft.State == ContentDraftStatePosted {
 		return ContentDraft{}, fmt.Errorf("draft %s is already posted as %q: a public post is terminal", draft.ID, draft.Post.RemoteID)
@@ -445,8 +450,12 @@ func MarkContentDraftScheduled(homePath, id string, in ContentDraftScheduleInput
 		AckedAt:     now.UTC().Format(time.RFC3339),
 		ReceiptRef:  strings.TrimSpace(in.ReceiptRef),
 	}
-	if err := candidates.WriteCandidate(homePath, candidates.ContentDraft, draft.ID, &draft); err != nil {
+	replaced, err := candidates.ReplaceCandidateIfCurrent(homePath, record, draft)
+	if err != nil {
 		return ContentDraft{}, err
+	}
+	if !replaced.Replaced {
+		return ContentDraft{}, fmt.Errorf("draft generation changed; retry from current state")
 	}
 	return draft, nil
 }
@@ -476,9 +485,12 @@ func MarkContentDraftPosted(homePath, id string, in ContentDraftPostInput, now t
 	if remoteID == "" {
 		return ContentDraft{}, fmt.Errorf("platform remote id required: posted without it is a claim, not a fact")
 	}
-	draft, err := ReadContentDraft(homePath, id)
+	record, draft, err := readContentOutbound(homePath, id)
 	if err != nil {
 		return ContentDraft{}, err
+	}
+	if draft.Outbound != nil {
+		return ContentDraft{}, fmt.Errorf("draft has an outbound attempt; use typed reconciliation")
 	}
 	if draft.State == ContentDraftStatePosted {
 		return ContentDraft{}, fmt.Errorf("draft %s is already posted as %q: a public post is terminal", draft.ID, draft.Post.RemoteID)
@@ -495,8 +507,12 @@ func MarkContentDraftPosted(homePath, id string, in ContentDraftPostInput, now t
 		PostedAt:   now.UTC().Format(time.RFC3339),
 		ReceiptRef: strings.TrimSpace(in.ReceiptRef),
 	}
-	if err := candidates.WriteCandidate(homePath, candidates.ContentDraft, draft.ID, &draft); err != nil {
+	replaced, err := candidates.ReplaceCandidateIfCurrent(homePath, record, draft)
+	if err != nil {
 		return ContentDraft{}, err
+	}
+	if !replaced.Replaced {
+		return ContentDraft{}, fmt.Errorf("draft generation changed; retry from current state")
 	}
 	return draft, nil
 }
@@ -515,9 +531,12 @@ func adjudicateContentDraft(homePath, id, newState string, now time.Time, requir
 	if homePath == "" {
 		return ContentDraft{}, fmt.Errorf("COMPOUND_HOME required")
 	}
-	draft, err := ReadContentDraft(homePath, id)
+	record, draft, err := readContentOutbound(homePath, id)
 	if err != nil {
 		return ContentDraft{}, err
+	}
+	if draft.Outbound != nil || (draft.Approval != nil && newState != ContentDraftStateRejected) {
+		return ContentDraft{}, fmt.Errorf("draft has a frozen approval or outbound owner; use its recovery command")
 	}
 	// A posted draft is public. Re-adjudicating it (park/reject/re-approve) would
 	// make the ledger disagree with the world, and the world is the one we cannot
@@ -543,8 +562,12 @@ func adjudicateContentDraft(homePath, id, newState string, now time.Time, requir
 	}
 	draft.State = newState
 	draft.AdjudicatedAt = now.UTC().Format(time.RFC3339)
-	if err := candidates.WriteCandidate(homePath, candidates.ContentDraft, draft.ID, &draft); err != nil {
+	replaced, err := candidates.ReplaceCandidateIfCurrent(homePath, record, draft)
+	if err != nil {
 		return ContentDraft{}, err
+	}
+	if !replaced.Replaced {
+		return ContentDraft{}, fmt.Errorf("draft generation changed; retry from current state")
 	}
 	return draft, nil
 }

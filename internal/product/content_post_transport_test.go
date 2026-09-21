@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/act"
 	"compound/internal/home"
 )
 
@@ -17,7 +18,15 @@ func authorizedDraftFixture(t *testing.T, homePath string) ContentDraft {
 		t.Fatal(err)
 	}
 	draft := recordQueueDraft(t, homePath, "grounded synthetic post", contentQueueNow.Add(72*time.Hour), contentQueueNow)
-	if _, err := ApplyContentQueueReview(homePath, approveReview("cqr_transport", draft.ID), "", contentQueueNow); err != nil {
+	if _, err := ApplyContentQueueReview(homePath, approveReview(t, homePath, "cqr_transport", draft.ID), "", contentQueueNow); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(homePath, "actuator", "transports")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := json.Marshal(map[string]any{"argv": []string{os.Args[0]}, "content_contract": act.ContentTransportContract})
+	if err := os.WriteFile(filepath.Join(dir, "fixture.json"), cfg, 0600); err != nil {
 		t.Fatal(err)
 	}
 	return draft

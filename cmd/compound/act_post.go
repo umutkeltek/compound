@@ -32,7 +32,7 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		sourceCount++
 	}
 	if sourceCount != 1 || (hasContent && flagValue(args, "--content") != "-") || transport == "" {
-		fmt.Fprintln(stderr, "usage: compound act post (--from-work W | --draft D --at RFC3339 | --content -) [--work W] --transport NAME [--confirm]")
+		fmt.Fprintln(stderr, "usage: compound act post (--from-work W | --draft D (--at RFC3339 | --reconcile) | --content -) [--work W] --transport NAME [--confirm]")
 		return 2
 	}
 	if hasFlag(args, "--capability") {
@@ -50,48 +50,43 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	var (
-		body      string
-		forward   []byte
-		draftReq  *product.ContentPostTransportRequest
-		draftAuth product.ContentPostAuthorization
-	)
-	switch {
-	case draftID != "":
-		if gateErr := product.RequireDistributionExperiment("act post --draft"); gateErr != nil {
-			fmt.Fprintln(stderr, "error:", gateErr)
-			return 2
+	if draftID != "" {
+		var at time.Time
+		if !hasFlag(args, "--reconcile") {
+			at, err = time.Parse(time.RFC3339, strings.TrimSpace(flagValue(args, "--at")))
+			if err != nil {
+				fmt.Fprintln(stderr, "error: --at must be RFC3339")
+				return 2
+			}
 		}
-		scheduleAt, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(flagValue(args, "--at")))
-		if parseErr != nil {
-			fmt.Fprintln(stderr, "error: --at must be a future RFC3339 timestamp")
-			return 2
+		out, postErr := product.ExecuteContentPost(homePath, draftID, transport, workID, at, hasFlag(args, "--confirm"), hasFlag(args, "--reconcile"), time.Now())
+		if hasFlag(args, "--json") {
+			if err := encodeJSON(stdout, out); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+		} else {
+			fmt.Fprintf(stdout, "# content post: %s\n- attempt: %s\n- next: %s\n", out.Mode, out.AttemptID, out.NextCommand)
+			if out.Request != nil {
+				fmt.Fprintf(stdout, "- package: %s\n- account: %s\n- text: %s\n", out.Request.PackageDigest, out.Request.AccountID, out.Request.Body)
+			}
 		}
-		request, auth, buildErr := product.BuildContentPostTransportRequest(homePath, draftID, transport, scheduleAt, time.Now())
-		if buildErr != nil {
-			fmt.Fprintln(stderr, "error:", buildErr)
+		if postErr != nil {
+			fmt.Fprintln(stderr, "error:", postErr)
 			return 1
 		}
-		draftReq = &request
-		draftAuth = auth
-		body = request.Body
-		forward, err = json.Marshal(request)
-		if err != nil {
-			fmt.Fprintln(stderr, "error:", err)
-			return 1
-		}
-		if workID == "" {
-			workID = auth.ActionIntent.IDs.WorkID
-		}
-	case fromWork != "":
+		return 0
+	}
+	var body string
+	var forward []byte
+	if fromWork != "" {
 		body, err = composeReceiptCard(homePath, fromWork)
 		forward = []byte(body)
-	default:
-		var content []byte
-		content, err = io.ReadAll(stdin)
-		body = string(content)
-		forward = content
+	} else {
+		forward, err = io.ReadAll(stdin)
+		body = string(forward)
 	}
+
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
@@ -108,9 +103,6 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	now := time.Now()
 	ai := governedPostIntent(workID, capability, target, string(forward), now)
-	if draftReq != nil {
-		ai = governedDraftPostIntent(workID, target, *draftReq, draftAuth, forward, now)
-	}
 	cfg, _, err := policy.LoadConfig(homePath)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -118,7 +110,7 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	pd := policy.Evaluate(ai, cfg, now)
 	if !hasFlag(args, "--confirm") {
-		return printActPostPreview(stdout, transport, target.Path, body, draftReq, pd, hasFlag(args, "--json"))
+		return printActPostPreview(stdout, transport, target.Path, body, nil, pd, hasFlag(args, "--json"))
 	}
 	if !policy.Allowed(pd) {
 		return printActPostHeld(stdout, transport, body, pd, hasFlag(args, "--json"))
@@ -132,18 +124,6 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
-	}
-	// Close the loop: a governed post that never marks its draft posted leaves the
-	// distribution measure blind, which is how the weekly driver reported success
-	// while nothing had ever shipped. A failure here does NOT undo the post — it is
-	// reported loudly and non-zero so it cannot read as a clean success.
-	if draftReq != nil {
-		if _, postErr := product.RecordContentPostResult(homePath, draftAuth.DraftID, result.PostImage, result.Receipt.ID, now); postErr != nil {
-			printActPostResult(stdout, transport, result, hasFlag(args, "--json"))
-			fmt.Fprintln(stderr, "error: the post was executed but the transport answer could not be recorded:", postErr)
-			fmt.Fprintln(stderr, "the draft is unchanged; reconcile it against the platform before reposting")
-			return 1
-		}
 	}
 	return printActPostResult(stdout, transport, result, hasFlag(args, "--json"))
 }
