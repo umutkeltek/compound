@@ -301,19 +301,22 @@ type SourceIssueFollowUp struct {
 }
 
 type HypothesisCandidate struct {
-	SchemaVersion     string   `json:"schema_version"`
-	ID                string   `json:"id"`
-	Kind              string   `json:"kind"`
-	ProductID         string   `json:"product_id"`
-	ChangeEvent       string   `json:"change_event"`
-	ExpectedEffect    string   `json:"expected_effect"`
-	Metrics           []string `json:"metrics"`
-	ObservationWindow string   `json:"observation_window"`
-	Result            string   `json:"result"`
-	NextAction        string   `json:"next_action"`
-	Verdict           string   `json:"verdict"`
-	EvidenceRefs      []string `json:"evidence_refs"`
-	CreatedAt         string   `json:"created_at"`
+	// Only the approval CAS appends to this field. Measurement keeps it intact;
+	// caller-supplied evidence citations cannot establish an approval outcome.
+	CommittedApprovalIDs []string `json:"committed_approval_ids,omitempty"`
+	SchemaVersion        string   `json:"schema_version"`
+	ID                   string   `json:"id"`
+	Kind                 string   `json:"kind"`
+	ProductID            string   `json:"product_id"`
+	ChangeEvent          string   `json:"change_event"`
+	ExpectedEffect       string   `json:"expected_effect"`
+	Metrics              []string `json:"metrics"`
+	ObservationWindow    string   `json:"observation_window"`
+	Result               string   `json:"result"`
+	NextAction           string   `json:"next_action"`
+	Verdict              string   `json:"verdict"`
+	EvidenceRefs         []string `json:"evidence_refs"`
+	CreatedAt            string   `json:"created_at"`
 }
 
 type Report struct {

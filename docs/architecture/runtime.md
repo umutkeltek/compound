@@ -554,7 +554,20 @@ then exactly one settled outcome: `product_hypothesis_approve` when the
 exact-generation CAS replaced the candidate, or
 `product_hypothesis_approve_refused` when a concurrent writer won it. Only the
 committed outcome names the approval act in `after_refs`, so a crash between
-intent and outcome reads as "intent, no outcome". This is the same recoverable
+intent and outcome reads as "intent, no outcome".
+The intent binds one private ArtifactStore snapshot containing the original request,
+actor/time, exact gate-read preimage with digest and custody token, and proposed
+postimage with digest. The candidate CAS appends to `committed_approval_ids` with the approved
+sentence; measurement review preserves that dedicated witness field. Generic
+evidence refs remain citations and cannot prove that an approval committed. A failed
+outcome write returns the original approval ID and `recovery_required`.
+`product hypothesis-approve <candidate_id> --resume-approval <approval_id>` loads
+that frozen operation and records its original terminal bytes idempotently. It never
+rewrites the candidate, including after a newer measurement. Missing/conflicting
+witnesses or legacy intents without snapshots remain `recovery_required`; intent
+alone never proves commitment. Ordinary retries detect an unsettled witness and
+point to the original resume command instead of minting another approval.
+This is the same recoverable
 publication shape as the work-action handoff above, not the same mechanism: no
 `ExactActionApproval` grant, lease, or policy decision is involved.
 

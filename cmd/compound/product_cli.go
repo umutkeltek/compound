@@ -421,18 +421,17 @@ func cmdProduct(args []string) {
 		fmt.Printf("- plan: %s\n- review: %s\n- signal_draft: %s\n", paths.PlanPath, paths.ReviewPath, paths.SignalDraftPath)
 	case "hypothesis-approve":
 		rest := args[1:]
-		effect := strings.TrimSpace(valueFlag(rest, "--expected-effect"))
-		if len(rest) == 0 || strings.TrimSpace(rest[0]) == "" || effect == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound product hypothesis-approve <candidate_id> --expected-effect <sentence> [--metrics m1,m2] [--window <span>] [--reviewed-by <actor>]")
+		effect, resume := strings.TrimSpace(valueFlag(rest, "--expected-effect")), strings.TrimSpace(valueFlag(rest, "--resume-approval"))
+		if len(rest) == 0 || strings.TrimSpace(rest[0]) == "" || (effect == "" && resume == "") {
+			fmt.Fprintln(os.Stderr, "usage: compound product hypothesis-approve <candidate_id> (--expected-effect <sentence>|--resume-approval <approval_id>) [--metrics m1,m2] [--window <span>] [--reviewed-by <actor>]")
 			os.Exit(2)
 		}
-		res, err := product.HypothesisApprove(homePath, product.HypothesisApproveInput{CandidateID: rest[0], ExpectedEffect: effect, Metrics: splitContentDraftEvidence(valueFlag(rest, "--metrics")), ObservationWindow: valueFlag(rest, "--window"), ReviewedBy: valueFlag(rest, "--reviewed-by")}, time.Now())
+		res, err := product.HypothesisApprove(homePath, product.HypothesisApproveInput{CandidateID: rest[0], ResumeApprovalID: resume, ExpectedEffect: effect, Metrics: splitContentDraftEvidence(valueFlag(rest, "--metrics")), ObservationWindow: valueFlag(rest, "--window"), ReviewedBy: valueFlag(rest, "--reviewed-by")}, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "product hypothesis-approve:", err)
 			os.Exit(1)
 		}
-		fmt.Printf("# product hypothesis-approve %s\n\n", res.Candidate.ID)
-		fmt.Printf("- status: approved\n- expected_effect: %s\n- verdict: %s (stays park: pending review keeps the measurement path)\n- next_action: %s\n- transition: %s\n", res.Candidate.ExpectedEffect, res.Candidate.Verdict, res.Candidate.NextAction, res.TransitionID)
+		fmt.Print(product.RenderHypothesisApprovalResult(res))
 	case "observation-verdict-plan":
 		verdictPath := valueFlag(args[1:], "--verdict")
 		targetPath := valueFlag(args[1:], "--target")

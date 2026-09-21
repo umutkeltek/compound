@@ -28,18 +28,21 @@ const HypothesisDraftExpectedEffectPlaceholderPrefix = "OPERATOR MUST WRITE"
 // Metrics and ObservationWindow are optional refinements of the draft's own
 // fields; ReviewedBy names the approving human (empty defaults to "operator").
 type HypothesisApproveInput struct {
-	CandidateID       string
-	ExpectedEffect    string
-	Metrics           []string
-	ObservationWindow string
-	ReviewedBy        string
+	ResumeApprovalID  string   `json:"resume_approval_id,omitempty"`
+	CandidateID       string   `json:"candidate_id"`
+	ExpectedEffect    string   `json:"expected_effect"`
+	Metrics           []string `json:"metrics"`
+	ObservationWindow string   `json:"observation_window"`
+	ReviewedBy        string   `json:"reviewed_by"`
 }
 
 // HypothesisApproveResult is the receipted outcome of one approval.
 type HypothesisApproveResult struct {
+	Status       string
 	Candidate    HypothesisCandidate
 	ApprovalID   string // id of the approval act recorded on the loop transition
 	TransitionID string
+	SnapshotRef  string
 }
 
 // recordLoopTransition is the transition-recording seam the approval door
@@ -77,6 +80,9 @@ func HypothesisApprove(homePath string, in HypothesisApproveInput, now time.Time
 	if candidateID == "" {
 		return HypothesisApproveResult{}, fmt.Errorf("candidate id required")
 	}
+	if strings.TrimSpace(in.ResumeApprovalID) != "" {
+		return resumeHypothesisApproval(homePath, in)
+	}
 	expectedEffect := strings.TrimSpace(in.ExpectedEffect)
 	if expectedEffect == "" {
 		return HypothesisApproveResult{}, fmt.Errorf("expected_effect required: the operator sentence is the hypothesis")
@@ -101,6 +107,12 @@ func HypothesisApprove(homePath string, in HypothesisApproveInput, now time.Time
 	if err := json.Unmarshal(record.Body, &candidate); err != nil {
 		return HypothesisApproveResult{}, fmt.Errorf("parse product hypothesis %q: %w", candidateID, err)
 	}
+	if pendingID, err := pendingHypothesisApproval(homePath, candidate); err != nil || pendingID != "" {
+		if err == nil {
+			err = fmt.Errorf("this candidate has an unsettled approval; do not mint another operation")
+		}
+		return approvalRecoveryRequired(HypothesisApproveResult{Candidate: candidate, ApprovalID: pendingID}, err)
+	}
 	if strings.TrimSpace(candidate.Verdict) != candidates.Park {
 		return HypothesisApproveResult{}, fmt.Errorf("product hypothesis %s verdict is %q: only a parked hypothesis can be approved", candidateID, candidate.Verdict)
 	}
@@ -110,89 +122,49 @@ func HypothesisApprove(homePath string, in HypothesisApproveInput, now time.Time
 	if strings.TrimSpace(candidate.ProductID) == "" {
 		return HypothesisApproveResult{}, fmt.Errorf("product hypothesis %s is missing product_id: cannot receipt an approval on the product loop", candidateID)
 	}
-	candidate.ExpectedEffect = expectedEffect
-	if metrics := compact(in.Metrics); len(metrics) > 0 {
-		candidate.Metrics = metrics
-	}
-	if window := strings.TrimSpace(in.ObservationWindow); window != "" {
-		candidate.ObservationWindow = window
-	}
-	// PendingReview matches `result == "unknown"` exactly; normalizing an empty
-	// result keeps the freshly approved hypothesis inside the measurement path
-	// for older candidate shapes that predate the drafts.
-	if strings.TrimSpace(candidate.Result) == "" {
-		candidate.Result = "unknown"
-	}
-	// verdict intentionally untouched: it stays park (see function comment).
-	// NextAction must stay non-empty — the PendingReview predicate requires it
-	// — and must point forward at the loop's own next steps.
-	candidate.NextAction = fmt.Sprintf("approved by %s: import before/after metric evidence and record the product review", actor)
 	approvalID := stableID("pha_", candidateID, expectedEffect, actor, now.UTC().Format(time.RFC3339Nano))
-	// Recoverable publication, the shape the exact work-action approval repair
-	// already uses (internal/work/action_approval_handoff.go): persist the
-	// immutable INTENT before anything can change, then publish only the settled
-	// outcome. The intent is recorded BEFORE the candidate state changes, so a
-	// failed record still leaves the candidate untouched (2026-09-15
-	// approval-integrity contract), and because it never claims the approval
-	// happened, a crash between the two reads as "intent, no outcome" instead of
-	// as an approval the CAS may well have refused.
-	intent, err := buildApprovalTransition(candidate, approvalTransitionInput{
-		Kind:        "product_hypothesis_approve_intent",
-		CandidateID: candidateID,
-		ApprovalID:  approvalID,
-		Actor:       actor,
-		Summary:     fmt.Sprintf("product hypothesis %s approval intent by %s: an expected_effect sentence is proposed against the gate-read generation; the candidate is unchanged and no outcome exists until the exact-generation CAS settles", candidateID, actor),
-	}, now)
+	candidate = projectHypothesisApproval(candidate, in, actor, approvalID)
+	snapshot, snapshotRef, err := freezeHypothesisApproval(homePath, record, candidate, in, actor, approvalID, now)
+	if err != nil {
+		return HypothesisApproveResult{}, err
+	}
+	// Freeze the request before its intent; neither record claims the CAS won.
+	intent, err := approvalSnapshotTransition(snapshot, snapshotRef, "product_hypothesis_approve_intent", "")
 	if err != nil {
 		return HypothesisApproveResult{}, err
 	}
 	if err := recordLoopTransition(homePath, intent); err != nil {
 		return HypothesisApproveResult{}, err
 	}
-	// Candidate write under the exact-generation CAS: a concurrent writer who
-	// changed the candidate between the gate read and now wins, and the approval
-	// is refused rather than silently overwriting their state.
+	result := HypothesisApproveResult{
+		Candidate:  HypothesisCandidate{ID: candidate.ID, ProductID: candidate.ProductID},
+		ApprovalID: approvalID, SnapshotRef: snapshotRef,
+	}
 	replaced, err := candidates.ReplaceCandidateIfCurrent(homePath, record, candidate)
 	if err != nil {
-		// An ambiguous write publishes no outcome: the intent alone is the honest
-		// record until a reader re-derives the current generation.
-		return HypothesisApproveResult{}, err
+		return approvalRecoveryRequired(result, err)
 	}
 	if !replaced.Replaced {
-		refusal := fmt.Errorf("product hypothesis %s changed since the gate read (now %q): approval refused, re-run on the current generation", candidateID, replaced.Current.Digest)
-		outcome, err := buildApprovalTransition(candidate, approvalTransitionInput{
-			Kind:        "product_hypothesis_approve_refused",
-			CandidateID: candidateID,
-			ApprovalID:  approvalID,
-			Actor:       actor,
-			Summary:     fmt.Sprintf("product hypothesis %s approval refused for %s: the candidate changed since the gate read (now %q), so no expected_effect reached the candidate and no product surface changed", candidateID, actor, replaced.Current.Digest),
-		}, now)
+		refusal := fmt.Errorf("product hypothesis %s changed since the gate read (now %q): approval refused", candidateID, replaced.Current.Digest)
+		outcome, err := approvalSnapshotTransition(snapshot, snapshotRef, "product_hypothesis_approve_refused", replaced.Current.Digest)
 		if err == nil {
 			err = recordLoopTransition(homePath, outcome)
 		}
 		if err != nil {
-			return HypothesisApproveResult{}, fmt.Errorf("%w; recording that refusal also failed: %v", refusal, err)
+			return approvalRecoveryRequired(result, fmt.Errorf("%w; recording that refusal also failed: %v", refusal, err))
 		}
 		return HypothesisApproveResult{}, refusal
 	}
-	// Committed outcome, published only now that the CAS actually replaced the
-	// candidate. Its id is derived from the approval act, so a failure here is
-	// replayable rather than a lost receipt.
-	tr, err := buildApprovalTransition(candidate, approvalTransitionInput{
-		Kind:        "product_hypothesis_approve",
-		CandidateID: candidateID,
-		ApprovalID:  approvalID,
-		Actor:       actor,
-		Committed:   true,
-		Summary:     fmt.Sprintf("product hypothesis %s approved by %s: expected_effect written, verdict stays park so the hypothesis remains in pending review; no product surface changed", candidateID, actor),
-	}, now)
+	result.Candidate = candidate
+	tr, err := approvalSnapshotTransition(snapshot, snapshotRef, "product_hypothesis_approve", "")
 	if err != nil {
-		return HypothesisApproveResult{}, err
+		return approvalRecoveryRequired(result, err)
 	}
 	if err := recordLoopTransition(homePath, tr); err != nil {
-		return HypothesisApproveResult{}, fmt.Errorf("product hypothesis %s approval committed but its outcome was not recorded: %w", candidateID, err)
+		return approvalRecoveryRequired(result, fmt.Errorf("approval committed but its outcome was not recorded: %w", err))
 	}
-	return HypothesisApproveResult{Candidate: candidate, ApprovalID: approvalID, TransitionID: tr.ID}, nil
+	result.Status, result.TransitionID = "committed", tr.ID
+	return result, nil
 }
 
 // approvalTransitionInput names the three approval records one act can produce:
