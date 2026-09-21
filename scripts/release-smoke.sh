@@ -4,11 +4,27 @@
 # Runs the end-to-end checks listed in docs_private/plan/2026-08-24-release-day.md
 # (Category 1E) and exits non-zero on any failure. Re-runnable.
 #
-# Usage: bash scripts/release-smoke.sh
+# Usage: COMPOUND_RELEASE_IDENTITY_FILE=/path/to/private-email.txt bash scripts/release-smoke.sh
 #
 # Pre-reqs: ~/.local/bin/compound codesigned and at HEAD; ~/.compound intact.
 
 set -u
+
+# Keep the operator identity outside the exported source. Refuse missing or
+# invalid input before this script can build, install, or mutate runtime state.
+if [[ -z "${COMPOUND_RELEASE_IDENTITY_FILE:-}" || ! -f "${COMPOUND_RELEASE_IDENTITY_FILE}" || ! -r "${COMPOUND_RELEASE_IDENTITY_FILE}" ]]; then
+  printf '%s\n' "COMPOUND_RELEASE_IDENTITY_FILE must name a readable private file containing one email address" >&2
+  exit 2
+fi
+if ! RELEASE_IDENTITY="$(cat "${COMPOUND_RELEASE_IDENTITY_FILE}")"; then
+  printf '%s\n' "cannot read release identity input" >&2
+  exit 2
+fi
+RELEASE_IDENTITY_PATTERN='^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+if [[ ! "${RELEASE_IDENTITY}" =~ ${RELEASE_IDENTITY_PATTERN} ]]; then
+  printf '%s\n' "release identity input must contain one nonempty literal email address" >&2
+  exit 2
+fi
 
 REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 COMPOUND="${COMPOUND:-${HOME}/.local/bin/compound}"
@@ -91,10 +107,23 @@ if [[ -f "${RELEASE_TARBALL}" ]]; then
   else
     ok "tarball clean (no docs_private / .claude / .codex)"
   fi
-  if tar -xzOf "${RELEASE_TARBALL}" 2>/dev/null | grep -E "umut\.keltek@gmail\.com" >/dev/null; then
-    bad "tarball leaks operator identity"
+  # Extract completely before scanning: an extraction error is never a clean
+  # identity result, and grep must distinguish no-match from a scan failure.
+  if IDENTITY_PAYLOAD="$(mktemp "${LOG_DIR}/identity-payload.XXXXXX")"; then
+    if tar -xzOf "${RELEASE_TARBALL}" >"${IDENTITY_PAYLOAD}"; then
+      grep -Fi -- "${RELEASE_IDENTITY}" "${IDENTITY_PAYLOAD}" >/dev/null
+      IDENTITY_SCAN_STATUS=$?
+      case "${IDENTITY_SCAN_STATUS}" in
+        0) bad "tarball leaks operator identity" ;;
+        1) ok "tarball clean (no operator identity)" ;;
+        *) bad "tarball operator identity scan failed" ;;
+      esac
+    else
+      bad "tarball extraction failed; operator identity check incomplete"
+    fi
+    rm -f "${IDENTITY_PAYLOAD}" || bad "operator identity payload cleanup failed"
   else
-    ok "tarball clean (no operator identity)"
+    bad "cannot create operator identity scan payload"
   fi
 else
   bad "tarball not produced"
