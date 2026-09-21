@@ -103,6 +103,21 @@ func afterWriteFailure(store *ArtifactStore, adapter Adapter, ai envelope.Action
 	return fmt.Errorf("act: %w — target rolled back to pre-image %s", cause, preRef)
 }
 
+// RecoveryRequiredError carries evidence of an unresolved external effect. It
+// is never permission to retry the write. Callers reconcile the same action.
+type RecoveryRequiredError struct {
+	ActionIntentID string
+	PreImageRef    string
+	PostImageRef   string
+	FindingID      string
+	Cause          error
+	detail         string
+}
+
+func (e *RecoveryRequiredError) Error() string               { return e.detail }
+func (e *RecoveryRequiredError) Unwrap() error               { return e.Cause }
+func (*RecoveryRequiredError) MutationMayHaveOccurred() bool { return true }
+
 // recordRecoveryFinding lands a durable, operator-visible act-recovery marker when a governed write
 // could neither be receipted NOR rolled back — the manual-recovery case. The finding is
 // evidence-class (never a ledger byte) and is surfaced by compound doctor's finding counts for
@@ -114,17 +129,25 @@ func recordRecoveryFinding(homePath string, ai envelope.ActionIntent, preRef, po
 			"action_intent: %s\ntarget_kind: %s\ntarget_id: %s\ntarget_path: %s\n"+
 			"pre_image_ref: %s\npost_image_ref: %s\npersistence_error: %v\nrollback_error: %v\n",
 		ai.ID, ai.Target.Kind, ai.Target.ID, ai.Target.Path, preRef, postRef, cause, rbErr)
+	refs := []string{preRef}
+	if postRef != "" && postRef != preRef {
+		refs = append(refs, postRef)
+	}
+	recovery := &RecoveryRequiredError{ActionIntentID: ai.ID, PreImageRef: preRef, PostImageRef: postRef, Cause: cause}
 	rec, ferr := finding.Record(homePath, finding.Finding{
 		Topic:        "act-recovery/" + strings.TrimSpace(ai.Target.Kind),
 		Body:         body,
 		ProducedBy:   "internal/act",
 		WorkID:       ai.IDs.WorkID,
-		EvidenceRefs: []string{preRef},
+		EvidenceRefs: refs,
 	}, now)
 	if ferr != nil {
-		return fmt.Errorf("act: write persistence FAILED (%v), rollback FAILED (%v), AND recovery finding could not be recorded (%v) — target left mutated; pre-image ref %s; MANUAL RECOVERY REQUIRED", cause, rbErr, ferr, preRef)
+		recovery.detail = fmt.Sprintf("act: write persistence FAILED (%v), rollback FAILED (%v), AND recovery finding could not be recorded (%v) — external effect unresolved; pre-image ref %s; post-image ref %s; MANUAL RECOVERY REQUIRED", cause, rbErr, ferr, preRef, postRef)
+		return recovery
 	}
-	return fmt.Errorf("act: write persistence FAILED (%v) and rollback FAILED (%v) — recorded recovery finding %s (pre-image ref %s); MANUAL RECOVERY REQUIRED", cause, rbErr, rec.ID, preRef)
+	recovery.FindingID = rec.ID
+	recovery.detail = fmt.Sprintf("act: write persistence FAILED (%v) and rollback FAILED (%v) — recorded recovery finding %s (pre-image ref %s; post-image ref %s); MANUAL RECOVERY REQUIRED", cause, rbErr, rec.ID, preRef, postRef)
+	return recovery
 }
 
 // Result is the receipted outcome of one governed outbound write.
@@ -217,7 +240,15 @@ func execute(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, pd
 		// refusals retain their existing zero-rollback semantics.
 		var uncertain interface{ MutationMayHaveOccurred() bool }
 		if errors.As(writeErr, &uncertain) && uncertain.MutationMayHaveOccurred() {
-			return Result{}, afterWriteFailure(store, adapter, ai, preRef, "", pre, writeErr, now)
+			// Capture any observation before compensation. For irreversible
+			// transports it is the only retained response to this exact attempt.
+			post, readErr := adapter.ReadCurrent(ai.Target)
+			postRef := ""
+			var putErr error
+			if readErr == nil {
+				postRef, putErr = store.Put(post)
+			}
+			return Result{}, afterWriteFailure(store, adapter, ai, preRef, postRef, pre, errors.Join(writeErr, readErr, putErr), now)
 		}
 		return Result{}, fmt.Errorf("act: write: %w", writeErr)
 	}

@@ -40,6 +40,18 @@ func (a *ExecTransportAdapter) ReadCurrent(envelope.ActionTarget) ([]byte, error
 	return append([]byte(nil), a.lastOutput...), nil
 }
 
+// A transport creates an external effect; its empty pre-image is not a request
+// that can undo it. Cancellation needs its own exact, authorized contract.
+func (a *ExecTransportAdapter) restorePreImage(envelope.ActionTarget, []byte) error {
+	return fmt.Errorf("transport %q has no pre-image restore contract; reconcile the original attempt before another request", a.Name)
+}
+
+type execTransportUncertainError struct{ err error }
+
+func (e *execTransportUncertainError) Error() string               { return e.err.Error() }
+func (e *execTransportUncertainError) Unwrap() error               { return e.err }
+func (*execTransportUncertainError) MutationMayHaveOccurred() bool { return true }
+
 type execTransportConfig struct {
 	Argv     []string `json:"argv"`
 	TimeoutS int      `json:"timeout_s,omitempty"`
@@ -112,17 +124,23 @@ func isShellExecutable(path string) bool {
 }
 
 type cappedTransportOutput struct {
-	bytes.Buffer
-	limit int
+	// Do not embed bytes.Buffer: its promoted ReadFrom lets io.Copy bypass
+	// Write, silently defeating the size limit for exec's output pipe.
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
 }
 
 func (w *cappedTransportOutput) Write(p []byte) (int, error) {
-	remaining := w.limit - w.Len()
+	remaining := w.limit - w.buffer.Len()
+	if len(p) > remaining {
+		w.truncated = true
+	}
 	if remaining > 0 {
 		if remaining > len(p) {
 			remaining = len(p)
 		}
-		_, _ = w.Buffer.Write(p[:remaining])
+		_, _ = w.buffer.Write(p[:remaining])
 	}
 	return len(p), nil
 }
@@ -238,17 +256,27 @@ func (a *ExecTransportAdapter) write(_ envelope.ActionTarget, newValue []byte) e
 	cmd := exec.CommandContext(ctx, cfg.Argv[0], cfg.Argv[1:]...)
 	cmd.Stdin = bytes.NewReader(newValue)
 	output := &cappedTransportOutput{limit: maxExecTransportOutput}
+	diagnostics := &cappedTransportOutput{limit: maxExecTransportOutput}
 	cmd.Stdout = output
-	cmd.Stderr = output
-	err = cmd.Run()
+	cmd.Stderr = diagnostics
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("transport %q start: %w", strings.TrimSpace(a.Name), err)
+	}
+	err = cmd.Wait()
+	// Stdout is the response contract. Stderr is diagnostic only. Retain
+	// partial response bytes even on error: the external operation may exist.
+	if len(bytes.TrimSpace(output.buffer.Bytes())) > 0 {
+		a.lastOutput = append([]byte(nil), output.buffer.Bytes()...)
+	}
+	summary := summarizeOutput(output.buffer.String() + "\n" + diagnostics.buffer.String())
 	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("transport %q timed out after %s; output: %s", strings.TrimSpace(a.Name), timeout, summarizeOutput(output.String()))
+		return &execTransportUncertainError{fmt.Errorf("transport %q timed out after %s; output: %s", strings.TrimSpace(a.Name), timeout, summary)}
 	}
 	if err != nil {
-		return fmt.Errorf("transport %q exec: %w; output: %s", strings.TrimSpace(a.Name), err, summarizeOutput(output.String()))
+		return &execTransportUncertainError{fmt.Errorf("transport %q exec: %w; output: %s", strings.TrimSpace(a.Name), err, summary)}
 	}
-	if len(bytes.TrimSpace(output.Bytes())) > 0 {
-		a.lastOutput = append([]byte(nil), output.Bytes()...)
+	if output.truncated {
+		return &execTransportUncertainError{fmt.Errorf("transport %q response exceeded %d bytes; retained prefix is not a complete observation", strings.TrimSpace(a.Name), maxExecTransportOutput)}
 	}
 	return nil
 }
