@@ -42,6 +42,9 @@ function totals(over: Partial<AdsTotals> = {}): AdsTotals {
     conversions: 0,
     revenue: 0,
     hasRevenue: false,
+    revenueCoverage: null,
+    spendUnknownCurrency: 0,
+    rowsUnknownCurrency: 0,
     ctr: 0,
     cpc: 0,
     cpa: 0,
@@ -90,7 +93,7 @@ const FIXTURE = {
   previous: { rows: 0 },
   platforms: [
     { platform: "apple_search_ads", label: "Apple Search Ads", status: "connected", totals: { spend: 112.5, currency: "USD", rows: 6, impressions: 24097, clicks: 915, conversions: 55, ctr: 0.03797, cpc: 0.1229, cpa: 2.045 }, previous: { rows: 0 }, daily: [{ date: "2026-09-01", spend: 37.5 }, { date: "2026-09-02", spend: 35.6 }, { date: "2026-09-03", spend: 39.4 }], products: ["product:demo-ios"], campaigns_active: 2, campaigns_total: 2, next_move: { text: "Current.", command: "compound product ads signal --platform apple_search_ads" } },
-    { platform: "google_ads", label: "Google Ads", status: "connected", totals: { spend: 3753.15, currency: "TRY", rows: 3, impressions: 37180, clicks: 1245, conversions: 55, revenue: 9090, has_revenue: true, roas: 2.4219, ctr: 0.0335, cpc: 3.0145, cpa: 68.24 }, previous: { rows: 0 }, daily: [], products: ["product:demo-web"], next_move: { text: "Current.", command: "x" } },
+    { platform: "google_ads", label: "Google Ads", status: "connected", totals: { spend: 3753.15, currency: "TRY", rows: 3, impressions: 37180, clicks: 1245, conversions: 55, revenue: 9090, has_revenue: true, revenue_coverage: 1, roas: 2.4219, ctr: 0.0335, cpc: 3.0145, cpa: 68.24 }, previous: { rows: 0 }, daily: [], products: ["product:demo-web"], next_move: { text: "Current.", command: "x" } },
     { platform: "meta_ads", label: "Meta Ads", status: "not_connected", totals: {}, previous: {}, daily: [], products: [], next_move: { text: "Not connected.", command: "compound product ads import --platform meta_ads --product <product:id> --report <export.csv>" } },
   ],
   products: [{ product_id: "product:demo-web", totals: { spend: 3753.15, currency: "TRY", rows: 3 }, previous: {}, by_platform: [{ platform: "google_ads", label: "Google Ads", spend: 3753.15, share: 1 }], daily: [] }],

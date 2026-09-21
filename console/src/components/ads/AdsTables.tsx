@@ -4,7 +4,10 @@ import {
   formatCount,
   formatCpa,
   formatCtr,
-  formatMixedSpend,
+  comparableSpend,
+  formatSpend,
+  roasExplanation,
+  type AdsTotals,
   formatMoney,
   formatRoas,
   productDisplay,
@@ -25,18 +28,8 @@ const TH = "px-2 py-1.5 text-left text-2xs font-bold uppercase tracking-wide tex
 const TD = "px-2 py-1.5 align-top text-xs";
 const NUM = `${TD} mono tabular-nums text-right`;
 
-function Spend({ spend, currency, mixed, byCurrency }: { spend: number; currency: string; mixed: boolean; byCurrency: Record<string, number> }) {
-  if (mixed) {
-    return (
-      <span title="rows in this window carry more than one currency">
-        {Object.entries(byCurrency)
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([c, v]) => formatMoney(v, c, { compact: true }))
-          .join(" + ")}
-      </span>
-    );
-  }
-  return <>{formatMoney(spend, currency)}</>;
+function Spend({ totals }: { totals: AdsTotals }) {
+  return <span title={comparableSpend(totals) ? undefined : "Spend currencies are mixed or unknown"}>{formatSpend(totals)}</span>;
 }
 
 export function AdsProductTable({ products, windowDays }: { products: AdsProductView[]; windowDays: number }) {
@@ -63,24 +56,24 @@ export function AdsProductTable({ products, windowDays }: { products: AdsProduct
               <tr key={p.productId} className="border-b border-hair last:border-0">
                 <td className={`${TD} font-medium text-ink`}>{productDisplay(p.productId)}</td>
                 <td className={NUM}>
-                  <Spend spend={p.totals.spend} currency={p.totals.currency} mixed={p.totals.mixedCurrency} byCurrency={p.totals.spendByCurrency} />
+                  <Spend totals={p.totals} />
                 </td>
                 <td className={TD}>
                   {delta != null ? <DeltaPill value={delta} suffix="%" goodDirection="down" title={`vs previous ${windowDays} days`} showZero /> : <span className="text-faint">—</span>}
                 </td>
                 <td className={NUM}>{formatCount(p.totals.conversions)}</td>
                 <td className={NUM}>{formatCpa(p.totals)}</td>
-                <td className={NUM}>{formatRoas(p.totals)}</td>
+                <td className={NUM} title={roasExplanation(p.totals)}>{formatRoas(p.totals)}</td>
                 <td className={TD}>
                   <div className="flex flex-wrap gap-1">
                     {p.byPlatform.map((s) => (
                       <span
                         key={s.platform}
                         className="inline-flex items-center gap-1 rounded-pill border border-hair bg-soft px-2 py-0.5 text-2xs font-semibold text-muted"
-                        title={`${formatMoney(s.spend, p.totals.mixedCurrency ? "" : p.totals.currency)} on ${s.label}`}
+                        title={comparableSpend(p.totals) ? `${formatMoney(s.spend, p.totals.currency)} on ${s.label}` : "Spend share unavailable across mixed or unknown currencies"}
                       >
                         {s.label}
-                        {!p.totals.mixedCurrency ? <span className="mono tabular-nums text-faint">{Math.round(s.share * 100)}%</span> : null}
+                        {comparableSpend(p.totals) ? <span className="mono tabular-nums text-faint">{Math.round(s.share * 100)}%</span> : null}
                       </span>
                     ))}
                   </div>
@@ -139,7 +132,7 @@ export function AdsCampaignTable({ campaigns, windowDays }: { campaigns: AdsCamp
                   <StatusChip tone={c.status === "active" ? "good" : "muted"} label={c.status} />
                 </td>
                 <td className={NUM}>
-                  <Spend spend={c.totals.spend} currency={c.totals.currency} mixed={c.totals.mixedCurrency} byCurrency={c.totals.spendByCurrency} />
+                  <Spend totals={c.totals} />
                 </td>
                 <td className={TD}>
                   {delta != null ? <DeltaPill value={delta} suffix="%" goodDirection="down" title={`vs previous ${windowDays} days`} showZero /> : <span className="text-faint">—</span>}

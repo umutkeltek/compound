@@ -140,3 +140,24 @@ cd console && bun scripts/ads-smoke.mjs
 ```
 
 Fixtures for every dialect live under `fixtures/product/ads/`.
+
+## Completeness and daily money
+
+The `compound.product_ads.v0.2` projection retains the totals completeness and
+unknown-currency fields. The console shows ROAS only with complete revenue
+coverage and one resolved spend currency; complete measured zero remains `0.00×`.
+Older payloads without revenue coverage cannot establish ROAS. CPC, CPA, CPM,
+and monetary window comparisons also require a resolved, comparable currency.
+Unknown spend remains visible with its amount and a “currency unknown” label.
+
+Daily `spend` and `revenue` are nullable. A daily monetary series has one
+`currency` across its entire window, including empty dates. Mixed or unresolved
+currencies produce null money values while preserving dates and count series;
+partial daily revenue is also null. Empty days in a known currency window have
+zero spend. Readers must preserve null and may not combine daily money from
+different currencies. The console withholds monetary sparklines from older
+payloads without this currency evidence.
+
+`bun scripts/ads-smoke.mjs` exercises real CSV import → Go projection →
+TypeScript mapping → rendered cards and tables in disposable homes, including
+partial revenue, true zero, unknown currency, and currencies changing by day.

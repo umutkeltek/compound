@@ -13,3 +13,4 @@ if (!result.ok) {
   process.exit(1);
 }
 console.log("ads smoke ok: the ads panel never renders a ratio, delta, or currency the rows cannot back");
+await import("./ads-consumer-smoke.tsx");

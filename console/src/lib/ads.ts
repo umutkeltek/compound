@@ -24,6 +24,9 @@ export type AdsTotals = {
   conversions: number;
   revenue: number;
   hasRevenue: boolean;
+  revenueCoverage: number | null;
+  spendUnknownCurrency: number;
+  rowsUnknownCurrency: number;
   ctr: number;
   cpc: number;
   cpa: number;
@@ -38,11 +41,12 @@ export type AdsTotals = {
 
 export type AdsDailyPoint = {
   date: string;
-  spend: number;
+  currency: string;
+  spend: number | null;
   impressions: number;
   clicks: number;
   conversions: number;
-  revenue: number;
+  revenue: number | null;
 };
 
 export type AdsPlatformStatus = "connected" | "stale" | "not_connected";
@@ -165,6 +169,9 @@ export function mapTotals(v: unknown): AdsTotals {
     conversions: num(o.conversions),
     revenue: num(o.revenue),
     hasRevenue: bool(o.has_revenue),
+    revenueCoverage: typeof o.revenue_coverage === "number" && Number.isFinite(o.revenue_coverage) && o.revenue_coverage >= 0 && o.revenue_coverage <= 1 ? o.revenue_coverage : null,
+    spendUnknownCurrency: num(o.spend_unknown_currency),
+    rowsUnknownCurrency: num(o.rows_unknown_currency),
     ctr: num(o.ctr),
     cpc: num(o.cpc),
     cpa: num(o.cpa),
@@ -183,11 +190,12 @@ function mapDaily(v: unknown): AdsDailyPoint[] {
     const o = rec(p);
     return {
       date: str(o.date),
-      spend: num(o.spend),
+      currency: str(o.currency),
+      spend: typeof o.spend === "number" && Number.isFinite(o.spend) && knownCurrency(str(o.currency)) ? o.spend : null,
       impressions: num(o.impressions),
       clicks: num(o.clicks),
       conversions: num(o.conversions),
-      revenue: num(o.revenue),
+      revenue: typeof o.revenue === "number" && Number.isFinite(o.revenue) && knownCurrency(str(o.currency)) ? o.revenue : null,
     };
   });
 }
@@ -380,8 +388,31 @@ export function formatMoney(value: number, currency: string, opts: { compact?: b
 export function formatMixedSpend(t: AdsTotals): string {
   return Object.entries(t.spendByCurrency)
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([c, v]) => formatMoney(v, c, { compact: true }))
+    .map(([c, v]) => c === "UNKNOWN" ? `${formatMoney(v, "")} (currency unknown)` : formatMoney(v, c, { compact: true }))
     .join(" + ");
+}
+
+function knownCurrency(currency: string): boolean {
+  return currency !== "" && currency !== "MIXED" && currency !== "UNKNOWN";
+}
+
+export function comparableSpend(t: AdsTotals): boolean {
+  return knownCurrency(t.currency) && !t.mixedCurrency && t.rowsUnknownCurrency === 0;
+}
+
+export function formatSpend(t: AdsTotals, opts: { compact?: boolean } = {}): string {
+  if (t.mixedCurrency) return formatMixedSpend(t);
+  if (!comparableSpend(t)) return `${formatMoney(t.spend, "")} (currency unknown)`;
+  return formatMoney(t.spend, t.currency, opts);
+}
+
+export function roasExplanation(t: AdsTotals): string {
+  if (!comparableSpend(t)) return "ROAS unavailable: spend currencies are mixed or unknown";
+  if (!t.hasRevenue) return "ROAS unavailable: no conversion value imported";
+  if (t.revenueCoverage === null) return "ROAS unavailable: revenue completeness unknown";
+  if (t.revenueCoverage < 1) return `ROAS unavailable: partial revenue (${Math.round(t.revenueCoverage * 100)}% coverage)`;
+  if (t.spend <= 0) return "ROAS unavailable: no positive spend";
+  return "revenue ÷ spend · complete revenue coverage";
 }
 
 export function formatCount(value: number): string {
@@ -395,20 +426,24 @@ export function formatCtr(t: AdsTotals): string {
   return t.impressions > 0 ? `${(t.ctr * 100).toFixed(2)}%` : "—";
 }
 export function formatCpc(t: AdsTotals): string {
-  return t.clicks > 0 && !t.mixedCurrency ? formatMoney(t.cpc, t.currency) : "—";
+  return t.clicks > 0 && comparableSpend(t) ? formatMoney(t.cpc, t.currency) : "—";
 }
 export function formatCpa(t: AdsTotals): string {
-  return t.conversions > 0 && !t.mixedCurrency ? formatMoney(t.cpa, t.currency) : "—";
+  return t.conversions > 0 && comparableSpend(t) ? formatMoney(t.cpa, t.currency) : "—";
+}
+
+export function formatCpm(t: AdsTotals): string {
+  return t.impressions > 0 && comparableSpend(t) ? formatMoney(t.cpm, t.currency) : "—";
 }
 export function formatRoas(t: AdsTotals): string {
-  return t.hasRevenue && t.spend > 0 && !t.mixedCurrency ? `${t.roas.toFixed(2)}×` : "—";
+  return t.hasRevenue && t.revenueCoverage === 1 && t.spend > 0 && comparableSpend(t) ? `${t.roas.toFixed(2)}×` : "—";
 }
 
 /** Percent change vs the previous window; null when the previous window is
  *  empty or currencies cannot be compared (a delta would be a lie). */
 export function windowDelta(now: AdsTotals, previous: AdsTotals, key: "spend" | "conversions" | "clicks" | "impressions"): number | null {
   if (previous.rows === 0) return null;
-  if (key === "spend" && (now.mixedCurrency || previous.mixedCurrency || now.currency !== previous.currency)) return null;
+  if (key === "spend" && (!comparableSpend(now) || !comparableSpend(previous) || now.currency !== previous.currency)) return null;
   const before = previous[key];
   const after = now[key];
   if (before === 0) return after === 0 ? 0 : null;
@@ -462,5 +497,7 @@ export function productDisplay(productId: string): string {
 }
 
 export function sparkValues(daily: AdsDailyPoint[], key: "spend" | "conversions" | "clicks"): number[] {
-  return daily.map((d) => d[key]);
+  if (key !== "spend") return daily.map((d) => d[key]);
+  if (daily.some((d) => d.spend === null || !knownCurrency(d.currency)) || new Set(daily.map((d) => d.currency)).size !== 1) return [];
+  return daily.map((d) => d.spend!);
 }

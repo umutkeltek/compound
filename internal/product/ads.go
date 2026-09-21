@@ -31,7 +31,7 @@ import (
 const (
 	AdsRowSchemaVersion        = "compound.product_ads_row.v0.1"
 	AdsImportSchemaVersion     = "compound.product_ads_import.v0.1"
-	AdsProjectionSchemaVersion = "compound.product_ads.v0.1"
+	AdsProjectionSchemaVersion = "compound.product_ads.v0.2"
 	AdsAuthorityRef            = "compound://ledger/product-ads"
 
 	// adsDefaultWindowDays is the panel's default look-back.

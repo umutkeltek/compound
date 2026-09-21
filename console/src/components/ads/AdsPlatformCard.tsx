@@ -5,10 +5,11 @@ import {
   formatCount,
   formatCpa,
   formatCpc,
+  formatCpm,
   formatCtr,
-  formatMixedSpend,
-  formatMoney,
+  formatSpend,
   formatRoas,
+  roasExplanation,
   platformStatusLabel,
   productDisplay,
   sparkValues,
@@ -38,7 +39,7 @@ export function AdsPlatformCard({ view, windowDays }: { view: AdsPlatformView; w
   const t = view.totals;
   const connected = view.status !== "not_connected";
   const spendDelta = windowDelta(t, view.previous, "spend");
-  const spendLabel = t.mixedCurrency ? formatMixedSpend(t) : formatMoney(t.spend, t.currency);
+  const spendLabel = formatSpend(t);
   const seam = view.status === "stale";
 
   return (
@@ -82,9 +83,10 @@ export function AdsPlatformCard({ view, windowDays }: { view: AdsPlatformView; w
             <Metric label="CTR" value={formatCtr(t)} />
             <Metric label="CPC" value={formatCpc(t)} />
             <Metric label="CPA" value={formatCpa(t)} title="spend ÷ conversions — reads — with no conversions" />
-            <Metric label="ROAS" value={formatRoas(t)} title="revenue ÷ spend — needs a conversion-value column" />
-            <Metric label="CPM" value={t.impressions > 0 && !t.mixedCurrency ? formatMoney(t.cpm, t.currency) : "—"} />
+            <Metric label="ROAS" value={formatRoas(t)} title={roasExplanation(t)} />
+            <Metric label="CPM" value={formatCpm(t)} />
           </div>
+          {formatRoas(t) === "—" ? <p className="text-2xs text-faint">{roasExplanation(t)}</p> : null}
 
           {view.products.length > 0 ? (
             <div className="flex flex-wrap items-center gap-1.5 text-2xs text-faint">

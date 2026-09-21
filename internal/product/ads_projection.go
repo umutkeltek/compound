@@ -114,12 +114,13 @@ type AdsTotals struct {
 }
 
 type AdsDailyPoint struct {
-	Date        string  `json:"date"`
-	Spend       float64 `json:"spend"`
-	Impressions float64 `json:"impressions"`
-	Clicks      float64 `json:"clicks"`
-	Conversions float64 `json:"conversions"`
-	Revenue     float64 `json:"revenue"`
+	Date        string   `json:"date"`
+	Currency    string   `json:"currency,omitempty"`
+	Spend       *float64 `json:"spend"`
+	Impressions float64  `json:"impressions"`
+	Clicks      float64  `json:"clicks"`
+	Conversions float64  `json:"conversions"`
+	Revenue     *float64 `json:"revenue"`
 }
 
 type AdsMove struct {
@@ -637,27 +638,38 @@ func adsROASIsComplete(t AdsTotals) bool {
 	return t.HasRevenue && t.Spend > 0 && t.RevenueCoverage >= 1 && adsSpendIsOneCurrency(t)
 }
 
-// adsDaily returns one point per day of the window, zero-filled, so a
-// sparkline reads gaps as gaps rather than compressing them away.
+// adsDaily returns one point per day of the window. Counts are zero-filled;
+// monetary values are nullable unless the window has one known currency.
 func adsDaily(rows []AdRow, start time.Time, days int) []AdsDailyPoint {
-	byDate := map[string]*AdsDailyPoint{}
+	byDate := map[string][]AdRow{}
 	out := make([]AdsDailyPoint, days)
 	for i := 0; i < days; i++ {
 		date := start.AddDate(0, 0, i).Format("2006-01-02")
 		out[i] = AdsDailyPoint{Date: date}
-		byDate[date] = &out[i]
+		byDate[date] = nil
 	}
+	var windowRows []AdRow
 	for _, r := range rows {
-		p, ok := byDate[r.Date]
-		if !ok {
+		if _, ok := byDate[r.Date]; !ok {
 			continue
 		}
-		p.Spend += r.Spend
-		p.Impressions += r.Impressions
-		p.Clicks += r.Clicks
-		p.Conversions += r.Conversions
-		if r.HasRevenue {
-			p.Revenue += r.Revenue
+		byDate[r.Date] = append(byDate[r.Date], r)
+		windowRows = append(windowRows, r)
+	}
+	// A trend needs one resolved currency across the entire window, even
+	// when different currencies appeared on different days. Counts survive.
+	window := adsTotals(windowRows)
+	comparable := window.Currency != "" && adsSpendIsOneCurrency(window)
+	for i := range out {
+		p := &out[i]
+		t := adsTotals(byDate[p.Date])
+		p.Currency = window.Currency
+		p.Impressions, p.Clicks, p.Conversions = t.Impressions, t.Clicks, t.Conversions
+		if comparable {
+			p.Spend = &t.Spend
+			if t.Rows == 0 || t.RevenueCoverage == 1 {
+				p.Revenue = &t.Revenue
+			}
 		}
 	}
 	return out
