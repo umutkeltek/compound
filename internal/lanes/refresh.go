@@ -304,6 +304,10 @@ func RefreshLane(opts RefreshLaneOptions, harnessName string) (LaneVerdict, erro
 		opts.Now = time.Now().UTC()
 	}
 
+	if preflight := preflightLaneRefresh(opts, harnessName); preflight.Status != statusRefreshReady {
+		return preflight, nil
+	}
+
 	// Step 1: hook install for THIS lane. The installer used to call
 	// `hook install --harness all` once and then re-run per-lane; the
 	// per-lane call here is idempotent and keeps each lane's verdict
@@ -477,9 +481,16 @@ func RefreshAllInstalledHarnesses(opts RefreshLaneOptions) ([]LaneVerdict, error
 	if opts.Now.IsZero() {
 		opts.Now = time.Now().UTC()
 	}
-	names, err := InstalledHarnesses(opts.HomePath)
+	preflight, err := PreflightInstalledRefresh(opts)
 	if err != nil {
 		return nil, err
+	}
+	if !refreshPreflightReady(preflight) {
+		return preflight, nil
+	}
+	names := make([]string, 0, len(preflight))
+	for _, v := range preflight {
+		names = append(names, v.Harness)
 	}
 	// Stabilize the shared hook manifest before rendering any pack.
 	hookErrors := make(map[string]error)
@@ -680,8 +691,11 @@ func RunCLIFromArgs(args []string, now time.Time) error {
 		return pErr
 	}
 	if printUsage {
-		fmt.Fprintln(os.Stderr, "usage: compound harness refresh-lane [--harness <name>] [--json] [--base <dir>] [--binary <path>] [--home <dir>]")
+		fmt.Fprintln(os.Stderr, "usage: compound harness refresh-lane [--preflight] [--harness <name>] [--json] [--base <dir>] [--binary <path>] [--home <dir>]")
 		return nil
+	}
+	if HasFlag(args, "--preflight") {
+		return runCLIRefreshPreflight(opts)
 	}
 	verdicts, refreshErr := RunCLIRefresh(opts)
 	if err := PrintVerdicts(os.Stdout, verdicts, opts.JSON); err != nil {
@@ -690,10 +704,15 @@ func RunCLIFromArgs(args []string, now time.Time) error {
 	if refreshErr != nil {
 		return refreshErr
 	}
-	for _, verdict := range verdicts {
-		if verdict.Status != StatusClean {
-			return fmt.Errorf("refresh incomplete for %s: %s (%s)", verdict.Harness, verdict.Status, verdict.Detail)
+	var incomplete *LaneVerdict
+	for i := range verdicts {
+		verdict := &verdicts[i]
+		if verdict.Status != StatusClean && (incomplete == nil || incomplete.Status == statusRefreshReady) {
+			incomplete = verdict
 		}
+	}
+	if incomplete != nil {
+		return fmt.Errorf("refresh incomplete for %s: %s (%s)", incomplete.Harness, incomplete.Status, incomplete.Detail)
 	}
 	return nil
 }

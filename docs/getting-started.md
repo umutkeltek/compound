@@ -229,6 +229,16 @@ It initializes `COMPOUND_HOME` at `~/.compound` and runs home/runtime doctors an
 the required installed-lane binding refresh. Publication and activation are
 reported separately; a failed refresh fails installation.
 
+Before initializing the home or publishing artifacts, the staged CLI runs
+`compound harness refresh-lane --preflight`. This read-only check validates every
+required native hook writer before any profile is refreshed. `ready` means the
+writer is available; it does not certify activation or provider acceptance.
+OpenCode registration belongs to `adapters/opencode/install.ts`; oh-my-pi shim
+installation belongs to `compound hook install --harness oh-my-pi` and does not
+publish settings-style hook authority. Required entries for either adapter stop
+source installation with their owner named. Resolve that activation contract
+before retrying; removing entries or skipping required refresh is not a repair.
+
 Source installation shares the release installer's kernel lock. Stop consumers
 of the installed binaries/helpers during installation: the set is published by
 sequential renames. On ordinary failure or a handled signal, the source installer

@@ -14,7 +14,7 @@ import (
 // builder/CLI are synthetic, allowing failures after publication without a new
 // full repository build per case. The CLI package also tests real clean installs.
 func TestSourceInstallerRestoresEnabledArtifactSet(t *testing.T) {
-	for _, fail := range []string{"breadth_build", "breadth_probe", "helper_validation", "home_doctor", "home_init", "runtime_doctor", "refresh", "rename:compound-breadth-engine", "rename:os", "rename:heartbeat-promote-stage.sh", "rename:compound-autonomy-heartbeat.sh", "rename:attention-letter.py", "term"} {
+	for _, fail := range []string{"breadth_build", "breadth_probe", "helper_validation", "home_doctor", "refresh_preflight", "home_init", "runtime_doctor", "refresh", "rename:compound-breadth-engine", "rename:os", "rename:heartbeat-promote-stage.sh", "rename:compound-autonomy-heartbeat.sh", "rename:attention-letter.py", "term"} {
 		for _, prior := range []bool{false, true} {
 			t.Run(fail+map[bool]string{false: "/fresh", true: "/upgrade"}[prior], func(t *testing.T) {
 				f := sourceInstallFixture(t)
@@ -63,6 +63,33 @@ func TestSourceInstallerRestoresEnabledArtifactSet(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestSourceInstallerRefusesRefreshBeforeActivation(t *testing.T) {
+	f := sourceInstallFixture(t)
+	for _, path := range f.targets {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		body := "previous " + filepath.Base(path) + "\n"
+		if filepath.Base(path) == "os" {
+			body = "#!/bin/sh\n# shim only operating-system/umut-os/exec-lane/os.ts\n"
+		}
+		if err := os.WriteFile(path, []byte(body), 0711); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := f.run("refresh_preflight")
+	if err == nil || !strings.Contains(string(out), "pre-publication refresh preflight FAILED") || strings.Contains(string(out), "activation incomplete") {
+		t.Fatalf("refusal did not happen before activation: %v\n%s", err, out)
+	}
+	calls, err := os.ReadFile(filepath.Join(f.repo, "cli-calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(calls), "harness refresh-lane --preflight") || strings.Contains(string(calls), "home init") || strings.Contains(string(calls), "runtime doctor") {
+		t.Fatalf("installer activated after failed eligibility check:\n%s", calls)
 	}
 }
 
@@ -227,7 +254,7 @@ func sourceInstallFixture(t *testing.T) sourceInstallerFixture {
 		"scripts/compound-autonomy-heartbeat.sh":  "#!/bin/sh\n. \"$(dirname \"$0\")/_lib/heartbeat-promote-stage.sh\"\n",
 		"scripts/_lib/heartbeat-promote-stage.sh": "promote_driver_stage_decide() { :; }\n",
 		"scripts/attention-letter.py":             "print('synthetic')\n",
-		"synthetic-cli":                           "#!/bin/sh\ncase \"$1 $2\" in\n 'home init') [ \"$INSTALL_FAIL\" != home_init ] ;;\n 'home doctor') [ \"$INSTALL_FAIL\" != home_doctor ] ;;\n 'runtime doctor') [ \"$INSTALL_FAIL\" != runtime_doctor ] ;;\n 'harness refresh-lane') [ \"$INSTALL_FAIL\" != refresh ] ;;\n *) exit 0 ;;\nesac\n",
+		"synthetic-cli":                           "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$FIXTURE_REPO/cli-calls\"\ncase \"$1 $2\" in\n 'home init') [ \"$INSTALL_FAIL\" != home_init ] ;;\n 'home doctor') [ \"$INSTALL_FAIL\" != home_doctor ] ;;\n 'runtime doctor') [ \"$INSTALL_FAIL\" != runtime_doctor ] ;;\n 'harness refresh-lane') case \" $* \" in *' --preflight '*) [ \"$INSTALL_FAIL\" != refresh_preflight ] ;; *) [ \"$INSTALL_FAIL\" != refresh ] ;; esac ;;\n *) exit 0 ;;\nesac\n",
 	}
 	files["synthetic-breadth"] = `#!/bin/sh
 [ "$INSTALL_FAIL" != breadth_probe ] || exit 73

@@ -209,6 +209,13 @@ if [ -d "$compound_home/config" ]; then
   fi
 fi
 
+# Refuse unsupported required adapter owners before any home/profile activation
+# or publication. A successful preflight proves eligibility, not activation.
+if ! PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$stage/new/compound" harness refresh-lane --preflight --base "$HOME" --binary "$install_dir/compound" >"$stage/preflight" 2>&1; then
+  cat "$stage/preflight" >&2
+  fail "pre-publication refresh preflight FAILED; no home/profile activation or artifacts published"
+fi
+
 # Initialize through the verified staged CLI before adding anything to a fresh
 # home: home init correctly refuses a populated path without its manifest.
 # This is an activation effect, reported honestly even if later publication fails.
