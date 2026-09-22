@@ -198,6 +198,12 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 			// belongs to another executor (foreign origin harness, foreign
 			// owner) or carries an unresolvable workspace is skipped with
 			// reason ineligible:<why> and never mutated.
+			// Saved profiles may name a tuple alias rather than its model-entry
+			// key. Carry that exact profile only when its stored tuple matches;
+			// production preflight must still resolve it through the owner before
+			// any claim. Reset from the route for every work item.
+			candidate = executionCandidateForSelection(selectedLane.candidate, w.ExecutionSelection)
+			result.Lane = candidate.LaunchProfileID
 			if eligible, why := unattendedEligibleCandidate(w, candidate); !eligible {
 				refused = append(refused, ExecuteRefusal{WorkID: ready, Reason: "ineligible:" + why})
 				continue
@@ -260,7 +266,9 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 			// R6E: a recognized refusal no longer strands the tick — it is
 			// recorded and the NEXT ready item is tried (bounded above).
 			var preflightErr error
-			if executeStageCandidatePreflightFn != nil {
+			if candidate.SourceRevision != "" && executeStageCandidatePreflightFn == nil {
+				preflightErr = errors.New("lane_unready:owner tuple preflight is not installed")
+			} else if executeStageCandidatePreflightFn != nil {
 				preflightErr = executeStageCandidatePreflightFn(s, ready, candidate, now)
 			} else {
 				preflightErr = executeStagePreflightFn(s, ready, lane, now)
@@ -637,6 +645,20 @@ func savedSelectionCompatible(selection envelope.ExecutionSelection, candidate E
 	harness := normalizeRouteLane(selection.Harness)
 	selectedHarness := normalizeRouteLane(candidate.Harness)
 	return harness == selectedHarness
+}
+
+// This only carries a saved spelling into owner preflight; it never establishes
+// alias authority. SourceRevision requires the tuple-aware production path to
+// re-resolve model, provider, harness and manifest before claim and launch.
+func executionCandidateForSelection(candidate ExecutionRouteCandidate, selection *envelope.ExecutionSelection) ExecutionRouteCandidate {
+	if selection != nil && candidate.SourceRevision != "" &&
+		strings.TrimSpace(selection.LaunchProfileID) != "" &&
+		candidate.RequestedModelID != "" && selection.RequestedModelID == candidate.RequestedModelID &&
+		candidate.ProviderRoute != "" && selection.ProviderRoute == candidate.ProviderRoute &&
+		normalizeRouteLane(selection.Harness) == normalizeRouteLane(candidate.Harness) {
+		candidate.LaunchProfileID = selection.LaunchProfileID
+	}
+	return candidate
 }
 
 // refusalFamily strips a refusal reason to its machine-readable family —

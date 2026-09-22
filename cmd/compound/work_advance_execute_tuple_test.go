@@ -41,7 +41,7 @@ models:
     capabilities:
       build-implement: {level: capable, evidence: fixture}
       work.continue.unattended: {level: capable, evidence: fixture}
-  fixture-qwen-quality:
+  fixture model (quality):
     lane: quality
     harness: claude_qwen
     provider_route: fixture-quality
@@ -52,8 +52,8 @@ models:
       build-implement: {level: capable, evidence: fixture}
       work.continue.unattended: {level: capable, evidence: fixture}
 routing_defaults:
-  build-implement: [claude-qwen, fixture-qwen-quality]
-  work.continue.unattended: [claude-qwen, fixture-qwen-quality]
+  build-implement: [claude-qwen, fixture model (quality)]
+  work.continue.unattended: [claude-qwen, fixture model (quality)]
 `
 	path := filepath.Join(t.TempDir(), "model-capabilities.yaml")
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
@@ -80,6 +80,7 @@ func TestWorkAdvanceExecuteDetachedTupleReachesActualAdapter(t *testing.T) {
 			f, candidates := adaptiveTupleFixture(t)
 			candidate := candidates[1]
 			if saved {
+				candidate.LaunchProfileID = "fixture-qwen-quality"
 				saveAdaptiveSelection(t, f, candidate)
 				candidate.SelectionRevision = 1
 			}
@@ -126,11 +127,15 @@ func TestWorkAdvanceExecuteDetachedTupleReachesActualAdapter(t *testing.T) {
 }
 
 func TestWorkAdvanceExecuteDetachedTupleDriftHasNoDelta(t *testing.T) {
-	for _, drift := range []string{"digest", "manifest", "selection", "model", "provider", "capacity"} {
+	for _, drift := range []string{"digest", "manifest", "selection", "model", "provider", "capacity", "profile", "foreign-profile"} {
 		t.Run(drift, func(t *testing.T) {
 			f, candidates := adaptiveTupleFixture(t)
 			candidate := candidates[1]
 			switch drift {
+			case "profile":
+				candidate.LaunchProfileID = "fixture-missing-wrapper"
+			case "foreign-profile":
+				candidate.LaunchProfileID = candidates[0].LaunchProfileID
 			case "model":
 				candidate.RequestedModelID = "fixture-substitution"
 			case "provider":
@@ -168,19 +173,38 @@ func TestWorkAdvanceExecuteDetachedTupleDriftHasNoDelta(t *testing.T) {
 			workAdvanceExecuteExit = func(code int) { panic(exitSignal{code}) }
 			t.Cleanup(func() { workAdvanceExecuteExit = prev })
 			code := 0
-			func() {
-				defer func() {
-					if x := recover(); x != nil {
-						if signal, ok := x.(exitSignal); ok {
-							code = signal.code
-						} else {
-							panic(x)
+			if drift == "profile" {
+				executable, err := os.Executable()
+				if err != nil {
+					t.Fatal(err)
+				}
+				childArgs := append([]string{"-test.run=^TestAdaptiveDetachedDoorHelper$", "--", "work"}, args...)
+				child := exec.Command(executable, childArgs...)
+				child.Env = append(os.Environ(), "COMPOUND_TEST_ADAPTIVE_DOOR=1")
+				out, err := child.CombinedOutput()
+				if err == nil || !strings.Contains(string(out), "no Compound lane tuple") {
+					t.Fatalf("missing profile result: %v %s", err, out)
+				}
+				code = child.ProcessState.ExitCode()
+			} else {
+				func() {
+					defer func() {
+						if x := recover(); x != nil {
+							if signal, ok := x.(exitSignal); ok {
+								code = signal.code
+							} else {
+								panic(x)
+							}
 						}
-					}
+					}()
+					cmdWork(args)
 				}()
-				cmdWork(args)
-			}()
-			if code != 1 {
+			}
+			wantCode := 1
+			if drift == "profile" {
+				wantCode = 2
+			}
+			if code != wantCode {
 				t.Fatalf("drift exit=%d", code)
 			}
 			after, err := f.store.Get(f.workID)

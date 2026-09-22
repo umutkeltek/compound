@@ -252,6 +252,11 @@ before mutation. The separate integer `--expected-selection-revision` guards the
 selected work retains its saved snapshot; unselected work receives a one-run profile override.
 Adapter readiness and final start revalidation consume the same profile.
 
+A saved profile may use a wrapper alias while routing names a descriptive model
+entry. Its exact profile is preserved when its saved model, provider and harness
+match the candidate; owner preflight re-resolves that profile against the sealed
+manifest before claim. A removed, ambiguous or foreign alias still refuses.
+
 ## Cancellation and budget are owned by the canonical execution seam
 
 `ExecuteGovernedHarnessAdvance` is the one mutation seam shared by the public CLI, the

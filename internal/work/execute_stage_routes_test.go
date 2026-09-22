@@ -240,3 +240,57 @@ func TestUnattendedEligibleCandidateProtectsExactSavedIntent(t *testing.T) {
 		})
 	}
 }
+
+func TestExecuteStageSavedAliasRequiresOwnerPreflightBeforeClaim(t *testing.T) {
+	for _, alias := range []string{"fixture-wrapper", "removed-wrapper"} {
+		t.Run(alias, func(t *testing.T) {
+			s := newStore(t)
+			w, err := s.Create(CreateInput{WorkID: "work_saved_alias", Owner: "orchestrator:fixture", Actor: "codex", CreatorHarness: "codex", State: "ready", Risk: "tier1", Privacy: "private", SuccessPredicate: "saved wrapper reaches its owner", ExecutionSelection: &envelope.ExecutionSelection{LaunchProfileID: alias, Harness: "claude_minimax", RequestedModelID: "fixture model (token plan)", ProviderRoute: "fixture-provider", Revision: 1, Source: "explicit", SelectedBy: "operator", SelectedAt: fixedNow.Format(time.RFC3339)}}, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			installExecuteGrant(t, s.home, true)
+			restoreAllExecuteHooks(t)
+			candidate := ExecutionRouteCandidate{LaunchProfileID: "fixture model (token plan)", Harness: "claude_minimax", RequestedModelID: "fixture model (token plan)", ProviderRoute: "fixture-provider", CapacityLane: "fixture-provider", SourceRevision: "fixture-revision"}
+			t.Cleanup(SwapExecuteStageRouteCandidates(func(string, string) []ExecutionRouteCandidate { return []ExecutionRouteCandidate{candidate} }))
+			executeStageCapacityFn = func(string, string, time.Time) (float64, bool, error) { return 10, true, nil }
+			executeStagePolicyEvalFn = func(policyActionIntentShim, policyConfigShim, time.Time) policyDecisionShim {
+				return policyDecisionShim{Outcome: "allow", ID: "pol_alias"}
+			}
+			checked, launched := 0, 0
+			t.Cleanup(SwapExecuteStageCandidatePreflight(func(store *Store, id string, c ExecutionRouteCandidate, _ time.Time) error {
+				checked++
+				current, err := store.Get(id)
+				if err != nil || !reflect.DeepEqual(w, current) {
+					t.Fatalf("work mutated before owner preflight: %v", err)
+				}
+				if c.LaunchProfileID != alias || c.RequestedModelID != candidate.RequestedModelID {
+					t.Fatalf("saved tuple substituted: %+v", c)
+				}
+				if alias == "removed-wrapper" {
+					return errors.New("lane_unready:owner no longer resolves saved wrapper")
+				}
+				return nil
+			}))
+			t.Cleanup(SwapExecuteStageCandidateLaunch(func(_ *Store, _ string, c ExecutionRouteCandidate, _, _ string, _ time.Time) (string, error) {
+				launched++
+				if c.LaunchProfileID != alias {
+					t.Fatalf("profile lost at launch: %+v", c)
+				}
+				return "ratt_saved_alias", nil
+			}))
+			result, err := s.Continue(fixedNow, ContinueOptions{Actor: "codex"})
+			if err != nil || checked != 1 {
+				t.Fatalf("result=%+v err=%v checks=%d", result, err, checked)
+			}
+			if alias == "removed-wrapper" {
+				after, err := s.Get(w.ID)
+				if err != nil || launched != 0 || !reflect.DeepEqual(w, after) {
+					t.Fatalf("refused alias mutated or launched: err=%v launches=%d", err, launched)
+				}
+			} else if launched != 1 || result.Action != "execute" {
+				t.Fatalf("saved alias did not launch: %+v", result)
+			}
+		})
+	}
+}
