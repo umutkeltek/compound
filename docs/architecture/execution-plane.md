@@ -457,3 +457,22 @@ usable route evidence, enforces a real cost/risk gate, removes duplicate routing
 real product/system loop.
 
 The execution-plane construction track is in `../roadmap/phases.md` (P10 — execution route evidence).
+
+### Bounded upstream evidence producer
+
+`scripts/upstream-learning/learning_tick.py` is an optional external scheduler
+entry point for explicit GitHub source frontiers. It creates governed work for
+one bounded acquisition/intake pass, requires an allowing action policy, custodies
+hash-checked text through findings, and sends no-promote source observations to
+the existing candidate owner. It drains pending delivery before acquiring more;
+unchanged inspected content stays quiet even when repository HEAD advances.
+Implementation/configuration hashes and truthful audit-only receipts make the
+actual producer visible. The canonical Bun inventory runs its synthetic and
+temporary-home intake tests.
+
+The producer performs no model calls, installations, graph mutations or automatic
+adoption. Evidence availability is observed; usefulness, novelty and actionability
+remain unassessed until independently audited. Experiment selection, reviewed
+adoption and runtime feedback remain with existing work, capability and receipt
+owners. Host scheduling and source configuration are private deployment inputs,
+not a second scheduler or meaning authority in the core.
