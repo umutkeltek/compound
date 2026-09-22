@@ -528,7 +528,11 @@ order is: persist the `ActionIntent` → mint or reuse the
 same eligibility predicate: an adapter-enforced direct single-action baseline
 hold, excluding security, placement, dirty source-control, and coordination
 boundaries. A ready grant keeps its plan generation; consumption or expiry
-rotates it. The executor sees only the neutral, evidence-backed
+rotates it. Historical plans without a full intent digest retain structural and
+original source-binding validation, but inventory scans exclude them and their
+grants from current authority. They cannot be reused, approved, or consumed;
+malformed history and changed current source bodies still fail closed. The
+executor sees only the neutral, evidence-backed
 `Exact approval plan approval_plan_<12hex> is ready for operator review.`
 sentence. Authentication and approval remain a separate operator boundary,
 and no retry mutates global harness permissions or configuration. Exact

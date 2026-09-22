@@ -32,6 +32,11 @@ var ErrExactApprovalExhausted = errors.New("matching exact approvals exhausted")
 // matching compatibility records that do not carry consumable authority.
 var ErrExactApprovalAuthorityUnavailable = errors.New("exact approval authority unavailable")
 
+// Historical plans can be validated as evidence without carrying the complete
+// intent binding required to grant authority. Only inventory scans handle this
+// distinction; approval and consumption continue to refuse it.
+var errLegacyExactApprovalPlan = errors.New("exact approval plan lacks full intent binding")
+
 type ExactActionApprovalPlan struct {
 	SchemaVersion  string        `json:"schema_version"`
 	ID             string        `json:"id"`
@@ -216,9 +221,12 @@ func exactApprovalPlansForBinding(store *eventstore.Store, digest string) ([]Exa
 		if err != nil {
 			return nil, err
 		}
-		plan, err := validateExactApprovalPlanRecord(store, entry.ID, record.Bytes)
+		plan, err := readExactApprovalPlanRecord(store, entry.ID, record.Bytes)
 		if err != nil {
 			return nil, err
+		}
+		if plan.Binding.FullIntentDigest == "" {
+			continue
 		}
 		if plan.BindingDigest == digest {
 			plans = append(plans, plan)
@@ -257,6 +265,9 @@ func exactApprovalPlanGrants(store *eventstore.Store) (map[string]exactApprovalP
 			return nil, err
 		}
 		planRef, hasPlan, err := validateExactPlanGrant(store, approval)
+		if errors.Is(err, errLegacyExactApprovalPlan) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -272,6 +283,19 @@ func exactApprovalPlanGrants(store *eventstore.Store) (map[string]exactApprovalP
 }
 
 func validateExactApprovalPlanRecord(store *eventstore.Store, entryID string, body []byte) (ExactActionApprovalPlan, error) {
+	plan, err := readExactApprovalPlanRecord(store, entryID, body)
+	if err != nil {
+		return ExactActionApprovalPlan{}, err
+	}
+	if plan.Binding.FullIntentDigest == "" {
+		return ExactActionApprovalPlan{}, fmt.Errorf("%w: %s", errLegacyExactApprovalPlan, entryID)
+	}
+	return plan, nil
+}
+
+// readExactApprovalPlanRecord verifies integrity using the binding format that
+// was recorded. A successful historical read alone never authorizes an action.
+func readExactApprovalPlanRecord(store *eventstore.Store, entryID string, body []byte) (ExactActionApprovalPlan, error) {
 	var plan ExactActionApprovalPlan
 	if err := json.Unmarshal(body, &plan); err != nil {
 		return ExactActionApprovalPlan{}, fmt.Errorf("invalid exact approval plan %s: %w", entryID, err)
@@ -302,6 +326,9 @@ func validateExactApprovalPlanRecord(store *eventstore.Store, entryID string, bo
 	}
 	sourceBinding := ActionBindingForIntent(source, Config{})
 	sourceBinding.PolicyRevision = plan.Binding.PolicyRevision
+	if plan.Binding.FullIntentDigest == "" {
+		sourceBinding.FullIntentDigest = ""
+	}
 	if ActionBindingDigest(sourceBinding) != plan.BindingDigest {
 		return ExactActionApprovalPlan{}, fmt.Errorf("invalid exact approval plan %s source binding", entryID)
 	}
@@ -365,7 +392,7 @@ func validateExactPlanGrant(store *eventstore.Store, approval ExactActionApprova
 	if err != nil {
 		return "", false, fmt.Errorf("invalid exact action approval %s plan evidence: %w", approval.ID, err)
 	}
-	plan, err := validateExactApprovalPlanRecord(store, planID, planRecord.Bytes)
+	plan, err := readExactApprovalPlanRecord(store, planID, planRecord.Bytes)
 	if err != nil {
 		return "", false, err
 	}
@@ -374,6 +401,9 @@ func validateExactPlanGrant(store *eventstore.Store, approval ExactActionApprova
 	if approval.ID != wantID || approval.BindingDigest != plan.BindingDigest ||
 		approval.ExpiresAt != plan.ExpiresAt || !containsExactString(approval.EvidenceRefs, actionRef.String()) {
 		return "", false, fmt.Errorf("invalid exact action approval %s plan binding", approval.ID)
+	}
+	if plan.Binding.FullIntentDigest == "" {
+		return "", false, fmt.Errorf("%w: %s", errLegacyExactApprovalPlan, plan.ID)
 	}
 	return planRef, true, nil
 }
