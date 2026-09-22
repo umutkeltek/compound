@@ -237,11 +237,9 @@ function metricArrayValue(metrics: ASCMetricPoint[], normalized: string, raw: st
 function metricLookupNames(normalized: string, raw: string): string[] {
   const aliases: Record<string, string[]> = {
     units: ["units", "monetized_units", "subscription_units", "renewal_units"],
-    developer_proceeds_usd: [
-      "developer_proceeds_usd",
-      "subscription_developer_proceeds",
-      "renewal_developer_proceeds",
-    ],
+    // Subscription/renewal proceeds describe a subset and do not attest USD.
+    // Only an explicitly named USD total can populate this metric, including zero.
+    developer_proceeds_usd: ["developer_proceeds_usd"],
   };
   return [...new Set([normalized, raw, ...(aliases[normalized] ?? [])])];
 }
@@ -250,8 +248,6 @@ function normalizeMetric(metric: string): string {
   switch (metric) {
     case "downloads":
       return "units";
-    case "proceeds":
-      return "developer_proceeds_usd";
     case "conversion_rate":
       return "product_page_conversion_rate";
     default:

@@ -5,6 +5,29 @@ import { join } from "node:path";
 import { exportsForSnapshot, parseConfig, signalExport } from "./asc_daily_signals.ts";
 
 describe("asc_daily_signals edge", () => {
+  test("does not invent USD or total proceeds from generic or subscription metrics", () => {
+    const config = { apps: [{ product_id: "product:demo", asc_app_id: "123", metrics: ["developer_proceeds_usd"] }] };
+    const ambiguous = [
+      { proceeds: 12.5 },
+      { metrics: { proceeds: 12.5 } },
+      { metrics: [{ name: "subscription_developer_proceeds", unit: "currency", thisDay: 0, status: "ok" }] },
+      { metrics: [{ name: "renewal_developer_proceeds", unit: "currency", thisDay: 12.5, status: "ok" }] },
+    ];
+    for (const row of ambiguous) {
+      expect(exportsForSnapshot(config, { date: "2026-07-04", apps: [{ asc_app_id: "123", ...row }] })).toEqual([]);
+    }
+    for (const { row, expected } of [
+      { row: { developer_proceeds_usd: 0 }, expected: 0 },
+      { row: { metrics: { developer_proceeds_usd: 12.5, proceeds: 99 } }, expected: 12.5 },
+      { row: { metrics: [{ name: "developer_proceeds_usd", unit: "currency", thisDay: -2, status: "ok" }] }, expected: -2 },
+    ]) {
+      const result = exportsForSnapshot(config, { date: "2026-07-04", apps: [{ asc_app_id: "123", ...row }] });
+      expect(result).toHaveLength(1);
+      expect(result[0].metric.name).toBe("developer_proceeds_usd");
+      expect(result[0].metric.after.value).toBe(expected);
+    }
+  });
+
   test("maps every configured app metric to deterministic ProductSignalExport documents", () => {
     const config = parseConfig("fixtures/product/asc-products.json");
     const snapshot = JSON.parse(readFileSync("fixtures/product/asc-daily-signals.json", "utf8"));
@@ -21,7 +44,7 @@ describe("asc_daily_signals edge", () => {
     expect(again.map((doc) => doc.signal_id)).toEqual(exports.map((doc) => doc.signal_id));
   });
 
-  test("aliases downloads and proceeds to existing ASC metric names", () => {
+  test("aliases downloads but preserves currency-unspecified proceeds", () => {
     const downloads = signalExport(
       { product_id: "product:demo", asc_app_id: "123" },
       "downloads",
@@ -37,10 +60,10 @@ describe("asc_daily_signals edge", () => {
       "2026-07-13T12:00:00Z",
     );
     expect(downloads.metric.name).toBe("units");
-    expect(proceeds.metric.name).toBe("developer_proceeds_usd");
+    expect(proceeds.metric.name).toBe("proceeds");
   });
 
-  test("maps asc insights daily metrics arrays", () => {
+  test("maps daily count metrics without relabeling subscription proceeds as a USD total", () => {
     const exports = exportsForSnapshot(
       {
         apps: [
@@ -72,9 +95,9 @@ describe("asc_daily_signals edge", () => {
       },
     );
 
-    expect(exports).toHaveLength(2);
-    expect(exports.map((doc) => doc.metric.name)).toEqual(["units", "developer_proceeds_usd"]);
-    expect(exports.map((doc) => doc.metric.after.value)).toEqual([2, 4.25]);
+    expect(exports).toHaveLength(1);
+    expect(exports.map((doc) => doc.metric.name)).toEqual(["units"]);
+    expect(exports.map((doc) => doc.metric.after.value)).toEqual([2]);
   });
 
   test("accepts operator-owned YAML app config", () => {

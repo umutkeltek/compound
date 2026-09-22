@@ -175,6 +175,13 @@ copies. The mapping is by surface *kind*, not by any specific repo layout:
 | a retrieval / embedding store | retrieval engine or source index, never authority |
 | ActivityWatch events | `internal/activity/awstream` reader joins `aw-watcher-{window,afk,vscode}_*` events across hostnames into Tier-0 `activity.Event` (kind=`app_activated`/`idle_started`); `internal/activity/tier1/source` registry reads cmux IPC + iTerm2/Warp/Terminal.app via `lsof` + VS Code/Cursor from AW `project` only and emits Tier-1 envelope events (kind=`window_focused`) with `pane_cwd`/`git_remote`/`agent_kind` meta. Two CLI verbs: `compound activity aw materialize` (Tier-0 ingest, `activity.ingest.drain` grant) and `compound activity tier1 collect` (Tier-1 envelopes, `activity.tier1.collect` grant). AW remains a passive reader; `aw-watcher-vscode_*.file` and any other title/url/document field are refused at the read boundary. See [ADR 0003](../adr/0003-activity-watch-virtual-stream-and-tier1.md) |
 
+Daily ASC metric intake preserves the reported measurement scope. Only an explicit
+`developer_proceeds_usd` field can produce that USD-total metric; subscription or
+renewal proceeds are subsets with unspecified currency and cannot substitute for it,
+including when their value is zero. A generic `proceeds` metric retains its generic
+name. Missing total/currency evidence produces no USD-total signal. Existing historical
+signals remain evidence for review; this change does not rewrite their history.
+
 Change-stream promotion candidate pages are product source observations, not
 product truth. `compound product change-stream <candidates.md>` preserves the
 generated page hash/capture and each candidate's product, surface, repo, score,
