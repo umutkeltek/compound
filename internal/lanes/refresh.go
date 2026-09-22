@@ -488,8 +488,16 @@ func RefreshAllInstalledHarnesses(opts RefreshLaneOptions) ([]LaneVerdict, error
 	if !refreshPreflightReady(preflight) {
 		return preflight, nil
 	}
+	// An externally-owned lane is carried through to the report untouched: the
+	// native writer owns neither its hooks nor its pack, so refreshing it here
+	// would claim an activation this code cannot perform.
 	names := make([]string, 0, len(preflight))
+	externalVerdicts := make(map[string]LaneVerdict, len(preflight))
 	for _, v := range preflight {
+		if v.Status == statusRefreshExternal {
+			externalVerdicts[v.Harness] = v
+			continue
+		}
 		names = append(names, v.Harness)
 	}
 	// Stabilize the shared hook manifest before rendering any pack.
@@ -499,8 +507,13 @@ func RefreshAllInstalledHarnesses(opts RefreshLaneOptions) ([]LaneVerdict, error
 			hookErrors[name] = err
 		}
 	}
-	out := make([]LaneVerdict, 0, len(names))
-	for _, name := range names {
+	out := make([]LaneVerdict, 0, len(preflight))
+	for _, p := range preflight {
+		if external, ok := externalVerdicts[p.Harness]; ok {
+			out = append(out, external)
+			continue
+		}
+		name := p.Harness
 		if err := hookErrors[name]; err != nil {
 			out = append(out, LaneVerdict{Harness: name, Status: StatusError, Detail: "hook install: " + err.Error(),
 				RepairCommand: fmt.Sprintf("compound hook install --harness %s", name)})

@@ -40,8 +40,12 @@ func TestRefreshPreflightThroughMainPreservesHomeAdmission(t *testing.T) {
 		{name: "absent-preflight-unknown", extraArgs: []string{"--unknown"}, wantExit: 1, want: `unknown refresh-lane argument "--unknown"`},
 		{name: "help-unknown", manifest: "valid", native: true, extraArgs: []string{"--help", "--unknown"}, wantExit: 1, want: `unknown refresh-lane argument "--unknown"`},
 		{name: "preflight-as-value", manifest: "valid", ordinary: true, native: true, extraArgs: []string{"--binary", "--preflight"}, wantExit: 1, want: "--binary requires a value"},
-		{name: "external-omp", manifest: "valid", external: "oh_my_pi", wantExit: 1, want: "compound hook install --harness oh-my-pi"},
-		{name: "external-opencode", manifest: "valid", external: "opencode", wantExit: 1, want: "adapters/opencode/install.ts"},
+		// An adapter with a known installer is reported to that owner and exits 0:
+		// it holds no pinned binary identity, so it cannot be left half-activated
+		// by publication. Exiting 1 here made `./install.sh` unable to publish at
+		// all on any home that enrolled one.
+		{name: "external-omp", manifest: "valid", external: "oh_my_pi", wantExit: 0, want: "compound hook install --harness oh-my-pi"},
+		{name: "external-opencode", manifest: "valid", external: "opencode", wantExit: 0, want: "adapters/opencode/install.ts"},
 		{name: "external-unknown", manifest: "valid", external: "unrecognized", wantExit: 1, want: "no native hook refresh owner"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

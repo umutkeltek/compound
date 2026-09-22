@@ -13,6 +13,15 @@ import (
 // hooks, instruction pack, or provider have been refreshed or proven.
 const statusRefreshReady = "ready"
 
+// statusRefreshExternal marks a lane a separate adapter installs. Such a lane
+// records no invocation_revision, and its hook reaches the binary through a
+// stable path rather than a pinned identity, so publishing a new binary cannot
+// leave it half-activated. It is reported with the command that owns it, never
+// refreshed by the native writer, and never gates publication: making it a
+// blocking verdict would be unsatisfiable, because no branch here can grant a
+// readiness the native writer has no way to deliver.
+const statusRefreshExternal = "external"
+
 func preflightLaneRefresh(opts RefreshLaneOptions, harnessName string) LaneVerdict {
 	harnessName = strings.TrimSpace(harnessName)
 	v := LaneVerdict{Harness: harnessName, Status: StatusError}
@@ -26,9 +35,13 @@ func preflightLaneRefresh(opts RefreshLaneOptions, harnessName string) LaneVerdi
 		v.Status = statusRefreshReady
 		v.Detail = "native hook writer available; no refresh performed"
 	case "oh_my_pi", "oh-my-pi":
-		v.Detail = "requires separate adapter activation: oh-my-pi shim is owned by compound hook install --harness oh-my-pi; its module report cannot refresh settings-style installed-hook authority; resolve the activation contract before retrying"
+		v.Status = statusRefreshExternal
+		v.Detail = "separate adapter owns this lane: the oh-my-pi shim is installed by compound hook install --harness oh-my-pi and invokes the binary through its install path, so publication neither refreshes nor invalidates it"
+		v.RepairCommand = "compound hook install --harness oh-my-pi"
 	case "opencode":
-		v.Detail = "requires separate adapter activation: OpenCode plugin and registration are owned by adapters/opencode/install.ts; native refresh cannot attest this observation-only adapter; resolve the activation contract before retrying"
+		v.Status = statusRefreshExternal
+		v.Detail = "separate adapter owns this lane: the OpenCode plugin and registration are installed by adapters/opencode/install.ts and resolve the binary at call time, so publication neither refreshes nor invalidates it"
+		v.RepairCommand = "bun adapters/opencode/install.ts"
 	default:
 		v.Detail = "no native hook refresh owner for this harness; resolve its adapter activation contract before retrying"
 	}
@@ -49,8 +62,15 @@ func PreflightInstalledRefresh(opts RefreshLaneOptions) ([]LaneVerdict, error) {
 	return verdicts, nil
 }
 
+// refreshPreflightReady gates the first native write. Only lanes the native
+// writer actually owns can withhold that permission; an externally-owned lane
+// is reported but cannot veto, or an enrolled adapter the writer never touches
+// would block every publication on this home forever.
 func refreshPreflightReady(verdicts []LaneVerdict) bool {
 	for _, v := range verdicts {
+		if v.Status == statusRefreshExternal {
+			continue
+		}
 		if v.Status != statusRefreshReady {
 			return false
 		}

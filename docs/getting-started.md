@@ -237,9 +237,13 @@ An absent home needs no initialization for this check; an existing home must
 have a compatible manifest. Ordinary refresh retains mutation admission.
 OpenCode registration belongs to `adapters/opencode/install.ts`; oh-my-pi shim
 installation belongs to `compound hook install --harness oh-my-pi` and does not
-publish settings-style hook authority. Required entries for either adapter stop
-source installation with their owner named. Resolve that activation contract
-before retrying; removing entries or skipping required refresh is not a repair.
+publish settings-style hook authority. Entries for either adapter are reported
+as `external` with their owner's command named, and do not stop source
+installation: neither records an `invocation_revision`, and each reaches the
+binary through a stable path rather than a pinned identity, so publication can
+leave neither half-activated. Refreshing them stays that owner's job — run the
+named command to pick up a new contract. A harness with no known owner at all is
+still a hard refusal, and removing manifest entries is never a repair.
 
 Source installation shares the release installer's kernel lock. Stop consumers
 of the installed binaries/helpers during installation: the set is published by

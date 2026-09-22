@@ -1,18 +1,21 @@
 package lanes
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"compound/internal/contract"
 	"compound/internal/home"
 )
 
-func TestRefreshAllRefusesExternalAdapterBeforeNativeMutation(t *testing.T) {
+// An externally-owned adapter is reported, not obeyed as a veto. Before
+// 2026-09-22 any enrolled oh_my_pi/opencode entry made refreshPreflightReady
+// permanently false, so `./install.sh` could publish no binary at all on a home
+// that enrolled one. The native lanes must still refresh, and the external
+// adapter's own files must still be left to their installer.
+func TestRefreshAllRefreshesNativeLanesAndReportsExternalAdapters(t *testing.T) {
 	for _, external := range []string{"oh_my_pi", "opencode"} {
 		t.Run(external, func(t *testing.T) {
 			homePath, baseDir := t.TempDir(), t.TempDir()
@@ -23,48 +26,39 @@ func TestRefreshAllRefusesExternalAdapterBeforeNativeMutation(t *testing.T) {
 			writeInstalledHooksManifest(t, homePath, map[string]string{
 				"codex": "binary:" + binaryPath, external: "binary:" + binaryPath,
 			})
-			configPath := filepath.Join(baseDir, ".codex", "hooks.json")
-			if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-				t.Fatal(err)
-			}
-			originalConfig := []byte("{\"synthetic_setting\":\"preserve\"}\n")
-			if err := os.WriteFile(configPath, originalConfig, 0640); err != nil {
-				t.Fatal(err)
-			}
-			manifestPath := contract.InstalledHooksPath(homePath)
-			originalManifest, err := os.ReadFile(manifestPath)
-			if err != nil {
-				t.Fatal(err)
-			}
 			verdicts, err := RefreshAllInstalledHarnesses(RefreshLaneOptions{
 				HomePath: homePath, BaseDir: baseDir, BinaryPath: binaryPath, Now: time.Now().UTC(),
 			})
 			if err != nil || len(verdicts) != 2 {
 				t.Fatalf("refresh verdicts: %+v; error: %v", verdicts, err)
 			}
-			owner := "adapters/opencode/install.ts"
+			owner, repair := "adapters/opencode/install.ts", "bun adapters/opencode/install.ts"
 			if external == "oh_my_pi" {
 				owner = "compound hook install --harness oh-my-pi"
+				repair = owner
 			}
-			if verdicts[0].Harness != "codex" || verdicts[0].Status != statusRefreshReady ||
-				verdicts[1].Harness != external || verdicts[1].Status != StatusError ||
-				!strings.Contains(verdicts[1].Detail, owner) {
-				t.Fatalf("refusal did not preserve the external owner boundary: %+v", verdicts)
+			if verdicts[1].Harness != external || verdicts[1].Status != statusRefreshExternal ||
+				!strings.Contains(verdicts[1].Detail, owner) || verdicts[1].RepairCommand != repair {
+				t.Fatalf("external adapter was not reported to its owner: %+v", verdicts[1])
 			}
-			for path, before := range map[string][]byte{configPath: originalConfig, manifestPath: originalManifest} {
-				after, readErr := os.ReadFile(path)
-				if readErr != nil || !bytes.Equal(before, after) {
-					t.Errorf("unsupported adapter %s mutated preimage %s before refusing: %v", external, path, readErr)
+			// The whole point of the repair. With the veto in place the ladder
+			// short-circuited and handed back the untouched preflight verdict, so
+			// the native lane still read `ready` — the status it can only hold
+			// while nothing has been refreshed. Any processed outcome (clean,
+			// drifted, or a genuine per-lane error) proves the lane was reached;
+			// a bare synthetic home has no lane default, so demanding success
+			// here would assert an unrelated contract-compile precondition.
+			if verdicts[0].Harness != "codex" || verdicts[0].Status == statusRefreshReady {
+				t.Fatalf("external entry short-circuited the native lane: %+v", verdicts[0])
+			}
+			// The native writer still must not author the external adapter's surfaces.
+			for _, untouched := range []string{
+				filepath.Join(baseDir, ".omp", "agent", "hooks", "pre", "compound.ts"),
+				filepath.Join(baseDir, ".config", "opencode", "plugins", "compound.ts"),
+			} {
+				if _, statErr := os.Stat(untouched); !os.IsNotExist(statErr) {
+					t.Errorf("native refresh authored externally-owned %s: %v", untouched, statErr)
 				}
-			}
-			if info, err := os.Stat(configPath); err != nil || info.Mode().Perm() != 0640 {
-				t.Fatalf("native config mode changed: %v %v", info, err)
-			}
-			if _, err := os.Stat(contract.InstalledHooksSourceAuthorityPath(homePath)); !os.IsNotExist(err) {
-				t.Fatalf("preflight created installed hook authority: %v", err)
-			}
-			if _, err := os.Stat(filepath.Join(homePath, "context")); !os.IsNotExist(err) {
-				t.Fatalf("preflight materialized instruction context: %v", err)
 			}
 		})
 	}
@@ -90,14 +84,24 @@ func TestRefreshPreflightCLIIsReadOnlyAndDoesNotClaimActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeInstalledHooksManifest(t, homePath, map[string]string{"codex": "binary:synthetic", "opencode": "binary:synthetic"})
-	if err := RunCLIFromArgs(args, time.Now().UTC()); err == nil {
-		t.Fatal("all-lane preflight silently accepted unsupported adapter")
+	// This is the install gate. An enrolled external adapter must not refuse it,
+	// or the installer can never publish a binary on this home.
+	if err := RunCLIFromArgs(args, time.Now().UTC()); err != nil {
+		t.Fatalf("all-lane preflight refused publication over an externally-owned adapter: %v", err)
 	}
-	if err := RunCLIFromArgs(args[1:], time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "opencode") {
-		t.Fatalf("full refresh did not identify the external blocker: %v", err)
+	// The full refresh may still report a per-lane problem in this bare home
+	// (no lane default means no contract compile). What it must never do again
+	// is refuse wholesale before touching anything.
+	if err := RunCLIFromArgs(args[1:], time.Now().UTC()); err != nil && strings.Contains(err.Error(), "refresh preflight refused") {
+		t.Fatalf("full refresh refused over an externally-owned adapter: %v", err)
 	}
 	if err := RunCLIFromArgs(append(args, "--harness", "codex"), time.Now().UTC()); err != nil {
 		t.Fatalf("explicit native lane was blocked by unrelated external entry: %v", err)
+	}
+	// A lane with no owner at all is still a hard refusal; only a lane whose
+	// installer is known and whose hook carries no pinned identity is waived.
+	if err := RunCLIFromArgs(append(args, "--harness", "unrecognized"), time.Now().UTC()); err == nil {
+		t.Fatal("preflight accepted a harness with no refresh owner")
 	}
 	if v := preflightLaneRefresh(RefreshLaneOptions{HomePath: homePath, BaseDir: baseDir, BinaryPath: binaryPath}, "unrecognized"); v.Status != StatusError {
 		t.Fatalf("unknown adapter accepted: %+v", v)
