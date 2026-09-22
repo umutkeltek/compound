@@ -470,9 +470,21 @@ Implementation/configuration hashes and truthful audit-only receipts make the
 actual producer visible. The canonical Bun inventory runs its synthetic and
 temporary-home intake tests.
 
-The producer performs no model calls, installations, graph mutations or automatic
-adoption. Evidence availability is observed; usefulness, novelty and actionability
-remain unassessed until independently audited. Experiment selection, reviewed
-adoption and runtime feedback remain with existing work, capability and receipt
-owners. Host scheduling and source configuration are private deployment inputs,
-not a second scheduler or meaning authority in the core.
+Acquisition performs no model calls, installations, graph mutations or automatic
+adoption. The optional `review_tick.py` consumes acknowledged pinned findings and
+makes at most one governed read-only audit (`classify-extract`) or independent
+provider challenge (`certify`) per invocation. It uses registered Claude-family
+adapters with enforced plan permissions and fresh alive capacity. Route planning
+uses the explicit `--read-only` capability-plan mode, which preserves refusals
+without recording them; candidate planning refuses that flag. Saved execution
+selection and actual attempt provenance must agree before intake. Completed
+responses survive custody retries without another model call; a blocked
+finalization does not starve other sources. In-progress work waits. Invalid
+responses have bounded retries that prefer untried eligible model/provider tuples
+for the same job without mutating shared route authority. Citation-checked model hypotheses
+remain operational evidence, never promoted truth or demonstrated improvement.
+Priority bands expose duplicates, disagreements, missing evidence and candidates
+for experiments. Experiment selection, reviewed adoption and runtime feedback
+remain with existing work, capability and receipt owners. Host scheduling and
+source configuration are private deployment inputs, not a second scheduler or
+meaning authority in the core.

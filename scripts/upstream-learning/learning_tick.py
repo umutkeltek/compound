@@ -33,8 +33,9 @@ def terminate_child(p):
         p.wait()
 
 class CLI:
-    def __init__(self, binary, deadline):
+    def __init__(self, binary, deadline, command_timeout=90):
         self.binary, self.deadline = binary, deadline
+        self.command_timeout = command_timeout
 
     def call(self, *args):
         left = self.deadline - time.monotonic()
@@ -43,7 +44,7 @@ class CLI:
         p = subprocess.Popen([self.binary, *map(str, args)], text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         try:
-            out, err = p.communicate(timeout=min(90, left))
+            out, err = p.communicate(timeout=min(self.command_timeout, left))
         except subprocess.TimeoutExpired:
             terminate_child(p)
             raise TickError('Compound command timed out: ' + ' '.join(args[:2]))

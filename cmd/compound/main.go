@@ -280,7 +280,7 @@ func routeUsage(sub string) string {
 	case "ev":
 		return routeEvUsage
 	default:
-		return "usage: compound route <execution-profile (--list|--profile ID) [--json]|evidence-authority [--json] [--recent N]|lane-projection [--harness H] [--json]|model-capabilities [--json|--yaml|--check-view FILE]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|promotion-apply --review <route_promotion.json> --rationale <text> --work W [--confirm] [--json]|promotion-revert --applied <route_promotion.applied.json> --work W [--confirm] [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|import-account-projection <admin-accounts.json>|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|speed (observe [--from <probe.json>]|list) [--json]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive] [--latency-class interactive|batch|overnight])|ev --capability-class C --deviation-lane L [--risk-grade gate|judge|tidy] [--class-bucket unknown] [--json]>"
+		return "usage: compound route <execution-profile (--list|--profile ID) [--json]|evidence-authority [--json] [--recent N]|lane-projection [--harness H] [--json]|model-capabilities [--json|--yaml|--check-view FILE]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|promotion-apply --review <route_promotion.json> --rationale <text> --work W [--confirm] [--json]|promotion-revert --applied <route_promotion.applied.json> --work W [--confirm] [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|import-account-projection <admin-accounts.json>|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|speed (observe [--from <probe.json>]|list) [--json]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive] [--latency-class interactive|batch|overnight] [--read-only])|ev --capability-class C --deviation-lane L [--risk-grade gate|judge|tidy] [--class-bucket unknown] [--json]>"
 	}
 }
 
@@ -947,6 +947,10 @@ func cmdRoute(args []string) {
 	if args[0] == "plan" {
 		candidateID := valueFlag(args[1:], "--candidate")
 		capabilityClass := valueFlag(args[1:], "--capability-class")
+		if hasFlag(args[1:], "--read-only") && (capabilityClass == "" || candidateID != "") {
+			fmt.Fprintln(os.Stderr, "route plan: --read-only requires --capability-class without --candidate")
+			os.Exit(2)
+		}
 		targetPath := valueFlag(args[1:], "--target")
 		if (candidateID == "" && capabilityClass == "") || (candidateID != "" && capabilityClass != "") {
 			fmt.Fprintln(os.Stderr, "usage: compound route plan (--candidate <candidate_id> [--target <file>]|--capability-class <class> [--privacy-sensitive])")
@@ -954,8 +958,10 @@ func cmdRoute(args []string) {
 		}
 		if capabilityClass != "" {
 			plan, err := routeevidence.PlanCapabilityRoute(homePath, capabilityClass, routeevidence.CapabilityRoutePlanOptions{
-				PrivacySensitive: hasFlag(args[1:], "--privacy-sensitive"),
-				LatencyClass:     valueFlag(args[1:], "--latency-class"),
+				PrivacySensitive:            hasFlag(args[1:], "--privacy-sensitive"),
+				LatencyClass:                valueFlag(args[1:], "--latency-class"),
+				SuppressRefusalEvidence:     hasFlag(args[1:], "--read-only"),
+				SuppressPendingObservations: hasFlag(args[1:], "--read-only"),
 			}, time.Now())
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "route plan:", err)

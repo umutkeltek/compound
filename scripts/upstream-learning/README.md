@@ -51,6 +51,49 @@ consumption. This producer grants no autonomous review, experiment or promotion
 authority. Staging is a delivery cache; Compound findings and source candidates
 own delivered evidence.
 
+## Optional audit and challenge tick
+
+`review_tick.py` consumes acknowledged, current observations from the same private
+configuration and staging directory. Set `COMPOUND_HOME` explicitly and provide
+`--config`, `--output-dir` and `--workspace`. Start with `--dry-run`, which plans
+without creating work. The installed CLI must advertise and report
+`route plan --capability-class C --read-only`; older versions are refused before
+planning. That flag suppresses refusal evidence and pending-observation reads,
+preserves eligibility checks, and refuses the candidate-planning branch.
+
+Each invocation makes at most one governed model call. An audit uses
+`classify-extract`; a challenge uses `certify` and excludes the audit's provider.
+A retry prefers an untried eligible model/provider tuple over a tuple that failed
+this same job; this does not demote a shared route from one failure.
+Both require registered Claude-family adapters, fresh alive capacity and enforced
+`plan` permissions. Unavailable capacity produces an explicit wait. This is a
+consumer of existing route and policy owners; it changes no account, grant or
+routing authority. Other harness families need a proven read-only execution
+posture before this driver can use them.
+
+Reports contain at most three hypotheses, each with a pinned source quote, named
+consumer, relationship, predicted benefit and falsifier. Priority bands are
+`park`, `disputed`, `needs-evidence`, `needs-independent-review` and
+`needs-experiment`. An empty or duplicate-only audit parks the source without a
+challenge call. Independence here means different requested provider routes;
+served fallback identity is not attested by these reports. These bands guide review; they are not measured quality scores.
+A model's supported verdict remains an opinion. No experiment, skill installation,
+memory promotion or adoption runs here.
+
+The driver checks the actual attempt's model, provider, profile revision, harness,
+actor, policy and work linkage before recording a finding. Replays reuse completed
+reports. A custody interruption preserves verifying work for finalization without
+another model call. A finalization hold or missing transcript remains visible while
+other observations can progress; malformed responses allow at most three attempts per role and
+observation. In-progress work is reported as waiting instead of duplicated. Sources
+older than 14 days are excluded. Acquisition and review share one process lock.
+The review budget is 450 seconds, with each CLI command capped at 330 seconds.
+
+Scheduling this optional entry point requires the same governed deployment as the
+acquisition tick. The scripts install no scheduler. Existing capability review and
+experiment owners remain responsible for comparing a baseline, demonstrating
+runtime benefit and deciding adoption.
+
 ## Verification
 
 ```sh

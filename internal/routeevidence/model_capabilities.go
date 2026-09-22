@@ -130,11 +130,12 @@ func planCapabilityRouteCacheKey(homePath, capabilityClass string, opts Capabili
 	// must invalidate the cache even when no LatencyBudget override is passed;
 	// otherwise the second call with a different LatencyClass returns the
 	// previously filtered chain instead of recomputing.
-	return fmt.Sprintf("%s\x00%s\x00%t\x00%t\x00%d\x06%t\x06%s\x00%s\x00%s\x00%d\x00%s",
+	return fmt.Sprintf("%s\x00%s\x00%t\x00%t\x00%t\x00%d\x06%t\x06%s\x00%s\x00%s\x00%d\x00%s",
 		homePath,
 		capabilityClass,
 		opts.PrivacySensitive,
 		opts.SuppressPendingObservations,
+		opts.SuppressRefusalEvidence,
 		opts.ExpectedMinutes,
 		opts.Confirm,
 		capPtr,
@@ -337,6 +338,7 @@ type CapabilityRoutePlanOptions struct {
 }
 
 type CapabilityRoutePlan struct {
+	ReadOnly          bool   `json:"read_only,omitempty"`
 	SchemaVersion     string `json:"schema_version"`
 	ID                string `json:"id"`
 	CreatedAt         string `json:"created_at"`
@@ -762,6 +764,7 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 		return CapabilityRoutePlan{}, err
 	}
 	plan := CapabilityRoutePlan{
+		ReadOnly:          opts.SuppressRefusalEvidence && opts.SuppressPendingObservations,
 		SchemaVersion:     CapabilityRoutePlanSchemaVersion,
 		ID:                autonomyproof.RoutePlanID(capabilityClass, opts.PrivacySensitive, authorityPath, sourceRevision),
 		CreatedAt:         rfc3339(now),
