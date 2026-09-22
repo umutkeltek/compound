@@ -473,8 +473,8 @@ func initGitRepoOrSkip(t *testing.T, targetRoot string) string {
 	for _, args := range [][]string{
 		// Point HEAD at refs/heads/main before the first commit so the
 		// fixture branch name does not depend on the machine's
-		// init.defaultBranch (CI runners default to master; CI run
-		// 35304076022 phase 1 — TargetLocalRef refs/heads/main did not
+		// init.defaultBranch (CI runners default to master; a CI fixture
+		// failed because TargetLocalRef refs/heads/main did not
 		// resolve). symbolic-ref works on every git version, unlike
 		// git init -b.
 		{"init", "--quiet"},
