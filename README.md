@@ -500,14 +500,23 @@ decided by evidence, one receipted step at a time.
 
 ## Status
 
-- Gen-1 memory packages are retired from `internal/`.
-- Gen-1 top-level verbs are tombstones, not compatibility aliases.
+The first generation is unreleased and actively dogfooded against a private
+reference system; governed execution and evidence records are inspectable
+through the workbench and proof-chain paths. This repository is the generic
+public substrate, not the dogfood dataset. Adaptive income orchestration and
+automatic skill lifecycle are still being developed and validated; the public
+surface reflects the substrate only.
+
+Internal migration context: Gen-1 memory packages are retired from `internal/`,
+and Gen-1 top-level verbs are tombstones rather than compatibility aliases.
+
+Health gates:
+
 - `compound architecture doctor --strict` enforces package classification,
   public-doc leak checks, candidate-map integrity, contract guards, and a
   convergence budget of `0`.
 - `compound memory doctor` verifies capture, promotion, retrieval, authority,
   and optional engine sync.
 
-Compound is dogfooded against a private reference system, but this repo is the
-generic public substrate. Public behavior must be proven through leak-free
-fixtures and explicit runtime inputs.
+Public behavior must be proven through leak-free fixtures and explicit runtime
+inputs.
