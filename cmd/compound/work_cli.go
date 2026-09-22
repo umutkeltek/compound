@@ -178,7 +178,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work advance-plan work_abc123 --to running --actor codex --dry-run",
 	},
 	"advance": {
-		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--acknowledge-abandoned ratt_X --reason R] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--launch-profile ID [--effort LEVEL] [--expected-selection-revision N]] [--execute [--resume-verifying] --harness <name> [--prompt <text> | -- <command> [args...]]]",
+		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--acknowledge-abandoned ratt_X --reason R] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--launch-profile ID [--effort LEVEL] [--expected-selection-revision N]] [--expected-execution-tuple DIGEST] [--execute [--resume-verifying] --harness <name> [--prompt <text> | -- <command> [args...]]]",
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"delegate": {
@@ -1476,7 +1476,7 @@ func cmdWork(args []string) {
 			"--context-pack": true, "--note": true, "--reason": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
 			"--harness": true, "--prompt": true, "--workspace": true, "--permission-mode": true,
-			"--launch-profile": true, "--effort": true, "--expected-selection-revision": true,
+			"--launch-profile": true, "--effort": true, "--expected-selection-revision": true, "--expected-execution-tuple": true,
 		}
 		// Validate only the pre-`--` portion of the args. The `--` is the
 		// standard POSIX positional separator; everything after is the
@@ -1489,6 +1489,10 @@ func cmdWork(args []string) {
 		if err := validateWorkArguments(validateSlice, advanceValueFlags, map[string]bool{"--steal": true, "--local-only": true, "--execute": true, "--resume-verifying": true}, 1); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if valueFlag(validateSlice, "--expected-execution-tuple") != "" && !hasFlag(validateSlice, "--execute") {
+			fmt.Fprintln(os.Stderr, "error: --expected-execution-tuple requires --execute")
 			os.Exit(2)
 		}
 		if hasFlag(validateSlice, "--resume-verifying") && (!hasFlag(validateSlice, "--execute") || hasFlag(validateSlice, "--steal")) {

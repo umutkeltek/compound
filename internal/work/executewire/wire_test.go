@@ -151,8 +151,8 @@ func TestContinueRouteHookReachesCapacityGateWithEligibleLane(t *testing.T) {
 	if res.Skipped != "capacity_unknown" {
 		t.Fatalf("skipped = %q, want capacity_unknown (route gate passed, capacity stub is stale); result=%+v", res.Skipped, res)
 	}
-	if res.Lane != "claude_minimax" {
-		t.Fatalf("lane = %q, want claude_minimax from the seeded route plan", res.Lane)
+	if res.Lane != "" || !strings.Contains(res.Human, "claude_minimax: capacity snapshot") {
+		t.Fatalf("unadmitted route must remain a refusal, not a selected lane: %+v", res)
 	}
 }
 

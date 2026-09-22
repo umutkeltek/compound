@@ -397,8 +397,9 @@ func TestUnattendedEligibleRule(t *testing.T) {
 				Origin: origin("claude_code"), Owner: "orchestrator:claude_zai",
 				ExecutionSelection: &envelope.ExecutionSelection{LaunchProfileID: "claude-minimax", Harness: "claude_code", Source: "explicit", Revision: 1, SelectedBy: "op", SelectedAt: "2026-09-15T00:00:00Z"},
 			},
-			lane:     "claude-minimax",
-			eligible: true,
+			lane:      "claude-minimax",
+			eligible:  false,
+			whyPrefix: "ineligible:saved execution_selection is not selected profile claude-minimax",
 		},
 		{
 			name: "a saved selection for another harness is ineligible on this lane",
@@ -408,7 +409,7 @@ func TestUnattendedEligibleRule(t *testing.T) {
 			},
 			lane:      "claude-minimax",
 			eligible:  false,
-			whyPrefix: "ineligible:saved execution_selection harness=oh_my_pi is not the route lane harness claude_code",
+			whyPrefix: "ineligible:saved execution_selection is not selected profile claude-minimax",
 		},
 		{
 			name: "a saved codex selection is ineligible on a claude lane",
@@ -417,7 +418,16 @@ func TestUnattendedEligibleRule(t *testing.T) {
 			},
 			lane:      "claude_minimax",
 			eligible:  false,
-			whyPrefix: "ineligible:saved execution_selection harness=codex is not the route lane harness claude_code",
+			whyPrefix: "ineligible:saved execution_selection is not selected profile claude_minimax",
+		},
+		{
+			name: "explicit saved selection authorizes a later executor over creator provenance",
+			work: envelope.WorkEnvelope{
+				Origin: origin("codex"), Owner: "orchestrator:claude_minimax",
+				ExecutionSelection: &envelope.ExecutionSelection{LaunchProfileID: "claude-minimax", Harness: "claude_minimax", Source: "explicit", Revision: 1, SelectedBy: "codex:orchestrator", SelectedAt: "2026-09-22T00:00:00Z"},
+			},
+			lane:     "claude_minimax",
+			eligible: true,
 		},
 	}
 	for _, tc := range cases {

@@ -143,6 +143,17 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	// or a missing adapter must fail closed here -- the old flow advanced
 	// first and looked up second, so a typo in --harness left the work
 	// stuck in "running" with no RunAttempt and no recovery path.
+	launchProfileID := ""
+	if explicitSelection != nil {
+		launchProfileID = strings.TrimSpace(explicitSelection.LaunchProfileID)
+	} else if wenv.ExecutionSelection != nil && harnessName == strings.TrimSpace(wenv.ExecutionSelection.Harness) {
+		// Saved-selection fallback: the work's own choice drives the profile.
+		launchProfileID = wenv.ExecutionSelection.LaunchProfileID
+	}
+	if err := executewire.ValidateExpectedExecutionTuple(homePath, valueFlag(rest, "--expected-execution-tuple"), harnessName, launchProfileID, wenv, now); err != nil {
+		fmt.Fprintf(os.Stderr, "error: execution tuple handoff: %v; no RunAttempt minted and envelope was not advanced\n", err)
+		workAdvanceExecuteExit(1)
+	}
 	runAttemptStore := runattempt.Open(homePath)
 	registry := harness.NewAdapterRegistry(runAttemptStore)
 	adapter, ok := registry.AdapterByName(harnessName)
@@ -215,13 +226,6 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		fmt.Fprintf(os.Stderr, "error: --launch-profile %q resolves harness %q, which is not the invoked harness %q; no RunAttempt was minted and the envelope was not advanced\n",
 			explicitSelection.LaunchProfileID, explicitSelection.Harness, harnessName)
 		workAdvanceExecuteExit(1)
-	}
-	launchProfileID := ""
-	if explicitSelection != nil {
-		launchProfileID = strings.TrimSpace(explicitSelection.LaunchProfileID)
-	} else if wenv.ExecutionSelection != nil && harnessName == strings.TrimSpace(wenv.ExecutionSelection.Harness) {
-		// Saved-selection fallback: the work's own choice drives the profile.
-		launchProfileID = wenv.ExecutionSelection.LaunchProfileID
 	}
 	// Resolve adapter-owned prerequisites before the governed state change.
 	// Tuple-backed lanes use this seam to prove their Compound tuple, wrapper,

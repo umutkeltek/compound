@@ -117,17 +117,36 @@ var writeDetachedStartedLog = func(file *os.File, line string) error {
 //     the pid; absent evidence leaves the reservation owned and explicitly
 //     recovery_required, including a crash immediately after cmd.Start.
 func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string, now time.Time) (work.DetachedLaunch, error) {
+	return LaunchDetachedCandidateViaDoor(store, workID, work.ExecutionRouteCandidate{LaunchProfileID: lane, Harness: lane}, prompt, actor, now)
+}
+
+func LaunchDetachedCandidateViaDoor(store *work.Store, workID string, candidate work.ExecutionRouteCandidate, prompt, actor string, now time.Time) (work.DetachedLaunch, error) {
 	var launch work.DetachedLaunch
 	if store == nil {
 		return launch, errors.New("detached launch: nil work store")
 	}
-	workID, lane, actor = strings.TrimSpace(workID), strings.TrimSpace(lane), strings.TrimSpace(actor)
-	if workID == "" || lane == "" || actor == "" {
-		return launch, fmt.Errorf("detached launch: workID=%q lane=%q actor=%q; all required", workID, lane, actor)
+	workID, candidate.LaunchProfileID, actor = strings.TrimSpace(workID), strings.TrimSpace(candidate.LaunchProfileID), strings.TrimSpace(actor)
+	if workID == "" || candidate.LaunchProfileID == "" || actor == "" {
+		return launch, fmt.Errorf("detached launch: workID=%q candidate.LaunchProfileID=%q actor=%q; all required", workID, candidate.LaunchProfileID, actor)
 	}
 	wenv, err := store.Get(workID)
 	if err != nil {
 		return launch, fmt.Errorf("detached launch: load envelope %s: %w", workID, err)
+	}
+	if candidate.SourceRevision != "" {
+		if _, err := resolveExecutionRouteCandidate(store.HomePath(), candidate, now); err != nil {
+			return launch, err
+		}
+		revision := 0
+		if wenv.ExecutionSelection != nil {
+			revision = wenv.ExecutionSelection.Revision
+		}
+		if revision != candidate.SelectionRevision {
+			return launch, fmt.Errorf("execution selection revision changed before detached handoff")
+		}
+		if err := validateSavedSelectionTuple(wenv, candidate, now); err != nil {
+			return launch, err
+		}
 	}
 	if !strings.HasPrefix(wenv.State, "claimed") {
 		return launch, fmt.Errorf("detached launch: envelope %s is %s, expected claimed (the seam claims before it hands off)", workID, wenv.State)
@@ -164,7 +183,7 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	defer devnull.Close()
 
 	budget := DefaultDetachedLaunchBudget
-	argv := DetachedLaunchArgv(timeoutBin, doorBin, budget, workID, lane, prompt, actor)
+	argv := DetachedCandidateLaunchArgv(timeoutBin, doorBin, budget, workID, candidate, prompt, actor)
 	// 1. Durable reserved launch identity BEFORE the process exists. A
 	// failure here is a clean not-started refusal: no child, no mutation.
 	// The launch id is minted HERE, once: it is what the log marker, the
@@ -174,7 +193,7 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 		SchemaVersion: work.DetachedLaunchSchemaVersion,
 		WorkID:        workID,
 		LaunchID:      launchID,
-		Lane:          lane,
+		Lane:          candidate.LaunchProfileID,
 		Actor:         actor,
 		Command:       argv,
 		LogPath:       logPath,
@@ -227,7 +246,7 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	if detachedAfterStartDecision != nil {
 		detachedAfterStartDecision()
 	}
-	_, logErr := fmt.Fprintf(logFile, "%s detached door start work=%s lane=%s actor=%s budget=%s argv=%q\n", now.UTC().Format(time.RFC3339), workID, lane, actor, budget, argv)
+	_, logErr := fmt.Fprintf(logFile, "%s detached door start work=%s lane=%s actor=%s budget=%s argv=%q\n", now.UTC().Format(time.RFC3339), workID, candidate.LaunchProfileID, actor, budget, argv)
 	// Per-launch boundary marker written BEFORE the started-pid line
 	// (audit 2026-09-16 finding 5). A reconcile that scopes its pid
 	// recovery to lines after the most recent marker for this workID
@@ -276,4 +295,20 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 	// Do not wait: the bounded door lives on. Release the parent's handle
 	// on success and on every returned post-start recording error.
 	return launch, nil
+}
+
+func DetachedCandidateLaunchArgv(timeoutBin, doorBin string, budget time.Duration, workID string, candidate work.ExecutionRouteCandidate, prompt, actor string) []string {
+	argv := DetachedLaunchArgv(timeoutBin, doorBin, budget, workID, candidate.LaunchProfileID, prompt, actor)
+	for i := range argv {
+		if argv[i] == "--harness" && i+1 < len(argv) {
+			argv[i+1] = candidate.Harness
+		}
+	}
+	if candidate.SourceRevision != "" {
+		argv = append(argv, "--expected-execution-tuple", ExecutionTupleDigest(candidate), "--expected-selection-revision", strconv.Itoa(candidate.SelectionRevision))
+		if candidate.SelectionRevision == 0 {
+			argv = append(argv, "--launch-profile", candidate.LaunchProfileID)
+		}
+	}
+	return argv
 }

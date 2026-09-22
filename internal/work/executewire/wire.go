@@ -39,9 +39,12 @@ import (
 // `running` with a lease.
 func Install() {
 	work.SwapExecuteStageRoutePlan(RouteFromManifest)
+	work.SwapExecuteStageRouteCandidates(RouteCandidatesFromManifest)
 	work.SwapExecuteStageCapacity(CapacityFromSnapshot)
 	work.SwapExecuteStagePreflight(PreflightViaActuator)
 	work.SwapExecuteStageLaunch(LaunchViaActuator)
+	work.SwapExecuteStageCandidatePreflight(PreflightCandidateViaActuator)
+	work.SwapExecuteStageCandidateLaunch(LaunchCandidateViaActuator)
 	// R7C (2026-09-12): bind the execution-selection resolver. R7A shipped the
 	// seam with a nil default, so the installed CLI refused every
 	// `--launch-profile` while its tests passed against a stub.
@@ -53,6 +56,41 @@ func Install() {
 	// a cancellable context — see the LaunchContext doc for the bound that
 	// applies in production and the open follow-up.
 	launchContextInstalled.Store(true)
+}
+
+func RouteCandidatesFromManifest(homePath, capability string) []work.ExecutionRouteCandidate {
+	manifest, _, revision, err := routeevidence.LoadModelCapabilitiesSnapshot(homePath)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []work.ExecutionRouteCandidate
+	for _, modelID := range manifest.RoutingDefaults[capability] {
+		entry, ok := manifest.Models[modelID]
+		if !ok {
+			continue
+		}
+		claim := entry.Capabilities[capability]
+		if autonomyproof.GateRole(capability, entry.Tier, strings.TrimSpace(claim.Level)) != "eligible" {
+			continue
+		}
+		h := strings.TrimSpace(entry.Harness)
+		profile := strings.TrimSpace(modelID)
+		if h == "" || !AdapterKnown(homePath, h) {
+			continue
+		}
+		key := strings.ToLower(strings.ReplaceAll(profile, "-", "_"))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		lane := strings.TrimSpace(entry.ProviderRoute)
+		if lane == "" {
+			lane = h
+		}
+		out = append(out, work.ExecutionRouteCandidate{LaunchProfileID: profile, Harness: h, RequestedModelID: profile, ProviderRoute: strings.TrimSpace(entry.ProviderRoute), SourceRevision: revision, CapacityLane: lane})
+	}
+	return out
 }
 
 // RouteFromManifest resolves the first eligible lane for the capability from
@@ -285,19 +323,27 @@ func PreflightViaActuator(store *work.Store, workID, lane string, now time.Time)
 	if store == nil {
 		return errors.New("execute stage preflight: nil work store")
 	}
+	return PreflightCandidateViaActuator(store, workID, legacyRouteCandidate(store.HomePath(), lane, lane, now), now)
+}
+
+func PreflightCandidateViaActuator(store *work.Store, workID string, candidate work.ExecutionRouteCandidate, now time.Time) error {
+	if store == nil {
+		return errors.New("execute stage preflight: nil work store")
+	}
 	workID = strings.TrimSpace(workID)
-	lane = strings.TrimSpace(lane)
-	if workID == "" || lane == "" {
-		return fmt.Errorf("execute stage preflight: workID=%q lane=%q; both required", workID, lane)
+	candidate.LaunchProfileID = strings.TrimSpace(candidate.LaunchProfileID)
+	candidate.Harness = strings.TrimSpace(candidate.Harness)
+	if workID == "" || candidate.LaunchProfileID == "" || candidate.Harness == "" {
+		return fmt.Errorf("execute stage preflight: workID=%q candidate=%+v; required", workID, candidate)
 	}
 	homePath := store.HomePath()
 
 	// 1. Resolve adapter enrollment. A missing adapter means the route
 	// plan names a lane the harness registry cannot drive — refuse with
 	// adapter_missing:<lane>.
-	_, ok := AdapterFor(homePath, lane)
+	_, ok := AdapterFor(homePath, candidate.Harness)
 	if !ok {
-		return errors.New("adapter_missing:" + lane)
+		return errors.New("adapter_missing:" + candidate.Harness)
 	}
 
 	// 2. Resolve workspace from the envelope's git_delivery. The
@@ -326,18 +372,28 @@ func PreflightViaActuator(store *work.Store, workID, lane string, now time.Time)
 	// the same Compound model-router authority the adapter reads, so
 	// passing its output here makes the comparison hold. Non-tuple
 	// lanes fall through to the lane id, exactly as before.
-	tupleCommand, tupleModelID, tupleProviderRoute, _, _ := resolveLaneLaunchTuple(homePath, lane, now)
+	tupleCommand, tupleModelID, tupleProviderRoute, _, _ := resolveLaneLaunchTuple(homePath, candidate.LaunchProfileID, now)
+	if candidate.SourceRevision != "" {
+		resolved, resolveErr := resolveExecutionRouteCandidate(homePath, candidate, now)
+		if resolveErr != nil {
+			return fmt.Errorf("lane_unready:%v", resolveErr)
+		}
+		tupleCommand, tupleModelID, tupleProviderRoute = resolved, candidate.RequestedModelID, candidate.ProviderRoute
+	}
 	if tupleModelID == "" {
-		tupleModelID = lane
+		tupleModelID = candidate.RequestedModelID
 	}
 	if tupleProviderRoute == "" {
-		tupleProviderRoute = lane
+		tupleProviderRoute = candidate.ProviderRoute
 	}
 	readinessReq := work.DelegateHarnessReadinessRequest{
-		HomePath: homePath, HarnessHome: "", ContextPackID: wenv.IDs.ContextPackID,
-		WorkID: workID, Workspace: workspace, Harness: lane, LaneID: lane,
+		HomePath: homePath, HarnessHome: "", ContextPackID: wenv.IDs.ContextPackID, LaunchProfileID: candidate.LaunchProfileID,
+		WorkID: workID, Workspace: workspace, Harness: candidate.Harness, LaneID: candidate.LaunchProfileID,
 		Command: tupleCommand, Args: []string{},
 		RequestedModelID: tupleModelID, RequestedProviderRoute: tupleProviderRoute, Now: now,
+	}
+	if err := validateSavedSelectionTuple(wenv, candidate, now); err != nil {
+		return fmt.Errorf("lane_unready:%v", err)
 	}
 	readiness, readinessErr := LaunchReadiness(readinessReq)
 	if readinessErr != nil {
@@ -480,15 +536,22 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	if store == nil {
 		return "", errors.New("execute stage launch: nil work store")
 	}
+	return LaunchCandidateViaActuator(store, workID, legacyRouteCandidate(store.HomePath(), lane, harnessName, now), prompt, actor, now)
+}
+
+func LaunchCandidateViaActuator(store *work.Store, workID string, candidate work.ExecutionRouteCandidate, prompt, actor string, now time.Time) (string, error) {
+	if store == nil {
+		return "", errors.New("execute stage launch: nil work store")
+	}
 	workID = strings.TrimSpace(workID)
-	harnessName = strings.TrimSpace(harnessName)
-	if workID == "" || harnessName == "" {
-		return "", fmt.Errorf("execute stage launch: workID=%q harness=%q; both required", workID, harnessName)
+	candidate.Harness = strings.TrimSpace(candidate.Harness)
+	if workID == "" || candidate.Harness == "" {
+		return "", fmt.Errorf("execute stage launch: workID=%q harness=%q; both required", workID, candidate.Harness)
 	}
 	homePath := store.HomePath()
-	adapter, ok := AdapterFor(homePath, harnessName)
+	adapter, ok := AdapterFor(homePath, candidate.Harness)
 	if !ok {
-		return "", errors.New("adapter_missing:" + harnessName)
+		return "", errors.New("adapter_missing:" + candidate.Harness)
 	}
 	wenv, err := store.Get(workID)
 	if err != nil {
@@ -514,16 +577,26 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	// items the readiness guard produced WITHOUT one (the production
 	// `executable` item — Ref set, Revision empty). The profile revision is
 	// the model-capabilities manifest sha256 the resolver consulted.
-	tupleCommand, tupleModelID, tupleProviderRoute, tupleProfileRevision, _ := resolveLaneLaunchTuple(homePath, lane, now)
+	tupleCommand, tupleModelID, tupleProviderRoute, tupleProfileRevision, _ := resolveLaneLaunchTuple(homePath, candidate.LaunchProfileID, now)
+	if candidate.SourceRevision != "" {
+		resolved, resolveErr := resolveExecutionRouteCandidate(homePath, candidate, now)
+		if resolveErr != nil {
+			return "", fmt.Errorf("lane_unready:%v", resolveErr)
+		}
+		tupleCommand, tupleModelID, tupleProviderRoute = resolved, candidate.RequestedModelID, candidate.ProviderRoute
+	}
+	if err := validateSavedSelectionTuple(wenv, candidate, now); err != nil {
+		return "", fmt.Errorf("lane_unready:%v", err)
+	}
 	if tupleModelID == "" {
-		tupleModelID = lane
+		tupleModelID = candidate.LaunchProfileID
 	}
 	if tupleProviderRoute == "" {
-		tupleProviderRoute = lane
+		tupleProviderRoute = candidate.LaunchProfileID
 	}
 	readinessReq := work.DelegateHarnessReadinessRequest{
-		HomePath: homePath, HarnessHome: "", ContextPackID: wenv.IDs.ContextPackID,
-		WorkID: workID, Workspace: workspace, Harness: harnessName, LaneID: lane,
+		HomePath: homePath, HarnessHome: "", ContextPackID: wenv.IDs.ContextPackID, LaunchProfileID: candidate.LaunchProfileID,
+		WorkID: workID, Workspace: workspace, Harness: candidate.Harness, LaneID: candidate.LaunchProfileID,
 		Command: tupleCommand, Args: []string{prompt},
 		RequestedModelID: tupleModelID, RequestedProviderRoute: tupleProviderRoute, Now: now,
 	}
@@ -547,7 +620,7 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	// the same ids into FinalizeGovernedHarnessRun as the
 	// ExpectedActionIntentID / ExpectedPolicyDecisionID the verifying
 	// transition compares against.
-	launchActionID, launchPolicyID, mintErr := store.MintLaunchAuthority(workID, actor, lane, prompt, now)
+	launchActionID, launchPolicyID, mintErr := store.MintLaunchAuthority(workID, actor, candidate.LaunchProfileID, prompt, now)
 	if mintErr != nil {
 		return "", fmt.Errorf("execute stage launch: mint launch authority: %w", mintErr)
 	}
@@ -567,9 +640,10 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	// override the standing grant authorizes; the seam never synthesizes
 	// bypass on its own.
 	runInput := harness.RunInput{
-		WorkID: workID, Harness: harnessName, Workspace: workspace,
+		WorkID: workID, Harness: candidate.Harness, Workspace: workspace,
+		RequestedModelID: tupleModelID, RequestedProviderRoute: tupleProviderRoute,
 		Args: []string{prompt}, PermissionMode: "bypass",
-		LaneID: lane, ActionIntentID: launchActionID,
+		LaneID: candidate.LaunchProfileID, ActionIntentID: launchActionID,
 		Timeout: resolvedLaunchTimeout(),
 		Now:     now,
 	}
@@ -581,10 +655,14 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	// onto the freshly minted RunAttempt, so the wire computes the
 	// snapshot here (with the saved selection or override as the source)
 	// and the runner does the actual stamp.
+	overrideHarness, overrideProfile := "", ""
+	if wenv.ExecutionSelection == nil && candidate.SourceRevision != "" {
+		overrideHarness, overrideProfile = candidate.Harness, candidate.LaunchProfileID
+	}
 	snapshot, snapshotErr := buildSelectionSnapshotFromSaved(
 		wenv,
-		"",                   // overrideHarness (the wire never overrides — the caller did, before this hook)
-		"",                   // overrideLaunchProfile (same — one-run override happens in cmd/compound, not here)
+		overrideHarness,
+		overrideProfile,
 		tupleProviderRoute,   // resolved route
 		tupleModelID,         // resolved model id
 		tupleProfileRevision, // observed profile revision (from the resolver)
@@ -607,6 +685,21 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	runInput.StartGuard = actuator.NewGovernedExecutionReservationStartGuard(
 		homePath, workID, launchPolicyID, launchActionID,
 	)
+	if candidate.SourceRevision != "" {
+		reservationGuard := runInput.StartGuard
+		runInput.StartGuard = func(ctx context.Context, start func() error) error {
+			return reservationGuard(ctx, func() error {
+				command, err := resolveExecutionRouteCandidate(homePath, candidate, time.Now().UTC())
+				if err != nil {
+					return fmt.Errorf("execution tuple changed before launch: %w", err)
+				}
+				if command != tupleCommand {
+					return errors.New("execution tuple executable changed before launch")
+				}
+				return start()
+			})
+		}
+	}
 	// Slice 2 (aut-launch-canonical 2026-09-07): mirror
 	// PrepareGovernedHarnessLaunch. Claude-family adapters carry the launch
 	// generation on the attempt itself: the shared runner persists
@@ -699,7 +792,7 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 		Store:                 store,
 		WorkID:                workID,
 		Actor:                 actor,
-		HarnessName:           harnessName,
+		HarnessName:           candidate.Harness,
 		RunningPolicyID:       launchPolicyID,
 		RunningActionIntentID: launchActionID,
 		ExistingRunAttemptIDs: wenv.RunAttemptIDs,
@@ -727,33 +820,8 @@ func LaunchViaActuator(store *work.Store, workID, lane, harnessName, prompt, act
 	return mintedRattID, nil
 }
 
-// resolvedLaunchTimeout returns the timeout the launch wire places on
-// harness.RunInput.Timeout.
-//
-// DEFECT 4 fix (AUT-P0-004 2026-09-04): every unattended launch
-// MUST have a finite execution budget — a zero Timeout leaves the
-// subprocess runner's `if in.Timeout > 0` branch dormant, the kill
-// timer never fires, and an unattended launch can block forever. The
-// heartbeat's outer `timeout 600` then SIGKILLs the Compound parent
-// while the subprocess group keeps running.
-//
-// The runner's existing subprocess_runner.go enforces `in.Timeout >
-// 0`, so the wire MUST set a non-zero budget. We pick
-// DefaultLaunchTimeout (5m) when the caller did not pin a value, and
-// we clamp explicit overrides to MaxLaunchTimeout (15m) so a
-// caller-supplied Timeout cannot exceed the heartbeat's outer bound
-// plus a margin. Returning 0 instead of clamping is also a defensible
-// choice — we pick clamping because the operator heartbeats' outer
-// `timeout 600` is the actual cap on parent lifetime, so a clamp
-// surfaces a refusal-with-value-fallback rather than a silent
-// hang-on-the-floor.
-// LaunchTimeout returns the timeout a governed launch places on one adapter
-// run (the wire's resolvedLaunchTimeout, exported for callers outside the
-// wire — the public CLI execute path bounds its RunInput with the same
-// ceiling instead of leaving the subprocess unbounded).
-func LaunchTimeout() time.Duration {
-	return resolvedLaunchTimeout()
-}
+// LaunchTimeout is the finite budget shared by the governed CLI and wire.
+func LaunchTimeout() time.Duration { return resolvedLaunchTimeout() }
 
 func resolvedLaunchTimeout() time.Duration {
 	// Package-level vars mean tests can pin both.
@@ -786,4 +854,5 @@ func InstallDetached() {
 		return
 	}
 	work.SwapExecuteStageDetachedLaunch(LaunchDetachedViaDoor)
+	work.SwapExecuteStageDetachedCandidateLaunch(LaunchDetachedCandidateViaDoor)
 }

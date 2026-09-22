@@ -378,6 +378,7 @@ type DelegateLaunchProfileResolverFunc func(DelegateLaunchProfileResolveRequest)
 var DelegateLaunchProfileResolver DelegateLaunchProfileResolverFunc
 
 type DelegateHarnessReadinessRequest struct {
+	LaunchProfileID        string
 	HomePath               string
 	HarnessHome            string
 	WorkID                 string

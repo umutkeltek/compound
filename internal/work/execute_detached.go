@@ -155,15 +155,24 @@ type DetachedReconcile struct {
 // executeDetachedLaunchFn spawns the detached door for an already-claimed
 // envelope and returns the sidecar identity. nil keeps the synchronous seam.
 type executeDetachedLaunchFn func(store *Store, workID, lane, prompt, actor string, now time.Time) (DetachedLaunch, error)
+type executeDetachedCandidateLaunchFn func(store *Store, workID string, candidate ExecutionRouteCandidate, prompt, actor string, now time.Time) (DetachedLaunch, error)
 
 var executeStageDetachedLaunchFn executeDetachedLaunchFn
+var executeStageDetachedCandidateLaunchFn executeDetachedCandidateLaunchFn
 
 // SwapExecuteStageDetachedLaunch installs fn as the seam's detached launcher
 // (nil restores the synchronous launch) and returns a restore function.
 func SwapExecuteStageDetachedLaunch(fn executeDetachedLaunchFn) func() {
-	prev := executeStageDetachedLaunchFn
+	prev, prevCandidate := executeStageDetachedLaunchFn, executeStageDetachedCandidateLaunchFn
 	executeStageDetachedLaunchFn = fn
-	return func() { executeStageDetachedLaunchFn = prev }
+	executeStageDetachedCandidateLaunchFn = nil
+	return func() { executeStageDetachedLaunchFn = prev; executeStageDetachedCandidateLaunchFn = prevCandidate }
+}
+
+func SwapExecuteStageDetachedCandidateLaunch(fn executeDetachedCandidateLaunchFn) func() {
+	prev := executeStageDetachedCandidateLaunchFn
+	executeStageDetachedCandidateLaunchFn = fn
+	return func() { executeStageDetachedCandidateLaunchFn = prev }
 }
 
 // DetachedLaunchDir is where the seam custodies detached-launch sidecars.

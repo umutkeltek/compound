@@ -40,6 +40,22 @@ var (
 // it to return a stub without importing the sibling package.
 type executeRoutePlanFn func(homePath, capability string) (lane string, ok bool)
 
+// ExecutionRouteCandidate is one owner-authorized executable tuple. Profile
+// identity and harness are deliberately separate: multiple profiles may use
+// one adapter, but they are not interchangeable launch choices.
+type ExecutionRouteCandidate struct {
+	LaunchProfileID   string
+	Harness           string
+	RequestedModelID  string
+	ProviderRoute     string
+	SourceRevision    string
+	CapacityLane      string
+	SelectionRevision int
+}
+
+// executeRouteCandidatesFn returns owner-ordered tuples for capacity admission.
+type executeRouteCandidatesFn func(homePath, capability string) []ExecutionRouteCandidate
+
 // executeCapacityFn reports the latest capacity snapshot for `lane` as
 // (usedPercent, fresh, err). `fresh=false` means the snapshot is older than
 // the freshness window — the seam must refuse on that signal regardless of
@@ -64,6 +80,11 @@ type executePolicyEvalFn func(ai policyActionIntentShim, cfg policyConfigShim, n
 // attribution only; actor is authority.
 type executeLaunchFn func(store *Store, workID, lane, harness, prompt, actor string, now time.Time) (string, error)
 
+// Tuple-aware launch/preflight seams preserve the selected route candidate
+// while the legacy hooks remain available to existing focused tests/callers.
+type executeCandidateLaunchFn func(store *Store, workID string, candidate ExecutionRouteCandidate, prompt, actor string, now time.Time) (string, error)
+type executeCandidatePreflightFn func(store *Store, workID string, candidate ExecutionRouteCandidate, now time.Time) error
+
 // executePreflightFn runs BEFORE the seam claims or advances the envelope
 // (DEFECT 1 fix, AUT-P0-001 2026-09-04). It resolves every prerequisite
 // that can fail before any state mutation: adapter enrollment, workspace
@@ -81,11 +102,14 @@ type executePreflightFn func(store *Store, workID, lane string, now time.Time) e
 // between cases. The defaults below are wired to "no-op stub" so production
 // callers must explicitly bind the real ones.
 var (
-	executeStageRoutePlanFn  executeRoutePlanFn  = defaultExecuteStageRoutePlanFn
-	executeStageCapacityFn   executeCapacityFn   = defaultExecuteStageCapacityFn
-	executeStagePolicyEvalFn executePolicyEvalFn = defaultExecuteStagePolicyEvalFn
-	launchStub               executeLaunchFn     = defaultExecuteStageLaunch
-	executeStagePreflightFn  executePreflightFn  = defaultExecuteStagePreflight
+	executeStageRoutePlanFn          executeRoutePlanFn       = defaultExecuteStageRoutePlanFn
+	executeStageRouteCandidatesFn    executeRouteCandidatesFn = defaultExecuteStageRouteCandidatesFn
+	executeStageCapacityFn           executeCapacityFn        = defaultExecuteStageCapacityFn
+	executeStagePolicyEvalFn         executePolicyEvalFn      = defaultExecuteStagePolicyEvalFn
+	launchStub                       executeLaunchFn          = defaultExecuteStageLaunch
+	executeStagePreflightFn          executePreflightFn       = defaultExecuteStagePreflight
+	executeStageCandidateLaunchFn    executeCandidateLaunchFn
+	executeStageCandidatePreflightFn executeCandidatePreflightFn
 )
 
 // Shim types for the policy-eval hook. The real policy package exposes
@@ -110,9 +134,19 @@ type PolicyDecisionShim = policyDecision
 // returns a restore function. cmd/compound binds the real resolver at init;
 // tests swap in stubs and restore to keep package state isolated.
 func SwapExecuteStageRoutePlan(fn executeRoutePlanFn) func() {
-	prev := executeStageRoutePlanFn
+	prev, prevCandidate := executeStageRoutePlanFn, executeStageRouteCandidatesFn
 	executeStageRoutePlanFn = fn
-	return func() { executeStageRoutePlanFn = prev }
+	executeStageRouteCandidatesFn = defaultExecuteStageRouteCandidatesFn
+	return func() { executeStageRoutePlanFn = prev; executeStageRouteCandidatesFn = prevCandidate }
+}
+
+// SwapExecuteStageRouteCandidates installs the ordered route source used by
+// unattended execution. The legacy single-route hook remains the default
+// source so focused callers keep their existing contract.
+func SwapExecuteStageRouteCandidates(fn executeRouteCandidatesFn) func() {
+	prev := executeStageRouteCandidatesFn
+	executeStageRouteCandidatesFn = fn
+	return func() { executeStageRouteCandidatesFn = prev }
 }
 
 // SwapExecuteStageCapacity installs fn as the seam's capacity reader and
@@ -134,9 +168,16 @@ func SwapExecuteStagePolicyEval(fn executePolicyEvalFn) func() {
 // SwapExecuteStageLaunch installs fn as the seam's harness launcher and
 // returns a restore function (see SwapExecuteStageRoutePlan).
 func SwapExecuteStageLaunch(fn executeLaunchFn) func() {
-	prev := launchStub
+	prev, prevCandidate := launchStub, executeStageCandidateLaunchFn
 	launchStub = fn
-	return func() { launchStub = prev }
+	executeStageCandidateLaunchFn = nil
+	return func() { launchStub = prev; executeStageCandidateLaunchFn = prevCandidate }
+}
+
+func SwapExecuteStageCandidateLaunch(fn executeCandidateLaunchFn) func() {
+	prev := executeStageCandidateLaunchFn
+	executeStageCandidateLaunchFn = fn
+	return func() { executeStageCandidateLaunchFn = prev }
 }
 
 // SwapExecuteStagePreflight installs fn as the seam's preflight resolver and
@@ -144,9 +185,16 @@ func SwapExecuteStageLaunch(fn executeLaunchFn) func() {
 // preflight (adapter / workspace / readiness) at init; tests stub the hook
 // to drive recognized refusal paths without spinning up a real adapter stack.
 func SwapExecuteStagePreflight(fn executePreflightFn) func() {
-	prev := executeStagePreflightFn
+	prev, prevCandidate := executeStagePreflightFn, executeStageCandidatePreflightFn
 	executeStagePreflightFn = fn
-	return func() { executeStagePreflightFn = prev }
+	executeStageCandidatePreflightFn = nil
+	return func() { executeStagePreflightFn = prev; executeStageCandidatePreflightFn = prevCandidate }
+}
+
+func SwapExecuteStageCandidatePreflight(fn executeCandidatePreflightFn) func() {
+	prev := executeStageCandidatePreflightFn
+	executeStageCandidatePreflightFn = fn
+	return func() { executeStageCandidatePreflightFn = prev }
 }
 
 type policyActionIntent struct {
@@ -513,7 +561,7 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			// claims the FIRST ready item — if that item was refused as
 			// untouchable, falling through would mutate it, which the
 			// refused-list contract forbids.
-			if isPreflightRefusalReason(stage.Skipped) || executeStageRefusedHeadUntouchable(stage) {
+			if stage.Skipped == "capacity_unknown" || isPreflightRefusalReason(stage.Skipped) || executeStageRefusedHeadUntouchable(stage) {
 				result.Status = "refused"
 				return s.recordContinue(now, result)
 			}

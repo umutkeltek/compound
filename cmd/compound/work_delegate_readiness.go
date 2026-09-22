@@ -34,7 +34,8 @@ func evaluateDelegateHarnessReadiness(req work.DelegateHarnessReadinessRequest) 
 	}
 
 	details := harness.ReadOnlyLaunchReadiness(req.HomePath, harness.RunInput{
-		WorkID: req.WorkID, Harness: harnessName, Workspace: req.Workspace,
+		LaunchProfileID: req.LaunchProfileID,
+		WorkID:          req.WorkID, Harness: harnessName, Workspace: req.Workspace,
 		Command: req.Command, Args: append([]string(nil), req.Args...), PermissionMode: "plan",
 		LaneID: req.LaneID, RequestedModelID: req.RequestedModelID,
 		RequestedProviderRoute: req.RequestedProviderRoute, Now: req.Now,

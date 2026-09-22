@@ -233,10 +233,24 @@ project default — and stamps the full snapshot (harness, profile, requested ef
 selection revision) onto the RunAttempt through the shared runner, on the same boundary it
 prints `selection: source=… profile=… rev=…`. `--expected-selection-revision N` is the CAS
 guard on that path: a stale revision produces zero execution and lifecycle delta. Unattended
-picking refuses a candidate whose saved selection names a different harness family than the
-route lane (`ineligible:saved execution_selection harness=…`) — the global route never
+picking refuses a candidate whose saved selection differs from the selected profile
+(`ineligible:saved execution_selection is not selected profile …`) — the global route never
 silently overrides the work's own saved choice; route and capacity checked on one lane cannot
 attest a candidate saved for another.
+
+Unattended selection consumes the route authority's ordered eligible candidates and reads fresh
+capacity for each. The authority supplies routing order and capability eligibility; there is no hardcoded provider roster.
+Stale, unknown, exhausted, removed, and unready routes produce bounded refusals before a claim.
+At most five routes and five ready items per route are examined, with at most one launch.
+Distinct profiles using the same harness remain separate candidates. A saved choice must match
+profile, harness, model and provider. It overrides creator provenance only on dispatcher-owned
+work; unselected foreign work remains ineligible.
+
+The detached door carries a digest of profile, harness, model, provider, capacity lane and
+source revision through `--expected-execution-tuple`. The child checks fresh owner resolution
+before mutation. The separate integer `--expected-selection-revision` guards the saved choice:
+selected work retains its saved snapshot; unselected work receives a one-run profile override.
+Adapter readiness and final start revalidation consume the same profile.
 
 ## Cancellation and budget are owned by the canonical execution seam
 

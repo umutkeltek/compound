@@ -131,9 +131,17 @@ func (a *ClaudeAdapter) resolveRunInput(in RunInput, suppressRefusalEvidence boo
 	if err != nil {
 		return RunInput{}, fmt.Errorf("%s adapter: load Compound model-router authority: %w", a.Name(), err)
 	}
-	modelID, tuple, err := routeevidence.ResolveModelCapabilityTuple(manifest, a.Name())
+	selector := strings.TrimSpace(in.LaunchProfileID)
+	if selector == "" {
+		selector = a.Name()
+	}
+	modelID, tuple, err := routeevidence.ResolveModelCapabilityTuple(manifest, selector)
 	if err != nil {
 		return RunInput{}, fmt.Errorf("%s adapter: %w", a.Name(), err)
+	}
+	normalize := func(s string) string { return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(s)), "-", "_") }
+	if normalize(tuple.Harness) != normalize(a.Name()) {
+		return RunInput{}, fmt.Errorf("%s adapter: launch profile %q belongs to harness %q", a.Name(), selector, tuple.Harness)
 	}
 	command, err := routeevidence.ResolveModelCapabilityExecutable(tuple.Aliases)
 	if err != nil {

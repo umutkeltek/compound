@@ -193,7 +193,7 @@ func TestLaunchStampsSelectionSnapshotBeforeAdapterRun(t *testing.T) {
 	sel := &envelope.ExecutionSelection{
 		LaunchProfileID:       "claude-minimax",
 		LaunchProfileRevision: "sha256:eeb7c22957a53d0876ede9bf0a28515c27665f5f2e329e83d93768d715400f4a",
-		Harness:               "claude_code",
+		Harness:               "claude_minimax",
 		ProviderRoute:         "minimax/MiniMax-M3",
 		RequestedModelID:      "MiniMax-M3",
 		RequestedEffort:       "xhigh",
@@ -228,11 +228,14 @@ func TestLaunchStampsSelectionSnapshotBeforeAdapterRun(t *testing.T) {
 	if gotIn == nil || gotIn.LaunchProfileID != snap.LaunchProfileID || snap.LaunchProfileID != sel.LaunchProfileID {
 		t.Fatalf("saved launch profile did not drive adapter input: input=%+v snapshot=%+v", gotIn, snap)
 	}
+	if gotIn.RequestedModelID != sel.RequestedModelID || gotIn.RequestedProviderRoute != sel.ProviderRoute {
+		t.Fatalf("adapter input substituted the saved tuple: model=%q route=%q, want model=%q route=%q", gotIn.RequestedModelID, gotIn.RequestedProviderRoute, sel.RequestedModelID, sel.ProviderRoute)
+	}
 	if snap.SelectionRevision != 2 {
 		t.Errorf("snapshot selection_rev = %d, want 2", snap.SelectionRevision)
 	}
-	if snap.Harness != "claude_code" {
-		t.Errorf("snapshot harness = %q, want claude_code", snap.Harness)
+	if snap.Harness != "claude_minimax" {
+		t.Errorf("snapshot harness = %q, want claude_minimax", snap.Harness)
 	}
 	if snap.RequestedModelID != "MiniMax-M3" {
 		t.Errorf("snapshot model = %q, want MiniMax-M3", snap.RequestedModelID)
@@ -262,7 +265,7 @@ func TestLaunchRecordsSelectionDriftWhenProfileRevisionMoved(t *testing.T) {
 	sel := &envelope.ExecutionSelection{
 		LaunchProfileID:       "claude-minimax",
 		LaunchProfileRevision: savedRev,
-		Harness:               "claude_code",
+		Harness:               "claude_minimax",
 		ProviderRoute:         "minimax/MiniMax-M3",
 		RequestedModelID:      "MiniMax-M3",
 		Source:                "explicit",
