@@ -350,7 +350,7 @@ func TestProjectContractBundleMapsSourceInPlaceProductRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "ok" || report.EntityID != "product:source_contract_demo" || len(report.ClaimIDs) != 10 || len(report.SignalIDs) != 0 || len(report.HypothesisIDs) != 0 {
+	if report.Status != "ok" || report.EntityID != "product:source_contract_demo" || len(report.ClaimIDs) != 13 || len(report.SignalIDs) != 0 || len(report.HypothesisIDs) != 0 {
 		t.Fatalf("report = %+v", report)
 	}
 	for predicate, want := range map[string]string{
@@ -360,6 +360,11 @@ func TestProjectContractBundleMapsSourceInPlaceProductRegistry(t *testing.T) {
 		"release_build":                    "42",
 		"release_subscription_ids":         "com.example.sourcecontractdemo.pro.monthly",
 		"release_mechanism":                "app_store_connect",
+		// Deployment reaches the store under the product entity, not a parallel
+		// bare-slug one — the join that lets a reader answer "where does this run".
+		"deploys_to":          "place:fixture-runtime",
+		"deploy_services":     "source-contract-demo-api",
+		"deploy_healthchecks": "https://source-contract-demo.example.invalid/health",
 	} {
 		claim, ok, err := store.CurrentClaim(bundle.Product.ID, predicate)
 		if err != nil {

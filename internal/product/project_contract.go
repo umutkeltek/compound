@@ -6,10 +6,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode"
 
 	"gopkg.in/yaml.v3"
+
+	"compound/internal/projectcontract"
 )
 
 const projectContractSchemaVersion = "1"
@@ -26,6 +29,7 @@ type projectContract struct {
 	} `yaml:"project"`
 	Source struct {
 		Authority struct {
+			Host string `yaml:"host"`
 			Path string `yaml:"path"`
 			Repo string `yaml:"repo"`
 		} `yaml:"authority"`
@@ -37,14 +41,19 @@ type projectContract struct {
 		URLs         []string `yaml:"urls"`
 		Healthchecks []string `yaml:"healthchecks"`
 		Primary      string   `yaml:"primary"`
+		Deployment   struct {
+			Method   string `yaml:"method"`
+			Command  string `yaml:"command"`
+			Rollback string `yaml:"rollback"`
+		} `yaml:"deployment"`
 	} `yaml:"runtime"`
 	Data struct {
-		Classification  string   `yaml:"classification"`
-		LocalPaths      []string `yaml:"local_paths"`
-		Databases       []string `yaml:"databases"`
-		ExternalSources []string `yaml:"external_sources"`
-		Backend         string   `yaml:"backend"`
-		CloudResources  string   `yaml:"cloud_resources"`
+		Classification  string                   `yaml:"classification"`
+		LocalPaths      []string                 `yaml:"local_paths"`
+		Databases       projectcontract.NameList `yaml:"databases"`
+		ExternalSources []string                 `yaml:"external_sources"`
+		Backend         string                   `yaml:"backend"`
+		CloudResources  string                   `yaml:"cloud_resources"`
 	} `yaml:"data"`
 	ReleaseIdentity releaseIdentity `yaml:"release_identity"`
 }
@@ -94,7 +103,27 @@ func LoadProjectContractBundle(projectPath, releasePath string) (Bundle, error) 
 		}
 		releaseRef = filepath.Base(releasePath)
 	}
-	return ProjectContractBundle(pc, rc, projectRef, releaseRef)
+	bundle, err := ProjectContractBundle(pc, rc, projectRef, releaseRef)
+	if err != nil || !hasProject {
+		return bundle, err
+	}
+	// The directory the contract was read from is the product's checkout on
+	// this machine. source.authority.path names the authority host's path,
+	// which is often a different machine, so only this one lets an agent
+	// standing in the checkout ask "which product is this?".
+	if dir, err := filepath.Abs(filepath.Dir(projectPath)); err == nil && !hasSurfaceRefValue(bundle.Product.Surfaces, dir) {
+		bundle.Product.Surfaces = append(bundle.Product.Surfaces, Surface{ID: "checkout", Kind: "repo", Ref: dir})
+	}
+	return bundle, nil
+}
+
+func hasSurfaceRefValue(surfaces []Surface, ref string) bool {
+	for _, s := range surfaces {
+		if s.Ref == ref {
+			return true
+		}
+	}
+	return false
 }
 
 func loadProjectContract(path string) (projectContract, error) {
@@ -251,12 +280,14 @@ func ProjectContractBundle(pc projectContract, rc releaseContract, projectRef, r
 		Product: Product{
 			ID:              productID,
 			Name:            name,
+			Aliases:         projectAliases(pc),
 			OwnerEntity:     ownerEntity(pc.Project.Owner, slug),
 			Surfaces:        projectSurfaces(pc, identity, slug),
 			Channels:        projectChannels(pc, identity),
 			Positioning:     projectPositioning(pc, rc, name),
 			PrivacyPosture:  projectPrivacy(pc),
 			ReleaseIdentity: exportedReleaseIdentity(identity),
+			Deployment:      projectDeployment(pc),
 			TasteProfile: TasteProfile{
 				Standards: []string{"source-in-place product contract"},
 				RedLines:  []string{"do not infer product signal or causality from project contract"},
@@ -304,6 +335,30 @@ func mergeReleaseIdentity(project, release releaseIdentity) releaseIdentity {
 	return out
 }
 
+// projectAliases renders the contract's project.aliases as names. Contracts
+// write them as plain strings, and a name containing ": " arrives from YAML as a
+// one-entry map ("Bar Exam: State Law Reference"); both are the author's alias,
+// so the map is joined back into the text they typed rather than dropped.
+func projectAliases(pc projectContract) []string {
+	var out []string
+	for _, raw := range pc.Project.Aliases {
+		switch v := raw.(type) {
+		case string:
+			out = append(out, v)
+		case map[string]any:
+			keys := make([]string, 0, len(v))
+			for key := range v {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				out = append(out, strings.TrimSpace(fmt.Sprintf("%s: %v", key, v[key])))
+			}
+		}
+	}
+	return compact(out)
+}
+
 func projectSurfaces(pc projectContract, id releaseIdentity, slug string) []Surface {
 	var surfaces []Surface
 	add := func(surfaceID, kind, ref string) {
@@ -329,6 +384,74 @@ func projectSurfaces(pc projectContract, id releaseIdentity, slug string) []Surf
 		add("project", "project", slug)
 	}
 	return surfaces
+}
+
+// projectDeployment derives where the product runs. The place is the runtime
+// authority, falling back to the source host — the same resolution
+// internal/runtimebinding already performs on this contract shape, kept
+// identical so the two readers cannot disagree about one product's host. When
+// neither resolves to a real name the deployment stays empty; the method and
+// command are carried only alongside a place, since a command without a
+// machine is an invitation to run it on the wrong one.
+func projectDeployment(pc projectContract) Deployment {
+	place := normalizePlaceID(pc.Runtime.Authority)
+	if place == "" {
+		place = normalizePlaceID(pc.Source.Authority.Host)
+	}
+	if place == "" {
+		return Deployment{}
+	}
+	return Deployment{
+		Place:        "place:" + place,
+		Method:       concreteValue(pc.Runtime.Deployment.Method),
+		Command:      concreteValue(pc.Runtime.Deployment.Command),
+		Rollback:     concreteValue(pc.Runtime.Deployment.Rollback),
+		Services:     compact(pc.Runtime.ServiceNames),
+		Healthchecks: compact(pc.Runtime.Healthchecks),
+	}
+}
+
+// concreteValue drops placeholder text real contracts carry ("unknown", "tbd",
+// "none"). An absent field reads as "not known here, go ask"; a field that says
+// "unknown" reads as an answer, and an agent can act on an answer.
+func concreteValue(value string) string {
+	if genericProjectIdentity(value) {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+// normalizePlaceID lowercases a host or platform name while preserving the
+// punctuation that makes it addressable. It deliberately does not reuse
+// normalizeIDPart: that collapses `.` to `_`, which would turn a dotted host
+// such as `edge.example` into `edge_example` and break the join with the
+// services registry (compound://registries/services). A generic value
+// ("unknown", "none") yields "".
+func normalizePlaceID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if genericProjectIdentity(value) {
+		return ""
+	}
+	var b strings.Builder
+	prevSeparator := false
+	for _, r := range value {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			prevSeparator = false
+		case r == '.' || r == '-' || r == '_' || r == '/':
+			if !prevSeparator {
+				b.WriteRune(r)
+				prevSeparator = true
+			}
+		default:
+			if !prevSeparator {
+				b.WriteByte('-')
+				prevSeparator = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "._-/")
 }
 
 func projectChannels(pc projectContract, id releaseIdentity) []string {

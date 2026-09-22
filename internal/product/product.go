@@ -87,15 +87,35 @@ type Bundle struct {
 }
 
 type Product struct {
-	ID              string          `json:"id" yaml:"id"`
-	Name            string          `json:"name" yaml:"name"`
+	ID   string `json:"id" yaml:"id"`
+	Name string `json:"name" yaml:"name"`
+	// Aliases are other names this product is known by (a former slug, a brand
+	// rename). They are registered on the ledger entity so Where can join a
+	// renamed product's records; they never mint an entity of their own.
+	Aliases         []string        `json:"aliases,omitempty" yaml:"aliases,omitempty"`
 	OwnerEntity     string          `json:"owner_entity" yaml:"owner_entity"`
 	Surfaces        []Surface       `json:"surfaces" yaml:"surfaces"`
 	Channels        []string        `json:"channels" yaml:"channels"`
 	Positioning     string          `json:"positioning" yaml:"positioning"`
 	PrivacyPosture  string          `json:"privacy_posture" yaml:"privacy_posture"`
 	ReleaseIdentity ReleaseIdentity `json:"release_identity,omitempty" yaml:"release_identity,omitempty"`
+	Deployment      Deployment      `json:"deployment,omitempty" yaml:"deployment,omitempty"`
 	TasteProfile    TasteProfile    `json:"taste_profile,omitempty" yaml:"taste_profile,omitempty"`
+}
+
+// Deployment is where a product actually runs and how it gets there. Surfaces
+// answer "where is it sold"; Deployment answers "where does it run" — the
+// question an agent asks before touching a release. It is imported from the
+// source-in-place project contract only: Compound never infers a place or a
+// deploy command, because an invented place aims a real command at the wrong
+// machine. An empty Place means unknown, and unknown is the useful answer.
+type Deployment struct {
+	Place        string   `json:"place,omitempty" yaml:"place,omitempty"`
+	Method       string   `json:"method,omitempty" yaml:"method,omitempty"`
+	Command      string   `json:"command,omitempty" yaml:"command,omitempty"`
+	Rollback     string   `json:"rollback,omitempty" yaml:"rollback,omitempty"`
+	Services     []string `json:"services,omitempty" yaml:"services,omitempty"`
+	Healthchecks []string `json:"healthchecks,omitempty" yaml:"healthchecks,omitempty"`
 }
 
 // ReleaseIdentity is the product-owned destination identity used by release
@@ -690,7 +710,7 @@ func Apply(homePath string, store *mem.Store, bundle Bundle, sourcePath string, 
 	entity := mem.Entity{
 		Slug:        bundle.Product.ID,
 		Kind:        "product",
-		Aliases:     compact([]string{bundle.Product.Name}),
+		Aliases:     compact(append([]string{bundle.Product.Name}, bundle.Product.Aliases...)),
 		Identifiers: productIdentifiers(bundle.Product),
 		Parent:      bundle.Product.OwnerEntity,
 		Visibility:  "operational",
@@ -1895,6 +1915,28 @@ func productClaims(bundle Bundle, evidenceID, sourcePath string) []mem.Candidate
 	}
 	if strings.TrimSpace(p.ReleaseIdentity.AppStoreConnectAppID) != "" {
 		claims = append(claims, add("release_mechanism", "app_store_connect"))
+	}
+	// Deployment claims key on p.ID like every other product claim. That is the
+	// whole point: these facts previously landed on a bare-slug entity written by
+	// internal/authority, so `product:<slug>` and a bare `<slug>` were two entities
+	// and no reader could join them. A product with no known place emits nothing.
+	if strings.TrimSpace(p.Deployment.Place) != "" {
+		deploymentClaims := []struct {
+			predicate string
+			value     string
+		}{
+			{"deploys_to", p.Deployment.Place},
+			{"deploy_method", p.Deployment.Method},
+			{"deploy_command", p.Deployment.Command},
+			{"deploy_rollback", p.Deployment.Rollback},
+			{"deploy_services", strings.Join(compact(p.Deployment.Services), ",")},
+			{"deploy_healthchecks", strings.Join(compact(p.Deployment.Healthchecks), ",")},
+		}
+		for _, item := range deploymentClaims {
+			if value := strings.TrimSpace(item.value); value != "" {
+				claims = append(claims, add(item.predicate, value))
+			}
+		}
 	}
 	return claims
 }

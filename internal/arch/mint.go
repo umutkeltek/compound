@@ -385,6 +385,17 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "one read-only evaluation of whether a Claude lane is ready to execute (hook binding fresh, instruction pack clean, context pack attached, permission posture attested), with the repair command per unmet item",
 		Consumer: "internal/actuator governed execute door (refuses an explicit mutation-capable launch on an unready lane), work delegate --dry-run, and the harness readiness operator face",
 	},
+	// projectcontract holds the YAML shapes that BOTH readers of the source-in-place
+	// project contract must agree on. internal/product and internal/runtimebinding each
+	// parse the same `project.yaml`; when a field's shape lived in two structs, one reader
+	// accepted a contract the other rejected (`data.databases` as a record failed product
+	// import and runtime doctor while the file itself was valid), so a product's deployment
+	// silently never reached the ledger. It performs no I/O, records nothing, gates nothing.
+	"organ:projectcontract": {
+		Class:    MintEvidence,
+		Purpose:  "one owner for the YAML shapes of the source-in-place project contract, so its two readers cannot disagree about a field",
+		Consumer: "internal/product project-contract import and internal/runtimebinding LoadProjectContract",
+	},
 	"organ:runattempt": {
 		Class:    MintEvidence,
 		Purpose:  "concrete record of one harness execution attempt against a work_id (who/what/when), persisted under COMPOUND_HOME/run_attempts for proof-chain linkage",

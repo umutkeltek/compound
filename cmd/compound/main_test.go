@@ -8947,7 +8947,7 @@ func TestProductImportProjectContractPromotesSourceInPlaceIdentity(t *testing.T)
 		})
 	})
 	if !strings.Contains(out, "# product import product:source_contract_demo") ||
-		!strings.Contains(out, "- claims: 10") ||
+		!strings.Contains(out, "- claims: 13") ||
 		!strings.Contains(out, "- signals: 0") ||
 		!strings.Contains(out, "- hypotheses: 0") {
 		t.Fatalf("product import output missing source-contract proof:\n%s", out)

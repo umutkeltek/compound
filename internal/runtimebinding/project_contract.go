@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"compound/internal/projectcontract"
 )
 
 type projectContract struct {
@@ -39,12 +41,12 @@ type projectContract struct {
 		} `yaml:"deployment"`
 	} `yaml:"runtime"`
 	Data struct {
-		Authority       string   `yaml:"authority"`
-		Classification  string   `yaml:"classification"`
-		NASPaths        []string `yaml:"nas_paths"`
-		LocalPaths      []string `yaml:"local_paths"`
-		Databases       []string `yaml:"databases"`
-		ExternalSources []string `yaml:"external_sources"`
+		Authority       string                   `yaml:"authority"`
+		Classification  string                   `yaml:"classification"`
+		NASPaths        []string                 `yaml:"nas_paths"`
+		LocalPaths      []string                 `yaml:"local_paths"`
+		Databases       projectcontract.NameList `yaml:"databases"`
+		ExternalSources []string                 `yaml:"external_sources"`
 	} `yaml:"data"`
 }
 
