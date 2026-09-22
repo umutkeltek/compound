@@ -90,10 +90,14 @@ func TestRefreshPreflightCLIIsReadOnlyAndDoesNotClaimActivation(t *testing.T) {
 		t.Fatalf("all-lane preflight refused publication over an externally-owned adapter: %v", err)
 	}
 	// The full refresh may still report a per-lane problem in this bare home
-	// (no lane default means no contract compile). What it must never do again
-	// is refuse wholesale before touching anything.
-	if err := RunCLIFromArgs(args[1:], time.Now().UTC()); err != nil && strings.Contains(err.Error(), "refresh preflight refused") {
-		t.Fatalf("full refresh refused over an externally-owned adapter: %v", err)
+	// (no lane default means no contract compile). What it must never do is fail
+	// over the external adapter — not at the preflight gate, and not at the
+	// completeness check that decides the CLI's exit code. Naming the adapter is
+	// the point: an assertion that only excluded the preflight message let
+	// `refresh incomplete for oh_my_pi: external` reach a real install.
+	if err := RunCLIFromArgs(args[1:], time.Now().UTC()); err != nil &&
+		(strings.Contains(err.Error(), "refresh preflight refused") || strings.Contains(err.Error(), "opencode")) {
+		t.Fatalf("full refresh failed over an externally-owned adapter: %v", err)
 	}
 	if err := RunCLIFromArgs(append(args, "--harness", "codex"), time.Now().UTC()); err != nil {
 		t.Fatalf("explicit native lane was blocked by unrelated external entry: %v", err)
@@ -105,5 +109,47 @@ func TestRefreshPreflightCLIIsReadOnlyAndDoesNotClaimActivation(t *testing.T) {
 	}
 	if v := preflightLaneRefresh(RefreshLaneOptions{HomePath: homePath, BaseDir: baseDir, BinaryPath: binaryPath}, "unrecognized"); v.Status != StatusError {
 		t.Fatalf("unknown adapter accepted: %+v", v)
+	}
+}
+
+// The refresh CLI's exit code is decided by refreshIncompleteVerdict. Reaching
+// it through RunCLIFromArgs cannot prove this rule: in a bare synthetic home the
+// native lane is itself non-clean and is selected first, masking the external
+// lane entirely. That masking is exactly why `refresh incomplete for oh_my_pi:
+// external` survived the first repair and only surfaced on a real install, once
+// the operator's claude_code lane went clean. Assert the rule directly.
+func TestRefreshIncompleteVerdictNeverBlamesAnExternalAdapter(t *testing.T) {
+	external := LaneVerdict{Harness: "oh_my_pi", Status: statusRefreshExternal, Detail: "separate adapter owns this lane"}
+	for _, tc := range []struct {
+		name     string
+		verdicts []LaneVerdict
+		want     string // "" means no lane should fail the CLI
+	}{
+		{name: "every native lane clean, one external", want: "", verdicts: []LaneVerdict{
+			{Harness: "codex", Status: StatusClean}, external,
+		}},
+		{name: "external alone", want: "", verdicts: []LaneVerdict{external}},
+		{name: "a real native failure still fails", want: "codex", verdicts: []LaneVerdict{
+			{Harness: "codex", Status: StatusError, Detail: "hook install failed"}, external,
+		}},
+		{name: "external never outranks a native failure", want: "codex", verdicts: []LaneVerdict{
+			external, {Harness: "codex", Status: StatusDrifted},
+		}},
+		{name: "a genuine failure replaces a bare ready", want: "codex", verdicts: []LaneVerdict{
+			{Harness: "claude_code", Status: statusRefreshReady}, external, {Harness: "codex", Status: StatusError},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := refreshIncompleteVerdict(tc.verdicts)
+			if tc.want == "" {
+				if got != nil {
+					t.Fatalf("externally-owned lane failed the refresh CLI: %+v", *got)
+				}
+				return
+			}
+			if got == nil || got.Harness != tc.want {
+				t.Fatalf("incomplete verdict = %v, want harness %q", got, tc.want)
+			}
+		})
 	}
 }

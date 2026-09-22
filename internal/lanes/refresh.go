@@ -698,6 +698,27 @@ func ParseCLIRefreshArgs(args []string, defaultHome, defaultBinary, defaultBase 
 	}, false, nil
 }
 
+// refreshIncompleteVerdict picks the verdict that should fail the refresh CLI,
+// or nil when none should. An externally-owned lane is never `clean`, because
+// the native writer deliberately does not refresh it; counting it as incomplete
+// would fail the installer's activation on a lane publication cannot affect --
+// the same unsatisfiable-gate shape the preflight once carried, one exit code
+// later. A `ready` verdict is weaker evidence than a real per-lane failure, so a
+// later genuine failure replaces it.
+func refreshIncompleteVerdict(verdicts []LaneVerdict) *LaneVerdict {
+	var incomplete *LaneVerdict
+	for i := range verdicts {
+		verdict := &verdicts[i]
+		if verdict.Status == statusRefreshExternal {
+			continue
+		}
+		if verdict.Status != StatusClean && (incomplete == nil || incomplete.Status == statusRefreshReady) {
+			incomplete = verdict
+		}
+	}
+	return incomplete
+}
+
 // RunCLIFromArgs is the single entry point cmd/compound should use
 // for `compound harness refresh-lane`. It owns the entire CLI body:
 // arg parsing, home resolution, verb dispatch, exit-code mapping,
@@ -731,14 +752,7 @@ func RunCLIFromArgs(args []string, now time.Time) error {
 	if refreshErr != nil {
 		return refreshErr
 	}
-	var incomplete *LaneVerdict
-	for i := range verdicts {
-		verdict := &verdicts[i]
-		if verdict.Status != StatusClean && (incomplete == nil || incomplete.Status == statusRefreshReady) {
-			incomplete = verdict
-		}
-	}
-	if incomplete != nil {
+	if incomplete := refreshIncompleteVerdict(verdicts); incomplete != nil {
 		return fmt.Errorf("refresh incomplete for %s: %s (%s)", incomplete.Harness, incomplete.Status, incomplete.Detail)
 	}
 	return nil
