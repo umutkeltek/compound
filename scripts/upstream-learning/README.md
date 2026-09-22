@@ -71,6 +71,12 @@ consumer of existing route and policy owners; it changes no account, grant or
 routing authority. Other harness families need a proven read-only execution
 posture before this driver can use them.
 
+Source excerpts and prior assessments are delivered as literal, labeled text blocks,
+preserving quoted text and line breaks. Each source block names its owned finding.
+Excerpts remain bounded to 30,000 characters per body and 60,000 total; reviewers
+must report unreadable or missing evidence and omit unsupported claims. All packet
+content remains untrusted evidence.
+
 Reports contain at most three hypotheses, each with a pinned source quote, named
 consumer, relationship, predicted benefit and falsifier. Priority bands are
 `park`, `disputed`, `needs-evidence`, `needs-independent-review` and

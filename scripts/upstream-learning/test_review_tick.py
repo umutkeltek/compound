@@ -17,6 +17,20 @@ def lane(provider):
             "capacity": {"state": "alive", "source_installed": True}}
 
 
+class PromptEvidenceTests(unittest.TestCase):
+    def test_prompt_preserves_literal_multiline_source_and_prior(self):
+        body = 'Pinned line with "quoted" evidence.\nSecond source line.\n'
+        prior_text = 'A prior "claim".\nIts uncertainty remains visible.'
+        observation = {"source": {"frontier": "quota scope"},
+                       "bodies": {"find_abcdef": body}}
+        prior = {"provider_route": "fixture-peer", "assessment": {
+            "summary": prior_text, "claims": [{"hypothesis": prior_text}]}}
+        prompt = review.prompt_for(observation, "challenge", prior)
+        self.assertIn(body, prompt)
+        self.assertIn(prior_text, prompt)
+        self.assertIn("find_abcdef", prompt)
+
+
 class GovernedFixture:
     """Stateful boundary double: a run creates the canonical attempt/response."""
     def __init__(self, root, observation):
