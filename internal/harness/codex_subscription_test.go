@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,10 +37,13 @@ func syntheticChatGPTAuth() map[string]any {
 	}
 }
 
+var syntheticIDTokenExpiry = time.Now().Add(time.Hour).Unix()
+
 func syntheticIDToken() string {
 	encode := base64.RawURLEncoding.EncodeToString
+	payload := fmt.Sprintf(`{"sub":"synthetic-user","email":"fixture@example.invalid","exp":%d}`, syntheticIDTokenExpiry)
 	return encode([]byte(`{"alg":"none","typ":"JWT"}`)) + "." +
-		encode([]byte(`{"sub":"synthetic-user","email":"fixture@example.invalid","exp":4102444800}`)) + "." +
+		encode([]byte(payload)) + "." +
 		encode([]byte("synthetic-signature"))
 }
 
