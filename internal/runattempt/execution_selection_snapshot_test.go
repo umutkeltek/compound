@@ -138,3 +138,25 @@ func TestExecutionSelectionSnapshotValidateNamesEveryOverclaim(t *testing.T) {
 		t.Fatalf("minimal override record must validate: %v", err)
 	}
 }
+
+func TestExecutionSelectionSnapshotUnobservableSessionCannotClaimID(t *testing.T) {
+	snap := validSnapshot()
+	snap.NativeSessionEvidence = "unobservable:adapter did not capture id"
+	snap.NativeSessionID = ""
+	if err := snap.Validate(); err != nil {
+		t.Fatalf("unobservable session without id must validate: %v", err)
+	}
+	snap.NativeSessionID = "uncaptured-id"
+	if err := snap.Validate(); err == nil || !strings.Contains(err.Error(), "native_session_id must be empty") {
+		t.Fatalf("unobservable session cannot claim id, got %v", err)
+	}
+	snap.NativeSessionID = ""
+	snap.NativeSessionEvidence = "unobservable:"
+	if err := snap.Validate(); err == nil || !strings.Contains(err.Error(), "native_session_evidence must carry one of") {
+		t.Fatalf("unobservable session requires a reason, got %v", err)
+	}
+	snap.NativeSessionEvidence = "unknown:adapter did not capture id"
+	if err := snap.Validate(); err == nil || !strings.Contains(err.Error(), "native_session_evidence must carry one of") {
+		t.Fatalf("unrecognized session evidence must be rejected, got %v", err)
+	}
+}

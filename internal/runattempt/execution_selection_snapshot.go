@@ -79,8 +79,9 @@ var ExecutionEffortEvidencePrefixes = []string{"argv:", "env:", "settings:", "re
 // ExecutionSessionEvidencePrefixes are the honest ways a native session id can be known:
 //   - pinned:<flag>       the launch pinned the id (e.g. pinned:--session-id)
 //   - derived:<path>      the id was read back from the harness's own session store
-//   - unsupported:<why>   the launch shape cannot produce a session (e.g. --no-session)
-var ExecutionSessionEvidencePrefixes = []string{"pinned:", "derived:", "unsupported:"}
+//   - unsupported:<why>  the launch shape cannot produce a session (e.g. --no-session)
+//   - unobservable:<why> a session may exist but the adapter did not capture its id
+var ExecutionSessionEvidencePrefixes = []string{"pinned:", "derived:", "unsupported:", "unobservable:"}
 
 var errExecutionSelectionSnapshotSet = errors.New("execution selection snapshot already set with different content")
 
@@ -123,8 +124,8 @@ func (s ExecutionSelectionSnapshot) Validate() error {
 		if !hasAnyPrefix(s.NativeSessionEvidence, ExecutionSessionEvidencePrefixes) {
 			errs = append(errs, fmt.Sprintf("native_session_evidence must carry one of %v with detail, got %q", ExecutionSessionEvidencePrefixes, s.NativeSessionEvidence))
 		}
-		if strings.HasPrefix(s.NativeSessionEvidence, "unsupported:") && s.NativeSessionID != "" {
-			errs = append(errs, "native_session_id must be empty when native_session_evidence is unsupported")
+		if (strings.HasPrefix(s.NativeSessionEvidence, "unsupported:") || strings.HasPrefix(s.NativeSessionEvidence, "unobservable:")) && s.NativeSessionID != "" {
+			errs = append(errs, "native_session_id must be empty when native_session_evidence is unsupported or unobservable")
 		}
 	}
 	for _, rev := range []string{s.LaunchProfileRevision} {

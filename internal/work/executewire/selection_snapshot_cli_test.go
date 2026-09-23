@@ -44,6 +44,22 @@ func TestBindCodexSelectionBeforePreflightPreservesRequestedEffort(t *testing.T)
 	}
 }
 
+func TestBuildSelectionSnapshotCodexSessionIsUnobservable(t *testing.T) {
+	selection := cliSavedSelection()
+	selection.Harness = "codex"
+	snap, err := BuildSelectionSnapshot(envelope.WorkEnvelope{ExecutionSelection: selection}, "codex", nil)
+	if err != nil {
+		t.Fatalf("BuildSelectionSnapshot: %v", err)
+	}
+	if snap.NativeSessionID != "" {
+		t.Errorf("native_session_id = %q; want empty until captured", snap.NativeSessionID)
+	}
+	const want = "unobservable:Codex native session ID is not captured by this adapter"
+	if snap.NativeSessionEvidence != want {
+		t.Errorf("native_session_evidence = %q; want %q", snap.NativeSessionEvidence, want)
+	}
+}
+
 func TestBuildSelectionSnapshotSavedConsumesRevisionAndCarriesEffortForClaudeFamily(t *testing.T) {
 	wenv := envelope.WorkEnvelope{ExecutionSelection: cliSavedSelection()}
 	snap, err := BuildSelectionSnapshot(wenv, "claude_code", nil)

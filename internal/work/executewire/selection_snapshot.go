@@ -252,6 +252,8 @@ func applyNativeSessionEvidence(snap *runattempt.ExecutionSelectionSnapshot) {
 	switch snap.Harness {
 	case "claude_code", "claude_minimax", "claude_mini", "claude_zai", "claude_qwen", "claude":
 		snap.NativeSessionEvidence = "unsupported:wire does not pin --session-id on the argv in v0.1; pass --session-id directly via the wrapper for explicit pinning"
+	case "codex":
+		snap.NativeSessionEvidence = "unobservable:Codex native session ID is not captured by this adapter"
 	default:
 		snap.NativeSessionEvidence = "unsupported:harness " + snap.Harness + " has no native session concept"
 	}

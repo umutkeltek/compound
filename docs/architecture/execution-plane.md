@@ -216,8 +216,9 @@ under either. Nothing here claims a provider received the value — that remains
 (`unknown_until_receipt`).
 
 **Sessions and lineage.** `native_session_id` plus `native_session_evidence` (`pinned:<flag>`, `derived:<path>`,
-`unsupported:<why>`) say which harness session an attempt is, so a resume targets THAT session and never "the
-most recent one". `continuation_of` names the predecessor attempt or `native:<id>` a launch resumed. A
+`unsupported:<why>`, `unobservable:<why>`) distinguish captured sessions from missing observation. A native
+resume targets a known session and never "the most recent one". `continuation_of` names the predecessor attempt
+or `native:<id>` a launch resumed. A
 cross-harness continuation keeps the Compound work lineage (work id, predecessor attempt, context pack) and
 records the new harness on a new attempt; it never pretends one harness's session format was resumed by
 another. Intentional changes of model, effort, or harness are new attempts with a new snapshot and, when saved,
