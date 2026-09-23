@@ -321,12 +321,13 @@ func TestCodexSubscriptionBindingCleansUpAfterCancellation(t *testing.T) {
 	source := t.TempDir()
 	writeSyntheticCodexAuth(t, source, syntheticChatGPTAuth(), 0o600)
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nprintf '%s' \"$CODEX_HOME\" > \"$HOME_CAPTURE\"\nsleep 30\n"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nprintf '%s' \"$$\" > \"$PID_CAPTURE\"\nprintf '%s' \"$CODEX_HOME\" > \"$HOME_CAPTURE\"\nsleep 30\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	withPATH(t, bin)
 	marked := filepath.Join(t.TempDir(), "isolated-home")
 	t.Setenv("HOME_CAPTURE", marked)
+	t.Setenv("PID_CAPTURE", marked+".pid")
 	t.Setenv("CODEX_HOME", source)
 	t.Setenv("COMPOUND_CODEX_USE_EXISTING_SUBSCRIPTION", "1")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -366,7 +367,15 @@ func TestCodexSubscriptionBindingCleansUpAfterCancellation(t *testing.T) {
 			t.Fatalf("cancel attempt status: %+v, err=%v", got.out.RunAttempt, got.err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("cancelled child did not terminate")
+		pid, _ := os.ReadFile(marked + ".pid")
+		processes, _ := exec.Command("ps", "-axo", "pid=,ppid=,pgid=,stat=,comm=").Output()
+		for _, line := range strings.Split(string(processes), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 && fields[2] == string(pid) {
+				t.Logf("cancelled process group: %s", line)
+			}
+		}
+		t.Fatal("cancelled run did not finish")
 	}
 	if _, err := os.Stat(string(home)); !os.IsNotExist(err) {
 		t.Fatalf("isolated auth home remains after cancellation: %v", err)

@@ -40,6 +40,7 @@ type subprocessRunOptions struct {
 	syncTranscript       func(*os.File) error
 	closeTranscript      func(*os.File) error
 	stableStartError     string
+	killProcessTree      func(*exec.Cmd) // test-only fault injection at the OS signal boundary
 }
 
 type subprocessEvidenceContext struct {
@@ -127,6 +128,10 @@ func runWithSubprocessOptions(
 ) (RunOutput, error) {
 	if err := validateSubprocessInput(harnessName, in); err != nil {
 		return RunOutput{}, err
+	}
+	killTree := killProcessTree
+	if options.killProcessTree != nil {
+		killTree = options.killProcessTree
 	}
 	// A non-positive heartbeat interval panics time.NewTicker inside
 	// heartbeatLoop. Clamp here -- the single funnel every adapter passes
@@ -314,7 +319,7 @@ func runWithSubprocessOptions(
 		// production guard returns start's result directly, but contain any
 		// future implementation bug here so no unobserved child is orphaned.
 		if startCalled && cmd.Process != nil {
-			killProcessTree(cmd)
+			killTree(cmd)
 			_ = cmd.Wait()
 		}
 		if options.stableStartError != "" {
@@ -350,6 +355,30 @@ func runWithSubprocessOptions(
 	// worse failure than the hang this ordering fixes.
 	var reapMu sync.Mutex
 	reaped := false
+	captureDrained := false
+	captureDone := make(chan struct{})
+	// A descendant can survive the first group signal while its parent is
+	// forking, retaining the capture pipes after the leader dies. Repeat only
+	// while capture is open: the unreaped leader still pins the group ID.
+	// Disable retries under reapMu BEFORE Wait can release that identity.
+	retryGroupKill := func() {
+		ticker := time.NewTicker(25 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-captureDone:
+				return
+			case <-ticker.C:
+				reapMu.Lock()
+				if captureDrained || reaped {
+					reapMu.Unlock()
+					return
+				}
+				killTree(cmd)
+				reapMu.Unlock()
+			}
+		}
+	}
 	var timedOut atomic.Bool
 	var cancelReason atomic.Value // empty, "timeout:exceeded", or "cancel:context_cancelled"
 	cancelReason.Store("")
@@ -360,13 +389,15 @@ func runWithSubprocessOptions(
 			select {
 			case <-t.C:
 				reapMu.Lock()
-				defer reapMu.Unlock()
 				if reaped {
+					reapMu.Unlock()
 					return // already exited and reaped; the pid is not ours
 				}
 				timedOut.Store(true)
 				cancelReason.Store("timeout:exceeded:" + in.Timeout.String())
-				killProcessTree(cmd)
+				killTree(cmd)
+				reapMu.Unlock()
+				retryGroupKill()
 			case <-stopCh:
 			}
 		}()
@@ -387,8 +418,8 @@ func runWithSubprocessOptions(
 			select {
 			case <-ctx.Done():
 				reapMu.Lock()
-				defer reapMu.Unlock()
 				if reaped {
+					reapMu.Unlock()
 					return
 				}
 				timedOut.Store(true)
@@ -397,7 +428,9 @@ func runWithSubprocessOptions(
 					reason = "cancel:context_cancelled:" + cerr.Error()
 				}
 				cancelReason.Store(reason)
-				killProcessTree(cmd)
+				killTree(cmd)
+				reapMu.Unlock()
+				retryGroupKill()
 			case <-stopCh:
 			}
 		}()
@@ -409,6 +442,10 @@ func runWithSubprocessOptions(
 	// BEFORE cmd.Wait honors the exec package's "all reads complete before
 	// Wait" contract for StdoutPipe/StderrPipe.
 	capWG.Wait()
+	reapMu.Lock()
+	captureDrained = true
+	close(captureDone)
+	reapMu.Unlock()
 	// cmd.Wait BEFORE close(stopCh): draining capture must not disarm the
 	// kill timer. Capture returning only proves the pipes EOF'd, which a
 	// child can cause at will with `exec 1>&- 2>&-` while it keeps running.

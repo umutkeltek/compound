@@ -276,6 +276,13 @@ attempt, then finalizes the envelope failed. A caller passing `context.Backgroun
 the guarantee: cancellation never reaches the adapter, and the detached worker inherits only
 its own external budget.
 
+If a descendant retains capture pipes after the first cancellation/timeout signal,
+the runner retries the same process group while its unreaped leader pins the identity.
+Retries are disabled under the capture/reap guard before `Wait` can release the PID.
+The initial timeout remains armed for a child that closes its pipes early. This
+closes the one-shot fork/cancellation race without widening the signal target or
+changing the run budget.
+
 ## Detached start/record failures are recoverable, not "failed to spawn"
 
 The detached door protocol is start/record-safe (2026-09-15):
