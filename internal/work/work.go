@@ -3434,6 +3434,11 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 			}
 		}
 	}
+	// Legacy transcript matches must be validated with the receipt's observation
+	// method and quality before any close artifact or recovery frame is persisted.
+	if len(in.ConsumedRefs) > 0 {
+		rec.Skills.Referenced = mergeUnique(rec.Skills.Referenced, in.ConsumedRefs)
+	}
 	rec.StateDelta.Changed = rec.EffectiveChanged()
 	if err := rec.Validate(); err != nil {
 		return res, fmt.Errorf("emitted receipt invalid: %w", err)
@@ -3446,13 +3451,6 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	}
 	after := append(append([]string{}, orEmpty(w.ArtifactIDs)...), rec.ID)
 	typedProjectionRefs := closeProjectionRefs(rec, w.IDs.ContextPackID)
-	// Raw injected-ref consumption (e.g. session-end claim:// refs) lands in the receipt's
-	// Skills.Used AFTER the skill typed projections are built, so it feeds the usage
-	// projection's consumed join without masquerading as a used SKILL. Not capability-
-	// normalized: a claim ref must match pack.included[].ref verbatim.
-	if len(in.ConsumedRefs) > 0 {
-		rec.Skills.Referenced = mergeUnique(rec.Skills.Referenced, in.ConsumedRefs)
-	}
 	// The apex action_refs carry only ActionIntent ids: legacy envelopes still
 	// hold prun_* run refs in ActionIntentIDs (see the field comment in
 	// envelope.go), and those are run history, not actions.

@@ -68,10 +68,9 @@ func observationQuality(readable bool) string {
 	return "unobservable"
 }
 
-// detectSessionConsumption reports the injected claim refs this session consumed and whether a
-// used-list was DECLARED. declared is true iff the transcript was present and readable (the
-// detector actually ran); a readable transcript that references nothing is an honest all-ignored
-// declaration. An absent/unreadable transcript is fail-open: (nil, false), never an error.
+// detectSessionConsumption reports injected claim refs mentioned in a readable transcript.
+// The boolean means the transcript was readable; no match leaves application and non-use
+// unknown. An absent or unreadable transcript yields (nil, false) without blocking close.
 func detectSessionConsumption(deps Deps, fx Fixture) (consumed []string, declared bool) {
 	path := strings.TrimSpace(fx.TranscriptPath)
 	if path == "" {

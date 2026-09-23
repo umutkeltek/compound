@@ -884,6 +884,29 @@ func TestCloseStampsUsedDeclaredAndConsumedRefs(t *testing.T) {
 	if contains(closed2.Receipt.Skills.Used, claimRef) {
 		t.Fatalf("undeclared close must not carry consumed refs: %v", closed2.Receipt.Skills.Used)
 	}
+
+	// A legacy transcript match without readable-scan provenance cannot be
+	// persisted as a reference. Failed close leaves the work unclosed.
+	s3 := newStore(t)
+	w3 := mkClosable(s3, "unproven-reference")
+	if _, err := s3.Close(w3.ID, CloseInput{
+		Outcome: "completed", MoveType: "outward_delta", Summary: "shipped", Changed: true, Actor: "codex",
+		ConsumedRefs: []string{claimRef},
+	}, fixedNow); err == nil {
+		t.Fatal("legacy reference without observation provenance must fail close")
+	} else if !strings.Contains(err.Error(), "skills.referenced") {
+		t.Fatalf("close failed before checking reference provenance: %v", err)
+	}
+	stillOpen, err := s3.Get(w3.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stillOpen.State != "running" {
+		t.Fatalf("failed close persisted a receipt or state transition: %+v", stillOpen)
+	}
+	if _, err := os.Stat(s3.envPath(idFor("rec_", w3.ID, ts(fixedNow)))); !os.IsNotExist(err) {
+		t.Fatalf("failed close persisted invalid receipt: %v", err)
+	}
 }
 
 func readReceiptFromEvents(t *testing.T, s *Store, recID string) envelope.Receipt {
