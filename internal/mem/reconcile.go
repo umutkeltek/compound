@@ -559,10 +559,12 @@ func readReconcileEvent(name string, data []byte) (reconcileEvent, bool, error) 
 		if err := json.Unmarshal(data, &rec); err != nil {
 			return reconcileEvent{}, false, err
 		}
-		if !rec.Skills.UsedDeclared {
-			return reconcileEvent{}, false, nil
+		var refs []string
+		for _, ref := range claimRefsFromUsed(rec.Skills.Used) {
+			if rec.Skills.ApplicationObserved(ref) {
+				refs = append(refs, ref)
+			}
 		}
-		refs := claimRefsFromUsed(rec.Skills.Used)
 		if len(refs) == 0 {
 			return reconcileEvent{}, false, nil
 		}

@@ -775,3 +775,14 @@ sweep without moving anything, which is how a caller picks the kind. `workbench`
 and `reviews` exclude archived entries by default; `--include-archived` restores
 query visibility, and `restore-history` moves selected entries back to original
 hot paths.
+# Reference evidence at close
+
+An offered ContextPack ref and a transcript reference are separate observations. Automatic
+SessionEnd and `work close --transcript` scans record exact/content-key matches in
+`Receipt.skills.referenced`, with `observation_method=transcript_reference_scan` and
+`observation_quality=readable|unobservable`. A readable transcript with no match leaves
+application unknown. Mention, quotation, and refutation cannot populate `skills.used` or
+cool a claim. Actual skill tool calls and explicit `--used` declarations remain use evidence.
+An injected ref contributes negative evidence only when `skills.explicit_non_use` names that
+exact ref and `skills.non_use_evidence` cites provenance. Historical `used_declared` receipts
+are preserved as recorded; their missing refs do not imply non-use.

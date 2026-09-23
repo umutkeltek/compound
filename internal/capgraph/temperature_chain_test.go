@@ -77,14 +77,25 @@ func TestUsageTemperatureChainWarmCoolNeutral(t *testing.T) {
 	})
 	declared := testReceipt("rec_declared", "completed", true, []string{warmRef}, nil, nil)
 	declared.Skills.UsedDeclared = true
+	declared.Skills.ExplicitNonUse = []string{coolRef}
+	declared.Skills.NonUseMethod = "explicit_declaration"
+	declared.Skills.NonUseActor = "operator:test"
+	declared.Skills.NonUseEvidence = "evidence:cool-claim-declaration"
+	declared.ProofRefs = append(declared.ProofRefs, declared.Skills.NonUseEvidence)
+	declared.EvidenceRefs = []string{"evidence:cool-claim-declaration"}
 	declared.IDs.ContextPackID = "ctx_declared"
 	writeReceipt(t, home, declared)
 
-	// Undeclared close injects neutral and declares nothing.
+	// Legacy automatic receipt quoted neutral; its method is ambiguous, so it stays neutral.
 	writeContextPack(t, home, "ctx_undeclared", []envelope.IncludedRef{
 		{Ref: neutralRef, SourceClass: "source", Reason: "recency", Confidence: 1, Status: "current"},
 	})
-	undeclared := testReceipt("rec_undeclared", "completed", true, nil, nil, nil)
+	undeclared := testReceipt("rec_undeclared", "completed", true, []string{neutralRef}, nil, nil)
+	undeclared.Skills.ApplicationMethod = ""
+	undeclared.Skills.UsedDeclared = true
+	undeclared.Skills.Referenced = []string{neutralRef}
+	undeclared.Skills.ObservationMethod = "transcript_reference_scan"
+	undeclared.Skills.ObservationQuality = "readable"
 	undeclared.IDs.ContextPackID = "ctx_undeclared"
 	writeReceipt(t, home, undeclared)
 

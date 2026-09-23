@@ -1,9 +1,8 @@
 // consumption.go — the session-end consumption detector (the Reflector's food supply).
 //
 // A session injects claims (ContextPack.included[] carries claim://<id>). At session end this
-// detector answers, deterministically and conservatively, WHICH of those injected claims the
-// session actually referenced, so the close receipt can report them as consumed and the memory-
-// temperature Reflector is fed a real signal instead of starving.
+// detector answers which injected claims the transcript referenced. A citation, quotation,
+// or refutation is reference evidence only; it never proves application or task effect.
 //
 // Design rules (v1, deliberately narrow — still fully live, untouched by v2 below):
 //   - JOIN PATH (single): the pack is resolved from the CLOSING WORK's context_pack_id. That is
@@ -22,9 +21,8 @@
 //     FORM rather than byte-offset — position-independent yet strictly self-echo-safe (no credit
 //     for the id merely appearing in the injection). Token boundaries are enforced so one claim id
 //     that is a prefix of another cannot cross-credit. No LLM, no token-overlap heuristics.
-//   - UNDER-DETECTION IS SAFE: a missed consumption becomes UNKNOWN, never ignored, because the
-//     usage projection only cools injected refs from receipts that DECLARED (used_declared). The
-//     detector running at all is the declaration; finding nothing is an honest all-ignored signal.
+//   - UNDER-DETECTION IS SAFE: a missed reference remains UNKNOWN. A readable transcript with
+//     no match is not a declaration of non-use.
 //   - FAIL-OPEN: a missing/unreadable transcript yields (nil, declared=false) and never errors, so
 //     session end is never blocked by the detector.
 //
@@ -62,6 +60,13 @@ import (
 
 // claimScheme is the ref scheme injected ledger claims carry in ContextPack.included[].
 const claimScheme = "claim://"
+
+func observationQuality(readable bool) string {
+	if readable {
+		return "readable"
+	}
+	return "unobservable"
+}
 
 // detectSessionConsumption reports the injected claim refs this session consumed and whether a
 // used-list was DECLARED. declared is true iff the transcript was present and readable (the

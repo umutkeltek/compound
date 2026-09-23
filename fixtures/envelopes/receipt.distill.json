@@ -43,6 +43,7 @@
     "model_calls": []
   },
   "skills": {
+    "application_method": "explicit_declaration",
     "used": [
       "capability://skill:golang-testing"
     ],

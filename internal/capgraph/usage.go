@@ -6,14 +6,9 @@
 // observable before SessionEnd; receipts retain validated/missed/ignored
 // reinforcement.
 //
-// Honest attribution (the anti-famine rule): CONSUMED increments from ANY receipt that
-// lists the injected ref in Used. IGNORED increments ONLY from receipts whose Skills.
-// UsedDeclared=true — a receipt that affirmatively declared what it used. A receipt that
-// never declared (most ceremony closes; a session-end whose consumption detector could not
-// read a transcript) leaves its injected refs at the INJECTED count only: unknown, not
-// ignored. Undeclared silence must never be read as a cooling signal — that would punish a
-// claim for the harness never reporting, the same error as treating a never-injected claim
-// as cold. (Falsifier: an undeclared receipt with injected-but-unused refs keeps ignored 0.)
+// Honest attribution: application requires an explicit method; reference scans
+// record mentions only. Non-use requires an exact actor- and proof-bound declaration.
+// Historical used_declared alone gives neither positive nor negative claim evidence.
 //
 // It is a projection, never truth: rebuilt from scratch on every call and written
 // only under projections/ (never the ledger or capability registry). See
@@ -90,14 +85,15 @@ type CapabilityUsageEvent struct {
 // never parses (malformed) — so a pre-probe-group fixture's projection JSON stays
 // byte-identical (pinned by TestBuildCapabilityUsageLegacyPacksOmitProbeGroup).
 type InjectedRefUsage struct {
-	Ref            string   `json:"ref"`
-	SourceClass    string   `json:"source_class,omitempty"`
-	ProbeGroup     string   `json:"probe_group,omitempty"`
-	InjectedCount  int      `json:"injected_count"`
-	ConsumedCount  int      `json:"consumed_count"`
-	IgnoredCount   int      `json:"ignored_count"`
-	LastInjected   string   `json:"last_injected,omitempty"`
-	SourceReceipts []string `json:"source_receipts"`
+	Ref             string   `json:"ref"`
+	ReferencedCount int      `json:"referenced_count,omitempty"`
+	SourceClass     string   `json:"source_class,omitempty"`
+	ProbeGroup      string   `json:"probe_group,omitempty"`
+	InjectedCount   int      `json:"injected_count"`
+	ConsumedCount   int      `json:"consumed_count"`
+	IgnoredCount    int      `json:"ignored_count"`
+	LastInjected    string   `json:"last_injected,omitempty"`
+	SourceReceipts  []string `json:"source_receipts"`
 }
 
 // FailureCauseCount aggregates the optional close-receipt failure_cause field.
@@ -175,6 +171,7 @@ type injAccum struct {
 	sourceClass  string
 	probeGroup   string
 	injected     int
+	referenced   int
 	consumed     int
 	ignored      int
 	lastInjected string
@@ -268,6 +265,9 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 		packID := strings.TrimSpace(rec.IDs.ContextPackID)
 
 		for ref := range usedSet {
+			if strings.HasPrefix(ref, "claim://") && !rec.Skills.ApplicationObserved(ref) {
+				continue
+			}
 			a := capFor(caps, ref)
 			a.used++
 			if validated {
@@ -331,17 +331,19 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 				injs[ref] = a
 			}
 			a.injected++
+			if rec.Skills.ReferenceObserved(ref) {
+				a.referenced++
+			}
 			if strings.TrimSpace(inc.SourceClass) != "" {
 				a.sourceClass = inc.SourceClass
 			}
 			if label, ok := parseProbeGroupLabel(inc.Reason); ok {
 				a.probeGroup = label
 			}
-			if usedSet[ref] {
+			if usedSet[ref] && rec.Skills.ApplicationObserved(ref) {
 				a.consumed++
-			} else if rec.Skills.UsedDeclared {
-				// IGNORED only when the receipt DECLARED its used-list (see ReceiptSkills.UsedDeclared):
-				// absence from a declaring receipt is real evidence the injected ref was not used.
+			} else if rec.ExplicitNonUseObserved(ref) {
+				// Exact sourced non-use declaration, with receipt work and actor provenance.
 				a.ignored++
 			}
 			// else: undeclared receipt — the injected ref stays at its injected count only. Absence of
@@ -496,14 +498,15 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 	// materialize injected refs, sorted by ref.
 	for ref, a := range injs {
 		proj.InjectedRefs = append(proj.InjectedRefs, InjectedRefUsage{
-			Ref:            ref,
-			SourceClass:    a.sourceClass,
-			ProbeGroup:     a.probeGroup,
-			InjectedCount:  a.injected,
-			ConsumedCount:  a.consumed,
-			IgnoredCount:   a.ignored,
-			LastInjected:   a.lastInjected,
-			SourceReceipts: lastReceiptIDs(a.injectedIn, srcCap),
+			Ref:             ref,
+			SourceClass:     a.sourceClass,
+			ProbeGroup:      a.probeGroup,
+			InjectedCount:   a.injected,
+			ConsumedCount:   a.consumed,
+			ReferencedCount: a.referenced,
+			IgnoredCount:    a.ignored,
+			LastInjected:    a.lastInjected,
+			SourceReceipts:  lastReceiptIDs(a.injectedIn, srcCap),
 		})
 	}
 	sort.Slice(proj.InjectedRefs, func(i, j int) bool {

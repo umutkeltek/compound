@@ -1237,7 +1237,7 @@ func testReceipt(id, outcome string, changed bool, used, missed, candidate []str
 			Verification: []string{},
 		},
 		Cost:      envelope.ReceiptCost{ModelCalls: []string{}},
-		Skills:    envelope.ReceiptSkills{Used: used, Missed: missed, Candidate: candidate},
+		Skills:    envelope.ReceiptSkills{Used: used, Missed: missed, Candidate: candidate, ApplicationMethod: "explicit_declaration"},
 		Memory:    envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}},
 		Next:      envelope.ReceiptNext{SuggestedWork: []string{}},
 		ProofRefs: proofRefs,

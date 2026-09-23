@@ -6,6 +6,13 @@ description: compile-day rules for ambient memory injection vs intent-shaped rec
 # memory-injection-rules — receipt-minted rules for general users
 
 Six rules minted from 31 confirmatory-window ON-condition receipts (2026-07-13 → 2026-07-19).
+
+Current interpretation: the compile numbers below are a historical snapshot. Old
+`used_declared` did not distinguish CLI declarations from transcript scans, and old
+`skills.used` could contain a quotation. Historical zero counts leave application
+unknown; positive claim counts need explicit application provenance before scoring.
+Current transcript scans record `skills.referenced` and readability, while application
+and non-use require separate declared methods and receipt-bound evidence.
 Each rule follows the preregistration template:
 
 > **inject X when Y; retrieve-on-demand otherwise; never ambient Z**
@@ -111,8 +118,9 @@ confirmatory window. (See "What didn't fire" below.)
   ON session with `used_declared: false` shows consumed_count=0. The split is
   suggestive (not statistically airtight at 1 vs 30, but the rule's purpose is
   to keep measurement alive, not to claim causality).
-- **Named consumer:** the SessionStart / UserPromptSubmit hooks — they must populate
-  `receipt.skills.used_declared` for any surface that could be a downstream consumer.
+- **Named consumer:** the SessionStart / UserPromptSubmit hooks — they must record
+  `receipt.skills.observation_method` and `observation_quality` for transcript scans.
+  Application requires `application_method`; non-use requires actor and proof provenance.
 - **Verdict:** **adopt-narrowed** — adopt the rule, but explicit narrow: this is a
   measurement-preservation rule, not a default-injection rule. Don't conflate with
   R-default-off.

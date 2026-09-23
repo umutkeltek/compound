@@ -31,6 +31,12 @@ func TestBuildCapabilityUsageInjectedRefsCarryProbeGroup(t *testing.T) {
 	})
 	rec := testReceipt("rec_probe1", "completed", true, []string{consumedRef}, nil, nil)
 	rec.Skills.UsedDeclared = true
+	rec.Skills.ExplicitNonUse = []string{ignoredRef}
+	rec.Skills.NonUseEvidence = "evidence:explicit-non-use"
+	rec.Skills.NonUseMethod = "explicit_declaration"
+	rec.Skills.NonUseActor = "operator:test"
+	rec.ProofRefs = append(rec.ProofRefs, rec.Skills.NonUseEvidence)
+	rec.EvidenceRefs = []string{"evidence:explicit-non-use"}
 	rec.IDs.ContextPackID = "ctx_probe1"
 	writeReceipt(t, home, rec)
 
@@ -79,6 +85,12 @@ func TestBuildCapabilityUsageMalformedProbeLabelLeavesProbeGroupEmpty(t *testing
 	})
 	rec := testReceipt("rec_malformed", "completed", true, nil, nil, nil)
 	rec.Skills.UsedDeclared = true
+	rec.Skills.ExplicitNonUse = []string{malformedRef}
+	rec.Skills.NonUseEvidence = "evidence:explicit-non-use"
+	rec.Skills.NonUseMethod = "explicit_declaration"
+	rec.Skills.NonUseActor = "operator:test"
+	rec.ProofRefs = append(rec.ProofRefs, rec.Skills.NonUseEvidence)
+	rec.EvidenceRefs = []string{"evidence:explicit-non-use"}
 	rec.IDs.ContextPackID = "ctx_malformed"
 	writeReceipt(t, home, rec)
 

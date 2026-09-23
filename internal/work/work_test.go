@@ -841,7 +841,10 @@ func TestCloseStampsUsedDeclaredAndConsumedRefs(t *testing.T) {
 	w := mkClosable(s, "declared-consumed")
 	closed, err := s.Close(w.ID, CloseInput{
 		Outcome: "completed", MoveType: "outward_delta", Summary: "shipped", Changed: true,
-		UsedDeclared: true, ConsumedRefs: []string{claimRef},
+		Actor: "codex", UsedDeclared: true, ConsumedRefs: []string{claimRef},
+		ReferencedRefs:    []string{"claim://claim_mentioned_only"},
+		ObservationMethod: "transcript_reference_scan", ObservationQuality: "readable",
+		ExplicitNonUse: []string{"claim://claim_rejected"}, NonUseEvidence: "evidence:operator-declaration", NonUseMethod: "explicit_declaration", ProofRefs: []string{"evidence:operator-declaration"},
 	}, fixedNow)
 	if err != nil {
 		t.Fatal(err)
@@ -849,8 +852,14 @@ func TestCloseStampsUsedDeclaredAndConsumedRefs(t *testing.T) {
 	if !closed.Receipt.Skills.UsedDeclared {
 		t.Fatalf("declared close must stamp used_declared=true, got receipt skills %+v", closed.Receipt.Skills)
 	}
-	if !contains(closed.Receipt.Skills.Used, claimRef) {
-		t.Fatalf("consumed claim ref must land verbatim in Skills.Used: %v", closed.Receipt.Skills.Used)
+	if !contains(closed.Receipt.Skills.Referenced, claimRef) || contains(closed.Receipt.Skills.Used, claimRef) {
+		t.Fatalf("legacy transcript match must remain reference-only: %+v", closed.Receipt.Skills)
+	}
+	if !contains(closed.Receipt.Skills.Referenced, "claim://claim_mentioned_only") || contains(closed.Receipt.Skills.Used, "claim://claim_mentioned_only") {
+		t.Fatalf("reference conflated with application: %+v", closed.Receipt.Skills)
+	}
+	if !contains(closed.Receipt.Skills.ExplicitNonUse, "claim://claim_rejected") || closed.Receipt.Skills.NonUseEvidence == "" {
+		t.Fatalf("sourced non-use lost: %+v", closed.Receipt.Skills)
 	}
 	// Purity: the claim ref is a reinforcement signal, not a used SKILL.
 	if containsProjection(closed.Transition.Projections.Typed, "skill", claimRef, "used") {
@@ -858,7 +867,7 @@ func TestCloseStampsUsedDeclaredAndConsumedRefs(t *testing.T) {
 	}
 	// Round-trip through persistence: the on-disk receipt carries the flag and the ref.
 	persisted := readReceiptFromEvents(t, s, closed.Receipt.ID)
-	if !persisted.Skills.UsedDeclared || !contains(persisted.Skills.Used, claimRef) {
+	if !persisted.Skills.UsedDeclared || !contains(persisted.Skills.Referenced, claimRef) {
 		t.Fatalf("persisted receipt lost declared/consumed signal: %+v", persisted.Skills)
 	}
 

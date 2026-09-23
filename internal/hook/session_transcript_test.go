@@ -285,19 +285,19 @@ func TestSessionEndWorklessTranscriptDetectsConsumedClaim(t *testing.T) {
 		t.Fatalf("produced = %v, want [receipt]", got)
 	}
 	rec := res.Produced[0].(*envelope.Receipt)
-	if !rec.Skills.UsedDeclared {
+	if rec.Skills.ObservationQuality != "readable" {
 		t.Fatalf("workless detector ran => used_declared must be true, got %+v", rec.Skills)
 	}
-	if !containsString(rec.Skills.Used, claimRef) {
-		t.Fatalf("consumed claim ref missing from receipt used: %v", rec.Skills.Used)
+	if !containsString(rec.Skills.Referenced, claimRef) {
+		t.Fatalf("consumed claim ref missing from receipt used: %v", rec.Skills.Referenced)
 	}
 	proj, err := capgraph.BuildCapabilityUsage(home, capgraph.UsageBuildOptions{GeneratedAt: fixedNow})
 	if err != nil {
 		t.Fatalf("build usage: %v", err)
 	}
-	if got := capabilityUsedCount(proj, claimRef); got != 1 {
+	if got := capabilityUsedCount(proj, claimRef); got != 0 {
 		b, _ := json.MarshalIndent(proj, "", "  ")
-		t.Fatalf("usage projection consumed claim count = %d, want 1\n%s", got, b)
+		t.Fatalf("workless reference must not become application: used count = %d\n%s", got, b)
 	}
 }
 

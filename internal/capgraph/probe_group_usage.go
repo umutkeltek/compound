@@ -25,14 +25,10 @@
 //     A ref with no such label (a legacy pack, or a ref that never routed through the
 //     probe-group path) contributes to no group at all — it is usage.go's concern, not
 //     this file's.
-//   - consumed increments when that receipt's Skills.Used echoes the ref.
-//   - ignored increments ONLY when the receipt declared its used-list
-//     (Skills.UsedDeclared) and did not consume the ref — an undeclared receipt can never
-//     inflate ignored, the same anti-famine rule usage.go enforces.
-//   - unknown increments for every remaining case: injected, not consumed, and the
-//     receipt never declared what it used.
-//
-// injected == consumed+ignored+unknown always holds for every group (a closed partition
+//   - application increments only for provenance-qualified Used refs.
+//   - ignored increments only for an exact non-use declaration with receipt
+//     work, actor, and proof provenance.
+//   - unknown includes transcript references and historical ambiguous receipts.
 // over every injection event contributing to it) — pinned by this file's tests.
 package capgraph
 
@@ -200,9 +196,9 @@ func BuildProbeGroupUsage(homePath string, opts ProbeGroupUsageBuildOptions) (Pr
 			}
 			g.injected++
 			switch {
-			case usedSet[ref]:
+			case usedSet[ref] && rec.Skills.ApplicationObserved(ref):
 				g.consumed++
-			case rec.Skills.UsedDeclared:
+			case rec.ExplicitNonUseObserved(ref):
 				// IGNORED only when the receipt DECLARED its used-list: absence from a
 				// declaring receipt is real evidence the ref was not used (mirrors
 				// usage.go's identical anti-famine rule).

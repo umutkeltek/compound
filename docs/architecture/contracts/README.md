@@ -514,3 +514,9 @@ evidence only — never a promoted claim.**
 `compound distiller eval <case.json|cases-dir> --record` stores passing eval proof under `COMPOUND_HOME/reviews/distiller-eval/proofs/` and prints a `distiller_eval:*` or `distiller_eval_corpus:*` proof ref. `compound distiller improvement-plan --candidate <id>` writes JSON/Markdown review artifacts plus gated `.review.yaml` under `COMPOUND_HOME/reviews/distiller-improvements/`. `compound distiller improvement-review <review.yaml>` validates edited decision/rationale/confidence, requires `eval_proof_refs` for accept, and resolves each accepted proof ref to a recorded passing eval proof before emitting a reviewed improvement artifact. It does not mutate distiller policy, edit prompts/code, update eval corpus, call a model, mutate source owners, or promote memory truth.
 
 Experimental content transport: [v0.2 package, attempt, and observation contract](content-transport.md) defines the existing product/act owner boundary, fresh-process recovery, and live acceptance limits.
+
+Receipt reference evidence is additive: `skills.referenced` records readable transcript
+matches, while `skills.used` reinforces an injected claim only with
+`application_method=explicit_declaration`. Fired skills retain tool-call evidence.
+`skills.explicit_non_use` cools a ref only with exact actor, work, and proof provenance.
+Historical `used_declared` is preserved but establishes neither application nor non-use.

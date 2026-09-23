@@ -2172,8 +2172,10 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		UsedCapabilities:           fx.Used,
 		MissedCapabilities:         fx.Missed,
 		FalseTriggeredCapabilities: fx.FalseTriggered,
-		ConsumedRefs:               consumedRefs,
-		UsedDeclared:               usedDeclared,
+		ReferencedRefs:             consumedRefs,
+		ObservationMethod:          "transcript_reference_scan",
+		ObservationQuality:         observationQuality(usedDeclared),
+		ApplicationMethod:         map[bool]string{true: "explicit_declaration", false: ""}[len(fx.Used) > 0],
 	}, now)
 	if err != nil {
 		return Result{}, err

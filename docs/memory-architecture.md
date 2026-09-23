@@ -226,10 +226,11 @@ hand-assigned tier, with `salience` driven by evidence-count and position-streng
 `compound://projections/memory-temperature` projection (`compound memory temperature --rebuild`): a
 build-time, recency-decayed join of the capability-usage projection's injected/consumed/ignored signal
 against current claims, fed into ambient recall as a bounded (±0.25) additive rank term. That
-`ignored` signal is attributed **honestly**: an injected-but-unused ref cools (increments `ignored`)
-only from a receipt that *declared* its used-list (`skills.used_declared`); an undeclared close leaves
-the ref at its `injected` count (unknown, neutral), so a claim is never cooled for the harness simply
-never reporting what it used.
+`ignored` requires an exact `skills.explicit_non_use` declaration bound to a work, actor,
+and receipt proof. An absent transcript match, including a readable scan with no match,
+is unknown and neutral. A transcript mention enters `skills.referenced`; only an explicit
+application method may warm a claim. Historical `used_declared` alone supplies neither
+negative nor positive claim evidence because its writer was ambiguous.
 Capability usage itself is a rebuildable view: v0.2 joins task-scoped `ContextPack.capability_offers[]`
 with bounded `PostToolUse` Skill metadata and later close receipts. Each immediate row carries capability,
 harness/lane, work/session, trigger explanation, and outcome; per-capability `fired_count` / `last_fired`

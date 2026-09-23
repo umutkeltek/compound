@@ -120,11 +120,11 @@ func TestSessionEndDetectsConsumedInjectedClaim(t *testing.T) {
 		t.Fatalf("session-end run: %v", err)
 	}
 	rec := res.Produced[0].(*envelope.Receipt)
-	if !rec.Skills.UsedDeclared {
+	if rec.Skills.ObservationQuality != "readable" {
 		t.Fatalf("detector ran => used_declared must be true, got %+v", rec.Skills)
 	}
-	if !containsString(rec.Skills.Used, claimRef) {
-		t.Fatalf("consumed claim ref missing from receipt used: %v", rec.Skills.Used)
+	if !containsString(rec.Skills.Referenced, claimRef) {
+		t.Fatalf("consumed claim ref missing from receipt used: %v", rec.Skills.Referenced)
 	}
 }
 
@@ -152,11 +152,11 @@ func TestSessionEndInjectionEchoDoesNotCountAsConsumed(t *testing.T) {
 		t.Fatalf("session-end run: %v", err)
 	}
 	rec := res.Produced[0].(*envelope.Receipt)
-	if !rec.Skills.UsedDeclared {
+	if rec.Skills.ObservationQuality != "readable" {
 		t.Fatalf("detector ran => used_declared must be true even when nothing consumed, got %+v", rec.Skills)
 	}
-	if containsString(rec.Skills.Used, claimRef) {
-		t.Fatalf("injection self-echo must not count as consumed: %v", rec.Skills.Used)
+	if containsString(rec.Skills.Referenced, claimRef) {
+		t.Fatalf("injection self-echo must not count as consumed: %v", rec.Skills.Referenced)
 	}
 }
 
@@ -183,8 +183,8 @@ func TestSessionEndAbsentTranscriptFailsOpen(t *testing.T) {
 	if rec.Skills.UsedDeclared {
 		t.Fatalf("unreadable transcript => used_declared must be false (fail-open), got %+v", rec.Skills)
 	}
-	if containsString(rec.Skills.Used, claimRef) {
-		t.Fatalf("fail-open close must carry no consumption refs: %v", rec.Skills.Used)
+	if containsString(rec.Skills.Referenced, claimRef) {
+		t.Fatalf("fail-open close must carry no consumption refs: %v", rec.Skills.Referenced)
 	}
 	closed, err := store.Get(wid)
 	if err != nil {
@@ -249,7 +249,7 @@ func TestSessionEndReceiptLandsOnlyInEventDoor(t *testing.T) {
 			found = &proj.InjectedRefs[i]
 		}
 	}
-	if found == nil || found.ConsumedCount != 1 {
+	if found == nil || found.ReferencedCount != 1 || found.ConsumedCount != 0 {
 		t.Fatalf("usage projection did not score consumed via the event door: %+v", found)
 	}
 }

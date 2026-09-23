@@ -1468,19 +1468,84 @@ type ReceiptCost struct {
 	HumanMinutes *int     `json:"human_minutes"`
 }
 type ReceiptSkills struct {
-	Used   []string `json:"used"`
-	Missed []string `json:"missed"`
-	// UsedDeclared is the honesty flag for the injected-ref reinforcement projection:
-	// true means this receipt made an AFFIRMATIVE statement about what was used (a close
-	// that passed --used, or a session-end whose consumption detector ran), so an injected
-	// ref ABSENT from Used counts as IGNORED. false (the additive default for old receipts
-	// and closes that never declared) means Used is silent — absence is UNKNOWN, never
-	// ignored. Additive/omitempty: absence decodes to false and changes no prior behavior.
+	Used               []string `json:"used"`
+	Missed             []string `json:"missed"`
+	Referenced         []string `json:"referenced,omitempty"`
+	ExplicitNonUse     []string `json:"explicit_non_use,omitempty"`
+	NonUseEvidence     string   `json:"non_use_evidence,omitempty"`
+	ObservationMethod  string   `json:"observation_method,omitempty"`
+	ObservationQuality string   `json:"observation_quality,omitempty"`
+	ApplicationMethod  string   `json:"application_method,omitempty"`
+	NonUseMethod       string   `json:"non_use_method,omitempty"`
+	NonUseActor        string   `json:"non_use_actor,omitempty"`
+	// UsedDeclared is retained for explicit typed declarations and historical wire
+	// compatibility. It does not establish non-use of other injected refs.
 	UsedDeclared        bool     `json:"used_declared,omitempty"`
 	FalseTriggered      []string `json:"false_triggered,omitempty"`
 	Candidate           []string `json:"candidate"`
 	CapabilitiesOffered []string `json:"capabilities_offered,omitempty"`
 }
+
+// ApplicationObserved requires a recorded mechanism. Legacy Used/UsedDeclared alone
+// cannot distinguish a real application from an automatic transcript reference.
+func (s ReceiptSkills) ApplicationObserved(ref string) bool {
+	if strings.HasPrefix(ref, "claim://") {
+		return s.ApplicationMethod == "explicit_declaration"
+	}
+	return s.ApplicationMethod == "explicit_declaration" || s.ApplicationMethod == "skill_tool_call"
+}
+
+func (s ReceiptSkills) ReferenceObserved(ref string) bool {
+	if s.ObservationMethod != "transcript_reference_scan" || s.ObservationQuality != "readable" {
+		return false
+	}
+	for _, observed := range s.Referenced {
+		if observed == ref {
+			return true
+		}
+	}
+	return false
+}
+
+// ExplicitNonUseObserved requires an exact ref and a receipt-bound evidence pointer.
+func (e Receipt) ExplicitNonUseObserved(ref string) bool {
+	if e.Skills.NonUseMethod != "explicit_declaration" || strings.TrimSpace(e.Skills.NonUseEvidence) == "" {
+		return false
+	}
+	if strings.TrimSpace(e.Skills.NonUseActor) == "" || strings.TrimSpace(e.IDs.WorkID) == "" {
+		return false
+	}
+	for _, used := range e.Skills.Used {
+		if used == ref {
+			return false
+		}
+	}
+	evidenceFound := false
+	for _, evidence := range e.EvidenceRefs {
+		if evidence == e.Skills.NonUseEvidence {
+			evidenceFound = true
+		}
+	}
+	if !evidenceFound {
+		return false
+	}
+	proofFound := false
+	for _, proof := range e.ProofRefs {
+		if proof == e.Skills.NonUseEvidence {
+			proofFound = true
+		}
+	}
+	if !proofFound {
+		return false
+	}
+	for _, declared := range e.Skills.ExplicitNonUse {
+		if declared == ref {
+			return true
+		}
+	}
+	return false
+}
+
 type ReceiptMemory struct {
 	Candidates []string `json:"candidates"`
 	Promoted   []string `json:"promoted"`
@@ -1570,6 +1635,54 @@ func (e Receipt) memoryRefs() []string {
 
 func (e *Receipt) Validate() error {
 	v := &verr{}
+	if len(e.Skills.Referenced) > 0 && (e.Skills.ObservationMethod != "transcript_reference_scan" || e.Skills.ObservationQuality != "readable") {
+		v.addf("skills.referenced requires readable transcript_reference_scan")
+	}
+	if e.Skills.ObservationMethod != "" && e.Skills.ObservationMethod != "transcript_reference_scan" {
+		v.addf("skills.observation_method invalid")
+	}
+	if e.Skills.ObservationQuality != "" && e.Skills.ObservationQuality != "readable" && e.Skills.ObservationQuality != "unobservable" {
+		v.addf("skills.observation_quality invalid")
+	}
+	if e.Skills.ApplicationMethod != "" && e.Skills.ApplicationMethod != "explicit_declaration" && e.Skills.ApplicationMethod != "skill_tool_call" {
+		v.addf("skills.application_method invalid")
+	}
+	if len(e.Skills.ExplicitNonUse) > 0 && strings.TrimSpace(e.Skills.NonUseEvidence) == "" {
+		v.addf("skills.explicit_non_use requires skills.non_use_evidence")
+	}
+	if len(e.Skills.ExplicitNonUse) > 0 {
+		if e.Skills.NonUseMethod != "explicit_declaration" {
+			v.addf("skills.explicit_non_use requires explicit_declaration method")
+		}
+		if strings.TrimSpace(e.Skills.NonUseActor) == "" || strings.TrimSpace(e.IDs.WorkID) == "" {
+			v.addf("skills.explicit_non_use requires work and actor provenance")
+		}
+		evidenceFound := false
+		for _, ref := range e.EvidenceRefs {
+			if ref == e.Skills.NonUseEvidence {
+				evidenceFound = true
+			}
+		}
+		if !evidenceFound {
+			v.addf("skills.non_use_evidence must appear in evidence_refs")
+		}
+		proofFound := false
+		for _, proof := range e.ProofRefs {
+			if proof == e.Skills.NonUseEvidence {
+				proofFound = true
+			}
+		}
+		if !proofFound {
+			v.addf("skills.non_use_evidence must appear in proof_refs")
+		}
+		for _, ref := range e.Skills.ExplicitNonUse {
+			for _, used := range e.Skills.Used {
+				if ref == used {
+					v.addf("skills.explicit_non_use contradicts skills.used for %q", ref)
+				}
+			}
+		}
+	}
 	e.Header.validate(v, SVReceipt, "rec_")
 	v.enum("outcome", e.Outcome, ReceiptOutcomes, true)
 	v.enum("move_type", e.MoveType, MoveTypes, true)

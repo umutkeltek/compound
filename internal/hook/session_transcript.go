@@ -220,7 +220,7 @@ func buildWorklessSessionReceipt(name string, fx Fixture, now time.Time) (*envel
 	if err != nil {
 		return nil, err
 	}
-	used := mergeUniqueStrings(summary.SkillsFired, summary.ConsumedRefs)
+	used := summary.SkillsFired
 	evidenceRefs := []string{}
 	if name == "SessionEnd" {
 		evidenceRefs = append(evidenceRefs, summary.OperatorSpanRefs...)
@@ -250,10 +250,13 @@ func buildWorklessSessionReceipt(name string, fx Fixture, now time.Time) (*envel
 		},
 		Cost: envelope.ReceiptCost{ModelCalls: []string{}},
 		Skills: envelope.ReceiptSkills{
-			Used:         used,
-			Missed:       []string{},
-			UsedDeclared: summary.UsedDeclared,
-			Candidate:    []string{},
+			Used:               used,
+			Missed:             []string{},
+			Referenced:         summary.ConsumedRefs,
+			ObservationMethod:  "transcript_reference_scan",
+			ObservationQuality: observationQuality(summary.UsedDeclared),
+			ApplicationMethod:  "skill_tool_call",
+			Candidate:          []string{},
 		},
 		Memory:    envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}},
 		Next:      envelope.ReceiptNext{SuggestedWork: []string{}},

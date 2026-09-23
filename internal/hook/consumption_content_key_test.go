@@ -117,11 +117,11 @@ func TestSessionEndContentKeyParaphraseWithoutIDCounts(t *testing.T) {
 		t.Fatalf("session-end run: %v", err)
 	}
 	rec := res.Produced[0].(*envelope.Receipt)
-	if !rec.Skills.UsedDeclared {
+	if rec.Skills.ObservationQuality != "readable" {
 		t.Fatalf("detector ran => used_declared must be true, got %+v", rec.Skills)
 	}
-	if !containsString(rec.Skills.Used, claim.Ref) {
-		t.Fatalf("content-key paraphrase must be credited as consumed: %v", rec.Skills.Used)
+	if !containsString(rec.Skills.Referenced, claim.Ref) {
+		t.Fatalf("content-key paraphrase must be credited as consumed: %v", rec.Skills.Referenced)
 	}
 }
 
@@ -154,11 +154,11 @@ func TestSessionEndContentKeySelfEchoNotConsumed(t *testing.T) {
 		t.Fatalf("session-end run: %v", err)
 	}
 	rec := res.Produced[0].(*envelope.Receipt)
-	if !rec.Skills.UsedDeclared {
+	if rec.Skills.ObservationQuality != "readable" {
 		t.Fatalf("detector ran => used_declared must be true, got %+v", rec.Skills)
 	}
-	if containsString(rec.Skills.Used, claim.Ref) {
-		t.Fatalf("content-key self-echo must not count as consumed: %v", rec.Skills.Used)
+	if containsString(rec.Skills.Referenced, claim.Ref) {
+		t.Fatalf("content-key self-echo must not count as consumed: %v", rec.Skills.Referenced)
 	}
 }
 
@@ -192,8 +192,8 @@ func TestSessionEndContentKeyRequotedDigestNotConsumed(t *testing.T) {
 		t.Fatalf("session-end run: %v", err)
 	}
 	rec := res.Produced[0].(*envelope.Receipt)
-	if containsString(rec.Skills.Used, claim.Ref) {
-		t.Fatalf("byte-exact requote of the injected digest must not count as consumed: %v", rec.Skills.Used)
+	if containsString(rec.Skills.Referenced, claim.Ref) {
+		t.Fatalf("byte-exact requote of the injected digest must not count as consumed: %v", rec.Skills.Referenced)
 	}
 }
 
@@ -231,11 +231,11 @@ func TestSessionEndContentKeyNoCrossCreditSiblingClaim(t *testing.T) {
 		t.Fatalf("session-end run: %v", err)
 	}
 	rec := res.Produced[0].(*envelope.Receipt)
-	if !containsString(rec.Skills.Used, referenced.Ref) {
-		t.Fatalf("referenced claim must be credited: %v", rec.Skills.Used)
+	if !containsString(rec.Skills.Referenced, referenced.Ref) {
+		t.Fatalf("referenced claim must be credited: %v", rec.Skills.Referenced)
 	}
-	if containsString(rec.Skills.Used, sibling.Ref) {
-		t.Fatalf("unreferenced sibling (shared entity+object, different predicate never mentioned) must NOT be credited: %v", rec.Skills.Used)
+	if containsString(rec.Skills.Referenced, sibling.Ref) {
+		t.Fatalf("unreferenced sibling (shared entity+object, different predicate never mentioned) must NOT be credited: %v", rec.Skills.Referenced)
 	}
 }
 
@@ -273,8 +273,8 @@ func TestSessionEndContentKeyAmbientScatterNotConsumed(t *testing.T) {
 		t.Fatalf("session-end run: %v", err)
 	}
 	rec := res.Produced[0].(*envelope.Receipt)
-	if containsString(rec.Skills.Used, claim.Ref) {
-		t.Fatalf("scattered mentions beyond the window bound must NOT be credited: %v", rec.Skills.Used)
+	if containsString(rec.Skills.Referenced, claim.Ref) {
+		t.Fatalf("scattered mentions beyond the window bound must NOT be credited: %v", rec.Skills.Referenced)
 	}
 }
 
@@ -303,8 +303,8 @@ func TestSessionEndIneligibleContentKeyFallsBackToExactIDOnly(t *testing.T) {
 		t.Fatalf("session-end run: %v", err)
 	}
 	rec := res.Produced[0].(*envelope.Receipt)
-	if containsString(rec.Skills.Used, claim.Ref) {
-		t.Fatalf("ineligible content-key must never credit a bare-word (non-id) reference: %v", rec.Skills.Used)
+	if containsString(rec.Skills.Referenced, claim.Ref) {
+		t.Fatalf("ineligible content-key must never credit a bare-word (non-id) reference: %v", rec.Skills.Referenced)
 	}
 
 	// A SEPARATE session where the bare id IS present must still be credited via v1 -- ineligible
@@ -325,8 +325,8 @@ func TestSessionEndIneligibleContentKeyFallsBackToExactIDOnly(t *testing.T) {
 		t.Fatalf("session-end run: %v", err)
 	}
 	rec2 := res2.Produced[0].(*envelope.Receipt)
-	if !containsString(rec2.Skills.Used, claim.Ref) {
-		t.Fatalf("v1 exact-id path must still work for an ineligible-content-key claim: %v", rec2.Skills.Used)
+	if !containsString(rec2.Skills.Referenced, claim.Ref) {
+		t.Fatalf("v1 exact-id path must still work for an ineligible-content-key claim: %v", rec2.Skills.Referenced)
 	}
 }
 
@@ -359,10 +359,10 @@ func TestSessionEndContentKeyMultilingualParaphraseIsAcceptedMiss(t *testing.T) 
 		t.Fatalf("session-end run: %v", err)
 	}
 	rec := res.Produced[0].(*envelope.Receipt)
-	if !rec.Skills.UsedDeclared {
+	if rec.Skills.ObservationQuality != "readable" {
 		t.Fatalf("detector ran => used_declared must be true, got %+v", rec.Skills)
 	}
-	if containsString(rec.Skills.Used, claim.Ref) {
-		t.Fatalf("accepted miss: a genuinely different-vocabulary/multilingual paraphrase must NOT be credited: %v", rec.Skills.Used)
+	if containsString(rec.Skills.Referenced, claim.Ref) {
+		t.Fatalf("accepted miss: a genuinely different-vocabulary/multilingual paraphrase must NOT be credited: %v", rec.Skills.Referenced)
 	}
 }

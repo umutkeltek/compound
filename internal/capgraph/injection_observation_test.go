@@ -362,3 +362,19 @@ func TestWriteInjectionObservationRunWritesUnderStateRunsOnly(t *testing.T) {
 		t.Fatal("WriteInjectionObservationRun must never create projections/")
 	}
 }
+
+func TestInjectionObservationLegacyMentionIsNotConsumption(t *testing.T) {
+	home := t.TempDir()
+	const ref = "claim://claim_legacy_mention"
+	writeInjectionContextPack(t, home, "ctx_legacy_mention", []string{ref}, nil)
+	rec := injectionReceipt("rec_legacy_mention", "work_legacy_mention", "ctx_legacy_mention", t0, []string{ref}, true)
+	rec.Skills.ApplicationMethod = ""
+	writeReceipt(t, home, rec)
+	report, err := BuildInjectionObservationReport(home, InjectionObservationOptions{GeneratedAt: t0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Sessions) != 1 || report.Sessions[0].ConsumedCount != 0 {
+		t.Fatalf("legacy automatic mention counted as consumption: %+v", report.Sessions)
+	}
+}

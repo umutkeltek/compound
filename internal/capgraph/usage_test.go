@@ -89,7 +89,13 @@ func TestBuildCapabilityUsageCountsUsedAndIgnored(t *testing.T) {
 
 	rec := testReceipt("rec_u1", "completed", true, []string{usedRef}, nil, []string{usedRef, offeredOnlyRef})
 	rec.Skills.CapabilitiesOffered = []string{usedRef, offeredOnlyRef}
-	rec.Skills.UsedDeclared = true // this receipt DECLARED its used-list, so an injected-but-unused ref is honestly ignored
+	rec.Skills.UsedDeclared = true // historical declaration alone does not supply negative evidence
+	rec.Skills.ExplicitNonUse = []string{ignoredRef}
+	rec.Skills.NonUseEvidence = "evidence:explicit-non-use"
+	rec.Skills.NonUseMethod = "explicit_declaration"
+	rec.Skills.NonUseActor = "operator:test"
+	rec.ProofRefs = append(rec.ProofRefs, rec.Skills.NonUseEvidence)
+	rec.EvidenceRefs = []string{"evidence:explicit-non-use"}
 	rec.IDs.ContextPackID = "ctx_u1"
 	writeReceipt(t, home, rec)
 
@@ -164,6 +170,12 @@ func TestBuildCapabilityUsageUndeclaredDoesNotInflateIgnored(t *testing.T) {
 	// Declared close: same shape (injected-but-unused) but it DECLARED its used-list.
 	declared := testReceipt("rec_declared", "completed", true, nil, nil, nil)
 	declared.Skills.UsedDeclared = true
+	declared.Skills.ExplicitNonUse = []string{injectedRef}
+	declared.Skills.NonUseEvidence = "evidence:explicit-non-use"
+	declared.Skills.NonUseMethod = "explicit_declaration"
+	declared.Skills.NonUseActor = "operator:test"
+	declared.ProofRefs = append(declared.ProofRefs, declared.Skills.NonUseEvidence)
+	declared.EvidenceRefs = []string{"evidence:explicit-non-use"}
 	declared.IDs.ContextPackID = "ctx_declared"
 	writeReceipt(t, home, declared)
 

@@ -42,6 +42,12 @@ func TestBuildProbeGroupUsageAggregatesAcrossReceipts(t *testing.T) {
 	})
 	declared := testReceipt("rec_g1", "completed", true, []string{sysStandingRef}, nil, nil)
 	declared.Skills.UsedDeclared = true
+	declared.Skills.ExplicitNonUse = []string{prodStandingRef}
+	declared.Skills.NonUseEvidence = "evidence:explicit-non-use"
+	declared.Skills.NonUseMethod = "explicit_declaration"
+	declared.Skills.NonUseActor = "operator:test"
+	declared.ProofRefs = append(declared.ProofRefs, declared.Skills.NonUseEvidence)
+	declared.EvidenceRefs = []string{"evidence:explicit-non-use"}
 	declared.IDs.ContextPackID = "ctx_g1"
 	writeReceipt(t, home, declared)
 
@@ -56,6 +62,12 @@ func TestBuildProbeGroupUsageAggregatesAcrossReceipts(t *testing.T) {
 	})
 	declaredIgnore := testReceipt("rec_g2", "completed", true, nil, nil, nil)
 	declaredIgnore.Skills.UsedDeclared = true
+	declaredIgnore.Skills.ExplicitNonUse = []string{sysStandingRef}
+	declaredIgnore.Skills.NonUseEvidence = "evidence:explicit-non-use"
+	declaredIgnore.Skills.NonUseMethod = "explicit_declaration"
+	declaredIgnore.Skills.NonUseActor = "operator:test"
+	declaredIgnore.ProofRefs = append(declaredIgnore.ProofRefs, declaredIgnore.Skills.NonUseEvidence)
+	declaredIgnore.EvidenceRefs = []string{"evidence:explicit-non-use"}
 	declaredIgnore.IDs.ContextPackID = "ctx_g2"
 	writeReceipt(t, home, declaredIgnore)
 

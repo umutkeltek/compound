@@ -406,7 +406,7 @@ func writeReconcileCloseReceipt(t *testing.T, s *Store, receiptID, transitionID,
 		MoveType:   "audit_only",
 		StateDelta: envelope.StateDelta{Changed: false, Summary: "usage-only close"},
 		Cost:       envelope.ReceiptCost{ModelCalls: []string{}},
-		Skills:     envelope.ReceiptSkills{Used: used, UsedDeclared: true},
+		Skills:     envelope.ReceiptSkills{Used: used, UsedDeclared: true, ApplicationMethod: "explicit_declaration"},
 		Memory:     envelope.ReceiptMemory{},
 		Next:       envelope.ReceiptNext{SuggestedWork: []string{}},
 	}
@@ -600,4 +600,23 @@ func hasReconcileParkedReason(reasons []SynthesisReconcileParkedReason, reason s
 		}
 	}
 	return false
+}
+
+func TestReadReconcileEventLegacyMentionIsNotApplication(t *testing.T) {
+	rec := envelope.Receipt{
+		Header:  envelope.Header{SchemaVersion: envelope.SVReceipt, ID: "rec_legacy_mention", CreatedAt: time.Now().UTC().Format(time.RFC3339), Producer: envelope.Producer{Kind: "test", Name: "compound-test"}, IDs: envelope.IDs{WorkID: "work_legacy_mention"}, Authority: envelope.Authority{SourceClass: "runtime", Status: "current"}, Privacy: "private", Risk: "tier1", EvidenceRefs: []string{}, Uncertainty: envelope.Uncertainty{Level: "known"}},
+		Outcome: "completed", MoveType: "audit_only", StateDelta: envelope.StateDelta{Changed: false, Summary: "legacy close"}, Cost: envelope.ReceiptCost{ModelCalls: []string{}},
+		Skills: envelope.ReceiptSkills{Used: []string{"claim://claim_mentioned"}, UsedDeclared: true}, Memory: envelope.ReceiptMemory{}, Next: envelope.ReceiptNext{SuggestedWork: []string{}},
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, included, err := readReconcileEvent("legacy.json", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if included {
+		t.Fatal("legacy transcript mention entered reconcile as application")
+	}
 }

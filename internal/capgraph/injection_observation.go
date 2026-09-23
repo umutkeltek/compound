@@ -262,7 +262,7 @@ func BuildInjectionObservationReport(homePath string, opts InjectionObservationO
 		usedSet := dedupeSet(rec.Skills.Used)
 		consumed := make([]string, 0, len(served))
 		for _, ref := range served {
-			if usedSet[ref] {
+			if usedSet[ref] && rec.Skills.ApplicationObserved(ref) {
 				consumed = append(consumed, ref)
 			}
 		}

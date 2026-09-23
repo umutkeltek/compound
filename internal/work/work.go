@@ -2364,17 +2364,19 @@ type CloseInput struct {
 	MemoryRejected             []string
 	FailureSurfaceOutcome      string
 	FailureMechanism           string
-	// UsedDeclared stamps the emitted receipt's skills.used_declared. It is the honesty
-	// flag the injected-ref reinforcement projection reads: true means this close made an
-	// affirmative statement about what was used (the CLI passed --used, or a session-end
-	// consumption detector ran), so an injected ref absent from Used is honestly ignored;
-	// false (the default) leaves absence as unknown. Additive.
+	// UsedDeclared preserves historical/typed declarations. Claim scoring needs
+	// separate application provenance; absence never implies non-use.
 	UsedDeclared bool
-	// ConsumedRefs are RAW injected-ref consumption signals (e.g. claim://<id>) merged
-	// verbatim into the receipt's Skills.Used so the usage projection's pack.included↔used
-	// join can score them CONSUMED. Unlike UsedCapabilities they are NOT capability-normalized
-	// (a claim ref is not a capability node); they are kept out of the skill typed projections.
-	ConsumedRefs []string
+	// ConsumedRefs is a legacy name for transcript matches. It is merged into
+	// Skills.Referenced and never establishes application.
+	ConsumedRefs       []string
+	ReferencedRefs     []string
+	ObservationMethod  string
+	ObservationQuality string
+	ApplicationMethod  string
+	NonUseMethod       string
+	ExplicitNonUse     []string
+	NonUseEvidence     string
 	// RunAttemptIDs attaches one or more RunAttempt ids (ratt_*) to the work
 	// envelope at close -- the failed-harness-run forward link. Close is the
 	// terminal transition for failed/cancelled work whose RunAttempt would
@@ -3403,6 +3405,14 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 			Candidate:           capabilityRefs,
 			CapabilitiesOffered: capabilityRefs,
 			UsedDeclared:        in.UsedDeclared,
+			Referenced:          in.ReferencedRefs,
+			ObservationMethod:   in.ObservationMethod,
+			ObservationQuality:  in.ObservationQuality,
+			ApplicationMethod:   in.ApplicationMethod,
+			NonUseMethod:        in.NonUseMethod,
+			NonUseActor:         in.Actor,
+			ExplicitNonUse:      in.ExplicitNonUse,
+			NonUseEvidence:      in.NonUseEvidence,
 		},
 		Memory: envelope.ReceiptMemory{
 			Candidates: memoryCandidates,
@@ -3415,6 +3425,14 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	}
 	if fc := failureCause(in.FailureSurfaceOutcome, in.FailureMechanism); fc != nil {
 		rec.FailureCause = fc
+	}
+	if len(in.ExplicitNonUse) > 0 && in.NonUseEvidence != "" {
+		for _, proof := range rec.ProofRefs {
+			if proof == in.NonUseEvidence {
+				rec.EvidenceRefs = mergeUnique(rec.EvidenceRefs, []string{in.NonUseEvidence})
+				break
+			}
+		}
 	}
 	rec.StateDelta.Changed = rec.EffectiveChanged()
 	if err := rec.Validate(); err != nil {
@@ -3433,7 +3451,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	// projection's consumed join without masquerading as a used SKILL. Not capability-
 	// normalized: a claim ref must match pack.included[].ref verbatim.
 	if len(in.ConsumedRefs) > 0 {
-		rec.Skills.Used = mergeUnique(rec.Skills.Used, in.ConsumedRefs)
+		rec.Skills.Referenced = mergeUnique(rec.Skills.Referenced, in.ConsumedRefs)
 	}
 	// The apex action_refs carry only ActionIntent ids: legacy envelopes still
 	// hold prun_* run refs in ActionIntentIDs (see the field comment in

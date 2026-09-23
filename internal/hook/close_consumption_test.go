@@ -108,15 +108,15 @@ func TestConsumptionForCloseMatchesSessionEndScoring(t *testing.T) {
 
 	consumed, declared := ConsumptionForClose(store, home, closeWork, path)
 
-	if declared != rec.Skills.UsedDeclared {
-		t.Fatalf("declared drift: governed-close=%v session-end=%v", declared, rec.Skills.UsedDeclared)
+	if declared != (rec.Skills.ObservationQuality == "readable") {
+		t.Fatalf("readability drift: governed-close=%v session-end=%s", declared, rec.Skills.ObservationQuality)
 	}
 	for _, ref := range consumed {
-		if !containsString(rec.Skills.Used, ref) {
-			t.Fatalf("governed-close credited %q that session-end did not: close=%v hook=%v", ref, consumed, rec.Skills.Used)
+		if !containsString(rec.Skills.Referenced, ref) {
+			t.Fatalf("governed-close credited %q that session-end did not: close=%v hook=%v", ref, consumed, rec.Skills.Referenced)
 		}
 	}
-	if !containsString(consumed, claimRef) || !containsString(rec.Skills.Used, claimRef) {
-		t.Fatalf("both paths must credit %q: close=%v hook=%v", claimRef, consumed, rec.Skills.Used)
+	if !containsString(consumed, claimRef) || !containsString(rec.Skills.Referenced, claimRef) {
+		t.Fatalf("both paths must credit %q: close=%v hook=%v", claimRef, consumed, rec.Skills.Referenced)
 	}
 }
