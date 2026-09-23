@@ -29,6 +29,7 @@
 //   - ignored increments only for an exact non-use declaration with receipt
 //     work, actor, and proof provenance.
 //   - unknown includes transcript references and historical ambiguous receipts.
+//
 // over every injection event contributing to it) — pinned by this file's tests.
 package capgraph
 

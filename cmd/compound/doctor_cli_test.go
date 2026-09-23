@@ -705,7 +705,7 @@ func TestDoctorReportsUnreadableRunAttemptLaunchEvidence(t *testing.T) {
 // two, skills.used_declared records whether the consumption detector actually RAN, and
 // skills.used carries any claim refs it detected. usedDeclared=false is the production case this
 // test exists for — the detector never ran, so this session's consumption is UNKNOWN.
-func seedInjectionSession(t *testing.T, homePath, recID, packID string, createdAt time.Time, servedClaims, consumedClaims []string, usedDeclared bool) {
+func seedInjectionSession(t *testing.T, homePath, recID, packID string, createdAt time.Time, servedClaims, consumedClaims []string, usedDeclared bool, applicationMethod string) {
 	t.Helper()
 	pack := envelope.ContextPack{
 		Header: envelope.Header{
@@ -764,7 +764,7 @@ func seedInjectionSession(t *testing.T, homePath, recID, packID string, createdA
 		MoveType:   "outward_delta",
 		StateDelta: envelope.StateDelta{Changed: true, Summary: "fixture", FilesChanged: []string{}, Artifacts: []string{}, Verification: []string{}},
 		Cost:       envelope.ReceiptCost{ModelCalls: []string{}},
-		Skills:     envelope.ReceiptSkills{Used: consumedClaims, Missed: []string{}, Candidate: []string{}, UsedDeclared: usedDeclared},
+		Skills:     envelope.ReceiptSkills{Used: consumedClaims, Missed: []string{}, Candidate: []string{}, UsedDeclared: usedDeclared, ApplicationMethod: applicationMethod},
 		Memory:     envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}},
 		Next:       envelope.ReceiptNext{SuggestedWork: []string{}},
 		ProofRefs:  []string{"check:fixture"},
@@ -825,20 +825,20 @@ func TestDoctorInjectionReportsNoRateBecauseConsumptionProvenanceIsUnrecoverable
 		t.Fatalf("init home: %v", err)
 	}
 
-	// The one real consumption: served 2, referenced 1.
+	// One explicitly declared application: served 2, applied 1.
 	seedInjectionSession(t, homePath, "rec_real_consumption", "ctx_real", cliTestNow,
-		[]string{"claim://claim_r1", "claim://claim_r2"}, []string{"claim://claim_r1"}, true)
+		[]string{"claim://claim_r1", "claim://claim_r2"}, []string{"claim://claim_r1"}, true, "explicit_declaration")
 	// Two CLI closes that passed --used (so used_declared=true) but declared capability refs, not
 	// claim refs. These consumed nothing and are NOT measurements of claim consumption.
 	seedInjectionSession(t, homePath, "rec_cli_a", "ctx_cli_a", cliTestNow.Add(time.Minute),
 		[]string{"claim://claim_a1", "claim://claim_a2", "claim://claim_a3"},
-		[]string{"capability://skill:compound-land"}, true)
+		[]string{"capability://skill:compound-land"}, true, "")
 	seedInjectionSession(t, homePath, "rec_cli_b", "ctx_cli_b", cliTestNow.Add(2*time.Minute),
 		[]string{"claim://claim_b1", "claim://claim_b2"},
-		[]string{"capability://skill:compound-verify"}, true)
+		[]string{"capability://skill:compound-verify"}, true, "")
 	// One session that declared nothing at all.
 	seedInjectionSession(t, homePath, "rec_silent", "ctx_silent", cliTestNow.Add(3*time.Minute),
-		[]string{"claim://claim_s1", "claim://claim_s2"}, nil, false)
+		[]string{"claim://claim_s1", "claim://claim_s2"}, nil, false, "")
 
 	var jsonOut, errOut bytes.Buffer
 	// Doctor exit-code contract: see runDoctorReport's header.

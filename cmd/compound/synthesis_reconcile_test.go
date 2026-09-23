@@ -96,7 +96,7 @@ func writeSynthesisReconcileCLIReceipt(t *testing.T, homePath, id, createdAt str
 		MoveType:   "audit_only",
 		StateDelta: envelope.StateDelta{Changed: false, Summary: "usage-only close"},
 		Cost:       envelope.ReceiptCost{ModelCalls: []string{}},
-		Skills:     envelope.ReceiptSkills{Used: used, UsedDeclared: true},
+		Skills:     envelope.ReceiptSkills{Used: used, UsedDeclared: true, ApplicationMethod: "explicit_declaration"},
 		Memory:     envelope.ReceiptMemory{},
 		Next:       envelope.ReceiptNext{SuggestedWork: []string{}},
 	}
