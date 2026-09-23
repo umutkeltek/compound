@@ -701,10 +701,9 @@ func TestDoctorReportsUnreadableRunAttemptLaunchEvidence(t *testing.T) {
 }
 
 // seedInjectionSession writes one ContextPack carrying servedClaims in active_memory plus the
-// receipt that closed it, mirroring the shape a real close writes: ids.context_pack_id joins the
-// two, skills.used_declared records whether the consumption detector actually RAN, and
-// skills.used carries any claim refs it detected. usedDeclared=false is the production case this
-// test exists for — the detector never ran, so this session's consumption is UNKNOWN.
+// receipt that closed it: ids.context_pack_id joins the two. ApplicationMethod distinguishes
+// an explicit application declaration from historical Used/UsedDeclared ambiguity; a readable
+// transcript or typed declaration alone does not establish use of other served claims.
 func seedInjectionSession(t *testing.T, homePath, recID, packID string, createdAt time.Time, servedClaims, consumedClaims []string, usedDeclared bool, applicationMethod string) {
 	t.Helper()
 	pack := envelope.ContextPack{
@@ -796,11 +795,11 @@ func seedInjectionSession(t *testing.T, homePath, recID, packID string, createdA
 // right (unknown is never rendered as zero) and drops the part that was invented (that receipts
 // can tell you which sessions were measured).
 
-// A declared CLI close is not a measurement, and the Receipt cannot tell you which it was.
+// Historical receipts cannot identify which writer set UsedDeclared; it is not a measurement.
 //
 // This falsifier exists because the previous fix (1b9628f0) got the axis wrong. It split served
 // claim-events by Receipt.Skills.UsedDeclared and called one side "measured". But UsedDeclared has
-// TWO writers with incompatible meanings:
+// Before explicit application provenance, TWO writers had incompatible meanings:
 //
 //	cmd/compound/work_cli.go  UsedDeclared: has("--used")   — an operator/agent typed a flag
 //	internal/hook/hook.go     UsedDeclared: usedDeclared    — the session-end detector actually ran
