@@ -22,7 +22,20 @@ const HOME = homedir();
 const RECEIPT_DIR = join(HOME, ".hermes/cron/output/1dc135fe0275");
 const FRESHNESS_DAYS = 7;
 
-type Status = "fresh" | "stale" | "missing";
+export type Status = "fresh" | "stale" | "missing";
+
+/** Every status this checker can emit. Callers gate against THIS list. */
+export const STATUSES: readonly Status[] = ["fresh", "stale", "missing"];
+
+/**
+ * The one place that decides whether a backup status clears a destructive
+ * step. Callers must not re-spell the literal: weekly_reclaim.ts once tested
+ * `status !== "ok"`, a value this checker never emits, so every apply run
+ * aborted while logging green.
+ */
+export function backupGateAllowsApply(status: string): boolean {
+  return status === "fresh";
+}
 
 function status(): { status: Status; latest: string | null; age_hours: number | null } {
   if (!existsSync(RECEIPT_DIR)) return { status: "missing", latest: null, age_hours: null };
@@ -40,6 +53,8 @@ function status(): { status: Status; latest: string | null; age_hours: number | 
   };
 }
 
-const s = status();
-console.log(JSON.stringify(s, null, 2));
-process.exit(0);
+// Guarded so callers can import the gate without triggering the CLI's exit.
+if (import.meta.main) {
+  console.log(JSON.stringify(status(), null, 2));
+  process.exit(0);
+}

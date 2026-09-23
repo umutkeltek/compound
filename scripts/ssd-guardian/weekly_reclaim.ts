@@ -26,6 +26,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { backupGateAllowsApply } from "./check_backup_freshness";
 
 const APPLY = process.argv.includes("--apply");
 const SCRIPT_DIR = import.meta.dir;
@@ -76,7 +77,7 @@ let abortReason: string | null = null;
     // Audit P0-5: stale-or-missing backup is a HARD precondition for the
     // destructive steps. Dry-run may proceed (it mutates nothing); apply
     // must not.
-    if (APPLY && j.status !== "ok") {
+    if (APPLY && !backupGateAllowsApply(j.status)) {
       abortReason = `backup freshness gate refused apply (status=${j.status})`;
       steps.push({ id: "abort", status: "failed", reason: abortReason });
     }
