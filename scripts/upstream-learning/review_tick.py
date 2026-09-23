@@ -22,6 +22,8 @@ import upstream_scout as scout
 
 ACTOR = "scheduler:upstream-review"
 SCHEMA = "compound.upstream_review.v0.1"
+REJECTION_SCHEMA = "compound.upstream_review_rejection.v0.1"
+PASS_PREDICATE = "Pinned upstream review yields an owned accepted or rejected validation disposition; only citation-checked hypotheses may be accepted"
 MAX_ATTEMPTS = 3
 MAX_AGE_DAYS = 14
 MAX_CONTEXT = 60_000
@@ -29,8 +31,16 @@ ROLE_CAPABILITIES = {"audit": "classify-extract", "challenge": "certify"}
 RELATIONS = {"addresses", "duplicates", "contradicts", "depends_on", "validated_by", "invalidated_by"}
 
 
+class CompletedEvidenceUnavailable(intake.TickError):
+    pass
+
+
 class ReviewRejected(intake.TickError):
-    """A completed model response cannot be accepted as review evidence."""
+    """A completed response failed validation; retain its verified attempt."""
+
+    def __init__(self, message, attempt_id):
+        super().__init__(message)
+        self.attempt_id = attempt_id
 
 
 def read_json(path, limit=1_500_000):
@@ -107,13 +117,19 @@ def get_work(cli, identity):
         raise
 
 
-def role_state(cli, observation, role):
+def role_state(cli, home, observation, role):
     for attempt in range(1, MAX_ATTEMPTS + 1):
         identity = work_id(observation, role, attempt)
         work = get_work(cli, identity)
         if work is None:
             return "ready", identity, None
         if work["state"] == "completed":
+            try:
+                _, report = completed_report(home, work, observation, role)
+            except (intake.TickError, ValueError, OSError) as error:
+                raise CompletedEvidenceUnavailable(str(error)) from error
+            if report.get("schema_version") == REJECTION_SCHEMA:
+                continue
             return "completed", identity, work
         if work["state"] == "verifying":
             return "recover_verifying", identity, work
@@ -122,33 +138,65 @@ def role_state(cli, observation, role):
     return "attempts_exhausted", identity, work
 
 
-def prefer_untried_routes(cli, observation, role, identity, routes):
+def prefer_untried_routes(cli, home, observation, role, identity, routes):
     """Use job-local failure evidence without changing shared route authority."""
     failed = set()
     for number in range(1, int(identity.rsplit("_", 1)[1])):
         work = get_work(cli, work_id(observation, role, number))
-        if work and work.get("state") == "failed":
+        rejected = False
+        if work and work.get("state") == "completed":
+            _, report = completed_report(home, work, observation, role)
+            rejected = report.get("schema_version") == REJECTION_SCHEMA
+        if work and (work.get("state") == "failed" or rejected):
             selected = work.get("execution_selection") or {}
             failed.add((selected.get("requested_model_id"), selected.get("provider_route")))
-    return sorted(routes, key=lambda lane: (lane["model_id"], lane["provider_route"]) in failed)
+    key = lambda lane: (lane["model_id"], lane["provider_route"])
+    if role == "audit" and failed and all(key(lane) in failed for lane in routes):
+        # Escalate this job through an existing stronger capability owner only
+        # after its current cheap choices failed. This grants no shared rating.
+        routes = routes + eligible_routes(cli, "challenge")
+    unique = {}
+    for lane in routes:
+        unique.setdefault(key(lane), lane)
+    return sorted(unique.values(), key=lambda lane: key(lane) in failed)
 
 
 def completed_report(home, work, observation, role):
     for ref in reversed(work.get("artifact_ids", [])):
-        if ref.startswith("finding:"):
-            record = finding(home, ref.removeprefix("finding:"))
-            report = json.loads(record["body"])
-            if report.get("schema_version") == SCHEMA and report.get("observation_id") == observation["id"] and report.get("role") == role:
-                if report.get("source_revision") != observation["revision"] or report.get("adoption_allowed") is not False:
-                    raise intake.TickError("Stored review revision or evidence boundary differs")
-                validate_report(report.get("assessment"), observation)
-                selected = work.get("execution_selection") or {}
-                lane = {"model_id": selected.get("requested_model_id"), "provider_route": selected.get("provider_route")}
-                attempt, assessment = transcript_report(home, work, lane, observation)
-                if report.get("run_attempt_id") != attempt or report.get("assessment") != assessment or report.get("provider_route") != lane["provider_route"] or report.get("requested_model_id") != lane["model_id"]:
-                    raise intake.TickError("Stored review differs from its governed execution")
-                return record["id"], report
+        if not ref.startswith("finding:"):
+            continue
+        record = finding(home, ref.removeprefix("finding:"))
+        report = json.loads(record["body"])
+        if not isinstance(report, dict):
+            raise intake.TickError("Stored review must be an object")
+        if report.get("schema_version") not in {SCHEMA, REJECTION_SCHEMA} or report.get("observation_id") != observation["id"] or report.get("role") != role:
+            continue
+        if report.get("source_revision") != observation["revision"] or report.get("adoption_allowed") is not False:
+            raise intake.TickError("Stored review revision or evidence boundary differs")
+        selected = work.get("execution_selection") or {}
+        lane = {"model_id": selected.get("requested_model_id"), "provider_route": selected.get("provider_route")}
+        try:
+            attempt, assessment = transcript_report(home, work, lane, observation)
+        except ReviewRejected as error:
+            if report != rejection_report(work, observation, role, lane, error):
+                raise intake.TickError("Stored rejection differs from its governed execution") from error
+        else:
+            if report.get("schema_version") != SCHEMA or report.get("run_attempt_id") != attempt or report.get("assessment") != assessment or report.get("provider_route") != lane["provider_route"] or report.get("requested_model_id") != lane["model_id"]:
+                raise intake.TickError("Stored review differs from its governed execution")
+        return record["id"], report
     raise intake.TickError("Completed review has no owned report")
+
+
+def rejection_report(work, observation, role, lane, error):
+    # This predicate must have been declared before execution. Never rewrite a
+    # legacy promise of valid hypotheses into success after invalid output.
+    if work.get("success_predicate") != PASS_PREDICATE:
+        raise intake.TickError("Legacy review predicate requires a valid response; rejected output needs governed continuation")
+    return {"schema_version": REJECTION_SCHEMA, "disposition": "rejected",
+            "observation_id": observation["id"], "source_revision": observation["revision"],
+            "role": role, "provider_route": lane["provider_route"],
+            "requested_model_id": lane["model_id"], "run_attempt_id": error.attempt_id,
+            "validation_error": str(error), "adoption_allowed": False}
 
 
 def eligible_routes(cli, role, excluded_provider=""):
@@ -221,6 +269,18 @@ def validate_report(value, observation):
     return value
 
 
+def decode_response(body):
+    """Accept a JSON document or one explicitly framed report, never a guess."""
+    try:
+        return json.loads(body)
+    except ValueError:
+        blocks = re.findall(r"^```json[ \t]*\n(.*?)^```[ \t]*$", body,
+                            re.MULTILINE | re.DOTALL)
+        if len(blocks) != 1 or len(re.findall(r"^```", body, re.MULTILINE)) != 2:
+            raise ValueError("Review requires one JSON document or one explicit JSON block")
+        return json.loads(blocks[0])
+
+
 def transcript_report(home, work, lane, observation):
     for identity in reversed(work.get("run_attempt_ids", [])):
         if not re.fullmatch(r"ratt_[A-Za-z0-9_]+", identity):
@@ -246,12 +306,10 @@ def transcript_report(home, work, lane, observation):
         if path.stat().st_size > 1_000_000:
             raise intake.TickError("Review transcript too large")
         body = "\n".join(line.removeprefix("stdout: ") for line in path.read_text().splitlines() if line.startswith("stdout: ")).strip()
-        if body.startswith("```json\n") and body.endswith("\n```"):
-            body = body[8:-4].strip()
         try:
-            return identity, validate_report(json.loads(body), observation)
+            return identity, validate_report(decode_response(body), observation)
         except (ValueError, intake.TickError) as error:
-            raise ReviewRejected(str(error)) from error
+            raise ReviewRejected(str(error), identity) from error
     raise intake.TickError("No successful governed read-only review attempt")
 
 
@@ -271,11 +329,16 @@ def finish_review(cli, home, output, observation, role, identity, lane, prior):
     work = get_work(cli, identity)
     if not work or work["state"] != "verifying":
         raise intake.TickError("Review did not finish at verifying")
-    attempt, result = transcript_report(home, work, lane, observation)
+    try:
+        attempt, result = transcript_report(home, work, lane, observation)
+        report = {"schema_version": SCHEMA, "observation_id": observation["id"], "source_revision": observation["revision"], "role": role, "provider_route": lane["provider_route"], "requested_model_id": lane["model_id"], "run_attempt_id": attempt, "assessment": result, "priority_band": priority_band(role, result["claims"]), "adoption_allowed": False, "prior_audit": prior}
+    except ReviewRejected as error:
+        report = rejection_report(work, observation, role, lane, error)
+        attempt = error.attempt_id
+    rejected = report["schema_version"] == REJECTION_SCHEMA
     # Recovering verifying work reuses the same attempt and deterministic
     # finding body. It never launches another model or counts another vote.
-    report = {"schema_version": SCHEMA, "observation_id": observation["id"], "source_revision": observation["revision"], "role": role, "provider_route": lane["provider_route"], "requested_model_id": lane["model_id"], "run_attempt_id": attempt, "assessment": result, "priority_band": priority_band(role, result["claims"]), "adoption_allowed": False, "prior_audit": prior}
-    intent = {"schema_version": "compound.action_intent.v0.1", "id": "act_review_" + uuid.uuid4().hex[:20], "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "producer": {"kind": "cli", "name": "compound-upstream-review"}, "ids": {"work_id": identity}, "scope": {"entity_id": "system:compound"}, "authority": {"source_class": "runtime"}, "privacy": "private", "risk": "tier1", "uncertainty": {"level": "known"}, "evidence_refs": [observation["id"], attempt], "actor": ACTOR, "capability": "filesystem.write", "action": "record_upstream_review_evidence", "target": {"kind": "directory", "path": str(output), "id": "upstream-review-evidence"}, "mutation_class": "local_reversible", "reversibility": "easy", "blast_radius": "repo", "preview": "Custody citation-checked review as an evidence finding; attach and close audit-only work. No promotion, adoption or external writes.", "rollback_plan": "Retain evidence; stop review schedule. No source or authoritative claim was changed."}
+    intent = {"schema_version": "compound.action_intent.v0.1", "id": "act_review_" + uuid.uuid4().hex[:20], "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "producer": {"kind": "cli", "name": "compound-upstream-review"}, "ids": {"work_id": identity}, "scope": {"entity_id": "system:compound"}, "authority": {"source_class": "runtime"}, "privacy": "private", "risk": "tier1", "uncertainty": {"level": "known"}, "evidence_refs": [observation["id"], attempt], "actor": ACTOR, "capability": "filesystem.write", "action": "record_upstream_review_evidence", "target": {"kind": "directory", "path": str(output), "id": "upstream-review-evidence"}, "mutation_class": "local_reversible", "reversibility": "easy", "blast_radius": "repo", "preview": "Custody the accepted review or distinct rejection disposition as evidence; attach and close audit-only validation work. No promotion, adoption or external writes.", "rollback_plan": "Retain evidence; stop review schedule. No source or authoritative claim was changed."}
     path = output / "ticks" / (identity + ".review-intent.json")
     intake.write(path, intent)
     decision = cli.json("work", "act", identity, "--intent", path)
@@ -288,28 +351,22 @@ def finish_review(cli, home, output, observation, role, identity, lane, prior):
     if not found:
         raise intake.TickError("Review custody returned no finding identity")
     ref = "finding:" + found
-    cli.call("work", "advance", identity, "--to", "verifying", "--by", ACTOR, "--artifact", ref, "--verification", attempt, "--note", "Structured source citations checked; model output remains evidence, no adoption")
-    cli.call("work", "close", identity, "--outcome", "completed", "--move-type", "audit_only", "--by", ACTOR, "--changed", "--proof", ref, "--proof", attempt, "--summary", "Bounded " + role + " produced citation-checked hypotheses in owned findings; no adoption or source change")
-    return {"status": "reviewed", "work_id": identity, "role": role, "finding": ref, "run_attempt_id": attempt}
-
-
-def finalize_or_reject(cli, home, output, observation, role, identity, lane, prior):
-    try:
-        return finish_review(cli, home, output, observation, role, identity, lane, prior)
-    except ReviewRejected:
-        cli.call("work", "close", identity, "--outcome", "failed", "--move-type", "audit_only", "--by", ACTOR, "--proof", observation["id"], "--summary", "Completed review response rejected by citation/schema checks; no assessment accepted")
-        raise
+    summary = ("Review response rejected by citation/schema validation; no assessment accepted" if rejected else "Review produced citation-checked hypotheses; no adoption or source change")
+    cli.call("work", "advance", identity, "--to", "verifying", "--by", ACTOR, "--artifact", ref, "--verification", attempt, "--note", summary)
+    proofs = [part for proof in dict.fromkeys([ref, attempt] + work.get("run_attempt_ids", [])) for part in ("--proof", proof)]
+    cli.call("work", "close", identity, "--outcome", "completed", "--move-type", "audit_only", "--by", ACTOR, "--changed", *proofs, "--summary", summary)
+    return {"status": "rejected" if rejected else "reviewed", "work_id": identity, "role": role, "finding": ref, "run_attempt_id": attempt}
 
 
 def run_one(cli, home, output, workspace, observation, role, identity, lane, prior=None):
-    cli.call("work", "create", "--work-id", identity, "--owner", "compound:capability-learning", "--by", ACTOR, "--state", "ready", "--risk", "tier1", "--privacy", "private", "--canonical-surface", "compound://source/observations/" + observation["id"], "--predicate", "Pinned upstream review produces citation-checked hypotheses only", "--outcome", role + " " + observation["source"]["frontier"], "--creator-harness", "script", "--creator-model", "none", "--creator-lane", "upstream-review", "--launch-profile", lane["model_id"])
+    cli.call("work", "create", "--work-id", identity, "--owner", "compound:capability-learning", "--by", ACTOR, "--state", "ready", "--risk", "tier1", "--privacy", "private", "--canonical-surface", "compound://source/observations/" + observation["id"], "--predicate", PASS_PREDICATE, "--outcome", role + " " + observation["source"]["frontier"], "--creator-harness", "script", "--creator-model", "none", "--creator-lane", "upstream-review", "--launch-profile", lane["model_id"])
     cli.call("work", "claim", identity, "--by", ACTOR)
     # Governance owns execution/failure transitions. An interrupted running
     # attempt is observable pending work, never permission to launch a duplicate.
     cli.call("work", "advance", identity, "--to", "running", "--by", ACTOR, "--execute", "--harness", lane["harness"], "--permission-mode", "plan", "--workspace", str(workspace), "--prompt", prompt_for(observation, role, prior))
     # Intake/finalization failures preserve verifying so the next tick recovers
     # the same response, without another model call or another supporting vote.
-    return finalize_or_reject(cli, home, output, observation, role, identity, lane, prior)
+    return finish_review(cli, home, output, observation, role, identity, lane, prior)
 
 
 def tick(cli, config, output, home, workspace, now, dry_run=False):
@@ -318,7 +375,11 @@ def tick(cli, config, output, home, workspace, now, dry_run=False):
     for observation in observations(config, output, home, now)[:3]:
         prior = None
         for role in ("audit", "challenge"):
-            status, identity, work = role_state(cli, observation, role)
+            try:
+                status, identity, work = role_state(cli, home, observation, role)
+            except CompletedEvidenceUnavailable as error:
+                waits.append({"observation": observation["id"], "role": role, "reason": "completed_evidence_unavailable", "error": str(error)[:500]})
+                break
             if status == "completed":
                 try:
                     _, report = completed_report(home, work, observation, role)
@@ -339,7 +400,7 @@ def tick(cli, config, output, home, workspace, now, dry_run=False):
                 lane = {"model_id": selection.get("requested_model_id"), "provider_route": selection.get("provider_route")}
                 recovery_attempted = True
                 try:
-                    result = finalize_or_reject(cli, home, output, observation, role, identity, lane, prior)
+                    result = finish_review(cli, home, output, observation, role, identity, lane, prior)
                     result["waiting"] = waits
                     return result
                 except (intake.TickError, ValueError, OSError) as error:
@@ -351,7 +412,7 @@ def tick(cli, config, output, home, workspace, now, dry_run=False):
                 waits.append({"observation": observation["id"], "role": role, "reason": status})
                 break
             routes = eligible_routes(cli, role, (prior or {}).get("provider_route", ""))
-            routes = prefer_untried_routes(cli, observation, role, identity, routes)
+            routes = prefer_untried_routes(cli, home, observation, role, identity, routes)
             if not routes:
                 waits.append({"observation": observation["id"], "role": role, "reason": "no_qualified_independent_capacity"})
                 break

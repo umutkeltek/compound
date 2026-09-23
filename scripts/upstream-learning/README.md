@@ -65,6 +65,12 @@ Each invocation makes at most one governed model call. An audit uses
 `classify-extract`; a challenge uses `certify` and excludes the audit's provider.
 A retry prefers an untried eligible model/provider tuple over a tuple that failed
 this same job; this does not demote a shared route from one failure.
+If every currently eligible audit tuple has failed that same job, a retry may
+consult the existing `certify` route authority for a stronger eligible reader.
+This remains one call per tick and does not alter shared model ratings, account
+admission, the three-attempt limit, or challenge independence. A first attempt
+never borrows certification routes merely because cheap capacity is unavailable.
+
 Both require registered Claude-family adapters, fresh alive capacity and enforced
 `plan` permissions. Unavailable capacity produces an explicit wait. This is a
 consumer of existing route and policy owners; it changes no account, grant or
@@ -76,6 +82,17 @@ preserving quoted text and line breaks. Each source block names its owned findin
 Excerpts remain bounded to 30,000 characters per body and 60,000 total; reviewers
 must report unreadable or missing evidence and omit unsupported claims. All packet
 content remains untrusted evidence.
+
+A response may be a JSON document or one explicitly labeled JSON code block
+with surrounding harness prose. Multiple blocks, malformed reports and invalid
+pinned quotes remain rejected. Before launch, new work promises an owned accepted
+or rejected validation disposition. A rejected response produces a distinct
+rejection finding with the actual attempt and source revision, never an accepted
+assessment. That validation pass completes `audit_only`; the successful process
+retains its immutable outcome. Rejection replay checks the original transcript
+again before it can count toward job-local retries and the three-pass limit.
+Legacy work that promised valid hypotheses cannot be completed with a rejection;
+it requires a valid response through governed same-work continuation.
 
 Reports contain at most three hypotheses, each with a pinned source quote, named
 consumer, relationship, predicted benefit and falsifier. Priority bands are

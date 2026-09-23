@@ -485,6 +485,15 @@ for the same job without mutating shared route authority. Citation-checked model
 remain operational evidence, never promoted truth or demonstrated improvement.
 Priority bands expose duplicates, disagreements, missing evidence and candidates
 for experiments. Experiment selection, reviewed adoption and runtime feedback
-remain with existing work, capability and receipt owners. Host scheduling and
+remain with existing work, capability and receipt owners. A failed audit may use an existing eligible
+`certify` route only after all current cheap audit tuples have failed that same
+job; shared ratings and admission remain unchanged. Reports accept a JSON
+document or one explicit JSON fence, retaining strict schema and pinned quotes.
+New review work declares an accepted-or-rejected validation predicate before
+launch. Invalid output becomes a distinct owned rejection finding, never an
+assessment; the validation pass completes `audit_only` without relabeling its
+successful process. Replaying the same transcript and pinned revision validates
+rejection retry evidence. Legacy valid-hypothesis predicates still require a
+valid response through governed continuation. Host scheduling and
 source configuration are private deployment inputs, not a second scheduler or
 meaning authority in the core.

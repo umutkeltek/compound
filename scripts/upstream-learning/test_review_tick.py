@@ -31,6 +31,24 @@ class PromptEvidenceTests(unittest.TestCase):
         self.assertIn("find_abcdef", prompt)
 
 
+class ResponseEnvelopeTests(unittest.TestCase):
+    def test_one_explicit_report_survives_harness_prose(self):
+        report = {"summary": "Evidence remains provisional.", "claims": []}
+        encoded = json.dumps(report)
+        self.assertEqual(review.decode_response(encoded), report)
+        self.assertEqual(review.decode_response(
+            "Planning note.\n```json\n" + encoded + "\n```\nEnd note."), report)
+
+    def test_ambiguous_or_unframed_output_stays_rejected(self):
+        report = '{"summary":"bounded","claims":[]}'
+        for body in ["Intro " + report, "```json\n" + report,
+                     "```json\n" + report + "\n```\n```json\n" + report,
+                     "```json\n" + report + "\n```\n```python\npass\n```",
+                     "```json\n" + report + "\n```\n```json\n" + report + "\n```"]:
+            with self.subTest(body=body), self.assertRaises(ValueError):
+                review.decode_response(body)
+
+
 class GovernedFixture:
     """Stateful boundary double: a run creates the canonical attempt/response."""
     def __init__(self, root, observation):
@@ -38,6 +56,7 @@ class GovernedFixture:
         self.home.mkdir()
         self.works, self.calls = {}, []
         self.routes = [lane("minimax"), lane("qwen")]
+        self.certify_routes = None
         self.fail_record, self.allow, self.invalid_quote = False, True, False
         self.deadline = time.monotonic() + 450
         self.response = {"summary": "A testable candidate.", "claims": [{
@@ -62,8 +81,9 @@ class GovernedFixture:
         identity = args[2] if len(args) > 2 else ""
         if args[:2] == ("work", "create"):
             identity = self.arg(args, "--work-id")
-            route = next(x for x in self.routes if x["model_id"] == self.arg(args, "--launch-profile"))
+            route = next(x for x in self.routes + (self.certify_routes or []) if x["model_id"] == self.arg(args, "--launch-profile"))
             self.works[identity] = {"id": identity, "state": "ready", "created_at": "2026-01-01T00:00:00Z",
+                "success_predicate": self.arg(args, "--predicate"),
                 "run_ids": [], "artifact_ids": [], "run_attempt_ids": [], "execution_selection": {
                     "launch_profile_id": route["model_id"], "launch_profile_revision": "sha256:fixture",
                     "harness": route["harness"], "provider_route": route["provider_route"],
@@ -94,6 +114,12 @@ class GovernedFixture:
             elif "--artifact" in args:
                 work["artifact_ids"].append(self.arg(args, "--artifact"))
         elif args[:2] == ("work", "close"):
+            proofs = {args[i + 1] for i, value in enumerate(args) if value == "--proof"}
+            # Core forbids relabeling a succeeded immutable process as failed.
+            if self.arg(args, "--outcome") != "completed":
+                raise review.intake.TickError("terminal succeeded attempt contradicts close outcome")
+            if not set(self.works[identity]["run_attempt_ids"]).issubset(proofs):
+                raise review.intake.TickError("succeeded attempt lacks close proof")
             self.works[identity]["state"] = self.arg(args, "--outcome")
         else:
             raise AssertionError(args)
@@ -109,7 +135,10 @@ class GovernedFixture:
             return {"executors": ["claude_minimax", "claude_qwen"]}
         if args[:2] == ("route", "plan"):
             assert "--read-only" in args
-            return {"read_only": True, "chain": self.routes}
+            routes = self.routes
+            if self.arg(args, "--capability-class") == "certify" and self.certify_routes is not None:
+                routes = self.certify_routes
+            return {"read_only": True, "chain": routes}
         if args[:2] == ("work", "act"):
             action = json.loads(Path(args[-1]).read_text())
             work = self.works[args[2]]
@@ -179,21 +208,92 @@ class ReviewTests(unittest.TestCase):
     def test_invalid_citations_exhaust_bounded_attempts(self):
         self.cli.invalid_quote = True
         for _ in range(3):
-            with self.assertRaises(review.ReviewRejected):
-                self.tick()
+            self.assertEqual(self.tick()["status"], "rejected")
         result = self.tick()
         self.assertEqual(result["waiting"][0]["reason"], "attempts_exhausted")
         self.assertEqual(len(self.cli.launches()), 3)
-        self.assertFalse(any(c[:2] == ("finding", "record") for c in self.cli.calls))
+        for work in self.cli.works.values():
+            self.assertEqual(work["state"], "completed")
+            _, report = review.completed_report(self.cli.home, work, self.obs, "audit")
+            self.assertEqual(report["schema_version"], review.REJECTION_SCHEMA)
+            self.assertNotIn("assessment", report)
 
     def test_failed_job_prefers_another_eligible_tuple(self):
         self.cli.invalid_quote = True
-        with self.assertRaises(review.ReviewRejected):
-            self.tick()
+        self.assertEqual(self.tick()["status"], "rejected")
         self.cli.invalid_quote = False
         self.assertEqual(self.tick()["status"], "reviewed")
         providers = [w["execution_selection"]["provider_route"] for w in self.cli.works.values()]
         self.assertEqual(providers, ["minimax", "qwen"])
+
+    def test_exhausted_cheap_tuples_escalate_to_qualified_certifier(self):
+        self.cli.routes = [lane("minimax")]
+        self.cli.certify_routes = [lane("qwen")]
+        self.cli.invalid_quote = True
+        self.assertEqual(self.tick()["status"], "rejected")
+        self.cli.invalid_quote = False
+        self.assertEqual(self.tick()["status"], "reviewed")
+        providers = [w["execution_selection"]["provider_route"] for w in self.cli.works.values()]
+        self.assertEqual(providers, ["minimax", "qwen"])
+        self.assertEqual(len(self.cli.launches()), 2)
+
+    def test_first_audit_does_not_borrow_certifier_route(self):
+        self.cli.routes = []
+        self.cli.certify_routes = [lane("qwen")]
+        self.assertEqual(self.tick()["waiting"][0]["reason"], "no_qualified_independent_capacity")
+        self.assertFalse(self.cli.launches())
+        self.assertFalse(any(c[:2] == ("route", "plan") and "certify" in c for c in self.cli.calls))
+
+    def test_escalation_still_requires_fresh_capacity(self):
+        self.cli.routes = [lane("minimax")]
+        self.cli.certify_routes = [lane("qwen")]
+        self.cli.certify_routes[0]["capacity"]["state"] = "unknown"
+        self.cli.invalid_quote = True
+        self.assertEqual(self.tick()["status"], "rejected")
+        self.cli.invalid_quote = False
+        self.assertEqual(self.tick()["status"], "reviewed")
+        providers = [w["execution_selection"]["provider_route"] for w in self.cli.works.values()]
+        self.assertEqual(providers, ["minimax", "minimax"])
+
+    def test_rejection_custody_interruption_replays_without_another_call(self):
+        self.cli.invalid_quote = self.cli.fail_record = True
+        with self.assertRaisesRegex(review.intake.TickError, "custody interrupted"):
+            self.tick()
+        self.cli.fail_record = False
+        self.assertEqual(self.tick()["status"], "rejected")
+        self.assertEqual(len(self.cli.launches()), 1)
+
+    def test_legacy_predicate_cannot_be_completed_with_rejection(self):
+        self.cli.fail_record = True
+        with self.assertRaises(review.intake.TickError):
+            self.tick()
+        work = next(iter(self.cli.works.values()))
+        work["success_predicate"] = "Pinned upstream review produces citation-checked hypotheses only"
+        next((self.cli.home / "run_attempts").glob("*.transcript")).write_text("stdout: invalid")
+        self.cli.fail_record = False
+        result = self.tick()
+        self.assertEqual(work["state"], "verifying")
+        self.assertIn("Legacy review predicate", result["waiting"][0]["error"])
+        self.assertEqual(len(self.cli.launches()), 1)
+        self.assertFalse(any(c[:2] == ("work", "close") for c in self.cli.calls))
+
+    def test_rejection_replay_checks_revision_transcript_and_exact_disposition(self):
+        self.cli.invalid_quote = True
+        self.assertEqual(self.tick()["status"], "rejected")
+        record_path = next((self.cli.home / "observed/findings").glob("*.json"))
+        original_record = json.loads(record_path.read_text())
+        for field, value in [("source_revision", "changed"), ("run_attempt_id", "ratt_foreign"),
+                             ("validation_error", "invented"), ("assessment", {"claims": []})]:
+            report = json.loads(original_record["body"])
+            report[field] = value
+            body = json.dumps(report)
+            self.cli.put(record_path, dict(original_record, body=body, cid=review.scout.sha(body.encode())))
+            with self.subTest(field=field):
+                self.assertEqual(self.tick()["waiting"][0]["reason"], "completed_evidence_unavailable")
+        self.cli.put(record_path, original_record)
+        next((self.cli.home / "run_attempts").glob("*.transcript")).write_text("stdout: " + json.dumps(self.cli.response))
+        self.assertEqual(self.tick()["waiting"][0]["reason"], "completed_evidence_unavailable")
+        self.assertEqual(len(self.cli.launches()), 1)
 
     def test_empty_audit_does_not_spend_an_independent_challenge(self):
         self.cli.response["claims"] = []
@@ -310,8 +410,8 @@ class ReviewTests(unittest.TestCase):
             self.tick()
         self.cli.fail_record = False
         next((self.cli.home / "run_attempts").glob("*.transcript")).write_text("stderr: no response\n")
-        self.assertEqual(self.tick()["waiting"][0]["reason"], "finalization_wait")
-        self.assertEqual(next(iter(self.cli.works.values()))["state"], "failed")
+        self.assertEqual(self.tick()["status"], "rejected")
+        self.assertEqual(next(iter(self.cli.works.values()))["state"], "completed")
         self.assertEqual(self.tick()["status"], "reviewed")
         self.assertEqual(len(self.cli.launches()), 2)
 
