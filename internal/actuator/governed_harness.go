@@ -267,6 +267,11 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 	if n := len(running.ActionIntentIDs); n > 0 {
 		actionIntentID = running.ActionIntentIDs[n-1]
 	}
+	// Bind the adapter prompt to the exact generation just reserved. Raw argv
+	// execution keeps its caller-supplied command contract unchanged.
+	if isClaudeGoalPromptAdapter(in.Adapter.Name()) && (strings.TrimSpace(runInput.Prompt) != "" || (runInput.Command == "" && len(runInput.Args) == 0)) {
+		runInput.Prompt = governedGoalPrompt(running, runInput.Prompt)
+	}
 	runInput, err = PrepareGovernedHarnessLaunch(GovernedHarnessLaunchInput{
 		HomePath:               in.HomePath,
 		Adapter:                in.Adapter,
@@ -288,6 +293,45 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 		RunInput:       runInput,
 		ActionIntentID: actionIntentID,
 	}, nil
+}
+
+func isClaudeGoalPromptAdapter(name string) bool {
+	switch name {
+	case "claude", "claude-zai", "claude-minimax", "claude-qwen":
+		return true
+	default:
+		return false
+	}
+}
+
+// governedGoalPrompt gives direct, selected, and resumed harness runs the same
+// current objective boundary. The caller's newest request stays explicit and
+// takes precedence over any older dispatch prose or saved context.
+func governedGoalPrompt(w envelope.WorkEnvelope, request string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Current governed work %s\n\n", w.ID)
+	fmt.Fprintf(&b, "- work_id: %s\n", w.ID)
+	if w.IDs.ContextPackID != "" {
+		fmt.Fprintf(&b, "- context_pack_id: %s\n", w.IDs.ContextPackID)
+	}
+	if selection := w.ExecutionSelection; selection != nil {
+		fmt.Fprintf(&b, "- saved_selection: harness=%s profile=%s model=%s route=%s effort=%s revision=%d\n",
+			selection.Harness, selection.LaunchProfileID, selection.RequestedModelID, selection.ProviderRoute, selection.RequestedEffort, selection.Revision)
+	}
+	fmt.Fprintf(&b, "\n## Desired outcome\n%s\n", strings.TrimSpace(w.DesiredOutcome))
+	fmt.Fprintf(&b, "\n## Success predicate\n%s\n", strings.TrimSpace(w.SuccessPredicate))
+	if len(w.NonGoals) > 0 {
+		fmt.Fprintln(&b, "\n## Non-goals")
+		for _, nonGoal := range w.NonGoals {
+			fmt.Fprintf(&b, "- %s\n", nonGoal)
+		}
+	}
+	fmt.Fprintln(&b, "\n## Execution instruction")
+	fmt.Fprintln(&b, "Use this current work goal and context to execute the request; report evidence against the success predicate. The latest explicit request below takes precedence over older task prose.")
+	if strings.TrimSpace(request) != "" {
+		fmt.Fprintf(&b, "\n## Latest explicit request\n%s\n", strings.TrimSpace(request))
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // ExecuteGovernedHarnessAdvance runs the one mutation seam shared by explicit
