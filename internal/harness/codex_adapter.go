@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,8 +34,9 @@ import (
 // subprocess wrapper, not a hook consumer. The HarnessRegistry continues
 // to advertise Codex's capabilities from its manifest.
 type CodexAdapter struct {
-	store             *runattempt.Store
-	heartbeatInterval time.Duration
+	store                  *runattempt.Store
+	heartbeatInterval      time.Duration
+	verifyNativeExecutable func(string) error // test-only seam
 }
 
 // NewCodexAdapter returns the production adapter. Heartbeats every 5s.
@@ -54,6 +56,48 @@ func NewCodexAdapterWithInterval(store *runattempt.Store, interval time.Duration
 // Name returns the manifest adapter id for Codex. Future Registry
 // integration (C.3) keys on this.
 func (a *CodexAdapter) Name() string { return "codex" }
+
+func (a *CodexAdapter) validateCodexInput(in *RunInput) error {
+	native := filepath.Base(strings.TrimSpace(in.Command)) == "codex"
+	if native {
+		if _, _, err := codexNativeSelection(*in); err != nil {
+			return err
+		}
+	} else if in.ExecutionSelectionSnapshot != nil && strings.TrimSpace(in.ExecutionSelectionSnapshot.RequestedEffort) != "" {
+		return fmt.Errorf("codex adapter: selected wrapper cannot attest requested native effort")
+	}
+	bind := os.Getenv("COMPOUND_CODEX_USE_EXISTING_SUBSCRIPTION")
+	if bind != "" && bind != "1" {
+		return fmt.Errorf("codex subscription binding: opt-in must equal 1")
+	}
+	if bind == "1" {
+		if strings.TrimSpace(in.RequestedModelID) == "" || strings.TrimSpace(in.RequestedProviderRoute) == "" {
+			return fmt.Errorf("codex subscription binding: explicit selected native tuple required")
+		}
+		if err := validateCodexSubscriptionInvocation(*in); err != nil {
+			return err
+		}
+	}
+	if bind != "1" && in.PermissionMode != "plan" {
+		return nil
+	}
+	if !native {
+		return fmt.Errorf("codex adapter: native codex executable required for read-only enforcement")
+	}
+	resolved, err := resolvedCodexCommand(in.Command)
+	if err != nil {
+		return err
+	}
+	verify := a.verifyNativeExecutable
+	if verify == nil {
+		verify = verifyNativeCodexExecutable
+	}
+	if err := verify(resolved); err != nil {
+		return err
+	}
+	in.Command = resolved
+	return nil
+}
 
 // Preflight resolves a selected Compound LaneTuple to its owned executable
 // before a governed caller claims or advances work. Legacy direct callers
@@ -91,12 +135,15 @@ func (a *CodexAdapter) Preflight(_ context.Context, in RunInput) (RunInput, erro
 		return RunInput{}, fmt.Errorf("codex adapter: resolve codex executable: %w", err)
 	}
 	in.Command = command
+	if err := a.validateCodexInput(&in); err != nil {
+		return RunInput{}, err
+	}
 	in.preflighted = true
 	return in, nil
 }
 
 // Run drives the codex subprocess end-to-end. Mirrors ClaudeAdapter.Run.
-func (a *CodexAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error) {
+func (a *CodexAdapter) Run(ctx context.Context, in RunInput) (out RunOutput, runErr error) {
 	if !in.preflighted {
 		resolved, err := a.Preflight(ctx, in)
 		if err != nil {
@@ -105,6 +152,69 @@ func (a *CodexAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error) 
 		in = resolved
 	}
 	in.Harness = a.Name()
+	if err := a.validateCodexInput(&in); err != nil {
+		return RunOutput{}, err
+	}
+	if os.Getenv("COMPOUND_CODEX_USE_EXISTING_SUBSCRIPTION") == "1" || in.PermissionMode == "plan" {
+		selected := in.Command
+		original, err := os.Stat(selected)
+		if err != nil {
+			return RunOutput{}, fmt.Errorf("codex adapter: native executable unavailable")
+		}
+		verify := a.verifyNativeExecutable
+		if verify == nil {
+			verify = verifyNativeCodexExecutable
+		}
+		prior := in.StartGuard
+		in.StartGuard = func(ctx context.Context, start func() error) error {
+			checkedStart := func() error {
+				current, err := os.Stat(selected)
+				if err != nil || !os.SameFile(original, current) {
+					return fmt.Errorf("codex adapter: native executable changed before start")
+				}
+				if err := verify(selected); err != nil {
+					return err
+				}
+				return start()
+			}
+			if prior != nil {
+				return prior(ctx, checkedStart)
+			}
+			return checkedStart()
+		}
+	}
+	nativeCommand := filepath.Base(strings.TrimSpace(in.Command)) == "codex"
+	if nativeCommand {
+		_, nativeEffort, _ := codexNativeSelection(in) // validated in Preflight and again above
+		if in.ExecutionSelectionSnapshot != nil && nativeEffort != "" {
+			in.ExecutionSelectionSnapshot.AppliedEffort = nativeEffort
+			in.ExecutionSelectionSnapshot.EffortEvidence = "argv:model_reasoning_effort"
+		}
+	}
+	bind := os.Getenv("COMPOUND_CODEX_USE_EXISTING_SUBSCRIPTION")
+	if bind == "1" {
+		var isolatedHome string
+		defer func() {
+			if isolatedHome != "" {
+				if err := os.RemoveAll(isolatedHome); err != nil {
+					runErr = errors.Join(runErr, fmt.Errorf("codex subscription binding: isolated home cleanup failed"))
+				}
+			}
+		}()
+		return runWithSubprocessOptions(ctx, a.store, a.Name(), in,
+			func(ctx context.Context, in RunInput) *exec.Cmd {
+				return a.buildCmdWithHome(ctx, in, isolatedHome)
+			}, a.heartbeatInterval, subprocessRunOptions{
+				PrepareEvidence: func() error {
+					var err error
+					isolatedHome, err = os.MkdirTemp("", "codex-subscription-")
+					if err != nil {
+						return fmt.Errorf("codex subscription binding: isolated home unavailable")
+					}
+					return writeCodexSubscriptionSnapshot(isolatedHome)
+				},
+			})
+	}
 	return runWithSubprocess(ctx, a.store, a.Name(), in, a.buildCmd, a.heartbeatInterval)
 }
 
@@ -124,12 +234,36 @@ func (a *CodexAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error) 
 // was the latent risk. Caller-supplied in.Env still wins: we set the
 // env line BEFORE in.Env so a caller override is honored.
 func (a *CodexAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
+	return a.buildCmdWithHome(ctx, in, "")
+}
+
+func (a *CodexAdapter) buildCmdWithHome(ctx context.Context, in RunInput, preparedHome string) *exec.Cmd {
 	// Timeout is owned by runWithSubprocess; see OSEntrypointsAdapter.buildCmd.
 	prompt := in.Prompt
 	if prompt == "" && len(in.Args) > 0 {
 		prompt = in.Args[0]
 	}
 	args := []string{"exec"}
+	if in.PermissionMode == "plan" || preparedHome != "" {
+		args = []string{"-a", "never", "-s", "read-only", "exec"}
+	}
+	var model, effort string
+	if filepath.Base(strings.TrimSpace(in.Command)) == "codex" {
+		model, effort, _ = codexNativeSelection(in) // Run validated before minting.
+	}
+	if model != "" || effort != "" {
+		prefix := append([]string(nil), args[:len(args)-1]...)
+		if model != "" {
+			prefix = append(prefix, "-m", model)
+		}
+		if effort != "" {
+			prefix = append(prefix, "-c", "model_reasoning_effort=\""+effort+"\"")
+		}
+		args = append(prefix, "exec")
+	}
+	if preparedHome != "" {
+		args = append(args, "--ignore-user-config", "--ignore-rules", "-c", "model_provider=\"openai\"", "--json")
+	}
 	if prompt != "" {
 		args = append(args, prompt)
 	}
@@ -139,7 +273,11 @@ func (a *CodexAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
 	}
 	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Dir = in.Workspace
-	codexHome, err := os.MkdirTemp("", "codex-")
+	codexHome := preparedHome
+	var err error
+	if codexHome == "" {
+		codexHome, err = os.MkdirTemp("", "codex-")
+	}
 	if err != nil {
 		// Fall back to a path we are confident is writable; the OS temp
 		// rotation will eventually reclaim it. Worst case: isolation is
@@ -147,7 +285,11 @@ func (a *CodexAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
 		codexHome = filepath.Join(os.TempDir(), "codex-fallback-"+in.WorkID)
 		_ = os.MkdirAll(codexHome, 0o700)
 	}
-	cmd.Env = append(os.Environ(), "CODEX_HOME="+codexHome)
-	cmd.Env = append(cmd.Env, in.Env...)
+	if preparedHome != "" {
+		cmd.Env = codexSubscriptionChildEnv(in.Env, codexHome)
+	} else {
+		cmd.Env = append(os.Environ(), "CODEX_HOME="+codexHome)
+		cmd.Env = append(cmd.Env, in.Env...)
+	}
 	return cmd
 }

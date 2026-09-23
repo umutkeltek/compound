@@ -257,7 +257,11 @@ entry. Its exact profile is preserved when its saved model, provider and harness
 match the candidate; owner preflight re-resolves that profile against the sealed
 manifest before claim. A removed, ambiguous or foreign alias still refuses.
 
-The Claude-family governed adapter prompt carries the current reserved WorkEnvelope's work/context IDs, desired outcome, success predicate, non-goals, and saved selection. The caller's latest explicit request takes precedence, including on resume. Raw argv commands and prepared prompt-only adapters retain their caller-supplied input contracts.
+Claude-family and Codex governed adapter prompts carry the current reserved WorkEnvelope's work/context IDs, desired outcome, success predicate, non-goals, and saved selection. The caller's latest explicit request takes precedence, including on resume. Raw argv commands and prepared prompt-only adapters retain their caller-supplied input contracts.
+
+Codex keeps a fresh isolated `CODEX_HOME` per invocation. Explicit `COMPOUND_CODEX_USE_EXISTING_SUBSCRIPTION=1` binds only a private, owner-owned ChatGPT auth snapshot into that home after RunAttempt mint; it omits refresh authority and API keys, preserves the source refresh timestamp, refuses non-native wrappers and caller auth overrides, and removes the snapshot on return. The child uses native read-only approval/sandbox flags. Native Codex selections require a model ID and supported reasoning effort; legacy wrappers retain their selected model contract but cannot claim a native effort they do not attest.
+
+For opt-in subscription execution, the saved Codex model, route, profile, and revision reach preflight before execution; an owner-selected native model/provider tuple is required. Supported requested effort is applied in native argv and attested there, never inferred from the route. The child ignores user config and execpolicy rules, pins the OpenAI provider, and emits JSONL events. Snapshot cleanup failures are surfaced.
 
 ## Cancellation and budget are owned by the canonical execution seam
 
