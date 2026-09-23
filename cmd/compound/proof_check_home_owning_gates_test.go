@@ -144,6 +144,9 @@ func TestHomeOwningGateProductionPathsAreContextOnly(t *testing.T) {
 		if strings.Contains(string(body), "exec.Command(") {
 			t.Fatalf("%s still has a raw exec.Command production path", name)
 		}
+		if strings.Contains(string(body), "os.Executable(") {
+			t.Errorf("%s bypasses pinned proof runtime custody with os.Executable", name)
+		}
 		if !strings.Contains(string(body), "proofCheckCommandContext(") {
 			t.Fatalf("%s has no proofCheckCommandContext subprocess path", name)
 		}

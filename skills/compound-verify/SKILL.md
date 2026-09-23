@@ -142,7 +142,11 @@ Two corollaries worth their own line:
    Since `fc4cd8e3` the home-reading gates (`memory doctor`, workbench projection, the attention
    and agents console smokes) each seed and own a temp `COMPOUND_HOME` and assert its content, so
    their verdict is about the diff rather than about your dev home's size — and they no longer get
-   slower every time you use Compound. They are listed in `proofCheckHomeOwningGates`; a gate that
+   slower every time you use Compound. Fixture probes and console `COMPOUND_BIN` must resolve
+   through the proof context's pinned runtime, including these home-owning gates: a long proof
+   can outlive its original `go run` cache executable. A source-removal regression must still
+   execute both the nonempty fixture check and its real consumer against the pinned copy.
+   They are listed in `proofCheckHomeOwningGates`; a gate that
    leaves that map silently goes back to reading ambient state.
 
 3. **Temp-home end-to-end** (proves the slice works outside your polluted dev home):

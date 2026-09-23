@@ -34,7 +34,7 @@ func runProofCheckConsoleAgentsGate(repo string, step proofCheckStep) ([]byte, e
 }
 
 func runProofCheckConsoleAgentsGateContext(ctx context.Context, repo string, step proofCheckStep) ([]byte, error) {
-	exe, err := os.Executable()
+	exe, err := work.ProofRuntimeExecutable(ctx, "compound", proofCheckRuntimeExecutable)
 	if err != nil {
 		return nil, err
 	}
