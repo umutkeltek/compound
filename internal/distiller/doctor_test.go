@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/reviewartifact"
 )
@@ -74,6 +75,7 @@ func TestDoctorCountsOnlyUnresolvedImprovementReviewsAsDebt(t *testing.T) {
 				reviewed := ReviewedImprovement{
 					SchemaVersion: ReviewedImprovementSchemaVersion,
 					ID:            "reviewed_fixture", ReviewID: "fixture", PlanID: plan.ID,
+					CreatedAt:   rfc3339(t0),
 					CandidateID: candidateID, CandidateKind: KindMethodUpgrade,
 					ImprovementID: plan.Draft.ImprovementID,
 					Decision:      tc.decision, Status: tc.status,
@@ -111,6 +113,55 @@ func TestDoctorRefusesMalformedImprovementReview(t *testing.T) {
 	}
 	if _, err := Doctor(home); err == nil || !strings.Contains(err.Error(), "parse improvement review") {
 		t.Fatalf("malformed terminal evidence must surface, got %v", err)
+	}
+}
+
+func TestDoctorLaterKeepReviewingReopensImprovementDebt(t *testing.T) {
+	home, store := setup(t)
+	result, err := Run(home, store, readTraceFixture(t, "distill-session.json"), DefaultPolicy(), ReferenceExtractor{}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var candidateID string
+	for _, decision := range result.Decisions {
+		if decision.Kind == KindMethodUpgrade {
+			candidateID = decision.CandidateID
+		}
+	}
+	if candidateID == "" {
+		t.Fatal("fixture did not produce method upgrade")
+	}
+	plan, err := BuildImprovementPlan(home, candidateID, filepath.Join(t.TempDir(), "target.go"), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordImprovementPlan(home, plan); err != nil {
+		t.Fatal(err)
+	}
+	for _, review := range []struct {
+		id, decision, status string
+		at                   time.Time
+	}{
+		{id: "z_accepted", decision: ImprovementReviewDecisionAccept, status: "accepted", at: t0},
+		{id: "a_reopened", decision: ImprovementReviewDecisionKeepReviewing, status: "needs_review", at: t0.Add(time.Minute)},
+	} {
+		reviewed := ReviewedImprovement{
+			SchemaVersion: ReviewedImprovementSchemaVersion,
+			ID:            "reviewed_" + review.id, ReviewID: review.id, PlanID: plan.ID,
+			CreatedAt: rfc3339(review.at), CandidateID: candidateID,
+			CandidateKind: KindMethodUpgrade, ImprovementID: plan.Draft.ImprovementID,
+			Decision: review.decision, Status: review.status,
+		}
+		if _, err := reviewartifact.WriteJSON(home, ImprovementReviewArea, review.id+".reviewed.json", reviewed, "  "); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := Doctor(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.MethodUpgradeDebt != 1 || report.Status != "attention" {
+		t.Fatalf("latest keep_reviewing must reopen debt, got debt=%d status=%q", report.MethodUpgradeDebt, report.Status)
 	}
 }
 

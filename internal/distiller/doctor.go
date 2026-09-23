@@ -236,7 +236,7 @@ func countCandidateFiles(homePath, kind string) (int, error) {
 
 // The inbox is a durable candidate inventory: a reviewed candidate remains on disk.
 // Only a terminal owner review closes the operator decision represented by debt.
-func unresolvedImprovementCandidates(homePath, kind string, terminal map[string]bool) (int, error) {
+func unresolvedImprovementCandidates(homePath, kind string, reviews map[string]improvementReviewState) (int, error) {
 	rel := candidates.InboxDir(candidates.Kind(kind))
 	files, err := filepath.Glob(filepath.Join(homePath, rel, "*.json"))
 	if err != nil {
@@ -255,19 +255,25 @@ func unresolvedImprovementCandidates(homePath, kind string, terminal map[string]
 		if candidate.ID != strings.TrimSuffix(filepath.Base(path), ".json") || candidate.Kind != kind {
 			return 0, fmt.Errorf("improvement candidate %s has mismatched id or kind", path)
 		}
-		if !terminal[kind+"\x00"+candidate.ID] {
+		if !reviews[kind+"\x00"+candidate.ID].terminal {
 			count++
 		}
 	}
 	return count, nil
 }
 
-func terminalImprovementReviews(homePath string) (map[string]bool, error) {
-	terminal := map[string]bool{}
+type improvementReviewState struct {
+	at       time.Time
+	id       string
+	terminal bool
+}
+
+func terminalImprovementReviews(homePath string) (map[string]improvementReviewState, error) {
+	reviews := map[string]improvementReviewState{}
 	dir := filepath.Join(homePath, "reviews", ImprovementReviewArea)
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return terminal, nil
+		return reviews, nil
 	}
 	if err != nil {
 		return nil, err
@@ -288,6 +294,10 @@ func terminalImprovementReviews(homePath string) (map[string]bool, error) {
 		if reviewed.SchemaVersion != ReviewedImprovementSchemaVersion || reviewed.ReviewID == "" || reviewed.ID != "reviewed_"+reviewed.ReviewID || entry.Name() != reviewed.ReviewID+".reviewed.json" || reviewed.PlanID == "" || reviewed.PlanID != filepath.Base(reviewed.PlanID) || reviewed.CandidateID == "" {
 			return nil, fmt.Errorf("invalid improvement review %s", path)
 		}
+		at, err := time.Parse(time.RFC3339, reviewed.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("invalid improvement review timestamp %s: %w", path, err)
+		}
 		plan, err := readImprovementPlan(homePath, reviewed.PlanID)
 		if err != nil {
 			return nil, err
@@ -295,17 +305,22 @@ func terminalImprovementReviews(homePath string) (map[string]bool, error) {
 		if plan.SchemaVersion != ImprovementPlanSchemaVersion {
 			return nil, fmt.Errorf("improvement review %s references invalid plan schema", path)
 		}
-		if reviewed.CandidateID != plan.CandidateID || reviewed.CandidateKind != plan.CandidateKind || reviewed.ImprovementID != plan.Draft.ImprovementID {
+		if reviewed.CandidateID != plan.CandidateID || reviewed.CandidateKind != plan.CandidateKind || reviewed.ImprovementID != plan.Draft.ImprovementID || (reviewed.CandidateKind != KindMethodUpgrade && reviewed.CandidateKind != KindPolicyPatch) {
 			return nil, fmt.Errorf("improvement review %s does not match its plan", path)
 		}
 		if reviewed.Status != improvementReviewStatus(reviewed.Decision) || !improvementReviewDecisionOK(reviewed.Decision) {
 			return nil, fmt.Errorf("improvement review %s has inconsistent decision or status", path)
 		}
-		if reviewed.Decision == ImprovementReviewDecisionAccept || reviewed.Decision == ImprovementReviewDecisionReject {
-			terminal[reviewed.CandidateKind+"\x00"+reviewed.CandidateID] = true
+		key := reviewed.CandidateKind + "\x00" + reviewed.CandidateID
+		prior := reviews[key]
+		if prior.id == "" || at.After(prior.at) || (at.Equal(prior.at) && reviewed.ReviewID > prior.id) {
+			reviews[key] = improvementReviewState{
+				at: at, id: reviewed.ReviewID,
+				terminal: reviewed.Decision == ImprovementReviewDecisionAccept || reviewed.Decision == ImprovementReviewDecisionReject,
+			}
 		}
 	}
-	return terminal, nil
+	return reviews, nil
 }
 
 func statusForPositive(n int) string {
