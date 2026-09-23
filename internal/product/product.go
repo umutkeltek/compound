@@ -84,6 +84,9 @@ type Bundle struct {
 	Signals       []Signal     `json:"signals,omitempty" yaml:"signals,omitempty"`
 	Hypotheses    []Hypothesis `json:"hypotheses,omitempty" yaml:"hypotheses,omitempty"`
 	EvidenceRefs  []string     `json:"evidence_refs" yaml:"evidence_refs"`
+	// contractSourced marks a bundle built from a source-in-place project
+	// contract. Apply imports such a bundle additively; see additiveContractBundle.
+	contractSourced bool
 }
 
 type Product struct {
@@ -707,11 +710,18 @@ func Apply(homePath string, store *mem.Store, bundle Bundle, sourcePath string, 
 	}
 	report.EvidenceIDs = append(report.EvidenceIDs, evidence.ID)
 
+	var keep map[string]bool
+	var priorIdentifiers []string
+	if bundle.contractSourced {
+		if bundle, keep, priorIdentifiers, err = additiveContractBundle(store, bundle); err != nil {
+			return report, err
+		}
+	}
 	entity := mem.Entity{
 		Slug:        bundle.Product.ID,
 		Kind:        "product",
 		Aliases:     compact(append([]string{bundle.Product.Name}, bundle.Product.Aliases...)),
-		Identifiers: productIdentifiers(bundle.Product),
+		Identifiers: compact(append(priorIdentifiers, productIdentifiers(bundle.Product)...)),
 		Parent:      bundle.Product.OwnerEntity,
 		Visibility:  "operational",
 	}
@@ -719,7 +729,13 @@ func Apply(homePath string, store *mem.Store, bundle Bundle, sourcePath string, 
 		return report, err
 	}
 
-	captured, err := store.Capture(productClaims(bundle, evidence.ID, sourcePath), now)
+	var claims []mem.Candidate
+	for _, c := range productClaims(bundle, evidence.ID, sourcePath) {
+		if !keep[c.Predicate] {
+			claims = append(claims, c)
+		}
+	}
+	captured, err := store.Capture(claims, now)
 	if err != nil {
 		return report, err
 	}
@@ -750,6 +766,82 @@ func Apply(homePath string, store *mem.Store, bundle Bundle, sourcePath string, 
 		report.HypothesisIDs = append(report.HypothesisIDs, c.ID)
 	}
 	return report, nil
+}
+
+// additiveContractBundle folds a contract-sourced bundle onto what the ledger
+// already records for its product. A project contract is the authority for
+// where a product runs and how it is released. It is not the authority for how
+// the product is positioned — its notes are a repository summary and
+// data.classification is a storage class — and it does not know the surfaces,
+// channels, aliases, identifiers, or owner other writers recorded. So its import
+// adds and never removes: those sets are unioned with the current record, the
+// recorded owner is kept, a contested fact is left under review, and
+// positioning and privacy posture are seeded only when nothing records them yet.
+// It returns the merged bundle, the predicates to leave untouched, and the
+// entity identifiers already registered.
+func additiveContractBundle(store *mem.Store, bundle Bundle) (Bundle, map[string]bool, []string, error) {
+	id := bundle.Product.ID
+	view, err := store.CurrentView()
+	if err != nil {
+		return bundle, nil, nil, err
+	}
+	current := map[string]mem.Claim{}
+	for _, c := range view.Claims() {
+		if c.Entity != id {
+			continue
+		}
+		if prior, ok := current[c.Predicate]; !ok || c.Seq > prior.Seq {
+			current[c.Predicate] = c
+		}
+	}
+	keep := map[string]bool{}
+	for _, predicate := range []string{"positioning", "privacy_posture"} {
+		if strings.TrimSpace(current[predicate].Object) != "" {
+			keep[predicate] = true
+		}
+	}
+	// A fact under review is hidden from Claims(), so its slot reads empty here.
+	// Superseding it would drop the recorded value and close the review with no
+	// one deciding it; the contract leaves every contested slot untouched.
+	for _, pos := range view.Positions() {
+		if pos.Entity == id && pos.Status == "contested" {
+			keep[pos.Predicate] = true
+		}
+	}
+	p := bundle.Product
+	var surfaces []Surface
+	seen := map[string]bool{}
+	for _, ref := range strings.Split(current["surfaces"].Object, ",") {
+		if ref = strings.TrimSpace(ref); ref != "" && !seen[ref] {
+			seen[ref] = true
+			surfaces = append(surfaces, Surface{ID: "recorded", Kind: "recorded", Ref: ref})
+		}
+	}
+	for _, s := range p.Surfaces {
+		if !seen[s.Ref] {
+			seen[s.Ref] = true
+			surfaces = append(surfaces, s)
+		}
+	}
+	p.Surfaces = surfaces
+	p.Channels = compact(append(strings.Split(current["channels"].Object, ","), p.Channels...))
+
+	entities, err := store.Entities()
+	if err != nil {
+		return bundle, nil, nil, err
+	}
+	var priorIdentifiers []string
+	for _, e := range entities {
+		if e.Slug == id {
+			p.Aliases = compact(append(append([]string{}, e.Aliases...), p.Aliases...))
+			priorIdentifiers = e.Identifiers
+			if strings.TrimSpace(e.Parent) != "" {
+				p.OwnerEntity = e.Parent
+			}
+		}
+	}
+	bundle.Product = p
+	return bundle, keep, priorIdentifiers, nil
 }
 
 func ApplySignal(homePath string, store *mem.Store, doc SignalDocument, sourcePath string, now time.Time) (Report, error) {

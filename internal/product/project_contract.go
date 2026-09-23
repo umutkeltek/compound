@@ -293,7 +293,8 @@ func ProjectContractBundle(pc projectContract, rc releaseContract, projectRef, r
 				RedLines:  []string{"do not infer product signal or causality from project contract"},
 			},
 		},
-		EvidenceRefs: evidenceRefs,
+		EvidenceRefs:    evidenceRefs,
+		contractSourced: true,
 	}
 	if err := Validate(bundle); err != nil {
 		return Bundle{}, err
