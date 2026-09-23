@@ -880,8 +880,8 @@ func TestDoctorInjectionReportsNoRateBecauseConsumptionProvenanceIsUnrecoverable
 		{"served_events", got.Inj.ServedEvents, 9},
 		{"consumed_events", got.Inj.ConsumedEvents, 1},
 		{"sessions_served", got.Inj.SessionsServed, 4},
-		// ONLY the session that actually referenced a served claim counts. The two declared CLI
-		// closes must land on the other side of this line — that is the whole point.
+		// Only the receipt with explicit application provenance counts. The two
+		// historical CLI declarations remain ambiguous for claim application.
 		{"sessions_with_consumption", got.Inj.SessionsWithConsumption, 1},
 		{"sessions_without_consumption", got.Inj.SessionsWithoutConsumption, 3},
 	} {
