@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"compound/internal/envelope"
+	"compound/internal/harness"
 	"compound/internal/runattempt"
 )
 
@@ -175,6 +176,28 @@ func BuildSelectionSnapshot(
 	)
 }
 
+// BindSelectionBeforePreflight makes the public launch consume the same choice
+// its RunAttempt will report. Codex resolves the model-router tuple and owned
+// executable in Preflight; a snapshot alone cannot select that executable.
+func BindSelectionBeforePreflight(wenv envelope.WorkEnvelope, harnessName string, override *envelope.ExecutionSelection, input harness.RunInput) (harness.RunInput, error) {
+	snapshot, err := BuildSelectionSnapshot(wenv, harnessName, override)
+	if err != nil {
+		return harness.RunInput{}, err
+	}
+	input.ExecutionSelectionSnapshot = &snapshot
+	if harnessName != "codex" || snapshot.LaunchProfileID == "" {
+		return input, nil
+	}
+	if snapshot.Harness != harnessName || snapshot.RequestedModelID == "" || snapshot.ProviderRoute == "" || snapshot.LaunchProfileRevision == "" {
+		return harness.RunInput{}, fmt.Errorf("Codex selection %q lacks an exact harness, model, provider route, or owner revision", snapshot.LaunchProfileID)
+	}
+	input.LaunchProfileID = snapshot.LaunchProfileID
+	input.RequestedModelID = snapshot.RequestedModelID
+	input.RequestedProviderRoute = snapshot.ProviderRoute
+	input.ExpectedModelRouterRevision = snapshot.LaunchProfileRevision
+	return input, nil
+}
+
 // applyEffortEvidence stamps the honest evidence about whether the
 // applied effort is known. Today the wire cannot attest applied effort
 // for any production harness (the Claude wrapper carries effort as
@@ -198,10 +221,13 @@ func applyEffortEvidence(snap *runattempt.ExecutionSelectionSnapshot) {
 		// requested value but never a claimed-applied value.
 		snap.EffortEvidence = "unobservable:wrapper carries effort as env only (SB_LANE_REQUESTED_EFFORT); no argv or settings pin attests the applied value"
 	case "codex":
-		// codex adapter does not carry an effort control today;
-		// record unsupported.
-		snap.EffortEvidence = "unsupported:codex adapter does not expose effort control in v0.1"
-		snap.RequestedEffort = ""
+		// Native Codex applies this in the adapter. Keep the requested value
+		// until the adapter attests argv application or refuses the launch.
+		if snap.RequestedEffort != "" {
+			snap.EffortEvidence = "unobservable:Codex effort application awaits adapter preflight"
+		} else {
+			snap.EffortEvidence = "unsupported:no Codex effort requested"
+		}
 	default:
 		// os-harness-entrypoints / unknown: no effort control.
 		snap.EffortEvidence = "unsupported:harness " + snap.Harness + " has no effort control"

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/harness"
 )
 
 // BuildSelectionSnapshot contract (2026-09-15): the public-CLI selection
@@ -24,6 +25,22 @@ func cliSavedSelection() *envelope.ExecutionSelection {
 		Revision:              3,
 		SelectedBy:            "operator",
 		SelectedAt:            time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC).Format(time.RFC3339),
+	}
+}
+
+func TestBindCodexSelectionBeforePreflightPreservesRequestedEffort(t *testing.T) {
+	selection := cliSavedSelection()
+	selection.Harness = "codex"
+	selection.RequestedEffort = "medium"
+	input, err := BindSelectionBeforePreflight(
+		envelope.WorkEnvelope{ExecutionSelection: selection}, "codex", nil,
+		harness.RunInput{Harness: "codex"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.ExecutionSelectionSnapshot == nil || input.ExecutionSelectionSnapshot.RequestedEffort != "medium" || input.ExecutionSelectionSnapshot.AppliedEffort != "" {
+		t.Fatalf("Codex effort was silently discarded or prematurely claimed applied: %+v", input.ExecutionSelectionSnapshot)
 	}
 }
 

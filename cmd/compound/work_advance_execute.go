@@ -244,6 +244,12 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		Now:             time.Now().UTC(),
 		ProofRefs:       append([]string(nil), wenv.ArtifactIDs...),
 	}
+	// The same saved or one-run tuple must select the actual Codex executable.
+	runInput, err = executewire.BindSelectionBeforePreflight(wenv, harnessName, explicitSelection, runInput)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: bind execution selection: %v; no RunAttempt minted and envelope was not advanced\n", err)
+		workAdvanceExecuteExit(1)
+	}
 	if preflight, ok := adapter.(harness.PreflightAdapter); ok {
 		resolved, err := preflight.Preflight(launchCtx, runInput)
 		if err != nil {
@@ -252,21 +258,6 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		}
 		runInput = resolved
 	}
-	// work_r7a_execution_selection_20260911 + public-CLI contract 2026-09-15:
-	// the per-run selection snapshot is stamped on the RunInput AFTER the
-	// preflight resolution (preflight may rebuild the input) and BEFORE the
-	// governed advance, so the shared runner persists what this launch was
-	// ASKED to run — harness, profile, requested effort, consumed selection
-	// revision — onto the freshly minted RunAttempt. The override branch
-	// carries the CLI's own resolution; the saved branch stamps the
-	// envelope's revision. A snapshot that cannot be built honestly refuses
-	// before any state change.
-	snapshot, snapErr := executewire.BuildSelectionSnapshot(wenv, harnessName, explicitSelection)
-	if snapErr != nil {
-		fmt.Fprintf(os.Stderr, "error: build execution selection snapshot: %v\n", snapErr)
-		workAdvanceExecuteExit(1)
-	}
-	runInput.ExecutionSelectionSnapshot = &snapshot
 	// A governed run is bounded: the RunInput carries the same finite launch
 	// budget the launch wire applies, and the run context is the
 	// signal-derived launch context (SIGINT/SIGTERM cancel the adapter run,
