@@ -269,7 +269,7 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 	}
 	// Bind the adapter prompt to the exact generation just reserved. Raw argv
 	// execution keeps its caller-supplied command contract unchanged.
-	if isClaudeGoalPromptAdapter(in.Adapter.Name()) && (strings.TrimSpace(runInput.Prompt) != "" || (runInput.Command == "" && len(runInput.Args) == 0)) {
+	if claudeFamily && (strings.TrimSpace(runInput.Prompt) != "" || (runInput.Command == "" && len(runInput.Args) == 0)) {
 		runInput.Prompt = governedGoalPrompt(running, runInput.Prompt)
 	}
 	runInput, err = PrepareGovernedHarnessLaunch(GovernedHarnessLaunchInput{
@@ -293,15 +293,6 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 		RunInput:       runInput,
 		ActionIntentID: actionIntentID,
 	}, nil
-}
-
-func isClaudeGoalPromptAdapter(name string) bool {
-	switch name {
-	case "claude", "claude-zai", "claude-minimax", "claude-qwen":
-		return true
-	default:
-		return false
-	}
 }
 
 // governedGoalPrompt gives direct, selected, and resumed harness runs the same

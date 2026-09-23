@@ -20,6 +20,37 @@ type goalCaptureAdapter struct {
 
 func (a *goalCaptureAdapter) Name() string { return "claude" }
 
+func (a *goalCaptureAdapter) GovernedPermissionPosture() {}
+
+func (a *goalCaptureAdapter) RevalidateGovernedRun(_ context.Context, in harness.RunInput) (harness.RunInput, error) {
+	return in, nil
+}
+
+func TestRegistryClaudeLanesSupportGovernedGoalPrompt(t *testing.T) {
+	registry := harness.NewAdapterRegistry(runattempt.Open(t.TempDir()))
+	seen := map[string]bool{}
+	for _, name := range registry.Names() {
+		adapter, ok := registry.AdapterByName(name)
+		if !ok {
+			t.Fatalf("registered adapter %q missing", name)
+		}
+		_, permissionAdapter := adapter.(harness.GovernedPermissionAdapter)
+		if strings.HasPrefix(name, "claude") {
+			if !permissionAdapter {
+				t.Fatalf("Claude lane %q will miss goal handoff", name)
+			}
+			seen[name] = true
+		} else if permissionAdapter {
+			t.Fatalf("non-Claude lane %q unexpectedly entered goal handoff", name)
+		}
+	}
+	for _, name := range []string{"claude", "claude_minimax", "claude_zai_full"} {
+		if !seen[name] {
+			t.Fatalf("production Claude lane %q absent from registry", name)
+		}
+	}
+}
+
 func (a *goalCaptureAdapter) Run(_ context.Context, in harness.RunInput) (harness.RunOutput, error) {
 	a.prompts = append(a.prompts, in.Prompt)
 	now := time.Now().UTC()
@@ -66,7 +97,7 @@ func TestGovernedAdapterReceivesCurrentGoalOnRunAndResume(t *testing.T) {
 	}
 	adapter := &goalCaptureAdapter{attempts: runattempt.Open(homePath)}
 	first, err := ExecuteGovernedHarnessAdvance(context.Background(), homePath, store, claimed, adapter,
-		harness.RunInput{WorkID: claimed.ID, Harness: adapter.Name(), Workspace: t.TempDir(), Prompt: "audit the selected work", Now: now},
+		harness.RunInput{WorkID: claimed.ID, Harness: adapter.Name(), Workspace: t.TempDir(), Prompt: "audit the selected work", PermissionMode: "plan", Now: now},
 		"goal-capture-test", "running", "first audit", claimed.RunAttemptIDs, false, now.Add(2*time.Second))
 	if err != nil || first.RunError != nil {
 		t.Fatalf("first execution: %v / %v", err, first.RunError)
@@ -86,7 +117,7 @@ func TestGovernedAdapterReceivesCurrentGoalOnRunAndResume(t *testing.T) {
 		t.Fatal("stale claimed envelope was accepted for resume")
 	}
 	second, err := ExecuteGovernedHarnessAdvance(context.Background(), homePath, store, verifying, adapter,
-		harness.RunInput{WorkID: verifying.ID, Harness: adapter.Name(), Workspace: t.TempDir(), Prompt: "continue with the new audit focus", Now: now.Add(3 * time.Second)},
+		harness.RunInput{WorkID: verifying.ID, Harness: adapter.Name(), Workspace: t.TempDir(), Prompt: "continue with the new audit focus", PermissionMode: "plan", Now: now.Add(3 * time.Second)},
 		"goal-capture-test", "running", "resume audit", verifying.RunAttemptIDs, true, now.Add(3*time.Second))
 	if err != nil || second.RunError != nil {
 		t.Fatalf("resume execution: %v / %v", err, second.RunError)
