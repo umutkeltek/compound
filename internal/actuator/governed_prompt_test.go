@@ -149,6 +149,47 @@ func TestGovernedGoalPromptNamesContextPack(t *testing.T) {
 	}
 }
 
+func TestGovernedCodexReservationReceivesCurrentGoal(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create(work.CreateInput{
+		Owner: "goal-capture-test", DesiredOutcome: "audit the held-out metadata routes",
+		SuccessPredicate: "six route verdicts with source evidence",
+		NonGoals:         []string{"do not modify the product"},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.Claim(created.ID, "goal-capture-test", now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := harness.NewAdapterRegistry(runattempt.Open(homePath)).AdapterByName("codex")
+	if !ok {
+		t.Fatal("production Codex adapter missing")
+	}
+	reserved, err := ReserveGovernedHarnessLaunch(GovernedHarnessReservationInput{
+		HomePath: homePath, Store: store, ClaimedWork: claimed, Adapter: adapter,
+		RunInput: harness.RunInput{WorkID: claimed.ID, Harness: "codex", Workspace: t.TempDir(), Prompt: "resume the product audit", PermissionMode: "plan"},
+		Actor:    "goal-capture-test", Target: "running", Now: now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{claimed.ID, created.DesiredOutcome, created.SuccessPredicate, created.NonGoals[0], "resume the product audit"} {
+		if !strings.Contains(reserved.RunInput.Prompt, want) {
+			t.Fatalf("Codex prompt missing %q: %s", want, reserved.RunInput.Prompt)
+		}
+	}
+}
+
 func TestGovernedRawCommandKeepsCallerInput(t *testing.T) {
 	for _, args := range [][]string{nil, {"raw-arg"}} {
 		t.Run(strings.Join(args, ","), func(t *testing.T) {

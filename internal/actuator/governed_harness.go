@@ -269,7 +269,7 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 	}
 	// Bind the adapter prompt to the exact generation just reserved. Raw argv
 	// execution keeps its caller-supplied command contract unchanged.
-	if claudeFamily && (strings.TrimSpace(runInput.Prompt) != "" || (runInput.Command == "" && len(runInput.Args) == 0)) {
+	if (claudeFamily || in.Adapter.Name() == "codex") && (strings.TrimSpace(runInput.Prompt) != "" || (runInput.Command == "" && len(runInput.Args) == 0)) {
 		runInput.Prompt = governedGoalPrompt(running, runInput.Prompt)
 	}
 	runInput, err = PrepareGovernedHarnessLaunch(GovernedHarnessLaunchInput{
