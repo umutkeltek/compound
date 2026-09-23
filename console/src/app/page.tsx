@@ -29,7 +29,7 @@ import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { moveTypeGroup, summarizeMoveTypeMix } from "@/lib/move-mix";
 import { toDate } from "@/lib/time";
-import { latestCompoundingMoment } from "@/representation";
+import { latestProofBackedChange } from "@/representation";
 
 export const dynamic = "force-dynamic";
 
@@ -88,7 +88,7 @@ export default async function Briefing() {
   const continueModel = deriveContinue(workbench, open);
   const stages = pipelineStages(workbench);
   const recent = arr(workbench?.recent);
-  const compounded = latestCompoundingMoment(recent);
+  const compounded = latestProofBackedChange(recent);
 
   // World Δ (7-day move mix) + an honest week-over-week delta (only shown when
   // the recent window reaches back far enough to cover the prior week — §9.6).

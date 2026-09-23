@@ -1,16 +1,17 @@
 /**
  * Normalize the existing workbench `recent` projection into the one moment the
- * Briefing may honestly call "compounded". The projection remains authority:
- * this selector only rejects rows that do not carry the full proof shape.
+ * Briefing can show as a proof-backed change. Receipt and transition references
+ * establish no later reuse, downstream outcome, or measured improvement.
  */
 
-export type CompoundingMove = "outward_delta" | "memory_delta" | "rule_delta" | "control_plane_repair" | string;
+export type ChangeMove = "outward_delta" | "memory_delta" | "rule_delta" | "control_plane_repair" | string;
 
-export interface CompoundingMoment {
-  kind: "work_landed_alive";
+export interface ProofBackedChange {
+  kind: "proof_backed_change";
+  evidenceLevel: "proof_backed_change";
   workId: string;
   headline: string;
-  moveType: CompoundingMove;
+  moveType: ChangeMove;
   moveLabel: string;
   producer: string;
   receiptRef: string;
@@ -55,7 +56,7 @@ function humanHeadline(item: ProjectionRow): string {
   const surface = text(item.canonical_surface);
   if (surface.startsWith("packet:")) return surface.slice("packet:".length).replace(/-/g, " ");
 
-  return text(item.success_predicate) || "A proof-backed change landed";
+  return text(item.success_predicate) || "A proof-backed change was recorded";
 }
 
 function rank(item: ProjectionRow): number {
@@ -69,7 +70,7 @@ function rank(item: ProjectionRow): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function normalize(value: unknown): CompoundingMoment | null {
+function normalize(value: unknown): ProofBackedChange | null {
   const item = row(value);
   if (!item) return null;
 
@@ -83,7 +84,8 @@ function normalize(value: unknown): CompoundingMoment | null {
   }
 
   return {
-    kind: "work_landed_alive",
+    kind: "proof_backed_change",
+    evidenceLevel: "proof_backed_change",
     workId: text(item.work_id) || text(item.id),
     headline: humanHeadline(item),
     moveType,
@@ -96,8 +98,8 @@ function normalize(value: unknown): CompoundingMoment | null {
   };
 }
 
-export function latestCompoundingMoment(values: readonly unknown[]): CompoundingMoment | null {
-  let latest: { moment: CompoundingMoment; rank: number } | null = null;
+export function latestProofBackedChange(values: readonly unknown[]): ProofBackedChange | null {
+  let latest: { moment: ProofBackedChange; rank: number } | null = null;
   for (const value of values) {
     const item = row(value);
     const moment = normalize(value);

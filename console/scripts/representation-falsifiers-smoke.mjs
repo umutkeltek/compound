@@ -17,4 +17,4 @@ if (!result.ok) {
   process.exit(1);
 }
 
-console.log("representation falsifiers smoke ok: FR1 (receipt-or-error chip), FR2 (home number == actionable), FR3 (predicate labelled as goal), FR4 (a11y-reachable affordance), FR6 (proof-backed compounding moment)");
+console.log("representation falsifiers smoke ok: FR1 (receipt-or-error chip), FR2 (home number == actionable), FR3 (predicate labelled as goal), FR4 (a11y-reachable affordance), FR6 (proof-backed change without assumed benefit)");

@@ -219,11 +219,13 @@ func (s *Store) BranchCoverage(now time.Time, windowDays int) (BranchCoverageRep
 		if tr.SecondOrder.FutureBehaviorChanged && len(tr.OpensBranches) == 0 &&
 			(tr.Cause == nil || tr.Cause.NextConsumer == "") {
 			report.Counts.UnverifiableChanged++
-			// Overshoot the cap; the post-pass sort + truncation below
-			// produces the most-recent-first list bounded by the cap.
-			if len(report.Unverifiable) < branchDebtListCap*4 {
-				report.Unverifiable = append(report.Unverifiable, item.id)
+			// The fold is chronological. Retain its bounded tail, not a
+			// capped prefix that permanently loses newer observations.
+			if len(report.Unverifiable) == branchDebtListCap {
+				copy(report.Unverifiable, report.Unverifiable[1:])
+				report.Unverifiable = report.Unverifiable[:branchDebtListCap-1]
 			}
+			report.Unverifiable = append(report.Unverifiable, item.id)
 		}
 		for _, ref := range tr.OpensBranches {
 			state, exists := branches[ref.Branch]
@@ -300,18 +302,9 @@ func (s *Store) BranchCoverage(now time.Time, windowDays int) (BranchCoverageRep
 	}
 	report.Debt = debt
 
-	// Unverifiable list: cap to the most-recent-by-scan-order, NOT the first
-	// IDs the scan encountered. The cap is sized generously above the limit so
-	// the sort can pick the freshest entries; the truncated slice carries the
-	// operator's actual actionable surface.
-	if len(report.Unverifiable) > branchDebtListCap {
-		// Inputs were appended in (created_at, id) ascending order during the
-		// fold; reverse the prefix so the cap keeps the most recent.
-		sorted := make([]string, len(report.Unverifiable))
-		for i, id := range report.Unverifiable {
-			sorted[len(report.Unverifiable)-1-i] = id
-		}
-		report.Unverifiable = sorted[:branchDebtListCap]
+	// Newest first even when the full history is smaller than the cap.
+	for i, j := 0, len(report.Unverifiable)-1; i < j; i, j = i+1, j-1 {
+		report.Unverifiable[i], report.Unverifiable[j] = report.Unverifiable[j], report.Unverifiable[i]
 	}
 	return report, nil
 }

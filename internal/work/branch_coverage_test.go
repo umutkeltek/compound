@@ -333,11 +333,8 @@ func TestBranchCoverageUnverifiableListIsMostRecent(t *testing.T) {
 	t.Parallel()
 	s := newStore(t)
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-	// Write branchDebtListCap+5 unverifiable transitions, then 5 verifiable
-	// transitions with timestamps after — the verifiable ones must NOT
-	// appear in the unverifiable list (the list is unverifiable entries
-	// only), and the cap keeps the most recent unverifiable IDs.
-	total := branchDebtListCap + 5
+	// Exceed the old 40-entry prefix cap; assert every ID from the newest ten.
+	total := 100
 	for i := 0; i < total; i++ {
 		at := t0.Add(time.Duration(i) * time.Hour)
 		writeCoverageTransition(t, s,
@@ -355,12 +352,10 @@ func TestBranchCoverageUnverifiableListIsMostRecent(t *testing.T) {
 		t.Fatalf("unverifiable list len = %d, want capped at %d",
 			len(report.Unverifiable), branchDebtListCap)
 	}
-	// The list must contain the most-recent IDs (ascending timestamps
-	// produced the cap-reversed list); the FIRST list entry should be one
-	// of the last few IDs we wrote.
-	first := report.Unverifiable[0]
-	wantPrefix := fmt.Sprintf("tr_unv_%02d", total-1)
-	if !strings.HasPrefix(first, wantPrefix) && !strings.HasPrefix(first, "tr_unv_") {
-		t.Fatalf("most-recent-first unverifiable list failed: first=%s", first)
+	for i, got := range report.Unverifiable {
+		want := fmt.Sprintf("tr_unv_%02d", total-1-i)
+		if got != want {
+			t.Fatalf("unverifiable[%d] = %s, want %s", i, got, want)
+		}
 	}
 }

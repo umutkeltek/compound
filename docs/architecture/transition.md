@@ -13,6 +13,21 @@ State_t  →  Action_t  →  Receipt_t  →  State_t+1
 product/market signals + cost gradients + risk gates + taste standards + operator attention +
 system trust + open loops + dead surfaces.
 
+## Evidence of later benefit
+
+A completed changed receipt and its transition establish a **proof-backed change**.
+The console names that evidence level explicitly. Later levels need separate evidence:
+**observed reuse** of an identified artifact revision; a **verified downstream outcome**
+joined to that use; and **measured improvement** against a comparable baseline with
+quality, failures, coordination effort, and resource costs retained. A reference or
+`next_consumer` label alone does not advance the level. Missing observations stay unknown.
+The current-state `cause-consumption` report is attribution visibility, not a historical
+state-at-use reconstruction or a causal-effect estimate. Historical evaluation must bind
+the object revision and state at use time; later promotion cannot rewrite that observation.
+
+Branch-debt examples fold the full ordered transition history and retain its newest ten
+unverifiable entries, newest first. The total remains the complete count.
+
 ## The Transition object
 
 A `Transition` is a state change plus its **projections** into multiple representational spaces.

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { EmptyDoctrine, Panel } from "@/components/briefing/primitives";
 import { FeedDegraded, type FeedProjectionStatus } from "@/components/kit";
 import { ago } from "@/lib/time";
-import type { CompoundingMoment } from "@/representation";
+import type { ProofBackedChange } from "@/representation";
 
 const SOURCE = "compound workbench --json --recent 500";
 
@@ -17,13 +17,13 @@ export function LatestMoment({
   moment,
   read,
 }: {
-  moment: CompoundingMoment | null;
+  moment: ProofBackedChange | null;
   read: { status: FeedProjectionStatus; lastGoodAt: string | null };
 }) {
   if (read.status === "unreachable") {
     return (
       <Panel className="px-5 py-5">
-        <FeedDegraded label="compounding moment" source={SOURCE} lastGoodAt={read.lastGoodAt} />
+        <FeedDegraded label="proof-backed change" source={SOURCE} lastGoodAt={read.lastGoodAt} />
       </Panel>
     );
   }
@@ -31,9 +31,9 @@ export function LatestMoment({
   if (!moment) {
     return (
       <Panel className="px-5 py-5">
-        <div className="text-xs font-bold uppercase tracking-wide text-faint">What compounded</div>
+        <div className="text-xs font-bold uppercase tracking-wide text-faint">Proof-backed change</div>
         <div className="mt-3">
-          <EmptyDoctrine>No proof-backed change has landed yet. audit_only counts for nothing.</EmptyDoctrine>
+          <EmptyDoctrine>No proof-backed change has been recorded yet.</EmptyDoctrine>
         </div>
       </Panel>
     );
@@ -45,7 +45,7 @@ export function LatestMoment({
     <section className="overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
       <div className="px-5 pb-4 pt-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs font-bold uppercase tracking-wide text-faint">What compounded</span>
+          <span className="text-xs font-bold uppercase tracking-wide text-faint">Proof-backed change</span>
           <span className="inline-flex items-center gap-1.5 rounded-pill border border-good-line bg-good-soft px-2.5 py-1 text-2xs font-semibold text-good">
             <span className="h-1.5 w-1.5 rounded-full bg-good" aria-hidden />
             {moment.moveLabel}
@@ -56,9 +56,17 @@ export function LatestMoment({
           {moment.headline}
         </h2>
 
+        <p className="mt-2 text-xs text-muted">Reuse and downstream benefit have not been verified.</p>
+        <ol className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-2xs text-faint" aria-label="Improvement evidence">
+          <li aria-current="step" className="font-semibold text-ink">Proof-backed change</li>
+          <li>Observed reuse · unknown</li>
+          <li>Downstream outcome · unknown</li>
+          <li>Measured improvement · unknown</li>
+        </ol>
+
         <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-muted">
           <span>
-            landed by <strong className="font-semibold text-ink">{moment.producer}</strong>
+            recorded by <strong className="font-semibold text-ink">{moment.producer}</strong>
           </span>
           {lastGood ? <span className="text-faint">stale feed · last good {lastGood}</span> : null}
         </div>

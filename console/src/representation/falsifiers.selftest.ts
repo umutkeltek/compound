@@ -21,7 +21,7 @@ import {
   homeAccount,
   Instrument,
   instrumentActRequest,
-  latestCompoundingMoment,
+  latestProofBackedChange,
   ledgerStateFrom,
   renderRepresentation,
   resolveCard,
@@ -233,10 +233,7 @@ export function runRepresentationFalsifiers(): SelfTestResult {
     );
   }
 
-  // ---------- FR6 (compounding moment): the Briefing may call a completed
-  // move "compounded" only when the ledger proves a real, changed, non-audit
-  // transition. Presentation cannot launder an open claim or an audit into an
-  // outcome. ----------
+  // FR6: a receipt-backed change does not prove later reuse or benefit.
   {
     const eligible = {
       work_id: "work_examplemoment",
@@ -258,14 +255,16 @@ export function runRepresentationFalsifiers(): SelfTestResult {
       { ...eligible, work_id: "work_no_transition", transition_id: "" },
     ];
 
-    const moment = latestCompoundingMoment([
+    const moment = latestProofBackedChange([
       { ...eligible, work_id: "work_older", claimed_at: "100" },
       ...rejected,
       eligible,
     ]);
     check(
-      moment?.kind === "work_landed_alive" && moment.workId === "work_examplemoment",
-      "FR6: latest eligible proof-backed change becomes the compounding moment",
+      moment?.kind === "proof_backed_change" &&
+        moment.evidenceLevel === "proof_backed_change" &&
+        moment.workId === "work_examplemoment",
+      "FR6: latest eligible proof-backed change remains at the proof-backed evidence level",
       `FR6: wrong latest moment selected (${moment?.workId ?? "none"})`,
     );
     check(
@@ -279,9 +278,9 @@ export function runRepresentationFalsifiers(): SelfTestResult {
       `FR6: primary copy exposed a machine id (${moment?.headline ?? "none"})`,
     );
     check(
-      latestCompoundingMoment(rejected) === null,
-      "FR6: audit, unchanged, open, and proofless rows cannot render as compounded",
-      "FR6: an ineligible row was laundered into a compounded moment",
+      latestProofBackedChange(rejected) === null,
+      "FR6: audit, unchanged, open, and proofless rows cannot render as proof-backed changes",
+      "FR6: an ineligible row was laundered into a proof-backed change",
     );
 
     if (moment) {
@@ -293,7 +292,9 @@ export function runRepresentationFalsifiers(): SelfTestResult {
       );
       const visible = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
       check(
-        visible.includes("What compounded") &&
+        visible.includes("Proof-backed change") &&
+          visible.includes("Reuse and downstream benefit have not been verified") &&
+          !visible.includes("What compounded") &&
           visible.includes(moment.headline) &&
           visible.includes("Rule changed") &&
           visible.includes("by codex"),
@@ -327,9 +328,9 @@ export function runRepresentationFalsifiers(): SelfTestResult {
       }),
     );
     check(
-      emptyHtml.includes("No proof-backed change has landed yet") &&
+      emptyHtml.includes("No proof-backed change has been recorded yet") &&
         unreachableHtml.includes("feed is unreachable") &&
-        !unreachableHtml.includes("No proof-backed change has landed yet"),
+        !unreachableHtml.includes("No proof-backed change has been recorded yet"),
       "FR6: live-empty and unreachable remain honestly different states",
       "FR6: the moment conflated a dead workbench door with a confirmed empty ledger",
     );
