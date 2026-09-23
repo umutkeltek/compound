@@ -3,8 +3,116 @@ package distiller
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"compound/internal/reviewartifact"
 )
+
+func TestDoctorHistoricalDuplicatesDoNotRequireAttention(t *testing.T) {
+	home, store := setup(t)
+	raw := readTraceFixture(t, "distill-duplicate-memory.json")
+	for i := 0; i < 2; i++ {
+		if _, err := Run(home, store, raw, DefaultPolicy(), ReferenceExtractor{}, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := Doctor(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.DuplicateMemoryRejections != 1 || report.NoPromoteRows != 1 {
+		t.Fatalf("historical totals lost: %+v", report)
+	}
+	if report.Status != "ok" {
+		t.Fatalf("historical duplicate set status %q, want ok", report.Status)
+	}
+	for _, check := range report.Checks {
+		if check.Name == "duplicate_churn" {
+			if check.Status != "observed" || !strings.Contains(check.Detail, "recent rate unknown") {
+				t.Fatalf("duplicate check = %+v, want observed history with unknown recent rate", check)
+			}
+			return
+		}
+	}
+	t.Fatal("duplicate_churn check missing")
+}
+
+func TestDoctorCountsOnlyUnresolvedImprovementReviewsAsDebt(t *testing.T) {
+	for _, tc := range []struct {
+		name, decision, status string
+		wantDebt               int
+	}{
+		{name: "no review", wantDebt: 1},
+		{name: "accepted review", decision: ImprovementReviewDecisionAccept, status: "accepted", wantDebt: 0},
+		{name: "rejected review", decision: ImprovementReviewDecisionReject, status: "rejected", wantDebt: 0},
+		{name: "keep reviewing", decision: ImprovementReviewDecisionKeepReviewing, status: "needs_review", wantDebt: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, store := setup(t)
+			result, err := Run(home, store, readTraceFixture(t, "distill-session.json"), DefaultPolicy(), ReferenceExtractor{}, t0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var candidateID string
+			for _, decision := range result.Decisions {
+				if decision.Kind == KindMethodUpgrade {
+					candidateID = decision.CandidateID
+				}
+			}
+			if candidateID == "" {
+				t.Fatal("fixture did not produce method upgrade")
+			}
+			if tc.decision != "" {
+				plan, err := BuildImprovementPlan(home, candidateID, filepath.Join(t.TempDir(), "target.go"), t0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := RecordImprovementPlan(home, plan); err != nil {
+					t.Fatal(err)
+				}
+				reviewed := ReviewedImprovement{
+					SchemaVersion: ReviewedImprovementSchemaVersion,
+					ID:            "reviewed_fixture", ReviewID: "fixture", PlanID: plan.ID,
+					CandidateID: candidateID, CandidateKind: KindMethodUpgrade,
+					ImprovementID: plan.Draft.ImprovementID,
+					Decision:      tc.decision, Status: tc.status,
+				}
+				if _, err := reviewartifact.WriteJSON(home, ImprovementReviewArea, "fixture.reviewed.json", reviewed, "  "); err != nil {
+					t.Fatal(err)
+				}
+			}
+			report, err := Doctor(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.CandidateInboxCounts[KindMethodUpgrade] != 1 || report.MethodUpgradeDebt != tc.wantDebt || report.SelfImprovementDebt != tc.wantDebt {
+				t.Fatalf("raw inbox/debt = %d/%d/%d, want 1/%d/%d", report.CandidateInboxCounts[KindMethodUpgrade], report.MethodUpgradeDebt, report.SelfImprovementDebt, tc.wantDebt, tc.wantDebt)
+			}
+			wantStatus := "ok"
+			if tc.wantDebt > 0 {
+				wantStatus = "attention"
+			}
+			if report.Status != wantStatus {
+				t.Fatalf("status = %q, want %q", report.Status, wantStatus)
+			}
+		})
+	}
+}
+
+func TestDoctorRefusesMalformedImprovementReview(t *testing.T) {
+	home, _ := setup(t)
+	dir := filepath.Join(home, "reviews", ImprovementReviewArea)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "broken.reviewed.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Doctor(home); err == nil || !strings.Contains(err.Error(), "parse improvement review") {
+		t.Fatalf("malformed terminal evidence must surface, got %v", err)
+	}
+}
 
 func TestDoctorReportsSelfImprovementState(t *testing.T) {
 	home, store := setup(t)
@@ -62,8 +170,8 @@ func TestDoctorReportsDuplicateNoPromoteChurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
-	if report.Status != "attention" {
-		t.Fatalf("status = %q, want attention", report.Status)
+	if report.Status != "ok" {
+		t.Fatalf("status = %q, want ok", report.Status)
 	}
 	if report.MemoryPromoted != 1 || report.MemoryRejected != 1 {
 		t.Fatalf("memory promoted/rejected = %d/%d, want 1/1", report.MemoryPromoted, report.MemoryRejected)

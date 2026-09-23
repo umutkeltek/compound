@@ -108,8 +108,18 @@ func Doctor(homePath string) (DoctorReport, error) {
 	}
 
 	report.EvalCases = report.CandidateInboxCounts[KindEvalCase]
-	report.MethodUpgradeDebt = report.CandidateInboxCounts[KindMethodUpgrade]
-	report.PolicyPatchDebt = report.CandidateInboxCounts[KindPolicyPatch]
+	resolvedImprovements, err := terminalImprovementReviews(homePath)
+	if err != nil {
+		return report, err
+	}
+	report.MethodUpgradeDebt, err = unresolvedImprovementCandidates(homePath, KindMethodUpgrade, resolvedImprovements)
+	if err != nil {
+		return report, err
+	}
+	report.PolicyPatchDebt, err = unresolvedImprovementCandidates(homePath, KindPolicyPatch, resolvedImprovements)
+	if err != nil {
+		return report, err
+	}
 	report.CapabilityObservations = report.CandidateInboxCounts[KindCapabilityObs]
 	report.SelfImprovementDebt = report.MethodUpgradeDebt + report.PolicyPatchDebt
 
@@ -135,7 +145,7 @@ func Doctor(homePath string) (DoctorReport, error) {
 		DoctorCheck{
 			Name:   "method_policy_debt",
 			Status: statusForDebt(report.SelfImprovementDebt),
-			Detail: fmt.Sprintf("%d method upgrade(s), %d policy patch(es)", report.MethodUpgradeDebt, report.PolicyPatchDebt),
+			Detail: fmt.Sprintf("%d method upgrade review(s), %d policy patch review(s) unresolved", report.MethodUpgradeDebt, report.PolicyPatchDebt),
 		},
 		DoctorCheck{
 			Name:   "capability_observations",
@@ -144,11 +154,11 @@ func Doctor(homePath string) (DoctorReport, error) {
 		},
 		DoctorCheck{
 			Name:   "duplicate_churn",
-			Status: statusForDebt(report.DuplicateMemoryRejections + report.DuplicateCandidateRejections),
-			Detail: fmt.Sprintf("%d duplicate memory rejection(s), %d duplicate candidate rejection(s), %d memory no-promote row(s), %d candidate no-promote row(s)", report.DuplicateMemoryRejections, report.DuplicateCandidateRejections, report.DuplicateMemoryNoPromoteRows, report.DuplicateCandidateNoPromoteRows),
+			Status: statusForPositive(report.DuplicateMemoryRejections + report.DuplicateCandidateRejections),
+			Detail: fmt.Sprintf("lifetime totals: %d duplicate memory rejection(s), %d duplicate candidate rejection(s), %d memory no-promote row(s), %d candidate no-promote row(s); recent rate unknown", report.DuplicateMemoryRejections, report.DuplicateCandidateRejections, report.DuplicateMemoryNoPromoteRows, report.DuplicateCandidateNoPromoteRows),
 		},
 	)
-	if report.SelfImprovementDebt > 0 || report.DuplicateMemoryRejections > 0 || report.DuplicateCandidateRejections > 0 {
+	if report.SelfImprovementDebt > 0 {
 		report.Status = "attention"
 	}
 	return report, nil
@@ -222,6 +232,80 @@ func countCandidateFiles(homePath, kind string) (int, error) {
 		return 0, err
 	}
 	return len(files), nil
+}
+
+// The inbox is a durable candidate inventory: a reviewed candidate remains on disk.
+// Only a terminal owner review closes the operator decision represented by debt.
+func unresolvedImprovementCandidates(homePath, kind string, terminal map[string]bool) (int, error) {
+	rel := candidates.InboxDir(candidates.Kind(kind))
+	files, err := filepath.Glob(filepath.Join(homePath, rel, "*.json"))
+	if err != nil {
+		return 0, err
+	}
+	var count int
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return 0, err
+		}
+		var candidate Candidate
+		if err := json.Unmarshal(data, &candidate); err != nil {
+			return 0, fmt.Errorf("parse improvement candidate %s: %w", path, err)
+		}
+		if candidate.ID != strings.TrimSuffix(filepath.Base(path), ".json") || candidate.Kind != kind {
+			return 0, fmt.Errorf("improvement candidate %s has mismatched id or kind", path)
+		}
+		if !terminal[kind+"\x00"+candidate.ID] {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func terminalImprovementReviews(homePath string) (map[string]bool, error) {
+	terminal := map[string]bool{}
+	dir := filepath.Join(homePath, "reviews", ImprovementReviewArea)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return terminal, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".reviewed.json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		var reviewed ReviewedImprovement
+		if err := json.Unmarshal(data, &reviewed); err != nil {
+			return nil, fmt.Errorf("parse improvement review %s: %w", path, err)
+		}
+		if reviewed.SchemaVersion != ReviewedImprovementSchemaVersion || reviewed.ReviewID == "" || reviewed.ID != "reviewed_"+reviewed.ReviewID || entry.Name() != reviewed.ReviewID+".reviewed.json" || reviewed.PlanID == "" || reviewed.PlanID != filepath.Base(reviewed.PlanID) || reviewed.CandidateID == "" {
+			return nil, fmt.Errorf("invalid improvement review %s", path)
+		}
+		plan, err := readImprovementPlan(homePath, reviewed.PlanID)
+		if err != nil {
+			return nil, err
+		}
+		if plan.SchemaVersion != ImprovementPlanSchemaVersion {
+			return nil, fmt.Errorf("improvement review %s references invalid plan schema", path)
+		}
+		if reviewed.CandidateID != plan.CandidateID || reviewed.CandidateKind != plan.CandidateKind || reviewed.ImprovementID != plan.Draft.ImprovementID {
+			return nil, fmt.Errorf("improvement review %s does not match its plan", path)
+		}
+		if reviewed.Status != improvementReviewStatus(reviewed.Decision) || !improvementReviewDecisionOK(reviewed.Decision) {
+			return nil, fmt.Errorf("improvement review %s has inconsistent decision or status", path)
+		}
+		if reviewed.Decision == ImprovementReviewDecisionAccept || reviewed.Decision == ImprovementReviewDecisionReject {
+			terminal[reviewed.CandidateKind+"\x00"+reviewed.CandidateID] = true
+		}
+	}
+	return terminal, nil
 }
 
 func statusForPositive(n int) string {
