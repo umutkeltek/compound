@@ -34,6 +34,7 @@ func TestDetachedGovernedDoorCompletesAndReconciles(t *testing.T) {
 			}
 			w, err := store.Create(work.CreateInput{
 				Owner: "codex", SuccessPredicate: "synthetic detached adapter has one terminal attempt",
+				DesiredOutcome: "verify detached goal delivery",
 				GitDelivery: &envelope.GitDeliveryContract{
 					TargetWorktreeRoot: workspace, TargetLocalRef: "refs/heads/main",
 					ExpectedBaseSHA: base, PublicationMode: "local_only",
@@ -108,8 +109,19 @@ func TestDetachedGovernedDoorCompletesAndReconciles(t *testing.T) {
 				t.Fatalf("actual adapter did not leave bound terminal evidence: %+v err=%v\n%s", attempt, err, logBody)
 			}
 			transcript, err := os.ReadFile(attempt.TranscriptRef)
-			if err != nil || !strings.Contains(string(transcript), "synthetic adapter consumed: exec detached acceptance prompt") || !strings.Contains(string(transcript), "synthetic adapter executable: "+fakeCodex) {
-				t.Fatalf("actual adapter transcript does not prove the synthetic executable consumed the prompt: %v\n%s", err, transcript)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{
+				"synthetic adapter executable: " + fakeCodex,
+				"synthetic adapter consumed: exec # Current governed work " + w.ID,
+				"stdout: ## Desired outcome\nstdout: verify detached goal delivery",
+				"stdout: ## Success predicate\nstdout: synthetic detached adapter has one terminal attempt",
+				"stdout: ## Latest explicit request\nstdout: detached acceptance prompt",
+			} {
+				if !strings.Contains(string(transcript), want) {
+					t.Fatalf("actual adapter transcript does not prove governed prompt delivery; missing %q:\n%s", want, transcript)
+				}
 			}
 			if !strings.Contains(string(logBody), "run_attempt_id: "+attempt.ID) || !strings.Contains(string(logBody), "status: "+wantStatus) {
 				t.Fatalf("actual governed door did not report its terminal attempt:\n%s", logBody)
