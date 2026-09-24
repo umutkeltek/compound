@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { constants, accessSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { constants, accessSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { DOORS } from "../src/lib/doors.ts";
 
@@ -207,6 +208,38 @@ function runDoor(door) {
   return { door, elapsedMs: performance.now() - started, error };
 }
 
+// Exercise the production reader with owner-created records, not a duplicated
+// regex or a mapped fixture: valid explicit IDs must survive the read boundary.
+function assertWorkDetailReader() {
+  const fixtureHome = mkdtempSync(path.join(tmpdir(), "compound-work-reader-"));
+  const env = { ...process.env, COMPOUND_HOME: fixtureHome, COMPOUND_BIN: BIN };
+  const ids = ["work_abc123def456", "work_selected_fixture_1", "work_Custom-shaped_1"];
+  try {
+    execFileSync(BIN, ["home", "init"], { env, stdio: "pipe" });
+    for (const id of ids) {
+      execFileSync(BIN, ["work", "create", "--work-id", id, "--owner", "console-smoke",
+        "--by", "console-smoke", "--predicate", "Exact work remains visible",
+        "--outcome", "Inspect the synthetic task"], { env, stdio: "pipe" });
+    }
+    const moduleURL = pathToFileURL(path.join(CONSOLE_ROOT, "src/lib/compound.ts")).href;
+    execFileSync("node", ["--experimental-strip-types", "--input-type=module", "--eval", `
+      import assert from "node:assert/strict";
+      const { getWork } = await import(${JSON.stringify(moduleURL)});
+      for (const id of ${JSON.stringify(ids)}) {
+        const work = await getWork(id);
+        assert.equal(work?.id, id, "work-detail reader must preserve exact owner-created ID");
+        assert.equal(work?.desired_outcome, "Inspect the synthetic task");
+      }
+      for (const id of ["work_", "work_../escape", "work_a\\\\escape", " work_abc123 ", "--help", "work_a\\u0000b", "work_a\\nb"]) {
+        assert.equal(await getWork(id), null, "unsafe read identity must remain rejected");
+      }
+    `], { env, stdio: "pipe" });
+    console.log("projection-doors-smoke: real CLI work-detail IDs and goal round-trip ok");
+  } finally {
+    rmSync(fixtureHome, { recursive: true, force: true });
+  }
+}
+
 if (!HOME) skip("COMPOUND_HOME is not set");
 try {
   if (!statSync(HOME).isDirectory()) skip("COMPOUND_HOME is not a directory");
@@ -220,6 +253,12 @@ try {
   assertDoorManifestCoversLiteralCalls();
 } catch (error) {
   failures.push(`drift-guard: ${error.message}`);
+}
+try {
+  assertWorkDetailReader();
+} catch (error) {
+  console.error(`FAIL work-detail-reader: ${error.message}`);
+  process.exit(1);
 }
 
 const results = DOORS.map(runDoor);

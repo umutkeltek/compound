@@ -634,7 +634,9 @@ export async function getWorkLeases(): Promise<Json | null> {
 }
 
 export async function getWork(id: string): Promise<Json | null> {
-  if (!/^work_[a-z0-9]+$/.test(id)) return null;
+  // Work owns explicit IDs as well as generated ones; they are not hex-only.
+  // Keep one safe argv/path element and let the owned read resolve its identity.
+  if (!id.startsWith("work_") || id.length === 5 || id.trim() !== id || /[/\\\x00-\x1f\x7f]/.test(id)) return null;
   return runJson(["work", "show", id]);
 }
 

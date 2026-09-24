@@ -399,6 +399,10 @@ finalization; reattaching an older reference cannot accept a newer attempt. Veri
 attachment and close each compare the exact source state/policy/action under the
 existing lifecycle admission locks. A dry run attaches nothing.
 This check does not attest a reference's semantic quality; the verifier still owns it.
+The console work-detail reader resolves the exact owner-created ID, including
+underscored/custom IDs; it rejects path separators, control characters and padded
+identities rather than assuming every work ID is a generated hex suffix. The
+projection-door smoke creates real CLI records and checks the ID and goal round-trip.
 Dead explicit doors without a new linked terminal attempt preserve source work and
 report loss, never certify an old verifying state as new execution. Settled sidecars
 are archived under the existing detached owner before another attempt replaces the
