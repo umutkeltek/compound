@@ -36,6 +36,9 @@ export function runSelectedContinueSelfTest(): { ok: boolean; details: string[] 
   const needsProof = selectedContinueView(verifying, lease);
   check("status does not conflate run and completion", running.status === "Running" &&
     needsProof.status === "Needs proof review" && needsProof.detail.includes("never automatic"));
+  const completed = selectedContinueView({ ...base, state: "completed" }, lease);
+  check("completed view points to proof without attesting it", completed.status === "Completed" &&
+    completed.detail.includes("Inspect its receipt") && !completed.detail.includes("proof transition"));
   check("lease lookup exact and drift-sensitive", selectedWorkLease({ leases: [lease] }, id)?.by === "actor:exact" &&
     selectedWorkLease({ leases: [lease] }, "work_other") === null &&
     selectedContinueRevision(base, lease) !== selectedContinueRevision(base, { ...lease, by: "actor:changed" }));

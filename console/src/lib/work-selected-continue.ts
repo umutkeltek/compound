@@ -45,7 +45,7 @@ export function selectedContinueView(work: Json, lease: Json | null): SelectedCo
     detail = "Execution returned to verification. Review the attempt and proof before closing; a fresh resume is explicit, never automatic.";
   } else if (state === "completed") {
     status = "Completed";
-    detail = "This work has been closed with its separate proof transition.";
+    detail = "Closed as completed. Inspect its receipt and proof trail for the recorded evidence.";
   } else if (state === "failed") {
     status = "Failed";
     detail = "This work was closed as failed. A run result alone did not complete it.";

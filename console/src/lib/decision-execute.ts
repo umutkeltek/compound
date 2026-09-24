@@ -473,7 +473,7 @@ function jobHealthReviewEffect(payload: Json, preview: boolean): DecisionExecuti
 async function resolveItem(spec: DecisionAreaSpec, itemId: string): Promise<Json | null> {
   if (spec.area === "work-selected-continue") {
     const [work, leases] = await Promise.all([
-      runJson(["work", "show", itemId]),
+      runJson(["work", "show", itemId, "--json"]),
       runJson(["work", "leases", "--json"]),
     ]);
     if (!work || str(work.id) !== itemId || !leases) return null;
