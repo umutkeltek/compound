@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { constants, accessSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { constants, accessSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -211,7 +211,8 @@ function runDoor(door) {
 // Exercise the production reader with owner-created records, not a duplicated
 // regex or a mapped fixture: valid explicit IDs must survive the read boundary.
 function assertWorkDetailReader() {
-  const fixtureHome = mkdtempSync(path.join(tmpdir(), "compound-work-reader-"));
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "compound-work-reader-"));
+  const fixtureHome = path.join(fixtureRoot, "home");
   const env = { ...process.env, COMPOUND_HOME: fixtureHome, COMPOUND_BIN: BIN };
   const ids = ["work_abc123def456", "work_selected_fixture_1", "work_Custom-shaped_1"];
   try {
@@ -230,13 +231,33 @@ function assertWorkDetailReader() {
         assert.equal(work?.id, id, "work-detail reader must preserve exact owner-created ID");
         assert.equal(work?.desired_outcome, "Inspect the synthetic task");
       }
-      for (const id of ["work_", "work_../escape", "work_a\\\\escape", " work_abc123 ", "--help", "work_a\\u0000b", "work_a\\nb"]) {
-        assert.equal(await getWork(id), null, "unsafe read identity must remain rejected");
-      }
     `], { env, stdio: "pipe" });
+    // A not-found response would also return null. Observe the CLI boundary to
+    // prove invalid input is rejected before dispatch, in a fresh reader process.
+    const marker = path.join(fixtureRoot, "cli-called");
+    const fakeBin = path.join(fixtureRoot, "compound-probe");
+    writeFileSync(fakeBin, `#!/usr/bin/env node
+      require("node:fs").writeFileSync(${JSON.stringify(marker)}, "called");
+      process.stdout.write("{}");
+    `, { mode: 0o700 });
+    const invalidIDs = ["work_", "work_../escape", "work_a\\escape", " work_abc123 ",
+      "--help", "work_a\u0000b", "work_a\nb", "work_a\u007fb", "work_a\u0085b", "work_a\u009fb"];
+    execFileSync("node", ["--experimental-strip-types", "--input-type=module", "--eval", `
+      import assert from "node:assert/strict";
+      import { existsSync } from "node:fs";
+      const { getWork } = await import(${JSON.stringify(moduleURL)});
+      for (const id of ${JSON.stringify(invalidIDs)}) {
+        const result = await getWork(id);
+        assert.equal(existsSync(${JSON.stringify(marker)}), false,
+          "unsafe identity must not dispatch CLI: " + JSON.stringify(id));
+        assert.equal(result, null, "unsafe read identity must remain rejected");
+      }
+      await getWork("work_valid_probe");
+      assert.equal(existsSync(${JSON.stringify(marker)}), true, "dispatch probe must be live");
+    `], { env: { ...env, COMPOUND_BIN: fakeBin }, stdio: "pipe" });
     console.log("projection-doors-smoke: real CLI work-detail IDs and goal round-trip ok");
   } finally {
-    rmSync(fixtureHome, { recursive: true, force: true });
+    rmSync(fixtureRoot, { recursive: true, force: true });
   }
 }
 
