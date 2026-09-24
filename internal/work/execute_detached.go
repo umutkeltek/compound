@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"compound/internal/runattempt"
 )
 
 // R6P (2026-09-11): detached unattended launch.
@@ -122,8 +124,13 @@ func (e *DetachedLaunchRecordError) Unwrap() error { return e.Err }
 // launch. It is the runtime identity a human needs to observe or cancel the
 // run without the heartbeat: pid, process group, log path, exact argv.
 type DetachedLaunch struct {
-	SchemaVersion string `json:"schema_version"`
-	WorkID        string `json:"work_id"`
+	// Explicit continuations retain their source generation. A pre-existing
+	// verifying state cannot prove that this new door ever executed.
+	Explicit            bool     `json:"explicit,omitempty"`
+	SourceRevision      string   `json:"source_revision,omitempty"`
+	SourceRunAttemptIDs []string `json:"source_run_attempt_ids,omitempty"`
+	SchemaVersion       string   `json:"schema_version"`
+	WorkID              string   `json:"work_id"`
 	// LaunchID is the identity minted with the reservation and stamped into
 	// the door log, so a start, a recovery and the launcher's own start guard
 	// all name the same launch. Empty on sidecars written before 2026-09-19:
@@ -672,6 +679,19 @@ func (s *Store) ReconcileDetachedLaunches(now time.Time) []DetachedReconcile {
 	if err != nil || len(launches) == 0 {
 		return nil
 	}
+	return s.reconcileDetachedLaunches(launches, now)
+}
+
+// ReconcileDetachedLaunch never scans or changes unrelated work.
+func (s *Store) ReconcileDetachedLaunch(workID string, now time.Time) []DetachedReconcile {
+	launch, err := ReadDetachedLaunch(s.home, workID)
+	if err != nil {
+		return nil
+	}
+	return s.reconcileDetachedLaunches([]DetachedLaunch{launch}, now)
+}
+
+func (s *Store) reconcileDetachedLaunches(launches []DetachedLaunch, now time.Time) []DetachedReconcile {
 	var out []DetachedReconcile
 	for _, launch := range launches {
 		if launch.Outcome == DetachedOutcomeDoorFinalized || launch.Outcome == DetachedOutcomeDoorLost || launch.Outcome == DetachedOutcomeDoorLostRunning {
@@ -749,6 +769,9 @@ func (s *Store) ReconcileDetachedLaunches(now time.Time) []DetachedReconcile {
 		case loadErr != nil:
 			launch.Outcome = DetachedOutcomeDoorLost
 			launch.OutcomeDetail = "envelope unreadable: " + loadErr.Error()
+		case launch.Explicit && w.State != "running" && !s.detachedHasNewTerminalAttempt(launch, w.RunAttemptIDs):
+			launch.Outcome = DetachedOutcomeDoorLost
+			launch.OutcomeDetail = "explicit door exited without a new linked terminal attempt; source work retained, no execution success inferred"
 		case w.State == "verifying" || w.State == "completed" || w.State == "failed" || w.State == "cancelled":
 			launch.Outcome = DetachedOutcomeDoorFinalized
 			launch.OutcomeDetail = "door exited after finalizing; envelope " + w.State
@@ -793,6 +816,23 @@ func (s *Store) ReconcileDetachedLaunches(now time.Time) []DetachedReconcile {
 		out = append(out, verdict)
 	}
 	return out
+}
+
+func (s *Store) detachedHasNewTerminalAttempt(launch DetachedLaunch, ids []string) bool {
+	previous := make(map[string]bool, len(launch.SourceRunAttemptIDs))
+	for _, id := range launch.SourceRunAttemptIDs {
+		previous[id] = true
+	}
+	for _, id := range ids {
+		if previous[id] {
+			continue
+		}
+		a, err := runattempt.Open(s.home).Get(id)
+		if err == nil && a.WorkID == launch.WorkID && (a.Status == runattempt.StatusSucceeded || a.Status == runattempt.StatusFailed || a.Status == runattempt.StatusAbandoned) {
+			return true
+		}
+	}
+	return false
 }
 
 // detachedReconcileSummary renders reconciliation verdicts for the Human line.

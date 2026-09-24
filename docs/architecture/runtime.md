@@ -378,6 +378,32 @@ does not itself establish payment-flow or deployment success.
 
 ### Explicit same-work execution resume
 
+`work continue --selected --actor <lease-holder>` is an explicit continuation,
+not an unattended queue grant. It resolves the actor's sole claimed/running/verifying
+work; ambiguity refuses until an exact `--expect-work` is selected. The existing
+lease, saved execution selection and workspace are required. At most one bounded
+detached governed door starts. A per-work admission lock excludes duplicate clicks;
+the child checks the frozen source revision and tuple before ordinary fresh policy,
+permission, reservation and start checks. Only the selected launch is reconciled.
+`--resume` explicitly uses the existing verifying-resume owner; it never reopens
+terminal work. Selected launches opt into `--keep-verifying-on-failure`: a new,
+durable, same-work/action terminal failed attempt retains verifying for a later
+explicit retry. An attemptless/unbound failure remains unresolved running; ordinary
+first-run failure semantics are unchanged. A successful execution waits
+for verification rather than silently spending another attempt. Explicit acceptance
+(`--outcome`, `--move-type`, `--summary`) additionally requires a verification reference
+distinct from captured executor transcripts before the existing close/proof gates.
+`--verification <ref>` attaches a verifier's check through the same selected path,
+without copying the work ID. The check must be new after the latest linked execution
+finalization; reattaching an older reference cannot accept a newer attempt. Verification
+attachment and close each compare the exact source state/policy/action under the
+existing lifecycle admission locks. A dry run attaches nothing.
+This check does not attest a reference's semantic quality; the verifier still owns it.
+Dead explicit doors without a new linked terminal attempt preserve source work and
+report loss, never certify an old verifying state as new execution. Settled sidecars
+are archived under the existing detached owner before another attempt replaces the
+current pointer. Ordinary browser mutation capability gates remain unchanged.
+
 `compound work advance <work_id> --to running --execute --resume-verifying --harness <name> --workspace <project> -- <command>`
 continues a verifying WorkEnvelope through a fresh running reservation and back to
 verifying after each attempt. A failed resume retains its failed RunAttempt, reports

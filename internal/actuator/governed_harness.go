@@ -97,6 +97,7 @@ func (l *LaneRefusal) RenderTo(w io.Writer) {
 // GovernedHarnessFinalizationInput binds adapter completion to the exact
 // running work generation that authorized it.
 type GovernedHarnessFinalizationInput struct {
+	RetainFailedAttempt   bool
 	ResumeVerifying       bool
 	Store                 *work.Store
 	WorkID                string
@@ -335,6 +336,12 @@ func governedGoalPrompt(w envelope.WorkEnvelope, request string) string {
 // cancellation evidence on the attempt. Callers that pass context.Background()
 // forfeit that guarantee; a caller may not silently strip cancellation from
 // the canonical execution owner.
+// GovernedHarnessContinuationOptions changes only failed-attempt disposition.
+// It never changes source admission, permission, policy or retry authority.
+type GovernedHarnessContinuationOptions struct {
+	RetainFailedAttempt bool
+}
+
 func ExecuteGovernedHarnessAdvance(
 	ctx context.Context,
 	homePath string,
@@ -348,7 +355,12 @@ func ExecuteGovernedHarnessAdvance(
 	existingRunAttempts []string,
 	resumeVerifying bool,
 	now time.Time,
+	continuation ...GovernedHarnessContinuationOptions,
 ) (GovernedHarnessAdvanceExecution, error) {
+	if len(continuation) > 1 {
+		return GovernedHarnessAdvanceExecution{}, errors.New("only one continuation disposition may be supplied")
+	}
+	retainFailure := len(continuation) == 1 && continuation[0].RetainFailedAttempt
 	reserved, err := ReserveGovernedHarnessLaunch(GovernedHarnessReservationInput{
 		HomePath: homePath, Store: store, ClaimedWork: claimedWork, Adapter: adapter,
 		RunInput: runInput, Actor: actor, Target: target, Note: note, ResumeVerifying: resumeVerifying, Now: now,
@@ -362,6 +374,7 @@ func ExecuteGovernedHarnessAdvance(
 		harnessName = adapter.Name()
 	}
 	finalized, err := FinalizeGovernedHarnessRun(GovernedHarnessFinalizationInput{
+		RetainFailedAttempt:   retainFailure,
 		Store:                 store,
 		WorkID:                claimedWork.ID,
 		Actor:                 actor,
@@ -476,8 +489,24 @@ func FinalizeGovernedHarnessRun(in GovernedHarnessFinalizationInput) (GovernedHa
 	result := GovernedHarnessFinalizationResult{
 		Succeeded: in.RunError == nil && in.Output.RunAttempt.Status == runattempt.StatusSucceeded,
 	}
+	if in.RetainFailedAttempt && !result.Succeeded {
+		// An attemptless or unverifiable infrastructure error is unresolved,
+		// not a verified failed execution. Keep the exact running reservation
+		// for recovery rather than permitting another launch over uncertainty.
+		attempt, err := runattempt.Open(in.Store.HomePath()).Get(in.Output.RunAttempt.ID)
+		if err != nil || attempt.WorkID != in.WorkID || attempt.ActionIntentID != in.RunningActionIntentID ||
+			attempt.Origin != runattempt.OriginHarnessExecution ||
+			(attempt.Status != runattempt.StatusFailed && attempt.Status != runattempt.StatusAbandoned) {
+			return result, errors.New("selected execution failure lacks a new bound terminal failed attempt; running work remains unresolved for exact recovery")
+		}
+		for _, prior := range in.ExistingRunAttemptIDs {
+			if prior == attempt.ID {
+				return result, errors.New("selected failure cannot reuse a prior attempt as new recovery evidence")
+			}
+		}
+	}
 	var reservationErr error
-	if result.Succeeded || in.ResumeVerifying {
+	if result.Succeeded || in.ResumeVerifying || in.RetainFailedAttempt {
 		advanced, err := in.Store.Advance(in.WorkID, work.AdvanceInput{
 			To:                       "verifying",
 			Actor:                    in.Actor,
@@ -496,7 +525,7 @@ func FinalizeGovernedHarnessRun(in GovernedHarnessFinalizationInput) (GovernedHa
 			result.WorkID = advanced.ID
 			result.FinalState = advanced.State
 			if !result.Succeeded {
-				result.Warnings = append(result.Warnings, "resume attempt failed; work remains verifying for governed retry, not completed")
+				result.Warnings = append(result.Warnings, "execution attempt failed; work remains verifying for governed retry, not completed")
 			}
 		}
 	} else {

@@ -285,6 +285,17 @@ changing the run budget.
 
 ## Detached start/record failures are recoverable, not "failed to spawn"
 
+Explicit selected-work Continue reuses this door without unattended route selection
+or forced bypass. It carries the saved tuple/revision and a full source-generation
+digest to `work advance --execute`; explicit verifying resumes add `--resume-verifying`.
+The current goal and context come from the reserved WorkEnvelope, not repeated caller
+prose. Source drift refuses before minting; fresh policy and exact start/finalization
+reservations remain mandatory. A launch acknowledgment means only that a bounded door
+started, not that its adapter passed preflight or its task was accepted. New attempts
+retain retry lineage and archived launch evidence; observed model/provider identity
+remains unknown unless attested by route evidence. This is a mechanics contract, not
+evidence of improved product quality, saved human time, or successful model transfer.
+
 The detached door protocol is start/record-safe (2026-09-15):
 
 ```text

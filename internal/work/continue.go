@@ -218,12 +218,18 @@ type policyDecision struct {
 }
 
 type ContinueOptions struct {
-	Actor        string
-	RecentLimit  int
-	ExpectWorkID string
-	Outcome      string
-	MoveType     string
-	Summary      string
+	// Selected explicitly continues only ExpectWorkID under its current lease.
+	// It is not an unattended queue grant. Resume authorizes one new attempt
+	// from verifying; without it verification-pending work never relaunches.
+	Selected        bool
+	Resume          bool
+	VerificationRef string
+	Actor           string
+	RecentLimit     int
+	ExpectWorkID    string
+	Outcome         string
+	MoveType        string
+	Summary         string
 	// MaxExecuteSteps requests how many execute-stage launches Continue may
 	// perform. Zero (the flag omitted) means the default of 1, so an
 	// invocation that never mentions the flag can still launch a governed
@@ -243,6 +249,7 @@ type ContinueOptions struct {
 }
 
 type ContinueResult struct {
+	SelectedClose       *DispatchCloseResult      `json:"selected_close,omitempty"`
 	SchemaVersion       string                    `json:"schema_version"`
 	ID                  string                    `json:"id"`
 	GeneratedAt         string                    `json:"generated_at"`
@@ -441,6 +448,12 @@ func executeWarning(opts ContinueOptions) string {
 }
 
 func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, error) {
+	if opts.Selected {
+		return s.continueSelected(now, opts)
+	}
+	if opts.Resume || opts.VerificationRef != "" {
+		return ContinueResult{}, fmt.Errorf("resume and verification require selected-work Continue")
+	}
 	actor := strings.TrimSpace(opts.Actor)
 	if actor == "" {
 		actor = "codex"

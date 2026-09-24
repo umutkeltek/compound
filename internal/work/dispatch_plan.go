@@ -261,12 +261,16 @@ type DispatchClosePlanResult struct {
 }
 
 type DispatchCloseOptions struct {
-	Actor       string
-	RecentLimit int
-	WorkID      string
-	Outcome     string
-	MoveType    string
-	Summary     string
+	// Optional exact source reservation, checked by Close under its admission lock.
+	ExpectedWorkState        string
+	ExpectedPolicyDecisionID string
+	ExpectedActionIntentID   string
+	Actor                    string
+	RecentLimit              int
+	WorkID                   string
+	Outcome                  string
+	MoveType                 string
+	Summary                  string
 }
 
 type DispatchCloseResult struct {
@@ -1125,12 +1129,15 @@ func (s *Store) DispatchClose(now time.Time, opts DispatchCloseOptions) (Dispatc
 		summary = "dispatch close"
 	}
 	closed, err := s.Close(plan.Selected.WorkID, CloseInput{
-		Outcome:   outcome,
-		MoveType:  moveType,
-		Actor:     actor,
-		Summary:   summary,
-		Changed:   true,
-		ProofRefs: append([]string{}, plan.ClosePlan.ProofRefs...),
+		ExpectedWorkState:        opts.ExpectedWorkState,
+		ExpectedPolicyDecisionID: opts.ExpectedPolicyDecisionID,
+		ExpectedActionIntentID:   opts.ExpectedActionIntentID,
+		Outcome:                  outcome,
+		MoveType:                 moveType,
+		Actor:                    actor,
+		Summary:                  summary,
+		Changed:                  true,
+		ProofRefs:                append([]string{}, plan.ClosePlan.ProofRefs...),
 	}, now)
 	if err != nil {
 		return DispatchCloseResult{}, err

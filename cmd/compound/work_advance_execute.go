@@ -110,6 +110,10 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		refusal.RenderTo(os.Stderr)
 		workAdvanceExecuteExit(1)
 	}
+	if expected := valueFlag(rest, "--expected-work-revision"); expected != "" && expected != work.ExecutionSourceRevision(wenv) {
+		fmt.Fprintln(os.Stderr, "error: selected work changed before governed execution; no RunAttempt minted")
+		workAdvanceExecuteExit(1)
+	}
 	// work_r7a_execution_selection_20260911: fall back to the saved selection's harness when --harness is omitted; refuse when neither is set.
 	if harnessName == "" {
 		if wenv.ExecutionSelection == nil || strings.TrimSpace(wenv.ExecutionSelection.Harness) == "" {
@@ -274,7 +278,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	if note == "" {
 		note = "harness execute: " + harnessName
 	}
-	executed, err := actuator.ExecuteGovernedHarnessAdvance(launchCtx, homePath, store, wenv, adapter, runInput, actor, target, note, existingRunAttempts, resumeVerifying, now)
+	executed, err := actuator.ExecuteGovernedHarnessAdvance(launchCtx, homePath, store, wenv, adapter, runInput, actor, target, note, existingRunAttempts, resumeVerifying, now, actuator.GovernedHarnessContinuationOptions{RetainFailedAttempt: hasFlag(flagArgs, "--keep-verifying-on-failure")})
 	var laneRefusal *actuator.LaneRefusal
 	if errors.As(err, &laneRefusal) && laneRefusal != nil { // R3B 2026-09-04: explicit --permission-mode on unready lane refused BEFORE mint.
 		laneRefusal.RenderTo(os.Stderr)

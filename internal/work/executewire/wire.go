@@ -38,6 +38,7 @@ import (
 // the envelope byte-identical to before, instead of stranding it in
 // `running` with a lease.
 func Install() {
+	work.SelectedContinueLauncher = LaunchSelectedViaDoor
 	work.SwapExecuteStageRoutePlan(RouteFromManifest)
 	work.SwapExecuteStageRouteCandidates(RouteCandidatesFromManifest)
 	work.SwapExecuteStageCapacity(CapacityFromSnapshot)

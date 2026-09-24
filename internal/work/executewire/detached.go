@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/work"
 )
 
@@ -121,6 +122,10 @@ func LaunchDetachedViaDoor(store *work.Store, workID, lane, prompt, actor string
 }
 
 func LaunchDetachedCandidateViaDoor(store *work.Store, workID string, candidate work.ExecutionRouteCandidate, prompt, actor string, now time.Time) (work.DetachedLaunch, error) {
+	return launchDetachedCandidateViaDoor(store, workID, candidate, prompt, actor, now, nil)
+}
+
+func launchDetachedCandidateViaDoor(store *work.Store, workID string, candidate work.ExecutionRouteCandidate, prompt, actor string, now time.Time, source *envelope.WorkEnvelope) (work.DetachedLaunch, error) {
 	var launch work.DetachedLaunch
 	if store == nil {
 		return launch, errors.New("detached launch: nil work store")
@@ -148,7 +153,10 @@ func LaunchDetachedCandidateViaDoor(store *work.Store, workID string, candidate 
 			return launch, err
 		}
 	}
-	if !strings.HasPrefix(wenv.State, "claimed") {
+	if source != nil && work.ExecutionSourceRevision(wenv) != work.ExecutionSourceRevision(*source) {
+		return launch, errors.New("selected work changed before detached handoff")
+	}
+	if wenv.State != "claimed" && !(source != nil && wenv.State == "verifying") {
 		return launch, fmt.Errorf("detached launch: envelope %s is %s, expected claimed (the seam claims before it hands off)", workID, wenv.State)
 	}
 	if wenv.GitDelivery == nil || strings.TrimSpace(wenv.GitDelivery.TargetWorktreeRoot) == "" {
@@ -184,6 +192,20 @@ func LaunchDetachedCandidateViaDoor(store *work.Store, workID string, candidate 
 
 	budget := DefaultDetachedLaunchBudget
 	argv := DetachedCandidateLaunchArgv(timeoutBin, doorBin, budget, workID, candidate, prompt, actor)
+	if source != nil {
+		// Use the explicit door's ordinary permission derivation, never force
+		// unattended bypass. The same fresh authority checks still own launch.
+		for i := 0; i+1 < len(argv); i++ {
+			if argv[i] == "--permission-mode" {
+				argv = append(argv[:i], argv[i+2:]...)
+				break
+			}
+		}
+		argv = append(argv, "--expected-work-revision", work.ExecutionSourceRevision(*source), "--keep-verifying-on-failure")
+		if source.State == "verifying" {
+			argv = append(argv, "--resume-verifying")
+		}
+	}
 	// 1. Durable reserved launch identity BEFORE the process exists. A
 	// failure here is a clean not-started refusal: no child, no mutation.
 	// The launch id is minted HERE, once: it is what the log marker, the
@@ -200,6 +222,11 @@ func LaunchDetachedCandidateViaDoor(store *work.Store, workID string, candidate 
 		BudgetSeconds: int(budget.Seconds()),
 		StartedAt:     now.UTC().Format(time.RFC3339),
 		Outcome:       work.DetachedOutcomeReserved,
+	}
+	if source != nil {
+		reserved.Explicit = true
+		reserved.SourceRevision = work.ExecutionSourceRevision(*source)
+		reserved.SourceRunAttemptIDs = append([]string(nil), source.RunAttemptIDs...)
 	}
 	if err := writeDetachedLaunch(home, reserved); err != nil {
 		return launch, fmt.Errorf("detached launch: the reserved sidecar could not be written, so no door was started: %w", err)

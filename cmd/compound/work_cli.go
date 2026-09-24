@@ -134,7 +134,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work run-attempt-link --attempt ratt_20260823T120500Z_real --predecessor ratt_20260823T120000Z_abandoned",
 	},
 	"continue": {
-		Usage:   "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--max-execute-steps N] [--dry-run] [--json]",
+		Usage:   "usage: compound work continue [--actor A] [--expect-work work_id] [--selected [--resume|--verification REF]] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--max-execute-steps N] [--dry-run] [--json]",
 		Example: "compound work continue --actor codex --until-wait --max-execute-steps 1 --dry-run --json",
 	},
 	"dispatch-plan": {
@@ -947,11 +947,11 @@ func cmdWork(args []string) {
 			fmt.Printf("linked %s -> %s (work=%s, status=%s)\n", ra.ID, ra.PredecessorID, ra.WorkID, ra.Status)
 		}
 	case "continue":
-		usage := "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--max-execute-steps N] [--dry-run] [--json]"
+		usage := "usage: compound work continue [--actor A] [--expect-work work_id] [--selected [--resume|--verification REF]] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--max-execute-steps N] [--dry-run] [--json]"
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
-			case "--json", "--until-wait", "--dry-run":
-			case "--actor", "--expect-work", "--outcome", "--move-type", "--summary", "--max-steps", "--max-execute-steps":
+			case "--json", "--until-wait", "--dry-run", "--selected", "--resume":
+			case "--actor", "--expect-work", "--outcome", "--move-type", "--summary", "--max-steps", "--max-execute-steps", "--verification":
 				if i+1 >= len(rest) {
 					fmt.Fprintln(os.Stderr, usage)
 					os.Exit(2)
@@ -963,12 +963,15 @@ func cmdWork(args []string) {
 			}
 		}
 		continueOpts := work.ContinueOptions{
-			Actor:        flag("--actor"),
-			ExpectWorkID: flag("--expect-work"),
-			Outcome:      flag("--outcome"),
-			MoveType:     flag("--move-type"),
-			Summary:      flag("--summary"),
-			DryRun:       has("--dry-run"),
+			Selected:        has("--selected"),
+			Resume:          has("--resume"),
+			VerificationRef: flag("--verification"),
+			Actor:           flag("--actor"),
+			ExpectWorkID:    flag("--expect-work"),
+			Outcome:         flag("--outcome"),
+			MoveType:        flag("--move-type"),
+			Summary:         flag("--summary"),
+			DryRun:          has("--dry-run"),
 		}
 		maxSteps := 0
 		if raw := strings.TrimSpace(flag("--max-steps")); raw != "" {
@@ -1476,7 +1479,7 @@ func cmdWork(args []string) {
 			"--context-pack": true, "--note": true, "--reason": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
 			"--harness": true, "--prompt": true, "--workspace": true, "--permission-mode": true,
-			"--launch-profile": true, "--effort": true, "--expected-selection-revision": true, "--expected-execution-tuple": true,
+			"--launch-profile": true, "--effort": true, "--expected-selection-revision": true, "--expected-execution-tuple": true, "--expected-work-revision": true,
 		}
 		// Validate only the pre-`--` portion of the args. The `--` is the
 		// standard POSIX positional separator; everything after is the
@@ -1486,13 +1489,21 @@ func cmdWork(args []string) {
 		if idx := indexOf(rest, "--"); idx >= 0 {
 			validateSlice = rest[:idx]
 		}
-		if err := validateWorkArguments(validateSlice, advanceValueFlags, map[string]bool{"--steal": true, "--local-only": true, "--execute": true, "--resume-verifying": true}, 1); err != nil {
+		if err := validateWorkArguments(validateSlice, advanceValueFlags, map[string]bool{"--steal": true, "--local-only": true, "--execute": true, "--resume-verifying": true, "--keep-verifying-on-failure": true}, 1); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
 		if valueFlag(validateSlice, "--expected-execution-tuple") != "" && !hasFlag(validateSlice, "--execute") {
 			fmt.Fprintln(os.Stderr, "error: --expected-execution-tuple requires --execute")
+			os.Exit(2)
+		}
+		if valueFlag(validateSlice, "--expected-work-revision") != "" && !hasFlag(validateSlice, "--execute") {
+			fmt.Fprintln(os.Stderr, "error: --expected-work-revision requires --execute")
+			os.Exit(2)
+		}
+		if hasFlag(validateSlice, "--keep-verifying-on-failure") && !hasFlag(validateSlice, "--execute") {
+			fmt.Fprintln(os.Stderr, "error: --keep-verifying-on-failure requires --execute")
 			os.Exit(2)
 		}
 		if hasFlag(validateSlice, "--resume-verifying") && (!hasFlag(validateSlice, "--execute") || hasFlag(validateSlice, "--steal")) {
