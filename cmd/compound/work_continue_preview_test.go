@@ -52,7 +52,8 @@ func TestContinuePreviewPublicDoorPreservesLifecycle(t *testing.T) {
 				}
 			}
 			if state == "stale_detached" {
-				if err := work.WriteDetachedLaunch(homePath, work.DetachedLaunch{WorkID: id, Actor: "codex", Lane: "fixture", PID: 2147483647, PGID: 2147483647, StartedAt: now.Add(-time.Hour).Format(time.RFC3339), Outcome: work.DetachedOutcomeRunning, LogPath: filepath.Join(t.TempDir(), "door.log")}); err != nil {
+				const missingProcessID = 1<<31 - 1
+				if err := work.WriteDetachedLaunch(homePath, work.DetachedLaunch{WorkID: id, Actor: "codex", Lane: "fixture", PID: missingProcessID, PGID: missingProcessID, StartedAt: now.Add(-time.Hour).Format(time.RFC3339), Outcome: work.DetachedOutcomeRunning, LogPath: filepath.Join(t.TempDir(), "door.log")}); err != nil {
 					t.Fatal(err)
 				}
 			}
