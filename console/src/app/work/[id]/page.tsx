@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 
 import { Card, Chip, EmptyState, StateBadge } from "@/components/ui";
 import { WorkDetailActions } from "@/components/work/WorkDetailActions";
-import { arr, getWork, str } from "@/lib/compound";
+import { arr, getWork, getWorkLeases, str } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildActionRow } from "@/lib/work-pipeline";
@@ -12,6 +12,7 @@ import {
   packetForSurface,
   shortText,
 } from "@/lib/work-data";
+import { selectedContinueView, selectedWorkLease } from "@/lib/work-selected-continue";
 
 export const dynamic = "force-dynamic";
 
@@ -54,6 +55,8 @@ export default async function WorkDetail({ params }: { params: Promise<{ id: str
   const { id } = await params;
   const work = await getWork(id);
   if (!work) notFound();
+  const leases = await getWorkLeases();
+  const execution = selectedContinueView(work, selectedWorkLease(leases, id));
 
   const workbenchItem = await findWorkbenchItem(id);
   const merged = await enrichWorkItem({ ...(workbenchItem ?? {}), ...work, work_id: id });
@@ -151,6 +154,20 @@ export default async function WorkDetail({ params }: { params: Promise<{ id: str
             </div>
           </Card>
 
+          <Card title="Execution" accent="violet" glyph="▶">
+            <div className="flex flex-col gap-3 text-sm text-ink-2">
+              <div>
+                <div className="font-semibold text-ink">{execution.status}</div>
+                <p className="mt-1">{execution.detail}</p>
+              </div>
+              <TextBlock title="Goal" body={execution.goal} />
+              <TextBlock title="Saved selection" body={execution.selection} />
+              {execution.contextPackId ? <div><div className="section-label mb-1">Context pack</div><p className="mono break-all text-xs">{execution.contextPackId}</p></div> : null}
+              {execution.actor ? <div><div className="section-label mb-1">Current lease holder</div><p className="mono break-all text-xs">{execution.actor}</p></div> : null}
+              {execution.runAttemptIds.length ? <div><div className="section-label mb-1">Run attempts</div><CodeList items={execution.runAttemptIds} empty="No run attempt recorded." /></div> : null}
+              <p className="text-xs text-muted">This browser view is read-only. An authorized client may request one exact-work detached run; verification and close remain separate.</p>
+            </div>
+          </Card>
           <Card title="Move & trace" accent="blue" glyph="→">
             <div className="flex flex-col gap-3">
               <WorkDetailActions workId={id} actionRow={actionRow} mutationsReady={mutationsReady} />

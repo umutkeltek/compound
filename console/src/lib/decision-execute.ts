@@ -26,6 +26,7 @@ import {
   reviewResolutionGuardFromRead,
   resolveGenericAction,
 } from "@/lib/generic-actions";
+import { selectedWorkLease } from "@/lib/work-selected-continue";
 
 export type ActionAuthorityRequest = {
   expectedRevision: string;
@@ -470,6 +471,14 @@ function jobHealthReviewEffect(payload: Json, preview: boolean): DecisionExecuti
 }
 
 async function resolveItem(spec: DecisionAreaSpec, itemId: string): Promise<Json | null> {
+  if (spec.area === "work-selected-continue") {
+    const [work, leases] = await Promise.all([
+      runJson(["work", "show", itemId]),
+      runJson(["work", "leases", "--json"]),
+    ]);
+    if (!work || str(work.id) !== itemId || !leases) return null;
+    return { ...work, selected_lease: selectedWorkLease(leases, itemId) };
+  }
   if (spec.source === "reviews") {
     const data = await runJson(["reviews", "--json", "--area", spec.area]);
     return reviewItems(data).find((it) => str(it.id) === itemId) ?? null;

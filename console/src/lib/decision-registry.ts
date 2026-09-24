@@ -1,6 +1,7 @@
 import { arr, type Json, str } from "@/lib/compound";
 import { MOVE_TYPES } from "@/lib/move-types";
 import { shortText, targetLabel, uniqueBoundaries } from "@/lib/plain-language";
+import { selectedContinueRevision, selectedContinueView } from "@/lib/work-selected-continue";
 
 /*
  * The Decision Registry — the heart of the console-as-control-surface.
@@ -696,6 +697,35 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
       "--until-wait",
       "--json",
     ],
+  },
+  "work-selected-continue": {
+    area: "work-selected-continue",
+    title: "Continue this work",
+    glyph: ">",
+    accent: "green",
+    source: "workbench",
+    argvAllowlist: [["work", "continue", "--selected"]],
+    idPattern: /^work_[a-z0-9_]+$/,
+    requiresConfirmation: true,
+    revisionFor: (item) => selectedContinueRevision(item, (item.selected_lease ?? null) as Json | null),
+    options: [],
+    optionsFor: (item) => {
+      const view = selectedContinueView(item, (item.selected_lease ?? null) as Json | null);
+      if (view.canStart) return [{ value: "continue", label: "Run this work", tone: "green", description: "Admit one detached governed run for this exact work and lease holder." }];
+      if (view.canResume) return [{ value: "resume", label: "Resume run", tone: "green", description: "Explicitly start one fresh governed run from verification; no automatic completion." }];
+      return [];
+    },
+    plainLanguage: (item) => ({
+      headline: `Continue ${str(item.id)}`,
+      body: "Starts at most one governed detached run for this exact work. A launch is not task completion.",
+    }),
+    fields: [],
+    buildArgv: (ctx) => {
+      const view = selectedContinueView(ctx.item, (ctx.item.selected_lease ?? null) as Json | null);
+      if ((ctx.option === "continue" && !view.canStart) || (ctx.option === "resume" && !view.canResume)) return null;
+      return ["work", "continue", "--selected", "--expect-work", ctx.itemId, "--actor", view.actor,
+        ...(ctx.option === "resume" ? ["--resume"] : []), "--json"];
+    },
   },
   "work-dispatch": {
     area: "work-dispatch",
