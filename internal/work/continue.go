@@ -1,6 +1,7 @@
 package work
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -238,17 +239,15 @@ type ContinueOptions struct {
 	// accepted but not spendable today. effectiveExecuteBudget is the only
 	// number that describes real behaviour; this field is the request.
 	MaxExecuteSteps int
-	// DryRun makes the execute stage a planning probe: it runs every gate
-	// (route, capacity, policy) and produces a verdict, but it does NOT
-	// claim, advance, launch, or finalize any envelope. The returned
-	// verdict carries `would_execute: <work_id> on <lane> (capacity N%,
-	// policy <id>)` so operators can observe the unattended envelope end
-	// to end without minting RunAttempts. Heartbeats must keep DryRun
-	// false; this flag is for first-touch operator probes only.
+	// DryRun previews the whole continuation without lifecycle, lease, event,
+	// detached-recovery or execution writes. Launch readiness is checked, but
+	// the eventual mutation still requires fresh policy and reservation checks.
 	DryRun bool
 }
 
 type ContinueResult struct {
+	Preview             *ContinuePreview `json:"preview,omitempty"`
+	executionChoice     *ExecutionRouteCandidate
 	SelectedClose       *DispatchCloseResult      `json:"selected_close,omitempty"`
 	SchemaVersion       string                    `json:"schema_version"`
 	ID                  string                    `json:"id"`
@@ -480,6 +479,9 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 		},
 		Integrity: append([]string{}, report.Integrity...),
 	}
+	if opts.DryRun {
+		return s.previewContinue(now, opts, report, result)
+	}
 
 	// R6P: reconcile earlier detached launches on EVERY unattended tick, not
 	// only when a ready envelope is on the bench — a door handed off on tick
@@ -553,6 +555,11 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 			result.PolicyDecisionID = stage.PolicyDecisionID
 			result.Refused = stage.Refused
 			result.Execute = buildExecuteVerdict(stage, "refused")
+			if stage.Skipped == "target_changed" {
+				result.Status = "target_changed"
+				result.NoAction = stage.NoAction
+				return s.recordContinue(now, result)
+			}
 			// Clear result.Action / result.Status so DispatchStep
 			// below owns the recorded outcome (its Action/Status
 			// overwrite result.Action / result.Status when it claims).
@@ -578,24 +585,6 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 				result.Status = "refused"
 				return s.recordContinue(now, result)
 			}
-		}
-		if opts.DryRun && stage.Human != "" {
-			// Dry-run probe: every gate opened, the seam populated Human
-			// with the "would execute ..." line, and there is no launch
-			// to record. Stamp the verdict with would_execute and the
-			// capacity reading the seam observed, then record and
-			// return WITHOUT claiming the envelope. DispatchStep below
-			// is skipped on purpose: the dry-run operator is the only
-			// caller of this branch and they want a clean verdict, not
-			// a follow-on lifecycle move.
-			result.Skipped = "would_execute"
-			result.Lane = stage.Lane
-			result.Human = stage.Human
-			result.PolicyDecisionID = stage.PolicyDecisionID
-			result.WorkID = stage.WorkID
-			result.Refused = stage.Refused
-			result.Execute = buildDryRunVerdict(stage)
-			return s.recordContinue(now, result)
 		}
 	} else if opts.MaxExecuteSteps > 0 {
 		// The seam did not run because there was no ready envelope on
@@ -628,13 +617,28 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 	}
 
 	if report.DispatchNext.CanRun && continueMatchesExpected(expectWorkID, report.DispatchNext.WorkID) {
+		// An explicit pin owns the outer snapshot. Unpinned dispatch retains
+		// policy-aware selection and binds its own selected generation.
+		var source WorkbenchItem
+		if expectWorkID != "" {
+			source = dispatchSnapshot(report, expectWorkID)
+		}
 		step, err := s.DispatchStep(now, DispatchStepOptions{
-			Actor:       actor,
-			RecentLimit: opts.RecentLimit,
-			Outcome:     opts.Outcome,
-			MoveType:    opts.MoveType,
-			Summary:     opts.Summary,
+			ExpectWorkID:             source.WorkID,
+			ExpectedWorkState:        source.State,
+			ExpectedPolicyDecisionID: source.PolicyDecisionID,
+			ExpectedActionIntentID:   source.sourceActionIntentID,
+			Actor:                    actor,
+			RecentLimit:              opts.RecentLimit,
+			Outcome:                  opts.Outcome,
+			MoveType:                 opts.MoveType,
+			Summary:                  opts.Summary,
 		})
+		if errors.Is(err, ErrExecutionReservationChanged) {
+			result.Status = "target_changed"
+			result.NoAction = err.Error()
+			return s.recordContinue(now, result)
+		}
 		if err != nil {
 			return ContinueResult{}, err
 		}
@@ -659,7 +663,11 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 		if err != nil {
 			return ContinueResult{}, err
 		}
-		advanced, err := s.Advance(item.WorkID, AdvanceInput{To: "ready", Actor: actor, Note: "continue prepare"}, now)
+		advanced, err := s.Advance(item.WorkID, AdvanceInput{
+			To: "ready", Actor: actor, Note: "continue prepare",
+			ExpectedWorkState: item.State, ExpectedPolicyDecisionID: item.PolicyDecisionID,
+			ExpectedActionIntentID: item.sourceActionIntentID,
+		}, now)
 		if err != nil {
 			return ContinueResult{}, err
 		}
@@ -708,7 +716,7 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 // through would claim the envelope via the existing claim path.
 func isPreflightRefusalReason(reason string) bool {
 	switch strings.TrimSpace(reason) {
-	case "adapter_missing", "workspace_unresolvable", "lane_unready":
+	case "adapter_missing", "workspace_unresolvable", "lane_unready", "preflight_failed":
 		return true
 	default:
 		return false
@@ -828,6 +836,10 @@ func (s *Store) ContinueRun(now time.Time, opts ContinueRunOptions) (ContinueRun
 		result.WaitReason = step.WaitReason
 		result.BlockedOn = append([]string{}, step.BlockedOn...)
 		result.Integrity = mergeUnique(result.Integrity, step.Integrity)
+		if opts.DryRun {
+			result.Status = step.Status
+			return result, nil
+		}
 		if !step.CanContinue {
 			result.Status = "waiting"
 			result.CanContinue = false

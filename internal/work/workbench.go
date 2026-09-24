@@ -171,6 +171,9 @@ type WorkbenchAdmissionPreview struct {
 }
 
 type WorkbenchItem struct {
+	// Captured with State/PolicyDecisionID; in-process dispatch must not reload
+	// a newer generation and mistake it for the one that was selected.
+	sourceActionIntentID  string
 	WorkID                string                  `json:"work_id"`
 	State                 string                  `json:"state"`
 	Owner                 string                  `json:"owner,omitempty"`
@@ -839,6 +842,9 @@ func (s *Store) workbenchItemWithCaches(w envelope.WorkEnvelope, events []Event,
 		VerificationIDs:    append([]string{}, w.VerificationIDs...),
 		MemoryCandidateIDs: append([]string{}, w.MemoryCandidateIDs...),
 		recentAt:           w.CreatedAt,
+	}
+	if n := len(w.ActionIntentIDs); n > 0 {
+		item.sourceActionIntentID = w.ActionIntentIDs[n-1]
 	}
 	if w.Origin != nil {
 		item.AccountableOwner = w.Origin.AccountableOwner

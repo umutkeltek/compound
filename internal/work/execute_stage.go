@@ -242,20 +242,6 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 				return result, nil
 			}
 
-			// Dry-run probe: every gate opened, but the operator asked us NOT to
-			// claim, advance, launch, or finalize. Return a verdict that names
-			// the work, the lane, the capacity reading, and the policy decision
-			// id so the operator can verify the unattended envelope end-to-end
-			// without minting a RunAttempt. The envelope stays in its current
-			// state (ready) for the next live tick to act on.
-			if opts.DryRun {
-				result.Human = executeRefusedSummary(refused) + fmt.Sprintf("would execute %s on %s (capacity %.0f%%, policy %s)", ready, lane, usedPercent, pd.ID)
-				result.PolicyDecisionID = pd.ID
-				result.Lane = candidate.LaunchProfileID
-				result.WorkID = ready
-				return result, nil
-			}
-
 			// DEFECT 1 fix (AUT-P0-001 2026-09-04): preflight MUST run BEFORE the
 			// envelope is claimed or advanced. Production wires this hook to
 			// executewire.PreflightViaActuator, which resolves adapter enrollment,
@@ -290,6 +276,22 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 				return result, nil
 			}
 
+			// Dry-run probe: every gate opened, but the operator asked us NOT to
+			// claim, advance, launch, or finalize. Return a verdict that names
+			// the work, the lane, the capacity reading, and the policy decision
+			// id so the operator can verify the unattended envelope end-to-end
+			// without minting a RunAttempt. The envelope stays in its current
+			// state (ready) for the next live tick to act on.
+			if opts.DryRun {
+				result.Skipped = "would_execute"
+				result.executionChoice = &candidate
+				result.Human = executeRefusedSummary(refused) + fmt.Sprintf("would execute %s on %s (capacity %.0f%%, policy %s)", ready, lane, usedPercent, pd.ID)
+				result.PolicyDecisionID = pd.ID
+				result.Lane = candidate.LaunchProfileID
+				result.WorkID = ready
+				return result, nil
+			}
+
 			// All gates pass — claim + advance to running + launch + advance to
 			// verifying, reusing the existing lifecycle seams (`Claim`, `Advance`,
 			// `Close`) rather than forking them. The launch stops at verifying;
@@ -298,11 +300,18 @@ func (s *Store) executeStage(now time.Time, opts ContinueOptions, actor string) 
 			if workerPrompt == "" {
 				workerPrompt = "unattended execute from work continue: " + ready
 			}
-			if _, claimErr := s.Claim(ready, actor, now); claimErr != nil {
+			var sourceAction string
+			if n := len(w.ActionIntentIDs); n > 0 {
+				sourceAction = w.ActionIntentIDs[n-1]
+			}
+			if _, claimErr := s.claimExpected(ready, actor, w.State, w.PolicyDecisionID, sourceAction, now); claimErr != nil {
 				// Claim can fail (e.g. policy hold). Treat that as a stage-level
 				// refusal; the envelope stays in its current state so the next
 				// Continue can retry.
 				result.Skipped = "claim_failed"
+				if errors.Is(claimErr, ErrExecutionReservationChanged) {
+					result.Skipped = "target_changed"
+				}
 				result.Human = executeRefusedSummary(refused) + fmt.Sprintf("did nothing: claim of %s refused: %v", ready, claimErr)
 				result.NoAction = result.Human
 				return result, nil

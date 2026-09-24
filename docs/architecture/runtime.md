@@ -376,6 +376,26 @@ The production-callback retirement condition is a verified isolated sandbox
 endpoint followed by this exact setting cutover and readback; building the adapter
 does not itself establish payment-flow or deployment success.
 
+### Ordinary continuation preview and exact dispatch
+
+`work continue --dry-run` previews the whole command, including `--until-wait`,
+without lifecycle, lease, event, RunAttempt or detached-recovery writes. The
+existing Continue result carries an explicit `preview`: eligible/refused/waiting,
+exact target, proposed effects, resolved execution choice when available, and
+performed/deferred checks. Read-only adapter/workspace/readiness preflight runs
+before `would_execute`; refusal prose is never readiness evidence. Unsettled
+detached launches are reported as pending reconciliation, not recovered by preview.
+Fresh admission and process-start checks remain required at actual execution.
+
+An explicit `--expect-work` carries the observed target and state/policy/last-action
+generation through the existing dispatcher into claim, advance and close. A changed
+queue or generation refuses before nested mutation, including pending-claim recovery;
+a post-operation target check is not the safety boundary. Unpinned dispatch retains
+policy-aware selection, skips foreign-held work, and binds its actual selected
+generation. Preview consults those same lifecycle policy plans. Execution-stage
+claim also compares its preflight generation.
+The existing default remains one bounded execute step; zero is not a disable flag.
+
 ### Explicit same-work execution resume
 
 `work continue --selected --actor <lease-holder>` is an explicit continuation,

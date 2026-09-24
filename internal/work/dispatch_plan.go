@@ -37,16 +37,19 @@ const DispatchStepRunSchemaVersion = "compound.work_dispatch_step_run.v0.1"
 const defaultDispatchStepRunMaxSteps = 10
 
 type DispatchPlanOptions struct {
-	Actor                 string
-	Record                bool
-	RecentLimit           int
-	WorkID                string
-	SourcePacketPath      string
-	SourcePacketState     string
-	SourcePacketOwner     string
-	SourcePacketRisk      string
-	SourcePacketPrivacy   string
-	SourcePacketContextID string
+	ExpectedWorkState        string
+	ExpectedPolicyDecisionID string
+	ExpectedActionIntentID   string
+	Actor                    string
+	Record                   bool
+	RecentLimit              int
+	WorkID                   string
+	SourcePacketPath         string
+	SourcePacketState        string
+	SourcePacketOwner        string
+	SourcePacketRisk         string
+	SourcePacketPrivacy      string
+	SourcePacketContextID    string
 	// CapabilityClass, when set to a preparation class (see routeevidence.IsPreparationClass)
 	// and no explicit Actor is given, routes the dispatch to a lane chosen by the
 	// preparation-lane selection instead of the "codex" default. Empty or non-preparation
@@ -140,14 +143,16 @@ type DispatchPlanSource struct {
 }
 
 type DispatchPlanItem struct {
-	WorkID                string `json:"work_id"`
-	State                 string `json:"state"`
-	Owner                 string `json:"owner,omitempty"`
-	GitDeliveryBound      bool   `json:"git_delivery_bound,omitempty"`
-	ExpectedBaseSHA       string `json:"expected_base_sha,omitempty"`
-	RepositoryFingerprint string `json:"repository_fingerprint,omitempty"`
-	LandingStatus         string `json:"landing_status,omitempty"`
-	SuccessPredicate      string `json:"success_predicate,omitempty"`
+	sourcePolicyDecisionID string
+	sourceActionIntentID   string
+	WorkID                 string `json:"work_id"`
+	State                  string `json:"state"`
+	Owner                  string `json:"owner,omitempty"`
+	GitDeliveryBound       bool   `json:"git_delivery_bound,omitempty"`
+	ExpectedBaseSHA        string `json:"expected_base_sha,omitempty"`
+	RepositoryFingerprint  string `json:"repository_fingerprint,omitempty"`
+	LandingStatus          string `json:"landing_status,omitempty"`
+	SuccessPredicate       string `json:"success_predicate,omitempty"`
 	// PredicateCommand is the success predicate parsed as a single runnable command
 	// (CommandShapedPredicate, standing_proof.go) — the deterministic qualification signal
 	// for an external re-execute-and-verify driver. Derived at plan render time, never
@@ -299,17 +304,21 @@ type DispatchCloseResult struct {
 }
 
 type DispatchStepOptions struct {
-	Actor                 string
-	RecentLimit           int
-	Outcome               string
-	MoveType              string
-	Summary               string
-	SourcePacketPath      string
-	SourcePacketState     string
-	SourcePacketOwner     string
-	SourcePacketRisk      string
-	SourcePacketPrivacy   string
-	SourcePacketContextID string
+	ExpectWorkID             string
+	ExpectedWorkState        string
+	ExpectedPolicyDecisionID string
+	ExpectedActionIntentID   string
+	Actor                    string
+	RecentLimit              int
+	Outcome                  string
+	MoveType                 string
+	Summary                  string
+	SourcePacketPath         string
+	SourcePacketState        string
+	SourcePacketOwner        string
+	SourcePacketRisk         string
+	SourcePacketPrivacy      string
+	SourcePacketContextID    string
 }
 
 type DispatchStepResult struct {
@@ -705,7 +714,10 @@ func (s *Store) DispatchClaim(now time.Time, opts DispatchPlanOptions) (Dispatch
 		result.ResultPath = path
 		return result, nil
 	}
-	claimed, err := s.Claim(plan.Selected.WorkID, plan.Actor, now)
+	opts.ExpectedWorkState, opts.ExpectedPolicyDecisionID, opts.ExpectedActionIntentID = plan.Selected.expectedReservation(
+		opts.ExpectedWorkState, opts.ExpectedPolicyDecisionID, opts.ExpectedActionIntentID)
+	claimed, err := s.claimExpected(plan.Selected.WorkID, plan.Actor,
+		opts.ExpectedWorkState, opts.ExpectedPolicyDecisionID, opts.ExpectedActionIntentID, now)
 	if err != nil {
 		return DispatchClaimResult{}, err
 	}
@@ -852,7 +864,13 @@ func (s *Store) DispatchAdvance(now time.Time, opts DispatchPlanOptions) (Dispat
 		result.ResultPath = path
 		return result, nil
 	}
-	advanced, err := s.Advance(result.Selected.WorkID, AdvanceInput{To: "running", Actor: actor, Note: "dispatch advance"}, now)
+	opts.ExpectedWorkState, opts.ExpectedPolicyDecisionID, opts.ExpectedActionIntentID = result.Selected.expectedReservation(
+		opts.ExpectedWorkState, opts.ExpectedPolicyDecisionID, opts.ExpectedActionIntentID)
+	advanced, err := s.Advance(result.Selected.WorkID, AdvanceInput{
+		To: "running", Actor: actor, Note: "dispatch advance",
+		ExpectedWorkState: opts.ExpectedWorkState, ExpectedPolicyDecisionID: opts.ExpectedPolicyDecisionID,
+		ExpectedActionIntentID: opts.ExpectedActionIntentID,
+	}, now)
 	if err != nil {
 		return DispatchAdvanceResult{}, err
 	}
@@ -1128,6 +1146,8 @@ func (s *Store) DispatchClose(now time.Time, opts DispatchCloseOptions) (Dispatc
 	if summary == "" {
 		summary = "dispatch close"
 	}
+	opts.ExpectedWorkState, opts.ExpectedPolicyDecisionID, opts.ExpectedActionIntentID = plan.Selected.expectedReservation(
+		opts.ExpectedWorkState, opts.ExpectedPolicyDecisionID, opts.ExpectedActionIntentID)
 	closed, err := s.Close(plan.Selected.WorkID, CloseInput{
 		ExpectedWorkState:        opts.ExpectedWorkState,
 		ExpectedPolicyDecisionID: opts.ExpectedPolicyDecisionID,
@@ -1177,9 +1197,21 @@ func (s *Store) DispatchStep(now time.Time, opts DispatchStepOptions) (DispatchS
 	if actor == "" {
 		actor = "codex"
 	}
-	report, err := s.Workbench(now, WorkbenchOptions{RecentLimit: opts.RecentLimit})
+	report, err := s.Workbench(now, WorkbenchOptions{RecentLimit: opts.RecentLimit, Actor: actor})
 	if err != nil {
 		return DispatchStepResult{}, err
+	}
+	if opts.ExpectWorkID != "" {
+		if !report.DispatchNext.CanRun || report.DispatchNext.WorkID != opts.ExpectWorkID {
+			return DispatchStepResult{}, fmt.Errorf("%w: dispatch target changed from %s to %s", ErrExecutionReservationChanged, opts.ExpectWorkID, report.DispatchNext.WorkID)
+		}
+		w, err := s.Get(opts.ExpectWorkID)
+		if err != nil {
+			return DispatchStepResult{}, err
+		}
+		if err := validateExpectedExecutionReservation(w, opts.ExpectedWorkState, opts.ExpectedPolicyDecisionID, opts.ExpectedActionIntentID); err != nil {
+			return DispatchStepResult{}, err
+		}
 	}
 	result := DispatchStepResult{
 		SchemaVersion: DispatchStepSchemaVersion,
@@ -1198,13 +1230,17 @@ func (s *Store) DispatchStep(now time.Time, opts DispatchStepOptions) (DispatchS
 		Integrity: append([]string{}, report.Integrity...),
 	}
 	for _, item := range report.Open {
-		if item.State == "verifying" && hasCloseProofEvidence(item) {
+		if item.State == "verifying" && hasCloseProofEvidence(item) && !dispatchLeaseHeldByOther(item, actor) && continueMatchesExpected(opts.ExpectWorkID, item.WorkID) {
 			closed, err := s.DispatchClose(now, DispatchCloseOptions{
-				Actor:       actor,
-				RecentLimit: opts.RecentLimit,
-				Outcome:     opts.Outcome,
-				MoveType:    opts.MoveType,
-				Summary:     opts.Summary,
+				WorkID:                   opts.ExpectWorkID,
+				ExpectedWorkState:        opts.ExpectedWorkState,
+				ExpectedPolicyDecisionID: opts.ExpectedPolicyDecisionID,
+				ExpectedActionIntentID:   opts.ExpectedActionIntentID,
+				Actor:                    actor,
+				RecentLimit:              opts.RecentLimit,
+				Outcome:                  opts.Outcome,
+				MoveType:                 opts.MoveType,
+				Summary:                  opts.Summary,
 			})
 			if err != nil {
 				return DispatchStepResult{}, err
@@ -1221,8 +1257,13 @@ func (s *Store) DispatchStep(now time.Time, opts DispatchStepOptions) (DispatchS
 		}
 	}
 	for _, item := range report.Open {
-		if item.State == "claimed" && item.ClaimedBy == actor {
-			advanced, err := s.DispatchAdvance(now, DispatchPlanOptions{Actor: actor, RecentLimit: opts.RecentLimit})
+		if item.State == "claimed" && item.ClaimedBy == actor && continueMatchesExpected(opts.ExpectWorkID, item.WorkID) {
+			advanced, err := s.DispatchAdvance(now, DispatchPlanOptions{
+				Actor: actor, RecentLimit: opts.RecentLimit, WorkID: opts.ExpectWorkID,
+				ExpectedWorkState:        opts.ExpectedWorkState,
+				ExpectedPolicyDecisionID: opts.ExpectedPolicyDecisionID,
+				ExpectedActionIntentID:   opts.ExpectedActionIntentID,
+			})
 			if err != nil {
 				return DispatchStepResult{}, err
 			}
@@ -1246,14 +1287,18 @@ func (s *Store) DispatchStep(now time.Time, opts DispatchStepOptions) (DispatchS
 	}
 	if readyToClaim || strings.TrimSpace(opts.SourcePacketPath) != "" {
 		claimed, err := s.DispatchClaim(now, DispatchPlanOptions{
-			Actor:                 actor,
-			RecentLimit:           opts.RecentLimit,
-			SourcePacketPath:      opts.SourcePacketPath,
-			SourcePacketState:     opts.SourcePacketState,
-			SourcePacketOwner:     opts.SourcePacketOwner,
-			SourcePacketRisk:      opts.SourcePacketRisk,
-			SourcePacketPrivacy:   opts.SourcePacketPrivacy,
-			SourcePacketContextID: opts.SourcePacketContextID,
+			WorkID:                   opts.ExpectWorkID,
+			ExpectedWorkState:        opts.ExpectedWorkState,
+			ExpectedPolicyDecisionID: opts.ExpectedPolicyDecisionID,
+			ExpectedActionIntentID:   opts.ExpectedActionIntentID,
+			Actor:                    actor,
+			RecentLimit:              opts.RecentLimit,
+			SourcePacketPath:         opts.SourcePacketPath,
+			SourcePacketState:        opts.SourcePacketState,
+			SourcePacketOwner:        opts.SourcePacketOwner,
+			SourcePacketRisk:         opts.SourcePacketRisk,
+			SourcePacketPrivacy:      opts.SourcePacketPrivacy,
+			SourcePacketContextID:    opts.SourcePacketContextID,
 		})
 		if err != nil {
 			return DispatchStepResult{}, err
@@ -1564,20 +1609,22 @@ func dispatchLeaseHeldByOther(item WorkbenchItem, actor string) bool {
 
 func dispatchCandidate(item WorkbenchItem, actor string) DispatchPlanItem {
 	out := DispatchPlanItem{
-		WorkID:                item.WorkID,
-		State:                 item.State,
-		Owner:                 item.Owner,
-		GitDeliveryBound:      item.GitDeliveryBound,
-		ExpectedBaseSHA:       item.ExpectedBaseSHA,
-		RepositoryFingerprint: item.RepositoryFingerprint,
-		LandingStatus:         item.LandingStatus,
-		SuccessPredicate:      item.SuccessPredicate,
-		DesiredOutcome:        item.DesiredOutcome,
-		Reason:                item.OpenReason,
-		NextAction:            item.NextAction,
-		EvidenceRefs:          append([]string{}, item.EvidenceRefs...),
-		ActionContext:         cloneWorkActionContext(item.ActionContext),
-		ClaimedBy:             item.ClaimedBy,
+		sourcePolicyDecisionID: item.PolicyDecisionID,
+		sourceActionIntentID:   item.sourceActionIntentID,
+		WorkID:                 item.WorkID,
+		State:                  item.State,
+		Owner:                  item.Owner,
+		GitDeliveryBound:       item.GitDeliveryBound,
+		ExpectedBaseSHA:        item.ExpectedBaseSHA,
+		RepositoryFingerprint:  item.RepositoryFingerprint,
+		LandingStatus:          item.LandingStatus,
+		SuccessPredicate:       item.SuccessPredicate,
+		DesiredOutcome:         item.DesiredOutcome,
+		Reason:                 item.OpenReason,
+		NextAction:             item.NextAction,
+		EvidenceRefs:           append([]string{}, item.EvidenceRefs...),
+		ActionContext:          cloneWorkActionContext(item.ActionContext),
+		ClaimedBy:              item.ClaimedBy,
 	}
 	if cmd, ok := CommandShapedPredicate(out.SuccessPredicate); ok {
 		out.PredicateCommand = cmd
@@ -1611,6 +1658,13 @@ func dispatchCandidate(item WorkbenchItem, actor string) DispatchPlanItem {
 		out.Action = "inspect"
 	}
 	return out
+}
+
+func (item DispatchPlanItem) expectedReservation(state, policyID, actionID string) (string, string, string) {
+	if state != "" || policyID != "" || actionID != "" {
+		return state, policyID, actionID
+	}
+	return item.State, item.sourcePolicyDecisionID, item.sourceActionIntentID
 }
 
 func dispatchClosePlanCandidate(item WorkbenchItem, actor, outcome, moveType string) DispatchPlanItem {

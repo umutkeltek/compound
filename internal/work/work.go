@@ -1043,6 +1043,24 @@ func (s *Store) Claim(workID, by string, now time.Time) (envelope.WorkEnvelope, 
 	return s.ClaimWithLane(workID, by, "", now)
 }
 
+// claimExpected shares Claim's transaction but refuses a stale dispatch source
+// before claim recovery, lease publication, action/policy writes or RunAttempts.
+func (s *Store) claimExpected(workID, by, state, policyID, actionID string, now time.Time) (envelope.WorkEnvelope, error) {
+	var out envelope.WorkEnvelope
+	err := s.withLifecycleMutation(func() error {
+		w, err := s.Get(workID)
+		if err != nil {
+			return err
+		}
+		if err := validateExpectedExecutionReservation(w, state, policyID, actionID); err != nil {
+			return err
+		}
+		out, err = s.claimLocked(workID, by, "", now)
+		return err
+	})
+	return out, err
+}
+
 // ClaimWithLane claims a work and, when laneRef is non-empty, declares its lane: the ref must
 // resolve via capgraph.ResolveLaneRef (fail-closed at the gate, before any state mutation) and
 // the resolved canonical node id is recorded on the lease. Claim is the laneRef=="" case; every
@@ -1744,7 +1762,15 @@ func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope
 }
 
 func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (envelope.WorkEnvelope, error) {
-	w, err := s.recoverPendingClaimBeforeMutation(workID)
+	// Recovery is a mutation too: reject stale callers before replaying it.
+	w, err := s.Get(workID)
+	if err != nil {
+		return w, err
+	}
+	if err := validateExpectedExecutionReservation(w, in.ExpectedWorkState, in.ExpectedPolicyDecisionID, in.ExpectedActionIntentID); err != nil {
+		return w, err
+	}
+	w, err = s.recoverPendingClaimBeforeMutation(workID)
 	if err != nil {
 		return w, err
 	}
@@ -3227,7 +3253,14 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	} else if present {
 		return s.completeClosePending(pending, in, now)
 	}
-	w, err := s.recoverPendingClaimBeforeClose(workID)
+	w, err := s.Get(workID)
+	if err != nil {
+		return res, err
+	}
+	if err := validateExpectedExecutionReservation(w, in.ExpectedWorkState, in.ExpectedPolicyDecisionID, in.ExpectedActionIntentID); err != nil {
+		return res, err
+	}
+	w, err = s.recoverPendingClaimBeforeClose(workID)
 	if err != nil {
 		return res, err
 	}
