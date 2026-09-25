@@ -319,6 +319,9 @@ func readStreamedArchiveWithMetadataLimits(archivePath string, f *os.File, resto
 			generatedDirs[sha256.Sum256([]byte(filepath.ToSlash(rel)))] = struct{}{}
 		}
 		err := walkArchiveRootBatched(staged.root, ".", func(rel string, info fs.FileInfo) error {
+			if err := requireStreamedRestoreDevice(staged.stagingInfo, info); err != nil {
+				return fmt.Errorf("staged archive device changed at %s: %w", rel, err)
+			}
 			if info.IsDir() {
 				key := sha256.Sum256([]byte(rel))
 				if seen[key] {
@@ -420,6 +423,9 @@ func verifyStreamedStagedFile(target *archiveRestoreTarget, entry ArchiveEntry) 
 	}
 	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
 		return fmt.Errorf("restored archive entry must remain regular: %s", entry.Path)
+	}
+	if err := requireStreamedRestoreDevice(target.stagingInfo, before); err != nil {
+		return err
 	}
 	f, err := target.root.Open(rel)
 	if err != nil {

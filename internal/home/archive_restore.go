@@ -97,7 +97,7 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 		}
 	}()
 
-	target := &archiveRestoreTarget{root: staging, displayPath: stagingPath, deferFileParentSync: archive.streamed}
+	target := &archiveRestoreTarget{root: staging, displayPath: stagingPath, deferFileParentSync: archive.streamed, stagingInfo: stagingInfo}
 	if restoreArchivePreflighted != nil {
 		if err := restoreArchivePreflighted(archivePath); err != nil {
 			return RestoreReport{}, err
@@ -168,6 +168,9 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 		if err := archive.verifyStreamedStaging(target); err != nil {
 			return RestoreReport{}, err
 		}
+		if err := restoreStreamedDeviceBarrier(target); err != nil {
+			return RestoreReport{}, fmt.Errorf("streamed restore pre-publication durability failed: %w", err)
+		}
 	} else if err := target.verifyEntries(manifest, limits); err != nil {
 		return RestoreReport{}, err
 	}
@@ -194,6 +197,14 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 	}
 	if err := restoreSyncParent(parentFD); err != nil {
 		return RestoreReport{}, fmt.Errorf("restore published but parent sync failed; inspect target manually before retrying: %w", err)
+	}
+	if archive.streamed {
+		if err := restoreStreamedPublishParentSync(parentFD, stagingInfo); err != nil {
+			return RestoreReport{}, fmt.Errorf("restore published but durable parent sync failed; target preserved for manual verification: %w", err)
+		}
+		if err := restoreStreamedDeviceBarrier(target); err != nil {
+			return RestoreReport{}, fmt.Errorf("restore published but final device flush failed; target preserved for manual verification: %w", err)
+		}
 	}
 	return RestoreReport{ArchivePath: archivePath, TargetHome: targetHome, Kind: verify.Kind, Files: verify.Files, Bytes: verify.Bytes}, nil
 }
@@ -385,6 +396,7 @@ type archiveRestoreTarget struct {
 	root                *os.Root
 	displayPath         string
 	deferFileParentSync bool
+	stagingInfo         os.FileInfo
 }
 
 type archiveRestoreFile struct {
@@ -669,6 +681,11 @@ func (t *archiveRestoreTarget) createFile(name string, mode fs.FileMode) (*archi
 		_ = file.Close()
 		return nil, fmt.Errorf("archive restore created unstable nonregular file %s", name)
 	}
+	if t.deferFileParentSync {
+		if err := requireStreamedRestoreDevice(t.stagingInfo, opened); err != nil {
+			return nil, errors.Join(err, file.Close())
+		}
+	}
 	return &archiveRestoreFile{root: t.root, file: file, rel: rel, parentRel: parentRel, display: filepath.Join(t.displayPath, rel), openedInfo: opened, deferParentSync: t.deferFileParentSync}, nil
 }
 
@@ -678,7 +695,11 @@ func (f *archiveRestoreFile) abort(cause error) error {
 }
 
 func (f *archiveRestoreFile) commit() error {
-	if err := f.file.Sync(); err != nil {
+	syncFile := (*os.File).Sync
+	if f.deferParentSync {
+		syncFile = restoreStreamedFileSync
+	}
+	if err := syncFile(f.file); err != nil {
 		return f.abort(err)
 	}
 	if err := f.file.Close(); err != nil {
@@ -699,7 +720,13 @@ func (t *archiveRestoreTarget) syncTree() error {
 		if !info.IsDir() {
 			return nil
 		}
-		return restoreSyncStagingDirectory(t.root, path, filepath.Join(t.displayPath, path), "archive restore")
+		if err := restoreSyncStagingDirectory(t.root, path, filepath.Join(t.displayPath, path), "archive restore"); err != nil {
+			return err
+		}
+		if t.deferFileParentSync {
+			return syncStreamedRestoreDirectory(t.root, path, t.stagingInfo, info)
+		}
+		return nil
 	})
 }
 

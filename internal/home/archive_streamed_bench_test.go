@@ -31,6 +31,7 @@ func BenchmarkStreamedHomeRecovery820k(b *testing.B) {
 		}
 	}
 	fixtureDuration := time.Since(fixtureStart)
+	fmt.Printf("recovery phase=fixture_complete files=%d elapsed=%s\n", files, fixtureDuration)
 	archivePath := filepath.Join(base, "backup.tar.gz")
 	targetPath := filepath.Join(base, "restored")
 	b.ResetTimer()
@@ -39,16 +40,19 @@ func BenchmarkStreamedHomeRecovery820k(b *testing.B) {
 		b.Fatal(err)
 	}
 	backupDuration := time.Since(backupStart)
+	fmt.Printf("recovery phase=backup_complete elapsed=%s\n", backupDuration)
 	verifyStart := time.Now()
 	if report, err := VerifyArchive(archivePath); err != nil || !report.OK {
 		b.Fatalf("verify: report=%+v err=%v", report, err)
 	}
 	verifyDuration := time.Since(verifyStart)
+	fmt.Printf("recovery phase=verify_complete elapsed=%s\n", verifyDuration)
 	restoreStart := time.Now()
 	if _, err := RestoreArchive(archivePath, targetPath, now); err != nil {
 		b.Fatal(err)
 	}
 	restoreDuration := time.Since(restoreStart)
+	fmt.Printf("recovery phase=restore_complete elapsed=%s\n", restoreDuration)
 	b.StopTimer()
 	b.ReportMetric(fixtureDuration.Seconds(), "fixture-s")
 	b.ReportMetric(backupDuration.Seconds(), "backup-s")

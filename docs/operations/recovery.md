@@ -55,6 +55,18 @@ A header inventory, successful archive write or synthetic scale test is not
 populated-home recovery acceptance. The actual archive must pass verification,
 an isolated restore, home health checks and a real restored-home consumer.
 
+On macOS, streamed restore syncs each file to the device while staging remains
+private and unpublished. It then requires a checked full-device flush after
+directory sync and staged verification, before publishing the new home. A second
+checked flush follows the rename and parent-directory sync. All staged entries
+must remain on the same device; mounted subtrees are refused. The destination
+filesystem must support `F_FULLFSYNC`: unsupported or failed flushes are errors,
+not a fallback to weaker durability. A post-publication error preserves the new
+target for manual verification and must not trigger an automatic repeat.
+Unpublished staging is not a resumable recovery checkpoint. Keep it free of
+concurrent writers. Legacy archives and other platforms retain their existing
+sync protocol; these checks do not simulate physical power failure.
+
 ## Restore drill
 
 Restore into a new, absent target. Never restore over the active home.
