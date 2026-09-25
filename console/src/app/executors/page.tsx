@@ -7,7 +7,8 @@ import { HygieneBand } from "@/components/agents/HygieneBand";
 import { LeasePressure } from "@/components/agents/LeasePressure";
 import { LocalModelsTile } from "@/components/agents/LocalModelsTile";
 import { FreshnessChip, PageHeader } from "@/components/kit";
-import { getExecutors } from "@/lib/compound";
+import { getExecutors, getWorktreeInventory } from "@/lib/compound";
+import { WorktreeInventory } from "@/components/agents/WorktreeInventory";
 
 export const dynamic = "force-dynamic";
 
@@ -69,7 +70,8 @@ function Provenance({ projection }: { projection: ExecutorProjection }) {
 }
 
 export default async function AgentsPage() {
-  const projection = normalizeExecutorProjection(await getExecutors());
+  const [executors, worktrees] = await Promise.all([getExecutors(), getWorktreeInventory()]);
+  const projection = normalizeExecutorProjection(executors);
 
   return (
     <div className="flex flex-col gap-6">
@@ -79,6 +81,7 @@ export default async function AgentsPage() {
         right={<FreshnessChip generatedAt={projection?.generatedAt} source="compound executors --json" />}
       />
       <p className="text-sm text-muted">Who is working, on what, at what cost — and is anything stuck?</p>
+      <WorktreeInventory {...worktrees} />
 
       {projection ? (
         <>

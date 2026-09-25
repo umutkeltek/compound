@@ -1,6 +1,7 @@
 import { CopyCmd } from "@/components/CopyCmd";
 import { EmptyDoctrine, Panel, SectionLabel } from "@/components/briefing/primitives";
 import { StatusChip } from "@/components/kit";
+import { FeedDegraded } from "@/components/kit/FeedDegraded";
 import type { SelfHealing } from "@/lib/briefing";
 
 /**
@@ -11,11 +12,15 @@ import type { SelfHealing } from "@/lib/briefing";
  * empty state (DESIGN.md §7.9).
  */
 export function SelfHealingPanel({ health }: { health: SelfHealing }) {
+  const unknown = health.observation === "unreachable" || health.observation === "invalid";
+  const stale = health.observation === "stale";
   return (
     <section>
       <SectionLabel
         right={
-          health.ok ? (
+          unknown ? <StatusChip tone="seam" label="health unknown" /> : stale ? (
+            <StatusChip tone="seam" label="last-known result" />
+          ) : health.ok ? (
             <StatusChip tone="good" label="healthy" title="compound home doctor --json" />
           ) : (
             <StatusChip tone="seam" label={`${health.flags.length} to heal`} title="compound home doctor --json" />
@@ -25,12 +30,19 @@ export function SelfHealingPanel({ health }: { health: SelfHealing }) {
         Self-healing
       </SectionLabel>
 
-      {health.ok ? (
+      {unknown ? (
         <Panel className="px-6 py-6">
-          <EmptyDoctrine>Clean home. Nothing to heal{health.checkedDirs ? ` — ${health.checkedDirs} intact` : ""}.</EmptyDoctrine>
+          <FeedDegraded label="Home health" source="compound home doctor --json" lastGoodAt={health.lastGoodAt} />
+          {health.observation === "invalid" ? <p className="mt-3 text-sm text-muted">Doctor report is incomplete. Current health is unknown.</p> : null}
+          <CopyCmd cmd="compound home doctor --json" />
+        </Panel>
+      ) : health.ok || (stale && health.observedOK) ? (
+        <Panel className="px-6 py-6">
+          <EmptyDoctrine>{stale ? "Last-known home check passed; current health is unconfirmed" : "Clean home. Nothing to heal"}{health.checkedDirs ? ` — ${health.checkedDirs} intact` : ""}.</EmptyDoctrine>
         </Panel>
       ) : (
         <Panel className="overflow-hidden">
+          {stale ? <p className="px-5 py-3 text-sm text-seam">Last-known findings. Refresh or run home doctor before acting.</p> : null}
           {health.flags.map((flag, index) => (
             <div
               key={flag.key}

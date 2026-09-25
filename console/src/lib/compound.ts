@@ -4,7 +4,7 @@ import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/p
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { consoleChildEnv } from "./console-child-env.ts";
@@ -508,6 +508,18 @@ export function invalidateRunJsonCache(): void {
   // A mutation wants the next render to read post-mutation truth: the disk
   // tier must not resurrect pre-mutation last-good values.
   clearRunJsonDiskEntries();
+}
+
+/** Worktree inventory is scoped by an explicit operator repository binding.
+ * Never substitute the console source checkout or cwd for the user's repo. */
+export async function getWorktreeInventory(repo = process.env.COMPOUND_WORKTREE_REPO ?? ""): Promise<{
+  repo: string | null; read: ProjectionRead | null;
+}> {
+  if (!repo || !isAbsolute(repo)) return { repo: null, read: null };
+  return {
+    repo,
+    read: await runProjection(["executors", "worktrees", "--repo", repo, "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
+  };
 }
 
 function repoRootFromConsole(): string {

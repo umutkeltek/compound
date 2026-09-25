@@ -6,8 +6,8 @@ import { HealthBackup } from "@/components/settings/HealthBackup";
 import { MemoryLenses } from "@/components/settings/MemoryLenses";
 import { PolicyGroup } from "@/components/settings/PolicyGroup";
 import { RoutingModels } from "@/components/settings/RoutingModels";
-import { getAttention } from "@/lib/attention";
-import { privateFallbacksEnabled, runCompound, runJson, str, type Json } from "@/lib/compound";
+import { getAttentionProjection } from "@/lib/attention";
+import { HEAVY_PROJECTION_TIMEOUT_MS, privateFallbacksEnabled, runCompound, runJson, runProjection, str, type Json } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 
@@ -66,7 +66,7 @@ export default async function Settings() {
     engine,
     hooks,
     doctor,
-    attention,
+    attentionProjection,
     promotionCount,
     harnessText,
   ] = await Promise.all([
@@ -81,13 +81,14 @@ export default async function Settings() {
     runJson(["decisions", "authority", "--json"]),
     runJson(["route", "evidence-authority", "--json"]),
     runJson(["memory", "engine-config", "--json"]),
-    runJson(["contract", "hooks-authority"]),
-    runJson(["home", "doctor", "--json"]),
-    getAttention(),
+    runProjection(["contract", "hooks-authority"]),
+    runProjection(["home", "doctor", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
+    getAttentionProjection(),
     promotionReviewCount(),
     harnessListText(),
   ]);
 
+  const { read: attentionRead, report: attention } = attentionProjection;
   const mutationReadiness = computeConsoleMutationReadiness(consoleMutationsEnabled());
   const privateFallbacks = privateFallbacksEnabled();
   const gen = (value: Json | null): string | undefined => str(value?.generated_at) || undefined;
@@ -129,6 +130,7 @@ export default async function Settings() {
         standardClientAuthorized={mutationReadiness.standardClientAuthorized}
         privateFallbacks={privateFallbacks}
         attention={attention}
+        attentionRead={attentionRead}
         generatedAt={str(attention?.generated_at) || undefined}
       />
       <HealthBackup doctor={doctor} />

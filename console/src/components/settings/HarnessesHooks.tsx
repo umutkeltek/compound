@@ -1,5 +1,6 @@
-import { arr, num, str, type Json } from "@/lib/compound";
+import { arr, num, str, type Json, type ProjectionRead } from "@/lib/compound";
 
+import { FeedDegraded } from "@/components/kit/FeedDegraded";
 import { parseHarnessList } from "./data";
 import { PlugIcon } from "@/components/kit";
 
@@ -17,13 +18,16 @@ export function HarnessesHooks({
   generatedAt,
 }: {
   harnessText: string;
-  hooks: Json | null;
+  hooks: ProjectionRead;
   generatedAt?: string;
 }) {
   const harnesses = parseHarnessList(harnessText);
-  const hookCount = num(hooks?.hook_count);
-  const hookHarnesses = arr(hooks?.harnesses).map(String);
-  const readiness = arr(hooks?.pre_tool_use_readiness);
+  const value = hooks.status === "unreachable" ? null : hooks.value;
+  const known = typeof value?.installed === "boolean";
+  const hookCount = num(value?.hook_count);
+  const hookHarnesses = arr(value?.harnesses).map(String);
+  const readiness = arr(value?.pre_tool_use_readiness);
+  const runtimeReadiness = arr(value?.hook_readiness);
 
   return (
     <SettingsSection
@@ -33,7 +37,7 @@ export function HarnessesHooks({
       title="Harnesses & hooks"
       question="Which harnesses can compound govern, and where must the adapter enforce the gate?"
       source="compound contract hooks-authority"
-      generatedAt={generatedAt}
+      generatedAt={hooks.status === "live" && known ? generatedAt : undefined}
     >
       <Card title="Harness registry" badge={<CountChip n={harnesses.length} label="harnesses" tone="muted" />}>
         {harnesses.length ? (
@@ -73,7 +77,9 @@ export function HarnessesHooks({
         )}
       </Card>
 
-      <Card title="Installed-hooks lock" badge={<CountChip n={hookCount} label="hooks" tone="muted" />}>
+      <Card title="Installed-hooks lock" badge={known ? <CountChip n={hookCount} label={hooks.status === "stale" ? "last-known hooks" : "hooks"} tone="muted" /> : undefined}>
+        {!known ? <FeedDegraded label="Hook authority" source="compound contract hooks-authority" lastGoodAt={hooks.lastGoodAt} /> : null}
+        {hooks.status === "stale" ? <p className="mb-3 text-sm text-seam">Last-known hook configuration. Current installation is unconfirmed.</p> : null}
         <KV k="installed harnesses" v={hookHarnesses.length ? hookHarnesses.join(", ") : "—"} mono={false} />
         {readiness.length ? (
           <div className="mt-2 overflow-x-auto">
@@ -87,16 +93,24 @@ export function HarnessesHooks({
               </thead>
               <tbody className="mono">
                 {readiness.map((row: Json, index: number) => {
-                  const nativeBlock = Boolean(row.native_block) && Boolean(row.installed);
+                  const status = str(row.status);
+                  const nativeBlock = status === "native_blocking" && row.native_block === true && row.installed === true;
+                  const label = ({
+                    native_blocking: "native gate configured",
+                    non_blocking: "observation only",
+                    not_installed: "not installed",
+                    handler_unavailable: "handler unavailable",
+                    wrapper_required: "wrapper required",
+                  } as Record<string, string>)[status] ?? "unknown";
                   return (
                     <tr key={str(row.harness) || index} className="border-b border-hair last:border-b-0">
                       <td className="py-1.5 pr-3 text-ink">{str(row.harness)}</td>
                       <td className="py-1.5 pr-3">
                         <span className={nativeBlock ? "text-good" : "text-seam"}>
-                          {nativeBlock ? "native block" : "adapter required"}
+                          {label}
                         </span>
                       </td>
-                      <td className="py-1.5 text-muted">{str(row.status).replace(/_/g, " ")}</td>
+                      <td className="py-1.5 text-muted">{str(row.reason) || status.replace(/_/g, " ")}</td>
                     </tr>
                   );
                 })}
@@ -104,10 +118,20 @@ export function HarnessesHooks({
             </table>
           </div>
         ) : null}
+        {runtimeReadiness.length ? (
+          <div className="mt-3 border-t border-hair pt-2.5">
+            <p className="mb-2 text-xs font-semibold text-ink">Adapter support (not installed enforcement proof)</p>
+            {runtimeReadiness.map((row: Json, index) => (
+              <p key={index} className="text-xs text-muted">
+                {str(row.harness)} · {str(row.hook)}: {str(row.status).replace(/_/g, " ")} · fixture {row.fixture_present === true ? "present" : "absent"} · live adapter {row.live_adapter === true ? "available" : "unavailable"}
+              </p>
+            ))}
+          </div>
+        ) : null}
         <div className="mt-3 border-t border-hair pt-2.5">
           <DoctrineNote>
-            Hooks are clients, not brains. Where a harness cannot block natively, the adapter must enforce the gate —
-            a missing native hook is a wrapper requirement, never a governance hole.
+            Interactive hooks observe by default. Registry membership and fixtures do not prove enforcement.
+            A guarded profile needs behavioral proof for its exact launch configuration; delegate execution readiness is a separate check.
           </DoctrineNote>
         </div>
       </Card>

@@ -11,45 +11,64 @@
 > capability and remains projection-only. Direct private document reads are
 > unavailable; use a Compound-owned projection or scoped CLI read surface.
 
-## Quick start
+## Setup
+
+The dashboard is optional. It is **not included in the prebuilt binary archives**.
+Use the `console/` directory from the matching reviewed source commit, plus
+Bun and Node 20+. Keep the source checkout separate from your runtime home.
+Installing dependencies uses the package registry; no provider/model call is
+needed to render the dashboard.
+
+From the source checkout:
 
 ```sh
 cd console
-bun install
-compound console --operator
-# → http://localhost:3777
+bun install --frozen-lockfile
+export COMPOUND_HOME="/absolute/path/to/your-existing-compound-home"
+compound home doctor
+compound console build --operator --require-explicit-home
+compound console serve --operator --require-explicit-home
 ```
 
-This default is projection-only. A trusted local operator may opt into the
-existing governed mutation adapter outside the supported public-alpha console
-surface:
+Open the local address printed by the launcher. Keep the terminal open; Ctrl-C
+stops this owned server. In a second terminal with the **same home**,
+`compound console status --json` checks identity, reachability and static assets.
+Do not start a second server to resolve a port conflict.
+
+For development, `compound console --operator --require-explicit-home` starts
+the hot-reload lifecycle instead. The `bun run dev`, `bun run build` and
+`bun run serve` package scripts also use the owned launcher, but invoke it
+through `go run`: **those scripts require Go** as well as an explicit
+`COMPOUND_HOME`.
+
+The `--operator` flag selects this local lifecycle; it grants no mutation
+authority. The supported browser stays read-only. A card's copy-command is
+guidance for your harness or terminal, not evidence that the action ran.
+
+To include branch/worktree inventory on the Agents view, set
+`COMPOUND_WORKTREE_REPO="/absolute/path/to/your-project"` before starting the
+console. This read-only inventory binding is separate from the dashboard source
+checkout and installed-binary freshness check. The console never guesses a worktree target
+from its own working directory. Inventory shows the existing CLI's classifications,
+dirty/unlanded work, ownership, keep decisions and liveness uncertainty. It has
+no delete button; retirement still requires its governed exact-plan review.
+
+### Unsupported mutation extension
+
+A trusted local operator can opt into the existing capability-gated API extension
+outside the supported public-alpha browser surface:
 
 ```sh
-export COMPOUND_HOME="/path/to/operator-home"
+export COMPOUND_HOME="/absolute/path/to/operator-home"
 export COMPOUND_CONSOLE_CAPABILITY="$(openssl rand -hex 32)"
-compound console --operator --mutations
+compound console --operator --mutations --require-explicit-home
 ```
 
-The operator owns high-entropy generation; Compound validates the exact
-64-hex-character transport encoding and value. A direct extension client sends
-that exact value only in the capability header. Missing, malformed, or wrong
-configuration fails closed, and Compound does not issue capability cookies or
-include the value in launch JSON.
-
-Or using the package.json scripts:
-
-```sh
-cd console
-bun install
-bun run dev        # development mode (hot reload)
-bun run build      # production build
-bun run serve      # serve the production build
-```
-
-The `--operator` flag explicitly selects the local operator console lifecycle;
-the launcher refuses to start without it. It does not grant mutation authority.
-The normal operator console remains projection-only, and only the unsupported
-`--mutations` API extension enables mutation routes for an out-of-band client.
+A direct extension client must send that exact 64-hex-character capability only
+in the `x-compound-console-capability` header on a same-origin loopback request.
+The standard browser never receives it; Compound issues no capability cookies
+and omits the value from launch JSON. Missing or malformed configuration fails
+closed. This extension is not needed for ordinary dashboard setup.
 
 ## What you'll see
 
@@ -141,12 +160,26 @@ or legacy-session material. It also proves that missing, wrong, cookie-only,
 query-only, and body-only credentials fail closed while the exact header reaches
 request validation without executing a mutation.
 
+## Understanding health
+
+Today and Settings distinguish a live result from a last-known result and an
+unreachable feed. Missing or incomplete doctor data means **health unknown**,
+not an empty healthy home. A last-known passing check is not current acceptance.
+A doctor command that exits nonzero may appear as unavailable rather than a
+parsed failure report; run the displayed command to see its full diagnostic.
+
+Settings distinguishes observation-only hooks, missing installation, missing
+handlers and wrapper requirements. Fixture support is not installed enforcement
+proof. Recovery commands begin with verification or a dry-run; restoration needs
+an archive and a **new, absent absolute target directory**, and does not activate
+that target. Follow [Recovery](operations/recovery.md) before changing a live home.
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Port 3777 in use | `lsof -i :3777` to find the process; kill or change port |
-| Blank page | Run `compound home doctor` — home may not be initialized |
-| No data on briefing | Expected on a fresh home — create some work first |
-| Build errors | `cd console && bun install` — dependencies may be missing |
-| Stale data | The console reads live; refresh the page or check the stream |
+| Port 3777 in use | Check `compound console status --json`; stop only the server you own from its terminal. Do not kill an unknown process. |
+| Blank page | Run `compound home doctor` and check the launcher output and selected home. |
+| No data on briefing | Check whether the feed is live, stale or unreachable. Only a live empty projection means no data yet. |
+| Build errors | Check Bun/Node and run `bun install --frozen-lockfile` in the matching console checkout. |
+| Stale data | Last-known results are retained when refresh fails. Run the displayed source command and check the home/binary identity. |

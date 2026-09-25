@@ -17,7 +17,9 @@ post-tool-use      → ToolEvent (evidence of what happened)
 session-end        → Receipt + Transition (what was learned, what changed)
 ```
 
-The harness calls Compound; Compound never calls the harness. This is
+In interactive hook mode, the harness calls Compound. Governed delegate
+execution is separate: Compound can launch an enrolled executor through its
+adapter, policy and RunAttempt owners. Interactive hooks are
 **hooks-as-clients**: the harness is the client, Compound is the authority.
 
 Every task-scoped CLI orientation path (`orient`, `contract compile`, and
@@ -243,39 +245,18 @@ not claim mutation readiness: it installs `SessionStart`, `UserPromptSubmit`,
 observation-only `PreToolUse`, and `PostToolUse`, while preserving unrelated
 user hooks. Native blocking remains an explicit isolated-posture choice.
 
-### Activate the updated interactive posture
+### Activate updated interactive posture
 
-Active Codex and Claude Code processes cache their hook roster and permission
-posture at session start. Installing or reconciling hooks updates future
-processes; it does not rewrite the posture of a process that is already
-running. After installation, exit and start a fresh process, or resume the
-conversation from a newly started process.
+Active Codex and Claude Code processes cache hooks and permission posture at
+session start. Installing hooks affects future processes, not the one already
+running. Exit, start a fresh process with your existing permission and sandbox
+settings, then resume your conversation.
 
-For prompt-free interactive Codex, set both the approval policy and a sandbox
-that is broad enough for the task in the active Codex profile before launch:
-
-```toml
-approval_policy = "never"
-sandbox_mode = "workspace-write"
-```
-
-`approval_policy = "never"` removes approval questions; it does not expand the
-sandbox. Use `danger-full-access` only when unrestricted host access is
-intended. With a narrower sandbox, an out-of-scope operation fails instead of
-asking for approval. Start a fresh Codex process after changing either value.
-
-For prompt-free interactive Claude Code, resume with
-`bypassPermissions` explicitly:
-
-```sh
-claude --permission-mode bypassPermissions --resume <session-id>
-```
-
-This also avoids inheriting a launcher or saved session invocation that pins
-`acceptEdits` or another prompting mode. A fresh interactive Claude process may
-instead consume `permissions.defaultMode: "bypassPermissions"` from its normal
-settings authority. Isolated executor profiles remain separately configured
-and explicitly enforced.
+Changing to `approval_policy = "never"`, unrestricted host access or
+`bypassPermissions` is not an activation step. These are separate authority
+decisions for deliberately scoped executor profiles. Removing prompts does not
+expand a sandbox, and an observation hook does not make a broad permission profile
+guarded. Require exact behavioral readiness before governed mutation.
 
 ## OpenCode
 

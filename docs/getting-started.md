@@ -1,24 +1,25 @@
-# Getting Started — Compound + your repo + your agent in 15 minutes
+# Getting Started
 
-> Goal: install Compound, point it at **your** repo, wire it into **your** agent
-> (Claude Code, Codex, or any harness), and see the spine work end to end — one
-> work envelope from its briefing through a receipt, with evidence a later
-> session can inspect. Zero personal data required; everything runs locally.
+Start with one useful outcome in a project you already know. Install Compound,
+connect one supported harness, then ask that harness to pursue the goal within
+your boundaries. Keep advanced memory setup and unattended operation for later.
 
-Compound is local-first and makes agent work **accumulate**: it records the
-work as it actually happens. This guide proves linked context and durable
-execution history on your machine. Learning and ambient recall require
-separate adjudication; they are not automatic consequences of every session.
+**This is a developer preview, not yet a no-terminal installer.** The steps below
+are explicit so an agent or technical helper can assist without guessing. There
+is no accepted setup-time promise or evidence yet from a nontechnical-user trial.
 
-Hold the whole system as five places; each step below visits one:
+Your first checkpoint is simple: the installed version is identifiable, home
+health is known, your harness receives context, and you can inspect what ran.
+Durable history is not the same as automatic memory promotion or measured benefit.
 
-| Place | What happens there | Step |
-|---|---|---|
-| **the door** | your task enters as a typed envelope, validated first | 3 |
-| **the ledger** | adjudicated meaning; serves the briefing your agent starts from | 2 |
-| **the edge** | your agent — a rented executor — claims and runs the job | 4 |
-| **the gate** | policy is recorded before tools run; enforced profiles can block | 6 |
-| **the receipt** | proof of what ran, plus what it should change next time | 5 |
+| You want to… | Start here |
+|---|---|
+| Install a published release | Option A below; no Go required |
+| Build an authenticated release from source | Option B below |
+| Try unreleased source | Reviewed contributor checkout below |
+| Connect your existing agent after installation | [First useful session](#first-useful-session) |
+| See progress and health | [Console setup](console.md); requires a source checkout |
+| Learn the internal lifecycle | [Explicit demonstration](#2-orient-on-your-repo) |
 
 ## Prerequisites
 
@@ -42,6 +43,9 @@ Optional (for semantic memory): a local **Ollama** server — see
 [`memory-quickstart.md`](./memory-quickstart.md).
 
 ## 1. Install
+
+The historical `scripts/release-smoke.sh` entrypoint is retired and exits without
+effects. It is not an installer or a substitute for governed `proof-check`.
 
 Pick one:
 
@@ -284,6 +288,91 @@ make install
 This produces an unreleased development build, not a release artifact. Record
 the printed commit before testing, and do not present that installation as a
 published Compound version.
+
+## First useful session
+
+After installation, keep the same explicit runtime home across terminals.
+Run these checks before starting work:
+
+```sh
+compound version
+compound home doctor
+compound harness list
+```
+
+A failed doctor is not a clean home. Follow its reported issue before recovery
+or upgrade; do not delete runtime data to clear a warning. The source-setup
+section can report missing Go on a binary-only installation: Go is required
+for building, not for using the prebuilt CLI.
+
+Choose **one** managed interactive adapter:
+
+```sh
+# Claude Code
+compound hook install --harness claude-code --scope global
+compound hook install --harness claude-code --scope global --check --json
+
+# OR Codex
+compound hook install --harness codex --scope global
+compound hook install --harness codex --scope global --check --json
+```
+
+These commands change the chosen harness configuration. Keep its existing
+permission/sandbox settings; a fresh process is needed to load updated hooks.
+The managed interactive default observes actions, not blocks them.
+[Harness Wiring](harness-wiring.md) covers OpenCode, isolated guarded profiles
+and adapter limitations. Listed or installed does not mean execution-ready.
+
+Start your harness in your project and give it a bounded goal, for example:
+
+> Inspect this project's tests and identify one reproducible maintenance issue.
+> Use Compound's existing work and saved execution selection. Keep changes local,
+> run the relevant checks, and report what is verified and what remains unknown.
+> Do not publish, spend, or change permissions.
+
+The harness must establish a work item, owner, acceptance predicate and authorized
+selection before execution. Compound does not promise that every harness turns
+arbitrary prose into an admitted task. The [explicit lifecycle demonstration](#2-orient-on-your-repo)
+below shows those mechanics for integrators; it is not a request to make users
+copy IDs every session.
+
+## Daily use and recovery
+
+Use the same actor that holds the work. With exactly one held selected task and
+a saved executor, Continue resolves the task and preserves its goal and selection:
+
+```sh
+compound work continue --selected --actor <your-existing-actor> --json
+```
+
+Replace the actor placeholder with the identity already holding your work.
+Initial creation/claim is separate. More than one held task is an ambiguity to
+resolve, not permission to pick whichever is convenient.
+
+- **See progress:** `compound workbench` and `compound coordination`, or the
+  local dashboard's Today, Live and Work views.
+- **Interrupted or verifying:** inspect the reported attempt first. When the
+  selected path reports a recoverable, settled attempt, the same command with
+  `--resume` requests a new authorized run. Never blindly repeat an uncertain
+  external effect.
+- **Worker finished:** a successful process is not acceptance. Supply the
+  workflow's actual verification before closing; do not manufacture proof
+  strings just to mark work done.
+- **Needs you:** changed goals, missing authority, new spending and genuine
+  quality decisions remain explicit. There is no silent provider fallback.
+- **Fresh session:** use the same home and actor. Saved work remains available;
+  absence of a memory citation does not prove absence of reuse.
+
+For backups and upgrades, follow [Recovery](operations/recovery.md).
+A verified archive and a tested restore into a new target are distinct checks.
+For branch hygiene, inspect `compound executors worktrees --repo /path/to/project --json`.
+Landed, dirty, live, kept and unknown worktrees are different states; “landed”
+does not authorize deleting a checkout. Retirement uses exact reviewed plans.
+
+## Explicit lifecycle demonstration
+
+The remaining walkthrough teaches the underlying objects using a local command,
+without a model call. Its outcome is inspectable history, not proof of learning.
 
 ## 2. Orient on YOUR repo
 

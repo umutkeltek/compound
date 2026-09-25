@@ -37,6 +37,22 @@ The authoritative boundary and current runtime caveats live in
 Unsupported does not mean intentionally broken; it means the project does not
 claim compatibility, isolation, recovery, or security behavior for that shape.
 
+## Harness and dashboard setup
+
+Managed interactive hooks are available for Claude Code and Codex; their default
+posture observes rather than blocks mutations. OpenCode supports context and
+outcome observation, not a native mutation guard. Other harnesses require an
+enrolled supported adapter. Registry presence is not execution readiness, and
+enforcement is accepted only for behaviorally proven launch profiles.
+
+The optional local dashboard requires a matching source checkout, Bun and Node.
+It is not shipped in the prebuilt CLI archives. The package-script launch route
+also needs Go. Setup still uses a terminal; nontechnical onboarding without
+assistance and arbitrary-harness compatibility have not been demonstrated.
+
+See [Getting Started](docs/getting-started.md), [Harness Wiring](docs/harness-wiring.md),
+and [Console Setup](docs/console.md) for the supported paths.
+
 ## Compatibility policy
 
 The home manifest schema and home kind are exact compatibility boundaries.

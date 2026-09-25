@@ -11,7 +11,7 @@
  */
 
 import type { AttentionGroup } from "@/lib/attention";
-import { arr, num, str, type Json, type ProjectionStatus } from "@/lib/compound";
+import { arr, num, str, type Json, type ProjectionStatus, type ProjectionRead } from "@/lib/compound";
 import { parseActionAuthorityBundle } from "@/lib/action-authority";
 import type { AuthorityFace } from "@/representation";
 import { toDate } from "@/lib/time";
@@ -238,23 +238,46 @@ export type HygieneFlag = {
   tone: "seam" | "crit";
 };
 
-export type SelfHealing = { ok: boolean; flags: HygieneFlag[]; checkedDirs: string };
+export type SelfHealing = {
+  ok: boolean;
+  observedOK: boolean;
+  observation: ProjectionStatus | "invalid";
+  lastGoodAt: string | null;
+  flags: HygieneFlag[];
+  checkedDirs: string;
+};
 
-export function selfHealing(doctor: Json | null): SelfHealing {
-  if (!doctor) return { ok: true, flags: [], checkedDirs: "" };
-  const oh = (doctor.operational_hygiene ?? {}) as Json;
+export function selfHealing(read: ProjectionRead): SelfHealing {
+  const unknown: SelfHealing = {
+    ok: false, observedOK: false, observation: read.status === "unreachable" ? "unreachable" : "invalid",
+    lastGoodAt: read.lastGoodAt, flags: [], checkedDirs: "",
+  };
+  const doctor = read.value;
+  if (read.status === "unreachable" || !doctor) return unknown;
+  const oh = doctor.operational_hygiene as Json | undefined;
+  // A successful read is not proof of a complete doctor report. Do not
+  // coerce absent booleans/counts to healthy defaults.
+  if (doctor.schema_version !== "compound.home_doctor_report.v0.1" ||
+      !["ok", "fail"].includes(str(doctor.verdict)) ||
+      typeof doctor.manifest_ok !== "boolean" ||
+      typeof doctor.generated_state_in_repo_source !== "boolean" ||
+      !Number.isInteger(doctor.dirs_ok) || !Number.isInteger(doctor.dirs_total) ||
+      num(doctor.dirs_total) <= 0 || num(doctor.dirs_ok) < 0 || num(doctor.dirs_ok) > num(doctor.dirs_total) ||
+      typeof oh?.ok !== "boolean" ||
+      !Number.isInteger(oh.terminal_hot_work_count) || num(oh.terminal_hot_work_count) < 0 ||
+      !Number.isInteger(oh.stale_lease_count) || num(oh.stale_lease_count) < 0) return unknown;
   const flags: HygieneFlag[] = [];
 
   const hotWork = num(oh.terminal_hot_work_count);
   if (hotWork > 0) {
-    flags.push({ key: "hot-work", label: "Terminal work not archived", count: hotWork, command: "compound home archive-history --kind work", tone: "seam" });
+    flags.push({ key: "hot-work", label: "Terminal work not archived", count: hotWork, command: "compound home archive-history --kind work --dry-run", tone: "seam" });
   }
   const staleLeases = num(oh.stale_lease_count);
   if (staleLeases > 0) {
     // Age-independent residue (lease files for terminal/archived/missing work),
     // NOT the Agents band's "live leases past threshold" — labeled distinctly so
     // the two surfaces can never be conflated. Shared label = one source.
-    flags.push({ key: "stale-leases", label: LEASE_HISTORY_LABEL, count: staleLeases, command: "compound home archive-history --kind lease", tone: "seam" });
+    flags.push({ key: "stale-leases", label: LEASE_HISTORY_LABEL, count: staleLeases, command: "compound home archive-history --kind lease --dry-run", tone: "seam" });
   }
   if (doctor.manifest_ok === false) {
     flags.push({ key: "manifest", label: "Home manifest drift", count: 1, command: "compound home doctor", tone: "crit" });
@@ -268,8 +291,12 @@ export function selfHealing(doctor: Json | null): SelfHealing {
     flags.push({ key: "repo-state", label: "Generated state inside repo", count: 1, command: "compound home doctor", tone: "crit" });
   }
 
-  const ok = flags.length === 0 && oh.ok !== false;
-  return { ok, flags, checkedDirs: dirsTotal ? `${dirsOk}/${dirsTotal} dirs` : "" };
+  if ((doctor.verdict === "fail" || !oh.ok) && flags.length === 0) {
+    flags.push({ key: "doctor", label: "Doctor reported a failure — inspect full report", count: 1, command: "compound home doctor --json", tone: "crit" });
+  }
+  const observedOK = flags.length === 0 && doctor.verdict === "ok" && oh.ok === true;
+  return { ok: read.status === "live" && observedOK, observedOK, observation: read.status,
+    lastGoodAt: read.lastGoodAt, flags, checkedDirs: `${dirsOk}/${dirsTotal} dirs` };
 }
 
 /* ---------- Continue panel derivation (kit-styled ContinueCard) ----------

@@ -1,6 +1,7 @@
 import { DeltaPill, GearIcon } from "@/components/kit";
 import type { AttentionReport } from "@/lib/attention";
-import { num } from "@/lib/compound";
+import { FeedDegraded } from "@/components/kit/FeedDegraded";
+import { num, type ProjectionRead } from "@/lib/compound";
 
 import { buildCoverage, type AreaCoverage } from "./data";
 import { Card, CountChip, DoctrineNote, KV, SettingsSection } from "./primitives";
@@ -31,6 +32,7 @@ export function ConsoleEnv({
   standardClientAuthorized,
   privateFallbacks,
   attention,
+  attentionRead,
   generatedAt,
 }: {
   mutationsEnabled: boolean;
@@ -39,9 +41,16 @@ export function ConsoleEnv({
   standardClientAuthorized: boolean;
   privateFallbacks: boolean;
   attention: AttentionReport | null;
+  attentionRead: ProjectionRead;
   generatedAt?: string;
 }) {
   const coverage = buildCoverage(attention);
+  const raw = attentionRead.value;
+  const coverageKnown = attention && raw?.schema_version === "compound.attention.v0.1" &&
+    Array.isArray(raw.groups) && ["needs_you_groups", "actionable_now", "fallback_groups"].every((key) => {
+      const value = (raw.counts as Record<string, unknown> | undefined)?.[key];
+      return Number.isInteger(value) && Number(value) >= 0;
+    });
   const needsYouGroups = num(attention?.counts?.needs_you_groups);
   const serverActionable = num(attention?.counts?.actionable_now);
   const fallbackGroups = num(attention?.counts?.fallback_groups);
@@ -54,7 +63,7 @@ export function ConsoleEnv({
       title="Console & environment"
       question="Can this console mutate, and which review areas have server-adapter coverage?"
       source="compound attention --json"
-      generatedAt={generatedAt}
+      generatedAt={attentionRead.status === "live" && coverageKnown ? generatedAt : undefined}
     >
       <div className="grid gap-4 md:grid-cols-2">
         <Card title="Mutation gates" provenance="local" seamTone={mutationsEnabled ? "seam" : "good"}>
@@ -73,6 +82,11 @@ export function ConsoleEnv({
         </Card>
 
         <Card title="Coverage burn-down">
+          {!coverageKnown || attentionRead.status === "unreachable" ? (
+            <FeedDegraded label="Coverage" source="compound attention --json" lastGoodAt={attentionRead.lastGoodAt} />
+          ) : (
+          <>
+          {attentionRead.status === "stale" ? <p className="mb-2 text-sm text-seam">Last-known coverage; current gaps are unconfirmed.</p> : null}
           <div className="flex flex-wrap gap-2">
             <CountChip n={needsYouGroups} label="need you" tone={needsYouGroups > 0 ? "seam" : "good"} title="counts.needs_you_groups" />
             <CountChip
@@ -90,16 +104,19 @@ export function ConsoleEnv({
                 : "No server-adapter gaps. Every live area resolves to a wired server act; the standard browser remains projection-only."}
             </span>
           </DoctrineNote>
+          </>
+          )}
         </Card>
       </div>
 
       {/* THE transparency table. */}
+      {coverageKnown && attentionRead.status !== "unreachable" ? (
       <Card
         title="Server-adapter coverage"
         badge={
           <span className="flex items-center gap-1.5">
-            <CountChip n={coverage.serverAdapterAreas} label="live adapters" tone="good" />
-            <CountChip n={coverage.fallbackAreas} label="live fallback" tone={coverage.fallbackAreas > 0 ? "seam" : "good"} />
+            <CountChip n={coverage.serverAdapterAreas} label={attentionRead.status === "stale" ? "last-known adapters" : "live adapters"} tone="good" />
+            <CountChip n={coverage.fallbackAreas} label={attentionRead.status === "stale" ? "last-known fallback" : "live fallback"} tone={coverage.fallbackAreas > 0 ? "seam" : "good"} />
             {/* Burn-down lead: server-adapter areas minus fallback areas —
                 positive means adapter coverage leads copy-only debt. */}
             <DeltaPill
@@ -177,6 +194,7 @@ export function ConsoleEnv({
           </DoctrineNote>
         </div>
       </Card>
+      ) : null}
     </SettingsSection>
   );
 }

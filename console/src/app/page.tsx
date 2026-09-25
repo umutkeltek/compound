@@ -63,7 +63,7 @@ export default async function Briefing() {
       { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS },
     ).then((r) => r.value),
     runJson(["policy", "operator-authority", "--json"]),
-    runProjection(["home", "doctor", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }).then((r) => r.value),
+    runProjection(["home", "doctor", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
   ]);
   const { read: attentionRead, report: attention } = attentionProjection;
   const workbench = workbenchRead.value;
@@ -127,7 +127,7 @@ export default async function Briefing() {
     { label: "Decide", generatedAt: attentionRead.generatedAt ?? "", source: "compound attention --json" },
     { label: "World", generatedAt: workbenchRead.generatedAt ?? "", source: "compound workbench --json --recent 500" },
     { label: "Mind", generatedAt: str(memory?.generated_at), source: "compound memory candidates --json" },
-    { label: "Health", generatedAt: str(homeDoctor?.generated_at), source: "compound home doctor --json" },
+    { label: "Health", generatedAt: health.observation === "live" ? homeDoctor.generatedAt ?? "" : "", source: "compound home doctor --json" },
   ];
 
   return (

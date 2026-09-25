@@ -18,7 +18,7 @@ import { join } from "node:path";
  */
 
 const requested = process.argv[2] ?? "all";
-const allowed = new Set(["all", "lie", "never-cache-null", "no-false-alarms"]);
+const allowed = new Set(["all", "lie", "never-cache-null", "no-false-alarms", "health"]);
 assert.ok(allowed.has(requested), `unknown projection-degradation case: ${requested}`);
 
 const scratch = await mkdtemp(join(tmpdir(), "compound-projection-degradation-"));
@@ -62,6 +62,18 @@ if (mode === "empty") {
     generated_at: new Date().toISOString(),
     counts: { needs_you_groups: 0 },
     groups: [],
+  }));
+  process.exit(0);
+}
+if (mode === "executors") {
+  const repo = process.argv[process.argv.indexOf("--repo") + 1];
+  if (process.argv[3] !== "worktrees" || !repo || !process.argv.includes("--json")) process.exit(2);
+  console.log(JSON.stringify({
+    schema_version: "compound.worktree_inventory.v0.1", repo, generated_at: new Date().toISOString(),
+    rows: [{ path: repo + "/lane", branch: "fix/example", class: "unknown",
+      dirty_files: 1, unlanded_commits: 2, liveness: { state: "unknown" },
+      work_id: "work_example", next_action: "preserve; liveness unresolved", reason: "probe unavailable" }],
+    counts: { total: 1, unknown: 1 },
   }));
   process.exit(0);
 }
@@ -183,7 +195,121 @@ try {
     console.log("  no-false-alarms ok: live + empty -> doctrine empty state");
   }
 
-  console.log(`projection-degradation-smoke (${requested})`);
+async function healthTruth() {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { selfHealing } = await import("../src/lib/briefing.ts");
+  const { HealthBackup } = await import("../src/components/settings/HealthBackup.tsx");
+  const good = {
+    schema_version: "compound.home_doctor_report.v0.1",
+    generated_at: new Date().toISOString(),
+    verdict: "ok", manifest_ok: true, dirs_ok: 12, dirs_total: 12,
+    inside_git_repo: false, generated_state_in_repo_source: false,
+    operational_hygiene: { ok: true, terminal_hot_work_count: 0, stale_lease_count: 0 },
+  };
+  const read = (value, status = "live") => ({
+    value, status, generatedAt: value?.generated_at ?? null,
+    lastGoodAt: value ? good.generated_at : null,
+    error: status === "unreachable" ? "timed out" : null, elapsedMs: 1,
+  });
+  const render = (projection) => renderToStaticMarkup(createElement(HealthBackup, { doctor: projection }));
+  for (const projection of [read(null, "unreachable"), read({}), read({ verdict: "ok" })]) {
+    assert.equal(selfHealing(projection).ok, false, "missing/incomplete doctor must not certify health");
+    const html = render(projection);
+    assert.doesNotMatch(html, /Clean home|>healthy<|>true</, "unknown facts must not render healthy or true");
+    assert.match(html, /unavailable|unknown|incomplete/i);
+  }
+  const stale = render(read(good, "stale"));
+  assert.equal(selfHealing(read(good, "stale")).ok, false, "last-known health is not current health");
+  assert.match(stale, /last-known|last known/i);
+  assert.doesNotMatch(stale, /Clean home|>healthy</);
+  assert.doesNotMatch(stale, />live ·/, "a recent timestamp must not override stale projection state");
+  for (const failure of [
+    { ...good, verdict: "fail" },
+    { ...good, operational_hygiene: { ...good.operational_hygiene, ok: false } },
+    { ...good, manifest_ok: false },
+  ]) {
+    assert.equal(selfHealing(read(failure)).ok, false, "backend failure must survive projection");
+    assert.doesNotMatch(render(read(failure)), /Clean home|>healthy</);
+  }
+  const healthy = render(read(good));
+  assert.equal(selfHealing(read(good)).ok, true);
+  assert.match(healthy, /Clean home/);
+  assert.match(healthy, /home restore .*--target /);
+  assert.match(healthy, /home restore-history --id .*--dry-run/);
+  assert.match(healthy, /home archive-history --kind work --dry-run/);
+  assert.match(healthy, /home verify /);
+  console.log("  health ok: missing/malformed/stale/failed != healthy; recovery commands are bounded");
+  const { HarnessesHooks } = await import("../src/components/settings/HarnessesHooks.tsx");
+  const renderHooks = (projection) => renderToStaticMarkup(createElement(HarnessesHooks, { harnessText: "", hooks: projection }));
+  assert.match(renderHooks(read(null, "unreachable")), /unreachable|unavailable/i);
+  const hooks = renderHooks(read({
+    installed: true, hook_count: 2,
+    pre_tool_use_readiness: [
+      { harness: "observation", status: "non_blocking", native_block: false, installed: false },
+      { harness: "missing", status: "not_installed", native_block: true, installed: false },
+      { harness: "broken", status: "handler_unavailable", native_block: true, installed: false },
+    ],
+    hook_readiness: [{ harness: "observation", hook: "SessionStart", fixture_present: true, live_adapter: false, status: "fixture_only" }],
+  }));
+  assert.match(hooks, /observation only/i);
+  assert.match(hooks, /not installed/i);
+  assert.match(hooks, /handler unavailable/i);
+  assert.match(hooks, /fixture only/i);
+  assert.doesNotMatch(hooks, /adapter required/);
+  const { ConsoleEnv } = await import("../src/components/settings/ConsoleEnv.tsx");
+  const env = renderToStaticMarkup(createElement(ConsoleEnv, {
+    attention: null, attentionRead: read(null, "unreachable"),
+    mutationsEnabled: false, mutationFlagEnabled: false, instancePinned: false,
+    standardClientAuthorized: false, privateFallbacks: false,
+  }));
+  assert.doesNotMatch(env, /No server-adapter gaps/);
+  assert.doesNotMatch(env, /live adapters|live fallback|coverage lead/);
+  assert.match(env, /unavailable|unreachable/i);
+  const { toAttentionReport } = await import("../src/lib/attention.ts");
+  const malformedCoverage = renderToStaticMarkup(createElement(ConsoleEnv, {
+    attention: toAttentionReport({}), attentionRead: read({}),
+    mutationsEnabled: false, mutationFlagEnabled: false, instancePinned: false,
+    standardClientAuthorized: false, privateFallbacks: false,
+  }));
+  assert.doesNotMatch(malformedCoverage, /No server-adapter gaps|live adapters|live fallback/);
+  console.log("  settings ok: unavailable hooks/attention do not become zero gaps");
+  assert.equal(typeof compound.getWorktreeInventory, "function", "dashboard must consume the owned worktree inventory");
+  const unbound = await compound.getWorktreeInventory("");
+  assert.equal(unbound.read, null, "no explicit repo must not inspect cwd");
+  const relative = await compound.getWorktreeInventory("relative/repo");
+  assert.equal(relative.read, null, "relative repo must not silently become cwd authority");
+  const inventory = await compound.getWorktreeInventory(scratch);
+  assert.equal(inventory.read.status, "live");
+  assert.equal(inventory.read.value.repo, scratch, "exact repo must reach the public command");
+  const { WorktreeInventory } = await import("../src/components/agents/WorktreeInventory.tsx");
+  const treeHTML = renderToStaticMarkup(createElement(WorktreeInventory, inventory));
+  assert.match(treeHTML, /work_example/);
+  assert.match(treeHTML, /liveness unresolved/);
+  assert.match(treeHTML, /fix\/example/);
+  assert.doesNotMatch(treeHTML, /<button|retire now|safe to delete/i);
+  for (const classification of ["unknown", "live", "probe"]) {
+    const uncertain = { ...inventory, read: read({
+      ...inventory.read.value, rows: [{ path: "/fixture/lane", class: classification,
+        dirty_files: 0, unlanded_commits: 0, reason: "Git probe unavailable" }],
+    }) };
+    const html = renderToStaticMarkup(createElement(WorktreeInventory, uncertain));
+    assert.doesNotMatch(html, />0 \/ 0</, "unobserved Git counts must not become zero");
+    assert.match(html, /unknown \/ unknown/);
+  }
+  const missingTrees = renderToStaticMarkup(createElement(WorktreeInventory, { repo: scratch, read: read(null, "unreachable") }));
+  assert.match(missingTrees, /unreachable|unavailable/i);
+  const staleTrees = renderToStaticMarkup(createElement(WorktreeInventory, { ...inventory, read: { ...inventory.read, status: "stale" } }));
+  assert.doesNotMatch(staleTrees, />live ·/);
+  const malformedTrees = renderToStaticMarkup(createElement(WorktreeInventory, { ...inventory, read: read({ ...inventory.read.value, rows: [null] }) }));
+  assert.match(malformedTrees, /unreachable|unavailable/i);
+  const emptyTrees = renderToStaticMarkup(createElement(WorktreeInventory, unbound));
+  assert.match(emptyTrees, /COMPOUND_WORKTREE_REPO/);
+  console.log("  worktrees ok: explicitly bound read-only inventory, unknown liveness preserved");
+}
+
+console.log(`projection-degradation-smoke (${requested})`);
+if (requested === "all" || requested === "health") await healthTruth();
   if (requested === "all" || requested === "lie") await lie();
   if (requested === "all" || requested === "never-cache-null") await neverCacheNull();
   if (requested === "all" || requested === "no-false-alarms") await noFalseAlarms();

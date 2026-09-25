@@ -1,39 +1,19 @@
 # compound
 
-Local-first, agent-agnostic substrate that makes the flow of agent work leave
-reusable structure behind — without freezing the flow.
+Compound keeps your goals, decisions and work history across agent sessions.
+Use your supported harness to do the work; Compound supplies relevant context,
+coordinates governed execution, and records evidence you can inspect later.
 
-Concretely: a primary Go binary (`compound`) plus an optional semantic
-engine companion (`compound-breadth-engine`, installed by `install.sh` when
-you want embedding-based recall), and one local runtime directory
-(`COMPOUND_HOME`, default `~/.compound`). No cloud, no account. The
-interactive core requires no daemon: your agent harnesses — Claude Code,
-Codex, OpenCode, or any CLI — call it at session start for oriented context
-and through hooks for execution evidence. Enforced profiles can gate mutations;
-learning enters local, typed records through explicit adjudication. Optional unattended maintenance (scheduled
-memory drains, disk reclamation) additionally requires an explicitly
-installed scheduler; nothing self-installs one.
+It runs locally under one trusted OS user. Your runtime data lives in
+`COMPOUND_HOME` (default `~/.compound`); Compound needs no cloud account.
+Your chosen harness still needs its own installation and authentication.
+The optional dashboard helps you see what is progressing, what needs a decision,
+and which observations are stale or unavailable.
 
-Agent sessions are amnesiac by default: whatever an agent learned, decided, or
-broke evaporates when the context window closes. Compound records the work as
-it actually happens through its wired execution paths. Receipts preserve what
-ran; relevant adjudicated memory can inform a later session. Recording a session
-alone does not establish learning. The meaning stays owned across harnesses,
-models, and vendors.
-
-The thesis: meta-thinking must be engineered — compounding is not a feeling
-that emerges on its own. Probabilistic intelligence needs an owned, structured
-world around it, or it cannot accumulate into reliable action. Ideas die when
-they are captured wrong. Captured at execution-abstraction — a predicate, a
-falsifier, an envelope — an idea survives the moment it was had and reaches a
-factory that can act on it and adapt because of it. Compound is that capture
-format and that factory, as one substrate.
-
-The whole system in one line: **typed envelopes at the door · adjudicated
-meaning in the ledger · rented executors at the edge · policy before mutation
-· receipts and transitions after action.** Compound owns that structure;
-models, engines, and harnesses are replaceable edges. Search is not truth.
-Model output is not canon. Mutation requires an envelope and proof.
+**Current status: developer preview.** Setup still includes terminal steps.
+A no-terminal onboarding journey and universal harness compatibility are not
+accepted release claims. Recording work is not itself proof that future work
+became easier.
 
 ## Supported Scope (Public Alpha)
 
@@ -58,79 +38,47 @@ Full contract, including current blockers:
 See also the [support matrix](SUPPORT.md), [security policy](SECURITY.md),
 [recovery procedure](docs/operations/recovery.md), and [changelog](CHANGELOG.md).
 
-## Quickstart
+## Start here
 
-**New here?** Start with the [Getting Started guide](docs/getting-started.md) —
-Compound + your repo + your agent in 15 minutes.
+Follow [Getting Started](docs/getting-started.md) for the supported installation
+path. Prebuilt release instructions apply only to an actually published stable
+release; otherwise use a reviewed contributor checkout.
 
-```bash
-make install
-compound orient --harness claude-code --cwd /path/to/your/project --task "describe this project" --json
-# Replace <context_pack_id> with the returned JSON id (ctx_...).
-compound work create --owner "my-first-task" --predicate "the thing works" --context-pack <context_pack_id> --state ready --by "operator:me"
-compound workbench
+1. **Install and check the local home.** Start with `compound version` and
+   `compound home doctor`. Keep data outside your project checkout.
+2. **Connect one harness.** Follow [Harness Wiring](docs/harness-wiring.md).
+   Claude Code and Codex have managed interactive hooks; OpenCode has an
+   observation adapter. Other harnesses need an enrolled, supported adapter,
+   not just a name in a command.
+3. **Give your agent one goal and boundaries.** Ask it to inspect existing work,
+   preserve the chosen executor, and use the governed work lifecycle. You should
+   not need to copy internal IDs between sessions.
+4. **Inspect the result.** Use `compound workbench`, `compound coordination`,
+   or the optional [dashboard](docs/console.md). Execution success is separate
+   from verification and acceptance.
+
+For an already claimed task with a saved execution selection, the existing
+selected-work path resolves the actor's sole held task:
+
+```sh
+compound work continue --selected --actor <your-existing-actor> --json
 ```
 
-Wire your agent harness: see [Harness Wiring](docs/harness-wiring.md).
+This does not create or claim initial work, choose an arbitrary task, or grant
+new permission. Ambiguous selection, unsettled execution and missing authority
+remain explicit stops. [Daily use and recovery](docs/getting-started.md#daily-use-and-recovery)
+explains resuming and verification.
 
-### Inspect one governed execution
+The [explicit lifecycle demonstration](docs/getting-started.md#2-orient-on-your-repo)
+is for contributors learning the underlying commands, not the required first-run
+user experience.
 
-This local demonstration links a briefing to work, runs a bounded command, and
-leaves the execution evidence inspectable. It does not promote memory or prove
-that an agent has learned from the result:
+### Optional dashboard
 
-```bash
-compound home init
-compound doctor
-
-compound orient --harness claude-code --cwd "$PWD" --task "record a local execution demonstration" --json
-# Replace <context_pack_id> with the returned JSON id (ctx_...).
-compound work create \
-  --owner "quickstart" \
-  --predicate "the harness prints hello and records proof" \
-  --context-pack <context_pack_id> \
-  --state ready \
-  --by "operator:me"
-
-# Copy the returned work_... id into the commands below.
-compound work claim <work_id> --by "operator:me"
-compound work advance <work_id> --to running --by "operator:me" --execute \
-  --harness os-harness-entrypoints \
-  --workspace "$PWD" \
-  -- echo "hello from compound"
-
-compound work show <work_id> --json
-compound run-attempt list --json
-compound workbench
-
-# Close the verifying work; this mints its Receipt and Transition.
-compound work close <work_id> \
-  --by "operator:me" \
-  --outcome completed \
-  --move-type audit_only \
-  --summary "the local demonstration produced inspectable execution evidence"
-
-# Copy the transition id from the close output or closed work JSON.
-compound work show <work_id> --json
-compound transition show <transition_id>
-```
-
-A successful command prints a `run_attempt_id`, captures a transcript, and
-moves the work to `verifying`. Closing it then mints the Receipt and Transition.
-The WorkEnvelope keeps its ContextPack, RunAttempt, and terminal proof linked.
-A later session can inspect them with `compound work show <work_id> --json` and
-check their integrity with `compound work proof-chain-doctor`. Automatic memory
-recall requires relevant adjudicated memory; a completed receipt alone does not
-promote its contents.
-
-Optional local console on port 3777:
-
-```bash
-cd console && bun install
-compound console --operator
-```
-
-See the [Console guide](docs/console.md) for what you'll see.
+The prebuilt archives contain the CLI and engine, **not** a dashboard bundle.
+The console currently requires a matching source checkout, Bun and Node 20+.
+Its supported browser surface is local and read-only; it is not a replacement
+for the harness's governed execution path. See the [console setup guide](docs/console.md).
 
 For contract consumers:
 
