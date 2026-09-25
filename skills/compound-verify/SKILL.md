@@ -58,6 +58,15 @@ Two corollaries worth their own line:
   zero-provenance claim cannot be produced by `Adjudicate`; an unreadable work envelope cannot be
   produced by `Create`. A control that respected the door could not prove those gates can go red.
 
+### Process readiness is not admission readiness
+
+For subprocess lifecycle tests, start the process-readiness budget only after successful
+`cmd.Start`, not before durable admission. Keep admission bounded by the test context,
+surface early admission/start/exit errors, and cancel and join the worker before fixture
+cleanup. Prove delayed admission does not spend the unchanged readiness budget, while a
+missing marker, early exit, or cancellation still fails. Never relax takeover exclusion
+or termination assertions to accommodate setup latency.
+
 ## The battery (run in order; each step is checkable)
 
 1. **Never trust the checked-in binary.** `./compound` at repo root is a local build artifact and

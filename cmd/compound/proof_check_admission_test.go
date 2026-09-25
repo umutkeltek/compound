@@ -1040,6 +1040,16 @@ func TestProofCheckAdmissionRejectsSecondBeforeRunnerStarts(t *testing.T) {
 
 func TestProofCheckAdmissionStealCancelsPredecessorProcessBeforeSuccessorStarts(t *testing.T) {
 	t.Parallel()
+	testProofCheckAdmissionStealCancelsPredecessor(t, false)
+}
+
+func TestProofCheckAdmissionStealWithDelayedAdmissionPreservesProcessReadinessBudget(t *testing.T) {
+	t.Parallel()
+	testProofCheckAdmissionStealCancelsPredecessor(t, true)
+}
+
+func testProofCheckAdmissionStealCancelsPredecessor(t *testing.T, delayAdmission bool) {
+	t.Helper()
 	homePath := t.TempDir()
 	now := time.Now().UTC()
 	if err := home.Init(homePath, "proof-steal-cancellation-test", now); err != nil {
@@ -1065,9 +1075,42 @@ func TestProofCheckAdmissionStealCancelsPredecessorProcessBeforeSuccessorStarts(
 	secondProfile := syntheticAdmissionProfile(t, "/synthetic/repo-beta")
 	startedPath := filepath.Join(t.TempDir(), "predecessor-started")
 	terminatedPath := filepath.Join(t.TempDir(), "predecessor-terminated")
+	// Admission is setup, bounded by the test's existing deadline. The
+	// process-readiness timer is armed only after exec reports a real start.
+	deadline, bounded := t.Deadline()
+	if !bounded {
+		deadline = time.Now().Add(minimumProofCheckReservationTTL)
+	}
+	testCtx, cancel := context.WithDeadline(context.Background(), deadline)
+	firstFinished := make(chan struct{})
+	processStarted := make(chan struct{})
 	firstDone := make(chan error, 1)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-firstFinished:
+		case <-time.After(minimumProofCheckReservationTTL):
+			t.Error("predecessor admission/runner did not join after test cancellation")
+		}
+	})
+	var delayed atomic.Bool
+	admissionNow := func() time.Time {
+		if delayAdmission && !delayed.Swap(true) {
+			// Delay real admission, not the subprocess, beyond its unchanged
+			// three-second readiness window.
+			timer := time.NewTimer(3*time.Second + 50*time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-testCtx.Done():
+			}
+		}
+		return time.Now()
+	}
 	go func() {
+		defer close(firstFinished)
 		_, _, runErr := runProofCheckWithAdmissionContext(proofCheckAdmissionInput{
+			Context:   testCtx,
 			HomePath:  homePath,
 			WorkID:    first.ID,
 			Actor:     "codex:cancel-first",
@@ -1075,10 +1118,14 @@ func TestProofCheckAdmissionStealCancelsPredecessorProcessBeforeSuccessorStarts(
 			Command:   "compound proof-check --out /synthetic/report-alpha.json",
 			Profile:   firstProfile,
 			TTL:       30 * time.Second,
-			Now:       time.Now,
+			Now:       admissionNow,
 		}, func(ctx context.Context) (proofCheckReport, error) {
 			cmd := proofCheckCommandContext(ctx, "sh", "-c", "printf started > \"$1\"; while :; do sleep 1; done", "proof-predecessor", startedPath)
-			runErr := cmd.Run()
+			if err := cmd.Start(); err != nil {
+				return proofCheckReport{}, err
+			}
+			close(processStarted)
+			runErr := cmd.Wait()
 			if err := os.WriteFile(terminatedPath, []byte("terminated\n"), 0o644); err != nil {
 				return proofCheckReport{}, errors.Join(runErr, err)
 			}
@@ -1086,7 +1133,9 @@ func TestProofCheckAdmissionStealCancelsPredecessorProcessBeforeSuccessorStarts(
 		})
 		firstDone <- runErr
 	}()
-	waitForTestPath(t, startedPath, 3*time.Second)
+	if err := waitForProofCheckProcessReady(testCtx, processStarted, firstDone, startedPath, 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
 
 	var successorStarts atomic.Int32
 	_, _, secondErr := runProofCheckWithAdmissionContext(proofCheckAdmissionInput{
