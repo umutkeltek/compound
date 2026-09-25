@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -480,6 +481,12 @@ func TestHookLiveCodexStopWithoutExactLaneBindingNeverPretendsResume(t *testing.
 
 func seedAskStopRuntime(t *testing.T) (string, *work.Store, envelope.WorkEnvelope, string, string, string) {
 	t.Helper()
+	return seedAskStopRuntimeWithID(t, "")
+}
+
+func seedAskStopRuntimeWithID(t *testing.T, workID string) (string, *work.Store, envelope.WorkEnvelope, string, string, string) {
+	t.Helper()
+	now := time.Now().UTC()
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	t.Setenv("HOME", t.TempDir())
@@ -503,22 +510,197 @@ func seedAskStopRuntime(t *testing.T) (string, *work.Store, envelope.WorkEnvelop
 		t.Fatal(err)
 	}
 	w, err := store.Create(work.CreateInput{
-		Owner: "codex", DesiredOutcome: "finish a scoped local implementation",
+		WorkID: workID,
+		Owner:  "codex", DesiredOutcome: "finish a scoped local implementation",
 		SuccessPredicate: "the reversible implementation is verified", State: "ready", Privacy: "private", Risk: "tier1",
-	}, cliTestNow)
+	}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Claim(w.ID, "codex", cliTestNow.Add(time.Second)); err != nil {
+	if _, err := store.Claim(w.ID, "codex", now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex"}, cliTestNow.Add(2*time.Second)); err != nil {
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex"}, now); err != nil {
 		t.Fatal(err)
 	}
 	const threadID = "019f0000-0000-7000-8000-000000000333"
 	const turnID = "019f0000-0000-7000-8000-000000000444"
 	writeAskCodexJob(t, threadID, turnID, w.ID)
 	return homePath, store, w, ruling.Import.ClaimID, threadID, turnID
+}
+
+func TestHookLiveCodexStopOwnedSessionBinding(t *testing.T) {
+	binary := compoundTestBinary(t)
+	const coveredAsk = "May I continue with this reversible edit inside the envelope?"
+	for _, tc := range []struct {
+		name, workID, refs, ask, disposition, declaration string
+		legacy, staleSession, staleTurn, superseded       bool
+	}{
+		{name: "generated typed identity"},
+		{name: "underscored typed identity", workID: "work_alpha_1"},
+		{name: "typed and legacy agree", workID: "work_alpha_1", refs: "work_alpha_1"},
+		{name: "complete legacy custom identity", workID: "work_alpha_1", refs: "work_alpha_1", legacy: true},
+		{name: "typed conflicts with legacy", workID: "work_alpha_1", refs: "work_alpha_2", disposition: "delivery_unavailable"},
+		{name: "shared prefix ambiguity", workID: "work_alpha_1", refs: "work_alpha_1 work_alpha_2", legacy: true, disposition: "delivery_unavailable"},
+		{name: "typed does not hide ambiguous prose", workID: "work_alpha_1", refs: "work_alpha_1 work_alpha_2", disposition: "delivery_unavailable"},
+		{name: "ambiguous declaration forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", declaration: "ambiguous", disposition: "delivery_unavailable"},
+		{name: "uncorroborated declaration forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", declaration: "unheld", disposition: "delivery_unavailable"},
+		{name: "stale declaration forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", declaration: "stale", disposition: "delivery_unavailable"},
+		{name: "stale session", staleSession: true, disposition: "delivery_unavailable"},
+		{name: "stale turn", staleTurn: true, disposition: "delivery_unavailable"},
+		{name: "superseded standing decision", superseded: true},
+		{name: "new decision", ask: "Should the new partner receive a beta invite?", disposition: "novel"},
+		{name: "risk floor", ask: "May I publish this reversible envelope change externally?", disposition: "risk_floor"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			homePath, store, w, claimID, threadID, turnID := seedAskStopRuntimeWithID(t, tc.workID)
+			// A real prefix decoy makes accidental truncation observable, not just
+			// a lookup miss. None of these other work items is owned by this session.
+			for _, id := range []string{"work_alpha", "work_alpha_2"} {
+				if _, err := store.Create(work.CreateInput{WorkID: id, Owner: "other", SuccessPredicate: "must stay unchanged"}, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				actor := "other"
+				if tc.declaration == "ambiguous" && id == "work_alpha_2" {
+					actor = "codex"
+				}
+				if _, err := store.Claim(id, actor, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.Advance(id, work.AdvanceInput{To: "running", Actor: actor}, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeAskCodexJob(t, threadID, turnID, tc.refs)
+			if !tc.legacy {
+				actor := "codex"
+				if tc.declaration == "unheld" || tc.declaration == "stale" {
+					actor = tc.declaration
+				}
+				if tc.declaration == "stale" {
+					at := time.Now().Add(-2 * work.DefaultPresenceTTL)
+					stale, err := store.Create(work.CreateInput{Owner: actor, SuccessPredicate: "stale lease cannot bind Stop"}, at)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := store.Claim(stale.ID, actor, at); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Exercise the maintained producer, not a fabricated companion
+				// workId field or raw hook work_id. The resolver corroborates this
+				// announcement with the actor's sole independently held fresh lease.
+				cmd := exec.Command(binary, "presence", "announce", "--actor", actor, "--session", threadID, "--harness", "codex", "--cwd", "/workspace/example", "--json")
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("public presence producer: %v\n%s", err, output)
+				}
+			}
+			oldClaimID := claimID
+			if tc.superseded {
+				memStore, err := mem.Open(homePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ruling, err := decisions.Record(memStore, homePath, decisions.RecordInput{
+					Kind: decisions.KindRuling, ID: "operator-ruling-reversible-successor",
+					Title:      "Reversible actions inside the existing envelope may proceed with rollback evidence preserved.",
+					ReviewedBy: "operator:test", Scope: "reversible work inside an existing envelope",
+					UndoOf: "operator-ruling-reversible-envelope", Now: time.Now(),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				claimID = ruling.Import.ClaimID
+			}
+			before, err := store.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeKinds := askEventKindCounts(t, homePath)
+			if tc.staleSession {
+				threadID += "-stale"
+			}
+			if tc.staleTurn {
+				turnID += "-stale"
+			}
+			ask := tc.ask
+			if ask == "" {
+				ask = coveredAsk
+			}
+			invoke := func(active bool) askStopResponse {
+				t.Helper()
+				payload, err := json.Marshal(map[string]any{
+					"hook_event_name": "Stop", "session_id": threadID, "turn_id": turnID,
+					"last_assistant_message": ask, "stop_hook_active": active,
+					"cwd": "/workspace/example", "work_id": "work_alpha_2",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command(binary, "hook", "stop", "--live", "--harness", "codex")
+				cmd.Stdin = bytes.NewReader(payload)
+				var stderr bytes.Buffer
+				cmd.Stderr = &stderr
+				output, err := cmd.Output()
+				if err != nil {
+					t.Fatalf("public Stop: %v\n%s\n%s", err, output, stderr.String())
+				}
+				var response askStopResponse
+				if err := json.Unmarshal(output, &response); err != nil {
+					t.Fatalf("Stop JSON: %v\n%s", err, output)
+				}
+				return response
+			}
+			response := invoke(false)
+			after, err := store.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.disposition != "" {
+				if response.Decision != "" || response.Reason != "" || !reflect.DeepEqual(before, after) {
+					t.Fatalf("refusal mutated work or delivered continuation: response=%+v before=%+v after=%+v", response, before, after)
+				}
+				assertAskTriageBrief(t, homePath, ask, tc.disposition)
+				return
+			}
+			if response.Decision != "block" || !strings.Contains(response.Reason, claimID) || tc.superseded && strings.Contains(response.Reason, oldClaimID) {
+				t.Fatalf("owned session did not consume exact current decision %s: %+v", claimID, response)
+			}
+			for i, item := range after {
+				if item.ID != w.ID && !reflect.DeepEqual(item, before[i]) {
+					t.Fatalf("continuation changed unrelated work %s", item.ID)
+				}
+			}
+			bound, err := store.Get(w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var action envelope.ActionIntent
+			readJSONFile(t, filepath.Join(homePath, "events", bound.ActionIntentIDs[len(bound.ActionIntentIDs)-1]+".json"), &action)
+			wantBinding := "work-binding:collaboration_recipient"
+			if tc.legacy {
+				wantBinding = "work-binding:legacy_codex_job_reference"
+			}
+			if !askSliceContainsID(action.EvidenceRefs, wantBinding) || action.IDs.WorkID != w.ID {
+				t.Fatalf("missing exact identity/provenance: %+v", action)
+			}
+			afterKinds := askEventKindCounts(t, homePath)
+			if afterKinds["receipt"] != beforeKinds["receipt"]+1 || afterKinds["transition"] != beforeKinds["transition"]+1 {
+				t.Fatalf("expected one interim chain: before=%v after=%v", beforeKinds, afterKinds)
+			}
+			invoke(false)
+			if replay, err := store.List(); err != nil || !reflect.DeepEqual(after, replay) {
+				t.Fatalf("same-turn replay changed work: err=%v", err)
+			}
+			replayKinds := askEventKindCounts(t, homePath)
+			if replayKinds["receipt"] != afterKinds["receipt"] || replayKinds["transition"] != afterKinds["transition"] {
+				t.Fatalf("same-turn replay duplicated proof: before=%v after=%v", afterKinds, replayKinds)
+			}
+			if active := invoke(true); active.Decision != "" || active.Reason != "" {
+				t.Fatalf("active Stop recursed: %+v", active)
+			}
+		})
+	}
 }
 
 func assertAskTriageBrief(t *testing.T, homePath, headline, disposition string) {

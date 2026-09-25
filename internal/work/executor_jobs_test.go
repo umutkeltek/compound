@@ -5,11 +5,24 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"compound/internal/home"
 )
+
+func TestExecutorJobReferencesDoNotTruncateCustomIDs(t *testing.T) {
+	job := codexJobFile{
+		Summary: "Compare `work_alpha_1` with work_alpha_2",
+		Title:   "notwork_alpha work_release-v2.1",
+		Request: json.RawMessage(`{"prompt":"Continue work_alpha_1 and work_\u00e9tape_3"}`),
+	}
+	want := []string{"work_alpha_1", "work_alpha_2", "work_release-v2.1", "work_étape_3"}
+	if got := extractWorkRefTokens(job); !reflect.DeepEqual(got, want) {
+		t.Fatalf("complete legacy references=%q, want %q", got, want)
+	}
+}
 
 // deadPID spawns a trivial process, waits for it to exit, and returns its pid.
 // That pid is guaranteed not to reference a live process for the test window,

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -24,8 +23,6 @@ const (
 	AskTriageReviewArea          = "ask-triage"
 	AskTriageReviewSchemaVersion = "compound.ask_triage_review.v0.1"
 )
-
-var askWorkRefPattern = regexp.MustCompile(`work_[0-9A-Za-z]+`)
 
 type CodexStopInput struct {
 	SessionID            string
@@ -94,9 +91,10 @@ type codexTrackedJob struct {
 }
 
 type codexStopBinding struct {
-	Job    codexTrackedJob
-	Work   envelope.WorkEnvelope
-	JobRef string
+	Job         codexTrackedJob
+	Work        envelope.WorkEnvelope
+	JobRef      string
+	BindingRefs []string
 }
 
 // AskLawsFromClaims admits only operator-provenanced, operational decision
@@ -249,20 +247,52 @@ func resolveCodexStopBinding(store *work.Store, in CodexStopInput) (*codexStopBi
 		if json.Unmarshal(data, &job) != nil || !strings.EqualFold(strings.TrimSpace(job.Status), "running") || !work.PIDAlive(job.PID) || strings.TrimSpace(job.ThreadID) != strings.TrimSpace(in.SessionID) || strings.TrimSpace(job.TurnID) != strings.TrimSpace(in.TurnID) {
 			continue
 		}
-		workIDs := askUniqueStrings(askWorkRefPattern.FindAllString(strings.Join([]string{job.Summary, job.Title, job.Request.Prompt}, " "), -1))
-		if len(workIDs) != 1 {
-			continue
-		}
-		w, err := store.Get(workIDs[0])
-		if err != nil {
-			continue
-		}
-		matches = append(matches, codexStopBinding{Job: job, Work: w, JobRef: "codex-job:" + firstAskNonEmpty(job.ID, filepath.Base(path))})
+		matches = append(matches, codexStopBinding{Job: job, JobRef: "codex-job:" + firstAskNonEmpty(job.ID, filepath.Base(path))})
 	}
 	if len(matches) != 1 {
 		return nil, fmt.Sprintf("expected one exact companion thread/turn/work binding, found %d", len(matches)), nil
 	}
-	return &matches[0], "", nil
+	binding := &matches[0]
+	workIDs := work.LegacyJobWorkReferences(binding.Job.Summary, binding.Job.Title, binding.Job.Request.Prompt)
+	if len(workIDs) > 1 {
+		return nil, "companion job contains conflicting legacy work references", nil
+	}
+	recipient, owned, err := store.ResolveCollaborationRecipient(work.CollaborationRecipientQuery{
+		Harness: "codex", SessionID: in.SessionID, Cwd: in.Cwd,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	if !owned && recipient.UnresolvedReason != "" {
+		return nil, recipient.UnresolvedReason, nil
+	}
+	workID := recipient.WorkID
+	if owned {
+		if len(workIDs) == 1 && workIDs[0] != workID {
+			return nil, "owned session work conflicts with the companion job's legacy reference", nil
+		}
+		binding.BindingRefs = []string{"work-binding:collaboration_recipient"}
+		if recipient.RunAttemptID != "" {
+			binding.BindingRefs = append(binding.BindingRefs, recipient.RunAttemptID)
+		}
+	} else {
+		if len(workIDs) != 1 {
+			return nil, "no owned session work or unique legacy companion work reference", nil
+		}
+		workID = workIDs[0]
+		binding.BindingRefs = []string{"work-binding:legacy_codex_job_reference"}
+	}
+	// Get resolves a path; reject path-shaped references before consulting it,
+	// then require the complete embedded identity rather than trusting a prefix.
+	if filepath.Base(workID) != workID || strings.ContainsAny(workID, `/\`) {
+		return nil, "companion work reference is not a single work identity", nil
+	}
+	w, err := store.Get(workID)
+	if err != nil || w.ID != workID || w.Validate() != nil {
+		return nil, "companion work reference does not resolve to the exact valid envelope", nil
+	}
+	binding.Work = w
+	return binding, "", nil
 }
 
 func askContinuableWorkState(state string) bool {
@@ -276,6 +306,7 @@ func askContinuableWorkState(state string) bool {
 
 func recordStopContinuation(homePath string, store *work.Store, binding codexStopBinding, in CodexStopInput, ask hook.BlockingAsk, triage AskTriageResult, now time.Time) (CodexStopOutcome, error) {
 	evidenceRefs := askStopEvidenceRefs(binding.Work.ID, binding.JobRef, in, ask, triage.CitedRecordID)
+	evidenceRefs = append(evidenceRefs, binding.BindingRefs...)
 	actionID := reviewartifact.ID("act_", "ask-triage", binding.Work.ID, in.SessionID, in.TurnID, ask.Text, triage.CitedRecordID)
 	action := envelope.ActionIntent{
 		Header: envelope.Header{

@@ -98,6 +98,26 @@ func TestResolveCollaborationRecipientRequiresExactOwnedSessionBinding(t *testin
 	})
 }
 
+func TestResolveCollaborationRecipientAmbiguousSpawnIsNotAbsent(t *testing.T) {
+	t.Parallel()
+	store := newStore(t)
+	workspace := t.TempDir()
+	for _, id := range []string{"work_first", "work_second"} {
+		item, err := store.Create(CreateInput{WorkID: id, Owner: "codex:holder", SuccessPredicate: "ambiguous session refuses"}, fixedNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Claim(item.ID, "codex:holder", fixedNow); err != nil {
+			t.Fatal(err)
+		}
+		bindCollaborationRecipientForTest(t, store, item.ID, "codex:holder", "codex:holder", "codex", "same-session", workspace, fixedNow)
+	}
+	resolved, ok, err := store.ResolveCollaborationRecipient(CollaborationRecipientQuery{Harness: "codex", SessionID: "same-session", Cwd: workspace})
+	if err != nil || ok || resolved.UnresolvedReason == "" {
+		t.Fatalf("ambiguous typed identity reported absence: ok=%v resolved=%+v err=%v", ok, resolved, err)
+	}
+}
+
 func bindCollaborationRecipientForTest(
 	t *testing.T,
 	store *Store,

@@ -213,12 +213,60 @@ func TestCodexStopBindingNormalizesRunningStatus(t *testing.T) {
 	jobsRoot := filepath.Join(t.TempDir(), "jobs-state")
 	writeAskTriageJob(t, jobsRoot, " RUNNING ", os.Getpid(), threadID, turnID, w.ID)
 
-	binding, reason, err := resolveCodexStopBinding(store, CodexStopInput{SessionID: threadID, TurnID: turnID, JobsStateDir: jobsRoot})
+	binding, reason, err := resolveCodexStopBinding(store, CodexStopInput{SessionID: threadID, TurnID: turnID, JobsStateDir: jobsRoot, Cwd: "/workspace/example"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if binding == nil || binding.Work.ID != w.ID || reason != "" {
 		t.Fatalf("normalized running binding = %+v reason=%q, want work %s", binding, reason, w.ID)
+	}
+}
+
+func TestCodexStopBindingPreservesCompleteLegacyReferences(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		refs string
+		want string
+	}{
+		{"custom underscores", "work_alpha_1", "work_alpha_1"},
+		{"custom punctuation", "work_alpha-release.1", "work_alpha-release.1"},
+		{"shared prefix ambiguity", "work_alpha_1 work_alpha_2", ""},
+		{"unknown suffix does not adopt decoy", "work_alpha_unknown", ""},
+		{"embedded prefix is not a reference", "notwork_alpha", ""},
+		{"internal quote is not a delimiter", "work_alpha'unknown", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := work.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []string{"work_alpha", "work_alpha_1", "work_alpha_2", "work_alpha-release.1"} {
+				if _, err := store.Create(work.CreateInput{WorkID: id, Owner: "codex", SuccessPredicate: "p"}, askTriageTestNow); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := store.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			writeAskTriageJob(t, root, "running", os.Getpid(), "thread-exact", "turn-exact", tc.refs)
+			binding, reason, err := resolveCodexStopBinding(store, CodexStopInput{SessionID: "thread-exact", TurnID: "turn-exact", JobsStateDir: root, Cwd: "/workspace/example"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if binding != nil || reason == "" {
+					t.Fatalf("ambiguous/unknown reference adopted work: binding=%+v reason=%q", binding, reason)
+				}
+			} else if binding == nil || binding.Work.ID != tc.want {
+				t.Fatalf("binding=%+v reason=%q, want complete ID %s", binding, reason, tc.want)
+			}
+			after, err := store.List()
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("binding changed work: err=%v before=%+v after=%+v", err, before, after)
+			}
+		})
 	}
 }
 

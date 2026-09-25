@@ -78,12 +78,12 @@ func TestDeclaredSessionWithoutAnyLeaseNeverResolves(t *testing.T) {
 	}, fixedNow); err != nil {
 		t.Fatal(err)
 	}
-	_, ok, err := s.resolveDeclaredCollaborationRecipient(
+	resolved, ok, err := s.resolveDeclaredCollaborationRecipient(
 		declaredQuery(cwd), cwd, s.nonTerminalWorkByID(t), fixedNow.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok {
+	if ok || resolved.UnresolvedReason == "" {
 		t.Fatal("an uncorroborated declaration must not resolve")
 	}
 }
@@ -94,13 +94,13 @@ func TestDeclaredSessionWithStaleLeaseNeverResolves(t *testing.T) {
 	t.Parallel()
 	s, cwd, _, claimAt := declaredFixture(t, "codex:went-quiet")
 
-	_, ok, err := s.resolveDeclaredCollaborationRecipient(
+	resolved, ok, err := s.resolveDeclaredCollaborationRecipient(
 		declaredQuery(cwd), cwd, s.nonTerminalWorkByID(t),
 		claimAt.Add(DefaultPresenceTTL+time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok {
+	if ok || resolved.UnresolvedReason == "" {
 		t.Fatal("a cold lease must not corroborate a session")
 	}
 }
@@ -120,12 +120,12 @@ func TestDeclaredSessionWithTwoLeasesIsAmbiguousAndRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, ok, err := s.resolveDeclaredCollaborationRecipient(
+	resolved, ok, err := s.resolveDeclaredCollaborationRecipient(
 		declaredQuery(cwd), cwd, s.nonTerminalWorkByID(t), claimAt.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok {
+	if ok || resolved.UnresolvedReason == "" {
 		t.Fatal("two candidate works must refuse rather than guess")
 	}
 }

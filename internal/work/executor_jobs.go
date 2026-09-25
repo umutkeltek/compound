@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -20,10 +19,6 @@ const codexJobsStateRelDir = ".claude/plugins/data/codex-openai-codex/state"
 // ExecutorJobsProbeSourceRef labels the opt-in job-liveness probe on the
 // executors board so operators can see the projection consulted it.
 const ExecutorJobsProbeSourceRef = "compound.executors.codex_jobs_probe"
-
-// workRefTokenPattern matches an explicit work_<id> reference embedded in a job
-// prompt/summary. Matching is only trusted when the token equals a real work id.
-var workRefTokenPattern = regexp.MustCompile(`work_[0-9A-Za-z]+`)
 
 // DefaultCodexJobsStateDir returns the machine-local codex jobs state directory
 // derived from the user home. ok is false when no home can be resolved; callers
@@ -138,22 +133,38 @@ func scanStalledCodexJobs(dir string, now time.Time) ([]stalledCodexJob, []strin
 // (prompt/summary/title). The tokens are candidate references; a caller only
 // acts when a token equals an actual work item id.
 func extractWorkRefTokens(job codexJobFile) []string {
-	var b strings.Builder
-	b.WriteString(job.Summary)
-	b.WriteByte(' ')
-	b.WriteString(job.Title)
-	b.WriteByte(' ')
-	if len(job.Request) > 0 {
-		b.Write(job.Request)
+	var request struct {
+		Prompt string `json:"prompt"`
 	}
+	// Decode the owned text field rather than lexing JSON escapes or treating
+	// unrelated request metadata as a work reference.
+	_ = json.Unmarshal(job.Request, &request)
+	return LegacyJobWorkReferences(job.Summary, job.Title, request.Prompt)
+}
+
+// LegacyJobWorkReferences preserves complete whitespace-delimited work
+// references from companion prose. It is compatibility evidence, not a typed
+// work binding or permission. Unknown tokens stay in the result so callers can
+// refuse ambiguity instead of selecting the subset that happens to exist.
+// In particular, punctuation, Unicode and additional underscores are never
+// stripped to manufacture a shorter, potentially unrelated work identity.
+// One matching pair of surrounding quotes/backticks is presentation, but an
+// internal quote is part of the token, never a reason to adopt its prefix.
+// IDs containing whitespace require the owned session binding instead.
+func LegacyJobWorkReferences(texts ...string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, tok := range workRefTokenPattern.FindAllString(b.String(), -1) {
-		if seen[tok] {
-			continue
+	for _, text := range texts {
+		for _, tok := range strings.Fields(text) {
+			if len(tok) >= 2 && tok[0] == tok[len(tok)-1] && strings.ContainsRune("`\"'", rune(tok[0])) {
+				tok = tok[1 : len(tok)-1]
+			}
+			if !strings.HasPrefix(tok, "work_") || seen[tok] {
+				continue
+			}
+			seen[tok] = true
+			out = append(out, tok)
 		}
-		seen[tok] = true
-		out = append(out, tok)
 	}
 	return out
 }

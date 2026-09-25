@@ -25,14 +25,18 @@ type CollaborationRecipientQuery struct {
 // CollaborationRecipientResolution is the work owner's read model for one
 // active native recipient. It is reference-only and creates no registry.
 type CollaborationRecipientResolution struct {
-	Actor          string
-	WorkID         string
-	RunAttemptID   string
-	ScopeRefs      []string
-	DependencyRefs []string
-	PolicyRefs     []string
-	BaseRevisions  []string
-	ResourceRefs   []string
+	// UnresolvedReason is nonempty when known typed evidence cannot resolve.
+	// With ok=false, an empty reason means no matching typed binding exists;
+	// callers with a legacy bridge must never downgrade an unresolved binding.
+	UnresolvedReason string
+	Actor            string
+	WorkID           string
+	RunAttemptID     string
+	ScopeRefs        []string
+	DependencyRefs   []string
+	PolicyRefs       []string
+	BaseRevisions    []string
+	ResourceRefs     []string
 }
 
 // ResolveCollaborationRecipient binds a native session/cwd/harness payload to
@@ -57,7 +61,7 @@ func (s *Store) ResolveCollaborationRecipient(query CollaborationRecipientQuery)
 	query.SessionID = strings.TrimSpace(query.SessionID)
 	query.Cwd = strings.TrimSpace(query.Cwd)
 	if query.Harness == "" || query.SessionID == "" || query.Cwd == "" {
-		return CollaborationRecipientResolution{}, false, nil
+		return CollaborationRecipientResolution{UnresolvedReason: "recipient coordinates are incomplete"}, false, nil
 	}
 	cwd, err := canonicalCollaborationPath(query.Cwd)
 	if err != nil {
@@ -86,6 +90,7 @@ func (s *Store) ResolveCollaborationRecipient(query CollaborationRecipientQuery)
 		exactSession bool
 	}
 	candidates := make([]candidate, 0)
+	unsettledSession := false
 	for _, attempt := range attempts {
 		if attempt.Origin != runattempt.OriginHarnessExecution ||
 			normalizeCollaborationHarness(attempt.Harness) != query.Harness {
@@ -107,6 +112,10 @@ func (s *Store) ResolveCollaborationRecipient(query CollaborationRecipientQuery)
 			binding.Session == query.SessionID &&
 			binding.RunAttemptID == attempt.ID &&
 			normalizeCollaborationHarness(binding.Harness) == query.Harness
+		if binding != nil && binding.Session == query.SessionID &&
+			normalizeCollaborationHarness(binding.Harness) == query.Harness && !exactSession {
+			unsettledSession = true
+		}
 		candidates = append(candidates, candidate{attempt: attempt, work: item, exactSession: exactSession})
 	}
 	exact := candidates[:0]
@@ -117,6 +126,12 @@ func (s *Store) ResolveCollaborationRecipient(query CollaborationRecipientQuery)
 	}
 	if len(exact) == 1 {
 		return s.collaborationRecipientResolution(exact[0].work, exact[0].attempt)
+	}
+	if len(exact) > 1 {
+		return CollaborationRecipientResolution{UnresolvedReason: "multiple active spawned bindings match the exact session"}, false, nil
+	}
+	if unsettledSession {
+		return CollaborationRecipientResolution{UnresolvedReason: "the known spawned session has no exact active binding"}, false, nil
 	}
 	// No spawned binding. A session Compound never launched may still identify
 	// itself, but only conjunctively -- see below.
@@ -174,14 +189,21 @@ func (s *Store) resolveDeclaredCollaborationRecipient(
 		Cwd:       canonicalCwd,
 	})
 	actor := ""
+	matched := false
 	for _, announcement := range announcements {
 		if announcement.Key == want {
+			if matched {
+				return CollaborationRecipientResolution{UnresolvedReason: "multiple declarations match the exact session"}, false, nil
+			}
+			matched = true
 			actor = strings.TrimSpace(announcement.Actor)
-			break
 		}
 	}
-	if actor == "" {
+	if !matched {
 		return CollaborationRecipientResolution{}, false, nil
+	}
+	if actor == "" {
+		return CollaborationRecipientResolution{UnresolvedReason: "the exact session declaration has no actor"}, false, nil
 	}
 
 	leases, err := s.ListLeases()
@@ -204,13 +226,13 @@ func (s *Store) resolveDeclaredCollaborationRecipient(
 	// A lease that has gone cold is not corroboration: it would let an actor
 	// that stopped weeks ago keep validating a session forever.
 	if !corroborated {
-		return CollaborationRecipientResolution{}, false, nil
+		return CollaborationRecipientResolution{UnresolvedReason: "the exact session declaration has no fresh corroborating lease"}, false, nil
 	}
 	// Exactly one, mirroring the binding path. Two candidate works means we
 	// cannot say which context a message belongs to, and guessing would deliver
 	// one lane's coordination into another's.
 	if len(held) != 1 {
-		return CollaborationRecipientResolution{}, false, nil
+		return CollaborationRecipientResolution{UnresolvedReason: "the exact session declaration does not hold one unambiguous nonterminal work"}, false, nil
 	}
 	return s.collaborationRecipientResolution(held[0], runattempt.RunAttempt{Actor: actor})
 }
