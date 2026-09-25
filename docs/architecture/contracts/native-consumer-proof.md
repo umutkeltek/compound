@@ -1,6 +1,6 @@
 # Required native consumer proof
 
-External Go, Xcode, and Bun repositories can declare a tracked root compound-proof.json.
+External Go, Xcode, Bun, and Node/npm repositories can declare a tracked root compound-proof.json.
 Canonical admission reads that regular Git blob from the sealed head, never from
 ambient configuration or a caller replacement command. Compound and Rust retain
 their existing inventories; a consumer declaration cannot replace them. Module
@@ -27,6 +27,9 @@ but a quoted prefix followed by extra tokens is not a Compound module identity.
 
 Every declared consumer is required. Its command, relative directory, and exact
 contract-byte digest participate in the existing ordered resource-profile digest.
+For a nested Node declaration, its clean repository-relative location is also
+bound into that digest. Historical root declaration and serialized native-evidence
+identities are unchanged.
 The inventory also includes committed diff and public-redaction gates. Generic
 unit suites or a success sentence cannot substitute for a declared consumer.
 Only the exact Compound profile can publish an installed-Compound-runtime artifact.
@@ -120,3 +123,76 @@ inherited. Bun 1.4 has no bun install --offline contract. When hydration is
 required, reviewed repository-owned command may run bun install --frozen-lockfile
 with explicitly declared cache and ordinary network semantics. Compound validates
 prerequisites custody but does not install dependencies itself.
+
+## Node/npm native JUnit profile
+
+`node_npm_consumers_v1` uses `report_kind: node_test_junit`. Every consumer directory
+must contain tracked regular `package.json` and `package-lock.json` blobs. Consumer
+directories remain repository-root-relative, including when the declaration is
+nested. A caller cannot select a smaller declaration with an execution flag.
+
+Existing root declarations and Go/Compound, Cargo, and Bun/package root markers
+retain their precedence. Only a repository without those root markers may use one
+unambiguous tracked nested `compound-proof.json`; nested declarations are supported
+only for this Node/npm profile. Multiple candidates, symlinks, trees, submodules,
+and unclean paths refuse. Discovery includes tree entries and has a 16 MiB output
+limit. Noncanonical development/CI modes refuse a nested consumer declaration just
+as they refuse a root declaration. They cannot lend Compound's inventory to it.
+
+Admission reads the exact declaration blob from the captured Git head. A nested
+gate seals a domain-separated hash of its location and exact bytes. The runner
+resolves the same source-owned location; owned evidence retains `contract_path`
+and the finalizer checks the same identity. Relocating identical declaration bytes
+does not preserve admitted proof. The existing ordered gates still include every
+declared consumer, diff-check, and public redaction.
+
+The native report shape is tested against Node 26.9.0's built-in `node:test`
+`junit` reporter. Other Node versions are not certified by this claim; incompatible
+native output fails closed. Repository-owned wrappers should pin their supported
+runtime. Run the actual tests with `node --test --test-reporter=junit` and write
+`--test-reporter-destination` directly to `COMPOUND_PROOF_REPORT`. Register existing
+assertions through `node:test`; converting console PASS lines into XML is not proof.
+Named `describe` suites are required so each accepted leaf has native suite counts.
+
+Required and allowed-skip identities use canonical compact JSON
+`[repository-relative-file,classname,name,[suite ancestry...]]`. Native `classname`
+is significant (Node 26 uses named suite ancestry). Unlike Bun, Node's root has no
+aggregate count attributes, suite counts refer to immediate non-comment children,
+and native diagnostic/log comments are permitted within bounded reports. The
+validator checks these actual semantics. Failures, TODOs (even when listed as an
+allowed skip), absent/duplicate/required-skipped tests, undeclared skips, inconsistent
+counts, namespaces, unknown attributes, malformed/trailing XML, and empty reports
+refuse. The portable fixture was captured from genuine Node 26.9 execution; only
+root-path, hostname, timestamp, and duration metadata was normalized. Its assertions,
+outcomes, structure, and immediate-child counts were not fabricated. Local native
+execution tests are optional when the supported Node major is unavailable; portable
+fixture and adversarial tests still run.
+
+The runner records its canonical sealed `source_root` alongside unchanged native
+XML. Each native absolute file must be a clean contained path under that root;
+identity uses the exact relative path, never a basename or prefix-only comparison.
+This metadata is runner-owned custody, not an environment variable or XML-supplied
+root. It is retained within the owned report and revalidated by the finalizer; the
+transient sealed checkout need not still exist for later chain reads. The reviewed
+source trust boundary still applies: this is not a signature by Node or protection
+against a hostile source command fabricating its report.
+
+Node consumers get private HOME, explicit empty user/global npm config files,
+a private writable npm cache, and fixed offline/ignore-scripts/no-audit/no-fund/
+zero-fetch-retry npm defaults. Ambient NODE_OPTIONS, npm configuration, credentials,
+and provider keys do not pass through. A tracked project config remains source-owned
+and must be reviewed with the command. `NPM_CACHE_SEED_DIR` is an optional declared
+absolute cache-directory input restricted to this profile. Compound does not install
+or copy dependencies: a reviewed source-owned wrapper may seed its private cache
+using only lock-integrity-verified artifacts and run `npm ci --offline --ignore-scripts
+--include=dev --include=optional --no-audit --no-fund`. Keep platform-native optional
+dependencies such as the matching esbuild package; omitting all optional packages
+is not equivalent. Canonicalize a declared seed root once before containment checks
+so an operator-declared symlinked cache is not confused with a child tarball escape.
+Never copy ambient npm configuration or credentials, and never fetch a substitute.
+
+These npm controls are not a general network or filesystem sandbox. A stronger
+containment claim requires separate installed acceptance. Hydration feasibility,
+native parser tests, and changed capability selection are not customer outcomes or
+measured economic benefit. The product's actual governed canonical run and delivery
+must still consume the certificate before a changed-work close is accepted.

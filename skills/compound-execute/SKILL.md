@@ -195,24 +195,25 @@ the mutating path is grant-gated anyway. Skipping a live proof when the change H
 is the same class of error as attaching a fabricated one — both make the Receipt assert a
 consumption nobody observed, and the omission is the one no gate catches.
 
-**Bridge envelopes close on `live:`/`evidence:` ONLY — never a `commit:` artifact** (law minted
-2026-07-19 from a permanent wedge). A *bridge envelope* lands wholly or partly in a repo that is
-not compound: a control-plane host repo, a product repo, or an untracked runtime. `git_delivery`
-binds an envelope to
-exactly ONE canonical worktree + local ref + publication ref — compound's — and a `commit:` artifact
-is resolved against THAT lineage. A foreign-repo SHA can never be found there, so `land-check`
-cannot certify and `close` cannot pass; re-running never fixes it because the proof SHAPE is wrong.
-A prior bridge-envelope incident attached a foreign control-plane host repo commit and wedged
-permanently — recovery was cancellation under the steal path, not repair. The SHA is NAMED IN THE
-EVIDENCE BODY; it is provenance, not a delivery artifact.
+**Source work in another repository still requires its own Git delivery proof.** `git_delivery`
+binds one WorkEnvelope to one canonical repository, local target ref and publication contract;
+that repository need not be Compound. A `commit:` artifact must resolve in that bound lineage.
+For delivery closes, `ClosePlan` and `Close` derive scope from recorded actions and artifacts;
+a recorded commit artifact requires delivery proof even with `audit_only`. The audit-only path
+does not inspect every recorded mutation. Never relabel implemented source work as `audit_only`
+or replace its commit artifact with `evidence:` to evade proof: that would misstate the outcome.
 
-*Split slices are the common case*, not the exception — a door lands in compound while its cutover
-lands in a product repo (a compound-side door plus an external cutover is exactly this). Then ONE
-envelope carries TWO proof shapes: `commit:` for the compound-side delivery
-only, plus `live:` (a real run landing a real record under `COMPOUND_HOME`) and `evidence:` naming
-the foreign repo + SHA for the cutover. Reaching for `commit:` on the foreign half is a category
-error the gate correctly refuses — `commit:` asserts *compound's own delivery lineage contains
-this*, which for a foreign repo is unverifiable by construction.
+Bind the actual repository at creation. For an existing nonterminal envelope missing its delivery
+contract, use only the operator-provenanced same-state binding described in §0; do not recreate,
+silently retarget or cancel work merely to evade this gate. Execute that repository's supported
+canonical proof profile, deliver to its bound refs, then record its `land-check`. An unsupported
+consumer profile or missing native report remains an explicit verification gap; a certificate
+from Compound or another repository cannot substitute for it.
+
+For a Compound change followed by source changes in a product repository, use separately bound
+source work and preserve their lineage. `live:` and `evidence:` refs may record cross-repository
+consumption and cutover observations, but they supplement rather than certify the other source
+delivery. Non-source runtime observations keep their existing evidence and authorization rules.
 
 ## 8 · Route the learnings (the operator's law: "change the system based on the information")
 

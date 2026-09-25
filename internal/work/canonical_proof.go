@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -100,20 +101,27 @@ func ResolveCanonicalProofPlan(
 	hasGoModule := markers["go.mod"]
 	hasPackageJSON := markers["package.json"]
 	hasBunLock := markers["bun.lock"]
+	contractPath, err := canonicalConsumerDeclarationPath(resolvedRepo, source.HeadSHA)
+	if err != nil {
+		return CanonicalProofPlan{}, err
+	}
 
 	plan := CanonicalProofPlan{Repo: resolvedRepo, Source: source}
 	switch {
-	case markers[CanonicalConsumerContractPath]:
+	case contractPath != "":
 		if hasCargoManifest || hasCargoLock {
 			return CanonicalProofPlan{}, fmt.Errorf("external consumer contract cannot replace Rust canonical inventory")
 		}
-		body, blobErr := canonicalProofGitBlob(resolvedRepo, source.HeadSHA, CanonicalConsumerContractPath)
+		body, blobErr := canonicalProofGitBlob(resolvedRepo, source.HeadSHA, contractPath)
 		if blobErr != nil {
 			return CanonicalProofPlan{}, blobErr
 		}
 		contract, contractErr := parseCanonicalConsumerContract(body)
 		if contractErr != nil {
 			return CanonicalProofPlan{}, contractErr
+		}
+		if contractPath != CanonicalConsumerContractPath && contract.Profile != "node_npm_consumers_v1" {
+			return CanonicalProofPlan{}, fmt.Errorf("nested consumer declaration requires Node/npm profile")
 		}
 		if (contract.Profile == "go_consumers_v1") != hasGoModule {
 			return CanonicalProofPlan{}, fmt.Errorf("consumer profile does not match tracked root Go module")
@@ -135,7 +143,17 @@ func ResolveCanonicalProofPlan(
 		}
 		plan.ID = contract.Profile
 		for _, consumer := range contract.Consumers {
-			plan.Steps = append(plan.Steps, canonicalConsumerStep(consumer, body))
+			if contract.Profile == "node_npm_consumers_v1" {
+				paths := []string{path.Join(consumer.Dir, "package.json"), path.Join(consumer.Dir, "package-lock.json")}
+				packageMarkers, err := canonicalProofRootMarkers(resolvedRepo, source.HeadSHA, paths)
+				if err != nil {
+					return CanonicalProofPlan{}, err
+				}
+				if !packageMarkers[paths[0]] || !packageMarkers[paths[1]] {
+					return CanonicalProofPlan{}, fmt.Errorf("Node consumer %s requires tracked regular package.json and package-lock.json in its directory", consumer.ID)
+				}
+			}
+			plan.Steps = append(plan.Steps, canonicalConsumerStepAtPath(consumer, body, contractPath))
 		}
 		diffRange := source.BaseSHA + "..." + source.HeadSHA
 		plan.Steps = append(plan.Steps,
@@ -174,6 +192,73 @@ func ResolveCanonicalProofPlan(
 		return CanonicalProofPlan{}, fmt.Errorf("unsupported canonical proof repository: tracked root go.mod or Cargo.toml plus Cargo.lock required")
 	}
 	return cloneCanonicalProofPlan(plan), nil
+}
+
+func validConsumerContractPath(value string) bool {
+	return value != "" && len(value) <= 4096 && !path.IsAbs(value) && path.Clean(value) == value && value != ".." &&
+		!strings.HasPrefix(value, "../") && !strings.ContainsAny(value, "\\\x00\r\n") && path.Base(value) == CanonicalConsumerContractPath
+}
+
+// Existing root inventories always win. Only otherwise unsupported repositories
+// can discover one nested declaration; a runtime flag never selects a weaker one.
+func canonicalConsumerDeclarationPath(repo, head string) (string, error) {
+	markers, err := canonicalProofRootMarkers(repo, head, []string{CanonicalConsumerContractPath, "go.mod", "Cargo.toml", "Cargo.lock", "package.json", "bun.lock"})
+	if err != nil {
+		return "", err
+	}
+	if markers[CanonicalConsumerContractPath] {
+		return CanonicalConsumerContractPath, nil
+	}
+	if len(markers) != 0 {
+		return "", nil
+	}
+	packageLock, err := canonicalProofRootMarkers(repo, head, []string{"package-lock.json"})
+	if err != nil {
+		return "", err
+	}
+	if len(packageLock) != 0 {
+		return "", nil
+	}
+	// Include trees: a directory or submodule named like a declaration must not
+	// disappear from recursive discovery and leave a different declaration chosen.
+	cmd := exec.CommandContext(context.Background(), "git", "ls-tree", "-r", "-t", "-z", "--full-tree", head)
+	cmd.Dir = repo
+	var output consumerTreeOutput
+	cmd.Stdout = &output
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("discover consumer declarations: %w", err)
+	}
+	selected := ""
+	for _, record := range bytes.Split(output.Bytes(), []byte{0}) {
+		if len(record) == 0 {
+			continue
+		}
+		parts := strings.SplitN(string(record), "\t", 2)
+		if len(parts) != 2 {
+			return "", fmt.Errorf("malformed consumer Git tree")
+		}
+		if path.Base(parts[1]) != CanonicalConsumerContractPath {
+			continue
+		}
+		fields := strings.Fields(parts[0])
+		if len(fields) != 3 || fields[1] != "blob" || (fields[0] != "100644" && fields[0] != "100755") || !validConsumerContractPath(parts[1]) {
+			return "", fmt.Errorf("consumer declaration must be a clean regular Git blob")
+		}
+		if selected != "" {
+			return "", fmt.Errorf("ambiguous nested consumer declarations")
+		}
+		selected = parts[1]
+	}
+	return selected, nil
+}
+
+type consumerTreeOutput struct{ bytes.Buffer }
+
+func (b *consumerTreeOutput) Write(p []byte) (int, error) {
+	if len(p) > (16<<20)-b.Len() {
+		return 0, fmt.Errorf("consumer declaration Git tree exceeds 16 MiB discovery limit")
+	}
+	return b.Buffer.Write(p)
 }
 
 func canonicalProofRootMarkers(repo, headSHA string, paths []string) (map[string]bool, error) {
@@ -215,6 +300,15 @@ func RefuseRustInCompoundOnlyProofMode(repo, mode string) error {
 	}
 	if committed, err := canonicalProofGitNULList(repo, "ls-tree", "-z", "--name-only", "HEAD", "--", CanonicalConsumerContractPath); err == nil && len(committed) > 0 {
 		return fmt.Errorf("%s is Compound-specific; declared consumers require governed canonical proof", mode)
+	}
+	if _, err := canonicalProofGitNULList(repo, "rev-parse", "--verify", "HEAD"); err == nil {
+		contractPath, err := canonicalConsumerDeclarationPath(repo, "HEAD")
+		if err != nil {
+			return err
+		}
+		if contractPath != "" {
+			return fmt.Errorf("%s is Compound-specific; declared consumers require governed canonical proof", mode)
+		}
 	}
 	refusal := func() error {
 		return fmt.Errorf("%s is Compound-specific; a Rust workspace requires governed canonical proof with explicit --base, --work, --actor, and --out", mode)

@@ -44,13 +44,18 @@ type CanonicalConsumerEvidence struct {
 	Contract []byte `json:"contract"`
 	Report   []byte `json:"report"`
 	Tests    []byte `json:"tests,omitempty"`
+	// Absent ContractPath preserves historical root-declaration identities.
+	ContractPath string `json:"contract_path,omitempty"`
+	// SourceRoot is captured by the runner, not taken from environment or XML.
+	// Node's native absolute file names are checked relative to this sealed root.
+	SourceRoot string `json:"source_root,omitempty"`
 }
 
 func (e *CanonicalConsumerEvidence) size() int {
 	if e == nil {
 		return 0
 	}
-	return len(e.Contract) + len(e.Report) + len(e.Tests)
+	return len(e.Contract) + len(e.Report) + len(e.Tests) + len(e.ContractPath) + len(e.SourceRoot)
 }
 
 // RetainCanonicalConsumerEvidence bounds the whole report, not only each native
@@ -94,7 +99,7 @@ func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, err
 	if err := d.Decode(&c); err != nil {
 		return c, fmt.Errorf("consumer contract: %w", err)
 	}
-	if c.SchemaVersion != "compound.proof_consumers.v1" || (c.Profile != "go_consumers_v1" && c.Profile != "xcode_consumers_v1" && c.Profile != "bun_consumers_v1") {
+	if c.SchemaVersion != "compound.proof_consumers.v1" || (c.Profile != "go_consumers_v1" && c.Profile != "xcode_consumers_v1" && c.Profile != "bun_consumers_v1" && c.Profile != "node_npm_consumers_v1") {
 		return c, fmt.Errorf("unsupported consumer contract schema/profile")
 	}
 	if len(c.Consumers) == 0 || len(c.Consumers) > 32 {
@@ -136,6 +141,10 @@ func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, err
 		for name := range env {
 			switch name {
 			case "PG_BIN_DIR", "GOCACHE", "GOMODCACHE", "DEVELOPER_DIR", "BUN_INSTALL_CACHE_DIR":
+			case "NPM_CACHE_SEED_DIR":
+				if c.Profile != "node_npm_consumers_v1" {
+					return c, fmt.Errorf("npm seed directory requires Node/npm profile")
+				}
 			default:
 				return c, fmt.Errorf("consumer %s environment %q is not a tool/cache directory", s.ID, name)
 			}
@@ -157,12 +166,19 @@ func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, err
 					return c, fmt.Errorf("Bun allowed skip identity: %w", err)
 				}
 			}
+			if c.Profile == "node_npm_consumers_v1" {
+				if _, err := parseNodeTestIdentity(id); err != nil {
+					return c, fmt.Errorf("Node allowed skip identity: %w", err)
+				}
+			}
 		}
 		wantKind := "go_test_json"
 		if c.Profile == "xcode_consumers_v1" {
 			wantKind = "xcresult"
 		} else if c.Profile == "bun_consumers_v1" {
 			wantKind = "bun_junit"
+		} else if c.Profile == "node_npm_consumers_v1" {
+			wantKind = "node_test_junit"
 		}
 		if s.ReportKind != wantKind {
 			return c, fmt.Errorf("consumer %s report_kind must be %s", s.ID, wantKind)
@@ -173,6 +189,10 @@ func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, err
 			} else if wantKind == "bun_junit" {
 				if _, err := parseBunTestIdentity(id); err != nil {
 					return c, fmt.Errorf("Bun required test identity: %w", err)
+				}
+			} else if wantKind == "node_test_junit" {
+				if _, err := parseNodeTestIdentity(id); err != nil {
+					return c, fmt.Errorf("Node required test identity: %w", err)
 				}
 			}
 		}
@@ -195,18 +215,39 @@ func consumerUniqueStrings(values []string, required bool) (map[string]bool, err
 }
 
 func canonicalConsumerStep(c CanonicalConsumer, body []byte) ProofCheckStep {
-	sum := sha256.Sum256(body)
+	return canonicalConsumerStepAtPath(c, body, CanonicalConsumerContractPath)
+}
+
+func canonicalConsumerStepAtPath(c CanonicalConsumer, body []byte, contractPath string) ProofCheckStep {
+	identity := body
+	if contractPath != "" && contractPath != CanonicalConsumerContractPath {
+		identity = append([]byte("compound.proof_contract_path.v1\x00"+contractPath+"\x00"), body...)
+	}
+	sum := sha256.Sum256(identity)
 	return ProofCheckStep{Name: "consumer:" + c.ID, Command: append([]string(nil), c.Command...), Dir: c.Dir, ProofRef: "consumer:" + c.ID + ":sha256:" + hex.EncodeToString(sum[:])}
 }
 
 // CanonicalConsumerForStep checks the complete gate identity against the exact sealed body.
 func CanonicalConsumerForStep(body []byte, step ProofCheckStep) (CanonicalConsumer, error) {
+	return canonicalConsumerForStepAtPath(body, CanonicalConsumerContractPath, step)
+}
+
+func canonicalConsumerForStepAtPath(body []byte, contractPath string, step ProofCheckStep) (CanonicalConsumer, error) {
+	if contractPath == "" {
+		contractPath = CanonicalConsumerContractPath
+	}
+	if !validConsumerContractPath(contractPath) {
+		return CanonicalConsumer{}, fmt.Errorf("invalid consumer contract path")
+	}
 	contract, err := parseCanonicalConsumerContract(body)
 	if err != nil {
 		return CanonicalConsumer{}, err
 	}
+	if contractPath != CanonicalConsumerContractPath && contract.Profile != "node_npm_consumers_v1" {
+		return CanonicalConsumer{}, fmt.Errorf("nested consumer evidence requires Node/npm profile")
+	}
 	for _, consumer := range contract.Consumers {
-		want := canonicalConsumerStep(consumer, body)
+		want := canonicalConsumerStepAtPath(consumer, body, contractPath)
 		if want.Name != step.Name {
 			continue
 		}
@@ -218,21 +259,26 @@ func CanonicalConsumerForStep(body []byte, step ProofCheckStep) (CanonicalConsum
 	return CanonicalConsumer{}, fmt.Errorf("consumer %s absent from sealed contract", step.Name)
 }
 
-// ReadCanonicalConsumer reads only the admitted Git object's regular root blob.
+// ReadCanonicalConsumer reads only the admitted Git object's regular declaration blob.
 func ReadCanonicalConsumer(repo, head string, step ProofCheckStep) (CanonicalConsumer, []byte, error) {
-	markers, err := canonicalProofRootMarkers(repo, head, []string{CanonicalConsumerContractPath})
-	if err != nil {
-		return CanonicalConsumer{}, nil, err
-	}
-	if !markers[CanonicalConsumerContractPath] {
-		return CanonicalConsumer{}, nil, fmt.Errorf("tracked consumer contract required")
-	}
-	body, err := canonicalProofGitBlob(repo, head, CanonicalConsumerContractPath)
-	if err != nil {
-		return CanonicalConsumer{}, nil, err
-	}
-	c, err := CanonicalConsumerForStep(body, step)
+	c, body, _, err := readCanonicalConsumerAtPath(repo, head, step)
 	return c, body, err
+}
+
+func readCanonicalConsumerAtPath(repo, head string, step ProofCheckStep) (CanonicalConsumer, []byte, string, error) {
+	contractPath, err := canonicalConsumerDeclarationPath(repo, head)
+	if err != nil {
+		return CanonicalConsumer{}, nil, "", err
+	}
+	if contractPath == "" {
+		return CanonicalConsumer{}, nil, "", fmt.Errorf("tracked consumer contract required")
+	}
+	body, err := canonicalProofGitBlob(repo, head, contractPath)
+	if err != nil {
+		return CanonicalConsumer{}, nil, "", err
+	}
+	c, err := canonicalConsumerForStepAtPath(body, contractPath, step)
+	return c, body, contractPath, err
 }
 
 // ValidateCanonicalConsumerEvidence is shared by the native runner and owned report finalizer.
@@ -242,12 +288,15 @@ func ValidateCanonicalConsumerEvidence(step ProofCheckStep) error {
 	if e == nil {
 		return fmt.Errorf("consumer native evidence required")
 	}
-	c, err := CanonicalConsumerForStep(e.Contract, step)
+	c, err := canonicalConsumerForStepAtPath(e.Contract, e.ContractPath, step)
 	if err != nil {
 		return err
 	}
 	if len(e.Report) == 0 || len(e.Report) > CanonicalConsumerReportLimit || len(e.Tests) > CanonicalConsumerReportLimit {
 		return fmt.Errorf("consumer report absent or oversized")
+	}
+	if c.ReportKind != "node_test_junit" && e.SourceRoot != "" {
+		return fmt.Errorf("source-root metadata is only valid for Node native reports")
 	}
 	switch c.ReportKind {
 	case "go_test_json":
@@ -262,6 +311,11 @@ func ValidateCanonicalConsumerEvidence(step ProofCheckStep) error {
 			return fmt.Errorf("Bun report cannot carry an Xcode test tree")
 		}
 		return validateConsumerBunReport(c, e.Report)
+	case "node_test_junit":
+		if len(e.Tests) != 0 {
+			return fmt.Errorf("Node report cannot carry an Xcode test tree")
+		}
+		return validateConsumerNodeReport(c, e.Report, e.SourceRoot)
 	default:
 		return fmt.Errorf("unsupported native report")
 	}

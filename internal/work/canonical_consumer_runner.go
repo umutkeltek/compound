@@ -24,11 +24,24 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 	if len(headRefs) > 0 {
 		head = headRefs[len(headRefs)-1]
 	}
-	consumer, body, err := ReadCanonicalConsumer(repo, head, step)
+	consumer, body, contractPath, err := readCanonicalConsumerAtPath(repo, head, step)
 	if err != nil {
 		return nil, nil, err
 	}
 	evidence := &CanonicalConsumerEvidence{Contract: body}
+	if contractPath != CanonicalConsumerContractPath {
+		evidence.ContractPath = contractPath
+	}
+	if consumer.ReportKind == "node_test_junit" {
+		evidence.SourceRoot, err = filepath.EvalSymlinks(repo)
+		if err != nil {
+			return nil, evidence, err
+		}
+		evidence.SourceRoot, err = filepath.Abs(evidence.SourceRoot)
+		if err != nil {
+			return nil, evidence, err
+		}
+	}
 	cwd, err := consumerContainedDirectory(repo, consumer.Dir)
 	if err != nil {
 		return nil, evidence, err
@@ -82,7 +95,7 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 	}
 	defer os.RemoveAll(tmp)
 	childHome := os.Getenv("HOME")
-	if consumer.ReportKind == "bun_junit" {
+	if consumer.ReportKind == "bun_junit" || consumer.ReportKind == "node_test_junit" {
 		childHome = filepath.Join(tmp, "home")
 		if err := os.Mkdir(childHome, 0o700); err != nil {
 			return nil, evidence, err
@@ -91,7 +104,7 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 	reportName := "result.jsonl"
 	if consumer.ReportKind == "xcresult" {
 		reportName = "result.xcresult"
-	} else if consumer.ReportKind == "bun_junit" {
+	} else if consumer.ReportKind == "bun_junit" || consumer.ReportKind == "node_test_junit" {
 		reportName = "result.junit.xml"
 	}
 	reportPath := filepath.Join(tmp, reportName)
@@ -103,6 +116,19 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 	}
 	// exec.Cmd deduplicates environment entries, retaining the last declared cache value.
 	env = append(env, external...)
+	if consumer.ReportKind == "node_test_junit" {
+		// Isolating HOME alone leaves npm's installation-prefix global config
+		// readable. Both config paths and the writable cache are runner-owned.
+		userConfig, globalConfig := filepath.Join(tmp, "npm-user.config"), filepath.Join(tmp, "npm-global.config")
+		for _, file := range []string{userConfig, globalConfig} {
+			if err := os.WriteFile(file, nil, 0o600); err != nil {
+				return nil, evidence, err
+			}
+		}
+		env = append(env, "NPM_CONFIG_USERCONFIG="+userConfig, "NPM_CONFIG_GLOBALCONFIG="+globalConfig,
+			"NPM_CONFIG_CACHE="+filepath.Join(tmp, "npm-cache"), "NPM_CONFIG_OFFLINE=true", "NPM_CONFIG_IGNORE_SCRIPTS=true",
+			"NPM_CONFIG_AUDIT=false", "NPM_CONFIG_FUND=false", "NPM_CONFIG_FETCH_RETRIES=0")
+	}
 	if _, err := os.Lstat(reportPath); !os.IsNotExist(err) {
 		return nil, evidence, fmt.Errorf("native report target must be fresh")
 	}
@@ -123,7 +149,7 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 	output, runErr := cmd.CombinedOutput()
 	runErr = errors.Join(runErr, writer.Close())
 	runErr = errors.Join(runErr, awaitConsumerWriters(runCtx, cmd, reader))
-	if consumer.ReportKind == "go_test_json" || consumer.ReportKind == "bun_junit" {
+	if consumer.ReportKind == "go_test_json" || consumer.ReportKind == "bun_junit" || consumer.ReportKind == "node_test_junit" {
 		evidence.Report, err = readConsumerReport(tmp, reportName)
 	} else {
 		if err = validateConsumerResultBundle(reportPath); err == nil {
