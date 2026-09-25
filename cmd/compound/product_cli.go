@@ -618,13 +618,7 @@ func cmdProduct(args []string) {
 			fmt.Fprintln(os.Stderr, "usage: compound product review <review.yaml> --reviewed-by <actor>")
 			os.Exit(2)
 		}
-		review, err := product.LoadReview(reviewPath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "product review:", err)
-			os.Exit(1)
-		}
-		review.ReviewedBy = reviewedBy
-		report, err := product.ApplyReview(homePath, store, review, reviewPath, time.Now())
+		report, err := product.ApplyReviewFile(homePath, store, reviewPath, reviewedBy, time.Now())
 		if hasFlag(rest, "--json") {
 			printJSON(report)
 		} else {

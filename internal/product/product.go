@@ -675,15 +675,23 @@ func applySignalHints(b []byte, report *SignalDoctorReport) {
 }
 
 func LoadReview(path string) (Review, error) {
-	b, err := os.ReadFile(path)
+	review, _, err := loadReviewSource(path)
+	return review, err
+}
+
+var readReviewSourceFile = os.ReadFile
+
+// The parsed request and its fingerprint must describe the same captured read.
+func loadReviewSource(path string) (Review, string, error) {
+	b, err := readReviewSourceFile(path)
 	if err != nil {
-		return Review{}, err
+		return Review{}, "", err
 	}
 	var review Review
 	if err := yaml.Unmarshal(b, &review); err != nil {
-		return Review{}, err
+		return Review{}, "", err
 	}
-	return review, nil
+	return review, approvalCandidateDigest(b), nil
 }
 
 func LoadSourceIssueReview(path string) (SourceIssueReview, error) {

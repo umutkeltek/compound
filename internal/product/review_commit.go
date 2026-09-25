@@ -43,7 +43,25 @@ var replaceReviewCandidate = candidates.ReplaceCandidateIfCurrent
 var publishReviewHistory = appendUniqueReview
 var publishReviewArtifacts = recordReviewArtifactResult
 
-func ApplyReview(homePath string, store *mem.Store, request Review, sourcePath string, now time.Time) (report ReviewReport, resultErr error) {
+// ApplyReviewFile admits the parsed file revision, even if the path is replaced
+// afterward. The operator's reviewer override is frozen with that exact input.
+func ApplyReviewFile(homePath string, store *mem.Store, sourcePath, reviewedBy string, now time.Time) (ReviewReport, error) {
+	request, digest, err := loadReviewSource(sourcePath)
+	if err != nil {
+		return reviewBaseReport(request), err
+	}
+	request.ReviewedBy = strings.TrimSpace(reviewedBy)
+	return applyReview(homePath, store, request, sourcePath, digest, now)
+}
+
+// ApplyReview accepts a programmatic request. Its source is a provenance label,
+// not evidence that a file's bytes produced the typed value. File-backed callers
+// use ApplyReviewFile to bind parsing and fingerprinting to one captured read.
+func ApplyReview(homePath string, store *mem.Store, request Review, sourcePath string, now time.Time) (ReviewReport, error) {
+	return applyReview(homePath, store, request, sourcePath, "", now)
+}
+
+func applyReview(homePath string, store *mem.Store, request Review, sourcePath, sourceDigest string, now time.Time) (report ReviewReport, resultErr error) {
 	report = reviewBaseReport(request)
 	if err := ValidateReview(request); err != nil {
 		return report, err
@@ -82,7 +100,7 @@ func ApplyReview(homePath string, store *mem.Store, request Review, sourcePath s
 		if !equalReviewValue(request, snapshot.Request) || cleanReviewSource(sourcePath) != snapshot.SourcePath {
 			return report, fmt.Errorf("review %s already has a frozen request; reviewer, payload, time and source cannot change", request.ID)
 		}
-		if err := checkReviewSource(snapshot); err != nil {
+		if err := checkReviewSource(snapshot, sourceDigest); err != nil {
 			return report, err
 		}
 		return settleReview(homePath, snapshot, ref)
@@ -134,15 +152,7 @@ func ApplyReview(homePath string, store *mem.Store, request Review, sourcePath s
 	if err != nil {
 		return report, err
 	}
-	snapshot := reviewSnapshot{SchemaVersion: reviewSnapshotSchema, Request: request, Review: review, SourcePath: cleanReviewSource(sourcePath), CreatedAt: now.UTC().Format(time.RFC3339Nano), Preimage: before.Body, PreDigest: before.Digest, PreCustody: before.CustodyToken, Postimage: postimage, PostDigest: approvalCandidateDigest(postimage)}
-	if snapshot.SourcePath != "" {
-		body, err := os.ReadFile(snapshot.SourcePath)
-		if err == nil {
-			snapshot.SourceDigest = approvalCandidateDigest(body)
-		} else if !os.IsNotExist(err) {
-			return report, err
-		}
-	}
+	snapshot := reviewSnapshot{SchemaVersion: reviewSnapshotSchema, Request: request, Review: review, SourcePath: cleanReviewSource(sourcePath), SourceDigest: sourceDigest, CreatedAt: now.UTC().Format(time.RFC3339Nano), Preimage: before.Body, PreDigest: before.Digest, PreCustody: before.CustodyToken, Postimage: postimage, PostDigest: approvalCandidateDigest(postimage)}
 	ref, err := freezeReview(homePath, snapshot)
 	if err != nil {
 		return report, err
@@ -215,7 +225,13 @@ func cleanReviewSource(path string) string {
 	return filepath.Clean(path)
 }
 
-func checkReviewSource(snapshot reviewSnapshot) error {
+func checkReviewSource(snapshot reviewSnapshot, capturedDigest string) error {
+	if capturedDigest != "" {
+		if capturedDigest != snapshot.SourceDigest {
+			return fmt.Errorf("original review source bytes changed")
+		}
+		return nil
+	}
 	if snapshot.SourceDigest == "" {
 		return nil
 	}

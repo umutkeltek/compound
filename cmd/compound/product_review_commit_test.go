@@ -94,6 +94,18 @@ func TestProductReviewPublicCommitRecoveryAndConsumers(t *testing.T) {
 	if err := os.WriteFile(planPath, planBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A different byte revision cannot complete the partial operation, even if
+	// its parsed fields are identical. Restoring A must remain recoverable.
+	if err := os.WriteFile(reviewPath, []byte(draft+"\n# replacement source revision\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err = run("product", "review", reviewPath, "--reviewed-by", "synthetic-reviewer", "--json")
+	if err == nil || !strings.Contains(stderr, "source bytes changed") {
+		t.Fatalf("changed source revision completed old operation: %v\n%s\n%s", err, out, stderr)
+	}
+	if err := os.WriteFile(reviewPath, []byte(draft), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	out, stderr, err = run("product", "review", reviewPath, "--reviewed-by", "synthetic-reviewer", "--json")
 	if err != nil {
 		t.Fatalf("public recovery: %v\n%s\n%s", err, out, stderr)

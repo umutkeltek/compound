@@ -17,6 +17,7 @@ import (
 	"compound/internal/eventstore"
 	"compound/internal/home"
 	"compound/internal/mem"
+	"gopkg.in/yaml.v3"
 )
 
 func reviewCommitFixture(t *testing.T) (string, *mem.Store, Review) {
@@ -28,6 +29,118 @@ func reviewCommitFixture(t *testing.T) (string, *mem.Store, Review) {
 		t.Fatal(err)
 	}
 	return h, s, Review{SchemaVersion: ReviewSchemaVersion, ID: "review_a", ProductID: "product:review-fixture", HypothesisID: id, Result: "supported", Rationale: "Synthetic measurement supports the hypothesis.", Confidence: .8, NextAction: "retain", EvidenceRefs: []string{"product_signal:synthetic"}, ReviewedBy: "synthetic-reviewer"}
+}
+
+func TestReviewParsedSourceReplacementDoesNotStrandRecovery(t *testing.T) {
+	h, s, a := reviewCommitFixture(t)
+	path := filepath.Join(t.TempDir(), "review.yaml")
+	bodyA, err := yaml.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := a
+	b.Result, b.Rationale = "refuted", "Different source revision."
+	bodyB, err := yaml.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, bodyA, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldRead := readReviewSourceFile
+	t.Cleanup(func() { readReviewSourceFile = oldRead })
+	// The real reader captures A, then the source changes before admission.
+	readReviewSourceFile = func(path string) ([]byte, error) {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(path, bodyB, 0o600); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+	oldHistory := publishReviewHistory
+	t.Cleanup(func() { publishReviewHistory = oldHistory })
+	publishReviewHistory = func(string, Review) error { return errors.New("postcommit history failure") }
+	failed, err := ApplyReviewFile(h, s, path, a.ReviewedBy, tProduct)
+	readReviewSourceFile = oldRead
+	publishReviewHistory = oldHistory
+	if err == nil || failed.Status != "recovery_required" || failed.CandidateOutcome != "committed" {
+		t.Fatalf("lost committed partial result: %+v %v", failed, err)
+	}
+	artifacts, err := home.NewArtifactStore(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := artifacts.GetPrivate(failed.SnapshotRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot reviewSnapshot
+	if err := json.Unmarshal(frozen, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !equalReviewValue(snapshot.Request, a) || snapshot.SourceDigest != approvalCandidateDigest(bodyA) || snapshot.SourceDigest == approvalCandidateDigest(bodyB) {
+		t.Fatalf("frozen input mixed source revisions: %+v", snapshot)
+	}
+	before, err := candidates.ReadRecord(h, candidates.ProductHypothesis, a.HypothesisID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyReviewFile(h, s, path, a.ReviewedBy, tProduct.Add(time.Hour)); err == nil {
+		t.Fatal("replacement source B recovered request A")
+	}
+	if err := os.WriteFile(path, bodyA, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// On replay, matching parsed fields are insufficient: compare the captured
+	// bytes, not a later reread of the path restored to A.
+	readReviewSourceFile = func(string) ([]byte, error) {
+		return append(bytes.Clone(bodyA), []byte("\n# another source revision\n")...), nil
+	}
+	if _, err := ApplyReviewFile(h, s, path, a.ReviewedBy, tProduct.Add(time.Hour)); err == nil {
+		t.Fatal("different captured bytes recovered from a later matching path read")
+	}
+	readReviewSourceFile = oldRead
+	recovered, err := ApplyReviewFile(h, s, path, a.ReviewedBy, tProduct.Add(time.Hour))
+	if err != nil || recovered.Status != "updated" || recovered.CandidateOutcome != "committed" {
+		t.Fatalf("restored exact source A cannot recover: %+v %v", recovered, err)
+	}
+	if recovered.TransitionID != failed.TransitionID || recovered.EvidenceID != failed.EvidenceID {
+		t.Fatalf("recovery changed operation: %+v -> %+v", failed, recovered)
+	}
+	after, err := candidates.ReadRecord(h, candidates.ProductHypothesis, a.HypothesisID)
+	if err != nil || !bytes.Equal(before.Body, after.Body) {
+		t.Fatal("recovery reapplied the candidate")
+	}
+}
+
+func TestReviewProgrammaticSourceRemainsAProvenanceLabel(t *testing.T) {
+	h, s, a := reviewCommitFixture(t)
+	path := filepath.Join(t.TempDir(), "review.yaml")
+	if err := os.WriteFile(path, []byte("not the bytes that produced the typed request"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := ApplyReview(h, s, a, path, tProduct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := artifacts.GetPrivate(report.SnapshotRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot reviewSnapshot
+	if err := json.Unmarshal(body, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.SourceDigest != "" || snapshot.SourcePath != path || !equalReviewValue(snapshot.Request, a) {
+		t.Fatalf("programmatic request claimed unrelated file provenance: %+v", snapshot)
+	}
 }
 
 func TestReviewReplayDoesNotOverwriteLaterMeasurement(t *testing.T) {
@@ -281,10 +394,14 @@ func TestReviewRequestIdentityIsFrozen(t *testing.T) {
 		t.Run(field, func(t *testing.T) {
 			h, s, a := reviewCommitFixture(t)
 			path := filepath.Join(t.TempDir(), "review.yaml")
-			if err := os.WriteFile(path, []byte("original source"), 0o600); err != nil {
+			body, err := yaml.Marshal(a)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ApplyReview(h, s, a, path, tProduct); err != nil {
+			if err := os.WriteFile(path, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ApplyReviewFile(h, s, path, a.ReviewedBy, tProduct); err != nil {
 				t.Fatal(err)
 			}
 			before, _ := candidates.ReadRecord(h, candidates.ProductHypothesis, a.HypothesisID)
