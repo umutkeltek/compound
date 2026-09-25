@@ -328,7 +328,7 @@ func TestDryRunDerivedHypothesisClosesAfterSignalReview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reviewReport.Status != "updated" || reviewReport.Result != "supported" || reviewReport.TransitionID == "" {
+	if reviewReport.Status != "updated" || reviewReport.CandidateOutcome != "committed" || reviewReport.Result != "supported" || reviewReport.TransitionID == "" {
 		t.Fatalf("review report should close hypothesis with transition evidence: %+v", reviewReport)
 	}
 

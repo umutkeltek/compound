@@ -110,7 +110,7 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reviewReport.Status != "updated" || reviewReport.Result != "inconclusive" || reviewReport.EvidenceID == "" {
+	if reviewReport.Status != "updated" || reviewReport.CandidateOutcome != "committed" || reviewReport.Result != "inconclusive" || reviewReport.EvidenceID == "" {
 		t.Fatalf("review report = %+v", reviewReport)
 	}
 	if reviewReport.TransitionID == "" {
@@ -200,10 +200,10 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 	if !hasString(exportedSignal.EvidenceRefs, "fixture:asc:conversion:before") || !hasString(exportedSignal.EvidenceRefs, "fixture:asc:conversion:after") || !hasString(exportedSignal.EvidenceRefs, exportReport.EvidenceIDs[0]) {
 		t.Fatalf("exported evidence refs = %+v", exportedSignal.EvidenceRefs)
 	}
-	if len(withExport.Transitions) != 3 {
+	if len(withExport.Transitions) != 4 {
 		t.Fatalf("timeline transitions = %+v", withExport.Transitions)
 	}
-	if !hasTimelineObject(withExport.Transitions, "product_signal:sig_focus_asc_export_conversion_20260713") || !hasTimelineObject(withExport.Transitions, "product_review:review_focus_visuals_20260713") {
+	if !hasTimelineObject(withExport.Transitions, "product_signal:sig_focus_asc_export_conversion_20260713") || !hasTimelineObject(withExport.Transitions, "product_review:review_focus_visuals_20260713") || !hasTimelineObject(withExport.Transitions, "product_review_intent:review_focus_visuals_20260713") {
 		t.Fatalf("timeline transitions missing product refs: %+v", withExport.Transitions)
 	}
 }

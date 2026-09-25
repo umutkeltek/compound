@@ -625,20 +625,14 @@ func cmdProduct(args []string) {
 		}
 		review.ReviewedBy = reviewedBy
 		report, err := product.ApplyReview(homePath, store, review, reviewPath, time.Now())
+		if hasFlag(rest, "--json") {
+			printJSON(report)
+		} else {
+			fmt.Print(product.RenderReviewReport(report))
+		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "product review:", err)
 			os.Exit(1)
-		}
-		fmt.Printf("# product review %s\n\n", report.ReviewID)
-		fmt.Printf("- status: %s\n", report.Status)
-		fmt.Printf("- product: %s\n", report.ProductID)
-		fmt.Printf("- hypothesis: %s\n", report.HypothesisID)
-		fmt.Printf("- result: %s\n", report.Result)
-		fmt.Printf("- reviewed_by: %s\n", report.ReviewedBy)
-		fmt.Printf("- evidence: %s\n", report.EvidenceID)
-		fmt.Printf("- evidence_refs: %d\n", len(report.EvidenceRefs))
-		if report.TransitionID != "" {
-			fmt.Printf("- transition: %s\n", report.TransitionID)
 		}
 	case "observation-verdict-review":
 		if len(args) != 2 {

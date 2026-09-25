@@ -133,7 +133,7 @@ func TestReviewPlanRecordsGatedReviewArtifactsWithoutResolvingHypothesis(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reviewReport.Status != "updated" || reviewReport.HypothesisID != candidateID || reviewReport.TransitionID == "" || reviewReport.EvidenceID == "" {
+	if reviewReport.Status != "updated" || reviewReport.CandidateOutcome != "committed" || reviewReport.HypothesisID != candidateID || reviewReport.TransitionID == "" || reviewReport.EvidenceID == "" {
 		t.Fatalf("review report = %+v", reviewReport)
 	}
 	doctor, err := DoctorWithNow(home, "product:focus-notes", tProduct.Add(24*time.Hour))

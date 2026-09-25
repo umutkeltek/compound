@@ -327,19 +327,21 @@ type HypothesisCandidate struct {
 	// Only the approval CAS appends to this field. Measurement keeps it intact;
 	// caller-supplied evidence citations cannot establish an approval outcome.
 	CommittedApprovalIDs []string `json:"committed_approval_ids,omitempty"`
-	SchemaVersion        string   `json:"schema_version"`
-	ID                   string   `json:"id"`
-	Kind                 string   `json:"kind"`
-	ProductID            string   `json:"product_id"`
-	ChangeEvent          string   `json:"change_event"`
-	ExpectedEffect       string   `json:"expected_effect"`
-	Metrics              []string `json:"metrics"`
-	ObservationWindow    string   `json:"observation_window"`
-	Result               string   `json:"result"`
-	NextAction           string   `json:"next_action"`
-	Verdict              string   `json:"verdict"`
-	EvidenceRefs         []string `json:"evidence_refs"`
-	CreatedAt            string   `json:"created_at"`
+	// Only the review CAS appends this witness. Citations cannot prove commitment.
+	CommittedReviewIDs []string `json:"committed_review_ids,omitempty"`
+	SchemaVersion      string   `json:"schema_version"`
+	ID                 string   `json:"id"`
+	Kind               string   `json:"kind"`
+	ProductID          string   `json:"product_id"`
+	ChangeEvent        string   `json:"change_event"`
+	ExpectedEffect     string   `json:"expected_effect"`
+	Metrics            []string `json:"metrics"`
+	ObservationWindow  string   `json:"observation_window"`
+	Result             string   `json:"result"`
+	NextAction         string   `json:"next_action"`
+	Verdict            string   `json:"verdict"`
+	EvidenceRefs       []string `json:"evidence_refs"`
+	CreatedAt          string   `json:"created_at"`
 }
 
 type Report struct {
@@ -354,15 +356,17 @@ type Report struct {
 }
 
 type ReviewReport struct {
-	Status       string   `json:"status"`
-	ProductID    string   `json:"product_id"`
-	HypothesisID string   `json:"hypothesis_id"`
-	ReviewID     string   `json:"review_id"`
-	Result       string   `json:"result"`
-	ReviewedBy   string   `json:"reviewed_by"`
-	EvidenceID   string   `json:"evidence_id"`
-	EvidenceRefs []string `json:"evidence_refs"`
-	TransitionID string   `json:"transition_id,omitempty"`
+	Status           string   `json:"status"`
+	CandidateOutcome string   `json:"candidate_outcome"`
+	SnapshotRef      string   `json:"snapshot_ref,omitempty"`
+	ProductID        string   `json:"product_id"`
+	HypothesisID     string   `json:"hypothesis_id"`
+	ReviewID         string   `json:"review_id"`
+	Result           string   `json:"result"`
+	ReviewedBy       string   `json:"reviewed_by"`
+	EvidenceID       string   `json:"evidence_id"`
+	EvidenceRefs     []string `json:"evidence_refs"`
+	TransitionID     string   `json:"transition_id,omitempty"`
 }
 
 type ReviewArtifactRecord struct {
@@ -899,75 +903,6 @@ func ApplySignal(homePath string, store *mem.Store, doc SignalDocument, sourcePa
 	}, nil
 }
 
-func ApplyReview(homePath string, store *mem.Store, review Review, sourcePath string, now time.Time) (ReviewReport, error) {
-	if err := ValidateReview(review); err != nil {
-		return ReviewReport{ProductID: review.ProductID, HypothesisID: review.HypothesisID, ReviewID: review.ID, Status: "fail"}, err
-	}
-	candidate, err := loadHypothesisCandidate(homePath, review.HypothesisID)
-	if err != nil {
-		return ReviewReport{}, err
-	}
-	if candidate.ProductID != review.ProductID {
-		return ReviewReport{}, fmt.Errorf("review product_id %q does not match hypothesis product_id %q", review.ProductID, candidate.ProductID)
-	}
-	if review.ReviewedAt == "" {
-		review.ReviewedAt = now.UTC().Format(time.RFC3339)
-	}
-	review.AppliedAt = now.UTC().Format(time.RFC3339)
-	review.SourceRef = "product-review:" + filepath.Base(sourcePath)
-	evidence, err := store.RecordEvidence(mem.EvidenceItem{
-		SourceKind: "repo",
-		SourceID:   review.SourceRef,
-		QuoteText:  review.Rationale,
-		Actor:      review.ReviewedBy,
-	}, now)
-	if err != nil {
-		return ReviewReport{}, err
-	}
-	review.EvidenceID = evidence.ID
-	if err := appendUniqueReview(homePath, review); err != nil {
-		return ReviewReport{}, err
-	}
-	candidate.Result = review.Result
-	candidate.NextAction = review.NextAction
-	candidate.EvidenceRefs = compact(append(append(candidate.EvidenceRefs, evidence.ID, "product_review:"+review.ID), review.EvidenceRefs...))
-	if err := writeHypothesisCandidate(homePath, candidate); err != nil {
-		return ReviewReport{}, err
-	}
-	tr, err := BuildLoopTransition(LoopTransitionInput{
-		Kind:         "product_review",
-		ProductID:    review.ProductID,
-		ObjectID:     review.ID,
-		Actor:        review.ReviewedBy,
-		SourceTrace:  "product_review:" + review.ID,
-		BeforeRefs:   compact(append([]string{"product_hypothesis:" + candidate.ID}, review.EvidenceRefs...)),
-		AfterRefs:    compact(append([]string{"product_hypothesis:" + candidate.ID, "product_review:" + review.ID, evidence.ID}, candidate.EvidenceRefs...)),
-		EvidenceRefs: candidate.EvidenceRefs,
-		Summary:      fmt.Sprintf("product review %s set hypothesis %s to %s; no product surface changed", review.ID, candidate.ID, review.Result),
-	}, now)
-	if err != nil {
-		return ReviewReport{}, err
-	}
-	if err := RecordTransition(homePath, tr); err != nil {
-		return ReviewReport{}, err
-	}
-	report := ReviewReport{
-		Status:       "updated",
-		ProductID:    review.ProductID,
-		HypothesisID: review.HypothesisID,
-		ReviewID:     review.ID,
-		Result:       review.Result,
-		ReviewedBy:   review.ReviewedBy,
-		EvidenceID:   evidence.ID,
-		EvidenceRefs: candidate.EvidenceRefs,
-		TransitionID: tr.ID,
-	}
-	if err := recordReviewArtifactResult(homePath, review, sourcePath, report, now); err != nil {
-		return ReviewReport{}, err
-	}
-	return report, nil
-}
-
 func recordReviewArtifactResult(homePath string, review Review, sourcePath string, report ReviewReport, now time.Time) error {
 	stem := reviewArtifactStem(sourcePath)
 	if stem == "" {
@@ -1001,6 +936,18 @@ func recordReviewArtifactResult(homePath string, review Review, sourcePath strin
 		if os.IsNotExist(err) {
 			return nil
 		}
+		return err
+	}
+	if plan.ID != stem || plan.ProductID != report.ProductID || plan.HypothesisID != report.HypothesisID || plan.ReviewDraft.ReviewID != report.ReviewID {
+		return fmt.Errorf("review plan does not bind the committed review's product, hypothesis and review identity")
+	}
+	if plan.ReviewID != "" {
+		if plan.ReviewID != report.ReviewID || plan.ReviewResult != report.Result || plan.ReviewEvidenceID != report.EvidenceID || plan.ReviewTransitionID != report.TransitionID {
+			return fmt.Errorf("review plan already records a different committed result; recovery leaves it unchanged")
+		}
+		// JSON may have committed before Markdown failed. Repair the derived
+		// sibling from the CURRENT plan, without resetting a later plan status.
+		_, err := reviewartifact.WriteRaw(homePath, "product-reviews", stem+".md", []byte(RenderReviewPlan(plan)))
 		return err
 	}
 	plan.Status = "recorded"
@@ -2149,23 +2096,19 @@ func loadHypothesisCandidate(homePath, id string) (HypothesisCandidate, error) {
 }
 
 func appendUniqueReview(homePath string, review Review) error {
-	path := reviewsLog(homePath)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	reviews, err := loadReviews(homePath)
-	if err != nil {
-		return err
-	}
-	for _, existing := range reviews {
-		if existing.ID == review.ID {
-			if !sameReview(existing, review) {
-				return fmt.Errorf("product review %q already exists with different content", review.ID)
+	return withReviewHistory(homePath, true, func(f *os.File, reviews []Review) error {
+		for _, existing := range reviews {
+			if existing.ID == review.ID {
+				if !sameReview(existing, review) {
+					return fmt.Errorf("product review %q already exists with different content or provenance", review.ID)
+				}
+				// A prior append may have returned a sync failure. Retrying the
+				// same immutable row must finish its durability, not append again.
+				return f.Sync()
 			}
-			return nil
 		}
-	}
-	return appendJSONL(path, &review)
+		return appendReviewRow(f, review)
+	})
 }
 
 func appendUniqueSourceIssueReview(homePath string, review SourceIssueReview) error {
@@ -2253,12 +2196,8 @@ func loadHypotheses(homePath string) ([]HypothesisCandidate, error) {
 
 func loadReviews(homePath string) ([]Review, error) {
 	var out []Review
-	err := readJSONL(reviewsLog(homePath), func(line []byte) error {
-		var r Review
-		if err := json.Unmarshal(line, &r); err != nil || r.ID == "" {
-			return nil
-		}
-		out = append(out, r)
+	err := withReviewHistory(homePath, false, func(_ *os.File, reviews []Review) error {
+		out = reviews
 		return nil
 	})
 	return out, err
@@ -2614,6 +2553,10 @@ func productProjectionObject(refs []string) (string, string) {
 			return "product_signal", ref
 		case strings.HasPrefix(ref, "product_review:"):
 			return "product_review", ref
+		case strings.HasPrefix(ref, "product_review_intent:"):
+			return "product_review_intent", ref
+		case strings.HasPrefix(ref, "product_review_refused:"):
+			return "product_review_refused", ref
 		case strings.HasPrefix(ref, "product_source_issue_review:"):
 			return "product_source_issue_review", ref
 		case strings.HasPrefix(ref, "product_hypothesis:"):
@@ -2769,13 +2712,7 @@ func compact(values []string) []string {
 }
 
 func sameReview(a, b Review) bool {
-	return a.ProductID == b.ProductID &&
-		a.HypothesisID == b.HypothesisID &&
-		a.Result == b.Result &&
-		a.Rationale == b.Rationale &&
-		a.Confidence == b.Confidence &&
-		a.NextAction == b.NextAction &&
-		strings.Join(a.EvidenceRefs, "\x00") == strings.Join(b.EvidenceRefs, "\x00")
+	return equalReviewValue(a, b)
 }
 
 func sameSourceIssueReview(a, b SourceIssueReview) bool {

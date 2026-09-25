@@ -9528,6 +9528,7 @@ signal:
 	})
 	if !strings.Contains(reviewOut, "# product review "+plan.ReviewDraft.ReviewID) ||
 		!strings.Contains(reviewOut, "- status: updated") ||
+		!strings.Contains(reviewOut, "- candidate_outcome: committed") ||
 		!strings.Contains(reviewOut, "- transition:") {
 		t.Fatalf("product review output missing proof:\n%s", reviewOut)
 	}
