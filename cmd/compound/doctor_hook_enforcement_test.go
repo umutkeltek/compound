@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"compound/internal/hook"
 	"compound/internal/hookplan"
 )
 
@@ -108,11 +109,14 @@ func TestHookEnforcementBindsEachConfiguredPostureForSharedBinary(t *testing.T) 
 	if failing != 0 {
 		t.Fatalf("real observer/enforcer postures must pass, got failing=%d rows=%+v", failing, rows)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("shared binary with observer and enforcer postures needs two rows, got %+v", rows)
+	if len(rows) != 3 {
+		t.Fatalf("each installed harness route needs its own row, got %+v", rows)
 	}
-	assertHookPostureRow(t, rows, "observation_only", "observing", "claude-code,codex")
+	assertHookPostureRow(t, rows, "observation_only", "observing", "claude-code")
 	assertHookPostureRow(t, rows, "enforced", "enforcing", "claude-zai")
+	if rows[2].Status != "observing" || strings.Join(rows[2].Harnesses, ",") != "codex" {
+		t.Fatalf("missing codex observation route in %+v", rows)
+	}
 }
 
 func assertHookPostureRow(
@@ -205,8 +209,8 @@ func TestHookEnforcementFailsABinaryThatReplaysAGenuineResponse(t *testing.T) {
 	if failing != 1 {
 		t.Fatalf("a binary replaying a recorded decision must fail, got failing=%d rows=%+v", failing, rows)
 	}
-	if !strings.Contains(rows[0].Detail, "input_hash") {
-		t.Fatalf("detail must name the nonce mismatch, got %q", rows[0].Detail)
+	if !strings.Contains(rows[0].Detail, "live route") {
+		t.Fatalf("replayed fixture response must fail the live route, got %q", rows[0].Detail)
 	}
 }
 
@@ -229,6 +233,86 @@ func TestHookEnforcementPassesTheRealBinary(t *testing.T) {
 	}
 }
 
+func TestHookEnforcementRejectsInvalidInstalledArgument(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds compound binary: skipped in -short mode")
+	}
+	real := buildRealCompound(t)
+	configPath := filepath.Join(t.TempDir(), "settings.json")
+	command := hookplan.HookCommand(real, "claude-code") + " --bogus-installed-argument"
+	config := `{"hooks":{"PreToolUse":[{"hooks":[{"command":` + quoteJSON(command) + `}]}]}}`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, failing := buildHookEnforcementRows([]doctorHook{{Harness: "claude-code", ConfigPath: configPath}})
+	if failing != 1 || len(rows) != 1 || rows[0].Status != "fail_open" {
+		t.Fatalf("invalid installed argv must fail, got failing=%d rows=%+v", failing, rows)
+	}
+}
+
+func TestHookEnforcementRefusesExternalPathOverridesBeforeExecution(t *testing.T) {
+	for _, flag := range []string{"--home", "--parity-log"} {
+		t.Run(flag, func(t *testing.T) {
+			dir := t.TempDir()
+			marker := filepath.Join(dir, "executed")
+			stub := writeExecutable(t, filepath.Join(dir, "compound"), "#!/bin/sh\nprintf ran > "+quoteJSON(marker)+"\n")
+			configPath := filepath.Join(dir, "settings.json")
+			command := hookplan.HookCommand(stub, "claude-code") + " " + flag + " " + filepath.Join(dir, "outside-probe")
+			config := `{"hooks":{"PreToolUse":[{"hooks":[{"command":` + quoteJSON(command) + `}]}]}}`
+			if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			rows, failing := buildHookEnforcementRows([]doctorHook{{Harness: "claude-code", ConfigPath: configPath}})
+			if failing != 1 || len(rows) != 1 || rows[0].Status != "fail_open" {
+				t.Fatalf("external path override must fail closed, got failing=%d rows=%+v", failing, rows)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("unsafe installed argv executed before refusal: marker error %v", err)
+			}
+		})
+	}
+}
+
+func TestHookEnforcementRefusesMismatchedHarnessBeforeExecution(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "executed")
+	stub := writeExecutable(t, filepath.Join(dir, "compound"), "#!/bin/sh\nprintf ran > "+quoteJSON(marker)+"\n")
+	configPath := filepath.Join(dir, "settings.json")
+	command := hookplan.HookCommand(stub, "codex")
+	config := `{"hooks":{"PreToolUse":[{"hooks":[{"command":` + quoteJSON(command) + `}]}]}}`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, failing := buildHookEnforcementRows([]doctorHook{{Harness: "claude-code", ConfigPath: configPath}})
+	if failing != 1 || len(rows) != 1 || rows[0].Status != "fail_open" {
+		t.Fatalf("mismatched harness must fail closed, got failing=%d rows=%+v", failing, rows)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("mismatched harness route executed before refusal: marker error %v", err)
+	}
+}
+
+func TestHookProbeEnvironmentKeepsOnlyIsolatedCompoundHome(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "outside")
+	inside := filepath.Join(t.TempDir(), "inside")
+	t.Setenv("COMPOUND_HOME", outside)
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", outside)
+	t.Setenv("COMPOUND_PARITY_LOG", outside)
+
+	var compoundVars []string
+	for _, item := range hook.DoctorProbeEnvironment(inside) {
+		if strings.HasPrefix(item, "COMPOUND_") {
+			compoundVars = append(compoundVars, item)
+		}
+	}
+	if len(compoundVars) != 1 || compoundVars[0] != "COMPOUND_HOME="+inside {
+		t.Fatalf("probe inherited Compound authority variables: %v", compoundVars)
+	}
+}
+
 // TestHookEnforcementRejectsMixedPostureMismatches is the pair of fail-open falsifiers. Both
 // wrappers evaluate the genuine PolicyDecision; they differ only in whether they honor the
 // configured process-exit posture.
@@ -245,7 +329,7 @@ func TestHookEnforcementRejectsMixedPostureMismatches(t *testing.T) {
 		wrapper := writeExecutable(
 			t,
 			filepath.Join(dir, "compound"),
-			"#!/bin/sh\nexec "+quotedReal+" \"$1\" \"$2\" \"$4\"\n",
+			"#!/bin/sh\nexec "+quotedReal+" \"$1\" \"$2\" \"$3\" \"$4\" \"$5\"\n",
 		)
 		configPath := filepath.Join(dir, "settings.json")
 		writeHookConfigForPosture(t, configPath, "claude-zai", wrapper, true)
@@ -289,9 +373,9 @@ func TestHookEnforcementRejectsMixedPostureMismatches(t *testing.T) {
 	})
 }
 
-// TestHookEnforcementProbesEachBinaryOnceAcrossHarnesses keeps the check cheap enough to stay in
-// routine `compound doctor`: three configs pointing at one file cost one subprocess, not three.
-func TestHookEnforcementProbesEachBinaryOnceAcrossHarnesses(t *testing.T) {
+// TestHookEnforcementProbesEachInstalledHarnessRoute keeps distinct --harness
+// arguments from collapsing into one binary-level probe.
+func TestHookEnforcementProbesEachInstalledHarnessRoute(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	stub := writeExecutable(t, filepath.Join(dir, "bin", "compound"), exitZeroStubScript)
@@ -303,11 +387,13 @@ func TestHookEnforcementProbesEachBinaryOnceAcrossHarnesses(t *testing.T) {
 	}
 
 	rows, failing := buildHookEnforcementRows(hooks)
-	if len(rows) != 1 || failing != 1 {
-		t.Fatalf("one binary behind three configs must be one probed row, got %d rows failing=%d", len(rows), failing)
+	if len(rows) != 3 || failing != 3 {
+		t.Fatalf("three installed routes need three probes, got %d rows failing=%d", len(rows), failing)
 	}
-	if strings.Join(rows[0].Harnesses, ",") != "claude-code,claude-zai,codex" {
-		t.Fatalf("row must name every harness that would invoke it, got %v", rows[0].Harnesses)
+	for _, row := range rows {
+		if len(row.Harnesses) != 1 {
+			t.Fatalf("route must name its exact harness, got %+v", row)
+		}
 	}
 }
 

@@ -696,12 +696,15 @@ only when both the harness capability and an installed trusted write-scoped hook
 reports compares CONFIG bytes: `installed`/`ok`/`drift`/`absent` says the harness config names Compound's
 command, which stays green when the file behind that command is a no-op — and an exit-0 hook is
 indistinguishable from an allow, so a fail-open leaves no signal anywhere. The enforcement check therefore
-probes behaviour: it reads the binary out of each installed PreToolUse binding (POSIX-unquoted, deduped, one
-subprocess per distinct binary), synthesizes a destructive mutation whose ActionIntent id is a nonce minted
-for that run, and requires back both a `HookEvent` whose `input_hash` derives from that nonce and a
-`PolicyDecision` that does not allow it. A canned or recorded response fails the hash; an exit-0 stub fails
-both. The probe runs with `COMPOUND_HOME` and cwd inside a throwaway directory, so doctor still writes
-nothing, and it reports `FAIL` with a reinstall remedy rather than changing doctor's exit code.
+probes behaviour: it parses each supported installed PreToolUse command into an executable and exact arguments,
+without evaluating shell syntax, requires `--harness` to match the configured row's canonical runtime identity,
+and invokes its live stdin route. Each distinct argument vector and configured harness gets a probe.
+The probe synthesizes a destructive mutation with a run nonce and requires an ActionIntent for its exact target,
+a non-allowing PolicyDecision for that action, and a HookEvent with the action-bound input hash. A canned or
+recorded response and an exit-0 stub fail. The probe uses an isolated temporary `COMPOUND_HOME` and cwd,
+and reports `FAIL` with a reinstall remedy rather than changing doctor's exit code. This is a functional
+check of a trusted installed executable, not a sandbox against a hostile program: other environment
+variables and the local user's process privileges remain available to that executable.
 
 ---
 
