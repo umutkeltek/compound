@@ -215,7 +215,7 @@ func reviewRecovery(report ReviewReport, err error) (ReviewReport, error) {
 	if report.CandidateOutcome == "not_attempted" {
 		report.CandidateOutcome = "unknown"
 	}
-	return report, fmt.Errorf("review %s recovery_required: %w; retry the exact original review and reviewer to settle without reapplying", report.ReviewID, err)
+	return report, fmt.Errorf("review %s recovery_required: %w; retry the exact original review and reviewer to reconcile without reapplying; missing commit evidence or corrupt history requires evidence repair, not repeated retries", report.ReviewID, err)
 }
 
 func cleanReviewSource(path string) string {
