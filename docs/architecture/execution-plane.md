@@ -276,6 +276,18 @@ attempt, then finalizes the envelope failed. A caller passing `context.Backgroun
 the guarantee: cancellation never reaches the adapter, and the detached worker inherits only
 its own external budget.
 
+The first SIGINT or SIGTERM requests cancellation. Repeated SIGTERM during
+finalization is the same request: a process-group TERM can also reach GNU timeout,
+which forwards another TERM to the door. It must not restore default TERM handling
+and kill the door before the attempt and lifecycle settle. The launch owner keeps
+TERM handled, restores its Ctrl-C handling before publishing cancellation, and
+hard-stops its own process after 60 seconds if cleanup cannot finish. A subsequent
+explicit Ctrl-C or SIGKILL remains a hard stop; a forced stop is not evidence of
+successful finalization. Selected-work interruption returns to verifying with a
+failed attempt, not accepted work. The public synthetic journey emits its work,
+lease, attempt, detached log and event evidence on failure; CI retains those gate
+logs with the report and verdict output, never a complete runtime home.
+
 If a descendant retains capture pipes after the first cancellation/timeout signal,
 the runner retries the same process group while its unreaped leader pins the identity.
 Retries are disabled under the capture/reap guard before `Wait` can release the PID.

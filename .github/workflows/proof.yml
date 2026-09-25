@@ -68,7 +68,12 @@ jobs:
         if: always()
         with:
           name: proof-ci-report
-          path: ${{ runner.temp }}/ci.json
+          # Only proof-owned output from the disposable CI run, never a home,
+          # environment dump or checkout. Retain the logs referenced by ci.json.
+          path: |
+            ${{ runner.temp }}/ci.json
+            ${{ runner.temp }}/ci.stdout
+            ${{ runner.temp }}/ci.json.gates/
           if-no-files-found: warn
           retention-days: 14
 
@@ -163,6 +168,9 @@ jobs:
         if: always()
         with:
           name: proof-ci-console-report
-          path: ${{ runner.temp }}/ci-console.json
+          path: |
+            ${{ runner.temp }}/ci-console.json
+            ${{ runner.temp }}/ci-console.stdout
+            ${{ runner.temp }}/ci-console.json.gates/
           if-no-files-found: warn
           retention-days: 14

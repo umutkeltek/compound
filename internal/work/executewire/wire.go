@@ -15,11 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"compound/internal/actuator"
@@ -180,65 +177,13 @@ var LaunchReadiness = func(req work.DelegateHarnessReadinessRequest) (work.Deleg
 }
 
 // LaunchContext is the context the launch wire forwards to adapter.Run.
-// DEFECT 4 fix (AUT-P0-004 2026-09-04): production wires this to the
-// heartbeat-derived context (the seam's per-tick ctx with the heartbeat's
-// outer 600s bound). Tests swap it to a context they can cancel to prove
-// the runner honors cancellation and persists
-// `cancel:context_cancelled` evidence. The runner's process-group kill
-// path runs on ctx.Done, so a stuck subprocess cannot outlive the
-// heartbeat.
-//
-// Slice 2 (aut-launch-canonical 2026-09-07) layered onto the base
-// (R6A 2026-09-10): the LaunchContext var now has a companion install
-// flag (launchContextInstalled) keyed off executewire.Install so the
-// launch wire refuses with an explicit error when the seam was never
-// installed. What the flag proves is exactly that Install ran
-// (cmd/compound's init) — it does NOT prove a cancellable context was
-// wired: no production entry point threads a per-tick context yet, so
-// production launches still run under context.Background() and are bounded
-// by the runner's own deadline (DefaultLaunchTimeout via RunInput.Timeout),
-// not by caller cancellation. SIGTERM propagation from a killed heartbeat
-// to the child remains the open half of audit section 4. The base
-// (R6A 2026-09-10) keeps the signal-derived default so SIGINT/SIGTERM at
-// runtime cancels the launch even when no caller installed a context.
-// Tests that swap LaunchContext directly MUST also set the install flag
-// (or call Install themselves).
+// Production lazily derives cancellation from SIGINT/SIGTERM; the runner
+// terminates its subprocess group and records cancellation before the work
+// owner finalizes. RunInput.Timeout supplies the separate execution deadline.
+// The Install flag proves only that the production seam was bound, not that
+// a caller supplied a per-tick context. Tests replacing LaunchContext must
+// also set that flag (or call Install) and restore their context afterward.
 var LaunchContext = signalLaunchContext
-
-// launchSignal lazily holds the process-wide launch context. It is built on
-// the FIRST launch rather than in Install() on purpose: registering a signal
-// handler is a process-wide side effect, and `compound` has many subcommands
-// that never launch anything and must keep Go's default Ctrl-C behaviour.
-var (
-	launchSignalOnce sync.Once
-	launchSignalCtx  context.Context
-)
-
-// signalLaunchContext is the production launch context: cancelled on SIGINT
-// or SIGTERM so the subprocess runner's process-group kill (which hangs off
-// ctx.Done()) actually fires.
-//
-// SIGTERM is the one that matters for autonomy: the heartbeat wraps Compound
-// in `timeout 600`, which SIGTERMs the parent before SIGKILLing it. Before
-// this existed the launch context was context.Background(), so the parent
-// died while the harness subprocess tree kept running and held the capture
-// pipes open — a launch the heartbeat recorded as finished and the machine
-// was still executing.
-//
-// Once the first signal lands, default handling is restored, so a second
-// Ctrl-C hard-kills instead of being swallowed by a handler whose only job
-// was to cancel this launch.
-func signalLaunchContext() context.Context {
-	launchSignalOnce.Do(func() {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		launchSignalCtx = ctx
-		go func() {
-			<-ctx.Done()
-			stop()
-		}()
-	})
-	return launchSignalCtx
-}
 
 // InstallLaunchContext binds ctx as the context every subsequent launch
 // forwards to adapter.Run, and returns a restore func.

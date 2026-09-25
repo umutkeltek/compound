@@ -30,6 +30,7 @@ func TestSelectedContinueInitialInterruptionIsRecoverable(t *testing.T) {
 func runSelectedContinueJourney(t *testing.T, interruptFirst bool) {
 	t.Helper()
 	homePath := initializedExecutionHome(t)
+	defer logSelectedContinueFailure(t, homePath)
 	writeDispatchExecuteModelRouterFixtureForHarnessAlias(t, homePath, "codex", "fixture-codex-wrapper")
 	_, _, revision, err := routeevidence.LoadModelCapabilitiesSnapshot(homePath)
 	if err != nil {
