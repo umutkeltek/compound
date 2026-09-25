@@ -5,6 +5,13 @@ backup is useful only after `home verify` accepts it and a restore drill has
 proven that a new home can consume it. Keep the archive outside the source home
 so the backup cannot include or overwrite itself.
 
+Quiesce the home's writers before a consistent backup, including scheduled jobs and
+hook telemetry; admission locking alone does not stop an already-running writer.
+If an entry grows or shrinks during copying, backup refuses publication and names
+its relative path. Preserve that error, identify the writer, and settle it through
+its existing owner before retrying. Do not treat a partial archive as a restore point
+or bypass the backup owner with an unverified live-directory copy.
+
 ## Create and verify a backup
 
 ```sh

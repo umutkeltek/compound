@@ -3367,7 +3367,12 @@ func includeBackupPath(rel string, info fs.FileInfo) bool {
 	return habitatBackupIncluded(rel, info.IsDir())
 }
 
-func writeFileEntry(tw *tar.Writer, path, rel string, info fs.FileInfo) (ArchiveEntry, error) {
+func writeFileEntry(tw *tar.Writer, path, rel string, info fs.FileInfo) (entry ArchiveEntry, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			resultErr = fmt.Errorf("archive entry %q: %w", rel, resultErr)
+		}
+	}()
 	if err := validateArchivePath(rel); err != nil {
 		return ArchiveEntry{}, err
 	}
@@ -3388,6 +3393,9 @@ func writeFileEntry(tw *tar.Writer, path, rel string, info fs.FileInfo) (Archive
 	n, err := io.Copy(tw, io.TeeReader(f, sum))
 	if err != nil {
 		return ArchiveEntry{}, err
+	}
+	if n != info.Size() {
+		return ArchiveEntry{}, fmt.Errorf("source size changed while copying (expected %d, read %d): %w", info.Size(), n, io.ErrUnexpectedEOF)
 	}
 	return ArchiveEntry{Path: rel, Size: n, SHA256: hex.EncodeToString(sum.Sum(nil))}, nil
 }
