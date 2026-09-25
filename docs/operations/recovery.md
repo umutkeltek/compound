@@ -24,6 +24,37 @@ Do not prune the last verified local copy merely because no remote destination
 is configured. Keep at least one verified archive whose survival does not
 depend on the home being backed up.
 
+### Populated homes and the streamed profile
+
+The default backup format remains v0.1: at most 250,000 logical tar members
+(files, directories and metadata) and one manifest of at most 64 MiB. A writer
+budget refusal publishes no archive. It is not permission to prune history or
+to increase a verifier's limits.
+
+For a larger home, explicitly select the bounded v0.2 profile:
+
+```sh
+compound home backup --home "$COMPOUND_HOME" --format streamed-v2 --target /safe/local/path/compound-home-v2.tar.gz
+compound home verify /safe/local/path/compound-home-v2.tar.gz
+```
+
+`--format v1` preserves the default. Unknown or missing format values refuse.
+The streamed format has a small leading version descriptor, bounded chunks of
+file checksums, and a final index binding those chunks. Verification and restore
+recognize that descriptor; an archive cannot supply its own resource limits.
+Chunking does not waive checksums, duplicate-path checks, source identity,
+staged-file verification, absent-target publication or writer quiescence.
+
+Retain the exact recovery binary that produced and verified a streamed archive
+alongside the archive's evidence. Older binaries do not understand v0.2. Use
+the retained compatible recovery binary for the absent-target restore before
+starting a prior application binary against the restored home. Changing the
+archive format does not change the home schema or authorize a live migration.
+
+A header inventory, successful archive write or synthetic scale test is not
+populated-home recovery acceptance. The actual archive must pass verification,
+an isolated restore, home health checks and a real restored-home consumer.
+
 ## Restore drill
 
 Restore into a new, absent target. Never restore over the active home.

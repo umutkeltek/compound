@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 )
@@ -20,11 +19,14 @@ var (
 	restoreArchivePreflighted      = func(string) error { return nil }
 	restoreBeforePublish           = func(string, string) error { return nil }
 	restoreSyncParent              = syncRestoreDirectory
+	restoreSyncStagingDirectory    = syncRootedDirectory
 	restoreNoReplace               = restoreRenameNoReplace
 	restoreOpenStaging             = func(parent *os.Root, name string) (*os.Root, error) { return parent.OpenRoot(name) }
 	restoreBeforeStagingValidation = func(string) error { return nil }
 	restoreCleanupWalk             = func(root *os.Root, fn fs.WalkDirFunc) error {
-		return fs.WalkDir(root.FS(), ".", fn)
+		return walkRestoreCleanupBatched(root, ".", func(path string, info fs.FileInfo) error {
+			return fn(filepath.ToSlash(path), fs.FileInfoToDirEntry(info), nil)
+		})
 	}
 	restoreCleanupRemove = func(root *os.Root, name string) error { return root.Remove(name) }
 	restoreCleanupSync   = func(root *os.Root, display string) error {
@@ -95,7 +97,7 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 		}
 	}()
 
-	target := &archiveRestoreTarget{root: staging, displayPath: stagingPath}
+	target := &archiveRestoreTarget{root: staging, displayPath: stagingPath, deferFileParentSync: archive.streamed}
 	if restoreArchivePreflighted != nil {
 		if err := restoreArchivePreflighted(archivePath); err != nil {
 			return RestoreReport{}, err
@@ -105,9 +107,12 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 	if err != nil {
 		return RestoreReport{}, err
 	}
-	verify, err := verifyArchiveManifestWithLimits(archivePath, manifest, actual, limits)
-	if err != nil {
-		return RestoreReport{}, err
+	verify := archive.streamedReport
+	if !archive.streamed {
+		verify, err = verifyArchiveManifestWithLimits(archivePath, manifest, actual, limits)
+		if err != nil {
+			return RestoreReport{}, err
+		}
 	}
 	if err := target.completeHabitat(); err != nil {
 		return RestoreReport{}, err
@@ -115,7 +120,11 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 	if err := verifyRestoreStaging(parent, staging, stagingName, stagingInfo, stagingPath); err != nil {
 		return RestoreReport{}, err
 	}
-	if report := DoctorWithOptions(stagingPath, DoctorOptions{Now: now}); !report.OK || !report.PrivateCustody.OK {
+	if archive.streamed {
+		if err := target.validatePinnedHomeWithStreamed(true); err != nil {
+			return RestoreReport{}, fmt.Errorf("restored home failed rooted health check: %w", err)
+		}
+	} else if report := DoctorWithOptions(stagingPath, DoctorOptions{Now: now}); !report.OK || !report.PrivateCustody.OK {
 		return RestoreReport{}, fmt.Errorf(
 			"restored home failed doctor: manifest_ok=%t dirs=%d/%d habitat_ok=%t unknown_roots=%v unknown_entries=%v private_custody=%s findings=%v",
 			report.ManifestOK,
@@ -131,7 +140,7 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 	if err := verifyRestoreStaging(parent, staging, stagingName, stagingInfo, stagingPath); err != nil {
 		return RestoreReport{}, err
 	}
-	if err := target.validatePinnedHome(); err != nil {
+	if err := target.validatePinnedHomeWithStreamed(archive.streamed); err != nil {
 		return RestoreReport{}, err
 	}
 	if err := target.syncTree(); err != nil {
@@ -152,10 +161,14 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 	if err := verifyRestoreStaging(parent, staging, stagingName, stagingInfo, stagingPath); err != nil {
 		return RestoreReport{}, err
 	}
-	if err := target.validatePinnedHome(); err != nil {
+	if err := target.validatePinnedHomeWithStreamed(archive.streamed); err != nil {
 		return RestoreReport{}, err
 	}
-	if err := target.verifyEntries(manifest, limits); err != nil {
+	if archive.streamed {
+		if err := archive.verifyStreamedStaging(target); err != nil {
+			return RestoreReport{}, err
+		}
+	} else if err := target.verifyEntries(manifest, limits); err != nil {
 		return RestoreReport{}, err
 	}
 	if err := restoreNoReplace(parentFD, stagingName, targetName); err != nil {
@@ -336,7 +349,6 @@ func cleanupRestoreStaging(parent, staging *os.Root, name string, before os.File
 }
 
 func clearRestoreStaging(staging *os.Root, display string) error {
-	var files, dirs []string
 	if err := restoreCleanupWalk(staging, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -344,32 +356,24 @@ func clearRestoreStaging(staging *os.Root, display string) error {
 		if path == "." {
 			return nil
 		}
-		path = filepath.FromSlash(path)
-		if entry.IsDir() {
-			dirs = append(dirs, path)
-		} else {
-			files = append(files, path)
+		if err := restoreCleanupRemove(staging, filepath.FromSlash(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
-	for _, path := range files {
-		if err := restoreCleanupRemove(staging, path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
-	sort.Slice(dirs, func(i, j int) bool {
-		return strings.Count(filepath.ToSlash(dirs[i]), "/") > strings.Count(filepath.ToSlash(dirs[j]), "/")
-	})
-	for _, path := range dirs {
-		if err := restoreCleanupRemove(staging, path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
-	entries, err := fs.ReadDir(staging.FS(), ".")
+	opened, err := staging.Open(".")
 	if err != nil {
 		return err
+	}
+	entries, readErr := opened.ReadDir(1)
+	closeErr := opened.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return errors.Join(readErr, closeErr)
+	}
+	if closeErr != nil {
+		return closeErr
 	}
 	if len(entries) != 0 {
 		return fmt.Errorf("pinned restore staging is not empty after cleanup")
@@ -378,17 +382,19 @@ func clearRestoreStaging(staging *os.Root, display string) error {
 }
 
 type archiveRestoreTarget struct {
-	root        *os.Root
-	displayPath string
+	root                *os.Root
+	displayPath         string
+	deferFileParentSync bool
 }
 
 type archiveRestoreFile struct {
-	root       *os.Root
-	file       *os.File
-	rel        string
-	parentRel  string
-	display    string
-	openedInfo os.FileInfo
+	root            *os.Root
+	file            *os.File
+	rel             string
+	parentRel       string
+	display         string
+	openedInfo      os.FileInfo
+	deferParentSync bool
 }
 
 func (t *archiveRestoreTarget) ensureDirectory(name string, mode fs.FileMode) error {
@@ -512,12 +518,22 @@ func (t *archiveRestoreTarget) readRegularFile(rel string) ([]byte, error) {
 }
 
 func (t *archiveRestoreTarget) validatePinnedHome() error {
+	return t.validatePinnedHomeWithStreamed(false)
+}
+
+func (t *archiveRestoreTarget) validatePinnedHomeWithStreamed(streamed bool) error {
 	rootInfo, err := t.root.Stat(".")
 	if err != nil {
 		return err
 	}
 	if !rootInfo.IsDir() || rootInfo.Mode().Perm() != 0o700 || !ownedByCurrent(rootInfo) {
 		return fmt.Errorf("restore staging root must remain current-user-owned mode 0700: %s", t.displayPath)
+	}
+	if streamed {
+		if err := validateStreamedSourceHealth(t.root); err != nil {
+			return fmt.Errorf("restored home failed rooted habitat validation: %w", err)
+		}
+		return validateStreamedPrivateCustody(t.root, t.displayPath)
 	}
 
 	for _, rel := range append(append([]string(nil), HabitatDirs()...), privateCustodyKnownDirs...) {
@@ -546,7 +562,6 @@ func (t *archiveRestoreTarget) validatePinnedHome() error {
 	if _, err := decodeHomeManifest(manifestRaw); err != nil {
 		return fmt.Errorf("validate restored manifest: %w", err)
 	}
-
 	privateReport := PrivateCustodyReport{
 		SchemaVersion: PrivateCustodyReportSchema,
 		Root:          filepath.Join(t.displayPath, "private", "artifacts", "sha256"),
@@ -654,7 +669,7 @@ func (t *archiveRestoreTarget) createFile(name string, mode fs.FileMode) (*archi
 		_ = file.Close()
 		return nil, fmt.Errorf("archive restore created unstable nonregular file %s", name)
 	}
-	return &archiveRestoreFile{root: t.root, file: file, rel: rel, parentRel: parentRel, display: filepath.Join(t.displayPath, rel), openedInfo: opened}, nil
+	return &archiveRestoreFile{root: t.root, file: file, rel: rel, parentRel: parentRel, display: filepath.Join(t.displayPath, rel), openedInfo: opened, deferParentSync: t.deferFileParentSync}, nil
 }
 
 func (f *archiveRestoreFile) abort(cause error) error {
@@ -673,31 +688,19 @@ func (f *archiveRestoreFile) commit() error {
 	if err != nil || leaf.Mode()&os.ModeSymlink != 0 || !leaf.Mode().IsRegular() || !os.SameFile(leaf, f.openedInfo) {
 		return fmt.Errorf("archive restore file identity changed after write: %s", f.display)
 	}
-	return syncRootedDirectory(f.root, f.parentRel, f.display, "archive restore")
+	if f.deferParentSync {
+		return nil
+	}
+	return restoreSyncStagingDirectory(f.root, f.parentRel, f.display, "archive restore")
 }
 
 func (t *archiveRestoreTarget) syncTree() error {
-	var dirs []string
-	if err := fs.WalkDir(t.root.FS(), ".", func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	return walkArchiveRootPostorderBatched(t.root, ".", func(path string, info fs.FileInfo) error {
+		if !info.IsDir() {
+			return nil
 		}
-		if entry.IsDir() {
-			dirs = append(dirs, filepath.FromSlash(path))
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	sort.Slice(dirs, func(i, j int) bool {
-		return strings.Count(filepath.ToSlash(dirs[i]), "/") > strings.Count(filepath.ToSlash(dirs[j]), "/")
+		return restoreSyncStagingDirectory(t.root, path, filepath.Join(t.displayPath, path), "archive restore")
 	})
-	for _, path := range dirs {
-		if err := syncRootedDirectory(t.root, path, filepath.Join(t.displayPath, path), "archive restore"); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func syncRestoreDirectory(file *os.File) error {

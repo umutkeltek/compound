@@ -26,7 +26,7 @@ func ParseCLIArgs(args []string) CLIArgs {
 		case arg == "--home" && index+1 < len(args):
 			parsed.HomePath = args[index+1]
 			index++
-		case (arg == "--target" || arg == "--archive") && index+1 < len(args):
+		case (arg == "--target" || arg == "--archive" || arg == "--format") && index+1 < len(args):
 			index++
 		case arg == "--local":
 			parsed.HomeKind = HomeKindLocal

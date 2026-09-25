@@ -253,6 +253,19 @@ func Backup(homePath, targetPath string, now time.Time) (ArchiveReport, error) {
 	return report, nil
 }
 
+// BackupWithFormat selects an explicit backup profile. The empty format keeps
+// the original v0.1 archive contract used by Backup.
+func BackupWithFormat(homePath, targetPath, format string, now time.Time) (ArchiveReport, error) {
+	switch format {
+	case "", "v1":
+		return Backup(homePath, targetPath, now)
+	case ArchiveFormatStreamedV2:
+		return backupStreamed(homePath, targetPath, now)
+	default:
+		return ArchiveReport{}, fmt.Errorf("unsupported home archive format %q", format)
+	}
+}
+
 // ExportPublicFixture writes a redacted fixture archive: habitat shape and
 // sanitized manifest only, no runtime ledger/events/context/private files.
 func ExportPublicFixture(homePath, targetPath string, now time.Time) (ArchiveReport, error) {
@@ -364,11 +377,25 @@ func VerifyArchive(archivePath string) (VerifyReport, error) {
 	if err != nil {
 		return VerifyReport{}, err
 	}
-	manifest, actual, err := readArchive(archivePath, nil)
+	f, err := openArchiveNoFollow(archivePath, defaultArchiveReadLimits.MaxSourceBytes)
 	if err != nil {
 		return VerifyReport{}, err
 	}
-	return verifyArchiveManifest(archivePath, manifest, actual)
+	streamed, probeErr := probeStreamedArchive(f)
+	if probeErr != nil {
+		_ = f.Close()
+		return VerifyReport{}, probeErr
+	}
+	if streamed {
+		report, readErr := readStreamedArchive(archivePath, f, nil, nil, nil)
+		return report, errors.Join(readErr, f.Close())
+	}
+	manifest, actual, err := readOpenedArchiveWithLimits(archivePath, f, nil, defaultArchiveReadLimits, nil)
+	if err != nil {
+		return VerifyReport{}, errors.Join(err, f.Close())
+	}
+	report, verifyErr := verifyArchiveManifest(archivePath, manifest, actual)
+	return report, errors.Join(verifyErr, f.Close())
 }
 
 func verifyArchiveManifest(archivePath string, manifest ArchiveManifest, actual map[string]ArchiveEntry) (VerifyReport, error) {
@@ -3479,6 +3506,8 @@ type verifiedBackupArchive struct {
 	file            *os.File
 	limits          archiveReadLimits
 	preflightDigest []byte
+	streamed        bool
+	streamedReport  VerifyReport
 }
 
 func openVerifiedBackupArchive(archivePath string, limits archiveReadLimits) (*verifiedBackupArchive, error) {
@@ -3503,6 +3532,18 @@ func openVerifiedBackupArchive(archivePath string, limits archiveReadLimits) (*v
 	}
 
 	preflightDigest := sha256.New()
+	streamed, err := probeStreamedArchive(f)
+	if err != nil {
+		return fail(err)
+	}
+	if streamed {
+		streamLimits := archiveStreamTarLimitsFrom(limits)
+		report, err := readStreamedArchiveWithLimits(archivePath, f, nil, nil, preflightDigest, streamLimits)
+		if err != nil {
+			return fail(err)
+		}
+		return &verifiedBackupArchive{path: archivePath, file: f, limits: streamLimits, preflightDigest: preflightDigest.Sum(nil), streamed: true, streamedReport: report}, nil
+	}
 	manifest, actual, err := readOpenedArchiveWithLimits(archivePath, f, nil, limits, preflightDigest)
 	if err != nil {
 		return fail(err)
@@ -3524,6 +3565,16 @@ func (a *verifiedBackupArchive) extract(restore *archiveRestoreTarget) (ArchiveM
 		return ArchiveManifest{}, nil, fmt.Errorf("rewind verified archive source: %w", err)
 	}
 	restoreDigest := sha256.New()
+	if a.streamed {
+		report, err := readStreamedArchiveWithLimits(a.path, a.file, restore, nil, restoreDigest, a.limits)
+		if err != nil {
+			return ArchiveManifest{}, nil, err
+		}
+		if !bytes.Equal(a.preflightDigest, restoreDigest.Sum(nil)) || report != a.streamedReport {
+			return ArchiveManifest{}, nil, fmt.Errorf("archive source changed between preflight and restore extraction: %s", a.path)
+		}
+		return ArchiveManifest{SchemaVersion: ArchiveStreamSchemaV2, Kind: ArchiveKindBackup}, nil, nil
+	}
 	restoredManifest, restoredActual, err := readOpenedArchiveWithLimits(a.path, a.file, restore, a.limits, restoreDigest)
 	if err != nil {
 		return ArchiveManifest{}, nil, err

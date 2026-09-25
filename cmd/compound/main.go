@@ -4124,6 +4124,8 @@ func cmdHome(args []string) {
 			fmt.Println("usage: compound home restore-history (--all|--id id[,id...]) [--dry-run]")
 		case "private-custody":
 			fmt.Print(home.PrivateCustodyUsage)
+		case "backup":
+			fmt.Println("usage: compound home backup --target <new-archive.tar.gz> [--format v1|streamed-v2] [--home <path>]")
 		default:
 			fmt.Println("usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody> [--home <path>] [--local|--global]")
 		}
@@ -4156,7 +4158,11 @@ func cmdHome(args []string) {
 		}
 		printHomeDoctor(report)
 	case "backup":
-		report, err := home.Backup(resolve(), valueFlag(args, "--target"), time.Now())
+		if hasFlag(args, "--format") && valueFlag(args, "--format") == "" {
+			fmt.Fprintln(os.Stderr, "home backup: --format requires v1 or streamed-v2")
+			os.Exit(2)
+		}
+		report, err := home.BackupWithFormat(resolve(), valueFlag(args, "--target"), valueFlag(args, "--format"), time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "home backup:", err)
 			os.Exit(1)
