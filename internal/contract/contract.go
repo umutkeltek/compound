@@ -2400,8 +2400,13 @@ func (e *inProcessBreadthEngine) Index(claims []mem.Claim, gen int64) error {
 }
 
 func (e *inProcessBreadthEngine) Query(text, gate string, allowlist []string, k int) ([]mem.Hit, error) {
+	hits, _, err := e.QueryWithDiagnostics(text, gate, allowlist, k)
+	return hits, err
+}
+
+func (e *inProcessBreadthEngine) QueryWithDiagnostics(text, gate string, allowlist []string, k int) ([]mem.Hit, []string, error) {
 	result, err := e.engine.QueryWithLanes(text, gate, allowlist, k)
-	return result.Hits, err
+	return result.Hits, append([]string(nil), result.DegradedLanes...), err
 }
 
 // semanticTaskRankK bounds how many breadth hits contribute a relevance weight; the ambient pack
@@ -2491,21 +2496,19 @@ func semanticTaskRankResultWithEmbedderFromView(homePath string, in Input, trace
 			trace.CorpusGeneration = caps.CorpusGen
 		}
 	}
-	var claims []mem.Claim
-	var consumedRecall *mem.ExpandedQuery
+	var queryResult mem.ReadOnlyBreadthQueryResult
 	if in.ReadOnlyRetrieval {
 		if view != nil {
 			if expanded != nil {
-				result, queryErr := store.QueryBreadthReadOnlyFromViewExpandedResult(in.Task, semanticTaskRankK, eng, view, *expanded)
-				claims, consumedRecall, err = result.Claims, result.ConsumedExpansion, queryErr
+				queryResult, err = store.QueryBreadthReadOnlyFromViewExpandedResult(in.Task, semanticTaskRankK, eng, view, *expanded)
 			} else {
-				claims, err = store.QueryBreadthReadOnlyFromView(in.Task, semanticTaskRankK, eng, view)
+				queryResult, err = store.QueryBreadthReadOnlyFromViewResult(in.Task, semanticTaskRankK, eng, view)
 			}
 		} else {
-			claims, err = store.QueryBreadthReadOnly(in.Task, semanticTaskRankK, eng)
+			queryResult, err = store.QueryBreadthReadOnlyResult(in.Task, semanticTaskRankK, eng)
 		}
 	} else {
-		claims, err = store.QueryBreadth(in.Task, semanticTaskRankK, eng)
+		queryResult, err = store.QueryBreadthResult(in.Task, semanticTaskRankK, eng)
 	}
 	if err != nil {
 		if trace != nil {
@@ -2523,19 +2526,22 @@ func semanticTaskRankResultWithEmbedderFromView(homePath string, in Input, trace
 		if trace.ObservedEngine == "" {
 			trace.Outcome = EngineOutcomeRefused
 			trace.ErrorClass = EngineErrorProtocolVersion
+		} else if len(queryResult.DegradedLanes) > 0 {
+			trace.Outcome = EngineOutcomeDegraded
+			trace.ErrorClass = EngineErrorRetrieval
 		} else {
 			trace.Outcome = EngineOutcomeUsed
 			trace.ErrorClass = ""
 		}
 	}
-	if len(claims) == 0 {
-		return semanticTaskRankResult{ConsumedRecall: consumedRecall}
+	if len(queryResult.Claims) == 0 {
+		return semanticTaskRankResult{ConsumedRecall: queryResult.ConsumedExpansion}
 	}
-	ranks := make(map[string]float64, len(claims))
-	for i, c := range claims {
-		ranks[c.ID] = float64(len(claims) - i)
+	ranks := make(map[string]float64, len(queryResult.Claims))
+	for i, c := range queryResult.Claims {
+		ranks[c.ID] = float64(len(queryResult.Claims) - i)
 	}
-	return semanticTaskRankResult{Ranks: ranks, ConsumedRecall: consumedRecall}
+	return semanticTaskRankResult{Ranks: ranks, ConsumedRecall: queryResult.ConsumedExpansion}
 }
 
 func requestedEngineIdentity() string {

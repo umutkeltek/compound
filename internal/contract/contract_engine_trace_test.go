@@ -42,12 +42,20 @@ type scriptedTraceEngine struct {
 	indexErr     error
 	queryErr     error
 	hits         []mem.Hit
+	degraded     bool
 }
 
 func (e scriptedTraceEngine) Capabilities() mem.EngineCapabilities { return e.capabilities }
 func (e scriptedTraceEngine) Index([]mem.Claim, int64) error       { return e.indexErr }
 func (e scriptedTraceEngine) Query(string, string, []string, int) ([]mem.Hit, error) {
 	return append([]mem.Hit(nil), e.hits...), e.queryErr
+}
+func (e scriptedTraceEngine) QueryWithDiagnostics(string, string, []string, int) ([]mem.Hit, []string, error) {
+	var lanes []string
+	if e.degraded {
+		lanes = []string{"vector"}
+	}
+	return append([]mem.Hit(nil), e.hits...), lanes, e.queryErr
 }
 
 func seedTraceLedgerMemory(t *testing.T, homePath string) string {
@@ -158,6 +166,36 @@ func TestPackWithCapabilitiesTracedProjectsBoundedFailureClasses(t *testing.T) {
 }
 
 func TestPackWithCapabilitiesTracedProjectsUsedAndNotAttempted(t *testing.T) {
+	t.Run("successful degraded breadth query", func(t *testing.T) {
+		homePath := t.TempDir()
+		wantMemory := seedTraceLedgerMemory(t, homePath)
+		claimID := strings.TrimPrefix(wantMemory, "claim://")
+		pack, trace := packWithTraceEngine(t, homePath, scriptedTraceEngine{
+			capabilities: mem.EngineCapabilities{Name: "semantic-index", Breadth: true},
+			hits:         []mem.Hit{{ClaimID: claimID, Score: 1}},
+			degraded:     true,
+		})
+		if trace.Outcome != EngineOutcomeDegraded || trace.ErrorClass != EngineErrorRetrieval {
+			t.Fatalf("trace = %+v, want degraded/retrieval_error", trace)
+		}
+		if pack.Retrieval == nil || pack.Retrieval.Level != envelope.RetrievalLevelDegraded || pack.Retrieval.ErrorClass != envelope.RetrievalErrorRetrieval {
+			t.Fatalf("pack retrieval = %+v, want degraded/retrieval_error", pack.Retrieval)
+		}
+	})
+	t.Run("zero-hit degraded breadth query", func(t *testing.T) {
+		homePath := t.TempDir()
+		seedTraceLedgerMemory(t, homePath)
+		pack, trace := packWithTraceEngine(t, homePath, scriptedTraceEngine{
+			capabilities: mem.EngineCapabilities{Name: "semantic-index", Breadth: true},
+			degraded:     true,
+		})
+		if trace.Outcome != EngineOutcomeDegraded || trace.ErrorClass != EngineErrorRetrieval {
+			t.Fatalf("zero-hit trace = %+v, want degraded/retrieval_error", trace)
+		}
+		if pack.Retrieval == nil || pack.Retrieval.Level != envelope.RetrievalLevelDegraded {
+			t.Fatalf("zero-hit pack retrieval = %+v, want degraded", pack.Retrieval)
+		}
+	})
 	t.Run("successful breadth dependency", func(t *testing.T) {
 		homePath := t.TempDir()
 		wantMemory := seedTraceLedgerMemory(t, homePath)

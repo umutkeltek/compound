@@ -29,6 +29,7 @@ type fakeTransport struct {
 	schemaVersion          int // 0 = unstamped (tolerated); set != ProtocolVersion to test skew
 	indexCalls, queryCalls int
 	calls, failAfter       int // failAfter>=0: RoundTrip errors once calls exceed it
+	queryDegraded          map[string][]string
 }
 
 func (f *fakeTransport) RoundTrip(req Request) (Response, error) {
@@ -48,11 +49,78 @@ func (f *fakeTransport) RoundTrip(req Request) (Response, error) {
 		return Response{OK: true, Indexed: len(f.claims), CorpusGen: f.gen}, nil
 	case OpQuery:
 		f.queryCalls++
-		return Response{OK: true, Hits: refMatch(f.claims, req.Text, req.Gate, req.Allowlist, req.K), CorpusGen: f.gen}, nil
+		return Response{OK: true, Hits: refMatch(f.claims, req.Text, req.Gate, req.Allowlist, req.K), CorpusGen: f.gen, DegradedLanes: f.queryDegraded[req.Text]}, nil
 	}
 	return Response{OK: false, Error: &WireError{Code: CodeBadRequest, Message: "?"}}, nil
 }
 func (f *fakeTransport) Close() error { return nil }
+
+func TestProtocolQueryDiagnosticsAreScopedToEachResponse(t *testing.T) {
+	transport := &fakeTransport{
+		failAfter:     -1,
+		queryDegraded: map[string][]string{"degraded": {"vector"}},
+	}
+	engine := NewProtocolEngine(transport, "")
+	_, first, err := engine.QueryWithDiagnostics("degraded", GateAll, nil, 10)
+	if err != nil || len(first) != 1 || first[0] != "vector" {
+		t.Fatalf("first query diagnostics = %v, err = %v", first, err)
+	}
+	_, healthy, err := engine.QueryWithDiagnostics("healthy", GateAll, nil, 10)
+	if err != nil || len(healthy) != 0 {
+		t.Fatalf("healthy query inherited degradation = %v, err = %v", healthy, err)
+	}
+	_, again, err := engine.QueryWithDiagnostics("degraded", GateAll, nil, 10)
+	if err != nil || len(again) != 1 || again[0] != "vector" {
+		t.Fatalf("later query diagnostics = %v, err = %v", again, err)
+	}
+}
+
+func TestProtocolQueryDiagnosticsBoundUntrustedLaneNames(t *testing.T) {
+	transport := &fakeTransport{
+		failAfter: -1,
+		queryDegraded: map[string][]string{
+			"degraded": {"vector", "vector", strings.Repeat("private-body-", 10)},
+		},
+	}
+	engine := NewProtocolEngine(transport, "")
+	_, lanes, err := engine.QueryWithDiagnostics("degraded", GateAll, nil, 10)
+	if err != nil || len(lanes) != 2 || lanes[0] != "vector" || lanes[1] != "unknown" {
+		t.Fatalf("bounded diagnostics = %v, err = %v; want vector, unknown", lanes, err)
+	}
+}
+
+func TestBreadthQueryDiagnosticsCombineExpansionWithoutLeakingToNextInvocation(t *testing.T) {
+	store := storeWith(t, "topic", "predicate", "value")
+	view, err := store.CurrentView()
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &fakeTransport{
+		failAfter: -1,
+		queryDegraded: map[string][]string{
+			"value":  {"vector"},
+			"no-hit": {"vector"},
+		},
+	}
+	engine := NewProtocolEngine(transport, "")
+	expanded := ExpandedQuery{Original: "value", Text: "value topic", Added: []string{"topic"}, Active: true}
+	result, err := store.QueryBreadthReadOnlyFromViewExpandedResult("value", 10, engine, view, expanded)
+	if err != nil || len(result.Claims) == 0 || len(result.DegradedLanes) != 1 || result.DegradedLanes[0] != "vector" {
+		t.Fatalf("degraded primary with healthy alias = %+v, err = %v", result, err)
+	}
+
+	healthy := ExpandedQuery{Original: "topic", Text: "topic"}
+	next, err := store.QueryBreadthReadOnlyFromViewExpandedResult("topic", 10, engine, view, healthy)
+	if err != nil || len(next.DegradedLanes) != 0 {
+		t.Fatalf("healthy invocation inherited diagnostics = %+v, err = %v", next, err)
+	}
+
+	empty := ExpandedQuery{Original: "no-hit", Text: "no-hit"}
+	zeroHit, err := store.QueryBreadthReadOnlyFromViewExpandedResult("no-hit", 10, engine, view, empty)
+	if err != nil || len(zeroHit.Claims) != 0 || len(zeroHit.DegradedLanes) != 1 || zeroHit.DegradedLanes[0] != "vector" {
+		t.Fatalf("zero-hit degraded query = %+v, err = %v", zeroHit, err)
+	}
+}
 
 func storeWith(t *testing.T, e, p string, objs ...string) *Store {
 	s := newStore(t)

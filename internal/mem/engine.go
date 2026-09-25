@@ -90,6 +90,13 @@ type Engine interface {
 	Query(text, gate string, allowlist []string, k int) ([]Hit, error)
 }
 
+// DiagnosticEngine returns query-scoped degradation with the hits it produced.
+// Engines without diagnostics continue through the Engine interface.
+type DiagnosticEngine interface {
+	Engine
+	QueryWithDiagnostics(text, gate string, allowlist []string, k int) ([]Hit, []string, error)
+}
+
 type contextIndexEngine interface {
 	IndexWithContext(claims []Claim, edges []WireEdge, gen int64) error
 }
@@ -169,6 +176,14 @@ func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
 	return result.Claims, err
 }
 
+func (s *Store) QueryBreadthResult(text string, k int, eng Engine) (ReadOnlyBreadthQueryResult, error) {
+	view, err := s.CurrentView()
+	if err != nil {
+		return ReadOnlyBreadthQueryResult{}, err
+	}
+	return s.queryBreadthFromView(text, k, eng, true, view, nil)
+}
+
 // QueryBreadthReadOnly shares QueryBreadth's validation and ranking path but does not capture
 // valid observed_fact proposals. Live prompt retrieval uses it so an engine echo cannot turn a
 // transient query into a durable candidate. Malformed hits still fail closed.
@@ -181,12 +196,24 @@ func (s *Store) QueryBreadthReadOnly(text string, k int, eng Engine) ([]Claim, e
 	return result.Claims, err
 }
 
+func (s *Store) QueryBreadthReadOnlyResult(text string, k int, eng Engine) (ReadOnlyBreadthQueryResult, error) {
+	view, err := s.CurrentView()
+	if err != nil {
+		return ReadOnlyBreadthQueryResult{}, err
+	}
+	return s.queryBreadthFromView(text, k, eng, false, view, nil)
+}
+
 // QueryBreadthReadOnlyFromView preserves the normal read-only query ingress,
 // ranking, alias expansion, and fail-closed authority checks while reusing an
 // invocation's already-stabilized memory view.
 func (s *Store) QueryBreadthReadOnlyFromView(text string, k int, eng Engine, view *CurrentView) ([]Claim, error) {
 	result, err := s.queryBreadthFromView(text, k, eng, false, view, nil)
 	return result.Claims, err
+}
+
+func (s *Store) QueryBreadthReadOnlyFromViewResult(text string, k int, eng Engine, view *CurrentView) (ReadOnlyBreadthQueryResult, error) {
+	return s.queryBreadthFromView(text, k, eng, false, view, nil)
 }
 
 // QueryBreadthReadOnlyFromViewExpanded is the invocation-snapshot variant used
@@ -205,6 +232,7 @@ func (s *Store) QueryBreadthReadOnlyFromViewExpanded(text string, k int, eng Eng
 type ReadOnlyBreadthQueryResult struct {
 	Claims            []Claim
 	ConsumedExpansion *ExpandedQuery
+	DegradedLanes     []string
 }
 
 func (s *Store) QueryBreadthReadOnlyFromViewExpandedResult(text string, k int, eng Engine, view *CurrentView, expanded ExpandedQuery) (ReadOnlyBreadthQueryResult, error) {
@@ -255,15 +283,24 @@ func (s *Store) queryBreadthFromView(text string, k int, eng Engine, captureObse
 		// Pull a wider pool so discounted expansion hits can still fill top-k.
 		fetchK = k * 2
 	}
-	hits, err := eng.Query(text, GateList, allow, fetchK)
+	query := func(queryText string) ([]Hit, []string, error) {
+		if diagnostic, ok := eng.(DiagnosticEngine); ok {
+			return diagnostic.QueryWithDiagnostics(queryText, GateList, allow, fetchK)
+		}
+		hits, err := eng.Query(queryText, GateList, allow, fetchK)
+		return hits, nil, err
+	}
+	hits, degradedLanes, err := query(text)
 	if err != nil {
 		return ReadOnlyBreadthQueryResult{}, err
 	}
+	degradedLanes = appendDiagnosticLanes(nil, degradedLanes...)
 	if expanded.Active && len(expanded.Added) > 0 {
-		expHits, expErr := eng.Query(strings.Join(expanded.Added, " "), GateList, allow, fetchK)
+		expHits, expLanes, expErr := query(strings.Join(expanded.Added, " "))
 		if expErr != nil {
 			return ReadOnlyBreadthQueryResult{}, expErr
 		}
+		degradedLanes = appendDiagnosticLanes(degradedLanes, expLanes...)
 		hits = mergeHitsWithExpansionDiscount(hits, expHits, k)
 	} else if k > 0 && len(hits) > k {
 		hits = hits[:k]
@@ -301,7 +338,38 @@ func (s *Store) queryBreadthFromView(text string, k int, eng Engine, captureObse
 		}
 	}
 	consumed := cloneExpandedQuery(expanded)
-	return ReadOnlyBreadthQueryResult{Claims: out, ConsumedExpansion: &consumed}, nil
+	return ReadOnlyBreadthQueryResult{Claims: out, ConsumedExpansion: &consumed, DegradedLanes: degradedLanes}, nil
+}
+
+func appendDiagnosticLanes(dst []string, lanes ...string) []string {
+	for _, lane := range lanes {
+		lane = strings.TrimSpace(lane)
+		if len(dst) >= 8 {
+			continue
+		}
+		if lane == "" || len(lane) > 32 {
+			lane = "unknown"
+		} else {
+			for i := 0; i < len(lane); i++ {
+				ch := lane[i]
+				if !((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-') {
+					lane = "unknown"
+					break
+				}
+			}
+		}
+		found := false
+		for _, existing := range dst {
+			if existing == lane {
+				found = true
+				break
+			}
+		}
+		if !found {
+			dst = append(dst, lane)
+		}
+	}
+	return dst
 }
 
 func expandedQueryProvided(expanded ExpandedQuery) bool {

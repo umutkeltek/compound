@@ -318,17 +318,22 @@ func (e *ProtocolEngine) IndexWithContext(claims []Claim, edges []WireEdge, gen 
 }
 
 func (e *ProtocolEngine) Query(text, gate string, allowlist []string, k int) ([]Hit, error) {
+	hits, _, err := e.QueryWithDiagnostics(text, gate, allowlist, k)
+	return hits, err
+}
+
+func (e *ProtocolEngine) QueryWithDiagnostics(text, gate string, allowlist []string, k int) ([]Hit, []string, error) {
 	if err := e.ensureProbe(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	resp, err := e.transport.RoundTrip(Request{SchemaVersion: ProtocolVersion, RequestID: e.nextReqID(), Op: OpQuery, Text: text, Gate: gate, Allowlist: allowlist, K: k})
 	if err != nil {
-		return nil, ErrEngineUnavailable
+		return nil, nil, ErrEngineUnavailable
 	}
 	if !resp.OK {
-		return nil, wireErr(resp)
+		return nil, nil, wireErr(resp)
 	}
-	return resp.Hits, nil
+	return resp.Hits, appendDiagnosticLanes(nil, resp.DegradedLanes...), nil
 }
 
 func (e *ProtocolEngine) Close() error { return e.transport.Close() }
