@@ -438,17 +438,31 @@ func TestReviewRequestIdentityIsFrozen(t *testing.T) {
 func TestReviewConcurrentSameIDFreshProcesses(t *testing.T) {
 	h, _, a := reviewCommitFixture(t)
 	commands := make([]*exec.Cmd, 4)
+	stdout, stderr := make([]bytes.Buffer, len(commands)), make([]bytes.Buffer, len(commands))
+	started := 0
+	defer func() {
+		// A failed child must not leave its siblings writing into a removed fixture.
+		for i := 0; i < started; i++ {
+			if commands[i].ProcessState == nil {
+				if err := commands[i].Wait(); err != nil {
+					t.Errorf("unreaped child %d: %v\nstdout:\n%s\nstderr:\n%s", i, err, stdout[i].String(), stderr[i].String())
+				}
+			}
+		}
+	}()
 	for i := range commands {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestReviewCommitProcessHelper$")
 		cmd.Env = append(os.Environ(), "COMPOUND_TEST_REVIEW_HOME="+h, "COMPOUND_TEST_REVIEW_HYPOTHESIS="+a.HypothesisID)
+		cmd.Stdout, cmd.Stderr = &stdout[i], &stderr[i]
 		commands[i] = cmd
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
+		started++
 	}
-	for _, cmd := range commands {
+	for i, cmd := range commands {
 		if err := cmd.Wait(); err != nil {
-			t.Fatal(err)
+			t.Fatalf("child %d: %v\nstdout:\n%s\nstderr:\n%s", i, err, stdout[i].String(), stderr[i].String())
 		}
 	}
 	s, err := mem.Open(h)

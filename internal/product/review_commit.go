@@ -42,6 +42,7 @@ const reviewSnapshotSchema = "compound.product_review_snapshot.v0.1"
 var replaceReviewCandidate = candidates.ReplaceCandidateIfCurrent
 var publishReviewHistory = appendUniqueReview
 var publishReviewArtifacts = recordReviewArtifactResult
+var openReviewOperationFile = (*os.Root).OpenFile
 
 // ApplyReviewFile admits the parsed file revision, even if the path is replaced
 // afterward. The operator's reviewer override is frozen with that exact input.
@@ -452,23 +453,74 @@ func lockReviewOperation(homePath, reviewID string) (func() error, error) {
 	if err := root.Mkdir("lock", 0o755); err != nil && !os.IsExist(err) {
 		return nil, err
 	}
-	info, err := root.Lstat("lock")
-	if err != nil || !info.IsDir() {
+	directory, err := root.Lstat("lock")
+	if err != nil || !directory.IsDir() {
 		return nil, fmt.Errorf("review lock directory is not a regular directory: %v", err)
 	}
 	path := filepath.Join("lock", stableID("product-review-", reviewID)+".lock")
-	f, err := root.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	f, err := openReviewOperationLock(root, path)
 	if err != nil {
 		return nil, err
 	}
-	info, err = f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		f.Close()
-		return nil, fmt.Errorf("review lock is not a regular file: %v", err)
+	verify := func() error {
+		currentDirectory, directoryErr := root.Lstat("lock")
+		currentFile, fileErr := root.Lstat(path)
+		opened, statErr := f.Stat()
+		if err := errors.Join(directoryErr, fileErr, statErr); err != nil {
+			return err
+		}
+		if !currentDirectory.IsDir() || !os.SameFile(directory, currentDirectory) {
+			return fmt.Errorf("review lock directory changed while opening")
+		}
+		if !currentFile.Mode().IsRegular() || !opened.Mode().IsRegular() || !os.SameFile(currentFile, opened) {
+			return fmt.Errorf("review lock file changed while opening")
+		}
+		return nil
+	}
+	if err := verify(); err != nil {
+		return nil, errors.Join(err, f.Close())
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("review operation busy or unavailable: %w", err)
+		return nil, errors.Join(fmt.Errorf("review operation busy or unavailable: %w", err), f.Close())
+	}
+	if err := verify(); err != nil {
+		return nil, errors.Join(err, syscall.Flock(int(f.Fd()), syscall.LOCK_UN), f.Close())
 	}
 	return func() error { return errors.Join(syscall.Flock(int(f.Fd()), syscall.LOCK_UN), f.Close()) }, nil
+}
+
+func openReviewOperationLock(root *os.Root, path string) (*os.File, error) {
+	// Match the existing candidate/run-attempt owners: exclusive creation, then
+	// open the exact existing regular file if a concurrent creator won. A single
+	// O_CREATE open returned ENOENT during simultaneous creation in the
+	// Go 1.27.1 Darwin reproducer; this does not identify a kernel/runtime cause.
+	// Do not retry missing/replaced authority or classify it as lock contention.
+	before, err := root.Lstat(path)
+	var f *os.File
+	if os.IsNotExist(err) {
+		f, err = openReviewOperationFile(root, path, os.O_CREATE|os.O_EXCL|os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o600)
+		if os.IsExist(err) {
+			before, err = root.Lstat(path)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if f == nil {
+		if !before.Mode().IsRegular() {
+			return nil, fmt.Errorf("review lock is not a regular file")
+		}
+		f, err = openReviewOperationFile(root, path, os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			return nil, err
+		}
+	}
+	opened, err := f.Stat()
+	if err == nil && (!opened.Mode().IsRegular() || (before != nil && !os.SameFile(before, opened))) {
+		err = fmt.Errorf("review lock file changed while opening")
+	}
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	return f, nil
 }
