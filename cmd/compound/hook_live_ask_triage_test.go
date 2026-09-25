@@ -554,6 +554,7 @@ func TestHookLiveCodexStopOwnedSessionBinding(t *testing.T) {
 		{name: "terminal spawned identity forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", spawned: "terminal", legacy: true, disposition: "delivery_unavailable"},
 		{name: "unattached spawned identity forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", spawned: "unattached", legacy: true, disposition: "delivery_unavailable"},
 		{name: "superseded spawned identity forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", spawned: "superseded", legacy: true, disposition: "delivery_unavailable"},
+		{name: "wrong workspace spawned identity forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", spawned: "wrong-workspace", legacy: true, disposition: "delivery_unavailable"},
 		{name: "stale session", staleSession: true, disposition: "delivery_unavailable"},
 		{name: "stale turn", staleTurn: true, disposition: "delivery_unavailable"},
 		{name: "superseded standing decision", superseded: true},
@@ -589,7 +590,11 @@ func TestHookLiveCodexStopOwnedSessionBinding(t *testing.T) {
 				if attempt, err = attempts.SetOrigin(attempt.ID, runattempt.OriginHarnessExecution); err != nil {
 					t.Fatal(err)
 				}
-				if attempt, err = attempts.SetWorkspace(attempt.ID, "/workspace/example"); err != nil {
+				workspace := "/workspace/example"
+				if tc.spawned == "wrong-workspace" {
+					workspace = "/workspace/elsewhere"
+				}
+				if attempt, err = attempts.SetWorkspace(attempt.ID, workspace); err != nil {
 					t.Fatal(err)
 				}
 				fixture := nativeCoordinationCase{homePath: homePath, workID: w.ID, harness: "codex", receiver: "codex"}

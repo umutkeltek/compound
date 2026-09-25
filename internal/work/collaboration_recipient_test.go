@@ -12,7 +12,7 @@ import (
 
 func TestResolveCollaborationRecipientPriorBindingFence(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"terminal", "lost-attachment", "terminal-work"} {
+	for _, mode := range []string{"terminal", "lost-attachment", "terminal-work", "wrong-workspace"} {
 		t.Run(mode, func(t *testing.T) {
 			store := newStore(t)
 			workspace := t.TempDir()
@@ -32,7 +32,7 @@ func TestResolveCollaborationRecipientPriorBindingFence(t *testing.T) {
 				if _, err := runattempt.Open(store.home).Complete(attempt.ID, runattempt.StatusFailed, fixedNow.Add(time.Minute)); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+			} else if mode != "wrong-workspace" {
 				if mode == "lost-attachment" {
 					current.RunAttemptIDs = nil
 				} else {
@@ -43,6 +43,9 @@ func TestResolveCollaborationRecipientPriorBindingFence(t *testing.T) {
 				}
 			}
 			query := CollaborationRecipientQuery{Harness: "codex", SessionID: "known-session", Cwd: workspace}
+			if mode == "wrong-workspace" {
+				query.Cwd = t.TempDir()
+			}
 			before := store.eventLogReadCount()
 			resolved, ok, err := store.ResolveCollaborationRecipient(query)
 			if err != nil || ok || resolved.UnresolvedReason != "" || store.eventLogReadCount() != before {
