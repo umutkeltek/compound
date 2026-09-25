@@ -371,6 +371,15 @@ duplicate the gateway inside Compound.
 
 A backup is successful only when it restores behavior, not merely bytes.
 
+The local archive producer and verifier share one unchanged resource envelope. Before publication,
+backup and public-fixture export enforce logical tar-entry counts (including directories and the archive
+manifest), path bounds, per-entry and expanded bytes, the actual serialized manifest size, and the actual
+decoded/compressed streams including tar metadata, padding, and gzip finalization. Restore retains the
+same admitted limits through final staged-file verification. A budget refusal publishes no archive; it
+does not authorize pruning source evidence or raising the reader's limits. These checks establish budget
+parity, not a coherent live snapshot or support for larger estates. Manifest buffering, directory walks,
+and restore diagnostics still require separate resource acceptance before large-estate recovery is claimed.
+
 - A sealed backup includes manifest/catalog revision, config, sources, artifacts, ledger, registries, work,
   events, context, and reviews. Rebuildable projections/indexes may be omitted only when rebuild is proven.
 - Private backups are encrypted; encryption keys/recipients are not stored in the same archive. At least one

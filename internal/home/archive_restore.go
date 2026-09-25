@@ -155,7 +155,7 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 	if err := target.validatePinnedHome(); err != nil {
 		return RestoreReport{}, err
 	}
-	if err := target.verifyEntries(manifest); err != nil {
+	if err := target.verifyEntries(manifest, limits); err != nil {
 		return RestoreReport{}, err
 	}
 	if err := restoreNoReplace(parentFD, stagingName, targetName); err != nil {
@@ -569,9 +569,9 @@ func (t *archiveRestoreTarget) validatePinnedHome() error {
 	return nil
 }
 
-func (t *archiveRestoreTarget) verifyEntries(manifest ArchiveManifest) error {
-	if len(manifest.Entries) > defaultArchiveReadLimits.MaxEntries {
-		return fmt.Errorf("restored archive manifest entry count exceeds %d", defaultArchiveReadLimits.MaxEntries)
+func (t *archiveRestoreTarget) verifyEntries(manifest ArchiveManifest, limits archiveReadLimits) error {
+	if len(manifest.Entries) > limits.MaxEntries {
+		return fmt.Errorf("restored archive manifest entry count exceeds %d", limits.MaxEntries)
 	}
 	actual := make(map[string]ArchiveEntry, len(manifest.Entries))
 	err := fs.WalkDir(t.root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
@@ -610,7 +610,7 @@ func (t *archiveRestoreTarget) verifyEntries(manifest ArchiveManifest) error {
 	if err != nil {
 		return err
 	}
-	if _, err := verifyArchiveManifestWithLimits(t.displayPath, manifest, actual, defaultArchiveReadLimits); err != nil {
+	if _, err := verifyArchiveManifestWithLimits(t.displayPath, manifest, actual, limits); err != nil {
 		return fmt.Errorf("restored staging checksum verification failed: %w", err)
 	}
 	return nil

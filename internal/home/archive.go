@@ -45,6 +45,7 @@ const (
 )
 
 type archiveReadLimits struct {
+	MaxManifestBytes int64
 	MaxSourceBytes   int64
 	MaxEntries       int
 	MaxPathBytes     int
@@ -55,6 +56,7 @@ type archiveReadLimits struct {
 }
 
 var defaultArchiveReadLimits = archiveReadLimits{
+	MaxManifestBytes: archiveManifestMaxBytes,
 	MaxSourceBytes:   archiveMaxSourceBytes,
 	MaxEntries:       archiveMaxEntries,
 	MaxPathBytes:     archiveMaxPathBytes,
@@ -282,8 +284,10 @@ func writePublicFixtureArchive(homePath, targetPath string, now time.Time) (Arch
 		return ArchiveReport{}, err
 	}
 	defer aw.cleanup()
-	gz := gzip.NewWriter(aw.file)
-	tw := tar.NewWriter(gz)
+	tw, gz, err := newBudgetedArchiveWriters(aw.file, defaultArchiveReadLimits)
+	if err != nil {
+		return ArchiveReport{}, err
+	}
 
 	entries := []ArchiveEntry{}
 	var bytesWritten int64
@@ -3013,8 +3017,10 @@ func writeHomeArchive(homePath, targetPath, kind string, excluded []string, now 
 		return ArchiveReport{}, err
 	}
 	defer aw.cleanup()
-	gz := gzip.NewWriter(aw.file)
-	tw := tar.NewWriter(gz)
+	tw, gz, err := newBudgetedArchiveWriters(aw.file, defaultArchiveReadLimits)
+	if err != nil {
+		return ArchiveReport{}, err
+	}
 	manifestPath := filepath.Join(homePath, ManifestName)
 	pinnedManifestBytes, err := readManifestNoFollowBounded(manifestPath)
 	if err != nil {
@@ -3261,7 +3267,7 @@ func beginRootedExportArchivePublication(homePath, targetPath, parentRel string)
 	return nil, fmt.Errorf("could not allocate archive temp file for %s", targetPath)
 }
 
-func closeArchiveWriters(tw *tar.Writer, gz *gzip.Writer) error {
+func closeArchiveWriters(tw io.Closer, gz *gzip.Writer) error {
 	if err := tw.Close(); err != nil {
 		return err
 	}
@@ -3367,7 +3373,7 @@ func includeBackupPath(rel string, info fs.FileInfo) bool {
 	return habitatBackupIncluded(rel, info.IsDir())
 }
 
-func writeFileEntry(tw *tar.Writer, path, rel string, info fs.FileInfo) (entry ArchiveEntry, resultErr error) {
+func writeFileEntry(tw archiveEntryWriter, path, rel string, info fs.FileInfo) (entry ArchiveEntry, resultErr error) {
 	defer func() {
 		if resultErr != nil {
 			resultErr = fmt.Errorf("archive entry %q: %w", rel, resultErr)
@@ -3400,7 +3406,7 @@ func writeFileEntry(tw *tar.Writer, path, rel string, info fs.FileInfo) (entry A
 	return ArchiveEntry{Path: rel, Size: n, SHA256: hex.EncodeToString(sum.Sum(nil))}, nil
 }
 
-func writeBytesEntry(tw *tar.Writer, rel string, data []byte, mode int64) (ArchiveEntry, error) {
+func writeBytesEntry(tw archiveEntryWriter, rel string, data []byte, mode int64) (ArchiveEntry, error) {
 	if err := validateArchivePath(rel); err != nil {
 		return ArchiveEntry{}, err
 	}
@@ -3415,7 +3421,7 @@ func writeBytesEntry(tw *tar.Writer, rel string, data []byte, mode int64) (Archi
 	return ArchiveEntry{Path: rel, Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:])}, nil
 }
 
-func writeDirEntry(tw *tar.Writer, rel string, mode fs.FileMode) error {
+func writeDirEntry(tw archiveEntryWriter, rel string, mode fs.FileMode) error {
 	if err := validateArchivePath(rel); err != nil {
 		return err
 	}
@@ -3433,7 +3439,7 @@ func archiveHabitatDirMode(rel string) fs.FileMode {
 	return 0o755
 }
 
-func writeArchiveManifest(tw *tar.Writer, manifest ArchiveManifest) error {
+func writeArchiveManifest(tw archiveEntryWriter, manifest ArchiveManifest) error {
 	manifest.Entries = sortedArchiveEntries(manifest.Entries)
 	b, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -3561,8 +3567,7 @@ func readOpenedArchiveWithLimits(archivePath string, f *os.File, restore *archiv
 	var manifest ArchiveManifest
 	var embeddedHomeManifest []byte
 	manifestSeen := false
-	entryCount := 0
-	var expandedBytes int64
+	budget := archiveEntryBudget{limits: limits}
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -3578,27 +3583,10 @@ func readOpenedArchiveWithLimits(archivePath string, f *os.File, restore *archiv
 			return ArchiveManifest{}, nil, err
 		}
 		name := filepath.ToSlash(hdr.Name)
-		if err := validateArchivePath(name); err != nil {
+		if err := budget.observe(hdr); err != nil {
 			return ArchiveManifest{}, nil, err
 		}
-		entryCount++
-		if entryCount > limits.MaxEntries {
-			return ArchiveManifest{}, nil, fmt.Errorf("archive entry count exceeds %d", limits.MaxEntries)
-		}
 		canonicalName := strings.TrimSuffix(name, "/")
-		if len(name) > limits.MaxPathBytes {
-			return ArchiveManifest{}, nil, fmt.Errorf("archive path exceeds %d bytes: %s", limits.MaxPathBytes, name)
-		}
-		if depth := len(strings.Split(canonicalName, "/")); depth > limits.MaxPathDepth {
-			return ArchiveManifest{}, nil, fmt.Errorf("archive path depth exceeds %d: %s", limits.MaxPathDepth, name)
-		}
-		if hdr.Size < 0 || hdr.Size > limits.MaxEntryBytes {
-			return ArchiveManifest{}, nil, fmt.Errorf("archive entry %s exceeds %d bytes", name, limits.MaxEntryBytes)
-		}
-		if expandedBytes > limits.MaxExpandedBytes-hdr.Size {
-			return ArchiveManifest{}, nil, fmt.Errorf("archive expanded bytes exceed %d", limits.MaxExpandedBytes)
-		}
-		expandedBytes += hdr.Size
 		if _, exists := seen[canonicalName]; exists {
 			return ArchiveManifest{}, nil, fmt.Errorf("archive contains duplicate entry %s", name)
 		}
@@ -3629,10 +3617,7 @@ func readOpenedArchiveWithLimits(archivePath string, f *os.File, restore *archiv
 				return ArchiveManifest{}, nil, fmt.Errorf("archive contains duplicate manifest")
 			}
 			manifestSeen = true
-			if hdr.Size > archiveManifestMaxBytes {
-				return ArchiveManifest{}, nil, fmt.Errorf("archive manifest exceeds %d bytes", archiveManifestMaxBytes)
-			}
-			data, err := io.ReadAll(io.LimitReader(tr, archiveManifestMaxBytes+1))
+			data, err := io.ReadAll(io.LimitReader(tr, limits.MaxManifestBytes+1))
 			if err != nil {
 				if limitErr := decoded.limitErrorFor("decoded archive", "tar stream"); limitErr != nil {
 					return ArchiveManifest{}, nil, limitErr
@@ -3642,8 +3627,8 @@ func readOpenedArchiveWithLimits(archivePath string, f *os.File, restore *archiv
 				}
 				return ArchiveManifest{}, nil, err
 			}
-			if len(data) > archiveManifestMaxBytes {
-				return ArchiveManifest{}, nil, fmt.Errorf("archive manifest exceeds %d bytes", archiveManifestMaxBytes)
+			if int64(len(data)) > limits.MaxManifestBytes {
+				return ArchiveManifest{}, nil, fmt.Errorf("archive manifest exceeds %d bytes", limits.MaxManifestBytes)
 			}
 			if err := json.Unmarshal(data, &manifest); err != nil {
 				return ArchiveManifest{}, nil, fmt.Errorf("parse archive manifest: %w", err)
@@ -3786,7 +3771,7 @@ func rejectTrailingDecodedArchiveData(reader io.Reader) error {
 }
 
 func validateArchiveReadLimits(limits archiveReadLimits) error {
-	if limits.MaxSourceBytes < 1 || limits.MaxEntries < 1 || limits.MaxPathBytes < 1 || limits.MaxPathDepth < 1 || limits.MaxEntryBytes < 1 || limits.MaxExpandedBytes < 1 || limits.MaxDecodedBytes < 1 {
+	if limits.MaxManifestBytes < 1 || limits.MaxSourceBytes < 1 || limits.MaxEntries < 1 || limits.MaxPathBytes < 1 || limits.MaxPathDepth < 1 || limits.MaxEntryBytes < 1 || limits.MaxExpandedBytes < 1 || limits.MaxDecodedBytes < 1 {
 		return fmt.Errorf("archive read limits must all be positive")
 	}
 	if limits.MaxEntryBytes > limits.MaxExpandedBytes {
