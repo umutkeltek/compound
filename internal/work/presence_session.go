@@ -151,6 +151,44 @@ func readPresenceSession(path string) (PresenceSessionAnnouncement, error) {
 	return record, nil
 }
 
+// exactPresenceSession distinguishes an absent declaration from a present but
+// unusable one. Delivery authority must not use the tolerant inventory reader:
+// skipping a corrupt exact record would allow a weaker legacy binding to win.
+// Only the file owned by these normalized coordinates is read; unrelated bad
+// announcements neither establish nor prevent this recipient's identity.
+func (s *Store) exactPresenceSession(query CollaborationRecipientQuery) (PresenceSessionAnnouncement, bool, error) {
+	cwd, err := canonicalCollaborationPath(query.Cwd)
+	if err != nil {
+		return PresenceSessionAnnouncement{}, false, err
+	}
+	in := PresenceSessionInput{
+		Harness:   normalizeCollaborationHarness(query.Harness),
+		SessionID: strings.TrimSpace(query.SessionID), Cwd: cwd,
+	}
+	key := presenceSessionKey(in)
+	path := filepath.Join(s.presenceSessionDir(), key+".json")
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return PresenceSessionAnnouncement{}, false, nil
+	}
+	if err != nil {
+		return PresenceSessionAnnouncement{}, true, fmt.Errorf("read exact session declaration: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return PresenceSessionAnnouncement{}, true, errors.New("exact session declaration is not a regular owned file")
+	}
+	record, err := readPresenceSession(path)
+	if err != nil {
+		return PresenceSessionAnnouncement{}, true, fmt.Errorf("read exact session declaration: %w", err)
+	}
+	if record.SchemaVersion != PresenceSessionSchemaVersion || record.Key != key ||
+		record.Harness != in.Harness || record.SessionID != in.SessionID || record.Cwd != in.Cwd ||
+		strings.TrimSpace(record.Actor) == "" {
+		return PresenceSessionAnnouncement{}, true, errors.New("exact session declaration has invalid identity")
+	}
+	return record, true, nil
+}
+
 // ListPresenceSessions returns every announcement, newest declaration first.
 func (s *Store) ListPresenceSessions() ([]PresenceSessionAnnouncement, error) {
 	entries, err := os.ReadDir(s.presenceSessionDir())

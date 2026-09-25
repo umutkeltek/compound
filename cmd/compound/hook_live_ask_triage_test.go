@@ -20,6 +20,7 @@ import (
 	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/reviewartifact"
+	"compound/internal/runattempt"
 	"compound/internal/work"
 )
 
@@ -533,8 +534,8 @@ func TestHookLiveCodexStopOwnedSessionBinding(t *testing.T) {
 	binary := compoundTestBinary(t)
 	const coveredAsk = "May I continue with this reversible edit inside the envelope?"
 	for _, tc := range []struct {
-		name, workID, refs, ask, disposition, declaration string
-		legacy, staleSession, staleTurn, superseded       bool
+		name, workID, refs, ask, disposition, declaration, spawned string
+		legacy, staleSession, staleTurn, superseded                bool
 	}{
 		{name: "generated typed identity"},
 		{name: "underscored typed identity", workID: "work_alpha_1"},
@@ -546,6 +547,13 @@ func TestHookLiveCodexStopOwnedSessionBinding(t *testing.T) {
 		{name: "ambiguous declaration forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", declaration: "ambiguous", disposition: "delivery_unavailable"},
 		{name: "uncorroborated declaration forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", declaration: "unheld", disposition: "delivery_unavailable"},
 		{name: "stale declaration forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", declaration: "stale", disposition: "delivery_unavailable"},
+		{name: "malformed exact declaration forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", declaration: "malformed", disposition: "delivery_unavailable"},
+		{name: "unreadable exact declaration forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", declaration: "unreadable", disposition: "delivery_unavailable"},
+		{name: "mismatched exact declaration forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", declaration: "mismatched", disposition: "delivery_unavailable"},
+		{name: "unrelated malformed declaration permits exact identity", workID: "work_alpha_1", refs: "work_alpha_1", declaration: "unrelated"},
+		{name: "terminal spawned identity forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", spawned: "terminal", legacy: true, disposition: "delivery_unavailable"},
+		{name: "unattached spawned identity forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", spawned: "unattached", legacy: true, disposition: "delivery_unavailable"},
+		{name: "superseded spawned identity forbids legacy fallback", workID: "work_alpha_1", refs: "work_alpha_1", spawned: "superseded", legacy: true, disposition: "delivery_unavailable"},
 		{name: "stale session", staleSession: true, disposition: "delivery_unavailable"},
 		{name: "stale turn", staleTurn: true, disposition: "delivery_unavailable"},
 		{name: "superseded standing decision", superseded: true},
@@ -572,6 +580,55 @@ func TestHookLiveCodexStopOwnedSessionBinding(t *testing.T) {
 				}
 			}
 			writeAskCodexJob(t, threadID, turnID, tc.refs)
+			if tc.spawned != "" {
+				attempts := runattempt.Open(homePath)
+				attempt, err := attempts.Mint(w.ID, "codex", "codex", time.Now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if attempt, err = attempts.SetOrigin(attempt.ID, runattempt.OriginHarnessExecution); err != nil {
+					t.Fatal(err)
+				}
+				if attempt, err = attempts.SetWorkspace(attempt.ID, "/workspace/example"); err != nil {
+					t.Fatal(err)
+				}
+				fixture := nativeCoordinationCase{homePath: homePath, workID: w.ID, harness: "codex", receiver: "codex"}
+				bindingID := fixture.recordNativeSessionBinding(t, attempt, threadID, time.Now())
+				var attached []string
+				if tc.spawned != "unattached" {
+					attached = []string{attempt.ID}
+				}
+				if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex", RunAttemptIDs: attached, EvidenceRefs: []string{bindingID}}, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := attempts.MarkRunning(attempt.ID, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				if tc.spawned == "terminal" || tc.spawned == "superseded" {
+					if _, err := attempts.Complete(attempt.ID, runattempt.StatusFailed, time.Now()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.spawned == "superseded" {
+					successor, err := attempts.Mint(w.ID, "codex", "codex", time.Now())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if successor, err = attempts.SetOrigin(successor.ID, runattempt.OriginHarnessExecution); err != nil {
+						t.Fatal(err)
+					}
+					if successor, err = attempts.SetWorkspace(successor.ID, "/workspace/example"); err != nil {
+						t.Fatal(err)
+					}
+					bindingID := fixture.recordNativeSessionBinding(t, successor, threadID+"-successor", time.Now())
+					if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex", RunAttemptIDs: []string{successor.ID}, EvidenceRefs: []string{bindingID}}, time.Now()); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := attempts.MarkRunning(successor.ID, time.Now()); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			if !tc.legacy {
 				actor := "codex"
 				if tc.declaration == "unheld" || tc.declaration == "stale" {
@@ -593,6 +650,33 @@ func TestHookLiveCodexStopOwnedSessionBinding(t *testing.T) {
 				cmd := exec.Command(binary, "presence", "announce", "--actor", actor, "--session", threadID, "--harness", "codex", "--cwd", "/workspace/example", "--json")
 				if output, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("public presence producer: %v\n%s", err, output)
+				}
+				if tc.declaration == "malformed" || tc.declaration == "unreadable" || tc.declaration == "mismatched" || tc.declaration == "unrelated" {
+					records, err := store.ListPresenceSessions()
+					if err != nil || len(records) != 1 {
+						t.Fatalf("presence fixture: records=%+v err=%v", records, err)
+					}
+					path := filepath.Join(homePath, "observed", "presence-sessions", records[0].Key+".json")
+					switch tc.declaration {
+					case "malformed":
+						err = os.WriteFile(path, []byte("{"), 0o600)
+					case "unreadable":
+						if err = os.Remove(path); err == nil {
+							err = os.Mkdir(path, 0o700)
+						}
+					case "mismatched":
+						records[0].SessionID = "a-different-session"
+						blob, marshalErr := json.Marshal(records[0])
+						if marshalErr != nil {
+							t.Fatal(marshalErr)
+						}
+						err = os.WriteFile(path, blob, 0o600)
+					case "unrelated":
+						err = os.WriteFile(filepath.Join(filepath.Dir(path), "unrelated.json"), []byte("{"), 0o600)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			oldClaimID := claimID
@@ -659,6 +743,10 @@ func TestHookLiveCodexStopOwnedSessionBinding(t *testing.T) {
 			if tc.disposition != "" {
 				if response.Decision != "" || response.Reason != "" || !reflect.DeepEqual(before, after) {
 					t.Fatalf("refusal mutated work or delivered continuation: response=%+v before=%+v after=%+v", response, before, after)
+				}
+				afterKinds := askEventKindCounts(t, homePath)
+				if afterKinds["receipt"] != beforeKinds["receipt"] || afterKinds["transition"] != beforeKinds["transition"] {
+					t.Fatalf("refused binding emitted continuation proof: before=%v after=%v", beforeKinds, afterKinds)
 				}
 				assertAskTriageBrief(t, homePath, ask, tc.disposition)
 				return

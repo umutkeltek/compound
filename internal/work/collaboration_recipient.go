@@ -20,6 +20,11 @@ type CollaborationRecipientQuery struct {
 	Harness   string
 	SessionID string
 	Cwd       string
+	// CheckPriorBindings is for a Stop consumer about to use a legacy prose
+	// bridge. Only if normal resolution is absent, inspect prior delegate
+	// evidence before permitting that fallback. Ordinary hooks leave it false:
+	// the additional work-log snapshot is history-sized, not a hot-path lookup.
+	CheckPriorBindings bool
 }
 
 // CollaborationRecipientResolution is the work owner's read model for one
@@ -135,7 +140,44 @@ func (s *Store) ResolveCollaborationRecipient(query CollaborationRecipientQuery)
 	}
 	// No spawned binding. A session Compound never launched may still identify
 	// itself, but only conjunctively -- see below.
-	return s.resolveDeclaredCollaborationRecipient(query, cwd, workByID, time.Now())
+	declared, ok, err := s.resolveDeclaredCollaborationRecipient(query, cwd, workByID, time.Now())
+	if err != nil || ok || declared.UnresolvedReason != "" || !query.CheckPriorBindings {
+		return declared, ok, err
+	}
+	return s.resolveAbsentCollaborationRecipient(query)
+}
+
+// resolveAbsentCollaborationRecipient is a Stop compatibility fence, not an
+// alternate source of delivery authority. A terminal or unattached attempt is
+// intentionally absent from the live-attempt inventory, but its owned session
+// binding must not disappear and let prose authorize a continuation. Fold one
+// work-event snapshot with the same latest-binding rules as the live path. No
+// historical RunAttempt or launch sidecar is read here, and this fence never
+// converts inactive evidence into a resolved recipient.
+func (s *Store) resolveAbsentCollaborationRecipient(query CollaborationRecipientQuery) (CollaborationRecipientResolution, bool, error) {
+	byWork, err := s.eventsByWorkID()
+	if err != nil {
+		return CollaborationRecipientResolution{}, false, err
+	}
+	for workID, events := range byWork {
+		known := false
+		binding, _, err := s.latestDelegateBindingFromEvents(workID, events, func(spawn DelegateBinding) {
+			if spawn.Session == query.SessionID && normalizeCollaborationHarness(spawn.Harness) == query.Harness {
+				known = true
+			}
+		})
+		if err != nil {
+			return CollaborationRecipientResolution{}, false, err
+		}
+		if binding != nil && binding.Session == query.SessionID &&
+			normalizeCollaborationHarness(binding.Harness) == query.Harness {
+			return CollaborationRecipientResolution{UnresolvedReason: "the known spawned session has no exact active binding"}, false, nil
+		}
+		if known {
+			return CollaborationRecipientResolution{UnresolvedReason: "the known spawned session binding was superseded"}, false, nil
+		}
+	}
+	return CollaborationRecipientResolution{}, false, nil
 }
 
 // resolveDeclaredCollaborationRecipient is the path for a session this runtime
@@ -169,42 +211,21 @@ func (s *Store) resolveDeclaredCollaborationRecipient(
 	workByID map[string]envelope.WorkEnvelope,
 	now time.Time,
 ) (CollaborationRecipientResolution, bool, error) {
-	announcements, err := s.ListPresenceSessions()
-	if err != nil || len(announcements) == 0 {
-		return CollaborationRecipientResolution{}, false, err
-	}
 	// Key exactly as AnnouncePresenceSession does. It normalizes harness, trims
 	// the session, and canonicalizes cwd before hashing, so looking up with a
 	// raw path silently misses every record -- on macOS /var and /private/var
 	// hash differently. Normalizing here rather than trusting the caller keeps
 	// the helper correct on its own terms instead of depending on an unstated
 	// precondition that only today's single caller happens to satisfy.
-	canonicalCwd, err := canonicalCollaborationPath(cwd)
+	query.Cwd = cwd
+	announcement, found, err := s.exactPresenceSession(query)
 	if err != nil {
-		return CollaborationRecipientResolution{}, false, err
+		return CollaborationRecipientResolution{UnresolvedReason: err.Error()}, false, nil
 	}
-	want := presenceSessionKey(PresenceSessionInput{
-		Harness:   normalizeCollaborationHarness(query.Harness),
-		SessionID: strings.TrimSpace(query.SessionID),
-		Cwd:       canonicalCwd,
-	})
-	actor := ""
-	matched := false
-	for _, announcement := range announcements {
-		if announcement.Key == want {
-			if matched {
-				return CollaborationRecipientResolution{UnresolvedReason: "multiple declarations match the exact session"}, false, nil
-			}
-			matched = true
-			actor = strings.TrimSpace(announcement.Actor)
-		}
-	}
-	if !matched {
+	if !found {
 		return CollaborationRecipientResolution{}, false, nil
 	}
-	if actor == "" {
-		return CollaborationRecipientResolution{UnresolvedReason: "the exact session declaration has no actor"}, false, nil
-	}
+	actor := strings.TrimSpace(announcement.Actor)
 
 	leases, err := s.ListLeases()
 	if err != nil {

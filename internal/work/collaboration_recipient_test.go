@@ -1,12 +1,143 @@
 package work
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
 	"compound/internal/runattempt"
 )
+
+func TestResolveCollaborationRecipientPriorBindingFence(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"terminal", "lost-attachment", "terminal-work"} {
+		t.Run(mode, func(t *testing.T) {
+			store := newStore(t)
+			workspace := t.TempDir()
+			item, err := store.Create(CreateInput{Owner: "codex:holder", SuccessPredicate: "stale identity is not absent"}, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Claim(item.ID, "codex:holder", fixedNow); err != nil {
+				t.Fatal(err)
+			}
+			attempt := bindCollaborationRecipientForTest(t, store, item.ID, "codex:holder", "codex:holder", "codex", "known-session", workspace, fixedNow)
+			current, err := store.Get(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "terminal" {
+				if _, err := runattempt.Open(store.home).Complete(attempt.ID, runattempt.StatusFailed, fixedNow.Add(time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if mode == "lost-attachment" {
+					current.RunAttemptIDs = nil
+				} else {
+					current.State = "completed"
+				}
+				if err := store.writeJSON(store.workPath(item.ID), current); err != nil {
+					t.Fatal(err)
+				}
+			}
+			query := CollaborationRecipientQuery{Harness: "codex", SessionID: "known-session", Cwd: workspace}
+			before := store.eventLogReadCount()
+			resolved, ok, err := store.ResolveCollaborationRecipient(query)
+			if err != nil || ok || resolved.UnresolvedReason != "" || store.eventLogReadCount() != before {
+				t.Fatalf("ordinary hook consulted historical binding: ok=%v resolution=%+v reads=%d err=%v", ok, resolved, store.eventLogReadCount()-before, err)
+			}
+			query.CheckPriorBindings = true
+			started := time.Now()
+			resolved, ok, err = store.ResolveCollaborationRecipient(query)
+			elapsed := time.Since(started)
+			if err != nil || ok || resolved.UnresolvedReason == "" {
+				t.Fatalf("strict Stop discarded stale typed identity: ok=%v resolution=%+v err=%v", ok, resolved, err)
+			}
+			if delta := store.eventLogReadCount() - before; delta != 1 {
+				t.Fatalf("strict absence fence loaded work history %d times, want 1", delta)
+			}
+			info, err := os.Stat(filepath.Join(store.home, "events", "work.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("synthetic strict Stop fence: history_bytes=%d snapshots=1 elapsed=%s; not populated-home latency", info.Size(), elapsed)
+		})
+	}
+}
+
+func TestResolveCollaborationRecipientPriorBindingPreservesCurrent(t *testing.T) {
+	t.Parallel()
+	store := newStore(t)
+	workspace := t.TempDir()
+	item, err := store.Create(CreateInput{Owner: "codex:holder", SuccessPredicate: "new binding supersedes old"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(item.ID, "codex:holder", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	old := bindCollaborationRecipientForTest(t, store, item.ID, "codex:holder", "codex:holder", "codex", "old-session", workspace, fixedNow)
+	if _, err := runattempt.Open(store.home).Complete(old.ID, runattempt.StatusFailed, fixedNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	current := bindCollaborationRecipientForTest(t, store, item.ID, "codex:holder", "codex:holder", "codex", "new-session", workspace, fixedNow.Add(2*time.Minute))
+	query := CollaborationRecipientQuery{Harness: "codex", SessionID: "new-session", Cwd: workspace, CheckPriorBindings: true}
+	before := store.eventLogReadCount()
+	resolved, ok, err := store.ResolveCollaborationRecipient(query)
+	if err != nil || !ok || resolved.RunAttemptID != current.ID || store.eventLogReadCount()-before != 1 {
+		t.Fatalf("strict option displaced current binding or added history scan: ok=%v resolution=%+v reads=%d err=%v", ok, resolved, store.eventLogReadCount()-before, err)
+	}
+	query.SessionID = "old-session"
+	resolved, ok, err = store.ResolveCollaborationRecipient(query)
+	if err != nil || ok || resolved.UnresolvedReason == "" {
+		t.Fatalf("superseded old session could regain authority through legacy fallback: ok=%v resolution=%+v err=%v", ok, resolved, err)
+	}
+	query.SessionID = "unrelated-session"
+	resolved, ok, err = store.ResolveCollaborationRecipient(query)
+	if err != nil || ok || resolved.UnresolvedReason != "" {
+		t.Fatalf("history poisoned unrelated never-owned session: ok=%v resolution=%+v err=%v", ok, resolved, err)
+	}
+}
+
+func TestResolveCollaborationRecipientPriorBindingReadFailureRefuses(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"work-log", "delegate-event"} {
+		t.Run(source, func(t *testing.T) {
+			store := newStore(t)
+			workspace := t.TempDir()
+			item, err := store.Create(CreateInput{Owner: "codex:holder", SuccessPredicate: "unreadable prior identity refuses"}, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Claim(item.ID, "codex:holder", fixedNow); err != nil {
+				t.Fatal(err)
+			}
+			attempt := bindCollaborationRecipientForTest(t, store, item.ID, "codex:holder", "codex:holder", "codex", "known-session", workspace, fixedNow)
+			if _, err := runattempt.Open(store.home).Complete(attempt.ID, runattempt.StatusFailed, fixedNow.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			if source == "delegate-event" {
+				// Attach a missing owned record, not a guessed physical file:
+				// eventstore may already custody the real spawn in a segment.
+				if err := store.appendEvent(Event{
+					TS: ts(fixedNow.Add(2 * time.Minute)), WorkID: item.ID,
+					From: "claimed", To: "claimed", By: "codex:holder", Attached: []string{"wde_missing_binding"},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(filepath.Join(store.home, "events", "work.jsonl"), []byte("{\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			query := CollaborationRecipientQuery{Harness: "codex", SessionID: "known-session", Cwd: workspace, CheckPriorBindings: true}
+			resolved, ok, err := store.ResolveCollaborationRecipient(query)
+			if err == nil || ok {
+				t.Fatalf("unreadable owned history permitted absence: work=%s ok=%v resolution=%+v err=%v", item.ID, ok, resolved, err)
+			}
+		})
+	}
+}
 
 func TestResolveCollaborationRecipientRequiresExactOwnedSessionBinding(t *testing.T) {
 	t.Parallel()

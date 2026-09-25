@@ -259,6 +259,7 @@ func resolveCodexStopBinding(store *work.Store, in CodexStopInput) (*codexStopBi
 	}
 	recipient, owned, err := store.ResolveCollaborationRecipient(work.CollaborationRecipientQuery{
 		Harness: "codex", SessionID: in.SessionID, Cwd: in.Cwd,
+		CheckPriorBindings: len(workIDs) == 1,
 	})
 	if err != nil {
 		return nil, "", err

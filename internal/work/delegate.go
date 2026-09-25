@@ -561,6 +561,14 @@ func (s *Store) latestDelegateBinding(workID string) (*DelegateBinding, bool, er
 	if err != nil {
 		return nil, false, err
 	}
+	return s.latestDelegateBindingFromEvents(workID, events, nil)
+}
+
+// latestDelegateBindingFromEvents folds an already-owned lifecycle snapshot.
+// Batch callers must not reread the entire work log once per candidate. The
+// optional observer sees validated spawned identities, including superseded
+// ones; it cannot alter which binding the lifecycle fold makes current.
+func (s *Store) latestDelegateBindingFromEvents(workID string, events []Event, observeSpawn func(DelegateBinding)) (*DelegateBinding, bool, error) {
 	var binding *DelegateBinding
 	alive := false
 	for _, e := range events {
@@ -597,6 +605,9 @@ func (s *Store) latestDelegateBinding(workID string) (*DelegateBinding, bool, er
 					// compatible (terminalization is skipped; console
 					// shows an empty ratt).
 					RunAttemptID: dev.RunAttemptID,
+				}
+				if observeSpawn != nil {
+					observeSpawn(*binding)
 				}
 				alive = true
 			case "work.delegate.exited":

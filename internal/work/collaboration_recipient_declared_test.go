@@ -1,11 +1,83 @@
 package work
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"compound/internal/envelope"
 )
+
+func TestDeclaredSessionExactInvalidRecordIsNotAbsent(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"malformed", "unreadable", "wrong-key", "wrong-session", "wrong-schema", "no-actor"} {
+		t.Run(mode, func(t *testing.T) {
+			s, cwd, _, claimAt := declaredFixture(t, "codex:holder")
+			in, err := (PresenceSessionInput{Harness: "claude_code", SessionID: "declared-session", Cwd: cwd, Actor: "codex:holder"}).normalized()
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(s.presenceSessionDir(), presenceSessionKey(in)+".json")
+			record, err := readPresenceSession(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "malformed":
+				err = os.WriteFile(path, []byte("{"), 0o600)
+			case "unreadable":
+				// A directory deterministically fails the owned file read even
+				// when the test process can bypass permission bits.
+				if err = os.Remove(path); err == nil {
+					err = os.Mkdir(path, 0o700)
+				}
+			default:
+				switch mode {
+				case "wrong-key":
+					record.Key = "unrelated-key"
+				case "wrong-session":
+					record.SessionID = "unrelated-session"
+				case "wrong-schema":
+					record.SchemaVersion = "unknown"
+				case "no-actor":
+					record.Actor = ""
+				}
+				blob, marshalErr := json.Marshal(record)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				err = os.WriteFile(path, blob, 0o600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolved, ok, err := s.resolveDeclaredCollaborationRecipient(declaredQuery(cwd), cwd, s.nonTerminalWorkByID(t), claimAt.Add(time.Minute))
+			if ok || (err == nil && resolved.UnresolvedReason == "") {
+				t.Fatalf("present invalid exact identity became absent or valid: ok=%v resolution=%+v err=%v", ok, resolved, err)
+			}
+		})
+	}
+}
+
+func TestDeclaredSessionIgnoresUnrelatedInvalidRecord(t *testing.T) {
+	t.Parallel()
+	s, cwd, workID, claimAt := declaredFixture(t, "codex:holder")
+	if err := os.WriteFile(filepath.Join(s.presenceSessionDir(), "unrelated.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, ok, err := s.resolveDeclaredCollaborationRecipient(declaredQuery(cwd), cwd, s.nonTerminalWorkByID(t), claimAt.Add(time.Minute))
+	if err != nil || !ok || resolved.WorkID != workID {
+		t.Fatalf("unrelated invalid record blocked exact identity: ok=%v resolution=%+v err=%v", ok, resolved, err)
+	}
+	query := declaredQuery(cwd)
+	query.SessionID = "never-declared"
+	resolved, ok, err = s.resolveDeclaredCollaborationRecipient(query, cwd, s.nonTerminalWorkByID(t), claimAt.Add(time.Minute))
+	if err != nil || ok || resolved.UnresolvedReason != "" {
+		t.Fatalf("unrelated invalid record made an absent identity unresolved: ok=%v resolution=%+v err=%v", ok, resolved, err)
+	}
+}
 
 // declaredFixture stands up an announced session whose actor holds one fresh
 // lease -- the case the declared path is FOR.
