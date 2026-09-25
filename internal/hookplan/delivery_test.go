@@ -497,7 +497,7 @@ func TestPreviousSemanticCursorMigrationRestoresCurrentInterruptHoldWithoutRedel
 		WorkIDs: []string{fixture.work},
 	})
 	request := DeliveryRequest{
-		HomePath: fixture.home, Harness: "codex", CursorKey: "cursor-v2-interrupt",
+		HomePath: fixture.home, Harness: "codex", CursorKey: "test-v2",
 		Recipient: DeliveryRecipient{
 			WorkID: fixture.work, RunAttemptID: fixture.runAttemptID,
 			PolicyRefs: event.Affects.PolicyRefs,
