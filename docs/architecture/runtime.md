@@ -675,6 +675,15 @@ policy both allow it. The continuation is recorded on the same `work_id` as Acti
 Receipt → Transition without closing the parent work. Risk-floor, novel, stale, or unbound asks return no
 continuation and remain paused as an existing DecisionBrief-backed review item.
 
+The companion must still supply one exact live thread/turn job. Work identity comes first from the
+existing owned collaboration-recipient binding (spawned attempt, or exact declaration plus corroborating
+lease), not a field invented on the companion record. Complete legacy work-reference tokens remain a
+labeled compatibility bridge only when owned session evidence is genuinely absent. Conflicting prose,
+known inactive or superseded bindings, and invalid exact presence records refuse delivery; they never
+downgrade to a shorter prefix or weaker prose authority. Only the would-be Stop legacy fallback scans
+one work-event snapshot for prior bindings; current exact bindings and ordinary hooks skip that extra
+history-sized check. This is identity continuity, not new permission or proof of downstream benefit.
+
 **Capability-aware by harness — not fantasy-uniform.** Current Claude Code and Codex releases support blocking
 PreToolUse hooks; Codex also layers `AGENTS.md` + skills through progressive disclosure (it sees skill
 name/desc/path and loads full SKILL.md on demand; the initial list is capped). So a
