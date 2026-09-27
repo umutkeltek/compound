@@ -40,6 +40,24 @@ func fixedProfileNow() time.Time {
 	return time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
 }
 
+func TestBrowserOwnerHomeUsesCanonicalResolution(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("COMPOUND_HOME", "")
+	got, err := browserOwnerHome("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, ".compound"); got != want {
+		t.Fatalf("default home = %q, want %q", got, want)
+	}
+	custom := filepath.Join(root, "selected")
+	got, err = browserOwnerHome(custom)
+	if err != nil || got != custom {
+		t.Fatalf("explicit home = %q, %v; want %q", got, err, custom)
+	}
+}
+
 // F4: seed joins social-accounts; doctor counts; creating one dir flips
 // that one to enrolled; an account whose path has no profile is named.
 func TestBrowserProfileRegistryJoinsSocialAccounts(t *testing.T) {

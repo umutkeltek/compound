@@ -41,6 +41,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/home"
 )
 
 // SkillAdapterSchemaVersion tags the rendered adapter footer so a reader can
@@ -621,14 +623,10 @@ func runBrowserOwnerErr(err error) bool {
 	return true
 }
 
-// browserOwnerHome resolves the optional --home flag value; empty ⇒ use
-// env-derived COMPOUND_HOME. Indirection keeps home.Resolve imports out of
-// cmd/compound/main.go.
+// browserOwnerHome resolves optional --home through Compound's canonical
+// flag → environment → global-default precedence.
 func browserOwnerHome(flag string) (string, error) {
-	if strings.TrimSpace(flag) == "" {
-		return os.Getenv("COMPOUND_HOME"), nil
-	}
-	return flag, nil
+	return home.Resolve(flag)
 }
 
 // minimal flag-parsing helper mirrors cmd/compound's flagValue without
