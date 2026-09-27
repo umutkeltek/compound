@@ -218,7 +218,11 @@ delivery. Non-source runtime observations keep their existing evidence and autho
 An already-recorded private-runtime or worktree-retirement effect is not a source
 commit. Use `work delivery-capture` with its typed, exact-generation request to
 read and custody the real evidence, then `advance-plan` and its generated guarded
-same-state command for the operator-provenanced per-action binding. Capture is
+same-state command for the operator-provenanced per-action binding.
+If another actor holds the work, preview the approved one-operation override with
+`advance-plan --steal --reason "<operator-approved scope>"`; its emitted command
+retains the exact generation guards and does not transfer that actor's lease.
+Capture is
 `captured_not_bound`, not accepted work; a partial failure can have persisted
 evidence, so follow its unchanged-request `retry_command`. Never relabel source
 work, attach an unrelated commit, or mint a consumer-success report. Retirement

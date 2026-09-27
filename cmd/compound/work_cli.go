@@ -209,7 +209,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work claim work_abc123 --by codex --lane auto/judge",
 	},
 	"advance-plan": {
-		Usage:   "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run] [--delivery-action ACT --delivery-kind private_runtime --delivery-evidence REF]",
+		Usage:   "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run] [--delivery-action ACT --delivery-kind private_runtime|worktree_retirement --delivery-evidence REF]",
 		Example: "compound work advance-plan work_abc123 --to running --actor codex --dry-run",
 	},
 	"advance": {
@@ -1454,24 +1454,25 @@ func cmdWork(args []string) {
 		usage := workUsage("advance-plan")
 		advancePlanValueFlags := map[string]bool{
 			"--delivery-action": true, "--delivery-kind": true, "--delivery-evidence": true,
-			"--to": true, "--actor": true, "--capability": true, "--action": true, "--mutation-class": true,
+			"--to": true, "--actor": true, "--reason": true, "--capability": true, "--action": true, "--mutation-class": true,
 			"--reversibility": true, "--blast-radius": true, "--target-kind": true, "--target-id": true, "--target-path": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
 		}
-		for i := 0; i < len(rest); i++ {
-			switch rest[i] {
-			case "--json", "--dry-run", "--local-only":
-			case "--to", "--actor", "--capability", "--action", "--mutation-class", "--reversibility", "--blast-radius", "--target-kind", "--target-id", "--target-path", "--target-worktree-root", "--target-local-ref", "--expected-base-sha", "--publication-ref", "--delivery-action", "--delivery-kind", "--delivery-evidence":
-				if i+1 >= len(rest) {
-					fmt.Fprintln(os.Stderr, usage)
-					os.Exit(2)
+		if err := validateWorkArguments(rest, advancePlanValueFlags, map[string]bool{"--json": true, "--dry-run": true, "--local-only": true, "--steal": true}, 1); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		advancePlanSteal := false
+		advancePlanReason := ""
+		for i := 0; i < len(rest) && rest[i] != "--"; i++ {
+			if advancePlanValueFlags[rest[i]] {
+				if rest[i] == "--reason" {
+					advancePlanReason = rest[i+1]
 				}
 				i++
-			default:
-				if strings.HasPrefix(rest[i], "-") {
-					fmt.Fprintln(os.Stderr, usage)
-					os.Exit(2)
-				}
+			} else if rest[i] == "--steal" {
+				advancePlanSteal = true
 			}
 		}
 		if pos(advancePlanValueFlags) == "" || flag("--to") == "" {
@@ -1493,6 +1494,8 @@ func cmdWork(args []string) {
 			TargetID:          flag("--target-id"),
 			TargetPath:        flag("--target-path"),
 			Record:            !has("--dry-run"),
+			Steal:             advancePlanSteal,
+			StealReason:       advancePlanReason,
 		})
 		die(err)
 		if has("--json") {
