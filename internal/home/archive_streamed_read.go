@@ -102,6 +102,7 @@ func readStreamedArchiveWithMetadataLimits(archivePath string, f *os.File, resto
 	chunks := make([]archiveStreamChunk, 0, 256)
 	var homeManifestBytes []byte
 	var homeSchema string
+	var streamSchema string
 	var index archiveStreamIndex
 	var files, archivedDirs int
 	var bytesTotal, metaBytes, headerBytes int64
@@ -155,9 +156,10 @@ func readStreamedArchiveWithMetadataLimits(archivePath string, f *os.File, resto
 			if err := decodeStrictArchiveJSON(data, &header); err != nil {
 				return VerifyReport{}, fmt.Errorf("parse archive stream header: %w", err)
 			}
-			if header.SchemaVersion != ArchiveStreamSchemaV2 || header.Kind != ArchiveKindBackup {
+			if (header.SchemaVersion != ArchiveStreamSchemaV2 && header.SchemaVersion != ArchiveStreamSchemaV3) || header.Kind != ArchiveKindBackup {
 				return VerifyReport{}, asArchiveCompatibilityError(fmt.Errorf("unsupported archive stream descriptor %q/%q", header.SchemaVersion, header.Kind))
 			}
+			streamSchema = header.SchemaVersion
 			continue
 		}
 		if indexSeen {
@@ -180,7 +182,11 @@ func readStreamedArchiveWithMetadataLimits(archivePath string, f *os.File, resto
 			if err := decodeStrictArchiveJSON(data, &index); err != nil {
 				return VerifyReport{}, fmt.Errorf("parse archive stream index: %w", err)
 			}
-			if err := validateStreamIndex(index, chunks, files, bytesTotal, budget.entries, homeSchema); err != nil {
+			if err := validateArchiveLinks(index, streamSchema, seen, &budget); err != nil {
+				return VerifyReport{}, err
+			}
+			files += len(index.Links)
+			if err := validateStreamIndex(index, chunks, files, bytesTotal, budget.entries, homeSchema, streamSchema); err != nil {
 				return VerifyReport{}, err
 			}
 			indexSeen = true
@@ -308,7 +314,19 @@ func readStreamedArchiveWithMetadataLimits(archivePath string, f *os.File, resto
 	if !indexSeen || len(pending) != 0 || len(homeManifestBytes) == 0 {
 		return VerifyReport{}, fmt.Errorf("archive stream final index or home manifest is missing")
 	}
+	if restore != nil {
+		if err := createArchiveLinks(restore, index.Links); err != nil {
+			return VerifyReport{}, err
+		}
+	}
 	if staged != nil {
+		linkPaths := make(map[string]struct{}, len(index.Links))
+		for _, link := range index.Links {
+			if err := verifyArchiveLink(staged, link); err != nil {
+				return VerifyReport{}, err
+			}
+			linkPaths[link.Path] = struct{}{}
+		}
 		stagedCount := 0
 		stagedArchiveDirs := 0
 		generatedDirs := make(map[[sha256.Size]byte]struct{})
@@ -334,7 +352,8 @@ func readStreamedArchiveWithMetadataLimits(archivePath string, f *os.File, resto
 				}
 				return nil
 			}
-			if !info.Mode().IsRegular() {
+			_, isLink := linkPaths[rel]
+			if (isLink && info.Mode()&os.ModeSymlink == 0) || (!isLink && !info.Mode().IsRegular()) {
 				return fmt.Errorf("restored archive contains non-regular entry %s", rel)
 			}
 			stagedCount++
@@ -396,8 +415,8 @@ func checkStreamChunk(data []byte, pending []ArchiveEntry, staged *archiveRestor
 	return nil
 }
 
-func validateStreamIndex(index archiveStreamIndex, chunks []archiveStreamChunk, files int, bytesTotal int64, members int, homeSchema string) error {
-	if index.SchemaVersion != ArchiveStreamSchemaV2 || index.Kind != ArchiveKindBackup {
+func validateStreamIndex(index archiveStreamIndex, chunks []archiveStreamChunk, files int, bytesTotal int64, members int, homeSchema, streamSchema string) error {
+	if index.SchemaVersion != streamSchema || index.Kind != ArchiveKindBackup {
 		return asArchiveCompatibilityError(fmt.Errorf("archive stream index version or kind mismatch"))
 	}
 	if index.HomeSchemaVersion != homeSchema || homeSchema != SchemaVersion {

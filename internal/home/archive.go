@@ -261,6 +261,8 @@ func BackupWithFormat(homePath, targetPath, format string, now time.Time) (Archi
 		return Backup(homePath, targetPath, now)
 	case ArchiveFormatStreamedV2:
 		return backupStreamed(homePath, targetPath, now)
+	case ArchiveFormatStreamedV3:
+		return backupStreamedVersion(homePath, targetPath, now, ArchiveStreamSchemaV3)
 	default:
 		return ArchiveReport{}, fmt.Errorf("unsupported home archive format %q", format)
 	}

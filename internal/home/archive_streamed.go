@@ -91,6 +91,8 @@ type archiveStreamIndex struct {
 	Bytes             int64                `json:"bytes"`
 	Members           int                  `json:"members"`
 	Chunks            []archiveStreamChunk `json:"chunks"`
+	SourceHome        string               `json:"source_home,omitempty"`
+	Links             []archiveLink        `json:"links,omitempty"`
 }
 
 func archiveStreamTarLimits() archiveReadLimits {
@@ -197,6 +199,10 @@ func (w *archiveStreamChunkWriter) flush() error {
 }
 
 func backupStreamed(homePath, targetPath string, now time.Time) (ArchiveReport, error) {
+	return backupStreamedVersion(homePath, targetPath, now, ArchiveStreamSchemaV2)
+}
+
+func backupStreamedVersion(homePath, targetPath string, now time.Time, schema string) (ArchiveReport, error) {
 	homePath, targetPath, err := normalizeArchiveInputs(homePath, targetPath, ArchiveKindBackup, now)
 	if err != nil {
 		return ArchiveReport{}, err
@@ -207,7 +213,7 @@ func backupStreamed(homePath, targetPath string, now time.Time) (ArchiveReport, 
 			return err
 		}
 		var writeErr error
-		report, writeErr = writeStreamedHomeArchive(homePath, targetPath, now)
+		report, writeErr = writeStreamedHomeArchiveVersion(homePath, targetPath, now, schema)
 		return writeErr
 	})
 	if err != nil {
@@ -216,7 +222,12 @@ func backupStreamed(homePath, targetPath string, now time.Time) (ArchiveReport, 
 	return report, nil
 }
 
-func writeStreamedHomeArchive(homePath, targetPath string, now time.Time) (ArchiveReport, error) {
+func writeStreamedHomeArchiveVersion(homePath, targetPath string, now time.Time, schema string) (ArchiveReport, error) {
+	if schema == ArchiveStreamSchemaV3 {
+		if err := validateArchiveLinkSourceHome(homePath); err != nil {
+			return ArchiveReport{}, err
+		}
+	}
 	metadataLimits := defaultArchiveStreamMetadataLimits
 	if err := validateArchiveStreamMetadataLimits(metadataLimits); err != nil {
 		return ArchiveReport{}, err
@@ -241,7 +252,7 @@ func writeStreamedHomeArchive(homePath, targetPath string, now time.Time) (Archi
 	if err := validateStreamedSourceHealth(root); err != nil {
 		return ArchiveReport{}, err
 	}
-	header, err := json.Marshal(archiveStreamHeader{SchemaVersion: ArchiveStreamSchemaV2, Kind: ArchiveKindBackup})
+	header, err := json.Marshal(archiveStreamHeader{SchemaVersion: schema, Kind: ArchiveKindBackup})
 	if err != nil {
 		return ArchiveReport{}, err
 	}
@@ -271,6 +282,7 @@ func writeStreamedHomeArchive(homePath, targetPath string, now time.Time) (Archi
 		return ArchiveReport{}, err
 	}
 	files, bytesWritten := 1, manifestEntry.Size
+	var links []archiveLink
 	seen := make(map[[sha256.Size]byte]struct{})
 	seen[sha256.Sum256([]byte(ManifestName))] = struct{}{}
 	err = walkArchiveRootBatched(root, ".", func(rel string, info fs.FileInfo) error {
@@ -283,7 +295,7 @@ func writeStreamedHomeArchive(homePath, targetPath string, now time.Time) (Archi
 			}
 			return nil
 		}
-		if !info.IsDir() && !info.Mode().IsRegular() {
+		if !info.IsDir() && !info.Mode().IsRegular() && !(schema == ArchiveStreamSchemaV3 && info.Mode()&os.ModeSymlink != 0) {
 			return fmt.Errorf("archive included source entry must be regular file or directory: %s", rel)
 		}
 		key := sha256.Sum256([]byte(rel))
@@ -291,6 +303,21 @@ func writeStreamedHomeArchive(homePath, targetPath string, now time.Time) (Archi
 			return fmt.Errorf("archive contains duplicate source entry %s", rel)
 		}
 		seen[key] = struct{}{}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if len(links) >= archiveStreamMaxLinks {
+				return fmt.Errorf("archive link count exceeds %d", archiveStreamMaxLinks)
+			}
+			link, err := captureArchiveLink(root, homePath, rel, info)
+			if err != nil {
+				return err
+			}
+			if err := tw.budget.observe(&tar.Header{Name: rel, Typeflag: tar.TypeSymlink}); err != nil {
+				return err
+			}
+			links = append(links, link)
+			files++
+			return nil
+		}
 		if info.IsDir() {
 			return writeDirEntry(tw, rel, info.Mode())
 		}
@@ -312,7 +339,7 @@ func writeStreamedHomeArchive(homePath, targetPath string, now time.Time) (Archi
 		return ArchiveReport{}, err
 	}
 	index := archiveStreamIndex{
-		SchemaVersion:     ArchiveStreamSchemaV2,
+		SchemaVersion:     schema,
 		Kind:              ArchiveKindBackup,
 		CreatedAt:         now.UTC().Format(time.RFC3339),
 		HomeSchemaVersion: pinnedManifest.SchemaVersion,
@@ -321,6 +348,9 @@ func writeStreamedHomeArchive(homePath, targetPath string, now time.Time) (Archi
 		Bytes:             bytesWritten,
 		Members:           tw.budget.entries + 1,
 		Chunks:            chunks.chunks,
+	}
+	if schema == ArchiveStreamSchemaV3 {
+		index.SourceHome, index.Links = homePath, links
 	}
 	indexBytes, err := json.Marshal(index)
 	if err != nil {

@@ -67,6 +67,35 @@ Unpublished staging is not a resumable recovery checkpoint. Keep it free of
 concurrent writers. Legacy archives and other platforms retain their existing
 sync protocol; these checks do not simulate physical power failure.
 
+### Link-preserving backups
+
+For a home containing symbolic links, select `--format streamed-v3` (v0.3).
+The legacy v0.1 writer omits non-regular entries, including links; its successful
+verification does **not** prove link custody. The v0.2 writer refuses included
+links. Do not delete links or use v0.1 to bypass a v0.2 refusal.
+
+The v0.3 profile retains the v0.2 resource limits and stores at most 4,096 links
+as checksum-bound records in the existing 1 MiB final index. That byte limit can
+refuse an archive before the count limit. Links count as logical members and in
+the reported file count. Bodies are never read through them; tar link headers
+remain forbidden. Each record preserves the original target spelling and a
+portable target. Canonically spelled in-home absolute targets are rebased to
+relative targets so an isolated restore cannot point back to the source home.
+Canonical relative targets, including dangling and cyclic links, remain links;
+this does not repair an already-broken target. Escaping targets, noncanonical
+spellings (including trailing slashes), ambiguous parent traversal, missing or
+symbolic parents, path collisions, non-UTF-8 link metadata and oversized paths
+are refused. A link to a body excluded by the backup habitat remains a link;
+its presence does not prove that excluded body was archived.
+
+Restore validates the metadata, extracts regular bodies first, creates links
+last and rechecks the staged inventory and link targets before publication.
+No link is followed during backup or restore. Retain a v0.3-compatible recovery
+binary with a v0.3 archive; older binaries cannot restore it. The original
+absolute home and target spellings are private archive metadata, not public
+release evidence. This format preserves link identity and target semantics,
+not extended attributes or original link timestamps.
+
 ## Restore drill
 
 Restore into a new, absent target. Never restore over the active home.

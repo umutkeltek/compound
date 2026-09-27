@@ -407,6 +407,18 @@ verification, isolated restore and a real consumer must still pass before activa
 Replication, encrypted backup policy, restore rehearsals, and reference-aware deletion are target contracts
 until a vertical slice proves them. No legacy writer or store retires based on this document alone.
 
+The explicit `streamed-v3` profile adds bounded, checksum-bound symbolic-link
+records to the final index (at most 4,096 links, still at most 1 MiB). The original
+target is retained as private evidence; in-home absolute targets are rebased
+for an isolated restored home. Canonical relative, dangling and cyclic links
+are preserved without following them. Unsupported spellings, escapes, path
+collisions and non-directory parents fail closed. Links count against existing
+member/path budgets; they are created only after regular extraction and checked
+again before the unchanged durability/publication gate. Tar link headers remain
+forbidden. v0.1 historically omits non-regular entries and cannot establish link
+custody; v0.2 refuses them. v0.3 therefore requires its own compatible recovery
+binary and populated-home acceptance, not an inference from a v0.1 round trip.
+
 ### Failure-case contract
 
 “All information lives in Compound” is credible only if unhappy paths preserve a single owner:

@@ -79,6 +79,64 @@ func TestHomeStreamedArchivePublicRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHomeStreamedLinkedArchivePublicRoundTrip(t *testing.T) {
+	t.Parallel()
+	bin := compoundTestBinary(t)
+	source := filepath.Join(t.TempDir(), "home")
+	if err := home.Init(source, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	bodyPath := filepath.Join(source, "config", "retained.txt")
+	if err := os.WriteFile(bodyPath, []byte("restored consumer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(bodyPath, filepath.Join(source, "config", "latest")); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "linked.tar.gz")
+	runStreamedHomeCLI(t, bin, source, true, "home", "backup", "--format", "streamed-v3", "--target", archive)
+	file, err := os.Open(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gz.Close()
+	reader := tar.NewReader(gz)
+	header, err := reader.Next()
+	if err != nil || header.Name != "compound-home-archive-header.json" || header.Size > 4096 {
+		t.Fatalf("v3 header: %v, %v", header, err)
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, 4097))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marker struct {
+		SchemaVersion string `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &marker); err != nil || marker.SchemaVersion != "compound.home_archive.v0.3" {
+		t.Fatalf("v3 not selected: %s, %v", data, err)
+	}
+	runStreamedHomeCLI(t, bin, source, true, "home", "verify", archive)
+	if err := os.Rename(source, source+"-unavailable"); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "restored")
+	runStreamedHomeCLI(t, bin, target, true, "home", "restore", archive, "--target", target)
+	link := filepath.Join(target, "config", "latest")
+	if got, err := os.Readlink(link); err != nil || got != "retained.txt" {
+		t.Fatalf("portable link = %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(link); err != nil || string(got) != "restored consumer\n" {
+		t.Fatalf("restored consumer = %q, %v", got, err)
+	}
+	runStreamedHomeCLI(t, bin, target, true, "home", "doctor", "--json")
+	runStreamedHomeCLI(t, bin, target, true, "workbench", "--json")
+}
+
 func TestHomeBackupUnknownFormatRefusesPublication(t *testing.T) {
 	t.Parallel()
 	source := t.TempDir()
