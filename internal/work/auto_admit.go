@@ -81,7 +81,7 @@ func (s *Store) admitAutoLocked(workID string, in AutoAdmitInput, now time.Time)
 	if err != nil {
 		return AutoAdmitResult{WorkID: w.ID, WorkState: w.State, Class: "director", Reason: err.Error()}, err
 	}
-	if recovered, ok, err := s.recoverPendingAdvance(w, "admitted"); err != nil {
+	if recovered, ok, err := s.recoverPendingAdvance(w, "admitted", nil); err != nil {
 		return AutoAdmitResult{WorkID: w.ID, WorkState: w.State, Class: class, Reason: err.Error()}, err
 	} else if ok {
 		result := AutoAdmitResult{

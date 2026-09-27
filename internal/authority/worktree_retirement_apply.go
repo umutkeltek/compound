@@ -1,6 +1,7 @@
 package authority
 
 import (
+	"compound/internal/authority/gitrepository"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,7 +18,7 @@ import (
 
 const (
 	WorktreeRetirementPendingSchemaVersion = "compound.worktree_retirement_pending.v0.1"
-	WorktreeRetirementResultSchemaVersion  = "compound.worktree_retirement_result.v0.1"
+	WorktreeRetirementResultSchemaVersion  = gitrepository.WorktreeRetirementResultSchemaVersion
 
 	WorktreeRetirementPhasePrepared               = "prepared"
 	WorktreeRetirementPhaseWorktreeRemovalStarted = "worktree_removal_started"
@@ -83,32 +84,7 @@ type WorktreeRetirementPending struct {
 	PendingDigest       string                  `json:"pending_digest"`
 }
 
-type WorktreeRetirementResult struct {
-	SchemaVersion       string `json:"schema_version"`
-	ID                  string `json:"id"`
-	CreatedAt           string `json:"created_at"`
-	Status              string `json:"status"`
-	Phase               string `json:"phase"`
-	PlanID              string `json:"plan_id"`
-	PlanDigest          string `json:"plan_digest"`
-	AuthorizationDigest string `json:"authorization_digest"`
-	Actor               string `json:"actor"`
-	WorktreeRemoved     bool   `json:"worktree_removed"`
-	RefDeleted          bool   `json:"ref_deleted"`
-	AuthorityTip        string `json:"authority_tip"`
-	PublicationTip      string `json:"publication_tip"`
-	ActionIntentID      string `json:"action_intent_id,omitempty"`
-	PolicyDecisionID    string `json:"policy_decision_id,omitempty"`
-	ReceiptID           string `json:"receipt_id,omitempty"`
-	TransitionID        string `json:"transition_id,omitempty"`
-	LeaseWorkSHA256     string `json:"lease_work_sha256,omitempty"`
-	WorkDigest          string `json:"work_digest,omitempty"`
-	Error               string `json:"error,omitempty"`
-	PendingPath         string `json:"pending_path"`
-	ResultPath          string `json:"result_path"`
-	ResultDigest        string `json:"result_digest"`
-	Replayed            bool   `json:"replayed,omitempty"`
-}
+type WorktreeRetirementResult = gitrepository.WorktreeRetirementResult
 
 func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyRequest, deps WorktreeRetirementApplyDependencies, now time.Time) (WorktreeRetirementResult, error) {
 	if now.IsZero() {
@@ -259,7 +235,9 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 		if previousResult != nil {
 			pending.Action = newWorktreeRetirementActionForAttempt(plan, report, actor, now, previousResult.ResultDigest)
 		}
-		if retirementPhaseRequiresGitMutation(plan, pending.Phase) {
+		// A recorded failed outcome starts a new action even when Git effects
+		// already settled. Its completion still needs its own current decision.
+		if previousResult != nil || retirementPhaseRequiresGitMutation(plan, pending.Phase) {
 			if err := reevaluateWorktreeRetirementResumePolicy(deps, &pending, now); err != nil {
 				return WorktreeRetirementResult{}, err
 			}
@@ -780,10 +758,7 @@ func persistWorktreeRetirementResult(path string, result *WorktreeRetirementResu
 }
 
 func worktreeRetirementResultDigest(result WorktreeRetirementResult) string {
-	result.ResultDigest = ""
-	result.Replayed = false
-	data, _ := json.Marshal(result)
-	return "sha256:" + digestRetirementHex(data)
+	return gitrepository.WorktreeRetirementResultDigest(result)
 }
 
 func loadWorktreeRetirementResult(path string) (WorktreeRetirementResult, error) {
@@ -799,22 +774,7 @@ func loadWorktreeRetirementResult(path string) (WorktreeRetirementResult, error)
 }
 
 func validateWorktreeRetirementResult(result WorktreeRetirementResult, plan WorktreeRetirementPlan, report WorktreeRetirementReviewReport, path string) error {
-	if result.SchemaVersion != WorktreeRetirementResultSchemaVersion || result.PlanID != plan.ID || result.PlanDigest != plan.PlanDigest || result.AuthorizationDigest != report.AuthorizationDigest || filepath.Clean(result.ResultPath) != filepath.Clean(path) {
-		return fmt.Errorf("worktree retirement result identity mismatch")
-	}
-	if !validRetirementDigest(result.ResultDigest) || result.ResultDigest != worktreeRetirementResultDigest(result) {
-		return fmt.Errorf("worktree retirement result digest mismatch")
-	}
-	if result.Status != "completed" && result.Status != "partial" && result.Status != "failed" {
-		return fmt.Errorf("worktree retirement result status invalid")
-	}
-	if strings.TrimSpace(result.ActionIntentID) == "" || strings.TrimSpace(result.PolicyDecisionID) == "" || strings.TrimSpace(result.ReceiptID) == "" || strings.TrimSpace(result.TransitionID) == "" {
-		return fmt.Errorf("worktree retirement result proof chain incomplete")
-	}
-	if result.LeaseWorkSHA256 != plan.OwnerProof.LeaseWorkSHA256 || !validRetirementDigest(result.WorkDigest) {
-		return fmt.Errorf("worktree retirement result owner proof invalid")
-	}
-	return nil
+	return gitrepository.ValidateWorktreeRetirementResult(result, plan, report, path)
 }
 
 func writeRetirementDurableJSON(path string, value any) error {
@@ -860,9 +820,7 @@ func writeRetirementDurableJSON(path string, value any) error {
 }
 
 func worktreeRetirementApplyProofRefs(plan WorktreeRetirementPlan, report WorktreeRetirementReviewReport) []string {
-	refs := worktreeRetirementEvidenceRefs(plan)
-	refs = append(refs, report.SourceDigest, report.AuthorizationDigest, "worktree-retirement-review:"+report.ID)
-	return sortedUniqueNonEmpty(refs)
+	return gitrepository.WorktreeRetirementApplyProofRefs(plan, report)
 }
 
 func retirementWorktreePath(plan WorktreeRetirementPlan) string {

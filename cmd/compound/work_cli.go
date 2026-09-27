@@ -19,6 +19,37 @@ import (
 	"compound/internal/work"
 )
 
+func parseWorkDeliveryRequest(args []string) (*work.ActionDeliveryRequest, error) {
+	front := args
+	if separator := indexOf(args, "--"); separator >= 0 {
+		front = args[:separator]
+	}
+	flags := []string{"--delivery-action", "--delivery-kind", "--delivery-evidence"}
+	seen := 0
+	for _, flag := range flags {
+		if hasFlag(front, flag) {
+			seen++
+		}
+	}
+	if seen == 0 {
+		return nil, nil
+	}
+	if seen != len(flags) {
+		return nil, fmt.Errorf("delivery binding requires --delivery-action, --delivery-kind and --delivery-evidence together")
+	}
+	for _, flag := range flags {
+		if strings.TrimSpace(valueFlag(front, flag)) == "" {
+			return nil, fmt.Errorf("%s requires a nonempty value", flag)
+		}
+	}
+	for _, flag := range []string{"--execute", "--resume-verifying", "--keep-verifying-on-failure", "--lane", "--launch-profile", "--effort", "--expected-selection-revision", "--expected-execution-tuple", "--expected-work-revision", "--target-worktree-root", "--target-local-ref", "--expected-base-sha", "--publication-ref", "--local-only", "--run-attempt", "--artifact", "--verification", "--context-pack", "--harness", "--prompt", "--workspace", "--permission-mode", "--"} {
+		if hasFlag(args, flag) {
+			return nil, fmt.Errorf("delivery binding cannot be combined with %s", flag)
+		}
+	}
+	return &work.ActionDeliveryRequest{ActionIntentID: valueFlag(args, flags[0]), Kind: valueFlag(args, flags[1]), EvidenceRef: valueFlag(args, flags[2])}, nil
+}
+
 type workShowOutput struct {
 	envelope.WorkEnvelope
 	PacketPath   string       `json:"packet_path,omitempty"`
@@ -82,9 +113,13 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside|sweep-stale|reseal> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|delivery-capture|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside|sweep-stale|reseal> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
+	"delivery-capture": {
+		Usage:   "usage: compound work delivery-capture <work_id> --request <file> --by <actor> [--json]",
+		Example: "compound work delivery-capture work_example --request capture.json --by operator:example --json",
+	},
 	"create-plan": {
 		Usage:   "usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--creator-harness H] [--creator-model M] [--creator-lane L] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--deviation-lane L [--deviation-class C] [--deviation-card REF] [--deviation-risk gate|judge|tidy]] [--plan-class oneshot|plan_doc|phased] [--rework-of work_id] [--json] [--dry-run]",
 		Example: "compound work create-plan --owner codex --predicate \"tests pass\" --dry-run",
@@ -174,11 +209,11 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work claim work_abc123 --by codex --lane auto/judge",
 	},
 	"advance-plan": {
-		Usage:   "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]",
+		Usage:   "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run] [--delivery-action ACT --delivery-kind private_runtime --delivery-evidence REF]",
 		Example: "compound work advance-plan work_abc123 --to running --actor codex --dry-run",
 	},
 	"advance": {
-		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--acknowledge-abandoned ratt_X --reason R] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--launch-profile ID [--effort LEVEL] [--expected-selection-revision N]] [--expected-execution-tuple DIGEST] [--execute [--resume-verifying] --harness <name> [--prompt <text> | -- <command> [args...]]]",
+		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--acknowledge-abandoned ratt_X --reason R] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--launch-profile ID [--effort LEVEL] [--expected-selection-revision N]] [--expected-execution-tuple DIGEST] [--execute [--resume-verifying] --harness <name> [--prompt <text> | -- <command> [args...]]] [--delivery-action ACT --delivery-kind private_runtime --delivery-evidence REF] [--expected-work-state S --expected-policy-decision POL --expected-action-intent ACT]",
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"delegate": {
@@ -1409,9 +1444,16 @@ func cmdWork(args []string) {
 		}
 		die(err)
 		fmt.Printf("%s claimed by %s (%s) policy=%s\n", w.ID, w.Authority.Owner, w.State, w.PolicyDecisionID)
+	case "delivery-capture":
+		if code := work.RunWorkDeliveryCaptureCLI(rest, store, time.Now(), os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
+		}
 	case "advance-plan":
+		delivery, deliveryErr := parseWorkDeliveryRequest(rest)
+		die(deliveryErr)
 		usage := workUsage("advance-plan")
 		advancePlanValueFlags := map[string]bool{
+			"--delivery-action": true, "--delivery-kind": true, "--delivery-evidence": true,
 			"--to": true, "--actor": true, "--capability": true, "--action": true, "--mutation-class": true,
 			"--reversibility": true, "--blast-radius": true, "--target-kind": true, "--target-id": true, "--target-path": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
@@ -1419,7 +1461,7 @@ func cmdWork(args []string) {
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
 			case "--json", "--dry-run", "--local-only":
-			case "--to", "--actor", "--capability", "--action", "--mutation-class", "--reversibility", "--blast-radius", "--target-kind", "--target-id", "--target-path", "--target-worktree-root", "--target-local-ref", "--expected-base-sha", "--publication-ref":
+			case "--to", "--actor", "--capability", "--action", "--mutation-class", "--reversibility", "--blast-radius", "--target-kind", "--target-id", "--target-path", "--target-worktree-root", "--target-local-ref", "--expected-base-sha", "--publication-ref", "--delivery-action", "--delivery-kind", "--delivery-evidence":
 				if i+1 >= len(rest) {
 					fmt.Fprintln(os.Stderr, usage)
 					os.Exit(2)
@@ -1438,18 +1480,19 @@ func cmdWork(args []string) {
 		}
 		gitDelivery := parseGitDelivery(usage)
 		plan, err := store.AdvancePlan(pos(advancePlanValueFlags), time.Now(), work.AdvancePlanOptions{
-			Actor:         flag("--actor"),
-			To:            flag("--to"),
-			GitDelivery:   gitDelivery,
-			Capability:    flag("--capability"),
-			Action:        flag("--action"),
-			MutationClass: flag("--mutation-class"),
-			Reversibility: flag("--reversibility"),
-			BlastRadius:   flag("--blast-radius"),
-			TargetKind:    flag("--target-kind"),
-			TargetID:      flag("--target-id"),
-			TargetPath:    flag("--target-path"),
-			Record:        !has("--dry-run"),
+			NonSourceDelivery: delivery,
+			Actor:             flag("--actor"),
+			To:                flag("--to"),
+			GitDelivery:       gitDelivery,
+			Capability:        flag("--capability"),
+			Action:            flag("--action"),
+			MutationClass:     flag("--mutation-class"),
+			Reversibility:     flag("--reversibility"),
+			BlastRadius:       flag("--blast-radius"),
+			TargetKind:        flag("--target-kind"),
+			TargetID:          flag("--target-id"),
+			TargetPath:        flag("--target-path"),
+			Record:            !has("--dry-run"),
 		})
 		die(err)
 		if has("--json") {
@@ -1473,8 +1516,12 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "advance":
+		delivery, deliveryErr := parseWorkDeliveryRequest(rest)
+		die(deliveryErr)
 		usage := workUsage("advance")
 		advanceValueFlags := map[string]bool{
+			"--delivery-action": true, "--delivery-kind": true, "--delivery-evidence": true,
+			"--expected-work-state": true, "--expected-policy-decision": true, "--expected-action-intent": true,
 			"--to": true, "--by": true, "--actor": true, "--lane": true, "--run-attempt": true, "--artifact": true, "--verification": true,
 			"--context-pack": true, "--note": true, "--reason": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
@@ -1550,17 +1597,21 @@ func cmdWork(args []string) {
 			return
 		}
 		w, err := store.Advance(pos(advanceValueFlags), work.AdvanceInput{
-			To:             flag("--to"),
-			Actor:          firstNonEmpty(flag("--by"), flag("--actor")),
-			LaneRef:        flag("--lane"),
-			GitDelivery:    gitDelivery,
-			RunAttemptIDs:  runAttempts,
-			ArtifactID:     flag("--artifact"),
-			VerificationID: flag("--verification"),
-			ContextPackID:  flag("--context-pack"),
-			Note:           flag("--note"),
-			Steal:          has("--steal"),
-			StealReason:    flag("--reason"),
+			NonSourceDelivery:        delivery,
+			ExpectedWorkState:        flag("--expected-work-state"),
+			ExpectedPolicyDecisionID: flag("--expected-policy-decision"),
+			ExpectedActionIntentID:   flag("--expected-action-intent"),
+			To:                       flag("--to"),
+			Actor:                    firstNonEmpty(flag("--by"), flag("--actor")),
+			LaneRef:                  flag("--lane"),
+			GitDelivery:              gitDelivery,
+			RunAttemptIDs:            runAttempts,
+			ArtifactID:               flag("--artifact"),
+			VerificationID:           flag("--verification"),
+			ContextPackID:            flag("--context-pack"),
+			Note:                     flag("--note"),
+			Steal:                    has("--steal"),
+			StealReason:              flag("--reason"),
 		}, time.Now())
 		die(err)
 		if saveSelection != nil {

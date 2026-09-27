@@ -14,18 +14,19 @@ import (
 const AdvancePlanSchemaVersion = "compound.work_advance_plan.v0.1"
 
 type AdvancePlanOptions struct {
-	Actor         string
-	To            string
-	GitDelivery   *envelope.GitDeliveryContract
-	Capability    string
-	Action        string
-	MutationClass string
-	Reversibility string
-	BlastRadius   string
-	TargetKind    string
-	TargetID      string
-	TargetPath    string
-	Record        bool
+	NonSourceDelivery *ActionDeliveryRequest
+	Actor             string
+	To                string
+	GitDelivery       *envelope.GitDeliveryContract
+	Capability        string
+	Action            string
+	MutationClass     string
+	Reversibility     string
+	BlastRadius       string
+	TargetKind        string
+	TargetID          string
+	TargetPath        string
+	Record            bool
 	// Steal and StealReason preview the advance-gate lease escape hatch (see AdvanceInput in
 	// work.go): when set with a non-empty reason, the plan reports the advance as
 	// steal-ready (and its AdvanceCommand carries --steal --reason) instead of
@@ -49,25 +50,26 @@ type AdvancePolicySummary struct {
 }
 
 type AdvancePlan struct {
-	SchemaVersion  string                        `json:"schema_version"`
-	ID             string                        `json:"id"`
-	GeneratedAt    string                        `json:"generated_at"`
-	Status         string                        `json:"status"`
-	Mode           string                        `json:"mode"`
-	Actor          string                        `json:"actor"`
-	WorkID         string                        `json:"work_id"`
-	WorkState      string                        `json:"work_state"`
-	ToState        string                        `json:"to_state"`
-	WorkOwner      string                        `json:"work_owner,omitempty"`
-	GitDelivery    *envelope.GitDeliveryContract `json:"git_delivery,omitempty"`
-	PlanPath       string                        `json:"plan_path,omitempty"`
-	AdvanceCommand []string                      `json:"advance_command,omitempty"`
-	Policy         AdvancePolicySummary          `json:"policy"`
-	ActionIntent   envelope.ActionIntent         `json:"action_intent"`
-	Decision       envelope.PolicyDecision       `json:"policy_decision"`
-	ActionContext  *WorkActionContext            `json:"action_context,omitempty"`
-	NoAction       string                        `json:"no_action,omitempty"`
-	Warnings       []string                      `json:"warnings,omitempty"`
+	NonSourceDelivery *envelope.ActionDeliveryBinding `json:"non_source_delivery,omitempty"`
+	SchemaVersion     string                          `json:"schema_version"`
+	ID                string                          `json:"id"`
+	GeneratedAt       string                          `json:"generated_at"`
+	Status            string                          `json:"status"`
+	Mode              string                          `json:"mode"`
+	Actor             string                          `json:"actor"`
+	WorkID            string                          `json:"work_id"`
+	WorkState         string                          `json:"work_state"`
+	ToState           string                          `json:"to_state"`
+	WorkOwner         string                          `json:"work_owner,omitempty"`
+	GitDelivery       *envelope.GitDeliveryContract   `json:"git_delivery,omitempty"`
+	PlanPath          string                          `json:"plan_path,omitempty"`
+	AdvanceCommand    []string                        `json:"advance_command,omitempty"`
+	Policy            AdvancePolicySummary            `json:"policy"`
+	ActionIntent      envelope.ActionIntent           `json:"action_intent"`
+	Decision          envelope.PolicyDecision         `json:"policy_decision"`
+	ActionContext     *WorkActionContext              `json:"action_context,omitempty"`
+	NoAction          string                          `json:"no_action,omitempty"`
+	Warnings          []string                        `json:"warnings,omitempty"`
 }
 
 func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOptions) (AdvancePlan, error) {
@@ -96,11 +98,27 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 	}
 	if gitDelivery != nil {
 		opts.GitDelivery = gitDelivery
+		if opts.NonSourceDelivery != nil && opts.GitDelivery != nil {
+			return AdvancePlan{}, fmt.Errorf("cannot combine Git and non-source authority binding")
+		}
+	}
+	if opts.NonSourceDelivery != nil && (opts.Capability != "" || opts.Action != "" || opts.MutationClass != "" || opts.Reversibility != "" || opts.BlastRadius != "" || opts.TargetKind != "" || opts.TargetID != "" || opts.TargetPath != "") {
+		return AdvancePlan{}, fmt.Errorf("non-source delivery binding does not accept action overrides")
+	}
+	deliveryBinding, err := s.preflightActionDeliveryBinding(w, actor, to, opts.NonSourceDelivery)
+	if err != nil {
+		return AdvancePlan{}, err
 	}
 	if terminalStates[to] {
 		return AdvancePlan{}, terminalStateRequiresClose("advance-plan", to)
 	}
 	ai := s.advanceActionIntent(w, actor, to, now, opts)
+	if deliveryBinding != nil {
+		deliveryBinding.BindingActionIntentID = ai.ID
+	}
+	if opts.NonSourceDelivery != nil {
+		ai.EvidenceRefs = mergeUnique(ai.EvidenceRefs, []string{opts.NonSourceDelivery.ActionIntentID, opts.NonSourceDelivery.EvidenceRef})
+	}
 	if err := ai.Validate(); err != nil {
 		return AdvancePlan{}, err
 	}
@@ -113,20 +131,21 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 		return AdvancePlan{}, err
 	}
 	plan := AdvancePlan{
-		SchemaVersion: AdvancePlanSchemaVersion,
-		ID:            idFor("wap_", workID, actor, to, ts(now)),
-		GeneratedAt:   now.UTC().Format(time.RFC3339),
-		Status:        "not_advanceable",
-		Mode:          "proposal_only",
-		Actor:         actor,
-		WorkID:        w.ID,
-		WorkState:     w.State,
-		ToState:       to,
-		WorkOwner:     w.Owner,
-		GitDelivery:   gitDelivery,
-		Policy:        summarizeAdvancePolicy(pd, source),
-		ActionIntent:  ai,
-		Decision:      pd,
+		NonSourceDelivery: deliveryBinding,
+		SchemaVersion:     AdvancePlanSchemaVersion,
+		ID:                idFor("wap_", workID, actor, to, ts(now)),
+		GeneratedAt:       now.UTC().Format(time.RFC3339),
+		Status:            "not_advanceable",
+		Mode:              "proposal_only",
+		Actor:             actor,
+		WorkID:            w.ID,
+		WorkState:         w.State,
+		ToState:           to,
+		WorkOwner:         w.Owner,
+		GitDelivery:       gitDelivery,
+		Policy:            summarizeAdvancePolicy(pd, source),
+		ActionIntent:      ai,
+		Decision:          pd,
 		Warnings: []string{
 			"does not advance work",
 			"does not attach run, artifact, or verification ids",
@@ -147,6 +166,19 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 		plan.NoAction = fmt.Sprintf("work is terminal in state %q", w.State)
 	case to == w.State || canTransition(w.State, to):
 		plan.AdvanceCommand = []string{"compound", "work", "advance", w.ID, "--to", to, "--by", actor}
+		if opts.NonSourceDelivery != nil {
+			if len(w.ActionIntentIDs) == 0 || w.PolicyDecisionID == "" {
+				return AdvancePlan{}, fmt.Errorf("non-source binding requires an existing action and policy generation")
+			}
+			plan.AdvanceCommand = append(plan.AdvanceCommand,
+				"--delivery-action", opts.NonSourceDelivery.ActionIntentID,
+				"--delivery-kind", opts.NonSourceDelivery.Kind,
+				"--delivery-evidence", opts.NonSourceDelivery.EvidenceRef,
+				"--expected-work-state", w.State,
+				"--expected-policy-decision", w.PolicyDecisionID,
+				"--expected-action-intent", w.ActionIntentIDs[len(w.ActionIntentIDs)-1],
+			)
+		}
 		if gitDelivery != nil {
 			plan.AdvanceCommand = append(plan.AdvanceCommand,
 				"--target-worktree-root", gitDelivery.TargetWorktreeRoot,
@@ -260,6 +292,12 @@ func (s *Store) advanceActionIntent(w envelope.WorkEnvelope, actor, to string, n
 	idParts := []string{capability, action, targetKind, targetID, targetPath, mutationClass, reversibility, blastRadius, actor, to}
 	preview := fmt.Sprintf("advance work %s from %s to %s actor %s", w.ID, w.State, to, actor)
 	rollbackPlan := fmt.Sprintf("advance work back to %s if no downstream action started", w.State)
+	if opts.NonSourceDelivery != nil {
+		binding := opts.NonSourceDelivery
+		idParts = append(idParts, binding.ActionIntentID, binding.Kind, binding.EvidenceRef)
+		preview = fmt.Sprintf("bind exact %s delivery of action %s to evidence %s on work %s at state %s", binding.Kind, binding.ActionIntentID, binding.EvidenceRef, w.ID, w.State)
+		rollbackPlan = "preserve immutable binding history; refuse invalid evidence rather than rewriting prior authority"
+	}
 	if opts.GitDelivery != nil {
 		contract := opts.GitDelivery
 		idParts = append(idParts,

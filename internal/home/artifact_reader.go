@@ -77,6 +77,20 @@ func (r *ArtifactReader) Get(ref string) ([]byte, error) {
 // GetPrivate validates and returns a body held only in private artifact
 // custody. Missing or unsafe custody paths are refused without repair.
 func (r *ArtifactReader) GetPrivate(ref string) ([]byte, error) {
+	return r.getPrivate(ref, 0)
+}
+
+// GetPrivateBounded applies a caller-owned byte limit before body allocation.
+// It retains the same custody, content-address and rooted-identity checks as
+// GetPrivate. Nonpositive and overflowing limits are refused, not unbounded.
+func (r *ArtifactReader) GetPrivateBounded(ref string, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 || maxBytes == 1<<63-1 {
+		return nil, fmt.Errorf("private artifact byte limit must be positive and bounded")
+	}
+	return r.getPrivate(ref, maxBytes)
+}
+
+func (r *ArtifactReader) getPrivate(ref string, maxBytes int64) ([]byte, error) {
 	if r == nil {
 		return nil, fmt.Errorf("artifact reader is nil")
 	}
@@ -91,10 +105,10 @@ func (r *ArtifactReader) GetPrivate(ref string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	body, found, err := ReadRootedRegularFileCanonicalOnly(
+	body, found, err := readRootedRegularFileCanonicalOnlyWithLimit(
 		r.home,
 		filepath.Join(r.privateDir, hexDigest),
-		"private artifact",
+		"private artifact", maxBytes,
 	)
 	if err != nil {
 		return nil, err

@@ -56,26 +56,27 @@ type closePendingGit struct {
 // lifecycle event, terminal WorkEnvelope, Git proof locks, RunAttempts, and
 // captured lease have all converged.
 type closePending struct {
-	SchemaVersion    string                   `json:"schema_version"`
-	FrameSHA256      string                   `json:"frame_sha256"`
-	WorkID           string                   `json:"work_id"`
-	InputSHA256      string                   `json:"input_sha256"`
-	Authority        closePendingAuthority    `json:"authority"`
-	CompletedAt      string                   `json:"completed_at"`
-	SourceWork       envelope.WorkEnvelope    `json:"source_work"`
-	SourceWorkSHA256 string                   `json:"source_work_sha256"`
-	FinalWork        envelope.WorkEnvelope    `json:"final_work"`
-	FinalWorkSHA256  string                   `json:"final_work_sha256"`
-	Action           envelope.ActionIntent    `json:"action"`
-	Decision         envelope.PolicyDecision  `json:"decision"`
-	Receipt          envelope.Receipt         `json:"receipt"`
-	Transition       envelope.Transition      `json:"transition"`
-	Event            Event                    `json:"event"`
-	Lease            closePendingLease        `json:"lease"`
-	LeaseHolder      string                   `json:"lease_holder,omitempty"`
-	LeaseStolen      bool                     `json:"lease_stolen,omitempty"`
-	RunAttempts      []closePendingRunAttempt `json:"run_attempts,omitempty"`
-	Git              closePendingGit          `json:"git,omitempty"`
+	NonSourceEvidence map[string][]byte        `json:"non_source_evidence,omitempty"`
+	SchemaVersion     string                   `json:"schema_version"`
+	FrameSHA256       string                   `json:"frame_sha256"`
+	WorkID            string                   `json:"work_id"`
+	InputSHA256       string                   `json:"input_sha256"`
+	Authority         closePendingAuthority    `json:"authority"`
+	CompletedAt       string                   `json:"completed_at"`
+	SourceWork        envelope.WorkEnvelope    `json:"source_work"`
+	SourceWorkSHA256  string                   `json:"source_work_sha256"`
+	FinalWork         envelope.WorkEnvelope    `json:"final_work"`
+	FinalWorkSHA256   string                   `json:"final_work_sha256"`
+	Action            envelope.ActionIntent    `json:"action"`
+	Decision          envelope.PolicyDecision  `json:"decision"`
+	Receipt           envelope.Receipt         `json:"receipt"`
+	Transition        envelope.Transition      `json:"transition"`
+	Event             Event                    `json:"event"`
+	Lease             closePendingLease        `json:"lease"`
+	LeaseHolder       string                   `json:"lease_holder,omitempty"`
+	LeaseStolen       bool                     `json:"lease_stolen,omitempty"`
+	RunAttempts       []closePendingRunAttempt `json:"run_attempts,omitempty"`
+	Git               closePendingGit          `json:"git,omitempty"`
 }
 
 func (s *Store) closePendingPath(workID string) string {
@@ -223,6 +224,9 @@ func (s *Store) validateClosePending(p closePending) error {
 	}
 	if err := p.SourceWork.Validate(); err != nil {
 		return fmt.Errorf("source WorkEnvelope invalid: %w", err)
+	}
+	if err := validateFrozenCloseNonSourceEvidence(p); err != nil {
+		return err
 	}
 	if err := p.FinalWork.Validate(); err != nil {
 		return fmt.Errorf("final WorkEnvelope invalid: %w", err)
@@ -658,6 +662,9 @@ func (s *Store) newClosePending(
 		pending.RunAttempts = append(pending.RunAttempts, closePendingRunAttempt{
 			Attempt: plan.Attempt, ExpectedStatus: plan.Attempt.Status, Intent: plan.Intent, CallerOwns: plan.CallerOwns,
 		})
+	}
+	if err := s.captureCloseNonSourceEvidence(&pending); err != nil {
+		return closePending{}, err
 	}
 	if err := sealClosePending(&pending); err != nil {
 		return closePending{}, err
@@ -1191,6 +1198,11 @@ func (s *Store) completeClosePending(pending closePending, in CloseInput, now ti
 	if currentSHA != pending.SourceWorkSHA256 && !currentIsFinal {
 		return res, closeRecoveryRequired("work %s current generation differs from frozen close", pending.WorkID)
 	}
+	if !currentIsFinal {
+		if err := s.revalidateCloseNonSourceEvidence(pending); err != nil {
+			return res, closeRecoveryRequired("non-source delivery: %w", err)
+		}
+	}
 	if err := s.verifyClosePendingLease(pending, currentIsFinal); err != nil {
 		return res, err
 	}
@@ -1266,6 +1278,11 @@ func (s *Store) completeClosePending(pending closePending, in CloseInput, now ti
 			}
 			closeAfterLeaseStealDecision()
 		}
+		if !currentIsFinal {
+			if err := s.revalidateCloseNonSourceEvidence(pending); err != nil {
+				return abortReference(closeRecoveryRequired("non-source delivery: %w", err))
+			}
+		}
 		if pubErr := s.persistClosePendingEnvelopes(pending); pubErr != nil {
 			res = CloseResult{Work: pending.SourceWork, Receipt: pending.Receipt, Transition: pending.Transition}
 			return abortReference(pubErr)
@@ -1273,6 +1290,11 @@ func (s *Store) completeClosePending(pending closePending, in CloseInput, now ti
 		if verErr := s.verifyClosePendingLease(pending, currentIsFinal); verErr != nil {
 			res = CloseResult{Work: pending.SourceWork, Receipt: pending.Receipt, Transition: pending.Transition}
 			return abortReference(verErr)
+		}
+		if !currentIsFinal {
+			if err := s.revalidateCloseNonSourceEvidence(pending); err != nil {
+				return abortReference(closeRecoveryRequired("non-source delivery: %w", err))
+			}
 		}
 		if evErr := s.publishClosePendingEventAndWork(pending); evErr != nil {
 			res = CloseResult{Work: pending.SourceWork, Receipt: pending.Receipt, Transition: pending.Transition}

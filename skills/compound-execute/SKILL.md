@@ -215,6 +215,20 @@ source work and preserve their lineage. `live:` and `evidence:` refs may record 
 consumption and cutover observations, but they supplement rather than certify the other source
 delivery. Non-source runtime observations keep their existing evidence and authorization rules.
 
+An already-recorded private-runtime or worktree-retirement effect is not a source
+commit. Use `work delivery-capture` with its typed, exact-generation request to
+read and custody the real evidence, then `advance-plan` and its generated guarded
+same-state command for the operator-provenanced per-action binding. Capture is
+`captured_not_bound`, not accepted work; a partial failure can have persisted
+evidence, so follow its unchanged-request `retry_command`. Never relabel source
+work, attach an unrelated commit, or mint a consumer-success report. Retirement
+capture authenticates the existing completed transaction and retains recovery
+bytes; it grants no new retirement permission and does not rerun Git mutations.
+After a recovered retirement failure, capture each earlier failed action explicitly
+with `action_intent_id` and bind it separately. The later completed witness must
+match its exact plan/review; the earlier receipt stays failed.
+Uncovered source effects and failed canonical attempts keep their existing gates.
+
 ## 8 · Route the learnings (the operator's law: "change the system based on the information")
 
 A solution without its learnings routed is unfinished work. In the SAME round, write each learning

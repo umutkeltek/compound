@@ -399,6 +399,10 @@ func inspectRootedRemovalChain(
 	displayPath string,
 	kind string,
 ) (*rootedRemovalParentGuard, []rootedRemovalChainEntry, bool, error) {
+	return inspectRootedRemovalChainWithLimit(root, relativePath, displayPath, kind, 0)
+}
+
+func inspectRootedRemovalChainWithLimit(root *os.Root, relativePath, displayPath, kind string, maxBytes int64) (*rootedRemovalParentGuard, []rootedRemovalChainEntry, bool, error) {
 	parentPath := filepath.Dir(relativePath)
 	parents, err := lstatRootedDirectoryPath(root, parentPath, displayPath, kind, false)
 	if err != nil {
@@ -454,7 +458,7 @@ func inspectRootedRemovalChain(
 			}
 			return fail(fmt.Errorf("%s removal chain requires a regular non-symlink removal residue: %s", kind, entryDisplay))
 		}
-		data, stableInfo, err := readRootedCASRegularFile(parentRoot, name)
+		data, stableInfo, err := readRootedCASRegularFileWithLimit(parentRoot, name, maxBytes)
 		if err != nil {
 			return fail(err)
 		}

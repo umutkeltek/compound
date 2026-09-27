@@ -11,6 +11,10 @@ import (
 // for mutations that must not adopt or resurrect cleanup residue. Recovery and
 // read-only inspection should use ReadRootedRegularFileRemovalChain instead.
 func ReadRootedRegularFileCanonicalOnly(homePath, path, kind string) ([]byte, bool, error) {
+	return readRootedRegularFileCanonicalOnlyWithLimit(homePath, path, kind, 0)
+}
+
+func readRootedRegularFileCanonicalOnlyWithLimit(homePath, path, kind string, maxBytes int64) ([]byte, bool, error) {
 	root, relativePath, displayPath, err := openRootedPath(homePath, path, kind)
 	if err != nil {
 		return nil, false, err
@@ -26,7 +30,7 @@ func ReadRootedRegularFileCanonicalOnly(homePath, path, kind string) ([]byte, bo
 		return nil, false, nil
 	}
 
-	parent, chain, present, err := inspectRootedRemovalChain(root, relativePath, displayPath, kind)
+	parent, chain, present, err := inspectRootedRemovalChainWithLimit(root, relativePath, displayPath, kind, maxBytes)
 	if err != nil {
 		return nil, present, err
 	}

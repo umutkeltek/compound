@@ -2,6 +2,7 @@ package authority
 
 import (
 	"bytes"
+	"compound/internal/authority/gitrepository"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,14 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"compound/internal/policy"
 	"compound/internal/reviewartifact"
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	WorktreeRetirementReviewSchemaVersion       = "compound.worktree_retirement_review.v0.1"
-	WorktreeRetirementReviewReportSchemaVersion = "compound.worktree_retirement_review_report.v0.1"
+	WorktreeRetirementReviewSchemaVersion       = gitrepository.WorktreeRetirementReviewSchemaVersion
+	WorktreeRetirementReviewReportSchemaVersion = gitrepository.WorktreeRetirementReviewReportSchemaVersion
 
 	// WorktreeRetirementReviewArea owns worktree-retirement artifacts. They used
 	// to share the source-control-cleanup area, where the source-control queue
@@ -35,37 +35,9 @@ type WorktreeRetirementPlanPaths struct {
 	ReviewYAMLPath string `json:"review_yaml_path"`
 }
 
-type WorktreeRetirementReview struct {
-	SchemaVersion string   `json:"schema_version" yaml:"schema_version"`
-	ID            string   `json:"id" yaml:"id"`
-	PlanID        string   `json:"plan_id" yaml:"plan_id"`
-	PlanDigest    string   `json:"plan_digest" yaml:"plan_digest"`
-	Decision      string   `json:"decision" yaml:"decision"`
-	Rationale     string   `json:"rationale" yaml:"rationale"`
-	ReviewedBy    string   `json:"reviewed_by" yaml:"reviewed_by"`
-	ReviewedAt    string   `json:"reviewed_at,omitempty" yaml:"reviewed_at,omitempty"`
-	EvidenceRefs  []string `json:"evidence_refs" yaml:"evidence_refs"`
-}
+type WorktreeRetirementReview = gitrepository.WorktreeRetirementReview
 
-type WorktreeRetirementReviewReport struct {
-	SchemaVersion       string   `json:"schema_version"`
-	ID                  string   `json:"id"`
-	CreatedAt           string   `json:"created_at"`
-	Status              string   `json:"status"`
-	PlanID              string   `json:"plan_id"`
-	PlanDigest          string   `json:"plan_digest"`
-	PlanPath            string   `json:"plan_path"`
-	ReviewID            string   `json:"review_id"`
-	Decision            string   `json:"decision"`
-	Rationale           string   `json:"rationale"`
-	ReviewedBy          string   `json:"reviewed_by"`
-	ReviewedAt          string   `json:"reviewed_at"`
-	SourcePath          string   `json:"source_path"`
-	SourceDigest        string   `json:"source_digest"`
-	ReviewPath          string   `json:"review_path"`
-	AuthorizationDigest string   `json:"authorization_digest"`
-	EvidenceRefs        []string `json:"evidence_refs"`
-}
+type WorktreeRetirementReviewReport = gitrepository.WorktreeRetirementReviewReport
 
 func RecordWorktreeRetirementPlan(homePath string, plan WorktreeRetirementPlan) (WorktreeRetirementPlanPaths, error) {
 	if strings.TrimSpace(homePath) == "" {
@@ -118,50 +90,7 @@ func worktreeRetirementArtifactDir(homePath, planID string) (string, error) {
 }
 
 func ValidateWorktreeRetirementPlan(plan WorktreeRetirementPlan) error {
-	if plan.SchemaVersion != WorktreeRetirementPlanSchemaVersion {
-		return fmt.Errorf("worktree retirement plan schema_version must be %s", WorktreeRetirementPlanSchemaVersion)
-	}
-	if !strings.HasPrefix(plan.ID, "wtr_") || filepath.Base(plan.ID) != plan.ID {
-		return fmt.Errorf("worktree retirement plan id invalid")
-	}
-	if !filepath.IsAbs(plan.RepoRoot) || !validRetirementHex(plan.RepositoryFingerprint, 64) {
-		return fmt.Errorf("worktree retirement plan repository identity invalid")
-	}
-	if !validRetirementDigest(plan.PlanDigest) || plan.PlanDigest != WorktreeRetirementPlanDigest(plan) {
-		return fmt.Errorf("worktree retirement plan digest mismatch")
-	}
-	if plan.ID != WorktreeRetirementPlanID(plan) {
-		return fmt.Errorf("worktree retirement plan id invalid")
-	}
-	if !validRetirementObjectID(plan.AuthorityTip) || !validRetirementObjectID(plan.PublicationTip) {
-		return fmt.Errorf("worktree retirement plan requires full sealed authority tips")
-	}
-	if !strings.HasPrefix(plan.AuthorityRef, "refs/heads/") || !strings.HasPrefix(plan.PublicationRef, "refs/remotes/") {
-		return fmt.Errorf("worktree retirement plan requires canonical authority/publication refs")
-	}
-	if plan.CandidateRef == "" && plan.Worktree == nil {
-		return fmt.Errorf("worktree retirement plan has no retirement target")
-	}
-	if plan.Eligible {
-		if plan.Status != "review_required" || len(plan.BlockReasons) != 0 || (plan.CandidateRelation != WorktreeCandidateContained && plan.CandidateRelation != WorktreeCandidatePatchEquivalent && plan.CandidateRelation != WorktreeCandidateArchivedUnique) {
-			return fmt.Errorf("eligible worktree retirement plan has inconsistent eligibility")
-		}
-		if !validRetirementObjectID(plan.CandidateTip) {
-			return fmt.Errorf("eligible worktree retirement plan requires full candidate tip")
-		}
-		if err := validateRetirementOwnerProof(plan.OwnerProof); err != nil {
-			return fmt.Errorf("worktree retirement owner proof: %w", err)
-		}
-		if err := validateRetirementSourceProof(plan.SourceProof); err != nil {
-			return fmt.Errorf("worktree retirement source proof: %w", err)
-		}
-		if len(plan.RecoveryRefs) == 0 {
-			return fmt.Errorf("worktree retirement recovery refs required")
-		}
-	} else if plan.Status != "blocked" || len(plan.BlockReasons) == 0 {
-		return fmt.Errorf("blocked worktree retirement plan has no block reason")
-	}
-	return nil
+	return gitrepository.ValidateWorktreeRetirementPlan(plan)
 }
 
 func RenderWorktreeRetirementPlan(plan WorktreeRetirementPlan) string {
@@ -428,27 +357,7 @@ func syncWorktreeRetirementArtifactDirectory(dir string) error {
 }
 
 func validateWorktreeRetirementReview(review WorktreeRetirementReview) error {
-	if review.SchemaVersion != WorktreeRetirementReviewSchemaVersion || !strings.HasPrefix(review.ID, "wtrr_") || filepath.Base(review.PlanID) != review.PlanID {
-		return fmt.Errorf("worktree retirement review identity invalid")
-	}
-	if review.Decision != "authorize_retirement" {
-		return fmt.Errorf("worktree retirement review decision must be authorize_retirement")
-	}
-	if strings.TrimSpace(review.Rationale) == "" {
-		return fmt.Errorf("worktree retirement review rationale required")
-	}
-	if !policy.HasOperatorProvenance(review.ReviewedBy) {
-		return fmt.Errorf("worktree retirement review requires operator provenance")
-	}
-	if !validRetirementDigest(review.PlanDigest) || len(review.EvidenceRefs) == 0 {
-		return fmt.Errorf("worktree retirement review plan digest and evidence required")
-	}
-	if review.ReviewedAt != "" {
-		if _, err := time.Parse(time.RFC3339Nano, review.ReviewedAt); err != nil {
-			return fmt.Errorf("worktree retirement review reviewed_at must be RFC3339Nano: %w", err)
-		}
-	}
-	return nil
+	return gitrepository.ValidateWorktreeRetirementReview(review)
 }
 
 func worktreeRetirementReviewEqualIgnoringReviewedAt(a, b WorktreeRetirementReview) bool {
@@ -466,37 +375,12 @@ func ValidateAuthorizedWorktreeRetirement(planPath, reportPath string) (Worktree
 	if err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
-	if report.SchemaVersion != WorktreeRetirementReviewReportSchemaVersion || report.Status != "authorized" || report.Decision != "authorize_retirement" || !policy.HasOperatorProvenance(report.ReviewedBy) {
-		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement authorization report invalid")
-	}
-	if report.PlanID != plan.ID || report.PlanDigest != plan.PlanDigest || filepath.Clean(report.PlanPath) != filepath.Clean(planPath) {
-		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement authorization plan digest/path mismatch")
-	}
-	if !validRetirementDigest(report.AuthorizationDigest) || report.AuthorizationDigest != worktreeRetirementAuthorizationDigest(report) {
-		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement authorization digest mismatch")
-	}
-	if filepath.Clean(report.ReviewPath) != filepath.Clean(reportPath) {
-		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement authorization report path mismatch")
-	}
 	sourceBytes, err := os.ReadFile(report.SourcePath)
 	if err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
-	if report.SourceDigest != "sha256:"+digestRetirementHex(sourceBytes) {
-		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement reviewed YAML digest mismatch")
-	}
-	review, err := LoadWorktreeRetirementReview(report.SourcePath)
-	if err != nil {
+	if err := gitrepository.ValidateWorktreeRetirementAuthorization(plan, planPath, report, reportPath, sourceBytes); err != nil {
 		return WorktreeRetirementReviewReport{}, err
-	}
-	if err := validateWorktreeRetirementReview(review); err != nil {
-		return WorktreeRetirementReviewReport{}, err
-	}
-	if review.ID != report.ReviewID || review.PlanID != report.PlanID || review.PlanDigest != report.PlanDigest || review.Decision != report.Decision || strings.TrimSpace(review.Rationale) != report.Rationale || strings.TrimSpace(review.ReviewedBy) != report.ReviewedBy || review.ReviewedAt != report.ReviewedAt {
-		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement review report does not match reviewed YAML")
-	}
-	if !containsEvery(review.EvidenceRefs, worktreeRetirementEvidenceRefs(plan)) {
-		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement reviewed YAML lost plan evidence")
 	}
 	return report, nil
 }
@@ -516,21 +400,9 @@ func LoadWorktreeRetirementReviewReport(path string) (WorktreeRetirementReviewRe
 }
 
 func worktreeRetirementAuthorizationDigest(report WorktreeRetirementReviewReport) string {
-	report.AuthorizationDigest = ""
-	data, _ := json.Marshal(report)
-	return "sha256:" + digestRetirementHex(data)
+	return gitrepository.WorktreeRetirementAuthorizationDigest(report)
 }
 
 func worktreeRetirementEvidenceRefs(plan WorktreeRetirementPlan) []string {
-	refs := []string{
-		"worktree-retirement-plan:" + plan.ID + ":" + plan.PlanDigest,
-		"work:" + plan.OwnerProof.WorkID,
-		"work:" + plan.SourceProof.WorkID,
-		plan.SourceProof.CommitArtifactRef,
-		plan.SourceProof.LandCheckEvidenceRef,
-		plan.SourceProof.LandCheckFileDigest,
-		"repo-fingerprint:" + plan.RepositoryFingerprint,
-	}
-	refs = append(refs, plan.RecoveryRefs...)
-	return sortedUniqueNonEmpty(refs)
+	return gitrepository.WorktreeRetirementEvidenceRefs(plan)
 }

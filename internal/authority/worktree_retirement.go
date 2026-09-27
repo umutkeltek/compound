@@ -1,10 +1,8 @@
 package authority
 
 import (
+	"compound/internal/authority/gitrepository"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -16,12 +14,12 @@ import (
 )
 
 const (
-	WorktreeRetirementPlanSchemaVersion = "compound.worktree_retirement_plan.v0.1"
+	WorktreeRetirementPlanSchemaVersion = gitrepository.WorktreeRetirementPlanSchemaVersion
 
-	WorktreeCandidateContained       = "contained"
-	WorktreeCandidatePatchEquivalent = "patch_equivalent"
+	WorktreeCandidateContained       = gitrepository.WorktreeCandidateContained
+	WorktreeCandidatePatchEquivalent = gitrepository.WorktreeCandidatePatchEquivalent
 	WorktreeCandidateUnique          = "unique"
-	WorktreeCandidateArchivedUnique  = "archived_unique"
+	WorktreeCandidateArchivedUnique  = gitrepository.WorktreeCandidateArchivedUnique
 
 	WorktreeLivenessUnused  WorktreeLivenessState = "unused"
 	WorktreeLivenessActive  WorktreeLivenessState = "active"
@@ -76,12 +74,9 @@ func (e *WorktreeRetirementCommandError) Error() string {
 	return strings.Join(e.Argv, " ") + ": " + message
 }
 
-type WorktreeLivenessState string
+type WorktreeLivenessState = gitrepository.WorktreeLivenessState
 
-type WorktreeLivenessObservation struct {
-	State    WorktreeLivenessState `json:"state"`
-	Evidence string                `json:"evidence,omitempty"`
-}
+type WorktreeLivenessObservation = gitrepository.WorktreeLivenessObservation
 
 type WorktreeRetirementLiveness interface {
 	Observe(ctx context.Context, worktreePath string) WorktreeLivenessObservation
@@ -95,12 +90,7 @@ type WorktreeRetirementDependencies struct {
 
 // WorktreeRetirementRecoveryProof is verified content-addressed recovery
 // evidence sealed into a retirement plan.
-type WorktreeRetirementRecoveryProof struct {
-	Reference string `json:"reference"`
-	Kind      string `json:"kind"`
-	Digest    string `json:"digest"`
-	Path      string `json:"path"`
-}
+type WorktreeRetirementRecoveryProof = gitrepository.WorktreeRetirementRecoveryProof
 
 // WorktreeRetirementRecoveryResolver keeps recovery storage replaceable while
 // letting every mutation boundary re-prove the exact sealed bytes.
@@ -108,32 +98,9 @@ type WorktreeRetirementRecoveryResolver interface {
 	Resolve(ctx context.Context, reference string) (WorktreeRetirementRecoveryProof, error)
 }
 
-type WorktreeRetirementOwnerProof struct {
-	WorkID          string `json:"work_id"`
-	State           string `json:"state"`
-	LeaseHolder     string `json:"lease_holder"`
-	LeaseClaimedAt  string `json:"lease_claimed_at"`
-	LeaseWorkSHA256 string `json:"lease_work_sha256"`
-	WorkDigest      string `json:"work_digest"`
-}
+type WorktreeRetirementOwnerProof = gitrepository.WorktreeRetirementOwnerProof
 
-type WorktreeRetirementSourceProof struct {
-	WorkID                string   `json:"work_id"`
-	State                 string   `json:"state"`
-	ProofComplete         bool     `json:"proof_complete"`
-	ActionIntentIDs       []string `json:"action_intent_ids"`
-	PolicyDecisionID      string   `json:"policy_decision_id"`
-	ReceiptID             string   `json:"receipt_id"`
-	ReceiptOutcome        string   `json:"receipt_outcome"`
-	TransitionID          string   `json:"transition_id"`
-	CommitArtifactRef     string   `json:"commit_artifact_ref"`
-	CommitTip             string   `json:"commit_tip"`
-	LandCheckID           string   `json:"land_check_id"`
-	LandCheckEvidenceRef  string   `json:"land_check_evidence_ref"`
-	LandCheckStatus       string   `json:"land_check_status"`
-	LandCheckCandidateTip string   `json:"land_check_candidate_tip"`
-	LandCheckFileDigest   string   `json:"land_check_file_digest"`
-}
+type WorktreeRetirementSourceProof = gitrepository.WorktreeRetirementSourceProof
 
 // WorktreeKeepRecord is a caller-composed projection of an active operator
 // worktree-keep decision. internal/authority never reads the decisions/mem
@@ -167,43 +134,9 @@ type WorktreeRetirementPlanRequest struct {
 	KeepsUnreadable bool
 }
 
-type WorktreeRetirementWorktree struct {
-	Path       string                      `json:"path"`
-	Head       string                      `json:"head"`
-	BranchRef  string                      `json:"branch_ref,omitempty"`
-	GitDir     string                      `json:"git_dir,omitempty"`
-	Locked     bool                        `json:"locked"`
-	LockReason string                      `json:"lock_reason,omitempty"`
-	Prunable   bool                        `json:"prunable"`
-	Clean      bool                        `json:"clean"`
-	Liveness   WorktreeLivenessObservation `json:"liveness"`
-}
+type WorktreeRetirementWorktree = gitrepository.WorktreeRetirementWorktree
 
-type WorktreeRetirementPlan struct {
-	SchemaVersion         string                            `json:"schema_version"`
-	ID                    string                            `json:"id"`
-	CreatedAt             string                            `json:"created_at"`
-	Status                string                            `json:"status"`
-	RepoRoot              string                            `json:"repo_root"`
-	RepositoryFingerprint string                            `json:"repository_fingerprint"`
-	Worktree              *WorktreeRetirementWorktree       `json:"worktree,omitempty"`
-	CandidateRef          string                            `json:"candidate_ref,omitempty"`
-	CandidateTip          string                            `json:"candidate_tip"`
-	AuthorityRef          string                            `json:"authority_ref"`
-	AuthorityTip          string                            `json:"authority_tip"`
-	PublicationRef        string                            `json:"publication_ref"`
-	PublicationTip        string                            `json:"publication_tip"`
-	CandidateRelation     string                            `json:"candidate_relation"`
-	SourceRelation        string                            `json:"source_relation"`
-	OwnerProof            WorktreeRetirementOwnerProof      `json:"owner_proof"`
-	SourceProof           WorktreeRetirementSourceProof     `json:"source_proof"`
-	RecoveryRefs          []string                          `json:"recovery_refs"`
-	RecoveryProofs        []WorktreeRetirementRecoveryProof `json:"recovery_proofs"`
-	EvidenceRefs          []string                          `json:"evidence_refs"`
-	Eligible              bool                              `json:"eligible"`
-	BlockReasons          []string                          `json:"block_reasons"`
-	PlanDigest            string                            `json:"plan_digest"`
-}
+type WorktreeRetirementPlan = gitrepository.WorktreeRetirementPlan
 
 type retirementWorktreeRecord struct {
 	Path       string
@@ -476,48 +409,19 @@ func worktreeRetirementKeepTarget(plan WorktreeRetirementPlan) string {
 }
 
 func WorktreeRetirementPlanID(plan WorktreeRetirementPlan) string {
-	plan.ID = ""
-	plan.PlanDigest = ""
-	encoded, _ := json.Marshal(plan)
-	return "wtr_" + digestRetirementHex(encoded)[:12]
+	return gitrepository.WorktreeRetirementPlanID(plan)
 }
 
 func WorktreeRetirementPlanDigest(plan WorktreeRetirementPlan) string {
-	plan.PlanDigest = ""
-	encoded, _ := json.Marshal(plan)
-	return "sha256:" + digestRetirementHex(encoded)
+	return gitrepository.WorktreeRetirementPlanDigest(plan)
 }
 
 func validateRetirementOwnerProof(proof WorktreeRetirementOwnerProof) error {
-	if strings.TrimSpace(proof.WorkID) == "" || proof.State != "running" || strings.TrimSpace(proof.LeaseHolder) == "" || strings.TrimSpace(proof.LeaseClaimedAt) == "" {
-		return fmt.Errorf("running work id and lease holder/timestamp required")
-	}
-	if (!validRetirementHex(proof.LeaseWorkSHA256, 64) && !validRetirementDigest(proof.LeaseWorkSHA256)) || !validRetirementDigest(proof.WorkDigest) {
-		return fmt.Errorf("lease/work digests required")
-	}
-	return nil
+	return gitrepository.ValidateRetirementOwnerProof(proof)
 }
 
 func validateRetirementSourceProof(proof WorktreeRetirementSourceProof) error {
-	if strings.TrimSpace(proof.WorkID) == "" || (proof.State != "completed" && proof.State != "failed") || !proof.ProofComplete {
-		return fmt.Errorf("completed or failed terminal proof chain required")
-	}
-	if len(proof.ActionIntentIDs) == 0 || strings.TrimSpace(proof.PolicyDecisionID) == "" || strings.TrimSpace(proof.ReceiptID) == "" || strings.TrimSpace(proof.TransitionID) == "" {
-		return fmt.Errorf("action policy receipt transition ids required")
-	}
-	if proof.ReceiptOutcome != proof.State {
-		return fmt.Errorf("terminal source state %s requires matching receipt outcome, got %s", proof.State, proof.ReceiptOutcome)
-	}
-	if !validRetirementObjectID(proof.CommitTip) || proof.CommitArtifactRef != "commit:"+proof.CommitTip {
-		return fmt.Errorf("consistent full commit artifact required")
-	}
-	if proof.LandCheckStatus != "landed" || proof.LandCheckCandidateTip != proof.CommitTip {
-		return fmt.Errorf("landed land-check matching commit required")
-	}
-	if !strings.HasPrefix(proof.LandCheckID, "landcheck_") || proof.LandCheckEvidenceRef != "land-check:"+proof.LandCheckID || !validRetirementDigest(proof.LandCheckFileDigest) {
-		return fmt.Errorf("sealed land-check evidence required")
-	}
-	return nil
+	return gitrepository.ValidateRetirementSourceProof(proof)
 }
 
 func canonicalRetirementRepo(ctx context.Context, git WorktreeRetirementGit, value string) (string, error) {
@@ -786,28 +690,19 @@ func containsStringValue(values []string, target string) bool {
 }
 
 func validRetirementObjectID(value string) bool {
-	return validRetirementHex(value, 40) || validRetirementHex(value, 64)
+	return gitrepository.ValidRetirementObjectID(value)
 }
 
 func validRetirementDigest(value string) bool {
-	return strings.HasPrefix(value, "sha256:") && validRetirementHex(strings.TrimPrefix(value, "sha256:"), 64)
+	return gitrepository.ValidRetirementDigest(value)
 }
 
 func validRetirementHex(value string, size int) bool {
-	if len(value) != size {
-		return false
-	}
-	for _, r := range value {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-			return false
-		}
-	}
-	return true
+	return gitrepository.ValidRetirementHex(value, size)
 }
 
 func digestRetirementHex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return gitrepository.DigestRetirementHex(data)
 }
 
 // SHA256FileWorktreeRetirementRecoveryResolver verifies references of the

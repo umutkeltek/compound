@@ -860,15 +860,16 @@ type WorkEnvelope struct {
 	// ExpectedBaseSHA is the legacy, incomplete pre-contract field. It remains
 	// readable so existing envelopes do not become corrupt, but new admissions
 	// must use GitDelivery and completed commit-bearing work fails closed without it.
-	ExpectedBaseSHA  string               `json:"expected_base_sha,omitempty"`
-	GitDelivery      *GitDeliveryContract `json:"git_delivery,omitempty"`
-	State            string               `json:"state"`
-	DesiredOutcome   string               `json:"desired_outcome,omitempty"`
-	SuccessPredicate string               `json:"success_predicate"`
-	NonGoals         []string             `json:"non_goals"`
-	ProofMedium      string               `json:"proof_medium,omitempty"`
-	RouteDecisionID  string               `json:"route_decision_id,omitempty"`
-	PolicyDecisionID string               `json:"policy_decision_id,omitempty"`
+	ExpectedBaseSHA   string                  `json:"expected_base_sha,omitempty"`
+	GitDelivery       *GitDeliveryContract    `json:"git_delivery,omitempty"`
+	NonSourceDelivery []ActionDeliveryBinding `json:"non_source_delivery,omitempty"`
+	State             string                  `json:"state"`
+	DesiredOutcome    string                  `json:"desired_outcome,omitempty"`
+	SuccessPredicate  string                  `json:"success_predicate"`
+	NonGoals          []string                `json:"non_goals"`
+	ProofMedium       string                  `json:"proof_medium,omitempty"`
+	RouteDecisionID   string                  `json:"route_decision_id,omitempty"`
+	PolicyDecisionID  string                  `json:"policy_decision_id,omitempty"`
 	// ActionIntentIDs holds ActionIntent ids (act_*), NOT run identifiers. The wire name
 	// `run_ids` is a LEGACY MISNOMER retained deliberately: the canonical work hash is
 	// sha256(json.Marshal(WorkEnvelope)) (see internal/work.workEnvelopeSHA256), and that hash is
@@ -1032,6 +1033,7 @@ func (e *WorkEnvelope) Validate() error {
 	if e.GitDelivery != nil {
 		validateGitDeliveryContract(v, *e.GitDelivery)
 	}
+	validateActionDeliveryBindings(v, e.NonSourceDelivery, e.ActionIntentIDs)
 	if e.Prediction != nil {
 		validateWorkPrediction(v, *e.Prediction)
 	}

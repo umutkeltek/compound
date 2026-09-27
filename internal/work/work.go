@@ -1708,8 +1708,9 @@ func (s *Store) validateClaimEventArtifacts(event Event, claimed envelope.WorkEn
 // --- advance ---
 
 type AdvanceInput struct {
-	To    string
-	Actor string
+	To                string
+	Actor             string
+	NonSourceDelivery *ActionDeliveryRequest
 	// ExpectedWorkState is an optional compare-and-set precondition evaluated
 	// under the lifecycle admission lock. Governed execution uses it to reserve
 	// claimed -> running exactly once while ordinary same-state advances remain
@@ -1857,6 +1858,20 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 		}
 		in.GitDelivery = normalized
 	}
+	if in.NonSourceDelivery != nil {
+		if in.LaneRef != "" || len(in.RunAttemptIDs) != 0 || in.ArtifactID != "" || in.VerificationID != "" || in.ContextPackID != "" || len(in.EvidenceRefs) != 0 {
+			return w, fmt.Errorf("non-source delivery binding cannot attach unrelated execution or proof state")
+		}
+		if in.ExpectedWorkState == "" || in.ExpectedPolicyDecisionID == "" || in.ExpectedActionIntentID == "" {
+			return w, fmt.Errorf("non-source delivery binding requires exact expected state, policy and action generation")
+		}
+		if in.GitDelivery != nil {
+			return w, fmt.Errorf("cannot combine Git and non-source authority binding")
+		}
+		if _, err := s.preflightActionDeliveryBinding(w, actor, in.To, in.NonSourceDelivery); err != nil {
+			return w, err
+		}
+	}
 	if ref := strings.TrimSpace(in.VerificationID); strings.HasPrefix(ref, DifferentialProofVerificationPrefix) {
 		if _, err := s.validateDifferentialProofRef(w, ref); err != nil {
 			return w, fmt.Errorf("differential proof verification: %w", err)
@@ -1992,12 +2007,12 @@ var closeAfterFirstEnvelopeWrite = func() {}
 
 func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.Time) (envelope.WorkEnvelope, error) {
 	workID := w.ID
-	if recovered, ok, err := s.recoverPendingAdvance(w, in.To); err != nil {
+	if recovered, ok, err := s.recoverPendingAdvance(w, in.To, in.NonSourceDelivery); err != nil {
 		return w, err
 	} else if ok {
 		return recovered, nil
 	}
-	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To, GitDelivery: in.GitDelivery})
+	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To, GitDelivery: in.GitDelivery, NonSourceDelivery: in.NonSourceDelivery})
 	if err != nil {
 		return w, err
 	}
@@ -2021,6 +2036,13 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 	w.ActionIntentIDs = append(w.ActionIntentIDs, plan.ActionIntent.ID)
 	w.PolicyDecisionID = plan.Decision.ID
 	attached := []string{plan.ActionIntent.ID, plan.Decision.ID}
+	if plan.NonSourceDelivery != nil {
+		w.NonSourceDelivery = append(w.NonSourceDelivery, *plan.NonSourceDelivery)
+		w.EvidenceRefs = mergeUnique(w.EvidenceRefs, []string{plan.NonSourceDelivery.EvidenceRef})
+	}
+	if in.NonSourceDelivery != nil {
+		attached = append(attached, in.NonSourceDelivery.EvidenceRef)
+	}
 	if len(in.EvidenceRefs) > 0 {
 		w.EvidenceRefs = mergeUnique(w.EvidenceRefs, in.EvidenceRefs)
 		attached = append(attached, in.EvidenceRefs...)
@@ -2133,7 +2155,7 @@ func (s *Store) advancePendingPath(workID string) string {
 	return s.workPath(workID) + ".advance-pending"
 }
 
-func (s *Store) recoverPendingAdvance(current envelope.WorkEnvelope, to string) (envelope.WorkEnvelope, bool, error) {
+func (s *Store) recoverPendingAdvance(current envelope.WorkEnvelope, to string, delivery *ActionDeliveryRequest) (envelope.WorkEnvelope, bool, error) {
 	currentSHA256, err := workEnvelopeSHA256(current)
 	if err != nil {
 		return current, false, err
@@ -2186,6 +2208,9 @@ func (s *Store) recoverPendingAdvance(current envelope.WorkEnvelope, to string) 
 			if err := s.validatePendingAdvance(postMatches[0], pending); err != nil {
 				return err
 			}
+			if err := s.validatePendingDeliveryRequest(postMatches[0], current, pending, delivery); err != nil {
+				return err
+			}
 			if err := removeFileAndSyncDir(pendingPath); err != nil {
 				return err
 			}
@@ -2201,6 +2226,9 @@ func (s *Store) recoverPendingAdvance(current envelope.WorkEnvelope, to string) 
 			return removeFileAndSyncDir(pendingPath)
 		case 1:
 			if err := s.validatePendingAdvance(exactMatches[0], pending); err != nil {
+				return err
+			}
+			if err := s.validatePendingDeliveryRequest(exactMatches[0], current, pending, delivery); err != nil {
 				return err
 			}
 			if err := commitStagedJSON(pendingPath, s.workPath(current.ID)); err != nil {

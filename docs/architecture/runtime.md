@@ -222,6 +222,59 @@ Hung off one root `work_id`. The header matters more than any body — it preven
 authoritative ≠ current*.
 
 Current source-delivery close rule (superseding the earlier v0.4 migration wording above): only a revalidated `landed` `compound.work_land_check.v0.5` report is current close evidence. It binds the candidate tip to the latest attached, owned, content-addressed `proof-check:pfrs_*` source snapshot when one exists. The normal proof observes the bound target checkout. A checkout-independent CAS landing is also certifiable when the bound repository identity remains valid, no worktree checks out the target ref, and the target plus required publication refs already contain the certified candidate; dirt in the active foreign feature checkout is then outside target cleanliness. A target ref checked out in any worktree retains the ordinary checkout gate. Historical v0.3 and v0.4 reports remain readable stale evidence and require a fresh v0.5 check; v0.3 predates repository identity and v0.4 predates sealed proof source identity.
+Non-source delivery is an exact per-action classification, not a work-wide Git exemption.
+An operator-provenanced same-state `work advance` may bind `--delivery-action`,
+`--delivery-kind private_runtime` and an immutable `--delivery-evidence` reference.
+`advance-plan` emits that tuple and exact expected state/policy/action-generation guards.
+The evidence must bind canonical repository identity, the original action bytes, finite
+ignored private-overlay files, custodied before/after bodies and an actual readback
+Receipt/Transition. Tracked files, symlinks, arbitrary ignored source, broad repository
+targets and uncovered mutations retain the Git-delivery gate. Binding is immutable;
+custody, live hashes and the consumer chain are revalidated before terminal publication.
+An interrupted binding may recover only its exact request. Once terminal authority
+exists, frozen close cleanup may finish without rejecting legitimate later edits.
+Private-delivery manifests/reports are bounded to 1 MiB, individual bodies to 64 MiB;
+the artifact owner enforces limits before allocation and while reading. Classification
+never replaces canonical proof, genuine failed-attempt recovery, or task acceptance.
+
+`work delivery-capture <work_id> --request <file> --by <actor> --json` produces
+private-runtime evidence from actual bounded file reads. The strict 1 MiB request
+names the original action, exact repository commit and running work generation,
+and a finite file inventory with expected SHA-256 values.
+Each file declares prior absence or supplies a private rollback preimage path and
+hash. Absence is a historical declaration, not an observed past fact. All bodies
+must match before custody begins; capture admits at most 128 MiB of body reads.
+The existing receipted-action owner authorizes and records the readback; callers
+cannot supply a successful consumer report. Success is `captured_not_bound`:
+use its delivery tuple in `advance-plan`, then the exact generated command.
+`capture_incomplete` can include persisted custody, receipt and transition
+references; retry the unchanged request using the absolute-path `retry_command`.
+It neither repairs a failed proof nor accepts the parent work. Reserved receipt
+recovery reuses the durable completion time and validates the original transaction,
+including crashes between receipt publication, completion marking and cleanup.
+
+The same capture command accepts `compound.worktree_retirement_delivery_capture.v0.1`
+with `capture_id`, the exact running state/policy/action generation, and the
+original `plan_path`, `review_report_path`, and `result_path`. Authority remains
+the sole planner/reviewer/retirement producer; its wire types and pure validators
+are shared with Work through `authority/gitrepository`. Capture reads the exact
+reviewed YAML, authenticates the original ActionIntent/PolicyDecision and completed
+Receipt/Transition/lifecycle event, and preserves the original result bytes.
+It does not repeat deletion, infer success from self-consistent digests, or compare
+historical authority tips to today's main. Supported `sha256-file` recovery bytes
+enter private custody (64 MiB each, 128 MiB total); missing, changed or unsupported
+recovery evidence refuses capture. Optional `action_intent_id` selects an earlier
+failed retirement action instead of the completed action. Its authentic failed
+receipt must precede the separately validated completion witness in the owned
+lifecycle and bind the same sealed plan/review. Each action needs its own operator
+binding; no failure is rewritten, and this classification does not claim
+cryptographic ancestry of overwritten result files. Finalization retries minting
+a new retirement action refresh its PolicyDecision even when Git effects have
+already settled, without repeating those effects.
+The typed `worktree_retirement` binding covers
+only that original action. Close revalidates all custodied evidence, including
+recovery bodies; explicit Git contracts, commit artifacts and uncovered mutations
+still require their normal source-delivery proof.
 
 Canonical source proof executes every gate in a detached temporary checkout of
 the sealed HEAD. Only the ceremony-owned ignored inputs are copied as snapshots;

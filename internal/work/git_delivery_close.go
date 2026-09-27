@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/authority/gitrepository"
 	"compound/internal/envelope"
 )
 
@@ -81,6 +82,13 @@ func (s *Store) gitDeliveryRequirementSignal(w envelope.WorkEnvelope, moveType s
 		if action.MutationClass == "read" {
 			continue
 		}
+		covered, err := s.nonSourceDeliveryCovers(w, action)
+		if err != nil {
+			return "", err
+		}
+		if covered {
+			continue
+		}
 		if signal, err := gitScopedPathSignal("recorded ActionIntent "+runID+" target.path", action.Target.Path); signal != "" || err != nil {
 			return signal, err
 		}
@@ -133,6 +141,7 @@ existing:
 		return "", false, err
 	}
 	cmd := exec.Command("git", "-C", canonicalDir, "rev-parse", "--show-toplevel")
+	cmd.Env = gitrepository.ReadEnvironment()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if strings.Contains(strings.ToLower(string(out)), "not a git repository") {

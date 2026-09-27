@@ -240,12 +240,48 @@ func (s *Store) RecordReservedReceiptedAction(workID string, in ReceiptedActionI
 		if !receiptedActionReservationEqual(actual, expected) {
 			return fmt.Errorf("work %s receipted action reservation %s conflicts with requested transaction", workID, actual.ActionID)
 		}
+		// Completion may have been published before reservation cleanup was
+		// interrupted. Replay the frozen chain, never mint a new completion time.
+		completion, completed, _, err := s.preflightReceiptedActionCompletion(workID, in.Action.ID)
+		if err != nil {
+			return err
+		}
+		if completed {
+			if !receiptedActionReservationEqual(completion.reservation(), expected) {
+				return fmt.Errorf("work %s completed reservation conflicts with requested transaction", workID)
+			}
+			out, recordErr = s.replayCompletedReceiptedAction(workID, in, completion)
+			if recordErr != nil {
+				return recordErr
+			}
+			return s.clearReceiptedActionReservation(path, expected)
+		}
 		// Authorization identifies and admits the reservation. Completion is a
 		// separate causal moment after the exact reservation match and immediately
 		// before receipted-action publication begins.
 		completedAt := time.Now()
 		if completedAt.Before(authorizedAt) {
 			completedAt = authorizedAt
+		}
+		// The receipted-action pending marker is cleared before this reservation
+		// receives its completion record. A crash in that window leaves the
+		// receipt's timestamp as durable evidence of the first completion. The
+		// ordinary writer below still recomputes and validates every envelope and
+		// lifecycle link against the exact reserved input before finishing.
+		var receipt envelope.Receipt
+		if err := s.readEventJSON(expected.ReceiptID, &receipt); err == nil {
+			if err := receipt.Validate(); err != nil {
+				return err
+			}
+			if receipt.ID != expected.ReceiptID || receipt.IDs.WorkID != workID {
+				return fmt.Errorf("reserved receipt identity mismatch")
+			}
+			completedAt, err = time.Parse(time.RFC3339Nano, receipt.CreatedAt)
+			if err != nil || completedAt.Before(authorizedAt) {
+				return fmt.Errorf("reserved receipt completion time is invalid")
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
 		out, recordErr = s.recordReceiptedActionLocked(workID, in, authorizedAt, completedAt, false)
 		if recordErr != nil {

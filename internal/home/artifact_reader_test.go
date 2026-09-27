@@ -34,7 +34,7 @@ func TestArtifactReaderReadsPublicArtifactWithoutMutation(t *testing.T) {
 	if !bytes.Equal(got, want) {
 		t.Fatalf("Get() = %q, want %q", got, want)
 	}
-	if methods := exportedArtifactReaderMethods(); !reflect.DeepEqual(methods, []string{"Get", "GetPrivate"}) {
+	if methods := exportedArtifactReaderMethods(); !reflect.DeepEqual(methods, []string{"Get", "GetPrivate", "GetPrivateBounded"}) {
 		t.Fatalf("ArtifactReader exported methods = %v", methods)
 	}
 	if after := artifactReaderTreeSnapshot(t, homePath); !reflect.DeepEqual(after, before) {

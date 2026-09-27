@@ -375,6 +375,13 @@ func validateRootedCASLeaf(name string) error {
 }
 
 func readRootedCASRegularFile(root *os.Root, name string) ([]byte, os.FileInfo, error) {
+	return readRootedCASRegularFileWithLimit(root, name, 0)
+}
+
+// Test seam for growth after stat; production leaves it nil.
+var rootedCASBeforeBoundedRead func()
+
+func readRootedCASRegularFileWithLimit(root *os.Root, name string, maxBytes int64) ([]byte, os.FileInfo, error) {
 	before, err := root.Lstat(name)
 	if err != nil {
 		return nil, nil, err
@@ -391,9 +398,22 @@ func readRootedCASRegularFile(root *os.Root, name string) ([]byte, os.FileInfo, 
 	if err != nil {
 		return nil, nil, err
 	}
-	data, err := io.ReadAll(file)
+	var input io.Reader = file
+	if maxBytes > 0 {
+		if before.Size() > maxBytes || opened.Size() > maxBytes {
+			return nil, nil, fmt.Errorf("rooted file exceeds byte limit %d", maxBytes)
+		}
+		if rootedCASBeforeBoundedRead != nil {
+			rootedCASBeforeBoundedRead()
+		}
+		input = io.LimitReader(file, maxBytes+1)
+	}
+	data, err := io.ReadAll(input)
 	if err != nil {
 		return nil, nil, err
+	}
+	if maxBytes > 0 && int64(len(data)) > maxBytes {
+		return nil, nil, fmt.Errorf("rooted file exceeds byte limit %d during read", maxBytes)
 	}
 	openedAfter, err := file.Stat()
 	if err != nil {
