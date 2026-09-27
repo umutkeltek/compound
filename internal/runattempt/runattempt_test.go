@@ -525,6 +525,57 @@ func TestSetPredecessorChains(t *testing.T) {
 	}
 }
 
+func TestSetPredecessorRejectsSelfAndForeignWork(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		foreign bool
+		padded  bool
+		wantErr string
+	}{
+		{name: "self", wantErr: "must differ"},
+		{name: "padded self", padded: true, wantErr: "must differ"},
+		{name: "foreign work", foreign: true, wantErr: "same work"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			store := Open(home)
+			now := time.Now().UTC()
+			attempt, err := store.Mint("work_retry_target", "actor", "fake", now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			predecessor := attempt
+			if tc.foreign {
+				predecessor, err = store.Mint("work_unrelated", "actor", "fake", now)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			readAttempt := func(id string) []byte {
+				t.Helper()
+				body, err := os.ReadFile(filepath.Join(home, "run_attempts", id+".json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return body
+			}
+			before := map[string][]byte{attempt.ID: readAttempt(attempt.ID), predecessor.ID: readAttempt(predecessor.ID)}
+			predecessorID := predecessor.ID
+			if tc.padded {
+				predecessorID = " " + predecessorID + " "
+			}
+			if _, err := store.SetPredecessor(attempt.ID, predecessorID); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("SetPredecessor error = %v, want %q", err, tc.wantErr)
+			}
+			for id, body := range before {
+				if !reflect.DeepEqual(readAttempt(id), body) {
+					t.Errorf("refused lineage changed attempt %s", id)
+				}
+			}
+		})
+	}
+}
+
 func TestSetPredecessorRefuses(t *testing.T) {
 	home := t.TempDir()
 	s := Open(home)
