@@ -80,6 +80,7 @@ func TestBrowserSkillBodyIsHarnessNeutral(t *testing.T) {
 	required := []string{
 		"browser-profiles.json",
 		"mcporter call browser",
+		"compound browser goal",
 	}
 	for _, needle := range required {
 		if !strings.Contains(text, needle) {

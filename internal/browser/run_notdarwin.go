@@ -13,7 +13,14 @@ import (
 // instances". The command registry references browser.Run unconditionally,
 // so this stub keeps non-darwin builds compiling (pattern: the parked
 // darwin_surface_stub.go preserved in archive commit 40af455b).
-func Run(_ []string) {
+func Run(args []string) {
+	if handled, err := runPortableBrowser(args, os.Stdout); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	fmt.Fprintln(os.Stderr, "compound browser is only supported on darwin (macOS process projection)")
 	os.Exit(2)
 }

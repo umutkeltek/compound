@@ -32,6 +32,30 @@ The interactive harness boundary follows the same split:
   explicit launch inputs to the transport, and can be deleted without moving either authority. The gateway must
   not read Compound policy files, and Compound must not proxy model traffic.
 
+### Public browser task adapter
+
+`compound browser settings` is the Compound-owned, policy-gated Jev switch;
+missing settings route to the established Playwright backend. `compound browser route`
+exposes the selected backend to every harness. `compound browser goal`
+uses pinned `jev-ultrafast` only when the switch is on and no profile is
+requested. Its bridge starts an ephemeral, isolated headless Chrome rather
+than allowing Browser Harness to attach to an existing logged-in browser.
+Jev cannot attach to Compound's enrolled `user_data_dir`, so
+profile-bound and authenticated work remains on Playwright. A `goal` request
+that selects Playwright exits non-success with an explicit handoff; it does
+not pretend to have executed that task. The first Jev slice accepts only a
+public HTTPS origin and terminal decisions, scroll, or wait; all clicks, form
+edits, and other model-proposed actions are held before `act`. Each proposal has an ActionIntent and PolicyDecision, and
+each outcome has a Receipt/Transition pair in the event store. A `DONE`
+proposal is not success: the bridge observes the page again and must match the caller's explicit expected
+text. These receipts are `audit_only` because a public read does not create a
+durable outward state delta. The rented Python bridge and provider keys own no
+Compound meaning or credential body.
+
+Provider prediction precedes each browser-action proposal, so Jev launch requires an operator-supplied per-request TypeSafe cost ceiling and an explicit per-task USD budget. The launch ActionIntent carries the worst-case estimate for three HTTP attempts per step. This is an admission bound, not observed billing or a provider-enforced hard spending cap; without a trustworthy provider/account ceiling, keep Jev disabled. The CONNECT proxy limits Chrome to one public origin, but TLS is opaque to it: page scripts can still send same-origin POSTs, so this slice is unsuitable for pages where merely loading the page can mutate external state.
+
+The launch is classified `financial` and stays held without a policy standing grant for `browser.goal.jev` whose `max_usd` covers that estimate. A budget flag alone never authorizes provider contact.
+
 ## The execution handshake
 
 A harness is not a model; a provider is not a transport; native inference effort is not orchestration; a route

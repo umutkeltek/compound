@@ -47,7 +47,7 @@ const browserUsage = "usage: compound browser list [--json] [--instance UUID] [-
 	"       compound browser doctor [--json] [--stale-min M] [--idle-cpu-pct PCT]\n" +
 	"       compound browser doctor --fix [--dry-run] [--json] [--yes-each] scoped reap: orphan swiftshader only; per-target confirmation by default\n" +
 	"\n" +
-	"local operator diagnostic only — output contains local paths and process args; do not pipe into public audit / MCP / general agent context."
+	"local operator diagnostic only — output contains local paths and process args; do not pipe into public audit / MCP / general agent context.\n" + portableBrowserUsage
 
 // browserFlagSets enumerates the accepted flags per subcommand. Mirrors the
 // shape used by `scheduleFlagSets` (see cmd/compound/schedule_cli.go) so
@@ -168,6 +168,13 @@ const browserDoctorSchema = "compound/browser-doctor.v0.1"
 // Run is the organ entry point behind `compound browser` (the cmd-budget
 // ratchet keeps cmd/compound a dispatch layer; the surface lives here).
 func Run(args []string) {
+	if handled, err := runPortableBrowser(args, os.Stdout); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, browserUsage)
 		os.Exit(2)

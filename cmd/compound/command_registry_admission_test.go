@@ -126,6 +126,9 @@ func TestFirstPartyCommandAdmissionDistinguishesMutatingSubcommands(t *testing.T
 			command:       "compound home doctor --home /synthetic/home",
 			wantOperation: "local_command",
 		},
+		{command: "compound browser route --json", wantOperation: "local_command"},
+		{command: "compound browser settings --enable --work work_example", wantOperation: "governed_command"},
+		{command: "compound browser goal --work work_example --url https://example.com/ --goal read --expect-text Example", wantOperation: "governed_command"},
 		{
 			command:       "compound home where --home /synthetic/home",
 			wantOperation: "local_command",

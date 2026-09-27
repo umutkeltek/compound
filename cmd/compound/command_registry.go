@@ -216,10 +216,9 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("show", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),
 		"browser": readCommand(browsercli.Run).
-			withSubcommandAdmission("list", policy.FirstPartyCommandRead).
-			withSubcommandAdmission("show", policy.FirstPartyCommandRead).
-			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
-			withSubcommandFlagAdmission("doctor", "--fix", policy.FirstPartyCommandGoverned),
+			withSubcommandAdmission("list", policy.FirstPartyCommandRead).withSubcommandAdmission("show", policy.FirstPartyCommandRead).withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("route", policy.FirstPartyCommandRead).withSubcommandAdmission("goal", policy.FirstPartyCommandGoverned).withSubcommandAdmission("settings", policy.FirstPartyCommandRead).
+			withSubcommandFlagAdmission("settings", "--enable", policy.FirstPartyCommandGoverned).withSubcommandFlagAdmission("settings", "--disable", policy.FirstPartyCommandGoverned).withSubcommandFlagAdmission("doctor", "--fix", policy.FirstPartyCommandGoverned),
 		"game": readCommand(gamecli.Run).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("observe", policy.FirstPartyCommandGoverned).
