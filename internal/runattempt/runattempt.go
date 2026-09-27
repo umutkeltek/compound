@@ -1798,7 +1798,7 @@ func (s *Store) SetTokenUsage(id string, in, out int64) (RunAttempt, error) {
 // ---------------------------------------------------------------------------
 
 // SetPredecessor links this attempt to the one it retries. The predecessor
-// must be a valid ratt_ id that exists on disk (you cannot link to a phantom).
+// must be a different, valid ratt_ id for the same work that exists on disk.
 // Setting the same predecessor twice is idempotent (retry-safe). Changing to
 // a DIFFERENT predecessor is refused (a retry chain is append-only). Refuses
 // on terminal attempts (a swept/completed attempt cannot be retroactively
@@ -1812,10 +1812,17 @@ func (s *Store) SetPredecessor(id, predecessorID string) (RunAttempt, error) {
 		return RunAttempt{}, fmt.Errorf("runattempt set-predecessor %s: predecessor %q does not match %s pattern", id, predecessorID, Prefix)
 	}
 	return s.mutateMutable(id, func(ra *RunAttempt) (bool, error) {
+		if predecessorID == ra.ID {
+			return false, fmt.Errorf("runattempt set-predecessor %s: attempt and predecessor must differ", id)
+		}
 		// The predecessor must exist on disk — no phantom links. The global
 		// RunAttempt lock is already held, so this read cannot race a create.
-		if _, err := s.getFresh(predecessorID); err != nil {
+		predecessor, err := s.getFresh(predecessorID)
+		if err != nil {
 			return false, fmt.Errorf("runattempt set-predecessor %s: predecessor %s: %w", id, predecessorID, err)
+		}
+		if predecessor.WorkID != ra.WorkID {
+			return false, fmt.Errorf("runattempt set-predecessor %s: predecessor %s must belong to the same work", id, predecessorID)
 		}
 		// Idempotent: same predecessor again is a no-op.
 		if ra.PredecessorID == predecessorID {

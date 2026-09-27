@@ -297,7 +297,6 @@ Run these checks before starting work:
 ```sh
 compound version
 compound home doctor
-compound harness list
 ```
 
 A failed doctor is not a clean home. Follow its reported issue before recovery
@@ -326,8 +325,10 @@ and adapter limitations. Listed or installed does not mean execution-ready.
 Start your harness in your project and give it a bounded goal, for example:
 
 > Inspect this project's tests and identify one reproducible maintenance issue.
-> Use Compound's existing work and saved execution selection. Keep changes local,
-> run the relevant checks, and report what is verified and what remains unknown.
+> Create and claim one bounded Compound task. Record its owner and acceptance
+> predicate, then save an authorized executor selection before execution.
+> Keep changes local, run the relevant checks, and report what is verified
+> and what remains unknown.
 > Do not publish, spend, or change permissions.
 
 The harness must establish a work item, owner, acceptance predicate and authorized
