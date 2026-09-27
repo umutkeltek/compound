@@ -141,6 +141,18 @@ func TestInstalledHookRuntimeSupportResolvesFixtureOutsideRepoCWD(t *testing.T) 
 // not install would prove a hook that no session ever fires.
 func TestCanonicalClaudeFamilyExecutesEveryInstalledLiveHookEvent(t *testing.T) {
 	testBinary := compoundTestBinary(t)
+	poisonDir := t.TempDir()
+	poisonMarker := filepath.Join(poisonDir, "ambient-engine-ran")
+	poison := writeExecutable(t, filepath.Join(poisonDir, "engine"),
+		"#!/bin/sh\nprintf invoked > '"+strings.ReplaceAll(poisonMarker, "'", `'\''`)+"'\nexit 1\n")
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", poison)
+	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "ambient-profile")
+	t.Setenv("COMPOUND_PANEL_BASE_URL", "https://panel.invalid")
+	t.Cleanup(func() {
+		if _, err := os.Stat(poisonMarker); !os.IsNotExist(err) {
+			t.Errorf("installed binding fixture invoked the ambient retrieval engine: %v", err)
+		}
+	})
 	for _, harnessCase := range []struct {
 		installer string
 		runtime   string
@@ -211,7 +223,13 @@ func TestCanonicalClaudeFamilyExecutesEveryInstalledLiveHookEvent(t *testing.T) 
 				command := exec.Command("/bin/sh", "-c", binding.Command)
 				command.Stdin = strings.NewReader(event.input)
 				command.Dir = workspace
-				command.Env = os.Environ()
+				// These disposable homes prove installed binding semantics, not the
+				// operator's engine or panel. Keep ambient workers out of the fixture.
+				command.Env = append(os.Environ(),
+					"COMPOUND_MEM_ENGINE_BIN=",
+					"COMPOUND_MEMORY_CLI_PROFILE=",
+					"COMPOUND_PANEL_BASE_URL=",
+				)
 				var stdout, stderr bytes.Buffer
 				command.Stdout = &stdout
 				command.Stderr = &stderr

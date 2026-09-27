@@ -103,6 +103,12 @@ The hook-enforcement tests use the existing suite-wide `compoundTestBinary`;
 they do not share hook configs, captured responses, nonces or runtime homes.
 Build reuse must not remove the genuine-response replay falsifier.
 
+The fixture-only-route falsifier also proves the wrapper's fixture route still
+works before rejecting its broken live stdin route. Canonical installed-hook
+binding fixtures clear the ambient retrieval engine, memory profile and panel
+endpoint; a poisoned engine records invocation if that isolation is removed.
+These tests exercise the real hook commands, not a native harness consuming them.
+
 Work CLI tests that only require preinitialized synthetic state reuse
 `initializedTestHome(t)`. Each consumer still gets independent mutable files;
 initialization, distinct identity, missing-home and clock-sensitive tests keep

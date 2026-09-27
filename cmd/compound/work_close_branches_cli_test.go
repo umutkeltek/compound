@@ -79,7 +79,7 @@ func TestParseOpensBranchFlagRejectsMalformed(t *testing.T) {
 
 func TestParseAcknowledgeAbandonedHappy(t *testing.T) {
 	t.Parallel()
-	got, err := parseAcknowledgeAbandoned(
+	got, err := work.ParseAcknowledgeAbandonedFlagPairs(
 		[]string{
 			"work_abc123",
 			"--acknowledge-abandoned", "ratt_20260823T120000Z_aaaaaaa",
@@ -110,7 +110,7 @@ func TestParseAcknowledgeAbandonedHappy(t *testing.T) {
 
 func TestParseAcknowledgeAbandonedRequiresReason(t *testing.T) {
 	t.Parallel()
-	_, err := parseAcknowledgeAbandoned(
+	_, err := work.ParseAcknowledgeAbandonedFlagPairs(
 		[]string{"work_abc123", "--acknowledge-abandoned", "ratt_aaaa", "--reason", ""},
 		"",
 	)
@@ -121,7 +121,7 @@ func TestParseAcknowledgeAbandonedRequiresReason(t *testing.T) {
 
 func TestParseAcknowledgeAbandonedRequiresRattID(t *testing.T) {
 	t.Parallel()
-	_, err := parseAcknowledgeAbandoned(
+	_, err := work.ParseAcknowledgeAbandonedFlagPairs(
 		[]string{"work_abc123", "--acknowledge-abandoned"},
 		"",
 	)

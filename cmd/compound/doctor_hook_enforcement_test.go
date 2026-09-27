@@ -233,6 +233,39 @@ func TestHookEnforcementPassesTheRealBinary(t *testing.T) {
 	}
 }
 
+// A working fixture-file route cannot certify a broken installed stdin route.
+func TestHookEnforcementFailsWhenOnlyFixtureModeWorks(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("builds the compound binary: skipped in -short mode")
+	}
+	real := buildRealCompound(t)
+	dir := t.TempDir()
+	quotedReal := "'" + strings.ReplaceAll(real, "'", `'\''`) + "'"
+	fixtureOnly := writeExecutable(t, filepath.Join(dir, "compound"),
+		"#!/bin/sh\nif [ \"$3\" = \"--live\" ]; then exit 0; fi\nexec "+quotedReal+" \"$@\"\n")
+	fixturePath := filepath.Join(dir, "fixture.json")
+	if err := os.WriteFile(fixturePath, hookEnforcementProbeFixture("act_fixtureonly0001"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := exec.Command(fixtureOnly, "hook", "pre-tool-use", fixturePath)
+	fixture.Dir = dir
+	fixture.Env = append(os.Environ(), "COMPOUND_HOME="+filepath.Join(dir, "fixture-home"), "COMPOUND_MEM_ENGINE_BIN=")
+	response, err := fixture.Output()
+	if err != nil || !strings.Contains(string(response), "policy_decision") {
+		t.Fatalf("fixture route must remain functional: %v\n%s", err, response)
+	}
+	configPath := filepath.Join(dir, "settings.json")
+	writeHookConfigFor(t, configPath, "claude-code", fixtureOnly)
+	rows, failing := buildHookEnforcementRows([]doctorHook{{Harness: "claude-code", ConfigPath: configPath}})
+	if failing != 1 || len(rows) != 1 || rows[0].Status != "fail_open" {
+		t.Fatalf("fixture-only binary must fail its installed live route, got failing=%d rows=%+v", failing, rows)
+	}
+	if !strings.Contains(rows[0].Detail, "HookEvent") {
+		t.Fatalf("failure must report missing live HookEvent, got %q", rows[0].Detail)
+	}
+}
+
 func TestHookEnforcementRejectsInvalidInstalledArgument(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds compound binary: skipped in -short mode")
