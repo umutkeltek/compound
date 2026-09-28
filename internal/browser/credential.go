@@ -503,6 +503,19 @@ func linkStagedCredential(home, stageName string) error {
 }
 
 func repairPendingCredentialProof(home string, store *eventstore.Store) error {
+	return repairPendingCredentialProofWithJournalSync(home, store, syncCredentialJournal)
+}
+
+func syncCredentialJournal(home string) error {
+	dir, err := os.Open(filepath.Dir(credentialJournalPath(home)))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func repairPendingCredentialProofWithJournalSync(home string, store *eventstore.Store, syncJournal func(string) error) error {
 	pending, err := readPendingCredentialProof(home)
 	if os.IsNotExist(err) {
 		return nil
@@ -546,6 +559,12 @@ func repairPendingCredentialProof(home string, store *eventstore.Store) error {
 	if receipt.IDs.WorkID != intent.IDs.WorkID || transition.IDs.WorkID != intent.IDs.WorkID ||
 		(intent.Action == "rotate_typesafe_key") != (pending.OldSecret != "") {
 		return errors.New("credential proof journal action lineage is invalid")
+	}
+	// The prior writer may have renamed the journal and then failed the
+	// directory sync. A retry must make that preparation durable before it
+	// can change the live credential slot.
+	if err := syncJournal(home); err != nil {
+		return err
 	}
 	if receiptExists && transitionExists {
 		return recordPendingCredentialEvents(home, store, pending)

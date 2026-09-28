@@ -186,6 +186,18 @@ func TestPreparedCredentialRotationRecoversBeforeMutation(t *testing.T) {
 	if _, err := replaceCredentialFile(secretPath, oldKey); err != nil {
 		t.Fatal(err)
 	}
+	if err := repairPendingCredentialProofWithJournalSync(home, store, func(string) error {
+		return errors.New("synthetic journal directory sync fault")
+	}); err == nil {
+		t.Fatal("rotation proceeded without durable preparation")
+	}
+	before, err := os.ReadFile(secretPath)
+	if err != nil || string(before) != string(oldKey) {
+		t.Fatal("journal sync failure changed live slot")
+	}
+	if _, err := store.Read(original.ReceiptID); err == nil {
+		t.Fatal("journal sync failure published completed receipt")
+	}
 	if _, err := RotateTypeSafeCredential(home, "work_browser_test", newKey, cfg, testTime().Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
