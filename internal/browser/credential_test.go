@@ -1,6 +1,8 @@
 package browser
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +10,8 @@ import (
 	"time"
 
 	"compound/internal/capgraph"
+	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/policy"
 )
 
@@ -63,6 +67,88 @@ func TestTypeSafeCredentialEnrollmentIsGovernedAndContentFree(t *testing.T) {
 			}
 			return nil
 		})
+	}
+}
+
+func TestCredentialProofRetryRepairsExactTransition(t *testing.T) {
+	home := t.TempDir()
+	key := []byte("synthetic-repair-key")
+	cfg := policy.DefaultConfig()
+	cfg.StandingGrants = append(cfg.StandingGrants, policy.StandingGrant{
+		ID: "synthetic-jev-credential", Capability: "browser.credential.store",
+		MutationClass: "security", ReversibilityCeiling: "hard", BlastRadius: "local",
+	})
+	first, err := StoreTypeSafeCredential(home, "work_browser_test", key, cfg, testTime())
+	if err != nil || !first.Stored {
+		t.Fatalf("first enrollment: %+v %v", first, err)
+	}
+	store, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.Read(first.TransitionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var transition envelope.Transition
+	if err := json.Unmarshal(record.Bytes, &transition); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := lockCredentialSlot(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePendingCredentialProof(lock, transition); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Remove(first.TransitionID); err != nil {
+		t.Fatal(err)
+	}
+	unlockCredentialSlot(lock)
+	retry, err := StoreTypeSafeCredential(home, "work_browser_test", key, cfg, testTime().Add(time.Second))
+	if err != nil || !retry.Stored {
+		t.Fatalf("repair retry: %+v %v", retry, err)
+	}
+	if _, err := store.Read(first.TransitionID); err != nil {
+		t.Fatalf("original transition was not repaired: %v", err)
+	}
+	lock, err = lockCredentialSlot(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := lock.Stat()
+	unlockCredentialSlot(lock)
+	if err != nil || info.Size() != 0 {
+		t.Fatalf("credential proof journal not cleared: %v %v", info, err)
+	}
+}
+
+func TestCredentialRotationLockAndPostRenameOutcome(t *testing.T) {
+	home := t.TempDir()
+	cfg := policy.DefaultConfig()
+	cfg.StandingGrants = append(cfg.StandingGrants, policy.StandingGrant{
+		ID: "synthetic-jev-credential", Capability: "browser.credential.store",
+		MutationClass: "security", ReversibilityCeiling: "hard", BlastRadius: "local",
+	})
+	if _, err := StoreTypeSafeCredential(home, "work_browser_test", []byte("synthetic-before"), cfg, testTime()); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := lockCredentialSlot(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RotateTypeSafeCredential(home, "work_browser_test", []byte("synthetic-after"), cfg, testTime().Add(time.Second)); err == nil {
+		t.Fatal("concurrent rotation bypassed slot lock")
+	}
+	unlockCredentialSlot(lock)
+	path := filepath.Join(home, "secrets", "typesafe", "jev-api-key")
+	committed, err := replaceCredentialFileWithSync(path, []byte("synthetic-after"), func(*os.File) error { return errors.New("synthetic post-rename sync fault") })
+	if !committed || err == nil {
+		t.Fatalf("post-rename state was hidden: committed=%t err=%v", committed, err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "synthetic-after" {
+		t.Fatal("rename did not activate replacement")
 	}
 }
 

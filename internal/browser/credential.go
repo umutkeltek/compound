@@ -4,11 +4,14 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"compound/internal/capgraph"
@@ -102,7 +105,7 @@ func setTypeSafeCredential(home, workID string, key []byte, cfg policy.Config, n
 		if err == nil || change.ReceiptID != "" {
 			return
 		}
-		receiptID, transitionID, recordErr := recordStep(store, intent, "failed", "Jev credential enrollment stopped without activating the slot")
+		receiptID, transitionID, recordErr := recordStep(store, intent, "failed", "Jev credential operation failed; inspect exact slot before retry")
 		if recordErr != nil {
 			err = errors.Join(err, recordErr)
 			return
@@ -111,6 +114,14 @@ func setTypeSafeCredential(home, workID string, key []byte, cfg policy.Config, n
 		change.ReceiptID, change.TransitionID = receiptID, transitionID
 	}()
 	path := filepath.Join(home, "secrets", "typesafe", "jev-api-key")
+	lock, err := lockCredentialSlot(home)
+	if err != nil {
+		return CredentialChange{}, err
+	}
+	defer unlockCredentialSlot(lock)
+	if err := repairPendingCredentialProof(lock, store); err != nil {
+		return CredentialChange{}, err
+	}
 	graph, err := capgraph.Open(home)
 	if err != nil {
 		return CredentialChange{}, err
@@ -136,6 +147,7 @@ func setTypeSafeCredential(home, workID string, key []byte, cfg policy.Config, n
 	}
 	info, statErr := os.Lstat(path)
 	existing := statErr == nil
+	var postCommitErr error
 	if statErr != nil && !os.IsNotExist(statErr) {
 		return CredentialChange{}, statErr
 	}
@@ -151,9 +163,11 @@ func setTypeSafeCredential(home, workID string, key []byte, cfg policy.Config, n
 			return CredentialChange{}, errors.New("credential slot already contains another value; enrollment does not replace secrets")
 		}
 		if replace && subtle.ConstantTimeCompare(stored, key) != 1 {
-			if err := replaceCredentialFile(path, key); err != nil {
-				return CredentialChange{}, err
+			committed, replaceErr := replaceCredentialFile(path, key)
+			if replaceErr != nil && !committed {
+				return CredentialChange{}, replaceErr
 			}
+			postCommitErr = replaceErr
 			existing = false // A real state delta requires a completed receipt.
 		}
 	} else {
@@ -202,45 +216,175 @@ func setTypeSafeCredential(home, workID string, key []byte, cfg policy.Config, n
 		receiptID, transitionID, recordErr := recordStep(store, intent, "no_op", "Jev credential slot already enrolled")
 		return CredentialChange{Stored: recordErr == nil, ActionID: intent.ID, DecisionID: decision.ID, ReceiptID: receiptID, TransitionID: transitionID}, recordErr
 	}
-	receiptID, transitionID, err := recordCredentialStored(store, intent, now)
+	receiptID, transitionID, err := recordCredentialStored(lock, store, intent, now)
 	if err != nil {
 		// The exact slot stays recoverable on retry if audit publication fails.
-		return CredentialChange{Stored: true, ActionID: intent.ID, DecisionID: decision.ID, ReceiptID: receiptID}, err
+		return CredentialChange{Stored: true, ActionID: intent.ID, DecisionID: decision.ID, ReceiptID: receiptID, TransitionID: transitionID}, errors.Join(err, postCommitErr)
 	}
-	return CredentialChange{Stored: true, ActionID: intent.ID, DecisionID: decision.ID, ReceiptID: receiptID, TransitionID: transitionID}, nil
+	return CredentialChange{Stored: true, ActionID: intent.ID, DecisionID: decision.ID, ReceiptID: receiptID, TransitionID: transitionID}, postCommitErr
 }
 
-func replaceCredentialFile(path string, key []byte) error {
+func replaceCredentialFile(path string, key []byte) (bool, error) {
+	return replaceCredentialFileWithSync(path, key, func(dir *os.File) error { return dir.Sync() })
+}
+
+func replaceCredentialFileWithSync(path string, key []byte, syncDir func(*os.File) error) (bool, error) {
 	file, err := os.CreateTemp(filepath.Dir(path), ".jev-api-key-*")
 	if err != nil {
-		return err
+		return false, err
 	}
 	tempPath := file.Name()
 	defer os.Remove(tempPath)
 	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
-		return err
+		return false, err
 	}
 	if n, err := file.Write(key); err != nil || n != len(key) {
 		_ = file.Close()
-		return errors.New("credential replacement write failed")
+		return false, errors.New("credential replacement write failed")
 	}
 	if err := file.Sync(); err != nil {
 		_ = file.Close()
-		return err
+		return false, err
 	}
 	if err := file.Close(); err != nil {
-		return err
+		return false, err
 	}
 	if err := os.Rename(tempPath, path); err != nil {
-		return err
+		return false, err
 	}
 	dir, err := os.Open(filepath.Dir(path))
 	if err != nil {
-		return err
+		return true, err
 	}
 	defer dir.Close()
-	return dir.Sync()
+	return true, syncDir(dir)
+}
+
+// The content-free lock also journals one incomplete Receipt -> Transition
+// pair. A retry repairs the exact prior transition before changing the slot.
+func lockCredentialSlot(home string) (*os.File, error) {
+	if err := secureCredentialParents(home); err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(home, "secrets", "typesafe")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := secureCredentialParents(home); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, ".jev-api-key.lock")
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			return nil, errors.New("credential lock must be a regular mode-0600 file")
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		_ = file.Close()
+		return nil, errors.New("credential lock could not verify private regular file")
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		return nil, errors.New("credential slot is being changed by another process")
+	}
+	return file, nil
+}
+
+func unlockCredentialSlot(file *os.File) {
+	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	_ = file.Close()
+}
+
+func writePendingCredentialProof(lock *os.File, transition envelope.Transition) error {
+	data, err := json.Marshal(transition)
+	if err != nil {
+		return err
+	}
+	if err := lock.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := lock.Seek(0, 0); err != nil {
+		return err
+	}
+	if n, err := lock.Write(data); err != nil || n != len(data) {
+		return errors.New("credential proof journal write failed")
+	}
+	return lock.Sync()
+}
+
+func clearPendingCredentialProof(lock *os.File) error {
+	if err := lock.Truncate(0); err != nil {
+		return err
+	}
+	return lock.Sync()
+}
+
+func repairPendingCredentialProof(lock *os.File, store *eventstore.Store) error {
+	info, err := lock.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	if info.Size() > 16384 {
+		return errors.New("credential proof journal exceeds limit")
+	}
+	if _, err := lock.Seek(0, 0); err != nil {
+		return err
+	}
+	data, err := io.ReadAll(io.LimitReader(lock, 16385))
+	if err != nil {
+		return err
+	}
+	var transition envelope.Transition
+	if err := json.Unmarshal(data, &transition); err != nil {
+		return errors.New("credential proof journal is malformed")
+	}
+	if err := transition.Validate(); err != nil || len(transition.AfterRefs) != 1 || len(transition.ActionRefs) != 1 {
+		return errors.New("credential proof journal is invalid")
+	}
+	receiptExists, err := store.Exists(transition.AfterRefs[0])
+	if err != nil {
+		return err
+	}
+	if receiptExists {
+		actionRecord, err := store.Read(transition.ActionRefs[0])
+		if err != nil {
+			return err
+		}
+		var intent envelope.ActionIntent
+		if err := json.Unmarshal(actionRecord.Bytes, &intent); err != nil || intent.Capability != "browser.credential.store" || intent.Target.ID != jevCredentialSurface {
+			return errors.New("credential proof journal names an unrelated action")
+		}
+		receiptRecord, err := store.Read(transition.AfterRefs[0])
+		if err != nil {
+			return err
+		}
+		var receipt envelope.Receipt
+		if err := json.Unmarshal(receiptRecord.Bytes, &receipt); err != nil || receipt.Header.ID != transition.AfterRefs[0] || receipt.Outcome != "completed" {
+			return errors.New("credential proof journal names an unrelated receipt")
+		}
+		transitionExists, err := store.Exists(transition.ID)
+		if err != nil {
+			return err
+		}
+		if !transitionExists {
+			if err := recordEvent(store, transition.ID, &transition); err != nil {
+				return err
+			}
+		}
+	}
+	return clearPendingCredentialProof(lock)
 }
 
 func secureCredentialParents(home string) error {
@@ -259,7 +403,7 @@ func secureCredentialParents(home string) error {
 	return nil
 }
 
-func recordCredentialStored(store *eventstore.Store, intent envelope.ActionIntent, now time.Time) (string, string, error) {
+func recordCredentialStored(lock *os.File, store *eventstore.Store, intent envelope.ActionIntent, now time.Time) (string, string, error) {
 	digest := sha256.Sum256([]byte(intent.ID + "\x00stored"))
 	summary := "Jev TypeSafe credential slot enrolled in Compound custody"
 	if intent.Action == "rotate_typesafe_key" {
@@ -288,11 +432,14 @@ func recordCredentialStored(store *eventstore.Store, intent envelope.ActionInten
 	if err := transition.Validate(); err != nil {
 		return "", "", err
 	}
+	if err := writePendingCredentialProof(lock, transition); err != nil {
+		return "", "", err
+	}
 	if err := recordEvent(store, receipt.ID, &receipt); err != nil {
 		return "", "", err
 	}
 	if err := recordEvent(store, transition.ID, &transition); err != nil {
-		return receipt.ID, "", err
+		return receipt.ID, transition.ID, err
 	}
-	return receipt.ID, transition.ID, nil
+	return receipt.ID, transition.ID, clearPendingCredentialProof(lock)
 }
