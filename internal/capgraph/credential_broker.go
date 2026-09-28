@@ -24,6 +24,57 @@ import (
 // the custodian's store retain custody.
 const CredentialUsageSchemaVersion = "compound.credential_usage.v0.1"
 
+var ErrCredentialSurfaceNotRegistered = errors.New("credential surface not registered")
+
+// ResolveCredentialForSurface returns one child-environment assignment from a
+// registered, Compound-custodied secret. It never returns the value in an
+// error or audit record. Browser tasks use this instead of caller shell state.
+func ResolveCredentialForSurface(homePath, surfaceID, workID string, expected CredentialHandle) (string, error) {
+	info, err := os.Lstat(filepath.Join(homePath, "registries", "capability-connection-surfaces.jsonl"))
+	if os.IsNotExist(err) {
+		return "", fmt.Errorf("%w: %s", ErrCredentialSurfaceNotRegistered, surfaceID)
+	} else if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("credential surface registry is not a regular file")
+	}
+	store, err := OpenReadOnly(homePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("%w: %s", ErrCredentialSurfaceNotRegistered, surfaceID)
+		}
+		return "", err
+	}
+	surfaces, err := store.ConnectionSurfaces()
+	if err != nil {
+		return "", err
+	}
+	for _, surface := range surfaces {
+		if surface.NodeID != surfaceID {
+			continue
+		}
+		if surface.CredentialHandle != expected {
+			return "", fmt.Errorf("credential surface %q has an unexpected handle", surfaceID)
+		}
+		if !strings.HasPrefix(surface.CredentialHandle.Ref, "home-secret://") {
+			return "", fmt.Errorf("credential surface %q needs a Compound home secret", surfaceID)
+		}
+		env, broker, err := resolveCredentialEnv(homePath, surface.CredentialHandle)
+		if err != nil {
+			return "", err
+		}
+		if broker != "" || len(env) != 1 {
+			return "", fmt.Errorf("credential surface %q did not resolve one environment value", surfaceID)
+		}
+		if err := recordCredentialUsage(homePath, surfaceID, workID, surface.CredentialHandle, "resolved"); err != nil {
+			return "", err
+		}
+		return env[0], nil
+	}
+	return "", fmt.Errorf("credential surface %q absent from existing registry; refuse environment fallback", surfaceID)
+}
+
 // CredentialExecCommand implements `compound credential exec` — the one verb
 // that turns a ConnectionSurface's CredentialHandle into a live child process.
 //
@@ -117,7 +168,7 @@ func CredentialExecCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error: credential exec:", err)
 		return 1
 	}
-	if err := recordCredentialUsage(homePath, surfaceID, workID, surface.CredentialHandle); err != nil {
+	if err := recordCredentialUsage(homePath, surfaceID, workID, surface.CredentialHandle, "resolved"); err != nil {
 		fmt.Fprintln(stderr, "error: credential exec: record usage:", err)
 		return 1
 	}
@@ -169,6 +220,24 @@ func resolveCredentialEnv(homePath string, h CredentialHandle) (env []string, br
 			return nil, "", fmt.Errorf("home-secret locator %q is not a relative secrets path", locator)
 		}
 		path := filepath.Join(homePath, "secrets", rel)
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, "", fmt.Errorf("home-secret %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			return nil, "", fmt.Errorf("home-secret %s must be a regular mode-0600 file", path)
+		}
+		realHome, err := filepath.EvalSymlinks(homePath)
+		if err != nil {
+			return nil, "", err
+		}
+		realPath, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return nil, "", err
+		}
+		if !strings.HasPrefix(realPath, filepath.Join(realHome, "secrets")+string(os.PathSeparator)) {
+			return nil, "", fmt.Errorf("home-secret %s leaves Compound custody", path)
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, "", fmt.Errorf("home-secret %s: %w", path, err)
@@ -238,11 +307,11 @@ func readDotenvVar(path, key string) (string, error) {
 	return "", fmt.Errorf("env-file %s has no variable %s", path, key)
 }
 
-// recordCredentialUsage appends one audit line naming WHO used WHICH surface
-// WHEN. It records surface id, work id, env name, and kind — never the value.
-// A recording failure is a hard error: an unlogged use is exactly the
-// "which lane used which credential" question the record exists to answer.
-func recordCredentialUsage(homePath, surfaceID, workID string, h CredentialHandle) error {
+// recordCredentialUsage audits credential resolution, not provider contact or
+// child launch. The phase field prevents a policy-held task from appearing as
+// a completed credential use. It records only surface/work metadata, no value.
+// Failure is hard: even secret resolution must leave an audit trail.
+func recordCredentialUsage(homePath, surfaceID, workID string, h CredentialHandle, phase string) error {
 	path := filepath.Join(homePath, "registries", "credential-usage.jsonl")
 	rec := struct {
 		Schema    string    `json:"schema_version"`
@@ -250,12 +319,14 @@ func recordCredentialUsage(homePath, surfaceID, workID string, h CredentialHandl
 		WorkID    string    `json:"work_id,omitempty"`
 		EnvName   string    `json:"env_name,omitempty"`
 		Kind      string    `json:"kind,omitempty"`
+		Phase     string    `json:"phase"`
 		At        time.Time `json:"at"`
 	}{
 		Schema:    CredentialUsageSchemaVersion,
 		SurfaceID: surfaceID,
 		WorkID:    strings.TrimSpace(workID),
 		EnvName:   strings.TrimSpace(h.EnvName),
+		Phase:     phase,
 		At:        time.Now().UTC(),
 	}
 	if kind, _, ok := strings.Cut(strings.TrimSpace(h.Ref), "://"); ok {

@@ -8,9 +8,12 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/capgraph"
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/policy"
@@ -38,13 +41,68 @@ func testBridge(ctx context.Context) *exec.Cmd {
 	return cmd
 }
 
+func TestJevUsesCompoundCredentialAndPricingWithoutCallerEnvironment(t *testing.T) {
+	home := t.TempDir()
+	settings := []byte(`{"schema_version":"compound.browser_settings.v0.2","jev_enabled":true,"provider_model":"jev-1.13.0","provider_max_usd_per_request":0.003}`)
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(SettingsPath(home), settings, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secretPath := filepath.Join(home, "secrets", "typesafe", "jev-api-key")
+	if err := os.MkdirAll(filepath.Dir(secretPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, []byte("synthetic-typesafe-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := capgraph.AddConnectionSurfaceGoverned(home, capgraph.ConnectionSurface{
+		NodeID: "tool:browser-jev-typesafe",
+		CredentialHandle: capgraph.CredentialHandle{
+			Ref: "home-secret://typesafe/jev-api-key", Custodian: "compound-home",
+			EnvName: "TYPESAFE_API_KEY",
+		},
+	}, testTime())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TYPESAFE_API_KEY", "shadow-key")
+	t.Setenv("TYPESAFE_PROVIDER_MAX_USD_PER_REQUEST", "0.00001")
+	t.Setenv("TYPESAFE_MODEL", "other-model")
+	req := testTask(home)
+	req.MaxProviderUSD = 0.02
+	var launched *exec.Cmd
+	result, err := runTask(context.Background(), req, taskPolicy(), func(ctx context.Context) *exec.Cmd {
+		launched = testBridge(ctx)
+		return launched
+	})
+	if err != nil || result.Status != "verified" || launched == nil {
+		t.Fatalf("registered Jev task: result=%+v err=%v", result, err)
+	}
+	joined := strings.Join(launched.Env, "\n")
+	if strings.Contains(joined, "TYPESAFE_API_KEY=") || !strings.Contains(joined, "TYPESAFE_MODEL=jev-1.13.0") {
+		t.Fatal("secret reached setup process or pinned provider model missing")
+	}
+	if strings.Contains(joined, "shadow-key") || strings.Contains(joined, "other-model") {
+		t.Fatal("caller provider override leaked into Jev child")
+	}
+	if os.Getenv("TYPESAFE_API_KEY") != "shadow-key" {
+		t.Fatal("credential leaked into caller environment")
+	}
+}
+
 func TestJevBridgeHelper(t *testing.T) {
 	if os.Getenv("COMPOUND_TEST_JEV_HELPER") != "1" {
 		return
 	}
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"event": "ready"})
 	decoder := json.NewDecoder(os.Stdin)
 	var req map[string]any
 	if err := decoder.Decode(&req); err != nil {
+		os.Exit(2)
+	}
+	if req["typesafe_api_key"] == "" {
 		os.Exit(2)
 	}
 	mode := os.Getenv("COMPOUND_TEST_JEV_MODE")
@@ -194,6 +252,29 @@ func TestJevMissingCredentialNeverLaunches(t *testing.T) {
 	}
 }
 
+func TestJevCorruptRegistryNeverFallsBackToShellKey(t *testing.T) {
+	home := t.TempDir()
+	if _, err := SetJevEnabled(home, "work_browser_test", true, policy.DefaultConfig(), testTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "registries"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "registries", "capability-connection-surfaces.jsonl"), []byte("{torn\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TYPESAFE_API_KEY", "synthetic-shell-key")
+	t.Setenv("TYPESAFE_PROVIDER_MAX_USD_PER_REQUEST", "0.003")
+	called := 0
+	_, err := runTask(context.Background(), testTask(home), taskPolicy(), func(ctx context.Context) *exec.Cmd {
+		called++
+		return testBridge(ctx)
+	})
+	if err == nil || called != 0 {
+		t.Fatalf("corrupt registry used shell fallback: err=%v launches=%d", err, called)
+	}
+}
+
 func TestJevProviderCostPreflightStopsBeforeLaunch(t *testing.T) {
 	home := t.TempDir()
 	if _, err := SetJevEnabled(home, "work_browser_test", true, policy.DefaultConfig(), testTime()); err != nil {
@@ -207,6 +288,7 @@ func TestJevProviderCostPreflightStopsBeforeLaunch(t *testing.T) {
 		budget       float64
 	}{
 		{"", "", 0.1},
+		{"0.000001", "", 0.1},
 		{"0.05", "", 0.1},
 		{"0.01", "other-model", 0.1},
 		{"0.01", "", 0},

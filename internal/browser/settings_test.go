@@ -27,6 +27,29 @@ func TestBrowserSettingsDefaultAndRouteProfileFence(t *testing.T) {
 	}
 }
 
+func TestBrowserProviderPricingIsGovernedAndSurvivesToggle(t *testing.T) {
+	home := t.TempDir()
+	now := testTime()
+	cfg := policy.DefaultConfig()
+	if _, err := SetJevEnabled(home, "work_browser_test", true, cfg, now); err != nil {
+		t.Fatal(err)
+	}
+	change, err := SetProviderPricing(home, "work_browser_test", "jev-1.13.0", 0.003, cfg, now.Add(time.Second))
+	if err != nil || !change.Changed || change.ReceiptID == "" || change.DecisionID == "" {
+		t.Fatalf("provider pricing change not governed: %+v err=%v", change, err)
+	}
+	if _, err := SetJevEnabled(home, "work_browser_test", false, cfg, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadSettings(home)
+	if err != nil || loaded.JevEnabled || loaded.ProviderModel != "jev-1.13.0" || loaded.ProviderMaxUSDPerRequest != 0.003 {
+		t.Fatalf("provider price lost after toggle: %+v err=%v", loaded, err)
+	}
+	if _, err := SetProviderPricing(home, "work_browser_test", "jev-latest", 0.003, cfg, now.Add(3*time.Second)); err == nil {
+		t.Fatal("moving alias accepted as priced model")
+	}
+}
+
 func TestBrowserSettingsMalformedRefusesRoute(t *testing.T) {
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Dir(SettingsPath(home)), 0o755); err != nil {

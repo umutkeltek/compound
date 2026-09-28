@@ -16,15 +16,22 @@ import (
 )
 
 const (
-	settingsSchemaVersion = "compound.browser_settings.v0.1"
-	toggleCapability      = "browser.backend.toggle"
+	settingsSchemaVersion       = "compound.browser_settings.v0.2"
+	legacySettingsSchemaVersion = "compound.browser_settings.v0.1"
+	toggleCapability            = "browser.backend.toggle"
+	providerPricingCapability   = "browser.provider.pricing"
+	// Jev 1.13 accepts at most 64k input tokens at $0.042 per million.
+	// https://docs.typesafe.ai/models
+	minPricedJevUSDPerRequest = 0.002688
 )
 
 // Settings is Compound's sole browser-backend switch. Missing settings mean
 // the established Playwright route; malformed settings fail closed.
 type Settings struct {
-	SchemaVersion string `json:"schema_version"`
-	JevEnabled    bool   `json:"jev_enabled"`
+	SchemaVersion            string  `json:"schema_version"`
+	JevEnabled               bool    `json:"jev_enabled"`
+	ProviderModel            string  `json:"provider_model,omitempty"`
+	ProviderMaxUSDPerRequest float64 `json:"provider_max_usd_per_request,omitempty"`
 }
 
 type SettingsChange struct {
@@ -62,15 +69,30 @@ func LoadSettings(home string) (Settings, error) {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return Settings{}, fmt.Errorf("decode browser settings: %w", err)
 	}
-	if len(fields) != 2 || fields["schema_version"] == nil || fields["jev_enabled"] == nil {
+	if fields["schema_version"] == nil || fields["jev_enabled"] == nil {
 		return Settings{}, fmt.Errorf("browser settings have unrecognized shape")
+	}
+	for name := range fields {
+		switch name {
+		case "schema_version", "jev_enabled", "provider_model", "provider_max_usd_per_request":
+		default:
+			return Settings{}, fmt.Errorf("browser settings have unrecognized shape")
+		}
 	}
 	var settings Settings
 	if err := json.Unmarshal(data, &settings); err != nil {
 		return Settings{}, fmt.Errorf("decode browser settings: %w", err)
 	}
-	if settings.SchemaVersion != settingsSchemaVersion {
+	if settings.SchemaVersion != settingsSchemaVersion && settings.SchemaVersion != legacySettingsSchemaVersion {
 		return Settings{}, fmt.Errorf("unsupported browser settings schema %q", settings.SchemaVersion)
+	}
+	if (settings.ProviderModel == "") != (settings.ProviderMaxUSDPerRequest == 0) ||
+		(settings.ProviderModel != "" && (settings.ProviderModel != "jev-1.13.0" ||
+			settings.ProviderMaxUSDPerRequest < minPricedJevUSDPerRequest || settings.ProviderMaxUSDPerRequest > 0.003)) {
+		return Settings{}, fmt.Errorf("browser provider settings need pinned Jev model and bounded request ceiling")
+	}
+	if settings.SchemaVersion == legacySettingsSchemaVersion && len(fields) != 2 {
+		return Settings{}, fmt.Errorf("legacy browser settings have unrecognized shape")
 	}
 	return settings, nil
 }
@@ -101,13 +123,61 @@ func SetJevEnabled(home, workID string, enabled bool, cfg policy.Config, now tim
 	if !strings.HasPrefix(workID, "work_") {
 		return SettingsChange{}, fmt.Errorf("browser setting requires a work_id")
 	}
-	updated := Settings{SchemaVersion: settingsSchemaVersion, JevEnabled: enabled}
+	updated := current
+	updated.SchemaVersion = settingsSchemaVersion
+	updated.JevEnabled = enabled
 	newValue, err := json.MarshalIndent(updated, "", "  ")
 	if err != nil {
 		return SettingsChange{}, err
 	}
 	newValue = append(newValue, '\n')
 	intent := browserSettingIntent(home, workID, enabled, now)
+	decision := policy.Evaluate(intent, cfg, now)
+	if err := act.Gate(intent, decision); err != nil {
+		return SettingsChange{Settings: current, Refused: true, Reason: err.Error(), ActionID: intent.ID, DecisionID: decision.ID}, nil
+	}
+	store, err := act.NewArtifactStore(home)
+	if err != nil {
+		return SettingsChange{}, err
+	}
+	result, err := act.Execute(store, act.NewFileArtifactAdapter(), intent, decision, newValue, now)
+	if err != nil {
+		return SettingsChange{}, err
+	}
+	return SettingsChange{Settings: updated, Changed: true, ActionID: intent.ID, DecisionID: decision.ID, ReceiptID: result.Receipt.ID, TransitionID: result.Transition.ID}, nil
+}
+
+// SetProviderPricing pins the model and request ceiling without enabling Jev
+// or authorizing provider spend. The configured model cannot drift via alias.
+func SetProviderPricing(home, workID, model string, perRequestUSD float64, cfg policy.Config, now time.Time) (SettingsChange, error) {
+	if model != "jev-1.13.0" || perRequestUSD < minPricedJevUSDPerRequest || perRequestUSD > 0.003 {
+		return SettingsChange{}, fmt.Errorf("provider pricing requires pinned Jev 1.13 and USD ceiling between 0.002688 and 0.003")
+	}
+	if !strings.HasPrefix(workID, "work_") {
+		return SettingsChange{}, fmt.Errorf("browser provider pricing requires work_id")
+	}
+	current, err := LoadSettings(home)
+	if err != nil {
+		return SettingsChange{}, err
+	}
+	if current.ProviderModel == model && current.ProviderMaxUSDPerRequest == perRequestUSD {
+		return SettingsChange{Settings: current}, nil
+	}
+	updated := current
+	updated.SchemaVersion = settingsSchemaVersion
+	updated.ProviderModel = model
+	updated.ProviderMaxUSDPerRequest = perRequestUSD
+	newValue, err := json.MarshalIndent(updated, "", "  ")
+	if err != nil {
+		return SettingsChange{}, err
+	}
+	newValue = append(newValue, '\n')
+	intent := browserSettingIntent(home, workID, false, now)
+	digest := sha256.Sum256([]byte(workID + "\x00provider-pricing\x00" + now.UTC().Format(time.RFC3339Nano)))
+	intent.ID = "act_" + hex.EncodeToString(digest[:8])
+	intent.Capability = providerPricingCapability
+	intent.Action = "set_provider_pricing"
+	intent.Preview = "pin Jev provider pricing"
 	decision := policy.Evaluate(intent, cfg, now)
 	if err := act.Gate(intent, decision); err != nil {
 		return SettingsChange{Settings: current, Refused: true, Reason: err.Error(), ActionID: intent.ID, DecisionID: decision.ID}, nil

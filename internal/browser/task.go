@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/capgraph"
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/policy"
@@ -105,10 +106,23 @@ func runTask(ctx context.Context, req TaskRequest, cfg policy.Config, launch bri
 	if err != nil {
 		return result, err
 	}
-	if os.Getenv("TYPESAFE_API_KEY") == "" {
-		return result, errors.New("Jev requires TYPESAFE_API_KEY in the environment")
+	credentialEnv, err := capgraph.ResolveCredentialForSurface(req.Home, jevCredentialSurface, req.WorkID, jevCredentialHandle())
+	if errors.Is(err, capgraph.ErrCredentialSurfaceNotRegistered) {
+		if key := os.Getenv("TYPESAFE_API_KEY"); key != "" {
+			credentialEnv, err = "TYPESAFE_API_KEY="+key, nil
+		}
 	}
-	providerBound, err := providerCostBound(req)
+	if err != nil {
+		return result, fmt.Errorf("Jev requires a registered TypeSafe credential: %w", err)
+	}
+	providerModel := settings.ProviderModel
+	if providerModel == "" {
+		providerModel = os.Getenv("TYPESAFE_MODEL")
+	}
+	if providerModel == "" {
+		providerModel = "jev-1.13.0"
+	}
+	providerBound, err := providerCostBound(req, settings, providerModel)
 	if err != nil {
 		return result, err
 	}
@@ -177,7 +191,7 @@ func runTask(ctx context.Context, req TaskRequest, cfg policy.Config, launch bri
 	if cmd.Env == nil {
 		cmd.Env = os.Environ()
 	}
-	cmd.Env = append(cmd.Env, "COMPOUND_JEV_SESSION_DIR="+sessionDir)
+	cmd.Env = append(providerChildEnv(cmd.Env), "COMPOUND_JEV_SESSION_DIR="+sessionDir, "TYPESAFE_MODEL="+providerModel)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return result, err
@@ -198,12 +212,19 @@ func runTask(ctx context.Context, req TaskRequest, cfg policy.Config, launch bri
 			_ = cmd.Wait()
 		}
 	}()
-	request := map[string]any{"url": req.URL, "goal": req.Goal, "expect_text": req.ExpectText, "max_steps": req.MaxSteps}
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 4096), 16*1024)
+	if !scanner.Scan() {
+		return result, errors.New("Jev bridge did not become ready")
+	}
+	var ready bridgeEvent
+	if json.Unmarshal(scanner.Bytes(), &ready) != nil || ready.Event != "ready" {
+		return result, errors.New("Jev bridge readiness protocol failed")
+	}
+	request := map[string]any{"url": req.URL, "goal": req.Goal, "expect_text": req.ExpectText, "max_steps": req.MaxSteps, "typesafe_api_key": strings.TrimPrefix(credentialEnv, "TYPESAFE_API_KEY=")}
 	if err := json.NewEncoder(stdin).Encode(request); err != nil {
 		return result, err
 	}
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 4096), 16*1024)
 	var lastIntent *envelope.ActionIntent
 	terminalDone := false
 	for scanner.Scan() {
@@ -340,19 +361,42 @@ func runTask(ctx context.Context, req TaskRequest, cfg policy.Config, launch bri
 
 // Upstream can retry a TypeSafe POST three times for each predict. The bound
 // must be backed by a provider/account contract; a guessed price is unsafe.
-func providerCostBound(req TaskRequest) (float64, error) {
-	perRequest, err := strconv.ParseFloat(os.Getenv("TYPESAFE_PROVIDER_MAX_USD_PER_REQUEST"), 64)
+func providerCostBound(req TaskRequest, settings Settings, model string) (float64, error) {
+	price := ""
+	if settings.ProviderMaxUSDPerRequest > 0 {
+		price = strconv.FormatFloat(settings.ProviderMaxUSDPerRequest, 'f', -1, 64)
+	} else {
+		price = os.Getenv("TYPESAFE_PROVIDER_MAX_USD_PER_REQUEST")
+	}
+	perRequest, err := strconv.ParseFloat(price, 64)
 	if err != nil || !finitePositive(perRequest) || !finitePositive(req.MaxProviderUSD) {
 		return 0, errors.New("Jev requires a provider per-request cost ceiling and --provider-budget-usd")
+	}
+	if perRequest < minPricedJevUSDPerRequest {
+		return 0, errors.New("Jev provider ceiling is below the published pinned-model maximum")
 	}
 	bound := perRequest * float64(req.MaxSteps*3)
 	if !finitePositive(bound) || bound > req.MaxProviderUSD {
 		return 0, errors.New("Jev provider request bound exceeds task budget")
 	}
-	if model := os.Getenv("TYPESAFE_MODEL"); model != "" && model != "jev-latest" {
-		return 0, errors.New("Jev cost contract covers only the default TypeSafe model")
+	if model != "jev-1.13.0" {
+		return 0, errors.New("Jev cost contract covers only pinned Jev 1.13")
 	}
 	return bound, nil
+}
+
+func providerChildEnv(base []string) []string {
+	if base == nil {
+		base = os.Environ()
+	}
+	out := make([]string, 0, len(base))
+	for _, item := range base {
+		if strings.HasPrefix(item, "TYPESAFE_API_KEY=") || strings.HasPrefix(item, "TYPESAFE_MODEL=") || strings.HasPrefix(item, "TYPESAFE_PROVIDER_MAX_USD_PER_REQUEST=") {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func finitePositive(value float64) bool {
@@ -441,7 +485,7 @@ func recordEvent(store *eventstore.Store, id string, value any) error {
 func recordStep(store *eventstore.Store, intent envelope.ActionIntent, outcome, summary string) (string, string, error) {
 	now := time.Now().UTC()
 	digest := sha256.Sum256([]byte(intent.ID + "\x00" + outcome + "\x00" + now.Format(time.RFC3339Nano)))
-	receipt := envelope.Receipt{Header: intent.Header, Outcome: outcome, MoveType: "audit_only", StateDelta: envelope.StateDelta{Changed: false, Summary: summary}, Cost: envelope.ReceiptCost{ModelCalls: []string{}, USDEstimated: intent.EstimatedCost.USD}, Skills: envelope.ReceiptSkills{Used: []string{"browser.goal.jev"}, Missed: []string{}, Candidate: []string{}, UsedDeclared: true}, Memory: envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}}, Next: envelope.ReceiptNext{SuggestedWork: []string{}}}
+	receipt := envelope.Receipt{Header: intent.Header, Outcome: outcome, MoveType: "audit_only", StateDelta: envelope.StateDelta{Changed: false, Summary: summary}, Cost: envelope.ReceiptCost{ModelCalls: []string{}, USDEstimated: intent.EstimatedCost.USD}, Skills: envelope.ReceiptSkills{Used: []string{intent.Capability}, Missed: []string{}, Candidate: []string{}, UsedDeclared: true}, Memory: envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}}, Next: envelope.ReceiptNext{SuggestedWork: []string{}}}
 	receipt.SchemaVersion, receipt.ID, receipt.CreatedAt = envelope.SVReceipt, "rec_"+hex.EncodeToString(digest[:8]), now.Format(time.RFC3339Nano)
 	if err := receipt.Validate(); err != nil {
 		return "", "", err

@@ -3,6 +3,9 @@ package browser
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -41,6 +44,50 @@ func TestBrowserPortableCLISettingsReachRouteConsumer(t *testing.T) {
 	}
 	if err := json.Unmarshal(out.Bytes(), &route); err != nil || route.Backend != "playwright" {
 		t.Fatalf("profile route output: %s, %v", out.String(), err)
+	}
+}
+
+func TestBrowserProviderPricingCLIUpdatesCompoundSettings(t *testing.T) {
+	home := t.TempDir()
+	var out bytes.Buffer
+	handled, err := runPortableBrowser([]string{"provider-pricing", "--work", "work_browser_cli", "--model", "jev-1.13.0", "--max-usd-per-request", "0.003", "--json", "--home", home}, &out)
+	if !handled || err != nil {
+		t.Fatalf("provider pricing CLI: handled=%t err=%v", handled, err)
+	}
+	settings, err := LoadSettings(home)
+	if err != nil || settings.ProviderModel != "jev-1.13.0" || settings.ProviderMaxUSDPerRequest != 0.003 {
+		t.Fatalf("provider pricing not persisted: %+v err=%v", settings, err)
+	}
+}
+
+func TestBrowserCredentialCLIReadsSecretOnlyFromInput(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policySource := []byte("standing_grants:\n  - id: test-jev-secret\n    capability: browser.credential.store\n    mutation_class: security\n    reversibility_ceiling: hard\n    blast_radius: local\n")
+	if err := os.WriteFile(filepath.Join(home, "config", "policy.yaml"), policySource, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	handled, err := runPortableBrowserInput([]string{"credential-set", "--work", "work_browser_cli", "--confirm", "--json", "--home", home}, &out, strings.NewReader("synthetic-cli-key\n"))
+	if !handled || err != nil {
+		t.Fatalf("credential CLI: handled=%t err=%v output=%s", handled, err, out.String())
+	}
+	if strings.Contains(out.String(), "synthetic-cli-key") {
+		t.Fatal("credential CLI printed secret")
+	}
+	var result CredentialChange
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil || !result.Stored {
+		t.Fatalf("credential CLI response: %s err=%v", out.String(), err)
+	}
+	out.Reset()
+	handled, err = runPortableBrowserInput([]string{"credential-rotate", "--work", "work_browser_cli", "--confirm", "--json", "--home", home}, &out, strings.NewReader("synthetic-new-cli-key\n"))
+	if !handled || err != nil || strings.Contains(out.String(), "synthetic-new-cli-key") {
+		t.Fatalf("credential rotation CLI: handled=%t err=%v output=%s", handled, err, out.String())
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil || !result.Stored {
+		t.Fatalf("credential rotation CLI response: %s err=%v", out.String(), err)
 	}
 }
 

@@ -128,6 +128,9 @@ func TestFirstPartyCommandAdmissionDistinguishesMutatingSubcommands(t *testing.T
 		},
 		{command: "compound browser route --json", wantOperation: "local_command"},
 		{command: "compound browser settings --enable --work work_example", wantOperation: "governed_command"},
+		{command: "compound browser provider-pricing --work work_example --model jev-1.13.0 --max-usd-per-request 0.003", wantOperation: "governed_command"},
+		{command: "compound browser credential-set --work work_example --confirm", wantOperation: "governed_command"},
+		{command: "compound browser credential-rotate --work work_example --confirm", wantOperation: "governed_command"},
 		{command: "compound browser goal --work work_example --url https://example.com/ --goal read --expect-text Example", wantOperation: "governed_command"},
 		{
 			command:       "compound home where --home /synthetic/home",

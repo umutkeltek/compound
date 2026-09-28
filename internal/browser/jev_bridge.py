@@ -192,10 +192,15 @@ def isolated_chrome(allowed_url):
 
 def main():
     global STAGE
+    send(event="ready")
     request = receive()
+    provider_key = request.pop("typesafe_api_key", "")
+    if not provider_key:
+        raise RuntimeError("missing provider credential")
     STAGE = "chrome"
     with isolated_chrome(request["url"]):
         STAGE = "import"
+        os.environ["TYPESAFE_API_KEY"] = provider_key
         from jev_ultrafast import Agent
         execute_goal(Agent, request)
 

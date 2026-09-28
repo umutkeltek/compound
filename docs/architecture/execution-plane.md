@@ -56,6 +56,11 @@ Provider prediction precedes each browser-action proposal, so Jev launch require
 
 The launch is classified `financial` and stays held without a policy standing grant for `browser.goal.jev` whose `max_usd` covers that estimate. A budget flag alone never authorizes provider contact.
 
+The TypeSafe value is Compound-custodied but never a registry value: the capability graph stores only the `tool:browser-jev-typesafe` handle to `home-secret://typesafe/jev-api-key`. `compound browser credential-set --work W --confirm` takes a bounded key on stdin through a `security`-class PolicyDecision and writes a mode-0600 secret slot with a content-free receipt. The Jev caller pins the exact handle, custodian, and environment name. A registered or malformed registry fails closed; a caller `TYPESAFE_API_KEY` is a compatibility fallback only before any connection-surface registry exists.
+`compound browser credential-rotate --work W --confirm` replaces only that exact registered slot through the same security-class gate. Neither enrollment nor rotation accepts a credential in arguments or receipts.
+
+`compound browser provider-pricing` pins `jev-1.13.0` and its per-request ceiling in governed browser settings; harness environment cannot override the registered credential or priced model. TypeSafe's published Jev 1.13 price is $0.042 per million input tokens with a 64k-token maximum request, or at most $0.002688 per request; the configured $0.003 ceiling leaves margin. This price admission still requires a separate per-task budget and bounded `browser.goal.jev` financial standing grant. See [TypeSafe models](https://docs.typesafe.ai/models) for the external pricing evidence, which must be revisited if the pinned model or terms change.
+
 ## The execution handshake
 
 A harness is not a model; a provider is not a transport; native inference effort is not orchestration; a route
