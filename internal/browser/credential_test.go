@@ -94,11 +94,23 @@ func TestCredentialProofRetryRepairsExactTransition(t *testing.T) {
 	if err := json.Unmarshal(record.Bytes, &transition); err != nil {
 		t.Fatal(err)
 	}
+	receiptRecord, err := store.Read(first.ReceiptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt envelope.Receipt
+	if err := json.Unmarshal(receiptRecord.Bytes, &receipt); err != nil {
+		t.Fatal(err)
+	}
 	lock, err := lockCredentialSlot(home)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writePendingCredentialProof(lock, transition); err != nil {
+	stage, err := stageCredentialSecret(home, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePendingCredentialProof(home, receipt, transition, first.DecisionID, stage, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Remove(first.TransitionID); err != nil {
@@ -112,14 +124,152 @@ func TestCredentialProofRetryRepairsExactTransition(t *testing.T) {
 	if _, err := store.Read(first.TransitionID); err != nil {
 		t.Fatalf("original transition was not repaired: %v", err)
 	}
-	lock, err = lockCredentialSlot(home)
+	if _, err := os.Stat(credentialJournalPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("credential proof journal not cleared: %v", err)
+	}
+}
+
+func TestPreparedCredentialRotationRecoversBeforeMutation(t *testing.T) {
+	home := t.TempDir()
+	cfg := policy.DefaultConfig()
+	cfg.StandingGrants = append(cfg.StandingGrants, policy.StandingGrant{
+		ID: "synthetic-jev-credential", Capability: "browser.credential.store",
+		MutationClass: "security", ReversibilityCeiling: "hard", BlastRadius: "local",
+	})
+	oldKey := []byte("synthetic-old-key")
+	newKey := []byte("synthetic-new-key")
+	if _, err := StoreTypeSafeCredential(home, "work_browser_test", oldKey, cfg, testTime()); err != nil {
+		t.Fatal(err)
+	}
+	original, err := RotateTypeSafeCredential(home, "work_browser_test", newKey, cfg, testTime().Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := lock.Stat()
-	unlockCredentialSlot(lock)
-	if err != nil || info.Size() != 0 {
-		t.Fatalf("credential proof journal not cleared: %v %v", info, err)
+	store, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptRecord, err := store.Read(original.ReceiptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transitionRecord, err := store.Read(original.TransitionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt envelope.Receipt
+	var transition envelope.Transition
+	if err := json.Unmarshal(receiptRecord.Bytes, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(transitionRecord.Bytes, &transition); err != nil {
+		t.Fatal(err)
+	}
+	newStage, err := stageCredentialSecret(home, newKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStage, err := stageCredentialSecret(home, oldKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePendingCredentialProof(home, receipt, transition, original.DecisionID, newStage, oldStage); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Remove(original.ReceiptID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Remove(original.TransitionID); err != nil {
+		t.Fatal(err)
+	}
+	secretPath := filepath.Join(home, "secrets", "typesafe", "jev-api-key")
+	if _, err := replaceCredentialFile(secretPath, oldKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RotateTypeSafeCredential(home, "work_browser_test", newKey, cfg, testTime().Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Read(original.ReceiptID); err != nil {
+		t.Fatalf("original receipt not recovered: %v", err)
+	}
+	if _, err := store.Read(original.TransitionID); err != nil {
+		t.Fatalf("original transition not recovered: %v", err)
+	}
+	if _, err := os.Stat(credentialJournalPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("prepared journal retained: %v", err)
+	}
+	got, err := os.ReadFile(secretPath)
+	if err != nil || string(got) != string(newKey) {
+		t.Fatal("recovered rotation did not restore exact staged value")
+	}
+}
+
+func TestPreparedCredentialEnrollmentRecoversMissingSlot(t *testing.T) {
+	home := t.TempDir()
+	cfg := policy.DefaultConfig()
+	cfg.StandingGrants = append(cfg.StandingGrants, policy.StandingGrant{
+		ID: "synthetic-jev-credential", Capability: "browser.credential.store",
+		MutationClass: "security", ReversibilityCeiling: "hard", BlastRadius: "local",
+	})
+	key := []byte("synthetic-enrollment-recovery-key")
+	first, err := StoreTypeSafeCredential(home, "work_browser_test", key, cfg, testTime())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptRecord, err := store.Read(first.ReceiptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transitionRecord, err := store.Read(first.TransitionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt envelope.Receipt
+	var transition envelope.Transition
+	if err := json.Unmarshal(receiptRecord.Bytes, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(transitionRecord.Bytes, &transition); err != nil {
+		t.Fatal(err)
+	}
+	stage, err := stageCredentialSecret(home, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePendingCredentialProof(home, receipt, transition, first.DecisionID, stage, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Remove(first.ReceiptID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Remove(first.TransitionID); err != nil {
+		t.Fatal(err)
+	}
+	secretPath := filepath.Join(home, "secrets", "typesafe", "jev-api-key")
+	if err := os.Remove(secretPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StoreTypeSafeCredential(home, "work_browser_test", key, cfg, testTime().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Read(first.ReceiptID); err != nil {
+		t.Fatalf("original receipt not recovered: %v", err)
+	}
+	if _, err := store.Read(first.TransitionID); err != nil {
+		t.Fatalf("original transition not recovered: %v", err)
+	}
+	if _, err := os.Stat(credentialJournalPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("prepared journal retained: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "secrets", "typesafe", stage)); !os.IsNotExist(err) {
+		t.Fatalf("staged secret retained: %v", err)
+	}
+	if _, err := capgraph.ResolveCredentialForSurface(home, jevCredentialSurface, "work_browser_test", jevCredentialHandle()); err != nil {
+		t.Fatal(err)
 	}
 }
 

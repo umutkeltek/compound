@@ -7,11 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
-	"syscall"
 	"time"
 
 	"compound/internal/capgraph"
@@ -105,6 +104,12 @@ func setTypeSafeCredential(home, workID string, key []byte, cfg policy.Config, n
 		if err == nil || change.ReceiptID != "" {
 			return
 		}
+		// A prepared mutation may already have changed the live slot. Its
+		// original receipt is recovered from the journal, not contradicted by
+		// a failed receipt for the same ActionIntent.
+		if _, statErr := os.Lstat(credentialJournalPath(home)); statErr == nil {
+			return
+		}
 		receiptID, transitionID, recordErr := recordStep(store, intent, "failed", "Jev credential operation failed; inspect exact slot before retry")
 		if recordErr != nil {
 			err = errors.Join(err, recordErr)
@@ -119,7 +124,7 @@ func setTypeSafeCredential(home, workID string, key []byte, cfg policy.Config, n
 		return CredentialChange{}, err
 	}
 	defer unlockCredentialSlot(lock)
-	if err := repairPendingCredentialProof(lock, store); err != nil {
+	if err := repairPendingCredentialProof(home, store); err != nil {
 		return CredentialChange{}, err
 	}
 	graph, err := capgraph.Open(home)
@@ -163,6 +168,9 @@ func setTypeSafeCredential(home, workID string, key []byte, cfg policy.Config, n
 			return CredentialChange{}, errors.New("credential slot already contains another value; enrollment does not replace secrets")
 		}
 		if replace && subtle.ConstantTimeCompare(stored, key) != 1 {
+			if _, _, err := prepareCredentialStored(home, intent, decision.ID, now, key, stored); err != nil {
+				return CredentialChange{}, err
+			}
 			committed, replaceErr := replaceCredentialFile(path, key)
 			if replaceErr != nil && !committed {
 				return CredentialChange{}, replaceErr
@@ -180,24 +188,15 @@ func setTypeSafeCredential(home, workID string, key []byte, cfg policy.Config, n
 		if err := secureCredentialParents(home); err != nil {
 			return CredentialChange{}, err
 		}
-		file, openErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if openErr != nil {
-			return CredentialChange{}, openErr
+		if _, _, err := prepareCredentialStored(home, intent, decision.ID, now, key, nil); err != nil {
+			return CredentialChange{}, err
 		}
-		written, writeErr := file.Write(key)
-		if writeErr == nil && written != len(key) {
-			writeErr = errors.New("short credential write")
+		pending, readErr := readPendingCredentialProof(home)
+		if readErr != nil {
+			return CredentialChange{}, readErr
 		}
-		if writeErr == nil {
-			writeErr = file.Sync()
-		}
-		closeErr := file.Close()
-		if writeErr == nil {
-			writeErr = closeErr
-		}
-		if writeErr != nil {
-			_ = os.Remove(path)
-			return CredentialChange{}, fmt.Errorf("credential enrollment failed: %w", writeErr)
+		if linkErr := linkStagedCredential(home, pending.NewSecret); linkErr != nil {
+			return CredentialChange{}, linkErr
 		}
 	}
 	if !registered {
@@ -216,7 +215,17 @@ func setTypeSafeCredential(home, workID string, key []byte, cfg policy.Config, n
 		receiptID, transitionID, recordErr := recordStep(store, intent, "no_op", "Jev credential slot already enrolled")
 		return CredentialChange{Stored: recordErr == nil, ActionID: intent.ID, DecisionID: decision.ID, ReceiptID: receiptID, TransitionID: transitionID}, recordErr
 	}
-	receiptID, transitionID, err := recordCredentialStored(lock, store, intent, now)
+	if postCommitErr != nil {
+		// Rename changed the live slot, but failed directory sync leaves crash
+		// durability uncertain. Never publish a completed state-delta receipt.
+		return CredentialChange{ActionID: intent.ID, DecisionID: decision.ID}, fmt.Errorf("credential slot changed but durability is unverified: %w", postCommitErr)
+	}
+	ids, err := readPendingCredentialProof(home)
+	if err != nil {
+		return CredentialChange{}, err
+	}
+	receiptID, transitionID := ids.Receipt.ID, ids.Transition.ID
+	err = repairPendingCredentialProof(home, store)
 	if err != nil {
 		// The exact slot stays recoverable on retry if audit publication fails.
 		return CredentialChange{Stored: true, ActionID: intent.ID, DecisionID: decision.ID, ReceiptID: receiptID, TransitionID: transitionID}, errors.Join(err, postCommitErr)
@@ -282,109 +291,366 @@ func lockCredentialSlot(home string) (*os.File, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	file := os.NewFile(uintptr(fd), path)
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
-		_ = file.Close()
-		return nil, errors.New("credential lock could not verify private regular file")
-	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = file.Close()
-		return nil, errors.New("credential slot is being changed by another process")
-	}
-	return file, nil
+	return platformLockCredential(path)
 }
 
 func unlockCredentialSlot(file *os.File) {
-	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	platformUnlockCredential(file)
 	_ = file.Close()
 }
 
-func writePendingCredentialProof(lock *os.File, transition envelope.Transition) error {
-	data, err := json.Marshal(transition)
+type pendingCredentialProof struct {
+	Receipt    envelope.Receipt    `json:"receipt"`
+	Transition envelope.Transition `json:"transition"`
+	DecisionID string              `json:"decision_id"`
+	NewSecret  string              `json:"new_secret"`
+	OldSecret  string              `json:"old_secret,omitempty"`
+}
+
+func credentialJournalPath(home string) string {
+	return filepath.Join(home, "registries", "browser-credential-pending.json")
+}
+
+func writePendingCredentialProof(home string, receipt envelope.Receipt, transition envelope.Transition, decisionID, newSecret, oldSecret string) error {
+	path := credentialJournalPath(home)
+	if _, err := os.Lstat(path); err == nil {
+		return errors.New("credential proof journal already exists")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	data, err := json.Marshal(pendingCredentialProof{Receipt: receipt, Transition: transition, DecisionID: decisionID, NewSecret: newSecret, OldSecret: oldSecret})
 	if err != nil {
 		return err
 	}
-	if err := lock.Truncate(0); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	if _, err := lock.Seek(0, 0); err != nil {
+	file, err := os.CreateTemp(filepath.Dir(path), ".browser-credential-pending-*")
+	if err != nil {
 		return err
 	}
-	if n, err := lock.Write(data); err != nil || n != len(data) {
+	tempPath := file.Name()
+	defer os.Remove(tempPath)
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if n, err := file.Write(data); err != nil || n != len(data) {
+		_ = file.Close()
 		return errors.New("credential proof journal write failed")
 	}
-	return lock.Sync()
-}
-
-func clearPendingCredentialProof(lock *os.File) error {
-	if err := lock.Truncate(0); err != nil {
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
 		return err
 	}
-	return lock.Sync()
-}
-
-func repairPendingCredentialProof(lock *os.File, store *eventstore.Store) error {
-	info, err := lock.Stat()
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
-	if info.Size() == 0 {
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func clearPendingCredentialProof(home string) error {
+	path := credentialJournalPath(home)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func finishPendingCredentialProof(home string, pending pendingCredentialProof) error {
+	for _, name := range []string{pending.NewSecret, pending.OldSecret} {
+		if name == "" {
+			continue
+		}
+		path, err := stagedCredentialPath(home, name)
+		if err != nil {
+			return err
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	secretDir, err := os.Open(filepath.Join(home, "secrets", "typesafe"))
+	if err != nil {
+		return err
+	}
+	syncErr := secretDir.Sync()
+	closeErr := secretDir.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return clearPendingCredentialProof(home)
+}
+
+func readPendingCredentialProof(home string) (pendingCredentialProof, error) {
+	path := credentialJournalPath(home)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return pendingCredentialProof{}, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() > 32768 {
+		return pendingCredentialProof{}, errors.New("credential proof journal is not a private bounded file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return pendingCredentialProof{}, err
+	}
+	var pending pendingCredentialProof
+	if err := json.Unmarshal(data, &pending); err != nil {
+		return pendingCredentialProof{}, errors.New("credential proof journal is malformed")
+	}
+	return pending, nil
+}
+
+func stagedCredentialPath(home, name string) (string, error) {
+	if !strings.HasPrefix(name, ".jev-stage-") || filepath.Base(name) != name || strings.Contains(name, "..") {
+		return "", errors.New("credential proof journal has invalid secret reference")
+	}
+	return filepath.Join(home, "secrets", "typesafe", name), nil
+}
+
+func readStagedCredential(home, name string) ([]byte, error) {
+	path, err := stagedCredentialPath(home, name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() > 4096 {
+		return nil, errors.New("credential proof stage is not a private bounded file")
+	}
+	return os.ReadFile(path)
+}
+
+func stageCredentialSecret(home string, key []byte) (string, error) {
+	dir := filepath.Join(home, "secrets", "typesafe")
+	file, err := os.CreateTemp(dir, ".jev-stage-")
+	if err != nil {
+		return "", err
+	}
+	name := filepath.Base(file.Name())
+	defer func() { _ = file.Close() }()
+	if err := file.Chmod(0o600); err != nil {
+		_ = os.Remove(file.Name())
+		return "", err
+	}
+	if n, err := file.Write(key); err != nil || n != len(key) {
+		_ = os.Remove(file.Name())
+		return "", errors.New("credential stage write failed")
+	}
+	if err := file.Sync(); err != nil {
+		_ = os.Remove(file.Name())
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(file.Name())
+		return "", err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		_ = os.Remove(file.Name())
+		return "", err
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		_ = os.Remove(file.Name())
+		return "", err
+	}
+	return name, nil
+}
+
+func linkStagedCredential(home, stageName string) error {
+	stagePath, err := stagedCredentialPath(home, stageName)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(home, "secrets", "typesafe", "jev-api-key")
+	if err := os.Link(stagePath, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func repairPendingCredentialProof(home string, store *eventstore.Store) error {
+	pending, err := readPendingCredentialProof(home)
+	if os.IsNotExist(err) {
 		return nil
 	}
-	if info.Size() > 16384 {
-		return errors.New("credential proof journal exceeds limit")
-	}
-	if _, err := lock.Seek(0, 0); err != nil {
-		return err
-	}
-	data, err := io.ReadAll(io.LimitReader(lock, 16385))
 	if err != nil {
 		return err
 	}
-	var transition envelope.Transition
-	if err := json.Unmarshal(data, &transition); err != nil {
-		return errors.New("credential proof journal is malformed")
-	}
-	if err := transition.Validate(); err != nil || len(transition.AfterRefs) != 1 || len(transition.ActionRefs) != 1 {
+	receipt, transition := pending.Receipt, pending.Transition
+	if receipt.Validate() != nil || transition.Validate() != nil ||
+		len(transition.AfterRefs) != 1 || transition.AfterRefs[0] != receipt.ID ||
+		len(transition.ActionRefs) != 1 || receipt.Outcome != "completed" {
 		return errors.New("credential proof journal is invalid")
 	}
-	receiptExists, err := store.Exists(transition.AfterRefs[0])
+	actionRecord, err := store.Read(transition.ActionRefs[0])
 	if err != nil {
 		return err
 	}
-	if receiptExists {
-		actionRecord, err := store.Read(transition.ActionRefs[0])
+	var intent envelope.ActionIntent
+	if err := json.Unmarshal(actionRecord.Bytes, &intent); err != nil ||
+		intent.Capability != "browser.credential.store" || intent.Target.ID != jevCredentialSurface {
+		return errors.New("credential proof journal names an unrelated action")
+	}
+	decisionRecord, err := store.Read(pending.DecisionID)
+	if err != nil {
+		return err
+	}
+	var decision envelope.PolicyDecision
+	if err := json.Unmarshal(decisionRecord.Bytes, &decision); err != nil || decision.ID != pending.DecisionID || decision.ActionIntentID != intent.ID || policy.Gate(decision) != nil {
+		return errors.New("credential proof journal lacks its allowing policy decision")
+	}
+	receiptExists, err := store.Exists(receipt.ID)
+	if err != nil {
+		return err
+	}
+	transitionExists, err := store.Exists(transition.ID)
+	if err != nil {
+		return err
+	}
+	if receiptExists && transitionExists {
+		receiptRecord, receiptErr := store.Read(receipt.ID)
+		transitionRecord, transitionErr := store.Read(transition.ID)
+		var storedReceipt envelope.Receipt
+		var storedTransition envelope.Transition
+		if receiptErr != nil || transitionErr != nil ||
+			json.Unmarshal(receiptRecord.Bytes, &storedReceipt) != nil ||
+			json.Unmarshal(transitionRecord.Bytes, &storedTransition) != nil ||
+			!reflect.DeepEqual(storedReceipt, receipt) || !reflect.DeepEqual(storedTransition, transition) {
+			return errors.New("credential proof journal conflicts with stored event")
+		}
+		return finishPendingCredentialProof(home, pending)
+	}
+	if receipt.IDs.WorkID != intent.IDs.WorkID || transition.IDs.WorkID != intent.IDs.WorkID ||
+		(intent.Action == "rotate_typesafe_key") != (pending.OldSecret != "") {
+		return errors.New("credential proof journal action lineage is invalid")
+	}
+	newKey, err := readStagedCredential(home, pending.NewSecret)
+	if err != nil {
+		return err
+	}
+	secretPath := filepath.Join(home, "secrets", "typesafe", "jev-api-key")
+	secretInfo, err := os.Lstat(secretPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	var live []byte
+	if err == nil {
+		if !secretInfo.Mode().IsRegular() || secretInfo.Mode().Perm() != 0o600 {
+			return errors.New("credential proof repair needs a mode-0600 live slot")
+		}
+		live, err = os.ReadFile(secretPath)
 		if err != nil {
 			return err
 		}
-		var intent envelope.ActionIntent
-		if err := json.Unmarshal(actionRecord.Bytes, &intent); err != nil || intent.Capability != "browser.credential.store" || intent.Target.ID != jevCredentialSurface {
-			return errors.New("credential proof journal names an unrelated action")
-		}
-		receiptRecord, err := store.Read(transition.AfterRefs[0])
-		if err != nil {
-			return err
-		}
-		var receipt envelope.Receipt
-		if err := json.Unmarshal(receiptRecord.Bytes, &receipt); err != nil || receipt.Header.ID != transition.AfterRefs[0] || receipt.Outcome != "completed" {
-			return errors.New("credential proof journal names an unrelated receipt")
-		}
-		transitionExists, err := store.Exists(transition.ID)
-		if err != nil {
-			return err
-		}
-		if !transitionExists {
-			if err := recordEvent(store, transition.ID, &transition); err != nil {
+	}
+	if subtle.ConstantTimeCompare(live, newKey) != 1 {
+		if pending.OldSecret == "" {
+			if secretInfo != nil {
+				return errors.New("credential proof live slot conflicts with prepared enrollment")
+			}
+			if err := linkStagedCredential(home, pending.NewSecret); err != nil {
 				return err
+			}
+		} else {
+			oldKey, readErr := readStagedCredential(home, pending.OldSecret)
+			if readErr != nil {
+				return readErr
+			}
+			if subtle.ConstantTimeCompare(live, oldKey) != 1 {
+				return errors.New("credential proof live slot conflicts with prepared rotation")
+			}
+			if _, replaceErr := replaceCredentialFile(secretPath, newKey); replaceErr != nil {
+				return replaceErr
 			}
 		}
 	}
-	return clearPendingCredentialProof(lock)
+	secretDir, err := os.Open(filepath.Dir(secretPath))
+	if err != nil {
+		return err
+	}
+	syncErr := secretDir.Sync()
+	closeErr := secretDir.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	graph, err := capgraph.Open(home)
+	if err != nil {
+		return err
+	}
+	surfaces, err := graph.ConnectionSurfaces()
+	if err != nil {
+		return err
+	}
+	var bound bool
+	for _, surface := range surfaces {
+		if surface.NodeID == jevCredentialSurface &&
+			surface.CredentialHandle == jevCredentialHandle() &&
+			surface.AuthMode == "api_key" && surface.AssertingOwner == "compound.browser" {
+			bound = true
+		}
+	}
+	if !bound {
+		if err := capgraph.AddGoverned(home, capgraph.Node{ID: jevCredentialSurface, Kind: "tool", Name: "Jev TypeSafe provider", Triggers: []string{"browser", "jev"}}, time.Now()); err != nil {
+			return err
+		}
+		if _, err := capgraph.AddConnectionSurfaceGoverned(home, capgraph.ConnectionSurface{NodeID: jevCredentialSurface, AuthMode: "api_key", AssertingOwner: "compound.browser", CredentialHandle: jevCredentialHandle()}, time.Now()); err != nil {
+			return err
+		}
+	}
+	for _, item := range []struct {
+		id    string
+		value any
+		equal func([]byte) bool
+	}{
+		{receipt.ID, &receipt, func(raw []byte) bool {
+			var stored envelope.Receipt
+			return json.Unmarshal(raw, &stored) == nil && reflect.DeepEqual(stored, receipt)
+		}},
+		{transition.ID, &transition, func(raw []byte) bool {
+			var stored envelope.Transition
+			return json.Unmarshal(raw, &stored) == nil && reflect.DeepEqual(stored, transition)
+		}},
+	} {
+		exists, err := store.Exists(item.id)
+		if err != nil {
+			return err
+		}
+		if exists {
+			record, err := store.Read(item.id)
+			if err != nil || !item.equal(record.Bytes) {
+				return errors.New("credential proof journal conflicts with stored event")
+			}
+		} else if err := recordEvent(store, item.id, item.value); err != nil {
+			return err
+		}
+	}
+	return finishPendingCredentialProof(home, pending)
 }
 
 func secureCredentialParents(home string) error {
@@ -403,7 +669,7 @@ func secureCredentialParents(home string) error {
 	return nil
 }
 
-func recordCredentialStored(lock *os.File, store *eventstore.Store, intent envelope.ActionIntent, now time.Time) (string, string, error) {
+func prepareCredentialStored(home string, intent envelope.ActionIntent, decisionID string, now time.Time, key, old []byte) (string, string, error) {
 	digest := sha256.Sum256([]byte(intent.ID + "\x00stored"))
 	summary := "Jev TypeSafe credential slot enrolled in Compound custody"
 	if intent.Action == "rotate_typesafe_key" {
@@ -432,14 +698,34 @@ func recordCredentialStored(lock *os.File, store *eventstore.Store, intent envel
 	if err := transition.Validate(); err != nil {
 		return "", "", err
 	}
-	if err := writePendingCredentialProof(lock, transition); err != nil {
+	newStage, err := stageCredentialSecret(home, key)
+	if err != nil {
 		return "", "", err
 	}
-	if err := recordEvent(store, receipt.ID, &receipt); err != nil {
+	oldStage := ""
+	if old != nil {
+		oldStage, err = stageCredentialSecret(home, old)
+		if err != nil {
+			if path, pathErr := stagedCredentialPath(home, newStage); pathErr == nil {
+				_ = os.Remove(path)
+			}
+			return "", "", err
+		}
+	}
+	if err := writePendingCredentialProof(home, receipt, transition, decisionID, newStage, oldStage); err != nil {
+		// A failed directory sync may have committed the journal rename.
+		// Leave both stages intact if its existence is uncertain.
+		if _, statErr := os.Lstat(credentialJournalPath(home)); os.IsNotExist(statErr) {
+			for _, name := range []string{newStage, oldStage} {
+				if name == "" {
+					continue
+				}
+				if path, pathErr := stagedCredentialPath(home, name); pathErr == nil {
+					_ = os.Remove(path)
+				}
+			}
+		}
 		return "", "", err
 	}
-	if err := recordEvent(store, transition.ID, &transition); err != nil {
-		return receipt.ID, transition.ID, err
-	}
-	return receipt.ID, transition.ID, clearPendingCredentialProof(lock)
+	return receipt.ID, transition.ID, nil
 }
