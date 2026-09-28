@@ -273,6 +273,83 @@ func TestPreparedCredentialEnrollmentRecoversMissingSlot(t *testing.T) {
 	}
 }
 
+func TestRestoredCredentialJournalWithoutSecretAbandonsBeforeFreshEnrollment(t *testing.T) {
+	home := t.TempDir()
+	cfg := policy.DefaultConfig()
+	cfg.StandingGrants = append(cfg.StandingGrants, policy.StandingGrant{
+		ID: "synthetic-jev-credential", Capability: "browser.credential.store",
+		MutationClass: "security", ReversibilityCeiling: "hard", BlastRadius: "local",
+	})
+	key := []byte("synthetic-restore-key")
+	first, err := StoreTypeSafeCredential(home, "work_browser_test", key, cfg, testTime())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptRecord, err := store.Read(first.ReceiptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transitionRecord, err := store.Read(first.TransitionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt envelope.Receipt
+	var transition envelope.Transition
+	if err := json.Unmarshal(receiptRecord.Bytes, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(transitionRecord.Bytes, &transition); err != nil {
+		t.Fatal(err)
+	}
+	stage, err := stageCredentialSecret(home, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePendingCredentialProof(home, receipt, transition, first.DecisionID, stage, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Remove(first.ReceiptID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Remove(first.TransitionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(home, "secrets", "typesafe", stage)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StoreTypeSafeCredential(home, "work_browser_test", key, cfg, testTime().Add(time.Second)); err == nil {
+		t.Fatal("missing stage with live slot falsely recovered")
+	}
+	if _, err := os.Stat(credentialJournalPath(home)); err != nil {
+		t.Fatalf("uncertain journal was lost: %v", err)
+	}
+	if err := os.Remove(filepath.Join(home, "secrets", "typesafe", "jev-api-key")); err != nil {
+		t.Fatal(err)
+	}
+	second, err := StoreTypeSafeCredential(home, "work_browser_test", key, cfg, testTime().Add(2*time.Second))
+	if err != nil || !second.Stored {
+		t.Fatalf("fresh enrollment remained stranded: %+v %v", second, err)
+	}
+	record, err := store.Read(first.ReceiptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var abandoned envelope.Receipt
+	if err := json.Unmarshal(record.Bytes, &abandoned); err != nil {
+		t.Fatal(err)
+	}
+	if abandoned.Outcome != "failed" || abandoned.StateDelta.Changed {
+		t.Fatalf("restored attempt falsely completed: %+v", abandoned)
+	}
+	if _, err := os.Stat(credentialJournalPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("restored journal retained: %v", err)
+	}
+}
+
 func TestCredentialRotationLockAndPostRenameOutcome(t *testing.T) {
 	home := t.TempDir()
 	cfg := policy.DefaultConfig()

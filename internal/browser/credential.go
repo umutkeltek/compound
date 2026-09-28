@@ -107,8 +107,9 @@ func setTypeSafeCredential(home, workID string, key []byte, cfg policy.Config, n
 		// A prepared mutation may already have changed the live slot. Its
 		// original receipt is recovered from the journal, not contradicted by
 		// a failed receipt for the same ActionIntent.
-		if _, statErr := os.Lstat(credentialJournalPath(home)); statErr == nil {
-			return
+		if pending, readErr := readPendingCredentialProof(home); readErr == nil &&
+			len(pending.Transition.ActionRefs) == 1 && pending.Transition.ActionRefs[0] == intent.ID {
+			return // This exact action still owns a recoverable transaction.
 		}
 		receiptID, transitionID, recordErr := recordStep(store, intent, "failed", "Jev credential operation failed; inspect exact slot before retry")
 		if recordErr != nil {
@@ -305,6 +306,7 @@ type pendingCredentialProof struct {
 	DecisionID string              `json:"decision_id"`
 	NewSecret  string              `json:"new_secret"`
 	OldSecret  string              `json:"old_secret,omitempty"`
+	Abandoned  bool                `json:"abandoned,omitempty"`
 }
 
 func credentialJournalPath(home string) string {
@@ -312,13 +314,19 @@ func credentialJournalPath(home string) string {
 }
 
 func writePendingCredentialProof(home string, receipt envelope.Receipt, transition envelope.Transition, decisionID, newSecret, oldSecret string) error {
+	return persistPendingCredentialProof(home, pendingCredentialProof{Receipt: receipt, Transition: transition, DecisionID: decisionID, NewSecret: newSecret, OldSecret: oldSecret}, false)
+}
+
+func persistPendingCredentialProof(home string, pending pendingCredentialProof, replace bool) error {
 	path := credentialJournalPath(home)
-	if _, err := os.Lstat(path); err == nil {
-		return errors.New("credential proof journal already exists")
-	} else if !os.IsNotExist(err) {
-		return err
+	if !replace {
+		if _, err := os.Lstat(path); err == nil {
+			return errors.New("credential proof journal already exists")
+		} else if !os.IsNotExist(err) {
+			return err
+		}
 	}
-	data, err := json.Marshal(pendingCredentialProof{Receipt: receipt, Transition: transition, DecisionID: decisionID, NewSecret: newSecret, OldSecret: oldSecret})
+	data, err := json.Marshal(pending)
 	if err != nil {
 		return err
 	}
@@ -431,6 +439,9 @@ func readStagedCredential(home, name string) ([]byte, error) {
 		return nil, err
 	}
 	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil, os.ErrNotExist
+	}
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() > 4096 {
 		return nil, errors.New("credential proof stage is not a private bounded file")
 	}
@@ -502,7 +513,9 @@ func repairPendingCredentialProof(home string, store *eventstore.Store) error {
 	receipt, transition := pending.Receipt, pending.Transition
 	if receipt.Validate() != nil || transition.Validate() != nil ||
 		len(transition.AfterRefs) != 1 || transition.AfterRefs[0] != receipt.ID ||
-		len(transition.ActionRefs) != 1 || receipt.Outcome != "completed" {
+		len(transition.ActionRefs) != 1 ||
+		(pending.Abandoned && receipt.Outcome != "failed") ||
+		(!pending.Abandoned && receipt.Outcome != "completed") {
 		return errors.New("credential proof journal is invalid")
 	}
 	actionRecord, err := store.Read(transition.ActionRefs[0])
@@ -530,25 +543,39 @@ func repairPendingCredentialProof(home string, store *eventstore.Store) error {
 	if err != nil {
 		return err
 	}
-	if receiptExists && transitionExists {
-		receiptRecord, receiptErr := store.Read(receipt.ID)
-		transitionRecord, transitionErr := store.Read(transition.ID)
-		var storedReceipt envelope.Receipt
-		var storedTransition envelope.Transition
-		if receiptErr != nil || transitionErr != nil ||
-			json.Unmarshal(receiptRecord.Bytes, &storedReceipt) != nil ||
-			json.Unmarshal(transitionRecord.Bytes, &storedTransition) != nil ||
-			!reflect.DeepEqual(storedReceipt, receipt) || !reflect.DeepEqual(storedTransition, transition) {
-			return errors.New("credential proof journal conflicts with stored event")
-		}
-		return finishPendingCredentialProof(home, pending)
-	}
 	if receipt.IDs.WorkID != intent.IDs.WorkID || transition.IDs.WorkID != intent.IDs.WorkID ||
 		(intent.Action == "rotate_typesafe_key") != (pending.OldSecret != "") {
 		return errors.New("credential proof journal action lineage is invalid")
 	}
+	if receiptExists && transitionExists {
+		return recordPendingCredentialEvents(home, store, pending)
+	}
+	if pending.Abandoned {
+		return recordPendingCredentialEvents(home, store, pending)
+	}
 	newKey, err := readStagedCredential(home, pending.NewSecret)
 	if err != nil {
+		if os.IsNotExist(err) && !receiptExists && !transitionExists {
+			if _, statErr := os.Lstat(filepath.Join(home, "secrets", "typesafe", "jev-api-key")); os.IsNotExist(statErr) {
+				pending.Receipt.Outcome = "failed"
+				pending.Receipt.MoveType = "audit_only"
+				pending.Receipt.StateDelta = envelope.StateDelta{Changed: false, Summary: "Jev credential preparation was absent after restore; no live slot changed"}
+				pending.Receipt.ProofRefs = []string{}
+				pending.Transition.StateDelta = pending.Receipt.StateDelta.Summary
+				pending.Transition.SecondOrder.FutureBehaviorChanged = false
+				pending.Abandoned = true
+				if err := pending.Receipt.Validate(); err != nil {
+					return err
+				}
+				if err := pending.Transition.Validate(); err != nil {
+					return err
+				}
+				if err := persistPendingCredentialProof(home, pending, true); err != nil {
+					return err
+				}
+				return recordPendingCredentialEvents(home, store, pending)
+			}
+		}
 		return err
 	}
 	secretPath := filepath.Join(home, "secrets", "typesafe", "jev-api-key")
@@ -623,6 +650,11 @@ func repairPendingCredentialProof(home string, store *eventstore.Store) error {
 			return err
 		}
 	}
+	return recordPendingCredentialEvents(home, store, pending)
+}
+
+func recordPendingCredentialEvents(home string, store *eventstore.Store, pending pendingCredentialProof) error {
+	receipt, transition := pending.Receipt, pending.Transition
 	for _, item := range []struct {
 		id    string
 		value any
