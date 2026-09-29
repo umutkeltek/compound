@@ -64,6 +64,24 @@ func cleanupJevSession(dir string) error {
 }
 
 func reapJevPID(path, marker string) error {
+	return reapJevPIDWith(path, marker, jevReaperOps{
+		ps: func(pid int, field string) ([]byte, error) {
+			return exec.Command("ps", "-p", strconv.Itoa(pid), "-o", field+"=").Output()
+		},
+		kill:  syscall.Kill,
+		pgid:  syscall.Getpgid,
+		sleep: time.Sleep,
+	})
+}
+
+type jevReaperOps struct {
+	ps    func(int, string) ([]byte, error)
+	kill  func(int, syscall.Signal) error
+	pgid  func(int) (int, error)
+	sleep func(time.Duration)
+}
+
+func reapJevPIDWith(path, marker string, ops jevReaperOps) error {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil
@@ -88,24 +106,75 @@ func reapJevPID(path, marker string) error {
 	if err != nil || pid <= 1 {
 		return fmt.Errorf("invalid owned process PID in %s", path)
 	}
-	state, err := exec.Command("ps", "-p", value, "-o", "stat=").Output()
-	if err != nil || strings.HasPrefix(strings.TrimSpace(string(state)), "Z") {
-		return nil // Exited or waiting for its parent to reap it.
+	state, err := ops.ps(pid, "stat")
+	if err != nil {
+		return fmt.Errorf("inspect owned process %d state: %w", pid, err)
 	}
-	command, err := exec.Command("ps", "-p", value, "-o", "command=").Output()
-	if err != nil || len(command) == 0 { // Already gone.
+	if strings.HasPrefix(strings.TrimSpace(string(state)), "Z") {
 		return nil
 	}
-	if !strings.Contains(string(command), marker) {
-		return nil // Never signal a process whose identity no longer matches.
+	command, err := ops.ps(pid, "command")
+	if err != nil {
+		return fmt.Errorf("inspect owned process %d command: %w", pid, err)
 	}
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	if len(command) == 0 {
+		return fmt.Errorf("owned process %d has no observable command", pid)
+	}
+	if !strings.Contains(string(command), marker) {
+		return fmt.Errorf("owned process %d identity no longer matches %q", pid, marker)
+	}
+	groupID, err := ops.pgid(pid)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect owned process %d group: %w", pid, err)
+	}
+	target := pid
+	if groupID == pid {
+		target = -pid
+	}
+	if err := ops.kill(target, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("terminate owned process %d: %w", pid, err)
+	}
 	for i := 0; i < 20; i++ {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		if gone, err := jevProcessGone(pid, ops); err != nil {
+			return err
+		} else if gone {
 			return nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		ops.sleep(100 * time.Millisecond)
 	}
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	return nil
+	command, err = ops.ps(pid, "command")
+	if err != nil {
+		return fmt.Errorf("recheck owned process %d identity: %w", pid, err)
+	}
+	if !strings.Contains(string(command), marker) {
+		return fmt.Errorf("owned process %d identity changed before force stop", pid)
+	}
+	if err := ops.kill(target, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("force stop owned process %d: %w", pid, err)
+	}
+	for i := 0; i < 20; i++ {
+		if gone, err := jevProcessGone(pid, ops); err != nil {
+			return err
+		} else if gone {
+			return nil
+		}
+		ops.sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("owned process %d survived SIGKILL", pid)
+}
+
+func jevProcessGone(pid int, ops jevReaperOps) (bool, error) {
+	if err := ops.kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		return true, nil
+	} else if err != nil {
+		return false, fmt.Errorf("probe owned process %d: %w", pid, err)
+	}
+	state, err := ops.ps(pid, "stat")
+	if err != nil {
+		return false, fmt.Errorf("inspect owned process %d state: %w", pid, err)
+	}
+	return strings.HasPrefix(strings.TrimSpace(string(state)), "Z"), nil
 }

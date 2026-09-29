@@ -17,6 +17,80 @@ import (
 	"time"
 )
 
+func TestJevReaperFailsClosedAndUsesOwnedSignalTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		psFails   bool
+		termFails bool
+		killFails bool
+		survives  bool
+		nonLeader bool
+		wantError bool
+	}{
+		{"ps_unavailable", true, false, false, false, false, true},
+		{"term_error", false, true, false, false, false, true},
+		{"force_kill_error", false, false, true, true, false, true},
+		{"survivor", false, false, false, true, false, true},
+		{"nonleader_exact_pid", false, false, false, false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pidPath := filepath.Join(t.TempDir(), "owned.pid")
+			if err := os.WriteFile(pidPath, []byte("4321"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			alive := true
+			var signalled []int
+			ops := jevReaperOps{
+				ps: func(_ int, field string) ([]byte, error) {
+					if tc.psFails {
+						return nil, errors.New("ps unavailable")
+					}
+					if field == "stat" {
+						return []byte("S"), nil
+					}
+					return []byte("browser_harness.daemon --owned"), nil
+				},
+				kill: func(target int, signal syscall.Signal) error {
+					if signal == 0 {
+						if alive {
+							return nil
+						}
+						return syscall.ESRCH
+					}
+					signalled = append(signalled, target)
+					if signal == syscall.SIGTERM && tc.termFails {
+						return syscall.EPERM
+					}
+					if signal == syscall.SIGKILL && tc.killFails {
+						return syscall.EPERM
+					}
+					if !tc.survives {
+						alive = false
+					}
+					return nil
+				},
+				pgid: func(int) (int, error) {
+					if tc.nonLeader {
+						return 123, nil
+					}
+					return 4321, nil
+				},
+				sleep: func(time.Duration) {},
+			}
+			err := reapJevPIDWith(pidPath, "browser_harness.daemon", ops)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("reaper error = %v, wantError=%t", err, tc.wantError)
+			}
+			if tc.nonLeader && (len(signalled) != 1 || signalled[0] != 4321) {
+				t.Fatalf("nonleader signalled broad group: %v", signalled)
+			}
+			if tc.psFails && len(signalled) != 0 {
+				t.Fatalf("unverified process was signalled: %v", signalled)
+			}
+		})
+	}
+}
+
 // Opt-in because this uses real Chrome and resolves the pinned upstream uv
 // dependency. It proves a long-running browser/daemon is reaped on timeout,
 // rather than relying only on the instant synthetic stdio helper.

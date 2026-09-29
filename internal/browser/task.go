@@ -33,12 +33,21 @@ var ErrRoutedToPlaywright = errors.New("browser goal routed to Playwright; execu
 var bridgeSource embed.FS
 
 type TaskRequest struct {
-	Home       string `json:"-"`
-	WorkID     string `json:"work_id"`
-	URL        string `json:"url"`
-	Goal       string `json:"goal"`
-	ExpectText string `json:"expect_text"`
-	MaxSteps   int    `json:"max_steps"`
+	Actor           string   `json:"-"`
+	Workspace       string   `json:"-"`
+	NonGoals        []string `json:"-"`
+	RunningActionID string   `json:"-"`
+	RunAttemptID    string   `json:"-"`
+	ContractDigest  string   `json:"-"`
+	ContractJSON    string   `json:"-"`
+	ProviderModel   string   `json:"-"`
+	ProviderBound   float64  `json:"-"`
+	Home            string   `json:"-"`
+	WorkID          string   `json:"work_id"`
+	URL             string   `json:"url"`
+	Goal            string   `json:"goal"`
+	ExpectText      string   `json:"expect_text"`
+	MaxSteps        int      `json:"max_steps"`
 	// MaxProviderUSD is the caller's per-task spending ceiling. A separate
 	// operator-supplied per-request provider ceiling is required before launch.
 	MaxProviderUSD float64 `json:"max_provider_usd"`
@@ -46,6 +55,8 @@ type TaskRequest struct {
 }
 
 type TaskResult struct {
+	RunAttemptID  string   `json:"run_attempt_id,omitempty"`
+	WorkState     string   `json:"work_state,omitempty"`
 	Backend       string   `json:"backend"`
 	Status        string   `json:"status"`
 	Verified      bool     `json:"verified"`
@@ -83,7 +94,7 @@ func RunTask(ctx context.Context, req TaskRequest, cfg policy.Config) (TaskResul
 	return runTask(ctx, req, cfg, jevCommand)
 }
 
-func runTask(ctx context.Context, req TaskRequest, cfg policy.Config, launch bridgeFactory) (result TaskResult, err error) {
+func runTaskProtocol(ctx context.Context, req TaskRequest, cfg policy.Config, launch bridgeFactory, startBridge func(context.Context, *exec.Cmd) error, checkReservation func() error) (result TaskResult, err error) {
 	result.ReceiptIDs = []string{}
 	result.TransitionIDs = []string{}
 	settings, err := LoadSettings(req.Home)
@@ -105,15 +116,6 @@ func runTask(ctx context.Context, req TaskRequest, cfg policy.Config, launch bri
 	origin, err := publicOrigin(req.URL)
 	if err != nil {
 		return result, err
-	}
-	credentialEnv, err := capgraph.ResolveCredentialForSurface(req.Home, jevCredentialSurface, req.WorkID, jevCredentialHandle())
-	if errors.Is(err, capgraph.ErrCredentialSurfaceNotRegistered) {
-		if key := os.Getenv("TYPESAFE_API_KEY"); key != "" {
-			credentialEnv, err = "TYPESAFE_API_KEY="+key, nil
-		}
-	}
-	if err != nil {
-		return result, fmt.Errorf("Jev requires a registered TypeSafe credential: %w", err)
 	}
 	providerModel := settings.ProviderModel
 	if providerModel == "" {
@@ -185,6 +187,8 @@ func runTask(ctx context.Context, req TaskRequest, cfg policy.Config, launch bri
 	defer func() {
 		if cleanupErr := cleanupJevSession(sessionDir); cleanupErr != nil {
 			err = errors.Join(err, fmt.Errorf("clean Jev session: %w", cleanupErr))
+			result.Verified = false
+			result.Status = "failed"
 		}
 	}()
 	cmd := launch(ctx)
@@ -203,7 +207,7 @@ func runTask(ctx context.Context, req TaskRequest, cfg policy.Config, launch bri
 	// Upstream diagnostics can contain page content. Never forward stderr.
 	var stderr bytes.Buffer
 	cmd.Stderr = &limitedWriter{dst: &stderr, remaining: 4096}
-	if err := cmd.Start(); err != nil {
+	if err := startBridge(ctx, cmd); err != nil {
 		return result, fmt.Errorf("start Jev bridge: %w", err)
 	}
 	defer func() {
@@ -221,23 +225,61 @@ func runTask(ctx context.Context, req TaskRequest, cfg policy.Config, launch bri
 	if json.Unmarshal(scanner.Bytes(), &ready) != nil || ready.Event != "ready" {
 		return result, errors.New("Jev bridge readiness protocol failed")
 	}
-	request := map[string]any{"url": req.URL, "goal": req.Goal, "expect_text": req.ExpectText, "max_steps": req.MaxSteps, "typesafe_api_key": strings.TrimPrefix(credentialEnv, "TYPESAFE_API_KEY=")}
+	if err := checkReservation(); err != nil {
+		return result, err
+	}
+	credentialEnv, err := capgraph.ResolveCredentialForSurface(req.Home, jevCredentialSurface, req.WorkID, jevCredentialHandle())
+	if errors.Is(err, capgraph.ErrCredentialSurfaceNotRegistered) {
+		if key := os.Getenv("TYPESAFE_API_KEY"); key != "" {
+			credentialEnv, err = "TYPESAFE_API_KEY="+key, nil
+		}
+	}
+	if err != nil {
+		return result, fmt.Errorf("Jev requires a registered TypeSafe credential: %w", err)
+	}
+	request := map[string]any{"work_id": req.WorkID, "actor": req.Actor, "url": req.URL, "goal": req.Goal, "expect_text": req.ExpectText, "non_goals": req.NonGoals, "provider_model": req.ProviderModel, "provider_bound": req.ProviderBound, "max_provider_usd": req.MaxProviderUSD, "contract_json": req.ContractJSON, "contract_digest": req.ContractDigest, "max_steps": req.MaxSteps, "typesafe_api_key": strings.TrimPrefix(credentialEnv, "TYPESAFE_API_KEY=")}
 	if err := json.NewEncoder(stdin).Encode(request); err != nil {
 		return result, err
 	}
 	var lastIntent *envelope.ActionIntent
 	terminalDone := false
+	predictAuthorized := false
+	providerAuthorized := false
 	for scanner.Scan() {
 		var event bridgeEvent
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			return result, errors.New("invalid Jev bridge event")
 		}
 		switch event.Event {
+		case "predict_request":
+			if pending != nil || predictAuthorized || event.Step != result.Steps+1 || event.Step > req.MaxSteps {
+				return result, errors.New("out-of-order Jev prediction request")
+			}
+			if err := checkReservation(); err != nil {
+				_ = json.NewEncoder(stdin).Encode(map[string]bool{"allow": false})
+				return result, fmt.Errorf("Jev prediction held before provider contact: %w", err)
+			}
+			if err := json.NewEncoder(stdin).Encode(map[string]bool{"allow": true}); err != nil {
+				return result, err
+			}
+			predictAuthorized = true
+			providerAuthorized = true
 		case "proposal":
+			if !predictAuthorized {
+				return result, errors.New("Jev proposal lacked provider authorization")
+			}
+			predictAuthorized = false
+			if err := checkReservation(); err != nil {
+				return result, err
+			}
+			currentPolicy, _, err := policy.LoadConfig(req.Home)
+			if err != nil {
+				return result, err
+			}
 			if pending != nil || event.Step != result.Steps+1 || event.Step > req.MaxSteps {
 				return result, errors.New("out-of-order Jev proposal")
 			}
-			intent, decision, allowed := decideStep(req, origin, event, cfg)
+			intent, decision, allowed := decideStep(req, origin, event, currentPolicy)
 			if err := recordEvent(store, intent.ID, &intent); err != nil {
 				return result, err
 			}
@@ -329,7 +371,16 @@ func runTask(ctx context.Context, req TaskRequest, cfg policy.Config, launch bri
 			if err := cmd.Wait(); err != nil {
 				return result, errors.New("Jev bridge failed after result")
 			}
-			receipt, transition, writeErr := recordStep(store, startIntent, "completed", "bounded provider prediction attempted; actual charge unobserved")
+			if !providerAuthorized {
+				receipt, transition, writeErr := recordStep(store, startIntent, "blocked", "provider prediction refused before contact")
+				if writeErr != nil {
+					return result, writeErr
+				}
+				result.ReceiptIDs = append(result.ReceiptIDs, receipt)
+				result.TransitionIDs = append(result.TransitionIDs, transition)
+				return result, errors.New("Jev finished without authorized prediction")
+			}
+			receipt, transition, writeErr := recordStep(store, startIntent, "completed", "bounded provider prediction authorized; actual contact and charge unobserved")
 			if writeErr != nil {
 				return result, writeErr
 			}
@@ -457,6 +508,13 @@ func decideStep(req TaskRequest, origin string, event bridgeEvent, cfg policy.Co
 	now := time.Now().UTC()
 	digest := sha256.Sum256([]byte(req.WorkID + "\x00" + origin + "\x00" + fmt.Sprint(event.Step) + "\x00" + now.Format(time.RFC3339Nano)))
 	intent := envelope.ActionIntent{Header: envelope.Header{SchemaVersion: envelope.SVActionIntent, ID: "act_" + hex.EncodeToString(digest[:8]), CreatedAt: now.Format(time.RFC3339Nano), Producer: envelope.Producer{Kind: "cli", Name: "compound"}, IDs: envelope.IDs{WorkID: req.WorkID}, Authority: envelope.Authority{SourceClass: "runtime", Status: "current"}, Privacy: "private", Risk: "tier1", EvidenceRefs: []string{}, Uncertainty: envelope.Uncertainty{Level: "known"}}, Actor: "compound.browser", Capability: "browser.goal.jev", Action: event.Kind, Target: envelope.ActionTarget{Kind: "browser_page", ID: origin}, MutationClass: "read", Reversibility: "easy", BlastRadius: "local", Preview: "bounded public browser step"}
+	if req.RunningActionID != "" {
+		intent.EvidenceRefs = append(intent.EvidenceRefs, req.RunningActionID)
+	}
+	if req.RunAttemptID != "" {
+		intent.EvidenceRefs = append(intent.EvidenceRefs, req.RunAttemptID)
+	}
+	intent.ArgumentsHash = req.ContractDigest
 	safe := false
 	if _, err := scopedURL(origin, event.URL); err == nil {
 		switch {

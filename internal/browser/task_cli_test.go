@@ -112,7 +112,7 @@ func TestBrowserPortableCLIRejectsMalformedFlagsBeforeMutation(t *testing.T) {
 func TestBrowserGoalProfileHandoffNeedsNoProviderBudget(t *testing.T) {
 	home := t.TempDir()
 	var out bytes.Buffer
-	handled, err := runPortableBrowser([]string{"goal", "--home", home, "--work", "work_browser_cli", "--url", "https://example.com/", "--goal", "Read the heading", "--expect-text", "Example Domain", "--profile", "profile-a", "--json"}, &out)
+	handled, err := runPortableBrowser([]string{"goal", "--home", home, "--work", "work_browser_cli", "--actor", "browser-test", "--url", "https://example.com/", "--goal", "Read the heading", "--expect-text", "Example Domain", "--profile", "profile-a", "--json"}, &out)
 	if !handled || err != ErrRoutedToPlaywright {
 		t.Fatalf("profile handoff: handled=%t err=%v", handled, err)
 	}

@@ -1,7 +1,6 @@
 package browser
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 
 	"compound/internal/home"
 	"compound/internal/policy"
+	"compound/internal/work/executewire"
 )
 
 const portableBrowserUsage = "usage: compound browser settings [--json] [--home DIR] [--enable|--disable --work work_ID]\n" +
@@ -19,7 +19,7 @@ const portableBrowserUsage = "usage: compound browser settings [--json] [--home 
 	"       compound browser provider-pricing --work work_ID --model jev-1.13.0 --max-usd-per-request 0.003 [--json] [--home DIR]\n" +
 	"       compound browser credential-set --work work_ID --confirm [--json] [--home DIR] < KEY_ON_STDIN\n" +
 	"       compound browser credential-rotate --work work_ID --confirm [--json] [--home DIR] < KEY_ON_STDIN\n" +
-	"       compound browser goal --work work_ID --url HTTPS_URL --goal TEXT --expect-text TEXT [--provider-budget-usd USD] [--max-steps 1..6] [--profile ID] [--json] [--home DIR] (budget required for Jev)"
+	"       compound browser goal --work work_ID --actor ACTOR --url HTTPS_URL --goal TEXT --expect-text TEXT [--provider-budget-usd USD] [--max-steps 1..6] [--profile ID] [--json] [--home DIR] (budget required for Jev)"
 
 func runPortableBrowser(args []string, out io.Writer) (bool, error) {
 	return runPortableBrowserInput(args, out, os.Stdin)
@@ -43,7 +43,7 @@ func runPortableBrowserInput(args []string, out io.Writer, in io.Reader) (bool, 
 				return true, fmt.Errorf("duplicate flag %s", arg)
 			}
 			switches[arg] = true
-		case "--home", "--work", "--profile", "--url", "--goal", "--expect-text", "--max-steps", "--provider-budget-usd", "--model", "--max-usd-per-request":
+		case "--home", "--work", "--actor", "--profile", "--url", "--goal", "--expect-text", "--max-steps", "--provider-budget-usd", "--model", "--max-usd-per-request":
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") || values[arg] != "" {
 				return true, fmt.Errorf("%s requires one value", arg)
 			}
@@ -65,7 +65,7 @@ func runPortableBrowserInput(args []string, out io.Writer, in io.Reader) (bool, 
 	if verb != "provider-pricing" && (values["--model"] != "" || values["--max-usd-per-request"] != "") {
 		return true, fmt.Errorf("model and per-request ceiling are provider-pricing options")
 	}
-	if verb != "goal" && (values["--url"] != "" || values["--goal"] != "" || values["--expect-text"] != "" || values["--max-steps"] != "" || values["--provider-budget-usd"] != "") {
+	if verb != "goal" && (values["--actor"] != "" || values["--url"] != "" || values["--goal"] != "" || values["--expect-text"] != "" || values["--max-steps"] != "" || values["--provider-budget-usd"] != "") {
 		return true, fmt.Errorf("task options require goal")
 	}
 	if verb == "route" && values["--work"] != "" {
@@ -141,8 +141,8 @@ func runPortableBrowserInput(args []string, out io.Writer, in io.Reader) (bool, 
 		return true, nil
 	}
 	if verb == "goal" {
-		if values["--work"] == "" || values["--url"] == "" || values["--goal"] == "" || values["--expect-text"] == "" {
-			return true, fmt.Errorf("goal requires --work, --url, --goal, and --expect-text")
+		if values["--work"] == "" || values["--actor"] == "" || values["--url"] == "" || values["--goal"] == "" || values["--expect-text"] == "" {
+			return true, fmt.Errorf("goal requires --work, --actor, --url, --goal, and --expect-text")
 		}
 		steps := 3
 		if values["--max-steps"] != "" {
@@ -162,7 +162,7 @@ func runPortableBrowserInput(args []string, out io.Writer, in io.Reader) (bool, 
 		if err != nil {
 			return true, err
 		}
-		result, err := RunTask(context.Background(), TaskRequest{Home: homePath, WorkID: values["--work"], URL: values["--url"], Goal: values["--goal"], ExpectText: values["--expect-text"], MaxSteps: steps, MaxProviderUSD: budget, ProfileID: values["--profile"]}, cfg)
+		result, err := RunTask(executewire.LaunchContext(), TaskRequest{Home: homePath, Actor: values["--actor"], WorkID: values["--work"], URL: values["--url"], Goal: values["--goal"], ExpectText: values["--expect-text"], MaxSteps: steps, MaxProviderUSD: budget, ProfileID: values["--profile"]}, cfg)
 		if err != nil {
 			if switches["--json"] && result.Status != "" {
 				_ = json.NewEncoder(out).Encode(result)

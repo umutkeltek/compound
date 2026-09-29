@@ -4,6 +4,8 @@ Only content-free step metadata leaves this process. Page text, generated field
 values, screenshots, and credentials stay inside the rented browser process.
 """
 
+import base64
+import hashlib
 import json
 import ipaddress
 import os
@@ -194,6 +196,19 @@ def main():
     global STAGE
     send(event="ready")
     request = receive()
+    contract_bytes = base64.b64decode(request["contract_json"], validate=True)
+    if hashlib.sha256(contract_bytes).hexdigest() != request["contract_digest"]:
+        raise RuntimeError("browser contract digest mismatch")
+    contract = json.loads(contract_bytes)
+    for saved, transmitted in (
+        ("WorkID", "work_id"), ("Actor", "actor"), ("URL", "url"),
+        ("Goal", "goal"), ("ExpectText", "expect_text"),
+        ("NonGoals", "non_goals"), ("MaxSteps", "max_steps"),
+        ("MaxProviderUSD", "max_provider_usd"),
+        ("ProviderModel", "provider_model"), ("ProviderBound", "provider_bound"),
+    ):
+        if contract[saved] != request[transmitted]:
+            raise RuntimeError("browser contract input mismatch")
     provider_key = request.pop("typesafe_api_key", "")
     if not provider_key:
         raise RuntimeError("missing provider credential")
@@ -212,11 +227,19 @@ def execute_goal(Agent, request):
     # provider credentials; restore them only after the browser is connected.
     secrets = {key: os.environ.pop(key) for key in MODEL_SECRET_NAMES if key in os.environ}
     try:
-        agent_instance = Agent(request["url"], request["goal"], screenshots=False)
+        non_goals = request.get("non_goals", [])
+        goal = request["goal"]
+        if non_goals:
+            goal += "\nConstraints: " + "; ".join(non_goals)
+        agent_instance = Agent(request["url"], goal, screenshots=False)
     finally:
         os.environ.update(secrets)
     with agent_instance as agent:
         for step in range(1, request["max_steps"] + 1):
+            send(event="predict_request", step=step)
+            if receive().get("allow") is not True:
+                send(event="result", status="held", verified=False, steps=step - 1)
+                return
             STAGE = "predict"
             state = agent.command("predict")
             page = state["page"]
