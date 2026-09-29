@@ -21,7 +21,7 @@ import (
 // executeStageDetachedLaunchFn. The seam has already claimed the envelope
 // under the tick actor; this function spawns the SAME governed door a human
 // dispatches (`compound work advance <id> --to running --by <actor> --execute
-// --harness <lane> --permission-mode bypass --prompt <p>`) as its own process
+// --harness <lane> --permission-mode bypass --timeout <t> --prompt <p>`) as its own process
 // group, wrapped in GNU timeout so the run carries a finite budget that
 // outlives the heartbeat tick, with stdin closed and stdout/stderr custodied
 // in a log beside the RunAttempt launch evidence. It returns as soon as the
@@ -34,9 +34,19 @@ import (
 // orphaned. The timeout wrapper does exactly that at the budget.
 
 // DefaultDetachedLaunchBudget bounds one detached door. It is the budget
-// the timeout wrapper enforces; the door's own launch deadline (if any)
-// still applies inside it.
+// the timeout wrapper enforces; the door itself runs with the shorter
+// --timeout from detachedDoorTimeout so its own adapter deadline fires
+// first and it finalizes the RunAttempt before the wrapper TERMs it.
 var DefaultDetachedLaunchBudget = 45 * time.Minute
+
+// detachedDoorTimeout is the door's own --timeout inside a wrapper budget:
+// two minutes of finalize margin, never less than half the budget.
+func detachedDoorTimeout(budget time.Duration) time.Duration {
+	if inner := budget - 2*time.Minute; inner >= budget/2 {
+		return inner
+	}
+	return budget / 2
+}
 
 // DetachedDoorBinary resolves the compound binary the door runs as. Tests
 // swap it for a script that records its argv.
@@ -65,6 +75,7 @@ func DetachedLaunchArgv(timeoutBin, doorBin string, budget time.Duration, workID
 		doorBin, "work", "advance", workID,
 		"--to", "running", "--by", actor, "--execute",
 		"--harness", lane, "--permission-mode", "bypass",
+		"--timeout", detachedDoorTimeout(budget).String(),
 		"--prompt", prompt,
 	}
 }

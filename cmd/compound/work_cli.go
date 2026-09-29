@@ -42,7 +42,7 @@ func parseWorkDeliveryRequest(args []string) (*work.ActionDeliveryRequest, error
 			return nil, fmt.Errorf("%s requires a nonempty value", flag)
 		}
 	}
-	for _, flag := range []string{"--execute", "--resume-verifying", "--keep-verifying-on-failure", "--lane", "--launch-profile", "--effort", "--expected-selection-revision", "--expected-execution-tuple", "--expected-work-revision", "--target-worktree-root", "--target-local-ref", "--expected-base-sha", "--publication-ref", "--local-only", "--run-attempt", "--artifact", "--verification", "--context-pack", "--harness", "--prompt", "--workspace", "--permission-mode", "--"} {
+	for _, flag := range []string{"--execute", "--resume-verifying", "--keep-verifying-on-failure", "--lane", "--launch-profile", "--effort", "--expected-selection-revision", "--expected-execution-tuple", "--expected-work-revision", "--target-worktree-root", "--target-local-ref", "--expected-base-sha", "--publication-ref", "--local-only", "--run-attempt", "--artifact", "--verification", "--context-pack", "--harness", "--prompt", "--workspace", "--permission-mode", "--timeout", "--"} {
 		if hasFlag(args, flag) {
 			return nil, fmt.Errorf("delivery binding cannot be combined with %s", flag)
 		}
@@ -213,7 +213,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work advance-plan work_abc123 --to running --actor codex --dry-run",
 	},
 	"advance": {
-		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--acknowledge-abandoned ratt_X --reason R] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--launch-profile ID [--effort LEVEL] [--expected-selection-revision N]] [--expected-execution-tuple DIGEST] [--execute [--resume-verifying] --harness <name> [--prompt <text> | -- <command> [args...]]] [--delivery-action ACT --delivery-kind private_runtime --delivery-evidence REF] [--expected-work-state S --expected-policy-decision POL --expected-action-intent ACT]",
+		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--acknowledge-abandoned ratt_X --reason R] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--launch-profile ID [--effort LEVEL] [--expected-selection-revision N]] [--expected-execution-tuple DIGEST] [--execute [--resume-verifying] --harness <name> [--permission-mode MODE] [--timeout DUR (default 5m, max 45m)] [--prompt <text> | -- <command> [args...]]] [--delivery-action ACT --delivery-kind private_runtime --delivery-evidence REF] [--expected-work-state S --expected-policy-decision POL --expected-action-intent ACT]",
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"delegate": {
@@ -1528,7 +1528,7 @@ func cmdWork(args []string) {
 			"--to": true, "--by": true, "--actor": true, "--lane": true, "--run-attempt": true, "--artifact": true, "--verification": true,
 			"--context-pack": true, "--note": true, "--reason": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
-			"--harness": true, "--prompt": true, "--workspace": true, "--permission-mode": true,
+			"--harness": true, "--prompt": true, "--workspace": true, "--permission-mode": true, "--timeout": true,
 			"--launch-profile": true, "--effort": true, "--expected-selection-revision": true, "--expected-execution-tuple": true, "--expected-work-revision": true,
 		}
 		// Validate only the pre-`--` portion of the args. The `--` is the
@@ -1550,6 +1550,10 @@ func cmdWork(args []string) {
 		}
 		if valueFlag(validateSlice, "--expected-work-revision") != "" && !hasFlag(validateSlice, "--execute") {
 			fmt.Fprintln(os.Stderr, "error: --expected-work-revision requires --execute")
+			os.Exit(2)
+		}
+		if hasFlag(validateSlice, "--timeout") && !hasFlag(validateSlice, "--execute") {
+			fmt.Fprintln(os.Stderr, "error: --timeout requires --execute")
 			os.Exit(2)
 		}
 		if hasFlag(validateSlice, "--keep-verifying-on-failure") && !hasFlag(validateSlice, "--execute") {

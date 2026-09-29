@@ -132,6 +132,10 @@ compound **observes** executions; it does not become one. The rail is proven by 
   running reservation changes after the attempt is minted, the newer WorkEnvelope generation stays byte-for-byte
   authoritative. The attempt remains durable and reverse-linked by `work_id` + `action_intent_id`, and the CLI MUST
   surface that exception; it may never mint a same-state policy/action generation to manufacture a forward link.
+- **Execution budget:** `work advance --execute --timeout <dur>` sets the adapter deadline; absent or `0` keeps the
+  5-minute default, a request above 45m (the detached door's wrapper budget) is capped, and a malformed/negative value
+  refuses before any state change. A lane that needs more than 5 minutes must ask for it — without the flag every run
+  dies at exactly 5m0s. The detached door passes `--timeout` 2m under its wrapper so the door finalizes first.
 - **Workspace resolution order:** `--workspace` → `git_delivery.target_worktree_root` → `cwd` → **refuse**. **NEVER
   default to `COMPOUND_HOME`** — running a code-editing harness there edits the state/config dir, not the project.
 - **Raw/manual Claude adapter permission default is `plan`** (read-only; the only posture that cannot hang on

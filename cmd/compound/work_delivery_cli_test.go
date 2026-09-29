@@ -33,7 +33,7 @@ func TestWorkDeliveryCLIRequestIsExactAndExclusive(t *testing.T) {
 			t.Fatalf("accepted partial request: %v", args)
 		}
 	}
-	for _, flag := range []string{"--execute", "--lane", "--launch-profile", "--effort", "--expected-selection-revision", "--target-worktree-root", "--local-only", "--run-attempt", "--artifact", "--verification", "--context-pack", "--harness", "--prompt", "--workspace", "--permission-mode", "--"} {
+	for _, flag := range []string{"--execute", "--lane", "--launch-profile", "--effort", "--expected-selection-revision", "--target-worktree-root", "--local-only", "--run-attempt", "--artifact", "--verification", "--context-pack", "--harness", "--prompt", "--workspace", "--permission-mode", "--timeout", "--"} {
 		if _, err := parseWorkDeliveryRequest(append(append([]string(nil), base...), flag, "value")); err == nil {
 			t.Errorf("accepted mixed operation %s", flag)
 		}

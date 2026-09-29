@@ -154,10 +154,10 @@ func defect4LaunchSeed(t *testing.T, store *work.Store, workID, actor string, no
 //
 // The wire MUST set a finite RunInput.Timeout so the subprocess
 // runner's `if in.Timeout > 0` kill-timer branch arms. With the
-// DefaultLaunchTimeout (5 minutes) the wire populates Timeout > 0;
-// with an explicit caller-supplied Timeout the wire clamps to
-// MaxLaunchTimeout (15 minutes) so the deadline never exceeds the
-// heartbeat's outer `timeout 600` plus margin.
+// DefaultLaunchTimeout (5 minutes) the wire populates Timeout > 0 and
+// the synchronous seam never requests more, so the deadline stays under
+// the heartbeat's outer `timeout 600` plus margin. (Explicit CLI requests
+// resolve through LaunchTimeoutFor; see launch_timeout_test.go.)
 //
 // RED before fix: RunInput.Timeout == 0 (no default applied) — the
 // runner's kill goroutine never starts, so an unattended launch can

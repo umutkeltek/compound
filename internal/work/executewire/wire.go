@@ -240,16 +240,44 @@ func AssertLaunchContextInstalled() error {
 // Compound parent). 5 minutes (300s) is comfortably under 600s and above
 // the heaviest observed legacy session, so a productive unattended
 // launch completes inside the budget and a runaway launch is bounded.
-// Override ceiling MaxLaunchTimeout (900s) is enforced; an explicit
-// caller-supplied Timeout above that gets clamped.
+// It is also what `work advance --execute` uses when --timeout is absent
+// or zero; see LaunchTimeoutFor.
 var DefaultLaunchTimeout = 5 * time.Minute
 
-// MaxLaunchTimeout is the explicit-override ceiling. The wire MUST
-// refuse to launch with a Timeout > MaxLaunchTimeout because a
-// caller-supplied deadline above the heartbeat's outer budget would
-// still let the parent die while the subprocess tree keeps running —
-// the very failure shape this fix exists to prevent.
-var MaxLaunchTimeout = 15 * time.Minute
+// MaxLaunchTimeout caps an explicitly requested budget
+// (`work advance --execute --timeout`). It equals the detached door's
+// wrapper budget: no governed run may be asked to outlive the outermost
+// bound Compound itself puts around a door.
+var MaxLaunchTimeout = DefaultDetachedLaunchBudget
+
+// LaunchTimeoutFor resolves one governed run's execution budget: a
+// non-positive request keeps DefaultLaunchTimeout, a request above
+// MaxLaunchTimeout is capped to it, and anything else is honoured.
+func LaunchTimeoutFor(requested time.Duration) time.Duration {
+	if requested <= 0 {
+		return DefaultLaunchTimeout
+	}
+	if requested > MaxLaunchTimeout {
+		return MaxLaunchTimeout
+	}
+	return requested
+}
+
+// ParseLaunchTimeoutFlag resolves the `work advance --execute --timeout`
+// value through LaunchTimeoutFor. Parsing lives here, not in cmd/compound,
+// so the CLI keeps one call. A malformed or negative value is a usage error
+// the caller reports before any state change.
+func ParseLaunchTimeoutFlag(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return LaunchTimeoutFor(0), nil
+	}
+	requested, err := time.ParseDuration(raw)
+	if err != nil || requested < 0 {
+		return 0, fmt.Errorf("--timeout %q must be a non-negative duration such as 40m (absent or 0 = %s, capped at %s)", raw, DefaultLaunchTimeout, MaxLaunchTimeout)
+	}
+	return LaunchTimeoutFor(requested), nil
+}
 
 // PreflightViaActuator is the production preflight hook the seam calls
 // BEFORE Claim/Advance (DEFECT 1 fix, AUT-P0-001 2026-09-04). It resolves
@@ -590,7 +618,7 @@ func LaunchCandidateViaActuator(store *work.Store, workID string, candidate work
 		RequestedModelID: tupleModelID, RequestedProviderRoute: tupleProviderRoute,
 		Args: []string{prompt}, PermissionMode: "bypass",
 		LaneID: candidate.LaunchProfileID, ActionIntentID: launchActionID,
-		Timeout: resolvedLaunchTimeout(),
+		Timeout: LaunchTimeoutFor(0),
 		Now:     now,
 	}
 	// work_r7a_execution_selection_20260911: stamp the per-run selection
@@ -764,28 +792,6 @@ func LaunchCandidateViaActuator(store *work.Store, workID string, candidate work
 		return mintedRattID, runErr
 	}
 	return mintedRattID, nil
-}
-
-// LaunchTimeout is the finite budget shared by the governed CLI and wire.
-func LaunchTimeout() time.Duration { return resolvedLaunchTimeout() }
-
-func resolvedLaunchTimeout() time.Duration {
-	// Package-level vars mean tests can pin both.
-	def := DefaultLaunchTimeout
-	if def <= 0 {
-		def = 5 * time.Minute
-	}
-	max := MaxLaunchTimeout
-	if max <= 0 {
-		max = 15 * time.Minute
-	}
-	if max < def {
-		// The ceiling must sit above the default; if a test pinned
-		// them backwards, silently swap. Tests that pin deliberately
-		// impossibly-low ceilings should fail loudly elsewhere.
-		max = def
-	}
-	return def
 }
 
 // InstallDetached (R6P 2026-09-11) makes the unattended seam hand launches to

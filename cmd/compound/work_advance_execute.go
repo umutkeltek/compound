@@ -77,6 +77,11 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	if target == "" {
 		target = "running"
 	}
+	launchTimeout, err := executewire.ParseLaunchTimeoutFlag(valueFlag(rest, "--timeout"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v; no RunAttempt minted and envelope was not advanced\n", err)
+		workAdvanceExecuteExit(2)
+	}
 
 	// Parse post-`--` for command + args. Everything before the `--` is
 	// flag parsing; everything after is the subprocess argv. The first
@@ -262,12 +267,13 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		}
 		runInput = resolved
 	}
-	// A governed run is bounded: the RunInput carries the same finite launch
-	// budget the launch wire applies, and the run context is the
+	// A governed run is bounded: the RunInput carries the finite budget
+	// resolved from --timeout (absent = the wire default, capped at
+	// executewire.MaxLaunchTimeout), and the run context is the
 	// signal-derived launch context (SIGINT/SIGTERM cancel the adapter run,
 	// which the shared runner translates into a process-group kill with
 	// cancellation evidence). 2026-09-15 public-CLI cancellation contract.
-	runInput.Timeout = executewire.LaunchTimeout()
+	runInput.Timeout = launchTimeout
 	// A hook-governed lane must run the full roster for governed spawn; refuse
 	// (never install) before any state change (hookplan.GovernedFullRosterGate).
 	if gate := hookplan.GovernedFullRosterGate(harnessName); gate != nil {
