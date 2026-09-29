@@ -7,6 +7,17 @@ import { CANONICAL_HEADERS, ascEnv, parseArgs, parseConfig, reportPayload, rowsF
 
 const REPORT = JSON.parse(readFileSync("fixtures/product/apple-ads-campaign-report.json", "utf8"));
 
+function buildCompound(): string {
+  const bin = join(mkdtempSync(join(tmpdir(), "compound-apple-ads-bin-")), "compound");
+  const build = spawnSync("go", ["build", "-o", bin, "./cmd/compound"], { encoding: "utf8", timeout: 120_000 });
+  if (build.error) throw build.error;
+  if (build.status !== 0) throw new Error(build.stderr || build.stdout);
+  return bin;
+}
+
+// Compile before Bun starts the per-test timeout; the timeout measures the importer.
+const COMPOUND_BIN = buildCompound();
+
 describe("apple_ads_daily edge", () => {
   test("maps campaign rows to products through asc_app_id and reports unmapped apps", () => {
     const config = parseConfig("fixtures/product/asc-products.json");
@@ -53,7 +64,7 @@ describe("apple_ads_daily edge", () => {
     expect(payload.granularity).toBe("DAILY");
     expect(payload.returnRecordsWithNoMetrics).toBe(true);
     expect(() => reportPayload(0)).toThrow("--days");
-    const env = ascEnv({ HTTPS_PROXY: "http://127.0.0.1:1", https_proxy: "x", ALL_PROXY: "y", PATH: "/usr/bin" });
+    const env = ascEnv({ HTTPS_PROXY: "http://proxy.invalid:1", https_proxy: "x", ALL_PROXY: "y", PATH: "/usr/bin" });
     expect(env).toEqual({ PATH: "/usr/bin" });
   });
 
@@ -71,9 +82,7 @@ describe("apple_ads_daily edge", () => {
 
   test("apply invokes the ads import door idempotently in a temp home", () => {
     const home = mkdtempSync(join(tmpdir(), "compound-apple-ads-home-"));
-    const bin = join(mkdtempSync(join(tmpdir(), "compound-apple-ads-bin-")), "compound");
-    const build = spawnSync("go", ["build", "-o", bin, "./cmd/compound"], { encoding: "utf8" });
-    if (build.status !== 0) throw new Error(build.stderr || build.stdout);
+    const bin = COMPOUND_BIN;
     const env = { ...process.env, COMPOUND_HOME: home };
     const init = spawnSync(bin, ["home", "init", "--home", home], { encoding: "utf8", env });
     if (init.status !== 0) throw new Error(init.stderr || init.stdout);
