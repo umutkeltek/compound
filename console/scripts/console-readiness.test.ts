@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { consoleReadiness } from "./console-readiness.ts";
-import { computeInstancePin } from "./instance-pin.ts";
+import { consoleReadiness } from "../src/lib/console-readiness.ts";
+import { computeInstancePin } from "../src/lib/instance-pin.ts";
 
 const pin = computeInstancePin({
   COMPOUND_HOME: "/synthetic/console-home",
