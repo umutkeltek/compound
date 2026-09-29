@@ -66,6 +66,9 @@ if not json.loads(sys.stdin.readline()).get("allow"):
 send(event="acted", step=1, status="done", url=request["url"])
 child = subprocess.Popen(["sleep", "30"])
 with open(os.environ["COMPOUND_TEST_JEV_STEP_MARKER"], "w") as file:
+    # Publish an empty file first to exercise the reader's readiness boundary.
+    file.flush()
+    time.sleep(0.1)
     file.write(str(child.pid))
 while True:
     time.sleep(1)
@@ -93,17 +96,24 @@ while True:
 	})
 	deadline := time.Now().Add(15 * time.Second)
 	var childPID int
+	var observedMarker []byte
+	var markerParseErr error
 	for time.Now().Before(deadline) {
 		if data, err := os.ReadFile(marker); err == nil {
-			childPID, _ = strconv.Atoi(string(data))
-			break
+			observedMarker = append([]byte(nil), data...)
+			candidate, parseErr := strconv.Atoi(string(data))
+			markerParseErr = parseErr
+			if parseErr == nil && candidate > 1 {
+				childPID = candidate
+				break
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	if childPID == 0 {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		t.Fatalf("public CLI did not complete first step; stdout=%s stderr=%s", stdout.String(), stderr.String())
+		t.Fatalf("public CLI did not complete first step; marker=%q parse=%v stdout=%s stderr=%s", observedMarker, markerParseErr, stdout.String(), stderr.String())
 	}
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
