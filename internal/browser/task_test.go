@@ -870,13 +870,25 @@ func TestJevCancellationPreservesPartialProgress(t *testing.T) {
 	t.Setenv("TYPESAFE_PROVIDER_MAX_USD_PER_REQUEST", "0.01")
 	t.Setenv("COMPOUND_TEST_JEV_MODE", "hang")
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	req := testTask(home)
 	type outcome struct {
 		result TaskResult
 		err    error
 	}
 	done := make(chan outcome, 1)
+	joined := false
+	defer func() {
+		cancel()
+		if joined {
+			return
+		}
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("browser task did not stop within cancellation bound")
+			<-done // fixture cleanup must not race an unfinished worker
+		}
+	}()
 	go func() {
 		result, err := runTask(ctx, req, taskPolicy(), func(ctx context.Context) *exec.Cmd {
 			time.Sleep(1200 * time.Millisecond) // controlled slow admission-to-launch boundary
@@ -893,6 +905,7 @@ func TestJevCancellationPreservesPartialProgress(t *testing.T) {
 	for !firstActionRecorded {
 		select {
 		case got := <-done:
+			joined = true
 			t.Fatalf("browser task ended before first action receipt: %+v, %v", got.result, got.err)
 		default:
 		}
@@ -924,6 +937,7 @@ func TestJevCancellationPreservesPartialProgress(t *testing.T) {
 	cancel()
 	select {
 	case got := <-done:
+		joined = true
 		if got.err == nil || got.result.Status != "failed" || got.result.Steps != 1 || len(got.result.ReceiptIDs) != 2 || len(got.result.TransitionIDs) != 2 {
 			t.Fatalf("cancelled result = %+v, %v", got.result, got.err)
 		}
