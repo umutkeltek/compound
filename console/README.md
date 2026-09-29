@@ -35,10 +35,14 @@ stopped, then let launchd restart only the immutable serve step. The CLI keeps
 the lifecycle lock while Next runs and forwards termination to the whole child
 process group, so supervision cannot orphan a server on `:3777`.
 
-`status` is not a bind-only guess. It probes the existing instance badge on `/`,
-matches the expected home hash and lifecycle kind, then fetches every referenced
-local Next static asset. Its states distinguish `stopped`, `healthy`,
-`unhealthy`, and `occupied_foreign` without adding a health route.
+`status` probes the small read-only `/api/readiness` route for the frozen
+instance home hash, explicit pin, lifecycle kind, and current build's asset
+references. It fetches each referenced local Next static asset before marking
+the service healthy. This check does not wait for the dashboard's home or work
+projections: `data_freshness: not_checked` means their state is still unknown.
+An older console without the route reports readiness unavailable until its
+server is upgraded. States distinguish `stopped`,
+`healthy`, `unhealthy`, and `occupied_foreign`.
 
 The `ai.compound.console` launchd unit is an adapter to this owner. Its command
 must invoke the installed CLI (with its configured repo path), rather than

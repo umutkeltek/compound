@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -20,7 +19,7 @@ import (
 	"compound/internal/home"
 )
 
-const consoleStatusSchemaVersion = "compound.console_status.v0.2"
+const consoleStatusSchemaVersion = "compound.console_status.v0.3"
 
 // internal/console is the single authority for the launch-plan schema, env
 // names, lifecycle names, and capability gate. These aliases keep the cmd-
@@ -62,6 +61,7 @@ type consoleRuntimeStatus struct {
 	AssetsChecked int    `json:"assets_checked,omitempty"`
 	FailedAsset   string `json:"failed_asset,omitempty"`
 	Detail        string `json:"detail,omitempty"`
+	DataFreshness string `json:"data_freshness"`
 }
 
 func cmdConsole(args []string) {
@@ -221,6 +221,7 @@ func inspectConsoleRuntimeAt(address, expectedHome string, client *http.Client) 
 		Address:       address,
 		Port:          port,
 		ExpectedHome:  consoleHomeShortHash(expectedHome),
+		DataFreshness: "not_checked",
 	}
 	listener, err := net.Listen("tcp", address)
 	if err == nil {
@@ -230,113 +231,13 @@ func inspectConsoleRuntimeAt(address, expectedHome string, client *http.Client) 
 	}
 	status.OwnerPID, status.OwnerProcess = consolePortOwner(port)
 	if client == nil {
-		// RootLayout waits on the real attention/policy projections. A cold
-		// canonical process can legitimately take tens of seconds on its first
-		// render, so health must cover the longest current projection door.
-		client = &http.Client{Timeout: 60 * time.Second}
+		client = &http.Client{Timeout: 20 * time.Second}
 	}
-	rootURL := "http://" + address + "/"
-	response, err := client.Get(rootURL)
-	if err != nil {
-		status.Detail = "listener accepted TCP but the console HTTP probe failed"
-		return status
-	}
-	defer response.Body.Close()
-	status.HTTPStatus = response.StatusCode
-	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
-	if err != nil {
-		status.Detail = "console root response could not be read"
-		return status
-	}
-	html := string(body)
-	status.ObservedHome = consoleHTMLAttribute(html, "data-instance-home-hash")
-	status.BuildKind = consoleHTMLAttribute(html, "data-instance-build-kind")
-	explicit := consoleHTMLAttribute(html, "data-instance-explicit")
-	if status.ObservedHome == "" || status.ObservedHome != status.ExpectedHome || explicit != "1" {
-		status.State = "occupied_foreign"
-		status.Detail = "port owner is not the explicitly pinned canonical Compound console"
-		return status
-	}
-	if response.StatusCode != http.StatusOK {
-		status.Detail = fmt.Sprintf("console root returned HTTP %d", response.StatusCode)
-		return status
-	}
-	if status.BuildKind != "development" && status.BuildKind != "production" {
-		status.Detail = "console identity is missing its lifecycle build kind"
-		return status
-	}
-	assetPaths := consoleStaticAssets(html)
-	if len(assetPaths) == 0 {
-		status.Detail = "console root referenced no Next static asset"
-		return status
-	}
-	for _, assetPath := range assetPaths {
-		assetResponse, err := client.Get("http://" + address + assetPath)
-		if err != nil {
-			status.FailedAsset = assetPath
-			status.Detail = "console static asset probe failed"
-			return status
-		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(assetResponse.Body, 4<<20))
-		_ = assetResponse.Body.Close()
-		if assetResponse.StatusCode < 200 || assetResponse.StatusCode >= 300 {
-			status.FailedAsset = assetPath
-			status.Detail = fmt.Sprintf("console static asset returned HTTP %d", assetResponse.StatusCode)
-			return status
-		}
-		status.AssetsChecked++
-	}
-	status.State = "healthy"
-	status.Detail = ""
+	probe := console.InspectReadinessAt(address, status.ExpectedHome, client)
+	status.State, status.Detail, status.HTTPStatus = probe.State, probe.Detail, probe.HTTPStatus
+	status.ObservedHome, status.BuildKind = probe.ObservedHome, probe.BuildKind
+	status.AssetsChecked, status.FailedAsset = probe.AssetsChecked, probe.FailedAsset
 	return status
-}
-
-func consoleHTMLAttribute(html, name string) string {
-	marker := name + `="`
-	start := strings.Index(html, marker)
-	if start < 0 {
-		return ""
-	}
-	value := html[start+len(marker):]
-	end := strings.IndexByte(value, '"')
-	if end < 0 {
-		return ""
-	}
-	return value[:end]
-}
-
-func consoleStaticAssets(html string) []string {
-	const limit = 256
-	seen := make(map[string]struct{})
-	assets := make([]string, 0, 32)
-	remaining := html
-	for len(assets) < limit {
-		src := strings.Index(remaining, `src="`)
-		href := strings.Index(remaining, `href="`)
-		start := src
-		marker := `src="`
-		if start < 0 || (href >= 0 && href < start) {
-			start = href
-			marker = `href="`
-		}
-		if start < 0 {
-			break
-		}
-		rest := remaining[start+len(marker):]
-		end := strings.IndexByte(rest, '"')
-		if end < 0 {
-			break
-		}
-		value := rest[:end]
-		if strings.HasPrefix(value, "/_next/static/") {
-			if _, ok := seen[value]; !ok {
-				seen[value] = struct{}{}
-				assets = append(assets, value)
-			}
-		}
-		remaining = rest[end+1:]
-	}
-	return assets
 }
 
 func consolePortOwner(port int) (string, string) {

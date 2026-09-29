@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -229,111 +231,92 @@ func TestConsoleLifecycleCanRequireAnExplicitHome(t *testing.T) {
 	}
 }
 
-func TestConsoleRuntimeStatusDistinguishesHealthyUnhealthyAndForeign(t *testing.T) {
+func TestConsoleStatusUsesShallowReadinessDuringStalledRoot(t *testing.T) {
 	t.Parallel()
-	if testing.Short() {
-		t.Skip("fsync-heavy: skipped in -short mode")
-	}
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	expectedHash := consoleHomeShortHash(homePath)
+	var rootHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			rootHits.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "<html>streamed shell")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			<-r.Context().Done()
+		case "/api/readiness":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"schema_version":"compound.console_readiness.v0.1","home_hash":%q,"explicit":true,"build_kind":"production","build_id":"synthetic-build","static_assets":["/_next/static/chunks/app.js"],"data_freshness":"not_checked"}`, expectedHash)
+		case "/_next/static/chunks/app.js":
+			w.Header().Set("Content-Type", "application/javascript")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "consoleReady()")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
 
-	// The cold-start cases below scale the probe budget DOWN via the injectable client rather
-	// than sleeping for real against the 60s production default. The property under test is
-	// "a root response that arrives inside the probe budget still reads healthy, and one that
-	// arrives outside it does not" — that is a relationship between two durations, not a
-	// magnitude, so it is proven identically at 200ms/3s as at 5.2s/60s and costs 26x less.
-	//
-	// Deleting the delay entirely (the tempting "just make it 20ms" fix) would keep the test
-	// green while proving nothing: the subtest is named "within projection budget" precisely
-	// because the magnitude relative to the budget IS the assertion.
-	for _, tc := range []struct {
-		name         string
-		root         string
-		badAsset     string
-		rootDelay    time.Duration
-		probeTimeout time.Duration
-		wantState    string
-		wantKind     string
-	}{
-		{
-			name:      "healthy canonical console",
-			root:      `<html><body><span data-instance-home-hash="` + expectedHash + `" data-instance-explicit="1" data-instance-build-kind="production"></span><link href="/_next/static/css/app.css"><script src="/_next/static/chunks/app.js"></script></body></html>`,
-			wantState: "healthy",
-			wantKind:  "production",
-		},
-		{
-			name:         "cold canonical console within projection budget",
-			root:         `<html><body><span data-instance-home-hash="` + expectedHash + `" data-instance-explicit="1" data-instance-build-kind="production"></span><script src="/_next/static/chunks/app.js"></script></body></html>`,
-			rootDelay:    200 * time.Millisecond,
-			probeTimeout: 3 * time.Second,
-			wantState:    "healthy",
-			wantKind:     "production",
-		},
-		{
-			// The other side of the same boundary, which was never covered: a root that
-			// does NOT arrive inside the budget must not be reported healthy.
-			name:         "cold canonical console beyond projection budget",
-			root:         `<html><body><span data-instance-home-hash="` + expectedHash + `" data-instance-explicit="1" data-instance-build-kind="production"></span><script src="/_next/static/chunks/app.js"></script></body></html>`,
-			rootDelay:    600 * time.Millisecond,
-			probeTimeout: 80 * time.Millisecond,
-			wantState:    "unhealthy",
-		},
-		{
-			name:      "canonical console with broken assets",
-			root:      `<html><body><span data-instance-home-hash="` + expectedHash + `" data-instance-explicit="1" data-instance-build-kind="production"></span><script src="/_next/static/chunks/good.js"></script><script src="/_next/static/chunks/broken.js"></script></body></html>`,
-			badAsset:  "/_next/static/chunks/broken.js",
-			wantState: "unhealthy",
-			wantKind:  "production",
-		},
-		{
-			name:      "foreign listener",
-			root:      `<html><body>another service</body></html>`,
-			wantState: "occupied_foreign",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.HasPrefix(r.URL.Path, "/_next/static/") {
-					if r.URL.Path == tc.badAsset {
-						w.WriteHeader(http.StatusNotFound)
-						return
-					}
-					w.WriteHeader(http.StatusOK)
-					return
-				}
-				if tc.rootDelay > 0 {
-					time.Sleep(tc.rootDelay)
-				}
-				_, _ = fmt.Fprint(w, tc.root)
-			}))
-			defer server.Close()
-
-			var probe *http.Client
-			if tc.probeTimeout > 0 {
-				probe = &http.Client{Timeout: tc.probeTimeout}
-			}
-			status := inspectConsoleRuntimeAt(strings.TrimPrefix(server.URL, "http://"), homePath, probe)
-			if status.State != tc.wantState {
-				t.Fatalf("state = %q, want %q (detail=%q)", status.State, tc.wantState, status.Detail)
-			}
-			if status.BuildKind != tc.wantKind {
-				t.Fatalf("build kind = %q, want %q", status.BuildKind, tc.wantKind)
-			}
-			if tc.wantState == "healthy" && status.AssetsChecked == 0 {
-				t.Fatal("healthy status did not verify any referenced Next asset")
-			}
-		})
+	status := inspectConsoleRuntimeAt(strings.TrimPrefix(server.URL, "http://"), homePath, &http.Client{Timeout: 200 * time.Millisecond})
+	if status.State != "healthy" || status.AssetsChecked != 1 || status.BuildKind != "production" {
+		t.Fatalf("status = %+v, want healthy production with one checked asset", status)
+	}
+	if got := rootHits.Load(); got != 0 {
+		t.Fatalf("status fetched heavy root %d times, want zero", got)
 	}
 }
 
-func TestConsoleStaticAssetsReadsOnlyHTMLAttributes(t *testing.T) {
+func TestConsoleStatusRejectsInvalidShallowReadiness(t *testing.T) {
 	t.Parallel()
-	html := `<link href="/_next/static/css/app.css"><script src="/_next/static/chunks/app.js"></script>` +
-		`<script>self.__next_f.push(["/_next/static/chunks/ghost.js\\\""])</script>`
-	got := consoleStaticAssets(html)
-	want := []string{"/_next/static/css/app.css", "/_next/static/chunks/app.js"}
-	if !sameStringSlice(got, want) {
-		t.Fatalf("static assets = %v, want rendered src/href attributes %v", got, want)
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	hash := consoleHomeShortHash(homePath)
+	valid := fmt.Sprintf(`{"schema_version":"compound.console_readiness.v0.1","home_hash":%q,"explicit":true,"build_kind":"production","build_id":"synthetic-build","static_assets":["/_next/static/chunks/app.js"],"data_freshness":"not_checked"}`, hash)
+	for _, tc := range []struct {
+		name       string
+		body       string
+		assetCode  int
+		wantState  string
+		wantDetail string
+	}{
+		{name: "foreign home", body: strings.Replace(valid, hash, "aaaaaaa", 1), wantState: "occupied_foreign"},
+		{name: "unpinned", body: strings.Replace(valid, `"explicit":true`, `"explicit":false`, 1), wantState: "occupied_foreign"},
+		{name: "missing build id", body: strings.Replace(valid, `"build_id":"synthetic-build"`, `"build_id":""`, 1), wantState: "unhealthy"},
+		{name: "no assets", body: strings.Replace(valid, `"static_assets":["/_next/static/chunks/app.js"]`, `"static_assets":[]`, 1), wantState: "unhealthy"},
+		{name: "foreign asset URL", body: strings.Replace(valid, `/_next/static/chunks/app.js`, `//example.invalid/app.js`, 1), wantState: "unhealthy"},
+		{name: "broken asset", body: valid, assetCode: http.StatusNotFound, wantState: "unhealthy", wantDetail: "console static asset returned HTTP 404"},
+		{name: "unsupported data claim", body: strings.Replace(valid, `"not_checked"`, `"live"`, 1), wantState: "unhealthy"},
+		{name: "malformed", body: `{`, wantState: "unhealthy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var rootHits atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/readiness":
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, tc.body)
+				case "/_next/static/chunks/app.js":
+					w.Header().Set("Content-Type", "application/javascript")
+					if tc.assetCode != 0 {
+						w.WriteHeader(tc.assetCode)
+					}
+					_, _ = io.WriteString(w, "consoleReady()")
+				case "/":
+					rootHits.Add(1)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			status := inspectConsoleRuntimeAt(strings.TrimPrefix(server.URL, "http://"), homePath, &http.Client{Timeout: time.Second})
+			if status.State != tc.wantState || (tc.wantDetail != "" && status.Detail != tc.wantDetail) {
+				t.Fatalf("status = %+v, want state %q detail %q", status, tc.wantState, tc.wantDetail)
+			}
+			if status.DataFreshness != "not_checked" || rootHits.Load() != 0 {
+				t.Fatalf("status used a data/root shortcut: %+v root_hits=%d", status, rootHits.Load())
+			}
+		})
 	}
 }
 
@@ -759,7 +742,7 @@ func TestConsoleStatusReportsCanonicalHealth(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
 		t.Fatalf("parse console status: %v\n%s", err, stdout)
 	}
-	if status.SchemaVersion != "compound.console_status.v0.2" {
+	if status.SchemaVersion != consoleStatusSchemaVersion {
 		t.Fatalf("status schema = %q", status.SchemaVersion)
 	}
 	if status.Address != "127.0.0.1:3777" || status.Port != 3777 {

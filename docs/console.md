@@ -141,7 +141,12 @@ compound stream --follow   → SSE frames → console auto-updates
 compound console status --json
 ```
 
-Verifies: console identity, HTTP reachability, and static-asset health.
+Verifies: the explicitly pinned console identity, bounded HTTP response, and
+static assets named by the current build. `data_freshness: not_checked` is
+deliberate: a healthy service status does not assert that attention, home
+doctor, workbench, or other dashboard projections are current. Older consoles
+without the readiness route report readiness unavailable; they are not
+declared healthy from a stalled root response.
 
 ## Capability non-disclosure canary
 
