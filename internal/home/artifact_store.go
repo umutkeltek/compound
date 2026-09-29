@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -52,30 +53,63 @@ func (s *ArtifactStore) PutPrivate(body []byte) (string, error) {
 	if err := s.ensurePrivateArtifactRoot(); err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(body)
-	hexDigest := hex.EncodeToString(sum[:])
-	ref := ArtifactRefPrefix + hexDigest
-	path := filepath.Join(s.privateDir, hexDigest)
-	if existing, _, err := openVerifiedStablePrivateArtifactObject(s.privateDir, hexDigest, ref); err == nil {
-		defer existing.Close()
-		existingBody, readErr := io.ReadAll(existing)
-		if readErr != nil {
-			return "", readErr
-		}
-		if !bytes.Equal(existingBody, body) {
-			return "", fmt.Errorf("artifact %s content-address collision", ref)
-		}
-		return ref, nil
-	} else if !os.IsNotExist(err) {
-		return "", err
-	}
-
-	tmp, err := os.CreateTemp(s.privateDir, ".artifact-*")
+	var ref string
+	acquired, err := withPrivateArtifactDirectoryLock(s.home, false, func(root *os.Root) error {
+		var putErr error
+		ref, putErr = s.putPrivateLocked(root, body)
+		return putErr
+	})
 	if err != nil {
 		return "", err
 	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	if !acquired {
+		return "", fmt.Errorf("private artifact writer failed to acquire custody lock")
+	}
+	return ref, nil
+}
+
+func (s *ArtifactStore) putPrivateLocked(root *os.Root, body []byte) (string, error) {
+	sum := sha256.Sum256(body)
+	hexDigest := hex.EncodeToString(sum[:])
+	ref := ArtifactRefPrefix + hexDigest
+	dirRel := "."
+	digestRel := hexDigest
+	if exists, err := verifiedPrivateBodyRooted(root, digestRel, hexDigest, body, 1); err != nil {
+		return "", err
+	} else if exists {
+		if err := syncRootedDirectoryStrict(root, dirRel, s.privateDir, "private artifact writer"); err != nil {
+			return "", fmt.Errorf("sync existing private artifact digest: %w", err)
+		}
+		return ref, nil
+	}
+
+	var tmp *os.File
+	var tmpRel string
+	for range 100 {
+		var nonce [8]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			return "", err
+		}
+		tmpRel = fmt.Sprintf(".artifact-%d", binary.BigEndian.Uint64(nonce[:]))
+		var err error
+		tmp, err = root.OpenFile(tmpRel, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		break
+	}
+	if tmp == nil {
+		return "", fmt.Errorf("allocate private artifact stage")
+	}
+	stagedDurable := false
+	defer func() {
+		if !stagedDurable {
+			_ = root.Remove(tmpRel)
+		}
+	}()
 	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
 		return "", err
@@ -88,36 +122,85 @@ func (s *ArtifactStore) PutPrivate(body []byte) (string, error) {
 		tmp.Close()
 		return "", err
 	}
+	stagedDurable = true
 	if err := tmp.Close(); err != nil {
 		return "", err
 	}
-	if err := os.Link(tmpPath, path); err != nil {
-		if !os.IsExist(err) {
+	if err := root.Link(tmpRel, digestRel); err != nil {
+		if !errors.Is(err, os.ErrExist) {
 			return "", err
 		}
-		existing, _, verifyErr := openVerifiedStablePrivateArtifactObject(s.privateDir, hexDigest, ref)
+		exists, verifyErr := verifiedPrivateBodyRooted(root, digestRel, hexDigest, body, 1)
 		if verifyErr != nil {
 			return "", verifyErr
 		}
-		defer existing.Close()
-		existingBody, readErr := io.ReadAll(existing)
-		if readErr != nil {
-			return "", readErr
-		}
-		if !bytes.Equal(existingBody, body) {
-			return "", fmt.Errorf("artifact %s content-address collision", ref)
+		if !exists {
+			return "", fmt.Errorf("private artifact digest disappeared after publication race: %s", ref)
 		}
 	} else {
-		published, _, verifyErr := openVerifiedStablePrivateArtifactObject(s.privateDir, hexDigest, ref)
-		if verifyErr != nil {
-			return "", verifyErr
+		exists, err := verifiedPrivateBodyRooted(root, digestRel, hexDigest, body, 2)
+		if err != nil {
+			return "", err
 		}
-		published.Close()
+		if !exists {
+			return "", fmt.Errorf("private artifact digest disappeared after publication: %s", ref)
+		}
 	}
-	if err := syncDirectory(s.privateDir); err != nil {
+	if err := syncRootedDirectoryStrict(root, dirRel, s.privateDir, "private artifact writer"); err != nil {
 		return "", fmt.Errorf("sync artifact directory: %w", err)
 	}
+	if exists, err := verifiedPrivateBodyRooted(root, digestRel, hexDigest, body, 2); err != nil {
+		return "", err
+	} else if !exists {
+		return "", fmt.Errorf("private artifact digest disappeared before stage removal: %s", ref)
+	}
+	if err := root.Remove(tmpRel); err != nil {
+		return "", fmt.Errorf("remove published private artifact stage: %w", err)
+	}
+	if err := syncRootedDirectoryStrict(root, dirRel, s.privateDir, "private artifact writer"); err != nil {
+		return "", fmt.Errorf("sync removed private artifact stage: %w", err)
+	}
+	if exists, err := verifiedPrivateBodyRooted(root, digestRel, hexDigest, body, 1); err != nil {
+		return "", err
+	} else if !exists {
+		return "", fmt.Errorf("private artifact digest disappeared after stage removal: %s", ref)
+	}
 	return ref, nil
+}
+
+func verifiedPrivateBodyRooted(root *os.Root, rel, digest string, body []byte, expectedLinks uint64) (bool, error) {
+	snapshot, err := readStablePrivateRecoveryFile(root, rel, rel)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	links, ok := privateObjectLinkCount(snapshot.info)
+	if !ok || links != expectedLinks || snapshot.digest != digest || snapshot.bytes != int64(len(body)) {
+		return true, fmt.Errorf("private artifact digest identity, links, or hash differs: %s", rel)
+	}
+	file, err := root.Open(rel)
+	if err != nil {
+		return true, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(snapshot.info, opened) {
+		return true, fmt.Errorf("private artifact digest changed before byte comparison: %s: %v", rel, err)
+	}
+	existing, err := io.ReadAll(io.LimitReader(file, int64(len(body))+1))
+	if err != nil {
+		return true, err
+	}
+	if !bytes.Equal(existing, body) {
+		return true, fmt.Errorf("private artifact content-address collision: %s", rel)
+	}
+	final, err := lstatRootedRegularPath(root, rel, rel, "private artifact writer")
+	if err != nil || !os.SameFile(snapshot.info, final[len(final)-1]) {
+		return true, fmt.Errorf("private artifact digest changed after byte comparison: %s: %v", rel, err)
+	}
+	return true, nil
 }
 
 func (s *ArtifactStore) put(body []byte, dir string, mode os.FileMode) (string, error) {

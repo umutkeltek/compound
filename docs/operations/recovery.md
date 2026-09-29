@@ -150,3 +150,42 @@ binary-plus-backup operation, not an in-place downgrade.
 
 Recovery never authorizes deletion of the original home or archive. Deletion
 is a separate operator decision after recovery is proven.
+
+## Recover an abandoned private artifact stage
+
+`home doctor` reports an unexpected `.artifact-*` name in
+`private/artifacts/sha256` as manual. A stage can contain unique bytes even when
+no digest object exists. Preserve it. Quiesce older Compound binaries and other
+writers before the first recovery with a binary that uses the private artifact
+directory lock; older binaries do not participate in that lock. Stage age alone
+does not establish that a writer has stopped.
+
+For each exact stage, independently obtain its SHA-256 using a read-only hashing
+tool and construct `artifact:sha256:<64 lowercase hex>`. Review the exact stage
+name and expected reference, then replace the example name and digest below
+with those values and run the owner command:
+
+```sh
+compound home private-custody repair --home "$COMPOUND_HOME" \
+  --recover-stage '.artifact-123456789=artifact:sha256:<64 lowercase hex>' \
+  --dry-run --json
+compound home private-custody repair --home "$COMPOUND_HOME" \
+  --recover-stage '.artifact-123456789=artifact:sha256:<64 lowercase hex>' \
+  --json
+compound home doctor --home "$COMPOUND_HOME" --json
+```
+
+Repeat `--recover-stage NAME=REF` to select multiple exact stages in one call.
+Malformed, duplicate, or conflicting selections fail before repair. The owner
+hashes through a pinned private path, checks ownership, mode, link count, and
+expected digest, publishes without replacing an existing digest, and removes
+only a selected stage after the digest is verified and durably linked. If a
+partial publication or filesystem failure occurs, retain the report and retry
+the same selection; the owner recognizes a linked stage or an already verified
+digest. A successful recovery preserves the bytes observed in the stage. It
+does not prove that the interrupted `PutPrivate` call finished writing its
+intended body or attach the digest to a source manifest.
+
+This procedure assumes a trusted local home and quiesced old writers. The
+directory lock coordinates cooperating binaries; it cannot exclude a hostile
+same-UID process that swaps a path between final validation and unlink.

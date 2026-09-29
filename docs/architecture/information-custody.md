@@ -30,6 +30,15 @@ index acquiring an independent write lifecycle.
 restore can reproduce its declared body and required metadata while the original source is unavailable.
 Inventory, a path, a hash, a database row count, or a search result is not custody.
 
+The private artifact writer and exact-stage recovery share an exclusive lock on the existing
+`private/artifacts/sha256` directory. An interrupted `.artifact-*` file is evidence of observed bytes,
+not proof that its writer completed the intended body. `home private-custody repair --recover-stage
+NAME=REF` can publish only an explicitly selected, identity-stable, hash-matching stage without replacing
+an existing digest. It leaves unsafe or ambiguous stages for manual review; old binaries must be
+quiesced before adopting this lock protocol. The repair assumes a trusted local
+home: its cooperative lock and inode checks cannot exclude a hostile same-UID
+swap between final validation and unlink.
+
 ## 2. The runtime habitat
 
 The end-state top-level habitat is intentionally small:

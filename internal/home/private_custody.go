@@ -18,12 +18,24 @@ const PrivateCustodyReportSchema = "compound.private_custody_report.v0.1"
 
 var privateCustodyKnownDirs = []string{"private", "private/artifacts", "private/artifacts/sha256"}
 
-type PrivateCustodyOptions struct{ DryRun, Repair bool }
+type PrivateStageRecovery struct {
+	Name        string
+	ExpectedRef string
+}
+
+type PrivateCustodyOptions struct {
+	DryRun, Repair bool
+	RecoverStages  []PrivateStageRecovery
+}
 
 type privateCustodyHooks struct {
 	beforeRootOpen      func()
 	beforeRootChmodOpen func()
 	beforeChmodOpen     func(string)
+	beforeStageLink     func(string)
+	beforeStageUnlink   func(string)
+	syncRecoveryDir     func(*os.Root, string, string, string) error
+	beforeArtifactLock  func()
 }
 
 type PrivateCustodyReport struct {
@@ -92,6 +104,11 @@ func privateCustodyWithHooks(homePath string, opts PrivateCustodyOptions, hooks 
 		r.finish(opts)
 		return r
 	}
+	if err := validatePrivateStageSelections(opts.RecoverStages); err != nil {
+		r.addFinding(r.Root, "private_stage_recovery", "manual", "exact stage and digest selection", "invalid", "manual", err.Error())
+		r.finish(opts)
+		return r
+	}
 	root, err := openStableOwnedHomeRootPermissive(homePath, hooks)
 	if err != nil {
 		r.addFinding(absDisplay(homePath, "."), "home_root", "manual", "stable current-user-owned directory mode=0700", "unsafe", "manual", err.Error())
@@ -111,7 +128,32 @@ func privateCustodyWithHooks(homePath string, opts PrivateCustodyOptions, hooks 
 		safe = checkPrivateDir(&r, root, homePath, rel, opts, hooks)
 	}
 	if safe {
-		checkPrivateObjects(&r, root, homePath, opts, hooks)
+		if len(opts.RecoverStages) == 0 || !opts.Repair {
+			checkPrivateObjects(&r, root, homePath, opts, hooks)
+		} else {
+			if hooks.beforeArtifactLock != nil {
+				hooks.beforeArtifactLock()
+			}
+			acquired, err := withPrivateArtifactDirectoryLock(homePath, true, func(lockedRoot *os.Root) error {
+				before, beforeErr := root.Stat(filepath.FromSlash(privateArtifactRelativeDir))
+				locked, lockedErr := lockedRoot.Stat(".")
+				if err := errors.Join(beforeErr, lockedErr); err != nil {
+					return err
+				}
+				if !os.SameFile(before, locked) {
+					return fmt.Errorf("private custody home generation changed before artifact lock")
+				}
+				checkPrivateObjectsAt(&r, lockedRoot, homePath, opts, hooks, ".")
+				return nil
+			})
+			if err != nil || !acquired {
+				detail := "private artifact writer is active"
+				if err != nil {
+					detail = err.Error()
+				}
+				r.addFinding(r.Root, "private_stage_recovery", "manual", "exclusive private artifact custody", "busy_or_unsafe", "retry", detail)
+			}
+		}
 	}
 	r.finish(opts)
 	return r
@@ -371,6 +413,8 @@ func (r *PrivateCustodyReport) finish(opts PrivateCustodyOptions) {
 		if a.Status == "repaired" {
 			r.Changed = true
 			r.Counts.Repaired++
+		} else if a.Status == "partial" {
+			r.Changed = true
 		}
 	}
 	switch {
@@ -475,8 +519,11 @@ func createRootedPrivateDirectory(root *os.Root, rel, display string, hooks priv
 }
 
 func checkPrivateObjects(r *PrivateCustodyReport, root *os.Root, homePath string, opts PrivateCustodyOptions, hooks privateCustodyHooks) {
-	rootRel := filepath.FromSlash("private/artifacts/sha256")
-	displayRoot := absDisplay(homePath, rootRel)
+	checkPrivateObjectsAt(r, root, homePath, opts, hooks, filepath.FromSlash(privateArtifactRelativeDir))
+}
+
+func checkPrivateObjectsAt(r *PrivateCustodyReport, root *os.Root, homePath string, opts PrivateCustodyOptions, hooks privateCustodyHooks, rootRel string) {
+	displayRoot := absDisplay(homePath, privateArtifactRelativeDir)
 	if _, err := lstatRootedDirectoryPath(root, rootRel, displayRoot, "private custody", false); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			r.addFinding(displayRoot, "private_digest_root", "manual", "readable dir", "unreadable", "manual", err.Error())
@@ -495,10 +542,19 @@ func checkPrivateObjects(r *PrivateCustodyReport, root *os.Root, homePath string
 		return
 	}
 	sort.Strings(names)
+	selected := make(map[string]PrivateStageRecovery, len(opts.RecoverStages))
+	for _, stage := range opts.RecoverStages {
+		selected[stage.Name] = stage
+	}
 	for _, name := range names {
 		rel := filepath.Join(rootRel, name)
-		display := absDisplay(homePath, rel)
+		display := filepath.Join(displayRoot, name)
 		r.Counts.Checked++
+		if stage, ok := selected[name]; ok {
+			delete(selected, name)
+			recoverSelectedPrivateStage(r, root, rootRel, homePath, stage, opts, hooks)
+			continue
+		}
 		if !validPrivateDigestName(name) {
 			r.addFinding(display, "private_digest_object", "manual", "64 lowercase hex regular mode=0600", name, "manual", "invalid digest object name")
 			continue
@@ -517,6 +573,12 @@ func checkPrivateObjects(r *PrivateCustodyReport, root *os.Root, homePath string
 			continue
 		}
 		r.addFinding(display, "private_digest_object", "ok", "regular mode=0600", "regular mode=0600", "none", "")
+	}
+	for _, stage := range opts.RecoverStages {
+		if _, ok := selected[stage.Name]; ok {
+			r.Counts.Checked++
+			recoverSelectedPrivateStage(r, root, rootRel, homePath, stage, opts, hooks)
+		}
 	}
 }
 

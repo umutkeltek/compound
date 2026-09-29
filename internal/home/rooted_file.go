@@ -1299,6 +1299,14 @@ func sameRootedPath(before, after []os.FileInfo) bool {
 }
 
 func syncRootedDirectory(root *os.Root, relativePath, displayPath, kind string) error {
+	return syncRootedDirectoryWithEINVALPolicy(root, relativePath, displayPath, kind, true)
+}
+
+func syncRootedDirectoryStrict(root *os.Root, relativePath, displayPath, kind string) error {
+	return syncRootedDirectoryWithEINVALPolicy(root, relativePath, displayPath, kind, false)
+}
+
+func syncRootedDirectoryWithEINVALPolicy(root *os.Root, relativePath, displayPath, kind string, ignoreEINVAL bool) error {
 	before, err := lstatRootedDirectoryPath(root, relativePath, displayPath, kind, false)
 	if err != nil {
 		return err
@@ -1323,7 +1331,7 @@ func syncRootedDirectory(root *os.Root, relativePath, displayPath, kind string) 
 	}
 	syncErr := syncRootedDirectoryFile(relativePath, dir)
 	closeErr := dir.Close()
-	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) {
+	if syncErr != nil && (!ignoreEINVAL || !errors.Is(syncErr, syscall.EINVAL)) {
 		return syncErr
 	}
 	return closeErr
