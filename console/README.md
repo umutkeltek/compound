@@ -44,6 +44,10 @@ An older console without the route reports readiness unavailable until its
 server is upgraded. States distinguish `stopped`,
 `healthy`, `unhealthy`, and `occupied_foreign`.
 
+The existing `console-instance-pin-smoke` proof gate also runs the readiness
+manifest regression. To run that same check from this directory:
+`node --experimental-strip-types scripts/instance-pin-smoke.mjs`.
+
 The `ai.compound.console` launchd unit is an adapter to this owner. Its command
 must invoke the installed CLI (with its configured repo path), rather than
 calling `next start` directly:

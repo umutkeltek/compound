@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+// Keep the production readiness response covered by this existing proof gate.
+import "../src/lib/console-readiness.test.ts";
 
 /**
  * Falsifier for the 2026-07-11 cross-port isolation breach (finding
