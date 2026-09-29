@@ -159,7 +159,13 @@ def isolated_chrome(allowed_url):
             start_new_session=True,
             env={key: value for key, value in os.environ.items() if key not in MODEL_SECRET_NAMES},
         )
-        (temp / "chrome.pid").write_text(str(chrome.pid))
+        # The controller may reap after this leader exits. Bind the group to
+        # this session's Chrome profile, not just a reusable numeric PID.
+        (temp / "chrome.pid").write_text(json.dumps({
+            "pid": chrome.pid,
+            "pgid": chrome.pid,
+            "marker": f"--user-data-dir={profile}",
+        }))
         try:
             port_file = profile / "DevToolsActivePort"
             deadline = time.monotonic() + 15

@@ -379,7 +379,7 @@ func (a *jevTaskAdapter) Run(ctx context.Context, in harness.RunInput) (out harn
 			return startErr
 		})
 	}
-	check := func() error {
+	check := func(initialCredential string) error {
 		if err := home.WithAutonomyAdmissionLock(a.homePath, func() error {
 			return actuator.RevalidateGovernedExecutionReservation(a.homePath, in.WorkID, policyID, in.ActionIntentID)
 		}); err != nil {
@@ -404,11 +404,19 @@ func (a *jevTaskAdapter) Run(ctx context.Context, in harness.RunInput) (out harn
 		if _, err = browserPreflight(a.request, settings, currentPolicy); err != nil {
 			return err
 		}
-		_, err = capgraph.ResolveCredentialForSurface(a.homePath, jevCredentialSurface, in.WorkID, jevCredentialHandle())
-		if errors.Is(err, capgraph.ErrCredentialSurfaceNotRegistered) && os.Getenv("TYPESAFE_API_KEY") != "" {
-			return nil
+		currentCredential, err := capgraph.ResolveCredentialForSurface(a.homePath, jevCredentialSurface, in.WorkID, jevCredentialHandle())
+		if errors.Is(err, capgraph.ErrCredentialSurfaceNotRegistered) {
+			if key := os.Getenv("TYPESAFE_API_KEY"); key != "" {
+				currentCredential, err = "TYPESAFE_API_KEY="+key, nil
+			}
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		if initialCredential != "" && currentCredential != initialCredential {
+			return errors.New("Jev credential assignment changed before prediction")
+		}
+		return nil
 	}
 	a.request.RunningActionID, a.request.RunAttemptID = in.ActionIntentID, attemptID
 	a.result, err = runTaskProtocol(runCtx, a.request, a.config, a.launch, start, check)

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,19 +20,21 @@ import (
 
 func TestJevReaperFailsClosedAndUsesOwnedSignalTarget(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		psFails   bool
-		termFails bool
-		killFails bool
-		survives  bool
-		nonLeader bool
-		wantError bool
+		name       string
+		psFails    bool
+		groupFails bool
+		termFails  bool
+		killFails  bool
+		survives   bool
+		nonLeader  bool
+		wantError  bool
 	}{
-		{"ps_unavailable", true, false, false, false, false, true},
-		{"term_error", false, true, false, false, false, true},
-		{"force_kill_error", false, false, true, true, false, true},
-		{"survivor", false, false, false, true, false, true},
-		{"nonleader_exact_pid", false, false, false, false, true, false},
+		{"ps_unavailable", true, false, false, false, false, false, true},
+		{"group_inspection_error", false, true, false, false, false, false, true},
+		{"term_error", false, false, true, false, false, false, true},
+		{"force_kill_error", false, false, false, true, true, false, true},
+		{"survivor", false, false, false, false, true, false, true},
+		{"nonleader_exact_pid", false, false, false, false, false, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pidPath := filepath.Join(t.TempDir(), "owned.pid")
@@ -49,6 +52,12 @@ func TestJevReaperFailsClosedAndUsesOwnedSignalTarget(t *testing.T) {
 						return []byte("S"), nil
 					}
 					return []byte("browser_harness.daemon --owned"), nil
+				},
+				groupInspect: func(int, string) (bool, bool, error) {
+					if tc.groupFails {
+						return false, false, errors.New("group inspection unavailable")
+					}
+					return alive, alive, nil
 				},
 				kill: func(target int, signal syscall.Signal) error {
 					if signal == 0 {
@@ -86,6 +95,153 @@ func TestJevReaperFailsClosedAndUsesOwnedSignalTarget(t *testing.T) {
 			}
 			if tc.psFails && len(signalled) != 0 {
 				t.Fatalf("unverified process was signalled: %v", signalled)
+			}
+		})
+	}
+}
+
+func TestJevReaperProcessHelper(t *testing.T) {
+	mode := os.Getenv("COMPOUND_TEST_REAPER_MODE")
+	if mode == "" {
+		return
+	}
+	if mode == "child" {
+		signal.Ignore(syscall.SIGTERM)
+		if err := os.WriteFile(os.Getenv("COMPOUND_TEST_REAPER_MARKER"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			os.Exit(2)
+		}
+		for {
+			time.Sleep(time.Second)
+		}
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestJevReaperProcessHelper$", "--", os.Getenv("COMPOUND_TEST_REAPER_GROUP_MARKER"))
+	child.Env = append(os.Environ(), "COMPOUND_TEST_REAPER_MODE=child")
+	if err := child.Start(); err != nil {
+		os.Exit(2)
+	}
+	stopped := make(chan os.Signal, 1)
+	signal.Notify(stopped, syscall.SIGTERM)
+	<-stopped
+	os.Exit(0)
+}
+
+func TestJevReaperStopsOwnedGroupAfterLeaderExits(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "child.pid")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestJevReaperProcessHelper$")
+	cmd.Env = append(os.Environ(), "COMPOUND_TEST_REAPER_MODE=leader", "COMPOUND_TEST_REAPER_MARKER="+marker)
+	cmd.Env = append(cmd.Env, "COMPOUND_TEST_REAPER_GROUP_MARKER=TestJevReaperProcessHelper")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Wait()
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	var childPID int
+	for {
+		data, err := os.ReadFile(marker)
+		if err == nil {
+			childPID, err = strconv.Atoi(string(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("owned child did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	pidPath := filepath.Join(t.TempDir(), "owned.pid")
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := reapJevPID(pidPath, "TestJevReaperProcessHelper"); err != nil {
+		t.Fatal(err)
+	}
+	if alive, err := jevLiveGroupMembers(cmd.Process.Pid); err != nil || alive {
+		t.Fatalf("owned process group survived: alive=%t err=%v", alive, err)
+	}
+	if err := syscall.Kill(childPID, 0); err == nil {
+		state, stateErr := exec.Command("ps", "-p", strconv.Itoa(childPID), "-o", "stat=").Output()
+		if stateErr != nil || !strings.HasPrefix(strings.TrimSpace(string(state)), "Z") {
+			t.Fatalf("child remained live after cleanup: state=%q err=%v", state, stateErr)
+		}
+	}
+}
+
+func TestJevReaperStopsBoundGroupWhenLeaderAlreadyExited(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "child.pid")
+	groupMarker := "--user-data-dir=" + filepath.Join(t.TempDir(), "chrome")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestJevReaperProcessHelper$")
+	cmd.Env = append(os.Environ(), "COMPOUND_TEST_REAPER_MODE=leader", "COMPOUND_TEST_REAPER_MARKER="+marker, "COMPOUND_TEST_REAPER_GROUP_MARKER="+groupMarker)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("owned child did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := syscall.Kill(cmd.Process.Pid, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	pidPath := filepath.Join(t.TempDir(), "chrome.pid")
+	binding, err := json.Marshal(map[string]any{"pid": cmd.Process.Pid, "pgid": cmd.Process.Pid, "marker": groupMarker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pidPath, binding, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := reapJevPID(pidPath, groupMarker); err != nil {
+		t.Fatal(err)
+	}
+	if alive, err := jevLiveGroupMembers(cmd.Process.Pid); err != nil || alive {
+		t.Fatalf("pre-exited leader's group survived: alive=%t err=%v", alive, err)
+	}
+}
+
+func TestJevReaperRefusesAbsentUnboundOrUninspectableGroup(t *testing.T) {
+	for _, tc := range []struct {
+		name, binding string
+		inspectErr    bool
+	}{
+		{"plain_pid", "4321", false},
+		{"wrong_marker", `{"pid":4321,"pgid":4321,"marker":"foreign"}`, false},
+		{"inspection_error", `{"pid":4321,"pgid":4321,"marker":"owned"}`, true},
+		{"unmatched_member", `{"pid":4321,"pgid":4321,"marker":"owned"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pidPath := filepath.Join(t.TempDir(), "chrome.pid")
+			if err := os.WriteFile(pidPath, []byte(tc.binding), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			signals := 0
+			ops := jevReaperOps{
+				ps: func(int, string) ([]byte, error) { return nil, syscall.ESRCH },
+				groupInspect: func(int, string) (bool, bool, error) {
+					if tc.inspectErr {
+						return false, false, errors.New("inspection failed")
+					}
+					return true, false, nil
+				},
+				kill: func(int, syscall.Signal) error { signals++; return nil },
+			}
+			if err := reapJevPIDWith(pidPath, "owned", ops); err == nil || signals != 0 {
+				t.Fatalf("unverified group signalled: err=%v signals=%d", err, signals)
 			}
 		})
 	}

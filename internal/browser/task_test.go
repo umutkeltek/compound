@@ -255,6 +255,67 @@ func TestJevRevokedAfterStepCannotAuthorizeNextPrediction(t *testing.T) {
 	}
 }
 
+func TestJevCredentialRotationAfterStepCannotAuthorizeOldAssignment(t *testing.T) {
+	home := t.TempDir()
+	req := testTask(home)
+	if _, err := SetJevEnabled(home, req.WorkID, true, policy.DefaultConfig(), testTime()); err != nil {
+		t.Fatal(err)
+	}
+	secretPath := filepath.Join(home, "secrets", "typesafe", "jev-api-key")
+	if err := os.MkdirAll(filepath.Dir(secretPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, []byte("synthetic-before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capgraph.AddConnectionSurfaceGoverned(home, capgraph.ConnectionSurface{
+		NodeID: jevCredentialSurface, CredentialHandle: jevCredentialHandle(),
+	}, testTime()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TYPESAFE_API_KEY", "shadow-key")
+	t.Setenv("TYPESAFE_PROVIDER_MAX_USD_PER_REQUEST", "0.01")
+	t.Setenv("COMPOUND_TEST_JEV_MODE", "revoke_after_first")
+	marker := filepath.Join(t.TempDir(), "step")
+	t.Setenv("COMPOUND_TEST_JEV_STEP_MARKER", marker)
+	type outcome struct {
+		result TaskResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := runTask(context.Background(), req, taskPolicy(), testBridge)
+		done <- outcome{result, err}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first browser step did not complete")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := os.WriteFile(secretPath, []byte("synthetic-after"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker+".release", []byte("go"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if got.err == nil || !strings.Contains(got.err.Error(), "credential assignment changed") || got.result.Verified || got.result.Steps != 1 {
+			t.Fatalf("rotated assignment authorized or partial result lost: %+v, %v", got.result, got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("rotated task did not stop")
+	}
+	if _, err := os.Stat(marker + ".second-provider"); !os.IsNotExist(err) {
+		t.Fatalf("second prediction reached provider: %v", err)
+	}
+}
+
 func TestJevDisabledBeforeFirstPredictionRecordsNoProviderAttempt(t *testing.T) {
 	home := t.TempDir()
 	req := testTask(home)

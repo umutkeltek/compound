@@ -94,7 +94,7 @@ func RunTask(ctx context.Context, req TaskRequest, cfg policy.Config) (TaskResul
 	return runTask(ctx, req, cfg, jevCommand)
 }
 
-func runTaskProtocol(ctx context.Context, req TaskRequest, cfg policy.Config, launch bridgeFactory, startBridge func(context.Context, *exec.Cmd) error, checkReservation func() error) (result TaskResult, err error) {
+func runTaskProtocol(ctx context.Context, req TaskRequest, cfg policy.Config, launch bridgeFactory, startBridge func(context.Context, *exec.Cmd) error, checkReservation func(string) error) (result TaskResult, err error) {
 	result.ReceiptIDs = []string{}
 	result.TransitionIDs = []string{}
 	settings, err := LoadSettings(req.Home)
@@ -225,7 +225,7 @@ func runTaskProtocol(ctx context.Context, req TaskRequest, cfg policy.Config, la
 	if json.Unmarshal(scanner.Bytes(), &ready) != nil || ready.Event != "ready" {
 		return result, errors.New("Jev bridge readiness protocol failed")
 	}
-	if err := checkReservation(); err != nil {
+	if err := checkReservation(""); err != nil {
 		return result, err
 	}
 	credentialEnv, err := capgraph.ResolveCredentialForSurface(req.Home, jevCredentialSurface, req.WorkID, jevCredentialHandle())
@@ -255,7 +255,7 @@ func runTaskProtocol(ctx context.Context, req TaskRequest, cfg policy.Config, la
 			if pending != nil || predictAuthorized || event.Step != result.Steps+1 || event.Step > req.MaxSteps {
 				return result, errors.New("out-of-order Jev prediction request")
 			}
-			if err := checkReservation(); err != nil {
+			if err := checkReservation(credentialEnv); err != nil {
 				_ = json.NewEncoder(stdin).Encode(map[string]bool{"allow": false})
 				return result, fmt.Errorf("Jev prediction held before provider contact: %w", err)
 			}
@@ -269,7 +269,7 @@ func runTaskProtocol(ctx context.Context, req TaskRequest, cfg policy.Config, la
 				return result, errors.New("Jev proposal lacked provider authorization")
 			}
 			predictAuthorized = false
-			if err := checkReservation(); err != nil {
+			if err := checkReservation(credentialEnv); err != nil {
 				return result, err
 			}
 			currentPolicy, _, err := policy.LoadConfig(req.Home)
