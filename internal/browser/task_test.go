@@ -871,10 +871,64 @@ func TestJevCancellationPreservesPartialProgress(t *testing.T) {
 	t.Setenv("COMPOUND_TEST_JEV_MODE", "hang")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { time.Sleep(time.Second); cancel() }()
-	result, err := runTask(ctx, testTask(home), taskPolicy(), testBridge)
-	if err == nil || result.Status != "failed" || result.Steps != 1 || len(result.ReceiptIDs) != 2 || len(result.TransitionIDs) != 2 {
-		t.Fatalf("cancelled result = %+v, %v", result, err)
+	req := testTask(home)
+	type outcome struct {
+		result TaskResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := runTask(ctx, req, taskPolicy(), func(ctx context.Context) *exec.Cmd {
+			time.Sleep(1200 * time.Millisecond) // controlled slow admission-to-launch boundary
+			return testBridge(ctx)
+		})
+		done <- outcome{result, err}
+	}()
+	events, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	firstActionRecorded := false
+	for !firstActionRecorded {
+		select {
+		case got := <-done:
+			t.Fatalf("browser task ended before first action receipt: %+v, %v", got.result, got.err)
+		default:
+		}
+		entries, err := events.Scan(eventstore.ScanOptions{Prefixes: []string{"rec_"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			record, err := entry.Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var receipt envelope.Receipt
+			if err := json.Unmarshal(record.Bytes, &receipt); err != nil {
+				t.Fatal(err)
+			}
+			if receipt.IDs.WorkID == req.WorkID && receipt.StateDelta.Summary == "Jev browser action observed" {
+				firstActionRecorded = true
+				break
+			}
+		}
+		if !firstActionRecorded {
+			if time.Now().After(deadline) {
+				t.Fatal("first browser action was not durably recorded before cancellation")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if got.err == nil || got.result.Status != "failed" || got.result.Steps != 1 || len(got.result.ReceiptIDs) != 2 || len(got.result.TransitionIDs) != 2 {
+			t.Fatalf("cancelled result = %+v, %v", got.result, got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("browser task did not stop after cancellation")
 	}
 }
 
