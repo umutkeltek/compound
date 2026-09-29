@@ -149,24 +149,41 @@ def isolated_chrome(allowed_url):
         os.environ["BH_TMP_DIR"] = str(temp / "tmp")
         name = "compound_jev_" + uuid.uuid4().hex[:12]
         os.environ["BU_NAME"] = name
-        chrome = subprocess.Popen(
-            [chrome_path, "--headless=new", "--no-first-run", "--no-default-browser-check",
-             "--disable-background-networking", "--disable-quic", "--remote-debugging-port=0",
-             f"--proxy-server=http://127.0.0.1:{proxy.server_address[1]}",
-             "--proxy-bypass-list=<-loopback>",
-             f"--user-data-dir={profile}", "about:blank"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            env={key: value for key, value in os.environ.items() if key not in MODEL_SECRET_NAMES},
-        )
-        # The controller may reap after this leader exits. Bind the group to
-        # this session's Chrome profile, not just a reusable numeric PID.
-        (temp / "chrome.pid").write_text(json.dumps({
-            "pid": chrome.pid,
-            "pgid": chrome.pid,
-            "marker": f"--user-data-dir={profile}",
-        }))
+        chrome = None
+        pending_term = False
+        original_term = signal.getsignal(signal.SIGTERM)
+
+        def defer_term(_signum, _frame):
+            nonlocal pending_term
+            pending_term = True
+
+        # Python can deliver SIGTERM after Popen spawns the detached child but
+        # before its return value is assigned. Defer only this ownership handoff;
+        # a blocked signal mask would be inherited by Chrome.
+        signal.signal(signal.SIGTERM, defer_term)
+        handler_deferred = True
         try:
+            chrome = subprocess.Popen(
+                [chrome_path, "--headless=new", "--no-first-run", "--no-default-browser-check",
+                 "--disable-background-networking", "--disable-quic", "--remote-debugging-port=0",
+                 f"--proxy-server=http://127.0.0.1:{proxy.server_address[1]}",
+                 "--proxy-bypass-list=<-loopback>",
+                 f"--user-data-dir={profile}", "about:blank"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                env={key: value for key, value in os.environ.items() if key not in MODEL_SECRET_NAMES},
+            )
+            # The controller may reap after this leader exits. Bind the group to
+            # this session's Chrome profile, not just a reusable numeric PID.
+            (temp / "chrome.pid").write_text(json.dumps({
+                "pid": chrome.pid,
+                "pgid": chrome.pid,
+                "marker": f"--user-data-dir={profile}",
+            }))
+            signal.signal(signal.SIGTERM, original_term)
+            handler_deferred = False
+            if pending_term:
+                raise SystemExit(143)
             port_file = profile / "DevToolsActivePort"
             deadline = time.monotonic() + 15
             while not port_file.exists():
@@ -179,23 +196,27 @@ def isolated_chrome(allowed_url):
             os.environ["BU_CDP_WS"] = f"ws://127.0.0.1:{port}{path}"
             yield chrome.pid
         finally:
-            # Reap Chrome first: daemon shutdown can be interrupted by the
-            # cancellation signal, but the owned browser must not survive it.
-            if chrome.poll() is None:
-                os.killpg(chrome.pid, signal.SIGTERM)
-                try:
-                    chrome.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(chrome.pid, signal.SIGKILL)
-                    chrome.wait(timeout=5)
             try:
-                from browser_harness.admin import restart_daemon
-                restart_daemon(name, require_clean=False)
-            except BaseException:
-                # Cleanup must finish even when SIGTERM lands in this call.
-                pass
-            proxy.shutdown()
-            proxy_thread.join(timeout=2)
+                # Reap Chrome first: daemon shutdown can be interrupted by the
+                # cancellation signal, but the owned browser must not survive it.
+                if chrome is not None and chrome.poll() is None:
+                    os.killpg(chrome.pid, signal.SIGTERM)
+                    try:
+                        chrome.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(chrome.pid, signal.SIGKILL)
+                        chrome.wait(timeout=5)
+                try:
+                    from browser_harness.admin import restart_daemon
+                    restart_daemon(name, require_clean=False)
+                except BaseException:
+                    # Cleanup must finish even when SIGTERM lands in this call.
+                    pass
+                proxy.shutdown()
+                proxy_thread.join(timeout=2)
+            finally:
+                if handler_deferred:
+                    signal.signal(signal.SIGTERM, original_term)
 
 
 def main():

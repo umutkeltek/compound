@@ -247,6 +247,86 @@ func TestJevReaperRefusesAbsentUnboundOrUninspectableGroup(t *testing.T) {
 	}
 }
 
+func TestJevChromeSpawnHandoffAlwaysReapsDetachedChild(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 unavailable")
+	}
+	source, err := filepath.Abs("jev_bridge.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const script = `import os, pathlib, runpy, signal, subprocess, sys, time
+source, mode, session_dir = sys.argv[1:]
+session = pathlib.Path(session_dir)
+os.environ["COMPOUND_JEV_SESSION_DIR"] = session_dir
+isolated_chrome = runpy.run_path(source)["isolated_chrome"]
+scope = isolated_chrome.__wrapped__.__globals__
+scope["shutil"].which = lambda _name: sys.executable
+real_popen = subprocess.Popen
+def spawn_then_interrupt(*_args, **_kwargs):
+    child = real_popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                       start_new_session=True, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    (session / "synthetic-child.pid").write_text(str(child.pid))
+    if mode == "signal":
+        os.kill(os.getpid(), signal.SIGTERM)
+    return child
+scope["subprocess"].Popen = spawn_then_interrupt
+if mode == "write_failure":
+    original_write = pathlib.Path.write_text
+    def fail_sidecar(path, *args, **kwargs):
+        if path.name == "chrome.pid":
+            raise OSError("synthetic sidecar write failure")
+        return original_write(path, *args, **kwargs)
+    pathlib.Path.write_text = fail_sidecar
+signal.signal(signal.SIGTERM, lambda _signal, _frame: (_ for _ in ()).throw(SystemExit(143)))
+try:
+    with isolated_chrome("https://example.com/"):
+        raise AssertionError("synthetic Chrome cannot become ready")
+except BaseException as exc:
+    if mode == "signal" and not isinstance(exc, SystemExit):
+        raise
+    if mode == "write_failure" and not isinstance(exc, OSError):
+        raise
+else:
+    raise AssertionError("handoff interruption was ignored")
+`
+	for _, mode := range []string{"signal", "write_failure"} {
+		t.Run(mode, func(t *testing.T) {
+			sessionDir, err := newJevSession()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var childPID int
+			t.Cleanup(func() {
+				if childPID > 1 {
+					_ = syscall.Kill(-childPID, syscall.SIGKILL)
+				}
+				_ = os.RemoveAll(sessionDir)
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, python, "-c", script, source, mode, sessionDir)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("synthetic Chrome handoff failed: %v: %s", err, output)
+			}
+			data, err := os.ReadFile(filepath.Join(sessionDir, "synthetic-child.pid"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			childPID, err = strconv.Atoi(string(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if alive, err := jevLiveGroupMembers(childPID); err != nil || alive {
+				t.Fatalf("detached child survived %s handoff: alive=%t err=%v", mode, alive, err)
+			}
+		})
+	}
+}
+
 // Opt-in because this uses real Chrome and resolves the pinned upstream uv
 // dependency. It proves a long-running browser/daemon is reaped on timeout,
 // rather than relying only on the instant synthetic stdio helper.
