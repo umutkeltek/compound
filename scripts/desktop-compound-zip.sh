@@ -26,6 +26,16 @@ Default mode is for a ChatGPT Pro source audit:
     Skipping these keeps rsync from walking ~10 GB of agent worktrees on
     every run.
   - excludes dependency/build artifacts: node_modules, .next
+  - excludes raster/video media under docs_private/ (png, jpg, jpeg, gif,
+    webp, heic, mp4, mov): product-loop visuals and release QA captures
+    are evidence bytes, not source, and do not compress — ~1 GB of
+    screenshots is what pushed the zip past the upload cap. Media
+    outside docs_private/ (console assets, fixtures) is kept. Use
+    --include-media to keep it.
+  - removes compiled executables (Mach-O/ELF over 1 MB) from the staged copy
+    outside .git: the gitignored root build and the ~45 MB compound builds
+    kept as packet evidence under docs_private/ are not reviewable source.
+    Use --include-binaries to keep them.
   - removes Finder/system junk: .DS_Store, __MACOSX
   - enforces a hard zip budget (--max-zip-mb, default 480): an oversized
     zip is deleted and the run fails with the largest staged files listed.
@@ -54,6 +64,8 @@ Options:
                            in the audit workflow); those carry the actual delta.
   --include-node-modules   Keep dependency/build artifacts in the local snapshot.
   --include-private        With --upload-safe, keep private docs; harness/runtime directories remain excluded.
+  --include-media          Keep raster/video media under docs_private/.
+  --include-binaries       Keep compiled executables in the staged copy.
   --keep-memory NAME       Keep top-level memory/NAME. Can be repeated.
                            Default keep list: compound.
   --no-default-memory      Clear the default keep-memory list.
@@ -105,10 +117,15 @@ upload_safe=0
 delta=0
 include_private=1
 include_node_modules=0
+include_media=0
+include_binaries=0
 dry_run=0
 max_zip_mb=480
 
 extra_excludes=()
+
+# Raster/video extensions dropped from docs_private/ unless --include-media.
+media_exts=(png jpg jpeg gif webp heic mp4 mov)
 
 keep_memory=()
 if [[ -n "${COMPOUND_KEEP_MEMORY_PROJECTS:-}" ]]; then
@@ -155,6 +172,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --include-private)
       include_private=1
+      shift
+      ;;
+    --include-media)
+      include_media=1
+      shift
+      ;;
+    --include-binaries)
+      include_binaries=1
       shift
       ;;
     --keep-memory)
@@ -224,9 +249,25 @@ run() {
 # git queries, never mutates the source repo.
 generate_audit_notes() {
   local snapshot_utc head_sha branch status_lines status_verdict
-  local upstream ahead behind ahead_behind_line
+  local upstream ahead behind ahead_behind_line media_line binaries_line
 
   snapshot_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  if [[ "$include_media" -eq 0 ]]; then
+    media_line="Raster/video media under docs_private/ (${media_exts[*]}) is excluded
+   to fit the upload cap. A markdown link or report that points at a missing
+   screenshot there is a packaging rule, not a broken reference."
+  else
+    media_line="Raster/video media under docs_private/ is included (--include-media)."
+  fi
+
+  if [[ "$include_binaries" -eq 0 ]]; then
+    binaries_line="Compiled executables (Mach-O/ELF over 1 MB) are removed outside .git,
+   including build evidence under docs_private/plan/packets/. A receipt that
+   names a missing binary is a packaging rule, not lost evidence."
+  else
+    binaries_line="Compiled executables are included (--include-binaries)."
+  fi
 
   if git -C "$repo_real" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     head_sha="$(git -C "$repo_real" rev-parse HEAD 2>/dev/null || printf unknown)"
@@ -283,6 +324,8 @@ $ahead_behind_line
    agent checkouts, or live body-store sidecar databases (body/ is the
    switchback body-store SQLite/WAL/lock state).
    Their absence is a packaging rule, not repo state.
+4. $media_line
+5. $binaries_line
 
 Cross-check findings against this note before flagging repo hygiene.
 NOTES
@@ -331,6 +374,12 @@ if [[ "$include_node_modules" -eq 0 ]]; then
   )
 fi
 
+if [[ "$include_media" -eq 0 ]]; then
+  for ext in ${media_exts+"${media_exts[@]}"}; do
+    rsync_args+=(--exclude "/docs_private/**.$ext")
+  done
+fi
+
 if [[ "$upload_safe" -eq 1 ]]; then
   rsync_args+=(
     --exclude ".git/"
@@ -355,6 +404,8 @@ printf -- '- zip: %s\n' "$zip_path"
 printf -- '- mode: %s\n' "$([[ "$delta" -eq 1 ]] && printf delta || { [[ "$upload_safe" -eq 1 ]] && printf upload-safe || printf full-local; })"
 printf -- '- include_private: %s\n' "$include_private"
 printf -- '- include_node_modules: %s\n' "$include_node_modules"
+printf -- '- include_media: %s\n' "$include_media"
+printf -- '- include_binaries: %s\n' "$include_binaries"
 printf -- '- keep_memory: %s\n' "${keep_memory[*]:-(none)}"
 if [[ "${#extra_excludes[@]}" -gt 0 ]]; then
   printf -- '- extra_excludes:\n'
@@ -364,6 +415,22 @@ if [[ "${#extra_excludes[@]}" -gt 0 ]]; then
 fi
 
 run rm -rf -- "$stage_path" "$zip_path"
+# Deletes compiled executables from the staged copy. rsync cannot match them:
+# the packet builds have no extension, so sniff the magic bytes instead.
+prune_binaries() {
+  local path magic count=0
+  while IFS= read -r -d '' path; do
+    magic="$(head -c 4 "$path" | od -An -tx1 | tr -d ' \n')"
+    case "$magic" in
+      cffaedfe|cefaedfe|cafebabe|7f454c46)
+        rm -f -- "$path"
+        count=$((count + 1))
+        ;;
+    esac
+  done < <(find "$stage_path" -path "$stage_path/.git" -prune -o -type f -size +1024k -print0)
+  printf -- '- pruned_binaries: %s\n' "$count"
+}
+
 run mkdir -p -- "$stage_path"
 run rsync "${rsync_args[@]}" "$repo_real/" "$stage_path/"
 
@@ -378,6 +445,9 @@ run sh -c 'cat > "$1"' _ "$audit_notes_path" <<<"$(generate_audit_notes)"
 
 if [[ "$dry_run" -eq 0 ]]; then
   find "$stage_path" -name ".DS_Store" -delete
+  if [[ "$include_binaries" -eq 0 ]]; then
+    prune_binaries
+  fi
   (
     cd "$desktop_real"
     COPYFILE_DISABLE=1 zip -qr "$zip_path" "$stage_name"
