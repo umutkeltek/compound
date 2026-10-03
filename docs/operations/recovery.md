@@ -112,6 +112,11 @@ runs initialization and health checks there, and publishes only a validated
 home to an absent target. A failed or ambiguous publication is not success;
 preserve its output and the source archive for diagnosis.
 
+Readonly directories stay owner-writable in the private staging tree until child files, links and
+required habitat directories are complete. Their archived final permissions are then restored,
+children first, before rooted health, staged checksums, durability and publication checks. Original
+source permissions are never changed to make a restore pass.
+
 ## Upgrade
 
 1. Record `compound version --json` and the current home manifest.

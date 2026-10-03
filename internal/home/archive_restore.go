@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -118,6 +119,9 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 		return RestoreReport{}, err
 	}
 	if err := verifyRestoreStaging(parent, staging, stagingName, stagingInfo, stagingPath); err != nil {
+		return RestoreReport{}, err
+	}
+	if err := target.finalizeDirectoryModes(); err != nil {
 		return RestoreReport{}, err
 	}
 	if archive.streamed {
@@ -397,6 +401,7 @@ type archiveRestoreTarget struct {
 	displayPath         string
 	deferFileParentSync bool
 	stagingInfo         os.FileInfo
+	directoryModes      map[string]fs.FileMode
 }
 
 type archiveRestoreFile struct {
@@ -422,6 +427,10 @@ func (t *archiveRestoreTarget) ensureDirectory(name string, mode fs.FileMode) er
 	if perm == 0 {
 		perm = 0o755
 	}
+	// Restrictive final modes must not prevent extraction of later children.
+	// The enclosing private staging root remains mode 0700 throughout.
+	finalPerm := perm
+	perm |= 0o700
 	if _, err := t.root.Lstat(rel); errors.Is(err, os.ErrNotExist) {
 		if err := t.root.Mkdir(rel, perm); err != nil {
 			return err
@@ -449,6 +458,36 @@ func (t *archiveRestoreTarget) ensureDirectory(name string, mode fs.FileMode) er
 	if err := syncRootedDirectory(t.root, rel, filepath.Join(t.displayPath, rel), "archive restore"); err != nil {
 		return err
 	}
+	if perm != finalPerm {
+		if t.directoryModes == nil {
+			t.directoryModes = make(map[string]fs.FileMode)
+		}
+		t.directoryModes[rel] = finalPerm
+	} else {
+		delete(t.directoryModes, rel)
+	}
+	return nil
+}
+
+func (t *archiveRestoreTarget) finalizeDirectoryModes() error {
+	paths := make([]string, 0, len(t.directoryModes))
+	for path := range t.directoryModes {
+		paths = append(paths, path)
+	}
+	// Children first: a parent's final mode may deny traversal to its children.
+	sort.Slice(paths, func(i, j int) bool {
+		a, b := strings.Count(paths[i], string(filepath.Separator)), strings.Count(paths[j], string(filepath.Separator))
+		if a != b {
+			return a > b
+		}
+		return paths[i] < paths[j]
+	})
+	for _, rel := range paths {
+		if err := rootedChmodStable(t.root, rel, filepath.Join(t.displayPath, rel), "archive restore", t.directoryModes[rel], true, privateCustodyHooks{}); err != nil {
+			return fmt.Errorf("restore directory permissions %s: %w", rel, err)
+		}
+	}
+	t.directoryModes = nil
 	return nil
 }
 
