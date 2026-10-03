@@ -60,6 +60,9 @@ Two corollaries worth their own line:
 
 ### Process readiness is not admission readiness
 
+If marker existence signals readiness, publish its complete contents by sibling-file rename;
+creating an empty marker before writing exposes false readiness to the observer.
+
 For subprocess lifecycle tests, start the process-readiness budget only after successful
 `cmd.Start`, not before durable admission. Keep admission bounded by the test context,
 surface early admission/start/exit errors, and cancel and join the worker before fixture

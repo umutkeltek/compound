@@ -107,7 +107,12 @@ func TestJevReaperProcessHelper(t *testing.T) {
 	}
 	if mode == "child" {
 		signal.Ignore(syscall.SIGTERM)
-		if err := os.WriteFile(os.Getenv("COMPOUND_TEST_REAPER_MARKER"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		marker := os.Getenv("COMPOUND_TEST_REAPER_MARKER")
+		// Existence is the readiness signal; publish only a complete PID.
+		if err := os.WriteFile(marker+".tmp", []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			os.Exit(2)
+		}
+		if err := os.Rename(marker+".tmp", marker); err != nil {
 			os.Exit(2)
 		}
 		for {
