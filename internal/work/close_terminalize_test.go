@@ -63,6 +63,125 @@ func runAttemptBytesForCloseTest(t *testing.T, home, id string) []byte {
 	return body
 }
 
+func TestCloseVerificationRejectedWithoutAcknowledgementRefuses(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	id, _ := closeTerminalizeWork(t, s, "verification-rejected-regression", fixedNow)
+	ra := attachTerminalCloseHistoryAttempt(t, s, id, "", runattempt.StatusSucceeded, true, fixedNow.Add(4*time.Minute))
+	before := runAttemptBytesForCloseTest(t, s.home, ra.ID)
+	_, err := s.Close(id, CloseInput{Outcome: "failed", MoveType: "audit_only", Actor: "codex", ProofRefs: []string{"check:verification-rejected"}}, fixedNow.Add(10*time.Minute))
+	want := "terminal runattempt " + ra.ID + " status succeeded contradicts close outcome failed (want failed)"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	if !reflect.DeepEqual(before, runAttemptBytesForCloseTest(t, s.home, ra.ID)) {
+		t.Fatal("refusal rewrote succeeded attempt")
+	}
+}
+
+func verificationRejectedCloseInput(id, reason string) CloseInput {
+	return CloseInput{Outcome: "failed", MoveType: "audit_only", Actor: "codex", ProofRefs: []string{"check:verification-rejected"}, RunAttemptTerminalizations: []RunAttemptTerminalizationRequest{{RunAttemptID: id, Owner: "work.close.verification_rejected", TargetStatus: runattempt.StatusSucceeded, Reason: reason}}}
+}
+
+func TestCloseVerificationRejectedPreservesSucceededAttempt(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	id, _ := closeTerminalizeWork(t, s, "verification-rejected", fixedNow)
+	ra := attachTerminalCloseHistoryAttempt(t, s, id, "", runattempt.StatusSucceeded, true, fixedNow.Add(4*time.Minute))
+	before := runAttemptBytesForCloseTest(t, s.home, ra.ID)
+	reason := "independent verifier rejected the output: unsupported claim"
+	res, err := s.Close(id, verificationRejectedCloseInput(ra.ID, reason), fixedNow.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Work.State != "failed" || res.Receipt.Outcome != "failed" {
+		t.Fatalf("work/receipt outcome = %s/%s, want failed/failed", res.Work.State, res.Receipt.Outcome)
+	}
+	if !reflect.DeepEqual(before, runAttemptBytesForCloseTest(t, s.home, ra.ID)) {
+		t.Fatal("verification acknowledgement rewrote succeeded attempt")
+	}
+	want := "verification_rejected:" + ra.ID + ":" + reason
+	found := false
+	for _, ref := range res.Receipt.ProofRefs {
+		found = found || ref == want
+	}
+	if !found {
+		t.Fatalf("proof_refs = %v, want %q", res.Receipt.ProofRefs, want)
+	}
+}
+
+func TestCloseVerificationRejectedRefusals(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, state, outcome, status, reason, want string
+		unattached                                 bool
+	}{
+		{name: "running", state: "running", want: "requires work state verifying"},
+		{name: "empty reason", reason: " ", want: "requires non-empty --reason"},
+		{name: "not attached", unattached: true, want: "not attached"},
+		{name: "failed attempt", status: runattempt.StatusFailed, want: "requires terminal succeeded"},
+		{name: "abandoned attempt", status: runattempt.StatusAbandoned, want: "requires terminal succeeded"},
+		{name: "nonterminal attempt", status: runattempt.StatusRunning, want: "requires terminal succeeded"},
+		{name: "completed outcome", outcome: "completed", want: "requires outcome failed"},
+		{name: "cancelled outcome", outcome: "cancelled", want: "requires outcome failed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newStore(t)
+			id, _ := closeTerminalizeWork(t, s, "verification-refusal", fixedNow)
+			ra := attachTerminalCloseHistoryAttempt(t, s, id, "", runattempt.StatusSucceeded, true, fixedNow.Add(4*time.Minute))
+			if tt.status != "" {
+				ra.Status = tt.status
+				if !runattempt.IsTerminal(ra.Status) {
+					ra.CompletedAt = time.Time{}
+				}
+				writeRunAttemptForReconcileTest(t, s, ra)
+			}
+			if tt.state != "" {
+				if _, err := s.Advance(id, AdvanceInput{To: tt.state, Actor: "codex"}, fixedNow.Add(6*time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.unattached {
+				otherID, _ := closeTerminalizeWork(t, s, "verification-other-work", fixedNow)
+				ra = attachTerminalCloseHistoryAttempt(t, s, otherID, "", runattempt.StatusSucceeded, true, fixedNow.Add(4*time.Minute))
+			}
+			in := verificationRejectedCloseInput(ra.ID, "verifier rejected output")
+			if tt.name == "empty reason" {
+				in.RunAttemptTerminalizations[0].Reason = tt.reason
+			}
+			if tt.outcome != "" {
+				in.Outcome = tt.outcome
+			}
+			before := runAttemptBytesForCloseTest(t, s.home, ra.ID)
+			_, err := s.Close(id, in, fixedNow.Add(10*time.Minute))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want %q", err, tt.want)
+			}
+			if !reflect.DeepEqual(before, runAttemptBytesForCloseTest(t, s.home, ra.ID)) {
+				t.Fatal("refusal rewrote attempt")
+			}
+		})
+	}
+}
+
+func TestCloseVerificationRejectedOnlyNamedAttempts(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	id, _ := closeTerminalizeWork(t, s, "verification-named-only", fixedNow)
+	first := attachTerminalCloseHistoryAttempt(t, s, id, "", runattempt.StatusSucceeded, true, fixedNow.Add(4*time.Minute))
+	second := attachTerminalCloseHistoryAttempt(t, s, id, "", runattempt.StatusSucceeded, true, fixedNow.Add(5*time.Minute))
+	in := verificationRejectedCloseInput(first.ID, "first result rejected")
+	_, err := s.Close(id, in, fixedNow.Add(10*time.Minute))
+	want := "terminal runattempt " + second.ID + " status succeeded contradicts close outcome failed (want failed)"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	in.RunAttemptTerminalizations = append(in.RunAttemptTerminalizations, verificationRejectedCloseInput(second.ID, "second result rejected").RunAttemptTerminalizations[0])
+	if _, err := s.Close(id, in, fixedNow.Add(11*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunAttemptHasExecutedRequiresObservedBoundary(t *testing.T) {
 	t.Parallel()
 	heartbeat := fixedNow.Add(time.Minute)

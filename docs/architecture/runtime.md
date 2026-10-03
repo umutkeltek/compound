@@ -483,6 +483,17 @@ report loss, never certify an old verifying state as new execution. Settled side
 are archived under the existing detached owner before another attempt replaces the
 current pointer. Ordinary browser mutation capability gates remain unchanged.
 
+`work close --outcome failed --verification-rejected ratt_X --reason R` explicitly
+acknowledges a succeeded execution whose result verification rejected. The work
+must currently be `verifying`; each named attempt must be attached and terminal
+`succeeded`, and each reason must be nonempty. Repeat the flag for each rejected
+attempt. Each pair takes its first following `--reason` before the next
+acknowledgement flag, including when mixed with `--acknowledge-abandoned`.
+The receipt records `verification_rejected:<ratt_id>:<reason>` alongside the
+existing `abandon_ack:<ratt_id>:<reason>` namespace. Neither acknowledgement
+rewrites RunAttempt bytes. Unnamed attempts retain the ordinary close grading;
+without the flag, a succeeded execution still contradicts a failed close.
+
 `compound work advance <work_id> --to running --execute --resume-verifying --harness <name> --workspace <project> -- <command>`
 continues a verifying WorkEnvelope through a fresh running reservation and back to
 verifying after each attempt. A failed resume retains its failed RunAttempt, reports

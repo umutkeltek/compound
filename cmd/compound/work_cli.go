@@ -257,7 +257,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work close-plan work_abc123 --outcome completed --move-type outward_delta --dry-run",
 	},
 	"close": {
-		Usage:   "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--acknowledge-abandoned ratt_X --reason R]... [--steal --reason R]",
+		Usage:   "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--acknowledge-abandoned ratt_X --reason R]... [--verification-rejected ratt_X --reason R]... [--steal --reason R]",
 		Example: "compound work close work_abc123 --outcome completed --move-type outward_delta --summary \"shipped\" --changed",
 	},
 	"set-aside": {
@@ -1966,7 +1966,7 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "close":
-		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--opens-branch slug:owner:kind]... [--steal --reason R] [--transcript PATH] [--non-use REF --non-use-evidence REF]\n  (passing --used at all — even --used \"\" for declared-none — stamps skills.used_declared=true, records an explicit use declaration; absence of other refs remains unknown)\n  (--transcript PATH, or COMPOUND_TRANSCRIPT_PATH, runs the same reference detector as SessionEnd and records matches as references only; an absent or unreadable transcript is fail-open — unknown, never ignored, never a blocked close)\n  (--opens-branch declares a future branch on the emitted transition: kind is opens|blocks|supersedes|validates|retires|routes_to; the owner may itself contain colons)\n  (a work held by another actor's lease refuses close unless --by/--actor matches the holder, or --steal --reason \"...\" is given)"
+		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--opens-branch slug:owner:kind]... [--acknowledge-abandoned ratt_X --reason R]... [--verification-rejected ratt_X --reason R]... [--steal --reason R] [--transcript PATH] [--non-use REF --non-use-evidence REF]\n  (passing --used at all — even --used \"\" for declared-none — stamps skills.used_declared=true, records an explicit use declaration; absence of other refs remains unknown)\n  (--transcript PATH, or COMPOUND_TRANSCRIPT_PATH, runs the same reference detector as SessionEnd and records matches as references only; an absent or unreadable transcript is fail-open — unknown, never ignored, never a blocked close)\n  (--opens-branch declares a future branch on the emitted transition: kind is opens|blocks|supersedes|validates|retires|routes_to; the owner may itself contain colons)\n  (a work held by another actor's lease refuses close unless --by/--actor matches the holder, or --steal --reason \"...\" is given)"
 		closeValueFlags := map[string]bool{
 			"--outcome":               true,
 			"--move-type":             true,
@@ -1987,6 +1987,7 @@ func cmdWork(args []string) {
 			"--opens-branch":          true,
 			"--reason":                true,
 			"--acknowledge-abandoned": true,
+			"--verification-rejected": true,
 			"--transcript":            true,
 			"--non-use":               true,
 			"--non-use-evidence":      true,

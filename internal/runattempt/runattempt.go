@@ -134,6 +134,9 @@ const (
 	// the receipt carries a structured acknowledgement under a name the audit
 	// can branch on.
 	TerminalizationOwnerWorkAcknowledgeAbandoned = "work.close.ack_abandoned"
+	// TerminalizationOwnerWorkVerificationRejected acknowledges successful
+	// execution rejected by verification. It never rewrites the RunAttempt.
+	TerminalizationOwnerWorkVerificationRejected = "work.close.verification_rejected"
 )
 
 // TerminalizationIntent is the immutable prepare half of RunAttempt

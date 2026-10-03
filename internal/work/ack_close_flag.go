@@ -4,13 +4,16 @@ import (
 	"fmt"
 	"strings"
 
+	"compound/internal/envelope"
 	"compound/internal/runattempt"
 )
 
 // ParseAcknowledgeAbandonedFlagPairs scans args linearly for
-// --acknowledge-abandoned ratt_X --reason R pairs and returns one
+// --acknowledge-abandoned or --verification-rejected ratt_X --reason R
+// pairs and returns one
 // caller-owned terminalization reservation per pair. The reason is required
-// and is later stamped on the receipt as `abandon_ack:<id>:<reason>` so the
+// and is later stamped on the receipt as `abandon_ack:<id>:<reason>` or
+// `verification_rejected:<id>:<reason>` so the
 // operator-visible audit carries the explicit acknowledgement (see
 // buildRunAttemptTerminalizationPlans). Refused if --acknowledge-abandoned
 // is present without a following ratt_ id, or if the --reason paired with
@@ -23,42 +26,92 @@ import (
 // acknowledgement reasons and is stamped separately by the close-time gate
 // via CloseInput.StealReason. The parameter is preserved verbatim so the
 // call site signature does not change.
+// When --verification-rejected is present, each acknowledgement takes its
+// first following --reason before the next acknowledgement flag. Each pair
+// needs its own reason; abandoned-only parsing retains its existing behavior.
 func ParseAcknowledgeAbandonedFlagPairs(args []string, stealReason string) ([]RunAttemptTerminalizationRequest, error) {
 	var out []RunAttemptTerminalizationRequest
+	boundedReasons := false
+	for _, arg := range args {
+		boundedReasons = boundedReasons || arg == "--verification-rejected"
+	}
 	for i := 0; i < len(args); i++ {
-		if args[i] != "--acknowledge-abandoned" {
+		flag := args[i]
+		if flag != "--acknowledge-abandoned" && flag != "--verification-rejected" {
 			continue
 		}
 		if i+1 >= len(args) {
-			return nil, fmt.Errorf("--acknowledge-abandoned requires a following ratt_ id")
+			return nil, fmt.Errorf("%s requires a following ratt_ id", flag)
 		}
 		id := strings.TrimSpace(args[i+1])
 		if id == "" {
-			return nil, fmt.Errorf("--acknowledge-abandoned ratt_ id must be non-empty")
+			return nil, fmt.Errorf("%s ratt_ id must be non-empty", flag)
 		}
 		i++
 		// Scan ahead for the nearest --reason R whose R is non-empty and
 		// whose R is not itself a flag (so the value can carry colons).
 		reason := ""
 		for j := i + 1; j+1 < len(args); j++ {
+			if boundedReasons && (args[j] == "--acknowledge-abandoned" || args[j] == "--verification-rejected") {
+				break
+			}
 			if args[j] == "--reason" {
 				if strings.HasPrefix(args[j+1], "--") {
-					return nil, fmt.Errorf("--acknowledge-abandoned %s: --reason value must not start with --", id)
+					return nil, fmt.Errorf("%s %s: --reason value must not start with --", flag, id)
 				}
 				reason = strings.TrimSpace(args[j+1])
 				break
 			}
 		}
 		if reason == "" {
-			return nil, fmt.Errorf("--acknowledge-abandoned %s requires a non-empty --reason", id)
+			return nil, fmt.Errorf("%s %s requires a non-empty --reason", flag, id)
+		}
+		owner, status := runattempt.TerminalizationOwnerWorkAcknowledgeAbandoned, runattempt.StatusAbandoned
+		if flag == "--verification-rejected" {
+			owner, status = runattempt.TerminalizationOwnerWorkVerificationRejected, runattempt.StatusSucceeded
 		}
 		out = append(out, RunAttemptTerminalizationRequest{
 			RunAttemptID: id,
-			Owner:        runattempt.TerminalizationOwnerWorkAcknowledgeAbandoned,
-			TargetStatus: runattempt.StatusAbandoned,
+			Owner:        owner,
+			TargetStatus: status,
 			Reason:       reason,
 		})
 	}
 	_ = stealReason
 	return out, nil
+}
+
+// validateVerificationRejectedRequests keeps execution status separate from
+// verification outcome. It runs before close's state transition check.
+func (s *Store) validateVerificationRejectedRequests(w envelope.WorkEnvelope, in CloseInput) error {
+	for _, request := range in.RunAttemptTerminalizations {
+		if strings.TrimSpace(request.Owner) != runattempt.TerminalizationOwnerWorkVerificationRejected {
+			continue
+		}
+		if in.Outcome != "failed" {
+			return fmt.Errorf("--verification-rejected requires outcome failed, got %q", in.Outcome)
+		}
+		if w.State != "verifying" {
+			return fmt.Errorf("--verification-rejected requires work state verifying, got %q", w.State)
+		}
+		id := strings.TrimSpace(request.RunAttemptID)
+		if strings.TrimSpace(request.Reason) == "" {
+			return fmt.Errorf("--verification-rejected %s requires non-empty --reason", id)
+		}
+		attached := false
+		for _, attachedID := range w.RunAttemptIDs {
+			attached = attached || attachedID == id
+		}
+		if !attached {
+			return fmt.Errorf("--verification-rejected %s is not attached to work %s", id, w.ID)
+		}
+		ra, err := s.runAttempts().Get(id)
+		if err != nil {
+			return fmt.Errorf("--verification-rejected %s unreadable: %w", id, err)
+		}
+		if ra.Status != runattempt.StatusSucceeded || strings.TrimSpace(request.TargetStatus) != runattempt.StatusSucceeded {
+			return fmt.Errorf("--verification-rejected %s requires terminal succeeded attempt and target_status succeeded, got %q/%q", id, ra.Status, request.TargetStatus)
+		}
+	}
+	return nil
 }

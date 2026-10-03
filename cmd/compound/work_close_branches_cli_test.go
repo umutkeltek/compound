@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/runattempt"
 	"compound/internal/work"
@@ -74,6 +77,113 @@ func TestParseOpensBranchFlagRejectsMalformed(t *testing.T) {
 	}
 	if ref.Branch != "branch-lifecycle" || ref.Owner != "claude:orchestrator" || ref.Kind != "opens" {
 		t.Fatalf("colon-bearing owner must parse whole: %+v", ref)
+	}
+}
+
+func TestWorkCloseVerificationRejectedFlagLandsOnReceipt(t *testing.T) {
+	homePath := initializedTestHome(t)
+	t.Setenv("COMPOUND_HOME", homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(work.CreateInput{Owner: "verification-rejection", SuccessPredicate: "verification rejects successful execution"}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex"}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	attempts := runattempt.Open(homePath)
+	ra, err := attempts.Mint(w.ID, "codex", "codex", cliTestNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attempts.SetOrigin(ra.ID, runattempt.OriginHarnessExecution); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attempts.CommitLaunch(ra.ID, cliTestNow.Add(2*time.Minute), func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying", Actor: "codex", RunAttemptIDs: []string{ra.ID}}, cliTestNow.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attempts.Complete(ra.ID, runattempt.StatusSucceeded, cliTestNow.Add(4*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(homePath, "run_attempts", ra.ID+".json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := "independent verifier rejected unsupported claims"
+	out := captureStdout(t, func() {
+		cmdWork([]string{"close", w.ID, "--outcome", "failed", "--move-type", "audit_only", "--verification-rejected", ra.ID, "--reason", reason, "--proof", "check:cli-verification-rejected", "--by", "codex"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("close output missing JSON: %s", out)
+	}
+	var result work.CloseResult
+	if err := json.Unmarshal([]byte(out[start:]), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Work.State != "failed" || !strings.Contains(strings.Join(result.Receipt.ProofRefs, "\n"), "verification_rejected:"+ra.ID+":"+reason) {
+		t.Fatalf("close result = %+v", result)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(before) != string(after) {
+		t.Fatalf("acknowledgement rewrote attempt: %v", err)
+	}
+}
+
+func TestParseVerificationRejectedCloseInput(t *testing.T) {
+	t.Parallel()
+	args := []string{"work_example", "--outcome", "failed", "--verification-rejected", "ratt_20261004T000000Z_example", "--reason", "reviewer rejected unsupported claims"}
+	requests, err := work.ParseAcknowledgeAbandonedFlagPairs(args, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := work.CloseInput{Outcome: "failed", RunAttemptTerminalizations: requests}
+	if len(in.RunAttemptTerminalizations) != 1 {
+		t.Fatalf("close requests = %v, want one", in.RunAttemptTerminalizations)
+	}
+	got := in.RunAttemptTerminalizations[0]
+	if got.RunAttemptID != args[4] || got.Owner != "work.close.verification_rejected" || got.TargetStatus != runattempt.StatusSucceeded || got.Reason != args[6] {
+		t.Fatalf("close request = %+v", got)
+	}
+}
+
+func TestParseVerificationRejectedReasons(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		args      []string
+		wantError string
+	}{
+		{name: "repeatable", args: []string{"--verification-rejected", "ratt_first", "--reason", "first rejected", "--verification-rejected", "ratt_second", "--reason", "second rejected"}},
+		{name: "mixed flags", args: []string{"--acknowledge-abandoned", "ratt_first", "--reason", "first abandoned", "--verification-rejected", "ratt_second", "--reason", "second rejected"}},
+		{name: "reverse mixed flags", args: []string{"--verification-rejected", "ratt_first", "--reason", "first rejected", "--acknowledge-abandoned", "ratt_second", "--reason", "second abandoned"}},
+		{name: "reason cannot cross next acknowledgement", args: []string{"--verification-rejected", "ratt_first", "--acknowledge-abandoned", "ratt_second", "--reason", "second abandoned"}, wantError: "non-empty --reason"},
+		{name: "abandoned reason cannot cross rejection", args: []string{"--acknowledge-abandoned", "ratt_first", "--verification-rejected", "ratt_second", "--reason", "second rejected"}, wantError: "non-empty --reason"},
+		{name: "empty reason", args: []string{"--verification-rejected", "ratt_first", "--reason", " "}, wantError: "non-empty --reason"},
+		{name: "missing id", args: []string{"--verification-rejected"}, wantError: "requires a following ratt_"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := work.ParseAcknowledgeAbandonedFlagPairs(tt.args, "")
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("err = %v, want %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil || len(got) != 2 || got[0].Reason != tt.args[3] || got[1].Reason != tt.args[7] {
+				t.Fatalf("requests = %+v, err = %v", got, err)
+			}
+		})
 	}
 }
 
