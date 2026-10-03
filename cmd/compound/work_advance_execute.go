@@ -49,6 +49,12 @@ var workAdvanceExecuteExit = os.Exit
 // Exit code: 0 on succeeded, non-zero on failed/timeout/infra. Matches the
 // compound harness run contract.
 func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, rest []string, existingRunAttempts []string, explicitSelection *envelope.ExecutionSelection, now time.Time) {
+	// Split before reading any Compound option; child argv has its own owner.
+	var childArgs []string
+	if idx := indexOf(rest, "--"); idx >= 0 {
+		childArgs = rest[idx+1:]
+		rest = rest[:idx]
+	}
 	if workID == "" {
 		fmt.Fprintln(os.Stderr, "error: --execute requires a work_id")
 		workAdvanceExecuteExit(2)
@@ -86,12 +92,8 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	// Parse post-`--` for command + args. Everything before the `--` is
 	// flag parsing; everything after is the subprocess argv. The first
 	// post-`--` token is the program path; the rest are its args.
-	var restArgs []string
+	restArgs := childArgs
 	flagArgs := rest
-	if idx := indexOf(rest, "--"); idx >= 0 {
-		restArgs = rest[idx+1:]
-		flagArgs = rest[:idx]
-	}
 	resumeVerifying := hasFlag(flagArgs, "--resume-verifying")
 	var command string
 	var commandArgs []string

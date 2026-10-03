@@ -1519,6 +1519,10 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "advance":
+		executeRest := rest
+		if idx := indexOf(rest, "--"); idx >= 0 {
+			rest = rest[:idx]
+		}
 		delivery, deliveryErr := parseWorkDeliveryRequest(rest)
 		die(deliveryErr)
 		usage := workUsage("advance")
@@ -1600,7 +1604,7 @@ func cmdWork(args []string) {
 			// records the resolution (route, model, effort, revision) the
 			// invocation asked for. The envelope's saved selection is not
 			// rewritten by a one-run override.
-			runWorkAdvanceExecute(homePath, store, pos(advanceValueFlags), rest, runAttempts, saveSelection, time.Now())
+			runWorkAdvanceExecute(homePath, store, pos(advanceValueFlags), executeRest, runAttempts, saveSelection, time.Now())
 			return
 		}
 		w, err := store.Advance(pos(advanceValueFlags), work.AdvanceInput{

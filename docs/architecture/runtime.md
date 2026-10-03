@@ -451,6 +451,18 @@ generation. Preview consults those same lifecycle policy plans. Execution-stage
 claim also compares its preflight generation.
 The existing default remains one bounded execute step; zero is not a disable flag.
 
+### Governed execution argument ownership
+
+`work advance --execute --timeout <duration> -- <command> <args...>` reads
+Compound options only before `--`. The child command and arguments after that
+boundary are passed unchanged, including empty arguments and child options named
+`--timeout`, `--by`, or `--launch-profile`. A child timeout cannot change the
+Compound deadline or cause Compound duration validation to refuse the launch.
+An absent or zero Compound timeout retains the five-minute default; positive
+durations are capped at 45 minutes. Invalid or negative Compound durations refuse
+before a work mutation or execution RunAttempt is minted. Detached execution
+reserves two minutes of its 45-minute wrapper budget for finalization.
+
 ### Explicit same-work execution resume
 
 `work continue --selected --actor <lease-holder>` is an explicit continuation,
