@@ -36,7 +36,8 @@ proxied console, and arbitrary private embedding endpoints are unsupported.
 Full contract, including current blockers:
 [Supported Scope and Security Boundary](docs/security/supported-scope.md).
 See also the [support matrix](SUPPORT.md), [security policy](SECURITY.md),
-[recovery procedure](docs/operations/recovery.md), and [changelog](CHANGELOG.md).
+[recovery procedure](docs/operations/recovery.md),
+[second-opinion snapshots](docs/operations/second-opinion-snapshot.md), and [changelog](CHANGELOG.md).
 
 ## Start here
 

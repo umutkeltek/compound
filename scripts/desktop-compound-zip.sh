@@ -55,6 +55,15 @@ Options:
   --name NAME              Staged folder name. Default: compound.
   --zip NAME               Zip filename. Default: compound.zip.
   --upload-safe            Produce the smaller public-audit bundle.
+  --second-opinion         General ChatGPT review: all source and bounded current
+                           private context/recent text evidence; no Git objects,
+                           runtime homes, corpora, archives or duplicate worktrees.
+                           Adds REVIEW-START-HERE.md and REVIEW-MANIFEST.json.
+  --review-data-mb N        Private context/evidence budget for --second-opinion.
+                           Default: 32 MiB. Whole groups are omitted, never truncated.
+  --review-evidence PATH    Prioritize a repo-relative text file/directory in that
+                           budget (repeatable); fail if it cannot fit. Requires
+                           --second-opinion. Upload-safe/delta modes are separate.
   --delta                  Produce the small delta-review bundle: source tree
                            without .git, .compound-private/, memory/, and
                            docs_private/plan/packets/ bulk, so external
@@ -114,6 +123,9 @@ desktop_path="${COMPOUND_DESKTOP:-$HOME/Desktop}"
 stage_name="${COMPOUND_STAGE_NAME:-compound}"
 zip_name="${COMPOUND_ZIP_NAME:-compound.zip}"
 upload_safe=0
+second_opinion=0
+review_data_mb=32
+review_evidence=()
 delta=0
 include_private=1
 include_node_modules=0
@@ -161,6 +173,20 @@ while [[ $# -gt 0 ]]; do
       upload_safe=1
       include_private=0
       shift
+      ;;
+    --second-opinion)
+      second_opinion=1
+      shift
+      ;;
+    --review-data-mb)
+      [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || die "--review-data-mb requires a positive integer"
+      review_data_mb="$2"
+      shift 2
+      ;;
+    --review-evidence)
+      [[ $# -ge 2 ]] || die "--review-evidence requires a repository-relative path"
+      review_evidence+=("$2")
+      shift 2
       ;;
     --delta)
       delta=1
@@ -215,6 +241,16 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$second_opinion" -eq 1 ]]; then
+  [[ "$upload_safe" -eq 0 && "$delta" -eq 0 ]] || die "--second-opinion cannot be combined with --upload-safe or --delta"
+  [[ "$include_node_modules" -eq 0 && "$include_media" -eq 0 && "$include_binaries" -eq 0 ]] || die "--second-opinion selects source and text evidence; inclusion overrides require another mode"
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for --second-opinion"
+  upload_safe=1
+  include_private=1
+elif [[ "${#review_evidence[@]}" -gt 0 || "$review_data_mb" != 32 ]]; then
+  die "--review-evidence and --review-data-mb require --second-opinion"
+fi
 
 [[ "$stage_name" != "" ]] || die "--name cannot be empty"
 [[ "$zip_name" != "" ]] || die "--zip cannot be empty"
@@ -401,7 +437,7 @@ printf '# compound Desktop snapshot zip\n'
 printf -- '- source: %s\n' "$repo_real"
 printf -- '- stage: %s\n' "$stage_path"
 printf -- '- zip: %s\n' "$zip_path"
-printf -- '- mode: %s\n' "$([[ "$delta" -eq 1 ]] && printf delta || { [[ "$upload_safe" -eq 1 ]] && printf upload-safe || printf full-local; })"
+printf -- '- mode: %s\n' "$([[ "$second_opinion" -eq 1 ]] && printf second-opinion || { [[ "$delta" -eq 1 ]] && printf delta || { [[ "$upload_safe" -eq 1 ]] && printf upload-safe || printf full-local; }; })"
 printf -- '- include_private: %s\n' "$include_private"
 printf -- '- include_node_modules: %s\n' "$include_node_modules"
 printf -- '- include_media: %s\n' "$include_media"
@@ -412,6 +448,24 @@ if [[ "${#extra_excludes[@]}" -gt 0 ]]; then
   for pattern in "${extra_excludes[@]}"; do
     printf -- '    %s\n' "$pattern"
   done
+fi
+
+review_temp=""
+if [[ "$second_opinion" -eq 1 ]]; then
+  # Resolve selection before replacing any previous snapshot. A failed explicit
+  # evidence request leaves existing Desktop artifacts alone.
+  if [[ "$dry_run" -eq 0 ]]; then
+    review_temp="$(mktemp -d "${TMPDIR:-/tmp}/compound-zip-review.XXXXXX")"
+    trap 'rm -f -- "$review_temp/files.list" "$review_temp/selection.json"; rmdir -- "$review_temp"' EXIT
+  else
+    review_temp="(temporary-review-selection)"
+  fi
+  review_args=(select --repo "$repo_real" --out "$review_temp" --data-mb "$review_data_mb")
+  for evidence in ${review_evidence+"${review_evidence[@]}"}; do
+    review_args+=(--evidence "$evidence")
+  done
+  run python3 "$script_dir/desktop_zip_review.py" "${review_args[@]}"
+  rsync_args+=(--from0 --files-from "$review_temp/files.list")
 fi
 
 run rm -rf -- "$stage_path" "$zip_path"
@@ -443,10 +497,46 @@ fi
 audit_notes_path="$stage_path/AUDIT-NOTES.md"
 run sh -c 'cat > "$1"' _ "$audit_notes_path" <<<"$(generate_audit_notes)"
 
+if [[ "$second_opinion" -eq 1 ]]; then
+  review_brief="$(cat <<'REVIEW'
+# General second opinion — start here
+
+Review this repository critically as a whole: architecture, implementation,
+complexity, useful outcomes, and whether its stated guarantees have evidence.
+Identify the highest-impact problems and simplifications. Cite file paths and
+lines, distinguish confirmed findings from hypotheses, and consider what an
+alternative design would improve. The repository's doctrine is itself reviewable.
+
+Start with AUDIT-NOTES.md for the exact source checkout's HEAD and dirty state,
+README.md, docs/ARCHITECTURE.md, docs/LAYERS.md, and docs/architecture/status.md.
+Then inspect production code, its callers, and tests. Current private design/work
+context and recent real text evidence supplement the source.
+
+REVIEW-MANIFEST.json explains selection, hashes the packaged files, and lists
+budget/filter omissions. Source includes tracked and nonignored local files.
+Private context has a separate bounded budget. Recent evidence is selected across
+workflows without filtering for success; it is a sample, not exhaustive history.
+Supporting images/binaries and references outside the snapshot may be absent.
+
+The real COMPOUND_HOME is not exported and no fresh runtime checks are performed.
+Historical reports, receipts and plans do not prove current deployed behavior.
+Missing evidence should be identified as a limit, not treated as an empty system.
+Git object history is omitted; RECENT-COMMITS.txt provides limited history.
+REVIEW
+)"
+  run sh -c 'cat > "$1"' _ "$stage_path/REVIEW-START-HERE.md" <<<"$review_brief"
+  if [[ "$dry_run" -eq 0 ]]; then
+    git -C "$repo_real" log -30 --format='%h %ad %s' --date=iso-strict > "$stage_path/RECENT-COMMITS.txt"
+  fi
+fi
+
 if [[ "$dry_run" -eq 0 ]]; then
   find "$stage_path" -name ".DS_Store" -delete
   if [[ "$include_binaries" -eq 0 ]]; then
     prune_binaries
+  fi
+  if [[ "$second_opinion" -eq 1 ]]; then
+    python3 "$script_dir/desktop_zip_review.py" manifest --stage "$stage_path" --selection "$review_temp/selection.json"
   fi
   (
     cd "$desktop_real"
