@@ -104,7 +104,10 @@ jobs:
           make release-artifacts VERSION=0.1.0 DIST="$RUNNER_TEMP/candidate-a" SBOM_TOOL="$tools/cyclonedx-gomod"
           make release-artifacts VERSION=0.1.0 DIST="$RUNNER_TEMP/candidate-b" SBOM_TOOL="$tools/cyclonedx-gomod"
           diff -rq "$RUNNER_TEMP/candidate-a" "$RUNNER_TEMP/candidate-b"
-          git worktree add --detach "$RUNNER_TEMP/prior-source" "$prior"
+          # The SBOM Git reader requires a standalone checkout, not a
+          # linked-worktree .git file. Neither checkout publishes anything.
+          git clone --no-hardlinks --no-checkout . "$RUNNER_TEMP/prior-source"
+          git -C "$RUNNER_TEMP/prior-source" switch --detach "$prior"
           make -C "$RUNNER_TEMP/prior-source" release-artifacts VERSION=0.1.0 DIST="$RUNNER_TEMP/prior-bundle" SBOM_TOOL="$tools/cyclonedx-gomod"
           printf '%s\n' "$candidate" > "$RUNNER_TEMP/candidate-commit"
           go version > "$RUNNER_TEMP/release-toolchain.txt"
