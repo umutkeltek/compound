@@ -235,7 +235,9 @@ func (p PermissionAuthority) Validate() error {
 
 func LoadPermissionAuthority(homePath, harness string) (PermissionAuthority, string, error) {
 	path := PermissionAuthorityPath(homePath, harness)
-	body, err := os.ReadFile(path)
+	// Approval input must remain in owned custody, never follow an escaped
+	// leaf or parent into an executor-writable external referent.
+	body, err := homepkg.ReadRootedRegularFile(homePath, path, "permission authority")
 	if err != nil {
 		return PermissionAuthority{}, "", fmt.Errorf("read permission authority %s: %w", path, err)
 	}

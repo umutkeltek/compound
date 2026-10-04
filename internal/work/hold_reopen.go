@@ -289,6 +289,12 @@ func directorProposedWork(w envelope.WorkEnvelope) bool {
 	return false
 }
 
+// IsDirectorProposed uses persisted director proposal markers, not the current caller's
+// actor or proposal label. It is provenance classification, not authentication.
+func IsDirectorProposed(w envelope.WorkEnvelope) bool {
+	return directorProposedWork(w)
+}
+
 func hasOperatorProvenance(actor string) bool {
 	return policy.HasOperatorProvenance(actor)
 }

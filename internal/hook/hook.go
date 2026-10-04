@@ -950,6 +950,11 @@ func preparePreToolUseAction(fx Fixture, deps Deps, action envelope.ActionIntent
 		ai.IDs.WorkID = fx.WorkID
 	}
 	ai = normalizeActionTarget(fx, ai)
+	var err error
+	ai, err = guardActualPermissionTarget(fx, deps, ai)
+	if err != nil {
+		return preparedPreToolAction{}, err
+	}
 	prepared := preparedPreToolAction{action: ai}
 	if fx.Placement != nil {
 		prepared.placement = fx.Placement

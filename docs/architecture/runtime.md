@@ -685,6 +685,27 @@ and no retry mutates global harness permissions or configuration. Exact
 approvals cannot override a deny or security floor. Compaction and subagent
 transformations preserve parent lineage and cannot raise trust.
 
+Native raw-file permission targets are classified independently of proposal
+labels and Git discovery. PreToolUse resolves the actual target (including a
+symlinked existing parent for a new file) against the owned
+`COMPOUND_HOME/config/harness-permissions/` namespace and reads persisted
+director-proposal markers. Director-proposed permission mutations hit the
+existing hard-deny core even when the proposal was ordinary or the caller uses
+an operator-shaped label. Missing, unreadable, identity-mismatched or invalid
+persisted binding produces native denial with a content-free diagnostic, not
+an empty runtime-error response. Non-director bound work retains security-class
+grant/approval semantics; the dedicated typed permission-apply owner keeps its
+own checks. Batch members are checked individually, and a denied member denies
+the native operation. Observation-only profiles still observe; only explicit
+enforcement projects native denial. Logical namespace entries remain protected
+when a final leaf resolves outward; the permission-authority owner reads rooted
+regular files and rejects leaf or parent symlink bodies. An escaped external
+referent therefore cannot become accepted authority.
+
+This bounded target check does not authenticate actor labels or contain
+arbitrary shell processes, hard-link aliases, or target races under the same OS
+account. Other protected target families need their own owner mapping.
+
 `work act` uses the work-owned approval handoff: validate current active work
 and its lease, persist the immutable ActionIntent as a proposal, and evaluate
 current policy and autonomy halt before considering an exact grant. A held

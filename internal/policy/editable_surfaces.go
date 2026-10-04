@@ -17,8 +17,9 @@ package policy
 //  2. An absent or empty config means NOTHING is editable (not "everything"). Opening a
 //     surface is an explicit operator act, never a default.
 //
-// This registry only constrains explicit harness-edit proposals: a proposal without a
-// target_surface is ordinary work and is unaffected.
+// Proposal admission checks declared harness surfaces. Mutation adapters also
+// classify actual protected targets; an ordinary label cannot exempt a system
+// mutation of a hard-deny core surface.
 
 import (
 	"fmt"
@@ -327,4 +328,28 @@ func EditableSurfaceDenyDecision(ai envelope.ActionIntent, reason string, now ti
 	pd := mkDecision(ai, "deny", []string{reason}, nil, "", "", now)
 	pd.EvidenceRefs = mergeStrings(pd.EvidenceRefs, EditableSurfacesAuthorityRef)
 	return pd
+}
+
+// GuardActualEditableSurface applies the existing core frontier at a concrete
+// mutation target. The adapter resolves the target and reads persisted work;
+// neither a proposal label nor a caller-authored actor establishes the origin.
+// Missing work binding cannot certify a protected raw mutation. Operator work
+// keeps the existing security-class grant/approval path; system work is denied.
+func GuardActualEditableSurface(ai envelope.ActionIntent, surface string, systemOriginated, bindingKnown bool) envelope.ActionIntent {
+	surface = strings.ToLower(strings.TrimSpace(surface))
+	if !hardDenyCoreSurfaces[surface] || ai.MutationClass == "read" {
+		return ai
+	}
+	ai.MutationClass = "security"
+	ai.EvidenceRefs = mergeStrings(ai.EvidenceRefs, EditableSurfacesAuthorityRef)
+	reason := fmt.Sprintf("editable_surfaces(actual_target): %s is an operator-owned core surface", surface)
+	if systemOriginated {
+		ai.SecurityFloorOutcome = "deny"
+		reason = fmt.Sprintf("editable_surfaces(actual_target): system-originated mutation of HARD-DENY core surface %s", surface)
+	} else if !bindingKnown {
+		ai.SecurityFloorOutcome = "deny"
+		reason = fmt.Sprintf("editable_surfaces(actual_target): %s mutation requires readable persisted work binding", surface)
+	}
+	ai.SecurityReasons = mergeStrings(ai.SecurityReasons, reason)
+	return ai
 }
