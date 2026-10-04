@@ -77,6 +77,59 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  installed-release:
+    name: native installed release acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build exact candidate and prior accepted generation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          node --test scripts/installed-release-acceptance.test.mjs
+          tools="$RUNNER_TEMP/release-tools"
+          mkdir -p "$tools"
+          GOBIN="$tools" go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0
+          candidate="$(git rev-parse HEAD)"
+          prior=066593602dc773a6e9591433a769135b770c1b8f
+          make release-artifacts VERSION=0.1.0 DIST="$RUNNER_TEMP/candidate-a" SBOM_TOOL="$tools/cyclonedx-gomod"
+          make release-artifacts VERSION=0.1.0 DIST="$RUNNER_TEMP/candidate-b" SBOM_TOOL="$tools/cyclonedx-gomod"
+          diff -rq "$RUNNER_TEMP/candidate-a" "$RUNNER_TEMP/candidate-b"
+          git worktree add --detach "$RUNNER_TEMP/prior-source" "$prior"
+          make -C "$RUNNER_TEMP/prior-source" release-artifacts VERSION=0.1.0 DIST="$RUNNER_TEMP/prior-bundle" SBOM_TOOL="$tools/cyclonedx-gomod"
+          printf '%s\n' "$candidate" > "$RUNNER_TEMP/candidate-commit"
+          go version > "$RUNNER_TEMP/release-toolchain.txt"
+          "$tools/cyclonedx-gomod" version >> "$RUNNER_TEMP/release-toolchain.txt"
+      - name: Accept actual installed files in disposable homes
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/installed-release-acceptance.mjs \
+            "$RUNNER_TEMP/candidate-a" "$(cat "$RUNNER_TEMP/candidate-commit")" \
+            "$RUNNER_TEMP/installed-acceptance" "$RUNNER_TEMP/prior-bundle" \
+            066593602dc773a6e9591433a769135b770c1b8f
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: proof-installed-release-evidence
+          path: |
+            ${{ runner.temp }}/candidate-a/
+            ${{ runner.temp }}/prior-bundle/
+            ${{ runner.temp }}/candidate-commit
+            ${{ runner.temp }}/release-toolchain.txt
+            ${{ runner.temp }}/installed-acceptance/
+          if-no-files-found: warn
+          retention-days: 14
+
   proof-ci-console:
     name: proof-check --ci-console
     runs-on: ubuntu-24.04

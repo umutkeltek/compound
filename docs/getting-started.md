@@ -44,6 +44,24 @@ Optional (for semantic memory): a local **Ollama** server — see
 
 ## 1. Install
 
+Release acceptance uses the shipped nine-file bundle, absolute installed binary
+paths and explicit disposable homes. The existing Proof workflow runs the native
+Linux/amd64 drill; the same drill must also pass natively on Darwin/arm64 before
+release approval. It covers initialized first use, goal continuity, owned-process
+interruption and fresh resume, rejected result acceptance, installer rollback,
+and a restored-home product/decision consumer with the original home unavailable.
+The report is candidate-bound evidence, not authorization to publish:
+
+```sh
+node scripts/installed-release-acceptance.mjs \
+  /absolute/candidate-bundle FULL_CANDIDATE_COMMIT \
+  /absolute/absent-evidence-root /absolute/prior-bundle FULL_PRIOR_COMMIT
+```
+
+The runner requires Node 20+ and a source checkout for synthetic fixtures; it
+executes only installed Compound binaries. It never connects providers or real
+accounts, starts schedulers, mints authority, tags, or publishes a release.
+
 The historical `scripts/release-smoke.sh` entrypoint is retired and exits without
 effects. It is not an installer or a substitute for governed `proof-check`.
 
