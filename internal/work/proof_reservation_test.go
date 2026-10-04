@@ -360,7 +360,7 @@ func TestProofResourceReservationExpiryRetainsBarrierUntilTerminationIsGoverned(
 	}
 
 	predecessor.terminate(t)
-	if err := acquired.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(acquired.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	recovered, err := reserveProofResource(t, s, second.ID, ProofResourceReserveInput{
@@ -468,7 +468,7 @@ func TestProofResourceChainedStealWaitsForOldestNonterminalPredecessor(t *testin
 	}
 
 	predecessor.terminate(t)
-	if err := acquired.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(acquired.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	recovered, err := reserveProofResource(t, s, third.ID, ProofResourceReserveInput{
@@ -650,7 +650,7 @@ func TestProofResourceProducesTrustedTerminationEvidenceFromReleasedBarrier(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := acquired.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(acquired.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	recovered, err := reserveProofResource(t, s, second.ID, ProofResourceReserveInput{
@@ -701,7 +701,7 @@ func TestProofResourceTerminationEvidencePublicationRequiresPolicyAllow(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := acquired.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(acquired.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	artifactDir := filepath.Join(s.home, "artifacts", "sha256")
@@ -1189,7 +1189,7 @@ func TestProofResourceReservationExceptionalStealIsExplicitAndAudited(t *testing
 	if err := os.WriteFile(filepath.Join(s.home, "config", "policy.yaml"), policyYAML, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := acquired.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(acquired.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	stolen, err := reserveProofWithTakeoverObserver(func() (ProofResourceReserveResult, error) {
@@ -3319,7 +3319,7 @@ func TestResumeProofResourceCompletionRearmsExactExpiredHolderWithoutNewReservat
 	if !status.IsExpired || status.Holder != acquired.Reservation.Holder {
 		t.Fatalf("live-descendant refusal changed expired holder: %+v", status)
 	}
-	if err := acquired.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(acquired.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3375,7 +3375,7 @@ func TestResumeProofResourceCompletionReconcilesCrashAfterExactRearm(t *testing.
 	if _, err := s.CompleteProofResource(w.ID, completeInput, fixedNow.Add(2*time.Second)); err == nil {
 		t.Fatal("completion released while execution barrier remained live")
 	}
-	if err := acquired.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(acquired.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	prepareCalls := 0
@@ -4579,6 +4579,91 @@ func proofReportlessCompletionPendingFixture(
 	return s, w, acquired, input, pending, pendingPath
 }
 
+func TestProofFixtureBarrierCloseWaitsForForkToExecWindow(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	w := claimedProofWork(t, s, "fixture fork-to-exec barrier", proofActorAlpha, fixedNow)
+	acquired, err := reserveProofResourceWithLiveBarrier(t, s, w.ID, ProofResourceReserveInput{
+		Actor: proofActorAlpha, TTL: time.Minute, Workspace: "/synthetic/repo-alpha",
+		Command: "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = acquired.ExecutionBarrier.Close() })
+	inherited, err := acquired.ExecutionBarrier.DuplicateForChild()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inherited.Close()
+	// Model a forked child holding the same open-file description until exec.
+	// Go holds ForkLock for writing during that interval. No subprocess is
+	// started while this deterministic fixture holds the lock.
+	syscall.ForkLock.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			syscall.ForkLock.Unlock()
+		}
+	}()
+	closing := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(closing)
+		done <- closeProofFixtureExecutionBarrier(acquired.ExecutionBarrier)
+	}()
+	<-closing
+	closedBeforeExec := false
+	select {
+	case err = <-done:
+		closedBeforeExec = true
+	case <-time.After(50 * time.Millisecond):
+	}
+	// An actually inherited descriptor must still block the trusted producer;
+	// fixture synchronization is not authority to declare a live tree dead.
+	_, attestErr := landlease.AttestExecutionTerminated(s.home, acquired.Reservation.Holder)
+	var pending *landlease.ExecutionPendingError
+	if !errors.As(attestErr, &pending) {
+		_ = inherited.Close()
+		syscall.ForkLock.Unlock()
+		locked = false
+		t.Fatalf("inherited descriptor attestation = %v, want execution pending", attestErr)
+	}
+	if closeErr := inherited.Close(); closeErr != nil {
+		syscall.ForkLock.Unlock()
+		locked = false
+		t.Fatal(closeErr)
+	}
+	syscall.ForkLock.Unlock()
+	locked = false
+	if !closedBeforeExec {
+		select {
+		case err = <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("fixture barrier close did not finish after exec window")
+		}
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closedBeforeExec {
+		t.Fatal("fixture barrier close completed before inherited fork-to-exec descriptor was released")
+	}
+	if _, err := landlease.AttestExecutionTerminated(s.home, acquired.Reservation.Holder); err != nil {
+		t.Fatalf("closed fixture barrier retained execution tree: %v", err)
+	}
+}
+
+func closeProofFixtureExecutionBarrier(barrier *landlease.ExecutionBarrier) error {
+	// A concurrent Linux test subprocess can inherit even an O_CLOEXEC
+	// descriptor between fork and exec. Wait out that window and exclude new
+	// forks only during close, never during launch, store work or attestation.
+	syscall.ForkLock.RLock()
+	err := barrier.Close()
+	syscall.ForkLock.RUnlock()
+	return err
+}
+
 func reserveProofResource(
 	t *testing.T,
 	s *Store,
@@ -4594,7 +4679,7 @@ func reserveProofResource(
 	if result.ExecutionBarrier == nil {
 		t.Fatal("successful proof reservation omitted execution barrier")
 	}
-	if err := result.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(result.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	return result, nil

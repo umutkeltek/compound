@@ -59,7 +59,7 @@ func TestReserveProofResourceWhenFreeQueuesInsteadOfAbandoningAnAttempt(t *testi
 	if err != nil {
 		t.Fatalf("queued reserve: %v", err)
 	}
-	if err := result.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(result.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	if result.Reservation.Status != ProofResourceAcquired {
@@ -126,7 +126,7 @@ func TestReserveProofResourceWhenFreeWaitsOutAReservationInFlight(t *testing.T) 
 	if err != nil {
 		t.Fatalf("queued reserve: %v", err)
 	}
-	if err := result.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(result.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	if added := runAttemptCount(t, s, w.ID) - before; added != 1 {

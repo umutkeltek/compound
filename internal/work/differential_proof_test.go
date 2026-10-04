@@ -260,7 +260,7 @@ func completeDifferentialFailedProof(t *testing.T, store *Store, item envelope.W
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reserved.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(reserved.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	body, err := json.Marshal(map[string]any{

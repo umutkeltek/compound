@@ -143,7 +143,7 @@ func TestCompleteProofResourceStoresSealedSourceSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reserved.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(reserved.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	reportBody, err := json.Marshal(map[string]any{
@@ -456,7 +456,7 @@ func TestSHA256SourceBoundProofAndLandBinding(t *testing.T) {
 	if reserved.ExecutionBarrier == nil {
 		t.Fatal("sha256 proof reservation omitted execution barrier")
 	}
-	if err := reserved.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(reserved.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	reportBody, err := json.Marshal(map[string]any{
@@ -815,7 +815,7 @@ func newSourceBoundTakeoverProofFixture(
 		if err != nil {
 			t.Fatalf("reserve %s predecessor: %v", variant, err)
 		}
-		if err := predecessorReservation.ExecutionBarrier.Close(); err != nil {
+		if err := closeProofFixtureExecutionBarrier(predecessorReservation.ExecutionBarrier); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -903,7 +903,7 @@ func newSourceBoundTakeoverProofFixture(
 	if err != nil {
 		t.Fatalf("reserve %s proof: %v", variant, err)
 	}
-	if err := reserved.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(reserved.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1006,7 +1006,7 @@ func newSourceBoundProofCompletionFixture(t *testing.T, now time.Time) sourceBou
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reserved.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(reserved.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	reportBody, err := json.Marshal(map[string]any{
@@ -1114,7 +1114,7 @@ func completeSourceBoundProofForWork(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reserved.ExecutionBarrier.Close(); err != nil {
+	if err := closeProofFixtureExecutionBarrier(reserved.ExecutionBarrier); err != nil {
 		t.Fatal(err)
 	}
 	reportBody, err := json.Marshal(map[string]any{

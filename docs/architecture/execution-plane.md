@@ -44,6 +44,11 @@ requires a fresh matching live descendant before force-stopping its unchanged
 group; a zombie's lost command text does not prove either foreign ownership or
 successful cleanup.
 
+Proof-fixture descriptor closure is synchronized with Go's fork lock to exclude
+unrelated subprocess inheritance before close-on-exec. Production termination
+attestation remains fail-closed while any inherited barrier descriptor is live;
+fixture synchronization never substitutes for owned descendant termination.
+
 `compound browser settings` is the Compound-owned, policy-gated Jev switch;
 missing settings route to the established Playwright backend. `compound browser route`
 exposes the selected backend to every harness. `compound browser goal`
