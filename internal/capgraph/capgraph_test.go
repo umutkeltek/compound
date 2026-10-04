@@ -225,7 +225,7 @@ func TestLoadSourceAuthorityBackfillsLegacyObservedAt(t *testing.T) {
 	}
 }
 
-func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
+func TestConsumeReceiptsDeclaresUsedCapabilitiesOnly(t *testing.T) {
 	home, s := newStore(t)
 	if err := s.Add(Node{ID: "skill:pricing", Kind: "skill", Name: "Pricing", Triggers: []string{"pricing"}}); err != nil {
 		t.Fatal(err)
@@ -266,7 +266,7 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	if report.ReceiptsScanned != 3 || report.UsedCapabilitiesSeen != 3 || report.MissedCapabilitiesSeen != 1 {
 		t.Fatalf("report = %+v", report)
 	}
-	if report.AppliedValidatedEdges != 6 || report.AppliedMissedEdges != 2 || report.AppliedEdges != 8 {
+	if report.AppliedDeclaredUseEdges != 6 || report.AppliedMissedEdges != 2 || report.AppliedEdges != 8 {
 		t.Fatalf("report = %+v", report)
 	}
 	if report.SkippedNonCompleted != 1 || report.SkippedUnchanged != 0 {
@@ -279,25 +279,25 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 		t.Fatalf("skipped unknown = %v", report.SkippedUnknown)
 	}
 	edges := readCapEdges(t, home)
-	if !hasEdge(edges, EdValidatedBy, "skill:pricing", "rec_used") {
-		t.Fatalf("edges = %+v, want used skill validated by receipt", edges)
+	if !hasEdge(edges, EdDeclaredUsedBy, "skill:pricing", "rec_used") {
+		t.Fatalf("edges = %+v, want used skill declared by receipt", edges)
 	}
-	contextEdge := findEdge(edges, EdValidatedBy, "context:receipt", "skill:pricing")
+	contextEdge := findEdge(edges, EdDeclaredUsedBy, "context:receipt", "skill:pricing")
 	if contextEdge == nil {
-		t.Fatalf("edges = %+v, want used skill validated by receipt context", edges)
+		t.Fatalf("edges = %+v, want used skill declared by receipt context", edges)
 	}
-	if contextEdge.SourceReceipt != "rec_used" || contextEdge.Provenance != "cheap_lane" || contextEdge.Weight <= 0 {
-		t.Fatalf("validated context edge missing receipt provenance: %+v", contextEdge)
+	if contextEdge.SourceReceipt != "rec_used" || contextEdge.Provenance != "receipt_declared" || contextEdge.Weight <= 0 {
+		t.Fatalf("declared context edge missing receipt provenance: %+v", contextEdge)
 	}
-	if !hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_unchanged") {
+	if !hasEdge(edges, EdDeclaredUsedBy, "skill:offered-only", "rec_unchanged") {
 		t.Fatalf("edges = %+v, want legacy proof-bearing receipt to validate used skill", edges)
 	}
 	if !hasEdge(edges, EdMissedWhen, "context:receipt", "skill:missed") ||
 		!hasEdge(edges, EdMissedWhen, "context:test", "skill:missed") {
 		t.Fatalf("edges = %+v, want missed skill context edges from failed receipt summary", edges)
 	}
-	if hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_used") ||
-		hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_failed") {
+	if hasEdge(edges, EdDeclaredUsedBy, "skill:offered-only", "rec_used") ||
+		hasEdge(edges, EdDeclaredUsedBy, "skill:offered-only", "rec_failed") {
 		t.Fatalf("offered/failed capability should not validate: %+v", edges)
 	}
 
@@ -334,10 +334,10 @@ func TestReceiptScannersPreserveMalformedRecordPolicies(t *testing.T) {
 	}
 }
 
-func TestConsumeReceiptsValidatedSkillRaisesFutureSurfacing(t *testing.T) {
+func TestConsumeReceiptsDeclaredSkillRaisesFutureSurfacing(t *testing.T) {
 	home, s := newStore(t)
 	const nodeID = "skill:capability-writeback"
-	// Matches the task on purpose: this test measures that validation RAISES an
+	// Matches the task on purpose: this test measures that declaration RAISES an
 	// already-relevant capability, which is what reputation is for. It is no
 	// longer able to surface an irrelevant one from nothing.
 	if err := s.Add(Node{ID: nodeID, Kind: "skill", Name: "Capability Writeback", Triggers: []string{"writeback"}}); err != nil {
@@ -345,12 +345,12 @@ func TestConsumeReceiptsValidatedSkillRaisesFutureSurfacing(t *testing.T) {
 	}
 	task := "capability writeback edge follow-up"
 	before := surfaced(s, task)[nodeID]
-	// The claim this test makes is in its name: validation RAISES surfacing.
+	// The claim this test makes is in its name: declaration RAISES surfacing.
 	// It used to assert the node scored ZERO beforehand, which quietly depended
 	// on reputation being able to surface an irrelevant capability from nothing.
 	// That is the behavior that put a video-generation skill on a "fix the flaky
 	// swift test" list, so it was removed; the node must now be relevant first
-	// and validation lifts it from there. The strict comparison below is what
+	// and declaration lifts it from there. The strict comparison below is what
 	// actually guards the feature, and it is unchanged.
 	if before <= 0 {
 		t.Fatalf("precondition: a relevant skill should surface before receipts, got score %.1f", before)
@@ -367,30 +367,30 @@ func TestConsumeReceiptsValidatedSkillRaisesFutureSurfacing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.AppliedValidatedEdges < 4 {
-		t.Fatalf("report = %+v, want validating receipt context edges", report)
+	if report.AppliedDeclaredUseEdges < 4 {
+		t.Fatalf("report = %+v, want declaring receipt context edges", report)
 	}
 	after := surfaced(s, task)[nodeID]
 	if after <= before {
-		t.Fatalf("validated receipts should raise surfacing score for %s: before %.1f after %.1f", nodeID, before, after)
+		t.Fatalf("declared receipts should raise surfacing score for %s: before %.1f after %.1f", nodeID, before, after)
 	}
 	edges := readCapEdges(t, home)
-	if !hasEdge(edges, EdValidatedBy, "context:writeback", nodeID) {
-		t.Fatalf("edges = %+v, want validated_by context edge on real node", edges)
+	if !hasEdge(edges, EdDeclaredUsedBy, "context:writeback", nodeID) {
+		t.Fatalf("edges = %+v, want declared_by context edge on real node", edges)
 	}
 }
 
 // TestValidatedByContributionIsBoundedNotLifetimeEdgeCount is the E9 audit
-// falsifier: every validated_by edge is a distinct, permanent row (edgeKey
-// includes SourceReceipt, so repeat validations never dedupe -- that is
-// correct, each is a real historical event). But surface()'s validatedAdd
+// falsifier: every declared_by edge is a distinct, permanent row (edgeKey
+// includes SourceReceipt, so repeat declarations never dedupe -- that is
+// correct, each is a real historical event). But surface()'s declaredAdd
 // accumulator sums edgeScore over EVERY such edge with no ceiling, so a node's
 // surfacing score becomes its lifetime usage count rather than a bounded
-// relevance signal (live evidence: one skill node carries 404 validated_by
+// relevance signal (live evidence: one skill node carries 404 declared_by
 // edges). This proves the accumulated contribution must be capped per node:
-// a node validated exactly maxValidatedByAdd times (raw sum already at the
-// ceiling) and a node validated 404 times in the identical context must score
-// IDENTICALLY -- more historical validations beyond the cap must not keep
+// a node declared exactly maxValidatedByAdd times (raw sum already at the
+// ceiling) and a node declared 404 times in the identical context must score
+// IDENTICALLY -- more historical declarations beyond the cap must not keep
 // inflating the score.
 func TestValidatedByContributionIsBoundedNotLifetimeEdgeCount(t *testing.T) {
 	const nodeID = "skill:overvalidated"
@@ -416,7 +416,7 @@ func TestValidatedByContributionIsBoundedNotLifetimeEdgeCount(t *testing.T) {
 				Confidence:    1,
 				Weight:        1,
 				Provenance:    "cheap_lane",
-				SourceReceipt: "rec_hist_" + strconv.Itoa(i),
+				SourceReceipt: "review_hist_" + strconv.Itoa(i),
 			}
 			if err := s.AddEdge(edge, t0); err != nil {
 				t.Fatal(err)
@@ -518,7 +518,7 @@ func TestSurfaceIncludesCapabilityConstraints(t *testing.T) {
 	if !hasConstraint(hit.Constraints.KnownFalseTriggeredBy, EdFalseTriggeredBy, "context:paywall") {
 		t.Fatalf("false-trigger constraints = %+v", hit.Constraints.KnownFalseTriggeredBy)
 	}
-	if !hasConstraint(hit.Constraints.Evidence, EdValidatedBy, "rec_pricing_success") {
+	if !hasConstraint(hit.Constraints.Evidence, EdDeclaredUsedBy, "rec_pricing_success") {
 		t.Fatalf("evidence constraints = %+v", hit.Constraints.Evidence)
 	}
 	if hit.Constraints.CostRiskNote == "" {
@@ -891,10 +891,10 @@ func TestConsumeReceiptsIfGraphExistsConsumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || report.AppliedValidatedEdges != 3 {
+	if !ok || report.AppliedDeclaredUseEdges != 3 {
 		t.Fatalf("report = %+v ok=%v", report, ok)
 	}
-	if !hasEdge(readCapEdges(t, home), EdValidatedBy, "skill:auto", "rec_auto") {
+	if !hasEdge(readCapEdges(t, home), EdDeclaredUsedBy, "skill:auto", "rec_auto") {
 		t.Fatal("expected automatic receipt consumption to validate graph node")
 	}
 }

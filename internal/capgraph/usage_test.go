@@ -114,8 +114,8 @@ func TestBuildCapabilityUsageCountsUsedAndIgnored(t *testing.T) {
 	if used.OfferedCount != 1 {
 		t.Fatalf("offered_count for %q = %d, want 1", usedRef, used.OfferedCount)
 	}
-	if used.ValidatedCount != 1 {
-		t.Fatalf("validated_count for %q = %d, want 1", usedRef, used.ValidatedCount)
+	if used.ValidatedCount != 0 || used.DeclaredUseCount != 1 || used.AcceptedUseDeclarationCount != 1 {
+		t.Fatalf("receipt use strength for %q = %+v, want one accepted declaration, not validation", usedRef, used)
 	}
 	if len(used.SourceReceipts) != 1 || used.SourceReceipts[0] != "rec_u1" {
 		t.Fatalf("source_receipts for %q = %v, want [rec_u1]", usedRef, used.SourceReceipts)

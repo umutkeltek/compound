@@ -8,11 +8,12 @@ import (
 // FeedbackKindSummary is the deterministic, private-body-free read model of
 // receipt feedback grouped by node kind (the orient operator's per-kind
 // projection consumes it). Counts are distinct (node, source-receipt) pairs:
-// one receipt validating a node counts once no matter how many context-token
+// one receipt declaring use of a node counts once regardless of context-token
 // edges the feedback fanned out into.
 type FeedbackKindSummary struct {
 	NodeCount        int      `json:"node_count"`
 	ValidatedBy      int      `json:"validated_by"`
+	DeclaredUsedBy   int      `json:"declared_used_by"`
 	MissedWhen       int      `json:"missed_when"`
 	FalseTriggeredBy int      `json:"false_triggered_by"`
 	ReceiptIDs       []string `json:"receipt_ids"`
@@ -23,7 +24,7 @@ type FeedbackKindSummary struct {
 }
 
 // FeedbackCountsByKind folds the receipt-sourced evolution-feedback edges
-// (validated_by / missed_when / false_triggered_by carrying a SourceReceipt)
+// (declared_used_by / validated_by / missed_when / false_triggered_by carrying a SourceReceipt)
 // into a per-node-kind summary. Edges without receipt provenance are not
 // counted: this read model answers "which receipts fed back on which kind".
 // It is read-only and never materializes state in the home.
@@ -52,7 +53,7 @@ func FeedbackCountsByKind(homePath string) map[string]FeedbackKindSummary {
 	counted := map[string]map[nodeReceipt]bool{}
 	receiptsByKind := map[string]map[string]bool{}
 	for _, e := range edges {
-		if e.Kind != EdValidatedBy && e.Kind != EdMissedWhen && e.Kind != EdFalseTriggeredBy {
+		if e.Kind != EdValidatedBy && e.Kind != EdDeclaredUsedBy && e.Kind != EdMissedWhen && e.Kind != EdFalseTriggeredBy {
 			continue
 		}
 		receipt := strings.TrimSpace(e.SourceReceipt)
@@ -60,7 +61,7 @@ func FeedbackCountsByKind(homePath string) map[string]FeedbackKindSummary {
 			continue
 		}
 		// Exactly one end of a receipt-feedback edge is a graph node: the
-		// validated_by form is node → receipt, the feedback forms are
+		// declared-use form is node → receipt, the context feedback forms are
 		// context:token → node.
 		nodeID, kind := "", ""
 		if k, ok := kindOf[e.From]; ok {
@@ -81,6 +82,8 @@ func FeedbackCountsByKind(homePath string) map[string]FeedbackKindSummary {
 		counted[key][pair] = true
 		sum := out[kind]
 		switch e.Kind {
+		case EdDeclaredUsedBy:
+			sum.DeclaredUsedBy++
 		case EdValidatedBy:
 			sum.ValidatedBy++
 		case EdMissedWhen:

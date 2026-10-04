@@ -1210,6 +1210,7 @@ func cmdCapability(args []string) {
 		fmt.Printf("- false_triggers_seen: %d\n", report.FalseTriggersSeen)
 		fmt.Printf("- applied_edges: %d\n", report.AppliedEdges)
 		fmt.Printf("- applied_validated_edges: %d\n", report.AppliedValidatedEdges)
+		fmt.Printf("- applied_declared_use_edges: %d\n", report.AppliedDeclaredUseEdges)
 		fmt.Printf("- applied_missed_edges: %d\n", report.AppliedMissedEdges)
 		fmt.Printf("- applied_false_edges: %d\n", report.AppliedFalseEdges)
 		fmt.Printf("- skipped_non_completed: %d\n", report.SkippedNonCompleted)

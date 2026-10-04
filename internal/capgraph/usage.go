@@ -3,8 +3,8 @@
 // This generated view folds two evidence streams: immediate hook observations
 // (task-scoped capability offers and completed Skill tool calls) plus close
 // receipts and their referenced ContextPacks. Hook rows make a fired skill
-// observable before SessionEnd; receipts retain validated/missed/ignored
-// reinforcement.
+// observable before SessionEnd; receipts retain declared-use/missed/ignored
+// correlation, not independent validation.
 //
 // Honest attribution: application requires an explicit method; reference scans
 // record mentions only. Non-use requires an exact actor- and proof-bound declaration.
@@ -43,10 +43,14 @@ const (
 
 // CapabilityUsage is per-capability/skill-ref usage telemetry.
 type CapabilityUsage struct {
-	Ref                 string   `json:"ref"`
-	OfferedCount        int      `json:"offered_count"`
-	UsedCount           int      `json:"used_count"`
-	FiredCount          int      `json:"fired_count"`
+	Ref          string `json:"ref"`
+	OfferedCount int    `json:"offered_count"`
+	// UsedCount is the historical alias for DeclaredUseCount, not observed execution.
+	UsedCount                   int `json:"used_count"`
+	DeclaredUseCount            int `json:"declared_use_count"`
+	AcceptedUseDeclarationCount int `json:"accepted_use_declaration_count"`
+	FiredCount                  int `json:"fired_count"`
+	// ValidatedCount remains zero: this projection does not join independent evaluations.
 	ValidatedCount      int      `json:"validated_count"`
 	MissedCount         int      `json:"missed_count"`
 	FalseTriggeredCount int      `json:"false_triggered_count"`
@@ -113,8 +117,8 @@ type UsageSummaryEntry struct {
 type UsageSummary struct {
 	// TopIgnored ranks injected refs by how often they were injected but never used.
 	TopIgnored []UsageSummaryEntry `json:"top_ignored"`
-	// NeverFired lists refs that were offered but never used (used_count==0),
-	// ranked by offered_count — the receipt-feedback famine made visible.
+	// NeverFired is the historical field for offers with no declared use or observed
+	// skill call, ranked by offered_count. Missing evidence does not prove non-use.
 	NeverFired []UsageSummaryEntry `json:"never_fired"`
 }
 
@@ -153,18 +157,18 @@ type refReceipt struct {
 }
 
 type capAccum struct {
-	offered        int
-	used           int
-	fired          int
-	validated      int
-	missed         int
-	falseTriggered int
-	lastUsed       string
-	lastFired      string
-	lastOffered    string
-	offerKeys      map[string]bool
-	usedIn         []refReceipt
-	firedIn        []refReceipt
+	offered                 int
+	used                    int
+	fired                   int
+	acceptedUseDeclarations int
+	missed                  int
+	falseTriggered          int
+	lastUsed                string
+	lastFired               string
+	lastOffered             string
+	offerKeys               map[string]bool
+	usedIn                  []refReceipt
+	firedIn                 []refReceipt
 }
 
 type injAccum struct {
@@ -260,7 +264,7 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 		proj.ReceiptsInWindow++
 
 		ts := strings.TrimSpace(rec.CreatedAt)
-		validated := rec.Outcome == "completed" && rec.EffectiveChanged()
+		acceptedUseDeclaration := rec.Outcome == "completed" && rec.EffectiveChanged()
 		usedSet := dedupeUsageSet(rec.Skills.Used)
 		packID := strings.TrimSpace(rec.IDs.ContextPackID)
 
@@ -270,8 +274,8 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 			}
 			a := capFor(caps, ref)
 			a.used++
-			if validated {
-				a.validated++
+			if acceptedUseDeclaration {
+				a.acceptedUseDeclarations++
 			}
 			a.lastUsed = laterTS(a.lastUsed, ts)
 			a.usedIn = append(a.usedIn, refReceipt{id: rec.ID, ts: ts})
@@ -477,18 +481,19 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 	// materialize capabilities, sorted by ref.
 	for ref, a := range caps {
 		proj.Capabilities = append(proj.Capabilities, CapabilityUsage{
-			Ref:                 ref,
-			OfferedCount:        a.offered,
-			UsedCount:           a.used,
-			FiredCount:          a.fired,
-			ValidatedCount:      a.validated,
-			MissedCount:         a.missed,
-			FalseTriggeredCount: a.falseTriggered,
-			LastUsed:            a.lastUsed,
-			LastFired:           a.lastFired,
-			LastOffered:         a.lastOffered,
-			SourceReceipts:      lastReceiptIDs(a.usedIn, srcCap),
-			SourceEvents:        lastReceiptIDs(a.firedIn, srcCap),
+			Ref:                         ref,
+			OfferedCount:                a.offered,
+			UsedCount:                   a.used,
+			DeclaredUseCount:            a.used,
+			AcceptedUseDeclarationCount: a.acceptedUseDeclarations,
+			FiredCount:                  a.fired,
+			MissedCount:                 a.missed,
+			FalseTriggeredCount:         a.falseTriggered,
+			LastUsed:                    a.lastUsed,
+			LastFired:                   a.lastFired,
+			LastOffered:                 a.lastOffered,
+			SourceReceipts:              lastReceiptIDs(a.usedIn, srcCap),
+			SourceEvents:                lastReceiptIDs(a.firedIn, srcCap),
 		})
 	}
 	sort.Slice(proj.Capabilities, func(i, j int) bool {

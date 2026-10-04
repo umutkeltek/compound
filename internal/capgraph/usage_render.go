@@ -19,7 +19,19 @@ func WriteCapabilityUsageReport(w io.Writer, projectionPath string, proj Capabil
 	fmt.Fprintf(&out, "- context_packs_scanned: %d\n", proj.ContextPacksScanned)
 	fmt.Fprintf(&out, "- capabilities: %d  events: %d  injected_refs: %d\n\n", len(proj.Capabilities), len(proj.Events), len(proj.InjectedRefs))
 
-	fmt.Fprintln(&out, "## recent skill events")
+	fmt.Fprintln(&out, "## capability evidence (declarations are not execution or benefit)")
+	caps := proj.Capabilities
+	limit := top
+	if limit <= 0 {
+		limit = defaultSummaryTop
+	}
+	if len(caps) > limit {
+		caps = caps[:limit]
+	}
+	for _, cap := range caps {
+		fmt.Fprintf(&out, "- %s declared_use=%d accepted_use_declarations=%d observed_skill_calls=%d\n", cap.Ref, cap.DeclaredUseCount, cap.AcceptedUseDeclarationCount, cap.FiredCount)
+	}
+	fmt.Fprintln(&out, "\n## recent skill events")
 	if len(proj.Events) == 0 {
 		fmt.Fprintln(&out, "- (none)")
 	}
@@ -40,7 +52,7 @@ func WriteCapabilityUsageReport(w io.Writer, projectionPath string, proj Capabil
 		fmt.Fprintf(&out, "- %s  ignored=%d\n", entry.Ref, entry.Count)
 	}
 
-	fmt.Fprintln(&out, "\n## never fired (offered, never used)")
+	fmt.Fprintln(&out, "\n## offers without declared use or observed skill calls")
 	if len(proj.Summary.NeverFired) == 0 {
 		fmt.Fprintln(&out, "- (none)")
 	}

@@ -3792,8 +3792,8 @@ func autoConsumeCapabilityFeedback(homePath string) {
 	if !ok || report.AppliedEdges == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "[capability-feedback] applied_edges=%d validated=%d missed=%d false=%d\n",
-		report.AppliedEdges, report.AppliedValidatedEdges, report.AppliedMissedEdges, report.AppliedFalseEdges)
+	fmt.Fprintf(os.Stderr, "[capability-feedback] applied_edges=%d validated=%d declared_use=%d missed=%d false=%d\n",
+		report.AppliedEdges, report.AppliedValidatedEdges, report.AppliedDeclaredUseEdges, report.AppliedMissedEdges, report.AppliedFalseEdges)
 }
 
 func autoConsumeDistillerCapabilityFeedback(homePath string) {

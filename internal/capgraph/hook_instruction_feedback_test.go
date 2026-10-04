@@ -73,8 +73,8 @@ func TestConsumeReceiptsReachesInstructionAndHookOwnersWithProvenance(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.AppliedValidatedEdges < 2 {
-		t.Fatalf("report = %+v, want >=2 validated edges (one per owner)", report)
+	if report.AppliedDeclaredUseEdges < 2 {
+		t.Fatalf("report = %+v, want >=2 declared edges (one per owner)", report)
 	}
 	if report.AppliedMissedEdges < 1 || report.AppliedFalseEdges < 1 {
 		t.Fatalf("report = %+v, want missed and false-trigger edges applied", report)
@@ -84,21 +84,21 @@ func TestConsumeReceiptsReachesInstructionAndHookOwnersWithProvenance(t *testing
 	}
 
 	edges := readCapEdges(t, home)
-	if !hasEdge(edges, EdValidatedBy, "instruction_rule:act-inside-envelope", "rec_inst_hook") {
-		t.Fatalf("edges = %+v, want instruction_rule validated by rec_inst_hook", edges)
+	if !hasEdge(edges, EdDeclaredUsedBy, "instruction_rule:act-inside-envelope", "rec_inst_hook") {
+		t.Fatalf("edges = %+v, want instruction_rule declared by rec_inst_hook", edges)
 	}
-	if !hasEdge(edges, EdValidatedBy, "hook:claude-code:session-start-blocker", "rec_inst_hook") {
-		t.Fatalf("edges = %+v, want hook validated by rec_inst_hook", edges)
+	if !hasEdge(edges, EdDeclaredUsedBy, "hook:claude-code:session-start-blocker", "rec_inst_hook") {
+		t.Fatalf("edges = %+v, want hook declared by rec_inst_hook", edges)
 	}
-	hookValidated := findEdge(edges, EdValidatedBy, "context:envelope", "hook:claude-code:session-start-blocker")
+	hookValidated := findEdge(edges, EdDeclaredUsedBy, "context:envelope", "hook:claude-code:session-start-blocker")
 	if hookValidated == nil {
-		t.Fatalf("edges = %+v, want context:envelope->hook validated edge with provenance", edges)
+		t.Fatalf("edges = %+v, want context:envelope->hook declared edge with provenance", edges)
 	}
 	if hookValidated.SourceReceipt != "rec_inst_hook" {
-		t.Fatalf("hook validated context edge missing source receipt: %+v", hookValidated)
+		t.Fatalf("hook declared context edge missing source receipt: %+v", hookValidated)
 	}
 	if strings.TrimSpace(hookValidated.Provenance) == "" {
-		t.Fatalf("hook validated context edge missing provenance: %+v", hookValidated)
+		t.Fatalf("hook declared context edge missing provenance: %+v", hookValidated)
 	}
 	hookMissed := findEdge(edges, EdMissedWhen, "context:blocker", "hook:claude-code:session-start-blocker")
 	if hookMissed == nil {
@@ -189,11 +189,11 @@ func TestFeedbackCountsByKindIsDeterministicNoPrivateBody(t *testing.T) {
 	// per-receipt aggregation is reproducible.
 	rec1 := testReceipt("rec_inst_a", "completed", true,
 		[]string{"capability://instruction_rule:rule-a"}, nil, nil)
-	rec1.StateDelta.Summary = "rule a validated once"
+	rec1.StateDelta.Summary = "rule a declared once"
 	writeReceipt(t, home, rec1)
 	rec2 := testReceipt("rec_inst_b", "completed", true,
 		[]string{"capability://instruction_rule:rule-b"}, nil, nil)
-	rec2.StateDelta.Summary = "rule b validated once"
+	rec2.StateDelta.Summary = "rule b declared once"
 	writeReceipt(t, home, rec2)
 	rec3 := testReceipt("rec_hook_validation", "completed", true,
 		[]string{"capability://hook:claude-code:pre-tool-blocker"},
@@ -234,8 +234,8 @@ func TestFeedbackCountsByKindIsDeterministicNoPrivateBody(t *testing.T) {
 	if hook.NodeCount != 1 {
 		t.Fatalf("hook node count = %d, want 1 (%+v)", hook.NodeCount, hook)
 	}
-	if hook.ValidatedBy != 1 {
-		t.Fatalf("hook validated_by = %d, want 1 (%+v)", hook.ValidatedBy, hook)
+	if hook.DeclaredUsedBy != 1 {
+		t.Fatalf("hook declared_used_by = %d, want 1 (%+v)", hook.DeclaredUsedBy, hook)
 	}
 	if hook.MissedWhen != 1 {
 		t.Fatalf("hook missed_when = %d, want 1 (%+v)", hook.MissedWhen, hook)
@@ -253,8 +253,8 @@ func TestFeedbackCountsByKindIsDeterministicNoPrivateBody(t *testing.T) {
 	if rule.NodeCount != 2 {
 		t.Fatalf("instruction_rule node count = %d, want 2 (%+v)", rule.NodeCount, rule)
 	}
-	if rule.ValidatedBy != 2 {
-		t.Fatalf("instruction_rule validated_by = %d, want 2 (%+v)", rule.ValidatedBy, rule)
+	if rule.DeclaredUsedBy != 2 {
+		t.Fatalf("instruction_rule declared_used_by = %d, want 2 (%+v)", rule.DeclaredUsedBy, rule)
 	}
 	if rule.FalseTriggeredBy != 1 {
 		t.Fatalf("instruction_rule false_triggered_by = %d, want 1 (%+v)", rule.FalseTriggeredBy, rule)

@@ -267,11 +267,15 @@ func TestHookLiveSkillUseRefreshesCrossHarnessUsageWithinOneCycle(t *testing.T) 
 			if capability == nil || capability.FiredCount != 1 || capability.LastFired == "" {
 				t.Fatalf("%s capability fire stats = %+v", harnessName, capability)
 			}
+			if capability.DeclaredUseCount != 0 || capability.AcceptedUseDeclarationCount != 0 || capability.ValidatedCount != 0 {
+				t.Fatalf("%s hook observation minted declaration or validation: %+v", harnessName, capability)
+			}
 			human := captureStdout(t, func() {
 				cmdCapability([]string{"usage", "--top", "5"})
 			})
 			for _, want := range []string{
 				"## recent skill events",
+				"declared_use=0 accepted_use_declarations=0 observed_skill_calls=1",
 				"skill=diagnosing-bugs",
 				"harness=" + harnessName,
 				"lane=" + harnessName,

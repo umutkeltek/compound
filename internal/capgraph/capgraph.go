@@ -37,6 +37,7 @@ const (
 	EdSpecializes      = "specializes"
 	EdFallbackFor      = "fallback_for"
 	EdValidatedBy      = "validated_by"
+	EdDeclaredUsedBy   = "declared_used_by"
 	EdMissedWhen       = "missed_when"
 	EdFalseTriggeredBy = "false_triggered_by"
 	EdRetiredBy        = "retired_by"
@@ -45,7 +46,7 @@ const (
 	EdTendsTo          = "tends_to"
 )
 
-var EdgeKinds = []string{EdSurfacesWith, EdRequires, EdConflictsWith, EdSpecializes, EdFallbackFor, EdValidatedBy, EdMissedWhen, EdFalseTriggeredBy, EdRetiredBy, EdEvaluatedBy, EdCapableOf, EdTendsTo}
+var EdgeKinds = []string{EdSurfacesWith, EdRequires, EdConflictsWith, EdSpecializes, EdFallbackFor, EdValidatedBy, EdDeclaredUsedBy, EdMissedWhen, EdFalseTriggeredBy, EdRetiredBy, EdEvaluatedBy, EdCapableOf, EdTendsTo}
 
 // FeedbackEdges are the ones a CapabilityObservation can write (context:<token> → node).
 var FeedbackEdges = map[string]bool{EdMissedWhen: true, EdFalseTriggeredBy: true}
@@ -210,6 +211,9 @@ const (
 	// was true when recorded into "no longer counts" -- simplicity over a
 	// more expressive but unrequested scoring semantics change.
 	maxValidatedByAdd = 5.0
+	// Declarations may suggest an already-relevant capability, not establish
+	// execution, contribution, or measured benefit.
+	maxDeclaredUseAdd = 1.0
 )
 
 func Open(homePath string) (*Store, error) {
@@ -648,6 +652,7 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 
 	// learned context → node adjustments
 	validatedAdd := map[string]float64{}
+	declaredUseAdd := map[string]float64{}
 	missedAdd := map[string]float64{}
 	sub := map[string]float64{}
 	harnesses := map[string]map[string]bool{}
@@ -665,6 +670,11 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 			continue
 		}
 		switch e.Kind {
+		case EdDeclaredUsedBy:
+			if !contextTokenMatches(tokens, ctx) {
+				continue
+			}
+			declaredUseAdd[e.To] += edgeScore(e)
 		case EdValidatedBy:
 			if !contextTokenMatches(tokens, ctx) {
 				continue
@@ -685,6 +695,11 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 	for id, add := range validatedAdd {
 		if add > maxValidatedByAdd {
 			validatedAdd[id] = maxValidatedByAdd
+		}
+	}
+	for id, add := range declaredUseAdd {
+		if add > maxDeclaredUseAdd {
+			declaredUseAdd[id] = maxDeclaredUseAdd
 		}
 	}
 
@@ -743,10 +758,13 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 		// swift test" on track record alone, having matched zero task tokens.
 		// A reputation is evidence about ranking among candidates, not evidence
 		// of being a candidate.
-		reputation := validatedAdd[n.ID]
+		validatedReputation := validatedAdd[n.ID]
+		declaredReputation := declaredUseAdd[n.ID]
 		if base <= 0 && !semanticMatched && missedAdd[n.ID] <= 0 {
-			reputation = 0
+			validatedReputation = 0
+			declaredReputation = 0
 		}
+		reputation := validatedReputation + declaredReputation
 		score := base*n.Weight + semanticBonus + reputation + missedAdd[n.ID] + evidenceBonus[n.ID] - sub[n.ID]
 		if score <= 0 {
 			continue
@@ -755,8 +773,11 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 		if semanticBonus > 0 {
 			why += fmt.Sprintf(" +semantic=%.2f", sem)
 		}
-		if reputation > 0 {
-			why += fmt.Sprintf(" +validated_by=%.1f", reputation)
+		if validatedReputation > 0 {
+			why += fmt.Sprintf(" +validated_by=%.1f", validatedReputation)
+		}
+		if declaredReputation > 0 {
+			why += fmt.Sprintf(" +declared_used_by=%.1f", declaredReputation)
 		}
 		if missedAdd[n.ID] > 0 {
 			why += fmt.Sprintf(" +missed_when=%.1f", missedAdd[n.ID])
@@ -927,7 +948,7 @@ func capabilityConstraints(nodeID string, edges []Edge, connections map[string]C
 			if e.To == nodeID && strings.HasPrefix(e.From, "context:") {
 				add(&c.KnownFalseTriggeredBy, e.Kind, e.From, strings.TrimPrefix(e.From, "context:"), e.Confidence)
 			}
-		case EdValidatedBy, EdEvaluatedBy:
+		case EdValidatedBy, EdEvaluatedBy, EdDeclaredUsedBy:
 			if e.From == nodeID {
 				add(&c.Evidence, e.Kind, e.To, "", e.Confidence)
 			}
@@ -995,23 +1016,26 @@ func (s *Store) Consume(homePath string, now time.Time) (int, error) {
 
 // ReceiptConsumeReport summarizes how runtime receipts affected the graph.
 type ReceiptConsumeReport struct {
-	ReceiptsScanned        int      `json:"receipts_scanned"`
-	UsedCapabilitiesSeen   int      `json:"used_capabilities_seen"`
-	MissedCapabilitiesSeen int      `json:"missed_capabilities_seen"`
-	FalseTriggersSeen      int      `json:"false_triggers_seen"`
-	AppliedEdges           int      `json:"applied_edges"`
-	AppliedValidatedEdges  int      `json:"applied_validated_edges"`
-	AppliedMissedEdges     int      `json:"applied_missed_edges"`
-	AppliedFalseEdges      int      `json:"applied_false_edges"`
-	SkippedNonCompleted    int      `json:"skipped_non_completed"`
-	SkippedUnchanged       int      `json:"skipped_unchanged"`
-	SkippedMissingContext  int      `json:"skipped_missing_context"`
-	SkippedInvalidReceipt  int      `json:"skipped_invalid_receipt"`
-	SkippedUnknown         []string `json:"skipped_unknown"`
+	ReceiptsScanned         int      `json:"receipts_scanned"`
+	UsedCapabilitiesSeen    int      `json:"used_capabilities_seen"`
+	MissedCapabilitiesSeen  int      `json:"missed_capabilities_seen"`
+	FalseTriggersSeen       int      `json:"false_triggers_seen"`
+	AppliedEdges            int      `json:"applied_edges"`
+	AppliedValidatedEdges   int      `json:"applied_validated_edges"`
+	AppliedDeclaredUseEdges int      `json:"applied_declared_use_edges"`
+	AppliedMissedEdges      int      `json:"applied_missed_edges"`
+	AppliedFalseEdges       int      `json:"applied_false_edges"`
+	SkippedNonCompleted     int      `json:"skipped_non_completed"`
+	SkippedUnchanged        int      `json:"skipped_unchanged"`
+	SkippedMissingContext   int      `json:"skipped_missing_context"`
+	SkippedInvalidReceipt   int      `json:"skipped_invalid_receipt"`
+	SkippedUnknown          []string `json:"skipped_unknown"`
 }
 
 // ConsumeReceipts turns receipt feedback into graph edges. Used capabilities
-// validate only when a completed receipt changed state. Explicit missed
+// produce weak declared-use correlation only when a completed receipt changed
+// state. A receipt does not independently prove each capability executed or
+// caused the accepted result. Explicit missed
 // capabilities add missed_when context edges from the receipt summary; explicit
 // false-triggered capabilities add false_triggered_by edges from the same
 // summary. Failed receipts can still teach misses/false triggers.
@@ -1104,20 +1128,20 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 					}
 					continue
 				}
-				edge := receiptEdge(EdValidatedBy, nodeID, rec.ID, rec.ID, provenance, weight, now)
+				edge := receiptEdge(EdDeclaredUsedBy, nodeID, rec.ID, rec.ID, provenance, weight, now)
 				if added, err := addEdgeOnceCollect(&newEdges, existingEdges, edge); err != nil {
 					return report, err
 				} else if added {
 					report.AppliedEdges++
-					report.AppliedValidatedEdges++
+					report.AppliedDeclaredUseEdges++
 				}
 				for _, tok := range contextTokens {
-					contextEdge := receiptEdge(EdValidatedBy, "context:"+tok, nodeID, rec.ID, provenance, weight, now)
+					contextEdge := receiptEdge(EdDeclaredUsedBy, "context:"+tok, nodeID, rec.ID, provenance, weight, now)
 					if added, err := addEdgeOnceCollect(&newEdges, existingEdges, contextEdge); err != nil {
 						return report, err
 					} else if added {
 						report.AppliedEdges++
-						report.AppliedValidatedEdges++
+						report.AppliedDeclaredUseEdges++
 					}
 				}
 			}
@@ -1272,6 +1296,7 @@ func (s *Store) loadEdges() ([]Edge, error) {
 		if err := json.Unmarshal(line, &e); err != nil {
 			return nil // skip a torn/malformed line
 		}
+		e = receiptFeedbackStrength(e)
 		k := edgeKey(e)
 		if _, seen := byKey[k]; !seen {
 			order = append(order, k)
@@ -1641,24 +1666,42 @@ func receiptEdge(kind, from, to, receiptID, provenance string, weight float64, n
 }
 
 func receiptEdgeProvenance(rec envelope.Receipt) (string, float64) {
-	const (
-		cheapLaneWeight    = 1.0
-		verifiedLaneWeight = 2.0
-	)
-	parts := []string{rec.Producer.Kind, rec.Producer.Name}
-	parts = append(parts, rec.Cost.ModelCalls...)
-	parts = append(parts, rec.ProofRefs...)
-	text := strings.ToLower(strings.Join(parts, " "))
-	if strings.Contains(text, "verified") ||
-		strings.Contains(text, "oracle") ||
-		strings.Contains(text, "human-reviewed") ||
-		strings.Contains(text, "human_reviewed") {
-		return "verified_lane", verifiedLaneWeight
+	// Producer names, model names, and proof strings are caller-authored
+	// declarations, not an independently verified evaluation channel.
+	return "receipt_declared", 1.0
+}
+
+// Normalize the known receipt-feedback shape at the read seam without rewriting
+// historical graph bytes. Separately typed evaluation evidence is retained.
+func receiptFeedbackStrength(e Edge) Edge {
+	source := strings.TrimSpace(e.SourceReceipt)
+	// Legacy manifest imports may name the receipt only as the owner edge target.
+	// A source-less context-to-owner edge is ambiguous and must remain untouched.
+	if source == "" && !strings.HasPrefix(e.From, "context:") {
+		source = e.To
 	}
-	if strings.Contains(text, "local") {
-		return "local_lane", cheapLaneWeight
+	ref, err := eventstore.ParseReference(source)
+	if err != nil || !strings.HasPrefix(ref.ID(), "rec_") {
+		return e
 	}
-	return "cheap_lane", cheapLaneWeight
+	if e.Kind == EdValidatedBy {
+		to, toErr := eventstore.ParseReference(e.To)
+		if !strings.HasPrefix(e.From, "context:") && (toErr != nil || to.ID() != ref.ID()) {
+			return e
+		}
+		e.Kind = EdDeclaredUsedBy
+	}
+	if e.Kind == EdDeclaredUsedBy || e.Kind == EdMissedWhen || e.Kind == EdFalseTriggeredBy {
+		e.SourceReceipt = ref.ID()
+		if to, err := eventstore.ParseReference(e.To); err == nil && to.ID() == ref.ID() {
+			e.To = ref.ID()
+		}
+		e.Provenance = "receipt_declared"
+		if e.Weight > 1 {
+			e.Weight = 1
+		}
+	}
+	return e
 }
 
 func edgeScore(e Edge) float64 {
