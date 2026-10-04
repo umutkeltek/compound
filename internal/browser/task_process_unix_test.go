@@ -100,6 +100,78 @@ func TestJevReaperFailsClosedAndUsesOwnedSignalTarget(t *testing.T) {
 	}
 }
 
+func TestJevReaperRechecksZombieLeaderBeforeForceStop(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		state      string
+		matches    bool
+		inspectErr bool
+		stateErr   bool
+		wantError  bool
+	}{
+		{"zombie with owned child", "Z", true, false, false, false},
+		{"zombie with foreign child", "Z", false, false, false, true},
+		{"zombie inspection unavailable", "Z", true, true, false, true},
+		{"leader state unavailable", "Z", true, false, true, true},
+		{"live foreign leader", "S", true, false, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pidPath := filepath.Join(t.TempDir(), "owned.pid")
+			if err := os.WriteFile(pidPath, []byte("4321"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			terminated, alive, forceStops := false, true, 0
+			ops := jevReaperOps{
+				ps: func(_ int, field string) ([]byte, error) {
+					if field == "stat" {
+						if terminated && tc.stateErr {
+							return nil, errors.New("state inspection unavailable")
+						}
+						if terminated {
+							return []byte(tc.state), nil
+						}
+						return []byte("S"), nil
+					}
+					if terminated {
+						return []byte("[process] <defunct>"), nil
+					}
+					return []byte("synthetic-owned-marker"), nil
+				},
+				groupInspect: func(_ int, marker string) (bool, bool, error) {
+					if marker != "" && tc.inspectErr {
+						return false, false, errors.New("group inspection unavailable")
+					}
+					return alive, alive && tc.matches, nil
+				},
+				kill: func(target int, signal syscall.Signal) error {
+					if target != -4321 {
+						t.Fatalf("signal target = %d, want owned group -4321", target)
+					}
+					if signal == syscall.SIGTERM {
+						terminated = true
+					} else if signal == syscall.SIGKILL {
+						forceStops++
+						alive = false
+					}
+					return nil
+				},
+				pgid:  func(int) (int, error) { return 4321, nil },
+				sleep: func(time.Duration) {},
+			}
+			err := reapJevPIDWith(pidPath, "synthetic-owned-marker", ops)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("reaper error = %v, wantError=%t", err, tc.wantError)
+			}
+			if tc.wantError && forceStops != 0 {
+				t.Fatalf("unverified group was force stopped: %d", forceStops)
+			}
+			if !tc.wantError && (forceStops != 1 || alive) {
+				t.Fatalf("owned child not stopped: forceStops=%d alive=%t", forceStops, alive)
+			}
+		})
+	}
+}
+
 func TestJevReaperProcessHelper(t *testing.T) {
 	mode := os.Getenv("COMPOUND_TEST_REAPER_MODE")
 	if mode == "" {

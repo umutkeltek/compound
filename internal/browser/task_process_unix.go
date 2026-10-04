@@ -207,7 +207,23 @@ func reapJevPIDWith(path, marker string, ops jevReaperOps) error {
 			}
 			command, err = ops.ps(pid, "command")
 			if err != nil || !strings.Contains(string(command), marker) {
-				return fmt.Errorf("owned process %d identity changed before force stop", pid)
+				state, stateErr := ops.ps(pid, "stat")
+				if stateErr != nil || !strings.HasPrefix(strings.TrimSpace(string(state)), "Z") {
+					return fmt.Errorf("owned process %d identity changed before force stop", pid)
+				}
+				// An unreaped zombie retains its PID and group, but ps no
+				// longer exposes its original command. Recheck a live owned
+				// descendant before signaling the still-owned group.
+				alive, matched, inspectErr := ops.groupInspect(pid, marker)
+				if inspectErr != nil {
+					return fmt.Errorf("inspect zombie leader group %d: %w", pid, inspectErr)
+				}
+				if !alive {
+					return nil
+				}
+				if !matched {
+					return fmt.Errorf("zombie leader group %d lacks session identity", pid)
+				}
 			}
 		} else if !errors.Is(groupErr, syscall.ESRCH) {
 			return fmt.Errorf("recheck owned process %d group: %w", pid, groupErr)
