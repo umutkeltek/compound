@@ -89,9 +89,9 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
       {GOBIN: dir, COMPOUND_VERSION: v, COMPOUND_RELEASE_TARBALL: path.join(selected, `compound_${v}_${platform}.tar.gz`), ...extra});
   }
   const actor = 'codex:installed-release';
-  function create(id, goal, where = home) {
+  function create(id, goal, where = home, profile = '') {
     cli(`${id}-create`, ['work', 'create', '--work-id', id, '--state', 'ready', '--owner', actor, '--by', actor,
-      '--outcome', goal, '--predicate', 'Independent exact result acceptance'], where);
+      '--outcome', goal, '--predicate', 'Independent exact result acceptance', ...(profile ? ['--launch-profile', profile] : [])], where);
     cli(`${id}-claim`, ['work', 'claim', id, '--by', actor], where);
   }
   const attemptFile = (where, id) => path.join(where, 'run_attempts', `${id}.json`);
@@ -100,8 +100,8 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
   const output = attempt => fs.readFileSync(attempt.transcript_ref, 'utf8').trimEnd().split('\n').map(line => {
     assert(line.startsWith('stdout: '), 'unexpected worker output'); return line.slice(8);
   }).join('\n');
-  const execute = (id, code, args = [], resume = false) => ['work', 'advance', id, '--to', 'running', '--by', actor,
-    '--execute', ...(resume ? ['--resume-verifying'] : []), '--harness', 'os-harness-entrypoints', '--workspace', root,
+  const execute = (id, code, args = [], resume = false, saved = false) => ['work', 'advance', id, '--to', 'running', '--by', actor,
+    '--execute', ...(resume ? ['--resume-verifying'] : []), ...(saved ? [] : ['--harness', 'os-harness-entrypoints']), '--workspace', root,
     '--timeout', '90s', '--', process.execPath, '-e', code, ...args];
   function close(id, where = home, proofRef = '') {
     const result = cli(`${id}-close`, ['work', 'close', id, '--outcome', 'completed', '--move-type', 'audit_only', '--by', actor,
@@ -190,6 +190,8 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
       assert(liveErr.includes('remains reverse-linked only'));
       assert(liveErr.includes('preserving its state, policy, and action identity'));
       assert.equal(hash(workFile(home, reverse)), newerHash, 'older launch must not overwrite newer authority');
+      assert.deepEqual(json('reverse-finalized-current-work', ['work', 'show', reverse, '--json']), newer,
+        'public current state, policy, actions, run IDs and newer authority must remain exact');
       const historical = read(attemptFile(home, actual.id)), historyHash = hash(attemptFile(home, actual.id));
       assert.equal(historical.status, 'succeeded'); assert.equal(output(historical), 'HISTORICAL_ACCEPTED');
       const chain = close(reverse, home, 'run-attempt:' + actual.id);
@@ -234,10 +236,22 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
     report.checks.push({gate: 'execution_and_rejected_verification', passed: true, work_id: rejected, attempt_id: rejectedID,
       attempt_unchanged: true, caller_marker_refused: true, receipt_id: rejectionChain.receipt.id});
 
-    const continuation = 'work_installed_continuity', partial = path.join(root, 'partial.json');
-    create(continuation, 'Continue this saved goal after interruption without rebuilding its brief.');
-    const continuationWorker = "const fs=require('fs'),cp=require('child_process'),a=require('assert/strict');const [bin,id,partial,phase]=process.argv.slice(1);const r=cp.spawnSync(bin,['work','show',id,'--json'],{env:process.env,encoding:'utf8'});a.equal(r.status,0);const w=JSON.parse(r.stdout);a.equal(w.state,'running');if(phase==='interrupt'){const c=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});c.once('spawn',()=>{fs.writeFileSync(partial+'.ready',JSON.stringify({id,goal:w.desired_outcome,pid:process.pid,child_pid:c.pid}));fs.renameSync(partial+'.ready',partial);});setInterval(()=>{},1000);}else{const p=JSON.parse(fs.readFileSync(partial));a.equal(p.id,id);a.equal(p.goal,w.desired_outcome);console.log(JSON.stringify({accepted:true,id,goal:w.desired_outcome}));}";
-    const args = execute(continuation, continuationWorker, [bin, continuation, partial, 'interrupt']);
+    const profileID = 'local/installed-worker', profile = path.join(root, 'local-profile.yaml');
+    fs.writeFileSync(profile, JSON.stringify({version: 1, purpose: 'Isolated installed local worker acceptance fixture',
+      capability_classes: ['build-implement'], models: {[profileID]: {lane: 'local worker fixture',
+        harness: 'os-harness-entrypoints', provider_route: profileID, cost_class: 'local', tier: 'cheap',
+        packet_ceiling: 'multi-file', context_window: 200000, max_output: 16000, aliases: [process.execPath],
+        capabilities: {'build-implement': {level: 'primary', evidence: 'fixture:installed-local-worker'}}}},
+      routing_defaults: {'build-implement': [profileID]}}), {flag: 'wx', mode: 0o600});
+    cli('import-local-launch-profile', ['route', 'import-model-capabilities', profile]);
+    const continuation = 'work_installed_continuity', partial = path.join(root, 'partial.json'),
+      continuityGoal = 'Continue this saved goal after interruption without rebuilding its brief.';
+    create(continuation, continuityGoal, home, profileID);
+    const selected = json('continuity-saved-selection', ['work', 'show', continuation, '--json']).execution_selection;
+    assert.equal(selected?.launch_profile_id, profileID); assert.equal(selected?.harness, 'os-harness-entrypoints');
+    const continuationWorker = "const fs=require('fs'),cp=require('child_process'),a=require('assert/strict');const [bin,id,partial,phase,goal,workspace,selection]=process.argv.slice(1);const r=cp.spawnSync(bin,['work','show',id,'--json'],{env:process.env,encoding:'utf8'});a.equal(r.status,0);const w=JSON.parse(r.stdout);a.equal(w.state,'running');a.equal(w.desired_outcome,goal);a.equal(process.cwd(),workspace);a.deepEqual(w.execution_selection,JSON.parse(selection));const consumed={id,goal:w.desired_outcome,workspace:process.cwd(),selection:w.execution_selection};if(phase==='interrupt'){const c=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});c.once('spawn',()=>{fs.writeFileSync(partial+'.ready',JSON.stringify({...consumed,pid:process.pid,child_pid:c.pid}));fs.renameSync(partial+'.ready',partial);});setInterval(()=>{},1000);}else{const p=JSON.parse(fs.readFileSync(partial));for(const key of Object.keys(consumed))a.deepEqual(p[key],consumed[key]);console.log(JSON.stringify({accepted:true,...consumed}));}";
+    const workerArgs = phase => [bin, continuation, partial, phase, continuityGoal, root, JSON.stringify(selected)];
+    const args = execute(continuation, continuationWorker, workerArgs('interrupt'), false, true);
     args.splice(args.indexOf('--'), 0, '--keep-verifying-on-failure');
     const child = spawn(bin, args, {cwd: root, env: env(home), stdio: ['ignore', 'pipe', 'pipe']});
     const state = {done: false}; let stdout = '', stderr = '';
@@ -251,19 +265,30 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
       assert(child.kill('SIGINT')); assert.notEqual(await joined, 0);
       const after = json('cancelled-work', ['work', 'show', continuation, '--json']);
       assert.equal(after.state, 'verifying');
-      const cancelledID = after.run_attempt_ids.at(-1); assert.equal(read(attemptFile(home, cancelledID)).status, 'failed');
+      assert.deepEqual(after.execution_selection, selected);
+      const cancelledID = after.run_attempt_ids.at(-1), cancelledAttempt = read(attemptFile(home, cancelledID));
+      assert.equal(cancelledAttempt.status, 'failed');
       await until(() => !run(`owned-tree-${report.steps.length}`, '/bin/ps', ['-axo', 'pid=,pgid=,stat=']).stdout.trim().split('\n')
         .map(line => line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)$/)).filter(Boolean)
         .some(m => [owned.pid, owned.child_pid].includes(Number(m[1])) && !m[3].startsWith('Z')), 'owned process tree termination');
-      cli('fresh-process-resume', execute(continuation, continuationWorker, [bin, continuation, partial, 'resume'], true));
+      cli('fresh-process-resume', execute(continuation, continuationWorker, workerArgs('resume'), true, true));
       const resumed = json('resumed-work', ['work', 'show', continuation, '--json']), resumedID = resumed.run_attempt_ids.at(-1);
       const resumedAttempt = read(attemptFile(home, resumedID));
       assert.equal(resumedAttempt.status, 'succeeded'); assert.equal(resumedAttempt.predecessor_id, cancelledID);
+      assert.deepEqual(resumed.execution_selection, selected);
+      for (const attempt of [cancelledAttempt, resumedAttempt]) {
+        assert.equal(attempt.execution_selection.source, 'saved');
+        assert.equal(attempt.execution_selection.selection_revision, selected.revision);
+        assert.equal(attempt.execution_selection.launch_profile_id, profileID);
+        assert.equal(attempt.execution_selection.launch_profile_revision, selected.launch_profile_revision);
+        assert.equal(attempt.execution_selection.harness, selected.harness);
+      }
       assert.notEqual(resumed.policy_decision_id, after.policy_decision_id); assert.equal(hash(partial), partialHash);
-      assert.equal(JSON.parse(output(resumedAttempt)).accepted, true);
+      assert.deepEqual(JSON.parse(output(resumedAttempt)), {accepted: true, id: continuation, goal: continuityGoal,
+        workspace: root, selection: selected});
       const chain = close(continuation);
       report.checks.push({gate: 'interruption_fresh_resume', passed: true, cancelled_attempt: cancelledID, resumed_attempt: resumedID,
-        owned_tree_stopped: true, partial_sha256: partialHash, receipt_id: chain.receipt.id});
+        owned_tree_stopped: true, saved_selection: selected, partial_sha256: partialHash, receipt_id: chain.receipt.id});
     } finally { if (!state.done) { child.kill('SIGTERM'); await joined; } }
 
     const fixtureRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
