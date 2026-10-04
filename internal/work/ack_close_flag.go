@@ -8,6 +8,23 @@ import (
 	"compound/internal/runattempt"
 )
 
+// verificationRejectedOutcomeCompatible consumes only the exact sealed closing
+// receipt loaded by the doctor. A work result rejected by verification may
+// preserve successful execution; an acknowledgement is not evaluator identity.
+func verificationRejectedOutcomeCompatible(w envelope.WorkEnvelope, ra runattempt.RunAttempt, closing exactTerminalClose) bool {
+	if w.State != "failed" || ra.Status != runattempt.StatusSucceeded || ra.WorkID != w.ID ||
+		closing.Receipt.Outcome != "failed" || closing.Receipt.IDs.WorkID != w.ID {
+		return false
+	}
+	prefix := "verification_rejected:" + ra.ID + ":"
+	for _, ref := range closing.Receipt.ProofRefs {
+		if strings.HasPrefix(ref, prefix) && strings.TrimSpace(strings.TrimPrefix(ref, prefix)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseAcknowledgeAbandonedFlagPairs scans args linearly for
 // --acknowledge-abandoned or --verification-rejected ratt_X --reason R
 // pairs and returns one

@@ -506,6 +506,11 @@ existing `abandon_ack:<ratt_id>:<reason>` namespace. Neither acknowledgement
 rewrites RunAttempt bytes. Unnamed attempts retain the ordinary close grading;
 without the flag, a succeeded execution still contradicts a failed close.
 
+The proof-chain doctor accepts this execution/outcome distinction only from the
+exact digest-sealed closing receipt for that work and named succeeded attempt.
+Missing, wrong-attempt, empty-reason or unsealed acknowledgements do not certify;
+the acknowledgement is not an authenticated evaluator result.
+
 Terminal close discovers all same-work reverse links from the existing RunAttempt
 store, not only the envelope/caller list. Unreadable or contradictory census
 records refuse certification. Validated caller references join the prospective
