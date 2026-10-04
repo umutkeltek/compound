@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -1265,6 +1266,17 @@ func (s *Store) completeClosePending(pending closePending, in CloseInput, now ti
 	// lock — PrepareTerminalization and CompletePreparedTerminalization take
 	// only the per-attempt inode — so this outer holder does not recurse.
 	if err := s.withCloseAdmissionLock(pending.WorkID, func() error {
+		if !currentIsFinal {
+			// Mint/start/complete share this admission inode. Recheck the
+			// discovery made before frame preparation while they are excluded.
+			ids, censusErr := s.closeRunAttemptCensus(pending.FinalWork)
+			if censusErr == nil && !slices.Equal(ids, pending.FinalWork.RunAttemptIDs) {
+				censusErr = fmt.Errorf("work %s runattempt census changed before terminal publication; retry close with the complete history", pending.WorkID)
+			}
+			if censusErr != nil {
+				return s.failClosePendingBeforeAuthority(pending, abortReference(censusErr))
+			}
+		}
 		if prepErr := s.prepareRunAttemptTerminalizations(plans); prepErr != nil {
 			res = CloseResult{Work: pending.SourceWork, Receipt: pending.Receipt, Transition: pending.Transition}
 			return s.failClosePendingBeforeAuthority(pending, abortReference(prepErr))

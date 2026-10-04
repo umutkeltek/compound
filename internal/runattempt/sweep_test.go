@@ -46,6 +46,68 @@ func TestListFailsClosedOnMalformedRunAttempt(t *testing.T) {
 	}
 }
 
+func TestListFailsClosedOnContradictoryEmbeddedIdentity(t *testing.T) {
+	home := t.TempDir()
+	store := Open(home)
+	now := time.Now().UTC()
+	original, err := store.Mint("work_census_original", "codex", HarnessPlaceholder, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contradictory := original
+	contradictory.ID = MintDeterministic("census-foreign-identity", now.Add(time.Second))
+	contradictory.WorkID = "work_census_foreign"
+	body, err := json.Marshal(contradictory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This corruption cannot pass Mint; plant it to falsify the read boundary.
+	if err := os.WriteFile(filepath.Join(home, "run_attempts", original.ID+".json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(home).List(); err == nil || !strings.Contains(err.Error(), original.ID) {
+		t.Fatalf("census silently substituted a different identity: %v", err)
+	}
+}
+
+func TestListFailsClosedOnNamedAttemptDirectory(t *testing.T) {
+	home := t.TempDir()
+	store := Open(home)
+	ra, err := store.Mint("work_directory_census", "codex", HarnessPlaceholder, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "run_attempts", ra.ID+".json")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err == nil || !strings.Contains(err.Error(), ra.ID) {
+		t.Fatalf("named record directory escaped census: %v", err)
+	}
+}
+
+func TestListFailsClosedOnMissingWorkIdentity(t *testing.T) {
+	home := t.TempDir()
+	ra, err := Open(home).Mint("work_missing_membership", "codex", HarnessPlaceholder, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ra.WorkID = ""
+	body, err := json.Marshal(ra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "run_attempts", ra.ID+".json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(home).List(); err == nil || !strings.Contains(err.Error(), ra.ID) {
+		t.Fatalf("missing work membership escaped census: %v", err)
+	}
+}
+
 func TestListReturnsAllSortedByCreatedAt(t *testing.T) {
 	home := t.TempDir()
 	s := Open(home)

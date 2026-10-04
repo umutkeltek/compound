@@ -506,6 +506,24 @@ existing `abandon_ack:<ratt_id>:<reason>` namespace. Neither acknowledgement
 rewrites RunAttempt bytes. Unnamed attempts retain the ordinary close grading;
 without the flag, a succeeded execution still contradicts a failed close.
 
+Terminal close discovers all same-work reverse links from the existing RunAttempt
+store, not only the envelope/caller list. Unreadable or contradictory census
+records refuse certification. Validated caller references join the prospective
+set before discovery; known launch-free attempts retain the existing exact
+terminalization rules. Discovered history preserves forward order and inserts
+older retry predecessors before their successors. Active launches, prepared-only
+launch effects and
+unattached nonterminal executions require reconciliation; a terminal label alone
+is insufficient. An exact rooted pre-start refusal is accounted for without
+inventing a task failure or rewriting its execution record. The prospective close
+generation includes discovered history, and the existing admission lock rechecks
+the census before terminal publication. A refusal preserves newer work authority.
+The terminal proof-chain doctor takes one fresh store census per pass and reports
+reverse-only records omitted from frozen terminal work, including later evidence.
+It uses the same uncertain-launch rule as close. Unknown census membership
+prevents every terminal item from being certified; an unrelated nonterminal
+work's reference cannot hide the unreadable record.
+
 `compound work advance <work_id> --to running --execute --resume-verifying --harness <name> --workspace <project> -- <command>`
 continues a verifying WorkEnvelope through a fresh running reservation and back to
 verifying after each attempt. A failed resume retains its failed RunAttempt, reports

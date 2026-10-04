@@ -124,15 +124,32 @@ func (s *Store) ProofChainDoctor(now time.Time, opts ProofChainDoctorOptions) (P
 	// The store is cheap (path-only); opening once keeps the proof dimension
 	// scoped to the same home every terminal item inspects.
 	raStore := runattempt.Open(s.home)
+	census, err := s.proofRunAttemptCensus(works, &report)
+	if err != nil {
+		return ProofChainDoctorReport{}, err
+	}
+	censusIncomplete := false
+	for _, finding := range report.Findings {
+		if finding.Code == "run_attempt_census_incomplete" {
+			censusIncomplete = true
+			break
+		}
+	}
 	for _, w := range works {
 		if !terminalProofRequired(w.State) {
 			continue
 		}
 		report.Counts.TerminalChecked++
 		item := s.proofChainItem(w, eventsByWork[w.ID], &report)
+		if censusIncomplete {
+			// Unknown membership affects every terminal certification, even if
+			// this item's listed records are individually readable.
+			item.Problems = append(item.Problems, "run_attempt_census_incomplete")
+		}
 		if len(item.RunAttemptIDs) > 0 {
 			s.checkRunAttemptProof(w, eventsByWork[w.ID], raStore, &item, &report)
 		}
+		addReverseRunAttemptFindings(w, census[w.ID], &item, &report)
 		if len(item.Problems) == 0 {
 			item.ProofComplete = true
 			report.Counts.Complete++
@@ -504,6 +521,11 @@ func (s *Store) checkRunAttemptProof(w envelope.WorkEnvelope, events []Event, ra
 			report.Counts.RunAttemptActionMismatch++
 			addProofChainProblem(report, item, "run_attempt_action_mismatch", "run attempt "+rattID+" action_intent_id "+ra.ActionIntentID+" is not present in work "+w.ID+" action intent ids")
 		}
+		if runAttemptHasUncertainLaunch(ra) {
+			report.Counts.InvalidRunAttempt++
+			addProofChainProblem(report, item, "run_attempt_launch_uncertain", "run attempt "+rattID+" has active or uncertain launch effects; reconcile execution before terminal certification")
+			continue
+		}
 		if ra.TerminalizationIntent != nil {
 			intent := *ra.TerminalizationIntent
 			intentErr := closeEvidenceErr
@@ -526,8 +548,10 @@ func (s *Store) checkRunAttemptProof(w envelope.WorkEnvelope, events []Event, ra
 		}
 		want := runAttemptStatusForCloseOutcome(w.State)
 		historicalOutcomeCompatibleAttempt := historicalRunAttemptOutcomeCompatible(w.State, rattID, history)
+		nonExecutedAttempt := w.State == "completed" && (runAttemptPolicyRefusedBeforeExecution(ra) ||
+			runAttemptSweptSideEffectFreeReservation(ra) || runAttemptRefusedStartBeforeExecution(ra))
 		if ra.Status != runattempt.StatusSuperseded && ra.Status != want &&
-			!historicalOutcomeCompatibleAttempt {
+			!historicalOutcomeCompatibleAttempt && !nonExecutedAttempt {
 			verifiedProof, proofErr := s.committedVerifiedProofRunAttempt(w, ra)
 			if !verifiedProof {
 				report.Counts.RunAttemptOutcomeMismatch++

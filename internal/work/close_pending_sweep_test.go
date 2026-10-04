@@ -331,7 +331,10 @@ func TestCloseDoesNotRebuildSweptPlanAfterEarlierPrepare(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if firstPlan, err = attempts.CommitLaunch(firstPlan.ID, fixedNow.Add(2*time.Minute+20*time.Second), func() error { return nil }); err != nil {
+	// This plan exercises interrupted terminalization, not a subprocess.
+	// Do not invent launch evidence for a still-active execution: census
+	// correctly requires such effects to be reconciled before close.
+	if firstPlan, err = attempts.MarkRunning(firstPlan.ID, fixedNow.Add(2*time.Minute+20*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	// Put the nonterminal execution before the claim reservation so prepare

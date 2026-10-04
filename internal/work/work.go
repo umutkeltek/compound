@@ -3154,7 +3154,8 @@ func (s *Store) buildRunAttemptTerminalizationPlans(
 			// bind only an exact pre-execution refusal or a sweep-proven,
 			// side-effect-free claim reservation.
 			nonExecutedAttempt := in.Outcome == "completed" &&
-				(runAttemptPolicyRefusedBeforeExecution(ra) || runAttemptSweptSideEffectFreeReservation(ra))
+				(runAttemptPolicyRefusedBeforeExecution(ra) || runAttemptSweptSideEffectFreeReservation(ra) ||
+					runAttemptRefusedStartBeforeExecution(ra))
 			if ra.Status != runattempt.StatusSuperseded && ra.Status != workTarget &&
 				!historicalOutcomeCompatibleAttempt && !nonExecutedAttempt {
 				verifiedProof, err := s.committedVerifiedProofRunAttempt(closing, ra)
@@ -3405,6 +3406,13 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 			return res, fmt.Errorf("close RunAttemptIDs contains invalid id %q", rid)
 		}
 		w.RunAttemptIDs = mergeUnique(w.RunAttemptIDs, []string{rid})
+	}
+	// Include explicit caller references before discovery: their launch-free
+	// lifecycle still passes through the existing exact terminalization rules.
+	// Discovery never repairs an earlier attachment by rotating newer authority.
+	w.RunAttemptIDs, err = s.closeRunAttemptCensus(w)
+	if err != nil {
+		return res, err
 	}
 	closeNow, preparedGeneration, err := s.closeGenerationTime(reservedWork, reservedWorkSHA256, inputSHA256, w.RunAttemptIDs, now)
 	if err != nil {

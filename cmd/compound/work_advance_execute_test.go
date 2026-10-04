@@ -1519,6 +1519,59 @@ func TestReportRevokedExecutionAttemptDoesNotRotateNewerHeldGeneration(t *testin
 	}
 }
 
+func TestCloseRejectsReverseOnlyLiveExecutionAfterReservationLoss(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	workID, _, actionID := governedClaudeGuardReservation(t, homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptStore := runattempt.Open(homePath)
+	attempt, err := attemptStore.MintWithActionIntent(workID, "codex", "os-harness-entrypoints", actionID, cliTestNow.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attemptStore.SetOrigin(attempt.ID, runattempt.OriginHarnessExecution); err != nil {
+		t.Fatal(err)
+	}
+	// A real child stays blocked on our open input, without a timing sleep.
+	child := exec.Command("cat")
+	input, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = input.Close()
+		if child.Process != nil {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+		}
+	})
+	if _, err := attemptStore.CommitLaunch(attempt.ID, cliTestNow.Add(4*time.Second), child.Start); err != nil {
+		t.Fatal(err)
+	}
+	newer, err := store.Advance(workID, work.AdvanceInput{To: "verifying", Actor: "codex", Note: "newer reservation owns verification"}, cliTestNow.Add(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := captureStderr(t, func() { reportRevokedExecutionAttempt(store, workID, attempt.ID) })
+	if !strings.Contains(stderr, "remains reverse-linked only") || slices.Contains(newer.RunAttemptIDs, attempt.ID) {
+		t.Fatalf("setup did not exercise the reservation-loss reverse-only path: %s", stderr)
+	}
+	_, err = store.Close(workID, work.CloseInput{Outcome: "completed", MoveType: "audit_only", Actor: "codex", Summary: "must account for the live omitted child"}, cliTestNow.Add(6*time.Second))
+	if err == nil || !strings.Contains(err.Error(), attempt.ID) {
+		t.Fatalf("terminal certification omitted a real live reverse-only attempt: %v", err)
+	}
+	after, err := store.Get(workID)
+	if err != nil || !reflect.DeepEqual(after, newer) {
+		t.Fatalf("refused close changed newer work authority: err=%v before=%+v after=%+v", err, newer, after)
+	}
+	active, err := attemptStore.Get(attempt.ID)
+	if err != nil || active.Status != runattempt.StatusRunning || active.Launch == nil || active.Launch.CommittedAt == nil {
+		t.Fatalf("refused close changed live launch evidence: err=%v attempt=%+v", err, active)
+	}
+}
+
 func TestReportRevokedExecutionAttemptSurfacesImmutableTerminalReverseLinkException(t *testing.T) {
 	homePath := initializedExecutionHome(t)
 	workID, _, runningActionIntentID := governedClaudeGuardReservation(t, homePath)
@@ -1527,17 +1580,19 @@ func TestReportRevokedExecutionAttemptSurfacesImmutableTerminalReverseLinkExcept
 		t.Fatal(err)
 	}
 	attemptStore := runattempt.Open(homePath)
+	// A terminal close now censuses attempts that already exist. This
+	// exception concerns an attempt first observed after that immutable close.
+	if _, err := store.Close(workID, work.CloseInput{
+		Outcome: "failed", MoveType: "audit_only", Actor: "codex",
+		Summary: "newer terminal operator decision", Changed: true,
+	}, cliTestNow.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	attempt, err := attemptStore.MintWithActionIntent(workID, "codex", "os-harness-entrypoints", runningActionIntentID, cliTestNow.Add(3*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := attemptStore.Complete(attempt.ID, runattempt.StatusFailed, cliTestNow.Add(4*time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Close(workID, work.CloseInput{
-		Outcome: "failed", MoveType: "audit_only", Actor: "codex",
-		Summary: "newer terminal operator decision", Changed: true,
-	}, cliTestNow.Add(5*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	stderr := captureStderr(t, func() {

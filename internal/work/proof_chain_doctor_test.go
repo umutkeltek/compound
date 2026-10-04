@@ -626,6 +626,13 @@ func TestProofChainDoctorAcceptsLegacyTerminalWorkWithZeroRunAttemptRefs(t *test
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
+	// A genuine pre-RunAttempt home has neither forward nor reverse
+	// records. Clearing references alone would hide existing history.
+	for _, id := range final.RunAttemptIDs {
+		if err := os.Remove(filepath.Join(s.home, "run_attempts", id+".json")); err != nil {
+			t.Fatal(err)
+		}
+	}
 	final.RunAttemptIDs = nil
 	if err := s.writeJSON(s.workPath(w.ID), &final); err != nil {
 		t.Fatalf("rewrite: %v", err)

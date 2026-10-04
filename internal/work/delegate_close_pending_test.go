@@ -214,6 +214,12 @@ func TestDelegateFrozenCloseFencesPreMintRefusalPublications(t *testing.T) {
 				if err != nil || spawned.Status != "spawned" || spawned.Binding == nil {
 					t.Fatalf("seed live delegate: result=%+v err=%v", spawned, err)
 				}
+				// No process runs in this fake session. Keep its live session
+				// entry to exercise the refusal fence, but finish the launch
+				// record before freezing terminal authority.
+				if _, err := s.runAttempts().Complete(spawned.Binding.RunAttemptID, runattempt.StatusAbandoned, fixedNow.Add(45*time.Second)); err != nil {
+					t.Fatal(err)
+				}
 			case "tmux_absent":
 				runner.availErr = errors.New("tmux unavailable")
 			default:

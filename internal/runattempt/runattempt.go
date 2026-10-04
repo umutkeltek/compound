@@ -674,6 +674,9 @@ func (s *Store) getFresh(id string) (RunAttempt, error) {
 // differ between Get and getFresh: a cached read accepting a record that a
 // mutator rejects (or the reverse) would split the durable lifecycle view.
 func validateDecodedRunAttempt(ra RunAttempt) error {
+	if strings.TrimSpace(ra.WorkID) == "" || strings.TrimSpace(ra.WorkID) != ra.WorkID || filepath.Base(ra.WorkID) != ra.WorkID || ra.WorkID == "." || ra.WorkID == ".." {
+		return fmt.Errorf("invalid work_id %q: a nonempty single path element is required", ra.WorkID)
+	}
 	if !AcceptsSchemaVersion(ra.SchemaVersion) {
 		return fmt.Errorf("unsupported schema_version %q", ra.SchemaVersion)
 	}
@@ -1950,7 +1953,7 @@ func (s *Store) List() ([]RunAttempt, error) {
 	return s.list(nil)
 }
 
-// list walks run_attempts/ and loads every valid id through Get, except ids
+// list walks run_attempts/ and freshly loads every valid id, except ids
 // for which skip reports true; those are never read past skip itself.
 func (s *Store) list(skip func(id string) bool) ([]RunAttempt, error) {
 	dir := filepath.Join(s.home, "run_attempts")
@@ -1964,7 +1967,7 @@ func (s *Store) list(skip func(id string) bool) ([]RunAttempt, error) {
 	var out []RunAttempt
 	var issues []RunAttemptReadIssue
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".json")
@@ -1974,9 +1977,13 @@ func (s *Store) list(skip func(id string) bool) ([]RunAttempt, error) {
 		if skip != nil && skip(id) {
 			continue
 		}
-		ra, gerr := s.Get(id)
+		ra, gerr := s.getFresh(id)
 		if gerr != nil {
 			issues = append(issues, RunAttemptReadIssue{ID: id, Cause: gerr})
+			continue
+		}
+		if ra.ID != id {
+			issues = append(issues, RunAttemptReadIssue{ID: id, Cause: fmt.Errorf("embedded identity %q contradicts named record %q", ra.ID, id)})
 			continue
 		}
 		out = append(out, ra)
