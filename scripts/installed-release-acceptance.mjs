@@ -48,11 +48,13 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
   const home = path.join(root, 'home'), bins = path.join(root, 'bin'), bin = path.join(bins, 'compound');
   const report = {schema_version: 'compound.release_installed_acceptance.v0.1', candidate: commit,
     status: 'running', started_at: new Date().toISOString(), native: {platform: process.platform, arch: process.arch, kernel: os.release()},
-    artifacts: candidate.artifacts, prior_artifacts: prior.artifacts, steps: [], checks: [], external_effects: [],
+    test_runner_sha256: hash(fileURLToPath(import.meta.url)), artifacts: candidate.artifacts, prior_artifacts: prior.artifacts, steps: [], checks: [], external_effects: [],
     limitations: ['One trusted local OS user; no same-user containment or independently authenticated operator labels.',
       'No provider, scheduler, external account, live/private-corpus promotion, publication or authority-minting exercise.']};
   const deadline = Date.now() + 20 * 60 * 1000;
-  const env = where => ({PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'C', COMPOUND_HOME: where});
+  // Preserve the trusted OS user's real home for Go's user-profile lookup;
+  // Compound state always uses the explicit isolated COMPOUND_HOME below.
+  const env = where => ({PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'C', HOME: os.homedir(), COMPOUND_HOME: where});
   function record(name, result) {
     const files = {};
     for (const [suffix, body] of [['stdout', result.stdout], ['stderr', result.stderr]]) {
@@ -185,7 +187,8 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
       assert.equal(hash(workFile(home, reverse)), newerHash);
       fs.writeFileSync(release, 'release owned worker', {flag: 'wx'});
       assert.notEqual(await liveJoin, 0);
-      assert(liveErr.includes('remains reverse-linked without forward linkage'));
+      assert(liveErr.includes('remains reverse-linked only'));
+      assert(liveErr.includes('preserving its state, policy, and action identity'));
       assert.equal(hash(workFile(home, reverse)), newerHash, 'older launch must not overwrite newer authority');
       const historical = read(attemptFile(home, actual.id)), historyHash = hash(attemptFile(home, actual.id));
       assert.equal(historical.status, 'succeeded'); assert.equal(output(historical), 'HISTORICAL_ACCEPTED');

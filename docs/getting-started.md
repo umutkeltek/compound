@@ -38,6 +38,11 @@ home authority. The full support and security boundary — including the
 current hardening gaps the docs name rather than paper over:
 [`security/supported-scope.md`](./security/supported-scope.md).
 
+Actor and operator labels record provenance; they do not independently
+authenticate a person. Autonomous grant creation is outside this supported
+journey. Interactive profiles remain observation-only unless their exact native
+launch profile has accepted behavioral enforcement proof.
+
 Optional (for the console): **Bun** and **Node 20+**.
 Optional (for semantic memory): a local **Ollama** server — see
 [`memory-quickstart.md`](./memory-quickstart.md).
