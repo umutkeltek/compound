@@ -6536,8 +6536,11 @@ func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 	cmdHook([]string{"session-end", fixturePath})
 
 	edges := readCapabilityEdges(t, homePath)
-	if !hasCapabilityEdge(edges, capgraph.EdValidatedBy, "skill:session-end-proof") {
-		t.Fatalf("session-end did not auto-validate used capability; edges=%+v", edges)
+	if !hasCapabilityEdge(edges, capgraph.EdDeclaredUsedBy, "skill:session-end-proof") {
+		t.Fatalf("session-end did not consume declared use; edges=%+v", edges)
+	}
+	if hasCapabilityEdge(edges, capgraph.EdValidatedBy, "skill:session-end-proof") {
+		t.Fatalf("session-end declaration fabricated independent validation; edges=%+v", edges)
 	}
 }
 
@@ -7746,7 +7749,7 @@ func TestPolicyReleaseGoalHoldsAuthorityReportsHoldBacklog(t *testing.T) {
 	}
 }
 
-func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
+func TestImportedSkillOfferCanRecordDeclaredSessionEndFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -7754,6 +7757,12 @@ func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
 	}
 
 	cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "skill-manifest.yaml")})
+	var validationBefore capgraph.Edge
+	for _, edge := range readCapabilityEdges(t, homePath) {
+		if edge.Kind == capgraph.EdValidatedBy && edge.From == "skill:pricing" {
+			validationBefore = edge
+		}
+	}
 	cmdHook([]string{"user-prompt-submit", writeHookFixture(t, hook.Fixture{
 		Harness:  "codex",
 		Cwd:      "/repo/product",
@@ -7805,12 +7814,24 @@ func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
 	})})
 
 	edges := readCapabilityEdges(t, homePath)
-	if !hasCapabilityEdge(edges, capgraph.EdValidatedBy, "skill:pricing") {
-		t.Fatalf("session-end did not validate imported used skill; edges=%+v", edges)
+	if !hasCapabilityEdge(edges, capgraph.EdDeclaredUsedBy, "skill:pricing") {
+		t.Fatalf("session-end did not consume imported use declaration; edges=%+v", edges)
+	}
+	validations := 0
+	for _, edge := range edges {
+		if edge.Kind == capgraph.EdValidatedBy && edge.From == "skill:pricing" {
+			validations++
+			if edge.To != "eval:pricing-copy" || edge.SourceReceipt != "" || edge != validationBefore {
+				t.Fatalf("session-end changed typed evaluation evidence; edge=%+v", edge)
+			}
+		}
+	}
+	if validations != 1 {
+		t.Fatalf("session-end created or lost typed evaluation evidence; edges=%+v", edges)
 	}
 }
 
-func TestImportedSkillOfferCanBecomeValidatedSecondHarnessProductLoop(t *testing.T) {
+func TestImportedSkillOfferCanRecordDeclaredUseInSecondHarnessProductLoop(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -7869,11 +7890,15 @@ func TestImportedSkillOfferCanBecomeValidatedSecondHarnessProductLoop(t *testing
 	})})
 
 	edges := readCapabilityEdges(t, homePath)
-	if !hasCapabilityEdge(edges, capgraph.EdValidatedBy, "skill:claude-pricing") {
-		t.Fatalf("session-end did not validate imported claude skill; edges=%+v", edges)
+	if !hasCapabilityEdge(edges, capgraph.EdDeclaredUsedBy, "skill:claude-pricing") {
+		t.Fatalf("session-end did not consume imported claude skill declaration; edges=%+v", edges)
 	}
-	if hasCapabilityEdge(edges, capgraph.EdValidatedBy, "skill:codex-pricing") {
-		t.Fatalf("claude loop validated codex-only skill; edges=%+v", edges)
+	if hasCapabilityEdge(edges, capgraph.EdValidatedBy, "skill:claude-pricing") {
+		t.Fatalf("session-end declaration fabricated independent validation; edges=%+v", edges)
+	}
+	if hasCapabilityEdge(edges, capgraph.EdDeclaredUsedBy, "skill:codex-pricing") ||
+		hasCapabilityEdge(edges, capgraph.EdValidatedBy, "skill:codex-pricing") {
+		t.Fatalf("session-end incorrectly credited codex-only skill from claude work; edges=%+v", edges)
 	}
 }
 
