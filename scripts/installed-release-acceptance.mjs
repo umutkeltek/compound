@@ -340,7 +340,7 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
     create(consumer, 'Resolve and consume the existing product, local-first constraints and accepted decision from this isolated restored home.', restored);
     const consume = "const cp=require('child_process'),a=require('assert/strict');const [bin]=process.argv.slice(1);const get=args=>{const r=cp.spawnSync(bin,args,{env:process.env,encoding:'utf8'});a.equal(r.status,0);return JSON.parse(r.stdout);};console.log(JSON.stringify({product:get(['product','where','product:focus-notes','--json']),position:get(['memory','position','product:focus-notes','--json']),decision:get(['decisions','show','brain-dec-receipts','--json'])}));";
     cli('restored-real-consumer', execute(consumer, consume, [bin]), restored);
-    const consumed = json('restored-work', ['work', 'show', consumer, '--json']), consumerID = consumed.run_attempt_ids.at(-1);
+    const consumed = json('restored-work', ['work', 'show', consumer, '--json'], restored), consumerID = consumed.run_attempt_ids.at(-1);
     assert.deepEqual(JSON.parse(output(read(attemptFile(restored, consumerID)))), {product, position, decision});
     const chain = close(consumer, restored);
     assert.equal(json('restored-proof-doctor', ['work', 'proof-chain-doctor', '--json'], restored).status, 'ok');
