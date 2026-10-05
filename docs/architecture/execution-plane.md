@@ -342,7 +342,7 @@ changing the run budget.
 
 ### Actuator admission accounting is not a mission budget
 
-The separate trusted-local `actuator run|post|switchback` consumers reserve one
+The separate trusted-local actuator run, post, and execution-mode consumers reserve one
 product/channel action in the existing `actuator/budget/consumption.jsonl`
 before dispatch. Current-budget recheck and reservation append share the short
 home mutation guard; execution never holds that lock. Settlement preserves
