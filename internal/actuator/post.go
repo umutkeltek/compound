@@ -18,6 +18,10 @@ import (
 // PostArtifactSchemaVersion identifies a staged distribution post.
 const PostArtifactSchemaVersion = "compound.actuator_post_artifact.v0.1"
 
+var recordPostConsumption = func(ledger *Ledger, consumption Consumption) error {
+	return ledger.Record(consumption)
+}
+
 // PostArtifact is one staged distribution post. It is written to the outbox
 // through the governed act seam (so it carries a receipt + transition), and it
 // is the thing a later, separately-gated step would ship to a real channel. The
@@ -95,6 +99,10 @@ func Post(homePath string, in PostInput, cfg policy.Config, now time.Time) (Post
 
 	intent := postIntent(in, channel, surface, postPath, now)
 	plan, err := EvaluatePlan(homePath, intent, channel, in.ProductID, cfg, now)
+	var reservation Consumption
+	if err == nil && plan.Decision.Mode == ModeAuto {
+		plan, reservation, err = reservePlan(homePath, plan, now)
+	}
 	if err != nil {
 		return PostResult{}, err
 	}
@@ -140,15 +148,7 @@ func Post(homePath string, in PostInput, cfg policy.Config, now time.Time) (Post
 	// receipted, so budget accounting must not be silently wrong. Do NOT roll back —
 	// the move happened; the feedback loop below still closes regardless.
 	ledger := OpenLedger(homePath)
-	recErr := ledger.Record(Consumption{
-		SchemaVersion: ConsumptionSchemaVersion,
-		At:            now.UTC().Format(time.RFC3339),
-		ProductID:     in.ProductID,
-		Channel:       channel,
-		Actions:       1,
-		WorkID:        in.WorkID,
-		ReceiptRef:    res.Receipt.ID,
-	})
+	recErr := recordPostConsumption(ledger, settledConsumption(reservation, res.Receipt.ID))
 
 	// Close the loop: mint the observation hypothesis + schedule the signal check.
 	// This runs regardless of recErr — the post DID land, so the loop must open.
@@ -169,7 +169,7 @@ func Post(homePath string, in PostInput, cfg policy.Config, now time.Time) (Post
 	// back the move). Build the F9.1 error once so it composes on either failure path.
 	var recWrapped error
 	if recErr != nil {
-		recWrapped = fmt.Errorf("actuator post: post staged and receipted (%s) but recording budget consumption failed: %w", res.Receipt.ID, recErr)
+		recWrapped = fmt.Errorf("actuator post: post staged and receipted (%s) but settling budget consumption failed; reservation remains charged: %w", res.Receipt.ID, recErr)
 	}
 
 	if err != nil {

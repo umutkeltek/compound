@@ -34,6 +34,10 @@ var recordSwitchbackConsumption = func(ledger *Ledger, consumption Consumption) 
 	return ledger.Record(consumption)
 }
 
+var recordRunConsumption = func(ledger *Ledger, consumption Consumption) error {
+	return ledger.Record(consumption)
+}
+
 // Plan is the actuator's full routing verdict for one move: the policy decision,
 // the budget headroom, and the auto/hold/deny routing — computed but NOT yet
 // executed. EvaluatePlan is pure orchestration over existing authority (policy,
@@ -66,6 +70,7 @@ func EvaluatePlan(homePath string, intent envelope.ActionIntent, channel, produc
 	if err != nil {
 		return Plan{}, err
 	}
+	headroom = enforceRunBudgetAccounting(intent, headroom)
 	decision := Route(intent, pd.Outcome, headroom)
 	decision.Channel = channel
 	decision.PolicyOutcome = pd.Outcome
@@ -166,6 +171,10 @@ func applyInstructionStep(homePath string, p ProjectProfile, workID string, step
 	res := StepResult{Kind: step.Kind, Description: step.Description}
 	intent := instructionIntent(p, workID, step.FilePath, now)
 	plan, err := EvaluatePlan(homePath, intent, "switchback", p.ProductID, cfg, now)
+	var reservation Consumption
+	if err == nil && plan.Decision.Mode == ModeAuto {
+		plan, reservation, err = reservePlan(homePath, plan, now)
+	}
 	if err != nil {
 		res.Held = true
 		res.Reasons = []string{fmt.Sprintf("could not evaluate instruction write for %s: %v", step.FilePath, err)}
@@ -189,20 +198,12 @@ func applyInstructionStep(homePath string, p ProjectProfile, workID string, step
 		res.Reasons = []string{fmt.Sprintf("governed instruction write for %s refused/rolled back: %v", step.FilePath, err)}
 		return res
 	}
-	if recErr := recordSwitchbackConsumption(ledger, Consumption{
-		SchemaVersion: ConsumptionSchemaVersion,
-		At:            now.UTC().Format(time.RFC3339),
-		ProductID:     p.ProductID,
-		Channel:       "switchback",
-		Actions:       1,
-		WorkID:        workID,
-		ReceiptRef:    out.Receipt.ID,
-	}); recErr != nil {
+	if recErr := recordSwitchbackConsumption(ledger, settledConsumption(reservation, out.Receipt.ID)); recErr != nil {
 		// The instruction write DID land and is receipted; surface the budget
 		// accounting failure rather than dropping it silently (F9.1).
 		res.AccountingFailed = true
 		res.AccountingError = recErr.Error()
-		res.Reasons = append(res.Reasons, fmt.Sprintf("instruction write receipted %s but budget consumption NOT recorded: %v", out.Receipt.ID, recErr))
+		res.Reasons = append(res.Reasons, fmt.Sprintf("instruction write receipted %s but budget consumption settlement NOT recorded; reservation remains charged: %v", out.Receipt.ID, recErr))
 	}
 	res.Applied = true
 	res.ReceiptRef = out.Receipt.ID
@@ -258,6 +259,10 @@ func applyRoutingStep(homePath string, p ProjectProfile, step SwitchbackStep, bu
 		return res
 	}
 	plan, err := EvaluatePlan(homePath, *step.Intent, "switchback", p.ProductID, cfg, now)
+	var reservation Consumption
+	if err == nil && plan.Decision.Mode == ModeAuto {
+		plan, reservation, err = reservePlan(homePath, plan, now)
+	}
 	if err != nil {
 		res.Held = true
 		res.Reasons = []string{fmt.Sprintf("could not evaluate routing: %v", err)}
@@ -285,18 +290,10 @@ func applyRoutingStep(homePath string, p ProjectProfile, step SwitchbackStep, bu
 	// DID land and is receipted; if the consumption record fails, surface it on the
 	// step (F9.1) rather than dropping it silently — budget accounting must not be
 	// quietly wrong. The applied write is not rolled back.
-	if recErr := recordSwitchbackConsumption(ledger, Consumption{
-		SchemaVersion: ConsumptionSchemaVersion,
-		At:            now.UTC().Format(time.RFC3339),
-		ProductID:     p.ProductID,
-		Channel:       "switchback",
-		Actions:       1,
-		WorkID:        step.Intent.IDs.WorkID,
-		ReceiptRef:    out.Receipt.ID,
-	}); recErr != nil {
+	if recErr := recordSwitchbackConsumption(ledger, settledConsumption(reservation, out.Receipt.ID)); recErr != nil {
 		res.AccountingFailed = true
 		res.AccountingError = recErr.Error()
-		res.Reasons = append(res.Reasons, fmt.Sprintf("routing repoint receipted %s but budget consumption NOT recorded: %v", out.Receipt.ID, recErr))
+		res.Reasons = append(res.Reasons, fmt.Sprintf("routing repoint receipted %s but budget consumption settlement NOT recorded; reservation remains charged: %v", out.Receipt.ID, recErr))
 	}
 	res.Applied = true
 	res.ReceiptRef = out.Receipt.ID
@@ -393,6 +390,18 @@ func Run(homePath string, in RunInput, cfg policy.Config, now time.Time) (RunRes
 	if err := persistRunAuthorization(homePath, plan.Intent, plan.PolicyDecision); err != nil {
 		return RunResult{}, fmt.Errorf("actuator run: persist authorization: %w", err)
 	}
+	plan, reservation, err := reservePlan(homePath, plan, now)
+	if err != nil {
+		return RunResult{Plan: plan}, err
+	}
+	if plan.Decision.Mode != ModeAuto {
+		card := ReleaseGateFor(plan, now)
+		path, err := WriteHeldMoveCard(homePath, card)
+		if err != nil {
+			return RunResult{}, fmt.Errorf("actuator run: persist held-move card: %w", err)
+		}
+		return RunResult{Plan: plan, Held: true, HeldMoveID: card.ID, HeldMovePath: path}, nil
+	}
 	out, runErr := adapter.Run(context.Background(), harness.RunInput{
 		WorkID:         in.WorkID,
 		Harness:        in.Harness,
@@ -421,16 +430,8 @@ func Run(homePath string, in RunInput, cfg policy.Config, now time.Time) (RunRes
 	// recording itself fails, surface it (F9.1): the run DID happen (result reports
 	// Executed=true) so budget accounting must not be silently wrong. Do NOT roll
 	// back the run — it already executed.
-	if recErr := OpenLedger(homePath).Record(Consumption{
-		SchemaVersion: ConsumptionSchemaVersion,
-		At:            now.UTC().Format(time.RFC3339),
-		ProductID:     in.ProductID,
-		Channel:       channel,
-		Actions:       1,
-		WorkID:        in.WorkID,
-		ReceiptRef:    out.RunAttempt.ID,
-	}); recErr != nil {
-		wrapped := fmt.Errorf("actuator run: run executed (run_attempt=%s exit=%d) but recording budget consumption failed: %w", out.RunAttempt.ID, out.ExitCode, recErr)
+	if recErr := settleRunBudget(homePath, reservation, out.RunAttempt, adapter.Name()); recErr != nil {
+		wrapped := fmt.Errorf("actuator run: run executed (run_attempt=%s exit=%d) but settling budget consumption failed; reservation remains charged: %w", out.RunAttempt.ID, out.ExitCode, recErr)
 		if runErr != nil {
 			return result, errors.Join(runErr, wrapped)
 		}
@@ -438,6 +439,20 @@ func Run(homePath string, in RunInput, cfg policy.Config, now time.Time) (RunRes
 	}
 
 	return result, runErr
+}
+
+func settleRunBudget(homePath string, reservation Consumption, returned runattempt.RunAttempt, harnessName string) error {
+	stored, err := runattempt.Open(homePath).Get(returned.ID)
+	if err != nil {
+		return fmt.Errorf("reservation %s retains unresolved execution: read terminal attempt: %w", reservation.ReservationID, err)
+	}
+	if stored.ID != returned.ID || !runattempt.IsTerminal(stored.Status) || returned.Status != stored.Status ||
+		stored.WorkID != reservation.WorkID || returned.WorkID != stored.WorkID ||
+		stored.ActionIntentID != reservation.ActionIntentID || returned.ActionIntentID != stored.ActionIntentID ||
+		stored.Harness != harnessName || returned.Harness != stored.Harness {
+		return fmt.Errorf("reservation %s retains unresolved execution: attempt %s is nonterminal or contradicts work/action/harness identity", reservation.ReservationID, returned.ID)
+	}
+	return recordRunConsumption(OpenLedger(homePath), settledConsumption(reservation, stored.ID))
 }
 
 func persistRunAuthorization(homePath string, intent envelope.ActionIntent, decision envelope.PolicyDecision) error {

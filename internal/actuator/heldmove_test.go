@@ -73,6 +73,26 @@ func TestReleaseGateDenyIsTerminal(t *testing.T) {
 	}
 }
 
+func TestReleaseGateBudgetAccountingAndUnknownExecutionDoNotSuggestReset(t *testing.T) {
+	for _, scenario := range []string{"provider-accounting", "unresolved-reservation"} {
+		t.Run(scenario, func(t *testing.T) {
+			plan := testPlan("local_reversible", "easy", ModeHold, "allow", false, "execution")
+			if scenario == "provider-accounting" {
+				plan.Headroom.RequiresProviderAccounting = true
+			} else {
+				plan.Headroom.PendingReservationIDs = []string{"bres_test"}
+			}
+			card := ReleaseGateFor(plan, testNow)
+			if strings.Contains(card.ReleaseGate, "Wait for the rolling window to reset") || strings.Contains(card.ReleaseGate, "budget-set --channel") {
+				t.Fatalf("unsatisfiable budget repair advice: %s", card.ReleaseGate)
+			}
+			if len(card.RequiredInputs) == 0 || len(card.StopConditions) == 0 {
+				t.Fatalf("budget hold is not actionable: %+v", card)
+			}
+		})
+	}
+}
+
 func TestWriteAndListHeldMoves(t *testing.T) {
 	home := t.TempDir()
 	card := ReleaseGateFor(testPlan("financial", "hard", ModeHold, "hold", true, "paid_marketing"), testNow)

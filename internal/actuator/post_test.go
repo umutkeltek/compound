@@ -2,6 +2,7 @@ package actuator
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -230,24 +231,15 @@ func TestObserveClosureLateSignalStillCloses(t *testing.T) {
 	}
 }
 
-// TestPostSurfacesConsumptionRecordFailure (F9.1): when a post stages + receipts but
-// recording its budget consumption fails, Post must return an error naming the
-// consumption failure and the receipt id — and still report the move happened
-// (Executed=true, feedback loop closed) so the operator knows the staged post was NOT
-// rolled back. The budget dir is made read-only so EvaluatePlan's reads
-// (LoadBudget/Used) succeed but Record (a write) fails, isolating the record failure.
-// This mirrors TestRunSurfacesConsumptionRecordFailure for the run path.
+// A post-dispatch settlement failure must retain the staged post, feedback
+// evidence, non-green result, and durable reservation. The accounting seam
+// isolates this from a pre-admission write failure.
 func TestPostSurfacesConsumptionRecordFailure(t *testing.T) {
 	home := t.TempDir()
 	createKnownActuatorWork(t, home, "work_rec")
-	budgetDir := filepath.Join(home, "actuator", "budget")
-	if err := os.MkdirAll(budgetDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(budgetDir, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(budgetDir, 0o755) })
+	original := recordPostConsumption
+	recordPostConsumption = func(*Ledger, Consumption) error { return errors.New("consumption sink unavailable") }
+	t.Cleanup(func() { recordPostConsumption = original })
 
 	res, err := Post(home, PostInput{
 		WorkID:    "work_rec",

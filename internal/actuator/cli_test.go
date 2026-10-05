@@ -242,22 +242,16 @@ func TestActuatorSubcommandsAcceptKnownFlagsEndToEnd(t *testing.T) {
 	})
 }
 
-// postRecordFailureHome sets up a temp home whose actuator/budget dir is
-// read-only so EvaluatePlan's budget READS succeed but the post-staging
-// ledger.Record (a write) fails — the F9.1 "post landed but budget accounting
-// failed" scenario. Mirrors internal/actuator's TestPostSurfacesConsumptionRecordFailure.
+// postRecordFailureHome fails settlement AFTER the reservation and governed
+// write, retaining the real post-dispatch accounting-failure falsifier.
+// Callers are serial because they replace the accounting seam.
 func postRecordFailureHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	seedActuatorCLIWork(t, home, "work_rec")
-	budgetDir := filepath.Join(home, "actuator", "budget")
-	if err := os.MkdirAll(budgetDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(budgetDir, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(budgetDir, 0o755) })
+	original := recordPostConsumption
+	recordPostConsumption = func(*Ledger, Consumption) error { return errors.New("consumption sink unavailable") }
+	t.Cleanup(func() { recordPostConsumption = original })
 	return home
 }
 
@@ -271,7 +265,6 @@ func postRecordFailureHome(t *testing.T) string {
 // consumption failure on stderr with exit 1. RED before the fix (result dropped:
 // stdout empty of the result, only stderr).
 func TestActuatorPostJSONSurfacesResultWithRecordError(t *testing.T) {
-	t.Parallel()
 	home := postRecordFailureHome(t)
 	var stdout, stderr bytes.Buffer
 	code := runCLI([]string{
@@ -304,7 +297,6 @@ func TestActuatorPostJSONSurfacesResultWithRecordError(t *testing.T) {
 // EXECUTED block (the receipt: line) AND name the failure on stderr with exit 1.
 // RED before the fix (block skipped: no receipt: line on stdout).
 func TestActuatorPostHumanSurfacesReceiptWithRecordError(t *testing.T) {
-	t.Parallel()
 	home := postRecordFailureHome(t)
 	var stdout, stderr bytes.Buffer
 	code := runCLI([]string{

@@ -340,6 +340,30 @@ The initial timeout remains armed for a child that closes its pipes early. This
 closes the one-shot fork/cancellation race without widening the signal target or
 changing the run budget.
 
+### Actuator admission accounting is not a mission budget
+
+The separate trusted-local `actuator run|post|switchback` consumers reserve one
+product/channel action in the existing `actuator/budget/consumption.jsonl`
+before dispatch. Current-budget recheck and reservation append share the short
+home mutation guard; execution never holds that lock. Settlement preserves
+reservation identity, work, action, channel and timestamp and counts once.
+Exact settlement retry is idempotent. An in-flight or uncertain reservation
+does not age out; failure to persist settlement returns non-green while keeping
+the actual execution/receipt evidence. Inspect the named reservation and its
+work/attempt before reconciliation; do not delete ledger rows to recover room.
+
+Consumption v0.2 reads legacy v0.1 rows without rewriting them. Quiesce all old
+actuator writers before the first v0.2 reservation; mixed old/new budget writers
+against one home are unsupported. Source acceptance is not installed cutover.
+
+These limits retain their existing product/channel rolling semantics, not
+mission/account semantics. The wildcard is a channel fallback, not a sum of all
+channel usage. Local staging/config writes do not call a provider. Harness runs
+have no bounded provider-cost/token settlement here, so a configured finite
+spend/token ceiling holds rather than advertising enforcement without accounting.
+This does not certify `work advance --execute` mission spending, provider billing,
+authenticated approvals, or autonomous containment.
+
 ## Detached start/record failures are recoverable, not "failed to spawn"
 
 Explicit selected-work Continue reuses this door without unattended route selection

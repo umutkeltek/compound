@@ -21,16 +21,57 @@ import (
 // stubClaudeAdapter is a hermetic stand-in for the real subprocess-spawning claude
 // adapter, so a Run test can reach the post-dispatch consumption record without
 // spawning `claude`. It is injected through the buildAdapterRegistry seam.
-type stubClaudeAdapter struct{ ran bool }
+type stubClaudeAdapter struct {
+	ran                bool
+	store              *runattempt.Store
+	status             string
+	runErr             error
+	contradictWork     bool
+	returnedStatus     string
+	contradictStoredID bool
+}
 
 func (a *stubClaudeAdapter) Name() string { return "claude" }
 
 func (a *stubClaudeAdapter) Run(_ context.Context, in harness.RunInput) (harness.RunOutput, error) {
 	a.ran = true
+	ra, err := a.store.MintWithActionIntent(in.WorkID, "actuator-test", in.Harness, in.ActionIntentID, in.Now)
+	if err != nil {
+		return harness.RunOutput{}, err
+	}
+	status := a.status
+	if status == "" {
+		status = runattempt.StatusSucceeded
+	}
+	if runattempt.IsTerminal(status) {
+		ra, err = a.store.Complete(ra.ID, status, in.Now)
+		if err != nil {
+			return harness.RunOutput{RunAttempt: ra}, err
+		}
+	}
+	if a.contradictWork {
+		ra.WorkID = "work_foreign"
+	}
+	if a.returnedStatus != "" {
+		ra.Status = a.returnedStatus
+	}
+	if a.contradictStoredID {
+		contradictory := ra
+		contradictory.ID = "ratt_foreign"
+		data, err := json.Marshal(contradictory)
+		if err != nil {
+			return harness.RunOutput{}, err
+		}
+		// Deliberately bypass the valid writer: the production reader must not
+		// treat a filename/body identity contradiction as terminal evidence.
+		if err := os.WriteFile(filepath.Join(a.store.Home(), "run_attempts", ra.ID+".json"), data, 0o600); err != nil {
+			return harness.RunOutput{}, err
+		}
+	}
 	return harness.RunOutput{
-		RunAttempt: runattempt.RunAttempt{ID: "ratt_stub", WorkID: in.WorkID, Harness: in.Harness, Status: "succeeded"},
+		RunAttempt: ra,
 		ExitCode:   0,
-	}, nil
+	}, a.runErr
 }
 
 func createKnownActuatorWork(t *testing.T, homePath, workID string) {
@@ -52,6 +93,7 @@ func installStubActuatorRegistry(t *testing.T, stub *stubClaudeAdapter) {
 	t.Helper()
 	original := buildAdapterRegistry
 	buildAdapterRegistry = func(homePath string) *harness.AdapterRegistry {
+		stub.store = runattempt.Open(homePath)
 		registry := harness.NewAdapterRegistry(runattempt.Open(homePath))
 		if err := registry.RegisterAdapter(stub); err != nil {
 			t.Fatalf("register stub adapter: %v", err)
@@ -280,26 +322,20 @@ func TestCorruptLedgerErrorsAndHoldsBudget(t *testing.T) {
 	}
 }
 
-// T3 (F9.1): when a run executed but recording its budget consumption fails, Run must
-// return an error naming the consumption failure — and still report the run happened
-// (Executed=true) so the operator knows it did NOT get rolled back. The budget dir is
-// made read-only so LoadBudget/Used (reads) succeed but Record (a write) fails,
-// isolating the record failure.
+// A failed settlement after dispatch must preserve both the truthful execution
+// result and its durable budget reservation. Injection is after dispatch, not
+// a pre-admission write failure.
 func TestRunSurfacesConsumptionRecordFailure(t *testing.T) {
 	home := t.TempDir()
 	createKnownActuatorWork(t, home, "work_rec")
-	budgetDir := filepath.Join(home, "actuator", "budget")
-	if err := os.MkdirAll(budgetDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(budgetDir, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(budgetDir, 0o755) })
+	original := recordRunConsumption
+	recordRunConsumption = func(*Ledger, Consumption) error { return errors.New("consumption sink unavailable") }
+	t.Cleanup(func() { recordRunConsumption = original })
 
 	stub := &stubClaudeAdapter{}
 	orig := buildAdapterRegistry
 	buildAdapterRegistry = func(h string) *harness.AdapterRegistry {
+		stub.store = runattempt.Open(h)
 		reg := harness.NewAdapterRegistry(runattempt.Open(h))
 		if err := reg.RegisterAdapter(stub); err != nil {
 			t.Fatalf("register stub adapter: %v", err)
@@ -329,6 +365,10 @@ func TestRunSurfacesConsumptionRecordFailure(t *testing.T) {
 	}
 	if res.RunAttemptID == "" || !strings.Contains(err.Error(), res.RunAttemptID) {
 		t.Fatalf("error must report the run happened (run_attempt id %q), got: %v", res.RunAttemptID, err)
+	}
+	used, usageErr := OpenLedger(home).Used("", "execution", testNow.Add(48*time.Hour))
+	if usageErr != nil || used.Actions != 1 {
+		t.Fatalf("failed settlement must retain reservation even after its window: %+v, %v", used, usageErr)
 	}
 }
 

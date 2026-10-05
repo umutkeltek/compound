@@ -91,6 +91,16 @@ func releaseGate(plan Plan) (gate string, required, stop []string) {
 	// Auto-eligible class (read/local_reversible) that still held: the gate is budget
 	// headroom or reversibility — both operator-resolvable.
 	if !plan.Headroom.Allowed {
+		if plan.Headroom.RequiresProviderAccounting {
+			return "Harness spend/token accounting is not supported by this consumer. Keep the move held until a supported provider accounting owner can bound and settle its cost; waiting or raising an action limit cannot repair this.",
+				[]string{"supported bounded provider accounting within the approved spend/token ceiling"},
+				[]string{"provider cost remains unbounded or unsettled"}
+		}
+		if len(plan.Headroom.PendingReservationIDs) > 0 {
+			return fmt.Sprintf("Budget reservations %v still require execution reconciliation. Inspect their work/action and terminal attempt or receipt evidence. Do not delete ledger rows, raise limits, or wait for an unresolved reservation to expire.", plan.Headroom.PendingReservationIDs),
+				[]string{"exact terminal execution evidence and matching reservation settlement"},
+				[]string{"execution or external effects remain unresolved"}
+		}
 		return fmt.Sprintf("Budget exhausted on channel %q. Wait for the rolling window to reset, or raise the limit with: compound actuator budget-set --channel %s --window-hours H --max-actions N", plan.Channel, plan.Channel),
 			[]string{fmt.Sprintf("budget headroom on channel %s", plan.Channel)},
 			[]string{"still over the channel budget"}

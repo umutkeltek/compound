@@ -10,9 +10,9 @@
 //
 // The actuator adds exactly the two pieces that were missing:
 //
-//  1. A BudgetEnvelope + ledger — hard, enforced per-channel limits (spend caps,
-//     post rate-limits) checked BEFORE dispatch, so "execute within limits" is
-//     true by construction, not by prompt obedience.
+//  1. A BudgetEnvelope + ledger — per-channel action reservations are durable
+//     before dispatch; configured harness spend/token ceilings hold when this
+//     consumer cannot prove bounded provider accounting.
 //  2. A Route() classifier — reads the mutation_class + reversibility an intent
 //     ALREADY declares, plus the policy outcome and budget headroom, and routes
 //     reversible + under-budget work to AUTO while holding everything
@@ -30,15 +30,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/home"
 )
 
 const (
 	// BudgetSchemaVersion identifies a BudgetEnvelope on disk.
 	BudgetSchemaVersion = "compound.actuator_budget.v0.1"
 	// ConsumptionSchemaVersion identifies a consumption ledger row.
-	ConsumptionSchemaVersion = "compound.actuator_consumption.v0.1"
+	ConsumptionSchemaVersion = "compound.actuator_consumption.v0.2"
 	// WildcardChannel matches every channel when no channel-specific limit exists.
 	WildcardChannel = "*"
 	// DefaultBudgetID is the id of the built-in conservative budget used when a
@@ -146,38 +149,44 @@ func DefaultBudget(now time.Time) BudgetEnvelope {
 // Rows are append-only under COMPOUND_HOME/actuator/budget/consumption.jsonl;
 // the rolling usage sum is rebuilt from rows inside each channel's window.
 type Consumption struct {
-	SchemaVersion string  `json:"schema_version"`
-	At            string  `json:"at"`
-	ProductID     string  `json:"product_id,omitempty"`
-	Channel       string  `json:"channel"`
-	Actions       int     `json:"actions"`
-	SpendUSD      float64 `json:"spend_usd,omitempty"`
-	Tokens        int     `json:"tokens,omitempty"`
-	WorkID        string  `json:"work_id,omitempty"`
-	ReceiptRef    string  `json:"receipt_ref,omitempty"`
+	SchemaVersion  string  `json:"schema_version"`
+	At             string  `json:"at"`
+	ProductID      string  `json:"product_id,omitempty"`
+	Channel        string  `json:"channel"`
+	Actions        int     `json:"actions"`
+	SpendUSD       float64 `json:"spend_usd,omitempty"`
+	Tokens         int     `json:"tokens,omitempty"`
+	WorkID         string  `json:"work_id,omitempty"`
+	ReceiptRef     string  `json:"receipt_ref,omitempty"`
+	ReservationID  string  `json:"reservation_id,omitempty"`
+	Reserved       bool    `json:"reserved,omitempty"`
+	ActionIntentID string  `json:"action_intent_id,omitempty"`
 }
 
 // Usage is the rolled-up consumption for one (product, channel) inside a window.
 type Usage struct {
-	Actions  int     `json:"actions"`
-	SpendUSD float64 `json:"spend_usd"`
-	Tokens   int     `json:"tokens"`
+	Actions               int      `json:"actions"`
+	SpendUSD              float64  `json:"spend_usd"`
+	Tokens                int      `json:"tokens"`
+	PendingReservationIDs []string `json:"pending_reservation_ids,omitempty"`
 }
 
 // Headroom is the result of checking a budget against current usage. Allowed is
 // the hard gate; the Remaining fields and Reasons explain the decision so the
 // operator (and Route) can surface exactly which axis is tight.
 type Headroom struct {
-	Allowed           bool     `json:"allowed"`
-	Channel           string   `json:"channel"`
-	WindowHours       int      `json:"window_hours"`
-	ActionsRemaining  int      `json:"actions_remaining"`
-	SpendRemainingUSD float64  `json:"spend_remaining_usd"`
-	TokensRemaining   int      `json:"tokens_remaining"`
-	UnlimitedActions  bool     `json:"unlimited_actions"`
-	UnlimitedSpend    bool     `json:"unlimited_spend"`
-	UnlimitedTokens   bool     `json:"unlimited_tokens"`
-	Reasons           []string `json:"reasons,omitempty"`
+	Allowed                    bool     `json:"allowed"`
+	Channel                    string   `json:"channel"`
+	WindowHours                int      `json:"window_hours"`
+	ActionsRemaining           int      `json:"actions_remaining"`
+	SpendRemainingUSD          float64  `json:"spend_remaining_usd"`
+	TokensRemaining            int      `json:"tokens_remaining"`
+	UnlimitedActions           bool     `json:"unlimited_actions"`
+	UnlimitedSpend             bool     `json:"unlimited_spend"`
+	UnlimitedTokens            bool     `json:"unlimited_tokens"`
+	Reasons                    []string `json:"reasons,omitempty"`
+	PendingReservationIDs      []string `json:"pending_reservation_ids,omitempty"`
+	RequiresProviderAccounting bool     `json:"requires_provider_accounting,omitempty"`
 }
 
 // Ledger persists consumption rows under COMPOUND_HOME/actuator/budget. It is a
@@ -206,6 +215,12 @@ func (l *Ledger) SaveBudget(b BudgetEnvelope) error {
 	if err := b.Validate(); err != nil {
 		return err
 	}
+	return home.WithHomeMutationGuard(l.home, func(*home.HomeMutationGuard) error {
+		return l.saveBudget(b)
+	})
+}
+
+func (l *Ledger) saveBudget(b BudgetEnvelope) error {
 	if err := os.MkdirAll(l.dir(), 0o755); err != nil {
 		return err
 	}
@@ -214,7 +229,10 @@ func (l *Ledger) SaveBudget(b BudgetEnvelope) error {
 		return err
 	}
 	data = append(data, '\n')
-	return atomicWrite(l.BudgetPath(b.ProductID), data)
+	if err := atomicWrite(l.BudgetPath(b.ProductID), data); err != nil {
+		return err
+	}
+	return l.syncBudgetFile(l.BudgetPath(b.ProductID))
 }
 
 // LoadBudget returns the budget envelope for a product, or DefaultBudget when
@@ -243,14 +261,33 @@ func (l *Ledger) LoadBudget(productID string, now time.Time) (BudgetEnvelope, er
 // Record appends one consumption row. It validates the row's timestamp and
 // defaults SchemaVersion. Append-only: existing rows are never rewritten.
 func (l *Ledger) Record(c Consumption) error {
-	if strings.TrimSpace(c.Channel) == "" {
-		return fmt.Errorf("actuator consumption: channel required")
-	}
-	if _, err := time.Parse(time.RFC3339, c.At); err != nil {
-		return fmt.Errorf("actuator consumption: at invalid: %w", err)
-	}
+	return home.WithHomeMutationGuard(l.home, func(*home.HomeMutationGuard) error {
+		return l.record(c)
+	})
+}
+
+// record requires the home mutation guard and syncs before dispatch.
+func (l *Ledger) record(c Consumption) error {
 	if c.SchemaVersion == "" {
 		c.SchemaVersion = ConsumptionSchemaVersion
+	}
+	if err := validateConsumption(c); err != nil {
+		return err
+	}
+	_, reservations, err := l.consumptions()
+	if err != nil {
+		return err
+	}
+	if c.ReservationID != "" {
+		prior, exists := reservations[c.ReservationID]
+		if exists && sameReservation(prior, c) && prior.Reserved == c.Reserved && prior.ReceiptRef == c.ReceiptRef {
+			// A sync/close failure after append is uncertain, not permission to
+			// append a second charge or manufacture a fresh reservation.
+			return l.syncConsumption()
+		}
+		if (c.Reserved && exists) || (!c.Reserved && (!exists || !prior.Reserved || !sameReservation(prior, c))) {
+			return fmt.Errorf("invalid budget reservation/settlement %s", c.ReservationID)
+		}
 	}
 	if err := os.MkdirAll(l.dir(), 0o755); err != nil {
 		return err
@@ -267,7 +304,10 @@ func (l *Ledger) Record(c Consumption) error {
 	if _, err := f.Write(append(data, '\n')); err != nil {
 		return err
 	}
-	return nil
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return l.syncBudgetDirectories()
 }
 
 // Used rolls up consumption for (productID, channel) at or after `since`. Rows
@@ -275,12 +315,29 @@ func (l *Ledger) Record(c Consumption) error {
 // toward every channel (a global cap is global).
 func (l *Ledger) Used(productID, channel string, since time.Time) (Usage, error) {
 	var usage Usage
+	legacy, reservations, err := l.consumptions()
+	if err != nil {
+		return Usage{}, err
+	}
+	for _, c := range legacy {
+		addUsage(&usage, c, productID, channel, since)
+	}
+	for _, c := range reservations {
+		addUsage(&usage, c, productID, channel, since)
+	}
+	sort.Strings(usage.PendingReservationIDs)
+	return usage, nil
+}
+
+func (l *Ledger) consumptions() ([]Consumption, map[string]Consumption, error) {
+	var legacy []Consumption
+	reservations := map[string]Consumption{}
 	data, err := os.ReadFile(l.consumptionPath())
 	if err != nil {
 		if os.IsNotExist(err) {
-			return usage, nil
+			return legacy, reservations, nil
 		}
-		return usage, err
+		return nil, nil, err
 	}
 	for i, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -292,23 +349,26 @@ func (l *Ledger) Used(productID, channel string, since time.Time) (Usage, error)
 			// A malformed row fails CLOSED: skipping it would under-count usage and
 			// silently loosen the budget. Naming the line lets the operator repair
 			// the ledger; the caller (Check) turns this into a hold, not zero usage.
-			return Usage{}, fmt.Errorf("actuator consumption ledger %s: corrupt row at line %d: %w", l.consumptionPath(), i+1, err)
+			return nil, nil, fmt.Errorf("actuator consumption ledger %s: corrupt row at line %d: %w", l.consumptionPath(), i+1, err)
 		}
-		at, err := time.Parse(time.RFC3339, c.At)
-		if err != nil || at.Before(since) {
+		if err := validateConsumption(c); err != nil {
+			return nil, nil, fmt.Errorf("actuator consumption ledger line %d: %w", i+1, err)
+		}
+		if c.ReservationID != "" {
+			prior, exists := reservations[c.ReservationID]
+			if c.Reserved {
+				if exists {
+					return nil, nil, fmt.Errorf("duplicate budget reservation %s", c.ReservationID)
+				}
+			} else if !exists || !prior.Reserved || !sameReservation(prior, c) {
+				return nil, nil, fmt.Errorf("invalid budget settlement %s", c.ReservationID)
+			}
+			reservations[c.ReservationID] = c
 			continue
 		}
-		if c.ProductID != productID {
-			continue
-		}
-		if c.Channel != channel && c.Channel != WildcardChannel {
-			continue
-		}
-		usage.Actions += c.Actions
-		usage.SpendUSD += c.SpendUSD
-		usage.Tokens += c.Tokens
+		legacy = append(legacy, c)
 	}
-	return usage, nil
+	return legacy, reservations, nil
 }
 
 // Check compares the effective channel limit against current rolling usage and
@@ -332,19 +392,26 @@ func (l *Ledger) Check(budget BudgetEnvelope, productID, channel string, now tim
 		// under budget, so we HOLD (blocking) rather than treat missing data as zero
 		// usage. The error is surfaced as the hold reason, not swallowed.
 		return Headroom{
-			Allowed:     false,
-			Channel:     channel,
-			WindowHours: limits.WindowHours,
-			Reasons:     []string{fmt.Sprintf("budget ledger unreadable — holding fail-closed: %v", err)},
+			Allowed:          false,
+			Channel:          channel,
+			WindowHours:      limits.WindowHours,
+			UnlimitedActions: limits.MaxActions == 0,
+			UnlimitedSpend:   limits.MaxSpendUSD == 0,
+			UnlimitedTokens:  limits.MaxTokens == 0,
+			Reasons:          []string{fmt.Sprintf("budget ledger unreadable — holding fail-closed: %v", err)},
 		}, nil
 	}
 	h := Headroom{
-		Allowed:          true,
-		Channel:          channel,
-		WindowHours:      limits.WindowHours,
-		UnlimitedActions: limits.MaxActions == 0,
-		UnlimitedSpend:   limits.MaxSpendUSD == 0,
-		UnlimitedTokens:  limits.MaxTokens == 0,
+		Allowed:               true,
+		Channel:               channel,
+		WindowHours:           limits.WindowHours,
+		UnlimitedActions:      limits.MaxActions == 0,
+		UnlimitedSpend:        limits.MaxSpendUSD == 0,
+		UnlimitedTokens:       limits.MaxTokens == 0,
+		PendingReservationIDs: usage.PendingReservationIDs,
+	}
+	if len(usage.PendingReservationIDs) > 0 {
+		h.Reasons = append(h.Reasons, fmt.Sprintf("pending budget reservations require execution reconciliation: %v", usage.PendingReservationIDs))
 	}
 	if limits.MaxActions > 0 {
 		h.ActionsRemaining = limits.MaxActions - usage.Actions
