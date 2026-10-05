@@ -14,6 +14,15 @@ overlay.
 | **extract-approach** | After any non-trivial solved problem: extract the approach and route each learning to the owner that will consume it, in the same change. | [`extract-approach/SKILL.md`](./extract-approach/SKILL.md) |
 | **memory-injection-rules** | Compiling ambient memory-injection rules from receipt evidence — what to inject, when, and never ambient by default. Default for general users is pull-only. | [`memory-injection-rules/SKILL.md`](./memory-injection-rules/SKILL.md) |
 
+## Optional product lifecycle bundle
+
+The [public product-pipeline bundle](product-pipeline/README.md) supplies an original
+generic router and fifteen branching research/design/delivery/growth/learning contracts.
+It is not a build ceremony or an automatic scheduler. Its portable generator emits the
+existing native SkillManifest for governed import; no private skill overlay is required.
+[Source credits and license scopes](product-pipeline/SOURCES.md) identify conceptual
+influences and optional upstream complements, none silently installed.
+
 ## Tracked bodies vs. harness overlay
 
 - These bodies are **tracked in-repo** and are the source of truth for a public clone — no gitignored

@@ -95,6 +95,12 @@ fails. Every other fixture must report `ok`.
 For semantic memory (search over your docs): see the
 [Memory Quickstart](docs/memory-quickstart.md).
 
+For reusable product workflows—from discovery and UI/UX through release, distribution,
+retention and skill improvement—see the [public lifecycle skills](skills/product-pipeline/README.md).
+They include conditional branches, proof/recovery contracts and
+[pinned source credits](skills/product-pipeline/SOURCES.md). No private overlay or upstream
+bulk installation is required; offers are not unattended execution or business-outcome proof.
+
 ## Why
 
 Four failure classes eat agent-assisted work, and most stacks have no organ
