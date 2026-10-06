@@ -48,6 +48,7 @@ func CIConsoleGateNames() []string {
 		"console-decide-decision-feedback-smoke",
 		"console-decision-execute-smoke",
 		"console-delegated-sessions-smoke",
+		"console-evidence-card-smoke",
 		"console-generic-actions-smoke",
 		"console-instance-pin-smoke",
 		"console-lineage-smoke",
