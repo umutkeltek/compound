@@ -11,7 +11,9 @@ import (
 	"compound/internal/reviewartifact"
 )
 
-const noticeUsage = "usage: compound notice flush [--transport buzz] [--home P] [--json]"
+const noticeUsage = "usage: compound notice flush [--transport buzz] [--home P] [--json]\n" +
+	"       compound notice return-queue list|show <id>|ack <id> --by <actor> [--home P]\n" +
+	"       compound notice deadman ping [--fail] [--home P]"
 
 // ReviewsBuilder assembles the annotated, authority-stamped review queue for a
 // home. It is injected because building it is reviewqueue.Build, which depends
@@ -35,6 +37,18 @@ func Run(args []string) { RunWith(args, nil) }
 // workbench and executor holds only, which is a small minority of what actually
 // needs the operator.
 func RunWith(args []string, reviews ReviewsBuilder) {
+	if len(args) > 0 {
+		switch args[0] {
+		case "return-queue":
+			os.Exit(runHomeVerb(args[1:], func(homePath string, rest []string) int {
+				return runReturnQueueCLI(homePath, rest, os.Stdout, os.Stderr, time.Now().UTC())
+			}))
+		case "deadman":
+			os.Exit(runHomeVerb(args[1:], func(homePath string, rest []string) int {
+				return runDeadmanCLI(homePath, rest, os.Stdout, os.Stderr)
+			}))
+		}
+	}
 	if len(args) == 0 || args[0] != "flush" {
 		fmt.Fprintln(os.Stderr, noticeUsage)
 		os.Exit(2)
@@ -102,4 +116,32 @@ func RunWith(args []string, reviews ReviewsBuilder) {
 	if report.DoctorCount > 0 {
 		os.Exit(1)
 	}
+}
+
+// runHomeVerb strips an optional `--home P` from args, resolves the home the
+// same way flush does, and runs fn. It returns the exit code.
+func runHomeVerb(args []string, fn func(homePath string, rest []string) int) int {
+	homePath := ""
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--home" {
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, noticeUsage)
+				return 2
+			}
+			homePath = args[i+1]
+			i++
+			continue
+		}
+		rest = append(rest, args[i])
+	}
+	if strings.TrimSpace(homePath) == "" {
+		resolved, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "notice: resolve home: %v\n", err)
+			return 1
+		}
+		homePath = resolved
+	}
+	return fn(homePath, rest)
 }

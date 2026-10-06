@@ -319,5 +319,17 @@ FINAL_RC=0
 if [ "$DIR_RC" -ne 0 ] || [ "$ARCH_RC" -ne 0 ] || [ "$PD_RC" -ne 0 ] || [ "$STALE_RC" -ne 0 ] || [ "$CONT_RC" -ne 0 ]; then
   FINAL_RC=1
 fi
-echo "$TS final rc=$FINAL_RC | director rc=$DIR_RC $DIR_SUM | compaction rc=$ARCH_RC $ARCH_SUM | promote-driver rc=$PD_RC $PD_SUM | stale-work rc=$STALE_RC $STALE_SUM | sampler=$SAMPLER_SUM | continue rc=$CONT_RC $CONT_SUM" >> "$LOG"
+# Dead-man switch: a green tick pings the off-box check, a red tick pings its
+# /fail endpoint, so a machine that stops ticking at all is noticed by
+# something that is not on this machine. With no
+# $COMPOUND_HOME/config/healthchecks-ping-url it is a no-op with no network.
+# The ping reports the tick; it is not a stage and never changes FINAL_RC.
+if [ "$FINAL_RC" -eq 0 ]; then
+  DEADMAN_OUT=$("$TIMEOUT_BIN" 30 "$BIN" notice deadman ping 2>&1)
+else
+  DEADMAN_OUT=$("$TIMEOUT_BIN" 30 "$BIN" notice deadman ping --fail 2>&1)
+fi
+DEADMAN_RC=$?
+DEADMAN_SUM=$(printf '%.160s' "$DEADMAN_OUT" | tr '\n\r' '  ')
+echo "$TS final rc=$FINAL_RC | director rc=$DIR_RC $DIR_SUM | compaction rc=$ARCH_RC $ARCH_SUM | promote-driver rc=$PD_RC $PD_SUM | stale-work rc=$STALE_RC $STALE_SUM | sampler=$SAMPLER_SUM | continue rc=$CONT_RC $CONT_SUM | deadman rc=$DEADMAN_RC $DEADMAN_SUM" >> "$LOG"
 exit "$FINAL_RC"

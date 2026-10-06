@@ -104,6 +104,12 @@ PY
     printf -- '- archived: 0\n- dry_run: false\n'
     exit 0
     ;;
+  notice)
+    # `notice deadman ping [--fail]`: echo the exact argv so the tick log
+    # proves which form the heartbeat sent (green -> ping, red -> --fail).
+    printf 'deadman: stub %s\n' "$*"
+    exit 0
+    ;;
   work)
     # `work continue` renders a controlled payload when the case provides
     # one (FAKE_CONTINUE_JSON), so CONT_SUM parsing — e.g. the R6K
@@ -194,7 +200,8 @@ echo "==> e2e: committed driver (process exit 0) -> FINAL_RC=0"
 # receipts.jsonl, then prints the INDENTED report on stdout. The heartbeat
 # must bind the two by identity and go green.
 run_heartbeat "committed" "0" \
-  'FAKE_DRIVER_JSON=$(committed_driver_json pass-committed-001 "$_home"); export FAKE_DRIVER_JSON; FAKE_DRIVER_RECEIPT=producer; export FAKE_DRIVER_RECEIPT'
+  'FAKE_DRIVER_JSON=$(committed_driver_json pass-committed-001 "$_home"); export FAKE_DRIVER_JSON; FAKE_DRIVER_RECEIPT=producer; export FAKE_DRIVER_RECEIPT' \
+  'deadman rc=0 deadman: stub notice deadman ping$'
 
 echo "==> e2e: director stderr noise before valid JSON -> FINAL_RC=0, stderr kept in tick log"
 
@@ -230,7 +237,8 @@ echo "==> e2e: partial driver (process exit 0) -> FINAL_RC=1"
 
 DRIVER_JSON='{"pass_id":"pass-partial-001","stage":"partial","home":"..."}'
 run_heartbeat "partial" "1" \
-  'FAKE_DRIVER_JSON="$DRIVER_JSON"; export FAKE_DRIVER_JSON'
+  'FAKE_DRIVER_JSON="$DRIVER_JSON"; export FAKE_DRIVER_JSON' \
+  'deadman rc=0 deadman: stub notice deadman ping --fail$'
 
 echo "==> e2e: failed driver (process exit 0) -> FINAL_RC=1"
 

@@ -24,6 +24,7 @@ import (
 	"compound/internal/hookplan"
 	"compound/internal/landlease"
 	"compound/internal/lanes"
+	"compound/internal/operatornotice"
 	"compound/internal/policy"
 	"compound/internal/runattempt"
 	"compound/internal/work"
@@ -630,6 +631,7 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 		fmt.Fprintf(stdout, "  note: %s\n", rep.PlacementNote)
 	}
 	policy.RenderPresenceDoctorLine(stdout, rep.Home, time.Now().UTC())
+	operatornotice.RenderDoctorLines(stdout, rep.Home, time.Now().UTC())
 	printPlacementSourceFreshness(stdout, rep)
 	printRetention(stdout, rep)
 

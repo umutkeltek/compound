@@ -153,6 +153,12 @@ type NoticeReport struct {
 	// channel this flush. They are deliberately left unrecorded so a later
 	// flush can still reach them.
 	Queued int `json:"queued"`
+
+	// AwayThrough and ReturnQueued are set only inside an away window: the
+	// window's end, and how many asks were newly added to the return queue.
+	// Both are omitted while present so the report stays byte-identical.
+	AwayThrough  string `json:"away_through,omitempty"`
+	ReturnQueued int    `json:"return_queued,omitempty"`
 }
 
 // Notify is the public entry point: it builds the attention frontier from the
@@ -254,6 +260,22 @@ func NotifyFromInputs(homePath, transport string, in attention.Report, now time.
 		return decideCommand(pending[i]) != "" && decideCommand(pending[j]) == ""
 	})
 
+	// Away mode: inside the operator's away window every ask is queued for
+	// their return (and its work item parked through the governed hold) before
+	// anything is served, so a hold already notified before the window opened
+	// is queued too. Outside the window this is a no-op and the flush below is
+	// unchanged. A queue that cannot be written fails the flush: an ask the
+	// operator will never see is the failure this exists to prevent.
+	through := awayThrough(homePath, now)
+	if through != "" {
+		report.AwayThrough = through
+		queued, err := queueAsksForReturn(homePath, pending, through, now)
+		if err != nil {
+			return NoticeReport{}, fmt.Errorf("operatornotice: return queue: %w", err)
+		}
+		report.ReturnQueued = queued
+	}
+
 	// Pass A: classify against prior records without emitting anything, so
 	// channel occupancy is known BEFORE the first emit decision. A one-pass
 	// loop would let a hold already occupying the channel be counted after a
@@ -317,7 +339,7 @@ func NotifyFromInputs(homePath, transport string, in attention.Report, now time.
 		// Build the one-line card body and drive the existing act seam.
 		// A PolicyDecision-gate refusal or a transport-exec failure is
 		// counted in the doctor; the target stays byte-identical.
-		card := cardBody(group, holdID, workID, transport)
+		card := cardBodyFor(group, holdID, workID, through)
 		receiptID, transitionID, err := executeFn(homePath, transport, card, workID, now)
 		if err != nil {
 			report.Refused++
@@ -476,14 +498,23 @@ func noticeActionID(workID, transport, body string, now time.Time) string {
 // action now says so plainly and carries no command at all, which lets the
 // caller count it as unnotifiable instead of shipping a dead end.
 func cardBody(g attention.Group, holdID, workID, transport string) string {
-	ask := strings.TrimSpace(g.OperatorSummary)
-	if ask == "" {
-		ask = "attention hold requires operator review"
-	}
+	return cardBodyFor(g, holdID, workID, "")
+}
+
+// cardBodyFor is cardBody with the away window's end. Inside a window
+// (through non-empty) the decide line is replaced by where the ask now
+// waits: the card no longer asks, it says the ask is queued for the operator's
+// return and names its return-queue entry.
+func cardBodyFor(g attention.Group, holdID, workID, through string) string {
 	lines := []string{
 		fmt.Sprintf("🛎 hold=%s", holdID),
 		fmt.Sprintf("work=%s", workID),
-		fmt.Sprintf("ask=%s", ask),
+		fmt.Sprintf("ask=%s", askSummary(g)),
+	}
+	if through != "" {
+		lines = append(lines, fmt.Sprintf("queued for your return (through %s): compound notice return-queue show %s",
+			through, ReturnQueueIDFor(workID, g.Kind)))
+		return strings.Join(lines, "\n")
 	}
 	if cmd := decideCommand(g); cmd != "" {
 		lines = append(lines, "decide="+cmd)
