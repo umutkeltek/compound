@@ -264,15 +264,39 @@ func TestCanonicalConsumerXcodeAdapterConsumesBothNativeViews(t *testing.T) {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
-	script := "#!/bin/sh\nset -eu\ntest \"$1 $2 $3\" = 'xcresulttool get test-results'\ntest -d \"$6\"\ncase \"$4\" in\nsummary) printf '%s\\n' '{\"result\":\"Passed\",\"totalTestCount\":1,\"passedTests\":1,\"failedTests\":0,\"skippedTests\":0,\"expectedFailures\":0,\"testFailures\":[]}' ;;\ntests) printf '%s\\n' '{\"testNodes\":[{\"nodeType\":\"Test Case\",\"nodeIdentifier\":\"ActivationTests/testFirstAppearance()\",\"result\":\"Passed\"}]}' ;;\n*) exit 42 ;;\nesac\n"
-	executable := filepath.Join(bin, "xcrun")
-	if err := os.WriteFile(executable, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+	script := `#!/bin/sh
+set -eu
+if [ "$1" = --find ]; then
+  case "$2" in
+    xcodebuild|xcresulttool) printf '%s/%s\n' "${0%/*}" "$2"; exit 0 ;;
+    *) exit 42 ;;
+  esac
+fi
+test "$1 $2 $3" = 'xcresulttool get test-results'
+if [ "$5" = --help ]; then
+  printf '%s help\n' "$4"
+  exit 0
+fi
+test -d "$6"
+case "$4" in
+  summary) printf '%s\n' '{"result":"Passed","totalTestCount":1,"passedTests":1,"failedTests":0,"skippedTests":0,"expectedFailures":0,"testFailures":[]}' ;;
+  tests) printf '%s\n' '{"testNodes":[{"nodeType":"Test Case","nodeIdentifier":"ActivationTests/testFirstAppearance()","result":"Passed"}]}' ;;
+  *) exit 42 ;;
+esac
+`
+	for name, body := range map[string]string{
+		"xcrun":        script,
+		"xcodebuild":   "#!/bin/sh\nset -eu\ntest \"$1\" = -version\nprintf 'Xcode 99.0\\nBuild version Synthetic\\n'\n",
+		"xcresulttool": "#!/bin/sh\nexit 0\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	original := proofCheckRuntimeExecutable
 	proofCheckRuntimeExecutable = func(logical string) (string, error) {
-		if logical == "xcrun" {
-			return executable, nil
+		if logical == "xcrun" || logical == "xcodebuild" {
+			return filepath.Join(bin, logical), nil
 		}
 		return original(logical)
 	}
