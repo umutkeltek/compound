@@ -84,6 +84,12 @@ type ActionClassification struct {
 	// DesktopSurface is where the action lands on the operator's machine. See
 	// desktop_surface.go for the vocabulary and why it is its own dimension.
 	DesktopSurface string
+	// Capability, CatalogRow, and EvidenceRefs are set when a shell verb
+	// catalog row named the command (shell_verb_catalog.go); the command hash
+	// the semantic Destination replaced survives in EvidenceRefs.
+	Capability   string
+	CatalogRow   string
+	EvidenceRefs []string
 }
 
 type ActionBinding struct {
@@ -282,11 +288,11 @@ func MonitorToolAction(request ToolActionRequest, cfg Config, now time.Time) Mon
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
 			Privacy:       "private",
 			Risk:          actionRisk(classification),
-			EvidenceRefs:  append([]string{}, inputRefs...),
+			EvidenceRefs:  append(append([]string{}, inputRefs...), classification.EvidenceRefs...),
 			Uncertainty:   envelope.Uncertainty{Level: actionUncertainty(classification)},
 		},
 		Actor:          firstNonEmptyMonitor(request.Actor, request.Harness, "unknown-actor"),
-		Capability:     classification.Domain + "." + classification.Operation,
+		Capability:     actionCapability(classification),
 		Action:         classification.Operation,
 		Target:         envelope.ActionTarget{Kind: classification.TargetKind, ID: targetID, Path: shellTargetPath(classification, request.Cwd)},
 		Destination:    classification.Destination,

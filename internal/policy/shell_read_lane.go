@@ -300,7 +300,7 @@ func classifyShellAction(
 			worst = class
 		}
 	}
-	return shellClassificationFor(classification, worst)
+	return applyShellVerbCatalog(shellClassificationFor(classification, worst), command, segments, firstPartyCommands)
 }
 
 // shellExistingRemotePush recognizes only the narrow standing-grant shape:
