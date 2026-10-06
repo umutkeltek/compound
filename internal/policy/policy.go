@@ -45,6 +45,18 @@ type StandingGrant struct {
 	MaxTokens            *int     `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
 	Destination          string   `yaml:"destination,omitempty" json:"destination,omitempty"`
 	ExpiresAt            string   `yaml:"expires_at" json:"expires_at"` // RFC3339; empty = no expiry
+	// NotBefore is the RFC3339 instant the grant becomes eligible; empty =
+	// eligible from import. A grant is eligible only while not_before <= now < expires_at,
+	// so a December set can be imported now and activate itself.
+	NotBefore string `yaml:"not_before,omitempty" json:"not_before,omitempty"`
+	// RequiresPresence is the operator presence state the grant needs:
+	// any (default) | present | away. Presence is a KEY, not a ceiling: it
+	// only decides eligibility for grants that ask for a presence state.
+	RequiresPresence string `yaml:"requires_presence,omitempty" json:"requires_presence,omitempty"`
+	// Reason and Rollback are operator-authored audit text carried verbatim
+	// from the grant source; they never affect a decision.
+	Reason   string `yaml:"reason,omitempty" json:"reason,omitempty"`
+	Rollback string `yaml:"rollback,omitempty" json:"rollback,omitempty"`
 }
 
 // Config is the declarative policy. Shipped as a leak-free built-in default; overridable
@@ -61,6 +73,10 @@ type Config struct {
 	OperatorAutonomyLevel        string               `yaml:"operator_autonomy_level,omitempty" json:"operator_autonomy_level,omitempty"`
 	OperatorAutonomyAuthorityRef string               `yaml:"operator_autonomy_authority_ref,omitempty" json:"operator_autonomy_authority_ref,omitempty"`
 	PolicyEvidenceRefs           []string             `yaml:"policy_evidence_refs,omitempty" json:"policy_evidence_refs,omitempty"`
+	// OperatorPresence is the presence window from the operator-state
+	// authority. policy.yaml cannot set it (yaml:"-"); only
+	// compound://registries/operator-state does, via ApplyOperatorState.
+	OperatorPresence *OperatorPresence `yaml:"-" json:"operator_presence,omitempty"`
 }
 
 // DefaultConfig satisfies the three documented proof cases:
@@ -257,6 +273,9 @@ func evaluateBase(ai envelope.ActionIntent, cfg Config, now time.Time) envelope.
 	//    A granted read needs no such duty and stays a bare allow.
 	if g, missReasons, ok := matchGrant(cfg.StandingGrants, ai, cfg, now); ok {
 		reason := fmt.Sprintf("covered by standing grant %s (capability=%q class=%q)", g.ID, g.Capability, g.MutationClass)
+		if p := strings.TrimSpace(g.RequiresPresence); p != "" && p != PresenceAny {
+			reason += fmt.Sprintf(" requires_presence=%s", p)
+		}
 		if ai.MutationClass == "read" {
 			return withPolicyEvidence(mkDecision(ai, "allow",
 				[]string{reason}, nil, g.ID, g.ExpiresAt, now), cfg)
@@ -626,7 +645,11 @@ func matchGrant(grants []StandingGrant, ai envelope.ActionIntent, cfg Config, no
 				continue
 			}
 		}
-		reasons := grantEnvelopeMisses(g, ai, cfg)
+		if miss, inactive := grantNotYetActive(g, now); inactive {
+			misses = append(misses, miss)
+			continue
+		}
+		reasons := grantEnvelopeMisses(g, ai, cfg, now)
 		if len(reasons) == 0 {
 			return g, nil, true
 		}
@@ -635,9 +658,12 @@ func matchGrant(grants []StandingGrant, ai envelope.ActionIntent, cfg Config, no
 	return StandingGrant{}, misses, false
 }
 
-func grantEnvelopeMisses(g StandingGrant, ai envelope.ActionIntent, cfg Config) []string {
+func grantEnvelopeMisses(g StandingGrant, ai envelope.ActionIntent, cfg Config, now time.Time) []string {
 	var reasons []string
 	id := grantID(g)
+	if miss, ok := grantPresenceMiss(g, cfg, now); ok {
+		reasons = append(reasons, miss)
+	}
 	if g.ReversibilityCeiling != "" {
 		if !reversibilityWithinCeiling(ai.Reversibility, g.ReversibilityCeiling) {
 			reasons = append(reasons, fmt.Sprintf("standing grant %q covers reversibility up to %q, not %q", id, g.ReversibilityCeiling, ai.Reversibility))
@@ -677,6 +703,42 @@ func grantEnvelopeMisses(g StandingGrant, ai envelope.ActionIntent, cfg Config) 
 		}
 	}
 	return reasons
+}
+
+// grantNotYetActive reports a grant whose not_before is still ahead of now.
+// An unparseable not_before fails closed: the grant stays inactive, because a
+// window the policy cannot read is not a window anyone authorized.
+func grantNotYetActive(g StandingGrant, now time.Time) (string, bool) {
+	raw := strings.TrimSpace(g.NotBefore)
+	if raw == "" {
+		return "", false
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return fmt.Sprintf("standing grant %q has unreadable not_before %q; inactive", grantID(g), g.NotBefore), true
+	}
+	if now.Before(t) {
+		return fmt.Sprintf("standing grant %q not active before %s", grantID(g), raw), true
+	}
+	return "", false
+}
+
+// grantPresenceMiss reports a grant whose requires_presence the operator's
+// EFFECTIVE presence at now does not satisfy. Presence is a key here: a grant
+// that names no presence state (or "any") never misses, so this check alone
+// never moves a decision for such a grant. An unknown value fails closed. (The
+// one other thing away changes is the L3 envelope, which it only narrows; see
+// autonomyEnvelopeNarrowedAway.)
+func grantPresenceMiss(g StandingGrant, cfg Config, now time.Time) (string, bool) {
+	required := strings.ToLower(strings.TrimSpace(g.RequiresPresence))
+	if required == "" || required == PresenceAny {
+		return "", false
+	}
+	effective := cfg.OperatorPresence.Effective(now)
+	if required == effective {
+		return "", false
+	}
+	return fmt.Sprintf("standing grant %q requires_presence %q, operator presence is %q", grantID(g), required, effective), true
 }
 
 func grantID(g StandingGrant) string {

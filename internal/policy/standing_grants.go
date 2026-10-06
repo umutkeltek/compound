@@ -326,6 +326,8 @@ func normalizeStandingGrant(grant StandingGrant) (StandingGrant, error) {
 	grant.BlastRadius = strings.TrimSpace(grant.BlastRadius)
 	grant.TargetPath = strings.TrimSpace(grant.TargetPath)
 	grant.ExpiresAt = strings.TrimSpace(grant.ExpiresAt)
+	grant.NotBefore = strings.TrimSpace(grant.NotBefore)
+	grant.RequiresPresence = strings.ToLower(strings.TrimSpace(grant.RequiresPresence))
 	if grant.ID == "" || grant.Capability == "" {
 		return StandingGrant{}, fmt.Errorf("standing grant id and capability required")
 	}
@@ -346,10 +348,27 @@ func normalizeStandingGrant(grant StandingGrant) (StandingGrant, error) {
 		}
 		grant.ReversibilityCeiling = normalized
 	}
+	var expiresAt time.Time
 	if grant.ExpiresAt != "" {
-		if _, err := time.Parse(time.RFC3339, grant.ExpiresAt); err != nil {
+		t, err := time.Parse(time.RFC3339, grant.ExpiresAt)
+		if err != nil {
 			return StandingGrant{}, fmt.Errorf("standing grant %q invalid expires_at: %w", grant.ID, err)
 		}
+		expiresAt = t
+	}
+	if grant.NotBefore != "" {
+		notBefore, err := time.Parse(time.RFC3339, grant.NotBefore)
+		if err != nil {
+			return StandingGrant{}, fmt.Errorf("standing grant %q invalid not_before: %w", grant.ID, err)
+		}
+		if !expiresAt.IsZero() && notBefore.After(expiresAt) {
+			return StandingGrant{}, fmt.Errorf("standing grant %q not_before %s is after expires_at %s; the grant could never be eligible", grant.ID, grant.NotBefore, grant.ExpiresAt)
+		}
+	}
+	switch grant.RequiresPresence {
+	case "", PresenceAny, PresencePresent, PresenceAway:
+	default:
+		return StandingGrant{}, fmt.Errorf("standing grant %q invalid requires_presence %q: must be any|present|away", grant.ID, grant.RequiresPresence)
 	}
 	return grant, nil
 }

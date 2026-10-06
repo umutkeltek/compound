@@ -31,6 +31,7 @@
 //   - import-release-goal-holds
 //   - release-goal-holds-authority
 //   - autonomy-halt
+//   - presence (body in internal/policy.PresenceCLI)
 //   - editable-surfaces
 //
 // Exit code contract (preserved across the move): 0 allow, 3 hold, 4 deny,
@@ -50,7 +51,7 @@ import (
 
 func cmdPolicy(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|action-plan|action-approve|action-check|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt|editable-surfaces> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|action-plan|action-approve|action-check|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt|presence|editable-surfaces> ...")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -640,6 +641,8 @@ func cmdPolicy(args []string) {
 				fmt.Printf("  - %s\n", dc.Class)
 			}
 		}
+	case "presence":
+		os.Exit(policy.PresenceCLI(args[1:], os.Stdout, os.Stderr, time.Now()))
 	case "editable-surfaces":
 		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
 			fmt.Fprintln(os.Stderr, "usage: compound policy editable-surfaces [--json]")
@@ -678,7 +681,7 @@ func cmdPolicy(args []string) {
 			fmt.Printf("  ! validation_error: %s\n", ve)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|action-plan|action-approve|action-check|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt|editable-surfaces> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|action-plan|action-approve|action-check|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt|presence|editable-surfaces> ...")
 		os.Exit(2)
 	}
 }
