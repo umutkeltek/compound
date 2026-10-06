@@ -5,7 +5,8 @@ package browser
 //
 // heal = probe; when logged out, run the profile's login_recipe with
 // credentials from `compound browser credential-provider` (a subprocess on
-// PATH; values go to agent-browser on stdin only), then re-probe. It never
+// PATH spoken to in agent-browser's plugin protocol; values go to
+// agent-browser on stdin only), then re-probe. It never
 // loops: one login attempt per invocation, at most two attempts per profile
 // per six hours (persisted as heal_attempts in the registry row, recorded
 // BEFORE the page is driven so a crash still counts). Anything that needs
@@ -155,59 +156,167 @@ func pruneAttempts(attempts []healAttempt, now time.Time) []healAttempt {
 
 // --- credential provider ------------------------------------------------------
 
-// newCredentialProvider binds `compound browser credential-provider` (B3)
-// for one profile: `compound browser credential-provider --profile ID
-// --field NAME` prints the value on stdout and exits 0. A compound on PATH
-// without that verb reads as missing, not as a failed login.
-func newCredentialProvider(homePath, profile string) (secretResolver, error) {
+// credentialProviderReply is the ONE JSON object `compound browser
+// credential-provider` (credential_provider.go) writes for a
+// credential.resolve request; it exits 0 for every protocol answer.
+type credentialProviderReply struct {
+	Protocol   string              `json:"protocol"`
+	Success    bool                `json:"success"`
+	Error      string              `json:"error"`
+	Credential *providedCredential `json:"credential"`
+}
+
+// credentialResolveRequestJSON is the agent-browser.plugin.v1
+// credential.resolve envelope, the same request agent-browser sends the
+// plugin: profileName is the registry id, itemRef its credential_ref (the
+// provider refuses a mismatch; null when the row names none).
+func credentialResolveRequestJSON(profile, credentialRef string) ([]byte, error) {
+	req := credentialResolveRequest{ProfileName: profile}
+	if ref := strings.TrimSpace(credentialRef); ref != "" {
+		req.ItemRef = &ref
+	}
+	request, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(pluginEnvelope{Protocol: agentBrowserPluginProtocol, Type: "credential.resolve", Capability: "credential.read", Request: request})
+}
+
+// parseCredentialProviderReply reads the provider's one stdout object.
+// Errors carry the provider's refusal text (names only), never a value.
+func parseCredentialProviderReply(body []byte) (providedCredential, error) {
+	var reply credentialProviderReply
+	if err := json.Unmarshal(bytes.TrimSpace(body), &reply); err != nil || reply.Protocol != agentBrowserPluginProtocol {
+		return providedCredential{}, errors.New("credential_unavailable: the credential provider reply is not one agent-browser.plugin.v1 JSON object")
+	}
+	if !reply.Success || reply.Credential == nil {
+		reason := truncateDetail(reply.Error)
+		if reason == "" {
+			reason = "the credential provider refused"
+		}
+		return providedCredential{}, fmt.Errorf("credential_unavailable: %s", reason)
+	}
+	return *reply.Credential, nil
+}
+
+// credentialReplyField maps a recipe {{secret:FIELD}} to the reply field that
+// carries it: username, password, or the provider-generated otp for any
+// OTP/TOTP-like name. "" means credential.resolve has no such field.
+func credentialReplyField(field string) string {
+	switch lower := strings.ToLower(strings.TrimSpace(field)); {
+	case lower == "username" || lower == "password":
+		return lower
+	case strings.Contains(lower, "otp"):
+		return "otp"
+	}
+	return ""
+}
+
+func (c providedCredential) field(name string) string {
+	switch name {
+	case "username":
+		return c.Username
+	case "password":
+		return c.Password
+	case "otp":
+		return c.OTP
+	}
+	return ""
+}
+
+// healCredentials binds `compound browser credential-provider` (B3) for one
+// profile. Every resolve is one subprocess that reads one credential.resolve
+// envelope on stdin and writes one reply object on stdout (exit 0 for every
+// protocol answer). prefetch makes the one call per heal and holds
+// username/password; an otp is re-resolved at step time because codes expire.
+type healCredentials struct {
+	bin, home string
+	request   []byte
+	held      *providedCredential
+}
+
+// newCredentialProvider finds the provider on PATH. A compound on PATH
+// without the verb is detected at the first call and reads as missing, not
+// as a failed login.
+func newCredentialProvider(homePath string, p selfHealProfile) (*healCredentials, error) {
 	bin, err := exec.LookPath("compound")
 	if err != nil {
 		return nil, errors.New("credential_provider_missing: `compound browser credential-provider` is not on PATH")
 	}
-	return func(ctx context.Context, field string) (string, error) {
-		callCtx, cancel := context.WithTimeout(ctx, credentialProviderWait)
-		defer cancel()
-		cmd := exec.CommandContext(callCtx, bin, "browser", "credential-provider", "--profile", profile, "--field", field)
-		cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
-		cmd.Stdin = nil
-		stdout := &limitedBuffer{limit: 8192}
-		stderr := &limitedBuffer{limit: 4096}
-		cmd.Stdout, cmd.Stderr = stdout, stderr
-		if err := cmd.Run(); err != nil {
-			if strings.Contains(stderr.String(), "usage: compound browser") || strings.Contains(stderr.String(), "unknown browser") {
-				return "", errors.New("credential_provider_missing: installed compound has no `browser credential-provider`")
-			}
-			return "", fmt.Errorf("credential_unavailable: field %s", field)
-		}
-		value := strings.TrimRight(stdout.String(), "\r\n")
-		if value == "" {
-			return "", fmt.Errorf("credential_unavailable: field %s is empty", field)
-		}
-		return value, nil
-	}, nil
+	request, err := credentialResolveRequestJSON(p.ID, p.CredentialRef)
+	if err != nil {
+		return nil, err
+	}
+	return &healCredentials{bin: bin, home: homePath, request: request}, nil
 }
 
-// prefetchSecrets resolves every field the login recipe needs before any
-// attempt is recorded, so a provider gap never burns an attempt. TOTP-like
-// fields are left for step time because their codes expire.
-func prefetchSecrets(ctx context.Context, resolve secretResolver, fields []string) (secretResolver, error) {
-	cache := map[string]string{}
-	for _, field := range fields {
-		if strings.Contains(strings.ToLower(field), "totp") {
-			continue
+// fetch runs one credential.resolve round trip.
+func (c *healCredentials) fetch(ctx context.Context) (providedCredential, error) {
+	callCtx, cancel := context.WithTimeout(ctx, credentialProviderWait)
+	defer cancel()
+	cmd := exec.CommandContext(callCtx, c.bin, "browser", "credential-provider", "--home", c.home)
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+c.home)
+	cmd.Stdin = bytes.NewReader(c.request)
+	stdout := &limitedBuffer{limit: 8192}
+	stderr := &limitedBuffer{limit: 4096}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	if err := cmd.Run(); err != nil {
+		if strings.Contains(stderr.String(), "usage: compound browser") || strings.Contains(stderr.String(), "unknown browser") {
+			return providedCredential{}, errors.New("credential_provider_missing: installed compound has no `browser credential-provider`")
 		}
-		value, err := resolve(ctx, field)
-		if err != nil {
-			return nil, err
-		}
-		cache[field] = value
+		return providedCredential{}, errors.New("credential_unavailable: the credential provider exited unsuccessfully")
 	}
-	return func(ctx context.Context, field string) (string, error) {
-		if v, ok := cache[field]; ok {
-			return v, nil
+	return parseCredentialProviderReply(stdout.Bytes())
+}
+
+// prefetch resolves once before any attempt is recorded and proves every
+// field the login recipe needs is present, so a provider gap never burns an
+// attempt. A recipe that fills an otp the provider cannot produce needs the
+// operator's second factor: two_factor_required, also before any attempt.
+func (c *healCredentials) prefetch(ctx context.Context, fields []string) (secretResolver, error) {
+	cred, err := c.fetch(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, field := range fields {
+		name := credentialReplyField(field)
+		switch {
+		case name == "":
+			return nil, fmt.Errorf("credential_unavailable: field %s is not served by credential.resolve (username, password, otp)", field)
+		case cred.field(name) != "":
+		case name == "otp":
+			return nil, fmt.Errorf("two_factor_required: the credential provider returned no otp for field %s", field)
+		default:
+			return nil, fmt.Errorf("credential_unavailable: field %s is empty", field)
 		}
-		return resolve(ctx, field)
-	}, nil
+	}
+	c.held = &cred
+	return c.resolve, nil
+}
+
+// resolve is the step-time secretResolver.
+func (c *healCredentials) resolve(ctx context.Context, field string) (string, error) {
+	name := credentialReplyField(field)
+	if name == "" {
+		return "", fmt.Errorf("credential_unavailable: field %s is not served by credential.resolve", field)
+	}
+	if c.held == nil || name == "otp" {
+		cred, err := c.fetch(ctx)
+		if err != nil {
+			return "", err
+		}
+		if name == "otp" {
+			if cred.OTP == "" {
+				return "", fmt.Errorf("two_factor_required: the credential provider returned no otp for field %s", field)
+			}
+			return cred.OTP, nil
+		}
+		c.held = &cred
+	}
+	if value := c.held.field(name); value != "" {
+		return value, nil
+	}
+	return "", fmt.Errorf("credential_unavailable: field %s is empty", field)
 }
 
 // --- heal ----------------------------------------------------------------------
@@ -296,11 +405,13 @@ func runHeal(ctx context.Context, homePath, id string) (healResult, int) {
 	_, secretFields := recipeRequirements(recipe)
 	var secrets secretResolver
 	if len(secretFields) > 0 {
-		provider, err := newCredentialProvider(homePath, id)
+		provider, err := newCredentialProvider(homePath, p)
 		if err != nil {
+			res.Error = err.Error()
 			return needsOperator("refused", reasonOf(err))
 		}
-		if secrets, err = prefetchSecrets(ctx, provider, secretFields); err != nil {
+		if secrets, err = provider.prefetch(ctx, secretFields); err != nil {
+			res.Error = err.Error()
 			return needsOperator("refused", reasonOf(err))
 		}
 	}

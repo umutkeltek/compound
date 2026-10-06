@@ -73,23 +73,41 @@ case "$cmd" in
 esac
 `
 
-// fakeProviderScript stands in for `compound browser credential-provider`.
+// fakeProviderScript stands in for `compound browser credential-provider`
+// and speaks its contract (credential_provider.go): flags are only
+// `--home DIR` (anything else is CLI misuse, exit 2 with that verb's usage),
+// ONE agent-browser.plugin.v1 credential.resolve envelope on stdin, ONE JSON
+// object on stdout, exit 0 for every protocol answer. It serves the username
+// and $D/secret as the password, plus $D/otp as `otp` when that file exists.
+// Every request body is appended to provider-requests.log.
 const fakeProviderScript = `#!/bin/sh
 D="${FAKE_AB_DIR:?}"
 { printf 'ARGV'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\n'; } >> "$D/provider.log"
 if [ "$1" != browser ] || [ "$2" != credential-provider ] || [ -f "$D/provider-verb-absent" ]; then echo "usage: compound browser list [--json]" >&2; exit 2; fi
-shift 2; field=""
-while [ $# -gt 0 ]; do case "$1" in --field) field="$2"; shift 2 ;; *) shift ;; esac; done
-case "$field" in
-  username) echo "operator@example.test" ;;
-  password) cat "$D/secret" ;;
-  *) echo "no such field" >&2; exit 4 ;;
-esac
+shift 2
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --home) [ -n "$2" ] || { echo "usage: compound browser credential-provider [--home DIR]" >&2; exit 2; }; shift 2 ;;
+    *) printf 'error: unexpected argument "%s"\nusage: compound browser credential-provider [--home DIR]\n' "$1" >&2; exit 2 ;;
+  esac
+done
+req=$(cat)
+printf '%s\n' "$req" >> "$D/provider-requests.log"
+reply() { printf '{"protocol":"agent-browser.plugin.v1",%s}\n' "$1"; exit 0; }
+case "$req" in *'"protocol":"agent-browser.plugin.v1"'*) ;; *) reply '"success":false,"error":"unsupported protocol"' ;; esac
+case "$req" in *'"type":"credential.resolve"'*) ;; *) reply '"success":false,"error":"unsupported request type"' ;; esac
+case "$req" in *'"capability":"credential.read"'*) ;; *) reply '"success":false,"error":"credential.resolve requires the credential.read capability"' ;; esac
+case "$req" in *'"profileName":"` + fakeProfileID + `"'*) ;; *) reply '"success":false,"error":"profile is not registered"' ;; esac
+case "$req" in *'"itemRef":"` + fakeCredentialRef + `"'*|*'"itemRef":null'*) ;; *) reply '"success":false,"error":"itemRef does not match the credential_ref"' ;; esac
+[ -f "$D/secret" ] || reply '"success":false,"error":"no credential source for ref (file: absent)"'
+otp=""; [ -f "$D/otp" ] && otp=",\"otp\":\"$(cat "$D/otp")\""
+reply "\"success\":true,\"credential\":{\"username\":\"operator@example.test\",\"password\":\"$(cat "$D/secret")\"$otp}"
 `
 
 const (
-	fakeProfileID = "example-profile"
-	fakeSecret    = "hunter2-synthetic-secret"
+	fakeProfileID     = "example-profile"
+	fakeCredentialRef = "example-login"
+	fakeSecret        = "hunter2-synthetic-secret"
 )
 
 type healFixture struct {
@@ -191,6 +209,7 @@ func (f *healFixture) writeRegistry(extra map[string]any) {
 		"login_check_url":  "https://app.example.test/account",
 		"logged_in_marker": map[string]any{"text": "Welcome back"},
 		"login_recipe":     "login",
+		"credential_ref":   fakeCredentialRef,
 		"unknown_future":   "kept",
 	}
 	for k, v := range extra {

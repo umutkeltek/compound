@@ -188,9 +188,11 @@ func cmdSelfHealRun(ctx context.Context, homePath string, a selfHealArgs, out, e
 	}
 	var secrets secretResolver
 	if len(secretFields) > 0 {
-		if secrets, err = newCredentialProvider(homePath, a.profile); err != nil {
+		provider, err := newCredentialProvider(homePath, p)
+		if err != nil {
 			return refuse(err)
 		}
+		secrets = provider.resolve
 	}
 	lock, err := lockProfile(homePath, a.profile)
 	if err != nil {

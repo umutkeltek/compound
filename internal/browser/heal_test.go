@@ -315,8 +315,9 @@ func TestHealLogsInThroughProviderAndReprobes(t *testing.T) {
 			t.Fatalf("run receipt %s carries a credential value", path)
 		}
 	}
-	if !strings.Contains(f.readState("provider.log"), "[--profile] ["+fakeProfileID+"]") {
-		t.Fatalf("provider not called for the profile: %s", f.readState("provider.log"))
+	requests := strings.Split(strings.TrimSpace(f.readState("provider-requests.log")), "\n")
+	if len(requests) != 1 || !strings.Contains(requests[0], `"profileName":"`+fakeProfileID+`","itemRef":"`+fakeCredentialRef+`"`) {
+		t.Fatalf("want one credential.resolve for the profile and its credential_ref, got: %q", requests)
 	}
 }
 

@@ -82,6 +82,7 @@ type selfHealProfile struct {
 	LoggedInMarker  *browserMarker `json:"logged_in_marker,omitempty"`
 	TwoFactorMarker *browserMarker `json:"two_factor_marker,omitempty"`
 	LoginRecipe     string         `json:"login_recipe,omitempty"`
+	CredentialRef   string         `json:"credential_ref,omitempty"`
 	LastProbe       *lastProbe     `json:"last_probe,omitempty"`
 	HealAttempts    []healAttempt  `json:"heal_attempts,omitempty"`
 }
