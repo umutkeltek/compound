@@ -490,3 +490,47 @@ func TestBrowserOwnerSubcommandDoctorReadOnlySeedExplicit(t *testing.T) {
 		t.Fatal("browser-profiles owns the whole verb space (usage refusal still counts as handled)")
 	}
 }
+
+// credential_ref is an optional pointer (a secret NAME, never a value). Rows
+// without it keep loading; the explicit seed writer must carry it through.
+func TestBrowserProfileCredentialRefIsOptionalAndSurvivesSeed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	fixtureSocialAccounts(t, home, []map[string]string{
+		{"id": "acct-0001", "browser_profile": "~/social-profiles/profile-a"},
+	})
+	dirA := filepath.Join(home, "social-profiles", "profile-a")
+	body := `{"schema_version":"` + BrowserProfileRegistrySchemaVersion + `","updated_at":"2026-10-07T00:00:00Z","profiles":[` +
+		`{"id":"acct-0001","user_data_dir":"` + dirA + `","backends":{},"logins":["acct-0001"],"status":"pending_enrollment","credential_ref":"example-login"},` +
+		`{"id":"legacy","user_data_dir":"/nonexistent/legacy","backends":{},"logins":[],"status":"pending_enrollment"}]}`
+	if err := os.MkdirAll(filepath.Join(home, "registries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registryPath(home), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read, err := LoadBrowserProfileRegistryState(home)
+	if err != nil || read.State != BrowserProfileRegistryPopulated {
+		t.Fatalf("load: state=%q err=%v", read.State, err)
+	}
+	refs := map[string]string{}
+	for _, p := range read.Registry.Profiles {
+		refs[p.ID] = p.CredentialRef
+	}
+	if refs["acct-0001"] != "example-login" || refs["legacy"] != "" {
+		t.Fatalf("credential_ref load = %v", refs)
+	}
+	if _, err := SeedBrowserProfileRegistryExplicit(home, fixedProfileNow()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	after, err := os.ReadFile(registryPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), `"credential_ref": "example-login"`) {
+		t.Fatalf("seed dropped credential_ref:\n%s", after)
+	}
+	if strings.Count(string(after), "credential_ref") != 1 {
+		t.Fatalf("absent credential_ref must stay absent (omitempty):\n%s", after)
+	}
+}
