@@ -359,6 +359,7 @@ type Report struct {
 	SignalIDs     []string `json:"signal_ids"`
 	HypothesisIDs []string `json:"hypothesis_ids"`
 	TransitionIDs []string `json:"transition_ids,omitempty"`
+	Retracted     []string `json:"retracted,omitempty"` // essence_retract.go
 }
 
 type ReviewReport struct {
@@ -753,7 +754,12 @@ func Apply(homePath string, store *mem.Store, bundle Bundle, sourcePath string, 
 			claims = append(claims, c)
 		}
 	}
-	captured, err := store.Capture(claims, now)
+	retractions, retracted, err := essenceRetractions(store, bundle, claims, sourcePath)
+	if err != nil {
+		return report, err
+	}
+	report.Retracted = retracted
+	captured, err := store.Capture(append(claims, retractions...), now)
 	if err != nil {
 		return report, err
 	}
