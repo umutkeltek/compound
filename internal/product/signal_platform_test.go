@@ -477,7 +477,7 @@ func TestPlatformSignalCountsAppStoreAsIOS(t *testing.T) {
 		}},
 		{SchemaVersion: SchemaVersion, EvidenceRefs: []string{"fixture:dock"}, Product: Product{
 			ID: "product:dock", Name: "Dock", OwnerEntity: "project:dock", Positioning: "Marina finder.", PrivacyPosture: "local_first",
-			Surfaces: []Surface{{ID: "listing", Kind: "app_store", Ref: "appstore:6700000001"}},
+			Surfaces: []Surface{{ID: "listing", Kind: "app_store", Ref: "appstore:id-dock-fixture"}},
 			Channels: []string{"web"},
 		}},
 	}
@@ -498,7 +498,7 @@ func TestPlatformSignalCountsAppStoreAsIOS(t *testing.T) {
 		"product:harbor": "channel ios",
 		"product:beacon": "surface ios:com.example.beacon",
 		"product:tidal":  "channel app_store",
-		"product:dock":   "surface appstore:6700000001",
+		"product:dock":   "surface appstore:id-dock-fixture",
 	}
 	if !jsonEqual(t, reasons, want) {
 		t.Fatalf("match reasons = %v, want %v", reasons, want)
