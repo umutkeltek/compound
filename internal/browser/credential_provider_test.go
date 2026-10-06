@@ -146,7 +146,7 @@ func (fx credentialFixture) installFakeBWS(t *testing.T, secrets map[string]stri
 	}
 	var rows []secret
 	for key, value := range secrets {
-		rows = append(rows, secret{ID: "00000000-0000-0000-0000-000000000001", OrganizationID: "00000000-0000-0000-0000-000000000002", Key: key, Value: value, CreationDate: "2026-10-07T00:00:00Z", RevisionDate: "2026-10-07T00:00:00Z"})
+		rows = append(rows, secret{ID: "f1e2d3c4-b5a6-4978-8a9b-c0d1e2f3a4b5", OrganizationID: "a9b8c7d6-e5f4-4321-9f8e-d7c6b5a4f3e2", Key: key, Value: value, CreationDate: "2026-10-07T00:00:00Z", RevisionDate: "2026-10-07T00:00:00Z"})
 	}
 	listing, err := json.Marshal(rows)
 	if err != nil {
