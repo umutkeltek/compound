@@ -55,6 +55,20 @@ physical-device skip does not prove device behavior.
 Its native flat Failure Message child is retained as diagnostic structure, never
 counted as an additional test; nested cases or hidden result fields are refused.
 
+Xcode consumers also require xcodebuild and xcrun even if omitted from required_tools.
+Before the source-owned command launches, a read-only preflight uses the same
+explicit child environment, including DEVELOPER_DIR only when declared. It checks
+that xcrun resolves executable xcodebuild and xcresulttool paths, that xcodebuild
+reports a full Xcode version/build, and that both native test-results queries are
+supported. Successful stderr diagnostics are kept separate from the stdout
+identities being parsed; nonzero query exits still refuse. All probes share a
+15-second budget within the consumer deadline.
+An unavailable selection or unsupported report interface refuses product execution;
+Compound does not select, install, initialize, or repair the toolchain. This is a
+current capability check, not executable-byte attestation or a pinned-version claim.
+The repository-owned recipe still owns schemes, exact simulator destinations and
+fresh DerivedData. Preflight does not boot, reserve, or certify simulator readiness.
+
 The existing sealed checkout, reservation, RunAttempt, execution barrier, report
 custody, finalizer, and land-check remain the only certification path. Native
 report bytes and exact contract bytes are retained inside the content-addressed

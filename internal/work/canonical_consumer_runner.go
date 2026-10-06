@@ -46,10 +46,10 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 	if err != nil {
 		return nil, evidence, err
 	}
-	tools := make(map[string]string, len(consumer.RequiredTools)+1)
+	tools := make(map[string]string, len(consumer.RequiredTools)+2)
 	requiredTools := append([]string(nil), consumer.RequiredTools...)
 	if consumer.ReportKind == "xcresult" {
-		requiredTools = append(requiredTools, "xcrun")
+		requiredTools = append(requiredTools, "xcodebuild", "xcrun")
 	}
 	for _, tool := range requiredTools {
 		resolved, err := ProofRuntimeExecutable(ctx, tool, resolver)
@@ -134,6 +134,11 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(consumer.TimeoutSeconds)*time.Second)
 	defer cancel()
+	if consumer.ReportKind == "xcresult" {
+		if err := preflightConsumerXcode(runCtx, cwd, env, tools, command); err != nil {
+			return nil, evidence, err
+		}
+	}
 	cmd := command(runCtx, tools[consumer.Command[0]], consumer.Command[1:]...)
 	cmd.Dir, cmd.Env = cwd, env
 	// This report-custody fence is additional to the reservation's inherited
@@ -196,6 +201,52 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 		output = append(output, []byte("\nconsumer proof: "+runErr.Error()+"\n")...)
 	}
 	return output, evidence, runErr
+}
+
+// Probe the selected toolchain with the product's exact environment before its
+// source-owned command can launch. These queries never install or select Xcode,
+// build a target, or boot a simulator. Destination selection stays in the recipe.
+func preflightConsumerXcode(ctx context.Context, cwd string, env []string, tools map[string]string, command func(context.Context, string, ...string) *exec.Cmd) error {
+	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	probe := func(tool string, args ...string) ([]byte, error) {
+		cmd := command(probeCtx, tools[tool], args...)
+		cmd.Dir, cmd.Env = cwd, env
+		// Native tools may emit successful diagnostics on stderr. Only stdout
+		// carries the selected path, version, or query help we validate here.
+		output, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("Xcode consumer preflight %s %s: %w", tool, strings.Join(args, " "), errors.Join(err, probeCtx.Err()))
+		}
+		if len(output) == 0 || len(output) > 64<<10 {
+			return nil, fmt.Errorf("Xcode consumer preflight %s requires nonempty bounded output", tool)
+		}
+		return output, nil
+	}
+	for _, tool := range []string{"xcodebuild", "xcresulttool"} {
+		output, err := probe("xcrun", "--find", tool)
+		if err != nil {
+			return err
+		}
+		path := strings.TrimSpace(string(output))
+		info, err := os.Stat(path)
+		if !filepath.IsAbs(path) || strings.ContainsAny(path, "\r\n\x00") || err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+			return fmt.Errorf("Xcode consumer preflight requires selected executable %s; use an existing full Xcode toolchain", tool)
+		}
+	}
+	version, err := probe("xcodebuild", "-version")
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(string(version), "Xcode ") || !strings.Contains(string(version), "\nBuild version ") {
+		return fmt.Errorf("Xcode consumer preflight requires a full Xcode version and build")
+	}
+	for _, query := range []string{"summary", "tests"} {
+		if _, err := probe("xcrun", "xcresulttool", "get", "test-results", query, "--help"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func awaitConsumerWriters(ctx context.Context, cmd *exec.Cmd, reader *os.File) error {
