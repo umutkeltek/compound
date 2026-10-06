@@ -1302,6 +1302,12 @@ func cmdHarness(args []string) {
 		cmdHarnessCapabilityDrift(args[1:])
 		return
 	}
+	if target == "settings-matrix" {
+		if code := runHarnessSettingsMatrix(args[1:], os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
+		}
+		return
+	}
 	if target == "posture-plan" {
 		if code := runHarnessPosturePlan(args[1:], os.Stdout, os.Stderr); code != 0 {
 			os.Exit(code)

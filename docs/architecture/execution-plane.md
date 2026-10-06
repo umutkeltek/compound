@@ -603,3 +603,29 @@ rejection retry evidence. Legacy valid-hypothesis predicates still require a
 valid response through governed continuation. Host scheduling and
 source configuration are private deployment inputs, not a second scheduler or
 meaning authority in the core.
+### Harness settings: one defaults owner, declared executor observations
+
+`compound harness settings-matrix [--harness H] --json` is a read-only, freshly
+derived projection over every registered harness identity and existing
+`config/harness-permissions/<harness>.yaml` authority. Missing ownership is explicit;
+the adapter registry is not the identity inventory. Native keys have same-purpose
+labels, **not** asserted model or reasoning-scale equivalence across providers.
+No new preference catalog or cached matrix becomes authority.
+
+`PermissionAuthority.setting_sources` optionally declares executor-owned literal
+observations: `id`, `owner`, `format: shell_env`, absolute `path`, and `mappings`
+from owned string settings to source environment keys (for example
+`model: LAUNCH_MODEL`). Only the declared regular leaf is read, bounded to 128 KiB;
+it is never sourced or executed. Reports contain key status and exact-byte revision,
+never values or bodies. Mapped expansion, duplicate/missing assignments, unsupported
+formats, unowned mappings, symlink leaves and unavailable files are non-clean.
+Existing `harness drift` and doctor consume this result, including native-clean /
+launcher-mismatched cases; rendering never writes executor sources.
+
+Update requested defaults through the existing Compound authority, then render the
+native target through its governed apply seam. The executor owner updates its
+launcher; declare its observed mappings in that same authority and check drift.
+Re-run the matrix after harness/setting/source changes: new identities and owned
+keys appear without editing a second table. This observes declarations, not every
+possible overlay or actual inference. Fresh session model/effort, undeclared CLI
+flags, profiles and remote app overrides remain explicitly unverified.

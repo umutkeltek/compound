@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -298,4 +299,12 @@ func resolveExecuteWorkspace(args []string, gd *envelope.GitDeliveryContract) (s
 // line the refusal ladder quotes verbatim; ok=false means refuse.
 func checkExecuteWorkspaceExists(workspace string) (observed string, ok bool) {
 	return harness.CheckExecutionWorkspaceExists(workspace)
+}
+func runHarnessSettingsMatrix(args []string, stdout, stderr io.Writer) int {
+	root, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(stderr, "resolve Compound home failed")
+		return 1
+	}
+	return harness.RenderSettingsMatrixCLI(root, args, stdout, stderr)
 }

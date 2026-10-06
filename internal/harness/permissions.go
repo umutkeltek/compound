@@ -57,7 +57,8 @@ type PermissionAuthority struct {
 	// [features]); no dot means a top-level key. Only present for harnesses
 	// that opt into TOML posture ownership; nil/empty keeps the existing
 	// JSON-settings rendering path.
-	Settings map[string]any `json:"settings,omitempty" yaml:"settings,omitempty"`
+	Settings       map[string]any  `json:"settings,omitempty" yaml:"settings,omitempty"`
+	SettingSources []SettingSource `json:"setting_sources,omitempty" yaml:"setting_sources,omitempty"`
 }
 
 type HarnessArtifact struct {
@@ -144,11 +145,12 @@ func IsPermissionApplyFinalizationPending(err error) bool {
 }
 
 type PermissionDriftReport struct {
-	Harness        string   `json:"harness"`
-	TargetPath     string   `json:"target_path"`
-	TargetRevision string   `json:"target_revision,omitempty"`
-	Drifted        bool     `json:"drifted"`
-	Details        []string `json:"details,omitempty"`
+	Harness        string                `json:"harness"`
+	TargetPath     string                `json:"target_path"`
+	TargetRevision string                `json:"target_revision,omitempty"`
+	Drifted        bool                  `json:"drifted"`
+	Details        []string              `json:"details,omitempty"`
+	SettingSources []SettingSourceReport `json:"setting_sources,omitempty"`
 }
 
 func PermissionAuthorityRef(harness string) string {
@@ -1263,7 +1265,7 @@ func sameHarnessArtifact(a, b HarnessArtifact) bool {
 		reflect.DeepEqual(a.ManagedEntries, b.ManagedEntries)
 }
 
-func PermissionDrift(homePath, harness string) (PermissionDriftReport, error) {
+func permissionNativeDrift(homePath, harness string) (PermissionDriftReport, error) {
 	policy, _, err := LoadPermissionAuthority(homePath, harness)
 	if err != nil {
 		return PermissionDriftReport{}, err
