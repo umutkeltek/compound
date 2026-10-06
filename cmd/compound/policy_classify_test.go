@@ -47,8 +47,8 @@ func TestLiveActionIntentsNameShellVerbCatalogCapability(t *testing.T) {
 	}{
 		{"codex", "exec_command", "gog gmail send --to x@example.com -a ops@example.com",
 			"gmail.message.send", "public", "gmail-account:ops@example.com"},
-		{"claude-code", "Bash", "asc reviews list --app 1234567890",
-			"app_store.customer_reviews.read", "read", "asc-app:1234567890"},
+		{"claude-code", "Bash", "asc reviews list --app app-fixture-1",
+			"app_store.customer_reviews.read", "read", "asc-app:app-fixture-1"},
 		{"claude-code", "Bash", `curl -s -H "Authorization: Bearer $PADDLE_API_KEY" https://api.paddle.com/transactions`,
 			"paddle.api.read", "read", "paddle-api:api.paddle.com"},
 	} {

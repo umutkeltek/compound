@@ -418,7 +418,7 @@
     }
   },
   {
-    "command": "asc reviews list --app 1 \u003e out.json",
+    "command": "asc reviews list --app 1 > out.json",
     "classification": {
       "Known": false,
       "Domain": "shell",
@@ -551,7 +551,7 @@
     }
   },
   {
-    "command": "asc reviews list --app 1 \u0026\u0026 curl https://example.com/x",
+    "command": "asc reviews list --app 1 && curl https://example.com/x",
     "classification": {
       "Known": true,
       "Domain": "shell",
@@ -570,7 +570,7 @@
     }
   },
   {
-    "command": "gog gmail search foo \u0026\u0026 rm -rf /tmp/x",
+    "command": "gog gmail search foo && rm -rf /tmp/x",
     "classification": {
       "Known": true,
       "Domain": "shell",
@@ -637,25 +637,6 @@
       "BlastRadius": "internet",
       "TargetKind": "command",
       "Destination": "command:sha256:4f1124ffdb0f32a3db2789e93ff1d74dc0a4e552b1eda46337e40c1a7cfa7a34",
-      "RequiredSink": "network",
-      "NeedsSchema": false,
-      "NeedsDestination": true,
-      "OperatorGated": false,
-      "CapturesWorkInProgress": false,
-      "DesktopSurface": "none"
-    }
-  },
-  {
-    "command": "curl https://api.paddle.com@evil.example.invalid/x",
-    "classification": {
-      "Known": true,
-      "Domain": "shell",
-      "Operation": "network_command",
-      "MutationClass": "external_side_effect",
-      "Reversibility": "hard",
-      "BlastRadius": "internet",
-      "TargetKind": "command",
-      "Destination": "command:sha256:663c19bf9dddcc8ee3129583ad13a10edf9b70c9a4d08db898678cb12312b259",
       "RequiredSink": "network",
       "NeedsSchema": false,
       "NeedsDestination": true,
@@ -817,7 +798,7 @@
     }
   },
   {
-    "command": "asc reviews respond --review-id 1 --response hi \u0026\u0026 gog gmail send --to x@example.com",
+    "command": "asc reviews respond --review-id 1 --response hi && gog gmail send --to x@example.com",
     "classification": {
       "Known": false,
       "Domain": "shell",

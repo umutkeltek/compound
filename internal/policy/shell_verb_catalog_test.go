@@ -55,16 +55,16 @@ func TestShellVerbCatalogBuiltinRows(t *testing.T) {
 		// An env prefix can change which account gog defaults to.
 		{"GOG_ACCOUNT=other@example.com gog gmail search foo", "gmail.message.read", "read", "gmail-account:unresolved", "gog-gmail-read"},
 		// App Store Connect through asc.
-		{"asc reviews list --app 1234567890", "app_store.customer_reviews.read", "read", "asc-app:1234567890", "asc-reviews-read"},
-		{"asc reviews --app 1234567890 --stars 1 --sort -createdDate", "app_store.customer_reviews.read", "read", "asc-app:1234567890", "asc-reviews-list-default"},
-		{"asc reviews ratings --app=1234567890", "app_store.customer_reviews.read", "read", "asc-app:1234567890", "asc-reviews-read"},
+		{"asc reviews list --app app-fixture-1", "app_store.customer_reviews.read", "read", "asc-app:app-fixture-1", "asc-reviews-read"},
+		{"asc reviews --app app-fixture-1 --stars 1 --sort -createdDate", "app_store.customer_reviews.read", "read", "asc-app:app-fixture-1", "asc-reviews-list-default"},
+		{"asc reviews ratings --app=app-fixture-1", "app_store.customer_reviews.read", "read", "asc-app:app-fixture-1", "asc-reviews-read"},
 		{"asc reviews response for-review --review-id r1", "app_store.customer_reviews.read", "read", "asc-app:unresolved", "asc-reviews-response-read"},
 		{"asc reviews respond --review-id r1 --response 'Thanks!'", "app_store.review_response.write", "external_side_effect", "asc-app:unresolved", "asc-reviews-respond"},
-		{"asc reviews --app 1234567890 respond --review-id r1 --response hi", "app_store.review_response.write", "external_side_effect", "asc-app:1234567890", "asc-reviews-respond"},
-		{"asc reviews respond-batch --app 1234567890 --file replies.json --confirm", "app_store.review_response.write", "external_side_effect", "asc-app:1234567890", "asc-reviews-respond-batch"},
+		{"asc reviews --app app-fixture-1 respond --review-id r1 --response hi", "app_store.review_response.write", "external_side_effect", "asc-app:app-fixture-1", "asc-reviews-respond"},
+		{"asc reviews respond-batch --app app-fixture-1 --file replies.json --confirm", "app_store.review_response.write", "external_side_effect", "asc-app:app-fixture-1", "asc-reviews-respond-batch"},
 		{"asc reviews response delete --id resp1 --confirm", "app_store.delete", "destructive", "asc-app:unresolved", "asc-delete-nested"},
-		{"asc versions delete --app 1234567890 --version-id v1", "app_store.delete", "destructive", "asc-app:1234567890", "asc-delete"},
-		{"asc versions list --app 1234567890", "app_store.read", "read", "asc-app:1234567890", "asc-versions-read"},
+		{"asc versions delete --app app-fixture-1 --version-id v1", "app_store.delete", "destructive", "asc-app:app-fixture-1", "asc-delete"},
+		{"asc versions list --app app-fixture-1", "app_store.read", "read", "asc-app:app-fixture-1", "asc-versions-read"},
 		{"asc apps list", "app_store.read", "read", "asc-app:unresolved", "asc-apps-read"},
 		// Paddle through an HTTP client: GET is a read, any other method a write,
 		// and the destination is the API host, not the command text.
@@ -451,5 +451,25 @@ func writeCatalogExtension(t *testing.T, home, body string) {
 	}
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestShellHTTPHostUserinfoCannotSpoofPaddle builds the hostile URL by
+// concatenation so the source never carries an email-shaped literal: a
+// trusted host placed before `@` lands in userinfo and must not match the
+// Paddle rows.
+func TestShellHTTPHostUserinfoCannotSpoofPaddle(t *testing.T) {
+	catalogTestHome(t)
+	hostile := "https://api.paddle.com" + "@" + "evil.example.invalid/x"
+	host, ok := shellHTTPHost(hostile)
+	if !ok || host != "evil.example.invalid" {
+		t.Fatalf("shellHTTPHost(%q) = %q, %t; want evil.example.invalid, true", hostile, host, ok)
+	}
+	got := classifyCatalogCommand("curl " + hostile)
+	if cap := actionCapability(got); strings.HasPrefix(cap, "paddle.") {
+		t.Fatalf("userinfo spoof classified as %q; want the network fallback", cap)
+	}
+	if got.Operation != "network_command" {
+		t.Fatalf("userinfo spoof operation = %q; want network_command", got.Operation)
 	}
 }

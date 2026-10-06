@@ -51,7 +51,8 @@ func (row ShellVerbCatalogRow) matchHTTP(binary string, args []string) (string, 
 
 // shellHTTPHost returns the lowercased host a URL operand names, defaulting the
 // scheme the way the clients do. Userinfo cannot spoof it: url.Parse puts
-// `api.paddle.com` in `https://api.paddle.com@evil.example/` into userinfo.
+// a trusted host name placed before an `@` into userinfo, so the real host
+// (the part after the `@`) is what gets compared.
 func shellHTTPHost(raw string) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || strings.Contains(raw, shellSubstitutionPlaceholder) {
